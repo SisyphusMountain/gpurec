@@ -1,0 +1,3 @@
+[FAMILIES]
+- my_family
+gene_tree = /home/enzo/Documents/git/WP2/gpurec/test_trees_3/g.nwk

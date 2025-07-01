@@ -1,0 +1,4 @@
+mpiRanks:
+1
+command:
+/home/enzo/Documents/git/WP2/gpurec/AleRax_modified/build/bin/alerax -f test_trees_3/families_abs.txt -s test_trees_3/sp.nwk -p test_trees_3/output_debug --gene-tree-samples 0 --species-tree-search SKIP

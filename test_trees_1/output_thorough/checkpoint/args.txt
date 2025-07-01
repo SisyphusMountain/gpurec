@@ -1,0 +1,4 @@
+mpiRanks:
+1
+command:
+alerax -f families.txt -s sp.nwk -p output_thorough --gene-tree-samples 0 --species-tree-search SKIP --verbose-opt
