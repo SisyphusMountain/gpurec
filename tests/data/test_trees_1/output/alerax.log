@@ -1,0 +1,101 @@
+[00:00:00] AleRax v1.3.0
+[00:00:00] AleRax was called as follows:
+alerax -f families.txt -s sp.nwk -p output --gene-tree-samples 0 --species-tree-search SKIP
+
+[00:00:00] Run settings:
+	Output directory: output
+	Families information: families.txt
+	Starting species tree: will be imported from the user file: sp.nwk
+	MPI Ranks: 1
+	Random seed: 123
+	Reconciliation model: UndatedDTL
+	Transfer constraint: transfers to parents are forbidden
+	Memory savings: OFF
+	Model parametrization: rates are global to all species and families
+	Rate optimizer: LBFGSB
+	Prune species mode is disabled
+	Gene tree rooting: all gene tree root positions are considered with the same probability
+	Origination strategy: gene families can originate from each species with the same probability
+	Species tree search: skipping species tree search
+	Number of reconciled gene trees to sample: 0
+	AleRax will exclude gene families covering less than 4 species
+
+[00:00:00] Generating ccp files...
+[00:00:00] Families: 1
+[00:00:00] Trimming families covering less than 4 species...
+[00:00:00] Remaining families: 1
+[00:00:00] Initializing starting species tree...
+[00:00:00] Checking that ccps and mappings are valid...
+[00:00:00] Input data information:
+- Number of gene families: 1
+- Number of species: 8
+- Total number of genes: 8
+- Average number of genes per family: 8
+- Maximum number of genes per family: 8
+- Species with the smallest family coverage: "8" (covered by 1/1 families)
+- Average (over species) species family coverage: 1
+
+[00:00:00] Initializing ccps and evaluators...
+[00:00:00] Initializing ccps finished
+[00:00:00] Total number of clades: 27
+[00:00:00] Load balancing: 1
+[00:00:00] Recommended maximum number of cores: 1
+[00:00:00] Initial ll=-6.20756
+
+[00:00:00] Start the species tree optimization...
+
+[00:00:00] Optimization skipped!
+
+[00:00:00] End of the species tree optimization
+[00:00:00] Final species tree topology: output/species_trees/inferred_species_tree.newick
+
+[00:00:00] Final model rate optimization, non-thorough...
+[00:00:00] [Species search] Optimizing model rates (light), ll=-6.20756
+[00:00:00] [Species search]   Free parameters: 3
+[00:00:00] [Species search]   After model rate opt, ll=-2.56495
+
+[00:00:00] Final model rate optimization, thorough...
+[00:00:00] [Species search] Optimizing model rates (thorough), ll=-2.56495
+[00:00:00] [Species search]   Free parameters: 3
+[00:00:00] [Species search]   After model rate opt, ll=-2.56495
+[00:00:00] Final species tree likelihood: ll=-2.56495
+
+[00:00:00] End of AleRax execution
+[00:00:00] AleRax v1.3.0
+[00:00:00] AleRax was called as follows:
+alerax -f families.txt -s sp.nwk -p output --gene-tree-samples 0 --species-tree-search SKIP
+
+[00:00:00] Run settings:
+	Output directory: output
+	Families information: families.txt
+	Starting species tree: will be imported from the user file: sp.nwk
+	MPI Ranks: 1
+	Random seed: 123
+	Reconciliation model: UndatedDTL
+	Transfer constraint: transfers to parents are forbidden
+	Memory savings: OFF
+	Model parametrization: rates are global to all species and families
+	Rate optimizer: LBFGSB
+	Prune species mode is disabled
+	Gene tree rooting: all gene tree root positions are considered with the same probability
+	Origination strategy: gene families can originate from each species with the same probability
+	Species tree search: skipping species tree search
+	Number of reconciled gene trees to sample: 0
+	AleRax will exclude gene families covering less than 4 species
+
+[00:00:00] Initializing species tree from the checkpoint...
+[00:00:00] Checking that ccps and mappings are valid...
+[00:00:00] Input data information:
+- Number of gene families: 1
+- Number of species: 8
+- Total number of genes: 8
+- Average number of genes per family: 8
+- Maximum number of genes per family: 8
+- Species with the smallest family coverage: "8" (covered by 1/1 families)
+- Average (over species) species family coverage: 1
+
+Loading checkpoint information...
+
+The previous run finished successfully according to the checkpoint.
+To run anew please rename or remove or change the output directory
+

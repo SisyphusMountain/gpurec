@@ -1,0 +1,172 @@
+\section{Method}
+
+In this section we detail the likelihood computation as implemented in AleRax.  
+We first describe the model used to describe gene evolution under gene duplications, transfers, and losses.  
+Then, we explain how Conditional Clade Probabilities (CCPs) can be used to approximate the posterior distribution of gene tree topologies.  
+Finally, we derive our algorithm for computing the likelihood of a species tree under the UndatedDTL model using CCPs.
+
+\subsection{The UndatedDTL model}
+
+The UndatedDTL model is a discrete state model. The process starts with the origination of a single gene copy on branch $e$ of the species tree $S$ with probability $p^O_e$.  
+Subsequently, gene copies evolve independently until either all copies are observed at the leaves or become extinct.  
+A gene will undergo one of the following events:
+
+\begin{itemize}
+  \item On branch $e$ of the species tree, the gene copy either:
+  \begin{itemize}
+    \item Duplicates with probability $p^D_e$ and is replaced by two descendant genes on the same branch.
+    \item Is transferred with probability $p^T_e$ to a random recipient branch that is not ancestral to the donor branch, drawn uniformly at random from the species tree. It is replaced by two descendant genes, one on the donor and one on the recipient branch.
+    \item Is lost with probability $p^L_e$.
+    \item Undergoes a speciation with probability $p^S_e = 1 - (p^D_e + p^T_e + p^L_e)$, resulting in:
+    \begin{itemize}
+      \item On internal branches: replaced by two descendant genes on each descendant branch.
+      \item On terminal branches: replaced by a single descendant copy on the subtending leaf.
+    \end{itemize}
+  \end{itemize}
+  \item On leaf $l$ of the species tree: observed with probability $p^{\text{obs}}_l$, or discarded.
+\end{itemize}
+
+Gene trees are rooted trees spanned by observed gene copies with internal nodes corresponding to a speciation, duplication, or transfer event.
+
+We denote by $\delta_e$, $\lambda_e$, and $\tau_e$ the duplication, loss, and transfer intensity parameters that determine the probabilities:
+
+\begin{align}
+  p^D_e &= \frac{\delta_e}{1 + \delta_e + \tau_e + \lambda_e} \\
+  p^T_e &= \frac{\tau_e}{1 + \delta_e + \tau_e + \lambda_e} \\
+  p^L_e &= \frac{\lambda_e}{1 + \delta_e + \tau_e + \lambda_e} \\
+  p^S_e &= \frac{1}{1 + \delta_e + \tau_e + \lambda_e}
+\end{align}
+
+Note: the parameters $\delta_e, \lambda_e, \tau_e$ may vary between families or be shared across groups.  
+The parameter $p^{\text{obs}}_l$ represents the probability that a gene present in a genome (leaf $l$) is observed; by default, $p^{\text{obs}}_l = 1$.
+
+\subsection{Conditional clade probabilities}
+
+CCPs approximate the posterior distribution of tree topologies from MCMC samples.  
+They estimate gene tree probabilities using marginal split frequencies, ignoring clade dependencies.  
+Despite this, CCPs often yield accurate estimates due to the maximum entropy property (Jaynes, 2003).
+
+For a sample of trees, CCP-based estimates apply to trees that can be amalgamated (i.e., all splits observed in the sample).  
+Unobserved splits yield zero probability.
+
+\subsubsection{The probability of a rooted tree topology}
+
+Let $\gamma$ be a clade (subset of homologous sequences $\Gamma$). Let $G$ be a rooted tree spanning $\Gamma$, $g$ a subtree, and $\gamma$ the clade defined by the leaf set of $g$.  
+The probability $q_G(\gamma)$ is defined recursively:
+
+\[
+q_G(\gamma) = 
+\begin{cases}
+  p(\gamma', \gamma'' | \gamma) \cdot q_G(\gamma') \cdot q_G(\gamma'') & \text{if } |\gamma| > 1 \\
+  1 & \text{if } |\gamma| = 1
+\end{cases}
+\]
+
+with:
+\[
+p(\gamma', \gamma''|\gamma) \approx \frac{f(\gamma', \gamma''|\gamma)}{f(\gamma)} \quad \text{if } f(\gamma) > 0
+\]
+
+The posterior probability of $G$ is $q_G(\Gamma)$.  
+Only trees composed of clades present in the sample (amalgamable) have $q_G(\Gamma) > 0$.
+
+\subsubsection{The number of trees that can be amalgamated}
+
+Let $N(\gamma)$ be the number of amalgamable trees on clade $\gamma$:
+
+\[
+N(\gamma) = 
+\begin{cases}
+  \sum_{\gamma',\gamma''|\gamma} \delta(\gamma',\gamma''|\gamma) N(\gamma') N(\gamma'') & |\gamma| > 1 \\
+  1 & |\gamma| = 1
+\end{cases}
+\]
+
+where $\delta(\gamma',\gamma''|\gamma) = 1$ if the split is in the sample, 0 otherwise.
+
+\subsection{Efficiently calculating the joint likelihood}
+
+AleRax calculates:
+\[
+P(A|S) \approx \sum_G q_G(\Gamma) \cdot \frac{\sum_e p^O_e P_{e,R}}{\sum_e p^O_e (1 - E_e)}
+\]
+
+Using dynamic programming over clades $\gamma$ and species tree branches $e$, we define $\Pi_{e,\gamma}$ as the probability that the lineage leading to clade $\gamma$ exists on branch $e$. The likelihood becomes:
+
+\[
+P(A|S) \approx \frac{\sum_e p^O_e \Pi_{e,\Gamma}}{\sum_e p^O_e (1 - E_e)}
+\]
+
+\subsubsection{The extinction probability}
+
+Let $E_e$ be the extinction probability of branch $e$:
+
+\paragraph{Internal branches:}
+\[
+E_e = p^L_e + p^S_e E_f E_g + p^D_e E_e^2 + p^T_e E_e \bar{E}_e
+\]
+
+\paragraph{Terminal branches:}
+\[
+E_e = p^L_e + p^S_e E_l + p^D_e E_e^2 + p^T_e E_e \bar{E}_e
+\]
+
+\paragraph{Leaves:}
+\[
+E_l = 1 - p^{\text{obs}}_l
+\]
+
+where:
+
+\[
+\bar{E}_e = \frac{1}{|T(e)|} \sum_{h \in T(e)} E_h
+\]
+
+$T(e)$ is the set of non-ancestor branches of $e$ (transfer-eligible).
+
+Iterate from initial value $E_e^{(0)} = 0$ to convergence:
+
+\[
+E_e^{(n)} = \cdots \quad \text{as defined above}
+\]
+
+\subsubsection{Dual recursion over reconciliations and gene tree topologies}
+
+\paragraph{Internal branches:}
+\begin{align}
+\Pi_{e,\gamma} &= p^S_e \sum_{\gamma',\gamma''|\gamma} p(\gamma',\gamma''|\gamma) \left( \Pi_{f,\gamma'} \Pi_{g,\gamma''} + \Pi_{f,\gamma''} \Pi_{g,\gamma'} \right) \\
+&+ p^S_e (\Pi_{f,\gamma} E_g + \Pi_{g,\gamma} E_f) \\
+&+ p^D_e \sum_{\gamma',\gamma''|\gamma} p(\gamma',\gamma''|\gamma) \Pi_{e,\gamma'} \Pi_{e,\gamma''} \\
+&+ 2 p^D_e \Pi_{e,\gamma} E_e \\
+&+ p^T_e \sum_{\gamma',\gamma''|\gamma} p(\gamma',\gamma''|\gamma) \left( \Pi_{e,\gamma'} \bar{\Pi}_{e,\gamma''} + \Pi_{e,\gamma''} \bar{\Pi}_{e,\gamma'} \right) \\
+&+ p^T_e (\Pi_{e,\gamma} \bar{E}_e + \bar{\Pi}_{e,\gamma} E_e)
+\end{align}
+
+\paragraph{Terminal branches:}
+\begin{align}
+\Pi_{e,\gamma} &= p^S_e \Pi_{l,\gamma} + p^D_e \sum_{\gamma',\gamma''|\gamma} p(\gamma',\gamma''|\gamma) \Pi_{e,\gamma'} \Pi_{e,\gamma''} \\
+&+ 2 p^D_e \Pi_{e,\gamma} E_e \\
+&+ p^T_e \sum_{\gamma',\gamma''|\gamma} p(\gamma',\gamma''|\gamma) \left( \Pi_{e,\gamma'} \bar{\Pi}_{e,\gamma''} + \Pi_{e,\gamma''} \bar{\Pi}_{e,\gamma'} \right) \\
+&+ p^T_e (\Pi_{e,\gamma} \bar{E}_e + \bar{\Pi}_{e,\gamma} E_e)
+\end{align}
+
+\[
+\bar{\Pi}_{e,\gamma} = \frac{1}{|T(e)|} \sum_{h \in T(e)} \Pi_{h,\gamma}
+\]
+
+\paragraph{Leaves:}
+\[
+\Pi_{l,\gamma} = \sigma_{\gamma,l} + (1 - \sigma_{\gamma,l})(1 - p^{\text{obs}}_l)
+\]
+
+where $\sigma_{\gamma,l} = 1$ if $|\gamma| = 1$ and $\gamma$ maps to $l$, 0 otherwise.
+
+\subsection{Sampling reconciled gene trees}
+
+To sample reconciled gene trees under the joint likelihood:
+\begin{enumerate}
+  \item Sample origination species from Eq. (11).
+  \item Recursively sample events (D, T, L, S) from the sum in Eq. (18).
+\end{enumerate}
+
+For maximum-likelihood reconciliation, replace summations over $\gamma', \gamma''$ with maximizations.

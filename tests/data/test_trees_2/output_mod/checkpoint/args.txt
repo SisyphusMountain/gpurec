@@ -1,0 +1,4 @@
+mpiRanks:
+1
+command:
+../AleRax_modified/build/bin/alerax -f families.txt -s sp.nwk -p output_mod --gene-tree-samples 0 --species-tree-search SKIP
