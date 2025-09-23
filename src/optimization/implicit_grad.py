@@ -17,9 +17,9 @@ from typing import Callable, Dict, Optional, Tuple
 import torch
 
 # Local imports for building closures and likelihood
-from src.reconciliation.likelihood import (
+from src.core.likelihood import (
     E_step, Pi_step, compute_log_likelihood, get_log_params,
-    gather_Pi_children, dup_both_survive, NEG_INF
+    gather_Pi_children, compute_D, NEG_INF
 )
 from src.reconciliation.reconcile import setup_fixed_points
 
@@ -271,7 +271,7 @@ def optimize_theta_with_warm_starts(
         Pi_left = torch.index_select(Pi, 0, split_lefts)
         Pi_right = torch.index_select(Pi, 0, split_rights)
         log_split_probs = ccp_helpers['log_split_probs']
-        log_D_splits = dup_both_survive(Pi_left, Pi_right, log_split_probs, log_pD)
+        log_D_splits = compute_D(Pi_left, Pi_right, log_split_probs, log_pD)
         Pi_s1_left = torch.index_select(Pi_s1_ws, 0, split_lefts)
         Pi_s2_right = torch.index_select(Pi_s2_ws, 0, split_rights)
         Pi_s1_right = torch.index_select(Pi_s1_ws, 0, split_rights)

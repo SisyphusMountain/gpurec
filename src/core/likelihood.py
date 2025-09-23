@@ -11,15 +11,17 @@ from contextlib import contextmanager
 from typing import Dict, Optional
 from .autograd_functions import ScatterLogSumExp
 
-# Import Triton kernels if available
-try:
-    from .triton.lse import lse4_triton_pair, lse5_triton_pair, lse7_triton_pair
-    # 2D segmented logsumexp: y[g, s] = logsumexp(x[ptr[g]:ptr[g+1], s])
-    from .triton.scatter_lse import seg_logsumexp
-    TRITON_AVAILABLE = True
-except Exception:
-    TRITON_AVAILABLE = False
-    logging.warning("Triton not available; falling back to PyTorch implementations.")
+# # Import Triton kernels if available
+# try:
+#     from .triton.lse import lse4, lse5, lse7
+#     from .triton.lse import lse5_triton_pair as lse5
+#     from .triton.lse import lse7_triton_pair as lse
+#     # 2D segmented logsumexp: y[g, s] = logsumexp(x[ptr[g]:ptr[g+1], s])
+#     from triton.scatter_lse import seg_lse
+#     TRITON_AVAILABLE = True
+# except Exception:
+#     TRITON_AVAILABLE = False
+#     #logging.warning("Triton not available; falling back to PyTorch implementationssdfdffsd.")
 
 NEG_INF = float('-inf')
 
@@ -46,9 +48,8 @@ def _prof_range(name: str):
                     torch.cuda.nvtx.range_pop()
                 except Exception:
                     pass
-
 # TODO: try torch.compile
-def dup_both_survive(Pi_left, Pi_right, log_split_probs, log_pD):
+def compute_D(Pi_left, Pi_right, log_split_probs, log_pD):
     """
     input shapes: 
         Pi_left: [N_splits, S]
@@ -58,10 +59,115 @@ def dup_both_survive(Pi_left, Pi_right, log_split_probs, log_pD):
     Formula:
         p_D * p(gamma', gamma''|gamma) * Pi_{gamma',e} * Pi_{gamma'',e}
     """
-    return (log_split_probs.unsqueeze(1) + 
-            Pi_left + Pi_right + log_pD)  # [N_splits, S]
+    return (log_split_probs + Pi_left + Pi_right + log_pD)
+
+def compute_DL(Pi, E, log_pD, log_2):
+    return ((log_2 + log_pD + E).unsqueeze(0) + Pi).contiguous()
+
+def compute_T(log_split_probs_sorted, log_pT, Pi_left, Pi_right, Pibar_left, Pibar_right):
+    pTsplitprobs = log_split_probs_sorted + log_pT
+    T_term_1 = pTsplitprobs + Pi_left + Pibar_right
+    T_term_2 = pTsplitprobs + Pi_right + Pibar_left
+    return T_term_1, T_term_2
+
+def compute_DTS(log_pD, log_pT, log_pS, Pi_s12, Pi_left, Pi_right, Pibar_right, Pibar_left, log_split_probs, split_leftrights_sorted, N_splits, S):
+    DTS = torch.empty((5, N_splits, S))
+    DTS[0] = log_pD + Pi_left + Pi_right
+    DTS[1] = log_pT + Pi_left + Pibar_right
+    DTS[2] = log_pT + Pi_right + Pibar_left
+
+    Pi_s12_leftright = torch.index_select(Pi_s12, 0, split_leftrights_sorted) # [2 N_splits, 2 S]
+    Pi_s1_left = Pi_s12_leftright[:N_splits, :S]
+    Pi_s2_left = Pi_s12_leftright[:N_splits, S:]
+    Pi_s1_right = Pi_s12_leftright[N_splits:, :S]
+    Pi_s2_right = Pi_s12_leftright[N_splits:, S:]
+
+    DTS[3] = log_pS + Pi_s1_left + Pi_s2_right
+    DTS[4] = log_pS + Pi_s1_right + Pi_s2_left
+    # DTS = DTS.contiguous()
+    # DTS_term = log_split_probs + lse5(DTS[0], DTS[1], DTS[2], DTS[3], DTS[4])
+    DTS_term = log_split_probs + torch.logsumexp(DTS, dim=0)
+    return DTS_term
+
+def compute_DTS_smallmem(log_pD, log_pT, log_pS, Pi_s12, Pi_left, Pi_right, Pibar_right, Pibar_left, log_split_probs, split_leftrights_sorted, N_splits, S):
+    DTS = log_pD + Pi_left + Pi_right
+    DTS = torch.logaddexp(DTS, log_pT + Pi_left + Pibar_right)
+    DTS = torch.logaddexp(DTS, log_pT + Pi_right + Pibar_left)
+    Pi_s12_leftright = torch.index_select(Pi_s12, 0, split_leftrights_sorted) # [2 N_splits, 2 S]
+    Pi_s1_left = Pi_s12_leftright[:N_splits, :S]
+    Pi_s2_left = Pi_s12_leftright[:N_splits, S:]
+    Pi_s1_right = Pi_s12_leftright[N_splits:, :S]
+    Pi_s2_right = Pi_s12_leftright[N_splits:, S:]
+    DTS = torch.logaddexp(DTS, log_pS + Pi_s1_left + Pi_s2_right)
+    DTS = torch.logaddexp(DTS, log_pS + Pi_s1_right + Pi_s2_left)
+    DTS_term = log_split_probs + DTS
+    return DTS_term
+
+def compute_DTS_L(log_pD, log_pT, log_pS, Pi, Pibar, Pi_s1, Pi_s2, E, Ebar, E_s1, E_s2, clade_species_map, log_2):
+    DTS_L = torch.empty((6, Pi.shape[0], Pi.shape[1]), dtype=log_pD.dtype, device=log_pD.device)
+    # DL
+    DTS_L[0] = ((log_2 + log_pD + E).unsqueeze(0) + Pi)
+    # TL
+    DTS_L[1] = (log_pT + Pi + Ebar.unsqueeze(0))
+    DTS_L[2] = (log_pT + Pibar + E.unsqueeze(0))
+    # SL
+    DTS_L[3] = ((log_pS + E_s2).unsqueeze(0) + Pi_s1)
+    DTS_L[4] = ((log_pS + E_s1).unsqueeze(0) + Pi_s2)
+    # leaf
+    DTS_L[5] = (log_pS + clade_species_map)
+    # DTS_L = DTS_L.contiguous()
+    # DTS_L_term = lse6(DTS_L[0], DTS_L[1], DTS_L[2], DTS_L[3], DTS_L[4], DTS_L[5])
+    DTS_L_term = torch.logsumexp(DTS_L, dim=0)
+    return DTS_L_term
+
+def compute_DTS_L_smallmem(log_pD, log_pT, log_pS, Pi, Pibar, Pi_s1, Pi_s2, E, Ebar, E_s1, E_s2, clade_species_map, log_2):
+    DTS_L = ((log_2 + log_pD + E).unsqueeze(0) + Pi)
+    DTS_L = torch.logaddexp(DTS_L, (log_pT + Pi + Ebar.unsqueeze(0)))
+    DTS_L = torch.logaddexp(DTS_L, (log_pT + Pibar + E.unsqueeze(0)))
+    DTS_L = torch.logaddexp(DTS_L, ((log_pS + E_s2).unsqueeze(0) + Pi_s1))
+    DTS_L = torch.logaddexp(DTS_L, ((log_pS + E_s1).unsqueeze(0) + Pi_s2))
+    DTS_L = torch.logaddexp(DTS_L, (log_pS + clade_species_map))
+    return DTS_L
 
 # TODO: try torch.compile
+def compute_S(Pi, sp_P_idx, sp_c12_idx, split_leftrights_sorted, log_split_probs_sorted, log_pS, E_s1, E_s2, clade_species_map):
+    # region speciation
+    with _prof_range("Pi_step:speciation_children"):
+        Pi_s12 = gather_Pi_children(Pi, sp_P_idx, sp_c12_idx)  # [C, 2S]
+        Pi_s1, Pi_s2 = torch.chunk(Pi_s12, 2, dim=1)  # Each [C, S]
+        # each should be contiguous.
+    # TODO: use only 1 gather and 1 index_select and 4 chunks. If there are contiguity issues with the addition
+    # that comes after, we will try differently.
+    # torch.chunk returns views, so it does not allocate new memory.
+    # Extract for splits
+    with _prof_range("Pi_step:speciation_splits"):
+        Pi_s12_leftright = torch.index_select(Pi_s12, 0, split_leftrights_sorted) # [2 N_splits, 2 S]
+        N_splits = Pi_s12_leftright.size(0) // 2
+        Pi_s1_left = Pi_s12_leftright[:N_splits, :S]
+        Pi_s2_left = Pi_s12_leftright[:N_splits, S:]
+        Pi_s1_right = Pi_s12_leftright[N_splits:, :S]
+        Pi_s2_right = Pi_s12_leftright[N_splits:, S:]
+        # Pi_s1 = torch.index_select(Pi_s12, 0, split_lefts_sorted)   # [N_splits, S]
+        # Pi_s2 = torch.index_select(Pi_s12, 0, split_rights_sorted)  # [N_splits, S]
+
+    # both copies survive
+    with _prof_range("Pi_step:speciation_both_survive"):
+        S_term_1 = log_split_probs_sorted + log_pS + Pi_s1_left + Pi_s2_right  # [N_splits, S]
+        S_term_2 = log_split_probs_sorted + log_pS + Pi_s1_right + Pi_s2_left  # [N_splits, S]
+
+    
+    # one copy goes extinct
+    with _prof_range("Pi_step:speciation_one_extinct"):
+        SL_term_1 = log_pS + Pi_s1 + E_s2.unsqueeze(0)  # [C, S]
+        SL_term_2 = log_pS + Pi_s2 + E_s1.unsqueeze(0)  # [C, S]
+        # For leaf speciation events, one copy doesn't really go extinct, but S event on leaves still gives only one copy, not two.
+        # Therefore, the tensor clade_species_map has the same shape as Pi. [C, S]
+        # TODO: maybe there's a more efficient way of obtaining the leaf contribution...
+        log_leaf_contrib = log_pS + clade_species_map
+    # endregion speciation
+    return S_term_1, S_term_2, SL_term_1, SL_term_2, log_leaf_contrib
+
+
 def gather_E_children(E, sp_P_idx, child_index):
     """Gather extinction probabilities for internal nodes"""
     with _prof_range("gather_E_children"):
@@ -69,7 +175,6 @@ def gather_E_children(E, sp_P_idx, child_index):
         values = torch.index_select(E, 0, child_index)  # [N_internal_nodes]
         E_child.index_copy_(0, sp_P_idx, values)
         return E_child
-
 # TODO: try torch.compile
 def gather_Pi_children(Pi, sp_P_idx, child_index):
     with _prof_range("gather_Pi_children"):
@@ -78,14 +183,14 @@ def gather_Pi_children(Pi, sp_P_idx, child_index):
         values = torch.index_select(Pi, 1, child_index) # [C, N_internal_nodes]
         Pi_children.index_copy_(1, sp_P_idx, values)
         return Pi_children
-
 # TODO: try torch.compile
-@torch.compile
+#@torch.compile
 def get_log_params(theta):
     param_tensor = torch.zeros(4, device=theta.device, dtype=theta.dtype)
     param_tensor[1:] = theta
-    exp_params = torch.exp(param_tensor)
-    return torch.log(exp_params / exp_params.sum())
+    # exp_params = torch.exp(param_tensor)
+    # return torch.log(exp_params / exp_params.sum())
+    return torch.log_softmax(param_tensor, dim=0)
 
 def E_step(E, sp_P_idx, sp_child12_idx, Recipients_mat, theta,
            return_components=False, use_triton=True, compare_triton: bool = False):
@@ -115,7 +220,7 @@ def E_step(E, sp_P_idx, sp_child12_idx, Recipients_mat, theta,
     with _prof_range("E_step:reduce"):
         log_pL_expanded = log_pL * torch.ones_like(E)
         if TRITON_AVAILABLE and use_triton and speciation.is_cuda:
-            new_tr = lse4_triton_pair(speciation, duplication, transfer, log_pL_expanded)
+            new_tr = lse4(speciation, duplication, transfer, log_pL_expanded)
             if compare_triton:
                 ref = torch.logsumexp(torch.stack([speciation, duplication, transfer, log_pL_expanded], dim=0), dim=0)
                 rtol = 1e-12 if new_tr.dtype == torch.float64 else 1e-6
@@ -129,7 +234,7 @@ def E_step(E, sp_P_idx, sp_child12_idx, Recipients_mat, theta,
                 torch.stack([speciation, duplication, transfer, log_pL_expanded], dim=0), dim=0
             )
             if compare_triton and TRITON_AVAILABLE and speciation.is_cuda:
-                new_tr = lse4_triton_pair(speciation, duplication, transfer, log_pL_expanded)
+                new_tr = lse4(speciation, duplication, transfer, log_pL_expanded)
                 rtol = 1e-12 if ref.dtype == torch.float64 else 1e-6
                 atol = rtol
                 if not torch.allclose(new_tr, ref, rtol=rtol, atol=atol):
@@ -142,7 +247,6 @@ def E_step(E, sp_P_idx, sp_child12_idx, Recipients_mat, theta,
         return new_E, E_s1, E_s2, Ebar
     else:
         return new_E
-
 
 def Pi_step(Pi, ccp_helpers, species_helpers, clade_species_map,
             E, Ebar, E_s1, E_s2, theta, log_2, use_triton=True, compare_triton: bool = False):
@@ -161,31 +265,28 @@ def Pi_step(Pi, ccp_helpers, species_helpers, clade_species_map,
     Returns:
         new_Pi: Updated log probabilities [C, S]
     """
-    # Ensure theta is on the same device and dtype as Pi
-
-    # TODO: try get_log_params
     with _prof_range("Pi_step:event_probs"):
         log_pS, log_pD, log_pT, log_pL = get_log_params(theta)
     # region helpers
     # Extract helpers (precomputed sorted splits and CSR pointers)
     split_parents_sorted = ccp_helpers['split_parents_sorted']
-    split_lefts_sorted = ccp_helpers['split_lefts_sorted']
-    split_rights_sorted = ccp_helpers['split_rights_sorted']
+    # split_lefts_sorted = ccp_helpers['split_lefts_sorted']
+    # split_rights_sorted = ccp_helpers['split_rights_sorted']
     split_leftrights_sorted = ccp_helpers['split_leftrights_sorted']
-    log_split_probs_sorted = ccp_helpers['log_split_probs_sorted']
+    log_split_probs_sorted = ccp_helpers['log_split_probs_sorted'].unsqueeze(1).contiguous()  # [N_splits, 1]
     seg_ptr = ccp_helpers['ptr']
     seg_parent_ids = ccp_helpers['seg_parent_ids']
     # Segment partition helpers: contiguous blocks [len>=2][len==1][len==0]
     num_segs_ge2 = int(ccp_helpers.get('num_segs_ge2', 0))
     num_segs_eq1 = int(ccp_helpers.get('num_segs_eq1', 0))
-    num_segs_eq0 = int(ccp_helpers.get('num_segs_eq0', 0))
+    # num_segs_eq0 = int(ccp_helpers.get('num_segs_eq0', 0))
     end_rows_ge2 = int(ccp_helpers.get('end_rows_ge2', 0))
     ptr_ge2 = ccp_helpers.get('ptr_ge2', seg_ptr[:1])
     N_splits = ccp_helpers["N_splits"]
 
     sp_P_idx = species_helpers['s_P_indexes'] # index of parent for each internal node
-    sp_c1_idx = species_helpers['s_C1_indexes'] # index of first child for each internal node
-    sp_c2_idx = species_helpers['s_C2_indexes'] # index of second child for each internal node
+    # sp_c1_idx = species_helpers['s_C1_indexes'] # index of first child for each internal node
+    # sp_c2_idx = species_helpers['s_C2_indexes'] # index of second child for each internal node
     sp_c12_idx = species_helpers["s_C12_indexes"]
     Recipients_mat = species_helpers['Recipients_mat']
     C, S = Pi.shape
@@ -198,53 +299,25 @@ def Pi_step(Pi, ccp_helpers, species_helpers, clade_species_map,
         Pi_left, Pi_right = torch.chunk(Pi_leftright, 2, dim=0)  # Each [N_splits, S]
         # Pi_left = torch.index_select(Pi, 0, split_lefts_sorted)    # [N_splits, S]
         # Pi_right = torch.index_select(Pi, 0, split_rights_sorted)  # [N_splits, S]
-    
     # region duplication
     # both copies survive
     with _prof_range("Pi_step:duplication"):
-        log_D_splits = dup_both_survive(Pi_left, Pi_right, log_split_probs_sorted, log_pD)
+        D_term, DL_term = compute_D(Pi, E, Pi_left, Pi_right, log_split_probs_sorted, log_pD, log_2)
         
-        # one copy goes extinct
-        log_D_loss = (log_2 + log_pD + Pi + E.unsqueeze(0)).contiguous()  # [C, S]
+
     # endregion duplication
     
-    # TODO: use only one gather for both children
-    # region speciation
-    with _prof_range("Pi_step:speciation_children"):
-        Pi_s12 = gather_Pi_children(Pi, sp_P_idx, sp_c12_idx)  # [C, 2S]
-        Pi_s1, Pi_s2 = torch.chunk(Pi_s12, 2, dim=1)  # Each [C, S]
-        # each should be contiguous.
-    # TODO: use only 1 gather and 1 index_select and 4 chunks. If there are contiguity issues with the addition
-    # that comes after, we will try differently.
-    # torch.chunk returns views, so it does not allocate new memory.
-    # Extract for splits
-    with _prof_range("Pi_step:speciation_splits"):
-        Pi_s12_leftright = torch.index_select(Pi_s12, 0, split_leftrights_sorted) # [2 N_splits, 2 S]
-        N_splits = Pi_s12_leftright.size(0) // 2
-        Pi_s1_left = Pi_s12_leftright[:N_splits, :S]
-        Pi_s2_left = Pi_s12_leftright[:N_splits, S:]
-        Pi_s1_right = Pi_s12_leftright[N_splits:, :S]
-        Pi_s2_right = Pi_s12_leftright[N_splits:, S:]
-        # Pi_s1 = torch.index_select(Pi_s12, 0, split_lefts_sorted)   # [N_splits, S]
-        # Pi_s2 = torch.index_select(Pi_s12, 0, split_rights_sorted)  # [N_splits, S]
+    S_term_1, S_term_2, SL_term_1, SL_term_2, log_leaf_contrib = compute_S(Pi,
+                                                                           sp_P_idx,
+                                                                           sp_c12_idx,
+                                                                           split_leftrights_sorted,
+                                                                           log_split_probs_sorted,
+                                                                           log_pS,
+                                                                           E_s1,
+                                                                           E_s2,
+                                                                           clade_species_map,
+                                                                        )
 
-    # both copies survive
-    with _prof_range("Pi_step:speciation_both_survive"):
-        log_spec1 = log_split_probs_sorted.unsqueeze(1) + log_pS + Pi_s1_left + Pi_s2_right  # [N_splits, S]
-        log_spec2 = log_split_probs_sorted.unsqueeze(1) + log_pS + Pi_s1_right + Pi_s2_left  # [N_splits, S]
-
-    
-    # one copy goes extinct
-    # TODO: batch Pi_s1_left and Pi_s2_left and Pi_s1_right and Pi_s2_right instead of having to gather
-    # And use chunking
-    with _prof_range("Pi_step:speciation_one_extinct"):
-        log_S_term1 = log_pS + Pi_s1 + E_s2.unsqueeze(0)  # [C, S]
-        log_S_term2 = log_pS + Pi_s2 + E_s1.unsqueeze(0)  # [C, S]
-        # For leaf speciation events, one copy doesn't really go extinct, but S event on leaves still gives only one copy, not two.
-        # Therefore, the tensor clade_species_map has the same shape as Pi. [C, S]
-        log_leaf_contrib = log_pS + clade_species_map
-
-    # endregion speciation
     # region transfer
     # TODO: create a Triton kernel for this
     # both copies survive
@@ -262,13 +335,13 @@ def Pi_step(Pi, ccp_helpers, species_helpers, clade_species_map,
     
     # Transfer: log(p_T * split_probs * (Pi_left * Pibar_right + Pi_right * Pibar_left))
     with _prof_range("Pi_step:transfer_both_survive"):
-        log_trans1 = log_split_probs_sorted.unsqueeze(1) + log_pT + Pi_left + Pibar_right  # [N_splits, S]
-        log_trans2 = log_split_probs_sorted.unsqueeze(1) + log_pT + Pi_right + Pibar_left  # [N_splits, S]
+        T_term_1 = log_split_probs_sorted + log_pT + Pi_left + Pibar_right  # [N_splits, S]
+        T_term_2 = log_split_probs_sorted + log_pT + Pi_right + Pibar_left  # [N_splits, S]
 
     # only one copy survives
     with _prof_range("Pi_step:transfer_one_extinct"):
-        log_T_term1 = log_pT + Pi + Ebar.unsqueeze(0)  # [C, S]
-        log_T_term2 = log_pT + Pibar + E.unsqueeze(0)  # [C, S]
+        TL_term_1 = log_pT + Pi + Ebar.unsqueeze(0)  # [C, S]
+        TL_term_2 = log_pT + Pibar + E.unsqueeze(0)  # [C, S]
     # endregion transfer
 
 
@@ -276,14 +349,19 @@ def Pi_step(Pi, ccp_helpers, species_helpers, clade_species_map,
         
     # === COMBINE ALL CONTRIBUTIONS WITHOUT LOSSES ===
     # Stack all contributions and use logsumexp to add them
+    # TODO: avoid doing logsumexp if we need the exp directly after in scatterlogsumexp
     with _prof_range("Pi_step:combine_split_terms"):
-        log_combined_splits = lse5_triton_pair(
-            log_D_splits, log_spec1, log_spec2, log_trans1, log_trans2) # [N_splits, S]
+        survive_terms = lse5_triton_pair(D_term,
+                                               S_term_1,
+                                               S_term_2,
+                                               T_term_1,
+                                               T_term_2) # [N_splits, S]
+        
     # Aggregation across splits per parent clade
     with _prof_range("Pi_step:scatter_splits"):
-        if TRITON_AVAILABLE and use_triton and log_combined_splits.is_cuda:
+        if TRITON_AVAILABLE and use_triton and survive_terms.is_cuda:
             # Use precomputed CSR pointers over the already-sorted splits
-            x_sorted = log_combined_splits
+            x_sorted = survive_terms
 
             # Preallocate output mapped to original parents; default to -inf (covers empty segments and leaves)
             contribs_1_tr = torch.full((C, S), NEG_INF, dtype=x_sorted.dtype, device=x_sorted.device)
@@ -303,21 +381,21 @@ def Pi_step(Pi, ccp_helpers, species_helpers, clade_species_map,
 
             if compare_triton:
                 leaves_mask = torch.isfinite(clade_species_map).any(dim=1)
-                contribs_1_ref = ScatterLogSumExp.apply(log_combined_splits, split_parents_sorted, C, leaves_mask)
+                contribs_1_ref = ScatterLogSumExp.apply(survive_terms, split_parents_sorted, C, leaves_mask)
                 rtol = 1e-12 if contribs_1_tr.dtype == torch.float64 else 1e-6
                 atol = rtol
                 if not torch.allclose(contribs_1_tr, contribs_1_ref, rtol=rtol, atol=atol):
                     diff = (contribs_1_tr - contribs_1_ref).abs().max().item()
                     print(f"[Pi_step:scatter] Triton vs Torch mismatch: max_abs={diff:.3e}")
-            contribs_1 = contribs_1_tr
+            D_T_S_term = contribs_1_tr
             # [N_splits, S] -> [C, S] by summing over splits for each parent clade
         else:
             # Proven-stable autograd path with sorted parents
             leaves_mask = torch.isfinite(clade_species_map).any(dim=1)
-            contribs_1_ref = ScatterLogSumExp.apply(log_combined_splits, split_parents_sorted, C, leaves_mask)
-            if compare_triton and TRITON_AVAILABLE and log_combined_splits.is_cuda:
+            contribs_1_ref = ScatterLogSumExp.apply(survive_terms, split_parents_sorted, C, leaves_mask)
+            if compare_triton and TRITON_AVAILABLE and survive_terms.is_cuda:
                 # Run Triton path for comparison only
-                x_sorted = log_combined_splits
+                x_sorted = survive_terms
                 contribs_1_tr = torch.full((C, S), NEG_INF, dtype=x_sorted.dtype, device=x_sorted.device)
                 if num_segs_ge2 > 0 and end_rows_ge2 > 0:
                     y_ge2 = seg_logsumexp(x_sorted[:end_rows_ge2], ptr_ge2)
@@ -331,16 +409,16 @@ def Pi_step(Pi, ccp_helpers, species_helpers, clade_species_map,
                 if not torch.allclose(contribs_1_tr, contribs_1_ref, rtol=rtol, atol=atol):
                     diff = (contribs_1_tr - contribs_1_ref).abs().max().item()
                     print(f"[Pi_step:scatter] Torch vs Triton mismatch: max_abs={diff:.3e}")
-            contribs_1 = contribs_1_ref
+            D_T_S_term = contribs_1_ref
     
     # === COMBINE ALL CONTRIBUTIONS INCLUDING LOSSES ===
     with _prof_range("Pi_step:final_reduce"):
         # Use Triton kernel if available, enabled, and on CUDA
-        if TRITON_AVAILABLE and use_triton and contribs_1.is_cuda:
-            new_tr = lse7_triton_pair(contribs_1, log_D_loss, log_S_term1, log_S_term2, 
-                                      log_leaf_contrib, log_T_term1, log_T_term2)
+        if TRITON_AVAILABLE and use_triton and D_T_S_term.is_cuda:
+            new_tr = lse7_triton_pair(D_T_S_term, DL_term, SL_term_1, SL_term_2, 
+                                      log_leaf_contrib, TL_term_1, TL_term_2)
             if compare_triton:
-                all_terms = [contribs_1, log_D_loss, log_S_term1, log_S_term2, log_leaf_contrib, log_T_term1, log_T_term2]
+                all_terms = [D_T_S_term, DL_term, SL_term_1, SL_term_2, log_leaf_contrib, TL_term_1, TL_term_2]
                 ref = torch.logsumexp(torch.stack(all_terms, dim=0), dim=0)
                 rtol = 1e-12 if new_tr.dtype == torch.float64 else 1e-6
                 atol = rtol
@@ -349,11 +427,16 @@ def Pi_step(Pi, ccp_helpers, species_helpers, clade_species_map,
                     print(f"[Pi_step:final_reduce] Triton vs Torch mismatch: max_abs={diff:.3e}")
             new_Pi = new_tr
         else:
-            all_terms = [contribs_1, log_D_loss, log_S_term1, log_S_term2, log_leaf_contrib, log_T_term1, log_T_term2]
+            all_terms = [D_T_S_term, DL_term, SL_term_1, SL_term_2, log_leaf_contrib, TL_term_1, TL_term_2]
             ref = torch.logsumexp(torch.stack(all_terms, dim=0), dim=0)  # [C, S]
-            if compare_triton and TRITON_AVAILABLE and contribs_1.is_cuda:
-                new_tr = lse7_triton_pair(contribs_1, log_D_loss, log_S_term1, log_S_term2, 
-                                          log_leaf_contrib, log_T_term1, log_T_term2)
+            if compare_triton and TRITON_AVAILABLE and D_T_S_term.is_cuda:
+                new_tr = lse7_triton_pair(D_T_S_term,
+                                          DL_term,
+                                          SL_term_1,
+                                          SL_term_2, 
+                                          TL_term_1,
+                                          TL_term_2,
+                                          log_leaf_contrib)
                 rtol = 1e-12 if ref.dtype == torch.float64 else 1e-6
                 atol = rtol
                 if not torch.allclose(new_tr, ref, rtol=rtol, atol=atol):
@@ -364,8 +447,6 @@ def Pi_step(Pi, ccp_helpers, species_helpers, clade_species_map,
 
     
     return new_Pi
-
-
 
 def E_fixed_point(species_helpers: Dict,
                           theta: torch.Tensor,

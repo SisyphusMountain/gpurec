@@ -87,8 +87,6 @@ def build_species_helpers(sp_tree_path: str, device, dtype, traversal_order="pos
     idx_sp = {node: i for i, node in enumerate(species_nodes)}
     
     # Children matrices
-    s_C1 = torch.zeros((S, S), dtype=dtype, device=device)
-    s_C2 = torch.zeros((S, S), dtype=dtype, device=device)
     s_P_indexes = []
     s_C1_indexes = []
     s_C2_indexes = []
@@ -106,8 +104,6 @@ def build_species_helpers(sp_tree_path: str, device, dtype, traversal_order="pos
             lc, rc = children
             i_l = idx_sp[lc]
             i_r = idx_sp[rc]
-            s_C1[e, i_l] = 1.0
-            s_C2[e, i_r] = 1.0
             s_P_indexes.append(e)
             s_C1_indexes.append(i_l)
             s_C2_indexes.append(i_r)
@@ -140,8 +136,6 @@ def build_species_helpers(sp_tree_path: str, device, dtype, traversal_order="pos
             species_by_name[node.name] = node
             
     return {
-        "s_C1": s_C1,
-        "s_C2": s_C2,
         "s_P_indexes": s_P_indexes,
         "s_C1_indexes": s_C1_indexes,
         "s_C2_indexes": s_C2_indexes,

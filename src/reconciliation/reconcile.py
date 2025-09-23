@@ -11,7 +11,7 @@ from typing import Dict, Optional
 
 from ..core.ccp import build_ccp_from_single_tree, get_root_clade_id, build_ccp_helpers, build_clade_species_mapping
 from ..core.tree_helpers import build_species_helpers
-from .likelihood import E_fixed_point, Pi_fixed_point, compute_log_likelihood
+from ..core.likelihood import E_fixed_point, Pi_fixed_point, compute_log_likelihood
 
 
 def setup_fixed_points(species_tree_path: str, 

@@ -21,7 +21,7 @@ from src.core.ccp import (
     get_root_clade_id,
 )
 from src.core.tree_helpers import build_species_helpers
-from src.reconciliation.likelihood import (
+from src.core.likelihood import (
     E_fixed_point,
     Pi_fixed_point,
     compute_log_likelihood,

@@ -12,7 +12,7 @@ import torch
 
 # Import helpers from the baseline implementation
 from .likelihood import (
-    dup_both_survive,
+    compute_D,
     gather_Pi_children,
 )
 
@@ -90,7 +90,7 @@ def Pi_step_window(
 
     # Duplication: both survive terms over splits and 1-survivor per parent
     if has_splits:
-        log_D_splits = dup_both_survive(Pi_left, Pi_right, log_split_probs.index_select(0, split_idx), log_pD)
+        log_D_splits = compute_D(Pi_left, Pi_right, log_split_probs.index_select(0, split_idx), log_pD)
     log_2 = torch.log(torch.tensor(2.0, dtype=dtype, device=device))
     Pi_batch = Pi.index_select(0, window_parents)
     log_D_loss = log_2 + log_pD + Pi_batch + E.unsqueeze(0)  # [B,S]
