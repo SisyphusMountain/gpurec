@@ -148,7 +148,12 @@ def setup_fixed_points(species_tree_path: str,
         'Pi': Pi,
         'ccp': ccp,
         'E': E,
+        'Ebar': Ebar,
+        'E_s1': E_s1,
+        'E_s2': E_s2,
         'species_helpers': species_helpers,
         'clade_species_map': log_clade_species_map,
-        'ccp_helpers': ccp_helpers
+        'ccp_helpers': ccp_helpers,
+        'theta': param_tensor,
+        'root_clade_id': root_clade_id,
     }

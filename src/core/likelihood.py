@@ -9,7 +9,7 @@ import logging
 import torch
 from contextlib import contextmanager
 from typing import Dict, Optional
-from .autograd_functions import ScatterLogSumExp
+from .core_fn.baselines.scatter_lse import ScatterLogSumExp
 
 # # Import Triton kernels if available
 # try:

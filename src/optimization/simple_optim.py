@@ -31,7 +31,6 @@ class _ThetaQN:
     """
     Pseudo-curvature for theta (p=dim(theta) small).
     Stores (s_i=Δθ, y_i=Δg) and returns an L-BFGS two-loop direction.
-    Also provides Barzilai-Borwein (BB2) step scaling as a fallback.
     """
     def __init__(self, max_hist: int = 10):
         self.max_hist = max_hist
@@ -45,7 +44,7 @@ class _ThetaQN:
         if self.th_prev is not None and self.g_prev is not None:
             s = (theta - self.th_prev).reshape(-1)
             y = (g - self.g_prev).reshape(-1)
-            if torch.isfinite(s).all() and torch.isfinite(y).all():
+            if torch.isfinite(s).all() and torch.isfinite(y).all(): 
                 if (y @ s) > 1e-12:
                     self.S.append(s); self.Y.append(y)
                     if len(self.S) > self.max_hist:
@@ -74,22 +73,6 @@ class _ThetaQN:
             beta = rho * (y @ r)
             r = r + s * (a - beta)
         return -r
-
-    def bb2_scale(self, theta: torch.Tensor, g: torch.Tensor, lr_base: float,
-                  lr_min: float = 1e-4, lr_max: float = 10.0) -> float:
-        """Return lr_eff = lr_base * (s·y)/(y·y) if previous (s,y) exist."""
-        if self.th_prev is None or self.g_prev is None:
-            return lr_base
-        s = (theta - self.th_prev).reshape(-1)
-        y = (g - self.g_prev).reshape(-1)
-        yy = (y @ y).item()
-        if yy <= 1e-20:
-            return lr_base
-        alpha_bb2 = (s @ y).item() / yy
-        alpha_bb2 = max(min(alpha_bb2, lr_max), lr_min)
-        return lr_base * alpha_bb2
-
-
 
 class _PseudoCurvMem:
     """
@@ -141,80 +124,6 @@ class _PseudoCurvMem:
         T = (dLambda @ dTheta.T) @ torch.linalg.solve(G, torch.eye(G.shape[0], device=G.device, dtype=G.dtype))
         dlam_pred = T @ s
         return self.lam_hist[-1].reshape(-1) + dlam_pred
-
-
-
-## GMRES ##
-# ---------- FGMRES + matrix-free Jacobi (uses only v -> J^T v) ----------
-from typing import Callable, Optional
-import torch, math
-
-@torch.no_grad()
-def _estimate_diag_hutch(Av: Callable[[torch.Tensor], torch.Tensor],
-                         n: int, *, k: int, device, dtype,
-                         eps: float = 1e-8) -> torch.Tensor:
-    """Estimate diag(A) ≈ mean_i z ⊙ (A z) with k Rademacher probes; A is matrix-free."""
-    acc = torch.zeros(n, device=device, dtype=dtype)
-    for _ in range(k):
-        z = torch.empty(n, device=device, dtype=dtype).bernoulli_(0.5).mul_(2).add_(-1)  # ±1
-        acc += z * Av(z)
-    d = (acc / float(k)).abs().clamp_min(eps)
-    med = d.median()
-    if med > 0: d = d / med                        # normalize scales
-    return d
-
-@torch.no_grad()
-def _fgmres(Av: Callable[[torch.Tensor], torch.Tensor], b: torch.Tensor, *,
-            M_apply: Optional[Callable[[torch.Tensor], torch.Tensor]] = None,
-            tol: float = 1e-6, restart: int = 40, maxit: int = 200,
-            x0: Optional[torch.Tensor] = None) -> torch.Tensor:
-    """Flexible GMRES (right-preconditioned), minimizing ||r||_2."""
-    device, dtype = b.device, b.dtype
-    x = torch.zeros_like(b) if x0 is None else x0.clone()
-    if M_apply is None: M_apply = lambda v: v
-
-    it = 0
-    while it < maxit:
-        r = b - Av(x)
-        beta = r.norm()
-        if beta <= tol * b.norm().clamp_min(1.0): return x
-        m = min(restart, maxit - it)
-        V, Z = [], []
-        H = torch.zeros((m+1, m), device=device, dtype=dtype)
-        v1 = r / beta
-        V.append(v1)
-        happy = False
-        for j in range(m):
-            z_j = M_apply(V[j]); Z.append(z_j)
-            w = Av(z_j)                               # one VJP inside Av
-            for i in range(j+1):
-                hij = torch.dot(V[i], w)
-                H[i, j] = hij
-                w = w - hij * V[i]
-            H[j+1, j] = w.norm()
-            if H[j+1, j] < 1e-14:                     # happy breakdown
-                happy = True; m = j + 1; break
-            V.append(w / H[j+1, j])
-        e1 = torch.zeros(m+1, device=device, dtype=dtype); e1[0] = 1.0
-        y = torch.linalg.lstsq(H[:m+1, :m], beta * e1[:m+1]).solution
-        x = x + sum(y[i] * Z[i] for i in range(m))    # right-preconditioned update
-        it += m
-        if happy: return x
-    return x
-
-@torch.no_grad()
-def _solve_adjoint_krylov(vjp_apply: Callable[[torch.Tensor], torch.Tensor],
-                          rhs: torch.Tensor, *,
-                          tol: float = 1e-6, restart: int = 40, maxit: int = 200,
-                          hutch_probes: int = 8, warm_start: Optional[torch.Tensor] = None) -> torch.Tensor:
-    """Solve (I - J^T) x = rhs with FGMRES + Jacobi; only needs v -> J^T v."""
-    device, dtype = rhs.device, rhs.dtype
-    def Av(x): return x - vjp_apply(x)                # A = I - J^T
-    d = _estimate_diag_hutch(Av, rhs.numel(), k=hutch_probes, device=device, dtype=dtype)
-    M_apply = lambda v: v / d
-    return _fgmres(Av, rhs, M_apply=M_apply, tol=tol, restart=restart, maxit=maxit, x0=warm_start)
-
-## GMRES ##
 
 @dataclass
 class StepRecord:
@@ -280,6 +189,50 @@ def _fixed_point_map(
     )
     return _flatten_state(Pi_next, E_next)
 
+def _anderson_fixed_point(
+    apply_JxT,                # callable: v -> J^T v   (one VJP inside)
+    b: torch.Tensor,          # RHS
+    x0: Optional[torch.Tensor] = None,
+    *,
+    max_iter: int = 500,
+    tol: float = 1e-6,
+    m: int = 5,               # history size
+    beta: float = 0.5,        # damping in [0,1]
+    lam_reg: float = 1e-4,    # Tikhonov for the small LS
+    verbose: bool = False,
+) -> torch.Tensor:
+    """
+    Solve λ = b + J^T λ   using Anderson(m).
+    One VJP per outer iteration (inside apply_JxT). Cost per iter ≈ O(n m) + O(m^3).
+    """
+    x = torch.zeros_like(b) if x0 is None else x0.clone()
+    F = lambda z: b + apply_JxT(z)
+
+    R, D = [], []  # residuals r_k = F(x_k)-x_k ; steps d_k = F(x_k)-x_k
+    for k in range(max_iter):
+        Fx = F(x)
+        r  = Fx - x
+        if r.norm() <= tol * (1 + x.norm()):
+            return Fx
+
+        R.append(r); D.append(Fx - x)
+        if len(R) > m: R.pop(0); D.pop(0)
+
+        # Build small s×s normal equations (s=len(R) ≤ m)
+        s = len(R)
+        Rmat = torch.stack(R, dim=1)                           # [n, s]
+        Dmat = torch.stack(D, dim=1)                           # [n, s]
+        G = Rmat.T @ Rmat + lam_reg * torch.eye(s, device=r.device, dtype=r.dtype)  # [s,s]
+        alpha = torch.linalg.solve(G, Rmat.T @ r)              # [s]
+
+        # Anderson update (damped)
+        x = Fx + beta * (Dmat @ alpha)
+
+        if verbose and (k % 50 == 0):
+            print(f"Anderson k={k:03d}, ||r||={r.norm().item():.3e}")
+
+    # fall back: return last iterate
+    return x
 
 def _implicit_grad_vjp(
     problem: ThetaOptimizationProblem,
@@ -291,7 +244,10 @@ def _implicit_grad_vjp(
     tol: float = 1e-10,
     damping: float = 1.0,
     lam=None,
-    use_gmres=False,
+    use_anderson: bool = False,
+    anderson_m: int = 5,       
+    anderson_beta: float = 0.5,
+    anderson_lam: float = 1e-4,
 ) -> torch.Tensor:
     """
     Compute dL/dtheta at the fixed point using only VJP (autograd.functional.vjp).
@@ -305,7 +261,6 @@ def _implicit_grad_vjp(
     E_var = E_star.detach().clone().requires_grad_(True)
 
     flat_state = _flatten_state(Pi_var, E_var)
-    import time
     # Pullbacks using autograd.functional.vjp (you supply v each time)
     def apply_JxT(v: torch.Tensor) -> torch.Tensor:
         v = v.to(device=flat_state.device, dtype=flat_state.dtype)
@@ -334,27 +289,22 @@ def _implicit_grad_vjp(
         dL_dE = torch.zeros_like(E_var)
     b = _flatten_state(dL_dPi, dL_dE)
 
-
-    # FGMRES for (I - Jx^T) lambda = b  (one VJP per Krylov step; Jacobi adds 0 per-step VJPs)
-    if use_gmres:
-        lam = _solve_adjoint_krylov(
-            vjp_apply=lambda v: apply_JxT(v),      # Jx^T v
-            rhs=b,
-            tol=tol,
-            restart=40,
-            maxit=max_iter,                        # reuse your vjp_max_iter
-            hutch_probes=8,
-            warm_start=lam                         # reuse previous λ as x0
+    # Neumann iteration for (I - Jx^T) lambda = b
+    # Solve (I - Jx^T) λ = b
+    if use_anderson:
+        lam = _anderson_fixed_point(
+            apply_JxT, b, x0=lam,
+            max_iter=max_iter, tol=tol,
+            m=anderson_m, beta=anderson_beta, lam_reg=anderson_lam
         )
     else:
-        # Neumann iteration for (I - Jx^T) lambda = b
+        # Original Neumann
         if lam is None:
             lam = torch.zeros_like(b)
         for it in range(max_iter):
             lam_next = b + damping * apply_JxT(lam)
-            if torch.norm((lam_next - lam)/(lam+1e-10)) <= tol:
+            if torch.norm((lam_next - lam)/(lam + 1e-10)) <= tol:
                 lam = lam_next
-                print(f"stopped neumann at {it}")
                 break
             lam = lam_next
     grad_theta = apply_JthetaT(lam)
@@ -369,7 +319,7 @@ def optimize_theta(
     steps: int = 200,
     lr: float = 0.2,
     adam_eps: float = 1e-8,
-    tol_theta: float = 1e-3,
+    tol_theta: float = 1e-8,
     e_max_iters: int = 2000,
     pi_max_iters: int = 2000,
     e_tol: float = 1e-12,
@@ -379,20 +329,22 @@ def optimize_theta(
     vjp_tol: float = 1e-6,
     device: Optional[torch.device] = None,
     dtype: torch.dtype = torch.float64,
-    use_gmres: bool = False,
     # --- NEW: pseudo-curvature options ---
     use_pseudocurv: bool = False,
-    pseudocurv_max_hist: int = 6,
+    pseudocurv_max_hist: int = 5,
     pseudocurv_ridge: float = 1e-6,
     use_theta_pseudocurv: bool = False,         # NEW
-    theta_mode: str = "lbfgs",                  # "lbfgs" or "bb2"
+    use_torch_lbfgs: bool = False,
+    lbfgs_mode: str = "fixed",           # "fixed" or "wolfe"
+    lbfgs_history: int = 10,
+    lbfgs_max_iter: int = 10,
+    theta_mode: str = "lbfgs",                  # "lbfgs"
 ) -> Dict[str, object]:
     """
     Simple Adam loop using implicit gradient dL/dtheta (VJP-only).
 
     Args:
       ...
-      use_gmres: if True, use FGMRES for adjoint; else Neumann.
       use_pseudocurv: if True, predict λ from past (Δθ, Δλ) before adjoint solve.
       pseudocurv_max_hist: number of (θ, λ) pairs to keep for the predictor.
       pseudocurv_ridge: ridge term for the small multi-secant fit.
@@ -404,7 +356,7 @@ def optimize_theta(
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     problem = ThetaOptimizationProblem(species_tree_path, gene_tree_path, device=device, dtype=dtype)
-
+    
     theta = torch.nn.Parameter(theta_init.to(device=device, dtype=dtype).clone())
     # opt = torch.optim.Adam([theta], lr=lr, eps=adam_eps, betas=(0.7,0.9))
     opt = torch.optim.SGD([theta], lr=lr)
@@ -417,6 +369,136 @@ def optimize_theta(
     lam = None
 
     import time
+    start_optim = time.time()
+
+        # ----------------- Optional: use PyTorch LBFGS instead of custom step -----------------
+    if use_torch_lbfgs:
+        print("HEHO")
+        # Choose line-search mode
+        if lbfgs_mode.lower() == "wolfe":
+            line_search_fn = "strong_wolfe"
+            # strong-Wolfe will re-call the closure to backtrack → more fixed-point solves
+            max_iter_inner = max(1, lbfgs_max_iter)
+        else:
+            line_search_fn = None          # no line search, one closure call per inner iter
+            max_iter_inner = 1
+
+        # Build PyTorch LBFGS optimizer
+        torch_lbfgs = torch.optim.LBFGS(
+            [theta],
+            lr=lr,
+            max_iter=max_iter_inner,        # inner iters per outer .step()
+            max_eval=lbfgs_max_iter * 4,    # upper bound on closure evals
+            history_size=lbfgs_history,
+            tolerance_grad=0.0,             # we control stopping outside
+            tolerance_change=0.0,
+            line_search_fn=line_search_fn,
+        )
+
+        # Mutable cache to expose closure results to the outer loop without recomputation
+        cache = {"nll": None, "L": None, "E": None, "Pi": None, "grad_theta": None}
+        lam_ws = None  # carry λ warm-start across closures
+        import time
+        def closure():
+            nonlocal lam_ws
+            torch_lbfgs.zero_grad(set_to_none=True)
+            # 1) Fixed points (warm-start handled by problem)
+            start_fixed_point = time.time()
+            E, Pi, _ = problem.fixed_points(
+                theta,
+                e_max_iters=e_max_iters, pi_max_iters=pi_max_iters,
+                e_tol=e_tol, pi_tol=pi_tol, warm_start=True
+            )
+            end_fixed_point = time.time()
+            print(f"took {end_fixed_point - start_fixed_point} for fixed point with param {theta}")
+            # 2) Likelihood & nLL
+            L = compute_log_likelihood(Pi, problem.root_clade_id)
+            nll = -L
+
+            # 3) Optional λ predictor (if you already have _PseudoCurvMem outside, you can hook it here)
+            #    Example: if you pass `lam_ws` from outer scope, keep as-is.
+
+            # 4) Implicit gradient (of L); convert to ∇ nLL
+            start_grad = time.time()
+            grad_L, lam_ws = _implicit_grad_vjp(
+                problem, theta, E_star=E, Pi_star=Pi,
+                max_iter=vjp_max_iter, tol=vjp_tol, damping=damping,
+                lam=lam_ws,
+            )
+            end_grad = time.time()
+            print(f"took {end_grad - start_grad} to get grad")
+            print(f"got gradient {grad_L}")
+            g_nll = (-grad_L).detach()
+
+            # 5) Provide gradient to LBFGS
+            theta.grad = g_nll.clone()
+
+            # 6) Cache for logging
+            cache["nll"] = float(nll.detach())
+            cache["L"] = float(L.detach())
+            cache["E"] = E.detach()
+            cache["Pi"] = Pi.detach()
+            cache["grad_theta"] = grad_L.detach()
+
+            # Return a tensor loss (no backward needed since we set grad)
+            return nll.detach()
+
+        # ---- Outer iterations: each .step may call closure several times (esp. wolfe mode)
+        history: List[StepRecord] = []
+        prev_theta = theta.detach().clone()
+        import time
+        start_optim = time.time()
+        print('HI?')
+        for it in range(1, steps + 1):
+            # one LBFGS step (inner iters + possibly line search)
+            _ = torch_lbfgs.step(closure)
+            print("HEY???")
+            # read from cache
+            L_val = cache["L"]
+            nll_val = cache["nll"]
+            grad_theta_val = cache["grad_theta"]
+            theta_detached = theta.detach()
+            diff = torch.max(torch.abs(theta_detached - prev_theta)).item()
+            prev_theta = theta_detached.clone()
+            rates = torch.exp(theta_detached)
+            grad_inf = float(grad_theta_val.abs().max().item()) if grad_theta_val is not None else float("nan")
+            print(f"current {L_val=}, {nll_val=}, {grad_theta_val=}")
+            history.append(
+                StepRecord(
+                    iteration=it,
+                    theta=theta_detached.cpu(),
+                    rates=rates.cpu(),
+                    negative_log_likelihood=float(nll_val) if nll_val is not None else float("nan"),
+                    log_likelihood=float(L_val) if L_val is not None else float("nan"),
+                    theta_step_inf=diff,
+                    grad_infinity_norm=grad_inf,
+                )
+            )
+
+            # stopping on parameter change
+            if diff < tol_theta:
+                break
+
+        # Final report (recompute at tight tol for accuracy)
+        problem.e_tol, problem.pi_tol = e_tol, pi_tol
+        E_fin, Pi_fin, _ = problem.fixed_points(
+            theta,
+            e_max_iters=e_max_iters, pi_max_iters=pi_max_iters,
+            e_tol=problem.e_tol, pi_tol=problem.pi_tol, warm_start=True,
+        )
+        L_fin = compute_log_likelihood(Pi_fin, problem.root_clade_id)
+        end_optim = time.time()
+        print(f"[LBFGS] total optim time {end_optim - start_optim:.3f}s")
+
+        return {
+            "theta": theta.detach().cpu(),
+            "rates": torch.exp(theta.detach()).cpu(),
+            "log_likelihood": float(L_fin.item()),
+            "negative_log_likelihood": float((-L_fin).item()),
+            "history": history,
+        }
+    # ----------------- end LBFGS branch -----------------
+
     for it in range(1, steps + 1):
         # Converge fixed points (warm-start handled inside problem)
         t0 = time.time()
@@ -446,26 +528,6 @@ def optimize_theta(
                 else:
                     lam.copy_(lam_pred.view_as(lam))
 
-        # Implicit gradient via VJP-only adjoint (Neumann or GMRES), warm-start with lam
-        # grad_theta, lam = _implicit_grad_vjp(
-        #     problem,
-        #     theta,
-        #     E_star=E,
-        #     Pi_star=Pi,
-        #     max_iter=vjp_max_iter,
-        #     tol=vjp_tol,
-        #     damping=damping,
-        #     lam=lam,
-        #     use_gmres=use_gmres,
-        # )
-        # t2 = time.time()
-        # print(f"grad time {t2 - t1:.3f}s")
-
-        # # Adam step in ascent on L (i.e., descent on nLL): set param.grad = -grad_theta
-        # opt.zero_grad(set_to_none=True)
-        # theta.grad = -grad_theta.detach().clone()
-        # opt.step()
-        # Implicit gradient of L; convert to gradient of nLL
         grad_theta, lam = _implicit_grad_vjp(
             problem,
             theta,
@@ -475,9 +537,9 @@ def optimize_theta(
             tol=vjp_tol,
             damping=damping,
             lam=lam,
-            use_gmres=use_gmres,
         )
         g_nll = (-grad_theta).detach()                 # ∇ nLL
+        print(f"true gradient {g_nll}")
 
         if use_theta_pseudocurv and theta_qn is not None:
             # curvature-informed direction / step for theta (no extra evals)
@@ -489,13 +551,11 @@ def optimize_theta(
                 step_inf = (t * p).abs().max().item()
                 if step_inf > step_inf_cap:
                     t *= step_inf_cap / (step_inf + 1e-12)
+                print(f"{t=}\n{p=}")
                 with torch.no_grad():
-                    theta.data.add_(-t, g_nll.new_zeros(1))  # no-op to keep grad graph clean
-                    theta.data.add_(t, p)                    # θ ← θ + t p
-            else:  # "bb2"
-                lr_eff = theta_qn.bb2_scale(theta.detach(), g_nll.detach(), lr)
-                with torch.no_grad():
-                    theta.data.add_(-lr_eff, g_nll)          # θ ← θ - lr_eff ∇nLL
+                    theta.add_(-t, g_nll.new_zeros(1))  # no-op to keep grad graph clean
+                    theta.add_(t, p)                    # θ ← θ + t p
+                print(f"new theta {theta=}")
         else:
             # original SGD/Adam path (kept for parity)
             opt.zero_grad(set_to_none=True)
@@ -542,11 +602,13 @@ def optimize_theta(
         warm_start=True,
     )
     L_final = compute_log_likelihood(Pi_final, problem.root_clade_id)
-
+    end_optim = time.time()
+    print(f"total optim time {end_optim-start_optim}")
     return {
         "theta": theta.detach().cpu(),
         "rates": torch.exp(theta.detach()).cpu(),
         "log_likelihood": float(L_final.item()),
         "negative_log_likelihood": float((-L_final).item()),
         "history": history,
+        "Pi": Pi_final,
     }

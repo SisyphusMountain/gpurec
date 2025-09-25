@@ -74,6 +74,9 @@ def preprocess_fast(
         "end_rows_ge2": int(ccp_raw["end_rows_ge2"]),
         "C": int(ccp_raw["C"]),
         "N_splits": int(ccp_raw["N_splits"]),
+        # Optional extras for summaries/UI
+        "clade_leaf_labels": ccp_raw.get("clade_leaf_labels", None),
+        "clade_is_leaf": ccp_raw.get("clade_is_leaf", None),
     }
 
     root_clade_id = int(ccp_raw["root_clade_id"])

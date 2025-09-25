@@ -1,7 +1,8 @@
 import torch
-from .core_fn.triton.scatter_lse import seg_logsumexp
 from typing import Dict, Optional
 import math
+
+from .core_fn.triton.scatter_lse import seg_logsumexp
 
 
 NEG_INF = float("-inf")
@@ -97,8 +98,9 @@ def Pi_step(Pi, ccp_helpers, species_helpers, clade_species_map,
 
     DTS_reduced = torch.full((C, S), NEG_INF, device=Pi.device, dtype=Pi.dtype)
     # clades with >=2 splits
-    y_ge2 = seg_logsumexp(DTS_term[:end_rows_ge2], ptr_ge2)
-    DTS_reduced.index_copy_(0, seg_parent_ids[:num_segs_ge2], y_ge2)
+    if num_segs_ge2 > 0:
+        y_ge2 = seg_logsumexp(DTS_term[:end_rows_ge2], ptr_ge2)
+        DTS_reduced.index_copy_(0, seg_parent_ids[:num_segs_ge2], y_ge2)
     # clades with exactly 1 split
     if num_segs_eq1 > 0:
         DTS_reduced.index_copy_(0,
@@ -149,7 +151,7 @@ def E_fixed_point(species_helpers,
     
     # Initialize with log(0.5), or use a warm-start value if available
     if warm_start_E is not None:
-        E = warm_start_E
+        E = warm_start_E.detach()
     else:
         E = torch.full((S,), -0.69, dtype=dtype, device=device) # use log(0.5) as initial log-probs (within the unit $\ell^\infty$-ball where the map is contracting)
     E_s1 = torch.full_like(E, NEG_INF)

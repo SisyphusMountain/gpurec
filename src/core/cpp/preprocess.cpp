@@ -637,6 +637,8 @@ py::dict preprocess(const std::string &species_path,
   auto tensor_accessor = clade_species_tensor.accessor<double, 2>();
 
   std::vector<std::vector<int64_t>> clade_leaves_indices(C);
+  std::vector<std::string> clade_leaf_labels(C, std::string());
+  std::vector<uint8_t> clade_is_leaf(C, 0);
   for (size_t cid = 0; cid < C; ++cid) {
     const BitVec &bits = id_to_clade[cid];
     auto &indices = clade_leaves_indices[cid];
@@ -657,12 +659,16 @@ py::dict preprocess(const std::string &species_path,
                                        leaf_name);
             }
             tensor_accessor[static_cast<long>(cid)][it->second] = 1.0;
+            clade_leaf_labels[cid] = leaf_name; // store original leaf label
           }
         }
         word &= word - 1ULL;
       }
     }
     std::sort(indices.begin(), indices.end());
+    if (clade_sizes[cid] == 1) {
+      clade_is_leaf[cid] = 1;
+    }
   }
 
   py::dict species_dict;
@@ -783,6 +789,14 @@ py::dict preprocess(const std::string &species_path,
 
   py::dict ccp_dict;
   ccp_dict["clade_leaves"] = clade_leaves_indices;
+  // Provide optional labels for leaf clades (empty for non-leaf)
+  ccp_dict["clade_leaf_labels"] = clade_leaf_labels;
+  // Optional mask for leaf clades
+  ccp_dict["clade_is_leaf"] = torch::from_blob(
+                                   clade_is_leaf.data(),
+                                   {static_cast<long>(C)},
+                                   torch::TensorOptions().dtype(torch::kUInt8))
+                                   .clone();
 
 
   ccp_dict["split_counts"] = split_counts_tensor;

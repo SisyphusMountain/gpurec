@@ -87,37 +87,25 @@ class ScatterLogSumExp(torch.autograd.Function):
         Setup context for backward pass and functorch compatibility.
         """
         log_combined_splits, split_parents, C, ccp_leaves_mask = inputs
-        
-        # Store inputs for jvp method (required for functorch compatibility)
-        # Following PyTorch convention: store non-tensor data as ctx attributes
         ctx.input_args = inputs
-        
-        # Compute intermediate values needed for backward pass
         device, dtype = log_combined_splits.device, log_combined_splits.dtype
         S = log_combined_splits.shape[1]
         
-        # Expand parent indices to match shape [N_splits, S]
         split_parents_exp = split_parents.unsqueeze(1).expand(-1, S)
         
-        # Step 1: Find maximum values for numerical stability
         max_vals = torch.scatter_reduce(
             torch.full((C, S), float('-inf'), device=device, dtype=dtype),
             0, split_parents_exp, log_combined_splits,
             reduce='amax'
         )
         
-        # Step 2: Compute exp(log_val - max) for stability
         gathered_max = torch.gather(max_vals, 0, split_parents_exp)
         exp_terms = torch.exp(log_combined_splits - gathered_max)
         
-        # Step 3: Sum the exp terms
         sum_contribs = torch.scatter_add(
             torch.zeros_like(max_vals),
             0, split_parents_exp, exp_terms
         )
-        
-        # Save tensors needed for backward pass
-        # Following PyTorch best practices: only save tensors, store non-tensors as attributes
         ctx.save_for_backward(split_parents, exp_terms, sum_contribs, ccp_leaves_mask)
         # C is stored as attribute since it's not a tensor
         ctx.C = C

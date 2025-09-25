@@ -23,13 +23,13 @@ HDIM_CONFIGS = [
 ]
 
 
-@triton.autotune(
-    configs=[
-        triton.Config({"BLOCK_H": bh, "BLOCK_S": bs}, num_warps=nw, num_stages=ns)
-        for (bh, bs, nw, ns) in HDIM_CONFIGS
-    ],
-    key=["S"],
-)
+# @triton.autotune(
+#     configs=[
+#         triton.Config({"BLOCK_H": bh, "BLOCK_S": bs}, num_warps=nw, num_stages=ns)
+#         for (bh, bs, nw, ns) in HDIM_CONFIGS
+#     ],
+#     key=["S"],
+# )
 @triton.jit
 def _seg_lse_hdim_kernel(
     x_ptr, ptr_ptr, y_ptr,
@@ -103,13 +103,13 @@ def _seg_lse_hdim_kernel(
 # ---------------------------
 # Backward kernel: grad_x
 # ---------------------------
-@triton.autotune(
-    configs=[
-        triton.Config({"BLOCK_H": bh, "BLOCK_S": bs}, num_warps=nw, num_stages=ns)
-        for (bh, bs, nw, ns) in HDIM_CONFIGS
-    ],
-    key=["S"],
-)
+# @triton.autotune(
+#     configs=[
+#         triton.Config({"BLOCK_H": bh, "BLOCK_S": bs}, num_warps=nw, num_stages=ns)
+#         for (bh, bs, nw, ns) in HDIM_CONFIGS
+#     ],
+#     key=["S"],
+# )
 @triton.jit
 def _seg_lse_hdim_bwd_kernel(
     x_ptr, ptr_ptr, gy_ptr, gx_ptr,
@@ -256,8 +256,8 @@ def _seg_lse_hdim_bwd_kernel(
 def _seg_lse_forward_impl(
     x: torch.Tensor,
     ptr: torch.Tensor,
-    block_h: int = None,
-    block_s: int = None,
+    block_h: int = 128,
+    block_s: int = 128,
 ) -> torch.Tensor:
     """
     Launch forward Triton kernel (no autograd).
@@ -307,32 +307,31 @@ class SegLSEHdimFn(torch.autograd.Function):
     """
 
     @staticmethod
-    def forward(ctx, x: torch.Tensor, ptr: torch.Tensor, block_h: int = 0, block_s: int = 0):
-        # Store block sizes (0 => autotune)
-        ctx.block_h = int(block_h)
-        ctx.block_s = int(block_s)
-
+    def forward(x: torch.Tensor, ptr: torch.Tensor, block_h: int = 128, block_s: int = 128):
         # Compute forward and save for backward
         y = _seg_lse_forward_impl(
             x, ptr,
             None if block_h == 0 else block_h,
             None if block_s == 0 else block_s,
         )
-        ctx.save_for_backward(x, ptr)
         return y
+    
+    @staticmethod
+    def setup_context(ctx, inputs, outputs):
+        x, ptr, block_h, block_s = inputs
+        ctx.block_h = int(block_h)
+        ctx.block_s = int(block_s)
+        ctx.save_for_backward(x, ptr)
 
     @staticmethod
     def backward(ctx, grad_y: torch.Tensor):
         x, ptr = ctx.saved_tensors
-        assert grad_y.is_cuda, "grad_y must be CUDA tensor"
-        assert grad_y.dtype == x.dtype, "grad_y dtype must match x dtype"
+        x = x.contiguous()
+        ptr = ptr.contiguous()
 
+        grad_x = torch.zeros_like(x)
         H, S = x.shape
         G = ptr.numel() - 1
-        assert grad_y.shape == (G, S), "grad_y must be [G, S]"
-
-        grad_x = torch.zeros_like(x)  # initialize to zero for untouched rows/cols
-
         # Triton dtype
         if x.dtype == torch.float32:
             DTYPE = tl.float32
@@ -371,8 +370,8 @@ class SegLSEHdimFn(torch.autograd.Function):
 def seg_logsumexp(
     x: torch.Tensor,
     ptr: torch.Tensor,
-    block_h: int = None,
-    block_s: int = None,
+    block_h: int = 128,
+    block_s: int = 128,
 ) -> torch.Tensor:
     """
     y[g, s] = logsumexp(x[ptr[g]:ptr[g+1], s]) for g in [0..G), s in [0..S)
