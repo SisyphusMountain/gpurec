@@ -13,4 +13,25 @@ Porting the AleRax algorithm to GPU.
   - SL: repeat_interleave sur log_pS, sur E_s1 et E_s2 (qu'on devrait concaténer en E_s12, repeat_interleave puis prendre chacune des composantes)
   - D: Repeat_interleave E et log_pD
   - T: fusionner le kernel max+matmul.
-- Finir d'implémenter le log-matmul efficace pour calculer les probabilités de transfert. Pour avoir une bonne efficacité, on peut calculer un max. par ligne de la matrice A et par colonne de la matrice B et faire un matmul comme ça.
+
+
+Etapes : 
+1. Implémenter l'ouverture de l'arbre d'espèces et des arbres de gènes en C++. Rendre ça efficace.
+   1. Pour l'instant, efficacité ok (0.5 s pour test_mixed_200 avec 200 espèces et 1000 feuilles d'arbre de gènes)
+2. Faire en sorte que l'on puisse bien prendre plusieurs arbres de gènes par famille de gènes
+   1. Pas encore implémenté cette possibilité.
+   2. Pour avoir plusieurs familles, on concatènera les différentes matrices, et on verra comment modifier les updates pour que ça marche malgré tout.
+3. Implémenter la descente de gradient efficace pour l'optimisation de la vraisemblance.
+   1. Méthode du pseudo second ordre en regardant les gradients des paramètres passés?
+   2. BFGS sans line search?
+   3. Pour l'instant, LBFGS fonctionne plutôt bien.
+   4. Le calcul des gradients est très coûteux vers la fin...
+4. Implémenter le stochastic backtracking en Python puis en C++ pour obtenir les scénarios. Faire la partie output.
+   1. Stochastic backtracking fonctionne pour un seul arbre de gènes
+5. Optimiser la passe backward qui est coûteuse.
+6. Il faudrait avoir une optimisation adaptative : 1 ère étape: on calcule le bon gradient. Etapes suivantes : on obtient des gradients approximatifs. Ensuite on termine avec des gradients exacts. On ne doit update la courbure que lorsqu'on calcule des vrais gradients. Vrais gradients = suffisamment d'étapes de vjp. Gradient approximatifs = on update un gradient précédent en faisant juste quelques passes de vjp.
+
+
+
+ScatterLogSumExp triton : j'ai essayé d'utiliser torch.func.vjp, mais ça ne fonctionne pas en intégrant cette fonction, car l'autotuner de Triton voit des GradCheckTensor, ce qui est problématique.
+J'ai donc utilisé torch.autograd.functional.vjp. Ca fonctionne plutôt bien. Si on veut une intégration avec torch.func, il faut implémenter la fonction fake_tensor comme expliqué dans la page tutoriel intégration à torch.func.
