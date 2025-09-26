@@ -67,7 +67,6 @@ def Pi_step(Pi, ccp_helpers, species_helpers, clade_species_map,
     # Extract helpers (precomputed sorted splits and CSR pointers)
     split_leftrights_sorted = ccp_helpers['split_leftrights_sorted']
     log_split_probs = ccp_helpers['log_split_probs_sorted'].unsqueeze(1).contiguous()  # [N_splits, 1]
-    seg_ptr = ccp_helpers['ptr']
     seg_parent_ids = ccp_helpers['seg_parent_ids']
     # Segment partition helpers: contiguous blocks [len>=2][len==1][len==0]
     num_segs_ge2 = ccp_helpers['num_segs_ge2']
@@ -120,6 +119,9 @@ def E_step(E, sp_P_idx, sp_child12_idx, Recipients_mat, theta, return_components
     E_stack[1] = log_pD + 2 * E
     # T
     max_E = torch.max(E)
+    # print(f'{Recipients_mat.dtype=}')
+    # print(f"{E.dtype=}")
+    # print(f"{max_E.dtype=}")
     Ebar = torch.log(torch.mv(Recipients_mat, torch.exp(E - max_E))) + max_E
     E_stack[2] = log_pT + E + Ebar
     # L
@@ -213,7 +215,7 @@ def Pi_fixed_point(ccp_helpers,
     if warm_start_Pi is not None:
         Pi = warm_start_Pi
     else:
-        # Initialize like the working test: -log(2) for all entries, then set leaf probabilities
+        # Initialize like the working test: -log(100) for all entries, then set leaf probabilities
         Pi = torch.full((C, S), -math.log(100), dtype=dtype, device=device)
         
         # Set leaf probabilities based on clade-species mapping (convert from log space)

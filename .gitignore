@@ -2,3 +2,9 @@ prof_logs/*
 __pycache__/
 *.pyc
 .pytest_cache/
+# local stuff to ignore
+extra/
+scenarios/
+tests/data/**/output/
+torch/
+*.ipynb

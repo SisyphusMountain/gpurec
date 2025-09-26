@@ -26,8 +26,8 @@ def setup_fixed_points_likelihood2(
     delta: float = 1e-10,
     tau: float = 1e-10,
     lambda_param: float = 1e-10,
-    max_iters_E: int = 1000,
-    max_iters_Pi: int = 1000,
+    max_iters_E: int = 1_000_000_000, # large numbers by default to ensure convergence
+    max_iters_Pi: int = 1_000_000_000,
     tol_E: float = 1e-9,
     tol_Pi: float = 1e-9,
     device: Optional[torch.device] = None,
@@ -126,7 +126,6 @@ def setup_fixed_points_likelihood2(
         return_components=True,
         warm_start_E=None,
         dtype=dtype,
-        device=device,
     )
     t1 = time.time()
     print(f"E computation time: {t1 - t0} s")
@@ -165,18 +164,17 @@ def setup_fixed_points_likelihood2(
             print("No numerical instability detected")
 
     return {
+        "root_clade_id": root_clade_id,
+        "theta": param_tensor,
         "log_likelihood": float(log_likelihood),
         "Pi": Pi,
         "E": E,
+        "Ebar": Ebar,
         "E_s1": E_s1,
         "E_s2": E_s2,
-        "Ebar": Ebar,
         "species_helpers": species_helpers,
         "clade_species_map": log_clade_species_map,
-        "Recipients_mat": species_helpers['Recipients_mat'],
-        "theta": param_tensor,
         "ccp_helpers": ccp_helpers,
-        "root_clade_id": root_clade_id,
     }
 
 
