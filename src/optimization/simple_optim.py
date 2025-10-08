@@ -19,7 +19,7 @@ import torch
 from torch.autograd.functional import vjp
 
 from src.optimization.theta_optimizer import ThetaOptimizationProblem
-from src.core.likelihood_2 import (
+from src.core.likelihood import (
     E_step,
     Pi_step,
     compute_log_likelihood,
@@ -189,51 +189,6 @@ def _fixed_point_map(
     )
     return _flatten_state(Pi_next, E_next)
 
-def _anderson_fixed_point(
-    apply_JxT,                # callable: v -> J^T v   (one VJP inside)
-    b: torch.Tensor,          # RHS
-    x0: Optional[torch.Tensor] = None,
-    *,
-    max_iter: int = 500,
-    tol: float = 1e-6,
-    m: int = 5,               # history size
-    beta: float = 0.5,        # damping in [0,1]
-    lam_reg: float = 1e-4,    # Tikhonov for the small LS
-    verbose: bool = False,
-) -> torch.Tensor:
-    """
-    Solve λ = b + J^T λ   using Anderson(m).
-    One VJP per outer iteration (inside apply_JxT). Cost per iter ≈ O(n m) + O(m^3).
-    """
-    x = torch.zeros_like(b) if x0 is None else x0.clone()
-    F = lambda z: b + apply_JxT(z)
-
-    R, D = [], []  # residuals r_k = F(x_k)-x_k ; steps d_k = F(x_k)-x_k
-    for k in range(max_iter):
-        Fx = F(x)
-        r  = Fx - x
-        if r.norm() <= tol * (1 + x.norm()):
-            return Fx
-
-        R.append(r); D.append(Fx - x)
-        if len(R) > m: R.pop(0); D.pop(0)
-
-        # Build small s×s normal equations (s=len(R) ≤ m)
-        s = len(R)
-        Rmat = torch.stack(R, dim=1)                           # [n, s]
-        Dmat = torch.stack(D, dim=1)                           # [n, s]
-        G = Rmat.T @ Rmat + lam_reg * torch.eye(s, device=r.device, dtype=r.dtype)  # [s,s]
-        alpha = torch.linalg.solve(G, Rmat.T @ r)              # [s]
-
-        # Anderson update (damped)
-        x = Fx + beta * (Dmat @ alpha)
-
-        if verbose and (k % 50 == 0):
-            print(f"Anderson k={k:03d}, ||r||={r.norm().item():.3e}")
-
-    # fall back: return last iterate
-    return x
-
 def _implicit_grad_vjp(
     problem: ThetaOptimizationProblem,
     theta: torch.Tensor,
@@ -244,24 +199,13 @@ def _implicit_grad_vjp(
     tol: float = 1e-10,
     damping: float = 1.0,
     lam=None,
-    use_anderson: bool = False,
-    anderson_m: int = 5,       
-    anderson_beta: float = 0.5,
-    anderson_lam: float = 1e-4,
 ) -> torch.Tensor:
-    """
-    Compute dL/dtheta at the fixed point using only VJP (autograd.functional.vjp).
-
-    Solves (I - J_x H)^T lambda = dL/dx by Neumann iteration:
-      lambda_{k+1} = b + damping * (J_x H)^T lambda_k
-    and then grad_theta = (J_theta H)^T lambda.
-    """
     # Make differentiable state copies to build graph
     Pi_var = Pi_star.detach().clone().requires_grad_(True)
     E_var = E_star.detach().clone().requires_grad_(True)
 
     flat_state = _flatten_state(Pi_var, E_var)
-    # Pullbacks using autograd.functional.vjp (you supply v each time)
+    # Pullbacks using autograd.functional.vjp
     def apply_JxT(v: torch.Tensor) -> torch.Tensor:
         v = v.to(device=flat_state.device, dtype=flat_state.dtype)
         _, JxT_v = vjp(
@@ -291,22 +235,15 @@ def _implicit_grad_vjp(
 
     # Neumann iteration for (I - Jx^T) lambda = b
     # Solve (I - Jx^T) λ = b
-    if use_anderson:
-        lam = _anderson_fixed_point(
-            apply_JxT, b, x0=lam,
-            max_iter=max_iter, tol=tol,
-            m=anderson_m, beta=anderson_beta, lam_reg=anderson_lam
-        )
-    else:
-        # Original Neumann
-        if lam is None:
-            lam = torch.zeros_like(b)
-        for it in range(max_iter):
-            lam_next = b + damping * apply_JxT(lam)
-            if torch.norm((lam_next - lam)/(lam + 1e-10)) <= tol:
-                lam = lam_next
-                break
+    # Original Neumann
+    if lam is None:
+        lam = torch.zeros_like(b)
+    for it in range(max_iter):
+        lam_next = b + damping * apply_JxT(lam)
+        if torch.norm((lam_next - lam)/(lam + 1e-10)) <= tol:
             lam = lam_next
+            break
+        lam = lam_next
     grad_theta = apply_JthetaT(lam)
     return grad_theta, lam
 
@@ -373,9 +310,8 @@ def optimize_theta(
 
         # ----------------- Optional: use PyTorch LBFGS instead of custom step -----------------
     if use_torch_lbfgs:
-        print("HEHO")
         # Choose line-search mode
-        if lbfgs_mode.lower() == "wolfe":
+        if lbfgs_mode is not None and lbfgs_mode.lower() == "wolfe":
             line_search_fn = "strong_wolfe"
             # strong-Wolfe will re-call the closure to backtrack → more fixed-point solves
             max_iter_inner = max(1, lbfgs_max_iter)
@@ -448,11 +384,9 @@ def optimize_theta(
         prev_theta = theta.detach().clone()
         import time
         start_optim = time.time()
-        print('HI?')
         for it in range(1, steps + 1):
             # one LBFGS step (inner iters + possibly line search)
             _ = torch_lbfgs.step(closure)
-            print("HEY???")
             # read from cache
             L_val = cache["L"]
             nll_val = cache["nll"]

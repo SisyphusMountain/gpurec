@@ -238,6 +238,7 @@ def _seg_dU_log(
     r1 = tl.load(tile2row1_ptr  + pid_m)
 
     offs_m = r0 + tl.arange(0, TILE_M)
+
     offs_k = pid_k * TILE_K + tl.arange(0, TILE_K)
 
     mask_m = offs_m < r1
@@ -818,3 +819,73 @@ def vjp_cached_dU_dV(
 
     return dU_log, dV_scaled
 
+
+
+def _make_scaled(V_log: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    """Given V_log [K,N], return V_scaled [K,N] = exp(V_log - c_max) and c_max [N]."""
+    c_max = torch.max(V_log, dim=0, keepdim=False).values  # [N]
+    V_scaled = torch.exp(V_log - c_max.unsqueeze(0))       # [K,N]
+    return V_scaled, c_max
+
+
+def _ref_log_matmul(U_log: torch.Tensor, V_log: torch.Tensor) -> torch.Tensor:
+    """Reference stabilized log-matmul: log(exp(U) @ exp(V)) with per-row/col stabilization.
+
+    U_log: [G,K], V_log: [K,N]
+    Returns: [G,N]
+    """
+    # Row stabilization for U
+    U_max = torch.max(U_log, dim=1, keepdim=True).values  # [G,1]
+    U_lin = torch.exp(U_log - U_max)                      # [G,K]
+    # Col stabilization for V
+    V_scaled, c_max = _make_scaled(V_log)                 # [K,N], [N]
+    Y_lin = U_lin @ V_scaled                              # [G,N]
+    Y_log = torch.log(Y_lin) + U_max + c_max.unsqueeze(0) # [G,N]
+    return Y_log
+
+
+def _test_segmented_log_matmul_basic():
+    if not torch.cuda.is_available():
+        print("CUDA not available; skipping segmented_log_matmul test")
+        return
+    device = torch.device('cuda')
+    torch.manual_seed(0)
+
+    # Single segment case (NS=1)
+    G, K, N = 128, 64, 96
+    U_log = torch.randn(G, K, device=device, dtype=torch.float32)
+    V_log = torch.randn(K, N, device=device, dtype=torch.float32)
+    V_scaled, c_max = _make_scaled(V_log)
+    V_scaled_b = V_scaled.unsqueeze(0)  # [1,K,N]
+    c_max_b = c_max.unsqueeze(0)        # [1,N]
+    ptr = torch.tensor([0, G], dtype=torch.int64, device=device)
+
+    W_ref = _ref_log_matmul(U_log, V_log)
+    W_kernel, R = segmented_log_matmul(U_log, V_scaled_b, c_max_b, ptr)
+    assert torch.allclose(W_kernel, W_ref, rtol=1e-4, atol=1e-5), (
+        f"Mismatch single segment: max_abs={torch.max(torch.abs(W_kernel - W_ref)).item():.3e}")
+
+    # Two segments (NS=2), different V per segment
+    G1 = G // 2
+    G2 = G - G1
+    U1 = U_log[:G1]
+    U2 = U_log[G1:]
+    V1_log = torch.randn(K, N, device=device, dtype=torch.float32)
+    V2_log = torch.randn(K, N, device=device, dtype=torch.float32)
+    V1_scaled, c1 = _make_scaled(V1_log)
+    V2_scaled, c2 = _make_scaled(V2_log)
+    Vb = torch.stack([V1_scaled, V2_scaled], dim=0)  # [2,K,N]
+    cb = torch.stack([c1, c2], dim=0)                # [2,N]
+    ptr2 = torch.tensor([0, G1, G], dtype=torch.int64, device=device)
+
+    W1_ref = _ref_log_matmul(U1, V1_log)
+    W2_ref = _ref_log_matmul(U2, V2_log)
+    W_ref2 = torch.cat([W1_ref, W2_ref], dim=0)
+    W_kernel2, _ = segmented_log_matmul(U_log, Vb, cb, ptr2)
+    assert torch.allclose(W_kernel2, W_ref2, rtol=1e-4, atol=1e-5), (
+        f"Mismatch two segments: max_abs={torch.max(torch.abs(W_kernel2 - W_ref2)).item():.3e}")
+    print("segmented_log_matmul basic tests passed")
+
+
+if __name__ == '__main__':
+    _test_segmented_log_matmul_basic()

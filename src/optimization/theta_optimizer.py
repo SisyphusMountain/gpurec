@@ -32,8 +32,9 @@ from src.core.ccp import (
     build_clade_species_mapping,
     get_root_clade_id,
 )
+
 from src.core.tree_helpers import build_species_helpers
-from src.core.likelihood_2 import (
+from src.core.likelihood import (
     E_fixed_point,
     Pi_fixed_point,
     compute_log_likelihood,
@@ -481,11 +482,9 @@ def optimize_theta_implicit(
     cg_tol: float = 1e-8,
     cg_maxiter: int = 500,
     gmres_restart: int = 40,
-    use_jacobi_prec: bool = True,
     # predictor to take bigger θ steps with one solve/iter:
     prescreen: bool = True,
-    res_target: float = 1e-3,
-    max_halvings: int = 4,
+
 ) -> Dict[str, object]:
     """
     Adam on θ with implicit gradients. Each iteration:
