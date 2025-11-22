@@ -35,3 +35,9 @@ Etapes :
 
 ScatterLogSumExp triton : j'ai essayé d'utiliser torch.func.vjp, mais ça ne fonctionne pas en intégrant cette fonction, car l'autotuner de Triton voit des GradCheckTensor, ce qui est problématique.
 J'ai donc utilisé torch.autograd.functional.vjp. Ca fonctionne plutôt bien. Si on veut une intégration avec torch.func, il faut implémenter la fonction fake_tensor comme expliqué dans la page tutoriel intégration à torch.func.
+
+
+
+If we already schedule waves to compute Pi, could we prune branches during stochastic backtracking in some way?
+We get the root clade Pi value using a fixed-point equation involving subclades of Pi. Maybe we could compute greedily the gradient contributions only from the largest terms
+and upper bound the others. Doing so for all clades could allow us to not have to reschedule all computations when doing backward.
