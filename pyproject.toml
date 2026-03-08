@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "gpurec"
+version = "0.1.0"
+description = "GPU-accelerated gene tree / species tree reconciliation using the DTL model"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "torch>=2.0",
+    "numpy",
+    "more-itertools",
+]
+
+[project.optional-dependencies]
+triton = ["triton>=2.1"]
+dev = ["pytest", "ipython"]
+
+[project.scripts]
+gpurec = "src.cli.reconcile:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["src*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]

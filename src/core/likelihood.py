@@ -12,8 +12,8 @@ from .terms import (
     compute_DTS_L,
     compute_DTS_L_independent,
 )
-from .core_fn.triton.scatter_lse import seg_logsumexp
-from .core_fn.triton.seg_log_matmul import segmented_log_matmul
+from .kernels.scatter_lse import seg_logsumexp
+from .kernels.seg_log_matmul import segmented_log_matmul
 
 NEG_INF = float("-inf")
 
@@ -449,6 +449,4 @@ def compute_log_likelihood(Pi, E, root_clade_idx):
     #     "it should be equal to log(n_root_splits) + log(n_sp_branches) according to the formula in the " \
     #     "paper?")
     # To verify.
-    print(f"naive likelihood: {torch.logsumexp(root_probs, dim=-1) - denominator}")
-    print(f"numerator: {numerator}, denominator: {denominator}")
     return -(numerator - denominator)

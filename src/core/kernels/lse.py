@@ -49,7 +49,7 @@ def _lse4_kernel(OUT, X0, X1, X2, X3,
 
     y = tl.where(s == 0, NEG_INF, tl.log(s) + m)
     tl.store(OUT + offs, y, mask=mask)
-
+    
 @triton.autotune(configs=CONFIGS, key=['N'])
 @triton.jit
 def _lse5_kernel(OUT, X0, X1, X2, X3, X4,
@@ -111,9 +111,12 @@ def _lse7_kernel(OUT, X0, X1, X2, X3, X4, X5, X6,
     all_inf = (m == NEG_INF)
     m_safe = tl.where(all_inf, 0.0, m)
 
-    e0 = tl.exp(x0 - m_safe); e1 = tl.exp(x1 - m_safe)
-    e2 = tl.exp(x2 - m_safe); e3 = tl.exp(x3 - m_safe)
-    e4 = tl.exp(x4 - m_safe); e5 = tl.exp(x5 - m_safe)
+    e0 = tl.exp(x0 - m_safe)
+    e1 = tl.exp(x1 - m_safe)
+    e2 = tl.exp(x2 - m_safe)
+    e3 = tl.exp(x3 - m_safe)
+    e4 = tl.exp(x4 - m_safe)
+    e5 = tl.exp(x5 - m_safe)
     e6 = tl.exp(x6 - m_safe)
 
     s01 = e0 + e1

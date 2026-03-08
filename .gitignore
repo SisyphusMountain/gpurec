@@ -1,10 +1,32 @@
-prof_logs/*
+# Build artifacts
 __pycache__/
 *.pyc
+*.pyo
+*.so
+*.o
+a.out
+*.egg-info/
+dist/
+build/
+
+# Profiling & temporary
+prof_logs/
+nsys_reports/
 .pytest_cache/
-# local stuff to ignore
+.tmp/
+
+# Data & output
 extra/
 scenarios/
+output_test/
 tests/data/**/output/
-torch/
+
+# Notebooks (large, tracked separately)
 *.ipynb
+
+# IDE
+.vscode/
+.idea/
+
+# Other
+torch/

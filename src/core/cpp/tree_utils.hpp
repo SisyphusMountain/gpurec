@@ -10,6 +10,19 @@ struct TreeNode {
   std::string name;
   std::vector<TreeNode *> children;
   TreeNode *parent{nullptr};
+
+  TreeNode() = default;
+
+  // Recursively delete all children to prevent memory leaks
+  ~TreeNode() {
+    for (TreeNode *child : children) {
+      delete child;
+    }
+  }
+
+  // Prevent copying (raw pointer ownership makes copying unsafe)
+  TreeNode(const TreeNode&) = delete;
+  TreeNode& operator=(const TreeNode&) = delete;
 };
 
 class NewickParser {

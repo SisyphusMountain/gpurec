@@ -2,6 +2,7 @@
 
 #include <algorithm>
 
+// Hash clades recursively using the two subclade hashes
 uint64_t wyhash64(uint64_t a, uint64_t b) {
   constexpr uint64_t secret0 = 0xa0761d6478bd642full;
   constexpr uint64_t secret1 = 0xe7037ed1a0b428dbull;

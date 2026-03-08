@@ -170,7 +170,6 @@ class GeneDataset(Dataset):
             dtype=dtype,
             device=device,
         )
-        print("E: ")
         E = E_out['E']
         E_s1 = E_out['E_s1']
         E_s2 = E_out['E_s2']

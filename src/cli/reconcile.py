@@ -1,69 +1,85 @@
 """
-Command-line interface for CCP reconciliation.
-Only evaluates the log-likelihood of the gene tree given the species tree and DTL parameters.
+Command-line interface for gene tree / species tree reconciliation.
 
-In the future: we will implement sampling of reconciliations, and optimization of DTL parameters.
+Evaluates the log-likelihood of gene trees given a species tree and DTL parameters.
 """
 
-import sys
 import argparse
+import sys
+
 import torch
-from pathlib import Path
 
-# Add parent directory to path to import from src
-sys.path.insert(0, str(Path(__file__).parent.parent.parent))
-
-from src.reconciliation.reconcile import setup_fixed_points
+from ..core.model import GeneDataset
 
 
 def main():
     """Main CLI function."""
-    parser = argparse.ArgumentParser(description='Log-space CCP reconciliation for numerical stability')
-    parser.add_argument('--species', required=True, help='Species tree file (.nwk)')
-    parser.add_argument('--gene', required=True, help='Gene tree file (.nwk)')
-    parser.add_argument('--delta', type=float, default=1e-10, help='Duplication rate (default: 1e-10)')
-    parser.add_argument('--tau', type=float, default=1e-10, help='Transfer rate (default: 1e-10)')
-    parser.add_argument('--lambda', dest='lambda_param', type=float, default=1e-10, help='Loss rate (default: 1e-10)')
-    parser.add_argument('--iters', type=int, default=100, help='Maximum iterations (default: 100)')
-    parser.add_argument('--device', choices=['cpu', 'cuda'], help='Device to use (default: auto)')
-    parser.add_argument('--dtype', choices=['float32', 'float64', 'fp32', 'fp64'], default='float32',
-                        help='Computation dtype (default: float32)')
-    parser.add_argument('--debug', action='store_true', help='Enable debug output in Pi_update function')
-    parser.add_argument('--use-triton', action='store_true', default=True, help='Use Triton LSE kernels when available (default: True)')
-    parser.add_argument('--no-triton', dest='use_triton', action='store_false', help='Disable Triton LSE kernels')
-    parser.add_argument('--compare-triton', action='store_true', default=False, help='Compute both Triton and Torch results where applicable and report differences')
+    parser = argparse.ArgumentParser(
+        description="GPU-accelerated DTL reconciliation via CCP likelihood"
+    )
+    parser.add_argument("--species", required=True, help="Species tree file (.nwk)")
+    parser.add_argument(
+        "--gene", required=True, nargs="+", help="Gene tree file(s) (.nwk)"
+    )
+    parser.add_argument(
+        "--delta", type=float, default=1e-10, help="Duplication rate (default: 1e-10)"
+    )
+    parser.add_argument(
+        "--tau", type=float, default=1e-10, help="Transfer rate (default: 1e-10)"
+    )
+    parser.add_argument(
+        "--lambda",
+        dest="lambda_param",
+        type=float,
+        default=1e-10,
+        help="Loss rate (default: 1e-10)",
+    )
+    parser.add_argument(
+        "--iters", type=int, default=2000, help="Maximum iterations (default: 2000)"
+    )
+    parser.add_argument(
+        "--device", choices=["cpu", "cuda"], help="Device to use (default: auto)"
+    )
+    parser.add_argument(
+        "--dtype",
+        choices=["float32", "float64"],
+        default="float64",
+        help="Computation dtype (default: float64)",
+    )
     args = parser.parse_args()
-    
-    device = None
-    if args.device:
-        device = torch.device(args.device)
-    
-    try:
-        # Resolve dtype
-        if args.dtype in ('float32', 'fp32'):
-            dtype = torch.float32
-        elif args.dtype in ('float64', 'fp64'):
-            dtype = torch.float64
-        else:
-            dtype = torch.float32
 
-        result = setup_fixed_points(
-            args.species, args.gene,
-            delta=args.delta, tau=args.tau, lambda_param=args.lambda_param,
-            max_iters_E=args.iters, max_iters_Pi=args.iters, 
-            device=device, dtype=dtype, debug=args.debug, use_triton=args.use_triton,
-            compare_triton=args.compare_triton
+    device = (
+        torch.device(args.device)
+        if args.device
+        else torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    )
+    dtype = torch.float64 if args.dtype == "float64" else torch.float32
+
+    dataset = GeneDataset(
+        species_tree_path=args.species,
+        gene_tree_paths=args.gene,
+        genewise=False,
+        specieswise=False,
+        pairwise=False,
+        dtype=dtype,
+        device=device,
+    )
+
+    # Set DTL parameters
+    for i in range(len(dataset)):
+        dataset.set_params(i, D=args.delta, T=args.tau, L=args.lambda_param)
+
+    # Compute likelihoods
+    for i in range(len(dataset)):
+        result = dataset.compute_likelihood(
+            i,
+            max_iters_E=args.iters,
+            max_iters_Pi=args.iters,
+            device=device,
+            dtype=dtype,
         )
-        
-        print(f"\n🎯 Final Results:")
-        print(f"   Log-likelihood: {result['log_likelihood']:.6f}")
-        
-    except Exception as e:
-        print(f"❌ Error: {e}")
-        import traceback
-        traceback.print_exc()
-        return 1
-    
+        print(f"Family {i}: log-likelihood = {result['log_likelihood']:.6f}")
+
     return 0
 
 

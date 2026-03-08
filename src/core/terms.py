@@ -58,7 +58,6 @@ def compute_DTS(log_pD, log_pS, Pi_s12, Pi, Pibar, log_split_probs, split_leftri
     DTS[4] = log_pS + Pi_s1_right + Pi_s2_left
     # DTS = DTS.contiguous()
     # DTS_term = log_split_probs + lse5(DTS[0], DTS[1], DTS[2], DTS[3], DTS[4])
-    print("shape!",DTS.shape)
     DTS_term = log_split_probs + torch.logsumexp(DTS, dim=0)
     return DTS_term
 
