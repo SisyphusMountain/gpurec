@@ -15,7 +15,7 @@ from .terms import (
 from .kernels.scatter_lse import seg_logsumexp
 from .kernels.seg_log_matmul import segmented_log_matmul
 from .log2_utils import logsumexp2, logaddexp2
-from .kernels.wave_step import wave_step_fused
+from .kernels.wave_step import wave_step_fused, wave_pibar_step_fused
 
 # Try to import logmatmul for fast dense log-space matmul
 try:
@@ -666,29 +666,30 @@ def Pi_wave_forward(
             leaf_wt = leaf_term[wt].contiguous()  # [W, S] — constant for this wave
             dts_r = DTS_reduced if has_splits else None
 
-            for local_iter in range(local_iters):
-                total_iters += 1
+            # Pibar output buffer for this wave
+            Pibar_W_buf = Pibar[wt].contiguous()
 
-                # Pibar for this wave (inline matmul — can't fuse into Triton easily)
-                Pi_W = Pi[wt]
-                Pi_max = Pi_W.max(dim=1, keepdim=True).values
-                Pibar_W = torch.log2(torch.exp2(Pi_W - Pi_max) @ transfer_mat_T) + Pi_max + mt_squeezed
-                Pibar[wt] = Pibar_W
+            # Run in chunks of 8 iterations, check convergence between chunks
+            for chunk_start in range(0, local_iters, 8):
+                chunk_end = min(chunk_start + 8, local_iters)
+                for local_iter in range(chunk_start, chunk_end):
+                    total_iters += 1
 
-                # Fused kernel: gather species children + compute all terms + logsumexp
-                Pi_new = wave_step_fused(
-                    Pi_W.contiguous(), Pibar_W.contiguous(),
-                    DL_const, Ebar, E, SL1_const, SL2_const,
-                    sp_child1, sp_child2, leaf_wt, dts_r,
-                )
+                    # Fully fused: Pibar + DTS_L terms + logsumexp in one kernel
+                    Pi_W = Pi[wt].contiguous()
+                    Pi_new = wave_pibar_step_fused(
+                        Pi_W, transfer_mat, mt_squeezed,
+                        DL_const, Ebar, E, SL1_const, SL2_const,
+                        sp_child1, sp_child2, leaf_wt,
+                        Pibar_W_buf, dts_r,
+                    )
+                    Pi[wt] = Pi_new
+                    Pibar[wt] = Pibar_W_buf
 
-                # Check convergence every 4 iterations to reduce GPU syncs
-                if local_iter > 0 and (local_iter % 4 == 0 or local_iter == local_iters - 1):
-                    if torch.abs(Pi_new - Pi[wt]).max().item() < local_tolerance:
-                        Pi[wt] = Pi_new
+                # Check convergence after each chunk (one GPU sync per 8 iters)
+                if chunk_start > 0:
+                    if torch.abs(Pi_new - Pi_W).max().item() < local_tolerance:
                         break
-
-                Pi[wt] = Pi_new
 
     return {'Pi': Pi, 'clade_species_map': clade_species_map, 'iterations': total_iters}
 
