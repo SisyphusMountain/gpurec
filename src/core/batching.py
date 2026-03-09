@@ -50,6 +50,10 @@ def collate_gene_families(
     eq1_logp_parts: List[torch.Tensor] = []
     eq1_parent_ids_parts: List[torch.Tensor] = []
 
+    # split_parents_sorted (one entry per split, needed for wave scheduling)
+    ge2_split_parents_parts: List[torch.Tensor] = []
+    eq1_split_parents_parts: List[torch.Tensor] = []
+
     # Totals & per-family meta
     total_C = 0
     total_N = 0
@@ -87,6 +91,19 @@ def collate_gene_families(
         lefts_i = lefts_i + clade_offset
         rights_i = rights_i + clade_offset
 
+        # Build split_parents_sorted for this family (if available, or reconstruct)
+        if "split_parents_sorted" in ccp:
+            sp_sorted_i = ccp["split_parents_sorted"].to(torch.long).cpu()
+        else:
+            # Reconstruct from seg_parent_ids + ptr_ge2
+            sp_sorted_i = torch.empty(N_i, dtype=torch.long)
+            for si in range(num_ge2_i):
+                s_start = int(ptr_ge2_i[si].item())
+                s_end = int(ptr_ge2_i[si + 1].item())
+                sp_sorted_i[s_start:s_end] = seg_parent_ids_i[si]
+            for si in range(num_eq1_i):
+                sp_sorted_i[end_rows_ge2_i + si] = seg_parent_ids_i[num_ge2_i + si]
+
         # (>=2) rows for this family
         if end_rows_ge2_i > 0:
             ge2_left = lefts_i[:end_rows_ge2_i]
@@ -95,6 +112,7 @@ def collate_gene_families(
             ge2_right_parts.append(ge2_right)
             ge2_logp_parts.append(logp_i[:end_rows_ge2_i])
             ge2_parent_ids_parts.append(seg_parent_ids_i[:num_ge2_i] + clade_offset)
+            ge2_split_parents_parts.append(sp_sorted_i[:end_rows_ge2_i] + clade_offset)
             # stitch the ptrs: skip the leading 0 and add the current global row offset
             if num_ge2_i > 0:
                 ge2_ptr_pieces.append(ptr_ge2_i[1:] + row_offset_ge2)
@@ -110,6 +128,7 @@ def collate_gene_families(
             eq1_right_parts.append(eq1_right)
             eq1_logp_parts.append(logp_i[start:stop])
             eq1_parent_ids_parts.append(seg_parent_ids_i[num_ge2_i:num_ge2_i+num_eq1_i] + clade_offset)
+            eq1_split_parents_parts.append(sp_sorted_i[start:stop] + clade_offset)
 
         # Species/clade leaf mappings
         lr = item["leaf_row_index"].to(torch.long).to(device) + clade_offset
@@ -192,12 +211,23 @@ def collate_gene_families(
         # Degenerate case: no clade has >=2 splits in the entire batch
         ptr_ge2_batch = torch.tensor([0], dtype=torch.long)
 
+    # split_parents_sorted: [all ge2 split parents ; all eq1 split parents]
+    if len(ge2_split_parents_parts) > 0:
+        ge2_sp = torch.cat(ge2_split_parents_parts, dim=0)
+    else:
+        ge2_sp = torch.empty((0,), dtype=torch.long)
+    if len(eq1_split_parents_parts) > 0:
+        eq1_sp = torch.cat(eq1_split_parents_parts, dim=0)
+    else:
+        eq1_sp = torch.empty((0,), dtype=torch.long)
+    split_parents_sorted_batch = torch.cat([ge2_sp, eq1_sp], dim=0)
+
     # Sanity checks
     assert split_leftrights_sorted_batch.numel() == 2 * total_N
     assert log_split_probs_sorted_batch.numel() == total_N
     assert ptr_ge2_batch.numel() == (total_num_ge2 + 1)
     assert seg_parent_ids_batch.numel() == (total_num_ge2 + total_num_eq1)
-
+    assert split_parents_sorted_batch.numel() == total_N
 
     leaf_row_index = torch.cat(leaf_row_parts, 0).to(device)
     leaf_col_index = torch.cat(leaf_col_parts, 0).to(device)
@@ -207,6 +237,7 @@ def collate_gene_families(
             "N_splits": total_N,
             "split_leftrights_sorted": split_leftrights_sorted_batch.to(device),
             "log_split_probs_sorted": log_split_probs_sorted_batch.to(device),
+            "split_parents_sorted": split_parents_sorted_batch.to(device),
             "seg_parent_ids": seg_parent_ids_batch.to(device),
             "ptr_ge2": ptr_ge2_batch.to(device),
             "num_segs_ge2": total_num_ge2,
@@ -221,3 +252,30 @@ def collate_gene_families(
         "family_meta": family_meta,  # optional, but useful bookkeeping
     }
     return out
+
+
+def collate_wave(
+    families_waves: List[List[List[int]]],
+    families_clade_offsets: List[int],
+) -> List[List[int]]:
+    """Merge per-family wave assignments into cross-family waves.
+
+    For each wave index k, collects all families' wave-k clade IDs (with
+    global clade offsets applied) into a single list. This enables batching
+    all families' wave-k clades into one matmul.
+
+    Args:
+        families_waves: list of per-family wave lists (from compute_clade_waves)
+        families_clade_offsets: global clade offset for each family
+
+    Returns:
+        cross_waves: list of lists of globally-offset clade IDs per wave
+    """
+    max_waves = max(len(w) for w in families_waves) if families_waves else 0
+    cross_waves: List[List[int]] = [[] for _ in range(max_waves)]
+
+    for fam_idx, (fam_waves, offset) in enumerate(zip(families_waves, families_clade_offsets)):
+        for k, wave_clades in enumerate(fam_waves):
+            cross_waves[k].extend(c + offset for c in wave_clades)
+
+    return cross_waves

@@ -547,7 +547,8 @@ def Pi_wave_forward(
     clade_species_map = torch.full((C, S), NEG_INF, device=device, dtype=dtype)
     clade_species_map[leaf_row_index.to(device), leaf_col_index.to(device)] = 0.0
 
-    Pi = torch.full((C, S), -1000.0, dtype=dtype, device=device)
+    _PI_INIT = torch.finfo(dtype).min  # ~-3.4e38; exp2(this)=0 exactly
+    Pi = torch.full((C, S), _PI_INIT, dtype=dtype, device=device)
     Pi[leaf_row_index.to(device), leaf_col_index.to(device)] = 0.0
     Pibar = torch.full((C, S), NEG_INF, dtype=dtype, device=device)
 
@@ -629,66 +630,77 @@ def Pi_wave_forward(
 
     # Decide strategy based on S:
     # Small S (<=256): per-wave convergence with fused Triton kernel (Pibar in kernel)
-    # Large S (>256): global sweeps — cuBLAS for Pibar, Triton for DTS_L only
+    # Large S (>256): per-wave convergence with cuBLAS for Pibar
     use_global_pibar = (S > 256)
-
-    # Precompute global DTS reduction mapping (all splits -> all clades)
-    # This avoids per-wave Python loops in the hot path
-    all_split_lefts = lefts  # [N_splits]
-    all_split_rights = rights  # [N_splits]
-    all_lr = torch.cat([all_split_lefts, all_split_rights])  # [2*N_splits]
-    all_split_reduce_idx = split_parents.long()  # [N_splits] -> clade index
 
     with _nvtx_range("Pi wave forward"):
         if use_global_pibar:
-            # --- Large S: Jacobi iterations with global ops (minimal kernel launches) ---
-            Pi_prev = Pi.clone()
+            # --- Large S: per-wave convergence with cuBLAS Pibar ---
+            # Process waves in topological order. For each wave:
+            #   1. Compute DTS cross-clade terms ONCE (children already converged)
+            #   2. Iterate self-loop (Pibar + DTS_L) until convergence
+            #   3. Write converged Pi back, move to next wave
             prev_tf32 = torch.backends.cuda.matmul.allow_tf32
             torch.backends.cuda.matmul.allow_tf32 = True
 
-            for sweep in range(local_iters):
-                total_iters += 1
+            for wi, wd in enumerate(wave_data):
+                if wd is None:
+                    continue
+                wt, W, has_splits, wst, n_ws, sl, sr, lr, wlsp, reduce_idx = wd
+                leaf_wt = wave_leaf_terms[wi]
 
-                # 1. Global Pibar via cuBLAS (TF32 for speed, ~4e-4 max error)
-                Pi_max = Pi.max(dim=1, keepdim=True).values
-                Pibar = torch.log2(torch.exp2(Pi - Pi_max) @ transfer_mat_T) + Pi_max + mt_squeezed
+                # 1. DTS cross-clade: computed ONCE per wave (children frozen)
+                if has_splits:
+                    # Use fused kernel reading from full Pi/Pibar
+                    dts_term = dts_fused(
+                        Pi, Pibar, sl, sr,
+                        sp_child1, sp_child2,
+                        log_pD, log_pS, wlsp,
+                    )  # [n_ws, S]
+                    # Reduce splits → per-wave-clade [W, S]
+                    reduce_exp = reduce_idx.unsqueeze(1).expand_as(dts_term)
+                    dts_r = torch.full((W, S), NEG_INF, device=device, dtype=dtype)
+                    dts_r.scatter_reduce_(0, reduce_exp, dts_term, reduce='amax', include_self=True)
+                    dts_max = dts_r.clone()
+                    dts_sum = torch.zeros((W, S), device=device, dtype=dtype)
+                    dts_sum.scatter_add_(0, reduce_exp, torch.exp2(dts_term - dts_max[reduce_idx]))
+                    dts_r = torch.log2(dts_sum) + dts_max
+                else:
+                    dts_r = None
 
-                # 2. Global DTS: compute ALL split terms at once
-                DTS_reduced = _compute_DTS_reduced_global(
-                    Pi, Pibar, all_split_lefts, all_split_rights, N_splits,
-                    S, C, log_pD, log_pS, sp_child1, sp_child2,
-                    log_split_probs, all_split_reduce_idx, device, dtype,
-                    ccp_helpers=ccp_helpers)
+                # 2. Iterate self-loop until convergence
+                for local_iter in range(local_iters):
+                    total_iters += 1
+                    Pi_W = Pi[wt].contiguous()  # [W, S]
 
-                # 3. Global DTS_L: one kernel launch for ALL clades
-                Pi_new = wave_step_fused(
-                    Pi, Pibar,
-                    DL_const, Ebar, E, SL1_const, SL2_const,
-                    sp_child1, sp_child2, leaf_term, DTS_reduced,
-                )
-                Pi = Pi_new
+                    # Pibar via cuBLAS TF32: [W, S] @ [S, S]
+                    Pi_max = Pi_W.max(dim=1, keepdim=True).values
+                    Pibar_W = torch.log2(torch.exp2(Pi_W - Pi_max) @ transfer_mat_T) + Pi_max + mt_squeezed
 
-                # Check convergence every 8 sweeps
-                if sweep > 0 and sweep % 8 == 0:
-                    delta = torch.abs(Pi - Pi_prev).max().item()
-                    Pi_prev.copy_(Pi)
-                    if delta < local_tolerance:
-                        break
+                    # DTS_L update
+                    Pi_new = wave_step_fused(
+                        Pi_W, Pibar_W,
+                        DL_const, Ebar, E, SL1_const, SL2_const,
+                        sp_child1, sp_child2, leaf_wt, dts_r,
+                    )
+                    Pi[wt] = Pi_new
+                    Pibar[wt] = Pibar_W
+
+                    # Check convergence every iteration after minimum warmup
+                    if local_iter >= 3:
+                        significant = Pi_new > -100.0
+                        if not significant.any() or torch.abs(Pi_new - Pi_W)[significant].max().item() < local_tolerance:
+                            break
+
             torch.backends.cuda.matmul.allow_tf32 = prev_tf32
         else:
             # --- Small S: per-wave convergence with fully fused Triton kernel ---
             for wi, wd in enumerate(wave_data):
                 if wd is None:
                     continue
-                phase = phases[wi]
                 wt, W, has_splits, wst, n_ws, sl, sr, lr, wlsp, reduce_idx = wd
 
-                # Phase 1 (leaves): no cross-clade DTS, only self-loop
-                # Phase 2 (internal): DTS once, then iterate DTS_L
-                # Phase 3 (root): same as phase 2
                 if has_splits:
-                    Pi_lr = Pi[lr]
-                    Pibar_lr = Pibar[lr]
                     dts_r = _compute_DTS_reduced(
                         Pi, Pibar, lr, n_ws, S, W, log_pD, log_pS,
                         sp_child1, sp_child2, wlsp, reduce_idx, device, dtype)
@@ -698,20 +710,20 @@ def Pi_wave_forward(
                 leaf_wt = wave_leaf_terms[wi]
                 Pibar_W_buf = torch.empty(W, S, device=device, dtype=dtype)
 
-                for chunk_start in range(0, local_iters, 8):
-                    for local_iter in range(chunk_start, min(chunk_start + 8, local_iters)):
-                        total_iters += 1
-                        Pi_W = Pi[wt].contiguous()
-                        Pi_new = wave_pibar_step_fused(
-                            Pi_W, transfer_mat_c, mt_squeezed,
-                            DL_const, Ebar, E, SL1_const, SL2_const,
-                            sp_child1, sp_child2, leaf_wt,
-                            Pibar_W_buf, dts_r,
-                        )
-                        Pi[wt] = Pi_new
-                        Pibar[wt] = Pibar_W_buf
-                    if chunk_start > 0:
-                        if torch.abs(Pi_new - Pi_W).max().item() < local_tolerance:
+                for local_iter in range(local_iters):
+                    total_iters += 1
+                    Pi_W = Pi[wt].contiguous()
+                    Pi_new = wave_pibar_step_fused(
+                        Pi_W, transfer_mat_c, mt_squeezed,
+                        DL_const, Ebar, E, SL1_const, SL2_const,
+                        sp_child1, sp_child2, leaf_wt,
+                        Pibar_W_buf, dts_r,
+                    )
+                    Pi[wt] = Pi_new
+                    Pibar[wt] = Pibar_W_buf
+                    if local_iter >= 3:
+                        significant = Pi_new > -100.0
+                        if not significant.any() or torch.abs(Pi_new - Pi_W)[significant].max().item() < local_tolerance:
                             break
 
     return {'Pi': Pi, 'clade_species_map': clade_species_map, 'iterations': total_iters}
@@ -737,51 +749,6 @@ def _compute_DTS_reduced(Pi, Pibar, lr, n_ws, S, W, log_pD, log_pS,
     DTS_max = DTS_reduced.clone()
     DTS_sum = torch.zeros((W, S), device=device, dtype=dtype)
     DTS_sum.scatter_add_(0, reduce_exp, torch.exp2(DTS_term - DTS_max[reduce_idx]))
-    return torch.log2(DTS_sum) + DTS_max
-
-
-def _compute_DTS_reduced_global(Pi, Pibar, all_lefts, all_rights, N_splits,
-                                 S, C, log_pD, log_pS, sp_child1, sp_child2,
-                                 log_split_probs, split_parent_ids, device, dtype,
-                                 ccp_helpers=None):
-    """Compute DTS for ALL splits at once and reduce to per-clade [C, S].
-
-    Uses a fused Triton kernel to avoid materializing the [5, N, S] tensor.
-    Uses seg_logsumexp for fast reduction when ccp_helpers is provided.
-    """
-    # Fused DTS: gather + 5 terms + logsumexp + split_probs in one kernel
-    # Reads Pi/Pibar directly from [C,S] tensors using left/right indices
-    DTS_term = dts_fused(
-        Pi, Pibar, all_lefts, all_rights,
-        sp_child1, sp_child2,
-        log_pD, log_pS, log_split_probs,
-    )  # [N_splits, S]
-
-    # Reduce to [C, S] via seg_logsumexp (fast Triton kernel)
-    if ccp_helpers is not None:
-        num_segs_ge2 = ccp_helpers['num_segs_ge2']
-        num_segs_eq1 = ccp_helpers['num_segs_eq1']
-        end_rows_ge2 = ccp_helpers['end_rows_ge2']
-        ptr_ge2 = ccp_helpers['ptr_ge2']
-        seg_parent_ids = ccp_helpers['seg_parent_ids']
-
-        DTS_reduced = torch.full((C, S), NEG_INF, device=device, dtype=dtype)
-        if num_segs_ge2 > 0:
-            y_ge2 = _seg_logsumexp_host(DTS_term[:end_rows_ge2], ptr_ge2)
-            DTS_reduced.index_copy_(0, seg_parent_ids[:num_segs_ge2], y_ge2)
-        if num_segs_eq1 > 0:
-            DTS_reduced.index_copy_(0,
-                                    seg_parent_ids[num_segs_ge2:num_segs_ge2+num_segs_eq1],
-                                    DTS_term[end_rows_ge2:end_rows_ge2+num_segs_eq1])
-        return DTS_reduced
-
-    # Fallback: scatter_reduce
-    reduce_idx = split_parent_ids.unsqueeze(1).expand_as(DTS_term)
-    DTS_reduced = torch.full((C, S), NEG_INF, device=device, dtype=dtype)
-    DTS_reduced.scatter_reduce_(0, reduce_idx, DTS_term, reduce='amax', include_self=True)
-    DTS_max = DTS_reduced.clone()
-    DTS_sum = torch.zeros((C, S), device=device, dtype=dtype)
-    DTS_sum.scatter_add_(0, reduce_idx, torch.exp2(DTS_term - DTS_max[split_parent_ids]))
     return torch.log2(DTS_sum) + DTS_max
 
 
