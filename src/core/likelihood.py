@@ -25,10 +25,12 @@ try:
     _logmatmul_dir = str(_Path(__file__).resolve().parents[2] / 'logmatmul')
     if _logmatmul_dir not in _sys.path:
         _sys.path.insert(0, _logmatmul_dir)
+    from src.dense import logspace_matmul as _logspace_matmul
     from src.autograd import LogspaceMatmulFn
     _HAS_LOGMATMUL = True
 except ImportError:
     _HAS_LOGMATMUL = False
+    _logspace_matmul = None
 
 NEG_INF = float("-inf")
 
@@ -641,11 +643,13 @@ def Pi_wave_forward(
         if use_global_pibar:
             # --- Large S: Jacobi iterations with global ops (minimal kernel launches) ---
             Pi_prev = Pi.clone()
+            prev_tf32 = torch.backends.cuda.matmul.allow_tf32
+            torch.backends.cuda.matmul.allow_tf32 = True
 
             for sweep in range(local_iters):
                 total_iters += 1
 
-                # 1. Global Pibar via cuBLAS
+                # 1. Global Pibar via cuBLAS (TF32 for speed, ~4e-4 max error)
                 Pi_max = Pi.max(dim=1, keepdim=True).values
                 Pibar = torch.log2(torch.exp2(Pi - Pi_max) @ transfer_mat_T) + Pi_max + mt_squeezed
 
@@ -670,6 +674,7 @@ def Pi_wave_forward(
                     Pi_prev.copy_(Pi)
                     if delta < local_tolerance:
                         break
+            torch.backends.cuda.matmul.allow_tf32 = prev_tf32
         else:
             # --- Small S: per-wave convergence with fully fused Triton kernel ---
             for wi, wd in enumerate(wave_data):
