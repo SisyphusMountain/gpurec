@@ -335,3 +335,45 @@ def test_batched_wave_timing_large_s(cpp_ext):
         assert abs(logLs_seq[i] - logLs_bat[i]) < LOGL_ATOL, (
             f"Family {i}: seq={logLs_seq[i]:.6f}, bat={logLs_bat[i]:.6f}"
         )
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+def test_batched_wave_vs_batched_fp_large_s(cpp_ext):
+    """Batched wave vs batched FP (both use collated data)."""
+    device = torch.device("cuda")
+    dtype = torch.float32
+    n_fam = 10
+
+    batch_items, sh, pS, pD, pL, tf, mv, Eo = _load_families(
+        "test_trees_1000", n_fam, cpp_ext, device, dtype
+    )
+
+    # Batched wave
+    logLs_wv = _run_batched_wave(
+        batch_items, sh, pS, pD, pL, tf, mv, Eo, device, dtype
+    )
+
+    # Batched FP (via collate + Pi_fixed_point)
+    batched = collate_gene_families(batch_items, dtype=dtype, device=device)
+    ccp = batched["ccp"]
+    li = batched["leaf_row_index"]
+    lc = batched["leaf_col_index"]
+    root_ids = batched["root_clade_ids"]
+
+    fp_out = Pi_fixed_point(
+        ccp_helpers=ccp, species_helpers=sh,
+        leaf_row_index=li, leaf_col_index=lc,
+        E=Eo["E"], Ebar=Eo["E_bar"], E_s1=Eo["E_s1"], E_s2=Eo["E_s2"],
+        log_pS=pS, log_pD=pD, log_pL=pL,
+        transfer_mat_T=tf.T.contiguous(), max_transfer_mat=mv,
+        max_iters=2000, tolerance=TOL,
+        warm_start_Pi=None, device=device, dtype=dtype,
+    )
+    logL_fp_vec = compute_log_likelihood(fp_out["Pi"], Eo["E"], root_ids)
+    logLs_fp = [float(x) for x in logL_fp_vec]
+
+    for i in range(n_fam):
+        assert abs(logLs_fp[i] - logLs_wv[i]) < LOGL_ATOL, (
+            f"Family {i}: FP={logLs_fp[i]:.6f}, wave={logLs_wv[i]:.6f}, "
+            f"diff={abs(logLs_fp[i] - logLs_wv[i]):.2e}"
+        )

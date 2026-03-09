@@ -1,23 +1,12 @@
-from pathlib import Path
+import math
 
 import torch
 from torch.utils.data import Dataset
-from torch.utils.cpp_extension import load as cpp_load
 from .extract_parameters import extract_parameters
-from .likelihood import E_fixed_point, Pi_fixed_point, compute_log_likelihood
-from .batching import collate_gene_families
-
-
-def _load_species_gene_ext():
-    """JIT-compile and load the species+gene preprocessing extension."""
-    repo_root = Path(__file__).resolve().parents[2]
-    cpp_dir = repo_root / 'src' / 'core' / 'cpp'
-    sources = [
-        str(cpp_dir / 'preprocess.cpp'),
-        str(cpp_dir / 'tree_utils.cpp'),
-        str(cpp_dir / 'clade_utils.cpp'),
-    ]
-    return cpp_load(name='preprocess_species_gene_cpp', sources=sources, extra_cflags=['-O3'], verbose=False)
+from .likelihood import E_fixed_point, Pi_fixed_point, Pi_wave_forward, compute_log_likelihood
+from .batching import collate_gene_families, collate_wave
+from .scheduling import compute_clade_waves
+from .preprocess_cpp import _load_extension as _load_species_gene_ext
 
 
 class GeneDataset(Dataset):
@@ -42,7 +31,7 @@ class GeneDataset(Dataset):
         ext = _load_species_gene_ext()
 
         self.species_helpers = ext.preprocess_species(species_tree_path)
-        self.tr_mat_unnormalized = torch.log(self.species_helpers["Recipients_mat"])
+        self.tr_mat_unnormalized = torch.log2(self.species_helpers["Recipients_mat"])
         self.S = int(self.species_helpers['S'])
         
         # creating an initial theta
@@ -56,10 +45,13 @@ class GeneDataset(Dataset):
         else:
             theta = -10000*torch.ones(3, dtype=dtype, device=device)  
 
+        _INV_LN2 = 1.0 / math.log(2.0)
         families = []
         for gpath in gene_tree_paths:
             gene_data = ext.preprocess_gene_with_species(self.species_helpers, gpath)
             ccp = gene_data['ccp']
+            # Convert log_split_probs from ln (C++ output) to log2
+            ccp['log_split_probs_sorted'] = ccp['log_split_probs_sorted'] * _INV_LN2
             families.append({
                 'ccp_helpers': ccp,
                 'root_clade_id': int(gene_data['root_clade_id']),
@@ -225,6 +217,7 @@ class GeneDataset(Dataset):
         tol_Pi: float = 1e-12,
         device: torch.device | None = None,
         dtype: torch.dtype | None = None,
+        use_wave: bool = False,
     ) -> list[float]:
         """Compute log-likelihoods for a batch of gene families.
 
@@ -320,35 +313,76 @@ class GeneDataset(Dataset):
         E_s1 = E_out['E_s1']
         E_s2 = E_out['E_s2']
         Ebar = E_out['E_bar']
-        # Batched Pi fixed point over all clades
-        Pi_out = Pi_fixed_point(
-            ccp_helpers=ccp_helpers,
-            species_helpers=species_helpers,
-            leaf_row_index=leaf_row_index,
-            leaf_col_index=leaf_col_index,
-            E=E,
-            Ebar=Ebar,
-            E_s1=E_s1,
-            E_s2=E_s2,
-            log_pS=log_pS,
-            log_pD=log_pD,
-            log_pL=log_pL,
-            transfer_mat_T=transfer_mat.transpose(-1, -2),
-            max_transfer_mat=max_transfer_vec,
-            max_iters=max_iters_Pi,
-            tolerance=tol_Pi,
-            warm_start_Pi=None,
-            device=device,
-            dtype=dtype,
-            genewise=self.genewise,
-            specieswise=self.specieswise,
-            pairwise=self.pairwise,
-            clades_per_gene=(clades_per_gene if self.genewise else None),
-            batch_info=(
-                {'seg_ptr': torch.nn.functional.pad(torch.cumsum(clades_per_gene, dim=0), (1, 0))}
-                if self.genewise else None
-            ),
-        )
+
+        if use_wave and not self.genewise:
+            # Wave-based forward pass with cross-family batching
+            families_waves = []
+            families_phases = []
+            for idx in indices:
+                fam = self.families[idx]
+                ch_dev = {k: (v.to(device) if torch.is_tensor(v) else v)
+                          for k, v in fam['ccp_helpers'].items()}
+                waves_i, phases_i = compute_clade_waves(ch_dev)
+                families_waves.append(waves_i)
+                families_phases.append(phases_i)
+
+            offsets = [m['clade_offset'] for m in batched['family_meta']]
+            cross_waves = collate_wave(families_waves, offsets)
+
+            max_n_waves = max(len(p) for p in families_phases)
+            cross_phases = []
+            for k in range(max_n_waves):
+                phase_k = 1
+                for fp in families_phases:
+                    if k < len(fp):
+                        phase_k = max(phase_k, fp[k])
+                cross_phases.append(phase_k)
+
+            Pi_out = Pi_wave_forward(
+                waves=cross_waves,
+                ccp_helpers=ccp_helpers,
+                species_helpers=species_helpers,
+                leaf_row_index=leaf_row_index,
+                leaf_col_index=leaf_col_index,
+                E=E, Ebar=Ebar, E_s1=E_s1, E_s2=E_s2,
+                log_pS=log_pS, log_pD=log_pD, log_pL=log_pL,
+                transfer_mat=transfer_mat,
+                max_transfer_mat=max_transfer_vec,
+                device=device, dtype=dtype,
+                phases=cross_phases,
+                local_iters=max_iters_Pi,
+                local_tolerance=tol_Pi,
+            )
+        else:
+            # Batched Pi fixed point over all clades
+            Pi_out = Pi_fixed_point(
+                ccp_helpers=ccp_helpers,
+                species_helpers=species_helpers,
+                leaf_row_index=leaf_row_index,
+                leaf_col_index=leaf_col_index,
+                E=E,
+                Ebar=Ebar,
+                E_s1=E_s1,
+                E_s2=E_s2,
+                log_pS=log_pS,
+                log_pD=log_pD,
+                log_pL=log_pL,
+                transfer_mat_T=transfer_mat.transpose(-1, -2),
+                max_transfer_mat=max_transfer_vec,
+                max_iters=max_iters_Pi,
+                tolerance=tol_Pi,
+                warm_start_Pi=None,
+                device=device,
+                dtype=dtype,
+                genewise=self.genewise,
+                specieswise=self.specieswise,
+                pairwise=self.pairwise,
+                clades_per_gene=(clades_per_gene if self.genewise else None),
+                batch_info=(
+                    {'seg_ptr': torch.nn.functional.pad(torch.cumsum(clades_per_gene, dim=0), (1, 0))}
+                    if self.genewise else None
+                ),
+            )
         Pi = Pi_out['Pi']
 
         # Vector of per-family log-likelihoods
