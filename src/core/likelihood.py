@@ -16,6 +16,7 @@ from .kernels.scatter_lse import seg_logsumexp
 from .kernels.seg_log_matmul import segmented_log_matmul
 from .log2_utils import logsumexp2, logaddexp2
 from .kernels.wave_step import wave_step_fused, wave_pibar_step_fused
+from .kernels.dts_fused import dts_fused
 
 # Try to import logmatmul for fast dense log-space matmul
 try:
@@ -735,28 +736,43 @@ def _compute_DTS_reduced(Pi, Pibar, lr, n_ws, S, W, log_pD, log_pS,
 
 def _compute_DTS_reduced_global(Pi, Pibar, all_lefts, all_rights, N_splits,
                                  S, C, log_pD, log_pS, sp_child1, sp_child2,
-                                 log_split_probs, split_parent_ids, device, dtype):
-    """Compute DTS for ALL splits at once and reduce to per-clade [C, S]."""
+                                 log_split_probs, split_parent_ids, device, dtype,
+                                 _bufs=None):
+    """Compute DTS for ALL splits at once and reduce to per-clade [C, S].
+
+    Uses a fused Triton kernel to avoid materializing the [5, N, S] tensor.
+    """
     Pi_l = Pi[all_lefts]     # [N_splits, S]
     Pi_r = Pi[all_rights]    # [N_splits, S]
     Pibar_l = Pibar[all_lefts]
     Pibar_r = Pibar[all_rights]
 
     # Pad with -inf column for species-tree leaf children (index S)
-    neg_inf_col = torch.full((N_splits, 1), NEG_INF, device=device, dtype=dtype)
-    Pi_l_pad = torch.cat([Pi_l, neg_inf_col], dim=1)  # [N, S+1]
-    Pi_r_pad = torch.cat([Pi_r, neg_inf_col], dim=1)
+    # Reuse buffers if provided
+    if _bufs is not None and 'Pi_l_pad' in _bufs:
+        Pi_l_pad = _bufs['Pi_l_pad']
+        Pi_r_pad = _bufs['Pi_r_pad']
+        Pi_l_pad[:, :S] = Pi_l
+        Pi_r_pad[:, :S] = Pi_r
+    else:
+        neg_inf_col = torch.full((N_splits, 1), NEG_INF, device=device, dtype=dtype)
+        Pi_l_pad = torch.cat([Pi_l, neg_inf_col], dim=1)
+        Pi_r_pad = torch.cat([Pi_r, neg_inf_col], dim=1)
+        if _bufs is not None:
+            _bufs['Pi_l_pad'] = Pi_l_pad
+            _bufs['Pi_r_pad'] = Pi_r_pad
 
-    DTS = torch.empty((5, N_splits, S), device=device, dtype=dtype)
-    DTS[0] = log_pD + Pi_l + Pi_r                                    # D
-    DTS[1] = Pi_l + Pibar_r                                          # T (l->r)
-    DTS[2] = Pi_r + Pibar_l                                          # T (r->l)
-    DTS[3] = log_pS + Pi_l_pad[:, sp_child1] + Pi_r_pad[:, sp_child2]  # S
-    DTS[4] = log_pS + Pi_r_pad[:, sp_child1] + Pi_l_pad[:, sp_child2]  # S (swapped)
-    DTS_term = log_split_probs + logsumexp2(DTS, dim=0)  # [N_splits, S]
+    # Fused DTS: 5 terms + logsumexp + split_probs in one kernel
+    DTS_term = dts_fused(
+        Pi_l.contiguous(), Pi_r.contiguous(),
+        Pibar_l.contiguous(), Pibar_r.contiguous(),
+        Pi_l_pad.contiguous(), Pi_r_pad.contiguous(),
+        sp_child1, sp_child2,
+        log_pD, log_pS, log_split_probs,
+    )  # [N_splits, S]
 
     # Reduce to [C, S] via scatter logsumexp
-    reduce_idx = split_parent_ids.unsqueeze(1).expand_as(DTS_term)  # [N_splits, S]
+    reduce_idx = split_parent_ids.unsqueeze(1).expand_as(DTS_term)
     DTS_reduced = torch.full((C, S), NEG_INF, device=device, dtype=dtype)
     DTS_reduced.scatter_reduce_(0, reduce_idx, DTS_term, reduce='amax', include_self=True)
     DTS_max = DTS_reduced.clone()
