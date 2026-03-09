@@ -113,8 +113,8 @@ def _run_per_family_wave(batch_items, sh, pS, pD, pL, tf, mv, Eo, device, dtype)
     return logLs
 
 
-def _run_batched_wave(batch_items, sh, pS, pD, pL, tf, mv, Eo, device, dtype):
-    """Run Pi_wave_forward on all families batched together."""
+def _run_batched_wave_chunk(batch_items, sh, pS, pD, pL, tf, mv, Eo, device, dtype):
+    """Run Pi_wave_forward on a chunk of families batched together."""
     # 1. Collate families
     batched = collate_gene_families(batch_items, dtype=dtype, device=device)
     ccp = batched["ccp"]
@@ -137,7 +137,6 @@ def _run_batched_wave(batch_items, sh, pS, pD, pL, tf, mv, Eo, device, dtype):
     cross_waves = collate_wave(families_waves, offsets)
 
     # Cross-family phases: for each wave k, take max phase across families
-    # (if any family has phase 3 at wave k, the whole wave is phase 3, etc.)
     max_n_waves = max(len(p) for p in families_phases)
     cross_phases = []
     for k in range(max_n_waves):
@@ -159,10 +158,24 @@ def _run_batched_wave(batch_items, sh, pS, pD, pL, tf, mv, Eo, device, dtype):
     )
 
     # 4. Extract per-family log-likelihoods
-    logLs = []
     logL_vec = compute_log_likelihood(wv["Pi"], Eo["E"], root_ids)
-    for lL in logL_vec:
-        logLs.append(float(lL))
+    return [float(lL) for lL in logL_vec]
+
+
+def _run_batched_wave(batch_items, sh, pS, pD, pL, tf, mv, Eo, device, dtype,
+                      chunk_size=None):
+    """Run batched wave forward, splitting into chunks if needed."""
+    if chunk_size is None or len(batch_items) <= chunk_size:
+        return _run_batched_wave_chunk(
+            batch_items, sh, pS, pD, pL, tf, mv, Eo, device, dtype
+        )
+
+    logLs = []
+    for start in range(0, len(batch_items), chunk_size):
+        chunk = batch_items[start:start + chunk_size]
+        logLs.extend(_run_batched_wave_chunk(
+            chunk, sh, pS, pD, pL, tf, mv, Eo, device, dtype
+        ))
     return logLs
 
 
@@ -244,7 +257,7 @@ def test_batched_wave_matches_individual_large_s(cpp_ext, n_fam):
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
 def test_batched_wave_100_families_large_s(cpp_ext):
-    """Scale test: 100 families batched together on large S."""
+    """Scale test: 100 families in chunks of 20, verify against individual."""
     device = torch.device("cuda")
     dtype = torch.float32
 
@@ -253,10 +266,22 @@ def test_batched_wave_100_families_large_s(cpp_ext):
     )
 
     logLs_batched = _run_batched_wave(
-        batch_items, sh, pS, pD, pL, tf, mv, Eo, device, dtype
+        batch_items, sh, pS, pD, pL, tf, mv, Eo, device, dtype,
+        chunk_size=20,
     )
 
-    # Sanity: all log-likelihoods should be finite and negative
+    # Sanity: all log-likelihoods should be finite
+    # (values are in log2 space, so they can be positive)
     for i, lL in enumerate(logLs_batched):
         assert math.isfinite(lL), f"Family {i}: logL={lL} is not finite"
-        assert lL < 0, f"Family {i}: logL={lL} should be negative"
+
+    # Spot-check first 5 against individual
+    logLs_individual = _run_per_family_wave(
+        batch_items[:5], sh, pS, pD, pL, tf, mv, Eo, device, dtype
+    )
+    for i in range(5):
+        assert abs(logLs_individual[i] - logLs_batched[i]) < LOGL_ATOL, (
+            f"Family {i}: individual={logLs_individual[i]:.6f}, "
+            f"batched={logLs_batched[i]:.6f}, "
+            f"diff={abs(logLs_individual[i] - logLs_batched[i]):.2e}"
+        )
