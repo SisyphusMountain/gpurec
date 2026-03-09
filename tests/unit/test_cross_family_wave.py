@@ -6,6 +6,7 @@ individually.
 """
 
 import math
+import time
 from pathlib import Path
 
 import pytest
@@ -15,6 +16,7 @@ from src.core.preprocess_cpp import _load_extension
 from src.core.extract_parameters import extract_parameters
 from src.core.likelihood import (
     E_fixed_point,
+    Pi_fixed_point,
     Pi_wave_forward,
     compute_log_likelihood,
 )
@@ -284,4 +286,52 @@ def test_batched_wave_100_families_large_s(cpp_ext):
             f"Family {i}: individual={logLs_individual[i]:.6f}, "
             f"batched={logLs_batched[i]:.6f}, "
             f"diff={abs(logLs_individual[i] - logLs_batched[i]):.2e}"
+        )
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+def test_batched_wave_timing_large_s(cpp_ext):
+    """Benchmark: batched wave (chunks of 20) vs sequential per-family wave."""
+    device = torch.device("cuda")
+    dtype = torch.float32
+    n_fam = 20
+
+    batch_items, sh, pS, pD, pL, tf, mv, Eo = _load_families(
+        "test_trees_1000", n_fam, cpp_ext, device, dtype
+    )
+
+    # Warmup
+    _run_batched_wave(batch_items[:2], sh, pS, pD, pL, tf, mv, Eo, device, dtype)
+    _run_per_family_wave(batch_items[:2], sh, pS, pD, pL, tf, mv, Eo, device, dtype)
+
+    # Sequential per-family wave
+    torch.cuda.synchronize()
+    t0 = time.perf_counter()
+    logLs_seq = _run_per_family_wave(
+        batch_items, sh, pS, pD, pL, tf, mv, Eo, device, dtype
+    )
+    torch.cuda.synchronize()
+    t_seq = time.perf_counter() - t0
+
+    # Batched wave (single chunk)
+    torch.cuda.synchronize()
+    t0 = time.perf_counter()
+    logLs_bat = _run_batched_wave(
+        batch_items, sh, pS, pD, pL, tf, mv, Eo, device, dtype
+    )
+    torch.cuda.synchronize()
+    t_bat = time.perf_counter() - t0
+
+    # Report
+    print(f"\n  {n_fam} families, S=1999:")
+    print(f"    Sequential per-family wave: {t_seq*1000:.0f}ms "
+          f"({t_seq/n_fam*1000:.0f}ms/family)")
+    print(f"    Batched wave:               {t_bat*1000:.0f}ms "
+          f"({t_bat/n_fam*1000:.0f}ms/family)")
+    print(f"    Speedup: {t_seq/t_bat:.1f}x")
+
+    # Verify correctness
+    for i in range(n_fam):
+        assert abs(logLs_seq[i] - logLs_bat[i]) < LOGL_ATOL, (
+            f"Family {i}: seq={logLs_seq[i]:.6f}, bat={logLs_bat[i]:.6f}"
         )
