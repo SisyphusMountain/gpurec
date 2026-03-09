@@ -653,7 +653,8 @@ def Pi_wave_forward(
                 DTS_reduced = _compute_DTS_reduced_global(
                     Pi, Pibar, all_split_lefts, all_split_rights, N_splits,
                     S, C, log_pD, log_pS, sp_child1, sp_child2,
-                    log_split_probs, all_split_reduce_idx, device, dtype)
+                    log_split_probs, all_split_reduce_idx, device, dtype,
+                    ccp_helpers=ccp_helpers)
 
                 # 3. Global DTS_L: one kernel launch for ALL clades
                 Pi_new = wave_step_fused(
@@ -737,41 +738,39 @@ def _compute_DTS_reduced(Pi, Pibar, lr, n_ws, S, W, log_pD, log_pS,
 def _compute_DTS_reduced_global(Pi, Pibar, all_lefts, all_rights, N_splits,
                                  S, C, log_pD, log_pS, sp_child1, sp_child2,
                                  log_split_probs, split_parent_ids, device, dtype,
-                                 _bufs=None):
+                                 ccp_helpers=None):
     """Compute DTS for ALL splits at once and reduce to per-clade [C, S].
 
     Uses a fused Triton kernel to avoid materializing the [5, N, S] tensor.
+    Uses seg_logsumexp for fast reduction when ccp_helpers is provided.
     """
-    Pi_l = Pi[all_lefts]     # [N_splits, S]
-    Pi_r = Pi[all_rights]    # [N_splits, S]
-    Pibar_l = Pibar[all_lefts]
-    Pibar_r = Pibar[all_rights]
-
-    # Pad with -inf column for species-tree leaf children (index S)
-    # Reuse buffers if provided
-    if _bufs is not None and 'Pi_l_pad' in _bufs:
-        Pi_l_pad = _bufs['Pi_l_pad']
-        Pi_r_pad = _bufs['Pi_r_pad']
-        Pi_l_pad[:, :S] = Pi_l
-        Pi_r_pad[:, :S] = Pi_r
-    else:
-        neg_inf_col = torch.full((N_splits, 1), NEG_INF, device=device, dtype=dtype)
-        Pi_l_pad = torch.cat([Pi_l, neg_inf_col], dim=1)
-        Pi_r_pad = torch.cat([Pi_r, neg_inf_col], dim=1)
-        if _bufs is not None:
-            _bufs['Pi_l_pad'] = Pi_l_pad
-            _bufs['Pi_r_pad'] = Pi_r_pad
-
-    # Fused DTS: 5 terms + logsumexp + split_probs in one kernel
+    # Fused DTS: gather + 5 terms + logsumexp + split_probs in one kernel
+    # Reads Pi/Pibar directly from [C,S] tensors using left/right indices
     DTS_term = dts_fused(
-        Pi_l.contiguous(), Pi_r.contiguous(),
-        Pibar_l.contiguous(), Pibar_r.contiguous(),
-        Pi_l_pad.contiguous(), Pi_r_pad.contiguous(),
+        Pi, Pibar, all_lefts, all_rights,
         sp_child1, sp_child2,
         log_pD, log_pS, log_split_probs,
     )  # [N_splits, S]
 
-    # Reduce to [C, S] via scatter logsumexp
+    # Reduce to [C, S] via seg_logsumexp (fast Triton kernel)
+    if ccp_helpers is not None:
+        num_segs_ge2 = ccp_helpers['num_segs_ge2']
+        num_segs_eq1 = ccp_helpers['num_segs_eq1']
+        end_rows_ge2 = ccp_helpers['end_rows_ge2']
+        ptr_ge2 = ccp_helpers['ptr_ge2']
+        seg_parent_ids = ccp_helpers['seg_parent_ids']
+
+        DTS_reduced = torch.full((C, S), NEG_INF, device=device, dtype=dtype)
+        if num_segs_ge2 > 0:
+            y_ge2 = _seg_logsumexp_host(DTS_term[:end_rows_ge2], ptr_ge2)
+            DTS_reduced.index_copy_(0, seg_parent_ids[:num_segs_ge2], y_ge2)
+        if num_segs_eq1 > 0:
+            DTS_reduced.index_copy_(0,
+                                    seg_parent_ids[num_segs_ge2:num_segs_ge2+num_segs_eq1],
+                                    DTS_term[end_rows_ge2:end_rows_ge2+num_segs_eq1])
+        return DTS_reduced
+
+    # Fallback: scatter_reduce
     reduce_idx = split_parent_ids.unsqueeze(1).expand_as(DTS_term)
     DTS_reduced = torch.full((C, S), NEG_INF, device=device, dtype=dtype)
     DTS_reduced.scatter_reduce_(0, reduce_idx, DTS_term, reduce='amax', include_self=True)
