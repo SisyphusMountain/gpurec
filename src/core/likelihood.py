@@ -408,7 +408,7 @@ def Pi_fixed_point(
     if warm_start_Pi is not None:
         Pi = warm_start_Pi
     else:
-        Pi = torch.full((C, S), -math.log2(10.0), dtype=dtype, device=device)
+        Pi = torch.full((C, S), -64.0, dtype=dtype, device=device)
         Pi[leaf_row_index.to(device), leaf_col_index.to(device)] = 0.0
 
     converged_iter = max_iters
@@ -547,7 +547,7 @@ def Pi_wave_forward(
     clade_species_map = torch.full((C, S), NEG_INF, device=device, dtype=dtype)
     clade_species_map[leaf_row_index.to(device), leaf_col_index.to(device)] = 0.0
 
-    Pi = torch.full((C, S), -math.log2(10.0), dtype=dtype, device=device)
+    Pi = torch.full((C, S), -64.0, dtype=dtype, device=device)
     Pi[leaf_row_index.to(device), leaf_col_index.to(device)] = 0.0
     Pibar = torch.full((C, S), NEG_INF, dtype=dtype, device=device)
 
