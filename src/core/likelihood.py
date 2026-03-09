@@ -14,6 +14,20 @@ from .terms import (
 )
 from .kernels.scatter_lse import seg_logsumexp
 from .kernels.seg_log_matmul import segmented_log_matmul
+from .log2_utils import logsumexp2, logaddexp2
+from .kernels.wave_step import wave_step_fused
+
+# Try to import logmatmul for fast dense log-space matmul
+try:
+    import sys as _sys
+    from pathlib import Path as _Path
+    _logmatmul_dir = str(_Path(__file__).resolve().parents[2] / 'logmatmul')
+    if _logmatmul_dir not in _sys.path:
+        _sys.path.insert(0, _logmatmul_dir)
+    from src.autograd import LogspaceMatmulFn
+    _HAS_LOGMATMUL = True
+except ImportError:
+    _HAS_LOGMATMUL = False
 
 NEG_INF = float("-inf")
 
@@ -88,7 +102,7 @@ def _seg_logsumexp_host(x: torch.Tensor, ptr: torch.Tensor) -> torch.Tensor:
         s = int(ptr[i].item())
         e = int(ptr[i + 1].item())
         if e > s:
-            out.append(torch.logsumexp(x[s:e], dim=0))
+            out.append(logsumexp2(x[s:e], dim=0))
         else:
             # empty segment; produce -inf row
             out.append(torch.full_like(x[0], NEG_INF))
@@ -178,20 +192,31 @@ def Pi_step(Pi: torch.Tensor,
         
     else:
         # Computing Pibar
-        with _nvtx_here("Pi: Pi_max = max(Pi, dim=1)"):
-            Pi_max = torch.max(Pi, dim=1, keepdim=True).values # [C, 1]
-        with _nvtx_here("Pi: Pi - Pi_max"):
-            Pi_minus = Pi - Pi_max
-        with _nvtx_here("Pi: exp(Pi - Pi_max)"):
-            Pi_linear = torch.exp(Pi_minus)  # [C, S]
-        with _nvtx_here("Pi: mm(Pi_linear, transfer_T)"):
-            Pibar_linear = Pi_linear.mm(transfer_mat_T)  # [C, S]
-        with _nvtx_here("Pi: log(Pibar_linear)"):
-            Pibar_log = torch.log(Pibar_linear)
-        with _nvtx_here("Pi: + Pi_max"):
-            Pibar_log = Pibar_log + Pi_max
-        with _nvtx_here("Pi: + max_transfer_vec"):
-            Pibar = Pibar_log + max_transfer_mat.squeeze(-1)
+        if _HAS_LOGMATMUL and Pi.is_cuda:
+            # Fast path: fused log2-space matmul via logmatmul kernel
+            # transfer_mat_T is exp2(log_transfer_mat - max_transfer_mat).T
+            # We need transfer_mat (not transposed) as M [S, S] in linear space
+            with _nvtx_here("Pi: logmatmul Pibar"):
+                transfer_mat = transfer_mat_T.T  # [S, S] linear space
+                Pi_T = Pi.T.contiguous()          # [S, C] log2-space
+                Pibar_T = LogspaceMatmulFn.apply(transfer_mat, Pi_T, "ieee")  # [S, C]
+                Pibar = Pibar_T.T + max_transfer_mat.squeeze(-1)  # [C, S]
+        else:
+            # CPU fallback: manual stabilized matmul
+            with _nvtx_here("Pi: Pi_max = max(Pi, dim=1)"):
+                Pi_max = torch.max(Pi, dim=1, keepdim=True).values # [C, 1]
+            with _nvtx_here("Pi: Pi - Pi_max"):
+                Pi_minus = Pi - Pi_max
+            with _nvtx_here("Pi: exp2(Pi - Pi_max)"):
+                Pi_linear = torch.exp2(Pi_minus)  # [C, S]
+            with _nvtx_here("Pi: mm(Pi_linear, transfer_T)"):
+                Pibar_linear = Pi_linear.mm(transfer_mat_T)  # [C, S]
+            with _nvtx_here("Pi: log2(Pibar_linear)"):
+                Pibar_log = torch.log2(Pibar_linear)
+            with _nvtx_here("Pi: + Pi_max"):
+                Pibar_log = Pibar_log + Pi_max
+            with _nvtx_here("Pi: + max_transfer_vec"):
+                Pibar = Pibar_log + max_transfer_mat.squeeze(-1)
         with _nvtx_here("Pi: compute_DTS"):
             DTS_term = compute_DTS(log_pD, log_pS, Pi_s12, Pi, Pibar, log_split_probs, split_leftrights_sorted, N_splits, S)
         with _nvtx_here("Pi: compute_DTS_L"):
@@ -211,8 +236,8 @@ def Pi_step(Pi: torch.Tensor,
                                         seg_parent_ids[num_segs_ge2:num_segs_ge2+num_segs_eq1],
                                         DTS_term[end_rows_ge2:end_rows_ge2+num_segs_eq1])
 
-    with _nvtx_here("Pi: logaddexp(DTS_reduced, DTS_L_term)"):
-        return torch.logaddexp(DTS_reduced, DTS_L_term)
+    with _nvtx_here("Pi: logaddexp2(DTS_reduced, DTS_L_term)"):
+        return logaddexp2(DTS_reduced, DTS_L_term)
 
 def E_step(E, sp_P_idx, sp_child12_idx, log_pS, log_pD, log_pL, transfer_mat, max_transfer_mat):
     """E can either have shape [S] or [N_genes, S]. Likewise, transfer_mat can have shape [S, S] or [N_genes, S, S]."""
@@ -251,15 +276,15 @@ def E_step(E, sp_P_idx, sp_child12_idx, log_pS, log_pD, log_pL, transfer_mat, ma
     # avoid underflow by subtracting max
     # Use per-row max along species dimension for numerical stability
     max_E = E.max(dim=-1, keepdim=True).values
-    expE = torch.exp(E - max_E)
+    expE = torch.exp2(E - max_E)
     Ebar_linear = torch.einsum("...ij, ...j-> ...i", transfer_mat, expE)
-    Ebar = torch.log(Ebar_linear) + max_E + max_transfer_mat.squeeze(-1)
+    Ebar = torch.log2(Ebar_linear) + max_E + max_transfer_mat.squeeze(-1)
     E_stack[2] = E + Ebar
     # L
     # should broadcast correctly if log_pL is [S] and if log_pL is [N_genes, S]
     E_stack[3] = pL
 
-    E_new = torch.logsumexp(E_stack, dim=0)
+    E_new = logsumexp2(E_stack, dim=0)
     return E_new, E_s1, E_s2, Ebar
 
     
@@ -297,9 +322,9 @@ def E_fixed_point(species_helpers,
         E = warm_start_E.detach()
     else:
         if N is None:
-            E = torch.full((S,), -0.69, dtype=dtype, device=device)
+            E = torch.full((S,), -1.0, dtype=dtype, device=device)  # log2(0.5)
         else:
-            E = torch.full((N, S), -0.69, dtype=dtype, device=device)
+            E = torch.full((N, S), -1.0, dtype=dtype, device=device)  # log2(0.5)
     E_s1 = torch.full_like(E, NEG_INF)
     E_s2 = torch.full_like(E, NEG_INF)
 
@@ -380,11 +405,11 @@ def Pi_fixed_point(
     if warm_start_Pi is not None:
         Pi = warm_start_Pi
     else:
-        Pi = torch.full((C, S), -math.log(10.0), dtype=dtype, device=device)
+        Pi = torch.full((C, S), -math.log2(10.0), dtype=dtype, device=device)
         Pi[leaf_row_index.to(device), leaf_col_index.to(device)] = 0.0
 
     converged_iter = max_iters
-    log_2 = torch.tensor([math.log(2.0)], dtype=dtype, device=device)
+    log_2 = torch.tensor([1.0], dtype=dtype, device=device)  # log2(2) = 1
 
     # Default clades_per_gene if not provided (single family)
     if clades_per_gene is None:
@@ -425,28 +450,354 @@ def Pi_fixed_point(
     return {'Pi': Pi, 'clade_species_map': clade_species_map, 'iterations': converged_iter}
 
 
+def _compute_Pibar_wave(Pi_W, transfer_mat, max_transfer_mat):
+    """Compute Pibar for a subset of clades (a wave).
+
+    Args:
+        Pi_W: [|W|, S] log2-space, Pi values for this wave's clades
+        transfer_mat: [S, S] linear-space transfer matrix (exp2-scaled)
+        max_transfer_mat: [S] or [S, 1] log2-space column maxima
+
+    Returns:
+        Pibar_W: [|W|, S] log2-space
+    """
+    if _HAS_LOGMATMUL and Pi_W.is_cuda:
+        Pi_W_T = Pi_W.T.contiguous()  # [S, |W|]
+        Pibar_W_T = LogspaceMatmulFn.apply(transfer_mat, Pi_W_T, "ieee")  # [S, |W|]
+        Pibar_W = Pibar_W_T.T + max_transfer_mat.squeeze(-1)
+    else:
+        Pi_max = torch.max(Pi_W, dim=1, keepdim=True).values
+        Pi_linear = torch.exp2(Pi_W - Pi_max)
+        Pibar_linear = Pi_linear @ transfer_mat.T
+        Pibar_W = torch.log2(Pibar_linear) + Pi_max + max_transfer_mat.squeeze(-1)
+    return Pibar_W
+
+
+def _compute_Pibar_wave_compressed(topk_idx, topk_vals, transfer_mat_full, max_transfer_mat):
+    """Compressed Pibar using top-k sparsification (Phase C).
+
+    Instead of full S×S matmul, uses only k indices per clade.
+    Reads k²×|W| entries from transfer_mat instead of S²×|W|.
+
+    Args:
+        topk_idx: [k, |W|] int32, row indices of top-k per clade
+        topk_vals: [k, |W|] float32, log2-space values at those positions
+        transfer_mat_full: [S, S] linear-space full transfer matrix (with max NOT subtracted)
+        max_transfer_mat: [S] or [S, 1] log2-space column maxima
+
+    Returns:
+        Pibar_compressed: [k, |W|] float32, log2-space Pibar at top-k positions
+    """
+    if not _HAS_LOGMATMUL:
+        raise RuntimeError("logmatmul required for compressed Pibar")
+    from src.compressed import logspace_matmul_compressed
+    # The compressed kernel computes log2(M @ 2^X) restricted to k indices
+    Pibar_compressed = logspace_matmul_compressed(topk_idx, topk_vals, transfer_mat_full)
+    # Add back the max_transfer_mat at the top-k row positions
+    if max_transfer_mat.ndim == 2:
+        max_transfer_mat = max_transfer_mat.squeeze(-1)
+    # Gather max_transfer_mat at the topk row indices
+    max_at_topk = max_transfer_mat[topk_idx.long()]  # [k, |W|]
+    return Pibar_compressed + max_at_topk
+
+
+def Pi_wave_forward(
+    waves,
+    ccp_helpers,
+    species_helpers,
+    leaf_row_index,
+    leaf_col_index,
+    E,
+    Ebar,
+    E_s1,
+    E_s2,
+    log_pS,
+    log_pD,
+    log_pL,
+    transfer_mat,
+    max_transfer_mat,
+    device,
+    dtype,
+    *,
+    local_iters: int = 50,
+    local_tolerance: float = 1e-12,
+):
+    """Wave-based forward pass for Pi computation.
+
+    Processes clades wave by wave in topological order. Within each wave,
+    the self-loop (DTS_L) terms require local iteration. Cross-clade DTS
+    terms use children from earlier waves (already fixed).
+    """
+    C = int(ccp_helpers['C'])
+    S = int(species_helpers['S'])
+
+    split_leftrights = ccp_helpers['split_leftrights_sorted']
+    log_split_probs = ccp_helpers['log_split_probs_sorted'].unsqueeze(1).contiguous()
+    N_splits = ccp_helpers['N_splits']
+    sp_P_idx = species_helpers['s_P_indexes']
+    sp_c12_idx = species_helpers['s_C12_indexes']
+
+    clade_species_map = torch.full((C, S), NEG_INF, device=device, dtype=dtype)
+    clade_species_map[leaf_row_index.to(device), leaf_col_index.to(device)] = 0.0
+
+    Pi = torch.full((C, S), -math.log2(10.0), dtype=dtype, device=device)
+    Pi[leaf_row_index.to(device), leaf_col_index.to(device)] = 0.0
+    Pibar = torch.full((C, S), NEG_INF, dtype=dtype, device=device)
+
+    split_parents = ccp_helpers.get('split_parents_sorted', None)
+    if split_parents is None:
+        split_parents = _reconstruct_split_parents(ccp_helpers)
+
+    lefts = split_leftrights[:N_splits]
+    rights = split_leftrights[N_splits:]
+
+    # --- Precompute per-wave data as tensors (no Python dicts in hot loop) ---
+    parent_to_splits = {}
+    for i in range(N_splits):
+        p = int(split_parents[i].item())
+        parent_to_splits.setdefault(p, []).append(i)
+
+    # Precompute constant DTS_L terms (species-level, don't change across iterations)
+    DL_const = 1.0 + log_pD + E           # [S] — log_2 + log_pD + E
+    SL1_const = log_pS + E_s2             # [S]
+    SL2_const = log_pS + E_s1             # [S]
+    # log_pS + clade_species_map is per-clade but constant
+    leaf_term = log_pS + clade_species_map  # [C, S]
+
+    # Precompute direct species-tree child indices for fast gather
+    # sp_child1[e] = species index of child1 of species node e (or S for leaves)
+    # sp_child2[e] = species index of child2 of species node e (or S for leaves)
+    sp_child1 = torch.full((S,), S, dtype=torch.long, device=device)
+    sp_child2 = torch.full((S,), S, dtype=torch.long, device=device)
+    for i in range(len(sp_P_idx)):
+        p = int(sp_P_idx[i].item())
+        c = int(sp_c12_idx[i].item())
+        if p < S:
+            sp_child1[p] = c
+        else:
+            sp_child2[p - S] = c
+
+    # Precompute per-wave: wave_ids tensor, split indices, DTS reduction mapping
+    wave_data = []
+    for wave_ids in waves:
+        if not wave_ids:
+            wave_data.append(None)
+            continue
+        wt = torch.tensor(wave_ids, dtype=torch.long, device=device)
+        W = len(wave_ids)
+
+        # Gather splits for this wave
+        wsids = []
+        for c in wave_ids:
+            if c in parent_to_splits:
+                wsids.extend(parent_to_splits[c])
+
+        if wsids:
+            wst = torch.tensor(wsids, dtype=torch.long, device=device)
+            n_ws = len(wsids)
+            sl = lefts[wst]
+            sr = rights[wst]
+            lr = torch.cat([sl, sr])
+            wlsp = log_split_probs[wst]
+            # Build reduction index: map each split -> wave-local clade index
+            wsp = split_parents[wst]  # parent clade id per split
+            # Create clade_id -> wave_local_index mapping
+            clade_to_wi = torch.empty(C, dtype=torch.long, device=device)
+            clade_to_wi[wt] = torch.arange(W, device=device)
+            reduce_idx = clade_to_wi[wsp]  # [n_ws] -> wave-local index
+            wave_data.append((wt, W, True, wst, n_ws, sl, sr, lr, wlsp, reduce_idx))
+        else:
+            wave_data.append((wt, W, False, None, 0, None, None, None, None, None))
+
+    total_iters = 0
+    transfer_mat_T = transfer_mat.T.contiguous()
+    mt_squeezed = max_transfer_mat.squeeze(-1)
+
+    # Pre-allocate padded Pi buffer for species-child gathering (avoids per-iter cat)
+    max_wave_size = max((len(w) for w in waves if w), default=0)
+    Pi_pad_buf = torch.full((max_wave_size, S + 1), NEG_INF, device=device, dtype=dtype)
+
+    # Precompute DTS cross-clade terms once per wave (they don't change during local iteration)
+    # since children are from earlier waves and already fixed.
+    # Only recompute DTS_L (self-loop) terms.
+
+    with _nvtx_range("Pi wave forward"):
+        for wd in wave_data:
+            if wd is None:
+                continue
+
+            wt, W, has_splits, wst, n_ws, sl, sr, lr, wlsp, reduce_idx = wd
+
+            # Compute DTS cross-clade terms ONCE (children are fixed)
+            if has_splits:
+                Pi_lr = Pi[lr]
+                Pi_left = Pi_lr[:n_ws]
+                Pi_right = Pi_lr[n_ws:]
+                Pibar_lr = Pibar[lr]
+                Pibar_left = Pibar_lr[:n_ws]
+                Pibar_right = Pibar_lr[n_ws:]
+
+                # Speciation: gather species-tree children for left/right
+                # Pad Pi_lr with a -inf column for leaf species nodes
+                neg_inf_col = torch.full((2 * n_ws, 1), NEG_INF, device=device, dtype=dtype)
+                Pi_lr_pad = torch.cat([Pi_lr, neg_inf_col], dim=1)  # [2*n_ws, S+1]
+                Pi_s1_lr = Pi_lr_pad[:, sp_child1]  # [2*n_ws, S]
+                Pi_s2_lr = Pi_lr_pad[:, sp_child2]  # [2*n_ws, S]
+
+                # 5 DTS terms -> logsumexp
+                DTS = torch.empty((5, n_ws, S), device=device, dtype=dtype)
+                DTS[0] = log_pD + Pi_left + Pi_right
+                DTS[1] = Pi_left + Pibar_right
+                DTS[2] = Pi_right + Pibar_left
+                DTS[3] = log_pS + Pi_s1_lr[:n_ws] + Pi_s2_lr[n_ws:]
+                DTS[4] = log_pS + Pi_s1_lr[n_ws:] + Pi_s2_lr[:n_ws]
+                DTS_term = wlsp + logsumexp2(DTS, dim=0)  # [n_ws, S]
+
+                # Vectorized scatter-logsumexp: splits -> clades
+                reduce_exp = reduce_idx.unsqueeze(1).expand_as(DTS_term)
+                DTS_reduced = torch.full((W, S), NEG_INF, device=device, dtype=dtype)
+                DTS_reduced.scatter_reduce_(0, reduce_exp, DTS_term, reduce='amax', include_self=True)
+                DTS_max = DTS_reduced.clone()
+                DTS_exp = torch.exp2(DTS_term - DTS_max[reduce_idx])
+                DTS_sum = torch.zeros((W, S), device=device, dtype=dtype)
+                DTS_sum.scatter_add_(0, reduce_exp, DTS_exp)
+                DTS_reduced = torch.log2(DTS_sum) + DTS_max
+
+            leaf_wt = leaf_term[wt].contiguous()  # [W, S] — constant for this wave
+            dts_r = DTS_reduced if has_splits else None
+
+            for local_iter in range(local_iters):
+                total_iters += 1
+
+                # Pibar for this wave (inline matmul — can't fuse into Triton easily)
+                Pi_W = Pi[wt]
+                Pi_max = Pi_W.max(dim=1, keepdim=True).values
+                Pibar_W = torch.log2(torch.exp2(Pi_W - Pi_max) @ transfer_mat_T) + Pi_max + mt_squeezed
+                Pibar[wt] = Pibar_W
+
+                # Fused kernel: gather species children + compute all terms + logsumexp
+                Pi_new = wave_step_fused(
+                    Pi_W.contiguous(), Pibar_W.contiguous(),
+                    DL_const, Ebar, E, SL1_const, SL2_const,
+                    sp_child1, sp_child2, leaf_wt, dts_r,
+                )
+
+                # Check convergence every 4 iterations to reduce GPU syncs
+                if local_iter > 0 and (local_iter % 4 == 0 or local_iter == local_iters - 1):
+                    if torch.abs(Pi_new - Pi[wt]).max().item() < local_tolerance:
+                        Pi[wt] = Pi_new
+                        break
+
+                Pi[wt] = Pi_new
+
+    return {'Pi': Pi, 'clade_species_map': clade_species_map, 'iterations': total_iters}
+
+
+def _reconstruct_split_parents(ccp_helpers):
+    """Reconstruct split_parents_sorted from seg_parent_ids and segment structure."""
+    seg_parent_ids = ccp_helpers['seg_parent_ids']
+    num_ge2 = int(ccp_helpers['num_segs_ge2'])
+    num_eq1 = int(ccp_helpers['num_segs_eq1'])
+    end_rows_ge2 = int(ccp_helpers['end_rows_ge2'])
+    ptr_ge2 = ccp_helpers['ptr_ge2']
+    N_splits = int(ccp_helpers['N_splits'])
+
+    split_parents = torch.empty(N_splits, dtype=torch.long, device=seg_parent_ids.device)
+
+    # >=2 splits per clade
+    for i in range(num_ge2):
+        start = int(ptr_ge2[i].item())
+        end = int(ptr_ge2[i + 1].item())
+        parent_id = seg_parent_ids[i]
+        split_parents[start:end] = parent_id
+
+    # =1 split per clade
+    for i in range(num_eq1):
+        row = end_rows_ge2 + i
+        parent_id = seg_parent_ids[num_ge2 + i]
+        split_parents[row] = parent_id
+
+    return split_parents
+
+
+def compute_gradient_bounds(
+    Pi,
+    ccp_helpers,
+    root_clade_idx,
+    threshold=-20.0,
+):
+    """Compute gradient bounds for pruning clades from the backward pass (Phase D).
+
+    After the forward pass, propagates gradient bounds from the root downward
+    in reverse topological order. Clades with bound below threshold can be
+    excluded from the backward pass with bounded error.
+
+    Args:
+        Pi: [C, S] log2-space, converged Pi values
+        ccp_helpers: dict with split information
+        root_clade_idx: int or Long tensor, root clade index(es)
+        threshold: log2-space threshold for pruning
+
+    Returns:
+        grad_bound: [C] float32, upper bound on gradient magnitude per clade
+        pruned_mask: [C] bool, True for clades that can be pruned
+    """
+    C = Pi.shape[0]
+    N_splits = int(ccp_helpers['N_splits'])
+    split_leftrights = ccp_helpers['split_leftrights_sorted']
+    lefts = split_leftrights[:N_splits]
+    rights = split_leftrights[N_splits:]
+
+    # Clade scores: max_e Pi[gamma, e]
+    s = Pi.max(dim=1).values  # [C]
+
+    # Reconstruct split parents
+    split_parents = ccp_helpers.get('split_parents_sorted', None)
+    if split_parents is None:
+        split_parents = _reconstruct_split_parents(ccp_helpers)
+
+    # Initialize gradient bounds
+    grad_bound = torch.full((C,), NEG_INF, device=Pi.device, dtype=Pi.dtype)
+    if isinstance(root_clade_idx, int):
+        grad_bound[root_clade_idx] = 0.0
+    else:
+        grad_bound[root_clade_idx] = 0.0
+
+    # Build child->parent mapping for reverse traversal
+    # Process splits in reverse order (parents before children in reverse topo)
+    for i in range(N_splits):
+        p = int(split_parents[i].item()) if torch.is_tensor(split_parents[i]) else int(split_parents[i])
+        l = int(lefts[i].item()) if torch.is_tensor(lefts[i]) else int(lefts[i])
+        r = int(rights[i].item()) if torch.is_tensor(rights[i]) else int(rights[i])
+
+        if grad_bound[p].item() < threshold:
+            continue  # parent is pruned, skip subtree
+
+        # grad_bound[child] = logsumexp(grad_bound[child], grad_bound[parent] + s[sibling])
+        gb_p = grad_bound[p].item()
+        s_l = s[l].item()
+        s_r = s[r].item()
+
+        new_l = gb_p + s_r
+        new_r = gb_p + s_l
+
+        grad_bound[l] = torch.tensor(new_l).logaddexp(grad_bound[l].cpu()).to(Pi.device) if grad_bound[l].item() != NEG_INF else torch.tensor(new_l, device=Pi.device)
+        grad_bound[r] = torch.tensor(new_r).logaddexp(grad_bound[r].cpu()).to(Pi.device) if grad_bound[r].item() != NEG_INF else torch.tensor(new_r, device=Pi.device)
+
+    pruned_mask = grad_bound < threshold
+    return grad_bound, pruned_mask
+
+
 def compute_log_likelihood(Pi, E, root_clade_idx):
     """Computes log-likelihood in a batched way over the number
     of gene families.
-    Output has shape len(root_clade_idx)"""
+    Output has shape len(root_clade_idx).
+    Result is in log2 units (bits)."""
 
     # This will broadcast if root_clade_idx has shape [N_gene_trees]
     root_probs = Pi[root_clade_idx, :]
-    #print(f"root_probs: {root_probs}")
-    # print(f"Pi: {torch.exp(Pi).sum(dim=-1)}")
-    # We remove log(|S|) because we assume a uniform prior over the root species
-    # The logsumexp will still work if root_probs has shape [N_gene_trees, S]
-    numerator = torch.logsumexp(root_probs, dim=-1) - math.log(Pi.shape[-1])
-    #print(f"numerator: {numerator}")
+    # We remove log2(|S|) because we assume a uniform prior over the root species
+    numerator = logsumexp2(root_probs, dim=-1) - math.log2(Pi.shape[-1])
     # Will still work if E has shape [N_gene_trees, S]
-    denominator = torch.log((1-torch.exp(E).mean(dim=-1)))
-    #print(f"denominator: {denominator}")
-    # result is either a scalar or has shape [N_gene_trees]
-    # We can sum over it or use mean() if we want to jointly optimize multiple gene trees
-    #print(f"result: {numerator - denominator}")
-    # print("Warning: I don't know why likelihood is different from ALE." \
-    # "The ALE loglikelihood if p_S=1 is equal to the log of the number of possible root splits, but" \
-    #     "it should be equal to log(n_root_splits) + log(n_sp_branches) according to the formula in the " \
-    #     "paper?")
-    # To verify.
+    denominator = torch.log2((1-torch.exp2(E).mean(dim=-1)))
     return -(numerator - denominator)
