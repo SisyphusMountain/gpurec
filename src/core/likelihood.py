@@ -629,42 +629,40 @@ def Pi_wave_forward(
     # Large S (>256): global sweeps — cuBLAS for Pibar, Triton for DTS_L only
     use_global_pibar = (S > 256)
 
+    # Precompute global DTS reduction mapping (all splits -> all clades)
+    # This avoids per-wave Python loops in the hot path
+    all_split_lefts = lefts  # [N_splits]
+    all_split_rights = rights  # [N_splits]
+    all_lr = torch.cat([all_split_lefts, all_split_rights])  # [2*N_splits]
+    all_split_reduce_idx = split_parents.long()  # [N_splits] -> clade index
+
     with _nvtx_range("Pi wave forward"):
         if use_global_pibar:
-            # --- Large S: Gauss-Seidel sweeps with global cuBLAS Pibar ---
+            # --- Large S: Jacobi iterations with global ops (minimal kernel launches) ---
             Pi_prev = Pi.clone()
 
             for sweep in range(local_iters):
                 total_iters += 1
 
-                # Global Pibar via cuBLAS (fast for large S)
+                # 1. Global Pibar via cuBLAS
                 Pi_max = Pi.max(dim=1, keepdim=True).values
                 Pibar = torch.log2(torch.exp2(Pi - Pi_max) @ transfer_mat_T) + Pi_max + mt_squeezed
 
-                for wi, wd in enumerate(wave_data):
-                    if wd is None:
-                        continue
-                    phase = phases[wi]
-                    wt, W, has_splits, wst, n_ws, sl, sr, lr, wlsp, reduce_idx = wd
-                    leaf_wt = wave_leaf_terms[wi]
+                # 2. Global DTS: compute ALL split terms at once
+                DTS_reduced = _compute_DTS_reduced_global(
+                    Pi, Pibar, all_split_lefts, all_split_rights, N_splits,
+                    S, C, log_pD, log_pS, sp_child1, sp_child2,
+                    log_split_probs, all_split_reduce_idx, device, dtype)
 
-                    if has_splits:
-                        dts_r = _compute_DTS_reduced(
-                            Pi, Pibar, lr, n_ws, S, W, log_pD, log_pS,
-                            sp_child1, sp_child2, wlsp, reduce_idx, device, dtype)
-                    else:
-                        dts_r = None
+                # 3. Global DTS_L: one kernel launch for ALL clades
+                Pi_new = wave_step_fused(
+                    Pi, Pibar,
+                    DL_const, Ebar, E, SL1_const, SL2_const,
+                    sp_child1, sp_child2, leaf_term, DTS_reduced,
+                )
+                Pi = Pi_new
 
-                    Pi_W = Pi[wt].contiguous()
-                    Pibar_W = Pibar[wt].contiguous()
-                    Pi_new = wave_step_fused(
-                        Pi_W, Pibar_W,
-                        DL_const, Ebar, E, SL1_const, SL2_const,
-                        sp_child1, sp_child2, leaf_wt, dts_r,
-                    )
-                    Pi[wt] = Pi_new
-
-                # Check global convergence every 8 sweeps
+                # Check convergence every 8 sweeps
                 if sweep > 0 and sweep % 8 == 0:
                     delta = torch.abs(Pi - Pi_prev).max().item()
                     Pi_prev.copy_(Pi)
@@ -732,6 +730,38 @@ def _compute_DTS_reduced(Pi, Pibar, lr, n_ws, S, W, log_pD, log_pS,
     DTS_max = DTS_reduced.clone()
     DTS_sum = torch.zeros((W, S), device=device, dtype=dtype)
     DTS_sum.scatter_add_(0, reduce_exp, torch.exp2(DTS_term - DTS_max[reduce_idx]))
+    return torch.log2(DTS_sum) + DTS_max
+
+
+def _compute_DTS_reduced_global(Pi, Pibar, all_lefts, all_rights, N_splits,
+                                 S, C, log_pD, log_pS, sp_child1, sp_child2,
+                                 log_split_probs, split_parent_ids, device, dtype):
+    """Compute DTS for ALL splits at once and reduce to per-clade [C, S]."""
+    Pi_l = Pi[all_lefts]     # [N_splits, S]
+    Pi_r = Pi[all_rights]    # [N_splits, S]
+    Pibar_l = Pibar[all_lefts]
+    Pibar_r = Pibar[all_rights]
+
+    # Pad with -inf column for species-tree leaf children (index S)
+    neg_inf_col = torch.full((N_splits, 1), NEG_INF, device=device, dtype=dtype)
+    Pi_l_pad = torch.cat([Pi_l, neg_inf_col], dim=1)  # [N, S+1]
+    Pi_r_pad = torch.cat([Pi_r, neg_inf_col], dim=1)
+
+    DTS = torch.empty((5, N_splits, S), device=device, dtype=dtype)
+    DTS[0] = log_pD + Pi_l + Pi_r                                    # D
+    DTS[1] = Pi_l + Pibar_r                                          # T (l->r)
+    DTS[2] = Pi_r + Pibar_l                                          # T (r->l)
+    DTS[3] = log_pS + Pi_l_pad[:, sp_child1] + Pi_r_pad[:, sp_child2]  # S
+    DTS[4] = log_pS + Pi_r_pad[:, sp_child1] + Pi_l_pad[:, sp_child2]  # S (swapped)
+    DTS_term = log_split_probs + logsumexp2(DTS, dim=0)  # [N_splits, S]
+
+    # Reduce to [C, S] via scatter logsumexp
+    reduce_idx = split_parent_ids.unsqueeze(1).expand_as(DTS_term)  # [N_splits, S]
+    DTS_reduced = torch.full((C, S), NEG_INF, device=device, dtype=dtype)
+    DTS_reduced.scatter_reduce_(0, reduce_idx, DTS_term, reduce='amax', include_self=True)
+    DTS_max = DTS_reduced.clone()
+    DTS_sum = torch.zeros((C, S), device=device, dtype=dtype)
+    DTS_sum.scatter_add_(0, reduce_idx, torch.exp2(DTS_term - DTS_max[split_parent_ids]))
     return torch.log2(DTS_sum) + DTS_max
 
 
