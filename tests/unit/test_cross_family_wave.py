@@ -22,6 +22,7 @@ from src.core.likelihood import (
 )
 from src.core.scheduling import compute_clade_waves
 from src.core.batching import collate_gene_families, collate_wave
+from src.core.model import GeneDataset
 
 _INV = 1.0 / math.log(2.0)
 _ROOT = Path(__file__).resolve().parent.parent
@@ -492,4 +493,31 @@ def test_batched_wave_vs_fp_100_families_small_s(cpp_ext):
         assert diffs[i] < LOGL_ATOL, (
             f"Family {i}: FP={logLs_fp[i]:.6f}, wave={logLs_wv[i]:.6f}, "
             f"diff={diffs[i]:.2e}"
+        )
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+def test_model_api_wave_vs_sequential(cpp_ext):
+    """End-to-end: GeneDataset.compute_likelihood_batch wave matches per-family."""
+    data_dir = _ROOT / "data" / "test_trees_1000"
+    if not data_dir.exists():
+        pytest.skip("test_trees_1000 not found")
+
+    sp = str(data_dir / "sp.nwk")
+    genes = [str(g) for g in sorted(data_dir.glob("g_*.nwk"))[:10]]
+
+    ds = GeneDataset(sp, genes, genewise=False, specieswise=False, pairwise=False,
+                     dtype=torch.float32, device=torch.device("cuda"))
+
+    # Wave batched
+    logLs_wv = ds.compute_likelihood_batch(use_wave=True, tol_Pi=TOL)
+    # Per-family (uses FP internally)
+    logLs_seq = [ds.compute_likelihood(i, tol_Pi=TOL)["log_likelihood"]
+                 for i in range(len(genes))]
+
+    for i in range(len(genes)):
+        assert math.isfinite(logLs_wv[i]), f"Wave family {i}: logL={logLs_wv[i]}"
+        assert abs(logLs_wv[i] - logLs_seq[i]) < LOGL_ATOL, (
+            f"Family {i}: wave={logLs_wv[i]:.4f}, seq={logLs_seq[i]:.4f}, "
+            f"diff={abs(logLs_wv[i] - logLs_seq[i]):.2e}"
         )
