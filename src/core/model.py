@@ -218,16 +218,15 @@ class GeneDataset(Dataset):
         device: torch.device | None = None,
         dtype: torch.dtype | None = None,
         use_wave: bool = False,
+        chunk_size: int | None = None,
     ) -> list[float]:
         """Compute log-likelihoods for a batch of gene families.
 
         Returns a list of per-family log-likelihoods, in the same order as `indices`.
 
-        Notes/limits:
-        - Currently supports shared-parameter (genewise=False) batched Pi. If `self.genewise`
-          is True (distinct theta per family), E needs to be computed per family and Pi_step's
-          genewise path requires additional batching pointers. Until that path is finalized,
-          this method will fall back to per-family computation in that case.
+        Args:
+            chunk_size: If set, process families in chunks of this size to avoid OOM.
+                Only applies to the wave path. Recommended: 20 for S~2000.
         """
         if device is None:
             device = self.device
@@ -238,6 +237,20 @@ class GeneDataset(Dataset):
             indices = list(range(len(self.families)))
         if len(indices) == 0:
             return []
+
+        # Handle chunking: split large batches to avoid OOM
+        if chunk_size is not None and use_wave and len(indices) > chunk_size:
+            all_logLs = []
+            for start in range(0, len(indices), chunk_size):
+                chunk_indices = indices[start:start + chunk_size]
+                all_logLs.extend(self.compute_likelihood_batch(
+                    chunk_indices,
+                    max_iters_E=max_iters_E, tol_E=tol_E,
+                    max_iters_Pi=max_iters_Pi, tol_Pi=tol_Pi,
+                    device=device, dtype=dtype,
+                    use_wave=use_wave,
+                ))
+            return all_logLs
 
         # Build batch items compatible with collate_gene_families
         batch_items = []
