@@ -521,3 +521,114 @@ def test_model_api_wave_vs_sequential(cpp_ext):
             f"Family {i}: wave={logLs_wv[i]:.4f}, seq={logLs_seq[i]:.4f}, "
             f"diff={abs(logLs_wv[i] - logLs_seq[i]):.2e}"
         )
+
+
+# ------------------------------------------------------------------
+# ALeRax comparison tests
+# ------------------------------------------------------------------
+
+# ALeRax reference data: (dataset, gene_tree, output_dir, D, L, T, alerax_logL_nats)
+_ALERAX_REFS = [
+    ("test_trees_1", "g.nwk", "output", 1e-10, 1e-10, 1e-10, -2.56495),
+    ("test_trees_2", "g.nwk", "output", 1e-10, 1e-10, 0.0517229, -8.72486),
+    ("test_trees_3", "g.nwk", "output", 0.0555539, 1e-10, 1e-10, -6.75086),
+    ("test_mixed_200", "g.nwk", "output", 0.16103, 1e-10, 0.156391, -6215.73),
+]
+
+
+def _run_wave_single(ext, sp_path, gene_path, D_val, L_val, T_val, device, dtype):
+    """Run wave forward for a single family with given DTL params.
+
+    Returns (logL_nats, S) where logL_nats includes the uniform origination
+    prior 1/S and S is the number of species-tree nodes.
+    """
+    raw = ext.preprocess(sp_path, [str(gene_path)])
+    sr, cr = raw["species"], raw["ccp"]
+
+    sh = {
+        "S": int(sr["S"]),
+        "names": sr["names"],
+        "s_P_indexes": sr["s_P_indexes"].to(device=device),
+        "s_C12_indexes": sr["s_C12_indexes"].to(device=device),
+        "Recipients_mat": sr["Recipients_mat"].to(dtype=dtype, device=device),
+    }
+
+    ch = {k: (v.to(device) if torch.is_tensor(v) else v)
+          for k, v in cr.items()}
+    ch["log_split_probs_sorted"] = cr["log_split_probs_sorted"].to(dtype=dtype, device=device) * _INV
+
+    li = raw["leaf_row_index"].long().to(device)
+    lc = raw["leaf_col_index"].long().to(device)
+    root_id = int(cr["root_clade_id"])
+
+    theta = torch.log(torch.tensor([D_val, L_val, T_val], dtype=dtype, device=device))
+    tm = torch.log2(sh["Recipients_mat"])
+    pS, pD, pL, tf, mt = extract_parameters(
+        theta, tm, genewise=False, specieswise=False, pairwise=False
+    )
+    mv = mt.squeeze(-1) if mt.ndim == 2 else mt
+
+    Eo = E_fixed_point(
+        species_helpers=sh, log_pS=pS, log_pD=pD, log_pL=pL,
+        transfer_mat=tf, max_transfer_mat=mv, max_iters=2000,
+        tolerance=1e-12, warm_start_E=None, dtype=dtype, device=device,
+    )
+
+    waves, phases = compute_clade_waves(ch)
+    wv = Pi_wave_forward(
+        waves=waves, ccp_helpers=ch, species_helpers=sh,
+        leaf_row_index=li, leaf_col_index=lc,
+        E=Eo["E"], Ebar=Eo["E_bar"], E_s1=Eo["E_s1"], E_s2=Eo["E_s2"],
+        log_pS=pS, log_pD=pD, log_pL=pL,
+        transfer_mat=tf, max_transfer_mat=mv,
+        device=device, dtype=dtype, phases=phases,
+        local_iters=2000, local_tolerance=1e-6,
+    )
+
+    logL_bits = float(compute_log_likelihood(wv["Pi"], Eo["E"], root_id))
+    # Convert from log2 (bits) to nats: gpurec returns -logL in bits
+    # ALeRax reports logL in nats (negative)
+    LN2 = math.log(2.0)
+    logL_nats = -logL_bits * LN2
+    return logL_nats, sh["S"]
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+@pytest.mark.parametrize("ref", _ALERAX_REFS,
+                         ids=[r[0] for r in _ALERAX_REFS])
+def test_wave_matches_alerax(cpp_ext, ref):
+    """Wave forward matches ALeRax per-family likelihood at ALeRax's optimized parameters.
+
+    ALeRax 1.3.0 per_fam_likelihoods.txt omits the uniform origination prior
+    1/S from per-family log-likelihoods, while our compute_log_likelihood
+    includes it as -log2(S). We correct for this by adding ln(S) to our
+    result before comparison.
+    """
+    ds_name, gene_file, out_dir, D_val, L_val, T_val, alerax_nats = ref
+    device = torch.device("cuda")
+    dtype = torch.float32  # Triton kernels require float32
+
+    data_dir = _ROOT / "data" / ds_name
+    if not data_dir.exists():
+        pytest.skip(f"{ds_name} not found")
+
+    sp_path = str(data_dir / "sp.nwk")
+    gene_path = str(data_dir / gene_file)
+
+    wave_nats, S = _run_wave_single(
+        cpp_ext, sp_path, gene_path, D_val, L_val, T_val, device, dtype
+    )
+
+    # ALeRax 1.3.0 omits the 1/S origination prior from per-family reporting.
+    # Our formula includes -log2(S) in bits = -ln(S) in nats. Add it back.
+    wave_nats_no_orig = wave_nats + math.log(S)
+
+    diff = abs(wave_nats_no_orig - alerax_nats)
+    print(f"\n  {ds_name} (S={S}): ALeRax={alerax_nats:.5f}, "
+          f"wave={wave_nats:.5f}, wave(no orig)={wave_nats_no_orig:.5f}, "
+          f"diff={diff:.2e}")
+
+    # ALeRax likelihoods are reported to ~5 decimal places
+    assert diff < 0.05, (
+        f"{ds_name}: ALeRax={alerax_nats}, wave(no orig)={wave_nats_no_orig}, diff={diff:.2e}"
+    )
