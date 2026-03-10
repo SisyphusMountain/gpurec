@@ -2,7 +2,7 @@
 
 Validates that processing N families in a single batched Pi_wave_forward call
 produces the same per-family log-likelihoods as processing each family
-individually.
+individually, and matches batched fixed-point iteration.
 """
 
 import math
@@ -39,7 +39,6 @@ def _preprocess_family_raw(ext, sp_path, gene_path, device, dtype):
     """Preprocess one family, return raw dict (for collation) + helpers."""
     raw = ext.preprocess(sp_path, [str(gene_path)])
     sr, cr = raw["species"], raw["ccp"]
-    S = int(sr["S"])
     C = int(cr["C"])
 
     ch = {
@@ -52,8 +51,9 @@ def _preprocess_family_raw(ext, sp_path, gene_path, device, dtype):
         "end_rows_ge2": int(cr["end_rows_ge2"]),
         "C": C,
         "N_splits": int(cr["N_splits"]),
-        "split_parents_sorted": cr["split_parents_sorted"],
     }
+    if "split_parents_sorted" in cr:
+        ch["split_parents_sorted"] = cr["split_parents_sorted"]
     if "phased_waves" in cr:
         ch["phased_waves"] = cr["phased_waves"]
         ch["phased_phases"] = cr["phased_phases"]
@@ -181,6 +181,30 @@ def _run_batched_wave(batch_items, sh, pS, pD, pL, tf, mv, Eo, device, dtype,
     return logLs
 
 
+def _run_per_family_fp(batch_items, sh, pS, pD, pL, tf, mv, Eo, device, dtype):
+    """Run Pi_fixed_point on each family individually, return per-family logL."""
+    logLs = []
+    for item in batch_items:
+        ch_dev = {k: (v.to(device) if torch.is_tensor(v) else v)
+                  for k, v in item["ccp"].items()}
+        li = item["leaf_row_index"].to(device)
+        lc = item["leaf_col_index"].to(device)
+        root_id = item["root_clade_id"]
+
+        fp_out = Pi_fixed_point(
+            ccp_helpers=ch_dev, species_helpers=sh,
+            leaf_row_index=li, leaf_col_index=lc,
+            E=Eo["E"], Ebar=Eo["E_bar"], E_s1=Eo["E_s1"], E_s2=Eo["E_s2"],
+            log_pS=pS, log_pD=pD, log_pL=pL,
+            transfer_mat_T=tf.T.contiguous(), max_transfer_mat=mv,
+            max_iters=2000, tolerance=TOL,
+            warm_start_Pi=None, device=device, dtype=dtype,
+        )
+        lL = float(compute_log_likelihood(fp_out["Pi"], Eo["E"], root_id))
+        logLs.append(lL)
+    return logLs
+
+
 # ------------------------------------------------------------------
 # Tests
 # ------------------------------------------------------------------
@@ -273,7 +297,6 @@ def test_batched_wave_100_families_large_s(cpp_ext):
     )
 
     # Sanity: all log-likelihoods should be finite
-    # (values are in log2 space, so they can be positive)
     for i, lL in enumerate(logLs_batched):
         assert math.isfinite(lL), f"Family {i}: logL={lL} is not finite"
 
@@ -338,8 +361,8 @@ def test_batched_wave_timing_large_s(cpp_ext):
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
-def test_batched_wave_vs_batched_fp_large_s(cpp_ext):
-    """Batched wave vs batched FP (both use collated data)."""
+def test_batched_wave_vs_sequential_fp_large_s(cpp_ext):
+    """Batched wave vs sequential per-family FP (large S)."""
     device = torch.device("cuda")
     dtype = torch.float32
     n_fam = 10
@@ -353,27 +376,120 @@ def test_batched_wave_vs_batched_fp_large_s(cpp_ext):
         batch_items, sh, pS, pD, pL, tf, mv, Eo, device, dtype
     )
 
-    # Batched FP (via collate + Pi_fixed_point)
-    batched = collate_gene_families(batch_items, dtype=dtype, device=device)
-    ccp = batched["ccp"]
-    li = batched["leaf_row_index"]
-    lc = batched["leaf_col_index"]
-    root_ids = batched["root_clade_ids"]
-
-    fp_out = Pi_fixed_point(
-        ccp_helpers=ccp, species_helpers=sh,
-        leaf_row_index=li, leaf_col_index=lc,
-        E=Eo["E"], Ebar=Eo["E_bar"], E_s1=Eo["E_s1"], E_s2=Eo["E_s2"],
-        log_pS=pS, log_pD=pD, log_pL=pL,
-        transfer_mat_T=tf.T.contiguous(), max_transfer_mat=mv,
-        max_iters=2000, tolerance=TOL,
-        warm_start_Pi=None, device=device, dtype=dtype,
+    # Sequential per-family FP
+    logLs_fp = _run_per_family_fp(
+        batch_items, sh, pS, pD, pL, tf, mv, Eo, device, dtype
     )
-    logL_fp_vec = compute_log_likelihood(fp_out["Pi"], Eo["E"], root_ids)
-    logLs_fp = [float(x) for x in logL_fp_vec]
 
     for i in range(n_fam):
         assert abs(logLs_fp[i] - logLs_wv[i]) < LOGL_ATOL, (
             f"Family {i}: FP={logLs_fp[i]:.6f}, wave={logLs_wv[i]:.6f}, "
             f"diff={abs(logLs_fp[i] - logLs_wv[i]):.2e}"
+        )
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+def test_batched_wave_vs_fp_100_families_large_s(cpp_ext):
+    """Large-scale: 100 families (S=1999), batched wave vs sequential per-family FP.
+
+    Batched wave processes all families in cross-family waves (chunks of 20).
+    Spot-checks 10 families against per-family FP, validates all 100 are finite.
+    """
+    device = torch.device("cuda")
+    dtype = torch.float32
+    n_fam = 100
+    n_spot = 10  # spot-check this many against FP
+
+    batch_items, sh, pS, pD, pL, tf, mv, Eo = _load_families(
+        "test_trees_1000", n_fam, cpp_ext, device, dtype
+    )
+
+    # Batched wave (chunks of 20)
+    logLs_wv = _run_batched_wave(
+        batch_items, sh, pS, pD, pL, tf, mv, Eo, device, dtype,
+        chunk_size=20,
+    )
+
+    # All should be finite
+    for i in range(n_fam):
+        assert math.isfinite(logLs_wv[i]), f"Wave family {i}: logL={logLs_wv[i]}"
+
+    # Spot-check first n_spot families against sequential per-family FP
+    logLs_fp = _run_per_family_fp(
+        batch_items[:n_spot], sh, pS, pD, pL, tf, mv, Eo, device, dtype
+    )
+
+    diffs = [abs(logLs_fp[i] - logLs_wv[i]) for i in range(n_spot)]
+    max_diff = max(diffs)
+    mean_diff = sum(diffs) / len(diffs)
+    worst_idx = diffs.index(max_diff)
+
+    print(f"\n  {n_fam} families batched wave, {n_spot} spot-checked vs FP:")
+    print(f"    Mean diff: {mean_diff:.2e}")
+    print(f"    Max diff:  {max_diff:.2e} (family {worst_idx})")
+    print(f"    FP[{worst_idx}]={logLs_fp[worst_idx]:.4f}, "
+          f"wave[{worst_idx}]={logLs_wv[worst_idx]:.4f}")
+
+    for i in range(n_spot):
+        assert diffs[i] < LOGL_ATOL, (
+            f"Family {i}: FP={logLs_fp[i]:.6f}, wave={logLs_wv[i]:.6f}, "
+            f"diff={diffs[i]:.2e}"
+        )
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+def test_batched_wave_vs_fp_small_s_20_families(cpp_ext):
+    """Small S: 20 families batched wave vs sequential per-family FP."""
+    device = torch.device("cuda")
+    dtype = torch.float32
+
+    batch_items, sh, pS, pD, pL, tf, mv, Eo = _load_families(
+        "test_trees_20", 20, cpp_ext, device, dtype
+    )
+
+    logLs_wv = _run_batched_wave(
+        batch_items, sh, pS, pD, pL, tf, mv, Eo, device, dtype
+    )
+    logLs_fp = _run_per_family_fp(
+        batch_items, sh, pS, pD, pL, tf, mv, Eo, device, dtype
+    )
+
+    for i in range(len(batch_items)):
+        assert math.isfinite(logLs_wv[i]), f"Wave family {i}: logL={logLs_wv[i]}"
+        assert abs(logLs_fp[i] - logLs_wv[i]) < LOGL_ATOL, (
+            f"Family {i}: FP={logLs_fp[i]:.6f}, wave={logLs_wv[i]:.6f}, "
+            f"diff={abs(logLs_fp[i] - logLs_wv[i]):.2e}"
+        )
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+def test_batched_wave_vs_fp_100_families_small_s(cpp_ext):
+    """100 families from test_trees_100 (small S), wave vs per-family FP."""
+    device = torch.device("cuda")
+    dtype = torch.float32
+
+    batch_items, sh, pS, pD, pL, tf, mv, Eo = _load_families(
+        "test_trees_100", 100, cpp_ext, device, dtype
+    )
+
+    logLs_wv = _run_batched_wave(
+        batch_items, sh, pS, pD, pL, tf, mv, Eo, device, dtype,
+        chunk_size=50,
+    )
+    logLs_fp = _run_per_family_fp(
+        batch_items, sh, pS, pD, pL, tf, mv, Eo, device, dtype
+    )
+
+    diffs = [abs(logLs_fp[i] - logLs_wv[i]) for i in range(len(batch_items))]
+    max_diff = max(diffs)
+    mean_diff = sum(diffs) / len(diffs)
+    print(f"\n  100 families (small S), wave vs FP:")
+    print(f"    Mean diff: {mean_diff:.2e}")
+    print(f"    Max diff:  {max_diff:.2e}")
+
+    for i in range(len(batch_items)):
+        assert math.isfinite(logLs_wv[i]), f"Wave family {i}: logL={logLs_wv[i]}"
+        assert diffs[i] < LOGL_ATOL, (
+            f"Family {i}: FP={logLs_fp[i]:.6f}, wave={logLs_wv[i]:.6f}, "
+            f"diff={diffs[i]:.2e}"
         )
