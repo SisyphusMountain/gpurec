@@ -109,6 +109,7 @@ class GeneDataset(Dataset):
         tol_Pi: float = 1e-6,
         device: torch.device | None = None,
         dtype: torch.dtype | None = None,
+        use_wave: bool = False,
     ) -> dict:
         """Compute log-likelihood for a dataset element at `idx`.
 
@@ -171,32 +172,40 @@ class GeneDataset(Dataset):
         E_s1 = E_out['E_s1']
         E_s2 = E_out['E_s2']
         Ebar = E_out['E_bar']
-        # Pi fixed point
-        Pi_out = Pi_fixed_point(
-            ccp_helpers=ccp_helpers,
-            species_helpers=species_helpers,
-            leaf_row_index=leaf_row_index,
-            leaf_col_index=leaf_col_index,
-            E=E,
-            Ebar=Ebar,
-            E_s1=E_s1,
-            E_s2=E_s2,
-            log_pS=log_pS,
-            log_pD=log_pD,
-            log_pL=log_pL,
-            transfer_mat_T=transfer_mat.transpose(-1, -2),
-            max_transfer_mat=max_transfer_vec,
-            max_iters=max_iters_Pi,
-            tolerance=tol_Pi,
-            warm_start_Pi=None,
-            device=device,
-            dtype=dtype,
-            genewise=self.genewise,
-            specieswise=self.specieswise,
-            pairwise=self.pairwise,
-            clades_per_gene=None,
-            batch_info=None,
-        )
+        # Pi computation: wave-based or fixed-point
+        if use_wave:
+            waves, phases = compute_clade_waves(ccp_helpers)
+            Pi_out = Pi_wave_forward(
+                waves=waves,
+                ccp_helpers=ccp_helpers,
+                species_helpers=species_helpers,
+                leaf_row_index=leaf_row_index,
+                leaf_col_index=leaf_col_index,
+                E=E, Ebar=Ebar, E_s1=E_s1, E_s2=E_s2,
+                log_pS=log_pS, log_pD=log_pD, log_pL=log_pL,
+                transfer_mat=transfer_mat,
+                max_transfer_mat=max_transfer_vec,
+                device=device, dtype=dtype,
+                phases=phases,
+                local_iters=max_iters_Pi,
+                local_tolerance=tol_Pi,
+            )
+        else:
+            Pi_out = Pi_fixed_point(
+                ccp_helpers=ccp_helpers,
+                species_helpers=species_helpers,
+                leaf_row_index=leaf_row_index,
+                leaf_col_index=leaf_col_index,
+                E=E, Ebar=Ebar, E_s1=E_s1, E_s2=E_s2,
+                log_pS=log_pS, log_pD=log_pD, log_pL=log_pL,
+                transfer_mat_T=transfer_mat.transpose(-1, -2),
+                max_transfer_mat=max_transfer_vec,
+                max_iters=max_iters_Pi, tolerance=tol_Pi,
+                warm_start_Pi=None, device=device, dtype=dtype,
+                genewise=self.genewise, specieswise=self.specieswise,
+                pairwise=self.pairwise,
+                clades_per_gene=None, batch_info=None,
+            )
         Pi = Pi_out['Pi']
 
         root_clade_id = int(fam['root_clade_id'])
