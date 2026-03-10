@@ -729,6 +729,309 @@ def Pi_wave_forward(
     return {'Pi': Pi, 'clade_species_map': clade_species_map, 'iterations': total_iters}
 
 
+def _compute_dts_cross(Pi, Pibar, meta, sp_child1, sp_child2, log_pD, log_pS,
+                       S, device, dtype):
+    """Compute DTS cross-clade terms and reduce to [W, S] for one wave."""
+    sl = meta['sl']
+    sr = meta['sr']
+    wlsp = meta['log_split_probs']
+    reduce_idx = meta['reduce_idx']
+    W = meta['W']
+
+    dts_term = dts_fused(
+        Pi, Pibar, sl, sr,
+        sp_child1, sp_child2,
+        log_pD, log_pS, wlsp,
+    )  # [n_ws, S]
+    # Reduce to [W, S] via stable logsumexp scatter
+    reduce_exp = reduce_idx.unsqueeze(1).expand_as(dts_term)
+    dts_r = torch.full((W, S), NEG_INF, device=device, dtype=dtype)
+    dts_r.scatter_reduce_(0, reduce_exp, dts_term, reduce='amax', include_self=True)
+    dts_max = dts_r.clone()
+    dts_sum = torch.zeros((W, S), device=device, dtype=dtype)
+    dts_sum.scatter_add_(0, reduce_exp, torch.exp2(dts_term - dts_max[reduce_idx]))
+    return torch.log2(dts_sum) + dts_max
+
+
+def Pi_wave_forward_v2(
+    wave_layout,
+    species_helpers,
+    E,
+    Ebar,
+    E_s1,
+    E_s2,
+    log_pS,
+    log_pD,
+    log_pL,
+    transfer_mat,
+    max_transfer_mat,
+    device,
+    dtype,
+    *,
+    local_iters: int = 50,
+    local_tolerance: float = 1e-3,
+    fixed_iters: int | None = None,
+    overlap_streams: bool = False,
+):
+    """Wave-based Pi forward pass with wave-ordered layout (v2).
+
+    Clades are permuted so each wave occupies a contiguous block of Pi[ws:we].
+    The self-loop uses zero-copy views instead of gather/scatter.
+
+    Args:
+        wave_layout: dict from build_wave_layout() containing permuted indices
+                     and precomputed per-wave metadata
+        species_helpers: species tree helpers dict
+        E, Ebar, E_s1, E_s2: converged E vectors [S]
+        log_pS, log_pD, log_pL: event probabilities [S]
+        transfer_mat: [S, S] linear-space transfer matrix
+        max_transfer_mat: [S] log2-space column maxima
+        device, dtype: target device and float dtype
+        local_iters: max iterations per wave self-loop
+        local_tolerance: convergence threshold
+        fixed_iters: if set, use fixed iteration count (no convergence check / GPU sync)
+        overlap_streams: if True, overlap DTS preparation for wave k+1 with
+                         self-loop of wave k via a secondary CUDA stream
+
+    Returns:
+        dict with 'Pi' (in original clade order), 'clade_species_map', 'iterations'
+    """
+    ccp_helpers = wave_layout['ccp_helpers']
+    leaf_row_index = wave_layout['leaf_row_index']
+    leaf_col_index = wave_layout['leaf_col_index']
+    wave_metas = wave_layout['wave_metas']
+    wave_starts = wave_layout['wave_starts']
+
+    C = int(ccp_helpers['C'])
+    S = int(species_helpers['S'])
+
+    # Build clade_species_map in wave-ordered space
+    clade_species_map = torch.full((C, S), NEG_INF, device=device, dtype=dtype)
+    clade_species_map[leaf_row_index, leaf_col_index] = 0.0
+
+    _PI_INIT = torch.finfo(dtype).min
+    Pi = torch.full((C, S), _PI_INIT, dtype=dtype, device=device)
+    Pi[leaf_row_index, leaf_col_index] = 0.0
+    Pibar = torch.full((C, S), NEG_INF, dtype=dtype, device=device)
+
+    # Precompute species child indices
+    sp_P_idx = species_helpers['s_P_indexes']
+    sp_c12_idx = species_helpers['s_C12_indexes']
+    sp_child1 = torch.full((S,), S, dtype=torch.long, device=device)
+    sp_child2 = torch.full((S,), S, dtype=torch.long, device=device)
+    for i in range(len(sp_P_idx)):
+        p = int(sp_P_idx[i].item())
+        c = int(sp_c12_idx[i].item())
+        if p < S:
+            sp_child1[p] = c
+        else:
+            sp_child2[p - S] = c
+
+    # Precompute constant DTS_L terms
+    DL_const = 1.0 + log_pD + E           # [S]
+    SL1_const = log_pS + E_s2             # [S]
+    SL2_const = log_pS + E_s1             # [S]
+    leaf_term = log_pS + clade_species_map  # [C, S]
+
+    mt_squeezed = max_transfer_mat.squeeze(-1) if max_transfer_mat.ndim > 1 else max_transfer_mat
+    transfer_mat_T = transfer_mat.T.contiguous()
+    transfer_mat_c = transfer_mat.contiguous()
+
+    use_global_pibar = (S > 256)
+    n_waves = len(wave_metas)
+
+    # Determine iteration strategy
+    use_fixed = fixed_iters is not None
+    n_iters = fixed_iters if use_fixed else local_iters
+    min_warmup = 0 if use_fixed else 3
+
+    total_iters = 0
+
+    with _nvtx_range("Pi wave forward v2"):
+        if use_global_pibar:
+            prev_tf32 = torch.backends.cuda.matmul.allow_tf32
+            torch.backends.cuda.matmul.allow_tf32 = True
+
+            if overlap_streams and n_waves > 1:
+                # --- Stream-overlapped path ---
+                # DTS for wave k+1 is prepared on stream_prep while
+                # wave k's self-loop runs on the default stream.
+                stream_main = torch.cuda.current_stream(device)
+                stream_prep = torch.cuda.Stream(device=device)
+
+                # Prepare DTS for wave 0 on main stream (no overlap yet)
+                meta0 = wave_metas[0]
+                if meta0['has_splits']:
+                    dts_r_current = _compute_dts_cross(
+                        Pi, Pibar, meta0, sp_child1, sp_child2,
+                        log_pD, log_pS, S, device, dtype)
+                else:
+                    dts_r_current = None
+
+                # Pending DTS result for the next wave (computed on stream_prep)
+                dts_r_next = None
+                event_prep_done = None
+
+                for wi in range(n_waves):
+                    meta = wave_metas[wi]
+                    ws = meta['start']
+                    we = meta['end']
+                    W = meta['W']
+
+                    # Wait for any pending DTS prep from previous iteration
+                    if wi > 0 and event_prep_done is not None:
+                        stream_main.wait_event(event_prep_done)
+                        dts_r_current = dts_r_next
+                        dts_r_next = None
+
+                    dts_r = dts_r_current
+                    leaf_wt = leaf_term[ws:we]
+
+                    # Kick off DTS prep for wave wi+1 on stream_prep
+                    if wi + 1 < n_waves:
+                        meta_next = wave_metas[wi + 1]
+                        if meta_next['has_splits']:
+                            # Record event so stream_prep waits for wave wi's
+                            # self-loop to write converged Pi/Pibar values
+                            # that the next wave's DTS reads from.
+                            # We record AFTER the self-loop below.
+                            pass  # event recorded after self-loop
+
+                    # Self-loop
+                    for local_iter in range(n_iters):
+                        total_iters += 1
+                        Pi_W = Pi[ws:we]
+
+                        Pi_max = Pi_W.max(dim=1, keepdim=True).values
+                        Pibar_W = torch.log2(torch.exp2(Pi_W - Pi_max) @ transfer_mat_T) + Pi_max + mt_squeezed
+
+                        Pi_new = wave_step_fused(
+                            Pi_W, Pibar_W,
+                            DL_const, Ebar, E, SL1_const, SL2_const,
+                            sp_child1, sp_child2, leaf_wt, dts_r,
+                        )
+
+                        if not use_fixed and local_iter >= min_warmup:
+                            significant = Pi_new > -100.0
+                            if not significant.any() or torch.abs(Pi_new - Pi_W)[significant].max().item() < local_tolerance:
+                                Pi[ws:we] = Pi_new
+                                Pibar[ws:we] = Pibar_W
+                                break
+
+                        Pi[ws:we] = Pi_new
+                        Pibar[ws:we] = Pibar_W
+
+                    # Now that self-loop is done, launch DTS prep for next wave
+                    if wi + 1 < n_waves:
+                        meta_next = wave_metas[wi + 1]
+                        if meta_next['has_splits']:
+                            # Record event on main stream so prep stream
+                            # knows Pi/Pibar are ready
+                            event_self_done = torch.cuda.Event()
+                            event_self_done.record(stream_main)
+                            with torch.cuda.stream(stream_prep):
+                                stream_prep.wait_event(event_self_done)
+                                dts_r_next = _compute_dts_cross(
+                                    Pi, Pibar, meta_next, sp_child1, sp_child2,
+                                    log_pD, log_pS, S, device, dtype)
+                                event_prep_done = torch.cuda.Event()
+                                event_prep_done.record(stream_prep)
+                        else:
+                            dts_r_next = None
+                            event_prep_done = None
+            else:
+                # --- Non-overlapped path ---
+                for wi in range(n_waves):
+                    meta = wave_metas[wi]
+                    ws = meta['start']
+                    we = meta['end']
+                    W = meta['W']
+
+                    if meta['has_splits']:
+                        dts_r = _compute_dts_cross(
+                            Pi, Pibar, meta, sp_child1, sp_child2,
+                            log_pD, log_pS, S, device, dtype)
+                    else:
+                        dts_r = None
+
+                    leaf_wt = leaf_term[ws:we]
+
+                    for local_iter in range(n_iters):
+                        total_iters += 1
+                        Pi_W = Pi[ws:we]
+
+                        Pi_max = Pi_W.max(dim=1, keepdim=True).values
+                        Pibar_W = torch.log2(torch.exp2(Pi_W - Pi_max) @ transfer_mat_T) + Pi_max + mt_squeezed
+
+                        Pi_new = wave_step_fused(
+                            Pi_W, Pibar_W,
+                            DL_const, Ebar, E, SL1_const, SL2_const,
+                            sp_child1, sp_child2, leaf_wt, dts_r,
+                        )
+
+                        if not use_fixed and local_iter >= min_warmup:
+                            significant = Pi_new > -100.0
+                            if not significant.any() or torch.abs(Pi_new - Pi_W)[significant].max().item() < local_tolerance:
+                                Pi[ws:we] = Pi_new
+                                Pibar[ws:we] = Pibar_W
+                                break
+
+                        Pi[ws:we] = Pi_new
+                        Pibar[ws:we] = Pibar_W
+
+            torch.backends.cuda.matmul.allow_tf32 = prev_tf32
+        else:
+            # --- Small S: fused Triton kernel ---
+            for wi in range(n_waves):
+                meta = wave_metas[wi]
+                ws = meta['start']
+                we = meta['end']
+                W = meta['W']
+
+                if meta['has_splits']:
+                    sl = meta['sl']
+                    sr = meta['sr']
+                    lr = torch.cat([sl, sr])
+                    dts_r = _compute_DTS_reduced(
+                        Pi, Pibar, lr, meta['n_ws'], S, W, log_pD, log_pS,
+                        sp_child1, sp_child2, meta['log_split_probs'],
+                        meta['reduce_idx'], device, dtype)
+                else:
+                    dts_r = None
+
+                leaf_wt = leaf_term[ws:we].contiguous()
+                Pibar_W_buf = torch.empty(W, S, device=device, dtype=dtype)
+
+                for local_iter in range(n_iters):
+                    total_iters += 1
+                    Pi_W = Pi[ws:we]
+
+                    Pi_new = wave_pibar_step_fused(
+                        Pi_W, transfer_mat_c, mt_squeezed,
+                        DL_const, Ebar, E, SL1_const, SL2_const,
+                        sp_child1, sp_child2, leaf_wt,
+                        Pibar_W_buf, dts_r,
+                    )
+
+                    if not use_fixed and local_iter >= min_warmup:
+                        significant = Pi_new > -100.0
+                        if not significant.any() or torch.abs(Pi_new - Pi_W)[significant].max().item() < local_tolerance:
+                            Pi[ws:we] = Pi_new
+                            Pibar[ws:we] = Pibar_W_buf
+                            break
+
+                    Pi[ws:we] = Pi_new
+                    Pibar[ws:we] = Pibar_W_buf
+
+    # Unpermute Pi back to original clade order
+    # Pi is in new (wave-ordered) space; perm[orig] = new, so Pi[perm] reorders to original
+    perm = wave_layout['perm']
+    Pi_orig = Pi[perm]
+    clade_species_map_orig = clade_species_map[perm]
+
+    return {'Pi': Pi_orig, 'clade_species_map': clade_species_map_orig, 'iterations': total_iters}
+
+
 def _compute_DTS_reduced(Pi, Pibar, lr, n_ws, S, W, log_pD, log_pS,
                           sp_child1, sp_child2, wlsp, reduce_idx, device, dtype):
     """Compute DTS cross-clade terms and reduce to per-wave-clade."""

@@ -3,8 +3,8 @@ import math
 import torch
 from torch.utils.data import Dataset
 from .extract_parameters import extract_parameters
-from .likelihood import E_fixed_point, Pi_fixed_point, Pi_wave_forward, compute_log_likelihood
-from .batching import collate_gene_families, collate_wave
+from .likelihood import E_fixed_point, Pi_fixed_point, Pi_wave_forward, Pi_wave_forward_v2, compute_log_likelihood
+from .batching import collate_gene_families, collate_wave, build_wave_layout
 from .scheduling import compute_clade_waves
 from .preprocess_cpp import _load_extension as _load_species_gene_ext
 
@@ -232,15 +232,21 @@ class GeneDataset(Dataset):
         device: torch.device | None = None,
         dtype: torch.dtype | None = None,
         use_wave: bool = False,
+        wave_version: int = 2,
         chunk_size: int | None = None,
+        max_wave_size: int = 4096,
     ) -> list[float]:
         """Compute log-likelihoods for a batch of gene families.
 
         Returns a list of per-family log-likelihoods, in the same order as `indices`.
 
         Args:
+            use_wave: If True, use wave-based Pi forward pass instead of fixed-point.
+            wave_version: 1 = original gather/scatter wave (v1), 2 = wave-ordered
+                layout with zero-copy self-loop (v2). Default 2.
             chunk_size: If set, process families in chunks of this size to avoid OOM.
                 Only applies to the wave path. Recommended: 20 for S~2000.
+            max_wave_size: Max clades per wave for v2 scheduling. Default 4096.
         """
         if device is None:
             device = self.device
@@ -263,6 +269,8 @@ class GeneDataset(Dataset):
                     max_iters_Pi=max_iters_Pi, tol_Pi=tol_Pi,
                     device=device, dtype=dtype,
                     use_wave=use_wave,
+                    wave_version=wave_version,
+                    max_wave_size=max_wave_size,
                 ))
             return all_logLs
 
@@ -342,7 +350,7 @@ class GeneDataset(Dataset):
         Ebar = E_out['E_bar']
 
         if use_wave and not self.genewise:
-            # Wave-based forward pass with cross-family batching
+            # Compute per-family waves (uses fast C++ phased scheduler)
             families_waves = []
             families_phases = []
             for idx in indices:
@@ -365,21 +373,48 @@ class GeneDataset(Dataset):
                         phase_k = max(phase_k, fp[k])
                 cross_phases.append(phase_k)
 
-            Pi_out = Pi_wave_forward(
-                waves=cross_waves,
-                ccp_helpers=ccp_helpers,
-                species_helpers=species_helpers,
-                leaf_row_index=leaf_row_index,
-                leaf_col_index=leaf_col_index,
-                E=E, Ebar=Ebar, E_s1=E_s1, E_s2=E_s2,
-                log_pS=log_pS, log_pD=log_pD, log_pL=log_pL,
-                transfer_mat=transfer_mat,
-                max_transfer_mat=max_transfer_vec,
-                device=device, dtype=dtype,
-                phases=cross_phases,
-                local_iters=max_iters_Pi,
-                local_tolerance=tol_Pi,
-            )
+            if wave_version == 2:
+                # v2: wave-ordered layout with zero-copy self-loop
+                wave_layout = build_wave_layout(
+                    waves=cross_waves,
+                    phases=cross_phases,
+                    ccp_helpers=ccp_helpers,
+                    leaf_row_index=leaf_row_index,
+                    leaf_col_index=leaf_col_index,
+                    root_clade_ids=root_clade_ids,
+                    device=device,
+                    dtype=dtype,
+                )
+
+                Pi_out = Pi_wave_forward_v2(
+                    wave_layout=wave_layout,
+                    species_helpers=species_helpers,
+                    E=E, Ebar=Ebar, E_s1=E_s1, E_s2=E_s2,
+                    log_pS=log_pS, log_pD=log_pD, log_pL=log_pL,
+                    transfer_mat=transfer_mat,
+                    max_transfer_mat=max_transfer_vec,
+                    device=device, dtype=dtype,
+                    local_iters=max_iters_Pi,
+                    local_tolerance=tol_Pi,
+                )
+                # root_clade_ids are in original space; Pi is unpermuted by v2
+            else:
+                # v1: original gather/scatter wave
+                Pi_out = Pi_wave_forward(
+                    waves=cross_waves,
+                    ccp_helpers=ccp_helpers,
+                    species_helpers=species_helpers,
+                    leaf_row_index=leaf_row_index,
+                    leaf_col_index=leaf_col_index,
+                    E=E, Ebar=Ebar, E_s1=E_s1, E_s2=E_s2,
+                    log_pS=log_pS, log_pD=log_pD, log_pL=log_pL,
+                    transfer_mat=transfer_mat,
+                    max_transfer_mat=max_transfer_vec,
+                    device=device, dtype=dtype,
+                    phases=cross_phases,
+                    local_iters=max_iters_Pi,
+                    local_tolerance=tol_Pi,
+                )
         else:
             # Batched Pi fixed point over all clades
             Pi_out = Pi_fixed_point(

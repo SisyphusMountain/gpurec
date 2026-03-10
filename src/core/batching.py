@@ -1,4 +1,6 @@
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Tuple
+import heapq
+
 import torch
 
 
@@ -279,3 +281,312 @@ def collate_wave(
             cross_waves[k].extend(c + offset for c in wave_clades)
 
     return cross_waves
+
+
+def collate_wave_cross(
+    batch_items: List[Dict[str, Any]],
+    family_meta: List[Dict[str, int]],
+    max_wave_size: int = 256,
+) -> Tuple[List[List[int]], List[int]]:
+    """Phased cross-family wave scheduling with priority-queue load balancing.
+
+    Replicates the C++ ``compute_phased_cross_family_wave_stats`` algorithm
+    but returns the actual global clade IDs per wave (not just stats).
+
+    Three phases:
+      Phase 1 (leaves): All leaf clades across families, chunked.
+      Phase 2 (internal): Priority queue (higher split-count first) mixing
+        clades from all families once dependencies are satisfied.
+      Phase 3 (roots): All root clades, chunked.
+
+    Args:
+        batch_items: list of per-family dicts with 'ccp' and 'root_clade_id'
+        family_meta: list of per-family dicts with 'clade_offset' (from collate_gene_families)
+        max_wave_size: maximum number of clades per wave
+
+    Returns:
+        waves: list of lists of globally-offset clade IDs
+        phases: list of phase labels (1, 2, or 3)
+    """
+    n_fam = len(batch_items)
+
+    # Build per-family dependency structures
+    fam_children: List[List[set]] = []   # fam_children[fi][c] = set of child clades
+    fam_parents_of: List[List[List[int]]] = []  # fam_parents_of[fi][c] = parents that depend on c
+    fam_remaining: List[List[int]] = []  # fam_remaining[fi][c] = # children not yet processed
+    fam_split_count: List[List[int]] = []  # fam_split_count[fi][c] = number of splits
+    fam_root: List[int] = []
+    fam_C: List[int] = []
+
+    for fi, item in enumerate(batch_items):
+        ccp = item["ccp"]
+        C_i = int(ccp["C"])
+        N_i = int(ccp["N_splits"])
+        root_i = int(item["root_clade_id"])
+
+        fam_C.append(C_i)
+        fam_root.append(root_i)
+
+        lr = ccp["split_leftrights_sorted"]
+        if hasattr(lr, 'tolist'):
+            lr_list = lr.tolist()
+        else:
+            lr_list = list(lr)
+        lefts = lr_list[:N_i]
+        rights = lr_list[N_i:]
+
+        # Get or reconstruct split_parents
+        if "split_parents_sorted" in ccp:
+            sp = ccp["split_parents_sorted"]
+            sp_list = sp.tolist() if hasattr(sp, 'tolist') else list(sp)
+        else:
+            # Reconstruct
+            num_ge2 = int(ccp["num_segs_ge2"])
+            num_eq1 = int(ccp["num_segs_eq1"])
+            end_rows_ge2 = int(ccp["end_rows_ge2"])
+            ptr_ge2 = ccp["ptr_ge2"]
+            seg_parent_ids = ccp["seg_parent_ids"]
+            sp_list = [0] * N_i
+            for si in range(num_ge2):
+                s_start = int(ptr_ge2[si].item())
+                s_end = int(ptr_ge2[si + 1].item())
+                pid = int(seg_parent_ids[si].item())
+                for j in range(s_start, s_end):
+                    sp_list[j] = pid
+            for si in range(num_eq1):
+                sp_list[end_rows_ge2 + si] = int(seg_parent_ids[num_ge2 + si].item())
+
+        children: List[set] = [set() for _ in range(C_i)]
+        parents_of: List[List[int]] = [[] for _ in range(C_i)]
+        split_count: List[int] = [0] * C_i
+
+        for idx in range(N_i):
+            p = sp_list[idx]
+            l = lefts[idx]
+            r = rights[idx]
+            split_count[p] += 1
+            if l not in children[p]:
+                children[p].add(l)
+                parents_of[l].append(p)
+            if r != l and r not in children[p]:
+                children[p].add(r)
+                parents_of[r].append(p)
+
+        remaining = [len(children[c]) for c in range(C_i)]
+
+        fam_children.append(children)
+        fam_parents_of.append(parents_of)
+        fam_remaining.append(remaining)
+        fam_split_count.append(split_count)
+
+    offsets = [m["clade_offset"] for m in family_meta]
+    waves: List[List[int]] = []
+    phases: List[int] = []
+
+    # Phase 1: leaf clades (no splits, not root)
+    all_leaves: List[Tuple[int, int]] = []  # (family, local_clade)
+    for fi in range(n_fam):
+        for c in range(fam_C[fi]):
+            if c == fam_root[fi]:
+                continue
+            if fam_split_count[fi][c] == 0:
+                all_leaves.append((fi, c))
+
+    for start in range(0, len(all_leaves), max_wave_size):
+        end = min(start + max_wave_size, len(all_leaves))
+        wave = [all_leaves[i][1] + offsets[all_leaves[i][0]]
+                for i in range(start, end)]
+        waves.append(wave)
+        phases.append(1)
+        # Update remaining for parents
+        for i in range(start, end):
+            fi, c = all_leaves[i]
+            for p in fam_parents_of[fi][c]:
+                fam_remaining[fi][p] -= 1
+
+    # Phase 2: internal non-root clades, priority queue
+    # Use max-heap: negate split_count for min-heap → max priority
+    ready: List[Tuple[int, int, int]] = []  # (-split_count, family, clade)
+    for fi in range(n_fam):
+        for c in range(fam_C[fi]):
+            if c == fam_root[fi]:
+                continue
+            if fam_split_count[fi][c] == 0:
+                continue  # leaf, already done
+            if fam_remaining[fi][c] == 0:
+                heapq.heappush(ready, (-fam_split_count[fi][c], fi, c))
+
+    while ready:
+        batch: List[Tuple[int, int]] = []
+        while ready and len(batch) < max_wave_size:
+            _, fi, c = heapq.heappop(ready)
+            batch.append((fi, c))
+
+        wave = [c + offsets[fi] for fi, c in batch]
+        waves.append(wave)
+        phases.append(2)
+
+        # Update parents
+        for fi, c in batch:
+            for p in fam_parents_of[fi][c]:
+                fam_remaining[fi][p] -= 1
+                if fam_remaining[fi][p] == 0:
+                    if p != fam_root[fi]:
+                        heapq.heappush(ready, (-fam_split_count[fi][p], fi, p))
+
+    # Phase 3: root clades
+    all_roots = [(fi, fam_root[fi]) for fi in range(n_fam)]
+    for start in range(0, len(all_roots), max_wave_size):
+        end = min(start + max_wave_size, len(all_roots))
+        wave = [all_roots[i][1] + offsets[all_roots[i][0]]
+                for i in range(start, end)]
+        waves.append(wave)
+        phases.append(3)
+
+    return waves, phases
+
+
+def build_wave_layout(
+    waves: List[List[int]],
+    phases: List[int],
+    ccp_helpers: Dict[str, Any],
+    leaf_row_index: torch.Tensor,
+    leaf_col_index: torch.Tensor,
+    root_clade_ids: torch.Tensor,
+    device: torch.device | str = "cpu",
+    dtype: torch.dtype = torch.float32,
+) -> Dict[str, Any]:
+    """Build wave-ordered layout: permute clade indices so each wave is contiguous.
+
+    After this, wave k's clades occupy Pi[wave_starts[k] : wave_starts[k+1]]
+    as a contiguous block, eliminating gather/scatter in the self-loop.
+
+    Args:
+        waves: list of lists of global clade IDs per wave
+        phases: phase label per wave (1=leaf, 2=internal, 3=root)
+        ccp_helpers: merged CCP dict (from collate_gene_families)
+        leaf_row_index: Long[K] clade indices for leaf mapping
+        leaf_col_index: Long[K] species indices for leaf mapping
+        root_clade_ids: Long[F] root clade indices
+        device: target device
+        dtype: float dtype
+
+    Returns:
+        Dict with:
+          'perm': Long[C] — original-to-new mapping
+          'inv_perm': Long[C] — new-to-original mapping
+          'ccp_helpers': remapped CCP dict (all clade IDs in new space)
+          'leaf_row_index': remapped leaf row indices
+          'leaf_col_index': unchanged leaf col indices
+          'root_clade_ids': remapped root clade IDs
+          'wave_starts': Long[K+1] — start/end indices for each wave
+          'wave_metas': list of per-wave metadata dicts
+          'phases': list of phase labels
+    """
+    C = int(ccp_helpers['C'])
+    N_splits = int(ccp_helpers['N_splits'])
+
+    # --- 2a. Build permutation ---
+    all_clades: List[int] = []
+    wave_starts_list: List[int] = [0]
+    for wave_ids in waves:
+        all_clades.extend(wave_ids)
+        wave_starts_list.append(len(all_clades))
+
+    assert len(all_clades) == C, (
+        f"Wave layout covers {len(all_clades)} clades but C={C}"
+    )
+
+    inv_perm = torch.tensor(all_clades, dtype=torch.long, device=device)
+    perm = torch.empty(C, dtype=torch.long, device=device)
+    perm[inv_perm] = torch.arange(C, dtype=torch.long, device=device)
+    wave_starts = torch.tensor(wave_starts_list, dtype=torch.long, device=device)
+
+    # --- 2b. Remap all clade-index tensors (fully vectorized) ---
+    split_lr = ccp_helpers['split_leftrights_sorted'].to(device=device, dtype=torch.long)
+    lefts_orig = split_lr[:N_splits]
+    rights_orig = split_lr[N_splits:]
+    lefts_new = perm[lefts_orig]
+    rights_new = perm[rights_orig]
+
+    split_parents = ccp_helpers.get('split_parents_sorted', None)
+    if split_parents is not None:
+        sp_new = perm[split_parents.to(device=device, dtype=torch.long)]
+    else:
+        from .likelihood import _reconstruct_split_parents
+        sp_new = perm[_reconstruct_split_parents(ccp_helpers).to(device)]
+
+    leaf_row_new = perm[leaf_row_index.to(device=device, dtype=torch.long)]
+    root_ids_new = perm[root_clade_ids.to(device=device, dtype=torch.long)]
+
+    log_split_probs = ccp_helpers['log_split_probs_sorted']
+    if torch.is_tensor(log_split_probs):
+        log_split_probs = log_split_probs.to(device=device, dtype=dtype)
+
+    # --- 2c. Vectorized per-wave metadata ---
+    # For each split, find which wave its parent belongs to via searchsorted
+    # sp_new[i] is the new-space parent clade of split i, which is in [0, C)
+    # wave_starts is sorted → searchsorted gives the wave index
+    wave_starts_cpu = torch.tensor(wave_starts_list, dtype=torch.long)
+    sp_new_cpu = sp_new.cpu()
+
+    # searchsorted: find wave index for each split's parent
+    # wave_starts_list = [0, w0_end, w1_end, ...]. searchsorted(right) - 1 gives wave idx.
+    split_wave_idx = torch.searchsorted(wave_starts_cpu[1:], sp_new_cpu, right=True)
+    # split_wave_idx[i] = wave index of split i's parent
+
+    # Sort splits by wave index for efficient slicing
+    sort_order = split_wave_idx.argsort()
+    split_wave_sorted = split_wave_idx[sort_order]
+
+    # Find boundaries: where does each wave's splits start/end in the sorted order
+    n_waves = len(waves)
+    # Use searchsorted on the sorted wave indices
+    wave_split_starts = torch.searchsorted(split_wave_sorted, torch.arange(n_waves, dtype=torch.long))
+    wave_split_ends = torch.searchsorted(split_wave_sorted, torch.arange(n_waves, dtype=torch.long), right=True)
+
+    # Move sort_order to device for indexing
+    sort_order_dev = sort_order.to(device)
+
+    wave_metas: List[Dict[str, Any]] = []
+    for wi in range(n_waves):
+        ws = wave_starts_list[wi]
+        we = wave_starts_list[wi + 1]
+        W = we - ws
+
+        ss = int(wave_split_starts[wi].item())
+        se = int(wave_split_ends[wi].item())
+        n_ws = se - ss
+
+        meta: Dict[str, Any] = {
+            'start': ws,
+            'end': we,
+            'W': W,
+            'phase': phases[wi],
+            'has_splits': n_ws > 0,
+        }
+
+        if n_ws > 0:
+            wst = sort_order_dev[ss:se]  # split indices for this wave
+            meta['sl'] = lefts_new[wst]
+            meta['sr'] = rights_new[wst]
+            meta['log_split_probs'] = log_split_probs[wst].unsqueeze(1).contiguous()
+            meta['reduce_idx'] = sp_new[wst] - ws
+            meta['n_ws'] = n_ws
+
+        wave_metas.append(meta)
+
+    return {
+        'perm': perm,
+        'inv_perm': inv_perm,
+        'ccp_helpers': {
+            'C': C,
+            'N_splits': N_splits,
+        },
+        'leaf_row_index': leaf_row_new,
+        'leaf_col_index': leaf_col_index.to(device=device, dtype=torch.long),
+        'root_clade_ids': root_ids_new,
+        'wave_starts': wave_starts,
+        'wave_metas': wave_metas,
+        'phases': phases,
+    }
