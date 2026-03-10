@@ -25,15 +25,17 @@ class GeneDataset(Dataset):
 
         self.genewise = genewise
         self.specieswise = specieswise
-        self.pairwise = pairwise     
+        self.pairwise = pairwise
         self.device = device
         self.dtype = dtype
         ext = _load_species_gene_ext()
 
-        self.species_helpers = ext.preprocess_species(species_tree_path)
+        # Preprocess first family to get species helpers
+        first_raw = ext.preprocess(species_tree_path, [str(gene_tree_paths[0])])
+        self.species_helpers = first_raw['species']
         self.tr_mat_unnormalized = torch.log2(self.species_helpers["Recipients_mat"])
         self.S = int(self.species_helpers['S'])
-        
+
         # creating an initial theta
         if specieswise:
             if pairwise:
@@ -41,25 +43,28 @@ class GeneDataset(Dataset):
                 # If using pairwise coefficients, the transfer rate is implicitly contained in this matrix.
                 self.tr_mat_unnormalized = self.tr_mat_unnormalized - 10.0
             else:
-                theta = -10*torch.ones(self.S, 1, dtype=dtype, device=device)  
+                theta = -10*torch.ones(self.S, 1, dtype=dtype, device=device)
         else:
-            theta = -10000*torch.ones(3, dtype=dtype, device=device)  
+            theta = -10000*torch.ones(3, dtype=dtype, device=device)
 
         _INV_LN2 = 1.0 / math.log(2.0)
         families = []
-        for gpath in gene_tree_paths:
-            gene_data = ext.preprocess_gene_with_species(self.species_helpers, gpath)
-            ccp = gene_data['ccp']
+        for i, gpath in enumerate(gene_tree_paths):
+            if i == 0:
+                raw = first_raw
+            else:
+                raw = ext.preprocess(species_tree_path, [str(gpath)])
+            ccp = raw['ccp']
             # Convert log_split_probs from ln (C++ output) to log2
             ccp['log_split_probs_sorted'] = ccp['log_split_probs_sorted'] * _INV_LN2
             families.append({
                 'ccp_helpers': ccp,
-                'root_clade_id': int(gene_data['root_clade_id']),
-                'leaf_row_index': gene_data['leaf_row_index'],
-                'leaf_col_index': gene_data['leaf_col_index'],
+                'root_clade_id': int(ccp['root_clade_id']),
+                'leaf_row_index': raw['leaf_row_index'],
+                'leaf_col_index': raw['leaf_col_index'],
                 'C': int(ccp['C']),
                 'N_splits': int(ccp['N_splits']),
-                'theta': theta.clone(), # same theta for all families at the beginning. Will be optimized later.
+                'theta': theta.clone(),
                 'transfer_mat_unnormalized': self.tr_mat_unnormalized,
                 'log_split_probs': ccp['log_split_probs_sorted'],
             })
