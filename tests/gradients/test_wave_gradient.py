@@ -387,6 +387,120 @@ class TestGradientDescent:
             print(f"  theta[{i}] fd_grad = {fd_grad:.6e}")
 
 
+class TestWaveVsFiniteDifference:
+    """Test wave backward gradients against finite differences (fp64)."""
+
+    @pytest.fixture(scope="class")
+    def setup_1000(self):
+        return _setup_single_family("test_trees_1000", n_families=1, dtype=torch.float64)
+
+    def test_log_pD_gradient(self, setup_1000):
+        """dL/d(log_pD) matches central FD within 0.1%."""
+        d = setup_1000
+        device, dtype = d['device'], d['dtype']
+
+        result = Pi_wave_backward_v2(
+            wave_layout=d['wave_layout'],
+            Pi_star_wave=d['Pi_out']['Pi_wave_ordered'],
+            Pibar_star_wave=d['Pi_out']['Pibar_wave_ordered'],
+            E=d['E'], Ebar=d['Ebar'], E_s1=d['E_s1'], E_s2=d['E_s2'],
+            log_pS=d['log_pS'], log_pD=d['log_pD'], log_pL=d['log_pL'],
+            max_transfer_mat=d['max_transfer_mat'],
+            species_helpers=d['species_helpers'],
+            root_clade_ids_perm=d['root_clade_ids_perm'],
+            device=device, dtype=dtype,
+            neumann_terms=4, use_pruning=False,
+        )
+
+        eps = 1e-4
+        logL_p = self._forward_logL(d, log_pD=d['log_pD'] + eps)
+        logL_m = self._forward_logL(d, log_pD=d['log_pD'] - eps)
+        fd = (logL_p - logL_m) / (2 * eps)
+        bw = result['grad_log_pD'].item()
+
+        rel_err = abs(bw - fd) / (abs(fd) + 1e-30)
+        print(f"  log_pD: FD={fd:.6e}, BW={bw:.6e}, rel_err={rel_err:.2e}")
+        assert rel_err < 1e-3, f"log_pD gradient rel error {rel_err:.4e}"
+
+    def test_log_pS_gradient(self, setup_1000):
+        """dL/d(log_pS) matches central FD within 0.1%."""
+        d = setup_1000
+        device, dtype = d['device'], d['dtype']
+
+        result = Pi_wave_backward_v2(
+            wave_layout=d['wave_layout'],
+            Pi_star_wave=d['Pi_out']['Pi_wave_ordered'],
+            Pibar_star_wave=d['Pi_out']['Pibar_wave_ordered'],
+            E=d['E'], Ebar=d['Ebar'], E_s1=d['E_s1'], E_s2=d['E_s2'],
+            log_pS=d['log_pS'], log_pD=d['log_pD'], log_pL=d['log_pL'],
+            max_transfer_mat=d['max_transfer_mat'],
+            species_helpers=d['species_helpers'],
+            root_clade_ids_perm=d['root_clade_ids_perm'],
+            device=device, dtype=dtype,
+            neumann_terms=4, use_pruning=False,
+        )
+
+        eps = 1e-4
+        logL_p = self._forward_logL(d, log_pS=d['log_pS'] + eps)
+        logL_m = self._forward_logL(d, log_pS=d['log_pS'] - eps)
+        fd = (logL_p - logL_m) / (2 * eps)
+        bw = result['grad_log_pS'].item()
+
+        rel_err = abs(bw - fd) / (abs(fd) + 1e-30)
+        print(f"  log_pS: FD={fd:.6e}, BW={bw:.6e}, rel_err={rel_err:.2e}")
+        assert rel_err < 1e-3, f"log_pS gradient rel error {rel_err:.4e}"
+
+    def test_mt_gradient(self, setup_1000):
+        """dL/d(mt) directional derivative matches FD within 0.1%."""
+        d = setup_1000
+        device, dtype = d['device'], d['dtype']
+        mt = d['max_transfer_mat']
+
+        result = Pi_wave_backward_v2(
+            wave_layout=d['wave_layout'],
+            Pi_star_wave=d['Pi_out']['Pi_wave_ordered'],
+            Pibar_star_wave=d['Pi_out']['Pibar_wave_ordered'],
+            E=d['E'], Ebar=d['Ebar'], E_s1=d['E_s1'], E_s2=d['E_s2'],
+            log_pS=d['log_pS'], log_pD=d['log_pD'], log_pL=d['log_pL'],
+            max_transfer_mat=mt,
+            species_helpers=d['species_helpers'],
+            root_clade_ids_perm=d['root_clade_ids_perm'],
+            device=device, dtype=dtype,
+            neumann_terms=4, use_pruning=False,
+        )
+
+        torch.manual_seed(42)
+        direction = torch.randn_like(mt)
+        direction = direction / direction.norm()
+
+        eps = 1e-4
+        logL_p = self._forward_logL(d, max_transfer_mat=mt + eps * direction)
+        logL_m = self._forward_logL(d, max_transfer_mat=mt - eps * direction)
+        fd = (logL_p - logL_m) / (2 * eps)
+        bw = (result['grad_max_transfer_mat'] * direction).sum().item()
+
+        rel_err = abs(bw - fd) / (abs(fd) + 1e-30)
+        print(f"  mt dir: FD={fd:.6e}, BW={bw:.6e}, rel_err={rel_err:.2e}")
+        assert rel_err < 1e-3, f"mt gradient rel error {rel_err:.4e}"
+
+    @staticmethod
+    def _forward_logL(d, log_pS=None, log_pD=None, max_transfer_mat=None):
+        """Run Pi forward with optionally perturbed params, return logL."""
+        _log_pS = log_pS if log_pS is not None else d['log_pS']
+        _log_pD = log_pD if log_pD is not None else d['log_pD']
+        _mt = max_transfer_mat if max_transfer_mat is not None else d['max_transfer_mat']
+
+        Pi_out = Pi_wave_forward_v2(
+            wave_layout=d['wave_layout'], species_helpers=d['species_helpers'],
+            E=d['E'], Ebar=d['Ebar'], E_s1=d['E_s1'], E_s2=d['E_s2'],
+            log_pS=_log_pS, log_pD=_log_pD, log_pL=d['log_pL'],
+            transfer_mat=d['transfer_mat'], max_transfer_mat=_mt,
+            device=d['device'], dtype=d['dtype'], pibar_mode=d['pibar_mode'],
+        )
+        logL = compute_log_likelihood(Pi_out['Pi'], d['E'], d['root_clade_ids'])
+        return logL.sum().item()
+
+
 class TestPruning:
     """Test that pruning doesn't significantly affect gradients."""
 

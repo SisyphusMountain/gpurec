@@ -1461,13 +1461,17 @@ def Pi_wave_backward_v2(
     leaf_row_index = wave_layout['leaf_row_index']
     leaf_col_index = wave_layout['leaf_col_index']
 
-    def _get_leaf_wt(ws, we):
+    def _get_leaf_mask(ws, we):
+        """Return raw leaf mask [W, S] with 0 at leaf positions, -inf elsewhere."""
         W = we - ws
         lwt = torch.full((W, S), NEG_INF, device=device, dtype=dtype)
         mask = (leaf_row_index >= ws) & (leaf_row_index < we)
         if mask.any():
             lwt[leaf_row_index[mask] - ws, leaf_col_index[mask]] = 0.0
-        return log_pS + lwt
+        return lwt
+
+    def _get_leaf_wt(ws, we):
+        return log_pS + _get_leaf_mask(ws, we)
 
     # Optional pruning
     pruned_perm = None
@@ -1547,24 +1551,42 @@ def Pi_wave_backward_v2(
             v_k = v_k + term
 
         # --- Accumulate parameter gradients via VJP of g_k wrt params ---
-        _log_pD = log_pD.detach().requires_grad_(True)
-        _log_pS = log_pS.detach().requires_grad_(True)
-        _E = E.detach().requires_grad_(True)
-        _Ebar = Ebar.detach().requires_grad_(True)
-        _E_s1 = E_s1.detach().requires_grad_(True)
-        _E_s2 = E_s2.detach().requires_grad_(True)
-        _mt = mt_squeezed.detach().requires_grad_(True)
-
-        # Recompute DL_const etc. with grad-enabled params
-        _DL_const = 1.0 + _log_pD + _E
-        _SL1_const = _log_pS + _E_s2
-        _SL2_const = _log_pS + _E_s1
-
+        # NOTE: all differentiable computation must be inside enable_grad()
+        # because this function is decorated with @torch.no_grad().
         Pi_W_fixed = Pi_W_star.detach()  # fixed at converged value
+        leaf_mask = _get_leaf_mask(ws, we)  # raw 0/-inf mask
         with torch.enable_grad():
+            _log_pD = log_pD.detach().clone().requires_grad_(True)
+            _log_pS = log_pS.detach().clone().requires_grad_(True)
+            _E = E.detach().clone().requires_grad_(True)
+            _Ebar = Ebar.detach().clone().requires_grad_(True)
+            _E_s1 = E_s1.detach().clone().requires_grad_(True)
+            _E_s2 = E_s2.detach().clone().requires_grad_(True)
+            _mt = mt_squeezed.detach().clone().requires_grad_(True)
+
+            _DL_const = 1.0 + _log_pD + _E
+            _SL1_const = _log_pS + _E_s2
+            _SL2_const = _log_pS + _E_s1
+            _leaf_wt = _log_pS + leaf_mask  # differentiable leaf term
+
+            # Recompute dts_r with differentiable params (log_pD, log_pS, mt)
+            if meta['has_splits']:
+                # Recompute Pibar of all clades with differentiable _mt
+                Pi_det = Pi_star_wave.detach()
+                Pi_max_all = Pi_det.max(dim=1, keepdim=True).values
+                Pi_exp_all = torch.exp2(Pi_det - Pi_max_all)
+                row_sum_all = Pi_exp_all.sum(dim=1, keepdim=True)
+                _Pibar_all = torch.log2(row_sum_all - Pi_exp_all) + Pi_max_all + _mt
+                _dts_r = _dts_cross_differentiable(
+                    Pi_det, _Pibar_all, meta,
+                    sp_child1, sp_child2, _log_pD, _log_pS, S, device, dtype,
+                )
+            else:
+                _dts_r = None
+
             Pi_new_param = _self_loop_differentiable(
                 Pi_W_fixed, _mt, _DL_const, _Ebar, _E, _SL1_const, _SL2_const,
-                sp_child1, sp_child2, leaf_wt, dts_r, S,
+                sp_child1, sp_child2, _leaf_wt, _dts_r, S,
             )
             param_grads = torch.autograd.grad(
                 Pi_new_param, [_log_pD, _log_pS, _E, _Ebar, _E_s1, _E_s2, _mt],
