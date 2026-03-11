@@ -289,6 +289,7 @@ def _wave_step_uniform_kernel(
     S: tl.constexpr,
     stride: tl.constexpr,
     BLOCK_S: tl.constexpr,
+    FP64: tl.constexpr,
 ):
     """Fused kernel: uniform Pibar + DTS_L + logsumexp + convergence diff.
 
@@ -296,18 +297,21 @@ def _wave_step_uniform_kernel(
     Pass 1 uses the online max+sum trick (single scan) for row statistics.
     Pass 2 computes Pibar inline and all DTS_L terms in one scan.
     """
+    DTYPE = tl.float64 if FP64 else tl.float32
+    NEG_LARGE = -1e300 if FP64 else -1e30
+
     w = tl.program_id(0)
     pi_base = (ws + w) * stride      # offset into global Pi/Pibar
     out_base = w * stride             # offset into [W, S] outputs
 
     # === Pass 1: Online max + sum over the Pi row ===
-    row_max = tl.full([1], value=-1e30, dtype=tl.float32)
-    row_sum = tl.full([1], value=0.0, dtype=tl.float32)
+    row_max = tl.full([1], value=NEG_LARGE, dtype=DTYPE)
+    row_sum = tl.full([1], value=0.0, dtype=DTYPE)
 
     for s_start in range(0, S, BLOCK_S):
         s_offs = s_start + tl.arange(0, BLOCK_S)
         mask = s_offs < S
-        pi_val = tl.load(Pi_ptr + pi_base + s_offs, mask=mask, other=-1e30)
+        pi_val = tl.load(Pi_ptr + pi_base + s_offs, mask=mask, other=NEG_LARGE)
         tile_max = tl.max(pi_val, axis=0)
         new_max = tl.maximum(row_max, tile_max)
         # Rescale running sum to new max, add this tile's contribution
@@ -315,14 +319,15 @@ def _wave_step_uniform_kernel(
         row_max = new_max
 
     # === Pass 2: Pibar + DTS_L terms + logsumexp ===
-    local_max_diff = tl.full([1], value=0.0, dtype=tl.float32)
+    local_max_diff = tl.full([1], value=0.0, dtype=DTYPE)
+    M_SAFE_THRESH = -1e299 if FP64 else -1e29
 
     for s_start in range(0, S, BLOCK_S):
         s_offs = s_start + tl.arange(0, BLOCK_S)
         mask = s_offs < S
 
         # Load Pi[w, s]
-        pi_w = tl.load(Pi_ptr + pi_base + s_offs, mask=mask, other=-1e30)
+        pi_w = tl.load(Pi_ptr + pi_base + s_offs, mask=mask, other=NEG_LARGE)
 
         # Uniform Pibar: log2(row_sum - exp2(pi - max)) + max + mt
         pi_exp = tl.exp2(pi_w - row_max)
@@ -333,19 +338,19 @@ def _wave_step_uniform_kernel(
         tl.store(Pibar_out_ptr + pi_base + s_offs, pibar_w, mask=mask)
 
         # Load constants
-        dl_const = tl.load(DL_const_ptr + s_offs, mask=mask, other=-1e30)
-        ebar = tl.load(Ebar_ptr + s_offs, mask=mask, other=-1e30)
-        e_val = tl.load(E_ptr + s_offs, mask=mask, other=-1e30)
-        sl1_const = tl.load(SL1_const_ptr + s_offs, mask=mask, other=-1e30)
-        sl2_const = tl.load(SL2_const_ptr + s_offs, mask=mask, other=-1e30)
+        dl_const = tl.load(DL_const_ptr + s_offs, mask=mask, other=NEG_LARGE)
+        ebar = tl.load(Ebar_ptr + s_offs, mask=mask, other=NEG_LARGE)
+        e_val = tl.load(E_ptr + s_offs, mask=mask, other=NEG_LARGE)
+        sl1_const = tl.load(SL1_const_ptr + s_offs, mask=mask, other=NEG_LARGE)
+        sl2_const = tl.load(SL2_const_ptr + s_offs, mask=mask, other=NEG_LARGE)
 
         # Gather species children
         c1 = tl.load(sp_child1_ptr + s_offs, mask=mask, other=0)
         c2 = tl.load(sp_child2_ptr + s_offs, mask=mask, other=0)
         c1_valid = c1 < S
         c2_valid = c2 < S
-        pi_s1 = tl.load(Pi_ptr + pi_base + c1, mask=mask & c1_valid, other=-1e30)
-        pi_s2 = tl.load(Pi_ptr + pi_base + c2, mask=mask & c2_valid, other=-1e30)
+        pi_s1 = tl.load(Pi_ptr + pi_base + c1, mask=mask & c1_valid, other=NEG_LARGE)
+        pi_s2 = tl.load(Pi_ptr + pi_base + c2, mask=mask & c2_valid, other=NEG_LARGE)
 
         # 6 DTS_L terms
         t0 = dl_const + pi_w
@@ -353,7 +358,7 @@ def _wave_step_uniform_kernel(
         t2 = pibar_w + e_val
         t3 = sl1_const + pi_s1
         t4 = sl2_const + pi_s2
-        t5 = tl.load(leaf_term_ptr + out_base + s_offs, mask=mask, other=-1e30)
+        t5 = tl.load(leaf_term_ptr + out_base + s_offs, mask=mask, other=NEG_LARGE)
 
         m = tl.maximum(t0, t1)
         m = tl.maximum(m, t2)
@@ -362,10 +367,10 @@ def _wave_step_uniform_kernel(
         m = tl.maximum(m, t5)
 
         if has_splits:
-            dts_r = tl.load(DTS_reduced_ptr + out_base + s_offs, mask=mask, other=-1e30)
+            dts_r = tl.load(DTS_reduced_ptr + out_base + s_offs, mask=mask, other=NEG_LARGE)
             m = tl.maximum(m, dts_r)
 
-        m_safe = tl.where(m > -1e29, m, tl.zeros_like(m))
+        m_safe = tl.where(m > M_SAFE_THRESH, m, tl.zeros_like(m))
         s = tl.exp2(t0 - m_safe) + tl.exp2(t1 - m_safe) + tl.exp2(t2 - m_safe)
         s += tl.exp2(t3 - m_safe) + tl.exp2(t4 - m_safe) + tl.exp2(t5 - m_safe)
         if has_splits:
@@ -408,8 +413,9 @@ def wave_step_uniform_fused(Pi, Pibar, ws, W, S,
         Pi_new: [W, S] new Pi values
         max_diff: scalar, max |Pi_new - Pi_old| across all significant entries
     """
+    fp64 = Pi.dtype == torch.float64
     Pi_new = torch.empty((W, S), dtype=Pi.dtype, device=Pi.device)
-    max_diff_buf = torch.empty(W, dtype=torch.float32, device=Pi.device)
+    max_diff_buf = torch.empty(W, dtype=Pi.dtype, device=Pi.device)
     has_splits = DTS_reduced is not None
 
     BLOCK_S = min(256, triton.next_power_of_2(S))
@@ -427,6 +433,7 @@ def wave_step_uniform_fused(Pi, Pibar, ws, W, S,
         S,
         stride=S,
         BLOCK_S=BLOCK_S,
+        FP64=fp64,
         num_warps=4,
     )
     max_diff = max_diff_buf.max().item()
