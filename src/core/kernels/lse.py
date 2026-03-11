@@ -40,14 +40,14 @@ def _lse4_kernel(OUT, X0, X1, X2, X3,
     m   = tl.maximum(m01, m23)
     m_safe = tl.where(m == NEG_INF, 0.0, m)
 
-    e0 = tl.exp(x0 - m_safe); e1 = tl.exp(x1 - m_safe)
-    e2 = tl.exp(x2 - m_safe); e3 = tl.exp(x3 - m_safe)
+    e0 = tl.exp2(x0 - m_safe); e1 = tl.exp2(x1 - m_safe)
+    e2 = tl.exp2(x2 - m_safe); e3 = tl.exp2(x3 - m_safe)
 
     s01 = e0 + e1
     s23 = e2 + e3
     s   = s01 + s23
 
-    y = tl.where(s == 0, NEG_INF, tl.log(s) + m)
+    y = tl.where(s == 0, NEG_INF, tl.log2(s) + m)
     tl.store(OUT + offs, y, mask=mask)
     
 @triton.autotune(configs=CONFIGS, key=['N'])
@@ -72,15 +72,15 @@ def _lse5_kernel(OUT, X0, X1, X2, X3, X4,
     m   = tl.maximum(tl.maximum(m01, m23), x4)
     m_safe = tl.where(m == NEG_INF, 0.0, m)
 
-    e0 = tl.exp(x0 - m_safe); e1 = tl.exp(x1 - m_safe)
-    e2 = tl.exp(x2 - m_safe); e3 = tl.exp(x3 - m_safe)
-    e4 = tl.exp(x4 - m_safe)
+    e0 = tl.exp2(x0 - m_safe); e1 = tl.exp2(x1 - m_safe)
+    e2 = tl.exp2(x2 - m_safe); e3 = tl.exp2(x3 - m_safe)
+    e4 = tl.exp2(x4 - m_safe)
 
     s01 = e0 + e1
     s23 = e2 + e3
     s   = (s01 + s23) + e4
 
-    y = tl.where(s == 0, NEG_INF, tl.log(s) + m)
+    y = tl.where(s == 0, NEG_INF, tl.log2(s) + m)
     tl.store(OUT + offs, y, mask=mask)
 
 @triton.autotune(configs=CONFIGS, key=['N'])
@@ -111,13 +111,13 @@ def _lse7_kernel(OUT, X0, X1, X2, X3, X4, X5, X6,
     all_inf = (m == NEG_INF)
     m_safe = tl.where(all_inf, 0.0, m)
 
-    e0 = tl.exp(x0 - m_safe)
-    e1 = tl.exp(x1 - m_safe)
-    e2 = tl.exp(x2 - m_safe)
-    e3 = tl.exp(x3 - m_safe)
-    e4 = tl.exp(x4 - m_safe)
-    e5 = tl.exp(x5 - m_safe)
-    e6 = tl.exp(x6 - m_safe)
+    e0 = tl.exp2(x0 - m_safe)
+    e1 = tl.exp2(x1 - m_safe)
+    e2 = tl.exp2(x2 - m_safe)
+    e3 = tl.exp2(x3 - m_safe)
+    e4 = tl.exp2(x4 - m_safe)
+    e5 = tl.exp2(x5 - m_safe)
+    e6 = tl.exp2(x6 - m_safe)
 
     s01 = e0 + e1
     s23 = e2 + e3
@@ -125,7 +125,7 @@ def _lse7_kernel(OUT, X0, X1, X2, X3, X4, X5, X6,
     s   = (s01 + s23) + (s45 + e6)
 
     # When all inputs are -inf, return -inf directly
-    y = tl.where(all_inf, NEG_INF, tl.where(s == 0, NEG_INF, tl.log(s) + m))
+    y = tl.where(all_inf, NEG_INF, tl.where(s == 0, NEG_INF, tl.log2(s) + m))
     tl.store(OUT + offs, y, mask=mask)
 
 
@@ -148,7 +148,7 @@ class _LSEBaseFn(torch.autograd.Function):
     def _grad_weights(xs, y):
         # weights = exp(xi - y); guard y = -inf -> weights = 0
         finite = torch.isfinite(y)
-        weights = [torch.where(finite, torch.exp(x - y), torch.zeros_like(x)) for x in xs]
+        weights = [torch.where(finite, torch.exp2(x - y), torch.zeros_like(x)) for x in xs]
         return weights
 
 
@@ -283,10 +283,10 @@ def lse4_bwd_kernel(G0, G1, G2, G3,
     gy = tl.load(GY + offs, mask=mask)
 
     finite = y != NEG_INF
-    w0 = tl.where(finite, tl.exp(x0 - y), ZERO)
-    w1 = tl.where(finite, tl.exp(x1 - y), ZERO)
-    w2 = tl.where(finite, tl.exp(x2 - y), ZERO)
-    w3 = tl.where(finite, tl.exp(x3 - y), ZERO)
+    w0 = tl.where(finite, tl.exp2(x0 - y), ZERO)
+    w1 = tl.where(finite, tl.exp2(x1 - y), ZERO)
+    w2 = tl.where(finite, tl.exp2(x2 - y), ZERO)
+    w3 = tl.where(finite, tl.exp2(x3 - y), ZERO)
 
     tl.store(G0 + offs, gy * w0, mask=mask)
     tl.store(G1 + offs, gy * w1, mask=mask)
@@ -316,11 +316,11 @@ def lse5_bwd_kernel(G0, G1, G2, G3, G4,
     gy = tl.load(GY + offs, mask=mask)
 
     finite = y != NEG_INF
-    w0 = tl.where(finite, tl.exp(x0 - y), ZERO)
-    w1 = tl.where(finite, tl.exp(x1 - y), ZERO)
-    w2 = tl.where(finite, tl.exp(x2 - y), ZERO)
-    w3 = tl.where(finite, tl.exp(x3 - y), ZERO)
-    w4 = tl.where(finite, tl.exp(x4 - y), ZERO)
+    w0 = tl.where(finite, tl.exp2(x0 - y), ZERO)
+    w1 = tl.where(finite, tl.exp2(x1 - y), ZERO)
+    w2 = tl.where(finite, tl.exp2(x2 - y), ZERO)
+    w3 = tl.where(finite, tl.exp2(x3 - y), ZERO)
+    w4 = tl.where(finite, tl.exp2(x4 - y), ZERO)
 
     tl.store(G0 + offs, gy * w0, mask=mask)
     tl.store(G1 + offs, gy * w1, mask=mask)
@@ -353,13 +353,13 @@ def lse7_bwd_kernel(G0, G1, G2, G3, G4, G5, G6,
     gy = tl.load(GY + offs, mask=mask)
 
     finite = y != NEG_INF
-    w0 = tl.where(finite, tl.exp(x0 - y), ZERO)
-    w1 = tl.where(finite, tl.exp(x1 - y), ZERO)
-    w2 = tl.where(finite, tl.exp(x2 - y), ZERO)
-    w3 = tl.where(finite, tl.exp(x3 - y), ZERO)
-    w4 = tl.where(finite, tl.exp(x4 - y), ZERO)
-    w5 = tl.where(finite, tl.exp(x5 - y), ZERO)
-    w6 = tl.where(finite, tl.exp(x6 - y), ZERO)
+    w0 = tl.where(finite, tl.exp2(x0 - y), ZERO)
+    w1 = tl.where(finite, tl.exp2(x1 - y), ZERO)
+    w2 = tl.where(finite, tl.exp2(x2 - y), ZERO)
+    w3 = tl.where(finite, tl.exp2(x3 - y), ZERO)
+    w4 = tl.where(finite, tl.exp2(x4 - y), ZERO)
+    w5 = tl.where(finite, tl.exp2(x5 - y), ZERO)
+    w6 = tl.where(finite, tl.exp2(x6 - y), ZERO)
 
     tl.store(G0 + offs, gy * w0, mask=mask)
     tl.store(G1 + offs, gy * w1, mask=mask)

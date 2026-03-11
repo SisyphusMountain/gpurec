@@ -1,5 +1,6 @@
 import torch
-# Try torch.compile for some functions?
+from .log2_utils import logsumexp2
+
 NEG_INF = float("-inf")
 
 def gather_E_children(E, sp_P_idx, child_index):
@@ -27,6 +28,7 @@ def gather_E_children(E, sp_P_idx, child_index):
 
 def gather_Pi_children(Pi, sp_P_idx, child_index):
     C, S = Pi.shape
+    # TODO: fix this. filling and initializing is slow
     Pi_children = torch.full((C, 2*S), float("-inf"), device=Pi.device, dtype=Pi.dtype)  # [2C, S]
     values = torch.index_select(Pi, 1, child_index) # [C, N_internal_nodes]
     Pi_children.index_copy_(1, sp_P_idx, values)
@@ -58,7 +60,7 @@ def compute_DTS(log_pD, log_pS, Pi_s12, Pi, Pibar, log_split_probs, split_leftri
     DTS[4] = log_pS + Pi_s1_right + Pi_s2_left
     # DTS = DTS.contiguous()
     # DTS_term = log_split_probs + lse5(DTS[0], DTS[1], DTS[2], DTS[3], DTS[4])
-    DTS_term = log_split_probs + torch.logsumexp(DTS, dim=0)
+    DTS_term = log_split_probs + logsumexp2(DTS, dim=0)
     return DTS_term
 
 def compute_DTS_L(log_pD, log_pS, Pi, Pibar, Pi_s12, E, Ebar, E_s1, E_s2, clade_species_map, log_2):
@@ -77,7 +79,7 @@ def compute_DTS_L(log_pD, log_pS, Pi, Pibar, Pi_s12, E, Ebar, E_s1, E_s2, clade_
     DTS_L[5] = (log_pS + clade_species_map)
     # DTS_L = DTS_L.contiguous()
     # DTS_L_term = lse6(DTS_L[0], DTS_L[1], DTS_L[2], DTS_L[3], DTS_L[4], DTS_L[5])
-    DTS_L_term = torch.logsumexp(DTS_L, dim=0)
+    DTS_L_term = logsumexp2(DTS_L, dim=0)
     return DTS_L_term
 
 def compute_DTS_independent(Pi, Pibar, Pi_D, split_leftrights_sorted, N_splits, S, Pi_s12, Pi_S_s1, Pi_S_s2, log_split_probs):
@@ -116,7 +118,7 @@ def compute_DTS_independent(Pi, Pibar, Pi_D, split_leftrights_sorted, N_splits, 
     DTS[4] = Pi_s1_right + Pi_S_s2_left
     # DTS has shape [5, N_splits, S]
     # log_split_probs already has shape [N_splits, 1] so it broadcasts correctly 
-    DTS_term = log_split_probs + torch.logsumexp(DTS, dim=0)
+    DTS_term = log_split_probs + logsumexp2(DTS, dim=0)
     return DTS_term
 
 def compute_DTS_L_independent(rep_log_pS, Pi, Pibar, E, E_s1, E_s2, Pi_S_s1, Pi_S_s2, Ebar, Pi_D, clade_species_map, log_2, clades_per_gene):
@@ -140,5 +142,89 @@ def compute_DTS_L_independent(rep_log_pS, Pi, Pibar, E, E_s1, E_s2, Pi_S_s1, Pi_
     DTS_L[4] = Pi_S_s2 + E_s1_rep
     # Leaf term (rep_log_pS already expanded to [C,S])
     DTS_L[5] = rep_log_pS + clade_species_map
-    DTS_L_term = torch.logsumexp(DTS_L, dim=0)
+    DTS_L_term = logsumexp2(DTS_L, dim=0)
     return DTS_L_term
+
+
+def compute_DTS_wave(
+    Pi, Pibar, Pi_s12,
+    log_pD, log_pS,
+    split_lefts, split_rights,
+    log_split_probs,
+    S,
+):
+    """Compute DTS terms for a subset of splits (one wave).
+
+    Only processes splits whose parent is in the current wave.
+    Children Pi/Pibar come from the full (partially-frozen) Pi tensor.
+
+    Args:
+        Pi: [C, S] full Pi tensor (log2-space)
+        Pibar: [C, S] full Pibar tensor (log2-space)
+        Pi_s12: [C, 2S] Pi at species-tree children
+        log_pD, log_pS: event log2-probabilities
+        split_lefts: [N_w] left child clade indices for wave splits
+        split_rights: [N_w] right child clade indices for wave splits
+        log_split_probs: [N_w, 1] log2 split probabilities
+        S: number of species
+
+    Returns:
+        DTS_term: [N_w, S] log2-space DTS terms
+    """
+    N_w = split_lefts.shape[0]
+
+    lr_sorted = torch.cat([split_lefts, split_rights])
+    Pi_lr = torch.index_select(Pi, 0, lr_sorted)
+    Pi_left, Pi_right = torch.chunk(Pi_lr, 2, dim=0)
+    Pibar_lr = torch.index_select(Pibar, 0, lr_sorted)
+    Pibar_left, Pibar_right = torch.chunk(Pibar_lr, 2, dim=0)
+
+    DTS = torch.empty((5, N_w, S), device=Pi.device, dtype=Pi.dtype)
+    DTS[0] = log_pD + Pi_left + Pi_right
+    DTS[1] = Pi_left + Pibar_right
+    DTS[2] = Pi_right + Pibar_left
+
+    Pi_s12_lr = torch.index_select(Pi_s12, 0, lr_sorted)
+    Pi_s1_left = Pi_s12_lr[:N_w, :S]
+    Pi_s2_left = Pi_s12_lr[:N_w, S:]
+    Pi_s1_right = Pi_s12_lr[N_w:, :S]
+    Pi_s2_right = Pi_s12_lr[N_w:, S:]
+    DTS[3] = log_pS + Pi_s1_left + Pi_s2_right
+    DTS[4] = log_pS + Pi_s1_right + Pi_s2_left
+
+    DTS_term = log_split_probs + logsumexp2(DTS, dim=0)
+    return DTS_term
+
+
+def compute_DTS_L_wave(
+    Pi_wave, Pibar_wave, Pi_s12_wave,
+    E, Ebar, E_s1, E_s2,
+    log_pS, log_pD, log_2,
+    clade_species_map_wave,
+):
+    """Compute DTS_L terms for a wave's clades.
+
+    Args:
+        Pi_wave: [|W|, S] log2-space
+        Pibar_wave: [|W|, S] log2-space
+        Pi_s12_wave: [|W|, 2S] Pi at species children for wave clades
+        E, Ebar, E_s1, E_s2: [S] species extinction (log2-space)
+        log_pS, log_pD: event log2-probabilities
+        log_2: scalar tensor = 1.0 (log2(2))
+        clade_species_map_wave: [|W|, S] leaf indicators
+
+    Returns:
+        DTS_L_term: [|W|, S] log2-space
+    """
+    W, S = Pi_wave.shape
+    DTS_L = torch.empty((6, W, S), device=Pi_wave.device, dtype=Pi_wave.dtype)
+    Pi_s1_wave, Pi_s2_wave = torch.chunk(Pi_s12_wave, 2, dim=1)
+
+    DTS_L[0] = (log_2 + log_pD + E).unsqueeze(0) + Pi_wave  # DL
+    DTS_L[1] = Pi_wave + Ebar.unsqueeze(0)  # TL1
+    DTS_L[2] = Pibar_wave + E.unsqueeze(0)  # TL2
+    DTS_L[3] = (log_pS + E_s2).unsqueeze(0) + Pi_s1_wave  # SL1
+    DTS_L[4] = (log_pS + E_s1).unsqueeze(0) + Pi_s2_wave  # SL2
+    DTS_L[5] = log_pS + clade_species_map_wave  # leaf
+
+    return logsumexp2(DTS_L, dim=0)

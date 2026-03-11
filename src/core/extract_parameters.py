@@ -1,4 +1,5 @@
 import torch
+from .log2_utils import log2_softmax
 
 
 def extract_parameters(theta, transfer_mat_unnormalized, genewise, specieswise, pairwise):
@@ -7,16 +8,16 @@ def extract_parameters(theta, transfer_mat_unnormalized, genewise, specieswise, 
         zeros_tensor = theta.new_zeros((N_genes, N_sp, 1))
         if pairwise:
             complete_theta = torch.cat((zeros_tensor, theta, transfer_mat_unnormalized.unsqueeze(0).expand(N_genes, -1, -1)), dim=-1)
-            result = torch.log_softmax(complete_theta, dim=-1)
+            result = log2_softmax(complete_theta, dim=-1)
             log_pS = result[...,0]
             log_pD = result[...,1]
             log_pL = result[...,2]
             max_transfer_mat = torch.max(transfer_mat_unnormalized, dim=-1, keepdim=True).values
-            transfer_mat = torch.exp(result[...,3:] - max_transfer_mat)
+            transfer_mat = torch.exp2(result[...,3:] - max_transfer_mat)
             return log_pS, log_pD, log_pL, transfer_mat, max_transfer_mat
         else:
             complete_theta = torch.cat((zeros_tensor, theta), dim=-1)
-            result = torch.log_softmax(complete_theta, dim=-1)
+            result = log2_softmax(complete_theta, dim=-1)
             log_pS = result[...,0]
             log_pD = result[...,1]
             log_pL = result[...,2]
@@ -24,7 +25,7 @@ def extract_parameters(theta, transfer_mat_unnormalized, genewise, specieswise, 
             # transfer_mat has shape [N_sp, N_sp]. We need one per gene, so we add a broadcasting dimension
             log_transfer_mat = log_pT.unsqueeze(-1) + transfer_mat_unnormalized.unsqueeze(0) # shape [N_genes, N_sp, N_sp]
             max_transfer_mat = torch.max(log_transfer_mat, dim=-1, keepdim=True).values
-            transfer_mat = torch.exp(log_transfer_mat - max_transfer_mat)
+            transfer_mat = torch.exp2(log_transfer_mat - max_transfer_mat)
             return log_pS, log_pD, log_pL, transfer_mat, max_transfer_mat
     elif genewise:
         N_genes, _ = theta.shape
@@ -33,7 +34,7 @@ def extract_parameters(theta, transfer_mat_unnormalized, genewise, specieswise, 
             raise NotImplementedError("We don't implement pairwise transfer coefficients if we don't even use specieswise parameters.")
         else:
             complete_theta = torch.cat((zeros_tensor, theta), dim=-1)
-            result = torch.log_softmax(complete_theta, dim=-1)
+            result = log2_softmax(complete_theta, dim=-1)
             log_pS = result[...,0]
             log_pD = result[...,1]
             log_pL = result[...,2]
@@ -41,29 +42,29 @@ def extract_parameters(theta, transfer_mat_unnormalized, genewise, specieswise, 
             # transfer_mat has shape [N_sp, N_sp]. We need one per gene, so we add a broadcasting dimension
             log_transfer_mat = log_pT.view(N_genes, 1, 1) + transfer_mat_unnormalized.unsqueeze(0) # shape [N_genes, N_sp, N_sp]
             max_transfer_mat = torch.max(log_transfer_mat, dim=-1, keepdim=True).values
-            transfer_mat = torch.exp(log_transfer_mat - max_transfer_mat)
+            transfer_mat = torch.exp2(log_transfer_mat - max_transfer_mat)
             return log_pS, log_pD, log_pL, transfer_mat, max_transfer_mat
     elif specieswise:
         N_sp, _ = theta.shape
         zeros_tensor = theta.new_zeros((N_sp, 1))
         if pairwise:
             complete_theta = torch.cat((zeros_tensor, theta, transfer_mat_unnormalized), dim=-1)
-            result = torch.log_softmax(complete_theta, dim=-1)
+            result = log2_softmax(complete_theta, dim=-1)
             log_pS = result[...,0]
             log_pD = result[...,1]
             log_pL = result[...,2]
             max_transfer_mat = torch.max(transfer_mat_unnormalized, dim=-1, keepdim=True).values
-            transfer_mat = torch.exp(result[...,3:] - max_transfer_mat)
+            transfer_mat = torch.exp2(result[...,3:] - max_transfer_mat)
             # s = log_pS[0]
             # d = log_pD[0]
             # l = log_pL[0]
             # t = transfer_mat[0]
             # m = max_transfer_mat[0]
-            # We have (t*torch.exp(m)).sum() + torch.exp(s) + torch.exp(d) + torch.exp(l) = 1.0
+            # We have (t*torch.exp2(m)).sum() + torch.exp2(s) + torch.exp2(d) + torch.exp2(l) = 1.0
             return log_pS, log_pD, log_pL, transfer_mat, max_transfer_mat
         else:
             complete_theta = torch.cat((zeros_tensor, theta), dim=-1)
-            result = torch.log_softmax(complete_theta, dim=-1)
+            result = log2_softmax(complete_theta, dim=-1)
             log_pS = result[...,0]
             log_pD = result[...,1]
             log_pL = result[...,2]
@@ -72,23 +73,23 @@ def extract_parameters(theta, transfer_mat_unnormalized, genewise, specieswise, 
             # Each donor species i has row logits log_pT[i] + transfer_mat_unnormalized[i, :]
             log_transfer_mat = log_pT.unsqueeze(-1) + transfer_mat_unnormalized  # shape [N_sp, N_sp]
             max_transfer_mat = torch.max(log_transfer_mat, dim=-1, keepdim=True).values
-            transfer_mat = torch.exp(log_transfer_mat - max_transfer_mat)
+            transfer_mat = torch.exp2(log_transfer_mat - max_transfer_mat)
             return log_pS, log_pD, log_pL, transfer_mat, max_transfer_mat
     else:
         zeros_tensor = theta.new_zeros((1,))
         if pairwise:
             N_sp, _ = transfer_mat_unnormalized.shape
             complete_theta = torch.cat((zeros_tensor.unsqueeze(0).expand(N_sp, -1), theta.unsqueeze(0).expand(N_sp, -1), transfer_mat_unnormalized), dim=-1)
-            result = torch.log_softmax(complete_theta, dim=-1)
+            result = log2_softmax(complete_theta, dim=-1)
             log_pS = result[...,0].squeeze(0)
             log_pD = result[...,1].squeeze(0)
             log_pL = result[...,2].squeeze(0)
             max_transfer_mat = torch.max(transfer_mat_unnormalized, dim=-1, keepdim=True).values
-            transfer_mat = torch.exp(result[...,3:] - max_transfer_mat)
+            transfer_mat = torch.exp2(result[...,3:] - max_transfer_mat)
             return log_pS, log_pD, log_pL, transfer_mat, max_transfer_mat
         else:
             complete_theta = torch.cat((zeros_tensor, theta), dim=-1)
-            result = torch.log_softmax(complete_theta, dim=-1)
+            result = log2_softmax(complete_theta, dim=-1)
             log_pS = result[...,0]
             log_pD = result[...,1]
             log_pL = result[...,2]
@@ -97,8 +98,52 @@ def extract_parameters(theta, transfer_mat_unnormalized, genewise, specieswise, 
             # Scalar T distributed using provided unnormalized recipient logits per donor row
             log_transfer_mat = log_pT + transfer_mat_unnormalized  # shape [N_sp, N_sp]
             max_transfer_mat = torch.max(log_transfer_mat, dim=-1, keepdim=True).values
-            transfer_mat = torch.exp(log_transfer_mat - max_transfer_mat)
+            transfer_mat = torch.exp2(log_transfer_mat - max_transfer_mat)
             return log_pS, log_pD, log_pL, transfer_mat, max_transfer_mat
+
+
+def extract_parameters_uniform(theta, unnorm_row_max, specieswise):
+    """Extract SDTL parameters without materializing the [S,S] transfer matrix.
+
+    For the uniform pibar approximation, we only need max_transfer_mat (per-row
+    maxima of the log transfer matrix).  Since log_transfer_mat[i,j] =
+    log_pT[i] + unnorm[i,j], the row max is log_pT[i] + max_j(unnorm[i,j]).
+    This avoids the O(S^2) exp2 and eliminates the PCIe transfer of the full
+    [S,S] matrix.
+
+    Parameters
+    ----------
+    theta : Tensor
+        Rate parameters (same as extract_parameters).
+    unnorm_row_max : Tensor [S]
+        Precomputed row maxima of transfer_mat_unnormalized: max_j(unnorm[i,j]).
+    specieswise : bool
+        Whether rates are per-species.
+
+    Returns
+    -------
+    log_pS, log_pD, log_pL, transfer_mat (None), max_transfer_mat
+    """
+    if specieswise:
+        N_sp, _ = theta.shape
+        zeros_tensor = theta.new_zeros((N_sp, 1))
+        complete_theta = torch.cat((zeros_tensor, theta), dim=-1)
+        result = log2_softmax(complete_theta, dim=-1)
+        log_pS = result[..., 0]
+        log_pD = result[..., 1]
+        log_pL = result[..., 2]
+        log_pT = result[..., 3]  # [S]
+        max_transfer_mat = log_pT + unnorm_row_max  # [S]
+    else:
+        zeros_tensor = theta.new_zeros((1,))
+        complete_theta = torch.cat((zeros_tensor, theta), dim=-1)
+        result = log2_softmax(complete_theta, dim=-1)
+        log_pS = result[0]
+        log_pD = result[1]
+        log_pL = result[2]
+        log_pT = result[3]  # scalar
+        max_transfer_mat = log_pT + unnorm_row_max  # [S]
+    return log_pS, log_pD, log_pL, None, max_transfer_mat
 
 
 if __name__ == "__main__":

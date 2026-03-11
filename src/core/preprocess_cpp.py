@@ -25,14 +25,15 @@ def _load_extension() -> Any:
     return load(
         name="preprocess_cpp",
         sources=sources,
-        extra_cflags=["-O3"],
+        extra_cflags=["-O3", "-fopenmp"],
+        extra_ldflags=["-fopenmp"],
         verbose=False,
     )
 
 
 def preprocess_fast(
     species_tree_path: str,
-    gene_tree_path: str,
+    gene_tree_paths: "str | list[str]",
     *,
     device: torch.device | None = None,
     dtype: torch.dtype = torch.float64,
@@ -41,8 +42,12 @@ def preprocess_fast(
     if device is None:
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
+    # Accept a single path or a list
+    if isinstance(gene_tree_paths, str):
+        gene_tree_paths = [gene_tree_paths]
+
     ext = _load_extension()
-    raw = ext.preprocess(species_tree_path, gene_tree_path)
+    raw = ext.preprocess(species_tree_path, gene_tree_paths)
 
     species_raw = raw["species"]
     ccp_raw = raw["ccp"]

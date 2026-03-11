@@ -83,20 +83,20 @@ def _seg_lse_hdim_kernel(
         neg_inf_col = block_max == NEG_INF
         safe_block_max = tl.where(neg_inf_col, ZERO, block_max)
 
-        stable = tl.exp(x_tile - safe_block_max[None, :])
+        stable = tl.exp2(x_tile - safe_block_max[None, :])
         block_sum = tl.sum(stable, axis=0)
 
         cand_block_max = tl.where(neg_inf_col, NEG_INF, block_max)
         new_max = tl.maximum(running_max, cand_block_max)
 
-        scaled_running = tl.where(new_max == NEG_INF, ZERO, running_sum * tl.exp(running_max - new_max))
-        scaled_block   = tl.where(new_max == NEG_INF, ZERO, block_sum   * tl.exp(safe_block_max - new_max))
+        scaled_running = tl.where(new_max == NEG_INF, ZERO, running_sum * tl.exp2(running_max - new_max))
+        scaled_block   = tl.where(new_max == NEG_INF, ZERO, block_sum   * tl.exp2(safe_block_max - new_max))
         running_sum = scaled_running + scaled_block
         running_max = new_max
 
         start_h += BLOCK_H
 
-    out = tl.where(running_max == NEG_INF, NEG_INF, tl.log(running_sum) + running_max)
+    out = tl.where(running_max == NEG_INF, NEG_INF, tl.log2(running_sum) + running_max)
     tl.store(y_ptr + gid * stride_y_g + offs_s * stride_y_s, out, mask=mask_s)
 
 
@@ -189,7 +189,7 @@ def _seg_lse_hdim_bwd_kernel(
         safe_block_max_d = tl.where(neg_inf_col, 0.0, block_max_d)
 
         # Sumexp within block relative to block_max_d; reduce in ACC_DTYPE
-        stable = tl.exp(x_tile - safe_block_max_d[None, :])   # DTYPE
+        stable = tl.exp2(x_tile - safe_block_max_d[None, :])   # DTYPE
         block_sum = tl.sum(stable.to(ACC_DTYPE), axis=0)      # ACC_DTYPE
 
         # Prepare candidates
@@ -205,12 +205,12 @@ def _seg_lse_hdim_bwd_kernel(
         scaled_old = tl.where(
             new_m64 == float("-inf"),
             0.0,
-            den_cols * tl.exp((m_cols32.to(ACC_DTYPE) - new_m_d.to(ACC_DTYPE)))
+            den_cols * tl.exp2((m_cols32.to(ACC_DTYPE) - new_m_d.to(ACC_DTYPE)))
         )
         scaled_blk = tl.where(
             new_m64 == float("-inf"),
             0.0,
-            block_sum * tl.exp((safe_block_max_d.to(ACC_DTYPE) - new_m_d.to(ACC_DTYPE)))
+            block_sum * tl.exp2((safe_block_max_d.to(ACC_DTYPE) - new_m_d.to(ACC_DTYPE)))
         )
 
         den_cols = scaled_old + scaled_blk
@@ -238,7 +238,7 @@ def _seg_lse_hdim_bwd_kernel(
             other=float("-inf"),
         )
         # Use m_cols32 (same DTYPE shift as in denominator path)
-        p = tl.exp(x_tile - m_cols32[None, :])       # DTYPE
+        p = tl.exp2(x_tile - m_cols32[None, :])       # DTYPE
         gx_tile = p * scale[None, :]                 # DTYPE
 
         tl.store(
@@ -408,7 +408,10 @@ def _reference_seg_logsumexp(x: torch.Tensor, ptr: torch.Tensor) -> torch.Tensor
         end = int(ptr[g + 1].item())
         if start == end:
             continue
-        out[g] = torch.logsumexp(x[start:end], dim=0)
+        # log2-space: log2(sum(2^x))
+        m = x[start:end].max(dim=0).values
+        m_safe = torch.where(torch.isfinite(m), m, torch.zeros_like(m))
+        out[g] = torch.log2(torch.exp2(x[start:end] - m_safe.unsqueeze(0)).sum(dim=0)) + m
     return out
 
 

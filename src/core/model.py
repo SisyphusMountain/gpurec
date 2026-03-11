@@ -2,7 +2,7 @@ import math
 
 import torch
 from torch.utils.data import Dataset
-from .extract_parameters import extract_parameters
+from .extract_parameters import extract_parameters, extract_parameters_uniform
 from .likelihood import E_fixed_point, Pi_fixed_point, Pi_wave_forward, Pi_wave_forward_v2, compute_log_likelihood
 from .batching import collate_gene_families, collate_wave, build_wave_layout
 from .scheduling import compute_clade_waves
@@ -34,6 +34,7 @@ class GeneDataset(Dataset):
         first_raw = ext.preprocess(species_tree_path, [str(gene_tree_paths[0])])
         self.species_helpers = first_raw['species']
         self.tr_mat_unnormalized = torch.log2(self.species_helpers["Recipients_mat"])
+        self.unnorm_row_max = self.tr_mat_unnormalized.max(dim=-1).values  # [S], precomputed
         self.S = int(self.species_helpers['S'])
 
         # creating an initial theta
@@ -43,7 +44,7 @@ class GeneDataset(Dataset):
                 # If using pairwise coefficients, the transfer rate is implicitly contained in this matrix.
                 self.tr_mat_unnormalized = self.tr_mat_unnormalized - 10.0
             else:
-                theta = -10*torch.ones(self.S, 1, dtype=dtype, device=device)
+                theta = -10*torch.ones(self.S, 3, dtype=dtype, device=device)
         else:
             theta = -10000*torch.ones(3, dtype=dtype, device=device)
 
@@ -235,6 +236,7 @@ class GeneDataset(Dataset):
         wave_version: int = 2,
         chunk_size: int | None = None,
         max_wave_size: int = 4096,
+        pibar_mode: str = 'dense',
     ) -> list[float]:
         """Compute log-likelihoods for a batch of gene families.
 
@@ -247,6 +249,8 @@ class GeneDataset(Dataset):
             chunk_size: If set, process families in chunks of this size to avoid OOM.
                 Only applies to the wave path. Recommended: 20 for S~2000.
             max_wave_size: Max clades per wave for v2 scheduling. Default 4096.
+            pibar_mode: 'dense' (cuBLAS matmul) or 'uniform' (O(W*S) approximation).
+                Use 'uniform' for large S where the transfer matrix is nearly uniform.
         """
         if device is None:
             device = self.device
@@ -271,6 +275,7 @@ class GeneDataset(Dataset):
                     use_wave=use_wave,
                     wave_version=wave_version,
                     max_wave_size=max_wave_size,
+                    pibar_mode=pibar_mode,
                 ))
             return all_logLs
 
@@ -292,42 +297,53 @@ class GeneDataset(Dataset):
         root_clade_ids = batched['root_clade_ids']  # Long[F]
         clades_per_gene = torch.tensor([m['C'] for m in batched['family_meta']], dtype=torch.long, device=device)
 
-        transfer_mat_unnorm = self.tr_mat_unnormalized.to(device=device, dtype=dtype)
-
-        if self.genewise:
-            # Stack per-family theta and extract per-gene parameters
-            theta_stack = torch.stack([
-                self.families[i]['theta'].to(device=device, dtype=dtype) for i in indices
-            ], dim=0)
-            log_pS, log_pD, log_pL, transfer_mat, max_transfer_mat = extract_parameters(
-                theta_stack, transfer_mat_unnorm,
-                genewise=True, specieswise=self.specieswise, pairwise=self.pairwise,
-            )
-            # Ensure max_transfer has shape [N_genes, S]
-            if max_transfer_mat.ndim == 3 and max_transfer_mat.shape[-1] == 1:
-                max_transfer_vec = max_transfer_mat.squeeze(-1)
-            else:
-                max_transfer_vec = max_transfer_mat
-        else:
-            # Shared parameters across families
+        # Parameter extraction: uniform mode skips the [S,S] transfer matrix entirely
+        if pibar_mode == 'uniform' and not self.pairwise and not self.genewise:
+            # Lightweight path: only transfer [S] row maxima, not [S,S] matrix
+            unnorm_row_max = self.unnorm_row_max.to(device=device, dtype=dtype)
             theta0 = self.families[indices[0]]['theta'].to(device=device, dtype=dtype)
-            log_pS, log_pD, log_pL, transfer_mat, max_transfer_mat = extract_parameters(
-                theta0, transfer_mat_unnorm,
-                genewise=False, specieswise=self.specieswise, pairwise=self.pairwise,
+            log_pS, log_pD, log_pL, transfer_mat, max_transfer_mat = extract_parameters_uniform(
+                theta0, unnorm_row_max, specieswise=self.specieswise,
             )
-            if max_transfer_mat.ndim == 2 and max_transfer_mat.shape[-1] == 1:
-                max_transfer_vec = max_transfer_mat.squeeze(-1)
+            max_transfer_vec = max_transfer_mat  # already [S]
+        else:
+            transfer_mat_unnorm = self.tr_mat_unnormalized.to(device=device, dtype=dtype)
+            if self.genewise:
+                # Stack per-family theta and extract per-gene parameters
+                theta_stack = torch.stack([
+                    self.families[i]['theta'].to(device=device, dtype=dtype) for i in indices
+                ], dim=0)
+                log_pS, log_pD, log_pL, transfer_mat, max_transfer_mat = extract_parameters(
+                    theta_stack, transfer_mat_unnorm,
+                    genewise=True, specieswise=self.specieswise, pairwise=self.pairwise,
+                )
+                # Ensure max_transfer has shape [N_genes, S]
+                if max_transfer_mat.ndim == 3 and max_transfer_mat.shape[-1] == 1:
+                    max_transfer_vec = max_transfer_mat.squeeze(-1)
+                else:
+                    max_transfer_vec = max_transfer_mat
             else:
-                max_transfer_vec = max_transfer_mat
+                # Shared parameters across families
+                theta0 = self.families[indices[0]]['theta'].to(device=device, dtype=dtype)
+                log_pS, log_pD, log_pL, transfer_mat, max_transfer_mat = extract_parameters(
+                    theta0, transfer_mat_unnorm,
+                    genewise=False, specieswise=self.specieswise, pairwise=self.pairwise,
+                )
+                if max_transfer_mat.ndim == 2 and max_transfer_mat.shape[-1] == 1:
+                    max_transfer_vec = max_transfer_mat.squeeze(-1)
+                else:
+                    max_transfer_vec = max_transfer_mat
 
         # Move species helpers to device/dtype
+        # Skip [S,S] matrices (ancestors_dense, Recipients_mat) — too large for GPU
+        _skip_keys = {'ancestors_dense', 'Recipients_mat'} if pibar_mode == 'uniform' else set()
         def _move_tensor(t: torch.Tensor) -> torch.Tensor:
             if t.dtype.is_floating_point:
                 return t.to(device=device, dtype=dtype)
             else:
                 return t.to(device=device)
 
-        species_helpers = {k: (_move_tensor(v) if torch.is_tensor(v) else v)
+        species_helpers = {k: (_move_tensor(v) if torch.is_tensor(v) and k not in _skip_keys else v)
                            for k, v in self.species_helpers.items()}
 
         # E fixed point (vectorized across genes when parameters are batched)
@@ -343,11 +359,16 @@ class GeneDataset(Dataset):
             warm_start_E=None,
             dtype=dtype,
             device=device,
+            pibar_mode=pibar_mode,
         )
         E = E_out['E']
         E_s1 = E_out['E_s1']
         E_s2 = E_out['E_s2']
         Ebar = E_out['E_bar']
+
+        # Free large [S,S] tensors after E_step when using dense mode
+        if pibar_mode == 'uniform':
+            transfer_mat = None
 
         if use_wave and not self.genewise:
             # Compute per-family waves (uses fast C++ phased scheduler)
@@ -355,9 +376,7 @@ class GeneDataset(Dataset):
             families_phases = []
             for idx in indices:
                 fam = self.families[idx]
-                ch_dev = {k: (v.to(device) if torch.is_tensor(v) else v)
-                          for k, v in fam['ccp_helpers'].items()}
-                waves_i, phases_i = compute_clade_waves(ch_dev)
+                waves_i, phases_i = compute_clade_waves(fam['ccp_helpers'])
                 families_waves.append(waves_i)
                 families_phases.append(phases_i)
 
@@ -396,6 +415,7 @@ class GeneDataset(Dataset):
                     device=device, dtype=dtype,
                     local_iters=max_iters_Pi,
                     local_tolerance=tol_Pi,
+                    pibar_mode=pibar_mode,
                 )
                 # root_clade_ids are in original space; Pi is unpermuted by v2
             else:

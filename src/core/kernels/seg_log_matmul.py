@@ -89,10 +89,10 @@ def _seg_log_matmul(
         # online row max + rescale
         r_blk = tl.max(Ublk, axis=1)
         new_r = tl.maximum(r, r_blk)
-        S *= tl.exp(r - new_r)[:, None]
+        S *= tl.exp2(r - new_r)[:, None]
         r = new_r
 
-        Uexp = tl.exp(Ublk - r[:, None])  # [BM, BK], safe
+        Uexp = tl.exp2(Ublk - r[:, None])  # [BM, BK], safe
 
         # V_scaled chunk (linear space)
         v_ptrs = (V_scaled_ptr
@@ -107,7 +107,7 @@ def _seg_log_matmul(
         S += tl.dot(Uexp, V_scaled_blk, input_precision="ieee")  # [BM,BN]
 
     # finalize: W = log(S) + r + c_seg
-    Wtile = tl.where(S > 0, tl.log(S), tl.full((TILE_M, TILE_N), NEG_INF, dtype=tl.float32))
+    Wtile = tl.where(S > 0, tl.log2(S), tl.full((TILE_M, TILE_N), NEG_INF, dtype=tl.float32))
     Wtile = Wtile + r[:, None] + c_seg[None, :]
 
     # store W
@@ -273,7 +273,7 @@ def _seg_dU_log(
         Gtile  = tl.load(g_ptrs, mask=mask_m[:, None] & mask_n[None, :], other=0.0)
 
         # inv S* = exp(-(Wlog - c_max - r))
-        invSstar = tl.exp(-(Wtile - c_seg[None, :] - r[:, None]))
+        invSstar = tl.exp2(-(Wtile - c_seg[None, :] - r[:, None]))
         # zero-out columns where W=-inf (S*=0)
         invSstar = tl.where(Wtile > NEG_INF, invSstar, 0.0)
         Ttile = Gtile * invSstar  # [BM, BN]
@@ -284,7 +284,7 @@ def _seg_dU_log(
     # multiply by exp(U_log - r) safely
     u_ptrs = U_ptr + (offs_m[:, None] * stride_um + offs_k[None, :] * stride_uk)
     Ublk_log = tl.load(u_ptrs, mask=mask_m[:, None] & mask_k[None, :], other=NEG_INF)
-    Uexp = tl.exp(Ublk_log - r[:, None])  # <= 1
+    Uexp = tl.exp2(Ublk_log - r[:, None])  # <= 1
     dUtile = Uexp * Acc
 
     d_ptrs = dUlog_ptr + (offs_m[:, None] * stride_dm + offs_k[None, :] * stride_dk)
@@ -359,14 +359,14 @@ def _seg_dV_scaled(
         Gtile  = tl.load(g_ptrs, mask=mask_m[:, None] & mask_n[None, :], other=0.0)
 
         # T = G_log * exp(-(Wlog - c_max - r))
-        invSstar = tl.exp(-(Wtile - c_seg[None, :] - r[:, None]))
+        invSstar = tl.exp2(-(Wtile - c_seg[None, :] - r[:, None]))
         invSstar = tl.where(Wtile > NEG_INF, invSstar, 0.0)
         Ttile = Gtile * invSstar  # [BM, BN]
 
         # Uexp^T : [BK, BM]
         u_ptrs_T = U_ptr + (offs_m[None, :] * stride_um + offs_k[:, None] * stride_uk)
         Ublk_log_T = tl.load(u_ptrs_T, mask=mask_k[:, None] & mask_m[None, :], other=NEG_INF)
-        Uexp_T = tl.exp(Ublk_log_T - r[None, :])
+        Uexp_T = tl.exp2(Ublk_log_T - r[None, :])
 
         # Accumulate: [BK,BM] @ [BM,BN] -> [BK,BN]
         Acc += tl.dot(Uexp_T, Ttile, input_precision="ieee")
@@ -482,7 +482,7 @@ def _seg_record_forward(
         # Uexp chunk
         u_ptrs = U_ptr + (offs_m[:, None] * stride_um + k_offs[None, :] * stride_uk)
         Ublk_log = tl.load(u_ptrs, mask=mask_m[:, None] & k_mask[None, :], other=NEG_INF)
-        Ublk_exp = tl.exp(Ublk_log - r[:, None])  # <= 1, fp32 here
+        Ublk_exp = tl.exp2(Ublk_log - r[:, None])  # <= 1, fp32 here
 
         # Store Uexp once (first column tile only), possibly in f16/bf16
         if pid_n == 0:
@@ -500,7 +500,7 @@ def _seg_record_forward(
         S += tl.dot(Ublk_exp, Vblk, input_precision="ieee")
 
     # finalize W = log(S) + r + c_max
-    Wtile = tl.where(S > 0, tl.log(S), tl.full(S.shape, NEG_INF, tl.float32))
+    Wtile = tl.where(S > 0, tl.log2(S), tl.full(S.shape, NEG_INF, tl.float32))
     Wtile = Wtile + r[:, None] + c_seg[None, :]
 
     # store W
@@ -644,7 +644,7 @@ def _seg_dU_log_cached(
             Wtile  = tl.load(w_ptrs, mask=mask_m[:, None] & mask_n[None, :], other=NEG_INF)
             c_ptrs = c_max_ptr + s * stride_cm_s + offs_n * stride_cm_n
             c_seg  = tl.load(c_ptrs, mask=mask_n, other=0.0)
-            Inv = tl.exp(-(Wtile - c_seg[None, :] - r[:, None]))
+            Inv = tl.exp2(-(Wtile - c_seg[None, :] - r[:, None]))
             Inv = tl.where(Wtile > NEG_INF, Inv, 0.0)
 
         Ttile = Gtile * Inv  # [BM, BN]
@@ -733,7 +733,7 @@ def _seg_dV_scaled_cached(
         else:
             w_ptrs = Wlog_ptr + (offs_m[:, None] * stride_wm + offs_n[None, :] * stride_wn)
             Wtile  = tl.load(w_ptrs, mask=mask_m[:, None] & mask_n[None, :], other=NEG_INF)
-            Inv = tl.exp(-(Wtile - c_seg[None, :] - r[:, None]))
+            Inv = tl.exp2(-(Wtile - c_seg[None, :] - r[:, None]))
             Inv = tl.where(Wtile > NEG_INF, Inv, 0.0)
 
         Ttile = Gtile * Inv  # [BM, BN]
@@ -824,7 +824,7 @@ def vjp_cached_dU_dV(
 def _make_scaled(V_log: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
     """Given V_log [K,N], return V_scaled [K,N] = exp(V_log - c_max) and c_max [N]."""
     c_max = torch.max(V_log, dim=0, keepdim=False).values  # [N]
-    V_scaled = torch.exp(V_log - c_max.unsqueeze(0))       # [K,N]
+    V_scaled = torch.exp2(V_log - c_max.unsqueeze(0))       # [K,N]
     return V_scaled, c_max
 
 
@@ -836,11 +836,11 @@ def _ref_log_matmul(U_log: torch.Tensor, V_log: torch.Tensor) -> torch.Tensor:
     """
     # Row stabilization for U
     U_max = torch.max(U_log, dim=1, keepdim=True).values  # [G,1]
-    U_lin = torch.exp(U_log - U_max)                      # [G,K]
+    U_lin = torch.exp2(U_log - U_max)                      # [G,K]
     # Col stabilization for V
     V_scaled, c_max = _make_scaled(V_log)                 # [K,N], [N]
     Y_lin = U_lin @ V_scaled                              # [G,N]
-    Y_log = torch.log(Y_lin) + U_max + c_max.unsqueeze(0) # [G,N]
+    Y_log = torch.log2(Y_lin) + U_max + c_max.unsqueeze(0) # [G,N]
     return Y_log
 
 

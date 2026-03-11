@@ -260,3 +260,174 @@ def wave_step_fused(Pi_W, Pibar_W, DL_const, Ebar, E, SL1_const, SL2_const,
         stride_ws=S,
     )
     return Pi_new
+
+
+# --- Fused uniform-Pibar kernel ---
+# One program per clade row. Two passes:
+#   Pass 1: online max+sum over Pi row (for uniform Pibar stats)
+#   Pass 2: compute Pibar inline, DTS_L terms, logsumexp, convergence diff
+
+@triton.jit
+def _wave_step_uniform_kernel(
+    # Global Pi tensor [C, S] — read from rows [ws : ws+W]
+    Pi_ptr,
+    ws,                  # wave start (clade offset)
+    # Constants: [S] each
+    mt_ptr,
+    DL_const_ptr, Ebar_ptr, E_ptr, SL1_const_ptr, SL2_const_ptr,
+    # Species child indices: [S] long each
+    sp_child1_ptr, sp_child2_ptr,
+    # Per-wave arrays: [W, S]
+    leaf_term_ptr,
+    DTS_reduced_ptr,
+    has_splits: tl.constexpr,
+    # Outputs
+    Pi_new_ptr,          # [W, S]
+    Pibar_out_ptr,       # [C, S] — write Pibar to rows [ws : ws+W]
+    max_diff_ptr,        # [W] — per-row max |Pi_new - Pi_old| for convergence
+    # Dimensions
+    S: tl.constexpr,
+    stride: tl.constexpr,
+    BLOCK_S: tl.constexpr,
+):
+    """Fused kernel: uniform Pibar + DTS_L + logsumexp + convergence diff.
+
+    Each program handles one full clade row, processing S elements in tiles.
+    Pass 1 uses the online max+sum trick (single scan) for row statistics.
+    Pass 2 computes Pibar inline and all DTS_L terms in one scan.
+    """
+    w = tl.program_id(0)
+    pi_base = (ws + w) * stride      # offset into global Pi/Pibar
+    out_base = w * stride             # offset into [W, S] outputs
+
+    # === Pass 1: Online max + sum over the Pi row ===
+    row_max = tl.full([1], value=-1e30, dtype=tl.float32)
+    row_sum = tl.full([1], value=0.0, dtype=tl.float32)
+
+    for s_start in range(0, S, BLOCK_S):
+        s_offs = s_start + tl.arange(0, BLOCK_S)
+        mask = s_offs < S
+        pi_val = tl.load(Pi_ptr + pi_base + s_offs, mask=mask, other=-1e30)
+        tile_max = tl.max(pi_val, axis=0)
+        new_max = tl.maximum(row_max, tile_max)
+        # Rescale running sum to new max, add this tile's contribution
+        row_sum = row_sum * tl.exp2(row_max - new_max) + tl.sum(tl.exp2(pi_val - new_max), axis=0)
+        row_max = new_max
+
+    # === Pass 2: Pibar + DTS_L terms + logsumexp ===
+    local_max_diff = tl.full([1], value=0.0, dtype=tl.float32)
+
+    for s_start in range(0, S, BLOCK_S):
+        s_offs = s_start + tl.arange(0, BLOCK_S)
+        mask = s_offs < S
+
+        # Load Pi[w, s]
+        pi_w = tl.load(Pi_ptr + pi_base + s_offs, mask=mask, other=-1e30)
+
+        # Uniform Pibar: log2(row_sum - exp2(pi - max)) + max + mt
+        pi_exp = tl.exp2(pi_w - row_max)
+        mt = tl.load(mt_ptr + s_offs, mask=mask, other=0.0)
+        pibar_w = tl.log2(row_sum - pi_exp) + row_max + mt
+
+        # Store Pibar to global tensor
+        tl.store(Pibar_out_ptr + pi_base + s_offs, pibar_w, mask=mask)
+
+        # Load constants
+        dl_const = tl.load(DL_const_ptr + s_offs, mask=mask, other=-1e30)
+        ebar = tl.load(Ebar_ptr + s_offs, mask=mask, other=-1e30)
+        e_val = tl.load(E_ptr + s_offs, mask=mask, other=-1e30)
+        sl1_const = tl.load(SL1_const_ptr + s_offs, mask=mask, other=-1e30)
+        sl2_const = tl.load(SL2_const_ptr + s_offs, mask=mask, other=-1e30)
+
+        # Gather species children
+        c1 = tl.load(sp_child1_ptr + s_offs, mask=mask, other=0)
+        c2 = tl.load(sp_child2_ptr + s_offs, mask=mask, other=0)
+        c1_valid = c1 < S
+        c2_valid = c2 < S
+        pi_s1 = tl.load(Pi_ptr + pi_base + c1, mask=mask & c1_valid, other=-1e30)
+        pi_s2 = tl.load(Pi_ptr + pi_base + c2, mask=mask & c2_valid, other=-1e30)
+
+        # 6 DTS_L terms
+        t0 = dl_const + pi_w
+        t1 = pi_w + ebar
+        t2 = pibar_w + e_val
+        t3 = sl1_const + pi_s1
+        t4 = sl2_const + pi_s2
+        t5 = tl.load(leaf_term_ptr + out_base + s_offs, mask=mask, other=-1e30)
+
+        m = tl.maximum(t0, t1)
+        m = tl.maximum(m, t2)
+        m = tl.maximum(m, t3)
+        m = tl.maximum(m, t4)
+        m = tl.maximum(m, t5)
+
+        if has_splits:
+            dts_r = tl.load(DTS_reduced_ptr + out_base + s_offs, mask=mask, other=-1e30)
+            m = tl.maximum(m, dts_r)
+
+        m_safe = tl.where(m > -1e29, m, tl.zeros_like(m))
+        s = tl.exp2(t0 - m_safe) + tl.exp2(t1 - m_safe) + tl.exp2(t2 - m_safe)
+        s += tl.exp2(t3 - m_safe) + tl.exp2(t4 - m_safe) + tl.exp2(t5 - m_safe)
+        if has_splits:
+            s += tl.exp2(dts_r - m_safe)
+
+        result = tl.log2(s) + m
+        tl.store(Pi_new_ptr + out_base + s_offs, result, mask=mask)
+
+        # Convergence: max |result - pi_old| for significant entries (result > -100)
+        significant = result > -100.0
+        diff = tl.where(significant & mask, tl.abs(result - pi_w), tl.zeros_like(result))
+        local_max_diff = tl.maximum(local_max_diff, tl.max(diff, axis=0))
+
+    tl.store(max_diff_ptr + w, tl.max(local_max_diff, axis=0))
+
+
+def wave_step_uniform_fused(Pi, Pibar, ws, W, S,
+                            mt_squeezed, DL_const, Ebar, E, SL1_const, SL2_const,
+                            sp_child1, sp_child2, leaf_term_wt,
+                            DTS_reduced=None):
+    """Fused uniform-Pibar + wave step + convergence in one kernel.
+
+    Computes Pibar inline using the uniform transfer matrix approximation,
+    then DTS_L terms and logsumexp, plus per-row convergence diff.
+    Single kernel launch per iteration, eliminating the [W,S] Pibar intermediate.
+
+    Args:
+        Pi: [C, S] global Pi tensor (reads rows [ws:ws+W])
+        Pibar: [C, S] global Pibar tensor (writes rows [ws:ws+W])
+        ws: wave start index
+        W: wave size (number of clades)
+        S: number of species
+        mt_squeezed: [S] max_transfer_mat
+        DL_const, Ebar, E, SL1_const, SL2_const: [S] precomputed constants
+        sp_child1, sp_child2: [S] long species child indices
+        leaf_term_wt: [W, S]
+        DTS_reduced: [W, S] or None
+
+    Returns:
+        Pi_new: [W, S] new Pi values
+        max_diff: scalar, max |Pi_new - Pi_old| across all significant entries
+    """
+    Pi_new = torch.empty((W, S), dtype=Pi.dtype, device=Pi.device)
+    max_diff_buf = torch.empty(W, dtype=torch.float32, device=Pi.device)
+    has_splits = DTS_reduced is not None
+
+    BLOCK_S = min(256, triton.next_power_of_2(S))
+    grid = (W,)
+
+    _wave_step_uniform_kernel[grid](
+        Pi, ws,
+        mt_squeezed,
+        DL_const, Ebar, E, SL1_const, SL2_const,
+        sp_child1, sp_child2,
+        leaf_term_wt,
+        DTS_reduced if has_splits else leaf_term_wt,  # dummy
+        has_splits,
+        Pi_new, Pibar, max_diff_buf,
+        S,
+        stride=S,
+        BLOCK_S=BLOCK_S,
+        num_warps=4,
+    )
+    max_diff = max_diff_buf.max().item()
+    return Pi_new, max_diff
