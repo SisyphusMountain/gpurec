@@ -37,10 +37,16 @@ from src.core.tree_helpers import build_species_helpers
 from src.core.likelihood import (
     E_fixed_point,
     Pi_fixed_point,
+    Pi_wave_forward_v2,
+    Pi_wave_backward_v2,
     compute_log_likelihood,
+    compute_gradient_bounds,
     Pi_step,
     E_step,
 )
+from src.core.batching import build_wave_layout
+from src.core.scheduling import compute_clade_waves
+from src.core.extract_parameters import extract_parameters_uniform
 
 # -------------------------------------------------------------------------
 # Dataclasses for logging
@@ -327,6 +333,171 @@ def implicit_grad_loglik_vjp_cg(
     grad_theta = (gθ_F + gθ_G).detach()    # ∇θ logL
     return grad_theta, statsF, statsG
 
+
+@torch.no_grad()
+def implicit_grad_loglik_vjp_wave(
+    wave_layout,
+    species_helpers,
+    *,
+    Pi_star_wave: torch.Tensor,
+    Pibar_star_wave: torch.Tensor,
+    E_star: torch.Tensor,
+    E_s1: torch.Tensor,
+    E_s2: torch.Tensor,
+    Ebar: torch.Tensor,
+    log_pS: torch.Tensor,
+    log_pD: torch.Tensor,
+    log_pL: torch.Tensor,
+    max_transfer_mat: torch.Tensor,
+    root_clade_ids_perm: torch.Tensor,
+    theta: torch.Tensor,
+    unnorm_row_max: torch.Tensor,
+    specieswise: bool,
+    device: torch.device,
+    dtype: torch.dtype,
+    neumann_terms: int = 3,
+    use_pruning: bool = True,
+    pruning_threshold: float = -20.0,
+    cg_tol: float = 1e-8,
+    cg_maxiter: int = 500,
+    gmres_restart: int = 40,
+):
+    """Compute ∇θ logL using wave-decomposed backward pass + E adjoint.
+
+    Steps:
+    1. Pi backward: wave-by-wave Neumann series (root→leaves)
+    2. E adjoint: solve (I - G_E^T) w = q via CG/GMRES
+    3. θ gradient: VJP through extract_parameters_uniform
+
+    Returns (grad_theta, pi_backward_info).
+    """
+    # --- Step 1: Pi backward ---
+    pi_bwd = Pi_wave_backward_v2(
+        wave_layout=wave_layout,
+        Pi_star_wave=Pi_star_wave,
+        Pibar_star_wave=Pibar_star_wave,
+        E=E_star, Ebar=Ebar, E_s1=E_s1, E_s2=E_s2,
+        log_pS=log_pS, log_pD=log_pD, log_pL=log_pL,
+        max_transfer_mat=max_transfer_mat,
+        species_helpers=species_helpers,
+        root_clade_ids_perm=root_clade_ids_perm,
+        device=device, dtype=dtype,
+        neumann_terms=neumann_terms,
+        use_pruning=use_pruning,
+        pruning_threshold=pruning_threshold,
+    )
+
+    # --- Step 2: E adjoint ---
+    # q = accumulated gradient from Pi backward wrt E components
+    # The Pi backward accumulates grad_E, grad_Ebar, grad_E_s1, grad_E_s2
+    # These need to be chained through E_step to get the full E adjoint.
+
+    # Build VJP for E_step
+    sp_P_idx = species_helpers['s_P_indexes']
+    sp_c12_idx = species_helpers['s_C12_indexes']
+
+    # Assemble q from Pi backward's E-related gradients
+    q_E = pi_bwd['grad_E'].clone()
+
+    # Chain Ebar gradient through E_step's Ebar computation
+    # Ebar = logsumexp2(E) + mt, so dL/dE += dL/dEbar * d(Ebar)/d(E)
+    if pi_bwd['grad_Ebar'].abs().max() > 0:
+        E_req2 = E_star.detach().requires_grad_(True)
+        with torch.enable_grad():
+            mt_sq = max_transfer_mat.squeeze(-1) if max_transfer_mat.ndim > 1 else max_transfer_mat
+            # Ebar[s] = logsumexp2(E) + mt[s] (uniform approximation)
+            lse_val = torch.log2(torch.exp2(E_req2).sum(dim=-1, keepdim=True))
+            Ebar_recomp = lse_val + mt_sq
+            ebar_to_e = torch.autograd.grad(
+                Ebar_recomp, E_req2,
+                grad_outputs=pi_bwd['grad_Ebar'],
+                retain_graph=False,
+            )[0]
+        q_E = q_E + ebar_to_e
+
+    # Chain E_s1, E_s2 gradients through gather_E_children
+    if pi_bwd['grad_E_s1'].abs().max() > 0 or pi_bwd['grad_E_s2'].abs().max() > 0:
+        E_req3 = E_star.detach().requires_grad_(True)
+        with torch.enable_grad():
+            from src.core.terms import gather_E_children
+            E_s12 = gather_E_children(E_req3, sp_P_idx, sp_c12_idx)
+            E_s1_r, E_s2_r = torch.chunk(E_s12, 2, dim=-1)
+            E_s1_r = E_s1_r.view(E_req3.shape)
+            E_s2_r = E_s2_r.view(E_req3.shape)
+            total = (E_s1_r * pi_bwd['grad_E_s1']).sum() + (E_s2_r * pi_bwd['grad_E_s2']).sum()
+            es_to_e = torch.autograd.grad(total, E_req3, retain_graph=False)[0]
+        q_E = q_E + es_to_e
+
+    # Solve (I - G_E^T) w = q_E via CG/GMRES
+    def G_E_fun(E_in):
+        """E_step as a function of E only."""
+        return E_step(
+            E_in, sp_P_idx, sp_c12_idx,
+            log_pS, log_pD, log_pL,
+            None, max_transfer_mat, pibar_mode='uniform',
+        )[0]
+
+    # Build VJP for G_E
+    E_req_g = E_star.detach().requires_grad_(True)
+    with torch.enable_grad():
+        _, vjpG = tfunc.vjp(G_E_fun, E_req_g)
+
+    nE = E_star.numel()
+    E_shape = E_star.shape
+    q_flat = q_E.reshape(-1)
+
+    def AG_flat(w_flat):
+        wE = w_flat.view(E_shape).contiguous()
+        gE, = vjpG(wE.clone())
+        return (wE - gE).reshape(-1)
+
+    w_flat, statsG, okG = _cg(AG_flat, q_flat, tol=cg_tol, maxiter=cg_maxiter)
+    if not okG:
+        w_flat, statsG = _gmres(AG_flat, q_flat, tol=cg_tol, restart=gmres_restart, maxiter=cg_maxiter)
+        statsG.fallback_used = True
+
+    wE = w_flat.view(E_shape)
+
+    # Get theta gradient from E adjoint
+    _, gtheta_G = vjpG(wE)
+
+    # --- Step 3: theta gradient through extract_parameters_uniform ---
+    # VJP through extract_parameters_uniform to get dL/dtheta
+    theta_req = theta.detach().requires_grad_(True)
+    with torch.enable_grad():
+        log_pS_r, log_pD_r, log_pL_r, _, mt_r = extract_parameters_uniform(
+            theta_req, unnorm_row_max, specieswise=specieswise,
+        )
+        # Total parameter loss: sum of (param_gradient * param)
+        param_loss = (
+            (log_pS_r * pi_bwd['grad_log_pS']).sum() +
+            (log_pD_r * pi_bwd['grad_log_pD']).sum() +
+            (mt_r * pi_bwd['grad_max_transfer_mat']).sum()
+        )
+        grad_theta_pi = torch.autograd.grad(param_loss, theta_req, retain_graph=False)[0]
+
+    # E adjoint contribution to theta
+    theta_req2 = theta.detach().requires_grad_(True)
+    with torch.enable_grad():
+        log_pS_r2, log_pD_r2, log_pL_r2, _, mt_r2 = extract_parameters_uniform(
+            theta_req2, unnorm_row_max, specieswise=specieswise,
+        )
+
+        def G_E_theta(th_pS, th_pD, th_pL, th_mt):
+            return E_step(
+                E_star.detach(), sp_P_idx, sp_c12_idx,
+                th_pS, th_pD, th_pL, None, th_mt, pibar_mode='uniform',
+            )[0]
+
+        E_from_theta = G_E_theta(log_pS_r2, log_pD_r2, log_pL_r2, mt_r2)
+        gtheta_E = torch.autograd.grad(
+            E_from_theta, theta_req2,
+            grad_outputs=wE,
+            retain_graph=False,
+        )[0]
+
+    grad_theta = (grad_theta_pi + gtheta_E).detach()
+    return grad_theta, statsG
 
 
 # -------------------------------------------------------------------------

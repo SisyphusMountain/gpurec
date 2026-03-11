@@ -738,11 +738,15 @@ def Pi_wave_forward(
 
 def _compute_dts_cross(Pi, Pibar, meta, sp_child1, sp_child2, log_pD, log_pS,
                        S, device, dtype):
-    """Compute DTS cross-clade terms and reduce to [W, S] for one wave."""
+    """Compute DTS cross-clade terms and reduce to [W, S] for one wave.
+
+    Splits are pre-sorted: single-split clades (eq1) first, multi-split (ge2) after.
+    eq1: direct permuted copy (no reduction needed).
+    ge2: fused seg_logsumexp via CSR pointers.
+    """
     sl = meta['sl']
     sr = meta['sr']
     wlsp = meta['log_split_probs']
-    reduce_idx = meta['reduce_idx']
     W = meta['W']
 
     dts_term = dts_fused(
@@ -750,14 +754,24 @@ def _compute_dts_cross(Pi, Pibar, meta, sp_child1, sp_child2, log_pD, log_pS,
         sp_child1, sp_child2,
         log_pD, log_pS, wlsp,
     )  # [n_ws, S]
-    # Reduce to [W, S] via stable logsumexp scatter
-    reduce_exp = reduce_idx.unsqueeze(1).expand_as(dts_term)
+
+    NEG_INF = float('-inf')
     dts_r = torch.full((W, S), NEG_INF, device=device, dtype=dtype)
-    dts_r.scatter_reduce_(0, reduce_exp, dts_term, reduce='amax', include_self=True)
-    dts_max = dts_r.clone()
-    dts_sum = torch.zeros((W, S), device=device, dtype=dtype)
-    dts_sum.scatter_add_(0, reduce_exp, torch.exp2(dts_term - dts_max[reduce_idx]))
-    return torch.log2(dts_sum) + dts_max
+
+    n_eq1 = meta.get('n_eq1', 0)
+    n_ge2_clades = meta.get('n_ge2_clades', 0)
+
+    # Single-split clades: direct permuted copy
+    if n_eq1 > 0:
+        dts_r[meta['eq1_reduce_idx']] = dts_term[:n_eq1]
+
+    # Multi-split clades: fused segmented logsumexp
+    if n_ge2_clades > 0:
+        ge2_term = dts_term[n_eq1:].contiguous()
+        y_ge2 = seg_logsumexp(ge2_term, meta['ge2_ptr'])  # [n_ge2_clades, S]
+        dts_r[meta['ge2_parent_ids']] = y_ge2
+
+    return dts_r
 
 
 def _compute_Pibar_inline(Pi_W, transfer_mat_T, mt_squeezed, pibar_mode):
@@ -1065,6 +1079,7 @@ def Pi_wave_forward_v2(
                     dts_r = None
 
                 leaf_wt = _get_leaf_wt(ws, we).contiguous()
+
                 Pibar_W_buf = torch.empty(W, S, device=device, dtype=dtype)
 
                 for local_iter in range(n_iters):
@@ -1094,7 +1109,13 @@ def Pi_wave_forward_v2(
     Pi_orig = Pi[perm]
     clade_species_map_orig = clade_species_map[perm] if clade_species_map is not None else None
 
-    return {'Pi': Pi_orig, 'clade_species_map': clade_species_map_orig, 'iterations': total_iters}
+    return {
+        'Pi': Pi_orig,
+        'clade_species_map': clade_species_map_orig,
+        'iterations': total_iters,
+        'Pi_wave_ordered': Pi,
+        'Pibar_wave_ordered': Pibar,
+    }
 
 
 def _compute_DTS_reduced(Pi, Pibar, lr, n_ws, S, W, log_pD, log_pS,
@@ -1152,67 +1173,499 @@ def compute_gradient_bounds(
     ccp_helpers,
     root_clade_idx,
     threshold=-20.0,
+    wave_metas=None,
 ):
-    """Compute gradient bounds for pruning clades from the backward pass (Phase D).
+    """Compute gradient bounds for pruning clades from the backward pass.
 
-    After the forward pass, propagates gradient bounds from the root downward
-    in reverse topological order. Clades with bound below threshold can be
-    excluded from the backward pass with bounded error.
+    Propagates gradient bounds from root downward. When wave_metas is provided,
+    processes waves in reverse order (root→leaves) for correct topological ordering
+    and uses vectorized scatter_reduce instead of a Python loop.
 
     Args:
         Pi: [C, S] log2-space, converged Pi values
         ccp_helpers: dict with split information
         root_clade_idx: int or Long tensor, root clade index(es)
         threshold: log2-space threshold for pruning
+        wave_metas: optional list of per-wave metadata dicts (from build_wave_layout)
 
     Returns:
         grad_bound: [C] float32, upper bound on gradient magnitude per clade
         pruned_mask: [C] bool, True for clades that can be pruned
     """
     C = Pi.shape[0]
-    N_splits = int(ccp_helpers['N_splits'])
-    split_leftrights = ccp_helpers['split_leftrights_sorted']
-    lefts = split_leftrights[:N_splits]
-    rights = split_leftrights[N_splits:]
+    device = Pi.device
+    dtype = Pi.dtype
 
     # Clade scores: max_e Pi[gamma, e]
     s = Pi.max(dim=1).values  # [C]
 
-    # Reconstruct split parents
-    split_parents = ccp_helpers.get('split_parents_sorted', None)
-    if split_parents is None:
-        split_parents = _reconstruct_split_parents(ccp_helpers)
-
     # Initialize gradient bounds
-    grad_bound = torch.full((C,), NEG_INF, device=Pi.device, dtype=Pi.dtype)
+    grad_bound = torch.full((C,), NEG_INF, device=device, dtype=dtype)
     if isinstance(root_clade_idx, int):
         grad_bound[root_clade_idx] = 0.0
     else:
         grad_bound[root_clade_idx] = 0.0
 
-    # Build child->parent mapping for reverse traversal
-    # Process splits in reverse order (parents before children in reverse topo)
-    for i in range(N_splits):
-        p = int(split_parents[i].item()) if torch.is_tensor(split_parents[i]) else int(split_parents[i])
-        l = int(lefts[i].item()) if torch.is_tensor(lefts[i]) else int(lefts[i])
-        r = int(rights[i].item()) if torch.is_tensor(rights[i]) else int(rights[i])
+    if wave_metas is not None:
+        # Vectorized wave-by-wave propagation (root→leaves = reverse wave order)
+        for k in range(len(wave_metas) - 1, -1, -1):
+            meta = wave_metas[k]
+            if not meta['has_splits']:
+                continue
+            sl = meta['sl']  # [n_ws] left child indices
+            sr = meta['sr']  # [n_ws] right child indices
+            reduce_idx = meta['reduce_idx']  # [n_ws] wave-local parent index
+            ws = meta['start']
 
-        if grad_bound[p].item() < threshold:
-            continue  # parent is pruned, skip subtree
+            # Get parent gradient bounds for each split
+            gb_parents = grad_bound[reduce_idx + ws]  # [n_ws]
 
-        # grad_bound[child] = logsumexp(grad_bound[child], grad_bound[parent] + s[sibling])
-        gb_p = grad_bound[p].item()
-        s_l = s[l].item()
-        s_r = s[r].item()
+            # new bound for left child = gb_parent + s[right sibling]
+            new_l = gb_parents + s[sr]
+            # new bound for right child = gb_parent + s[left sibling]
+            new_r = gb_parents + s[sl]
 
-        new_l = gb_p + s_r
-        new_r = gb_p + s_l
+            # Accumulate via logaddexp into grad_bound at child positions
+            # Use scatter_reduce 'amax' as a first pass, then refine with logsumexp
+            # For simplicity and correctness, use logaddexp2 element-wise
+            grad_bound[sl] = logaddexp2(grad_bound[sl], new_l)
+            grad_bound[sr] = logaddexp2(grad_bound[sr], new_r)
+    else:
+        # Fallback: Python loop (for non-wave callers)
+        N_splits = int(ccp_helpers['N_splits'])
+        split_leftrights = ccp_helpers['split_leftrights_sorted']
+        lefts = split_leftrights[:N_splits]
+        rights = split_leftrights[N_splits:]
 
-        grad_bound[l] = torch.tensor(new_l).logaddexp(grad_bound[l].cpu()).to(Pi.device) if grad_bound[l].item() != NEG_INF else torch.tensor(new_l, device=Pi.device)
-        grad_bound[r] = torch.tensor(new_r).logaddexp(grad_bound[r].cpu()).to(Pi.device) if grad_bound[r].item() != NEG_INF else torch.tensor(new_r, device=Pi.device)
+        split_parents = ccp_helpers.get('split_parents_sorted', None)
+        if split_parents is None:
+            split_parents = _reconstruct_split_parents(ccp_helpers)
+
+        for i in range(N_splits):
+            p = int(split_parents[i].item()) if torch.is_tensor(split_parents[i]) else int(split_parents[i])
+            l_idx = int(lefts[i].item()) if torch.is_tensor(lefts[i]) else int(lefts[i])
+            r_idx = int(rights[i].item()) if torch.is_tensor(rights[i]) else int(rights[i])
+
+            if grad_bound[p].item() < threshold:
+                continue
+
+            gb_p = grad_bound[p]
+            new_l = gb_p + s[l_idx]
+            new_r = gb_p + s[r_idx]
+
+            grad_bound[l_idx] = logaddexp2(grad_bound[l_idx], new_r)
+            grad_bound[r_idx] = logaddexp2(grad_bound[r_idx], new_l)
 
     pruned_mask = grad_bound < threshold
     return grad_bound, pruned_mask
+
+
+def _self_loop_differentiable(
+    Pi_W, mt_squeezed, DL_const, Ebar, E, SL1_const, SL2_const,
+    sp_child1, sp_child2, leaf_wt, dts_r, S,
+):
+    """Pure-PyTorch differentiable self-loop step (uniform Pibar + DTS_L).
+
+    Computes one iteration of g_k(Pi_W) = logaddexp2(dts_r, DTS_L(Pi_W, Pibar(Pi_W))).
+    Used by the backward pass to build VJP closures via torch.func.vjp.
+
+    Args:
+        Pi_W: [W, S] log2-space, requires_grad
+        mt_squeezed: [S] max transfer mat
+        DL_const, Ebar, E, SL1_const, SL2_const: [S] precomputed constants
+        sp_child1, sp_child2: [S] species child indices
+        leaf_wt: [W, S] leaf term
+        dts_r: [W, S] or None, cross-clade DTS (frozen)
+        S: int
+
+    Returns:
+        Pi_new: [W, S] log2-space
+    """
+    W = Pi_W.shape[0]
+
+    # --- Pibar (uniform approximation) ---
+    Pi_max = Pi_W.max(dim=1, keepdim=True).values  # [W, 1]
+    Pi_exp = torch.exp2(Pi_W - Pi_max)              # [W, S]
+    row_sum = Pi_exp.sum(dim=1, keepdim=True)        # [W, 1]
+    Pibar_W = torch.log2(row_sum - Pi_exp) + Pi_max + mt_squeezed  # [W, S]
+
+    # --- Species children of Pi_W ---
+    # Pi_s1[w, s] = Pi_W[w, child1[s]], Pi_s2[w, s] = Pi_W[w, child2[s]]
+    # Sentinel index S → need padding
+    Pi_W_pad = torch.cat([Pi_W, torch.full((W, 1), NEG_INF, device=Pi_W.device, dtype=Pi_W.dtype)], dim=1)
+    Pi_s1 = Pi_W_pad[:, sp_child1.long()]  # [W, S]
+    Pi_s2 = Pi_W_pad[:, sp_child2.long()]  # [W, S]
+
+    # --- DTS_L: 6 terms ---
+    DTS_L = torch.stack([
+        DL_const.unsqueeze(0) + Pi_W,                    # DL
+        Pi_W + Ebar.unsqueeze(0),                         # TL1
+        Pibar_W + E.unsqueeze(0),                         # TL2
+        SL1_const.unsqueeze(0) + Pi_s1,                   # SL1
+        SL2_const.unsqueeze(0) + Pi_s2,                   # SL2
+        leaf_wt,                                           # leaf
+    ], dim=0)  # [6, W, S]
+
+    DTS_L_term = logsumexp2(DTS_L, dim=0)  # [W, S]
+
+    if dts_r is not None:
+        return logaddexp2(dts_r, DTS_L_term)
+    else:
+        return DTS_L_term
+
+
+def _dts_cross_differentiable(
+    Pi, Pibar, meta, sp_child1, sp_child2, log_pD, log_pS, S, device, dtype,
+):
+    """Differentiable DTS cross-clade computation for one wave.
+
+    Same as _compute_dts_cross but uses pure PyTorch ops (no Triton)
+    so that torch.func.vjp can trace through it.
+
+    Args:
+        Pi, Pibar: [C, S] full tensors (Pi requires_grad for children)
+        meta: wave metadata dict
+        sp_child1, sp_child2: [S] species child indices
+        log_pD, log_pS: scalar or [S] event probabilities
+        S: int
+
+    Returns:
+        dts_r: [W, S] reduced DTS cross-clade terms
+    """
+    sl = meta['sl']
+    sr = meta['sr']
+    wlsp = meta['log_split_probs']  # [n_ws, 1]
+    W = meta['W']
+    n_ws = sl.shape[0]
+
+    # Gather children
+    Pi_l = Pi[sl]        # [n_ws, S]
+    Pi_r = Pi[sr]        # [n_ws, S]
+    Pibar_l = Pibar[sl]  # [n_ws, S]
+    Pibar_r = Pibar[sr]  # [n_ws, S]
+
+    # Species children with sentinel padding
+    Pi_pad = torch.cat([Pi, torch.full((Pi.shape[0], 1), NEG_INF, device=device, dtype=dtype)], dim=1)
+    Pi_l_s1 = Pi_pad[sl][:, sp_child1.long()]  # [n_ws, S]
+    Pi_l_s2 = Pi_pad[sl][:, sp_child2.long()]
+    Pi_r_s1 = Pi_pad[sr][:, sp_child1.long()]
+    Pi_r_s2 = Pi_pad[sr][:, sp_child2.long()]
+
+    # 5 DTS terms
+    DTS = torch.stack([
+        log_pD + Pi_l + Pi_r,           # D
+        Pi_l + Pibar_r,                  # T (l->r)
+        Pi_r + Pibar_l,                  # T (r->l)
+        log_pS + Pi_l_s1 + Pi_r_s2,     # S1
+        log_pS + Pi_r_s1 + Pi_l_s2,     # S2
+    ], dim=0)  # [5, n_ws, S]
+
+    dts_term = wlsp + logsumexp2(DTS, dim=0)  # [n_ws, S]
+
+    # Reduce splits → per-wave-clade [W, S] via differentiable scatter
+    reduce_idx = meta['reduce_idx']  # [n_ws]
+
+    # Differentiable reduction: group by parent clade and logsumexp
+    # Use index_select + logsumexp per unique parent for autograd compatibility
+    reduce_expand = reduce_idx.unsqueeze(1).expand(n_ws, S)  # [n_ws, S]
+
+    # Pad dts_term to [n_ws+1, S] with -inf sentinel for safe indexing
+    dts_padded = torch.cat([dts_term, torch.full((1, S), NEG_INF, device=device, dtype=dtype)], dim=0)
+
+    # Build a dense [W, max_splits_per_clade, S] tensor and logsumexp over dim=1
+    # For simplicity, use scatter + max stabilization without in-place mutation
+    # Approach: compute per-clade logsumexp via a loop over unique parents
+    # This is small (W clades per wave) so the loop is cheap
+    parts = []
+    for w in range(W):
+        mask_w = reduce_idx == w
+        if mask_w.any():
+            parts.append(logsumexp2(dts_term[mask_w], dim=0).unsqueeze(0))  # [1, S]
+        else:
+            parts.append(torch.full((1, S), NEG_INF, device=device, dtype=dtype))
+    dts_r = torch.cat(parts, dim=0)  # [W, S]
+
+    return dts_r
+
+
+@torch.no_grad()
+def Pi_wave_backward_v2(
+    wave_layout,
+    Pi_star_wave,
+    Pibar_star_wave,
+    E, Ebar, E_s1, E_s2,
+    log_pS, log_pD, log_pL,
+    max_transfer_mat,
+    species_helpers,
+    root_clade_ids_perm,
+    device, dtype,
+    *,
+    neumann_terms=3,
+    pruning_threshold=-20.0,
+    use_pruning=True,
+):
+    """Wave-decomposed backward pass for implicit gradient computation.
+
+    Computes dL/dPi via Neumann series per wave (root→leaves), then
+    accumulates parameter gradients.
+
+    Args:
+        wave_layout: dict from build_wave_layout()
+        Pi_star_wave: [C, S] converged Pi in wave-ordered space
+        Pibar_star_wave: [C, S] converged Pibar in wave-ordered space
+        E, Ebar, E_s1, E_s2: [S] species extinction
+        log_pS, log_pD, log_pL: event probabilities
+        max_transfer_mat: [S] log2-space
+        species_helpers: species tree helpers
+        root_clade_ids_perm: Long[F] root clade IDs in wave-ordered space
+        device, dtype: target device/dtype
+        neumann_terms: number of Neumann series terms (default 3)
+        pruning_threshold: log2-space threshold for gradient pruning
+        use_pruning: whether to prune negligible-gradient clades
+
+    Returns:
+        dict with:
+            'v_Pi': [C, S] adjoint vector for Pi (wave-ordered)
+            'grad_E': [S] accumulated gradient contribution from Pi adjoint to E
+            'grad_log_pS': gradient wrt log_pS
+            'grad_log_pD': gradient wrt log_pD
+            'grad_max_transfer_mat': gradient wrt max_transfer_mat
+    """
+    wave_metas = wave_layout['wave_metas']
+    wave_starts = wave_layout['wave_starts']
+    perm = wave_layout['perm']
+    C, S = Pi_star_wave.shape
+    K = len(wave_metas)
+
+    # Precompute species child indices
+    sp_P_idx = species_helpers['s_P_indexes']
+    sp_c12_idx = species_helpers['s_C12_indexes']
+    p_cpu = sp_P_idx.cpu().long()
+    c_cpu = sp_c12_idx.cpu().long()
+    mask_c1 = p_cpu < S
+    sp_child1_cpu = torch.full((S,), S, dtype=torch.long)
+    sp_child2_cpu = torch.full((S,), S, dtype=torch.long)
+    sp_child1_cpu[p_cpu[mask_c1]] = c_cpu[mask_c1]
+    sp_child2_cpu[p_cpu[~mask_c1] - S] = c_cpu[~mask_c1]
+    sp_child1 = sp_child1_cpu.to(device)
+    sp_child2 = sp_child2_cpu.to(device)
+
+    mt_squeezed = max_transfer_mat.squeeze(-1) if max_transfer_mat.ndim > 1 else max_transfer_mat
+
+    # Precompute constant terms
+    DL_const = 1.0 + log_pD + E
+    SL1_const = log_pS + E_s2
+    SL2_const = log_pS + E_s1
+
+    # Per-wave leaf term helper
+    leaf_row_index = wave_layout['leaf_row_index']
+    leaf_col_index = wave_layout['leaf_col_index']
+
+    def _get_leaf_wt(ws, we):
+        W = we - ws
+        lwt = torch.full((W, S), NEG_INF, device=device, dtype=dtype)
+        mask = (leaf_row_index >= ws) & (leaf_row_index < we)
+        if mask.any():
+            lwt[leaf_row_index[mask] - ws, leaf_col_index[mask]] = 0.0
+        return log_pS + lwt
+
+    # Optional pruning
+    pruned_perm = None
+    if use_pruning:
+        grad_bound, pruned_mask = compute_gradient_bounds(
+            Pi_star_wave, {'N_splits': 0}, root_clade_ids_perm,
+            threshold=pruning_threshold, wave_metas=wave_metas,
+        )
+        pruned_perm = pruned_mask
+
+    # Initialize RHS: dL/dPi at root clades
+    # logL = -(logsumexp2(Pi[root]) - log2(S) - denom)
+    # dL/dPi[root,s] = -exp2(Pi[root,s] - logsumexp2(Pi[root]))
+    accumulated_rhs = torch.zeros(C, S, device=device, dtype=dtype)
+    for r in root_clade_ids_perm:
+        r = int(r)
+        root_Pi = Pi_star_wave[r]  # [S]
+        lse = logsumexp2(root_Pi, dim=0)  # scalar
+        accumulated_rhs[r] = -torch.exp2(root_Pi - lse)
+
+    # Accumulate parameter gradients
+    grad_log_pD = torch.zeros_like(log_pD)
+    grad_log_pS = torch.zeros_like(log_pS)
+    grad_mt = torch.zeros_like(mt_squeezed)
+    grad_E_acc = torch.zeros(S, device=device, dtype=dtype)
+    grad_Ebar_acc = torch.zeros(S, device=device, dtype=dtype)
+    grad_E_s1_acc = torch.zeros(S, device=device, dtype=dtype)
+    grad_E_s2_acc = torch.zeros(S, device=device, dtype=dtype)
+
+    # Backward sweep: root→leaves
+    for k in range(K - 1, -1, -1):
+        meta = wave_metas[k]
+        ws = meta['start']
+        we = meta['end']
+        W = meta['W']
+
+        # Skip entirely pruned waves
+        if use_pruning and pruned_perm is not None and pruned_perm[ws:we].all():
+            continue
+
+        rhs_k = accumulated_rhs[ws:we].clone()  # [W, S]
+
+        # Skip if RHS is all zero (no gradient flows here)
+        if rhs_k.abs().max() == 0:
+            continue
+
+        # Get frozen inputs for this wave
+        Pi_W_star = Pi_star_wave[ws:we].detach()
+        leaf_wt = _get_leaf_wt(ws, we)
+
+        # DTS cross-clade for this wave (frozen, from converged values)
+        if meta['has_splits']:
+            with torch.no_grad():
+                dts_r = _compute_dts_cross(
+                    Pi_star_wave, Pibar_star_wave, meta,
+                    sp_child1, sp_child2, log_pD, log_pS, S, device, dtype,
+                )
+        else:
+            dts_r = None
+
+        # --- Neumann series: v_k = sum_{n=0}^{N} (J_self^T)^n @ rhs_k ---
+        v_k = rhs_k.clone()
+        term = rhs_k
+
+        for n in range(neumann_terms):
+            # Build VJP through one self-loop step
+            Pi_W_req = Pi_W_star.clone().requires_grad_(True)
+            with torch.enable_grad():
+                Pi_new = _self_loop_differentiable(
+                    Pi_W_req, mt_squeezed, DL_const, Ebar, E, SL1_const, SL2_const,
+                    sp_child1, sp_child2, leaf_wt, dts_r, S,
+                )
+                # VJP: term_new = (dg/dPi_W)^T @ term
+                term_new = torch.autograd.grad(Pi_new, Pi_W_req, grad_outputs=term,
+                                               retain_graph=False)[0]
+            term = term_new.detach()
+            v_k = v_k + term
+
+        # --- Accumulate parameter gradients via VJP of g_k wrt params ---
+        _log_pD = log_pD.detach().requires_grad_(True)
+        _log_pS = log_pS.detach().requires_grad_(True)
+        _E = E.detach().requires_grad_(True)
+        _Ebar = Ebar.detach().requires_grad_(True)
+        _E_s1 = E_s1.detach().requires_grad_(True)
+        _E_s2 = E_s2.detach().requires_grad_(True)
+        _mt = mt_squeezed.detach().requires_grad_(True)
+
+        # Recompute DL_const etc. with grad-enabled params
+        _DL_const = 1.0 + _log_pD + _E
+        _SL1_const = _log_pS + _E_s2
+        _SL2_const = _log_pS + _E_s1
+
+        Pi_W_fixed = Pi_W_star.detach()  # fixed at converged value
+        with torch.enable_grad():
+            Pi_new_param = _self_loop_differentiable(
+                Pi_W_fixed, _mt, _DL_const, _Ebar, _E, _SL1_const, _SL2_const,
+                sp_child1, sp_child2, leaf_wt, dts_r, S,
+            )
+            param_grads = torch.autograd.grad(
+                Pi_new_param, [_log_pD, _log_pS, _E, _Ebar, _E_s1, _E_s2, _mt],
+                grad_outputs=v_k,
+                retain_graph=False,
+                allow_unused=True,
+            )
+
+        if param_grads[0] is not None:
+            grad_log_pD = grad_log_pD + param_grads[0]
+        if param_grads[1] is not None:
+            grad_log_pS = grad_log_pS + param_grads[1]
+        if param_grads[2] is not None:
+            grad_E_acc = grad_E_acc + param_grads[2]
+        if param_grads[3] is not None:
+            grad_Ebar_acc = grad_Ebar_acc + param_grads[3]
+        if param_grads[4] is not None:
+            grad_E_s1_acc = grad_E_s1_acc + param_grads[4]
+        if param_grads[5] is not None:
+            grad_E_s2_acc = grad_E_s2_acc + param_grads[5]
+        if param_grads[6] is not None:
+            grad_mt = grad_mt + param_grads[6]
+
+        # --- Cross-clade backward: propagate adjoint to earlier waves ---
+        if meta['has_splits']:
+            sl = meta['sl']
+            sr = meta['sr']
+
+            # VJP of dts_cross wrt Pi/Pibar of children
+            # Children are at indices sl, sr in the full Pi_star_wave
+            Pi_req = Pi_star_wave.detach().clone().requires_grad_(True)
+            Pibar_req = Pibar_star_wave.detach().clone().requires_grad_(True)
+
+            with torch.enable_grad():
+                dts_r_diff = _dts_cross_differentiable(
+                    Pi_req, Pibar_req, meta,
+                    sp_child1, sp_child2, log_pD, log_pS, S, device, dtype,
+                )
+                # The contribution to Pi_new from dts_r enters via logaddexp2(dts_r, DTS_L)
+                # We need d(logaddexp2(dts_r, DTS_L))/d(dts_r) * v_k
+                # = exp2(dts_r - Pi_new) * v_k  (softmax weight of the dts_r branch)
+                if dts_r is not None:
+                    Pi_new_at_star = _self_loop_differentiable(
+                        Pi_W_star, mt_squeezed, DL_const, Ebar, E, SL1_const, SL2_const,
+                        sp_child1, sp_child2, leaf_wt, dts_r, S,
+                    )
+                    # Weight of dts_r in the logaddexp2
+                    dts_weight = torch.exp2(dts_r - Pi_new_at_star)  # [W, S]
+                    dts_grad_output = v_k * dts_weight
+
+                    cross_grads = torch.autograd.grad(
+                        dts_r_diff, [Pi_req, Pibar_req],
+                        grad_outputs=dts_grad_output,
+                        retain_graph=False,
+                    )
+
+                    # Accumulate into earlier waves' RHS
+                    if cross_grads[0] is not None:
+                        accumulated_rhs = accumulated_rhs + cross_grads[0]
+                    # Pibar depends on Pi, so Pibar gradient needs to chain through
+                    # the Pibar computation. For the cross-clade terms, Pibar of children
+                    # was computed during the forward pass of earlier waves.
+                    # The gradient wrt Pibar_req will accumulate into the Pi adjoint
+                    # of the wave that computed that Pibar.
+                    if cross_grads[1] is not None:
+                        # Pibar[c] = f(Pi[c], mt) — need chain rule through Pibar
+                        # For each child c in sl/sr from earlier waves, accumulate
+                        # d(dts_cross)/d(Pibar[c]) * d(Pibar[c])/d(Pi[c])
+                        pibar_grad = cross_grads[1]  # [C, S]
+                        # Pibar[c, s] = log2(sum_f!=s exp2(Pi[c,f]) * M[s,f]) + mt[s]
+                        # d(Pibar[c,s])/d(Pi[c,f]) for f != s:
+                        #   = exp2(Pi[c,f] - Pibar[c,s] + mt[s]) * M[s,f] / sum_f!=s(...)
+                        # For uniform: d(Pibar)/d(Pi) = -exp2(Pi - Pi_max) / (rowsum - exp2(Pi - Pi_max))
+                        # This is complex. Use autograd instead.
+                        # Find which clades have non-zero pibar_grad
+                        nz_clades = pibar_grad.abs().sum(dim=1) > 0
+                        if nz_clades.any():
+                            nz_idx = nz_clades.nonzero(as_tuple=True)[0]
+                            Pi_for_pibar = Pi_star_wave[nz_idx].detach().requires_grad_(True)
+                            with torch.enable_grad():
+                                Pi_max_p = Pi_for_pibar.max(dim=1, keepdim=True).values
+                                Pi_exp_p = torch.exp2(Pi_for_pibar - Pi_max_p)
+                                row_sum_p = Pi_exp_p.sum(dim=1, keepdim=True)
+                                Pibar_recomp = torch.log2(row_sum_p - Pi_exp_p) + Pi_max_p + mt_squeezed
+                                pi_grad_from_pibar = torch.autograd.grad(
+                                    Pibar_recomp, Pi_for_pibar,
+                                    grad_outputs=pibar_grad[nz_idx],
+                                    retain_graph=False,
+                                )[0]
+                            accumulated_rhs[nz_idx] = accumulated_rhs[nz_idx] + pi_grad_from_pibar
+
+    return {
+        'v_Pi': accumulated_rhs,
+        'grad_E': grad_E_acc,
+        'grad_Ebar': grad_Ebar_acc,
+        'grad_E_s1': grad_E_s1_acc,
+        'grad_E_s2': grad_E_s2_acc,
+        'grad_log_pD': grad_log_pD,
+        'grad_log_pS': grad_log_pS,
+        'grad_max_transfer_mat': grad_mt,
+    }
 
 
 def compute_log_likelihood(Pi, E, root_clade_idx):
