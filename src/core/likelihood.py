@@ -242,7 +242,8 @@ def Pi_step(Pi: torch.Tensor,
     with _nvtx_here("Pi: logaddexp2(DTS_reduced, DTS_L_term)"):
         return logaddexp2(DTS_reduced, DTS_L_term)
 
-def E_step(E, sp_P_idx, sp_child12_idx, log_pS, log_pD, log_pL, transfer_mat, max_transfer_mat, pibar_mode='dense'):
+def E_step(E, sp_P_idx, sp_child12_idx, log_pS, log_pD, log_pL, transfer_mat, max_transfer_mat, pibar_mode='dense',
+           recipients_T=None):
     """E can either have shape [S] or [N_genes, S]. Likewise, transfer_mat can have shape [S, S] or [N_genes, S, S]."""
     E_stack = torch.empty((4, *E.shape), dtype=E.dtype, device=E.device)
     # S
@@ -281,6 +282,14 @@ def E_step(E, sp_P_idx, sp_child12_idx, log_pS, log_pD, log_pL, transfer_mat, ma
         # O(S) instead of O(S^2) matvec
         lse_E = logsumexp2(E, dim=-1, keepdim=True)  # [1] or [N, 1]
         Ebar = lse_E + max_transfer_mat  # broadcasts to [S] or [N, S]
+    elif pibar_mode == 'sparse_corrected':
+        # Exact Ebar via recipients matmul: same as dense but with precomputed
+        # recipients_T = transfer_mat.T = (1 - ancestors)^T
+        # Ebar_linear[s] = sum_j transfer_mat[s,j] * expE[j] = (expE @ recipients_T)[s]
+        max_E = E.max(dim=-1, keepdim=True).values
+        expE = torch.exp2(E - max_E)                     # [S] or [N, S]
+        Ebar_linear = expE @ recipients_T                 # [S] or [N, S]
+        Ebar = torch.log2(Ebar_linear) + max_E + max_transfer_mat.squeeze(-1)
     else:
         # Dense: full matvec with [S,S] transfer matrix
         max_E = E.max(dim=-1, keepdim=True).values
@@ -308,7 +317,8 @@ def E_fixed_point(species_helpers,
                           warm_start_E,
                           dtype,
                           device,
-                          pibar_mode='dense'):
+                          pibar_mode='dense',
+                          recipients_T=None):
 
     S = species_helpers['S']
     # Determine batch size from parameters if present
@@ -352,6 +362,7 @@ def E_fixed_point(species_helpers,
                     transfer_mat=transfer_mat,
                     max_transfer_mat=max_transfer_mat,
                     pibar_mode=pibar_mode,
+                    recipients_T=recipients_T,
                 )
                 
                 E_new, E_s1, E_s2, E_bar = result
@@ -774,13 +785,25 @@ def _compute_dts_cross(Pi, Pibar, meta, sp_child1, sp_child2, log_pD, log_pS,
     return dts_r
 
 
-def _compute_Pibar_inline(Pi_W, transfer_mat_T, mt_squeezed, pibar_mode):
-    """Compute Pibar for a wave, either via dense matmul or uniform approximation."""
+def _compute_Pibar_inline(Pi_W, transfer_mat_T, mt_squeezed, pibar_mode,
+                          recipients_T=None):
+    """Compute Pibar for a wave, either via dense matmul or uniform approximation.
+
+    pibar_mode:
+        'dense': exact O(W*S^2) matmul with transfer_mat_T
+        'uniform': O(W*S) approximation (subtract self only)
+        'sparse_corrected': exact via recipients matmul (1-ancestors)^T
+    """
     Pi_max = Pi_W.max(dim=1, keepdim=True).values
     if pibar_mode == 'uniform':
         Pi_exp = torch.exp2(Pi_W - Pi_max)
         row_sum = Pi_exp.sum(dim=1, keepdim=True)
         Pibar_W = torch.log2(row_sum - Pi_exp) + Pi_max + mt_squeezed
+    elif pibar_mode == 'sparse_corrected':
+        Pi_exp = torch.exp2(Pi_W - Pi_max)                     # [W, S]
+        # Direct matmul with recipients matrix (1 - ancestors)^T
+        # Avoids catastrophic cancellation from row_sum - excluded
+        Pibar_W = torch.log2(Pi_exp @ recipients_T) + Pi_max + mt_squeezed
     else:
         Pibar_W = torch.log2(torch.exp2(Pi_W - Pi_max) @ transfer_mat_T) + Pi_max + mt_squeezed
     return Pibar_W
@@ -843,7 +866,7 @@ def Pi_wave_forward_v2(
 
     _PI_INIT = torch.finfo(dtype).min
     Pi = torch.full((C, S), _PI_INIT, dtype=dtype, device=device)
-    Pi[leaf_row_index, leaf_col_index] = 0.0
+    Pi[leaf_row_index.to(device), leaf_col_index.to(device)] = 0.0
     Pibar = torch.full((C, S), NEG_INF, dtype=dtype, device=device)
 
     # Precompute species child indices (vectorized to avoid O(S) GPU syncs)
@@ -864,11 +887,24 @@ def Pi_wave_forward_v2(
     SL1_const = log_pS + E_s2             # [S]
     SL2_const = log_pS + E_s1             # [S]
 
+    recipients_T_mat = None
     if pibar_mode == 'uniform':
         # Avoid [C, S] clade_species_map and leaf_term allocations
         # leaf_wt is computed per-wave instead
         clade_species_map = None
         leaf_term = None
+        transfer_mat_T = None
+        transfer_mat_c = None
+    elif pibar_mode == 'sparse_corrected':
+        # Exact Pibar via recipients matmul: Pi_exp @ recipients_T
+        # recipients_T[j,s] = 1 if j is NOT ancestor of s (same non-zero pattern as transfer_mat.T
+        # but with uniform weights=1 instead of 1/n_valid, since mt already encodes normalization)
+        anc_dense = species_helpers['ancestors_dense'].to(device=device, dtype=dtype)
+        recipients_T_mat = (1.0 - anc_dense).T.contiguous()  # [S, S]
+        # Same leaf_term / clade_species_map setup as dense (needed for DTS)
+        clade_species_map = torch.full((C, S), NEG_INF, device=device, dtype=dtype)
+        clade_species_map[leaf_row_index, leaf_col_index] = 0.0
+        leaf_term = log_pS + clade_species_map  # [C, S]
         transfer_mat_T = None
         transfer_mat_c = None
     else:
@@ -969,7 +1005,8 @@ def Pi_wave_forward_v2(
                             total_iters += 1
                             Pi_W = Pi[ws:we]
 
-                            Pibar_W = _compute_Pibar_inline(Pi_W, transfer_mat_T, mt_squeezed, pibar_mode)
+                            Pibar_W = _compute_Pibar_inline(Pi_W, transfer_mat_T, mt_squeezed, pibar_mode,
+                                                            recipients_T=recipients_T_mat)
 
                             Pi_new = wave_step_fused(
                                 Pi_W, Pibar_W,
@@ -1040,7 +1077,8 @@ def Pi_wave_forward_v2(
                             total_iters += 1
                             Pi_W = Pi[ws:we]
 
-                            Pibar_W = _compute_Pibar_inline(Pi_W, transfer_mat_T, mt_squeezed, pibar_mode)
+                            Pibar_W = _compute_Pibar_inline(Pi_W, transfer_mat_T, mt_squeezed, pibar_mode,
+                                                            recipients_T=recipients_T_mat)
 
                             Pi_new = wave_step_fused(
                                 Pi_W, Pibar_W,

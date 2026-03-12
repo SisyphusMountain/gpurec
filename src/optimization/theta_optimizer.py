@@ -26,14 +26,18 @@ from torch import func as tfunc
 
 # ---------------------------- dataset helpers ----------------------------
 
-from src.core.ccp import (
-    build_ccp_from_single_tree,
-    build_ccp_helpers,
-    build_clade_species_mapping,
-    get_root_clade_id,
-)
+try:
+    from src.core.ccp import (
+        build_ccp_from_single_tree,
+        build_ccp_helpers,
+        build_clade_species_mapping,
+        get_root_clade_id,
+    )
+    from src.core.tree_helpers import build_species_helpers
+    _HAS_LEGACY_CCP = True
+except ImportError:
+    _HAS_LEGACY_CCP = False
 
-from src.core.tree_helpers import build_species_helpers
 from src.core.likelihood import (
     E_fixed_point,
     Pi_fixed_point,
@@ -46,7 +50,7 @@ from src.core.likelihood import (
 )
 from src.core.batching import build_wave_layout
 from src.core.scheduling import compute_clade_waves
-from src.core.extract_parameters import extract_parameters_uniform
+from src.core.extract_parameters import extract_parameters, extract_parameters_uniform
 
 # -------------------------------------------------------------------------
 # Dataclasses for logging
@@ -396,8 +400,17 @@ def implicit_grad_loglik_vjp_wave(
     sp_P_idx = species_helpers['s_P_indexes']
     sp_c12_idx = species_helpers['s_C12_indexes']
 
-    # Assemble q from Pi backward's E-related gradients
-    q_E = pi_bwd['grad_E'].clone()
+    # Assemble q from Pi backward's E-related gradients.
+    # Also include direct dNLL/dE from likelihood denominator:
+    #   NLL = -(logsumexp2(Pi[root])/S - log2(1 - mean(exp2(E))))
+    #   The denominator log2(1 - mean(exp2(E))) contributes directly to dNLL/dE.
+    n_fam = root_clade_ids_perm.numel()
+    E_req_d = E_star.detach().requires_grad_(True)
+    with torch.enable_grad():
+        mean_E_exp = torch.exp2(E_req_d).mean(dim=-1)
+        denom = torch.log2(1.0 - mean_E_exp)
+        direct_dNLL_dE = torch.autograd.grad(n_fam * denom, E_req_d)[0]
+    q_E = pi_bwd['grad_E'].clone() + direct_dNLL_dE
 
     # Chain Ebar gradient through E_step's Ebar computation
     # Ebar = logsumexp2(E) + mt, so dL/dE += dL/dEbar * d(Ebar)/d(E)
@@ -458,11 +471,15 @@ def implicit_grad_loglik_vjp_wave(
 
     wE = w_flat.view(E_shape)
 
-    # Get theta gradient from E adjoint
-    _, gtheta_G = vjpG(wE)
-
     # --- Step 3: theta gradient through extract_parameters_uniform ---
     # VJP through extract_parameters_uniform to get dL/dtheta
+    #
+    # The Pi backward produces grad_max_transfer_mat (mt gradient from Pibar
+    # computation) and grad_Ebar (Ebar gradient from the TL1 term).
+    # Since Ebar[s] = logsumexp2(E) + mt[s], grad_Ebar also contributes to the
+    # mt → theta pathway: d(Ebar)/d(mt) = I, so mt_total = grad_mt + grad_Ebar.
+    grad_mt_total = pi_bwd['grad_max_transfer_mat'] + pi_bwd['grad_Ebar']
+
     theta_req = theta.detach().requires_grad_(True)
     with torch.enable_grad():
         log_pS_r, log_pD_r, log_pL_r, _, mt_r = extract_parameters_uniform(
@@ -472,7 +489,7 @@ def implicit_grad_loglik_vjp_wave(
         param_loss = (
             (log_pS_r * pi_bwd['grad_log_pS']).sum() +
             (log_pD_r * pi_bwd['grad_log_pD']).sum() +
-            (mt_r * pi_bwd['grad_max_transfer_mat']).sum()
+            (mt_r * grad_mt_total).sum()
         )
         grad_theta_pi = torch.autograd.grad(param_loss, theta_req, retain_graph=False)[0]
 
@@ -515,6 +532,11 @@ class ThetaOptimizationProblem:
         device: Optional[torch.device] = None,
         dtype: torch.dtype = torch.float64,
     ) -> None:
+        if not _HAS_LEGACY_CCP:
+            raise ImportError(
+                "ThetaOptimizationProblem requires src.core.ccp and "
+                "src.core.tree_helpers which are not available."
+            )
         if device is None:
             device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.device = device
@@ -760,11 +782,373 @@ def optimize_theta_implicit(
 
 
 # -------------------------------------------------------------------------
-# (Optional) Big-step variant: trust-region L-BFGS with implicit gradients
+# Wave-based optimizer (uses wave forward + wave backward)
 # -------------------------------------------------------------------------
-# If you want to keep taking *very* large steps with one solve/iter, you can
-# drop back in the trust-region L-BFGS outer loop from earlier replies. The
-# only change is that wherever a gradient is needed, you call
-# `implicit_grad_loglik_vjp_cg(...)` and set theta.grad accordingly.
 
-# End of file
+def optimize_theta_wave(
+    wave_layout,
+    species_helpers,
+    root_clade_ids,
+    unnorm_row_max,
+    theta_init,
+    *,
+    transfer_mat_unnormalized=None,
+    steps: int = 200,
+    lr: float = 0.2,
+    tol_theta: float = 1e-3,
+    e_max_iters: int = 2000,
+    e_tol: float = 1e-8,
+    neumann_terms: int = 4,
+    use_pruning: bool = True,
+    pruning_threshold: float = -20.0,
+    cg_tol: float = 1e-8,
+    cg_maxiter: int = 500,
+    gmres_restart: int = 40,
+    specieswise: bool = False,
+    device=None,
+    dtype=torch.float64,
+    pibar_mode: str = 'uniform',
+    optimizer: str = 'adam',
+):
+    """Optimize theta using wave forward/backward + implicit gradient + Adam.
+
+    Parameters
+    ----------
+    wave_layout : dict
+        From build_wave_layout().
+    species_helpers : dict
+        Species tree helpers.
+    root_clade_ids : Tensor
+        Root clade IDs (original ordering) for likelihood computation.
+    unnorm_row_max : Tensor [S]
+        Row maxima of unnormalized transfer matrix.
+    theta_init : Tensor [3] or [S, 3]
+        Initial rate parameters (log-space).
+    steps : int
+        Maximum optimization iterations.
+    lr : float
+        Adam learning rate.
+
+    Returns
+    -------
+    dict with 'theta', 'rates', 'log_likelihood', 'negative_log_likelihood', 'history'.
+    """
+    if device is None:
+        device = theta_init.device
+    theta = torch.nn.Parameter(theta_init.to(device=device, dtype=dtype).clone())
+    opt = torch.optim.Adam([theta], lr=lr)
+
+    history: List[StepRecord] = []
+    prev_theta = theta.detach().clone()
+    warm_E = None
+
+    for it in range(1, steps + 1):
+        theta_d = theta.detach()
+
+        # 1) Extract parameters
+        with torch.no_grad():
+            if pibar_mode == 'dense' and transfer_mat_unnormalized is not None:
+                log_pS, log_pD, log_pL, transfer_mat, mt_raw = extract_parameters(
+                    theta_d, transfer_mat_unnormalized,
+                    genewise=False, specieswise=specieswise, pairwise=False,
+                )
+                mt = mt_raw.squeeze(-1) if mt_raw.ndim == 2 else mt_raw
+            else:
+                log_pS, log_pD, log_pL, transfer_mat, mt = extract_parameters_uniform(
+                    theta_d, unnorm_row_max, specieswise=specieswise,
+                )
+
+        # 2) E fixed point
+        with torch.no_grad():
+            E_out = E_fixed_point(
+                species_helpers=species_helpers,
+                log_pS=log_pS, log_pD=log_pD, log_pL=log_pL,
+                transfer_mat=transfer_mat, max_transfer_mat=mt,
+                max_iters=e_max_iters, tolerance=e_tol,
+                warm_start_E=warm_E,
+                dtype=dtype, device=device, pibar_mode=pibar_mode,
+            )
+            E_star = E_out['E']
+            E_s1 = E_out['E_s1']
+            E_s2 = E_out['E_s2']
+            Ebar = E_out['E_bar']
+            warm_E = E_star.detach()
+            iters_E = int(E_out['iterations'])
+
+        # 3) Pi wave forward
+        with torch.no_grad():
+            Pi_out = Pi_wave_forward_v2(
+                wave_layout=wave_layout, species_helpers=species_helpers,
+                E=E_star, Ebar=Ebar, E_s1=E_s1, E_s2=E_s2,
+                log_pS=log_pS, log_pD=log_pD, log_pL=log_pL,
+                transfer_mat=transfer_mat, max_transfer_mat=mt,
+                device=device, dtype=dtype, pibar_mode=pibar_mode,
+            )
+            Pi_star = Pi_out['Pi']
+            iters_Pi = int(Pi_out['iterations'])
+
+        # 4) Log-likelihood
+        with torch.no_grad():
+            logL = compute_log_likelihood(Pi_star, E_star, root_clade_ids)
+            logL_scalar = logL.sum()
+
+        # 5) Implicit gradient via wave backward + E adjoint
+        grad_theta, statsG = implicit_grad_loglik_vjp_wave(
+            wave_layout, species_helpers,
+            Pi_star_wave=Pi_out['Pi_wave_ordered'],
+            Pibar_star_wave=Pi_out['Pibar_wave_ordered'],
+            E_star=E_star, E_s1=E_s1, E_s2=E_s2, Ebar=Ebar,
+            log_pS=log_pS, log_pD=log_pD, log_pL=log_pL,
+            max_transfer_mat=mt,
+            root_clade_ids_perm=wave_layout['root_clade_ids'],
+            theta=theta_d,
+            unnorm_row_max=unnorm_row_max,
+            specieswise=specieswise,
+            device=device, dtype=dtype,
+            neumann_terms=neumann_terms,
+            use_pruning=use_pruning,
+            pruning_threshold=pruning_threshold,
+            cg_tol=cg_tol, cg_maxiter=cg_maxiter,
+            gmres_restart=gmres_restart,
+        )
+
+        # 6) Optimizer step (minimize NLL = maximize logL)
+        # grad_theta is the gradient of NLL w.r.t. theta.
+        opt.zero_grad(set_to_none=True)
+        # Replace NaN gradients with 0 (fp32 precision loss at very small rates)
+        grad_clean = grad_theta.clone()
+        grad_clean.nan_to_num_(nan=0.0)
+        theta.grad = grad_clean
+        opt.step()
+
+        # Clamp theta so rates stay >= 1e-10 (prevents fp32 underflow)
+        with torch.no_grad():
+            theta.clamp_(min=math.log(1e-10))
+
+        # Bookkeeping
+        theta_detached = theta.detach()
+        diff = float(torch.max(torch.abs(theta_detached - prev_theta)).item())
+        prev_theta = theta_detached.clone()
+        rates = torch.exp(theta_detached)
+        grad_inf = float(grad_theta.abs().max().item())
+        nll = float(logL_scalar.item())
+
+        fp_info = FixedPointInfo(iterations_E=iters_E, iterations_Pi=iters_Pi)
+        statsF_dummy = LinearSolveStats("wave_neumann", neumann_terms, 0.0, False)
+
+        history.append(
+            StepRecord(
+                iteration=it,
+                theta=theta_detached.cpu(),
+                rates=rates.cpu(),
+                negative_log_likelihood=nll,
+                log_likelihood=-nll,
+                theta_step_inf=diff,
+                grad_infinity_norm=grad_inf,
+                fp_info=fp_info,
+                gradient=grad_theta.cpu(),
+                solve_stats_F=statsF_dummy,
+                solve_stats_G=statsG,
+            )
+        )
+
+        if diff < tol_theta and it > 1:
+            break
+
+    return {
+        "theta": theta.detach().cpu(),
+        "rates": torch.exp(theta.detach()).cpu(),
+        "negative_log_likelihood": history[-1].negative_log_likelihood if history else float('nan'),
+        "log_likelihood": history[-1].log_likelihood if history else float('nan'),
+        "history": history,
+    }
+
+
+def optimize_theta_lbfgsb(
+    wave_layout,
+    species_helpers,
+    root_clade_ids,
+    unnorm_row_max,
+    theta_init,
+    *,
+    transfer_mat_unnormalized=None,
+    max_iter: int = 50,
+    e_max_iters: int = 2000,
+    e_tol: float = 1e-8,
+    neumann_terms: int = 4,
+    use_pruning: bool = True,
+    pruning_threshold: float = -20.0,
+    cg_tol: float = 1e-8,
+    cg_maxiter: int = 500,
+    gmres_restart: int = 40,
+    specieswise: bool = False,
+    device=None,
+    dtype=torch.float64,
+    pibar_mode: str = 'uniform',
+    callback=None,
+    gradient_mode: str = 'analytical',
+    fd_eps: float = 1e-3,
+):
+    """Optimize theta using L-BFGS-B (scipy) with wave gradient.
+
+    Uses scipy.optimize.minimize('L-BFGS-B') which is the same algorithm
+    AleRax uses. Each function evaluation computes E→Pi→logL→implicit gradient.
+    """
+    import numpy as np
+    from scipy.optimize import minimize as scipy_minimize
+
+    if device is None:
+        device = theta_init.device
+    theta_t = theta_init.to(device=device, dtype=dtype).clone()
+    n_params = theta_t.numel()
+    theta_shape = theta_t.shape
+
+    history: List[StepRecord] = []
+    warm_E = [None]  # mutable container for closure
+    eval_count = [0]
+
+    _THETA_MIN = math.log(1e-10)
+
+    # Precompute recipients_T for sparse_corrected mode (used by E_fixed_point)
+    _recipients_T = None
+    if pibar_mode == 'sparse_corrected':
+        anc_dense = species_helpers['ancestors_dense'].to(device=device, dtype=dtype)
+        _recipients_T = (1.0 - anc_dense).T.contiguous()  # [S, S]
+
+    def _eval_nll(theta_d, warm_start=None):
+        """Forward pass: theta → (nll, E_out, Pi_out, params). Re-solves E and Pi."""
+        with torch.no_grad():
+            if pibar_mode in ('dense', 'sparse_corrected') and transfer_mat_unnormalized is not None:
+                log_pS, log_pD, log_pL, transfer_mat, mt_raw = extract_parameters(
+                    theta_d, transfer_mat_unnormalized,
+                    genewise=False, specieswise=specieswise, pairwise=False,
+                )
+                mt = mt_raw.squeeze(-1) if mt_raw.ndim == 2 else mt_raw
+            else:
+                log_pS, log_pD, log_pL, transfer_mat, mt = extract_parameters_uniform(
+                    theta_d, unnorm_row_max, specieswise=specieswise,
+                )
+
+            E_out = E_fixed_point(
+                species_helpers=species_helpers,
+                log_pS=log_pS, log_pD=log_pD, log_pL=log_pL,
+                transfer_mat=transfer_mat, max_transfer_mat=mt,
+                max_iters=e_max_iters, tolerance=e_tol,
+                warm_start_E=warm_start,
+                dtype=dtype, device=device, pibar_mode=pibar_mode,
+                recipients_T=_recipients_T,
+            )
+
+            Pi_out = Pi_wave_forward_v2(
+                wave_layout=wave_layout, species_helpers=species_helpers,
+                E=E_out['E'], Ebar=E_out['E_bar'],
+                E_s1=E_out['E_s1'], E_s2=E_out['E_s2'],
+                log_pS=log_pS, log_pD=log_pD, log_pL=log_pL,
+                transfer_mat=transfer_mat, max_transfer_mat=mt,
+                device=device, dtype=dtype, pibar_mode=pibar_mode,
+            )
+
+            logL = compute_log_likelihood(Pi_out['Pi'], E_out['E'], root_clade_ids)
+            nll = float(logL.sum().item())
+
+        return nll, E_out, Pi_out, log_pS, log_pD, log_pL, transfer_mat, mt
+
+    def forward_and_grad(theta_flat_np):
+        theta_flat = torch.from_numpy(theta_flat_np).to(device=device, dtype=dtype)
+        theta_d = theta_flat.reshape(theta_shape).clamp(min=_THETA_MIN)
+
+        # Forward pass at base theta (always re-solves E and Pi)
+        nll, E_out, Pi_out, log_pS, log_pD, log_pL, transfer_mat, mt = _eval_nll(
+            theta_d, warm_start=warm_E[0])
+        warm_E[0] = E_out['E'].detach()
+        iters_E = int(E_out['iterations'])
+        iters_Pi = int(Pi_out['iterations'])
+
+        # Gradient computation
+        if gradient_mode == 'fd':
+            # Finite-difference gradient: perturb each theta[i], re-solve E+Pi
+            grad_theta = torch.zeros(n_params, dtype=dtype, device=device)
+            theta_flat_d = theta_d.reshape(-1)
+            for i in range(n_params):
+                tp = theta_flat_d.clone()
+                tp[i] += fd_eps
+                nll_p, _, _, _, _, _, _, _ = _eval_nll(tp.reshape(theta_shape))
+
+                tm = theta_flat_d.clone()
+                tm[i] -= fd_eps
+                nll_m, _, _, _, _, _, _, _ = _eval_nll(tm.reshape(theta_shape))
+
+                grad_theta[i] = (nll_p - nll_m) / (2 * fd_eps)
+            grad_theta = grad_theta.reshape(theta_shape)
+            statsG = LinearSolveStats("fd", 0, 0.0, True)
+        else:
+            # Analytical implicit gradient
+            grad_theta, statsG = implicit_grad_loglik_vjp_wave(
+                wave_layout, species_helpers,
+                Pi_star_wave=Pi_out['Pi_wave_ordered'],
+                Pibar_star_wave=Pi_out['Pibar_wave_ordered'],
+                E_star=E_out['E'], E_s1=E_out['E_s1'],
+                E_s2=E_out['E_s2'], Ebar=E_out['E_bar'],
+                log_pS=log_pS, log_pD=log_pD, log_pL=log_pL,
+                max_transfer_mat=mt,
+                root_clade_ids_perm=wave_layout['root_clade_ids'],
+                theta=theta_d,
+                unnorm_row_max=unnorm_row_max,
+                specieswise=specieswise,
+                device=device, dtype=dtype,
+                neumann_terms=neumann_terms,
+                use_pruning=use_pruning,
+                pruning_threshold=pruning_threshold,
+                cg_tol=cg_tol, cg_maxiter=cg_maxiter,
+                gmres_restart=gmres_restart,
+            )
+
+        eval_count[0] += 1
+        rates = torch.exp(theta_d.detach())
+        grad_inf = float(grad_theta.abs().max().item())
+
+        fp_info = FixedPointInfo(iterations_E=iters_E, iterations_Pi=iters_Pi)
+        statsF_dummy = LinearSolveStats("wave_neumann", neumann_terms, 0.0, False)
+        history.append(
+            StepRecord(
+                iteration=eval_count[0],
+                theta=theta_d.detach().cpu(),
+                rates=rates.cpu(),
+                negative_log_likelihood=nll,
+                log_likelihood=-nll,
+                theta_step_inf=0.0,
+                grad_infinity_norm=grad_inf,
+                fp_info=fp_info,
+                gradient=grad_theta.cpu(),
+                solve_stats_F=statsF_dummy,
+                solve_stats_G=statsG,
+            )
+        )
+
+        if callback is not None:
+            callback(eval_count[0], nll, rates, grad_inf)
+
+        grad_np = grad_theta.reshape(-1).cpu().to(torch.float64).numpy()
+        # Replace NaN gradients with 0 (fp32 precision loss at very small rates)
+        np.nan_to_num(grad_np, copy=False, nan=0.0)
+        return float(nll), grad_np
+
+    x0 = theta_t.reshape(-1).cpu().to(torch.float64).numpy()
+    bounds = [(_THETA_MIN, None)] * len(x0)
+    result = scipy_minimize(
+        forward_and_grad, x0, method='L-BFGS-B', jac=True,
+        bounds=bounds,
+        options={'maxiter': max_iter, 'ftol': 1e-12, 'gtol': 1e-6},
+    )
+
+    theta_final = torch.from_numpy(result.x).to(device=device, dtype=dtype).reshape(theta_shape)
+    rates_final = torch.exp(theta_final)
+
+    return {
+        "theta": theta_final.cpu(),
+        "rates": rates_final.cpu(),
+        "negative_log_likelihood": result.fun,
+        "log_likelihood": -result.fun,
+        "history": history,
+        "scipy_result": result,
+    }

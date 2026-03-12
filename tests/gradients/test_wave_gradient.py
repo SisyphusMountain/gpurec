@@ -664,5 +664,131 @@ class TestSelfLoopDifferentiable:
         assert torch.isfinite(Pi_W.grad).all()
 
 
+class TestFullChainFD:
+    """Test full-chain gradient dL/dtheta (through both E and Pi) via FD."""
+
+    @pytest.fixture(scope="class")
+    def setup_1000(self):
+        return _setup_single_family("test_trees_1000", n_families=1, dtype=torch.float64)
+
+    def test_full_chain_gradient_matches_fd(self, setup_1000):
+        """Perturb theta, re-solve E AND Pi, compare logL → validates full dL/dtheta."""
+        from src.optimization.theta_optimizer import implicit_grad_loglik_vjp_wave
+
+        d = setup_1000
+        device, dtype = d['device'], d['dtype']
+        theta = d['theta'].clone()
+        pibar_mode = d['pibar_mode']
+        tm_unnorm = torch.log2(d['species_helpers']['Recipients_mat']).to(device=device, dtype=dtype)
+
+        # Full forward at base theta (re-solves E and Pi)
+        logL_base, Pi_out_base, E_out_base, log_pS, log_pD, log_pL, mt = _full_forward(
+            theta, d['unnorm_row_max'], d['species_helpers'],
+            d['wave_layout'], d['root_clade_ids'], device, dtype,
+            pibar_mode=pibar_mode, tm_unnorm=tm_unnorm,
+        )
+
+        # Run implicit_grad_loglik_vjp_wave for analytical gradient
+        grad_theta, statsG = implicit_grad_loglik_vjp_wave(
+            d['wave_layout'], d['species_helpers'],
+            Pi_star_wave=Pi_out_base['Pi_wave_ordered'],
+            Pibar_star_wave=Pi_out_base['Pibar_wave_ordered'],
+            E_star=E_out_base['E'], E_s1=E_out_base['E_s1'],
+            E_s2=E_out_base['E_s2'], Ebar=E_out_base['E_bar'],
+            log_pS=log_pS, log_pD=log_pD, log_pL=log_pL,
+            max_transfer_mat=mt,
+            root_clade_ids_perm=d['wave_layout']['root_clade_ids'],
+            theta=theta,
+            unnorm_row_max=d['unnorm_row_max'],
+            specieswise=False,
+            device=device, dtype=dtype,
+            neumann_terms=4, use_pruning=False,
+            cg_tol=1e-10, cg_maxiter=1000,
+        )
+
+        print(f"  Base logL (NLL) = {logL_base:.8f}")
+        print(f"  E CG stats: {statsG}")
+        print(f"  Analytical gradient: {grad_theta}")
+
+        # Central finite differences for each theta component.
+        # eps=1e-4 balances truncation vs round-off: the E fixed-point solve
+        # has tol=1e-8, so FD accuracy ~ tol/eps = 1e-4 at eps=1e-4.
+        eps = 1e-4
+        for i in range(theta.numel()):
+            theta_p = theta.clone()
+            theta_p[i] += eps
+            logL_p, _, _, _, _, _, _ = _full_forward(
+                theta_p, d['unnorm_row_max'], d['species_helpers'],
+                d['wave_layout'], d['root_clade_ids'], device, dtype,
+                pibar_mode=pibar_mode, tm_unnorm=tm_unnorm,
+            )
+
+            theta_m = theta.clone()
+            theta_m[i] -= eps
+            logL_m, _, _, _, _, _, _ = _full_forward(
+                theta_m, d['unnorm_row_max'], d['species_helpers'],
+                d['wave_layout'], d['root_clade_ids'], device, dtype,
+                pibar_mode=pibar_mode, tm_unnorm=tm_unnorm,
+            )
+
+            fd = (logL_p - logL_m) / (2 * eps)
+            analytic = grad_theta[i].item()
+            rel_err = abs(analytic - fd) / (abs(fd) + 1e-30)
+            print(f"  theta[{i}]: FD={fd:.8e}, analytic={analytic:.8e}, rel_err={rel_err:.4e}")
+            assert rel_err < 0.01, (
+                f"theta[{i}] full-chain gradient rel error {rel_err:.4e} > 1%: "
+                f"FD={fd:.8e}, analytic={analytic:.8e}"
+            )
+
+
+class TestEndToEnd:
+    """Test end-to-end optimization loop."""
+
+    @pytest.fixture(scope="class")
+    def setup_1000(self):
+        return _setup_single_family("test_trees_1000", n_families=1, dtype=torch.float64)
+
+    def test_optimization_decreases_nll(self, setup_1000):
+        """5 steps of optimize_theta_wave, NLL should decrease."""
+        from src.optimization.theta_optimizer import optimize_theta_wave
+
+        d = setup_1000
+        device, dtype = d['device'], d['dtype']
+
+        result = optimize_theta_wave(
+            wave_layout=d['wave_layout'],
+            species_helpers=d['species_helpers'],
+            root_clade_ids=d['root_clade_ids'],
+            unnorm_row_max=d['unnorm_row_max'],
+            theta_init=d['theta'].clone(),
+            steps=5,
+            lr=0.1,
+            e_max_iters=2000,
+            e_tol=1e-8,
+            neumann_terms=4,
+            use_pruning=False,
+            cg_tol=1e-10,
+            cg_maxiter=1000,
+            specieswise=False,
+            device=device,
+            dtype=dtype,
+            pibar_mode=d['pibar_mode'],
+        )
+
+        history = result['history']
+        print(f"  Optimization history ({len(history)} steps):")
+        for rec in history:
+            print(f"    Step {rec.iteration}: NLL={rec.negative_log_likelihood:.6f}, "
+                  f"|grad|={rec.grad_infinity_norm:.4e}, |dtheta|={rec.theta_step_inf:.4e}")
+
+        assert len(history) >= 2, "Need at least 2 steps"
+        nll_first = history[0].negative_log_likelihood
+        nll_last = history[-1].negative_log_likelihood
+        print(f"  NLL: {nll_first:.6f} → {nll_last:.6f} (delta={nll_last - nll_first:.6e})")
+        assert nll_last < nll_first, (
+            f"NLL did not decrease: {nll_first:.6f} → {nll_last:.6f}"
+        )
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v", "-x"])

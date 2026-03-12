@@ -568,11 +568,49 @@ def build_wave_layout(
 
         if n_ws > 0:
             wst = sort_order_dev[ss:se]  # split indices for this wave
+            reduce_idx = sp_new[wst] - ws  # [n_ws] wave-local clade index
+
+            # Sort splits: single-split clades first, then multi-split clades.
+            # This enables using direct copy for eq1 and seg_logsumexp for ge2.
+            clade_split_counts = torch.zeros(W, dtype=torch.long, device=device)
+            clade_split_counts.scatter_add_(0, reduce_idx,
+                                            torch.ones(n_ws, dtype=torch.long, device=device))
+            # Per-split: count for the parent clade of that split
+            per_split_count = clade_split_counts[reduce_idx]  # [n_ws]
+            # Composite sort key: eq1 first (is_ge2=0), ge2 after (is_ge2=1),
+            # within ge2 sorted by parent clade (ascending) for CSR contiguity.
+            sort_key = (per_split_count > 1).long() * (W + 1) + reduce_idx
+            inner_order = sort_key.argsort(stable=True)
+            wst = wst[inner_order]
+            reduce_idx = reduce_idx[inner_order]
+
+            n_eq1 = int((per_split_count == 1).sum().item())
+            n_ge2_clades = int((clade_split_counts >= 2).sum().item())
+
             meta['sl'] = lefts_new[wst]
             meta['sr'] = rights_new[wst]
             meta['log_split_probs'] = log_split_probs[wst].unsqueeze(1).contiguous()
-            meta['reduce_idx'] = sp_new[wst] - ws
+            meta['reduce_idx'] = reduce_idx
             meta['n_ws'] = n_ws
+            meta['n_eq1'] = n_eq1
+            meta['n_ge2_clades'] = n_ge2_clades
+
+            if n_eq1 > 0:
+                meta['eq1_reduce_idx'] = reduce_idx[:n_eq1]
+
+            if n_ge2_clades > 0:
+                # Build CSR pointers for the ge2 portion (splits n_eq1:).
+                # Splits are sorted by parent clade (ascending), so same-parent
+                # splits are contiguous — perfect for seg_logsumexp CSR format.
+                ge2_reduce = reduce_idx[n_eq1:]  # [n_ge2_splits]
+                # Unique parent clades in order of first appearance (= ascending,
+                # since we sorted by clade index)
+                ge2_parent_ids, ge2_counts = ge2_reduce.unique_consecutive(return_counts=True)
+                ge2_ptr = torch.zeros(len(ge2_parent_ids) + 1, dtype=torch.long, device=device)
+                torch.cumsum(ge2_counts, dim=0, out=ge2_ptr[1:])
+
+                meta['ge2_ptr'] = ge2_ptr
+                meta['ge2_parent_ids'] = ge2_parent_ids  # wave-local clade indices
 
         wave_metas.append(meta)
 
@@ -586,6 +624,7 @@ def build_wave_layout(
         'leaf_row_index': leaf_row_new,
         'leaf_col_index': leaf_col_index.to(device=device, dtype=torch.long),
         'root_clade_ids': root_ids_new,
+        'original_root_clade_ids': root_clade_ids.to(device=device, dtype=torch.long),
         'wave_starts': wave_starts,
         'wave_metas': wave_metas,
         'phases': phases,
