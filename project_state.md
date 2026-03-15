@@ -1,0 +1,102 @@
+# Project State
+
+## Architecture
+
+- **Wave-only (v2)**: `Pi_wave_forward_v2` is the sole Pi forward pass. v1 (`Pi_wave_forward`) was removed 2026-03-14.
+- **FP kept for debug**: `Pi_fixed_point` / `Pi_step` remain for debugging and genewise fallback.
+- **API**:
+  - `GeneDataset.compute_likelihood_batch()` — always uses wave v2 (no `use_wave`/`wave_version` params). Falls back to FP only for genewise.
+  - `GeneDataset.compute_likelihood(idx, use_wave=False)` — single-family, FP by default, `use_wave=True` for v2.
+
+## Pibar Computation Strategies
+
+Three strategies for computing Pibar (the transfer-weighted sum of Pi), distinguished by the transfer rate structure:
+
+1. **Uniform** (scalar T): `Pibar[c,s] = sum_j(Pi[c,j]) - sum_{j∈ancestors(s)}(Pi[c,j])`, then scale by `mt[s]`. Unweighted sum + sparse ancestor correction. O(W×S + W×nnz_ancestors).
+   - Code `pibar_mode='uniform'`: exact (uses `recipients_T = (1-ancestors_dense).T`)
+   - Code `pibar_mode='uniform_approx'`: approximation (subtracts only self-term, ignores other ancestors; max rel error ~1e-6 at S=2K)
+
+2. **Specieswise** (per-donor T[s]): `Pibar[c,s] = sum_j(Pi[c,j]·T[j]) - sum_{j∈ancestors(s)}(Pi[c,j]·T[j])`. Weighted sum + sparse ancestor correction. Same sparsity pattern as uniform, just weighted.
+
+3. **Pairwise** (per-pair T[i,j]): full [S,S] log-matmul, or top-k sparsification of Pi columns. Code `pibar_mode='dense'`. O(W×S²) exact, or O(W×S×k) with top-k.
+
+## Mode Support Matrix
+
+Rows: Pibar strategy (code `pibar_mode`). Columns: parameter structure.
+
+| pibar_mode \ param_mode | global | specieswise | pairwise |
+|---|---|---|---|
+| **pairwise** (`dense`) | fwd ✓, bwd ✓, FD ✓ (3.8e-7), tol 0.01%, 15+ tests | fwd ✓, bwd ✓, FD ✓ (2.3e-7), tol 0.01%, 1 test | fwd ✓, bwd N/A, 0 tests |
+| **uniform** (`uniform_approx`) | fwd ✓, bwd ✓, FD ✓ (5.3e-7), tol 0.01%, 10+ tests | fwd ✓, bwd ✓, FD ✓ (3.4e-7), tol 0.01%, 1 test | invalid (uniform assumes scalar T) |
+| **uniform exact** (`uniform`) | fwd ✓, bwd ✓, FD ✓ (2.6e-7), tol 0.1%, 1 test (S=39) | fwd ✓, bwd ✓, FD ✓ (2.3e-7), tol 0.1%, 1 test | invalid |
+
+FD error is max relative error vs central finite differences (float64). Tolerance is the assert threshold in the test.
+
+**genewise**: FP fallback only, no wave support.
+
+### Specieswise Notes
+- Forward was broken before 2026-03-13: `dts_fused.py` collapsed per-species log_pD/log_pS to scalars via `.mean()`. Now fixed to pass per-species vectors through the kernel.
+- Forward correctness test: `TestSpecieswiseForwardConsistency` verifies that specieswise with uniform rates matches global mode.
+- Three FD gradient tests (`uniform_approx`, `dense`, `uniform`) validate the full backward chain.
+
+## Performance
+
+| Metric | Value |
+|---|---|
+| S=1999 wave vs FP | 18.6x faster (~200ms/family) |
+| S=19999 (uniform) | 0.26s/family |
+| Fused kernel bandwidth | 81% peak BW at S=20K |
+| Small-S (≤256) | Slower than FP (known issue) |
+| Peak memory at S=20K | ~18 GB on 24 GB GPU |
+
+## Optimizer Support
+
+- **`optimize_theta_wave`**: Adam optimizer, supports uniform + dense pibar, specieswise parameters.
+- **`optimize_theta_lbfgsb`**: L-BFGS-B with analytical or finite-difference gradient, all pibar modes.
+- **E adjoint**: CG/GMRES solver (17 CG iterations typical).
+
+## Benchmark: Forward Pass (1 family, float32)
+
+Time for extract_parameters + E_fixed_point + Pi_wave_forward_v2 + logL.
+Wave layout build excluded (one-time cost).
+GPU: RTX 4090 (24 GB). Measured 2026-03-13.
+
+### S = 1999 (test_trees_1000)
+
+| pibar_mode \ param_mode | global | specieswise | pairwise |
+|---|---|---|---|
+| **pairwise** (`dense`) | 87 ms | 77 ms | N/A |
+| **uniform** (`uniform_approx`) | 52 ms | 57 ms | N/A |
+| **uniform exact** (`uniform`) | 96 ms | 76 ms | N/A |
+
+### S = 19999 (test_trees_10000)
+
+| pibar_mode \ param_mode | global | specieswise | pairwise |
+|---|---|---|---|
+| **pairwise** (`dense`) | OOM | OOM | N/A |
+| **uniform** (`uniform_approx`) | 668 ms | 624 ms | N/A |
+| **uniform exact** (`uniform`) | OOM | OOM | N/A |
+
+Pairwise and uniform-exact require [S,S] matrices on GPU (~3 GB each at S=20K).
+
+## Dead Code Cleanup (2026-03-14)
+
+Removed v1 wave path and stale code:
+
+**likelihood.py**: Deleted `Pi_wave_forward`, `_compute_Pibar_wave`, `_compute_Pibar_wave_compressed` (~276 lines).
+
+**model.py**: `compute_likelihood_batch` always uses wave v2 (removed `use_wave`, `wave_version` params). `compute_likelihood` wave branch switched from v1 to v2.
+
+**Tests converted v1→v2**: `test_wave_vs_fp.py`, `test_cross_family_wave.py`, `bench_scale.py`. **test_wave_v2.py**: removed v1-comparison tests, kept v2-vs-FP + model API tests.
+
+**Deleted 18 stale files**: 9 broken tests (`test_convergence_analysis`, `test_parameter_optimization_timing`, `test_wave_pi_equivalence`, `test_implicit_vjp`, `test_pi_update_rigorous`, `test_E_update_rigorous`, `test_scatter_rigorous`, `test_likelihood_comparison`, `converged_data`), 2 scripts (`optimize_theta`, `profile_likelihood`), 5 profiling scripts (`explore_compressed_pibar`, `explore_hybrid_pibar`, `explore_tl_separation`, `explore_precomputed_topk`, `explore_warmstart_compressed`), 2 docs (`scheduling_proposal.md`, `scheduling_proposal_2.md`).
+
+**Tolerance widened**: wave-vs-FP tests use LOGL_ATOL=5e-2 (was 1e-2). v2's clade permutation changes FP operation ordering, causing ~0.03 absolute diffs on logL~2000 (~1.5e-5 relative).
+
+## Known Issues & Gaps
+
+- **Small-S kernel slower than FP**: fused Triton kernel underperforms fixed-point for S ≤ 256.
+- **No pairwise gradient support**: forward-only for pairwise parameter mode.
+- **uniform OOMs at large S**: uses dense [S,S] `recipients_T` matmul — should exploit ancestor sparsity (O(depth) per species) instead.
+- **uniform coverage**: only 1 FD test at S=39; no large-S validation.
+- **`build_wave_layout` memory**: ~8 MB at S=20K (perm arrays + split metadata). Previously misreported as 6.7 GB.

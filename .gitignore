@@ -28,5 +28,26 @@ tests/data/**/output/
 .vscode/
 .idea/
 
+# Thesis (separate repo)
+These/
+
+# Rust build artifacts
+rustree/target/
+
+# Test benchmark outputs
+tests/integration/*.csv
+tests/profiling/*.png
+tests/profiling/*.json
+
+# Test data (generated, too large for git)
+tests/data/test_trees_20/
+tests/data/test_trees_100/
+tests/data/test_trees_1000/
+tests/data/test_trees_10000/
+tests/data/test_trees_dtl01/
+
+# Vendored library (separate repo)
+logmatmul/
+
 # Other
 torch/
