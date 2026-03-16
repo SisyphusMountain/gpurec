@@ -86,7 +86,7 @@ def preprocess_families(ext, sp_path, gene_paths, device, dtype):
         "s_C12_indexes": sr["s_C12_indexes"].to(device=device),
         "Recipients_mat": sr["Recipients_mat"].to(dtype=dtype, device=device),
     }
-    theta = torch.log(torch.tensor([0.05, 0.05, 0.05], dtype=dtype, device=device))
+    theta = torch.log2(torch.tensor([0.05, 0.05, 0.05], dtype=dtype, device=device))
     tm = torch.log2(sh["Recipients_mat"])
     pS, pD, pL, tf, mt = extract_parameters(
         theta, tm, genewise=False, specieswise=False, pairwise=False

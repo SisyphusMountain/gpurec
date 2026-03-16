@@ -32,6 +32,7 @@ def _wave_pibar_step_kernel(
     # Block sizes
     BLOCK_S: tl.constexpr,
     BLOCK_F: tl.constexpr,  # tile size for reduction over f in matmul
+    FP64: tl.constexpr = False,
 ):
     """Fully fused kernel: Pibar computation + DTS_L terms + logsumexp.
 
@@ -41,6 +42,9 @@ def _wave_pibar_step_kernel(
       2. Compute 6 DTS_L terms using Pi[w,e], Pibar[w,e], children
       3. logsumexp all terms (+ DTS_reduced if present)
     """
+    DTYPE = tl.float64 if FP64 else tl.float32
+    NEG_LARGE = -1e300 if FP64 else -1e30
+
     w = tl.program_id(0)
     s_block = tl.program_id(1)
 
@@ -51,19 +55,19 @@ def _wave_pibar_step_kernel(
 
     # --- Step 1: Compute Pibar[w, s_offs] via log-space matmul ---
     # First pass: find max over f for stabilization
-    pi_max = tl.full([1], value=-1e30, dtype=tl.float32)
+    pi_max = tl.full([1], value=NEG_LARGE, dtype=DTYPE)
     for f_start in range(0, S, BLOCK_F):
         f_offs = f_start + tl.arange(0, BLOCK_F)
         f_mask = f_offs < S
-        pi_f = tl.load(Pi_W_ptr + base_w + f_offs, mask=f_mask, other=-1e30)
+        pi_f = tl.load(Pi_W_ptr + base_w + f_offs, mask=f_mask, other=NEG_LARGE)
         pi_max = tl.maximum(pi_max, tl.max(pi_f, axis=0))
 
     # Second pass: accumulate exp2(pi_f - max) * M[e, f] for each e in s_offs
-    acc = tl.zeros([BLOCK_S], dtype=tl.float32)
+    acc = tl.zeros([BLOCK_S], dtype=DTYPE)
     for f_start in range(0, S, BLOCK_F):
         f_offs = f_start + tl.arange(0, BLOCK_F)
         f_mask = f_offs < S
-        pi_f = tl.load(Pi_W_ptr + base_w + f_offs, mask=f_mask, other=-1e30)
+        pi_f = tl.load(Pi_W_ptr + base_w + f_offs, mask=f_mask, other=NEG_LARGE)
         exp_f = tl.exp2(pi_f - pi_max)  # [BLOCK_F]
 
         # Load M[s_offs, f_offs] — transfer_mat[e, f]
@@ -82,22 +86,22 @@ def _wave_pibar_step_kernel(
     tl.store(Pibar_ptr + base_w + s_offs, pibar_w, mask=mask)
 
     # --- Step 2: Load Pi[w, s_offs] and children ---
-    pi_w = tl.load(Pi_W_ptr + base_w + s_offs, mask=mask, other=-1e30)
+    pi_w = tl.load(Pi_W_ptr + base_w + s_offs, mask=mask, other=NEG_LARGE)
 
     # Load constants
-    dl_const = tl.load(DL_const_ptr + s_offs, mask=mask, other=-1e30)
-    ebar = tl.load(Ebar_ptr + s_offs, mask=mask, other=-1e30)
-    e_val = tl.load(E_ptr + s_offs, mask=mask, other=-1e30)
-    sl1_const = tl.load(SL1_const_ptr + s_offs, mask=mask, other=-1e30)
-    sl2_const = tl.load(SL2_const_ptr + s_offs, mask=mask, other=-1e30)
+    dl_const = tl.load(DL_const_ptr + s_offs, mask=mask, other=NEG_LARGE)
+    ebar = tl.load(Ebar_ptr + s_offs, mask=mask, other=NEG_LARGE)
+    e_val = tl.load(E_ptr + s_offs, mask=mask, other=NEG_LARGE)
+    sl1_const = tl.load(SL1_const_ptr + s_offs, mask=mask, other=NEG_LARGE)
+    sl2_const = tl.load(SL2_const_ptr + s_offs, mask=mask, other=NEG_LARGE)
 
     # Gather species children
     c1 = tl.load(sp_child1_ptr + s_offs, mask=mask, other=0)
     c2 = tl.load(sp_child2_ptr + s_offs, mask=mask, other=0)
     c1_valid = c1 < S
     c2_valid = c2 < S
-    pi_s1 = tl.load(Pi_W_ptr + base_w + c1, mask=mask & c1_valid, other=-1e30)
-    pi_s2 = tl.load(Pi_W_ptr + base_w + c2, mask=mask & c2_valid, other=-1e30)
+    pi_s1 = tl.load(Pi_W_ptr + base_w + c1, mask=mask & c1_valid, other=NEG_LARGE)
+    pi_s2 = tl.load(Pi_W_ptr + base_w + c2, mask=mask & c2_valid, other=NEG_LARGE)
 
     # --- Step 3: 6 DTS_L terms + logsumexp ---
     t0 = dl_const + pi_w
@@ -105,8 +109,9 @@ def _wave_pibar_step_kernel(
     t2 = pibar_w + e_val
     t3 = sl1_const + pi_s1
     t4 = sl2_const + pi_s2
-    t5 = tl.load(leaf_term_ptr + base_w + s_offs, mask=mask, other=-1e30)
+    t5 = tl.load(leaf_term_ptr + base_w + s_offs, mask=mask, other=NEG_LARGE)
 
+    M_SAFE_THRESH = -1e299 if FP64 else -1e29
     m = tl.maximum(t0, t1)
     m = tl.maximum(m, t2)
     m = tl.maximum(m, t3)
@@ -114,10 +119,10 @@ def _wave_pibar_step_kernel(
     m = tl.maximum(m, t5)
 
     if has_splits:
-        dts_r = tl.load(DTS_reduced_ptr + base_w + s_offs, mask=mask, other=-1e30)
+        dts_r = tl.load(DTS_reduced_ptr + base_w + s_offs, mask=mask, other=NEG_LARGE)
         m = tl.maximum(m, dts_r)
 
-    m_safe = tl.where(m > -1e29, m, tl.zeros_like(m))
+    m_safe = tl.where(m > M_SAFE_THRESH, m, tl.zeros_like(m))
     s = tl.exp2(t0 - m_safe) + tl.exp2(t1 - m_safe) + tl.exp2(t2 - m_safe)
     s += tl.exp2(t3 - m_safe) + tl.exp2(t4 - m_safe) + tl.exp2(t5 - m_safe)
     if has_splits:
@@ -149,6 +154,7 @@ def wave_pibar_step_fused(Pi_W, transfer_mat, mt_squeezed,
     W, S = Pi_W.shape
     Pi_new = torch.empty_like(Pi_W)
     has_splits = DTS_reduced is not None
+    fp64 = Pi_W.dtype == torch.float64
 
     BLOCK_S = 32
     BLOCK_F = min(64, triton.next_power_of_2(S))
@@ -169,6 +175,7 @@ def wave_pibar_step_fused(Pi_W, transfer_mat, mt_squeezed,
         stride_m_row=S,
         BLOCK_S=BLOCK_S,
         BLOCK_F=BLOCK_F,
+        FP64=fp64,
     )
     return Pi_new
 

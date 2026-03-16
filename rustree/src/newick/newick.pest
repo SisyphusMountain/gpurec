@@ -2,7 +2,7 @@ newick = { subtree ~ ";" }
 
 subtree = { leaf | internal }
 leaf = { NAME? ~ ":" ~ LENGTH? }
-internal = { "(" ~ subtree ~ "," ~ subtree ~ ")" ~ NAME? ~ ":"? ~ LENGTH? }
+internal = { "(" ~ subtree ~ ("," ~ subtree)+ ~ ")" ~ NAME? ~ ":"? ~ LENGTH? }
 
-NAME = @{ ASCII_ALPHANUMERIC+ }
+NAME = @{ (ASCII_ALPHANUMERIC | "_" | "-" | ".")+ }
 LENGTH = @{ (ASCII_DIGIT+ ~ ("." ~ ASCII_DIGIT*)? ~ ("e" | "E") ~ ("+" | "-")? ~ ASCII_DIGIT+) | (ASCII_DIGIT+ ~ "." ~ ASCII_DIGIT*) | (ASCII_DIGIT+) }

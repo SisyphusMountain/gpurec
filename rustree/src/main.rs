@@ -58,6 +58,7 @@ fn main() {
                 parent: None,
                 depth: None,
                 length: 0.0,
+                bd_event: None,
             },
             FlatNode {
                 name: "left".to_string(),
@@ -66,6 +67,7 @@ fn main() {
                 parent: Some(0),
                 depth: None,
                 length: 0.0,
+                bd_event: None,
             },
             FlatNode {
                 name: "right".to_string(),
@@ -74,6 +76,7 @@ fn main() {
                 parent: Some(0),
                 depth: None,
                 length: 0.0,
+                bd_event: None,
             },
         ],
         root: 0,

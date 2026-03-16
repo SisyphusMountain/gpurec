@@ -21,7 +21,7 @@ from src.core.likelihood import (
     compute_log_likelihood,
 )
 from src.core.scheduling import compute_clade_waves
-from src.core.batching import collate_gene_families, collate_wave
+from src.core.batching import collate_gene_families, collate_wave, build_wave_layout
 from src.core.model import GeneDataset
 
 _INV = 1.0 / math.log(2.0)
@@ -29,7 +29,7 @@ _ROOT = Path(__file__).resolve().parent.parent
 
 D, L, T = 0.05, 0.05, 0.05
 TOL = 1e-3
-LOGL_ATOL = 1e-2
+LOGL_ATOL = 5e-2  # wave permutation changes FP ordering → slightly larger diffs
 
 
 # ------------------------------------------------------------------
@@ -77,7 +77,7 @@ def _compute_shared_params(sr, device, dtype):
         "s_C12_indexes": sr["s_C12_indexes"].to(device=device),
         "Recipients_mat": sr["Recipients_mat"].to(dtype=dtype, device=device),
     }
-    theta = torch.log(torch.tensor([D, L, T], dtype=dtype, device=device))
+    theta = torch.log2(torch.tensor([D, L, T], dtype=dtype, device=device))
     tm = torch.log2(sh["Recipients_mat"])
     pS, pD, pL, tf, mt = extract_parameters(
         theta, tm, genewise=False, specieswise=False, pairwise=False
@@ -102,13 +102,19 @@ def _run_per_family_wave(batch_items, sh, pS, pD, pL, tf, mv, Eo, device, dtype)
         root_id = item["root_clade_id"]
 
         waves, phases = compute_clade_waves(ch_dev)
-        wv = Pi_wave_forward(
-            waves=waves, ccp_helpers=ch_dev, species_helpers=sh,
+        wave_layout = build_wave_layout(
+            waves=waves, phases=phases,
+            ccp_helpers=ch_dev,
             leaf_row_index=li, leaf_col_index=lc,
+            root_clade_ids=torch.tensor([root_id], dtype=torch.long, device=device),
+            device=device, dtype=dtype,
+        )
+        wv = Pi_wave_forward(
+            wave_layout=wave_layout, species_helpers=sh,
             E=Eo["E"], Ebar=Eo["E_bar"], E_s1=Eo["E_s1"], E_s2=Eo["E_s2"],
             log_pS=pS, log_pD=pD, log_pL=pL,
             transfer_mat=tf, max_transfer_mat=mv,
-            device=device, dtype=dtype, phases=phases,
+            device=device, dtype=dtype,
             local_iters=1000, local_tolerance=TOL,
         )
         lL = float(compute_log_likelihood(wv["Pi"], Eo["E"], root_id))
@@ -118,7 +124,6 @@ def _run_per_family_wave(batch_items, sh, pS, pD, pL, tf, mv, Eo, device, dtype)
 
 def _run_batched_wave_chunk(batch_items, sh, pS, pD, pL, tf, mv, Eo, device, dtype):
     """Run Pi_wave_forward on a chunk of families batched together."""
-    # 1. Collate families
     batched = collate_gene_families(batch_items, dtype=dtype, device=device)
     ccp = batched["ccp"]
     li = batched["leaf_row_index"]
@@ -126,7 +131,6 @@ def _run_batched_wave_chunk(batch_items, sh, pS, pD, pL, tf, mv, Eo, device, dty
     root_ids = batched["root_clade_ids"]
     family_meta = batched["family_meta"]
 
-    # 2. Compute per-family waves, then merge into cross-family waves
     families_waves = []
     families_phases = []
     for item in batch_items:
@@ -138,8 +142,6 @@ def _run_batched_wave_chunk(batch_items, sh, pS, pD, pL, tf, mv, Eo, device, dty
 
     offsets = [m["clade_offset"] for m in family_meta]
     cross_waves = collate_wave(families_waves, offsets)
-
-    # Cross-family phases: for each wave k, take max phase across families
     max_n_waves = max(len(p) for p in families_phases)
     cross_phases = []
     for k in range(max_n_waves):
@@ -149,18 +151,23 @@ def _run_batched_wave_chunk(batch_items, sh, pS, pD, pL, tf, mv, Eo, device, dty
                 phase_k = max(phase_k, fp[k])
         cross_phases.append(phase_k)
 
-    # 3. Run wave forward on the merged data
-    wv = Pi_wave_forward(
-        waves=cross_waves, ccp_helpers=ccp, species_helpers=sh,
+    wave_layout = build_wave_layout(
+        waves=cross_waves, phases=cross_phases,
+        ccp_helpers=ccp,
         leaf_row_index=li, leaf_col_index=lc,
+        root_clade_ids=root_ids,
+        device=device, dtype=dtype,
+    )
+
+    wv = Pi_wave_forward(
+        wave_layout=wave_layout, species_helpers=sh,
         E=Eo["E"], Ebar=Eo["E_bar"], E_s1=Eo["E_s1"], E_s2=Eo["E_s2"],
         log_pS=pS, log_pD=pD, log_pL=pL,
         transfer_mat=tf, max_transfer_mat=mv,
-        device=device, dtype=dtype, phases=cross_phases,
+        device=device, dtype=dtype,
         local_iters=1000, local_tolerance=TOL,
     )
 
-    # 4. Extract per-family log-likelihoods
     logL_vec = compute_log_likelihood(wv["Pi"], Eo["E"], root_ids)
     return [float(lL) for lL in logL_vec]
 
@@ -510,7 +517,7 @@ def test_model_api_wave_vs_sequential(cpp_ext):
                      dtype=torch.float32, device=torch.device("cuda"))
 
     # Wave batched
-    logLs_wv = ds.compute_likelihood_batch(use_wave=True, tol_Pi=TOL)
+    logLs_wv = ds.compute_likelihood_batch(tol_Pi=TOL)
     # Per-family (uses FP internally)
     logLs_seq = [ds.compute_likelihood(i, tol_Pi=TOL)["log_likelihood"]
                  for i in range(len(genes))]
@@ -537,11 +544,7 @@ _ALERAX_REFS = [
 
 
 def _run_wave_single(ext, sp_path, gene_path, D_val, L_val, T_val, device, dtype):
-    """Run wave forward for a single family with given DTL params.
-
-    Returns (logL_nats, S) where logL_nats includes the uniform origination
-    prior 1/S and S is the number of species-tree nodes.
-    """
+    """Run wave forward for a single family with given DTL params."""
     raw = ext.preprocess(sp_path, [str(gene_path)])
     sr, cr = raw["species"], raw["ccp"]
 
@@ -561,7 +564,7 @@ def _run_wave_single(ext, sp_path, gene_path, D_val, L_val, T_val, device, dtype
     lc = raw["leaf_col_index"].long().to(device)
     root_id = int(cr["root_clade_id"])
 
-    theta = torch.log(torch.tensor([D_val, L_val, T_val], dtype=dtype, device=device))
+    theta = torch.log2(torch.tensor([D_val, L_val, T_val], dtype=dtype, device=device))
     tm = torch.log2(sh["Recipients_mat"])
     pS, pD, pL, tf, mt = extract_parameters(
         theta, tm, genewise=False, specieswise=False, pairwise=False
@@ -575,19 +578,23 @@ def _run_wave_single(ext, sp_path, gene_path, D_val, L_val, T_val, device, dtype
     )
 
     waves, phases = compute_clade_waves(ch)
-    wv = Pi_wave_forward(
-        waves=waves, ccp_helpers=ch, species_helpers=sh,
+    wave_layout = build_wave_layout(
+        waves=waves, phases=phases,
+        ccp_helpers=ch,
         leaf_row_index=li, leaf_col_index=lc,
+        root_clade_ids=torch.tensor([root_id], dtype=torch.long, device=device),
+        device=device, dtype=dtype,
+    )
+    wv = Pi_wave_forward(
+        wave_layout=wave_layout, species_helpers=sh,
         E=Eo["E"], Ebar=Eo["E_bar"], E_s1=Eo["E_s1"], E_s2=Eo["E_s2"],
         log_pS=pS, log_pD=pD, log_pL=pL,
         transfer_mat=tf, max_transfer_mat=mv,
-        device=device, dtype=dtype, phases=phases,
+        device=device, dtype=dtype,
         local_iters=2000, local_tolerance=1e-6,
     )
 
     logL_bits = float(compute_log_likelihood(wv["Pi"], Eo["E"], root_id))
-    # Convert from log2 (bits) to nats: gpurec returns -logL in bits
-    # ALeRax reports logL in nats (negative)
     LN2 = math.log(2.0)
     logL_nats = -logL_bits * LN2
     return logL_nats, sh["S"]

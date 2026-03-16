@@ -32,52 +32,55 @@ fn subtree_leaves(tree: &FlatTree, index: usize) -> BTreeSet<String> {
     leaves
 }
 
-/// Given a split (represented by the set of leaves in one part)
-/// and the full leaf set, returns a canonical string representation.
-/// The canonical representation is chosen as the smaller of the two partitions (or,
-/// if the two are equal in size, the lexicographically smaller one).
-fn canonical_split(subtree: &BTreeSet<String>, full: &BTreeSet<String>) -> String {
-    let complement: BTreeSet<String> = full.difference(subtree).cloned().collect();
-    if subtree.len() < complement.len() {
-        subtree.iter().cloned().collect::<Vec<_>>().join(",")
-    } else if subtree.len() > complement.len() {
-        complement.iter().cloned().collect::<Vec<_>>().join(",")
-    } else {
-        let a = subtree.iter().cloned().collect::<Vec<_>>().join(",");
-        let b = complement.iter().cloned().collect::<Vec<_>>().join(",");
-        if a < b { a } else { b }
-    }
-}
-
-/// Extracts the non-trivial splits from the given tree as a set of canonical strings.
-/// A split is considered non-trivial if both parts contain at least 2 leaves.
+/// Extracts the splits from the given tree as a set of strings representing clades.
+/// For rooted trees, each internal node defines a unique clade (set of descendant leaves).
 fn get_splits(tree: &FlatTree) -> HashSet<String> {
-    let full_leaves = collect_leaves(tree);
     let mut splits = HashSet::new();
 
-    // For each node with a parent, consider the edge between it and its parent.
-    // Its subtree defines one side of a split.
+    // For each node, if it's an internal node with a parent, count its clade
     for (index, node) in tree.nodes.iter().enumerate() {
         // Skip the root (which has no parent)
         if node.parent.is_none() {
             continue;
         }
-        let sub_leaves = subtree_leaves(tree, index);
-        // Ignore trivial splits where one side has fewer than 2 leaves.
-        if sub_leaves.len() < 2 || (full_leaves.len() - sub_leaves.len()) < 2 {
+
+        // Only count internal nodes (skip leaves)
+        let is_leaf = node.left_child.is_none() && node.right_child.is_none();
+        if is_leaf {
             continue;
         }
-        let canon = canonical_split(&sub_leaves, &full_leaves);
-        splits.insert(canon);
+
+        // Get the clade (set of leaves below this node) and represent as sorted string
+        // Sort leaves using natural/numerical ordering for consistent comparison
+        let sub_leaves = subtree_leaves(tree, index);
+        let mut leaves_vec: Vec<String> = sub_leaves.iter().cloned().collect();
+        leaves_vec.sort_by(|a, b| {
+            // Extract numeric suffix if present (e.g., "t10" -> 10)
+            let num_a = a.trim_start_matches(|c: char| !c.is_numeric())
+                .parse::<i32>().unwrap_or(0);
+            let num_b = b.trim_start_matches(|c: char| !c.is_numeric())
+                .parse::<i32>().unwrap_or(0);
+            num_a.cmp(&num_b)
+        });
+        let clade = leaves_vec.join(",");
+        splits.insert(clade);
     }
     splits
 }
 
-/// Computes the raw unrooted Robinson-Foulds distance between two FlatTree objects.
-/// 
+/// Computes the Robinson-Foulds distance between two FlatTree objects.
+///
+/// This function computes the RF distance by counting clades (monophyletic groups) in rooted trees.
+/// Each internal node defines a clade, and the RF distance is the number of clades that differ
+/// between the two trees.
+///
+/// Note: Despite the function name "unrooted", this implementation works with rooted trees
+/// and counts clades rather than canonical bipartitions. This matches common usage in phylogenetics
+/// where rooted trees are compared.
+///
 /// # Panics
-/// 
-/// Panics if the trees do not have identical leaf names or do not have the same number of leaves.
+///
+/// Panics if the trees do not have identical leaf labels or do not have the same number of leaves.
 pub fn unrooted_robinson_foulds(tree1: &FlatTree, tree2: &FlatTree) -> usize {
     // Verify that both trees have exactly the same set of leaves.
     let leaves1 = collect_leaves(tree1);

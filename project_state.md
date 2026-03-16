@@ -2,11 +2,11 @@
 
 ## Architecture
 
-- **Wave-only (v2)**: `Pi_wave_forward_v2` is the sole Pi forward pass. v1 (`Pi_wave_forward`) was removed 2026-03-14.
+- **Wave-only**: `Pi_wave_forward` is the sole Pi forward pass. The v1 gather/scatter implementation was removed 2026-03-14.
 - **FP kept for debug**: `Pi_fixed_point` / `Pi_step` remain for debugging and genewise fallback.
 - **API**:
-  - `GeneDataset.compute_likelihood_batch()` — always uses wave v2 (no `use_wave`/`wave_version` params). Falls back to FP only for genewise.
-  - `GeneDataset.compute_likelihood(idx, use_wave=False)` — single-family, FP by default, `use_wave=True` for v2.
+  - `GeneDataset.compute_likelihood_batch()` — always uses wave (no `use_wave`/`wave_version` params). Falls back to FP only for genewise.
+  - `GeneDataset.compute_likelihood(idx, use_wave=False)` — single-family, FP by default, `use_wave=True` for wave.
 
 ## Pibar Computation Strategies
 
@@ -32,7 +32,7 @@ Rows: Pibar strategy (code `pibar_mode`). Columns: parameter structure.
 
 FD error is max relative error vs central finite differences (float64). Tolerance is the assert threshold in the test.
 
-**genewise**: FP fallback only, no wave support.
+**genewise**: per-family wave loop (not cross-family batched).
 
 ### Specieswise Notes
 - Forward was broken before 2026-03-13: `dts_fused.py` collapsed per-species log_pD/log_pS to scalars via `.mean()`. Now fixed to pass per-species vectors through the kernel.
@@ -57,7 +57,7 @@ FD error is max relative error vs central finite differences (float64). Toleranc
 
 ## Benchmark: Forward Pass (1 family, float32)
 
-Time for extract_parameters + E_fixed_point + Pi_wave_forward_v2 + logL.
+Time for extract_parameters + E_fixed_point + Pi_wave_forward + logL.
 Wave layout build excluded (one-time cost).
 GPU: RTX 4090 (24 GB). Measured 2026-03-13.
 
@@ -83,15 +83,15 @@ Pairwise and uniform-exact require [S,S] matrices on GPU (~3 GB each at S=20K).
 
 Removed v1 wave path and stale code:
 
-**likelihood.py**: Deleted `Pi_wave_forward`, `_compute_Pibar_wave`, `_compute_Pibar_wave_compressed` (~276 lines).
+**likelihood.py**: Deleted v1 `Pi_wave_forward`, `_compute_Pibar_wave`, `_compute_Pibar_wave_compressed` (~276 lines).
 
-**model.py**: `compute_likelihood_batch` always uses wave v2 (removed `use_wave`, `wave_version` params). `compute_likelihood` wave branch switched from v1 to v2.
+**model.py**: `compute_likelihood_batch` always uses wave (removed `use_wave`, `wave_version` params). `compute_likelihood` wave branch switched from v1 to wave-ordered layout.
 
-**Tests converted v1→v2**: `test_wave_vs_fp.py`, `test_cross_family_wave.py`, `bench_scale.py`. **test_wave_v2.py**: removed v1-comparison tests, kept v2-vs-FP + model API tests.
+**Tests converted v1 to wave**: `test_wave_vs_fp.py`, `test_cross_family_wave.py`, `bench_scale.py`. **test_wave_v2.py**: removed v1-comparison tests, kept wave-vs-FP + model API tests.
 
 **Deleted 18 stale files**: 9 broken tests (`test_convergence_analysis`, `test_parameter_optimization_timing`, `test_wave_pi_equivalence`, `test_implicit_vjp`, `test_pi_update_rigorous`, `test_E_update_rigorous`, `test_scatter_rigorous`, `test_likelihood_comparison`, `converged_data`), 2 scripts (`optimize_theta`, `profile_likelihood`), 5 profiling scripts (`explore_compressed_pibar`, `explore_hybrid_pibar`, `explore_tl_separation`, `explore_precomputed_topk`, `explore_warmstart_compressed`), 2 docs (`scheduling_proposal.md`, `scheduling_proposal_2.md`).
 
-**Tolerance widened**: wave-vs-FP tests use LOGL_ATOL=5e-2 (was 1e-2). v2's clade permutation changes FP operation ordering, causing ~0.03 absolute diffs on logL~2000 (~1.5e-5 relative).
+**Tolerance widened**: wave-vs-FP tests use LOGL_ATOL=5e-2 (was 1e-2). The wave clade permutation changes FP operation ordering, causing ~0.03 absolute diffs on logL~2000 (~1.5e-5 relative).
 
 ## Known Issues & Gaps
 

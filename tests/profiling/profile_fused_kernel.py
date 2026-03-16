@@ -1,7 +1,7 @@
 """Profile the fused uniform-Pibar kernel at large S.
 
 Purpose:
-    Measure where time is spent in compute_likelihood_batch(pibar_mode='uniform')
+    Measure where time is spent in compute_likelihood_batch(pibar_mode='uniform_approx')
     for large species trees (S~20K), after introducing the fused Triton kernel
     `wave_step_uniform_fused` which combines Pibar computation, DTS_L terms,
     logsumexp, and convergence checking into a single kernel launch per iteration.
@@ -86,7 +86,7 @@ class Timer:
 # High-level stage profiling
 # ---------------------------------------------------------------------------
 
-def profiled_likelihood(ds, pibar_mode='uniform', timer=None):
+def profiled_likelihood(ds, pibar_mode='uniform_approx', timer=None):
     """Run compute_likelihood_batch with per-stage timing.
 
     Re-implements the steps of GeneDataset.compute_likelihood_batch
@@ -94,7 +94,7 @@ def profiled_likelihood(ds, pibar_mode='uniform', timer=None):
     """
     from src.core.extract_parameters import extract_parameters
     from src.core.likelihood import (
-        E_fixed_point, Pi_wave_forward_v2, compute_log_likelihood,
+        E_fixed_point, Pi_wave_forward, compute_log_likelihood,
     )
     from src.core.batching import collate_gene_families, collate_wave, build_wave_layout
     from src.core.scheduling import compute_clade_waves
@@ -127,7 +127,7 @@ def profiled_likelihood(ds, pibar_mode='uniform', timer=None):
 
     # A2. Species helpers to GPU
     with T.section("A2. species_helpers to GPU"):
-        _skip = {'ancestors_dense', 'Recipients_mat'} if pibar_mode == 'uniform' else set()
+        _skip = {'ancestors_dense', 'Recipients_mat'} if pibar_mode == 'uniform_approx' else set()
         def _mv(t):
             return t.to(device=device, dtype=dtype) if t.dtype.is_floating_point else t.to(device)
         species_helpers = {
@@ -142,7 +142,7 @@ def profiled_likelihood(ds, pibar_mode='uniform', timer=None):
             transfer_mat=transfer_mat, max_transfer_mat=max_transfer_vec,
             max_iters=200, tolerance=1e-3, warm_start_E=None, dtype=dtype, device=device)
         E, E_s1, E_s2, Ebar = E_out['E'], E_out['E_s1'], E_out['E_s2'], E_out['E_bar']
-        if pibar_mode == 'uniform':
+        if pibar_mode == 'uniform_approx':
             del transfer_mat; del transfer_mat_unnorm; transfer_mat = None
 
     # C. Wave scheduling
@@ -165,9 +165,9 @@ def profiled_likelihood(ds, pibar_mode='uniform', timer=None):
             leaf_row_index=leaf_row_index, leaf_col_index=leaf_col_index,
             root_clade_ids=root_clade_ids, device=device, dtype=dtype)
 
-    # D. Pi wave forward v2
-    with T.section("D. Pi_wave_forward_v2"):
-        Pi_out = Pi_wave_forward_v2(
+    # D. Pi wave forward
+    with T.section("D. Pi_wave_forward"):
+        Pi_out = Pi_wave_forward(
             wave_layout=wave_layout, species_helpers=species_helpers,
             E=E, Ebar=Ebar, E_s1=E_s1, E_s2=E_s2,
             log_pS=log_pS, log_pD=log_pD, log_pL=log_pL,
@@ -187,8 +187,8 @@ def profiled_likelihood(ds, pibar_mode='uniform', timer=None):
 # Inner-loop profiling via monkey-patching
 # ---------------------------------------------------------------------------
 
-def profiled_inner_loop(ds, pibar_mode='uniform'):
-    """Profile Pi_wave_forward_v2's inner loop by patching key functions.
+def profiled_inner_loop(ds, pibar_mode='uniform_approx'):
+    """Profile Pi_wave_forward's inner loop by patching key functions.
 
     Patches:
       - _compute_dts_cross: counts calls, measures cumulative time
@@ -257,7 +257,7 @@ def profiled_inner_loop(ds, pibar_mode='uniform'):
         torch.cuda.synchronize()
         t0 = time.perf_counter()
         logLs = ds.compute_likelihood_batch(
-            use_wave=True, wave_version=2, chunk_size=1,
+            chunk_size=1,
             max_iters_Pi=200, tol_Pi=1e-3, pibar_mode=pibar_mode)
         torch.cuda.synchronize()
         total = time.perf_counter() - t0
@@ -294,7 +294,7 @@ def main():
     parser.add_argument("--n_families", type=int, default=1)
     parser.add_argument("--dataset", default="test_trees_10000",
                         help="Dataset dir under tests/data/")
-    parser.add_argument("--pibar_mode", default="uniform", choices=["uniform", "dense"])
+    parser.add_argument("--pibar_mode", default="uniform_approx", choices=["uniform_approx", "dense", "uniform", "topk"])
     parser.add_argument("--skip_warmup", action="store_true")
     args = parser.parse_args()
 
@@ -318,7 +318,7 @@ def main():
     # Warmup
     if not args.skip_warmup:
         print("Warmup (JIT compile)...")
-        ds.compute_likelihood_batch(use_wave=True, wave_version=2, chunk_size=1,
+        ds.compute_likelihood_batch(chunk_size=1,
                                      max_iters_Pi=200, tol_Pi=1e-3,
                                      pibar_mode=args.pibar_mode)
         torch.cuda.synchronize()
@@ -350,7 +350,7 @@ def main():
         torch.cuda.synchronize()
         t0 = time.perf_counter()
         logLs = ds.compute_likelihood_batch(
-            use_wave=True, wave_version=2, chunk_size=1,
+            chunk_size=1,
             max_iters_Pi=200, tol_Pi=1e-3,
             pibar_mode=args.pibar_mode)
         torch.cuda.synchronize()

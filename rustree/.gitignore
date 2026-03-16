@@ -1,0 +1,42 @@
+target/
+Zombi/
+AleRax/
+
+# Output / generated files
+out/
+*.svg
+species.nwk
+tests.ipynb
+
+# Root-level generated data
+/bd_events.csv
+/gene_tree.csv
+/test_dtl_events.csv
+/test_dtl_output.xml
+
+# Test data
+test_data_3/
+tests/RF_trees
+tests/python/__pycache__
+
+# External tools / submodules
+light_phylogeny
+thirdkind
+
+# AI-generated docs
+CODE_REVIEW.md
+CODE_REVIEW_ACTION_PLAN.md
+CODE_REVIEW_REPORT.md
+ALERAX_INTEGRATION.md
+PYTHON_API.md
+docs/
+tests/python/*.md
+
+# Root-level test scripts
+/test_*.py
+
+# Misc
+code_damien.R
+test_alerax_statistics.py
+TODO.md
+

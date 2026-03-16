@@ -37,7 +37,7 @@ a 768 GB/s device). At S=20K: 0.45ms/call average, 105ms for 232 calls.
 
 ## 2. Vectorized Species Child Setup
 
-**File:** `src/core/likelihood.py` — `Pi_wave_forward_v2` init
+**File:** `src/core/likelihood.py` — `Pi_wave_forward` init
 
 **Problem:** Building `sp_child1[S]` and `sp_child2[S]` from `s_P_indexes` and
 `s_C12_indexes` used a Python loop with `.item()` calls:
@@ -96,7 +96,7 @@ waves_i, phases_i = compute_clade_waves(fam['ccp_helpers'])
 End-to-end:                           2.5s      0.56s  (4.5x)
   extract_params (PCIe + compute):    0.29s     0.28s
   wave scheduling:                    0.42s     0.001s  ← fix #3
-  Pi_wave_forward_v2:                 0.63s     0.25s
+  Pi_wave_forward:                 0.63s     0.25s
     species child setup:              0.40s     0.01s   ← fix #2
     fused kernel (232 calls):          -        0.10s   ← fix #1
     DTS cross (57 calls):             0.10s     0.10s
@@ -111,7 +111,7 @@ The fused kernel at S=20K: 0.45ms/call average, ~625 GB/s effective bandwidth
 ```
                                      Before    After
 End-to-end:                           0.75s     0.22s  (3.4x)
-  Pi_wave_forward_v2:                 0.17s     0.07s
+  Pi_wave_forward:                 0.17s     0.07s
     fused kernel (1724 calls):         -        0.06s
     DTS cross (421 calls):            0.05s     0.05s
 ```

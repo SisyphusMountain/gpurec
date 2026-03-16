@@ -1,13 +1,26 @@
 use crate::node::FlatTree;
-use regex::Regex;
-use lazy_static::lazy_static;
 
 /// Strips ANSI escape sequences from a string.
 fn strip_ansi_codes(s: &str) -> String {
-    lazy_static! {
-        static ref RE: Regex = Regex::new(r"\x1b\[[0-9;]*m").unwrap();
+    let mut result = String::with_capacity(s.len());
+    let bytes = s.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'\x1b' && i + 1 < bytes.len() && bytes[i + 1] == b'[' {
+            // Skip past the escape sequence
+            i += 2;
+            while i < bytes.len() && (bytes[i].is_ascii_digit() || bytes[i] == b';') {
+                i += 1;
+            }
+            if i < bytes.len() && bytes[i] == b'm' {
+                i += 1;
+            }
+        } else {
+            result.push(bytes[i] as char);
+            i += 1;
+        }
     }
-    RE.replace_all(s, "").to_string()
+    result
 }
 
 /// Compare two string values. If they differ, returns the new value in red with the old value in parentheses.

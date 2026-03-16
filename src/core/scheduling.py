@@ -12,8 +12,6 @@ from __future__ import annotations
 from collections import deque
 from typing import Any, Dict, List, Tuple
 
-import torch
-
 
 # ---------------------------------------------------------------------------
 # Public API

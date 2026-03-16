@@ -1,0 +1,2 @@
+useDynLib(rustree, .registration = TRUE)
+exportPattern("^[[:alpha:]]+")

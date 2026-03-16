@@ -133,8 +133,6 @@ def run():
         transfer_mat_T=T.transpose(-1, -2), max_transfer_mat=T_max.squeeze(-1),
         max_iters=args.itersPi, tolerance=1e-12,
         warm_start_Pi=None, device=device, dtype=dtype,
-        genewise=False, specieswise=False, pairwise=False,
-        clades_per_gene=None, batch_info=None,
     )
     Pi_single = Pi_single_out['Pi']
     ll_single = compute_log_likelihood(Pi_single, E, root0)
@@ -151,8 +149,6 @@ def run():
         transfer_mat_T=T.transpose(-1, -2), max_transfer_mat=T_max.squeeze(-1),
         max_iters=args.itersPi, tolerance=1e-12,
         warm_start_Pi=None, device=device, dtype=dtype,
-        genewise=False, specieswise=False, pairwise=False,
-        clades_per_gene=None, batch_info=None,
     )
     Pi_b = Pi_batch_out['Pi']
     # Slice corresponding to family 0

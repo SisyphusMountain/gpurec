@@ -13,9 +13,9 @@ def _dts_fused_kernel(
     lefts_ptr, rights_ptr,
     # Species child indices: [S] each (S = sentinel for "no child")
     sp_child1_ptr, sp_child2_ptr,
-    # Parameters: scalar values
-    log_pD_val,
-    log_pS_val,
+    # Parameters: [S] vectors (per-species log-probabilities)
+    log_pD_ptr,
+    log_pS_ptr,
     # Split probs: [N]
     log_split_probs_ptr,
     # Output: [N, S]
@@ -49,8 +49,12 @@ def _dts_fused_kernel(
     pibar_l = tl.load(Pibar_ptr + base_l + s_offs, mask=mask, other=-1e30)
     pibar_r = tl.load(Pibar_ptr + base_r + s_offs, mask=mask, other=-1e30)
 
+    # Load per-species parameters
+    log_pD_s = tl.load(log_pD_ptr + s_offs, mask=mask, other=-1e30)
+    log_pS_s = tl.load(log_pS_ptr + s_offs, mask=mask, other=-1e30)
+
     # Compute first 3 DTS terms
-    t0 = log_pD_val + pi_l + pi_r                        # D
+    t0 = log_pD_s + pi_l + pi_r                          # D
     t1 = pi_l + pibar_r                                  # T (l->r)
     t2 = pi_r + pibar_l                                  # T (r->l)
 
@@ -67,8 +71,8 @@ def _dts_fused_kernel(
     pi_r_c1 = tl.load(Pi_ptr + base_r + c1, mask=mask & c1_valid, other=-1e30)
     pi_l_c2 = tl.load(Pi_ptr + base_l + c2, mask=mask & c2_valid, other=-1e30)
 
-    t3 = log_pS_val + pi_l_c1 + pi_r_c2                  # S
-    t4 = log_pS_val + pi_r_c1 + pi_l_c2                  # S (swapped)
+    t3 = log_pS_s + pi_l_c1 + pi_r_c2                    # S
+    t4 = log_pS_s + pi_r_c1 + pi_l_c2                    # S (swapped)
 
     # Fused logsumexp2 over 5 terms
     m = tl.maximum(t0, t1)
@@ -100,7 +104,7 @@ def dts_fused(Pi, Pibar, lefts, rights,
         lefts: [N] long — left child clade indices per split
         rights: [N] long — right child clade indices per split
         sp_child1, sp_child2: [S] long — species tree child indices (S=sentinel)
-        log_pD, log_pS: scalar
+        log_pD, log_pS: scalar or [S] per-species event probabilities
         log_split_probs: [N, 1] or [N]
         out: optional [N, S] output buffer
 
@@ -115,9 +119,15 @@ def dts_fused(Pi, Pibar, lefts, rights,
     # Flatten log_split_probs to [N]
     lsp = log_split_probs.reshape(N).contiguous()
 
-    # Extract scalar values for kernel
-    pD_val = float(log_pD.item()) if log_pD.dim() == 0 else float(log_pD.mean().item())
-    pS_val = float(log_pS.item()) if log_pS.dim() == 0 else float(log_pS.mean().item())
+    # Expand scalar params to [S] vectors for the kernel
+    if log_pD.dim() == 0:
+        log_pD_vec = log_pD.expand(S).contiguous()
+    else:
+        log_pD_vec = log_pD.contiguous()
+    if log_pS.dim() == 0:
+        log_pS_vec = log_pS.expand(S).contiguous()
+    else:
+        log_pS_vec = log_pS.contiguous()
 
     BLOCK_S = 128
     grid = (N, (S + BLOCK_S - 1) // BLOCK_S)
@@ -126,7 +136,7 @@ def dts_fused(Pi, Pibar, lefts, rights,
         Pi.contiguous(), Pibar.contiguous(),
         lefts, rights,
         sp_child1, sp_child2,
-        pD_val, pS_val,
+        log_pD_vec, log_pS_vec,
         lsp,
         out,
         N, S,

@@ -1,0 +1,8 @@
+Package: rustree
+Title: Fast Phylogenetic Tree Simulation
+Version: 0.1.0
+Authors@R: person("Your", "Name", email = "you@example.com", role = c("aut", "cre"))
+Description: Simulate species trees under birth-death process and gene trees with DTL events.
+License: MIT
+Encoding: UTF-8
+SystemRequirements: Cargo (Rust package manager), rustc

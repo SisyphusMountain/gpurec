@@ -1,0 +1,29 @@
+[package]
+name = "rustree"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "rustree"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+pyo3 = { version = "0.18", features = ["extension-module"], optional = true }
+extendr-api = { version = "0.6", optional = true }
+pest = "2.7.4"
+pest_derive = "2.7.4"
+rand = "0.8.5"
+quick-xml = "0.31"
+tempfile = "3.8"
+
+[features]
+default = ["python"]
+python = ["pyo3"]
+r = ["extendr-api"]
+
+[profile.release]
+debug = true  # Include debug symbols for profiling
+
+[[test]]
+name = "sampling_tests"
+path = "tests/sampling_tests.rs"

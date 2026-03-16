@@ -20,8 +20,8 @@ from src.core.extract_parameters import extract_parameters_uniform
 from src.core.likelihood import (
     E_fixed_point,
     E_step,
-    Pi_wave_forward_v2,
-    Pi_wave_backward_v2,
+    Pi_wave_forward,
+    Pi_wave_backward,
     compute_log_likelihood,
     compute_gradient_bounds,
     _self_loop_differentiable,
@@ -93,14 +93,14 @@ def _setup_single_family(ds_name, n_families=1, device=None, dtype=torch.float64
     }
     S = sh["S"]
 
-    theta = torch.log(torch.tensor([D, L, T], dtype=dtype, device=device))
+    theta = torch.log2(torch.tensor([D, L, T], dtype=dtype, device=device))
     tm_unnorm = torch.log2(sh["Recipients_mat"])
     unnorm_row_max = tm_unnorm.max(dim=-1).values.to(device=device, dtype=dtype)
 
     # Use uniform mode for large S, dense for small S (Triton kernels need dense for S<=256)
-    pibar_mode = 'uniform' if S > 256 else 'dense'
+    pibar_mode = 'uniform_approx' if S > 256 else 'dense'
 
-    if pibar_mode == 'uniform':
+    if pibar_mode == 'uniform_approx':
         log_pS, log_pD, log_pL, transfer_mat, max_transfer_mat = extract_parameters_uniform(
             theta, unnorm_row_max, specieswise=False,
         )
@@ -150,7 +150,7 @@ def _setup_single_family(ds_name, n_families=1, device=None, dtype=torch.float64
         device=device, dtype=dtype,
     )
 
-    Pi_out = Pi_wave_forward_v2(
+    Pi_out = Pi_wave_forward(
         wave_layout=wave_layout, species_helpers=sh,
         E=E, Ebar=Ebar, E_s1=E_s1, E_s2=E_s2,
         log_pS=log_pS, log_pD=log_pD, log_pL=log_pL,
@@ -177,17 +177,17 @@ def _setup_single_family(ds_name, n_families=1, device=None, dtype=torch.float64
 
 
 def _full_forward(theta, unnorm_row_max, sh, wave_layout, root_clade_ids, device, dtype,
-                   pibar_mode='uniform', tm_unnorm=None):
+                   pibar_mode='uniform_approx', tm_unnorm=None, ancestors_T=None, specieswise=False):
     """Full forward pass at given theta, return logL."""
     S = sh['S']
-    if pibar_mode == 'uniform':
+    if pibar_mode in ('uniform_approx', 'uniform'):
         log_pS, log_pD, log_pL, transfer_mat, mt = extract_parameters_uniform(
-            theta, unnorm_row_max, specieswise=False,
+            theta, unnorm_row_max, specieswise=specieswise,
         )
     else:
         from src.core.extract_parameters import extract_parameters
         log_pS, log_pD, log_pL, transfer_mat, mt = extract_parameters(
-            theta, tm_unnorm, genewise=False, specieswise=False, pairwise=False,
+            theta, tm_unnorm, genewise=False, specieswise=specieswise, pairwise=False,
         )
         if mt.ndim == 2:
             mt = mt.squeeze(-1)
@@ -196,8 +196,9 @@ def _full_forward(theta, unnorm_row_max, sh, wave_layout, root_clade_ids, device
         transfer_mat=transfer_mat, max_transfer_mat=mt,
         max_iters=2000, tolerance=1e-8, warm_start_E=None,
         dtype=dtype, device=device, pibar_mode=pibar_mode,
+        ancestors_T=ancestors_T,
     )
-    Pi_out = Pi_wave_forward_v2(
+    Pi_out = Pi_wave_forward(
         wave_layout=wave_layout, species_helpers=sh,
         E=E_out['E'], Ebar=E_out['E_bar'], E_s1=E_out['E_s1'], E_s2=E_out['E_s2'],
         log_pS=log_pS, log_pD=log_pD, log_pL=log_pL,
@@ -266,7 +267,7 @@ class TestWaveBackward:
     def test_backward_runs(self, setup_20):
         """Backward pass completes without error."""
         d = setup_20
-        result = Pi_wave_backward_v2(
+        result = Pi_wave_backward(
             wave_layout=d['wave_layout'],
             Pi_star_wave=d['Pi_out']['Pi_wave_ordered'],
             Pibar_star_wave=d['Pi_out']['Pibar_wave_ordered'],
@@ -285,7 +286,7 @@ class TestWaveBackward:
     def test_backward_gradients_finite(self, setup_20):
         """All gradient accumulators should be finite."""
         d = setup_20
-        result = Pi_wave_backward_v2(
+        result = Pi_wave_backward(
             wave_layout=d['wave_layout'],
             Pi_star_wave=d['Pi_out']['Pi_wave_ordered'],
             Pibar_star_wave=d['Pi_out']['Pibar_wave_ordered'],
@@ -303,7 +304,7 @@ class TestWaveBackward:
     def test_root_rhs_nonzero(self, setup_20):
         """The root clade should have nonzero RHS."""
         d = setup_20
-        result = Pi_wave_backward_v2(
+        result = Pi_wave_backward(
             wave_layout=d['wave_layout'],
             Pi_star_wave=d['Pi_out']['Pi_wave_ordered'],
             Pibar_star_wave=d['Pi_out']['Pibar_wave_ordered'],
@@ -338,7 +339,7 @@ class TestGradientDescent:
         d = setup_20
         device, dtype = d['device'], d['dtype']
 
-        result = Pi_wave_backward_v2(
+        result = Pi_wave_backward(
             wave_layout=d['wave_layout'],
             Pi_star_wave=d['Pi_out']['Pi_wave_ordered'],
             Pibar_star_wave=d['Pi_out']['Pibar_wave_ordered'],
@@ -399,7 +400,7 @@ class TestWaveVsFiniteDifference:
         d = setup_1000
         device, dtype = d['device'], d['dtype']
 
-        result = Pi_wave_backward_v2(
+        result = Pi_wave_backward(
             wave_layout=d['wave_layout'],
             Pi_star_wave=d['Pi_out']['Pi_wave_ordered'],
             Pibar_star_wave=d['Pi_out']['Pibar_wave_ordered'],
@@ -420,14 +421,14 @@ class TestWaveVsFiniteDifference:
 
         rel_err = abs(bw - fd) / (abs(fd) + 1e-30)
         print(f"  log_pD: FD={fd:.6e}, BW={bw:.6e}, rel_err={rel_err:.2e}")
-        assert rel_err < 1e-3, f"log_pD gradient rel error {rel_err:.4e}"
+        assert rel_err < 1e-4, f"log_pD gradient rel error {rel_err:.4e}"
 
     def test_log_pS_gradient(self, setup_1000):
         """dL/d(log_pS) matches central FD within 0.1%."""
         d = setup_1000
         device, dtype = d['device'], d['dtype']
 
-        result = Pi_wave_backward_v2(
+        result = Pi_wave_backward(
             wave_layout=d['wave_layout'],
             Pi_star_wave=d['Pi_out']['Pi_wave_ordered'],
             Pibar_star_wave=d['Pi_out']['Pibar_wave_ordered'],
@@ -448,7 +449,7 @@ class TestWaveVsFiniteDifference:
 
         rel_err = abs(bw - fd) / (abs(fd) + 1e-30)
         print(f"  log_pS: FD={fd:.6e}, BW={bw:.6e}, rel_err={rel_err:.2e}")
-        assert rel_err < 1e-3, f"log_pS gradient rel error {rel_err:.4e}"
+        assert rel_err < 1e-4, f"log_pS gradient rel error {rel_err:.4e}"
 
     def test_mt_gradient(self, setup_1000):
         """dL/d(mt) directional derivative matches FD within 0.1%."""
@@ -456,7 +457,7 @@ class TestWaveVsFiniteDifference:
         device, dtype = d['device'], d['dtype']
         mt = d['max_transfer_mat']
 
-        result = Pi_wave_backward_v2(
+        result = Pi_wave_backward(
             wave_layout=d['wave_layout'],
             Pi_star_wave=d['Pi_out']['Pi_wave_ordered'],
             Pibar_star_wave=d['Pi_out']['Pibar_wave_ordered'],
@@ -481,7 +482,7 @@ class TestWaveVsFiniteDifference:
 
         rel_err = abs(bw - fd) / (abs(fd) + 1e-30)
         print(f"  mt dir: FD={fd:.6e}, BW={bw:.6e}, rel_err={rel_err:.2e}")
-        assert rel_err < 1e-3, f"mt gradient rel error {rel_err:.4e}"
+        assert rel_err < 1e-4, f"mt gradient rel error {rel_err:.4e}"
 
     @staticmethod
     def _forward_logL(d, log_pS=None, log_pD=None, max_transfer_mat=None):
@@ -490,7 +491,7 @@ class TestWaveVsFiniteDifference:
         _log_pD = log_pD if log_pD is not None else d['log_pD']
         _mt = max_transfer_mat if max_transfer_mat is not None else d['max_transfer_mat']
 
-        Pi_out = Pi_wave_forward_v2(
+        Pi_out = Pi_wave_forward(
             wave_layout=d['wave_layout'], species_helpers=d['species_helpers'],
             E=d['E'], Ebar=d['Ebar'], E_s1=d['E_s1'], E_s2=d['E_s2'],
             log_pS=_log_pS, log_pD=_log_pD, log_pL=d['log_pL'],
@@ -524,8 +525,8 @@ class TestPruning:
             neumann_terms=3,
         )
 
-        result_full = Pi_wave_backward_v2(**kwargs, use_pruning=False)
-        result_pruned = Pi_wave_backward_v2(**kwargs, use_pruning=True, pruning_threshold=-50.0)
+        result_full = Pi_wave_backward(**kwargs, use_pruning=False)
+        result_pruned = Pi_wave_backward(**kwargs, use_pruning=True, pruning_threshold=-50.0)
 
         # Pruned result should be finite
         assert torch.isfinite(result_pruned['v_Pi']).all()
@@ -735,8 +736,8 @@ class TestFullChainFD:
             analytic = grad_theta[i].item()
             rel_err = abs(analytic - fd) / (abs(fd) + 1e-30)
             print(f"  theta[{i}]: FD={fd:.8e}, analytic={analytic:.8e}, rel_err={rel_err:.4e}")
-            assert rel_err < 0.01, (
-                f"theta[{i}] full-chain gradient rel error {rel_err:.4e} > 1%: "
+            assert rel_err < 1e-4, (
+                f"theta[{i}] full-chain gradient rel error {rel_err:.4e} > 0.01%: "
                 f"FD={fd:.8e}, analytic={analytic:.8e}"
             )
 
@@ -788,6 +789,1586 @@ class TestEndToEnd:
         assert nll_last < nll_first, (
             f"NLL did not decrease: {nll_first:.6f} → {nll_last:.6f}"
         )
+
+
+class TestFullChainFDDense:
+    """Test full-chain gradient dL/dtheta with pibar_mode='dense' via FD."""
+
+    @pytest.fixture(scope="class")
+    def setup_1000_dense(self):
+        """Set up with test_trees_1000 explicitly in dense mode (fp64)."""
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        dtype = torch.float64
+
+        ext = _load_extension()
+        data_dir = _ROOT / "data" / "test_trees_1000"
+        if not data_dir.exists():
+            pytest.skip("test_trees_1000 not found")
+        sp_path = str(data_dir / "sp.nwk")
+        gene_paths = sorted(data_dir.glob("g_*.nwk"))[:1]
+        if len(gene_paths) < 1:
+            pytest.skip("No gene families in test_trees_1000")
+
+        raw = ext.preprocess(sp_path, [str(gene_paths[0])])
+        sr = raw['species']
+        cr = raw['ccp']
+        ch = {
+            "split_leftrights_sorted": cr["split_leftrights_sorted"],
+            "log_split_probs_sorted": cr["log_split_probs_sorted"].to(dtype=dtype) * _INV,
+            "seg_parent_ids": cr["seg_parent_ids"],
+            "ptr_ge2": cr["ptr_ge2"],
+            "num_segs_ge2": int(cr["num_segs_ge2"]),
+            "num_segs_eq1": int(cr["num_segs_eq1"]),
+            "end_rows_ge2": int(cr["end_rows_ge2"]),
+            "C": int(cr["C"]),
+            "N_splits": int(cr["N_splits"]),
+        }
+        if "split_parents_sorted" in cr:
+            ch["split_parents_sorted"] = cr["split_parents_sorted"]
+        batch_items = [{
+            "ccp": ch,
+            "leaf_row_index": raw["leaf_row_index"].long(),
+            "leaf_col_index": raw["leaf_col_index"].long(),
+            "root_clade_id": int(cr["root_clade_id"]),
+        }]
+
+        sh = {
+            "S": int(sr["S"]),
+            "names": sr["names"],
+            "s_P_indexes": sr["s_P_indexes"].to(device=device),
+            "s_C12_indexes": sr["s_C12_indexes"].to(device=device),
+            "Recipients_mat": sr["Recipients_mat"].to(dtype=dtype, device=device),
+        }
+        S = sh["S"]
+
+        theta = torch.log2(torch.tensor([D, L, T], dtype=dtype, device=device))
+        tm_unnorm = torch.log2(sh["Recipients_mat"]).to(device=device, dtype=dtype)
+        unnorm_row_max = tm_unnorm.max(dim=-1).values.to(device=device, dtype=dtype)
+
+        from src.core.extract_parameters import extract_parameters
+        log_pS, log_pD, log_pL, transfer_mat, max_transfer_mat = extract_parameters(
+            theta, tm_unnorm, genewise=False, specieswise=False, pairwise=False,
+        )
+        if max_transfer_mat.ndim == 2:
+            max_transfer_mat = max_transfer_mat.squeeze(-1)
+
+        E_out = E_fixed_point(
+            species_helpers=sh, log_pS=log_pS, log_pD=log_pD, log_pL=log_pL,
+            transfer_mat=transfer_mat, max_transfer_mat=max_transfer_mat,
+            max_iters=2000, tolerance=1e-8, warm_start_E=None,
+            dtype=dtype, device=device, pibar_mode='dense',
+        )
+
+        batched = collate_gene_families(batch_items, dtype=dtype, device=device)
+        ccp_helpers = batched['ccp']
+        leaf_row_index = batched['leaf_row_index']
+        leaf_col_index = batched['leaf_col_index']
+        root_clade_ids = batched['root_clade_ids']
+
+        families_waves, families_phases = [], []
+        for bi in batch_items:
+            w, p = compute_clade_waves(bi['ccp'])
+            families_waves.append(w)
+            families_phases.append(p)
+
+        offsets = [m['clade_offset'] for m in batched['family_meta']]
+        cross_waves = collate_wave(families_waves, offsets)
+        max_n = max(len(p) for p in families_phases)
+        cross_phases = [max(fp[k] if k < len(fp) else 1 for fp in families_phases) for k in range(max_n)]
+
+        wave_layout = build_wave_layout(
+            waves=cross_waves, phases=cross_phases,
+            ccp_helpers=ccp_helpers,
+            leaf_row_index=leaf_row_index,
+            leaf_col_index=leaf_col_index,
+            root_clade_ids=root_clade_ids,
+            device=device, dtype=dtype,
+        )
+
+        Pi_out = Pi_wave_forward(
+            wave_layout=wave_layout, species_helpers=sh,
+            E=E_out['E'], Ebar=E_out['E_bar'],
+            E_s1=E_out['E_s1'], E_s2=E_out['E_s2'],
+            log_pS=log_pS, log_pD=log_pD, log_pL=log_pL,
+            transfer_mat=transfer_mat, max_transfer_mat=max_transfer_mat,
+            device=device, dtype=dtype, pibar_mode='dense',
+        )
+
+        return {
+            'wave_layout': wave_layout,
+            'Pi_out': Pi_out,
+            'species_helpers': sh,
+            'E_out': E_out,
+            'E': E_out['E'], 'E_s1': E_out['E_s1'],
+            'E_s2': E_out['E_s2'], 'Ebar': E_out['E_bar'],
+            'log_pS': log_pS, 'log_pD': log_pD, 'log_pL': log_pL,
+            'transfer_mat': transfer_mat,
+            'max_transfer_mat': max_transfer_mat,
+            'root_clade_ids': root_clade_ids,
+            'root_clade_ids_perm': wave_layout['root_clade_ids'],
+            'theta': theta,
+            'unnorm_row_max': unnorm_row_max,
+            'tm_unnorm': tm_unnorm,
+            'device': device, 'dtype': dtype, 'S': S,
+        }
+
+    def test_full_chain_gradient_dense_matches_fd(self, setup_1000_dense):
+        """Full-chain gradient with pibar_mode='dense' matches central FD at fp64."""
+        from src.optimization.theta_optimizer import implicit_grad_loglik_vjp_wave
+        from src.core.extract_parameters import extract_parameters
+
+        d = setup_1000_dense
+        device, dtype = d['device'], d['dtype']
+        theta = d['theta'].clone()
+        tm_unnorm = d['tm_unnorm']
+
+        logL_base, Pi_out_base, E_out_base, log_pS, log_pD, log_pL, mt = _full_forward(
+            theta, d['unnorm_row_max'], d['species_helpers'],
+            d['wave_layout'], d['root_clade_ids'], device, dtype,
+            pibar_mode='dense', tm_unnorm=tm_unnorm,
+        )
+
+        grad_theta, statsG = implicit_grad_loglik_vjp_wave(
+            d['wave_layout'], d['species_helpers'],
+            Pi_star_wave=Pi_out_base['Pi_wave_ordered'],
+            Pibar_star_wave=Pi_out_base['Pibar_wave_ordered'],
+            E_star=E_out_base['E'], E_s1=E_out_base['E_s1'],
+            E_s2=E_out_base['E_s2'], Ebar=E_out_base['E_bar'],
+            log_pS=log_pS, log_pD=log_pD, log_pL=log_pL,
+            max_transfer_mat=mt,
+            root_clade_ids_perm=d['wave_layout']['root_clade_ids'],
+            theta=theta,
+            unnorm_row_max=d['unnorm_row_max'],
+            specieswise=False,
+            device=device, dtype=dtype,
+            neumann_terms=4, use_pruning=False,
+            cg_tol=1e-10, cg_maxiter=1000,
+            pibar_mode='dense',
+            transfer_mat=d['transfer_mat'],
+            transfer_mat_unnormalized=tm_unnorm,
+        )
+
+        print(f"  [dense] Base logL (NLL) = {logL_base:.8f}")
+        print(f"  [dense] E CG stats: {statsG}")
+        print(f"  [dense] Analytical gradient: {grad_theta}")
+
+        eps = 1e-4
+        for i in range(theta.numel()):
+            theta_p = theta.clone()
+            theta_p[i] += eps
+            logL_p, _, _, _, _, _, _ = _full_forward(
+                theta_p, d['unnorm_row_max'], d['species_helpers'],
+                d['wave_layout'], d['root_clade_ids'], device, dtype,
+                pibar_mode='dense', tm_unnorm=tm_unnorm,
+            )
+
+            theta_m = theta.clone()
+            theta_m[i] -= eps
+            logL_m, _, _, _, _, _, _ = _full_forward(
+                theta_m, d['unnorm_row_max'], d['species_helpers'],
+                d['wave_layout'], d['root_clade_ids'], device, dtype,
+                pibar_mode='dense', tm_unnorm=tm_unnorm,
+            )
+
+            fd = (logL_p - logL_m) / (2 * eps)
+            analytic = grad_theta[i].item()
+            rel_err = abs(analytic - fd) / (abs(fd) + 1e-30)
+            print(f"  [dense] theta[{i}]: FD={fd:.8e}, analytic={analytic:.8e}, rel_err={rel_err:.4e}")
+            assert rel_err < 1e-4, (
+                f"theta[{i}] dense full-chain gradient rel error {rel_err:.4e} > 0.01%: "
+                f"FD={fd:.8e}, analytic={analytic:.8e}"
+            )
+
+
+def _setup_uniform(ds_name, n_families=1, device=None, dtype=torch.float64):
+    """Set up problem with pibar_mode='uniform' for gradient testing."""
+    if device is None:
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+    ext = _load_extension()
+    data_dir = _ROOT / "data" / ds_name
+    if not data_dir.exists():
+        pytest.skip(f"{ds_name} not found")
+    sp_path = str(data_dir / "sp.nwk")
+    gene_paths = sorted(data_dir.glob("g_*.nwk"))[:n_families]
+    if len(gene_paths) < n_families:
+        pytest.skip(f"Only {len(gene_paths)} families in {ds_name}")
+
+    batch_items = []
+    sr = None
+    for gp in gene_paths:
+        raw = ext.preprocess(sp_path, [str(gp)])
+        if sr is None:
+            sr = raw['species']
+        cr = raw['ccp']
+        ch = {
+            "split_leftrights_sorted": cr["split_leftrights_sorted"],
+            "log_split_probs_sorted": cr["log_split_probs_sorted"].to(dtype=dtype) * _INV,
+            "seg_parent_ids": cr["seg_parent_ids"],
+            "ptr_ge2": cr["ptr_ge2"],
+            "num_segs_ge2": int(cr["num_segs_ge2"]),
+            "num_segs_eq1": int(cr["num_segs_eq1"]),
+            "end_rows_ge2": int(cr["end_rows_ge2"]),
+            "C": int(cr["C"]),
+            "N_splits": int(cr["N_splits"]),
+        }
+        if "split_parents_sorted" in cr:
+            ch["split_parents_sorted"] = cr["split_parents_sorted"]
+        batch_items.append({
+            "ccp": ch,
+            "leaf_row_index": raw["leaf_row_index"].long(),
+            "leaf_col_index": raw["leaf_col_index"].long(),
+            "root_clade_id": int(cr["root_clade_id"]),
+        })
+
+    sh = {
+        "S": int(sr["S"]),
+        "names": sr["names"],
+        "s_P_indexes": sr["s_P_indexes"].to(device=device),
+        "s_C12_indexes": sr["s_C12_indexes"].to(device=device),
+        "Recipients_mat": sr["Recipients_mat"].to(dtype=dtype, device=device),
+        "ancestors_dense": sr["ancestors_dense"].to(dtype=dtype, device=device),
+    }
+    S = sh["S"]
+
+    ancestors_T = sh["ancestors_dense"].T.to_sparse_coo()
+
+    theta = torch.log2(torch.tensor([D, L, T], dtype=dtype, device=device))
+    tm_unnorm = torch.log2(sh["Recipients_mat"])
+    unnorm_row_max = tm_unnorm.max(dim=-1).values.to(device=device, dtype=dtype)
+
+    pibar_mode = 'uniform'
+
+    log_pS, log_pD, log_pL, transfer_mat, max_transfer_mat = extract_parameters_uniform(
+        theta, unnorm_row_max, specieswise=False,
+    )
+
+    E_out = E_fixed_point(
+        species_helpers=sh, log_pS=log_pS, log_pD=log_pD, log_pL=log_pL,
+        transfer_mat=transfer_mat, max_transfer_mat=max_transfer_mat,
+        max_iters=2000, tolerance=1e-8, warm_start_E=None,
+        dtype=dtype, device=device, pibar_mode=pibar_mode,
+        ancestors_T=ancestors_T,
+    )
+
+    batched = collate_gene_families(batch_items, dtype=dtype, device=device)
+    ccp_helpers = batched['ccp']
+    leaf_row_index = batched['leaf_row_index']
+    leaf_col_index = batched['leaf_col_index']
+    root_clade_ids = batched['root_clade_ids']
+
+    families_waves, families_phases = [], []
+    for bi in batch_items:
+        w, p = compute_clade_waves(bi['ccp'])
+        families_waves.append(w)
+        families_phases.append(p)
+
+    offsets = [m['clade_offset'] for m in batched['family_meta']]
+    cross_waves = collate_wave(families_waves, offsets)
+    max_n = max(len(p) for p in families_phases)
+    cross_phases = [max(fp[k] if k < len(fp) else 1 for fp in families_phases) for k in range(max_n)]
+
+    wave_layout = build_wave_layout(
+        waves=cross_waves, phases=cross_phases,
+        ccp_helpers=ccp_helpers,
+        leaf_row_index=leaf_row_index,
+        leaf_col_index=leaf_col_index,
+        root_clade_ids=root_clade_ids,
+        device=device, dtype=dtype,
+    )
+
+    Pi_out = Pi_wave_forward(
+        wave_layout=wave_layout, species_helpers=sh,
+        E=E_out['E'], Ebar=E_out['E_bar'],
+        E_s1=E_out['E_s1'], E_s2=E_out['E_s2'],
+        log_pS=log_pS, log_pD=log_pD, log_pL=log_pL,
+        transfer_mat=transfer_mat, max_transfer_mat=max_transfer_mat,
+        device=device, dtype=dtype, pibar_mode=pibar_mode,
+    )
+
+    return {
+        'wave_layout': wave_layout,
+        'Pi_out': Pi_out,
+        'species_helpers': sh,
+        'E': E_out['E'], 'E_s1': E_out['E_s1'],
+        'E_s2': E_out['E_s2'], 'Ebar': E_out['E_bar'],
+        'log_pS': log_pS, 'log_pD': log_pD, 'log_pL': log_pL,
+        'transfer_mat': transfer_mat,
+        'max_transfer_mat': max_transfer_mat,
+        'root_clade_ids': root_clade_ids,
+        'root_clade_ids_perm': wave_layout['root_clade_ids'],
+        'theta': theta,
+        'unnorm_row_max': unnorm_row_max,
+        'pibar_mode': pibar_mode,
+        'ancestors_T': ancestors_T,
+        'batch_items': batch_items,
+        'device': device, 'dtype': dtype, 'S': S,
+    }
+
+
+class TestUniformExactFullChainFD:
+    """Test full-chain gradient dL/dtheta with pibar_mode='uniform' via FD."""
+
+    @pytest.fixture(scope="class")
+    def setup_20_uniform(self):
+        return _setup_uniform("test_trees_20", n_families=1, dtype=torch.float64)
+
+    def test_full_chain_gradient_uniform(self, setup_20_uniform):
+        """Perturb theta, re-solve E AND Pi with uniform, compare logL."""
+        from src.optimization.theta_optimizer import implicit_grad_loglik_vjp_wave
+
+        d = setup_20_uniform
+        device, dtype = d['device'], d['dtype']
+        theta = d['theta'].clone()
+        pibar_mode = d['pibar_mode']
+        ancestors_T = d['ancestors_T']
+
+        logL_base, Pi_out_base, E_out_base, log_pS, log_pD, log_pL, mt = _full_forward(
+            theta, d['unnorm_row_max'], d['species_helpers'],
+            d['wave_layout'], d['root_clade_ids'], device, dtype,
+            pibar_mode=pibar_mode, ancestors_T=ancestors_T,
+        )
+
+        grad_theta, statsG = implicit_grad_loglik_vjp_wave(
+            d['wave_layout'], d['species_helpers'],
+            Pi_star_wave=Pi_out_base['Pi_wave_ordered'],
+            Pibar_star_wave=Pi_out_base['Pibar_wave_ordered'],
+            E_star=E_out_base['E'], E_s1=E_out_base['E_s1'],
+            E_s2=E_out_base['E_s2'], Ebar=E_out_base['E_bar'],
+            log_pS=log_pS, log_pD=log_pD, log_pL=log_pL,
+            max_transfer_mat=mt,
+            root_clade_ids_perm=d['wave_layout']['root_clade_ids'],
+            theta=theta,
+            unnorm_row_max=d['unnorm_row_max'],
+            specieswise=False,
+            device=device, dtype=dtype,
+            neumann_terms=4, use_pruning=False,
+            cg_tol=1e-10, cg_maxiter=1000,
+            pibar_mode=pibar_mode,
+            ancestors_T=ancestors_T,
+        )
+
+        print(f"  [uniform] Base logL (NLL) = {logL_base:.8f}")
+        print(f"  [uniform] E CG stats: {statsG}")
+        print(f"  [uniform] Analytical gradient: {grad_theta}")
+
+        eps = 1e-4
+        for i in range(theta.numel()):
+            theta_p = theta.clone()
+            theta_p[i] += eps
+            logL_p, _, _, _, _, _, _ = _full_forward(
+                theta_p, d['unnorm_row_max'], d['species_helpers'],
+                d['wave_layout'], d['root_clade_ids'], device, dtype,
+                pibar_mode=pibar_mode, ancestors_T=ancestors_T,
+            )
+
+            theta_m = theta.clone()
+            theta_m[i] -= eps
+            logL_m, _, _, _, _, _, _ = _full_forward(
+                theta_m, d['unnorm_row_max'], d['species_helpers'],
+                d['wave_layout'], d['root_clade_ids'], device, dtype,
+                pibar_mode=pibar_mode, ancestors_T=ancestors_T,
+            )
+
+            fd = (logL_p - logL_m) / (2 * eps)
+            analytic = grad_theta[i].item()
+            rel_err = abs(analytic - fd) / (abs(fd) + 1e-30)
+            print(f"  [uniform] theta[{i}]: FD={fd:.8e}, analytic={analytic:.8e}, rel_err={rel_err:.4e}")
+            assert rel_err < 1e-3, (
+                f"theta[{i}] uniform full-chain gradient rel error {rel_err:.4e} > 0.1%: "
+                f"FD={fd:.8e}, analytic={analytic:.8e}"
+            )
+
+
+class TestSpecieswiseUniformFD:
+    """Test full-chain gradient dL/dtheta with specieswise=True, pibar_mode='uniform_approx' via FD."""
+
+    @pytest.fixture(scope="class")
+    def setup_sw_uniform(self):
+        """Set up specieswise + uniform on test_trees_20."""
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        dtype = torch.float64
+
+        ext = _load_extension()
+        data_dir = _ROOT / "data" / "test_trees_20"
+        if not data_dir.exists():
+            pytest.skip("test_trees_20 not found")
+        sp_path = str(data_dir / "sp.nwk")
+        gene_paths = sorted(data_dir.glob("g_*.nwk"))[:1]
+        if len(gene_paths) < 1:
+            pytest.skip("No gene families in test_trees_20")
+
+        raw = ext.preprocess(sp_path, [str(gene_paths[0])])
+        sr = raw['species']
+        cr = raw['ccp']
+        ch = {
+            "split_leftrights_sorted": cr["split_leftrights_sorted"],
+            "log_split_probs_sorted": cr["log_split_probs_sorted"].to(dtype=dtype) * _INV,
+            "seg_parent_ids": cr["seg_parent_ids"],
+            "ptr_ge2": cr["ptr_ge2"],
+            "num_segs_ge2": int(cr["num_segs_ge2"]),
+            "num_segs_eq1": int(cr["num_segs_eq1"]),
+            "end_rows_ge2": int(cr["end_rows_ge2"]),
+            "C": int(cr["C"]),
+            "N_splits": int(cr["N_splits"]),
+        }
+        if "split_parents_sorted" in cr:
+            ch["split_parents_sorted"] = cr["split_parents_sorted"]
+        batch_items = [{
+            "ccp": ch,
+            "leaf_row_index": raw["leaf_row_index"].long(),
+            "leaf_col_index": raw["leaf_col_index"].long(),
+            "root_clade_id": int(cr["root_clade_id"]),
+        }]
+
+        sh = {
+            "S": int(sr["S"]),
+            "names": sr["names"],
+            "s_P_indexes": sr["s_P_indexes"].to(device=device),
+            "s_C12_indexes": sr["s_C12_indexes"].to(device=device),
+            "Recipients_mat": sr["Recipients_mat"].to(dtype=dtype, device=device),
+        }
+        S = sh["S"]
+
+        # Specieswise theta: [S, 3], initialized to uniform D=L=T=0.05
+        theta = torch.log2(torch.tensor([D, L, T], dtype=dtype, device=device)).unsqueeze(0).expand(S, -1).contiguous()
+        tm_unnorm = torch.log2(sh["Recipients_mat"])
+        unnorm_row_max = tm_unnorm.max(dim=-1).values.to(device=device, dtype=dtype)
+
+        pibar_mode = 'uniform_approx'
+        log_pS, log_pD, log_pL, transfer_mat, max_transfer_mat = extract_parameters_uniform(
+            theta, unnorm_row_max, specieswise=True,
+        )
+
+        E_out = E_fixed_point(
+            species_helpers=sh, log_pS=log_pS, log_pD=log_pD, log_pL=log_pL,
+            transfer_mat=transfer_mat, max_transfer_mat=max_transfer_mat,
+            max_iters=2000, tolerance=1e-8, warm_start_E=None,
+            dtype=dtype, device=device, pibar_mode=pibar_mode,
+        )
+
+        batched = collate_gene_families(batch_items, dtype=dtype, device=device)
+        root_clade_ids = batched['root_clade_ids']
+
+        families_waves, families_phases = [], []
+        for bi in batch_items:
+            w, p = compute_clade_waves(bi['ccp'])
+            families_waves.append(w)
+            families_phases.append(p)
+
+        offsets = [m['clade_offset'] for m in batched['family_meta']]
+        cross_waves = collate_wave(families_waves, offsets)
+        max_n = max(len(p) for p in families_phases)
+        cross_phases = [max(fp[k] if k < len(fp) else 1 for fp in families_phases) for k in range(max_n)]
+
+        wave_layout = build_wave_layout(
+            waves=cross_waves, phases=cross_phases,
+            ccp_helpers=batched['ccp'],
+            leaf_row_index=batched['leaf_row_index'],
+            leaf_col_index=batched['leaf_col_index'],
+            root_clade_ids=root_clade_ids,
+            device=device, dtype=dtype,
+        )
+
+        Pi_out = Pi_wave_forward(
+            wave_layout=wave_layout, species_helpers=sh,
+            E=E_out['E'], Ebar=E_out['E_bar'],
+            E_s1=E_out['E_s1'], E_s2=E_out['E_s2'],
+            log_pS=log_pS, log_pD=log_pD, log_pL=log_pL,
+            transfer_mat=transfer_mat, max_transfer_mat=max_transfer_mat,
+            device=device, dtype=dtype, pibar_mode=pibar_mode,
+        )
+
+        return {
+            'wave_layout': wave_layout,
+            'Pi_out': Pi_out,
+            'species_helpers': sh,
+            'E_out': E_out,
+            'log_pS': log_pS, 'log_pD': log_pD, 'log_pL': log_pL,
+            'transfer_mat': transfer_mat,
+            'max_transfer_mat': max_transfer_mat,
+            'root_clade_ids': root_clade_ids,
+            'theta': theta,
+            'unnorm_row_max': unnorm_row_max,
+            'device': device, 'dtype': dtype, 'S': S,
+        }
+
+    def test_specieswise_uniform_gradient_matches_fd(self, setup_sw_uniform):
+        """Full-chain specieswise gradient with uniform pibar matches central FD."""
+        from src.optimization.theta_optimizer import implicit_grad_loglik_vjp_wave
+
+        d = setup_sw_uniform
+        device, dtype = d['device'], d['dtype']
+        theta = d['theta'].clone()
+        S = d['S']
+
+        logL_base, Pi_out_base, E_out_base, log_pS, log_pD, log_pL, mt = _full_forward(
+            theta, d['unnorm_row_max'], d['species_helpers'],
+            d['wave_layout'], d['root_clade_ids'], device, dtype,
+            pibar_mode='uniform_approx', specieswise=True,
+        )
+
+        grad_theta, statsG = implicit_grad_loglik_vjp_wave(
+            d['wave_layout'], d['species_helpers'],
+            Pi_star_wave=Pi_out_base['Pi_wave_ordered'],
+            Pibar_star_wave=Pi_out_base['Pibar_wave_ordered'],
+            E_star=E_out_base['E'], E_s1=E_out_base['E_s1'],
+            E_s2=E_out_base['E_s2'], Ebar=E_out_base['E_bar'],
+            log_pS=log_pS, log_pD=log_pD, log_pL=log_pL,
+            max_transfer_mat=mt,
+            root_clade_ids_perm=d['wave_layout']['root_clade_ids'],
+            theta=theta,
+            unnorm_row_max=d['unnorm_row_max'],
+            specieswise=True,
+            device=device, dtype=dtype,
+            neumann_terms=4, use_pruning=False,
+            cg_tol=1e-10, cg_maxiter=1000,
+            pibar_mode='uniform_approx',
+        )
+
+        print(f"  [sw-uniform] Base logL = {logL_base:.8f}")
+        print(f"  [sw-uniform] grad_theta shape = {grad_theta.shape}")
+        print(f"  [sw-uniform] grad_theta range = [{grad_theta.min():.4e}, {grad_theta.max():.4e}]")
+
+        eps = 1e-4
+        n_checked = 0
+        max_rel_err = 0.0
+        # Check a representative subset: first 5, last 5, and 5 random species
+        torch.manual_seed(42)
+        indices = list(range(min(5, S)))
+        indices += list(range(max(S - 5, min(5, S)), S))
+        if S > 15:
+            indices += torch.randint(5, S - 5, (5,)).tolist()
+        species_indices = sorted(set(indices))
+
+        for s_idx in species_indices:
+            for d_idx in range(3):
+                theta_p = theta.clone()
+                theta_p[s_idx, d_idx] += eps
+                logL_p, _, _, _, _, _, _ = _full_forward(
+                    theta_p, d['unnorm_row_max'], d['species_helpers'],
+                    d['wave_layout'], d['root_clade_ids'], device, dtype,
+                    pibar_mode='uniform_approx', specieswise=True,
+                )
+
+                theta_m = theta.clone()
+                theta_m[s_idx, d_idx] -= eps
+                logL_m, _, _, _, _, _, _ = _full_forward(
+                    theta_m, d['unnorm_row_max'], d['species_helpers'],
+                    d['wave_layout'], d['root_clade_ids'], device, dtype,
+                    pibar_mode='uniform_approx', specieswise=True,
+                )
+
+                fd = (logL_p - logL_m) / (2 * eps)
+                analytic = grad_theta[s_idx, d_idx].item()
+                rel_err = abs(analytic - fd) / (abs(fd) + 1e-30)
+                max_rel_err = max(max_rel_err, rel_err)
+                n_checked += 1
+                dim_name = ['D', 'L', 'T'][d_idx]
+                print(f"  [sw-uniform] theta[{s_idx},{dim_name}]: FD={fd:.8e}, "
+                      f"analytic={analytic:.8e}, rel_err={rel_err:.4e}")
+                assert rel_err < 1e-4, (
+                    f"theta[{s_idx},{dim_name}] specieswise uniform gradient rel error "
+                    f"{rel_err:.4e} > 0.01%: FD={fd:.8e}, analytic={analytic:.8e}"
+                )
+
+        print(f"  [sw-uniform] Checked {n_checked} components, max rel error = {max_rel_err:.4e}")
+
+
+class TestSpecieswiseDenseFD:
+    """Test full-chain gradient dL/dtheta with specieswise=True, pibar_mode='dense' via FD."""
+
+    @pytest.fixture(scope="class")
+    def setup_sw_dense(self):
+        """Set up specieswise + dense on test_trees_20."""
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        dtype = torch.float64
+
+        ext = _load_extension()
+        data_dir = _ROOT / "data" / "test_trees_20"
+        if not data_dir.exists():
+            pytest.skip("test_trees_20 not found")
+        sp_path = str(data_dir / "sp.nwk")
+        gene_paths = sorted(data_dir.glob("g_*.nwk"))[:1]
+        if len(gene_paths) < 1:
+            pytest.skip("No gene families in test_trees_20")
+
+        raw = ext.preprocess(sp_path, [str(gene_paths[0])])
+        sr = raw['species']
+        cr = raw['ccp']
+        ch = {
+            "split_leftrights_sorted": cr["split_leftrights_sorted"],
+            "log_split_probs_sorted": cr["log_split_probs_sorted"].to(dtype=dtype) * _INV,
+            "seg_parent_ids": cr["seg_parent_ids"],
+            "ptr_ge2": cr["ptr_ge2"],
+            "num_segs_ge2": int(cr["num_segs_ge2"]),
+            "num_segs_eq1": int(cr["num_segs_eq1"]),
+            "end_rows_ge2": int(cr["end_rows_ge2"]),
+            "C": int(cr["C"]),
+            "N_splits": int(cr["N_splits"]),
+        }
+        if "split_parents_sorted" in cr:
+            ch["split_parents_sorted"] = cr["split_parents_sorted"]
+        batch_items = [{
+            "ccp": ch,
+            "leaf_row_index": raw["leaf_row_index"].long(),
+            "leaf_col_index": raw["leaf_col_index"].long(),
+            "root_clade_id": int(cr["root_clade_id"]),
+        }]
+
+        sh = {
+            "S": int(sr["S"]),
+            "names": sr["names"],
+            "s_P_indexes": sr["s_P_indexes"].to(device=device),
+            "s_C12_indexes": sr["s_C12_indexes"].to(device=device),
+            "Recipients_mat": sr["Recipients_mat"].to(dtype=dtype, device=device),
+        }
+        S = sh["S"]
+
+        theta = torch.log2(torch.tensor([D, L, T], dtype=dtype, device=device)).unsqueeze(0).expand(S, -1).contiguous()
+        tm_unnorm = torch.log2(sh["Recipients_mat"]).to(device=device, dtype=dtype)
+        unnorm_row_max = tm_unnorm.max(dim=-1).values.to(device=device, dtype=dtype)
+
+        from src.core.extract_parameters import extract_parameters
+        log_pS, log_pD, log_pL, transfer_mat, max_transfer_mat = extract_parameters(
+            theta, tm_unnorm, genewise=False, specieswise=True, pairwise=False,
+        )
+        if max_transfer_mat.ndim == 2:
+            max_transfer_mat = max_transfer_mat.squeeze(-1)
+
+        E_out = E_fixed_point(
+            species_helpers=sh, log_pS=log_pS, log_pD=log_pD, log_pL=log_pL,
+            transfer_mat=transfer_mat, max_transfer_mat=max_transfer_mat,
+            max_iters=2000, tolerance=1e-8, warm_start_E=None,
+            dtype=dtype, device=device, pibar_mode='dense',
+        )
+
+        batched = collate_gene_families(batch_items, dtype=dtype, device=device)
+        root_clade_ids = batched['root_clade_ids']
+
+        families_waves, families_phases = [], []
+        for bi in batch_items:
+            w, p = compute_clade_waves(bi['ccp'])
+            families_waves.append(w)
+            families_phases.append(p)
+
+        offsets = [m['clade_offset'] for m in batched['family_meta']]
+        cross_waves = collate_wave(families_waves, offsets)
+        max_n = max(len(p) for p in families_phases)
+        cross_phases = [max(fp[k] if k < len(fp) else 1 for fp in families_phases) for k in range(max_n)]
+
+        wave_layout = build_wave_layout(
+            waves=cross_waves, phases=cross_phases,
+            ccp_helpers=batched['ccp'],
+            leaf_row_index=batched['leaf_row_index'],
+            leaf_col_index=batched['leaf_col_index'],
+            root_clade_ids=root_clade_ids,
+            device=device, dtype=dtype,
+        )
+
+        Pi_out = Pi_wave_forward(
+            wave_layout=wave_layout, species_helpers=sh,
+            E=E_out['E'], Ebar=E_out['E_bar'],
+            E_s1=E_out['E_s1'], E_s2=E_out['E_s2'],
+            log_pS=log_pS, log_pD=log_pD, log_pL=log_pL,
+            transfer_mat=transfer_mat, max_transfer_mat=max_transfer_mat,
+            device=device, dtype=dtype, pibar_mode='dense',
+        )
+
+        return {
+            'wave_layout': wave_layout,
+            'Pi_out': Pi_out,
+            'species_helpers': sh,
+            'E_out': E_out,
+            'log_pS': log_pS, 'log_pD': log_pD, 'log_pL': log_pL,
+            'transfer_mat': transfer_mat,
+            'max_transfer_mat': max_transfer_mat,
+            'root_clade_ids': root_clade_ids,
+            'theta': theta,
+            'unnorm_row_max': unnorm_row_max,
+            'tm_unnorm': tm_unnorm,
+            'device': device, 'dtype': dtype, 'S': S,
+        }
+
+    def test_specieswise_dense_gradient_matches_fd(self, setup_sw_dense):
+        """Full-chain specieswise gradient with dense pibar matches central FD."""
+        from src.optimization.theta_optimizer import implicit_grad_loglik_vjp_wave
+
+        d = setup_sw_dense
+        device, dtype = d['device'], d['dtype']
+        theta = d['theta'].clone()
+        tm_unnorm = d['tm_unnorm']
+        S = d['S']
+
+        logL_base, Pi_out_base, E_out_base, log_pS, log_pD, log_pL, mt = _full_forward(
+            theta, d['unnorm_row_max'], d['species_helpers'],
+            d['wave_layout'], d['root_clade_ids'], device, dtype,
+            pibar_mode='dense', tm_unnorm=tm_unnorm, specieswise=True,
+        )
+
+        grad_theta, statsG = implicit_grad_loglik_vjp_wave(
+            d['wave_layout'], d['species_helpers'],
+            Pi_star_wave=Pi_out_base['Pi_wave_ordered'],
+            Pibar_star_wave=Pi_out_base['Pibar_wave_ordered'],
+            E_star=E_out_base['E'], E_s1=E_out_base['E_s1'],
+            E_s2=E_out_base['E_s2'], Ebar=E_out_base['E_bar'],
+            log_pS=log_pS, log_pD=log_pD, log_pL=log_pL,
+            max_transfer_mat=mt,
+            root_clade_ids_perm=d['wave_layout']['root_clade_ids'],
+            theta=theta,
+            unnorm_row_max=d['unnorm_row_max'],
+            specieswise=True,
+            device=device, dtype=dtype,
+            neumann_terms=4, use_pruning=False,
+            cg_tol=1e-10, cg_maxiter=1000,
+            pibar_mode='dense',
+            transfer_mat=d['transfer_mat'],
+            transfer_mat_unnormalized=tm_unnorm,
+        )
+
+        print(f"  [sw-dense] Base logL = {logL_base:.8f}")
+        print(f"  [sw-dense] grad_theta shape = {grad_theta.shape}")
+        print(f"  [sw-dense] grad_theta range = [{grad_theta.min():.4e}, {grad_theta.max():.4e}]")
+
+        eps = 1e-4
+        n_checked = 0
+        max_rel_err = 0.0
+        torch.manual_seed(42)
+        indices = list(range(min(5, S)))
+        indices += list(range(max(S - 5, min(5, S)), S))
+        if S > 15:
+            indices += torch.randint(5, S - 5, (5,)).tolist()
+        species_indices = sorted(set(indices))
+
+        for s_idx in species_indices:
+            for d_idx in range(3):
+                theta_p = theta.clone()
+                theta_p[s_idx, d_idx] += eps
+                logL_p, _, _, _, _, _, _ = _full_forward(
+                    theta_p, d['unnorm_row_max'], d['species_helpers'],
+                    d['wave_layout'], d['root_clade_ids'], device, dtype,
+                    pibar_mode='dense', tm_unnorm=tm_unnorm, specieswise=True,
+                )
+
+                theta_m = theta.clone()
+                theta_m[s_idx, d_idx] -= eps
+                logL_m, _, _, _, _, _, _ = _full_forward(
+                    theta_m, d['unnorm_row_max'], d['species_helpers'],
+                    d['wave_layout'], d['root_clade_ids'], device, dtype,
+                    pibar_mode='dense', tm_unnorm=tm_unnorm, specieswise=True,
+                )
+
+                fd = (logL_p - logL_m) / (2 * eps)
+                analytic = grad_theta[s_idx, d_idx].item()
+                rel_err = abs(analytic - fd) / (abs(fd) + 1e-30)
+                max_rel_err = max(max_rel_err, rel_err)
+                n_checked += 1
+                if rel_err > 0.005:
+                    print(f"  [sw-dense] theta[{s_idx},{d_idx}]: FD={fd:.8e}, "
+                          f"analytic={analytic:.8e}, rel_err={rel_err:.4e}")
+                assert rel_err < 1e-4, (
+                    f"theta[{s_idx},{d_idx}] specieswise dense gradient rel error "
+                    f"{rel_err:.4e} > 0.01%: FD={fd:.8e}, analytic={analytic:.8e}"
+                )
+
+        print(f"  [sw-dense] Checked {n_checked} components, max rel error = {max_rel_err:.4e}")
+
+
+class TestSpecieswiseUniformExactFD:
+    """Test full-chain gradient dL/dtheta with specieswise=True, pibar_mode='uniform' via FD."""
+
+    @pytest.fixture(scope="class")
+    def setup_sw_uniform(self):
+        """Set up specieswise + uniform on test_trees_20."""
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        dtype = torch.float64
+
+        ext = _load_extension()
+        data_dir = _ROOT / "data" / "test_trees_20"
+        if not data_dir.exists():
+            pytest.skip("test_trees_20 not found")
+        sp_path = str(data_dir / "sp.nwk")
+        gene_paths = sorted(data_dir.glob("g_*.nwk"))[:1]
+        if len(gene_paths) < 1:
+            pytest.skip("No gene families in test_trees_20")
+
+        raw = ext.preprocess(sp_path, [str(gene_paths[0])])
+        sr = raw['species']
+        cr = raw['ccp']
+        ch = {
+            "split_leftrights_sorted": cr["split_leftrights_sorted"],
+            "log_split_probs_sorted": cr["log_split_probs_sorted"].to(dtype=dtype) * _INV,
+            "seg_parent_ids": cr["seg_parent_ids"],
+            "ptr_ge2": cr["ptr_ge2"],
+            "num_segs_ge2": int(cr["num_segs_ge2"]),
+            "num_segs_eq1": int(cr["num_segs_eq1"]),
+            "end_rows_ge2": int(cr["end_rows_ge2"]),
+            "C": int(cr["C"]),
+            "N_splits": int(cr["N_splits"]),
+        }
+        if "split_parents_sorted" in cr:
+            ch["split_parents_sorted"] = cr["split_parents_sorted"]
+        batch_items = [{
+            "ccp": ch,
+            "leaf_row_index": raw["leaf_row_index"].long(),
+            "leaf_col_index": raw["leaf_col_index"].long(),
+            "root_clade_id": int(cr["root_clade_id"]),
+        }]
+
+        sh = {
+            "S": int(sr["S"]),
+            "names": sr["names"],
+            "s_P_indexes": sr["s_P_indexes"].to(device=device),
+            "s_C12_indexes": sr["s_C12_indexes"].to(device=device),
+            "Recipients_mat": sr["Recipients_mat"].to(dtype=dtype, device=device),
+            "ancestors_dense": sr["ancestors_dense"].to(dtype=dtype, device=device),
+        }
+        S = sh["S"]
+
+        ancestors_T = sh["ancestors_dense"].T.to_sparse_coo()
+
+        theta = torch.log2(torch.tensor([D, L, T], dtype=dtype, device=device)).unsqueeze(0).expand(S, -1).contiguous()
+        tm_unnorm = torch.log2(sh["Recipients_mat"])
+        unnorm_row_max = tm_unnorm.max(dim=-1).values.to(device=device, dtype=dtype)
+
+        pibar_mode = 'uniform'
+        log_pS, log_pD, log_pL, transfer_mat, max_transfer_mat = extract_parameters_uniform(
+            theta, unnorm_row_max, specieswise=True,
+        )
+
+        E_out = E_fixed_point(
+            species_helpers=sh, log_pS=log_pS, log_pD=log_pD, log_pL=log_pL,
+            transfer_mat=transfer_mat, max_transfer_mat=max_transfer_mat,
+            max_iters=2000, tolerance=1e-8, warm_start_E=None,
+            dtype=dtype, device=device, pibar_mode=pibar_mode,
+            ancestors_T=ancestors_T,
+        )
+
+        batched = collate_gene_families(batch_items, dtype=dtype, device=device)
+        root_clade_ids = batched['root_clade_ids']
+
+        families_waves, families_phases = [], []
+        for bi in batch_items:
+            w, p = compute_clade_waves(bi['ccp'])
+            families_waves.append(w)
+            families_phases.append(p)
+
+        offsets = [m['clade_offset'] for m in batched['family_meta']]
+        cross_waves = collate_wave(families_waves, offsets)
+        max_n = max(len(p) for p in families_phases)
+        cross_phases = [max(fp[k] if k < len(fp) else 1 for fp in families_phases) for k in range(max_n)]
+
+        wave_layout = build_wave_layout(
+            waves=cross_waves, phases=cross_phases,
+            ccp_helpers=batched['ccp'],
+            leaf_row_index=batched['leaf_row_index'],
+            leaf_col_index=batched['leaf_col_index'],
+            root_clade_ids=root_clade_ids,
+            device=device, dtype=dtype,
+        )
+
+        Pi_out = Pi_wave_forward(
+            wave_layout=wave_layout, species_helpers=sh,
+            E=E_out['E'], Ebar=E_out['E_bar'],
+            E_s1=E_out['E_s1'], E_s2=E_out['E_s2'],
+            log_pS=log_pS, log_pD=log_pD, log_pL=log_pL,
+            transfer_mat=transfer_mat, max_transfer_mat=max_transfer_mat,
+            device=device, dtype=dtype, pibar_mode=pibar_mode,
+        )
+
+        return {
+            'wave_layout': wave_layout,
+            'Pi_out': Pi_out,
+            'species_helpers': sh,
+            'E_out': E_out,
+            'log_pS': log_pS, 'log_pD': log_pD, 'log_pL': log_pL,
+            'transfer_mat': transfer_mat,
+            'max_transfer_mat': max_transfer_mat,
+            'root_clade_ids': root_clade_ids,
+            'theta': theta,
+            'unnorm_row_max': unnorm_row_max,
+            'ancestors_T': ancestors_T,
+            'device': device, 'dtype': dtype, 'S': S,
+        }
+
+    def test_specieswise_uniform_gradient_matches_fd(self, setup_sw_uniform):
+        """Full-chain specieswise gradient with uniform pibar matches central FD."""
+        from src.optimization.theta_optimizer import implicit_grad_loglik_vjp_wave
+
+        d = setup_sw_uniform
+        device, dtype = d['device'], d['dtype']
+        theta = d['theta'].clone()
+        S = d['S']
+        ancestors_T = d['ancestors_T']
+
+        logL_base, Pi_out_base, E_out_base, log_pS, log_pD, log_pL, mt = _full_forward(
+            theta, d['unnorm_row_max'], d['species_helpers'],
+            d['wave_layout'], d['root_clade_ids'], device, dtype,
+            pibar_mode='uniform', ancestors_T=ancestors_T, specieswise=True,
+        )
+
+        grad_theta, statsG = implicit_grad_loglik_vjp_wave(
+            d['wave_layout'], d['species_helpers'],
+            Pi_star_wave=Pi_out_base['Pi_wave_ordered'],
+            Pibar_star_wave=Pi_out_base['Pibar_wave_ordered'],
+            E_star=E_out_base['E'], E_s1=E_out_base['E_s1'],
+            E_s2=E_out_base['E_s2'], Ebar=E_out_base['E_bar'],
+            log_pS=log_pS, log_pD=log_pD, log_pL=log_pL,
+            max_transfer_mat=mt,
+            root_clade_ids_perm=d['wave_layout']['root_clade_ids'],
+            theta=theta,
+            unnorm_row_max=d['unnorm_row_max'],
+            specieswise=True,
+            device=device, dtype=dtype,
+            neumann_terms=4, use_pruning=False,
+            cg_tol=1e-10, cg_maxiter=1000,
+            pibar_mode='uniform',
+            ancestors_T=ancestors_T,
+        )
+
+        print(f"  [sw-sparse] Base logL = {logL_base:.8f}")
+        print(f"  [sw-sparse] grad_theta shape = {grad_theta.shape}")
+        print(f"  [sw-sparse] grad_theta range = [{grad_theta.min():.4e}, {grad_theta.max():.4e}]")
+
+        eps = 1e-4
+        n_checked = 0
+        max_rel_err = 0.0
+        torch.manual_seed(42)
+        indices = list(range(min(5, S)))
+        indices += list(range(max(S - 5, min(5, S)), S))
+        if S > 15:
+            indices += torch.randint(5, S - 5, (5,)).tolist()
+        species_indices = sorted(set(indices))
+
+        for s_idx in species_indices:
+            for d_idx in range(3):
+                theta_p = theta.clone()
+                theta_p[s_idx, d_idx] += eps
+                logL_p, _, _, _, _, _, _ = _full_forward(
+                    theta_p, d['unnorm_row_max'], d['species_helpers'],
+                    d['wave_layout'], d['root_clade_ids'], device, dtype,
+                    pibar_mode='uniform', ancestors_T=ancestors_T, specieswise=True,
+                )
+
+                theta_m = theta.clone()
+                theta_m[s_idx, d_idx] -= eps
+                logL_m, _, _, _, _, _, _ = _full_forward(
+                    theta_m, d['unnorm_row_max'], d['species_helpers'],
+                    d['wave_layout'], d['root_clade_ids'], device, dtype,
+                    pibar_mode='uniform', ancestors_T=ancestors_T, specieswise=True,
+                )
+
+                fd = (logL_p - logL_m) / (2 * eps)
+                analytic = grad_theta[s_idx, d_idx].item()
+                rel_err = abs(analytic - fd) / (abs(fd) + 1e-30)
+                max_rel_err = max(max_rel_err, rel_err)
+                n_checked += 1
+                if rel_err > 0.005:
+                    print(f"  [sw-sparse] theta[{s_idx},{d_idx}]: FD={fd:.8e}, "
+                          f"analytic={analytic:.8e}, rel_err={rel_err:.4e}")
+                assert rel_err < 1e-3, (
+                    f"theta[{s_idx},{d_idx}] specieswise uniform gradient rel error "
+                    f"{rel_err:.4e} > 0.1%: FD={fd:.8e}, analytic={analytic:.8e}"
+                )
+
+        print(f"  [sw-sparse] Checked {n_checked} components, max rel error = {max_rel_err:.4e}")
+
+
+class TestSpecieswiseForwardConsistency:
+    """Verify that specieswise mode with uniform rates matches global mode exactly."""
+
+    @pytest.fixture(scope="class")
+    def setup_both_modes(self):
+        """Run forward pass in both global and specieswise mode on same data."""
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        dtype = torch.float64
+
+        ext = _load_extension()
+        data_dir = _ROOT / "data" / "test_trees_20"
+        if not data_dir.exists():
+            pytest.skip("test_trees_20 not found")
+        sp_path = str(data_dir / "sp.nwk")
+        gene_paths = sorted(data_dir.glob("g_*.nwk"))[:1]
+        if len(gene_paths) < 1:
+            pytest.skip("No gene families in test_trees_20")
+
+        raw = ext.preprocess(sp_path, [str(gene_paths[0])])
+        sr = raw['species']
+        cr = raw['ccp']
+        ch = {
+            "split_leftrights_sorted": cr["split_leftrights_sorted"],
+            "log_split_probs_sorted": cr["log_split_probs_sorted"].to(dtype=dtype) * _INV,
+            "seg_parent_ids": cr["seg_parent_ids"],
+            "ptr_ge2": cr["ptr_ge2"],
+            "num_segs_ge2": int(cr["num_segs_ge2"]),
+            "num_segs_eq1": int(cr["num_segs_eq1"]),
+            "end_rows_ge2": int(cr["end_rows_ge2"]),
+            "C": int(cr["C"]),
+            "N_splits": int(cr["N_splits"]),
+        }
+        if "split_parents_sorted" in cr:
+            ch["split_parents_sorted"] = cr["split_parents_sorted"]
+        batch_items = [{
+            "ccp": ch,
+            "leaf_row_index": raw["leaf_row_index"].long(),
+            "leaf_col_index": raw["leaf_col_index"].long(),
+            "root_clade_id": int(cr["root_clade_id"]),
+        }]
+
+        sh = {
+            "S": int(sr["S"]),
+            "names": sr["names"],
+            "s_P_indexes": sr["s_P_indexes"].to(device=device),
+            "s_C12_indexes": sr["s_C12_indexes"].to(device=device),
+            "Recipients_mat": sr["Recipients_mat"].to(dtype=dtype, device=device),
+        }
+        S = sh["S"]
+
+        tm_unnorm = torch.log2(sh["Recipients_mat"])
+        unnorm_row_max = tm_unnorm.max(dim=-1).values.to(device=device, dtype=dtype)
+
+        # --- Global mode ---
+        theta_global = torch.log2(torch.tensor([D, L, T], dtype=dtype, device=device))
+        log_pS_g, log_pD_g, log_pL_g, tf_g, mt_g = extract_parameters_uniform(
+            theta_global, unnorm_row_max, specieswise=False,
+        )
+        E_g = E_fixed_point(
+            species_helpers=sh, log_pS=log_pS_g, log_pD=log_pD_g, log_pL=log_pL_g,
+            transfer_mat=tf_g, max_transfer_mat=mt_g,
+            max_iters=2000, tolerance=1e-8, warm_start_E=None,
+            dtype=dtype, device=device, pibar_mode='uniform_approx',
+        )
+
+        # --- Specieswise mode (uniform rates = same D,L,T for all species) ---
+        theta_sw = torch.log2(torch.tensor([D, L, T], dtype=dtype, device=device)).unsqueeze(0).expand(S, -1).contiguous()
+        log_pS_sw, log_pD_sw, log_pL_sw, tf_sw, mt_sw = extract_parameters_uniform(
+            theta_sw, unnorm_row_max, specieswise=True,
+        )
+        E_sw = E_fixed_point(
+            species_helpers=sh, log_pS=log_pS_sw, log_pD=log_pD_sw, log_pL=log_pL_sw,
+            transfer_mat=tf_sw, max_transfer_mat=mt_sw,
+            max_iters=2000, tolerance=1e-8, warm_start_E=None,
+            dtype=dtype, device=device, pibar_mode='uniform_approx',
+        )
+
+        # Build wave layout (shared)
+        batched = collate_gene_families(batch_items, dtype=dtype, device=device)
+        root_clade_ids = batched['root_clade_ids']
+        families_waves, families_phases = [], []
+        for bi in batch_items:
+            w, p = compute_clade_waves(bi['ccp'])
+            families_waves.append(w)
+            families_phases.append(p)
+        offsets = [m['clade_offset'] for m in batched['family_meta']]
+        cross_waves = collate_wave(families_waves, offsets)
+        max_n = max(len(p) for p in families_phases)
+        cross_phases = [max(fp[k] if k < len(fp) else 1 for fp in families_phases) for k in range(max_n)]
+        wave_layout = build_wave_layout(
+            waves=cross_waves, phases=cross_phases,
+            ccp_helpers=batched['ccp'],
+            leaf_row_index=batched['leaf_row_index'],
+            leaf_col_index=batched['leaf_col_index'],
+            root_clade_ids=root_clade_ids,
+            device=device, dtype=dtype,
+        )
+
+        # Forward pass — global
+        Pi_g = Pi_wave_forward(
+            wave_layout=wave_layout, species_helpers=sh,
+            E=E_g['E'], Ebar=E_g['E_bar'],
+            E_s1=E_g['E_s1'], E_s2=E_g['E_s2'],
+            log_pS=log_pS_g, log_pD=log_pD_g, log_pL=log_pL_g,
+            transfer_mat=tf_g, max_transfer_mat=mt_g,
+            device=device, dtype=dtype, pibar_mode='uniform_approx',
+        )
+        logL_g = compute_log_likelihood(
+            Pi_g['Pi'], E_g['E'], root_clade_ids,
+        )
+
+        # Forward pass — specieswise
+        Pi_sw = Pi_wave_forward(
+            wave_layout=wave_layout, species_helpers=sh,
+            E=E_sw['E'], Ebar=E_sw['E_bar'],
+            E_s1=E_sw['E_s1'], E_s2=E_sw['E_s2'],
+            log_pS=log_pS_sw, log_pD=log_pD_sw, log_pL=log_pL_sw,
+            transfer_mat=tf_sw, max_transfer_mat=mt_sw,
+            device=device, dtype=dtype, pibar_mode='uniform_approx',
+        )
+        logL_sw = compute_log_likelihood(
+            Pi_sw['Pi'], E_sw['E'], root_clade_ids,
+        )
+
+        return {
+            'Pi_global': Pi_g['Pi'], 'Pi_specieswise': Pi_sw['Pi'],
+            'logL_global': logL_g, 'logL_specieswise': logL_sw,
+            'E_global': E_g, 'E_specieswise': E_sw,
+        }
+
+    def test_E_matches(self, setup_both_modes):
+        """E fixed point should be identical for global vs specieswise-uniform."""
+        E_g = setup_both_modes['E_global']['E']
+        E_sw = setup_both_modes['E_specieswise']['E']
+        diff = (E_g - E_sw).abs().max().item()
+        print(f"  E max abs diff: {diff:.4e}")
+        assert diff < 1e-10, f"E differs: max abs diff = {diff:.4e}"
+
+    def test_Pi_matches(self, setup_both_modes):
+        """Pi forward should be identical for global vs specieswise-uniform."""
+        Pi_g = setup_both_modes['Pi_global']
+        Pi_sw = setup_both_modes['Pi_specieswise']
+        diff = (Pi_g - Pi_sw).abs().max().item()
+        print(f"  Pi max abs diff: {diff:.4e}")
+        assert diff < 1e-8, f"Pi differs: max abs diff = {diff:.4e}"
+
+    def test_logL_matches(self, setup_both_modes):
+        """Log-likelihood should be identical for global vs specieswise-uniform."""
+        logL_g = setup_both_modes['logL_global']
+        logL_sw = setup_both_modes['logL_specieswise']
+        diff = abs(logL_g.item() - logL_sw.item())
+        rel = diff / (abs(logL_g.item()) + 1e-30)
+        print(f"  logL global={logL_g.item():.8f}, specieswise={logL_sw.item():.8f}, "
+              f"abs diff={diff:.4e}, rel diff={rel:.4e}")
+        assert diff < 1e-6, f"logL differs: abs diff = {diff:.4e}"
+
+
+class TestGenewiseGradient:
+    """Test genewise wave gradient (per-gene theta, uniform_approx pibar)."""
+
+    @pytest.fixture(scope="class")
+    def setup_genewise(self):
+        """Set up genewise gradient test with 3 families, different theta per gene."""
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        dtype = torch.float64
+
+        ext = _load_extension()
+        data_dir = _ROOT / "data" / "test_trees_1000"
+        if not data_dir.exists():
+            pytest.skip("test_trees_1000 not found")
+        sp_path = str(data_dir / "sp.nwk")
+        gene_paths = sorted(data_dir.glob("g_*.nwk"))[:3]
+
+        families = []
+        sr = None
+        for gp in gene_paths:
+            raw = ext.preprocess(sp_path, [str(gp)])
+            if sr is None:
+                sr = raw['species']
+            cr = raw['ccp']
+            ch = {
+                "split_leftrights_sorted": cr["split_leftrights_sorted"],
+                "log_split_probs_sorted": cr["log_split_probs_sorted"].to(dtype=dtype) * _INV,
+                "seg_parent_ids": cr["seg_parent_ids"],
+                "ptr_ge2": cr["ptr_ge2"],
+                "num_segs_ge2": int(cr["num_segs_ge2"]),
+                "num_segs_eq1": int(cr["num_segs_eq1"]),
+                "end_rows_ge2": int(cr["end_rows_ge2"]),
+                "C": int(cr["C"]),
+                "N_splits": int(cr["N_splits"]),
+            }
+            if "split_parents_sorted" in cr:
+                ch["split_parents_sorted"] = cr["split_parents_sorted"]
+            families.append({
+                'ccp_helpers': ch,
+                'leaf_row_index': raw['leaf_row_index'].long(),
+                'leaf_col_index': raw['leaf_col_index'].long(),
+                'root_clade_id': int(cr['root_clade_id']),
+            })
+
+        sh = {
+            "S": int(sr["S"]),
+            "names": sr["names"],
+            "s_P_indexes": sr["s_P_indexes"].to(device=device),
+            "s_C12_indexes": sr["s_C12_indexes"].to(device=device),
+            "Recipients_mat": sr["Recipients_mat"].to(dtype=dtype, device=device),
+        }
+        S = sh["S"]
+        tm_unnorm = torch.log2(sh["Recipients_mat"])
+        unnorm_row_max = tm_unnorm.max(dim=-1).values.to(device=device, dtype=dtype)
+
+        # Per-gene theta: different rates per family
+        G = len(families)
+        torch.manual_seed(123)
+        theta_stack = torch.randn(G, 3, dtype=dtype, device=device) * 0.3 - 5.0
+
+        return {
+            'families': families,
+            'species_helpers': sh,
+            'theta_stack': theta_stack,
+            'unnorm_row_max': unnorm_row_max,
+            'device': device,
+            'dtype': dtype,
+            'S': S,
+            'G': G,
+        }
+
+    @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+    def test_genewise_gradient_matches_fd(self, setup_genewise):
+        """Per-gene gradient matches central finite differences."""
+        from src.optimization.theta_optimizer import implicit_grad_loglik_vjp_wave_genewise
+
+        d = setup_genewise
+        device, dtype = d['device'], d['dtype']
+        theta_stack = d['theta_stack'].clone()
+        G = d['G']
+        families = d['families']
+        sh = d['species_helpers']
+        unnorm_row_max = d['unnorm_row_max']
+        pibar_mode = 'uniform_approx'
+
+        def _forward_genewise(theta_s):
+            """Full genewise forward: extract params, E, Pi, logL per family."""
+            from src.core.batching import collate_gene_families, build_wave_layout
+            from src.core.scheduling import compute_clade_waves
+
+            log_pS, log_pD, log_pL, _, mt = extract_parameters_uniform(
+                theta_s, unnorm_row_max, specieswise=False, genewise=True,
+            )
+            E_out = E_fixed_point(
+                species_helpers=sh, log_pS=log_pS, log_pD=log_pD, log_pL=log_pL,
+                transfer_mat=None, max_transfer_mat=mt,
+                max_iters=2000, tolerance=1e-10, warm_start_E=None,
+                dtype=dtype, device=device, pibar_mode=pibar_mode,
+            )
+            logLs = []
+            for g in range(theta_s.shape[0]):
+                fam = families[g]
+                single_item = {
+                    'ccp': fam['ccp_helpers'],
+                    'leaf_row_index': fam['leaf_row_index'],
+                    'leaf_col_index': fam['leaf_col_index'],
+                    'root_clade_id': int(fam['root_clade_id']),
+                }
+                single_batched = collate_gene_families([single_item], dtype=dtype, device=device)
+                waves_g, phases_g = compute_clade_waves(fam['ccp_helpers'])
+                wl = build_wave_layout(
+                    waves=waves_g, phases=phases_g,
+                    ccp_helpers=single_batched['ccp'],
+                    leaf_row_index=single_batched['leaf_row_index'],
+                    leaf_col_index=single_batched['leaf_col_index'],
+                    root_clade_ids=single_batched['root_clade_ids'],
+                    device=device, dtype=dtype,
+                )
+                Pi_out = Pi_wave_forward(
+                    wave_layout=wl, species_helpers=sh,
+                    E=E_out['E'][g], Ebar=E_out['E_bar'][g],
+                    E_s1=E_out['E_s1'][g], E_s2=E_out['E_s2'][g],
+                    log_pS=log_pS[g], log_pD=log_pD[g], log_pL=log_pL[g],
+                    transfer_mat=None, max_transfer_mat=mt[g],
+                    device=device, dtype=dtype, pibar_mode=pibar_mode,
+                )
+                logL = compute_log_likelihood(
+                    Pi_out['Pi'], E_out['E'][g],
+                    single_batched['root_clade_ids'],
+                )
+                logLs.append(logL.sum().item())
+            return logLs
+
+        # Base forward
+        logLs_base = _forward_genewise(theta_stack)
+
+        # Analytical gradient
+        log_pS, log_pD, log_pL, _, mt = extract_parameters_uniform(
+            theta_stack, unnorm_row_max, specieswise=False, genewise=True,
+        )
+        E_out = E_fixed_point(
+            species_helpers=sh, log_pS=log_pS, log_pD=log_pD, log_pL=log_pL,
+            transfer_mat=None, max_transfer_mat=mt,
+            max_iters=2000, tolerance=1e-10, warm_start_E=None,
+            dtype=dtype, device=device, pibar_mode=pibar_mode,
+        )
+
+        grad_theta_stack, all_stats = implicit_grad_loglik_vjp_wave_genewise(
+            families, sh,
+            E_all=E_out['E'], E_s1_all=E_out['E_s1'],
+            E_s2_all=E_out['E_s2'], Ebar_all=E_out['E_bar'],
+            log_pS_all=log_pS, log_pD_all=log_pD, log_pL_all=log_pL,
+            mt_all=mt,
+            theta_stack=theta_stack,
+            unnorm_row_max=unnorm_row_max,
+            specieswise=False,
+            device=device, dtype=dtype,
+            pibar_mode=pibar_mode,
+            neumann_terms=4, use_pruning=False,
+            cg_tol=1e-10, cg_maxiter=1000,
+        )
+
+        assert grad_theta_stack.shape == theta_stack.shape, (
+            f"grad shape {grad_theta_stack.shape} != theta shape {theta_stack.shape}"
+        )
+
+        # Central finite differences per gene, per theta component
+        eps = 1e-4
+        max_rel_err = 0.0
+        for g in range(G):
+            for i in range(3):
+                theta_p = theta_stack.clone()
+                theta_p[g, i] += eps
+                logLs_p = _forward_genewise(theta_p)
+
+                theta_m = theta_stack.clone()
+                theta_m[g, i] -= eps
+                logLs_m = _forward_genewise(theta_m)
+
+                # Only gene g's logL should change
+                fd = (logLs_p[g] - logLs_m[g]) / (2 * eps)
+                analytic = grad_theta_stack[g, i].item()
+                rel_err = abs(analytic - fd) / (abs(fd) + 1e-30)
+                max_rel_err = max(max_rel_err, rel_err)
+                print(f"  gene {g} theta[{i}]: FD={fd:.8e}, analytic={analytic:.8e}, "
+                      f"rel_err={rel_err:.4e}")
+                assert rel_err < 1e-2, (
+                    f"gene {g} theta[{i}] rel error {rel_err:.4e} > 1%: "
+                    f"FD={fd:.8e}, analytic={analytic:.8e}"
+                )
+
+        print(f"  Max relative error across all components: {max_rel_err:.4e}")
+
+
+class TestGradientDescentAll:
+    """Verify gradient descent decreases NLL for all valid (genewise, specieswise, pibar_mode) combos."""
+
+    @pytest.fixture(scope="class")
+    def shared_setup(self):
+        """Load 3 families from test_trees_1000 once, share across all tests."""
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        dtype = torch.float64
+
+        ext = _load_extension()
+        data_dir = _ROOT / "data" / "test_trees_1000"
+        if not data_dir.exists():
+            pytest.skip("test_trees_1000 not found")
+        sp_path = str(data_dir / "sp.nwk")
+        gene_paths = sorted(data_dir.glob("g_*.nwk"))[:3]
+
+        families = []
+        batch_items = []
+        sr = None
+        for gp in gene_paths:
+            raw = ext.preprocess(sp_path, [str(gp)])
+            if sr is None:
+                sr = raw['species']
+            cr = raw['ccp']
+            ch = {
+                "split_leftrights_sorted": cr["split_leftrights_sorted"],
+                "log_split_probs_sorted": cr["log_split_probs_sorted"].to(dtype=dtype) * _INV,
+                "seg_parent_ids": cr["seg_parent_ids"],
+                "ptr_ge2": cr["ptr_ge2"],
+                "num_segs_ge2": int(cr["num_segs_ge2"]),
+                "num_segs_eq1": int(cr["num_segs_eq1"]),
+                "end_rows_ge2": int(cr["end_rows_ge2"]),
+                "C": int(cr["C"]),
+                "N_splits": int(cr["N_splits"]),
+            }
+            if "split_parents_sorted" in cr:
+                ch["split_parents_sorted"] = cr["split_parents_sorted"]
+            item = {
+                "ccp": ch,
+                "leaf_row_index": raw["leaf_row_index"].long(),
+                "leaf_col_index": raw["leaf_col_index"].long(),
+                "root_clade_id": int(cr["root_clade_id"]),
+            }
+            batch_items.append(item)
+            families.append({
+                'ccp_helpers': ch,
+                'leaf_row_index': raw['leaf_row_index'].long(),
+                'leaf_col_index': raw['leaf_col_index'].long(),
+                'root_clade_id': int(cr['root_clade_id']),
+            })
+
+        sh = {
+            "S": int(sr["S"]),
+            "names": sr["names"],
+            "s_P_indexes": sr["s_P_indexes"].to(device=device),
+            "s_C12_indexes": sr["s_C12_indexes"].to(device=device),
+            "Recipients_mat": sr["Recipients_mat"].to(dtype=dtype, device=device),
+        }
+        if "ancestors_dense" in sr:
+            sh["ancestors_dense"] = sr["ancestors_dense"].to(dtype=dtype, device=device)
+        S = sh["S"]
+        tm_unnorm = torch.log2(sh["Recipients_mat"])
+        unnorm_row_max = tm_unnorm.max(dim=-1).values.to(device=device, dtype=dtype)
+
+        return {
+            'families': families,
+            'batch_items': batch_items,
+            'species_helpers': sh,
+            'unnorm_row_max': unnorm_row_max,
+            'tm_unnorm': tm_unnorm,
+            'device': device,
+            'dtype': dtype,
+            'S': S,
+            'G': len(families),
+        }
+
+    def _run_descent_non_genewise(self, d, specieswise, pibar_mode, steps=3):
+        """Run optimize_theta_wave for a non-genewise combination."""
+        from src.optimization.theta_optimizer import optimize_theta_wave
+        from src.core.batching import collate_gene_families, collate_wave, build_wave_layout
+        from src.core.scheduling import compute_clade_waves
+
+        device, dtype = d['device'], d['dtype']
+        S = d['S']
+        sh = d['species_helpers']
+
+        if specieswise:
+            theta = torch.log2(torch.tensor([D, L, T], dtype=dtype, device=device)).unsqueeze(0).expand(S, -1).contiguous()
+        else:
+            theta = torch.log2(torch.tensor([D, L, T], dtype=dtype, device=device))
+
+        batched = collate_gene_families(d['batch_items'], dtype=dtype, device=device)
+        root_clade_ids = batched['root_clade_ids']
+
+        families_waves, families_phases = [], []
+        for bi in d['batch_items']:
+            w, p = compute_clade_waves(bi['ccp'])
+            families_waves.append(w)
+            families_phases.append(p)
+        offsets = [m['clade_offset'] for m in batched['family_meta']]
+        cross_waves = collate_wave(families_waves, offsets)
+        max_n = max(len(p) for p in families_phases)
+        cross_phases = [max(fp[k] if k < len(fp) else 1 for fp in families_phases) for k in range(max_n)]
+
+        wave_layout = build_wave_layout(
+            waves=cross_waves, phases=cross_phases,
+            ccp_helpers=batched['ccp'],
+            leaf_row_index=batched['leaf_row_index'],
+            leaf_col_index=batched['leaf_col_index'],
+            root_clade_ids=root_clade_ids,
+            device=device, dtype=dtype,
+        )
+
+        tm_unnorm = d['tm_unnorm'].to(device=device, dtype=dtype) if pibar_mode == 'dense' else None
+
+        result = optimize_theta_wave(
+            wave_layout, sh, root_clade_ids, d['unnorm_row_max'],
+            theta_init=theta,
+            transfer_mat_unnormalized=tm_unnorm,
+            steps=steps, lr=0.1,
+            e_max_iters=2000, e_tol=1e-8,
+            neumann_terms=4, use_pruning=False,
+            cg_tol=1e-10, cg_maxiter=1000,
+            specieswise=specieswise,
+            device=device, dtype=dtype,
+            pibar_mode=pibar_mode,
+        )
+        return result['history']
+
+    def _run_descent_genewise(self, d, specieswise, pibar_mode, steps=3):
+        """Run manual gradient descent loop for genewise combinations."""
+        from src.optimization.theta_optimizer import implicit_grad_loglik_vjp_wave_genewise
+        from src.core.batching import collate_gene_families, build_wave_layout
+        from src.core.scheduling import compute_clade_waves
+
+        device, dtype = d['device'], d['dtype']
+        S, G = d['S'], d['G']
+        sh = d['species_helpers']
+        families = d['families']
+        unnorm_row_max = d['unnorm_row_max']
+
+        if specieswise:
+            theta = torch.log2(torch.tensor([D, L, T], dtype=dtype, device=device)).unsqueeze(0).unsqueeze(0).expand(G, S, -1).contiguous()
+        else:
+            theta = torch.log2(torch.tensor([D, L, T], dtype=dtype, device=device)).unsqueeze(0).expand(G, -1).contiguous()
+
+        theta = torch.nn.Parameter(theta)
+        opt = torch.optim.Adam([theta], lr=0.1)
+        nlls = []
+
+        for step in range(steps):
+            theta_d = theta.detach()
+            with torch.no_grad():
+                log_pS, log_pD, log_pL, _, mt = extract_parameters_uniform(
+                    theta_d, unnorm_row_max, specieswise=specieswise, genewise=True,
+                )
+                E_out = E_fixed_point(
+                    species_helpers=sh, log_pS=log_pS, log_pD=log_pD, log_pL=log_pL,
+                    transfer_mat=None, max_transfer_mat=mt,
+                    max_iters=2000, tolerance=1e-8, warm_start_E=None,
+                    dtype=dtype, device=device, pibar_mode=pibar_mode,
+                )
+
+                # Per-family forward for logL
+                total_nll = 0.0
+                for g in range(G):
+                    fam = families[g]
+                    si = {
+                        'ccp': fam['ccp_helpers'],
+                        'leaf_row_index': fam['leaf_row_index'],
+                        'leaf_col_index': fam['leaf_col_index'],
+                        'root_clade_id': int(fam['root_clade_id']),
+                    }
+                    sb = collate_gene_families([si], dtype=dtype, device=device)
+                    wg, pg = compute_clade_waves(fam['ccp_helpers'])
+                    wl = build_wave_layout(
+                        waves=wg, phases=pg,
+                        ccp_helpers=sb['ccp'],
+                        leaf_row_index=sb['leaf_row_index'],
+                        leaf_col_index=sb['leaf_col_index'],
+                        root_clade_ids=sb['root_clade_ids'],
+                        device=device, dtype=dtype,
+                    )
+                    Pi_out = Pi_wave_forward(
+                        wave_layout=wl, species_helpers=sh,
+                        E=E_out['E'][g], Ebar=E_out['E_bar'][g],
+                        E_s1=E_out['E_s1'][g], E_s2=E_out['E_s2'][g],
+                        log_pS=log_pS[g], log_pD=log_pD[g], log_pL=log_pL[g],
+                        transfer_mat=None, max_transfer_mat=mt[g],
+                        device=device, dtype=dtype, pibar_mode=pibar_mode,
+                    )
+                    logL = compute_log_likelihood(Pi_out['Pi'], E_out['E'][g], sb['root_clade_ids'])
+                    total_nll += logL.sum().item()
+                nlls.append(total_nll)
+
+            # Gradient
+            grad_theta, _ = implicit_grad_loglik_vjp_wave_genewise(
+                families, sh,
+                E_all=E_out['E'], E_s1_all=E_out['E_s1'],
+                E_s2_all=E_out['E_s2'], Ebar_all=E_out['E_bar'],
+                log_pS_all=log_pS, log_pD_all=log_pD, log_pL_all=log_pL,
+                mt_all=mt, theta_stack=theta_d,
+                unnorm_row_max=unnorm_row_max,
+                specieswise=specieswise,
+                device=device, dtype=dtype,
+                pibar_mode=pibar_mode,
+                neumann_terms=4, use_pruning=False,
+                cg_tol=1e-10, cg_maxiter=1000,
+            )
+
+            opt.zero_grad(set_to_none=True)
+            grad_clean = grad_theta.clone()
+            grad_clean.nan_to_num_(nan=0.0)
+            theta.grad = grad_clean
+            opt.step()
+
+        return nlls
+
+    @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+    @pytest.mark.parametrize("genewise,specieswise,pibar_mode", [
+        (False, False, 'uniform_approx'),
+        (False, False, 'dense'),
+        (False, True, 'uniform_approx'),
+        (False, True, 'dense'),
+        (True, False, 'uniform_approx'),
+        (True, True, 'uniform_approx'),
+    ])
+    def test_descent_decreases_nll(self, shared_setup, genewise, specieswise, pibar_mode):
+        """Gradient descent should decrease NLL for all valid combinations."""
+        d = shared_setup
+        label = f"gw={genewise}, sw={specieswise}, mode={pibar_mode}"
+
+        if genewise:
+            nlls = self._run_descent_genewise(d, specieswise, pibar_mode, steps=3)
+            print(f"  [{label}] NLLs: {' → '.join(f'{n:.4f}' for n in nlls)}")
+            assert nlls[-1] < nlls[0], (
+                f"[{label}] NLL did not decrease: {nlls[0]:.4f} → {nlls[-1]:.4f}"
+            )
+        else:
+            history = self._run_descent_non_genewise(d, specieswise, pibar_mode, steps=3)
+            nlls = [h.negative_log_likelihood for h in history]
+            print(f"  [{label}] NLLs: {' → '.join(f'{n:.4f}' for n in nlls)}")
+            assert nlls[-1] < nlls[0], (
+                f"[{label}] NLL did not decrease: {nlls[0]:.4f} → {nlls[-1]:.4f}"
+            )
 
 
 if __name__ == "__main__":

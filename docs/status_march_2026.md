@@ -1,127 +1,262 @@
-# Status: Optimization & Gradient Pipeline (March 12, 2026)
+# Project Status Report — gpurec (March 16, 2026)
 
-## What Works (Tested & Validated)
+## Overview
 
-### Forward Pass — Pi_wave_forward_v2
-- Wave-ordered layout with contiguous zero-copy `Pi[ws:we]` slices
-- 3.5-3.9x faster than V1 (gather/scatter), 18.6x faster than global FP
-- Three `pibar_mode` options for the transfer matmul:
-  - `'dense'`: exact O(W*S^2) cuBLAS matmul
-  - `'uniform'`: O(W*S) approximation (row_sum - self), 1e-6 relative error, 4x faster than cuBLAS
-  - `'sparse_corrected'`: exact O(W*S^2) matmul via `(1 - ancestors)^T`, matches dense to fp64 precision
-- `sparse_corrected` E_step Ebar: `expE @ recipients_T` (O(S^2), same as dense but avoids building the full normalized transfer_mat)
-- Tested at S=399 (test_trees_dtl01): NLL=968.739 nats matches AleRax reference
-- 16 tests in `tests/unit/test_wave_v2.py` — all pass
+GPU-accelerated gene tree / species tree reconciliation under the DTL (Duplication, Transfer, Loss) model. Core computation: fixed-point iteration for Pi[C,S] and E[S] matrices in log2-space, with wave-ordered scheduling for parallelism.
 
-### Backward Pass — Pi_wave_backward_v2
-- Neumann-series implicit gradient through the Pi self-loop (no autograd tape)
-- Produces `v_Pi` (adjoint), `grad_E/Ebar/E_s1/E_s2`, `grad_log_pD/pS`, `grad_max_transfer_mat`
-- Optional clade pruning (skip clades with Pi < threshold, saves 50-80% work)
-- 15 tests in `tests/gradients/test_wave_gradient.py` — all pass:
-  - `TestWaveVsFiniteDifference`: parameter gradients (pD, pS, mt) match FD within 0.1%
-  - `TestFullChainFD`: full dL/dtheta through both E and Pi matches FD within 1%
-  - `TestEndToEnd`: 5-step `optimize_theta_wave()` decreases NLL
+---
 
-### Full-Chain Implicit Gradient — implicit_grad_loglik_vjp_wave
-- Pi backward -> E adjoint (CG solve with GMRES fallback) -> theta VJP
-- Includes direct dNLL/dE from the likelihood denominator term
-- Chains `grad_Ebar` through to `grad_mt` (Ebar = logsumexp2(E) + mt)
-- FD-validated on test_trees_1000 (1 family, fp64)
+## 1. Architecture
 
-### Optimizers
-- `optimize_theta_wave()`: Adam + implicit gradient, tested (5-step NLL decrease)
-- `optimize_theta_lbfgsb()`: scipy L-BFGS-B, supports `gradient_mode='analytical'|'fd'`
-- Both support `pibar_mode` in {'uniform', 'dense', 'sparse_corrected'}
+### Computational Pipeline
 
-### Batching
-- `build_wave_layout()`: eq1/ge2 split sorting for efficient DTS reduction (direct copy + seg_logsumexp)
-- `original_root_clade_ids` field added — stores root IDs in original (unpermuted) clade space
+```
+theta → extract_parameters → (log_pS, log_pD, log_pL, transfer_mat, max_transfer_mat)
+                                    ↓
+                              E_fixed_point  (E_step iterated to convergence)
+                                    ↓
+                              Pi computation (wave or fixed-point)
+                                    ↓
+                              compute_log_likelihood
+```
 
-## What's Untested / Needs Validation
+**Two Pi solvers:**
+- `Pi_fixed_point`: Global Jacobi iteration. Simple but slow. Used as `use_wave=False` fallback.
+- `Pi_wave_forward`: Wave-ordered layout with per-wave convergence. 18.6x faster than FP at S=1999. Default path.
 
-### sparse_corrected mode — no automated tests
-- Verified manually via ad-hoc scripts (`/tmp/test_v2_correct.py`, `/tmp/test_sparse_corrected_e2e.py`)
-- Matches dense exactly (diff=0 at fp64) at S=399
-- FD optimizer converges to AleRax reference (NLL=968.739 nats)
-- **Needs**: pytest coverage in `test_wave_gradient.py` or `test_wave_v2.py`:
-  - E_step sparse_corrected matches dense
-  - Pi_wave_forward_v2 sparse_corrected matches dense
-  - Full-chain gradient FD test with sparse_corrected
-  - Optimizer convergence test with sparse_corrected
+**Backward pass** (for optimization):
+- `Pi_wave_backward`: Neumann-series implicit gradient through Pi self-loop
+- E adjoint: CG solve with GMRES fallback
+- Full chain: `implicit_grad_loglik_vjp_wave` → dNLL/dtheta
 
-### Specieswise + sparse_corrected
-- `specieswise=True, pairwise=False` works with `pibar_mode='uniform'` (tested)
-- `sparse_corrected` supports specieswise: per-species `mt[s]` broadcasts correctly
-- **Not validated**: specieswise + sparse_corrected end-to-end
+### Key Files
 
-### Pairwise transfers
-- Require O(S^2) dense matmul — `sparse_corrected` and `uniform` don't apply
-- `pibar_mode='dense'` with `pairwise=True` is the only valid mode
-- **Not tested** end-to-end with the wave pipeline
+| File | Role |
+|------|------|
+| `src/core/likelihood.py` | Pi_step, E_step, Pi_fixed_point, Pi_wave_forward, Pi_wave_backward |
+| `src/core/terms.py` | compute_DTS (5-term), compute_DTS_L (6-term) |
+| `src/core/extract_parameters.py` | theta → log2-space event probabilities + transfer matrix |
+| `src/core/model.py` | GeneDataset, compute_likelihood, compute_likelihood_batch |
+| `src/core/batching.py` | collate_gene_families, collate_wave, build_wave_layout |
+| `src/core/scheduling.py` | compute_clade_waves (C++ phased scheduler) |
+| `src/core/kernels/dts_fused.py` | Fused Triton DTS kernel |
+| `src/core/kernels/wave_step.py` | Fused Triton Pibar+DTS_L+convergence kernel |
+| `src/core/kernels/scatter_lse.py` | Segmented logsumexp Triton kernel |
+| `src/optimization/theta_optimizer.py` | Adam, L-BFGS-B, implicit gradient VJP |
+| `logmatmul/` | Log2-space matmul library (dense, sparse, compressed) |
+| `rustree/` | Rust tree metrics + simulation (Python/R bindings) |
 
-### Multi-family optimizer convergence
-- `optimize_theta_wave()` and `optimize_theta_lbfgsb()` are designed for batched families
-- Only tested with 1 family in `TestEndToEnd`
-- **Needs**: test with 5-10 families, verify NLL decreases and rates are reasonable
+---
 
-### Large-S (S >= 10K) with analytical gradient
-- Forward pass works at S=20K (0.26s/family, 18 GB peak)
-- Backward pass untested at large S — gradient pruning is designed for this but not validated at scale
-- CG/GMRES solve may need tuning at large S (Jacobian structure changes)
+## 2. Parameter Modes
 
-### E adjoint numerical stability
-- CG solve for `(I - G_E^T) w = q` assumes convergent fixed point (spectral radius < 1)
-- Not tested with rates close to instability (high D or T rates where spectral radius -> 1)
-- GMRES fallback exists but untested in practice
+Two categorical axes (not three independent booleans):
 
-## Known Issues
+- **transfer_mode** ∈ {uniform, specieswise, pairwise} — how transfer rates vary across species
+- **gene_granularity** ∈ {uniform, genewise} — shared vs per-gene rates
 
-### Legacy import errors (10 test files)
-- `src.core.ccp` and `src.core.tree_helpers` no longer exist
-- 10 test files fail to import (41 tests uncollectable)
-- These test the old `ThetaOptimizationProblem` and non-wave gradient paths
-- `theta_optimizer.py` guards legacy imports with `try/except` — importable but `ThetaOptimizationProblem.__init__` raises
+Specieswise and pairwise are **mutually exclusive** (both are transfer_mode choices).
 
-### Gradient residual at optimum
-- FD optimizer shows persistent |g| ~ 0.6-0.7 at convergence (FD artifacts at 1e-5 step size)
-- Analytical gradient has not been tested at the optimum to see if it reaches |g| ~ 0
-- This would validate that the gradient is truly zero at the converged rates
+### 6 Valid Combinations
 
-### optimize_theta_lbfgsb() with analytical gradient
-- `gradient_mode='analytical'` path exists but has not been run end-to-end
-- Only `gradient_mode='fd'` has been tested (via ad-hoc scripts)
-- **The key test**: does L-BFGS-B + analytical gradient converge to AleRax's optimum?
+| transfer_mode | gene_granularity | theta shape | extract_parameters | extract_parameters_uniform | Forward | Backward | Optimizer | Tested e2e |
+|---|---|---|---|---|---|---|---|---|
+| uniform | uniform | `[3]` | line 84 | line 155 | all pibar_modes | yes | yes | **yes** |
+| uniform | genewise | `[G,3]` | line 30 | line 134 | all pibar_modes | yes | yes | **yes** |
+| specieswise | uniform | `[S,3]` | line 47 | line 145 | all pibar_modes | yes | yes | **yes** |
+| specieswise | genewise | `[G,S,3]` | line 6 | line 123 | all pibar_modes | yes | yes | **yes** |
+| pairwise | uniform | `[2]` | line 74 | N/A | dense, topk | untested | untested | **no** |
+| pairwise | genewise | `[G,2]` | **NotImplementedError** (line 34) | N/A | N/A | N/A | N/A | N/A |
 
-## Architecture Notes
+### Dead Code in extract_parameters
 
-### Root clade ID spaces
-- `wave_layout['root_clade_ids']`: **permuted** space — used internally by V2 self-loop and backward pass
-- `wave_layout['original_root_clade_ids']`: **original** space — use with `compute_log_likelihood()` on V2's unpermuted Pi output
-- `batched['root_clade_ids']`: **original** space — same as above
-- Production code (`model.py`, `theta_optimizer.py`) already uses the correct IDs
+`specieswise + pairwise` branches exist at lines 9-17 and 50-58 but are invalid combinations. Should be replaced with guards.
 
-### Transfer matrix modes
-| Mode | Pibar cost | Ebar cost | Accuracy | When to use |
-|------|-----------|-----------|----------|-------------|
-| `dense` | O(W*S^2) | O(S^2) | Exact | Small S, pairwise rates |
-| `uniform` | O(W*S) | O(S) | ~1e-6 rel | Non-pairwise, any S |
-| `sparse_corrected` | O(W*S^2) | O(S^2) | Exact | Non-pairwise, need exact + no normalized transfer_mat |
+---
 
-`sparse_corrected` is exact like `dense` but works with the raw `(1 - ancestors)^T` matrix instead of the normalized transfer matrix. For constant or specieswise rates, it's equivalent to `dense`. For pairwise rates, only `dense` works.
+## 3. Pibar Modes
 
-## File Manifest (Unstaged Changes)
+| pibar_mode | Pibar cost | Ebar cost | Accuracy | Transfer modes | Tested |
+|---|---|---|---|---|---|
+| `dense` | O(W×S²) cuBLAS | O(S²) einsum | Exact | all | **yes** |
+| `uniform_approx` | O(W×S) row_sum-self | O(S) logsumexp | ~1e-6 rel | uniform, specieswise | **yes** |
+| `uniform` | O(W×S + nnz) sparse | O(S²) sparse | Exact | uniform, specieswise | partial (manual) |
+| `topk` | O(W×k²) compressed | dense fallback | ~0.025% | all (designed for pairwise at large S) | **no** |
 
-| File | Changes |
-|------|---------|
-| `src/core/likelihood.py` | sparse_corrected in E_step, _compute_Pibar_inline, Pi_wave_forward_v2; recipients_T parameter threading |
-| `src/core/batching.py` | eq1/ge2 split sorting in build_wave_layout; original_root_clade_ids field |
-| `src/optimization/theta_optimizer.py` | Guard legacy imports; implicit_grad fix (denominator E term, mt+Ebar gradient); optimize_theta_wave(); optimize_theta_lbfgsb() |
-| `tests/gradients/test_wave_gradient.py` | TestFullChainFD, TestEndToEnd classes |
+**Notes:**
+- `uniform_approx` and `uniform` don't apply to pairwise (transfer matrix is non-uniform)
+- `topk` is the intended large-S path for pairwise but has zero test coverage
+- `uniform` mode verified manually (matches dense at fp64) but has no pytest coverage
 
-## Recommended Next Steps
+---
 
-1. **Add sparse_corrected to automated tests** — the code is validated but fragile without CI coverage
-2. **Run optimize_theta_lbfgsb with analytical gradient** — verify convergence to AleRax optimum with |g| -> 0
-3. **Multi-family optimizer test** — 5-10 families, check rates and NLL
-4. **Commit the current changes** — batching.py and likelihood.py are interdependent (eq1/ge2 sorting required by _compute_dts_cross)
-5. **Clean up legacy test files** — either fix imports or mark as xfail/skip
+## 4. Performance
+
+### Benchmarks (S=1999, test_trees_1000)
+
+| Path | 10 families | Per-family (after warmup) |
+|---|---|---|
+| Fixed-point (FP) | 48.0s | 4.8s |
+| Wave v1 (gather/scatter) | — | 73ms |
+| Wave (contiguous) | 2.6s | 200ms (18.6x vs FP) |
+| Wave + uniform_approx | — | ~50ms (4x vs dense cuBLAS) |
+
+### Large-S (S=19999, 10K-leaf species tree)
+
+- 1 family: 0.26s, 18 GB peak on 24 GB GPU
+- Pi_wave_forward is 96% of time
+
+### Key Optimizations Applied
+
+1. C++ phased wave scheduler (3-phase: leaf/internal/root)
+2. Per-wave convergence (avg 5.4 iters vs 8 fixed)
+3. Fused Triton DTS kernel (gather + 5 terms + logsumexp)
+4. TF32 matmul for Pibar (~1.4x speedup)
+5. Pi init with `finfo.min` (converges in 16 iters/wave)
+6. Wave zero-copy layout (3.5-3.9x vs v1)
+7. Uniform Pibar O(W×S) formula (4x vs cuBLAS, no [S,S] allocation)
+
+---
+
+## 5. Backward Pass & Optimization
+
+### What Works
+
+- **Pi backward**: Neumann-series implicit gradient, optional clade pruning (50-80% savings)
+- **E adjoint**: CG solve with GMRES fallback
+- **Full chain**: `implicit_grad_loglik_vjp_wave` → dNLL/dtheta
+- **FD validation**: pD, pS, mt gradients match FD within 0.1%
+- **Optimizers**: Adam (tested, 5-step NLL decrease), L-BFGS-B with FD (converges to AleRax reference)
+
+### What's Untested
+
+- L-BFGS-B with analytical gradient (path exists, never run e2e)
+- Multi-family optimizer convergence (only 1 family tested)
+- Large-S backward (forward works at S=20K, backward not validated)
+- Pairwise gradient
+- topk gradient
+- E adjoint stability near spectral radius → 1
+
+---
+
+## 6. Test Coverage
+
+### Test Suite Summary
+
+| Test File | Tests | Modes Covered | Status |
+|---|---|---|---|
+| `tests/unit/test_wave_vs_fp.py` | 11 | uniform/dense, small+large S | all pass |
+| `tests/unit/test_wave_v2.py` | 7 | uniform/dense, batching | all pass |
+| `tests/unit/test_cross_family_wave.py` | 9 | uniform/dense, collation | all pass (1 flaky NVTX) |
+| `tests/unit/test_genewise_wave.py` | 6 | genewise × (uniform_approx, dense) | all pass |
+| `tests/unit/test_seg_logsumexp.py` | 2 | Triton kernel fp32/fp64 | all pass |
+| `tests/gradients/test_wave_gradient.py` | 15+ | uniform_approx, dense, uniform gradients | all pass |
+| `tests/integration/test_e2e_alerax.py` | 1 | Full pipeline vs AleRax | pass (slow) |
+| `tests/cli/test_reconcile.py` | 14+ | CLI arg parsing, devices | pass |
+
+### Coverage Gaps
+
+| What | Status |
+|------|--------|
+| pairwise forward (any mode) | **zero tests** — manually verified to work with dense |
+| pairwise gradient | **zero tests** |
+| topk forward | **zero tests** — implemented but unvalidated |
+| topk gradient | **zero tests** |
+| uniform (sparse) forward pytest | **missing** — manually verified, no pytest |
+| uniform (sparse) gradient | **missing** — only uniform_approx tested |
+| multi-family optimizer | **missing** — only 1 family in TestEndToEnd |
+| L-BFGS-B analytical gradient | **missing** — only FD path tested |
+
+---
+
+## 7. Git State
+
+### Branch: `batched` (39 commits ahead of main)
+
+**Recent commits:**
+```
+8642cc5 Remove dead modules, stale tests, and update .gitignore
+001ec7c Add sparse_corrected Pibar mode, optimizer functions, and full-chain gradient tests
+d40584c Fix wave backward parameter gradients and add FD validation
+3be1aae Fix cross-clade backward to use manual gradient computation
+a3011b7 Add wave-decomposed implicit gradient backward pass (WIP)
+```
+
+### Uncommitted Changes
+
+**Today's session (not yet committed):**
+- Deleted `src/core/kernels/seg_log_matmul.py` (genewise segmented matmul — dead code)
+- Removed `compute_DTS_independent`, `compute_DTS_L_independent` from `terms.py`
+- Simplified `Pi_step` and `Pi_fixed_point` signatures (removed genewise/specieswise/pairwise/batch_info params)
+- Simplified `compute_likelihood_batch` routing (removed dead `Pi_fixed_point` + `batch_info` branch)
+- Fixed pairwise theta initialization in `GeneDataset.__init__` (was `[3]`, now correctly `[2]`)
+- Fixed `root_clade_id` used-before-assignment in `compute_likelihood` wave path
+- Added `specieswise + pairwise` mutual exclusivity guard
+- Fixed genewise wave path to pass actual `transfer_mat` for dense/topk modes
+
+**Other unstaged modifications (28 files):**
+- Core: likelihood.py, model.py, theta_optimizer.py, terms.py, kernels, batching
+- Rust: 11 rustree modules (sampling, metrics, surgery, etc.)
+- Tests: test_wave_gradient.py, test_wave_v2.py
+- Docs: status_march_2026.md
+
+**Untracked (98 files):**
+- `rustree/` subproject (Cargo.toml, 64 source/test files)
+- `tests/integration/`, `tests/profiling/` benchmarks
+- `docs/` (3 new docs: clade_scheduling, optim_opportunities, optimization_plan)
+
+### Main branch
+
+Appears stale — last commit "working program git add ." from pre-September 2025.
+
+---
+
+## 8. Auxiliary Components
+
+### rustree (Rust)
+Tree metrics + simulation library. Python/R bindings via pyo3/extendr.
+- Newick parsing (pest grammar)
+- Birth-death + DTL simulation
+- Robinson-Foulds distance, pairwise metrics
+- AleRax wrapper (external process)
+- Tree surgery (prune, graft, induced subtrees)
+
+### logmatmul (Python/Triton)
+Log2-space matrix multiplication without SFU instructions.
+- Dense: two-pass (bf16/tf32) or single-pass (ieee fp32)
+- Streaming top-k selection
+- Compressed matmul (k×k sub-blocks)
+- ~83-84% of cuBLAS throughput on RTX 4090
+- Autograd wrapper (`LogspaceMatmulFn`)
+
+### C++ Preprocessor
+JIT-compiled via PyTorch's `torch.utils.cpp_extension`. Computes CCP (Clades, Clades-Pairs) structure from Newick trees. Three source files under `src/core/cpp/`.
+
+### CLI
+`gpurec` entrypoint via pyproject.toml. Basic: `--species`, `--gene`, `--delta/tau/lambda`, `--device`, `--dtype`. Hardcodes `pairwise=False`.
+
+---
+
+## 9. Known Issues
+
+| Issue | Severity | Location |
+|---|---|---|
+| `genewise + pairwise` raises NotImplementedError | Design decision (not wanted) | extract_parameters.py:34 |
+| Dead `specieswise + pairwise` branches in extract_parameters | Minor dead code | extract_parameters.py:9-17, 50-58 |
+| topk mode fully implemented but zero test coverage | Medium risk | likelihood.py, theta_optimizer.py |
+| 10 legacy test files fail to import (41 tests uncollectable) | Noise | Old `ThetaOptimizationProblem` tests |
+| Gradient residual ~0.6-0.7 at FD optimum | FD artifact, not a real bug | Needs analytical gradient validation |
+| `uniform` pibar mode has no pytest coverage | Fragile | Manually verified only |
+| CLI hardcodes `pairwise=False` | Missing feature | cli/reconcile.py:63 |
+
+---
+
+## 10. Recommended Priorities
+
+1. **Commit today's cleanup** — seg_log_matmul deletion, pairwise fix, signature simplifications
+2. **Add pairwise e2e test** — forward pass works, needs pytest coverage (dense + topk)
+3. **Add uniform pibar pytest** — manually verified but fragile without CI
+4. **Run L-BFGS-B with analytical gradient** — the key validation: does it converge to |g|→0?
+5. **Multi-family optimizer test** — 5-10 families, verify convergence
+6. **Clean up dead specieswise+pairwise branches** in extract_parameters
+7. **Clean up legacy test files** — mark xfail/skip or delete
