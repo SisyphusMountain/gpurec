@@ -482,14 +482,14 @@ def _compute_dts_cross(Pi, Pibar, meta, sp_child1, sp_child2, log_pD, log_pS,
 
 
 def _compute_Pibar_inline(Pi_W, transfer_mat_T, mt_squeezed, pibar_mode,
-                          ancestors_T=None, transfer_mat_full=None, topk_k=16):
+                          ancestors_T=None, topk_k=16):
     """Compute Pibar for a wave, either via dense matmul or uniform approximation.
 
     pibar_mode:
         'dense': exact O(W*S^2) matmul with transfer_mat_T
         'uniform_approx': O(W*S) approximation (subtract self only)
         'uniform': O(W*S + W*nnz_anc) sum minus sparse ancestor correction
-        'topk': O(W*k^2) compressed matmul via top-k sparsification of Pi
+        'topk': O(W*k*S) full-output, compressed-input matmul via top-k of Pi
     """
     Pi_max = Pi_W.max(dim=1, keepdim=True).values
     if pibar_mode == 'uniform_approx':
@@ -502,24 +502,21 @@ def _compute_Pibar_inline(Pi_W, transfer_mat_T, mt_squeezed, pibar_mode,
         ancestor_sum = Pi_exp @ ancestors_T                    # [W, S] sparse matmul
         Pibar_W = torch.log2(row_sum - ancestor_sum) + Pi_max + mt_squeezed
     elif pibar_mode == 'topk':
-        # Top-k compressed matmul: O(W*k^2) instead of O(W*S^2)
-        # Pi_W is [W, S] log2-space. We need [S, W] for streaming_topk.
+        # Full-output, compressed-input: O(W*k*S) instead of O(W*S^2)
+        # Select top-k input positions from Pi (captures 99.7%+ of mass)
         W, S = Pi_W.shape
-        Pi_W_T = Pi_W.T.contiguous().float()                   # [S, W]
-        topk_vals, topk_idx = _streaming_topk(Pi_W_T, topk_k)  # [k, W]
-        # compressed matmul: log2(M @ 2^X) at top-k positions
-        M = transfer_mat_full.contiguous().float()              # [S, S] linear-space
-        Pibar_compressed = _logspace_matmul_compressed(topk_idx, topk_vals, M)  # [k, W]
-        # Add max_transfer_mat at topk row positions
-        mt_1d = mt_squeezed.squeeze(-1) if mt_squeezed.ndim > 1 else mt_squeezed
-        max_at_topk = mt_1d[topk_idx.long()]                   # [k, W]
-        Pibar_compressed = Pibar_compressed + max_at_topk
-        # Scatter compressed result into full [W, S] Pibar
-        Pibar_W = torch.full((W, S), NEG_INF, device=Pi_W.device, dtype=Pi_W.dtype)
-        # topk_idx is [k, W], we need to scatter into [W, S]
-        col_idx = topk_idx.long().T                             # [W, k]
-        Pibar_vals = Pibar_compressed.to(Pi_W.dtype).T          # [W, k]
-        Pibar_W.scatter_(1, col_idx, Pibar_vals)
+        topk_vals, topk_idx = torch.topk(Pi_W, topk_k, dim=1)  # [W, k]
+        Pi_max_topk = topk_vals[:, :1]                           # [W, 1]
+        Pi_exp_topk = torch.exp2(topk_vals - Pi_max_topk)       # [W, k]
+        # For small S, gather+bmm is fastest; for large S, use k-loop to avoid OOM
+        if W * topk_k * S * Pi_W.element_size() < 512 * 1024 * 1024:  # < 512MB
+            tf_gathered = transfer_mat_T[topk_idx.reshape(-1)].reshape(W, topk_k, S)
+            Pibar_linear = torch.bmm(Pi_exp_topk.unsqueeze(1), tf_gathered).squeeze(1)
+        else:
+            Pibar_linear = torch.zeros(W, S, device=Pi_W.device, dtype=Pi_W.dtype)
+            for j in range(topk_k):
+                Pibar_linear.addcmul_(Pi_exp_topk[:, j:j+1], transfer_mat_T[topk_idx[:, j]])
+        Pibar_W = _safe_log2(Pibar_linear) + Pi_max_topk + mt_squeezed
     else:
         Pibar_W = torch.log2(torch.exp2(Pi_W - Pi_max) @ transfer_mat_T) + Pi_max + mt_squeezed
     return Pibar_W
@@ -605,13 +602,12 @@ def Pi_wave_forward(
     SL2_const = log_pS + E_s1             # [S]
 
     ancestors_T_mat = None
-    transfer_mat_full = None
-    if pibar_mode == 'uniform_approx':
+    if pibar_mode in ('uniform_approx', 'topk'):
         # Avoid [C, S] clade_species_map and leaf_term allocations
         # leaf_wt is computed per-wave instead
         clade_species_map = None
         leaf_term = None
-        transfer_mat_T = None
+        transfer_mat_T = transfer_mat.T.contiguous() if pibar_mode == 'topk' else None
         transfer_mat_c = None
     elif pibar_mode == 'uniform':
         # Exact Pibar = row_sum - ancestor_correction (sparse)
@@ -625,14 +621,6 @@ def Pi_wave_forward(
         leaf_term = log_pS + clade_species_map  # [C, S]
         transfer_mat_T = None
         transfer_mat_c = None
-    elif pibar_mode == 'topk':
-        # Top-k compressed matmul: needs transfer_mat in linear space
-        clade_species_map = torch.full((C, S), NEG_INF, device=device, dtype=dtype)
-        clade_species_map[leaf_row_index, leaf_col_index] = 0.0
-        leaf_term = log_pS + clade_species_map  # [C, S]
-        transfer_mat_full = transfer_mat.contiguous()  # [S, S] linear-space for compressed kernel
-        transfer_mat_T = transfer_mat.T.contiguous()   # [S, S] for dense fallback (DTS etc.)
-        transfer_mat_c = transfer_mat.contiguous()
     else:
         clade_species_map = torch.full((C, S), NEG_INF, device=device, dtype=dtype)
         clade_species_map[leaf_row_index, leaf_col_index] = 0.0
@@ -735,7 +723,6 @@ def Pi_wave_forward(
 
                             Pibar_W = _compute_Pibar_inline(Pi_W, transfer_mat_T, mt_squeezed, pibar_mode,
                                                             ancestors_T=ancestors_T_mat,
-                                                            transfer_mat_full=transfer_mat_full,
                                                             topk_k=topk_k)
 
                             Pi_new = wave_step_fused(
@@ -809,7 +796,6 @@ def Pi_wave_forward(
 
                             Pibar_W = _compute_Pibar_inline(Pi_W, transfer_mat_T, mt_squeezed, pibar_mode,
                                                             ancestors_T=ancestors_T_mat,
-                                                            transfer_mat_full=transfer_mat_full,
                                                             topk_k=topk_k)
 
                             Pi_new = wave_step_fused(
