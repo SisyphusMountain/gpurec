@@ -235,7 +235,7 @@ def implicit_grad_loglik_vjp_wave(
 
     Returns (grad_theta, pi_backward_info).
     """
-    # --- Step 1: Pi backward ---
+    # --- Step 1: Pi backward (can be pre-computed for batched mode) ---
     pi_bwd = Pi_wave_backward(
         wave_layout=wave_layout,
         Pi_star_wave=Pi_star_wave,
@@ -254,6 +254,36 @@ def implicit_grad_loglik_vjp_wave(
         ancestors_T=ancestors_T,
     )
 
+    return _e_adjoint_and_theta_vjp(
+        pi_bwd, E_star, Ebar, E_s1, E_s2,
+        log_pS, log_pD, log_pL,
+        max_transfer_mat, species_helpers, root_clade_ids_perm,
+        theta, unnorm_row_max, specieswise,
+        device, dtype,
+        cg_tol=cg_tol, cg_maxiter=cg_maxiter, gmres_restart=gmres_restart,
+        pibar_mode=pibar_mode, transfer_mat=transfer_mat,
+        transfer_mat_unnormalized=transfer_mat_unnormalized,
+        ancestors_T=ancestors_T,
+    )
+
+
+def _e_adjoint_and_theta_vjp(
+    pi_bwd,
+    E_star, Ebar, E_s1, E_s2,
+    log_pS, log_pD, log_pL,
+    max_transfer_mat, species_helpers, root_clade_ids_perm,
+    theta, unnorm_row_max, specieswise,
+    device, dtype,
+    *,
+    cg_tol=1e-8, cg_maxiter=500, gmres_restart=40,
+    pibar_mode='uniform_approx',
+    transfer_mat=None, transfer_mat_unnormalized=None, ancestors_T=None,
+):
+    """E adjoint solve + theta VJP from pre-computed Pi backward result.
+
+    Takes pi_bwd dict (from Pi_wave_backward) and completes the gradient
+    computation through E adjoint solve and extract_parameters VJP.
+    """
     # --- Step 2: E adjoint ---
     sp_P_idx = species_helpers['s_P_indexes']
     sp_c12_idx = species_helpers['s_C12_indexes']
@@ -875,6 +905,7 @@ def optimize_theta_genewise(
     e_max_iters=2000,
     e_tol=1e-8,
     neumann_terms=3,
+    pruning_threshold=1e-6,
     cg_tol=1e-8,
     cg_maxiter=500,
     device=None,
@@ -888,6 +919,7 @@ def optimize_theta_genewise(
 
     Each gene has its own E (so Pi forward is per-family sequential), but
     E_fixed_point is batched across all G genes for efficiency.
+    Uses cross-family batched backward with per-clade pruning.
 
     Parameters
     ----------
@@ -951,9 +983,14 @@ def optimize_theta_genewise(
         for k, v in species_helpers.items()
     }
 
+    from src.core.batching import collate_wave
+
     # --- Phase A: precompute wave layouts (once) ---
     wave_layouts = []
     root_clade_ids_list = []
+    per_family_waves = []
+    per_family_phases = []
+    batch_items = []
     for g in range(G):
         fam = families[g]
         single_item = {
@@ -974,6 +1011,30 @@ def optimize_theta_genewise(
         )
         wave_layouts.append(wl_g)
         root_clade_ids_list.append(single_batched['root_clade_ids'])
+        per_family_waves.append(waves_g)
+        per_family_phases.append(phases_g)
+        batch_items.append(single_item)
+
+    # Build merged cross-family layout for batched backward
+    all_batched = collate_gene_families(batch_items, dtype=dtype, device=device)
+    family_meta = all_batched['family_meta']
+    offsets = [m['clade_offset'] for m in family_meta]
+    sizes = [m['C'] for m in family_meta]
+    cross_waves = collate_wave(per_family_waves, offsets)
+    cross_phases = [max(per_family_phases[g][k] for g in range(G) if k < len(per_family_phases[g]))
+                    for k in range(len(cross_waves))]
+    merged_layout = build_wave_layout(
+        waves=cross_waves, phases=cross_phases,
+        ccp_helpers=all_batched['ccp'],
+        leaf_row_index=all_batched['leaf_row_index'],
+        leaf_col_index=all_batched['leaf_col_index'],
+        root_clade_ids=all_batched['root_clade_ids'],
+        device=device, dtype=dtype,
+        family_clade_counts=sizes,
+        family_clade_offsets=offsets,
+    )
+    C_total = int(all_batched['ccp']['C'])
+    S = species_helpers['S']
 
     # --- Phase B: define eval functions ---
 
@@ -993,24 +1054,26 @@ def optimize_theta_genewise(
         return log_pS, log_pD, log_pL, mt, E_out
 
     def _nll_and_grad(theta_t, warm_E, active_mask):
-        """Full forward + backward for active genes. Returns (nll, grad, E_out)."""
+        """Full forward + batched backward for active genes."""
         log_pS, log_pD, log_pL, mt, E_out = _eval_E(theta_t, warm_E)
 
         nll = torch.full((G,), float('nan'), device=device, dtype=dtype)
         grad = torch.zeros_like(theta_t)
+        active_genes = active_mask.nonzero(as_tuple=False).squeeze(-1).tolist()
 
-        for g in active_mask.nonzero(as_tuple=False).squeeze(-1).tolist():
-            # Slice per-gene E quantities
+        # --- Per-family forward + NLL ---
+        Pi_orig = {}  # g → Pi in original (unpermuted) space
+        Pibar_orig = {}
+        for g in active_genes:
             E_g = E_out['E'][g]
+            Ebar_g = E_out['E_bar'][g]
             E_s1_g = E_out['E_s1'][g]
             E_s2_g = E_out['E_s2'][g]
-            Ebar_g = E_out['E_bar'][g]
             mt_g = mt[g]
             pS_g = log_pS[g] if log_pS.ndim >= 1 else log_pS
             pD_g = log_pD[g] if log_pD.ndim >= 1 else log_pD
             pL_g = log_pL[g] if log_pL.ndim >= 1 else log_pL
 
-            # Pi forward
             Pi_out_g = Pi_wave_forward(
                 wave_layout=wave_layouts[g], species_helpers=species_helpers,
                 E=E_g, Ebar=Ebar_g, E_s1=E_s1_g, E_s2=E_s2_g,
@@ -1020,27 +1083,68 @@ def optimize_theta_genewise(
                 local_iters=local_iters, local_tolerance=local_tolerance,
                 pibar_mode=pibar_mode,
             )
-
-            # NLL
-            logL_g = compute_log_likelihood(
-                Pi_out_g['Pi'], E_g, root_clade_ids_list[g],
-            )
+            logL_g = compute_log_likelihood(Pi_out_g['Pi'], E_g, root_clade_ids_list[g])
             nll[g] = logL_g.sum()
 
-            # Backward (implicit gradient)
-            grad_theta_g, _ = implicit_grad_loglik_vjp_wave(
-                wave_layouts[g], species_helpers,
-                Pi_star_wave=Pi_out_g['Pi_wave_ordered'],
-                Pibar_star_wave=Pi_out_g['Pibar_wave_ordered'],
-                E_star=E_g, E_s1=E_s1_g, E_s2=E_s2_g, Ebar=Ebar_g,
-                log_pS=pS_g, log_pD=pD_g, log_pL=pL_g,
-                max_transfer_mat=mt_g,
-                root_clade_ids_perm=wave_layouts[g]['root_clade_ids'],
-                theta=theta_t[g],
-                unnorm_row_max=unnorm_row_max,
-                specieswise=specieswise,
-                device=device, dtype=dtype,
-                neumann_terms=neumann_terms,
+            # Un-permute to original clade space
+            inv_perm_g = wave_layouts[g]['inv_perm']
+            Pi_orig[g] = Pi_out_g['Pi_wave_ordered'][inv_perm_g]
+            Pibar_orig[g] = Pi_out_g['Pibar_wave_ordered'][inv_perm_g]
+
+        # --- Merge into batched tensor in merged layout order ---
+        merged_perm = merged_layout['perm']
+        Pi_star_merged = torch.full((C_total, S), float('-inf'), device=device, dtype=dtype)
+        Pibar_star_merged = torch.full((C_total, S), float('-inf'), device=device, dtype=dtype)
+        for g in active_genes:
+            o, c = offsets[g], sizes[g]
+            Pi_star_merged[merged_perm[o:o+c]] = Pi_orig[g]
+            Pibar_star_merged[merged_perm[o:o+c]] = Pibar_orig[g]
+
+        # --- Single batched backward ---
+        pi_bwd = Pi_wave_backward(
+            wave_layout=merged_layout,
+            Pi_star_wave=Pi_star_merged,
+            Pibar_star_wave=Pibar_star_merged,
+            E=E_out['E'], Ebar=E_out['E_bar'],
+            E_s1=E_out['E_s1'], E_s2=E_out['E_s2'],
+            log_pS=log_pS, log_pD=log_pD, log_pL=log_pL,
+            max_transfer_mat=mt,
+            species_helpers=species_helpers,
+            root_clade_ids_perm=merged_layout['root_clade_ids'],
+            device=device, dtype=dtype,
+            neumann_terms=neumann_terms,
+            use_pruning=True,
+            pruning_threshold=pruning_threshold,
+            pibar_mode=pibar_mode,
+            family_idx=merged_layout['family_idx'],
+        )
+
+        # --- Per-family E adjoint + theta VJP ---
+        for g in active_genes:
+            E_g = E_out['E'][g]
+            Ebar_g = E_out['E_bar'][g]
+            mt_g = mt[g]
+            pS_g = log_pS[g] if log_pS.ndim >= 1 else log_pS
+            pD_g = log_pD[g] if log_pD.ndim >= 1 else log_pD
+            pL_g = log_pL[g] if log_pL.ndim >= 1 else log_pL
+
+            # Slice per-family gradients from batched backward
+            pi_bwd_g = {
+                'grad_E': pi_bwd['grad_E'][g],
+                'grad_Ebar': pi_bwd['grad_Ebar'][g],
+                'grad_E_s1': pi_bwd['grad_E_s1'][g],
+                'grad_E_s2': pi_bwd['grad_E_s2'][g],
+                'grad_log_pD': pi_bwd['grad_log_pD'][g],
+                'grad_log_pS': pi_bwd['grad_log_pS'][g],
+                'grad_max_transfer_mat': pi_bwd['grad_max_transfer_mat'][g],
+            }
+
+            grad_theta_g, _ = _e_adjoint_and_theta_vjp(
+                pi_bwd_g, E_g, Ebar_g, E_out['E_s1'][g], E_out['E_s2'][g],
+                pS_g, pD_g, pL_g, mt_g,
+                species_helpers, wave_layouts[g]['root_clade_ids'],
+                theta_t[g], unnorm_row_max, specieswise,
+                device, dtype,
                 cg_tol=cg_tol, cg_maxiter=cg_maxiter,
                 pibar_mode=pibar_mode,
             )
