@@ -102,7 +102,7 @@ def extract_parameters(theta, transfer_mat_unnormalized, genewise, specieswise, 
             return log_pS, log_pD, log_pL, transfer_mat, max_transfer_mat
 
 
-def extract_parameters_uniform(theta, unnorm_row_max, specieswise):
+def extract_parameters_uniform(theta, unnorm_row_max, specieswise, genewise=False):
     """Extract SDTL parameters without materializing the [S,S] transfer matrix.
 
     For the uniform pibar approximation, we only need max_transfer_mat (per-row
@@ -115,15 +115,41 @@ def extract_parameters_uniform(theta, unnorm_row_max, specieswise):
     ----------
     theta : Tensor
         Rate parameters (same as extract_parameters).
+        When genewise=True: [G, 3] (non-specieswise) or [G, S, 3] (specieswise).
     unnorm_row_max : Tensor [S]
         Precomputed row maxima of transfer_mat_unnormalized: max_j(unnorm[i,j]).
     specieswise : bool
         Whether rates are per-species.
+    genewise : bool
+        Whether rates are per-gene.
 
     Returns
     -------
     log_pS, log_pD, log_pL, transfer_mat (None), max_transfer_mat
     """
+    if genewise:
+        if specieswise:
+            # theta [G, S, 3]
+            G, S, _ = theta.shape
+            zeros = theta.new_zeros((G, S, 1))
+            result = log2_softmax(torch.cat((zeros, theta), dim=-1), dim=-1)
+            log_pS = result[..., 0]   # [G, S]
+            log_pD = result[..., 1]   # [G, S]
+            log_pL = result[..., 2]   # [G, S]
+            log_pT = result[..., 3]   # [G, S]
+            # mt[g, s] = log_pT[g, s] + unnorm_row_max[s]
+            max_transfer_mat = log_pT + unnorm_row_max  # [G, S]
+        else:
+            # theta [G, 3]
+            zeros = theta.new_zeros((theta.shape[0], 1))
+            result = log2_softmax(torch.cat((zeros, theta), dim=-1), dim=-1)
+            log_pS = result[:, 0]     # [G]
+            log_pD = result[:, 1]     # [G]
+            log_pL = result[:, 2]     # [G]
+            log_pT = result[:, 3]     # [G]
+            # mt[g, s] = log_pT[g] + unnorm_row_max[s]
+            max_transfer_mat = log_pT.unsqueeze(-1) + unnorm_row_max  # [G, S]
+        return log_pS, log_pD, log_pL, None, max_transfer_mat
     if specieswise:
         N_sp, _ = theta.shape
         zeros_tensor = theta.new_zeros((N_sp, 1))

@@ -526,12 +526,12 @@ class TestPruning:
         )
 
         result_full = Pi_wave_backward(**kwargs, use_pruning=False)
-        result_pruned = Pi_wave_backward(**kwargs, use_pruning=True, pruning_threshold=-50.0)
+        result_pruned = Pi_wave_backward(**kwargs, use_pruning=True, pruning_threshold=1e-6)
 
         # Pruned result should be finite
         assert torch.isfinite(result_pruned['v_Pi']).all()
 
-        # Pruned gradient should agree on the unpruned (important) clades
+        # Pruned gradient should closely match full gradient
         v_full = result_full['v_Pi']
         v_pruned = result_pruned['v_Pi']
 
@@ -541,9 +541,80 @@ class TestPruning:
         print(f"  Full norm: {v_full.norm():.6e}, Pruned norm: {v_pruned.norm():.6e}")
         assert dot >= 0, "Pruned gradient points in opposite direction"
 
+        # Parameter gradients should match within 1% relative error
+        for key in ('grad_log_pS', 'grad_log_pD', 'grad_max_transfer_mat'):
+            g_full = result_full[key]
+            g_pruned = result_pruned[key]
+            denom = g_full.abs().max().item()
+            if denom > 1e-10:
+                rel_err = (g_full - g_pruned).abs().max().item() / denom
+                print(f"  {key}: rel_err={rel_err:.6e}")
+                assert rel_err < 0.01, f"{key} rel_err={rel_err:.4f} exceeds 1%"
+
+
+class TestPruningGradientAccuracy:
+    """Test that runtime pruning produces accurate gradients with measurable speedup."""
+
+    @pytest.fixture(scope="class")
+    def setup_100(self):
+        return _setup_single_family("test_trees_100", n_families=1, dtype=torch.float32)
+
+    def test_pruning_gradient_accuracy(self, setup_100):
+        """Pruned gradient matches full within 1%, and at least 20% of waves pruned."""
+        d = setup_100
+        kwargs = dict(
+            wave_layout=d['wave_layout'],
+            Pi_star_wave=d['Pi_out']['Pi_wave_ordered'],
+            Pibar_star_wave=d['Pi_out']['Pibar_wave_ordered'],
+            E=d['E'], Ebar=d['Ebar'], E_s1=d['E_s1'], E_s2=d['E_s2'],
+            log_pS=d['log_pS'], log_pD=d['log_pD'], log_pL=d['log_pL'],
+            max_transfer_mat=d['max_transfer_mat'],
+            species_helpers=d['species_helpers'],
+            root_clade_ids_perm=d['root_clade_ids_perm'],
+            device=d['device'], dtype=d['dtype'],
+            neumann_terms=3,
+        )
+
+        result_full = Pi_wave_backward(**kwargs, use_pruning=False)
+        result_pruned = Pi_wave_backward(**kwargs, use_pruning=True, pruning_threshold=1e-6)
+
+        # All parameter gradients should match within 1%
+        for key in ('grad_log_pS', 'grad_log_pD', 'grad_max_transfer_mat'):
+            g_full = result_full[key]
+            g_pruned = result_pruned[key]
+            denom = g_full.abs().max().item()
+            if denom > 1e-10:
+                rel_err = (g_full - g_pruned).abs().max().item() / denom
+                print(f"  {key}: rel_err={rel_err:.6e}")
+                assert rel_err < 0.01, f"{key} rel_err={rel_err:.4f} exceeds 1%"
+
+        # v_Pi adjoint should match within 1%
+        v_full = result_full['v_Pi']
+        v_pruned = result_pruned['v_Pi']
+        denom = v_full.abs().max().item()
+        if denom > 1e-10:
+            rel_err = (v_full - v_pruned).abs().max().item() / denom
+            print(f"  v_Pi: rel_err={rel_err:.6e}")
+            assert rel_err < 0.01, f"v_Pi rel_err={rel_err:.4f} exceeds 1%"
+
+        # At least 20% of waves should be pruned
+        n_total = result_pruned['n_waves_total']
+        n_skipped = result_pruned['n_waves_skipped']
+        n_processed = result_pruned['n_waves_processed']
+        prune_frac = n_skipped / n_total
+        print(f"  Waves: {n_total} total, {n_skipped} skipped, {n_processed} processed "
+              f"({prune_frac:.0%} pruned)")
+        assert prune_frac >= 0.20, (
+            f"Only {prune_frac:.0%} waves pruned (expected >= 20%)"
+        )
+
 
 class TestGradientBoundsVectorized:
-    """Test vectorized compute_gradient_bounds."""
+    """Test vectorized compute_gradient_bounds.
+
+    Note: compute_gradient_bounds is no longer called from Pi_wave_backward
+    (replaced by runtime adjoint thresholding), but kept as a standalone unit test.
+    """
 
     @pytest.fixture(scope="class")
     def setup_20(self):

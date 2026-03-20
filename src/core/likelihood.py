@@ -1168,7 +1168,7 @@ def Pi_wave_backward(
     device, dtype,
     *,
     neumann_terms=3,
-    pruning_threshold=-20.0,
+    pruning_threshold=1e-6,
     use_pruning=True,
     pibar_mode='uniform_approx',
     transfer_mat=None,
@@ -1190,8 +1190,8 @@ def Pi_wave_backward(
         root_clade_ids_perm: Long[F] root clade IDs in wave-ordered space
         device, dtype: target device/dtype
         neumann_terms: number of Neumann series terms (default 3)
-        pruning_threshold: log2-space threshold for gradient pruning
-        use_pruning: whether to prune negligible-gradient clades
+        pruning_threshold: linear-space adjoint magnitude threshold for pruning
+        use_pruning: whether to prune waves with negligible adjoint gradient
         pibar_mode: 'uniform_approx', 'dense', or 'uniform'
         transfer_mat: [S, S] linear-space transfer matrix (for dense mode)
         ancestors_T: [S, S] sparse CSR = ancestors.T (for uniform mode)
@@ -1252,14 +1252,9 @@ def Pi_wave_backward(
     def _get_leaf_wt(ws, we):
         return log_pS + _get_leaf_mask(ws, we)
 
-    # Optional pruning
-    pruned_perm = None
-    if use_pruning:
-        grad_bound, pruned_mask = compute_gradient_bounds(
-            Pi_star_wave, {'N_splits': 0}, root_clade_ids_perm,
-            threshold=pruning_threshold, wave_metas=wave_metas,
-        )
-        pruned_perm = pruned_mask
+    # Diagnostic counters for pruning
+    n_waves_total = K
+    n_waves_skipped = 0
 
     # Initialize RHS: dL/dPi at root clades
     # logL = -(logsumexp2(Pi[root]) - log2(S) - denom)
@@ -1288,14 +1283,12 @@ def Pi_wave_backward(
         we = meta['end']
         W = meta['W']
 
-        # Skip entirely pruned waves
-        if use_pruning and pruned_perm is not None and pruned_perm[ws:we].all():
-            continue
-
         rhs_k = accumulated_rhs[ws:we].clone()  # [W, S]
 
-        # Skip if RHS is all zero (no gradient flows here)
-        if rhs_k.abs().max() == 0:
+        # Skip waves with negligible adjoint gradient
+        rhs_max = rhs_k.abs().max().item()
+        if rhs_max == 0 or (use_pruning and rhs_max < pruning_threshold):
+            n_waves_skipped += 1
             continue
 
         # Get frozen inputs for this wave
@@ -1552,6 +1545,9 @@ def Pi_wave_backward(
         'grad_log_pD': grad_log_pD,
         'grad_log_pS': grad_log_pS,
         'grad_max_transfer_mat': grad_mt,
+        'n_waves_total': n_waves_total,
+        'n_waves_skipped': n_waves_skipped,
+        'n_waves_processed': n_waves_total - n_waves_skipped,
     }
     if grad_transfer_mat_acc is not None:
         result['grad_transfer_mat'] = grad_transfer_mat_acc
