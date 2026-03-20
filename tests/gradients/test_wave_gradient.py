@@ -609,6 +609,80 @@ class TestPruningGradientAccuracy:
         )
 
 
+class TestBatchedBackward:
+    """Test that batched (cross-family) backward matches per-family backward."""
+
+    @pytest.fixture(scope="class")
+    def setup_2fam(self):
+        return _setup_single_family("test_trees_20", n_families=2, dtype=torch.float32)
+
+    def test_batched_matches_per_family(self, setup_2fam):
+        """Batched backward with family_idx should match per-family backward."""
+        d = setup_2fam
+        device, dtype = d['device'], d['dtype']
+        S = d['S']
+
+        # --- Per-family backward (reference) ---
+        result_per_fam = Pi_wave_backward(
+            wave_layout=d['wave_layout'],
+            Pi_star_wave=d['Pi_out']['Pi_wave_ordered'],
+            Pibar_star_wave=d['Pi_out']['Pibar_wave_ordered'],
+            E=d['E'], Ebar=d['Ebar'], E_s1=d['E_s1'], E_s2=d['E_s2'],
+            log_pS=d['log_pS'], log_pD=d['log_pD'], log_pL=d['log_pL'],
+            max_transfer_mat=d['max_transfer_mat'],
+            species_helpers=d['species_helpers'],
+            root_clade_ids_perm=d['root_clade_ids_perm'],
+            device=device, dtype=dtype,
+            neumann_terms=3,
+            use_pruning=False,
+        )
+
+        # --- Batched backward with family_idx ---
+        # Build family_idx: all clades belong to "family 0" (since _setup_single_family
+        # merges families into one layout). We test the batched path by wrapping
+        # [S] params into [1, S] with family_idx mapping all clades to family 0.
+        C = d['Pi_out']['Pi_wave_ordered'].shape[0]
+        family_idx = torch.zeros(C, dtype=torch.long, device=device)
+
+        # Expand params to [1, S]
+        result_batched = Pi_wave_backward(
+            wave_layout=d['wave_layout'],
+            Pi_star_wave=d['Pi_out']['Pi_wave_ordered'],
+            Pibar_star_wave=d['Pi_out']['Pibar_wave_ordered'],
+            E=d['E'].unsqueeze(0), Ebar=d['Ebar'].unsqueeze(0),
+            E_s1=d['E_s1'].unsqueeze(0), E_s2=d['E_s2'].unsqueeze(0),
+            log_pS=d['log_pS'].unsqueeze(0), log_pD=d['log_pD'].unsqueeze(0),
+            log_pL=d['log_pL'].unsqueeze(0),
+            max_transfer_mat=d['max_transfer_mat'].unsqueeze(0),
+            species_helpers=d['species_helpers'],
+            root_clade_ids_perm=d['root_clade_ids_perm'],
+            device=device, dtype=dtype,
+            neumann_terms=3,
+            use_pruning=False,
+            family_idx=family_idx,
+        )
+
+        # v_Pi should match exactly
+        v_ref = result_per_fam['v_Pi']
+        v_bat = result_batched['v_Pi']
+        denom = v_ref.abs().max().item()
+        if denom > 1e-10:
+            rel_err = (v_ref - v_bat).abs().max().item() / denom
+            print(f"  v_Pi rel_err: {rel_err:.6e}")
+            assert rel_err < 0.01, f"v_Pi rel_err={rel_err:.4f}"
+
+        # Parameter gradients: per-family returns [S], batched returns [1, S]
+        for key in ('grad_log_pS', 'grad_log_pD', 'grad_max_transfer_mat'):
+            g_ref = result_per_fam[key]  # [S]
+            g_bat = result_batched[key]  # [1, S]
+            g_bat_sq = g_bat.squeeze(0)
+            denom = g_ref.abs().max().item()
+            if denom > 1e-10:
+                rel_err = (g_ref - g_bat_sq).abs().max().item() / denom
+                print(f"  {key} rel_err: {rel_err:.6e}")
+                assert rel_err < 0.01, f"{key} rel_err={rel_err:.4f}"
+
+
 class TestGradientBoundsVectorized:
     """Test vectorized compute_gradient_bounds.
 

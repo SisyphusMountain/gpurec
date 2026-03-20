@@ -455,6 +455,8 @@ def build_wave_layout(
     root_clade_ids: torch.Tensor,
     device: torch.device | str = "cpu",
     dtype: torch.dtype = torch.float32,
+    family_clade_counts: List[int] | None = None,
+    family_clade_offsets: List[int] | None = None,
 ) -> Dict[str, Any]:
     """Build wave-ordered layout: permute clade indices so each wave is contiguous.
 
@@ -470,6 +472,8 @@ def build_wave_layout(
         root_clade_ids: Long[F] root clade indices
         device: target device
         dtype: float dtype
+        family_clade_counts: per-family clade counts [G] (for family_idx)
+        family_clade_offsets: per-family clade offsets [G] (for family_idx)
 
     Returns:
         Dict with:
@@ -482,6 +486,7 @@ def build_wave_layout(
           'wave_starts': Long[K+1] — start/end indices for each wave
           'wave_metas': list of per-wave metadata dicts
           'phases': list of phase labels
+          'family_idx': Long[C] clade→family (only if family_clade_counts provided)
     """
     C = int(ccp_helpers['C'])
     N_splits = int(ccp_helpers['N_splits'])
@@ -614,7 +619,7 @@ def build_wave_layout(
 
         wave_metas.append(meta)
 
-    return {
+    result = {
         'perm': perm,
         'inv_perm': inv_perm,
         'ccp_helpers': {
@@ -629,3 +634,13 @@ def build_wave_layout(
         'wave_metas': wave_metas,
         'phases': phases,
     }
+
+    # Build clade→family mapping in wave-ordered space
+    if family_clade_counts is not None and family_clade_offsets is not None:
+        family_idx_orig = torch.empty(C, dtype=torch.long, device=device)
+        for g, (offset, c_g) in enumerate(zip(family_clade_offsets, family_clade_counts)):
+            family_idx_orig[offset:offset + c_g] = g
+        # Permute to wave-ordered space: result[new_idx] = family of original clade inv_perm[new_idx]
+        result['family_idx'] = family_idx_orig[inv_perm]
+
+    return result
