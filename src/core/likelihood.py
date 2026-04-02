@@ -13,6 +13,7 @@ from .terms import (
 from .kernels.scatter_lse import seg_logsumexp
 from .log2_utils import logsumexp2, logaddexp2
 from .kernels.wave_step import wave_step_fused, wave_pibar_step_fused, wave_step_uniform_fused
+from .kernels.wave_backward import wave_backward_uniform_fused
 from .kernels.dts_fused import dts_fused
 
 # Try to import logmatmul for fast dense log-space matmul.
@@ -1141,30 +1142,181 @@ def _dts_cross_differentiable(
 
     dts_term = wlsp + logsumexp2(DTS, dim=0)  # [n_ws, S]
 
-    # Reduce splits → per-wave-clade [W, S] via differentiable scatter
+    # Reduce splits → per-wave-clade [W, S] via differentiable scatter-based
+    # segment logsumexp.  Vectorized: no Python loop over clades.
     reduce_idx = meta['reduce_idx']  # [n_ws]
-
-    # Differentiable reduction: group by parent clade and logsumexp
-    # Use index_select + logsumexp per unique parent for autograd compatibility
     reduce_expand = reduce_idx.unsqueeze(1).expand(n_ws, S)  # [n_ws, S]
 
-    # Pad dts_term to [n_ws+1, S] with -inf sentinel for safe indexing
-    dts_padded = torch.cat([dts_term, torch.full((1, S), NEG_INF, device=device, dtype=dtype)], dim=0)
+    # Step 1: per-segment max for numerical stability (detached — gradient
+    # flows through the exp+sum path, not through the max).
+    seg_max = torch.full((W, S), NEG_INF, device=device, dtype=dtype)
+    seg_max.scatter_reduce_(0, reduce_expand, dts_term.detach(), reduce='amax',
+                            include_self=True)
 
-    # Build a dense [W, max_splits_per_clade, S] tensor and logsumexp over dim=1
-    # For simplicity, use scatter + max stabilization without in-place mutation
-    # Approach: compute per-clade logsumexp via a loop over unique parents
-    # This is small (W clades per wave) so the loop is cheap
-    parts = []
-    for w in range(W):
-        mask_w = reduce_idx == w
-        if mask_w.any():
-            parts.append(logsumexp2(dts_term[mask_w], dim=0).unsqueeze(0))  # [1, S]
-        else:
-            parts.append(torch.full((1, S), NEG_INF, device=device, dtype=dtype))
-    dts_r = torch.cat(parts, dim=0)  # [W, S]
+    # Step 2: stabilised exp2, scatter-add, log2
+    shifted = torch.exp2(dts_term - seg_max[reduce_idx])
+    seg_sum = torch.zeros((W, S), device=device, dtype=dtype)
+    seg_sum.scatter_add_(0, reduce_expand, shifted)
+    dts_r = _safe_log2(seg_sum) + seg_max
 
     return dts_r
+
+
+def _self_loop_vjp_precompute(
+    Pi_star, Pibar_star, dts_r,
+    mt_w, DL_w, Ebar_w, E_w, SL1_w, SL2_w,
+    sp_child1, sp_child2, leaf_wt, S,
+    pibar_mode, transfer_mat_T, ancestors_T,
+):
+    """Precompute softmax weights and Pibar VJP ingredients for one wave.
+
+    Evaluates the self-loop g(Pi) at Pi=Pi_star and caches all quantities
+    needed by _self_loop_Jt_apply (Neumann VJP) and param VJP.
+    Called ONCE per wave.
+    """
+    W = Pi_star.shape[0]
+    device, dtype = Pi_star.device, Pi_star.dtype
+
+    def _expand(t):
+        return t.unsqueeze(0).expand(W, -1) if t.ndim == 1 else t
+
+    mt = _expand(mt_w)
+    DL = _expand(DL_w)
+    Ebar = _expand(Ebar_w)
+    E = _expand(E_w)
+    SL1 = _expand(SL1_w)
+    SL2 = _expand(SL2_w)
+
+    # --- Pibar VJP ingredients ---
+    Pi_max = Pi_star.max(dim=1, keepdim=True).values  # [W, 1]
+    p_prime = torch.exp2(Pi_star - Pi_max)             # [W, S]
+
+    if pibar_mode == 'uniform_approx':
+        row_sum = p_prime.sum(dim=1, keepdim=True)
+        pibar_denom = row_sum - p_prime            # [W, S]
+    elif pibar_mode == 'uniform':
+        row_sum = p_prime.sum(dim=1, keepdim=True)
+        anc_sum = p_prime @ ancestors_T            # [W, S] sparse matmul
+        pibar_denom = row_sum - anc_sum
+    else:  # dense / topk
+        pibar_matmul = p_prime @ transfer_mat_T    # [W, S]
+
+    # --- DTS_L terms at Pi_star ---
+    Pi_pad = torch.cat([Pi_star, torch.full((W, 1), NEG_INF, device=device, dtype=dtype)], dim=1)
+    Pi_s1 = Pi_pad[:, sp_child1.long()]
+    Pi_s2 = Pi_pad[:, sp_child2.long()]
+
+    terms = torch.stack([
+        DL + Pi_star,       # 0: DL
+        Pi_star + Ebar,     # 1: TL1 (Pi + Ebar)
+        Pibar_star + E,     # 2: TL2 (Pibar + E)
+        SL1 + Pi_s1,        # 3: SL1
+        SL2 + Pi_s2,        # 4: SL2
+        leaf_wt,             # 5: leaf
+    ], dim=0)  # [6, W, S]
+
+    DTS_L = logsumexp2(terms, dim=0)  # [W, S]
+
+    # --- Softmax weights ---
+    if dts_r is not None:
+        Pi_new = logaddexp2(dts_r, DTS_L)
+        w_L = _safe_exp2_ratio(DTS_L, Pi_new)  # [W, S]
+    else:
+        w_L = torch.ones(W, S, device=device, dtype=dtype)
+
+    # Per-term weights in DTS_L logsumexp: w_terms[i] = exp2(terms[i] - DTS_L)
+    w_terms = _safe_exp2_ratio(terms, DTS_L.unsqueeze(0))  # [6, W, S]
+
+    # Precompute speciation scatter indices (constant across Neumann iterations)
+    sc1 = sp_child1.long()
+    sc2 = sp_child2.long()
+    valid1 = sc1 < S
+    valid2 = sc2 < S
+
+    # Precompute Pibar VJP division factors to avoid repeated torch.where in Jt_apply
+    result = {
+        'w_L': w_L,
+        'w_terms': w_terms,
+        'p_prime': p_prime,
+    }
+    if pibar_mode in ('uniform_approx', 'uniform'):
+        pos = pibar_denom > 0
+        inv_denom = torch.where(pos, 1.0 / torch.where(pos, pibar_denom, torch.ones_like(pibar_denom)),
+                                torch.zeros_like(pibar_denom))
+        result['pibar_inv_denom'] = inv_denom  # [W, S]: 1/denom where positive, 0 elsewhere
+    else:
+        pos = pibar_matmul > 0
+        inv_matmul = torch.where(pos, 1.0 / torch.where(pos, pibar_matmul, torch.ones_like(pibar_matmul)),
+                                 torch.zeros_like(pibar_matmul))
+        result['pibar_inv_matmul'] = inv_matmul
+        result['pibar_matmul'] = pibar_matmul  # still needed for param VJP
+    if valid1.any():
+        result['sc1_valid'] = valid1
+        result['sc1_idx'] = sc1[valid1].unsqueeze(0)  # [1, n_valid]
+    if valid2.any():
+        result['sc2_valid'] = valid2
+        result['sc2_idx'] = sc2[valid2].unsqueeze(0)  # [1, n_valid]
+    return result
+
+
+def _self_loop_Jt_apply(
+    v, ingredients, sp_child1, sp_child2, S, W,
+    pibar_mode, transfer_mat_T, ancestors_T,
+):
+    """Apply J_self^T @ v analytically using precomputed ingredients.
+
+    This is the VJP of one self-loop step g(Pi) = logaddexp2(dts_r, DTS_L(Pi)).
+    The Jacobian J = dg/dPi is block-diagonal per clade (no cross-clade coupling
+    in the self-loop). Each block captures:
+      - diagonal: d(DTS_L)/d(Pi) through DL+Pi and Pi+Ebar terms
+      - Pibar path: d(DTS_L)/d(Pibar) * d(Pibar)/d(Pi) through Pibar+E term
+      - speciation: d(DTS_L)/d(Pi_s1) * d(Pi_s1)/d(Pi) scatter through SL terms
+    """
+    w_L = ingredients['w_L']
+    w_terms = ingredients['w_terms']
+    p_prime = ingredients['p_prime']
+
+    # Weight v by DTS_L branch contribution (vs DTS_cross)
+    alpha = v * w_L  # [W, S]
+
+    # Terms 0,1: direct Pi dependence (DL+Pi, Pi+Ebar)
+    result = alpha * (w_terms[0] + w_terms[1])
+
+    # Term 2: Pibar(Pi)+E — Pibar→Pi chain rule
+    v_Pibar = alpha * w_terms[2]  # [W, S]
+
+    if pibar_mode == 'uniform_approx':
+        # d(Pibar[s])/d(Pi[f]) = p'[f] / (rowsum-p'[s])  for f≠s, 0 for f=s
+        # VJP: result[f] += p'[f] * (A - u_d[f])
+        # where u_d[s] = v_Pibar[s] / (rowsum-p'[s]), A = sum_s u_d[s]
+        u_d = v_Pibar * ingredients['pibar_inv_denom']  # [W, S]
+        A = u_d.sum(dim=1, keepdim=True)
+        result = result + p_prime * (A - u_d)
+    elif pibar_mode == 'uniform':
+        u_d = v_Pibar * ingredients['pibar_inv_denom']
+        A = u_d.sum(dim=1, keepdim=True)
+        correction = (ancestors_T @ u_d.T).T
+        result = result + p_prime * (A - correction)
+    else:  # dense / topk
+        u_mr = v_Pibar * ingredients['pibar_inv_matmul']
+        result = result + p_prime * (u_mr @ transfer_mat_T.T)
+
+    # Terms 3,4: speciation — VJP of gather Pi[:, child[s]] is scatter_add
+    sc1_valid = ingredients.get('sc1_valid')
+    sc2_valid = ingredients.get('sc2_valid')
+    sc1_idx = ingredients.get('sc1_idx')
+    sc2_idx = ingredients.get('sc2_idx')
+
+    if sc1_valid is not None:
+        src = alpha * w_terms[3]  # [W, S]
+        idx = sc1_idx.expand(W, -1) if sc1_idx.shape[0] == 1 else sc1_idx
+        result.scatter_add_(1, idx, src[:, sc1_valid])
+    if sc2_valid is not None:
+        src = alpha * w_terms[4]  # [W, S]
+        idx = sc2_idx.expand(W, -1) if sc2_idx.shape[0] == 1 else sc2_idx
+        result.scatter_add_(1, idx, src[:, sc2_valid])
+
+    return result
 
 
 @torch.no_grad()
@@ -1346,7 +1498,11 @@ def Pi_wave_backward(
 
         # Get frozen inputs for this wave
         Pi_W_star = Pi_star_wave[ws:we].detach()
-        leaf_wt = _get_leaf_wt(ws, we)
+        leaf_mask = _get_leaf_mask(ws, we)  # raw 0/-inf mask, reused below
+        if batched:
+            leaf_wt = log_pS_clade[ws:we] + leaf_mask
+        else:
+            leaf_wt = log_pS + leaf_mask
 
         # DTS cross-clade for this wave (frozen, from converged values)
         if meta['has_splits']:
@@ -1420,142 +1576,222 @@ def Pi_wave_backward(
             SL1_n = SL1_w
             SL2_n = SL2_w
 
-        # --- Neumann series: v_k = sum_{n=0}^{N} (J_self^T)^n @ rhs ---
-        v_k = rhs_active.clone()
-        term = rhs_active
+        # --- Fused Triton kernel path (non-batched, uniform_approx, fp32, CUDA) ---
+        use_fused = (
+            not batched
+            and pibar_mode == 'uniform_approx'
+            and dtype == torch.float32
+            and device.type == 'cuda'
+            and S > 256
+        )
 
-        for n in range(neumann_terms):
-            # Build VJP through one self-loop step
-            Pi_W_req = Pi_active.clone().requires_grad_(True)
-            with torch.enable_grad():
-                Pi_new = _self_loop_differentiable(
-                    Pi_W_req, mt_n, DL_n, Ebar_n, E_n, SL1_n, SL2_n,
-                    sp_child1, sp_child2, leaf_wt_active, dts_r_active, S,
-                    pibar_mode=pibar_mode, transfer_mat_T=transfer_mat_T,
-                    ancestors_T=ancestors_T,
+        if use_fused:
+            # Kernel handles precompute + Neumann + param VJP in one launch.
+            # No compaction needed: zero rhs → zero outputs.
+            v_k, aw0, aw1, aw2, aw345, aw3, aw4 = wave_backward_uniform_fused(
+                Pi_star_wave, Pibar_star_wave, ws, W, S,
+                dts_r, rhs_k.clone(),
+                mt_w, DL_w, Ebar_w, E_w, SL1_w, SL2_w,
+                sp_child1, sp_child2, leaf_wt,
+                neumann_terms=neumann_terms,
+            )
+
+            def _accum(acc, contrib):
+                s = contrib.sum(dim=0)
+                return acc + (s.sum() if acc.ndim == 0 else s)
+
+            grad_log_pD = _accum(grad_log_pD, aw0)
+            grad_log_pS = _accum(grad_log_pS, aw345)
+            grad_E_acc = _accum(grad_E_acc, aw0 + aw2)
+            grad_Ebar_acc = _accum(grad_Ebar_acc, aw1)
+            grad_E_s1_acc = _accum(grad_E_s1_acc, aw4)
+            grad_E_s2_acc = _accum(grad_E_s2_acc, aw3)
+            grad_mt = _accum(grad_mt, aw2)
+
+        else:
+            # --- PyTorch analytical path (batched, dense, fp64, or CPU) ---
+            Pibar_W_star = Pibar_star_wave[ws:we]
+            ingredients = _self_loop_vjp_precompute(
+                Pi_W_star, Pibar_W_star, dts_r,
+                mt_w, DL_w, Ebar_w, E_w, SL1_w, SL2_w,
+                sp_child1, sp_child2, leaf_wt, S,
+                pibar_mode, transfer_mat_T, ancestors_T,
+            )
+
+            # --- Neumann series: v_k = sum_{n=0}^{N} (J_self^T)^n @ rhs ---
+            if use_compact:
+                compact_ing = {
+                    'w_L': ingredients['w_L'][active_idx],
+                    'w_terms': ingredients['w_terms'][:, active_idx],
+                    'p_prime': ingredients['p_prime'][active_idx],
+                }
+                if 'pibar_inv_denom' in ingredients:
+                    compact_ing['pibar_inv_denom'] = ingredients['pibar_inv_denom'][active_idx]
+                if 'pibar_inv_matmul' in ingredients:
+                    compact_ing['pibar_inv_matmul'] = ingredients['pibar_inv_matmul'][active_idx]
+                if 'pibar_matmul' in ingredients:
+                    compact_ing['pibar_matmul'] = ingredients['pibar_matmul'][active_idx]
+                for key in ('sc1_valid', 'sc1_idx', 'sc2_valid', 'sc2_idx'):
+                    if key in ingredients:
+                        compact_ing[key] = ingredients[key]
+                neumann_ing = compact_ing
+                neumann_W = n_active
+            else:
+                neumann_ing = ingredients
+                neumann_W = W
+
+            v_k = rhs_active.clone()
+            term = rhs_active
+            for n in range(neumann_terms):
+                term = _self_loop_Jt_apply(
+                    term, neumann_ing, sp_child1, sp_child2, S, neumann_W,
+                    pibar_mode, transfer_mat_T, ancestors_T,
                 )
-                # VJP: term_new = (dg/dPi_W)^T @ term
-                term_new = torch.autograd.grad(Pi_new, Pi_W_req, grad_outputs=term,
-                                               retain_graph=False)[0]
-            term = term_new.detach()
-            v_k = v_k + term
+                v_k = v_k + term
 
-        # Expand v_k back to full wave for parameter VJP and cross-clade backward
-        if use_compact:
-            v_k_full = torch.zeros(W, S, device=device, dtype=dtype)
-            v_k_full[active_idx] = v_k
-            v_k = v_k_full
+            if use_compact:
+                v_k_full = torch.zeros(W, S, device=device, dtype=dtype)
+                v_k_full[active_idx] = v_k
+                v_k = v_k_full
 
-        # --- Accumulate parameter gradients via VJP of g_k wrt params ---
-        # NOTE: all differentiable computation must be inside enable_grad()
-        # because this function is decorated with @torch.no_grad().
-        Pi_W_fixed = Pi_W_star.detach()  # fixed at converged value
-        leaf_mask = _get_leaf_mask(ws, we)  # raw 0/-inf mask
-        with torch.enable_grad():
-            # Clone params as differentiable leaves — [S] for shared, [G, S] for genewise
-            _log_pD = log_pD.detach().clone().requires_grad_(True)
-            _log_pS = log_pS.detach().clone().requires_grad_(True)
-            _E = E.detach().clone().requires_grad_(True)
-            _Ebar = Ebar.detach().clone().requires_grad_(True)
-            _E_s1 = E_s1.detach().clone().requires_grad_(True)
-            _E_s2 = E_s2.detach().clone().requires_grad_(True)
-            _mt = mt_squeezed.detach().clone().requires_grad_(True)
-            _transfer_mat_T = None
-            if pibar_mode in ('dense', 'topk') and transfer_mat_T is not None:
-                _transfer_mat_T = transfer_mat_T.detach().clone().requires_grad_(True)
+            # --- Accumulate parameter gradients analytically ---
+            alpha_full = v_k * ingredients['w_L']
+            wt = ingredients['w_terms']
+
+            def _accum(acc, contrib):
+                s = contrib.sum(dim=0)
+                return acc + (s.sum() if acc.ndim == 0 else s)
+
+            aw0 = alpha_full * wt[0]
+            aw1 = alpha_full * wt[1]
+            aw2 = alpha_full * wt[2]
+            aw3 = alpha_full * wt[3]
+            aw4 = alpha_full * wt[4]
+            aw5 = alpha_full * wt[5]
 
             if batched:
-                # Index [G, S] or [G] → [W, S] per-clade; VJP through indexing = scatter_add
                 fi_w = family_idx[ws:we]
+                fi_expand = fi_w.unsqueeze(1).expand(W, S)
+                def _scatter_accum(acc, contrib):
+                    if acc.ndim == 1:
+                        acc.scatter_add_(0, fi_w, contrib.sum(dim=1))
+                    else:
+                        acc.scatter_add_(0, fi_expand, contrib)
 
-                def _idx(p, fi):
-                    r = p[fi]
-                    return r.unsqueeze(-1) if r.ndim == 1 else r
-
-                _DL_const_w = 1.0 + _idx(_log_pD, fi_w) + _idx(_E, fi_w)
-                _SL1_w = _idx(_log_pS, fi_w) + _idx(_E_s2, fi_w)
-                _SL2_w = _idx(_log_pS, fi_w) + _idx(_E_s1, fi_w)
-                _leaf_wt = _idx(_log_pS, fi_w) + leaf_mask
-                _mt_w = _idx(_mt, fi_w)
-                _Ebar_w = _idx(_Ebar, fi_w)
-                _E_w = _idx(_E, fi_w)
+                _scatter_accum(grad_log_pD, aw0)
+                _scatter_accum(grad_log_pS, aw3 + aw4 + aw5)
+                _scatter_accum(grad_E_acc, aw0 + aw2)
+                _scatter_accum(grad_Ebar_acc, aw1)
+                _scatter_accum(grad_E_s1_acc, aw4)
+                _scatter_accum(grad_E_s2_acc, aw3)
+                _scatter_accum(grad_mt, aw2)
             else:
-                _DL_const_w = 1.0 + _log_pD + _E
-                _SL1_w = _log_pS + _E_s2
-                _SL2_w = _log_pS + _E_s1
-                _leaf_wt = _log_pS + leaf_mask
-                _mt_w = _mt
-                _Ebar_w = _Ebar
-                _E_w = _E
+                grad_log_pD = _accum(grad_log_pD, aw0)
+                grad_log_pS = _accum(grad_log_pS, aw3 + aw4 + aw5)
+                grad_E_acc = _accum(grad_E_acc, aw0 + aw2)
+                grad_Ebar_acc = _accum(grad_Ebar_acc, aw1)
+                grad_E_s1_acc = _accum(grad_E_s1_acc, aw4)
+                grad_E_s2_acc = _accum(grad_E_s2_acc, aw3)
+                grad_mt = _accum(grad_mt, aw2)
 
-            # Recompute dts_r with differentiable params (log_pD, log_pS, mt)
-            if meta['has_splits']:
-                # Recompute Pibar of all clades with differentiable _mt
-                Pi_det = Pi_star_wave.detach()
-                Pi_max_all = Pi_det.max(dim=1, keepdim=True).values
-                Pi_exp_all = torch.exp2(Pi_det - Pi_max_all)
-                if batched:
-                    _mt_all_clade = _idx(_mt, family_idx)  # [C, S]
-                else:
-                    _mt_all_clade = _mt  # [S], broadcasts
-                if pibar_mode == 'uniform_approx':
-                    row_sum_all = Pi_exp_all.sum(dim=1, keepdim=True)
-                    _Pibar_all = _safe_log2(row_sum_all - Pi_exp_all) + Pi_max_all + _mt_all_clade
-                elif pibar_mode == 'uniform':
-                    row_sum_all = Pi_exp_all.sum(dim=1, keepdim=True)
-                    _Pibar_all = _safe_log2(row_sum_all - Pi_exp_all @ ancestors_T) + Pi_max_all + _mt_all_clade
-                else:  # dense or topk
-                    _Pibar_all = _safe_log2(Pi_exp_all @ _transfer_mat_T) + Pi_max_all + _mt_all_clade
+            if pibar_mode in ('dense', 'topk') and grad_transfer_mat_acc is not None:
+                v_Pibar_full = alpha_full * wt[2]
+                matmul_r = ingredients['pibar_matmul']
+                mr_safe = torch.where(matmul_r > 0, matmul_r, torch.ones_like(matmul_r))
+                u_mr = torch.where(matmul_r > 0, v_Pibar_full / mr_safe, torch.zeros_like(v_Pibar_full))
+                grad_transfer_mat_acc = grad_transfer_mat_acc + u_mr.T @ ingredients['p_prime']
 
-                if batched:
-                    reduce_idx_p = meta['reduce_idx']
-                    fi_splits = family_idx[ws + reduce_idx_p]
-                    _log_pD_dts = _idx(_log_pD, fi_splits)
-                    _log_pS_dts = _idx(_log_pS, fi_splits)
-                else:
-                    _log_pD_dts = _log_pD
-                    _log_pS_dts = _log_pS
+        # DTS_cross param gradients: log_pD and log_pS appear in the 5 cross-clade
+        # terms, and mt appears through Pibar of child clades.
+        if meta['has_splits'] and dts_r is not None:
+            # Weight of dts_r branch: w_R = 1 - w_L
+            w_R = _safe_exp2_ratio(dts_r, Pi_W_star)  # [W, S]
+            v_dts_r = v_k * w_R  # [W, S]
 
-                _dts_r = _dts_cross_differentiable(
-                    Pi_det, _Pibar_all, meta,
-                    sp_child1, sp_child2, _log_pD_dts, _log_pS_dts, S, device, dtype,
-                )
+            sl_m = meta['sl']
+            sr_m = meta['sr']
+            wlsp_m = meta['log_split_probs']
+            reduce_idx_m = meta['reduce_idx']
+            n_ws_m = sl_m.shape[0]
+
+            # Reconstruct dts_term and DTS_5 to get softmax weights
+            Pi_l = Pi_star_wave[sl_m]
+            Pi_r = Pi_star_wave[sr_m]
+            Pibar_l = Pibar_star_wave[sl_m]
+            Pibar_r = Pibar_star_wave[sr_m]
+            neg_inf_col = torch.full((Pi_star_wave.shape[0], 1), NEG_INF, device=device, dtype=dtype)
+            Pi_col_pad = torch.cat([Pi_star_wave, neg_inf_col], dim=1)
+            Pi_l_s1 = Pi_col_pad[sl_m][:, sp_child1.long()]
+            Pi_l_s2 = Pi_col_pad[sl_m][:, sp_child2.long()]
+            Pi_r_s1 = Pi_col_pad[sr_m][:, sp_child1.long()]
+            Pi_r_s2 = Pi_col_pad[sr_m][:, sp_child2.long()]
+
+            if batched:
+                fi_splits = family_idx[ws + reduce_idx_m]
+                _pD_s = log_pD[fi_splits]
+                if _pD_s.ndim == 1:
+                    _pD_s = _pD_s.unsqueeze(-1)
+                _pS_s = log_pS[fi_splits]
+                if _pS_s.ndim == 1:
+                    _pS_s = _pS_s.unsqueeze(-1)
             else:
-                _dts_r = None
+                _pD_s = log_pD
+                _pS_s = log_pS
 
-            Pi_new_param = _self_loop_differentiable(
-                Pi_W_fixed, _mt_w, _DL_const_w, _Ebar_w, _E_w, _SL1_w, _SL2_w,
-                sp_child1, sp_child2, _leaf_wt, _dts_r, S,
-                pibar_mode=pibar_mode, transfer_mat_T=_transfer_mat_T,
-                ancestors_T=ancestors_T,
-            )
-            grad_vars = [_log_pD, _log_pS, _E, _Ebar, _E_s1, _E_s2, _mt]
-            if _transfer_mat_T is not None:
-                grad_vars.append(_transfer_mat_T)
-            param_grads = torch.autograd.grad(
-                Pi_new_param, grad_vars,
-                grad_outputs=v_k,
-                retain_graph=False,
-                allow_unused=True,
-            )
+            DTS_5 = torch.stack([
+                _pD_s + Pi_l + Pi_r,
+                Pi_l + Pibar_r,
+                Pi_r + Pibar_l,
+                _pS_s + Pi_l_s1 + Pi_r_s2,
+                _pS_s + Pi_r_s1 + Pi_l_s2,
+            ], dim=0)  # [5, n_ws, S]
+            dts_lse = logsumexp2(DTS_5, dim=0)  # [n_ws, S]
+            dts_term = wlsp_m + dts_lse
 
-        if param_grads[0] is not None:
-            grad_log_pD = grad_log_pD + param_grads[0]
-        if param_grads[1] is not None:
-            grad_log_pS = grad_log_pS + param_grads[1]
-        if param_grads[2] is not None:
-            grad_E_acc = grad_E_acc + param_grads[2]
-        if param_grads[3] is not None:
-            grad_Ebar_acc = grad_Ebar_acc + param_grads[3]
-        if param_grads[4] is not None:
-            grad_E_s1_acc = grad_E_s1_acc + param_grads[4]
-        if param_grads[5] is not None:
-            grad_E_s2_acc = grad_E_s2_acc + param_grads[5]
-        if param_grads[6] is not None:
-            grad_mt = grad_mt + param_grads[6]
-        if _transfer_mat_T is not None and len(param_grads) > 7 and param_grads[7] is not None:
-            # grad wrt transfer_mat_T → transpose to get grad wrt transfer_mat
-            grad_transfer_mat_acc = grad_transfer_mat_acc + param_grads[7].T
+            # Segment logsumexp VJP: v_dts_r → v_dts_term
+            dts_r_at_parent = dts_r[reduce_idx_m]
+            v_dts_term = v_dts_r[reduce_idx_m] * _safe_exp2_ratio(dts_term, dts_r_at_parent)
+
+            # 5-term logsumexp VJP: v_dts_term → v_DTS_5
+            softmax_5 = _safe_exp2_ratio(DTS_5, dts_lse.unsqueeze(0))  # [5, n_ws, S]
+            v_DTS_5 = v_dts_term.unsqueeze(0) * softmax_5
+
+            # Param grads from cross-clade terms:
+            # term 0: log_pD + Pi_l + Pi_r → grad_log_pD
+            # terms 3,4: log_pS + ... → grad_log_pS
+            # terms 1,2: through Pibar_r, Pibar_l → grad_mt
+            if batched:
+                fi_split_expand = fi_splits.unsqueeze(1).expand(n_ws_m, S)
+                if grad_log_pD.ndim == 1:
+                    grad_log_pD.scatter_add_(0, fi_splits, v_DTS_5[0].sum(dim=1))
+                    grad_log_pS.scatter_add_(0, fi_splits, (v_DTS_5[3] + v_DTS_5[4]).sum(dim=1))
+                else:
+                    grad_log_pD.scatter_add_(0, fi_split_expand, v_DTS_5[0])
+                    grad_log_pS.scatter_add_(0, fi_split_expand, v_DTS_5[3] + v_DTS_5[4])
+                # mt gradient from Pibar: d(Pibar)/d(mt) = 1 (additive)
+                child_ids_dts = torch.cat([sl_m, sr_m])
+                fi_ch = family_idx[child_ids_dts]
+                fi_ch_expand = fi_ch.unsqueeze(1).expand(2 * n_ws_m, S)
+                # v_DTS_5[1] → Pibar_r (children sr), v_DTS_5[2] → Pibar_l (children sl)
+                grad_mt.scatter_add_(0, fi_ch_expand,
+                                     torch.cat([v_DTS_5[2], v_DTS_5[1]], dim=0))
+            else:
+                grad_log_pD = _accum(grad_log_pD, v_DTS_5[0])
+                grad_log_pS = _accum(grad_log_pS, v_DTS_5[3] + v_DTS_5[4])
+                grad_mt = _accum(grad_mt, v_DTS_5[1] + v_DTS_5[2])
+
+            # Dense/topk: mt gradient already handled above; transfer_mat grad
+            # through Pibar of children flows through Pibar→transfer_mat chain
+            if pibar_mode in ('dense', 'topk') and grad_transfer_mat_acc is not None:
+                v_Pibar_ch = torch.cat([v_DTS_5[2], v_DTS_5[1]], dim=0)  # [2*n_ws, S]
+                child_ids = torch.cat([sl_m, sr_m])
+                Pi_ch = Pi_star_wave[child_ids]
+                Pi_max_ch = Pi_ch.max(dim=1, keepdim=True).values
+                p_prime_ch = torch.exp2(Pi_ch - Pi_max_ch)
+                matmul_ch = p_prime_ch @ transfer_mat_T
+                mc_safe = torch.where(matmul_ch > 0, matmul_ch, torch.ones_like(matmul_ch))
+                u_mc = torch.where(matmul_ch > 0, v_Pibar_ch / mc_safe, torch.zeros_like(v_Pibar_ch))
+                grad_transfer_mat_acc = grad_transfer_mat_acc + u_mc.T @ p_prime_ch
 
         # --- Cross-clade backward: propagate adjoint to earlier waves ---
         if meta['has_splits'] and dts_r is not None:
@@ -1566,15 +1802,9 @@ def Pi_wave_backward(
             n_ws = sl.shape[0]
 
             # Step 1: Weight of dts_r branch in logaddexp2(dts_r, DTS_L) = Pi_new
-            # Pi_new = logaddexp2(dts_r, DTS_L)
-            # d(Pi_new)/d(dts_r) = exp2(dts_r - Pi_new) element-wise
-            Pi_new_at_star = _self_loop_differentiable(
-                Pi_W_star, mt_w, DL_w, Ebar_w, E_w, SL1_w, SL2_w,
-                sp_child1, sp_child2, leaf_wt, dts_r, S,
-                pibar_mode=pibar_mode, transfer_mat_T=transfer_mat_T,
-                ancestors_T=ancestors_T,
-            )
-            dts_weight = _safe_exp2_ratio(dts_r, Pi_new_at_star)  # [W, S]
+            # At convergence, g(Pi*) = Pi*, so Pi_new_at_star = Pi_W_star.
+            # No need to recompute _self_loop_differentiable.
+            dts_weight = _safe_exp2_ratio(dts_r, Pi_W_star)  # [W, S]
             # grad flowing into dts_r: [W, S]
             grad_dts_r = v_k * dts_weight
 
@@ -1678,29 +1908,35 @@ def Pi_wave_backward(
             all_pibar_grad = torch.cat([pibar_grad_l, pibar_grad_r])  # [2*n_ws, S]
 
             # For each unique child, accumulate pibar gradients
+            # Analytical VJP of d(Pibar)/d(Pi) — avoids autograd.
             nz = all_pibar_grad.abs().sum(dim=1) > 0
             if nz.any():
                 nz_children = all_children[nz]
-                nz_grad = all_pibar_grad[nz]
-                # Compute d(Pibar)/d(Pi) via autograd for these children
-                Pi_ch = Pi_star_wave[nz_children].detach().requires_grad_(True)
-                mt_ch = mt_clade[nz_children] if batched else mt_squeezed
-                with torch.enable_grad():
-                    Pi_max_p = Pi_ch.max(dim=1, keepdim=True).values
-                    Pi_exp_p = torch.exp2(Pi_ch - Pi_max_p)
-                    if pibar_mode == 'uniform_approx':
-                        row_sum_p = Pi_exp_p.sum(dim=1, keepdim=True)
-                        Pibar_recomp = _safe_log2(row_sum_p - Pi_exp_p) + Pi_max_p + mt_ch
-                    elif pibar_mode == 'uniform':
-                        row_sum_p = Pi_exp_p.sum(dim=1, keepdim=True)
-                        Pibar_recomp = _safe_log2(row_sum_p - Pi_exp_p @ ancestors_T) + Pi_max_p + mt_ch
-                    else:  # dense or topk
-                        Pibar_recomp = _safe_log2(Pi_exp_p @ transfer_mat_T) + Pi_max_p + mt_ch
-                    pi_from_pibar = torch.autograd.grad(
-                        Pibar_recomp, Pi_ch,
-                        grad_outputs=nz_grad,
-                        retain_graph=False,
-                    )[0]
+                u = all_pibar_grad[nz]  # [N, S]
+                Pi_ch = Pi_star_wave[nz_children]
+                Pi_max_p = Pi_ch.max(dim=1, keepdim=True).values
+                p_prime = torch.exp2(Pi_ch - Pi_max_p)
+
+                if pibar_mode == 'uniform_approx':
+                    denom = p_prime.sum(dim=1, keepdim=True) - p_prime
+                    denom_safe = torch.where(denom > 0, denom, torch.ones_like(denom))
+                    u_d = torch.where(denom > 0, u / denom_safe, torch.zeros_like(u))
+                    A = u_d.sum(dim=1, keepdim=True)
+                    pi_from_pibar = p_prime * (A - u_d)
+                elif pibar_mode == 'uniform':
+                    anc_sum = p_prime @ ancestors_T  # [N, S]
+                    denom = p_prime.sum(dim=1, keepdim=True) - anc_sum
+                    denom_safe = torch.where(denom > 0, denom, torch.ones_like(denom))
+                    u_d = torch.where(denom > 0, u / denom_safe, torch.zeros_like(u))
+                    A = u_d.sum(dim=1, keepdim=True)
+                    correction = (ancestors_T @ u_d.T).T  # sparse [S,S] @ [S,N] → [S,N] → [N,S]
+                    pi_from_pibar = p_prime * (A - correction)
+                else:  # dense or topk
+                    matmul_r = p_prime @ transfer_mat_T
+                    mr_safe = torch.where(matmul_r > 0, matmul_r, torch.ones_like(matmul_r))
+                    u_mr = torch.where(matmul_r > 0, u / mr_safe, torch.zeros_like(u))
+                    pi_from_pibar = p_prime * (u_mr @ transfer_mat_T.T)
+
                 accumulated_rhs.index_add_(0, nz_children, pi_from_pibar)
 
     result = {

@@ -13,15 +13,23 @@ _INV_LN2 = 1.0 / math.log(2.0)  # = log2(e)
 _NEG_INF = float('-inf')
 
 
+_neg_inf_sentinel_cache: dict = {}
+
+
 def _safe_log2_internal(x: torch.Tensor) -> torch.Tensor:
     """log2(x) with zero gradient at x<=0 (returns -inf there).
 
     Avoids the standard log2(0)=-inf whose gradient 1/(0*ln2)=inf causes
     0*inf=NaN when upstream gradient is zero.
     """
+    key = (x.device.type, getattr(x.device, 'index', None), x.dtype)
+    sentinel = _neg_inf_sentinel_cache.get(key)
+    if sentinel is None:
+        sentinel = torch.tensor(_NEG_INF, device=x.device, dtype=x.dtype)
+        _neg_inf_sentinel_cache[key] = sentinel
     pos = x > 0
     safe_x = torch.where(pos, x, torch.ones_like(x))
-    return torch.where(pos, torch.log2(safe_x), x.new_tensor(_NEG_INF))
+    return torch.where(pos, torch.log2(safe_x), sentinel.expand_as(x))
 
 
 def logsumexp2(x: torch.Tensor, dim: int, keepdim: bool = False) -> torch.Tensor:
