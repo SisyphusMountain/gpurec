@@ -22,51 +22,11 @@ from .terms import (
     compute_DTS,
     compute_DTS_L,
 )
-from .kernels.scatter_lse import seg_logsumexp
 from .log2_utils import logsumexp2, logaddexp2
+from ._logmatmul_compat import HAS_LOGMATMUL as _HAS_LOGMATMUL, LogspaceMatmulFn
+from ._helpers import _seg_logsumexp_host  # noqa: F401
 
 NEG_INF = float("-inf")
-
-
-# ===== try to import logmatmul (same logic as forward.py) =================
-try:
-    import sys as _sys
-    import importlib as _imp
-    from pathlib import Path as _Path
-    _logmatmul_dir = str(_Path(__file__).resolve().parents[2] / 'logmatmul')
-    _saved_src = _sys.modules.get('src')
-    if 'src' in _sys.modules:
-        del _sys.modules['src']
-    if _logmatmul_dir not in _sys.path:
-        _sys.path.insert(0, _logmatmul_dir)
-    _imp.import_module('src')
-    LogspaceMatmulFn = _imp.import_module('src.autograd').LogspaceMatmulFn
-    _HAS_LOGMATMUL = True
-    if _saved_src is not None:
-        _sys.modules['src'] = _saved_src
-except (ImportError, FileNotFoundError, ModuleNotFoundError):
-    _HAS_LOGMATMUL = False
-    LogspaceMatmulFn = None
-
-
-# ===== Private helpers (copied from forward.py) ===========================
-
-def _seg_logsumexp_host(x: torch.Tensor, ptr: torch.Tensor) -> torch.Tensor:
-    """CPU fallback for segmented logsumexp; uses Triton kernel on CUDA."""
-    if x.is_cuda and ptr.is_cuda:
-        return seg_logsumexp(x, ptr)
-    num_segs = int(ptr.numel()) - 1
-    out = []
-    for i in range(num_segs):
-        s = int(ptr[i].item())
-        e = int(ptr[i + 1].item())
-        if e > s:
-            out.append(logsumexp2(x[s:e], dim=0))
-        else:
-            out.append(torch.full_like(x[0], NEG_INF))
-    return torch.stack(out, dim=0) if out else torch.empty(
-        (0, *x.shape[1:]), device=x.device, dtype=x.dtype
-    )
 
 
 # ---------------------------------------------------------------------------

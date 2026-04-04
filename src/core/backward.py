@@ -2,16 +2,9 @@
 import torch
 
 from .log2_utils import logsumexp2, logaddexp2, _safe_log2_internal as _safe_log2
+from ._helpers import _safe_exp2_ratio  # noqa: F401
 
 NEG_INF = float("-inf")
-
-
-def _safe_exp2_ratio(a, b):
-    """2^(a-b) safely: returns 0 when a = -inf."""
-    neg_inf_a = (a == NEG_INF)
-    a_safe = torch.where(neg_inf_a, torch.zeros_like(a), a)
-    b_safe = torch.where(neg_inf_a, torch.zeros_like(b), b)
-    return torch.where(neg_inf_a, torch.zeros_like(a), torch.exp2(a_safe - b_safe))
 
 
 # ---------------------------------------------------------------------------

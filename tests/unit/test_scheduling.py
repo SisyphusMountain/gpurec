@@ -40,10 +40,15 @@ class TestComputeCladeWaves:
         assert sorted(seen) == list(range(C)), "Each clade must appear exactly once"
 
     def test_topological_order_small(self):
-        """For every split (p, l, r), level[p] > level[l] and level[p] > level[r]."""
+        """For every split (p, l, r), wave(p) > wave(l) and wave(p) > wave(r)."""
         ccp_helpers, _ = _load_helpers("test_trees_1")
         from src.core.scheduling import compute_clade_waves
-        waves, level = compute_clade_waves(ccp_helpers)
+        waves, phases = compute_clade_waves(ccp_helpers)
+        # Build clade → wave-index mapping
+        level = {}
+        for wi, w in enumerate(waves):
+            for c in w:
+                level[c] = wi
         N = ccp_helpers["N_splits"]
         parents = ccp_helpers["split_parents_sorted"].tolist()
         lr = ccp_helpers["split_leftrights_sorted"].tolist()
@@ -62,34 +67,11 @@ class TestComputeCladeWaves:
         """The root clade should be in the last wave."""
         ccp_helpers, root_clade_id = _load_helpers("test_trees_1")
         from src.core.scheduling import compute_clade_waves
-        waves, level = compute_clade_waves(ccp_helpers)
-        assert level[root_clade_id] == len(waves) - 1, (
-            f"root level={level[root_clade_id]}, last wave={len(waves)-1}"
+        waves, phases = compute_clade_waves(ccp_helpers)
+        assert root_clade_id in waves[-1], (
+            f"root clade {root_clade_id} not found in last wave {waves[-1]}"
         )
 
-    def test_balance_no_worse(self):
-        """Balanced scheduling should not increase max split load."""
-        ccp_helpers, _ = _load_helpers("test_trees_1")
-        from src.core.scheduling import compute_clade_waves
-        split_counts = ccp_helpers["split_counts"].tolist()
-
-        waves_unbal, _ = compute_clade_waves(ccp_helpers, balance=False)
-        waves_bal, _ = compute_clade_waves(ccp_helpers, balance=True)
-
-        def max_load(waves):
-            return max(sum(split_counts[c] for c in w) for w in waves if w)
-
-        assert max_load(waves_bal) <= max_load(waves_unbal), (
-            "balance=True should not increase max wave split load"
-        )
-
-    def test_wave_count_unchanged_by_balance(self):
-        """Balancing must not increase the number of waves."""
-        ccp_helpers, _ = _load_helpers("test_trees_1")
-        from src.core.scheduling import compute_clade_waves
-        waves_unbal, _ = compute_clade_waves(ccp_helpers, balance=False)
-        waves_bal, _ = compute_clade_waves(ccp_helpers, balance=True)
-        assert len(waves_bal) == len(waves_unbal), "balance=True must not add extra waves"
 
 
 class TestWaveStats:

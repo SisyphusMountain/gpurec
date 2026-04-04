@@ -1,131 +1,23 @@
 """Forward pass: Pi_step, Pi_fixed_point, Pi_wave_forward and helpers."""
 import torch
-import math
-import os
-import inspect
-from contextlib import contextmanager
 
-from .terms import (
-    gather_E_children,
-)
-from .kernels.scatter_lse import seg_logsumexp
 from .log2_utils import logsumexp2, logaddexp2
+from .log2_utils import _safe_log2_internal as _safe_log2
+from .kernels.scatter_lse import seg_logsumexp
 from .kernels.wave_step import wave_step_fused, wave_pibar_step_fused, wave_step_uniform_fused
 from .kernels.dts_fused import dts_fused
-
-# Try to import logmatmul for fast dense log-space matmul.
-try:
-    import sys as _sys
-    import importlib as _imp
-    from pathlib import Path as _Path
-    _logmatmul_dir = str(_Path(__file__).resolve().parents[2] / 'logmatmul')
-    _saved_src = _sys.modules.get('src')
-    if 'src' in _sys.modules:
-        del _sys.modules['src']
-    for _k in list(_sys.modules):
-        if _k.startswith('src.') and hasattr(_sys.modules[_k], '__file__') and \
-           _sys.modules[_k].__file__ and 'logmatmul' not in _sys.modules[_k].__file__:
-            pass
-    if _logmatmul_dir not in _sys.path:
-        _sys.path.insert(0, _logmatmul_dir)
-    _imp.import_module('src')
-    LogspaceMatmulFn = _imp.import_module('src.autograd').LogspaceMatmulFn
-    _streaming_topk = _imp.import_module('src.sparse').streaming_topk
-    _logspace_matmul_compressed = _imp.import_module('src.compressed').logspace_matmul_compressed
-    _HAS_LOGMATMUL = True
-    if _saved_src is not None:
-        _sys.modules['src'] = _saved_src
-except (ImportError, FileNotFoundError, ModuleNotFoundError):
-    _HAS_LOGMATMUL = False
-    _streaming_topk = None
-    _logspace_matmul_compressed = None
-    LogspaceMatmulFn = None
+from ._logmatmul_compat import (
+    HAS_LOGMATMUL as _HAS_LOGMATMUL,
+    LogspaceMatmulFn,
+    streaming_topk as _streaming_topk,
+    logspace_matmul_compressed as _logspace_matmul_compressed,
+)
+from ._helpers import _safe_exp2_ratio, _seg_logsumexp_host, _nvtx_range, _nvtx_here  # noqa: F401
 
 NEG_INF = float("-inf")
 
-from .log2_utils import _safe_log2_internal as _safe_log2
-
 # Re-export legacy code so existing ``from .forward import Pi_step`` still works.
 from .legacy import Pi_step, Pi_fixed_point  # noqa: F401
-
-
-# ---------------------------------------------------------------------------
-# Utilities
-# ---------------------------------------------------------------------------
-
-def _safe_exp2_ratio(a, b):
-    """2^(a-b) safely: returns 0 when a = -inf."""
-    neg_inf_a = (a == NEG_INF)
-    a_safe = torch.where(neg_inf_a, torch.zeros_like(a), a)
-    b_safe = torch.where(neg_inf_a, torch.zeros_like(b), b)
-    return torch.where(neg_inf_a, torch.zeros_like(a), torch.exp2(a_safe - b_safe))
-
-
-@contextmanager
-def _nvtx_range(name: str):
-    nvtx = getattr(getattr(torch, "cuda", None), "nvtx", None)
-    if nvtx is not None and hasattr(nvtx, "range"):
-        try:
-            with nvtx.range(name):
-                yield
-            return
-        except Exception:
-            pass
-    pushed = False
-    if nvtx is not None and hasattr(nvtx, "range_push"):
-        try:
-            nvtx.range_push(name)
-            pushed = True
-        except Exception:
-            pushed = False
-    try:
-        yield
-    finally:
-        if pushed and hasattr(nvtx, "range_pop"):
-            try:
-                nvtx.range_pop()
-            except Exception:
-                pass
-
-
-@contextmanager
-def _nvtx_here(name: str):
-    """NVTX range whose label includes caller file:line for easy mapping."""
-    try:
-        frame = inspect.currentframe().f_back
-        info = inspect.getframeinfo(frame, context=0)
-        base = os.path.basename(info.filename)
-        label = f"{name} [{base}:{info.lineno}]"
-    except Exception:
-        label = name
-    record_function = None
-    try:
-        record_function = getattr(getattr(torch, 'autograd', None).profiler, 'record_function', None)
-    except Exception:
-        record_function = None
-    if record_function is not None:
-        with record_function(label):
-            with _nvtx_range(label):
-                yield
-    else:
-        with _nvtx_range(label):
-            yield
-
-
-def _seg_logsumexp_host(x: torch.Tensor, ptr: torch.Tensor) -> torch.Tensor:
-    """CPU fallback for segmented logsumexp; uses Triton kernel when CUDA is available."""
-    if x.is_cuda and ptr.is_cuda:
-        return seg_logsumexp(x, ptr)
-    num_segs = int(ptr.numel()) - 1
-    out = []
-    for i in range(num_segs):
-        s = int(ptr[i].item())
-        e = int(ptr[i + 1].item())
-        if e > s:
-            out.append(logsumexp2(x[s:e], dim=0))
-        else:
-            out.append(torch.full_like(x[0], NEG_INF))
-    return torch.stack(out, dim=0) if out else torch.empty((0, *x.shape[1:]), device=x.device, dtype=x.dtype)
 
 
 # ---------------------------------------------------------------------------
