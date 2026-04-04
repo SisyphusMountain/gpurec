@@ -409,21 +409,15 @@ def Pi_wave_backward(
     """Wave-decomposed backward pass for implicit gradient computation.
 
     Computes dL/dPi via Neumann series per wave (root→leaves), then
-    accumulates parameter gradients.
-
-    Supports two modes:
-    - **Shared params** (family_idx=None): E, log_pS, etc. are [S] tensors shared
-      across all clades. Gradient accumulators are [S].
-    - **Genewise batched** (family_idx provided): E, log_pS, etc. are [G, S] tensors
-      with per-family values. family_idx [C] maps each clade to its family.
-      Gradient accumulators are [G, S].
+    accumulates parameter gradients.  Always operates in batched mode
+    internally; a single gene tree (family_idx=None) is handled as G=1.
 
     Args:
         wave_layout: dict from build_wave_layout()
         Pi_star_wave: [C, S] converged Pi in wave-ordered space
         Pibar_star_wave: [C, S] converged Pibar in wave-ordered space
         E, Ebar, E_s1, E_s2: [S] or [G, S] species extinction
-        log_pS, log_pD, log_pL: [S] or [G, S] event probabilities
+        log_pS, log_pD, log_pL: scalar/[S] or [G]/[G, S] event probabilities
         max_transfer_mat: [S] or [G, S] log2-space
         species_helpers: species tree helpers
         root_clade_ids_perm: Long[F] root clade IDs in wave-ordered space
@@ -434,7 +428,7 @@ def Pi_wave_backward(
         pibar_mode: 'uniform_approx', 'dense', or 'uniform'
         transfer_mat: [S, S] linear-space transfer matrix (for dense mode)
         ancestors_T: [S, S] sparse CSR = ancestors.T (for uniform mode)
-        family_idx: Long[C] clade→family mapping (enables genewise batched mode)
+        family_idx: Long[C] clade→family mapping. None → auto-wrapped as G=1.
 
     Returns:
         dict with:
@@ -445,9 +439,6 @@ def Pi_wave_backward(
             'grad_max_transfer_mat': [S] or [G, S] gradient wrt max_transfer_mat
             'grad_transfer_mat': [S, S] gradient wrt transfer_mat (dense mode only)
     """
-    # Import forward helpers needed for cross-clade DTS
-    from .forward import _compute_dts_cross
-
     # Fused Triton backward kernels (optional)
     try:
         from .kernels.wave_backward import wave_backward_uniform_fused, dts_cross_backward_fused
@@ -456,8 +447,6 @@ def Pi_wave_backward(
         _HAS_FUSED_BACKWARD = False
 
     wave_metas = wave_layout['wave_metas']
-    wave_starts = wave_layout['wave_starts']
-    perm = wave_layout['perm']
     C, S = Pi_star_wave.shape
     K = len(wave_metas)
 
@@ -473,32 +462,39 @@ def Pi_wave_backward(
     sp_child1 = sp_child1_cpu.to(device)
     sp_child2 = sp_child2_cpu.to(device)
 
-    batched = family_idx is not None
-    mt_squeezed = max_transfer_mat.squeeze(-1) if max_transfer_mat.ndim > 1 else max_transfer_mat
+    # Auto-wrap single-family inputs into batched format (G=1).
+    _auto_wrapped = family_idx is None
+    if _auto_wrapped:
+        family_idx = torch.zeros(C, dtype=torch.long, device=device)
+        E = E.unsqueeze(0)
+        Ebar = Ebar.unsqueeze(0)
+        E_s1 = E_s1.unsqueeze(0)
+        E_s2 = E_s2.unsqueeze(0)
+        log_pS = log_pS.unsqueeze(0)
+        log_pD = log_pD.unsqueeze(0)
+        log_pL = log_pL.unsqueeze(0)
+        max_transfer_mat = max_transfer_mat.unsqueeze(0)
+
+    mt_squeezed = max_transfer_mat.squeeze(-1) if max_transfer_mat.ndim > 2 else max_transfer_mat
 
     transfer_mat_T = None
     if pibar_mode in ('dense', 'topk') and transfer_mat is not None:
         transfer_mat_T = transfer_mat.T.contiguous()
 
-    if batched:
-        G = log_pD.shape[0]
+    G = log_pD.shape[0]
 
-        def _to_clade(p):
-            r = p[family_idx]
-            return r.unsqueeze(-1) if r.ndim == 1 else r
+    def _to_clade(p):
+        r = p[family_idx]
+        return r.unsqueeze(-1) if r.ndim == 1 else r
 
-        mt_clade = _to_clade(mt_squeezed)
-        E_clade = _to_clade(E)
-        Ebar_clade = _to_clade(Ebar)
-        log_pD_clade = _to_clade(log_pD)
-        log_pS_clade = _to_clade(log_pS)
-        DL_const = 1.0 + log_pD_clade + E_clade
-        SL1_const = log_pS_clade + _to_clade(E_s2)
-        SL2_const = log_pS_clade + _to_clade(E_s1)
-    else:
-        DL_const = 1.0 + log_pD + E
-        SL1_const = log_pS + E_s2
-        SL2_const = log_pS + E_s1
+    mt_clade = _to_clade(mt_squeezed)
+    E_clade = _to_clade(E)
+    Ebar_clade = _to_clade(Ebar)
+    log_pD_clade = _to_clade(log_pD)
+    log_pS_clade = _to_clade(log_pS)
+    DL_const = 1.0 + log_pD_clade + E_clade
+    SL1_const = log_pS_clade + _to_clade(E_s2)
+    SL2_const = log_pS_clade + _to_clade(E_s1)
 
     leaf_row_index = wave_layout['leaf_row_index']
     leaf_col_index = wave_layout['leaf_col_index']
@@ -512,9 +508,7 @@ def Pi_wave_backward(
         return lwt
 
     def _get_leaf_wt(ws, we):
-        if batched:
-            return log_pS_clade[ws:we] + _get_leaf_mask(ws, we)
-        return log_pS + _get_leaf_mask(ws, we)
+        return log_pS_clade[ws:we] + _get_leaf_mask(ws, we)
 
     n_waves_total = K
     n_waves_skipped = 0
@@ -560,109 +554,72 @@ def Pi_wave_backward(
         n_clades_skipped += (W - n_active)
 
         Pi_W_star = Pi_star_wave[ws:we].detach()
-        leaf_mask = _get_leaf_mask(ws, we)
-        if batched:
-            leaf_wt = log_pS_clade[ws:we] + leaf_mask
-        else:
-            leaf_wt = log_pS + leaf_mask
+        leaf_wt = _get_leaf_wt(ws, we)
 
         if meta['has_splits']:
-            if batched:
-                reduce_idx = meta['reduce_idx']
-                log_pD_dts = log_pD_clade[ws + reduce_idx]
-                log_pS_dts = log_pS_clade[ws + reduce_idx]
-                with torch.no_grad():
-                    dts_r = _dts_cross_differentiable(
-                        Pi_star_wave.detach(), Pibar_star_wave.detach(), meta,
-                        sp_child1, sp_child2, log_pD_dts, log_pS_dts, S, device, dtype,
-                    )
-            else:
-                with torch.no_grad():
-                    dts_r = _compute_dts_cross(
-                        Pi_star_wave, Pibar_star_wave, meta,
-                        sp_child1, sp_child2, log_pD, log_pS, S, device, dtype,
-                    )
+            reduce_idx = meta['reduce_idx']
+            log_pD_dts = log_pD_clade[ws + reduce_idx]
+            log_pS_dts = log_pS_clade[ws + reduce_idx]
+            with torch.no_grad():
+                dts_r = _dts_cross_differentiable(
+                    Pi_star_wave.detach(), Pibar_star_wave.detach(), meta,
+                    sp_child1, sp_child2, log_pD_dts, log_pS_dts, S, device, dtype,
+                )
         else:
             dts_r = None
 
-        if batched:
-            mt_w = mt_clade[ws:we]
-            DL_w = DL_const[ws:we]
-            E_w = E_clade[ws:we]
-            Ebar_w = Ebar_clade[ws:we]
-            SL1_w = SL1_const[ws:we]
-            SL2_w = SL2_const[ws:we]
-        else:
-            mt_w = mt_squeezed
-            DL_w = DL_const
-            E_w = E
-            Ebar_w = Ebar
-            SL1_w = SL1_const
-            SL2_w = SL2_const
+        mt_w = mt_clade[ws:we]
+        DL_w = DL_const[ws:we]
+        E_w = E_clade[ws:we]
+        Ebar_w = Ebar_clade[ws:we]
+        SL1_w = SL1_const[ws:we]
+        SL2_w = SL2_const[ws:we]
 
         use_compact = (n_active < W)
         if use_compact:
             active_idx = active_mask.nonzero(as_tuple=True)[0]
             rhs_active = rhs_k[active_idx]
-            Pi_active = Pi_W_star[active_idx]
-            leaf_wt_active = leaf_wt[active_idx]
-            dts_r_active = dts_r[active_idx] if dts_r is not None else None
-            if batched:
-                mt_n = mt_w[active_idx]
-                DL_n = DL_w[active_idx]
-                E_n = E_w[active_idx]
-                Ebar_n = Ebar_w[active_idx]
-                SL1_n = SL1_w[active_idx]
-                SL2_n = SL2_w[active_idx]
-            else:
-                mt_n = mt_w
-                DL_n = DL_w
-                E_n = E_w
-                Ebar_n = Ebar_w
-                SL1_n = SL1_w
-                SL2_n = SL2_w
         else:
             active_idx = None
             rhs_active = rhs_k
-            Pi_active = Pi_W_star
-            leaf_wt_active = leaf_wt
-            dts_r_active = dts_r
-            mt_n = mt_w
-            DL_n = DL_w
-            E_n = E_w
-            Ebar_n = Ebar_w
-            SL1_n = SL1_w
-            SL2_n = SL2_w
 
         use_fused = (
             _HAS_FUSED_BACKWARD
-            and not batched
+            and G == 1
             and pibar_mode == 'uniform_approx'
             and dtype == torch.float32
             and device.type == 'cuda'
             and S > 256
         )
 
+        # Per-wave family indices for scatter accumulation.
+        fi_w = family_idx[ws:we]
+        fi_expand = fi_w.unsqueeze(1).expand(W, S)
+
+        def _scatter_accum(acc, contrib):
+            if acc.ndim == 1:
+                acc.scatter_add_(0, fi_w, contrib.sum(dim=1))
+            else:
+                acc.scatter_add_(0, fi_expand, contrib)
+
         if use_fused:
+            # G=1: extract shared [S] constants for the fused kernel.
             v_k, aw0, aw1, aw2, aw345, aw3, aw4 = wave_backward_uniform_fused(
                 Pi_star_wave, Pibar_star_wave, ws, W, S,
                 dts_r, rhs_k.clone(),
-                mt_w, DL_w, Ebar_w, E_w, SL1_w, SL2_w,
+                mt_clade[ws], DL_const[ws], Ebar_clade[ws],
+                E_clade[ws], SL1_const[ws], SL2_const[ws],
                 sp_child1, sp_child2, leaf_wt,
                 neumann_terms=neumann_terms,
             )
 
-            def _accum(acc, contrib):
-                s = contrib.sum(dim=0)
-                return acc + (s.sum() if acc.ndim == 0 else s)
-
-            grad_log_pD = _accum(grad_log_pD, aw0)
-            grad_log_pS = _accum(grad_log_pS, aw345)
-            grad_E_acc = _accum(grad_E_acc, aw0 + aw2)
-            grad_Ebar_acc = _accum(grad_Ebar_acc, aw1)
-            grad_E_s1_acc = _accum(grad_E_s1_acc, aw4)
-            grad_E_s2_acc = _accum(grad_E_s2_acc, aw3)
-            grad_mt = _accum(grad_mt, aw2)
+            _scatter_accum(grad_log_pD, aw0)
+            _scatter_accum(grad_log_pS, aw345)
+            _scatter_accum(grad_E_acc, aw0 + aw2)
+            _scatter_accum(grad_Ebar_acc, aw1)
+            _scatter_accum(grad_E_s1_acc, aw4)
+            _scatter_accum(grad_E_s2_acc, aw3)
+            _scatter_accum(grad_mt, aw2)
 
         else:
             Pibar_W_star = Pibar_star_wave[ws:we]
@@ -703,7 +660,7 @@ def Pi_wave_backward(
             else:
                 v_k = rhs_active.clone()
                 term = rhs_active
-                for n in range(neumann_terms):
+                for _n in range(neumann_terms):
                     term = _self_loop_Jt_apply(
                         term, solve_ing, sp_child1, sp_child2, S, solve_W,
                         pibar_mode, transfer_mat_T, ancestors_T,
@@ -718,10 +675,6 @@ def Pi_wave_backward(
             alpha_full = v_k * ingredients['w_L']
             wt = ingredients['w_terms']
 
-            def _accum(acc, contrib):
-                s = contrib.sum(dim=0)
-                return acc + (s.sum() if acc.ndim == 0 else s)
-
             aw0 = alpha_full * wt[0]
             aw1 = alpha_full * wt[1]
             aw2 = alpha_full * wt[2]
@@ -729,30 +682,13 @@ def Pi_wave_backward(
             aw4 = alpha_full * wt[4]
             aw5 = alpha_full * wt[5]
 
-            if batched:
-                fi_w = family_idx[ws:we]
-                fi_expand = fi_w.unsqueeze(1).expand(W, S)
-                def _scatter_accum(acc, contrib):
-                    if acc.ndim == 1:
-                        acc.scatter_add_(0, fi_w, contrib.sum(dim=1))
-                    else:
-                        acc.scatter_add_(0, fi_expand, contrib)
-
-                _scatter_accum(grad_log_pD, aw0)
-                _scatter_accum(grad_log_pS, aw3 + aw4 + aw5)
-                _scatter_accum(grad_E_acc, aw0 + aw2)
-                _scatter_accum(grad_Ebar_acc, aw1)
-                _scatter_accum(grad_E_s1_acc, aw4)
-                _scatter_accum(grad_E_s2_acc, aw3)
-                _scatter_accum(grad_mt, aw2)
-            else:
-                grad_log_pD = _accum(grad_log_pD, aw0)
-                grad_log_pS = _accum(grad_log_pS, aw3 + aw4 + aw5)
-                grad_E_acc = _accum(grad_E_acc, aw0 + aw2)
-                grad_Ebar_acc = _accum(grad_Ebar_acc, aw1)
-                grad_E_s1_acc = _accum(grad_E_s1_acc, aw4)
-                grad_E_s2_acc = _accum(grad_E_s2_acc, aw3)
-                grad_mt = _accum(grad_mt, aw2)
+            _scatter_accum(grad_log_pD, aw0)
+            _scatter_accum(grad_log_pS, aw3 + aw4 + aw5)
+            _scatter_accum(grad_E_acc, aw0 + aw2)
+            _scatter_accum(grad_Ebar_acc, aw1)
+            _scatter_accum(grad_E_s1_acc, aw4)
+            _scatter_accum(grad_E_s2_acc, aw3)
+            _scatter_accum(grad_mt, aw2)
 
             if pibar_mode in ('dense', 'topk') and grad_transfer_mat_acc is not None:
                 v_Pibar_full = alpha_full * wt[2]
@@ -769,18 +705,23 @@ def Pi_wave_backward(
             n_ws = sl.shape[0]
 
             if use_fused:
+                # G=1: pass shared params to fused kernel.
                 (grad_Pi_l, grad_Pi_r, grad_Pibar_l, grad_Pibar_r,
                  param_pD, param_pS) = dts_cross_backward_fused(
                     Pi_star_wave, Pibar_star_wave, v_k, ws,
                     sl, sr, reduce_idx, wlsp,
-                    log_pD, log_pS,
+                    log_pD[0], log_pS[0],
                     sp_child1, sp_child2, S,
                 )
 
-                grad_log_pD = grad_log_pD + param_pD.sum()
-                grad_log_pS = grad_log_pS + param_pS.sum()
+                # Accumulate into G=1 row.
+                grad_log_pD[0] += param_pD.sum()
+                grad_log_pS[0] += param_pS.sum()
                 mt_contrib = grad_Pibar_l.sum(dim=0) + grad_Pibar_r.sum(dim=0)
-                grad_mt = grad_mt + (mt_contrib.sum() if grad_mt.ndim == 0 else mt_contrib)
+                if grad_mt.ndim == 1:
+                    grad_mt[0] += mt_contrib.sum()
+                else:
+                    grad_mt[0] += mt_contrib
 
             else:
                 Pi_l = Pi_star_wave[sl]
@@ -794,17 +735,13 @@ def Pi_wave_backward(
                 Pi_r_s1 = Pi_col_pad[sr][:, sp_child1.long()]
                 Pi_r_s2 = Pi_col_pad[sr][:, sp_child2.long()]
 
-                if batched:
-                    fi_splits = family_idx[ws + reduce_idx]
-                    _pD_s = log_pD[fi_splits]
-                    if _pD_s.ndim == 1:
-                        _pD_s = _pD_s.unsqueeze(-1)
-                    _pS_s = log_pS[fi_splits]
-                    if _pS_s.ndim == 1:
-                        _pS_s = _pS_s.unsqueeze(-1)
-                else:
-                    _pD_s = log_pD
-                    _pS_s = log_pS
+                fi_splits = family_idx[ws + reduce_idx]
+                _pD_s = log_pD[fi_splits]
+                if _pD_s.ndim == 1:
+                    _pD_s = _pD_s.unsqueeze(-1)
+                _pS_s = log_pS[fi_splits]
+                if _pS_s.ndim == 1:
+                    _pS_s = _pS_s.unsqueeze(-1)
 
                 DTS_5 = torch.stack([
                     _pD_s + Pi_l + Pi_r,
@@ -820,23 +757,18 @@ def Pi_wave_backward(
                 grad_DTS_5 = v_k_parent.unsqueeze(0) * _safe_exp2_ratio(
                     combined, Pi_parent.unsqueeze(0))
 
-                if batched:
-                    fi_split_expand = fi_splits.unsqueeze(1).expand(n_ws, S)
-                    if grad_log_pD.ndim == 1:
-                        grad_log_pD.scatter_add_(0, fi_splits, grad_DTS_5[0].sum(dim=1))
-                        grad_log_pS.scatter_add_(0, fi_splits, (grad_DTS_5[3] + grad_DTS_5[4]).sum(dim=1))
-                    else:
-                        grad_log_pD.scatter_add_(0, fi_split_expand, grad_DTS_5[0])
-                        grad_log_pS.scatter_add_(0, fi_split_expand, grad_DTS_5[3] + grad_DTS_5[4])
-                    child_ids_dts = torch.cat([sl, sr])
-                    fi_ch = family_idx[child_ids_dts]
-                    fi_ch_expand = fi_ch.unsqueeze(1).expand(2 * n_ws, S)
-                    grad_mt.scatter_add_(0, fi_ch_expand,
-                                         torch.cat([grad_DTS_5[2], grad_DTS_5[1]], dim=0))
+                fi_split_expand = fi_splits.unsqueeze(1).expand(n_ws, S)
+                if grad_log_pD.ndim == 1:
+                    grad_log_pD.scatter_add_(0, fi_splits, grad_DTS_5[0].sum(dim=1))
+                    grad_log_pS.scatter_add_(0, fi_splits, (grad_DTS_5[3] + grad_DTS_5[4]).sum(dim=1))
                 else:
-                    grad_log_pD = _accum(grad_log_pD, grad_DTS_5[0])
-                    grad_log_pS = _accum(grad_log_pS, grad_DTS_5[3] + grad_DTS_5[4])
-                    grad_mt = _accum(grad_mt, grad_DTS_5[1] + grad_DTS_5[2])
+                    grad_log_pD.scatter_add_(0, fi_split_expand, grad_DTS_5[0])
+                    grad_log_pS.scatter_add_(0, fi_split_expand, grad_DTS_5[3] + grad_DTS_5[4])
+                child_ids_dts = torch.cat([sl, sr])
+                fi_ch = family_idx[child_ids_dts]
+                fi_ch_expand = fi_ch.unsqueeze(1).expand(2 * n_ws, S)
+                grad_mt.scatter_add_(0, fi_ch_expand,
+                                     torch.cat([grad_DTS_5[2], grad_DTS_5[1]], dim=0))
 
                 if pibar_mode in ('dense', 'topk') and grad_transfer_mat_acc is not None:
                     v_Pibar_ch = torch.cat([grad_DTS_5[2], grad_DTS_5[1]], dim=0)
@@ -921,4 +853,11 @@ def Pi_wave_backward(
     }
     if grad_transfer_mat_acc is not None:
         result['grad_transfer_mat'] = grad_transfer_mat_acc
+
+    # Unwrap G=1 results back to original shapes.
+    if _auto_wrapped:
+        for key in ('grad_E', 'grad_Ebar', 'grad_E_s1', 'grad_E_s2',
+                     'grad_log_pD', 'grad_log_pS', 'grad_max_transfer_mat'):
+            result[key] = result[key][0]
+
     return result
