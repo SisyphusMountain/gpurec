@@ -33,6 +33,7 @@ def _wave_pibar_step_kernel(
     BLOCK_S: tl.constexpr,
     BLOCK_F: tl.constexpr,  # tile size for reduction over f in matmul
     FP64: tl.constexpr = False,
+    stride_c: tl.constexpr = 0,
 ):
     """Fully fused kernel: Pibar computation + DTS_L terms + logsumexp.
 
@@ -79,7 +80,7 @@ def _wave_pibar_step_kernel(
 
         acc += tl.sum(m_vals * exp_f[None, :], axis=1)  # [BLOCK_S]
 
-    mt = tl.load(mt_ptr + s_offs, mask=mask, other=0.0)
+    mt = tl.load(mt_ptr + w * stride_c + s_offs, mask=mask, other=0.0)
     pibar_w = tl.log2(acc) + pi_max + mt  # [BLOCK_S]
 
     # Store Pibar
@@ -88,12 +89,12 @@ def _wave_pibar_step_kernel(
     # --- Step 2: Load Pi[w, s_offs] and children ---
     pi_w = tl.load(Pi_W_ptr + base_w + s_offs, mask=mask, other=NEG_LARGE)
 
-    # Load constants
-    dl_const = tl.load(DL_const_ptr + s_offs, mask=mask, other=NEG_LARGE)
-    ebar = tl.load(Ebar_ptr + s_offs, mask=mask, other=NEG_LARGE)
-    e_val = tl.load(E_ptr + s_offs, mask=mask, other=NEG_LARGE)
-    sl1_const = tl.load(SL1_const_ptr + s_offs, mask=mask, other=NEG_LARGE)
-    sl2_const = tl.load(SL2_const_ptr + s_offs, mask=mask, other=NEG_LARGE)
+    # Load constants (stride_c=0 → shared [S], stride_c=S → per-clade [W,S])
+    dl_const = tl.load(DL_const_ptr + w * stride_c + s_offs, mask=mask, other=NEG_LARGE)
+    ebar = tl.load(Ebar_ptr + w * stride_c + s_offs, mask=mask, other=NEG_LARGE)
+    e_val = tl.load(E_ptr + w * stride_c + s_offs, mask=mask, other=NEG_LARGE)
+    sl1_const = tl.load(SL1_const_ptr + w * stride_c + s_offs, mask=mask, other=NEG_LARGE)
+    sl2_const = tl.load(SL2_const_ptr + w * stride_c + s_offs, mask=mask, other=NEG_LARGE)
 
     # Gather species children
     c1 = tl.load(sp_child1_ptr + s_offs, mask=mask, other=0)
@@ -141,8 +142,8 @@ def wave_pibar_step_fused(Pi_W, transfer_mat, mt_squeezed,
     Args:
         Pi_W: [W, S] contiguous, log2-space
         transfer_mat: [S, S] contiguous
-        mt_squeezed: [S]
-        DL_const, Ebar, E, SL1_const, SL2_const: [S] each
+        mt_squeezed: [S] or [W, S]
+        DL_const, Ebar, E, SL1_const, SL2_const: [S] or [W, S] each
         sp_child1, sp_child2: [S] long
         leaf_term_wt: [W, S] contiguous
         Pibar_out: [W, S] output buffer for Pibar (written to)
@@ -155,6 +156,7 @@ def wave_pibar_step_fused(Pi_W, transfer_mat, mt_squeezed,
     Pi_new = torch.empty_like(Pi_W)
     has_splits = DTS_reduced is not None
     fp64 = Pi_W.dtype == torch.float64
+    stride_c = S if DL_const.ndim == 2 else 0
 
     BLOCK_S = 32
     BLOCK_F = min(64, triton.next_power_of_2(S))
@@ -176,6 +178,7 @@ def wave_pibar_step_fused(Pi_W, transfer_mat, mt_squeezed,
         BLOCK_S=BLOCK_S,
         BLOCK_F=BLOCK_F,
         FP64=fp64,
+        stride_c=stride_c,
     )
     return Pi_new
 
@@ -192,6 +195,7 @@ def _wave_step_kernel(
     Pi_new_ptr,
     W: tl.constexpr, S: tl.constexpr,
     stride_ws: tl.constexpr,
+    stride_c: tl.constexpr = 0,
 ):
     """Fused kernel: given Pi_W, Pibar_W, compute Pi_new = logsumexp2(all_terms, dim=0)."""
     w = tl.program_id(0)
@@ -205,11 +209,11 @@ def _wave_step_kernel(
     pi_w = tl.load(Pi_W_ptr + base + s_offs, mask=mask, other=-1e30)
     pibar_w = tl.load(Pibar_W_ptr + base + s_offs, mask=mask, other=-1e30)
 
-    dl_const = tl.load(DL_const_ptr + s_offs, mask=mask, other=-1e30)
-    ebar = tl.load(Ebar_ptr + s_offs, mask=mask, other=-1e30)
-    e_val = tl.load(E_ptr + s_offs, mask=mask, other=-1e30)
-    sl1_const = tl.load(SL1_const_ptr + s_offs, mask=mask, other=-1e30)
-    sl2_const = tl.load(SL2_const_ptr + s_offs, mask=mask, other=-1e30)
+    dl_const = tl.load(DL_const_ptr + w * stride_c + s_offs, mask=mask, other=-1e30)
+    ebar = tl.load(Ebar_ptr + w * stride_c + s_offs, mask=mask, other=-1e30)
+    e_val = tl.load(E_ptr + w * stride_c + s_offs, mask=mask, other=-1e30)
+    sl1_const = tl.load(SL1_const_ptr + w * stride_c + s_offs, mask=mask, other=-1e30)
+    sl2_const = tl.load(SL2_const_ptr + w * stride_c + s_offs, mask=mask, other=-1e30)
 
     c1 = tl.load(sp_child1_ptr + s_offs, mask=mask, other=0)
     c2 = tl.load(sp_child2_ptr + s_offs, mask=mask, other=0)
@@ -251,6 +255,7 @@ def wave_step_fused(Pi_W, Pibar_W, DL_const, Ebar, E, SL1_const, SL2_const,
     W, S = Pi_W.shape
     Pi_new = torch.empty_like(Pi_W)
     has_splits = DTS_reduced is not None
+    stride_c = S if DL_const.ndim == 2 else 0
 
     BLOCK_S = 32
     grid = (W, (S + BLOCK_S - 1) // BLOCK_S)
@@ -265,6 +270,7 @@ def wave_step_fused(Pi_W, Pibar_W, DL_const, Ebar, E, SL1_const, SL2_const,
         Pi_new,
         W, S,
         stride_ws=S,
+        stride_c=stride_c,
     )
     return Pi_new
 
@@ -297,12 +303,15 @@ def _wave_step_uniform_kernel(
     stride: tl.constexpr,
     BLOCK_S: tl.constexpr,
     FP64: tl.constexpr,
+    stride_c: tl.constexpr = 0,
 ):
     """Fused kernel: uniform Pibar + DTS_L + logsumexp + convergence diff.
 
     Each program handles one full clade row, processing S elements in tiles.
     Pass 1 uses the online max+sum trick (single scan) for row statistics.
     Pass 2 computes Pibar inline and all DTS_L terms in one scan.
+
+    stride_c: 0 = shared [S] constants, S = per-clade [W, S] constants.
     """
     DTYPE = tl.float64 if FP64 else tl.float32
     NEG_LARGE = -1e300 if FP64 else -1e30
@@ -338,18 +347,18 @@ def _wave_step_uniform_kernel(
 
         # Uniform Pibar: log2(row_sum - exp2(pi - max)) + max + mt
         pi_exp = tl.exp2(pi_w - row_max)
-        mt = tl.load(mt_ptr + s_offs, mask=mask, other=0.0)
+        mt = tl.load(mt_ptr + w * stride_c + s_offs, mask=mask, other=0.0)
         pibar_w = tl.log2(row_sum - pi_exp) + row_max + mt
 
         # Store Pibar to global tensor
         tl.store(Pibar_out_ptr + pi_base + s_offs, pibar_w, mask=mask)
 
-        # Load constants
-        dl_const = tl.load(DL_const_ptr + s_offs, mask=mask, other=NEG_LARGE)
-        ebar = tl.load(Ebar_ptr + s_offs, mask=mask, other=NEG_LARGE)
-        e_val = tl.load(E_ptr + s_offs, mask=mask, other=NEG_LARGE)
-        sl1_const = tl.load(SL1_const_ptr + s_offs, mask=mask, other=NEG_LARGE)
-        sl2_const = tl.load(SL2_const_ptr + s_offs, mask=mask, other=NEG_LARGE)
+        # Load constants (stride_c=0 → shared [S], stride_c=S → per-clade [W,S])
+        dl_const = tl.load(DL_const_ptr + w * stride_c + s_offs, mask=mask, other=NEG_LARGE)
+        ebar = tl.load(Ebar_ptr + w * stride_c + s_offs, mask=mask, other=NEG_LARGE)
+        e_val = tl.load(E_ptr + w * stride_c + s_offs, mask=mask, other=NEG_LARGE)
+        sl1_const = tl.load(SL1_const_ptr + w * stride_c + s_offs, mask=mask, other=NEG_LARGE)
+        sl2_const = tl.load(SL2_const_ptr + w * stride_c + s_offs, mask=mask, other=NEG_LARGE)
 
         # Gather species children
         c1 = tl.load(sp_child1_ptr + s_offs, mask=mask, other=0)
@@ -410,8 +419,8 @@ def wave_step_uniform_fused(Pi, Pibar, ws, W, S,
         ws: wave start index
         W: wave size (number of clades)
         S: number of species
-        mt_squeezed: [S] max_transfer_mat
-        DL_const, Ebar, E, SL1_const, SL2_const: [S] precomputed constants
+        mt_squeezed: [S] or [W, S] max_transfer_mat
+        DL_const, Ebar, E, SL1_const, SL2_const: [S] or [W, S] precomputed constants
         sp_child1, sp_child2: [S] long species child indices
         leaf_term_wt: [W, S]
         DTS_reduced: [W, S] or None
@@ -424,6 +433,7 @@ def wave_step_uniform_fused(Pi, Pibar, ws, W, S,
     Pi_new = torch.empty((W, S), dtype=Pi.dtype, device=Pi.device)
     max_diff_buf = torch.empty(W, dtype=Pi.dtype, device=Pi.device)
     has_splits = DTS_reduced is not None
+    stride_c = S if DL_const.ndim == 2 else 0
 
     BLOCK_S = min(256, triton.next_power_of_2(S))
     grid = (W,)
@@ -441,6 +451,7 @@ def wave_step_uniform_fused(Pi, Pibar, ws, W, S,
         stride=S,
         BLOCK_S=BLOCK_S,
         FP64=fp64,
+        stride_c=stride_c,
         num_warps=4,
     )
     max_diff = max_diff_buf.max().item()

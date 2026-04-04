@@ -13,7 +13,7 @@ def _dts_fused_kernel(
     lefts_ptr, rights_ptr,
     # Species child indices: [S] each (S = sentinel for "no child")
     sp_child1_ptr, sp_child2_ptr,
-    # Parameters: [S] vectors (per-species log-probabilities)
+    # Parameters: [S] or [N, S] vectors (per-species log-probabilities)
     log_pD_ptr,
     log_pS_ptr,
     # Split probs: [N]
@@ -24,6 +24,9 @@ def _dts_fused_kernel(
     N: tl.constexpr,
     S: tl.constexpr,
     BLOCK_S: tl.constexpr,
+    # Strides for per-split params (0 = shared [S], S = per-split [N, S])
+    stride_pD: tl.constexpr = 0,
+    stride_pS: tl.constexpr = 0,
 ):
     """Compute DTS_term[i, s] = log_split_probs[i] + logsumexp2(5 DTS terms)[s].
 
@@ -49,9 +52,9 @@ def _dts_fused_kernel(
     pibar_l = tl.load(Pibar_ptr + base_l + s_offs, mask=mask, other=-1e30)
     pibar_r = tl.load(Pibar_ptr + base_r + s_offs, mask=mask, other=-1e30)
 
-    # Load per-species parameters
-    log_pD_s = tl.load(log_pD_ptr + s_offs, mask=mask, other=-1e30)
-    log_pS_s = tl.load(log_pS_ptr + s_offs, mask=mask, other=-1e30)
+    # Load per-species parameters (shared [S] when stride=0, per-split [N,S] when stride=S)
+    log_pD_s = tl.load(log_pD_ptr + n * stride_pD + s_offs, mask=mask, other=-1e30)
+    log_pS_s = tl.load(log_pS_ptr + n * stride_pS + s_offs, mask=mask, other=-1e30)
 
     # Compute first 3 DTS terms
     t0 = log_pD_s + pi_l + pi_r                          # D
@@ -129,6 +132,10 @@ def dts_fused(Pi, Pibar, lefts, rights,
     else:
         log_pS_vec = log_pS.contiguous()
 
+    # stride=0 means shared [S], stride=S means per-split [N, S]
+    stride_pD = S if log_pD_vec.ndim == 2 else 0
+    stride_pS = S if log_pS_vec.ndim == 2 else 0
+
     BLOCK_S = 128
     grid = (N, (S + BLOCK_S - 1) // BLOCK_S)
 
@@ -141,5 +148,7 @@ def dts_fused(Pi, Pibar, lefts, rights,
         out,
         N, S,
         BLOCK_S=BLOCK_S,
+        stride_pD=stride_pD,
+        stride_pS=stride_pS,
     )
     return out

@@ -60,8 +60,13 @@ def _compute_dts_cross(Pi, Pibar, meta, sp_child1, sp_child2, log_pD, log_pS,
 # ---------------------------------------------------------------------------
 
 def _compute_Pibar_inline(Pi_W, transfer_mat_T, mt_squeezed, pibar_mode,
-                          ancestors_T=None, topk_k=16):
-    """Compute Pibar for a wave, either via dense matmul or uniform approximation."""
+                          ancestors_T=None, topk_k=16, family_ids=None):
+    """Compute Pibar for a wave, either via dense matmul or uniform approximation.
+
+    Args:
+        family_ids: Long[W] wave-local family indices. When provided with a [G, S, S]
+            transfer_mat_T, loops over unique families to avoid [W, S, S] allocation.
+    """
     Pi_max = Pi_W.max(dim=1, keepdim=True).values
     if pibar_mode == 'uniform_approx':
         Pi_exp = torch.exp2(Pi_W - Pi_max)
@@ -85,6 +90,14 @@ def _compute_Pibar_inline(Pi_W, transfer_mat_T, mt_squeezed, pibar_mode,
             for j in range(topk_k):
                 Pibar_linear.addcmul_(Pi_exp_topk[:, j:j+1], transfer_mat_T[topk_idx[:, j]])
         Pibar_W = _safe_log2(Pibar_linear) + Pi_max_topk + mt_squeezed
+    elif family_ids is not None and transfer_mat_T.ndim == 3:
+        # Batched dense: transfer_mat_T is [G, S, S].
+        # Loop over unique families to avoid materializing [W, S, S].
+        Pi_exp = torch.exp2(Pi_W - Pi_max)
+        Pibar_W = torch.empty_like(Pi_W)
+        for g in family_ids.unique():
+            mask_g = family_ids == g
+            Pibar_W[mask_g] = torch.log2(Pi_exp[mask_g] @ transfer_mat_T[g]) + Pi_max[mask_g] + mt_squeezed[mask_g]
     else:
         Pibar_W = torch.log2(torch.exp2(Pi_W - Pi_max) @ transfer_mat_T) + Pi_max + mt_squeezed
     return Pibar_W
@@ -240,6 +253,7 @@ def Pi_wave_forward(
     overlap_streams: bool = False,
     pibar_mode: str = 'dense',
     topk_k: int = 16,
+    family_idx: torch.Tensor | None = None,
 ):
     """Wave-based Pi forward pass with wave-ordered layout (v2).
 
@@ -250,10 +264,11 @@ def Pi_wave_forward(
         wave_layout: dict from build_wave_layout() containing permuted indices
                      and precomputed per-wave metadata
         species_helpers: species tree helpers dict
-        E, Ebar, E_s1, E_s2: converged E vectors [S]
-        log_pS, log_pD, log_pL: event probabilities [S]
-        transfer_mat: [S, S] linear-space transfer matrix (None when pibar_mode='uniform_approx')
-        max_transfer_mat: [S] log2-space column maxima
+        E, Ebar, E_s1, E_s2: converged E vectors [S] or [G, S]
+        log_pS, log_pD, log_pL: event probabilities (scalar, [S], [G], or [G, S])
+        transfer_mat: [S, S] or [G, S, S] linear-space transfer matrix
+                      (None when pibar_mode='uniform_approx')
+        max_transfer_mat: [S] or [G, S] log2-space column maxima
         device, dtype: target device and float dtype
         local_iters: max iterations per wave self-loop
         local_tolerance: convergence threshold
@@ -262,6 +277,8 @@ def Pi_wave_forward(
                          self-loop of wave k via a secondary CUDA stream
         pibar_mode: 'dense', 'uniform_approx', 'uniform', or 'topk'
         topk_k: number of top-k entries per clade for pibar_mode='topk' (default 16)
+        family_idx: Long[C] clade→family mapping in wave-ordered space.
+                    When provided, parameters are [G, ...] and indexed per-clade.
 
     Returns:
         dict with 'Pi' (in original clade order), 'clade_species_map', 'iterations'
@@ -292,10 +309,16 @@ def Pi_wave_forward(
     sp_child1 = sp_child1_cpu.to(device)
     sp_child2 = sp_child2_cpu.to(device)
 
-    # Precompute constant DTS_L terms
-    DL_const = 1.0 + log_pD + E
-    SL1_const = log_pS + E_s2
-    SL2_const = log_pS + E_s1
+    batched = family_idx is not None
+
+    # Precompute constant DTS_L terms — [S] when shared, [G, S] when batched.
+    # When genewise non-specieswise, log_pD/log_pS are [G] (1D) but E is [G, S].
+    # Unsqueeze to [G, 1] so broadcasting produces [G, S].
+    _pD = log_pD.unsqueeze(-1) if batched and log_pD.ndim == 1 else log_pD
+    _pS = log_pS.unsqueeze(-1) if batched and log_pS.ndim == 1 else log_pS
+    DL_const = 1.0 + _pD + E
+    SL1_const = _pS + E_s2
+    SL2_const = _pS + E_s1
 
     ancestors_T_mat = None
     if pibar_mode in ('uniform_approx', 'topk'):
@@ -308,29 +331,88 @@ def Pi_wave_forward(
         ancestors_T_mat = anc_dense.T.to_sparse_coo()
         clade_species_map = torch.full((C, S), NEG_INF, device=device, dtype=dtype)
         clade_species_map[leaf_row_index, leaf_col_index] = 0.0
-        leaf_term = log_pS + clade_species_map
+        leaf_term = None if batched else log_pS + clade_species_map
         transfer_mat_T = None
         transfer_mat_c = None
     else:
         clade_species_map = torch.full((C, S), NEG_INF, device=device, dtype=dtype)
         clade_species_map[leaf_row_index, leaf_col_index] = 0.0
-        leaf_term = log_pS + clade_species_map
-        transfer_mat_T = transfer_mat.T.contiguous()
-        transfer_mat_c = transfer_mat.contiguous()
+        leaf_term = None if batched else log_pS + clade_species_map
+        if transfer_mat is not None:
+            if transfer_mat.ndim == 2:
+                transfer_mat_T = transfer_mat.T.contiguous()
+                transfer_mat_c = transfer_mat.contiguous()
+            else:
+                # [G, S, S] — precompute transposed version for per-family Pibar
+                transfer_mat_T = transfer_mat.transpose(1, 2).contiguous()
+                transfer_mat_c = None
+        else:
+            transfer_mat_T = None
+            transfer_mat_c = None
 
     mt_squeezed = max_transfer_mat.squeeze(-1) if max_transfer_mat.ndim > 1 else max_transfer_mat
+
+    def _get_leaf_mask(ws, we):
+        """Return [W, S] mask with 0.0 at leaf positions, NEG_INF elsewhere."""
+        W = we - ws
+        lwt = torch.full((W, S), NEG_INF, device=device, dtype=dtype)
+        m = (leaf_row_index >= ws) & (leaf_row_index < we)
+        if m.any():
+            lwt[leaf_row_index[m] - ws, leaf_col_index[m]] = 0.0
+        return lwt
 
     def _get_leaf_wt(ws, we):
         if leaf_term is not None:
             return leaf_term[ws:we]
-        W = we - ws
-        lwt = torch.full((W, S), NEG_INF, device=device, dtype=dtype)
-        mask = (leaf_row_index >= ws) & (leaf_row_index < we)
-        if mask.any():
-            lwt[leaf_row_index[mask] - ws, leaf_col_index[mask]] = 0.0
+        lwt = _get_leaf_mask(ws, we)
+        if batched:
+            # log_pS is [G, S] or [G]; gather per-clade then add leaf mask
+            fi_w = family_idx[ws:we]
+            log_pS_w = log_pS[fi_w]                     # [W] or [W, S]
+            if log_pS_w.ndim == 1:
+                log_pS_w = log_pS_w.unsqueeze(-1)       # [W, 1] for broadcast
+            return log_pS_w + lwt
         return log_pS + lwt
 
+    def _wave_consts(ws, we):
+        """Return per-wave constants: (DL, SL1, SL2, Ebar_w, E_w, mt_w).
+
+        When batched: gathers [W, S] from [G, S] via family_idx.
+        When shared: returns the [S] tensors as-is.
+        """
+        if not batched:
+            return DL_const, SL1_const, SL2_const, Ebar, E, mt_squeezed
+        fi_w = family_idx[ws:we]
+        return (DL_const[fi_w], SL1_const[fi_w], SL2_const[fi_w],
+                Ebar[fi_w], E[fi_w], mt_squeezed[fi_w])
+
+    def _wave_dts_params(meta):
+        """Return per-split (log_pD, log_pS) for DTS cross-clade computation.
+
+        When batched: gathers per-split params from [G, ...] via family_idx,
+        expanding [N_splits] scalars to [N_splits, S] for the kernel.
+        When shared: returns the original params.
+        """
+        if not batched:
+            return log_pD, log_pS
+        # Each split's parent clade determines the family.
+        # reduce_idx maps splits to wave-local clade indices.
+        ws = meta['start']
+        reduce_idx = meta['reduce_idx']
+        fi_splits = family_idx[ws + reduce_idx]
+        pD = log_pD[fi_splits]  # [N_splits] or [N_splits, S]
+        pS = log_pS[fi_splits]
+        # Kernel needs [S] or [N, S]; expand [N] → [N, S]
+        if pD.ndim == 1:
+            pD = pD.unsqueeze(-1).expand(-1, S).contiguous()
+        if pS.ndim == 1:
+            pS = pS.unsqueeze(-1).expand(-1, S).contiguous()
+        return pD, pS
+
     use_global_pibar = (S > 256) or pibar_mode in ('uniform_approx', 'uniform', 'topk')
+    # Fused pibar+step kernel can't handle per-family [G, S, S] transfer matrices
+    if batched and transfer_mat is not None and transfer_mat.ndim == 3:
+        use_global_pibar = True
     n_waves = len(wave_metas)
 
     use_fixed = fixed_iters is not None
@@ -350,9 +432,10 @@ def Pi_wave_forward(
 
                 meta0 = wave_metas[0]
                 if meta0['has_splits']:
+                    pD_dts0, pS_dts0 = _wave_dts_params(meta0)
                     dts_r_current = _compute_dts_cross(
                         Pi, Pibar, meta0, sp_child1, sp_child2,
-                        log_pD, log_pS, S, device, dtype)
+                        pD_dts0, pS_dts0, S, device, dtype)
                 else:
                     dts_r_current = None
 
@@ -372,13 +455,14 @@ def Pi_wave_forward(
 
                     dts_r = dts_r_current
                     leaf_wt = _get_leaf_wt(ws, we)
+                    DL_w, SL1_w, SL2_w, Ebar_w, E_w, mt_w = _wave_consts(ws, we)
 
                     if pibar_mode == 'uniform_approx':
                         for local_iter in range(n_iters):
                             total_iters += 1
                             Pi_new, max_diff = wave_step_uniform_fused(
                                 Pi, Pibar, ws, W, S,
-                                mt_squeezed, DL_const, Ebar, E, SL1_const, SL2_const,
+                                mt_w, DL_w, Ebar_w, E_w, SL1_w, SL2_w,
                                 sp_child1, sp_child2, leaf_wt, dts_r,
                             )
                             Pi[ws:we] = Pi_new
@@ -386,17 +470,23 @@ def Pi_wave_forward(
                                 if max_diff < local_tolerance:
                                     break
                     else:
+                        tm_T_w = transfer_mat_T
+                        fi_w_dense = None
+                        if batched and transfer_mat_T is not None and transfer_mat_T.ndim == 3:
+                            fi_w_dense = family_idx[ws:we]
+
                         for local_iter in range(n_iters):
                             total_iters += 1
                             Pi_W = Pi[ws:we]
 
-                            Pibar_W = _compute_Pibar_inline(Pi_W, transfer_mat_T, mt_squeezed, pibar_mode,
+                            Pibar_W = _compute_Pibar_inline(Pi_W, tm_T_w, mt_w, pibar_mode,
                                                             ancestors_T=ancestors_T_mat,
-                                                            topk_k=topk_k)
+                                                            topk_k=topk_k,
+                                                            family_ids=fi_w_dense)
 
                             Pi_new = wave_step_fused(
                                 Pi_W, Pibar_W,
-                                DL_const, Ebar, E, SL1_const, SL2_const,
+                                DL_w, Ebar_w, E_w, SL1_w, SL2_w,
                                 sp_child1, sp_child2, leaf_wt, dts_r,
                             )
 
@@ -413,13 +503,14 @@ def Pi_wave_forward(
                     if wi + 1 < n_waves:
                         meta_next = wave_metas[wi + 1]
                         if meta_next['has_splits']:
+                            pD_next, pS_next = _wave_dts_params(meta_next)
                             event_self_done = torch.cuda.Event()
                             event_self_done.record(stream_main)
                             with torch.cuda.stream(stream_prep):
                                 stream_prep.wait_event(event_self_done)
                                 dts_r_next = _compute_dts_cross(
                                     Pi, Pibar, meta_next, sp_child1, sp_child2,
-                                    log_pD, log_pS, S, device, dtype)
+                                    pD_next, pS_next, S, device, dtype)
                                 event_prep_done = torch.cuda.Event()
                                 event_prep_done.record(stream_prep)
                         else:
@@ -433,20 +524,22 @@ def Pi_wave_forward(
                     W = meta['W']
 
                     if meta['has_splits']:
+                        pD_dts, pS_dts = _wave_dts_params(meta)
                         dts_r = _compute_dts_cross(
                             Pi, Pibar, meta, sp_child1, sp_child2,
-                            log_pD, log_pS, S, device, dtype)
+                            pD_dts, pS_dts, S, device, dtype)
                     else:
                         dts_r = None
 
                     leaf_wt = _get_leaf_wt(ws, we)
+                    DL_w, SL1_w, SL2_w, Ebar_w, E_w, mt_w = _wave_consts(ws, we)
 
                     if pibar_mode == 'uniform_approx':
                         for local_iter in range(n_iters):
                             total_iters += 1
                             Pi_new, max_diff = wave_step_uniform_fused(
                                 Pi, Pibar, ws, W, S,
-                                mt_squeezed, DL_const, Ebar, E, SL1_const, SL2_const,
+                                mt_w, DL_w, Ebar_w, E_w, SL1_w, SL2_w,
                                 sp_child1, sp_child2, leaf_wt, dts_r,
                             )
                             Pi[ws:we] = Pi_new
@@ -454,17 +547,24 @@ def Pi_wave_forward(
                                 if max_diff < local_tolerance:
                                     break
                     else:
+                        # Dense/uniform/topk Pibar
+                        tm_T_w = transfer_mat_T
+                        fi_w_dense = None
+                        if batched and transfer_mat_T is not None and transfer_mat_T.ndim == 3:
+                            fi_w_dense = family_idx[ws:we]
+
                         for local_iter in range(n_iters):
                             total_iters += 1
                             Pi_W = Pi[ws:we]
 
-                            Pibar_W = _compute_Pibar_inline(Pi_W, transfer_mat_T, mt_squeezed, pibar_mode,
+                            Pibar_W = _compute_Pibar_inline(Pi_W, tm_T_w, mt_w, pibar_mode,
                                                             ancestors_T=ancestors_T_mat,
-                                                            topk_k=topk_k)
+                                                            topk_k=topk_k,
+                                                            family_ids=fi_w_dense)
 
                             Pi_new = wave_step_fused(
                                 Pi_W, Pibar_W,
-                                DL_const, Ebar, E, SL1_const, SL2_const,
+                                DL_w, Ebar_w, E_w, SL1_w, SL2_w,
                                 sp_child1, sp_child2, leaf_wt, dts_r,
                             )
 
@@ -486,18 +586,25 @@ def Pi_wave_forward(
                 we = meta['end']
                 W = meta['W']
 
+                DL_w, SL1_w, SL2_w, Ebar_w, E_w, mt_w = _wave_consts(ws, we)
+
                 if meta['has_splits']:
                     sl = meta['sl']
                     sr = meta['sr']
                     lr = torch.cat([sl, sr])
+                    pD_dts, pS_dts = _wave_dts_params(meta)
                     dts_r = _compute_DTS_reduced(
-                        Pi, Pibar, lr, meta['n_ws'], S, W, log_pD, log_pS,
+                        Pi, Pibar, lr, meta['n_ws'], S, W, pD_dts, pS_dts,
                         sp_child1, sp_child2, meta['log_split_probs'],
                         meta['reduce_idx'], device, dtype)
                 else:
                     dts_r = None
 
                 leaf_wt = _get_leaf_wt(ws, we).contiguous()
+
+                # For dense+batched: the fused pibar+step kernel doesn't support
+                # per-family transfer matrices, so fall back to separate Pibar + step.
+                tm_c_w = transfer_mat_c
 
                 Pibar_W_buf = torch.empty(W, S, device=device, dtype=dtype)
 
@@ -506,8 +613,8 @@ def Pi_wave_forward(
                     Pi_W = Pi[ws:we]
 
                     Pi_new = wave_pibar_step_fused(
-                        Pi_W, transfer_mat_c, mt_squeezed,
-                        DL_const, Ebar, E, SL1_const, SL2_const,
+                        Pi_W, tm_c_w, mt_w,
+                        DL_w, Ebar_w, E_w, SL1_w, SL2_w,
                         sp_child1, sp_child2, leaf_wt,
                         Pibar_W_buf, dts_r,
                     )
