@@ -210,10 +210,11 @@ pub(crate) fn finalize_simulation(
     let mut final_node_mapping = node_mapping;
 
     // Handle edge case: gene lost before any events
-    // Node name format: {species_idx}_{gene_idx}
+    // Node name format: {species_name}_{gene_idx}
     if final_gene_nodes.is_empty() {
+        let sp_name = &species_tree.nodes[origin_species].name;
         final_gene_nodes.push(FlatNode {
-            name: format!("{}_0", origin_species),
+            name: format!("{}_0", sp_name),
             left_child: None,
             right_child: None,
             parent: None,

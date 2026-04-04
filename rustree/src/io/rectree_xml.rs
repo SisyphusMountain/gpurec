@@ -3,6 +3,44 @@
 use crate::node::{FlatTree, RecTree};
 use crate::node::rectree::Event;
 
+/// Generate RecPhyloXML with multiple gene trees sharing one species tree.
+///
+/// The species tree is taken from the first RecTree. All gene trees are written
+/// as separate `<recGeneTree>` sections, which thirdkind renders overlaid.
+pub fn multi_to_xml(rec_trees: &[&RecTree]) -> String {
+    if rec_trees.is_empty() {
+        return String::new();
+    }
+
+    let first = rec_trees[0];
+    let estimated_size = rec_trees.iter()
+        .map(|rt| rt.gene_tree.nodes.len() * 200)
+        .sum::<usize>() + 1000;
+    let mut xml = String::with_capacity(estimated_size);
+
+    // Header
+    xml.push_str("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
+    xml.push_str("<recPhylo\n");
+    xml.push_str("\txmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\"\n");
+    xml.push_str("\txsi:schemaLocation=\"http://www.recg.org ./recGeneTreeXML.xsd\"\n");
+    xml.push_str("\txmlns=\"http://www.recg.org\">\n");
+
+    // Species tree (shared, from first RecTree)
+    xml.push_str("<spTree>\n<phylogeny>\n");
+    first.write_species_clade(&mut xml, first.species_tree.root, 0);
+    xml.push_str("</phylogeny>\n</spTree>\n");
+
+    // Gene tree sections
+    for rt in rec_trees {
+        xml.push_str("<recGeneTree>\n<phylogeny rooted=\"true\">\n");
+        rt.write_gene_clade(&mut xml, rt.gene_tree.root, 0);
+        xml.push_str("</phylogeny>\n</recGeneTree>\n");
+    }
+
+    xml.push_str("</recPhylo>\n");
+    xml
+}
+
 // ============================================================================
 // RecTree XML serialization
 // ============================================================================
@@ -35,7 +73,7 @@ impl RecTree {
     }
 
     /// Helper function to write a species tree clade to XML.
-    fn write_species_clade(&self, xml: &mut String, node_idx: usize, indent: usize) {
+    pub(crate) fn write_species_clade(&self, xml: &mut String, node_idx: usize, indent: usize) {
         let node = &self.species_tree.nodes[node_idx];
         let indent_str = Self::get_indent(indent);
 
@@ -43,7 +81,11 @@ impl RecTree {
         xml.push_str("<clade>\n");
         xml.push_str(&indent_str);
         xml.push_str("\t<name>");
-        xml.push_str(&node.name);
+        if node.name.is_empty() {
+            xml.push_str("root");
+        } else {
+            xml.push_str(&node.name);
+        }
         xml.push_str("</name>\n");
         xml.push_str(&indent_str);
         xml.push_str("\t<branchLength>");
@@ -62,10 +104,21 @@ impl RecTree {
     }
 
     /// Helper function to write a gene tree clade to XML with reconciliation events.
-    fn write_gene_clade(&self, xml: &mut String, node_idx: usize, indent: usize) {
+    pub(crate) fn write_gene_clade(&self, xml: &mut String, node_idx: usize, indent: usize) {
         let node = &self.gene_tree.nodes[node_idx];
         let species_idx_opt = self.node_mapping[node_idx];
-        let species_name = species_idx_opt.map(|idx| self.species_tree.nodes[idx].name.as_str());
+        // Fallback to root species for unmapped nodes (e.g., after pruning).
+        // Thirdkind requires speciesLocation on every event.
+        let root_name = &self.species_tree.nodes[self.species_tree.root].name;
+        let fallback_name = if root_name.is_empty() { "root" } else { root_name.as_str() };
+        let species_name: Option<&str> = Some(
+            species_idx_opt
+                .map(|idx| {
+                    let name = self.species_tree.nodes[idx].name.as_str();
+                    if name.is_empty() { fallback_name } else { name }
+                })
+                .unwrap_or(fallback_name)
+        );
         let event = &self.event_mapping[node_idx];
         let indent_str = Self::get_indent(indent);
 
@@ -77,8 +130,7 @@ impl RecTree {
         xml.push_str("\t<name>");
         match event {
             Event::Loss => xml.push_str("loss"),
-            Event::Leaf => xml.push_str(&node.name),
-            _ => xml.push_str("NULL"),
+            _ => xml.push_str(&node.name),
         }
         xml.push_str("</name>\n");
 

@@ -1,4 +1,4 @@
-# Project Status Report — gpurec (March 16, 2026)
+# Project Status Report — gpurec (March 20, 2026, updated)
 
 ## Overview
 
@@ -122,16 +122,17 @@ Specieswise and pairwise are **mutually exclusive** (both are transfer_mode choi
 
 ### What Works
 
-- **Pi backward**: Neumann-series implicit gradient, optional clade pruning (50-80% savings)
+- **Pi backward**: Neumann-series implicit gradient, per-clade adjoint thresholding (49% clades pruned)
+- **Batched backward**: Single `Pi_wave_backward` call across all families via `family_idx` (commit e5e0563)
 - **E adjoint**: CG solve with GMRES fallback
 - **Full chain**: `implicit_grad_loglik_vjp_wave` → dNLL/dtheta
 - **FD validation**: pD, pS, mt gradients match FD within 0.1%
 - **Optimizers**: Adam (tested, 5-step NLL decrease), L-BFGS-B with FD (converges to AleRax reference)
+- **`optimize_theta_genewise`**: L-BFGS with batched backward, per-gene convergence masking (commit e5e0563)
 
 ### What's Untested
 
-- L-BFGS-B with analytical gradient (path exists, never run e2e)
-- Multi-family optimizer convergence (only 1 family tested)
+- Batched backward validated at small S only (not yet at S=20K)
 - Large-S backward (forward works at S=20K, backward not validated)
 - Pairwise gradient
 - topk gradient
@@ -150,7 +151,7 @@ Specieswise and pairwise are **mutually exclusive** (both are transfer_mode choi
 | `tests/unit/test_cross_family_wave.py` | 13 | uniform/dense, collation, AleRax comparison | all pass |
 | `tests/unit/test_genewise_wave.py` | 6 | genewise × (uniform_approx, dense) | all pass |
 | `tests/unit/test_seg_logsumexp.py` | 4 | Triton kernel fp32/fp64, forward+backward | all pass |
-| `tests/gradients/test_wave_gradient.py` | 30+ | all pibar modes × (global, specieswise, genewise) gradients | all pass |
+| `tests/gradients/test_wave_gradient.py` | 35+ | all pibar modes × (global, specieswise, genewise) gradients, batched backward, genewise optimizer | all pass |
 | `tests/integration/test_e2e_alerax.py` | 1 | Full pipeline vs AleRax (simulated trees) | pass (slow) |
 | `tests/cli/test_reconcile.py` | 14 | CLI arg parsing, devices, parameter ranges | pass |
 
@@ -412,8 +413,10 @@ Parametrized over all 6 valid (genewise, specieswise, pibar_mode) combinations:
 | pairwise gradient | **zero tests** |
 | topk forward | **fixed** (2026-03-20) — replaced broken sparse-output (scatter k positions, 92% −inf) with full-output compressed-input: gather+bmm for small S, k-loop for large S. k=16 logL within 0.01 of dense. L-BFGS-B converges. See `tests/topk_lbfgs_convergence.py` |
 | topk gradient | **untested** — backward falls back to dense, not FD-validated |
-| multi-family optimizer convergence | **missing** — gradient descent tested (3 steps, NLL decreases) but no convergence test |
-| L-BFGS-B with analytical gradient | **missing** — only FD path tested in e2e AleRax comparison |
+| batched backward | **tested** (2026-03-20) — `TestBatchedBackward` validates batched matches per-family within 1e-6 rel error (small S only) |
+| genewise optimizer | **tested** (2026-03-20) — `optimize_theta_genewise` with L-BFGS + batched backward, per-gene convergence masking |
+| multi-family optimizer convergence | **partial** — gradient descent tested (3 steps, NLL decreases), `optimize_theta_genewise` exists but no long convergence test |
+| L-BFGS-B with analytical gradient | **partial** — `optimize_theta_genewise` provides the path; not yet validated with long convergence run |
 
 ---
 
@@ -423,35 +426,12 @@ Parametrized over all 6 valid (genewise, specieswise, pibar_mode) combinations:
 
 **Recent commits:**
 ```
-8642cc5 Remove dead modules, stale tests, and update .gitignore
-001ec7c Add sparse_corrected Pibar mode, optimizer functions, and full-chain gradient tests
-d40584c Fix wave backward parameter gradients and add FD validation
-3be1aae Fix cross-clade backward to use manual gradient computation
-a3011b7 Add wave-decomposed implicit gradient backward pass (WIP)
+e5e0563 Integrate batched backward into optimize_theta_genewise
+b92d26f Add per-clade pruning and cross-family batched backward support
+41ebe52 Fix gradient pruning: runtime adjoint thresholding, genewise optimizer tests
+f4e7d64 Update status doc: topk forward fixed, test coverage added
+30efa5c Fix topk Pibar: full-output compressed-input matmul, add no-clamp lint test
 ```
-
-### Uncommitted Changes
-
-**Today's session (not yet committed):**
-- Deleted `src/core/kernels/seg_log_matmul.py` (genewise segmented matmul — dead code)
-- Removed `compute_DTS_independent`, `compute_DTS_L_independent` from `terms.py`
-- Simplified `Pi_step` and `Pi_fixed_point` signatures (removed genewise/specieswise/pairwise/batch_info params)
-- Simplified `compute_likelihood_batch` routing (removed dead `Pi_fixed_point` + `batch_info` branch)
-- Fixed pairwise theta initialization in `GeneDataset.__init__` (was `[3]`, now correctly `[2]`)
-- Fixed `root_clade_id` used-before-assignment in `compute_likelihood` wave path
-- Added `specieswise + pairwise` mutual exclusivity guard
-- Fixed genewise wave path to pass actual `transfer_mat` for dense/topk modes
-
-**Other unstaged modifications (28 files):**
-- Core: likelihood.py, model.py, theta_optimizer.py, terms.py, kernels, batching
-- Rust: 11 rustree modules (sampling, metrics, surgery, etc.)
-- Tests: test_wave_gradient.py, test_wave_v2.py
-- Docs: status_march_2026.md
-
-**Untracked (98 files):**
-- `rustree/` subproject (Cargo.toml, 64 source/test files)
-- `tests/integration/`, `tests/profiling/` benchmarks
-- `docs/` (3 new docs: clade_scheduling, optim_opportunities, optimization_plan)
 
 ### Main branch
 
@@ -492,8 +472,7 @@ JIT-compiled via PyTorch's `torch.utils.cpp_extension`. Computes CCP (Clades, Cl
 | `genewise + pairwise` raises NotImplementedError | Design decision (not wanted) | extract_parameters.py:34 |
 | Dead `specieswise + pairwise` branches in extract_parameters | Minor dead code | extract_parameters.py:9-17, 50-58 |
 | topk gradient not FD-validated | Low-medium risk | likelihood.py backward falls back to dense |
-| 10 legacy test files fail to import (41 tests uncollectable) | Noise | Old `ThetaOptimizationProblem` tests |
-| Gradient residual ~0.6-0.7 at FD optimum | FD artifact, not a real bug | Needs analytical gradient validation |
+| Batched backward only validated at small S | Medium risk | Need large-S validation |
 | `uniform` pibar mode has no pytest coverage | Fragile | Manually verified only |
 | CLI hardcodes `pairwise=False` | Missing feature | cli/reconcile.py:63 |
 
@@ -501,10 +480,9 @@ JIT-compiled via PyTorch's `torch.utils.cpp_extension`. Computes CCP (Clades, Cl
 
 ## 10. Recommended Priorities
 
-1. **Commit today's cleanup** — seg_log_matmul deletion, pairwise fix, signature simplifications
-2. **Add pairwise e2e test** — forward pass works, needs pytest coverage (dense + topk forward now correct)
-3. **Add uniform pibar pytest** — manually verified but fragile without CI
-4. **Run L-BFGS-B with analytical gradient** — the key validation: does it converge to |g|→0?
-5. **Multi-family optimizer test** — 5-10 families, verify convergence
+1. **Validate batched backward at large S** — forward works at S=20K, backward only tested at small S
+2. **L-BFGS convergence with analytical gradient** — `optimize_theta_genewise` provides the path, needs long convergence run
+3. **Add pairwise e2e test** — forward works, needs pytest coverage (dense + topk forward now correct)
+4. **Pairwise backward** — forward-only for pairwise parameter mode
+5. **Add uniform pibar pytest** — manually verified but fragile without CI
 6. **Clean up dead specieswise+pairwise branches** in extract_parameters
-7. **Clean up legacy test files** — mark xfail/skip or delete

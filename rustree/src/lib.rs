@@ -48,4 +48,8 @@ pub use alerax::{
     run_alerax, reconcile_forest, AleRaxConfig, AleRaxFamilyResult, AleRaxForestResult,
     GeneFamily, ModelType, validate_inputs, SpeciesEventRow, TransferRow,
 };
-pub use robinson_foulds::unrooted_robinson_foulds;
+pub use robinson_foulds::{unrooted_robinson_foulds, true_unrooted_robinson_foulds};
+pub use comparison::{
+    compare_reconciliations, compare_reconciliations_multi,
+    ReconciliationComparison, MultiSampleComparison, NodeComparison,
+};

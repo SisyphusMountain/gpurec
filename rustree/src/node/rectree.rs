@@ -5,7 +5,7 @@ use std::sync::Arc;
 use crate::dtl::DTLEvent;
 
 /// Events that can occur during DTL reconciliation.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Event {
     /// Speciation event - gene tree lineage follows species tree split
     Speciation,

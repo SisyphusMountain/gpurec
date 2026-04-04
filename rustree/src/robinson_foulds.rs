@@ -97,3 +97,61 @@ pub fn unrooted_robinson_foulds(tree1: &FlatTree, tree2: &FlatTree) -> usize {
     let rf_distance = (splits1.len() - common.len()) + (splits2.len() - common.len());
     rf_distance
 }
+
+/// Extracts unrooted bipartitions from a rooted tree.
+///
+/// Each internal edge defines a bipartition of the leaf set. We represent each
+/// bipartition by the smaller side (by cardinality, then lexicographically).
+/// This makes the result independent of root placement.
+fn get_unrooted_bipartitions(tree: &FlatTree) -> HashSet<String> {
+    let all_leaves = collect_leaves(tree);
+    let n = all_leaves.len();
+    let mut bipartitions = HashSet::new();
+
+    for (index, node) in tree.nodes.iter().enumerate() {
+        if node.parent.is_none() { continue; } // skip root
+        if node.left_child.is_none() && node.right_child.is_none() { continue; } // skip leaves
+
+        let clade = subtree_leaves(tree, index);
+        // Normalize: use the smaller side of the bipartition
+        let side = if clade.len() * 2 < n {
+            clade
+        } else if clade.len() * 2 > n {
+            all_leaves.difference(&clade).cloned().collect()
+        } else {
+            // Equal size: pick lexicographically smaller
+            let complement: BTreeSet<String> = all_leaves.difference(&clade).cloned().collect();
+            if clade < complement { clade } else { complement }
+        };
+
+        if side.len() > 1 || side.len() < n - 1 {
+            // Only non-trivial bipartitions (not single leaf vs rest)
+            let mut leaves_vec: Vec<String> = side.into_iter().collect();
+            leaves_vec.sort();
+            bipartitions.insert(leaves_vec.join(","));
+        }
+    }
+    bipartitions
+}
+
+/// Computes the true unrooted Robinson-Foulds distance between two trees.
+///
+/// Compares bipartitions (splits) rather than rooted clades, so two trees
+/// that differ only in root placement will have RF distance 0.
+///
+/// # Panics
+///
+/// Panics if the trees do not have identical leaf labels.
+pub fn true_unrooted_robinson_foulds(tree1: &FlatTree, tree2: &FlatTree) -> usize {
+    let leaves1 = collect_leaves(tree1);
+    let leaves2 = collect_leaves(tree2);
+    if leaves1 != leaves2 {
+        panic!("The trees do not have identical leaf labels.");
+    }
+
+    let bip1 = get_unrooted_bipartitions(tree1);
+    let bip2 = get_unrooted_bipartitions(tree2);
+
+    let common: HashSet<_> = bip1.intersection(&bip2).collect();
+    (bip1.len() - common.len()) + (bip2.len() - common.len())
+}

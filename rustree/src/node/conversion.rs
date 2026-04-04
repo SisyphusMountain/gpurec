@@ -92,6 +92,25 @@ impl FlatTree {
             .collect()
     }
 
+    /// Name unnamed internal nodes as `internal0`, `internal1`, etc.
+    ///
+    /// Panics if any existing node name starts with `"internal"`, to avoid
+    /// ambiguity between original and generated names.
+    pub fn name_internal_nodes(&mut self) {
+        assert!(
+            !self.nodes.iter().any(|n| n.name.starts_with("internal")),
+            "Cannot auto-name internal nodes: at least one node already has a name starting with \"internal\""
+        );
+        let mut counter = 0usize;
+        for i in 0..self.nodes.len() {
+            let is_internal = self.nodes[i].left_child.is_some() || self.nodes[i].right_child.is_some();
+            if is_internal && self.nodes[i].name.is_empty() {
+                self.nodes[i].name = format!("internal{}", counter);
+                counter += 1;
+            }
+        }
+    }
+
     /// Returns extant leaf nodes — leaves whose birth-death event is `BDEvent::Leaf`.
     pub fn get_extant_leaves(&self) -> Vec<&FlatNode> {
         use crate::bd::BDEvent;

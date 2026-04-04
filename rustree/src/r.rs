@@ -14,8 +14,9 @@ use std::fs;
 use std::process::Command;
 
 use crate::bd::{simulate_bd_tree_bwd, generate_events_from_tree, TreeEvent, BDEvent};
-use crate::dtl::{simulate_dtl, simulate_dtl_batch, simulate_dtl_per_species, simulate_dtl_per_species_batch};
+use crate::dtl::{simulate_dtl, simulate_dtl_batch, simulate_dtl_per_species, simulate_dtl_per_species_batch, DTLEvent};
 use crate::dtl::{simulate_dtl_iter, simulate_dtl_per_species_iter};
+use crate::induced_transfers::induced_transfers;
 use crate::node::{FlatTree, FlatNode, Event, RecTree, GeneForest};
 use crate::sampling::{extract_induced_subtree, extract_induced_subtree_by_names};
 
@@ -198,10 +199,12 @@ fn simulate_dtl_r(
     };
 
     let origin_species = species_tree.root;
-    let (rec_tree, _events) = simulate_dtl(&species_tree, origin_species, lambda_d, lambda_t, lambda_l, alpha, None, require_extant, &mut rng)
+    let (rec_tree, events) = simulate_dtl(&species_tree, origin_species, lambda_d, lambda_t, lambda_l, alpha, None, require_extant, &mut rng)
         .map_err(|e| Error::Other(e))?;
 
-    rectree_to_rlist(&species_tree, &rec_tree.gene_tree, &rec_tree.node_mapping, &rec_tree.event_mapping)
+    let result = rectree_to_rlist(&species_tree, &rec_tree.gene_tree, &rec_tree.node_mapping, &rec_tree.event_mapping)?;
+    result.set_attrib("dtl_events", dtl_events_to_rlist(&events, &species_tree))?;
+    Ok(result)
 }
 
 /// Simulate a batch of DTL gene trees efficiently.
@@ -252,7 +255,7 @@ fn simulate_dtl_batch_r(
     };
 
     let origin_species = species_tree.root;
-    let (rec_trees, _all_events) = simulate_dtl_batch(
+    let (rec_trees, all_events) = simulate_dtl_batch(
         &species_tree,
         origin_species,
         lambda_d,
@@ -265,11 +268,14 @@ fn simulate_dtl_batch_r(
         &mut rng,
     ).map_err(|e| Error::Other(e))?;
 
-    // Convert to list of lists
+    // Convert to list of lists, attaching DTL events to each gene tree
     let gene_tree_lists: Vec<List> = rec_trees
         .iter()
-        .map(|rec_tree| {
-            rectree_to_rlist(&species_tree, &rec_tree.gene_tree, &rec_tree.node_mapping, &rec_tree.event_mapping)
+        .zip(all_events.iter())
+        .map(|(rec_tree, events)| {
+            let gt_list = rectree_to_rlist(&species_tree, &rec_tree.gene_tree, &rec_tree.node_mapping, &rec_tree.event_mapping)?;
+            gt_list.set_attrib("dtl_events", dtl_events_to_rlist(events, &species_tree))?;
+            Ok(gt_list)
         })
         .collect::<Result<Vec<List>>>()?;
 
@@ -323,10 +329,12 @@ fn simulate_dtl_per_species_r(
     };
 
     let origin_species = species_tree.root;
-    let (rec_tree, _events) = simulate_dtl_per_species(&species_tree, origin_species, lambda_d, lambda_t, lambda_l, alpha, None, require_extant, &mut rng)
+    let (rec_tree, events) = simulate_dtl_per_species(&species_tree, origin_species, lambda_d, lambda_t, lambda_l, alpha, None, require_extant, &mut rng)
         .map_err(|e| Error::Other(e))?;
 
-    rectree_to_rlist(&species_tree, &rec_tree.gene_tree, &rec_tree.node_mapping, &rec_tree.event_mapping)
+    let result = rectree_to_rlist(&species_tree, &rec_tree.gene_tree, &rec_tree.node_mapping, &rec_tree.event_mapping)?;
+    result.set_attrib("dtl_events", dtl_events_to_rlist(&events, &species_tree))?;
+    Ok(result)
 }
 
 /// Simulate a batch of DTL gene trees using the Zombi-style per-species model.
@@ -380,7 +388,7 @@ fn simulate_dtl_per_species_batch_r(
     };
 
     let origin_species = species_tree.root;
-    let (rec_trees, _all_events) = simulate_dtl_per_species_batch(
+    let (rec_trees, all_events) = simulate_dtl_per_species_batch(
         &species_tree,
         origin_species,
         lambda_d,
@@ -393,11 +401,14 @@ fn simulate_dtl_per_species_batch_r(
         &mut rng,
     ).map_err(|e| Error::Other(e))?;
 
-    // Convert to list of lists
+    // Convert to list of lists, attaching DTL events to each gene tree
     let gene_tree_lists: Vec<List> = rec_trees
         .iter()
-        .map(|rec_tree| {
-            rectree_to_rlist(&species_tree, &rec_tree.gene_tree, &rec_tree.node_mapping, &rec_tree.event_mapping)
+        .zip(all_events.iter())
+        .map(|(rec_tree, events)| {
+            let gt_list = rectree_to_rlist(&species_tree, &rec_tree.gene_tree, &rec_tree.node_mapping, &rec_tree.event_mapping)?;
+            gt_list.set_attrib("dtl_events", dtl_events_to_rlist(events, &species_tree))?;
+            Ok(gt_list)
         })
         .collect::<Result<Vec<List>>>()?;
 
@@ -496,7 +507,7 @@ fn save_xml_r(gene_tree_list: List, filepath: &str) -> Result<()> {
 /// @export
 #[extendr]
 fn save_csv_r(gene_tree_list: List, filepath: &str) -> Result<()> {
-    let (species_tree, gene_tree, node_mapping, event_mapping) = rlist_to_genetree(&gene_tree_list)?;
+    let (gene_tree, species_tree, node_mapping, event_mapping) = rlist_to_genetree(&gene_tree_list)?;
     let rec_tree = RecTree::new_owned(species_tree, gene_tree, node_mapping, event_mapping);
     rec_tree.save_csv(filepath)
         .map_err(|e| extendr_api::Error::Other(format!("Failed to write CSV: {}", e)))?;
@@ -1415,11 +1426,264 @@ fn simulate_dtl_per_species_stream_newick_r(
     Ok(output_dir.to_string())
 }
 
+/// Serialize a Vec<DTLEvent> to an R list (data-frame-like columns).
+///
+/// Returns a list with columns: event_type, time, gene_id, species,
+/// from_species, to_species. Transfer-only fields are NA for non-transfers.
+fn dtl_events_to_rlist(events: &[DTLEvent], species_tree: &FlatTree) -> List {
+    let n = events.len();
+    let mut event_types: Vec<String> = Vec::with_capacity(n);
+    let mut times: Vec<f64> = Vec::with_capacity(n);
+    let mut gene_ids: Vec<i32> = Vec::with_capacity(n);
+    let mut species_names: Vec<String> = Vec::with_capacity(n);
+    let mut from_species: Vec<Rstr> = Vec::with_capacity(n);
+    let mut to_species: Vec<Rstr> = Vec::with_capacity(n);
+
+    let sp_name = |idx: usize| -> String {
+        if idx < species_tree.nodes.len() {
+            species_tree.nodes[idx].name.clone()
+        } else {
+            format!("node_{}", idx)
+        }
+    };
+
+    for event in events {
+        match event {
+            DTLEvent::Speciation { time, gene_id, species_id, .. } => {
+                event_types.push("Speciation".to_string());
+                times.push(*time);
+                gene_ids.push(*gene_id as i32);
+                species_names.push(sp_name(*species_id));
+                from_species.push(Rstr::na());
+                to_species.push(Rstr::na());
+            }
+            DTLEvent::Duplication { time, gene_id, species_id, .. } => {
+                event_types.push("Duplication".to_string());
+                times.push(*time);
+                gene_ids.push(*gene_id as i32);
+                species_names.push(sp_name(*species_id));
+                from_species.push(Rstr::na());
+                to_species.push(Rstr::na());
+            }
+            DTLEvent::Transfer { time, gene_id, species_id, from_species: from_sp, to_species: to_sp, .. } => {
+                event_types.push("Transfer".to_string());
+                times.push(*time);
+                gene_ids.push(*gene_id as i32);
+                species_names.push(sp_name(*species_id));
+                from_species.push(Rstr::from(sp_name(*from_sp)));
+                to_species.push(Rstr::from(sp_name(*to_sp)));
+            }
+            DTLEvent::Loss { time, gene_id, species_id } => {
+                event_types.push("Loss".to_string());
+                times.push(*time);
+                gene_ids.push(*gene_id as i32);
+                species_names.push(sp_name(*species_id));
+                from_species.push(Rstr::na());
+                to_species.push(Rstr::na());
+            }
+            DTLEvent::Leaf { time, gene_id, species_id } => {
+                event_types.push("Leaf".to_string());
+                times.push(*time);
+                gene_ids.push(*gene_id as i32);
+                species_names.push(sp_name(*species_id));
+                from_species.push(Rstr::na());
+                to_species.push(Rstr::na());
+            }
+        }
+    }
+
+    list!(
+        event_type = event_types,
+        time = times,
+        gene_id = gene_ids,
+        species = species_names,
+        from_species = from_species,
+        to_species = to_species
+    )
+}
+
+/// Deserialize an R DTL events list back to Vec<DTLEvent>.
+///
+/// Requires the species tree to resolve names back to indices.
+fn rlist_to_dtl_events(events_list: &List, species_tree: &FlatTree) -> Result<Vec<DTLEvent>> {
+    let event_types: Vec<String> = events_list.dollar("event_type")?.as_str_vector()
+        .ok_or("Failed to get event_type column")?
+        .iter().map(|s| s.to_string()).collect();
+    let times: Vec<f64> = events_list.dollar("time")?.as_real_vector()
+        .ok_or("Failed to get time column")?;
+    let gene_ids: Vec<i32> = events_list.dollar("gene_id")?.as_integer_vector()
+        .ok_or("Failed to get gene_id column")?;
+    let species_names: Vec<String> = events_list.dollar("species")?.as_str_vector()
+        .ok_or("Failed to get species column")?
+        .iter().map(|s| s.to_string()).collect();
+
+    // from_species and to_species may contain NAs
+    let from_species_robj = events_list.dollar("from_species")?;
+    let to_species_robj = events_list.dollar("to_species")?;
+    let from_species_strs: Vec<String> = from_species_robj.as_str_vector()
+        .ok_or("Failed to get from_species column")?
+        .iter().map(|s| s.to_string()).collect();
+    let to_species_strs: Vec<String> = to_species_robj.as_str_vector()
+        .ok_or("Failed to get to_species column")?
+        .iter().map(|s| s.to_string()).collect();
+
+    // Build name→index map
+    let name_to_idx: std::collections::HashMap<&str, usize> = species_tree.nodes.iter()
+        .enumerate()
+        .map(|(i, n)| (n.name.as_str(), i))
+        .collect();
+
+    let resolve = |name: &str| -> Result<usize> {
+        name_to_idx.get(name).copied()
+            .ok_or_else(|| Error::Other(format!("Species '{}' not found in tree", name)))
+    };
+
+    let n = event_types.len();
+    let mut dtl_events = Vec::with_capacity(n);
+
+    for i in 0..n {
+        let sp_idx = resolve(&species_names[i])?;
+        let event = match event_types[i].as_str() {
+            "Speciation" => DTLEvent::Speciation {
+                time: times[i],
+                gene_id: gene_ids[i] as usize,
+                species_id: sp_idx,
+                left_child: 0,
+                right_child: 0,
+            },
+            "Duplication" => DTLEvent::Duplication {
+                time: times[i],
+                gene_id: gene_ids[i] as usize,
+                species_id: sp_idx,
+                child1: 0,
+                child2: 0,
+            },
+            "Transfer" => {
+                let from_idx = resolve(&from_species_strs[i])?;
+                let to_idx = resolve(&to_species_strs[i])?;
+                DTLEvent::Transfer {
+                    time: times[i],
+                    gene_id: gene_ids[i] as usize,
+                    species_id: sp_idx,
+                    from_species: from_idx,
+                    to_species: to_idx,
+                    donor_child: 0,
+                    recipient_child: 0,
+                }
+            },
+            "Loss" => DTLEvent::Loss {
+                time: times[i],
+                gene_id: gene_ids[i] as usize,
+                species_id: sp_idx,
+            },
+            "Leaf" => DTLEvent::Leaf {
+                time: times[i],
+                gene_id: gene_ids[i] as usize,
+                species_id: sp_idx,
+            },
+            other => return Err(Error::Other(format!("Unknown event type: {}", other))),
+        };
+        dtl_events.push(event);
+    }
+
+    Ok(dtl_events)
+}
+
+/// Compute induced transfers by projecting transfer events onto a sampled subtree.
+///
+/// Given a species tree, a set of sampled leaf names, and DTL events from
+/// simulation, this function projects each transfer's donor and recipient
+/// species onto the sampled subtree.
+///
+/// @param species_tree_list The complete species tree
+/// @param sampled_leaf_names Character vector of species leaf names to keep
+/// @param dtl_events_list DTL events list (from attr(gene_tree, "dtl_events"))
+/// @return A data.frame with columns: time, gene_id, from_complete, to_complete,
+///         from_sampled, to_sampled
+/// @export
+#[extendr]
+fn induced_transfers_r(
+    species_tree_list: List,
+    sampled_leaf_names: Robj,
+    dtl_events_list: List,
+) -> Result<List> {
+    let species_tree = rlist_to_flattree(&species_tree_list)?;
+
+    let names: Vec<String> = sampled_leaf_names.as_str_vector()
+        .ok_or("sampled_leaf_names must be a character vector")?
+        .iter().map(|s| s.to_string()).collect();
+
+    if names.is_empty() {
+        return Err("sampled_leaf_names cannot be empty".into());
+    }
+
+    let events = rlist_to_dtl_events(&dtl_events_list, &species_tree)?;
+
+    let result = induced_transfers(&species_tree, &names, &events);
+
+    // Build the sampled tree to resolve sampled indices to names
+    let (sampled_tree, _) = extract_induced_subtree_by_names(&species_tree, &names)
+        .ok_or("Failed to extract sampled subtree")?;
+
+    let n = result.len();
+    let mut times: Vec<f64> = Vec::with_capacity(n);
+    let mut gene_ids: Vec<i32> = Vec::with_capacity(n);
+    let mut from_complete: Vec<String> = Vec::with_capacity(n);
+    let mut to_complete: Vec<String> = Vec::with_capacity(n);
+    let mut from_sampled: Vec<Rstr> = Vec::with_capacity(n);
+    let mut to_sampled: Vec<Rstr> = Vec::with_capacity(n);
+
+    for it in &result {
+        times.push(it.time);
+        gene_ids.push(it.gene_id as i32);
+        from_complete.push(species_tree.nodes[it.from_species_complete].name.clone());
+        to_complete.push(species_tree.nodes[it.to_species_complete].name.clone());
+        from_sampled.push(match it.from_species_sampled {
+            Some(idx) => Rstr::from(sampled_tree.nodes[idx].name.clone()),
+            None => Rstr::na(),
+        });
+        to_sampled.push(match it.to_species_sampled {
+            Some(idx) => Rstr::from(sampled_tree.nodes[idx].name.clone()),
+            None => Rstr::na(),
+        });
+    }
+
+    Ok(list!(
+        time = times,
+        gene_id = gene_ids,
+        from_complete = from_complete,
+        to_complete = to_complete,
+        from_sampled = from_sampled,
+        to_sampled = to_sampled
+    ))
+}
+
+/// Name unnamed internal nodes as `internal0`, `internal1`, etc.
+///
+/// Assigns names to internal nodes (nodes with children) that have empty names.
+/// Errors if any existing node name starts with "internal".
+///
+/// @param tree_list A tree list from parse_newick or simulate_species_tree
+/// @return The tree with internal nodes named
+/// @export
+#[extendr]
+fn name_internal_nodes_r(tree_list: List) -> Result<List> {
+    let mut tree = rlist_to_flattree(&tree_list)?;
+    if tree.nodes.iter().any(|n| n.name.starts_with("internal")) {
+        return Err(Error::Other(
+            "Cannot auto-name internal nodes: at least one node already has a name starting with \"internal\"".to_string()
+        ));
+    }
+    tree.name_internal_nodes();
+    Ok(flattree_to_rlist(&tree))
+}
+
 // Macro to generate exports
 extendr_module! {
     mod rustree;
     fn simulate_species_tree_r;
     fn parse_newick_r;
+    fn name_internal_nodes_r;
     fn tree_to_newick_r;
     fn tree_num_leaves_r;
     fn tree_leaf_names_r;
@@ -1441,6 +1705,7 @@ extendr_module! {
     fn pairwise_distances_r;
     fn save_pairwise_distances_csv_r;
     fn parse_recphyloxml_r;
+    fn induced_transfers_r;
     fn simulate_dtl_stream_xml_r;
     fn simulate_dtl_stream_newick_r;
     fn simulate_dtl_per_species_stream_xml_r;

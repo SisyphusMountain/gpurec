@@ -12,6 +12,10 @@ parse_newick <- function(newick_str) {
   .Call("wrap__parse_newick_r", as.character(newick_str))
 }
 
+name_internal_nodes <- function(tree) {
+  .Call("wrap__name_internal_nodes_r", tree)
+}
+
 tree_to_newick <- function(tree) {
   .Call("wrap__tree_to_newick_r", tree)
 }
@@ -38,6 +42,18 @@ simulate_dtl_batch <- function(species_tree, n, lambda_d, lambda_t, lambda_l, tr
   .Call("wrap__simulate_dtl_batch_r", species_tree, as.integer(n), as.double(lambda_d), as.double(lambda_t), as.double(lambda_l), as.double(transfer_alpha), as.logical(require_extant), as.integer(seed))
 }
 
+simulate_dtl_per_species <- function(species_tree, lambda_d, lambda_t, lambda_l, transfer_alpha = NULL, require_extant = FALSE, seed = NULL) {
+  if (is.null(seed)) seed <- NA_integer_
+  if (is.null(transfer_alpha)) transfer_alpha <- NA_real_
+  .Call("wrap__simulate_dtl_per_species_r", species_tree, as.double(lambda_d), as.double(lambda_t), as.double(lambda_l), as.double(transfer_alpha), as.logical(require_extant), as.integer(seed))
+}
+
+simulate_dtl_per_species_batch <- function(species_tree, n, lambda_d, lambda_t, lambda_l, transfer_alpha = NULL, require_extant = FALSE, seed = NULL) {
+  if (is.null(seed)) seed <- NA_integer_
+  if (is.null(transfer_alpha)) transfer_alpha <- NA_real_
+  .Call("wrap__simulate_dtl_per_species_batch_r", species_tree, as.integer(n), as.double(lambda_d), as.double(lambda_t), as.double(lambda_l), as.double(transfer_alpha), as.logical(require_extant), as.integer(seed))
+}
+
 gene_tree_num_extant <- function(gene_tree) {
   .Call("wrap__gene_tree_num_extant_r", gene_tree)
 }
@@ -58,6 +74,39 @@ extract_induced_subtree_by_names <- function(tree, leaf_names) {
   .Call("wrap__extract_induced_subtree_by_names_r", tree, as.character(leaf_names))
 }
 
+sample_leaves <- function(gene_tree, species_leaf_names) {
+  .Call("wrap__sample_leaves_r", gene_tree, as.character(species_leaf_names))
+}
+
+# Induced Transfers
+
+#' Get DTL events attached to a gene tree.
+#'
+#' @param gene_tree A gene tree from simulate_dtl or simulate_dtl_batch
+#' @return A list with columns: event_type, time, gene_id, species,
+#'         from_species, to_species. Returns NULL if no events attached.
+get_dtl_events <- function(gene_tree) {
+  attr(gene_tree, "dtl_events")
+}
+
+#' Compute induced transfers by projecting onto a sampled subtree.
+#'
+#' @param species_tree The complete species tree
+#' @param sampled_leaf_names Character vector of species to keep
+#' @param dtl_events DTL events list (from get_dtl_events())
+#' @return A data.frame with columns: time, gene_id, from_complete,
+#'         to_complete, from_sampled, to_sampled
+induced_transfers <- function(species_tree, sampled_leaf_names,
+                              dtl_events) {
+  result <- .Call(
+    "wrap__induced_transfers_r",
+    species_tree,
+    as.character(sampled_leaf_names),
+    dtl_events
+  )
+  as.data.frame(result, stringsAsFactors = FALSE)
+}
+
 # I/O Functions
 
 save_newick <- function(tree_or_gene_tree, filepath) {
@@ -74,6 +123,10 @@ save_csv <- function(gene_tree, filepath) {
 
 save_bd_events_csv <- function(species_tree, filepath) {
   .Call("wrap__save_bd_events_csv_r", species_tree, as.character(filepath))
+}
+
+parse_recphyloxml <- function(filepath) {
+  .Call("wrap__parse_recphyloxml_r", as.character(filepath))
 }
 
 gene_tree_to_svg <- function(gene_tree, filepath = NULL, open_browser = FALSE) {
@@ -109,4 +162,34 @@ pairwise_distances <- function(tree, distance_type = "metric", leaves_only = TRU
 #' save_pairwise_distances_csv(sp_tree, "distances.csv", "metric")
 save_pairwise_distances_csv <- function(tree, filepath, distance_type = "metric", leaves_only = TRUE) {
   .Call("wrap__save_pairwise_distances_csv_r", tree, as.character(filepath), as.character(distance_type), as.logical(leaves_only))
+}
+
+# Streaming Functions (memory-efficient batch output)
+
+simulate_dtl_stream_xml <- function(newick, n, lambda_d, lambda_t, lambda_l, transfer_alpha = NULL, replacement_transfer = NULL, require_extant = FALSE, seed = NULL, output_dir) {
+  if (is.null(seed)) seed <- NA_integer_
+  if (is.null(transfer_alpha)) transfer_alpha <- NA_real_
+  if (is.null(replacement_transfer)) replacement_transfer <- NA_real_
+  .Call("wrap__simulate_dtl_stream_xml_r", as.character(newick), as.integer(n), as.double(lambda_d), as.double(lambda_t), as.double(lambda_l), as.double(transfer_alpha), as.double(replacement_transfer), as.logical(require_extant), as.integer(seed), as.character(output_dir))
+}
+
+simulate_dtl_stream_newick <- function(newick, n, lambda_d, lambda_t, lambda_l, transfer_alpha = NULL, replacement_transfer = NULL, require_extant = FALSE, seed = NULL, output_dir) {
+  if (is.null(seed)) seed <- NA_integer_
+  if (is.null(transfer_alpha)) transfer_alpha <- NA_real_
+  if (is.null(replacement_transfer)) replacement_transfer <- NA_real_
+  .Call("wrap__simulate_dtl_stream_newick_r", as.character(newick), as.integer(n), as.double(lambda_d), as.double(lambda_t), as.double(lambda_l), as.double(transfer_alpha), as.double(replacement_transfer), as.logical(require_extant), as.integer(seed), as.character(output_dir))
+}
+
+simulate_dtl_per_species_stream_xml <- function(newick, n, lambda_d, lambda_t, lambda_l, transfer_alpha = NULL, replacement_transfer = NULL, require_extant = FALSE, seed = NULL, output_dir) {
+  if (is.null(seed)) seed <- NA_integer_
+  if (is.null(transfer_alpha)) transfer_alpha <- NA_real_
+  if (is.null(replacement_transfer)) replacement_transfer <- NA_real_
+  .Call("wrap__simulate_dtl_per_species_stream_xml_r", as.character(newick), as.integer(n), as.double(lambda_d), as.double(lambda_t), as.double(lambda_l), as.double(transfer_alpha), as.double(replacement_transfer), as.logical(require_extant), as.integer(seed), as.character(output_dir))
+}
+
+simulate_dtl_per_species_stream_newick <- function(newick, n, lambda_d, lambda_t, lambda_l, transfer_alpha = NULL, replacement_transfer = NULL, require_extant = FALSE, seed = NULL, output_dir) {
+  if (is.null(seed)) seed <- NA_integer_
+  if (is.null(transfer_alpha)) transfer_alpha <- NA_real_
+  if (is.null(replacement_transfer)) replacement_transfer <- NA_real_
+  .Call("wrap__simulate_dtl_per_species_stream_newick_r", as.character(newick), as.integer(n), as.double(lambda_d), as.double(lambda_t), as.double(lambda_l), as.double(transfer_alpha), as.double(replacement_transfer), as.logical(require_extant), as.integer(seed), as.character(output_dir))
 }

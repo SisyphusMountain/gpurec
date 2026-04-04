@@ -308,9 +308,9 @@ fn parse_gene_tree(xml_content: &str) -> Result<GeneNode, ParseError> {
                         }
                     }
                     "T" if in_events_rec => {
-                        // Generic internal node marker (treat as speciation)
+                        // Zombi format: T denotes horizontal gene transfer
                         if let Some(node) = clade_stack.last_mut() {
-                            node.event_type = Event::Speciation;
+                            node.event_type = Event::Transfer;
                             if let Some(species_loc) = get_attribute(e, b"speciesLocation") {
                                 node.species_location = species_loc;
                             }
@@ -610,4 +610,38 @@ pub fn parse_gene_tree_only_file(
 ) -> Result<(FlatTree, Vec<Option<usize>>, Vec<Event>), ParseError> {
     let xml_content = fs::read_to_string(xml_filepath)?;
     parse_gene_tree_only(&xml_content, species_tree)
+}
+
+/// Extract per-node annotations from a gene-tree-only XML.
+///
+/// Walks the parsed XML gene tree and returns a map from node name to
+/// (species_location, Event) for every node (including loss nodes).
+/// Callers can then look up only the names they care about.
+pub fn parse_xml_gene_annotations(
+    xml_content: &str,
+) -> Result<HashMap<String, (String, Event)>, ParseError> {
+    let gene_root = parse_gene_tree(xml_content)?;
+    let mut annotations = HashMap::new();
+    collect_annotations(&gene_root, &mut annotations);
+    Ok(annotations)
+}
+
+/// File-based version of `parse_xml_gene_annotations`.
+pub fn parse_xml_gene_annotations_file(
+    xml_filepath: &str,
+) -> Result<HashMap<String, (String, Event)>, ParseError> {
+    let xml_content = fs::read_to_string(xml_filepath)?;
+    parse_xml_gene_annotations(&xml_content)
+}
+
+fn collect_annotations(node: &GeneNode, map: &mut HashMap<String, (String, Event)>) {
+    if !node.name.is_empty() {
+        map.insert(
+            node.name.clone(),
+            (node.species_location.clone(), node.event_type.clone()),
+        );
+    }
+    for child in &node.children {
+        collect_annotations(child, map);
+    }
 }

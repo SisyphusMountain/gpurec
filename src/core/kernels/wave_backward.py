@@ -1,7 +1,10 @@
-"""Fused Triton kernel for wave-backward (Neumann VJP + param VJP).
+"""Fused Triton kernels for wave-backward.
 
-Mirrors the forward wave_step_uniform_fused kernel structure:
-one CTA per clade, multi-pass over species dimension.
+Two kernels:
+1. _wave_backward_uniform_kernel: self-loop backward (Neumann VJP + param VJP)
+2. _dts_cross_backward_kernel: cross-clade DTS backward (adjoint propagation + param VJP)
+
+Both use one CTA per work-item, multi-pass over species dimension.
 """
 
 import torch
@@ -434,3 +437,268 @@ def wave_backward_uniform_fused(
     )
 
     return v_k, aw0, aw1, aw2, aw345, aw3, aw4
+
+
+# =========================================================================
+# Cross-clade DTS backward kernel
+# =========================================================================
+
+@triton.jit
+def _dts_cross_backward_kernel(
+    # Converged values [C, S]
+    Pi_star_ptr,
+    Pibar_star_ptr,
+    # Neumann-solved adjoint [W, S]
+    v_k_ptr,
+    # Split metadata
+    sl_ptr,            # [n_ws] int64 — left child global clade index
+    sr_ptr,            # [n_ws] int64 — right child global clade index
+    reduce_idx_ptr,    # [n_ws] int64 — wave-local parent index
+    wlsp_ptr,          # [n_ws] float — log split probability (squeezed)
+    # Scalar params
+    log_pD,            # float
+    log_pS,            # float
+    # Species children [S] int64
+    sp_child1_ptr,
+    sp_child2_ptr,
+    # Outputs [n_ws, S]
+    grad_Pi_l_ptr,
+    grad_Pi_r_ptr,
+    grad_Pibar_l_ptr,
+    grad_Pibar_r_ptr,
+    # Per-split param sums [n_ws]
+    param_pD_ptr,
+    param_pS_ptr,
+    # Dimensions
+    ws,                # wave start offset (parent row = ws + reduce_idx)
+    S: tl.constexpr,
+    stride_C: tl.constexpr,
+    BLOCK_S: tl.constexpr,
+):
+    """Fused cross-clade DTS backward for uniform_approx Pibar mode.
+
+    For each split i, computes the VJP of the 5 cross-clade DTS terms.
+
+    Key simplification: the chain rule through segment-logsumexp, 5-term
+    logsumexp, and the DTS_L/dts_r mixing collapses to a single weight:
+
+        v_DTS_5[t, i, s] = v_k[parent, s] * exp2(wlsp[i] + DTS_5[t,i,s] - Pi_parent[s])
+
+    This avoids materializing intermediate [5, n_ws, S] tensors.
+
+    Pass 1: compute direct Pi/Pibar gradients, accumulate param sums.
+    Pass 2: scatter speciation gradients to child species positions.
+    """
+    NEG_LARGE: tl.constexpr = -1e30
+
+    i = tl.program_id(0)  # split index
+
+    # Load split metadata (scalar per CTA)
+    sl = tl.load(sl_ptr + i)
+    sr = tl.load(sr_ptr + i)
+    parent_w = tl.load(reduce_idx_ptr + i)
+    wlsp = tl.load(wlsp_ptr + i)
+
+    # Base offsets into [C, S] for child clades
+    pi_l_base = sl * stride_C
+    pi_r_base = sr * stride_C
+    pibar_l_base = sl * stride_C
+    pibar_r_base = sr * stride_C
+    # Parent clade in Pi_star: row (ws + parent_w)
+    parent_pi_base = (ws + parent_w) * stride_C
+    # v_k is [W, S] contiguous, indexed by parent_w
+    parent_vk_base = parent_w * S
+    # Output row
+    out_base = i * S
+
+    # Accumulators for per-split param sums (1-element blocks for Triton compatibility)
+    sum_pD = tl.zeros((1,), dtype=tl.float32)
+    sum_pS = tl.zeros((1,), dtype=tl.float32)
+    _scalar_off = tl.arange(0, 1)  # for storing 1-element blocks
+
+    # ================================================================
+    # Pass 1: Direct contributions + param sums
+    # ================================================================
+    for s_start in range(0, S, BLOCK_S):
+        s_offs = s_start + tl.arange(0, BLOCK_S)
+        mask = s_offs < S
+
+        # Load child Pi/Pibar
+        Pi_l = tl.load(Pi_star_ptr + pi_l_base + s_offs, mask=mask, other=NEG_LARGE)
+        Pi_r = tl.load(Pi_star_ptr + pi_r_base + s_offs, mask=mask, other=NEG_LARGE)
+        Pibar_l = tl.load(Pibar_star_ptr + pibar_l_base + s_offs, mask=mask, other=NEG_LARGE)
+        Pibar_r = tl.load(Pibar_star_ptr + pibar_r_base + s_offs, mask=mask, other=NEG_LARGE)
+
+        # Species child gathers (for speciation terms)
+        c1 = tl.load(sp_child1_ptr + s_offs, mask=mask, other=0)
+        c2 = tl.load(sp_child2_ptr + s_offs, mask=mask, other=0)
+        c1_valid = (c1 < S) & mask
+        c2_valid = (c2 < S) & mask
+        Pi_l_s1 = tl.load(Pi_star_ptr + pi_l_base + c1, mask=c1_valid, other=NEG_LARGE)
+        Pi_l_s2 = tl.load(Pi_star_ptr + pi_l_base + c2, mask=c2_valid, other=NEG_LARGE)
+        Pi_r_s1 = tl.load(Pi_star_ptr + pi_r_base + c1, mask=c1_valid, other=NEG_LARGE)
+        Pi_r_s2 = tl.load(Pi_star_ptr + pi_r_base + c2, mask=c2_valid, other=NEG_LARGE)
+
+        # Load parent's Pi and v_k
+        Pi_parent = tl.load(Pi_star_ptr + parent_pi_base + s_offs, mask=mask, other=NEG_LARGE)
+        v_k_val = tl.load(v_k_ptr + parent_vk_base + s_offs, mask=mask, other=0.0)
+
+        # DTS_5 terms
+        d0 = log_pD + Pi_l + Pi_r           # D: duplication
+        d1 = Pi_l + Pibar_r                 # T: transfer l→r
+        d2 = Pi_r + Pibar_l                 # T: transfer r→l
+        d3 = log_pS + Pi_l_s1 + Pi_r_s2    # S: speciation (c1 in l, c2 in r)
+        d4 = log_pS + Pi_r_s1 + Pi_l_s2    # S: speciation (c1 in r, c2 in l)
+
+        # Simplified weight: v_DTS_5[t] = v_k * exp2(wlsp + DTS_5[t] - Pi_parent)
+        # Pi_parent >= wlsp + DTS_5[t], so exponent <= 0 and result in [0, 1].
+        # Guard: when Pi_parent = -inf, all weights are 0.
+        parent_valid = Pi_parent > NEG_LARGE
+
+        w0 = tl.where(parent_valid, tl.exp2(wlsp + d0 - Pi_parent), tl.zeros_like(d0))
+        w1 = tl.where(parent_valid, tl.exp2(wlsp + d1 - Pi_parent), tl.zeros_like(d1))
+        w2 = tl.where(parent_valid, tl.exp2(wlsp + d2 - Pi_parent), tl.zeros_like(d2))
+        w3 = tl.where(parent_valid, tl.exp2(wlsp + d3 - Pi_parent), tl.zeros_like(d3))
+        w4 = tl.where(parent_valid, tl.exp2(wlsp + d4 - Pi_parent), tl.zeros_like(d4))
+
+        vd0 = v_k_val * w0
+        vd1 = v_k_val * w1
+        vd2 = v_k_val * w2
+        vd3 = v_k_val * w3
+        vd4 = v_k_val * w4
+
+        # Direct contributions to Pi gradients (D + T terms only; S terms via scatter in pass 2)
+        tl.store(grad_Pi_l_ptr + out_base + s_offs, vd0 + vd1, mask=mask)
+        tl.store(grad_Pi_r_ptr + out_base + s_offs, vd0 + vd2, mask=mask)
+        tl.store(grad_Pibar_l_ptr + out_base + s_offs, vd2, mask=mask)
+        tl.store(grad_Pibar_r_ptr + out_base + s_offs, vd1, mask=mask)
+
+        # Accumulate param sums
+        sum_pD += tl.sum(vd0, axis=0)
+        sum_pS += tl.sum(vd3 + vd4, axis=0)
+
+    # Store per-split param sums (use block pointer for compatibility)
+    tl.store(param_pD_ptr + i + _scalar_off, sum_pD)
+    tl.store(param_pS_ptr + i + _scalar_off, sum_pS)
+
+    # ================================================================
+    # Pass 2: Scatter speciation contributions to child species positions
+    #
+    # DTS[3] reads Pi_l[child1[s]] and Pi_r[child2[s]], so:
+    #   grad_Pi_l[child1[s]] += vd3[s],  grad_Pi_r[child2[s]] += vd3[s]
+    # DTS[4] reads Pi_r[child1[s]] and Pi_l[child2[s]], so:
+    #   grad_Pi_r[child1[s]] += vd4[s],  grad_Pi_l[child2[s]] += vd4[s]
+    #
+    # Each CTA owns its output row. sp_child1/sp_child2 are injective
+    # (each child has one parent), so read-modify-write is race-free.
+    # ================================================================
+    for s_start in range(0, S, BLOCK_S):
+        s_offs = s_start + tl.arange(0, BLOCK_S)
+        mask = s_offs < S
+
+        # Recompute vd3, vd4 (speciation terms only)
+        c1 = tl.load(sp_child1_ptr + s_offs, mask=mask, other=0)
+        c2 = tl.load(sp_child2_ptr + s_offs, mask=mask, other=0)
+        c1_valid = (c1 < S) & mask
+        c2_valid = (c2 < S) & mask
+
+        Pi_l_s1 = tl.load(Pi_star_ptr + pi_l_base + c1, mask=c1_valid, other=NEG_LARGE)
+        Pi_l_s2 = tl.load(Pi_star_ptr + pi_l_base + c2, mask=c2_valid, other=NEG_LARGE)
+        Pi_r_s1 = tl.load(Pi_star_ptr + pi_r_base + c1, mask=c1_valid, other=NEG_LARGE)
+        Pi_r_s2 = tl.load(Pi_star_ptr + pi_r_base + c2, mask=c2_valid, other=NEG_LARGE)
+
+        Pi_parent = tl.load(Pi_star_ptr + parent_pi_base + s_offs, mask=mask, other=NEG_LARGE)
+        v_k_val = tl.load(v_k_ptr + parent_vk_base + s_offs, mask=mask, other=0.0)
+
+        d3 = log_pS + Pi_l_s1 + Pi_r_s2
+        d4 = log_pS + Pi_r_s1 + Pi_l_s2
+
+        parent_valid = Pi_parent > NEG_LARGE
+        w3 = tl.where(parent_valid, tl.exp2(wlsp + d3 - Pi_parent), tl.zeros_like(d3))
+        w4 = tl.where(parent_valid, tl.exp2(wlsp + d4 - Pi_parent), tl.zeros_like(d4))
+        vd3 = v_k_val * w3
+        vd4 = v_k_val * w4
+
+        # Scatter to child1 positions
+        # grad_Pi_l[child1[s]] += vd3[s]
+        cur = tl.load(grad_Pi_l_ptr + out_base + c1, mask=c1_valid, other=0.0)
+        tl.store(grad_Pi_l_ptr + out_base + c1, cur + vd3, mask=c1_valid)
+        # grad_Pi_r[child1[s]] += vd4[s]
+        cur = tl.load(grad_Pi_r_ptr + out_base + c1, mask=c1_valid, other=0.0)
+        tl.store(grad_Pi_r_ptr + out_base + c1, cur + vd4, mask=c1_valid)
+
+        # Scatter to child2 positions
+        # grad_Pi_r[child2[s]] += vd3[s]
+        cur = tl.load(grad_Pi_r_ptr + out_base + c2, mask=c2_valid, other=0.0)
+        tl.store(grad_Pi_r_ptr + out_base + c2, cur + vd3, mask=c2_valid)
+        # grad_Pi_l[child2[s]] += vd4[s]
+        cur = tl.load(grad_Pi_l_ptr + out_base + c2, mask=c2_valid, other=0.0)
+        tl.store(grad_Pi_l_ptr + out_base + c2, cur + vd4, mask=c2_valid)
+
+
+def dts_cross_backward_fused(
+    Pi_star, Pibar_star, v_k, ws,
+    sl, sr, reduce_idx, wlsp,
+    log_pD, log_pS,
+    sp_child1, sp_child2,
+    S,
+):
+    """Fused DTS cross-clade backward: replaces both param-grad and adjoint blocks.
+
+    Args:
+        Pi_star: [C, S] converged Pi (full, not just wave slice)
+        Pibar_star: [C, S] converged Pibar
+        v_k: [W, S] Neumann-solved adjoint for this wave
+        ws: wave start offset (int)
+        sl: [n_ws] int64 — left child clade indices
+        sr: [n_ws] int64 — right child clade indices
+        reduce_idx: [n_ws] int64 — wave-local parent indices
+        wlsp: [n_ws, 1] or [n_ws] — log split probabilities
+        log_pD: scalar float — log2 duplication probability
+        log_pS: scalar float — log2 speciation probability
+        sp_child1, sp_child2: [S] int64 — species child indices
+        S: int — number of species
+
+    Returns:
+        grad_Pi_l: [n_ws, S] gradient to Pi at left child clades (includes speciation scatter)
+        grad_Pi_r: [n_ws, S] gradient to Pi at right child clades (includes speciation scatter)
+        grad_Pibar_l: [n_ws, S] gradient to Pibar at left child clades
+        grad_Pibar_r: [n_ws, S] gradient to Pibar at right child clades
+        param_pD: [n_ws] per-split sum of v_DTS_5[0] (duplication param grad)
+        param_pS: [n_ws] per-split sum of v_DTS_5[3]+v_DTS_5[4] (speciation param grad)
+    """
+    n_ws = sl.shape[0]
+    device = Pi_star.device
+    dtype = Pi_star.dtype
+
+    # Squeeze wlsp to [n_ws]
+    wlsp_flat = wlsp.squeeze(-1) if wlsp.ndim > 1 else wlsp
+
+    # Extract scalar param values
+    pD_val = float(log_pD) if log_pD.ndim == 0 else float(log_pD.item())
+    pS_val = float(log_pS) if log_pS.ndim == 0 else float(log_pS.item())
+
+    # Allocate outputs
+    grad_Pi_l = torch.empty((n_ws, S), device=device, dtype=dtype)
+    grad_Pi_r = torch.empty((n_ws, S), device=device, dtype=dtype)
+    grad_Pibar_l = torch.empty((n_ws, S), device=device, dtype=dtype)
+    grad_Pibar_r = torch.empty((n_ws, S), device=device, dtype=dtype)
+    param_pD = torch.empty(n_ws, device=device, dtype=dtype)
+    param_pS = torch.empty(n_ws, device=device, dtype=dtype)
+
+    stride_C = Pi_star.stride(0)
+    BLOCK_S = min(256, triton.next_power_of_2(S))
+
+    grid = (n_ws,)
+    _dts_cross_backward_kernel[grid](
+        Pi_star, Pibar_star,
+        v_k,
+        sl, sr, reduce_idx, wlsp_flat,
+        pD_val, pS_val,
+        sp_child1, sp_child2,
+        grad_Pi_l, grad_Pi_r, grad_Pibar_l, grad_Pibar_r,
+        param_pD, param_pS,
+        ws, S, stride_C, BLOCK_S,
+    )
+
+    return grad_Pi_l, grad_Pi_r, grad_Pibar_l, grad_Pibar_r, param_pD, param_pS

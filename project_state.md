@@ -51,9 +51,10 @@ FD error is max relative error vs central finite differences (float64). Toleranc
 
 ## Optimizer Support
 
-- **`optimize_theta_wave`**: Adam optimizer, supports uniform + dense pibar, specieswise parameters.
-- **`optimize_theta_lbfgsb`**: L-BFGS-B with analytical or finite-difference gradient, all pibar modes.
-- **E adjoint**: CG/GMRES solver (17 CG iterations typical).
+- **`optimize_theta_wave`**: L-BFGS optimizer with implicit gradient (single-family, any pibar_mode). Warm-start E across iterations. Armijo line search.
+- **`optimize_theta_genewise`**: L-BFGS with **batched backward** across families. Single `Pi_wave_backward` call with `family_idx` for all families, per-gene convergence masking. Per-family forward → merged Pi → single batched backward → per-family E adjoint.
+- **E adjoint**: CG solver with GMRES fallback (17 CG iterations typical).
+- **Gradient pruning**: Per-clade adjoint thresholding in `Pi_wave_backward` — skips clades where adjoint magnitude < `pruning_threshold`. Achieves 49% clade pruning on test data.
 
 ## Benchmark: Forward Pass (1 family, float32)
 
@@ -97,6 +98,7 @@ Removed v1 wave path and stale code:
 
 - **Small-S kernel slower than FP**: fused Triton kernel underperforms fixed-point for S ≤ 256.
 - **No pairwise gradient support**: forward-only for pairwise parameter mode.
+- **Batched backward only validated at small S**: forward works at S=20K, batched backward not yet tested at large S.
 - **uniform OOMs at large S**: uses dense [S,S] `recipients_T` matmul — should exploit ancestor sparsity (O(depth) per species) instead.
 - **uniform coverage**: only 1 FD test at S=39; no large-S validation.
 - **`build_wave_layout` memory**: ~8 MB at S=20K (perm arrays + split metadata). Previously misreported as 6.7 GB.

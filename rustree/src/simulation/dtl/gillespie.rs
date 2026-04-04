@@ -58,7 +58,7 @@ pub(crate) fn simulate_dtl_gillespie<R: Rng>(
     let transfer_threshold = if total_dtl_rate > 0.0 { (lambda_d + lambda_t) / total_dtl_rate } else { 0.0 };
     // Preallocate as many gene nodes as species nodes (for default case where there are no transfers, no duplications, no losses)
     let estimated_capacity = species_tree.nodes.len();
-    let mut state = SimulationState::new(estimated_capacity);
+    let mut state = SimulationState::new(estimated_capacity, species_tree);
 
     // Find when origin species starts (beginning of its branch)
     let origin_start_time = species_tree.nodes[origin_species].depth

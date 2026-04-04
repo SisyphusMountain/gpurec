@@ -49,5 +49,10 @@ tests/data/test_trees_dtl01/
 # Vendored library (separate repo)
 logmatmul/
 
+# Generated graphs / session artifacts
+callgraph*
+*.session.txt
+2026-*.txt
+
 # Other
 torch/

@@ -281,7 +281,7 @@ fn find_gene_leaves_for_species(
 /// `gene_old_to_new` maps original gene indices to new indices (None if pruned).
 /// `species_old_to_new` maps original species indices to new indices.
 /// Returns `(new_node_mapping, new_event_mapping)` indexed by new gene tree nodes.
-fn remap_gene_tree_indices(
+pub fn remap_gene_tree_indices(
     sampled_gene_tree: &FlatTree,
     gene_old_to_new: &[Option<usize>],
     old_node_mapping: &[Option<usize>],

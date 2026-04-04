@@ -20,6 +20,7 @@ pub struct AleRaxConfig {
     pub output_dir: PathBuf,
     pub num_samples: usize,
     pub model_parametrization: ModelType,
+    pub gene_tree_rooting: Option<String>,
     pub seed: Option<u64>,
     pub alerax_path: String,
 }
@@ -260,6 +261,10 @@ fn build_alerax_command(config: &AleRaxConfig) -> Command {
     cmd.arg("-p").arg(&config.output_dir);
     cmd.arg("--model-parametrization").arg(config.model_parametrization.as_str());
     cmd.arg("--gene-tree-samples").arg(config.num_samples.to_string());
+
+    if let Some(ref rooting) = config.gene_tree_rooting {
+        cmd.arg("--gene-tree-rooting").arg(rooting);
+    }
 
     if let Some(seed) = config.seed {
         cmd.arg("--seed").arg(seed.to_string());
@@ -818,6 +823,7 @@ pub fn reconcile_forest(
     output_dir: Option<PathBuf>,
     num_samples: usize,
     model: ModelType,
+    gene_tree_rooting: Option<String>,
     seed: Option<u64>,
     alerax_path: &str,
     keep_output: bool,
@@ -876,6 +882,7 @@ pub fn reconcile_forest(
         output_dir: alerax_output_dir.clone(),
         num_samples,
         model_parametrization: model,
+        gene_tree_rooting,
         seed,
         alerax_path: alerax_path.to_string(),
     };

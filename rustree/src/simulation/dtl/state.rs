@@ -2,7 +2,7 @@
 
 use std::collections::BTreeMap;
 use rand::Rng;
-use crate::node::{FlatNode, Event};
+use crate::node::{FlatNode, FlatTree, Event};
 use super::event::DTLEvent;
 
 /// Holds the mutable state during DTL simulation.
@@ -10,7 +10,8 @@ use super::event::DTLEvent;
 /// Used by both per-gene and per-species simulation models via the shared
 /// Gillespie loop. Tracks gene nodes, their mapping to species, and which
 /// genes are alive in each species.
-pub(crate) struct SimulationState {
+pub(crate) struct SimulationState<'a> {
+    pub species_tree: &'a FlatTree,
     pub gene_nodes: Vec<FlatNode>,
     pub node_mapping: Vec<Option<usize>>,
     pub event_mapping: Vec<Event>,
@@ -20,10 +21,11 @@ pub(crate) struct SimulationState {
     pub genes_per_species: Option<BTreeMap<usize, Vec<usize>>>,
 }
 
-impl SimulationState {
+impl<'a> SimulationState<'a> {
     // TODO: make the function names more coherent and clear.
-    pub fn new(capacity: usize) -> Self {
+    pub fn new(capacity: usize, species_tree: &'a FlatTree) -> Self {
         Self {
+            species_tree,
             gene_nodes: Vec::with_capacity(capacity),
             node_mapping: Vec::with_capacity(capacity),
             event_mapping: Vec::with_capacity(capacity),
@@ -36,7 +38,7 @@ impl SimulationState {
     pub fn create_gene_node(&mut self, parent: Option<usize>, species_idx: usize, event: Event, time: f64) -> usize {
         let idx = self.gene_nodes.len();
         self.gene_nodes.push(FlatNode {
-            name: format!("{}_{}", species_idx, idx),
+            name: format!("{}_{}", self.species_tree.nodes[species_idx].name, idx),
             left_child: None,
             right_child: None,
             parent,

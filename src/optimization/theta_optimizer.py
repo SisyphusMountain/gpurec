@@ -1036,6 +1036,12 @@ def optimize_theta_genewise(
     C_total = int(all_batched['ccp']['C'])
     S = species_helpers['S']
 
+    # Precompute ancestors_T for uniform mode
+    _ancestors_T = None
+    if pibar_mode == 'uniform':
+        anc_dense = species_helpers['ancestors_dense'].to(device=device, dtype=dtype)
+        _ancestors_T = anc_dense.T.to_sparse_coo()
+
     # --- Phase B: define eval functions ---
 
     def _eval_E(theta_t, warm_E):
@@ -1050,6 +1056,7 @@ def optimize_theta_genewise(
             max_iters=e_max_iters, tolerance=e_tol,
             warm_start_E=warm_E,
             dtype=dtype, device=device, pibar_mode=pibar_mode,
+            ancestors_T=_ancestors_T,
         )
         return log_pS, log_pD, log_pL, mt, E_out
 
@@ -1087,9 +1094,10 @@ def optimize_theta_genewise(
             nll[g] = logL_g.sum()
 
             # Un-permute to original clade space
-            inv_perm_g = wave_layouts[g]['inv_perm']
-            Pi_orig[g] = Pi_out_g['Pi_wave_ordered'][inv_perm_g]
-            Pibar_orig[g] = Pi_out_g['Pibar_wave_ordered'][inv_perm_g]
+            # perm[orig] = wave_pos, so Pi_wave[perm] gives original order
+            perm_g = wave_layouts[g]['perm']
+            Pi_orig[g] = Pi_out_g['Pi_wave_ordered'][perm_g]
+            Pibar_orig[g] = Pi_out_g['Pibar_wave_ordered'][perm_g]
 
         # --- Merge into batched tensor in merged layout order ---
         merged_perm = merged_layout['perm']
@@ -1116,6 +1124,7 @@ def optimize_theta_genewise(
             use_pruning=True,
             pruning_threshold=pruning_threshold,
             pibar_mode=pibar_mode,
+            ancestors_T=_ancestors_T,
             family_idx=merged_layout['family_idx'],
         )
 
@@ -1147,6 +1156,7 @@ def optimize_theta_genewise(
                 device, dtype,
                 cg_tol=cg_tol, cg_maxiter=cg_maxiter,
                 pibar_mode=pibar_mode,
+                ancestors_T=_ancestors_T,
             )
             grad[g] = grad_theta_g
 
@@ -1244,6 +1254,9 @@ def optimize_theta_genewise(
             if not ls_pending.any():
                 break
             alpha[ls_pending] *= 0.5
+
+        # If line search failed (Armijo never satisfied), reject the step
+        alpha[ls_pending] = 0.0
 
         # Construct final theta from per-gene alpha
         theta_accepted = (theta.reshape(G, -1) + alpha.unsqueeze(-1) * direction).reshape(theta_shape)
