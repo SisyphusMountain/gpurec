@@ -98,9 +98,9 @@ def _setup_single_family(ds_name, n_families=1, device=None, dtype=torch.float64
     unnorm_row_max = tm_unnorm.max(dim=-1).values.to(device=device, dtype=dtype)
 
     # Use uniform mode for large S, dense for small S (Triton kernels need dense for S<=256)
-    pibar_mode = 'uniform_approx' if S > 256 else 'dense'
+    pibar_mode = 'uniform' if S > 256 else 'dense'
 
-    if pibar_mode == 'uniform_approx':
+    if pibar_mode == 'uniform':
         log_pS, log_pD, log_pL, transfer_mat, max_transfer_mat = extract_parameters_uniform(
             theta, unnorm_row_max, specieswise=False,
         )
@@ -177,10 +177,10 @@ def _setup_single_family(ds_name, n_families=1, device=None, dtype=torch.float64
 
 
 def _full_forward(theta, unnorm_row_max, sh, wave_layout, root_clade_ids, device, dtype,
-                   pibar_mode='uniform_approx', tm_unnorm=None, ancestors_T=None, specieswise=False):
+                   pibar_mode='uniform', tm_unnorm=None, ancestors_T=None, specieswise=False):
     """Full forward pass at given theta, return logL."""
     S = sh['S']
-    if pibar_mode in ('uniform_approx', 'uniform'):
+    if pibar_mode in ('uniform', 'uniform'):
         log_pS, log_pD, log_pL, transfer_mat, mt = extract_parameters_uniform(
             theta, unnorm_row_max, specieswise=specieswise,
         )
@@ -1326,7 +1326,7 @@ class TestUniformExactFullChainFD:
 
 
 class TestSpecieswiseUniformFD:
-    """Test full-chain gradient dL/dtheta with specieswise=True, pibar_mode='uniform_approx' via FD."""
+    """Test full-chain gradient dL/dtheta with specieswise=True, pibar_mode='uniform' via FD."""
 
     @pytest.fixture(scope="class")
     def setup_sw_uniform(self):
@@ -1380,7 +1380,7 @@ class TestSpecieswiseUniformFD:
         tm_unnorm = torch.log2(sh["Recipients_mat"])
         unnorm_row_max = tm_unnorm.max(dim=-1).values.to(device=device, dtype=dtype)
 
-        pibar_mode = 'uniform_approx'
+        pibar_mode = 'uniform'
         log_pS, log_pD, log_pL, transfer_mat, max_transfer_mat = extract_parameters_uniform(
             theta, unnorm_row_max, specieswise=True,
         )
@@ -1450,7 +1450,7 @@ class TestSpecieswiseUniformFD:
         logL_base, Pi_out_base, E_out_base, log_pS, log_pD, log_pL, mt = _full_forward(
             theta, d['unnorm_row_max'], d['species_helpers'],
             d['wave_layout'], d['root_clade_ids'], device, dtype,
-            pibar_mode='uniform_approx', specieswise=True,
+            pibar_mode='uniform', specieswise=True,
         )
 
         grad_theta, statsG = implicit_grad_loglik_vjp_wave(
@@ -1468,7 +1468,7 @@ class TestSpecieswiseUniformFD:
             device=device, dtype=dtype,
             neumann_terms=4, use_pruning=False,
             cg_tol=1e-10, cg_maxiter=1000,
-            pibar_mode='uniform_approx',
+            pibar_mode='uniform',
         )
 
         print(f"  [sw-uniform] Base logL = {logL_base:.8f}")
@@ -1493,7 +1493,7 @@ class TestSpecieswiseUniformFD:
                 logL_p, _, _, _, _, _, _ = _full_forward(
                     theta_p, d['unnorm_row_max'], d['species_helpers'],
                     d['wave_layout'], d['root_clade_ids'], device, dtype,
-                    pibar_mode='uniform_approx', specieswise=True,
+                    pibar_mode='uniform', specieswise=True,
                 )
 
                 theta_m = theta.clone()
@@ -1501,7 +1501,7 @@ class TestSpecieswiseUniformFD:
                 logL_m, _, _, _, _, _, _ = _full_forward(
                     theta_m, d['unnorm_row_max'], d['species_helpers'],
                     d['wave_layout'], d['root_clade_ids'], device, dtype,
-                    pibar_mode='uniform_approx', specieswise=True,
+                    pibar_mode='uniform', specieswise=True,
                 )
 
                 fd = (logL_p - logL_m) / (2 * eps)
@@ -1981,7 +1981,7 @@ class TestSpecieswiseForwardConsistency:
             species_helpers=sh, log_pS=log_pS_g, log_pD=log_pD_g, log_pL=log_pL_g,
             transfer_mat=tf_g, max_transfer_mat=mt_g,
             max_iters=2000, tolerance=1e-8, warm_start_E=None,
-            dtype=dtype, device=device, pibar_mode='uniform_approx',
+            dtype=dtype, device=device, pibar_mode='uniform',
         )
 
         # --- Specieswise mode (uniform rates = same D,L,T for all species) ---
@@ -1993,7 +1993,7 @@ class TestSpecieswiseForwardConsistency:
             species_helpers=sh, log_pS=log_pS_sw, log_pD=log_pD_sw, log_pL=log_pL_sw,
             transfer_mat=tf_sw, max_transfer_mat=mt_sw,
             max_iters=2000, tolerance=1e-8, warm_start_E=None,
-            dtype=dtype, device=device, pibar_mode='uniform_approx',
+            dtype=dtype, device=device, pibar_mode='uniform',
         )
 
         # Build wave layout (shared)
@@ -2024,7 +2024,7 @@ class TestSpecieswiseForwardConsistency:
             E_s1=E_g['E_s1'], E_s2=E_g['E_s2'],
             log_pS=log_pS_g, log_pD=log_pD_g, log_pL=log_pL_g,
             transfer_mat=tf_g, max_transfer_mat=mt_g,
-            device=device, dtype=dtype, pibar_mode='uniform_approx',
+            device=device, dtype=dtype, pibar_mode='uniform',
         )
         logL_g = compute_log_likelihood(
             Pi_g['Pi'], E_g['E'], root_clade_ids,
@@ -2037,7 +2037,7 @@ class TestSpecieswiseForwardConsistency:
             E_s1=E_sw['E_s1'], E_s2=E_sw['E_s2'],
             log_pS=log_pS_sw, log_pD=log_pD_sw, log_pL=log_pL_sw,
             transfer_mat=tf_sw, max_transfer_mat=mt_sw,
-            device=device, dtype=dtype, pibar_mode='uniform_approx',
+            device=device, dtype=dtype, pibar_mode='uniform',
         )
         logL_sw = compute_log_likelihood(
             Pi_sw['Pi'], E_sw['E'], root_clade_ids,
@@ -2077,7 +2077,7 @@ class TestSpecieswiseForwardConsistency:
 
 
 class TestGenewiseGradient:
-    """Test genewise wave gradient (per-gene theta, uniform_approx pibar)."""
+    """Test genewise wave gradient (per-gene theta, uniform pibar)."""
 
     @pytest.fixture(scope="class")
     def setup_genewise(self):
@@ -2158,7 +2158,7 @@ class TestGenewiseGradient:
         families = d['families']
         sh = d['species_helpers']
         unnorm_row_max = d['unnorm_row_max']
-        pibar_mode = 'uniform_approx'
+        pibar_mode = 'uniform'
 
         def _forward_genewise(theta_s):
             """Full genewise forward: extract params, E, Pi, logL per family."""
@@ -2489,12 +2489,12 @@ class TestGradientDescentAll:
 
     @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
     @pytest.mark.parametrize("genewise,specieswise,pibar_mode", [
-        (False, False, 'uniform_approx'),
+        (False, False, 'uniform'),
         (False, False, 'dense'),
-        (False, True, 'uniform_approx'),
+        (False, True, 'uniform'),
         (False, True, 'dense'),
-        (True, False, 'uniform_approx'),
-        (True, True, 'uniform_approx'),
+        (True, False, 'uniform'),
+        (True, True, 'uniform'),
     ])
     def test_descent_decreases_nll(self, shared_setup, genewise, specieswise, pibar_mode):
         """Gradient descent should decrease NLL for all valid combinations."""

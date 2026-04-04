@@ -135,9 +135,7 @@ class GeneDataset(Dataset):
         dtype: torch.dtype,
     ) -> tuple[dict[str, Any], torch.Tensor | None]:
         skip_keys = set()
-        if pibar_mode == 'uniform_approx':
-            skip_keys = {'ancestors_dense', 'Recipients_mat'}
-        elif pibar_mode == 'uniform':
+        if pibar_mode == 'uniform':
             skip_keys = {'Recipients_mat'}
 
         species_helpers = {
@@ -176,7 +174,7 @@ class GeneDataset(Dataset):
         device: torch.device,
         dtype: torch.dtype,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor | None, torch.Tensor]:
-        use_uniform_extract = (pibar_mode in ('uniform_approx', 'uniform')) and not self.pairwise
+        use_uniform_extract = (pibar_mode == 'uniform') and not self.pairwise
 
         if use_uniform_extract and not self.genewise:
             unnorm_row_max = self.unnorm_row_max.to(device=device, dtype=dtype)
@@ -318,8 +316,8 @@ class GeneDataset(Dataset):
             chunk_size: If set, process families in chunks of this size to avoid OOM.
                 Recommended: 20 for S~2000.
             max_wave_size: Max clades per wave for wave scheduling. Default 4096.
-            pibar_mode: 'dense' (cuBLAS matmul) or 'uniform_approx' (O(W*S) approximation).
-                Use 'uniform_approx' for large S where the transfer matrix is nearly uniform.
+            pibar_mode: 'dense' (cuBLAS matmul) or 'uniform' (O(W*S) exact for scalar/specieswise T).
+                Use 'uniform' for large S where the transfer matrix is nearly uniform.
         """
         device, dtype = self._resolve_device_dtype(device, dtype)
 
@@ -395,7 +393,7 @@ class GeneDataset(Dataset):
         Ebar = E_out['E_bar']
 
         # Free large [S,S] tensors after E_step when using uniform modes
-        if pibar_mode in ('uniform_approx', 'uniform'):
+        if pibar_mode == 'uniform':
             transfer_mat = None
 
         # Wave scheduling: merge all families into cross-family waves

@@ -60,12 +60,7 @@ def E_step(E, sp_P_idx, sp_child12_idx, log_pS, log_pD, log_pL, transfer_mat, ma
     # D
     E_stack[1] = pD + 2 * E
     # T: compute Ebar
-    if pibar_mode == 'uniform_approx':
-        # Uniform: Ebar[s] = logsumexp2(E) + mt[s]
-        # O(S) instead of O(S^2) matvec
-        lse_E = logsumexp2(E, dim=-1, keepdim=True)  # [1] or [N, 1]
-        Ebar = lse_E + max_transfer_mat  # broadcasts to [S] or [N, S]
-    elif pibar_mode == 'uniform':
+    if pibar_mode == 'uniform':
         # Exact Ebar = row_sum(E) - ancestor_sum(E), in log-space
         max_E = E.max(dim=-1, keepdim=True).values
         expE = torch.exp2(E - max_E)                     # [S] or [N, S]

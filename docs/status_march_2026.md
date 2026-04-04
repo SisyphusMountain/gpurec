@@ -79,12 +79,12 @@ Specieswise and pairwise are **mutually exclusive** (both are transfer_mode choi
 | pibar_mode | Pibar cost | Ebar cost | Accuracy | Transfer modes | Tested |
 |---|---|---|---|---|---|
 | `dense` | O(W×S²) cuBLAS | O(S²) einsum | Exact | all | **yes** |
-| `uniform_approx` | O(W×S) row_sum-self | O(S) logsumexp | ~1e-6 rel | uniform, specieswise | **yes** |
+| `uniform` | O(W×S) row_sum-self | O(S) logsumexp | ~1e-6 rel | uniform, specieswise | **yes** |
 | `uniform` | O(W×S + nnz) sparse | O(S²) sparse | Exact | uniform, specieswise | partial (manual) |
 | `topk` | O(W×k×S) gather+bmm or k-loop | dense fallback | ~0.01 abs per family | all (designed for pairwise at large S) | **yes** (forward + L-BFGS-B) |
 
 **Notes:**
-- `uniform_approx` and `uniform` don't apply to pairwise (transfer matrix is non-uniform)
+- `uniform` and `uniform` don't apply to pairwise (transfer matrix is non-uniform)
 - `topk` is the intended large-S path for pairwise; forward and L-BFGS-B convergence tested
 - `uniform` mode verified manually (matches dense at fp64) but has no pytest coverage
 
@@ -99,7 +99,7 @@ Specieswise and pairwise are **mutually exclusive** (both are transfer_mode choi
 | Fixed-point (FP) | 48.0s | 4.8s |
 | Wave v1 (gather/scatter) | — | 73ms |
 | Wave (contiguous) | 2.6s | 200ms (18.6x vs FP) |
-| Wave + uniform_approx | — | ~50ms (4x vs dense cuBLAS) |
+| Wave + uniform | — | ~50ms (4x vs dense cuBLAS) |
 
 ### Large-S (S=19999, 10K-leaf species tree)
 
@@ -149,7 +149,7 @@ Specieswise and pairwise are **mutually exclusive** (both are transfer_mode choi
 | `tests/unit/test_wave_vs_fp.py` | 11 | uniform/dense, small+large S | all pass |
 | `tests/unit/test_wave_v2.py` | 7 | uniform/dense, batching | all pass |
 | `tests/unit/test_cross_family_wave.py` | 13 | uniform/dense, collation, AleRax comparison | all pass |
-| `tests/unit/test_genewise_wave.py` | 6 | genewise × (uniform_approx, dense) | all pass |
+| `tests/unit/test_genewise_wave.py` | 6 | genewise × (uniform, dense) | all pass |
 | `tests/unit/test_seg_logsumexp.py` | 4 | Triton kernel fp32/fp64, forward+backward | all pass |
 | `tests/gradients/test_wave_gradient.py` | 35+ | all pibar modes × (global, specieswise, genewise) gradients, batched backward, genewise optimizer | all pass |
 | `tests/integration/test_e2e_alerax.py` | 1 | Full pipeline vs AleRax (simulated trees) | pass (slow) |
@@ -232,10 +232,10 @@ Specieswise and pairwise are **mutually exclusive** (both are transfer_mode choi
 |---|---|---|---|---|---|
 | `test_extract_params_uniform_genewise_shapes` | synthetic | — | — | Verifies tensor shapes for `extract_parameters_uniform` with genewise=True: pS/pD/pL [G], mt [G,S] for non-specieswise; pS/pD/pL [G,S], mt [G,S] for specieswise | shape checks |
 | `test_extract_params_uniform_genewise_consistency` | synthetic | 50 | 4 | Per-family extraction == stacked genewise extraction | `allclose(atol=1e-6)` |
-| `test_genewise_wave_vs_fp_uniform_approx` | test_trees_100 | 199 | 5 | Genewise wave (`uniform_approx`) vs genewise FP (`dense`) | \|wave − fp\| < 5e-2 per family |
-| `test_genewise_wave_vs_fp_specieswise_uniform_approx` | test_trees_100 | 199 | 3 | Genewise + specieswise wave (`uniform_approx`) vs FP (`dense`). theta shape [S,3] per family | \|wave − fp\| < max(5e-2, \|fp\| × 5e-4) |
+| `test_genewise_wave_vs_fp_uniform` | test_trees_100 | 199 | 5 | Genewise wave (`uniform`) vs genewise FP (`dense`) | \|wave − fp\| < 5e-2 per family |
+| `test_genewise_wave_vs_fp_specieswise_uniform` | test_trees_100 | 199 | 3 | Genewise + specieswise wave (`uniform`) vs FP (`dense`). theta shape [S,3] per family | \|wave − fp\| < max(5e-2, \|fp\| × 5e-4) |
 | `test_genewise_wave_batch_vs_per_family` | test_trees_100 | 199 | 4 | Full genewise batch == sum of single-family genewise batches | \|batch − seq\| < 1e-2 |
-| `test_genewise_wave_large_s` | test_trees_1000 | 1999 | 3 | Genewise at large S: wave (`uniform_approx`) vs FP (`dense`) | \|wave − fp\| < max(5e-2, \|fp\| × 5e-4) |
+| `test_genewise_wave_large_s` | test_trees_1000 | 1999 | 3 | Genewise at large S: wave (`uniform`) vs FP (`dense`) | \|wave − fp\| < max(5e-2, \|fp\| × 5e-4) |
 
 ---
 
@@ -316,7 +316,7 @@ These are the most important gradient tests. They perturb theta, re-solve both E
 
 | Test Class | pibar_mode | Dataset | S | theta shape | eps | Tolerance | What's validated |
 |---|---|---|---|---|---|---|---|
-| `TestFullChainFD` | uniform_approx | test_trees_1000 | 1999 | [3] | 1e-4 | rel < 1e-4 per component | dL/d(theta[0]), dL/d(theta[1]), dL/d(theta[2]) |
+| `TestFullChainFD` | uniform | test_trees_1000 | 1999 | [3] | 1e-4 | rel < 1e-4 per component | dL/d(theta[0]), dL/d(theta[1]), dL/d(theta[2]) |
 | `TestFullChainFDDense` | dense | test_trees_1000 | 1999 | [3] | 1e-4 | rel < 1e-3 | Same 3 components, via dense matmul Pibar path |
 | `TestUniformExactFullChainFD` | uniform (exact) | test_trees_20 | ~39 | [3] | 1e-4 | rel < 1e-3 | Same, with ancestor-corrected sparse Pibar |
 
@@ -326,7 +326,7 @@ Specieswise mode: theta [S,3], per-species D/L/T rates. FD perturbs each species
 
 | Test Class | pibar_mode | Dataset | S | eps | Tolerance | What's validated |
 |---|---|---|---|---|---|---|
-| `TestSpecieswiseUniformFD` | uniform_approx | test_trees_20 | ~39 | 1e-4 | rel < 1e-3 | Random-direction FD on theta [S,3] |
+| `TestSpecieswiseUniformFD` | uniform | test_trees_20 | ~39 | 1e-4 | rel < 1e-3 | Random-direction FD on theta [S,3] |
 | `TestSpecieswiseDenseFD` | dense | test_trees_20 | ~39 | 1e-4 | rel < 1e-3 | Same, dense Pibar path |
 | `TestSpecieswiseUniformExactFD` | uniform (exact) | test_trees_20 | ~39 | 1e-4 | rel < 1e-3 | Same, ancestor-corrected sparse path |
 
@@ -356,12 +356,12 @@ Parametrized over all 6 valid (genewise, specieswise, pibar_mode) combinations:
 
 | genewise | specieswise | pibar_mode | theta shape | Method |
 |---|---|---|---|---|
-| False | False | uniform_approx | [3] | `optimize_theta_wave` (3 steps, lr=0.1) |
+| False | False | uniform | [3] | `optimize_theta_wave` (3 steps, lr=0.1) |
 | False | False | dense | [3] | same |
-| False | True | uniform_approx | [S,3] | same |
+| False | True | uniform | [S,3] | same |
 | False | True | dense | [S,3] | same |
-| True | False | uniform_approx | [G,3] | Manual Adam loop with `implicit_grad_loglik_vjp_wave_genewise` |
-| True | True | uniform_approx | [G,S,3] | same |
+| True | False | uniform | [G,3] | Manual Adam loop with `implicit_grad_loglik_vjp_wave_genewise` |
+| True | True | uniform | [G,S,3] | same |
 
 **Assertion**: NLL decreases after 3 Adam steps for each combination.
 

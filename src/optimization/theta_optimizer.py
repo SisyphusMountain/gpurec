@@ -221,7 +221,7 @@ def implicit_grad_loglik_vjp_wave(
     cg_tol: float = 1e-8,
     cg_maxiter: int = 500,
     gmres_restart: int = 40,
-    pibar_mode: str = 'uniform_approx',
+    pibar_mode: str = 'uniform',
     transfer_mat: Optional[torch.Tensor] = None,
     transfer_mat_unnormalized: Optional[torch.Tensor] = None,
     ancestors_T: Optional[torch.Tensor] = None,
@@ -276,7 +276,7 @@ def _e_adjoint_and_theta_vjp(
     device, dtype,
     *,
     cg_tol=1e-8, cg_maxiter=500, gmres_restart=40,
-    pibar_mode='uniform_approx',
+    pibar_mode='uniform',
     transfer_mat=None, transfer_mat_unnormalized=None, ancestors_T=None,
 ):
     """E adjoint solve + theta VJP from pre-computed Pi backward result.
@@ -307,18 +307,14 @@ def _e_adjoint_and_theta_vjp(
                 max_E = E_req2.max(dim=-1, keepdim=True).values
                 expE = torch.exp2(E_req2 - max_E)
                 Ebar_recomp = _safe_log2(torch.einsum("ij,j->i", transfer_mat, expE)) + max_E.squeeze(-1) + mt_sq
-            elif pibar_mode == 'uniform' and ancestors_T is not None:
-                # Ebar[s] = log2(sum(exp2(E)) - sum_{j: s is ancestor of j}(exp2(E[j]))) + max_E + mt[s]
+            else:
+                # uniform: Ebar[s] = log2(sum(exp2(E)) - ancestor_sum) + max_E + mt[s]
                 max_E = E_req2.max(dim=-1, keepdim=True).values
                 expE = torch.exp2(E_req2 - max_E)
                 expE_2d = expE.unsqueeze(0)
                 row_sum = expE_2d.sum(dim=-1, keepdim=True)
                 ancestor_sum = expE_2d @ ancestors_T
                 Ebar_recomp = _safe_log2((row_sum - ancestor_sum).squeeze(0)) + max_E.squeeze(-1) + mt_sq
-            else:
-                # uniform: Ebar[s] = logsumexp2(E) + mt[s]
-                lse_val = torch.log2(torch.exp2(E_req2).sum(dim=-1, keepdim=True))
-                Ebar_recomp = lse_val + mt_sq
             ebar_to_e = torch.autograd.grad(
                 Ebar_recomp, E_req2,
                 grad_outputs=pi_bwd['grad_Ebar'],
@@ -391,7 +387,7 @@ def _e_adjoint_and_theta_vjp(
             if grad_transfer_mat is not None:
                 param_loss = param_loss + (transfer_mat_r * grad_transfer_mat).sum()
         else:
-            # uniform and uniform_approx: no theta-dependent transfer_mat
+            # uniform: no theta-dependent transfer_mat
             log_pS_r, log_pD_r, log_pL_r, _, mt_r = extract_parameters_uniform(
                 theta_req, unnorm_row_max, specieswise=specieswise,
             )
@@ -420,31 +416,19 @@ def _e_adjoint_and_theta_vjp(
 
             E_from_theta = G_E_theta(log_pS_r2, log_pD_r2, log_pL_r2, transfer_mat_r2, mt_r2)
         else:
-            if pibar_mode == 'uniform' and ancestors_T is not None:
-                log_pS_r2, log_pD_r2, log_pL_r2, _, mt_r2 = extract_parameters_uniform(
-                    theta_req2, unnorm_row_max, specieswise=specieswise,
-                )
+            # uniform: no theta-dependent transfer_mat
+            log_pS_r2, log_pD_r2, log_pL_r2, _, mt_r2 = extract_parameters_uniform(
+                theta_req2, unnorm_row_max, specieswise=specieswise,
+            )
 
-                def G_E_theta(th_pS, th_pD, th_pL, th_mt):
-                    return E_step(
-                        E_star.detach(), sp_P_idx, sp_c12_idx,
-                        th_pS, th_pD, th_pL, None, th_mt,
-                        pibar_mode='uniform', ancestors_T=ancestors_T,
-                    )[0]
+            def G_E_theta(th_pS, th_pD, th_pL, th_mt):
+                return E_step(
+                    E_star.detach(), sp_P_idx, sp_c12_idx,
+                    th_pS, th_pD, th_pL, None, th_mt,
+                    pibar_mode='uniform', ancestors_T=ancestors_T,
+                )[0]
 
-                E_from_theta = G_E_theta(log_pS_r2, log_pD_r2, log_pL_r2, mt_r2)
-            else:
-                log_pS_r2, log_pD_r2, log_pL_r2, _, mt_r2 = extract_parameters_uniform(
-                    theta_req2, unnorm_row_max, specieswise=specieswise,
-                )
-
-                def G_E_theta(th_pS, th_pD, th_pL, th_mt):
-                    return E_step(
-                        E_star.detach(), sp_P_idx, sp_c12_idx,
-                        th_pS, th_pD, th_pL, None, th_mt, pibar_mode='uniform_approx',
-                    )[0]
-
-                E_from_theta = G_E_theta(log_pS_r2, log_pD_r2, log_pL_r2, mt_r2)
+            E_from_theta = G_E_theta(log_pS_r2, log_pD_r2, log_pL_r2, mt_r2)
 
         gtheta_E = torch.autograd.grad(
             E_from_theta, theta_req2,
@@ -474,7 +458,7 @@ def implicit_grad_loglik_vjp_wave_genewise(
     specieswise: bool,
     device: torch.device,
     dtype: torch.dtype,
-    pibar_mode: str = 'uniform_approx',
+    pibar_mode: str = 'uniform',
     neumann_terms: int = 3,
     use_pruning: bool = True,
     pruning_threshold: float = 1e-6,
@@ -620,7 +604,7 @@ def optimize_theta_wave(
     specieswise: bool = False,
     device=None,
     dtype=torch.float64,
-    pibar_mode: str = 'uniform_approx',
+    pibar_mode: str = 'uniform',
     optimizer: str = 'adam',
     momentum: float = 0.9,
 ):
@@ -910,7 +894,7 @@ def optimize_theta_genewise(
     cg_maxiter=500,
     device=None,
     dtype=torch.float32,
-    pibar_mode='uniform_approx',
+    pibar_mode='uniform',
     specieswise=False,
     local_iters=2000,
     local_tolerance=1e-3,
@@ -970,9 +954,7 @@ def optimize_theta_genewise(
 
     # Move species_helpers tensors to device (skip large [S,S] matrices for uniform modes)
     _skip_keys = set()
-    if pibar_mode == 'uniform_approx':
-        _skip_keys = {'ancestors_dense', 'Recipients_mat'}
-    elif pibar_mode == 'uniform':
+    if pibar_mode == 'uniform':
         _skip_keys = {'Recipients_mat'}
     def _move_tensor(t):
         if t.dtype.is_floating_point:

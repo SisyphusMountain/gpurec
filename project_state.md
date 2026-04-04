@@ -13,8 +13,7 @@
 Three strategies for computing Pibar (the transfer-weighted sum of Pi), distinguished by the transfer rate structure:
 
 1. **Uniform** (scalar T): `Pibar[c,s] = sum_j(Pi[c,j]) - sum_{j∈ancestors(s)}(Pi[c,j])`, then scale by `mt[s]`. Unweighted sum + sparse ancestor correction. O(W×S + W×nnz_ancestors).
-   - Code `pibar_mode='uniform'`: exact (uses `recipients_T = (1-ancestors_dense).T`)
-   - Code `pibar_mode='uniform_approx'`: approximation (subtracts only self-term, ignores other ancestors; max rel error ~1e-6 at S=2K)
+   - Code `pibar_mode='uniform'`: exact (uses `ancestors_T` sparse matmul for ancestor correction)
 
 2. **Specieswise** (per-donor T[s]): `Pibar[c,s] = sum_j(Pi[c,j]·T[j]) - sum_{j∈ancestors(s)}(Pi[c,j]·T[j])`. Weighted sum + sparse ancestor correction. Same sparsity pattern as uniform, just weighted.
 
@@ -27,8 +26,7 @@ Rows: Pibar strategy (code `pibar_mode`). Columns: parameter structure.
 | pibar_mode \ param_mode | global | specieswise | pairwise |
 |---|---|---|---|
 | **pairwise** (`dense`) | fwd ✓, bwd ✓, FD ✓ (3.8e-7), tol 0.01%, 15+ tests | fwd ✓, bwd ✓, FD ✓ (2.3e-7), tol 0.01%, 1 test | fwd ✓, bwd N/A, 0 tests |
-| **uniform** (`uniform_approx`) | fwd ✓, bwd ✓, FD ✓ (5.3e-7), tol 0.01%, 10+ tests | fwd ✓, bwd ✓, FD ✓ (3.4e-7), tol 0.01%, 1 test | invalid (uniform assumes scalar T) |
-| **uniform exact** (`uniform`) | fwd ✓, bwd ✓, FD ✓ (2.6e-7), tol 0.1%, 1 test (S=39) | fwd ✓, bwd ✓, FD ✓ (2.3e-7), tol 0.1%, 1 test | invalid |
+| **uniform** (`uniform`) | fwd ✓, bwd ✓, FD ✓ (2.6e-7), tol 0.1%, 10+ tests | fwd ✓, bwd ✓, FD ✓ (3.4e-7), tol 0.01%, 1 test | invalid (uniform assumes scalar T) |
 
 FD error is max relative error vs central finite differences (float64). Tolerance is the assert threshold in the test.
 
@@ -37,7 +35,7 @@ FD error is max relative error vs central finite differences (float64). Toleranc
 ### Specieswise Notes
 - Forward was broken before 2026-03-13: `dts_fused.py` collapsed per-species log_pD/log_pS to scalars via `.mean()`. Now fixed to pass per-species vectors through the kernel.
 - Forward correctness test: `TestSpecieswiseForwardConsistency` verifies that specieswise with uniform rates matches global mode.
-- Three FD gradient tests (`uniform_approx`, `dense`, `uniform`) validate the full backward chain.
+- Three FD gradient tests (`uniform`, `dense`, `uniform`) validate the full backward chain.
 
 ## Performance
 
@@ -67,7 +65,7 @@ GPU: RTX 4090 (24 GB). Measured 2026-03-13.
 | pibar_mode \ param_mode | global | specieswise | pairwise |
 |---|---|---|---|
 | **pairwise** (`dense`) | 87 ms | 77 ms | N/A |
-| **uniform** (`uniform_approx`) | 52 ms | 57 ms | N/A |
+| **uniform** (`uniform`) | 52 ms | 57 ms | N/A |
 | **uniform exact** (`uniform`) | 96 ms | 76 ms | N/A |
 
 ### S = 19999 (test_trees_10000)
@@ -75,7 +73,7 @@ GPU: RTX 4090 (24 GB). Measured 2026-03-13.
 | pibar_mode \ param_mode | global | specieswise | pairwise |
 |---|---|---|---|
 | **pairwise** (`dense`) | OOM | OOM | N/A |
-| **uniform** (`uniform_approx`) | 668 ms | 624 ms | N/A |
+| **uniform** (`uniform`) | 668 ms | 624 ms | N/A |
 | **uniform exact** (`uniform`) | OOM | OOM | N/A |
 
 Pairwise and uniform-exact require [S,S] matrices on GPU (~3 GB each at S=20K).

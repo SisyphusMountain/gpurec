@@ -93,7 +93,7 @@ if rel_err > 1e-3:
     print("\n*** MISMATCH in cross-clade VJP! Investigating... ***")
     
     # Check if the issue is in the pibar_denom or the ancestor correction
-    # Let's compare with the simpler uniform_approx formula
+    # Let's compare with the simpler uniform formula
     denom_approx = p_prime.sum(dim=1, keepdim=True) - p_prime
     denom_approx_safe = torch.where(denom_approx > 0, denom_approx, torch.ones_like(denom_approx))
     u_d_approx = torch.where(denom_approx > 0, v_Pibar / denom_approx_safe, torch.zeros_like(v_Pibar))
@@ -101,6 +101,6 @@ if rel_err > 1e-3:
     pi_from_pibar_approx = p_prime * (A_approx - u_d_approx)
     
     rel_err_approx = (pi_from_pibar_approx - pi_from_pibar_autograd).norm() / pi_from_pibar_autograd.norm()
-    print(f"  uniform_approx VJP vs autograd: rel_err={rel_err_approx:.6e}")
+    print(f"  uniform VJP vs autograd: rel_err={rel_err_approx:.6e}")
 else:
     print("Cross-clade Pibar→Pi VJP is CORRECT!")

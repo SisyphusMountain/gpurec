@@ -4,7 +4,7 @@ import torch
 from .log2_utils import logsumexp2, logaddexp2
 from .log2_utils import _safe_log2_internal as _safe_log2
 from .kernels.scatter_lse import seg_logsumexp
-from .kernels.wave_step import wave_step_fused, wave_pibar_step_fused, wave_step_uniform_fused
+from .kernels.wave_step import wave_step_fused, wave_pibar_step_fused
 from .kernels.dts_fused import dts_fused
 from ._logmatmul_compat import (
     HAS_LOGMATMUL as _HAS_LOGMATMUL,
@@ -68,11 +68,7 @@ def _compute_Pibar_inline(Pi_W, transfer_mat_T, mt_squeezed, pibar_mode,
             transfer_mat_T, loops over unique families to avoid [W, S, S] allocation.
     """
     Pi_max = Pi_W.max(dim=1, keepdim=True).values
-    if pibar_mode == 'uniform_approx':
-        Pi_exp = torch.exp2(Pi_W - Pi_max)
-        row_sum = Pi_exp.sum(dim=1, keepdim=True)
-        Pibar_W = torch.log2(row_sum - Pi_exp) + Pi_max + mt_squeezed
-    elif pibar_mode == 'uniform':
+    if pibar_mode == 'uniform':
         Pi_exp = torch.exp2(Pi_W - Pi_max)
         row_sum = Pi_exp.sum(dim=1, keepdim=True)
         ancestor_sum = Pi_exp @ ancestors_T
@@ -267,7 +263,7 @@ def Pi_wave_forward(
         E, Ebar, E_s1, E_s2: converged E vectors [S] or [G, S]
         log_pS, log_pD, log_pL: event probabilities (scalar, [S], [G], or [G, S])
         transfer_mat: [S, S] or [G, S, S] linear-space transfer matrix
-                      (None when pibar_mode='uniform_approx')
+                      (None when pibar_mode='uniform')
         max_transfer_mat: [S] or [G, S] log2-space column maxima
         device, dtype: target device and float dtype
         local_iters: max iterations per wave self-loop
@@ -275,7 +271,7 @@ def Pi_wave_forward(
         fixed_iters: if set, use fixed iteration count (no convergence check / GPU sync)
         overlap_streams: if True, overlap DTS preparation for wave k+1 with
                          self-loop of wave k via a secondary CUDA stream
-        pibar_mode: 'dense', 'uniform_approx', 'uniform', or 'topk'
+        pibar_mode: 'dense', 'uniform', or 'topk'
         topk_k: number of top-k entries per clade for pibar_mode='topk' (default 16)
         family_idx: Long[C] clade→family mapping in wave-ordered space.
                     When provided, parameters are [G, ...] and indexed per-clade.
@@ -321,10 +317,10 @@ def Pi_wave_forward(
     SL2_const = _pS + E_s1
 
     ancestors_T_mat = None
-    if pibar_mode in ('uniform_approx', 'topk'):
+    if pibar_mode == 'topk':
         clade_species_map = None
         leaf_term = None
-        transfer_mat_T = transfer_mat.T.contiguous() if pibar_mode == 'topk' else None
+        transfer_mat_T = transfer_mat.T.contiguous()
         transfer_mat_c = None
     elif pibar_mode == 'uniform':
         anc_dense = species_helpers['ancestors_dense'].to(device=device, dtype=dtype)
@@ -409,7 +405,7 @@ def Pi_wave_forward(
             pS = pS.unsqueeze(-1).expand(-1, S).contiguous()
         return pD, pS
 
-    use_global_pibar = (S > 256) or pibar_mode in ('uniform_approx', 'uniform', 'topk')
+    use_global_pibar = (S > 256) or pibar_mode in ('uniform', 'topk')
     # Fused pibar+step kernel can't handle per-family [G, S, S] transfer matrices
     if batched and transfer_mat is not None and transfer_mat.ndim == 3:
         use_global_pibar = True
@@ -457,48 +453,35 @@ def Pi_wave_forward(
                     leaf_wt = _get_leaf_wt(ws, we)
                     DL_w, SL1_w, SL2_w, Ebar_w, E_w, mt_w = _wave_consts(ws, we)
 
-                    if pibar_mode == 'uniform_approx':
-                        for local_iter in range(n_iters):
-                            total_iters += 1
-                            Pi_new, max_diff = wave_step_uniform_fused(
-                                Pi, Pibar, ws, W, S,
-                                mt_w, DL_w, Ebar_w, E_w, SL1_w, SL2_w,
-                                sp_child1, sp_child2, leaf_wt, dts_r,
-                            )
-                            Pi[ws:we] = Pi_new
-                            if not use_fixed and local_iter >= min_warmup:
-                                if max_diff < local_tolerance:
-                                    break
-                    else:
-                        tm_T_w = transfer_mat_T
-                        fi_w_dense = None
-                        if batched and transfer_mat_T is not None and transfer_mat_T.ndim == 3:
-                            fi_w_dense = family_idx[ws:we]
+                    tm_T_w = transfer_mat_T
+                    fi_w_dense = None
+                    if batched and transfer_mat_T is not None and transfer_mat_T.ndim == 3:
+                        fi_w_dense = family_idx[ws:we]
 
-                        for local_iter in range(n_iters):
-                            total_iters += 1
-                            Pi_W = Pi[ws:we]
+                    for local_iter in range(n_iters):
+                        total_iters += 1
+                        Pi_W = Pi[ws:we]
 
-                            Pibar_W = _compute_Pibar_inline(Pi_W, tm_T_w, mt_w, pibar_mode,
-                                                            ancestors_T=ancestors_T_mat,
-                                                            topk_k=topk_k,
-                                                            family_ids=fi_w_dense)
+                        Pibar_W = _compute_Pibar_inline(Pi_W, tm_T_w, mt_w, pibar_mode,
+                                                        ancestors_T=ancestors_T_mat,
+                                                        topk_k=topk_k,
+                                                        family_ids=fi_w_dense)
 
-                            Pi_new = wave_step_fused(
-                                Pi_W, Pibar_W,
-                                DL_w, Ebar_w, E_w, SL1_w, SL2_w,
-                                sp_child1, sp_child2, leaf_wt, dts_r,
-                            )
+                        Pi_new = wave_step_fused(
+                            Pi_W, Pibar_W,
+                            DL_w, Ebar_w, E_w, SL1_w, SL2_w,
+                            sp_child1, sp_child2, leaf_wt, dts_r,
+                        )
 
-                            if not use_fixed and local_iter >= min_warmup:
-                                significant = Pi_new > -100.0
-                                if not significant.any() or torch.abs(Pi_new - Pi_W)[significant].max().item() < local_tolerance:
-                                    Pi[ws:we] = Pi_new
-                                    Pibar[ws:we] = Pibar_W
-                                    break
+                        if not use_fixed and local_iter >= min_warmup:
+                            significant = Pi_new > -100.0
+                            if not significant.any() or torch.abs(Pi_new - Pi_W)[significant].max().item() < local_tolerance:
+                                Pi[ws:we] = Pi_new
+                                Pibar[ws:we] = Pibar_W
+                                break
 
-                            Pi[ws:we] = Pi_new
-                            Pibar[ws:we] = Pibar_W
+                        Pi[ws:we] = Pi_new
+                        Pibar[ws:we] = Pibar_W
 
                     if wi + 1 < n_waves:
                         meta_next = wave_metas[wi + 1]
@@ -534,49 +517,35 @@ def Pi_wave_forward(
                     leaf_wt = _get_leaf_wt(ws, we)
                     DL_w, SL1_w, SL2_w, Ebar_w, E_w, mt_w = _wave_consts(ws, we)
 
-                    if pibar_mode == 'uniform_approx':
-                        for local_iter in range(n_iters):
-                            total_iters += 1
-                            Pi_new, max_diff = wave_step_uniform_fused(
-                                Pi, Pibar, ws, W, S,
-                                mt_w, DL_w, Ebar_w, E_w, SL1_w, SL2_w,
-                                sp_child1, sp_child2, leaf_wt, dts_r,
-                            )
-                            Pi[ws:we] = Pi_new
-                            if not use_fixed and local_iter >= min_warmup:
-                                if max_diff < local_tolerance:
-                                    break
-                    else:
-                        # Dense/uniform/topk Pibar
-                        tm_T_w = transfer_mat_T
-                        fi_w_dense = None
-                        if batched and transfer_mat_T is not None and transfer_mat_T.ndim == 3:
-                            fi_w_dense = family_idx[ws:we]
+                    tm_T_w = transfer_mat_T
+                    fi_w_dense = None
+                    if batched and transfer_mat_T is not None and transfer_mat_T.ndim == 3:
+                        fi_w_dense = family_idx[ws:we]
 
-                        for local_iter in range(n_iters):
-                            total_iters += 1
-                            Pi_W = Pi[ws:we]
+                    for local_iter in range(n_iters):
+                        total_iters += 1
+                        Pi_W = Pi[ws:we]
 
-                            Pibar_W = _compute_Pibar_inline(Pi_W, tm_T_w, mt_w, pibar_mode,
-                                                            ancestors_T=ancestors_T_mat,
-                                                            topk_k=topk_k,
-                                                            family_ids=fi_w_dense)
+                        Pibar_W = _compute_Pibar_inline(Pi_W, tm_T_w, mt_w, pibar_mode,
+                                                        ancestors_T=ancestors_T_mat,
+                                                        topk_k=topk_k,
+                                                        family_ids=fi_w_dense)
 
-                            Pi_new = wave_step_fused(
-                                Pi_W, Pibar_W,
-                                DL_w, Ebar_w, E_w, SL1_w, SL2_w,
-                                sp_child1, sp_child2, leaf_wt, dts_r,
-                            )
+                        Pi_new = wave_step_fused(
+                            Pi_W, Pibar_W,
+                            DL_w, Ebar_w, E_w, SL1_w, SL2_w,
+                            sp_child1, sp_child2, leaf_wt, dts_r,
+                        )
 
-                            if not use_fixed and local_iter >= min_warmup:
-                                significant = Pi_new > -100.0
-                                if not significant.any() or torch.abs(Pi_new - Pi_W)[significant].max().item() < local_tolerance:
-                                    Pi[ws:we] = Pi_new
-                                    Pibar[ws:we] = Pibar_W
-                                    break
+                        if not use_fixed and local_iter >= min_warmup:
+                            significant = Pi_new > -100.0
+                            if not significant.any() or torch.abs(Pi_new - Pi_W)[significant].max().item() < local_tolerance:
+                                Pi[ws:we] = Pi_new
+                                Pibar[ws:we] = Pibar_W
+                                break
 
-                            Pi[ws:we] = Pi_new
-                            Pibar[ws:we] = Pibar_W
+                        Pi[ws:we] = Pi_new
+                        Pibar[ws:we] = Pibar_W
 
             torch.backends.cuda.matmul.allow_tf32 = prev_tf32
         else:

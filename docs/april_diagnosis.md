@@ -70,7 +70,7 @@ Per-clade adjoint thresholding achieves 49% pruning with a fixed threshold. Anne
 | Issue | Impact | Notes |
 |-------|--------|-------|
 | Small-S kernel slower than FP | Low | Fused Triton underperforms at S ≤ 256. Could fall back to FP. |
-| `uniform` pibar OOMs at large S | Medium for `uniform` mode | Uses dense [S,S] `recipients_T`. Should exploit ancestor sparsity (O(depth) per species). `uniform_approx` works fine at large S. |
+| `uniform` pibar OOMs at large S | Medium for `uniform` mode | Uses dense [S,S] `recipients_T`. Should exploit ancestor sparsity (O(depth) per species). `uniform` works fine at large S. |
 
 ---
 

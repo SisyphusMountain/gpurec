@@ -45,7 +45,7 @@ def _wave_backward_uniform_kernel(
     BLOCK_S: tl.constexpr,
     NEUMANN_TERMS: tl.constexpr,
 ):
-    """Fused backward kernel for uniform_approx Pibar mode.
+    """Fused backward kernel for uniform Pibar mode.
 
     Per clade w, computes:
     1. Softmax weights (w_L, w_terms) from converged Pi/Pibar
@@ -475,7 +475,7 @@ def _dts_cross_backward_kernel(
     stride_C: tl.constexpr,
     BLOCK_S: tl.constexpr,
 ):
-    """Fused cross-clade DTS backward for uniform_approx Pibar mode.
+    """Fused cross-clade DTS backward for uniform Pibar mode.
 
     For each split i, computes the VJP of the 5 cross-clade DTS terms.
 

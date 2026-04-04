@@ -50,7 +50,7 @@ def test_nll_decreases(data_dir):
         lbfgs_m=5,
         grad_tol=1e-8,  # don't converge early, run all steps
         device=device, dtype=dtype,
-        pibar_mode='uniform_approx',
+        pibar_mode='uniform',
     )
 
     history = result['history']
@@ -101,7 +101,7 @@ def test_matches_scipy_per_family(data_dir):
         lbfgs_m=10,
         grad_tol=1e-6,
         device=device, dtype=dtype,
-        pibar_mode='uniform_approx',
+        pibar_mode='uniform',
     )
 
     # Per-family scipy L-BFGS-B (reference)
@@ -142,7 +142,7 @@ def test_matches_scipy_per_family(data_dir):
             steps=30,
             optimizer='lbfgs',
             device=device, dtype=dtype,
-            pibar_mode='uniform_approx',
+            pibar_mode='uniform',
         )
 
         nll_gw = float(result_genewise['nll'][g])
@@ -190,7 +190,7 @@ def test_convergence_masking(data_dir):
         lbfgs_m=5,
         grad_tol=1e-3,  # relatively loose tolerance to see convergence masking
         device=device, dtype=dtype,
-        pibar_mode='uniform_approx',
+        pibar_mode='uniform',
     )
 
     history = result['history']

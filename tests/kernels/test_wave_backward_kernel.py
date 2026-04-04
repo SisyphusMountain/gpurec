@@ -95,7 +95,7 @@ def _setup(ds_name, n_families=1, dtype=torch.float32):
         species_helpers=sh, log_pS=log_pS, log_pD=log_pD, log_pL=log_pL,
         transfer_mat=transfer_mat, max_transfer_mat=mt,
         max_iters=2000, tolerance=1e-8, warm_start_E=None,
-        dtype=dtype, device=device, pibar_mode='uniform_approx',
+        dtype=dtype, device=device, pibar_mode='uniform',
     )
 
     batched = collate_gene_families(batch_items, dtype=dtype, device=device)
@@ -126,7 +126,7 @@ def _setup(ds_name, n_families=1, dtype=torch.float32):
         E=E_out['E'], Ebar=E_out['E_bar'], E_s1=E_out['E_s1'], E_s2=E_out['E_s2'],
         log_pS=log_pS, log_pD=log_pD, log_pL=log_pL,
         transfer_mat=transfer_mat, max_transfer_mat=mt,
-        device=device, dtype=dtype, pibar_mode='uniform_approx',
+        device=device, dtype=dtype, pibar_mode='uniform',
     )
 
     # Species child lookup
@@ -184,7 +184,7 @@ def _pytorch_single_wave_backward(
         Pi_W, Pibar_W, dts_r,
         mt_squeezed, DL_const, Ebar, E, SL1_const, SL2_const,
         sp_child1, sp_child2, leaf_wt, S,
-        pibar_mode='uniform_approx', transfer_mat_T=None, ancestors_T=None,
+        pibar_mode='uniform', transfer_mat_T=None, ancestors_T=None,
     )
 
     # Neumann series
@@ -193,7 +193,7 @@ def _pytorch_single_wave_backward(
     for _ in range(neumann_terms):
         term = _self_loop_Jt_apply(
             term, ingredients, sp_child1, sp_child2, S, W,
-            pibar_mode='uniform_approx', transfer_mat_T=None, ancestors_T=None,
+            pibar_mode='uniform', transfer_mat_T=None, ancestors_T=None,
         )
         v_k = v_k + term
 
@@ -482,7 +482,7 @@ class TestWaveBackwardKernelLargeS:
 class TestFusedBackwardE2EFiniteDifference:
     """End-to-end FD test that exercises the fused Triton kernel via Pi_wave_backward.
 
-    Uses fp32 + S=1999 + uniform_approx → fused kernel is activated.
+    Uses fp32 + S=1999 + uniform → fused kernel is activated.
     Compares analytical gradient against central finite differences.
     """
 
@@ -506,7 +506,7 @@ class TestFusedBackwardE2EFiniteDifference:
             root_clade_ids_perm=d['wave_layout']['root_clade_ids'],
             device=d['device'], dtype=d['dtype'],
             neumann_terms=3, use_pruning=False,
-            pibar_mode='uniform_approx',
+            pibar_mode='uniform',
         )
 
         eps = 1e-2  # large eps for fp32 (logL~2349, need eps*grad >> fp32_noise)
@@ -534,7 +534,7 @@ class TestFusedBackwardE2EFiniteDifference:
             root_clade_ids_perm=d['wave_layout']['root_clade_ids'],
             device=d['device'], dtype=d['dtype'],
             neumann_terms=3, use_pruning=False,
-            pibar_mode='uniform_approx',
+            pibar_mode='uniform',
         )
 
         eps = 1e-2
@@ -563,7 +563,7 @@ class TestFusedBackwardE2EFiniteDifference:
             root_clade_ids_perm=d['wave_layout']['root_clade_ids'],
             device=d['device'], dtype=d['dtype'],
             neumann_terms=3, use_pruning=False,
-            pibar_mode='uniform_approx',
+            pibar_mode='uniform',
         )
 
         # Use all-ones direction (large signal) instead of random (which partially cancels).
@@ -594,7 +594,7 @@ class TestFusedBackwardE2EFiniteDifference:
             E=d['E'], Ebar=d['Ebar'], E_s1=d['E_s1'], E_s2=d['E_s2'],
             log_pS=_log_pS, log_pD=_log_pD, log_pL=d['log_pL'],
             transfer_mat=None, max_transfer_mat=_mt,
-            device=d['device'], dtype=d['dtype'], pibar_mode='uniform_approx',
+            device=d['device'], dtype=d['dtype'], pibar_mode='uniform',
         )
         # Need root clade IDs in original space for compute_log_likelihood
         perm = d['wave_layout']['perm']

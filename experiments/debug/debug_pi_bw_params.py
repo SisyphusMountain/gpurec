@@ -61,19 +61,19 @@ bw = Pi_wave_backward(
 )
 v_Pi = bw['v_Pi']  # [C, S]
 
-# Also do the same with uniform_approx for comparison
+# Also do the same with uniform for comparison
 E_out_a = E_fixed_point(
     species_helpers=sh, log_pS=log_pS, log_pD=log_pD, log_pL=log_pL,
     transfer_mat=transfer_mat, max_transfer_mat=mt,
     max_iters=2000, tolerance=1e-10, warm_start_E=None,
-    dtype=dtype, device=device, pibar_mode='uniform_approx', ancestors_T=ancestors_T,
+    dtype=dtype, device=device, pibar_mode='uniform', ancestors_T=ancestors_T,
 )
 Pi_out_a = Pi_wave_forward(
     wave_layout=wl, species_helpers=sh,
     E=E_out_a['E'], Ebar=E_out_a['E_bar'], E_s1=E_out_a['E_s1'], E_s2=E_out_a['E_s2'],
     log_pS=log_pS, log_pD=log_pD, log_pL=log_pL,
     transfer_mat=transfer_mat, max_transfer_mat=mt,
-    device=device, dtype=dtype, pibar_mode='uniform_approx',
+    device=device, dtype=dtype, pibar_mode='uniform',
     local_tolerance=1e-10, local_iters=500,
 )
 bw_a = Pi_wave_backward(
@@ -88,7 +88,7 @@ bw_a = Pi_wave_backward(
     device=device, dtype=dtype,
     neumann_terms=50,
     use_pruning=False,
-    pibar_mode='uniform_approx',
+    pibar_mode='uniform',
     ancestors_T=ancestors_T,
 )
 

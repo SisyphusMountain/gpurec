@@ -1,6 +1,6 @@
 """Test genewise wave support.
 
-Validates that genewise + uniform/uniform_approx pibar modes use the wave
+Validates that genewise + uniform/uniform pibar modes use the wave
 per-family loop path and produce results consistent with the genewise FP fallback.
 """
 
@@ -15,7 +15,7 @@ from src.core.extract_parameters import extract_parameters_uniform
 
 _ROOT = Path(__file__).resolve().parent.parent
 TOL = 1e-3
-# uniform_approx vs dense produces small diffs; genewise adds per-gene variation
+# uniform vs dense produces small diffs; genewise adds per-gene variation
 LOGL_ATOL = 5e-2
 
 
@@ -99,12 +99,12 @@ def test_extract_params_uniform_genewise_consistency():
 
 
 # ------------------------------------------------------------------
-# Test: genewise wave vs genewise FP (uniform_approx)
+# Test: genewise wave vs genewise FP (uniform)
 # ------------------------------------------------------------------
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
-def test_genewise_wave_vs_fp_uniform_approx(data_dir):
-    """Genewise wave (uniform_approx) matches genewise FP (dense)."""
+def test_genewise_wave_vs_fp_uniform(data_dir):
+    """Genewise wave (uniform) matches genewise FP (dense)."""
     sp = str(data_dir / "sp.nwk")
     genes = [str(g) for g in sorted(data_dir.glob("g_*.nwk"))[:5]]
 
@@ -119,9 +119,9 @@ def test_genewise_wave_vs_fp_uniform_approx(data_dir):
     for i, fam in enumerate(ds.families):
         fam['theta'] = torch.randn(3, dtype=dtype, device=device) * 0.5 - 5.0
 
-    # Wave path (genewise + uniform_approx)
+    # Wave path (genewise + uniform)
     logLs_wave = ds.compute_likelihood_batch(
-        pibar_mode='uniform_approx', tol_Pi=TOL, tol_E=TOL,
+        pibar_mode='uniform', tol_Pi=TOL, tol_E=TOL,
     )
 
     # FP fallback (genewise + dense)
@@ -138,12 +138,12 @@ def test_genewise_wave_vs_fp_uniform_approx(data_dir):
 
 
 # ------------------------------------------------------------------
-# Test: genewise wave vs genewise FP (specieswise + uniform_approx)
+# Test: genewise wave vs genewise FP (specieswise + uniform)
 # ------------------------------------------------------------------
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
-def test_genewise_wave_vs_fp_specieswise_uniform_approx(data_dir):
-    """Genewise + specieswise wave (uniform_approx) matches FP (dense)."""
+def test_genewise_wave_vs_fp_specieswise_uniform(data_dir):
+    """Genewise + specieswise wave (uniform) matches FP (dense)."""
     sp = str(data_dir / "sp.nwk")
     genes = [str(g) for g in sorted(data_dir.glob("g_*.nwk"))[:3]]
 
@@ -158,7 +158,7 @@ def test_genewise_wave_vs_fp_specieswise_uniform_approx(data_dir):
         fam['theta'] = torch.randn(S, 3, dtype=dtype, device=device) * 0.3 - 5.0
 
     logLs_wave = ds.compute_likelihood_batch(
-        pibar_mode='uniform_approx', tol_Pi=TOL, tol_E=TOL,
+        pibar_mode='uniform', tol_Pi=TOL, tol_E=TOL,
     )
     logLs_fp = ds.compute_likelihood_batch(
         pibar_mode='dense', tol_Pi=TOL, tol_E=TOL,
@@ -167,7 +167,7 @@ def test_genewise_wave_vs_fp_specieswise_uniform_approx(data_dir):
     for i, (lw, lf) in enumerate(zip(logLs_wave, logLs_fp)):
         assert math.isfinite(lw), f"Wave family {i}: logL={lw}"
         assert math.isfinite(lf), f"FP family {i}: logL={lf}"
-        # Specieswise has slightly higher uniform_approx error
+        # Specieswise has slightly higher uniform error
         tol = max(LOGL_ATOL, abs(lf) * 5e-4)
         assert abs(lw - lf) < tol, (
             f"Family {i}: wave={lw:.4f}, fp={lf:.4f}, diff={abs(lw - lf):.2e}"
@@ -195,14 +195,14 @@ def test_genewise_wave_batch_vs_per_family(data_dir):
 
     # Full batch
     logLs_batch = ds.compute_likelihood_batch(
-        pibar_mode='uniform_approx', tol_Pi=TOL, tol_E=TOL,
+        pibar_mode='uniform', tol_Pi=TOL, tol_E=TOL,
     )
 
     # Per-family (single-index batches, same code path)
     logLs_seq = []
     for i in range(len(genes)):
         logL_i = ds.compute_likelihood_batch(
-            [i], pibar_mode='uniform_approx', tol_Pi=TOL, tol_E=TOL,
+            [i], pibar_mode='uniform', tol_Pi=TOL, tol_E=TOL,
         )
         logLs_seq.append(logL_i[0])
 
@@ -234,9 +234,9 @@ def test_genewise_wave_large_s(data_dir_large):
     for i, fam in enumerate(ds.families):
         fam['theta'] = torch.randn(3, dtype=dtype, device=device) * 0.5 - 5.0
 
-    # wave (genewise + uniform_approx)
+    # wave (genewise + uniform)
     logLs_wave = ds.compute_likelihood_batch(
-        pibar_mode='uniform_approx', tol_Pi=TOL, tol_E=TOL,
+        pibar_mode='uniform', tol_Pi=TOL, tol_E=TOL,
     )
 
     # dense FP (reference)

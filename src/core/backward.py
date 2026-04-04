@@ -14,7 +14,7 @@ NEG_INF = float("-inf")
 def _self_loop_differentiable(
     Pi_W, mt_squeezed, DL_const, Ebar, E, SL1_const, SL2_const,
     sp_child1, sp_child2, leaf_wt, dts_r, S,
-    pibar_mode='uniform_approx', transfer_mat_T=None, ancestors_T=None,
+    pibar_mode='uniform', transfer_mat_T=None, ancestors_T=None,
 ):
     """Pure-PyTorch differentiable self-loop step (Pibar + DTS_L).
 
@@ -29,7 +29,7 @@ def _self_loop_differentiable(
         leaf_wt: [W, S] leaf term
         dts_r: [W, S] or None, cross-clade DTS (frozen)
         S: int
-        pibar_mode: 'uniform_approx', 'dense', 'uniform', or 'topk'
+        pibar_mode: 'dense', 'uniform', or 'topk'
         transfer_mat_T: [S, S] for dense/topk mode (may require grad for theta VJP)
         ancestors_T: [S, S] sparse COO, ancestors.T (for uniform mode)
 
@@ -51,10 +51,7 @@ def _self_loop_differentiable(
     # --- Pibar ---
     Pi_max = Pi_W.max(dim=1, keepdim=True).values
     Pi_exp = torch.exp2(Pi_W - Pi_max)
-    if pibar_mode == 'uniform_approx':
-        row_sum = Pi_exp.sum(dim=1, keepdim=True)
-        Pibar_W = _safe_log2(row_sum - Pi_exp) + Pi_max + mt_w
-    elif pibar_mode == 'uniform':
+    if pibar_mode == 'uniform':
         row_sum = Pi_exp.sum(dim=1, keepdim=True)
         ancestor_sum = Pi_exp @ ancestors_T
         Pibar_W = _safe_log2(row_sum - ancestor_sum) + Pi_max + mt_w
@@ -180,10 +177,7 @@ def _self_loop_vjp_precompute(
     Pi_max = Pi_star.max(dim=1, keepdim=True).values
     p_prime = torch.exp2(Pi_star - Pi_max)
 
-    if pibar_mode == 'uniform_approx':
-        row_sum = p_prime.sum(dim=1, keepdim=True)
-        pibar_denom = row_sum - p_prime
-    elif pibar_mode == 'uniform':
+    if pibar_mode == 'uniform':
         row_sum = p_prime.sum(dim=1, keepdim=True)
         anc_sum = p_prime @ ancestors_T
         pibar_denom = row_sum - anc_sum
@@ -223,7 +217,7 @@ def _self_loop_vjp_precompute(
         'w_terms': w_terms,
         'p_prime': p_prime,
     }
-    if pibar_mode in ('uniform_approx', 'uniform'):
+    if pibar_mode == 'uniform':
         pos = pibar_denom > 0
         inv_denom = torch.where(pos, 1.0 / torch.where(pos, pibar_denom, torch.ones_like(pibar_denom)),
                                 torch.zeros_like(pibar_denom))
@@ -352,11 +346,7 @@ def _self_loop_Jt_apply(
 
     v_Pibar = alpha * w_terms[2]
 
-    if pibar_mode == 'uniform_approx':
-        u_d = v_Pibar * ingredients['pibar_inv_denom']
-        A = u_d.sum(dim=1, keepdim=True)
-        result = result + p_prime * (A - u_d)
-    elif pibar_mode == 'uniform':
+    if pibar_mode == 'uniform':
         u_d = v_Pibar * ingredients['pibar_inv_denom']
         A = u_d.sum(dim=1, keepdim=True)
         correction = (ancestors_T @ u_d.T).T
@@ -401,7 +391,7 @@ def Pi_wave_backward(
     neumann_terms=3,
     pruning_threshold=1e-6,
     use_pruning=True,
-    pibar_mode='uniform_approx',
+    pibar_mode='uniform',
     transfer_mat=None,
     ancestors_T=None,
     family_idx=None,
@@ -425,7 +415,7 @@ def Pi_wave_backward(
         neumann_terms: number of Neumann series terms (default 3)
         pruning_threshold: linear-space adjoint magnitude threshold for pruning
         use_pruning: whether to prune waves with negligible adjoint gradient
-        pibar_mode: 'uniform_approx', 'dense', or 'uniform'
+        pibar_mode: 'dense', 'uniform', or 'topk'
         transfer_mat: [S, S] linear-space transfer matrix (for dense mode)
         ancestors_T: [S, S] sparse CSR = ancestors.T (for uniform mode)
         family_idx: Long[C] clade→family mapping. None → auto-wrapped as G=1.
@@ -586,7 +576,7 @@ def Pi_wave_backward(
         use_fused = (
             _HAS_FUSED_BACKWARD
             and G == 1
-            and pibar_mode == 'uniform_approx'
+            and pibar_mode == 'uniform'
             and dtype == torch.float32
             and device.type == 'cuda'
             and S > 256
@@ -813,13 +803,7 @@ def Pi_wave_backward(
                 Pi_max_p = Pi_ch.max(dim=1, keepdim=True).values
                 p_prime = torch.exp2(Pi_ch - Pi_max_p)
 
-                if pibar_mode == 'uniform_approx':
-                    denom = p_prime.sum(dim=1, keepdim=True) - p_prime
-                    denom_safe = torch.where(denom > 0, denom, torch.ones_like(denom))
-                    u_d = torch.where(denom > 0, u / denom_safe, torch.zeros_like(u))
-                    A = u_d.sum(dim=1, keepdim=True)
-                    pi_from_pibar = p_prime * (A - u_d)
-                elif pibar_mode == 'uniform':
+                if pibar_mode == 'uniform':
                     anc_sum = p_prime @ ancestors_T
                     denom = p_prime.sum(dim=1, keepdim=True) - anc_sum
                     denom_safe = torch.where(denom > 0, denom, torch.ones_like(denom))

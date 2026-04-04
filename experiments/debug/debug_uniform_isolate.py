@@ -78,8 +78,8 @@ print(f"Analytical grad_mt     = {float(bw['grad_max_transfer_mat'].sum()):.6f}"
 print(f"Analytical grad_E      = {float(bw['grad_E'].sum()):.6f}")
 print(f"Analytical grad_Ebar   = {float(bw['grad_Ebar'].sum()):.6f}")
 
-# --- Now compare with uniform_approx backward ---
-# First, run forward with uniform_approx to see if the VJP is correct for that mode
+# --- Now compare with uniform backward ---
+# First, run forward with uniform to see if the VJP is correct for that mode
 log_pS_a, log_pD_a, log_pL_a, transfer_mat_a, mt_a = extract_parameters_uniform(
     theta, unnorm_row_max, specieswise=False,
 )
@@ -87,7 +87,7 @@ E_out_a = E_fixed_point(
     species_helpers=sh, log_pS=log_pS_a, log_pD=log_pD_a, log_pL=log_pL_a,
     transfer_mat=transfer_mat_a, max_transfer_mat=mt_a,
     max_iters=2000, tolerance=1e-10, warm_start_E=None,
-    dtype=dtype, device=device, pibar_mode='uniform_approx',
+    dtype=dtype, device=device, pibar_mode='uniform',
     ancestors_T=ancestors_T,
 )
 Pi_out_a = Pi_wave_forward(
@@ -95,12 +95,12 @@ Pi_out_a = Pi_wave_forward(
     E=E_out_a['E'], Ebar=E_out_a['E_bar'], E_s1=E_out_a['E_s1'], E_s2=E_out_a['E_s2'],
     log_pS=log_pS_a, log_pD=log_pD_a, log_pL=log_pL_a,
     transfer_mat=transfer_mat_a, max_transfer_mat=mt_a,
-    device=device, dtype=dtype, pibar_mode='uniform_approx',
+    device=device, dtype=dtype, pibar_mode='uniform',
     local_tolerance=1e-10, local_iters=500,
 )
 logL_a = compute_log_likelihood(Pi_out_a['Pi'], E_out_a['E'], root_clade_ids)
 nll_a = logL_a.sum().item()
-print(f"\nuniform_approx NLL = {nll_a:.6f}")
+print(f"\nuniform NLL = {nll_a:.6f}")
 print(f"uniform NLL = {nll:.6f}")
 print(f"Difference = {abs(nll - nll_a):.6f}")
 
