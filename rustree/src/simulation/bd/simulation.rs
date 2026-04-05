@@ -136,17 +136,29 @@ fn handle_initial_nodes(
 ///
 /// Node names are integers: 0 to n-1 are extant species, n onwards are other nodes
 ///
-/// # Panics
-/// Panics if lambda <= mu, as the backwards process may grow indefinitely
+/// # Errors
+/// Returns an error if:
+/// - `n` is 0
+/// - `lambda` is not finite or not positive
+/// - `mu` is not finite or negative
+/// - `lambda <= mu`
 ///
 /// # References
 /// Stadler, T. (2011). Simulating trees with a fixed number of extant species.
 /// Systematic Biology, 60(5), 676-684.
-pub fn simulate_bd_tree_bwd<R: Rng>(n: usize, lambda: f64, mu: f64, rng: &mut R) -> (FlatTree, Vec<TreeEvent>) {
-    assert!(n > 0, "Number of species must be positive");
-    assert!(lambda.is_finite() && lambda > 0.0, "Speciation rate must be finite and positive");
-    assert!(mu.is_finite() && mu >= 0.0, "Extinction rate must be finite and non-negative");
-    assert!(lambda > mu, "Speciation rate must be strictly greater than extinction rate");
+pub fn simulate_bd_tree_bwd<R: Rng>(n: usize, lambda: f64, mu: f64, rng: &mut R) -> Result<(FlatTree, Vec<TreeEvent>), String> {
+    if n == 0 {
+        return Err("Number of species must be positive".to_string());
+    }
+    if !lambda.is_finite() || lambda <= 0.0 {
+        return Err(format!("Speciation rate must be finite and positive, got {}", lambda));
+    }
+    if !mu.is_finite() || mu < 0.0 {
+        return Err(format!("Extinction rate must be finite and non-negative, got {}", mu));
+    }
+    if lambda <= mu {
+        return Err(format!("Speciation rate ({}) must be strictly greater than extinction rate ({})", lambda, mu));
+    }
 
     // Start at present (time = 0) with n isolated vertices
     let mut time = 0.0;
@@ -208,5 +220,5 @@ pub fn simulate_bd_tree_bwd<R: Rng>(n: usize, lambda: f64, mu: f64, rng: &mut R)
         root: root_idx,
     };
 
-    (tree, events)
+    Ok((tree, events))
 }

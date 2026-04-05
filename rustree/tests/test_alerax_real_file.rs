@@ -1,11 +1,12 @@
 use rustree::{RecTree, Event};
 
 #[test]
-#[ignore] // Requires local data files at /home/enzo/... - run with: cargo test --test test_alerax_real_file -- --ignored
+#[ignore] // Requires external WP2 data — set RUSTREE_WP2_DATA to the data dir
 fn test_parse_alerax_file() {
-    let filepath = "/home/enzo/Documents/git/WP2/data/test_data/test_2/alerax_g.xml";
+    let data_dir = std::env::var("RUSTREE_WP2_DATA").expect("Set RUSTREE_WP2_DATA to WP2 data dir");
+    let filepath = format!("{}/test_data/test_2/alerax_g.xml", data_dir);
 
-    let result = RecTree::from_xml_file(filepath);
+    let result = RecTree::from_xml_file(&filepath);
     assert!(result.is_ok(), "Failed to parse ALERax file: {:?}", result.err());
 
     let rec_tree = result.unwrap();

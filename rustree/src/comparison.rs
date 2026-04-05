@@ -3,6 +3,7 @@
 
 use std::collections::{BTreeSet, HashSet, HashMap};
 use crate::node::{Node, FlatTree, RecTree, rectree::Event};
+use crate::error::RustreeError;
 use crate::sampling::{mark_nodes_postorder, NodeMark, get_descendant_leaf_names};
 
 
@@ -10,27 +11,38 @@ use crate::sampling::{mark_nodes_postorder, NodeMark, get_descendant_leaf_names}
 // Topology comparison (existing)
 // ============================================================================
 
+/// Returns the lexicographically smallest leaf name in the subtree.
+/// Used for canonical child ordering to avoid exponential comparison.
+fn min_leaf_name(node: &Node) -> &str {
+    match (&node.left_child, &node.right_child) {
+        (None, None) => &node.name,
+        (Some(left), Some(right)) => {
+            let l = min_leaf_name(left);
+            let r = min_leaf_name(right);
+            if l <= r { l } else { r }
+        }
+        (Some(child), None) | (None, Some(child)) => min_leaf_name(child),
+    }
+}
+
 /// Recursively compares two Node objects (ignoring the order of children).
-pub fn compare_nodes(n1: &Node, n2: &Node, use_lengths: bool, tol: f64) -> Result<bool, String> {
+///
+/// Uses canonical child ordering (by minimum leaf name) to achieve O(n)
+/// comparison instead of the O(2^h) worst case of trying both orderings.
+pub fn compare_nodes(n1: &Node, n2: &Node, use_lengths: bool, tol: f64) -> Result<bool, RustreeError> {
     if n1.name != n2.name { return Ok(false); }
 
-    if use_lengths {
-        if (n1.length - n2.length).abs() > tol { return Ok(false); }
-    }
-
-
+    if use_lengths
+        && (n1.length - n2.length).abs() > tol { return Ok(false); }
 
     // Collect non-None children for each node.
     let mut children1 = Vec::new();
-    if let Some(child) = &n1.left_child { children1.push(child); }
-    if let Some(child) = &n1.right_child { children1.push(child); }
+    if let Some(child) = &n1.left_child { children1.push(child.as_ref()); }
+    if let Some(child) = &n1.right_child { children1.push(child.as_ref()); }
 
     let mut children2 = Vec::new();
-    if let Some(child) = &n2.left_child { children2.push(child); }
-    if let Some(child) = &n2.right_child { children2.push(child); }
-
-    // Check if the number of children is the same.
-    // It may be the case that one node has 2 children (internal node) and the other has 1
+    if let Some(child) = &n2.left_child { children2.push(child.as_ref()); }
+    if let Some(child) = &n2.right_child { children2.push(child.as_ref()); }
 
     if children1.len() != children2.len() {
         return Ok(false);
@@ -39,15 +51,18 @@ pub fn compare_nodes(n1: &Node, n2: &Node, use_lengths: bool, tol: f64) -> Resul
     match children1.len() {
         0 => Ok(true),
         2 => {
-            Ok((compare_nodes(children1[0], children2[0], use_lengths, tol)? && compare_nodes(children1[1], children2[1], use_lengths, tol)?)
-            || (compare_nodes(children1[0], children2[1], use_lengths, tol)? && compare_nodes(children1[1], children2[0], use_lengths, tol)?))
+            // Sort children by min leaf name for canonical ordering
+            children1.sort_by_key(|c| min_leaf_name(c));
+            children2.sort_by_key(|c| min_leaf_name(c));
+            Ok(compare_nodes(children1[0], children2[0], use_lengths, tol)?
+                && compare_nodes(children1[1], children2[1], use_lengths, tol)?)
         },
-        n => Err(format!("Invalid binary tree: node '{}' has {} children (expected 0 or 2)", n1.name, n))
+        n => Err(RustreeError::Tree(format!("Invalid binary tree: node '{}' has {} children (expected 0 or 2)", n1.name, n)))
     }
 }
 
 /// Convenience wrapper for topology-only comparison (ignores branch lengths).
-pub fn compare_nodes_topology(n1: &Node, n2: &Node) -> Result<bool, String> {
+pub fn compare_nodes_topology(n1: &Node, n2: &Node) -> Result<bool, RustreeError> {
     compare_nodes(n1, n2, false, 0.0)
 }
 
@@ -196,7 +211,9 @@ fn build_extant_clade_map(
             continue;
         }
         // get_descendant_leaf_names returns ALL leaves; filter to extant only
-        let all_descendants = get_descendant_leaf_names(tree, idx);
+        // Safety: idx comes from tree.postorder_indices(), so it is a valid tree node index
+        let all_descendants = get_descendant_leaf_names(tree, idx)
+            .expect("internal error: postorder index should be valid");
         let clade: BTreeSet<String> = all_descendants.into_iter()
             .filter(|name| extant_names.contains(name))
             .collect();
@@ -263,7 +280,7 @@ fn species_clade_for(
 pub fn compare_reconciliations(
     truth: &RecTree,
     inferred: &RecTree,
-) -> Result<ReconciliationComparison, String> {
+) -> Result<ReconciliationComparison, RustreeError> {
     // Verify same extant leaf sets
     let truth_extant = extant_leaf_names(&truth.gene_tree, &truth.event_mapping);
     let inf_extant = extant_leaf_names(&inferred.gene_tree, &inferred.event_mapping);
@@ -271,11 +288,11 @@ pub fn compare_reconciliations(
     if truth_extant != inf_extant {
         let only_truth: Vec<_> = truth_extant.difference(&inf_extant).take(5).collect();
         let only_inf: Vec<_> = inf_extant.difference(&truth_extant).take(5).collect();
-        return Err(format!(
+        return Err(RustreeError::Validation(format!(
             "Extant leaf sets differ: truth has {}, inferred has {}. \
              Only in truth (first 5): {:?}. Only in inferred (first 5): {:?}",
             truth_extant.len(), inf_extant.len(), only_truth, only_inf
-        ));
+        )));
     }
 
     // Build clade maps for gene trees
@@ -391,9 +408,9 @@ pub fn compare_reconciliations(
 pub fn compare_reconciliations_multi(
     truth: &RecTree,
     samples: &[RecTree],
-) -> Result<MultiSampleComparison, String> {
+) -> Result<MultiSampleComparison, RustreeError> {
     if samples.is_empty() {
-        return Err("No samples to compare".to_string());
+        return Err(RustreeError::Validation("No samples to compare".to_string()));
     }
 
     // Per-sample comparisons

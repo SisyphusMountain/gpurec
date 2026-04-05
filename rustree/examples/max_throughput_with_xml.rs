@@ -20,7 +20,7 @@ fn main() {
     let lambda = 1.0;
     let mu = 0.0; // Pure birth
 
-    let (species_tree, _) = simulate_bd_tree_bwd(n_species, lambda, mu, &mut rng);
+    let (species_tree, _) = simulate_bd_tree_bwd(n_species, lambda, mu, &mut rng).unwrap();
     let mut species_tree = species_tree; // Make mutable for assign_depths
     species_tree.assign_depths();
     let phase1_time = phase1_start.elapsed();
@@ -63,7 +63,7 @@ fn main() {
             None,
             false,
             &mut rng,
-        );
+        ).unwrap();
 
         let (s, d, t, l, _) = count_events(&rec_tree);
         let extant = count_extant_genes(&rec_tree);

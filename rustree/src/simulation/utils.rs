@@ -10,7 +10,7 @@ use rand::Rng;
 #[inline]
 pub(crate) fn draw_waiting_time<R: Rng>(total_rate: f64, rng: &mut R) -> f64 {
     if total_rate > 0.0 {
-        let u: f64 = rng.gen();
+        let u: f64 = rng.gen::<f64>().max(f64::EPSILON);
         -u.ln() / total_rate
     } else {
         f64::INFINITY

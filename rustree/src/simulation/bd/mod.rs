@@ -1,5 +1,8 @@
-// birth-death processes for the generation of trees.
-// We start with classical birth-death processes.
+//! Birth-death process simulation for phylogenetic trees.
+//!
+//! Provides forward- and backward-time birth-death tree generation,
+//! event extraction (speciation, extinction), and CSV export of
+//! the resulting event sequences.
 
 mod types;
 mod simulation;

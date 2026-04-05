@@ -14,7 +14,7 @@ const BATCH: usize = 1000;
 
 fn make_species_tree(n: usize, seed: u64) -> FlatTree {
     let mut rng = StdRng::seed_from_u64(seed);
-    let (mut tree, _) = simulate_bd_tree_bwd(n, 1.0, 0.3, &mut rng);
+    let (mut tree, _) = simulate_bd_tree_bwd(n, 1.0, 0.3, &mut rng).unwrap();
     tree.assign_depths();
     tree
 }
@@ -22,7 +22,7 @@ fn make_species_tree(n: usize, seed: u64) -> FlatTree {
 fn pilot_bd_events(n: usize, lambda: f64, mu: f64) -> u64 {
     let mut rng = StdRng::seed_from_u64(42);
     let total: usize = (0..10)
-        .map(|_| simulate_bd_tree_bwd(n, lambda, mu, &mut rng).1.len())
+        .map(|_| simulate_bd_tree_bwd(n, lambda, mu, &mut rng).unwrap().1.len())
         .sum();
     (total / 10) as u64
 }
@@ -67,7 +67,7 @@ fn bd_parallel_scaling(c: &mut Criterion) {
             b.iter(|| {
                 (0..BATCH).into_par_iter().for_each(|i| {
                     let mut rng = StdRng::seed_from_u64(i as u64);
-                    std::hint::black_box(simulate_bd_tree_bwd(n, lambda, mu, &mut rng));
+                    std::hint::black_box(simulate_bd_tree_bwd(n, lambda, mu, &mut rng).unwrap());
                 });
             });
         });
@@ -90,7 +90,7 @@ fn bd_parallel_vs_serial(c: &mut Criterion) {
         b.iter(|| {
             for i in 0..BATCH {
                 let mut rng = StdRng::seed_from_u64(i as u64);
-                std::hint::black_box(simulate_bd_tree_bwd(n, lambda, mu, &mut rng));
+                std::hint::black_box(simulate_bd_tree_bwd(n, lambda, mu, &mut rng).unwrap());
             }
         });
     });
@@ -99,7 +99,7 @@ fn bd_parallel_vs_serial(c: &mut Criterion) {
         b.iter(|| {
             (0..BATCH).into_par_iter().for_each(|i| {
                 let mut rng = StdRng::seed_from_u64(i as u64);
-                std::hint::black_box(simulate_bd_tree_bwd(n, lambda, mu, &mut rng));
+                std::hint::black_box(simulate_bd_tree_bwd(n, lambda, mu, &mut rng).unwrap());
             });
         });
     });
@@ -227,7 +227,7 @@ fn bd_thread_scaling(c: &mut Criterion) {
                     pool.install(|| {
                         (0..BATCH).into_par_iter().for_each(|i| {
                             let mut rng = StdRng::seed_from_u64(i as u64);
-                            std::hint::black_box(simulate_bd_tree_bwd(n, lambda, mu, &mut rng));
+                            std::hint::black_box(simulate_bd_tree_bwd(n, lambda, mu, &mut rng).unwrap());
                         });
                     });
                 });

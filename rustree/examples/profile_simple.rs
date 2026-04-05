@@ -7,7 +7,7 @@ use rand::rngs::StdRng;
 fn main() {
     // Generate species tree
     let mut rng = StdRng::seed_from_u64(42);
-    let (mut species_tree, _) = simulate_bd_tree_bwd(1000, 1.0, 0.0, &mut rng);
+    let (mut species_tree, _) = simulate_bd_tree_bwd(1000, 1.0, 0.0, &mut rng).unwrap();
     species_tree.assign_depths();
 
     // Run many iterations for better profiling signal
@@ -23,7 +23,7 @@ fn main() {
         n_trees,
         false,
         &mut rng,
-    );
+    ).unwrap();
 
     println!("Completed {} trees", n_trees);
 }

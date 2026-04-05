@@ -56,7 +56,7 @@ def compute_rf_R(t1, t2):
 
 def main():
     # Path where trees are located
-    tree_dir = "/home/enzo/Documents/git/rustree/tests/RF_trees"
+    tree_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "RF_trees")
     # Pattern to match tree files (e.g., "tree_*.newick")
     pattern = os.path.join(tree_dir, "tree_*.newick")
     tree_files = sorted(glob.glob(pattern))

@@ -1,5 +1,4 @@
-// rustree/src/main.rs
-// just testing code here
+// Tree traversal example — demonstrates PreOrder, InOrder, PostOrder on Node and FlatTree.
 
 
 use rustree::node::{Node, FlatNode, FlatTree, TraversalOrder, HasName};

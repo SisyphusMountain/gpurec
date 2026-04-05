@@ -1,9 +1,8 @@
 use std::fs;
 use std::path::PathBuf;
-use rustree::newick::newick::parse_newick;
-use rustree::node::Node;
-use rustree::comparison::compare_nodes_topology; // Import from comparison module
-use rustree::surgery::spr_topology; // Import the surgery module function
+use rustree::newick::parse_newick;
+use rustree::comparison::compare_nodes_topology;
+use rustree::surgery::spr_topology;
 use rustree::debug::diffed_flat_tree_table;
 
 
@@ -16,7 +15,7 @@ fn run_spr_test(moved_node_name: &str, receiver_name: &str, expected_filename: &
     // Parse the original tree.
     let mut nodes = parse_newick(orig_str.trim())
         .expect("Failed to parse original tree");
-    let mut orig_tree = nodes.pop().expect("No tree found in original file");
+    let orig_tree = nodes.pop().expect("No tree found in original file");
 
     // Convert to a flat tree.
     let mut flat_tree = orig_tree.to_flat_tree();
@@ -95,7 +94,7 @@ fn test_spr_1_to_2() {
 }
 
 #[test]
-fn test_spr_4_to_T10() {
+fn test_spr_4_to_t10() {
     // For donor "4" and receiver "T10", expected topology is in 4_to_T10.nwk.
     run_spr_test("T10", "4", "4_to_T10.nwk");
 }
@@ -107,7 +106,7 @@ fn test_spr_4_to_5() {
 }
 
 #[test]
-fn test_spr_0_to_T7() {
+fn test_spr_0_to_t7() {
     // For donor "0" and receiver "T7", expected topology is in 0_to_T7.nwk.
     run_spr_test("T7", "0", "0_to_T7.nwk");
 }

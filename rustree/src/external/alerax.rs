@@ -2,7 +2,6 @@
 ///
 /// This module provides functionality to call the external ALERax tool
 /// for reconciling gene trees with species trees and parsing the results.
-
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::{BufRead, BufReader};
@@ -172,7 +171,7 @@ pub fn validate_inputs(
     // Check each gene tree
     for (family_name, newick) in gene_trees {
         // Parse gene tree to check leaves
-        let mut nodes = crate::newick::newick::parse_newick(newick)
+        let mut nodes = crate::newick::parse_newick(newick)
             .map_err(|e| format!("Failed to parse gene tree '{}': {}", family_name, e))?;
 
         let root = nodes.pop()
@@ -371,7 +370,7 @@ fn parse_transfers_file(path: &Path) -> Result<HashMap<String, HashMap<String, f
                 .map_err(|_| format!("Failed to parse transfer count in line: {}", line))?;
 
             transfers.entry(source)
-                .or_insert_with(HashMap::new)
+                .or_default()
                 .insert(destination, count);
         }
     }
@@ -396,7 +395,7 @@ fn compute_events_per_species(rec_tree: &RecTree) -> HashMap<String, EventCounts
         let species_name = species_node.name.clone();
 
         // Get or create event counts for this species
-        let counts = species_events.entry(species_name).or_insert_with(EventCounts::default);
+        let counts = species_events.entry(species_name).or_default();
 
         // Increment count based on event type
         match rec_tree.event_mapping[i] {
@@ -464,7 +463,7 @@ fn aggregate_statistics(
         for (source, destinations) in transfers {
             for (dest, count) in destinations {
                 *transfer_totals.entry(source.clone())
-                    .or_insert_with(HashMap::new)
+                    .or_default()
                     .entry(dest.clone())
                     .or_insert(0.0) += count;
             }
@@ -476,7 +475,7 @@ fn aggregate_statistics(
     for (source, destinations) in transfer_totals {
         for (dest, total) in destinations {
             mean_transfers.entry(source.clone())
-                .or_insert_with(HashMap::new)
+                .or_default()
                 .insert(dest, total / n_samples);
         }
     }
@@ -486,7 +485,7 @@ fn aggregate_statistics(
     for rec_tree in reconciled_trees {
         let species_events = compute_events_per_species(rec_tree);
         for (species, counts) in species_events {
-            let total = species_event_totals.entry(species).or_insert_with(EventCounts::default);
+            let total = species_event_totals.entry(species).or_default();
             total.speciations += counts.speciations;
             total.speciation_losses += counts.speciation_losses;
             total.duplications += counts.duplications;
@@ -600,7 +599,7 @@ pub fn run_alerax(
 
     // Show command for debugging
     let cmd_str = format!("{:?}", cmd);
-    eprintln!("Running ALERax command: {}", cmd_str);
+    log::info!("Running ALERax command: {}", cmd_str);
 
     let output = cmd.output()
         .map_err(|e| format!("Failed to execute ALERax: {}", e))?;
@@ -714,7 +713,7 @@ fn run_alerax_streaming(config: &AleRaxConfig, species_tree_newick: &str) -> Res
     cmd.stderr(Stdio::piped());
 
     let cmd_str = format!("{:?}", cmd);
-    eprintln!("Running ALERax: {}", cmd_str);
+    log::info!("Running ALERax: {}", cmd_str);
 
     let mut child = cmd.spawn()
         .map_err(|e| format!("Failed to spawn ALERax: {}", e))?;
@@ -728,7 +727,7 @@ fn run_alerax_streaming(config: &AleRaxConfig, species_tree_newick: &str) -> Res
         for line in reader.lines() {
             match line {
                 Ok(line) => {
-                    eprintln!("{}", line);
+                    log::debug!("[ALERax] {}", line);
                     captured.push_str(&line);
                     captured.push('\n');
                 }
@@ -818,6 +817,7 @@ fn rename_transfer_rows(
 /// 5. Parses all results (RecPhyloXML, rates, likelihoods, summary stats)
 /// 6. Auto-renames species tree nodes and gene tree leaf names back to original names
 /// 7. Returns a comprehensive result object
+#[allow(clippy::too_many_arguments)]
 pub fn reconcile_forest(
     forest: &GeneForest,
     output_dir: Option<PathBuf>,
@@ -1068,7 +1068,7 @@ mod tests {
 
     #[test]
     fn test_parse_species_event_counts_file() {
-        let path = Path::new("test_data_3/output_alerax/reconciliations/summaries/family_1_meanSpeciesEventCounts.txt");
+        let path = Path::new("testdata/test_data_3/output_alerax/reconciliations/summaries/family_1_meanSpeciesEventCounts.txt");
         if !path.exists() {
             return; // Skip if test data not available
         }
@@ -1085,7 +1085,7 @@ mod tests {
 
     #[test]
     fn test_parse_total_species_event_counts() {
-        let path = Path::new("test_data_3/output_alerax/reconciliations/totalSpeciesEventCounts.txt");
+        let path = Path::new("testdata/test_data_3/output_alerax/reconciliations/totalSpeciesEventCounts.txt");
         if !path.exists() {
             return;
         }
@@ -1099,7 +1099,7 @@ mod tests {
 
     #[test]
     fn test_parse_transfer_rows_file() {
-        let path = Path::new("test_data_3/output_alerax/reconciliations/totalTransfers.txt");
+        let path = Path::new("testdata/test_data_3/output_alerax/reconciliations/totalTransfers.txt");
         if !path.exists() {
             return;
         }

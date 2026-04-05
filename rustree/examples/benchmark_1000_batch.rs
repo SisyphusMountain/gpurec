@@ -17,7 +17,7 @@ fn main() {
     println!("Phase 1: Generating species tree...");
     let mut rng = StdRng::seed_from_u64(42);
     let start = Instant::now();
-    let (mut species_tree, _) = simulate_bd_tree_bwd(1000, 1.0, 0.0, &mut rng);
+    let (mut species_tree, _) = simulate_bd_tree_bwd(1000, 1.0, 0.0, &mut rng).unwrap();
     species_tree.assign_depths();
     let species_time = start.elapsed();
     println!("  ✓ Generated {} species in {:.3}s\n", species_tree.nodes.len(), species_time.as_secs_f64());
@@ -37,7 +37,7 @@ fn main() {
         1000,
         false,
         &mut rng,
-    );
+    ).unwrap();
 
     let simulation_time = start.elapsed();
 

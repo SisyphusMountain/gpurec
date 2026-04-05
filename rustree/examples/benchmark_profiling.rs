@@ -11,7 +11,7 @@ fn main() {
     // Generate species tree
     println!("Generating species tree (1000 leaves)...");
     let mut rng = StdRng::seed_from_u64(42);
-    let (mut species_tree, _) = simulate_bd_tree_bwd(1000, 1.0, 0.0, &mut rng);
+    let (mut species_tree, _) = simulate_bd_tree_bwd(1000, 1.0, 0.0, &mut rng).unwrap();
     species_tree.assign_depths();
     println!("  ✓ Generated {} species\n", species_tree.nodes.len());
 
@@ -34,7 +34,7 @@ fn main() {
             None,
             false,
             &mut rng,
-        );
+        ).unwrap();
         total_nodes += rec_tree.gene_tree.nodes.len();
         total_events += events.len();
     }

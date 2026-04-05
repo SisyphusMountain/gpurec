@@ -1,3 +1,4 @@
+#![allow(clippy::too_many_arguments)]
 // Streaming DTL simulation iterator
 //
 // Provides DtlSimIter, a lazy iterator that generates one gene tree at a time
@@ -9,6 +10,7 @@ use crate::node::{FlatTree, RecTree};
 use rand::Rng;
 use std::sync::Arc;
 
+use super::DTLConfig;
 use super::event::DTLEvent;
 use super::gillespie::{DTLMode, simulate_dtl_gillespie};
 use super::utils::count_extant_genes;
@@ -45,11 +47,7 @@ pub struct DtlSimIter<'a, R: Rng> {
     lca_depths: Option<Vec<Vec<f64>>>,
     // Simulation parameters
     origin_species: usize,
-    lambda_d: f64,
-    lambda_t: f64,
-    lambda_l: f64,
-    transfer_alpha: Option<f64>,
-    replacement_transfer: Option<f64>,
+    config: DTLConfig,
     n_simulations: usize,
     require_extant: bool,
     mode: DTLMode,
@@ -68,11 +66,7 @@ impl<'a, R: Rng> DtlSimIter<'a, R> {
         contemporaneity: Vec<Vec<usize>>,
         lca_depths: Option<Vec<Vec<f64>>>,
         origin_species: usize,
-        lambda_d: f64,
-        lambda_t: f64,
-        lambda_l: f64,
-        transfer_alpha: Option<f64>,
-        replacement_transfer: Option<f64>,
+        config: DTLConfig,
         n_simulations: usize,
         require_extant: bool,
         rng: &'a mut R,
@@ -84,11 +78,7 @@ impl<'a, R: Rng> DtlSimIter<'a, R> {
             contemporaneity,
             lca_depths,
             origin_species,
-            lambda_d,
-            lambda_t,
-            lambda_l,
-            transfer_alpha,
-            replacement_transfer,
+            config,
             n_simulations,
             require_extant,
             mode,
@@ -125,7 +115,7 @@ impl<'a, R: Rng> DtlSimIter<'a, R> {
         let width = digit_width(self.n_simulations);
         for (i, result) in self.enumerate() {
             let (rec_tree, _events) = result?;
-            let newick = rec_tree.gene_tree.to_newick()?;
+            let newick = rec_tree.gene_tree.to_newick().map_err(|e| e.to_string())?;
             let path = format!("{}/gene_{:0>width$}.nwk", dir, i, width = width);
             std::fs::write(&path, &newick).map_err(|e| e.to_string())?;
         }
@@ -166,8 +156,11 @@ impl<'a, R: Rng> Iterator for DtlSimIter<'a, R> {
             return None;
         }
 
+        const MAX_ATTEMPTS: usize = 10_000;
+        let mut attempts = 0;
+
         loop {
-            let lca_ref = self.lca_depths.as_ref().map(|v| v.as_slice());
+            let lca_ref = self.lca_depths.as_deref();
             let result = simulate_dtl_gillespie(
                 self.mode,
                 &self.species_arc,
@@ -176,11 +169,7 @@ impl<'a, R: Rng> Iterator for DtlSimIter<'a, R> {
                 &self.contemporaneity,
                 lca_ref,
                 self.origin_species,
-                self.lambda_d,
-                self.lambda_t,
-                self.lambda_l,
-                self.transfer_alpha,
-                self.replacement_transfer,
+                &self.config,
                 &mut *self.rng,
             );
 
@@ -191,6 +180,14 @@ impl<'a, R: Rng> Iterator for DtlSimIter<'a, R> {
                         return Some(Ok((rec_tree, events)));
                     }
                     // Retry: tree had no extant genes
+                    attempts += 1;
+                    if attempts >= MAX_ATTEMPTS {
+                        return Some(Err(format!(
+                            "Failed to generate a gene tree with extant genes after {} attempts. \
+                             The DTL rates (d={}, t={}, l={}) may make extant genes extremely unlikely.",
+                            MAX_ATTEMPTS, self.config.lambda_d, self.config.lambda_t, self.config.lambda_l
+                        )));
+                    }
                 }
                 Err(e) => return Some(Err(e)),
             }

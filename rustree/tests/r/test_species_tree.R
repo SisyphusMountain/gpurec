@@ -2,8 +2,9 @@
 # Run with: Rscript test_species_tree.R
 
 # Load the library
-dyn.load("/home/enzo/Documents/Zombi/ZOMBI/zombi-rs/rustree/target/release/librustree.so")
-source("/home/enzo/Documents/Zombi/ZOMBI/zombi-rs/rustree/R/rustree.R")
+repo_root <- normalizePath(file.path(dirname(sys.frame(1)$ofile), "..", ".."))
+dyn.load(file.path(repo_root, "target", "release", "librustree.so"))
+source(file.path(repo_root, "R", "rustree.R"))
 
 # Test framework
 test_passed <- 0

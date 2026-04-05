@@ -2,10 +2,12 @@
 
 use super::{Node, FlatNode, FlatTree, RecTree};
 use std::collections::HashMap;
+use crate::error::RustreeError;
 
 // Methods on Node for conversion
 impl Node {
     /// Converts a recursive `Node` structure into a `FlatTree`.
+    #[must_use]
     pub fn to_flat_tree(&self) -> FlatTree {
         let mut flat_nodes = Vec::new();
         let root_index = self.node_to_flat_internal(&mut flat_nodes, None);
@@ -45,6 +47,7 @@ impl Node {
 // Methods on FlatTree for conversion
 impl FlatTree {
     /// Converts a `FlatTree` into a recursive `Node` structure.
+    #[must_use]
     pub fn to_node(&self) -> Node {
         self.flat_to_node_internal(self.root)
     }
@@ -94,13 +97,14 @@ impl FlatTree {
 
     /// Name unnamed internal nodes as `internal0`, `internal1`, etc.
     ///
-    /// Panics if any existing node name starts with `"internal"`, to avoid
+    /// Returns an error if any existing node name starts with `"internal"`, to avoid
     /// ambiguity between original and generated names.
-    pub fn name_internal_nodes(&mut self) {
-        assert!(
-            !self.nodes.iter().any(|n| n.name.starts_with("internal")),
-            "Cannot auto-name internal nodes: at least one node already has a name starting with \"internal\""
-        );
+    pub fn name_internal_nodes(&mut self) -> Result<(), RustreeError> {
+        if self.nodes.iter().any(|n| n.name.starts_with("internal")) {
+            return Err(RustreeError::Validation(
+                "Cannot auto-name internal nodes: at least one node already has a name starting with \"internal\"".to_string()
+            ));
+        }
         let mut counter = 0usize;
         for i in 0..self.nodes.len() {
             let is_internal = self.nodes[i].left_child.is_some() || self.nodes[i].right_child.is_some();
@@ -109,6 +113,7 @@ impl FlatTree {
                 counter += 1;
             }
         }
+        Ok(())
     }
 
     /// Returns extant leaf nodes — leaves whose birth-death event is `BDEvent::Leaf`.
@@ -148,27 +153,32 @@ impl FlatTree {
 /// nodes or leaf/internal mismatch at any position).
 ///
 /// # Example
-/// ```rust
+/// ```rust,no_run
+/// # use rustree::FlatTree;
+/// # use rustree::node::map_by_topology;
+/// # let tree_a = FlatTree { nodes: vec![], root: 0 };
+/// # let tree_b = FlatTree { nodes: vec![], root: 0 };
 /// let mapping = map_by_topology(&tree_a, &tree_b)?;
 /// // mapping[b_idx] == a_idx for corresponding nodes
+/// # Ok::<(), rustree::RustreeError>(())
 /// ```
 pub fn map_by_topology(
     source_tree: &FlatTree,
     target_tree: &FlatTree,
-) -> Result<HashMap<usize, usize>, String> {
+) -> Result<HashMap<usize, usize>, RustreeError> {
     if source_tree.nodes.len() != target_tree.nodes.len() {
-        return Err(format!(
+        return Err(RustreeError::Tree(format!(
             "Trees have different number of nodes: source={}, target={}",
             source_tree.nodes.len(),
             target_tree.nodes.len()
-        ));
+        )));
     }
 
     let source_postorder = source_tree.postorder_indices();
     let target_postorder = target_tree.postorder_indices();
 
     if source_postorder.len() != target_postorder.len() {
-        return Err("Trees have different structures (postorder lengths differ)".to_string());
+        return Err(RustreeError::Tree("Trees have different structures (postorder lengths differ)".to_string()));
     }
 
     let mut mapping = HashMap::new();
@@ -183,10 +193,10 @@ pub fn map_by_topology(
             && target_tree.nodes[target_idx].right_child.is_none();
 
         if source_is_leaf != target_is_leaf {
-            return Err(format!(
+            return Err(RustreeError::Tree(format!(
                 "Structural mismatch at postorder position {}: source node {} and target node {} differ in leaf/internal status",
                 pos, source_idx, target_idx
-            ));
+            )));
         }
 
         mapping.insert(target_idx, source_idx);
@@ -212,14 +222,14 @@ pub fn map_by_topology(
 /// Ok(()) on success, or an error if trees have incompatible topologies.
 ///
 /// # Example
-/// ```rust
+/// ```rust,ignore
 /// rename_gene_tree(&original_tree, &mut rec_tree)?;
 /// // Now rec_tree.gene_tree has the same node names as original_tree
 /// ```
 pub fn rename_gene_tree(
     reference_tree: &FlatTree,
     rec_tree: &mut RecTree,
-) -> Result<(), String> {
+) -> Result<(), RustreeError> {
     let mapping = map_by_topology(reference_tree, &rec_tree.gene_tree)?;
 
     for (target_idx, &source_idx) in mapping.iter() {
@@ -331,6 +341,6 @@ mod mapping_tests {
         // Should fail due to different number of nodes
         let result = map_by_topology(&tree1, &tree2);
         assert!(result.is_err());
-        assert!(result.unwrap_err().contains("different number of nodes"));
+        assert!(result.unwrap_err().to_string().contains("different number of nodes"));
     }
 }

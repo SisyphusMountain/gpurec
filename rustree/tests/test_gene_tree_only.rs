@@ -53,7 +53,6 @@ fn test_parse_gene_tree_only_with_p_tags() {
 #[test]
 fn test_from_separate_files_simple() {
     use std::fs;
-    use std::path::PathBuf;
 
     // Create temporary files
     let temp_dir = std::env::temp_dir();
@@ -186,5 +185,5 @@ fn test_gene_tree_only_missing_species() {
 
     let result = RecTree::from_gene_tree_xml(gene_xml, species_tree);
     assert!(result.is_err(), "Should fail when species 'C' not found");
-    assert!(result.unwrap_err().contains("Species 'C' not found"));
+    assert!(result.unwrap_err().to_string().contains("Species 'C' not found"));
 }

@@ -10,13 +10,13 @@ use std::sync::{Arc, Mutex};
 fn main() {
     println!("=== Multi-Core with Dynamic Work Distribution ===\n");
 
-    let num_cpus = num_cpus::get();
+    let num_cpus = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1);
     println!("Available CPUs: {}\n", num_cpus);
 
     // Generate species tree
     println!("Generating species tree (1000 leaves)...");
     let mut rng = StdRng::seed_from_u64(42);
-    let (mut species_tree, _) = simulate_bd_tree_bwd(1000, 1.0, 0.0, &mut rng);
+    let (mut species_tree, _) = simulate_bd_tree_bwd(1000, 1.0, 0.0, &mut rng).unwrap();
     species_tree.assign_depths();
     println!("  ✓ Generated {} species\n", species_tree.nodes.len());
 
@@ -51,7 +51,7 @@ fn main() {
                         None,
                         false,
                         &mut rng_thread,
-                    );
+                    ).unwrap();
                     nodes += rec_tree.gene_tree.nodes.len();
                     events += tree_events.len();
                 }
@@ -62,12 +62,8 @@ fn main() {
             handles.push(handle);
         }
 
-        let mut total_nodes_static = 0;
-        let mut total_events_static = 0;
         for handle in handles {
-            let (n, e) = handle.join().unwrap();
-            total_nodes_static += n;
-            total_events_static += e;
+            let (_n, _e) = handle.join().unwrap();
         }
 
         let static_time = start.elapsed().as_secs_f64();
@@ -95,7 +91,7 @@ fn main() {
 
                 loop {
                     // Grab next tree index
-                    let tree_idx = {
+                    let _tree_idx = {
                         let mut idx = next_tree_clone.lock().unwrap();
                         if *idx >= n_trees {
                             break;
@@ -114,7 +110,7 @@ fn main() {
                         None,
                         false,
                         &mut rng_thread,
-                    );
+                    ).unwrap();
                     nodes += rec_tree.gene_tree.nodes.len();
                     events += tree_events.len();
                     trees_done += 1;
@@ -126,14 +122,10 @@ fn main() {
             handles.push(handle);
         }
 
-        let mut total_nodes_dynamic = 0;
-        let mut total_events_dynamic = 0;
         let mut per_thread_counts = Vec::new();
 
         for handle in handles {
-            let (n, e, count) = handle.join().unwrap();
-            total_nodes_dynamic += n;
-            total_events_dynamic += e;
+            let (_n, _e, count) = handle.join().unwrap();
             per_thread_counts.push(count);
         }
 

@@ -35,6 +35,7 @@ impl RecTreeColumns {
     }
 
     /// Convert to a full CSV string (header + rows).
+    #[must_use]
     pub fn to_csv_string(&self) -> String {
         let n = self.node_id.len();
         let mut csv = String::with_capacity(n * 100 + 200);
@@ -166,6 +167,7 @@ impl RecTree {
     }
 
     /// Export reconciled tree to CSV string (header + rows).
+    #[must_use]
     pub fn to_csv_string(&self) -> String {
         self.to_columns().to_csv_string()
     }

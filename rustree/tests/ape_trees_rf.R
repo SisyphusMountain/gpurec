@@ -7,7 +7,8 @@ if (!require("ape", quietly = TRUE)) {
 }
 
 # Set directory to save trees and results.
-dir_path <- "/home/enzo/Documents/git/rustree/tests/RF_trees"
+repo_root <- normalizePath(file.path(dirname(sys.frame(1)$ofile), ".."))
+dir_path <- file.path(repo_root, "tests", "RF_trees")
 
 # Create the directory if it doesn't exist.
 if (!dir.exists(dir_path)) {

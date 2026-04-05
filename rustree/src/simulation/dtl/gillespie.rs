@@ -1,3 +1,4 @@
+#![allow(clippy::too_many_arguments)]
 // Shared Gillespie-style DTL simulation loop
 // Both per-gene and per-species DTL models use the same chronological
 // event loop, differing only in how the total event rate is computed
@@ -8,6 +9,7 @@ use crate::node::{FlatTree, Event, RecTree};
 use rand::Rng;
 use std::sync::Arc;
 
+use super::DTLConfig;
 use super::event::DTLEvent;
 use super::state::SimulationState;
 use crate::simulation::utils::draw_waiting_time;
@@ -33,10 +35,11 @@ pub(crate) enum DTLMode {
 /// - **PerGene**: total rate = n_copies × (λ_D + λ_T + λ_L), random copy is selected
 /// - **PerSpecies**: total rate = n_alive_species × (λ_D + λ_T + λ_L), random species
 ///   is selected then random gene in that species (event fails if species has no genes)
+///
 /// For now, rates are the same for all species in the tree. We can change it later if we want.
 /// Doing so will involve changing the rates at which events are proposed,
 /// as well as the probability of a given event affecting each gene or species at time t.
-/// We can have auxillary functions to flexibly handle the different generalizations without loss of performance.
+/// We can have auxiliary functions to flexibly handle the different generalizations without loss of performance.
 pub(crate) fn simulate_dtl_gillespie<R: Rng>(
     mode: DTLMode,
     species_tree: &Arc<FlatTree>,
@@ -45,13 +48,15 @@ pub(crate) fn simulate_dtl_gillespie<R: Rng>(
     contemporaneity: &[Vec<usize>],
     lca_depths: Option<&[Vec<f64>]>,
     origin_species: usize,
-    lambda_d: f64,
-    lambda_t: f64,
-    lambda_l: f64,
-    transfer_alpha: Option<f64>,
-    replacement_transfer: Option<f64>,
+    config: &DTLConfig,
     rng: &mut R,
 ) -> Result<(RecTree, Vec<DTLEvent>), String> {
+
+    let lambda_d = config.lambda_d;
+    let lambda_t = config.lambda_t;
+    let lambda_l = config.lambda_l;
+    let transfer_alpha = config.transfer_alpha;
+    let replacement_transfer = config.replacement_transfer;
 
     let total_dtl_rate = lambda_d + lambda_t + lambda_l;
     let dup_threshold = if total_dtl_rate > 0.0 { lambda_d / total_dtl_rate } else { 0.0 };
@@ -141,8 +146,7 @@ pub(crate) fn simulate_dtl_gillespie<R: Rng>(
                 BDEvent::Speciation => {
                     let child1 = sp_event.child1.ok_or_else(|| format!("Speciation event for node {} has no child1", sp_event.node_id))?;
                     let child2 = sp_event.child2.ok_or_else(|| format!("Speciation event for node {} has no child2", sp_event.node_id))?;
-                    let gps = state.genes_per_species.as_mut().ok_or("Internal error: genes_per_species not initialized")?;
-                    if let Some(genes) = gps.remove(&sp_event.node_id) {
+                    if let Some(genes) = state.take_genes_for_species(sp_event.node_id) {
                         for gene_idx in genes {
                             state.handle_speciation(
                                 gene_idx, sp_event.node_id, child1, child2, current_time,
@@ -151,16 +155,14 @@ pub(crate) fn simulate_dtl_gillespie<R: Rng>(
                     }
                 }
                 BDEvent::Extinction => {
-                    let gps = state.genes_per_species.as_mut().ok_or("Internal error: genes_per_species not initialized")?;
-                    if let Some(genes) = gps.remove(&sp_event.node_id) {
+                    if let Some(genes) = state.take_genes_for_species(sp_event.node_id) {
                         for gene_idx in genes {
                             state.handle_loss(gene_idx, sp_event.node_id, current_time);
                         }
                     }
                 }
                 BDEvent::Leaf => {
-                    let gps = state.genes_per_species.as_mut().ok_or("Internal error: genes_per_species not initialized")?;
-                    if let Some(genes) = gps.remove(&sp_event.node_id) {
+                    if let Some(genes) = state.take_genes_for_species(sp_event.node_id) {
                         for gene_idx in genes {
                             state.handle_leaf(gene_idx, sp_event.node_id, current_time);
                         }
@@ -225,7 +227,7 @@ pub(crate) fn simulate_dtl_gillespie<R: Rng>(
                 if let Some(recipient_species) = recipient {
                     // Replacement transfer: find and remove victim BEFORE adding transfer
                     let is_replacement = replacement_transfer
-                        .map_or(false, |p| p > 0.0 && rng.gen::<f64>() < p);
+                        .is_some_and(|p| p > 0.0 && rng.gen::<f64>() < p);
                     if is_replacement {
                         if let Some(victim) = state.random_gene_in_species(recipient_species, rng) {
                             state.handle_loss(victim, recipient_species, current_time);

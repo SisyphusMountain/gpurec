@@ -15,11 +15,12 @@ pest = "2.7.4"
 pest_derive = "2.7.4"
 rand = "0.8.5"
 rayon = "1.10"
+log = "0.4"
 quick-xml = "0.31"
 tempfile = "3.8"
 
 [features]
-default = ["python"]
+default = []
 python = ["pyo3", "numpy"]
 r = ["extendr-api"]
 
@@ -27,6 +28,7 @@ r = ["extendr-api"]
 rand = "0.8"
 criterion = { version = "0.5", features = ["html_reports"] }
 rayon = "1.10"
+extendr-engine = { version = "0.6" }
 
 [[bench]]
 name = "bd_benchmarks"
@@ -42,6 +44,10 @@ harness = false
 
 [[bench]]
 name = "bench_plot"
+harness = false
+
+[[bench]]
+name = "comparison_sampling_benchmarks"
 harness = false
 
 [profile.release]

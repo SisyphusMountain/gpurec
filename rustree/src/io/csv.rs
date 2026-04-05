@@ -16,11 +16,13 @@ use crate::node::FlatTree;
 /// # Returns
 /// Result indicating success or error
 pub fn save_bd_events_to_csv(events: &[TreeEvent], tree: &FlatTree, filename: &str) -> io::Result<()> {
-    let mut file = File::create(filename)?;
-    writeln!(file, "{}", TreeEvent::csv_header())?;
+    let file = File::create(filename)?;
+    let mut writer = BufWriter::new(file);
+    writeln!(writer, "{}", TreeEvent::csv_header())?;
     for event in events {
-        writeln!(file, "{}", event.to_csv_row(tree).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?)?;
+        writeln!(writer, "{}", event.to_csv_row(tree).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?)?;
     }
+    writer.flush()?;
     Ok(())
 }
 

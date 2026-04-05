@@ -320,7 +320,7 @@ pub fn remap_gene_tree_indices(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::newick::newick::parse_newick;
+    use crate::newick::parse_newick;
 
     fn make_species_tree(newick: &str) -> FlatTree {
         let mut nodes = parse_newick(newick).unwrap();

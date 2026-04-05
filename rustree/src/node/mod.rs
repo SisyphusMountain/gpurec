@@ -41,6 +41,11 @@ pub struct FlatNode {
     pub left_child: Option<usize>,
     pub right_child: Option<usize>,
     pub parent: Option<usize>,
+    /// Distance from the root of the tree.
+    /// `None` when depths have not been computed yet.
+    /// `Some(f64)` after `assign_depths()` has been called.
+    /// Operations like sampling and induced subtree extraction may
+    /// invalidate depths (reset to `None`).
     pub depth: Option<f64>,
     pub length: f64,
     /// Birth-death event type for this node (only set for species trees from BD simulation)
@@ -65,6 +70,7 @@ pub struct Node {
 }
 
 /// Traversal order for tree iteration.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TraversalOrder {
     PreOrder,
     InOrder,

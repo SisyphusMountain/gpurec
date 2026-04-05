@@ -1,5 +1,5 @@
 use rustree::{RecTree, Event, GeneForest, parse_newick};
-use rustree::sampling::{compute_lca, build_leaf_pair_lca_map, get_descendant_leaf_names};
+use rustree::sampling::{compute_lca, build_leaf_pair_lca_map, lca_map_get, get_descendant_leaf_names};
 use std::sync::Arc;
 
 /// Helper to create a simple species tree for testing
@@ -37,15 +37,15 @@ fn test_compute_lca_simple() {
     let ab_idx = tree.nodes.iter().position(|n| n.name == "AB").unwrap();
 
     // Test LCA(A, B) = AB
-    let lca_ab = compute_lca(&tree, a_idx, b_idx);
+    let lca_ab = compute_lca(&tree, a_idx, b_idx).unwrap();
     assert_eq!(lca_ab, ab_idx, "LCA(A, B) should be AB");
 
     // Test LCA(A, C) = Root
-    let lca_ac = compute_lca(&tree, a_idx, c_idx);
+    let lca_ac = compute_lca(&tree, a_idx, c_idx).unwrap();
     assert_eq!(lca_ac, tree.root, "LCA(A, C) should be Root");
 
     // Test LCA(B, C) = Root
-    let lca_bc = compute_lca(&tree, b_idx, c_idx);
+    let lca_bc = compute_lca(&tree, b_idx, c_idx).unwrap();
     assert_eq!(lca_bc, tree.root, "LCA(B, C) should be Root");
 }
 
@@ -56,12 +56,12 @@ fn test_build_leaf_pair_lca_map() {
 
     let ab_idx = tree.nodes.iter().position(|n| n.name == "AB").unwrap();
 
-    // Check that (A, B) and (B, A) both map to AB
-    assert_eq!(lca_map.get(&("A".to_string(), "B".to_string())), Some(&ab_idx));
-    assert_eq!(lca_map.get(&("B".to_string(), "A".to_string())), Some(&ab_idx));
+    // Check that both orderings resolve via lca_map_get
+    assert_eq!(lca_map_get(&lca_map, "A", "B"), Some(ab_idx));
+    assert_eq!(lca_map_get(&lca_map, "B", "A"), Some(ab_idx));
 
     // Check that (A, C) maps to Root
-    assert_eq!(lca_map.get(&("A".to_string(), "C".to_string())), Some(&tree.root));
+    assert_eq!(lca_map_get(&lca_map, "A", "C"), Some(tree.root));
 }
 
 #[test]
@@ -69,13 +69,13 @@ fn test_get_descendant_leaf_names() {
     let tree = make_species_tree("((A:1,B:1)AB:1,C:2)Root:0;");
 
     let ab_idx = tree.nodes.iter().position(|n| n.name == "AB").unwrap();
-    let leaves = get_descendant_leaf_names(&tree, ab_idx);
+    let leaves = get_descendant_leaf_names(&tree, ab_idx).unwrap();
 
     assert_eq!(leaves.len(), 2);
     assert!(leaves.contains(&"A".to_string()));
     assert!(leaves.contains(&"B".to_string()));
 
-    let root_leaves = get_descendant_leaf_names(&tree, tree.root);
+    let root_leaves = get_descendant_leaf_names(&tree, tree.root).unwrap();
     assert_eq!(root_leaves.len(), 3);
     assert!(root_leaves.contains(&"A".to_string()));
     assert!(root_leaves.contains(&"B".to_string()));

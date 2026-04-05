@@ -1,3 +1,4 @@
+#![allow(clippy::too_many_arguments)]
 // Per-species DTL (Duplication-Transfer-Loss) simulation (Zombi-style)
 //
 // This module contains the per-species model where DTL event rates are
@@ -9,6 +10,7 @@ use crate::node::{FlatTree, RecTree};
 use rand::Rng;
 use std::sync::Arc;
 
+use super::DTLConfig;
 use super::event::DTLEvent;
 use super::gillespie::DTLMode;
 use super::stream::DtlSimIter;
@@ -56,7 +58,26 @@ pub fn simulate_dtl_per_species_iter<'a, R: Rng>(
     require_extant: bool,
     rng: &'a mut R,
 ) -> Result<DtlSimIter<'a, R>, String> {
-    validate_rates(lambda_d, lambda_t, lambda_l)?;
+    let config = DTLConfig {
+        lambda_d,
+        lambda_t,
+        lambda_l,
+        transfer_alpha,
+        replacement_transfer,
+    };
+    simulate_dtl_per_species_iter_with_config(species_tree, origin_species, config, n_simulations, require_extant, rng)
+}
+
+/// Core implementation for creating a per-species DTL simulation iterator from a [`DTLConfig`].
+pub fn simulate_dtl_per_species_iter_with_config<'a, R: Rng>(
+    species_tree: &FlatTree,
+    origin_species: usize,
+    config: DTLConfig,
+    n_simulations: usize,
+    require_extant: bool,
+    rng: &'a mut R,
+) -> Result<DtlSimIter<'a, R>, String> {
+    validate_rates(config.lambda_d, config.lambda_t, config.lambda_l)?;
 
     let species_arc = Arc::new(species_tree.clone());
     let species_events = generate_events_from_tree(species_tree)?;
@@ -71,7 +92,7 @@ pub fn simulate_dtl_per_species_iter<'a, R: Rng>(
     depths.sort_by(|a, b| a.total_cmp(b));
     depths.dedup();
     let contemporaneity = species_tree.find_contemporaneity(&depths);
-    let lca_depths = precompute_lca(species_tree, transfer_alpha);
+    let lca_depths = precompute_lca(species_tree, config.transfer_alpha);
 
     Ok(DtlSimIter::new(
         DTLMode::PerSpecies,
@@ -81,11 +102,7 @@ pub fn simulate_dtl_per_species_iter<'a, R: Rng>(
         contemporaneity,
         lca_depths,
         origin_species,
-        lambda_d,
-        lambda_t,
-        lambda_l,
-        transfer_alpha,
-        replacement_transfer,
+        config,
         n_simulations,
         require_extant,
         rng,

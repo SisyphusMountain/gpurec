@@ -11,7 +11,8 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 use rustree::node::FlatTree;
-use rustree::{parse_newick, unrooted_robinson_foulds};
+use rustree::parse_newick;
+use rustree::robinson_foulds::unrooted_robinson_foulds;
 
 fn flat_tree_from_file<P: AsRef<Path>>(file_path: P) -> FlatTree {
     let tree_str = fs::read_to_string(&file_path)
@@ -65,8 +66,6 @@ fn test_rf_distance_comparison_table() {
         .map(|path| flat_tree_from_file(path))
         .collect();
 
-    let mut mismatches = 0usize;
-
     for i in 0..flat_trees.len() {
         for j in (i + 1)..flat_trees.len() {
             let expected_file = dir_path.join(format!("rf_tree_{:02}_{:02}.txt", i + 1, j + 1));
@@ -77,10 +76,6 @@ fn test_rf_distance_comparison_table() {
                 .unwrap_or_else(|_| panic!("Bad RF value in {}", expected_file.display()));
 
             let computed_rf = unrooted_robinson_foulds(&flat_trees[i], &flat_trees[j]);
-
-            if computed_rf != expected_rf {
-                mismatches += 1;
-            }
 
             assert_eq!(
                 computed_rf, expected_rf,

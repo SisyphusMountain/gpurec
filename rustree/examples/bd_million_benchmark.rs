@@ -37,7 +37,7 @@ fn main() {
             let mut rng = StdRng::seed_from_u64(42 + i as u64);
 
             let start = Instant::now();
-            let (tree, _events) = simulate_bd_tree_bwd(n, lambda, mu, &mut rng);
+            let (tree, _events) = simulate_bd_tree_bwd(n, lambda, mu, &mut rng).unwrap();
             let elapsed = start.elapsed().as_secs_f64();
 
             total_time += elapsed;

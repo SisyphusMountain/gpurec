@@ -2,19 +2,9 @@
 
 use rustree::bd::simulate_bd_tree_bwd;
 use rustree::dtl::{simulate_dtl, count_events, count_extant_genes};
-use rustree::newick::newick::parse_newick;
 use rand::SeedableRng;
 use rand::rngs::StdRng;
 use std::time::Instant;
-
-// Helper function to create a species tree from Newick
-fn create_species_tree(newick: &str) -> rustree::node::FlatTree {
-    let mut nodes = parse_newick(newick).unwrap();
-    let root = nodes.pop().expect("No tree found");
-    let mut tree = root.to_flat_tree();
-    tree.assign_depths();
-    tree
-}
 
 #[test]
 #[ignore] // Run with: cargo test --test dtl_benchmark benchmark_dtl_varying_rates -- --ignored --nocapture
@@ -26,7 +16,7 @@ fn benchmark_dtl_varying_rates() {
     let mut rng = StdRng::seed_from_u64(42);
 
     // Generate a species tree once
-    let (mut species_tree, _) = simulate_bd_tree_bwd(10, 1.0, 0.3, &mut rng);
+    let (mut species_tree, _) = simulate_bd_tree_bwd(10, 1.0, 0.3, &mut rng).unwrap();
     species_tree.assign_depths();
 
     // Test configurations: (lambda_d, lambda_t, lambda_l, label)
@@ -122,7 +112,7 @@ fn benchmark_dtl_varying_species_tree_size() {
 
         for _ in 0..n_reps {
             // Generate a new species tree for each replicate
-            let (mut species_tree, _) = simulate_bd_tree_bwd(n_species, 1.0, 0.3, &mut rng);
+            let (mut species_tree, _) = simulate_bd_tree_bwd(n_species, 1.0, 0.3, &mut rng).unwrap();
             species_tree.assign_depths();
 
             let start = Instant::now();
@@ -171,7 +161,7 @@ fn benchmark_dtl_scalability() {
     println!("Species tree: 20 species, 10 replicates per configuration\n");
 
     let mut rng = StdRng::seed_from_u64(99999);
-    let (mut species_tree, _) = simulate_bd_tree_bwd(20, 1.0, 0.3, &mut rng);
+    let (mut species_tree, _) = simulate_bd_tree_bwd(20, 1.0, 0.3, &mut rng).unwrap();
     species_tree.assign_depths();
 
     // Test with increasing event rates
@@ -229,7 +219,7 @@ fn benchmark_dtl_transfer_intensity() {
     println!("Species tree: 15 species, λ_d=1.0, λ_l=0.3, 50 reps\n");
 
     let mut rng = StdRng::seed_from_u64(54321);
-    let (mut species_tree, _) = simulate_bd_tree_bwd(15, 1.0, 0.3, &mut rng);
+    let (mut species_tree, _) = simulate_bd_tree_bwd(15, 1.0, 0.3, &mut rng).unwrap();
     species_tree.assign_depths();
 
     let lambda_d = 1.0;
@@ -297,7 +287,7 @@ fn benchmark_dtl_loss_impact() {
     println!("Species tree: 10 species, λ_d=1.0, λ_t=0.5, 100 reps\n");
 
     let mut rng = StdRng::seed_from_u64(77777);
-    let (mut species_tree, _) = simulate_bd_tree_bwd(10, 1.0, 0.3, &mut rng);
+    let (mut species_tree, _) = simulate_bd_tree_bwd(10, 1.0, 0.3, &mut rng).unwrap();
     species_tree.assign_depths();
 
     let lambda_d = 1.0;
@@ -385,7 +375,7 @@ fn benchmark_dtl_large_scale() {
 
         for _ in 0..n_reps {
             // Generate species tree
-            let (mut species_tree, _) = simulate_bd_tree_bwd(n_species, 1.0, 0.3, &mut rng);
+            let (mut species_tree, _) = simulate_bd_tree_bwd(n_species, 1.0, 0.3, &mut rng).unwrap();
             species_tree.assign_depths();
 
             let start = Instant::now();
@@ -423,7 +413,7 @@ fn benchmark_dtl_quick_test() {
     println!("10 species tree, 20 replicates with balanced rates\n");
 
     let mut rng = StdRng::seed_from_u64(42);
-    let (mut species_tree, _) = simulate_bd_tree_bwd(10, 1.0, 0.3, &mut rng);
+    let (mut species_tree, _) = simulate_bd_tree_bwd(10, 1.0, 0.3, &mut rng).unwrap();
     species_tree.assign_depths();
 
     let lambda_d = 1.0;
@@ -433,10 +423,15 @@ fn benchmark_dtl_quick_test() {
 
     let mut total_time = 0.0;
     let mut total_events = 0;
+    let mut total_s: usize = 0;
+    let mut total_d: usize = 0;
+    let mut total_t: usize = 0;
+    let mut total_l: usize = 0;
+    let mut total_leaves: usize = 0;
 
     for _ in 0..n_reps {
         let start = Instant::now();
-        let (_rec_tree, events) = simulate_dtl(
+        let (rec_tree, events) = simulate_dtl(
             &species_tree,
             species_tree.root,
             lambda_d,
@@ -450,6 +445,13 @@ fn benchmark_dtl_quick_test() {
         let elapsed = start.elapsed();
         total_time += elapsed.as_secs_f64() * 1000.0;
         total_events += events.len();
+
+        let (s, d, t, l, leaves) = count_events(&rec_tree);
+        total_s += s;
+        total_d += d;
+        total_t += t;
+        total_l += l;
+        total_leaves += leaves;
     }
 
     let avg_time_ms = total_time / n_reps as f64;
@@ -458,4 +460,16 @@ fn benchmark_dtl_quick_test() {
     println!("Average time per simulation: {:.3} ms", avg_time_ms);
     println!("Average events per simulation: {}", avg_events);
     println!("Simulations per second: {:.1}", 1000.0 / avg_time_ms);
+    println!("Avg speciations: {}, duplications: {}, transfers: {}, losses: {}, leaves: {}",
+        total_s / n_reps, total_d / n_reps, total_t / n_reps, total_l / n_reps, total_leaves / n_reps);
+
+    // Statistical sanity checks with deterministic seed:
+    // - Every simulation should produce events (species tree has 10 leaves -> at least 9 speciations)
+    assert!(avg_events >= 9, "Expected at least 9 events on average, got {}", avg_events);
+    // - With lambda_d=1.0, we expect some duplications
+    assert!(total_d > 0, "Expected at least some duplications with lambda_d=1.0");
+    // - With lambda_t=0.5, we expect some transfers
+    assert!(total_t > 0, "Expected at least some transfers with lambda_t=0.5");
+    // - Every gene tree should have at least one leaf
+    assert!(total_leaves >= n_reps, "Expected at least 1 leaf per simulation");
 }

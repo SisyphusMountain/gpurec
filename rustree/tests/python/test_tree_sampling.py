@@ -9,7 +9,8 @@ This module tests the induced subtree extraction functionality including:
 """
 
 import sys
-sys.path.insert(0, "/home/enzo/Documents/Zombi/ZOMBI/zombi-rs/rustree/target/release")
+import os
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "target", "release"))
 import rustree
 import pytest
 

@@ -22,16 +22,16 @@ pub fn is_ancestor(
         }
         // Basic cycle check / prevent infinite loop if root's parent is not None
         if current_idx == flat_tree.root && flat_tree[flat_tree.root].parent.is_some() {
-            eprintln!(
-                "Warning: Root node {} has an unexpected parent during is_ancestor check.",
+            log::warn!(
+                "Root node {} has an unexpected parent during is_ancestor check.",
                 flat_tree.root
             );
             return false; // Avoid potential infinite loop
         }
         // More robust cycle check (if current node points back to original node_idx)
         if current_idx == node_idx {
-            eprintln!(
-                "Warning: Cycle detected involving node {} during is_ancestor check.",
+            log::warn!(
+                "Cycle detected involving node {} during is_ancestor check.",
                 node_idx
             );
             return false;

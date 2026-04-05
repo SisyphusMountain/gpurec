@@ -59,7 +59,8 @@ pub(crate) fn precompute_lca(
 ///
 /// A vector of species indices that are alive at `event_time` and are not the `donor`.
 /// May be empty if the donor is the only species alive at that time.
-pub(crate) fn get_contemporaneous_recipients(
+#[cfg(test)]
+fn get_contemporaneous_recipients(
     depths: &[f64],
     contemporaneity: &[Vec<usize>],
     event_time: f64,
@@ -73,7 +74,9 @@ pub(crate) fn get_contemporaneous_recipients(
         .collect()
 }
 
-/// Transfer recipient selection (uniform random)
+/// Transfer recipient selection (uniform random).
+///
+/// Selects directly from the contemporaneity slice without allocating.
 pub(crate) fn select_transfer_recipient<R: Rng>(
     depths: &[f64],
     contemporaneity: &[Vec<usize>],
@@ -81,15 +84,26 @@ pub(crate) fn select_transfer_recipient<R: Rng>(
     donor: usize,
     rng: &mut R,
 ) -> Option<usize> {
-    let recipients = get_contemporaneous_recipients(depths, contemporaneity, event_time, donor);
-    if recipients.is_empty() {
-        None
-    } else {
-        Some(recipients[rng.gen_range(0..recipients.len())])
+    let time_idx = find_time_index(depths, event_time);
+    let contemporaries = &contemporaneity[time_idx];
+
+    // Count eligible recipients (all contemporaries except donor)
+    let count = contemporaries.iter().filter(|&&sp| sp != donor).count();
+    if count == 0 {
+        return None;
     }
+
+    // Pick the k-th eligible recipient (0-indexed)
+    let k = rng.gen_range(0..count);
+    contemporaries.iter()
+        .filter(|&&sp| sp != donor)
+        .nth(k)
+        .copied()
 }
 
-/// Transfer recipient selection with assortative preference (distance-weighted)
+/// Transfer recipient selection with assortative preference (distance-weighted).
+///
+/// Selects directly from the contemporaneity slice without allocating a recipient Vec.
 pub(crate) fn select_transfer_recipient_assortative<R: Rng>(
     depths: &[f64],
     contemporaneity: &[Vec<usize>],
@@ -99,24 +113,17 @@ pub(crate) fn select_transfer_recipient_assortative<R: Rng>(
     alpha: f64,
     rng: &mut R,
 ) -> Option<usize> {
-    let recipients = get_contemporaneous_recipients(depths, contemporaneity, event_time, donor);
-    if recipients.is_empty() {
-        return None;
-    }
+    let time_idx = find_time_index(depths, event_time);
+    let contemporaries = &contemporaneity[time_idx];
 
-    // Compute weights for each potential recipient
-    // We can later make this more efficient by precomputing the 
-    // exponentials for each possible timeslice, due to the softmax
-    // invariance. For now we compute them on the fly for simplicity.
-    let mut weights: Vec<f64> = Vec::with_capacity(recipients.len());
+    // Compute total weight over eligible recipients
     let mut total_weight = 0.0;
-
-    for &species in &recipients {
-        let lca_depth = lca_depths[donor][species];
-        let distance = 2.0 * (event_time - lca_depth);
-        let weight = (-alpha * distance).exp();
-        weights.push(weight);
-        total_weight += weight;
+    for &sp in contemporaries {
+        if sp != donor {
+            let lca_depth = lca_depths[donor][sp];
+            let distance = 2.0 * (event_time - lca_depth);
+            total_weight += (-alpha * distance).exp();
+        }
     }
 
     if total_weight <= 0.0 {
@@ -126,16 +133,22 @@ pub(crate) fn select_transfer_recipient_assortative<R: Rng>(
     // Sample from weighted distribution
     let threshold: f64 = rng.gen::<f64>() * total_weight;
     let mut cumulative = 0.0;
+    let mut last_eligible = None;
 
-    for (i, &weight) in weights.iter().enumerate() {
-        cumulative += weight;
-        if cumulative >= threshold {
-            return Some(recipients[i]);
+    for &sp in contemporaries {
+        if sp != donor {
+            let lca_depth = lca_depths[donor][sp];
+            let distance = 2.0 * (event_time - lca_depth);
+            cumulative += (-alpha * distance).exp();
+            last_eligible = Some(sp);
+            if cumulative >= threshold {
+                return Some(sp);
+            }
         }
     }
 
-    // Fallback to last recipient
-    Some(recipients[recipients.len() - 1])
+    // Fallback to last eligible recipient
+    last_eligible
 }
 
 /// Maps a time value to the index of the time subdivision interval containing it.
@@ -229,7 +242,7 @@ pub(crate) fn finalize_simulation(
     let root_idx = final_gene_nodes
         .iter()
         .position(|n| n.parent.is_none())
-        .unwrap_or(0);
+        .expect("gene tree must have at least one root node (no parent)");
 
     let gene_tree = FlatTree {
         nodes: final_gene_nodes,

@@ -16,7 +16,7 @@ const OUTPUT_DIR: &str = "target/bench_plots";
 
 fn make_species_tree(n: usize, seed: u64) -> FlatTree {
     let mut rng = StdRng::seed_from_u64(seed);
-    let (mut tree, _) = simulate_bd_tree_bwd(n, 1.0, 0.3, &mut rng);
+    let (mut tree, _) = simulate_bd_tree_bwd(n, 1.0, 0.3, &mut rng).unwrap();
     tree.assign_depths();
     tree
 }
@@ -77,7 +77,7 @@ fn main() {
     for &n in &[50usize, 100, 200, 500, 1000, 2000, 5000, 10000] {
         let batch = calibrate(|| {
             let mut rng = StdRng::seed_from_u64(0);
-            std::hint::black_box(simulate_bd_tree_bwd(n, lambda, mu, &mut rng));
+            std::hint::black_box(simulate_bd_tree_bwd(n, lambda, mu, &mut rng).unwrap());
         });
 
         // Serial
@@ -86,7 +86,7 @@ fn main() {
             || {
                 let mut rng = StdRng::seed_from_u64(0);
                 for _ in 0..batch {
-                    std::hint::black_box(simulate_bd_tree_bwd(n, lambda, mu, &mut rng));
+                    std::hint::black_box(simulate_bd_tree_bwd(n, lambda, mu, &mut rng).unwrap());
                 }
             },
             batch,
@@ -101,7 +101,7 @@ fn main() {
             || {
                 (0..par_batch).into_par_iter().for_each(|i| {
                     let mut rng = StdRng::seed_from_u64(i as u64);
-                    std::hint::black_box(simulate_bd_tree_bwd(n, lambda, mu, &mut rng));
+                    std::hint::black_box(simulate_bd_tree_bwd(n, lambda, mu, &mut rng).unwrap());
                 });
             },
             par_batch,
@@ -287,7 +287,7 @@ fn main() {
                 pool.install(|| {
                     (0..batch_ts).into_par_iter().for_each(|i| {
                         let mut rng = StdRng::seed_from_u64(i as u64);
-                        std::hint::black_box(simulate_bd_tree_bwd(n_bd, lambda, mu, &mut rng));
+                        std::hint::black_box(simulate_bd_tree_bwd(n_bd, lambda, mu, &mut rng).unwrap());
                     });
                 });
             },

@@ -8,7 +8,7 @@ use rustree::FlatTree;
 /// Create a species tree of size n with deterministic seed.
 fn make_species_tree(n: usize, seed: u64) -> FlatTree {
     let mut rng = StdRng::seed_from_u64(seed);
-    let (mut tree, _) = simulate_bd_tree_bwd(n, 1.0, 0.3, &mut rng);
+    let (mut tree, _) = simulate_bd_tree_bwd(n, 1.0, 0.3, &mut rng).unwrap();
     tree.assign_depths();
     tree
 }

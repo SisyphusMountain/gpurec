@@ -40,7 +40,7 @@ fn main() {
     for &n_species in &species_sizes {
         // Generate species tree
         let mut rng = StdRng::seed_from_u64(42);
-        let (mut species_tree, _) = simulate_bd_tree_bwd(n_species, 1.0, 0.5, &mut rng);
+        let (mut species_tree, _) = simulate_bd_tree_bwd(n_species, 1.0, 0.5, &mut rng).unwrap();
         species_tree.assign_depths();
 
         // Benchmark per-gene-copy model (simulate_dtl_batch)
@@ -57,7 +57,7 @@ fn main() {
             n_gene_trees,
             false,
             &mut rng1,
-        );
+        ).unwrap();
         let per_gene_time = start.elapsed().as_secs_f64();
         let per_gene_rate = n_gene_trees as f64 / per_gene_time;
 
@@ -75,7 +75,7 @@ fn main() {
             n_gene_trees,
             false,
             &mut rng2,
-        );
+        ).unwrap();
         let per_species_time = start.elapsed().as_secs_f64();
         let per_species_rate = n_gene_trees as f64 / per_species_time;
 
@@ -123,7 +123,7 @@ fn main() {
     println!("=============================================================");
 
     let mut rng = StdRng::seed_from_u64(42);
-    let (mut species_tree, _) = simulate_bd_tree_bwd(100, 1.0, 0.5, &mut rng);
+    let (mut species_tree, _) = simulate_bd_tree_bwd(100, 1.0, 0.5, &mut rng).unwrap();
     species_tree.assign_depths();
 
     let batch_sizes = [100, 1_000, 10_000];
@@ -140,7 +140,7 @@ fn main() {
             &species_tree, species_tree.root,
             lambda_d, lambda_t, lambda_l, None,
             None, batch_size, false, &mut rng1,
-        );
+        ).unwrap();
         let pg_time = start.elapsed().as_secs_f64();
         let pg_rate = batch_size as f64 / pg_time;
 
@@ -151,7 +151,7 @@ fn main() {
             &species_tree, species_tree.root,
             lambda_d, lambda_t, lambda_l, None,
             None, batch_size, false, &mut rng2,
-        );
+        ).unwrap();
         let ps_time = start.elapsed().as_secs_f64();
         let ps_rate = batch_size as f64 / ps_time;
 

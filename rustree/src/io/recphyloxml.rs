@@ -9,6 +9,11 @@ use quick_xml::Reader;
 use std::collections::HashMap;
 use std::fs;
 
+/// Parsed components of a full RecPhyloXML file: (species_tree, gene_tree, node_mapping, event_mapping).
+type RecPhyloComponents = (FlatTree, FlatTree, Vec<Option<usize>>, Vec<Event>);
+/// Parsed components of a gene-tree-only RecPhyloXML: (gene_tree, node_mapping, event_mapping).
+type GeneTreeComponents = (FlatTree, Vec<Option<usize>>, Vec<Event>);
+
 /// Errors that can occur during RecPhyloXML parsing.
 #[derive(Debug)]
 pub enum ParseError {
@@ -92,7 +97,7 @@ impl GeneNode {
 /// Returns a tuple of (species_tree, gene_tree, node_mapping, event_mapping).
 pub fn parse_recphyloxml(
     xml_content: &str,
-) -> Result<(FlatTree, FlatTree, Vec<Option<usize>>, Vec<Event>), ParseError> {
+) -> Result<RecPhyloComponents, ParseError> {
     // Parse the species tree
     let species_root = parse_species_tree(xml_content)?;
     let (species_tree, species_name_map) = species_node_to_flat_tree(&species_root)?;
@@ -108,7 +113,7 @@ pub fn parse_recphyloxml(
 /// Parse a RecPhyloXML file and return the components for creating a RecTree.
 pub fn parse_recphyloxml_file(
     filepath: &str,
-) -> Result<(FlatTree, FlatTree, Vec<Option<usize>>, Vec<Event>), ParseError> {
+) -> Result<RecPhyloComponents, ParseError> {
     let xml_content = fs::read_to_string(filepath)?;
     parse_recphyloxml(&xml_content)
 }
@@ -153,7 +158,7 @@ fn parse_species_tree(xml_content: &str) -> Result<SpeciesNode, ParseError> {
             }
             Ok(XmlEvent::Text(e)) => {
                 if in_name || in_branch_length {
-                    current_text.push_str(&e.unescape()?.into_owned());
+                    current_text.push_str(&e.unescape()?);
                 }
             }
             Ok(XmlEvent::End(ref e)) => {
@@ -173,7 +178,7 @@ fn parse_species_tree(xml_content: &str) -> Result<SpeciesNode, ParseError> {
                             node.branch_length = match trimmed.parse() {
                                 Ok(v) => v,
                                 Err(_) => {
-                                    eprintln!("Warning: failed to parse branch length '{}' in species tree, defaulting to 0.0", trimmed);
+                                    log::warn!("Failed to parse branch length '{}' in species tree, defaulting to 0.0", trimmed);
                                     0.0
                                 }
                             };
@@ -321,7 +326,7 @@ fn parse_gene_tree(xml_content: &str) -> Result<GeneNode, ParseError> {
             }
             Ok(XmlEvent::Text(e)) => {
                 if in_name || in_branch_length {
-                    current_text.push_str(&e.unescape()?.into_owned());
+                    current_text.push_str(&e.unescape()?);
                 }
             }
             Ok(XmlEvent::End(ref e)) => {
@@ -341,7 +346,7 @@ fn parse_gene_tree(xml_content: &str) -> Result<GeneNode, ParseError> {
                             node.branch_length = match trimmed.parse() {
                                 Ok(v) => v,
                                 Err(_) => {
-                                    eprintln!("Warning: failed to parse branch length '{}' in gene tree, defaulting to 0.0", trimmed);
+                                    log::warn!("Failed to parse branch length '{}' in gene tree, defaulting to 0.0", trimmed);
                                     0.0
                                 }
                             };
@@ -383,11 +388,9 @@ fn parse_gene_tree(xml_content: &str) -> Result<GeneNode, ParseError> {
 
 /// Helper function to get an attribute value from an XML element.
 fn get_attribute(element: &quick_xml::events::BytesStart, attr_name: &[u8]) -> Option<String> {
-    for attr in element.attributes() {
-        if let Ok(attr) = attr {
-            if attr.key.as_ref() == attr_name {
-                return String::from_utf8(attr.value.to_vec()).ok();
-            }
+    for attr in element.attributes().flatten() {
+        if attr.key.as_ref() == attr_name {
+            return String::from_utf8(attr.value.to_vec()).ok();
         }
     }
     None
@@ -434,7 +437,7 @@ fn species_node_to_flat_tree(
         });
 
         // Process children
-        if node.children.len() > 0 {
+        if !node.children.is_empty() {
             let left_idx = traverse(&node.children[0], Some(index), nodes, name_map)?;
             nodes[index].left_child = Some(left_idx);
 
@@ -462,7 +465,7 @@ fn species_node_to_flat_tree(
 fn gene_node_to_flat_tree(
     root: &GeneNode,
     species_name_map: &HashMap<String, usize>,
-) -> Result<(FlatTree, Vec<Option<usize>>, Vec<Event>), ParseError> {
+) -> Result<GeneTreeComponents, ParseError> {
     let mut nodes = Vec::new();
     let mut node_mapping = Vec::new();
     let mut event_mapping = Vec::new();
@@ -515,7 +518,7 @@ fn gene_node_to_flat_tree(
         }
 
         // Process children
-        if node.children.len() > 0 {
+        if !node.children.is_empty() {
             let left_idx = traverse(
                 &node.children[0],
                 Some(index),
@@ -589,7 +592,7 @@ pub fn build_species_name_map(species_tree: &FlatTree) -> HashMap<String, usize>
 pub fn parse_gene_tree_only(
     xml_content: &str,
     species_tree: &FlatTree,
-) -> Result<(FlatTree, Vec<Option<usize>>, Vec<Event>), ParseError> {
+) -> Result<GeneTreeComponents, ParseError> {
     // Build name map from provided species tree
     let species_name_map = build_species_name_map(species_tree);
 
@@ -607,7 +610,7 @@ pub fn parse_gene_tree_only(
 pub fn parse_gene_tree_only_file(
     xml_filepath: &str,
     species_tree: &FlatTree,
-) -> Result<(FlatTree, Vec<Option<usize>>, Vec<Event>), ParseError> {
+) -> Result<GeneTreeComponents, ParseError> {
     let xml_content = fs::read_to_string(xml_filepath)?;
     parse_gene_tree_only(&xml_content, species_tree)
 }

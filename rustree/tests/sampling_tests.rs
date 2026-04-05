@@ -1,7 +1,7 @@
 use std::fs;
 use std::path::PathBuf;
 use rustree::comparison::compare_nodes;
-use rustree::newick::newick::parse_newick;
+use rustree::newick::parse_newick;
 use rustree::sampling::{extract_induced_subtree, find_leaf_indices_by_names};
 
 #[test]

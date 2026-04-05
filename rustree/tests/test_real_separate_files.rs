@@ -1,16 +1,17 @@
 use rustree::{RecTree, Event};
 
 #[test]
-#[ignore] // Requires local data files at /home/enzo/... - run with: cargo test --test test_real_separate_files -- --ignored
+#[ignore] // Requires external WP2 data — set RUSTREE_WP2_DATA to the data dir
 fn test_parse_real_separate_files() {
-    let species_path = "/home/enzo/Documents/git/WP2/data/output_1/T/CompleteTree.nwk";
-    let gene_path = "/home/enzo/Documents/git/WP2/data/output_1/G/Gene_trees/1_rec.xml";
+    let data_dir = std::env::var("RUSTREE_WP2_DATA").expect("Set RUSTREE_WP2_DATA to WP2 data dir");
+    let species_path = format!("{}/output_1/T/CompleteTree.nwk", data_dir);
+    let gene_path = format!("{}/output_1/G/Gene_trees/1_rec.xml", data_dir);
 
     println!("\n=== Parsing Real Separate Files ===");
     println!("Species tree: {}", species_path);
     println!("Gene tree: {}", gene_path);
 
-    let result = RecTree::from_separate_files(species_path, gene_path);
+    let result = RecTree::from_separate_files(&species_path, &gene_path);
 
     assert!(
         result.is_ok(),

@@ -1,6 +1,5 @@
 // rustree/src/newick/mod.rs
 
-// Bring in pest macros if needed:
+mod parser;
 
-// Declare the module that contains your parser functions:
-pub mod newick;
+pub use parser::parse_newick;

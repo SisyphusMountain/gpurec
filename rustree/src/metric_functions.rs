@@ -4,14 +4,27 @@
 
 
 use crate::node::{Node, TraversalOrder, FlatTree};
+use std::str::FromStr;
 
 /// Type of distance to compute between nodes.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DistanceType {
     /// Topological distance: number of edges between two nodes
     Topological,
     /// Metric distance: sum of branch lengths along the path
     Metric,
+}
+
+impl FromStr for DistanceType {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "topological" => Ok(DistanceType::Topological),
+            "metric" => Ok(DistanceType::Metric),
+            _ => Err(format!("Unknown distance type '{}'. Valid values: topological, metric", s)),
+        }
+    }
 }
 
 /// A single pairwise distance entry between two nodes.
@@ -76,6 +89,10 @@ impl LcaTable {
     }
 
     /// Find the lowest common ancestor of two nodes in O(1).
+    ///
+    /// # Panics
+    ///
+    /// Panics if `u` or `v` are not valid node indices for the tree this table was built from.
     pub fn lca(&self, u: usize, v: usize) -> usize {
         if u == v {
             return u;
@@ -173,8 +190,8 @@ impl LcaTable {
         let mut sparse = vec![vec![0usize; m]; max_k];
 
         // Base case: each element is its own minimum
-        for i in 0..m {
-            sparse[0][i] = i;
+        for (i, slot) in sparse[0].iter_mut().enumerate() {
+            *slot = i;
         }
 
         // Fill larger ranges by combining two halves
@@ -213,24 +230,6 @@ impl LcaTable {
     }
 }
 
-/// Recursively sets the depth of nodes in a tree.
-/// Each node's depth includes its own stem length plus all ancestral stem lengths.
-///
-/// # Arguments
-/// * `node` - The root node to set the depth for.
-/// * `depth` - The depth at the parent node (usually 0.0 at the root's parent).
-pub fn give_depth(node: &mut Node, depth: f64) {
-    // Include this node's stem length in its depth
-    let node_depth = depth + node.length;
-    node.depth = Some(node_depth);
-    if let Some(left_child) = &mut node.left_child {
-        give_depth(left_child, node_depth);
-    }
-    if let Some(right_child) = &mut node.right_child {
-        give_depth(right_child, node_depth);
-    }
-}
-
 impl Node {
     pub fn total_length(&self) -> f64 {
         let mut total_length = 0.0;
@@ -266,6 +265,10 @@ impl Node {
     /// # Arguments
     /// * `node` - The root node of the tree.
     /// * `parent_depth` - The depth of the parent node.
+    ///
+    /// # Panics
+    ///
+    /// Panics if depths have not been assigned (via [`assign_depths`](Self::assign_depths)).
     pub fn depths_to_lengths(&mut self, parent_depth: f64) {
         let depth = self.depth.expect("depths must be assigned before calling depths_to_lengths() - call assign_depths() first");
         self.length = depth - parent_depth;
@@ -347,7 +350,7 @@ impl FlatTree {
         let mut depths: Vec<f64> = self.nodes.iter().filter_map(|node| node.depth).collect();
         depths.sort_by(|a, b| a.total_cmp(b));
         depths.dedup();
-        return depths;
+        depths
     }
     /// Computes the vector of time interval durations from the tree's depth subdivision.
     ///
@@ -362,17 +365,22 @@ impl FlatTree {
     /// - `intervals[0]` is always `0.0` (there is no interval before the first depth point).
     /// - `intervals[i]` for `i >= 1` equals `depths[i] - depths[i-1]`.
     ///
+    /// # Panics
+    ///
+    /// Panics (unsigned underflow) if the tree has no assigned depths, because the
+    /// subdivision will be empty. Call [`assign_depths`](Self::assign_depths) first.
+    ///
     /// # Example
     ///
     /// If the depths are `[0, 1, 2, 3, 5]`, the returned intervals are `[0, 1, 1, 1, 2]`.
     pub fn make_intervals(&self) -> Vec<f64> {
         let depths = self.make_subdivision();
-        let mut intervals: Vec<f64> = Vec::with_capacity(depths.len() - 1);
+        let mut intervals: Vec<f64> = Vec::with_capacity(depths.len());
         intervals.push(0.0);
         for i in 0..depths.len() - 1 {
             intervals.push(depths[i + 1] - depths[i]);
         }
-        return intervals;
+        intervals
     }
     /// Finds the index in `depths` whose value is closest to `value`.
     ///
@@ -447,6 +455,10 @@ impl FlatTree {
     /// * `depths` - A sorted slice of time points (depths) representing the subdivision,
     ///   as returned by [`make_subdivision`](Self::make_subdivision).
     ///
+    /// # Panics
+    ///
+    /// Panics if depths have not been assigned (via [`assign_depths`](Self::assign_depths)).
+    ///
     /// # Returns
     ///
     /// A `Vec<Vec<usize>>` of the same length as `depths`, where `contemporaneity[j]`
@@ -464,8 +476,8 @@ impl FlatTree {
             let end_index = self.find_closest_index(depths, end_time);
 
             // We don't count the start index because the node is not alive on the interval that ends at the start index.
-            for j in (start_index + 1)..=end_index {
-                contemporaneity[j].push(i);
+            for slot in &mut contemporaneity[(start_index + 1)..=end_index] {
+                slot.push(i);
             }
         }
         contemporaneity
@@ -491,6 +503,20 @@ impl FlatTree {
     /// # Returns
     /// The index of the lowest common ancestor.
     pub fn find_lca(&self, node_a: usize, node_b: usize) -> Result<usize, String> {
+        let n = self.nodes.len();
+        if node_a >= n {
+            return Err(format!(
+                "node_a index {} is out of bounds (tree has {} nodes)",
+                node_a, n
+            ));
+        }
+        if node_b >= n {
+            return Err(format!(
+                "node_b index {} is out of bounds (tree has {} nodes)",
+                node_b, n
+            ));
+        }
+
         // Collect ancestors of node_a (including itself)
         let mut ancestors_a = std::collections::HashSet::new();
         let mut current = Some(node_a);
@@ -519,6 +545,10 @@ impl FlatTree {
     /// This is used for efficient distance computation during assortative transfer selection.
     /// The distance between two nodes A and B at time t is: 2 * (t - lca_depth[A][B])
     ///
+    /// # Panics
+    ///
+    /// Panics if the tree has no nodes (via [`LcaTable::new`]).
+    ///
     /// # Returns
     /// A symmetric matrix where `result[i][j]` = depth of LCA(i, j).
     pub fn precompute_lca_depths(&self) -> Result<Vec<Vec<f64>>, String> {
@@ -526,8 +556,8 @@ impl FlatTree {
         let lca_table = LcaTable::new(self);
         let mut lca_depths = vec![vec![0.0; n]; n];
 
-        for i in 0..n {
-            for j in i..n {
+        for (i, row) in lca_depths.iter_mut().enumerate() {
+            for (j, cell) in row.iter_mut().enumerate().skip(i) {
                 let lca = lca_table.lca(i, j);
                 let depth = self.nodes[lca].depth.ok_or_else(|| {
                     format!(
@@ -535,8 +565,15 @@ impl FlatTree {
                         lca
                     )
                 })?;
-                lca_depths[i][j] = depth;
-                lca_depths[j][i] = depth; // Symmetric
+                *cell = depth;
+            }
+        }
+        // Fill symmetric lower triangle
+        #[allow(clippy::needless_range_loop)]
+        for i in 1..n {
+            for j in 0..i {
+                let val = lca_depths[j][i];
+                lca_depths[i][j] = val;
             }
         }
 
@@ -567,6 +604,11 @@ impl FlatTree {
     /// * `node_a` - Index of the first node
     /// * `node_b` - Index of the second node
     /// * `distance_type` - Type of distance to compute (Topological or Metric)
+    ///
+    /// # Panics
+    ///
+    /// Panics if the parent chain from either node to their LCA is broken (i.e., a node
+    /// on the path has no parent). This should not happen on a well-formed tree.
     ///
     /// # Returns
     /// The distance between the two nodes.
@@ -615,15 +657,19 @@ impl FlatTree {
     /// * `distance_type` - Type of distance to compute (Topological or Metric)
     /// * `leaves_only` - If true, only compute distances between leaf nodes
     ///
+    /// # Panics
+    ///
+    /// Panics if the tree has a broken parent chain (see [`distance_between`](Self::distance_between)).
+    ///
     /// # Returns
     /// A vector of PairwiseDistance entries containing all pairs (including symmetric
-    /// pairs and self-distances).
+    /// pairs only, excluding self-distances).
     ///
     /// # Example
     /// ```ignore
     /// let tree = parse_newick("((A:1,B:1):1,C:2):0;").unwrap().to_flat_tree();
     /// let distances = tree.pairwise_distances(DistanceType::Metric, true);
-    /// // Returns distances for: (A,A), (A,B), (A,C), (B,A), (B,B), (B,C), (C,A), (C,B), (C,C)
+    /// // Returns distances for: (A,B), (A,C), (B,C)  — upper triangle only
     /// ```
     pub fn pairwise_distances(&self, distance_type: DistanceType, leaves_only: bool) -> Result<Vec<PairwiseDistance<'_>>, String> {
         let indices: Vec<usize> = if leaves_only {
@@ -638,10 +684,11 @@ impl FlatTree {
             (0..self.nodes.len()).collect()
         };
 
-        let mut distances = Vec::with_capacity(indices.len() * indices.len());
+        let n = indices.len();
+        let mut distances = Vec::with_capacity(n * (n - 1) / 2);
 
-        for &i in &indices {
-            for &j in &indices {
+        for (pos_i, &i) in indices.iter().enumerate() {
+            for &j in &indices[pos_i + 1..] {
                 let dist = self.distance_between(i, j, distance_type)?;
                 distances.push(PairwiseDistance {
                     node1: &self.nodes[i].name,
@@ -659,17 +706,27 @@ impl FlatTree {
     /// # Arguments
     /// * `distance_type` - Type of distance to compute (Topological or Metric)
     ///
+    /// # Panics
+    ///
+    /// Panics if the tree has a broken parent chain (see [`distance_between`](Self::distance_between)).
+    ///
     /// # Returns
     /// A symmetric matrix where `result[i][j]` = distance between nodes i and j.
     pub fn pairwise_distance_matrix(&self, distance_type: DistanceType) -> Result<Vec<Vec<f64>>, String> {
         let n = self.nodes.len();
         let mut matrix = vec![vec![0.0; n]; n];
 
-        for i in 0..n {
-            for j in i..n {
-                let dist = self.distance_between(i, j, distance_type)?;
-                matrix[i][j] = dist;
-                matrix[j][i] = dist; // Symmetric
+        for (i, row) in matrix.iter_mut().enumerate() {
+            for (j, cell) in row.iter_mut().enumerate().skip(i) {
+                *cell = self.distance_between(i, j, distance_type)?;
+            }
+        }
+        // Fill symmetric lower triangle
+        #[allow(clippy::needless_range_loop)]
+        for i in 1..n {
+            for j in 0..i {
+                let val = matrix[j][i];
+                matrix[i][j] = val;
             }
         }
 
@@ -679,7 +736,7 @@ impl FlatTree {
 
 #[cfg(test)]
 mod tests {
-    use crate::newick::newick::parse_newick;
+    use crate::newick::parse_newick;
     use crate::node::FlatTree;
 
     /// Helper: parse a Newick string and return a FlatTree with depths assigned.

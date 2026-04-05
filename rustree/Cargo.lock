@@ -207,6 +207,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "ctor"
+version = "0.2.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "32a2785755761f3ddc1492979ce1e48d2c00d09311c39e4466429188f3dd6501"
+dependencies = [
+ "quote",
+ "syn",
+]
+
+[[package]]
 name = "digest"
 version = "0.10.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -242,6 +252,16 @@ dependencies = [
  "libR-sys",
  "once_cell",
  "paste",
+]
+
+[[package]]
+name = "extendr-engine"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "268440fc25ddc76a70e45510e4c4f35a0359cc3642479a627dac72650de45d69"
+dependencies = [
+ "ctor",
+ "libR-sys",
 ]
 
 [[package]]
@@ -379,6 +399,12 @@ name = "linux-raw-sys"
 version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "df1d3c3b53da64cf5760482273a98e575c651a67eec7f77df96b5b642de8f039"
+
+[[package]]
+name = "log"
+version = "0.4.29"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5e5032e24019045c762d3c0f28f5b6b8bbf38563a65908389bf7978758920897"
 
 [[package]]
 name = "matrixmultiply"
@@ -772,6 +798,8 @@ version = "0.1.0"
 dependencies = [
  "criterion",
  "extendr-api",
+ "extendr-engine",
+ "log",
  "numpy",
  "pest",
  "pest_derive",

@@ -81,6 +81,7 @@ fn get_splits(tree: &FlatTree) -> HashSet<String> {
 /// # Panics
 ///
 /// Panics if the trees do not have identical leaf labels or do not have the same number of leaves.
+#[must_use]
 pub fn unrooted_robinson_foulds(tree1: &FlatTree, tree2: &FlatTree) -> usize {
     // Verify that both trees have exactly the same set of leaves.
     let leaves1 = collect_leaves(tree1);
@@ -94,8 +95,8 @@ pub fn unrooted_robinson_foulds(tree1: &FlatTree, tree2: &FlatTree) -> usize {
 
     // Compute the number of splits that are not shared.
     let common: HashSet<_> = splits1.intersection(&splits2).collect();
-    let rf_distance = (splits1.len() - common.len()) + (splits2.len() - common.len());
-    rf_distance
+    
+    (splits1.len() - common.len()) + (splits2.len() - common.len())
 }
 
 /// Extracts unrooted bipartitions from a rooted tree.
@@ -142,6 +143,7 @@ fn get_unrooted_bipartitions(tree: &FlatTree) -> HashSet<String> {
 /// # Panics
 ///
 /// Panics if the trees do not have identical leaf labels.
+#[must_use]
 pub fn true_unrooted_robinson_foulds(tree1: &FlatTree, tree2: &FlatTree) -> usize {
     let leaves1 = collect_leaves(tree1);
     let leaves2 = collect_leaves(tree2);

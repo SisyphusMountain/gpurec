@@ -9,6 +9,7 @@
 use std::collections::HashMap;
 use crate::node::FlatTree;
 use crate::dtl::DTLEvent;
+use crate::error::RustreeError;
 use crate::sampling::{NodeMark, mark_nodes_postorder, find_leaf_indices_by_names, extract_induced_subtree_by_names};
 
 /// An induced transfer: a transfer event with both complete-tree and
@@ -103,9 +104,9 @@ pub(crate) fn compute_projection(
 pub fn ghost_lengths(
     complete_tree: &FlatTree,
     sampled_leaf_names: &[String],
-) -> (FlatTree, Vec<f64>) {
+) -> Result<(FlatTree, Vec<f64>), RustreeError> {
     let (sampled_tree, _) = extract_induced_subtree_by_names(complete_tree, sampled_leaf_names)
-        .expect("Failed to extract induced subtree from leaf names");
+        .ok_or_else(|| RustreeError::Tree("Failed to extract induced subtree from leaf names".to_string()))?;
 
     let keep_indices = find_leaf_indices_by_names(complete_tree, sampled_leaf_names);
     let mut marks = vec![NodeMark::Discard; complete_tree.nodes.len()];
@@ -134,7 +135,7 @@ pub fn ghost_lengths(
         }
     }
 
-    (sampled_tree, ghost)
+    Ok((sampled_tree, ghost))
 }
 
 /// Computes induced transfers by projecting each transfer's donor and recipient
@@ -151,9 +152,9 @@ pub fn induced_transfers(
     complete_tree: &FlatTree,
     sampled_leaf_names: &[String],
     events: &[DTLEvent],
-) -> Vec<InducedTransfer> {
+) -> Result<Vec<InducedTransfer>, RustreeError> {
     let (sampled_tree, _) = extract_induced_subtree_by_names(complete_tree, sampled_leaf_names)
-        .expect("Failed to extract induced subtree from leaf names");
+        .ok_or_else(|| RustreeError::Tree("Failed to extract induced subtree from leaf names".to_string()))?;
 
     // Step 1: Mark complete tree nodes
     let keep_indices = find_leaf_indices_by_names(complete_tree, sampled_leaf_names);
@@ -181,7 +182,7 @@ pub fn induced_transfers(
         .collect();
 
     // Step 5: For each transfer event, produce an InducedTransfer
-    events
+    Ok(events
         .iter()
         .filter_map(|event| {
             if let DTLEvent::Transfer { time, gene_id, from_species, to_species, .. } = event {
@@ -197,13 +198,13 @@ pub fn induced_transfers(
                 None
             }
         })
-        .collect()
+        .collect())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::newick::newick::parse_newick;
+    use crate::newick::parse_newick;
     use crate::sampling::extract_induced_subtree_by_names;
 
     fn make_tree(newick: &str) -> FlatTree {
@@ -301,7 +302,7 @@ mod tests {
             recipient_child: 2,
         }];
 
-        let induced = induced_transfers(&complete_tree, &sampled_names, &events);
+        let induced = induced_transfers(&complete_tree, &sampled_names, &events).unwrap();
         assert_eq!(induced.len(), 1);
 
         let t = &induced[0];
@@ -331,7 +332,7 @@ mod tests {
         let complete = make_tree("((A:1,B:1)AB:1,(C:1,D:1)CD:1)root:0;");
         let sampled_names: Vec<String> = vec!["A".into(), "C".into()];
 
-        let (sampled, ghost) = ghost_lengths(&complete, &sampled_names);
+        let (sampled, ghost) = ghost_lengths(&complete, &sampled_names).unwrap();
 
         let sampled_a = sampled.find_node_index("A").unwrap();
         let sampled_c = sampled.find_node_index("C").unwrap();
@@ -351,7 +352,7 @@ mod tests {
         let complete = make_tree("((A:1,B:1)AB:1,(C:1,D:1)CD:1)root:0;");
         let sampled_names: Vec<String> = vec!["A".into(), "B".into()];
 
-        let (sampled, ghost) = ghost_lengths(&complete, &sampled_names);
+        let (sampled, ghost) = ghost_lengths(&complete, &sampled_names).unwrap();
 
         let sampled_ab = sampled.find_node_index("AB").unwrap();
         let sampled_a = sampled.find_node_index("A").unwrap();
@@ -387,7 +388,7 @@ mod tests {
             },
         ];
 
-        let induced = induced_transfers(&complete_tree, &sampled_names, &events);
+        let induced = induced_transfers(&complete_tree, &sampled_names, &events).unwrap();
         assert_eq!(induced.len(), 0, "Non-transfer events should be filtered out");
     }
 }

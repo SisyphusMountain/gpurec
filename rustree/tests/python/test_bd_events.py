@@ -10,10 +10,10 @@ This module tests:
 """
 
 import sys
-sys.path.insert(0, "/home/enzo/Documents/Zombi/ZOMBI/zombi-rs/rustree/target/release")
+import os
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "target", "release"))
 
 import rustree
-import os
 import tempfile
 import csv as csv_module
 from pathlib import Path

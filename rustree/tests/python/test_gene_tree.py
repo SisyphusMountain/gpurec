@@ -9,9 +9,9 @@ Tests cover:
 """
 
 import sys
-sys.path.insert(0, "/home/enzo/Documents/Zombi/ZOMBI/zombi-rs/rustree/target/release")
-import rustree
 import os
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "target", "release"))
+import rustree
 import tempfile
 
 # Create a shared species tree for all tests

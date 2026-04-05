@@ -2,6 +2,7 @@
 
 use std::collections::{HashSet, HashMap};
 use crate::node::{FlatTree, FlatNode};
+use crate::error::RustreeError;
 
 /// Status of a node during induced subtree extraction.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -31,6 +32,7 @@ pub(crate) enum NodeMark {
 /// A new `FlatTree` containing only the induced subtree, or `None` if no leaves are kept.
 /// The returned `Vec<Option<usize>>` maps original node indices to new node indices
 /// (`old_to_new[old_idx] = Some(new_idx)` for kept nodes, `None` for discarded/collapsed nodes).
+#[must_use]
 pub fn extract_induced_subtree(tree: &FlatTree, keep_leaf_indices: &HashSet<usize>) -> Option<(FlatTree, Vec<Option<usize>>)> {
     if keep_leaf_indices.is_empty() {
         return None;
@@ -55,10 +57,15 @@ pub fn extract_induced_subtree(tree: &FlatTree, keep_leaf_indices: &HashSet<usiz
         return None;
     }
 
-    Some((FlatTree {
+    let mut induced_tree = FlatTree {
         nodes: new_nodes,
         root: 0, // Root is always first node added
-    }, old_to_new))
+    };
+
+    // Recalculate depths from branch lengths (original depths are invalid after collapsing)
+    induced_tree.assign_depths();
+
+    Some((induced_tree, old_to_new))
 }
 
 /// Marks nodes using postorder traversal (children before parents).
@@ -174,6 +181,7 @@ fn build_induced_tree(
 ///
 /// # Returns
 /// A HashSet of leaf indices matching the given names.
+#[must_use]
 pub fn find_leaf_indices_by_names(tree: &FlatTree, names: &[String]) -> HashSet<usize> {
     let name_set: HashSet<&str> = names.iter().map(|s| s.as_str()).collect();
 
@@ -190,6 +198,7 @@ pub fn find_leaf_indices_by_names(tree: &FlatTree, names: &[String]) -> HashSet<
 }
 
 /// Finds all leaf indices in the tree.
+#[must_use]
 pub fn find_all_leaf_indices(tree: &FlatTree) -> Vec<usize> {
     tree.nodes
         .iter()
@@ -209,6 +218,7 @@ pub fn find_all_leaf_indices(tree: &FlatTree) -> Vec<usize> {
 ///
 /// # Returns
 /// A new `FlatTree` containing only the induced subtree, or `None` if no matching leaves found.
+#[must_use]
 pub fn extract_induced_subtree_by_names(tree: &FlatTree, leaf_names: &[String]) -> Option<(FlatTree, Vec<Option<usize>>)> {
     let keep_indices = find_leaf_indices_by_names(tree, leaf_names);
     extract_induced_subtree(tree, &keep_indices)
@@ -225,6 +235,7 @@ pub fn extract_induced_subtree_by_names(tree: &FlatTree, leaf_names: &[String]) 
 ///
 /// # Returns
 /// A HashSet of indices of extant leaves.
+#[must_use]
 pub fn find_extant_leaf_indices(tree: &FlatTree) -> HashSet<usize> {
     use crate::bd::BDEvent;
 
@@ -271,7 +282,7 @@ pub fn find_extant_leaf_indices(tree: &FlatTree) -> HashSet<usize> {
 ///
 /// // Simulate tree with 20 extant species
 /// let mut rng = StdRng::seed_from_u64(42);
-/// let (tree, _) = simulate_bd_tree_bwd(20, 1.0, 0.5, &mut rng);
+/// let (tree, _) = simulate_bd_tree_bwd(20, 1.0, 0.5, &mut rng).unwrap();
 ///
 /// // Extract only extant species (removes extinct lineages)
 /// let (extant_tree, mapping) = extract_extant_subtree(&tree)
@@ -282,12 +293,10 @@ pub fn find_extant_leaf_indices(tree: &FlatTree) -> HashSet<usize> {
 ///     .filter(|n| n.left_child.is_none() && n.right_child.is_none())
 ///     .count(), 20);
 /// ```
+#[must_use]
 pub fn extract_extant_subtree(tree: &FlatTree) -> Option<(FlatTree, Vec<Option<usize>>)> {
     let extant_indices = find_extant_leaf_indices(tree);
-    let (mut extant_tree, mapping) = extract_induced_subtree(tree, &extant_indices)?;
-
-    // Assign depths to the extracted tree (required for DTL simulation)
-    extant_tree.assign_depths();
+    let (extant_tree, mapping) = extract_induced_subtree(tree, &extant_indices)?;
 
     Some((extant_tree, mapping))
 }
@@ -301,7 +310,21 @@ pub fn extract_extant_subtree(tree: &FlatTree) -> Option<(FlatTree, Vec<Option<u
 ///
 /// # Returns
 /// The index of the LCA node (the deepest node that is an ancestor of both input nodes).
-pub fn compute_lca(tree: &FlatTree, node1_idx: usize, node2_idx: usize) -> usize {
+pub fn compute_lca(tree: &FlatTree, node1_idx: usize, node2_idx: usize) -> Result<usize, RustreeError> {
+    let n = tree.nodes.len();
+    if node1_idx >= n {
+        return Err(RustreeError::Index(format!(
+            "node1_idx {} is out of bounds (tree has {} nodes)",
+            node1_idx, n
+        )));
+    }
+    if node2_idx >= n {
+        return Err(RustreeError::Index(format!(
+            "node2_idx {} is out of bounds (tree has {} nodes)",
+            node2_idx, n
+        )));
+    }
+
     // Build path from node1 to root
     let mut path1 = HashSet::new();
     let mut current = node1_idx;
@@ -315,18 +338,18 @@ pub fn compute_lca(tree: &FlatTree, node1_idx: usize, node2_idx: usize) -> usize
     // Walk from node2 to root until we find a node in path1
     let mut current = node2_idx;
     if path1.contains(&current) {
-        return current;
+        return Ok(current);
     }
 
     while let Some(parent) = tree.nodes[current].parent {
         if path1.contains(&parent) {
-            return parent;
+            return Ok(parent);
         }
         current = parent;
     }
 
     // If we get here, return the root (should always be in path1)
-    tree.root
+    Ok(tree.root)
 }
 
 /// Gets all leaf names descended from a given node.
@@ -337,7 +360,15 @@ pub fn compute_lca(tree: &FlatTree, node1_idx: usize, node2_idx: usize) -> usize
 ///
 /// # Returns
 /// A vector of leaf names descended from this node.
-pub fn get_descendant_leaf_names(tree: &FlatTree, node_idx: usize) -> Vec<String> {
+pub fn get_descendant_leaf_names(tree: &FlatTree, node_idx: usize) -> Result<Vec<String>, RustreeError> {
+    if node_idx >= tree.nodes.len() {
+        return Err(RustreeError::Index(format!(
+            "node_idx {} is out of bounds (tree has {} nodes)",
+            node_idx,
+            tree.nodes.len()
+        )));
+    }
+
     let mut leaves = Vec::new();
     let mut stack = vec![node_idx];
 
@@ -358,7 +389,7 @@ pub fn get_descendant_leaf_names(tree: &FlatTree, node_idx: usize) -> Vec<String
         }
     }
 
-    leaves
+    Ok(leaves)
 }
 
 /// Builds a mapping from all pairs of leaf names to their LCA node index.
@@ -371,23 +402,41 @@ pub fn get_descendant_leaf_names(tree: &FlatTree, node_idx: usize) -> Vec<String
 ///
 /// # Returns
 /// A HashMap mapping (leaf_name1, leaf_name2) pairs to LCA node indices.
+#[must_use]
 pub fn build_leaf_pair_lca_map(tree: &FlatTree) -> HashMap<(String, String), usize> {
     let leaf_indices = find_all_leaf_indices(tree);
     let mut lca_map = HashMap::new();
 
     for i in 0..leaf_indices.len() {
         for j in (i+1)..leaf_indices.len() {
-            let leaf1 = &tree.nodes[leaf_indices[i]];
-            let leaf2 = &tree.nodes[leaf_indices[j]];
-            let lca_idx = compute_lca(tree, leaf_indices[i], leaf_indices[j]);
+            let name1 = &tree.nodes[leaf_indices[i]].name;
+            let name2 = &tree.nodes[leaf_indices[j]].name;
+            // Safety: leaf_indices come from find_all_leaf_indices, so they are valid
+            let lca_idx = compute_lca(tree, leaf_indices[i], leaf_indices[j])
+                .expect("internal error: leaf indices from find_all_leaf_indices should be valid");
 
-            // Store both orderings for easy lookup
-            lca_map.insert((leaf1.name.clone(), leaf2.name.clone()), lca_idx);
-            lca_map.insert((leaf2.name.clone(), leaf1.name.clone()), lca_idx);
+            // Store canonical ordering (smaller name first) to halve memory
+            let key = if name1 <= name2 {
+                (name1.clone(), name2.clone())
+            } else {
+                (name2.clone(), name1.clone())
+            };
+            lca_map.insert(key, lca_idx);
         }
     }
 
     lca_map
+}
+
+/// Look up the LCA for a pair of leaf names in a canonical-ordered LCA map.
+#[must_use]
+pub fn lca_map_get(lca_map: &HashMap<(String, String), usize>, a: &str, b: &str) -> Option<usize> {
+    let key = if a <= b {
+        (a.to_string(), b.to_string())
+    } else {
+        (b.to_string(), a.to_string())
+    };
+    lca_map.get(&key).copied()
 }
 
 /// Maps sampled species tree node indices to original species tree node indices.
@@ -407,7 +456,7 @@ pub fn build_sampled_to_original_mapping(
     original_tree: &FlatTree,
     _sampled_lca_map: &HashMap<(String, String), usize>,
     original_lca_map: &HashMap<(String, String), usize>,
-) -> Result<HashMap<usize, usize>, String> {
+) -> Result<HashMap<usize, usize>, RustreeError> {
     let mut mapping = HashMap::new();
 
     // For each node in sampled tree
@@ -418,24 +467,23 @@ pub fn build_sampled_to_original_mapping(
             // Leaf node - use name-based lookup
             let original_idx = original_tree.nodes.iter()
                 .position(|n| n.name == sampled_node.name)
-                .ok_or_else(|| format!(
+                .ok_or_else(|| RustreeError::Tree(format!(
                     "Sampled leaf '{}' (index {}) not found in original tree",
                     sampled_node.name, sampled_idx
-                ))?;
+                )))?;
             mapping.insert(sampled_idx, original_idx);
         } else {
             // Internal node - use LCA-based lookup
-            let leaf_names = get_descendant_leaf_names(sampled_tree, sampled_idx);
+            let leaf_names = get_descendant_leaf_names(sampled_tree, sampled_idx)?;
 
             if leaf_names.len() >= 2 {
                 // Use first two leaves to identify this internal node
-                let key = (leaf_names[0].clone(), leaf_names[1].clone());
-                let original_idx = original_lca_map.get(&key)
-                    .ok_or_else(|| format!(
+                let original_idx = lca_map_get(original_lca_map, &leaf_names[0], &leaf_names[1])
+                    .ok_or_else(|| RustreeError::Tree(format!(
                         "LCA for leaves ('{}', '{}') not found in original tree",
-                        key.0, key.1
-                    ))?;
-                mapping.insert(sampled_idx, *original_idx);
+                        leaf_names[0], leaf_names[1]
+                    )))?;
+                mapping.insert(sampled_idx, original_idx);
             }
         }
     }
@@ -446,7 +494,7 @@ pub fn build_sampled_to_original_mapping(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::newick::newick::parse_newick;
+    use crate::newick::parse_newick;
 
     fn make_tree(newick: &str) -> FlatTree {
         let mut nodes = parse_newick(newick).unwrap();
@@ -514,7 +562,7 @@ mod tests {
 
         // Simulate with high extinction rate
         let mut rng = StdRng::seed_from_u64(42);
-        let (tree, _) = simulate_bd_tree_bwd(20, 1.0, 0.7, &mut rng);
+        let (tree, _) = simulate_bd_tree_bwd(20, 1.0, 0.7, &mut rng).unwrap();
 
         let extant_indices = find_extant_leaf_indices(&tree);
 
@@ -537,7 +585,7 @@ mod tests {
         use rand::SeedableRng;
 
         let mut rng = StdRng::seed_from_u64(42);
-        let (tree, _) = simulate_bd_tree_bwd(20, 1.0, 0.5, &mut rng);
+        let (tree, _) = simulate_bd_tree_bwd(20, 1.0, 0.5, &mut rng).unwrap();
 
         // Extract extant subtree
         let (extant_tree, mapping) = extract_extant_subtree(&tree)
@@ -570,7 +618,7 @@ mod tests {
 
         // Simulate with NO extinction (mu = 0)
         let mut rng = StdRng::seed_from_u64(123);
-        let (tree, _) = simulate_bd_tree_bwd(15, 1.0, 0.0, &mut rng);
+        let (tree, _) = simulate_bd_tree_bwd(15, 1.0, 0.0, &mut rng).unwrap();
 
         let (extant_tree, _) = extract_extant_subtree(&tree)
             .expect("Should have extant species");

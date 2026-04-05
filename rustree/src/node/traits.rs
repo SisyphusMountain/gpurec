@@ -20,13 +20,13 @@ impl HasName for FlatNode {
     }
 }
 
-impl<'a> HasName for &'a Node {
+impl HasName for &Node {
     fn name(&self) -> &str {
         &self.name
     }
 }
 
-impl<'a> HasName for &'a FlatNode {
+impl HasName for &FlatNode {
     fn name(&self) -> &str {
         &self.name
     }

@@ -1,8 +1,12 @@
+WHITESPACE = _{ " " | "\t" | "\r" | "\n" }
+
 newick = { subtree ~ ";" }
 
-subtree = { leaf | internal }
-leaf = { NAME? ~ ":" ~ LENGTH? }
-internal = { "(" ~ subtree ~ ("," ~ subtree)+ ~ ")" ~ NAME? ~ ":"? ~ LENGTH? }
+subtree = { internal | leaf }
+leaf = { LABEL ~ (":" ~ LENGTH?)? | ":" ~ LENGTH? | "" }
+internal = { "(" ~ subtree ~ ("," ~ subtree)+ ~ ")" ~ LABEL? ~ (":" ~ LENGTH?)? }
 
+LABEL = { QUOTED_NAME | NAME }
+QUOTED_NAME = @{ "'" ~ (!"'" ~ ANY)* ~ "'" }
 NAME = @{ (ASCII_ALPHANUMERIC | "_" | "-" | ".")+ }
 LENGTH = @{ (ASCII_DIGIT+ ~ ("." ~ ASCII_DIGIT*)? ~ ("e" | "E") ~ ("+" | "-")? ~ ASCII_DIGIT+) | (ASCII_DIGIT+ ~ "." ~ ASCII_DIGIT*) | (ASCII_DIGIT+) }

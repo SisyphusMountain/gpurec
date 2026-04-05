@@ -9,7 +9,8 @@ This script shows how to:
 """
 
 import sys
-sys.path.insert(0, "/home/enzo/Documents/git/WP2/rustree/target/release")
+import os
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "target", "release"))
 import rustree
 
 

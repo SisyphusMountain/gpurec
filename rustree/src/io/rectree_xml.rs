@@ -1,5 +1,6 @@
 //! XML serialization and parsing for reconciled trees (RecTree).
 
+use crate::error::RustreeError;
 use crate::node::{FlatTree, RecTree};
 use crate::node::rectree::Event;
 
@@ -47,6 +48,7 @@ pub fn multi_to_xml(rec_trees: &[&RecTree]) -> String {
 
 impl RecTree {
     /// Exports the reconciled tree to RecPhyloXML format with branch lengths.
+    #[must_use]
     pub fn to_xml(&self) -> String {
         let estimated_size = self.gene_tree.nodes.len() * 200 + 1000;
         let mut xml = String::with_capacity(estimated_size);
@@ -253,21 +255,21 @@ impl RecTree {
     // ========================================================================
 
     /// Parse a RecPhyloXML string and create a RecTree.
-    pub fn from_xml(xml_content: &str) -> Result<Self, String> {
+    pub fn from_xml(xml_content: &str) -> Result<Self, RustreeError> {
         use super::recphyloxml::parse_recphyloxml;
 
         let (species_tree, gene_tree, node_mapping, event_mapping) =
-            parse_recphyloxml(xml_content).map_err(|e| e.to_string())?;
+            parse_recphyloxml(xml_content)?;
 
         Ok(RecTree::new_owned(species_tree, gene_tree, node_mapping, event_mapping))
     }
 
     /// Parse a RecPhyloXML file and create a RecTree.
-    pub fn from_xml_file(filepath: &str) -> Result<Self, String> {
+    pub fn from_xml_file(filepath: &str) -> Result<Self, RustreeError> {
         use super::recphyloxml::parse_recphyloxml_file;
 
         let (species_tree, gene_tree, node_mapping, event_mapping) =
-            parse_recphyloxml_file(filepath).map_err(|e| e.to_string())?;
+            parse_recphyloxml_file(filepath)?;
 
         Ok(RecTree::new_owned(species_tree, gene_tree, node_mapping, event_mapping))
     }
@@ -276,11 +278,11 @@ impl RecTree {
     ///
     /// This is useful when the species tree is provided separately (e.g., from a Newick file)
     /// and the XML only contains the reconciled gene tree (no `<spTree>` section).
-    pub fn from_gene_tree_xml(xml_content: &str, species_tree: FlatTree) -> Result<Self, String> {
+    pub fn from_gene_tree_xml(xml_content: &str, species_tree: FlatTree) -> Result<Self, RustreeError> {
         use super::recphyloxml::parse_gene_tree_only;
 
         let (gene_tree, node_mapping, event_mapping) =
-            parse_gene_tree_only(xml_content, &species_tree).map_err(|e| e.to_string())?;
+            parse_gene_tree_only(xml_content, &species_tree)?;
 
         Ok(RecTree::new_owned(species_tree, gene_tree, node_mapping, event_mapping))
     }
@@ -289,11 +291,11 @@ impl RecTree {
     pub fn from_gene_tree_xml_file(
         xml_filepath: &str,
         species_tree: FlatTree,
-    ) -> Result<Self, String> {
+    ) -> Result<Self, RustreeError> {
         use super::recphyloxml::parse_gene_tree_only_file;
 
         let (gene_tree, node_mapping, event_mapping) =
-            parse_gene_tree_only_file(xml_filepath, &species_tree).map_err(|e| e.to_string())?;
+            parse_gene_tree_only_file(xml_filepath, &species_tree)?;
 
         Ok(RecTree::new_owned(species_tree, gene_tree, node_mapping, event_mapping))
     }
@@ -308,24 +310,22 @@ impl RecTree {
     ///     "species_tree.nwk",
     ///     "gene_tree_rec.xml"
     /// )?;
-    /// # Ok::<(), String>(())
+    /// # Ok::<(), rustree::RustreeError>(())
     /// ```
     pub fn from_separate_files(
         species_newick_path: &str,
         gene_xml_path: &str,
-    ) -> Result<Self, String> {
-        use crate::newick::newick::parse_newick;
+    ) -> Result<Self, RustreeError> {
+        use crate::newick::parse_newick;
         use std::fs;
 
-        let species_newick = fs::read_to_string(species_newick_path)
-            .map_err(|e| format!("Failed to read species tree file: {}", e))?;
+        let species_newick = fs::read_to_string(species_newick_path)?;
 
-        let mut species_nodes = parse_newick(&species_newick)
-            .map_err(|e| format!("Failed to parse species tree Newick: {}", e))?;
+        let mut species_nodes = parse_newick(&species_newick)?;
 
         let species_root = species_nodes
             .pop()
-            .ok_or_else(|| "No tree found in species Newick file".to_string())?;
+            .ok_or_else(|| RustreeError::Parse("No tree found in species Newick file".to_string()))?;
 
         let mut species_tree = species_root.to_flat_tree();
         species_tree.assign_depths();
