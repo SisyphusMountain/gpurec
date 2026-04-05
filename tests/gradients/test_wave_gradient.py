@@ -15,19 +15,13 @@ from pathlib import Path
 import pytest
 import torch
 
-from src.core.preprocess_cpp import _load_extension
-from src.core.extract_parameters import extract_parameters_uniform
-from src.core.likelihood import (
-    E_fixed_point,
-    E_step,
-    Pi_wave_forward,
-    Pi_wave_backward,
-    compute_log_likelihood,
-    compute_gradient_bounds,
-    _self_loop_differentiable,
-)
-from src.core.scheduling import compute_clade_waves
-from src.core.batching import (
+from gpurec.core.preprocess_cpp import _load_extension
+from gpurec.core.extract_parameters import extract_parameters_uniform
+from gpurec.core.likelihood import E_fixed_point, E_step, compute_log_likelihood
+from gpurec.core.forward import Pi_wave_forward, compute_gradient_bounds
+from gpurec.core.backward import Pi_wave_backward, _self_loop_differentiable
+from gpurec.core.scheduling import compute_clade_waves
+from gpurec.core.batching import (
     collate_gene_families,
     collate_wave,
     build_wave_layout,
@@ -105,7 +99,7 @@ def _setup_single_family(ds_name, n_families=1, device=None, dtype=torch.float64
             theta, unnorm_row_max, specieswise=False,
         )
     else:
-        from src.core.extract_parameters import extract_parameters
+        from gpurec.core.extract_parameters import extract_parameters
         log_pS, log_pD, log_pL, transfer_mat, max_transfer_mat = extract_parameters(
             theta, tm_unnorm.to(device=device, dtype=dtype),
             genewise=False, specieswise=False, pairwise=False,
@@ -185,7 +179,7 @@ def _full_forward(theta, unnorm_row_max, sh, wave_layout, root_clade_ids, device
             theta, unnorm_row_max, specieswise=specieswise,
         )
     else:
-        from src.core.extract_parameters import extract_parameters
+        from gpurec.core.extract_parameters import extract_parameters
         log_pS, log_pD, log_pL, transfer_mat, mt = extract_parameters(
             theta, tm_unnorm, genewise=False, specieswise=specieswise, pairwise=False,
         )
@@ -819,7 +813,7 @@ class TestFullChainFD:
 
     def test_full_chain_gradient_matches_fd(self, setup_1000):
         """Perturb theta, re-solve E AND Pi, compare logL → validates full dL/dtheta."""
-        from src.optimization.theta_optimizer import implicit_grad_loglik_vjp_wave
+        from gpurec.optimization.theta_optimizer import implicit_grad_loglik_vjp_wave
 
         d = setup_1000
         device, dtype = d['device'], d['dtype']
@@ -896,7 +890,7 @@ class TestEndToEnd:
 
     def test_optimization_decreases_nll(self, setup_1000):
         """5 steps of optimize_theta_wave, NLL should decrease."""
-        from src.optimization.theta_optimizer import optimize_theta_wave
+        from gpurec.optimization.theta_optimizer import optimize_theta_wave
 
         d = setup_1000
         device, dtype = d['device'], d['dtype']
@@ -990,7 +984,7 @@ class TestFullChainFDDense:
         tm_unnorm = torch.log2(sh["Recipients_mat"]).to(device=device, dtype=dtype)
         unnorm_row_max = tm_unnorm.max(dim=-1).values.to(device=device, dtype=dtype)
 
-        from src.core.extract_parameters import extract_parameters
+        from gpurec.core.extract_parameters import extract_parameters
         log_pS, log_pD, log_pL, transfer_mat, max_transfer_mat = extract_parameters(
             theta, tm_unnorm, genewise=False, specieswise=False, pairwise=False,
         )
@@ -1059,8 +1053,8 @@ class TestFullChainFDDense:
 
     def test_full_chain_gradient_dense_matches_fd(self, setup_1000_dense):
         """Full-chain gradient with pibar_mode='dense' matches central FD at fp64."""
-        from src.optimization.theta_optimizer import implicit_grad_loglik_vjp_wave
-        from src.core.extract_parameters import extract_parameters
+        from gpurec.optimization.theta_optimizer import implicit_grad_loglik_vjp_wave
+        from gpurec.core.extract_parameters import extract_parameters
 
         d = setup_1000_dense
         device, dtype = d['device'], d['dtype']
@@ -1260,7 +1254,7 @@ class TestUniformExactFullChainFD:
 
     def test_full_chain_gradient_uniform(self, setup_20_uniform):
         """Perturb theta, re-solve E AND Pi with uniform, compare logL."""
-        from src.optimization.theta_optimizer import implicit_grad_loglik_vjp_wave
+        from gpurec.optimization.theta_optimizer import implicit_grad_loglik_vjp_wave
 
         d = setup_20_uniform
         device, dtype = d['device'], d['dtype']
@@ -1440,7 +1434,7 @@ class TestSpecieswiseUniformFD:
 
     def test_specieswise_uniform_gradient_matches_fd(self, setup_sw_uniform):
         """Full-chain specieswise gradient with uniform pibar matches central FD."""
-        from src.optimization.theta_optimizer import implicit_grad_loglik_vjp_wave
+        from gpurec.optimization.theta_optimizer import implicit_grad_loglik_vjp_wave
 
         d = setup_sw_uniform
         device, dtype = d['device'], d['dtype']
@@ -1574,7 +1568,7 @@ class TestSpecieswiseDenseFD:
         tm_unnorm = torch.log2(sh["Recipients_mat"]).to(device=device, dtype=dtype)
         unnorm_row_max = tm_unnorm.max(dim=-1).values.to(device=device, dtype=dtype)
 
-        from src.core.extract_parameters import extract_parameters
+        from gpurec.core.extract_parameters import extract_parameters
         log_pS, log_pD, log_pL, transfer_mat, max_transfer_mat = extract_parameters(
             theta, tm_unnorm, genewise=False, specieswise=True, pairwise=False,
         )
@@ -1637,7 +1631,7 @@ class TestSpecieswiseDenseFD:
 
     def test_specieswise_dense_gradient_matches_fd(self, setup_sw_dense):
         """Full-chain specieswise gradient with dense pibar matches central FD."""
-        from src.optimization.theta_optimizer import implicit_grad_loglik_vjp_wave
+        from gpurec.optimization.theta_optimizer import implicit_grad_loglik_vjp_wave
 
         d = setup_sw_dense
         device, dtype = d['device'], d['dtype']
@@ -1838,7 +1832,7 @@ class TestSpecieswiseUniformExactFD:
 
     def test_specieswise_uniform_gradient_matches_fd(self, setup_sw_uniform):
         """Full-chain specieswise gradient with uniform pibar matches central FD."""
-        from src.optimization.theta_optimizer import implicit_grad_loglik_vjp_wave
+        from gpurec.optimization.theta_optimizer import implicit_grad_loglik_vjp_wave
 
         d = setup_sw_uniform
         device, dtype = d['device'], d['dtype']
@@ -2149,7 +2143,7 @@ class TestGenewiseGradient:
     @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
     def test_genewise_gradient_matches_fd(self, setup_genewise):
         """Per-gene gradient matches central finite differences."""
-        from src.optimization.theta_optimizer import implicit_grad_loglik_vjp_wave_genewise
+        from gpurec.optimization.theta_optimizer import implicit_grad_loglik_vjp_wave_genewise
 
         d = setup_genewise
         device, dtype = d['device'], d['dtype']
@@ -2162,8 +2156,8 @@ class TestGenewiseGradient:
 
         def _forward_genewise(theta_s):
             """Full genewise forward: extract params, E, Pi, logL per family."""
-            from src.core.batching import collate_gene_families, build_wave_layout
-            from src.core.scheduling import compute_clade_waves
+            from gpurec.core.batching import collate_gene_families, build_wave_layout
+            from gpurec.core.scheduling import compute_clade_waves
 
             log_pS, log_pD, log_pL, _, mt = extract_parameters_uniform(
                 theta_s, unnorm_row_max, specieswise=False, genewise=True,
@@ -2347,9 +2341,9 @@ class TestGradientDescentAll:
 
     def _run_descent_non_genewise(self, d, specieswise, pibar_mode, steps=3):
         """Run optimize_theta_wave for a non-genewise combination."""
-        from src.optimization.theta_optimizer import optimize_theta_wave
-        from src.core.batching import collate_gene_families, collate_wave, build_wave_layout
-        from src.core.scheduling import compute_clade_waves
+        from gpurec.optimization.theta_optimizer import optimize_theta_wave
+        from gpurec.core.batching import collate_gene_families, collate_wave, build_wave_layout
+        from gpurec.core.scheduling import compute_clade_waves
 
         device, dtype = d['device'], d['dtype']
         S = d['S']
@@ -2400,9 +2394,9 @@ class TestGradientDescentAll:
 
     def _run_descent_genewise(self, d, specieswise, pibar_mode, steps=3):
         """Run manual gradient descent loop for genewise combinations."""
-        from src.optimization.theta_optimizer import implicit_grad_loglik_vjp_wave_genewise
-        from src.core.batching import collate_gene_families, build_wave_layout
-        from src.core.scheduling import compute_clade_waves
+        from gpurec.optimization.theta_optimizer import implicit_grad_loglik_vjp_wave_genewise
+        from gpurec.core.batching import collate_gene_families, build_wave_layout
+        from gpurec.core.scheduling import compute_clade_waves
 
         device, dtype = d['device'], d['dtype']
         S, G = d['S'], d['G']

@@ -19,8 +19,8 @@ from pathlib import Path
 import pytest
 import torch
 
-from src.core.model import GeneDataset
-from src.optimization.theta_optimizer import optimize_theta_genewise, optimize_theta_wave
+from gpurec.core.model import GeneDataset
+from gpurec.optimization.theta_optimizer import optimize_theta_genewise, optimize_theta_wave
 
 _ROOT = Path(__file__).resolve().parents[1]
 DATA_1000 = _ROOT / "data" / "test_trees_1000"
@@ -159,8 +159,8 @@ class TestSharedConverges:
     """Verify that shared-param L-BFGS converges via optimize_theta_wave."""
 
     def test_convergence(self, ds_shared):
-        from src.core.batching import collate_gene_families, build_wave_layout
-        from src.core.scheduling import compute_clade_waves
+        from gpurec.core.batching import collate_gene_families, build_wave_layout
+        from gpurec.core.scheduling import compute_clade_waves
 
         # Build cross-family wave layout for all families
         items = []
@@ -284,10 +284,11 @@ class TestForwardConsistency:
         # Recompute likelihood at optimized theta using forward-only path
         theta_opt = result['theta'].to(device=DEVICE, dtype=DTYPE)
 
-        from src.core.extract_parameters import extract_parameters_uniform
-        from src.core.likelihood import E_fixed_point, Pi_wave_forward, compute_log_likelihood
-        from src.core.batching import collate_gene_families, build_wave_layout
-        from src.core.scheduling import compute_clade_waves
+        from gpurec.core.extract_parameters import extract_parameters_uniform
+        from gpurec.core.likelihood import E_fixed_point, compute_log_likelihood
+        from gpurec.core.forward import Pi_wave_forward
+        from gpurec.core.batching import collate_gene_families, build_wave_layout
+        from gpurec.core.scheduling import compute_clade_waves
 
         S = ds_genewise.species_helpers['S']
         unnorm = ds_genewise.unnorm_row_max.to(device=DEVICE, dtype=DTYPE)
@@ -397,8 +398,8 @@ class TestAleRaxComparison:
                              genewise=False, specieswise=False, pairwise=False,
                              dtype=DTYPE, device=DEVICE)
 
-            from src.core.batching import collate_gene_families, build_wave_layout
-            from src.core.scheduling import compute_clade_waves
+            from gpurec.core.batching import collate_gene_families, build_wave_layout
+            from gpurec.core.scheduling import compute_clade_waves
 
             items = []
             for fam in ds.families:

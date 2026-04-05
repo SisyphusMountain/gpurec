@@ -6,8 +6,8 @@ from pathlib import Path
 import pytest
 import torch
 
-from src.core.model import GeneDataset
-from src.optimization.theta_optimizer import optimize_theta_genewise, optimize_theta_wave
+from gpurec.core.model import GeneDataset
+from gpurec.optimization.theta_optimizer import optimize_theta_genewise, optimize_theta_wave
 
 _ROOT = Path(__file__).resolve().parent.parent
 TOL_PI = 1e-3
@@ -105,8 +105,8 @@ def test_matches_scipy_per_family(data_dir):
     )
 
     # Per-family scipy L-BFGS-B (reference)
-    from src.core.batching import collate_gene_families, build_wave_layout
-    from src.core.scheduling import compute_clade_waves
+    from gpurec.core.batching import collate_gene_families, build_wave_layout
+    from gpurec.core.scheduling import compute_clade_waves
 
     for g in range(G):
         fam = ds.families[g]

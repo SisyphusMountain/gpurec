@@ -6,13 +6,10 @@ import math
 import torch
 from torch import Tensor
 
-from src.core.likelihood import (
-    E_fixed_point,
-    Pi_wave_forward,
-    Pi_wave_backward,
-    compute_log_likelihood,
-)
-from src.core.extract_parameters import extract_parameters_uniform
+from gpurec.core.likelihood import E_fixed_point, compute_log_likelihood
+from gpurec.core.forward import Pi_wave_forward
+from gpurec.core.backward import Pi_wave_backward
+from gpurec.core.extract_parameters import extract_parameters_uniform
 
 from .implicit_grad import _e_adjoint_and_theta_vjp
 
@@ -121,8 +118,8 @@ def optimize_theta_genewise(
     -------
     dict with 'theta' [G,3], 'nll' [G], 'rates' [G,3], 'history' list[dict].
     """
-    from src.core.batching import collate_gene_families, build_wave_layout, collate_wave
-    from src.core.scheduling import compute_clade_waves
+    from gpurec.core.batching import collate_gene_families, build_wave_layout, collate_wave
+    from gpurec.core.scheduling import compute_clade_waves
 
     if device is None:
         device = theta_init.device

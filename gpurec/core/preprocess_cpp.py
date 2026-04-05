@@ -9,8 +9,7 @@ from typing import Any
 from torch.utils.cpp_extension import load
 
 
-_REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
-_CPP_DIR = _REPO_ROOT / "src" / "core" / "cpp"
+_CPP_DIR = pathlib.Path(__file__).resolve().parent / "cpp"
 _CPP_SRC = _CPP_DIR / "preprocess.cpp"
 
 

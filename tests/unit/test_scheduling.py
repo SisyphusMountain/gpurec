@@ -10,7 +10,7 @@ _DATA_DIR = _REPO_ROOT / "tests" / "data"
 
 def _load_helpers(case_name: str):
     """Return (ccp_helpers, root_clade_id) for the given test case."""
-    from src.core.preprocess_cpp import _load_extension
+    from gpurec.core.preprocess_cpp import _load_extension
     d = _DATA_DIR / case_name
     ext = _load_extension()
     raw = ext.preprocess(str(d / "sp.nwk"), [str(d / "g.nwk")])
@@ -31,7 +31,7 @@ class TestComputeCladeWaves:
     def test_coverage_small(self):
         """Every clade appears exactly once across all waves."""
         ccp_helpers, _ = _load_helpers("test_trees_1")
-        from src.core.scheduling import compute_clade_waves
+        from gpurec.core.scheduling import compute_clade_waves
         waves, level = compute_clade_waves(ccp_helpers)
         C = ccp_helpers["C"]
         seen = []
@@ -42,7 +42,7 @@ class TestComputeCladeWaves:
     def test_topological_order_small(self):
         """For every split (p, l, r), wave(p) > wave(l) and wave(p) > wave(r)."""
         ccp_helpers, _ = _load_helpers("test_trees_1")
-        from src.core.scheduling import compute_clade_waves
+        from gpurec.core.scheduling import compute_clade_waves
         waves, phases = compute_clade_waves(ccp_helpers)
         # Build clade → wave-index mapping
         level = {}
@@ -66,7 +66,7 @@ class TestComputeCladeWaves:
     def test_root_in_last_wave_small(self):
         """The root clade should be in the last wave."""
         ccp_helpers, root_clade_id = _load_helpers("test_trees_1")
-        from src.core.scheduling import compute_clade_waves
+        from gpurec.core.scheduling import compute_clade_waves
         waves, phases = compute_clade_waves(ccp_helpers)
         assert root_clade_id in waves[-1], (
             f"root clade {root_clade_id} not found in last wave {waves[-1]}"
@@ -77,7 +77,7 @@ class TestComputeCladeWaves:
 class TestWaveStats:
     def test_stats_keys(self):
         ccp_helpers, _ = _load_helpers("test_trees_1")
-        from src.core.scheduling import compute_clade_waves, wave_stats
+        from gpurec.core.scheduling import compute_clade_waves, wave_stats
         waves, _ = compute_clade_waves(ccp_helpers)
         stats = wave_stats(waves, ccp_helpers)
         assert len(stats) == len(waves)
@@ -88,7 +88,7 @@ class TestWaveStats:
     def test_total_splits_matches(self):
         """Sum of n_splits across waves equals N_splits."""
         ccp_helpers, _ = _load_helpers("test_trees_1")
-        from src.core.scheduling import compute_clade_waves, wave_stats
+        from gpurec.core.scheduling import compute_clade_waves, wave_stats
         waves, _ = compute_clade_waves(ccp_helpers)
         stats = wave_stats(waves, ccp_helpers)
         assert sum(s["n_splits"] for s in stats) == ccp_helpers["N_splits"]

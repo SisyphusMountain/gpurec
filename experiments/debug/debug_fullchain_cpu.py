@@ -7,21 +7,22 @@ import torch
 import sys
 sys.path.insert(0, '/home/enzo/Documents/git/gpurec/gpurec')
 
-from src.core.likelihood import (
-    _self_loop_differentiable, _dts_cross_differentiable, NEG_INF,
-    _safe_log2, logsumexp2, E_fixed_point, Pi_wave_backward,
-    _compute_dts_cross,
+from gpurec.core.likelihood import E_fixed_point
+from gpurec.core.forward import _compute_dts_cross, NEG_INF
+from gpurec.core.backward import (
+    Pi_wave_backward, _self_loop_differentiable, _dts_cross_differentiable,
 )
-from src.core.scheduling import compute_clade_waves
-from src.core.batching import collate_wave, build_wave_layout
-from src.core.extract_parameters import extract_parameters_uniform
-from src.core.model import collate_gene_families
-from src.optimization.theta_optimizer import implicit_grad_loglik_vjp_wave
+from gpurec.core.log2_utils import _safe_log2_internal as _safe_log2, logsumexp2
+from gpurec.core.scheduling import compute_clade_waves
+from gpurec.core.batching import collate_wave, build_wave_layout
+from gpurec.core.extract_parameters import extract_parameters_uniform
+from gpurec.core.model import collate_gene_families
+from gpurec.optimization.theta_optimizer import implicit_grad_loglik_vjp_wave
 from tests.gradients.test_wave_gradient import _load_extension, _ROOT
-import src.core.likelihood as _lik_mod
+import gpurec.core.forward as _fwd_mod
 
 # Monkey-patch _compute_dts_cross to use pure PyTorch (no Triton)
-_orig_compute_dts_cross = _lik_mod._compute_dts_cross
+_orig_compute_dts_cross = _fwd_mod._compute_dts_cross
 
 def _patched_compute_dts_cross(Pi, Pibar, meta, sp_child1, sp_child2, log_pD, log_pS,
                                 S, device, dtype):
@@ -29,7 +30,7 @@ def _patched_compute_dts_cross(Pi, Pibar, meta, sp_child1, sp_child2, log_pD, lo
     return _dts_cross_differentiable(Pi, Pibar, meta, sp_child1, sp_child2,
                                      log_pD, log_pS, S, device, dtype)
 
-_lik_mod._compute_dts_cross = _patched_compute_dts_cross
+_fwd_mod._compute_dts_cross = _patched_compute_dts_cross
 
 dtype = torch.float64
 device = torch.device('cpu')

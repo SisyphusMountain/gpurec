@@ -518,7 +518,7 @@ def build_wave_layout(
     if split_parents is not None:
         sp_new = perm[split_parents.to(device=device, dtype=torch.long)]
     else:
-        from .likelihood import _reconstruct_split_parents
+        from .forward import _reconstruct_split_parents
         sp_new = perm[_reconstruct_split_parents(ccp_helpers).to(device)]
 
     leaf_row_new = perm[leaf_row_index.to(device=device, dtype=torch.long)]

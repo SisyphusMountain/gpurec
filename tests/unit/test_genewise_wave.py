@@ -10,8 +10,8 @@ from pathlib import Path
 import pytest
 import torch
 
-from src.core.model import GeneDataset
-from src.core.extract_parameters import extract_parameters_uniform
+from gpurec.core.model import GeneDataset
+from gpurec.core.extract_parameters import extract_parameters_uniform
 
 _ROOT = Path(__file__).resolve().parent.parent
 TOL = 1e-3

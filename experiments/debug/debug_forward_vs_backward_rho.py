@@ -15,13 +15,11 @@ We test this by:
 """
 import torch
 from tests.gradients.test_wave_gradient import _setup_uniform
-from src.core.likelihood import (
-    Pi_wave_forward, _self_loop_vjp_precompute, _self_loop_Jt_apply,
-    _compute_Pibar_inline, NEG_INF,
-)
-from src.core.extract_parameters import extract_parameters_uniform
-from src.core.likelihood import E_fixed_point
-from src.core.kernels.wave_step import wave_step_fused
+from gpurec.core.forward import Pi_wave_forward, _compute_Pibar_inline, NEG_INF
+from gpurec.core.backward import _self_loop_vjp_precompute, _self_loop_Jt_apply
+from gpurec.core.likelihood import E_fixed_point
+from gpurec.core.extract_parameters import extract_parameters_uniform
+from gpurec.core.kernels.wave_step import wave_step_fused
 
 d = _setup_uniform("test_trees_20", n_families=1, dtype=torch.float64)
 device, dtype = d['device'], d['dtype']
@@ -71,7 +69,7 @@ sp_child2 = torch.full((S,), S, dtype=torch.long, device=device)
 sp_child1[p_cpu[mask_c1].to(device)] = c_cpu[mask_c1].to(device)
 sp_child2[(p_cpu[~mask_c1] - S).to(device)] = c_cpu[~mask_c1].to(device)
 
-from src.core.likelihood import _compute_dts_cross
+from gpurec.core.forward import _compute_dts_cross
 
 wave_metas = wl['wave_metas']
 wave_starts = wl['wave_starts']

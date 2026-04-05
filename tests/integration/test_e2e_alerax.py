@@ -25,9 +25,10 @@ PROJECT_ROOT = pathlib.Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROJECT_ROOT))
 
 import rustree
-from src.core.preprocess_cpp import _load_extension as _load_cpp_ext
-from src.core.extract_parameters import extract_parameters
-from src.core.likelihood import E_fixed_point, Pi_fixed_point, compute_log_likelihood
+from gpurec.core.preprocess_cpp import _load_extension as _load_cpp_ext
+from gpurec.core.extract_parameters import extract_parameters
+from gpurec.core.likelihood import E_fixed_point, compute_log_likelihood
+from gpurec.core.legacy import Pi_fixed_point
 
 # ---------------------------------------------------------------------------
 # Configuration

@@ -7,12 +7,10 @@ import torch
 from torch import Tensor
 from torch import func as tfunc
 
-from src.core.likelihood import (
-    E_step,
-    Pi_wave_backward,
-    _safe_log2,
-)
-from src.core.extract_parameters import extract_parameters, extract_parameters_uniform
+from gpurec.core.likelihood import E_step
+from gpurec.core.backward import Pi_wave_backward
+from gpurec.core.log2_utils import _safe_log2_internal as _safe_log2
+from gpurec.core.extract_parameters import extract_parameters, extract_parameters_uniform
 
 from .linear_solvers import _cg, _gmres
 from .types import LinearSolveStats
@@ -150,7 +148,7 @@ def _e_adjoint_and_theta_vjp(
     if pi_bwd['grad_E_s1'].abs().max() > 0 or pi_bwd['grad_E_s2'].abs().max() > 0:
         E_req3 = E_star.detach().requires_grad_(True)
         with torch.enable_grad():
-            from src.core.terms import gather_E_children
+            from gpurec.core.terms import gather_E_children
             E_s12 = gather_E_children(E_req3, sp_P_idx, sp_c12_idx)
             E_s1_r, E_s2_r = torch.chunk(E_s12, 2, dim=-1)
             E_s1_r = E_s1_r.view(E_req3.shape)
@@ -291,6 +289,7 @@ def implicit_grad_loglik_vjp_wave_genewise(
     gmres_restart: int = 40,
     local_iters: int = 2000,
     local_tolerance: float = 1e-3,
+    ancestors_T=None,
 ):
     """Genewise implicit gradient via per-family Pi forward + backward loop.
 
@@ -323,9 +322,9 @@ def implicit_grad_loglik_vjp_wave_genewise(
     -------
     (grad_theta_stack, stats_list) : (Tensor [G, ...], list[LinearSolveStats])
     """
-    from src.core.likelihood import Pi_wave_forward
-    from src.core.batching import collate_gene_families, build_wave_layout
-    from src.core.scheduling import compute_clade_waves
+    from gpurec.core.forward import Pi_wave_forward
+    from gpurec.core.batching import collate_gene_families, build_wave_layout
+    from gpurec.core.scheduling import compute_clade_waves
 
     G = len(families)
     grad_thetas = []
@@ -394,6 +393,7 @@ def implicit_grad_loglik_vjp_wave_genewise(
             cg_tol=cg_tol, cg_maxiter=cg_maxiter,
             gmres_restart=gmres_restart,
             pibar_mode=pibar_mode,
+            ancestors_T=ancestors_T,
         )
 
         grad_thetas.append(grad_theta_g)

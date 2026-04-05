@@ -5,11 +5,10 @@ for the uniform mode.
 """
 import torch
 from tests.gradients.test_wave_gradient import _setup_uniform
-from src.core.likelihood import (
-    Pi_wave_forward, Pi_wave_backward, compute_log_likelihood,
-)
-from src.core.extract_parameters import extract_parameters_uniform
-from src.core.likelihood import E_fixed_point
+from gpurec.core.likelihood import E_fixed_point, compute_log_likelihood
+from gpurec.core.forward import Pi_wave_forward
+from gpurec.core.backward import Pi_wave_backward
+from gpurec.core.extract_parameters import extract_parameters_uniform
 
 d = _setup_uniform("test_trees_20", n_families=1, dtype=torch.float64)
 device, dtype = d['device'], d['dtype']

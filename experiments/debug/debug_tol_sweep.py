@@ -2,11 +2,10 @@
 import math, torch
 from pathlib import Path
 from tests.gradients.test_wave_gradient import _setup_uniform
-from src.core.extract_parameters import extract_parameters_uniform
-from src.core.likelihood import (
-    E_fixed_point, Pi_wave_forward, compute_log_likelihood,
-)
-from src.optimization.theta_optimizer import implicit_grad_loglik_vjp_wave
+from gpurec.core.extract_parameters import extract_parameters_uniform
+from gpurec.core.likelihood import E_fixed_point, compute_log_likelihood
+from gpurec.core.forward import Pi_wave_forward
+from gpurec.optimization.theta_optimizer import implicit_grad_loglik_vjp_wave
 
 d = _setup_uniform("test_trees_20", n_families=1, dtype=torch.float64)
 device, dtype = d['device'], d['dtype']

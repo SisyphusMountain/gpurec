@@ -45,7 +45,7 @@ gpurec --species species.nwk --gene gene.nwk --device cuda --dtype float64
 
 ```python
 import torch
-from src.core.model import GeneDataset
+from gpurec.core.model import GeneDataset
 
 # Load data
 dataset = GeneDataset(
@@ -71,18 +71,15 @@ log_liks = dataset.compute_likelihood_batch()
 ### Parameter optimization
 
 ```python
-from src.optimization.simple_optim import optimize_theta
+from gpurec.optimization import optimize_theta_wave
 
-result = optimize_theta(
-    species_tree_path="species.nwk",
-    gene_tree_path="gene.nwk",
-    theta_init=torch.tensor([-5.0, -5.0, -5.0]),  # log(D), log(L), log(T)
-    steps=200,
+result = optimize_theta_wave(
+    dataset,
+    n_steps=200,
     lr=0.2,
-    dtype=torch.float64,
 )
-print(f"Optimized rates: {result['rates']}")
-print(f"Log-likelihood: {result['log_likelihood']}")
+print(f"Optimized theta: {result.theta}")
+print(f"Log-likelihood: {result.log_likelihood}")
 ```
 
 ## Algorithm
@@ -117,42 +114,37 @@ The `pairwise` flag additionally allows species-pair-specific transfer coefficie
 ## Project structure
 
 ```
-gpurec/
-├── pyproject.toml          # Package configuration
-├── README.md
-├── pytest.ini
-├── src/
+gpurec/                         # Repository root
+├── gpurec/                     # Installable Python package
 │   ├── core/
 │   │   ├── model.py            # GeneDataset: data loading and likelihood API
-│   │   ├── likelihood.py       # E/Pi fixed-point solvers
-│   │   ├── terms.py            # DTS term computation (speciation/duplication/transfer)
-│   │   ├── extract_parameters.py  # theta -> (pS, pD, pL, transfer_mat) conversion
-│   │   ├── batching.py         # Multi-family collation for batched likelihood
+│   │   ├── likelihood.py       # E solver, log-likelihood computation
+│   │   ├── forward.py          # Pi_wave_forward, DTS cross-clade, Pibar strategies
+│   │   ├── backward.py         # Pi_wave_backward, VJP precomputation
+│   │   ├── legacy.py           # Legacy Pi_fixed_point (test baselines only)
+│   │   ├── terms.py            # DTS term computation (D/T/S/L events)
+│   │   ├── extract_parameters.py  # theta -> log2-space event probabilities
+│   │   ├── batching.py         # Multi-family collation, wave-ordered layout
+│   │   ├── scheduling.py       # Wave scheduling (Python + C++ backend)
+│   │   ├── log2_utils.py       # logsumexp2, logaddexp2, log2_softmax
 │   │   ├── kernels/            # Triton GPU kernels
-│   │   │   ├── scatter_lse.py      # Segmented logsumexp
-│   │   │   ├── seg_log_matmul.py   # Segmented log-space matrix multiply
-│   │   │   └── lse.py              # Fixed-arity logsumexp
 │   │   └── cpp/                # C++ preprocessing extensions (JIT-compiled)
-│   │       ├── preprocess.cpp
-│   │       ├── tree_utils.cpp/.hpp
-│   │       └── clade_utils.cpp/.hpp
 │   ├── optimization/
-│   │   ├── optim.py            # VJP-based implicit gradient computation
-│   │   ├── simple_optim.py     # Full optimization loop (SGD/Adam/L-BFGS)
-│   │   └── theta_optimizer.py  # CG/GMRES-based implicit gradient optimizer
-│   ├── reconciliation/
-│   │   ├── sampler.py          # Stochastic backtracking (calls C++ extension)
-│   │   ├── summaries.py        # Output writers (transfer frequencies, events)
-│   │   └── ext_loader.py       # C++ backtracking extension loader
-│   ├── cli/
-│   │   └── reconcile.py        # Command-line interface
-│   └── utils/
-│       └── debug.py
-├── scripts/                    # Standalone experiment scripts
-├── tests/                      # Test suite
-├── docs/                       # Design notes and references
-└── extra/                      # Reference material (gitignored)
+│   │   ├── wave_optimizer.py   # SGD/Adam loop (wave forward/backward)
+│   │   ├── genewise_optimizer.py  # Per-gene L-BFGS optimizer
+│   │   ├── implicit_grad.py    # VJP closures, transpose system assembly
+│   │   └── linear_solvers.py   # Neumann, CG, GMRES solvers
+│   └── cli/
+│       └── reconcile.py        # Command-line interface
+├── tests/                      # Pytest suite (unit, integration, gradient, kernel)
+├── experiments/                # Debug/research scripts
+├── logmatmul/                  # Log-space matmul library (separate package)
+├── rustree/                    # Rust tree library with Python bindings
+├── extra/                      # Reference material (AleRax_modified)
+└── docs/                       # Architecture, current state, historical notes
 ```
+
+See [docs/architecture.md](docs/architecture.md) for detailed module responsibilities.
 
 ## Tests
 

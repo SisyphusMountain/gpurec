@@ -5,15 +5,17 @@ import torch
 import sys
 sys.path.insert(0, '/home/enzo/Documents/git/gpurec/gpurec')
 
-from src.core.likelihood import (
+from gpurec.core.likelihood import E_fixed_point
+from gpurec.core.backward import (
     _self_loop_differentiable, _self_loop_vjp_precompute, _self_loop_Jt_apply,
-    _dts_cross_differentiable, NEG_INF, _safe_log2,
-    E_fixed_point,
+    _dts_cross_differentiable,
 )
-from src.core.scheduling import compute_clade_waves
-from src.core.batching import collate_wave, build_wave_layout
-from src.core.extract_parameters import extract_parameters_uniform
-from src.core.model import collate_gene_families
+from gpurec.core.forward import NEG_INF
+from gpurec.core.log2_utils import _safe_log2_internal as _safe_log2
+from gpurec.core.scheduling import compute_clade_waves
+from gpurec.core.batching import collate_wave, build_wave_layout
+from gpurec.core.extract_parameters import extract_parameters_uniform
+from gpurec.core.model import collate_gene_families
 from tests.gradients.test_wave_gradient import _load_extension, _ROOT
 
 # ─── Setup (replicate _setup_uniform on CPU) ────────────────────────────────

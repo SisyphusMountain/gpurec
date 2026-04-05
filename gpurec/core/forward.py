@@ -1,4 +1,4 @@
-"""Forward pass: Pi_step, Pi_fixed_point, Pi_wave_forward and helpers."""
+"""Forward pass: Pi_wave_forward and helpers."""
 import torch
 
 from .log2_utils import logsumexp2, logaddexp2
@@ -12,12 +12,9 @@ from ._logmatmul_compat import (
     streaming_topk as _streaming_topk,
     logspace_matmul_compressed as _logspace_matmul_compressed,
 )
-from ._helpers import _safe_exp2_ratio, _seg_logsumexp_host, _nvtx_range, _nvtx_here  # noqa: F401
+from ._helpers import _safe_exp2_ratio, _seg_logsumexp_host, _nvtx_range, _nvtx_here
 
 NEG_INF = float("-inf")
-
-# Re-export legacy code so existing ``from .forward import Pi_step`` still works.
-from .legacy import Pi_step, Pi_fixed_point  # noqa: F401
 
 
 # ---------------------------------------------------------------------------
@@ -96,7 +93,7 @@ def _compute_Pibar_inline(Pi_W, transfer_mat_T, mt_squeezed, pibar_mode,
             Pibar_W[mask_g] = torch.log2(Pi_exp[mask_g] @ transfer_mat_T[g]) + Pi_max[mask_g] + mt_squeezed[mask_g]
     else:
         Pibar_W = torch.log2(torch.exp2(Pi_W - Pi_max) @ transfer_mat_T) + Pi_max + mt_squeezed
-    return Pibar_W
+    return Pibar_W.contiguous()
 
 
 # ---------------------------------------------------------------------------

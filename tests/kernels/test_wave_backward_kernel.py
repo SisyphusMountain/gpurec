@@ -11,24 +11,20 @@ from pathlib import Path
 import pytest
 import torch
 
-from src.core.preprocess_cpp import _load_extension
-from src.core.extract_parameters import extract_parameters_uniform
-from src.core.likelihood import (
-    E_fixed_point,
-    Pi_wave_forward,
-    _self_loop_vjp_precompute,
-    _self_loop_Jt_apply,
-    _safe_exp2_ratio,
-    logsumexp2,
-    logaddexp2,
-)
-from src.core.scheduling import compute_clade_waves
-from src.core.batching import (
+from gpurec.core.preprocess_cpp import _load_extension
+from gpurec.core.extract_parameters import extract_parameters_uniform
+from gpurec.core.likelihood import E_fixed_point
+from gpurec.core.forward import Pi_wave_forward
+from gpurec.core.backward import _self_loop_vjp_precompute, _self_loop_Jt_apply
+from gpurec.core._helpers import _safe_exp2_ratio
+from gpurec.core.log2_utils import logsumexp2, logaddexp2
+from gpurec.core.scheduling import compute_clade_waves
+from gpurec.core.batching import (
     collate_gene_families,
     collate_wave,
     build_wave_layout,
 )
-from src.core.kernels.wave_backward import wave_backward_uniform_fused
+from gpurec.core.kernels.wave_backward import wave_backward_uniform_fused
 
 _INV = 1.0 / math.log(2.0)
 _ROOT = Path(__file__).resolve().parent.parent
@@ -242,7 +238,7 @@ class TestWaveBackwardKernel:
 
         # DTS cross (reuse forward's computation via _compute_dts_cross)
         if meta['has_splits']:
-            from src.core.likelihood import _compute_dts_cross
+            from gpurec.core.forward import _compute_dts_cross
             dts_r = _compute_dts_cross(
                 d['Pi_star_wave'], d['Pibar_star_wave'], meta,
                 d['sp_child1'], d['sp_child2'],
@@ -431,7 +427,7 @@ class TestWaveBackwardKernelLargeS:
         device, dtype = d['device'], d['dtype']
 
         if meta['has_splits']:
-            from src.core.likelihood import _compute_dts_cross
+            from gpurec.core.forward import _compute_dts_cross
             dts_r = _compute_dts_cross(
                 d['Pi_star_wave'], d['Pibar_star_wave'], meta,
                 d['sp_child1'], d['sp_child2'],
@@ -493,7 +489,9 @@ class TestFusedBackwardE2EFiniteDifference:
 
     def test_grad_log_pD_vs_fd(self, setup_fp32_1000):
         d = setup_fp32_1000
-        from src.core.likelihood import Pi_wave_backward, Pi_wave_forward, compute_log_likelihood
+        from gpurec.core.forward import Pi_wave_forward
+        from gpurec.core.backward import Pi_wave_backward
+        from gpurec.core.likelihood import compute_log_likelihood
 
         result = Pi_wave_backward(
             wave_layout=d['wave_layout'],
@@ -521,7 +519,7 @@ class TestFusedBackwardE2EFiniteDifference:
 
     def test_grad_log_pS_vs_fd(self, setup_fp32_1000):
         d = setup_fp32_1000
-        from src.core.likelihood import Pi_wave_backward
+        from gpurec.core.backward import Pi_wave_backward
 
         result = Pi_wave_backward(
             wave_layout=d['wave_layout'],
@@ -549,7 +547,7 @@ class TestFusedBackwardE2EFiniteDifference:
 
     def test_grad_mt_vs_fd(self, setup_fp32_1000):
         d = setup_fp32_1000
-        from src.core.likelihood import Pi_wave_backward
+        from gpurec.core.backward import Pi_wave_backward
         mt = d['max_transfer_mat']
 
         result = Pi_wave_backward(
@@ -582,8 +580,9 @@ class TestFusedBackwardE2EFiniteDifference:
 
     @staticmethod
     def _forward_logL(d, log_pS=None, log_pD=None, max_transfer_mat=None):
-        from src.core.likelihood import Pi_wave_forward, compute_log_likelihood
-        from src.core.batching import build_wave_layout
+        from gpurec.core.forward import Pi_wave_forward
+        from gpurec.core.likelihood import compute_log_likelihood
+        from gpurec.core.batching import build_wave_layout
 
         _log_pS = log_pS if log_pS is not None else d['log_pS']
         _log_pD = log_pD if log_pD is not None else d['log_pD']

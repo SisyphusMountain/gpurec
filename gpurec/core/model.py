@@ -4,7 +4,8 @@ from typing import Any
 import torch
 from torch.utils.data import Dataset
 from .extract_parameters import extract_parameters, extract_parameters_uniform
-from .likelihood import E_fixed_point, Pi_wave_forward, compute_log_likelihood
+from .likelihood import E_fixed_point, compute_log_likelihood
+from .forward import Pi_wave_forward
 from .batching import collate_gene_families, collate_wave, build_wave_layout
 from .scheduling import compute_clade_waves
 from .preprocess_cpp import _load_extension as _load_species_gene_ext
@@ -255,20 +256,13 @@ class GeneDataset(Dataset):
         tol_Pi: float = 1e-6,
         device: torch.device | None = None,
         dtype: torch.dtype | None = None,
-        use_wave: bool = False,
         pibar_mode: str = 'dense',
     ) -> dict:
         """Compute log-likelihood for a single family via the batched pathway.
 
         A single-family evaluation is treated as a batch of size 1 to ensure
         consistency between `compute_likelihood` and `compute_likelihood_batch`.
-
-        Notes:
-            - `use_wave` is kept for backward compatibility but ignored.
-            - Detailed intermediate tensors are not materialized on this path;
-              only `log_likelihood` is returned.
         """
-        _ = use_wave  # compatibility argument
 
         logL = self.compute_likelihood_batch(
             indices=[idx],

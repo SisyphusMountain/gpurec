@@ -6,12 +6,9 @@ from typing import List, Optional
 
 import torch
 
-from src.core.likelihood import (
-    E_fixed_point,
-    Pi_wave_forward,
-    compute_log_likelihood,
-)
-from src.core.extract_parameters import extract_parameters, extract_parameters_uniform
+from gpurec.core.likelihood import E_fixed_point, compute_log_likelihood
+from gpurec.core.forward import Pi_wave_forward
+from gpurec.core.extract_parameters import extract_parameters, extract_parameters_uniform
 
 from .types import FixedPointInfo, LinearSolveStats, StepRecord
 from .implicit_grad import implicit_grad_loglik_vjp_wave

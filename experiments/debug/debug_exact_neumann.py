@@ -5,13 +5,13 @@ then compute exact (I-J^T)^{-1} @ rhs.
 """
 import torch
 from tests.gradients.test_wave_gradient import _setup_uniform
-from src.core.likelihood import (
-    Pi_wave_forward, Pi_wave_backward,
-    _self_loop_differentiable, _self_loop_vjp_precompute,
-    _self_loop_Jt_apply, _compute_dts_cross, NEG_INF,
+from gpurec.core.forward import Pi_wave_forward, _compute_dts_cross, NEG_INF
+from gpurec.core.backward import (
+    Pi_wave_backward, _self_loop_differentiable,
+    _self_loop_vjp_precompute, _self_loop_Jt_apply,
 )
-from src.core.extract_parameters import extract_parameters_uniform
-from src.core.likelihood import E_fixed_point
+from gpurec.core.likelihood import E_fixed_point
+from gpurec.core.extract_parameters import extract_parameters_uniform
 
 d = _setup_uniform("test_trees_20", n_families=1, dtype=torch.float64)
 device, dtype = d['device'], d['dtype']
@@ -157,7 +157,7 @@ for wave_idx in [6, 7]:  # These had ρ ≈ 0.96, 0.97
     print(f"  Neumann(200) vs exact: rel_err = {rel_err200:.6e}")
     
     # GMRES solution
-    from src.core.likelihood import _gmres_self_loop_solve
+    from gpurec.core.backward import _gmres_self_loop_solve
     v_gmres = _gmres_self_loop_solve(
         rhs, ingredients, sp_child1, sp_child2, S, W,
         pibar_mode, transfer_mat, ancestors_T,

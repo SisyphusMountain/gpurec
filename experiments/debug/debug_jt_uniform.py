@@ -1,12 +1,12 @@
 """Verify _self_loop_Jt_apply for uniform mode against torch.func.vjp (autograd)."""
 import torch
 from tests.gradients.test_wave_gradient import _setup_uniform
-from src.core.likelihood import (
-    Pi_wave_forward, _self_loop_vjp_precompute,
-    _self_loop_Jt_apply, _self_loop_differentiable, NEG_INF,
+from gpurec.core.forward import Pi_wave_forward, NEG_INF
+from gpurec.core.backward import (
+    _self_loop_vjp_precompute, _self_loop_Jt_apply, _self_loop_differentiable,
 )
-from src.core.extract_parameters import extract_parameters_uniform
-from src.core.likelihood import E_fixed_point
+from gpurec.core.likelihood import E_fixed_point
+from gpurec.core.extract_parameters import extract_parameters_uniform
 
 d = _setup_uniform("test_trees_20", n_families=1, dtype=torch.float64)
 device, dtype = d['device'], d['dtype']
@@ -72,7 +72,7 @@ for wave_idx in range(min(len(wave_metas), 5)):
     # Get DTS_r for this wave
     if meta['has_splits']:
         # Need to compute dts_r...
-        from src.core.likelihood import _compute_dts_cross
+        from gpurec.core.forward import _compute_dts_cross
         dts_r = _compute_dts_cross(
             Pi_star_wave, Pibar_star_wave, meta,
             sp_child1, sp_child2, log_pD, log_pS, S, device, dtype

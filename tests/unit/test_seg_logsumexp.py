@@ -47,7 +47,7 @@ def _reference_grad(x: torch.Tensor, ptr: torch.Tensor, grad_out: torch.Tensor) 
 @CUDA_ONLY
 @pytest.mark.parametrize("dtype", [torch.float32, torch.float64])
 def test_seg_logsumexp_matches_reference(dtype):
-    from src.core.kernels.scatter_lse import seg_logsumexp
+    from gpurec.core.kernels.scatter_lse import seg_logsumexp
 
     device = "cuda"
     torch.manual_seed(1234)
@@ -74,7 +74,7 @@ def test_seg_logsumexp_matches_reference(dtype):
 @CUDA_ONLY
 @pytest.mark.parametrize("dtype", [torch.float32, torch.float64])
 def test_seg_logsumexp_gradients(dtype):
-    from src.core.kernels.scatter_lse import seg_logsumexp
+    from gpurec.core.kernels.scatter_lse import seg_logsumexp
 
     device = "cuda"
     torch.manual_seed(4321)

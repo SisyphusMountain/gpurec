@@ -19,11 +19,11 @@ triton = ["triton>=2.1"]
 dev = ["pytest", "ipython"]
 
 [project.scripts]
-gpurec = "src.cli.reconcile:main"
+gpurec = "gpurec.cli.reconcile:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["src*"]
+include = ["gpurec*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

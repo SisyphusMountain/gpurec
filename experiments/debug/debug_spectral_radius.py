@@ -5,14 +5,15 @@ a differentiable forward + autograd backward per wave.
 """
 import torch
 from tests.gradients.test_wave_gradient import _setup_uniform
-from src.core.likelihood import (
-    Pi_wave_forward, Pi_wave_backward, compute_log_likelihood,
-    _self_loop_differentiable, _dts_cross_differentiable,
-    _self_loop_vjp_precompute, _self_loop_Jt_apply,
-    _compute_dts_cross, _compute_Pibar_inline, NEG_INF,
+from gpurec.core.forward import (
+    Pi_wave_forward, _compute_dts_cross, _compute_Pibar_inline, NEG_INF,
 )
-from src.core.extract_parameters import extract_parameters_uniform
-from src.core.likelihood import E_fixed_point
+from gpurec.core.backward import (
+    Pi_wave_backward, _self_loop_differentiable, _dts_cross_differentiable,
+    _self_loop_vjp_precompute, _self_loop_Jt_apply,
+)
+from gpurec.core.likelihood import E_fixed_point, compute_log_likelihood
+from gpurec.core.extract_parameters import extract_parameters_uniform
 
 d = _setup_uniform("test_trees_20", n_families=1, dtype=torch.float64)
 device, dtype = d['device'], d['dtype']

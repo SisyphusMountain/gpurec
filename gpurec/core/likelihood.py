@@ -1,22 +1,14 @@
-"""Likelihood computation: E solver, log-likelihood, and re-exports.
+"""Likelihood computation: E solver and log-likelihood.
 
 The heavy Pi forward/backward code lives in forward.py and backward.py;
-this module keeps the E solver, compute_log_likelihood, shared utilities,
-and re-exports everything so that existing ``from .likelihood import X``
-statements continue to work unchanged.
+this module owns E_step, E_fixed_point, and compute_log_likelihood.
 """
 import torch
 import math
 
 from .terms import gather_E_children
 from .log2_utils import logsumexp2, logaddexp2
-from .log2_utils import _safe_log2_internal as _safe_log2  # noqa: F401  — re-exported for theta_optimizer
-from ._helpers import (  # noqa: F401
-    _safe_exp2_ratio,
-    _seg_logsumexp_host,
-    _nvtx_range,
-    _nvtx_here,
-)
+from ._helpers import _nvtx_range
 
 NEG_INF = float("-inf")
 
@@ -181,31 +173,3 @@ def compute_log_likelihood(Pi, E, root_clade_idx):
     denominator = torch.log2((1-torch.exp2(E).mean(dim=-1)))
     return -(numerator - denominator)
 
-
-# =========================================================================
-# Re-exports from forward.py, backward.py and legacy.py
-# =========================================================================
-# Existing code does ``from .likelihood import Pi_wave_forward`` etc.
-# These re-exports keep that working without touching every import site.
-
-from .legacy import (  # noqa: E402, F401
-    Pi_step,
-    Pi_fixed_point,
-)
-
-from .forward import (  # noqa: E402, F401
-    Pi_wave_forward,
-    _compute_dts_cross,
-    _compute_Pibar_inline,
-    _reconstruct_split_parents,
-    compute_gradient_bounds,
-)
-
-from .backward import (  # noqa: E402, F401
-    _self_loop_differentiable,
-    _dts_cross_differentiable,
-    _self_loop_vjp_precompute,
-    _gmres_self_loop_solve,
-    _self_loop_Jt_apply,
-    Pi_wave_backward,
-)

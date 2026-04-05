@@ -10,21 +10,18 @@ from pathlib import Path
 import pytest
 import torch
 
-from src.core.preprocess_cpp import _load_extension
-from src.core.extract_parameters import extract_parameters
-from src.core.likelihood import (
-    E_fixed_point,
-    Pi_fixed_point,
-    Pi_wave_forward,
-    compute_log_likelihood,
-)
-from src.core.scheduling import compute_clade_waves
-from src.core.batching import (
+from gpurec.core.preprocess_cpp import _load_extension
+from gpurec.core.extract_parameters import extract_parameters
+from gpurec.core.likelihood import E_fixed_point, compute_log_likelihood
+from gpurec.core.legacy import Pi_fixed_point
+from gpurec.core.forward import Pi_wave_forward
+from gpurec.core.scheduling import compute_clade_waves
+from gpurec.core.batching import (
     collate_gene_families,
     collate_wave,
     build_wave_layout,
 )
-from src.core.model import GeneDataset
+from gpurec.core.model import GeneDataset
 
 _INV = 1.0 / math.log(2.0)
 _ROOT = Path(__file__).resolve().parent.parent

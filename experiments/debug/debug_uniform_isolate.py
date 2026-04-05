@@ -10,13 +10,14 @@ import math
 import torch
 from pathlib import Path
 from tests.gradients.test_wave_gradient import _setup_uniform, _full_forward
-from src.core.likelihood import (
-    Pi_wave_forward, Pi_wave_backward, compute_log_likelihood,
-    _self_loop_differentiable, _self_loop_vjp_precompute,
-    _self_loop_Jt_apply, NEG_INF,
+from gpurec.core.likelihood import compute_log_likelihood
+from gpurec.core.forward import Pi_wave_forward, NEG_INF
+from gpurec.core.backward import (
+    Pi_wave_backward, _self_loop_differentiable,
+    _self_loop_vjp_precompute, _self_loop_Jt_apply,
 )
-from src.core.extract_parameters import extract_parameters_uniform
-from src.optimization.theta_optimizer import implicit_grad_loglik_vjp_wave
+from gpurec.core.extract_parameters import extract_parameters_uniform
+from gpurec.optimization.theta_optimizer import implicit_grad_loglik_vjp_wave
 
 d = _setup_uniform("test_trees_20", n_families=1, dtype=torch.float64)
 device, dtype = d['device'], d['dtype']
@@ -32,7 +33,7 @@ unnorm_row_max = d['unnorm_row_max']
 log_pS, log_pD, log_pL, transfer_mat, mt = extract_parameters_uniform(
     theta, unnorm_row_max, specieswise=False,
 )
-from src.core.likelihood import E_fixed_point
+from gpurec.core.likelihood import E_fixed_point  # noqa: E402
 E_out = E_fixed_point(
     species_helpers=sh, log_pS=log_pS, log_pD=log_pD, log_pL=log_pL,
     transfer_mat=transfer_mat, max_transfer_mat=mt,

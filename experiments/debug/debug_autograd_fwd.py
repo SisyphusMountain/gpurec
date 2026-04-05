@@ -6,13 +6,12 @@ the analytical backward.
 """
 import torch
 from tests.gradients.test_wave_gradient import _setup_uniform
-from src.core.likelihood import (
-    Pi_wave_forward, Pi_wave_backward, compute_log_likelihood,
-    _self_loop_differentiable, _dts_cross_differentiable,
-    _compute_dts_cross, NEG_INF,
+from gpurec.core.forward import Pi_wave_forward, _compute_dts_cross, NEG_INF
+from gpurec.core.backward import (
+    Pi_wave_backward, _self_loop_differentiable, _dts_cross_differentiable,
 )
-from src.core.extract_parameters import extract_parameters_uniform
-from src.core.likelihood import E_fixed_point
+from gpurec.core.likelihood import E_fixed_point, compute_log_likelihood
+from gpurec.core.extract_parameters import extract_parameters_uniform
 
 d = _setup_uniform("test_trees_20", n_families=1, dtype=torch.float64)
 device, dtype = d['device'], d['dtype']
@@ -113,7 +112,7 @@ for wave_idx in range(len(wave_metas)):
     Pi_exp = torch.exp2(Pi_W - Pi_max)
     row_sum = Pi_exp.sum(dim=1, keepdim=True)
     ancestor_sum = Pi_exp @ ancestors_T
-    from src.core.likelihood import _safe_log2
+    from gpurec.core.log2_utils import _safe_log2_internal as _safe_log2
     Pibar_W = _safe_log2(row_sum - ancestor_sum) + Pi_max + mt_grad
     Pibar = Pibar.clone()
     Pibar[ws:we] = Pibar_W
