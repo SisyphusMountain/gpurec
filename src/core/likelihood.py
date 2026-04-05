@@ -197,7 +197,6 @@ from .forward import (  # noqa: E402, F401
     Pi_wave_forward,
     _compute_dts_cross,
     _compute_Pibar_inline,
-    _compute_DTS_reduced,
     _reconstruct_split_parents,
     compute_gradient_bounds,
 )

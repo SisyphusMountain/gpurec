@@ -9,9 +9,8 @@ available in the preprocessed helpers.
 
 from __future__ import annotations
 
+from collections import deque
 from typing import Any, Dict, List, Tuple
-
-from .legacy import _compute_clade_waves_bfs
 
 
 # ---------------------------------------------------------------------------
@@ -62,6 +61,64 @@ def compute_clade_waves(
 
     # Fallback: Python BFS (no phase info)
     return _compute_clade_waves_bfs(ccp_helpers)
+
+
+# ---------------------------------------------------------------------------
+# BFS wave scheduler (fallback)
+# ---------------------------------------------------------------------------
+
+
+def _compute_clade_waves_bfs(
+    ccp_helpers: Dict[str, Any],
+) -> Tuple[List[List[int]], List[int]]:
+    """Python BFS scheduler (fallback when C++ phased data unavailable)."""
+    C: int = int(ccp_helpers["C"])
+    N_splits: int = int(ccp_helpers["N_splits"])
+
+    split_parents: List[int] = ccp_helpers["split_parents_sorted"].tolist()
+    leftrights: List[int] = ccp_helpers["split_leftrights_sorted"].tolist()
+    lefts = leftrights[:N_splits]
+    rights = leftrights[N_splits:]
+
+    depended_by: List[List[int]] = [[] for _ in range(C)]
+    children_sets: List[set] = [set() for _ in range(C)]
+
+    for idx in range(N_splits):
+        p = split_parents[idx]
+        l = lefts[idx]
+        r = rights[idx]
+        if l not in children_sets[p]:
+            children_sets[p].add(l)
+            depended_by[l].append(p)
+        if r != l and r not in children_sets[p]:
+            children_sets[p].add(r)
+            depended_by[r].append(p)
+
+    remaining: List[int] = [len(children_sets[c]) for c in range(C)]
+    level: List[int] = [0] * C
+
+    queue: deque[int] = deque()
+    for c in range(C):
+        if remaining[c] == 0:
+            queue.append(c)
+
+    while queue:
+        c = queue.popleft()
+        for p in depended_by[c]:
+            if level[p] <= level[c]:
+                level[p] = level[c] + 1
+            remaining[p] -= 1
+            if remaining[p] == 0:
+                queue.append(p)
+
+    max_wave: int = max(level) if C > 0 else 0
+    waves: List[List[int]] = [[] for _ in range(max_wave + 1)]
+    for c in range(C):
+        waves[level[c]].append(c)
+
+    # No phase info — label all as phase 0
+    phases = [0] * len(waves)
+    return waves, phases
 
 
 # ---------------------------------------------------------------------------

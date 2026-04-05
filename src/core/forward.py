@@ -166,7 +166,10 @@ def compute_gradient_bounds(
     threshold=-20.0,
     wave_metas=None,
 ):
-    """Compute gradient bounds for pruning clades from the backward pass."""
+    """Compute gradient bounds for pruning clades from the backward pass.
+
+    Deprecated: no longer called from backward pass. Kept for test coverage.
+    """
     C = Pi.shape[0]
     device = Pi.device
     dtype = Pi.dtype

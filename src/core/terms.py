@@ -1,3 +1,9 @@
+"""Term computations for reconciliation likelihood.
+
+``gather_E_children`` is the active function used by the wave-based passes.
+``gather_Pi_children``, ``compute_DTS``, and ``compute_DTS_L`` are used only
+by the legacy fixed-point solver in ``legacy.py``.
+"""
 import torch
 from .log2_utils import logsumexp2
 
