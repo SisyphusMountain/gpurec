@@ -39,6 +39,7 @@ def optimize_theta_wave(
     pibar_mode: str = 'uniform',
     optimizer: str = 'adam',
     momentum: float = 0.9,
+    verbose: bool = False,
 ):
     """Optimize theta using wave forward/backward + implicit gradient.
 
@@ -162,7 +163,13 @@ def optimize_theta_wave(
             nll, grad_theta, statsG, E_out = _forward_backward(theta_d, warm_E_ref[0])
             warm_E_ref[0] = E_out['E'].detach()
 
+            nll_is_nan = math.isnan(nll)
             eval_count[0] += 1
+            if verbose:
+                grad_inf_str = f"{float(grad_theta.abs().max()):.3e}" if not nll_is_nan else "nan"
+                nll_str = f"{nll:.4f}" if not nll_is_nan else "nan"
+                print(f"  eval {eval_count[0]:3d}  NLL={nll_str}  grad_inf={grad_inf_str}",
+                      flush=True)
             fp_info = FixedPointInfo(iterations_E=int(E_out['iterations']),
                                      iterations_Pi=0)
             history.append(StepRecord(
@@ -170,7 +177,7 @@ def optimize_theta_wave(
                 rates=torch.exp2(theta_d.detach()).cpu(),
                 negative_log_likelihood=nll, log_likelihood=-nll,
                 theta_step_inf=0.0,
-                grad_infinity_norm=float(grad_theta.abs().max().item()),
+                grad_infinity_norm=float(grad_theta.abs().max().item()) if not nll_is_nan else float('nan'),
                 fp_info=fp_info, gradient=grad_theta.cpu(),
                 solve_stats_F=LinearSolveStats("wave_neumann", neumann_terms, 0.0, False),
                 solve_stats_G=statsG,
@@ -178,14 +185,16 @@ def optimize_theta_wave(
 
             grad_np = grad_theta.reshape(-1).cpu().to(torch.float64).numpy()
             np.nan_to_num(grad_np, copy=False, nan=0.0)
-            return float(nll), grad_np
+            # Return +inf (not NaN) so scipy's line search backtracks instead of corrupting state
+            return_nll = float('inf') if nll_is_nan else float(nll)
+            return return_nll, grad_np
 
         x0 = theta_t.reshape(-1).cpu().to(torch.float64).numpy()
         bounds = [(_THETA_MIN, None)] * len(x0)
         result = scipy_minimize(
             forward_and_grad, x0, method='L-BFGS-B', jac=True,
             bounds=bounds,
-            options={'maxiter': steps, 'ftol': 1e-12, 'gtol': 1e-6},
+            options={'maxiter': steps, 'maxfun': steps * 3, 'ftol': 1e-12, 'gtol': 1e-6},
         )
 
         theta_final = torch.from_numpy(result.x).to(device=device, dtype=dtype).reshape(theta_shape)
