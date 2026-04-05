@@ -58,7 +58,10 @@ def E_step(E, sp_P_idx, sp_child12_idx, log_pS, log_pD, log_pL, transfer_mat, ma
         expE = torch.exp2(E - max_E)                     # [S] or [N, S]
         expE_2d = expE.unsqueeze(0) if expE.ndim == 1 else expE
         row_sum = expE_2d.sum(dim=-1, keepdim=True)      # [1, 1] or [N, 1]
-        ancestor_sum = expE_2d @ ancestors_T              # [1, S] or [N, S] sparse matmul
+        # Sparse COO matmul returns a column-major (non-contiguous) result when LHS
+        # is 2D (batched case). Make it contiguous before subsequent arithmetic so
+        # downstream Triton kernels that assume C-contiguous layout don't read garbage.
+        ancestor_sum = (expE_2d @ ancestors_T).contiguous()  # [1, S] or [N, S]
         Ebar_linear = (row_sum - ancestor_sum).squeeze(0) if expE.ndim == 1 else (row_sum - ancestor_sum)
         Ebar = torch.log2(Ebar_linear) + max_E + max_transfer_mat.squeeze(-1)
     else:

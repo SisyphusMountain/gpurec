@@ -198,6 +198,59 @@ def optimize_theta_wave(
         )
 
         theta_final = torch.from_numpy(result.x).to(device=device, dtype=dtype).reshape(theta_shape)
+
+        # Detect float32 precision floor and retry in float64
+        if dtype == torch.float32 and len(history) >= 5:
+            recent_nlls = [h.negative_log_likelihood for h in history[-5:]]
+            nll_range = max(recent_nlls) - min(recent_nlls)
+            final_grad_inf = history[-1].grad_infinity_norm
+            if final_grad_inf > 1e-2 and nll_range < 1e-4:
+                if verbose:
+                    print(f"  [float32 floor detected: grad_inf={final_grad_inf:.3e}, "
+                          f"nll_range={nll_range:.2e}] retrying in float64 ...", flush=True)
+
+                def _to64(x):
+                    """Recursively convert floating-point tensors to float64.
+
+                    Handles nested containers: dict, list, tuple.
+                    Non-floating tensors (e.g. Long index tensors) and
+                    non-tensor values (int, str, dict of strings) are left untouched.
+                    """
+                    if torch.is_tensor(x):
+                        return x.to(torch.float64) if x.is_floating_point() else x
+                    if isinstance(x, dict):
+                        return {k: _to64(v) for k, v in x.items()}
+                    if isinstance(x, list):
+                        return [_to64(v) for v in x]
+                    if isinstance(x, tuple):
+                        return tuple(_to64(v) for v in x)
+                    return x
+
+                wl64 = _to64(wave_layout)
+                sp64 = _to64(species_helpers)
+                urm64 = _to64(unnorm_row_max)
+                tm64 = _to64(transfer_mat_unnormalized) if transfer_mat_unnormalized is not None else None
+                theta_init64 = theta_final.to(torch.float64)
+
+                result64 = optimize_theta_wave(
+                    wl64, sp64, root_clade_ids,
+                    urm64, theta_init64,
+                    transfer_mat_unnormalized=tm64,
+                    steps=steps, lr=lr, tol_theta=tol_theta,
+                    e_max_iters=e_max_iters, e_tol=e_tol,
+                    neumann_terms=neumann_terms,
+                    use_pruning=use_pruning, pruning_threshold=pruning_threshold,
+                    cg_tol=cg_tol, cg_maxiter=cg_maxiter, gmres_restart=gmres_restart,
+                    specieswise=specieswise, device=device,
+                    dtype=torch.float64,
+                    pibar_mode=pibar_mode,
+                    optimizer='lbfgs',
+                    verbose=verbose,
+                )
+                # Merge histories: float32 phase first, then float64 phase
+                result64["history"] = history + result64["history"]
+                return result64
+
         return {
             "theta": theta_final.cpu(),
             "rates": torch.exp2(theta_final).cpu(),

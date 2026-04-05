@@ -135,7 +135,7 @@ def _e_adjoint_and_theta_vjp(
                 expE = torch.exp2(E_req2 - max_E)
                 expE_2d = expE.unsqueeze(0)
                 row_sum = expE_2d.sum(dim=-1, keepdim=True)
-                ancestor_sum = expE_2d @ ancestors_T
+                ancestor_sum = (expE_2d @ ancestors_T).contiguous()
                 Ebar_recomp = _safe_log2((row_sum - ancestor_sum).squeeze(0)) + max_E.squeeze(-1) + mt_sq
             ebar_to_e = torch.autograd.grad(
                 Ebar_recomp, E_req2,
