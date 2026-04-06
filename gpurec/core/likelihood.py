@@ -7,7 +7,7 @@ import torch
 import math
 
 from .terms import gather_E_children
-from .log2_utils import logsumexp2, logaddexp2
+from .log2_utils import logsumexp2, logaddexp2, _safe_log2_internal as _safe_log2
 from ._helpers import _nvtx_range
 
 NEG_INF = float("-inf")
@@ -63,7 +63,10 @@ def E_step(E, sp_P_idx, sp_child12_idx, log_pS, log_pD, log_pL, transfer_mat, ma
         # downstream Triton kernels that assume C-contiguous layout don't read garbage.
         ancestor_sum = (expE_2d @ ancestors_T).contiguous()  # [1, S] or [N, S]
         Ebar_linear = (row_sum - ancestor_sum).squeeze(0) if expE.ndim == 1 else (row_sum - ancestor_sum)
-        Ebar = torch.log2(Ebar_linear) + max_E + max_transfer_mat.squeeze(-1)
+        # Use safe log2: float32 cancellation can make row_sum - ancestor_sum
+        # slightly negative for species with many ancestors; safe log2 returns
+        # -inf (zero transfer contribution) instead of NaN.
+        Ebar = _safe_log2(Ebar_linear) + max_E + max_transfer_mat.squeeze(-1)
     else:
         # Dense/topk: full matvec with [S,S] transfer matrix
         # (topk uses dense for E since E is [S] — cheap)

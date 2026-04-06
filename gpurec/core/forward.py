@@ -68,8 +68,13 @@ def _compute_Pibar_inline(Pi_W, transfer_mat_T, mt_squeezed, pibar_mode,
     if pibar_mode == 'uniform':
         Pi_exp = torch.exp2(Pi_W - Pi_max)
         row_sum = Pi_exp.sum(dim=1, keepdim=True)
-        ancestor_sum = Pi_exp @ ancestors_T
-        Pibar_W = torch.log2(row_sum - ancestor_sum) + Pi_max + mt_squeezed
+        # Sparse COO matmul returns non-contiguous output for 2D input — make
+        # it contiguous before the subtraction so row_sum - ancestor_sum is exact.
+        ancestor_sum = (Pi_exp @ ancestors_T).contiguous()
+        # Use safe log2: float32 cancellation can make row_sum - ancestor_sum
+        # slightly negative for species with many ancestors; safe log2 returns
+        # -inf (zero transfer probability) instead of NaN.
+        Pibar_W = _safe_log2(row_sum - ancestor_sum) + Pi_max + mt_squeezed
     elif pibar_mode == 'topk':
         W, S = Pi_W.shape
         topk_vals, topk_idx = torch.topk(Pi_W, topk_k, dim=1)
