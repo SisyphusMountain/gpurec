@@ -123,8 +123,9 @@ def _compute_DTS_reduced(Pi, Pibar, lr, n_ws, S, W, log_pD, log_pS,
     DTS_reduced = torch.full((W, S), NEG_INF, device=device, dtype=dtype)
     DTS_reduced.scatter_reduce_(0, reduce_exp, DTS_term, reduce='amax', include_self=True)
     DTS_max = DTS_reduced.clone()
+    DTS_max_safe = torch.where(DTS_max == NEG_INF, torch.zeros_like(DTS_max), DTS_max)
     DTS_sum = torch.zeros((W, S), device=device, dtype=dtype)
-    DTS_sum.scatter_add_(0, reduce_exp, torch.exp2(DTS_term - DTS_max[reduce_idx]))
+    DTS_sum.scatter_add_(0, reduce_exp, torch.exp2(DTS_term - DTS_max_safe[reduce_idx]))
     return torch.log2(DTS_sum) + DTS_max
 
 

@@ -3,6 +3,8 @@ from __future__ import annotations
 
 from typing import Optional
 
+import time
+
 import torch
 from torch import Tensor
 from torch import func as tfunc
@@ -13,7 +15,6 @@ from gpurec.core.log2_utils import _safe_log2_internal as _safe_log2
 from gpurec.core.extract_parameters import extract_parameters, extract_parameters_uniform
 
 from .linear_solvers import _cg, _gmres
-from .types import LinearSolveStats
 
 
 @torch.no_grad()
@@ -58,6 +59,8 @@ def implicit_grad_loglik_vjp_wave(
     Returns (grad_theta, pi_backward_info).
     """
     # --- Step 1: Pi backward (can be pre-computed for batched mode) ---
+    torch.cuda.synchronize()
+    _t_pi_bwd_0 = time.perf_counter()
     pi_bwd = Pi_wave_backward(
         wave_layout=wave_layout,
         Pi_star_wave=Pi_star_wave,
@@ -75,8 +78,10 @@ def implicit_grad_loglik_vjp_wave(
         transfer_mat=transfer_mat,
         ancestors_T=ancestors_T,
     )
+    torch.cuda.synchronize()
+    _t_pi_bwd = time.perf_counter() - _t_pi_bwd_0
 
-    return _e_adjoint_and_theta_vjp(
+    grad_theta, statsG = _e_adjoint_and_theta_vjp(
         pi_bwd, E_star, Ebar, E_s1, E_s2,
         log_pS, log_pD, log_pL,
         max_transfer_mat, species_helpers, root_clade_ids_perm,
@@ -87,6 +92,8 @@ def implicit_grad_loglik_vjp_wave(
         transfer_mat_unnormalized=transfer_mat_unnormalized,
         ancestors_T=ancestors_T,
     )
+    statsG.pi_bwd_time = _t_pi_bwd
+    return grad_theta, statsG
 
 
 def _e_adjoint_and_theta_vjp(
@@ -97,6 +104,7 @@ def _e_adjoint_and_theta_vjp(
     theta, unnorm_row_max, specieswise,
     device, dtype,
     *,
+    genewise=False,
     cg_tol=1e-8, cg_maxiter=500, gmres_restart=40,
     pibar_mode='uniform',
     transfer_mat=None, transfer_mat_unnormalized=None, ancestors_T=None,
@@ -116,7 +124,13 @@ def _e_adjoint_and_theta_vjp(
     with torch.enable_grad():
         mean_E_exp = torch.exp2(E_req_d).mean(dim=-1)
         denom = torch.log2(1.0 - mean_E_exp)
-        direct_dNLL_dE = torch.autograd.grad(n_fam * denom, E_req_d)[0]
+        # Shared-E mode: denominator contributes once per family => n_fam * denom.
+        # Genewise mode: E is per-family [G, S], so each row contributes once.
+        if E_req_d.ndim > 1 and E_req_d.shape[0] == n_fam:
+            direct_obj = denom.sum()
+        else:
+            direct_obj = (n_fam * denom).sum() if denom.ndim > 0 else (n_fam * denom)
+        direct_dNLL_dE = torch.autograd.grad(direct_obj, E_req_d)[0]
     q_E = pi_bwd['grad_E'].clone() + direct_dNLL_dE
 
     # Chain Ebar gradient through E_step's Ebar computation
@@ -133,10 +147,15 @@ def _e_adjoint_and_theta_vjp(
                 # uniform: Ebar[s] = log2(sum(exp2(E)) - ancestor_sum) + max_E + mt[s]
                 max_E = E_req2.max(dim=-1, keepdim=True).values
                 expE = torch.exp2(E_req2 - max_E)
-                expE_2d = expE.unsqueeze(0)
-                row_sum = expE_2d.sum(dim=-1, keepdim=True)
-                ancestor_sum = (expE_2d @ ancestors_T).contiguous()
-                Ebar_recomp = _safe_log2((row_sum - ancestor_sum).squeeze(0)) + max_E.squeeze(-1) + mt_sq
+                if expE.ndim == 1:
+                    expE_2d = expE.unsqueeze(0)
+                    row_sum = expE_2d.sum(dim=-1, keepdim=True)
+                    ancestor_sum = (expE_2d @ ancestors_T).contiguous()
+                    Ebar_recomp = _safe_log2((row_sum - ancestor_sum).squeeze(0)) + max_E.squeeze(-1) + mt_sq
+                else:
+                    row_sum = expE.sum(dim=-1, keepdim=True)
+                    ancestor_sum = (expE @ ancestors_T).contiguous()
+                    Ebar_recomp = _safe_log2(row_sum - ancestor_sum) + max_E + mt_sq
             ebar_to_e = torch.autograd.grad(
                 Ebar_recomp, E_req2,
                 grad_outputs=pi_bwd['grad_Ebar'],
@@ -158,6 +177,9 @@ def _e_adjoint_and_theta_vjp(
         q_E = q_E + es_to_e
 
     # Solve (I - G_E^T) w = q_E via CG/GMRES
+    torch.cuda.synchronize()
+    _t_qE = time.perf_counter()
+
     def G_E_fun(E_in):
         """E_step as a function of E only."""
         return E_step(
@@ -172,7 +194,6 @@ def _e_adjoint_and_theta_vjp(
     with torch.enable_grad():
         _, vjpG = tfunc.vjp(G_E_fun, E_req_g)
 
-    nE = E_star.numel()
     E_shape = E_star.shape
     q_flat = q_E.reshape(-1)
 
@@ -186,6 +207,9 @@ def _e_adjoint_and_theta_vjp(
         w_flat, statsG = _gmres(AG_flat, q_flat, tol=cg_tol, restart=gmres_restart, maxiter=cg_maxiter)
         statsG.fallback_used = True
 
+    torch.cuda.synchronize()
+    _t_cg = time.perf_counter() - _t_qE
+
     wE = w_flat.view(E_shape)
 
     # --- Step 3: theta gradient through extract_parameters ---
@@ -196,7 +220,7 @@ def _e_adjoint_and_theta_vjp(
         if pibar_mode in ('dense', 'topk') and transfer_mat_unnormalized is not None:
             log_pS_r, log_pD_r, log_pL_r, transfer_mat_r, mt_r_raw = extract_parameters(
                 theta_req, transfer_mat_unnormalized,
-                genewise=False, specieswise=specieswise, pairwise=False,
+                genewise=genewise, specieswise=specieswise, pairwise=False,
             )
             mt_r = mt_r_raw.squeeze(-1) if mt_r_raw.ndim == 2 else mt_r_raw
             param_loss = (
@@ -211,7 +235,7 @@ def _e_adjoint_and_theta_vjp(
         else:
             # uniform: no theta-dependent transfer_mat
             log_pS_r, log_pD_r, log_pL_r, _, mt_r = extract_parameters_uniform(
-                theta_req, unnorm_row_max, specieswise=specieswise,
+                theta_req, unnorm_row_max, specieswise=specieswise, genewise=genewise,
             )
             param_loss = (
                 (log_pS_r * pi_bwd['grad_log_pS']).sum() +
@@ -226,7 +250,7 @@ def _e_adjoint_and_theta_vjp(
         if pibar_mode in ('dense', 'topk') and transfer_mat_unnormalized is not None:
             log_pS_r2, log_pD_r2, log_pL_r2, transfer_mat_r2, mt_r2_raw = extract_parameters(
                 theta_req2, transfer_mat_unnormalized,
-                genewise=False, specieswise=specieswise, pairwise=False,
+                genewise=genewise, specieswise=specieswise, pairwise=False,
             )
             mt_r2 = mt_r2_raw.squeeze(-1) if mt_r2_raw.ndim == 2 else mt_r2_raw
 
@@ -240,7 +264,7 @@ def _e_adjoint_and_theta_vjp(
         else:
             # uniform: no theta-dependent transfer_mat
             log_pS_r2, log_pD_r2, log_pL_r2, _, mt_r2 = extract_parameters_uniform(
-                theta_req2, unnorm_row_max, specieswise=specieswise,
+                theta_req2, unnorm_row_max, specieswise=specieswise, genewise=genewise,
             )
 
             def G_E_theta(th_pS, th_pD, th_pL, th_mt):
@@ -257,6 +281,12 @@ def _e_adjoint_and_theta_vjp(
             grad_outputs=wE,
             retain_graph=False,
         )[0]
+
+    torch.cuda.synchronize()
+    _t_theta_vjp = time.perf_counter() - _t_qE - _t_cg  # remainder after CG
+    # Stash sub-timings on statsG for the caller
+    statsG.cg_time = _t_cg
+    statsG.theta_vjp_time = _t_theta_vjp
 
     grad_theta = (grad_theta_pi + gtheta_E).detach()
     return grad_theta, statsG

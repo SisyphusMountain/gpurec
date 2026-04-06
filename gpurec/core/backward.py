@@ -137,7 +137,11 @@ def _dts_cross_differentiable(
     seg_max.scatter_reduce_(0, reduce_expand, dts_term.detach(), reduce='amax',
                             include_self=True)
 
-    shifted = torch.exp2(dts_term - seg_max[reduce_idx])
+    # Avoid -inf - (-inf) -> NaN when a whole segment/species slice is unreachable.
+    # In that case seg_max is -inf and all corresponding dts_term are -inf, so using
+    # a finite shift (0) yields exp2(-inf)=0 and the reduced result remains -inf.
+    seg_max_safe = torch.where(seg_max == NEG_INF, torch.zeros_like(seg_max), seg_max)
+    shifted = torch.exp2(dts_term - seg_max_safe[reduce_idx])
     seg_sum = torch.zeros((W, S), device=device, dtype=dtype)
     seg_sum.scatter_add_(0, reduce_expand, shifted)
     dts_r = _safe_log2(seg_sum) + seg_max
@@ -645,7 +649,7 @@ def Pi_wave_backward(
                 v_k = _gmres_self_loop_solve(
                     rhs_active, solve_ing, sp_child1, sp_child2, S, solve_W,
                     pibar_mode, transfer_mat_T, ancestors_T,
-                    max_iters=50, tol=1e-8,
+                    max_iters=5, tol=1e-8,
                 )
             else:
                 v_k = rhs_active.clone()

@@ -2,9 +2,9 @@
 from __future__ import annotations
 
 import math
+import time
 
 import torch
-from torch import Tensor
 
 from gpurec.core.likelihood import E_fixed_point, compute_log_likelihood
 from gpurec.core.forward import Pi_wave_forward
@@ -76,6 +76,7 @@ def optimize_theta_genewise(
     specieswise=False,
     local_iters=2000,
     local_tolerance=1e-3,
+    verbose=False,
 ):
     """Genewise L-BFGS: independently optimize (D_g, L_g, T_g) per gene family.
 
@@ -127,7 +128,6 @@ def optimize_theta_genewise(
     _THETA_MIN = math.log2(1e-10)
 
     G = len(families)
-    P = theta_init.shape[-1] if theta_init.ndim == 2 else theta_init.shape[-1] * theta_init.shape[-2]
     unnorm_row_max = unnorm_row_max.to(device=device, dtype=dtype)
 
     # Move species_helpers tensors to device (skip large [S,S] matrices for uniform modes)
@@ -144,8 +144,6 @@ def optimize_theta_genewise(
     }
 
     # --- Phase A: precompute wave layouts (once) ---
-    wave_layouts = []
-    root_clade_ids_list = []
     per_family_waves = []
     per_family_phases = []
     batch_items = []
@@ -157,18 +155,7 @@ def optimize_theta_genewise(
             'leaf_col_index': fam['leaf_col_index'],
             'root_clade_id': int(fam['root_clade_id']),
         }
-        single_batched = collate_gene_families([single_item], dtype=dtype, device=device)
         waves_g, phases_g = compute_clade_waves(fam['ccp_helpers'])
-        wl_g = build_wave_layout(
-            waves=waves_g, phases=phases_g,
-            ccp_helpers=single_batched['ccp'],
-            leaf_row_index=single_batched['leaf_row_index'],
-            leaf_col_index=single_batched['leaf_col_index'],
-            root_clade_ids=single_batched['root_clade_ids'],
-            device=device, dtype=dtype,
-        )
-        wave_layouts.append(wl_g)
-        root_clade_ids_list.append(single_batched['root_clade_ids'])
         per_family_waves.append(waves_g)
         per_family_phases.append(phases_g)
         batch_items.append(single_item)
@@ -191,8 +178,6 @@ def optimize_theta_genewise(
         family_clade_counts=sizes,
         family_clade_offsets=offsets,
     )
-    C_total = int(all_batched['ccp']['C'])
-    S = species_helpers['S']
 
     # Precompute ancestors_T for uniform mode
     _ancestors_T = None
@@ -224,53 +209,32 @@ def optimize_theta_genewise(
 
         nll = torch.full((G,), float('nan'), device=device, dtype=dtype)
         grad = torch.zeros_like(theta_t)
-        active_genes = active_mask.nonzero(as_tuple=False).squeeze(-1).tolist()
 
-        # --- Per-family forward + NLL ---
-        Pi_orig = {}  # g → Pi in original (unpermuted) space
-        Pibar_orig = {}
-        for g in active_genes:
-            E_g = E_out['E'][g]
-            Ebar_g = E_out['E_bar'][g]
-            E_s1_g = E_out['E_s1'][g]
-            E_s2_g = E_out['E_s2'][g]
-            mt_g = mt[g]
-            pS_g = log_pS[g] if log_pS.ndim >= 1 else log_pS
-            pD_g = log_pD[g] if log_pD.ndim >= 1 else log_pD
-            pL_g = log_pL[g] if log_pL.ndim >= 1 else log_pL
-
-            Pi_out_g = Pi_wave_forward(
-                wave_layout=wave_layouts[g], species_helpers=species_helpers,
-                E=E_g, Ebar=Ebar_g, E_s1=E_s1_g, E_s2=E_s2_g,
-                log_pS=pS_g, log_pD=pD_g, log_pL=pL_g,
-                transfer_mat=None, max_transfer_mat=mt_g,
-                device=device, dtype=dtype,
-                local_iters=local_iters, local_tolerance=local_tolerance,
-                pibar_mode=pibar_mode,
-            )
-            logL_g = compute_log_likelihood(Pi_out_g['Pi'], E_g, root_clade_ids_list[g])
-            nll[g] = logL_g.sum()
-
-            # Un-permute to original clade space
-            # perm[orig] = wave_pos, so Pi_wave[perm] gives original order
-            perm_g = wave_layouts[g]['perm']
-            Pi_orig[g] = Pi_out_g['Pi_wave_ordered'][perm_g]
-            Pibar_orig[g] = Pi_out_g['Pibar_wave_ordered'][perm_g]
-
-        # --- Merge into batched tensor in merged layout order ---
-        merged_perm = merged_layout['perm']
-        Pi_star_merged = torch.full((C_total, S), float('-inf'), device=device, dtype=dtype)
-        Pibar_star_merged = torch.full((C_total, S), float('-inf'), device=device, dtype=dtype)
-        for g in active_genes:
-            o, c = offsets[g], sizes[g]
-            Pi_star_merged[merged_perm[o:o+c]] = Pi_orig[g]
-            Pibar_star_merged[merged_perm[o:o+c]] = Pibar_orig[g]
+        # --- Single batched forward + per-family NLL ---
+        Pi_out = Pi_wave_forward(
+            wave_layout=merged_layout,
+            species_helpers=species_helpers,
+            E=E_out['E'], Ebar=E_out['E_bar'],
+            E_s1=E_out['E_s1'], E_s2=E_out['E_s2'],
+            log_pS=log_pS, log_pD=log_pD, log_pL=log_pL,
+            transfer_mat=None, max_transfer_mat=mt,
+            device=device, dtype=dtype,
+            local_iters=local_iters, local_tolerance=local_tolerance,
+            pibar_mode=pibar_mode,
+            family_idx=merged_layout['family_idx'],
+        )
+        # Keep objective in wave-ordered space so NLL and Pi backward use the
+        # same root indexing convention.
+        nll_full = compute_log_likelihood(
+            Pi_out['Pi_wave_ordered'], E_out['E'], merged_layout['root_clade_ids'],
+        )
+        nll[active_mask] = nll_full[active_mask]
 
         # --- Single batched backward ---
         pi_bwd = Pi_wave_backward(
             wave_layout=merged_layout,
-            Pi_star_wave=Pi_star_merged,
-            Pibar_star_wave=Pibar_star_merged,
+            Pi_star_wave=Pi_out['Pi_wave_ordered'],
+            Pibar_star_wave=Pi_out['Pibar_wave_ordered'],
             E=E_out['E'], Ebar=E_out['E_bar'],
             E_s1=E_out['E_s1'], E_s2=E_out['E_s2'],
             log_pS=log_pS, log_pD=log_pD, log_pL=log_pL,
@@ -286,37 +250,21 @@ def optimize_theta_genewise(
             family_idx=merged_layout['family_idx'],
         )
 
-        # --- Per-family E adjoint + theta VJP ---
-        for g in active_genes:
-            E_g = E_out['E'][g]
-            Ebar_g = E_out['E_bar'][g]
-            mt_g = mt[g]
-            pS_g = log_pS[g] if log_pS.ndim >= 1 else log_pS
-            pD_g = log_pD[g] if log_pD.ndim >= 1 else log_pD
-            pL_g = log_pL[g] if log_pL.ndim >= 1 else log_pL
-
-            # Slice per-family gradients from batched backward
-            pi_bwd_g = {
-                'grad_E': pi_bwd['grad_E'][g],
-                'grad_Ebar': pi_bwd['grad_Ebar'][g],
-                'grad_E_s1': pi_bwd['grad_E_s1'][g],
-                'grad_E_s2': pi_bwd['grad_E_s2'][g],
-                'grad_log_pD': pi_bwd['grad_log_pD'][g],
-                'grad_log_pS': pi_bwd['grad_log_pS'][g],
-                'grad_max_transfer_mat': pi_bwd['grad_max_transfer_mat'][g],
-            }
-
-            grad_theta_g, _ = _e_adjoint_and_theta_vjp(
-                pi_bwd_g, E_g, Ebar_g, E_out['E_s1'][g], E_out['E_s2'][g],
-                pS_g, pD_g, pL_g, mt_g,
-                species_helpers, wave_layouts[g]['root_clade_ids'],
-                theta_t[g], unnorm_row_max, specieswise,
-                device, dtype,
-                cg_tol=cg_tol, cg_maxiter=cg_maxiter,
-                pibar_mode=pibar_mode,
-                ancestors_T=_ancestors_T,
-            )
-            grad[g] = grad_theta_g
+        # --- Single batched E adjoint + theta VJP ---
+        grad_theta_all, _ = _e_adjoint_and_theta_vjp(
+            pi_bwd,
+            E_out['E'], E_out['E_bar'], E_out['E_s1'], E_out['E_s2'],
+            log_pS, log_pD, log_pL,
+            mt,
+            species_helpers, merged_layout['root_clade_ids'],
+            theta_t, unnorm_row_max, specieswise,
+            device, dtype,
+            genewise=True,
+            cg_tol=cg_tol, cg_maxiter=cg_maxiter,
+            pibar_mode=pibar_mode,
+            ancestors_T=_ancestors_T,
+        )
+        grad[active_mask] = grad_theta_all[active_mask]
 
         return nll, grad, E_out
 
@@ -324,30 +272,25 @@ def optimize_theta_genewise(
         """Forward-only NLL (no backward). For line search probes."""
         log_pS, log_pD, log_pL, mt, E_out = _eval_E(theta_t, warm_E)
 
+        Pi_out = Pi_wave_forward(
+            wave_layout=merged_layout,
+            species_helpers=species_helpers,
+            E=E_out['E'], Ebar=E_out['E_bar'],
+            E_s1=E_out['E_s1'], E_s2=E_out['E_s2'],
+            log_pS=log_pS, log_pD=log_pD, log_pL=log_pL,
+            transfer_mat=None, max_transfer_mat=mt,
+            device=device, dtype=dtype,
+            local_iters=local_iters, local_tolerance=local_tolerance,
+            pibar_mode=pibar_mode,
+            family_idx=merged_layout['family_idx'],
+        )
+        # Keep objective in wave-ordered space so line-search probes match
+        # the gradient objective used by Pi backward.
+        nll_full = compute_log_likelihood(
+            Pi_out['Pi_wave_ordered'], E_out['E'], merged_layout['root_clade_ids'],
+        )
         nll = torch.full((G,), float('nan'), device=device, dtype=dtype)
-
-        for g in active_mask.nonzero(as_tuple=False).squeeze(-1).tolist():
-            E_g = E_out['E'][g]
-            mt_g = mt[g]
-            pS_g = log_pS[g] if log_pS.ndim >= 1 else log_pS
-            pD_g = log_pD[g] if log_pD.ndim >= 1 else log_pD
-            pL_g = log_pL[g] if log_pL.ndim >= 1 else log_pL
-
-            Pi_out_g = Pi_wave_forward(
-                wave_layout=wave_layouts[g], species_helpers=species_helpers,
-                E=E_g, Ebar=E_out['E_bar'][g],
-                E_s1=E_out['E_s1'][g], E_s2=E_out['E_s2'][g],
-                log_pS=pS_g, log_pD=pD_g, log_pL=pL_g,
-                transfer_mat=None, max_transfer_mat=mt_g,
-                device=device, dtype=dtype,
-                local_iters=local_iters, local_tolerance=local_tolerance,
-                pibar_mode=pibar_mode,
-            )
-
-            logL_g = compute_log_likelihood(
-                Pi_out_g['Pi'], E_g, root_clade_ids_list[g],
-            )
-            nll[g] = logL_g.sum()
+        nll[active_mask] = nll_full[active_mask]
 
         return nll, E_out
 
@@ -356,7 +299,9 @@ def optimize_theta_genewise(
     active = torch.ones(G, dtype=torch.bool, device=device)
 
     # Initial evaluation
+    t0_init = time.perf_counter()
     nll, grad, E_out = _nll_and_grad(theta, None, active)
+    init_time = time.perf_counter() - t0_init
 
     # L-BFGS history buffers
     theta_shape = theta.shape  # [G, P] or [G, S, 3]
@@ -371,9 +316,16 @@ def optimize_theta_genewise(
         'nll': nll.detach().cpu().clone(),
         'grad_inf': float(grad.abs().max().item()),
         'n_active': int(active.sum().item()),
+        'e_iters': int(E_out['iterations']),
+        'step_time_s': init_time,
     })
+    if verbose:
+        print(f"  step   0/{max_steps}  NLL={float(nll.sum()):.4f}  |g|={float(grad.abs().max()):.3e}"
+              f"  active={G}/{G}  E_iters={int(E_out['iterations'])}  t={init_time:.2f}s",
+              flush=True)
 
     for step in range(1, max_steps + 1):
+        t0_step = time.perf_counter()
         # Convergence masking
         grad_flat = grad.reshape(G, -1)
         active = active & (grad_flat.abs().max(dim=-1).values >= grad_tol)
@@ -407,7 +359,13 @@ def optimize_theta_genewise(
             E_ls = E_try
 
             # Per-gene Armijo check (nll_try is nan for non-pending genes)
-            armijo_ok = ls_pending & (nll_try <= nll + 1e-4 * alpha * slope)
+            armijo_rhs = nll + 1e-4 * alpha * slope
+            armijo_ok = (
+                ls_pending
+                & torch.isfinite(nll_try)
+                & torch.isfinite(armijo_rhs)
+                & (nll_try <= armijo_rhs)
+            )
             ls_pending = ls_pending & ~armijo_ok
             if not ls_pending.any():
                 break
@@ -424,6 +382,25 @@ def optimize_theta_genewise(
         nll_new, grad_new, E_new = _nll_and_grad(
             theta_accepted, E_ls['E'].detach(), active,
         )
+
+        # Fail fast on per-gene non-finite evaluations.
+        grad_new_flat = grad_new.reshape(G, -1)
+        bad_eval = active & (
+            ~torch.isfinite(nll_new)
+            | ~torch.isfinite(grad_new_flat).all(dim=-1)
+        )
+        if bad_eval.any():
+            bad_idx = bad_eval.nonzero(as_tuple=False).squeeze(-1)
+            n_bad = int(bad_idx.numel())
+            sample_idx = bad_idx[:10].tolist()
+            nll_finite = int(torch.isfinite(nll_new[bad_eval]).sum().item())
+            grad_finite = int(torch.isfinite(grad_new_flat[bad_eval]).all(dim=-1).sum().item())
+            raise FloatingPointError(
+                "Non-finite evaluation in optimize_theta_genewise "
+                f"at step {step}: {n_bad} active genes produced non-finite values; "
+                f"sample_gene_ids={sample_idx}; finite_nll={nll_finite}/{n_bad}; "
+                f"finite_grad={grad_finite}/{n_bad}."
+            )
 
         # Update L-BFGS history (sanitize bad curvature entries)
         s_k = (theta_accepted - theta).reshape(G, -1)
@@ -445,13 +422,22 @@ def optimize_theta_genewise(
         nll_new[~active] = nll[~active]
         theta, nll, grad, E_out = theta_accepted, nll_new, grad_new, E_new
 
+        step_time = time.perf_counter() - t0_step
+        n_active = int(active.sum().item())
+        e_it = int(E_new['iterations'])
         history.append({
             'step': step,
             'nll': nll.detach().cpu().clone(),
             'grad_inf': float(grad.abs().max().item()),
-            'n_active': int(active.sum().item()),
+            'n_active': n_active,
             'alpha': alpha.detach().cpu().clone(),
+            'e_iters': e_it,
+            'step_time_s': step_time,
         })
+        if verbose:
+            print(f"  step {step:3d}/{max_steps}  NLL={float(nll.sum()):.4f}  |g|={float(grad.abs().max()):.3e}"
+                  f"  active={n_active}/{G}  E_iters={e_it}  t={step_time:.2f}s",
+                  flush=True)
 
     # Compute final rates
     rates = torch.exp2(theta.detach())

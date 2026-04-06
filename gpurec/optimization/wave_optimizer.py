@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import math
+import time
 from typing import List, Optional
 
 import torch
@@ -94,6 +95,8 @@ def optimize_theta_wave(
 
     def _forward_backward(theta_d, warm_E):
         """Full forward + backward: returns (nll, grad_theta, history_record, warm_E)."""
+        torch.cuda.synchronize()
+        t_e0 = time.perf_counter()
         with torch.no_grad():
             log_pS, log_pD, log_pL, transfer_mat, mt = _extract(theta_d)
 
@@ -107,6 +110,9 @@ def optimize_theta_wave(
                 ancestors_T=_ancestors_T,
             )
 
+        torch.cuda.synchronize()
+        t_pi0 = time.perf_counter()
+        with torch.no_grad():
             Pi_out = Pi_wave_forward(
                 wave_layout=wave_layout, species_helpers=species_helpers,
                 E=E_out['E'], Ebar=E_out['E_bar'],
@@ -119,6 +125,8 @@ def optimize_theta_wave(
             logL = compute_log_likelihood(Pi_out['Pi'], E_out['E'], root_clade_ids)
             nll = float(logL.sum().item())
 
+        torch.cuda.synchronize()
+        t_grad0 = time.perf_counter()
         grad_theta, statsG = implicit_grad_loglik_vjp_wave(
             wave_layout, species_helpers,
             Pi_star_wave=Pi_out['Pi_wave_ordered'],
@@ -142,6 +150,16 @@ def optimize_theta_wave(
             transfer_mat_unnormalized=transfer_mat_unnormalized,
             ancestors_T=_ancestors_T,
         )
+        torch.cuda.synchronize()
+        t_end = time.perf_counter()
+
+        if verbose:
+            pi_bwd_t = getattr(statsG, 'pi_bwd_time', 0)
+            cg_t = getattr(statsG, 'cg_time', 0)
+            theta_t = getattr(statsG, 'theta_vjp_time', 0)
+            print(f"    breakdown: E={t_pi0-t_e0:.3f}s  Pi={t_grad0-t_pi0:.3f}s  grad={t_end-t_grad0:.3f}s"
+                  f"  [Pi_bwd={pi_bwd_t:.3f}s  CG={cg_t:.3f}s  theta_vjp={theta_t:.3f}s]",
+                  flush=True)
 
         return nll, grad_theta, statsG, E_out
 
@@ -160,7 +178,9 @@ def optimize_theta_wave(
             theta_flat = torch.from_numpy(theta_flat_np).to(device=device, dtype=dtype)
             theta_d = theta_flat.reshape(theta_shape).clamp(min=_THETA_MIN)
 
+            t_start = time.perf_counter()
             nll, grad_theta, statsG, E_out = _forward_backward(theta_d, warm_E_ref[0])
+            step_time = time.perf_counter() - t_start
             warm_E_ref[0] = E_out['E'].detach()
 
             nll_is_nan = math.isnan(nll)
@@ -168,8 +188,9 @@ def optimize_theta_wave(
             if verbose:
                 grad_inf_str = f"{float(grad_theta.abs().max()):.3e}" if not nll_is_nan else "nan"
                 nll_str = f"{nll:.4f}" if not nll_is_nan else "nan"
-                print(f"  eval {eval_count[0]:3d}  NLL={nll_str}  grad_inf={grad_inf_str}",
-                      flush=True)
+                e_it = int(E_out['iterations'])
+                print(f"  step {eval_count[0]:3d}/{steps}  NLL={nll_str}  |g|={grad_inf_str}"
+                      f"  E_iters={e_it}  t={step_time:.2f}s", flush=True)
             fp_info = FixedPointInfo(iterations_E=int(E_out['iterations']),
                                      iterations_Pi=0)
             history.append(StepRecord(
@@ -181,6 +202,7 @@ def optimize_theta_wave(
                 fp_info=fp_info, gradient=grad_theta.cpu(),
                 solve_stats_F=LinearSolveStats("wave_neumann", neumann_terms, 0.0, False),
                 solve_stats_G=statsG,
+                step_time_s=step_time,
             ))
 
             grad_np = grad_theta.reshape(-1).cpu().to(torch.float64).numpy()
@@ -263,7 +285,7 @@ def optimize_theta_wave(
     # --- Iterative optimizers (adam, sgd) ---
     theta = torch.nn.Parameter(theta_init.to(device=device, dtype=dtype).clone())
     if optimizer == 'sgd':
-        opt = torch.optim.SGD([theta], lr=lr, momentum=momentum)
+        opt = torch.optim.SGD([theta], lr=lr, momentum=momentum, nesterov=False)
     else:
         opt = torch.optim.Adam([theta], lr=lr)
 
@@ -274,6 +296,7 @@ def optimize_theta_wave(
     for it in range(1, steps + 1):
         theta_d = theta.detach()
 
+        t_start = time.perf_counter()
         nll, grad_theta, statsG, E_out = _forward_backward(theta_d, warm_E)
         warm_E = E_out['E'].detach()
         iters_E = int(E_out['iterations'])
@@ -284,6 +307,7 @@ def optimize_theta_wave(
         grad_clean.nan_to_num_(nan=0.0)
         theta.grad = grad_clean
         opt.step()
+        step_time = time.perf_counter() - t_start
 
         with torch.no_grad():
             theta.clamp_(min=_THETA_MIN)
@@ -294,6 +318,11 @@ def optimize_theta_wave(
         prev_theta = theta_detached.clone()
         rates = torch.exp2(theta_detached)
         grad_inf = float(grad_theta.abs().max().item())
+
+        if verbose:
+            nll_str = f"{nll:.4f}" if not math.isnan(nll) else "nan"
+            print(f"  step {it:3d}/{steps}  NLL={nll_str}  |g|={grad_inf:.3e}"
+                  f"  E_iters={iters_E}  t={step_time:.2f}s", flush=True)
 
         fp_info = FixedPointInfo(iterations_E=iters_E, iterations_Pi=0)
         statsF_dummy = LinearSolveStats("wave_neumann", neumann_terms, 0.0, False)
@@ -311,6 +340,7 @@ def optimize_theta_wave(
                 gradient=grad_theta.cpu(),
                 solve_stats_F=statsF_dummy,
                 solve_stats_G=statsG,
+                step_time_s=step_time,
             )
         )
 

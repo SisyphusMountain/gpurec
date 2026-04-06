@@ -6,11 +6,22 @@ torch.logaddexp, and torch.log_softmax.
 """
 
 import math
+import os
 import torch
 
 _INV_LN2 = 1.0 / math.log(2.0)  # = log2(e)
 
 _NEG_INF = float('-inf')
+
+
+def _debug_nan_checks_enabled() -> bool:
+    """Return True when expensive NaN scans are enabled for debugging.
+
+    Set GPUREC_DEBUG_NAN_CHECKS to one of: 1, true, yes, on.
+    Defaults to False for performance.
+    """
+    v = os.getenv("GPUREC_DEBUG_NAN_CHECKS", "").strip().lower()
+    return v in {"1", "true", "yes", "on"}
 
 
 _neg_inf_sentinel_cache: dict = {}
@@ -21,7 +32,12 @@ def _safe_log2_internal(x: torch.Tensor) -> torch.Tensor:
 
     Avoids the standard log2(0)=-inf whose gradient 1/(0*ln2)=inf causes
     0*inf=NaN when upstream gradient is zero.
+
+    In debug mode (GPUREC_DEBUG_NAN_CHECKS=1), raises ValueError if x contains
+    any NaN. Disabled by default to avoid full-tensor scans on hot paths.
     """
+    if _debug_nan_checks_enabled() and torch.isnan(x).any():
+        raise ValueError(f"_safe_log2_internal received NaN input (shape={tuple(x.shape)}, dtype={x.dtype})")
     key = (x.device.type, getattr(x.device, 'index', None), x.dtype)
     sentinel = _neg_inf_sentinel_cache.get(key)
     if sentinel is None:

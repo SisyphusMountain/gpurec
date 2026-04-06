@@ -31,3 +31,4 @@ class StepRecord:
     gradient: torch.Tensor
     solve_stats_F: LinearSolveStats
     solve_stats_G: LinearSolveStats
+    step_time_s: float = 0.0
