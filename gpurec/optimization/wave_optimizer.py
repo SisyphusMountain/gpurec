@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import math
 import time
-from typing import List, Optional
+from typing import List
 
 import torch
 
@@ -13,6 +13,23 @@ from gpurec.core.extract_parameters import extract_parameters, extract_parameter
 
 from .types import FixedPointInfo, LinearSolveStats, StepRecord
 from .implicit_grad import implicit_grad_loglik_vjp_wave
+
+
+def _cuda_mem_diag(device) -> str:
+    """Best-effort CUDA memory diagnostics string."""
+    try:
+        if not torch.cuda.is_available():
+            return "cuda_unavailable"
+        idx = device.index if hasattr(device, "index") and device.index is not None else torch.cuda.current_device()
+        free_b, total_b = torch.cuda.mem_get_info(idx)
+        alloc_b = torch.cuda.memory_allocated(idx)
+        reserved_b = torch.cuda.memory_reserved(idx)
+        return (
+            f"free={free_b / (1024**3):.2f}GiB total={total_b / (1024**3):.2f}GiB "
+            f"allocated={alloc_b / (1024**3):.2f}GiB reserved={reserved_b / (1024**3):.2f}GiB"
+        )
+    except Exception as exc:
+        return f"mem_diag_unavailable({exc})"
 
 
 def optimize_theta_wave(
@@ -38,6 +55,11 @@ def optimize_theta_wave(
     device=None,
     dtype=torch.float64,
     pibar_mode: str = 'uniform',
+    family_batch_size: int = 0,
+    wave_layout_batches=None,
+    families=None,
+    stochastic_batches: bool = False,
+    stochastic_seed: int = 0,
     optimizer: str = 'adam',
     momentum: float = 0.9,
     verbose: bool = False,
@@ -62,6 +84,20 @@ def optimize_theta_wave(
         Learning rate (ignored for 'lbfgs').
     optimizer : str
         'adam', 'sgd', or 'lbfgs'.
+    family_batch_size : int
+        Optional family mini-batch size for global/specieswise gradient accumulation.
+        Effective when ``wave_layout_batches`` is provided by caller.
+    wave_layout_batches : list[tuple[dict, Tensor]] | None
+        Optional prebuilt batches of ``(wave_layout_batch, root_clade_ids_batch)``.
+        When provided, forward/backward runs batch-by-batch and accumulates NLL/gradient.
+    families : list[dict] | None
+        Optional original family dicts. When provided with ``family_batch_size > 0``
+        and ``wave_layout_batches is None``, batch wave layouts are built lazily per step.
+    stochastic_batches : bool
+        If True (and optimizer='sgd'), sample a random family batch each step
+        instead of accumulating all family batches.
+    stochastic_seed : int
+        RNG seed used for stochastic family-batch sampling.
     momentum : float
         Momentum for SGD (default 0.9, ignored for adam/lbfgs).
 
@@ -80,6 +116,87 @@ def optimize_theta_wave(
         anc_dense = species_helpers['ancestors_dense'].to(device=device, dtype=dtype)
         _ancestors_T = anc_dense.T.to_sparse_coo()
 
+    _lazy_batch_ranges = None
+    _lazy_batch_builder = None
+    if wave_layout_batches is None and families is not None and family_batch_size and family_batch_size > 0:
+        from gpurec.core.batching import collate_gene_families, collate_wave, build_wave_layout
+        from gpurec.core.scheduling import compute_clade_waves
+
+        fam_items = []
+        fam_waves = []
+        fam_phases = []
+        for fam in families:
+            fam_items.append({
+                'ccp': fam['ccp_helpers'],
+                'leaf_row_index': fam['leaf_row_index'],
+                'leaf_col_index': fam['leaf_col_index'],
+                'root_clade_id': int(fam['root_clade_id']),
+            })
+            w, p = compute_clade_waves(fam['ccp_helpers'])
+            fam_waves.append(w)
+            fam_phases.append(p)
+
+        n_f = len(fam_items)
+        _lazy_batch_ranges = [
+            (i, min(i + int(family_batch_size), n_f))
+            for i in range(0, n_f, int(family_batch_size))
+        ]
+
+        def _build_lazy_batch(batch_id: int):
+            i, j = _lazy_batch_ranges[batch_id]
+            sub_items = fam_items[i:j]
+            sub_waves = fam_waves[i:j]
+            sub_phases = fam_phases[i:j]
+
+            batched = collate_gene_families(sub_items, dtype=dtype, device=device)
+            offsets = [m['clade_offset'] for m in batched['family_meta']]
+            cross_waves = collate_wave(sub_waves, offsets)
+
+            max_n_waves = max(len(p) for p in sub_phases)
+            cross_phases = []
+            for k in range(max_n_waves):
+                phase_k = 1
+                for fp in sub_phases:
+                    if k < len(fp):
+                        phase_k = max(phase_k, fp[k])
+                cross_phases.append(phase_k)
+
+            family_clade_counts = [m['C'] for m in batched['family_meta']]
+            family_clade_offsets = [m['clade_offset'] for m in batched['family_meta']]
+            wl = build_wave_layout(
+                waves=cross_waves,
+                phases=cross_phases,
+                ccp_helpers=batched['ccp'],
+                leaf_row_index=batched['leaf_row_index'],
+                leaf_col_index=batched['leaf_col_index'],
+                root_clade_ids=batched['root_clade_ids'],
+                device=device,
+                dtype=dtype,
+                family_clade_counts=family_clade_counts,
+                family_clade_offsets=family_clade_offsets,
+            )
+            return wl, batched['root_clade_ids']
+
+        _lazy_batch_builder = _build_lazy_batch
+
+    def _num_layout_batches() -> int:
+        if wave_layout_batches is not None:
+            return len(wave_layout_batches)
+        if _lazy_batch_ranges is not None:
+            return len(_lazy_batch_ranges)
+        return 1
+
+    _rng = torch.Generator(device='cpu')
+    _rng.manual_seed(int(stochastic_seed))
+
+    def _select_batch_ids() -> list[int] | None:
+        n_total = _num_layout_batches()
+        use_stochastic = stochastic_batches and optimizer == 'sgd' and n_total > 1
+        if not use_stochastic:
+            return None
+        sampled = int(torch.randint(0, n_total, (1,), generator=_rng).item())
+        return [sampled]
+
     def _extract(theta_d):
         if pibar_mode in ('dense', 'topk') and transfer_mat_unnormalized is not None:
             log_pS, log_pD, log_pL, transfer_mat, mt_raw = extract_parameters(
@@ -93,71 +210,166 @@ def optimize_theta_wave(
             )
         return log_pS, log_pD, log_pL, transfer_mat, mt
 
-    def _forward_backward(theta_d, warm_E):
+    def _forward_backward(theta_d, warm_E, selected_batch_ids=None):
         """Full forward + backward: returns (nll, grad_theta, history_record, warm_E)."""
+        if wave_layout_batches is not None:
+            if selected_batch_ids is None:
+                layout_batches = wave_layout_batches
+            else:
+                layout_batches = [wave_layout_batches[i] for i in selected_batch_ids]
+        elif _lazy_batch_builder is not None and _lazy_batch_ranges is not None:
+            if selected_batch_ids is None:
+                ids = range(len(_lazy_batch_ranges))
+            else:
+                ids = selected_batch_ids
+            layout_batches = (_lazy_batch_builder(i) for i in ids)
+        else:
+            layout_batches = [(wave_layout, root_clade_ids)]
+
         torch.cuda.synchronize()
         t_e0 = time.perf_counter()
-        with torch.no_grad():
-            log_pS, log_pD, log_pL, transfer_mat, mt = _extract(theta_d)
+        try:
+            with torch.no_grad():
+                log_pS, log_pD, log_pL, transfer_mat, mt = _extract(theta_d)
 
-            E_out = E_fixed_point(
-                species_helpers=species_helpers,
-                log_pS=log_pS, log_pD=log_pD, log_pL=log_pL,
-                transfer_mat=transfer_mat, max_transfer_mat=mt,
-                max_iters=e_max_iters, tolerance=e_tol,
-                warm_start_E=warm_E,
-                dtype=dtype, device=device, pibar_mode=pibar_mode,
-                ancestors_T=_ancestors_T,
-            )
+                E_out = E_fixed_point(
+                    species_helpers=species_helpers,
+                    log_pS=log_pS, log_pD=log_pD, log_pL=log_pL,
+                    transfer_mat=transfer_mat, max_transfer_mat=mt,
+                    max_iters=e_max_iters, tolerance=e_tol,
+                    warm_start_E=warm_E,
+                    dtype=dtype, device=device, pibar_mode=pibar_mode,
+                    ancestors_T=_ancestors_T,
+                )
+        except torch.OutOfMemoryError as exc:
+            raise torch.OutOfMemoryError(
+                f"OOM in optimize_theta_wave phase=E_fixed_point; "
+                f"mode={'specieswise' if specieswise else 'global'}; "
+                f"pibar_mode={pibar_mode}; {_cuda_mem_diag(device)}"
+            ) from exc
+        except RuntimeError as exc:
+            if "out of memory" in str(exc).lower():
+                raise torch.OutOfMemoryError(
+                    f"OOM in optimize_theta_wave phase=E_fixed_point; "
+                    f"mode={'specieswise' if specieswise else 'global'}; "
+                    f"pibar_mode={pibar_mode}; {_cuda_mem_diag(device)}"
+                ) from exc
+            raise
 
         torch.cuda.synchronize()
         t_pi0 = time.perf_counter()
         with torch.no_grad():
-            Pi_out = Pi_wave_forward(
-                wave_layout=wave_layout, species_helpers=species_helpers,
-                E=E_out['E'], Ebar=E_out['E_bar'],
-                E_s1=E_out['E_s1'], E_s2=E_out['E_s2'],
-                log_pS=log_pS, log_pD=log_pD, log_pL=log_pL,
-                transfer_mat=transfer_mat, max_transfer_mat=mt,
-                device=device, dtype=dtype, pibar_mode=pibar_mode,
-            )
+            nll = 0.0
+            grad_theta = torch.zeros_like(theta_d)
+            stats_list = []
+            pi_bwd_t_total = 0.0
+            cg_t_total = 0.0
+            theta_t_total = 0.0
+            pi_phase_time = 0.0
+            grad_phase_time = 0.0
+            n_batch_accum = 0
 
-            logL = compute_log_likelihood(Pi_out['Pi'], E_out['E'], root_clade_ids)
-            nll = float(logL.sum().item())
+            for _batch_idx, (wl_b, roots_b) in enumerate(layout_batches):
+                t_pi_b0 = time.perf_counter()
+                try:
+                    Pi_out_b = Pi_wave_forward(
+                        wave_layout=wl_b, species_helpers=species_helpers,
+                        E=E_out['E'], Ebar=E_out['E_bar'],
+                        E_s1=E_out['E_s1'], E_s2=E_out['E_s2'],
+                        log_pS=log_pS, log_pD=log_pD, log_pL=log_pL,
+                        transfer_mat=transfer_mat, max_transfer_mat=mt,
+                        device=device, dtype=dtype, pibar_mode=pibar_mode,
+                    )
+                    logL_b = compute_log_likelihood(Pi_out_b['Pi'], E_out['E'], roots_b)
+                    nll += float(logL_b.sum().item())
+                except torch.OutOfMemoryError as exc:
+                    raise torch.OutOfMemoryError(
+                        f"OOM in optimize_theta_wave phase=Pi_wave_forward; "
+                        f"mode={'specieswise' if specieswise else 'global'}; "
+                        f"pibar_mode={pibar_mode}; family_batch_size={family_batch_size}; {_cuda_mem_diag(device)}"
+                    ) from exc
+                except RuntimeError as exc:
+                    if "out of memory" in str(exc).lower():
+                        raise torch.OutOfMemoryError(
+                            f"OOM in optimize_theta_wave phase=Pi_wave_forward; "
+                            f"mode={'specieswise' if specieswise else 'global'}; "
+                            f"pibar_mode={pibar_mode}; family_batch_size={family_batch_size}; {_cuda_mem_diag(device)}"
+                        ) from exc
+                    raise
+                pi_phase_time += time.perf_counter() - t_pi_b0
 
+                t_g_b0 = time.perf_counter()
+                try:
+                    grad_theta_b, statsG_b = implicit_grad_loglik_vjp_wave(
+                        wl_b, species_helpers,
+                        Pi_star_wave=Pi_out_b['Pi_wave_ordered'],
+                        Pibar_star_wave=Pi_out_b['Pibar_wave_ordered'],
+                        E_star=E_out['E'], E_s1=E_out['E_s1'],
+                        E_s2=E_out['E_s2'], Ebar=E_out['E_bar'],
+                        log_pS=log_pS, log_pD=log_pD, log_pL=log_pL,
+                        max_transfer_mat=mt,
+                        root_clade_ids_perm=wl_b['root_clade_ids'],
+                        theta=theta_d,
+                        unnorm_row_max=unnorm_row_max,
+                        specieswise=specieswise,
+                        device=device, dtype=dtype,
+                        neumann_terms=neumann_terms,
+                        use_pruning=use_pruning,
+                        pruning_threshold=pruning_threshold,
+                        cg_tol=cg_tol, cg_maxiter=cg_maxiter,
+                        gmres_restart=gmres_restart,
+                        pibar_mode=pibar_mode,
+                        transfer_mat=transfer_mat,
+                        transfer_mat_unnormalized=transfer_mat_unnormalized,
+                        ancestors_T=_ancestors_T,
+                    )
+                except torch.OutOfMemoryError as exc:
+                    raise torch.OutOfMemoryError(
+                        f"OOM in optimize_theta_wave phase=implicit_grad_loglik_vjp_wave; "
+                        f"mode={'specieswise' if specieswise else 'global'}; "
+                        f"pibar_mode={pibar_mode}; family_batch_size={family_batch_size}; {_cuda_mem_diag(device)}"
+                    ) from exc
+                except RuntimeError as exc:
+                    if "out of memory" in str(exc).lower():
+                        raise torch.OutOfMemoryError(
+                            f"OOM in optimize_theta_wave phase=implicit_grad_loglik_vjp_wave; "
+                            f"mode={'specieswise' if specieswise else 'global'}; "
+                            f"pibar_mode={pibar_mode}; family_batch_size={family_batch_size}; {_cuda_mem_diag(device)}"
+                        ) from exc
+                    raise
+                grad_phase_time += time.perf_counter() - t_g_b0
+
+                grad_theta = grad_theta + grad_theta_b
+                stats_list.append(statsG_b)
+                pi_bwd_t_total += float(getattr(statsG_b, 'pi_bwd_time', 0.0))
+                cg_t_total += float(getattr(statsG_b, 'cg_time', 0.0))
+                theta_t_total += float(getattr(statsG_b, 'theta_vjp_time', 0.0))
+                n_batch_accum += 1
+
+            # Gradient accumulation normalization: average over family batches.
+            if n_batch_accum > 0:
+                grad_theta = grad_theta / float(n_batch_accum)
+
+            if stats_list:
+                method0 = stats_list[0].method
+                method = method0 if all(s.method == method0 for s in stats_list) else "mixed"
+                statsG = LinearSolveStats(
+                    method=method,
+                    iters=int(sum(s.iters for s in stats_list)),
+                    rel_residual=float(max(s.rel_residual for s in stats_list)),
+                    fallback_used=bool(any(s.fallback_used for s in stats_list)),
+                )
+                setattr(statsG, 'pi_bwd_time', pi_bwd_t_total)
+                setattr(statsG, 'cg_time', cg_t_total)
+                setattr(statsG, 'theta_vjp_time', theta_t_total)
+            else:
+                statsG = LinearSolveStats("none", 0, 0.0, False)
         torch.cuda.synchronize()
-        t_grad0 = time.perf_counter()
-        grad_theta, statsG = implicit_grad_loglik_vjp_wave(
-            wave_layout, species_helpers,
-            Pi_star_wave=Pi_out['Pi_wave_ordered'],
-            Pibar_star_wave=Pi_out['Pibar_wave_ordered'],
-            E_star=E_out['E'], E_s1=E_out['E_s1'],
-            E_s2=E_out['E_s2'], Ebar=E_out['E_bar'],
-            log_pS=log_pS, log_pD=log_pD, log_pL=log_pL,
-            max_transfer_mat=mt,
-            root_clade_ids_perm=wave_layout['root_clade_ids'],
-            theta=theta_d,
-            unnorm_row_max=unnorm_row_max,
-            specieswise=specieswise,
-            device=device, dtype=dtype,
-            neumann_terms=neumann_terms,
-            use_pruning=use_pruning,
-            pruning_threshold=pruning_threshold,
-            cg_tol=cg_tol, cg_maxiter=cg_maxiter,
-            gmres_restart=gmres_restart,
-            pibar_mode=pibar_mode,
-            transfer_mat=transfer_mat,
-            transfer_mat_unnormalized=transfer_mat_unnormalized,
-            ancestors_T=_ancestors_T,
-        )
-        torch.cuda.synchronize()
-        t_end = time.perf_counter()
-
         if verbose:
             pi_bwd_t = getattr(statsG, 'pi_bwd_time', 0)
             cg_t = getattr(statsG, 'cg_time', 0)
             theta_t = getattr(statsG, 'theta_vjp_time', 0)
-            print(f"    breakdown: E={t_pi0-t_e0:.3f}s  Pi={t_grad0-t_pi0:.3f}s  grad={t_end-t_grad0:.3f}s"
+            print(f"    breakdown: E={t_pi0-t_e0:.3f}s  Pi={pi_phase_time:.3f}s  grad={grad_phase_time:.3f}s"
                   f"  [Pi_bwd={pi_bwd_t:.3f}s  CG={cg_t:.3f}s  theta_vjp={theta_t:.3f}s]",
                   flush=True)
 
@@ -266,6 +478,11 @@ def optimize_theta_wave(
                     specieswise=specieswise, device=device,
                     dtype=torch.float64,
                     pibar_mode=pibar_mode,
+                    family_batch_size=family_batch_size,
+                    wave_layout_batches=wave_layout_batches,
+                    families=families,
+                    stochastic_batches=stochastic_batches,
+                    stochastic_seed=stochastic_seed,
                     optimizer='lbfgs',
                     verbose=verbose,
                 )
@@ -295,9 +512,10 @@ def optimize_theta_wave(
 
     for it in range(1, steps + 1):
         theta_d = theta.detach()
+        selected_batch_ids = _select_batch_ids()
 
         t_start = time.perf_counter()
-        nll, grad_theta, statsG, E_out = _forward_backward(theta_d, warm_E)
+        nll, grad_theta, statsG, E_out = _forward_backward(theta_d, warm_E, selected_batch_ids=selected_batch_ids)
         warm_E = E_out['E'].detach()
         iters_E = int(E_out['iterations'])
 

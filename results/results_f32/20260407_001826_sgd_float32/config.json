@@ -1,0 +1,15 @@
+{
+  "command": "experiments/validate_three_modes.py --out-dir results/results_f32 --optimizer sgd --lr 0.001 --tol-theta 1e-6 --momentum 0.5 --dtype float32 --dataset test_trees_1000 --gene-batch-size 5 --all-families",
+  "timestamp": "20260407_001826",
+  "dataset": "test_trees_1000",
+  "steps": 100,
+  "families": 0,
+  "all_families": true,
+  "out_dir": "results/results_f32",
+  "optimizer": "sgd",
+  "lr": 0.001,
+  "tol_theta": 1e-06,
+  "momentum": 0.5,
+  "dtype": "float32",
+  "gene_batch_size": 5
+}

@@ -65,11 +65,13 @@ def _nvtx_range(name: str):
     nvtx = getattr(getattr(torch, "cuda", None), "nvtx", None)
     if nvtx is not None and hasattr(nvtx, "range"):
         try:
-            with nvtx.range(name):
+            range_ctx = nvtx.range(name)
+        except Exception:
+            range_ctx = None
+        if range_ctx is not None:
+            with range_ctx:
                 yield
             return
-        except Exception:
-            pass
     pushed = False
     if nvtx is not None and hasattr(nvtx, "range_push"):
         try:

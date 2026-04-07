@@ -1,6 +1,6 @@
 """Tests for optimize_theta_genewise (genewise L-BFGS)."""
 
-import math
+import os
 from pathlib import Path
 
 import pytest
@@ -14,11 +14,25 @@ TOL_PI = 1e-3
 TOL_E = 1e-8
 
 
+def _resolve_test_data_dir(default_name: str) -> Path:
+        """Resolve dataset dir from env var or default dataset name.
+
+        GPUREC_TEST_DATASET can be either:
+            - a dataset name under tests/data (e.g. test_trees_10000)
+            - an absolute/relative path to a dataset directory
+        """
+        ds = os.environ.get("GPUREC_TEST_DATASET", default_name)
+        ds_path = Path(ds)
+        if ds_path.exists():
+                return ds_path
+        return _ROOT / "data" / ds
+
+
 @pytest.fixture(scope="module")
 def data_dir():
-    d = _ROOT / "data" / "test_trees_100"
+    d = _resolve_test_data_dir("test_trees_100")
     if not d.exists():
-        pytest.skip("test_trees_100 not found")
+        pytest.skip(f"dataset not found: {d}")
     return d
 
 

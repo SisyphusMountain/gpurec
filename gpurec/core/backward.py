@@ -698,13 +698,17 @@ def Pi_wave_backward(
             reduce_idx = meta['reduce_idx']
             n_ws = sl.shape[0]
 
-            if use_fused:
+            # Fused kernel currently supports only scalar log_pD/log_pS (shared-param case).
+            # For specieswise/genewise tensors, use the generic path below.
+            fused_scalar_params = (log_pD.numel() == 1 and log_pS.numel() == 1)
+
+            if use_fused and fused_scalar_params:
                 # G=1: pass shared params to fused kernel.
                 (grad_Pi_l, grad_Pi_r, grad_Pibar_l, grad_Pibar_r,
                  param_pD, param_pS) = dts_cross_backward_fused(
                     Pi_star_wave, Pibar_star_wave, v_k, ws,
                     sl, sr, reduce_idx, wlsp,
-                    log_pD[0], log_pS[0],
+                    log_pD.reshape(-1)[0], log_pS.reshape(-1)[0],
                     sp_child1, sp_child2, S,
                 )
 

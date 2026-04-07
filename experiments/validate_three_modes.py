@@ -24,7 +24,9 @@ from pathlib import Path
 
 import torch
 
-DATA_DIR = Path(__file__).resolve().parents[1] / "tests" / "data" / "test_trees_100"
+DATA_ROOT = Path(__file__).resolve().parents[1] / "tests" / "data"
+DEFAULT_DATASET = "test_trees_100"
+SAFE_DEFAULT_FAMILIES = 5
 
 # AleRax reports in ln-space; we compute in log2.
 # NLL_log2 = NLL_ln / ln(2)
@@ -43,6 +45,8 @@ ALERAX_NLL = {k: v / _LN2 for k, v in ALERAX_NLL_LN.items()}
 def _parse_alerax_global_rates(data_dir):
     """Parse global AleRax rates from model_parameters (all rows identical)."""
     params_dir = data_dir / "output_global" / "model_parameters"
+    if not params_dir.exists() or not params_dir.is_dir():
+        return None
     for f in params_dir.iterdir():
         for line in f.read_text().splitlines():
             if line.startswith("node") or line.startswith("Node"):
@@ -57,6 +61,8 @@ def _parse_alerax_global_rates(data_dir):
 def _parse_alerax_genewise_rates(data_dir, G):
     """Parse per-family AleRax rates (alternating 'D L T' header + values)."""
     params_dir = data_dir / "output_genewise" / "model_parameters"
+    if not params_dir.exists() or not params_dir.is_dir():
+        return None
     rates = []
     for f in sorted(params_dir.iterdir()):
         for line in f.read_text().splitlines():
@@ -125,7 +131,7 @@ def _build_wave_layout(ds, device, dtype):
                 phase_k = max(phase_k, fp[k])
         cross_phases.append(phase_k)
 
-    family_clade_counts  = [m["C"]            for m in batched["family_meta"]]
+    family_clade_counts = [m["C"] for m in batched["family_meta"]]
     family_clade_offsets = [m["clade_offset"] for m in batched["family_meta"]]
 
     wave_layout = build_wave_layout(
@@ -152,6 +158,33 @@ def _sp_helpers_gpu(ds, device, dtype):
         )
         for k, v in ds.species_helpers.items()
     }
+
+
+def _resolve_effective_batch_sizes(args, n_families):
+    """Resolve effective mini-batch sizes.
+
+    Interface:
+      - ``--batch-size N`` applies to both:
+          * family accumulation (global/specieswise)
+          * gene batching (genewise)
+      - ``--batch-size 0`` keeps mode-specific defaults:
+          * global/specieswise: 16 for SGD, else full-batch
+          * genewise: full-batch
+    """
+    if args.batch_size and args.batch_size > 0:
+        b = min(int(args.batch_size), int(n_families))
+        return b, b
+
+    family_batch_size = min(16, int(n_families)) if args.optimizer == "sgd" else 0
+    gene_batch_size = 0
+    return family_batch_size, gene_batch_size
+
+
+def _resolve_stochastic_batches(args, optimizer, family_batch_size):
+    """Choose whether SGD should sample a random family subset each step."""
+    if args.stochastic_global_specieswise is not None:
+        return bool(args.stochastic_global_specieswise)
+    return optimizer == "sgd" and family_batch_size > 0
 
 
 def _write_wave_csv(path, history):
@@ -206,7 +239,7 @@ def _rate_comparison(label, ours, alerax):
 
 def _report(mode, result, alerax_nll, elapsed, csv_path=None, alerax_rates=None):
     nll = result["negative_log_likelihood"]
-    gap = nll - alerax_nll
+    gap = (nll - alerax_nll) if alerax_nll is not None else None
     rates = result["rates"]
     history = result["history"]
     n_steps = len(history)
@@ -216,7 +249,10 @@ def _report(mode, result, alerax_nll, elapsed, csv_path=None, alerax_rates=None)
     print(f"  REPORT: {mode}")
     print(f"{'═'*60}")
     print(f"  Steps: {n_steps}   Time: {elapsed:.1f}s")
-    print(f"  NLL  our={nll:.3f}   AleRax={alerax_nll:.3f}   gap={gap:+.3f}")
+    if alerax_nll is not None:
+        print(f"  NLL  our={nll:.3f}   AleRax={alerax_nll:.3f}   gap={gap:+.3f}")
+    else:
+        print(f"  NLL  our={nll:.3f}   AleRax=N/A (no reference for this dataset)")
     if rates.dim() == 1:
         print(f"  Rates  D={rates[0]:.6f}  L={rates[1]:.6f}  T={rates[2]:.6f}")
         if alerax_rates:
@@ -244,7 +280,7 @@ def _report(mode, result, alerax_nll, elapsed, csv_path=None, alerax_rates=None)
 def _report_genewise(result, alerax_nll, elapsed, csv_path=None,
                      alerax_rates=None, alerax_per_fam_nll=None):
     total_nll = float(result["nll"].sum())
-    gap = total_nll - alerax_nll
+    gap = (total_nll - alerax_nll) if alerax_nll is not None else None
     history = result["history"]
     n_steps = len(history)
     G = len(result["rates"])
@@ -254,10 +290,13 @@ def _report_genewise(result, alerax_nll, elapsed, csv_path=None,
     times = [r.get("step_time_s", 0.0) for r in history]
     n_active = [r["n_active"] for r in history]
     print(f"\n{'═'*60}")
-    print(f"  REPORT: genewise")
+    print("  REPORT: genewise")
     print(f"{'═'*60}")
     print(f"  Steps: {n_steps}   Time: {elapsed:.1f}s  G={G} families")
-    print(f"  NLL  our={total_nll:.3f}   AleRax={alerax_nll:.3f}   gap={gap:+.3f}")
+    if alerax_nll is not None:
+        print(f"  NLL  our={total_nll:.3f}   AleRax={alerax_nll:.3f}   gap={gap:+.3f}")
+    else:
+        print(f"  NLL  our={total_nll:.3f}   AleRax=N/A (no reference for this dataset)")
     print(f"  Rates (mean over families)  D={mean_r[0]:.6f}  L={mean_r[1]:.6f}  T={mean_r[2]:.6f}")
     if alerax_rates:
         ar_D = sum(r["D"] for r in alerax_rates) / len(alerax_rates)
@@ -305,14 +344,19 @@ def _report_genewise(result, alerax_nll, elapsed, csv_path=None,
 
 def main():
     parser = argparse.ArgumentParser()
+    parser.add_argument("--dataset", type=str, default=DEFAULT_DATASET,
+                        help=("Dataset name under tests/data (e.g. test_trees_1000) "
+                              "or explicit path to dataset directory"))
     parser.add_argument("--steps", type=int, default=100, help="Max optimizer steps")
     parser.add_argument("--families", type=int, default=0,
-                        help="Use only first N families (0 = all 100)")
+                        help="Use only first N families (0 = auto-safe default unless --all-families)")
+    parser.add_argument("--all-families", action="store_true",
+                        help="Force using all families in dataset (may be very memory intensive)")
     parser.add_argument("--out-dir", type=str, default=".",
                         help="Directory to write CSV files (default: current dir)")
-    parser.add_argument("--optimizer", type=str, default="lbfgs",
+    parser.add_argument("--optimizer", type=str, default="sgd",
                         choices=["lbfgs", "adam", "sgd"],
-                        help="Optimizer for global/specieswise modes (default: lbfgs)")
+                        help="Optimizer for global/specieswise modes (default: sgd)")
     parser.add_argument("--lr", type=float, default=0.2,
                         help="Learning rate for adam/sgd (default: 0.2, ignored for lbfgs)")
     parser.add_argument("--tol-theta", type=float, default=None,
@@ -322,6 +366,15 @@ def main():
     parser.add_argument("--dtype", type=str, default="float32",
                         choices=["float32", "float64"],
                         help="Precision (default: float32)")
+    parser.add_argument("--batch-size", type=int, default=0,
+                        help=("Unified mini-batch size for both family accumulation "
+                              "(global/specieswise) and genewise Pi/E batching. "
+                              "0 uses defaults (SGD: family=16, gene=full-batch)."))
+    parser.add_argument("--stochastic-global-specieswise", action=argparse.BooleanOptionalAction, default=None,
+                        help=("Sample one random family mini-batch per SGD step for global/specieswise "
+                              "(default: enabled when optimizer=sgd and family mini-batching is active)."))
+    parser.add_argument("--stochastic-seed", type=int, default=0,
+                        help="RNG seed for stochastic family-batch sampling.")
     args = parser.parse_args()
 
     # Create timestamped run subfolder
@@ -359,18 +412,100 @@ def main():
     from gpurec.core.model import GeneDataset
     from gpurec.optimization.theta_optimizer import optimize_theta_wave, optimize_theta_genewise
 
-    sp_path   = str(DATA_DIR / "sp.nwk")
-    gene_paths = sorted(DATA_DIR.glob("g_*.nwk"))
+    def _run_with_oom_hint(stage: str, thunk):
+        try:
+            return thunk()
+        except torch.OutOfMemoryError as exc:
+            detail = str(exc).strip()
+            raise SystemExit(
+                f"CUDA OOM during {stage}. Try `--families N` with a smaller N "
+                f"(e.g. 5, 10, 20), or use `--dtype float32` if not already set."
+                + (f"\nDetail: {detail}" if detail else "")
+            ) from exc
+        except RuntimeError as exc:
+            if "out of memory" in str(exc).lower():
+                detail = str(exc).strip()
+                raise SystemExit(
+                    f"CUDA OOM during {stage}. Try `--families N` with a smaller N "
+                    f"(e.g. 1, 2, 5), or use `--dtype float32` if not already set."
+                    + (f"\nDetail: {detail}" if detail else "")
+                ) from exc
+            raise
+
+    dataset_arg = Path(args.dataset)
+    data_dir = dataset_arg if dataset_arg.exists() else (DATA_ROOT / args.dataset)
+    if not data_dir.exists():
+        raise SystemExit(f"Dataset not found: {data_dir}")
+
+    sp_path   = str(data_dir / "sp.nwk")
+    all_gene_paths = sorted(data_dir.glob("g_*.nwk"))
+    total_families = len(all_gene_paths)
     if args.families > 0:
-        gene_paths = gene_paths[:args.families]
+        gene_paths = all_gene_paths[:args.families]
+    elif args.all_families:
+        gene_paths = all_gene_paths
+    elif total_families > SAFE_DEFAULT_FAMILIES:
+        gene_paths = all_gene_paths[:SAFE_DEFAULT_FAMILIES]
+        print(
+            f"[safety] Dataset has {total_families} families; defaulting to first "
+            f"{SAFE_DEFAULT_FAMILIES} to reduce OOM risk. "
+            "Use --all-families to force full run or --families N to choose a custom subset."
+        )
+    else:
+        gene_paths = all_gene_paths
     gene_paths = [str(g) for g in gene_paths]
     G = len(gene_paths)
-    print(f"Loaded {G} families from {DATA_DIR.name}")
+    effective_family_batch_size, effective_gene_batch_size = _resolve_effective_batch_sizes(args, G)
+    stochastic_batches = _resolve_stochastic_batches(args, optimizer, effective_family_batch_size)
+
+    print(f"Loaded {G}/{total_families} families from {data_dir}")
+    if effective_family_batch_size > 0:
+        print(f"Using family mini-batch size: {effective_family_batch_size}")
+    else:
+        print("Using full-batch family accumulation for global/specieswise")
+    if effective_gene_batch_size > 0:
+        print(f"Using gene mini-batch size: {effective_gene_batch_size}")
+    else:
+        print("Using full-batch genewise updates")
+    if stochastic_batches:
+        print(f"Using stochastic family-batch updates (seed={args.stochastic_seed})")
 
     # Parse AleRax reference data
-    alerax_global_rates = _parse_alerax_global_rates(DATA_DIR)
-    alerax_genewise_rates = _parse_alerax_genewise_rates(DATA_DIR, G)
-    alerax_gw_per_fam_nll = _parse_alerax_per_fam_nll(DATA_DIR, "genewise", G)
+    alerax_global_rates = _parse_alerax_global_rates(data_dir)
+    alerax_genewise_rates = _parse_alerax_genewise_rates(data_dir, G)
+    alerax_gw_per_fam_nll = _parse_alerax_per_fam_nll(data_dir, "genewise", G)
+    alerax_nll_ref = ALERAX_NLL if data_dir.name == DEFAULT_DATASET else {
+        "global": None,
+        "genewise": None,
+        "specieswise": None,
+    }
+
+    def _run_wave_mode(*, stage_name, ds, theta_init, specieswise_mode):
+        wl, root_ids = _build_wave_layout(ds, device, dtype)
+        return _run_with_oom_hint(
+            f"{stage_name} optimization",
+            lambda: optimize_theta_wave(
+                wave_layout=wl,
+                species_helpers=_sp_helpers_gpu(ds, device, dtype),
+                root_clade_ids=root_ids,
+                unnorm_row_max=ds.unnorm_row_max.to(device=device, dtype=dtype),
+                theta_init=theta_init,
+                steps=args.steps,
+                lr=lr,
+                tol_theta=tol_theta,
+                optimizer=optimizer,
+                momentum=momentum,
+                specieswise=specieswise_mode,
+                pibar_mode="uniform",
+                family_batch_size=effective_family_batch_size,
+                families=ds.families,
+                stochastic_batches=stochastic_batches,
+                stochastic_seed=args.stochastic_seed,
+                device=device,
+                dtype=dtype,
+                verbose=True,
+            ),
+        )
 
     # ── Global ────────────────────────────────────────────────────────────────
     print("\n[1/3] Global optimization (3 shared parameters) ...")
@@ -379,29 +514,16 @@ def main():
                             dtype=dtype, device=device)
     S = ds_global.S
 
-    wl, root_ids = _build_wave_layout(ds_global, device, dtype)
-    sp_helpers = _sp_helpers_gpu(ds_global, device, dtype)
     theta_init_global = math.log2(0.02) * torch.ones(3, dtype=dtype, device=device)
 
     t0 = time.time()
-    result_global = optimize_theta_wave(
-        wave_layout=wl,
-        species_helpers=sp_helpers,
-        root_clade_ids=root_ids,
-        unnorm_row_max=ds_global.unnorm_row_max.to(device=device, dtype=dtype),
+    result_global = _run_wave_mode(
+        stage_name="global",
+        ds=ds_global,
         theta_init=theta_init_global,
-        steps=args.steps,
-        lr=lr,
-        tol_theta=tol_theta,
-        optimizer=optimizer,
-        momentum=momentum,
-        specieswise=False,
-        pibar_mode="uniform",
-        device=device,
-        dtype=dtype,
-        verbose=True,
+        specieswise_mode=False,
     )
-    _report("global", result_global, ALERAX_NLL["global"], time.time() - t0,
+    _report("global", result_global, alerax_nll_ref["global"], time.time() - t0,
             csv_path=out_dir / "global_history.csv",
             alerax_rates=alerax_global_rates)
 
@@ -411,31 +533,18 @@ def main():
                         genewise=False, specieswise=True, pairwise=False,
                         dtype=dtype, device=device)
 
-    wl_sw, root_ids_sw = _build_wave_layout(ds_sw, device, dtype)
-    sp_helpers_sw = _sp_helpers_gpu(ds_sw, device, dtype)
     # Initialize all species at global AleRax optimum
     global_rates = result_global["rates"].to(device=device, dtype=dtype)  # [3]
     theta_init_sw = global_rates.unsqueeze(0).expand(S, -1).clone()       # [S, 3]
 
     t0 = time.time()
-    result_sw = optimize_theta_wave(
-        wave_layout=wl_sw,
-        species_helpers=sp_helpers_sw,
-        root_clade_ids=root_ids_sw,
-        unnorm_row_max=ds_sw.unnorm_row_max.to(device=device, dtype=dtype),
+    result_sw = _run_wave_mode(
+        stage_name="specieswise",
+        ds=ds_sw,
         theta_init=theta_init_sw,
-        steps=args.steps,
-        lr=lr,
-        tol_theta=tol_theta,
-        optimizer=optimizer,
-        momentum=momentum,
-        specieswise=True,
-        pibar_mode="uniform",
-        device=device,
-        dtype=dtype,
-        verbose=True,
+        specieswise_mode=True,
     )
-    _report("specieswise", result_sw, ALERAX_NLL["specieswise"], time.time() - t0,
+    _report("specieswise", result_sw, alerax_nll_ref["specieswise"], time.time() - t0,
             csv_path=out_dir / "specieswise_history.csv")
 
     # ── Genewise ──────────────────────────────────────────────────────────────
@@ -448,36 +557,47 @@ def main():
     theta_init_gw = global_rates.unsqueeze(0).expand(G, -1).clone()  # [G, 3]
 
     t0 = time.time()
-    result_gw = optimize_theta_genewise(
-        families=ds_gw.families,
-        species_helpers=ds_gw.species_helpers,
-        unnorm_row_max=ds_gw.unnorm_row_max,
-        theta_init=theta_init_gw,
-        max_steps=args.steps,
-        lbfgs_m=10,
-        grad_tol=1e-5,
-        pibar_mode="uniform",
-        device=device,
-        dtype=dtype,
-        verbose=True,
+    result_gw = _run_with_oom_hint(
+        "genewise optimization",
+        lambda: optimize_theta_genewise(
+            families=ds_gw.families,
+            species_helpers=ds_gw.species_helpers,
+            unnorm_row_max=ds_gw.unnorm_row_max,
+            theta_init=theta_init_gw,
+            max_steps=args.steps,
+            lbfgs_m=10,
+            grad_tol=1e-5,
+            pibar_mode="uniform",
+            device=device,
+            dtype=dtype,
+            gene_batch_size=effective_gene_batch_size,
+            verbose=True,
+        ),
     )
-    _report_genewise(result_gw, ALERAX_NLL["genewise"], time.time() - t0,
+    _report_genewise(result_gw, alerax_nll_ref["genewise"], time.time() - t0,
                      csv_path=out_dir / "genewise_history.csv",
                      alerax_rates=alerax_genewise_rates,
                      alerax_per_fam_nll=alerax_gw_per_fam_nll)
 
     # ── Final summary ─────────────────────────────────────────────────────────
     print(f"\n{'═'*60}")
-    print("Summary (NLL gap = our - AleRax, negative = we beat AleRax):")
-    print(f"  global:      {result_global['negative_log_likelihood'] - ALERAX_NLL['global']:+.3f}")
-    print(f"  specieswise: {result_sw['negative_log_likelihood']     - ALERAX_NLL['specieswise']:+.3f}")
-    print(f"  genewise:    {float(result_gw['nll'].sum())            - ALERAX_NLL['genewise']:+.3f}")
+    if all(v is not None for v in alerax_nll_ref.values()):
+        print("Summary (NLL gap = our - AleRax, negative = we beat AleRax):")
+        print(f"  global:      {result_global['negative_log_likelihood'] - alerax_nll_ref['global']:+.3f}")
+        print(f"  specieswise: {result_sw['negative_log_likelihood']     - alerax_nll_ref['specieswise']:+.3f}")
+        print(f"  genewise:    {float(result_gw['nll'].sum())            - alerax_nll_ref['genewise']:+.3f}")
+    else:
+        print("Summary: AleRax NLL gap not shown (no hardcoded reference for this dataset).")
+        print(f"  global NLL:      {result_global['negative_log_likelihood']:.3f}")
+        print(f"  specieswise NLL: {result_sw['negative_log_likelihood']:.3f}")
+        print(f"  genewise NLL:    {float(result_gw['nll'].sum()):.3f}")
     if alerax_global_rates:
-        print(f"\nAleRax reference rates (global):")
+        print("\nAleRax reference rates (global):")
         print(f"  D={alerax_global_rates['D']:.6f}  L={alerax_global_rates['L']:.6f}  T={alerax_global_rates['T']:.6f}")
-    print(f"\nAleRax reference NLL (log2-space):")
-    for mode, nll in ALERAX_NLL.items():
-        print(f"  {mode:12s}  {nll:.3f}  (ln-space: {ALERAX_NLL_LN[mode]:.2f})")
+    if all(v is not None for v in alerax_nll_ref.values()):
+        print("\nAleRax reference NLL (log2-space):")
+        for mode, nll in ALERAX_NLL.items():
+            print(f"  {mode:12s}  {nll:.3f}  (ln-space: {ALERAX_NLL_LN[mode]:.2f})")
 
 
 if __name__ == "__main__":

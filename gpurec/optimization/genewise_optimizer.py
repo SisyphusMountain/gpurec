@@ -76,6 +76,7 @@ def optimize_theta_genewise(
     specieswise=False,
     local_iters=2000,
     local_tolerance=1e-3,
+    gene_batch_size=None,
     verbose=False,
 ):
     """Genewise L-BFGS: independently optimize (D_g, L_g, T_g) per gene family.
@@ -114,6 +115,9 @@ def optimize_theta_genewise(
         Whether rates are per-species.
     local_iters, local_tolerance : int, float
         Pi forward convergence parameters.
+    gene_batch_size : int | None
+        Number of genes to process per mini-batch for Pi forward/backward.
+        ``None`` or <=0 means full-batch over all genes.
 
     Returns
     -------
@@ -143,7 +147,7 @@ def optimize_theta_genewise(
         for k, v in species_helpers.items()
     }
 
-    # --- Phase A: precompute wave layouts (once) ---
+    # --- Phase A: precompute per-family scheduling primitives (once) ---
     per_family_waves = []
     per_family_phases = []
     batch_items = []
@@ -160,24 +164,102 @@ def optimize_theta_genewise(
         per_family_phases.append(phases_g)
         batch_items.append(single_item)
 
-    # Build merged cross-family layout for batched backward
-    all_batched = collate_gene_families(batch_items, dtype=dtype, device=device)
-    family_meta = all_batched['family_meta']
-    offsets = [m['clade_offset'] for m in family_meta]
-    sizes = [m['C'] for m in family_meta]
-    cross_waves = collate_wave(per_family_waves, offsets)
-    cross_phases = [max(per_family_phases[g][k] for g in range(G) if k < len(per_family_phases[g]))
-                    for k in range(len(cross_waves))]
-    merged_layout = build_wave_layout(
-        waves=cross_waves, phases=cross_phases,
-        ccp_helpers=all_batched['ccp'],
-        leaf_row_index=all_batched['leaf_row_index'],
-        leaf_col_index=all_batched['leaf_col_index'],
-        root_clade_ids=all_batched['root_clade_ids'],
-        device=device, dtype=dtype,
-        family_clade_counts=sizes,
-        family_clade_offsets=offsets,
-    )
+    if gene_batch_size is None or gene_batch_size <= 0:
+        gene_batch_size = G
+    gene_batch_size = int(gene_batch_size)
+    if gene_batch_size < 1:
+        raise ValueError(f"gene_batch_size must be >=1, got {gene_batch_size}")
+
+    full_gene_ids = list(range(G))
+    full_merged_layout = None
+    layout_cache = {}
+    _MAX_LAYOUT_CACHE = 512
+
+    def _gene_batches(mask: torch.Tensor):
+        """Yield lists of global gene indices for active genes in mini-batches."""
+        active_idx = mask.nonzero(as_tuple=False).squeeze(-1)
+        if active_idx.numel() == 0:
+            return
+        ids = active_idx.tolist()
+        for i in range(0, len(ids), gene_batch_size):
+            yield ids[i:i + gene_batch_size]
+
+    def _build_merged_layout_for_gene_ids(gene_ids):
+        """Build merged cross-family wave layout for a subset of genes."""
+        if len(gene_ids) == 0:
+            return None
+
+        key = tuple(gene_ids)
+        cached = layout_cache.get(key)
+        if cached is not None:
+            return cached
+
+        nonlocal full_merged_layout
+        if gene_ids == full_gene_ids:
+            if full_merged_layout is None:
+                chunk_items = [batch_items[g] for g in gene_ids]
+                chunk_waves = [per_family_waves[g] for g in gene_ids]
+                chunk_phases = [per_family_phases[g] for g in gene_ids]
+
+                chunk_batched = collate_gene_families(chunk_items, dtype=dtype, device=device)
+                family_meta = chunk_batched['family_meta']
+                offsets = [m['clade_offset'] for m in family_meta]
+                sizes = [m['C'] for m in family_meta]
+
+                cross_waves = collate_wave(chunk_waves, offsets)
+                cross_phases = []
+                for k in range(len(cross_waves)):
+                    phase_k = max(fp[k] for fp in chunk_phases if k < len(fp))
+                    cross_phases.append(phase_k)
+
+                full_merged_layout = build_wave_layout(
+                    waves=cross_waves,
+                    phases=cross_phases,
+                    ccp_helpers=chunk_batched['ccp'],
+                    leaf_row_index=chunk_batched['leaf_row_index'],
+                    leaf_col_index=chunk_batched['leaf_col_index'],
+                    root_clade_ids=chunk_batched['root_clade_ids'],
+                    device=device,
+                    dtype=dtype,
+                    family_clade_counts=sizes,
+                    family_clade_offsets=offsets,
+                )
+                layout_cache[key] = full_merged_layout
+            return full_merged_layout
+
+        chunk_items = [batch_items[g] for g in gene_ids]
+        chunk_waves = [per_family_waves[g] for g in gene_ids]
+        chunk_phases = [per_family_phases[g] for g in gene_ids]
+
+        chunk_batched = collate_gene_families(chunk_items, dtype=dtype, device=device)
+        family_meta = chunk_batched['family_meta']
+        offsets = [m['clade_offset'] for m in family_meta]
+        sizes = [m['C'] for m in family_meta]
+
+        cross_waves = collate_wave(chunk_waves, offsets)
+        cross_phases = []
+        for k in range(len(cross_waves)):
+            phase_k = max(fp[k] for fp in chunk_phases if k < len(fp))
+            cross_phases.append(phase_k)
+
+        layout = build_wave_layout(
+            waves=cross_waves,
+            phases=cross_phases,
+            ccp_helpers=chunk_batched['ccp'],
+            leaf_row_index=chunk_batched['leaf_row_index'],
+            leaf_col_index=chunk_batched['leaf_col_index'],
+            root_clade_ids=chunk_batched['root_clade_ids'],
+            device=device,
+            dtype=dtype,
+            family_clade_counts=sizes,
+            family_clade_offsets=offsets,
+        )
+        layout_cache[key] = layout
+        if len(layout_cache) > _MAX_LAYOUT_CACHE:
+            oldest_key = next(iter(layout_cache))
+            if oldest_key != key:
+                layout_cache.pop(oldest_key)
+        return layout
 
     # Precompute ancestors_T for uniform mode
     _ancestors_T = None
@@ -185,114 +267,208 @@ def optimize_theta_genewise(
         anc_dense = species_helpers['ancestors_dense'].to(device=device, dtype=dtype)
         _ancestors_T = anc_dense.T.to_sparse_coo()
 
+    S = species_helpers['S']
+    if torch.is_tensor(S):
+        S = int(S.item())
+    else:
+        S = int(S)
+
     # --- Phase B: define eval functions ---
 
-    def _eval_E(theta_t, warm_E):
-        """Vectorized E solve for all G genes."""
+    def _eval_E_chunk(theta_t_chunk, warm_E_chunk):
+        """E solve for a gene mini-batch."""
         log_pS, log_pD, log_pL, _, mt = extract_parameters_uniform(
-            theta_t, unnorm_row_max, specieswise=specieswise, genewise=True,
+            theta_t_chunk, unnorm_row_max, specieswise=specieswise, genewise=True,
         )
         E_out = E_fixed_point(
             species_helpers=species_helpers,
             log_pS=log_pS, log_pD=log_pD, log_pL=log_pL,
             transfer_mat=None, max_transfer_mat=mt,
             max_iters=e_max_iters, tolerance=e_tol,
-            warm_start_E=warm_E,
+            warm_start_E=warm_E_chunk,
             dtype=dtype, device=device, pibar_mode=pibar_mode,
             ancestors_T=_ancestors_T,
         )
         return log_pS, log_pD, log_pL, mt, E_out
 
     def _nll_and_grad(theta_t, warm_E, active_mask):
-        """Full forward + batched backward for active genes."""
-        log_pS, log_pD, log_pL, mt, E_out = _eval_E(theta_t, warm_E)
+        """Mini-batched forward/backward for active genes."""
 
         nll = torch.full((G,), float('nan'), device=device, dtype=dtype)
         grad = torch.zeros_like(theta_t)
+        E_full = torch.zeros((G, S), device=device, dtype=dtype)
+        Ebar_full = torch.zeros((G, S), device=device, dtype=dtype)
+        E_s1_full = torch.zeros((G, S), device=device, dtype=dtype)
+        E_s2_full = torch.zeros((G, S), device=device, dtype=dtype)
+        e_iters_max = 0
 
-        # --- Single batched forward + per-family NLL ---
-        Pi_out = Pi_wave_forward(
-            wave_layout=merged_layout,
-            species_helpers=species_helpers,
-            E=E_out['E'], Ebar=E_out['E_bar'],
-            E_s1=E_out['E_s1'], E_s2=E_out['E_s2'],
-            log_pS=log_pS, log_pD=log_pD, log_pL=log_pL,
-            transfer_mat=None, max_transfer_mat=mt,
-            device=device, dtype=dtype,
-            local_iters=local_iters, local_tolerance=local_tolerance,
-            pibar_mode=pibar_mode,
-            family_idx=merged_layout['family_idx'],
-        )
-        # Keep objective in wave-ordered space so NLL and Pi backward use the
-        # same root indexing convention.
-        nll_full = compute_log_likelihood(
-            Pi_out['Pi_wave_ordered'], E_out['E'], merged_layout['root_clade_ids'],
-        )
-        nll[active_mask] = nll_full[active_mask]
+        if warm_E is not None:
+            E_full.copy_(warm_E)
 
-        # --- Single batched backward ---
-        pi_bwd = Pi_wave_backward(
-            wave_layout=merged_layout,
-            Pi_star_wave=Pi_out['Pi_wave_ordered'],
-            Pibar_star_wave=Pi_out['Pibar_wave_ordered'],
-            E=E_out['E'], Ebar=E_out['E_bar'],
-            E_s1=E_out['E_s1'], E_s2=E_out['E_s2'],
-            log_pS=log_pS, log_pD=log_pD, log_pL=log_pL,
-            max_transfer_mat=mt,
-            species_helpers=species_helpers,
-            root_clade_ids_perm=merged_layout['root_clade_ids'],
-            device=device, dtype=dtype,
-            neumann_terms=neumann_terms,
-            use_pruning=True,
-            pruning_threshold=pruning_threshold,
-            pibar_mode=pibar_mode,
-            ancestors_T=_ancestors_T,
-            family_idx=merged_layout['family_idx'],
-        )
+        for gene_ids in _gene_batches(active_mask):
+            idx = torch.as_tensor(gene_ids, device=device, dtype=torch.long)
+            merged_layout = _build_merged_layout_for_gene_ids(gene_ids)
 
-        # --- Single batched E adjoint + theta VJP ---
-        grad_theta_all, _ = _e_adjoint_and_theta_vjp(
-            pi_bwd,
-            E_out['E'], E_out['E_bar'], E_out['E_s1'], E_out['E_s2'],
-            log_pS, log_pD, log_pL,
-            mt,
-            species_helpers, merged_layout['root_clade_ids'],
-            theta_t, unnorm_row_max, specieswise,
-            device, dtype,
-            genewise=True,
-            cg_tol=cg_tol, cg_maxiter=cg_maxiter,
-            pibar_mode=pibar_mode,
-            ancestors_T=_ancestors_T,
-        )
-        grad[active_mask] = grad_theta_all[active_mask]
+            warm_E_chunk = None
+            if warm_E is not None:
+                warm_E_chunk = warm_E[idx]
 
+            theta_chunk = theta_t[idx]
+            log_pS_chunk, log_pD_chunk, log_pL_chunk, mt_chunk, E_chunk_out = _eval_E_chunk(
+                theta_chunk, warm_E_chunk,
+            )
+            e_iters_max = max(e_iters_max, int(E_chunk_out['iterations']))
+
+            E_chunk = E_chunk_out['E']
+            Ebar_chunk = E_chunk_out['E_bar']
+            E_s1_chunk = E_chunk_out['E_s1']
+            E_s2_chunk = E_chunk_out['E_s2']
+
+            E_full[idx] = E_chunk
+            Ebar_full[idx] = Ebar_chunk
+            E_s1_full[idx] = E_s1_chunk
+            E_s2_full[idx] = E_s2_chunk
+
+            # --- Mini-batched forward + per-family NLL ---
+            Pi_out = Pi_wave_forward(
+                wave_layout=merged_layout,
+                species_helpers=species_helpers,
+                E=E_chunk,
+                Ebar=Ebar_chunk,
+                E_s1=E_s1_chunk,
+                E_s2=E_s2_chunk,
+                log_pS=log_pS_chunk,
+                log_pD=log_pD_chunk,
+                log_pL=log_pL_chunk,
+                transfer_mat=None,
+                max_transfer_mat=mt_chunk,
+                device=device,
+                dtype=dtype,
+                local_iters=local_iters,
+                local_tolerance=local_tolerance,
+                pibar_mode=pibar_mode,
+                family_idx=merged_layout['family_idx'],
+            )
+
+            nll_chunk = compute_log_likelihood(
+                Pi_out['Pi_wave_ordered'], E_chunk, merged_layout['root_clade_ids'],
+            )
+            nll[idx] = nll_chunk
+
+            # --- Mini-batched backward ---
+            pi_bwd = Pi_wave_backward(
+                wave_layout=merged_layout,
+                Pi_star_wave=Pi_out['Pi_wave_ordered'],
+                Pibar_star_wave=Pi_out['Pibar_wave_ordered'],
+                E=E_chunk,
+                Ebar=Ebar_chunk,
+                E_s1=E_s1_chunk,
+                E_s2=E_s2_chunk,
+                log_pS=log_pS_chunk,
+                log_pD=log_pD_chunk,
+                log_pL=log_pL_chunk,
+                max_transfer_mat=mt_chunk,
+                species_helpers=species_helpers,
+                root_clade_ids_perm=merged_layout['root_clade_ids'],
+                device=device,
+                dtype=dtype,
+                neumann_terms=neumann_terms,
+                use_pruning=True,
+                pruning_threshold=pruning_threshold,
+                pibar_mode=pibar_mode,
+                ancestors_T=_ancestors_T,
+                family_idx=merged_layout['family_idx'],
+            )
+
+            # --- Mini-batched E adjoint + theta VJP ---
+            grad_theta_chunk, _ = _e_adjoint_and_theta_vjp(
+                pi_bwd,
+                E_chunk,
+                Ebar_chunk,
+                E_s1_chunk,
+                E_s2_chunk,
+                log_pS_chunk,
+                log_pD_chunk,
+                log_pL_chunk,
+                mt_chunk,
+                species_helpers,
+                merged_layout['root_clade_ids'],
+                theta_chunk,
+                unnorm_row_max,
+                specieswise,
+                device,
+                dtype,
+                genewise=True,
+                cg_tol=cg_tol,
+                cg_maxiter=cg_maxiter,
+                pibar_mode=pibar_mode,
+                ancestors_T=_ancestors_T,
+            )
+            grad[idx] = grad_theta_chunk
+
+        E_out = {
+            'E': E_full,
+            'E_bar': Ebar_full,
+            'E_s1': E_s1_full,
+            'E_s2': E_s2_full,
+            'iterations': e_iters_max,
+        }
         return nll, grad, E_out
 
     def _nll_only(theta_t, warm_E, active_mask):
         """Forward-only NLL (no backward). For line search probes."""
-        log_pS, log_pD, log_pL, mt, E_out = _eval_E(theta_t, warm_E)
-
-        Pi_out = Pi_wave_forward(
-            wave_layout=merged_layout,
-            species_helpers=species_helpers,
-            E=E_out['E'], Ebar=E_out['E_bar'],
-            E_s1=E_out['E_s1'], E_s2=E_out['E_s2'],
-            log_pS=log_pS, log_pD=log_pD, log_pL=log_pL,
-            transfer_mat=None, max_transfer_mat=mt,
-            device=device, dtype=dtype,
-            local_iters=local_iters, local_tolerance=local_tolerance,
-            pibar_mode=pibar_mode,
-            family_idx=merged_layout['family_idx'],
-        )
-        # Keep objective in wave-ordered space so line-search probes match
-        # the gradient objective used by Pi backward.
-        nll_full = compute_log_likelihood(
-            Pi_out['Pi_wave_ordered'], E_out['E'], merged_layout['root_clade_ids'],
-        )
         nll = torch.full((G,), float('nan'), device=device, dtype=dtype)
-        nll[active_mask] = nll_full[active_mask]
+        if warm_E is not None:
+            E_full = warm_E.clone()
+        else:
+            E_full = torch.zeros((G, S), device=device, dtype=dtype)
+        e_iters_max = 0
 
-        return nll, E_out
+        for gene_ids in _gene_batches(active_mask):
+            idx = torch.as_tensor(gene_ids, device=device, dtype=torch.long)
+            merged_layout = _build_merged_layout_for_gene_ids(gene_ids)
+
+            warm_E_chunk = None
+            if warm_E is not None:
+                warm_E_chunk = warm_E[idx]
+
+            theta_chunk = theta_t[idx]
+            log_pS_chunk, log_pD_chunk, log_pL_chunk, mt_chunk, E_chunk_out = _eval_E_chunk(
+                theta_chunk, warm_E_chunk,
+            )
+            e_iters_max = max(e_iters_max, int(E_chunk_out['iterations']))
+
+            E_chunk = E_chunk_out['E']
+            Ebar_chunk = E_chunk_out['E_bar']
+            E_s1_chunk = E_chunk_out['E_s1']
+            E_s2_chunk = E_chunk_out['E_s2']
+            E_full[idx] = E_chunk
+
+            Pi_out = Pi_wave_forward(
+                wave_layout=merged_layout,
+                species_helpers=species_helpers,
+                E=E_chunk,
+                Ebar=Ebar_chunk,
+                E_s1=E_s1_chunk,
+                E_s2=E_s2_chunk,
+                log_pS=log_pS_chunk,
+                log_pD=log_pD_chunk,
+                log_pL=log_pL_chunk,
+                transfer_mat=None,
+                max_transfer_mat=mt_chunk,
+                device=device,
+                dtype=dtype,
+                local_iters=local_iters,
+                local_tolerance=local_tolerance,
+                pibar_mode=pibar_mode,
+                family_idx=merged_layout['family_idx'],
+            )
+            nll_chunk = compute_log_likelihood(
+                Pi_out['Pi_wave_ordered'], E_chunk, merged_layout['root_clade_ids'],
+            )
+            nll[idx] = nll_chunk
+
+        return nll, {'E': E_full, 'iterations': e_iters_max}
 
     # --- Phase C: L-BFGS loop ---
     theta = theta_init.to(device=device, dtype=dtype).clone()

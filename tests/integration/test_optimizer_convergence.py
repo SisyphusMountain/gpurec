@@ -12,6 +12,7 @@ Tier 2: AleRax reference comparison (needs AleRax+MPI)
 """
 
 import math
+import os
 import shutil
 import tempfile
 from pathlib import Path
@@ -23,7 +24,23 @@ from gpurec.core.model import GeneDataset
 from gpurec.optimization.theta_optimizer import optimize_theta_genewise, optimize_theta_wave
 
 _ROOT = Path(__file__).resolve().parents[1]
-DATA_1000 = _ROOT / "data" / "test_trees_1000"
+
+
+def _resolve_test_data_dir(default_name: str) -> Path:
+        """Resolve dataset dir from env var or default dataset name.
+
+        GPUREC_TEST_DATASET can be either:
+            - a dataset name under tests/data (e.g. test_trees_10000)
+            - an absolute/relative path to a dataset directory
+        """
+        ds = os.environ.get("GPUREC_TEST_DATASET", default_name)
+        ds_path = Path(ds)
+        if ds_path.exists():
+                return ds_path
+        return _ROOT / "data" / ds
+
+
+DATA_DIR = _resolve_test_data_dir("test_trees_1000")
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 DTYPE = torch.float32
@@ -36,14 +53,14 @@ N_FAMILIES = 5  # keep low to avoid OOM on 24GB GPU
 
 @pytest.fixture(scope="module")
 def ds_genewise():
-    """Load families from test_trees_1000 as genewise dataset."""
-    if not DATA_1000.exists():
-        pytest.skip("test_trees_1000 not found")
+    """Load families from selected dataset as genewise dataset."""
+    if not DATA_DIR.exists():
+        pytest.skip(f"dataset not found: {DATA_DIR}")
     if not torch.cuda.is_available():
         pytest.skip("CUDA required")
 
-    sp = str(DATA_1000 / "sp.nwk")
-    genes = [str(g) for g in sorted(DATA_1000.glob("g_*.nwk"))[:N_FAMILIES]]
+    sp = str(DATA_DIR / "sp.nwk")
+    genes = [str(g) for g in sorted(DATA_DIR.glob("g_*.nwk"))[:N_FAMILIES]]
     ds = GeneDataset(sp, genes, genewise=True, specieswise=False, pairwise=False,
                      dtype=DTYPE, device=DEVICE)
     return ds
@@ -51,14 +68,14 @@ def ds_genewise():
 
 @pytest.fixture(scope="module")
 def ds_shared():
-    """Load families from test_trees_1000 as shared-param dataset."""
-    if not DATA_1000.exists():
-        pytest.skip("test_trees_1000 not found")
+    """Load families from selected dataset as shared-param dataset."""
+    if not DATA_DIR.exists():
+        pytest.skip(f"dataset not found: {DATA_DIR}")
     if not torch.cuda.is_available():
         pytest.skip("CUDA required")
 
-    sp = str(DATA_1000 / "sp.nwk")
-    genes = [str(g) for g in sorted(DATA_1000.glob("g_*.nwk"))[:N_FAMILIES]]
+    sp = str(DATA_DIR / "sp.nwk")
+    genes = [str(g) for g in sorted(DATA_DIR.glob("g_*.nwk"))[:N_FAMILIES]]
     ds = GeneDataset(sp, genes, genewise=False, specieswise=False, pairwise=False,
                      dtype=DTYPE, device=DEVICE)
     return ds
