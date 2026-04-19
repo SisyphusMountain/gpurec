@@ -22,12 +22,25 @@ pub struct AleRaxConfig {
     pub gene_tree_rooting: Option<String>,
     pub seed: Option<u64>,
     pub alerax_path: String,
+    /// Optional starting duplication rate (passed via `--d`).
+    pub d: Option<f64>,
+    /// Optional starting loss rate (passed via `--l`).
+    pub l: Option<f64>,
+    /// Optional starting transfer rate (passed via `--t`).
+    pub t: Option<f64>,
+    /// If true, AleRax is invoked with `--fix-rates` (no rate optimization).
+    pub fix_rates: bool,
+    /// Optional directory of per-branch starting rates files (passed via
+    /// `--starting-rates-file`). Used for PER-SPECIES / PER-FAMILY modes
+    /// when injecting externally optimized rates.
+    pub starting_rates_file: Option<PathBuf>,
 }
 
 /// Model parametrization type for ALERax
 #[derive(Clone, Copy)]
 pub enum ModelType {
     PerFamily,
+    PerSpecies,
     Global,
 }
 
@@ -35,6 +48,7 @@ impl ModelType {
     fn as_str(&self) -> &str {
         match self {
             ModelType::PerFamily => "PER-FAMILY",
+            ModelType::PerSpecies => "PER-SPECIES",
             ModelType::Global => "GLOBAL",
         }
     }
@@ -269,22 +283,61 @@ fn build_alerax_command(config: &AleRaxConfig) -> Command {
         cmd.arg("--seed").arg(seed.to_string());
     }
 
+    // Starting rates: scalar (--d/--l/--t) or per-branch (--starting-rates-file).
+    if let Some(d) = config.d {
+        cmd.arg("--d").arg(d.to_string());
+    }
+    if let Some(l) = config.l {
+        cmd.arg("--l").arg(l.to_string());
+    }
+    if let Some(t) = config.t {
+        cmd.arg("--t").arg(t.to_string());
+    }
+    if let Some(ref path) = config.starting_rates_file {
+        cmd.arg("--starting-rates-file").arg(path);
+    }
+    if config.fix_rates {
+        cmd.arg("--fix-rates");
+    }
+
+    // When the caller has supplied fixed rates we also disable species tree
+    // search: a topology change would invalidate per-branch rates and is
+    // never desired in a "pure sampling" workflow.
+    if config.fix_rates || config.starting_rates_file.is_some() {
+        cmd.arg("--species-tree-search").arg("SKIP");
+    }
+
     cmd
 }
 
-/// Parse ALERax rates file (D L T)
+/// Parse the per-family rates file written by AleRax in PER_FAMILY mode
+/// (`<output>/model_parameters/<family>_rates.txt`).
+///
+/// Format:
+/// ```
+/// # D L T          (or `D L T` without the leading `#`)
+/// 0.098 1e-10 0.066
+/// ```
 fn parse_rates_file(path: &Path) -> Result<(f64, f64, f64), String> {
     let content = fs::read_to_string(path)
         .map_err(|e| format!("Failed to read rates file: {}", e))?;
 
-    let lines: Vec<&str> = content.lines().collect();
-    if lines.len() < 2 {
-        return Err("Invalid rates file format (expected at least 2 lines)".to_string());
-    }
+    // Skip blank/header lines, take the first data row.
+    let value_line = content
+        .lines()
+        .find(|line| {
+            let trimmed = line.trim();
+            !trimmed.is_empty() && !trimmed.starts_with('#') && {
+                // header without `#` (e.g., "D L T") starts with a non-numeric token
+                let first = trimmed.split_whitespace().next().unwrap_or("");
+                first.parse::<f64>().is_ok()
+            }
+        })
+        .ok_or_else(|| {
+            "Invalid rates file format (no numeric data row found)".to_string()
+        })?;
 
-    // Line 1: "D L T"
-    // Line 2: "0.098 1e-10 0.066"
-    let values: Vec<&str> = lines[1].split_whitespace().collect();
+    let values: Vec<&str> = value_line.split_whitespace().collect();
     if values.len() != 3 {
         return Err(format!("Expected 3 rate values, found {}", values.len()));
     }
@@ -297,6 +350,67 @@ fn parse_rates_file(path: &Path) -> Result<(f64, f64, f64), String> {
         .map_err(|_| format!("Failed to parse transfer rate: {}", values[2]))?;
 
     Ok((d, l, t))
+}
+
+/// Parse the shared rates file written by AleRax in GLOBAL / PER_SPECIES
+/// modes (`<output>/model_parameters/model_parameters.txt`).
+///
+/// Format:
+/// ```
+/// # node D L T     (or `node D L T` without the leading `#`)
+/// node_label 0.098 1e-10 0.066
+/// ...
+/// ```
+///
+/// Returns the rates from the first data row. In GLOBAL mode every row
+/// holds the same values. In PER_SPECIES mode the rates differ per node;
+/// the first row is taken as a representative scalar so the existing
+/// `PyAleRaxResult.duplication_rate / loss_rate / transfer_rate` interface
+/// stays meaningful.
+fn parse_global_rates_file(path: &Path) -> Result<(f64, f64, f64), String> {
+    let content = fs::read_to_string(path)
+        .map_err(|e| format!("Failed to read rates file: {}", e))?;
+
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        let mut tokens = trimmed.split_whitespace();
+        let label = match tokens.next() {
+            Some(t) => t,
+            None => continue,
+        };
+        // Skip a header that lacks the leading `#`, e.g. "node D L T".
+        if label.parse::<f64>().is_err()
+            && tokens
+                .clone()
+                .next()
+                .map(|t| t.parse::<f64>().is_err())
+                .unwrap_or(true)
+        {
+            continue;
+        }
+        let rest: Vec<&str> = tokens.collect();
+        if rest.len() < 3 {
+            return Err(format!(
+                "Expected at least 3 rate values in row '{}', found {}",
+                trimmed,
+                rest.len()
+            ));
+        }
+        let d = rest[0]
+            .parse()
+            .map_err(|_| format!("Failed to parse duplication rate: {}", rest[0]))?;
+        let l = rest[1]
+            .parse()
+            .map_err(|_| format!("Failed to parse loss rate: {}", rest[1]))?;
+        let t = rest[2]
+            .parse()
+            .map_err(|_| format!("Failed to parse transfer rate: {}", rest[2]))?;
+        return Ok((d, l, t));
+    }
+    Err("Invalid rates file format (no numeric data row found)".to_string())
 }
 
 /// Parse ALERax per-family likelihoods file
@@ -531,12 +645,35 @@ fn parse_alerax_results(
     let likelihoods_path = output_dir.join("per_fam_likelihoods.txt");
     let likelihoods = parse_likelihoods_file(&likelihoods_path)?;
 
+    // GLOBAL / PER_SPECIES modes share a single rates file across all
+    // families; PER_FAMILY mode writes one file per family. Try the
+    // shared file first as a fallback for non-PER_FAMILY runs.
+    let shared_rates_path = output_dir
+        .join("model_parameters")
+        .join("model_parameters.txt");
+    let shared_rates = if shared_rates_path.exists() {
+        Some(parse_global_rates_file(&shared_rates_path)?)
+    } else {
+        None
+    };
+
     for family in families {
-        // Parse rates
+        // Parse rates: prefer per-family file, fall back to shared file.
         let rates_path = output_dir
             .join("model_parameters")
             .join(format!("{}_rates.txt", family.name));
-        let (d, l, t) = parse_rates_file(&rates_path)?;
+        let (d, l, t) = if rates_path.exists() {
+            parse_rates_file(&rates_path)?
+        } else if let Some(rates) = shared_rates {
+            rates
+        } else {
+            return Err(format!(
+                "No rates file found for family '{}': checked {} and {}",
+                family.name,
+                rates_path.display(),
+                shared_rates_path.display()
+            ));
+        };
 
         // Parse reconciliation samples
         let reconciliation_dir = output_dir.join("reconciliations").join("all");
@@ -885,6 +1022,11 @@ pub fn reconcile_forest(
         gene_tree_rooting,
         seed,
         alerax_path: alerax_path.to_string(),
+        d: None,
+        l: None,
+        t: None,
+        fix_rates: false,
+        starting_rates_file: None,
     };
 
     // Run ALERax with streaming output

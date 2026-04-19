@@ -320,6 +320,39 @@ class GeneReconModel(torch.nn.Module):
         return float(-self.forward(reduce="sum").item())
 
     # ──────────────────────────────────────────────────────────────────
+    # Reconciliation sampling via AleRax
+    # ──────────────────────────────────────────────────────────────────
+    def sample_reconciliations(
+        self,
+        *,
+        num_samples: int = 100,
+        output_dir: Optional[str] = None,
+        seed: Optional[int] = None,
+        keep_output: bool = False,
+        alerax_path: str = "alerax",
+    ) -> dict:
+        """Sample reconciliation scenarios from this model's optimized rates.
+
+        Calls AleRax with ``--fix-rates`` so the optimized DTL rates flow
+        through to the sampler unchanged. Supports ``global``,
+        ``specieswise``, and ``genewise`` modes (combined
+        ``genewise+specieswise`` and ``pairwise`` raise
+        :class:`NotImplementedError`).
+
+        Returns a ``dict`` mapping family name → ``PyAleRaxResult``
+        (see :func:`rustree.reconcile_with_alerax`).
+        """
+        from .sampling import sample_reconciliations as _impl
+        return _impl(
+            self,
+            num_samples=num_samples,
+            output_dir=output_dir,
+            seed=seed,
+            keep_output=keep_output,
+            alerax_path=alerax_path,
+        )
+
+    # ──────────────────────────────────────────────────────────────────
     # Parameter management
     # ──────────────────────────────────────────────────────────────────
     def clamp_theta_(self, min_rate: float = 1e-10) -> None:

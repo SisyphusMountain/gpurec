@@ -93,7 +93,7 @@ impl PyAleRaxResult {
 /// best_tree.to_svg("reconciled.svg")
 /// ```
 #[pyfunction]
-#[pyo3(signature = (species_tree, gene_trees, output_dir=None, num_samples=100, model="PER-FAMILY".to_string(), gene_tree_rooting=None, seed=None, keep_output=false, alerax_path="alerax".to_string()))]
+#[pyo3(signature = (species_tree, gene_trees, output_dir=None, num_samples=100, model="PER-FAMILY".to_string(), gene_tree_rooting=None, seed=None, keep_output=false, alerax_path="alerax".to_string(), d=None, l=None, t=None, fix_rates=false, starting_rates_file=None))]
 #[allow(clippy::too_many_arguments)]
 pub fn reconcile_with_alerax(
     py: Python,
@@ -106,6 +106,11 @@ pub fn reconcile_with_alerax(
     seed: Option<u64>,
     keep_output: bool,
     alerax_path: String,
+    d: Option<f64>,
+    l: Option<f64>,
+    t: Option<f64>,
+    fix_rates: bool,
+    starting_rates_file: Option<String>,
 ) -> PyResult<HashMap<String, PyAleRaxResult>> {
     use crate::alerax::{run_alerax, AleRaxConfig, GeneFamily, ModelType, validate_inputs};
     use std::fs;
@@ -115,9 +120,10 @@ pub fn reconcile_with_alerax(
     // Parse model type
     let model_type = match model.to_uppercase().as_str() {
         "PER-FAMILY" | "PER_FAMILY" => ModelType::PerFamily,
+        "PER-SPECIES" | "PER_SPECIES" => ModelType::PerSpecies,
         "GLOBAL" => ModelType::Global,
         _ => return Err(PyValueError::new_err(format!(
-            "Invalid model type '{}'. Must be 'PER-FAMILY' or 'GLOBAL'", model
+            "Invalid model type '{}'. Must be 'PER-FAMILY', 'PER-SPECIES', or 'GLOBAL'", model
         ))),
     };
 
@@ -266,6 +272,11 @@ pub fn reconcile_with_alerax(
         gene_tree_rooting,
         seed,
         alerax_path,
+        d,
+        l,
+        t,
+        fix_rates,
+        starting_rates_file: starting_rates_file.map(PathBuf::from),
     };
 
     // Run ALERax
