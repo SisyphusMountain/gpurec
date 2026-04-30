@@ -1,0 +1,3 @@
+step,nll_sum,grad_inf,n_active,e_iters,step_time_s,cumulative_time_s
+0,650080.875000,1.635525e+03,100,24,21.2284,21.2284
+1,442768.875000,1.209999e+02,100,1,11.3578,32.5862

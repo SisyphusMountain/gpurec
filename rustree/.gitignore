@@ -1,0 +1,16 @@
+target/
+Zombi/
+AleRax/
+
+# Output / generated files
+out/
+*.svg
+
+# Test data (generated outputs live under testdata/)
+testdata/
+tests/RF_trees
+tests/python/__pycache__
+
+# Misc
+__pycache__/
+.pytest_cache/

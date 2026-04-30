@@ -1,0 +1,12 @@
+{
+  "command": "experiments/validate_three_modes.py --out-dir results/results_f32 --optimizer sgd --lr 0.0001 --tol-theta 1e-6 --momentum 0.5 --dtype float64",
+  "timestamp": "20260406_190927",
+  "steps": 100,
+  "families": 0,
+  "out_dir": "results/results_f32",
+  "optimizer": "sgd",
+  "lr": 0.0001,
+  "tol_theta": 1e-06,
+  "momentum": 0.5,
+  "dtype": "float64"
+}

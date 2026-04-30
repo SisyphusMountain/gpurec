@@ -1,0 +1,2 @@
+step,nll,grad_inf,e_iters,cg_method,cg_iters,cg_residual,cg_fallback,step_time_s,cumulative_time_s
+1,39350.253906,1.169758e+03,10,CG,7,1.31e-09,0,1.7598,1.7598

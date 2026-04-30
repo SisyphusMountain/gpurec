@@ -1,9 +1,0 @@
-{
-  "best_params": {
-    "delta": 0.1,
-    "tau": 0.1,
-    "lambda": 0.1,
-    "log_likelihood": -Infinity
-  },
-  "history": []
-}

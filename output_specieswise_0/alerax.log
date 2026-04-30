@@ -1,0 +1,104 @@
+[00:00:00] AleRax v1.4.0
+[00:00:00] AleRax was called as follows:
+alerax -s sp.nwk -f families_0.txt -p output_specieswise_0 --model-parametrization PER-SPECIES
+
+[00:00:00] Run settings:
+	Output directory: output_specieswise_0
+	Families information: families_0.txt
+	Starting species tree: will be imported from the user file: sp.nwk
+	MPI ranks: 24
+	Random seed: 123
+	Reconciliation model: UndatedDTL
+	Transfer constraint: transfers to parents are forbidden
+	Memory savings: OFF
+	Model parametrization: each species has a different set of rates common to all families
+	Rate optimizer: LBFGSB
+	Prune species mode: OFF
+	Gene tree rooting: all gene tree root positions are considered with the same probability
+	Origination strategy: gene families can originate from each species with the same probability
+	Species tree search: skip species tree search
+	Number of reconciled gene trees to sample: 100
+	AleRax will exclude gene families covering less than 4 species
+
+[00:00:00] Checking families...
+
+Error: No valid families, aborting
+
+[00:00:00] AleRax v1.4.0
+[00:00:00] AleRax was called as follows:
+alerax -s sp.nwk -f families_0.txt -p output_specieswise_0 --model-parametrization PER-SPECIES
+
+[00:00:00] Run settings:
+	Output directory: output_specieswise_0
+	Families information: families_0.txt
+	Starting species tree: will be imported from the user file: sp.nwk
+	MPI ranks: 24
+	Random seed: 123
+	Reconciliation model: UndatedDTL
+	Transfer constraint: transfers to parents are forbidden
+	Memory savings: OFF
+	Model parametrization: each species has a different set of rates common to all families
+	Rate optimizer: LBFGSB
+	Prune species mode: OFF
+	Gene tree rooting: all gene tree root positions are considered with the same probability
+	Origination strategy: gene families can originate from each species with the same probability
+	Species tree search: skip species tree search
+	Number of reconciled gene trees to sample: 100
+	AleRax will exclude gene families covering less than 4 species
+
+[00:00:00] Checking families...
+
+Error: No valid families, aborting
+
+[00:00:00] AleRax v1.4.0
+[00:00:00] AleRax was called as follows:
+alerax -s sp.nwk -f families_0.txt -p output_specieswise_0 --model-parametrization PER-SPECIES
+
+[00:00:00] Run settings:
+	Output directory: output_specieswise_0
+	Families information: families_0.txt
+	Starting species tree: will be imported from the user file: sp.nwk
+	MPI ranks: 24
+	Random seed: 123
+	Reconciliation model: UndatedDTL
+	Transfer constraint: transfers to parents are forbidden
+	Memory savings: OFF
+	Model parametrization: each species has a different set of rates common to all families
+	Rate optimizer: LBFGSB
+	Prune species mode: OFF
+	Gene tree rooting: all gene tree root positions are considered with the same probability
+	Origination strategy: gene families can originate from each species with the same probability
+	Species tree search: skip species tree search
+	Number of reconciled gene trees to sample: 100
+	AleRax will exclude gene families covering less than 4 species
+
+[00:00:00] Checking families...
+
+Error: No valid families, aborting
+
+[00:00:00] AleRax v1.4.0
+[00:00:00] AleRax was called as follows:
+alerax -s sp.nwk -f families_0.txt -p output_specieswise_0 --model-parametrization PER-SPECIES
+
+[00:00:00] Run settings:
+	Output directory: output_specieswise_0
+	Families information: families_0.txt
+	Starting species tree: will be imported from the user file: sp.nwk
+	MPI ranks: 24
+	Random seed: 123
+	Reconciliation model: UndatedDTL
+	Transfer constraint: transfers to parents are forbidden
+	Memory savings: OFF
+	Model parametrization: each species has a different set of rates common to all families
+	Rate optimizer: LBFGSB
+	Prune species mode: OFF
+	Gene tree rooting: all gene tree root positions are considered with the same probability
+	Origination strategy: gene families can originate from each species with the same probability
+	Species tree search: skip species tree search
+	Number of reconciled gene trees to sample: 100
+	AleRax will exclude gene families covering less than 4 species
+
+[00:00:00] Checking families...
+
+Error: No valid families, aborting
+

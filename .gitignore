@@ -1,0 +1,58 @@
+# Build artifacts
+__pycache__/
+*.pyc
+*.pyo
+*.so
+*.o
+a.out
+*.egg-info/
+dist/
+build/
+
+# Profiling & temporary
+prof_logs/
+nsys_reports/
+.pytest_cache/
+.tmp/
+
+# Data & output
+extra/
+scenarios/
+output_test/
+tests/data/**/output/
+
+# Notebooks (large, tracked separately)
+*.ipynb
+
+# IDE
+.vscode/
+.idea/
+
+# Thesis (separate repo)
+These/
+
+# Rust build artifacts
+rustree/target/
+
+# Test benchmark outputs
+tests/integration/*.csv
+tests/profiling/*.png
+tests/profiling/*.json
+
+# Test data (generated, too large for git)
+tests/data/test_trees_20/
+tests/data/test_trees_100/
+tests/data/test_trees_1000/
+tests/data/test_trees_10000/
+tests/data/test_trees_dtl01/
+
+# Vendored library (separate repo)
+logmatmul/
+
+# Generated graphs / session artifacts
+callgraph*
+*.session.txt
+2026-*.txt
+
+# Other
+torch/
