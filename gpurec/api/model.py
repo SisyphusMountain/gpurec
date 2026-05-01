@@ -18,6 +18,7 @@ and exposes ``theta`` as an ``nn.Parameter`` so notebook users can use any
 from __future__ import annotations
 
 import math
+import os
 from typing import Any, Optional
 
 import torch
@@ -254,6 +255,8 @@ class GeneReconModel(torch.nn.Module):
         device: Any = "cuda",
         dtype: torch.dtype = torch.float32,
         theta_init_rates: Optional[tuple[float, float, float]] = None,
+        preprocess_cache_dir: str | os.PathLike | None = None,
+        refresh_preprocess_cache: bool = False,
         **solver_kwargs,
     ) -> "GeneReconModel":
         """One-liner: Newick paths → ready-to-optimize model.
@@ -277,6 +280,11 @@ class GeneReconModel(torch.nn.Module):
         theta_init_rates : (D, L, T) | None
             Optional natural-space initial rates. If ``None``, the dataset
             default of ``log2(1e-10)`` is used (matching GeneDataset).
+        preprocess_cache_dir : str | os.PathLike | None
+            Optional directory for CPU preprocessing cache files. Reusing the
+            same cache avoids reparsing/rebuilding unchanged gene trees.
+        refresh_preprocess_cache : bool
+            Ignore existing preprocessing cache entries and overwrite them.
         """
         genewise, specieswise, pairwise = _mode_to_flags(mode)
         if isinstance(device, str):
@@ -289,6 +297,8 @@ class GeneReconModel(torch.nn.Module):
             pairwise=pairwise,
             dtype=dtype,
             device=device,
+            preprocess_cache_dir=preprocess_cache_dir,
+            refresh_preprocess_cache=refresh_preprocess_cache,
         )
         theta_init = None
         if theta_init_rates is not None:

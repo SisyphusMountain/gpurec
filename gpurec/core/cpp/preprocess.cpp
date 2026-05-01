@@ -1213,7 +1213,8 @@ compute_clade_waves(const CCPArrays &ccp, size_t C) {
  */
 py::dict preprocess_multiple_families(
     const std::string &species_path,
-    const std::map<std::string, std::vector<std::string>> &families) {
+    const std::map<std::string, std::vector<std::string>> &families,
+    bool include_details = true) {
 
   // Parse species tree once (shared across all families)
   std::unique_ptr<TreeNode> species_root = parse_newick_file(species_path);
@@ -1272,21 +1273,27 @@ py::dict preprocess_multiple_families(
     // Build leaf-to-species mapping
     std::vector<int64_t> leaf_row_index;
     std::vector<int64_t> leaf_col_index;
-    std::vector<std::vector<int64_t>> clade_leaves_indices(C);
-    std::vector<std::string> clade_leaf_labels(C);
-    std::vector<uint8_t> clade_is_leaf(C, 0);
+    std::vector<std::vector<int64_t>> clade_leaves_indices;
+    std::vector<std::string> clade_leaf_labels;
+    std::vector<uint8_t> clade_is_leaf;
+    if (include_details) {
+      clade_leaves_indices.resize(C);
+      clade_leaf_labels.resize(C);
+      clade_is_leaf.resize(C, 0);
+    }
 
     for (size_t cid = 0; cid < C; ++cid) {
       const Clade& clade = clade_data.clades.get(cid);
       const BitVec& bits = clade.bits();
-      std::vector<int64_t> &indices = clade_leaves_indices[cid];
       for (size_t word_index = 0; word_index < bits.size(); ++word_index) {
         uint64_t word = bits[word_index];
         while (word) {
           unsigned long bit = __builtin_ctzll(word);
           size_t leaf_idx = word_index * BITS_PER_WORD + bit;
           if (leaf_idx < leaf_names.size()) {
-            indices.push_back(static_cast<int64_t>(leaf_idx));
+            if (include_details) {
+              clade_leaves_indices[cid].push_back(static_cast<int64_t>(leaf_idx));
+            }
             if (clade.size() == 1) {
               const std::string &leaf_name = leaf_names[leaf_idx];
               std::string species = extract_species_name(leaf_name);
@@ -1298,22 +1305,29 @@ py::dict preprocess_multiple_families(
               }
               leaf_row_index.push_back(static_cast<int64_t>(cid));
               leaf_col_index.push_back(static_cast<int64_t>(it->second));
-              clade_leaf_labels[cid] = leaf_name;
+              if (include_details) {
+                clade_leaf_labels[cid] = leaf_name;
+              }
             }
           }
           word &= word - 1ULL;
         }
       }
-      std::sort(indices.begin(), indices.end());
-      if (clade.size() == 1) {
+      if (include_details) {
+        std::vector<int64_t> &indices = clade_leaves_indices[cid];
+        std::sort(indices.begin(), indices.end());
+      }
+      if (include_details && clade.size() == 1) {
         clade_is_leaf[cid] = 1;
       }
     }
 
     py::dict ccp_dict;
-    ccp_dict["clade_leaves"] = clade_leaves_indices;
-    ccp_dict["clade_leaf_labels"] = clade_leaf_labels;
-    ccp_dict["clade_is_leaf"] = to_uint8_tensor(clade_is_leaf);
+    if (include_details) {
+      ccp_dict["clade_leaves"] = clade_leaves_indices;
+      ccp_dict["clade_leaf_labels"] = clade_leaf_labels;
+      ccp_dict["clade_is_leaf"] = to_uint8_tensor(clade_is_leaf);
+    }
     ccp_dict["split_counts"] = to_long_tensor(ccp.split_counts);
     ccp_dict["split_order"] = to_long_tensor(ccp.split_order);
     ccp_dict["split_parents_sorted"] = to_long_tensor(ccp.split_parents_sorted);
@@ -1332,14 +1346,30 @@ py::dict preprocess_multiple_families(
     ccp_dict["C"] = static_cast<int64_t>(C);
     ccp_dict["N_splits"] = static_cast<int64_t>(clade_data.splits.size());
     ccp_dict["root_clade_id"] = clade_data.root_clade_id;
-    ccp_dict["inclusion_children"] = to_long_tensor(ccp.inclusion_children);
-    ccp_dict["inclusion_parents"] = to_long_tensor(ccp.inclusion_parents);
-    ccp_dict["ubiquitous_clade_id"] = ccp.ubiquitous_clade_id;
+    if (include_details) {
+      ccp_dict["inclusion_children"] = to_long_tensor(ccp.inclusion_children);
+      ccp_dict["inclusion_parents"] = to_long_tensor(ccp.inclusion_parents);
+      ccp_dict["ubiquitous_clade_id"] = ccp.ubiquitous_clade_id;
+    }
 
     auto [wave_level, n_waves] = compute_clade_waves(ccp, C);
     std::vector<int64_t> wave_level_i64(wave_level.begin(), wave_level.end());
     ccp_dict["clade_wave_level"] = to_long_tensor(wave_level_i64);
     ccp_dict["n_waves"] = static_cast<int64_t>(n_waves);
+
+    // Also compute phased waves (default max_wave_size = C, i.e. no limit).
+    // Keep this in sync with preprocess() so Python code can use the same
+    // scheduler metadata whether families are preprocessed singly or batched.
+    {
+      SchedData sd = build_sched_data(clade_data);
+      auto [phased_waves, phased_phases] = compute_phased_waves_impl(sd, static_cast<int>(C));
+      py::list py_waves;
+      for (const auto &w : phased_waves) {
+        py_waves.append(to_long_tensor(w));
+      }
+      ccp_dict["phased_waves"] = py_waves;
+      ccp_dict["phased_phases"] = phased_phases;
+    }
 
     py::dict family_dict;
     family_dict["ccp"] = ccp_dict;
@@ -2544,6 +2574,9 @@ py::list compute_cross_family_wave_stats(
 PYBIND11_MODULE(preprocess_cpp, m) {
   m.def("preprocess", &preprocess, "Preprocess species and gene trees");
   m.def("preprocess_multiple_families", &preprocess_multiple_families,
+        py::arg("species_path"),
+        py::arg("families"),
+        py::arg("include_details") = true,
         "Preprocess multiple gene families with shared species tree");
   m.def("compute_phased_waves", &compute_phased_waves,
         "Three-phase scheduler returning actual wave assignments (single family)");
@@ -2620,4 +2653,3 @@ PYBIND11_MODULE(preprocess_cpp, m) {
             t_parse+t_ccp+t_adj+t_waves, (t_parse+t_ccp+t_adj+t_waves)*1000/n_fam);
   }, "Benchmark parsing stages");
 }
-

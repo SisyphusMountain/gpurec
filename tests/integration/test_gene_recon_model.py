@@ -148,6 +148,42 @@ def test_adam_matches_optimize_theta_wave(trees):
         )
 
 
+def test_preprocess_cache_matches_single_path(trees, tmp_path, monkeypatch):
+    sp, genes = trees
+    genes = genes[:3]
+    kwargs = dict(
+        species_tree=sp,
+        gene_trees=genes,
+        mode="global",
+        pibar_mode="uniform",
+        device=_device(),
+        dtype=torch.float32,
+        theta_init_rates=(0.05, 0.05, 0.05),
+    )
+
+    monkeypatch.setenv("GPUREC_PREPROCESS_MODE", "single")
+    single = GeneReconModel.from_trees(**kwargs)
+    nll_single = float(single().item())
+
+    monkeypatch.delenv("GPUREC_PREPROCESS_MODE", raising=False)
+    cached_populate = GeneReconModel.from_trees(
+        **kwargs,
+        preprocess_cache_dir=tmp_path,
+    )
+    nll_populate = float(cached_populate().item())
+
+    cached_hit = GeneReconModel.from_trees(
+        **kwargs,
+        preprocess_cache_dir=tmp_path,
+    )
+    nll_hit = float(cached_hit().item())
+
+    assert nll_populate == nll_single
+    assert nll_hit == nll_single
+    assert list(tmp_path.glob("family-*.pt"))
+    assert list(tmp_path.glob("species-*.pt"))
+
+
 # ──────────────────────────────────────────────────────────────────────
 # 3. L-BFGS closure pattern
 # ──────────────────────────────────────────────────────────────────────

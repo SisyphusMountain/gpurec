@@ -1,4 +1,7 @@
 import math
+import os
+import hashlib
+from pathlib import Path
 from typing import Any
 
 import torch
@@ -26,6 +29,8 @@ class GeneDataset(Dataset):
         pairwise, # changes the size of theta
         dtype=torch.float32,
         device=None,
+        preprocess_cache_dir: str | os.PathLike | None = None,
+        refresh_preprocess_cache: bool = False,
     ):
         if device is None:
             device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -37,9 +42,35 @@ class GeneDataset(Dataset):
         self.dtype = dtype
         ext = _load_species_gene_ext()
 
-        # Preprocess first family to get species helpers
-        first_raw = ext.preprocess(species_tree_path, [str(gene_tree_paths[0])])
-        self.species_helpers = first_raw['species']
+        use_single_preprocess = os.environ.get("GPUREC_PREPROCESS_MODE", "").lower() == "single"
+        family_names = [f"family_{i:06d}" for i in range(len(gene_tree_paths))]
+        if use_single_preprocess:
+            raw_by_family = {
+                name: ext.preprocess(species_tree_path, [str(path)])
+                for name, path in zip(family_names, gene_tree_paths)
+            }
+            self.species_helpers = raw_by_family[family_names[0]]['species']
+        elif preprocess_cache_dir is not None:
+            self.species_helpers, raw_by_family = self._preprocess_with_cache(
+                ext,
+                species_tree_path,
+                gene_tree_paths,
+                family_names,
+                preprocess_cache_dir=preprocess_cache_dir,
+                refresh=refresh_preprocess_cache,
+            )
+        else:
+            families_input = {
+                name: [str(path)]
+                for name, path in zip(family_names, gene_tree_paths)
+            }
+            raw_all = ext.preprocess_multiple_families(
+                species_tree_path,
+                families_input,
+                False,
+            )
+            raw_by_family = raw_all['families']
+            self.species_helpers = raw_all['species']
         self.tr_mat_unnormalized = torch.log2(self.species_helpers["Recipients_mat"])
         self.unnorm_row_max = self.tr_mat_unnormalized.max(dim=-1).values  # [S], precomputed
         self.S = int(self.species_helpers['S'])
@@ -59,11 +90,8 @@ class GeneDataset(Dataset):
 
         _INV_LN2 = 1.0 / math.log(2.0)
         families = []
-        for i, gpath in enumerate(gene_tree_paths):
-            if i == 0:
-                raw = first_raw
-            else:
-                raw = ext.preprocess(species_tree_path, [str(gpath)])
+        for i, (gpath, family_name) in enumerate(zip(gene_tree_paths, family_names)):
+            raw = raw_by_family[family_name]
             ccp = raw['ccp']
             # Convert log_split_probs from ln (C++ output) to log2
             ccp['log_split_probs_sorted'] = ccp['log_split_probs_sorted'] * _INV_LN2
@@ -84,6 +112,87 @@ class GeneDataset(Dataset):
         self.species_tree_path = species_tree_path
 
         self.num_families = len(families)
+
+    @staticmethod
+    def _hash_file(path: str | os.PathLike) -> str:
+        h = hashlib.sha256()
+        with open(path, "rb") as fh:
+            for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+                h.update(chunk)
+        return h.hexdigest()
+
+    @classmethod
+    def _preprocess_with_cache(
+        cls,
+        ext,
+        species_tree_path,
+        gene_tree_paths,
+        family_names,
+        *,
+        preprocess_cache_dir: str | os.PathLike,
+        refresh: bool,
+    ):
+        cache_dir = Path(preprocess_cache_dir)
+        cache_dir.mkdir(parents=True, exist_ok=True)
+
+        version = "light-v1"
+        species_hash = cls._hash_file(species_tree_path)
+        species_key = hashlib.sha256(
+            f"{version}:species:{species_hash}".encode("utf-8")
+        ).hexdigest()
+        species_cache = cache_dir / f"species-{species_key}.pt"
+
+        species_helpers = None
+        if species_cache.exists() and not refresh:
+            species_helpers = torch.load(
+                species_cache,
+                map_location="cpu",
+                weights_only=False,
+            )
+
+        raw_by_family = {}
+        missing = {}
+        family_cache_paths = {}
+        for name, path in zip(family_names, gene_tree_paths):
+            gene_hash = cls._hash_file(path)
+            family_key = hashlib.sha256(
+                f"{version}:family:{species_hash}:{gene_hash}".encode("utf-8")
+            ).hexdigest()
+            cache_path = cache_dir / f"family-{family_key}.pt"
+            family_cache_paths[name] = cache_path
+            if cache_path.exists() and not refresh:
+                raw_by_family[name] = torch.load(
+                    cache_path,
+                    map_location="cpu",
+                    weights_only=False,
+                )
+            else:
+                missing[name] = [str(path)]
+
+        if missing:
+            raw_all = ext.preprocess_multiple_families(
+                species_tree_path,
+                missing,
+                False,
+            )
+            if species_helpers is None:
+                species_helpers = raw_all["species"]
+                torch.save(species_helpers, species_cache)
+
+            for name, raw in raw_all["families"].items():
+                raw_by_family[name] = raw
+                torch.save(raw, family_cache_paths[name])
+
+        if species_helpers is None:
+            raw_species = ext.preprocess_multiple_families(
+                species_tree_path,
+                {},
+                False,
+            )
+            species_helpers = raw_species["species"]
+            torch.save(species_helpers, species_cache)
+
+        return species_helpers, raw_by_family
     
     def __len__(self):
         return len(self.families)

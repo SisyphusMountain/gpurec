@@ -427,9 +427,42 @@ Full 1000-family run with 150-family chunks:
 | 6 | 100 | 634,820 | 50 | 158,830 | 266.704 ms | 11.160 GB |
 | Total | 1000 | 6,417,248 | - | - | 2,687.836 ms | - |
 
-The same run spent 590.0 s in repeated Newick preprocessing/model construction.
-That is outside the steady CUDA forward interval, but it is now the dominant
-end-to-end wall-clock cost for one-off evaluation.
+The previous same-chunk run spent 590.0 s in repeated Newick
+preprocessing/model construction. That work is outside the steady CUDA forward
+interval, but it dominated one-off end-to-end wall time.
+
+The current construction path now uses `preprocess_multiple_families` by
+default and asks C++ for a light likelihood-only output (`include_details=False`)
+that skips large unused CCP detail structures (`clade_leaves`,
+`clade_leaf_labels`, `clade_is_leaf`, and inclusion-DAG debug fields). The old
+single-family preprocess path is still available for debugging with
+`GPUREC_PREPROCESS_MODE=single`. `GeneReconModel.from_trees` also accepts
+`preprocess_cache_dir=...`; cache keys include the species tree content hash,
+gene tree content hash, and a format version.
+
+Construction timings, same `test_trees_1000` data and same likelihood:
+
+| Families | Path | Build/model construction | Forward | Loss |
+| ---: | --- | ---: | ---: | ---: |
+| 50 | old single-family preprocess | 25.923 s | 136.106 ms | 107804.273438 |
+| 50 | batched light preprocess | 16.493 s | 136.287 ms | 107804.273438 |
+| 50 | cache populate | 16.852 s | 136.446 ms | 107804.273438 |
+| 50 | cache hit | 0.120 s | 136.519 ms | 107804.273438 |
+| 150 | batched light preprocess | 49.568 s | 401.443 ms | 323018.687500 |
+| 150 | cache populate | 50.507 s | 402.962 ms | 323018.687500 |
+| 150 | cache hit | 0.313 s | 403.053 ms | 323018.687500 |
+
+Full 1000-family chunked construction and forward, with 150-family chunks:
+
+| Pass | Build/model construction | Forward | Total loss | Peak GPU | Max RSS |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Cache populate | 396.046 s | 2690.625 ms | 2157097.125 | 17.280 GB | 1.937 GB |
+| Cache hit | 2.131 s | 2698.202 ms | 2157097.125 | 17.280 GB | 1.937 GB |
+
+The first run is still CPU-bound by Newick/CCP construction, but it is down from
+about 590 s to about 396 s including cache writes. Reusing the cache reduces the
+1000-family construction overhead to about 2.1 s; at that point end-to-end
+likelihood evaluation is again dominated by the 2.7 s CUDA forward time.
 
 Nsight Systems comparison for a 150-family chunk:
 
