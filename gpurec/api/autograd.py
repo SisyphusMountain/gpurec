@@ -23,6 +23,7 @@ import torch
 from gpurec.core.likelihood import E_fixed_point, compute_log_likelihood
 from gpurec.core.forward import Pi_wave_forward
 from gpurec.core.backward import Pi_wave_backward
+from gpurec.core._helpers import _nvtx_range
 from gpurec.core.extract_parameters import (
     extract_parameters,
     extract_parameters_uniform,
@@ -63,6 +64,7 @@ class ReconStaticState:
     tol_E: float = 1e-8
     max_iters_Pi: int = 2000
     tol_Pi: float = 1e-6
+    fixed_iters_Pi: Optional[int] = 6
     neumann_terms: int = 3
     use_pruning: bool = True
     pruning_threshold: float = 1e-6
@@ -162,84 +164,91 @@ class _GeneReconFunction(torch.autograd.Function):
 
         with torch.no_grad():
             # 1. Extract parameters
-            log_pS, log_pD, log_pL, transfer_mat, max_transfer_vec = (
-                _extract_parameters(theta, static)
-            )
+            with _nvtx_range("forward extract parameters"):
+                log_pS, log_pD, log_pL, transfer_mat, max_transfer_vec = (
+                    _extract_parameters(theta, static)
+                )
 
             # 2. E fixed-point with warm start
-            E_out = E_fixed_point(
-                species_helpers=static.species_helpers,
-                log_pS=log_pS,
-                log_pD=log_pD,
-                log_pL=log_pL,
-                transfer_mat=transfer_mat,
-                max_transfer_mat=max_transfer_vec,
-                max_iters=static.max_iters_E,
-                tolerance=static.tol_E,
-                warm_start_E=static.warm_E,
-                dtype=dtype,
-                device=device,
-                pibar_mode=static.pibar_mode,
-                ancestors_T=static.ancestors_T,
-            )
-            E = E_out["E"]
-            E_s1 = E_out["E_s1"]
-            E_s2 = E_out["E_s2"]
-            Ebar = E_out["E_bar"]
+            with _nvtx_range("forward E fixed point"):
+                E_out = E_fixed_point(
+                    species_helpers=static.species_helpers,
+                    log_pS=log_pS,
+                    log_pD=log_pD,
+                    log_pL=log_pL,
+                    transfer_mat=transfer_mat,
+                    max_transfer_mat=max_transfer_vec,
+                    max_iters=static.max_iters_E,
+                    tolerance=static.tol_E,
+                    warm_start_E=static.warm_E,
+                    dtype=dtype,
+                    device=device,
+                    pibar_mode=static.pibar_mode,
+                    ancestors_T=static.ancestors_T,
+                )
+                E = E_out["E"]
+                E_s1 = E_out["E_s1"]
+                E_s2 = E_out["E_s2"]
+                Ebar = E_out["E_bar"]
 
             # 3. Pi wave forward
-            Pi_out = Pi_wave_forward(
-                wave_layout=static.wave_layout,
-                species_helpers=static.species_helpers,
-                E=E,
-                Ebar=Ebar,
-                E_s1=E_s1,
-                E_s2=E_s2,
-                log_pS=log_pS,
-                log_pD=log_pD,
-                log_pL=log_pL,
-                transfer_mat=transfer_mat,
-                max_transfer_mat=max_transfer_vec,
-                device=device,
-                dtype=dtype,
-                local_iters=static.max_iters_Pi,
-                local_tolerance=static.tol_Pi,
-                pibar_mode=static.pibar_mode,
-                family_idx=(
-                    static.wave_layout.get("family_idx") if static.genewise else None
-                ),
-            )
+            with _nvtx_range("forward Pi waves"):
+                Pi_out = Pi_wave_forward(
+                    wave_layout=static.wave_layout,
+                    species_helpers=static.species_helpers,
+                    E=E,
+                    Ebar=Ebar,
+                    E_s1=E_s1,
+                    E_s2=E_s2,
+                    log_pS=log_pS,
+                    log_pD=log_pD,
+                    log_pL=log_pL,
+                    transfer_mat=transfer_mat,
+                    max_transfer_mat=max_transfer_vec,
+                    device=device,
+                    dtype=dtype,
+                    local_iters=static.max_iters_Pi,
+                    local_tolerance=static.tol_Pi,
+                    fixed_iters=static.fixed_iters_Pi,
+                    pibar_mode=static.pibar_mode,
+                    family_idx=(
+                        static.wave_layout.get("family_idx") if static.genewise else None
+                    ),
+                )
 
             # 4. NLL: compute_log_likelihood returns NLL despite the name (see
             #    gpurec/core/likelihood.py:180). nll_vec is per-family.
-            nll_vec = compute_log_likelihood(
-                Pi_out["Pi"], E, static.root_clade_ids
-            )
+            with _nvtx_range("forward root likelihood"):
+                nll_vec = compute_log_likelihood(
+                    Pi_out["Pi"], E, static.root_clade_ids
+                )
 
         # 5. Save state for backward.
-        ctx.save_for_backward(
-            theta,
-            Pi_out["Pi_wave_ordered"],
-            Pi_out["Pibar_wave_ordered"],
-            E,
-            E_s1,
-            E_s2,
-            Ebar,
-            log_pS,
-            log_pD,
-            log_pL,
-            max_transfer_vec,
-        )
-        # transfer_mat may be None (uniform mode); store as ctx attribute.
-        ctx.transfer_mat = transfer_mat
-        ctx.static = static
-        ctx.reduce = reduce
+        with _nvtx_range("forward save outputs"):
+            ctx.save_for_backward(
+                theta,
+                Pi_out["Pi_wave_ordered"],
+                Pi_out["Pibar_wave_ordered"],
+                E,
+                E_s1,
+                E_s2,
+                Ebar,
+                log_pS,
+                log_pD,
+                log_pL,
+                max_transfer_vec,
+            )
+            # transfer_mat may be None (uniform mode); store as ctx attribute.
+            ctx.transfer_mat = transfer_mat
+            ctx.static = static
+            ctx.reduce = reduce
 
         # 6. Update warm-start cache (in-place mutation of the shared static).
-        static.warm_E = E.detach()
+        with _nvtx_range("forward reduce"):
+            static.warm_E = E.detach()
 
-        # 7. Reduce.
-        return nll_vec.sum() if reduce == "sum" else nll_vec
+            # 7. Reduce.
+            return nll_vec.sum() if reduce == "sum" else nll_vec
 
     @staticmethod
     @torch.autograd.function.once_differentiable

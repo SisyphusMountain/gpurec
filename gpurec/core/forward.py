@@ -1,10 +1,22 @@
 """Forward pass: Pi_wave_forward and helpers."""
+import os
+
 import torch
 
 from .log2_utils import logsumexp2, logaddexp2
 from .log2_utils import _safe_log2_internal as _safe_log2
 from .kernels.scatter_lse import seg_logsumexp
-from .kernels.wave_step import wave_step_fused, wave_pibar_step_fused
+from .kernels.wave_step import (
+    build_uniform_linear_operator,
+    wave_step_fused,
+    wave_pibar_step_fused,
+    wave_step_uniform_fused,
+    wave_step_uniform_ancestor_fused,
+    wave_step_uniform_csr_fused,
+    wave_step_uniform_two_kernel_fused,
+    wave_step_uniform_linear_fused,
+    wave_pibar_uniform_fused,
+)
 from .kernels.dts_fused import dts_fused
 from ._logmatmul_compat import (
     HAS_LOGMATMUL as _HAS_LOGMATMUL,
@@ -101,6 +113,18 @@ def _compute_Pibar_inline(Pi_W, transfer_mat_T, mt_squeezed, pibar_mode,
     return Pibar_W.contiguous()
 
 
+def _compute_Pibar_uniform_spmm(Pi_W, ancestors_sparse, mt_squeezed):
+    """Compute uniform Pibar via sparse ancestors @ dense Pi_exp.T."""
+    Pi_max = Pi_W.max(dim=1, keepdim=True).values
+    Pi_exp = torch.exp2(Pi_W - Pi_max)
+    row_sum = Pi_exp.sum(dim=1, keepdim=True)
+    # cuSPARSE handles the [S, W] RHS much better when it is physically
+    # contiguous. For large waves this copy is cheaper than strided CSRMM.
+    ancestor_sum = torch.sparse.mm(ancestors_sparse, Pi_exp.T.contiguous()).T.contiguous()
+    Pibar_W = _safe_log2(row_sum - ancestor_sum) + Pi_max + mt_squeezed
+    return Pibar_W.contiguous()
+
+
 # ---------------------------------------------------------------------------
 # DTS reduced (small-S path)
 # ---------------------------------------------------------------------------
@@ -127,6 +151,134 @@ def _compute_DTS_reduced(Pi, Pibar, lr, n_ws, S, W, log_pD, log_pS,
     DTS_sum = torch.zeros((W, S), device=device, dtype=dtype)
     DTS_sum.scatter_add_(0, reduce_exp, torch.exp2(DTS_term - DTS_max_safe[reduce_idx]))
     return torch.log2(DTS_sum) + DTS_max
+
+
+def _get_species_wave_helpers(species_helpers, S, device, use_uniform_fused):
+    """Return cached species child/parent helpers for wave kernels."""
+    target_device = torch.device(device)
+    if target_device.type == 'cuda' and target_device.index is None:
+        target_device = torch.device('cuda', torch.cuda.current_device())
+    cache = species_helpers.get('_wave_forward_species_cache')
+    if cache is not None and int(cache.get('S', -1)) == int(S):
+        sp_child1 = cache.get('sp_child1')
+        sp_child2 = cache.get('sp_child2')
+        sp_parent = cache.get('sp_parent')
+        ancestor_cols = cache.get('ancestor_cols')
+        ancestor_csr_indptr = cache.get('ancestor_csr_indptr')
+        ancestor_csr_indices = cache.get('ancestor_csr_indices')
+        cache_ok = (
+            torch.is_tensor(sp_child1)
+            and torch.is_tensor(sp_child2)
+            and sp_child1.device == target_device
+            and sp_child2.device == target_device
+        )
+        if use_uniform_fused:
+            cache_ok = (
+                cache_ok
+                and torch.is_tensor(sp_parent)
+                and sp_parent.device == target_device
+                and torch.is_tensor(ancestor_cols)
+                and ancestor_cols.device == target_device
+                and torch.is_tensor(ancestor_csr_indptr)
+                and ancestor_csr_indptr.device == target_device
+                and torch.is_tensor(ancestor_csr_indices)
+                and ancestor_csr_indices.device == target_device
+            )
+        if cache_ok:
+            return (
+                sp_child1,
+                sp_child2,
+                sp_parent if use_uniform_fused else None,
+                int(cache.get('max_ancestor_depth', 0)),
+                cache.get('sp_child1_cpu'),
+                cache.get('sp_child2_cpu'),
+                cache.get('sp_parent_cpu'),
+                ancestor_cols if use_uniform_fused else None,
+                ancestor_csr_indptr if use_uniform_fused else None,
+                ancestor_csr_indices if use_uniform_fused else None,
+            )
+
+    sp_P_idx = species_helpers['s_P_indexes']
+    sp_c12_idx = species_helpers['s_C12_indexes']
+    p_cpu = sp_P_idx.cpu().long()
+    c_cpu = sp_c12_idx.cpu().long()
+    mask_c1 = p_cpu < S
+
+    sp_child1_cpu = torch.full((S,), S, dtype=torch.long)
+    sp_child2_cpu = torch.full((S,), S, dtype=torch.long)
+    sp_child1_cpu[p_cpu[mask_c1]] = c_cpu[mask_c1]
+    sp_child2_cpu[p_cpu[~mask_c1] - S] = c_cpu[~mask_c1]
+
+    sp_parent_cpu = None
+    sp_parent = None
+    ancestor_cols = None
+    ancestor_cols_cpu = None
+    ancestor_csr_indptr = None
+    ancestor_csr_indices = None
+    ancestor_csr_indptr_cpu = None
+    ancestor_csr_indices_cpu = None
+    max_ancestor_depth = 0
+    if use_uniform_fused:
+        sp_parent_cpu = torch.full((S,), -1, dtype=torch.long)
+        sp_parent_cpu[c_cpu[mask_c1]] = p_cpu[mask_c1]
+        sp_parent_cpu[c_cpu[~mask_c1]] = p_cpu[~mask_c1] - S
+
+        parent_values = sp_parent_cpu.tolist()
+        ancestor_lists = []
+        for s_idx in range(S):
+            depth = 0
+            cur = s_idx
+            ancestors = []
+            while cur >= 0:
+                ancestors.append(cur)
+                depth += 1
+                if depth > S:
+                    raise RuntimeError("Cycle detected in species parent pointers")
+                cur = parent_values[cur]
+            ancestor_lists.append(ancestors)
+            max_ancestor_depth = max(max_ancestor_depth, depth)
+        ancestor_cols_cpu = torch.full((S, max_ancestor_depth), -1, dtype=torch.long)
+        for s_idx, ancestors in enumerate(ancestor_lists):
+            ancestor_cols_cpu[s_idx, :len(ancestors)] = torch.tensor(ancestors, dtype=torch.long)
+        csr_indptr = [0]
+        csr_indices = []
+        for ancestors in ancestor_lists:
+            csr_indices.extend(ancestors)
+            csr_indptr.append(len(csr_indices))
+        ancestor_csr_indptr_cpu = torch.tensor(csr_indptr, dtype=torch.int32)
+        ancestor_csr_indices_cpu = torch.tensor(csr_indices, dtype=torch.int32)
+        sp_parent = sp_parent_cpu.to(target_device)
+        ancestor_cols = ancestor_cols_cpu.T.contiguous().to(target_device)
+        ancestor_csr_indptr = ancestor_csr_indptr_cpu.to(target_device)
+        ancestor_csr_indices = ancestor_csr_indices_cpu.to(target_device)
+
+    sp_child1 = sp_child1_cpu.to(target_device)
+    sp_child2 = sp_child2_cpu.to(target_device)
+    species_helpers['_wave_forward_species_cache'] = {
+        'S': int(S),
+        'sp_child1': sp_child1,
+        'sp_child2': sp_child2,
+        'sp_parent': sp_parent,
+        'ancestor_cols': ancestor_cols,
+        'ancestor_csr_indptr': ancestor_csr_indptr,
+        'ancestor_csr_indices': ancestor_csr_indices,
+        'max_ancestor_depth': int(max_ancestor_depth),
+        'sp_child1_cpu': sp_child1_cpu,
+        'sp_child2_cpu': sp_child2_cpu,
+        'sp_parent_cpu': sp_parent_cpu,
+    }
+    return (
+        sp_child1,
+        sp_child2,
+        sp_parent,
+        int(max_ancestor_depth),
+        sp_child1_cpu,
+        sp_child2_cpu,
+        sp_parent_cpu,
+        ancestor_cols,
+        ancestor_csr_indptr,
+        ancestor_csr_indices,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -294,65 +446,133 @@ def Pi_wave_forward(
     C = int(ccp_helpers['C'])
     S = int(species_helpers['S'])
 
-    _PI_INIT = torch.finfo(dtype).min
-    Pi = torch.full((C, S), _PI_INIT, dtype=dtype, device=device)
-    Pi[leaf_row_index.to(device), leaf_col_index.to(device)] = 0.0
-    Pibar = torch.full((C, S), NEG_INF, dtype=dtype, device=device)
-
-    sp_P_idx = species_helpers['s_P_indexes']
-    sp_c12_idx = species_helpers['s_C12_indexes']
-    p_cpu = sp_P_idx.cpu().long()
-    c_cpu = sp_c12_idx.cpu().long()
-    mask_c1 = p_cpu < S
-    sp_child1_cpu = torch.full((S,), S, dtype=torch.long)
-    sp_child2_cpu = torch.full((S,), S, dtype=torch.long)
-    sp_child1_cpu[p_cpu[mask_c1]] = c_cpu[mask_c1]
-    sp_child2_cpu[p_cpu[~mask_c1] - S] = c_cpu[~mask_c1]
-    sp_child1 = sp_child1_cpu.to(device)
-    sp_child2 = sp_child2_cpu.to(device)
+    with _nvtx_range("Pi setup tensors"):
+        _PI_INIT = torch.finfo(dtype).min
+        Pi = torch.full((C, S), _PI_INIT, dtype=dtype, device=device)
+        Pi[leaf_row_index.to(device), leaf_col_index.to(device)] = 0.0
+        Pibar = torch.full((C, S), NEG_INF, dtype=dtype, device=device)
 
     batched = family_idx is not None
+    use_uniform_fused = (pibar_mode == 'uniform' and torch.device(device).type == 'cuda')
+    uniform_impl = os.environ.get("GPUREC_UNIFORM_IMPL", "").lower().replace("-", "_")
+    use_uniform_csr = (
+        use_uniform_fused
+        and not batched
+        and uniform_impl in (
+            "spmm", "sparse", "sparse_mm", "sparse_matmul",
+            "csr", "csr_spmm", "triton_spmm", "fused_spmm",
+        )
+    )
+    use_uniform_spmm = (
+        use_uniform_fused
+        and not batched
+        and not use_uniform_csr
+        and uniform_impl in ("torch_spmm", "torch_sparse", "torch_sparse_mm")
+    )
+    use_uniform_linear = (
+        use_uniform_fused
+        and not use_uniform_csr
+        and not use_uniform_spmm
+        and not batched
+        and (
+            os.environ.get("GPUREC_UNIFORM_LINEAR_OPERATOR", "0") == "1"
+            or uniform_impl == "linear"
+        )
+    )
+    use_uniform_two_kernel = (
+        use_uniform_fused
+        and not use_uniform_linear
+        and not use_uniform_csr
+        and not use_uniform_spmm
+        and (
+            os.environ.get("GPUREC_UNIFORM_TWO_KERNEL", "0") == "1"
+            or uniform_impl in ("two", "two_kernel", "two_kernels")
+        )
+    )
+    use_uniform_ancestor = (
+        use_uniform_fused
+        and not use_uniform_linear
+        and not use_uniform_two_kernel
+        and not use_uniform_csr
+        and not use_uniform_spmm
+        and uniform_impl in ("ancestor", "ancestors", "ancestor_list", "ancestor_table")
+    )
+
+    sp_parent = None
+    ancestor_cols = None
+    ancestor_csr_indptr = None
+    ancestor_csr_indices = None
+    max_ancestor_depth = 0
+    with _nvtx_range("Pi setup species helpers"):
+        (
+            sp_child1,
+            sp_child2,
+            sp_parent,
+            max_ancestor_depth,
+            sp_child1_cpu,
+            sp_child2_cpu,
+            sp_parent_cpu,
+            ancestor_cols,
+            ancestor_csr_indptr,
+            ancestor_csr_indices,
+        ) = _get_species_wave_helpers(species_helpers, S, device, use_uniform_fused)
 
     # Precompute constant DTS_L terms — [S] when shared, [G, S] when batched.
     # When genewise non-specieswise, log_pD/log_pS are [G] (1D) but E is [G, S].
     # Unsqueeze to [G, 1] so broadcasting produces [G, S].
-    _pD = log_pD.unsqueeze(-1) if batched and log_pD.ndim == 1 else log_pD
-    _pS = log_pS.unsqueeze(-1) if batched and log_pS.ndim == 1 else log_pS
-    DL_const = 1.0 + _pD + E
-    SL1_const = _pS + E_s2
-    SL2_const = _pS + E_s1
+    with _nvtx_range("Pi setup DTS constants"):
+        _pD = log_pD.unsqueeze(-1) if batched and log_pD.ndim == 1 else log_pD
+        _pS = log_pS.unsqueeze(-1) if batched and log_pS.ndim == 1 else log_pS
+        DL_const = 1.0 + _pD + E
+        SL1_const = _pS + E_s2
+        SL2_const = _pS + E_s1
 
     ancestors_T_mat = None
-    if pibar_mode == 'topk':
-        clade_species_map = None
-        leaf_term = None
-        transfer_mat_T = transfer_mat.T.contiguous()
-        transfer_mat_c = None
-    elif pibar_mode == 'uniform':
-        anc_dense = species_helpers['ancestors_dense'].to(device=device, dtype=dtype)
-        ancestors_T_mat = anc_dense.T.to_sparse_coo()
-        clade_species_map = torch.full((C, S), NEG_INF, device=device, dtype=dtype)
-        clade_species_map[leaf_row_index, leaf_col_index] = 0.0
-        leaf_term = None if batched else log_pS + clade_species_map
-        transfer_mat_T = None
-        transfer_mat_c = None
-    else:
-        clade_species_map = torch.full((C, S), NEG_INF, device=device, dtype=dtype)
-        clade_species_map[leaf_row_index, leaf_col_index] = 0.0
-        leaf_term = None if batched else log_pS + clade_species_map
-        if transfer_mat is not None:
-            if transfer_mat.ndim == 2:
-                transfer_mat_T = transfer_mat.T.contiguous()
-                transfer_mat_c = transfer_mat.contiguous()
-            else:
-                # [G, S, S] — precompute transposed version for per-family Pibar
-                transfer_mat_T = transfer_mat.transpose(1, 2).contiguous()
-                transfer_mat_c = None
-        else:
+    ancestors_spmm_mat = None
+    with _nvtx_range("Pi setup pibar mode"):
+        if pibar_mode == 'topk':
+            clade_species_map = None
+            leaf_term = None
+            transfer_mat_T = transfer_mat.T.contiguous()
+            transfer_mat_c = None
+        elif pibar_mode == 'uniform':
+            if use_uniform_spmm:
+                anc_dense = species_helpers['ancestors_dense'].to(device=device, dtype=dtype)
+                ancestors_spmm_mat = anc_dense.to_sparse_csr()
+            elif not use_uniform_fused:
+                anc_dense = species_helpers['ancestors_dense'].to(device=device, dtype=dtype)
+                ancestors_T_mat = anc_dense.T.to_sparse_coo()
+            clade_species_map = torch.full((C, S), NEG_INF, device=device, dtype=dtype)
+            clade_species_map[leaf_row_index, leaf_col_index] = 0.0
+            leaf_term = None if batched else log_pS + clade_species_map
             transfer_mat_T = None
             transfer_mat_c = None
+        else:
+            clade_species_map = torch.full((C, S), NEG_INF, device=device, dtype=dtype)
+            clade_species_map[leaf_row_index, leaf_col_index] = 0.0
+            leaf_term = None if batched else log_pS + clade_species_map
+            if transfer_mat is not None:
+                if transfer_mat.ndim == 2:
+                    transfer_mat_T = transfer_mat.T.contiguous()
+                    transfer_mat_c = transfer_mat.contiguous()
+                else:
+                    # [G, S, S] — precompute transposed version for per-family Pibar
+                    transfer_mat_T = transfer_mat.transpose(1, 2).contiguous()
+                    transfer_mat_c = None
+            else:
+                transfer_mat_T = None
+                transfer_mat_c = None
 
-    mt_squeezed = max_transfer_mat.squeeze(-1) if max_transfer_mat.ndim > 1 else max_transfer_mat
+    with _nvtx_range("Pi setup uniform linear"):
+        mt_squeezed = max_transfer_mat.squeeze(-1) if max_transfer_mat.ndim > 1 else max_transfer_mat
+        uniform_linear_op = None
+        uniform_linear_debug_guard = os.environ.get("GPUREC_DEBUG_UNIFORM_LINEAR_GUARD", "1") != "0"
+        if use_uniform_linear:
+            uniform_linear_op = build_uniform_linear_operator(
+                DL_const, Ebar, E, SL1_const, SL2_const, mt_squeezed,
+                sp_parent_cpu, sp_child1_cpu, sp_child2_cpu,
+                device=device, dtype=dtype,
+            )
 
     def _get_leaf_mask(ws, we):
         """Return [W, S] mask with 0.0 at leaf positions, NEG_INF elsewhere."""
@@ -468,26 +688,135 @@ def Pi_wave_forward(
                         total_iters += 1
                         Pi_W = Pi[ws:we]
 
-                        Pibar_W = _compute_Pibar_inline(Pi_W, tm_T_w, mt_w, pibar_mode,
-                                                        ancestors_T=ancestors_T_mat,
-                                                        topk_k=topk_k,
-                                                        family_ids=fi_w_dense)
+                        if use_uniform_linear:
+                            compute_diff = not use_fixed and local_iter >= min_warmup
+                            Pi_new, max_diff = wave_step_uniform_linear_fused(
+                                Pi, ws, W, S,
+                                uniform_linear_op['op_cols'],
+                                uniform_linear_op['op_vals'],
+                                uniform_linear_op['v_scaled'],
+                                uniform_linear_op['row_scale'],
+                                leaf_wt, dts_r,
+                                compute_diff=compute_diff,
+                                debug_guard=uniform_linear_debug_guard,
+                            )
 
-                        Pi_new = wave_step_fused(
-                            Pi_W, Pibar_W,
-                            DL_w, Ebar_w, E_w, SL1_w, SL2_w,
-                            sp_child1, sp_child2, leaf_wt, dts_r,
-                        )
-
-                        if not use_fixed and local_iter >= min_warmup:
-                            significant = Pi_new > -100.0
-                            if not significant.any() or torch.abs(Pi_new - Pi_W)[significant].max().item() < local_tolerance:
+                            if compute_diff and max_diff.item() < local_tolerance:
                                 Pi[ws:we] = Pi_new
-                                Pibar[ws:we] = Pibar_W
                                 break
 
-                        Pi[ws:we] = Pi_new
-                        Pibar[ws:we] = Pibar_W
+                            Pi[ws:we] = Pi_new
+                        elif use_uniform_two_kernel:
+                            compute_diff = not use_fixed and local_iter >= min_warmup
+                            Pi_new, max_diff = wave_step_uniform_two_kernel_fused(
+                                Pi, Pibar, ws, W, S,
+                                mt_w, DL_w, Ebar_w, E_w, SL1_w, SL2_w,
+                                sp_child1, sp_child2, sp_parent, max_ancestor_depth,
+                                leaf_wt, dts_r,
+                                compute_diff=compute_diff,
+                            )
+
+                            if compute_diff and max_diff.item() < local_tolerance:
+                                Pi[ws:we] = Pi_new
+                                break
+
+                            Pi[ws:we] = Pi_new
+                        elif use_uniform_ancestor:
+                            compute_diff = not use_fixed and local_iter >= min_warmup
+                            Pi_new, max_diff = wave_step_uniform_ancestor_fused(
+                                Pi, Pibar, ws, W, S,
+                                mt_w, DL_w, Ebar_w, E_w, SL1_w, SL2_w,
+                                sp_child1, sp_child2, ancestor_cols,
+                                leaf_wt, dts_r,
+                                compute_diff=compute_diff,
+                            )
+
+                            if compute_diff and max_diff.item() < local_tolerance:
+                                Pi[ws:we] = Pi_new
+                                break
+
+                            Pi[ws:we] = Pi_new
+                        elif use_uniform_csr:
+                            compute_diff = not use_fixed and local_iter >= min_warmup
+                            Pi_new, max_diff = wave_step_uniform_csr_fused(
+                                Pi, Pibar, ws, W, S,
+                                mt_w, DL_w, Ebar_w, E_w, SL1_w, SL2_w,
+                                sp_child1, sp_child2, ancestor_csr_indptr,
+                                ancestor_csr_indices, max_ancestor_depth,
+                                leaf_wt, dts_r,
+                                compute_diff=compute_diff,
+                            )
+
+                            if compute_diff and max_diff.item() < local_tolerance:
+                                Pi[ws:we] = Pi_new
+                                break
+
+                            Pi[ws:we] = Pi_new
+                        elif use_uniform_spmm:
+                            Pibar_W = _compute_Pibar_uniform_spmm(
+                                Pi_W,
+                                ancestors_spmm_mat,
+                                mt_w,
+                            )
+
+                            Pi_new = wave_step_fused(
+                                Pi_W, Pibar_W,
+                                DL_w, Ebar_w, E_w, SL1_w, SL2_w,
+                                sp_child1, sp_child2, leaf_wt, dts_r,
+                            )
+
+                            if not use_fixed and local_iter >= min_warmup:
+                                significant = Pi_new > -100.0
+                                if not significant.any() or torch.abs(Pi_new - Pi_W)[significant].max().item() < local_tolerance:
+                                    Pi[ws:we] = Pi_new
+                                    Pibar[ws:we] = Pibar_W
+                                    break
+
+                            Pi[ws:we] = Pi_new
+                            Pibar[ws:we] = Pibar_W
+                        elif use_uniform_fused:
+                            compute_diff = not use_fixed and local_iter >= min_warmup
+                            Pi_new, max_diff = wave_step_uniform_fused(
+                                Pi, Pibar, ws, W, S,
+                                mt_w, DL_w, Ebar_w, E_w, SL1_w, SL2_w,
+                                sp_child1, sp_child2, sp_parent, max_ancestor_depth,
+                                leaf_wt, dts_r,
+                                compute_diff=compute_diff,
+                            )
+
+                            if compute_diff and max_diff.item() < local_tolerance:
+                                Pi[ws:we] = Pi_new
+                                break
+
+                            Pi[ws:we] = Pi_new
+                        else:
+                            Pibar_W = _compute_Pibar_inline(Pi_W, tm_T_w, mt_w, pibar_mode,
+                                                            ancestors_T=ancestors_T_mat,
+                                                            topk_k=topk_k,
+                                                            family_ids=fi_w_dense)
+
+                            Pi_new = wave_step_fused(
+                                Pi_W, Pibar_W,
+                                DL_w, Ebar_w, E_w, SL1_w, SL2_w,
+                                sp_child1, sp_child2, leaf_wt, dts_r,
+                            )
+
+                            if not use_fixed and local_iter >= min_warmup:
+                                significant = Pi_new > -100.0
+                                if not significant.any() or torch.abs(Pi_new - Pi_W)[significant].max().item() < local_tolerance:
+                                    Pi[ws:we] = Pi_new
+                                    Pibar[ws:we] = Pibar_W
+                                    break
+
+                            Pi[ws:we] = Pi_new
+                            Pibar[ws:we] = Pibar_W
+
+                    if use_uniform_linear:
+                        wave_pibar_uniform_fused(
+                            Pi, Pibar, ws, W, S,
+                            mt_w,
+                            uniform_linear_op['ancestor_cols'],
+                        )
 
                     if wi + 1 < n_waves:
                         meta_next = wave_metas[wi + 1]
@@ -532,26 +861,135 @@ def Pi_wave_forward(
                         total_iters += 1
                         Pi_W = Pi[ws:we]
 
-                        Pibar_W = _compute_Pibar_inline(Pi_W, tm_T_w, mt_w, pibar_mode,
-                                                        ancestors_T=ancestors_T_mat,
-                                                        topk_k=topk_k,
-                                                        family_ids=fi_w_dense)
+                        if use_uniform_linear:
+                            compute_diff = not use_fixed and local_iter >= min_warmup
+                            Pi_new, max_diff = wave_step_uniform_linear_fused(
+                                Pi, ws, W, S,
+                                uniform_linear_op['op_cols'],
+                                uniform_linear_op['op_vals'],
+                                uniform_linear_op['v_scaled'],
+                                uniform_linear_op['row_scale'],
+                                leaf_wt, dts_r,
+                                compute_diff=compute_diff,
+                                debug_guard=uniform_linear_debug_guard,
+                            )
 
-                        Pi_new = wave_step_fused(
-                            Pi_W, Pibar_W,
-                            DL_w, Ebar_w, E_w, SL1_w, SL2_w,
-                            sp_child1, sp_child2, leaf_wt, dts_r,
-                        )
-
-                        if not use_fixed and local_iter >= min_warmup:
-                            significant = Pi_new > -100.0
-                            if not significant.any() or torch.abs(Pi_new - Pi_W)[significant].max().item() < local_tolerance:
+                            if compute_diff and max_diff.item() < local_tolerance:
                                 Pi[ws:we] = Pi_new
-                                Pibar[ws:we] = Pibar_W
                                 break
 
-                        Pi[ws:we] = Pi_new
-                        Pibar[ws:we] = Pibar_W
+                            Pi[ws:we] = Pi_new
+                        elif use_uniform_two_kernel:
+                            compute_diff = not use_fixed and local_iter >= min_warmup
+                            Pi_new, max_diff = wave_step_uniform_two_kernel_fused(
+                                Pi, Pibar, ws, W, S,
+                                mt_w, DL_w, Ebar_w, E_w, SL1_w, SL2_w,
+                                sp_child1, sp_child2, sp_parent, max_ancestor_depth,
+                                leaf_wt, dts_r,
+                                compute_diff=compute_diff,
+                            )
+
+                            if compute_diff and max_diff.item() < local_tolerance:
+                                Pi[ws:we] = Pi_new
+                                break
+
+                            Pi[ws:we] = Pi_new
+                        elif use_uniform_ancestor:
+                            compute_diff = not use_fixed and local_iter >= min_warmup
+                            Pi_new, max_diff = wave_step_uniform_ancestor_fused(
+                                Pi, Pibar, ws, W, S,
+                                mt_w, DL_w, Ebar_w, E_w, SL1_w, SL2_w,
+                                sp_child1, sp_child2, ancestor_cols,
+                                leaf_wt, dts_r,
+                                compute_diff=compute_diff,
+                            )
+
+                            if compute_diff and max_diff.item() < local_tolerance:
+                                Pi[ws:we] = Pi_new
+                                break
+
+                            Pi[ws:we] = Pi_new
+                        elif use_uniform_csr:
+                            compute_diff = not use_fixed and local_iter >= min_warmup
+                            Pi_new, max_diff = wave_step_uniform_csr_fused(
+                                Pi, Pibar, ws, W, S,
+                                mt_w, DL_w, Ebar_w, E_w, SL1_w, SL2_w,
+                                sp_child1, sp_child2, ancestor_csr_indptr,
+                                ancestor_csr_indices, max_ancestor_depth,
+                                leaf_wt, dts_r,
+                                compute_diff=compute_diff,
+                            )
+
+                            if compute_diff and max_diff.item() < local_tolerance:
+                                Pi[ws:we] = Pi_new
+                                break
+
+                            Pi[ws:we] = Pi_new
+                        elif use_uniform_spmm:
+                            Pibar_W = _compute_Pibar_uniform_spmm(
+                                Pi_W,
+                                ancestors_spmm_mat,
+                                mt_w,
+                            )
+
+                            Pi_new = wave_step_fused(
+                                Pi_W, Pibar_W,
+                                DL_w, Ebar_w, E_w, SL1_w, SL2_w,
+                                sp_child1, sp_child2, leaf_wt, dts_r,
+                            )
+
+                            if not use_fixed and local_iter >= min_warmup:
+                                significant = Pi_new > -100.0
+                                if not significant.any() or torch.abs(Pi_new - Pi_W)[significant].max().item() < local_tolerance:
+                                    Pi[ws:we] = Pi_new
+                                    Pibar[ws:we] = Pibar_W
+                                    break
+
+                            Pi[ws:we] = Pi_new
+                            Pibar[ws:we] = Pibar_W
+                        elif use_uniform_fused:
+                            compute_diff = not use_fixed and local_iter >= min_warmup
+                            Pi_new, max_diff = wave_step_uniform_fused(
+                                Pi, Pibar, ws, W, S,
+                                mt_w, DL_w, Ebar_w, E_w, SL1_w, SL2_w,
+                                sp_child1, sp_child2, sp_parent, max_ancestor_depth,
+                                leaf_wt, dts_r,
+                                compute_diff=compute_diff,
+                            )
+
+                            if compute_diff and max_diff.item() < local_tolerance:
+                                Pi[ws:we] = Pi_new
+                                break
+
+                            Pi[ws:we] = Pi_new
+                        else:
+                            Pibar_W = _compute_Pibar_inline(Pi_W, tm_T_w, mt_w, pibar_mode,
+                                                            ancestors_T=ancestors_T_mat,
+                                                            topk_k=topk_k,
+                                                            family_ids=fi_w_dense)
+
+                            Pi_new = wave_step_fused(
+                                Pi_W, Pibar_W,
+                                DL_w, Ebar_w, E_w, SL1_w, SL2_w,
+                                sp_child1, sp_child2, leaf_wt, dts_r,
+                            )
+
+                            if not use_fixed and local_iter >= min_warmup:
+                                significant = Pi_new > -100.0
+                                if not significant.any() or torch.abs(Pi_new - Pi_W)[significant].max().item() < local_tolerance:
+                                    Pi[ws:we] = Pi_new
+                                    Pibar[ws:we] = Pibar_W
+                                    break
+
+                            Pi[ws:we] = Pi_new
+                            Pibar[ws:we] = Pibar_W
+
+                    if use_uniform_linear:
+                        wave_pibar_uniform_fused(
+                            Pi, Pibar, ws, W, S,
+                            mt_w,
+                            uniform_linear_op['ancestor_cols'],
+                        )
 
             torch.backends.cuda.matmul.allow_tf32 = prev_tf32
         else:
@@ -604,9 +1042,10 @@ def Pi_wave_forward(
                     Pi[ws:we] = Pi_new
                     Pibar[ws:we] = Pibar_W_buf
 
-    perm = wave_layout['perm']
-    Pi_orig = Pi[perm]
-    clade_species_map_orig = clade_species_map[perm] if clade_species_map is not None else None
+    with _nvtx_range("Pi finalize permute"):
+        perm = wave_layout['perm']
+        Pi_orig = Pi[perm]
+        clade_species_map_orig = clade_species_map[perm] if clade_species_map is not None else None
 
     return {
         'Pi': Pi_orig,

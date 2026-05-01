@@ -290,6 +290,13 @@ def _wave_step_uniform_kernel(
     DL_const_ptr, Ebar_ptr, E_ptr, SL1_const_ptr, SL2_const_ptr,
     # Species child indices: [S] long each
     sp_child1_ptr, sp_child2_ptr,
+    # Species parent index: [S] long, -1 for root
+    sp_parent_ptr,
+    # Padded ancestor-list table: [MAX_ANCESTOR_DEPTH, S] long
+    ancestor_cols_ptr,
+    # CSR ancestor matrix: row = descendant species, cols = ancestors
+    ancestor_csr_indptr_ptr,
+    ancestor_csr_indices_ptr,
     # Per-wave arrays: [W, S]
     leaf_term_ptr,
     DTS_reduced_ptr,
@@ -302,6 +309,10 @@ def _wave_step_uniform_kernel(
     S: tl.constexpr,
     stride: tl.constexpr,
     BLOCK_S: tl.constexpr,
+    MAX_ANCESTOR_DEPTH: tl.constexpr,
+    COMPUTE_DIFF: tl.constexpr,
+    USE_ANCESTOR_CSR: tl.constexpr,
+    USE_ANCESTOR_COLS: tl.constexpr,
     FP64: tl.constexpr,
     stride_c: tl.constexpr = 0,
 ):
@@ -335,7 +346,8 @@ def _wave_step_uniform_kernel(
         row_max = new_max
 
     # === Pass 2: Pibar + DTS_L terms + logsumexp ===
-    local_max_diff = tl.full([1], value=0.0, dtype=DTYPE)
+    if COMPUTE_DIFF:
+        local_max_diff = tl.full([1], value=0.0, dtype=DTYPE)
     M_SAFE_THRESH = -1e299 if FP64 else -1e29
 
     for s_start in range(0, S, BLOCK_S):
@@ -345,10 +357,43 @@ def _wave_step_uniform_kernel(
         # Load Pi[w, s]
         pi_w = tl.load(Pi_ptr + pi_base + s_offs, mask=mask, other=NEG_LARGE)
 
-        # Uniform Pibar: log2(row_sum - exp2(pi - max)) + max + mt
-        pi_exp = tl.exp2(pi_w - row_max)
+        ancestor_sum = tl.zeros([BLOCK_S], dtype=DTYPE)
+        if USE_ANCESTOR_CSR:
+            # Uniform Pibar with CSR ancestor rows. This is the fused version
+            # of the sparse ancestor matmul: it reuses row_max/row_sum already
+            # computed by this wave-step kernel and only performs the sparse
+            # ancestor correction inline.
+            row_start = tl.load(ancestor_csr_indptr_ptr + s_offs, mask=mask, other=0)
+            row_end = tl.load(ancestor_csr_indptr_ptr + s_offs + 1, mask=mask, other=0)
+            for k in range(0, MAX_ANCESTOR_DEPTH):
+                pos = row_start + k
+                anc_valid = mask & (pos < row_end)
+                anc = tl.load(ancestor_csr_indices_ptr + pos, mask=anc_valid, other=-1)
+                pi_anc = tl.load(Pi_ptr + pi_base + anc, mask=anc_valid, other=NEG_LARGE)
+                ancestor_sum += tl.where(anc_valid, tl.exp2(pi_anc - row_max), tl.zeros([BLOCK_S], dtype=DTYPE))
+        elif USE_ANCESTOR_COLS:
+            # Uniform Pibar with a precomputed [depth, species] ancestor table.
+            # This avoids the loop-carried dependency of following parent
+            # pointers, at the cost of one extra static index tensor.
+            for k in range(0, MAX_ANCESTOR_DEPTH):
+                anc = tl.load(ancestor_cols_ptr + k * S + s_offs, mask=mask, other=-1)
+                anc_valid = mask & (anc >= 0) & (anc < S)
+                pi_anc = tl.load(Pi_ptr + pi_base + anc, mask=anc_valid, other=NEG_LARGE)
+                ancestor_sum += tl.where(anc_valid, tl.exp2(pi_anc - row_max), tl.zeros([BLOCK_S], dtype=DTYPE))
+        else:
+            # Uniform Pibar: log2(row_sum - ancestor_sum) + max + mt.
+            # ancestors_dense[descendant, ancestor] includes self, so walk the
+            # species parent chain starting at s and sum exp2(Pi[ancestor] - max).
+            cur = s_offs.to(tl.int64)
+            for _ in range(0, MAX_ANCESTOR_DEPTH):
+                cur_valid = mask & (cur >= 0) & (cur < S)
+                pi_anc = tl.load(Pi_ptr + pi_base + cur, mask=cur_valid, other=NEG_LARGE)
+                ancestor_sum += tl.where(cur_valid, tl.exp2(pi_anc - row_max), tl.zeros([BLOCK_S], dtype=DTYPE))
+                cur = tl.load(sp_parent_ptr + cur, mask=cur_valid, other=-1)
+
         mt = tl.load(mt_ptr + w * stride_c + s_offs, mask=mask, other=0.0)
-        pibar_w = tl.log2(row_sum - pi_exp) + row_max + mt
+        denom = row_sum - ancestor_sum
+        pibar_w = tl.where(denom > 0.0, tl.log2(denom) + row_max + mt, NEG_LARGE)
 
         # Store Pibar to global tensor
         tl.store(Pibar_out_ptr + pi_base + s_offs, pibar_w, mask=mask)
@@ -395,18 +440,19 @@ def _wave_step_uniform_kernel(
         result = tl.log2(s) + m
         tl.store(Pi_new_ptr + out_base + s_offs, result, mask=mask)
 
-        # Convergence: max |result - pi_old| for significant entries (result > -100)
-        significant = result > -100.0
-        diff = tl.where(significant & mask, tl.abs(result - pi_w), tl.zeros_like(result))
-        local_max_diff = tl.maximum(local_max_diff, tl.max(diff, axis=0))
+        if COMPUTE_DIFF:
+            significant = result > -100.0
+            diff = tl.where(significant & mask, tl.abs(result - pi_w), tl.zeros_like(result))
+            local_max_diff = tl.maximum(local_max_diff, tl.max(diff, axis=0))
 
-    tl.store(max_diff_ptr + w, tl.max(local_max_diff, axis=0))
+    if COMPUTE_DIFF:
+        tl.store(max_diff_ptr + w, tl.max(local_max_diff, axis=0))
 
 
 def wave_step_uniform_fused(Pi, Pibar, ws, W, S,
                             mt_squeezed, DL_const, Ebar, E, SL1_const, SL2_const,
-                            sp_child1, sp_child2, leaf_term_wt,
-                            DTS_reduced=None):
+                            sp_child1, sp_child2, sp_parent, max_ancestor_depth,
+                            leaf_term_wt, DTS_reduced=None, compute_diff=True):
     """Fused uniform-Pibar + wave step + convergence in one kernel.
 
     Computes Pibar inline using the uniform transfer matrix approximation,
@@ -422,16 +468,19 @@ def wave_step_uniform_fused(Pi, Pibar, ws, W, S,
         mt_squeezed: [S] or [W, S] max_transfer_mat
         DL_const, Ebar, E, SL1_const, SL2_const: [S] or [W, S] precomputed constants
         sp_child1, sp_child2: [S] long species child indices
+        sp_parent: [S] long species parent indices (-1 at root)
+        max_ancestor_depth: maximum root-path length including self
         leaf_term_wt: [W, S]
         DTS_reduced: [W, S] or None
 
     Returns:
         Pi_new: [W, S] new Pi values
-        max_diff: scalar, max |Pi_new - Pi_old| across all significant entries
+        max_diff: scalar tensor, max |Pi_new - Pi_old| across significant entries
+                  when compute_diff=True; otherwise None
     """
     fp64 = Pi.dtype == torch.float64
     Pi_new = torch.empty((W, S), dtype=Pi.dtype, device=Pi.device)
-    max_diff_buf = torch.empty(W, dtype=Pi.dtype, device=Pi.device)
+    max_diff_buf = torch.empty(W, dtype=Pi.dtype, device=Pi.device) if compute_diff else Pi_new
     has_splits = DTS_reduced is not None
     stride_c = S if DL_const.ndim == 2 else 0
 
@@ -443,6 +492,10 @@ def wave_step_uniform_fused(Pi, Pibar, ws, W, S,
         mt_squeezed,
         DL_const, Ebar, E, SL1_const, SL2_const,
         sp_child1, sp_child2,
+        sp_parent,
+        sp_parent,  # dummy ancestor table; disabled by USE_ANCESTOR_COLS=False
+        sp_parent,  # dummy CSR indptr; disabled by USE_ANCESTOR_CSR=False
+        sp_parent,  # dummy CSR indices; disabled by USE_ANCESTOR_CSR=False
         leaf_term_wt,
         DTS_reduced if has_splits else leaf_term_wt,  # dummy
         has_splits,
@@ -450,9 +503,593 @@ def wave_step_uniform_fused(Pi, Pibar, ws, W, S,
         S,
         stride=S,
         BLOCK_S=BLOCK_S,
+        MAX_ANCESTOR_DEPTH=int(max_ancestor_depth),
+        COMPUTE_DIFF=bool(compute_diff),
+        USE_ANCESTOR_CSR=False,
+        USE_ANCESTOR_COLS=False,
         FP64=fp64,
         stride_c=stride_c,
         num_warps=4,
     )
-    max_diff = max_diff_buf.max().item()
+    max_diff = max_diff_buf.max() if compute_diff else None
     return Pi_new, max_diff
+
+
+def wave_step_uniform_ancestor_fused(Pi, Pibar, ws, W, S,
+                                     mt_squeezed, DL_const, Ebar, E, SL1_const, SL2_const,
+                                     sp_child1, sp_child2, ancestor_cols,
+                                     leaf_term_wt, DTS_reduced=None, compute_diff=True):
+    """Fused uniform-Pibar + wave step using precomputed ancestor lists.
+
+    This is equivalent to :func:`wave_step_uniform_fused`, but uses a padded
+    [max_depth, S] ancestor table instead of following parent pointers inside
+    the kernel.
+    """
+    fp64 = Pi.dtype == torch.float64
+    Pi_new = torch.empty((W, S), dtype=Pi.dtype, device=Pi.device)
+    max_diff_buf = torch.empty(W, dtype=Pi.dtype, device=Pi.device) if compute_diff else Pi_new
+    has_splits = DTS_reduced is not None
+    stride_c = S if DL_const.ndim == 2 else 0
+
+    BLOCK_S = min(256, triton.next_power_of_2(S))
+    grid = (W,)
+
+    _wave_step_uniform_kernel[grid](
+        Pi, ws,
+        mt_squeezed,
+        DL_const, Ebar, E, SL1_const, SL2_const,
+        sp_child1, sp_child2,
+        ancestor_cols,  # dummy parent table; disabled by USE_ANCESTOR_COLS=True
+        ancestor_cols,
+        ancestor_cols,  # dummy CSR indptr; disabled by USE_ANCESTOR_CSR=False
+        ancestor_cols,  # dummy CSR indices; disabled by USE_ANCESTOR_CSR=False
+        leaf_term_wt,
+        DTS_reduced if has_splits else leaf_term_wt,  # dummy
+        has_splits,
+        Pi_new, Pibar, max_diff_buf,
+        S,
+        stride=S,
+        BLOCK_S=BLOCK_S,
+        MAX_ANCESTOR_DEPTH=ancestor_cols.shape[0],
+        COMPUTE_DIFF=bool(compute_diff),
+        USE_ANCESTOR_CSR=False,
+        USE_ANCESTOR_COLS=True,
+        FP64=fp64,
+        stride_c=stride_c,
+        num_warps=4,
+    )
+    max_diff = max_diff_buf.max() if compute_diff else None
+    return Pi_new, max_diff
+
+
+def wave_step_uniform_csr_fused(Pi, Pibar, ws, W, S,
+                                mt_squeezed, DL_const, Ebar, E, SL1_const, SL2_const,
+                                sp_child1, sp_child2, ancestor_csr_indptr,
+                                ancestor_csr_indices, max_ancestor_depth,
+                                leaf_term_wt, DTS_reduced=None, compute_diff=True):
+    """Fused uniform-Pibar + wave step using CSR ancestor rows.
+
+    This is the hand-written Triton sparse-ancestor path. It keeps the existing
+    fused row max, row sum, log/subtract, and DTS computations, and only changes
+    the ancestor correction to read CSR rows directly.
+    """
+    fp64 = Pi.dtype == torch.float64
+    Pi_new = torch.empty((W, S), dtype=Pi.dtype, device=Pi.device)
+    max_diff_buf = torch.empty(W, dtype=Pi.dtype, device=Pi.device) if compute_diff else Pi_new
+    has_splits = DTS_reduced is not None
+    stride_c = S if DL_const.ndim == 2 else 0
+
+    BLOCK_S = min(256, triton.next_power_of_2(S))
+    grid = (W,)
+
+    _wave_step_uniform_kernel[grid](
+        Pi, ws,
+        mt_squeezed,
+        DL_const, Ebar, E, SL1_const, SL2_const,
+        sp_child1, sp_child2,
+        ancestor_csr_indices,  # dummy parent table; disabled by USE_ANCESTOR_CSR=True
+        ancestor_csr_indices,  # dummy padded table; disabled by USE_ANCESTOR_COLS=False
+        ancestor_csr_indptr,
+        ancestor_csr_indices,
+        leaf_term_wt,
+        DTS_reduced if has_splits else leaf_term_wt,  # dummy
+        has_splits,
+        Pi_new, Pibar, max_diff_buf,
+        S,
+        stride=S,
+        BLOCK_S=BLOCK_S,
+        MAX_ANCESTOR_DEPTH=int(max_ancestor_depth),
+        COMPUTE_DIFF=bool(compute_diff),
+        USE_ANCESTOR_CSR=True,
+        USE_ANCESTOR_COLS=False,
+        FP64=fp64,
+        stride_c=stride_c,
+        num_warps=4,
+    )
+    max_diff = max_diff_buf.max() if compute_diff else None
+    return Pi_new, max_diff
+
+
+@triton.jit
+def _wave_pibar_uniform_parent_kernel(
+    Pi_ptr,
+    ws,
+    mt_ptr,
+    sp_parent_ptr,
+    Pibar_out_ptr,
+    S: tl.constexpr,
+    stride: tl.constexpr,
+    BLOCK_S: tl.constexpr,
+    MAX_ANCESTOR_DEPTH: tl.constexpr,
+    FP64: tl.constexpr,
+    stride_c: tl.constexpr = 0,
+):
+    DTYPE = tl.float64 if FP64 else tl.float32
+    NEG_LARGE = -1e300 if FP64 else -1e30
+
+    w = tl.program_id(0)
+    pi_base = (ws + w) * stride
+
+    row_max = tl.full([1], value=NEG_LARGE, dtype=DTYPE)
+    row_sum = tl.full([1], value=0.0, dtype=DTYPE)
+    for s_start in range(0, S, BLOCK_S):
+        s_offs = s_start + tl.arange(0, BLOCK_S)
+        mask = s_offs < S
+        pi_val = tl.load(Pi_ptr + pi_base + s_offs, mask=mask, other=NEG_LARGE)
+        tile_max = tl.max(pi_val, axis=0)
+        new_max = tl.maximum(row_max, tile_max)
+        row_sum = row_sum * tl.exp2(row_max - new_max) + tl.sum(tl.exp2(pi_val - new_max), axis=0)
+        row_max = new_max
+
+    for s_start in range(0, S, BLOCK_S):
+        s_offs = s_start + tl.arange(0, BLOCK_S)
+        mask = s_offs < S
+
+        cur = s_offs.to(tl.int64)
+        ancestor_sum = tl.zeros([BLOCK_S], dtype=DTYPE)
+        for _ in range(0, MAX_ANCESTOR_DEPTH):
+            cur_valid = mask & (cur >= 0) & (cur < S)
+            pi_anc = tl.load(Pi_ptr + pi_base + cur, mask=cur_valid, other=NEG_LARGE)
+            ancestor_sum += tl.where(cur_valid, tl.exp2(pi_anc - row_max), tl.zeros([BLOCK_S], dtype=DTYPE))
+            cur = tl.load(sp_parent_ptr + cur, mask=cur_valid, other=-1)
+
+        mt = tl.load(mt_ptr + w * stride_c + s_offs, mask=mask, other=0.0)
+        denom = row_sum - ancestor_sum
+        pibar_w = tl.where(denom > 0.0, tl.log2(denom) + row_max + mt, NEG_LARGE)
+        tl.store(Pibar_out_ptr + pi_base + s_offs, pibar_w, mask=mask)
+
+
+def wave_pibar_uniform_parent_fused(Pi, Pibar, ws, W, S,
+                                    mt_squeezed, sp_parent, max_ancestor_depth):
+    """Compute uniform Pibar rows by walking species parent pointers."""
+    fp64 = Pi.dtype == torch.float64
+    stride_c = S if mt_squeezed.ndim == 2 else 0
+    BLOCK_S = min(256, triton.next_power_of_2(S))
+    grid = (W,)
+
+    _wave_pibar_uniform_parent_kernel[grid](
+        Pi,
+        ws,
+        mt_squeezed,
+        sp_parent,
+        Pibar,
+        S,
+        stride=S,
+        BLOCK_S=BLOCK_S,
+        MAX_ANCESTOR_DEPTH=int(max_ancestor_depth),
+        FP64=fp64,
+        stride_c=stride_c,
+        num_warps=4,
+    )
+
+
+@triton.jit
+def _wave_step_uniform_from_pibar_kernel(
+    Pi_ptr,
+    Pibar_ptr,
+    ws,
+    DL_const_ptr, Ebar_ptr, E_ptr, SL1_const_ptr, SL2_const_ptr,
+    sp_child1_ptr, sp_child2_ptr,
+    leaf_term_ptr,
+    DTS_reduced_ptr,
+    has_splits: tl.constexpr,
+    Pi_new_ptr,
+    max_diff_ptr,
+    S: tl.constexpr,
+    stride: tl.constexpr,
+    BLOCK_S: tl.constexpr,
+    COMPUTE_DIFF: tl.constexpr,
+    FP64: tl.constexpr,
+    stride_c: tl.constexpr = 0,
+):
+    DTYPE = tl.float64 if FP64 else tl.float32
+    NEG_LARGE = -1e300 if FP64 else -1e30
+    M_SAFE_THRESH = -1e299 if FP64 else -1e29
+
+    w = tl.program_id(0)
+    pi_base = (ws + w) * stride
+    out_base = w * stride
+
+    if COMPUTE_DIFF:
+        local_max_diff = tl.full([1], value=0.0, dtype=DTYPE)
+
+    for s_start in range(0, S, BLOCK_S):
+        s_offs = s_start + tl.arange(0, BLOCK_S)
+        mask = s_offs < S
+
+        pi_w = tl.load(Pi_ptr + pi_base + s_offs, mask=mask, other=NEG_LARGE)
+        pibar_w = tl.load(Pibar_ptr + pi_base + s_offs, mask=mask, other=NEG_LARGE)
+
+        dl_const = tl.load(DL_const_ptr + w * stride_c + s_offs, mask=mask, other=NEG_LARGE)
+        ebar = tl.load(Ebar_ptr + w * stride_c + s_offs, mask=mask, other=NEG_LARGE)
+        e_val = tl.load(E_ptr + w * stride_c + s_offs, mask=mask, other=NEG_LARGE)
+        sl1_const = tl.load(SL1_const_ptr + w * stride_c + s_offs, mask=mask, other=NEG_LARGE)
+        sl2_const = tl.load(SL2_const_ptr + w * stride_c + s_offs, mask=mask, other=NEG_LARGE)
+
+        c1 = tl.load(sp_child1_ptr + s_offs, mask=mask, other=0)
+        c2 = tl.load(sp_child2_ptr + s_offs, mask=mask, other=0)
+        c1_valid = c1 < S
+        c2_valid = c2 < S
+        pi_s1 = tl.load(Pi_ptr + pi_base + c1, mask=mask & c1_valid, other=NEG_LARGE)
+        pi_s2 = tl.load(Pi_ptr + pi_base + c2, mask=mask & c2_valid, other=NEG_LARGE)
+
+        t0 = dl_const + pi_w
+        t1 = pi_w + ebar
+        t2 = pibar_w + e_val
+        t3 = sl1_const + pi_s1
+        t4 = sl2_const + pi_s2
+        t5 = tl.load(leaf_term_ptr + out_base + s_offs, mask=mask, other=NEG_LARGE)
+
+        m = tl.maximum(t0, t1)
+        m = tl.maximum(m, t2)
+        m = tl.maximum(m, t3)
+        m = tl.maximum(m, t4)
+        m = tl.maximum(m, t5)
+
+        if has_splits:
+            dts_r = tl.load(DTS_reduced_ptr + out_base + s_offs, mask=mask, other=NEG_LARGE)
+            m = tl.maximum(m, dts_r)
+
+        m_safe = tl.where(m > M_SAFE_THRESH, m, tl.zeros_like(m))
+        acc = tl.exp2(t0 - m_safe) + tl.exp2(t1 - m_safe) + tl.exp2(t2 - m_safe)
+        acc += tl.exp2(t3 - m_safe) + tl.exp2(t4 - m_safe) + tl.exp2(t5 - m_safe)
+        if has_splits:
+            acc += tl.exp2(dts_r - m_safe)
+
+        result = tl.log2(acc) + m
+        tl.store(Pi_new_ptr + out_base + s_offs, result, mask=mask)
+
+        if COMPUTE_DIFF:
+            significant = result > -100.0
+            diff = tl.where(significant & mask, tl.abs(result - pi_w), tl.zeros_like(result))
+            local_max_diff = tl.maximum(local_max_diff, tl.max(diff, axis=0))
+
+    if COMPUTE_DIFF:
+        tl.store(max_diff_ptr + w, tl.max(local_max_diff, axis=0))
+
+
+def wave_step_uniform_from_pibar_fused(Pi, Pibar, ws, W, S,
+                                       DL_const, Ebar, E, SL1_const, SL2_const,
+                                       sp_child1, sp_child2,
+                                       leaf_term_wt, DTS_reduced=None,
+                                       compute_diff=True):
+    """Compute a uniform-mode DTS_L step from already-stored Pibar rows."""
+    fp64 = Pi.dtype == torch.float64
+    Pi_new = torch.empty((W, S), dtype=Pi.dtype, device=Pi.device)
+    max_diff_buf = torch.empty(W, dtype=Pi.dtype, device=Pi.device) if compute_diff else Pi_new
+    has_splits = DTS_reduced is not None
+    stride_c = S if DL_const.ndim == 2 else 0
+    BLOCK_S = min(256, triton.next_power_of_2(S))
+    grid = (W,)
+
+    _wave_step_uniform_from_pibar_kernel[grid](
+        Pi,
+        Pibar,
+        ws,
+        DL_const, Ebar, E, SL1_const, SL2_const,
+        sp_child1, sp_child2,
+        leaf_term_wt,
+        DTS_reduced if has_splits else leaf_term_wt,
+        has_splits,
+        Pi_new,
+        max_diff_buf,
+        S,
+        stride=S,
+        BLOCK_S=BLOCK_S,
+        COMPUTE_DIFF=bool(compute_diff),
+        FP64=fp64,
+        stride_c=stride_c,
+        num_warps=4,
+    )
+    max_diff = max_diff_buf.max() if compute_diff else None
+    return Pi_new, max_diff
+
+
+def wave_step_uniform_two_kernel_fused(Pi, Pibar, ws, W, S,
+                                       mt_squeezed, DL_const, Ebar, E,
+                                       SL1_const, SL2_const,
+                                       sp_child1, sp_child2,
+                                       sp_parent, max_ancestor_depth,
+                                       leaf_term_wt, DTS_reduced=None,
+                                       compute_diff=True):
+    """Uniform Pibar followed by DTS_L update using two Triton launches."""
+    wave_pibar_uniform_parent_fused(
+        Pi, Pibar, ws, W, S,
+        mt_squeezed, sp_parent, max_ancestor_depth,
+    )
+    return wave_step_uniform_from_pibar_fused(
+        Pi, Pibar, ws, W, S,
+        DL_const, Ebar, E, SL1_const, SL2_const,
+        sp_child1, sp_child2,
+        leaf_term_wt, DTS_reduced,
+        compute_diff=compute_diff,
+    )
+
+
+def build_uniform_linear_operator(DL_const, Ebar, E, SL1_const, SL2_const, mt_squeezed,
+                                  sp_parent_cpu, sp_child1_cpu, sp_child2_cpu,
+                                  device, dtype):
+    """Build a row-scaled signed sparse operator for uniform DTS_L.
+
+    The operator evaluates the Pi-dependent part of DTS_L in linear space:
+        row_scale[s] * (v_scaled[s] * sum(p) + M_scaled[s] @ p)
+    where p = exp2(Pi - row_max).  The sparse structure is stored in a padded
+    ELL layout because species-tree rows are short and fixed.
+    """
+    S = int(sp_parent_cpu.numel())
+
+    ancestor_lists = []
+    max_depth = 0
+    for s in range(S):
+        cur = s
+        ancestors = []
+        while cur >= 0:
+            ancestors.append(cur)
+            cur = int(sp_parent_cpu[cur].item())
+        ancestor_lists.append(ancestors)
+        max_depth = max(max_depth, len(ancestors))
+
+    max_op_nnz = max_depth + 2
+    ancestor_cols_cpu = torch.full((S, max_depth), -1, dtype=torch.long)
+    op_cols_cpu = torch.zeros((S, max_op_nnz), dtype=torch.long)
+    op_kind_cpu = torch.full((S, max_op_nnz), -1, dtype=torch.int8)
+
+    for s, ancestors in enumerate(ancestor_lists):
+        ancestor_cols_cpu[s, :len(ancestors)] = torch.tensor(ancestors, dtype=torch.long)
+
+        slot = 0
+        op_cols_cpu[s, slot] = s
+        op_kind_cpu[s, slot] = 0  # diag + self ancestor transfer subtraction
+        slot += 1
+
+        for anc in ancestors[1:]:
+            op_cols_cpu[s, slot] = anc
+            op_kind_cpu[s, slot] = 1  # strict ancestor transfer subtraction
+            slot += 1
+
+        c1 = int(sp_child1_cpu[s].item())
+        if c1 < S:
+            op_cols_cpu[s, slot] = c1
+            op_kind_cpu[s, slot] = 2
+            slot += 1
+
+        c2 = int(sp_child2_cpu[s].item())
+        if c2 < S:
+            op_cols_cpu[s, slot] = c2
+            op_kind_cpu[s, slot] = 3
+
+    op_cols = op_cols_cpu.to(device=device)
+    op_kind = op_kind_cpu.to(device=device)
+    ancestor_cols = ancestor_cols_cpu.to(device=device)
+
+    transfer_coeff = torch.exp2(E + mt_squeezed)
+    diag_coeff = torch.exp2(DL_const) + torch.exp2(Ebar)
+    sl1_coeff = torch.exp2(SL1_const)
+    sl2_coeff = torch.exp2(SL2_const)
+
+    op_vals = torch.zeros((S, max_op_nnz), device=device, dtype=dtype)
+    op_vals = torch.where(op_kind == 0, (diag_coeff - transfer_coeff).unsqueeze(1), op_vals)
+    op_vals = torch.where(op_kind == 1, (-transfer_coeff).unsqueeze(1), op_vals)
+    op_vals = torch.where(op_kind == 2, sl1_coeff.unsqueeze(1), op_vals)
+    op_vals = torch.where(op_kind == 3, sl2_coeff.unsqueeze(1), op_vals)
+
+    max_abs = torch.maximum(op_vals.abs().amax(dim=1), transfer_coeff.abs())
+    max_abs = torch.where(max_abs > 0.0, max_abs, torch.ones_like(max_abs))
+    row_scale = torch.log2(max_abs)
+    op_vals_scaled = (op_vals / max_abs.unsqueeze(1)).contiguous()
+    v_scaled = (transfer_coeff / max_abs).contiguous()
+
+    return {
+        'op_cols': op_cols.T.contiguous(),
+        'op_vals': op_vals_scaled.T.contiguous(),
+        'v_scaled': v_scaled,
+        'row_scale': row_scale.contiguous(),
+        'ancestor_cols': ancestor_cols.T.contiguous(),
+    }
+
+
+@triton.jit
+def _wave_step_uniform_linear_kernel(
+    Pi_ptr,
+    ws,
+    op_cols_ptr,
+    op_vals_ptr,
+    v_scaled_ptr,
+    row_scale_ptr,
+    leaf_term_ptr,
+    DTS_reduced_ptr,
+    has_splits: tl.constexpr,
+    Pi_new_ptr,
+    max_diff_ptr,
+    S: tl.constexpr,
+    stride: tl.constexpr,
+    MAX_OP_NNZ: tl.constexpr,
+    BLOCK_S: tl.constexpr,
+    COMPUTE_DIFF: tl.constexpr,
+    DEBUG_GUARD: tl.constexpr,
+    FP64: tl.constexpr,
+):
+    DTYPE = tl.float64 if FP64 else tl.float32
+    NEG_LARGE = -1e300 if FP64 else -1e30
+    M_SAFE_THRESH = -1e299 if FP64 else -1e29
+
+    w = tl.program_id(0)
+    pi_base = (ws + w) * stride
+    out_base = w * stride
+
+    row_max = tl.full([1], value=NEG_LARGE, dtype=DTYPE)
+    row_sum = tl.full([1], value=0.0, dtype=DTYPE)
+    for s_start in range(0, S, BLOCK_S):
+        s_offs = s_start + tl.arange(0, BLOCK_S)
+        mask = s_offs < S
+        pi_val = tl.load(Pi_ptr + pi_base + s_offs, mask=mask, other=NEG_LARGE)
+        tile_max = tl.max(pi_val, axis=0)
+        new_max = tl.maximum(row_max, tile_max)
+        row_sum = row_sum * tl.exp2(row_max - new_max) + tl.sum(tl.exp2(pi_val - new_max), axis=0)
+        row_max = new_max
+
+    if COMPUTE_DIFF:
+        local_max_diff = tl.full([1], value=0.0, dtype=DTYPE)
+
+    for s_start in range(0, S, BLOCK_S):
+        s_offs = s_start + tl.arange(0, BLOCK_S)
+        mask = s_offs < S
+        pi_w = tl.load(Pi_ptr + pi_base + s_offs, mask=mask, other=NEG_LARGE)
+
+        raw = tl.load(v_scaled_ptr + s_offs, mask=mask, other=0.0) * row_sum
+        for k in range(0, MAX_OP_NNZ):
+            cols = tl.load(op_cols_ptr + k * S + s_offs, mask=mask, other=0)
+            vals = tl.load(op_vals_ptr + k * S + s_offs, mask=mask, other=0.0)
+            pi_col = tl.load(Pi_ptr + pi_base + cols, mask=mask, other=NEG_LARGE)
+            raw += vals * tl.exp2(pi_col - row_max)
+
+        row_scale = tl.load(row_scale_ptr + s_offs, mask=mask, other=0.0)
+        local_log = tl.log2(raw) + row_max + row_scale
+        if DEBUG_GUARD:
+            local_log = tl.where(raw > 0.0, local_log, NEG_LARGE)
+
+        leaf = tl.load(leaf_term_ptr + out_base + s_offs, mask=mask, other=NEG_LARGE)
+        m = tl.maximum(local_log, leaf)
+        if has_splits:
+            dts_r = tl.load(DTS_reduced_ptr + out_base + s_offs, mask=mask, other=NEG_LARGE)
+            m = tl.maximum(m, dts_r)
+
+        m_safe = tl.where(m > M_SAFE_THRESH, m, tl.zeros_like(m))
+        acc = tl.exp2(local_log - m_safe) + tl.exp2(leaf - m_safe)
+        if has_splits:
+            acc += tl.exp2(dts_r - m_safe)
+
+        result = tl.log2(acc) + m
+        tl.store(Pi_new_ptr + out_base + s_offs, result, mask=mask)
+
+        if COMPUTE_DIFF:
+            significant = result > -100.0
+            diff = tl.where(significant & mask, tl.abs(result - pi_w), tl.zeros_like(result))
+            local_max_diff = tl.maximum(local_max_diff, tl.max(diff, axis=0))
+
+    if COMPUTE_DIFF:
+        tl.store(max_diff_ptr + w, tl.max(local_max_diff, axis=0))
+
+
+def wave_step_uniform_linear_fused(Pi, ws, W, S, op_cols, op_vals, v_scaled, row_scale,
+                                   leaf_term_wt, DTS_reduced=None, compute_diff=True,
+                                   debug_guard=False):
+    """Uniform DTS_L update via pre-scaled signed sparse operator."""
+    fp64 = Pi.dtype == torch.float64
+    Pi_new = torch.empty((W, S), dtype=Pi.dtype, device=Pi.device)
+    max_diff_buf = torch.empty(W, dtype=Pi.dtype, device=Pi.device) if compute_diff else Pi_new
+    has_splits = DTS_reduced is not None
+
+    BLOCK_S = min(256, triton.next_power_of_2(S))
+    grid = (W,)
+
+    _wave_step_uniform_linear_kernel[grid](
+        Pi, ws,
+        op_cols,
+        op_vals,
+        v_scaled,
+        row_scale,
+        leaf_term_wt,
+        DTS_reduced if has_splits else leaf_term_wt,
+        has_splits,
+        Pi_new,
+        max_diff_buf,
+        S,
+        stride=S,
+        MAX_OP_NNZ=op_cols.shape[0],
+        BLOCK_S=BLOCK_S,
+        COMPUTE_DIFF=bool(compute_diff),
+        DEBUG_GUARD=bool(debug_guard),
+        FP64=fp64,
+        num_warps=4,
+    )
+    max_diff = max_diff_buf.max() if compute_diff else None
+    return Pi_new, max_diff
+
+
+@triton.jit
+def _wave_pibar_uniform_ancestor_kernel(
+    Pi_ptr,
+    ws,
+    mt_ptr,
+    ancestor_cols_ptr,
+    Pibar_out_ptr,
+    S: tl.constexpr,
+    stride: tl.constexpr,
+    MAX_ANCESTOR_DEPTH: tl.constexpr,
+    BLOCK_S: tl.constexpr,
+    FP64: tl.constexpr,
+):
+    DTYPE = tl.float64 if FP64 else tl.float32
+    NEG_LARGE = -1e300 if FP64 else -1e30
+
+    w = tl.program_id(0)
+    pi_base = (ws + w) * stride
+
+    row_max = tl.full([1], value=NEG_LARGE, dtype=DTYPE)
+    row_sum = tl.full([1], value=0.0, dtype=DTYPE)
+    for s_start in range(0, S, BLOCK_S):
+        s_offs = s_start + tl.arange(0, BLOCK_S)
+        mask = s_offs < S
+        pi_val = tl.load(Pi_ptr + pi_base + s_offs, mask=mask, other=NEG_LARGE)
+        tile_max = tl.max(pi_val, axis=0)
+        new_max = tl.maximum(row_max, tile_max)
+        row_sum = row_sum * tl.exp2(row_max - new_max) + tl.sum(tl.exp2(pi_val - new_max), axis=0)
+        row_max = new_max
+
+    for s_start in range(0, S, BLOCK_S):
+        s_offs = s_start + tl.arange(0, BLOCK_S)
+        mask = s_offs < S
+
+        ancestor_sum = tl.zeros([BLOCK_S], dtype=DTYPE)
+        for k in range(0, MAX_ANCESTOR_DEPTH):
+            anc = tl.load(ancestor_cols_ptr + k * S + s_offs, mask=mask, other=-1)
+            anc_valid = mask & (anc >= 0) & (anc < S)
+            pi_anc = tl.load(Pi_ptr + pi_base + anc, mask=anc_valid, other=NEG_LARGE)
+            ancestor_sum += tl.where(anc_valid, tl.exp2(pi_anc - row_max), tl.zeros([BLOCK_S], dtype=DTYPE))
+
+        mt = tl.load(mt_ptr + s_offs, mask=mask, other=0.0)
+        denom = row_sum - ancestor_sum
+        pibar_w = tl.where(denom > 0.0, tl.log2(denom) + row_max + mt, NEG_LARGE)
+        tl.store(Pibar_out_ptr + pi_base + s_offs, pibar_w, mask=mask)
+
+
+def wave_pibar_uniform_fused(Pi, Pibar, ws, W, S, mt_squeezed, ancestor_cols):
+    """Compute final uniform Pibar rows using precomputed ancestor columns."""
+    fp64 = Pi.dtype == torch.float64
+    BLOCK_S = min(256, triton.next_power_of_2(S))
+    grid = (W,)
+
+    _wave_pibar_uniform_ancestor_kernel[grid](
+        Pi,
+        ws,
+        mt_squeezed,
+        ancestor_cols,
+        Pibar,
+        S,
+        stride=S,
+        MAX_ANCESTOR_DEPTH=ancestor_cols.shape[0],
+        BLOCK_S=BLOCK_S,
+        FP64=fp64,
+        num_warps=4,
+    )

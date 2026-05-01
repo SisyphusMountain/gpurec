@@ -89,15 +89,15 @@ def test_adam_matches_optimize_theta_wave(trees):
     n_steps = 20
 
     # Path A: new API (record per-step NLL BEFORE the optimizer step, to
-    # match optimize_theta_wave's history convention). Use Pi_wave_forward's
-    # default solver knobs (max_iters_Pi=50, tol_Pi=1e-3) so the Pi
-    # convergence is bitwise-identical to what optimize_theta_wave does.
+    # match optimize_theta_wave's history convention). Opt back into adaptive
+    # Pi convergence so this path is bitwise-identical to optimize_theta_wave.
     model = GeneReconModel.from_trees(
         species_tree=sp, gene_trees=genes, mode="global",
         device=device, dtype=dtype,
         theta_init_rates=(0.05, 0.05, 0.05),
         max_iters_Pi=50,
         tol_Pi=1e-3,
+        fixed_iters_Pi=None,
     )
     opt_new = torch.optim.Adam(model.parameters(), lr=lr)
     history_new: list[float] = []
