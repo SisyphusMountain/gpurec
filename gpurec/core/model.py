@@ -6,7 +6,12 @@ from torch.utils.data import Dataset
 from .extract_parameters import extract_parameters, extract_parameters_uniform
 from .likelihood import E_fixed_point, compute_log_likelihood
 from .forward import Pi_wave_forward
-from .batching import collate_gene_families, collate_wave, build_wave_layout
+from .batching import (
+    build_wave_layout,
+    collate_gene_families,
+    collate_wave,
+    split_phase_waves,
+)
 from .scheduling import compute_clade_waves
 from .preprocess_cpp import _load_extension as _load_species_gene_ext
 
@@ -296,7 +301,8 @@ class GeneDataset(Dataset):
         device: torch.device | None = None,
         dtype: torch.dtype | None = None,
         chunk_size: int | None = None,
-        max_wave_size: int = 4096,
+        max_wave_size: int | None = None,
+        max_root_wave_size: int | None = None,
         pibar_mode: str = 'dense',
     ) -> list[float]:
         """Compute log-likelihoods for a batch of gene families.
@@ -309,7 +315,11 @@ class GeneDataset(Dataset):
         Args:
             chunk_size: If set, process families in chunks of this size to avoid OOM.
                 Recommended: 20 for S~2000.
-            max_wave_size: Max clades per wave for wave scheduling. Default 4096.
+            max_wave_size: If set, use fixed-size cross-family wave scheduling
+                with at most this many clades per wave. If ``None``, merge
+                families by their per-family wave index.
+            max_root_wave_size: If set with index-merged scheduling, split
+                only phase-3 root waves to cap DTS scratch memory.
             pibar_mode: 'dense' (cuBLAS matmul) or 'uniform' (O(W*S) exact for scalar/specieswise T).
                 Use 'uniform' for large S where the transfer matrix is nearly uniform.
         """
@@ -332,6 +342,7 @@ class GeneDataset(Dataset):
                     device=device, dtype=dtype,
                     chunk_size=chunk_size,
                     max_wave_size=max_wave_size,
+                    max_root_wave_size=max_root_wave_size,
                     pibar_mode=pibar_mode,
                 ))
             return all_logLs
@@ -390,6 +401,7 @@ class GeneDataset(Dataset):
         if pibar_mode == 'uniform':
             transfer_mat = None
 
+        offsets = [m['clade_offset'] for m in batched['family_meta']]
         # Wave scheduling: merge all families into cross-family waves
         families_waves = []
         families_phases = []
@@ -399,7 +411,6 @@ class GeneDataset(Dataset):
             families_waves.append(waves_i)
             families_phases.append(phases_i)
 
-        offsets = [m['clade_offset'] for m in batched['family_meta']]
         cross_waves = collate_wave(families_waves, offsets)
 
         max_n_waves = max(len(p) for p in families_phases)
@@ -410,6 +421,19 @@ class GeneDataset(Dataset):
                 if k < len(fp):
                     phase_k = max(phase_k, fp[k])
             cross_phases.append(phase_k)
+
+        cross_waves, cross_phases = split_phase_waves(
+            cross_waves,
+            cross_phases,
+            phase=None,
+            max_wave_size=max_wave_size,
+        )
+        cross_waves, cross_phases = split_phase_waves(
+            cross_waves,
+            cross_phases,
+            phase=3,
+            max_wave_size=max_root_wave_size,
+        )
 
         family_clade_counts = [m['C'] for m in batched['family_meta']]
         family_clade_offsets = [m['clade_offset'] for m in batched['family_meta']]
@@ -439,7 +463,12 @@ class GeneDataset(Dataset):
             local_tolerance=tol_Pi,
             pibar_mode=pibar_mode,
             family_idx=wave_layout.get('family_idx') if self.genewise else None,
+            return_original=False,
         )
 
-        logL_vec = compute_log_likelihood(Pi_out['Pi'], E, root_clade_ids)
+        logL_vec = compute_log_likelihood(
+            Pi_out['Pi_wave_ordered'],
+            E,
+            wave_layout['root_clade_ids'],
+        )
         return [float(x) for x in logL_vec.detach().cpu().tolist()]

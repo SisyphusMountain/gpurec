@@ -379,3 +379,92 @@ fixed6-to-fixed7 drift. Fixed 7 is the safer fixed-count candidate for matching
   about 1.2 ms.
 - There is no GPU overlap in the current trace; all work is serialized on one
   stream.
+
+## 1000-Family Chunked Likelihood
+
+Workload: `tests/data/test_trees_1000`, global uniform mode, fp32, fixed
+`Pi` iterations = 6, RTX 4090. A single all-family resident run is not viable:
+the 1000 families contain 6,417,248 clades, so one `[C,S]` fp32 matrix is about
+51.3 GB at `S=1999`; `Pi + Pibar` alone would be about 102.6 GB. A first
+all-family preprocessing attempt also reached about 93 GB RSS before GPU
+layout/forward.
+
+Implemented changes for this workload:
+
+- Uniform fused leaf handling now uses `leaf_species_index[C]` instead of a
+  persistent `[C,S]` leaf-term matrix.
+- High-level likelihood paths skip the final full `Pi[perm]` copy and compute
+  root likelihood from wave-ordered root ids.
+- Fixed-6 uniform mode can use `Pibar[ws:we]` as ping-pong scratch for odd
+  iterations, then recompute final `Pibar` once per wave. This removes the
+  per-iteration `Pi_new -> Pi` device copy.
+- `max_wave_size` can split oversized index-merged waves, but the stable result
+  below uses the default index-merged waves. The tested large capped run needs
+  more validation before using it for production.
+
+Chunk-size progression on the first families:
+
+| Version | Chunk | Forward | Peak GPU | Result |
+| --- | ---: | ---: | ---: | --- |
+| Previous committed path | 50 | 178.2 ms | 15.5 GB | Fits |
+| Previous committed path | 70 | 245.8 ms | 21.4 GB | Fits |
+| Previous committed path | 75 | - | - | OOM |
+| Leaf index only | 100 | 321.7 ms | 15.3 GB | Fits |
+| Leaf index + skip final `Pi[perm]` | 150 | 467.8 ms | 19.2 GB | Fits |
+| Leaf index + skip final copy + ping-pong | 150 | 401.4 ms | 16.8 GB | Fits |
+| Leaf index + skip final copy + ping-pong | 175 | - | - | Not stable; DTS path hit illegal access near memory limit |
+
+Full 1000-family run with 150-family chunks:
+
+| Chunk | Families | Clades | Waves | Max wave | Forward | Peak GPU |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 0 | 150 | 954,706 | 48 | 238,864 | 401.441 ms | 16.770 GB |
+| 1 | 150 | 969,482 | 48 | 242,558 | 405.702 ms | 17.029 GB |
+| 2 | 150 | 979,570 | 52 | 245,080 | 408.183 ms | 17.208 GB |
+| 3 | 150 | 961,630 | 48 | 240,595 | 407.063 ms | 16.893 GB |
+| 4 | 150 | 954,750 | 48 | 238,875 | 397.762 ms | 16.770 GB |
+| 5 | 150 | 962,290 | 48 | 240,760 | 400.981 ms | 16.904 GB |
+| 6 | 100 | 634,820 | 50 | 158,830 | 266.704 ms | 11.160 GB |
+| Total | 1000 | 6,417,248 | - | - | 2,687.836 ms | - |
+
+The same run spent 590.0 s in repeated Newick preprocessing/model construction.
+That is outside the steady CUDA forward interval, but it is now the dominant
+end-to-end wall-clock cost for one-off evaluation.
+
+Nsight Systems comparison for a 150-family chunk:
+
+| Metric | Before ping-pong | After ping-pong |
+| --- | ---: | ---: |
+| Profiled forward interval | 465.557 ms | 400.892 ms |
+| CUDA kernel time | 369.893 ms | 398.841 ms |
+| Device-to-device memcpy | 93.759 ms / 45.805 GB | 0.0166 ms / 1.53 MB |
+| `_wave_step_uniform_kernel` | 276.682 ms | 269.677 ms |
+| `_dts_fused_kernel` | 55.573 ms | 55.350 ms |
+| Final `_wave_pibar_uniform_parent_kernel` | - | 36.111 ms |
+
+Ping-pong removes about 93.7 ms of D2D copy work and adds about 36.1 ms of
+final Pibar recomputation, for a net improvement of about 65 ms on the
+150-family chunk.
+
+Nsight Compute sample for the largest 150-family `_wave_step_uniform_kernel`
+launch (`grid=(238864,1,1)`, `block=(128,1,1)`):
+
+| Metric | Value |
+| --- | ---: |
+| Duration | 11.556 ms |
+| Compute throughput | 84.55% |
+| Memory busy | 71.76% |
+| DRAM throughput | 32.57% |
+| L1/TEX throughput | 71.79% |
+| L2 throughput | 62.57% |
+| L1/TEX hit rate | 80.48% |
+| L2 hit rate | 94.25% |
+| Eligible warps / scheduler | 4.28 |
+| No eligible warp cycles | 17.46% |
+| Achieved occupancy | 99.59% |
+| Local spill requests | 0 |
+
+The large wave-step launch is compute-heavy with high occupancy and no spilling.
+The most useful remaining optimization target in the profiled 150-family chunk
+is now the algorithmic cost of the uniform wave-step/Pibar work itself, not
+copy overhead.

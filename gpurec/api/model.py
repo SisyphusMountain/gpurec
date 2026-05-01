@@ -26,6 +26,7 @@ from gpurec.core.batching import (
     build_wave_layout,
     collate_gene_families,
     collate_wave,
+    split_phase_waves,
 )
 from gpurec.core.model import GeneDataset
 from gpurec.core.scheduling import compute_clade_waves
@@ -49,6 +50,8 @@ def _build_static_state(
     cg_tol: float,
     cg_maxiter: int,
     gmres_restart: int,
+    max_wave_size: Optional[int] = None,
+    max_root_wave_size: Optional[int] = None,
 ) -> ReconStaticState:
     """Absorb the wave-layout boilerplate that lives in
     ``experiments/validate_three_modes.py:100-149`` and
@@ -92,6 +95,19 @@ def _build_static_state(
             if k < len(fp):
                 phase_k = max(phase_k, fp[k])
         cross_phases.append(phase_k)
+
+    cross_waves, cross_phases = split_phase_waves(
+        cross_waves,
+        cross_phases,
+        phase=None,
+        max_wave_size=max_wave_size,
+    )
+    cross_waves, cross_phases = split_phase_waves(
+        cross_waves,
+        cross_phases,
+        phase=3,
+        max_wave_size=max_root_wave_size,
+    )
 
     family_clade_counts = [m["C"] for m in batched["family_meta"]]
     family_clade_offsets = [m["clade_offset"] for m in batched["family_meta"]]
@@ -175,6 +191,8 @@ class GeneReconModel(torch.nn.Module):
         cg_maxiter: int = 500,
         gmres_restart: int = 40,
         theta_init: Optional[torch.Tensor] = None,
+        max_wave_size: Optional[int] = None,
+        max_root_wave_size: Optional[int] = None,
     ):
         super().__init__()
         if dataset.pairwise:
@@ -218,6 +236,8 @@ class GeneReconModel(torch.nn.Module):
             cg_tol=cg_tol,
             cg_maxiter=cg_maxiter,
             gmres_restart=gmres_restart,
+            max_wave_size=max_wave_size,
+            max_root_wave_size=max_root_wave_size,
         )
 
     # ──────────────────────────────────────────────────────────────────

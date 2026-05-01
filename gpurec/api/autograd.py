@@ -211,6 +211,7 @@ class _GeneReconFunction(torch.autograd.Function):
                     local_tolerance=static.tol_Pi,
                     fixed_iters=static.fixed_iters_Pi,
                     pibar_mode=static.pibar_mode,
+                    return_original=False,
                     family_idx=(
                         static.wave_layout.get("family_idx") if static.genewise else None
                     ),
@@ -220,7 +221,7 @@ class _GeneReconFunction(torch.autograd.Function):
             #    gpurec/core/likelihood.py:180). nll_vec is per-family.
             with _nvtx_range("forward root likelihood"):
                 nll_vec = compute_log_likelihood(
-                    Pi_out["Pi"], E, static.root_clade_ids
+                    Pi_out["Pi_wave_ordered"], E, static.wave_layout["root_clade_ids"]
                 )
 
         # 5. Save state for backward.

@@ -283,6 +283,35 @@ def collate_wave(
     return cross_waves
 
 
+def split_phase_waves(
+    waves: List[List[int]],
+    phases: List[int],
+    *,
+    phase: int | None,
+    max_wave_size: int | None,
+) -> Tuple[List[List[int]], List[int]]:
+    """Split selected waves, preserving the original order.
+
+    If ``phase`` is ``None``, split waves from all phases.
+    """
+    if max_wave_size is None:
+        return waves, phases
+    if max_wave_size <= 0:
+        raise ValueError("max_wave_size must be positive")
+
+    out_waves: List[List[int]] = []
+    out_phases: List[int] = []
+    for wave, ph in zip(waves, phases):
+        if (phase is None or ph == phase) and len(wave) > max_wave_size:
+            for start in range(0, len(wave), max_wave_size):
+                out_waves.append(wave[start:start + max_wave_size])
+                out_phases.append(ph)
+        else:
+            out_waves.append(wave)
+            out_phases.append(ph)
+    return out_waves, out_phases
+
+
 def collate_wave_cross(
     batch_items: List[Dict[str, Any]],
     family_meta: List[Dict[str, int]],
@@ -523,6 +552,10 @@ def build_wave_layout(
 
     leaf_row_new = perm[leaf_row_index.to(device=device, dtype=torch.long)]
     root_ids_new = perm[root_clade_ids.to(device=device, dtype=torch.long)]
+    leaf_col_new = leaf_col_index.to(device=device, dtype=torch.long)
+    leaf_species_index = torch.full((C,), -1, dtype=torch.long, device=device)
+    if leaf_row_new.numel() > 0:
+        leaf_species_index[leaf_row_new] = leaf_col_new
 
     log_split_probs = ccp_helpers['log_split_probs_sorted']
     if torch.is_tensor(log_split_probs):
@@ -627,7 +660,8 @@ def build_wave_layout(
             'N_splits': N_splits,
         },
         'leaf_row_index': leaf_row_new,
-        'leaf_col_index': leaf_col_index.to(device=device, dtype=torch.long),
+        'leaf_col_index': leaf_col_new,
+        'leaf_species_index': leaf_species_index,
         'root_clade_ids': root_ids_new,
         'original_root_clade_ids': root_clade_ids.to(device=device, dtype=torch.long),
         'wave_starts': wave_starts,

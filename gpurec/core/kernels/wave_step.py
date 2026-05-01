@@ -299,6 +299,8 @@ def _wave_step_uniform_kernel(
     ancestor_csr_indices_ptr,
     # Per-wave arrays: [W, S]
     leaf_term_ptr,
+    leaf_species_ptr,
+    leaf_logp_ptr,
     DTS_reduced_ptr,
     has_splits: tl.constexpr,
     # Outputs
@@ -313,6 +315,9 @@ def _wave_step_uniform_kernel(
     COMPUTE_DIFF: tl.constexpr,
     USE_ANCESTOR_CSR: tl.constexpr,
     USE_ANCESTOR_COLS: tl.constexpr,
+    USE_LEAF_INDEX: tl.constexpr,
+    STORE_PIBAR: tl.constexpr,
+    OUTPUT_GLOBAL: tl.constexpr,
     FP64: tl.constexpr,
     stride_c: tl.constexpr = 0,
 ):
@@ -329,7 +334,10 @@ def _wave_step_uniform_kernel(
 
     w = tl.program_id(0)
     pi_base = (ws + w) * stride      # offset into global Pi/Pibar
-    out_base = w * stride             # offset into [W, S] outputs
+    if OUTPUT_GLOBAL:
+        out_base = pi_base            # offset into global output rows
+    else:
+        out_base = w * stride         # offset into [W, S] outputs
 
     # === Pass 1: Online max + sum over the Pi row ===
     row_max = tl.full([1], value=NEG_LARGE, dtype=DTYPE)
@@ -395,8 +403,11 @@ def _wave_step_uniform_kernel(
         denom = row_sum - ancestor_sum
         pibar_w = tl.where(denom > 0.0, tl.log2(denom) + row_max + mt, NEG_LARGE)
 
-        # Store Pibar to global tensor
-        tl.store(Pibar_out_ptr + pi_base + s_offs, pibar_w, mask=mask)
+        # Store Pibar to global tensor when this invocation is producing the
+        # final Pibar rows. Fixed-iteration ping-pong uses Pibar as Pi scratch
+        # and recomputes/stores final Pibar after the last iteration.
+        if STORE_PIBAR:
+            tl.store(Pibar_out_ptr + pi_base + s_offs, pibar_w, mask=mask)
 
         # Load constants (stride_c=0 → shared [S], stride_c=S → per-clade [W,S])
         dl_const = tl.load(DL_const_ptr + w * stride_c + s_offs, mask=mask, other=NEG_LARGE)
@@ -419,7 +430,12 @@ def _wave_step_uniform_kernel(
         t2 = pibar_w + e_val
         t3 = sl1_const + pi_s1
         t4 = sl2_const + pi_s2
-        t5 = tl.load(leaf_term_ptr + out_base + s_offs, mask=mask, other=NEG_LARGE)
+        if USE_LEAF_INDEX:
+            leaf_species = tl.load(leaf_species_ptr + ws + w)
+            leaf_logp = tl.load(leaf_logp_ptr + s_offs, mask=mask, other=NEG_LARGE)
+            t5 = tl.where(mask & (leaf_species == s_offs), leaf_logp, NEG_LARGE)
+        else:
+            t5 = tl.load(leaf_term_ptr + out_base + s_offs, mask=mask, other=NEG_LARGE)
 
         m = tl.maximum(t0, t1)
         m = tl.maximum(m, t2)
@@ -452,7 +468,8 @@ def _wave_step_uniform_kernel(
 def wave_step_uniform_fused(Pi, Pibar, ws, W, S,
                             mt_squeezed, DL_const, Ebar, E, SL1_const, SL2_const,
                             sp_child1, sp_child2, sp_parent, max_ancestor_depth,
-                            leaf_term_wt, DTS_reduced=None, compute_diff=True):
+                            leaf_term_wt, DTS_reduced=None, compute_diff=True,
+                            leaf_species_idx=None, leaf_logp=None):
     """Fused uniform-Pibar + wave step + convergence in one kernel.
 
     Computes Pibar inline using the uniform transfer matrix approximation,
@@ -483,6 +500,9 @@ def wave_step_uniform_fused(Pi, Pibar, ws, W, S,
     max_diff_buf = torch.empty(W, dtype=Pi.dtype, device=Pi.device) if compute_diff else Pi_new
     has_splits = DTS_reduced is not None
     stride_c = S if DL_const.ndim == 2 else 0
+    use_leaf_index = leaf_species_idx is not None and leaf_logp is not None
+    leaf_species_arg = leaf_species_idx if use_leaf_index else sp_parent
+    leaf_logp_arg = leaf_logp if use_leaf_index else leaf_term_wt
 
     BLOCK_S = min(256, triton.next_power_of_2(S))
     grid = (W,)
@@ -497,6 +517,8 @@ def wave_step_uniform_fused(Pi, Pibar, ws, W, S,
         sp_parent,  # dummy CSR indptr; disabled by USE_ANCESTOR_CSR=False
         sp_parent,  # dummy CSR indices; disabled by USE_ANCESTOR_CSR=False
         leaf_term_wt,
+        leaf_species_arg,
+        leaf_logp_arg,
         DTS_reduced if has_splits else leaf_term_wt,  # dummy
         has_splits,
         Pi_new, Pibar, max_diff_buf,
@@ -507,6 +529,9 @@ def wave_step_uniform_fused(Pi, Pibar, ws, W, S,
         COMPUTE_DIFF=bool(compute_diff),
         USE_ANCESTOR_CSR=False,
         USE_ANCESTOR_COLS=False,
+        USE_LEAF_INDEX=use_leaf_index,
+        STORE_PIBAR=True,
+        OUTPUT_GLOBAL=False,
         FP64=fp64,
         stride_c=stride_c,
         num_warps=4,
@@ -515,10 +540,60 @@ def wave_step_uniform_fused(Pi, Pibar, ws, W, S,
     return Pi_new, max_diff
 
 
+def wave_step_uniform_fused_into(Pi_in, Pi_out, Pibar, ws, W, S,
+                                 mt_squeezed, DL_const, Ebar, E, SL1_const, SL2_const,
+                                 sp_child1, sp_child2, sp_parent, max_ancestor_depth,
+                                 leaf_term_wt, DTS_reduced=None,
+                                 leaf_species_idx=None, leaf_logp=None):
+    """Fused uniform wave step writing Pi output directly into global rows."""
+    fp64 = Pi_in.dtype == torch.float64
+    has_splits = DTS_reduced is not None
+    stride_c = S if DL_const.ndim == 2 else 0
+    use_leaf_index = leaf_species_idx is not None and leaf_logp is not None
+    leaf_species_arg = leaf_species_idx if use_leaf_index else sp_parent
+    leaf_logp_arg = leaf_logp if use_leaf_index else leaf_term_wt
+    max_diff_buf = Pi_out
+
+    BLOCK_S = min(256, triton.next_power_of_2(S))
+    grid = (W,)
+    Pi_out_rows = Pi_out.narrow(0, int(ws), int(W))
+
+    _wave_step_uniform_kernel[grid](
+        Pi_in, ws,
+        mt_squeezed,
+        DL_const, Ebar, E, SL1_const, SL2_const,
+        sp_child1, sp_child2,
+        sp_parent,
+        sp_parent,
+        sp_parent,
+        sp_parent,
+        leaf_term_wt,
+        leaf_species_arg,
+        leaf_logp_arg,
+        DTS_reduced if has_splits else leaf_term_wt,
+        has_splits,
+        Pi_out_rows, Pibar, max_diff_buf,
+        S,
+        stride=S,
+        BLOCK_S=BLOCK_S,
+        MAX_ANCESTOR_DEPTH=int(max_ancestor_depth),
+        COMPUTE_DIFF=False,
+        USE_ANCESTOR_CSR=False,
+        USE_ANCESTOR_COLS=False,
+        USE_LEAF_INDEX=use_leaf_index,
+        STORE_PIBAR=False,
+        OUTPUT_GLOBAL=False,
+        FP64=fp64,
+        stride_c=stride_c,
+        num_warps=4,
+    )
+
+
 def wave_step_uniform_ancestor_fused(Pi, Pibar, ws, W, S,
                                      mt_squeezed, DL_const, Ebar, E, SL1_const, SL2_const,
                                      sp_child1, sp_child2, ancestor_cols,
-                                     leaf_term_wt, DTS_reduced=None, compute_diff=True):
+                                     leaf_term_wt, DTS_reduced=None, compute_diff=True,
+                                     leaf_species_idx=None, leaf_logp=None):
     """Fused uniform-Pibar + wave step using precomputed ancestor lists.
 
     This is equivalent to :func:`wave_step_uniform_fused`, but uses a padded
@@ -530,6 +605,9 @@ def wave_step_uniform_ancestor_fused(Pi, Pibar, ws, W, S,
     max_diff_buf = torch.empty(W, dtype=Pi.dtype, device=Pi.device) if compute_diff else Pi_new
     has_splits = DTS_reduced is not None
     stride_c = S if DL_const.ndim == 2 else 0
+    use_leaf_index = leaf_species_idx is not None and leaf_logp is not None
+    leaf_species_arg = leaf_species_idx if use_leaf_index else ancestor_cols
+    leaf_logp_arg = leaf_logp if use_leaf_index else leaf_term_wt
 
     BLOCK_S = min(256, triton.next_power_of_2(S))
     grid = (W,)
@@ -544,6 +622,8 @@ def wave_step_uniform_ancestor_fused(Pi, Pibar, ws, W, S,
         ancestor_cols,  # dummy CSR indptr; disabled by USE_ANCESTOR_CSR=False
         ancestor_cols,  # dummy CSR indices; disabled by USE_ANCESTOR_CSR=False
         leaf_term_wt,
+        leaf_species_arg,
+        leaf_logp_arg,
         DTS_reduced if has_splits else leaf_term_wt,  # dummy
         has_splits,
         Pi_new, Pibar, max_diff_buf,
@@ -554,6 +634,9 @@ def wave_step_uniform_ancestor_fused(Pi, Pibar, ws, W, S,
         COMPUTE_DIFF=bool(compute_diff),
         USE_ANCESTOR_CSR=False,
         USE_ANCESTOR_COLS=True,
+        USE_LEAF_INDEX=use_leaf_index,
+        STORE_PIBAR=True,
+        OUTPUT_GLOBAL=False,
         FP64=fp64,
         stride_c=stride_c,
         num_warps=4,
@@ -566,7 +649,8 @@ def wave_step_uniform_csr_fused(Pi, Pibar, ws, W, S,
                                 mt_squeezed, DL_const, Ebar, E, SL1_const, SL2_const,
                                 sp_child1, sp_child2, ancestor_csr_indptr,
                                 ancestor_csr_indices, max_ancestor_depth,
-                                leaf_term_wt, DTS_reduced=None, compute_diff=True):
+                                leaf_term_wt, DTS_reduced=None, compute_diff=True,
+                                leaf_species_idx=None, leaf_logp=None):
     """Fused uniform-Pibar + wave step using CSR ancestor rows.
 
     This is the hand-written Triton sparse-ancestor path. It keeps the existing
@@ -578,6 +662,9 @@ def wave_step_uniform_csr_fused(Pi, Pibar, ws, W, S,
     max_diff_buf = torch.empty(W, dtype=Pi.dtype, device=Pi.device) if compute_diff else Pi_new
     has_splits = DTS_reduced is not None
     stride_c = S if DL_const.ndim == 2 else 0
+    use_leaf_index = leaf_species_idx is not None and leaf_logp is not None
+    leaf_species_arg = leaf_species_idx if use_leaf_index else ancestor_csr_indices
+    leaf_logp_arg = leaf_logp if use_leaf_index else leaf_term_wt
 
     BLOCK_S = min(256, triton.next_power_of_2(S))
     grid = (W,)
@@ -592,6 +679,8 @@ def wave_step_uniform_csr_fused(Pi, Pibar, ws, W, S,
         ancestor_csr_indptr,
         ancestor_csr_indices,
         leaf_term_wt,
+        leaf_species_arg,
+        leaf_logp_arg,
         DTS_reduced if has_splits else leaf_term_wt,  # dummy
         has_splits,
         Pi_new, Pibar, max_diff_buf,
@@ -602,6 +691,9 @@ def wave_step_uniform_csr_fused(Pi, Pibar, ws, W, S,
         COMPUTE_DIFF=bool(compute_diff),
         USE_ANCESTOR_CSR=True,
         USE_ANCESTOR_COLS=False,
+        USE_LEAF_INDEX=use_leaf_index,
+        STORE_PIBAR=True,
+        OUTPUT_GLOBAL=False,
         FP64=fp64,
         stride_c=stride_c,
         num_warps=4,
