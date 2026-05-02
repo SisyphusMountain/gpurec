@@ -7,6 +7,8 @@ Two kernels:
 Both use one CTA per work-item, multi-pass over species dimension.
 """
 
+import os
+
 import torch
 import triton
 import triton.language as tl
@@ -61,6 +63,7 @@ def _wave_backward_uniform_kernel(
     NEUMANN_TERMS: tl.constexpr,
     USE_LEAF_INDEX: tl.constexpr,
     ACCUM_PARAM_GRADS: tl.constexpr,
+    FAST_NOSPLIT_PARAM_GRADS: tl.constexpr,
     DTYPE: tl.constexpr,
 ):
     """Fused backward kernel for uniform Pibar mode.
@@ -338,67 +341,27 @@ def _wave_backward_uniform_kernel(
 
         v_k_val = tl.load(v_k_ptr + off, mask=mask, other=0.0)
 
-        # Reload Pi and Pibar to recompute weights
-        # (we overwrote aw* buffers with Jt scratch data)
-        pi_w = tl.load(Pi_star_ptr + pi_base + s_offs, mask=mask, other=-1e30)
-        pibar_w = tl.load(Pibar_star_ptr + pi_base + s_offs, mask=mask, other=-1e30)
-        dl_c = tl.load(DL_const_ptr + s_offs, mask=mask, other=-1e30)
-        ebar = tl.load(Ebar_ptr + s_offs, mask=mask, other=-1e30)
-        e_val = tl.load(E_ptr + s_offs, mask=mask, other=-1e30)
-        sl1_c = tl.load(SL1_const_ptr + s_offs, mask=mask, other=-1e30)
-        sl2_c = tl.load(SL2_const_ptr + s_offs, mask=mask, other=-1e30)
-        c1 = tl.load(sp_child1_ptr + s_offs, mask=mask, other=0)
-        c2 = tl.load(sp_child2_ptr + s_offs, mask=mask, other=0)
-        c1_valid = c1 < S
-        c2_valid = c2 < S
-        pi_s1 = tl.load(Pi_star_ptr + pi_base + c1, mask=mask & c1_valid, other=-1e30)
-        pi_s2 = tl.load(Pi_star_ptr + pi_base + c2, mask=mask & c2_valid, other=-1e30)
-        if USE_LEAF_INDEX:
-            leaf_species = tl.load(leaf_species_ptr + ws + w)
-            leaf_logp = tl.load(leaf_logp_ptr + s_offs, mask=mask, other=-1e30)
-            t5 = tl.where(mask & (leaf_species == s_offs), leaf_logp, -1e30)
-        else:
-            t5 = tl.load(leaf_term_ptr + off, mask=mask, other=-1e30)
+        if ACCUM_PARAM_GRADS and FAST_NOSPLIT_PARAM_GRADS and not has_splits:
+            diag_wt = tl.load(aw0_ptr + off, mask=mask, other=0.0)
+            pibar_wt = tl.load(aw1_ptr + off, mask=mask, other=0.0)
+            sl1_wt = tl.load(aw4_ptr + off, mask=mask, other=0.0)
+            sl2_wt = tl.load(aw345_ptr + off, mask=mask, other=0.0)
+            leaf_wt = 1.0 - diag_wt - pibar_wt - sl1_wt - sl2_wt
 
-        # Recompute DTS_L terms and softmax weights
-        t0 = dl_c + pi_w
-        t1 = pi_w + ebar
-        t2 = pibar_w + e_val
-        t3 = sl1_c + pi_s1
-        t4 = sl2_c + pi_s2
-        m = tl.maximum(tl.maximum(tl.maximum(t0, t1), tl.maximum(t2, t3)), tl.maximum(t4, t5))
-        m_safe = tl.where(m > -1e29, m, tl.zeros_like(m))
-        e0 = tl.exp2(t0 - m_safe)
-        e1 = tl.exp2(t1 - m_safe)
-        e2 = tl.exp2(t2 - m_safe)
-        e3 = tl.exp2(t3 - m_safe)
-        e4 = tl.exp2(t4 - m_safe)
-        e5 = tl.exp2(t5 - m_safe)
-        dts_l_sum = e0 + e1 + e2 + e3 + e4 + e5
-        inv_sum = tl.where(dts_l_sum > 0, 1.0 / dts_l_sum, tl.zeros_like(dts_l_sum))
+            dl_c = tl.load(DL_const_ptr + s_offs, mask=mask, other=-1e30)
+            ebar = tl.load(Ebar_ptr + s_offs, mask=mask, other=-1e30)
+            m01 = tl.maximum(dl_c, ebar)
+            e0_01 = tl.exp2(dl_c - m01)
+            e1_01 = tl.exp2(ebar - m01)
+            frac_d = e0_01 / (e0_01 + e1_01)
 
-        if has_splits:
-            dts_r = tl.load(dts_r_ptr + off, mask=mask, other=-1e30)
-            dts_l = tl.log2(dts_l_sum) + m
-            pi_new_m = tl.maximum(dts_l, dts_r)
-            pi_new_ms = tl.where(pi_new_m > -1e29, pi_new_m, tl.zeros_like(pi_new_m))
-            pi_new = tl.log2(tl.exp2(dts_l - pi_new_ms) + tl.exp2(dts_r - pi_new_ms)) + pi_new_m
-            w_L = tl.where(dts_l > -1e29, tl.exp2(dts_l - pi_new), tl.zeros_like(dts_l))
-        else:
-            w_L = tl.full(s_offs.shape, value=1.0, dtype=DTYPE)
+            _aw0 = v_k_val * diag_wt * frac_d
+            _aw1 = v_k_val * diag_wt * (1.0 - frac_d)
+            _aw2 = v_k_val * pibar_wt
+            _aw3 = v_k_val * sl1_wt
+            _aw4 = v_k_val * sl2_wt
+            _aw345 = v_k_val * (sl1_wt + sl2_wt + leaf_wt)
 
-        alpha = v_k_val * w_L
-
-        # Per-element param contributions
-        _aw0 = alpha * e0 * inv_sum   # → log_pD, E
-        _aw1 = alpha * e1 * inv_sum   # → Ebar
-        _aw2 = alpha * e2 * inv_sum   # → E, mt
-        _aw3 = alpha * e3 * inv_sum   # → log_pS, E_s2
-        _aw4 = alpha * e4 * inv_sum   # → log_pS, E_s1
-        _aw5 = alpha * e5 * inv_sum   # → log_pS
-
-        _aw345 = _aw3 + _aw4 + _aw5
-        if ACCUM_PARAM_GRADS:
             tl.atomic_add(grad_log_pD_ptr, tl.sum(tl.where(mask, _aw0, 0.0), axis=0), sem="relaxed")
             tl.atomic_add(grad_log_pS_ptr, tl.sum(tl.where(mask, _aw345, 0.0), axis=0), sem="relaxed")
             tl.atomic_add(grad_E_ptr + s_offs, _aw0 + _aw2, sem="relaxed", mask=mask)
@@ -407,12 +370,81 @@ def _wave_backward_uniform_kernel(
             tl.atomic_add(grad_E_s2_ptr + s_offs, _aw3, sem="relaxed", mask=mask)
             tl.atomic_add(grad_mt_ptr + s_offs, _aw2, sem="relaxed", mask=mask)
         else:
-            tl.store(aw0_ptr + off, _aw0, mask=mask)
-            tl.store(aw1_ptr + off, _aw1, mask=mask)
-            tl.store(aw2_ptr + off, _aw2, mask=mask)
-            tl.store(aw345_ptr + off, _aw345, mask=mask)
-            tl.store(aw3_ptr + off, _aw3, mask=mask)
-            tl.store(aw4_ptr + off, _aw4, mask=mask)
+            # Reload Pi and Pibar to recompute weights
+            # (we overwrote aw* buffers with Jt scratch data)
+            pi_w = tl.load(Pi_star_ptr + pi_base + s_offs, mask=mask, other=-1e30)
+            pibar_w = tl.load(Pibar_star_ptr + pi_base + s_offs, mask=mask, other=-1e30)
+            dl_c = tl.load(DL_const_ptr + s_offs, mask=mask, other=-1e30)
+            ebar = tl.load(Ebar_ptr + s_offs, mask=mask, other=-1e30)
+            e_val = tl.load(E_ptr + s_offs, mask=mask, other=-1e30)
+            sl1_c = tl.load(SL1_const_ptr + s_offs, mask=mask, other=-1e30)
+            sl2_c = tl.load(SL2_const_ptr + s_offs, mask=mask, other=-1e30)
+            c1 = tl.load(sp_child1_ptr + s_offs, mask=mask, other=0)
+            c2 = tl.load(sp_child2_ptr + s_offs, mask=mask, other=0)
+            c1_valid = c1 < S
+            c2_valid = c2 < S
+            pi_s1 = tl.load(Pi_star_ptr + pi_base + c1, mask=mask & c1_valid, other=-1e30)
+            pi_s2 = tl.load(Pi_star_ptr + pi_base + c2, mask=mask & c2_valid, other=-1e30)
+            if USE_LEAF_INDEX:
+                leaf_species = tl.load(leaf_species_ptr + ws + w)
+                leaf_logp = tl.load(leaf_logp_ptr + s_offs, mask=mask, other=-1e30)
+                t5 = tl.where(mask & (leaf_species == s_offs), leaf_logp, -1e30)
+            else:
+                t5 = tl.load(leaf_term_ptr + off, mask=mask, other=-1e30)
+
+            # Recompute DTS_L terms and softmax weights
+            t0 = dl_c + pi_w
+            t1 = pi_w + ebar
+            t2 = pibar_w + e_val
+            t3 = sl1_c + pi_s1
+            t4 = sl2_c + pi_s2
+            m = tl.maximum(tl.maximum(tl.maximum(t0, t1), tl.maximum(t2, t3)), tl.maximum(t4, t5))
+            m_safe = tl.where(m > -1e29, m, tl.zeros_like(m))
+            e0 = tl.exp2(t0 - m_safe)
+            e1 = tl.exp2(t1 - m_safe)
+            e2 = tl.exp2(t2 - m_safe)
+            e3 = tl.exp2(t3 - m_safe)
+            e4 = tl.exp2(t4 - m_safe)
+            e5 = tl.exp2(t5 - m_safe)
+            dts_l_sum = e0 + e1 + e2 + e3 + e4 + e5
+            inv_sum = tl.where(dts_l_sum > 0, 1.0 / dts_l_sum, tl.zeros_like(dts_l_sum))
+
+            if has_splits:
+                dts_r = tl.load(dts_r_ptr + off, mask=mask, other=-1e30)
+                dts_l = tl.log2(dts_l_sum) + m
+                pi_new_m = tl.maximum(dts_l, dts_r)
+                pi_new_ms = tl.where(pi_new_m > -1e29, pi_new_m, tl.zeros_like(pi_new_m))
+                pi_new = tl.log2(tl.exp2(dts_l - pi_new_ms) + tl.exp2(dts_r - pi_new_ms)) + pi_new_m
+                w_L = tl.where(dts_l > -1e29, tl.exp2(dts_l - pi_new), tl.zeros_like(dts_l))
+            else:
+                w_L = tl.full(s_offs.shape, value=1.0, dtype=DTYPE)
+
+            alpha = v_k_val * w_L
+
+            # Per-element param contributions
+            _aw0 = alpha * e0 * inv_sum   # → log_pD, E
+            _aw1 = alpha * e1 * inv_sum   # → Ebar
+            _aw2 = alpha * e2 * inv_sum   # → E, mt
+            _aw3 = alpha * e3 * inv_sum   # → log_pS, E_s2
+            _aw4 = alpha * e4 * inv_sum   # → log_pS, E_s1
+            _aw5 = alpha * e5 * inv_sum   # → log_pS
+
+            _aw345 = _aw3 + _aw4 + _aw5
+            if ACCUM_PARAM_GRADS:
+                tl.atomic_add(grad_log_pD_ptr, tl.sum(tl.where(mask, _aw0, 0.0), axis=0), sem="relaxed")
+                tl.atomic_add(grad_log_pS_ptr, tl.sum(tl.where(mask, _aw345, 0.0), axis=0), sem="relaxed")
+                tl.atomic_add(grad_E_ptr + s_offs, _aw0 + _aw2, sem="relaxed", mask=mask)
+                tl.atomic_add(grad_Ebar_ptr + s_offs, _aw1, sem="relaxed", mask=mask)
+                tl.atomic_add(grad_E_s1_ptr + s_offs, _aw4, sem="relaxed", mask=mask)
+                tl.atomic_add(grad_E_s2_ptr + s_offs, _aw3, sem="relaxed", mask=mask)
+                tl.atomic_add(grad_mt_ptr + s_offs, _aw2, sem="relaxed", mask=mask)
+            else:
+                tl.store(aw0_ptr + off, _aw0, mask=mask)
+                tl.store(aw1_ptr + off, _aw1, mask=mask)
+                tl.store(aw2_ptr + off, _aw2, mask=mask)
+                tl.store(aw345_ptr + off, _aw345, mask=mask)
+                tl.store(aw3_ptr + off, _aw3, mask=mask)
+                tl.store(aw4_ptr + off, _aw4, mask=mask)
 
 
 def wave_backward_uniform_fused(
@@ -468,6 +500,9 @@ def wave_backward_uniform_fused(
 
     has_splits = dts_r is not None
     use_leaf_index = leaf_species_idx is not None and leaf_logp is not None
+    fast_nosplit_param_grads = (
+        os.environ.get("GPUREC_FAST_NOSPLIT_PARAM_ACCUM", "0") != "0"
+    )
     if leaf_term_wt is None:
         if not use_leaf_index:
             raise ValueError("leaf_term_wt is required when leaf_species_idx/leaf_logp are not provided")
@@ -516,6 +551,7 @@ def wave_backward_uniform_fused(
         neumann_terms,
         USE_LEAF_INDEX=bool(use_leaf_index),
         ACCUM_PARAM_GRADS=bool(accum_enabled),
+        FAST_NOSPLIT_PARAM_GRADS=bool(fast_nosplit_param_grads),
         DTYPE=_tl_float_dtype(dtype),
     )
 

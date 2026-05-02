@@ -203,6 +203,23 @@ Other tested proposals:
 | `max_wave_size=32768` | 60.483 ms | 181.742 ms | Accept as default cap |
 | `max_wave_size=16384` | not retested | 184.092 ms | Reject for default; useful only if memory constrained |
 | `max_root_wave_size=32` | not retested | 194.434 ms | Reject; too many root-wave launches |
+| no-split final VJP shortcut | 61.828 ms | 184.176 ms | Reject for default; algebra valid but slower |
+
+The no-split final VJP shortcut was the targeted Bottleneck 1 subtask. An
+explorer agent checked the algebra: when `has_splits=false`, `w_L=1`, so the
+precomputed Neumann scratch weights satisfy
+`leaf_wt = 1 - diag_wt - pibar_wt - sl1_wt - sl2_wt`. The D/Ebar split is
+`exp2(DL_const) / (exp2(DL_const) + exp2(Ebar))` because the shared `Pi` factor
+cancels from terms 0 and 1. The mapping caveat is that `sl1_wt` contributes to
+`grad_E_s2`, while `sl2_wt` contributes to `grad_E_s1`.
+
+The shortcut was implemented behind `GPUREC_FAST_NOSPLIT_PARAM_ACCUM=1` and
+validated with the autograd bridge in both modes, but profiling showed why it
+lost. On the representative 10-family leaf wave, default fused accumulation
+used about `2.451 GB` DRAM reads and `1.602 GB` DRAM writes; the no-split
+shortcut used `2.615 GB` reads and `1.632 GB` writes. In other words, reading
+the stored scratch weights was less cache-friendly than recomputing the final
+softmax terms, so the shortcut increased DRAM traffic and was left disabled.
 
 ## Nsight Systems breakdown
 
