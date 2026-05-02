@@ -19,6 +19,64 @@ def _tl_float_dtype(dtype):
 
 
 @triton.jit
+def _active_mask_from_rhs_absmax_kernel(
+    rhs_ptr,          # [W, S]
+    active_mask_ptr,  # [W] bool
+    threshold,
+    S: tl.constexpr,
+    stride: tl.constexpr,
+    BLOCK_S: tl.constexpr,
+    STRICT_GT: tl.constexpr,
+    DTYPE: tl.constexpr,
+):
+    w = tl.program_id(0)
+    row_base = w * stride
+    row_max = tl.full([1], value=0.0, dtype=DTYPE)
+
+    for s_start in range(0, S, BLOCK_S):
+        s_offs = s_start + tl.arange(0, BLOCK_S)
+        mask = s_offs < S
+        rhs_val = tl.load(rhs_ptr + row_base + s_offs, mask=mask, other=0.0)
+        tile_max = tl.max(tl.abs(rhs_val), axis=0)
+        row_max = tl.maximum(row_max, tile_max)
+
+    if STRICT_GT:
+        active = row_max > threshold
+    else:
+        active = row_max >= threshold
+    lane = tl.arange(0, 1)
+    tl.store(active_mask_ptr + w + lane, active)
+
+
+def active_mask_from_rhs_absmax_fused(rhs, threshold, *, use_pruning=True):
+    """Build the row activity mask for backward pruning in one Triton launch."""
+    if rhs.ndim != 2:
+        raise ValueError("rhs must be a 2D tensor")
+    if rhs.device.type != "cuda":
+        raise ValueError("active_mask_from_rhs_absmax_fused requires a CUDA tensor")
+    if rhs.dtype not in (torch.float32, torch.float64):
+        raise ValueError("active_mask_from_rhs_absmax_fused supports fp32/fp64 tensors")
+
+    W, S = rhs.shape
+    active_mask = torch.empty((W,), device=rhs.device, dtype=torch.bool)
+    if W == 0:
+        return active_mask
+
+    BLOCK_S = min(256, triton.next_power_of_2(S))
+    _active_mask_from_rhs_absmax_kernel[(W,)](
+        rhs,
+        active_mask,
+        float(threshold),
+        S,
+        rhs.stride(0),
+        BLOCK_S,
+        STRICT_GT=bool(not use_pruning),
+        DTYPE=_tl_float_dtype(rhs.dtype),
+    )
+    return active_mask
+
+
+@triton.jit
 def _wave_backward_uniform_kernel(
     # Converged values from forward pass
     Pi_star_ptr,      # [C, S] — read rows [ws:ws+W]
@@ -997,6 +1055,7 @@ def _dts_cross_backward_accum_kernel(
     stride_C: tl.constexpr,
     BLOCK_S: tl.constexpr,
     USE_ACTIVE_MASK: tl.constexpr,
+    USE_ATOMICS: tl.constexpr,
     DTYPE: tl.constexpr,
 ):
     """DTS cross-clade backward with direct accumulation of Pi adjoints.
@@ -1086,8 +1145,16 @@ def _dts_cross_backward_accum_kernel(
         vd3 = v_k_val * w3
         vd4 = v_k_val * w4
 
-        tl.atomic_add(accumulated_rhs_ptr + pi_l_base + s_offs, vd0 + vd1, sem="relaxed", mask=mask)
-        tl.atomic_add(accumulated_rhs_ptr + pi_r_base + s_offs, vd0 + vd2, sem="relaxed", mask=mask)
+        pi_l_out = accumulated_rhs_ptr + pi_l_base + s_offs
+        pi_r_out = accumulated_rhs_ptr + pi_r_base + s_offs
+        if USE_ATOMICS:
+            tl.atomic_add(pi_l_out, vd0 + vd1, sem="relaxed", mask=mask)
+            tl.atomic_add(pi_r_out, vd0 + vd2, sem="relaxed", mask=mask)
+        else:
+            pi_l_cur = tl.load(pi_l_out, mask=mask, other=0.0)
+            pi_r_cur = tl.load(pi_r_out, mask=mask, other=0.0)
+            tl.store(pi_l_out, pi_l_cur + vd0 + vd1, mask=mask)
+            tl.store(pi_r_out, pi_r_cur + vd0 + vd2, mask=mask)
         tl.store(grad_Pibar_l_ptr + out_base + s_offs, vd2, mask=valid_mask)
         tl.store(grad_Pibar_r_ptr + out_base + s_offs, vd1, mask=valid_mask)
 
@@ -1124,10 +1191,24 @@ def _dts_cross_backward_accum_kernel(
         vd3 = v_k_val * w3
         vd4 = v_k_val * w4
 
-        tl.atomic_add(accumulated_rhs_ptr + pi_l_base + c1, vd3, sem="relaxed", mask=c1_valid)
-        tl.atomic_add(accumulated_rhs_ptr + pi_r_base + c1, vd4, sem="relaxed", mask=c1_valid)
-        tl.atomic_add(accumulated_rhs_ptr + pi_r_base + c2, vd3, sem="relaxed", mask=c2_valid)
-        tl.atomic_add(accumulated_rhs_ptr + pi_l_base + c2, vd4, sem="relaxed", mask=c2_valid)
+        pi_l_c1_out = accumulated_rhs_ptr + pi_l_base + c1
+        pi_r_c1_out = accumulated_rhs_ptr + pi_r_base + c1
+        pi_r_c2_out = accumulated_rhs_ptr + pi_r_base + c2
+        pi_l_c2_out = accumulated_rhs_ptr + pi_l_base + c2
+        if USE_ATOMICS:
+            tl.atomic_add(pi_l_c1_out, vd3, sem="relaxed", mask=c1_valid)
+            tl.atomic_add(pi_r_c1_out, vd4, sem="relaxed", mask=c1_valid)
+            tl.atomic_add(pi_r_c2_out, vd3, sem="relaxed", mask=c2_valid)
+            tl.atomic_add(pi_l_c2_out, vd4, sem="relaxed", mask=c2_valid)
+        else:
+            pi_l_c1_cur = tl.load(pi_l_c1_out, mask=c1_valid, other=0.0)
+            pi_r_c1_cur = tl.load(pi_r_c1_out, mask=c1_valid, other=0.0)
+            pi_r_c2_cur = tl.load(pi_r_c2_out, mask=c2_valid, other=0.0)
+            pi_l_c2_cur = tl.load(pi_l_c2_out, mask=c2_valid, other=0.0)
+            tl.store(pi_l_c1_out, pi_l_c1_cur + vd3, mask=c1_valid)
+            tl.store(pi_r_c1_out, pi_r_c1_cur + vd4, mask=c1_valid)
+            tl.store(pi_r_c2_out, pi_r_c2_cur + vd3, mask=c2_valid)
+            tl.store(pi_l_c2_out, pi_l_c2_cur + vd4, mask=c2_valid)
 
 
 def dts_cross_backward_accum_fused(
@@ -1138,8 +1219,9 @@ def dts_cross_backward_accum_fused(
     accumulated_rhs,
     S,
     active_mask=None,
+    use_atomics=True,
 ):
-    """Fused DTS backward that atomically accumulates direct Pi adjoints."""
+    """Fused DTS backward with direct Pi-adjoint accumulation."""
     n_ws = sl.shape[0]
     device = Pi_star.device
     dtype = Pi_star.dtype
@@ -1168,7 +1250,110 @@ def dts_cross_backward_accum_fused(
         param_pD, param_pS,
         ws, S, stride_C, BLOCK_S,
         USE_ACTIVE_MASK=bool(active_mask is not None),
+        USE_ATOMICS=bool(use_atomics),
         DTYPE=_tl_float_dtype(dtype),
+    )
+
+    return grad_Pibar_l, grad_Pibar_r, param_pD, param_pS
+
+
+@triton.jit
+def _add_grouped_dts_pi_accum_kernel(
+    group_children_ptr,   # [n_groups]
+    grouped_grad_ptr,     # [n_groups, S]
+    accumulated_rhs_ptr,  # [C, S]
+    S: tl.constexpr,
+    stride_C: tl.constexpr,
+    BLOCK_S: tl.constexpr,
+):
+    group = tl.program_id(0)
+    block = tl.program_id(1)
+
+    child = tl.load(group_children_ptr + group)
+    s_offs = block * BLOCK_S + tl.arange(0, BLOCK_S)
+    mask = s_offs < S
+    grad = tl.load(grouped_grad_ptr + group * S + s_offs, mask=mask, other=0.0)
+    out = accumulated_rhs_ptr + child * stride_C + s_offs
+    cur = tl.load(out, mask=mask, other=0.0)
+    tl.store(out, cur + grad, mask=mask)
+
+
+def dts_cross_backward_accum_grouped_fused(
+    Pi_star, Pibar_star, v_k, ws,
+    sl, sr, reduce_idx, wlsp,
+    log_pD, log_pS,
+    sp_child1, sp_child2,
+    accumulated_rhs,
+    S,
+    active_mask=None,
+    group_children=None,
+    group_inverse=None,
+):
+    """Two-stage DTS backward accumulation grouped by child clade.
+
+    Stage 1 reuses the per-split fused DTS VJP to build local Pi/Pibar
+    adjoints. Stage 2 reduces left/right Pi adjoints by child row in a compact
+    scratch buffer, then adds each reduced child row once to accumulated_rhs.
+    This is an opt-in high-fanout alternative to direct atomics.
+    """
+    n_ws = sl.shape[0]
+    if active_mask is not None and reduce_idx is None:
+        raise ValueError("reduce_idx is required when active_mask is provided")
+
+    (grad_Pi_l, grad_Pi_r, grad_Pibar_l, grad_Pibar_r,
+     param_pD, param_pS) = dts_cross_backward_fused(
+        Pi_star, Pibar_star, v_k, ws,
+        sl, sr, reduce_idx, wlsp,
+        log_pD, log_pS,
+        sp_child1, sp_child2, S,
+        active_mask=active_mask,
+    )
+
+    if n_ws == 0:
+        return grad_Pibar_l, grad_Pibar_r, param_pD, param_pS
+
+    if group_children is None or group_inverse is None:
+        all_children = torch.cat((sl, sr), dim=0)
+        group_children, group_inverse = torch.unique(
+            all_children,
+            sorted=True,
+            return_inverse=True,
+        )
+
+    group_children = group_children.contiguous()
+    group_inverse = group_inverse.contiguous()
+    n_groups = group_children.shape[0]
+    if n_groups == 0:
+        return grad_Pibar_l, grad_Pibar_r, param_pD, param_pS
+
+    BLOCK_S = min(256, triton.next_power_of_2(S))
+    grouped_grad = torch.zeros((n_groups, S), device=Pi_star.device, dtype=Pi_star.dtype)
+    use_active_mask = active_mask is not None
+
+    _group_cross_pibar_grad_kernel[(2 * n_ws, triton.cdiv(S, BLOCK_S))](
+        grad_Pi_l,
+        grad_Pi_r,
+        group_inverse,
+        reduce_idx if reduce_idx is not None else group_inverse,
+        active_mask if active_mask is not None else grouped_grad,
+        grouped_grad,
+        grouped_grad,
+        n_ws,
+        S,
+        BLOCK_S,
+        USE_ACTIVE_MASK=use_active_mask,
+        TRACK_GROUP_ACTIVE=False,
+        num_warps=4,
+    )
+
+    _add_grouped_dts_pi_accum_kernel[(n_groups, triton.cdiv(S, BLOCK_S))](
+        group_children,
+        grouped_grad,
+        accumulated_rhs,
+        S,
+        accumulated_rhs.stride(0),
+        BLOCK_S,
+        num_warps=4,
     )
 
     return grad_Pibar_l, grad_Pibar_r, param_pD, param_pS

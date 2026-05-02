@@ -532,7 +532,7 @@ overlaps proposal 3, where the all-wave compact scratch path won.
 The wave loop still performs host decisions on CUDA tensors:
 
 ```python
-rhs_k = accumulated_rhs[ws:we].clone()
+rhs_k = accumulated_rhs[ws:we]  # fused uniform default; clone fallback is opt-in
 clade_max = rhs_k.abs().max(dim=1).values
 active_mask = clade_max >= pruning_threshold
 if not active_mask.any():
@@ -969,32 +969,72 @@ The largest split waves are root-like and have many splits per parent:
 
 For those waves, a split-major atomic kernel may not be the best layout.
 
-### Next work
+### Tested proposals
 
-1. Add a second path for high fanout waves.
+Two default-off alternatives were implemented:
 
-   Use the current direct atomic path for low and medium fanout. For root-like
-   waves, try a parent-grouped or child-grouped two-stage reduction:
+| Path | Env flag | Idea |
+|---|---|---|
+| Child-grouped two-stage accumulation | `GPUREC_DTS_BACKWARD_ACCUM_IMPL=grouped` | Materialize local `grad_Pi_l/r`, reduce by child row, then add one row per child to `accumulated_rhs`. |
+| Child-unique no-atomic accumulation | `GPUREC_DTS_BACKWARD_ACCUM_IMPL=noatomic` | For selected high-fanout waves whose child rows are unique, replace atomic add with load/add/store. |
 
-   ```text
-   stage 1: compute per-split/per-tile contributions into a compact scratch
-   stage 2: reduce by child row and species, then add once to accumulated_rhs
-   ```
+Both paths keep the direct atomic kernel as the default fallback. The grouped
+path also has aliases `GPUREC_GROUPED_DTS_BACKWARD_ACCUM=1` and thresholds
+`GPUREC_GROUPED_DTS_BACKWARD_MIN_SPLITS` / `GPUREC_GROUPED_DTS_BACKWARD_MIN_FANOUT`.
+The no-atomic path has alias `GPUREC_NOATOMIC_DTS_BACKWARD_ACCUM=1`.
 
-   The switch criterion can be based on `n_splits / W` and measured duplicate
-   child factor.
+Correctness checks against the current direct path:
 
-2. Avoid doing speciation scatter with atomics where tree injectivity is known.
+```text
+FAMS=2 forced grouped_all: max abs 6.10e-05, max rel 9.68e-07
+FAMS=2 forced noatomic_all: exact
+FAMS=10 threshold grouped: max abs 1.22e-04, max rel 3.18e-07
+FAMS=10 threshold noatomic: max abs 3.66e-04, max rel 3.18e-07
+FAMS=50 threshold grouped: exact
+FAMS=50 threshold noatomic: exact
+```
 
-   Within one split output row, child-species scatter is conflict-free. The
-   direct accumulation kernel uses atomics because multiple splits can target
-   the same child clade. A grouped path can recover normal stores for the local
-   scatter part.
+Backward-only CUDA event timings from the worker:
 
-3. Keep the current direct path as the fallback.
+| Families | Path | Mean | Median | Min |
+|---:|---|---:|---:|---:|
+| 10 | direct | 48.033 ms | 47.810 ms | 47.523 ms |
+| 10 | grouped | 48.311 ms | 48.313 ms | 47.981 ms |
+| 10 | noatomic | 48.343 ms | 48.324 ms | 48.054 ms |
+| 50 | direct | 163.760 ms | 164.352 ms | 162.431 ms |
+| 50 | grouped | 175.255 ms | 175.860 ms | 173.495 ms |
+| 50 | noatomic | 163.325 ms | 163.053 ms | 160.907 ms |
 
-   Previous tests showed it was faster overall than the materializing path, and
-   NCU confirms the cost is meaningful but not catastrophic.
+Nsight Systems, 50 families:
+
+| Path | DTS accumulation kernel total |
+|---|---:|
+| direct `_dts_cross_backward_accum_kernel` | 29.639 ms |
+| noatomic `_dts_cross_backward_accum_kernel` | 29.630 ms |
+| grouped DTS pieces combined | 39.348 ms |
+
+Grouped split:
+
+```text
+_dts_cross_backward_accum_kernel: 18.234 ms
+_dts_cross_backward_kernel:        7.912 ms
+_group_cross_pibar_grad_kernel:    7.331 ms
+_add_grouped_dts_pi_accum_kernel:  5.870 ms
+```
+
+The child-grouped path regresses because the selected high-fanout waves are not
+child-duplicate-heavy. In the 50-family workload, the selected waves have child
+duplicate factor about `1.00`, so grouping adds materialization and reduction
+kernels without reducing much contention.
+
+The no-atomic path is correctness-safe for the observed child-unique high
+fanout waves, but Nsight shows no meaningful kernel improvement. The atomics
+are visible in NCU, but for this layout they are not the dominant reason the
+DTS accumulation kernel costs about 30 ms.
+
+Recommendation: keep the direct atomic path as the default. The next useful
+DTS experiment is parent-grouped, not child-grouped: the problematic waves have
+many splits per parent, while child rows are mostly unique.
 
 ## Bottleneck 5: residual PyTorch kernels
 
@@ -1014,52 +1054,105 @@ The most important sources are:
 4. Temporary additions such as `aw0 + aw2` and `aw3 + aw4 + aw5`.
 5. Some remaining fallback paths for non-fused pieces.
 
-### Next work
+### Tested proposal: fused active-mask construction
 
-1. Fuse parameter-gradient reductions out of `_scatter_accum`.
+An active-mask builder was added behind `GPUREC_KERNELIZED_ACTIVE_MASK=1`.
+It replaces:
 
-   For the global mode benchmark, all family indices map to one parameter row.
-   The fused wave kernel can write compact partial sums instead of full `[W, S]`
-   contribution tensors.
+```python
+clade_max = rhs_k.abs().max(dim=1).values
+active_mask = clade_max >= pruning_threshold
+```
 
-2. Remove dense leaf-mask creation.
+with one Triton kernel, `_active_mask_from_rhs_absmax_kernel`.
 
-   This removes fill kernels and one host sync from `_get_leaf_mask`.
+Correctness:
 
-3. Replace active-mask compaction with in-kernel row skipping.
+```text
+tests/kernels/test_active_mask_kernel.py: 3 passed
+GPUREC_KERNELIZED_ACTIVE_MASK=1 targeted backward/kernel tests: 20 passed
+```
 
-   This removes PyTorch `abs`, `max`, compare, `any`, `sum.item`, and `nonzero`
-   from the critical path, or at least reduces them to asynchronous device-side
-   work.
+Worker benchmark summary:
+
+| Families | Default median | Fused-mask median | Result |
+|---:|---:|---:|---|
+| 10 | 47.527 ms | 47.802 ms | slight regression |
+| 50 | 167.547 ms | 160.386 ms then 163.149 ms | noisy, sometimes faster |
+
+10-family Nsight Systems confirms the intended PyTorch kernels are removed:
+
+| Kernel family | Default | Fused mask |
+|---|---:|---:|
+| PyTorch `AbsFunctor` active-mask kernels | 47 instances / 0.587 ms | 2 / 0.002 ms |
+| PyTorch row `MaxOps` reductions | 62 / 0.624 ms | 17 / 0.058 ms |
+| PyTorch compare-scalar kernels | 64 / 0.084 ms | 19 / 0.024 ms |
+| `_active_mask_from_rhs_absmax_kernel` | 0 | 45 / 0.450 ms |
+
+The fused mask is a cleaner implementation, but it does not remove the real
+host-pruning bottleneck. `active_mask.any()`, `active_mask.sum().item()`, and
+`active_mask.nonzero(...)` still force synchronization and dynamic work in the
+wave loop. In the 50-family combined profile, the fused mask added `2.947 ms`
+of Triton kernel time and made the profiled interval slower despite removing
+some PyTorch launches.
+
+Recommendation: keep `GPUREC_KERNELIZED_ACTIVE_MASK=1` default-off. The next
+step should be device-side active worklists or a fixed schedule that avoids
+host scalar decisions, not just a fused mask builder.
 
 ## Bottleneck 6: D2D copies
 
-Copies are not the biggest wall-time issue, but they are an easy cleanup:
+This proposal was implemented and made the default. The old behavior can still
+be forced with `GPUREC_FUSED_UNIFORM_BACKWARD_VIEW_RHS=0`.
 
-| Families | D2D/memcpy calls | D2D/memcpy bytes | D2D/memcpy time |
-|---:|---:|---:|---:|
-| 10 | 688 | 852.8 MB | 1.974 ms |
-| 50 | 755 | 3,979.9 MB | 8.274 ms |
-
-Almost all of this volume matches two wave-RHS copies per processed wave:
+The earlier profile showed large D2D volume from wave RHS snapshots. One
+documented clone had already been removed, but one per-wave clone remained:
 
 ```python
-rhs_k = accumulated_rhs[ws:we].clone()        # backward.py:682
-...
-wave_backward_uniform_fused(..., rhs_k.clone(), ...)
+rhs_k = accumulated_rhs[ws:we].clone()
 ```
 
-`wave_backward_uniform_fused` documents that `rhs` is overwritten as scratch.
-But `rhs_k` is already a private clone of `accumulated_rhs[ws:we]`, and it is
-not needed after the fused call. Passing `rhs_k` directly should remove roughly
-half of the D2D copy volume:
+For the fused uniform CUDA path, `_wave_backward_uniform_kernel` treats
+`rhs_ptr` as read-only. Later cross-DTS and uniform-`Pibar` adjoints accumulate
+into child rows from earlier waves, not into the current wave slice. Therefore
+the kernel can read the contiguous `accumulated_rhs[ws:we]` view directly.
+
+Correctness:
 
 ```text
-10 families: about 0.4 GB and about 1 ms upper bound
-50 families: about 2.0 GB and about 4 ms upper bound
+Default RHS-view targeted backward/kernel tests: 20 passed
+GPUREC_FUSED_UNIFORM_BACKWARD_VIEW_RHS=0 tests/gradients/test_autograd_bridge.py: 15 passed
+10-family off/on parity: loss diff 0, theta-grad max rel 1.01e-7
+Direct fused-wrapper mutation check: rhs_mutation_max_abs 0
+Wave layout overlap check: child_row_overlap_violations []
 ```
 
-This is a small but low-risk first patch.
+Backward-only CUDA event timings:
+
+| Families | RHS clone median | RHS view median | Final default median | Peak alloc before | Peak alloc after |
+|---:|---:|---:|---:|---:|---:|
+| 10 | 48.993 ms | 48.340 ms | 46.641 ms | 2.829 GB | 2.695 GB |
+| 50 | 163.035 ms | 159.055 ms | 158.463 ms | 10.567 GB | 10.305 GB |
+
+The final default medians are from the supervisor's sequential `REPS=9`,
+`WARMUPS=5` rerun after enabling RHS view by default.
+
+Nsight Systems D2D copy summary:
+
+| Families | RHS clone | D2D calls | D2D bytes | D2D time |
+|---:|---|---:|---:|---:|
+| 10 | on | 408 | 570.080 MB | 1.238 ms |
+| 10 | view | 363 | 38.106 MB | 0.377 ms |
+| 50 | on | 427 | 2609.790 MB | 5.159 ms |
+| 50 | view | 378 | 35.638 MB | 0.391 ms |
+
+The removed copy count is exactly one per wave: `45` copies for 10 families and
+`49` copies for 50 families. D2D volume drops by `531.974 MB` and
+`2574.152 MB`; D2D time drops by `0.861 ms` and `4.768 ms`.
+
+Recommendation: keep RHS view as the default. This is the only Bottleneck 4-6
+proposal in this round with a clear mechanism, a direct profile confirmation,
+lower peak memory, and a repeatable wall-time improvement.
 
 ## What not to prioritize first
 
@@ -1089,27 +1182,32 @@ stream. The right target is fewer bytes.
 
 ## Recommended plan
 
-### P0: remove obvious copies and dense leaf tensors
+### P0: keep removing avoidable bytes
 
-1. Pass `rhs_k` directly into `wave_backward_uniform_fused` instead of
-   `rhs_k.clone()`.
-2. Replace dense `leaf_wt` with compact per-row leaf species indices.
-3. Validate gradients against the current implementation and finite differences.
-4. Re-profile 10 and 50 families with Nsight Systems.
+The RHS clone has been removed for the fused uniform CUDA path and is now the
+default. The remaining byte-reduction work is inside the self-loop kernel and
+around residual scratch tensors:
 
-Expected gain:
+1. Audit the largest remaining D2D copies after RHS-view mode.
+2. Continue reducing `_wave_backward_uniform_kernel` scratch traffic.
+3. Keep the compact leaf-index path as the default and avoid reintroducing dense
+   `[W, S]` leaf tensors.
+
+Measured gain from the accepted RHS-view change:
 
 ```text
-copies: 1 to 4 ms depending on batch size
-leaf tensor removal: likely several ms on 50 families, plus lower self-loop bandwidth
+10 families: 48.993 ms -> 48.340 ms in worker run, final default 46.641 ms
+50 families: 163.035 ms -> 159.055 ms in worker run, final default 158.463 ms
+D2D bytes at 50 families: 2609.790 MB -> 35.638 MB
 ```
 
-### P1: device-resident pruning
+### P1: device-resident pruning/worklists
 
 1. Keep pruning semantics, but stop branching on CUDA scalars from Python.
 2. Pass active masks to the Triton kernels and skip inactive rows or splits
    inside the kernels.
-3. Launch all waves in the fixed schedule.
+3. Compact active rows/splits into device worklists, or launch all waves in a
+   fixed schedule only if the no-op work is cheaper than the current syncs.
 4. Re-measure the no-op cost versus the removed sync gaps.
 
 Expected gain:
@@ -1119,8 +1217,10 @@ Expected gain:
 50-family upper bound: 37.8 ms GPU idle/gap span
 ```
 
-The real gain will be lower, but this should materially improve small and
-medium batches.
+The fused active-mask experiment proved that simply replacing `abs().max()` is
+not enough. It removed the intended PyTorch kernels, but left `any`,
+`sum().item`, and `nonzero` synchronization in place and therefore remains
+default-off.
 
 ### P2: fuse parameter-gradient reductions
 
@@ -1139,7 +1239,7 @@ self-loop final-store traffic also decreases
 
 This is the biggest structural cleanup after pruning.
 
-### P3: specialize high-fanout split waves
+### P3: parent-specialize high-fanout split waves
 
 1. Keep the current split-major DTS path for ordinary waves.
 2. Add a parent-grouped path for high `n_splits / W` root-like waves.
@@ -1151,6 +1251,10 @@ Expected gain:
 targets: 29.4 ms DTS backward accum + 12.4 ms DTS forward recompute at 50 families
 likely gain: workload dependent, probably single-digit to low-double-digit ms
 ```
+
+Child-grouping was tested and rejected for this workload: selected high-fanout
+waves had child duplicate factor about `1.00`, and the grouped DTS pieces cost
+`39.348 ms` versus `29.639 ms` for the direct atomic kernel.
 
 ### P4: revisit uniform Pibar VJP grouping
 
@@ -1178,8 +1282,9 @@ kernels. On the 50-family batch there are 37.8 ms of GPU idle/gaps and about
 44 ms of residual PyTorch kernel work. The highest-value next implementation
 work is therefore:
 
-1. remove duplicate RHS copies and dense leaf tensors,
-2. make pruning device-resident,
+1. keep reducing self-loop scratch/copy bytes after the accepted RHS-view fix,
+2. make pruning device-resident with active worklists rather than only a fused
+   mask builder,
 3. fuse parameter-gradient reductions,
-4. specialize high-fanout DTS waves,
-5. only then optimize uniform `Pibar` VJP grouping.
+4. try parent-grouped high-fanout DTS waves,
+5. only then revisit uniform `Pibar` VJP grouping.

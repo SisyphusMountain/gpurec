@@ -444,12 +444,14 @@ def Pi_wave_backward(
             wave_backward_uniform_fused,
             dts_cross_backward_fused,
             dts_cross_backward_accum_fused,
+            dts_cross_backward_accum_grouped_fused,
             uniform_cross_pibar_vjp_fused,
             uniform_cross_pibar_vjp_tree_fused,
             uniform_cross_pibar_vjp_tree_prefix_fused,
             uniform_cross_pibar_vjp_tree_grouped_fused,
             uniform_cross_pibar_vjp_grouped_tree_fused,
             pibar_row_stats_fused,
+            active_mask_from_rhs_absmax_fused,
         )
         _HAS_FUSED_BACKWARD = True
     except ImportError:
@@ -499,6 +501,12 @@ def Pi_wave_backward(
     cross_pibar_row_stats_enabled = (
         os.environ.get("GPUREC_CROSS_PIBAR_ROW_STATS", "0") != "0"
     )
+    kernelized_active_mask_enabled = (
+        os.environ.get("GPUREC_KERNELIZED_ACTIVE_MASK", "0") != "0"
+        and _HAS_FUSED_BACKWARD
+        and device.type == 'cuda'
+        and dtype in (torch.float32, torch.float64)
+    )
     kernelized_backward_dts_enabled = (
         os.environ.get("GPUREC_KERNELIZED_BACKWARD_DTS", "1") != "0"
         and device.type == 'cuda'
@@ -506,8 +514,46 @@ def Pi_wave_backward(
     fused_dts_backward_accum_enabled = (
         os.environ.get("GPUREC_FUSED_DTS_BACKWARD_ACCUM", "1") != "0"
     )
+    dts_backward_accum_impl = os.environ.get(
+        "GPUREC_DTS_BACKWARD_ACCUM_IMPL", "direct"
+    ).lower()
+    grouped_dts_backward_accum_enabled = (
+        os.environ.get("GPUREC_GROUPED_DTS_BACKWARD_ACCUM", "0") != "0"
+        or dts_backward_accum_impl in (
+            "grouped",
+            "grouped_all",
+            "child_grouped",
+            "child_grouped_all",
+        )
+    )
+    noatomic_dts_backward_accum_enabled = (
+        os.environ.get("GPUREC_NOATOMIC_DTS_BACKWARD_ACCUM", "0") != "0"
+        or dts_backward_accum_impl in (
+            "noatomic",
+            "noatomic_all",
+            "nonatomic",
+            "nonatomic_all",
+        )
+    )
+    grouped_dts_backward_accum_all = dts_backward_accum_impl in (
+        "grouped_all",
+        "child_grouped_all",
+    )
+    noatomic_dts_backward_accum_all = dts_backward_accum_impl in (
+        "noatomic_all",
+        "nonatomic_all",
+    )
+    grouped_dts_backward_min_splits = int(
+        os.environ.get("GPUREC_GROUPED_DTS_BACKWARD_MIN_SPLITS", "8192")
+    )
+    grouped_dts_backward_min_fanout = float(
+        os.environ.get("GPUREC_GROUPED_DTS_BACKWARD_MIN_FANOUT", "64")
+    )
     fused_uniform_backward_enabled = (
         os.environ.get("GPUREC_FUSED_UNIFORM_BACKWARD", "1") != "0"
+    )
+    fused_uniform_backward_view_rhs = (
+        os.environ.get("GPUREC_FUSED_UNIFORM_BACKWARD_VIEW_RHS", "1") != "0"
     )
     _compute_dts_cross_kernelized = None
     if kernelized_backward_dts_enabled:
@@ -849,15 +895,32 @@ def Pi_wave_backward(
     ):
         cross_pibar_row_stats = pibar_row_stats_fused(Pi_star_wave)
 
+    def _compute_active_mask(rhs):
+        if kernelized_active_mask_enabled:
+            threshold = pruning_threshold if use_pruning else 0.0
+            return active_mask_from_rhs_absmax_fused(
+                rhs, threshold, use_pruning=use_pruning
+            )
+        clade_max = rhs.abs().max(dim=1).values
+        if use_pruning:
+            return clade_max >= pruning_threshold
+        return clade_max > 0
+
     for k in range(K - 1, -1, -1):
         meta = wave_metas[k]
         ws = meta['start']
         we = meta['end']
         W = meta['W']
 
-        rhs_k = accumulated_rhs[ws:we].clone()
-
         use_fused = can_use_fused_uniform_backward
+        rhs_slice = accumulated_rhs[ws:we]
+        # The fused uniform kernel treats rhs as read-only, and this wave's
+        # later cross-DTS/Pibar adjoints accumulate into child rows.
+        rhs_k = (
+            rhs_slice
+            if (use_fused and fused_uniform_backward_view_rhs)
+            else rhs_slice.clone()
+        )
         no_cpu_pruning_wave = no_cpu_pruning and use_fused
         device_pruning_wave = device_pruning_requested and use_fused
         kernel_pruning_wave = no_cpu_pruning_wave or device_pruning_wave
@@ -865,11 +928,8 @@ def Pi_wave_backward(
         active_mask_for_kernels = None
 
         if kernel_pruning_wave:
-            clade_max = rhs_k.abs().max(dim=1).values
-            if use_pruning:
-                active_mask = clade_max >= pruning_threshold
-            elif device_pruning_wave:
-                active_mask = clade_max > 0
+            if use_pruning or device_pruning_wave:
+                active_mask = _compute_active_mask(rhs_k)
             if active_mask is not None:
                 active_mask = active_mask.contiguous()
                 active_mask_for_kernels = active_mask
@@ -883,11 +943,7 @@ def Pi_wave_backward(
             active_idx = None
             rhs_active = rhs_k
         else:
-            clade_max = rhs_k.abs().max(dim=1).values
-            if use_pruning:
-                active_mask = clade_max >= pruning_threshold
-            else:
-                active_mask = clade_max > 0
+            active_mask = _compute_active_mask(rhs_k)
 
             if not active_mask.any():
                 n_waves_skipped += 1
@@ -1090,14 +1146,72 @@ def Pi_wave_backward(
             if use_fused and fused_scalar_params:
                 # G=1: pass shared params to fused kernel.
                 if fused_dts_backward_accum_enabled:
-                    (grad_Pibar_l, grad_Pibar_r,
-                     param_pD, param_pS) = dts_cross_backward_accum_fused(
-                        Pi_star_wave, Pibar_star_wave, v_k, ws,
-                        sl, sr, reduce_idx, wlsp,
-                        log_pD.reshape(-1)[0], log_pS.reshape(-1)[0],
-                        sp_child1, sp_child2, accumulated_rhs, S,
-                        active_mask=active_mask_for_kernels,
+                    dts_accum_threshold_match = (
+                        n_ws >= grouped_dts_backward_min_splits
+                        and (n_ws / max(W, 1)) >= grouped_dts_backward_min_fanout
                     )
+                    use_noatomic_dts_accum = (
+                        noatomic_dts_backward_accum_enabled
+                        and (noatomic_dts_backward_accum_all or dts_accum_threshold_match)
+                    )
+                    use_grouped_dts_accum = (
+                        grouped_dts_backward_accum_enabled
+                        and (grouped_dts_backward_accum_all or dts_accum_threshold_match)
+                    )
+                    group_children = group_inverse = None
+                    if use_noatomic_dts_accum or use_grouped_dts_accum:
+                        group_children = meta.get('_dts_accum_group_children')
+                        group_inverse = meta.get('_dts_accum_group_inverse')
+                        if (
+                            not torch.is_tensor(group_children)
+                            or not torch.is_tensor(group_inverse)
+                            or group_children.device != sl.device
+                            or group_inverse.device != sl.device
+                        ):
+                            all_children = torch.cat((sl, sr), dim=0)
+                            group_children, group_inverse = torch.unique(
+                                all_children,
+                                sorted=True,
+                                return_inverse=True,
+                            )
+                            group_children = group_children.contiguous()
+                            group_inverse = group_inverse.contiguous()
+                            meta['_dts_accum_group_children'] = group_children
+                            meta['_dts_accum_group_inverse'] = group_inverse
+                    child_rows_unique = (
+                        torch.is_tensor(group_children)
+                        and int(group_children.shape[0]) == int(2 * n_ws)
+                    )
+                    if use_noatomic_dts_accum and child_rows_unique:
+                        (grad_Pibar_l, grad_Pibar_r,
+                         param_pD, param_pS) = dts_cross_backward_accum_fused(
+                            Pi_star_wave, Pibar_star_wave, v_k, ws,
+                            sl, sr, reduce_idx, wlsp,
+                            log_pD.reshape(-1)[0], log_pS.reshape(-1)[0],
+                            sp_child1, sp_child2, accumulated_rhs, S,
+                            active_mask=active_mask_for_kernels,
+                            use_atomics=False,
+                        )
+                    elif use_grouped_dts_accum:
+                        (grad_Pibar_l, grad_Pibar_r,
+                         param_pD, param_pS) = dts_cross_backward_accum_grouped_fused(
+                            Pi_star_wave, Pibar_star_wave, v_k, ws,
+                            sl, sr, reduce_idx, wlsp,
+                            log_pD.reshape(-1)[0], log_pS.reshape(-1)[0],
+                            sp_child1, sp_child2, accumulated_rhs, S,
+                            active_mask=active_mask_for_kernels,
+                            group_children=group_children,
+                            group_inverse=group_inverse,
+                        )
+                    else:
+                        (grad_Pibar_l, grad_Pibar_r,
+                         param_pD, param_pS) = dts_cross_backward_accum_fused(
+                            Pi_star_wave, Pibar_star_wave, v_k, ws,
+                            sl, sr, reduce_idx, wlsp,
+                            log_pD.reshape(-1)[0], log_pS.reshape(-1)[0],
+                            sp_child1, sp_child2, accumulated_rhs, S,
+                            active_mask=active_mask_for_kernels,
+                        )
                     used_fused_direct_pi_accum = True
                     grad_Pi_l = grad_Pi_r = None
                 else:
