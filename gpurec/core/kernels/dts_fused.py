@@ -5,6 +5,10 @@ import triton
 import triton.language as tl
 
 
+def _tl_float_dtype(dtype):
+    return tl.float64 if dtype == torch.float64 else tl.float32
+
+
 @triton.jit
 def _dts_fused_kernel(
     # Full Pi and Pibar tensors: [C, S]
@@ -18,6 +22,9 @@ def _dts_fused_kernel(
     log_pS_ptr,
     # Split probs: [N]
     log_split_probs_ptr,
+    # Optional parent-row active mask for wave-local reduce_idx[n]
+    reduce_idx_ptr,
+    active_mask_ptr,
     # Output: [N, S]
     out_ptr,
     # Dimensions
@@ -27,6 +34,8 @@ def _dts_fused_kernel(
     # Param modes: 0 = shared [S], 1 = per-split [N, S], 2 = per-split scalar [N] / [N, 1]
     mode_pD: tl.constexpr = 0,
     mode_pS: tl.constexpr = 0,
+    USE_ACTIVE_MASK: tl.constexpr = False,
+    DTYPE: tl.constexpr = tl.float32,
 ):
     """Compute DTS_term[i, s] = log_split_probs[i] + logsumexp2(5 DTS terms)[s].
 
@@ -42,6 +51,15 @@ def _dts_fused_kernel(
     # Load left/right clade indices for this split
     left_idx = tl.load(lefts_ptr + n)
     right_idx = tl.load(rights_ptr + n)
+    if USE_ACTIVE_MASK:
+        parent_w = tl.load(reduce_idx_ptr + n)
+        parent_active = tl.load(active_mask_ptr + parent_w)
+        if parent_active == 0:
+            out_base = n * S
+            tl.store(out_ptr + out_base + s_offs,
+                     tl.full([BLOCK_S], value=-1e30, dtype=DTYPE),
+                     mask=mask)
+            return
 
     base_l = left_idx * S
     base_r = right_idx * S
@@ -110,7 +128,7 @@ def _dts_fused_kernel(
 def dts_fused(Pi, Pibar, lefts, rights,
               sp_child1, sp_child2,
               log_pD, log_pS, log_split_probs,
-              out=None):
+              out=None, active_mask=None, reduce_idx=None):
     """Fused DTS: gather + 5 terms + logsumexp + split_probs in one kernel.
 
     Args:
@@ -130,6 +148,8 @@ def dts_fused(Pi, Pibar, lefts, rights,
     S = Pi.shape[1]
     if out is None:
         out = torch.empty((N, S), device=Pi.device, dtype=Pi.dtype)
+    if active_mask is not None and reduce_idx is None:
+        raise ValueError("reduce_idx is required when active_mask is provided")
 
     # Flatten log_split_probs to [N]
     lsp = log_split_probs.reshape(N).contiguous()
@@ -166,10 +186,14 @@ def dts_fused(Pi, Pibar, lefts, rights,
         sp_child1, sp_child2,
         log_pD_vec, log_pS_vec,
         lsp,
+        reduce_idx if reduce_idx is not None else lefts,
+        active_mask if active_mask is not None else lefts,
         out,
         N, S,
         BLOCK_S=BLOCK_S,
         mode_pD=mode_pD,
         mode_pS=mode_pS,
+        USE_ACTIVE_MASK=bool(active_mask is not None),
+        DTYPE=_tl_float_dtype(Pi.dtype),
     )
     return out

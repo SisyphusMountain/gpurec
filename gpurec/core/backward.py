@@ -606,6 +606,16 @@ def Pi_wave_backward(
         r = p[family_idx]
         return r.unsqueeze(-1) if r.ndim == 1 else r
 
+    can_use_fused_uniform_backward = (
+        fused_uniform_backward_enabled
+        and _HAS_FUSED_BACKWARD
+        and G == 1
+        and pibar_mode == 'uniform'
+        and dtype in (torch.float32, torch.float64)
+        and device.type == 'cuda'
+        and S > 256
+    )
+
     # Shared/global mode has one parameter/E row for every clade.  Keeping the
     # constants as [S] avoids materializing several [C, S] copies before the
     # wave loop, which is both slow and the main source of backward OOMs.
@@ -664,9 +674,39 @@ def Pi_wave_backward(
     fused_wave_param_accum_enabled = (
         os.environ.get("GPUREC_FUSED_WAVE_PARAM_ACCUM", "1") != "0"
     )
+    no_cpu_pruning = (
+        os.environ.get("GPUREC_BACKWARD_NO_CPU_PRUNING", "0") != "0"
+    )
+    device_pruning_requested = (
+        os.environ.get("GPUREC_DEVICE_PRUNING", "0") != "0"
+    )
+    dense_leaf_mask_from_index = (
+        os.environ.get("GPUREC_DENSE_LEAF_MASK_FROM_INDEX", "0") != "0"
+        and leaf_species_index is not None
+        and not (can_use_fused_uniform_backward and use_uniform_leaf_index)
+    )
+    leaf_species_lanes = (
+        torch.arange(S, device=device)
+        if dense_leaf_mask_from_index else None
+    )
+    leaf_zero = (
+        torch.tensor(0.0, device=device, dtype=dtype)
+        if dense_leaf_mask_from_index else None
+    )
+    leaf_neg_inf = (
+        torch.tensor(NEG_INF, device=device, dtype=dtype)
+        if dense_leaf_mask_from_index else None
+    )
 
     def _get_leaf_mask(ws, we):
         W = we - ws
+        if dense_leaf_mask_from_index:
+            return torch.where(
+                leaf_species_index[ws:we].unsqueeze(1) == leaf_species_lanes.unsqueeze(0),
+                leaf_zero,
+                leaf_neg_inf,
+            )
+
         lwt = torch.full((W, S), NEG_INF, device=device, dtype=dtype)
         mask = (leaf_row_index >= ws) & (leaf_row_index < we)
         if mask.any():
@@ -683,6 +723,10 @@ def Pi_wave_backward(
     n_waves_skipped = 0
     n_clades_total = C
     n_clades_skipped = 0
+    device_pruning_clades_total = 0
+    device_pruning_waves_total = 0
+    device_pruning_active_counts = []
+    device_pruning_wave_active_flags = []
 
     accumulated_rhs = torch.zeros(C, S, device=device, dtype=dtype)
     for r in root_clade_ids_perm:
@@ -708,31 +752,48 @@ def Pi_wave_backward(
 
         rhs_k = accumulated_rhs[ws:we].clone()
 
-        clade_max = rhs_k.abs().max(dim=1).values
-        if use_pruning:
-            active_mask = clade_max >= pruning_threshold
+        use_fused = can_use_fused_uniform_backward
+        no_cpu_pruning_wave = no_cpu_pruning and use_fused
+        device_pruning_wave = device_pruning_requested and use_fused
+        kernel_pruning_wave = no_cpu_pruning_wave or device_pruning_wave
+        active_mask = None
+        active_mask_for_kernels = None
+
+        if kernel_pruning_wave:
+            clade_max = rhs_k.abs().max(dim=1).values
+            if use_pruning:
+                active_mask = clade_max >= pruning_threshold
+            elif device_pruning_wave:
+                active_mask = clade_max > 0
+            if active_mask is not None:
+                active_mask = active_mask.contiguous()
+                active_mask_for_kernels = active_mask
+            if device_pruning_wave:
+                device_pruning_clades_total += W
+                device_pruning_waves_total += 1
+                device_pruning_active_counts.append(active_mask.sum())
+                device_pruning_wave_active_flags.append(active_mask.any())
+            n_active = W
+            use_compact = False
+            active_idx = None
+            rhs_active = rhs_k
         else:
-            active_mask = clade_max > 0
+            clade_max = rhs_k.abs().max(dim=1).values
+            if use_pruning:
+                active_mask = clade_max >= pruning_threshold
+            else:
+                active_mask = clade_max > 0
 
-        if not active_mask.any():
-            n_waves_skipped += 1
-            n_clades_skipped += W
-            continue
+            if not active_mask.any():
+                n_waves_skipped += 1
+                n_clades_skipped += W
+                continue
 
-        n_active = int(active_mask.sum().item())
-        n_clades_skipped += (W - n_active)
+            n_active = int(active_mask.sum().item())
+            n_clades_skipped += (W - n_active)
 
         Pi_W_star = Pi_star_wave[ws:we].detach()
 
-        use_fused = (
-            fused_uniform_backward_enabled
-            and _HAS_FUSED_BACKWARD
-            and G == 1
-            and pibar_mode == 'uniform'
-            and dtype in (torch.float32, torch.float64)
-            and device.type == 'cuda'
-            and S > 256
-        )
         leaf_wt = None if (use_fused and use_uniform_leaf_index) else _get_leaf_wt(ws, we)
 
         if meta['has_splits']:
@@ -748,6 +809,7 @@ def Pi_wave_backward(
                     dts_r = _compute_dts_cross_kernelized(
                         Pi_star_wave.detach(), Pibar_star_wave.detach(), meta,
                         sp_child1, sp_child2, log_pD_dts, log_pS_dts, S, device, dtype,
+                        active_mask=active_mask_for_kernels,
                     )
                 else:
                     dts_r = _dts_cross_differentiable(
@@ -772,13 +834,14 @@ def Pi_wave_backward(
             SL1_w = SL1_const[ws:we]
             SL2_w = SL2_const[ws:we]
 
-        use_compact = (n_active < W)
-        if use_compact:
-            active_idx = active_mask.nonzero(as_tuple=True)[0]
-            rhs_active = rhs_k[active_idx]
-        else:
-            active_idx = None
-            rhs_active = rhs_k
+        if not kernel_pruning_wave:
+            use_compact = (n_active < W)
+            if use_compact:
+                active_idx = active_mask.nonzero(as_tuple=True)[0]
+                rhs_active = rhs_k[active_idx]
+            else:
+                active_idx = None
+                rhs_active = rhs_k
 
         # Per-wave family indices for scatter accumulation.
         fi_w = family_idx[ws:we]
@@ -818,6 +881,7 @@ def Pi_wave_backward(
                 leaf_species_idx=leaf_species_index if use_uniform_leaf_index else None,
                 leaf_logp=uniform_leaf_logp if use_uniform_leaf_index else None,
                 accum_param_grads=accum_param_grads,
+                active_mask=active_mask_for_kernels,
             )
 
             if accum_param_grads is None:
@@ -927,6 +991,7 @@ def Pi_wave_backward(
                         sl, sr, reduce_idx, wlsp,
                         log_pD.reshape(-1)[0], log_pS.reshape(-1)[0],
                         sp_child1, sp_child2, accumulated_rhs, S,
+                        active_mask=active_mask_for_kernels,
                     )
                     used_fused_direct_pi_accum = True
                     grad_Pi_l = grad_Pi_r = None
@@ -937,6 +1002,7 @@ def Pi_wave_backward(
                         sl, sr, reduce_idx, wlsp,
                         log_pD.reshape(-1)[0], log_pS.reshape(-1)[0],
                         sp_child1, sp_child2, S,
+                        active_mask=active_mask_for_kernels,
                     )
 
                 # Accumulate into G=1 row.
@@ -1047,6 +1113,8 @@ def Pi_wave_backward(
                         level_parents,
                         accumulated_rhs,
                         S,
+                        active_mask=active_mask_for_kernels,
+                        reduce_idx=reduce_idx,
                     )
                 else:
                     uniform_cross_pibar_vjp_fused(
@@ -1058,6 +1126,8 @@ def Pi_wave_backward(
                         ancestor_cols,
                         accumulated_rhs,
                         S,
+                        active_mask=active_mask_for_kernels,
+                        reduce_idx=reduce_idx,
                     )
                 used_fused_pibar_vjp = True
 
@@ -1088,6 +1158,12 @@ def Pi_wave_backward(
                         pi_from_pibar = p_prime * (u_mr @ transfer_mat_T.T)
 
                     accumulated_rhs.index_add_(0, nz_children, pi_from_pibar)
+
+    if device_pruning_active_counts:
+        n_device_active = int(torch.stack(device_pruning_active_counts).sum().item())
+        n_device_waves_active = int(torch.stack(device_pruning_wave_active_flags).sum().item())
+        n_clades_skipped += device_pruning_clades_total - n_device_active
+        n_waves_skipped += device_pruning_waves_total - n_device_waves_active
 
     result = {
         'v_Pi': accumulated_rhs,

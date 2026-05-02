@@ -27,6 +27,7 @@ def _wave_backward_uniform_kernel(
     has_splits: tl.constexpr,
     # Incoming adjoint
     rhs_ptr,          # [W, S]
+    active_mask_ptr,  # optional [W] bool row activity mask
     # Constants [S]
     mt_ptr, DL_const_ptr, Ebar_ptr, E_ptr, SL1_const_ptr, SL2_const_ptr,
     # Species children [S] long
@@ -68,6 +69,7 @@ def _wave_backward_uniform_kernel(
     RECOMPUTE_PIBAR_DENOM: tl.constexpr,
     LEAF_HIT_ONLY_LOGP: tl.constexpr,
     LEAF_LOGP_SCALAR: tl.constexpr,
+    USE_ACTIVE_MASK: tl.constexpr,
     DTYPE: tl.constexpr,
 ):
     """Fused backward kernel for uniform Pibar mode.
@@ -87,6 +89,25 @@ def _wave_backward_uniform_kernel(
     w = tl.program_id(0)
     pi_base = (ws + w) * stride      # offset into [C, S]
     out_base = w * stride             # offset into [W, S]
+    if USE_ACTIVE_MASK:
+        row_active = tl.load(active_mask_ptr + w)
+        if row_active == 0:
+            for s_start in range(0, S, BLOCK_S):
+                s_offs = s_start + tl.arange(0, BLOCK_S)
+                mask = s_offs < S
+                zero = tl.zeros([BLOCK_S], dtype=DTYPE)
+                tl.store(v_k_ptr + out_base + s_offs, zero, mask=mask)
+                if not ACCUM_PARAM_GRADS:
+                    off = out_base + s_offs
+                    tl.store(aw0_ptr + off, zero, mask=mask)
+                    tl.store(aw1_ptr + off, zero, mask=mask)
+                    tl.store(aw2_ptr + off, zero, mask=mask)
+                    tl.store(aw345_ptr + off, zero, mask=mask)
+                    tl.store(aw3_ptr + off, zero, mask=mask)
+                    tl.store(aw4_ptr + off, zero, mask=mask)
+            return
+    else:
+        row_active = True
 
     # ================================================================
     # Pass 1: Row statistics for uniform Pibar (same as forward)
@@ -96,7 +117,8 @@ def _wave_backward_uniform_kernel(
 
     for s_start in range(0, S, BLOCK_S):
         s_offs = s_start + tl.arange(0, BLOCK_S)
-        mask = s_offs < S
+        valid_mask = s_offs < S
+        mask = valid_mask & row_active
         pi_val = tl.load(Pi_star_ptr + pi_base + s_offs, mask=mask, other=-1e30)
         tile_max = tl.max(pi_val, axis=0)
         new_max = tl.maximum(row_max, tile_max)
@@ -128,7 +150,8 @@ def _wave_backward_uniform_kernel(
 
     for s_start in range(0, S, BLOCK_S):
         s_offs = s_start + tl.arange(0, BLOCK_S)
-        mask = s_offs < S
+        valid_mask = s_offs < S
+        mask = valid_mask & row_active
         off = out_base + s_offs
 
         # Load Pi*, Pibar*
@@ -240,9 +263,10 @@ def _wave_backward_uniform_kernel(
     # Copy rhs → v_k (v_k accumulates the Neumann sum)
     for s_start in range(0, S, BLOCK_S):
         s_offs = s_start + tl.arange(0, BLOCK_S)
-        mask = s_offs < S
+        valid_mask = s_offs < S
+        mask = valid_mask & row_active
         rhs_val = tl.load(rhs_ptr + out_base + s_offs, mask=mask, other=0.0)
-        tl.store(v_k_ptr + out_base + s_offs, rhs_val, mask=mask)
+        tl.store(v_k_ptr + out_base + s_offs, rhs_val, mask=valid_mask)
 
     # Buffer ping-pong: iteration 0 reads rhs_ptr, even iterations write
     # spec_buf, and odd iterations write term_buf. Output buffer is zeroed
@@ -254,7 +278,8 @@ def _wave_backward_uniform_kernel(
         # Without zeroing, non-child positions would have stale data from prior iterations.
         for s_start in range(0, S, BLOCK_S):
             s_offs = s_start + tl.arange(0, BLOCK_S)
-            mask = s_offs < S
+            valid_mask = s_offs < S
+            mask = valid_mask & row_active
             if _n % 2 == 0:
                 tl.store(spec_buf_ptr + out_base + s_offs,
                          tl.zeros(s_offs.shape, dtype=DTYPE), mask=mask)
@@ -268,7 +293,8 @@ def _wave_backward_uniform_kernel(
 
         for s_start in range(0, S, BLOCK_S):
             s_offs = s_start + tl.arange(0, BLOCK_S)
-            mask = s_offs < S
+            valid_mask = s_offs < S
+            mask = valid_mask & row_active
             off = out_base + s_offs
 
             # Load term from appropriate buffer
@@ -319,7 +345,8 @@ def _wave_backward_uniform_kernel(
         # --- Sub-pass B: compute J^T result using A ---
         for s_start in range(0, S, BLOCK_S):
             s_offs = s_start + tl.arange(0, BLOCK_S)
-            mask = s_offs < S
+            valid_mask = s_offs < S
+            mask = valid_mask & row_active
             off = out_base + s_offs
 
             # Reload term and weights
@@ -374,7 +401,8 @@ def _wave_backward_uniform_kernel(
     # ================================================================
     for s_start in range(0, S, BLOCK_S):
         s_offs = s_start + tl.arange(0, BLOCK_S)
-        mask = s_offs < S
+        valid_mask = s_offs < S
+        mask = valid_mask & row_active
         off = out_base + s_offs
 
         v_k_val = tl.load(v_k_ptr + off, mask=mask, other=0.0)
@@ -484,12 +512,12 @@ def _wave_backward_uniform_kernel(
                 tl.atomic_add(grad_E_s2_ptr + s_offs, _aw3, sem="relaxed", mask=mask)
                 tl.atomic_add(grad_mt_ptr + s_offs, _aw2, sem="relaxed", mask=mask)
             else:
-                tl.store(aw0_ptr + off, _aw0, mask=mask)
-                tl.store(aw1_ptr + off, _aw1, mask=mask)
-                tl.store(aw2_ptr + off, _aw2, mask=mask)
-                tl.store(aw345_ptr + off, _aw345, mask=mask)
-                tl.store(aw3_ptr + off, _aw3, mask=mask)
-                tl.store(aw4_ptr + off, _aw4, mask=mask)
+                tl.store(aw0_ptr + off, _aw0, mask=valid_mask)
+                tl.store(aw1_ptr + off, _aw1, mask=valid_mask)
+                tl.store(aw2_ptr + off, _aw2, mask=valid_mask)
+                tl.store(aw345_ptr + off, _aw345, mask=valid_mask)
+                tl.store(aw3_ptr + off, _aw3, mask=valid_mask)
+                tl.store(aw4_ptr + off, _aw4, mask=valid_mask)
 
 
 def wave_backward_uniform_fused(
@@ -502,6 +530,7 @@ def wave_backward_uniform_fused(
     leaf_species_idx=None,
     leaf_logp=None,
     accum_param_grads=None,
+    active_mask=None,
 ):
     """Fused backward: precompute + Neumann + param VJP in one kernel per wave.
 
@@ -609,6 +638,7 @@ def wave_backward_uniform_fused(
         dts_r if has_splits else Pi_star,  # dummy ptr when no splits
         has_splits,
         rhs,
+        active_mask if active_mask is not None else rhs,
         mt_squeezed, DL_const, Ebar, E, SL1_const, SL2_const,
         sp_child1, sp_child2,
         leaf_term_wt,
@@ -634,6 +664,7 @@ def wave_backward_uniform_fused(
         RECOMPUTE_PIBAR_DENOM=bool(recompute_pibar_denom),
         LEAF_HIT_ONLY_LOGP=bool(leaf_hit_only_logp),
         LEAF_LOGP_SCALAR=bool(leaf_logp_scalar),
+        USE_ACTIVE_MASK=bool(active_mask is not None),
         DTYPE=_tl_float_dtype(dtype),
     )
 
@@ -653,6 +684,7 @@ def _dts_cross_backward_kernel(
     Pibar_star_ptr,
     # Neumann-solved adjoint [W, S]
     v_k_ptr,
+    active_mask_ptr,   # optional [W] bool parent row activity mask
     # Split metadata
     sl_ptr,            # [n_ws] int64 — left child global clade index
     sr_ptr,            # [n_ws] int64 — right child global clade index
@@ -677,6 +709,7 @@ def _dts_cross_backward_kernel(
     S: tl.constexpr,
     stride_C: tl.constexpr,
     BLOCK_S: tl.constexpr,
+    USE_ACTIVE_MASK: tl.constexpr,
     DTYPE: tl.constexpr,
 ):
     """Fused cross-clade DTS backward for uniform Pibar mode.
@@ -702,6 +735,25 @@ def _dts_cross_backward_kernel(
     sr = tl.load(sr_ptr + i)
     parent_w = tl.load(reduce_idx_ptr + i)
     wlsp = tl.load(wlsp_ptr + i)
+    if USE_ACTIVE_MASK:
+        parent_active = tl.load(active_mask_ptr + parent_w)
+        if parent_active == 0:
+            out_base = i * S
+            zero_scalar = tl.zeros((1,), dtype=DTYPE)
+            _scalar_off = tl.arange(0, 1)
+            tl.store(param_pD_ptr + i + _scalar_off, zero_scalar)
+            tl.store(param_pS_ptr + i + _scalar_off, zero_scalar)
+            for s_start in range(0, S, BLOCK_S):
+                s_offs = s_start + tl.arange(0, BLOCK_S)
+                mask = s_offs < S
+                zero = tl.zeros([BLOCK_S], dtype=DTYPE)
+                tl.store(grad_Pi_l_ptr + out_base + s_offs, zero, mask=mask)
+                tl.store(grad_Pi_r_ptr + out_base + s_offs, zero, mask=mask)
+                tl.store(grad_Pibar_l_ptr + out_base + s_offs, zero, mask=mask)
+                tl.store(grad_Pibar_r_ptr + out_base + s_offs, zero, mask=mask)
+            return
+    else:
+        parent_active = True
 
     # Base offsets into [C, S] for child clades
     pi_l_base = sl * stride_C
@@ -725,7 +777,8 @@ def _dts_cross_backward_kernel(
     # ================================================================
     for s_start in range(0, S, BLOCK_S):
         s_offs = s_start + tl.arange(0, BLOCK_S)
-        mask = s_offs < S
+        valid_mask = s_offs < S
+        mask = valid_mask & parent_active
 
         # Load child Pi/Pibar
         Pi_l = tl.load(Pi_star_ptr + pi_l_base + s_offs, mask=mask, other=NEG_LARGE)
@@ -772,10 +825,10 @@ def _dts_cross_backward_kernel(
         vd4 = v_k_val * w4
 
         # Direct contributions to Pi gradients (D + T terms only; S terms via scatter in pass 2)
-        tl.store(grad_Pi_l_ptr + out_base + s_offs, vd0 + vd1, mask=mask)
-        tl.store(grad_Pi_r_ptr + out_base + s_offs, vd0 + vd2, mask=mask)
-        tl.store(grad_Pibar_l_ptr + out_base + s_offs, vd2, mask=mask)
-        tl.store(grad_Pibar_r_ptr + out_base + s_offs, vd1, mask=mask)
+        tl.store(grad_Pi_l_ptr + out_base + s_offs, vd0 + vd1, mask=valid_mask)
+        tl.store(grad_Pi_r_ptr + out_base + s_offs, vd0 + vd2, mask=valid_mask)
+        tl.store(grad_Pibar_l_ptr + out_base + s_offs, vd2, mask=valid_mask)
+        tl.store(grad_Pibar_r_ptr + out_base + s_offs, vd1, mask=valid_mask)
 
         # Accumulate param sums
         sum_pD += tl.sum(vd0, axis=0)
@@ -798,7 +851,8 @@ def _dts_cross_backward_kernel(
     # ================================================================
     for s_start in range(0, S, BLOCK_S):
         s_offs = s_start + tl.arange(0, BLOCK_S)
-        mask = s_offs < S
+        valid_mask = s_offs < S
+        mask = valid_mask & parent_active
 
         # Recompute vd3, vd4 (speciation terms only)
         c1 = tl.load(sp_child1_ptr + s_offs, mask=mask, other=0)
@@ -846,6 +900,7 @@ def dts_cross_backward_fused(
     log_pD, log_pS,
     sp_child1, sp_child2,
     S,
+    active_mask=None,
 ):
     """Fused DTS cross-clade backward: replaces both param-grad and adjoint blocks.
 
@@ -897,12 +952,14 @@ def dts_cross_backward_fused(
     _dts_cross_backward_kernel[grid](
         Pi_star, Pibar_star,
         v_k,
+        active_mask if active_mask is not None else v_k,
         sl, sr, reduce_idx, wlsp_flat,
         pD_val, pS_val,
         sp_child1, sp_child2,
         grad_Pi_l, grad_Pi_r, grad_Pibar_l, grad_Pibar_r,
         param_pD, param_pS,
         ws, S, stride_C, BLOCK_S,
+        USE_ACTIVE_MASK=bool(active_mask is not None),
         DTYPE=_tl_float_dtype(dtype),
     )
 
@@ -916,6 +973,7 @@ def _dts_cross_backward_accum_kernel(
     Pibar_star_ptr,
     # Neumann-solved adjoint [W, S]
     v_k_ptr,
+    active_mask_ptr,   # optional [W] bool parent row activity mask
     # Split metadata
     sl_ptr,            # [n_ws] int64 — left child global clade index
     sr_ptr,            # [n_ws] int64 — right child global clade index
@@ -938,6 +996,7 @@ def _dts_cross_backward_accum_kernel(
     S: tl.constexpr,
     stride_C: tl.constexpr,
     BLOCK_S: tl.constexpr,
+    USE_ACTIVE_MASK: tl.constexpr,
     DTYPE: tl.constexpr,
 ):
     """DTS cross-clade backward with direct accumulation of Pi adjoints.
@@ -956,6 +1015,23 @@ def _dts_cross_backward_accum_kernel(
     sr = tl.load(sr_ptr + i)
     parent_w = tl.load(reduce_idx_ptr + i)
     wlsp = tl.load(wlsp_ptr + i)
+    if USE_ACTIVE_MASK:
+        parent_active = tl.load(active_mask_ptr + parent_w)
+        if parent_active == 0:
+            out_base = i * S
+            zero_scalar = tl.zeros((1,), dtype=DTYPE)
+            _scalar_off = tl.arange(0, 1)
+            tl.store(param_pD_ptr + i + _scalar_off, zero_scalar)
+            tl.store(param_pS_ptr + i + _scalar_off, zero_scalar)
+            for s_start in range(0, S, BLOCK_S):
+                s_offs = s_start + tl.arange(0, BLOCK_S)
+                mask = s_offs < S
+                zero = tl.zeros([BLOCK_S], dtype=DTYPE)
+                tl.store(grad_Pibar_l_ptr + out_base + s_offs, zero, mask=mask)
+                tl.store(grad_Pibar_r_ptr + out_base + s_offs, zero, mask=mask)
+            return
+    else:
+        parent_active = True
 
     pi_l_base = sl * stride_C
     pi_r_base = sr * stride_C
@@ -971,7 +1047,8 @@ def _dts_cross_backward_accum_kernel(
 
     for s_start in range(0, S, BLOCK_S):
         s_offs = s_start + tl.arange(0, BLOCK_S)
-        mask = s_offs < S
+        valid_mask = s_offs < S
+        mask = valid_mask & parent_active
 
         Pi_l = tl.load(Pi_star_ptr + pi_l_base + s_offs, mask=mask, other=NEG_LARGE)
         Pi_r = tl.load(Pi_star_ptr + pi_r_base + s_offs, mask=mask, other=NEG_LARGE)
@@ -1011,8 +1088,8 @@ def _dts_cross_backward_accum_kernel(
 
         tl.atomic_add(accumulated_rhs_ptr + pi_l_base + s_offs, vd0 + vd1, sem="relaxed", mask=mask)
         tl.atomic_add(accumulated_rhs_ptr + pi_r_base + s_offs, vd0 + vd2, sem="relaxed", mask=mask)
-        tl.store(grad_Pibar_l_ptr + out_base + s_offs, vd2, mask=mask)
-        tl.store(grad_Pibar_r_ptr + out_base + s_offs, vd1, mask=mask)
+        tl.store(grad_Pibar_l_ptr + out_base + s_offs, vd2, mask=valid_mask)
+        tl.store(grad_Pibar_r_ptr + out_base + s_offs, vd1, mask=valid_mask)
 
         sum_pD += tl.sum(vd0, axis=0)
         sum_pS += tl.sum(vd3 + vd4, axis=0)
@@ -1022,7 +1099,8 @@ def _dts_cross_backward_accum_kernel(
 
     for s_start in range(0, S, BLOCK_S):
         s_offs = s_start + tl.arange(0, BLOCK_S)
-        mask = s_offs < S
+        valid_mask = s_offs < S
+        mask = valid_mask & parent_active
 
         c1 = tl.load(sp_child1_ptr + s_offs, mask=mask, other=0)
         c2 = tl.load(sp_child2_ptr + s_offs, mask=mask, other=0)
@@ -1059,6 +1137,7 @@ def dts_cross_backward_accum_fused(
     sp_child1, sp_child2,
     accumulated_rhs,
     S,
+    active_mask=None,
 ):
     """Fused DTS backward that atomically accumulates direct Pi adjoints."""
     n_ws = sl.shape[0]
@@ -1080,6 +1159,7 @@ def dts_cross_backward_accum_fused(
     _dts_cross_backward_accum_kernel[(n_ws,)](
         Pi_star, Pibar_star,
         v_k,
+        active_mask if active_mask is not None else v_k,
         sl, sr, reduce_idx, wlsp_flat,
         pD_val, pS_val,
         sp_child1, sp_child2,
@@ -1087,6 +1167,7 @@ def dts_cross_backward_accum_fused(
         grad_Pibar_l, grad_Pibar_r,
         param_pD, param_pS,
         ws, S, stride_C, BLOCK_S,
+        USE_ACTIVE_MASK=bool(active_mask is not None),
         DTYPE=_tl_float_dtype(dtype),
     )
 
@@ -1104,6 +1185,8 @@ def _uniform_cross_pibar_vjp_kernel(
     grad_Pibar_r_ptr,     # [n_ws, S]
     sl_ptr,               # [n_ws]
     sr_ptr,               # [n_ws]
+    reduce_idx_ptr,       # [n_ws], used with active_mask_ptr when enabled
+    active_mask_ptr,      # optional [W] bool parent row activity mask
     ancestor_cols_ptr,    # [MAX_ANCESTOR_DEPTH, S]
     accumulated_rhs_ptr,  # [C, S], updated atomically
     correction_buf_ptr,   # [2 * n_ws, S]
@@ -1112,6 +1195,7 @@ def _uniform_cross_pibar_vjp_kernel(
     stride_C: tl.constexpr,
     BLOCK_S: tl.constexpr,
     MAX_ANCESTOR_DEPTH: tl.constexpr,
+    USE_ACTIVE_MASK: tl.constexpr,
     DTYPE: tl.constexpr,
 ):
     """Apply the VJP of uniform Pibar for one cross-DTS child side.
@@ -1136,6 +1220,13 @@ def _uniform_cross_pibar_vjp_kernel(
     child_l = tl.load(sl_ptr + split_i)
     child_r = tl.load(sr_ptr + split_i)
     child = tl.where(is_right, child_r, child_l)
+    if USE_ACTIVE_MASK:
+        parent_w = tl.load(reduce_idx_ptr + split_i)
+        row_active = tl.load(active_mask_ptr + parent_w)
+        if row_active == 0:
+            return
+    else:
+        row_active = True
 
     pi_base = child * stride_C
     grad_base = split_i * S
@@ -1144,7 +1235,8 @@ def _uniform_cross_pibar_vjp_kernel(
     # Clear the correction row owned by this program.
     for s_start in range(0, S, BLOCK_S):
         s_offs = s_start + tl.arange(0, BLOCK_S)
-        mask = s_offs < S
+        valid_mask = s_offs < S
+        mask = valid_mask & row_active
         tl.store(correction_buf_ptr + corr_base + s_offs,
                  tl.zeros([BLOCK_S], dtype=DTYPE), mask=mask)
 
@@ -1153,7 +1245,8 @@ def _uniform_cross_pibar_vjp_kernel(
     row_sum = tl.full([1], value=0.0, dtype=DTYPE)
     for s_start in range(0, S, BLOCK_S):
         s_offs = s_start + tl.arange(0, BLOCK_S)
-        mask = s_offs < S
+        valid_mask = s_offs < S
+        mask = valid_mask & row_active
         pi_val = tl.load(Pi_star_ptr + pi_base + s_offs, mask=mask, other=NEG_LARGE)
         tile_max = tl.max(pi_val, axis=0)
         new_max = tl.maximum(row_max, tile_max)
@@ -1164,7 +1257,8 @@ def _uniform_cross_pibar_vjp_kernel(
     A = tl.full([1], value=0.0, dtype=DTYPE)
     for s_start in range(0, S, BLOCK_S):
         s_offs = s_start + tl.arange(0, BLOCK_S)
-        mask = s_offs < S
+        valid_mask = s_offs < S
+        mask = valid_mask & row_active
 
         ancestor_sum = tl.zeros([BLOCK_S], dtype=DTYPE)
         for k in range(0, MAX_ANCESTOR_DEPTH):
@@ -1193,7 +1287,8 @@ def _uniform_cross_pibar_vjp_kernel(
     # Add p[f] * (A - correction[f]) into the child row's Pi adjoint.
     for s_start in range(0, S, BLOCK_S):
         s_offs = s_start + tl.arange(0, BLOCK_S)
-        mask = s_offs < S
+        valid_mask = s_offs < S
+        mask = valid_mask & row_active
         pi_val = tl.load(Pi_star_ptr + pi_base + s_offs, mask=mask, other=NEG_LARGE)
         p_prime = tl.exp2(pi_val - row_max)
         correction = tl.load(correction_buf_ptr + corr_base + s_offs, mask=mask, other=0.0)
@@ -1210,6 +1305,8 @@ def uniform_cross_pibar_vjp_fused(
     ancestor_cols,
     accumulated_rhs,
     S,
+    active_mask=None,
+    reduce_idx=None,
 ):
     """Fused uniform-Pibar VJP for cross-DTS child gradients.
 
@@ -1222,6 +1319,8 @@ def uniform_cross_pibar_vjp_fused(
     n_ws = sl.shape[0]
     if n_ws == 0:
         return
+    if active_mask is not None and reduce_idx is None:
+        raise ValueError("reduce_idx is required when active_mask is provided")
 
     correction_buf = torch.empty((2 * n_ws, S), device=Pi_star.device, dtype=Pi_star.dtype)
     BLOCK_S = min(256, triton.next_power_of_2(S))
@@ -1233,6 +1332,8 @@ def uniform_cross_pibar_vjp_fused(
         grad_Pibar_r,
         sl,
         sr,
+        reduce_idx if reduce_idx is not None else sl,
+        active_mask if active_mask is not None else grad_Pibar_l,
         ancestor_cols,
         accumulated_rhs,
         correction_buf,
@@ -1241,6 +1342,7 @@ def uniform_cross_pibar_vjp_fused(
         stride_C,
         BLOCK_S,
         MAX_ANCESTOR_DEPTH=ancestor_cols.shape[0],
+        USE_ACTIVE_MASK=bool(active_mask is not None),
         DTYPE=_tl_float_dtype(Pi_star.dtype),
         num_warps=4,
     )
@@ -1253,6 +1355,8 @@ def _uniform_cross_pibar_vjp_tree_kernel(
     grad_Pibar_r_ptr,     # [n_ws, S]
     sl_ptr,               # [n_ws]
     sr_ptr,               # [n_ws]
+    reduce_idx_ptr,       # [n_ws], used with active_mask_ptr when enabled
+    active_mask_ptr,      # optional [W] bool parent row activity mask
     ancestor_cols_ptr,    # [MAX_ANCESTOR_DEPTH, S]
     sp_child1_ptr,        # [S]
     sp_child2_ptr,        # [S]
@@ -1266,6 +1370,7 @@ def _uniform_cross_pibar_vjp_tree_kernel(
     MAX_ANCESTOR_DEPTH: tl.constexpr,
     N_LEVELS: tl.constexpr,
     MAX_LEVEL_WIDTH: tl.constexpr,
+    USE_ACTIVE_MASK: tl.constexpr,
     DTYPE: tl.constexpr,
 ):
     """Uniform Pibar VJP using a descendant/subtree gather.
@@ -1287,6 +1392,13 @@ def _uniform_cross_pibar_vjp_tree_kernel(
     child_l = tl.load(sl_ptr + split_i)
     child_r = tl.load(sr_ptr + split_i)
     child = tl.where(is_right, child_r, child_l)
+    if USE_ACTIVE_MASK:
+        parent_w = tl.load(reduce_idx_ptr + split_i)
+        row_active = tl.load(active_mask_ptr + parent_w)
+        if row_active == 0:
+            return
+    else:
+        row_active = True
 
     pi_base = child * stride_C
     grad_base = split_i * S
@@ -1296,7 +1408,8 @@ def _uniform_cross_pibar_vjp_tree_kernel(
     row_sum = tl.full([1], value=0.0, dtype=DTYPE)
     for s_start in range(0, S, BLOCK_S):
         s_offs = s_start + tl.arange(0, BLOCK_S)
-        mask = s_offs < S
+        valid_mask = s_offs < S
+        mask = valid_mask & row_active
         pi_val = tl.load(Pi_star_ptr + pi_base + s_offs, mask=mask, other=NEG_LARGE)
         tile_max = tl.max(pi_val, axis=0)
         new_max = tl.maximum(row_max, tile_max)
@@ -1308,7 +1421,8 @@ def _uniform_cross_pibar_vjp_tree_kernel(
     A = tl.full([1], value=0.0, dtype=DTYPE)
     for s_start in range(0, S, BLOCK_S):
         s_offs = s_start + tl.arange(0, BLOCK_S)
-        mask = s_offs < S
+        valid_mask = s_offs < S
+        mask = valid_mask & row_active
 
         ancestor_sum = tl.zeros([BLOCK_S], dtype=DTYPE)
         for k in range(0, MAX_ANCESTOR_DEPTH):
@@ -1341,7 +1455,7 @@ def _uniform_cross_pibar_vjp_tree_kernel(
                 mask=p_offs < MAX_LEVEL_WIDTH,
                 other=-1,
             )
-            parent_valid = (parent >= 0) & (parent < S)
+            parent_valid = (parent >= 0) & (parent < S) & row_active
             c1 = tl.load(sp_child1_ptr + parent, mask=parent_valid, other=S)
             c2 = tl.load(sp_child2_ptr + parent, mask=parent_valid, other=S)
             c1_valid = parent_valid & (c1 < S)
@@ -1355,7 +1469,8 @@ def _uniform_cross_pibar_vjp_tree_kernel(
 
     for s_start in range(0, S, BLOCK_S):
         s_offs = s_start + tl.arange(0, BLOCK_S)
-        mask = s_offs < S
+        valid_mask = s_offs < S
+        mask = valid_mask & row_active
         pi_val = tl.load(Pi_star_ptr + pi_base + s_offs, mask=mask, other=NEG_LARGE)
         p_prime = tl.exp2(pi_val - row_max)
         subtree_sum = tl.load(subtree_buf_ptr + subtree_base + s_offs, mask=mask, other=0.0)
@@ -1377,11 +1492,15 @@ def uniform_cross_pibar_vjp_tree_fused(
     level_parents,
     accumulated_rhs,
     S,
+    active_mask=None,
+    reduce_idx=None,
 ):
     """Uniform-Pibar VJP using bottom-up descendant/subtree gathering."""
     n_ws = sl.shape[0]
     if n_ws == 0:
         return
+    if active_mask is not None and reduce_idx is None:
+        raise ValueError("reduce_idx is required when active_mask is provided")
 
     subtree_buf = torch.empty((2 * n_ws, S), device=Pi_star.device, dtype=Pi_star.dtype)
     BLOCK_S = min(256, triton.next_power_of_2(S))
@@ -1395,6 +1514,8 @@ def uniform_cross_pibar_vjp_tree_fused(
         grad_Pibar_r,
         sl,
         sr,
+        reduce_idx if reduce_idx is not None else sl,
+        active_mask if active_mask is not None else grad_Pibar_l,
         ancestor_cols,
         sp_child1,
         sp_child2,
@@ -1408,6 +1529,7 @@ def uniform_cross_pibar_vjp_tree_fused(
         MAX_ANCESTOR_DEPTH=ancestor_cols.shape[0],
         N_LEVELS=n_levels,
         MAX_LEVEL_WIDTH=max_level_width,
+        USE_ACTIVE_MASK=bool(active_mask is not None),
         DTYPE=_tl_float_dtype(Pi_star.dtype),
         num_warps=4,
     )

@@ -552,7 +552,7 @@ Pruning itself is worth keeping: without pruning, the 10-family backward went
 from 72.676 ms to 101.283 ms. The problem is the host-controlled pruning
 implementation.
 
-### Next work
+### Initial hypotheses
 
 1. Move pruning into the kernels instead of compacting on the host.
 
@@ -569,16 +569,139 @@ implementation.
 3. Use a compact leaf-index representation so `_get_leaf_mask(...).any()` is
    eliminated at the same time.
 
-Expected gain:
+Pre-test upper bound:
 
 ```text
 10-family upper bound: up to 33.7 ms of GPU idle/gaps
 50-family upper bound: up to 37.8 ms of GPU idle/gaps
 ```
 
-The full upper bound is not achievable because some gaps include unavoidable
-launch sequencing and allocator activity, but removing host compaction should be
-one of the highest-leverage changes.
+The full upper bound was never expected to be achievable because some gaps
+include unavoidable launch sequencing and allocator activity. The experiment
+below shows the more important issue: host pruning was also skipping whole
+waves, not only synchronizing.
+
+### Progress: tested device-resident pruning
+
+We used the same three-agent workflow as for Bottleneck 1:
+
+| Agent | Target | Result |
+|---|---|---|
+| Agent 1 | Device-side `active_mask` passed into Triton kernels | Correct, but fixed-schedule version is slower than host wave skipping |
+| Agent 2 | Remove CPU whole-wave decisions and quantify sync overhead | Isolated sync cost is real, but CPU skipping avoids more GPU work |
+| Agent 3 | Remove `_get_leaf_mask(...).any()` / compact leaf representation | Already solved on the default fused path by `leaf_species_index[C]` |
+
+The main prototype is behind environment flags and is **not enabled by
+default**:
+
+```bash
+GPUREC_BACKWARD_NO_CPU_PRUNING=1  # no per-wave host any/sum/nonzero, no stats sync
+GPUREC_DEVICE_PRUNING=1           # same masked kernels, with deferred pruning stats
+GPUREC_DENSE_LEAF_MASK_FROM_INDEX=1  # fallback-only dense leaf mask experiment
+```
+
+The device-pruning path computes the same row activity mask on the GPU, passes
+it into `_wave_backward_uniform_kernel`, `_dts_cross_backward_accum_kernel`,
+`_uniform_cross_pibar_vjp_*`, and `dts_fused`, and makes inactive programs
+return early or write zero/`-inf` outputs. This removes the repeated host
+`any()`, `sum().item()`, and `nonzero()` decisions from the fused CUDA path.
+
+Correctness checks passed:
+
+| Check | Result |
+|---|---:|
+| `GPUREC_BACKWARD_NO_CPU_PRUNING=1 tests/gradients/test_autograd_bridge.py` | 15 passed |
+| `GPUREC_BACKWARD_NO_CPU_PRUNING=1 tests/kernels/test_uniform_cross_pibar_vjp_kernel.py` | 2 passed |
+| `GPUREC_DEVICE_PRUNING=1 tests/gradients/test_autograd_bridge.py` | 15 passed |
+| `GPUREC_DEVICE_PRUNING=1 tests/kernels/test_uniform_cross_pibar_vjp_kernel.py` | 2 passed |
+| `GPUREC_DEVICE_PRUNING=1 GPUREC_FUSED_CROSS_PIBAR_VJP_IMPL=flat tests/gradients/test_autograd_bridge.py` | 15 passed |
+| 10-family parity, loss diff | 0 |
+| 10-family parity, max theta grad rel diff | `2.75e-7` |
+| 50-family parity, loss diff | 0 |
+| 50-family parity, max theta grad rel diff | `3.04e-7` |
+
+Normal backward-only timings after adding active-aware DTS construction:
+
+| State | 10 families mean / median | 50 families mean / median | Verdict |
+|---|---:|---:|---|
+| Default host pruning | `59.927 / 59.739 ms` | `174.785 / 174.387 ms` | Keep default |
+| `GPUREC_BACKWARD_NO_CPU_PRUNING=1` | `66.862 / 59.250 ms` | `178.648 / 177.943 ms` | Rejected |
+| `GPUREC_DEVICE_PRUNING=1` | `58.969 / 58.911 ms` | `178.303 / 177.588 ms` | Rejected |
+
+The 10-family no-CPU mean includes one outlier (`97.856 ms`); the median shows
+that fixed-schedule device pruning can match host pruning for small batches. At
+50 families, where the production workload is more relevant, both no-CPU paths
+are still slower by about `3.5 ms` to `3.9 ms`.
+
+Nsight Systems, 10-family default host pruning vs `GPUREC_DEVICE_PRUNING=1`:
+
+| Metric | Host pruning | Device pruning |
+|---|---:|---:|
+| Captured backward CUDA-event time | `70.513 ms` | `70.432 ms` |
+| `cudaStreamSynchronize` calls | 273 | 213 |
+| D2H copies | 210 | 150 |
+| CUDA kernel launches | 2,171 | 2,314 |
+| `_wave_backward_uniform_kernel` total | `9.334 ms` | `9.206 ms` |
+| `_uniform_cross_pibar_vjp_tree_kernel` total | `10.488 ms` | `10.313 ms` |
+| `_dts_cross_backward_accum_kernel` total | `6.095 ms` | `6.419 ms` |
+| `_dts_fused_kernel` total | `2.389 ms` | `2.634 ms` |
+
+Nsight Systems, 50-family default host pruning vs `GPUREC_DEVICE_PRUNING=1`:
+
+| Metric | Host pruning | Device pruning |
+|---|---:|---:|
+| Captured backward CUDA-event time | `190.652 ms` | `194.487 ms` |
+| `cudaStreamSynchronize` calls | 319 | 249 |
+| D2H copies | 260 | 190 |
+| CUDA kernel launches | 2,982 | 3,117 |
+| `_wave_backward_uniform_kernel` total | `41.409 ms` | `39.986 ms` |
+| `_uniform_cross_pibar_vjp_tree_kernel` total | `39.657 ms` | `38.163 ms` |
+| `_dts_cross_backward_accum_kernel` total | `29.653 ms` | `31.257 ms` |
+| `_dts_fused_kernel` total | `12.158 ms` | `13.287 ms` |
+
+The result is technically useful but not a production improvement. The host
+pruning path is expensive because it synchronizes, but it also skips entire
+waves. The fixed-schedule device path removes about 60 to 70 D2H/sync events,
+yet it still launches kernels for waves that the CPU path never launched. Even
+with early returns, those launches still allocate outputs, clear buffers, run
+small no-op programs, and create extra reduction/stat kernels. At 50 families,
+the extra scheduled work is larger than the sync savings.
+
+The active-aware DTS change was important: before it, 50-family no-CPU pruning
+was about `181.5 ms`; after masking `dts_fused`, it was about `178.6 ms`. The
+remaining regression is not from the self-loop or Pibar kernels themselves
+(`_wave_backward_uniform_kernel` and `_uniform_cross_pibar_vjp_tree_kernel`
+both got slightly faster in the 50-family trace). It is mainly from fixed
+scheduling overhead around split waves: more `_dts_cross_backward_accum_kernel`
+work, more `_dts_fused_kernel` launches, and extra launch/stat bookkeeping.
+
+So the next version should not be "always launch every wave with an active
+mask." It should preserve CPU pruning's scheduling property without CPU scalar
+decisions. The likely design is a device-built active worklist:
+
+1. Compute active row counts and active split-parent counts on device.
+2. Compact active rows/splits into reusable work buffers with prefix sums.
+3. Launch self-loop, DTS backward, and Pibar VJP on compacted active work only.
+4. Either drop per-iteration pruning counters from the hot path or update them
+   asynchronously and read them only for diagnostics.
+
+That would remove host syncs while also avoiding the fixed-schedule launch and
+no-op work that made this prototype slower.
+
+### Progress: leaf-mask sync proposal
+
+The default global CUDA path already avoids `_get_leaf_mask(...).any()`:
+`leaf_species_index[C]` is passed directly to the fused Triton wave kernel, so
+no dense `[W, S]` leaf mask is materialized in the hot path.
+
+Forcing the legacy dense fallback (`GPUREC_BACKWARD_LEAF_INDEX=0`) costs about
+`12.7 ms` at 50 families and raises peak memory by about `0.26 GB`. An opt-in
+fallback, `GPUREC_DENSE_LEAF_MASK_FROM_INDEX=1`, was tested to construct the
+dense mask from `leaf_species_index` without the CUDA scalar `.any()` branch.
+It reduced the 10-family fallback profile from 308 to 275
+`cudaStreamSynchronize` calls and D2H copies from 244 to 210, but runtime did
+not improve because it still materializes the dense `[W, S]` mask. This remains
+disabled; the correct production path is the existing fused leaf-index path.
 
 ## Bottleneck 3: uniform Pibar VJP tree kernel
 

@@ -36,7 +36,7 @@ NEG_INF = float("-inf")
 # ---------------------------------------------------------------------------
 
 def _compute_dts_cross(Pi, Pibar, meta, sp_child1, sp_child2, log_pD, log_pS,
-                       S, device, dtype):
+                       S, device, dtype, active_mask=None):
     """Compute DTS cross-clade terms and reduce to [W, S] for one wave."""
     sl = meta['sl']
     sr = meta['sr']
@@ -47,6 +47,8 @@ def _compute_dts_cross(Pi, Pibar, meta, sp_child1, sp_child2, log_pD, log_pS,
         Pi, Pibar, sl, sr,
         sp_child1, sp_child2,
         log_pD, log_pS, wlsp,
+        active_mask=active_mask,
+        reduce_idx=meta['reduce_idx'] if active_mask is not None else None,
     )
 
     NEG_INF = float('-inf')

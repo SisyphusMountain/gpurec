@@ -77,3 +77,32 @@ def test_dts_fused_matches_reference_for_param_layouts(dtype, atol, rtol, layout
     actual = dts_fused(Pi, Pibar, lefts, rights, sp_child1, sp_child2, log_pD, log_pS, log_split_probs)
     expected = _reference(Pi, Pibar, lefts, rights, sp_child1, sp_child2, log_pD, log_pS, log_split_probs)
     torch.testing.assert_close(actual, expected, atol=atol, rtol=rtol)
+
+
+@pytest.mark.parametrize("dtype,atol,rtol", [(torch.float32, 2e-5, 2e-5), (torch.float64, 1e-10, 1e-10)])
+def test_dts_fused_active_mask_skips_inactive_parent_rows(dtype, atol, rtol):
+    torch.manual_seed(1)
+    device = torch.device("cuda")
+    C, S, N = 7, 11, 5
+    Pi = (torch.randn(C, S, device=device, dtype=dtype) * 0.2 - 2.0).contiguous()
+    Pibar = (torch.randn(C, S, device=device, dtype=dtype) * 0.2 - 2.0).contiguous()
+    lefts = torch.tensor([0, 1, 2, 3, 4], device=device, dtype=torch.long)
+    rights = torch.tensor([1, 2, 3, 4, 5], device=device, dtype=torch.long)
+    reduce_idx = torch.tensor([0, 1, 1, 2, 3], device=device, dtype=torch.long)
+    active_mask = torch.tensor([True, False, True, False], device=device)
+    sp_child1 = torch.tensor([1, 3, S, 5, S, 7, S, 9, S, S, S], device=device, dtype=torch.long)
+    sp_child2 = torch.tensor([2, 4, S, 6, S, 8, S, 10, S, S, S], device=device, dtype=torch.long)
+    log_split_probs = (torch.randn(N, 1, device=device, dtype=dtype) * 0.1 - 1.0).contiguous()
+    log_pD = (torch.randn(S, device=device, dtype=dtype) * 0.1 - 4.0).contiguous()
+    log_pS = (torch.randn(S, device=device, dtype=dtype) * 0.1 - 4.0).contiguous()
+
+    actual = dts_fused(
+        Pi, Pibar, lefts, rights, sp_child1, sp_child2, log_pD, log_pS, log_split_probs,
+        active_mask=active_mask, reduce_idx=reduce_idx,
+    )
+    expected = _reference(Pi, Pibar, lefts, rights, sp_child1, sp_child2, log_pD, log_pS, log_split_probs)
+    inactive = ~active_mask[reduce_idx]
+    expected = expected.clone()
+    expected[inactive] = -1e30
+
+    torch.testing.assert_close(actual, expected, atol=atol, rtol=rtol)
