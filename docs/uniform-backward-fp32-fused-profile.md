@@ -88,9 +88,9 @@ For comparison, disabling pruning on the 10-family batch took 101.283 ms. So
 the current pruning is still a net win, even though its implementation causes
 host/device synchronization.
 
-## Optimization Update: Leaf Index And RHS Scratch
+## Optimization Update: Tested Proposals
 
-After this profile, four low-risk changes were implemented in the fused uniform
+After this profile, six low-risk changes were implemented in the fused uniform
 backward path:
 
 | Commit | Change | Main effect |
@@ -99,6 +99,8 @@ backward path:
 | `ed6b5b7` | Treat `rhs` as read-only and use an internal ping-pong scratch buffer | Removes one full `[W,S]` device-to-device copy per processed wave |
 | `05d7c48` | Allocate `spec_buf` with `empty` instead of `zeros` | Removes redundant scratch zero-fill launches |
 | `8077a50` | Use plain reductions when `G == 1` | Replaces indexed `scatter_add_` with direct reductions for global-mode gradients |
+| `dcda611` | Atomically accumulate global wave param reductions inside `_wave_backward_uniform_kernel` | Removes six full `[W,S]` contribution tensors from the hot reduction path |
+| `fa88780` | Default cross-family `max_wave_size` to 32,768 | Keeps large batches below memory limits without slowing the 50-family case |
 
 Correctness was checked by comparing the old dense-leaf path
 (`GPUREC_BACKWARD_LEAF_INDEX=0`) with the new leaf-index path and by running the
@@ -112,6 +114,12 @@ autograd finite-difference bridge tests:
 | 10 families, loss difference | 0 |
 | 10 families, max gradient abs diff | 0 |
 | `tests/gradients/test_autograd_bridge.py` | 15 passed |
+| `GPUREC_FUSED_WAVE_PARAM_ACCUM=0 tests/gradients/test_autograd_bridge.py` | 15 passed |
+
+The fused parameter accumulation path changes fp32 summation order because it
+uses RED operations inside the Triton kernel. Against the previous reduction
+path, the largest observed 10-family gradient relative difference was
+`2.85e-4`; the loss was unchanged and the finite-difference bridge tests passed.
 
 Normal backward-only timing, same setup as above:
 
@@ -122,23 +130,26 @@ Normal backward-only timing, same setup as above:
 | Leaf index + read-only RHS | 67.984 ms | 218.372 ms | 16.161 GB |
 | Leaf index + read-only RHS + empty scratch | 68.160 ms | 214.755 ms | 16.162 GB |
 | Plus direct global reductions | 65.428 ms | 205.489 ms | 16.162 GB |
+| Plus fused wave param accumulation | 60.614 ms | 181.570 ms | 14.865 GB |
+| Plus default `max_wave_size=32768` | 61.095 ms | 181.255 ms | 11.091 GB |
 
-The final state is about 10.7% faster on the 10-family benchmark and 11.0%
-faster on the 50-family benchmark. The larger batch benefits most from the RHS
-copy, scratch-fill, and direct-reduction changes because it moves much larger
-wave buffers.
+The final default state is about 16.6% faster on the 10-family benchmark and
+21.4% faster on the 50-family benchmark, while cutting 50-family peak memory by
+about 34%. With the 32,768 wave cap, a 100-family backward run that OOMed in the
+uncapped layout completed with `maxW=32768`, peak memory `18.73 GB`, and best
+measured backward time `326.207 ms`.
 
 Nsight Systems on the optimized 50-family backward interval:
 
 | Metric | Baseline | Optimized |
 |---|---:|---:|
-| Captured backward CUDA time | 244.036 ms | 219.863 ms |
-| GPU kernel time | 197.552 ms | 176.906 ms |
+| Captured backward CUDA time | 244.036 ms | 193.680 ms |
+| GPU kernel time | 197.552 ms | 151.522 ms |
 | GPU memcpy time | 8.274 ms | 5.451 ms |
-| GPU memset time | 0.017 ms | 0.068 ms |
-| GPU active span | 205.842 ms | 182.425 ms |
-| GPU idle/gap span | 37.834 ms | 37.130 ms |
-| Kernel launches | 3,809 | 3,730 |
+| GPU memset time | 0.017 ms | 0.017 ms |
+| GPU active span | 205.842 ms | 156.989 ms |
+| GPU idle/gap span | 37.834 ms | 36.418 ms |
+| Kernel launches | 3,809 | 3,220 |
 | Copies | 755 | 684 |
 
 The remaining end-to-end profile is still kernel dominated. The top optimized
@@ -146,43 +157,52 @@ kernel totals are:
 
 | Component | Optimized 50-family kernel time |
 |---|---:|
-| `_wave_backward_uniform_kernel` | 56.835 ms |
-| `_uniform_cross_pibar_vjp_tree_kernel` | 39.232 ms |
-| `_dts_cross_backward_accum_kernel` | 29.388 ms |
-| PyTorch reductions | 17.077 ms |
-| `_dts_fused_kernel` | 12.153 ms |
-| PyTorch add kernels | 4.570 ms |
+| `_wave_backward_uniform_kernel` | 47.137 ms |
+| `_uniform_cross_pibar_vjp_tree_kernel` | 38.985 ms |
+| `_dts_cross_backward_accum_kernel` | 29.654 ms |
+| `_dts_fused_kernel` | 12.156 ms |
+| PyTorch reductions | 5.482 ms |
+| PyTorch abs kernels | 4.999 ms |
 
 Nsight Compute on the optimized largest 10-family leaf wave
 (`_wave_backward_uniform_kernel`, `W=16645`, `S=1999`):
 
 | Metric | Baseline | Optimized |
 |---|---:|---:|
-| Duration | 6.503 ms | 5.322 ms |
-| DRAM read bytes | 3.384 GB | 2.447 GB |
-| DRAM write bytes | 2.485 GB | 2.353 GB |
-| Total DRAM bytes | 5.869 GB | 4.800 GB |
-| DRAM throughput | 90.0% | 89.4% |
-| Compute throughput | 22.8% | 28.0% |
-| Issue slots busy | 12.3% | 14.8% |
-| Achieved occupancy | 82.1% | 74.2% |
-| Registers per thread | 48 | 56 |
-| L1/TEX hit rate | 57.4% | 58.1% |
-| L2 hit rate | 74.4% | 81.6% |
+| Duration | 6.503 ms | 5.128 ms |
+| DRAM read bytes | 3.384 GB | 2.451 GB |
+| DRAM write bytes | 2.485 GB | 1.602 GB |
+| Total DRAM bytes | 5.869 GB | 4.053 GB |
+| DRAM throughput | 90.0% | 78.5% |
+| Compute throughput | 22.8% | 28.7% |
+| Issue slots busy | 12.3% | 15.9% |
+| Achieved occupancy | 82.1% | 82.4% |
+| Registers per thread | 48 | 48 |
+| L1/TEX hit rate | 57.4% | 55.7% |
+| L2 hit rate | 74.4% | 82.2% |
+| Global RED accesses | 0 | 10.75 M |
 
 The kernel is still DRAM-bandwidth bound after the optimization. The leaf-index
-path removed roughly 1.07 GB of DRAM traffic from the largest leaf-wave launch,
-which explains the local 18% kernel speedup. Occupancy dropped because the
-additional leaf-index branch and read-only RHS scratch path use more registers,
-but the launch remains bandwidth limited, so the lower occupancy was not the
-limiting factor.
+and fused-accumulation changes removed roughly 1.82 GB of DRAM traffic from the
+largest leaf-wave launch, explaining the local 21% kernel speedup. The RED
+operations are visible, but they are cheaper than writing six full contribution
+tensors and reducing them with PyTorch.
 
-The next useful work is therefore unchanged in direction: reduce full `[W,S]`
-temporary traffic and residual PyTorch reductions. The direct global-reduction
-shortcut removed the indexed PyTorch scatter kernels from the hot list, but
-`_wave_backward_uniform_kernel` still writes six full contribution tensors that
-are immediately reduced by PyTorch, and the optimized 50-family trace still
-spends about 17 ms in PyTorch reduction kernels.
+Other tested proposals:
+
+| Proposal | 10-family result | 50-family result | Decision |
+|---|---:|---:|---|
+| Disable pruning | 91.015 ms | 324.348 ms | Reject; host pruning still avoids too much work |
+| Pruning threshold `1e-8` | 65.203 ms | 218.066 ms | Reject; slower at 50 families |
+| Pibar VJP `tree` | 61.135 ms | 183.883 ms | Keep current default |
+| Pibar VJP ancestor columns | 85.586 ms | 341.054 ms | Reject |
+| Pibar VJP PyTorch fallback | 114.400 ms | 481.529 ms | Reject |
+| DTS backward direct accumulation | 61.202 ms | 180.732 ms | Keep current default |
+| DTS backward materialized child grads | 63.098 ms | 187.895 ms | Reject |
+| Disable kernelized backward DTS | 148.823 ms | 649.828 ms | Reject |
+| `max_wave_size=32768` | 60.483 ms | 181.742 ms | Accept as default cap |
+| `max_wave_size=16384` | not retested | 184.092 ms | Reject for default; useful only if memory constrained |
+| `max_root_wave_size=32` | not retested | 194.434 ms | Reject; too many root-wave launches |
 
 ## Nsight Systems breakdown
 
