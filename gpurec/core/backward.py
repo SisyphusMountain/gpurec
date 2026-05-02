@@ -653,6 +653,9 @@ def Pi_wave_backward(
             if log_pS_shared.ndim == 0
             else log_pS_shared.contiguous()
         )
+    fused_wave_param_accum_enabled = (
+        os.environ.get("GPUREC_FUSED_WAVE_PARAM_ACCUM", "1") != "0"
+    )
 
     def _get_leaf_mask(ws, we):
         W = we - ws
@@ -786,6 +789,17 @@ def Pi_wave_backward(
                 acc.scatter_add_(0, fi_expand, contrib)
 
         if use_fused:
+            accum_param_grads = None
+            if fused_wave_param_accum_enabled and _auto_wrapped:
+                accum_param_grads = (
+                    grad_log_pD,
+                    grad_log_pS,
+                    grad_E_acc[0],
+                    grad_Ebar_acc[0],
+                    grad_E_s1_acc[0],
+                    grad_E_s2_acc[0],
+                    grad_mt[0],
+                )
             # G=1: extract shared [S] constants for the fused kernel.
             v_k, aw0, aw1, aw2, aw345, aw3, aw4 = wave_backward_uniform_fused(
                 Pi_star_wave, Pibar_star_wave, ws, W, S,
@@ -795,15 +809,17 @@ def Pi_wave_backward(
                 neumann_terms=neumann_terms,
                 leaf_species_idx=leaf_species_index if use_uniform_leaf_index else None,
                 leaf_logp=uniform_leaf_logp if use_uniform_leaf_index else None,
+                accum_param_grads=accum_param_grads,
             )
 
-            _scatter_accum(grad_log_pD, aw0)
-            _scatter_accum(grad_log_pS, aw345)
-            _scatter_accum(grad_E_acc, aw0 + aw2)
-            _scatter_accum(grad_Ebar_acc, aw1)
-            _scatter_accum(grad_E_s1_acc, aw4)
-            _scatter_accum(grad_E_s2_acc, aw3)
-            _scatter_accum(grad_mt, aw2)
+            if accum_param_grads is None:
+                _scatter_accum(grad_log_pD, aw0)
+                _scatter_accum(grad_log_pS, aw345)
+                _scatter_accum(grad_E_acc, aw0 + aw2)
+                _scatter_accum(grad_Ebar_acc, aw1)
+                _scatter_accum(grad_E_s1_acc, aw4)
+                _scatter_accum(grad_E_s2_acc, aw3)
+                _scatter_accum(grad_mt, aw2)
 
         else:
             Pibar_W_star = Pibar_star_wave[ws:we]

@@ -45,6 +45,14 @@ def _wave_backward_uniform_kernel(
     # Scratch buffer for speciation scatter [W, S]
     spec_buf_ptr,
     term_buf_ptr,
+    # Optional in-kernel accumulation targets for global-mode param grads.
+    grad_log_pD_ptr,
+    grad_log_pS_ptr,
+    grad_E_ptr,
+    grad_Ebar_ptr,
+    grad_E_s1_ptr,
+    grad_E_s2_ptr,
+    grad_mt_ptr,
     # Dimensions
     ws,               # wave start offset into [C, S]
     S: tl.constexpr,
@@ -52,6 +60,7 @@ def _wave_backward_uniform_kernel(
     BLOCK_S: tl.constexpr,
     NEUMANN_TERMS: tl.constexpr,
     USE_LEAF_INDEX: tl.constexpr,
+    ACCUM_PARAM_GRADS: tl.constexpr,
     DTYPE: tl.constexpr,
 ):
     """Fused backward kernel for uniform Pibar mode.
@@ -388,12 +397,22 @@ def _wave_backward_uniform_kernel(
         _aw4 = alpha * e4 * inv_sum   # → log_pS, E_s1
         _aw5 = alpha * e5 * inv_sum   # → log_pS
 
-        tl.store(aw0_ptr + off, _aw0, mask=mask)
-        tl.store(aw1_ptr + off, _aw1, mask=mask)
-        tl.store(aw2_ptr + off, _aw2, mask=mask)
-        tl.store(aw345_ptr + off, _aw3 + _aw4 + _aw5, mask=mask)
-        tl.store(aw3_ptr + off, _aw3, mask=mask)
-        tl.store(aw4_ptr + off, _aw4, mask=mask)
+        _aw345 = _aw3 + _aw4 + _aw5
+        if ACCUM_PARAM_GRADS:
+            tl.atomic_add(grad_log_pD_ptr, tl.sum(tl.where(mask, _aw0, 0.0), axis=0), sem="relaxed")
+            tl.atomic_add(grad_log_pS_ptr, tl.sum(tl.where(mask, _aw345, 0.0), axis=0), sem="relaxed")
+            tl.atomic_add(grad_E_ptr + s_offs, _aw0 + _aw2, sem="relaxed", mask=mask)
+            tl.atomic_add(grad_Ebar_ptr + s_offs, _aw1, sem="relaxed", mask=mask)
+            tl.atomic_add(grad_E_s1_ptr + s_offs, _aw4, sem="relaxed", mask=mask)
+            tl.atomic_add(grad_E_s2_ptr + s_offs, _aw3, sem="relaxed", mask=mask)
+            tl.atomic_add(grad_mt_ptr + s_offs, _aw2, sem="relaxed", mask=mask)
+        else:
+            tl.store(aw0_ptr + off, _aw0, mask=mask)
+            tl.store(aw1_ptr + off, _aw1, mask=mask)
+            tl.store(aw2_ptr + off, _aw2, mask=mask)
+            tl.store(aw345_ptr + off, _aw345, mask=mask)
+            tl.store(aw3_ptr + off, _aw3, mask=mask)
+            tl.store(aw4_ptr + off, _aw4, mask=mask)
 
 
 def wave_backward_uniform_fused(
@@ -405,6 +424,7 @@ def wave_backward_uniform_fused(
     neumann_terms=3,
     leaf_species_idx=None,
     leaf_logp=None,
+    accum_param_grads=None,
 ):
     """Fused backward: precompute + Neumann + param VJP in one kernel per wave.
 
@@ -422,6 +442,11 @@ def wave_backward_uniform_fused(
         neumann_terms: int
         leaf_species_idx: optional [C] row -> species leaf index, -1 for non-leaves
         leaf_logp: optional [S] log_pS values used with leaf_species_idx
+        accum_param_grads: optional tuple of seven tensors
+            (grad_log_pD, grad_log_pS, grad_E, grad_Ebar,
+             grad_E_s1, grad_E_s2, grad_mt). When provided, the kernel
+            atomically accumulates param VJP results and returns None for
+            the per-element contribution tensors.
 
     Returns:
         v_k: [W, S] Neumann-solved adjoint
@@ -431,6 +456,7 @@ def wave_backward_uniform_fused(
     dtype = Pi_star.dtype
 
     v_k = torch.empty((W, S), device=device, dtype=dtype)
+    accum_enabled = accum_param_grads is not None
     aw0 = torch.empty((W, S), device=device, dtype=dtype)
     aw1 = torch.empty((W, S), device=device, dtype=dtype)
     aw2 = torch.empty((W, S), device=device, dtype=dtype)
@@ -448,6 +474,19 @@ def wave_backward_uniform_fused(
         leaf_term_wt = leaf_logp
     leaf_species_arg = leaf_species_idx if use_leaf_index else sp_child1
     leaf_logp_arg = leaf_logp if use_leaf_index else leaf_term_wt
+    if accum_enabled:
+        (
+            grad_log_pD_arg,
+            grad_log_pS_arg,
+            grad_E_arg,
+            grad_Ebar_arg,
+            grad_E_s1_arg,
+            grad_E_s2_arg,
+            grad_mt_arg,
+        ) = accum_param_grads
+    else:
+        grad_log_pD_arg = grad_log_pS_arg = aw0
+        grad_E_arg = grad_Ebar_arg = grad_E_s1_arg = grad_E_s2_arg = grad_mt_arg = aw0
 
     BLOCK_S = min(256, triton.next_power_of_2(S))
 
@@ -466,12 +505,22 @@ def wave_backward_uniform_fused(
         aw0, aw1, aw2, aw345, aw3, aw4,
         spec_buf,
         term_buf,
+        grad_log_pD_arg,
+        grad_log_pS_arg,
+        grad_E_arg,
+        grad_Ebar_arg,
+        grad_E_s1_arg,
+        grad_E_s2_arg,
+        grad_mt_arg,
         ws, S, S, BLOCK_S,
         neumann_terms,
         USE_LEAF_INDEX=bool(use_leaf_index),
+        ACCUM_PARAM_GRADS=bool(accum_enabled),
         DTYPE=_tl_float_dtype(dtype),
     )
 
+    if accum_enabled:
+        return v_k, None, None, None, None, None, None
     return v_k, aw0, aw1, aw2, aw345, aw3, aw4
 
 
