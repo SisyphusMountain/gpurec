@@ -51,7 +51,7 @@ def _build_static_state(
     cg_tol: float,
     cg_maxiter: int,
     gmres_restart: int,
-    max_wave_size: Optional[int] = None,
+    max_wave_size: Optional[int] = 32768,
     max_root_wave_size: Optional[int] = None,
 ) -> ReconStaticState:
     """Absorb the wave-layout boilerplate that lives in
@@ -192,7 +192,7 @@ class GeneReconModel(torch.nn.Module):
         cg_maxiter: int = 500,
         gmres_restart: int = 40,
         theta_init: Optional[torch.Tensor] = None,
-        max_wave_size: Optional[int] = None,
+        max_wave_size: Optional[int] = 32768,
         max_root_wave_size: Optional[int] = None,
     ):
         super().__init__()

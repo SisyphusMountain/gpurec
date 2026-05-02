@@ -407,7 +407,7 @@ class GeneDataset(Dataset):
         device: torch.device | None = None,
         dtype: torch.dtype | None = None,
         chunk_size: int | None = None,
-        max_wave_size: int | None = None,
+        max_wave_size: int | None = 32768,
         max_root_wave_size: int | None = None,
         pibar_mode: str = 'dense',
     ) -> list[float]:
