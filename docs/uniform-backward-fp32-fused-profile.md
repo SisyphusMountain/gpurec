@@ -27,6 +27,7 @@ GPUREC_FUSED_CROSS_PIBAR_VJP=1
 GPUREC_FUSED_CROSS_PIBAR_VJP_IMPL=tree
 GPUREC_FUSED_UNIFORM_BACKWARD=1
 GPUREC_UNIFORM_PINGPONG=1
+GPUREC_COMPACT_PIBAR_SCRATCH=1
 ```
 
 Model configuration:
@@ -90,9 +91,10 @@ host/device synchronization.
 
 ## Optimization Update: Tested Proposals
 
-After this profile, six production changes were implemented in the fused
-uniform backward path. One additional Bottleneck 1 experiment was implemented
-behind an environment flag and left disabled because it was slower.
+After this profile, seven production changes were implemented in the fused
+uniform backward path. Several additional Bottleneck 1 experiments were
+implemented behind environment flags and left disabled because they were slower
+or only diagnostic.
 
 | Commit | Change | Main effect |
 |---|---|---|
@@ -102,6 +104,7 @@ behind an environment flag and left disabled because it was slower.
 | `8077a50` | Use plain reductions when `G == 1` | Replaces indexed `scatter_add_` with direct reductions for global-mode gradients |
 | `dcda611` | Atomically accumulate global wave param reductions inside `_wave_backward_uniform_kernel` | Removes six full `[W,S]` contribution tensors from the hot reduction path |
 | `fa88780` | Default cross-family `max_wave_size` to 32,768 | Keeps large batches below memory limits without slowing the 50-family case |
+| `980ecac` | Store compact Pibar VJP coefficient scratch by default | Replaces `pibar_wt`, `inv_denom`, and `p_prime` scratch with `pibar_wt * inv_denom` plus one recomputed `p_prime` |
 
 Correctness was checked by comparing the old dense-leaf path
 (`GPUREC_BACKWARD_LEAF_INDEX=0`) with the new leaf-index path and by running the
@@ -116,6 +119,8 @@ autograd finite-difference bridge tests:
 | 10 families, max gradient abs diff | 0 |
 | `tests/gradients/test_autograd_bridge.py` | 15 passed |
 | `GPUREC_FUSED_WAVE_PARAM_ACCUM=0 tests/gradients/test_autograd_bridge.py` | 15 passed |
+| `GPUREC_COMPACT_PIBAR_SCRATCH=0 tests/gradients/test_autograd_bridge.py` | 15 passed |
+| `tests/kernels/test_uniform_cross_pibar_vjp_kernel.py` | 2 passed |
 
 The fused parameter accumulation path changes fp32 summation order because it
 uses RED operations inside the Triton kernel. Against the previous reduction
@@ -133,34 +138,38 @@ Normal backward-only timing, same setup as above:
 | Plus direct global reductions | 65.428 ms | 205.489 ms | 16.162 GB |
 | Plus fused wave param accumulation | 60.614 ms | 181.570 ms | 14.865 GB |
 | Plus default `max_wave_size=32768` | 61.095 ms | 181.255 ms | 11.091 GB |
+| Plus compact Pibar scratch | 59.462 ms | 174.174 ms | 10.567 GB |
 
-The final default state is about 16.6% faster on the 10-family benchmark and
-21.4% faster on the 50-family benchmark, while cutting 50-family peak memory by
-about 34%. With the 32,768 wave cap, a 100-family backward run that OOMed in the
-uncapped layout completed with `maxW=32768`, peak memory `18.73 GB`, and best
-measured backward time `326.207 ms`.
+The final default state is about 18.8% faster on the 10-family benchmark and
+24.5% faster on the 50-family benchmark, while cutting 50-family peak memory by
+about 37.1%. With the 32,768 wave cap, a 100-family backward run that OOMed in
+the uncapped layout completed with `maxW=32768`, peak memory `18.73 GB`, and
+best measured backward time `326.207 ms` before the compact-scratch change.
 
-Nsight Systems on the optimized 50-family backward interval:
+Nsight Systems on the current 50-family backward interval, compared with the
+same code run under `GPUREC_COMPACT_PIBAR_SCRATCH=0`:
 
-| Metric | Baseline | Optimized |
+| Metric | Compact off | Compact default |
 |---|---:|---:|
-| Captured backward CUDA time | 244.036 ms | 193.680 ms |
-| GPU kernel time | 197.552 ms | 151.522 ms |
-| GPU memcpy time | 8.274 ms | 5.451 ms |
-| GPU memset time | 0.017 ms | 0.017 ms |
-| GPU active span | 205.842 ms | 156.989 ms |
-| GPU idle/gap span | 37.834 ms | 36.418 ms |
-| Kernel launches | 3,809 | 3,220 |
-| Copies | 755 | 684 |
+| Captured backward CUDA time | 198.034 ms | 188.684 ms |
+| `_wave_backward_uniform_kernel` total | 50.154 ms | 41.119 ms |
+| Largest `_wave_backward_uniform_kernel` launch | 9.658 ms | 7.655 ms |
+| `_uniform_cross_pibar_vjp_tree_kernel` total | 39.777 ms | 38.633 ms |
+| `_dts_cross_backward_accum_kernel` total | 29.665 ms | 29.659 ms |
+| `_dts_fused_kernel` total | 12.153 ms | 12.156 ms |
+| GPU memops time | 5.424 ms | 5.422 ms |
+| Kernel launches | 2,982 | 2,982 |
+| Copies | 690 | 690 |
 
-The remaining end-to-end profile is still kernel dominated. The top optimized
-kernel totals are:
+The compact scratch change is isolated: it changes only the self-loop kernel
+bucket. DTS, cross-Pibar VJP, memops, launch count, and copy count are
+essentially unchanged. The top compact-default kernel totals are:
 
 | Component | Optimized 50-family kernel time |
 |---|---:|
-| `_wave_backward_uniform_kernel` | 47.137 ms |
-| `_uniform_cross_pibar_vjp_tree_kernel` | 38.985 ms |
-| `_dts_cross_backward_accum_kernel` | 29.654 ms |
+| `_wave_backward_uniform_kernel` | 41.119 ms |
+| `_uniform_cross_pibar_vjp_tree_kernel` | 38.633 ms |
+| `_dts_cross_backward_accum_kernel` | 29.659 ms |
 | `_dts_fused_kernel` | 12.156 ms |
 | PyTorch reductions | 5.482 ms |
 | PyTorch abs kernels | 4.999 ms |
@@ -189,6 +198,26 @@ largest leaf-wave launch, explaining the local 21% kernel speedup. The RED
 operations are visible, but they are cheaper than writing six full contribution
 tensors and reducing them with PyTorch.
 
+After the compact Pibar scratch change, a fresh NCU pass on the same 10-family
+leaf wave showed:
+
+| Metric | Previous default | Compact scratch default |
+|---|---:|---:|
+| DRAM read bytes | 2.431 GB | 1.483 GB |
+| DRAM write bytes | 1.601 GB | 1.211 GB |
+| Total DRAM bytes | 4.032 GB | 2.694 GB |
+| DRAM throughput | 75.0% | 61.5% |
+| Compute throughput | 27.5% | 31.8% |
+| Issue slots busy | 15.2% | 18.0% |
+| Achieved occupancy | 82.0% | 81.8% |
+| L1/TEX bytes | 27.265 GB | 25.190 GB |
+| L2 bytes | 13.784 GB | 12.459 GB |
+| Global RED accesses | 10.75 M | 10.75 M |
+
+The compact path removes about `1.34 GB` of DRAM traffic from this one launch.
+Occupancy is unchanged; the improvement is from issuing fewer memory
+transactions, not from launching more resident work.
+
 Other tested proposals:
 
 | Proposal | 10-family result | 50-family result | Decision |
@@ -205,6 +234,10 @@ Other tested proposals:
 | `max_wave_size=16384` | not retested | 184.092 ms | Reject for default; useful only if memory constrained |
 | `max_root_wave_size=32` | not retested | 194.434 ms | Reject; too many root-wave launches |
 | no-split final VJP shortcut | 61.828 ms | 184.176 ms | Reject for default; algebra valid but slower |
+| recompute Pibar denominator scratch | 60.090 ms | 174.754 ms | Diagnostic only; compact coefficient is better overall |
+| compact Pibar coefficient scratch | 59.462 ms | 174.174 ms | Accept as default; best memory reduction and stable correctness |
+| leaf-logp hit-only/scalar specialization | 62.137 ms | 182.300 ms | Reject; leaf load was not the limiting traffic |
+| compact scratch only on no-split waves | 65.886 ms | 176.708 ms | Reject; split waves also need the compact scratch win |
 
 The no-split final VJP shortcut was the targeted Bottleneck 1 subtask. An
 explorer agent checked the algebra: when `has_splits=false`, `w_L=1`, so the
@@ -375,12 +408,20 @@ as a dense full tensor in `backward.py:641-647`.
 
 ### Progress on the four proposals
 
+For proposals 3 and 4, three subagents were used and this document was updated
+from the supervisor pass. Pasteur analyzed proposal 3 and proposed the compact
+Pibar coefficient variant. Avicenna analyzed proposal 4 and pointed out that a
+source-only no-split kernel clone would remove little because `has_splits` and
+`USE_LEAF_INDEX` are already Triton constexprs. Leibniz reconstructed the
+reproducible CUDA-event, Nsight Systems, and Nsight Compute harnesses used for
+the measurements below.
+
 | Proposal | Status | Benchmark result | Decision |
 |---|---|---:|---|
 | 1. Compact leaf species index instead of dense `leaf_term_wt` | Implemented in `a06aac1` | 10 families: `73.252 ms` to `68.373 ms`; 50 families: `230.795 ms` to `225.373 ms`; 50-family peak memory: `16.806 GB` to `16.161 GB` | Keep |
 | 2. Avoid full parameter-gradient contribution tensors | Implemented in `dcda611` after direct reductions in `8077a50` | 10 families: `65.428 ms` to `60.614 ms`; 50 families: `205.489 ms` to `181.570 ms`; 50-family peak memory: `16.162 GB` to `14.865 GB` | Keep |
-| 3. Recompute self-loop weights instead of storing/reloading scratch | Not yet tested as an independent kernel redesign | No benchmark yet | Still open |
-| 4. Specialize the no-split leaf wave | Partially tested with the opt-in final-VJP shortcut in `32001a5` | Shortcut: 10 families `61.828 ms`, 50 families `184.176 ms`; default recheck: 10 families `61.106 ms`, 50 families `180.791 ms` | Partial experiment rejected; full specialization still open |
+| 3. Recompute self-loop weights instead of storing/reloading scratch | Tested with two variants: full denominator recompute and compact Pibar coefficient scratch | Compact default: 10 families `59.462 ms`, 50 families `174.174 ms`; peak `10.567 GB` at 50 families | Keep compact coefficient scratch |
+| 4. Specialize the no-split leaf wave | Tested three low-risk specializations: final-VJP shortcut, leaf-logp hit-only/scalar loads, and compact scratch restricted to no-split waves | Best no-split-only variant: 50 families `176.708 ms`; still slower than compact-all-waves `174.174 ms` | Reject for now |
 
 Proposal 1 replaced the dense leaf tensor with `leaf_species_idx[C]` plus
 `leaf_logp[S]`. Instead of reading a mostly `-inf` `[W, S]` `leaf_term_wt`
@@ -416,17 +457,46 @@ then rereading full contribution tensors. On the optimized largest 10-family
 leaf wave, total DRAM traffic dropped from `5.869 GB` to `4.053 GB`, and the
 launch time dropped from `6.503 ms` to `5.128 ms`.
 
-Proposal 3 remains the main untested Bottleneck 1 idea. The current kernel
-still stores softmax/Pibar/child weights in the `aw*` scratch buffers and reloads
-them during the Neumann passes. Since the kernel is DRAM-bound and compute
-throughput is low, a version that recomputes some of these weights could win if
-it removes enough global traffic without increasing register pressure or
-instruction count too much. This needs a separate kernel experiment; the
-no-split final-VJP shortcut below does not answer this question because it only
-changed the final parameter pass.
+Proposal 3 was tested with the same three-agent workflow. Pasteur identified a
+middle path that is better than fully recomputing every self-loop weight. The
+old Neumann scratch stored three Pibar-related arrays:
 
-Proposal 4 was only partially tested. The implemented shortcut used the fact
-that no-split waves have `w_L=1`, so the final parameter VJP can recover:
+```text
+aw1 = pibar_wt
+aw2 = inv_denom
+aw3 = p_prime
+```
+
+The accepted compact path stores only:
+
+```text
+aw1 = pibar_wt * inv_denom
+```
+
+Then Neumann pass A computes:
+
+```text
+u_d = term * aw1
+```
+
+and pass B recomputes only:
+
+```text
+p_prime = exp2(Pi[row, s] - row_max)
+```
+
+This saves two full `[W,S]` scratch allocations when in-kernel parameter
+accumulation is enabled, removes two precompute stores, removes several Neumann
+loads, and adds one `Pi` load plus one `exp2` in pass B. That trade is favorable
+because the kernel is memory-bound and `Pi` has better locality than the
+separate scratch streams. The more aggressive
+`GPUREC_RECOMPUTE_PIBAR_DENOM=1` variant also passed correctness, but the
+compact coefficient path has the cleaner memory reduction and is now the
+default. `GPUREC_COMPACT_PIBAR_SCRATCH=0` restores the old behavior.
+
+Proposal 4 was tested as far as the low-risk variants justified. The first
+implemented shortcut used the fact that no-split waves have `w_L=1`, so the
+final parameter VJP can recover:
 
 ```text
 leaf_wt = 1 - diag_wt - pibar_wt - sl1_wt - sl2_wt
@@ -446,10 +516,16 @@ local recomputation with extra global scratch reads, and the access pattern is
 worse for this already memory-bound kernel. Therefore the shortcut is disabled
 by default behind `GPUREC_FAST_NOSPLIT_PARAM_ACCUM=1`.
 
-A full no-split leaf-wave specialization is still distinct from this rejected
-shortcut. It would need a separate kernel entry point or constexpr path that
-removes `dts_r` handling, eliminates dense-leaf logic, and revisits the Neumann
-scratch layout across the whole wave, not only the final VJP pass.
+Two other no-split/leaf specializations were tested. `GPUREC_LEAF_HIT_ONLY_LOGP`
+with `GPUREC_SCALAR_LEAF_LOGP` avoids loading leaf log-probabilities for every
+species lane, but this did not help because those loads are tiny compared with
+the Neumann scratch traffic. Restricting compact Pibar scratch to no-split waves
+with `GPUREC_COMPACT_PIBAR_SCRATCH=leaf` was also slower than applying compact
+scratch to every fused wave. A source-only no-split clone would remove little:
+`has_splits` and `USE_LEAF_INDEX` are already Triton constexprs, so the compiler
+already specializes those branches per launch. A future separate leaf kernel
+would only be worthwhile if it also changes the Neumann scratch layout; that
+overlaps proposal 3, where the all-wave compact scratch path won.
 
 ## Bottleneck 2: CPU-driven pruning and dynamic compaction
 
