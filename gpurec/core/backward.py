@@ -1,4 +1,6 @@
 """Backward pass: Pi_wave_backward and helpers (VJP / Neumann / GMRES)."""
+import os
+
 import torch
 
 from .log2_utils import logsumexp2, logaddexp2, _safe_log2_internal as _safe_log2
@@ -435,7 +437,13 @@ def Pi_wave_backward(
     """
     # Fused Triton backward kernels (optional)
     try:
-        from .kernels.wave_backward import wave_backward_uniform_fused, dts_cross_backward_fused
+        from .kernels.wave_backward import (
+            wave_backward_uniform_fused,
+            dts_cross_backward_fused,
+            dts_cross_backward_accum_fused,
+            uniform_cross_pibar_vjp_fused,
+            uniform_cross_pibar_vjp_tree_fused,
+        )
         _HAS_FUSED_BACKWARD = True
     except ImportError:
         _HAS_FUSED_BACKWARD = False
@@ -455,6 +463,123 @@ def Pi_wave_backward(
     sp_child2_cpu[p_cpu[~mask_c1] - S] = c_cpu[~mask_c1]
     sp_child1 = sp_child1_cpu.to(device)
     sp_child2 = sp_child2_cpu.to(device)
+
+    fused_cross_pibar_vjp_enabled = (
+        os.environ.get("GPUREC_FUSED_CROSS_PIBAR_VJP", "1") != "0"
+        and _HAS_FUSED_BACKWARD
+        and pibar_mode == 'uniform'
+        and dtype in (torch.float32, torch.float64)
+        and device.type == 'cuda'
+    )
+    fused_cross_pibar_vjp_impl = os.environ.get(
+        "GPUREC_FUSED_CROSS_PIBAR_VJP_IMPL", "tree"
+    ).lower()
+    kernelized_backward_dts_enabled = (
+        os.environ.get("GPUREC_KERNELIZED_BACKWARD_DTS", "1") != "0"
+        and device.type == 'cuda'
+    )
+    fused_dts_backward_accum_enabled = (
+        os.environ.get("GPUREC_FUSED_DTS_BACKWARD_ACCUM", "1") != "0"
+    )
+    fused_uniform_backward_enabled = (
+        os.environ.get("GPUREC_FUSED_UNIFORM_BACKWARD", "1") != "0"
+    )
+    _compute_dts_cross_kernelized = None
+    if kernelized_backward_dts_enabled:
+        from .forward import _compute_dts_cross as _compute_dts_cross_kernelized
+
+    ancestor_cols = None
+    level_parents = None
+    if fused_cross_pibar_vjp_enabled:
+        target_device = torch.device(device)
+        if target_device.type == 'cuda' and target_device.index is None:
+            target_device = torch.device('cuda', torch.cuda.current_device())
+        cache = species_helpers.get('_wave_forward_species_cache')
+        if cache is not None and int(cache.get('S', -1)) == int(S):
+            cached_ancestor_cols = cache.get('ancestor_cols')
+            if torch.is_tensor(cached_ancestor_cols) and cached_ancestor_cols.device == target_device:
+                ancestor_cols = cached_ancestor_cols
+            cached_level_parents = cache.get('level_parents')
+            if torch.is_tensor(cached_level_parents) and cached_level_parents.device == target_device:
+                level_parents = cached_level_parents
+
+        if ancestor_cols is None or (fused_cross_pibar_vjp_impl == "tree" and level_parents is None):
+            sp_parent_cpu = torch.full((S,), -1, dtype=torch.long)
+            sp_parent_cpu[c_cpu[mask_c1]] = p_cpu[mask_c1]
+            sp_parent_cpu[c_cpu[~mask_c1]] = p_cpu[~mask_c1] - S
+
+            parent_values = sp_parent_cpu.tolist()
+            ancestor_lists = []
+            max_ancestor_depth = 0
+            for s_idx in range(S):
+                cur = s_idx
+                depth = 0
+                ancestors = []
+                while cur >= 0:
+                    ancestors.append(cur)
+                    depth += 1
+                    if depth > S:
+                        raise RuntimeError("Cycle detected in species parent pointers")
+                    cur = parent_values[cur]
+                ancestor_lists.append(ancestors)
+                max_ancestor_depth = max(max_ancestor_depth, depth)
+
+            ancestor_cols_cpu = torch.full((S, max_ancestor_depth), -1, dtype=torch.long)
+            for s_idx, ancestors in enumerate(ancestor_lists):
+                ancestor_cols_cpu[s_idx, :len(ancestors)] = torch.tensor(ancestors, dtype=torch.long)
+            if ancestor_cols is None:
+                ancestor_cols = ancestor_cols_cpu.T.contiguous().to(target_device)
+
+            if fused_cross_pibar_vjp_impl == "tree" and level_parents is None:
+                child1_values = sp_child1_cpu.tolist()
+                child2_values = sp_child2_cpu.tolist()
+                levels = [-1] * S
+
+                for s_idx in range(S):
+                    if levels[s_idx] >= 0:
+                        continue
+                    stack = [(s_idx, False)]
+                    while stack:
+                        node, expanded = stack.pop()
+                        if levels[node] >= 0:
+                            continue
+                        c1 = child1_values[node]
+                        c2 = child2_values[node]
+                        if not expanded:
+                            stack.append((node, True))
+                            if c2 < S and levels[c2] < 0:
+                                stack.append((c2, False))
+                            if c1 < S and levels[c1] < 0:
+                                stack.append((c1, False))
+                            continue
+                        child_levels = []
+                        if c1 < S:
+                            child_levels.append(levels[c1])
+                        if c2 < S:
+                            child_levels.append(levels[c2])
+                        levels[node] = (max(child_levels) + 1) if child_levels else 0
+
+                max_level = max(levels) if levels else 0
+                level_lists = []
+                max_level_width = 1
+                for level in range(1, max_level + 1):
+                    parents = [
+                        s_idx for s_idx, node_level in enumerate(levels)
+                        if node_level == level
+                        and (child1_values[s_idx] < S or child2_values[s_idx] < S)
+                    ]
+                    if parents:
+                        level_lists.append(parents)
+                        max_level_width = max(max_level_width, len(parents))
+
+                level_parents_cpu = torch.full(
+                    (max(len(level_lists), 1), max_level_width),
+                    -1,
+                    dtype=torch.long,
+                )
+                for level, parents in enumerate(level_lists):
+                    level_parents_cpu[level, :len(parents)] = torch.tensor(parents, dtype=torch.long)
+                level_parents = level_parents_cpu.contiguous().to(target_device)
 
     # Auto-wrap single-family inputs into batched format (G=1).
     _auto_wrapped = family_idx is None
@@ -481,14 +606,34 @@ def Pi_wave_backward(
         r = p[family_idx]
         return r.unsqueeze(-1) if r.ndim == 1 else r
 
-    mt_clade = _to_clade(mt_squeezed)
-    E_clade = _to_clade(E)
-    Ebar_clade = _to_clade(Ebar)
-    log_pD_clade = _to_clade(log_pD)
-    log_pS_clade = _to_clade(log_pS)
-    DL_const = 1.0 + log_pD_clade + E_clade
-    SL1_const = log_pS_clade + _to_clade(E_s2)
-    SL2_const = log_pS_clade + _to_clade(E_s1)
+    # Shared/global mode has one parameter/E row for every clade.  Keeping the
+    # constants as [S] avoids materializing several [C, S] copies before the
+    # wave loop, which is both slow and the main source of backward OOMs.
+    if _auto_wrapped:
+        mt_shared = mt_squeezed[0]
+        E_shared = E[0]
+        Ebar_shared = Ebar[0]
+        E_s1_shared = E_s1[0]
+        E_s2_shared = E_s2[0]
+        log_pD_shared = log_pD[0]
+        log_pS_shared = log_pS[0]
+        DL_shared = 1.0 + log_pD_shared + E_shared
+        SL1_shared = log_pS_shared + E_s2_shared
+        SL2_shared = log_pS_shared + E_s1_shared
+        mt_clade = E_clade = Ebar_clade = log_pD_clade = log_pS_clade = None
+        DL_const = SL1_const = SL2_const = None
+    else:
+        mt_shared = E_shared = Ebar_shared = E_s1_shared = E_s2_shared = None
+        log_pD_shared = log_pS_shared = None
+        DL_shared = SL1_shared = SL2_shared = None
+        mt_clade = _to_clade(mt_squeezed)
+        E_clade = _to_clade(E)
+        Ebar_clade = _to_clade(Ebar)
+        log_pD_clade = _to_clade(log_pD)
+        log_pS_clade = _to_clade(log_pS)
+        DL_const = 1.0 + log_pD_clade + E_clade
+        SL1_const = log_pS_clade + _to_clade(E_s2)
+        SL2_const = log_pS_clade + _to_clade(E_s1)
 
     leaf_row_index = wave_layout['leaf_row_index']
     leaf_col_index = wave_layout['leaf_col_index']
@@ -502,7 +647,10 @@ def Pi_wave_backward(
         return lwt
 
     def _get_leaf_wt(ws, we):
-        return log_pS_clade[ws:we] + _get_leaf_mask(ws, we)
+        leaf_mask = _get_leaf_mask(ws, we)
+        if _auto_wrapped:
+            return log_pS_shared + leaf_mask
+        return log_pS_clade[ws:we] + leaf_mask
 
     n_waves_total = K
     n_waves_skipped = 0
@@ -552,22 +700,40 @@ def Pi_wave_backward(
 
         if meta['has_splits']:
             reduce_idx = meta['reduce_idx']
-            log_pD_dts = log_pD_clade[ws + reduce_idx]
-            log_pS_dts = log_pS_clade[ws + reduce_idx]
+            if _auto_wrapped:
+                log_pD_dts = log_pD_shared
+                log_pS_dts = log_pS_shared
+            else:
+                log_pD_dts = log_pD_clade[ws + reduce_idx]
+                log_pS_dts = log_pS_clade[ws + reduce_idx]
             with torch.no_grad():
-                dts_r = _dts_cross_differentiable(
-                    Pi_star_wave.detach(), Pibar_star_wave.detach(), meta,
-                    sp_child1, sp_child2, log_pD_dts, log_pS_dts, S, device, dtype,
-                )
+                if _compute_dts_cross_kernelized is not None:
+                    dts_r = _compute_dts_cross_kernelized(
+                        Pi_star_wave.detach(), Pibar_star_wave.detach(), meta,
+                        sp_child1, sp_child2, log_pD_dts, log_pS_dts, S, device, dtype,
+                    )
+                else:
+                    dts_r = _dts_cross_differentiable(
+                        Pi_star_wave.detach(), Pibar_star_wave.detach(), meta,
+                        sp_child1, sp_child2, log_pD_dts, log_pS_dts, S, device, dtype,
+                    )
         else:
             dts_r = None
 
-        mt_w = mt_clade[ws:we]
-        DL_w = DL_const[ws:we]
-        E_w = E_clade[ws:we]
-        Ebar_w = Ebar_clade[ws:we]
-        SL1_w = SL1_const[ws:we]
-        SL2_w = SL2_const[ws:we]
+        if _auto_wrapped:
+            mt_w = mt_shared
+            DL_w = DL_shared
+            E_w = E_shared
+            Ebar_w = Ebar_shared
+            SL1_w = SL1_shared
+            SL2_w = SL2_shared
+        else:
+            mt_w = mt_clade[ws:we]
+            DL_w = DL_const[ws:we]
+            E_w = E_clade[ws:we]
+            Ebar_w = Ebar_clade[ws:we]
+            SL1_w = SL1_const[ws:we]
+            SL2_w = SL2_const[ws:we]
 
         use_compact = (n_active < W)
         if use_compact:
@@ -578,10 +744,11 @@ def Pi_wave_backward(
             rhs_active = rhs_k
 
         use_fused = (
-            _HAS_FUSED_BACKWARD
+            fused_uniform_backward_enabled
+            and _HAS_FUSED_BACKWARD
             and G == 1
             and pibar_mode == 'uniform'
-            and dtype == torch.float32
+            and dtype in (torch.float32, torch.float64)
             and device.type == 'cuda'
             and S > 256
         )
@@ -601,8 +768,7 @@ def Pi_wave_backward(
             v_k, aw0, aw1, aw2, aw345, aw3, aw4 = wave_backward_uniform_fused(
                 Pi_star_wave, Pibar_star_wave, ws, W, S,
                 dts_r, rhs_k.clone(),
-                mt_clade[ws], DL_const[ws], Ebar_clade[ws],
-                E_clade[ws], SL1_const[ws], SL2_const[ws],
+                mt_w, DL_w, Ebar_w, E_w, SL1_w, SL2_w,
                 sp_child1, sp_child2, leaf_wt,
                 neumann_terms=neumann_terms,
             )
@@ -701,16 +867,29 @@ def Pi_wave_backward(
             # Fused kernel currently supports only scalar log_pD/log_pS (shared-param case).
             # For specieswise/genewise tensors, use the generic path below.
             fused_scalar_params = (log_pD.numel() == 1 and log_pS.numel() == 1)
+            used_fused_pibar_vjp = False
+            used_fused_direct_pi_accum = False
 
             if use_fused and fused_scalar_params:
                 # G=1: pass shared params to fused kernel.
-                (grad_Pi_l, grad_Pi_r, grad_Pibar_l, grad_Pibar_r,
-                 param_pD, param_pS) = dts_cross_backward_fused(
-                    Pi_star_wave, Pibar_star_wave, v_k, ws,
-                    sl, sr, reduce_idx, wlsp,
-                    log_pD.reshape(-1)[0], log_pS.reshape(-1)[0],
-                    sp_child1, sp_child2, S,
-                )
+                if fused_dts_backward_accum_enabled:
+                    (grad_Pibar_l, grad_Pibar_r,
+                     param_pD, param_pS) = dts_cross_backward_accum_fused(
+                        Pi_star_wave, Pibar_star_wave, v_k, ws,
+                        sl, sr, reduce_idx, wlsp,
+                        log_pD.reshape(-1)[0], log_pS.reshape(-1)[0],
+                        sp_child1, sp_child2, accumulated_rhs, S,
+                    )
+                    used_fused_direct_pi_accum = True
+                    grad_Pi_l = grad_Pi_r = None
+                else:
+                    (grad_Pi_l, grad_Pi_r, grad_Pibar_l, grad_Pibar_r,
+                     param_pD, param_pS) = dts_cross_backward_fused(
+                        Pi_star_wave, Pibar_star_wave, v_k, ws,
+                        sl, sr, reduce_idx, wlsp,
+                        log_pD.reshape(-1)[0], log_pS.reshape(-1)[0],
+                        sp_child1, sp_child2, S,
+                    )
 
                 # Accumulate into G=1 row.
                 grad_log_pD[0] += param_pD.sum()
@@ -797,35 +976,70 @@ def Pi_wave_backward(
                     grad_Pi_r.scatter_add_(1, idx2.unsqueeze(0).expand(n_ws, -1), grad_DTS_5[3][:, valid2])
                     grad_Pi_l.scatter_add_(1, idx2.unsqueeze(0).expand(n_ws, -1), grad_DTS_5[4][:, valid2])
 
-            accumulated_rhs.index_add_(0, sl, grad_Pi_l)
-            accumulated_rhs.index_add_(0, sr, grad_Pi_r)
+            if not used_fused_direct_pi_accum:
+                accumulated_rhs.index_add_(0, sl, grad_Pi_l)
+                accumulated_rhs.index_add_(0, sr, grad_Pi_r)
 
-            all_children = torch.cat([sl, sr])
-            all_pibar_grad = torch.cat([grad_Pibar_l, grad_Pibar_r])
-
-            nz = all_pibar_grad.abs().sum(dim=1) > 0
-            if nz.any():
-                nz_children = all_children[nz]
-                u = all_pibar_grad[nz]
-                Pi_ch = Pi_star_wave[nz_children]
-                Pi_max_p = Pi_ch.max(dim=1, keepdim=True).values
-                p_prime = torch.exp2(Pi_ch - Pi_max_p)
-
-                if pibar_mode == 'uniform':
-                    anc_sum = p_prime @ ancestors_T
-                    denom = p_prime.sum(dim=1, keepdim=True) - anc_sum
-                    denom_safe = torch.where(denom > 0, denom, torch.ones_like(denom))
-                    u_d = torch.where(denom > 0, u / denom_safe, torch.zeros_like(u))
-                    A = u_d.sum(dim=1, keepdim=True)
-                    correction = (ancestors_T @ u_d.T).T
-                    pi_from_pibar = p_prime * (A - correction)
+            if (
+                use_fused
+                and fused_scalar_params
+                and fused_cross_pibar_vjp_enabled
+                and ancestor_cols is not None
+            ):
+                if fused_cross_pibar_vjp_impl == "tree" and level_parents is not None:
+                    uniform_cross_pibar_vjp_tree_fused(
+                        Pi_star_wave,
+                        grad_Pibar_l,
+                        grad_Pibar_r,
+                        sl,
+                        sr,
+                        ancestor_cols,
+                        sp_child1,
+                        sp_child2,
+                        level_parents,
+                        accumulated_rhs,
+                        S,
+                    )
                 else:
-                    matmul_r = p_prime @ transfer_mat_T
-                    mr_safe = torch.where(matmul_r > 0, matmul_r, torch.ones_like(matmul_r))
-                    u_mr = torch.where(matmul_r > 0, u / mr_safe, torch.zeros_like(u))
-                    pi_from_pibar = p_prime * (u_mr @ transfer_mat_T.T)
+                    uniform_cross_pibar_vjp_fused(
+                        Pi_star_wave,
+                        grad_Pibar_l,
+                        grad_Pibar_r,
+                        sl,
+                        sr,
+                        ancestor_cols,
+                        accumulated_rhs,
+                        S,
+                    )
+                used_fused_pibar_vjp = True
 
-                accumulated_rhs.index_add_(0, nz_children, pi_from_pibar)
+            if not used_fused_pibar_vjp:
+                all_children = torch.cat([sl, sr])
+                all_pibar_grad = torch.cat([grad_Pibar_l, grad_Pibar_r])
+
+                nz = all_pibar_grad.abs().sum(dim=1) > 0
+                if nz.any():
+                    nz_children = all_children[nz]
+                    u = all_pibar_grad[nz]
+                    Pi_ch = Pi_star_wave[nz_children]
+                    Pi_max_p = Pi_ch.max(dim=1, keepdim=True).values
+                    p_prime = torch.exp2(Pi_ch - Pi_max_p)
+
+                    if pibar_mode == 'uniform':
+                        anc_sum = p_prime @ ancestors_T
+                        denom = p_prime.sum(dim=1, keepdim=True) - anc_sum
+                        denom_safe = torch.where(denom > 0, denom, torch.ones_like(denom))
+                        u_d = torch.where(denom > 0, u / denom_safe, torch.zeros_like(u))
+                        A = u_d.sum(dim=1, keepdim=True)
+                        correction = (ancestors_T @ u_d.T).T
+                        pi_from_pibar = p_prime * (A - correction)
+                    else:
+                        matmul_r = p_prime @ transfer_mat_T
+                        mr_safe = torch.where(matmul_r > 0, matmul_r, torch.ones_like(matmul_r))
+                        u_mr = torch.where(matmul_r > 0, u / mr_safe, torch.zeros_like(u))
+                        pi_from_pibar = p_prime * (u_mr @ transfer_mat_T.T)
+
+                    accumulated_rhs.index_add_(0, nz_children, pi_from_pibar)
 
     result = {
         'v_Pi': accumulated_rhs,

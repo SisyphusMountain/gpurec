@@ -12,6 +12,10 @@ import triton
 import triton.language as tl
 
 
+def _tl_float_dtype(dtype):
+    return tl.float64 if dtype == torch.float64 else tl.float32
+
+
 @triton.jit
 def _wave_backward_uniform_kernel(
     # Converged values from forward pass
@@ -44,6 +48,7 @@ def _wave_backward_uniform_kernel(
     stride: tl.constexpr,
     BLOCK_S: tl.constexpr,
     NEUMANN_TERMS: tl.constexpr,
+    DTYPE: tl.constexpr,
 ):
     """Fused backward kernel for uniform Pibar mode.
 
@@ -57,7 +62,7 @@ def _wave_backward_uniform_kernel(
       Pass A: compute u_d[s], accumulate A, write spec scatter to buffer
       Pass B: compute result[s] using A, read spec scatter from buffer
     """
-    NEG_LARGE = tl.full([1], value=-1e30, dtype=tl.float32)
+    NEG_LARGE = tl.full([1], value=-1e30, dtype=DTYPE)
 
     w = tl.program_id(0)
     pi_base = (ws + w) * stride      # offset into [C, S]
@@ -66,8 +71,8 @@ def _wave_backward_uniform_kernel(
     # ================================================================
     # Pass 1: Row statistics for uniform Pibar (same as forward)
     # ================================================================
-    row_max = tl.full([1], value=-1e30, dtype=tl.float32)
-    row_sum = tl.full([1], value=0.0, dtype=tl.float32)
+    row_max = tl.full([1], value=-1e30, dtype=DTYPE)
+    row_sum = tl.full([1], value=0.0, dtype=DTYPE)
 
     for s_start in range(0, S, BLOCK_S):
         s_offs = s_start + tl.arange(0, BLOCK_S)
@@ -99,7 +104,7 @@ def _wave_backward_uniform_kernel(
     #   aw4 = w_L * w_terms[3]                  — SL1 weight
     #   aw345 = w_L * w_terms[4]                — SL2 weight
     # ================================================================
-    M_SAFE = tl.full([1], value=-1e29, dtype=tl.float32)
+    M_SAFE = tl.full([1], value=-1e29, dtype=DTYPE)
 
     for s_start in range(0, S, BLOCK_S):
         s_offs = s_start + tl.arange(0, BLOCK_S)
@@ -158,7 +163,7 @@ def _wave_backward_uniform_kernel(
             # w_L: safe when DTS_L = -inf → w_L = 0
             w_L = tl.where(dts_l > M_SAFE, tl.exp2(dts_l - pi_new), tl.zeros_like(dts_l))
         else:
-            w_L = tl.full(s_offs.shape, value=1.0, dtype=tl.float32)
+            w_L = tl.full(s_offs.shape, value=1.0, dtype=DTYPE)
 
         # Per-term softmax weights (divide by dts_l_sum, not dts_l_sum + dts_r)
         inv_sum = tl.where(dts_l_sum > 0, 1.0 / dts_l_sum, tl.zeros_like(dts_l_sum))
@@ -216,14 +221,14 @@ def _wave_backward_uniform_kernel(
             mask = s_offs < S
             if _n % 2 == 0:
                 tl.store(spec_buf_ptr + out_base + s_offs,
-                         tl.zeros(s_offs.shape, dtype=tl.float32), mask=mask)
+                         tl.zeros(s_offs.shape, dtype=DTYPE), mask=mask)
             else:
                 tl.store(rhs_ptr + out_base + s_offs,
-                         tl.zeros(s_offs.shape, dtype=tl.float32), mask=mask)
+                         tl.zeros(s_offs.shape, dtype=DTYPE), mask=mask)
 
         # --- Sub-pass A: accumulate A = sum_s(term * pibar_wt * inv_denom) ---
         # Also write speciation scatter contributions.
-        A_acc = tl.full([1], value=0.0, dtype=tl.float32)
+        A_acc = tl.full([1], value=0.0, dtype=DTYPE)
 
         for s_start in range(0, S, BLOCK_S):
             s_offs = s_start + tl.arange(0, BLOCK_S)
@@ -357,7 +362,7 @@ def _wave_backward_uniform_kernel(
             pi_new = tl.log2(tl.exp2(dts_l - pi_new_ms) + tl.exp2(dts_r - pi_new_ms)) + pi_new_m
             w_L = tl.where(dts_l > -1e29, tl.exp2(dts_l - pi_new), tl.zeros_like(dts_l))
         else:
-            w_L = tl.full(s_offs.shape, value=1.0, dtype=tl.float32)
+            w_L = tl.full(s_offs.shape, value=1.0, dtype=DTYPE)
 
         alpha = v_k_val * w_L
 
@@ -434,6 +439,7 @@ def wave_backward_uniform_fused(
         spec_buf,
         ws, S, S, BLOCK_S,
         neumann_terms,
+        DTYPE=_tl_float_dtype(dtype),
     )
 
     return v_k, aw0, aw1, aw2, aw345, aw3, aw4
@@ -474,6 +480,7 @@ def _dts_cross_backward_kernel(
     S: tl.constexpr,
     stride_C: tl.constexpr,
     BLOCK_S: tl.constexpr,
+    DTYPE: tl.constexpr,
 ):
     """Fused cross-clade DTS backward for uniform Pibar mode.
 
@@ -512,8 +519,8 @@ def _dts_cross_backward_kernel(
     out_base = i * S
 
     # Accumulators for per-split param sums (1-element blocks for Triton compatibility)
-    sum_pD = tl.zeros((1,), dtype=tl.float32)
-    sum_pS = tl.zeros((1,), dtype=tl.float32)
+    sum_pD = tl.zeros((1,), dtype=DTYPE)
+    sum_pS = tl.zeros((1,), dtype=DTYPE)
     _scalar_off = tl.arange(0, 1)  # for storing 1-element blocks
 
     # ================================================================
@@ -699,6 +706,511 @@ def dts_cross_backward_fused(
         grad_Pi_l, grad_Pi_r, grad_Pibar_l, grad_Pibar_r,
         param_pD, param_pS,
         ws, S, stride_C, BLOCK_S,
+        DTYPE=_tl_float_dtype(dtype),
     )
 
     return grad_Pi_l, grad_Pi_r, grad_Pibar_l, grad_Pibar_r, param_pD, param_pS
+
+
+@triton.jit
+def _dts_cross_backward_accum_kernel(
+    # Converged values [C, S]
+    Pi_star_ptr,
+    Pibar_star_ptr,
+    # Neumann-solved adjoint [W, S]
+    v_k_ptr,
+    # Split metadata
+    sl_ptr,            # [n_ws] int64 — left child global clade index
+    sr_ptr,            # [n_ws] int64 — right child global clade index
+    reduce_idx_ptr,    # [n_ws] int64 — wave-local parent index
+    wlsp_ptr,          # [n_ws] float — log split probability (squeezed)
+    # Scalar params
+    log_pD,            # float
+    log_pS,            # float
+    # Species children [S] int64
+    sp_child1_ptr,
+    sp_child2_ptr,
+    # Outputs
+    accumulated_rhs_ptr,  # [C, S], direct Pi adjoints updated atomically
+    grad_Pibar_l_ptr,     # [n_ws, S]
+    grad_Pibar_r_ptr,     # [n_ws, S]
+    param_pD_ptr,         # [n_ws]
+    param_pS_ptr,         # [n_ws]
+    # Dimensions
+    ws,                # wave start offset (parent row = ws + reduce_idx)
+    S: tl.constexpr,
+    stride_C: tl.constexpr,
+    BLOCK_S: tl.constexpr,
+    DTYPE: tl.constexpr,
+):
+    """DTS cross-clade backward with direct accumulation of Pi adjoints.
+
+    This is the same VJP as _dts_cross_backward_kernel, but it writes direct
+    Pi contributions into accumulated_rhs instead of materializing
+    grad_Pi_l/grad_Pi_r and relying on two PyTorch index_add_ calls.
+    Pibar adjoints are still materialized because they feed the uniform Pibar
+    VJP kernel.
+    """
+    NEG_LARGE: tl.constexpr = -1e30
+
+    i = tl.program_id(0)
+
+    sl = tl.load(sl_ptr + i)
+    sr = tl.load(sr_ptr + i)
+    parent_w = tl.load(reduce_idx_ptr + i)
+    wlsp = tl.load(wlsp_ptr + i)
+
+    pi_l_base = sl * stride_C
+    pi_r_base = sr * stride_C
+    pibar_l_base = sl * stride_C
+    pibar_r_base = sr * stride_C
+    parent_pi_base = (ws + parent_w) * stride_C
+    parent_vk_base = parent_w * S
+    out_base = i * S
+
+    sum_pD = tl.zeros((1,), dtype=DTYPE)
+    sum_pS = tl.zeros((1,), dtype=DTYPE)
+    _scalar_off = tl.arange(0, 1)
+
+    for s_start in range(0, S, BLOCK_S):
+        s_offs = s_start + tl.arange(0, BLOCK_S)
+        mask = s_offs < S
+
+        Pi_l = tl.load(Pi_star_ptr + pi_l_base + s_offs, mask=mask, other=NEG_LARGE)
+        Pi_r = tl.load(Pi_star_ptr + pi_r_base + s_offs, mask=mask, other=NEG_LARGE)
+        Pibar_l = tl.load(Pibar_star_ptr + pibar_l_base + s_offs, mask=mask, other=NEG_LARGE)
+        Pibar_r = tl.load(Pibar_star_ptr + pibar_r_base + s_offs, mask=mask, other=NEG_LARGE)
+
+        c1 = tl.load(sp_child1_ptr + s_offs, mask=mask, other=0)
+        c2 = tl.load(sp_child2_ptr + s_offs, mask=mask, other=0)
+        c1_valid = (c1 < S) & mask
+        c2_valid = (c2 < S) & mask
+        Pi_l_s1 = tl.load(Pi_star_ptr + pi_l_base + c1, mask=c1_valid, other=NEG_LARGE)
+        Pi_l_s2 = tl.load(Pi_star_ptr + pi_l_base + c2, mask=c2_valid, other=NEG_LARGE)
+        Pi_r_s1 = tl.load(Pi_star_ptr + pi_r_base + c1, mask=c1_valid, other=NEG_LARGE)
+        Pi_r_s2 = tl.load(Pi_star_ptr + pi_r_base + c2, mask=c2_valid, other=NEG_LARGE)
+
+        Pi_parent = tl.load(Pi_star_ptr + parent_pi_base + s_offs, mask=mask, other=NEG_LARGE)
+        v_k_val = tl.load(v_k_ptr + parent_vk_base + s_offs, mask=mask, other=0.0)
+
+        d0 = log_pD + Pi_l + Pi_r
+        d1 = Pi_l + Pibar_r
+        d2 = Pi_r + Pibar_l
+        d3 = log_pS + Pi_l_s1 + Pi_r_s2
+        d4 = log_pS + Pi_r_s1 + Pi_l_s2
+
+        parent_valid = Pi_parent > NEG_LARGE
+        w0 = tl.where(parent_valid, tl.exp2(wlsp + d0 - Pi_parent), tl.zeros_like(d0))
+        w1 = tl.where(parent_valid, tl.exp2(wlsp + d1 - Pi_parent), tl.zeros_like(d1))
+        w2 = tl.where(parent_valid, tl.exp2(wlsp + d2 - Pi_parent), tl.zeros_like(d2))
+        w3 = tl.where(parent_valid, tl.exp2(wlsp + d3 - Pi_parent), tl.zeros_like(d3))
+        w4 = tl.where(parent_valid, tl.exp2(wlsp + d4 - Pi_parent), tl.zeros_like(d4))
+
+        vd0 = v_k_val * w0
+        vd1 = v_k_val * w1
+        vd2 = v_k_val * w2
+        vd3 = v_k_val * w3
+        vd4 = v_k_val * w4
+
+        tl.atomic_add(accumulated_rhs_ptr + pi_l_base + s_offs, vd0 + vd1, sem="relaxed", mask=mask)
+        tl.atomic_add(accumulated_rhs_ptr + pi_r_base + s_offs, vd0 + vd2, sem="relaxed", mask=mask)
+        tl.store(grad_Pibar_l_ptr + out_base + s_offs, vd2, mask=mask)
+        tl.store(grad_Pibar_r_ptr + out_base + s_offs, vd1, mask=mask)
+
+        sum_pD += tl.sum(vd0, axis=0)
+        sum_pS += tl.sum(vd3 + vd4, axis=0)
+
+    tl.store(param_pD_ptr + i + _scalar_off, sum_pD)
+    tl.store(param_pS_ptr + i + _scalar_off, sum_pS)
+
+    for s_start in range(0, S, BLOCK_S):
+        s_offs = s_start + tl.arange(0, BLOCK_S)
+        mask = s_offs < S
+
+        c1 = tl.load(sp_child1_ptr + s_offs, mask=mask, other=0)
+        c2 = tl.load(sp_child2_ptr + s_offs, mask=mask, other=0)
+        c1_valid = (c1 < S) & mask
+        c2_valid = (c2 < S) & mask
+
+        Pi_l_s1 = tl.load(Pi_star_ptr + pi_l_base + c1, mask=c1_valid, other=NEG_LARGE)
+        Pi_l_s2 = tl.load(Pi_star_ptr + pi_l_base + c2, mask=c2_valid, other=NEG_LARGE)
+        Pi_r_s1 = tl.load(Pi_star_ptr + pi_r_base + c1, mask=c1_valid, other=NEG_LARGE)
+        Pi_r_s2 = tl.load(Pi_star_ptr + pi_r_base + c2, mask=c2_valid, other=NEG_LARGE)
+
+        Pi_parent = tl.load(Pi_star_ptr + parent_pi_base + s_offs, mask=mask, other=NEG_LARGE)
+        v_k_val = tl.load(v_k_ptr + parent_vk_base + s_offs, mask=mask, other=0.0)
+
+        d3 = log_pS + Pi_l_s1 + Pi_r_s2
+        d4 = log_pS + Pi_r_s1 + Pi_l_s2
+
+        parent_valid = Pi_parent > NEG_LARGE
+        w3 = tl.where(parent_valid, tl.exp2(wlsp + d3 - Pi_parent), tl.zeros_like(d3))
+        w4 = tl.where(parent_valid, tl.exp2(wlsp + d4 - Pi_parent), tl.zeros_like(d4))
+        vd3 = v_k_val * w3
+        vd4 = v_k_val * w4
+
+        tl.atomic_add(accumulated_rhs_ptr + pi_l_base + c1, vd3, sem="relaxed", mask=c1_valid)
+        tl.atomic_add(accumulated_rhs_ptr + pi_r_base + c1, vd4, sem="relaxed", mask=c1_valid)
+        tl.atomic_add(accumulated_rhs_ptr + pi_r_base + c2, vd3, sem="relaxed", mask=c2_valid)
+        tl.atomic_add(accumulated_rhs_ptr + pi_l_base + c2, vd4, sem="relaxed", mask=c2_valid)
+
+
+def dts_cross_backward_accum_fused(
+    Pi_star, Pibar_star, v_k, ws,
+    sl, sr, reduce_idx, wlsp,
+    log_pD, log_pS,
+    sp_child1, sp_child2,
+    accumulated_rhs,
+    S,
+):
+    """Fused DTS backward that atomically accumulates direct Pi adjoints."""
+    n_ws = sl.shape[0]
+    device = Pi_star.device
+    dtype = Pi_star.dtype
+
+    wlsp_flat = wlsp.squeeze(-1) if wlsp.ndim > 1 else wlsp
+    pD_val = float(log_pD) if log_pD.ndim == 0 else float(log_pD.item())
+    pS_val = float(log_pS) if log_pS.ndim == 0 else float(log_pS.item())
+
+    grad_Pibar_l = torch.empty((n_ws, S), device=device, dtype=dtype)
+    grad_Pibar_r = torch.empty((n_ws, S), device=device, dtype=dtype)
+    param_pD = torch.empty(n_ws, device=device, dtype=dtype)
+    param_pS = torch.empty(n_ws, device=device, dtype=dtype)
+
+    stride_C = Pi_star.stride(0)
+    BLOCK_S = min(256, triton.next_power_of_2(S))
+
+    _dts_cross_backward_accum_kernel[(n_ws,)](
+        Pi_star, Pibar_star,
+        v_k,
+        sl, sr, reduce_idx, wlsp_flat,
+        pD_val, pS_val,
+        sp_child1, sp_child2,
+        accumulated_rhs,
+        grad_Pibar_l, grad_Pibar_r,
+        param_pD, param_pS,
+        ws, S, stride_C, BLOCK_S,
+        DTYPE=_tl_float_dtype(dtype),
+    )
+
+    return grad_Pibar_l, grad_Pibar_r, param_pD, param_pS
+
+
+# =========================================================================
+# Uniform Pibar VJP for cross-clade gradients
+# =========================================================================
+
+@triton.jit
+def _uniform_cross_pibar_vjp_kernel(
+    Pi_star_ptr,          # [C, S]
+    grad_Pibar_l_ptr,     # [n_ws, S]
+    grad_Pibar_r_ptr,     # [n_ws, S]
+    sl_ptr,               # [n_ws]
+    sr_ptr,               # [n_ws]
+    ancestor_cols_ptr,    # [MAX_ANCESTOR_DEPTH, S]
+    accumulated_rhs_ptr,  # [C, S], updated atomically
+    correction_buf_ptr,   # [2 * n_ws, S]
+    n_ws: tl.constexpr,
+    S: tl.constexpr,
+    stride_C: tl.constexpr,
+    BLOCK_S: tl.constexpr,
+    MAX_ANCESTOR_DEPTH: tl.constexpr,
+    DTYPE: tl.constexpr,
+):
+    """Apply the VJP of uniform Pibar for one cross-DTS child side.
+
+    For a child row with incoming Pibar adjoint u:
+
+        p = exp2(Pi - row_max)
+        denom[s] = sum_f p[f] - sum_{a in ancestors(s)} p[a]
+        u_d[s] = u[s] / denom[s]
+        grad_Pi[f] = p[f] * (sum_s u_d[s] -
+                             sum_{s: f in ancestors(s)} u_d[s])
+
+    Each program handles either the left or right child of one split and
+    atomically accumulates grad_Pi into accumulated_rhs[child].
+    """
+    NEG_LARGE: tl.constexpr = -1e30
+
+    row = tl.program_id(0)
+    split_i = tl.where(row < n_ws, row, row - n_ws)
+    is_right = row >= n_ws
+
+    child_l = tl.load(sl_ptr + split_i)
+    child_r = tl.load(sr_ptr + split_i)
+    child = tl.where(is_right, child_r, child_l)
+
+    pi_base = child * stride_C
+    grad_base = split_i * S
+    corr_base = row * S
+
+    # Clear the correction row owned by this program.
+    for s_start in range(0, S, BLOCK_S):
+        s_offs = s_start + tl.arange(0, BLOCK_S)
+        mask = s_offs < S
+        tl.store(correction_buf_ptr + corr_base + s_offs,
+                 tl.zeros([BLOCK_S], dtype=DTYPE), mask=mask)
+
+    # Row max and shifted row sum for p = exp2(Pi - row_max).
+    row_max = tl.full([1], value=NEG_LARGE, dtype=DTYPE)
+    row_sum = tl.full([1], value=0.0, dtype=DTYPE)
+    for s_start in range(0, S, BLOCK_S):
+        s_offs = s_start + tl.arange(0, BLOCK_S)
+        mask = s_offs < S
+        pi_val = tl.load(Pi_star_ptr + pi_base + s_offs, mask=mask, other=NEG_LARGE)
+        tile_max = tl.max(pi_val, axis=0)
+        new_max = tl.maximum(row_max, tile_max)
+        row_sum = row_sum * tl.exp2(row_max - new_max) + tl.sum(tl.exp2(pi_val - new_max), axis=0)
+        row_max = new_max
+
+    # Build correction[f] = sum_{s: f ancestor of s} u_d[s].
+    A = tl.full([1], value=0.0, dtype=DTYPE)
+    for s_start in range(0, S, BLOCK_S):
+        s_offs = s_start + tl.arange(0, BLOCK_S)
+        mask = s_offs < S
+
+        ancestor_sum = tl.zeros([BLOCK_S], dtype=DTYPE)
+        for k in range(0, MAX_ANCESTOR_DEPTH):
+            anc = tl.load(ancestor_cols_ptr + k * S + s_offs, mask=mask, other=-1)
+            anc_valid = mask & (anc >= 0) & (anc < S)
+            pi_anc = tl.load(Pi_star_ptr + pi_base + anc, mask=anc_valid, other=NEG_LARGE)
+            ancestor_sum += tl.where(
+                anc_valid,
+                tl.exp2(pi_anc - row_max),
+                tl.zeros([BLOCK_S], dtype=DTYPE),
+            )
+
+        denom = row_sum - ancestor_sum
+
+        grad_l = tl.load(grad_Pibar_l_ptr + grad_base + s_offs, mask=mask, other=0.0)
+        grad_r = tl.load(grad_Pibar_r_ptr + grad_base + s_offs, mask=mask, other=0.0)
+        grad_u = tl.where(is_right, grad_r, grad_l)
+        u_d = tl.where(denom > 0.0, grad_u / denom, tl.zeros([BLOCK_S], dtype=DTYPE))
+        A += tl.sum(u_d, axis=0)
+
+        for k in range(0, MAX_ANCESTOR_DEPTH):
+            anc = tl.load(ancestor_cols_ptr + k * S + s_offs, mask=mask, other=-1)
+            anc_valid = mask & (anc >= 0) & (anc < S)
+            tl.atomic_add(correction_buf_ptr + corr_base + anc, u_d, sem="relaxed", mask=anc_valid)
+
+    # Add p[f] * (A - correction[f]) into the child row's Pi adjoint.
+    for s_start in range(0, S, BLOCK_S):
+        s_offs = s_start + tl.arange(0, BLOCK_S)
+        mask = s_offs < S
+        pi_val = tl.load(Pi_star_ptr + pi_base + s_offs, mask=mask, other=NEG_LARGE)
+        p_prime = tl.exp2(pi_val - row_max)
+        correction = tl.load(correction_buf_ptr + corr_base + s_offs, mask=mask, other=0.0)
+        contrib = p_prime * (A - correction)
+        tl.atomic_add(accumulated_rhs_ptr + pi_base + s_offs, contrib, sem="relaxed", mask=mask)
+
+
+def uniform_cross_pibar_vjp_fused(
+    Pi_star,
+    grad_Pibar_l,
+    grad_Pibar_r,
+    sl,
+    sr,
+    ancestor_cols,
+    accumulated_rhs,
+    S,
+):
+    """Fused uniform-Pibar VJP for cross-DTS child gradients.
+
+    This replaces:
+      cat(left/right Pibar grads) -> p_prime @ ancestors_T ->
+      ancestors_T @ u_d.T -> index_add into accumulated_rhs.
+
+    The operation is in-place on accumulated_rhs.
+    """
+    n_ws = sl.shape[0]
+    if n_ws == 0:
+        return
+
+    correction_buf = torch.empty((2 * n_ws, S), device=Pi_star.device, dtype=Pi_star.dtype)
+    BLOCK_S = min(256, triton.next_power_of_2(S))
+    stride_C = Pi_star.stride(0)
+
+    _uniform_cross_pibar_vjp_kernel[(2 * n_ws,)](
+        Pi_star,
+        grad_Pibar_l,
+        grad_Pibar_r,
+        sl,
+        sr,
+        ancestor_cols,
+        accumulated_rhs,
+        correction_buf,
+        n_ws,
+        S,
+        stride_C,
+        BLOCK_S,
+        MAX_ANCESTOR_DEPTH=ancestor_cols.shape[0],
+        DTYPE=_tl_float_dtype(Pi_star.dtype),
+        num_warps=4,
+    )
+
+
+@triton.jit
+def _uniform_cross_pibar_vjp_tree_kernel(
+    Pi_star_ptr,          # [C, S]
+    grad_Pibar_l_ptr,     # [n_ws, S]
+    grad_Pibar_r_ptr,     # [n_ws, S]
+    sl_ptr,               # [n_ws]
+    sr_ptr,               # [n_ws]
+    ancestor_cols_ptr,    # [MAX_ANCESTOR_DEPTH, S]
+    sp_child1_ptr,        # [S]
+    sp_child2_ptr,        # [S]
+    level_parents_ptr,    # [N_LEVELS, MAX_LEVEL_WIDTH]
+    accumulated_rhs_ptr,  # [C, S], updated atomically
+    subtree_buf_ptr,      # [2 * n_ws, S]
+    n_ws: tl.constexpr,
+    S: tl.constexpr,
+    stride_C: tl.constexpr,
+    BLOCK_S: tl.constexpr,
+    MAX_ANCESTOR_DEPTH: tl.constexpr,
+    N_LEVELS: tl.constexpr,
+    MAX_LEVEL_WIDTH: tl.constexpr,
+    DTYPE: tl.constexpr,
+):
+    """Uniform Pibar VJP using a descendant/subtree gather.
+
+    This computes the same correction term as _uniform_cross_pibar_vjp_kernel,
+    but avoids scattering every descendant into all of its ancestors.  Instead
+    it writes u_d into subtree_buf and performs a bottom-up tree reduction:
+
+        subtree_sum[parent] = u_d[parent] + subtree_sum[child1] + subtree_sum[child2]
+
+    After that, correction[f] is subtree_sum[f].
+    """
+    NEG_LARGE: tl.constexpr = -1e30
+
+    row = tl.program_id(0)
+    split_i = tl.where(row < n_ws, row, row - n_ws)
+    is_right = row >= n_ws
+
+    child_l = tl.load(sl_ptr + split_i)
+    child_r = tl.load(sr_ptr + split_i)
+    child = tl.where(is_right, child_r, child_l)
+
+    pi_base = child * stride_C
+    grad_base = split_i * S
+    subtree_base = row * S
+
+    row_max = tl.full([1], value=NEG_LARGE, dtype=DTYPE)
+    row_sum = tl.full([1], value=0.0, dtype=DTYPE)
+    for s_start in range(0, S, BLOCK_S):
+        s_offs = s_start + tl.arange(0, BLOCK_S)
+        mask = s_offs < S
+        pi_val = tl.load(Pi_star_ptr + pi_base + s_offs, mask=mask, other=NEG_LARGE)
+        tile_max = tl.max(pi_val, axis=0)
+        new_max = tl.maximum(row_max, tile_max)
+        row_sum = row_sum * tl.exp2(row_max - new_max) + tl.sum(tl.exp2(pi_val - new_max), axis=0)
+        row_max = new_max
+
+    # Initial subtree_buf contains u_d for every species.  Leaves are already
+    # final subtree sums; internal nodes are completed by the bottom-up pass.
+    A = tl.full([1], value=0.0, dtype=DTYPE)
+    for s_start in range(0, S, BLOCK_S):
+        s_offs = s_start + tl.arange(0, BLOCK_S)
+        mask = s_offs < S
+
+        ancestor_sum = tl.zeros([BLOCK_S], dtype=DTYPE)
+        for k in range(0, MAX_ANCESTOR_DEPTH):
+            anc = tl.load(ancestor_cols_ptr + k * S + s_offs, mask=mask, other=-1)
+            anc_valid = mask & (anc >= 0) & (anc < S)
+            pi_anc = tl.load(Pi_star_ptr + pi_base + anc, mask=anc_valid, other=NEG_LARGE)
+            ancestor_sum += tl.where(
+                anc_valid,
+                tl.exp2(pi_anc - row_max),
+                tl.zeros([BLOCK_S], dtype=DTYPE),
+            )
+
+        denom = row_sum - ancestor_sum
+        grad_l = tl.load(grad_Pibar_l_ptr + grad_base + s_offs, mask=mask, other=0.0)
+        grad_r = tl.load(grad_Pibar_r_ptr + grad_base + s_offs, mask=mask, other=0.0)
+        grad_u = tl.where(is_right, grad_r, grad_l)
+        u_d = tl.where(denom > 0.0, grad_u / denom, tl.zeros([BLOCK_S], dtype=DTYPE))
+        A += tl.sum(u_d, axis=0)
+        tl.store(subtree_buf_ptr + subtree_base + s_offs, u_d, mask=mask)
+
+    tl.debug_barrier()
+
+    # Bottom-up subtree reduction.  level_parents is ordered from parents of
+    # leaves up to the root, so every child subtree has already been computed.
+    for level in range(0, N_LEVELS):
+        for p_start in range(0, MAX_LEVEL_WIDTH, BLOCK_S):
+            p_offs = p_start + tl.arange(0, BLOCK_S)
+            parent = tl.load(
+                level_parents_ptr + level * MAX_LEVEL_WIDTH + p_offs,
+                mask=p_offs < MAX_LEVEL_WIDTH,
+                other=-1,
+            )
+            parent_valid = (parent >= 0) & (parent < S)
+            c1 = tl.load(sp_child1_ptr + parent, mask=parent_valid, other=S)
+            c2 = tl.load(sp_child2_ptr + parent, mask=parent_valid, other=S)
+            c1_valid = parent_valid & (c1 < S)
+            c2_valid = parent_valid & (c2 < S)
+
+            parent_val = tl.load(subtree_buf_ptr + subtree_base + parent, mask=parent_valid, other=0.0)
+            c1_val = tl.load(subtree_buf_ptr + subtree_base + c1, mask=c1_valid, other=0.0)
+            c2_val = tl.load(subtree_buf_ptr + subtree_base + c2, mask=c2_valid, other=0.0)
+            tl.store(subtree_buf_ptr + subtree_base + parent, parent_val + c1_val + c2_val, mask=parent_valid)
+        tl.debug_barrier()
+
+    for s_start in range(0, S, BLOCK_S):
+        s_offs = s_start + tl.arange(0, BLOCK_S)
+        mask = s_offs < S
+        pi_val = tl.load(Pi_star_ptr + pi_base + s_offs, mask=mask, other=NEG_LARGE)
+        p_prime = tl.exp2(pi_val - row_max)
+        subtree_sum = tl.load(subtree_buf_ptr + subtree_base + s_offs, mask=mask, other=0.0)
+        contrib = p_prime * (A - subtree_sum)
+        # Duplicate child clades across splits still require an atomic add into
+        # accumulated_rhs.  The subtree correction itself is atomic-free.
+        tl.atomic_add(accumulated_rhs_ptr + pi_base + s_offs, contrib, sem="relaxed", mask=mask)
+
+
+def uniform_cross_pibar_vjp_tree_fused(
+    Pi_star,
+    grad_Pibar_l,
+    grad_Pibar_r,
+    sl,
+    sr,
+    ancestor_cols,
+    sp_child1,
+    sp_child2,
+    level_parents,
+    accumulated_rhs,
+    S,
+):
+    """Uniform-Pibar VJP using bottom-up descendant/subtree gathering."""
+    n_ws = sl.shape[0]
+    if n_ws == 0:
+        return
+
+    subtree_buf = torch.empty((2 * n_ws, S), device=Pi_star.device, dtype=Pi_star.dtype)
+    BLOCK_S = min(256, triton.next_power_of_2(S))
+    stride_C = Pi_star.stride(0)
+
+    n_levels = level_parents.shape[0]
+    max_level_width = level_parents.shape[1]
+    _uniform_cross_pibar_vjp_tree_kernel[(2 * n_ws,)](
+        Pi_star,
+        grad_Pibar_l,
+        grad_Pibar_r,
+        sl,
+        sr,
+        ancestor_cols,
+        sp_child1,
+        sp_child2,
+        level_parents,
+        accumulated_rhs,
+        subtree_buf,
+        n_ws,
+        S,
+        stride_C,
+        BLOCK_S,
+        MAX_ANCESTOR_DEPTH=ancestor_cols.shape[0],
+        N_LEVELS=n_levels,
+        MAX_LEVEL_WIDTH=max_level_width,
+        DTYPE=_tl_float_dtype(Pi_star.dtype),
+        num_warps=4,
+    )

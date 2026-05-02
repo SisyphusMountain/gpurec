@@ -13,7 +13,7 @@ def _dts_fused_kernel(
     lefts_ptr, rights_ptr,
     # Species child indices: [S] each (S = sentinel for "no child")
     sp_child1_ptr, sp_child2_ptr,
-    # Parameters: [S] or [N, S] vectors (per-species log-probabilities)
+    # Parameters: [S], [N], [N, 1], or [N, S] log-probabilities
     log_pD_ptr,
     log_pS_ptr,
     # Split probs: [N]
@@ -24,9 +24,9 @@ def _dts_fused_kernel(
     N: tl.constexpr,
     S: tl.constexpr,
     BLOCK_S: tl.constexpr,
-    # Strides for per-split params (0 = shared [S], S = per-split [N, S])
-    stride_pD: tl.constexpr = 0,
-    stride_pS: tl.constexpr = 0,
+    # Param modes: 0 = shared [S], 1 = per-split [N, S], 2 = per-split scalar [N] / [N, 1]
+    mode_pD: tl.constexpr = 0,
+    mode_pS: tl.constexpr = 0,
 ):
     """Compute DTS_term[i, s] = log_split_probs[i] + logsumexp2(5 DTS terms)[s].
 
@@ -52,9 +52,21 @@ def _dts_fused_kernel(
     pibar_l = tl.load(Pibar_ptr + base_l + s_offs, mask=mask, other=-1e30)
     pibar_r = tl.load(Pibar_ptr + base_r + s_offs, mask=mask, other=-1e30)
 
-    # Load per-species parameters (shared [S] when stride=0, per-split [N,S] when stride=S)
-    log_pD_s = tl.load(log_pD_ptr + n * stride_pD + s_offs, mask=mask, other=-1e30)
-    log_pS_s = tl.load(log_pS_ptr + n * stride_pS + s_offs, mask=mask, other=-1e30)
+    # Load parameters.  Backward often has per-split scalars as [N, 1]; avoid
+    # expanding them to [N, S] just to satisfy the kernel.
+    if mode_pD == 2:
+        log_pD_s = tl.load(log_pD_ptr + n)
+    elif mode_pD == 1:
+        log_pD_s = tl.load(log_pD_ptr + n * S + s_offs, mask=mask, other=-1e30)
+    else:
+        log_pD_s = tl.load(log_pD_ptr + s_offs, mask=mask, other=-1e30)
+
+    if mode_pS == 2:
+        log_pS_s = tl.load(log_pS_ptr + n)
+    elif mode_pS == 1:
+        log_pS_s = tl.load(log_pS_ptr + n * S + s_offs, mask=mask, other=-1e30)
+    else:
+        log_pS_s = tl.load(log_pS_ptr + s_offs, mask=mask, other=-1e30)
 
     # Compute first 3 DTS terms
     t0 = log_pD_s + pi_l + pi_r                          # D
@@ -107,7 +119,7 @@ def dts_fused(Pi, Pibar, lefts, rights,
         lefts: [N] long — left child clade indices per split
         rights: [N] long — right child clade indices per split
         sp_child1, sp_child2: [S] long — species tree child indices (S=sentinel)
-        log_pD, log_pS: scalar or [S] per-species event probabilities
+        log_pD, log_pS: scalar, [S], [N], [N, 1], or [N, S] event probabilities
         log_split_probs: [N, 1] or [N]
         out: optional [N, S] output buffer
 
@@ -122,19 +134,28 @@ def dts_fused(Pi, Pibar, lefts, rights,
     # Flatten log_split_probs to [N]
     lsp = log_split_probs.reshape(N).contiguous()
 
-    # Expand scalar params to [S] vectors for the kernel
-    if log_pD.dim() == 0:
-        log_pD_vec = log_pD.expand(S).contiguous()
-    else:
-        log_pD_vec = log_pD.contiguous()
-    if log_pS.dim() == 0:
-        log_pS_vec = log_pS.expand(S).contiguous()
-    else:
-        log_pS_vec = log_pS.contiguous()
+    def _prepare_param(p):
+        if p.dim() == 0:
+            return p.expand(S).contiguous(), 0
+        if p.dim() == 1:
+            if p.numel() == S:
+                return p.contiguous(), 0
+            if p.numel() == N:
+                return p.contiguous(), 2
+        if p.dim() == 2:
+            if p.shape[0] != N:
+                raise ValueError(f"per-split parameter first dim must be N={N}, got {tuple(p.shape)}")
+            if p.shape[1] == 1:
+                return p.reshape(N).contiguous(), 2
+            if p.shape[1] == S:
+                return p.contiguous(), 1
+        raise ValueError(
+            "DTS parameters must be scalar, [S], [N], [N, 1], or [N, S]; "
+            f"got shape {tuple(p.shape)} with N={N}, S={S}"
+        )
 
-    # stride=0 means shared [S], stride=S means per-split [N, S]
-    stride_pD = S if log_pD_vec.ndim == 2 else 0
-    stride_pS = S if log_pS_vec.ndim == 2 else 0
+    log_pD_vec, mode_pD = _prepare_param(log_pD)
+    log_pS_vec, mode_pS = _prepare_param(log_pS)
 
     BLOCK_S = 128
     grid = (N, (S + BLOCK_S - 1) // BLOCK_S)
@@ -148,7 +169,7 @@ def dts_fused(Pi, Pibar, lefts, rights,
         out,
         N, S,
         BLOCK_S=BLOCK_S,
-        stride_pD=stride_pD,
-        stride_pS=stride_pS,
+        mode_pD=mode_pD,
+        mode_pS=mode_pS,
     )
     return out

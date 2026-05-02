@@ -76,9 +76,11 @@ def _setup(ds_name, n_families=1, dtype=torch.float32):
         "names": sr["names"],
         "s_P_indexes": sr["s_P_indexes"].to(device=device),
         "s_C12_indexes": sr["s_C12_indexes"].to(device=device),
+        "ancestors_dense": sr["ancestors_dense"].to(dtype=dtype, device=device),
         "Recipients_mat": sr["Recipients_mat"].to(dtype=dtype, device=device),
     }
     S = sh["S"]
+    ancestors_T = sh["ancestors_dense"].T.to_sparse_coo()
     theta = torch.log2(torch.tensor([D, L, T], dtype=dtype, device=device))
     tm_unnorm = torch.log2(sh["Recipients_mat"])
     unnorm_row_max = tm_unnorm.max(dim=-1).values.to(device=device, dtype=dtype)
@@ -92,6 +94,7 @@ def _setup(ds_name, n_families=1, dtype=torch.float32):
         transfer_mat=transfer_mat, max_transfer_mat=mt,
         max_iters=2000, tolerance=1e-8, warm_start_E=None,
         dtype=dtype, device=device, pibar_mode='uniform',
+        ancestors_T=ancestors_T,
     )
 
     batched = collate_gene_families(batch_items, dtype=dtype, device=device)
@@ -145,6 +148,7 @@ def _setup(ds_name, n_families=1, dtype=torch.float32):
         'Ebar': E_out['E_bar'],
         'log_pS': log_pS, 'log_pD': log_pD, 'log_pL': log_pL,
         'max_transfer_mat': mt,
+        'ancestors_T': ancestors_T,
         'sp_child1': sp_child1, 'sp_child2': sp_child2,
         'device': device, 'dtype': dtype, 'S': S,
     }
@@ -167,6 +171,7 @@ def _pytorch_single_wave_backward(
     dts_r, rhs,
     mt_squeezed, DL_const, Ebar, E, SL1_const, SL2_const,
     sp_child1, sp_child2, leaf_wt,
+    ancestors_T,
     neumann_terms,
 ):
     """Run the PyTorch analytical path for a single wave.
@@ -180,7 +185,7 @@ def _pytorch_single_wave_backward(
         Pi_W, Pibar_W, dts_r,
         mt_squeezed, DL_const, Ebar, E, SL1_const, SL2_const,
         sp_child1, sp_child2, leaf_wt, S,
-        pibar_mode='uniform', transfer_mat_T=None, ancestors_T=None,
+        pibar_mode='uniform', transfer_mat_T=None, ancestors_T=ancestors_T,
     )
 
     # Neumann series
@@ -189,7 +194,7 @@ def _pytorch_single_wave_backward(
     for _ in range(neumann_terms):
         term = _self_loop_Jt_apply(
             term, ingredients, sp_child1, sp_child2, S, W,
-            pibar_mode='uniform', transfer_mat_T=None, ancestors_T=None,
+            pibar_mode='uniform', transfer_mat_T=None, ancestors_T=ancestors_T,
         )
         v_k = v_k + term
 
@@ -264,6 +269,7 @@ class TestWaveBackwardKernel:
                 dts_r, rhs,
                 mt, DL_const, d['Ebar'], d['E'], SL1_const, SL2_const,
                 d['sp_child1'], d['sp_child2'], leaf_wt,
+                d['ancestors_T'],
                 neumann_terms,
             )
 
@@ -365,6 +371,47 @@ class TestWaveBackwardKernel:
             print(f"  {name}: {rel:.2e}")
 
 
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+def test_wave_backward_uniform_fused_supports_fp64_synthetic():
+    """Exercise the fused self-loop kernel in fp64 on an exact small reference."""
+    device = torch.device("cuda")
+    dtype = torch.float64
+    W, S = 3, 8
+    ws = 0
+    torch.manual_seed(1234)
+
+    Pi_star = torch.randn(W, S, device=device, dtype=dtype).contiguous()
+    Pibar_star = torch.randn(W, S, device=device, dtype=dtype).contiguous()
+    dts_r = torch.randn(W, S, device=device, dtype=dtype).contiguous()
+    rhs = torch.randn(W, S, device=device, dtype=dtype) * 0.01
+
+    mt = torch.zeros(S, device=device, dtype=dtype)
+    DL_const = torch.randn(S, device=device, dtype=dtype) * 0.1
+    Ebar = torch.randn(S, device=device, dtype=dtype) * 0.1
+    E = torch.randn(S, device=device, dtype=dtype) * 0.1
+    SL1_const = torch.randn(S, device=device, dtype=dtype) * 0.1
+    SL2_const = torch.randn(S, device=device, dtype=dtype) * 0.1
+    leaf_wt = torch.randn(W, S, device=device, dtype=dtype) * 0.1
+
+    sp_child1 = torch.full((S,), S, device=device, dtype=torch.long)
+    sp_child2 = torch.full((S,), S, device=device, dtype=torch.long)
+    ancestors_T = torch.eye(S, device=device, dtype=dtype).to_sparse_coo()
+
+    refs = _pytorch_single_wave_backward(
+        Pi_star, Pibar_star, ws, W, S, dts_r, rhs,
+        mt, DL_const, Ebar, E, SL1_const, SL2_const,
+        sp_child1, sp_child2, leaf_wt, ancestors_T, neumann_terms=3,
+    )
+    tris = wave_backward_uniform_fused(
+        Pi_star, Pibar_star, ws, W, S, dts_r, rhs.clone(),
+        mt, DL_const, Ebar, E, SL1_const, SL2_const,
+        sp_child1, sp_child2, leaf_wt, neumann_terms=3,
+    )
+
+    for ref, tri in zip(refs, tris):
+        torch.testing.assert_close(tri, ref, rtol=1e-10, atol=1e-10)
+
+
 class TestWaveBackwardKernelLargeS:
     """Test at S=1999 (test_trees_1000) — the production scale."""
 
@@ -393,7 +440,7 @@ class TestWaveBackwardKernelLargeS:
             _pytorch_single_wave_backward(
                 d['Pi_star_wave'], d['Pibar_star_wave'], ws, W, S,
                 None, rhs, mt, DL_const, d['Ebar'], d['E'], SL1_const, SL2_const,
-                d['sp_child1'], d['sp_child2'], leaf_wt, 3,
+                d['sp_child1'], d['sp_child2'], leaf_wt, d['ancestors_T'], 3,
             )
 
         v_tri, *aw_tri = wave_backward_uniform_fused(
@@ -449,7 +496,7 @@ class TestWaveBackwardKernelLargeS:
             _pytorch_single_wave_backward(
                 d['Pi_star_wave'], d['Pibar_star_wave'], ws, W, S,
                 dts_r, rhs, mt, DL_const, d['Ebar'], d['E'], SL1_const, SL2_const,
-                d['sp_child1'], d['sp_child2'], leaf_wt, 3,
+                d['sp_child1'], d['sp_child2'], leaf_wt, d['ancestors_T'], 3,
             )
 
         v_tri, *aw_tri = wave_backward_uniform_fused(
@@ -505,6 +552,7 @@ class TestFusedBackwardE2EFiniteDifference:
             device=d['device'], dtype=d['dtype'],
             neumann_terms=3, use_pruning=False,
             pibar_mode='uniform',
+            ancestors_T=d['ancestors_T'],
         )
 
         eps = 1e-2  # large eps for fp32 (logL~2349, need eps*grad >> fp32_noise)
@@ -533,6 +581,7 @@ class TestFusedBackwardE2EFiniteDifference:
             device=d['device'], dtype=d['dtype'],
             neumann_terms=3, use_pruning=False,
             pibar_mode='uniform',
+            ancestors_T=d['ancestors_T'],
         )
 
         eps = 1e-2
@@ -562,6 +611,7 @@ class TestFusedBackwardE2EFiniteDifference:
             device=d['device'], dtype=d['dtype'],
             neumann_terms=3, use_pruning=False,
             pibar_mode='uniform',
+            ancestors_T=d['ancestors_T'],
         )
 
         # Use all-ones direction (large signal) instead of random (which partially cancels).
