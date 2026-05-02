@@ -31,6 +31,8 @@ def _wave_backward_uniform_kernel(
     sp_child1_ptr, sp_child2_ptr,
     # Leaf term [W, S]
     leaf_term_ptr,
+    leaf_species_ptr,
+    leaf_logp_ptr,
     # Outputs
     v_k_ptr,          # [W, S] — Neumann-solved adjoint
     # Per-element param grad contributions [W, S] each — reduced by caller
@@ -48,6 +50,7 @@ def _wave_backward_uniform_kernel(
     stride: tl.constexpr,
     BLOCK_S: tl.constexpr,
     NEUMANN_TERMS: tl.constexpr,
+    USE_LEAF_INDEX: tl.constexpr,
     DTYPE: tl.constexpr,
 ):
     """Fused backward kernel for uniform Pibar mode.
@@ -136,7 +139,12 @@ def _wave_backward_uniform_kernel(
         t2 = pibar_w + e_val
         t3 = sl1_c + pi_s1
         t4 = sl2_c + pi_s2
-        t5 = tl.load(leaf_term_ptr + off, mask=mask, other=-1e30)
+        if USE_LEAF_INDEX:
+            leaf_species = tl.load(leaf_species_ptr + ws + w)
+            leaf_logp = tl.load(leaf_logp_ptr + s_offs, mask=mask, other=-1e30)
+            t5 = tl.where(mask & (leaf_species == s_offs), leaf_logp, NEG_LARGE)
+        else:
+            t5 = tl.load(leaf_term_ptr + off, mask=mask, other=-1e30)
 
         # Logsumexp over 6 terms → DTS_L
         m = tl.maximum(t0, t1)
@@ -335,7 +343,12 @@ def _wave_backward_uniform_kernel(
         c2_valid = c2 < S
         pi_s1 = tl.load(Pi_star_ptr + pi_base + c1, mask=mask & c1_valid, other=-1e30)
         pi_s2 = tl.load(Pi_star_ptr + pi_base + c2, mask=mask & c2_valid, other=-1e30)
-        t5 = tl.load(leaf_term_ptr + off, mask=mask, other=-1e30)
+        if USE_LEAF_INDEX:
+            leaf_species = tl.load(leaf_species_ptr + ws + w)
+            leaf_logp = tl.load(leaf_logp_ptr + s_offs, mask=mask, other=-1e30)
+            t5 = tl.where(mask & (leaf_species == s_offs), leaf_logp, -1e30)
+        else:
+            t5 = tl.load(leaf_term_ptr + off, mask=mask, other=-1e30)
 
         # Recompute DTS_L terms and softmax weights
         t0 = dl_c + pi_w
@@ -389,6 +402,8 @@ def wave_backward_uniform_fused(
     mt_squeezed, DL_const, Ebar, E, SL1_const, SL2_const,
     sp_child1, sp_child2, leaf_term_wt,
     neumann_terms=3,
+    leaf_species_idx=None,
+    leaf_logp=None,
 ):
     """Fused backward: precompute + Neumann + param VJP in one kernel per wave.
 
@@ -404,6 +419,8 @@ def wave_backward_uniform_fused(
         sp_child1, sp_child2: [S] long
         leaf_term_wt: [W, S]
         neumann_terms: int
+        leaf_species_idx: optional [C] row -> species leaf index, -1 for non-leaves
+        leaf_logp: optional [S] log_pS values used with leaf_species_idx
 
     Returns:
         v_k: [W, S] Neumann-solved adjoint
@@ -422,6 +439,13 @@ def wave_backward_uniform_fused(
     spec_buf = torch.zeros((W, S), device=device, dtype=dtype)
 
     has_splits = dts_r is not None
+    use_leaf_index = leaf_species_idx is not None and leaf_logp is not None
+    if leaf_term_wt is None:
+        if not use_leaf_index:
+            raise ValueError("leaf_term_wt is required when leaf_species_idx/leaf_logp are not provided")
+        leaf_term_wt = leaf_logp
+    leaf_species_arg = leaf_species_idx if use_leaf_index else sp_child1
+    leaf_logp_arg = leaf_logp if use_leaf_index else leaf_term_wt
 
     BLOCK_S = min(256, triton.next_power_of_2(S))
 
@@ -434,11 +458,14 @@ def wave_backward_uniform_fused(
         mt_squeezed, DL_const, Ebar, E, SL1_const, SL2_const,
         sp_child1, sp_child2,
         leaf_term_wt,
+        leaf_species_arg,
+        leaf_logp_arg,
         v_k,
         aw0, aw1, aw2, aw345, aw3, aw4,
         spec_buf,
         ws, S, S, BLOCK_S,
         neumann_terms,
+        USE_LEAF_INDEX=bool(use_leaf_index),
         DTYPE=_tl_float_dtype(dtype),
     )
 

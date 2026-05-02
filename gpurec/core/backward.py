@@ -637,6 +637,22 @@ def Pi_wave_backward(
 
     leaf_row_index = wave_layout['leaf_row_index']
     leaf_col_index = wave_layout['leaf_col_index']
+    leaf_species_index = wave_layout.get('leaf_species_index')
+
+    use_uniform_leaf_index = bool(
+        os.environ.get("GPUREC_BACKWARD_LEAF_INDEX", "1") != "0"
+        and _auto_wrapped
+        and pibar_mode == 'uniform'
+        and device.type == 'cuda'
+        and leaf_species_index is not None
+    )
+    uniform_leaf_logp = None
+    if use_uniform_leaf_index:
+        uniform_leaf_logp = (
+            log_pS_shared.expand(S).contiguous()
+            if log_pS_shared.ndim == 0
+            else log_pS_shared.contiguous()
+        )
 
     def _get_leaf_mask(ws, we):
         W = we - ws
@@ -696,7 +712,17 @@ def Pi_wave_backward(
         n_clades_skipped += (W - n_active)
 
         Pi_W_star = Pi_star_wave[ws:we].detach()
-        leaf_wt = _get_leaf_wt(ws, we)
+
+        use_fused = (
+            fused_uniform_backward_enabled
+            and _HAS_FUSED_BACKWARD
+            and G == 1
+            and pibar_mode == 'uniform'
+            and dtype in (torch.float32, torch.float64)
+            and device.type == 'cuda'
+            and S > 256
+        )
+        leaf_wt = None if (use_fused and use_uniform_leaf_index) else _get_leaf_wt(ws, we)
 
         if meta['has_splits']:
             reduce_idx = meta['reduce_idx']
@@ -743,16 +769,6 @@ def Pi_wave_backward(
             active_idx = None
             rhs_active = rhs_k
 
-        use_fused = (
-            fused_uniform_backward_enabled
-            and _HAS_FUSED_BACKWARD
-            and G == 1
-            and pibar_mode == 'uniform'
-            and dtype in (torch.float32, torch.float64)
-            and device.type == 'cuda'
-            and S > 256
-        )
-
         # Per-wave family indices for scatter accumulation.
         fi_w = family_idx[ws:we]
         fi_expand = fi_w.unsqueeze(1).expand(W, S)
@@ -771,6 +787,8 @@ def Pi_wave_backward(
                 mt_w, DL_w, Ebar_w, E_w, SL1_w, SL2_w,
                 sp_child1, sp_child2, leaf_wt,
                 neumann_terms=neumann_terms,
+                leaf_species_idx=leaf_species_index if use_uniform_leaf_index else None,
+                leaf_logp=uniform_leaf_logp if use_uniform_leaf_index else None,
             )
 
             _scatter_accum(grad_log_pD, aw0)
