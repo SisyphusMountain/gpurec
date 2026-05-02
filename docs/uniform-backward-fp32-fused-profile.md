@@ -90,8 +90,9 @@ host/device synchronization.
 
 ## Optimization Update: Tested Proposals
 
-After this profile, six low-risk changes were implemented in the fused uniform
-backward path:
+After this profile, six production changes were implemented in the fused
+uniform backward path. One additional Bottleneck 1 experiment was implemented
+behind an environment flag and left disabled because it was slower.
 
 | Commit | Change | Main effect |
 |---|---|---|
@@ -220,6 +221,9 @@ used about `2.451 GB` DRAM reads and `1.602 GB` DRAM writes; the no-split
 shortcut used `2.615 GB` reads and `1.632 GB` writes. In other words, reading
 the stored scratch weights was less cache-friendly than recomputing the final
 softmax terms, so the shortcut increased DRAM traffic and was left disabled.
+After disabling it, the default path rechecked at `61.106 ms` for 10 families
+and `180.791 ms` for 50 families, so the recorded experiment does not affect
+production behavior unless `GPUREC_FAST_NOSPLIT_PARAM_ACCUM=1` is set.
 
 ## Nsight Systems breakdown
 
@@ -369,36 +373,83 @@ entry is finite, but the current kernel reads `leaf_term_wt` for every species
 twice (`wave_backward.py:139` and `wave_backward.py:338`), and Python builds it
 as a dense full tensor in `backward.py:641-647`.
 
-### Next work
+### Progress on the four proposals
 
-1. Replace dense `leaf_term_wt` with a compact per-row leaf species index.
-   The kernel can compute:
+| Proposal | Status | Benchmark result | Decision |
+|---|---|---:|---|
+| 1. Compact leaf species index instead of dense `leaf_term_wt` | Implemented in `a06aac1` | 10 families: `73.252 ms` to `68.373 ms`; 50 families: `230.795 ms` to `225.373 ms`; 50-family peak memory: `16.806 GB` to `16.161 GB` | Keep |
+| 2. Avoid full parameter-gradient contribution tensors | Implemented in `dcda611` after direct reductions in `8077a50` | 10 families: `65.428 ms` to `60.614 ms`; 50 families: `205.489 ms` to `181.570 ms`; 50-family peak memory: `16.162 GB` to `14.865 GB` | Keep |
+| 3. Recompute self-loop weights instead of storing/reloading scratch | Not yet tested as an independent kernel redesign | No benchmark yet | Still open |
+| 4. Specialize the no-split leaf wave | Partially tested with the opt-in final-VJP shortcut in `32001a5` | Shortcut: 10 families `61.828 ms`, 50 families `184.176 ms`; default recheck: 10 families `61.106 ms`, 50 families `180.791 ms` | Partial experiment rejected; full specialization still open |
 
-   ```text
-   t5 = log_pS[s] if leaf_species_for_row[w] == s else -inf
-   ```
+Proposal 1 replaced the dense leaf tensor with `leaf_species_idx[C]` plus
+`leaf_logp[S]`. Instead of reading a mostly `-inf` `[W, S]` `leaf_term_wt`
+tile, the kernel computes the leaf term locally:
 
-   This removes dense `[W, S]` allocation/fill and two global reads per element
-   in the self-loop kernel.
+```text
+t5 = leaf_logp[s] if leaf_species_idx[row] == s else -inf
+```
 
-2. Stop writing full parameter-gradient contribution tensors when possible.
-   The kernel currently writes six `[W, S]` arrays and Python later reduces
-   them with scatter/reduction kernels. For global mode, accumulate partial
-   reductions inside the Triton kernel into a compact per-wave or per-block
-   buffer, then reduce that small buffer. This removes:
+This removes dense allocation/fill work in Python and removes two large
+leaf-term global reads from the self-loop kernel. The measured gain was modest
+but robust because it only affects the leaf-like rows; it also reduced
+50-family peak memory by about `645 MB`.
 
-   - final `aw*` stores from `_wave_backward_uniform_kernel`
-   - PyTorch scatter/reduce kernels in `_scatter_accum`
-   - `aw0 + aw2` and `aw3 + aw4 + aw5` temporary add kernels
+Proposal 2 moved global-mode parameter-gradient accumulation into
+`_wave_backward_uniform_kernel`. Before this change, the kernel wrote six full
+`[W, S]` contribution tensors and Python reduced them later with PyTorch
+scatter/reduction/add kernels. The current default uses Triton RED operations
+to accumulate:
 
-3. Consider recomputing some self-loop weights instead of storing them in
-   `aw*` scratch. The kernel is memory-bound, not compute-bound. Recomputing
-   exp/log weights in the Neumann passes may be cheaper than storing and
-   reloading six full arrays, especially on the large leaf wave.
+```text
+grad_log_pD += sum(term0)
+grad_log_pS += sum(term3 + term4 + leaf)
+grad_E      += term0 + term2
+grad_Ebar   += term1
+grad_E_s1   += term4
+grad_E_s2   += term3
+grad_mt     += term2
+```
 
-4. Specialize the no-split leaf wave. The leaf wave has `has_splits=False` and
-   sparse leaf observations. It is also the largest wave. A specialized path can
-   avoid `dts_r` logic, dense leaf terms, and unnecessary softmax branches.
+The RED operations are visible in NCU, but they are cheaper than writing and
+then rereading full contribution tensors. On the optimized largest 10-family
+leaf wave, total DRAM traffic dropped from `5.869 GB` to `4.053 GB`, and the
+launch time dropped from `6.503 ms` to `5.128 ms`.
+
+Proposal 3 remains the main untested Bottleneck 1 idea. The current kernel
+still stores softmax/Pibar/child weights in the `aw*` scratch buffers and reloads
+them during the Neumann passes. Since the kernel is DRAM-bound and compute
+throughput is low, a version that recomputes some of these weights could win if
+it removes enough global traffic without increasing register pressure or
+instruction count too much. This needs a separate kernel experiment; the
+no-split final-VJP shortcut below does not answer this question because it only
+changed the final parameter pass.
+
+Proposal 4 was only partially tested. The implemented shortcut used the fact
+that no-split waves have `w_L=1`, so the final parameter VJP can recover:
+
+```text
+leaf_wt = 1 - diag_wt - pibar_wt - sl1_wt - sl2_wt
+```
+
+and split the combined diagonal weight between the D and Ebar terms using:
+
+```text
+D_frac = exp2(DL_const) / (exp2(DL_const) + exp2(Ebar))
+```
+
+This algebra was checked by an explorer agent and validated with
+`tests/gradients/test_autograd_bridge.py` in both default and opt-in modes.
+However, NCU showed that it increased the representative leaf-wave DRAM traffic
+from `4.053 GB` to `4.246 GB`. The reason is that the shortcut replaces some
+local recomputation with extra global scratch reads, and the access pattern is
+worse for this already memory-bound kernel. Therefore the shortcut is disabled
+by default behind `GPUREC_FAST_NOSPLIT_PARAM_ACCUM=1`.
+
+A full no-split leaf-wave specialization is still distinct from this rejected
+shortcut. It would need a separate kernel entry point or constexpr path that
+removes `dts_r` handling, eliminates dense-leaf logic, and revisits the Neumann
+scratch layout across the whole wave, not only the final VJP pass.
 
 ## Bottleneck 2: CPU-driven pruning and dynamic compaction
 
