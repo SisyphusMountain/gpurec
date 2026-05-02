@@ -44,6 +44,7 @@ def _wave_backward_uniform_kernel(
     aw4_ptr,          # grad contribution to E_s1 (from term 4)
     # Scratch buffer for speciation scatter [W, S]
     spec_buf_ptr,
+    term_buf_ptr,
     # Dimensions
     ws,               # wave start offset into [C, S]
     S: tl.constexpr,
@@ -216,8 +217,8 @@ def _wave_backward_uniform_kernel(
         rhs_val = tl.load(rhs_ptr + out_base + s_offs, mask=mask, other=0.0)
         tl.store(v_k_ptr + out_base + s_offs, rhs_val, mask=mask)
 
-    # Buffer ping-pong: even iterations read rhs_ptr, write spec_buf;
-    # odd iterations read spec_buf, write rhs_ptr. Output buffer is zeroed
+    # Buffer ping-pong: iteration 0 reads rhs_ptr, even iterations write
+    # spec_buf, and odd iterations write term_buf. Output buffer is zeroed
     # at the start of each iteration to avoid stale data at non-child positions.
 
     for _n in range(NEUMANN_TERMS):
@@ -231,7 +232,7 @@ def _wave_backward_uniform_kernel(
                 tl.store(spec_buf_ptr + out_base + s_offs,
                          tl.zeros(s_offs.shape, dtype=DTYPE), mask=mask)
             else:
-                tl.store(rhs_ptr + out_base + s_offs,
+                tl.store(term_buf_ptr + out_base + s_offs,
                          tl.zeros(s_offs.shape, dtype=DTYPE), mask=mask)
 
         # --- Sub-pass A: accumulate A = sum_s(term * pibar_wt * inv_denom) ---
@@ -249,7 +250,7 @@ def _wave_backward_uniform_kernel(
             elif _n % 2 == 1:
                 term_val = tl.load(spec_buf_ptr + off, mask=mask, other=0.0)
             else:
-                term_val = tl.load(rhs_ptr + off, mask=mask, other=0.0)
+                term_val = tl.load(term_buf_ptr + off, mask=mask, other=0.0)
 
             pibar_wt = tl.load(aw1_ptr + off, mask=mask, other=0.0)
             inv_denom = tl.load(aw2_ptr + off, mask=mask, other=0.0)
@@ -274,8 +275,8 @@ def _wave_backward_uniform_kernel(
                 tl.store(spec_buf_ptr + out_base + c1, src1, mask=c1_valid)
                 tl.store(spec_buf_ptr + out_base + c2, src2, mask=c2_valid)
             else:
-                tl.store(rhs_ptr + out_base + c1, src1, mask=c1_valid)
-                tl.store(rhs_ptr + out_base + c2, src2, mask=c2_valid)
+                tl.store(term_buf_ptr + out_base + c1, src1, mask=c1_valid)
+                tl.store(term_buf_ptr + out_base + c2, src2, mask=c2_valid)
 
         # --- Sub-pass B: compute J^T result using A ---
         for s_start in range(0, S, BLOCK_S):
@@ -289,7 +290,7 @@ def _wave_backward_uniform_kernel(
             elif _n % 2 == 1:
                 term_val = tl.load(spec_buf_ptr + off, mask=mask, other=0.0)
             else:
-                term_val = tl.load(rhs_ptr + off, mask=mask, other=0.0)
+                term_val = tl.load(term_buf_ptr + off, mask=mask, other=0.0)
 
             diag_wt = tl.load(aw0_ptr + off, mask=mask, other=0.0)
             pibar_wt = tl.load(aw1_ptr + off, mask=mask, other=0.0)
@@ -303,14 +304,14 @@ def _wave_backward_uniform_kernel(
             if _n % 2 == 0:
                 spec_val = tl.load(spec_buf_ptr + off, mask=mask, other=0.0)
             else:
-                spec_val = tl.load(rhs_ptr + off, mask=mask, other=0.0)
+                spec_val = tl.load(term_buf_ptr + off, mask=mask, other=0.0)
             result = result + spec_val
 
             # Store result to output buffer
             if _n % 2 == 0:
                 tl.store(spec_buf_ptr + off, result, mask=mask)
             else:
-                tl.store(rhs_ptr + off, result, mask=mask)
+                tl.store(term_buf_ptr + off, result, mask=mask)
 
             # Accumulate into v_k
             v_k_val = tl.load(v_k_ptr + off, mask=mask, other=0.0)
@@ -414,7 +415,7 @@ def wave_backward_uniform_fused(
         W: wave size
         S: number of species
         dts_r: [W, S] or None
-        rhs: [W, S] incoming adjoint (WILL BE OVERWRITTEN as scratch)
+        rhs: [W, S] incoming adjoint
         mt_squeezed, DL_const, Ebar, E, SL1_const, SL2_const: [S]
         sp_child1, sp_child2: [S] long
         leaf_term_wt: [W, S]
@@ -437,6 +438,7 @@ def wave_backward_uniform_fused(
     aw3 = torch.empty((W, S), device=device, dtype=dtype)
     aw4 = torch.empty((W, S), device=device, dtype=dtype)
     spec_buf = torch.zeros((W, S), device=device, dtype=dtype)
+    term_buf = torch.empty((W, S), device=device, dtype=dtype)
 
     has_splits = dts_r is not None
     use_leaf_index = leaf_species_idx is not None and leaf_logp is not None
@@ -463,6 +465,7 @@ def wave_backward_uniform_fused(
         v_k,
         aw0, aw1, aw2, aw345, aw3, aw4,
         spec_buf,
+        term_buf,
         ws, S, S, BLOCK_S,
         neumann_terms,
         USE_LEAF_INDEX=bool(use_leaf_index),

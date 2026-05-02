@@ -783,7 +783,7 @@ def Pi_wave_backward(
             # G=1: extract shared [S] constants for the fused kernel.
             v_k, aw0, aw1, aw2, aw345, aw3, aw4 = wave_backward_uniform_fused(
                 Pi_star_wave, Pibar_star_wave, ws, W, S,
-                dts_r, rhs_k.clone(),
+                dts_r, rhs_k,
                 mt_w, DL_w, Ebar_w, E_w, SL1_w, SL2_w,
                 sp_child1, sp_child2, leaf_wt,
                 neumann_terms=neumann_terms,
