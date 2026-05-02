@@ -437,7 +437,7 @@ def wave_backward_uniform_fused(
     aw345 = torch.empty((W, S), device=device, dtype=dtype)
     aw3 = torch.empty((W, S), device=device, dtype=dtype)
     aw4 = torch.empty((W, S), device=device, dtype=dtype)
-    spec_buf = torch.zeros((W, S), device=device, dtype=dtype)
+    spec_buf = torch.empty((W, S), device=device, dtype=dtype)
     term_buf = torch.empty((W, S), device=device, dtype=dtype)
 
     has_splits = dts_r is not None
