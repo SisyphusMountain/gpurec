@@ -648,10 +648,18 @@ def Pi_wave_backward(
     )
     uniform_leaf_logp = None
     if use_uniform_leaf_index:
+        use_scalar_leaf_logp = (
+            os.environ.get("GPUREC_SCALAR_LEAF_LOGP", "0") != "0"
+            and log_pS_shared.ndim == 0
+        )
         uniform_leaf_logp = (
-            log_pS_shared.expand(S).contiguous()
-            if log_pS_shared.ndim == 0
-            else log_pS_shared.contiguous()
+            log_pS_shared.contiguous()
+            if use_scalar_leaf_logp
+            else (
+                log_pS_shared.expand(S).contiguous()
+                if log_pS_shared.ndim == 0
+                else log_pS_shared.contiguous()
+            )
         )
     fused_wave_param_accum_enabled = (
         os.environ.get("GPUREC_FUSED_WAVE_PARAM_ACCUM", "1") != "0"

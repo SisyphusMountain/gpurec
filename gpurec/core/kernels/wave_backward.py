@@ -64,6 +64,10 @@ def _wave_backward_uniform_kernel(
     USE_LEAF_INDEX: tl.constexpr,
     ACCUM_PARAM_GRADS: tl.constexpr,
     FAST_NOSPLIT_PARAM_GRADS: tl.constexpr,
+    COMPACT_PIBAR_SCRATCH: tl.constexpr,
+    RECOMPUTE_PIBAR_DENOM: tl.constexpr,
+    LEAF_HIT_ONLY_LOGP: tl.constexpr,
+    LEAF_LOGP_SCALAR: tl.constexpr,
     DTYPE: tl.constexpr,
 ):
     """Fused backward kernel for uniform Pibar mode.
@@ -154,8 +158,15 @@ def _wave_backward_uniform_kernel(
         t4 = sl2_c + pi_s2
         if USE_LEAF_INDEX:
             leaf_species = tl.load(leaf_species_ptr + ws + w)
-            leaf_logp = tl.load(leaf_logp_ptr + s_offs, mask=mask, other=-1e30)
-            t5 = tl.where(mask & (leaf_species == s_offs), leaf_logp, NEG_LARGE)
+            leaf_hit = mask & (leaf_species == s_offs)
+            if LEAF_LOGP_SCALAR:
+                leaf_logp = tl.load(leaf_logp_ptr)
+                t5 = tl.where(leaf_hit, leaf_logp, NEG_LARGE)
+            elif LEAF_HIT_ONLY_LOGP:
+                t5 = tl.load(leaf_logp_ptr + s_offs, mask=leaf_hit, other=-1e30)
+            else:
+                leaf_logp = tl.load(leaf_logp_ptr + s_offs, mask=mask, other=-1e30)
+                t5 = tl.where(leaf_hit, leaf_logp, NEG_LARGE)
         else:
             t5 = tl.load(leaf_term_ptr + off, mask=mask, other=-1e30)
 
@@ -207,9 +218,13 @@ def _wave_backward_uniform_kernel(
         sl2_wt = w_L * wt4                 # SL2 speciation weight
 
         tl.store(aw0_ptr + off, diag_wt, mask=mask)
-        tl.store(aw1_ptr + off, pibar_wt, mask=mask)
-        tl.store(aw2_ptr + off, inv_denom, mask=mask)
-        tl.store(aw3_ptr + off, p_prime, mask=mask)
+        if COMPACT_PIBAR_SCRATCH:
+            tl.store(aw1_ptr + off, pibar_wt * inv_denom, mask=mask)
+        else:
+            tl.store(aw1_ptr + off, pibar_wt, mask=mask)
+        if (not RECOMPUTE_PIBAR_DENOM) and (not COMPACT_PIBAR_SCRATCH):
+            tl.store(aw2_ptr + off, inv_denom, mask=mask)
+            tl.store(aw3_ptr + off, p_prime, mask=mask)
         tl.store(aw4_ptr + off, sl1_wt, mask=mask)
         tl.store(aw345_ptr + off, sl2_wt, mask=mask)
 
@@ -264,10 +279,21 @@ def _wave_backward_uniform_kernel(
             else:
                 term_val = tl.load(term_buf_ptr + off, mask=mask, other=0.0)
 
-            pibar_wt = tl.load(aw1_ptr + off, mask=mask, other=0.0)
-            inv_denom = tl.load(aw2_ptr + off, mask=mask, other=0.0)
+            if COMPACT_PIBAR_SCRATCH:
+                pibar_u_coeff = tl.load(aw1_ptr + off, mask=mask, other=0.0)
+                u_d = term_val * pibar_u_coeff
+            else:
+                pibar_wt = tl.load(aw1_ptr + off, mask=mask, other=0.0)
+                if RECOMPUTE_PIBAR_DENOM:
+                    pi_w = tl.load(Pi_star_ptr + pi_base + s_offs, mask=mask, other=-1e30)
+                    p_prime = tl.exp2(pi_w - row_max)
+                    denom = row_sum - p_prime
+                    inv_denom = tl.where(denom > 0, 1.0 / denom, tl.zeros_like(denom))
+                else:
+                    inv_denom = tl.load(aw2_ptr + off, mask=mask, other=0.0)
 
-            u_d = term_val * pibar_wt * inv_denom
+                u_d = term_val * pibar_wt * inv_denom
+
             A_acc += tl.sum(u_d, axis=0)
 
             # Speciation scatter: write term * sl_wt to child index
@@ -305,11 +331,23 @@ def _wave_backward_uniform_kernel(
                 term_val = tl.load(term_buf_ptr + off, mask=mask, other=0.0)
 
             diag_wt = tl.load(aw0_ptr + off, mask=mask, other=0.0)
-            pibar_wt = tl.load(aw1_ptr + off, mask=mask, other=0.0)
-            inv_denom = tl.load(aw2_ptr + off, mask=mask, other=0.0)
-            p_prime = tl.load(aw3_ptr + off, mask=mask, other=0.0)
+            if COMPACT_PIBAR_SCRATCH:
+                pibar_u_coeff = tl.load(aw1_ptr + off, mask=mask, other=0.0)
+                pi_w = tl.load(Pi_star_ptr + pi_base + s_offs, mask=mask, other=-1e30)
+                p_prime = tl.exp2(pi_w - row_max)
+                u_d = term_val * pibar_u_coeff
+            else:
+                pibar_wt = tl.load(aw1_ptr + off, mask=mask, other=0.0)
+                if RECOMPUTE_PIBAR_DENOM:
+                    pi_w = tl.load(Pi_star_ptr + pi_base + s_offs, mask=mask, other=-1e30)
+                    p_prime = tl.exp2(pi_w - row_max)
+                    denom = row_sum - p_prime
+                    inv_denom = tl.where(denom > 0, 1.0 / denom, tl.zeros_like(denom))
+                else:
+                    inv_denom = tl.load(aw2_ptr + off, mask=mask, other=0.0)
+                    p_prime = tl.load(aw3_ptr + off, mask=mask, other=0.0)
 
-            u_d = term_val * pibar_wt * inv_denom
+                u_d = term_val * pibar_wt * inv_denom
             result = term_val * diag_wt + p_prime * (A_acc - u_d)
 
             # Add speciation contribution (written to output buffer in sub-pass A)
@@ -341,7 +379,7 @@ def _wave_backward_uniform_kernel(
 
         v_k_val = tl.load(v_k_ptr + off, mask=mask, other=0.0)
 
-        if ACCUM_PARAM_GRADS and FAST_NOSPLIT_PARAM_GRADS and not has_splits:
+        if ACCUM_PARAM_GRADS and FAST_NOSPLIT_PARAM_GRADS and not has_splits and not COMPACT_PIBAR_SCRATCH:
             diag_wt = tl.load(aw0_ptr + off, mask=mask, other=0.0)
             pibar_wt = tl.load(aw1_ptr + off, mask=mask, other=0.0)
             sl1_wt = tl.load(aw4_ptr + off, mask=mask, other=0.0)
@@ -387,8 +425,15 @@ def _wave_backward_uniform_kernel(
             pi_s2 = tl.load(Pi_star_ptr + pi_base + c2, mask=mask & c2_valid, other=-1e30)
             if USE_LEAF_INDEX:
                 leaf_species = tl.load(leaf_species_ptr + ws + w)
-                leaf_logp = tl.load(leaf_logp_ptr + s_offs, mask=mask, other=-1e30)
-                t5 = tl.where(mask & (leaf_species == s_offs), leaf_logp, -1e30)
+                leaf_hit = mask & (leaf_species == s_offs)
+                if LEAF_LOGP_SCALAR:
+                    leaf_logp = tl.load(leaf_logp_ptr)
+                    t5 = tl.where(leaf_hit, leaf_logp, -1e30)
+                elif LEAF_HIT_ONLY_LOGP:
+                    t5 = tl.load(leaf_logp_ptr + s_offs, mask=leaf_hit, other=-1e30)
+                else:
+                    leaf_logp = tl.load(leaf_logp_ptr + s_offs, mask=mask, other=-1e30)
+                    t5 = tl.where(leaf_hit, leaf_logp, -1e30)
             else:
                 t5 = tl.load(leaf_term_ptr + off, mask=mask, other=-1e30)
 
@@ -487,22 +532,55 @@ def wave_backward_uniform_fused(
     device = Pi_star.device
     dtype = Pi_star.dtype
 
-    v_k = torch.empty((W, S), device=device, dtype=dtype)
     accum_enabled = accum_param_grads is not None
-    aw0 = torch.empty((W, S), device=device, dtype=dtype)
-    aw1 = torch.empty((W, S), device=device, dtype=dtype)
-    aw2 = torch.empty((W, S), device=device, dtype=dtype)
-    aw345 = torch.empty((W, S), device=device, dtype=dtype)
-    aw3 = torch.empty((W, S), device=device, dtype=dtype)
-    aw4 = torch.empty((W, S), device=device, dtype=dtype)
-    spec_buf = torch.empty((W, S), device=device, dtype=dtype)
-    term_buf = torch.empty((W, S), device=device, dtype=dtype)
-
     has_splits = dts_r is not None
     use_leaf_index = leaf_species_idx is not None and leaf_logp is not None
     fast_nosplit_param_grads = (
         os.environ.get("GPUREC_FAST_NOSPLIT_PARAM_ACCUM", "0") != "0"
     )
+    recompute_pibar_denom = (
+        os.environ.get("GPUREC_RECOMPUTE_PIBAR_DENOM", "0") != "0"
+    )
+    compact_pibar_scratch_mode = (
+        os.environ.get("GPUREC_COMPACT_PIBAR_SCRATCH", "1")
+        .strip()
+        .lower()
+    )
+    compact_pibar_scratch = compact_pibar_scratch_mode not in (
+        "0", "false", "no", "off", ""
+    )
+    if compact_pibar_scratch_mode in ("leaf", "nosplit", "no_split"):
+        compact_pibar_scratch = not has_splits
+    if compact_pibar_scratch:
+        recompute_pibar_denom = False
+    leaf_hit_only_logp = (
+        os.environ.get("GPUREC_LEAF_HIT_ONLY_LOGP", "0") != "0"
+    )
+    leaf_logp_scalar = bool(
+        use_leaf_index
+        and leaf_logp is not None
+        and leaf_logp.numel() == 1
+    )
+
+    v_k = torch.empty((W, S), device=device, dtype=dtype)
+    aw0 = torch.empty((W, S), device=device, dtype=dtype)
+    aw1 = torch.empty((W, S), device=device, dtype=dtype)
+    need_pibar_denom_scratch = not (
+        accum_enabled and (compact_pibar_scratch or recompute_pibar_denom)
+    )
+    aw2 = (
+        torch.empty((W, S), device=device, dtype=dtype)
+        if need_pibar_denom_scratch else aw0
+    )
+    aw345 = torch.empty((W, S), device=device, dtype=dtype)
+    aw3 = (
+        torch.empty((W, S), device=device, dtype=dtype)
+        if need_pibar_denom_scratch else aw0
+    )
+    aw4 = torch.empty((W, S), device=device, dtype=dtype)
+    spec_buf = torch.empty((W, S), device=device, dtype=dtype)
+    term_buf = torch.empty((W, S), device=device, dtype=dtype)
+
     if leaf_term_wt is None:
         if not use_leaf_index:
             raise ValueError("leaf_term_wt is required when leaf_species_idx/leaf_logp are not provided")
@@ -552,6 +630,10 @@ def wave_backward_uniform_fused(
         USE_LEAF_INDEX=bool(use_leaf_index),
         ACCUM_PARAM_GRADS=bool(accum_enabled),
         FAST_NOSPLIT_PARAM_GRADS=bool(fast_nosplit_param_grads),
+        COMPACT_PIBAR_SCRATCH=bool(compact_pibar_scratch),
+        RECOMPUTE_PIBAR_DENOM=bool(recompute_pibar_denom),
+        LEAF_HIT_ONLY_LOGP=bool(leaf_hit_only_logp),
+        LEAF_LOGP_SCALAR=bool(leaf_logp_scalar),
         DTYPE=_tl_float_dtype(dtype),
     )
 
