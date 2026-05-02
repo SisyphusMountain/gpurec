@@ -67,7 +67,6 @@ class GeneDataset(Dataset):
             raw_all = ext.preprocess_multiple_families(
                 species_tree_path,
                 families_input,
-                False,
             )
             raw_by_family = raw_all['families']
             self.species_helpers = raw_all['species']
@@ -173,7 +172,6 @@ class GeneDataset(Dataset):
             raw_all = ext.preprocess_multiple_families(
                 species_tree_path,
                 missing,
-                False,
             )
             if species_helpers is None:
                 species_helpers = raw_all["species"]
@@ -187,7 +185,6 @@ class GeneDataset(Dataset):
             raw_species = ext.preprocess_multiple_families(
                 species_tree_path,
                 {},
-                False,
             )
             species_helpers = raw_species["species"]
             torch.save(species_helpers, species_cache)

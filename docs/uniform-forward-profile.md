@@ -439,7 +439,7 @@ still spent nearly all of its time computing an unused inclusion DAG.
 
 | Stage | Time |
 | --- | ---: |
-| C++ `preprocess_multiple_families(..., include_details=False)` | 3.929 s |
+| C++ `preprocess_multiple_families(...)` light default | 3.929 s |
 | Python family normalization | 0.006 s |
 | `collate_gene_families` | 0.005 s |
 | Python wave scheduling/merge | 0.003 s |
@@ -461,12 +461,13 @@ The hotspot was the O(C^2) subset test in the inclusion-DAG construction inside
 `build_ccp_arrays`. It is now guarded by the same light/full flag that controls
 whether those debug fields are returned.
 
-The current construction path now uses `preprocess_multiple_families` by
-default and asks C++ for a light likelihood-only output (`include_details=False`)
-that skips large unused CCP detail structures (`clade_leaves`,
-`clade_leaf_labels`, `clade_is_leaf`, and inclusion-DAG debug fields), and no
-longer computes the inclusion DAG in that light mode. The old single-family
-preprocess path is still available for debugging with
+The current construction path now uses `preprocess_multiple_families`, whose
+default output is the light likelihood-only payload. Full debug/detail output is
+still available with `include_details=True`. The light payload skips large
+unused CCP detail structures (`clade_leaves`, `clade_leaf_labels`,
+`clade_is_leaf`, and inclusion-DAG debug fields), and no longer computes the
+inclusion DAG. The old single-family preprocess path is still available for
+debugging with
 `GPUREC_PREPROCESS_MODE=single`. `GeneReconModel.from_trees` also accepts
 `preprocess_cache_dir=...`; cache keys include the species tree content hash,
 gene tree content hash, and a format version.

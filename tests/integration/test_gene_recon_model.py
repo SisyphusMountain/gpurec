@@ -184,6 +184,27 @@ def test_preprocess_cache_matches_single_path(trees, tmp_path, monkeypatch):
     assert list(tmp_path.glob("species-*.pt"))
 
 
+def test_multi_family_preprocess_defaults_to_light(trees):
+    from gpurec.core.preprocess_cpp import _load_extension
+
+    sp, genes = trees
+    ext = _load_extension()
+    families = {"f0": [genes[0]]}
+
+    default_raw = ext.preprocess_multiple_families(sp, families)
+    full_raw = ext.preprocess_multiple_families(sp, families, True)
+
+    default_ccp = default_raw["families"]["f0"]["ccp"]
+    full_ccp = full_raw["families"]["f0"]["ccp"]
+
+    assert "inclusion_children" not in default_ccp
+    assert "inclusion_parents" not in default_ccp
+    assert "ubiquitous_clade_id" not in default_ccp
+    assert "inclusion_children" in full_ccp
+    assert "inclusion_parents" in full_ccp
+    assert "ubiquitous_clade_id" in full_ccp
+
+
 # ──────────────────────────────────────────────────────────────────────
 # 3. L-BFGS closure pattern
 # ──────────────────────────────────────────────────────────────────────

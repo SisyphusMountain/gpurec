@@ -1213,12 +1213,15 @@ compute_clade_waves(const CCPArrays &ccp, size_t C) {
  *
  * @param species_path Path to the species tree
  * @param families Map from family name to vector of gene tree paths for that family
+ * @param include_details Whether to compute and return full debug/detail fields.
+ *                        Defaults to false because likelihood construction only
+ *                        needs the light CCP/scheduler payload.
  * @return Dictionary with shared species data and per-family CCPs
  */
 py::dict preprocess_multiple_families(
     const std::string &species_path,
     const std::map<std::string, std::vector<std::string>> &families,
-    bool include_details = true) {
+    bool include_details = false) {
 
   // Parse species tree once (shared across all families)
   std::unique_ptr<TreeNode> species_root = parse_newick_file(species_path);
@@ -2580,8 +2583,8 @@ PYBIND11_MODULE(preprocess_cpp, m) {
   m.def("preprocess_multiple_families", &preprocess_multiple_families,
         py::arg("species_path"),
         py::arg("families"),
-        py::arg("include_details") = true,
-        "Preprocess multiple gene families with shared species tree");
+        py::arg("include_details") = false,
+        "Preprocess multiple gene families with shared species tree. Defaults to light output; pass include_details=True for full debug fields.");
   m.def("compute_phased_waves", &compute_phased_waves,
         "Three-phase scheduler returning actual wave assignments (single family)");
   m.def("compute_wave_stats", &compute_wave_stats,
