@@ -90,7 +90,7 @@ host/device synchronization.
 
 ## Optimization Update: Leaf Index And RHS Scratch
 
-After this profile, three low-risk changes were implemented in the fused uniform
+After this profile, four low-risk changes were implemented in the fused uniform
 backward path:
 
 | Commit | Change | Main effect |
@@ -98,6 +98,7 @@ backward path:
 | `a06aac1` | Use `leaf_species_index[C]` plus `[S]` `log_pS` in the Triton kernel | Avoids constructing and reading dense `[W,S]` leaf tensors |
 | `ed6b5b7` | Treat `rhs` as read-only and use an internal ping-pong scratch buffer | Removes one full `[W,S]` device-to-device copy per processed wave |
 | `05d7c48` | Allocate `spec_buf` with `empty` instead of `zeros` | Removes redundant scratch zero-fill launches |
+| `8077a50` | Use plain reductions when `G == 1` | Replaces indexed `scatter_add_` with direct reductions for global-mode gradients |
 
 Correctness was checked by comparing the old dense-leaf path
 (`GPUREC_BACKWARD_LEAF_INDEX=0`) with the new leaf-index path and by running the
@@ -120,22 +121,24 @@ Normal backward-only timing, same setup as above:
 | Leaf index only | 68.373 ms | 225.373 ms | 16.161 GB |
 | Leaf index + read-only RHS | 67.984 ms | 218.372 ms | 16.161 GB |
 | Leaf index + read-only RHS + empty scratch | 68.160 ms | 214.755 ms | 16.162 GB |
+| Plus direct global reductions | 65.428 ms | 205.489 ms | 16.162 GB |
 
-The final state is about 7.0% faster on both the 10-family and 50-family
-benchmarks. The larger batch benefits most from the RHS copy and scratch-fill
-changes because it moves much larger wave buffers.
+The final state is about 10.7% faster on the 10-family benchmark and 11.0%
+faster on the 50-family benchmark. The larger batch benefits most from the RHS
+copy, scratch-fill, and direct-reduction changes because it moves much larger
+wave buffers.
 
 Nsight Systems on the optimized 50-family backward interval:
 
 | Metric | Baseline | Optimized |
 |---|---:|---:|
-| Captured backward CUDA time | 244.036 ms | 235.450 ms |
-| GPU kernel time | 197.552 ms | 188.784 ms |
-| GPU memcpy time | 8.274 ms | 5.429 ms |
-| GPU memset time | 0.017 ms | 0.017 ms |
-| GPU active span | 205.842 ms | 194.229 ms |
-| GPU idle/gap span | 37.834 ms | 40.871 ms |
-| Kernel launches | 3,809 | 3,560 |
+| Captured backward CUDA time | 244.036 ms | 219.863 ms |
+| GPU kernel time | 197.552 ms | 176.906 ms |
+| GPU memcpy time | 8.274 ms | 5.451 ms |
+| GPU memset time | 0.017 ms | 0.068 ms |
+| GPU active span | 205.842 ms | 182.425 ms |
+| GPU idle/gap span | 37.834 ms | 37.130 ms |
+| Kernel launches | 3,809 | 3,730 |
 | Copies | 755 | 684 |
 
 The remaining end-to-end profile is still kernel dominated. The top optimized
@@ -143,12 +146,12 @@ kernel totals are:
 
 | Component | Optimized 50-family kernel time |
 |---|---:|
-| `_wave_backward_uniform_kernel` | 56.809 ms |
-| `_uniform_cross_pibar_vjp_tree_kernel` | 39.243 ms |
+| `_wave_backward_uniform_kernel` | 56.835 ms |
+| `_uniform_cross_pibar_vjp_tree_kernel` | 39.232 ms |
 | `_dts_cross_backward_accum_kernel` | 29.388 ms |
-| PyTorch scatter/gather reduce-add | 20.685 ms |
-| `_dts_fused_kernel` | 12.146 ms |
-| PyTorch reductions | 8.652 ms |
+| PyTorch reductions | 17.077 ms |
+| `_dts_fused_kernel` | 12.153 ms |
+| PyTorch add kernels | 4.570 ms |
 
 Nsight Compute on the optimized largest 10-family leaf wave
 (`_wave_backward_uniform_kernel`, `W=16645`, `S=1999`):
@@ -175,10 +178,11 @@ but the launch remains bandwidth limited, so the lower occupancy was not the
 limiting factor.
 
 The next useful work is therefore unchanged in direction: reduce full `[W,S]`
-temporary traffic and residual PyTorch reductions. In particular,
+temporary traffic and residual PyTorch reductions. The direct global-reduction
+shortcut removed the indexed PyTorch scatter kernels from the hot list, but
 `_wave_backward_uniform_kernel` still writes six full contribution tensors that
 are immediately reduced by PyTorch, and the optimized 50-family trace still
-spends about 29 ms in PyTorch scatter/reduction kernels.
+spends about 17 ms in PyTorch reduction kernels.
 
 ## Nsight Systems breakdown
 
