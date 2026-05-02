@@ -392,7 +392,9 @@ CladeData compute_clades_and_splits(
 /**
  * @brief Convert CladeData to sorted CCP arrays for efficient computation
  */
-CCPArrays build_ccp_arrays(const CladeData& clade_data) {
+CCPArrays build_ccp_arrays(
+    const CladeData& clade_data,
+    bool include_inclusion = true) {
   CCPArrays result;
   const size_t C = clade_data.clades.size();
   const size_t N_splits = clade_data.splits.size();
@@ -502,42 +504,44 @@ CCPArrays build_ccp_arrays(const CladeData& clade_data) {
   result.end_rows_ge2 = static_cast<int>(result.ptr[result.stop_reduce_ptr_idx]);
   result.ptr_ge2.assign(result.ptr.begin(), result.ptr.begin() + result.stop_reduce_ptr_idx + 1);
 
-  // Compute clade inclusion DAG
-  // Find ubiquitous clade (contains all leaves, has maximum size)
-  int max_size = 0;
   result.ubiquitous_clade_id = -1;
-  for (size_t i = 0; i < C; ++i) {
-    const Clade& clade = clade_data.clades.get(i);
-    if (clade.size() > max_size) {
-      max_size = clade.size();
-      result.ubiquitous_clade_id = static_cast<int64_t>(i);
-    }
-  }
-
-  // Compute all inclusion relationships (child ⊆ parent)
-  // For clades A and B: A ⊆ B iff (A.bits & B.bits) == A.bits
-  for (size_t i = 0; i < C; ++i) {
-    const Clade& clade_i = clade_data.clades.get(i);
-    const BitVec& bits_i = clade_i.bits();
-
-    for (size_t j = 0; j < C; ++j) {
-      if (i == j) continue;  // Skip self-loops
-
-      const Clade& clade_j = clade_data.clades.get(j);
-      const BitVec& bits_j = clade_j.bits();
-
-      // Check if clade_i ⊆ clade_j (all bits in i are also in j)
-      bool is_subset = true;
-      for (size_t w = 0; w < bits_i.size(); ++w) {
-        if ((bits_i[w] & bits_j[w]) != bits_i[w]) {
-          is_subset = false;
-          break;
-        }
+  if (include_inclusion) {
+    // Compute clade inclusion DAG
+    // Find ubiquitous clade (contains all leaves, has maximum size)
+    int max_size = 0;
+    for (size_t i = 0; i < C; ++i) {
+      const Clade& clade = clade_data.clades.get(i);
+      if (clade.size() > max_size) {
+        max_size = clade.size();
+        result.ubiquitous_clade_id = static_cast<int64_t>(i);
       }
+    }
 
-      if (is_subset) {
-        result.inclusion_children.push_back(static_cast<int64_t>(i));
-        result.inclusion_parents.push_back(static_cast<int64_t>(j));
+    // Compute all inclusion relationships (child ⊆ parent)
+    // For clades A and B: A ⊆ B iff (A.bits & B.bits) == A.bits
+    for (size_t i = 0; i < C; ++i) {
+      const Clade& clade_i = clade_data.clades.get(i);
+      const BitVec& bits_i = clade_i.bits();
+
+      for (size_t j = 0; j < C; ++j) {
+        if (i == j) continue;  // Skip self-loops
+
+        const Clade& clade_j = clade_data.clades.get(j);
+        const BitVec& bits_j = clade_j.bits();
+
+        // Check if clade_i ⊆ clade_j (all bits in i are also in j)
+        bool is_subset = true;
+        for (size_t w = 0; w < bits_i.size(); ++w) {
+          if ((bits_i[w] & bits_j[w]) != bits_i[w]) {
+            is_subset = false;
+            break;
+          }
+        }
+
+        if (is_subset) {
+          result.inclusion_children.push_back(static_cast<int64_t>(i));
+          result.inclusion_parents.push_back(static_cast<int64_t>(j));
+        }
       }
     }
   }
@@ -1266,7 +1270,7 @@ py::dict preprocess_multiple_families(
     std::unordered_map<std::string, int> leaf_to_index;
 
     CladeData clade_data = amalgamate_clades_and_splits(gene_paths, leaf_names, leaf_to_index);
-    CCPArrays ccp = build_ccp_arrays(clade_data);
+    CCPArrays ccp = build_ccp_arrays(clade_data, include_details);
 
     const size_t C = clade_data.clades.size();
 
@@ -2591,7 +2595,9 @@ PYBIND11_MODULE(preprocess_cpp, m) {
         "Three-phase scheduler with cross-family global batching");
   m.def("compute_cross_family_wave_stats", &compute_cross_family_wave_stats,
         "Compute wave stats with cross-family batching (global schedule)");
-  m.def("bench_parse", [](const std::map<std::string, std::vector<std::string>> &families) {
+  m.def("bench_parse", [](
+      const std::map<std::string, std::vector<std::string>> &families,
+      bool include_inclusion) {
     namespace chr = std::chrono;
     struct FamilyEntry { std::string name; std::vector<std::string> paths; };
     std::vector<FamilyEntry> fam_vec;
@@ -2608,7 +2614,7 @@ PYBIND11_MODULE(preprocess_cpp, m) {
           fam_vec[fi].paths, leaf_names, leaf_to_index);
       auto t1 = chr::high_resolution_clock::now();
 
-      CCPArrays ccp = build_ccp_arrays(clade_data);
+      CCPArrays ccp = build_ccp_arrays(clade_data, include_inclusion);
       auto t2 = chr::high_resolution_clock::now();
 
       const size_t C = clade_data.clades.size();
@@ -2644,12 +2650,14 @@ PYBIND11_MODULE(preprocess_cpp, m) {
       t_adj   += chr::duration<double>(t3 - t2).count();
       t_waves += chr::duration<double>(t4 - t3).count();
     }
-    fprintf(stderr, "bench_parse (%d families, single-thread):\n", n_fam);
+    fprintf(stderr, "bench_parse (%d families, single-thread, include_inclusion=%s):\n",
+            n_fam, include_inclusion ? "true" : "false");
     fprintf(stderr, "  amalgamate_clades_and_splits: %.3fs (%.1f ms/fam)\n", t_parse, t_parse*1000/n_fam);
     fprintf(stderr, "  build_ccp_arrays:             %.3fs (%.1f ms/fam)\n", t_ccp, t_ccp*1000/n_fam);
     fprintf(stderr, "  build adjacency:              %.3fs (%.1f ms/fam)\n", t_adj, t_adj*1000/n_fam);
     fprintf(stderr, "  compute_clade_waves:          %.3fs (%.1f ms/fam)\n", t_waves, t_waves*1000/n_fam);
     fprintf(stderr, "  TOTAL:                        %.3fs (%.1f ms/fam)\n",
             t_parse+t_ccp+t_adj+t_waves, (t_parse+t_ccp+t_adj+t_waves)*1000/n_fam);
-  }, "Benchmark parsing stages");
+  }, py::arg("families"), py::arg("include_inclusion") = true,
+     "Benchmark parsing stages");
 }

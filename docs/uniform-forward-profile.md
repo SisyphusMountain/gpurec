@@ -398,6 +398,9 @@ Implemented changes for this workload:
 - Fixed-6 uniform mode can use `Pibar[ws:we]` as ping-pong scratch for odd
   iterations, then recompute final `Pibar` once per wave. This removes the
   per-iteration `Pi_new -> Pi` device copy.
+- The light batched preprocessing path now skips the C++ clade inclusion DAG,
+  which is only needed for full debug/detail outputs and is not consumed by the
+  likelihood path.
 - `max_wave_size` can split oversized index-merged waves, but the stable result
   below uses the default index-merged waves. The tested large capped run needs
   more validation before using it for production.
@@ -427,42 +430,76 @@ Full 1000-family run with 150-family chunks:
 | 6 | 100 | 634,820 | 50 | 158,830 | 266.704 ms | 11.160 GB |
 | Total | 1000 | 6,417,248 | - | - | 2,687.836 ms | - |
 
-The previous same-chunk run spent 590.0 s in repeated Newick
-preprocessing/model construction. That work is outside the steady CUDA forward
-interval, but it dominated one-off end-to-end wall time.
+An earlier same-chunk run spent 590.0 s in repeated Newick
+preprocessing/model construction. After switching to batched light
+preprocessing this dropped to 396.0 s, but profiling showed that the light path
+still spent nearly all of its time computing an unused inclusion DAG.
+
+10-family CPU/profile breakdown before skipping the inclusion DAG:
+
+| Stage | Time |
+| --- | ---: |
+| C++ `preprocess_multiple_families(..., include_details=False)` | 3.929 s |
+| Python family normalization | 0.006 s |
+| `collate_gene_families` | 0.005 s |
+| Python wave scheduling/merge | 0.003 s |
+| GPU `build_wave_layout` | 0.027 s |
+| Species helper move/sparse conversion | 0.003 s |
+| Total measured construction work | 3.971 s |
+
+The C++ `bench_parse` hook narrowed that down further:
+
+| C++ stage, 10 families | With inclusion DAG | Without inclusion DAG |
+| --- | ---: | ---: |
+| `amalgamate_clades_and_splits` | 0.040 s | 0.037 s |
+| `build_ccp_arrays` | 3.786 s | 0.003 s |
+| Scheduling adjacency build | 0.011 s | 0.010 s |
+| `compute_clade_waves` | 0.013 s | 0.012 s |
+| Total | 3.851 s | 0.063 s |
+
+The hotspot was the O(C^2) subset test in the inclusion-DAG construction inside
+`build_ccp_arrays`. It is now guarded by the same light/full flag that controls
+whether those debug fields are returned.
 
 The current construction path now uses `preprocess_multiple_families` by
 default and asks C++ for a light likelihood-only output (`include_details=False`)
 that skips large unused CCP detail structures (`clade_leaves`,
-`clade_leaf_labels`, `clade_is_leaf`, and inclusion-DAG debug fields). The old
-single-family preprocess path is still available for debugging with
+`clade_leaf_labels`, `clade_is_leaf`, and inclusion-DAG debug fields), and no
+longer computes the inclusion DAG in that light mode. The old single-family
+preprocess path is still available for debugging with
 `GPUREC_PREPROCESS_MODE=single`. `GeneReconModel.from_trees` also accepts
 `preprocess_cache_dir=...`; cache keys include the species tree content hash,
 gene tree content hash, and a format version.
 
-Construction timings, same `test_trees_1000` data and same likelihood:
+Current construction timings, same `test_trees_1000` data and same likelihood:
 
 | Families | Path | Build/model construction | Forward | Loss |
 | ---: | --- | ---: | ---: | ---: |
-| 50 | old single-family preprocess | 25.923 s | 136.106 ms | 107804.273438 |
-| 50 | batched light preprocess | 16.493 s | 136.287 ms | 107804.273438 |
-| 50 | cache populate | 16.852 s | 136.446 ms | 107804.273438 |
-| 50 | cache hit | 0.120 s | 136.519 ms | 107804.273438 |
-| 150 | batched light preprocess | 49.568 s | 401.443 ms | 323018.687500 |
-| 150 | cache populate | 50.507 s | 402.962 ms | 323018.687500 |
-| 150 | cache hit | 0.313 s | 403.053 ms | 323018.687500 |
+| 10 | old single-family preprocess | 4.772 s | - | 22182.916016 |
+| 10 | batched light preprocess | 0.157 s | - | 22182.916016 |
+| 10 | cache populate | 0.398 s | - | 22182.916016 |
+| 10 | cache hit | 0.038 s | - | 22182.916016 |
+| 50 | old single-family preprocess | 23.330 s | 136.050 ms | 107804.273438 |
+| 50 | batched light preprocess | 0.726 s | 136.274 ms | 107804.273438 |
+| 50 | cache populate | 0.810 s | 136.558 ms | 107804.273438 |
+| 50 | cache hit | 0.116 s | 137.107 ms | 107804.273438 |
+| 150 | batched light preprocess | 2.162 s | 402.325 ms | 323018.687500 |
+| 150 | cache populate | 2.387 s | 403.586 ms | 323018.687500 |
+| 150 | cache hit | 0.307 s | 403.032 ms | 323018.687500 |
 
 Full 1000-family chunked construction and forward, with 150-family chunks:
 
 | Pass | Build/model construction | Forward | Total loss | Peak GPU | Max RSS |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| Cache populate | 396.046 s | 2690.625 ms | 2157097.125 | 17.280 GB | 1.937 GB |
-| Cache hit | 2.131 s | 2698.202 ms | 2157097.125 | 17.280 GB | 1.937 GB |
+| No cache, batched light preprocess | 15.586 s | 2690.811 ms | 2157097.125 | 17.280 GB | 1.490 GB |
+| Cache populate | 17.261 s | 2704.248 ms | 2157097.125 | 17.280 GB | 1.578 GB |
+| Cache hit | 2.129 s | 2712.187 ms | 2157097.125 | 17.280 GB | 1.578 GB |
 
-The first run is still CPU-bound by Newick/CCP construction, but it is down from
-about 590 s to about 396 s including cache writes. Reusing the cache reduces the
-1000-family construction overhead to about 2.1 s; at that point end-to-end
-likelihood evaluation is again dominated by the 2.7 s CUDA forward time.
+The uncached 1000-family construction path is now down from about 590 s
+originally, to 396 s after light output pruning, to 15.6 s after skipping the
+unused inclusion-DAG computation. Reusing the cache still reduces construction
+overhead to about 2.1 s; at that point end-to-end likelihood evaluation is
+again dominated by the 2.7 s CUDA forward time.
 
 Nsight Systems comparison for a 150-family chunk:
 
