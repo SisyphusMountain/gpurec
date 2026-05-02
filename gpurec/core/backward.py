@@ -502,8 +502,9 @@ def Pi_wave_backward(
         os.environ.get("GPUREC_CROSS_PIBAR_ROW_STATS", "0") != "0"
     )
     kernelized_active_mask_enabled = (
-        os.environ.get("GPUREC_KERNELIZED_ACTIVE_MASK", "0") != "0"
+        os.environ.get("GPUREC_KERNELIZED_ACTIVE_MASK", "1") != "0"
         and _HAS_FUSED_BACKWARD
+        and pibar_mode == 'uniform'
         and device.type == 'cuda'
         and dtype in (torch.float32, torch.float64)
     )

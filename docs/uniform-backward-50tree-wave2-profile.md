@@ -572,3 +572,77 @@ The expected win is less certain than the active-mask and DTS-loop proposals.
   launch comes from the backward interval.
 - A first attempt to time two pruning variants in parallel was discarded. The
   timings reported above were rerun sequentially.
+
+## Proposal 1 follow-up: active-mask default
+
+Proposal 1 was tested with the same three-agent workflow used in earlier
+optimization passes:
+
+| Role | Task | Result |
+|---|---|---|
+| Static reviewer | Check the exact default flip and scope risks | One-line default flip is correct, but should be scoped to `pibar_mode == 'uniform'` to avoid changing dense/topk behavior |
+| Correctness worker | Run focused tests and parity checks | Passed; see below |
+| Benchmark worker | Compare default and explicit active-mask runs | Found timings in the active-mask range; supervisor reran explicit `GPUREC_KERNELIZED_ACTIVE_MASK=0` vs default to remove ambiguity after the local default changed |
+
+The implemented guard is:
+
+```python
+kernelized_active_mask_enabled = (
+    os.environ.get("GPUREC_KERNELIZED_ACTIVE_MASK", "1") != "0"
+    and _HAS_FUSED_BACKWARD
+    and pibar_mode == 'uniform'
+    and device.type == 'cuda'
+    and dtype in (torch.float32, torch.float64)
+)
+```
+
+So the Triton mask path is now default-on only for CUDA fp32/fp64 uniform
+backward. `GPUREC_KERNELIZED_ACTIVE_MASK=0` remains the override to force the
+old PyTorch `abs().max()` mask construction.
+
+Correctness checks:
+
+| Command/check | Result |
+|---|---:|
+| `pytest -q tests/gradients/test_autograd_bridge.py tests/kernels/test_uniform_cross_pibar_vjp_kernel.py tests/kernels/test_active_mask_kernel.py -q` | 20 passed |
+| `GPUREC_KERNELIZED_ACTIVE_MASK=0 pytest -q tests/gradients/test_autograd_bridge.py -q` | 15 passed |
+| `test_trees_20`, 10-family default vs explicit active mask | loss diff `0`, theta max abs `1.91e-6`, max rel `1.91e-7` |
+| `test_trees_1000`, 10-family default vs explicit active mask | exact loss and theta-gradient match |
+| `test_trees_1000`, forced old mask vs active mask | loss diff `0`, theta max abs `3.66e-4`, max rel `9.55e-7` |
+
+The larger old `tests/gradients/test_wave_gradient.py -k "Pruning"` check was
+also tried, but it fails in both active-mask modes before reaching the mask
+logic:
+
+```text
+TypeError: unsupported operand type(s) for @: 'Tensor' and 'NoneType'
+```
+
+The failure happens in the generic uniform self-loop path with `ancestors_T=None`
+and reproduces with `GPUREC_KERNELIZED_ACTIVE_MASK=0`, so it is not a proposal 1
+regression.
+
+Supervisor timings after the default flip, with the old path forced by
+`GPUREC_KERNELIZED_ACTIVE_MASK=0`:
+
+```bash
+FAMS={10,50} REPS=9 WARMUPS=5 python /tmp/gpurec_profile/bench_uniform_backward.py
+```
+
+| Families | Mask path | Mean | Median | Min | Peak allocation |
+|---:|---|---:|---:|---:|---:|
+| 10 | old PyTorch mask, forced `0` | `47.387 ms` | `47.386 ms` | `47.222 ms` | `2.695 GB` |
+| 10 | new default Triton mask | `46.711 ms` | `46.615 ms` | `46.450 ms` | `2.695 GB` |
+| 50 | old PyTorch mask, forced `0` | `157.464 ms` | `157.820 ms` | `155.726 ms` | `10.305 GB` |
+| 50 | new default Triton mask | `152.798 ms` | `151.909 ms` | `151.252 ms` | `10.305 GB` |
+
+A reversed-order 50-family rerun confirmed the direction:
+
+| Families | Mask path | Mean | Median | Min |
+|---:|---|---:|---:|---:|
+| 50 | new default Triton mask | `152.924 ms` | `153.090 ms` | `151.432 ms` |
+| 50 | old PyTorch mask, forced `0` | `157.737 ms` | `157.997 ms` | `156.014 ms` |
+
+Decision: promote proposal 1. The measured win is about `0.8 ms` at 10
+families and `4.9-5.9 ms` at 50 families, with no peak-memory change and no
+meaningful numerical difference.
