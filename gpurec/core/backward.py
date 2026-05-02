@@ -774,6 +774,12 @@ def Pi_wave_backward(
         fi_expand = fi_w.unsqueeze(1).expand(W, S)
 
         def _scatter_accum(acc, contrib):
+            if G == 1:
+                if acc.ndim == 1:
+                    acc[0] += contrib.sum()
+                else:
+                    acc[0] += contrib.sum(dim=0)
+                return
             if acc.ndim == 1:
                 acc.scatter_add_(0, fi_w, contrib.sum(dim=1))
             else:
