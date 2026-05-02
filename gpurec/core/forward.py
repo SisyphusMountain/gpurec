@@ -512,6 +512,15 @@ def Pi_wave_forward(
         and not use_uniform_spmm
         and leaf_species_index is not None
     )
+    reuse_forward_pibar_stats = bool(
+        use_uniform_fused
+        and not batched
+        and os.environ.get("GPUREC_REUSE_FORWARD_PIBAR_STATS", "0") != "0"
+    )
+    uniform_pibar_row_max = (
+        torch.empty((C,), dtype=dtype, device=device)
+        if reuse_forward_pibar_stats else None
+    )
 
     sp_parent = None
     ancestor_cols = None
@@ -765,6 +774,7 @@ def Pi_wave_forward(
                                 compute_diff=compute_diff,
                                 leaf_species_idx=leaf_species_index,
                                 leaf_logp=uniform_leaf_logp,
+                                pibar_row_max=uniform_pibar_row_max,
                             )
 
                             if compute_diff and max_diff.item() < local_tolerance:
@@ -783,6 +793,7 @@ def Pi_wave_forward(
                                 compute_diff=compute_diff,
                                 leaf_species_idx=leaf_species_index,
                                 leaf_logp=uniform_leaf_logp,
+                                pibar_row_max=uniform_pibar_row_max,
                             )
 
                             if compute_diff and max_diff.item() < local_tolerance:
@@ -828,6 +839,7 @@ def Pi_wave_forward(
                                     wave_pibar_uniform_parent_fused(
                                         Pi, Pibar, ws, W, S,
                                         mt_w, sp_parent, max_ancestor_depth,
+                                        row_max_out=uniform_pibar_row_max,
                                     )
                             else:
                                 compute_diff = not use_fixed and local_iter >= min_warmup
@@ -839,6 +851,7 @@ def Pi_wave_forward(
                                     compute_diff=compute_diff,
                                     leaf_species_idx=leaf_species_index,
                                     leaf_logp=uniform_leaf_logp,
+                                    pibar_row_max=uniform_pibar_row_max,
                                 )
 
                                 if compute_diff and max_diff.item() < local_tolerance:
@@ -873,6 +886,7 @@ def Pi_wave_forward(
                             Pi, Pibar, ws, W, S,
                             mt_w,
                             uniform_linear_op['ancestor_cols'],
+                            row_max_out=uniform_pibar_row_max,
                         )
 
                     if wi + 1 < n_waves:
@@ -961,6 +975,7 @@ def Pi_wave_forward(
                                 compute_diff=compute_diff,
                                 leaf_species_idx=leaf_species_index,
                                 leaf_logp=uniform_leaf_logp,
+                                pibar_row_max=uniform_pibar_row_max,
                             )
 
                             if compute_diff and max_diff.item() < local_tolerance:
@@ -979,6 +994,7 @@ def Pi_wave_forward(
                                 compute_diff=compute_diff,
                                 leaf_species_idx=leaf_species_index,
                                 leaf_logp=uniform_leaf_logp,
+                                pibar_row_max=uniform_pibar_row_max,
                             )
 
                             if compute_diff and max_diff.item() < local_tolerance:
@@ -1024,6 +1040,7 @@ def Pi_wave_forward(
                                     wave_pibar_uniform_parent_fused(
                                         Pi, Pibar, ws, W, S,
                                         mt_w, sp_parent, max_ancestor_depth,
+                                        row_max_out=uniform_pibar_row_max,
                                     )
                             else:
                                 compute_diff = not use_fixed and local_iter >= min_warmup
@@ -1035,6 +1052,7 @@ def Pi_wave_forward(
                                     compute_diff=compute_diff,
                                     leaf_species_idx=leaf_species_index,
                                     leaf_logp=uniform_leaf_logp,
+                                    pibar_row_max=uniform_pibar_row_max,
                                 )
 
                                 if compute_diff and max_diff.item() < local_tolerance:
@@ -1069,6 +1087,7 @@ def Pi_wave_forward(
                             Pi, Pibar, ws, W, S,
                             mt_w,
                             uniform_linear_op['ancestor_cols'],
+                            row_max_out=uniform_pibar_row_max,
                         )
 
             torch.backends.cuda.matmul.allow_tf32 = prev_tf32
@@ -1137,4 +1156,5 @@ def Pi_wave_forward(
         'iterations': total_iters,
         'Pi_wave_ordered': Pi,
         'Pibar_wave_ordered': Pibar,
+        'uniform_pibar_row_max': uniform_pibar_row_max,
     }

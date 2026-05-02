@@ -48,6 +48,7 @@ def implicit_grad_loglik_vjp_wave(
     transfer_mat: Optional[torch.Tensor] = None,
     transfer_mat_unnormalized: Optional[torch.Tensor] = None,
     ancestors_T: Optional[torch.Tensor] = None,
+    uniform_pibar_row_max: Optional[torch.Tensor] = None,
 ):
     """Compute ∇θ logL using wave-decomposed backward pass + E adjoint.
 
@@ -77,6 +78,7 @@ def implicit_grad_loglik_vjp_wave(
         pibar_mode=pibar_mode,
         transfer_mat=transfer_mat,
         ancestors_T=ancestors_T,
+        uniform_pibar_row_max=uniform_pibar_row_max,
     )
     torch.cuda.synchronize()
     _t_pi_bwd = time.perf_counter() - _t_pi_bwd_0

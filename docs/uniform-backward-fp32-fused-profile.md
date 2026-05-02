@@ -743,26 +743,193 @@ best observed waves = roughly 1.33x to 1.38x
 So child grouping is useful, but it is not enough by itself to transform the
 profile.
 
-### Next work
+### Bottleneck 3 proposal workflow
 
-1. Prototype child-grouped `Pibar` VJP only after the bigger self-loop and
-   pruning fixes.
+The three-agent workflow was reused for this bottleneck:
 
-   The grouped design should first reduce `grad_Pibar_l/r` by child clade, then
-   run one uniform `Pibar` VJP per unique child. Based on the measured duplicate
-   factor, the likely gain is around 5% to 12% of this kernel on this workload.
+| Agent | Proposal | Implementation flag | Result |
+|---|---|---|---|
+| Agent 1 | Group split-side `Pibar` adjoints by child clade | `GPUREC_GROUPED_CROSS_PIBAR_VJP=1` and optionally `GPUREC_GROUPED_CROSS_PIBAR_REDUCE_IMPL=triton` | Correct, slower |
+| Agent 2 | Reuse forward-side `Pibar` row information | `GPUREC_REUSE_FORWARD_PIBAR_STATS=1` | Correct, small gain on 10 families, neutral/slower on 50 |
+| Agent 3 | Replace ancestor-list denominator with a species-tree prefix pass | `GPUREC_FUSED_CROSS_PIBAR_VJP_IMPL=prefix` | Correct, slower |
 
-2. Reuse forward-side uniform `Pibar` statistics if available.
+All paths are default-off. The production default remains the existing
+bottom-up tree VJP kernel.
 
-   The kernel recomputes row max, row sum, and ancestor denominators from
-   `Pi_star`. If forward can store compact per-row statistics, backward can
-   avoid part of the repeated work. The tradeoff is extra forward memory.
+Correctness checks:
 
-3. Investigate a species-tree-specific kernel for the denominator.
+| Command | Result |
+|---|---:|
+| `GPUREC_CROSS_PIBAR_ROW_STATS=1 pytest -q tests/gradients/test_autograd_bridge.py tests/kernels/test_uniform_cross_pibar_vjp_kernel.py -q` | 17 passed |
+| `GPUREC_REUSE_FORWARD_PIBAR_STATS=1 pytest -q tests/gradients/test_autograd_bridge.py -q` | 15 passed |
+| `GPUREC_FUSED_CROSS_PIBAR_VJP_IMPL=prefix pytest -q tests/gradients/test_autograd_bridge.py tests/kernels/test_uniform_cross_pibar_vjp_kernel.py -q` | 17 passed |
+| `GPUREC_GROUPED_CROSS_PIBAR_VJP=1 GPUREC_GROUPED_CROSS_PIBAR_REDUCE_IMPL=triton pytest -q tests/gradients/test_autograd_bridge.py tests/kernels/test_uniform_cross_pibar_vjp_kernel.py -q` | 17 passed |
 
-   The bottom-up gather path avoided ancestor scatter atomics, but it still
-   does a full-tree pass per split side. A species-major layout may let multiple
-   child rows share metadata and improve cache behavior.
+Real-workload parity was also checked by the agents on 10 and 50 families.
+The loss matched exactly in these runs. The largest reported theta-gradient
+relative errors were `3.18e-7` for forward-stat reuse, `2.28e-7` for child
+grouping, and `1.52e-7` for the prefix-denominator kernel.
+
+Supervisor benchmark conditions:
+
+```bash
+FAMS={10,50} REPS=9 WARMUPS=5 python /tmp/gpurec_profile/bench_uniform_backward.py
+```
+
+Backward-only CUDA event timings:
+
+| Variant | 10 families median | 10 families min | 50 families median | 50 families min | Peak alloc, 50 families |
+|---|---:|---:|---:|---:|---:|
+| Current default tree VJP | 47.769 ms | 47.662 ms | 162.704 ms | 161.829 ms | 10.567 GB |
+| Forward `row_max` + `Pibar` denominator reuse | 47.290 ms | 46.898 ms | 166.956 ms | 162.592 ms | 10.568 GB |
+| Backward row-stat precompute | 48.876 ms | 48.201 ms | 217.632 ms | 163.776 ms | 10.570 GB |
+| Child-grouped VJP, Triton reduction | 50.138 ms | 49.388 ms | 177.791 ms | 175.892 ms | 10.575 GB |
+| Prefix denominator kernel | 50.185 ms | 49.654 ms | 180.791 ms | 178.578 ms | 10.567 GB |
+
+The 50-family row-stat-precompute run was bimodal. Nsight Systems gives the
+more useful kernel-level explanation: it reduced the tree VJP kernel by only
+`0.848 ms`, then added a `2.690 ms` precompute kernel, so it is not a useful
+default even ignoring the timing jitter.
+
+### Proposal 1: child-grouped uniform Pibar VJP
+
+The idea was to reduce `grad_Pibar_l/r` by child clade first, then run one
+uniform `Pibar` VJP per unique child instead of one per split side. Two variants
+were tested:
+
+1. A simple PyTorch path using `cat`, `unique`, `index_add_`, and a grouped VJP.
+2. A cached-metadata Triton path using a custom `_group_cross_pibar_grad_kernel`
+   followed by `_uniform_cross_pibar_vjp_tree_grouped_kernel`.
+
+Nsight Systems, 50 families:
+
+| Kernel group | Default | Grouped Triton |
+|---|---:|---:|
+| Uniform `Pibar` VJP | 37.784 ms | 32.119 ms |
+| Group-reduce split-side gradients | 0 ms | 16.102 ms |
+| Net `Pibar` VJP path | 37.784 ms | 48.221 ms |
+| Backward interval in profiled run | 175.673 ms | 190.433 ms |
+
+Grouping therefore does reduce the VJP kernel itself by `5.665 ms` at 50
+families, but the required reduction pass costs `16.102 ms`. The duplicate
+split-side factor is only about `1.111x` overall, so a separate full
+`[2 * n_ws, S]` reduction pass is too much work.
+
+The PyTorch grouped path is worse for the same reason plus extra allocation and
+library overhead. It also raises 50-family peak allocation from about `10.567 GB`
+to about `11.433 GB` in the agent run because it materializes `cat`,
+`unique`/inverse metadata, and a grouped gradient buffer.
+
+Recommendation: keep this disabled. A future version would have to fuse child
+grouping into DTS cross backward so `grad_Pibar_l/r` is never materialized and
+then reduced. Even then, the measured `1.11x` duplicate factor limits the upside.
+
+### Proposal 2: reuse forward-side Pibar statistics
+
+Two forms of row-stat reuse were tested.
+
+The first precomputes backward row stats with `_pibar_row_stats_kernel`, then
+loads `row_max` and `row_sum` in `_uniform_cross_pibar_vjp_tree_kernel`. This is
+correct, but the extra full pass over `Pi_star` is not paid back. In Nsight
+Systems at 50 families:
+
+```text
+default _uniform_cross_pibar_vjp_tree_kernel: 37.784 ms
+row-stats _uniform_cross_pibar_vjp_tree_kernel: 36.936 ms
+_pibar_row_stats_kernel: 2.690 ms
+```
+
+Net kernel time therefore regresses by about `1.842 ms`.
+
+The second form stores only the final forward `row_max[C]` tensor and reuses
+the already-materialized `Pibar` value to recover the inverse denominator:
+
+```text
+inv_denom[s] = 2 ** (row_max[row] + mt[s] - Pibar[row, s])
+```
+
+This skips both the backward row-max/row-sum pass and the ancestor-denominator
+walk. It still needs the subtree correction because that depends on the
+incoming adjoint.
+
+Memory cost in fp32 is small for `row_max`:
+
+| Families | C | `row_max` | `row_max + row_sum` | Full denom/inv-denom |
+|---:|---:|---:|---:|---:|
+| 10 | 66,530 | 0.266 MB | 0.532 MB | 532 MB |
+| 50 | 321,930 | 1.288 MB | 2.575 MB | 2.57 GB |
+| 100 | 635,372 | 2.541 MB | 5.083 MB | 5.08 GB |
+
+This path helps small waves but not the 50-family schedule:
+
+```text
+10 families, event median: 47.769 ms -> 47.290 ms
+50 families, event median: 162.704 ms -> 166.956 ms
+50 families, Nsight Pibar VJP: 37.784 ms -> 39.157 ms
+```
+
+The agent's 10-family NCU profile explains the mixed result:
+
+```text
+L1/TEX bytes: 5.43 GB -> 2.75 GB
+DRAM read: 201.7 MB -> 251.1 MB
+DRAM write: 76.7 MB -> 72.5 MB
+Issue active: 33.2% -> 23.4%
+Occupancy: 73.3% -> 96.4%
+```
+
+So this does remove a large amount of L1/TEX ancestor-gather work, but it
+replaces mostly cache-resident ancestor reads with extra global `Pibar` and
+`mt` reads. At 50 families, that additional DRAM pressure cancels the arithmetic
+savings.
+
+Recommendation: leave default-off. It may be useful for smaller batches or a
+future layout where `Pibar` is already hot in cache, but it is not a default
+win for the 50-family occupancy-optimized schedule.
+
+### Proposal 3: species-tree prefix denominator
+
+The prefix prototype replaces the per-species padded-ancestor denominator loop
+with a top-down pass over the species tree:
+
+```text
+prefix[s] = sum_{a in ancestors(s)} p[a]
+denom[s] = row_sum - prefix[s]
+```
+
+It then reuses the existing bottom-up subtree VJP. This is controlled by
+`GPUREC_FUSED_CROSS_PIBAR_VJP_IMPL=prefix`.
+
+The result is correct but slower:
+
+```text
+50 families, event median: 162.704 ms -> 180.791 ms
+50 families, Nsight Pibar VJP: 37.784 ms -> 56.475 ms
+```
+
+Representative NCU counters from the agent show the resource tradeoff:
+
+| Metric | Default tree | Prefix denominator |
+|---|---:|---:|
+| DRAM read | 587.2 MB | 727.8 MB |
+| DRAM write | 259.4 MB | 258.6 MB |
+| L1/TEX traffic | 15.36 GB | 12.48 GB |
+| L2 traffic | 4.56 GB | 7.07 GB |
+| SM throughput | 51.1% | 47.0% |
+| Issue active | 40.6% | 24.1% |
+| Long scoreboard stalls | 62.5% | 37.5% |
+| Barrier stalls | 13.6% | 39.3% |
+
+The prefix kernel does reduce long-scoreboard stalls and L1/TEX traffic, which
+means the original ancestor gathers really are part of the cost. But the
+top-down prefix pass adds level barriers and scratch traffic. The result is
+lower issue activity, higher L2/DRAM pressure, and much worse barrier stalls.
+
+Recommendation: reject this species-major/prefix direction for now. The current
+row-major split-side kernel has ugly gathers, but those gathers are often
+cache-resident and keep the rest of the row work contiguous. Sharing species
+metadata does not share the row-specific `Pi` distribution, which is the data
+that dominates the VJP.
 
 ## Bottleneck 4: DTS cross backward accumulation
 

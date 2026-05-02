@@ -238,6 +238,11 @@ class _GeneReconFunction(torch.autograd.Function):
                 log_pD,
                 log_pL,
                 max_transfer_vec,
+                (
+                    Pi_out["uniform_pibar_row_max"]
+                    if Pi_out.get("uniform_pibar_row_max") is not None
+                    else theta.new_empty(0)
+                ),
             )
             # transfer_mat may be None (uniform mode); store as ctx attribute.
             ctx.transfer_mat = transfer_mat
@@ -266,6 +271,7 @@ class _GeneReconFunction(torch.autograd.Function):
             log_pD,
             log_pL,
             max_transfer_vec,
+            uniform_pibar_row_max,
         ) = ctx.saved_tensors
         transfer_mat = ctx.transfer_mat
         static: ReconStaticState = ctx.static
@@ -297,6 +303,11 @@ class _GeneReconFunction(torch.autograd.Function):
                 transfer_mat=transfer_mat,
                 ancestors_T=static.ancestors_T,
                 family_idx=wave_layout["family_idx"],
+                uniform_pibar_row_max=(
+                    uniform_pibar_row_max
+                    if uniform_pibar_row_max.numel() > 0
+                    else None
+                ),
             )
             grad_theta, _stats = _e_adjoint_and_theta_vjp(
                 pi_bwd,
@@ -355,6 +366,11 @@ class _GeneReconFunction(torch.autograd.Function):
                 transfer_mat=transfer_mat,
                 transfer_mat_unnormalized=static.transfer_mat_unnormalized,
                 ancestors_T=static.ancestors_T,
+                uniform_pibar_row_max=(
+                    uniform_pibar_row_max
+                    if uniform_pibar_row_max.numel() > 0
+                    else None
+                ),
             )
 
         # grad_theta is d(NLL_total)/d(theta). The forward returned NLL_total

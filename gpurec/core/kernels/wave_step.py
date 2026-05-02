@@ -307,6 +307,7 @@ def _wave_step_uniform_kernel(
     Pi_new_ptr,          # [W, S]
     Pibar_out_ptr,       # [C, S] — write Pibar to rows [ws : ws+W]
     max_diff_ptr,        # [W] — per-row max |Pi_new - Pi_old| for convergence
+    pibar_row_max_ptr,   # optional [C] — final row max for backward Pibar VJP
     # Dimensions
     S: tl.constexpr,
     stride: tl.constexpr,
@@ -317,6 +318,7 @@ def _wave_step_uniform_kernel(
     USE_ANCESTOR_COLS: tl.constexpr,
     USE_LEAF_INDEX: tl.constexpr,
     STORE_PIBAR: tl.constexpr,
+    STORE_PIBAR_ROW_MAX: tl.constexpr,
     OUTPUT_GLOBAL: tl.constexpr,
     FP64: tl.constexpr,
     stride_c: tl.constexpr = 0,
@@ -352,6 +354,9 @@ def _wave_step_uniform_kernel(
         # Rescale running sum to new max, add this tile's contribution
         row_sum = row_sum * tl.exp2(row_max - new_max) + tl.sum(tl.exp2(pi_val - new_max), axis=0)
         row_max = new_max
+
+    if STORE_PIBAR_ROW_MAX:
+        tl.store(pibar_row_max_ptr + ws + w, tl.max(row_max, axis=0))
 
     # === Pass 2: Pibar + DTS_L terms + logsumexp ===
     if COMPUTE_DIFF:
@@ -469,7 +474,8 @@ def wave_step_uniform_fused(Pi, Pibar, ws, W, S,
                             mt_squeezed, DL_const, Ebar, E, SL1_const, SL2_const,
                             sp_child1, sp_child2, sp_parent, max_ancestor_depth,
                             leaf_term_wt, DTS_reduced=None, compute_diff=True,
-                            leaf_species_idx=None, leaf_logp=None):
+                            leaf_species_idx=None, leaf_logp=None,
+                            pibar_row_max=None):
     """Fused uniform-Pibar + wave step + convergence in one kernel.
 
     Computes Pibar inline using the uniform transfer matrix approximation,
@@ -522,6 +528,7 @@ def wave_step_uniform_fused(Pi, Pibar, ws, W, S,
         DTS_reduced if has_splits else leaf_term_wt,  # dummy
         has_splits,
         Pi_new, Pibar, max_diff_buf,
+        pibar_row_max if pibar_row_max is not None else Pibar,
         S,
         stride=S,
         BLOCK_S=BLOCK_S,
@@ -531,6 +538,7 @@ def wave_step_uniform_fused(Pi, Pibar, ws, W, S,
         USE_ANCESTOR_COLS=False,
         USE_LEAF_INDEX=use_leaf_index,
         STORE_PIBAR=True,
+        STORE_PIBAR_ROW_MAX=bool(pibar_row_max is not None),
         OUTPUT_GLOBAL=False,
         FP64=fp64,
         stride_c=stride_c,
@@ -572,7 +580,7 @@ def wave_step_uniform_fused_into(Pi_in, Pi_out, Pibar, ws, W, S,
         leaf_logp_arg,
         DTS_reduced if has_splits else leaf_term_wt,
         has_splits,
-        Pi_out_rows, Pibar, max_diff_buf,
+        Pi_out_rows, Pibar, max_diff_buf, Pibar,
         S,
         stride=S,
         BLOCK_S=BLOCK_S,
@@ -582,6 +590,7 @@ def wave_step_uniform_fused_into(Pi_in, Pi_out, Pibar, ws, W, S,
         USE_ANCESTOR_COLS=False,
         USE_LEAF_INDEX=use_leaf_index,
         STORE_PIBAR=False,
+        STORE_PIBAR_ROW_MAX=False,
         OUTPUT_GLOBAL=False,
         FP64=fp64,
         stride_c=stride_c,
@@ -590,10 +599,11 @@ def wave_step_uniform_fused_into(Pi_in, Pi_out, Pibar, ws, W, S,
 
 
 def wave_step_uniform_ancestor_fused(Pi, Pibar, ws, W, S,
-                                     mt_squeezed, DL_const, Ebar, E, SL1_const, SL2_const,
+                                    mt_squeezed, DL_const, Ebar, E, SL1_const, SL2_const,
                                      sp_child1, sp_child2, ancestor_cols,
                                      leaf_term_wt, DTS_reduced=None, compute_diff=True,
-                                     leaf_species_idx=None, leaf_logp=None):
+                                     leaf_species_idx=None, leaf_logp=None,
+                                     pibar_row_max=None):
     """Fused uniform-Pibar + wave step using precomputed ancestor lists.
 
     This is equivalent to :func:`wave_step_uniform_fused`, but uses a padded
@@ -627,6 +637,7 @@ def wave_step_uniform_ancestor_fused(Pi, Pibar, ws, W, S,
         DTS_reduced if has_splits else leaf_term_wt,  # dummy
         has_splits,
         Pi_new, Pibar, max_diff_buf,
+        pibar_row_max if pibar_row_max is not None else Pibar,
         S,
         stride=S,
         BLOCK_S=BLOCK_S,
@@ -636,6 +647,7 @@ def wave_step_uniform_ancestor_fused(Pi, Pibar, ws, W, S,
         USE_ANCESTOR_COLS=True,
         USE_LEAF_INDEX=use_leaf_index,
         STORE_PIBAR=True,
+        STORE_PIBAR_ROW_MAX=bool(pibar_row_max is not None),
         OUTPUT_GLOBAL=False,
         FP64=fp64,
         stride_c=stride_c,
@@ -650,7 +662,8 @@ def wave_step_uniform_csr_fused(Pi, Pibar, ws, W, S,
                                 sp_child1, sp_child2, ancestor_csr_indptr,
                                 ancestor_csr_indices, max_ancestor_depth,
                                 leaf_term_wt, DTS_reduced=None, compute_diff=True,
-                                leaf_species_idx=None, leaf_logp=None):
+                                leaf_species_idx=None, leaf_logp=None,
+                                pibar_row_max=None):
     """Fused uniform-Pibar + wave step using CSR ancestor rows.
 
     This is the hand-written Triton sparse-ancestor path. It keeps the existing
@@ -684,6 +697,7 @@ def wave_step_uniform_csr_fused(Pi, Pibar, ws, W, S,
         DTS_reduced if has_splits else leaf_term_wt,  # dummy
         has_splits,
         Pi_new, Pibar, max_diff_buf,
+        pibar_row_max if pibar_row_max is not None else Pibar,
         S,
         stride=S,
         BLOCK_S=BLOCK_S,
@@ -693,6 +707,7 @@ def wave_step_uniform_csr_fused(Pi, Pibar, ws, W, S,
         USE_ANCESTOR_COLS=False,
         USE_LEAF_INDEX=use_leaf_index,
         STORE_PIBAR=True,
+        STORE_PIBAR_ROW_MAX=bool(pibar_row_max is not None),
         OUTPUT_GLOBAL=False,
         FP64=fp64,
         stride_c=stride_c,
@@ -709,10 +724,12 @@ def _wave_pibar_uniform_parent_kernel(
     mt_ptr,
     sp_parent_ptr,
     Pibar_out_ptr,
+    row_max_out_ptr,
     S: tl.constexpr,
     stride: tl.constexpr,
     BLOCK_S: tl.constexpr,
     MAX_ANCESTOR_DEPTH: tl.constexpr,
+    STORE_ROW_MAX: tl.constexpr,
     FP64: tl.constexpr,
     stride_c: tl.constexpr = 0,
 ):
@@ -733,6 +750,9 @@ def _wave_pibar_uniform_parent_kernel(
         row_sum = row_sum * tl.exp2(row_max - new_max) + tl.sum(tl.exp2(pi_val - new_max), axis=0)
         row_max = new_max
 
+    if STORE_ROW_MAX:
+        tl.store(row_max_out_ptr + ws + w, tl.max(row_max, axis=0))
+
     for s_start in range(0, S, BLOCK_S):
         s_offs = s_start + tl.arange(0, BLOCK_S)
         mask = s_offs < S
@@ -752,7 +772,8 @@ def _wave_pibar_uniform_parent_kernel(
 
 
 def wave_pibar_uniform_parent_fused(Pi, Pibar, ws, W, S,
-                                    mt_squeezed, sp_parent, max_ancestor_depth):
+                                    mt_squeezed, sp_parent, max_ancestor_depth,
+                                    row_max_out=None):
     """Compute uniform Pibar rows by walking species parent pointers."""
     fp64 = Pi.dtype == torch.float64
     stride_c = S if mt_squeezed.ndim == 2 else 0
@@ -765,10 +786,12 @@ def wave_pibar_uniform_parent_fused(Pi, Pibar, ws, W, S,
         mt_squeezed,
         sp_parent,
         Pibar,
+        row_max_out if row_max_out is not None else Pibar,
         S,
         stride=S,
         BLOCK_S=BLOCK_S,
         MAX_ANCESTOR_DEPTH=int(max_ancestor_depth),
+        STORE_ROW_MAX=bool(row_max_out is not None),
         FP64=fp64,
         stride_c=stride_c,
         num_warps=4,
@@ -1126,10 +1149,12 @@ def _wave_pibar_uniform_ancestor_kernel(
     mt_ptr,
     ancestor_cols_ptr,
     Pibar_out_ptr,
+    row_max_out_ptr,
     S: tl.constexpr,
     stride: tl.constexpr,
     MAX_ANCESTOR_DEPTH: tl.constexpr,
     BLOCK_S: tl.constexpr,
+    STORE_ROW_MAX: tl.constexpr,
     FP64: tl.constexpr,
 ):
     DTYPE = tl.float64 if FP64 else tl.float32
@@ -1149,6 +1174,9 @@ def _wave_pibar_uniform_ancestor_kernel(
         row_sum = row_sum * tl.exp2(row_max - new_max) + tl.sum(tl.exp2(pi_val - new_max), axis=0)
         row_max = new_max
 
+    if STORE_ROW_MAX:
+        tl.store(row_max_out_ptr + ws + w, tl.max(row_max, axis=0))
+
     for s_start in range(0, S, BLOCK_S):
         s_offs = s_start + tl.arange(0, BLOCK_S)
         mask = s_offs < S
@@ -1166,7 +1194,8 @@ def _wave_pibar_uniform_ancestor_kernel(
         tl.store(Pibar_out_ptr + pi_base + s_offs, pibar_w, mask=mask)
 
 
-def wave_pibar_uniform_fused(Pi, Pibar, ws, W, S, mt_squeezed, ancestor_cols):
+def wave_pibar_uniform_fused(Pi, Pibar, ws, W, S, mt_squeezed, ancestor_cols,
+                             row_max_out=None):
     """Compute final uniform Pibar rows using precomputed ancestor columns."""
     fp64 = Pi.dtype == torch.float64
     BLOCK_S = min(256, triton.next_power_of_2(S))
@@ -1178,10 +1207,12 @@ def wave_pibar_uniform_fused(Pi, Pibar, ws, W, S, mt_squeezed, ancestor_cols):
         mt_squeezed,
         ancestor_cols,
         Pibar,
+        row_max_out if row_max_out is not None else Pibar,
         S,
         stride=S,
         MAX_ANCESTOR_DEPTH=ancestor_cols.shape[0],
         BLOCK_S=BLOCK_S,
+        STORE_ROW_MAX=bool(row_max_out is not None),
         FP64=fp64,
         num_warps=4,
     )
