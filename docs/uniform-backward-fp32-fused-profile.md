@@ -88,6 +88,98 @@ For comparison, disabling pruning on the 10-family batch took 101.283 ms. So
 the current pruning is still a net win, even though its implementation causes
 host/device synchronization.
 
+## Optimization Update: Leaf Index And RHS Scratch
+
+After this profile, three low-risk changes were implemented in the fused uniform
+backward path:
+
+| Commit | Change | Main effect |
+|---|---|---|
+| `a06aac1` | Use `leaf_species_index[C]` plus `[S]` `log_pS` in the Triton kernel | Avoids constructing and reading dense `[W,S]` leaf tensors |
+| `ed6b5b7` | Treat `rhs` as read-only and use an internal ping-pong scratch buffer | Removes one full `[W,S]` device-to-device copy per processed wave |
+| `05d7c48` | Allocate `spec_buf` with `empty` instead of `zeros` | Removes redundant scratch zero-fill launches |
+
+Correctness was checked by comparing the old dense-leaf path
+(`GPUREC_BACKWARD_LEAF_INDEX=0`) with the new leaf-index path and by running the
+autograd finite-difference bridge tests:
+
+| Check | Result |
+|---|---:|
+| 3 families, loss difference | 0 |
+| 3 families, max gradient abs diff | 9.16e-5 |
+| 3 families, max gradient relative diff | 2.45e-7 |
+| 10 families, loss difference | 0 |
+| 10 families, max gradient abs diff | 0 |
+| `tests/gradients/test_autograd_bridge.py` | 15 passed |
+
+Normal backward-only timing, same setup as above:
+
+| State | 10 families | 50 families | 50-family peak memory |
+|---|---:|---:|---:|
+| Baseline in this document | 73.252 ms | 230.795 ms | 16.806 GB |
+| Leaf index only | 68.373 ms | 225.373 ms | 16.161 GB |
+| Leaf index + read-only RHS | 67.984 ms | 218.372 ms | 16.161 GB |
+| Leaf index + read-only RHS + empty scratch | 68.160 ms | 214.755 ms | 16.162 GB |
+
+The final state is about 7.0% faster on both the 10-family and 50-family
+benchmarks. The larger batch benefits most from the RHS copy and scratch-fill
+changes because it moves much larger wave buffers.
+
+Nsight Systems on the optimized 50-family backward interval:
+
+| Metric | Baseline | Optimized |
+|---|---:|---:|
+| Captured backward CUDA time | 244.036 ms | 235.450 ms |
+| GPU kernel time | 197.552 ms | 188.784 ms |
+| GPU memcpy time | 8.274 ms | 5.429 ms |
+| GPU memset time | 0.017 ms | 0.017 ms |
+| GPU active span | 205.842 ms | 194.229 ms |
+| GPU idle/gap span | 37.834 ms | 40.871 ms |
+| Kernel launches | 3,809 | 3,560 |
+| Copies | 755 | 684 |
+
+The remaining end-to-end profile is still kernel dominated. The top optimized
+kernel totals are:
+
+| Component | Optimized 50-family kernel time |
+|---|---:|
+| `_wave_backward_uniform_kernel` | 56.809 ms |
+| `_uniform_cross_pibar_vjp_tree_kernel` | 39.243 ms |
+| `_dts_cross_backward_accum_kernel` | 29.388 ms |
+| PyTorch scatter/gather reduce-add | 20.685 ms |
+| `_dts_fused_kernel` | 12.146 ms |
+| PyTorch reductions | 8.652 ms |
+
+Nsight Compute on the optimized largest 10-family leaf wave
+(`_wave_backward_uniform_kernel`, `W=16645`, `S=1999`):
+
+| Metric | Baseline | Optimized |
+|---|---:|---:|
+| Duration | 6.503 ms | 5.322 ms |
+| DRAM read bytes | 3.384 GB | 2.447 GB |
+| DRAM write bytes | 2.485 GB | 2.353 GB |
+| Total DRAM bytes | 5.869 GB | 4.800 GB |
+| DRAM throughput | 90.0% | 89.4% |
+| Compute throughput | 22.8% | 28.0% |
+| Issue slots busy | 12.3% | 14.8% |
+| Achieved occupancy | 82.1% | 74.2% |
+| Registers per thread | 48 | 56 |
+| L1/TEX hit rate | 57.4% | 58.1% |
+| L2 hit rate | 74.4% | 81.6% |
+
+The kernel is still DRAM-bandwidth bound after the optimization. The leaf-index
+path removed roughly 1.07 GB of DRAM traffic from the largest leaf-wave launch,
+which explains the local 18% kernel speedup. Occupancy dropped because the
+additional leaf-index branch and read-only RHS scratch path use more registers,
+but the launch remains bandwidth limited, so the lower occupancy was not the
+limiting factor.
+
+The next useful work is therefore unchanged in direction: reduce full `[W,S]`
+temporary traffic and residual PyTorch reductions. In particular,
+`_wave_backward_uniform_kernel` still writes six full contribution tensors that
+are immediately reduced by PyTorch, and the optimized 50-family trace still
+spends about 29 ms in PyTorch scatter/reduction kernels.
+
 ## Nsight Systems breakdown
 
 Nsight adds some overhead, so the captured wall times are higher than the
