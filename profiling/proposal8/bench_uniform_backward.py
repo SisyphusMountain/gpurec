@@ -78,6 +78,16 @@ def _parse_args() -> argparse.Namespace:
         default=os.getenv("CUDA_GRAPH_CHECK", "1") != "0",
         help="Compare one normal fixed-schedule backward against one graph replay after capture.",
     )
+    parser.add_argument(
+        "--cuda-graph-profile-phase",
+        choices=("both", "normal", "replay"),
+        default=os.getenv("CUDA_GRAPH_PROFILE_PHASE", "both"),
+        help=(
+            "When PROFILE_CUDA_API=1 in CUDA graph mode, choose whether the "
+            "cudaProfilerStart/Stop range wraps normal fixed-schedule timing, "
+            "graph replay timing, or both."
+        ),
+    )
     parser.add_argument("--cache-dir", default=os.getenv("PREPROCESS_CACHE_DIR", "/tmp/gpurec_preprocess_cache"))
     args = parser.parse_args()
     mws = str(args.max_wave_size).strip().lower()
@@ -117,6 +127,13 @@ def _cuda_event_elapsed(fn) -> float:
     return start.elapsed_time(end)
 
 
+def _profile_phase_enabled(args: argparse.Namespace, phase: str) -> bool:
+    return bool(
+        args.profile_cuda_api
+        and args.cuda_graph_profile_phase in ("both", phase)
+    )
+
+
 def _grad_snapshot(model: GeneReconModel) -> list[torch.Tensor | None]:
     return [
         None if p.grad is None else p.grad.detach().clone()
@@ -137,20 +154,69 @@ def _max_grad_abs_diff(
     return max_diff
 
 
+def _tensor_max_abs_diff(a: torch.Tensor, b: torch.Tensor) -> float:
+    if a.shape != b.shape:
+        return float("inf")
+    if a.numel() == 0:
+        return 0.0
+    chunk_elems = int(os.getenv("CUDA_GRAPH_CHECK_CHUNK_ELEMS", str(16 * 1024 * 1024)))
+    if chunk_elems <= 0 or a.numel() <= chunk_elems:
+        return float((a - b).abs().max().detach().cpu())
+    if not (a.is_contiguous() and b.is_contiguous()):
+        return float((a - b).abs().max().detach().cpu())
+    a_flat = a.view(-1)
+    b_flat = b.view(-1)
+    scratch = torch.empty((min(chunk_elems, a.numel()),), device=a.device, dtype=a.dtype)
+    max_diff = 0.0
+    for start in range(0, a.numel(), chunk_elems):
+        stop = min(start + chunk_elems, a.numel())
+        span = stop - start
+        tmp = scratch[:span]
+        torch.sub(a_flat[start:stop], b_flat[start:stop], out=tmp)
+        tmp.abs_()
+        max_diff = max(max_diff, float(tmp.max().detach().cpu()))
+    return max_diff
+
+
+def _tensor_max_abs(a: torch.Tensor) -> float:
+    if a.numel() == 0:
+        return 0.0
+    chunk_elems = int(os.getenv("CUDA_GRAPH_CHECK_CHUNK_ELEMS", str(16 * 1024 * 1024)))
+    if chunk_elems <= 0 or a.numel() <= chunk_elems or not a.is_contiguous():
+        return float(a.abs().max().detach().cpu())
+    a_flat = a.view(-1)
+    scratch = torch.empty((min(chunk_elems, a.numel()),), device=a.device, dtype=a.dtype)
+    max_abs = 0.0
+    for start in range(0, a.numel(), chunk_elems):
+        stop = min(start + chunk_elems, a.numel())
+        span = stop - start
+        tmp = scratch[:span]
+        torch.abs(a_flat[start:stop], out=tmp)
+        max_abs = max(max_abs, float(tmp.max().detach().cpu()))
+    return max_abs
+
+
 def _max_tensor_dict_abs_diff(
     lhs: dict,
     rhs: dict,
     *,
     keys: tuple[str, ...],
-) -> float:
+) -> tuple[float, str, float]:
     max_diff = 0.0
+    max_key = ""
+    max_ref = 0.0
     for key in keys:
         a = lhs.get(key)
         b = rhs.get(key)
         if not (torch.is_tensor(a) and torch.is_tensor(b)):
             continue
-        max_diff = max(max_diff, float((a - b).abs().max().detach().cpu()))
-    return max_diff
+        diff = _tensor_max_abs_diff(a, b)
+        if diff >= max_diff:
+            max_diff = diff
+            max_key = key
+            max_ref = _tensor_max_abs(a)
+    denom = max(max_ref, 1.0)
+    return max_diff, max_key, max_diff / denom
 
 
 def _selected_genes(root: Path, start: int, fams: int) -> list[str]:
@@ -268,6 +334,9 @@ def _prepare_pi_backward_inputs(model: GeneReconModel) -> tuple[dict, torch.Tens
         E_out["E"],
         static.wave_layout["root_clade_ids"],
     ).sum()
+    root_clade_ids = static.wave_layout["root_clade_ids"]
+    if torch.is_tensor(root_clade_ids):
+        root_clade_ids = [int(r) for r in root_clade_ids.detach().cpu().tolist()]
     kwargs = {
         "wave_layout": static.wave_layout,
         "Pi_star_wave": pi_out["Pi_wave_ordered"],
@@ -281,7 +350,7 @@ def _prepare_pi_backward_inputs(model: GeneReconModel) -> tuple[dict, torch.Tens
         "log_pL": log_pL,
         "max_transfer_mat": max_transfer_vec,
         "species_helpers": static.species_helpers,
-        "root_clade_ids_perm": static.wave_layout["root_clade_ids"],
+        "root_clade_ids_perm": root_clade_ids,
         "device": static.device,
         "dtype": static.dtype,
         "neumann_terms": static.neumann_terms,
@@ -341,14 +410,14 @@ def _run_cuda_graph_model_bench(model: GeneReconModel, args: argparse.Namespace)
         loss = model()
         torch.cuda.synchronize()
         torch.cuda.reset_peak_memory_stats()
-        if args.profile_cuda_api:
+        if _profile_phase_enabled(args, "normal"):
             torch.cuda.cudart().cudaProfilerStart()
 
         def backward_only() -> None:
             loss.backward()
 
         normal_times.append(_cuda_event_elapsed(backward_only))
-        if args.profile_cuda_api:
+        if _profile_phase_enabled(args, "normal"):
             torch.cuda.cudart().cudaProfilerStop()
         normal_peaks.append(torch.cuda.max_memory_allocated() / 1e9)
         if baseline_loss is None:
@@ -405,10 +474,10 @@ def _run_cuda_graph_model_bench(model: GeneReconModel, args: argparse.Namespace)
     replay_peaks = []
     for _ in range(args.reps):
         torch.cuda.reset_peak_memory_stats()
-        if args.profile_cuda_api:
+        if _profile_phase_enabled(args, "replay"):
             torch.cuda.cudart().cudaProfilerStart()
         replay_times.append(_cuda_event_elapsed(graph.replay))
-        if args.profile_cuda_api:
+        if _profile_phase_enabled(args, "replay"):
             torch.cuda.cudart().cudaProfilerStop()
         replay_peaks.append(torch.cuda.max_memory_allocated() / 1e9)
 
@@ -455,7 +524,7 @@ def _run_cuda_graph_pi_backward_bench(
 
     for _ in range(args.reps):
         torch.cuda.reset_peak_memory_stats()
-        if args.profile_cuda_api:
+        if _profile_phase_enabled(args, "normal"):
             torch.cuda.cudart().cudaProfilerStart()
         holder = {}
 
@@ -463,7 +532,7 @@ def _run_cuda_graph_pi_backward_bench(
             holder["out"] = Pi_wave_backward(**kwargs)
 
         normal_times.append(_cuda_event_elapsed(direct_backward))
-        if args.profile_cuda_api:
+        if _profile_phase_enabled(args, "normal"):
             torch.cuda.cudart().cudaProfilerStop()
         normal_peaks.append(torch.cuda.max_memory_allocated() / 1e9)
         if baseline_bwd is None:
@@ -522,7 +591,7 @@ def _run_cuda_graph_pi_backward_bench(
         key: value.detach().clone() if torch.is_tensor(value) else value
         for key, value in static_bwd.items()
     }
-    output_abs_diff = _max_tensor_dict_abs_diff(
+    output_abs_diff, output_abs_diff_key, output_rel_diff = _max_tensor_dict_abs_diff(
         baseline_bwd,
         graph_bwd,
         keys=tensor_keys,
@@ -532,10 +601,10 @@ def _run_cuda_graph_pi_backward_bench(
     replay_peaks = []
     for _ in range(args.reps):
         torch.cuda.reset_peak_memory_stats()
-        if args.profile_cuda_api:
+        if _profile_phase_enabled(args, "replay"):
             torch.cuda.cudart().cudaProfilerStart()
         replay_times.append(_cuda_event_elapsed(graph.replay))
-        if args.profile_cuda_api:
+        if _profile_phase_enabled(args, "replay"):
             torch.cuda.cudart().cudaProfilerStop()
         replay_peaks.append(torch.cuda.max_memory_allocated() / 1e9)
 
@@ -555,7 +624,12 @@ def _run_cuda_graph_pi_backward_bench(
         "times", ",".join(f"{t:.3f}" for t in replay_times),
     )
     if args.cuda_graph_check:
-        print("cuda_graph_check", "max_output_abs_diff", f"{output_abs_diff:.8e}")
+        print(
+            "cuda_graph_check",
+            "max_output_abs_diff", f"{output_abs_diff:.8e}",
+            "key", output_abs_diff_key,
+            "rel_to_key_max", f"{output_rel_diff:.8e}",
+        )
     print("normal_peak_alloc_gb", f"{max(normal_peaks):.3f}")
     print("cuda_graph_peak_alloc_gb", f"{max(replay_peaks):.3f}")
 

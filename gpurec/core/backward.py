@@ -465,17 +465,48 @@ def Pi_wave_backward(
     C, S = Pi_star_wave.shape
     K = len(wave_metas)
 
-    sp_P_idx = species_helpers['s_P_indexes']
-    sp_c12_idx = species_helpers['s_C12_indexes']
-    p_cpu = sp_P_idx.cpu().long()
-    c_cpu = sp_c12_idx.cpu().long()
-    mask_c1 = p_cpu < S
-    sp_child1_cpu = torch.full((S,), S, dtype=torch.long)
-    sp_child2_cpu = torch.full((S,), S, dtype=torch.long)
-    sp_child1_cpu[p_cpu[mask_c1]] = c_cpu[mask_c1]
-    sp_child2_cpu[p_cpu[~mask_c1] - S] = c_cpu[~mask_c1]
-    sp_child1 = sp_child1_cpu.to(device)
-    sp_child2 = sp_child2_cpu.to(device)
+    target_device = torch.device(device)
+    if target_device.type == 'cuda' and target_device.index is None:
+        target_device = torch.device('cuda', torch.cuda.current_device())
+    species_cache = species_helpers.get('_wave_forward_species_cache')
+    sp_child1_cpu = sp_child2_cpu = None
+    sp_child1 = sp_child2 = None
+    p_cpu = c_cpu = mask_c1 = None
+    if species_cache is not None and int(species_cache.get('S', -1)) == int(S):
+        cached_child1 = species_cache.get('sp_child1')
+        cached_child2 = species_cache.get('sp_child2')
+        cached_child1_cpu = species_cache.get('sp_child1_cpu')
+        cached_child2_cpu = species_cache.get('sp_child2_cpu')
+        if (
+            torch.is_tensor(cached_child1)
+            and torch.is_tensor(cached_child2)
+            and cached_child1.device == target_device
+            and cached_child2.device == target_device
+            and torch.is_tensor(cached_child1_cpu)
+            and torch.is_tensor(cached_child2_cpu)
+        ):
+            sp_child1 = cached_child1
+            sp_child2 = cached_child2
+            sp_child1_cpu = cached_child1_cpu
+            sp_child2_cpu = cached_child2_cpu
+
+    if sp_child1 is None or sp_child2 is None:
+        sp_P_idx = species_helpers['s_P_indexes']
+        sp_c12_idx = species_helpers['s_C12_indexes']
+        p_cpu = sp_P_idx.cpu().long()
+        c_cpu = sp_c12_idx.cpu().long()
+        mask_c1 = p_cpu < S
+        sp_child1_cpu = torch.full((S,), S, dtype=torch.long)
+        sp_child2_cpu = torch.full((S,), S, dtype=torch.long)
+        sp_child1_cpu[p_cpu[mask_c1]] = c_cpu[mask_c1]
+        sp_child2_cpu[p_cpu[~mask_c1] - S] = c_cpu[~mask_c1]
+        sp_child1 = sp_child1_cpu.to(target_device)
+        sp_child2 = sp_child2_cpu.to(target_device)
+        if species_cache is not None and int(species_cache.get('S', -1)) == int(S):
+            species_cache['sp_child1'] = sp_child1
+            species_cache['sp_child2'] = sp_child2
+            species_cache['sp_child1_cpu'] = sp_child1_cpu
+            species_cache['sp_child2_cpu'] = sp_child2_cpu
 
     fused_cross_pibar_vjp_enabled = (
         os.environ.get("GPUREC_FUSED_CROSS_PIBAR_VJP", "1") != "0"
@@ -767,9 +798,6 @@ def Pi_wave_backward(
     sp_parent = None
     depth_nodes = None
     if fused_cross_pibar_vjp_enabled:
-        target_device = torch.device(device)
-        if target_device.type == 'cuda' and target_device.index is None:
-            target_device = torch.device('cuda', torch.cuda.current_device())
         cache = species_helpers.get('_wave_forward_species_cache')
         if cache is not None and int(cache.get('S', -1)) == int(S):
             cached_ancestor_cols = cache.get('ancestor_cols')
@@ -818,6 +846,12 @@ def Pi_wave_backward(
             )
             or (prefix_cross_pibar_vjp_impl and (sp_parent is None or depth_nodes is None))
         ):
+            if p_cpu is None or c_cpu is None or mask_c1 is None:
+                sp_P_idx = species_helpers['s_P_indexes']
+                sp_c12_idx = species_helpers['s_C12_indexes']
+                p_cpu = sp_P_idx.cpu().long()
+                c_cpu = sp_c12_idx.cpu().long()
+                mask_c1 = p_cpu < S
             sp_parent_cpu = torch.full((S,), -1, dtype=torch.long)
             sp_parent_cpu[c_cpu[mask_c1]] = p_cpu[mask_c1]
             sp_parent_cpu[c_cpu[~mask_c1]] = p_cpu[~mask_c1] - S
@@ -1224,8 +1258,25 @@ def Pi_wave_backward(
     )
 
     if wave_topology_int32_enabled:
-        sp_child1_wave = sp_child1_cpu.to(device=device, dtype=torch.int32)
-        sp_child2_wave = sp_child2_cpu.to(device=device, dtype=torch.int32)
+        cached_child1_i32 = None
+        cached_child2_i32 = None
+        if species_cache is not None and int(species_cache.get('S', -1)) == int(S):
+            cached_child1_i32 = species_cache.get('sp_child1_int32')
+            cached_child2_i32 = species_cache.get('sp_child2_int32')
+        if (
+            torch.is_tensor(cached_child1_i32)
+            and torch.is_tensor(cached_child2_i32)
+            and cached_child1_i32.device == target_device
+            and cached_child2_i32.device == target_device
+        ):
+            sp_child1_wave = cached_child1_i32
+            sp_child2_wave = cached_child2_i32
+        else:
+            sp_child1_wave = sp_child1_cpu.to(device=target_device, dtype=torch.int32)
+            sp_child2_wave = sp_child2_cpu.to(device=target_device, dtype=torch.int32)
+            if species_cache is not None and int(species_cache.get('S', -1)) == int(S):
+                species_cache['sp_child1_int32'] = sp_child1_wave
+                species_cache['sp_child2_int32'] = sp_child2_wave
         leaf_species_index_wave = (
             leaf_species_index.to(device=device, dtype=torch.int32).contiguous()
             if torch.is_tensor(leaf_species_index)
