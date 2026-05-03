@@ -1153,6 +1153,7 @@ def _dts_cross_backward_accum_kernel(
     grad_log_pD_ptr,      # optional scalar accumulation target
     grad_log_pS_ptr,      # optional scalar accumulation target
     grad_mt_ptr,          # optional scalar/[S] accumulation target
+    grad_mt_partial_ptr,  # optional [ceil(n_ws/tile_splits), S] two-stage vector accumulation
     pibar_ud_ptr,         # optional [2 * n_ws, S] initial Pibar VJP subtree values
     pibar_A_ptr,          # optional [2 * n_ws] row sums of pibar_ud
     pibar_side_active_ptr, # optional [2 * n_ws] exact nonzero u_d row mask
@@ -1170,6 +1171,8 @@ def _dts_cross_backward_accum_kernel(
     ACCUM_PARAM_REDUCTIONS: tl.constexpr,
     ACCUM_MT_REDUCTION: tl.constexpr,
     GRAD_MT_SCALAR: tl.constexpr,
+    GRAD_MT_TWO_STAGE: tl.constexpr,
+    GRAD_MT_TILE_SPLITS: tl.constexpr,
     OUTPUT_PIBAR_UD: tl.constexpr,
     OUTPUT_SIDE_ACTIVE: tl.constexpr,
     DTYPE: tl.constexpr,
@@ -1335,6 +1338,14 @@ def _dts_cross_backward_accum_kernel(
                     tl.sum(tl.where(mask, mt_contrib, 0.0), axis=0),
                     sem="relaxed",
                 )
+            elif GRAD_MT_TWO_STAGE:
+                mt_tile = i // GRAD_MT_TILE_SPLITS
+                tl.atomic_add(
+                    grad_mt_partial_ptr + mt_tile * S + s_offs,
+                    mt_contrib,
+                    sem="relaxed",
+                    mask=mask,
+                )
             else:
                 tl.atomic_add(
                     grad_mt_ptr + s_offs,
@@ -1424,6 +1435,38 @@ def _dts_cross_backward_accum_kernel(
                 tl.store(pi_l_c2_out, pi_l_c2_cur + vd4, mask=c2_valid)
 
 
+@triton.jit
+def _dts_grad_mt_two_stage_reduce_kernel(
+    partial_ptr,   # [n_tiles, S]
+    grad_mt_ptr,   # [S]
+    n_tiles: tl.constexpr,
+    S: tl.constexpr,
+    BLOCK_TILES: tl.constexpr,
+    BLOCK_S: tl.constexpr,
+    DTYPE: tl.constexpr,
+):
+    """Reduce split-tile DTS grad_mt partials by species."""
+    s_block = tl.program_id(0)
+    s_offs = s_block * BLOCK_S + tl.arange(0, BLOCK_S)
+    valid_s = s_offs < S
+    acc = tl.zeros([BLOCK_S], dtype=DTYPE)
+
+    tile_start = 0
+    while tile_start < n_tiles:
+        tile_offs = tile_start + tl.arange(0, BLOCK_TILES)
+        mask = (tile_offs[:, None] < n_tiles) & valid_s[None, :]
+        vals = tl.load(
+            partial_ptr + tile_offs[:, None] * S + s_offs[None, :],
+            mask=mask,
+            other=0.0,
+        )
+        acc += tl.sum(vals, axis=0)
+        tile_start += BLOCK_TILES
+
+    current = tl.load(grad_mt_ptr + s_offs, mask=valid_s, other=0.0)
+    tl.store(grad_mt_ptr + s_offs, current + acc, mask=valid_s)
+
+
 def dts_cross_backward_accum_fused(
     Pi_star, Pibar_star, v_k, ws,
     sl, sr, reduce_idx, wlsp,
@@ -1443,6 +1486,8 @@ def dts_cross_backward_accum_fused(
     output_pibar_side_active=False,
     mt_squeezed=None,
     pibar_row_max=None,
+    grad_mt_two_stage=False,
+    grad_mt_two_stage_tile_splits=128,
 ):
     """Fused DTS backward with direct Pi-adjoint accumulation."""
     n_ws = sl.shape[0]
@@ -1501,6 +1546,19 @@ def dts_cross_backward_accum_fused(
     mt_arg = mt_arg if output_pibar_ud else dummy
     pibar_row_max_arg = pibar_row_max_arg if output_pibar_ud else dummy
     grad_mt_scalar = bool(accum_mt_reduction and grad_mt.numel() == 1)
+    use_grad_mt_two_stage = bool(
+        grad_mt_two_stage
+        and accum_mt_reduction
+        and not grad_mt_scalar
+        and grad_mt.numel() == S
+    )
+    grad_mt_two_stage_tile_splits = max(1, int(grad_mt_two_stage_tile_splits))
+    n_grad_mt_tiles = triton.cdiv(n_ws, grad_mt_two_stage_tile_splits)
+    grad_mt_partial = (
+        torch.zeros((n_grad_mt_tiles, S), device=device, dtype=dtype)
+        if use_grad_mt_two_stage
+        else dummy
+    )
 
     stride_C = Pi_star.stride(0)
     BLOCK_S = min(256, triton.next_power_of_2(S))
@@ -1517,6 +1575,7 @@ def dts_cross_backward_accum_fused(
         grad_Pibar_r if grad_Pibar_r is not None else pibar_ud,
         param_pD_arg, param_pS_arg,
         grad_log_pD_arg, grad_log_pS_arg, grad_mt_arg,
+        grad_mt_partial,
         pibar_ud_arg, pibar_A_arg, pibar_side_active_arg, mt_arg, pibar_row_max_arg,
         ws, S, stride_C, BLOCK_S,
         USE_ACTIVE_MASK=bool(active_mask is not None),
@@ -1526,10 +1585,26 @@ def dts_cross_backward_accum_fused(
         ACCUM_PARAM_REDUCTIONS=bool(accum_param_reductions),
         ACCUM_MT_REDUCTION=bool(accum_mt_reduction),
         GRAD_MT_SCALAR=bool(grad_mt_scalar),
+        GRAD_MT_TWO_STAGE=bool(use_grad_mt_two_stage),
+        GRAD_MT_TILE_SPLITS=grad_mt_two_stage_tile_splits,
         OUTPUT_PIBAR_UD=bool(output_pibar_ud),
         OUTPUT_SIDE_ACTIVE=bool(output_pibar_side_active),
         DTYPE=_tl_float_dtype(dtype),
     )
+
+    if use_grad_mt_two_stage:
+        mt_block_s = min(64, triton.next_power_of_2(S))
+        mt_block_tiles = 16
+        _dts_grad_mt_two_stage_reduce_kernel[(triton.cdiv(S, mt_block_s),)](
+            grad_mt_partial,
+            grad_mt,
+            n_grad_mt_tiles,
+            S,
+            mt_block_tiles,
+            mt_block_s,
+            DTYPE=_tl_float_dtype(dtype),
+            num_warps=4,
+        )
 
     if output_pibar_ud:
         if output_pibar_side_active:

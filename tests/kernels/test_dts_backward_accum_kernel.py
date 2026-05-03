@@ -860,6 +860,106 @@ def test_dts_staged_pibar_ud_matches_materialized_pibar_vjp(dtype, atol, rtol, a
     torch.testing.assert_close(grad_mt, grad_pibar_l.sum(dim=0) + grad_pibar_r.sum(dim=0), atol=atol, rtol=rtol)
 
 
+@pytest.mark.parametrize("dtype,atol,rtol", [(torch.float32, 5e-5, 5e-5), (torch.float64, 1e-9, 1e-10)])
+@pytest.mark.parametrize("active", [False, True])
+def test_dts_staged_grad_mt_two_stage_matches_vector_atomics(dtype, atol, rtol, active):
+    torch.manual_seed(43)
+    device = torch.device("cuda")
+    C, S, W, N = 10, 31, 3, 8
+    ws = 7
+
+    _, ancestors_dense, sp_child1, sp_child2, _ = _binary_tree_helpers(S, device, dtype)
+    Pi = (torch.randn(C, S, device=device, dtype=dtype) * 0.2 - 2.0).contiguous()
+    mt = (torch.randn(S, device=device, dtype=dtype) * 0.01 - 4.0).contiguous()
+    Pibar, row_max = _uniform_pibar_from_pi(Pi, mt, ancestors_dense)
+    v_k = (torch.randn(W, S, device=device, dtype=dtype) * 0.1).contiguous()
+
+    sl = torch.tensor([0, 1, 2, 3, 1, 4, 5, 2], device=device, dtype=torch.long)
+    sr = torch.tensor([1, 2, 3, 4, 0, 2, 6, 5], device=device, dtype=torch.long)
+    reduce_idx = torch.tensor([0, 1, 1, 2, 2, 0, 1, 2], device=device, dtype=torch.long)
+    wlsp = (torch.randn(N, device=device, dtype=dtype) * 0.1 - 1.0).contiguous()
+    active_mask = torch.tensor([True, False, True], device=device) if active else None
+
+    atomic_rhs = torch.zeros(C, S, device=device, dtype=dtype)
+    two_stage_rhs = torch.zeros(C, S, device=device, dtype=dtype)
+    atomic_mt = torch.zeros(S, device=device, dtype=dtype)
+    two_stage_mt = torch.zeros(S, device=device, dtype=dtype)
+    atomic_pD = torch.zeros(1, device=device, dtype=dtype)
+    atomic_pS = torch.zeros(1, device=device, dtype=dtype)
+    two_stage_pD = torch.zeros(1, device=device, dtype=dtype)
+    two_stage_pS = torch.zeros(1, device=device, dtype=dtype)
+
+    atomic = dts_cross_backward_accum_fused(
+        Pi,
+        Pibar,
+        v_k,
+        ws,
+        sl,
+        sr,
+        reduce_idx,
+        wlsp,
+        _scalar_param(-4.0, device=device, dtype=dtype, shape="1d"),
+        _scalar_param(-5.0, device=device, dtype=dtype, shape="1d"),
+        sp_child1,
+        sp_child2,
+        atomic_rhs,
+        S,
+        active_mask=active_mask,
+        merge_s_term=True,
+        grad_log_pD=atomic_pD,
+        grad_log_pS=atomic_pS,
+        accum_param_reductions=True,
+        grad_mt=atomic_mt,
+        accum_mt_reduction=True,
+        output_pibar_ud=True,
+        output_pibar_side_active=True,
+        mt_squeezed=mt,
+        pibar_row_max=row_max,
+    )
+    two_stage = dts_cross_backward_accum_fused(
+        Pi,
+        Pibar,
+        v_k,
+        ws,
+        sl,
+        sr,
+        reduce_idx,
+        wlsp,
+        _scalar_param(-4.0, device=device, dtype=dtype, shape="1d"),
+        _scalar_param(-5.0, device=device, dtype=dtype, shape="1d"),
+        sp_child1,
+        sp_child2,
+        two_stage_rhs,
+        S,
+        active_mask=active_mask,
+        merge_s_term=True,
+        grad_log_pD=two_stage_pD,
+        grad_log_pS=two_stage_pS,
+        accum_param_reductions=True,
+        grad_mt=two_stage_mt,
+        accum_mt_reduction=True,
+        output_pibar_ud=True,
+        output_pibar_side_active=True,
+        mt_squeezed=mt,
+        pibar_row_max=row_max,
+        grad_mt_two_stage=True,
+        grad_mt_two_stage_tile_splits=3,
+    )
+    torch.cuda.synchronize()
+
+    atomic_ud, atomic_A, atomic_side, atomic_param_pD, atomic_param_pS = atomic
+    two_stage_ud, two_stage_A, two_stage_side, two_stage_param_pD, two_stage_param_pS = two_stage
+    assert atomic_param_pD is None and atomic_param_pS is None
+    assert two_stage_param_pD is None and two_stage_param_pS is None
+    torch.testing.assert_close(two_stage_rhs, atomic_rhs, atol=atol, rtol=rtol)
+    torch.testing.assert_close(two_stage_ud, atomic_ud, atol=atol, rtol=rtol)
+    torch.testing.assert_close(two_stage_A, atomic_A, atol=atol, rtol=rtol)
+    torch.testing.assert_close(two_stage_mt, atomic_mt, atol=atol, rtol=rtol)
+    torch.testing.assert_close(two_stage_pD, atomic_pD, atol=atol, rtol=rtol)
+    torch.testing.assert_close(two_stage_pS, atomic_pS, atol=atol, rtol=rtol)
+    assert torch.equal(two_stage_side.cpu(), atomic_side.cpu())
+
+
 @pytest.mark.parametrize("dtype,atol,rtol", [(torch.float32, 4e-5, 4e-5), (torch.float64, 1e-9, 1e-10)])
 @pytest.mark.parametrize("active", [False, True])
 def test_dts_staged_pibar_ud_skip_zero_sides_matches_unpruned(dtype, atol, rtol, active):

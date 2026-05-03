@@ -1858,6 +1858,186 @@ Profiling gate:
 - gradient differences should match the expected reordered-fp32 tolerance and
   pass finite-difference checks.
 
+### Proposal 6 test report: split-tile `grad_mt` partials
+
+The 3-agent + supervisor pass found two different implementations with very
+different behavior:
+
+| implementation | idea | result |
+|---|---|---|
+| full per-split staging | write `vd1 + vd2` to `[n_ws, S]`, then reduce | correct but rejected |
+| split-tile partials | atomically accumulate into `[ceil(n_ws / tile), S]`, then reduce | accepted as opt-in |
+
+The full-staging variant is the literal way to remove vector `grad_mt` atomics
+from the DTS kernel, but it writes and rereads a large matrix.  For the hot
+50-family split wave with `n_ws = 42155` and `S = 1999`, that matrix is about
+`337 MB`.  Nsys showed the DTS kernel itself improved, but the new reduction
+kernel erased the win:
+
+| bucket, 50 families | current-best | full per-split staging |
+|---|---:|---:|
+| `_dts_cross_backward_accum_kernel` | `31.525 ms` | `28.625 ms` |
+| `_dts_grad_mt_two_stage_reduce_kernel` | none | `6.944 ms` |
+| DTS accum + new reduce | `31.525 ms` | `35.569 ms` |
+| event median | `104.589 ms` | `111.397 ms` |
+
+This confirmed the risk in the proposal: a separate pass over large per-split
+data loses even if it reduces RED instructions inside DTS.
+
+The accepted prototype keeps the current split-major DTS program but changes
+the target of the vector `grad_mt` atomics:
+
+```text
+tile_id = split_id // TILE_SPLITS
+mt_partial[tile_id, s] += vd1[split_id, s] + vd2[split_id, s]
+
+later:
+grad_mt[s] += sum_tile mt_partial[tile, s]
+```
+
+This is not fully atomics-free; it is a contention-reduction experiment.  It
+spreads the hot `S` output vector across many tile rows, so each address is hit
+by at most `TILE_SPLITS` splits instead of all splits in the wave.  The partial
+buffer is small.  At `TILE_SPLITS = 128`, the largest wave uses:
+
+```text
+ceil(42155 / 128) * 1999 * 4 bytes ~= 2.64 MB
+```
+
+Implementation details:
+
+- `GPUREC_DTS_GRAD_MT_TWO_STAGE=1` enables the path.
+- `GPUREC_DTS_GRAD_MT_TWO_STAGE_TILE_SPLITS` controls the split tile; the
+  tested default is `128`.
+- The path only applies to vector `grad_mt` on the direct staged `pibar_ud`
+  path.  Scalar `grad_mt` keeps the existing scalar atomic.  Parent-tiled DTS
+  is unchanged.
+- The direct DTS wrapper allocates a zeroed `[n_tiles, S]` partial buffer,
+  passes it to `_dts_cross_backward_accum_kernel`, then launches
+  `_dts_grad_mt_two_stage_reduce_kernel`.
+- Default behavior remains unchanged unless the environment flag is set.
+
+Correctness checks:
+
+```text
+python -m py_compile gpurec/core/backward.py gpurec/core/kernels/wave_backward.py
+pytest -q tests/kernels/test_dts_backward_accum_kernel.py
+  -> 47 passed
+
+GPUREC_DTS_GRAD_MT_TWO_STAGE=1 \
+pytest -q tests/gradients/test_autograd_bridge.py \
+          tests/gradients/test_fd_all_modes.py::test_analytic_matches_fd
+  -> 21 passed
+```
+
+The focused kernel test compares direct vector atomics and split-tile partials
+for `fp32` and `fp64`, with active-mask on/off, scalar parameter reductions,
+staged `pibar_ud`, `pibar_A`, and side-active output.  Tolerances are
+`5e-5` for fp32 and `1e-9`/`1e-10` for fp64, because the split-tile path changes
+the vector reduction order.
+
+End-to-end timing used the current-best flags from Proposals 4 and 5:
+
+```text
+GPUREC_DTS_PIBAR_UD_SKIP_ZERO_SIDES=1
+GPUREC_DTS_PIBAR_UD_COMPACT_LEVELS=1
+```
+
+Main benchmark:
+
+| case | baseline median | Proposal 6 median | median gain |
+|---|---:|---:|---:|
+| 10 families, tile 128, 9 reps | `34.813 ms` | `33.163 ms` | `1.650 ms` |
+| 50 families, tile 128, 15 reps | `105.478 ms` | `102.079 ms` | `3.399 ms` |
+
+Tile sweep, 50 families, 5 reps:
+
+| tile size | median |
+|---:|---:|
+| baseline | `105.011 ms` |
+| 8 | `102.202 ms` |
+| 16 | `101.668 ms` |
+| 32 | `101.244 ms` |
+| 64 | `104.492 ms` |
+| 128 | `101.036 ms` |
+| 256 | `100.879 ms` |
+| 512 | `101.560 ms` |
+
+Tile `256` was slightly best in the short 50-family sweep, but tile `128` was
+much better on the 10-family case (`33.163 ms` versus `34.067 ms` at tile
+`256`) and essentially tied on 50 families, so `128` is the current default.
+The tile-size curve is noisy because it balances partial-buffer rows, atomic
+contention, and allocation/fill overhead.
+
+Nsight Systems, 50-family capture:
+
+| bucket | baseline | Proposal 6 tile 128 |
+|---|---:|---:|
+| `_dts_cross_backward_accum_kernel` | `31.543 ms` | `26.878 ms` |
+| `_dts_grad_mt_two_stage_reduce_kernel` | none | `0.104 ms` |
+| DTS accum + new reduce | `31.543 ms` | `26.982 ms` |
+| `_wave_backward_uniform_kernel` | `24.887 ms` | `24.884 ms` |
+| `_uniform_cross_pibar_vjp_tree_from_ud_compact_kernel` | `15.943 ms` | `15.852 ms` |
+| profiled backward event | `117.790 ms` | `114.754 ms` |
+
+The profiled event times include Nsight overhead and are larger than regular
+event timings, but the bucket deltas are useful: the DTS side falls by about
+`4.56 ms` after paying for the new reduction kernel.
+
+NCU hot DTS launch, split-wave skip 4, grid `42155`:
+
+| metric | baseline | Proposal 6 tile 128 |
+|---|---:|---:|
+| duration | `5.237 ms` | `4.542 ms` |
+| registers/thread | `96` | `96` |
+| achieved occupancy | `41.51%` | `41.51%` |
+| DRAM read | `2.014 GB` | `2.017 GB` |
+| DRAM write | `1.316 GB` | `1.319 GB` |
+| global load inst | `36.392 M` | `36.392 M` |
+| global store inst | `5.480 M` | `5.480 M` |
+| global RED inst | `18.613 M` | `18.571 M` |
+| L1 global RED bytes | `3.305 GB` | `3.043 GB` |
+
+The main metric is not the instruction count.  The number of RED instructions
+barely changes because the DTS kernel still uses atomics.  The win comes from
+where those atomics go: spreading them over partial rows reduces hot-address
+contention and lowers measured global RED traffic by about `262 MB` on the hot
+launch.  Register pressure does not improve, so occupancy remains fixed at
+`41.5%`.
+
+NCU for the corresponding reduction launch:
+
+| metric | value |
+|---|---:|
+| duration | `11.840 us` |
+| DRAM read | `2.651 MB` |
+| global load inst | `20,916` |
+| global store inst | `63` |
+| global RED inst | `0` |
+
+This is why the tile-partial version succeeds while full staging failed: the
+extra reduction is tiny when it reads `[ceil(n_ws/tile), S]`, not `[n_ws, S]`.
+
+Artifacts:
+
+```text
+/tmp/gpurec_profile/prop6_currentbest_fams50.nsys-rep
+/tmp/gpurec_profile/prop6_twostage_fams50.nsys-rep
+/tmp/gpurec_profile/prop6_tile_baseline_fams50.nsys-rep
+/tmp/gpurec_profile/prop6_tile_twostage128_fams50.nsys-rep
+/tmp/gpurec_profile/prop6_tile_ncu_dts_baseline_skip4.csv
+/tmp/gpurec_profile/prop6_tile_ncu_dts_twostage128_skip4.csv
+/tmp/gpurec_profile/prop6_tile_ncu_dts_baseline_skip4_occ.csv
+/tmp/gpurec_profile/prop6_tile_ncu_dts_twostage128_skip4_occ.csv
+/tmp/gpurec_profile/prop6_tile_ncu_reduce_twostage128_skip4.csv
+```
+
+Decision: keep Proposal 6 as a validated opt-in path.  It is the first Proposal
+6 version that improves the 50-family target, but it should stay behind
+`GPUREC_DTS_GRAD_MT_TWO_STAGE=1` until we test it on the larger 1000-tree
+scheduling workload and decide whether the tile-size heuristic should depend
+on `n_ws`.
+
 ## Proposal 7: scratch-buffer pooling for large wave temporaries
 
 The hot wrappers allocate several large temporary tensors per wave:

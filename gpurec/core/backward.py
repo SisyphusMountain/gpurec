@@ -699,6 +699,12 @@ def Pi_wave_backward(
     dts_reduction_accum_min_splits = int(
         os.environ.get("GPUREC_DTS_BACKWARD_REDUCTION_ACCUM_MIN_SPLITS", "8192")
     )
+    dts_grad_mt_two_stage_enabled = (
+        os.environ.get("GPUREC_DTS_GRAD_MT_TWO_STAGE", "0") != "0"
+    )
+    dts_grad_mt_two_stage_tile_splits = int(
+        os.environ.get("GPUREC_DTS_GRAD_MT_TWO_STAGE_TILE_SPLITS", "128")
+    )
     _compute_dts_cross_kernelized = None
     if kernelized_backward_dts_enabled:
         from .forward import _compute_dts_cross as _compute_dts_cross_kernelized
@@ -1601,6 +1607,13 @@ def Pi_wave_backward(
                                 ),
                                 mt_squeezed=mt_shared,
                                 pibar_row_max=forward_pibar_row_max,
+                                grad_mt_two_stage=(
+                                    dts_grad_mt_two_stage_enabled
+                                    and pibar_ud_fusion_match
+                                ),
+                                grad_mt_two_stage_tile_splits=(
+                                    dts_grad_mt_two_stage_tile_splits
+                                ),
                             )
                             if (
                                 pibar_ud_fusion_match
