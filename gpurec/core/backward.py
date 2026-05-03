@@ -575,6 +575,42 @@ def Pi_wave_backward(
     backward_pruning_row_stats_enabled = (
         os.environ.get("GPUREC_BACKWARD_PRUNING_ROW_STATS", "0") != "0"
     )
+    hybrid_row_pruning_env = os.environ.get("GPUREC_BACKWARD_HYBRID_ROW_PRUNING")
+    if hybrid_row_pruning_env is None:
+        hybrid_row_pruning_env = os.environ.get("GPUREC_BACKWARD_HYBRID_ROW_MASK")
+    if hybrid_row_pruning_env is None:
+        hybrid_row_pruning_env = os.environ.get("GPUREC_FUSED_ROW_ACTIVE_MASK")
+    if hybrid_row_pruning_env is None:
+        hybrid_row_pruning_env = "1"
+    hybrid_row_pruning_enabled = (
+        (hybrid_row_pruning_env != "0")
+        and _HAS_FUSED_BACKWARD
+        and pibar_mode == 'uniform'
+        and device.type == 'cuda'
+        and dtype in (torch.float32, torch.float64)
+    )
+    hybrid_row_pruning_targets = os.environ.get(
+        "GPUREC_BACKWARD_HYBRID_ROW_PRUNING_TARGETS",
+        os.environ.get("GPUREC_BACKWARD_ROW_MASK_TARGETS", "all"),
+    ).strip().lower()
+    if hybrid_row_pruning_targets in ("", "1", "true", "yes", "on"):
+        hybrid_row_pruning_targets = "all"
+    hybrid_prune_self = hybrid_row_pruning_targets in ("all", "self", "wave")
+    hybrid_prune_splits = hybrid_row_pruning_targets in (
+        "all",
+        "split",
+        "splits",
+        "dts",
+        "dts_pibar",
+        "pibar",
+    )
+    hybrid_row_pruning_require_partial = (
+        os.environ.get("GPUREC_BACKWARD_HYBRID_ROW_PRUNING_REQUIRE_PARTIAL", "0")
+        != "0"
+    )
+    hybrid_row_pruning_min_inactive_frac = float(
+        os.environ.get("GPUREC_BACKWARD_HYBRID_ROW_PRUNING_MIN_INACTIVE_FRAC", "0")
+    )
     wave_topology_int32_enabled = (
         os.environ.get("GPUREC_WAVE_TOPOLOGY_INT32", "1") != "0"
         and device.type == 'cuda'
@@ -1001,14 +1037,18 @@ def Pi_wave_backward(
         device_pruning_wave = device_pruning_requested and use_fused
         kernel_pruning_wave = no_cpu_pruning_wave or device_pruning_wave
         active_mask = None
-        active_mask_for_kernels = None
+        active_mask_for_dts_forward = None
+        active_mask_for_wave_kernel = None
+        active_mask_for_split_kernels = None
 
         if kernel_pruning_wave:
             if use_pruning or device_pruning_wave:
                 active_mask = _compute_active_mask(rhs_k)
             if active_mask is not None:
                 active_mask = active_mask.contiguous()
-                active_mask_for_kernels = active_mask
+                active_mask_for_dts_forward = active_mask
+                active_mask_for_wave_kernel = active_mask
+                active_mask_for_split_kernels = active_mask
             if device_pruning_wave:
                 device_pruning_clades_total += W
                 device_pruning_waves_total += 1
@@ -1027,11 +1067,41 @@ def Pi_wave_backward(
                 continue
 
             if use_fused:
+                apply_hybrid_row_pruning = hybrid_row_pruning_enabled
+                n_active_for_policy = None
+                if apply_hybrid_row_pruning and (
+                    hybrid_row_pruning_require_partial
+                    or hybrid_row_pruning_min_inactive_frac > 0.0
+                ):
+                    n_active_for_policy = int(active_mask.sum().item())
+                    n_inactive_for_policy = W - n_active_for_policy
+                    if (
+                        hybrid_row_pruning_require_partial
+                        and n_inactive_for_policy == 0
+                    ):
+                        apply_hybrid_row_pruning = False
+                    if hybrid_row_pruning_min_inactive_frac > 0.0:
+                        inactive_frac = n_inactive_for_policy / W
+                        apply_hybrid_row_pruning = (
+                            apply_hybrid_row_pruning
+                            and inactive_frac >= hybrid_row_pruning_min_inactive_frac
+                        )
+                if apply_hybrid_row_pruning:
+                    active_mask = active_mask.contiguous()
+                    if hybrid_prune_self:
+                        active_mask_for_dts_forward = active_mask
+                        active_mask_for_wave_kernel = active_mask
+                    if hybrid_prune_splits:
+                        active_mask_for_split_kernels = active_mask
                 # The fused Triton path does not consume compact row indices.
                 # Keep optional row statistics out of the production path
                 # because sum().item() synchronizes the wave loop.
                 if backward_pruning_row_stats_enabled:
-                    n_active = int(active_mask.sum().item())
+                    n_active = (
+                        n_active_for_policy
+                        if n_active_for_policy is not None
+                        else int(active_mask.sum().item())
+                    )
                     n_clades_skipped += (W - n_active)
                 else:
                     n_active = W
@@ -1056,7 +1126,7 @@ def Pi_wave_backward(
                     dts_r = _compute_dts_cross_kernelized(
                         Pi_star_wave.detach(), Pibar_star_wave.detach(), meta,
                         sp_child1, sp_child2, log_pD_dts, log_pS_dts, S, device, dtype,
-                        active_mask=active_mask_for_kernels,
+                        active_mask=active_mask_for_dts_forward,
                     )
                 else:
                     dts_r = _dts_cross_differentiable(
@@ -1132,7 +1202,7 @@ def Pi_wave_backward(
                 leaf_species_idx=leaf_species_index_wave if use_uniform_leaf_index else None,
                 leaf_logp=uniform_leaf_logp if use_uniform_leaf_index else None,
                 accum_param_grads=accum_param_grads,
-                active_mask=active_mask_for_kernels,
+                active_mask=active_mask_for_wave_kernel,
                 sp_parent=sp_parent_wave,
                 pibar_row_max=forward_pibar_row_max,
             )
@@ -1283,7 +1353,7 @@ def Pi_wave_backward(
                             sl, sr, reduce_idx, wlsp,
                             log_pD, log_pS,
                             sp_child1, sp_child2, accumulated_rhs, S,
-                            active_mask=active_mask_for_kernels,
+                            active_mask=active_mask_for_split_kernels,
                             use_atomics=False,
                         )
                     elif use_grouped_dts_accum:
@@ -1293,7 +1363,7 @@ def Pi_wave_backward(
                             sl, sr, reduce_idx, wlsp,
                             log_pD, log_pS,
                             sp_child1, sp_child2, accumulated_rhs, S,
-                            active_mask=active_mask_for_kernels,
+                            active_mask=active_mask_for_split_kernels,
                             group_children=group_children,
                             group_inverse=group_inverse,
                         )
@@ -1330,7 +1400,7 @@ def Pi_wave_backward(
                             sl, sr, reduce_idx, wlsp,
                             log_pD, log_pS,
                             sp_child1, sp_child2, accumulated_rhs, S,
-                            active_mask=active_mask_for_kernels,
+                            active_mask=active_mask_for_split_kernels,
                             merge_s_term=merged_dts_backward_accum_enabled,
                             grad_log_pD=grad_log_pD,
                             grad_log_pS=grad_log_pS,
@@ -1354,7 +1424,7 @@ def Pi_wave_backward(
                         sl, sr, reduce_idx, wlsp,
                         log_pD, log_pS,
                         sp_child1, sp_child2, S,
-                        active_mask=active_mask_for_kernels,
+                        active_mask=active_mask_for_split_kernels,
                     )
 
                 # Accumulate into G=1 row. The direct DTS accumulation path can
@@ -1474,7 +1544,7 @@ def Pi_wave_backward(
                         level_parents,
                         accumulated_rhs,
                         S,
-                        active_mask=active_mask_for_kernels,
+                        active_mask=active_mask_for_split_kernels,
                         reduce_idx=reduce_idx,
                         pibar_row_max=forward_pibar_row_max,
                     )
@@ -1482,7 +1552,7 @@ def Pi_wave_backward(
                     grouped_cross_pibar_vjp_enabled
                     and fused_cross_pibar_vjp_impl == "tree"
                     and level_parents is not None
-                    and active_mask_for_kernels is None
+                    and active_mask_for_split_kernels is None
                 ):
                     if grouped_cross_pibar_reduce_impl in ("triton", "kernel"):
                         group_children = meta.get('_cross_pibar_group_children')
@@ -1518,7 +1588,7 @@ def Pi_wave_backward(
                             active_mask=(
                                 active_mask
                                 if grouped_cross_pibar_use_active
-                                else active_mask_for_kernels
+                                else active_mask_for_split_kernels
                             ),
                             reduce_idx=reduce_idx,
                         )
@@ -1565,7 +1635,7 @@ def Pi_wave_backward(
                         level_parents,
                         accumulated_rhs,
                         S,
-                        active_mask=active_mask_for_kernels,
+                        active_mask=active_mask_for_split_kernels,
                         reduce_idx=reduce_idx,
                         row_stats=cross_pibar_row_stats,
                     )
@@ -1582,7 +1652,7 @@ def Pi_wave_backward(
                         level_parents,
                         accumulated_rhs,
                         S,
-                        active_mask=active_mask_for_kernels,
+                        active_mask=active_mask_for_split_kernels,
                         reduce_idx=reduce_idx,
                         row_stats=cross_pibar_row_stats,
                         Pibar_star=Pibar_star_wave,
@@ -1599,7 +1669,7 @@ def Pi_wave_backward(
                         ancestor_cols,
                         accumulated_rhs,
                         S,
-                        active_mask=active_mask_for_kernels,
+                        active_mask=active_mask_for_split_kernels,
                         reduce_idx=reduce_idx,
                         row_stats=cross_pibar_row_stats,
                     )

@@ -305,6 +305,196 @@ Profiling gate:
   threshold-inactive diagnostics;
 - reject if total kernel time does not fall even when row counts look good.
 
+### Proposal 1 implementation result
+
+Implemented in `gpurec/core/backward.py` and accepted as the default fused
+uniform backward behavior.  `GPUREC_BACKWARD_HYBRID_ROW_PRUNING=0` disables it
+for A/B profiling.  The older aliases `GPUREC_BACKWARD_HYBRID_ROW_MASK` and
+`GPUREC_FUSED_ROW_ACTIVE_MASK` are still accepted when the primary variable is
+unset.
+
+The subagent split was:
+
+| Role | Result |
+|---|---|
+| Agent 1, code-path audit | confirmed that proposal 0 made the fused path use the active mask only for whole-wave host skip, so partial active rows were still computed inside active waves |
+| Agent 2, prototype and parity | prototyped mask forwarding into fused kernels; found the useful policy is `all`, with smaller wins for `self` and `splits` only |
+| Agent 3, profiling plan | isolated the necessary Nsys buckets and NCU launches: largest launches plus representative partially inactive launches |
+| Supervisor | integrated the targeted masks, ran correctness/FD tests, ran event/Nsys/NCU profiles, and documented the result here |
+
+The implementation keeps the existing host whole-wave pruning decision and adds
+three separate masks:
+
+```python
+active_mask = active_rows(rhs_k)
+if not active_mask.any():
+    continue                  # preserve whole-wave skip
+
+active_mask_for_dts_forward = None
+active_mask_for_wave_kernel = None
+active_mask_for_split_kernels = None
+
+if hybrid_row_pruning_enabled:
+    active_mask = active_mask.contiguous()
+    if target in {"all", "self", "wave"}:
+        active_mask_for_dts_forward = active_mask
+        active_mask_for_wave_kernel = active_mask
+    if target in {"all", "split", "splits", "dts", "dts_pibar", "pibar"}:
+        active_mask_for_split_kernels = active_mask
+```
+
+This matters because the fused backward wave has two different kinds of work.
+The self-loop/DTS-forward part consumes wave rows, while the DTS accumulation
+and Pibar VJP consume split-side rows through `reduce_idx`.  A single
+`active_mask_for_kernels` switch made experiments ambiguous; separate masks let
+us test where the win comes from.
+
+Additional profiling-only policy knobs were added:
+
+| Variable | Meaning |
+|---|---|
+| `GPUREC_BACKWARD_HYBRID_ROW_PRUNING_TARGETS=self` | mask only the DTS forward recompute and self-loop wave kernel |
+| `GPUREC_BACKWARD_HYBRID_ROW_PRUNING_TARGETS=splits` | mask only DTS backward accumulation and split-side Pibar VJP |
+| `GPUREC_BACKWARD_HYBRID_ROW_PRUNING_REQUIRE_PARTIAL=1` | compute `active_mask.sum().item()` and pass the mask only when at least one row is inactive |
+| `GPUREC_BACKWARD_HYBRID_ROW_PRUNING_MIN_INACTIVE_FRAC=0.10` | compute the inactive fraction on the host and pass the mask only above the threshold |
+
+The last two knobs deliberately reintroduce a scalar synchronization, so they
+are not default production policy.  They are there to test whether the branch
+overhead on nearly full waves is large enough to justify a future device-side
+counter/worklist.
+
+Correctness checks:
+
+| Check | Result |
+|---|---:|
+| `python -m py_compile gpurec/core/backward.py` | pass |
+| `pytest -q tests/gradients/test_autograd_bridge.py tests/kernels/test_active_mask_kernel.py tests/kernels/test_dts_fused_kernel.py tests/kernels/test_dts_backward_accum_kernel.py tests/kernels/test_uniform_cross_pibar_vjp_kernel.py` | `49 passed` |
+| `pytest -q tests/gradients/test_fd_all_modes.py::test_analytic_matches_fd` | `6 passed` |
+| exact-zero pruning disabled, 10 families, hybrid all on vs off | loss diff `0`, theta max-abs `2.441e-4`, theta max-rel `1.828e-7` |
+| threshold pruning enabled, 10 families, hybrid `all` vs off | loss diff `0`, theta max-abs `0.004028`, theta max-rel `3.016e-6` |
+| threshold pruning enabled, 10 families, hybrid `self` vs off | loss diff `0`, theta max-abs `0.004272`, theta max-rel `3.199e-6` |
+| threshold pruning enabled, 10 families, hybrid `splits` vs off | loss diff `0`, theta max-abs `0.004150`, theta max-rel `3.108e-6` |
+
+The small threshold-mode gradient differences are expected from doing real
+row-level pruning at the same numerical cutoff that was previously used only
+for whole-wave skipping.  The finite-difference test still passes.
+
+CUDA-event benchmarks, 50 families, 15 measured repetitions:
+
+| Policy | Env | Median | Delta vs off |
+|---|---|---:|---:|
+| row masks disabled | `GPUREC_BACKWARD_HYBRID_ROW_PRUNING=0` | `119.411 ms` | reference |
+| all masks, default | none | `116.055 ms` | `-3.356 ms` / `-2.8%` |
+| self-loop side only | `GPUREC_BACKWARD_HYBRID_ROW_PRUNING_TARGETS=self` | `118.280 ms` | `-1.131 ms` / `-0.9%` |
+| split side only | `GPUREC_BACKWARD_HYBRID_ROW_PRUNING_TARGETS=splits` | `118.081 ms` | `-1.330 ms` / `-1.1%` |
+| all masks, only partial waves | `GPUREC_BACKWARD_HYBRID_ROW_PRUNING_REQUIRE_PARTIAL=1` | `116.860 ms` | `-2.551 ms` / `-2.1%` |
+| all masks, inactive fraction at least `10%` | `GPUREC_BACKWARD_HYBRID_ROW_PRUNING_MIN_INACTIVE_FRAC=0.10` | `117.224 ms` | `-2.187 ms` / `-1.8%` |
+| all masks, inactive fraction at least `25%` | `GPUREC_BACKWARD_HYBRID_ROW_PRUNING_MIN_INACTIVE_FRAC=0.25` | `117.060 ms` | `-2.351 ms` / `-2.0%` |
+
+A separate clean A/B run after making `all` the default measured `115.980 ms`
+default versus `119.616 ms` disabled, a `3.636 ms` improvement.  The 10-family
+workload did not benefit consistently: default and disabled both measured about
+`35.75 ms`, which matches the idea that the benefit needs enough partially
+inactive waves to amortize the branch and mask load.
+
+Negative controls:
+
+| Policy | Median |
+|---|---:|
+| `GPUREC_DEVICE_PRUNING=1` | `123.624 ms` |
+| `GPUREC_BACKWARD_NO_CPU_PRUNING=1` | `122.712 ms` |
+
+These remain slower because they launch fixed-schedule work for waves the host
+would have skipped entirely.  Proposal 1 is specifically a hybrid: keep the
+host whole-wave skip, then use the same mask inside the kernels for active
+waves.
+
+Nsight Systems, 50 families, one captured backward after warmup:
+
+| Metric | Masks disabled | Hybrid `all` | Delta |
+|---|---:|---:|---:|
+| CUDA event in capture | `132.992 ms` | `130.488 ms` | `-2.504 ms` |
+| summed GPU kernel time | `108.640 ms` | `105.521 ms` | `-3.119 ms` |
+| kernel launches | `2846` | `2846` | `0` |
+| `cudaStreamSynchronize` calls | `205` | `205` | `0` |
+| `cudaLaunchKernel` API time | `4.695 ms` | `4.595 ms` | `-0.100 ms` |
+| D2D memcpy time | `0.390 ms` | `0.391 ms` | `0.000 ms` |
+| D2H memcpy time | `0.129 ms` | `0.127 ms` | `-0.002 ms` |
+
+The improvement is not from fewer launches or fewer host syncs.  It is actual
+GPU work removed inside already-launched kernels.
+
+Nsys hot buckets:
+
+| Kernel bucket | Masks disabled | Hybrid `all` | Delta |
+|---|---:|---:|---:|
+| `_dts_cross_backward_accum_kernel` | `32.571 ms` | `31.448 ms` | `-1.123 ms` |
+| `_wave_backward_uniform_kernel` | `25.363 ms` | `24.089 ms` | `-1.274 ms` |
+| `_uniform_cross_pibar_vjp_tree_from_ud_kernel` | `25.443 ms` | `24.923 ms` | `-0.520 ms` |
+| `_dts_fused_kernel` | `12.210 ms` | `12.000 ms` | `-0.210 ms` |
+| `_active_mask_from_rhs_absmax_kernel` | `2.918 ms` | `2.957 ms` | `+0.039 ms` |
+| `_seg_lse_hdim_kernel` | `1.518 ms` | `1.515 ms` | `-0.003 ms` |
+
+The per-launch deltas show why the total win is only a few milliseconds: the
+largest launches are mostly active and do not change, but several mid-sized
+launches become much cheaper.
+
+| Kernel and launch-skip | Masks disabled | Hybrid `all` | Delta |
+|---|---:|---:|---:|
+| `_wave_backward_uniform_kernel`, skip 7 | `0.597 ms` | `0.052 ms` | `-0.544 ms` |
+| `_wave_backward_uniform_kernel`, skip 8 | `0.363 ms` | `0.046 ms` | `-0.318 ms` |
+| `_wave_backward_uniform_kernel`, skip 6 | `0.201 ms` | `0.036 ms` | `-0.164 ms` |
+| `_dts_cross_backward_accum_kernel`, skip 7 | `0.483 ms` | `0.072 ms` | `-0.411 ms` |
+| `_dts_cross_backward_accum_kernel`, skip 8 | `0.288 ms` | `0.044 ms` | `-0.244 ms` |
+| `_uniform_cross_pibar_vjp_tree_from_ud_kernel`, skip 7 | `0.386 ms` | `0.020 ms` | `-0.367 ms` |
+| `_uniform_cross_pibar_vjp_tree_from_ud_kernel`, skip 8 | `0.219 ms` | `0.019 ms` | `-0.200 ms` |
+| `_dts_fused_kernel`, skip 7 | `0.113 ms` | `0.032 ms` | `-0.081 ms` |
+| `_dts_fused_kernel`, skip 8 | `0.081 ms` | `0.020 ms` | `-0.062 ms` |
+
+Nsight Compute confirmed the same shape.  For the largest representative
+launches, the mask branch is almost free but also has almost nothing to skip:
+
+| Launch | Metric | Masks disabled | Hybrid `all` |
+|---|---|---:|---:|
+| largest `_wave_backward_uniform_kernel`, skip 34 | duration | `5.175 ms` | `5.171 ms` |
+| same | DRAM throughput | `55.86%` | `56.05%` |
+| same | compute throughput | `39.61%` | `39.62%` |
+| same | achieved occupancy | `99.42%` | `99.41%` |
+| largest `_dts_cross_backward_accum_kernel`, skip 4 | duration | `5.330 ms` | `5.303 ms` |
+| same | DRAM throughput | `62.32%` | `62.35%` |
+| same | compute throughput | `24.43%` | `24.44%` |
+| same | achieved occupancy | `41.54%` | `41.54%` |
+| same | registers/thread | `96` | `96` |
+
+For a representative partially inactive launch, the early-return branch removes
+most of the work:
+
+| Launch | Metric | Masks disabled | Hybrid `all` |
+|---|---|---:|---:|
+| `_wave_backward_uniform_kernel`, skip 7 | duration | `655.424 us` | `53.696 us` |
+| same | memory throughput | `520.8 GB/s` | `37.1 GB/s` |
+| same | DRAM throughput | `51.71%` | `3.69%` |
+| same | compute throughput | `37.09%` | `5.56%` |
+| same | achieved occupancy | `96.59%` | `76.30%` |
+| `_dts_cross_backward_accum_kernel`, skip 7 | duration | `466.528 us` | `64.320 us` |
+| same | memory throughput | `589.7 GB/s` | `399.0 GB/s` |
+| same | DRAM throughput | `58.56%` | `39.64%` |
+| same | compute throughput | `25.10%` | `7.51%` |
+| same | L2 hit rate | `66.43%` | `98.60%` |
+| same | achieved occupancy | `41.32%` | `34.88%` |
+
+The low throughput percentages in the masked partially inactive launches are
+not a regression.  They mean the kernel returns early for most rows, so there
+is too little remaining work to saturate the device.
+
+Decision: accept `all` as the default.  The target-only policies prove the win
+is split across both parts of the backward pass.  The host-threshold policies
+were slower than unconditional mask forwarding because they reintroduced
+`active_mask.sum().item()` synchronization and did not save enough branch work.
+If we revisit thresholds, the count needs to be produced device-side together
+with a compact worklist; the current production path should keep passing the
+mask unconditionally after the host whole-wave skip.
+
 ## Proposal 2: parent-reduced DTS forward recompute
 
 The backward pass recomputes cross-DTS forward terms before the self-loop VJP:
