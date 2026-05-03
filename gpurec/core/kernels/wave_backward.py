@@ -13,6 +13,8 @@ import torch
 import triton
 import triton.language as tl
 
+_cuda_pibar_from_ud_fallback_warned = False
+
 
 def _tl_float_dtype(dtype):
     return tl.float64 if dtype == torch.float64 else tl.float32
@@ -3103,6 +3105,50 @@ def uniform_cross_pibar_vjp_tree_from_ud_fused(
         and compact_level_child1 is not None
         and compact_level_child2 is not None
     )
+    cuda_pibar_from_ud_enabled = (
+        os.environ.get("GPUREC_CUDA_PIBAR_FROM_UD", "0") != "0"
+    )
+    if (
+        cuda_pibar_from_ud_enabled
+        and use_compact_levels
+        and Pi_star.dtype == torch.float32
+        and Pi_star.device.type == "cuda"
+    ):
+        try:
+            from .pibar_vjp_cuda import uniform_cross_pibar_vjp_tree_from_ud_cuda
+
+            return uniform_cross_pibar_vjp_tree_from_ud_cuda(
+                Pi_star,
+                pibar_ud,
+                pibar_A,
+                sl,
+                sr,
+                accumulated_rhs,
+                S,
+                active_mask=active_mask,
+                reduce_idx=reduce_idx,
+                pibar_row_max=pibar_row_max,
+                side_active=side_active,
+                compact_level_ptr=compact_level_ptr,
+                compact_level_parents=compact_level_parents,
+                compact_level_child1=compact_level_child1,
+                compact_level_child2=compact_level_child2,
+            )
+        except Exception as exc:
+            if os.environ.get("GPUREC_CUDA_PIBAR_FROM_UD_STRICT", "0") != "0":
+                raise
+            import warnings
+
+            global _cuda_pibar_from_ud_fallback_warned
+            if not _cuda_pibar_from_ud_fallback_warned:
+                warnings.warn(
+                    "GPUREC_CUDA_PIBAR_FROM_UD=1 requested, but the CUDA "
+                    f"prototype was unavailable ({exc}); falling back to Triton.",
+                    RuntimeWarning,
+                    stacklevel=2,
+                )
+                _cuda_pibar_from_ud_fallback_warned = True
+
     if use_compact_levels:
         if compact_level_ptr.numel() < 2:
             raise ValueError("compact_level_ptr must contain at least start and end offsets")
