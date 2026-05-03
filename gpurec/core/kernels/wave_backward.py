@@ -1155,6 +1155,7 @@ def _dts_cross_backward_accum_kernel(
     grad_mt_ptr,          # optional scalar/[S] accumulation target
     pibar_ud_ptr,         # optional [2 * n_ws, S] initial Pibar VJP subtree values
     pibar_A_ptr,          # optional [2 * n_ws] row sums of pibar_ud
+    pibar_side_active_ptr, # optional [2 * n_ws] exact nonzero u_d row mask
     mt_ptr,               # optional [S] max transfer mat for Pibar denom reuse
     pibar_row_max_ptr,    # optional [C] Pi-row max from forward uniform Pibar
     # Dimensions
@@ -1170,6 +1171,7 @@ def _dts_cross_backward_accum_kernel(
     ACCUM_MT_REDUCTION: tl.constexpr,
     GRAD_MT_SCALAR: tl.constexpr,
     OUTPUT_PIBAR_UD: tl.constexpr,
+    OUTPUT_SIDE_ACTIVE: tl.constexpr,
     DTYPE: tl.constexpr,
 ):
     """DTS cross-clade backward with direct accumulation of Pi adjoints.
@@ -1202,6 +1204,9 @@ def _dts_cross_backward_accum_kernel(
             if OUTPUT_PIBAR_UD:
                 tl.store(pibar_A_ptr + i + _scalar_off, zero_scalar)
                 tl.store(pibar_A_ptr + tl.num_programs(0) + i + _scalar_off, zero_scalar)
+                if OUTPUT_SIDE_ACTIVE:
+                    tl.store(pibar_side_active_ptr + i + _scalar_off, 0)
+                    tl.store(pibar_side_active_ptr + tl.num_programs(0) + i + _scalar_off, 0)
             for s_start in range(0, S, BLOCK_S):
                 s_offs = s_start + tl.arange(0, BLOCK_S)
                 mask = s_offs < S
@@ -1239,6 +1244,8 @@ def _dts_cross_backward_accum_kernel(
     if OUTPUT_PIBAR_UD:
         row_max_l = tl.load(pibar_row_max_ptr + sl).to(DTYPE)
         row_max_r = tl.load(pibar_row_max_ptr + sr).to(DTYPE)
+        side_nonzero_l = tl.full((1,), value=0, dtype=tl.int32)
+        side_nonzero_r = tl.full((1,), value=0, dtype=tl.int32)
 
     for s_start in range(0, S, BLOCK_S):
         s_offs = s_start + tl.arange(0, BLOCK_S)
@@ -1311,6 +1318,9 @@ def _dts_cross_backward_accum_kernel(
             tl.store(pibar_ud_ptr + (tl.num_programs(0) + i) * S + s_offs, ud_r, mask=valid_mask)
             sum_ud_l += tl.sum(tl.where(mask, ud_l, 0.0), axis=0)
             sum_ud_r += tl.sum(tl.where(mask, ud_r, 0.0), axis=0)
+            if OUTPUT_SIDE_ACTIVE:
+                side_nonzero_l += tl.where(tl.max(tl.abs(ud_l), axis=0) != 0.0, 1, 0)
+                side_nonzero_r += tl.where(tl.max(tl.abs(ud_r), axis=0) != 0.0, 1, 0)
         else:
             tl.store(grad_Pibar_l_ptr + out_base + s_offs, vd2, mask=valid_mask)
             tl.store(grad_Pibar_r_ptr + out_base + s_offs, vd1, mask=valid_mask)
@@ -1362,6 +1372,9 @@ def _dts_cross_backward_accum_kernel(
     if OUTPUT_PIBAR_UD:
         tl.store(pibar_A_ptr + i + _scalar_off, sum_ud_l)
         tl.store(pibar_A_ptr + tl.num_programs(0) + i + _scalar_off, sum_ud_r)
+        if OUTPUT_SIDE_ACTIVE:
+            tl.store(pibar_side_active_ptr + i + _scalar_off, side_nonzero_l != 0)
+            tl.store(pibar_side_active_ptr + tl.num_programs(0) + i + _scalar_off, side_nonzero_r != 0)
 
     if not MERGE_S_TERM:
         for s_start in range(0, S, BLOCK_S):
@@ -1427,6 +1440,7 @@ def dts_cross_backward_accum_fused(
     accum_param_reductions=False,
     accum_mt_reduction=False,
     output_pibar_ud=False,
+    output_pibar_side_active=False,
     mt_squeezed=None,
     pibar_row_max=None,
 ):
@@ -1455,11 +1469,18 @@ def dts_cross_backward_accum_fused(
         raise ValueError("mt_squeezed must have S elements when outputting Pibar u_d")
     if output_pibar_ud and pibar_row_max.numel() < Pi_star.shape[0]:
         raise ValueError("pibar_row_max must contain one row-max value per Pi row")
+    if output_pibar_side_active and not output_pibar_ud:
+        raise ValueError("output_pibar_side_active requires output_pibar_ud")
 
     grad_Pibar_l = None if output_pibar_ud else torch.empty((n_ws, S), device=device, dtype=dtype)
     grad_Pibar_r = None if output_pibar_ud else torch.empty((n_ws, S), device=device, dtype=dtype)
     pibar_ud = torch.empty((2 * n_ws, S), device=device, dtype=dtype) if output_pibar_ud else None
     pibar_A = torch.empty((2 * n_ws,), device=device, dtype=dtype) if output_pibar_ud else None
+    pibar_side_active = (
+        torch.empty((2 * n_ws,), device=device, dtype=torch.bool)
+        if output_pibar_side_active
+        else None
+    )
     param_pD = None if accum_param_reductions else torch.empty(n_ws, device=device, dtype=dtype)
     param_pS = None if accum_param_reductions else torch.empty(n_ws, device=device, dtype=dtype)
     param_pD_arg = grad_log_pD if accum_param_reductions else param_pD
@@ -1470,6 +1491,7 @@ def dts_cross_backward_accum_fused(
     grad_mt_arg = grad_mt if accum_mt_reduction else dummy
     pibar_ud_arg = pibar_ud if output_pibar_ud else dummy
     pibar_A_arg = pibar_A if output_pibar_ud else dummy
+    pibar_side_active_arg = pibar_side_active if output_pibar_side_active else dummy
     mt_arg = mt_squeezed.contiguous() if output_pibar_ud and not mt_squeezed.is_contiguous() else mt_squeezed
     pibar_row_max_arg = (
         pibar_row_max.contiguous()
@@ -1495,7 +1517,7 @@ def dts_cross_backward_accum_fused(
         grad_Pibar_r if grad_Pibar_r is not None else pibar_ud,
         param_pD_arg, param_pS_arg,
         grad_log_pD_arg, grad_log_pS_arg, grad_mt_arg,
-        pibar_ud_arg, pibar_A_arg, mt_arg, pibar_row_max_arg,
+        pibar_ud_arg, pibar_A_arg, pibar_side_active_arg, mt_arg, pibar_row_max_arg,
         ws, S, stride_C, BLOCK_S,
         USE_ACTIVE_MASK=bool(active_mask is not None),
         USE_ATOMICS=bool(use_atomics),
@@ -1505,10 +1527,13 @@ def dts_cross_backward_accum_fused(
         ACCUM_MT_REDUCTION=bool(accum_mt_reduction),
         GRAD_MT_SCALAR=bool(grad_mt_scalar),
         OUTPUT_PIBAR_UD=bool(output_pibar_ud),
+        OUTPUT_SIDE_ACTIVE=bool(output_pibar_side_active),
         DTYPE=_tl_float_dtype(dtype),
     )
 
     if output_pibar_ud:
+        if output_pibar_side_active:
+            return pibar_ud, pibar_A, pibar_side_active, param_pD, param_pS
         return pibar_ud, pibar_A, param_pD, param_pS
     return grad_Pibar_l, grad_Pibar_r, param_pD, param_pS
 
@@ -2801,6 +2826,7 @@ def uniform_cross_pibar_vjp_tree_from_ud_fused(
     reduce_idx=None,
     pibar_row_max=None,
     skip_zero_sides=False,
+    side_active=None,
 ):
     """Uniform-Pibar VJP tree correction from DTS-staged u_d."""
     n_ws = sl.shape[0]
@@ -2813,8 +2839,11 @@ def uniform_cross_pibar_vjp_tree_from_ud_fused(
 
     BLOCK_S = min(256, triton.next_power_of_2(S))
     stride_C = Pi_star.stride(0)
-    side_active = None
-    if skip_zero_sides:
+    if side_active is not None:
+        if side_active.numel() != 2 * n_ws:
+            raise ValueError("side_active must have one entry per split side")
+        side_active = side_active.contiguous()
+    elif skip_zero_sides:
         side_active = torch.empty((2 * n_ws,), device=Pi_star.device, dtype=torch.bool)
         _pibar_ud_side_active_kernel[(2 * n_ws,)](
             pibar_ud,

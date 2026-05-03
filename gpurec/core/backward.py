@@ -1368,6 +1368,7 @@ def Pi_wave_backward(
             used_fused_direct_pi_accum = False
             used_dts_mt_reduction_accum = False
             used_dts_pibar_ud_fusion = False
+            pibar_side_active = None
 
             if use_fused and fused_scalar_params:
                 # G=1: pass shared params to fused kernel.
@@ -1501,8 +1502,7 @@ def Pi_wave_backward(
                                 ge2_max_fanout=meta.get('ge2_max_fanout'),
                             )
                         else:
-                            (grad_Pibar_l, grad_Pibar_r,
-                             param_pD, param_pS) = dts_cross_backward_accum_fused(
+                            dts_accum_result = dts_cross_backward_accum_fused(
                                 Pi_star_wave, Pibar_star_wave, v_k, ws,
                                 sl, sr, reduce_idx, wlsp,
                                 log_pD, log_pS,
@@ -1519,9 +1519,22 @@ def Pi_wave_backward(
                                 accum_param_reductions=use_dts_reduction_accum_scalar,
                                 accum_mt_reduction=use_dts_reduction_accum_mt,
                                 output_pibar_ud=pibar_ud_fusion_match,
+                                output_pibar_side_active=(
+                                    pibar_ud_fusion_match
+                                    and dts_pibar_ud_skip_zero_sides_enabled
+                                ),
                                 mt_squeezed=mt_shared,
                                 pibar_row_max=forward_pibar_row_max,
                             )
+                            if (
+                                pibar_ud_fusion_match
+                                and dts_pibar_ud_skip_zero_sides_enabled
+                            ):
+                                (grad_Pibar_l, grad_Pibar_r, pibar_side_active,
+                                 param_pD, param_pS) = dts_accum_result
+                            else:
+                                (grad_Pibar_l, grad_Pibar_r,
+                                 param_pD, param_pS) = dts_accum_result
                     used_fused_direct_pi_accum = True
                     grad_Pi_l = grad_Pi_r = None
                 else:
@@ -1655,6 +1668,7 @@ def Pi_wave_backward(
                         reduce_idx=reduce_idx,
                         pibar_row_max=forward_pibar_row_max,
                         skip_zero_sides=dts_pibar_ud_skip_zero_sides_enabled,
+                        side_active=pibar_side_active,
                     )
                 elif (
                     grouped_cross_pibar_vjp_enabled

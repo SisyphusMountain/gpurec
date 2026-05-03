@@ -1413,6 +1413,147 @@ now.  It is correct and measurably faster on 50 families, but enabling it by
 default should wait until the side mask is produced in DTS rather than by a
 separate streaming scan.
 
+### Proposal 4 follow-up: side activity produced by direct DTS
+
+After committing the scan-based exact-zero test, I tried the direct refinement
+suggested by the profile: produce `side_active` inside the direct DTS staging
+kernel while it already has `u_d` in registers.
+
+Implementation:
+
+```text
+sum_ud_l = 0
+sum_ud_r = 0
+side_nonzero_l = 0
+side_nonzero_r = 0
+
+for species tile:
+    ud_l = vd2 * inv_denom_l
+    ud_r = vd1 * inv_denom_r
+
+    store pibar_ud[left_side, tile] = ud_l
+    store pibar_ud[right_side, tile] = ud_r
+
+    sum_ud_l += sum(ud_l)
+    sum_ud_r += sum(ud_r)
+    side_nonzero_l += any(abs(ud_l) != 0)
+    side_nonzero_r += any(abs(ud_r) != 0)
+
+store pibar_A[left_side] = sum_ud_l
+store pibar_A[right_side] = sum_ud_r
+store side_active[left_side] = side_nonzero_l != 0
+store side_active[right_side] = side_nonzero_r != 0
+```
+
+`uniform_cross_pibar_vjp_tree_from_ud_fused` now accepts a caller-supplied
+`side_active` tensor.  The normal backward direct-DTS path passes this tensor
+when `GPUREC_DTS_PIBAR_UD_SKIP_ZERO_SIDES=1`, so the separate
+`_pibar_ud_side_active_kernel` scan is avoided.  If no side-active tensor is
+supplied, the wrapper still has the scan fallback used by the first experiment.
+
+Scope:
+
+- implemented for the direct DTS staging kernel, which is the default backward
+  accumulation path;
+- the parent-tiled DTS experiment still falls back to the scan path if it is
+  manually enabled together with side skipping.
+
+Additional correctness checks:
+
+```text
+pytest -q tests/kernels/test_dts_backward_accum_kernel.py
+GPUREC_DTS_PIBAR_UD_SKIP_ZERO_SIDES=1 pytest -q tests/gradients/test_fd_all_modes.py::test_analytic_matches_fd
+GPUREC_DTS_PIBAR_UD_SKIP_ZERO_SIDES=1 pytest -q tests/gradients/test_autograd_bridge.py
+```
+
+Results:
+
+```text
+DTS backward accumulation tests: 35 passed
+finite-difference analytic-vs-FD test: 6 passed
+autograd bridge tests: 15 passed
+```
+
+The staged DTS test also checks that the in-kernel side-active output exactly
+matches:
+
+```text
+pibar_ud.abs().amax(dim=1) != 0
+```
+
+#### Wall-time after fusing side activity
+
+Interleaved backward-only timing, one already-built model, same direct path:
+
+```text
+10 families
+skip_zero_sides=0: median 35.941 ms, mean 36.237 ms, min 35.689 ms
+skip_zero_sides=1: median 34.354 ms, mean 34.407 ms, min 33.893 ms
+gain: 1.587 ms, 4.4%
+
+50 families
+skip_zero_sides=0: median 113.688 ms, mean 113.699 ms, min 113.078 ms
+skip_zero_sides=1: median 107.294 ms, mean 107.157 ms, min 106.224 ms
+gain: 6.394 ms, 5.6%
+```
+
+Compared with the scan-based version, the 50-family median improved from about
+`110.6 ms` to `107.3 ms`.  The remaining difference between the `7.0 ms`
+Nsight tree-kernel saving and the `6.4 ms` event-timed wall gain is mostly
+normal run-to-run noise plus a very small amount of extra scalar work inside
+DTS.
+
+#### Nsight Systems after fusing side activity
+
+Report:
+
+```text
+/tmp/gpurec_profile/prop4_fusedmask_fams50.nsys-rep
+```
+
+Kernel-sum comparison:
+
+```text
+bucket                                      baseline      scan-mask     fused-mask
+_dts_cross_backward_accum_kernel            31.447 ms      31.433 ms      31.427 ms
+_wave_backward_uniform_kernel               24.006 ms      24.015 ms      24.011 ms
+_uniform_cross_pibar_vjp_tree_from_ud        24.781 ms      17.754 ms      18.148 ms
+_pibar_ud_side_active_kernel                  0.000 ms       4.433 ms       0.000 ms
+_dts_parent_reduced_ge2_stage1_kernel         7.072 ms       7.067 ms       7.053 ms
+_active_mask_from_rhs_absmax_kernel           2.955 ms       2.943 ms       2.959 ms
+_dts_eq1_to_rows_kernel                       2.695 ms       2.696 ms       2.695 ms
+```
+
+The important point is that DTS did not get slower in the captured pass.  The
+side-active bookkeeping reuses values already computed for `pibar_ud`, and the
+extra final boolean stores are tiny relative to the existing staged `u_d`
+traffic.  The scan kernel disappears entirely.
+
+#### Nsight Compute: DTS impact
+
+Representative direct DTS launch, skip `4`, grid `42155` split rows.
+
+```text
+metric                         baseline direct DTS   fused-mask direct DTS
+duration                       5.224 ms              5.216 ms
+DRAM throughput                63.30%                63.39%
+compute throughput             24.83%                28.85%
+registers/thread               96                    96
+theoretical occupancy          41.67%                41.67%
+achieved occupancy             41.53%                41.52%
+achieved active warps/SM        19.93                 19.93
+```
+
+The side-active reduction slightly increases the compute-side instruction mix,
+but it does not change register pressure, occupancy, memory throughput, or
+duration for this hot launch.
+
+Current decision: the direct fused-mask variant meets the acceptance criteria
+for exact-zero skipping.  It remains behind
+`GPUREC_DTS_PIBAR_UD_SKIP_ZERO_SIDES=1` for now so the default path is unchanged
+until we decide whether to also cover the parent-tiled experiment and enable the
+optimization by default.
+
 ## Proposal 5: reduce Pibar tree level-padding and species-topology traffic
 
 The staged Pibar tree kernel is now mostly a tree-buffer correction:

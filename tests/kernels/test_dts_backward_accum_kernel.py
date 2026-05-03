@@ -485,6 +485,7 @@ def test_uniform_cross_pibar_from_ud_skip_zero_sides_matches_baseline(dtype, ato
     zero_side_rows = torch.tensor([0, N + 4], device=device, dtype=torch.long)
     pibar_ud[zero_side_rows] = 0
     pibar_A = pibar_ud.sum(dim=1).contiguous()
+    side_active = (pibar_ud.abs().amax(dim=1) != 0).contiguous()
 
     base_ud = pibar_ud.clone()
     skip_ud = pibar_ud.clone()
@@ -522,6 +523,7 @@ def test_uniform_cross_pibar_from_ud_skip_zero_sides_matches_baseline(dtype, ato
         reduce_idx=reduce_idx,
         pibar_row_max=pibar_row_max,
         skip_zero_sides=True,
+        side_active=side_active,
     )
     torch.cuda.synchronize()
 
@@ -745,7 +747,7 @@ def test_dts_staged_pibar_ud_skip_zero_sides_matches_unpruned(dtype, atol, rtol,
     active_mask = torch.tensor([True, False, True], device=device) if active else None
 
     direct_rhs = torch.zeros(C, S, device=device, dtype=dtype)
-    pibar_ud, pibar_A, _, _ = dts_cross_backward_accum_fused(
+    pibar_ud, pibar_A, dts_side_active, _, _ = dts_cross_backward_accum_fused(
         Pi,
         Pibar,
         v_k,
@@ -765,9 +767,13 @@ def test_dts_staged_pibar_ud_skip_zero_sides_matches_unpruned(dtype, atol, rtol,
         grad_mt=torch.zeros(S, device=device, dtype=dtype),
         accum_mt_reduction=True,
         output_pibar_ud=True,
+        output_pibar_side_active=True,
         mt_squeezed=mt,
         pibar_row_max=row_max,
     )
+    torch.cuda.synchronize()
+    expected_side_active = pibar_ud.abs().amax(dim=1) != 0
+    assert torch.equal(dts_side_active.cpu(), expected_side_active.cpu())
 
     pibar_ud_unpruned = pibar_ud.clone()
     pibar_A_unpruned = pibar_A.clone()
