@@ -503,6 +503,10 @@ def Pi_wave_backward(
     dts_pibar_ud_fusion_enabled = (
         os.environ.get("GPUREC_DTS_PIBAR_UD_FUSION", "1") != "0"
     )
+    dts_pibar_ud_skip_zero_sides_enabled = (
+        os.environ.get("GPUREC_DTS_PIBAR_UD_SKIP_ZERO_SIDES", "0") != "0"
+        or os.environ.get("GPUREC_DTS_PIBAR_UD_WORKLIST", "0") != "0"
+    )
     dts_pibar_ud_min_splits = int(
         os.environ.get("GPUREC_DTS_PIBAR_UD_MIN_SPLITS", "0")
     )
@@ -1650,6 +1654,7 @@ def Pi_wave_backward(
                         active_mask=active_mask_for_split_kernels,
                         reduce_idx=reduce_idx,
                         pibar_row_max=forward_pibar_row_max,
+                        skip_zero_sides=dts_pibar_ud_skip_zero_sides_enabled,
                     )
                 elif (
                     grouped_cross_pibar_vjp_enabled

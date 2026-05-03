@@ -2678,10 +2678,34 @@ def uniform_cross_pibar_vjp_tree_fused(
 
 
 @triton.jit
+def _pibar_ud_side_active_kernel(
+    pibar_ud_ptr,        # [n_rows, S]
+    side_active_ptr,     # [n_rows] bool
+    S: tl.constexpr,
+    BLOCK_S: tl.constexpr,
+    DTYPE: tl.constexpr,
+):
+    """Mark split-side rows whose staged u_d is not exactly all zero."""
+    row = tl.program_id(0)
+    row_base = row * S
+    row_absmax = tl.full([1], value=0.0, dtype=DTYPE)
+
+    for s_start in range(0, S, BLOCK_S):
+        s_offs = s_start + tl.arange(0, BLOCK_S)
+        mask = s_offs < S
+        vals = tl.load(pibar_ud_ptr + row_base + s_offs, mask=mask, other=0.0)
+        row_absmax = tl.maximum(row_absmax, tl.max(tl.abs(vals), axis=0))
+
+    lane = tl.arange(0, 1)
+    tl.store(side_active_ptr + row + lane, row_absmax != 0.0)
+
+
+@triton.jit
 def _uniform_cross_pibar_vjp_tree_from_ud_kernel(
     Pi_star_ptr,          # [C, S]
     pibar_ud_ptr,         # [2 * n_ws, S], initial subtree values u_d
     pibar_A_ptr,          # [2 * n_ws], sum_s u_d[s] per split side
+    side_active_ptr,      # optional [2 * n_ws] bool exact-zero side skip mask
     sl_ptr,               # [n_ws]
     sr_ptr,               # [n_ws]
     reduce_idx_ptr,       # [n_ws], used with active_mask_ptr when enabled
@@ -2698,6 +2722,7 @@ def _uniform_cross_pibar_vjp_tree_from_ud_kernel(
     N_LEVELS: tl.constexpr,
     MAX_LEVEL_WIDTH: tl.constexpr,
     USE_ACTIVE_MASK: tl.constexpr,
+    USE_SIDE_ACTIVE: tl.constexpr,
     DTYPE: tl.constexpr,
 ):
     """Uniform Pibar VJP tree correction when DTS has already staged u_d."""
@@ -2706,6 +2731,10 @@ def _uniform_cross_pibar_vjp_tree_from_ud_kernel(
     row = tl.program_id(0)
     split_i = tl.where(row < n_ws, row, row - n_ws)
     is_right = row >= n_ws
+    if USE_SIDE_ACTIVE:
+        side_active = tl.load(side_active_ptr + row)
+        if side_active == 0:
+            return
 
     child_l = tl.load(sl_ptr + split_i)
     child_r = tl.load(sr_ptr + split_i)
@@ -2771,6 +2800,7 @@ def uniform_cross_pibar_vjp_tree_from_ud_fused(
     active_mask=None,
     reduce_idx=None,
     pibar_row_max=None,
+    skip_zero_sides=False,
 ):
     """Uniform-Pibar VJP tree correction from DTS-staged u_d."""
     n_ws = sl.shape[0]
@@ -2783,10 +2813,23 @@ def uniform_cross_pibar_vjp_tree_from_ud_fused(
 
     BLOCK_S = min(256, triton.next_power_of_2(S))
     stride_C = Pi_star.stride(0)
+    side_active = None
+    if skip_zero_sides:
+        side_active = torch.empty((2 * n_ws,), device=Pi_star.device, dtype=torch.bool)
+        _pibar_ud_side_active_kernel[(2 * n_ws,)](
+            pibar_ud,
+            side_active,
+            S,
+            BLOCK_S,
+            DTYPE=_tl_float_dtype(Pi_star.dtype),
+            num_warps=4,
+        )
+
     _uniform_cross_pibar_vjp_tree_from_ud_kernel[(2 * n_ws,)](
         Pi_star,
         pibar_ud,
         pibar_A,
+        side_active if side_active is not None else pibar_A,
         sl,
         sr,
         reduce_idx if reduce_idx is not None else sl,
@@ -2803,9 +2846,11 @@ def uniform_cross_pibar_vjp_tree_from_ud_fused(
         N_LEVELS=level_parents.shape[0],
         MAX_LEVEL_WIDTH=level_parents.shape[1],
         USE_ACTIVE_MASK=bool(active_mask is not None),
+        USE_SIDE_ACTIVE=bool(side_active is not None),
         DTYPE=_tl_float_dtype(Pi_star.dtype),
         num_warps=4,
     )
+    return side_active
 
 
 def uniform_cross_pibar_vjp_tree_prefix_fused(

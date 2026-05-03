@@ -1093,6 +1093,326 @@ Profiling gate:
 - verify old/new parity exactly for exact-zero mode and with finite-difference
   checks for thresholded mode.
 
+### Proposal 4 experiment: exact-zero split-side skipping
+
+Supervisor date: 2026-05-03.
+
+Subagent split:
+
+- audit agent: checked the staged `pibar_ud` layout and safety condition;
+- implementation agent: added an opt-in exact-zero side mask and parity tests;
+- profiling agent: generated Nsight Systems / Nsight Compute artifacts under
+  `/tmp/gpurec_profile`; the supervisor parsed and re-ran the key benchmarks
+  locally because the profiler agent did not return a final message before the
+  timeout.
+
+The implemented test is the low-risk prefix of the proposal, not a full
+compacted worklist.  The current code marks rows of staged `u_d` that are not
+exactly all zero:
+
+```text
+side_active[row] = max_s(abs(pibar_ud[row, s])) != 0
+```
+
+and passes that boolean mask to the from-`u_d` Pibar tree kernel:
+
+```text
+row = program_id(0)
+if side_active[row] == 0:
+    return
+
+bottom_up_subtree_sum(pibar_ud[row, :])
+atomic_add(accumulated_rhs[child, :], p_prime * (A - subtree_sum))
+```
+
+The path is off by default and enabled with either:
+
+```text
+GPUREC_DTS_PIBAR_UD_SKIP_ZERO_SIDES=1
+GPUREC_DTS_PIBAR_UD_WORKLIST=1
+```
+
+The second spelling is accepted as an alias for this exact-zero experiment, but
+the code does not yet compact a true active-side worklist.
+
+#### Correctness
+
+The safety condition is based on the full `u_d` row, not on `A=sum_s u_d[s]`.
+Using `A == 0` would be unsafe because positive and negative `u_d` entries can
+cancel.
+
+Commands run:
+
+```text
+python -m py_compile gpurec/core/backward.py gpurec/core/kernels/wave_backward.py tests/kernels/test_dts_backward_accum_kernel.py
+pytest -q tests/kernels/test_dts_backward_accum_kernel.py
+GPUREC_DTS_PIBAR_UD_SKIP_ZERO_SIDES=1 pytest -q tests/gradients/test_fd_all_modes.py::test_analytic_matches_fd
+GPUREC_DTS_PIBAR_UD_SKIP_ZERO_SIDES=1 pytest -q tests/gradients/test_autograd_bridge.py
+```
+
+Results:
+
+```text
+tests/kernels/test_dts_backward_accum_kernel.py: 35 passed
+finite-difference analytic-vs-FD test: 6 passed
+autograd bridge tests: 15 passed
+```
+
+Two focused tests were added:
+
+- direct from-`u_d` Pibar tree parity with zero side rows;
+- full staged DTS `u_d` output followed by from-`u_d` Pibar tree parity.
+
+Both tests run for fp32/fp64 and with/without the active row mask.
+
+#### Exact-zero side sparsity
+
+Stats script:
+
+```text
+FAMS=50 REPS=1 WARMUPS=1 python /tmp/gpurec_profile/prop4_side_sparsity.py
+```
+
+For the 50-family benchmark:
+
+```text
+total_sides         503358
+parent_active_sides 483372
+exact nonzero u_d   344227  (68.39% of all sides)
+exact nonzero u_d among parent-active sides: 71.21%
+```
+
+Threshold-only diagnostic, not used by the exact implementation:
+
+```text
+threshold > 1e-12: active u_d rows 32.47%
+threshold > 1e-09: active u_d rows 32.24%
+threshold > 1e-06: active u_d rows 14.15%
+threshold > 1e-04: active u_d rows  1.06%
+```
+
+This means exact skipping removes about one third of side programs.  The much
+larger apparent threshold sparsity would require approximate derivative pruning
+and therefore belongs to a different proposal.
+
+Largest split waves:
+
+```text
+wave  n_splits  sides  parent-active  exact-active  active>1e-6
+44    42155     84310  83842          48436         118
+43    36200     72400  71256          40388         92
+3     27023     54046  54046          54046         6422
+46    24229     48458  48394          26244         55
+45    23345     46690  46518          27004         49
+```
+
+The exact-zero pattern is wave-dependent.  Early waves can be completely
+nonzero; later high-fanout waves often have only about 54-57% exact-active side
+rows.
+
+#### Wall-time benchmark
+
+The clean comparison uses one already-built 50-family model and alternates the
+environment flag inside the same process:
+
+```text
+GPUREC_DTS_BACKWARD_ACCUM_IMPL=direct
+FAMS=50
+fixed_iters_Pi=6
+max_wave_size=32768
+dtype=fp32
+```
+
+Interleaved event-timed backward-only results:
+
+```text
+skip_zero_sides=0: mean 114.073 ms, median 113.889 ms, min 113.621 ms
+samples: 114.312, 113.753, 113.990, 113.789, 114.973, 113.621
+
+skip_zero_sides=1: mean 110.636 ms, median 110.598 ms, min 110.383 ms
+samples: 110.748, 110.605, 110.591, 110.383, 111.039, 110.448
+```
+
+Net measured gain:
+
+```text
+113.889 ms -> 110.598 ms
+gain: 3.291 ms, 2.9%
+```
+
+The profiling subagent also ran independent non-interleaved medians:
+
+```text
+10 families: default 36.045 ms, skip-zero 35.335 ms, gain 0.710 ms
+50 families: default 115.312 ms, skip-zero 111.463 ms, gain 3.849 ms
+```
+
+An earlier non-interleaved run was noisier because later samples drifted upward,
+but the first stable samples agreed with the interleaved result.
+
+#### Nsight Systems breakdown
+
+Nsight Systems reports used:
+
+```text
+/tmp/gpurec_profile/prop3_direct50.nsys-rep
+/tmp/gpurec_profile/prop4_skipzero_fams50.nsys-rep
+```
+
+Kernel-sum comparison for the backward capture:
+
+```text
+bucket                                      baseline      skip-zero
+_dts_cross_backward_accum_kernel            31.447 ms      31.433 ms
+_wave_backward_uniform_kernel               24.006 ms      24.015 ms
+_uniform_cross_pibar_vjp_tree_from_ud        24.781 ms      17.754 ms
+_pibar_ud_side_active_kernel                  0.000 ms       4.433 ms
+_dts_parent_reduced_ge2_stage1_kernel         7.072 ms       7.067 ms
+_active_mask_from_rhs_absmax_kernel           2.955 ms       2.943 ms
+_dts_eq1_to_rows_kernel                       2.695 ms       2.696 ms
+```
+
+The from-`u_d` Pibar tree bucket drops by `7.027 ms`, but the side-activity
+scan costs `4.433 ms`, so the Nsight kernel-sum gain is about `2.6 ms`.  The
+event-timed interleaved benchmark sees about `3.3 ms`; the difference is within
+the noise we usually see between single captured passes and repeated event
+timing.
+
+No new host synchronization was introduced.  CUDA API summaries remain dominated
+by the existing `cudaStreamSynchronize` calls around the benchmark/autograd
+boundaries.  The proposal adds one Triton launch per split wave.
+
+#### Nsight Compute resource use
+
+Representative largest split wave, `84310` side rows, block size `128`.
+
+From-`u_d` Pibar tree, baseline:
+
+```text
+duration                    4.21 ms
+DRAM read                   about 2.01 GB
+DRAM write                  about 1.31 GB
+DRAM throughput             78.42%
+L2 throughput               74.53%
+compute throughput          28.60%
+achieved occupancy          98.71%
+registers/thread            40
+L2 hit rate                 77.65%
+```
+
+From-`u_d` Pibar tree, exact-zero side mask:
+
+```text
+duration                    2.48 ms
+DRAM read                   about 1.16 GB
+DRAM write                  about 744.87 MB
+DRAM throughput             76.40%
+L2 throughput               73.06%
+compute throughput          28.15%
+achieved occupancy          98.51%
+registers/thread            40
+L2 hit rate                 77.62%
+```
+
+The kernel remains memory-bound and almost fully occupied.  The gain comes from
+skipping the bottom-up subtree buffer traffic for inactive side rows; the active
+rows have essentially the same resource profile as before.
+
+Side-active scan kernel:
+
+```text
+duration                    693.41 us
+DRAM read                   about 674.16 MB
+DRAM write                  about 2.98 MB
+DRAM throughput             96.96%
+L2 throughput               42.32%
+compute throughput          36.03%
+achieved occupancy          98.54%
+registers/thread            18
+L1 hit rate                 17.72%
+L2 hit rate                  0.93%
+```
+
+This scan streams `pibar_ud` once and is almost pure DRAM bandwidth.  That is
+why the total gain is much smaller than the raw tree-kernel reduction.
+
+Useful NCU launch skips for 50-family follow-up profiles:
+
+```text
+skip 4:  84310 side rows, largest hot sparse Pibar launch
+skip 5:  72400 side rows, second hot sparse launch
+skip 2:  48458 side rows, high-fanout sparse launch
+skip 32: 54046 side rows, all-active negative control
+```
+
+The same launch skips apply to `_pibar_ud_side_active_kernel`.
+
+#### Why not compact a true worklist yet?
+
+A true device worklist needs both compaction and a launch count.  In Python /
+Triton, reading the device-side active count back to size the next launch would
+reintroduce a host synchronization.  Launching the compacted worklist over the
+full original grid avoids the host sync, but then still launches one program per
+original side and adds a compaction pass; it mainly replaces the cheap boolean
+early return with an expensive prefix/compact stage.
+
+The current NCU data shows that inactive programs are not the main residual
+cost.  Once a side row is inactive, the program returns before the subtree walk.
+The expensive part is identifying exact-zero rows by scanning `pibar_ud`.
+
+The more promising next step is to produce `side_active` directly in the DTS
+staging kernel while `u_d` is already being computed:
+
+```text
+any_l = false
+any_r = false
+for species tile:
+    ud_l = ...
+    ud_r = ...
+    store pibar_ud_l, pibar_ud_r
+    any_l |= any(abs(ud_l) != 0)
+    any_r |= any(abs(ud_r) != 0)
+
+store side_active_l = any_l
+store side_active_r = any_r
+```
+
+That would remove the `4.433 ms` side scan bucket.  If the DTS kernel cost did
+not grow much, the upper bound for this exact proposal would become close to the
+full `7.0 ms` tree-kernel saving.  It needs separate implementation because
+both the direct DTS staging kernel and the parent-tiled DTS staging kernel need
+an optional side-active output.
+
+If a true compact worklist is tested later, measure four components separately:
+
+```text
+1. side_active or side_absmax production
+2. device compaction into side_ids
+3. compact/worklist Pibar tree
+4. full backward wall time
+```
+
+A production path should avoid copying the active count to host.  A diagnostic
+upper bound may copy the count and launch exactly `active_count` rows, but that
+timing should be labeled as a non-production bound because it includes a host
+decision point.
+
+Acceptance criteria for a future compact worklist should be stricter than for
+the boolean early-return path:
+
+```text
+50-family median: at least 4 ms faster than default
+incremental gain over exact-zero mask: at least 1.5 ms
+construction cost: <= 1 ms if side activity is fused into DTS
+all-active launch skip 32: no material regression
+exact-zero parity: exact; thresholded mode: finite-difference-gated
+```
+
+Supervisor decision: keep this exact-zero skip path as an opt-in experiment for
+now.  It is correct and measurably faster on 50 families, but enabling it by
+default should wait until the side mask is produced in DTS rather than by a
+separate streaming scan.
+
 ## Proposal 5: reduce Pibar tree level-padding and species-topology traffic
 
 The staged Pibar tree kernel is now mostly a tree-buffer correction:
