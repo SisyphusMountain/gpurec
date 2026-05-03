@@ -1056,6 +1056,7 @@ def _dts_cross_backward_accum_kernel(
     BLOCK_S: tl.constexpr,
     USE_ACTIVE_MASK: tl.constexpr,
     USE_ATOMICS: tl.constexpr,
+    MERGE_S_TERM: tl.constexpr,
     DTYPE: tl.constexpr,
 ):
     """DTS cross-clade backward with direct accumulation of Pi adjoints.
@@ -1161,54 +1162,75 @@ def _dts_cross_backward_accum_kernel(
         sum_pD += tl.sum(vd0, axis=0)
         sum_pS += tl.sum(vd3 + vd4, axis=0)
 
+        if MERGE_S_TERM:
+            pi_l_c1_out = accumulated_rhs_ptr + pi_l_base + c1
+            pi_r_c1_out = accumulated_rhs_ptr + pi_r_base + c1
+            pi_r_c2_out = accumulated_rhs_ptr + pi_r_base + c2
+            pi_l_c2_out = accumulated_rhs_ptr + pi_l_base + c2
+            if USE_ATOMICS:
+                tl.atomic_add(pi_l_c1_out, vd3, sem="relaxed", mask=c1_valid)
+                tl.atomic_add(pi_r_c1_out, vd4, sem="relaxed", mask=c1_valid)
+                tl.atomic_add(pi_r_c2_out, vd3, sem="relaxed", mask=c2_valid)
+                tl.atomic_add(pi_l_c2_out, vd4, sem="relaxed", mask=c2_valid)
+            else:
+                pi_l_c1_cur = tl.load(pi_l_c1_out, mask=c1_valid, other=0.0)
+                pi_r_c1_cur = tl.load(pi_r_c1_out, mask=c1_valid, other=0.0)
+                pi_r_c2_cur = tl.load(pi_r_c2_out, mask=c2_valid, other=0.0)
+                pi_l_c2_cur = tl.load(pi_l_c2_out, mask=c2_valid, other=0.0)
+                tl.store(pi_l_c1_out, pi_l_c1_cur + vd3, mask=c1_valid)
+                tl.store(pi_r_c1_out, pi_r_c1_cur + vd4, mask=c1_valid)
+                tl.store(pi_r_c2_out, pi_r_c2_cur + vd3, mask=c2_valid)
+                tl.store(pi_l_c2_out, pi_l_c2_cur + vd4, mask=c2_valid)
+
     tl.store(param_pD_ptr + i + _scalar_off, sum_pD)
     tl.store(param_pS_ptr + i + _scalar_off, sum_pS)
 
-    for s_start in range(0, S, BLOCK_S):
-        s_offs = s_start + tl.arange(0, BLOCK_S)
-        valid_mask = s_offs < S
-        mask = valid_mask & parent_active
+    if not MERGE_S_TERM:
+        for s_start in range(0, S, BLOCK_S):
+            s_offs = s_start + tl.arange(0, BLOCK_S)
+            valid_mask = s_offs < S
+            mask = valid_mask & parent_active
 
-        c1 = tl.load(sp_child1_ptr + s_offs, mask=mask, other=0)
-        c2 = tl.load(sp_child2_ptr + s_offs, mask=mask, other=0)
-        c1_valid = (c1 < S) & mask
-        c2_valid = (c2 < S) & mask
+            c1 = tl.load(sp_child1_ptr + s_offs, mask=mask, other=0)
+            c2 = tl.load(sp_child2_ptr + s_offs, mask=mask, other=0)
+            c1_valid = (c1 < S) & mask
+            c2_valid = (c2 < S) & mask
 
-        Pi_l_s1 = tl.load(Pi_star_ptr + pi_l_base + c1, mask=c1_valid, other=NEG_LARGE)
-        Pi_l_s2 = tl.load(Pi_star_ptr + pi_l_base + c2, mask=c2_valid, other=NEG_LARGE)
-        Pi_r_s1 = tl.load(Pi_star_ptr + pi_r_base + c1, mask=c1_valid, other=NEG_LARGE)
-        Pi_r_s2 = tl.load(Pi_star_ptr + pi_r_base + c2, mask=c2_valid, other=NEG_LARGE)
+            Pi_l_s1 = tl.load(Pi_star_ptr + pi_l_base + c1, mask=c1_valid, other=NEG_LARGE)
+            Pi_l_s2 = tl.load(Pi_star_ptr + pi_l_base + c2, mask=c2_valid, other=NEG_LARGE)
+            Pi_r_s1 = tl.load(Pi_star_ptr + pi_r_base + c1, mask=c1_valid, other=NEG_LARGE)
+            Pi_r_s2 = tl.load(Pi_star_ptr + pi_r_base + c2, mask=c2_valid, other=NEG_LARGE)
 
-        Pi_parent = tl.load(Pi_star_ptr + parent_pi_base + s_offs, mask=mask, other=NEG_LARGE)
-        v_k_val = tl.load(v_k_ptr + parent_vk_base + s_offs, mask=mask, other=0.0)
+            Pi_parent = tl.load(Pi_star_ptr + parent_pi_base + s_offs, mask=mask, other=NEG_LARGE)
+            v_k_val = tl.load(v_k_ptr + parent_vk_base + s_offs, mask=mask, other=0.0)
 
-        d3 = log_pS + Pi_l_s1 + Pi_r_s2
-        d4 = log_pS + Pi_r_s1 + Pi_l_s2
+            d3 = log_pS + Pi_l_s1 + Pi_r_s2
+            d4 = log_pS + Pi_r_s1 + Pi_l_s2
 
-        parent_valid = Pi_parent > NEG_LARGE
-        w3 = tl.where(parent_valid, tl.exp2(wlsp + d3 - Pi_parent), tl.zeros_like(d3))
-        w4 = tl.where(parent_valid, tl.exp2(wlsp + d4 - Pi_parent), tl.zeros_like(d4))
-        vd3 = v_k_val * w3
-        vd4 = v_k_val * w4
+            parent_valid = Pi_parent > NEG_LARGE
+            w3 = tl.where(parent_valid, tl.exp2(wlsp + d3 - Pi_parent), tl.zeros_like(d3))
+            w4 = tl.where(parent_valid, tl.exp2(wlsp + d4 - Pi_parent), tl.zeros_like(d4))
+            vd3 = v_k_val * w3
+            vd4 = v_k_val * w4
 
-        pi_l_c1_out = accumulated_rhs_ptr + pi_l_base + c1
-        pi_r_c1_out = accumulated_rhs_ptr + pi_r_base + c1
-        pi_r_c2_out = accumulated_rhs_ptr + pi_r_base + c2
-        pi_l_c2_out = accumulated_rhs_ptr + pi_l_base + c2
-        if USE_ATOMICS:
-            tl.atomic_add(pi_l_c1_out, vd3, sem="relaxed", mask=c1_valid)
-            tl.atomic_add(pi_r_c1_out, vd4, sem="relaxed", mask=c1_valid)
-            tl.atomic_add(pi_r_c2_out, vd3, sem="relaxed", mask=c2_valid)
-            tl.atomic_add(pi_l_c2_out, vd4, sem="relaxed", mask=c2_valid)
-        else:
-            pi_l_c1_cur = tl.load(pi_l_c1_out, mask=c1_valid, other=0.0)
-            pi_r_c1_cur = tl.load(pi_r_c1_out, mask=c1_valid, other=0.0)
-            pi_r_c2_cur = tl.load(pi_r_c2_out, mask=c2_valid, other=0.0)
-            pi_l_c2_cur = tl.load(pi_l_c2_out, mask=c2_valid, other=0.0)
-            tl.store(pi_l_c1_out, pi_l_c1_cur + vd3, mask=c1_valid)
-            tl.store(pi_r_c1_out, pi_r_c1_cur + vd4, mask=c1_valid)
-            tl.store(pi_r_c2_out, pi_r_c2_cur + vd3, mask=c2_valid)
-            tl.store(pi_l_c2_out, pi_l_c2_cur + vd4, mask=c2_valid)
+            pi_l_c1_out = accumulated_rhs_ptr + pi_l_base + c1
+            pi_r_c1_out = accumulated_rhs_ptr + pi_r_base + c1
+            pi_r_c2_out = accumulated_rhs_ptr + pi_r_base + c2
+            pi_l_c2_out = accumulated_rhs_ptr + pi_l_base + c2
+            if USE_ATOMICS:
+                tl.atomic_add(pi_l_c1_out, vd3, sem="relaxed", mask=c1_valid)
+                tl.atomic_add(pi_r_c1_out, vd4, sem="relaxed", mask=c1_valid)
+                tl.atomic_add(pi_r_c2_out, vd3, sem="relaxed", mask=c2_valid)
+                tl.atomic_add(pi_l_c2_out, vd4, sem="relaxed", mask=c2_valid)
+            else:
+                pi_l_c1_cur = tl.load(pi_l_c1_out, mask=c1_valid, other=0.0)
+                pi_r_c1_cur = tl.load(pi_r_c1_out, mask=c1_valid, other=0.0)
+                pi_r_c2_cur = tl.load(pi_r_c2_out, mask=c2_valid, other=0.0)
+                pi_l_c2_cur = tl.load(pi_l_c2_out, mask=c2_valid, other=0.0)
+                tl.store(pi_l_c1_out, pi_l_c1_cur + vd3, mask=c1_valid)
+                tl.store(pi_r_c1_out, pi_r_c1_cur + vd4, mask=c1_valid)
+                tl.store(pi_r_c2_out, pi_r_c2_cur + vd3, mask=c2_valid)
+                tl.store(pi_l_c2_out, pi_l_c2_cur + vd4, mask=c2_valid)
 
 
 def dts_cross_backward_accum_fused(
@@ -1220,6 +1242,7 @@ def dts_cross_backward_accum_fused(
     S,
     active_mask=None,
     use_atomics=True,
+    merge_s_term=False,
 ):
     """Fused DTS backward with direct Pi-adjoint accumulation."""
     n_ws = sl.shape[0]
@@ -1251,6 +1274,7 @@ def dts_cross_backward_accum_fused(
         ws, S, stride_C, BLOCK_S,
         USE_ACTIVE_MASK=bool(active_mask is not None),
         USE_ATOMICS=bool(use_atomics),
+        MERGE_S_TERM=bool(merge_s_term),
         DTYPE=_tl_float_dtype(dtype),
     )
 

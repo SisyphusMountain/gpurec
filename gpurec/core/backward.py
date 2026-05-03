@@ -536,6 +536,15 @@ def Pi_wave_backward(
             "nonatomic_all",
         )
     )
+    merged_dts_backward_accum_enabled = (
+        os.environ.get("GPUREC_MERGED_DTS_BACKWARD_ACCUM", "1") != "0"
+        or dts_backward_accum_impl in (
+            "merged",
+            "merged_s",
+            "merge_s",
+            "merged_s_term",
+        )
+    )
     grouped_dts_backward_accum_all = dts_backward_accum_impl in (
         "grouped_all",
         "child_grouped_all",
@@ -1212,6 +1221,7 @@ def Pi_wave_backward(
                             log_pD.reshape(-1)[0], log_pS.reshape(-1)[0],
                             sp_child1, sp_child2, accumulated_rhs, S,
                             active_mask=active_mask_for_kernels,
+                            merge_s_term=merged_dts_backward_accum_enabled,
                         )
                     used_fused_direct_pi_accum = True
                     grad_Pi_l = grad_Pi_r = None

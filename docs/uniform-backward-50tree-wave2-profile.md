@@ -545,11 +545,9 @@ The expected win is less certain than the active-mask and DTS-loop proposals.
 ## Ranked plan for the next implementation wave
 
 1. **Promote `GPUREC_KERNELIZED_ACTIVE_MASK=1` to default for CUDA uniform
-   backward**, after rechecking 10-tree and 50-tree correctness/timing. This is
-   the simplest measured win: about `4.9 ms` median at 50 trees.
-2. **Merge the two species loops in `_dts_cross_backward_accum_kernel`** behind
-   an env flag. Profile with NCU before making it default. Watch register count,
-   occupancy, MIO throttle, and DRAM bytes.
+   backward.** Completed in the proposal 1 follow-up below.
+2. **Merge the two species loops in `_dts_cross_backward_accum_kernel`.**
+   Completed in the proposal 2 follow-up below.
 3. **Remove CUDA scalar-to-Python extraction for `log_pD/log_pS` in DTS backward
    kernels**. This should reduce sync count and is low-risk if implemented as a
    device-pointer load.
@@ -646,3 +644,191 @@ A reversed-order 50-family rerun confirmed the direction:
 Decision: promote proposal 1. The measured win is about `0.8 ms` at 10
 families and `4.9-5.9 ms` at 50 families, with no peak-memory change and no
 meaningful numerical difference.
+
+## Proposal 2 follow-up: merged DTS S-term accumulation
+
+Proposal 2 merges the two species loops in `_dts_cross_backward_accum_kernel`.
+The old direct DTS backward accumulation kernel did this:
+
+1. First full pass over species:
+   - compute `vd0..vd4`;
+   - accumulate D/T direct `Pi` adjoints;
+   - write `grad_Pibar_l/r`;
+   - accumulate `param_pD/param_pS`.
+2. Second full pass over species:
+   - reload `Pi_l[c1]`, `Pi_l[c2]`, `Pi_r[c1]`, `Pi_r[c2]`;
+   - reload parent `Pi` and `v_k`;
+   - recompute `vd3/vd4`;
+   - accumulate S-term direct `Pi` adjoints.
+
+The new path does the S-term `vd3/vd4` `accumulated_rhs` updates inside the
+first pass, while those values and species-child masks are already live. The
+old two-loop path remains available with:
+
+```bash
+GPUREC_MERGED_DTS_BACKWARD_ACCUM=0
+```
+
+The alias `GPUREC_DTS_BACKWARD_ACCUM_IMPL=merged` also enables the merged path,
+but the production default is now direct accumulation with merged S-term
+updates enabled.
+
+### Subagent workflow
+
+| Role | Task | Result |
+|---|---|---|
+| Static reviewer | Check algebra and risks | Equivalent for atomic direct accumulation; non-atomic remains valid only under the existing unique-child-row guard |
+| Correctness worker | Run focused tests and 10-family parity | Passed; exact 10-family loss and theta-gradient match against old direct |
+| Performance worker | Run 10/50-family timings and 50-family Nsight Systems | Merged path consistently faster; DTS accum kernel bucket down by `3.535 ms` in Nsight |
+| Supervisor | Add focused direct-kernel parity test, promote default, run NCU old-vs-merged | Confirmed reduced DRAM bytes but higher register pressure |
+
+The static review specifically called out these constraints:
+
+- atomic direct accumulation is algebraically safe when the S-term atomics move
+  into the first loop;
+- `c1_valid` and `c2_valid` masks must remain unchanged, because invalid
+  sentinel children otherwise write to species `0`;
+- the active-mask early return must still zero `grad_Pibar_l/r` and scalar
+  params because those outputs are allocated with `torch.empty`;
+- the non-atomic path must not be widened beyond its existing
+  `child_rows_unique` guard.
+
+The implementation therefore adds a `MERGE_S_TERM` Triton constexpr and passes
+it only through `dts_cross_backward_accum_fused`. Grouped DTS and no-atomic DTS
+paths are left as separate experimental paths.
+
+### Correctness
+
+Focused checks:
+
+| Check | Result |
+|---|---:|
+| `py_compile` over changed files | passed |
+| default focused suite with merged default | 23 passed |
+| forced old path with `GPUREC_MERGED_DTS_BACKWARD_ACCUM=0` | 18 passed |
+| correctness worker default focused tests | 13 passed |
+| correctness worker with `GPUREC_MERGED_DTS_BACKWARD_ACCUM=1` | 13 passed |
+| correctness worker old fallback `GPUREC_FUSED_DTS_BACKWARD_ACCUM=0` | 3 passed |
+| correctness worker alias `GPUREC_DTS_BACKWARD_ACCUM_IMPL=merged` | 3 passed |
+
+The new direct-kernel test
+`tests/kernels/test_dts_backward_accum_kernel.py` compares old two-loop and
+merged accumulation outputs directly. It covers:
+
+- fp32 and fp64;
+- duplicated child clade rows, so atomics are exercised;
+- inactive parent rows through `active_mask`.
+
+It passed:
+
+```text
+tests/kernels/test_dts_backward_accum_kernel.py: 3 passed
+```
+
+10-family end-to-end parity from the correctness worker, toggling only
+`GPUREC_MERGED_DTS_BACKWARD_ACCUM`:
+
+| Quantity | Difference |
+|---|---:|
+| loss abs diff | `0` |
+| theta grad max abs diff | `0` |
+| theta grad max rel diff | `0` |
+| theta grad L2 diff | `0` |
+
+### Timings
+
+Benchmark command:
+
+```bash
+FAMS={10,50} REPS=9 WARMUPS=5 python /tmp/gpurec_profile/bench_uniform_backward.py
+```
+
+Performance worker timings before promoting the default:
+
+| Families | Path | Mean | Median | Min | Peak allocation |
+|---:|---|---:|---:|---:|---:|
+| 10 | old direct | `47.197 ms` | `47.194 ms` | `46.856 ms` | `2.695 GB` |
+| 10 | merged | `45.974 ms` | `45.955 ms` | `45.722 ms` | `2.695 GB` |
+| 50 | old direct, run 1 | `153.055 ms` | `152.699 ms` | `151.524 ms` | `10.305 GB` |
+| 50 | merged, run 1 | `149.925 ms` | `149.759 ms` | `148.211 ms` | `10.305 GB` |
+| 50 | old direct, run 2 | `152.802 ms` | `153.575 ms` | `151.054 ms` | `10.305 GB` |
+| 50 | merged, run 2 | `148.997 ms` | `148.606 ms` | `147.457 ms` | `10.305 GB` |
+
+After promoting the merged path to default, the supervisor reran a direct
+default-vs-forced-old comparison:
+
+| Families | Path | Mean | Median | Min | Peak allocation |
+|---:|---|---:|---:|---:|---:|
+| 50 | new default merged | `148.942 ms` | `148.625 ms` | `147.666 ms` | `10.305 GB` |
+| 50 | old path forced with `GPUREC_MERGED_DTS_BACKWARD_ACCUM=0` | `152.777 ms` | `153.198 ms` | `151.494 ms` | `10.305 GB` |
+
+So proposal 2 saves about:
+
+```text
+10 families:  ~1.2 ms, 2.6%
+50 families:  ~3.1-4.6 ms depending on run/order, about 2-3%
+```
+
+Combined with proposal 1, the current 50-family backward is now below
+`150 ms` median on this benchmark.
+
+### Nsight Systems
+
+Worker Nsight Systems captures:
+
+| Path | Script backward time | `_dts_cross_backward_accum_kernel` total | DTS launches | Total kernel time | Kernel interval | Kernel launches |
+|---|---:|---:|---:|---:|---:|---:|
+| old direct | `164.218 ms` | `29.681 ms` | 33 | `137.765 ms` | `163.910 ms` | 3136 |
+| merged | `161.713 ms` | `26.145 ms` | 33 | `134.359 ms` | `161.418 ms` | 3136 |
+
+The launch count is unchanged. The DTS accum bucket improves by:
+
+```text
+29.681 ms -> 26.145 ms
+delta = -3.535 ms
+relative DTS bucket speedup = 11.9%
+```
+
+### Nsight Compute
+
+Supervisor NCU on the same representative largest DTS accum launch
+(`42155` splits):
+
+| Metric | Old two-loop | Merged S-term |
+|---|---:|---:|
+| Duration | `4.751 ms` | `4.371 ms` |
+| DRAM read | `2.123 GB` | `2.026 GB` |
+| DRAM write | `1.521 GB` | `1.319 GB` |
+| Total DRAM bytes | `3.644 GB` | `3.345 GB` |
+| DRAM throughput | `76.2%` | `76.0%` |
+| SM throughput | `25.2%` | `23.9%` |
+| L1 hit rate | `61.3%` | `55.5%` |
+| L2 hit rate | `74.1%` | `67.4%` |
+| Achieved occupancy | `74.6%` | `49.6%` |
+| Registers/thread | 54 | 78 |
+| Register occupancy limit | 9 blocks/SM | 6 blocks/SM |
+| Eligible warps/scheduler | `0.264` | `0.149` |
+| Global RED ops | `15.93 M` | `15.93 M` |
+| Excess global sectors | `356 MB` | `224 MB` |
+
+The result is a useful but not perfect tradeoff. The merged kernel removes about
+`299 MB` of DRAM traffic from the representative launch and cuts excessive
+global sectors by about `132 MB`. However, live range pressure increases
+registers/thread from `54` to `78`, dropping achieved occupancy from `74.6%` to
+`49.6%`. This explains why the single-launch speedup is `8.0%` instead of the
+larger speedup one might expect from removing the whole second logical loop.
+
+Stall mix:
+
+| Stall | Old | Merged |
+|---|---:|---:|
+| Long scoreboard | `26.2%` | `30.4%` |
+| Barrier | `29.4%` | `29.3%` |
+| MIO throttle | `25.7%` | `18.1%` |
+| Short scoreboard | `7.6%` | `11.0%` |
+| LG throttle | `5.0%` | `4.1%` |
+
+Decision: promote proposal 2. It gives a stable end-to-end improvement and
+reduces the DTS accum bucket by almost `12%` in Nsight Systems. The next DTS
+kernel work should target the new register-pressure/occupancy cost rather than
+more blind fusion.
