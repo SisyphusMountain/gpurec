@@ -558,8 +558,10 @@ The expected win is less certain than the active-mask and DTS-loop proposals.
    proposal 5 follow-up below with a staged `u_d` Pibar VJP path. The
    monolithic-kernel version remains rejected as too register-risky.
 6. **Use NCU source-counter-guided work on `_wave_backward_uniform_kernel`**.
-   It remains the largest bucket, but the next change should be driven by exact
-   source lines for excessive sectors, not by broad guesses.
+   Completed in the proposal 6 follow-up below. The promoted path replaces the
+   Neumann speciation scatter scratch with parent gathers, passes int32 topology
+   tensors into the wave kernel, uses an 8-warp launch for the gather variant,
+   and reuses the forward Pibar row maxima.
 
 ## Measurement notes
 
@@ -1476,3 +1478,219 @@ this wave that substantially reduces the Pibar VJP bucket. A monolithic
 DTS+Pibar tree kernel remains a bad next step: DTS already climbs to
 96 registers/thread in the staged path. The next work should target DTS
 register pressure and vector `grad_mt` accumulation, not bigger fusion.
+
+## Proposal 6 follow-up: source-counter-guided wave-kernel work
+
+Proposal 6 targeted `_wave_backward_uniform_kernel`, which became the largest
+remaining kernel bucket after the DTS-staged Pibar VJP work.
+
+The final promoted changes are:
+
+1. `GPUREC_WAVE_SPEC_GATHER=1` by default. The Neumann speciation contribution
+   now uses `term[parent[s]] * sl_weight[parent[s] -> s]` instead of full-row
+   zeroing, child scatter stores, and readback from the scratch buffer.
+2. `GPUREC_WAVE_TOPOLOGY_INT32=1` by default. The fused wave kernel receives
+   int32 species topology tensors for child, parent, and leaf-species indices.
+   PyTorch indexing paths still keep their long tensors.
+3. `GPUREC_WAVE_NUM_WARPS=8` by default only for the gather path. The old
+   scatter fallback keeps Triton's previous launch shape unless this env var is
+   explicitly set.
+4. `GPUREC_WAVE_REUSE_PIBAR_ROW_MAX=1` by default. When forward row maxima are
+   available, the wave kernel skips its own Pibar row-stat pass and computes
+   `inv_denom = 2 ** (row_max + mt - Pibar_star)`.
+
+Fallback to the old wave-kernel behavior:
+
+```bash
+GPUREC_WAVE_SPEC_GATHER=0
+GPUREC_WAVE_TOPOLOGY_INT32=0
+GPUREC_WAVE_NUM_WARPS=0
+GPUREC_WAVE_REUSE_PIBAR_ROW_MAX=0
+```
+
+### Subagent workflow
+
+| Role | Task | Result |
+|---|---|---|
+| Source-counter reviewer | Export and inspect NCU source counters for `_wave_backward_uniform_kernel` | Identified Neumann scratch traffic as first-order; ranked int32 topology, parent-gather speciation, block/warp sweep, and row-max reuse as testable candidates |
+| Correctness reviewer | Audit usable tests and propose gates | Confirmed direct per-wave PyTorch parity is pre-existing red; recommended E2E FD/autograd gates plus a new scatter-vs-gather direct parity test |
+| Benchmark/profile reviewer | Establish clean post-proposal-5 baseline and exact Nsys/NCU commands | Fresh baseline: 10 trees `40.050 ms` median, 50 trees `136.159 ms` median; supplied launch-skip values and profiling commands |
+| Supervisor | Implement guarded variants, promote the winning defaults, run tests/benchmarks/Nsys/NCU, document | Final 50-tree median `121.016 ms`; wave-kernel Nsys bucket `39.422 ms -> 25.412 ms` |
+
+### Source-counter diagnosis
+
+The pre-change representative large wave (`W=32768`, `S=1999`) was memory and
+scratch limited:
+
+| Metric | Old scatter path |
+|---|---:|
+| Duration | `7.847 ms` |
+| DRAM read / write | `2.941 GB / 2.437 GB` |
+| L1 global load / store / RED bytes | `40.352 GB / 6.600 GB / 2.638 GB` |
+| DRAM throughput | `67.97%` |
+| Compute throughput | `34.66%` |
+| Achieved occupancy | `82.51%` |
+| Eligible warps / scheduler | `0.301` |
+| Registers / thread | 48 |
+| Excessive L2 sectors | `777.6 MB` |
+
+The hot code was the Neumann loop:
+
+- the full-row zeroing pass before each speciation scatter;
+- pass A loading `term` and compact Pibar coefficient scratch to form `u_d`;
+- child-index loads plus speciation scatter stores;
+- pass B reloading term/coefficient scratch, reading the speciation buffer,
+  storing the next term, and reading/updating `v_k`.
+
+The final RED operations for parameter gradients are visible, but they were not
+the first source-counter target. The source export also showed repeated 64-bit
+`LDG.E.64` topology loads, which made int32 topology worth testing.
+
+### Correctness
+
+Focused correctness checks:
+
+| Check | Result |
+|---|---:|
+| Direct scatter-vs-gather parity for one no-split wave and one split wave, including accumulated param grads | passed |
+| Default E2E FD wave tests + autograd bridge + active-mask tests | 22 passed |
+| Forced old wave fallback E2E/autograd bridge | 18 passed |
+| Broader focused backward kernel suite | 40 passed |
+
+The existing full `tests/kernels/test_wave_backward_kernel.py` direct
+Triton-vs-PyTorch file is still not a green gate; it had pre-existing failures
+before proposal 6. The new checked-in scatter-vs-gather test is therefore the
+direct kernel regression gate for this change.
+
+### Event timings
+
+Fresh post-proposal-5 baseline from the performance agent:
+
+| Families | Path | Mean | Median | Min | Peak allocation |
+|---:|---|---:|---:|---:|---:|
+| 10 | old default before proposal 6 | `40.157 ms` | `40.050 ms` | `39.778 ms` | `2.696 GB` |
+| 50 | old default before proposal 6 | `136.309 ms` | `136.159 ms` | `134.409 ms` | `10.306 GB` |
+
+Candidate sweep on the 50-tree target:
+
+| Path | Mean | Median | Min | Notes |
+|---|---:|---:|---:|---|
+| forced old fallback | `136.603 ms` | `136.519 ms` | `134.847 ms` | scatter, long topology, Triton default warps |
+| gather only | `128.062 ms` | `127.528 ms` | `126.402 ms` | removes speciation zero/scatter/readback |
+| int32 only | `130.929 ms` | `130.834 ms` | `129.895 ms` | reduces topology-load overhead |
+| gather + int32 | `124.244 ms` | `124.321 ms` | `122.990 ms` | effects combine |
+| gather + int32 + `num_warps=8` | `121.088 ms` | `121.229 ms` | `120.213 ms` | best launch shape |
+| final default with row-max reuse | `121.300 ms` | `121.016 ms` | `120.529 ms` | promoted |
+
+Other block/warp variants were rejected:
+
+| Variant | 50-tree median | Decision |
+|---|---:|---|
+| `BLOCK_S=128` | `143.905 ms` | reject; too many loop trips |
+| `BLOCK_S=512` | `137.661 ms` | reject; worse locality/pressure |
+| `BLOCK_S=512`, `num_warps=8` | `122.294 ms` | close, but slower than default `BLOCK_S=256` |
+| `num_warps=16` | `125.623 ms` | reject; too much pressure |
+
+The 10-tree final-equivalent row-max run was:
+
+| Families | Path | Mean | Median | Min | Peak allocation |
+|---:|---|---:|---:|---:|---:|
+| 10 | final default-equivalent | `37.349 ms` | `37.204 ms` | `36.725 ms` | `2.696 GB` |
+
+### Nsight Systems
+
+Nsight Systems captures:
+
+| Capture | Path |
+|---|---|
+| forced old scatter path | `/tmp/gpurec_profile/prop6_spec_scatter50.nsys-rep` |
+| final default with row-max reuse | `/tmp/gpurec_profile/prop6_final_rowmax50.nsys-rep` |
+
+Single-capture 50-tree timings under Nsight overhead:
+
+| Path | Backward event time | Kernel launches | Summed kernel time |
+|---|---:|---:|---:|
+| old scatter | `145.358 ms` | 2968 | `120.389 ms` |
+| final default | `135.759 ms` | 2970 | `109.177 ms` |
+
+Kernel bucket movement:
+
+| Component | Old scatter | Final default | Delta |
+|---|---:|---:|---:|
+| `_wave_backward_uniform_kernel` | `39.422 ms` | `25.412 ms` | `-14.010 ms` |
+| `_dts_cross_backward_accum_kernel` | `30.049 ms` | `32.606 ms` | `+2.557 ms` |
+| `_uniform_cross_pibar_vjp_tree_from_ud_kernel` | `25.389 ms` | `25.618 ms` | unchanged/noise |
+| `_dts_fused_kernel` | `12.207 ms` | `12.207 ms` | unchanged |
+| `_active_mask_from_rhs_absmax_kernel` | `2.914 ms` | `2.919 ms` | unchanged |
+| Total summed kernel time | `120.389 ms` | `109.177 ms` | `-11.212 ms` |
+
+The launch count increases by two because the int32 topology conversion adds a
+couple of tiny setup copies/kernels. This is not in the hot region: D2D copy
+time stays `0.390 ms`, and H2D copy count rises only from 2 to 4 tiny copies.
+
+### Nsight Compute
+
+Representative large `_wave_backward_uniform_kernel` launch:
+
+| Metric | Old scatter | Final default |
+|---|---:|---:|
+| Duration | `7.847 ms` | `5.102 ms` |
+| DRAM read | `2.941 GB` | `1.008 GB` |
+| DRAM write | `2.437 GB` | `1.895 GB` |
+| L1 global load bytes | `40.352 GB` | `20.259 GB` |
+| L1 global store bytes | `6.600 GB` | `3.518 GB` |
+| L1 global RED bytes | `2.638 GB` | `1.327 GB` |
+| DRAM throughput | `67.97%` | `56.46%` |
+| Memory throughput | `76.08%` | `87.52%` |
+| Compute throughput | `34.66%` | `40.18%` |
+| Achieved occupancy | `82.51%` | `99.43%` |
+| Active warps / scheduler | `9.875` | `11.945` |
+| Eligible warps / scheduler | `0.301` | `0.457` |
+| Registers / thread | 48 | 40 |
+| Excessive L2 sectors | `777.6 MB` | `146.1 MB` |
+| Executed instructions | `1.749 B` | `1.680 B` |
+
+Stall mix:
+
+| Stall | Old scatter | Final default |
+|---|---:|---:|
+| Long scoreboard | `21.84` | `26.58` |
+| Barrier | `12.09` | `5.58` |
+| MIO throttle | `6.76` | `1.24` |
+| Short scoreboard | `3.90` | `2.68` |
+| LG throttle | `2.32` | `1.18` |
+
+The long-scoreboard ratio rises because the final kernel is much shorter and
+more purely load-latency limited after scratch stores/barriers are removed. The
+absolute outcome is still better: duration drops by `2.745 ms` for this launch,
+DRAM read drops by about `1.93 GB`, L1 load bytes are cut roughly in half, and
+excessive sectors fall by about `81%`.
+
+### Interpretation
+
+The main win is not arithmetic. It comes from changing the Neumann speciation
+dataflow:
+
+```text
+old: zero next buffer -> scatter parent contributions to children -> read next buffer
+new: gather parent term and parent side weight directly when computing each child
+```
+
+The gather path adds parent-index loads, but it removes enough full-row scratch
+traffic to dominate that cost. Int32 topology then reduces the remaining
+topology-load waste. The 8-warp launch is only safe as a default for the gather
+path; the old scatter path is intentionally left on Triton's prior launch shape
+when `GPUREC_WAVE_SPEC_GATHER=0`.
+
+Row-max reuse is a small additive cleanup. It avoids recomputing Pibar row
+statistics in the wave kernel when the forward pass already stored row maxima,
+and it uses the same stable identity as the staged DTS Pibar VJP:
+
+```text
+inv_denom = 2 ** (row_max + mt - Pibar_star)
+```
+
+Decision: promote proposal 6. The final 50-tree median improves from about
+`136.2 ms` to about `121.0 ms`, and the wave kernel is no longer the largest
+bucket in Nsys. The next bottleneck is again split-side work: DTS accumulation
+and staged Pibar tree VJP are now comparable to or larger than the wave bucket.
