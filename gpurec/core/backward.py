@@ -507,6 +507,9 @@ def Pi_wave_backward(
         os.environ.get("GPUREC_DTS_PIBAR_UD_SKIP_ZERO_SIDES", "0") != "0"
         or os.environ.get("GPUREC_DTS_PIBAR_UD_WORKLIST", "0") != "0"
     )
+    dts_pibar_ud_compact_levels_enabled = (
+        os.environ.get("GPUREC_DTS_PIBAR_UD_COMPACT_LEVELS", "0") != "0"
+    )
     dts_pibar_ud_min_splits = int(
         os.environ.get("GPUREC_DTS_PIBAR_UD_MIN_SPLITS", "0")
     )
@@ -702,6 +705,10 @@ def Pi_wave_backward(
 
     ancestor_cols = None
     level_parents = None
+    compact_level_ptr = None
+    compact_level_parents = None
+    compact_level_child1 = None
+    compact_level_child2 = None
     sp_parent = None
     depth_nodes = None
     if fused_cross_pibar_vjp_enabled:
@@ -716,6 +723,24 @@ def Pi_wave_backward(
             cached_level_parents = cache.get('level_parents')
             if torch.is_tensor(cached_level_parents) and cached_level_parents.device == target_device:
                 level_parents = cached_level_parents
+            cached_compact_level_ptr = cache.get('compact_level_ptr')
+            cached_compact_level_parents = cache.get('compact_level_parents')
+            cached_compact_level_child1 = cache.get('compact_level_child1')
+            cached_compact_level_child2 = cache.get('compact_level_child2')
+            if (
+                torch.is_tensor(cached_compact_level_ptr)
+                and torch.is_tensor(cached_compact_level_parents)
+                and torch.is_tensor(cached_compact_level_child1)
+                and torch.is_tensor(cached_compact_level_child2)
+                and cached_compact_level_ptr.device == target_device
+                and cached_compact_level_parents.device == target_device
+                and cached_compact_level_child1.device == target_device
+                and cached_compact_level_child2.device == target_device
+            ):
+                compact_level_ptr = cached_compact_level_ptr
+                compact_level_parents = cached_compact_level_parents
+                compact_level_child1 = cached_compact_level_child1
+                compact_level_child2 = cached_compact_level_child2
             cached_sp_parent = cache.get('sp_parent')
             if torch.is_tensor(cached_sp_parent) and cached_sp_parent.device == target_device:
                 sp_parent = cached_sp_parent
@@ -726,6 +751,16 @@ def Pi_wave_backward(
         if (
             ancestor_cols is None
             or (tree_cross_pibar_vjp_impl and level_parents is None)
+            or (
+                dts_pibar_ud_compact_levels_enabled
+                and tree_cross_pibar_vjp_impl
+                and (
+                    compact_level_ptr is None
+                    or compact_level_parents is None
+                    or compact_level_child1 is None
+                    or compact_level_child2 is None
+                )
+            )
             or (prefix_cross_pibar_vjp_impl and (sp_parent is None or depth_nodes is None))
         ):
             sp_parent_cpu = torch.full((S,), -1, dtype=torch.long)
@@ -756,7 +791,17 @@ def Pi_wave_backward(
             if ancestor_cols is None:
                 ancestor_cols = ancestor_cols_cpu.T.contiguous().to(target_device)
 
-            if tree_cross_pibar_vjp_impl and level_parents is None:
+            need_compact_levels = (
+                dts_pibar_ud_compact_levels_enabled
+                and tree_cross_pibar_vjp_impl
+                and (
+                    compact_level_ptr is None
+                    or compact_level_parents is None
+                    or compact_level_child1 is None
+                    or compact_level_child2 is None
+                )
+            )
+            if tree_cross_pibar_vjp_impl and (level_parents is None or need_compact_levels):
                 child1_values = sp_child1_cpu.tolist()
                 child2_values = sp_child2_cpu.tolist()
                 levels = [-1] * S
@@ -798,14 +843,35 @@ def Pi_wave_backward(
                         level_lists.append(parents)
                         max_level_width = max(max_level_width, len(parents))
 
-                level_parents_cpu = torch.full(
-                    (max(len(level_lists), 1), max_level_width),
-                    -1,
-                    dtype=torch.long,
-                )
-                for level, parents in enumerate(level_lists):
-                    level_parents_cpu[level, :len(parents)] = torch.tensor(parents, dtype=torch.long)
-                level_parents = level_parents_cpu.contiguous().to(target_device)
+                if level_parents is None:
+                    level_parents_cpu = torch.full(
+                        (max(len(level_lists), 1), max_level_width),
+                        -1,
+                        dtype=torch.long,
+                    )
+                    for level, parents in enumerate(level_lists):
+                        level_parents_cpu[level, :len(parents)] = torch.tensor(parents, dtype=torch.long)
+                    level_parents = level_parents_cpu.contiguous().to(target_device)
+                if need_compact_levels:
+                    ptr_values = [0]
+                    flat_parents = []
+                    flat_child1 = []
+                    flat_child2 = []
+                    for parents in level_lists:
+                        flat_parents.extend(parents)
+                        flat_child1.extend(child1_values[parent] for parent in parents)
+                        flat_child2.extend(child2_values[parent] for parent in parents)
+                        ptr_values.append(len(flat_parents))
+                    if len(ptr_values) == 1:
+                        ptr_values.append(0)
+                    compact_level_ptr_cpu = torch.tensor(ptr_values, dtype=torch.long)
+                    compact_level_parents_cpu = torch.tensor(flat_parents, dtype=torch.int32)
+                    compact_level_child1_cpu = torch.tensor(flat_child1, dtype=torch.int32)
+                    compact_level_child2_cpu = torch.tensor(flat_child2, dtype=torch.int32)
+                    compact_level_ptr = compact_level_ptr_cpu.contiguous().to(target_device)
+                    compact_level_parents = compact_level_parents_cpu.contiguous().to(target_device)
+                    compact_level_child1 = compact_level_child1_cpu.contiguous().to(target_device)
+                    compact_level_child2 = compact_level_child2_cpu.contiguous().to(target_device)
 
             if prefix_cross_pibar_vjp_impl and depth_nodes is None:
                 depths = [-1] * S
@@ -840,6 +906,16 @@ def Pi_wave_backward(
             if cache is not None and int(cache.get('S', -1)) == int(S):
                 if level_parents is not None:
                     cache['level_parents'] = level_parents
+                if (
+                    compact_level_ptr is not None
+                    and compact_level_parents is not None
+                    and compact_level_child1 is not None
+                    and compact_level_child2 is not None
+                ):
+                    cache['compact_level_ptr'] = compact_level_ptr
+                    cache['compact_level_parents'] = compact_level_parents
+                    cache['compact_level_child1'] = compact_level_child1
+                    cache['compact_level_child2'] = compact_level_child2
                 if sp_parent is not None:
                     cache['sp_parent'] = sp_parent
                 if depth_nodes is not None:
@@ -1669,6 +1745,26 @@ def Pi_wave_backward(
                         pibar_row_max=forward_pibar_row_max,
                         skip_zero_sides=dts_pibar_ud_skip_zero_sides_enabled,
                         side_active=pibar_side_active,
+                        compact_level_ptr=(
+                            compact_level_ptr
+                            if dts_pibar_ud_compact_levels_enabled
+                            else None
+                        ),
+                        compact_level_parents=(
+                            compact_level_parents
+                            if dts_pibar_ud_compact_levels_enabled
+                            else None
+                        ),
+                        compact_level_child1=(
+                            compact_level_child1
+                            if dts_pibar_ud_compact_levels_enabled
+                            else None
+                        ),
+                        compact_level_child2=(
+                            compact_level_child2
+                            if dts_pibar_ud_compact_levels_enabled
+                            else None
+                        ),
                     )
                 elif (
                     grouped_cross_pibar_vjp_enabled

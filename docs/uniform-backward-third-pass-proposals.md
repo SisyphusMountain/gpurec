@@ -1623,6 +1623,158 @@ Profiling gate:
 - Nsys must show the Pibar tree bucket falling without a new setup kernel
   erasing the win.
 
+### Proposal 5 test report: compact per-level Pibar tree traversal
+
+The 3-agent + supervisor pass tested the padding hypothesis directly.  The
+species tree used by `test_trees_1000` has `S = 1999` species nodes and `999`
+internal parent nodes.  The current padded layout has `22` bottom-up levels with
+`MAX_LEVEL_WIDTH = 335`, so each split side scans `22 * 335 = 7370` level slots
+even though only `999` are real parent nodes:
+
+```text
+level widths:
+335, 203, 125, 90, 63, 46, 36, 26, 21, 14, 10, 9, 5, 4, 2, 2, 2, 2, 1, 1, 1, 1
+
+active parent nodes: 999
+padded slots per side: 7370
+padding slots per side: 6371
+padding fraction: 86.45%
+```
+
+Across split waves, this means the Pibar tree correction repeatedly executes a
+large amount of masked topology work:
+
+| case | split waves | splits | split sides | real parent visits | padded parent slots |
+|---|---:|---:|---:|---:|---:|
+| 10 families | 44 | 83,135 | 166,270 | 166,103,730 | 1,225,409,900 |
+| 50 families | 46 | 402,275 | 804,550 | 803,745,450 | 5,929,533,500 |
+
+The implementation is opt-in with
+`GPUREC_DTS_PIBAR_UD_COMPACT_LEVELS=1`.  It precomputes and caches four device
+arrays from the species topology:
+
+```text
+compact_level_ptr[level]      -> flat start offset
+compact_level_parents[offset] -> parent node id
+compact_level_child1[offset]  -> first child id
+compact_level_child2[offset]  -> second child id
+```
+
+The compact kernel preserves the per-level barrier structure, but it scans only
+the active parent range for each level:
+
+```text
+for level in levels:
+    start = compact_level_ptr[level]
+    end = compact_level_ptr[level + 1]
+    for off in range(start, end, BLOCK_S):
+        parent = compact_level_parents[off]
+        c1 = compact_level_child1[off]
+        c2 = compact_level_child2[off]
+        pibar_ud[parent] += pibar_ud[c1] + pibar_ud[c2]
+    barrier()
+```
+
+There were two implementation stages.  The first compact version flattened only
+the parent nodes and still loaded `sp_child1[parent]` and `sp_child2[parent]`
+inside the kernel.  That reduced masked parent metadata loads, but the hot
+launch remained mostly dominated by the same child-topology loads.  The final
+variant also flattens `child1` and `child2`, so each active parent slot now
+uses contiguous compact metadata and the kernel no longer performs indexed
+child lookups through the full species arrays.
+
+Correctness checks:
+
+```text
+python -m py_compile gpurec/core/backward.py gpurec/core/kernels/wave_backward.py
+pytest -q tests/kernels/test_dts_backward_accum_kernel.py
+  -> 43 passed
+
+GPUREC_DTS_PIBAR_UD_COMPACT_LEVELS=1 \
+pytest -q tests/gradients/test_autograd_bridge.py
+  -> 15 passed
+
+GPUREC_DTS_PIBAR_UD_SKIP_ZERO_SIDES=1 \
+GPUREC_DTS_PIBAR_UD_COMPACT_LEVELS=1 \
+pytest -q tests/gradients/test_autograd_bridge.py \
+          tests/gradients/test_fd_all_modes.py::test_analytic_matches_fd
+  -> 21 passed
+```
+
+The kernel tests now compare padded and compact Pibar tree correction for
+`fp32` and `fp64`, with and without the active parent mask, and with and without
+exact-zero side skipping.  The gradient checks exercise the full autograd path
+with the compact path enabled.
+
+End-to-end benchmark, current best path with direct DTS and exact-zero side
+skipping enabled:
+
+| case | compact off median | compact on median | median gain |
+|---|---:|---:|---:|
+| 10 families | `35.142 ms` | `34.035 ms` | `1.107 ms` |
+| 50 families | `106.102 ms` | `103.581 ms` | `2.521 ms` |
+
+The result is workload dependent.  With exact-zero side skipping disabled, the
+implementation worker measured `36.166 -> 36.455 ms` on 10 families and
+`114.576 -> 112.177 ms` on 50 families.  Because the 10-family no-skip case was
+a slight regression, the compact path remains behind the environment flag
+instead of becoming the default.
+
+Nsight Systems, 50-family backward:
+
+| variant | Pibar from-`u_d` bucket | launches | hottest launch |
+|---|---:|---:|---:|
+| padded + side skip | `18.099 ms` | 33 | `2.788 ms` all-active negative-control wave |
+| compact parents only + side skip | `17.337 ms` | 33 | about `2.41 ms` on the sampled hot wave |
+| compact parents+children + side skip | `15.892 ms` | 33 | `2.454 ms` |
+
+The 50-family Pibar bucket therefore drops by about `2.21 ms` versus the
+current padded side-skip path.  The full backward pass gain was a little larger
+in the benchmark (`2.52 ms` median), which is within normal run-to-run noise
+for these captures.
+
+NCU hot-launch comparison for split-wave index 4:
+
+| metric | padded | compact parents only | compact parents+children |
+|---|---:|---:|---:|
+| kernel duration | `2.479 ms` | `2.369 ms` | `2.213 ms` |
+| DRAM read bytes | `1.164625 GB` | `1.164518 GB` | `1.164479 GB` |
+| DRAM write bytes | `744.901 MB` | `744.806 MB` | `744.772 MB` |
+| global load instructions | `30,464,432` | `29,495,712` | `29,495,712` |
+| global reduction instructions | `3,051,468` | `3,051,468` | `3,051,468` |
+| global store instructions | `2,228,056` | `2,228,056` | `2,228,056` |
+| registers/thread | `40` | `40` | `36` |
+| achieved occupancy | `98.38%` | `98.16%` | `97.65%` |
+| DRAM throughput | `76.47%` | `78.64%` | `86.15%` |
+| compute throughput | `27.62%` | `23.88%` | `25.73%` |
+
+The important observation is that DRAM bytes barely move.  The dominant bytes
+are still `pibar_ud` row traffic and atomic additions into `accumulated_rhs`.
+The compact path helps by cutting masked topology/control work, reducing global
+load instruction count by about `3.2%`, and lowering register pressure from
+`40` to `36` registers/thread after child metadata was flattened.  The kernel
+is still primarily memory-latency limited: compact traversal makes each launch
+shorter, but it does not change the fundamental `pibar_ud` and atomic traffic.
+
+Artifacts:
+
+```text
+/tmp/gpurec_profile/prop5_skipzero_fams50.nsys-rep
+/tmp/gpurec_profile/prop5_compact_fams50.nsys-rep
+/tmp/gpurec_profile/prop5_compact_child_fams50.nsys-rep
+/tmp/gpurec_profile/prop5_ncu_pibar_padded_skip4.csv
+/tmp/gpurec_profile/prop5_ncu_pibar_compact_skip4.csv
+/tmp/gpurec_profile/prop5_ncu_pibar_compact_child_skip4.csv
+```
+
+Decision: keep the compact traversal as a validated opt-in path.  It is a real
+win for the 50-family target and for the current side-skip configuration, but
+it should not be enabled unconditionally until we add a small runtime heuristic
+or collect more evidence on small batches.  A reasonable heuristic would enable
+it when exact-zero side skipping is active and the product
+`n_ws * padding_fraction` is large enough to amortize the extra compact metadata
+loads.
+
 ## Proposal 6: two-stage `grad_mt` reduction for the staged DTS path
 
 The staged DTS path must still accumulate the vector `grad_mt` contribution:

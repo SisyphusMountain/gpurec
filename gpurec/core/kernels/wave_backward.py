@@ -2811,6 +2811,91 @@ def _uniform_cross_pibar_vjp_tree_from_ud_kernel(
         tl.atomic_add(accumulated_rhs_ptr + pi_base + s_offs, contrib, sem="relaxed", mask=mask)
 
 
+@triton.jit
+def _uniform_cross_pibar_vjp_tree_from_ud_compact_kernel(
+    Pi_star_ptr,          # [C, S]
+    pibar_ud_ptr,         # [2 * n_ws, S], initial subtree values u_d
+    pibar_A_ptr,          # [2 * n_ws], sum_s u_d[s] per split side
+    side_active_ptr,      # optional [2 * n_ws] bool exact-zero side skip mask
+    sl_ptr,               # [n_ws]
+    sr_ptr,               # [n_ws]
+    reduce_idx_ptr,       # [n_ws], used with active_mask_ptr when enabled
+    active_mask_ptr,      # optional [W] bool parent row activity mask
+    pibar_row_max_ptr,    # [C], Pi-row max from forward uniform Pibar
+    compact_level_ptr,    # [N_LEVELS + 1]
+    compact_level_parent_ptr, # [total internal nodes across levels]
+    compact_level_child1_ptr, # [total internal nodes across levels]
+    compact_level_child2_ptr, # [total internal nodes across levels]
+    accumulated_rhs_ptr,  # [C, S], updated atomically
+    n_ws: tl.constexpr,
+    S: tl.constexpr,
+    stride_C: tl.constexpr,
+    BLOCK_S: tl.constexpr,
+    N_LEVELS: tl.constexpr,
+    USE_ACTIVE_MASK: tl.constexpr,
+    USE_SIDE_ACTIVE: tl.constexpr,
+    DTYPE: tl.constexpr,
+):
+    """Uniform Pibar from-u_d tree correction using compact per-level nodes."""
+    NEG_LARGE: tl.constexpr = -1e30
+
+    row = tl.program_id(0)
+    split_i = tl.where(row < n_ws, row, row - n_ws)
+    is_right = row >= n_ws
+    if USE_SIDE_ACTIVE:
+        side_active = tl.load(side_active_ptr + row)
+        if side_active == 0:
+            return
+
+    child_l = tl.load(sl_ptr + split_i)
+    child_r = tl.load(sr_ptr + split_i)
+    child = tl.where(is_right, child_r, child_l)
+    if USE_ACTIVE_MASK:
+        parent_w = tl.load(reduce_idx_ptr + split_i)
+        row_active = tl.load(active_mask_ptr + parent_w)
+        if row_active == 0:
+            return
+    else:
+        row_active = True
+
+    pi_base = child * stride_C
+    row_base = row * S
+    row_max = tl.load(pibar_row_max_ptr + child).to(DTYPE)
+    A = tl.load(pibar_A_ptr + row).to(DTYPE)
+
+    tl.debug_barrier()
+    for level in range(0, N_LEVELS):
+        level_start = tl.load(compact_level_ptr + level)
+        level_end = tl.load(compact_level_ptr + level + 1)
+        p_start = level_start
+        while p_start < level_end:
+            node_offs = p_start + tl.arange(0, BLOCK_S)
+            node_mask = node_offs < level_end
+            parent = tl.load(compact_level_parent_ptr + node_offs, mask=node_mask, other=-1)
+            c1 = tl.load(compact_level_child1_ptr + node_offs, mask=node_mask, other=S)
+            c2 = tl.load(compact_level_child2_ptr + node_offs, mask=node_mask, other=S)
+            parent_valid = node_mask & (parent >= 0) & (parent < S) & row_active
+            c1_valid = node_mask & (c1 >= 0) & (c1 < S) & row_active
+            c2_valid = node_mask & (c2 >= 0) & (c2 < S) & row_active
+
+            parent_val = tl.load(pibar_ud_ptr + row_base + parent, mask=parent_valid, other=0.0)
+            c1_val = tl.load(pibar_ud_ptr + row_base + c1, mask=c1_valid, other=0.0)
+            c2_val = tl.load(pibar_ud_ptr + row_base + c2, mask=c2_valid, other=0.0)
+            tl.store(pibar_ud_ptr + row_base + parent, parent_val + c1_val + c2_val, mask=parent_valid)
+            p_start += BLOCK_S
+        tl.debug_barrier()
+
+    for s_start in range(0, S, BLOCK_S):
+        s_offs = s_start + tl.arange(0, BLOCK_S)
+        valid_mask = s_offs < S
+        mask = valid_mask & row_active
+        pi_val = tl.load(Pi_star_ptr + pi_base + s_offs, mask=mask, other=NEG_LARGE)
+        p_prime = tl.exp2(pi_val - row_max)
+        subtree_sum = tl.load(pibar_ud_ptr + row_base + s_offs, mask=mask, other=0.0)
+        contrib = p_prime * (A - subtree_sum)
+        tl.atomic_add(accumulated_rhs_ptr + pi_base + s_offs, contrib, sem="relaxed", mask=mask)
+
+
 def uniform_cross_pibar_vjp_tree_from_ud_fused(
     Pi_star,
     pibar_ud,
@@ -2827,6 +2912,10 @@ def uniform_cross_pibar_vjp_tree_from_ud_fused(
     pibar_row_max=None,
     skip_zero_sides=False,
     side_active=None,
+    compact_level_ptr=None,
+    compact_level_parents=None,
+    compact_level_child1=None,
+    compact_level_child2=None,
 ):
     """Uniform-Pibar VJP tree correction from DTS-staged u_d."""
     n_ws = sl.shape[0]
@@ -2853,6 +2942,46 @@ def uniform_cross_pibar_vjp_tree_from_ud_fused(
             DTYPE=_tl_float_dtype(Pi_star.dtype),
             num_warps=4,
         )
+
+    use_compact_levels = (
+        compact_level_ptr is not None
+        and compact_level_parents is not None
+        and compact_level_child1 is not None
+        and compact_level_child2 is not None
+    )
+    if use_compact_levels:
+        if compact_level_ptr.numel() < 2:
+            raise ValueError("compact_level_ptr must contain at least start and end offsets")
+        compact_level_ptr = compact_level_ptr.contiguous()
+        compact_level_parents = compact_level_parents.contiguous()
+        compact_level_child1 = compact_level_child1.contiguous()
+        compact_level_child2 = compact_level_child2.contiguous()
+        _uniform_cross_pibar_vjp_tree_from_ud_compact_kernel[(2 * n_ws,)](
+            Pi_star,
+            pibar_ud,
+            pibar_A,
+            side_active if side_active is not None else pibar_A,
+            sl,
+            sr,
+            reduce_idx if reduce_idx is not None else sl,
+            active_mask if active_mask is not None else pibar_ud,
+            pibar_row_max,
+            compact_level_ptr,
+            compact_level_parents,
+            compact_level_child1,
+            compact_level_child2,
+            accumulated_rhs,
+            n_ws,
+            S,
+            stride_C,
+            BLOCK_S,
+            N_LEVELS=compact_level_ptr.numel() - 1,
+            USE_ACTIVE_MASK=bool(active_mask is not None),
+            USE_SIDE_ACTIVE=bool(side_active is not None),
+            DTYPE=_tl_float_dtype(Pi_star.dtype),
+            num_warps=4,
+        )
+        return side_active
 
     _uniform_cross_pibar_vjp_tree_from_ud_kernel[(2 * n_ws,)](
         Pi_star,

@@ -90,6 +90,27 @@ def _binary_tree_helpers(S, device, dtype):
     )
 
 
+def _compact_level_helpers(level_parents, sp_child1, sp_child2):
+    level_parents_cpu = level_parents.detach().cpu()
+    child1_cpu = sp_child1.detach().cpu()
+    child2_cpu = sp_child2.detach().cpu()
+    ptr = [0]
+    nodes = []
+    child1 = []
+    child2 = []
+    for level in range(level_parents_cpu.shape[0]):
+        valid = level_parents_cpu[level][level_parents_cpu[level] >= 0].tolist()
+        nodes.extend(valid)
+        child1.extend(int(child1_cpu[parent]) for parent in valid)
+        child2.extend(int(child2_cpu[parent]) for parent in valid)
+        ptr.append(len(nodes))
+    compact_ptr = torch.tensor(ptr, device=level_parents.device, dtype=torch.long)
+    compact_nodes = torch.tensor(nodes, device=level_parents.device, dtype=torch.int32)
+    compact_child1 = torch.tensor(child1, device=level_parents.device, dtype=torch.int32)
+    compact_child2 = torch.tensor(child2, device=level_parents.device, dtype=torch.int32)
+    return compact_ptr, compact_nodes, compact_child1, compact_child2
+
+
 def _uniform_pibar_from_pi(Pi, mt, ancestors_dense):
     row_max = Pi.max(dim=1).values
     p = torch.exp2(Pi - row_max[:, None])
@@ -489,8 +510,24 @@ def test_uniform_cross_pibar_from_ud_skip_zero_sides_matches_baseline(dtype, ato
 
     base_ud = pibar_ud.clone()
     skip_ud = pibar_ud.clone()
+    compact_ud = pibar_ud.clone()
     base_rhs = torch.zeros(C, S, device=device, dtype=dtype)
     skip_rhs = torch.zeros(C, S, device=device, dtype=dtype)
+    compact_rhs = torch.zeros(C, S, device=device, dtype=dtype)
+    ptr = [0]
+    flat_parent = []
+    flat_child1 = []
+    flat_child2 = []
+    for level in level_parents.cpu().tolist():
+        parents = [int(parent) for parent in level if int(parent) >= 0]
+        flat_parent.extend(parents)
+        flat_child1.extend(int(sp_child1[parent].item()) for parent in parents)
+        flat_child2.extend(int(sp_child2[parent].item()) for parent in parents)
+        ptr.append(len(flat_parent))
+    compact_ptr = torch.tensor(ptr, device=device, dtype=torch.long)
+    compact_parent = torch.tensor(flat_parent, device=device, dtype=torch.int32)
+    compact_child1 = torch.tensor(flat_child1, device=device, dtype=torch.int32)
+    compact_child2 = torch.tensor(flat_child2, device=device, dtype=torch.int32)
 
     uniform_cross_pibar_vjp_tree_from_ud_fused(
         Pi,
@@ -525,10 +562,109 @@ def test_uniform_cross_pibar_from_ud_skip_zero_sides_matches_baseline(dtype, ato
         skip_zero_sides=True,
         side_active=side_active,
     )
+    uniform_cross_pibar_vjp_tree_from_ud_fused(
+        Pi,
+        compact_ud,
+        pibar_A,
+        sl,
+        sr,
+        sp_child1,
+        sp_child2,
+        level_parents,
+        compact_rhs,
+        S,
+        active_mask=active_mask,
+        reduce_idx=reduce_idx,
+        pibar_row_max=pibar_row_max,
+        skip_zero_sides=True,
+        side_active=side_active,
+        compact_level_ptr=compact_ptr,
+        compact_level_parents=compact_parent,
+        compact_level_child1=compact_child1,
+        compact_level_child2=compact_child2,
+    )
     torch.cuda.synchronize()
 
     torch.testing.assert_close(skip_rhs, base_rhs, atol=atol, rtol=rtol)
+    torch.testing.assert_close(compact_rhs, base_rhs, atol=atol, rtol=rtol)
     torch.testing.assert_close(skip_ud, base_ud, atol=atol, rtol=rtol)
+    torch.testing.assert_close(compact_ud, base_ud, atol=atol, rtol=rtol)
+
+
+@pytest.mark.parametrize("dtype,atol,rtol", [(torch.float32, 3e-5, 3e-5), (torch.float64, 1e-10, 1e-10)])
+@pytest.mark.parametrize("active", [False, True])
+@pytest.mark.parametrize("skip_zero_sides", [False, True])
+def test_uniform_cross_pibar_from_ud_compact_levels_matches_padded(
+    dtype, atol, rtol, active, skip_zero_sides
+):
+    torch.manual_seed(41)
+    device = torch.device("cuda")
+    C, S, W, N = 9, 31, 3, 6
+    ws = 6
+
+    _, _, sp_child1, sp_child2, level_parents = _binary_tree_helpers(S, device, dtype)
+    compact_ptr, compact_nodes, compact_child1, compact_child2 = _compact_level_helpers(
+        level_parents, sp_child1, sp_child2
+    )
+    Pi = (torch.randn(C, S, device=device, dtype=dtype) * 0.2 - 2.0).contiguous()
+    pibar_row_max = Pi.max(dim=1).values.contiguous()
+    sl = torch.tensor([0, 1, 2, 3, 1, 4], device=device, dtype=torch.long)
+    sr = torch.tensor([1, 2, 3, 4, 0, 2], device=device, dtype=torch.long)
+    reduce_idx = torch.tensor([0, 1, 1, 2, 2, 0], device=device, dtype=torch.long)
+    active_mask = torch.tensor([True, False, True], device=device) if active else None
+
+    pibar_ud = (torch.randn(2 * N, S, device=device, dtype=dtype) * 0.01).contiguous()
+    pibar_ud[torch.tensor([0, N + 4], device=device, dtype=torch.long)] = 0
+    pibar_A = pibar_ud.sum(dim=1).contiguous()
+    side_active = (pibar_ud.abs().amax(dim=1) != 0).contiguous()
+
+    padded_ud = pibar_ud.clone()
+    compact_ud = pibar_ud.clone()
+    padded_rhs = torch.zeros(C, S, device=device, dtype=dtype)
+    compact_rhs = torch.zeros(C, S, device=device, dtype=dtype)
+
+    uniform_cross_pibar_vjp_tree_from_ud_fused(
+        Pi,
+        padded_ud,
+        pibar_A,
+        sl,
+        sr,
+        sp_child1,
+        sp_child2,
+        level_parents,
+        padded_rhs,
+        S,
+        active_mask=active_mask,
+        reduce_idx=reduce_idx,
+        pibar_row_max=pibar_row_max,
+        skip_zero_sides=skip_zero_sides,
+        side_active=side_active if skip_zero_sides else None,
+    )
+    uniform_cross_pibar_vjp_tree_from_ud_fused(
+        Pi,
+        compact_ud,
+        pibar_A,
+        sl,
+        sr,
+        sp_child1,
+        sp_child2,
+        level_parents,
+        compact_rhs,
+        S,
+        active_mask=active_mask,
+        reduce_idx=reduce_idx,
+        pibar_row_max=pibar_row_max,
+        skip_zero_sides=skip_zero_sides,
+        side_active=side_active if skip_zero_sides else None,
+        compact_level_ptr=compact_ptr,
+        compact_level_parents=compact_nodes,
+        compact_level_child1=compact_child1,
+        compact_level_child2=compact_child2,
+    )
+    torch.cuda.synchronize()
+
+    torch.testing.assert_close(compact_rhs, padded_rhs, atol=atol, rtol=rtol)
+    torch.testing.assert_close(compact_ud, padded_ud, atol=atol, rtol=rtol)
 
 
 @pytest.mark.parametrize("dtype,atol,rtol", [(torch.float32, 2e-5, 2e-5), (torch.float64, 1e-10, 1e-10)])
