@@ -572,6 +572,9 @@ def Pi_wave_backward(
     fused_uniform_backward_view_rhs = (
         os.environ.get("GPUREC_FUSED_UNIFORM_BACKWARD_VIEW_RHS", "1") != "0"
     )
+    backward_pruning_row_stats_enabled = (
+        os.environ.get("GPUREC_BACKWARD_PRUNING_ROW_STATS", "0") != "0"
+    )
     wave_topology_int32_enabled = (
         os.environ.get("GPUREC_WAVE_TOPOLOGY_INT32", "1") != "0"
         and device.type == 'cuda'
@@ -1023,8 +1026,18 @@ def Pi_wave_backward(
                 n_clades_skipped += W
                 continue
 
-            n_active = int(active_mask.sum().item())
-            n_clades_skipped += (W - n_active)
+            if use_fused:
+                # The fused Triton path does not consume compact row indices.
+                # Keep optional row statistics out of the production path
+                # because sum().item() synchronizes the wave loop.
+                if backward_pruning_row_stats_enabled:
+                    n_active = int(active_mask.sum().item())
+                    n_clades_skipped += (W - n_active)
+                else:
+                    n_active = W
+            else:
+                n_active = int(active_mask.sum().item())
+                n_clades_skipped += (W - n_active)
 
         Pi_W_star = Pi_star_wave[ws:we].detach()
 
@@ -1068,7 +1081,7 @@ def Pi_wave_backward(
             SL1_w = SL1_const[ws:we]
             SL2_w = SL2_const[ws:we]
 
-        if not kernel_pruning_wave:
+        if not kernel_pruning_wave and not use_fused:
             use_compact = (n_active < W)
             if use_compact:
                 active_idx = active_mask.nonzero(as_tuple=True)[0]
@@ -1076,6 +1089,10 @@ def Pi_wave_backward(
             else:
                 active_idx = None
                 rhs_active = rhs_k
+        elif not kernel_pruning_wave:
+            use_compact = False
+            active_idx = None
+            rhs_active = rhs_k
 
         # Per-wave family indices for scatter accumulation.
         fi_w = family_idx[ws:we]
