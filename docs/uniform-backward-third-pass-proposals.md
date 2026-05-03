@@ -2257,6 +2257,190 @@ This should be considered after Proposal 1 gives real row masks inside active
 waves. It is likely more important for 1000-family throughput than for the
 50-family profile.
 
+### Proposal 8 test report: static chunks and family/chunk diagnostics
+
+The 3-agent + supervisor pass tested Proposal 8 in two ways:
+
+1. use the existing static `max_wave_size` scheduler as the concrete
+   family-contiguous chunking mechanism;
+2. add an opt-in diagnostic that measures how much extra work a true
+   active-family/chunk scheduler could avoid.
+
+Default behavior is unchanged.  The diagnostic is enabled only with:
+
+```text
+GPUREC_BACKWARD_FAMILY_CHUNK_DIAG=1
+GPUREC_BACKWARD_FAMILY_CHUNK_ROWS=8192
+```
+
+Aliases are also accepted:
+`GPUREC_BACKWARD_FAMILY_PRUNING_DIAG` and
+`GPUREC_BACKWARD_FAMILY_CHUNK_SIZE`.
+
+Implementation:
+
+- `Pi_wave_backward` can now use `wave_layout["family_idx"]` as side metadata
+  even in shared/global mode, without passing it as the `family_idx` argument.
+  This is important because passing it as the argument would disable the fused
+  `G == 1` uniform backward path.
+- The diagnostic precomputes family-contiguous chunk ids for each wave, capped
+  by `GPUREC_BACKWARD_FAMILY_CHUNK_ROWS`.
+- During the normal reverse wave loop, it records rows, active rows, rows in
+  active chunks, split programs under current whole-wave scheduling, split
+  programs whose parent row is active, and split programs inside active chunks.
+- The result is returned as `pi_bwd["family_chunk_pruning_diag"]`.
+- A helper script was added at
+  `profiling/proposal8/bench_uniform_backward.py` to run consistent event
+  timings, static layout probes, Nsight captures, and the direct
+  `Pi_wave_backward` diagnostic path.
+
+No true active-chunk scheduler was promoted.  The reason is structural: the
+current hot kernels consume full-wave metadata (`ws`, `W`, full `reduce_idx`,
+full split lists, and staged Pibar side lists).  To launch only active chunks
+for split waves, we would need filtered per-chunk split/Pibar worklists, with
+chunk-local `reduce_idx_sub = reduce_idx[keep] - chunk_start` and unchanged
+global `sl`/`sr` child ids.  Doing that with PyTorch boolean indexing inside
+the wave loop would add exactly the extra passes and launches that previous
+optimization waves repeatedly found to be losing dataflows.
+
+Correctness checks:
+
+```text
+python -m py_compile gpurec/core/backward.py \
+    profiling/proposal8/bench_uniform_backward.py
+
+pytest -q tests/gradients/test_autograd_bridge.py
+  -> 15 passed
+
+GPUREC_BACKWARD_FAMILY_CHUNK_DIAG=1 \
+pytest -q tests/gradients/test_autograd_bridge.py \
+          tests/gradients/test_fd_all_modes.py::test_analytic_matches_fd
+  -> 21 passed
+```
+
+Changing `max_wave_size` preserves the loss exactly on the tested workloads.
+Theta-gradient differences are small and come from floating-point accumulation
+order and threshold-pruned wave/chunk ordering:
+
+| workload | compare to `max_wave_size=32768` | loss diff | theta max abs | theta max rel |
+|---|---:|---:|---:|---:|
+| 10 families | `65536` | `0` | `1.22e-4` | `3.17e-7` |
+| 10 families | `16384` | `0` | `5.25e-3` | `1.14e-5` |
+| 10 families | `8192` | `0` | `1.03e-2` | `1.43e-5` |
+| 50 families | `65536` | `0` | `1.20e-1` | `2.18e-5` |
+| 50 families | `16384` | `0` | `6.55e-1` | `3.38e-4` |
+| 50 families | `8192` | `0` | `6.00e-1` | `2.86e-4` |
+
+Static `max_wave_size` sweep, 50 families, current-best backward flags:
+
+```text
+GPUREC_DTS_PIBAR_UD_SKIP_ZERO_SIDES=1
+GPUREC_DTS_PIBAR_UD_COMPACT_LEVELS=1
+GPUREC_DTS_GRAD_MT_TWO_STAGE=1
+```
+
+| `max_wave_size` | waves | max `W` | median backward | peak allocation |
+|---:|---:|---:|---:|---:|
+| none | `47` | `80,545` | `101.523 ms` | `12.936 GB` |
+| `65,536` | `48` | `65,536` | `101.443 ms` | `12.001 GB` |
+| `32,768` | `49` | `32,768` | `101.035 ms` | `10.308 GB` |
+| `16,384` | `56` | `16,384` | `101.905 ms` | `9.089 GB` |
+| `8,192` | `74` | `8,192` | `102.753 ms` | `9.044 GB` |
+
+The existing `32768` default is a good balance for 50 families.  Smaller
+chunks reduce peak memory by about `1.2 GB`, but do not improve time; `8192`
+adds too many waves.
+
+100-family sweep:
+
+| `max_wave_size` | waves | max `W` | median backward | peak allocation |
+|---:|---:|---:|---:|---:|
+| none | `47` | `158,968` | OOM | OOM during self-loop scratch |
+| `65,536` | `49` | `65,536` | `185.253 ms` | `20.377 GB` |
+| `32,768` | `56` | `32,768` | `186.630 ms` | `17.950 GB` |
+| `16,384` | `74` | `16,384` | `186.199 ms` | `17.847 GB` |
+| `8,192` | `109` | `8,192` | `188.630 ms` | `17.847 GB` |
+
+At 100 families, `65536` can be about `1.4 ms` faster than `32768`, but it
+uses roughly `2.4 GB` more peak memory.  `150` families OOMs in the backward
+pass on this 24 GB GPU: after forward, allocating `accumulated_rhs[C,S]`
+requires another `7.11 GiB` while only about `6.40 GiB` is free.  For the
+1000-family dataset, actual backward throughput therefore has to be measured
+as multiple resident chunks.  Four sampled 100-family chunks had medians:
+
+| family range | clades | waves | median backward | peak allocation |
+|---|---:|---:|---:|---:|
+| `0:100` | `635,372` | `56` | `186.566 ms` | `17.950 GB` |
+| `100:200` | `643,624` | `57` | `187.797 ms` | `18.146 GB` |
+| `500:600` | `642,096` | `57` | `186.648 ms` | `18.109 GB` |
+| `900:1000` | `634,820` | `59` | `185.468 ms` | `17.934 GB` |
+
+This puts a 1000-family backward upper estimate around `1.86-1.88 s` for ten
+100-family chunks, not counting model construction and launch overhead between
+chunks.
+
+Family/chunk diagnostic counters with `chunk_rows=8192`:
+
+| workload | current rows scheduled | active rows | rows in active chunks | chunk-skippable rows |
+|---|---:|---:|---:|---:|
+| 50 families | `171,334` | `161,341` | `162,774` | `8,560` / `5.0%` |
+| 100 families | `338,294` | `318,403` | `321,080` | `17,214` / `5.1%` |
+
+| workload | current split programs | active-parent split programs | split programs in active chunks | chunk-skippable splits |
+|---|---:|---:|---:|---:|
+| 50 families | `251,679` | `241,686` | `243,119` | `8,560` / `3.4%` |
+| 100 families | `496,862` | `476,971` | `479,648` | `17,214` / `3.5%` |
+
+The important point is that hybrid row masks from Proposal 1 already capture
+almost all of the visible pruning opportunity inside active waves.  A
+family/chunk scheduler would mostly reduce launch grids for inactive chunks,
+but the additional row/split programs it could avoid are only about `3-5%` of
+the work that whole-wave pruning still schedules.
+
+Nsight Systems, 50 families, `32768` versus `8192`:
+
+| metric | `32768` | `8192` |
+|---|---:|---:|
+| captured event | `115.420 ms` | `115.242 ms` |
+| summed kernel time | `89.776 ms` | `89.323 ms` |
+| total kernel launches | `2918` | `3037` |
+| `cudaLaunchKernel` calls | `2578` | `2640` |
+| `cudaStreamSynchronize` calls | `205` | `230` |
+| `cudaMemcpyAsync` calls | `527` | `552` |
+
+Hot kernel movement:
+
+| bucket | `32768` | `8192` | interpretation |
+|---|---:|---:|---|
+| `_dts_cross_backward_accum_kernel` | `26.863 ms`, 33 launches | `26.932 ms`, 38 launches | unchanged total work |
+| `_wave_backward_uniform_kernel` | `24.831 ms`, 36 launches | `23.988 ms`, 48 launches | smaller waves reduce the largest self-loop launches |
+| `_uniform_cross_pibar_vjp_tree_from_ud_compact_kernel` | `15.883 ms`, 33 launches | `16.062 ms`, 38 launches | slight launch/dataflow overhead |
+| `_dts_parent_reduced_ge2_stage1_kernel` | `7.058 ms`, 6 launches | `7.021 ms`, 6 launches | unchanged high-fanout root-side work |
+| `_active_mask_from_rhs_absmax_kernel` | `2.956 ms`, 49 launches | `3.113 ms`, 74 launches | direct cost of extra chunks |
+| `_dts_fused_kernel` | `1.566 ms`, 24 launches | `2.146 ms`, 27 launches | extra split-wave fragments |
+
+Nsight shows why the event benchmark rejects smaller chunks despite a small
+self-loop-kernel decrease: extra chunks add active-mask launches, syncs,
+memcpy bookkeeping, and split/Pibar fragments.  The hot DTS and Pibar buckets
+do not shrink because the split-side work remains the same unless we build
+filtered split-side worklists.
+
+Nsight artifacts:
+
+```text
+/tmp/gpurec_profile/prop8_fams50_mws32768.nsys-rep
+/tmp/gpurec_profile/prop8_fams50_mws8192.nsys-rep
+/tmp/gpurec_profile/prop8_fams50_mws32768_kern_cuda_gpu_kern_sum.csv
+/tmp/gpurec_profile/prop8_fams50_mws8192_kern_cuda_gpu_kern_sum.csv
+```
+
+Decision: do not promote a new Proposal 8 scheduling path.  Keep the diagnostic
+and benchmark helper for future large-batch work, keep `max_wave_size=32768` as
+the default, and treat true family/chunk scheduling as a larger scheduler
+rewrite.  It should only be revisited if future pruning thresholds make active
+families much sparser than this 50/100-family profile, or if the large-batch
+memory target matters more than the extra launch/sync overhead.
+
 ## Proposed implementation order
 
 The order below maximizes learning per engineering hour.
