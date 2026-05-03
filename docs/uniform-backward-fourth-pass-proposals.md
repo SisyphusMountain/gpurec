@@ -1002,6 +1002,195 @@ For the 42,155-split launch, the new high-fanout path must beat the direct
 DTS-accum Nsys bucket.  Lower global-load instructions alone are not enough;
 the previous parent-tiled path already achieved that and still regressed.
 
+### Proposal 2 results
+
+Status: implemented as an opt-in prototype and rejected as a default.
+
+Implementation commit:
+
+```text
+996148e Add ragged parent-tile DTS backward accumulation.
+```
+
+Changed files:
+
+- `gpurec/core/kernels/wave_backward.py`
+- `gpurec/core/backward.py`
+- `tests/kernels/test_dts_backward_accum_kernel.py`
+
+Runtime controls:
+
+```text
+GPUREC_DTS_BACKWARD_ACCUM_IMPL=parent_ragged[_all]
+GPUREC_PARENT_RAGGED_DTS_BACKWARD_TILE_SPLITS=<tile splits>
+```
+
+Defaults are preserved.  The prototype caches a ge2 tile worklist on wave
+metadata and routes selected high-fanout waves through the ragged kernel.
+Non-selected waves stay on the current direct split-major kernel.  Within a
+selected wave, eq1 rows are represented as one-split ragged descriptors rather
+than running through a separate direct prefix kernel.
+
+The implementation removes the rectangular empty CTAs from the earlier
+`parent_tiled` prototype, but it is still only a partial version of the ideal
+proposal.  The current Triton launch geometry is:
+
+```text
+grid = (n_work_tiles, ceil(S / BLOCK_S))
+```
+
+not the ideal:
+
+```text
+grid = (n_descriptors,)
+```
+
+Because species blocks are still a grid axis, scalar reductions for `pibar_A`,
+`grad_log_pD`, `grad_log_pS`, and optional `grad_mt` are still issued once per
+species block.  This keeps one of the rejected rectangular prototype's major
+costs.
+
+Subagent split:
+
+| Worker | Role | Result |
+|---|---|---|
+| Agent 1 | implementation | added cached ragged ge2 tile metadata, opt-in `parent_ragged` routing, and kernel tests |
+| Agent 2 | correctness | verified direct kernel parity, FD coverage, autograd bridge coverage, and a skewed synthetic high-fanout case |
+| Agent 3 | profiling | ran paired event timing, Nsys buckets, NCU comparisons, and tile-split sweep |
+| Supervisor | decision | confirmed the ragged path removes overlaunch but still fails the NCU and Nsys acceptance gate |
+
+Correctness:
+
+| Command | Result |
+|---|---:|
+| `pytest -q tests/kernels/test_dts_backward_accum_kernel.py` | `57 passed` |
+| `GPUREC_DTS_BACKWARD_ACCUM_IMPL=parent_ragged_all GPUREC_PARENT_RAGGED_DTS_BACKWARD_TILE_SPLITS=16 pytest -q tests/gradients/test_fd_all_modes.py::test_analytic_matches_fd tests/gradients/test_autograd_bridge.py` | `21 passed` |
+
+The worker's skewed synthetic high-fanout case used `S=512` and `n_ws=830`.
+The rectangular geometry would have launched `6144` tiles; the ragged worklist
+launched `223` tiles.  Parity matched with max relative error at or below
+`5.5e-7`, and `pibar_ud`/`pibar_A` were exact.  The isolated synthetic timing
+improved only slightly, from `0.099 ms` rectangular to `0.091 ms` ragged.
+
+CUDA-event timings outside Nsight:
+
+| Run | Variant | Median backward | Mean | Min | Change vs direct |
+|---|---|---:|---:|---:|---:|
+| local, `FAMS=50 REPS=7 WARMUPS=5 MAX_WAVE_SIZE=32768` | direct | `102.356 ms` | `102.447 ms` | `101.800 ms` | reference |
+| local, same command | `parent_tiled`, tile 16 | `116.829 ms` | `119.016 ms` | `116.104 ms` | `+14.473 ms` |
+| local, same command | `parent_ragged`, tile 16 | `116.186 ms` | `118.902 ms` | `115.691 ms` | `+13.830 ms` |
+| performance agent paired run | direct | `103.362 ms` | - | - | reference |
+| performance agent paired run | `parent_tiled` | `117.731 ms` | - | - | `+14.369 ms` |
+| performance agent paired run | `parent_ragged` | `116.388 ms` | - | - | `+13.026 ms` |
+
+The paired run reported unchanged loss and memory footprint:
+
+```text
+loss = 107804.2734375
+peak allocation = 10.308 GB
+```
+
+Sequential tile sweep, `FAMS=50 REPS=3 WARMUPS=3`:
+
+| `GPUREC_PARENT_RAGGED_DTS_BACKWARD_TILE_SPLITS` | Median backward |
+|---:|---:|
+| 4 | `123.549 ms` |
+| 8 | `115.166 ms` |
+| 16 | `114.935 ms` |
+| 32 | `120.464 ms` |
+
+The best tile setting in this short sweep was still much slower than the
+direct default.
+
+Nsys paired results from `/tmp/gpurec_profile/prop2_readonly`:
+
+| Variant | Nsys backward | DTS accum subtotal | DTS detail | Other hot buckets |
+|---|---:|---:|---|---|
+| current direct | `116.741 ms` | `27.454 ms` | `_dts_cross_backward_accum_kernel`: `27.454 ms`, 33 launches | `_wave_backward_uniform_kernel`: `24.618 ms`, 36 launches; `_uniform_cross_pibar_vjp_tree_from_ud_compact_kernel`: `16.219 ms`, 33 launches |
+| `parent_tiled` | `127.553 ms` | `40.646 ms` | `parent_tiled_ge2`: `27.343 ms`, 6 launches; remaining direct DTS: `10.372 ms`, 27 launches | - |
+| `parent_ragged` | `129.080 ms` | `40.860 ms` | `parent_ragged`: `27.538 ms`, 6 launches; remaining direct DTS: `10.383 ms`, 27 launches | `_pibar_ud_side_active`: `2.939 ms`, 6 launches from ragged side-active handling |
+
+The ragged worklist fixes the rectangular overlaunch but does not reduce the
+total DTS accumulation bucket.  It is slightly slower than the rectangular
+prototype in this Nsys capture because the remaining species-block scalar
+atomics and side-active handling dominate the saved empty CTA work.
+
+Wave 44 diagnostics:
+
+```text
+S=1999
+W=247
+splits=42155
+n_eq1=234
+ge2_groups=13
+ge2_mean=3224.7
+ge2_max=3787
+```
+
+| Variant | Grid | CTAs | Nsys launch duration |
+|---|---|---:|---:|
+| direct | `(42155, 1, 1)` | `42,155` | about `4.569 ms` |
+| rectangular `parent_tiled` | `(247, 237, 8)` | `468,312` | about `7.314 ms` |
+| ragged `parent_ragged` | `(2861, 8, 1)` | `22,888` | about `7.390 ms` |
+
+The ragged grid cuts the rectangular CTA count by about `20.5x` and launches
+fewer CTAs than the direct split-major kernel.  That reduction is real, but it
+does not translate into a faster launch.
+
+NCU representative wave 44 from `/tmp/gpurec_profile/prop2_ragged`:
+
+| Metric | Direct split-major | Ragged parent tile | Rectangular parent tile |
+|---|---:|---:|---:|
+| Kernel | `_dts_cross_backward_accum_kernel` | `_dts_cross_backward_accum_parent_ragged_kernel` | `_dts_cross_backward_accum_parent_tiled_ge2_kernel` |
+| Duration | `4.631712 ms` | `7.439616 ms` | `9.710176 ms` |
+| Grid size | `42,155` CTAs | `22,888` CTAs | `468,312` CTAs |
+| Threads launched | `5,395,840` | `2,929,664` | `59,943,936` |
+| Registers/thread | `96` | `96` | `96` |
+| Waves/SM | `65.87` | `35.76` | `731.74` |
+| Achieved warps | `41.47%` | `41.41%` | `41.11%` |
+| Memory throughput | `73.26%` | `49.88%` | `38.20%` |
+| DRAM throughput | `73.26%` | `49.88%` | `38.20%` |
+| SM throughput | `33.31%` | `16.47%` | `12.61%` |
+| DRAM read | `2.017 GB` | `2.218 GB` | `2.217 GB` |
+| DRAM write | `1.319 GB` | `1.430 GB` | `1.430 GB` |
+| Global load instructions | `36.392 M` | `29.531 M` | `29.560 M` |
+| Global store instructions | `5.480 M` | `5.312 M` | `5.312 M` |
+| Global RED instructions | `18.571 M` | `19.871 M` | `19.871 M` |
+| Instructions | `778.598 M` | `728.577 M` | `744.170 M` |
+| Spills | none | none | none |
+
+Stall samples:
+
+| Stall reason | Direct | Ragged |
+|---|---:|---:|
+| Long scoreboard | `226,725 / 642,129 = 35.3%` | `465,447 / 1,034,894 = 45.0%` |
+| Barrier | `25.3%` | `23.9%` |
+| MIO | `12.0%` | `7.8%` |
+| Wait | `5.5%` | `3.1%` |
+
+The NCU result explains the regression.  Ragged parent tiling lowers global
+load instructions and removes empty CTAs, but it also lowers achieved memory
+throughput, moves more DRAM bytes, issues more global reductions, and spends a
+larger share of samples stalled on long scoreboard.  The extra DRAM traffic is
+nearly identical to the rectangular parent-tiled path, which shows that the
+remaining species-block scalar atomics and cache behavior are the important
+costs after overlaunch is removed.
+
+Decision: keep `parent_ragged` opt-in only; do not promote it to the default.
+It fails the acceptance gate.  On the representative `42,155`-split launch,
+ragged takes `7.44 ms` in NCU versus `4.63 ms` for the direct kernel, and the
+total DTS accumulation Nsys bucket is about `40.86 ms` versus `27.45 ms`
+direct.  Lower load instruction count is not enough to offset lower memory
+throughput, more DRAM bytes, more global reductions, and long-scoreboard
+stalls.
+
+This is still a useful negative result.  It proves that the rectangular
+overlaunch was not the only problem with parent tiling in Triton.  A true
+`grid=(n_descriptors,)` implementation that keeps scalar reductions inside a
+descriptor, or a CUDA implementation that keeps parent rows in shared memory,
+would be separate work.  The current Triton ragged implementation is not
+default-worthy.
+
 ## Proposal 3: CUDA graph or graph segments for the fixed backward schedule
 
 The current host still synchronizes per wave to preserve whole-wave pruning:
