@@ -500,10 +500,10 @@ def Pi_wave_backward(
         os.environ.get("GPUREC_GROUPED_CROSS_PIBAR_USE_ACTIVE", "1") != "0"
     )
     dts_pibar_ud_fusion_enabled = (
-        os.environ.get("GPUREC_DTS_PIBAR_UD_FUSION", "0") != "0"
+        os.environ.get("GPUREC_DTS_PIBAR_UD_FUSION", "1") != "0"
     )
     dts_pibar_ud_min_splits = int(
-        os.environ.get("GPUREC_DTS_PIBAR_UD_MIN_SPLITS", "8192")
+        os.environ.get("GPUREC_DTS_PIBAR_UD_MIN_SPLITS", "0")
     )
     cross_pibar_row_stats_enabled = (
         os.environ.get("GPUREC_CROSS_PIBAR_ROW_STATS", "0") != "0"

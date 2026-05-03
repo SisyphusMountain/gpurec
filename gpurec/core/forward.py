@@ -517,7 +517,7 @@ def Pi_wave_forward(
         and not batched
         and (
             os.environ.get("GPUREC_REUSE_FORWARD_PIBAR_STATS", "0") != "0"
-            or os.environ.get("GPUREC_DTS_PIBAR_UD_FUSION", "0") != "0"
+            or os.environ.get("GPUREC_DTS_PIBAR_UD_FUSION", "1") != "0"
         )
     )
     uniform_pibar_row_max = (
