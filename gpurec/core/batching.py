@@ -649,6 +649,8 @@ def build_wave_layout(
 
                 meta['ge2_ptr'] = ge2_ptr
                 meta['ge2_parent_ids'] = ge2_parent_ids  # wave-local clade indices
+                meta['ge2_max_fanout'] = int(ge2_counts.max().item())
+                meta['ge2_mean_fanout'] = float(ge2_counts.float().mean().item())
 
         wave_metas.append(meta)
 

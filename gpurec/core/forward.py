@@ -19,7 +19,7 @@ from .kernels.wave_step import (
     wave_pibar_uniform_fused,
     wave_pibar_uniform_parent_fused,
 )
-from .kernels.dts_fused import dts_fused
+from .kernels.dts_fused import dts_fused, dts_fused_parent_reduced
 from ._logmatmul_compat import (
     HAS_LOGMATMUL as _HAS_LOGMATMUL,
     LogspaceMatmulFn,
@@ -36,12 +36,41 @@ NEG_INF = float("-inf")
 # ---------------------------------------------------------------------------
 
 def _compute_dts_cross(Pi, Pibar, meta, sp_child1, sp_child2, log_pD, log_pS,
-                       S, device, dtype, active_mask=None):
+                       S, device, dtype, active_mask=None,
+                       parent_reduced=False, parent_reduced_min_splits=8192,
+                       parent_reduced_impl="tiled",
+                       parent_reduced_tile_splits=64):
     """Compute DTS cross-clade terms and reduce to [W, S] for one wave."""
     sl = meta['sl']
     sr = meta['sr']
     wlsp = meta['log_split_probs']
     W = meta['W']
+    n_eq1 = meta.get('n_eq1', 0)
+    n_ge2_clades = meta.get('n_ge2_clades', 0)
+
+    use_parent_reduced = (
+        bool(parent_reduced)
+        and (n_eq1 > 0 or n_ge2_clades > 0)
+        and sl.numel() >= int(parent_reduced_min_splits)
+    )
+    if use_parent_reduced:
+        empty_ge2_ptr = None
+        if n_ge2_clades == 0:
+            empty_ge2_ptr = torch.zeros((1,), dtype=torch.long, device=device)
+        return dts_fused_parent_reduced(
+            Pi, Pibar, sl, sr,
+            sp_child1, sp_child2,
+            log_pD, log_pS, wlsp,
+            W,
+            n_eq1,
+            meta.get('eq1_reduce_idx', sl[:0]),
+            meta.get('ge2_ptr', empty_ge2_ptr),
+            meta.get('ge2_parent_ids', sl[:0]),
+            active_mask=active_mask,
+            impl=parent_reduced_impl,
+            tile_splits=parent_reduced_tile_splits,
+            ge2_max_fanout=meta.get('ge2_max_fanout'),
+        )
 
     dts_term = dts_fused(
         Pi, Pibar, sl, sr,
@@ -53,9 +82,6 @@ def _compute_dts_cross(Pi, Pibar, meta, sp_child1, sp_child2, log_pD, log_pS,
 
     NEG_INF = float('-inf')
     dts_r = torch.full((W, S), NEG_INF, device=device, dtype=dtype)
-
-    n_eq1 = meta.get('n_eq1', 0)
-    n_ge2_clades = meta.get('n_ge2_clades', 0)
 
     if n_eq1 > 0:
         dts_r[meta['eq1_reduce_idx']] = dts_term[:n_eq1]

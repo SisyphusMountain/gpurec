@@ -586,6 +586,200 @@ Profiling gate:
 - Nsys should show the combined DTS-forward bucket falling, not just moving
   time into a new partial-reduction kernel.
 
+### Proposal 2 implementation result
+
+Implemented and accepted as the default uniform backward DTS forward-recompute
+path.  It can be disabled with `GPUREC_BACKWARD_PARENT_REDUCED_DTS=0`.  The
+default implementation is `tiled` with `64` splits per partial tile and keeps
+the conservative `8192` split threshold:
+
+```text
+GPUREC_BACKWARD_PARENT_REDUCED_DTS=tiled
+GPUREC_BACKWARD_PARENT_REDUCED_DTS_TILE_SPLITS=64
+GPUREC_BACKWARD_PARENT_REDUCED_DTS_MIN_SPLITS=8192
+```
+
+The subagent split was:
+
+| Role | Result |
+|---|---|
+| Agent 1, code-path audit | verified that the target is the backward `_compute_dts_cross -> dts_fused -> seg_logsumexp` chain and that `meta["ge2_ptr"]` / `meta["ge2_parent_ids"]` already encode the CSR parent grouping |
+| Agent 2, prototype | built the first direct parent-loop prototype and showed it was correct but too serial for production |
+| Agent 3, profiling plan | measured wave fanout/materialization sizes and identified the high-ge2 waves and the all-eq1 wave that should be treated separately |
+| Supervisor | added the tiled two-stage ge2 reduction, added a direct eq1-to-`dts_r` kernel, ran parity/FD/event/Nsys/NCU checks, promoted the winning path to default, and documented the result here |
+
+The final dataflow is:
+
+```text
+old:
+    dts_fused(Pi, Pibar, splits) -> dts_term[n_splits, S]
+    dts_r[eq1_parent] = dts_term[eq1]
+    dts_r[ge2_parent] = seg_logsumexp(dts_term[ge2], ge2_ptr)
+
+new:
+    eq1 kernel:
+        compute one split and write directly to dts_r[parent, species_block]
+
+    ge2 stage 1:
+        grid = (parent_group, split_tile, species_block)
+        compute logsumexp over 5 * TILE_SPLITS terms
+        write partial_max and partial_sum
+
+    ge2 stage 2:
+        grid = (parent_group, species_block)
+        merge partial_max / partial_sum tiles
+        write dts_r[parent, species_block]
+```
+
+The ge2 stage computes the mathematically equivalent flat reduction
+
+```text
+dts_r[p,s] = logsumexp2_{split i under p, term t in 0..4}
+             (log_split_prob[i] + DTS5[t,i,s])
+```
+
+instead of first forming `log_split_prob[i] + logsumexp2_t(DTS5[t,i,s])` and
+then reducing across splits.  This removes one `log2` per split/species in the
+ge2 path and avoids the full `[ge2_splits, S]` materialization.
+
+Implementation details:
+
+| File | Change |
+|---|---|
+| `gpurec/core/kernels/dts_fused.py` | added `_dts_eq1_to_rows_kernel`, `_dts_parent_reduced_ge2_stage1_kernel`, `_dts_parent_reduced_ge2_stage2_kernel`, and `dts_fused_parent_reduced` |
+| `gpurec/core/forward.py` | extended `_compute_dts_cross` with explicit `parent_reduced` arguments; the shared forward helper remains default-off unless backward opts in |
+| `gpurec/core/backward.py` | enables the parent-reduced path by default for uniform CUDA backward DTS recompute and passes the implementation/tile/threshold knobs |
+| `gpurec/core/batching.py` | stores `ge2_max_fanout` and `ge2_mean_fanout` while `ge2_counts` is already available, avoiding a backward-loop sync for tile sizing |
+| `tests/kernels/test_dts_fused_kernel.py` | adds parity coverage for direct/tiled parent-reduced DTS with fp32/fp64, active-mask on/off, and shared/per-split parameters |
+
+Correctness checks:
+
+| Check | Result |
+|---|---:|
+| `python -m py_compile gpurec/core/backward.py gpurec/core/forward.py gpurec/core/batching.py gpurec/core/kernels/dts_fused.py` | pass |
+| `pytest -q tests/kernels/test_dts_fused_kernel.py tests/gradients/test_autograd_bridge.py` | `41 passed` |
+| `pytest -q tests/kernels/test_dts_fused_kernel.py tests/gradients/test_autograd_bridge.py tests/gradients/test_fd_all_modes.py::test_analytic_matches_fd` after making it default | `47 passed` |
+| `GPUREC_BACKWARD_PARENT_REDUCED_DTS=tiled GPUREC_BACKWARD_PARENT_REDUCED_DTS_TILE_SPLITS=64 pytest -q tests/gradients/test_fd_all_modes.py::test_analytic_matches_fd` | `6 passed` |
+
+Per-wave instrumentation from the 50-family workload:
+
+| Metric | 10 families | 50 families |
+|---|---:|---:|
+| total splits across backward waves | `83,135` | `402,275` |
+| old DTS materialization volume per backward | `633.953 MiB` | `2.996 GiB` |
+| ge2 splits | `33,260` | `160,940` |
+| ge2 parent groups | `10` | `50` |
+| mean ge2 fanout | `3326.00` | `3218.80` |
+
+Largest 50-family DTS waves:
+
+| Wave | Splits | Eq1 | Ge2 groups | Ge2 splits | Mean ge2 fanout | Max ge2 fanout | Old `dts_term` bytes |
+|---:|---:|---:|---:|---:|---:|---:|---:|
+| 44 | `42155` | `234` | `13` | `41921` | `3224.69` | `3787` | `321.456 MiB` |
+| 43 | `36200` | `572` | `12` | `35628` | `2969.00` | `3419` | `276.046 MiB` |
+| 3 | `27023` | `27023` | `0` | `0` | `0.00` | `0` | `206.066 MiB` |
+| 46 | `24229` | `32` | `7` | `24197` | `3456.71` | `4009` | `184.760 MiB` |
+| 45 | `23345` | `86` | `7` | `23259` | `3322.71` | `3837` | `178.019 MiB` |
+| 42 | `19642` | `1230` | `6` | `18412` | `3068.67` | `3391` | `149.782 MiB` |
+
+This is why the final implementation includes both kernels.  The ge2 tiled
+path handles waves 42-48; the eq1 direct path handles the large all-eq1 wave 3.
+
+CUDA-event benchmark results:
+
+| Workload | Policy | Median | Delta |
+|---|---|---:|---:|
+| 50 families, 15 reps | parent-reduced default | `112.976 ms` | `-3.710 ms` / `-3.2%` |
+| 50 families, 15 reps | disabled, `GPUREC_BACKWARD_PARENT_REDUCED_DTS=0` | `116.686 ms` | reference |
+| 10 families, 15 reps | parent-reduced default | `35.867 ms` | `-0.494 ms` / `-1.4%` |
+| 10 families, 15 reps | disabled, `GPUREC_BACKWARD_PARENT_REDUCED_DTS=0` | `36.361 ms` | reference |
+
+Variant sweep on 50 families before promotion:
+
+| Variant | Median | Interpretation |
+|---|---:|---|
+| disabled | `116.238 ms` | reference in that sweep |
+| direct parent loop | `117.152 ms` | correct but serializes thousands of splits per parent |
+| tiled, 32 splits/tile | `114.932 ms` | better, more partial tiles |
+| tiled, 64 splits/tile | `112.580 ms` | best measured point |
+| tiled, 128 splits/tile | `113.897 ms` | less parallelism than 64 |
+| tiled, 256 splits/tile | `113.665 ms` | still good, not best |
+
+Nsight Systems 50-family capture:
+
+| Metric | Disabled | Parent-reduced default | Delta |
+|---|---:|---:|---:|
+| CUDA event in capture | `130.306 ms` | `126.178 ms` | `-4.128 ms` |
+| summed GPU kernel time | `105.375 ms` | `102.132 ms` | `-3.243 ms` |
+| kernel launches | `2846` | `2852` | `+6` |
+| `cudaStreamSynchronize` calls | `205` | `205` | `0` |
+| `cudaLaunchKernel` API time | `4.631 ms` | `4.665 ms` | `+0.034 ms` |
+| D2D memcpy time | `0.391 ms` | `0.391 ms` | `0.000 ms` |
+| D2H memcpy time | `0.128 ms` | `0.128 ms` | `0.000 ms` |
+
+The path adds six net launches, but avoids enough memory traffic that total
+kernel time still falls.  Host synchronization does not increase.
+
+Nsys DTS-forward bucket replacement:
+
+| Bucket | Disabled | Parent-reduced default |
+|---|---:|---:|
+| `_dts_fused_kernel` | `12.002 ms`, `33` launches | `1.566 ms`, `24` launches |
+| `_seg_lse_hdim_kernel` | `1.514 ms`, `7` launches | `0.066 ms`, `1` launch |
+| `_dts_eq1_to_rows_kernel` | none | `2.696 ms`, `9` launches |
+| `_dts_parent_reduced_ge2_stage1_kernel` | none | `7.037 ms`, `6` launches |
+| `_dts_parent_reduced_ge2_stage2_kernel` | none | `0.119 ms`, `6` launches |
+| combined DTS forward recompute | `13.516 ms` | `11.484 ms` |
+
+The bucket falls by `2.032 ms`.  The full backward event falls more because the
+direct `dts_r` production also removes PyTorch `index_put` work on the large
+eq1/ge2 waves: the `index_put` bucket drops from `1.382 ms` to `0.392 ms`.
+
+Nsys per-launch view:
+
+| Old launch | Duration | New replacement | Duration |
+|---|---:|---|---:|
+| `_dts_fused_kernel`, wave 44, grid `(42155,16)` | `2.154 ms` | stage1 `(13,60,16)` + stage2 `(13,16)` + eq1 `(234,16)` | `1.912 + 0.022 + 0.003 ms` |
+| `_seg_lse_hdim_kernel`, wave 44, grid `(13,16)` | `0.382 ms` | included above | included above |
+| `_dts_fused_kernel`, all-eq1 wave 3, grid `(27023,16)` | about `1.31 ms` in NCU / large Nsys launch | `_dts_eq1_to_rows_kernel`, grid `(27023,16)` | `1.396 ms` |
+
+For high-ge2 waves the new path is faster because it removes the full split
+matrix write and later segment read.  For the all-eq1 wave, the direct kernel is
+similar to old `dts_fused` but avoids the subsequent large `dts_term -> dts_r`
+index copy.
+
+Nsight Compute, largest high-ge2 wave 44:
+
+| Kernel | Duration | Memory throughput | DRAM | SM | L2 hit | Registers/thread | Achieved occupancy |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| old `_dts_fused_kernel` | `2.13 ms` | `888.20 GB/s` | `88.19%` | `17.73%` | `23.57%` | `31` | `94.45%` |
+| old `_seg_lse_hdim_kernel` | `375.65 us` | `900.69 GB/s` | `89.44%` | `9.11%` | `8.35%` | `155` | `13.07%` |
+| new `_dts_parent_reduced_ge2_stage1_kernel` | `1.879 ms` | `790.35 GB/s` | `78.47%` | `15.80%` | `11.05%` | `39` | `94.53%` |
+| new `_dts_parent_reduced_ge2_stage2_kernel` | `23.104 us` | `457.77 GB/s` | `45.56%` | `4.65%` | `7.94%` | `25` | `12.69%` |
+
+Stage 1 is still DRAM-bound and dominated by long-scoreboard stalls, but it
+writes/reads a much smaller partial buffer than the old split matrix.  Stage 2
+is tiny.  The old `seg_lse` was also DRAM-bound and low occupancy because of
+its high register count; the new stage 2 avoids making that a substantial
+bucket.
+
+Nsight Compute, large all-eq1 wave:
+
+| Kernel | Duration | Memory throughput | DRAM | SM | L2 hit | Registers/thread | Achieved occupancy |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| new `_dts_eq1_to_rows_kernel`, grid `(27023,16)` | `1.355 ms` | `884.55 GB/s` | `87.83%` | `18.95%` | `25.32%` | `38` | `94.85%` |
+
+The eq1 kernel is not fundamentally faster than `_dts_fused` for the same
+single-split math; its value is eliminating the extra dense copy from
+`dts_term` into `dts_r`.
+
+Decision: accept the tiled implementation with `TILE_SPLITS=64` as the default.
+The direct parent-loop prototype is retained as an experiment but should not be
+used by default.  Remaining opportunities are mostly memory-layout and reuse
+work inside stage 1: it is still DRAM-bound, has low L2 reuse, and spends most
+stall cycles waiting on global loads.  Smaller algorithmic tweaks to stage 2
+will not matter unless stage 1 is reduced further.
+
 ## Proposal 3: parent-tiled DTS backward accumulation
 
 The current DTS backward accumulation is split-major:

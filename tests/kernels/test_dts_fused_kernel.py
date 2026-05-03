@@ -3,7 +3,8 @@
 import pytest
 import torch
 
-from gpurec.core.kernels.dts_fused import dts_fused
+from gpurec.core.kernels.dts_fused import dts_fused, dts_fused_parent_reduced
+from gpurec.core.kernels.scatter_lse import seg_logsumexp
 from gpurec.core.log2_utils import logsumexp2
 
 
@@ -105,4 +106,49 @@ def test_dts_fused_active_mask_skips_inactive_parent_rows(dtype, atol, rtol):
     expected = expected.clone()
     expected[inactive] = -1e30
 
+    torch.testing.assert_close(actual, expected, atol=atol, rtol=rtol)
+
+
+@pytest.mark.parametrize("dtype,atol,rtol", [(torch.float32, 3e-5, 3e-5), (torch.float64, 1e-10, 1e-10)])
+@pytest.mark.parametrize("active", [False, True])
+@pytest.mark.parametrize("split_params", [False, True])
+@pytest.mark.parametrize("impl", ["direct", "tiled"])
+def test_dts_parent_reduced_matches_existing_recompute(dtype, atol, rtol, active, split_params, impl):
+    torch.manual_seed(4)
+    device = torch.device("cuda")
+    C, S, N, W = 10, 13, 7, 4
+    Pi = (torch.randn(C, S, device=device, dtype=dtype) * 0.2 - 2.0).contiguous()
+    Pibar = (torch.randn(C, S, device=device, dtype=dtype) * 0.2 - 2.0).contiguous()
+    lefts = torch.tensor([0, 1, 2, 3, 4, 5, 6], device=device, dtype=torch.long)
+    rights = torch.tensor([1, 2, 3, 4, 5, 6, 7], device=device, dtype=torch.long)
+    reduce_idx = torch.tensor([0, 2, 1, 1, 3, 3, 3], device=device, dtype=torch.long)
+    n_eq1 = 2
+    eq1_reduce_idx = torch.tensor([0, 2], device=device, dtype=torch.long)
+    ge2_ptr = torch.tensor([0, 2, 5], device=device, dtype=torch.long)
+    ge2_parent_ids = torch.tensor([1, 3], device=device, dtype=torch.long)
+    active_mask = torch.tensor([True, False, True, True], device=device) if active else None
+
+    sp_child1 = torch.tensor([1, 3, S, 5, S, 7, S, 9, S, 11, S, S, S], device=device, dtype=torch.long)
+    sp_child2 = torch.tensor([2, 4, S, 6, S, 8, S, 10, S, 12, S, S, S], device=device, dtype=torch.long)
+    log_split_probs = (torch.randn(N, 1, device=device, dtype=dtype) * 0.1 - 1.0).contiguous()
+    if split_params:
+        log_pD = (torch.randn(N, device=device, dtype=dtype) * 0.1 - 4.0).contiguous()
+        log_pS = (torch.randn(N, 1, device=device, dtype=dtype) * 0.1 - 4.0).contiguous()
+    else:
+        log_pD = (torch.randn(S, device=device, dtype=dtype) * 0.1 - 4.0).contiguous()
+        log_pS = (torch.randn(S, device=device, dtype=dtype) * 0.1 - 4.0).contiguous()
+
+    dts_term = dts_fused(
+        Pi, Pibar, lefts, rights, sp_child1, sp_child2, log_pD, log_pS,
+        log_split_probs, active_mask=active_mask, reduce_idx=reduce_idx if active else None,
+    )
+    expected = torch.full((W, S), -float("inf"), device=device, dtype=dtype)
+    expected[eq1_reduce_idx] = dts_term[:n_eq1]
+    expected[ge2_parent_ids] = seg_logsumexp(dts_term[n_eq1:].contiguous(), ge2_ptr)
+
+    actual = dts_fused_parent_reduced(
+        Pi, Pibar, lefts, rights, sp_child1, sp_child2, log_pD, log_pS,
+        log_split_probs, W, n_eq1, eq1_reduce_idx, ge2_ptr, ge2_parent_ids,
+        active_mask=active_mask, impl=impl, tile_splits=2, ge2_max_fanout=3,
+    )
     torch.testing.assert_close(actual, expected, atol=atol, rtol=rtol)

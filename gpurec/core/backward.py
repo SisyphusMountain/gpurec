@@ -519,6 +519,37 @@ def Pi_wave_backward(
         os.environ.get("GPUREC_KERNELIZED_BACKWARD_DTS", "1") != "0"
         and device.type == 'cuda'
     )
+    dts_parent_reduced_env = os.environ.get("GPUREC_BACKWARD_PARENT_REDUCED_DTS")
+    if dts_parent_reduced_env is None:
+        dts_parent_reduced_env = os.environ.get("GPUREC_DTS_PARENT_REDUCED")
+    if dts_parent_reduced_env is None:
+        dts_parent_reduced_env = "tiled"
+    parent_reduced_backward_dts_enabled = (
+        dts_parent_reduced_env.strip().lower()
+        not in ("", "0", "false", "off", "no")
+        and kernelized_backward_dts_enabled
+        and pibar_mode == 'uniform'
+        and device.type == 'cuda'
+        and dtype in (torch.float32, torch.float64)
+    )
+    parent_reduced_backward_dts_min_splits = int(
+        os.environ.get(
+            "GPUREC_BACKWARD_PARENT_REDUCED_DTS_MIN_SPLITS",
+            os.environ.get("GPUREC_DTS_PARENT_REDUCED_MIN_SPLITS", "8192"),
+        )
+    )
+    parent_reduced_backward_dts_impl = dts_parent_reduced_env.strip().lower()
+    if parent_reduced_backward_dts_impl in ("1", "true", "yes", "on"):
+        parent_reduced_backward_dts_impl = os.environ.get(
+            "GPUREC_BACKWARD_PARENT_REDUCED_DTS_IMPL",
+            os.environ.get("GPUREC_DTS_PARENT_REDUCED_IMPL", "tiled"),
+        ).strip().lower()
+    parent_reduced_backward_dts_tile_splits = int(
+        os.environ.get(
+            "GPUREC_BACKWARD_PARENT_REDUCED_DTS_TILE_SPLITS",
+            os.environ.get("GPUREC_DTS_PARENT_REDUCED_TILE_SPLITS", "64"),
+        )
+    )
     fused_dts_backward_accum_enabled = (
         os.environ.get("GPUREC_FUSED_DTS_BACKWARD_ACCUM", "1") != "0"
     )
@@ -1127,6 +1158,10 @@ def Pi_wave_backward(
                         Pi_star_wave.detach(), Pibar_star_wave.detach(), meta,
                         sp_child1, sp_child2, log_pD_dts, log_pS_dts, S, device, dtype,
                         active_mask=active_mask_for_dts_forward,
+                        parent_reduced=parent_reduced_backward_dts_enabled,
+                        parent_reduced_min_splits=parent_reduced_backward_dts_min_splits,
+                        parent_reduced_impl=parent_reduced_backward_dts_impl,
+                        parent_reduced_tile_splits=parent_reduced_backward_dts_tile_splits,
                     )
                 else:
                     dts_r = _dts_cross_differentiable(
