@@ -572,6 +572,11 @@ def Pi_wave_backward(
     fused_uniform_backward_view_rhs = (
         os.environ.get("GPUREC_FUSED_UNIFORM_BACKWARD_VIEW_RHS", "1") != "0"
     )
+    wave_topology_int32_enabled = (
+        os.environ.get("GPUREC_WAVE_TOPOLOGY_INT32", "0") != "0"
+        and device.type == 'cuda'
+        and dtype in (torch.float32, torch.float64)
+    )
     dts_reduction_accum_impl = os.environ.get(
         "GPUREC_DTS_BACKWARD_REDUCTION_ACCUM", "scalar"
     ).strip().lower()
@@ -743,6 +748,12 @@ def Pi_wave_backward(
                 if depth_nodes is not None:
                     cache['depth_nodes'] = depth_nodes
 
+    sp_parent_wave = (
+        sp_parent.to(dtype=torch.int32).contiguous()
+        if wave_topology_int32_enabled and torch.is_tensor(sp_parent)
+        else sp_parent
+    )
+
     # Auto-wrap single-family inputs into batched format (G=1).
     _auto_wrapped = family_idx is None
     if _auto_wrapped:
@@ -842,6 +853,19 @@ def Pi_wave_backward(
     device_pruning_requested = (
         os.environ.get("GPUREC_DEVICE_PRUNING", "0") != "0"
     )
+
+    if wave_topology_int32_enabled:
+        sp_child1_wave = sp_child1_cpu.to(device=device, dtype=torch.int32)
+        sp_child2_wave = sp_child2_cpu.to(device=device, dtype=torch.int32)
+        leaf_species_index_wave = (
+            leaf_species_index.to(device=device, dtype=torch.int32).contiguous()
+            if torch.is_tensor(leaf_species_index)
+            else leaf_species_index
+        )
+    else:
+        sp_child1_wave = sp_child1
+        sp_child2_wave = sp_child2
+        leaf_species_index_wave = leaf_species_index
     dense_leaf_mask_from_index = (
         os.environ.get("GPUREC_DENSE_LEAF_MASK_FROM_INDEX", "0") != "0"
         and leaf_species_index is not None
@@ -1086,13 +1110,13 @@ def Pi_wave_backward(
                 Pi_star_wave, Pibar_star_wave, ws, W, S,
                 dts_r, rhs_k,
                 mt_w, DL_w, Ebar_w, E_w, SL1_w, SL2_w,
-                sp_child1, sp_child2, leaf_wt,
+                sp_child1_wave, sp_child2_wave, leaf_wt,
                 neumann_terms=neumann_terms,
-                leaf_species_idx=leaf_species_index if use_uniform_leaf_index else None,
+                leaf_species_idx=leaf_species_index_wave if use_uniform_leaf_index else None,
                 leaf_logp=uniform_leaf_logp if use_uniform_leaf_index else None,
                 accum_param_grads=accum_param_grads,
                 active_mask=active_mask_for_kernels,
-                sp_parent=sp_parent,
+                sp_parent=sp_parent_wave,
             )
 
             if accum_param_grads is None:
