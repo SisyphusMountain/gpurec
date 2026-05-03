@@ -554,9 +554,9 @@ The expected win is less certain than the active-mask and DTS-loop proposals.
    proposal 4 follow-up below for scalar `grad_log_pD/grad_log_pS` reductions.
    The `grad_mt` accumulation variant was tested and left opt-in because it is
    slower.
-5. **Only then revisit DTS/Pibar intermediate fusion**. The materialized
-   `grad_Pibar_l/r` traffic is large, but the tree VJP makes a monolithic kernel
-   risky.
+5. **Only then revisit DTS/Pibar intermediate fusion**. Completed in the
+   proposal 5 follow-up below with a staged `u_d` Pibar VJP path. The
+   monolithic-kernel version remains rejected as too register-risky.
 6. **Use NCU source-counter-guided work on `_wave_backward_uniform_kernel`**.
    It remains the largest bucket, but the next change should be driven by exact
    source lines for excessive sectors, not by broad guesses.
@@ -1238,3 +1238,241 @@ more values live in the already register-sensitive DTS accumulation kernel.
 Decision: promote only scalar `grad_log_pD/grad_log_pS` accumulation for large
 split waves. Keep `grad_mt` accumulation available for experiments with
 `GPUREC_DTS_BACKWARD_REDUCTION_ACCUM=all`, but do not use it by default.
+
+## Proposal 5 follow-up: DTS-staged Pibar VJP
+
+Proposal 5 revisits the largest remaining split-side intermediate:
+`_dts_cross_backward_accum_kernel` used to write `grad_Pibar_l/r`, and
+`_uniform_cross_pibar_vjp_tree_kernel` immediately reread those matrices,
+converted them to `u_d`, wrote `u_d` into `subtree_buf`, and then performed the
+tree correction.
+
+The promoted implementation is a semi-fusion, not a monolithic kernel:
+
+1. DTS backward still handles direct `Pi` adjoints, DTS scalar reductions, and
+   `grad_mt`.
+2. When `GPUREC_DTS_PIBAR_UD_FUSION=1`, DTS computes
+   `u_d = grad_Pibar * inv_denom` directly using forward-stored uniform Pibar
+   row maxima plus `Pibar_star` and `mt`.
+3. DTS writes a single `[2 * n_ws, S]` `u_d` staging buffer and a `[2 * n_ws]`
+   row-sum vector `A`.
+4. `_uniform_cross_pibar_vjp_tree_from_ud_kernel` reuses that same `u_d` buffer
+   as the tree `subtree_buf`, performs the bottom-up species-tree correction,
+   and atomically adds `p * (A - subtree_sum)` into `accumulated_rhs`.
+
+This removes the tree kernel's `grad_Pibar_l/r` read, denominator computation,
+and initial `u_d` write. It also makes the vector `grad_mt` reduction happen in
+the DTS kernel, so the later PyTorch `grad_Pibar_l/r.sum(dim=0)` reductions are
+removed.
+
+Current defaults:
+
+```bash
+GPUREC_DTS_PIBAR_UD_FUSION=1
+GPUREC_DTS_PIBAR_UD_MIN_SPLITS=0
+```
+
+Fallback:
+
+```bash
+GPUREC_DTS_PIBAR_UD_FUSION=0
+```
+
+Forward row-max storage is now also enabled when the staged path is enabled,
+because the DTS kernel needs the same row maxima that the old optional
+`GPUREC_REUSE_FORWARD_PIBAR_STATS=1` path used.
+
+### Subagent workflow
+
+| Role | Task | Result |
+|---|---|---|
+| Static reviewer | Check algebra and identify safe fusion boundary | Recommended the `u_d` staging design; warned against one giant DTS+tree kernel because DTS already has high register pressure |
+| Correctness worker | Audit test gaps and run current parity checks | Existing DTS/Pibar focused tests passed; called out missing combined staged-kernel coverage |
+| Performance worker | Establish baseline and profiling plan | Confirmed current 50-family baseline around `148 ms`, largest split wave `42155` splits, and combined DTS+Pibar target around `64 ms` under Nsys |
+| Supervisor | Implement guarded path, add parity test, benchmark, run Nsys/NCU, promote | Staged-all path is consistently faster and is now default |
+
+The algebraic reason this works is that uniform Pibar VJP is linear in the
+incoming Pibar adjoint `u` for a fixed child `Pi` row. DTS computes exactly the
+incoming adjoints:
+
+```text
+grad_Pibar_l = vd2
+grad_Pibar_r = vd1
+```
+
+The tree VJP only needs `u_d = u / denom`, `A = sum(u_d)`, and child-row
+`p = exp2(Pi - row_max)`. DTS already has `vd1/vd2` and `Pibar_star`; with
+forward row maxima and `mt`, it can compute:
+
+```text
+inv_denom = 2 ** (row_max + mt - Pibar_star)
+u_d = vd * inv_denom
+```
+
+### Correctness
+
+Focused checks:
+
+| Check | Result |
+|---|---:|
+| `py_compile` over changed files | passed |
+| new staged DTS+Pibar kernel parity test only | 4 passed |
+| default focused suite after promotion | 39 passed |
+| forced old fallback with `GPUREC_DTS_PIBAR_UD_FUSION=0` | 34 passed |
+| opt-in staged path before promotion, threshold `0` | 34 passed |
+
+The new checked-in test compares the full combined update:
+
+```text
+DTS direct Pi adjoints
++ Pibar VJP contribution from materialized grad_Pibar_l/r
+```
+
+against:
+
+```text
+DTS direct Pi adjoints
++ DTS-staged u_d
++ Pibar tree correction from staged u_d
+```
+
+It covers fp32/fp64, active-mask off/on, duplicate child clades, scalar
+`log_pD/log_pS`, vector `grad_mt`, and a consistent uniform `Pibar_star`
+constructed from `Pi`, `mt`, and the ancestor matrix.
+
+### Timings
+
+Benchmark command:
+
+```bash
+FAMS={10,50} REPS=9 WARMUPS=5 python /tmp/gpurec_profile/bench_uniform_backward.py
+```
+
+Initial threshold sweep after the path was wired correctly:
+
+| Families | Path | Mean | Median | Min | Peak allocation |
+|---:|---|---:|---:|---:|---:|
+| 10 | old forced `GPUREC_DTS_PIBAR_UD_FUSION=0` | `44.672 ms` | `44.640 ms` | `44.067 ms` | `2.695 GB` |
+| 10 | staged, threshold `8192` | `43.105 ms` | `42.974 ms` | `42.415 ms` | `2.696 GB` |
+| 10 | staged, threshold `0` | `40.188 ms` | `40.137 ms` | `39.768 ms` | `2.696 GB` |
+| 50 | old forced `GPUREC_DTS_PIBAR_UD_FUSION=0` | `148.896 ms` | `148.650 ms` | `146.841 ms` | `10.305 GB` |
+| 50 | staged, threshold `8192` | `137.865 ms` | `137.352 ms` | `136.136 ms` | `10.306 GB` |
+| 50 | staged, threshold `0` | `135.874 ms` | `135.441 ms` | `134.167 ms` | `10.306 GB` |
+
+Longer reversed-order 50-family check:
+
+| Families | Path | Mean | Median | Min |
+|---:|---|---:|---:|---:|
+| 50 | staged, threshold `0` | `135.781 ms` | `135.276 ms` | `133.903 ms` |
+| 50 | old forced | `148.204 ms` | `148.881 ms` | `146.279 ms` |
+
+Final default-vs-forced-old check after promotion:
+
+| Families | Path | Mean | Median | Min | Peak allocation |
+|---:|---|---:|---:|---:|---:|
+| 10 | new default staged | `40.885 ms` | `40.611 ms` | `40.453 ms` | `2.696 GB` |
+| 10 | old forced | `44.715 ms` | `44.802 ms` | `44.467 ms` | `2.695 GB` |
+| 50 | new default staged | `136.784 ms` | `136.886 ms` | `134.718 ms` | `10.306 GB` |
+| 50 | old forced | `148.220 ms` | `148.387 ms` | `146.364 ms` | `10.305 GB` |
+
+The staged path improves the 50-family median by about `11.5-13.6 ms` depending
+on run order and improves the 10-family median by about `4.2 ms`. Peak backward
+allocation changes by only about `1 MB`.
+
+The older forward-stat reuse path alone is not the explanation. With
+`GPUREC_REUSE_FORWARD_PIBAR_STATS=1` but staged Pibar disabled, the 50-family
+run was `149.170 ms mean / 149.062 ms median`, so it was slightly slower than
+the old default.
+
+### Nsight Systems
+
+Nsight Systems captures:
+
+| Capture | Path |
+|---|---|
+| old forced | `/tmp/gpurec_profile/prop5_ud_actual_old_fams50.nsys-rep` |
+| staged threshold `0` | `/tmp/gpurec_profile/prop5_ud_actual_staged0_fams50.nsys-rep` |
+
+Single-capture backward event times under Nsight overhead:
+
+| Path | Backward event time | Kernel launches | Summed kernel time |
+|---|---:|---:|---:|
+| old forced | `159.010 ms` | 3100 | `134.252 ms` |
+| staged threshold `0` | `144.888 ms` | 2968 | `120.611 ms` |
+
+Kernel bucket movement:
+
+| Component | Old forced | Staged `u_d` | Delta |
+|---|---:|---:|---:|
+| `_wave_backward_uniform_kernel` | `39.562 ms` | `39.559 ms` | unchanged |
+| Pibar VJP tree | `37.888 ms` | `25.510 ms` | `-12.378 ms` |
+| `_dts_cross_backward_accum_kernel` | `26.237 ms` | `30.006 ms` | `+3.769 ms` |
+| `_dts_fused_kernel` | `12.125 ms` | `12.209 ms` | unchanged/noise |
+| PyTorch float-sum reductions | `5.357 ms`, 227 launches | `0.369 ms`, 161 launches | `-4.988 ms`, `-66` launches |
+| PyTorch vector add kernels | `0.417 ms`, 348 launches | `0.326 ms`, 282 launches | `-0.091 ms`, `-66` launches |
+| Total kernels | `3100` | `2968` | `-132` |
+| Total kernel time | `134.252 ms` | `120.611 ms` | `-13.641 ms` |
+
+CUDA API and copies:
+
+| API / mem event | Old forced | Staged `u_d` |
+|---|---:|---:|
+| `cudaStreamSynchronize` | 252 calls, `116.672 ms` | 252 calls, `103.989 ms` |
+| `cudaLaunchKernel` | 2799 calls, `5.025 ms` | 2667 calls, `4.772 ms` |
+| `cudaMemcpyAsync` | 574 calls, `1.597 ms` | 574 calls, `1.517 ms` |
+| D2H copies | 194 events, `0.171 ms`, `32.927 KB` | 194 events, `0.171 ms`, `32.927 KB` |
+| D2D copies | 378 events, `0.391 ms`, `35.638 MB` | 378 events, `0.390 ms`, `35.638 MB` |
+
+The staged path does not remove CPU pruning decisions or D2H copies. The
+sync-time reduction is mostly host waiting on less GPU work.
+
+### Nsight Compute
+
+NCU was run on representative large launches selected with `--launch-skip 4`.
+
+| Metric | Old DTS accum | Staged DTS accum |
+|---|---:|---:|
+| Duration | `4.370 ms` | `4.855 ms` |
+| DRAM read | `2.027 GB` | `2.027 GB` |
+| DRAM write | `1.318 GB` | `1.319 GB` |
+| DRAM throughput | `76.00%` | `68.41%` |
+| Memory throughput | `765.4 GB/s` | `689.0 GB/s` |
+| Compute throughput | `23.90%` | `26.83%` |
+| Registers/thread | 78 | 96 |
+| Achieved occupancy | `49.72%` | `41.49%` |
+| Eligible warps/scheduler | `0.154` | `0.163` |
+| Global RED ops | `16.02 M` | `18.72 M` |
+| L2 excessive global sectors | `224.1 M` | `245.2 M` |
+
+Staged DTS gets slower because it now computes `u_d`, accumulates vector
+`grad_mt`, writes the `u_d` staging buffer, and stores `A`. The cost is visible
+as higher register pressure (`78 -> 96` registers/thread), lower occupancy, and
+more global reductions.
+
+| Metric | Old Pibar tree | Staged-from-`u_d` tree |
+|---|---:|---:|
+| Duration | `6.297 ms` | `4.220 ms` |
+| DRAM read | `2.704 GB` | `2.023 GB` |
+| DRAM write | `1.320 GB` | `1.318 GB` |
+| DRAM throughput | `63.45%` | `78.60%` |
+| Memory throughput | `639.1 GB/s` | `791.6 GB/s` |
+| Compute throughput | `59.75%` | `28.50%` |
+| Registers/thread | 56 | 40 |
+| Achieved occupancy | `74.58%` | `98.37%` |
+| Eligible warps/scheduler | `0.810` | `0.396` |
+| Executed instructions | `3.085 B` | `0.900 B` |
+| L2 excessive global sectors | `618.5 M` | `401.3 M` |
+
+The tree kernel is where the win comes from. It no longer performs denominator
+construction or initial `u_d` staging. Instructions fall by about `71%`, DRAM
+read falls by about `681 MB` on the representative launch, registers drop
+`56 -> 40`, and achieved occupancy rises to almost full occupancy. It is still
+memory-bound and has worse eligible-warp ratio than the old tree kernel because
+it is now mostly a tree-buffer memory/reduction kernel rather than a mixed
+compute+memory kernel, but it is much shorter.
+
+Decision: promote proposal 5. The staged `u_d` path is the first proposal in
+this wave that substantially reduces the Pibar VJP bucket. A monolithic
+DTS+Pibar tree kernel remains a bad next step: DTS already climbs to
+96 registers/thread in the staged path. The next work should target DTS
+register pressure and vector `grad_mt` accumulation, not bigger fusion.
