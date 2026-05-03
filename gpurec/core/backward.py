@@ -566,7 +566,7 @@ def Pi_wave_backward(
         os.environ.get("GPUREC_FUSED_UNIFORM_BACKWARD_VIEW_RHS", "1") != "0"
     )
     dts_reduction_accum_impl = os.environ.get(
-        "GPUREC_DTS_BACKWARD_REDUCTION_ACCUM", "0"
+        "GPUREC_DTS_BACKWARD_REDUCTION_ACCUM", "scalar"
     ).strip().lower()
     dts_reduction_accum_scalar_enabled = dts_reduction_accum_impl in (
         "1",
@@ -583,6 +583,9 @@ def Pi_wave_backward(
         "grad_mt",
         "all",
         "full",
+    )
+    dts_reduction_accum_min_splits = int(
+        os.environ.get("GPUREC_DTS_BACKWARD_REDUCTION_ACCUM_MIN_SPLITS", "8192")
     )
     _compute_dts_cross_kernelized = None
     if kernelized_backward_dts_enabled:
@@ -1234,8 +1237,17 @@ def Pi_wave_backward(
                             group_inverse=group_inverse,
                         )
                     else:
-                        use_dts_reduction_accum_scalar = dts_reduction_accum_scalar_enabled
-                        use_dts_reduction_accum_mt = dts_reduction_accum_mt_enabled
+                        reduction_threshold_match = (
+                            n_ws >= dts_reduction_accum_min_splits
+                        )
+                        use_dts_reduction_accum_scalar = (
+                            dts_reduction_accum_scalar_enabled
+                            and reduction_threshold_match
+                        )
+                        use_dts_reduction_accum_mt = (
+                            dts_reduction_accum_mt_enabled
+                            and reduction_threshold_match
+                        )
                         used_dts_mt_reduction_accum = use_dts_reduction_accum_mt
                         (grad_Pibar_l, grad_Pibar_r,
                          param_pD, param_pS) = dts_cross_backward_accum_fused(

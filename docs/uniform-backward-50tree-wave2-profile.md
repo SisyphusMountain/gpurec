@@ -550,9 +550,10 @@ The expected win is less certain than the active-mask and DTS-loop proposals.
    Completed in the proposal 2 follow-up below.
 3. **Remove CUDA scalar-to-Python extraction for `log_pD/log_pS` in DTS backward
    kernels**. Completed in the proposal 3 follow-up below.
-4. **Kernelize/fuse DTS parameter and `grad_mt` reductions**. Start with scalar
-   `grad_log_pD/grad_log_pS`; handle `grad_mt` carefully because species-level
-   atomic contention may or may not beat the current PyTorch reductions.
+4. **Kernelize/fuse DTS parameter and `grad_mt` reductions**. Completed in the
+   proposal 4 follow-up below for scalar `grad_log_pD/grad_log_pS` reductions.
+   The `grad_mt` accumulation variant was tested and left opt-in because it is
+   slower.
 5. **Only then revisit DTS/Pibar intermediate fusion**. The materialized
    `grad_Pibar_l/r` traffic is large, but the tree VJP makes a monolithic kernel
    risky.
@@ -1015,3 +1016,225 @@ Decision: promote proposal 3. It is a low-risk cleanup, improves the measured
 removes exactly the synchronization/copy pattern it targeted. The next ranked
 proposal should move to DTS parameter and `grad_mt` reductions; proposal 3 does
 not change the remaining PyTorch reduction bucket.
+
+## Proposal 4 follow-up: DTS reduction accumulation
+
+Proposal 4 targets the post-DTS reductions in the scalar-parameter uniform path:
+
+```python
+grad_log_pD[0] += param_pD.sum()
+grad_log_pS[0] += param_pS.sum()
+mt_contrib = grad_Pibar_l.sum(dim=0) + grad_Pibar_r.sum(dim=0)
+grad_mt[0] += mt_contrib
+```
+
+The implementation adds optional accumulation targets to
+`_dts_cross_backward_accum_kernel`. For the promoted path, the Triton program
+keeps its existing per-split `sum_pD` and `sum_pS` values and atomically adds
+them directly into one-element `grad_log_pD` and `grad_log_pS` tensors. That
+lets Python skip materializing `param_pD/param_pS` and skip the two PyTorch
+scalar reductions for selected split waves.
+
+The `grad_mt` path was also implemented behind the same flag family, but was
+not promoted. Accumulating `grad_mt[s]` inside the split kernel creates
+species-lane atomics into only `S=1999` targets, so its contention profile is
+much worse than the two scalar parameter atomics.
+
+Current defaults:
+
+```bash
+GPUREC_DTS_BACKWARD_REDUCTION_ACCUM=scalar
+GPUREC_DTS_BACKWARD_REDUCTION_ACCUM_MIN_SPLITS=8192
+```
+
+Useful overrides:
+
+```bash
+GPUREC_DTS_BACKWARD_REDUCTION_ACCUM=0      # old materialized reduction path
+GPUREC_DTS_BACKWARD_REDUCTION_ACCUM=all    # scalar params plus grad_mt, slower
+```
+
+The `8192` split threshold is deliberately conservative. It avoids increasing
+register pressure on small split waves where the launch-saving benefit is too
+small, while still catching the large 50-family split waves where the PyTorch
+reduction launches are visible.
+
+### Subagent workflow
+
+| Role | Task | Result |
+|---|---|---|
+| Static reviewer | Check algebra and where direct accumulation is safe | Scalar `grad_log_pD/grad_log_pS` accumulation is equivalent for the current `G=1` scalar-parameter uniform path; vector/specieswise parameter cases should stay on generic paths |
+| Correctness worker | Test direct-kernel parity, active-mask cases, and finite differences | Passed for fp32/fp64, active mask off/on, scalar-only and `grad_mt` variants |
+| Performance worker | Check whether the proposal was present at the starting commit | Found no proposal-4 flags before the supervisor patch; supervisor ran the actual benchmarks and Nsight profiles |
+| Supervisor | Implement guarded kernel targets, benchmark thresholds, run Nsys/NCU, choose default | Promoted scalar-only thresholded accumulation; left `grad_mt` opt-in |
+
+The static review also called out the important restriction: this is safe for
+scalar `log_pD/log_pS` and the current `G=1` uniform fused path. A familywise or
+specieswise parameter layout would need indexed/scattered targets rather than
+one scalar accumulation target.
+
+### Correctness
+
+Focused checks after the implementation:
+
+| Check | Result |
+|---|---:|
+| `py_compile` over changed files | passed |
+| `tests/kernels/test_dts_backward_accum_kernel.py` after adding direct reduction-target parity | 15 passed |
+| default focused suite after promoting scalar threshold | 35 passed |
+| forced old materialized path, `GPUREC_DTS_BACKWARD_REDUCTION_ACCUM=0` | 30 passed |
+| full opt-in path, `GPUREC_DTS_BACKWARD_REDUCTION_ACCUM=all` | 30 passed |
+
+The new direct-kernel test compares materialized reductions against in-kernel
+accumulation. It covers fp32/fp64, active-mask off/on, scalar-only
+accumulation, and the opt-in `grad_mt` accumulation target.
+
+The correctness worker also ran a direct parity script across dtype and mask
+variants:
+
+| Variant | Max observed diff |
+|---|---:|
+| scalar-only fp32 | `1.49e-08` |
+| scalar-only fp64 | `5.55e-17` |
+| `grad_mt` vector/scalar targets | same tolerance range |
+
+Finite-difference smoke checks also passed:
+
+```bash
+GPUREC_DTS_BACKWARD_REDUCTION_ACCUM=scalar pytest ... test_grad_log_pD_vs_fd test_grad_log_pS_vs_fd
+GPUREC_DTS_BACKWARD_REDUCTION_ACCUM=all    pytest ... test_grad_log_pD_vs_fd test_grad_log_pS_vs_fd test_grad_mt_vs_fd
+```
+
+### Timings
+
+Initial all-wave benchmark, before adding the split threshold:
+
+| Families | Reduction mode | Mean | Median | Min | Decision |
+|---:|---|---:|---:|---:|---|
+| 10 | old materialized | `44.951 ms` | `44.947 ms` | `44.724 ms` | baseline |
+| 10 | scalar params, all split waves | `45.289 ms` | `45.129 ms` | `44.760 ms` | slower |
+| 10 | scalar params + `grad_mt` | `45.797 ms` | `45.820 ms` | `45.234 ms` | slower |
+| 50 | old materialized | `149.128-151.349 ms` | `148.885-149.382 ms` | `147.492-148.093 ms` | baseline range |
+| 50 | scalar params, all split waves | `148.258-149.311 ms` | `147.909-149.235 ms` | `145.996-147.123 ms` | small win/noise |
+| 50 | scalar params + `grad_mt` | `150.722-151.115 ms` | `150.704-150.818 ms` | `148.978-149.835 ms` | slower |
+
+Threshold sweep for scalar-only accumulation:
+
+| Families | Threshold | Mean | Median | Min |
+|---:|---:|---:|---:|---:|
+| 10 | `4096` | `44.029 ms` | `43.989 ms` | `43.813 ms` |
+| 10 | `8192` | `44.266 ms` | `43.889 ms` | `43.781 ms` |
+| 10 | `16000` | `44.424 ms` | `44.293 ms` | `43.993 ms` |
+| 50 | `4096` | `147.733 ms` | `147.662 ms` | `146.048 ms` |
+| 50 | `8192` | `147.623 ms` | `147.163 ms` | `146.185 ms` |
+| 50 | `16000` | `148.480 ms` | `148.341 ms` | `147.014 ms` |
+
+Final event checks after making the thresholded scalar path the default:
+
+| Families | Path | Mean | Median | Min | Peak allocation |
+|---:|---|---:|---:|---:|---:|
+| 10 | old forced with `GPUREC_DTS_BACKWARD_REDUCTION_ACCUM=0` | `44.676 ms` | `44.572 ms` | `44.323 ms` | `2.695 GB` |
+| 10 | new default scalar threshold `8192` | `44.725 ms` | `44.591 ms` | `44.246 ms` | `2.695 GB` |
+| 50 | old forced with `GPUREC_DTS_BACKWARD_REDUCTION_ACCUM=0` | `148.449 ms` | `147.777 ms` | `146.245 ms` | `10.305 GB` |
+| 50 | new default scalar threshold `8192` | `147.563 ms` | `147.752 ms` | `145.985 ms` | `10.305 GB` |
+
+The 10-family result is effectively neutral in the final short run. The
+50-family mean improves by about `0.9 ms` in that run, and the threshold sweep
+showed `8192` as the best 50-family setting. Since this document's target is
+the 50-tree backward pass, the thresholded scalar path is a reasonable default.
+
+### Nsight Systems
+
+Nsight Systems captures:
+
+| Capture | Path |
+|---|---|
+| old materialized reductions | `/tmp/gpurec_profile/prop4_reductions_old_fams50.nsys-rep` |
+| scalar threshold `8192` | `/tmp/gpurec_profile/prop4_reductions_scalar8192_fams50.nsys-rep` |
+
+Single-capture backward event times under Nsight overhead:
+
+| Path | Backward event time | Kernel launches | Summed kernel time |
+|---|---:|---:|---:|
+| old materialized reductions | `159.983 ms` | 3136 | `134.555 ms` |
+| scalar threshold `8192` | `158.519 ms` | 3100 | `134.363 ms` |
+
+The mechanism is launch cleanup, not a major change to bulk GPU work:
+
+| Metric | Old | Scalar threshold `8192` | Delta |
+|---|---:|---:|---:|
+| `cudaLaunchKernel` calls | 2835 | 2799 | `-36` |
+| `cudaLaunchKernel` API time | `5.044 ms` | `4.922 ms` | `-0.122 ms` |
+| PyTorch float-sum reductions | 245 launches, `5.457 ms` | 227 launches, `5.353 ms` | `-18`, `-0.104 ms` |
+| PyTorch vectorized add kernels | 366 launches, `0.440 ms` | 348 launches, `0.417 ms` | `-18`, `-0.023 ms` |
+| `_dts_cross_backward_accum_kernel` bucket | 33 launches, `26.411 ms` | 33 launches, `26.266 ms` | `-0.145 ms` |
+| `_wave_backward_uniform_kernel` bucket | `39.545 ms` | `39.542 ms` | unchanged |
+| `_uniform_cross_pibar_vjp_tree_kernel` bucket | `37.903 ms` | `37.986 ms` | unchanged/noise |
+| `_dts_fused_kernel` bucket | `12.134 ms` | `12.131 ms` | unchanged |
+
+CUDA API synchronization and copies do not change:
+
+| API / mem event | Old | Scalar threshold `8192` |
+|---|---:|---:|
+| `cudaStreamSynchronize` | 252 calls, `116.377 ms` | 252 calls, `117.046 ms` |
+| `cudaDeviceSynchronize` | 6 calls, `7.239 ms` | 6 calls, `7.217 ms` |
+| `cudaMemcpyAsync` | 574 calls, `1.633 ms` | 574 calls, `1.471 ms` |
+| D2H copies | 194 events, `0.175 ms`, `32.927 KB` | 194 events, `0.170 ms`, `32.927 KB` |
+| D2D copies | 378 events, `0.391 ms`, `35.638 MB` | 378 events, `0.391 ms`, `35.638 MB` |
+
+This is expected. Proposal 3 removed the scalar host extractions. Proposal 4
+removes follow-up GPU reductions and their launch overhead, but it does not
+remove any CPU pruning decisions or D2H shape queries.
+
+### Nsight Compute
+
+NCU was run on the largest DTS accumulation launch (`42155` splits):
+
+| Metric | Old materialized reductions | Scalar threshold `8192` |
+|---|---:|---:|
+| Duration | `4.414 ms` | `4.375 ms` |
+| DRAM read | `2.027 GB` | `2.026 GB` |
+| DRAM write | `1.320 GB` | `1.318 GB` |
+| Total DRAM bytes | `3.346 GB` | `3.345 GB` |
+| DRAM throughput | `75.26%` | `75.91%` |
+| Memory throughput | `758.0 GB/s` | `764.5 GB/s` |
+| L1/TEX throughput | `25.29%` | `25.29%` |
+| L2 throughput | `51.26%` | `51.22%` |
+| Compute throughput | `23.68%` | `23.87%` |
+| SM busy | `11.20%` | `11.25%` |
+| Issue slots busy | `11.20%` | `11.25%` |
+| Achieved occupancy | `57.98%` | `49.57%` |
+| Registers/thread | 72 | 78 |
+| Register occupancy limit | 7 blocks/SM | 6 blocks/SM |
+| Active warps/scheduler | `6.97` | `5.96` |
+| Eligible warps/scheduler | `0.161` | `0.154` |
+| Global RED ops | `15.93 M` | `16.02 M` |
+| L2 excessive global sectors | `224.1 M` | `224.1 M` |
+| L1 hit rate | `54.83%` | `55.69%` |
+| L2 hit rate | `68.04%` | `67.44%` |
+
+Stall mix:
+
+| Stall | Old | Scalar threshold `8192` |
+|---|---:|---:|
+| Barrier | `18.31` warps/issue | `15.17` warps/issue |
+| Long scoreboard | `16.97` | `15.26` |
+| MIO throttle | `13.40` | `10.04` |
+| Short scoreboard | `6.69` | `6.09` |
+| LG throttle | `2.75` | `2.60` |
+
+The extra scalar atomics are visible as a small increase in global RED
+instructions (`15.93 M -> 16.02 M`), but the kernel remains dominated by the
+same memory/reduction behavior as before. The added constexpr path increases
+registers from 72 to 78 in this compiled variant, lowering occupancy, so the
+single-kernel improvement is small. The end-to-end improvement comes mostly
+from removing 36 tiny PyTorch launches around the large split waves.
+
+The `grad_mt` accumulation variant is slower for the same reason the static
+review predicted. It does not add two scalar atomics per split program; it adds
+many atomics into a small species vector, creating contention while also keeping
+more values live in the already register-sensitive DTS accumulation kernel.
+
+Decision: promote only scalar `grad_log_pD/grad_log_pS` accumulation for large
+split waves. Keep `grad_mt` accumulation available for experiments with
+`GPUREC_DTS_BACKWARD_REDUCTION_ACCUM=all`, but do not use it by default.
