@@ -120,6 +120,7 @@ def _wave_backward_uniform_kernel(
     mt_ptr, DL_const_ptr, Ebar_ptr, E_ptr, SL1_const_ptr, SL2_const_ptr,
     # Species children [S] long
     sp_child1_ptr, sp_child2_ptr,
+    sp_parent_ptr,
     # Leaf term [W, S]
     leaf_term_ptr,
     leaf_species_ptr,
@@ -157,6 +158,7 @@ def _wave_backward_uniform_kernel(
     RECOMPUTE_PIBAR_DENOM: tl.constexpr,
     LEAF_HIT_ONLY_LOGP: tl.constexpr,
     LEAF_LOGP_SCALAR: tl.constexpr,
+    SPEC_GATHER: tl.constexpr,
     USE_ACTIVE_MASK: tl.constexpr,
     DTYPE: tl.constexpr,
 ):
@@ -344,9 +346,14 @@ def _wave_backward_uniform_kernel(
     #
     # Each J^T application on vector `term` requires:
     #   Pass A: compute u_d = term * pibar_wt * inv_denom, accumulate A = sum(u_d)
-    #           also scatter speciation: spec_buf[child[s]] = term[s] * sl_wt[s]
+    #           and, in the default path, scatter speciation contributions.
     #   Pass B: result[s] = term[s] * diag_wt[s] + p_prime[s] * (A - u_d[s])
-    #                        + spec_buf[s] (read back speciation contribution)
+    #                        + speciation contribution.
+    #
+    # SPEC_GATHER replaces the scatter/zero/read speciation path with:
+    #   spec[s] = term[parent[s]] * sl_weight[parent[s] -> s]
+    # This removes one full zero pass and the speciation scatter stores, but
+    # adds parent-index gathers from the current term and scratch weights.
     # ================================================================
     # Copy rhs → v_k (v_k accumulates the Neumann sum)
     for s_start in range(0, S, BLOCK_S):
@@ -361,19 +368,20 @@ def _wave_backward_uniform_kernel(
     # at the start of each iteration to avoid stale data at non-child positions.
 
     for _n in range(NEUMANN_TERMS):
-        # Zero the output buffer before scatter writes.
-        # Sub-pass A only writes to child positions (scatter); sub-pass B reads ALL positions.
-        # Without zeroing, non-child positions would have stale data from prior iterations.
-        for s_start in range(0, S, BLOCK_S):
-            s_offs = s_start + tl.arange(0, BLOCK_S)
-            valid_mask = s_offs < S
-            mask = valid_mask & row_active
-            if _n % 2 == 0:
-                tl.store(spec_buf_ptr + out_base + s_offs,
-                         tl.zeros(s_offs.shape, dtype=DTYPE), mask=mask)
-            else:
-                tl.store(term_buf_ptr + out_base + s_offs,
-                         tl.zeros(s_offs.shape, dtype=DTYPE), mask=mask)
+        if not SPEC_GATHER:
+            # Zero the output buffer before scatter writes.
+            # Sub-pass A only writes to child positions (scatter); sub-pass B reads ALL positions.
+            # Without zeroing, non-child positions would have stale data from prior iterations.
+            for s_start in range(0, S, BLOCK_S):
+                s_offs = s_start + tl.arange(0, BLOCK_S)
+                valid_mask = s_offs < S
+                mask = valid_mask & row_active
+                if _n % 2 == 0:
+                    tl.store(spec_buf_ptr + out_base + s_offs,
+                             tl.zeros(s_offs.shape, dtype=DTYPE), mask=mask)
+                else:
+                    tl.store(term_buf_ptr + out_base + s_offs,
+                             tl.zeros(s_offs.shape, dtype=DTYPE), mask=mask)
 
         # --- Sub-pass A: accumulate A = sum_s(term * pibar_wt * inv_denom) ---
         # Also write speciation scatter contributions.
@@ -410,25 +418,26 @@ def _wave_backward_uniform_kernel(
 
             A_acc += tl.sum(u_d, axis=0)
 
-            # Speciation scatter: write term * sl_wt to child index
-            sl1_wt = tl.load(aw4_ptr + off, mask=mask, other=0.0)
-            sl2_wt = tl.load(aw345_ptr + off, mask=mask, other=0.0)
-            c1 = tl.load(sp_child1_ptr + s_offs, mask=mask, other=0)
-            c2 = tl.load(sp_child2_ptr + s_offs, mask=mask, other=0)
-            c1_valid = (c1 < S) & mask
-            c2_valid = (c2 < S) & mask
+            if not SPEC_GATHER:
+                # Speciation scatter: write term * sl_wt to child index
+                sl1_wt = tl.load(aw4_ptr + off, mask=mask, other=0.0)
+                sl2_wt = tl.load(aw345_ptr + off, mask=mask, other=0.0)
+                c1 = tl.load(sp_child1_ptr + s_offs, mask=mask, other=0)
+                c2 = tl.load(sp_child2_ptr + s_offs, mask=mask, other=0)
+                c1_valid = (c1 < S) & mask
+                c2_valid = (c2 < S) & mask
 
-            # No conflict: each child appears as target of exactly one parent.
-            src1 = term_val * sl1_wt
-            src2 = term_val * sl2_wt
-            # Write to output buffer at child index (using the OTHER buffer)
-            if _n % 2 == 0:
-                # Writing to spec_buf
-                tl.store(spec_buf_ptr + out_base + c1, src1, mask=c1_valid)
-                tl.store(spec_buf_ptr + out_base + c2, src2, mask=c2_valid)
-            else:
-                tl.store(term_buf_ptr + out_base + c1, src1, mask=c1_valid)
-                tl.store(term_buf_ptr + out_base + c2, src2, mask=c2_valid)
+                # No conflict: each child appears as target of exactly one parent.
+                src1 = term_val * sl1_wt
+                src2 = term_val * sl2_wt
+                # Write to output buffer at child index (using the OTHER buffer)
+                if _n % 2 == 0:
+                    # Writing to spec_buf
+                    tl.store(spec_buf_ptr + out_base + c1, src1, mask=c1_valid)
+                    tl.store(spec_buf_ptr + out_base + c2, src2, mask=c2_valid)
+                else:
+                    tl.store(term_buf_ptr + out_base + c1, src1, mask=c1_valid)
+                    tl.store(term_buf_ptr + out_base + c2, src2, mask=c2_valid)
 
         # --- Sub-pass B: compute J^T result using A ---
         for s_start in range(0, S, BLOCK_S):
@@ -465,8 +474,23 @@ def _wave_backward_uniform_kernel(
                 u_d = term_val * pibar_wt * inv_denom
             result = term_val * diag_wt + p_prime * (A_acc - u_d)
 
-            # Add speciation contribution (written to output buffer in sub-pass A)
-            if _n % 2 == 0:
+            # Add speciation contribution.
+            if SPEC_GATHER:
+                parent = tl.load(sp_parent_ptr + s_offs, mask=mask, other=-1)
+                parent_valid = parent >= 0
+                parent_off = out_base + parent
+                if _n == 0:
+                    parent_term = tl.load(rhs_ptr + parent_off, mask=mask & parent_valid, other=0.0)
+                elif _n % 2 == 1:
+                    parent_term = tl.load(spec_buf_ptr + parent_off, mask=mask & parent_valid, other=0.0)
+                else:
+                    parent_term = tl.load(term_buf_ptr + parent_off, mask=mask & parent_valid, other=0.0)
+                parent_sl1 = tl.load(aw4_ptr + parent_off, mask=mask & parent_valid, other=0.0)
+                parent_sl2 = tl.load(aw345_ptr + parent_off, mask=mask & parent_valid, other=0.0)
+                parent_c1 = tl.load(sp_child1_ptr + parent, mask=mask & parent_valid, other=S)
+                parent_wt = tl.where(parent_c1 == s_offs, parent_sl1, parent_sl2)
+                spec_val = parent_term * parent_wt
+            elif _n % 2 == 0:
                 spec_val = tl.load(spec_buf_ptr + off, mask=mask, other=0.0)
             else:
                 spec_val = tl.load(term_buf_ptr + off, mask=mask, other=0.0)
@@ -619,6 +643,7 @@ def wave_backward_uniform_fused(
     leaf_logp=None,
     accum_param_grads=None,
     active_mask=None,
+    sp_parent=None,
 ):
     """Fused backward: precompute + Neumann + param VJP in one kernel per wave.
 
@@ -678,6 +703,10 @@ def wave_backward_uniform_fused(
         and leaf_logp is not None
         and leaf_logp.numel() == 1
     )
+    spec_gather = (
+        os.environ.get("GPUREC_WAVE_SPEC_GATHER", "0") != "0"
+        and sp_parent is not None
+    )
 
     v_k = torch.empty((W, S), device=device, dtype=dtype)
     aw0 = torch.empty((W, S), device=device, dtype=dtype)
@@ -729,6 +758,7 @@ def wave_backward_uniform_fused(
         active_mask if active_mask is not None else rhs,
         mt_squeezed, DL_const, Ebar, E, SL1_const, SL2_const,
         sp_child1, sp_child2,
+        sp_parent if spec_gather else sp_child1,
         leaf_term_wt,
         leaf_species_arg,
         leaf_logp_arg,
@@ -752,6 +782,7 @@ def wave_backward_uniform_fused(
         RECOMPUTE_PIBAR_DENOM=bool(recompute_pibar_denom),
         LEAF_HIT_ONLY_LOGP=bool(leaf_hit_only_logp),
         LEAF_LOGP_SCALAR=bool(leaf_logp_scalar),
+        SPEC_GATHER=bool(spec_gather),
         USE_ACTIVE_MASK=bool(active_mask is not None),
         DTYPE=_tl_float_dtype(dtype),
     )

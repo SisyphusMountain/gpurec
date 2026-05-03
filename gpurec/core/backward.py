@@ -1092,6 +1092,7 @@ def Pi_wave_backward(
                 leaf_logp=uniform_leaf_logp if use_uniform_leaf_index else None,
                 accum_param_grads=accum_param_grads,
                 active_mask=active_mask_for_kernels,
+                sp_parent=sp_parent,
             )
 
             if accum_param_grads is None:

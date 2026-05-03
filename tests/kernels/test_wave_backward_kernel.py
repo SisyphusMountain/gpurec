@@ -166,6 +166,79 @@ def _get_leaf_wt(wave_layout, ws, we, S, log_pS, device, dtype):
     return log_pS + lwt
 
 
+def _species_parent_from_children(sp_child1, sp_child2, S):
+    parent = torch.full((S,), -1, device=sp_child1.device, dtype=torch.long)
+    species = torch.arange(S, device=sp_child1.device, dtype=torch.long)
+    c1 = sp_child1.long()
+    c2 = sp_child2.long()
+    mask1 = c1 < S
+    mask2 = c2 < S
+    parent[c1[mask1]] = species[mask1]
+    parent[c2[mask2]] = species[mask2]
+    return parent.contiguous()
+
+
+def _compute_wave_dts_r(d, meta, S, device, dtype):
+    if not meta['has_splits']:
+        return None
+    from gpurec.core.forward import _compute_dts_cross
+    return _compute_dts_cross(
+        d['Pi_star_wave'], d['Pibar_star_wave'], meta,
+        d['sp_child1'], d['sp_child2'],
+        d['log_pD'], d['log_pS'], S, device, dtype,
+    )
+
+
+def _zero_accum_param_grads(S, device, dtype):
+    return (
+        torch.zeros(1, device=device, dtype=dtype),
+        torch.zeros(1, device=device, dtype=dtype),
+        torch.zeros(S, device=device, dtype=dtype),
+        torch.zeros(S, device=device, dtype=dtype),
+        torch.zeros(S, device=device, dtype=dtype),
+        torch.zeros(S, device=device, dtype=dtype),
+        torch.zeros(S, device=device, dtype=dtype),
+    )
+
+
+def _run_wave_scatter_or_gather(d, wave_idx, rhs, *, use_gather, monkeypatch):
+    wl = d['wave_layout']
+    meta = wl['wave_metas'][wave_idx]
+    ws, we, W, S = meta['start'], meta['end'], meta['W'], d['S']
+    device, dtype = d['device'], d['dtype']
+    dts_r = _compute_wave_dts_r(d, meta, S, device, dtype)
+
+    DL_const = 1.0 + d['log_pD'] + d['E']
+    SL1_const = d['log_pS'] + d['E_s2']
+    SL2_const = d['log_pS'] + d['E_s1']
+    mt = d['max_transfer_mat'].squeeze(-1) if d['max_transfer_mat'].ndim > 1 else d['max_transfer_mat']
+    leaf_wt = _get_leaf_wt(wl, ws, we, S, d['log_pS'], device, dtype)
+    accum = _zero_accum_param_grads(S, device, dtype)
+    sp_parent = _species_parent_from_children(d['sp_child1'], d['sp_child2'], S)
+
+    monkeypatch.setenv("GPUREC_WAVE_SPEC_GATHER", "1" if use_gather else "0")
+    v_k, *_ = wave_backward_uniform_fused(
+        d['Pi_star_wave'].float().contiguous(),
+        d['Pibar_star_wave'].float().contiguous(),
+        ws, W, S,
+        dts_r.float().contiguous() if dts_r is not None else None,
+        rhs.float().clone().contiguous(),
+        mt.float().contiguous(),
+        DL_const.float().contiguous(),
+        d['Ebar'].float().contiguous(),
+        d['E'].float().contiguous(),
+        SL1_const.float().contiguous(),
+        SL2_const.float().contiguous(),
+        d['sp_child1'].long().contiguous(),
+        d['sp_child2'].long().contiguous(),
+        leaf_wt.float().contiguous(),
+        neumann_terms=3,
+        accum_param_grads=accum,
+        sp_parent=sp_parent,
+    )
+    return v_k, accum
+
+
 def _pytorch_single_wave_backward(
     Pi_star, Pibar_star, ws, W, S,
     dts_r, rhs,
@@ -369,6 +442,35 @@ class TestWaveBackwardKernel:
         print(f"\nMax relative errors across {K} waves:")
         for name, rel in max_rels.items():
             print(f"  {name}: {rel:.2e}")
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+def test_wave_speciation_gather_matches_scatter(setup_100, monkeypatch):
+    """The parent-gather Neumann path should match the default scatter path."""
+    d = setup_100
+    wl = d['wave_layout']
+    wave_indices = [0]
+    for k in range(len(wl['wave_metas']) - 1, -1, -1):
+        if wl['wave_metas'][k]['has_splits']:
+            wave_indices.append(k)
+            break
+
+    for wave_idx in wave_indices:
+        meta = wl['wave_metas'][wave_idx]
+        W, S = meta['W'], d['S']
+        torch.manual_seed(8800 + wave_idx)
+        rhs = torch.randn(W, S, device=d['device'], dtype=d['dtype']) * 0.01
+
+        v_scatter, accum_scatter = _run_wave_scatter_or_gather(
+            d, wave_idx, rhs, use_gather=False, monkeypatch=monkeypatch
+        )
+        v_gather, accum_gather = _run_wave_scatter_or_gather(
+            d, wave_idx, rhs, use_gather=True, monkeypatch=monkeypatch
+        )
+
+        torch.testing.assert_close(v_gather, v_scatter, rtol=1e-5, atol=1e-6)
+        for got, ref in zip(accum_gather, accum_scatter):
+            torch.testing.assert_close(got, ref, rtol=1e-5, atol=1e-6)
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
