@@ -565,6 +565,25 @@ def Pi_wave_backward(
     fused_uniform_backward_view_rhs = (
         os.environ.get("GPUREC_FUSED_UNIFORM_BACKWARD_VIEW_RHS", "1") != "0"
     )
+    dts_reduction_accum_impl = os.environ.get(
+        "GPUREC_DTS_BACKWARD_REDUCTION_ACCUM", "0"
+    ).strip().lower()
+    dts_reduction_accum_scalar_enabled = dts_reduction_accum_impl in (
+        "1",
+        "true",
+        "yes",
+        "on",
+        "scalar",
+        "scalars",
+        "all",
+        "full",
+    )
+    dts_reduction_accum_mt_enabled = dts_reduction_accum_impl in (
+        "mt",
+        "grad_mt",
+        "all",
+        "full",
+    )
     _compute_dts_cross_kernelized = None
     if kernelized_backward_dts_enabled:
         from .forward import _compute_dts_cross as _compute_dts_cross_kernelized
@@ -1152,6 +1171,7 @@ def Pi_wave_backward(
             fused_scalar_params = (log_pD.numel() == 1 and log_pS.numel() == 1)
             used_fused_pibar_vjp = False
             used_fused_direct_pi_accum = False
+            used_dts_mt_reduction_accum = False
 
             if use_fused and fused_scalar_params:
                 # G=1: pass shared params to fused kernel.
@@ -1214,6 +1234,9 @@ def Pi_wave_backward(
                             group_inverse=group_inverse,
                         )
                     else:
+                        use_dts_reduction_accum_scalar = dts_reduction_accum_scalar_enabled
+                        use_dts_reduction_accum_mt = dts_reduction_accum_mt_enabled
+                        used_dts_mt_reduction_accum = use_dts_reduction_accum_mt
                         (grad_Pibar_l, grad_Pibar_r,
                          param_pD, param_pS) = dts_cross_backward_accum_fused(
                             Pi_star_wave, Pibar_star_wave, v_k, ws,
@@ -1222,6 +1245,15 @@ def Pi_wave_backward(
                             sp_child1, sp_child2, accumulated_rhs, S,
                             active_mask=active_mask_for_kernels,
                             merge_s_term=merged_dts_backward_accum_enabled,
+                            grad_log_pD=grad_log_pD,
+                            grad_log_pS=grad_log_pS,
+                            grad_mt=(
+                                grad_mt
+                                if grad_mt.ndim == 1
+                                else grad_mt[0]
+                            ),
+                            accum_param_reductions=use_dts_reduction_accum_scalar,
+                            accum_mt_reduction=use_dts_reduction_accum_mt,
                         )
                     used_fused_direct_pi_accum = True
                     grad_Pi_l = grad_Pi_r = None
@@ -1235,14 +1267,24 @@ def Pi_wave_backward(
                         active_mask=active_mask_for_kernels,
                     )
 
-                # Accumulate into G=1 row.
-                grad_log_pD[0] += param_pD.sum()
-                grad_log_pS[0] += param_pS.sum()
-                mt_contrib = grad_Pibar_l.sum(dim=0) + grad_Pibar_r.sum(dim=0)
-                if grad_mt.ndim == 1:
-                    grad_mt[0] += mt_contrib.sum()
-                else:
-                    grad_mt[0] += mt_contrib
+                # Accumulate into G=1 row. The direct DTS accumulation path can
+                # optionally do these reductions in-kernel.
+                if not (
+                    used_fused_direct_pi_accum
+                    and param_pD is None
+                    and param_pS is None
+                ):
+                    grad_log_pD[0] += param_pD.sum()
+                    grad_log_pS[0] += param_pS.sum()
+                if not (
+                    used_fused_direct_pi_accum
+                    and used_dts_mt_reduction_accum
+                ):
+                    mt_contrib = grad_Pibar_l.sum(dim=0) + grad_Pibar_r.sum(dim=0)
+                    if grad_mt.ndim == 1:
+                        grad_mt[0] += mt_contrib.sum()
+                    else:
+                        grad_mt[0] += mt_contrib
 
             else:
                 Pi_l = Pi_star_wave[sl]

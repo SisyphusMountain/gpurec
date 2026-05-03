@@ -1088,6 +1088,9 @@ def _dts_cross_backward_accum_kernel(
     grad_Pibar_r_ptr,     # [n_ws, S]
     param_pD_ptr,         # [n_ws]
     param_pS_ptr,         # [n_ws]
+    grad_log_pD_ptr,      # optional scalar accumulation target
+    grad_log_pS_ptr,      # optional scalar accumulation target
+    grad_mt_ptr,          # optional scalar/[S] accumulation target
     # Dimensions
     ws,                # wave start offset (parent row = ws + reduce_idx)
     S: tl.constexpr,
@@ -1097,6 +1100,9 @@ def _dts_cross_backward_accum_kernel(
     USE_ATOMICS: tl.constexpr,
     MERGE_S_TERM: tl.constexpr,
     DEVICE_SCALAR_PARAMS: tl.constexpr,
+    ACCUM_PARAM_REDUCTIONS: tl.constexpr,
+    ACCUM_MT_REDUCTION: tl.constexpr,
+    GRAD_MT_SCALAR: tl.constexpr,
     DTYPE: tl.constexpr,
 ):
     """DTS cross-clade backward with direct accumulation of Pi adjoints.
@@ -1121,8 +1127,9 @@ def _dts_cross_backward_accum_kernel(
             out_base = i * S
             zero_scalar = tl.zeros((1,), dtype=DTYPE)
             _scalar_off = tl.arange(0, 1)
-            tl.store(param_pD_ptr + i + _scalar_off, zero_scalar)
-            tl.store(param_pS_ptr + i + _scalar_off, zero_scalar)
+            if not ACCUM_PARAM_REDUCTIONS:
+                tl.store(param_pD_ptr + i + _scalar_off, zero_scalar)
+                tl.store(param_pS_ptr + i + _scalar_off, zero_scalar)
             for s_start in range(0, S, BLOCK_S):
                 s_offs = s_start + tl.arange(0, BLOCK_S)
                 mask = s_offs < S
@@ -1208,6 +1215,21 @@ def _dts_cross_backward_accum_kernel(
 
         sum_pD += tl.sum(vd0, axis=0)
         sum_pS += tl.sum(vd3 + vd4, axis=0)
+        if ACCUM_MT_REDUCTION:
+            mt_contrib = vd1 + vd2
+            if GRAD_MT_SCALAR:
+                tl.atomic_add(
+                    grad_mt_ptr + _scalar_off,
+                    tl.sum(tl.where(mask, mt_contrib, 0.0), axis=0),
+                    sem="relaxed",
+                )
+            else:
+                tl.atomic_add(
+                    grad_mt_ptr + s_offs,
+                    mt_contrib,
+                    sem="relaxed",
+                    mask=mask,
+                )
 
         if MERGE_S_TERM:
             pi_l_c1_out = accumulated_rhs_ptr + pi_l_base + c1
@@ -1229,8 +1251,12 @@ def _dts_cross_backward_accum_kernel(
                 tl.store(pi_r_c2_out, pi_r_c2_cur + vd3, mask=c2_valid)
                 tl.store(pi_l_c2_out, pi_l_c2_cur + vd4, mask=c2_valid)
 
-    tl.store(param_pD_ptr + i + _scalar_off, sum_pD)
-    tl.store(param_pS_ptr + i + _scalar_off, sum_pS)
+    if ACCUM_PARAM_REDUCTIONS:
+        tl.atomic_add(grad_log_pD_ptr + _scalar_off, sum_pD, sem="relaxed")
+        tl.atomic_add(grad_log_pS_ptr + _scalar_off, sum_pS, sem="relaxed")
+    else:
+        tl.store(param_pD_ptr + i + _scalar_off, sum_pD)
+        tl.store(param_pS_ptr + i + _scalar_off, sum_pS)
 
     if not MERGE_S_TERM:
         for s_start in range(0, S, BLOCK_S):
@@ -1290,6 +1316,11 @@ def dts_cross_backward_accum_fused(
     active_mask=None,
     use_atomics=True,
     merge_s_term=False,
+    grad_log_pD=None,
+    grad_log_pS=None,
+    grad_mt=None,
+    accum_param_reductions=False,
+    accum_mt_reduction=False,
 ):
     """Fused DTS backward with direct Pi-adjoint accumulation."""
     n_ws = sl.shape[0]
@@ -1301,10 +1332,26 @@ def dts_cross_backward_accum_fused(
         log_pD, log_pS, device=device, dtype=dtype
     )
 
+    if accum_param_reductions and (grad_log_pD is None or grad_log_pS is None):
+        raise ValueError("grad_log_pD/grad_log_pS are required when accumulating DTS scalar reductions")
+    if accum_param_reductions:
+        if grad_log_pD.numel() != 1 or grad_log_pS.numel() != 1:
+            raise ValueError("DTS scalar reduction targets must have one element")
+    if accum_mt_reduction and grad_mt is None:
+        raise ValueError("grad_mt is required when accumulating DTS mt reductions")
+    if accum_mt_reduction and grad_mt.numel() not in (1, S):
+        raise ValueError("DTS mt reduction target must have one element or S elements")
+
     grad_Pibar_l = torch.empty((n_ws, S), device=device, dtype=dtype)
     grad_Pibar_r = torch.empty((n_ws, S), device=device, dtype=dtype)
-    param_pD = torch.empty(n_ws, device=device, dtype=dtype)
-    param_pS = torch.empty(n_ws, device=device, dtype=dtype)
+    param_pD = None if accum_param_reductions else torch.empty(n_ws, device=device, dtype=dtype)
+    param_pS = None if accum_param_reductions else torch.empty(n_ws, device=device, dtype=dtype)
+    param_pD_arg = grad_log_pD if accum_param_reductions else param_pD
+    param_pS_arg = grad_log_pS if accum_param_reductions else param_pS
+    grad_log_pD_arg = grad_log_pD if accum_param_reductions else grad_Pibar_l
+    grad_log_pS_arg = grad_log_pS if accum_param_reductions else grad_Pibar_l
+    grad_mt_arg = grad_mt if accum_mt_reduction else grad_Pibar_l
+    grad_mt_scalar = bool(accum_mt_reduction and grad_mt.numel() == 1)
 
     stride_C = Pi_star.stride(0)
     BLOCK_S = min(256, triton.next_power_of_2(S))
@@ -1318,12 +1365,16 @@ def dts_cross_backward_accum_fused(
         sp_child1, sp_child2,
         accumulated_rhs,
         grad_Pibar_l, grad_Pibar_r,
-        param_pD, param_pS,
+        param_pD_arg, param_pS_arg,
+        grad_log_pD_arg, grad_log_pS_arg, grad_mt_arg,
         ws, S, stride_C, BLOCK_S,
         USE_ACTIVE_MASK=bool(active_mask is not None),
         USE_ATOMICS=bool(use_atomics),
         MERGE_S_TERM=bool(merge_s_term),
         DEVICE_SCALAR_PARAMS=bool(device_scalar_params),
+        ACCUM_PARAM_REDUCTIONS=bool(accum_param_reductions),
+        ACCUM_MT_REDUCTION=bool(accum_mt_reduction),
+        GRAD_MT_SCALAR=bool(grad_mt_scalar),
         DTYPE=_tl_float_dtype(dtype),
     )
 
