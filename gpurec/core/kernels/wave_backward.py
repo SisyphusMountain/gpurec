@@ -18,6 +18,36 @@ def _tl_float_dtype(dtype):
     return tl.float64 if dtype == torch.float64 else tl.float32
 
 
+def _device_scalar_param(param, *, device, dtype):
+    """Return a one-element device tensor without extracting CUDA scalars."""
+    if torch.is_tensor(param):
+        if param.numel() != 1:
+            raise ValueError("fused DTS backward scalar parameters must have one element")
+        if param.device != device or param.dtype != dtype:
+            param = param.to(device=device, dtype=dtype)
+        return param.reshape(1).contiguous()
+    return torch.tensor([param], device=device, dtype=dtype)
+
+
+def _dts_scalar_param_args(log_pD, log_pS, *, device, dtype):
+    use_device_scalars = (
+        os.environ.get("GPUREC_DTS_BACKWARD_DEVICE_SCALARS", "1") != "0"
+    )
+    if use_device_scalars:
+        return (
+            _device_scalar_param(log_pD, device=device, dtype=dtype),
+            _device_scalar_param(log_pS, device=device, dtype=dtype),
+            True,
+        )
+
+    def _extract(param):
+        if torch.is_tensor(param):
+            return float(param) if param.ndim == 0 else float(param.item())
+        return float(param)
+
+    return _extract(log_pD), _extract(log_pS), False
+
+
 @triton.jit
 def _active_mask_from_rhs_absmax_kernel(
     rhs_ptr,          # [W, S]
@@ -749,8 +779,8 @@ def _dts_cross_backward_kernel(
     reduce_idx_ptr,    # [n_ws] int64 — wave-local parent index
     wlsp_ptr,          # [n_ws] float — log split probability (squeezed)
     # Scalar params
-    log_pD,            # float
-    log_pS,            # float
+    log_pD_arg,        # [1] scalar tensor or Python float
+    log_pS_arg,        # [1] scalar tensor or Python float
     # Species children [S] int64
     sp_child1_ptr,
     sp_child2_ptr,
@@ -768,6 +798,7 @@ def _dts_cross_backward_kernel(
     stride_C: tl.constexpr,
     BLOCK_S: tl.constexpr,
     USE_ACTIVE_MASK: tl.constexpr,
+    DEVICE_SCALAR_PARAMS: tl.constexpr,
     DTYPE: tl.constexpr,
 ):
     """Fused cross-clade DTS backward for uniform Pibar mode.
@@ -812,6 +843,13 @@ def _dts_cross_backward_kernel(
             return
     else:
         parent_active = True
+
+    if DEVICE_SCALAR_PARAMS:
+        log_pD = tl.load(log_pD_arg).to(DTYPE)
+        log_pS = tl.load(log_pS_arg).to(DTYPE)
+    else:
+        log_pD = log_pD_arg
+        log_pS = log_pS_arg
 
     # Base offsets into [C, S] for child clades
     pi_l_base = sl * stride_C
@@ -991,9 +1029,9 @@ def dts_cross_backward_fused(
     # Squeeze wlsp to [n_ws]
     wlsp_flat = wlsp.squeeze(-1) if wlsp.ndim > 1 else wlsp
 
-    # Extract scalar param values
-    pD_val = float(log_pD) if log_pD.ndim == 0 else float(log_pD.item())
-    pS_val = float(log_pS) if log_pS.ndim == 0 else float(log_pS.item())
+    log_pD_arg, log_pS_arg, device_scalar_params = _dts_scalar_param_args(
+        log_pD, log_pS, device=device, dtype=dtype
+    )
 
     # Allocate outputs
     grad_Pi_l = torch.empty((n_ws, S), device=device, dtype=dtype)
@@ -1012,12 +1050,13 @@ def dts_cross_backward_fused(
         v_k,
         active_mask if active_mask is not None else v_k,
         sl, sr, reduce_idx, wlsp_flat,
-        pD_val, pS_val,
+        log_pD_arg, log_pS_arg,
         sp_child1, sp_child2,
         grad_Pi_l, grad_Pi_r, grad_Pibar_l, grad_Pibar_r,
         param_pD, param_pS,
         ws, S, stride_C, BLOCK_S,
         USE_ACTIVE_MASK=bool(active_mask is not None),
+        DEVICE_SCALAR_PARAMS=bool(device_scalar_params),
         DTYPE=_tl_float_dtype(dtype),
     )
 
@@ -1038,8 +1077,8 @@ def _dts_cross_backward_accum_kernel(
     reduce_idx_ptr,    # [n_ws] int64 — wave-local parent index
     wlsp_ptr,          # [n_ws] float — log split probability (squeezed)
     # Scalar params
-    log_pD,            # float
-    log_pS,            # float
+    log_pD_arg,        # [1] scalar tensor or Python float
+    log_pS_arg,        # [1] scalar tensor or Python float
     # Species children [S] int64
     sp_child1_ptr,
     sp_child2_ptr,
@@ -1057,6 +1096,7 @@ def _dts_cross_backward_accum_kernel(
     USE_ACTIVE_MASK: tl.constexpr,
     USE_ATOMICS: tl.constexpr,
     MERGE_S_TERM: tl.constexpr,
+    DEVICE_SCALAR_PARAMS: tl.constexpr,
     DTYPE: tl.constexpr,
 ):
     """DTS cross-clade backward with direct accumulation of Pi adjoints.
@@ -1092,6 +1132,13 @@ def _dts_cross_backward_accum_kernel(
             return
     else:
         parent_active = True
+
+    if DEVICE_SCALAR_PARAMS:
+        log_pD = tl.load(log_pD_arg).to(DTYPE)
+        log_pS = tl.load(log_pS_arg).to(DTYPE)
+    else:
+        log_pD = log_pD_arg
+        log_pS = log_pS_arg
 
     pi_l_base = sl * stride_C
     pi_r_base = sr * stride_C
@@ -1250,8 +1297,9 @@ def dts_cross_backward_accum_fused(
     dtype = Pi_star.dtype
 
     wlsp_flat = wlsp.squeeze(-1) if wlsp.ndim > 1 else wlsp
-    pD_val = float(log_pD) if log_pD.ndim == 0 else float(log_pD.item())
-    pS_val = float(log_pS) if log_pS.ndim == 0 else float(log_pS.item())
+    log_pD_arg, log_pS_arg, device_scalar_params = _dts_scalar_param_args(
+        log_pD, log_pS, device=device, dtype=dtype
+    )
 
     grad_Pibar_l = torch.empty((n_ws, S), device=device, dtype=dtype)
     grad_Pibar_r = torch.empty((n_ws, S), device=device, dtype=dtype)
@@ -1266,7 +1314,7 @@ def dts_cross_backward_accum_fused(
         v_k,
         active_mask if active_mask is not None else v_k,
         sl, sr, reduce_idx, wlsp_flat,
-        pD_val, pS_val,
+        log_pD_arg, log_pS_arg,
         sp_child1, sp_child2,
         accumulated_rhs,
         grad_Pibar_l, grad_Pibar_r,
@@ -1275,6 +1323,7 @@ def dts_cross_backward_accum_fused(
         USE_ACTIVE_MASK=bool(active_mask is not None),
         USE_ATOMICS=bool(use_atomics),
         MERGE_S_TERM=bool(merge_s_term),
+        DEVICE_SCALAR_PARAMS=bool(device_scalar_params),
         DTYPE=_tl_float_dtype(dtype),
     )
 

@@ -1197,7 +1197,7 @@ def Pi_wave_backward(
                          param_pD, param_pS) = dts_cross_backward_accum_fused(
                             Pi_star_wave, Pibar_star_wave, v_k, ws,
                             sl, sr, reduce_idx, wlsp,
-                            log_pD.reshape(-1)[0], log_pS.reshape(-1)[0],
+                            log_pD, log_pS,
                             sp_child1, sp_child2, accumulated_rhs, S,
                             active_mask=active_mask_for_kernels,
                             use_atomics=False,
@@ -1207,7 +1207,7 @@ def Pi_wave_backward(
                          param_pD, param_pS) = dts_cross_backward_accum_grouped_fused(
                             Pi_star_wave, Pibar_star_wave, v_k, ws,
                             sl, sr, reduce_idx, wlsp,
-                            log_pD.reshape(-1)[0], log_pS.reshape(-1)[0],
+                            log_pD, log_pS,
                             sp_child1, sp_child2, accumulated_rhs, S,
                             active_mask=active_mask_for_kernels,
                             group_children=group_children,
@@ -1218,7 +1218,7 @@ def Pi_wave_backward(
                          param_pD, param_pS) = dts_cross_backward_accum_fused(
                             Pi_star_wave, Pibar_star_wave, v_k, ws,
                             sl, sr, reduce_idx, wlsp,
-                            log_pD.reshape(-1)[0], log_pS.reshape(-1)[0],
+                            log_pD, log_pS,
                             sp_child1, sp_child2, accumulated_rhs, S,
                             active_mask=active_mask_for_kernels,
                             merge_s_term=merged_dts_backward_accum_enabled,
@@ -1230,7 +1230,7 @@ def Pi_wave_backward(
                      param_pD, param_pS) = dts_cross_backward_fused(
                         Pi_star_wave, Pibar_star_wave, v_k, ws,
                         sl, sr, reduce_idx, wlsp,
-                        log_pD.reshape(-1)[0], log_pS.reshape(-1)[0],
+                        log_pD, log_pS,
                         sp_child1, sp_child2, S,
                         active_mask=active_mask_for_kernels,
                     )
