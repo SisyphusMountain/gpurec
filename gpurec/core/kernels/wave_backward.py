@@ -3110,7 +3110,6 @@ def uniform_cross_pibar_vjp_tree_from_ud_fused(
     )
     if (
         cuda_pibar_from_ud_enabled
-        and use_compact_levels
         and Pi_star.dtype == torch.float32
         and Pi_star.device.type == "cuda"
     ):
@@ -3129,6 +3128,9 @@ def uniform_cross_pibar_vjp_tree_from_ud_fused(
                 reduce_idx=reduce_idx,
                 pibar_row_max=pibar_row_max,
                 side_active=side_active,
+                level_parents=level_parents,
+                sp_child1=sp_child1,
+                sp_child2=sp_child2,
                 compact_level_ptr=compact_level_ptr,
                 compact_level_parents=compact_level_parents,
                 compact_level_child1=compact_level_child1,

@@ -9,6 +9,86 @@ import torch
 
 
 _CUDA_SRC = r"""
+extern "C" __global__ void gpurec_pibar_from_ud_shared_padded_fp32(
+    const float* __restrict__ Pi,
+    const float* __restrict__ pibar_ud,
+    const float* __restrict__ pibar_A,
+    const unsigned char* __restrict__ side_active,
+    const long long* __restrict__ sl,
+    const long long* __restrict__ sr,
+    const long long* __restrict__ reduce_idx,
+    const unsigned char* __restrict__ active_mask,
+    const float* __restrict__ pibar_row_max,
+    const long long* __restrict__ sp_child1,
+    const long long* __restrict__ sp_child2,
+    const long long* __restrict__ level_parents,
+    float* __restrict__ accumulated_rhs,
+    int n_ws,
+    int S,
+    int pi_stride,
+    int rhs_stride,
+    int n_levels,
+    int max_level_width,
+    int use_active_mask,
+    int use_side_active
+) {
+    const int row = blockIdx.x;
+    if (row >= 2 * n_ws) {
+        return;
+    }
+    if (use_side_active != 0 && side_active[row] == 0) {
+        return;
+    }
+
+    const int split_i = (row < n_ws) ? row : (row - n_ws);
+    if (use_active_mask != 0) {
+        const long long parent_w = reduce_idx[split_i];
+        if (active_mask[parent_w] == 0) {
+            return;
+        }
+    }
+
+    const long long child = (row < n_ws) ? sl[split_i] : sr[split_i];
+    const int row_base = row * S;
+    const long long pi_base = child * (long long)pi_stride;
+    const long long rhs_base = child * (long long)rhs_stride;
+    const float A = pibar_A[row];
+    const float row_max = pibar_row_max[child];
+
+    extern __shared__ float work[];
+
+    for (int s = threadIdx.x; s < S; s += blockDim.x) {
+        work[s] = pibar_ud[row_base + s];
+    }
+    __syncthreads();
+
+    for (int level = 0; level < n_levels; ++level) {
+        const long long level_base = level * (long long)max_level_width;
+        for (int offset = threadIdx.x; offset < max_level_width; offset += blockDim.x) {
+            const long long parent = level_parents[level_base + offset];
+            if (parent >= 0 && parent < S) {
+                const long long c1 = sp_child1[parent];
+                const long long c2 = sp_child2[parent];
+                float value = work[parent];
+                if (c1 >= 0 && c1 < S) {
+                    value += work[c1];
+                }
+                if (c2 >= 0 && c2 < S) {
+                    value += work[c2];
+                }
+                work[parent] = value;
+            }
+        }
+        __syncthreads();
+    }
+
+    for (int s = threadIdx.x; s < S; s += blockDim.x) {
+        const float p_prime = exp2f(Pi[pi_base + s] - row_max);
+        const float contrib = p_prime * (A - work[s]);
+        atomicAdd(accumulated_rhs + rhs_base + s, contrib);
+    }
+}
+
 extern "C" __global__ void gpurec_pibar_from_ud_shared_fp32(
     const float* __restrict__ Pi,
     const float* __restrict__ pibar_ud,
@@ -26,7 +106,8 @@ extern "C" __global__ void gpurec_pibar_from_ud_shared_fp32(
     float* __restrict__ accumulated_rhs,
     int n_ws,
     int S,
-    int stride,
+    int pi_stride,
+    int rhs_stride,
     int n_levels,
     int use_active_mask,
     int use_side_active
@@ -49,7 +130,8 @@ extern "C" __global__ void gpurec_pibar_from_ud_shared_fp32(
 
     const long long child = (row < n_ws) ? sl[split_i] : sr[split_i];
     const int row_base = row * S;
-    const long long pi_base = child * (long long)stride;
+    const long long pi_base = child * (long long)pi_stride;
+    const long long rhs_base = child * (long long)rhs_stride;
     const float A = pibar_A[row];
     const float row_max = pibar_row_max[child];
 
@@ -84,7 +166,7 @@ extern "C" __global__ void gpurec_pibar_from_ud_shared_fp32(
     for (int s = threadIdx.x; s < S; s += blockDim.x) {
         const float p_prime = exp2f(Pi[pi_base + s] - row_max);
         const float contrib = p_prime * (A - work[s]);
-        atomicAdd(accumulated_rhs + pi_base + s, contrib);
+        atomicAdd(accumulated_rhs + rhs_base + s, contrib);
     }
 }
 """
@@ -149,11 +231,15 @@ def _load_cuda_kernel(device_index: int, cc_major: int, cc_minor: int):
 
     _check_driver(driver.cuInit(0), "cuInit")
     module = _check_driver(driver.cuModuleLoadData(bytes(ptx)), "cuModuleLoadData")[0]
-    func = _check_driver(
+    compact_func = _check_driver(
         driver.cuModuleGetFunction(module, b"gpurec_pibar_from_ud_shared_fp32"),
         "cuModuleGetFunction",
     )[0]
-    return module, func
+    padded_func = _check_driver(
+        driver.cuModuleGetFunction(module, b"gpurec_pibar_from_ud_shared_padded_fp32"),
+        "cuModuleGetFunction",
+    )[0]
+    return module, compact_func, padded_func
 
 
 def _kernel_params(*values):
@@ -184,6 +270,9 @@ def uniform_cross_pibar_vjp_tree_from_ud_cuda(
     reduce_idx=None,
     pibar_row_max=None,
     side_active=None,
+    level_parents=None,
+    sp_child1=None,
+    sp_child2=None,
     compact_level_ptr=None,
     compact_level_parents=None,
     compact_level_child1=None,
@@ -197,10 +286,19 @@ def uniform_cross_pibar_vjp_tree_from_ud_cuda(
         raise ValueError("reduce_idx is required when active_mask is provided")
     if pibar_row_max is None:
         raise ValueError("pibar_row_max is required for CUDA Pibar VJP")
-    if compact_level_ptr is None or compact_level_parents is None:
-        raise ValueError("compact level tensors are required for CUDA Pibar VJP")
-    if compact_level_child1 is None or compact_level_child2 is None:
-        raise ValueError("compact child tensors are required for CUDA Pibar VJP")
+    use_compact_levels = (
+        compact_level_ptr is not None
+        and compact_level_parents is not None
+        and compact_level_child1 is not None
+        and compact_level_child2 is not None
+    )
+    use_padded_levels = (
+        level_parents is not None
+        and sp_child1 is not None
+        and sp_child2 is not None
+    )
+    if not use_compact_levels and not use_padded_levels:
+        raise ValueError("compact or padded level tensors are required for CUDA Pibar VJP")
 
     float_tensors = (Pi_star, pibar_ud, pibar_A, pibar_row_max, accumulated_rhs)
     if any(t.dtype != torch.float32 for t in float_tensors):
@@ -215,14 +313,20 @@ def uniform_cross_pibar_vjp_tree_from_ud_cuda(
         raise ValueError("split child tensors must be int64")
     if reduce_idx is not None and reduce_idx.dtype != torch.int64:
         raise ValueError("reduce_idx must be int64")
-    if compact_level_ptr.dtype != torch.int64:
-        raise ValueError("compact level ptr must be int64")
-    if (
-        compact_level_parents.dtype != torch.int32
-        or compact_level_child1.dtype != torch.int32
-        or compact_level_child2.dtype != torch.int32
-    ):
-        raise ValueError("compact level node tensors must be int32")
+    if use_compact_levels:
+        if compact_level_ptr.dtype != torch.int64:
+            raise ValueError("compact level ptr must be int64")
+        if (
+            compact_level_parents.dtype != torch.int32
+            or compact_level_child1.dtype != torch.int32
+            or compact_level_child2.dtype != torch.int32
+        ):
+            raise ValueError("compact level node tensors must be int32")
+    if use_padded_levels:
+        if level_parents.dtype != torch.int64:
+            raise ValueError("level_parents must be int64")
+        if sp_child1.dtype != torch.int64 or sp_child2.dtype != torch.int64:
+            raise ValueError("species child tensors must be int64")
 
     tensors = [
         Pi_star,
@@ -231,12 +335,17 @@ def uniform_cross_pibar_vjp_tree_from_ud_cuda(
         sl,
         sr,
         pibar_row_max,
-        compact_level_ptr,
-        compact_level_parents,
-        compact_level_child1,
-        compact_level_child2,
         accumulated_rhs,
     ]
+    if use_compact_levels:
+        tensors.extend([
+            compact_level_ptr,
+            compact_level_parents,
+            compact_level_child1,
+            compact_level_child2,
+        ])
+    if use_padded_levels:
+        tensors.extend([level_parents, sp_child1, sp_child2])
     if reduce_idx is not None:
         tensors.append(reduce_idx)
     if active_mask is not None:
@@ -263,35 +372,80 @@ def uniform_cross_pibar_vjp_tree_from_ud_cuda(
 
     block = 256
     shared_bytes = int(S) * 4
+    props = torch.cuda.get_device_properties(device_index)
+    max_shared = getattr(
+        props,
+        "shared_memory_per_block_optin",
+        getattr(props, "shared_memory_per_block", 49152),
+    )
+    if shared_bytes > int(max_shared):
+        raise ValueError("CUDA Pibar VJP shared-memory row scratch is too large")
     active_arg = active_mask.contiguous() if active_mask is not None else pibar_A
     side_arg = side_active.contiguous() if side_active is not None else pibar_A
     reduce_arg = reduce_idx.contiguous() if reduce_idx is not None else sl
 
-    params, _keepalive = _kernel_params(
-        ("ptr", Pi_star),
-        ("ptr", pibar_ud),
-        ("ptr", pibar_A),
-        ("ptr", side_arg),
-        ("ptr", sl),
-        ("ptr", sr),
-        ("ptr", reduce_arg),
-        ("ptr", active_arg),
-        ("ptr", pibar_row_max),
-        ("ptr", compact_level_ptr),
-        ("ptr", compact_level_parents),
-        ("ptr", compact_level_child1),
-        ("ptr", compact_level_child2),
-        ("ptr", accumulated_rhs),
-        ("int", n_ws),
-        ("int", S),
-        ("int", Pi_star.stride(0)),
-        ("int", int(compact_level_ptr.numel()) - 1),
-        ("int", 1 if active_mask is not None else 0),
-        ("int", 1 if side_active is not None else 0),
-    )
-
     with torch.cuda.device(device_index):
-        _, func = _load_cuda_kernel(device_index, cc_major, cc_minor)
+        _, compact_func, padded_func = _load_cuda_kernel(device_index, cc_major, cc_minor)
+        if use_compact_levels:
+            func = compact_func
+            params, _keepalive = _kernel_params(
+                ("ptr", Pi_star),
+                ("ptr", pibar_ud),
+                ("ptr", pibar_A),
+                ("ptr", side_arg),
+                ("ptr", sl),
+                ("ptr", sr),
+                ("ptr", reduce_arg),
+                ("ptr", active_arg),
+                ("ptr", pibar_row_max),
+                ("ptr", compact_level_ptr),
+                ("ptr", compact_level_parents),
+                ("ptr", compact_level_child1),
+                ("ptr", compact_level_child2),
+                ("ptr", accumulated_rhs),
+                ("int", n_ws),
+                ("int", S),
+                ("int", Pi_star.stride(0)),
+                ("int", accumulated_rhs.stride(0)),
+                ("int", int(compact_level_ptr.numel()) - 1),
+                ("int", 1 if active_mask is not None else 0),
+                ("int", 1 if side_active is not None else 0),
+            )
+            launch_name = "gpurec_pibar_from_ud_shared_fp32"
+        else:
+            func = padded_func
+            params, _keepalive = _kernel_params(
+                ("ptr", Pi_star),
+                ("ptr", pibar_ud),
+                ("ptr", pibar_A),
+                ("ptr", side_arg),
+                ("ptr", sl),
+                ("ptr", sr),
+                ("ptr", reduce_arg),
+                ("ptr", active_arg),
+                ("ptr", pibar_row_max),
+                ("ptr", sp_child1),
+                ("ptr", sp_child2),
+                ("ptr", level_parents),
+                ("ptr", accumulated_rhs),
+                ("int", n_ws),
+                ("int", S),
+                ("int", Pi_star.stride(0)),
+                ("int", accumulated_rhs.stride(0)),
+                ("int", int(level_parents.shape[0])),
+                ("int", int(level_parents.shape[1])),
+                ("int", 1 if active_mask is not None else 0),
+                ("int", 1 if side_active is not None else 0),
+            )
+            launch_name = "gpurec_pibar_from_ud_shared_padded_fp32"
+        _check_driver(
+            driver.cuFuncSetAttribute(
+                func,
+                driver.CUfunction_attribute.CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES,
+                shared_bytes,
+            ),
+            "cuFuncSetAttribute(MAX_DYNAMIC_SHARED_SIZE_BYTES)",
+        )
         stream = torch.cuda.current_stream(Pi_star.device).cuda_stream
         _check_driver(
             driver.cuLaunchKernel(
@@ -307,6 +461,6 @@ def uniform_cross_pibar_vjp_tree_from_ud_cuda(
                 params,
                 0,
             ),
-            "cuLaunchKernel(gpurec_pibar_from_ud_shared_fp32)",
+            f"cuLaunchKernel({launch_name})",
         )
     return side_active
