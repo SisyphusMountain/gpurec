@@ -704,7 +704,7 @@ def wave_backward_uniform_fused(
         and leaf_logp.numel() == 1
     )
     spec_gather = (
-        os.environ.get("GPUREC_WAVE_SPEC_GATHER", "0") != "0"
+        os.environ.get("GPUREC_WAVE_SPEC_GATHER", "1") != "0"
         and sp_parent is not None
     )
 
@@ -747,7 +747,20 @@ def wave_backward_uniform_fused(
         grad_log_pD_arg = grad_log_pS_arg = aw0
         grad_E_arg = grad_Ebar_arg = grad_E_s1_arg = grad_E_s2_arg = grad_mt_arg = aw0
 
-    BLOCK_S = min(256, triton.next_power_of_2(S))
+    block_s_env = os.environ.get("GPUREC_WAVE_BLOCK_S", "").strip()
+    if block_s_env:
+        BLOCK_S = int(block_s_env)
+    else:
+        BLOCK_S = min(256, triton.next_power_of_2(S))
+    num_warps_env = os.environ.get(
+        "GPUREC_WAVE_NUM_WARPS",
+        "8" if spec_gather else "",
+    ).strip()
+    launch_options = {}
+    if num_warps_env:
+        num_warps = int(num_warps_env)
+        if num_warps > 0:
+            launch_options["num_warps"] = num_warps
 
     grid = (W,)
     _wave_backward_uniform_kernel[grid](
@@ -785,6 +798,7 @@ def wave_backward_uniform_fused(
         SPEC_GATHER=bool(spec_gather),
         USE_ACTIVE_MASK=bool(active_mask is not None),
         DTYPE=_tl_float_dtype(dtype),
+        **launch_options,
     )
 
     if accum_enabled:

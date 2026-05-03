@@ -573,7 +573,7 @@ def Pi_wave_backward(
         os.environ.get("GPUREC_FUSED_UNIFORM_BACKWARD_VIEW_RHS", "1") != "0"
     )
     wave_topology_int32_enabled = (
-        os.environ.get("GPUREC_WAVE_TOPOLOGY_INT32", "0") != "0"
+        os.environ.get("GPUREC_WAVE_TOPOLOGY_INT32", "1") != "0"
         and device.type == 'cuda'
         and dtype in (torch.float32, torch.float64)
     )
