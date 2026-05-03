@@ -883,6 +883,142 @@ Profiling gate:
 - keep the first implementation restricted to root-like waves with high
   `n_splits / W`.
 
+### Proposal 3 results
+
+Subagent split:
+
+| Worker | Role | Result |
+|---|---|---|
+| Agent 1 | read-only audit | confirmed the hot path is `_dts_cross_backward_accum_kernel`, that the repeated parent loads are `Pi_star[ws + reduce_idx[i], s]` and `v_k[reduce_idx[i], s]`, and that `n_eq1`/`ge2_ptr`/`ge2_parent_ids` already provide the needed parent CSR metadata |
+| Agent 2 | implementation | added an opt-in CSR parent-tiled staged DTS backward kernel and parity tests for fp32/fp64, active masks, scalar reductions, staged `pibar_ud`, and `grad_mt` |
+| Agent 3 | profiling plan | produced the baseline Nsys/NCU launch targets and acceptance gates; the key target launch was the 42,155-split wave at NCU skip 4 |
+| Supervisor | integration and profiling | verified correctness, benchmarked default versus parent-tiled, profiled the regression with Nsys and NCU, and documented the decision |
+
+Implementation:
+
+```text
+GPUREC_DTS_BACKWARD_ACCUM_IMPL=parent_tiled[_all]
+GPUREC_PARENT_TILED_DTS_BACKWARD_TILE_SPLITS=16   # tested completing point
+```
+
+The prototype is intentionally opt-in.  It only covers the staged uniform hot
+path: merged S-term, direct atomic Pi accumulation, scalar parameter reductions,
+optional `grad_mt` accumulation, and `pibar_ud/pibar_A` output.  The direct path
+remains the default.
+
+Correctness:
+
+| Command | Result |
+|---|---:|
+| `pytest -q tests/kernels/test_dts_backward_accum_kernel.py` | `27 passed` |
+| `GPUREC_DTS_BACKWARD_ACCUM_IMPL=parent_tiled pytest -q tests/gradients/test_fd_all_modes.py::test_analytic_matches_fd` | `6 passed` |
+| worker run: `GPUREC_DTS_BACKWARD_ACCUM_IMPL=parent_tiled_all GPUREC_PARENT_TILED_DTS_BACKWARD_TILE_SPLITS=2 pytest -q tests/gradients/test_autograd_bridge.py` | `15 passed` |
+
+Event timings:
+
+| Workload | Variant | Median backward time | Change |
+|---|---|---:|---:|
+| 10 families, 15 reps | default direct | `36.168 ms` | reference |
+| 10 families, 15 reps | parent-tiled, tile 64 | `36.098 ms` | noise-level `-0.070 ms` |
+| 50 families, 15 reps | default direct | `113.892 ms` | reference |
+| 50 families, worker run | parent-tiled, tile 8 | `129.276 ms` | `+15.709 ms` / `+13.8%` |
+| 50 families, worker run | parent-tiled, tile 16 | `127.043 ms` | `+13.476 ms` / `+11.9%` |
+
+`TILE_SPLITS=64` was not usable for the 50-family run: the kernel loop is
+statically unrolled by Triton, and the benchmark did not complete after several
+minutes.  This is a compile/code-size failure mode, not a production candidate.
+
+Nsys, one profiled 50-family backward:
+
+| Bucket | Direct | Parent-tiled tile 16 | Interpretation |
+|---|---:|---:|---|
+| direct `_dts_cross_backward_accum_kernel` | `31.447 ms`, 33 launches | `11.932 ms`, 27 launches | small and non-ge2 waves still use the direct path |
+| `_dts_cross_backward_accum_parent_tiled_ge2_kernel` | none | `33.832 ms`, 6 launches | replaces only the high-fanout ge2 launches |
+| total DTS backward accumulation bucket | `31.447 ms` | `45.764 ms` | regression `+14.317 ms` |
+| `_uniform_cross_pibar_vjp_tree_from_ud_kernel` | `24.781 ms` | `24.886 ms` | downstream staged Pibar VJP is unchanged |
+| `_wave_backward_uniform_kernel` | `24.006 ms` | `24.028 ms` | self-loop backward is unchanged |
+
+The largest direct launch:
+
+```text
+_dts_cross_backward_accum_kernel
+grid=(42155, 1, 1)
+duration=5.223 ms
+registers/thread=96
+achieved occupancy=41.53%
+```
+
+The corresponding parent-tiled launch:
+
+```text
+_dts_cross_backward_accum_parent_tiled_ge2_kernel
+grid=(247, 237, 8)
+duration=9.559 ms
+registers/thread=96
+achieved occupancy=41.09%
+```
+
+The parent-tiled launch has far more CTAs because the grid is rectangular in
+`(n_eq1 + n_ge2_groups, max_tiles, species_blocks)`.  Eq1 rows only need tile
+zero, but they are still launched for every ge2 `max_tiles` value and return
+immediately.  For the high-split waves at tile 16:
+
+| Wave | Splits | `n_eq1` | ge2 groups | active CTAs | rectangular CTAs | Overlaunch |
+|---:|---:|---:|---:|---:|---:|---:|
+| 42 | 19,642 | 1,230 | 6 | 19,072 | 2,096,256 | `109.91x` |
+| 43 | 36,200 | 572 | 12 | 22,440 | 999,808 | `44.55x` |
+| 44 | 42,155 | 234 | 13 | 22,888 | 468,312 | `20.46x` |
+| 45 | 23,345 | 86 | 7 | 12,352 | 178,560 | `14.46x` |
+| 46 | 24,229 | 32 | 7 | 12,384 | 78,312 | `6.32x` |
+| 47 | 13,546 | 8 | 4 | 6,848 | 22,176 | `3.24x` |
+| 48 | 3,985 | 0 | 1 | 2,000 | 2,000 | `1.00x` |
+
+NCU, representative 42,155-split wave:
+
+| Metric | Direct split-major | Parent-tiled tile 16 |
+|---|---:|---:|
+| Duration | `5.224 ms` | `9.559 ms` |
+| Grid size | `42,155` CTAs | `468,312` CTAs |
+| Threads launched | `5.396 M` | `59.944 M` |
+| Registers/thread | `96` | `96` |
+| Achieved occupancy | `41.53%` | `41.09%` |
+| DRAM throughput | `63.30%` | `37.88%` |
+| Memory throughput | `637.5 GB/s` | `381.5 GB/s` |
+| Compute throughput | `24.83%` | `12.84%` |
+| L1/TEX hit rate | `61.64%` | `48.76%` |
+| L2 hit rate | `66.08%` | `61.14%` |
+| Warp cycles / issued instruction | `42.42` | `71.98` |
+| L1TEX scoreboard stall share | `33.7%` | `37.3%` |
+| Global load instructions | `36.392 M` | `29.560 M` |
+| Global store instructions | `5.396 M` | `5.312 M` |
+| Global RED instructions | `18.613 M` | `19.871 M` |
+| Global load sectors | `334.314 M` | `198.742 M` |
+| Global store sectors | `25.799 M` | `25.715 M` |
+| Global RED sectors | `103.275 M` | `104.533 M` |
+| DRAM read bytes | `2.015 GB` | `2.217 GB` |
+| DRAM write bytes | `1.316 GB` | `1.430 GB` |
+
+The proposed reuse does happen: global load instructions and L1 sectors fall.
+But the kernel still loses because:
+
+1. The rectangular grid launches many empty CTAs, especially for eq1 groups.
+2. Splitting species into a grid axis turns per-split scalar reductions
+   (`pibar_A`, `grad_log_pD`, `grad_log_pS`) into per-split-per-species-block
+   atomics.
+3. The direct kernel aggregates all species blocks for one split inside one CTA,
+   so it performs one scalar update per split side; the parent-tiled kernel
+   performs up to eight partial scalar updates per split side for `S=1999`.
+4. Cache behavior worsens enough that DRAM read/write bytes increase despite
+   fewer global load instructions.
+5. The new kernel has lower achieved memory and compute throughput, so it is
+   latency/overhead limited rather than bandwidth limited.
+
+Decision: reject this parent-tiled implementation as a default optimization.
+Keep it opt-in only as a documented negative result.  A future viable parent
+grouping would need a ragged tile list that launches only active parent tiles,
+keeps eq1 on the old direct path, and avoids multiplying scalar reduction
+atomics by the number of species blocks.
+
 ## Proposal 4: split-side worklists for staged Pibar VJP
 
 The staged DTS path writes `u_d` and `A`, then the Pibar tree correction runs

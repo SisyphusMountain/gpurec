@@ -5,6 +5,7 @@ import torch
 
 from gpurec.core.kernels.wave_backward import (
     dts_cross_backward_accum_fused,
+    dts_cross_backward_accum_parent_tiled_fused,
     dts_cross_backward_fused,
     uniform_cross_pibar_vjp_tree_fused,
     uniform_cross_pibar_vjp_tree_from_ud_fused,
@@ -264,6 +265,204 @@ def _run_nonaccum_variant(*, active_mask=None, dtype=torch.float32, scalar_shape
     )
     torch.cuda.synchronize()
     return outputs
+
+
+def _parent_tiled_fixture(dtype, active):
+    torch.manual_seed(31)
+    device = torch.device("cuda")
+    C, S, W, N = 12, 31, 4, 9
+    ws = 8
+
+    ancestor_cols, ancestors_dense, sp_child1, sp_child2, level_parents = _binary_tree_helpers(
+        S, device, dtype
+    )
+    del ancestor_cols, level_parents
+
+    Pi = (torch.randn(C, S, device=device, dtype=dtype) * 0.2 - 2.0).contiguous()
+    mt = (torch.randn(S, device=device, dtype=dtype) * 0.01 - 4.0).contiguous()
+    Pibar, row_max = _uniform_pibar_from_pi(Pi, mt, ancestors_dense)
+    v_k = (torch.randn(W, S, device=device, dtype=dtype) * 0.1).contiguous()
+
+    sl = torch.tensor([0, 1, 2, 3, 1, 4, 5, 2, 6], device=device, dtype=torch.long)
+    sr = torch.tensor([1, 2, 3, 4, 0, 2, 6, 5, 7], device=device, dtype=torch.long)
+    reduce_idx = torch.tensor([0, 0, 0, 0, 1, 1, 1, 3, 3], device=device, dtype=torch.long)
+    wlsp = (torch.randn(N, device=device, dtype=dtype) * 0.1 - 1.0).contiguous()
+    active_mask = torch.tensor([True, False, True, True], device=device) if active else None
+
+    ge2_ptr = torch.tensor([0, 4, 7, 9], device=device, dtype=torch.long)
+    ge2_parent_ids = torch.tensor([0, 1, 3], device=device, dtype=torch.long)
+
+    return {
+        "Pi": Pi,
+        "Pibar": Pibar,
+        "v_k": v_k,
+        "ws": ws,
+        "sl": sl,
+        "sr": sr,
+        "reduce_idx": reduce_idx,
+        "wlsp": wlsp,
+        "log_pD": _scalar_param(-4.0, device=device, dtype=dtype, shape="1d"),
+        "log_pS": _scalar_param(-5.0, device=device, dtype=dtype, shape="1d"),
+        "sp_child1": sp_child1,
+        "sp_child2": sp_child2,
+        "S": S,
+        "active_mask": active_mask,
+        "n_eq1": 0,
+        "ge2_ptr": ge2_ptr,
+        "ge2_parent_ids": ge2_parent_ids,
+        "ge2_max_fanout": 4,
+        "mt": mt,
+        "row_max": row_max,
+    }
+
+
+@pytest.mark.parametrize("dtype,atol,rtol", [(torch.float32, 4e-5, 4e-5), (torch.float64, 1e-10, 1e-10)])
+@pytest.mark.parametrize("active", [False, True])
+def test_dts_backward_parent_tiled_matches_direct_accum(dtype, atol, rtol, active):
+    args = _parent_tiled_fixture(dtype, active)
+    base_rhs = torch.zeros_like(args["Pi"])
+    tiled_rhs = torch.zeros_like(args["Pi"])
+    base_pD = torch.zeros(1, device=args["Pi"].device, dtype=dtype)
+    base_pS = torch.zeros(1, device=args["Pi"].device, dtype=dtype)
+    tiled_pD = torch.zeros(1, device=args["Pi"].device, dtype=dtype)
+    tiled_pS = torch.zeros(1, device=args["Pi"].device, dtype=dtype)
+
+    base = dts_cross_backward_accum_fused(
+        args["Pi"],
+        args["Pibar"],
+        args["v_k"],
+        args["ws"],
+        args["sl"],
+        args["sr"],
+        args["reduce_idx"],
+        args["wlsp"],
+        args["log_pD"],
+        args["log_pS"],
+        args["sp_child1"],
+        args["sp_child2"],
+        base_rhs,
+        args["S"],
+        active_mask=args["active_mask"],
+        merge_s_term=True,
+        grad_log_pD=base_pD,
+        grad_log_pS=base_pS,
+        accum_param_reductions=True,
+        output_pibar_ud=True,
+        mt_squeezed=args["mt"],
+        pibar_row_max=args["row_max"],
+    )
+    tiled = dts_cross_backward_accum_parent_tiled_fused(
+        args["Pi"],
+        args["Pibar"],
+        args["v_k"],
+        args["ws"],
+        args["sl"],
+        args["sr"],
+        args["reduce_idx"],
+        args["wlsp"],
+        args["n_eq1"],
+        args["ge2_ptr"],
+        args["ge2_parent_ids"],
+        args["log_pD"],
+        args["log_pS"],
+        args["sp_child1"],
+        args["sp_child2"],
+        tiled_rhs,
+        args["S"],
+        active_mask=args["active_mask"],
+        grad_log_pD=tiled_pD,
+        grad_log_pS=tiled_pS,
+        mt_squeezed=args["mt"],
+        pibar_row_max=args["row_max"],
+        tile_splits=2,
+        ge2_max_fanout=args["ge2_max_fanout"],
+    )
+    torch.cuda.synchronize()
+
+    torch.testing.assert_close(tiled_rhs, base_rhs, atol=atol, rtol=rtol)
+    torch.testing.assert_close(tiled[0], base[0], atol=atol, rtol=rtol)
+    torch.testing.assert_close(tiled[1], base[1], atol=atol, rtol=rtol)
+    torch.testing.assert_close(tiled_pD, base_pD, atol=atol, rtol=rtol)
+    torch.testing.assert_close(tiled_pS, base_pS, atol=atol, rtol=rtol)
+    assert tiled[2] is None and tiled[3] is None
+
+
+@pytest.mark.parametrize("dtype,atol,rtol", [(torch.float32, 5e-5, 5e-5), (torch.float64, 1e-9, 1e-10)])
+@pytest.mark.parametrize("active", [False, True])
+def test_dts_backward_parent_tiled_staged_pibar_ud_matches_direct(dtype, atol, rtol, active):
+    args = _parent_tiled_fixture(dtype, active)
+    base_rhs = torch.zeros_like(args["Pi"])
+    tiled_rhs = torch.zeros_like(args["Pi"])
+    base_mt = torch.zeros(args["S"], device=args["Pi"].device, dtype=dtype)
+    tiled_mt = torch.zeros(args["S"], device=args["Pi"].device, dtype=dtype)
+    base_pD = torch.zeros(1, device=args["Pi"].device, dtype=dtype)
+    base_pS = torch.zeros(1, device=args["Pi"].device, dtype=dtype)
+    tiled_pD = torch.zeros(1, device=args["Pi"].device, dtype=dtype)
+    tiled_pS = torch.zeros(1, device=args["Pi"].device, dtype=dtype)
+
+    base = dts_cross_backward_accum_fused(
+        args["Pi"],
+        args["Pibar"],
+        args["v_k"],
+        args["ws"],
+        args["sl"],
+        args["sr"],
+        args["reduce_idx"],
+        args["wlsp"],
+        args["log_pD"],
+        args["log_pS"],
+        args["sp_child1"],
+        args["sp_child2"],
+        base_rhs,
+        args["S"],
+        active_mask=args["active_mask"],
+        merge_s_term=True,
+        grad_log_pD=base_pD,
+        grad_log_pS=base_pS,
+        accum_param_reductions=True,
+        grad_mt=base_mt,
+        accum_mt_reduction=True,
+        output_pibar_ud=True,
+        mt_squeezed=args["mt"],
+        pibar_row_max=args["row_max"],
+    )
+    tiled = dts_cross_backward_accum_parent_tiled_fused(
+        args["Pi"],
+        args["Pibar"],
+        args["v_k"],
+        args["ws"],
+        args["sl"],
+        args["sr"],
+        args["reduce_idx"],
+        args["wlsp"],
+        args["n_eq1"],
+        args["ge2_ptr"],
+        args["ge2_parent_ids"],
+        args["log_pD"],
+        args["log_pS"],
+        args["sp_child1"],
+        args["sp_child2"],
+        tiled_rhs,
+        args["S"],
+        active_mask=args["active_mask"],
+        grad_log_pD=tiled_pD,
+        grad_log_pS=tiled_pS,
+        tile_splits=2,
+        grad_mt=tiled_mt,
+        accum_mt_reduction=True,
+        mt_squeezed=args["mt"],
+        pibar_row_max=args["row_max"],
+        ge2_max_fanout=args["ge2_max_fanout"],
+    )
+    torch.cuda.synchronize()
+
+    torch.testing.assert_close(tiled_rhs, base_rhs, atol=atol, rtol=rtol)
+    torch.testing.assert_close(tiled_mt, base_mt, atol=atol, rtol=rtol)
+    torch.testing.assert_close(tiled[0], base[0], atol=atol, rtol=rtol)
+    torch.testing.assert_close(tiled[1], base[1], atol=atol, rtol=rtol)
+    torch.testing.assert_close(tiled_pD, base_pD, atol=atol, rtol=rtol)
+    torch.testing.assert_close(tiled_pS, base_pS, atol=atol, rtol=rtol)
+    assert tiled[2] is None and tiled[3] is None
 
 
 @pytest.mark.parametrize("dtype,atol,rtol", [(torch.float32, 2e-5, 2e-5), (torch.float64, 1e-10, 1e-10)])
