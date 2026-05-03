@@ -1091,6 +1091,10 @@ def _dts_cross_backward_accum_kernel(
     grad_log_pD_ptr,      # optional scalar accumulation target
     grad_log_pS_ptr,      # optional scalar accumulation target
     grad_mt_ptr,          # optional scalar/[S] accumulation target
+    pibar_ud_ptr,         # optional [2 * n_ws, S] initial Pibar VJP subtree values
+    pibar_A_ptr,          # optional [2 * n_ws] row sums of pibar_ud
+    mt_ptr,               # optional [S] max transfer mat for Pibar denom reuse
+    pibar_row_max_ptr,    # optional [C] Pi-row max from forward uniform Pibar
     # Dimensions
     ws,                # wave start offset (parent row = ws + reduce_idx)
     S: tl.constexpr,
@@ -1103,6 +1107,7 @@ def _dts_cross_backward_accum_kernel(
     ACCUM_PARAM_REDUCTIONS: tl.constexpr,
     ACCUM_MT_REDUCTION: tl.constexpr,
     GRAD_MT_SCALAR: tl.constexpr,
+    OUTPUT_PIBAR_UD: tl.constexpr,
     DTYPE: tl.constexpr,
 ):
     """DTS cross-clade backward with direct accumulation of Pi adjoints.
@@ -1125,17 +1130,26 @@ def _dts_cross_backward_accum_kernel(
         parent_active = tl.load(active_mask_ptr + parent_w)
         if parent_active == 0:
             out_base = i * S
+            ud_l_base = i * S
+            ud_r_base = (tl.program_id(0) + 0 + tl.num_programs(0)) * S
             zero_scalar = tl.zeros((1,), dtype=DTYPE)
             _scalar_off = tl.arange(0, 1)
             if not ACCUM_PARAM_REDUCTIONS:
                 tl.store(param_pD_ptr + i + _scalar_off, zero_scalar)
                 tl.store(param_pS_ptr + i + _scalar_off, zero_scalar)
+            if OUTPUT_PIBAR_UD:
+                tl.store(pibar_A_ptr + i + _scalar_off, zero_scalar)
+                tl.store(pibar_A_ptr + tl.num_programs(0) + i + _scalar_off, zero_scalar)
             for s_start in range(0, S, BLOCK_S):
                 s_offs = s_start + tl.arange(0, BLOCK_S)
                 mask = s_offs < S
                 zero = tl.zeros([BLOCK_S], dtype=DTYPE)
-                tl.store(grad_Pibar_l_ptr + out_base + s_offs, zero, mask=mask)
-                tl.store(grad_Pibar_r_ptr + out_base + s_offs, zero, mask=mask)
+                if OUTPUT_PIBAR_UD:
+                    tl.store(pibar_ud_ptr + ud_l_base + s_offs, zero, mask=mask)
+                    tl.store(pibar_ud_ptr + ud_r_base + s_offs, zero, mask=mask)
+                else:
+                    tl.store(grad_Pibar_l_ptr + out_base + s_offs, zero, mask=mask)
+                    tl.store(grad_Pibar_r_ptr + out_base + s_offs, zero, mask=mask)
             return
     else:
         parent_active = True
@@ -1157,7 +1171,12 @@ def _dts_cross_backward_accum_kernel(
 
     sum_pD = tl.zeros((1,), dtype=DTYPE)
     sum_pS = tl.zeros((1,), dtype=DTYPE)
+    sum_ud_l = tl.zeros((1,), dtype=DTYPE)
+    sum_ud_r = tl.zeros((1,), dtype=DTYPE)
     _scalar_off = tl.arange(0, 1)
+    if OUTPUT_PIBAR_UD:
+        row_max_l = tl.load(pibar_row_max_ptr + sl).to(DTYPE)
+        row_max_r = tl.load(pibar_row_max_ptr + sr).to(DTYPE)
 
     for s_start in range(0, S, BLOCK_S):
         s_offs = s_start + tl.arange(0, BLOCK_S)
@@ -1210,8 +1229,29 @@ def _dts_cross_backward_accum_kernel(
             pi_r_cur = tl.load(pi_r_out, mask=mask, other=0.0)
             tl.store(pi_l_out, pi_l_cur + vd0 + vd1, mask=mask)
             tl.store(pi_r_out, pi_r_cur + vd0 + vd2, mask=mask)
-        tl.store(grad_Pibar_l_ptr + out_base + s_offs, vd2, mask=valid_mask)
-        tl.store(grad_Pibar_r_ptr + out_base + s_offs, vd1, mask=valid_mask)
+        if OUTPUT_PIBAR_UD:
+            mt = tl.load(mt_ptr + s_offs, mask=valid_mask, other=0.0).to(DTYPE)
+            finite_l = (Pibar_l > -1e29) & mask
+            finite_r = (Pibar_r > -1e29) & mask
+            inv_denom_l = tl.where(
+                finite_l,
+                tl.exp2(row_max_l + mt - Pibar_l),
+                tl.zeros([BLOCK_S], dtype=DTYPE),
+            )
+            inv_denom_r = tl.where(
+                finite_r,
+                tl.exp2(row_max_r + mt - Pibar_r),
+                tl.zeros([BLOCK_S], dtype=DTYPE),
+            )
+            ud_l = vd2 * inv_denom_l
+            ud_r = vd1 * inv_denom_r
+            tl.store(pibar_ud_ptr + i * S + s_offs, ud_l, mask=valid_mask)
+            tl.store(pibar_ud_ptr + (tl.num_programs(0) + i) * S + s_offs, ud_r, mask=valid_mask)
+            sum_ud_l += tl.sum(tl.where(mask, ud_l, 0.0), axis=0)
+            sum_ud_r += tl.sum(tl.where(mask, ud_r, 0.0), axis=0)
+        else:
+            tl.store(grad_Pibar_l_ptr + out_base + s_offs, vd2, mask=valid_mask)
+            tl.store(grad_Pibar_r_ptr + out_base + s_offs, vd1, mask=valid_mask)
 
         sum_pD += tl.sum(vd0, axis=0)
         sum_pS += tl.sum(vd3 + vd4, axis=0)
@@ -1257,6 +1297,9 @@ def _dts_cross_backward_accum_kernel(
     else:
         tl.store(param_pD_ptr + i + _scalar_off, sum_pD)
         tl.store(param_pS_ptr + i + _scalar_off, sum_pS)
+    if OUTPUT_PIBAR_UD:
+        tl.store(pibar_A_ptr + i + _scalar_off, sum_ud_l)
+        tl.store(pibar_A_ptr + tl.num_programs(0) + i + _scalar_off, sum_ud_r)
 
     if not MERGE_S_TERM:
         for s_start in range(0, S, BLOCK_S):
@@ -1321,6 +1364,9 @@ def dts_cross_backward_accum_fused(
     grad_mt=None,
     accum_param_reductions=False,
     accum_mt_reduction=False,
+    output_pibar_ud=False,
+    mt_squeezed=None,
+    pibar_row_max=None,
 ):
     """Fused DTS backward with direct Pi-adjoint accumulation."""
     n_ws = sl.shape[0]
@@ -1341,16 +1387,35 @@ def dts_cross_backward_accum_fused(
         raise ValueError("grad_mt is required when accumulating DTS mt reductions")
     if accum_mt_reduction and grad_mt.numel() not in (1, S):
         raise ValueError("DTS mt reduction target must have one element or S elements")
+    if output_pibar_ud and (mt_squeezed is None or pibar_row_max is None):
+        raise ValueError("mt_squeezed and pibar_row_max are required when outputting Pibar u_d")
+    if output_pibar_ud and mt_squeezed.numel() != S:
+        raise ValueError("mt_squeezed must have S elements when outputting Pibar u_d")
+    if output_pibar_ud and pibar_row_max.numel() < Pi_star.shape[0]:
+        raise ValueError("pibar_row_max must contain one row-max value per Pi row")
 
-    grad_Pibar_l = torch.empty((n_ws, S), device=device, dtype=dtype)
-    grad_Pibar_r = torch.empty((n_ws, S), device=device, dtype=dtype)
+    grad_Pibar_l = None if output_pibar_ud else torch.empty((n_ws, S), device=device, dtype=dtype)
+    grad_Pibar_r = None if output_pibar_ud else torch.empty((n_ws, S), device=device, dtype=dtype)
+    pibar_ud = torch.empty((2 * n_ws, S), device=device, dtype=dtype) if output_pibar_ud else None
+    pibar_A = torch.empty((2 * n_ws,), device=device, dtype=dtype) if output_pibar_ud else None
     param_pD = None if accum_param_reductions else torch.empty(n_ws, device=device, dtype=dtype)
     param_pS = None if accum_param_reductions else torch.empty(n_ws, device=device, dtype=dtype)
     param_pD_arg = grad_log_pD if accum_param_reductions else param_pD
     param_pS_arg = grad_log_pS if accum_param_reductions else param_pS
-    grad_log_pD_arg = grad_log_pD if accum_param_reductions else grad_Pibar_l
-    grad_log_pS_arg = grad_log_pS if accum_param_reductions else grad_Pibar_l
-    grad_mt_arg = grad_mt if accum_mt_reduction else grad_Pibar_l
+    dummy = pibar_ud if output_pibar_ud else grad_Pibar_l
+    grad_log_pD_arg = grad_log_pD if accum_param_reductions else dummy
+    grad_log_pS_arg = grad_log_pS if accum_param_reductions else dummy
+    grad_mt_arg = grad_mt if accum_mt_reduction else dummy
+    pibar_ud_arg = pibar_ud if output_pibar_ud else dummy
+    pibar_A_arg = pibar_A if output_pibar_ud else dummy
+    mt_arg = mt_squeezed.contiguous() if output_pibar_ud and not mt_squeezed.is_contiguous() else mt_squeezed
+    pibar_row_max_arg = (
+        pibar_row_max.contiguous()
+        if output_pibar_ud and not pibar_row_max.is_contiguous()
+        else pibar_row_max
+    )
+    mt_arg = mt_arg if output_pibar_ud else dummy
+    pibar_row_max_arg = pibar_row_max_arg if output_pibar_ud else dummy
     grad_mt_scalar = bool(accum_mt_reduction and grad_mt.numel() == 1)
 
     stride_C = Pi_star.stride(0)
@@ -1364,9 +1429,11 @@ def dts_cross_backward_accum_fused(
         log_pD_arg, log_pS_arg,
         sp_child1, sp_child2,
         accumulated_rhs,
-        grad_Pibar_l, grad_Pibar_r,
+        grad_Pibar_l if grad_Pibar_l is not None else pibar_ud,
+        grad_Pibar_r if grad_Pibar_r is not None else pibar_ud,
         param_pD_arg, param_pS_arg,
         grad_log_pD_arg, grad_log_pS_arg, grad_mt_arg,
+        pibar_ud_arg, pibar_A_arg, mt_arg, pibar_row_max_arg,
         ws, S, stride_C, BLOCK_S,
         USE_ACTIVE_MASK=bool(active_mask is not None),
         USE_ATOMICS=bool(use_atomics),
@@ -1375,9 +1442,12 @@ def dts_cross_backward_accum_fused(
         ACCUM_PARAM_REDUCTIONS=bool(accum_param_reductions),
         ACCUM_MT_REDUCTION=bool(accum_mt_reduction),
         GRAD_MT_SCALAR=bool(grad_mt_scalar),
+        OUTPUT_PIBAR_UD=bool(output_pibar_ud),
         DTYPE=_tl_float_dtype(dtype),
     )
 
+    if output_pibar_ud:
+        return pibar_ud, pibar_A, param_pD, param_pS
     return grad_Pibar_l, grad_Pibar_r, param_pD, param_pS
 
 
@@ -2217,6 +2287,137 @@ def uniform_cross_pibar_vjp_tree_fused(
         USE_ACTIVE_MASK=bool(active_mask is not None),
         USE_ROW_STATS=bool(row_stats is not None),
         USE_PIBAR_DENOM_STATS=bool(use_pibar_denom_stats),
+        DTYPE=_tl_float_dtype(Pi_star.dtype),
+        num_warps=4,
+    )
+
+
+@triton.jit
+def _uniform_cross_pibar_vjp_tree_from_ud_kernel(
+    Pi_star_ptr,          # [C, S]
+    pibar_ud_ptr,         # [2 * n_ws, S], initial subtree values u_d
+    pibar_A_ptr,          # [2 * n_ws], sum_s u_d[s] per split side
+    sl_ptr,               # [n_ws]
+    sr_ptr,               # [n_ws]
+    reduce_idx_ptr,       # [n_ws], used with active_mask_ptr when enabled
+    active_mask_ptr,      # optional [W] bool parent row activity mask
+    pibar_row_max_ptr,    # [C], Pi-row max from forward uniform Pibar
+    sp_child1_ptr,        # [S]
+    sp_child2_ptr,        # [S]
+    level_parents_ptr,    # [N_LEVELS, MAX_LEVEL_WIDTH]
+    accumulated_rhs_ptr,  # [C, S], updated atomically
+    n_ws: tl.constexpr,
+    S: tl.constexpr,
+    stride_C: tl.constexpr,
+    BLOCK_S: tl.constexpr,
+    N_LEVELS: tl.constexpr,
+    MAX_LEVEL_WIDTH: tl.constexpr,
+    USE_ACTIVE_MASK: tl.constexpr,
+    DTYPE: tl.constexpr,
+):
+    """Uniform Pibar VJP tree correction when DTS has already staged u_d."""
+    NEG_LARGE: tl.constexpr = -1e30
+
+    row = tl.program_id(0)
+    split_i = tl.where(row < n_ws, row, row - n_ws)
+    is_right = row >= n_ws
+
+    child_l = tl.load(sl_ptr + split_i)
+    child_r = tl.load(sr_ptr + split_i)
+    child = tl.where(is_right, child_r, child_l)
+    if USE_ACTIVE_MASK:
+        parent_w = tl.load(reduce_idx_ptr + split_i)
+        row_active = tl.load(active_mask_ptr + parent_w)
+        if row_active == 0:
+            return
+    else:
+        row_active = True
+
+    pi_base = child * stride_C
+    row_base = row * S
+    row_max = tl.load(pibar_row_max_ptr + child).to(DTYPE)
+    A = tl.load(pibar_A_ptr + row).to(DTYPE)
+
+    # pibar_ud is intentionally reused in-place as subtree_buf.  It already
+    # contains u_d for each species from the DTS kernel.
+    tl.debug_barrier()
+    for level in range(0, N_LEVELS):
+        for p_start in range(0, MAX_LEVEL_WIDTH, BLOCK_S):
+            p_offs = p_start + tl.arange(0, BLOCK_S)
+            parent = tl.load(
+                level_parents_ptr + level * MAX_LEVEL_WIDTH + p_offs,
+                mask=p_offs < MAX_LEVEL_WIDTH,
+                other=-1,
+            )
+            parent_valid = (parent >= 0) & (parent < S) & row_active
+            c1 = tl.load(sp_child1_ptr + parent, mask=parent_valid, other=S)
+            c2 = tl.load(sp_child2_ptr + parent, mask=parent_valid, other=S)
+            c1_valid = parent_valid & (c1 < S)
+            c2_valid = parent_valid & (c2 < S)
+
+            parent_val = tl.load(pibar_ud_ptr + row_base + parent, mask=parent_valid, other=0.0)
+            c1_val = tl.load(pibar_ud_ptr + row_base + c1, mask=c1_valid, other=0.0)
+            c2_val = tl.load(pibar_ud_ptr + row_base + c2, mask=c2_valid, other=0.0)
+            tl.store(pibar_ud_ptr + row_base + parent, parent_val + c1_val + c2_val, mask=parent_valid)
+        tl.debug_barrier()
+
+    for s_start in range(0, S, BLOCK_S):
+        s_offs = s_start + tl.arange(0, BLOCK_S)
+        valid_mask = s_offs < S
+        mask = valid_mask & row_active
+        pi_val = tl.load(Pi_star_ptr + pi_base + s_offs, mask=mask, other=NEG_LARGE)
+        p_prime = tl.exp2(pi_val - row_max)
+        subtree_sum = tl.load(pibar_ud_ptr + row_base + s_offs, mask=mask, other=0.0)
+        contrib = p_prime * (A - subtree_sum)
+        tl.atomic_add(accumulated_rhs_ptr + pi_base + s_offs, contrib, sem="relaxed", mask=mask)
+
+
+def uniform_cross_pibar_vjp_tree_from_ud_fused(
+    Pi_star,
+    pibar_ud,
+    pibar_A,
+    sl,
+    sr,
+    sp_child1,
+    sp_child2,
+    level_parents,
+    accumulated_rhs,
+    S,
+    active_mask=None,
+    reduce_idx=None,
+    pibar_row_max=None,
+):
+    """Uniform-Pibar VJP tree correction from DTS-staged u_d."""
+    n_ws = sl.shape[0]
+    if n_ws == 0:
+        return
+    if active_mask is not None and reduce_idx is None:
+        raise ValueError("reduce_idx is required when active_mask is provided")
+    if pibar_row_max is None:
+        raise ValueError("pibar_row_max is required for DTS-staged Pibar VJP")
+
+    BLOCK_S = min(256, triton.next_power_of_2(S))
+    stride_C = Pi_star.stride(0)
+    _uniform_cross_pibar_vjp_tree_from_ud_kernel[(2 * n_ws,)](
+        Pi_star,
+        pibar_ud,
+        pibar_A,
+        sl,
+        sr,
+        reduce_idx if reduce_idx is not None else sl,
+        active_mask if active_mask is not None else pibar_ud,
+        pibar_row_max,
+        sp_child1,
+        sp_child2,
+        level_parents,
+        accumulated_rhs,
+        n_ws,
+        S,
+        stride_C,
+        BLOCK_S,
+        N_LEVELS=level_parents.shape[0],
+        MAX_LEVEL_WIDTH=level_parents.shape[1],
+        USE_ACTIVE_MASK=bool(active_mask is not None),
         DTYPE=_tl_float_dtype(Pi_star.dtype),
         num_warps=4,
     )

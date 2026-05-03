@@ -447,6 +447,7 @@ def Pi_wave_backward(
             dts_cross_backward_accum_grouped_fused,
             uniform_cross_pibar_vjp_fused,
             uniform_cross_pibar_vjp_tree_fused,
+            uniform_cross_pibar_vjp_tree_from_ud_fused,
             uniform_cross_pibar_vjp_tree_prefix_fused,
             uniform_cross_pibar_vjp_tree_grouped_fused,
             uniform_cross_pibar_vjp_grouped_tree_fused,
@@ -497,6 +498,12 @@ def Pi_wave_backward(
     ).lower()
     grouped_cross_pibar_use_active = (
         os.environ.get("GPUREC_GROUPED_CROSS_PIBAR_USE_ACTIVE", "1") != "0"
+    )
+    dts_pibar_ud_fusion_enabled = (
+        os.environ.get("GPUREC_DTS_PIBAR_UD_FUSION", "0") != "0"
+    )
+    dts_pibar_ud_min_splits = int(
+        os.environ.get("GPUREC_DTS_PIBAR_UD_MIN_SPLITS", "8192")
     )
     cross_pibar_row_stats_enabled = (
         os.environ.get("GPUREC_CROSS_PIBAR_ROW_STATS", "0") != "0"
@@ -916,6 +923,16 @@ def Pi_wave_backward(
     )
     if reuse_forward_pibar_stats_enabled:
         forward_pibar_row_max = uniform_pibar_row_max.contiguous()
+    elif (
+        dts_pibar_ud_fusion_enabled
+        and uniform_pibar_row_max is not None
+        and torch.is_tensor(uniform_pibar_row_max)
+        and uniform_pibar_row_max.numel() == C
+        and pibar_mode == 'uniform'
+        and device.type == 'cuda'
+        and dtype in (torch.float32, torch.float64)
+    ):
+        forward_pibar_row_max = uniform_pibar_row_max.contiguous()
     if (
         cross_pibar_row_stats_enabled
         and not reuse_forward_pibar_stats_enabled
@@ -1175,6 +1192,7 @@ def Pi_wave_backward(
             used_fused_pibar_vjp = False
             used_fused_direct_pi_accum = False
             used_dts_mt_reduction_accum = False
+            used_dts_pibar_ud_fusion = False
 
             if use_fused and fused_scalar_params:
                 # G=1: pass shared params to fused kernel.
@@ -1240,15 +1258,29 @@ def Pi_wave_backward(
                         reduction_threshold_match = (
                             n_ws >= dts_reduction_accum_min_splits
                         )
+                        pibar_ud_fusion_match = (
+                            dts_pibar_ud_fusion_enabled
+                            and fused_cross_pibar_vjp_enabled
+                            and fused_cross_pibar_vjp_impl == "tree"
+                            and level_parents is not None
+                            and forward_pibar_row_max is not None
+                            and mt_shared is not None
+                            and mt_shared.ndim == 1
+                            and n_ws >= dts_pibar_ud_min_splits
+                        )
                         use_dts_reduction_accum_scalar = (
                             dts_reduction_accum_scalar_enabled
                             and reduction_threshold_match
                         )
                         use_dts_reduction_accum_mt = (
-                            dts_reduction_accum_mt_enabled
-                            and reduction_threshold_match
+                            (
+                                dts_reduction_accum_mt_enabled
+                                and reduction_threshold_match
+                            )
+                            or pibar_ud_fusion_match
                         )
                         used_dts_mt_reduction_accum = use_dts_reduction_accum_mt
+                        used_dts_pibar_ud_fusion = pibar_ud_fusion_match
                         (grad_Pibar_l, grad_Pibar_r,
                          param_pD, param_pS) = dts_cross_backward_accum_fused(
                             Pi_star_wave, Pibar_star_wave, v_k, ws,
@@ -1266,6 +1298,9 @@ def Pi_wave_backward(
                             ),
                             accum_param_reductions=use_dts_reduction_accum_scalar,
                             accum_mt_reduction=use_dts_reduction_accum_mt,
+                            output_pibar_ud=pibar_ud_fusion_match,
+                            mt_squeezed=mt_shared,
+                            pibar_row_max=forward_pibar_row_max,
                         )
                     used_fused_direct_pi_accum = True
                     grad_Pi_l = grad_Pi_r = None
@@ -1384,7 +1419,23 @@ def Pi_wave_backward(
                 and fused_cross_pibar_vjp_enabled
                 and ancestor_cols is not None
             ):
-                if (
+                if used_dts_pibar_ud_fusion:
+                    uniform_cross_pibar_vjp_tree_from_ud_fused(
+                        Pi_star_wave,
+                        grad_Pibar_l,
+                        grad_Pibar_r,
+                        sl,
+                        sr,
+                        sp_child1,
+                        sp_child2,
+                        level_parents,
+                        accumulated_rhs,
+                        S,
+                        active_mask=active_mask_for_kernels,
+                        reduce_idx=reduce_idx,
+                        pibar_row_max=forward_pibar_row_max,
+                    )
+                elif (
                     grouped_cross_pibar_vjp_enabled
                     and fused_cross_pibar_vjp_impl == "tree"
                     and level_parents is not None
