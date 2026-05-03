@@ -549,8 +549,7 @@ The expected win is less certain than the active-mask and DTS-loop proposals.
 2. **Merge the two species loops in `_dts_cross_backward_accum_kernel`.**
    Completed in the proposal 2 follow-up below.
 3. **Remove CUDA scalar-to-Python extraction for `log_pD/log_pS` in DTS backward
-   kernels**. This should reduce sync count and is low-risk if implemented as a
-   device-pointer load.
+   kernels**. Completed in the proposal 3 follow-up below.
 4. **Kernelize/fuse DTS parameter and `grad_mt` reductions**. Start with scalar
    `grad_log_pD/grad_log_pS`; handle `grad_mt` carefully because species-level
    atomic contention may or may not beat the current PyTorch reductions.
@@ -832,3 +831,187 @@ Decision: promote proposal 2. It gives a stable end-to-end improvement and
 reduces the DTS accum bucket by almost `12%` in Nsight Systems. The next DTS
 kernel work should target the new register-pressure/occupancy cost rather than
 more blind fusion.
+
+## Proposal 3 follow-up: DTS scalar parameters stay on device
+
+Proposal 3 removes the per-wave CUDA-scalar extraction for `log_pD` and
+`log_pS` in the fused DTS backward wrappers. Before this change,
+`dts_cross_backward_fused` and `dts_cross_backward_accum_fused` converted the
+two scalar CUDA tensors to Python floats:
+
+```python
+pD_val = float(log_pD) if log_pD.ndim == 0 else float(log_pD.item())
+pS_val = float(log_pS) if log_pS.ndim == 0 else float(log_pS.item())
+```
+
+In the 50-family workload there are 33 split waves. That means the old default
+did two scalar device-to-host extractions per split wave, for 66 tiny D2H
+copies and 66 host-side stream synchronizations in the backward interval.
+
+The new default passes one-element device tensors to the Triton kernels. Each
+split program loads `log_pD` and `log_pS` once with `tl.load`. The old behavior
+is still available for comparison with:
+
+```bash
+GPUREC_DTS_BACKWARD_DEVICE_SCALARS=0
+```
+
+The call sites in `Pi_wave_backward` now pass `log_pD` and `log_pS` directly
+into the scalar-gated fused block instead of indexing `reshape(-1)[0]`. The
+fused wrappers still reject non-scalar tensors through a `numel() == 1` helper,
+so specieswise/genewise parameters continue to use the generic path.
+
+### Subagent workflow
+
+| Role | Task | Result |
+|---|---|---|
+| Static reviewer | Check the scalar-extraction sites and safest API shape | Recommended pointer scalar params, `numel()==1` guard, dtype/device normalization, and preserving the generic fallback |
+| Correctness worker | Test old-vs-new parity for DTS backward wrappers | Passed for fp32/fp64, active-mask on/off, merged S-term on/off |
+| Performance worker | Coordinate profiling plan | Paused before Nsight to avoid concurrent GPU profiling after seeing another worker's large CUDA test process |
+| Supervisor | Implement, test, benchmark, run Nsight Systems and one NCU sample | Default device-scalar path is faster end-to-end by removing exactly 66 sync/copy pairs |
+
+### Correctness
+
+Focused supervisor checks:
+
+| Check | Result |
+|---|---:|
+| `py_compile` over changed files | passed |
+| `tests/kernels/test_dts_backward_accum_kernel.py` | 7 passed |
+| default focused suite | 27 passed |
+| forced old scalar path focused suite | 22 passed |
+
+The new direct kernel tests compare:
+
+- `GPUREC_DTS_BACKWARD_DEVICE_SCALARS=1` against forced fallback `0`;
+- 0-d and `[1]` scalar tensor shapes;
+- fp32 and fp64;
+- `_dts_cross_backward_accum_kernel`;
+- `_dts_cross_backward_kernel`, which is still used by the grouped accum path;
+- inactive parent rows through `active_mask`.
+
+The correctness worker also ran a direct old-vs-new parity script over
+`dts_cross_backward_fused` and `dts_cross_backward_accum_fused`:
+
+| dtype | active mask | merged S-term | max abs diff, non-accum | max abs diff, accum |
+|---|---|---|---:|---:|
+| fp32 | off | off | `0` | `4.66e-10` |
+| fp32 | off | on | `0` | `0` |
+| fp32 | on | off | `0` | `0` |
+| fp32 | on | on | `0` | `0` |
+| fp64 | off | off | `0` | `3.47e-18` |
+| fp64 | off | on | `0` | `0` |
+| fp64 | on | off | `0` | `0` |
+| fp64 | on | on | `0` | `0` |
+
+`tests/kernels/test_wave_backward_kernel.py` still has pre-existing failures:
+the correctness worker saw the same `5 failed, 5 passed` result with the new
+path and with `GPUREC_DTS_BACKWARD_DEVICE_SCALARS=0`, so those failures are not
+attributable to this proposal.
+
+### Timings
+
+Benchmark command:
+
+```bash
+FAMS={10,50} REPS={9,15} WARMUPS=5 python /tmp/gpurec_profile/bench_uniform_backward.py
+```
+
+Supervisor event timings:
+
+| Families | Scalar path | Mean | Median | Min | Peak allocation |
+|---:|---|---:|---:|---:|---:|
+| 10 | old Python scalar extraction | `46.744 ms` | `46.648 ms` | `46.317 ms` | `2.695 GB` |
+| 10 | new device scalar load | `44.159 ms` | `44.155 ms` | `43.635 ms` | `2.695 GB` |
+| 50 | old Python scalar extraction | `149.638 ms` | `149.606 ms` | `147.924 ms` | `10.305 GB` |
+| 50 | new device scalar load | `148.596 ms` | `148.385 ms` | `147.268 ms` | `10.305 GB` |
+
+The 50-family pair was rerun in reverse order:
+
+| Families | Scalar path | Mean | Median | Min |
+|---:|---|---:|---:|---:|
+| 50 | new device scalar load | `147.902 ms` | `147.850 ms` | `146.017 ms` |
+| 50 | old Python scalar extraction | `149.403 ms` | `149.778 ms` | `147.650 ms` |
+
+The 50-family win is therefore about `1.0-1.5 ms`; the 10-family win was
+larger, about `2.5 ms`, because fixed host synchronization costs are a larger
+share of the smaller workload.
+
+### Nsight Systems
+
+Nsight Systems captures:
+
+| Capture | Path |
+|---|---|
+| old scalar extraction | `/tmp/gpurec_profile/d71cf11_device_scalars_old_fams50.nsys-rep` |
+| new device scalar load | `/tmp/gpurec_profile/d71cf11_device_scalars_new_fams50.nsys-rep` |
+
+Single-capture backward event times under Nsight overhead:
+
+| Scalar path | Backward event time | GPU kernel span | Summed kernel time | Kernel launches |
+|---|---:|---:|---:|---:|
+| old Python scalar extraction | `161.802 ms` | `161.522 ms` | `134.370 ms` | 3136 |
+| new device scalar load | `159.916 ms` | `159.745 ms` | `134.712 ms` | 3136 |
+
+The kernel launch count is unchanged. The summed kernel time is essentially the
+same and is slightly higher in this one capture, which is consistent with the
+new path adding two scalar `tl.load`s per split program. The wall-time gain
+comes from host-side dependency removal:
+
+| CUDA API / mem event | Old | New | Delta |
+|---|---:|---:|---:|
+| `cudaStreamSynchronize` calls | 318 | 252 | `-66` |
+| `cudaStreamSynchronize` API time | `118.277 ms` | `116.564 ms` | `-1.713 ms` |
+| `cudaMemcpyAsync` calls | 640 | 574 | `-66` |
+| D2H copy events | 260 | 194 | `-66` |
+| D2H GPU copy time | `0.227 ms` | `0.171 ms` | `-0.056 ms` |
+| D2H bytes | `33.191 KB` | `32.927 KB` | `-264 B` |
+| `cudaLaunchKernel` calls | 2835 | 2835 | `0` |
+
+The `-66` deltas are exactly `2 * 33 split waves`, which confirms that these
+were the `log_pD/log_pS` scalar extractions.
+
+The DTS accum kernel bucket did not improve:
+
+| Scalar path | `_dts_cross_backward_accum_kernel` total | Launches | Max launch |
+|---|---:|---:|---:|
+| old Python scalar extraction | `26.131 ms` | 33 | `4.306 ms` |
+| new device scalar load | `26.409 ms` | 33 | `4.356 ms` |
+
+That is expected. This proposal does not reduce DTS math or memory traffic; it
+moves scalar parameter access from the host into the kernel. The right success
+metric is synchronization/copy count and end-to-end wall time, not the DTS
+kernel bucket.
+
+### Nsight Compute
+
+NCU was run on the largest DTS accum launch, using `--launch-skip 4` under the
+CUDA profiler range:
+
+| Metric | Old Python scalar extraction | New device scalar load |
+|---|---:|---:|
+| Duration | `4.368 ms` | `4.413 ms` |
+| DRAM read | `2.026 GB` | `2.027 GB` |
+| DRAM write | `1.319 GB` | `1.319 GB` |
+| DRAM throughput | `76.0%` | `75.3%` |
+| SM throughput | `23.9%` | `23.7%` |
+| L2 throughput | `51.3%` | `51.3%` |
+| Registers/thread | 78 | 72 |
+| Register occupancy limit | 6 blocks/SM | 7 blocks/SM |
+| Achieved occupancy | `49.6%` | `58.0%` |
+| Eligible warps/scheduler | `0.149` | `0.161` |
+| Global RED ops | `15.93 M` | `15.93 M` |
+| Constant-cache requests | 2527 | 2546 |
+
+The NCU sample confirms that the kernel resource profile is basically the same.
+The new path adds only a tiny scalar-load footprint: constant-cache requests
+increase by 19 on this launch, while bulk DRAM traffic and global reductions
+are unchanged. The measured single-launch duration is about `1%` slower under
+NCU replay, but the end-to-end Nsight Systems interval is still faster because
+66 host synchronization points are gone.
+
+Decision: promote proposal 3. It is a low-risk cleanup, improves the measured
+50-family backward by about `1-1.5 ms`, improves the 10-family case more, and
+removes exactly the synchronization/copy pattern it targeted. The next ranked
+proposal should move to DTS parameter and `grad_mt` reductions; proposal 3 does
+not change the remaining PyTorch reduction bucket.
