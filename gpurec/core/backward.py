@@ -967,6 +967,83 @@ def Pi_wave_backward(
         and device.type == 'cuda'
         and S > 256
     )
+    scratch_pool_requested = (
+        os.environ.get("GPUREC_BACKWARD_SCRATCH_POOL", "0") != "0"
+    )
+    scratch_pool_scope_env = os.environ.get(
+        "GPUREC_BACKWARD_SCRATCH_POOL_SCOPES",
+        os.environ.get("GPUREC_BACKWARD_SCRATCH_POOL_SCOPE", "all"),
+    ).strip().lower()
+    if scratch_pool_scope_env in ("", "1", "true", "yes", "on"):
+        scratch_pool_scope_env = "all"
+    scratch_pool_scopes = {
+        scope.strip()
+        for scope in scratch_pool_scope_env.replace(";", ",").split(",")
+        if scope.strip()
+    }
+    scratch_pool_all_scopes = (
+        "all" in scratch_pool_scopes or "*" in scratch_pool_scopes
+    )
+
+    def _scratch_scope_enabled(*names):
+        return scratch_pool_all_scopes or any(name in scratch_pool_scopes for name in names)
+
+    scratch_pool_enabled = (
+        scratch_pool_requested
+        and can_use_fused_uniform_backward
+        and _auto_wrapped
+        and "none" not in scratch_pool_scopes
+    )
+    scratch_pool = None
+    if scratch_pool_enabled:
+        max_wave_W = max((int(meta.get('W', 0)) for meta in wave_metas), default=0)
+        max_dts_splits = max(
+            (
+                int(meta['sl'].numel())
+                for meta in wave_metas
+                if meta.get('has_splits') and torch.is_tensor(meta.get('sl'))
+            ),
+            default=0,
+        )
+        scratch_pool = {}
+        if max_wave_W > 0 and _scratch_scope_enabled("self", "wave", "self_loop"):
+            scratch_pool["wave"] = {
+                name: torch.empty((max_wave_W, S), device=device, dtype=dtype)
+                for name in (
+                    "v_k",
+                    "aw0",
+                    "aw1",
+                    "aw345",
+                    "aw4",
+                    "spec_buf",
+                    "term_buf",
+                )
+            }
+        dts_scratch = {}
+        if max_dts_splits > 0 and _scratch_scope_enabled("dts", "dts_ud", "pibar_ud"):
+            dts_scratch["pibar_ud"] = torch.empty(
+                (2 * max_dts_splits, S), device=device, dtype=dtype
+            )
+            dts_scratch["pibar_A"] = torch.empty(
+                (2 * max_dts_splits,), device=device, dtype=dtype
+            )
+            dts_scratch["pibar_side_active"] = torch.empty(
+                (2 * max_dts_splits,), device=device, dtype=torch.bool
+            )
+        if (
+            max_dts_splits > 0
+            and dts_grad_mt_two_stage_enabled
+            and _scratch_scope_enabled("dts", "grad_mt", "dts_grad_mt")
+        ):
+            mt_tile_splits = max(1, int(dts_grad_mt_two_stage_tile_splits))
+            max_grad_mt_tiles = (max_dts_splits + mt_tile_splits - 1) // mt_tile_splits
+            dts_scratch["grad_mt_partial"] = torch.empty(
+                (max_grad_mt_tiles, S), device=device, dtype=dtype
+            )
+        if dts_scratch:
+            scratch_pool["dts"] = dts_scratch
+        if not scratch_pool:
+            scratch_pool = None
 
     # Shared/global mode has one parameter/E row for every clade.  Keeping the
     # constants as [S] avoids materializing several [C, S] copies before the
@@ -1349,6 +1426,7 @@ def Pi_wave_backward(
                 active_mask=active_mask_for_wave_kernel,
                 sp_parent=sp_parent_wave,
                 pibar_row_max=forward_pibar_row_max,
+                scratch=scratch_pool.get("wave") if scratch_pool is not None else None,
             )
 
             if accum_param_grads is None:
@@ -1613,6 +1691,11 @@ def Pi_wave_backward(
                                 ),
                                 grad_mt_two_stage_tile_splits=(
                                     dts_grad_mt_two_stage_tile_splits
+                                ),
+                                scratch=(
+                                    scratch_pool.get("dts")
+                                    if scratch_pool is not None
+                                    else None
                                 ),
                             )
                             if (

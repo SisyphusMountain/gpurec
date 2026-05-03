@@ -48,6 +48,21 @@ def _dts_scalar_param_args(log_pD, log_pS, *, device, dtype):
     return _extract(log_pD), _extract(log_pS), False
 
 
+def _scratch_view(scratch, name, shape, *, device, dtype):
+    """Return a contiguous leading slice from caller-owned scratch if valid."""
+    if not isinstance(scratch, dict):
+        return None
+    buf = scratch.get(name)
+    if not torch.is_tensor(buf):
+        return None
+    if buf.device != device or buf.dtype != dtype or buf.ndim != len(shape):
+        return None
+    if any(int(buf.shape[i]) < int(shape[i]) for i in range(len(shape))):
+        return None
+    view = buf[tuple(slice(0, int(dim)) for dim in shape)]
+    return view if view.is_contiguous() else None
+
+
 @triton.jit
 def _active_mask_from_rhs_absmax_kernel(
     rhs_ptr,          # [W, S]
@@ -655,6 +670,7 @@ def wave_backward_uniform_fused(
     active_mask=None,
     sp_parent=None,
     pibar_row_max=None,
+    scratch=None,
 ):
     """Fused backward: precompute + Neumann + param VJP in one kernel per wave.
 
@@ -723,24 +739,44 @@ def wave_backward_uniform_fused(
         and pibar_row_max is not None
     )
 
-    v_k = torch.empty((W, S), device=device, dtype=dtype)
-    aw0 = torch.empty((W, S), device=device, dtype=dtype)
-    aw1 = torch.empty((W, S), device=device, dtype=dtype)
+    scratch_shape = (W, S)
+
+    v_k = _scratch_view(scratch, "v_k", scratch_shape, device=device, dtype=dtype)
+    if v_k is None:
+        v_k = torch.empty(scratch_shape, device=device, dtype=dtype)
+    aw0 = _scratch_view(scratch, "aw0", scratch_shape, device=device, dtype=dtype)
+    if aw0 is None:
+        aw0 = torch.empty(scratch_shape, device=device, dtype=dtype)
+    aw1 = _scratch_view(scratch, "aw1", scratch_shape, device=device, dtype=dtype)
+    if aw1 is None:
+        aw1 = torch.empty(scratch_shape, device=device, dtype=dtype)
     need_pibar_denom_scratch = not (
         accum_enabled and (compact_pibar_scratch or recompute_pibar_denom)
     )
-    aw2 = (
-        torch.empty((W, S), device=device, dtype=dtype)
-        if need_pibar_denom_scratch else aw0
-    )
-    aw345 = torch.empty((W, S), device=device, dtype=dtype)
-    aw3 = (
-        torch.empty((W, S), device=device, dtype=dtype)
-        if need_pibar_denom_scratch else aw0
-    )
-    aw4 = torch.empty((W, S), device=device, dtype=dtype)
-    spec_buf = torch.empty((W, S), device=device, dtype=dtype)
-    term_buf = torch.empty((W, S), device=device, dtype=dtype)
+    if need_pibar_denom_scratch:
+        aw2 = _scratch_view(scratch, "aw2", scratch_shape, device=device, dtype=dtype)
+        if aw2 is None:
+            aw2 = torch.empty(scratch_shape, device=device, dtype=dtype)
+    else:
+        aw2 = aw0
+    aw345 = _scratch_view(scratch, "aw345", scratch_shape, device=device, dtype=dtype)
+    if aw345 is None:
+        aw345 = torch.empty(scratch_shape, device=device, dtype=dtype)
+    if need_pibar_denom_scratch:
+        aw3 = _scratch_view(scratch, "aw3", scratch_shape, device=device, dtype=dtype)
+        if aw3 is None:
+            aw3 = torch.empty(scratch_shape, device=device, dtype=dtype)
+    else:
+        aw3 = aw0
+    aw4 = _scratch_view(scratch, "aw4", scratch_shape, device=device, dtype=dtype)
+    if aw4 is None:
+        aw4 = torch.empty(scratch_shape, device=device, dtype=dtype)
+    spec_buf = _scratch_view(scratch, "spec_buf", scratch_shape, device=device, dtype=dtype)
+    if spec_buf is None:
+        spec_buf = torch.empty(scratch_shape, device=device, dtype=dtype)
+    term_buf = _scratch_view(scratch, "term_buf", scratch_shape, device=device, dtype=dtype)
+    if term_buf is None:
+        term_buf = torch.empty(scratch_shape, device=device, dtype=dtype)
 
     if leaf_term_wt is None:
         if not use_leaf_index:
@@ -1488,6 +1524,7 @@ def dts_cross_backward_accum_fused(
     pibar_row_max=None,
     grad_mt_two_stage=False,
     grad_mt_two_stage_tile_splits=128,
+    scratch=None,
 ):
     """Fused DTS backward with direct Pi-adjoint accumulation."""
     n_ws = sl.shape[0]
@@ -1517,17 +1554,54 @@ def dts_cross_backward_accum_fused(
     if output_pibar_side_active and not output_pibar_ud:
         raise ValueError("output_pibar_side_active requires output_pibar_ud")
 
-    grad_Pibar_l = None if output_pibar_ud else torch.empty((n_ws, S), device=device, dtype=dtype)
-    grad_Pibar_r = None if output_pibar_ud else torch.empty((n_ws, S), device=device, dtype=dtype)
-    pibar_ud = torch.empty((2 * n_ws, S), device=device, dtype=dtype) if output_pibar_ud else None
-    pibar_A = torch.empty((2 * n_ws,), device=device, dtype=dtype) if output_pibar_ud else None
+    if output_pibar_ud:
+        grad_Pibar_l = None
+        grad_Pibar_r = None
+    else:
+        grad_Pibar_l = _scratch_view(
+            scratch, "grad_Pibar_l", (n_ws, S), device=device, dtype=dtype
+        )
+        if grad_Pibar_l is None:
+            grad_Pibar_l = torch.empty((n_ws, S), device=device, dtype=dtype)
+        grad_Pibar_r = _scratch_view(
+            scratch, "grad_Pibar_r", (n_ws, S), device=device, dtype=dtype
+        )
+        if grad_Pibar_r is None:
+            grad_Pibar_r = torch.empty((n_ws, S), device=device, dtype=dtype)
+    if output_pibar_ud:
+        pibar_ud = _scratch_view(
+            scratch, "pibar_ud", (2 * n_ws, S), device=device, dtype=dtype
+        )
+        if pibar_ud is None:
+            pibar_ud = torch.empty((2 * n_ws, S), device=device, dtype=dtype)
+        pibar_A = _scratch_view(
+            scratch, "pibar_A", (2 * n_ws,), device=device, dtype=dtype
+        )
+        if pibar_A is None:
+            pibar_A = torch.empty((2 * n_ws,), device=device, dtype=dtype)
+    else:
+        pibar_ud = None
+        pibar_A = None
     pibar_side_active = (
-        torch.empty((2 * n_ws,), device=device, dtype=torch.bool)
+        _scratch_view(
+            scratch, "pibar_side_active", (2 * n_ws,),
+            device=device, dtype=torch.bool
+        )
         if output_pibar_side_active
         else None
     )
-    param_pD = None if accum_param_reductions else torch.empty(n_ws, device=device, dtype=dtype)
-    param_pS = None if accum_param_reductions else torch.empty(n_ws, device=device, dtype=dtype)
+    if output_pibar_side_active and pibar_side_active is None:
+        pibar_side_active = torch.empty((2 * n_ws,), device=device, dtype=torch.bool)
+    if accum_param_reductions:
+        param_pD = None
+        param_pS = None
+    else:
+        param_pD = _scratch_view(scratch, "param_pD", (n_ws,), device=device, dtype=dtype)
+        if param_pD is None:
+            param_pD = torch.empty(n_ws, device=device, dtype=dtype)
+        param_pS = _scratch_view(scratch, "param_pS", (n_ws,), device=device, dtype=dtype)
+        if param_pS is None:
+            param_pS = torch.empty(n_ws, device=device, dtype=dtype)
     param_pD_arg = grad_log_pD if accum_param_reductions else param_pD
     param_pS_arg = grad_log_pS if accum_param_reductions else param_pS
     dummy = pibar_ud if output_pibar_ud else grad_Pibar_l
@@ -1554,11 +1628,16 @@ def dts_cross_backward_accum_fused(
     )
     grad_mt_two_stage_tile_splits = max(1, int(grad_mt_two_stage_tile_splits))
     n_grad_mt_tiles = triton.cdiv(n_ws, grad_mt_two_stage_tile_splits)
-    grad_mt_partial = (
-        torch.zeros((n_grad_mt_tiles, S), device=device, dtype=dtype)
-        if use_grad_mt_two_stage
-        else dummy
-    )
+    if use_grad_mt_two_stage:
+        grad_mt_partial = _scratch_view(
+            scratch, "grad_mt_partial", (n_grad_mt_tiles, S),
+            device=device, dtype=dtype
+        )
+        if grad_mt_partial is None:
+            grad_mt_partial = torch.empty((n_grad_mt_tiles, S), device=device, dtype=dtype)
+        grad_mt_partial.zero_()
+    else:
+        grad_mt_partial = dummy
 
     stride_C = Pi_star.stride(0)
     BLOCK_S = min(256, triton.next_power_of_2(S))

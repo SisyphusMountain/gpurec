@@ -888,6 +888,12 @@ def test_dts_staged_grad_mt_two_stage_matches_vector_atomics(dtype, atol, rtol, 
     atomic_pS = torch.zeros(1, device=device, dtype=dtype)
     two_stage_pD = torch.zeros(1, device=device, dtype=dtype)
     two_stage_pS = torch.zeros(1, device=device, dtype=dtype)
+    two_stage_scratch = {
+        "pibar_ud": torch.empty((2 * N + 4, S), device=device, dtype=dtype),
+        "pibar_A": torch.empty((2 * N + 4,), device=device, dtype=dtype),
+        "pibar_side_active": torch.empty((2 * N + 4,), device=device, dtype=torch.bool),
+        "grad_mt_partial": torch.empty(((N + 2) // 3 + 2, S), device=device, dtype=dtype),
+    }
 
     atomic = dts_cross_backward_accum_fused(
         Pi,
@@ -944,6 +950,7 @@ def test_dts_staged_grad_mt_two_stage_matches_vector_atomics(dtype, atol, rtol, 
         pibar_row_max=row_max,
         grad_mt_two_stage=True,
         grad_mt_two_stage_tile_splits=3,
+        scratch=two_stage_scratch,
     )
     torch.cuda.synchronize()
 

@@ -2079,6 +2079,149 @@ Risks:
 - this should not be attempted before a liveness table is written for each
   wave phase.
 
+### Proposal 7 test report: named scratch pool
+
+The 3-agent + supervisor pass implemented and tested a conservative named
+scratch pool.  This is not a phase-overlaid slab allocator.  Each pooled tensor
+has a distinct name and storage, and wrappers only take a leading contiguous
+view if the caller-owned buffer has the right device, dtype, rank, and shape.
+
+Environment gates:
+
+```text
+GPUREC_BACKWARD_SCRATCH_POOL=1
+GPUREC_BACKWARD_SCRATCH_POOL_SCOPES=all|wave|self|dts|dts_ud|pibar_ud|grad_mt
+```
+
+Default behavior is unchanged.  With the flag disabled, wrappers keep using
+ordinary `torch.empty`/`torch.zeros`.
+
+Implementation:
+
+- `wave_backward_uniform_fused` accepts an optional scratch dictionary for
+  self-loop buffers.
+- `dts_cross_backward_accum_fused` accepts an optional scratch dictionary for
+  staged DTS/Pibar buffers.
+- `Pi_wave_backward` preallocates max-sized scratch buffers once per backward
+  call when `GPUREC_BACKWARD_SCRATCH_POOL=1`.
+- The current default fused-param path aliases `aw2` and `aw3` to `aw0`, so the
+  pool only preallocates `v_k`, `aw0`, `aw1`, `aw345`, `aw4`, `spec_buf`, and
+  `term_buf` for the self-loop.
+- The DTS scratch pool can hold `pibar_ud`, `pibar_A`, `pibar_side_active`, and
+  the Proposal 6 `grad_mt_partial` buffer.
+- `grad_mt_partial` is explicitly zeroed before the DTS kernel because it is an
+  atomic accumulation target.
+
+Liveness table for the tested current-best path:
+
+| phase | live scratch | can reuse after |
+|---|---|---|
+| self-loop Neumann/VJP | `v_k`, self-loop scratch buffers | self-loop kernel completes, except `v_k` |
+| DTS backward accumulation | `v_k`, `pibar_ud`, `pibar_A`, optional `pibar_side_active`, optional `grad_mt_partial` | DTS kernel and Proposal 6 reduction complete, except `pibar_ud`/`pibar_A` |
+| from-`u_d` Pibar VJP | `pibar_ud`, `pibar_A`, optional `pibar_side_active` | from-`u_d` kernel completes |
+
+The important constraint is that `v_k` must remain live until DTS backward has
+launched, and `pibar_ud` must remain live until the from-`u_d` Pibar tree
+kernel finishes because that kernel mutates it in-place as subtree storage.
+The tested implementation avoids aliasing these buffers.  This makes it safe,
+but it also means the pool keeps max-sized self-loop and DTS buffers resident
+together, so it is not a peak-memory optimization.
+
+Static fp32 pool sizes for `test_trees_1000`:
+
+| case | max `W` | max split count | self-loop named pool | staged DTS pool |
+|---|---:|---:|---:|---:|
+| 10 families | `16,645` | `8,981` | about `0.93 GB` | about `0.14 GB` |
+| 50 families | `32,768` | `42,155` | about `1.83 GB` | about `0.67 GB` |
+
+Correctness checks:
+
+```text
+python -m py_compile gpurec/core/backward.py gpurec/core/kernels/wave_backward.py
+
+GPUREC_BACKWARD_SCRATCH_POOL=1 \
+pytest -q tests/kernels/test_dts_backward_accum_kernel.py
+  -> 47 passed
+
+GPUREC_BACKWARD_SCRATCH_POOL=1 \
+GPUREC_DTS_GRAD_MT_TWO_STAGE=1 \
+pytest -q tests/gradients/test_autograd_bridge.py \
+          tests/gradients/test_fd_all_modes.py::test_analytic_matches_fd
+  -> 21 passed
+```
+
+The DTS parity test also passes a deliberately oversized caller-owned scratch
+dictionary into the two-stage `grad_mt` path, which exercises leading-slice
+views rather than exact-shape buffers.
+
+Benchmarks used the current-best flags:
+
+```text
+GPUREC_DTS_PIBAR_UD_SKIP_ZERO_SIDES=1
+GPUREC_DTS_PIBAR_UD_COMPACT_LEVELS=1
+GPUREC_DTS_GRAD_MT_TWO_STAGE=1
+```
+
+Clean final event timings:
+
+| case | baseline median | scratch `all` median | delta | baseline peak | scratch peak |
+|---|---:|---:|---:|---:|---:|
+| 10 families, 9 reps | `33.797 ms` | `33.992 ms` | `+0.195 ms` | `2.696 GB` | `2.822 GB` |
+| 50 families, 9 reps | `100.757 ms` | `100.969 ms` | `+0.212 ms` | `10.308 GB` | `10.637 GB` |
+
+Scoped 50-family smoke tests:
+
+| scope | median | peak | note |
+|---|---:|---:|---|
+| `all` | `101.698 ms` | `10.637 GB` | neutral/regression |
+| `wave` | `109.324 ms` | `10.874 GB` | noisy with a large outlier |
+| `dts` | `102.781 ms` | `10.553 GB` | slight regression |
+| `grad_mt` | `106.689 ms` | `10.310 GB` | very noisy |
+
+Nsight Systems, 50-family capture:
+
+| bucket | baseline | scratch `all` |
+|---|---:|---:|
+| `_dts_cross_backward_accum_kernel` | `26.864 ms` | `26.913 ms` |
+| `_wave_backward_uniform_kernel` | `24.834 ms` | `24.882 ms` |
+| `_uniform_cross_pibar_vjp_tree_from_ud_compact_kernel` | `15.875 ms` | `15.916 ms` |
+| `_dts_parent_reduced_ge2_stage1_kernel` | `7.064 ms` | `7.052 ms` |
+| `_dts_grad_mt_two_stage_reduce_kernel` | `0.103 ms` | `0.104 ms` |
+| profiled backward event | `114.502 ms` | `114.990 ms` |
+
+CUDA API summary, same captures:
+
+| API bucket | baseline | scratch `all` |
+|---|---:|---:|
+| `cudaLaunchKernel` | `4.623 ms`, 2578 calls | `4.595 ms`, 2578 calls |
+| `cudaMemcpyAsync` | `1.566 ms`, 527 calls | `1.502 ms`, 527 calls |
+| `cuLaunchKernelEx` | `0.573 ms`, 230 calls | `0.523 ms`, 230 calls |
+| `cudaStreamSynchronize` | `75.267 ms`, 205 calls | `75.129 ms`, 205 calls |
+
+No meaningful `cudaMalloc`/`cudaFree` time appears in the profiled backward
+interval.  The PyTorch caching allocator is already absorbing these temporary
+allocations, so replacing repeated `torch.empty` calls with long-lived named
+buffers does not reduce kernel time or API overhead.  It does increase
+`max_memory_allocated` because max-sized self-loop and DTS buffers are kept
+alive together.
+
+Artifacts:
+
+```text
+/tmp/gpurec_profile/prop7_baseline_fams50.nsys-rep
+/tmp/gpurec_profile/prop7_pool_fams50_timing_clean.nsys-rep
+/tmp/gpurec_profile/prop7_baseline_fams50_api.csv
+/tmp/gpurec_profile/prop7_pool_fams50_timing_clean_nsys_summary.txt
+/tmp/gpurec_profile/prop7_pool_fams50_timing_clean_nsys_stats.csv
+```
+
+Decision: keep the scratch pool as an opt-in diagnostic path and leave it
+default-off.  The named pool is correct, but it is not a performance or memory
+win for the 10/50-family current-best workload.  A future memory-oriented pool
+would need to be phase-aware and deliberately overlay compatible buffers, for
+example reusing self-loop scratch after DTS has consumed `v_k`; that requires a
+more explicit liveness scheduler than this proposal's safe named buffers.
+
 ## Proposal 8: family/chunk-aware pruning for very large batches
 
 Whole-wave pruning weakens as more families are batched together. A global wave
