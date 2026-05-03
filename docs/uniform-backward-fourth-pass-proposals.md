@@ -625,6 +625,325 @@ Start with the two-kernel variant.  It isolates the Pibar tree memory problem
 without touching DTS accumulation.  Only after that wins should the one-kernel
 DTS/Pibar fusion be attempted.
 
+### Proposal 1 test report: shared-memory Pibar-from-UD kernel
+
+Status: implemented as an opt-in two-kernel prototype, not promoted as the
+default.
+
+Files:
+
+- `gpurec/core/kernels/pibar_vjp_cuda.py` contains
+  `gpurec_pibar_from_ud_shared_fp32`, compiled at runtime with NVRTC through
+  CUDA Python bindings.
+- `gpurec/core/kernels/wave_backward.py` routes
+  `uniform_cross_pibar_vjp_tree_from_ud_fused` to this kernel when
+  `GPUREC_CUDA_PIBAR_FROM_UD=1`.  `GPUREC_CUDA_PIBAR_FROM_UD_STRICT=1` makes
+  the run fail instead of silently falling back.
+- The hook is intentionally narrow: CUDA fp32, staged `pibar_ud`/`pibar_A`
+  already produced by the existing DTS accumulation kernel.  It supports both
+  compact level metadata and the older padded `level_parents` metadata; the
+  production benchmark path uses compact levels.
+
+The two-kernel dataflow keeps the current DTS producer unchanged:
+
+```text
+DTS backward accumulation:
+    compute vd1/vd2
+    compute u_d = v_Pibar * inv_denom
+    write pibar_ud[2 * n_splits, S]
+    write pibar_A[2 * n_splits]
+
+CUDA Pibar-from-UD:
+    load one staged side row into shared memory
+    do bottom-up species-tree subtree accumulation in shared memory
+    atomic_add p_prime * (A - subtree_sum) into accumulated_rhs[child, :]
+```
+
+The new kernel uses one fp32 shared-memory row:
+
+```text
+1999 * 4 B = 7,996 B dynamic shared memory per block
+```
+
+That is very different from the proposal-0 self-loop prototype.  It still keeps
+high occupancy because it is limited to about `8 KB/block`, not `56 KB/block`.
+
+Pseudo-code:
+
+```cuda
+// one block per split side
+for s in species:
+    work[s] = pibar_ud[row, s]
+
+for level in postorder_levels:
+    for node in level:
+        work[parent(node)] += work[child1(node)] + work[child2(node)]
+    __syncthreads()
+
+for s in species:
+    p_prime = exp2(Pi[child, s] - row_max[child])
+    atomic_add(accumulated_rhs[child, s], p_prime * (A[row] - work[s]))
+```
+
+This preserves the current active-mask and side-skip semantics:
+
+- `active_mask` is parent-row based and indexed with `reduce_idx[split_i]`;
+- `side_active` is the exact nonzero side-row predicate produced by the DTS
+  kernel, not `A != 0`;
+- duplicate child clades still require atomics into `accumulated_rhs`.
+
+#### Correctness checks
+
+Commands run:
+
+```bash
+python -m py_compile \
+  gpurec/core/kernels/wave_backward.py \
+  gpurec/core/kernels/pibar_vjp_cuda.py
+
+pytest -q tests/kernels/test_dts_backward_accum_kernel.py
+
+pytest -q tests/gradients/test_autograd_bridge.py
+
+GPUREC_CUDA_PIBAR_FROM_UD=1 \
+GPUREC_CUDA_PIBAR_FROM_UD_STRICT=1 \
+pytest -q tests/gradients/test_autograd_bridge.py
+```
+
+The direct DTS/Pibar kernel file passed: `49 passed`.  This includes the
+worker-added direct test
+`test_uniform_cross_pibar_from_ud_cuda_shared_preserves_pibar_ud`, which checks
+both padded and compact metadata paths and verifies that the CUDA shared-memory
+consumer does not clobber `pibar_ud`.
+
+Both public autograd runs passed: `15 passed`.
+
+Large-workload parity was checked by running the same `test_trees_1000` model
+with the current Triton compact Pibar-from-UD path and with
+`GPUREC_CUDA_PIBAR_FROM_UD=1 GPUREC_CUDA_PIBAR_FROM_UD_STRICT=1`.
+
+| workload | loss diff | max abs grad diff | max rel grad diff | mean abs grad diff |
+|---:|---:|---:|---:|---:|
+| 10 families | `0` | `2.441e-4` | `6.345e-7` | `2.441e-4` |
+| 50 families | `0` | `2.441e-3` | `1.332e-6` | `2.279e-3` |
+
+The differences are fp32 atomic-order noise.  They are smaller than the
+proposal-0 self-loop prototype because the new kernel changes only one
+tree-scratch phase and preserves the same mathematical correction.
+
+Subagent correctness audit notes:
+
+- `pibar_ud` rows are laid out as left sides in `0:n_ws` and right sides in
+  `n_ws:2*n_ws`;
+- `pibar_A[row]` is the original `sum_s u_d[s]`, before tree accumulation;
+- active masks are over parent wave rows, not split sides;
+- exact zero-side skipping must use the staged row's nonzero predicate, because
+  `A == 0` can happen by cancellation even when `u_d` is nonzero;
+- the current Triton consumer clobbers `pibar_ud` in-place as global subtree
+  scratch.  The CUDA prototype keeps the subtree scratch in shared memory and
+  preserves `pibar_ud`; the direct test asserts that property.
+
+#### Event-timed benchmarks
+
+All timings below use `tests/data/test_trees_1000`, `fixed_iters_Pi=6`,
+`neumann_terms=3`, `MAX_WAVE_SIZE=32768`, and the same fused backward defaults
+as the previous pass.  Proposal 0 is off unless explicitly noted.
+
+| families | mode | median backward | delta vs baseline | peak allocation |
+|---:|---|---:|---:|---:|
+| 10 | baseline Triton Pibar-from-UD | `33.784 ms` | - | `2.696 GB` |
+| 10 | CUDA Pibar-from-UD | `34.832 ms` | `+1.048 ms` slower | `2.696 GB` |
+| 50 | baseline Triton Pibar-from-UD | `103.788 ms` | - | `10.308 GB` |
+| 50 | CUDA Pibar-from-UD | `101.558 ms` | `-2.230 ms` faster | `10.308 GB` |
+| 100 | baseline Triton Pibar-from-UD | `192.292 ms` | - | `17.950 GB` |
+| 100 | CUDA Pibar-from-UD | `186.765 ms` | `-5.527 ms` faster | `17.950 GB` |
+| 50 | proposal 0 + proposal 1 | `98.119 ms` | `-5.669 ms` faster | `9.898 GB` |
+
+After the worker's broader padded+compact implementation and direct tests were
+integrated, a quick 5-repetition 50-family check gave `102.570 ms` baseline and
+`99.736 ms` with `GPUREC_CUDA_PIBAR_FROM_UD=1`, a `2.834 ms` median win.  The
+tables above keep the earlier 7-repetition comparison because it was collected
+as a matched baseline/candidate pair before the final documentation pass; both
+runs show the same conclusion.
+
+Interpretation:
+
+- The two-kernel Pibar replacement is too small to help at 10 families.
+- It becomes useful as split-side work grows.  At 100 families it saves about
+  `5.5 ms`.
+- Peak allocation is unchanged.  This is expected: the two-kernel variant still
+  requires the DTS kernel to materialize `pibar_ud`.  It only avoids using
+  `pibar_ud` as global tree scratch in the consumer.
+- It composes with proposal 0.  On the fresh 50-family baseline, proposal 1
+  alone saves `2.230 ms`; proposal 0 + proposal 1 saves `5.669 ms` and keeps
+  proposal 0's lower peak allocation.
+
+#### Nsight Systems, 50 families
+
+Commands:
+
+```bash
+PROFILE_CUDA_API=1 FAMS=50 REPS=1 WARMUPS=4 MAX_WAVE_SIZE=32768 \
+nsys profile --force-overwrite=true \
+  --capture-range=cudaProfilerApi --capture-range-end=stop \
+  --trace=cuda,nvtx,osrt \
+  -o /tmp/gpurec_profile/prop1/nsys_baseline_50 \
+  python profiling/proposal8/bench_uniform_backward.py
+
+GPUREC_CUDA_PIBAR_FROM_UD=1 \
+GPUREC_CUDA_PIBAR_FROM_UD_STRICT=1 \
+PROFILE_CUDA_API=1 FAMS=50 REPS=1 WARMUPS=4 MAX_WAVE_SIZE=32768 \
+nsys profile --force-overwrite=true \
+  --capture-range=cudaProfilerApi --capture-range-end=stop \
+  --trace=cuda,nvtx,osrt \
+  -o /tmp/gpurec_profile/prop1/nsys_cuda_50 \
+  python profiling/proposal8/bench_uniform_backward.py
+```
+
+Single captured backward interval:
+
+| metric | baseline | CUDA Pibar-from-UD |
+|---|---:|---:|
+| benchmark-reported backward time under NSYS | `116.390 ms` | `114.541 ms` |
+| total GPU kernel time | `91.181 ms` | `87.107 ms` |
+| kernel launches | `2918` | `2918` |
+| DTS cross accumulation bucket | `27.449 ms` | `27.439 ms` |
+| self-loop wave bucket | `24.943 ms` | `25.004 ms` |
+| Pibar-from-UD bucket | `33 launches`, `16.212 ms` | `33 launches`, `12.206 ms` |
+| parent-reduced DTS stage 1 bucket | `7.190 ms` | `7.133 ms` |
+| active-mask bucket | `3.026 ms` | `3.008 ms` |
+
+The proposal is isolated: DTS and self-loop buckets are unchanged within noise.
+The Pibar-from-UD bucket drops by `4.006 ms`, or `24.7%`.
+
+Per-launch timings show the same pattern:
+
+```text
+baseline compact Pibar-from-UD:
+0.235, 0.711, 1.235, 1.292, 2.250, 1.899, 1.011, ...
+..., 0.504, 0.705, 0.967, 1.536, 2.483 ms
+
+CUDA shared Pibar-from-UD:
+0.175, 0.531, 0.931, 0.958, 1.704, 1.424, 0.760, ...
+..., 0.377, 0.525, 0.727, 1.164, 1.915 ms
+```
+
+CUDA API overhead does not explain the improvement.  `cudaLaunchKernel` is
+essentially unchanged (`4.745 ms` baseline, `4.779 ms` candidate), while
+`cuLaunchKernel` rises only from `0.172 ms` to `0.260 ms` for the NVRTC
+launches.
+
+#### Nsight Compute, representative Pibar launches
+
+Two launch positions were profiled:
+
+- skip `4`: an early sparse/hot Pibar-from-UD launch;
+- skip `32`: the largest late Pibar-from-UD launch in the captured 50-family
+  schedule.
+
+Commands used the same shape as the NSYS run, changing only the kernel name and
+launch skip:
+
+```bash
+ncu --target-processes all --profile-from-start off \
+  --kernel-name _uniform_cross_pibar_vjp_tree_from_ud_compact_kernel \
+  --launch-skip 32 --launch-count 1 \
+  --set detailed --csv --page raw \
+  --log-file /tmp/gpurec_profile/prop1/ncu_baseline_pibar_skip32.csv \
+  python profiling/proposal8/bench_uniform_backward.py
+
+GPUREC_CUDA_PIBAR_FROM_UD=1 \
+GPUREC_CUDA_PIBAR_FROM_UD_STRICT=1 \
+ncu --target-processes all --profile-from-start off \
+  --kernel-name gpurec_pibar_from_ud_shared_fp32 \
+  --launch-skip 32 --launch-count 1 \
+  --set detailed --csv --page raw \
+  --log-file /tmp/gpurec_profile/prop1/ncu_cuda_pibar_skip32.csv \
+  python profiling/proposal8/bench_uniform_backward.py
+```
+
+Skip `4`:
+
+| metric | baseline compact Triton | CUDA shared |
+|---|---:|---:|
+| duration | `2.229 ms` | `1.684 ms` |
+| DRAM read | `1.164 GB` | `1.164 GB` |
+| DRAM write | `0.747 GB` | `0.365 GB` |
+| compute-memory throughput | `87.20%` | `92.37%` |
+| DRAM throughput | `87.20%` | `92.37%` |
+| SM throughput | `25.71%` | `17.77%` |
+| active warps | `98.63%` | `96.15%` |
+| registers/thread | `36` | `26` |
+| dynamic shared memory/block | `0 B` | `7,996 B` |
+| global load instructions | `29.496 M` | `24.311 M` |
+| global store instructions | `2.228 M` | `0` |
+| global reduction instructions | `3.051 M` | `3.051 M` |
+| shared load/store instructions | `0 / 0` | `9.736 M / 5.280 M` |
+| local spilling requests | `0` | `0` |
+
+Skip `32`:
+
+| metric | baseline compact Triton | CUDA shared |
+|---|---:|---:|
+| duration | `2.514 ms` | `1.896 ms` |
+| DRAM read | `1.302 GB` | `1.301 GB` |
+| DRAM write | `0.838 GB` | `0.412 GB` |
+| compute-memory throughput | `86.57%` | `91.90%` |
+| DRAM throughput | `86.57%` | `91.90%` |
+| SM throughput | `25.39%` | `17.49%` |
+| active warps | `98.23%` | `95.81%` |
+| registers/thread | `36` | `26` |
+| dynamic shared memory/block | `0 B` | `7,996 B` |
+| global load instructions | `32.752 M` | `26.807 M` |
+| global store instructions | `2.486 M` | `0` |
+| global reduction instructions | `3.405 M` | `3.405 M` |
+| shared load/store instructions | `0 / 0` | `10.863 M / 5.891 M` |
+| local spilling requests | `0` | `0` |
+
+The resource story is clean:
+
+- The proposal removes the global stores used by the old tree-scratch phase.
+  DRAM writes fall by about `0.38-0.43 GB` per representative launch.
+- DRAM reads barely change because both kernels still read `Pi`, `pibar_ud`,
+  tree metadata, and row maxima.  A one-kernel DTS/Pibar fusion would be needed
+  to remove the `pibar_ud` read itself.
+- Global reduction instructions are unchanged because duplicate child clades
+  still require atomics into `accumulated_rhs`.
+- Occupancy remains high.  The CUDA kernel uses only `7,996 B` dynamic shared
+  memory per block, so active warps stay near `96%`.  This is why proposal 1
+  succeeds where the proposal-0 shared-memory self-loop kernel was occupancy
+  limited.
+- SM throughput drops because the kernel is even more memory dominated after
+  removing arithmetic/instruction overhead.  That is not a regression; the
+  duration still falls by `24-25%`.
+
+#### Decision
+
+Keep the two-kernel shared-memory Pibar-from-UD path as an opt-in prototype.
+It is a real improvement, but it does not meet the original `4 ms` event-median
+acceptance gate at 50 families in this run:
+
+```text
+event median:      103.788 ms -> 101.558 ms  (2.230 ms faster)
+Pibar NSYS bucket:  16.212 ms ->  12.206 ms  (4.006 ms faster)
+```
+
+The bucket-level improvement is exactly what proposal 1 targeted, but the full
+backward pass still has larger unchanged buckets:
+
+```text
+DTS cross accumulation: ~27.4 ms
+self-loop wave bucket:  ~25.0 ms
+Pibar-from-UD after fix: ~12.2 ms
+```
+
+The next step for this line of work is the one-kernel variant: fuse the DTS
+side's `u_d` construction with the shared-memory tree correction.  That would
+remove both the `pibar_ud` write from DTS and the `pibar_ud` read from Pibar VJP,
+and it is the only proposal-1 variant that can reduce peak memory.  The risk is
+register pressure in the DTS kernel, so it should be attempted separately with
+NCU checks on registers/thread, spills, and occupancy.
+
 ## Proposal 2: ragged parent-tile worklist for high-fanout DTS backward
 
 The rejected parent-tiled DTS backward prototype still taught us something
