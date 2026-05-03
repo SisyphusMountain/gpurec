@@ -1117,6 +1117,7 @@ def Pi_wave_backward(
                 accum_param_grads=accum_param_grads,
                 active_mask=active_mask_for_kernels,
                 sp_parent=sp_parent_wave,
+                pibar_row_max=forward_pibar_row_max,
             )
 
             if accum_param_grads is None:

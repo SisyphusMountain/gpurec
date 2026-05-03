@@ -111,6 +111,7 @@ def _wave_backward_uniform_kernel(
     # Converged values from forward pass
     Pi_star_ptr,      # [C, S] — read rows [ws:ws+W]
     Pibar_star_ptr,   # [C, S] — read rows [ws:ws+W]
+    Pibar_row_max_ptr, # optional [C] forward Pi row maxima for uniform Pibar
     dts_r_ptr,        # [W, S] or None — cross-clade DTS
     has_splits: tl.constexpr,
     # Incoming adjoint
@@ -158,6 +159,7 @@ def _wave_backward_uniform_kernel(
     RECOMPUTE_PIBAR_DENOM: tl.constexpr,
     LEAF_HIT_ONLY_LOGP: tl.constexpr,
     LEAF_LOGP_SCALAR: tl.constexpr,
+    USE_PIBAR_ROW_MAX: tl.constexpr,
     SPEC_GATHER: tl.constexpr,
     USE_ACTIVE_MASK: tl.constexpr,
     DTYPE: tl.constexpr,
@@ -202,18 +204,22 @@ def _wave_backward_uniform_kernel(
     # ================================================================
     # Pass 1: Row statistics for uniform Pibar (same as forward)
     # ================================================================
-    row_max = tl.full([1], value=-1e30, dtype=DTYPE)
-    row_sum = tl.full([1], value=0.0, dtype=DTYPE)
+    if USE_PIBAR_ROW_MAX:
+        row_max = tl.load(Pibar_row_max_ptr + ws + w)
+        row_sum = tl.full([1], value=0.0, dtype=DTYPE)
+    else:
+        row_max = tl.full([1], value=-1e30, dtype=DTYPE)
+        row_sum = tl.full([1], value=0.0, dtype=DTYPE)
 
-    for s_start in range(0, S, BLOCK_S):
-        s_offs = s_start + tl.arange(0, BLOCK_S)
-        valid_mask = s_offs < S
-        mask = valid_mask & row_active
-        pi_val = tl.load(Pi_star_ptr + pi_base + s_offs, mask=mask, other=-1e30)
-        tile_max = tl.max(pi_val, axis=0)
-        new_max = tl.maximum(row_max, tile_max)
-        row_sum = row_sum * tl.exp2(row_max - new_max) + tl.sum(tl.exp2(pi_val - new_max), axis=0)
-        row_max = new_max
+        for s_start in range(0, S, BLOCK_S):
+            s_offs = s_start + tl.arange(0, BLOCK_S)
+            valid_mask = s_offs < S
+            mask = valid_mask & row_active
+            pi_val = tl.load(Pi_star_ptr + pi_base + s_offs, mask=mask, other=-1e30)
+            tile_max = tl.max(pi_val, axis=0)
+            new_max = tl.maximum(row_max, tile_max)
+            row_sum = row_sum * tl.exp2(row_max - new_max) + tl.sum(tl.exp2(pi_val - new_max), axis=0)
+            row_max = new_max
 
     # ================================================================
     # Pass 2: Compute softmax weights and store to [W, S] buffers
@@ -321,8 +327,12 @@ def _wave_backward_uniform_kernel(
 
         # Pibar VJP ingredients: inv_denom = 1 / (row_sum - p_prime)
         p_prime = tl.exp2(pi_w - row_max)
-        denom = row_sum - p_prime
-        inv_denom = tl.where(denom > 0, 1.0 / denom, tl.zeros_like(denom))
+        if USE_PIBAR_ROW_MAX:
+            mt_val = tl.load(mt_ptr + s_offs, mask=mask, other=-1e30)
+            inv_denom = tl.exp2(row_max + mt_val - pibar_w)
+        else:
+            denom = row_sum - p_prime
+            inv_denom = tl.where(denom > 0, 1.0 / denom, tl.zeros_like(denom))
 
         # Store precomputed weights to scratch buffers
         diag_wt = w_L * (wt0 + wt1)        # diagonal J^T weight
@@ -644,6 +654,7 @@ def wave_backward_uniform_fused(
     accum_param_grads=None,
     active_mask=None,
     sp_parent=None,
+    pibar_row_max=None,
 ):
     """Fused backward: precompute + Neumann + param VJP in one kernel per wave.
 
@@ -707,6 +718,10 @@ def wave_backward_uniform_fused(
         os.environ.get("GPUREC_WAVE_SPEC_GATHER", "1") != "0"
         and sp_parent is not None
     )
+    use_pibar_row_max = (
+        os.environ.get("GPUREC_WAVE_REUSE_PIBAR_ROW_MAX", "1") != "0"
+        and pibar_row_max is not None
+    )
 
     v_k = torch.empty((W, S), device=device, dtype=dtype)
     aw0 = torch.empty((W, S), device=device, dtype=dtype)
@@ -765,6 +780,7 @@ def wave_backward_uniform_fused(
     grid = (W,)
     _wave_backward_uniform_kernel[grid](
         Pi_star, Pibar_star,
+        pibar_row_max if use_pibar_row_max else Pi_star,
         dts_r if has_splits else Pi_star,  # dummy ptr when no splits
         has_splits,
         rhs,
@@ -795,6 +811,7 @@ def wave_backward_uniform_fused(
         RECOMPUTE_PIBAR_DENOM=bool(recompute_pibar_denom),
         LEAF_HIT_ONLY_LOGP=bool(leaf_hit_only_logp),
         LEAF_LOGP_SCALAR=bool(leaf_logp_scalar),
+        USE_PIBAR_ROW_MAX=bool(use_pibar_row_max),
         SPEC_GATHER=bool(spec_gather),
         USE_ACTIVE_MASK=bool(active_mask is not None),
         DTYPE=_tl_float_dtype(dtype),
