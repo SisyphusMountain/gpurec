@@ -56,6 +56,12 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--profile-cuda-api", action="store_true", default=os.getenv("PROFILE_CUDA_API", "0") != "0")
     parser.add_argument("--cuda-graph", action="store_true", default=os.getenv("CUDA_GRAPH", "0") != "0")
     parser.add_argument(
+        "--cuda-graph-target",
+        choices=("model", "pi_backward"),
+        default=os.getenv("CUDA_GRAPH_TARGET", "model"),
+        help="Capture target for --cuda-graph.",
+    )
+    parser.add_argument(
         "--graph-fixed-schedule-mode",
         choices=("no_cpu", "device", "existing"),
         default=os.getenv("CUDA_GRAPH_FIXED_SCHEDULE_MODE", "no_cpu"),
@@ -131,6 +137,22 @@ def _max_grad_abs_diff(
     return max_diff
 
 
+def _max_tensor_dict_abs_diff(
+    lhs: dict,
+    rhs: dict,
+    *,
+    keys: tuple[str, ...],
+) -> float:
+    max_diff = 0.0
+    for key in keys:
+        a = lhs.get(key)
+        b = rhs.get(key)
+        if not (torch.is_tensor(a) and torch.is_tensor(b)):
+            continue
+        max_diff = max(max_diff, float((a - b).abs().max().detach().cpu()))
+    return max_diff
+
+
 def _selected_genes(root: Path, start: int, fams: int) -> list[str]:
     genes = sorted(root.glob("g_*.nwk"))
     stop = start + fams
@@ -196,7 +218,7 @@ def _print_wave_shape(model: GeneReconModel) -> None:
 
 
 @torch.no_grad()
-def _run_pi_backward_diag(model: GeneReconModel, args: argparse.Namespace) -> None:
+def _prepare_pi_backward_inputs(model: GeneReconModel) -> tuple[dict, torch.Tensor]:
     static = model.static
     theta = model.theta.detach()
     log_pS, log_pD, log_pL, transfer_mat, max_transfer_vec = _extract_parameters(
@@ -246,36 +268,43 @@ def _run_pi_backward_diag(model: GeneReconModel, args: argparse.Namespace) -> No
         E_out["E"],
         static.wave_layout["root_clade_ids"],
     ).sum()
+    kwargs = {
+        "wave_layout": static.wave_layout,
+        "Pi_star_wave": pi_out["Pi_wave_ordered"],
+        "Pibar_star_wave": pi_out["Pibar_wave_ordered"],
+        "E": E_out["E"],
+        "Ebar": E_out["E_bar"],
+        "E_s1": E_out["E_s1"],
+        "E_s2": E_out["E_s2"],
+        "log_pS": log_pS,
+        "log_pD": log_pD,
+        "log_pL": log_pL,
+        "max_transfer_mat": max_transfer_vec,
+        "species_helpers": static.species_helpers,
+        "root_clade_ids_perm": static.wave_layout["root_clade_ids"],
+        "device": static.device,
+        "dtype": static.dtype,
+        "neumann_terms": static.neumann_terms,
+        "use_pruning": static.use_pruning,
+        "pruning_threshold": static.pruning_threshold,
+        "pibar_mode": static.pibar_mode,
+        "transfer_mat": transfer_mat,
+        "ancestors_T": static.ancestors_T,
+        "uniform_pibar_row_max": pi_out.get("uniform_pibar_row_max"),
+    }
+    return kwargs, nll
+
+
+@torch.no_grad()
+def _run_pi_backward_diag(model: GeneReconModel, args: argparse.Namespace) -> None:
+    kwargs, nll = _prepare_pi_backward_inputs(model)
 
     old_diag = os.environ.get("GPUREC_BACKWARD_FAMILY_CHUNK_DIAG")
     old_rows = os.environ.get("GPUREC_BACKWARD_FAMILY_CHUNK_ROWS")
     os.environ["GPUREC_BACKWARD_FAMILY_CHUNK_DIAG"] = "1"
     os.environ["GPUREC_BACKWARD_FAMILY_CHUNK_ROWS"] = str(args.diag_chunk_rows)
     try:
-        pi_bwd = Pi_wave_backward(
-            wave_layout=static.wave_layout,
-            Pi_star_wave=pi_out["Pi_wave_ordered"],
-            Pibar_star_wave=pi_out["Pibar_wave_ordered"],
-            E=E_out["E"],
-            Ebar=E_out["E_bar"],
-            E_s1=E_out["E_s1"],
-            E_s2=E_out["E_s2"],
-            log_pS=log_pS,
-            log_pD=log_pD,
-            log_pL=log_pL,
-            max_transfer_mat=max_transfer_vec,
-            species_helpers=static.species_helpers,
-            root_clade_ids_perm=static.wave_layout["root_clade_ids"],
-            device=static.device,
-            dtype=static.dtype,
-            neumann_terms=static.neumann_terms,
-            use_pruning=static.use_pruning,
-            pruning_threshold=static.pruning_threshold,
-            pibar_mode=static.pibar_mode,
-            transfer_mat=transfer_mat,
-            ancestors_T=static.ancestors_T,
-            uniform_pibar_row_max=pi_out.get("uniform_pibar_row_max"),
-        )
+        pi_bwd = Pi_wave_backward(**kwargs)
     finally:
         if old_diag is None:
             os.environ.pop("GPUREC_BACKWARD_FAMILY_CHUNK_DIAG", None)
@@ -294,7 +323,7 @@ def _run_pi_backward_diag(model: GeneReconModel, args: argparse.Namespace) -> No
         print(key, diag[key])
 
 
-def _run_cuda_graph_bench(model: GeneReconModel, args: argparse.Namespace) -> None:
+def _run_cuda_graph_model_bench(model: GeneReconModel, args: argparse.Namespace) -> None:
     _validate_cuda_graph_env(args)
 
     normal_times = []
@@ -347,7 +376,7 @@ def _run_cuda_graph_bench(model: GeneReconModel, args: argparse.Namespace) -> No
             static_loss.backward()
     except Exception as exc:
         torch.cuda.synchronize()
-        print("cuda_graph_capture_failed", type(exc).__name__, str(exc))
+        print("cuda_graph_capture_failed", "target", "model", type(exc).__name__, str(exc))
         print(
             "cuda_graph_attempt",
             "side-stream warmup, deleted live eager loss, then captured "
@@ -406,6 +435,138 @@ def _run_cuda_graph_bench(model: GeneReconModel, args: argparse.Namespace) -> No
         )
     print("normal_peak_alloc_gb", f"{max(normal_peaks):.3f}")
     print("cuda_graph_peak_alloc_gb", f"{max(replay_peaks):.3f}")
+
+
+@torch.no_grad()
+def _run_cuda_graph_pi_backward_bench(
+    model: GeneReconModel,
+    args: argparse.Namespace,
+) -> None:
+    _validate_cuda_graph_env(args)
+    kwargs, nll = _prepare_pi_backward_inputs(model)
+    torch.cuda.synchronize()
+
+    normal_times = []
+    normal_peaks = []
+    baseline_bwd = None
+    for _ in range(args.warmups):
+        Pi_wave_backward(**kwargs)
+        torch.cuda.synchronize()
+
+    for _ in range(args.reps):
+        torch.cuda.reset_peak_memory_stats()
+        if args.profile_cuda_api:
+            torch.cuda.cudart().cudaProfilerStart()
+        holder = {}
+
+        def direct_backward() -> None:
+            holder["out"] = Pi_wave_backward(**kwargs)
+
+        normal_times.append(_cuda_event_elapsed(direct_backward))
+        if args.profile_cuda_api:
+            torch.cuda.cudart().cudaProfilerStop()
+        normal_peaks.append(torch.cuda.max_memory_allocated() / 1e9)
+        if baseline_bwd is None:
+            baseline_bwd = {
+                key: value.detach().clone() if torch.is_tensor(value) else value
+                for key, value in holder["out"].items()
+            }
+
+    assert baseline_bwd is not None
+
+    try:
+        side_stream = torch.cuda.Stream()
+        side_stream.wait_stream(torch.cuda.current_stream())
+        with torch.cuda.stream(side_stream):
+            Pi_wave_backward(**kwargs)
+        torch.cuda.current_stream().wait_stream(side_stream)
+
+        graph = torch.cuda.CUDAGraph()
+        torch.cuda.synchronize()
+        with torch.cuda.graph(graph):
+            static_bwd = Pi_wave_backward(**kwargs)
+    except Exception as exc:
+        torch.cuda.synchronize()
+        print("cuda_graph_capture_failed", "target", "pi_backward", type(exc).__name__, str(exc))
+        print(
+            "cuda_graph_attempt",
+            "computed E_fixed_point/Pi_wave_forward outside capture, then "
+            "captured Pi_wave_backward(**static_kwargs) with fixed-schedule env",
+        )
+        print("loss", float(nll.detach().cpu()))
+        print(
+            "normal_pi_backward_ms",
+            "mean", f"{statistics.mean(normal_times):.3f}",
+            "median", f"{statistics.median(normal_times):.3f}",
+            "min", f"{min(normal_times):.3f}",
+            "times", ",".join(f"{t:.3f}" for t in normal_times),
+        )
+        print("normal_peak_alloc_gb", f"{max(normal_peaks):.3f}")
+        return
+
+    graph.replay()
+    torch.cuda.synchronize()
+
+    tensor_keys = (
+        "v_Pi",
+        "grad_E",
+        "grad_Ebar",
+        "grad_E_s1",
+        "grad_E_s2",
+        "grad_log_pD",
+        "grad_log_pS",
+        "grad_max_transfer_mat",
+        "grad_transfer_mat",
+    )
+    graph_bwd = {
+        key: value.detach().clone() if torch.is_tensor(value) else value
+        for key, value in static_bwd.items()
+    }
+    output_abs_diff = _max_tensor_dict_abs_diff(
+        baseline_bwd,
+        graph_bwd,
+        keys=tensor_keys,
+    )
+
+    replay_times = []
+    replay_peaks = []
+    for _ in range(args.reps):
+        torch.cuda.reset_peak_memory_stats()
+        if args.profile_cuda_api:
+            torch.cuda.cudart().cudaProfilerStart()
+        replay_times.append(_cuda_event_elapsed(graph.replay))
+        if args.profile_cuda_api:
+            torch.cuda.cudart().cudaProfilerStop()
+        replay_peaks.append(torch.cuda.max_memory_allocated() / 1e9)
+
+    print("loss", float(nll.detach().cpu()))
+    print(
+        "normal_pi_backward_ms",
+        "mean", f"{statistics.mean(normal_times):.3f}",
+        "median", f"{statistics.median(normal_times):.3f}",
+        "min", f"{min(normal_times):.3f}",
+        "times", ",".join(f"{t:.3f}" for t in normal_times),
+    )
+    print(
+        "cuda_graph_pi_backward_replay_ms",
+        "mean", f"{statistics.mean(replay_times):.3f}",
+        "median", f"{statistics.median(replay_times):.3f}",
+        "min", f"{min(replay_times):.3f}",
+        "times", ",".join(f"{t:.3f}" for t in replay_times),
+    )
+    if args.cuda_graph_check:
+        print("cuda_graph_check", "max_output_abs_diff", f"{output_abs_diff:.8e}")
+    print("normal_peak_alloc_gb", f"{max(normal_peaks):.3f}")
+    print("cuda_graph_peak_alloc_gb", f"{max(replay_peaks):.3f}")
+
+
+def _run_cuda_graph_bench(model: GeneReconModel, args: argparse.Namespace) -> None:
+    if args.cuda_graph_target == "model":
+        _run_cuda_graph_model_bench(model, args)
+    elif args.cuda_graph_target == "pi_backward":
+        _run_cuda_graph_pi_backward_bench(model, args)
+    else:
+        raise ValueError(f"unknown cuda graph target: {args.cuda_graph_target}")
 
 
 def main() -> None:
