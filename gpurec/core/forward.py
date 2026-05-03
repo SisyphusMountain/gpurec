@@ -515,7 +515,10 @@ def Pi_wave_forward(
     reuse_forward_pibar_stats = bool(
         use_uniform_fused
         and not batched
-        and os.environ.get("GPUREC_REUSE_FORWARD_PIBAR_STATS", "0") != "0"
+        and (
+            os.environ.get("GPUREC_REUSE_FORWARD_PIBAR_STATS", "0") != "0"
+            or os.environ.get("GPUREC_DTS_PIBAR_UD_FUSION", "0") != "0"
+        )
     )
     uniform_pibar_row_max = (
         torch.empty((C,), dtype=dtype, device=device)
