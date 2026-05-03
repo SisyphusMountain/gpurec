@@ -446,6 +446,8 @@ def Pi_wave_backward(
             dts_cross_backward_accum_fused,
             dts_cross_backward_accum_grouped_fused,
             dts_cross_backward_accum_parent_tiled_fused,
+            dts_cross_backward_accum_parent_ragged_fused,
+            _build_parent_ragged_ge2_worklist,
             uniform_cross_pibar_vjp_fused,
             uniform_cross_pibar_vjp_tree_fused,
             uniform_cross_pibar_vjp_tree_from_ud_fused,
@@ -573,6 +575,15 @@ def Pi_wave_backward(
             "parent-tiled-all",
         )
     )
+    parent_ragged_dts_backward_accum_enabled = (
+        os.environ.get("GPUREC_PARENT_RAGGED_DTS_BACKWARD_ACCUM", "0") != "0"
+        or dts_backward_accum_impl in (
+            "parent_ragged",
+            "parent_ragged_all",
+            "parent-ragged",
+            "parent-ragged-all",
+        )
+    )
     grouped_dts_backward_accum_enabled = (
         os.environ.get("GPUREC_GROUPED_DTS_BACKWARD_ACCUM", "0") != "0"
         or dts_backward_accum_impl in (
@@ -612,6 +623,10 @@ def Pi_wave_backward(
         "parent_tiled_all",
         "parent-tiled-all",
     )
+    parent_ragged_dts_backward_accum_all = dts_backward_accum_impl in (
+        "parent_ragged_all",
+        "parent-ragged-all",
+    )
     grouped_dts_backward_min_splits = int(
         os.environ.get("GPUREC_GROUPED_DTS_BACKWARD_MIN_SPLITS", "8192")
     )
@@ -626,6 +641,12 @@ def Pi_wave_backward(
     )
     parent_tiled_dts_backward_tile_splits = int(
         os.environ.get("GPUREC_PARENT_TILED_DTS_BACKWARD_TILE_SPLITS", "16")
+    )
+    parent_ragged_dts_backward_tile_splits = int(
+        os.environ.get(
+            "GPUREC_PARENT_RAGGED_DTS_BACKWARD_TILE_SPLITS",
+            str(parent_tiled_dts_backward_tile_splits),
+        )
     )
     fused_uniform_backward_enabled = (
         os.environ.get("GPUREC_FUSED_UNIFORM_BACKWARD", "1") != "0"
@@ -1865,7 +1886,64 @@ def Pi_wave_backward(
                             and torch.is_tensor(ge2_parent_ids)
                             and int(meta.get('n_ge2_clades', 0)) > 0
                         )
-                        if use_parent_tiled_dts_accum:
+                        use_parent_ragged_dts_accum = (
+                            parent_ragged_dts_backward_accum_enabled
+                            and (
+                                parent_ragged_dts_backward_accum_all
+                                or parent_tiled_threshold_match
+                            )
+                            and pibar_ud_fusion_match
+                            and merged_dts_backward_accum_enabled
+                            and use_dts_reduction_accum_scalar
+                            and torch.is_tensor(ge2_ptr)
+                            and torch.is_tensor(ge2_parent_ids)
+                            and int(meta.get('n_ge2_clades', 0)) > 0
+                        )
+                        if use_parent_ragged_dts_accum:
+                            ragged_key = (
+                                "_dts_accum_parent_ragged_worklist_"
+                                f"{int(parent_ragged_dts_backward_tile_splits)}"
+                            )
+                            ragged_worklist = meta.get(ragged_key)
+                            if (
+                                not isinstance(ragged_worklist, tuple)
+                                or len(ragged_worklist) != 3
+                                or not all(torch.is_tensor(t) for t in ragged_worklist)
+                                or any(t.device != ge2_ptr.device for t in ragged_worklist)
+                            ):
+                                ragged_worklist = _build_parent_ragged_ge2_worklist(
+                                    int(meta.get('n_eq1', 0)),
+                                    ge2_ptr,
+                                    ge2_parent_ids,
+                                    parent_ragged_dts_backward_tile_splits,
+                                )
+                                meta[ragged_key] = ragged_worklist
+                            (grad_Pibar_l, grad_Pibar_r,
+                             param_pD, param_pS) = dts_cross_backward_accum_parent_ragged_fused(
+                                Pi_star_wave, Pibar_star_wave, v_k, ws,
+                                sl, sr, reduce_idx, wlsp,
+                                int(meta.get('n_eq1', 0)),
+                                ge2_ptr,
+                                ge2_parent_ids,
+                                log_pD, log_pS,
+                                sp_child1, sp_child2, accumulated_rhs, S,
+                                active_mask=active_mask_for_split_kernels,
+                                grad_log_pD=grad_log_pD,
+                                grad_log_pS=grad_log_pS,
+                                grad_mt=(
+                                    grad_mt
+                                    if grad_mt.ndim == 1
+                                    else grad_mt[0]
+                                ),
+                                accum_mt_reduction=use_dts_reduction_accum_mt,
+                                mt_squeezed=mt_shared,
+                                pibar_row_max=forward_pibar_row_max,
+                                tile_splits=parent_ragged_dts_backward_tile_splits,
+                                ge2_tile_split_starts=ragged_worklist[0],
+                                ge2_tile_split_ends=ragged_worklist[1],
+                                ge2_tile_parent_ids=ragged_worklist[2],
+                            )
+                        elif use_parent_tiled_dts_accum:
                             (grad_Pibar_l, grad_Pibar_r,
                              param_pD, param_pS) = dts_cross_backward_accum_parent_tiled_fused(
                                 Pi_star_wave, Pibar_star_wave, v_k, ws,

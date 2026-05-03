@@ -6,6 +6,7 @@ import torch
 from gpurec.core.kernels.wave_backward import (
     dts_cross_backward_accum_fused,
     dts_cross_backward_accum_parent_tiled_fused,
+    dts_cross_backward_accum_parent_ragged_fused,
     dts_cross_backward_fused,
     uniform_cross_pibar_vjp_tree_fused,
     uniform_cross_pibar_vjp_tree_from_ud_fused,
@@ -291,7 +292,7 @@ def _run_nonaccum_variant(*, active_mask=None, dtype=torch.float32, scalar_shape
 def _parent_tiled_fixture(dtype, active):
     torch.manual_seed(31)
     device = torch.device("cuda")
-    C, S, W, N = 12, 31, 4, 9
+    C, S, W, N = 12, 31, 4, 10
     ws = 8
 
     ancestor_cols, ancestors_dense, sp_child1, sp_child2, level_parents = _binary_tree_helpers(
@@ -304,9 +305,9 @@ def _parent_tiled_fixture(dtype, active):
     Pibar, row_max = _uniform_pibar_from_pi(Pi, mt, ancestors_dense)
     v_k = (torch.randn(W, S, device=device, dtype=dtype) * 0.1).contiguous()
 
-    sl = torch.tensor([0, 1, 2, 3, 1, 4, 5, 2, 6], device=device, dtype=torch.long)
-    sr = torch.tensor([1, 2, 3, 4, 0, 2, 6, 5, 7], device=device, dtype=torch.long)
-    reduce_idx = torch.tensor([0, 0, 0, 0, 1, 1, 1, 3, 3], device=device, dtype=torch.long)
+    sl = torch.tensor([7, 0, 1, 2, 3, 1, 4, 5, 2, 6], device=device, dtype=torch.long)
+    sr = torch.tensor([0, 1, 2, 3, 4, 0, 2, 6, 5, 7], device=device, dtype=torch.long)
+    reduce_idx = torch.tensor([2, 0, 0, 0, 0, 1, 1, 1, 3, 3], device=device, dtype=torch.long)
     wlsp = (torch.randn(N, device=device, dtype=dtype) * 0.1 - 1.0).contiguous()
     active_mask = torch.tensor([True, False, True, True], device=device) if active else None
 
@@ -328,7 +329,7 @@ def _parent_tiled_fixture(dtype, active):
         "sp_child2": sp_child2,
         "S": S,
         "active_mask": active_mask,
-        "n_eq1": 0,
+        "n_eq1": 1,
         "ge2_ptr": ge2_ptr,
         "ge2_parent_ids": ge2_parent_ids,
         "ge2_max_fanout": 4,
@@ -337,9 +338,18 @@ def _parent_tiled_fixture(dtype, active):
     }
 
 
+_PARENT_TILE_VARIANTS = [
+    pytest.param(dts_cross_backward_accum_parent_tiled_fused, id="rectangular"),
+    pytest.param(dts_cross_backward_accum_parent_ragged_fused, id="ragged"),
+]
+
+
 @pytest.mark.parametrize("dtype,atol,rtol", [(torch.float32, 4e-5, 4e-5), (torch.float64, 1e-10, 1e-10)])
 @pytest.mark.parametrize("active", [False, True])
-def test_dts_backward_parent_tiled_matches_direct_accum(dtype, atol, rtol, active):
+@pytest.mark.parametrize("parent_impl", _PARENT_TILE_VARIANTS)
+def test_dts_backward_parent_tile_variants_matches_direct_accum(
+    dtype, atol, rtol, active, parent_impl
+):
     args = _parent_tiled_fixture(dtype, active)
     base_rhs = torch.zeros_like(args["Pi"])
     tiled_rhs = torch.zeros_like(args["Pi"])
@@ -372,7 +382,7 @@ def test_dts_backward_parent_tiled_matches_direct_accum(dtype, atol, rtol, activ
         mt_squeezed=args["mt"],
         pibar_row_max=args["row_max"],
     )
-    tiled = dts_cross_backward_accum_parent_tiled_fused(
+    tiled = parent_impl(
         args["Pi"],
         args["Pibar"],
         args["v_k"],
@@ -410,7 +420,10 @@ def test_dts_backward_parent_tiled_matches_direct_accum(dtype, atol, rtol, activ
 
 @pytest.mark.parametrize("dtype,atol,rtol", [(torch.float32, 5e-5, 5e-5), (torch.float64, 1e-9, 1e-10)])
 @pytest.mark.parametrize("active", [False, True])
-def test_dts_backward_parent_tiled_staged_pibar_ud_matches_direct(dtype, atol, rtol, active):
+@pytest.mark.parametrize("parent_impl", _PARENT_TILE_VARIANTS)
+def test_dts_backward_parent_tile_variants_staged_pibar_ud_matches_direct(
+    dtype, atol, rtol, active, parent_impl
+):
     args = _parent_tiled_fixture(dtype, active)
     base_rhs = torch.zeros_like(args["Pi"])
     tiled_rhs = torch.zeros_like(args["Pi"])
@@ -447,7 +460,7 @@ def test_dts_backward_parent_tiled_staged_pibar_ud_matches_direct(dtype, atol, r
         mt_squeezed=args["mt"],
         pibar_row_max=args["row_max"],
     )
-    tiled = dts_cross_backward_accum_parent_tiled_fused(
+    tiled = parent_impl(
         args["Pi"],
         args["Pibar"],
         args["v_k"],
