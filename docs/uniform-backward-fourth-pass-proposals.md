@@ -2492,33 +2492,155 @@ tied to `pruning_threshold` and optimizer-level convergence tests.
 
 ## Proposal 8: split metadata and topology compression audit
 
-Species topology already has an int32 path.  Split metadata still flows through
-many kernels as int64 `sl`, `sr`, and `reduce_idx`.  The scalar metadata bytes
-are small compared with Pi/Pibar traffic, so this is not a major expected win,
-but it is easy to audit:
+### Tested report
+
+This report supersedes the stale species-topology text that used to occupy this
+section.  The final tested implementation is the two-commit split-metadata
+change:
+
+- `707bcbf Add int32 wave split metadata`
+- `be4706f Add split metadata dtype fallback`
+
+The implementation promotes Proposal 8's split-id storage change, not a new
+wave/topology algorithm.  Wave layout now stores split metadata as int32 by
+default, with `GPUREC_WAVE_SPLIT_METADATA_INT32=0` preserving the old `long`
+layout.  This is a correctness-preserving memory cleanup with neutral latency at
+50 families and a small possible benefit at 100 families; it is not a meaningful
+latency optimization by itself.
+
+### What changed technically
+
+`build_wave_layout` now selects an `index_dtype` for per-wave split metadata.
+The default is `torch.int32`; setting `GPUREC_WAVE_SPLIT_METADATA_INT32=0`
+selects `torch.long`.  The default path guards against impossible int32 clade
+ids by raising if `C > torch.iinfo(torch.int32).max`.
+
+The implementation deliberately keeps compatibility boundaries explicit:
+
+- PyTorch fallback and indexing sites call `.long()` before using split metadata
+  as PyTorch indices.
+- Triton kernels accept the int32 tensors but cast loaded ids to `tl.int64`
+  before pointer arithmetic and row offset calculations.
+- The optional CUDA Pibar-from-`u_d` prototype accepts int32 inputs at the Python
+  boundary, then widens them to contiguous int64 tensors internally because the
+  prototype CUDA signature still uses `long long*`.
+- `ge2_ptr` remains `torch.long`; it is a CSR pointer vector passed to
+  `seg_logsumexp`, which asserts int64 pointers.
+
+This means the storage dtype changed, while the address/index arithmetic remains
+64-bit where the current PyTorch, Triton, and CUDA call sites require it.
+
+### Metadata dtypes after the audit
+
+| Metadata | Final dtype/path | Reason |
+|---|---|---|
+| `sl`, `sr` | int32 by default; long with `GPUREC_WAVE_SPLIT_METADATA_INT32=0` | global child clade ids fit int32 in the tested layouts; storage is halved |
+| `reduce_idx` | int32 by default; long with fallback flag | wave-local parent row ids fit int32 and are loaded by Triton/CUDA paths |
+| `eq1_reduce_idx` | int32 by default; long with fallback flag | view/slice of the same parent-id storage used for single-split parents |
+| `ge2_parent_ids` | int32 by default; long with fallback flag | wave-local parent ids for multi-split parent groups |
+| `ge2_ptr` | kept long | CSR pointer vector for `seg_logsumexp`; that helper requires int64 ptrs |
+| `perm`, `inv_perm`, `wave_starts` | kept long | global layout/permutation tensors used directly by PyTorch indexing |
+| `leaf_row_index`, `leaf_col_index`, `leaf_species_index` | kept long | PyTorch indexing and sentinel-compatible leaf metadata |
+| `root_clade_ids`, `original_root_clade_ids`, `family_idx` | kept long | PyTorch indexing and family/root bookkeeping |
+| species topology and compact level topology | separate from this change | previous topology-int32 work remains controlled by its own paths; Proposal 8 here is split metadata |
+
+### Correctness evidence
+
+Final correctness checks on 2026-05-04:
+
+| Command | Result |
+|---|---:|
+| `py_compile` for touched implementation/profiling files | passed |
+| focused new dtype/fallback tests | `3 passed` |
+| `pytest -q tests/kernels/test_dts_fused_kernel.py tests/kernels/test_dts_backward_accum_kernel.py tests/gradients/test_autograd_bridge.py` | `107 passed in 17.28s` |
+| supervisor rerun combining py_compile, wave-layout fallback tests, DTS tests, and autograd bridge | `109 passed in 15.29s` |
+
+The parity checks compare the final int32 default against the long-metadata
+fallback:
+
+| Case | Loss diff | Grad max abs | Grad relative |
+|---|---:|---:|---:|
+| 10 families | `0` | `1.220703125e-4` | `9.14e-8` |
+| 50 families | `0` | `1.46484375e-3` | `2.272e-7` |
+
+These differences are in the expected fp32 accumulation-noise range.  The long
+fallback test is important because it verifies `GPUREC_WAVE_SPLIT_METADATA_INT32=0`
+still constructs long `sl`/`sr`/`reduce_idx`/`eq1_reduce_idx`/`ge2_parent_ids`
+metadata while leaving `ge2_ptr` long in both modes.
+
+### Timing and profiling evidence
+
+CUDA-event medians show the expected shape: memory improves, latency is mostly
+neutral.
+
+| Case and run order | Long median | Int32 median | Int32 minus long | Read |
+|---|---:|---:|---:|---|
+| 10 families | `34.500 ms` | `34.766 ms` | `+0.266 ms` | neutral |
+| 50 families, long first | `103.323 ms` | `103.593 ms` | `+0.270 ms` | neutral/slightly worse, with outliers |
+| 50 families, int32 first | `102.961 ms` | `104.728 ms` | `+1.767 ms` | order-sensitive, not a win |
+| 100 families, long first | `188.837 ms` | `187.401 ms` | `-1.436 ms` | small possible win |
+| 100 families, int32 first | `188.452 ms` | `187.293 ms` | `-1.159 ms` | small possible win |
+
+Peak memory is the clearer benefit:
+
+| Case | Peak-memory effect |
+|---|---:|
+| 50 families | about `6 MB` saved |
+| 100 families | about `12 MB` saved |
+
+Nsight Systems on the 50-family case confirms the hot kernel mix did not change
+materially:
+
+| Mode | Summed kernel time | Kernel launches | Read |
+|---|---:|---:|---|
+| long metadata fallback | `91.660 ms` | 2918 | baseline for the final code with `GPUREC_WAVE_SPLIT_METADATA_INT32=0` |
+| default int32 metadata | `90.977 ms` | 2942 | same DTS/Pibar buckets within noise; small launch-count increase from compatibility work |
+
+Nsight Compute for the DTS accumulation kernel is also essentially unchanged:
+both modes use 96 registers/thread, `41.67%` theoretical occupancy, about
+`41.5%` achieved occupancy, about `69-73%` DRAM throughput, and about `33-35%`
+SM throughput.
+
+The resource interpretation is therefore straightforward.  Split ids are scalar
+metadata, while the dominant kernels still move GB-scale Pi/Pibar/DTS row data.
+Halving the metadata storage reduces persistent wave-layout/cache footprint and
+shows up as the measured peak-memory savings.  It does not remove the need for
+64-bit address math: Triton widens ids before pointer arithmetic, PyTorch
+fallbacks create `.long()` compatibility views for indexing, and the optional
+CUDA Pibar prototype widens to match its current `long long*` signature.  Those
+compatibility costs explain why the 50-family timing is neutral to slightly
+worse even though memory use is cleaner.
+
+### Decision
+
+Keep the default int32 split metadata and keep
+`GPUREC_WAVE_SPLIT_METADATA_INT32=0` as the conservative long fallback.
+
+This is correct and low-risk, and it gives a small, scaling memory cleanup:
+about `6 MB` at 50 families and about `12 MB` at 100 families in the tested
+profile.  It should not be counted as a meaningful latency optimization.  The
+50-family latency is neutral or slightly worse, and the 100-family timing shows
+only about a `1 ms` possible benefit.  Do not spend more effort compressing this
+metadata unless future source counters show scalar split-id loads as a real hot
+path, or unless the PyTorch/CUDA fallback boundaries are removed so int32 ids can
+stay int32 end to end.
+
+Artifacts:
 
 ```text
-50-family C = 321930
-100-family C = 635372
-1000-family chunks are still well below int32 range
+/tmp/gpurec_profile/prop8_int32_metadata/
+/tmp/gpurec_profile/prop8_int32_metadata/baseline/summary.txt
+/tmp/gpurec_profile/prop8_int32_metadata/be4706f_int32/logs/
+/tmp/gpurec_profile/prop8_int32_metadata/be4706f_long/
+/tmp/gpurec_profile/prop8_int32_metadata/nsys_50_i32_0.nsys-rep
+/tmp/gpurec_profile/prop8_int32_metadata/nsys_50_i32_0.sqlite
+/tmp/gpurec_profile/prop8_int32_metadata/nsys_50_i32_1.nsys-rep
+/tmp/gpurec_profile/prop8_int32_metadata/nsys_50_i32_1.sqlite
+/tmp/gpurec_profile/prop8_int32_metadata/ncu_dts_accum_i32_0.ncu-rep
+/tmp/gpurec_profile/prop8_int32_metadata/ncu_dts_accum_i32_1.ncu-rep
+/tmp/gpurec_profile/prop8_int32_metadata/ncu_dts_accum_basic_i32_0.ncu-rep
+/tmp/gpurec_profile/prop8_int32_metadata/ncu_dts_accum_basic_i32_1.ncu-rep
 ```
-
-Potential changes:
-
-- store `sl`, `sr`, `reduce_idx`, `eq1_reduce_idx`, and ge2 parent ids as
-  int32 in the wave layout;
-- keep a long fallback only for PyTorch indexing paths that require it;
-- pass int32 metadata into Triton/CUDA kernels by default.
-
-Expected gain:
-
-- probably `<1 ms` at 50 families;
-- may reduce register pressure and memory sectors slightly in DTS/Pibar
-  kernels;
-- low risk if all PyTorch indexing fallbacks keep long tensors.
-
-This should not interrupt higher-upside work, but it is a useful cleanup before
-writing new CUDA kernels.
 
 ## Ranked next plan
 
@@ -2534,7 +2656,7 @@ The best next experiments by expected value are:
 | 6 | Proposal 3, CUDA graph segments | More useful after memory kernels shrink | `0-6 ms` |
 | 7 | Proposal 6, Euler species layout | High upside but broad refactor | `5-15 ms`, high risk |
 | 8 | Proposal 7, thresholded side pruning | Potentially useful but approximate | `0-6 ms`, opt-in |
-| 9 | Proposal 8, int32 split metadata | Cleanup, likely small | `<1 ms` |
+| 9 | Proposal 8 follow-up | Implemented as default int32 split metadata with long fallback; revisit only if scalar ids become source-counter hot | none now |
 
 ## Measurement gates for the fourth wave
 
