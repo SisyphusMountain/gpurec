@@ -1007,6 +1007,219 @@ Expected effect:
 - remove large generic PyTorch materializations from the self-loop;
 - close the most obvious gap between genewise and global backward.
 
+### Proposal 2 follow-up: implemented family-indexed fused self-loop
+
+Proposal 2 was implemented and accepted as the default genewise uniform
+backward self-loop path when the shapes are supported.
+
+The old gate was effectively:
+
+```python
+can_use_fused_uniform_backward = fused and G == 1 and pibar_mode == "uniform"
+```
+
+The new gate also accepts genewise batches when the self-loop constants are
+available as family-indexed species rows:
+
+```python
+family_indexed_self_loop_supported =
+    E, Ebar, E_s1, E_s2, mt are [G,S]
+    and log_pD/log_pS are [G] or [G,S]
+    and pibar_mode == "uniform"
+
+can_use_fused_uniform_backward =
+    fused and (_auto_wrapped or family_indexed_self_loop_supported)
+```
+
+The fused Triton kernel now has three constant-addressing layouts:
+
+| Layout | Tensor shape | Addressing |
+|---|---|---|
+| shared | `[S]` | `const[s]` |
+| row-expanded | `[W,S]` | `const[row,s]` |
+| family-indexed | `[G,S]` | `const[family_idx[ws + row], s]` |
+
+For the genewise self-loop we use the family-indexed layout, so the backward
+wave does not first materialize `DL`, `E`, `Ebar`, `SL1`, `SL2`, or `mt` as
+`[W,S]`.  Parameter-gradient accumulation is also family-aware:
+
+```text
+scalar genewise:
+    atomic_add grad_log_pD[family] += sum_s awD[row,s]
+    atomic_add grad_log_pS[family] += sum_s awS[row,s]
+
+specieswise genewise:
+    atomic_add grad_log_pD[family,s] += awD[row,s]
+    atomic_add grad_log_pS[family,s] += awS[row,s]
+
+all cases:
+    atomic_add grad_E[family,s]     += ...
+    atomic_add grad_Ebar[family,s]  += ...
+    atomic_add grad_E_s1[family,s]  += ...
+    atomic_add grad_E_s2[family,s]  += ...
+    atomic_add grad_mt[family,s]    += ...
+```
+
+The CUDA no-split prototype remains global-only.  Genewise DTS backward and
+cross-Pibar VJP are still generic after this proposal.
+
+#### Correctness
+
+Focused local validation:
+
+```bash
+python -m py_compile \
+  gpurec/core/backward.py \
+  gpurec/core/kernels/wave_backward.py \
+  profiling/proposal2/bench_genewise_backward.py \
+  tests/gradients/test_genewise_fused_backward.py
+
+pytest -q \
+  tests/kernels/test_wave_step_uniform_forward_kernel.py \
+  tests/unit/test_specieswise_uniform.py \
+  tests/gradients/test_genewise_fused_backward.py \
+  tests/unit/test_genewise_wave.py::test_genewise_uniform_leaf_index_gradient_bridge_matches_dense_leaf_fallback \
+  tests/gradients/test_autograd_bridge.py::test_genewise_uniform_backward_matches_individual_uniform_trees
+```
+
+Result:
+
+```text
+15 passed in 7.52 s
+```
+
+Broader backward-kernel and genewise-wave regression pass:
+
+```bash
+pytest -q tests/kernels/test_wave_backward_kernel.py tests/unit/test_genewise_wave.py
+```
+
+Result:
+
+```text
+25 passed in 12.43 s
+```
+
+The new dedicated genewise backward test file covers:
+
+- small-tree `torch.autograd.gradcheck`;
+- batched genewise weighted gradients against independent global/uniform
+  per-family runs;
+- high-`S` fp64 optimized genewise self-loop against a tight generic fallback,
+  with a guard that fails if the optimized path reaches the old generic
+  self-loop.
+
+Direct kernel parity smokes from the implementation worker:
+
+| Case | Output max diff | Gradient max diff |
+|---|---:|---:|
+| small `S=199`, scalar `[G]` | `0.000e+00` | `2.682e-07` |
+| small `S=199`, specieswise `[G,S]` | `1.705e-13` | `1.192e-07` |
+| large `S=1999`, scalar `[G]` | `7.451e-09` | `7.629e-06` |
+| large `S=1999`, specieswise `[G,S]` | `3.725e-09` | `2.503e-06` |
+
+Full `Pi_wave_backward` large smokes produced finite `v_Pi` and finite
+parameter gradients for both scalar genewise and specieswise genewise layouts.
+
+#### Benchmark
+
+Clean local 10-family benchmark, `tests/data/test_trees_1000`, fp32,
+`max_wave_size=4096`, pruning enabled:
+
+```bash
+PREPROCESS_CACHE_DIR=/tmp/gpurec_prop2_genewise_cache \
+python profiling/proposal2/bench_genewise_backward.py \
+  --dataset tests/data/test_trees_1000 \
+  --fams 10 \
+  --reps 5 \
+  --warmups 2 \
+  --max-wave-size 4096 \
+  --backward-path optimized-genewise
+```
+
+The helper installs a guard that raises if `_self_loop_vjp_precompute` or
+`_gmres_self_loop_solve` is reached, so the timing is definitely the optimized
+family-indexed fused path.
+
+| Path | Mean | Median | Min | Loss | Peak allocation |
+|---|---:|---:|---:|---:|---:|
+| generic self-loop fallback | `531.410 ms` | `531.569 ms` | `530.306 ms` | `22182.9140625` | `6.615 GB` |
+| optimized genewise self-loop | `310.082 ms` | `310.018 ms` | `309.586 ms` | `22182.9140625` | `6.595 GB` |
+
+This clean rerun gives a `1.71x` median speedup for the 10-family backward.
+The absolute timings differ from the noisier Nsys profiling run, but the
+direction is the same.
+
+Profiler run from Pauli, same 10-family shape:
+
+| Path | Mean | Median | Min | Peak allocation | Loss |
+|---|---:|---:|---:|---:|---:|
+| generic fallback | `669.738 ms` | `589.145 ms` | `556.977 ms` | `12.136 GB` | `22182.9140625` |
+| optimized genewise self-loop | `483.833 ms` | `444.749 ms` | `309.859 ms` | `6.595 GB` | `22182.9140625` |
+
+Nsys 10-family breakdown:
+
+| Metric | Generic | Optimized |
+|---|---:|---:|
+| captured backward event time | `1053.412 ms` | `354.899 ms` |
+| GPU active time | `508.093 ms` | `298.207 ms` |
+| kernel launches | `25253` | `7394` |
+| summed kernel time | `502.338 ms` | `297.140 ms` |
+| `_wave_backward_uniform_kernel` | `0 / 0 ms` | `32 / 61.738 ms` |
+| PyTorch elementwise/math/fill | `15944 / 266.712 ms` | `3457 / 98.848 ms` |
+| cuSPARSE sparse matmul | `1039 / 94.721 ms` | `312 / 29.011 ms` |
+| cat/materialization | `265 / 51.894 ms` | `201 / 47.639 ms` |
+| scatter/add atomics | `891 / 22.667 ms` | `365 / 10.574 ms` |
+| DTS forward recompute | `37 / 2.792 ms` | `37 / 2.744 ms` |
+
+The optimized path removes most of the old generic self-loop launch pressure.
+It does not change DTS forward recompute, DTS backward, or cross-Pibar VJP.
+
+NCU on the largest optimized self-loop launch:
+
+| Metric | Value |
+|---|---:|
+| duration | `29.44 ms` |
+| grid / block | `(16645,1,1)` / `(128,1,1)` |
+| registers/thread | `40` |
+| achieved occupancy | `98.33%` |
+| spills/local load-store | `0` |
+| memory throughput | `204.28 GB/s` |
+| DRAM read/write | `3.679 GB / 2.334 GB` |
+| L1 / L2 hit rate | `24.52% / 93.13%` |
+| global atom / red ops | `49.935M / 5.509M` |
+| L2 atomic input cycles active | `36.09%` |
+| issue slots busy | `8.64%` |
+
+The kernel is not register- or occupancy-limited.  The new visible cost is
+direct family-gradient atomic pressure, especially when many active rows in a
+wave share the same family.
+
+#### Remaining blocker
+
+The 50-family genewise backward still OOMs even after Proposal 2.  The failure
+is not in the fused self-loop.  It happens later in the remaining generic
+DTS/Pibar path:
+
+```text
+gpurec/core/backward.py:2304 grad_DTS_5 = ...
+tried to allocate 1.57 GiB
+about 21.85 GiB already in use
+```
+
+The 1000-tree full backward was therefore not attempted.  The 1000-tree shape
+is:
+
+```text
+S=1999 G=1000 C=6417248 waves=231 maxW=32768
+split_rows=8018810 leaves=1605562 roots=1000
+```
+
+Decision: keep Proposal 2.  It is correct, removes the old generic self-loop
+from optimized genewise backward, and gives a clear 10-family speedup.  The
+next useful work is Proposal 3 and Proposal 4: make genewise DTS backward and
+uniform Pibar VJP family-aware so the larger batches fit.
+
 ## Proposal 3: Port Fused DTS Backward Accumulation To Genewise
 
 After the self-loop, the next generic genewise cost is cross-clade DTS
@@ -1248,7 +1461,7 @@ Tolerance policy:
 | 0 | Family-indexed constants inside forward wave-step | Accepted; removed `[W,S]` uniform constant materialization | 1000-tree forward: `4.468 s -> 2.618 s` |
 | 1 | Family-indexed forward DTS parameters | Accepted; removes `[n_splits,S]` DTS parameter expansion in high-fanout waves | 1000-tree forward: `2.610 s -> 2.328 s` |
 | 2 | Genewise profiling harnesses | Prevents benchmarking old generic paths | reproducible optimized forward/backward numbers |
-| 3 | Fused genewise backward self-loop | Required to make genewise backward use the uniform fast path | 10/50-family backward time, peak memory, NCU self-loop |
+| 3 | Fused genewise backward self-loop | Accepted; removes the generic self-loop for supported genewise uniform batches | 10-family backward: `531.569 ms -> 310.018 ms` locally |
 | 4 | Fused genewise DTS backward accumulation | Removes generic `DTS_5` and split scatter work | DTS backward bucket and parameter scatter time |
 | 5 | Family-aware uniform Pibar VJP | Reuses exact ancestor-corrected global Pibar VJP kernels | Pibar VJP bucket and memory |
 | 6 | Saved-tensor and chunked autograd strategy | Required for 1000-family genewise training | full 1000-tree backward without OOM |
@@ -1274,11 +1487,15 @@ Forward:
 
 Backward:
 
-- The first goal is not a small percentage win.  The first goal is to make an
-  optimized genewise backward path exist and fit.
-- Once the fused self-loop, DTS backward, and Pibar VJP are family-aware,
-  genewise backward should be compared to global/uniform backward per resident
-  chunk, not to the current generic 10-family smoke number.
+- Proposal 2 now makes the optimized genewise backward self-loop exist and fit
+  for 10-family chunks.  In a clean local benchmark it improved the 10-family
+  backward from `531.569 ms` median to `310.018 ms` median.
+- The optimized self-loop alone is not enough for 50/1000-family genewise
+  backward.  The remaining OOM happens in generic DTS/Pibar backward
+  materialization, not in `_wave_backward_uniform_kernel`.
+- Once DTS backward and Pibar VJP are family-aware, genewise backward should be
+  compared to global/uniform backward per resident chunk, not to the current
+  partially optimized 10-family smoke number.
 - The expected lower bound is the global/uniform fused path plus extra
   family-indexed parameter loads and per-family gradient accumulation.  The
   expected upper bound is much better than generic PyTorch autograd because the

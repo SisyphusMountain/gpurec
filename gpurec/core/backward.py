@@ -1113,6 +1113,8 @@ def Pi_wave_backward(
         log_pD = log_pD.unsqueeze(0)
         log_pL = log_pL.unsqueeze(0)
         max_transfer_mat = max_transfer_mat.unsqueeze(0)
+    else:
+        family_idx = family_idx.to(device=device, dtype=torch.long).contiguous()
 
     family_chunk_diag_wave_info = None
     family_chunk_diag_values = None
@@ -1186,14 +1188,44 @@ def Pi_wave_backward(
 
     G = log_pD.shape[0]
 
-    def _to_clade(p):
-        r = p[family_idx]
-        return r.unsqueeze(-1) if r.ndim == 1 else r
+    def _family_param_shape_ok(p):
+        return (
+            torch.is_tensor(p)
+            and p.ndim in (1, 2)
+            and int(p.shape[0]) == int(G)
+            and (p.ndim == 1 or int(p.shape[1]) in (1, S))
+        )
 
+    def _family_species_shape_ok(p):
+        return (
+            torch.is_tensor(p)
+            and p.ndim == 2
+            and int(p.shape[0]) == int(G)
+            and int(p.shape[1]) == int(S)
+        )
+
+    fused_genewise_self_loop_env = os.environ.get(
+        "GPUREC_FUSED_GENEWISE_BACKWARD_SELF_LOOP",
+        os.environ.get("GPUREC_FUSED_GENEWISE_BACKWARD", "1"),
+    ).strip().lower()
+    fused_genewise_self_loop_requested = fused_genewise_self_loop_env not in (
+        "", "0", "false", "off", "no"
+    )
+    family_indexed_self_loop_supported = (
+        (not _auto_wrapped)
+        and fused_genewise_self_loop_requested
+        and _family_species_shape_ok(E)
+        and _family_species_shape_ok(Ebar)
+        and _family_species_shape_ok(E_s1)
+        and _family_species_shape_ok(E_s2)
+        and _family_species_shape_ok(mt_squeezed)
+        and _family_param_shape_ok(log_pD)
+        and _family_param_shape_ok(log_pS)
+    )
     can_use_fused_uniform_backward = (
         fused_uniform_backward_enabled
         and _HAS_FUSED_BACKWARD
-        and G == 1
+        and (_auto_wrapped or family_indexed_self_loop_supported)
         and pibar_mode == 'uniform'
         and dtype in (torch.float32, torch.float64)
         and device.type == 'cuda'
@@ -1292,20 +1324,36 @@ def Pi_wave_backward(
         DL_shared = 1.0 + log_pD_shared + E_shared
         SL1_shared = log_pS_shared + E_s2_shared
         SL2_shared = log_pS_shared + E_s1_shared
-        mt_clade = E_clade = Ebar_clade = log_pD_clade = log_pS_clade = None
-        DL_const = SL1_const = SL2_const = None
+        mt_family = E_family = Ebar_family = None
+        DL_family = SL1_family = SL2_family = None
     else:
         mt_shared = E_shared = Ebar_shared = E_s1_shared = E_s2_shared = None
         log_pD_shared = log_pS_shared = None
         DL_shared = SL1_shared = SL2_shared = None
-        mt_clade = _to_clade(mt_squeezed)
-        E_clade = _to_clade(E)
-        Ebar_clade = _to_clade(Ebar)
-        log_pD_clade = _to_clade(log_pD)
-        log_pS_clade = _to_clade(log_pS)
-        DL_const = 1.0 + log_pD_clade + E_clade
-        SL1_const = log_pS_clade + _to_clade(E_s2)
-        SL2_const = log_pS_clade + _to_clade(E_s1)
+        mt_family = mt_squeezed.contiguous()
+        E_family = E.contiguous()
+        Ebar_family = Ebar.contiguous()
+        _pD_family = log_pD.unsqueeze(-1) if log_pD.ndim == 1 else log_pD
+        _pS_family = log_pS.unsqueeze(-1) if log_pS.ndim == 1 else log_pS
+        DL_family = (1.0 + _pD_family + E).contiguous()
+        SL1_family = (_pS_family + E_s2).contiguous()
+        SL2_family = (_pS_family + E_s1).contiguous()
+
+    def _wave_consts(ws, we, *, family_indexed):
+        """Return constants for the current self-loop wave."""
+        if _auto_wrapped:
+            return mt_shared, DL_shared, E_shared, Ebar_shared, SL1_shared, SL2_shared
+        if family_indexed:
+            return mt_family, DL_family, E_family, Ebar_family, SL1_family, SL2_family
+        fi_w = family_idx[ws:we]
+        return (
+            mt_family[fi_w],
+            DL_family[fi_w],
+            E_family[fi_w],
+            Ebar_family[fi_w],
+            SL1_family[fi_w],
+            SL2_family[fi_w],
+        )
 
     leaf_row_index = wave_layout['leaf_row_index']
     leaf_col_index = wave_layout['leaf_col_index']
@@ -1313,26 +1361,29 @@ def Pi_wave_backward(
 
     use_uniform_leaf_index = bool(
         os.environ.get("GPUREC_BACKWARD_LEAF_INDEX", "1") != "0"
-        and _auto_wrapped
+        and can_use_fused_uniform_backward
         and pibar_mode == 'uniform'
         and device.type == 'cuda'
         and leaf_species_index is not None
     )
     uniform_leaf_logp = None
     if use_uniform_leaf_index:
-        use_scalar_leaf_logp = (
-            os.environ.get("GPUREC_SCALAR_LEAF_LOGP", "0") != "0"
-            and log_pS_shared.ndim == 0
-        )
-        uniform_leaf_logp = (
-            log_pS_shared.contiguous()
-            if use_scalar_leaf_logp
-            else (
-                log_pS_shared.expand(S).contiguous()
-                if log_pS_shared.ndim == 0
-                else log_pS_shared.contiguous()
+        if _auto_wrapped:
+            use_scalar_leaf_logp = (
+                os.environ.get("GPUREC_SCALAR_LEAF_LOGP", "0") != "0"
+                and log_pS_shared.ndim == 0
             )
-        )
+            uniform_leaf_logp = (
+                log_pS_shared.contiguous()
+                if use_scalar_leaf_logp
+                else (
+                    log_pS_shared.expand(S).contiguous()
+                    if log_pS_shared.ndim == 0
+                    else log_pS_shared.contiguous()
+                )
+            )
+        else:
+            uniform_leaf_logp = log_pS.contiguous()
     fused_wave_param_accum_enabled = (
         os.environ.get("GPUREC_FUSED_WAVE_PARAM_ACCUM", "1") != "0"
     )
@@ -1409,7 +1460,10 @@ def Pi_wave_backward(
         leaf_mask = _get_leaf_mask(ws, we)
         if _auto_wrapped:
             return log_pS_shared + leaf_mask
-        return log_pS_clade[ws:we] + leaf_mask
+        log_pS_w = log_pS[family_idx[ws:we]]
+        if log_pS_w.ndim == 1:
+            log_pS_w = log_pS_w.unsqueeze(-1)
+        return log_pS_w + leaf_mask
 
     n_waves_total = K
     n_waves_skipped = 0
@@ -1671,8 +1725,13 @@ def Pi_wave_backward(
                 log_pS_dts = log_pS_shared
             else:
                 reduce_idx_long = reduce_idx.long()
-                log_pD_dts = log_pD_clade[ws + reduce_idx_long]
-                log_pS_dts = log_pS_clade[ws + reduce_idx_long]
+                fi_splits_dts = family_idx[ws + reduce_idx_long]
+                log_pD_dts = log_pD[fi_splits_dts]
+                log_pS_dts = log_pS[fi_splits_dts]
+                if log_pD_dts.ndim == 1:
+                    log_pD_dts = log_pD_dts.unsqueeze(-1)
+                if log_pS_dts.ndim == 1:
+                    log_pS_dts = log_pS_dts.unsqueeze(-1)
             with torch.no_grad():
                 if _compute_dts_cross_kernelized is not None:
                     dts_r = _compute_dts_cross_kernelized(
@@ -1692,20 +1751,10 @@ def Pi_wave_backward(
         else:
             dts_r = None
 
-        if _auto_wrapped:
-            mt_w = mt_shared
-            DL_w = DL_shared
-            E_w = E_shared
-            Ebar_w = Ebar_shared
-            SL1_w = SL1_shared
-            SL2_w = SL2_shared
-        else:
-            mt_w = mt_clade[ws:we]
-            DL_w = DL_const[ws:we]
-            E_w = E_clade[ws:we]
-            Ebar_w = Ebar_clade[ws:we]
-            SL1_w = SL1_const[ws:we]
-            SL2_w = SL2_const[ws:we]
+        use_family_indexed_self_loop = bool(use_fused and not _auto_wrapped)
+        mt_w, DL_w, E_w, Ebar_w, SL1_w, SL2_w = _wave_consts(
+            ws, we, family_indexed=use_family_indexed_self_loop
+        )
 
         if not kernel_pruning_wave and not use_fused:
             use_compact = (n_active < W)
@@ -1738,18 +1787,30 @@ def Pi_wave_backward(
 
         if use_fused:
             accum_param_grads = None
-            if fused_wave_param_accum_enabled and _auto_wrapped:
-                accum_param_grads = (
-                    grad_log_pD,
-                    grad_log_pS,
-                    grad_E_acc[0],
-                    grad_Ebar_acc[0],
-                    grad_E_s1_acc[0],
-                    grad_E_s2_acc[0],
-                    grad_mt[0],
-                )
+            if fused_wave_param_accum_enabled:
+                if _auto_wrapped:
+                    accum_param_grads = (
+                        grad_log_pD,
+                        grad_log_pS,
+                        grad_E_acc[0],
+                        grad_Ebar_acc[0],
+                        grad_E_s1_acc[0],
+                        grad_E_s2_acc[0],
+                        grad_mt[0],
+                    )
+                elif use_family_indexed_self_loop:
+                    accum_param_grads = (
+                        grad_log_pD,
+                        grad_log_pS,
+                        grad_E_acc,
+                        grad_Ebar_acc,
+                        grad_E_s1_acc,
+                        grad_E_s2_acc,
+                        grad_mt,
+                    )
             use_cuda_nosplit = (
                 cuda_self_loop_nosplit_enabled
+                and _auto_wrapped
                 and dts_r is None
                 and accum_param_grads is not None
                 and dtype == torch.float32
@@ -1810,7 +1871,6 @@ def Pi_wave_backward(
                         or active_mask_for_split_kernels is active_mask_for_wave_kernel
                     )
                 )
-                # G=1: extract shared [S] constants for the fused kernel.
                 v_k, aw0, aw1, aw2, aw345, aw3, aw4 = wave_backward_uniform_fused(
                     Pi_star_wave, Pibar_star_wave, ws, W, S,
                     dts_r, rhs_k,
@@ -1826,6 +1886,8 @@ def Pi_wave_backward(
                     pibar_row_max=forward_pibar_row_max,
                     skip_inactive_zero_stores=skip_wave_inactive_zero_stores,
                     scratch=scratch_pool.get("wave") if scratch_pool is not None else None,
+                    family_idx=family_idx if use_family_indexed_self_loop else None,
+                    family_indexed_consts=use_family_indexed_self_loop,
                 )
 
             if accum_param_grads is None:

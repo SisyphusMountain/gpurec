@@ -65,6 +65,49 @@ def _scratch_view(scratch, name, shape, *, device, dtype):
     return view if view.is_contiguous() else None
 
 
+def _uniform_backward_const_layout(const_tensor, family_idx, family_indexed):
+    """Return addressing mode for self-loop constants.
+
+    Modes:
+      0: shared [S]
+      1: row-expanded [W, S]
+      2: family-indexed [G, S] addressed through family_idx[C]
+    """
+    if family_indexed:
+        if family_idx is None:
+            raise ValueError("family-indexed backward constants require family_idx")
+        if const_tensor.ndim != 2:
+            raise ValueError("family-indexed backward constants require [G, S] tensors")
+        return 2
+    if const_tensor.ndim == 2:
+        return 1
+    return 0
+
+
+def _uniform_backward_leaf_logp_mode(use_leaf_index, leaf_logp, family_idx, family_indexed):
+    """Return addressing mode for leaf log-probabilities in the self-loop."""
+    if not use_leaf_index:
+        return 0
+    if family_indexed:
+        if family_idx is None:
+            raise ValueError("family-indexed leaf log-probabilities require family_idx")
+        if leaf_logp.ndim == 1:
+            return 1
+        if leaf_logp.ndim == 2:
+            if int(leaf_logp.shape[1]) == 1:
+                raise ValueError("family-indexed [G, 1] leaf_logp should be expanded to [G, S]")
+            return 2
+        raise ValueError("family-indexed leaf_logp must have shape [G] or [G, S]")
+    if leaf_logp.numel() == 1:
+        return 3
+    return 0
+
+
+def _grad_param_is_scalar(grad):
+    """Whether a log_pD/log_pS gradient tensor is family-scalar."""
+    return grad.ndim == 1 or (grad.ndim == 2 and int(grad.shape[1]) == 1)
+
+
 def _parent_from_children(sp_child1, sp_child2, S):
     """Build species parent pointers from child arrays for direct kernel callers."""
     device = sp_child1.device
@@ -173,6 +216,7 @@ def _wave_backward_uniform_kernel(
     leaf_term_ptr,
     leaf_species_ptr,
     leaf_logp_ptr,
+    family_idx_ptr,
     # Outputs
     v_k_ptr,          # [W, S] — Neumann-solved adjoint
     # Per-element param grad contributions [W, S] each — reduced by caller
@@ -208,11 +252,14 @@ def _wave_backward_uniform_kernel(
     COMPACT_PIBAR_SCRATCH: tl.constexpr,
     RECOMPUTE_PIBAR_DENOM: tl.constexpr,
     LEAF_HIT_ONLY_LOGP: tl.constexpr,
-    LEAF_LOGP_SCALAR: tl.constexpr,
+    LEAF_LOGP_MODE: tl.constexpr,
     USE_PIBAR_ROW_MAX: tl.constexpr,
     SPEC_GATHER: tl.constexpr,
     USE_ACTIVE_MASK: tl.constexpr,
     SKIP_INACTIVE_ZERO_STORES: tl.constexpr,
+    CONST_LAYOUT: tl.constexpr,
+    LOG_PD_GRAD_SCALAR: tl.constexpr,
+    LOG_PS_GRAD_SCALAR: tl.constexpr,
     DTYPE: tl.constexpr,
 ):
     """Fused backward kernel for uniform Pibar mode.
@@ -234,6 +281,15 @@ def _wave_backward_uniform_kernel(
     w = tl.program_id(0)
     pi_base = (ws + w) * stride      # offset into [C, S]
     out_base = w * stride             # offset into [W, S]
+    family = tl.full([1], value=0, dtype=tl.int64)
+    const_base = 0
+    grad_family_base = 0
+    if CONST_LAYOUT == 1:
+        const_base = out_base
+    elif CONST_LAYOUT == 2:
+        family = tl.load(family_idx_ptr + ws + w).to(tl.int64) + tl.zeros([1], dtype=tl.int64)
+        const_base = family * stride
+        grad_family_base = family * stride
     if USE_ACTIVE_MASK:
         row_active = tl.load(active_mask_ptr + w)
         if row_active == 0:
@@ -316,11 +372,11 @@ def _wave_backward_uniform_kernel(
         pibar_w = tl.load(Pibar_star_ptr + pi_base + s_offs, mask=mask, other=-1e30)
 
         # Load constants
-        dl_c = tl.load(DL_const_ptr + s_offs, mask=mask, other=-1e30)
-        ebar = tl.load(Ebar_ptr + s_offs, mask=mask, other=-1e30)
-        e_val = tl.load(E_ptr + s_offs, mask=mask, other=-1e30)
-        sl1_c = tl.load(SL1_const_ptr + s_offs, mask=mask, other=-1e30)
-        sl2_c = tl.load(SL2_const_ptr + s_offs, mask=mask, other=-1e30)
+        dl_c = tl.load(DL_const_ptr + const_base + s_offs, mask=mask, other=-1e30)
+        ebar = tl.load(Ebar_ptr + const_base + s_offs, mask=mask, other=-1e30)
+        e_val = tl.load(E_ptr + const_base + s_offs, mask=mask, other=-1e30)
+        sl1_c = tl.load(SL1_const_ptr + const_base + s_offs, mask=mask, other=-1e30)
+        sl2_c = tl.load(SL2_const_ptr + const_base + s_offs, mask=mask, other=-1e30)
 
         # Gather species children
         c1 = tl.load(sp_child1_ptr + s_offs, mask=mask, other=0)
@@ -339,8 +395,22 @@ def _wave_backward_uniform_kernel(
         if USE_LEAF_INDEX:
             leaf_species = tl.load(leaf_species_ptr + ws + w)
             leaf_hit = mask & (leaf_species == s_offs)
-            if LEAF_LOGP_SCALAR:
-                leaf_logp = tl.load(leaf_logp_ptr)
+            if LEAF_LOGP_MODE == 3:
+                leaf_logp = tl.load(leaf_logp_ptr).to(DTYPE) + tl.zeros([BLOCK_S], dtype=DTYPE)
+                t5 = tl.where(leaf_hit, leaf_logp, NEG_LARGE)
+            elif LEAF_LOGP_MODE == 2:
+                leaf_logp = tl.load(
+                    leaf_logp_ptr + family * stride + s_offs,
+                    mask=leaf_hit,
+                    other=-1e30,
+                )
+                t5 = tl.where(leaf_hit, leaf_logp, NEG_LARGE)
+            elif LEAF_LOGP_MODE == 1:
+                leaf_family = tl.load(family_idx_ptr + ws + w).to(tl.int64)
+                leaf_logp = (
+                    tl.load(leaf_logp_ptr + leaf_family).to(DTYPE)
+                    + tl.zeros([BLOCK_S], dtype=DTYPE)
+                )
                 t5 = tl.where(leaf_hit, leaf_logp, NEG_LARGE)
             elif LEAF_HIT_ONLY_LOGP:
                 t5 = tl.load(leaf_logp_ptr + s_offs, mask=leaf_hit, other=-1e30)
@@ -629,8 +699,8 @@ def _wave_backward_uniform_kernel(
             sl2_wt = tl.load(aw345_ptr + off, mask=mask, other=0.0)
             leaf_wt = 1.0 - diag_wt - pibar_wt - sl1_wt - sl2_wt
 
-            dl_c = tl.load(DL_const_ptr + s_offs, mask=mask, other=-1e30)
-            ebar = tl.load(Ebar_ptr + s_offs, mask=mask, other=-1e30)
+            dl_c = tl.load(DL_const_ptr + const_base + s_offs, mask=mask, other=-1e30)
+            ebar = tl.load(Ebar_ptr + const_base + s_offs, mask=mask, other=-1e30)
             m01 = tl.maximum(dl_c, ebar)
             e0_01 = tl.exp2(dl_c - m01)
             e1_01 = tl.exp2(ebar - m01)
@@ -643,23 +713,47 @@ def _wave_backward_uniform_kernel(
             _aw4 = v_k_val * sl2_wt
             _aw345 = v_k_val * (sl1_wt + sl2_wt + leaf_wt)
 
-            tl.atomic_add(grad_log_pD_ptr, tl.sum(tl.where(mask, _aw0, 0.0), axis=0), sem="relaxed")
-            tl.atomic_add(grad_log_pS_ptr, tl.sum(tl.where(mask, _aw345, 0.0), axis=0), sem="relaxed")
-            tl.atomic_add(grad_E_ptr + s_offs, _aw0 + _aw2, sem="relaxed", mask=mask)
-            tl.atomic_add(grad_Ebar_ptr + s_offs, _aw1, sem="relaxed", mask=mask)
-            tl.atomic_add(grad_E_s1_ptr + s_offs, _aw4, sem="relaxed", mask=mask)
-            tl.atomic_add(grad_E_s2_ptr + s_offs, _aw3, sem="relaxed", mask=mask)
-            tl.atomic_add(grad_mt_ptr + s_offs, _aw2, sem="relaxed", mask=mask)
+            if LOG_PD_GRAD_SCALAR:
+                tl.atomic_add(
+                    grad_log_pD_ptr + family,
+                    tl.sum(tl.where(mask, _aw0, 0.0), axis=0),
+                    sem="relaxed",
+                )
+            else:
+                tl.atomic_add(
+                    grad_log_pD_ptr + grad_family_base + s_offs,
+                    _aw0,
+                    sem="relaxed",
+                    mask=mask,
+                )
+            if LOG_PS_GRAD_SCALAR:
+                tl.atomic_add(
+                    grad_log_pS_ptr + family,
+                    tl.sum(tl.where(mask, _aw345, 0.0), axis=0),
+                    sem="relaxed",
+                )
+            else:
+                tl.atomic_add(
+                    grad_log_pS_ptr + grad_family_base + s_offs,
+                    _aw345,
+                    sem="relaxed",
+                    mask=mask,
+                )
+            tl.atomic_add(grad_E_ptr + grad_family_base + s_offs, _aw0 + _aw2, sem="relaxed", mask=mask)
+            tl.atomic_add(grad_Ebar_ptr + grad_family_base + s_offs, _aw1, sem="relaxed", mask=mask)
+            tl.atomic_add(grad_E_s1_ptr + grad_family_base + s_offs, _aw4, sem="relaxed", mask=mask)
+            tl.atomic_add(grad_E_s2_ptr + grad_family_base + s_offs, _aw3, sem="relaxed", mask=mask)
+            tl.atomic_add(grad_mt_ptr + grad_family_base + s_offs, _aw2, sem="relaxed", mask=mask)
         else:
             # Reload Pi and Pibar to recompute weights
             # (we overwrote aw* buffers with Jt scratch data)
             pi_w = tl.load(Pi_star_ptr + pi_base + s_offs, mask=mask, other=-1e30)
             pibar_w = tl.load(Pibar_star_ptr + pi_base + s_offs, mask=mask, other=-1e30)
-            dl_c = tl.load(DL_const_ptr + s_offs, mask=mask, other=-1e30)
-            ebar = tl.load(Ebar_ptr + s_offs, mask=mask, other=-1e30)
-            e_val = tl.load(E_ptr + s_offs, mask=mask, other=-1e30)
-            sl1_c = tl.load(SL1_const_ptr + s_offs, mask=mask, other=-1e30)
-            sl2_c = tl.load(SL2_const_ptr + s_offs, mask=mask, other=-1e30)
+            dl_c = tl.load(DL_const_ptr + const_base + s_offs, mask=mask, other=-1e30)
+            ebar = tl.load(Ebar_ptr + const_base + s_offs, mask=mask, other=-1e30)
+            e_val = tl.load(E_ptr + const_base + s_offs, mask=mask, other=-1e30)
+            sl1_c = tl.load(SL1_const_ptr + const_base + s_offs, mask=mask, other=-1e30)
+            sl2_c = tl.load(SL2_const_ptr + const_base + s_offs, mask=mask, other=-1e30)
             c1 = tl.load(sp_child1_ptr + s_offs, mask=mask, other=0)
             c2 = tl.load(sp_child2_ptr + s_offs, mask=mask, other=0)
             c1_valid = c1 < S
@@ -669,8 +763,22 @@ def _wave_backward_uniform_kernel(
             if USE_LEAF_INDEX:
                 leaf_species = tl.load(leaf_species_ptr + ws + w)
                 leaf_hit = mask & (leaf_species == s_offs)
-                if LEAF_LOGP_SCALAR:
-                    leaf_logp = tl.load(leaf_logp_ptr)
+                if LEAF_LOGP_MODE == 3:
+                    leaf_logp = tl.load(leaf_logp_ptr).to(DTYPE) + tl.zeros([BLOCK_S], dtype=DTYPE)
+                    t5 = tl.where(leaf_hit, leaf_logp, -1e30)
+                elif LEAF_LOGP_MODE == 2:
+                    leaf_logp = tl.load(
+                        leaf_logp_ptr + family * stride + s_offs,
+                        mask=leaf_hit,
+                        other=-1e30,
+                    )
+                    t5 = tl.where(leaf_hit, leaf_logp, -1e30)
+                elif LEAF_LOGP_MODE == 1:
+                    leaf_family = tl.load(family_idx_ptr + ws + w).to(tl.int64)
+                    leaf_logp = (
+                        tl.load(leaf_logp_ptr + leaf_family).to(DTYPE)
+                        + tl.zeros([BLOCK_S], dtype=DTYPE)
+                    )
                     t5 = tl.where(leaf_hit, leaf_logp, -1e30)
                 elif LEAF_HIT_ONLY_LOGP:
                     t5 = tl.load(leaf_logp_ptr + s_offs, mask=leaf_hit, other=-1e30)
@@ -719,13 +827,37 @@ def _wave_backward_uniform_kernel(
 
             _aw345 = _aw3 + _aw4 + _aw5
             if ACCUM_PARAM_GRADS:
-                tl.atomic_add(grad_log_pD_ptr, tl.sum(tl.where(mask, _aw0, 0.0), axis=0), sem="relaxed")
-                tl.atomic_add(grad_log_pS_ptr, tl.sum(tl.where(mask, _aw345, 0.0), axis=0), sem="relaxed")
-                tl.atomic_add(grad_E_ptr + s_offs, _aw0 + _aw2, sem="relaxed", mask=mask)
-                tl.atomic_add(grad_Ebar_ptr + s_offs, _aw1, sem="relaxed", mask=mask)
-                tl.atomic_add(grad_E_s1_ptr + s_offs, _aw4, sem="relaxed", mask=mask)
-                tl.atomic_add(grad_E_s2_ptr + s_offs, _aw3, sem="relaxed", mask=mask)
-                tl.atomic_add(grad_mt_ptr + s_offs, _aw2, sem="relaxed", mask=mask)
+                if LOG_PD_GRAD_SCALAR:
+                    tl.atomic_add(
+                        grad_log_pD_ptr + family,
+                        tl.sum(tl.where(mask, _aw0, 0.0), axis=0),
+                        sem="relaxed",
+                    )
+                else:
+                    tl.atomic_add(
+                        grad_log_pD_ptr + grad_family_base + s_offs,
+                        _aw0,
+                        sem="relaxed",
+                        mask=mask,
+                    )
+                if LOG_PS_GRAD_SCALAR:
+                    tl.atomic_add(
+                        grad_log_pS_ptr + family,
+                        tl.sum(tl.where(mask, _aw345, 0.0), axis=0),
+                        sem="relaxed",
+                    )
+                else:
+                    tl.atomic_add(
+                        grad_log_pS_ptr + grad_family_base + s_offs,
+                        _aw345,
+                        sem="relaxed",
+                        mask=mask,
+                    )
+                tl.atomic_add(grad_E_ptr + grad_family_base + s_offs, _aw0 + _aw2, sem="relaxed", mask=mask)
+                tl.atomic_add(grad_Ebar_ptr + grad_family_base + s_offs, _aw1, sem="relaxed", mask=mask)
+                tl.atomic_add(grad_E_s1_ptr + grad_family_base + s_offs, _aw4, sem="relaxed", mask=mask)
+                tl.atomic_add(grad_E_s2_ptr + grad_family_base + s_offs, _aw3, sem="relaxed", mask=mask)
+                tl.atomic_add(grad_mt_ptr + grad_family_base + s_offs, _aw2, sem="relaxed", mask=mask)
             else:
                 tl.store(aw0_ptr + off, _aw0, mask=valid_mask)
                 tl.store(aw1_ptr + off, _aw1, mask=valid_mask)
@@ -1141,6 +1273,8 @@ def wave_backward_uniform_fused(
     pibar_row_max=None,
     skip_inactive_zero_stores=False,
     scratch=None,
+    family_idx=None,
+    family_indexed_consts=False,
 ):
     """Fused backward: precompute + Neumann + param VJP in one kernel per wave.
 
@@ -1152,12 +1286,14 @@ def wave_backward_uniform_fused(
         S: number of species
         dts_r: [W, S] or None
         rhs: [W, S] incoming adjoint
-        mt_squeezed, DL_const, Ebar, E, SL1_const, SL2_const: [S]
+        mt_squeezed, DL_const, Ebar, E, SL1_const, SL2_const:
+            [S], [W, S], or [G, S] when family_indexed_consts=True
         sp_child1, sp_child2: [S] long
         leaf_term_wt: [W, S]
         neumann_terms: int
         leaf_species_idx: optional [C] row -> species leaf index, -1 for non-leaves
-        leaf_logp: optional [S] log_pS values used with leaf_species_idx
+        leaf_logp: optional [S], [G], or [G, S] log_pS values used with
+            leaf_species_idx
         accum_param_grads: optional tuple of seven tensors
             (grad_log_pD, grad_log_pS, grad_E, grad_Ebar,
              grad_E_s1, grad_E_s2, grad_mt). When provided, the kernel
@@ -1174,6 +1310,26 @@ def wave_backward_uniform_fused(
     accum_enabled = accum_param_grads is not None
     has_splits = dts_r is not None
     use_leaf_index = leaf_species_idx is not None and leaf_logp is not None
+    const_layout = _uniform_backward_const_layout(
+        DL_const, family_idx, bool(family_indexed_consts)
+    )
+    if accum_enabled and const_layout == 1:
+        raise ValueError(
+            "in-kernel parameter accumulation is not supported for row-expanded "
+            "backward constants"
+        )
+    if bool(family_indexed_consts) and use_leaf_index:
+        if leaf_logp.ndim == 1:
+            leaf_logp = leaf_logp.unsqueeze(-1).expand(-1, S).contiguous()
+        elif leaf_logp.ndim == 2 and int(leaf_logp.shape[1]) == 1:
+            leaf_logp = leaf_logp.expand(-1, S).contiguous()
+        else:
+            leaf_logp = leaf_logp.contiguous()
+    leaf_logp_mode = _uniform_backward_leaf_logp_mode(
+        use_leaf_index, leaf_logp, family_idx, bool(family_indexed_consts)
+    )
+    if family_idx is not None:
+        family_idx = family_idx.to(device=device, dtype=torch.long).contiguous()
     if sp_parent is None:
         sp_parent = _parent_from_children(sp_child1, sp_child2, S)
     else:
@@ -1207,11 +1363,7 @@ def wave_backward_uniform_fused(
     leaf_hit_only_logp = (
         os.environ.get("GPUREC_LEAF_HIT_ONLY_LOGP", "0") != "0"
     )
-    leaf_logp_scalar = bool(
-        use_leaf_index
-        and leaf_logp is not None
-        and leaf_logp.numel() == 1
-    )
+    leaf_logp_scalar = leaf_logp_mode == 3
     # Parent-gather speciation was an optimization for the old self-only
     # correction. With the full ancestor correction it is not exact enough on
     # all waves, so keep the scatter path as the only production path.
@@ -1228,7 +1380,12 @@ def wave_backward_uniform_fused(
         "", "0", "false", "no", "off"
     )
     param_two_stage_enabled = False
-    if param_two_stage_requested and accum_enabled and not has_splits:
+    if (
+        param_two_stage_requested
+        and accum_enabled
+        and not has_splits
+        and const_layout == 0
+    ):
         (
             grad_log_pD_arg,
             grad_log_pS_arg,
@@ -1311,6 +1468,9 @@ def wave_backward_uniform_fused(
     else:
         grad_log_pD_arg = grad_log_pS_arg = aw0
         grad_E_arg = grad_Ebar_arg = grad_E_s1_arg = grad_E_s2_arg = grad_mt_arg = aw0
+    log_pD_grad_scalar = _grad_param_is_scalar(grad_log_pD_arg)
+    log_pS_grad_scalar = _grad_param_is_scalar(grad_log_pS_arg)
+    family_idx_arg = family_idx if family_idx is not None else sp_parent
 
     block_s_env = os.environ.get("GPUREC_WAVE_BLOCK_S", "").strip()
     if block_s_env:
@@ -1341,6 +1501,7 @@ def wave_backward_uniform_fused(
         leaf_term_wt,
         leaf_species_arg,
         leaf_logp_arg,
+        family_idx_arg,
         v_k,
         aw0, aw1, aw2, aw345, aw3, aw4,
         spec_buf,
@@ -1363,11 +1524,14 @@ def wave_backward_uniform_fused(
         COMPACT_PIBAR_SCRATCH=bool(compact_pibar_scratch),
         RECOMPUTE_PIBAR_DENOM=bool(recompute_pibar_denom),
         LEAF_HIT_ONLY_LOGP=bool(leaf_hit_only_logp),
-        LEAF_LOGP_SCALAR=bool(leaf_logp_scalar),
+        LEAF_LOGP_MODE=int(leaf_logp_mode),
         USE_PIBAR_ROW_MAX=bool(use_pibar_row_max),
         SPEC_GATHER=bool(spec_gather),
         USE_ACTIVE_MASK=bool(active_mask is not None),
         SKIP_INACTIVE_ZERO_STORES=bool(skip_inactive_zero_stores),
+        CONST_LAYOUT=int(const_layout),
+        LOG_PD_GRAD_SCALAR=bool(log_pD_grad_scalar),
+        LOG_PS_GRAD_SCALAR=bool(log_pS_grad_scalar),
         DTYPE=_tl_float_dtype(dtype),
         **launch_options,
     )
