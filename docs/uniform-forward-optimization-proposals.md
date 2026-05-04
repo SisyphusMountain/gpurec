@@ -577,6 +577,199 @@ Expected gain for Proposal 2:
   `269.677 ms`, but only if the change reduces instruction count without
   lowering occupancy.
 
+### Proposal 2 follow-up: implemented int32 topology, rejected tile/default leaf rewrites
+
+Proposal 2 was tested with the same worker/supervisor split as proposal 1:
+one workstream reviewed implementation risk, one ran correctness/parity checks,
+one handled profiling, and the supervisor provided the documentation checklist.
+The final local implementation and documentation were applied in this branch.
+
+Implementation:
+
+- `GPUREC_FORWARD_TOPOLOGY_INT32` now controls CUDA forward species topology
+  dtype and defaults to enabled when `S < 2^31`.
+- `_get_species_wave_helpers(...)` keeps CPU helper tensors as `torch.long` for
+  Python/PyTorch indexing, but caches CUDA `sp_child1`, `sp_child2`,
+  `sp_parent`, and padded `ancestor_cols` as either `int32` or `long`.
+- The helper cache key now includes the chosen index dtype so a process can
+  switch between int64 and int32 experiments without reusing stale tensors.
+- `_wave_step_uniform_kernel` and `_wave_pibar_uniform_parent_kernel` receive a
+  `TOPOLOGY_INT32` constexpr. The parent-walk cursor stays int32 only on the
+  int32 path; the int64 path keeps `s_offs.to(tl.int64)`. This was necessary
+  because Triton rejects loop-carried variables whose dtype changes across
+  iterations.
+- `GPUREC_FORWARD_WAVE_BLOCK_S` and `GPUREC_FORWARD_WAVE_NUM_WARPS` were added
+  as explicit tuning knobs for uniform forward kernels. The default tile policy
+  remains the previous `BLOCK_S=min(256, next_power_of_2(S))`, `num_warps=4`.
+
+The key kernel change is deliberately small:
+
+```python
+if TOPOLOGY_INT32:
+    cur = s_offs
+else:
+    cur = s_offs.to(tl.int64)
+
+for _ in range(0, MAX_ANCESTOR_DEPTH):
+    cur_valid = mask & (cur >= 0) & (cur < S)
+    pi_anc = tl.load(Pi_ptr + pi_base + cur, mask=cur_valid, other=NEG_LARGE)
+    ancestor_sum += ...
+    cur = tl.load(sp_parent_ptr + cur, mask=cur_valid, other=-1)
+```
+
+This attacks the integer/index side of the parent walk directly. It does not
+change the mathematical order of the default `BLOCK_S=256`, `num_warps=4`
+configuration, so the default int32 path is bitwise identical to the old int64
+path on the tested small parity workload.
+
+Correctness evidence:
+
+| Check | Result |
+|---|---:|
+| 3-family NLL, int64 default | `6421.17333984375` |
+| 3-family NLL, int32 default | `6421.17333984375` |
+| 3-family NLL delta, int32 default | `0.0` |
+| 3-family significant `Pi` max abs delta, int32 default | `0.0` |
+| 3-family significant `Pi` max abs delta, `BLOCK_S=128, warps=4` | `3.2806e-4` |
+| 3-family significant `Pi` max abs delta, `BLOCK_S=256, warps=8` | `3.2806e-4` |
+| 3-family significant `Pi` max abs delta, `BLOCK_S=512, warps=8` | `2.5940e-4` |
+| Focused forward/backward smoke tests | `35 passed in 58.47 s` |
+| Model API likelihood tests | `3 passed in 67.22 s` |
+| Uniform wave-step kernel tests with `BLOCK_S=512, warps=8` | `3 passed in 1.17 s` |
+| `py_compile` touched Python files | passed |
+
+The non-default tile shapes preserve the NLL in the 3-family fixed-6 check, but
+they are not bitwise-equivalent full-tensor rewrites because row max/sum
+reductions happen in a different tile order. That is acceptable for an opt-in
+profiling knob, but it is not a reason to change the production default.
+
+Timing, proposal 0 enabled, fixed 6, `need_pibar=False`, 50 families:
+
+| Variant | Median | Mean | Min | Delta vs int64 default | NLL |
+|---|---:|---:|---:|---:|---:|
+| int64 default | `135.496 ms` | `135.600 ms` | `134.844 ms` | - | `107804.265625` |
+| int32 default | `116.706 ms` | `116.732 ms` | `116.143 ms` | `-18.790 ms` | `107804.265625` |
+| int32, `BLOCK_S=128`, `warps=4` | `117.370 ms` | `117.315 ms` | `116.619 ms` | `-18.126 ms` | `107804.265625` |
+| int32, `BLOCK_S=256`, `warps=8` | `115.441 ms` | `115.743 ms` | `114.639 ms` | `-20.054 ms` | `107804.265625` |
+| int32, `BLOCK_S=512`, `warps=8` | `118.148 ms` | `119.659 ms` | `116.409 ms` | `-17.347 ms` | `107804.265625` |
+
+Timing, same setup, 150 families:
+
+| Variant | Median | Mean | Min | Delta vs int64 default | NLL |
+|---|---:|---:|---:|---:|---:|
+| int64 default | `403.379 ms` | `402.480 ms` | `400.092 ms` | - | `323018.6875` |
+| int32 default | `346.532 ms` | `346.526 ms` | `345.625 ms` | `-56.847 ms` | `323018.6875` |
+| int32, `BLOCK_S=128`, `warps=4` | `375.678 ms` | `372.588 ms` | `350.303 ms` | `-27.701 ms` | `323018.6875` |
+| int32, `BLOCK_S=256`, `warps=8` | `347.310 ms` | `346.894 ms` | `345.540 ms` | `-56.069 ms` | `323018.6875` |
+| int32, `BLOCK_S=512`, `warps=8` | `349.448 ms` | `349.114 ms` | `346.824 ms` | `-53.931 ms` | `323018.6875` |
+
+After making int32 topology the default, the no-flag benchmark reports:
+
+| Workload | Default median | NLL | Peak GPU |
+|---|---:|---:|---:|
+| 50 families | `116.663 ms` | `107804.265625` | `5.271977 GiB` |
+| 150 families | `344.509 ms` | `323018.6875` | `15.018308 GiB` |
+
+The 8-warp tile is slightly faster for 50 families, but not for 150 families.
+Because the 150-family chunk is the current high-occupancy target, the default
+tile shape stays unchanged and the tile sweep remains an experiment knob.
+
+Nsight Systems, one warmed 150-family rep:
+
+| Kernel bucket | int64 default | int32 default | Delta | Launches |
+|---|---:|---:|---:|---:|
+| Event time | `399.104 ms` | `344.755 ms` | `-54.349 ms` | - |
+| Kernel span | `399.075 ms` | `344.659 ms` | `-54.416 ms` | - |
+| `_wave_step_uniform_kernel` | `274.317 ms` | `225.193 ms` | `-49.124 ms` | `390 -> 390` |
+| `_wave_pibar_uniform_parent_kernel` | `36.143 ms` | `30.710 ms` | `-5.433 ms` | `64 -> 64` |
+| `_dts_fused_kernel` | `30.917 ms` | `30.896 ms` | `-0.021 ms` | `49 -> 49` |
+| `_dts_parent_reduced_ge2_stage1_kernel` | `23.263 ms` | `23.441 ms` | `+0.178 ms` | `8 -> 8` |
+| PyTorch index kernels | `12.267 ms` | `12.270 ms` | `+0.003 ms` | `50 -> 50` |
+| PyTorch fill kernels, main bucket | `8.697 ms` | `8.697 ms` | `0.000 ms` | `61 -> 61` |
+
+The improvement is therefore not a scheduling or launch-count effect. It is
+concentrated in the two kernels that walk species parent/child topology.
+
+Nsight Compute, representative large 150-family `_wave_step_uniform_kernel`
+launch `54`:
+
+| Metric | int64 default | int32 default |
+|---|---:|---:|
+| Duration | `1.635520 ms` | `1.340448 ms` |
+| Executed instructions | `1.504e9` | `1.158e9` |
+| Issued instructions | `1.504e9` | `1.158e9` |
+| Registers/thread | `40` | `40` |
+| Local spill requests | `0` | `0` |
+| Achieved occupancy | `98.18%` | `98.11%` |
+| Achieved active warps/SM | `47.12` | `47.09` |
+| Issue slots busy | `81.38%` | `76.17%` |
+| Compute throughput | `81.67%` | `82.17%` |
+| Memory throughput | `71.43%` | `82.17%` |
+| DRAM throughput | `47.57%` | `58.04%` |
+| L1/TEX throughput | `71.73%` | `82.39%` |
+| L2 throughput | `62.28%` | `62.09%` |
+| L1/TEX hit rate | `80.50%` | `81.83%` |
+| L2 hit rate | `88.86%` | `86.37%` |
+| Branch efficiency | `100%` | `100%` |
+| Divergent branches | `0` | `0` |
+
+The NCU interpretation is that int32 does not improve occupancy and does not
+remove spills; it removes about `23%` of the executed instructions in the hot
+launch. NCU's compute-workload rule reported the old int64 kernel as ALU
+over-utilized (`80.3%` ALU pipeline), while the int32 kernel dropped that ALU
+pipeline estimate to `47.2%`. Source counters still report uncoalesced global
+accesses, so the change is best understood as reducing integer/index instruction
+pressure around the same irregular ancestor-gather pattern, not as fixing memory
+coalescing.
+
+Leaf/no-split audit:
+
+| Quantity, 150 families | Value |
+|---|---:|
+| No-split waves | `8` |
+| No-split rows | `238864` |
+| No-split rows that are leaves | `238864` |
+| No-split fixed-6 wave-step launches | `48` |
+| No-split wave-step time in int32 Nsys trace | `53.822 ms` |
+| Split-wave wave-step time in int32 Nsys trace | `171.371 ms` |
+
+NCU on the first leaf-only no-split launch showed the same basic profile as
+the representative split launch: `1.303424 ms`, `40` registers/thread, no
+spills, `98.09%` achieved occupancy, `1.141e9` executed instructions, `100%`
+branch efficiency, and no divergent branches. The `has_splits` branch is already
+a compile-time constant and the leaf term already uses `USE_LEAF_INDEX`; there
+was no source-counter evidence for an easy leaf-only specialization. A separate
+leaf/no-split kernel remains possible, but it should be treated as a new
+algorithmic proposal rather than a small cleanup.
+
+Row-max storage:
+
+Proposal 2c was already handled by proposal 1. `reuse_forward_pibar_stats` is
+now gated by `need_pibar`, and likelihood-only forward returns
+`uniform_pibar_row_max=None`. This removes dead backward-only row-max output from
+the likelihood path, but proposal 1 measured only a very small memory effect and
+no meaningful speedup because the row-max store is one scalar per clade row.
+
+Profiler artifacts:
+
+```text
+/tmp/gpurec_profile/forward_prop2/nsys_f150_base.nsys-rep
+/tmp/gpurec_profile/forward_prop2/nsys_f150_i32.nsys-rep
+/tmp/gpurec_profile/forward_prop2/ncu_wave_base_launch54.csv
+/tmp/gpurec_profile/forward_prop2/ncu_wave_i32_launch54.csv
+/tmp/gpurec_profile/forward_prop2/ncu_wave_base_launch54_instruction.csv
+/tmp/gpurec_profile/forward_prop2/ncu_wave_i32_launch54_instruction.csv
+/tmp/gpurec_profile/forward_prop2/ncu_wave_i32_leaf_launch0.csv
+```
+
+Decision:
+
+- Promote int32 species topology as the CUDA uniform forward default.
+- Keep `GPUREC_FORWARD_TOPOLOGY_INT32=0` as an escape hatch.
+- Keep `GPUREC_FORWARD_WAVE_BLOCK_S` and `GPUREC_FORWARD_WAVE_NUM_WARPS` as
+  profiling knobs, but do not change the default tile shape.
+- Do not implement a leaf/no-split specialization in this pass.
+
 ## Proposal 3: CUDA shared-memory row-prefix Pibar prototype
 
 This is the higher-risk version of Proposal 2. The current kernel computes

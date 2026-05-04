@@ -67,6 +67,23 @@ def _parse_args() -> argparse.Namespace:
         action=argparse.BooleanOptionalAction,
         default=os.getenv("NEED_PIBAR", "1") != "0",
     )
+    parser.add_argument(
+        "--topology-int32",
+        action=argparse.BooleanOptionalAction,
+        default=os.getenv("GPUREC_FORWARD_TOPOLOGY_INT32", "1") != "0",
+    )
+    parser.add_argument(
+        "--wave-block-s",
+        type=int,
+        default=int(os.getenv("GPUREC_FORWARD_WAVE_BLOCK_S", "0")),
+        help="Override GPUREC_FORWARD_WAVE_BLOCK_S; 0 keeps the default heuristic.",
+    )
+    parser.add_argument(
+        "--wave-num-warps",
+        type=int,
+        default=int(os.getenv("GPUREC_FORWARD_WAVE_NUM_WARPS", "0")),
+        help="Override GPUREC_FORWARD_WAVE_NUM_WARPS; 0 keeps the default.",
+    )
     args = parser.parse_args()
     mws = str(args.max_wave_size).strip().lower()
     args.max_wave_size = None if mws in ("", "0", "none", "null") else int(mws)
@@ -267,6 +284,15 @@ def main() -> None:
     args = _parse_args()
     for key, value in DEFAULT_FLAGS.items():
         os.environ.setdefault(key, value)
+    os.environ["GPUREC_FORWARD_TOPOLOGY_INT32"] = "1" if args.topology_int32 else "0"
+    if args.wave_block_s > 0:
+        os.environ["GPUREC_FORWARD_WAVE_BLOCK_S"] = str(args.wave_block_s)
+    else:
+        os.environ.pop("GPUREC_FORWARD_WAVE_BLOCK_S", None)
+    if args.wave_num_warps > 0:
+        os.environ["GPUREC_FORWARD_WAVE_NUM_WARPS"] = str(args.wave_num_warps)
+    else:
+        os.environ.pop("GPUREC_FORWARD_WAVE_NUM_WARPS", None)
     _set_variant(args, args.variant)
     model, E_out, params = _prepare(args)
     _print_shape(model)
@@ -304,6 +330,9 @@ def main() -> None:
         "tile_splits", args.tile_splits,
         "ge2_only", int(args.ge2_only),
         "need_pibar", int(args.need_pibar),
+        "topology_int32", int(args.topology_int32),
+        "wave_block_s", args.wave_block_s,
+        "wave_num_warps", args.wave_num_warps,
         "reps", len(times),
         "median_ms", statistics.median(times),
         "mean_ms", statistics.mean(times),

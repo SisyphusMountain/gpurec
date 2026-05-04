@@ -1,8 +1,31 @@
 """Fused Triton kernels for wave-step computation."""
 
+import os
+
 import torch
 import triton
 import triton.language as tl
+
+
+def _uniform_block_s(S: int, *, default_cap: int = 256) -> int:
+    """Return the species tile width for uniform forward kernels."""
+    raw = os.environ.get("GPUREC_FORWARD_WAVE_BLOCK_S")
+    if raw is None:
+        return int(min(default_cap, triton.next_power_of_2(S)))
+    block_s = int(raw)
+    if block_s <= 0:
+        raise ValueError("GPUREC_FORWARD_WAVE_BLOCK_S must be positive")
+    return block_s
+
+
+def _uniform_num_warps() -> int:
+    raw = os.environ.get("GPUREC_FORWARD_WAVE_NUM_WARPS")
+    if raw is None:
+        return 4
+    num_warps = int(raw)
+    if num_warps <= 0:
+        raise ValueError("GPUREC_FORWARD_WAVE_NUM_WARPS must be positive")
+    return num_warps
 
 
 @triton.jit
@@ -321,6 +344,7 @@ def _wave_step_uniform_kernel(
     STORE_PIBAR_ROW_MAX: tl.constexpr,
     OUTPUT_GLOBAL: tl.constexpr,
     FP64: tl.constexpr,
+    TOPOLOGY_INT32: tl.constexpr,
     stride_c: tl.constexpr = 0,
 ):
     """Fused kernel: uniform Pibar + DTS_L + logsumexp + convergence diff.
@@ -397,7 +421,10 @@ def _wave_step_uniform_kernel(
             # Uniform Pibar: log2(row_sum - ancestor_sum) + max + mt.
             # ancestors_dense[descendant, ancestor] includes self, so walk the
             # species parent chain starting at s and sum exp2(Pi[ancestor] - max).
-            cur = s_offs.to(tl.int64)
+            if TOPOLOGY_INT32:
+                cur = s_offs
+            else:
+                cur = s_offs.to(tl.int64)
             for _ in range(0, MAX_ANCESTOR_DEPTH):
                 cur_valid = mask & (cur >= 0) & (cur < S)
                 pi_anc = tl.load(Pi_ptr + pi_base + cur, mask=cur_valid, other=NEG_LARGE)
@@ -510,7 +537,8 @@ def wave_step_uniform_fused(Pi, Pibar, ws, W, S,
     leaf_species_arg = leaf_species_idx if use_leaf_index else sp_parent
     leaf_logp_arg = leaf_logp if use_leaf_index else leaf_term_wt
 
-    BLOCK_S = min(256, triton.next_power_of_2(S))
+    BLOCK_S = _uniform_block_s(S)
+    num_warps = _uniform_num_warps()
     grid = (W,)
 
     _wave_step_uniform_kernel[grid](
@@ -541,8 +569,9 @@ def wave_step_uniform_fused(Pi, Pibar, ws, W, S,
         STORE_PIBAR_ROW_MAX=bool(pibar_row_max is not None),
         OUTPUT_GLOBAL=False,
         FP64=fp64,
+        TOPOLOGY_INT32=sp_parent.dtype == torch.int32,
         stride_c=stride_c,
-        num_warps=4,
+        num_warps=num_warps,
     )
     max_diff = max_diff_buf.max() if compute_diff else None
     return Pi_new, max_diff
@@ -562,7 +591,8 @@ def wave_step_uniform_fused_into(Pi_in, Pi_out, Pibar, ws, W, S,
     leaf_logp_arg = leaf_logp if use_leaf_index else leaf_term_wt
     max_diff_buf = Pi_out
 
-    BLOCK_S = min(256, triton.next_power_of_2(S))
+    BLOCK_S = _uniform_block_s(S)
+    num_warps = _uniform_num_warps()
     grid = (W,)
     Pi_out_rows = Pi_out.narrow(0, int(ws), int(W))
 
@@ -593,8 +623,9 @@ def wave_step_uniform_fused_into(Pi_in, Pi_out, Pibar, ws, W, S,
         STORE_PIBAR_ROW_MAX=False,
         OUTPUT_GLOBAL=False,
         FP64=fp64,
+        TOPOLOGY_INT32=sp_parent.dtype == torch.int32,
         stride_c=stride_c,
-        num_warps=4,
+        num_warps=num_warps,
     )
 
 
@@ -619,7 +650,8 @@ def wave_step_uniform_ancestor_fused(Pi, Pibar, ws, W, S,
     leaf_species_arg = leaf_species_idx if use_leaf_index else ancestor_cols
     leaf_logp_arg = leaf_logp if use_leaf_index else leaf_term_wt
 
-    BLOCK_S = min(256, triton.next_power_of_2(S))
+    BLOCK_S = _uniform_block_s(S)
+    num_warps = _uniform_num_warps()
     grid = (W,)
 
     _wave_step_uniform_kernel[grid](
@@ -650,8 +682,9 @@ def wave_step_uniform_ancestor_fused(Pi, Pibar, ws, W, S,
         STORE_PIBAR_ROW_MAX=bool(pibar_row_max is not None),
         OUTPUT_GLOBAL=False,
         FP64=fp64,
+        TOPOLOGY_INT32=ancestor_cols.dtype == torch.int32,
         stride_c=stride_c,
-        num_warps=4,
+        num_warps=num_warps,
     )
     max_diff = max_diff_buf.max() if compute_diff else None
     return Pi_new, max_diff
@@ -679,7 +712,8 @@ def wave_step_uniform_csr_fused(Pi, Pibar, ws, W, S,
     leaf_species_arg = leaf_species_idx if use_leaf_index else ancestor_csr_indices
     leaf_logp_arg = leaf_logp if use_leaf_index else leaf_term_wt
 
-    BLOCK_S = min(256, triton.next_power_of_2(S))
+    BLOCK_S = _uniform_block_s(S)
+    num_warps = _uniform_num_warps()
     grid = (W,)
 
     _wave_step_uniform_kernel[grid](
@@ -710,8 +744,9 @@ def wave_step_uniform_csr_fused(Pi, Pibar, ws, W, S,
         STORE_PIBAR_ROW_MAX=bool(pibar_row_max is not None),
         OUTPUT_GLOBAL=False,
         FP64=fp64,
+        TOPOLOGY_INT32=ancestor_csr_indices.dtype == torch.int32,
         stride_c=stride_c,
-        num_warps=4,
+        num_warps=num_warps,
     )
     max_diff = max_diff_buf.max() if compute_diff else None
     return Pi_new, max_diff
@@ -731,6 +766,7 @@ def _wave_pibar_uniform_parent_kernel(
     MAX_ANCESTOR_DEPTH: tl.constexpr,
     STORE_ROW_MAX: tl.constexpr,
     FP64: tl.constexpr,
+    TOPOLOGY_INT32: tl.constexpr,
     stride_c: tl.constexpr = 0,
 ):
     DTYPE = tl.float64 if FP64 else tl.float32
@@ -757,7 +793,10 @@ def _wave_pibar_uniform_parent_kernel(
         s_offs = s_start + tl.arange(0, BLOCK_S)
         mask = s_offs < S
 
-        cur = s_offs.to(tl.int64)
+        if TOPOLOGY_INT32:
+            cur = s_offs
+        else:
+            cur = s_offs.to(tl.int64)
         ancestor_sum = tl.zeros([BLOCK_S], dtype=DTYPE)
         for _ in range(0, MAX_ANCESTOR_DEPTH):
             cur_valid = mask & (cur >= 0) & (cur < S)
@@ -777,7 +816,8 @@ def wave_pibar_uniform_parent_fused(Pi, Pibar, ws, W, S,
     """Compute uniform Pibar rows by walking species parent pointers."""
     fp64 = Pi.dtype == torch.float64
     stride_c = S if mt_squeezed.ndim == 2 else 0
-    BLOCK_S = min(256, triton.next_power_of_2(S))
+    BLOCK_S = _uniform_block_s(S)
+    num_warps = _uniform_num_warps()
     grid = (W,)
 
     _wave_pibar_uniform_parent_kernel[grid](
@@ -793,8 +833,9 @@ def wave_pibar_uniform_parent_fused(Pi, Pibar, ws, W, S,
         MAX_ANCESTOR_DEPTH=int(max_ancestor_depth),
         STORE_ROW_MAX=bool(row_max_out is not None),
         FP64=fp64,
+        TOPOLOGY_INT32=sp_parent.dtype == torch.int32,
         stride_c=stride_c,
-        num_warps=4,
+        num_warps=num_warps,
     )
 
 
@@ -894,7 +935,8 @@ def wave_step_uniform_from_pibar_fused(Pi, Pibar, ws, W, S,
     max_diff_buf = torch.empty(W, dtype=Pi.dtype, device=Pi.device) if compute_diff else Pi_new
     has_splits = DTS_reduced is not None
     stride_c = S if DL_const.ndim == 2 else 0
-    BLOCK_S = min(256, triton.next_power_of_2(S))
+    BLOCK_S = _uniform_block_s(S)
+    num_warps = _uniform_num_warps()
     grid = (W,)
 
     _wave_step_uniform_from_pibar_kernel[grid](
@@ -914,7 +956,7 @@ def wave_step_uniform_from_pibar_fused(Pi, Pibar, ws, W, S,
         COMPUTE_DIFF=bool(compute_diff),
         FP64=fp64,
         stride_c=stride_c,
-        num_warps=4,
+        num_warps=num_warps,
     )
     max_diff = max_diff_buf.max() if compute_diff else None
     return Pi_new, max_diff
@@ -1115,7 +1157,8 @@ def wave_step_uniform_linear_fused(Pi, ws, W, S, op_cols, op_vals, v_scaled, row
     max_diff_buf = torch.empty(W, dtype=Pi.dtype, device=Pi.device) if compute_diff else Pi_new
     has_splits = DTS_reduced is not None
 
-    BLOCK_S = min(256, triton.next_power_of_2(S))
+    BLOCK_S = _uniform_block_s(S)
+    num_warps = _uniform_num_warps()
     grid = (W,)
 
     _wave_step_uniform_linear_kernel[grid](
@@ -1136,7 +1179,7 @@ def wave_step_uniform_linear_fused(Pi, ws, W, S, op_cols, op_vals, v_scaled, row
         COMPUTE_DIFF=bool(compute_diff),
         DEBUG_GUARD=bool(debug_guard),
         FP64=fp64,
-        num_warps=4,
+        num_warps=num_warps,
     )
     max_diff = max_diff_buf.max() if compute_diff else None
     return Pi_new, max_diff
@@ -1198,7 +1241,8 @@ def wave_pibar_uniform_fused(Pi, Pibar, ws, W, S, mt_squeezed, ancestor_cols,
                              row_max_out=None):
     """Compute final uniform Pibar rows using precomputed ancestor columns."""
     fp64 = Pi.dtype == torch.float64
-    BLOCK_S = min(256, triton.next_power_of_2(S))
+    BLOCK_S = _uniform_block_s(S)
+    num_warps = _uniform_num_warps()
     grid = (W,)
 
     _wave_pibar_uniform_ancestor_kernel[grid](
@@ -1214,5 +1258,5 @@ def wave_pibar_uniform_fused(Pi, Pibar, ws, W, S, mt_squeezed, ancestor_cols,
         BLOCK_S=BLOCK_S,
         STORE_ROW_MAX=bool(row_max_out is not None),
         FP64=fp64,
-        num_warps=4,
+        num_warps=num_warps,
     )

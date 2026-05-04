@@ -188,8 +188,18 @@ def _get_species_wave_helpers(species_helpers, S, device, use_uniform_fused):
     target_device = torch.device(device)
     if target_device.type == 'cuda' and target_device.index is None:
         target_device = torch.device('cuda', torch.cuda.current_device())
+    use_topology_int32 = bool(
+        target_device.type == 'cuda'
+        and int(S) < 2 ** 31
+        and os.environ.get("GPUREC_FORWARD_TOPOLOGY_INT32", "1") != "0"
+    )
+    index_dtype = torch.int32 if use_topology_int32 else torch.long
     cache = species_helpers.get('_wave_forward_species_cache')
-    if cache is not None and int(cache.get('S', -1)) == int(S):
+    if (
+        cache is not None
+        and int(cache.get('S', -1)) == int(S)
+        and cache.get('index_dtype') == str(index_dtype)
+    ):
         sp_child1 = cache.get('sp_child1')
         sp_child2 = cache.get('sp_child2')
         sp_parent = cache.get('sp_parent')
@@ -277,15 +287,16 @@ def _get_species_wave_helpers(species_helpers, S, device, use_uniform_fused):
             csr_indptr.append(len(csr_indices))
         ancestor_csr_indptr_cpu = torch.tensor(csr_indptr, dtype=torch.int32)
         ancestor_csr_indices_cpu = torch.tensor(csr_indices, dtype=torch.int32)
-        sp_parent = sp_parent_cpu.to(target_device)
-        ancestor_cols = ancestor_cols_cpu.T.contiguous().to(target_device)
+        sp_parent = sp_parent_cpu.to(device=target_device, dtype=index_dtype)
+        ancestor_cols = ancestor_cols_cpu.T.contiguous().to(device=target_device, dtype=index_dtype)
         ancestor_csr_indptr = ancestor_csr_indptr_cpu.to(target_device)
         ancestor_csr_indices = ancestor_csr_indices_cpu.to(target_device)
 
-    sp_child1 = sp_child1_cpu.to(target_device)
-    sp_child2 = sp_child2_cpu.to(target_device)
+    sp_child1 = sp_child1_cpu.to(device=target_device, dtype=index_dtype)
+    sp_child2 = sp_child2_cpu.to(device=target_device, dtype=index_dtype)
     species_helpers['_wave_forward_species_cache'] = {
         'S': int(S),
+        'index_dtype': str(index_dtype),
         'sp_child1': sp_child1,
         'sp_child2': sp_child2,
         'sp_parent': sp_parent,
