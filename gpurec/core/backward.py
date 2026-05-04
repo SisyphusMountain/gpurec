@@ -536,9 +536,23 @@ def Pi_wave_backward(
     dts_pibar_ud_fusion_enabled = (
         os.environ.get("GPUREC_DTS_PIBAR_UD_FUSION", "1") != "0"
     )
+    dts_pibar_ud_side_threshold = float(
+        os.environ.get(
+            "GPUREC_DTS_PIBAR_UD_SIDE_THRESHOLD",
+            os.environ.get("GPUREC_DTS_PIBAR_UD_SIDE_BUDGET", "0"),
+        )
+    )
+    if dts_pibar_ud_side_threshold < 0.0:
+        raise ValueError("GPUREC_DTS_PIBAR_UD_SIDE_THRESHOLD must be non-negative")
+    dts_pibar_ud_side_threshold_arg = (
+        torch.tensor([dts_pibar_ud_side_threshold], device=target_device, dtype=dtype)
+        if dts_pibar_ud_side_threshold > 0.0
+        else 0.0
+    )
     dts_pibar_ud_skip_zero_sides_enabled = (
         os.environ.get("GPUREC_DTS_PIBAR_UD_SKIP_ZERO_SIDES", "0") != "0"
         or os.environ.get("GPUREC_DTS_PIBAR_UD_WORKLIST", "0") != "0"
+        or dts_pibar_ud_side_threshold > 0.0
     )
     dts_pibar_ud_compact_levels_enabled = (
         os.environ.get("GPUREC_DTS_PIBAR_UD_COMPACT_LEVELS", "0") != "0"
@@ -2109,6 +2123,7 @@ def Pi_wave_backward(
                                     pibar_ud_fusion_match
                                     and dts_pibar_ud_skip_zero_sides_enabled
                                 ),
+                                pibar_side_threshold=dts_pibar_ud_side_threshold_arg,
                                 mt_squeezed=mt_shared,
                                 pibar_row_max=forward_pibar_row_max,
                                 grad_mt_two_stage=(
@@ -2302,6 +2317,7 @@ def Pi_wave_backward(
                             if dts_pibar_ud_euler_prefix_enabled
                             else None
                         ),
+                        side_active_threshold=dts_pibar_ud_side_threshold_arg,
                     )
                 elif (
                     grouped_cross_pibar_vjp_enabled

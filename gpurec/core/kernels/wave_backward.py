@@ -1650,6 +1650,7 @@ def _dts_cross_backward_accum_kernel(
     pibar_side_active_ptr, # optional [2 * n_ws] exact nonzero u_d row mask
     mt_ptr,               # optional [S] max transfer mat for Pibar denom reuse
     pibar_row_max_ptr,    # optional [C] Pi-row max from forward uniform Pibar
+    side_active_threshold_ptr,
     # Dimensions
     ws,                # wave start offset (parent row = ws + reduce_idx)
     S: tl.constexpr,
@@ -1666,6 +1667,7 @@ def _dts_cross_backward_accum_kernel(
     GRAD_MT_TILE_SPLITS: tl.constexpr,
     OUTPUT_PIBAR_UD: tl.constexpr,
     OUTPUT_SIDE_ACTIVE: tl.constexpr,
+    SIDE_ACTIVE_THRESHOLD_ENABLED: tl.constexpr,
     SKIP_INACTIVE_PIBAR_OUTPUT_ZERO: tl.constexpr,
     DTYPE: tl.constexpr,
 ):
@@ -1743,6 +1745,8 @@ def _dts_cross_backward_accum_kernel(
         row_max_r = tl.load(pibar_row_max_ptr + sr).to(DTYPE)
         side_nonzero_l = tl.full((1,), value=0, dtype=tl.int32)
         side_nonzero_r = tl.full((1,), value=0, dtype=tl.int32)
+        side_abs_bound_l = tl.zeros((1,), dtype=DTYPE)
+        side_abs_bound_r = tl.zeros((1,), dtype=DTYPE)
 
     for s_start in range(0, S, BLOCK_S):
         s_offs = s_start + tl.arange(0, BLOCK_S)
@@ -1816,8 +1820,12 @@ def _dts_cross_backward_accum_kernel(
             sum_ud_l += tl.sum(tl.where(mask, ud_l, 0.0), axis=0)
             sum_ud_r += tl.sum(tl.where(mask, ud_r, 0.0), axis=0)
             if OUTPUT_SIDE_ACTIVE:
-                side_nonzero_l += tl.where(tl.max(tl.abs(ud_l), axis=0) != 0.0, 1, 0)
-                side_nonzero_r += tl.where(tl.max(tl.abs(ud_r), axis=0) != 0.0, 1, 0)
+                if SIDE_ACTIVE_THRESHOLD_ENABLED:
+                    side_abs_bound_l += tl.sum(tl.where(mask, tl.abs(ud_l), 0.0), axis=0)
+                    side_abs_bound_r += tl.sum(tl.where(mask, tl.abs(ud_r), 0.0), axis=0)
+                else:
+                    side_nonzero_l += tl.where(tl.max(tl.abs(ud_l), axis=0) != 0.0, 1, 0)
+                    side_nonzero_r += tl.where(tl.max(tl.abs(ud_r), axis=0) != 0.0, 1, 0)
         else:
             tl.store(grad_Pibar_l_ptr + out_base + s_offs, vd2, mask=valid_mask)
             tl.store(grad_Pibar_r_ptr + out_base + s_offs, vd1, mask=valid_mask)
@@ -1878,8 +1886,21 @@ def _dts_cross_backward_accum_kernel(
         tl.store(pibar_A_ptr + i + _scalar_off, sum_ud_l)
         tl.store(pibar_A_ptr + tl.num_programs(0) + i + _scalar_off, sum_ud_r)
         if OUTPUT_SIDE_ACTIVE:
-            tl.store(pibar_side_active_ptr + i + _scalar_off, side_nonzero_l != 0)
-            tl.store(pibar_side_active_ptr + tl.num_programs(0) + i + _scalar_off, side_nonzero_r != 0)
+            if SIDE_ACTIVE_THRESHOLD_ENABLED:
+                threshold = tl.load(side_active_threshold_ptr).to(DTYPE)
+                bound_l = side_abs_bound_l
+                bound_r = side_abs_bound_r
+                tl.store(pibar_side_active_ptr + i + _scalar_off, bound_l > threshold)
+                tl.store(
+                    pibar_side_active_ptr + tl.num_programs(0) + i + _scalar_off,
+                    bound_r > threshold,
+                )
+            else:
+                tl.store(pibar_side_active_ptr + i + _scalar_off, side_nonzero_l != 0)
+                tl.store(
+                    pibar_side_active_ptr + tl.num_programs(0) + i + _scalar_off,
+                    side_nonzero_r != 0,
+                )
 
     if not MERGE_S_TERM:
         for s_start in range(0, S, BLOCK_S):
@@ -1978,6 +1999,7 @@ def dts_cross_backward_accum_fused(
     accum_mt_reduction=False,
     output_pibar_ud=False,
     output_pibar_side_active=False,
+    pibar_side_threshold=0.0,
     mt_squeezed=None,
     pibar_row_max=None,
     grad_mt_two_stage=False,
@@ -2012,6 +2034,23 @@ def dts_cross_backward_accum_fused(
         raise ValueError("pibar_row_max must contain one row-max value per Pi row")
     if output_pibar_side_active and not output_pibar_ud:
         raise ValueError("output_pibar_side_active requires output_pibar_ud")
+    if torch.is_tensor(pibar_side_threshold):
+        if pibar_side_threshold.numel() != 1:
+            raise ValueError("pibar_side_threshold tensor must contain one value")
+        side_threshold_enabled = bool(output_pibar_side_active)
+        side_active_threshold_arg = _device_scalar_param(
+            pibar_side_threshold, device=device, dtype=dtype
+        )
+    else:
+        pibar_side_threshold = float(pibar_side_threshold)
+        if pibar_side_threshold < 0.0:
+            raise ValueError("pibar_side_threshold must be non-negative")
+        side_threshold_enabled = bool(output_pibar_side_active and pibar_side_threshold > 0.0)
+        side_active_threshold_arg = (
+            torch.tensor([pibar_side_threshold], device=device, dtype=dtype)
+            if side_threshold_enabled
+            else None
+        )
 
     if output_pibar_ud:
         grad_Pibar_l = None
@@ -2078,6 +2117,7 @@ def dts_cross_backward_accum_fused(
     )
     mt_arg = mt_arg if output_pibar_ud else dummy
     pibar_row_max_arg = pibar_row_max_arg if output_pibar_ud else dummy
+    side_active_threshold_arg = side_active_threshold_arg if side_threshold_enabled else dummy
     grad_mt_scalar = bool(accum_mt_reduction and grad_mt.numel() == 1)
     use_grad_mt_two_stage = bool(
         grad_mt_two_stage
@@ -2115,6 +2155,7 @@ def dts_cross_backward_accum_fused(
         grad_log_pD_arg, grad_log_pS_arg, grad_mt_arg,
         grad_mt_partial,
         pibar_ud_arg, pibar_A_arg, pibar_side_active_arg, mt_arg, pibar_row_max_arg,
+        side_active_threshold_arg,
         ws, S, stride_C, BLOCK_S,
         USE_ACTIVE_MASK=bool(active_mask is not None),
         USE_ATOMICS=bool(use_atomics),
@@ -2127,6 +2168,7 @@ def dts_cross_backward_accum_fused(
         GRAD_MT_TILE_SPLITS=grad_mt_two_stage_tile_splits,
         OUTPUT_PIBAR_UD=bool(output_pibar_ud),
         OUTPUT_SIDE_ACTIVE=bool(output_pibar_side_active),
+        SIDE_ACTIVE_THRESHOLD_ENABLED=side_threshold_enabled,
         SKIP_INACTIVE_PIBAR_OUTPUT_ZERO=bool(skip_inactive_pibar_output_zero),
         DTYPE=_tl_float_dtype(dtype),
     )
@@ -3687,23 +3729,32 @@ def uniform_cross_pibar_vjp_tree_fused(
 def _pibar_ud_side_active_kernel(
     pibar_ud_ptr,        # [n_rows, S]
     side_active_ptr,     # [n_rows] bool
+    side_active_threshold_ptr,
     S: tl.constexpr,
     BLOCK_S: tl.constexpr,
+    SIDE_ACTIVE_THRESHOLD_ENABLED: tl.constexpr,
     DTYPE: tl.constexpr,
 ):
-    """Mark split-side rows whose staged u_d is not exactly all zero."""
+    """Mark split-side rows whose staged u_d should run Pibar tree work."""
     row = tl.program_id(0)
     row_base = row * S
     row_absmax = tl.full([1], value=0.0, dtype=DTYPE)
+    row_abssum = tl.full([1], value=0.0, dtype=DTYPE)
 
     for s_start in range(0, S, BLOCK_S):
         s_offs = s_start + tl.arange(0, BLOCK_S)
         mask = s_offs < S
         vals = tl.load(pibar_ud_ptr + row_base + s_offs, mask=mask, other=0.0)
-        row_absmax = tl.maximum(row_absmax, tl.max(tl.abs(vals), axis=0))
+        abs_vals = tl.abs(vals)
+        row_absmax = tl.maximum(row_absmax, tl.max(abs_vals, axis=0))
+        row_abssum += tl.sum(tl.where(mask, abs_vals, 0.0), axis=0)
 
     lane = tl.arange(0, 1)
-    tl.store(side_active_ptr + row + lane, row_absmax != 0.0)
+    if SIDE_ACTIVE_THRESHOLD_ENABLED:
+        threshold = tl.load(side_active_threshold_ptr).to(DTYPE)
+        tl.store(side_active_ptr + row + lane, row_abssum > threshold)
+    else:
+        tl.store(side_active_ptr + row + lane, row_absmax != 0.0)
 
 
 @triton.jit
@@ -3988,6 +4039,7 @@ def uniform_cross_pibar_vjp_tree_from_ud_fused(
     compact_level_child2=None,
     subtree_interval_start=None,
     subtree_interval_end=None,
+    side_active_threshold=0.0,
 ):
     """Uniform-Pibar VJP tree correction from DTS-staged u_d."""
     n_ws = sl.shape[0]
@@ -3997,6 +4049,23 @@ def uniform_cross_pibar_vjp_tree_from_ud_fused(
         raise ValueError("reduce_idx is required when active_mask is provided")
     if pibar_row_max is None:
         raise ValueError("pibar_row_max is required for DTS-staged Pibar VJP")
+    if torch.is_tensor(side_active_threshold):
+        if side_active_threshold.numel() != 1:
+            raise ValueError("side_active_threshold tensor must contain one value")
+        side_active_threshold_enabled = True
+        side_active_threshold_arg = _device_scalar_param(
+            side_active_threshold, device=Pi_star.device, dtype=Pi_star.dtype
+        )
+    else:
+        side_active_threshold = float(side_active_threshold)
+        if side_active_threshold < 0.0:
+            raise ValueError("side_active_threshold must be non-negative")
+        side_active_threshold_enabled = side_active_threshold > 0.0
+        side_active_threshold_arg = (
+            torch.tensor([side_active_threshold], device=Pi_star.device, dtype=Pi_star.dtype)
+            if side_active_threshold_enabled
+            else None
+        )
 
     BLOCK_S = min(256, triton.next_power_of_2(S))
     stride_C = Pi_star.stride(0)
@@ -4009,8 +4078,10 @@ def uniform_cross_pibar_vjp_tree_from_ud_fused(
         _pibar_ud_side_active_kernel[(2 * n_ws,)](
             pibar_ud,
             side_active,
+            side_active_threshold_arg if side_active_threshold_enabled else pibar_ud,
             S,
             BLOCK_S,
+            SIDE_ACTIVE_THRESHOLD_ENABLED=bool(side_active_threshold_enabled),
             DTYPE=_tl_float_dtype(Pi_star.dtype),
             num_warps=4,
         )
