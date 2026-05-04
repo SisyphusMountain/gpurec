@@ -843,6 +843,306 @@ Acceptance gate:
 - No increase in peak memory.
 - Exact or near-exact parity with the Triton path under fixed 6.
 
+### Proposal 3 follow-up: shared-memory row-prefix Pibar prototype
+
+Proposal 3 was tested as a feasibility and performance study rather than a
+production implementation.  The completed work covered the current code map,
+baseline profiles, a Triton scratch row-prefix Pibar prototype, and a local
+NVRTC CUDA shared-memory Pibar-only prototype.
+
+The important distinction is scope: both prototypes implemented Pibar
+normalization, not the full fused DTS_L wave-step update.  The original
+acceptance gate was a reduction in the `_wave_step_uniform_kernel` bucket for
+150-family chunks.  Since no full DTS_L fused CUDA row-prefix kernel was
+implemented, Proposal 3 cannot be accepted as a production fp32 forward path.
+
+#### Code map and feasibility
+
+Worker A mapped the current uniform wave-step implementation:
+
+| Location | Role |
+|---|---|
+| `gpurec/core/kernels/wave_step.py:_wave_step_uniform_kernel`, lines `381-393` | row max/sum reduction |
+| lines `410-445` | Pibar ancestor correction modes |
+| lines `433-445` | default parent-pointer walk |
+| lines `447-450` | Pibar formula |
+| lines `457-512` | DTS_L term loads and logsumexp update |
+| `gpurec/core/forward.py:_run_wave_self_loop` | default ping-pong wiring through `wave_step_uniform_fused_into` and final `wave_pibar_uniform_parent_fused` |
+
+For `tests/data/test_trees_1000`, species ids are child-before-parent: every
+non-root species has `parent_index > child_index`.  Therefore a prefix can be
+computed by descending species id, or by explicit species-tree levels.  The
+tested species topology has `S=1999` and `max_depth=23`.
+
+A minimal CUDA hook would likely follow the existing NVRTC/driver pattern in
+`wave_backward_cuda.py`: one CUDA block per clade row and dynamic shared memory
+for one species row.  Shared-memory footprint is manageable for Pibar-only
+state but still a serious occupancy constraint:
+
+| dtype | one row shared array |
+|---|---:|
+| fp32 | `7.81 KiB` |
+| fp64 | `15.62 KiB` |
+
+Adding more arrays for a fully fused DTS_L wave-step would reduce resident
+blocks per SM further.
+
+#### Representative commands
+
+The baseline forward interval used the current optimized defaults:
+
+```bash
+GPUREC_FORWARD_PARENT_REDUCED_DTS=1 \
+GPUREC_FORWARD_PARENT_REDUCED_DTS_MIN_SPLITS=0 \
+GPUREC_FORWARD_PARENT_REDUCED_DTS_IMPL=tiled \
+GPUREC_FORWARD_PARENT_REDUCED_DTS_TILE_SPLITS=64 \
+GPUREC_FORWARD_LEAF_INDEX=1 \
+GPUREC_FORWARD_TOPOLOGY_INT32=1 \
+GPUREC_FORWARD_DTS_OVERLAP_MODE=off \
+.venv/bin/python profiling/bench_uniform_forward_parent_dts.py \
+  --dataset tests/data/test_trees_1000 \
+  --fams 50 \
+  --fixed-iters 6 \
+  --dtype fp32 \
+  --no-need-pibar \
+  --root-rows
+```
+
+Nsys profiling used the same benchmark shape with one profiled repetition, for
+example:
+
+```bash
+nsys profile --force-overwrite=true \
+  -o /tmp/prop3_default_fp32_f50 \
+  .venv/bin/python profiling/bench_uniform_forward_parent_dts.py \
+    --dataset tests/data/test_trees_1000 \
+    --fams 50 \
+    --fixed-iters 6 \
+    --dtype fp32 \
+    --no-need-pibar \
+    --root-rows \
+    --reps 1 \
+    --warmups 1
+```
+
+The Triton scratch prototype was run from:
+
+```bash
+.venv/bin/python /tmp/gpurec_row_prefix_pibar_proto.py
+```
+
+#### Baseline profiles
+
+Worker B profiled the current optimized path with global uniform mode,
+fixed-6 Pi iterations, `need_pibar=False`, `root_rows=True`, DTS overlap off,
+parent-reduced DTS on, leaf-index on, and int32 topology on.
+
+50-family fp32 shape:
+
+| Quantity | Value |
+|---|---:|
+| `S` | `1999` |
+| `G` | `50` |
+| clades `C` | `321930` |
+| waves | `49` |
+| max wave size | `32768` |
+| split rows | `402275` |
+| first waves | `k0=32768` leaf-only, `k1=32768` leaf-only, `k2=15009` leaf-only, `k3=27023` internal split rows |
+
+50-family fp32 likelihood-only interval:
+
+| Variant | Median | Peak GPU | NLL |
+|---|---:|---:|---:|
+| default | `116.435 ms` | `5.256 GiB` | `107804.265625` |
+| ancestor | `159.383 ms` | `5.458 GiB` | `107804.265625` |
+| csr | `169.739 ms` | `5.458 GiB` | `107804.265625` |
+| two_kernel | `204.512 ms` | `10.25 GiB` | `107804.265625` |
+| linear | `413.727 ms` | `10.25 GiB` | `107804.265625` |
+
+50-family fp32 Nsys default:
+
+| Kernel bucket | Time | Launches | Share |
+|---|---:|---:|---:|
+| `_wave_step_uniform_kernel` | `76.998 ms` | `294` | `66.5%` |
+| `_wave_pibar_uniform_parent_kernel` | `10.306 ms` | `48` | `8.9%` |
+| `_dts_fused_kernel` | `9.703 ms` | `39` | `8.4%` |
+| `_dts_parent_reduced_ge2_stage1_kernel` | `7.521 ms` | `7` | `6.5%` |
+
+Representative 50-family fp32 NCU launches:
+
+| Launch | Duration | Throughput | DRAM | L1/TEX | L2 hit | Occupancy | Registers | Spills |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| default leaf wave `k0`, `W=32768` | `1.32 ms` | compute/memory `82.13%` | `38.05%` | `82.41%` | `92.01%` | `98.16%` | `40` | `0` |
+| final parent-Pibar, `W=32768` | `1.10 ms` | compute/memory `83.58%` | `45.72%` | hit `93.83%` | `72.93%` | `98.00%` | `34` | `0` |
+
+For fp32, the optimized Triton kernels are already high-occupancy and
+throughput-heavy.  The existing ancestor/csr/two-kernel/linear variants all
+regress in full forward timing.
+
+10-family fp64 likelihood-only interval:
+
+| Variant | Median | Peak GPU | NLL read |
+|---|---:|---:|---|
+| default | `1219.896 ms` | `2.172 GiB` | baseline |
+| ancestor | `1101.922 ms` | `2.483 GiB` | delta `1.381e-4` |
+| csr | `1102.028 ms` | `2.483 GiB` | delta `1.381e-4` |
+| two_kernel | `1104.638 ms` | `4.46 GiB` | delta `1.381e-4` |
+| linear | `1236.321 ms` | `4.46 GiB` | exact default NLL |
+
+10-family fp64 Nsys default:
+
+| Kernel bucket | Time | Launches | Share |
+|---|---:|---:|---:|
+| `_wave_step_uniform_kernel` | `1065.183 ms` | `270` | `85.5%` |
+| `_wave_pibar_uniform_parent_kernel` | `132.761 ms` | `44` | `10.7%` |
+| DTS combined | about `43 ms` | - | - |
+
+10-family fp64 NCU default leaf wave: duration `51.27 ms`, compute throughput
+`83.88%`, memory throughput `1.39%`, DRAM `0.99%`, fp64 pipeline bottleneck,
+occupancy `81.16%`, `48` registers/thread, and no spills.  This confirms that
+fp64 is scalar-pipeline limited, not memory-bandwidth limited.
+
+#### Triton scratch prefix prototype
+
+Worker C wrote a temporary scratch script:
+`/tmp/gpurec_row_prefix_pibar_proto.py`.  No tracked files were edited.
+
+The prototype decomposes Pibar into multiple Triton launches:
+
+```text
+1. compute row stats
+2. store exp scratch [W, S]
+3. launch one level kernel per species depth
+4. launch final Pibar kernel
+```
+
+For this topology, `max_depth = n_levels = 23` and `max_level_width = 242`.
+
+Parity against the parent-walk Pibar path:
+
+| dtype | Max abs error |
+|---|---:|
+| fp32 | `0` to `9.54e-7` |
+| fp64 | `8.88e-16` to `1.78e-15` |
+
+Pibar-only median timings:
+
+| dtype | `W` | Parent walk | Triton prefix | Result |
+|---|---:|---:|---:|---|
+| fp32 | `1` | `0.0316 ms` | `0.3931 ms` | prefix slower |
+| fp32 | `512` | `0.0365 ms` | `0.3881 ms` | prefix slower |
+| fp32 | `2048` | `0.0836 ms` | `0.4628 ms` | prefix slower |
+| fp64 | `1` | `0.2785 ms` | `0.4260 ms` | prefix slower |
+| fp64 | `512` | `1.0428 ms` | `0.5501 ms` | prefix faster |
+| fp64 | `2048` | `4.1206 ms` | `1.1315 ms` | `3.64x` faster |
+
+Nsys for fp64 `W=2048` showed why this is not production-ready:
+the parent path was `6` launches for `24.64 ms` total, while the prefix path
+spent `2.44 ms` in init kernels, `1.61 ms` in final kernels, and `0.845 ms` in
+`138` level-kernel launches.  The math is promising for fp64, but the launch
+structure is unsuitable for the real forward loop.
+
+#### CUDA shared-memory Pibar-only scratch
+
+A local inline NVRTC prototype tested one CUDA block per Pi row with dynamic
+shared memory for a single exp/prefix row.  It uses the child-before-parent
+species-id property:
+
+```cuda
+// prefix initially stores exp2(Pi[row, s] - row_max)
+__syncthreads();
+if (threadIdx.x == 0) {
+    for (int s = S - 1; s >= 0; --s) {
+        int p = parent[s];
+        if (p >= 0) {
+            prefix[s] += prefix[p];
+        }
+    }
+}
+__syncthreads();
+// all threads write Pibar[row, s]
+```
+
+This prototype computes Pibar only.  It does not fuse DTS_L loads, D/S/T terms,
+or the final logsumexp update.
+
+Parity against `wave_pibar_uniform_parent_fused`:
+
+| dtype | Max abs error | Read |
+|---|---:|---|
+| fp32 | `3.81e-6` | allclose under scratch tolerance |
+| fp64 | `7.11e-15` | allclose under scratch tolerance |
+
+CUDA event medians:
+
+| dtype | `W` | Parent walk | Shared prefix | Result |
+|---|---:|---:|---:|---|
+| fp32 | `1` | `0.0307 ms` | `0.0666 ms` | `2.17x` slower |
+| fp32 | `512` | `0.0358 ms` | `0.0696 ms` | `1.94x` slower |
+| fp32 | `2048` | `0.0819 ms` | `0.1792 ms` | `2.19x` slower |
+| fp32 | `8192` | `0.2721 ms` | `0.6458 ms` | `2.37x` slower |
+| fp64 | `1` | `0.2774 ms` | `0.1207 ms` | `2.30x` faster |
+| fp64 | `512` | `1.0414 ms` | `0.1986 ms` | `5.24x` faster |
+| fp64 | `2048` | `4.1185 ms` | `0.7772 ms` | `5.30x` faster |
+| fp64 | `8192` | `16.4274 ms` | `2.6880 ms` | `6.11x` faster |
+
+Shared memory per block was one row only: `7.81 KiB` for fp32 and `15.62 KiB`
+for fp64.  The prototype uses no global scratch allocation.  The single-thread
+descending recurrence is serial inside each row, but for fp64 it still wins
+because it avoids the repeated scalar fp64 parent-walk work.
+
+#### Interpretation
+
+The two prototypes agree on the main technical result:
+
+- row-prefix Pibar is a bad fp32 tradeoff in the current forward path;
+- row-prefix Pibar is promising for fp64, especially for larger `W`;
+- avoiding global scratch and many level launches matters;
+- the remaining hard problem is fusing the prefix result into the DTS_L
+  wave-step update without losing occupancy to shared memory, barriers, and
+  additional per-row scratch.
+
+The current fp32 baseline already has `98%` achieved occupancy and no spills in
+the representative leaf and final-Pibar kernels.  Replacing the parent walk
+with a shared-memory row prefix adds synchronization and shared-memory
+footprint, while removing work that is not yet expensive enough in fp32.  That
+is why the CUDA Pibar-only prefix is `2.0-2.4x` slower in fp32.
+
+The fp64 situation is different.  NCU shows the default fp64 leaf wave at
+`51.27 ms`, with DRAM almost idle and the scalar fp64 pipeline saturated.  The
+shared-memory prefix removes repeated fp64 ancestor-walk arithmetic and gives a
+`2.3-6.1x` Pibar-only speedup.  This supports an fp64-specific Pibar/final-Pibar
+follow-up, but not a general fp32 production rewrite.
+
+#### Decision
+
+Do not promote a production fp32 path from Proposal 3.
+
+The original acceptance gate was at least `5%` faster on the
+`_wave_step_uniform_kernel` bucket for 150-family chunks.  That gate was not
+met because the implemented CUDA scratch was Pibar-only and no full fused
+DTS_L CUDA wave-step kernel was built.  The fp32 Pibar-only CUDA prefix also
+regressed relative to the current Triton parent-walk Pibar kernel.
+
+Keep the result as evidence for two narrower future directions:
+
+- fp64 Pibar-only or final-Pibar replacement, where the shared-memory CUDA
+  prefix showed `2.3-6.1x` Pibar-only speedups without global scratch;
+- a later full DTS_L fused CUDA prototype only if it can keep shared-memory
+  footprint low enough to preserve occupancy and demonstrate full wave-step
+  bucket improvement, not just Pibar microkernel speedup.
+
+Artifacts:
+
+```text
+/tmp/gpurec_row_prefix_pibar_proto.py
+/tmp/gpurec_row_prefix_fp32.log
+/tmp/gpurec_row_prefix_fp64.log
+/tmp/gpurec_row_prefix_w2048_fp64.nsys-rep
+/tmp/gpurec_row_prefix_w2048_fp64_kernels.txt
+/tmp/prop3_default_fp32_f50.nsys-rep
+```
+
 ## Proposal 4: readiness-aware DTS overlap
 
 The forward code has an `overlap_streams` argument, but the current high-level
