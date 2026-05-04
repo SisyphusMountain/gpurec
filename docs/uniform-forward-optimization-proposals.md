@@ -1783,6 +1783,244 @@ dense or block-sparse MMA. The earlier sparse-matmul path showed that even a
 fast sparse matmul is not enough if the surrounding exp/log/materialization
 work is not fused.
 
+### Proposal 9 follow-up: tested fp64 and tensor-core experiments
+
+Proposal 9 tested three directions:
+
+1. row-prefix / linear uniform formulation;
+2. mixed internal precision for fp64 inputs;
+3. fp64 Triton tile tuning and tensor-core audit.
+
+The benchmark helper now accepts `--dtype {fp32,fp64}` so the fp64 measurements
+are reproducible.  The default remains fp32.  The reliable local measurements
+below used an RTX 4090, `S=1999`, `tests/data/test_trees_1000`, global uniform
+mode, fixed 6 Pi iterations, current optimized likelihood interval,
+`--no-need-pibar --root-rows`, and cache directory
+`/tmp/gpurec_prop9_cache`.  Earlier accidental parallel benchmark samples are
+excluded.
+
+#### Baseline dtype cost
+
+Likelihood-only interval:
+
+| Workload | dtype | Median | Peak GPU | NLL | Read |
+|---:|---|---:|---:|---:|---|
+| 3 families | fp32 | `11.550 ms` | `0.306619 GiB` | `6421.17333984375` | baseline |
+| 3 families | fp64 | `389.793 ms` | `0.612526 GiB` | `6421.173588860177` | `33.7x`, NLL diff `2.49e-4` |
+| 10 families | fp32 | `59.239 ms` | `1.088754 GiB` | `22182.9140625` | baseline |
+| 10 families | fp64 | `2216.894-3071.235 ms` | `2.171539 GiB` | `22182.916951060826` | noisy `37-52x`, NLL diff `0.002889` |
+
+Full-output interval, `--need-pibar --no-root-rows`:
+
+| Workload | dtype | Median | Peak GPU | NLL | Ratio |
+|---:|---|---:|---:|---:|---:|
+| 3 families | fp32 | `27.178 ms` | `0.306689 GiB` | `6421.17333984375` | - |
+| 3 families | fp64 | `847.117 ms` | `0.612666 GiB` | `6421.173588860177` | `31.2x` |
+
+The end-to-end fp64 penalty is therefore about `31-52x` on this RTX 4090,
+depending on workload and output mode.  The memory increase is the expected
+roughly `2x` tensor-size effect.
+
+#### NCU resource evidence
+
+NCU was run on the first 3-family `_wave_step_uniform_kernel` launch:
+`grid=(4684,1,1)`, block x dimension `128`.
+
+| Metric | fp32 | fp64 |
+|---|---:|---:|
+| Kernel duration | `209.024 us` | `14.484 ms` |
+| Duration ratio | - | about `69x` |
+| SM throughput | `74.873%` | `83.554%` |
+| DRAM throughput | `37.984%` | `1.066%` |
+| FP64 pipe instructions | `0` | `216,382,013` |
+| Tensor HMMA instructions | `0` | `0` |
+| Registers/thread | `40` | `48` |
+| Waves/SM | `3.05` | `3.66` |
+
+Interpretation: fp64 is not memory-bound here.  DRAM is almost idle in the fp64
+kernel, while scalar fp64 work saturates the SM side.  Tensor cores are exactly
+unused in both runs.  The current kernel has no `tl.dot`/MMA structure and
+executes scalar exp/log/reduction and tree-gather code.
+
+Artifacts:
+
+```text
+/tmp/gpurec_prop9_ncu_fp32_default.ncu-rep
+/tmp/gpurec_prop9_ncu_fp64_default.ncu-rep
+```
+
+#### Row-prefix / linear and existing fp64 variants
+
+Worker A found that no usable forward row-prefix CUDA/shared-memory prototype
+is wired today.  The prefix/Euler code is backward-only VJP machinery, mainly
+in `gpurec/core/kernels/wave_backward.py`.  The available forward variants are
+the default parent-walk ping-pong path plus `GPUREC_UNIFORM_IMPL=ancestor`,
+`csr`, `two_kernel`, and `linear`; all are parameterized for fp64.
+
+Correctness was acceptable for the existing variants:
+
+| Check | Result |
+|---|---|
+| Synthetic fp64 kernel parity | default/two-kernel/ancestor/csr max abs `0.0`; linear `6.66e-16` |
+| 3-family dataset NLL parity | default `6421.173588860177`; ancestor/csr/two-kernel delta `3.855e-05`; linear delta `0.0` |
+| 10-family dataset NLL parity | default `22182.916951060826`; ancestor/csr/two-kernel delta `1.381e-04`; linear delta `0.0` |
+
+Worker A warmed likelihood-only timings after E, fp64, fixed 6, root rows:
+
+| Variant | 3 families | Peak | 10 families | Peak | Read |
+|---|---:|---:|---:|---:|---|
+| default | `410.197 ms` | `0.613 GiB` | `1239.073 ms` | `2.172 GiB` | baseline |
+| ancestor | `371.897 ms` | `0.701 GiB` | `1118.671 ms` | `2.483 GiB` | possible `9-10%` fp64 win |
+| csr | `373.647 ms` | `0.701 GiB` | `1118.716 ms` | `2.483 GiB` | similar to ancestor |
+| two_kernel | `374.494 ms` | `1.260 GiB` | `1124.505 ms` | `4.464 GiB` | faster, but high memory |
+| linear | `497.580 ms` | `1.261 GiB` | `1257.127 ms` | `4.466 GiB` | reject |
+
+Worker A's Nsys comparison did not show a clean linear win:
+default wave step `3126.176 ms / 270` launches versus linear
+`3025.390 ms / 270`, but final Pibar increased from
+`382.098 ms / 44` to `420.426 ms / 45`; DTS was similar.  The earlier local
+guarded linear check was also slower (`1299.424 ms` on 3 families) and used
+about `2x` GPU memory.  Artifacts:
+
+```text
+/tmp/gpurec_profile/prop9_fp64/default_f10.nsys-rep
+/tmp/gpurec_profile/prop9_fp64/linear_f10.nsys-rep
+```
+
+Decision: reject row-prefix/linear promotion.  There is no forward row-prefix
+implementation to promote, and the existing linear variant is slower.  The
+ancestor/csr variants may deserve a later controlled fp64-only sweep because
+they showed a possible `9-10%` speedup with modest memory growth and small NLL
+deltas, but they should not become defaults from this evidence alone.
+
+#### Mixed internal precision
+
+A temporary, removed prototype tested:
+
+```text
+GPUREC_UNIFORM_INTERNAL_FP32=1
+```
+
+It kept external tensors fp64 but cast the default uniform wave-step and final
+Pibar internal arithmetic to fp32.  This code was removed after testing and is
+not a committed production path.
+
+Performance was promising:
+
+| Workload/mode | Default fp64 | Mixed internal fp32 | Peak GPU | NLL |
+|---|---:|---:|---:|---:|
+| 3 families, likelihood-only | `389.793 ms` | `33.215 ms` | `0.612526 GiB` | `6421.173355468305` |
+| 10 families, likelihood-only | `2216.894-3071.235 ms` | `104.916 ms` | `2.171539 GiB` | `22182.916381341616` |
+| 3 families, full-output | `847.117 ms` | `73.809 ms` | - | `6421.173355468305` |
+
+Numerically, this moved the fp64 result close to the fp32 likelihood:
+
+| Workload | Abs NLL diff vs default fp64 |
+|---:|---:|
+| 3 families | `2.33e-4` |
+| 10 families | `5.70e-4` |
+
+But finite-difference gradient checks failed under the mixed-internal prototype:
+
+| Case | Analytic | FD | Diff |
+|---|---:|---:|---:|
+| global uniform, `idx=(1,)` | `3.656096` | `3.630517` | `2.558e-2` |
+| specieswise uniform, `idx=(0,0)` | `0.160833` | `0.152741` | `8.091e-3` |
+| genewise uniform, `idx=(0,0)` | `0.971214` | `0.975034` | `-3.820e-3` |
+
+This finite-difference failure is the decisive reason not to promote the
+broader mixed-internal path for training/backward.
+
+Worker B tested a narrower scratch candidate: tensors, E, DTS, Pi values, and
+the final likelihood remained fp64, but only Pibar normalization internals
+(`row_max`, `row_sum`, `ancestor_sum`, `denom`, and
+`log2(denom) + row_max + mt`) ran in fp32 before casting Pibar back to fp64.
+No tracked files were edited.
+
+| Workload/mode | Current fp64 | Pibar32 scratch | Speedup |
+|---|---:|---:|---:|
+| 3 families, likelihood-only | `389.97 ms` | `111.74 ms` | `3.49x` |
+| 10 families, likelihood-only | `2558.32 ms` | `747.80 ms` | `3.42x` |
+| 3 families, full-output | `844.74 ms` | `244.88 ms` | `3.45x` |
+| 10 families, full-output | `2656.18 ms` | `754.16 ms` | `3.52x` |
+
+Worker B's 3-family Nsys split showed wave step falling from `358.10 ms` to
+`103.09 ms`, final Pibar from `44.82 ms` to `2.27 ms`, and DTS unchanged at
+about `13 ms`.
+
+| Workload | NLL diff vs fp64 | Pi max abs | Pi mean abs | Pibar max abs |
+|---:|---:|---:|---:|---:|
+| 3 families | `3.70e-05` | `1.07e-02` | `2.42e-04` | `1.32e-02` |
+| 10 families | `1.20e-04` | `2.13e-02` | `2.11e-04` | `2.18e-02` |
+
+This is a more conservative future direction than the broader local
+`GPUREC_UNIFORM_INTERNAL_FP32=1` experiment: the speedup is smaller, but the
+NLL drift is also smaller and the approximation is localized to Pibar
+normalization.  Worker B did not run gradcheck, so this remains an
+inference-only candidate until backward parity and finite-difference checks are
+implemented.
+
+Mixed-precision decision: do not promote any mixed internal fp32 path for
+training/backward.  A hidden approximation inside `dtype=torch.float64` would
+make gradients dtype-dependent in a way that already failed finite-difference
+checks.  The narrower Pibar32 variant is worth considering only as an explicit
+approximate inference mode with documented tolerances.
+
+#### Block-size tuning and tensor-core audit
+
+Worker C tested fp64 full-output runs on 10 families with exact NLL parity for
+all block candidates: `22182.916951060826`, delta `0.0`, peak
+`2.172035 GiB`.
+
+| `BLOCK_S` / warps | Median | Mean | Min | Max |
+|---|---:|---:|---:|---:|
+| default/default | `1294.522 ms` | `1647.310 ms` | `1220.011 ms` | `2655.197 ms` |
+| `128 / 4` | `2716.198 ms` | `2554.450 ms` | `1242.821 ms` | `3967.305 ms` |
+| `256 / 4` | `1299.455 ms` | `1880.114 ms` | `1219.967 ms` | `3112.721 ms` |
+| `256 / 8` | `1310.252 ms` | `1547.670 ms` | `1245.598 ms` | `2424.108 ms` |
+| `512 / 8` | `1221.536 ms` | `1222.863 ms` | `1221.426 ms` | `1230.903 ms` |
+
+`512/8` was the best and most stable in that full-output fp64 run.  However,
+local 10-family likelihood-only `512/8` was slower: median `4424.032 ms`
+versus noisy default medians in the `2216-3071 ms` range.  Treat fp64 block
+tuning as workload-sensitive and inconclusive.  Keep the tuning knobs, but do
+not change the default.
+
+Worker Nsys for default full-output fp64 showed:
+
+| Kernel bucket | Time | Launches | Share |
+|---|---:|---:|---:|
+| `_wave_step_uniform_kernel` | `2.285 s` | `270` | `86.0%` |
+| `_wave_pibar_uniform_parent_kernel` | `269.247 ms` | `45` | `10.1%` |
+| `_dts_fused_kernel` | `56.515 ms` | `39` | - |
+
+The tensor-core audit found tensor-pipe counters exactly zero and scalar fp64
+`dadd`/`dmul`/`dfma` instructions present.  There is no tensor-core opportunity
+in the current scalar kernels.
+
+#### Decision
+
+No production fp64/tensor-core optimization is promoted from Proposal 9.  The
+only retained implementation change is benchmark support for `--dtype` so fp64
+measurements can be reproduced.
+
+Near-term direction:
+
+- do not use the linear/row-prefix direction for fp64 forward yet; no forward
+  row-prefix implementation is wired;
+- run a later controlled ancestor/csr fp64 sweep before considering an fp64
+  default change;
+- do not silently mix fp32 internals into fp64 training;
+- keep fp64 block-size knobs for profiling, but leave defaults unchanged;
+- consider an explicit inference-only Pibar32 approximate mode with
+  per-family NLL bounds;
+- require gradient-consistent mixed backward and finite-difference validation
+  before any mixed mode can be used for training;
+- otherwise focus on algorithmic reformulation that reduces scalar exp/log work
+  in a gradient-consistent way.
+
+Tensor cores are not applicable to the current uniform forward kernels.
+
 ## Ranked plan
 
 | Rank | Proposal | Why now | Main metric |

@@ -39,6 +39,12 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--reps", type=int, default=int(os.getenv("REPS", "9")))
     parser.add_argument("--warmups", type=int, default=int(os.getenv("WARMUPS", "5")))
     parser.add_argument("--fixed-iters", type=int, default=int(os.getenv("FIXED_ITERS_PI", "6")))
+    parser.add_argument(
+        "--dtype",
+        choices=("fp32", "fp64"),
+        default=os.getenv("DTYPE", "fp32"),
+        help="Floating-point dtype used for the model and timed Pi interval.",
+    )
     parser.add_argument("--max-wave-size", default=os.getenv("MAX_WAVE_SIZE", "32768"))
     parser.add_argument("--max-root-wave-size", default=os.getenv("MAX_ROOT_WAVE_SIZE", ""))
     parser.add_argument("--cache-dir", default=os.getenv("PREPROCESS_CACHE_DIR", "/tmp/gpurec_preprocess_cache"))
@@ -227,13 +233,14 @@ def _print_shape(model: GeneReconModel) -> None:
 def _prepare(args: argparse.Namespace) -> tuple[GeneReconModel, dict, tuple]:
     root = Path(args.dataset)
     genes = _selected_genes(root, args.start, args.fams)
+    dtype = torch.float64 if args.dtype == "fp64" else torch.float32
     model = GeneReconModel.from_trees(
         str(root / "sp.nwk"),
         genes,
         mode=args.mode,
         pibar_mode="uniform",
         device="cuda",
-        dtype=torch.float32,
+        dtype=dtype,
         theta_init_rates=(0.05, 0.05, 0.05),
         fixed_iters_Pi=args.fixed_iters,
         max_wave_size=args.max_wave_size,
@@ -404,6 +411,7 @@ def main() -> None:
         "timing",
         "variant", args.variant,
         "mode", args.mode,
+        "dtype", args.dtype,
         "min_splits", args.min_splits,
         "impl", args.impl,
         "tile_splits", args.tile_splits,
