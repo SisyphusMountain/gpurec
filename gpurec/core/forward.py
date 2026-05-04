@@ -442,6 +442,7 @@ def Pi_wave_forward(
     topk_k: int = 16,
     family_idx: torch.Tensor | None = None,
     return_original: bool = True,
+    need_pibar: bool = True,
 ):
     """Wave-based Pi forward pass with wave-ordered layout (v2).
 
@@ -467,6 +468,9 @@ def Pi_wave_forward(
         topk_k: number of top-k entries per clade for pibar_mode='topk' (default 16)
         family_idx: Long[C] clade→family mapping in wave-ordered space.
                     When provided, parameters are [G, ...] and indexed per-clade.
+        need_pibar: if False, do not return final Pibar rows. In fixed even
+                    uniform ping-pong mode, root-wave final Pibar recomputation
+                    is skipped because no later cross-DTS can consume those rows.
 
     Returns:
         dict with 'Pi' (in original clade order when requested),
@@ -542,6 +546,8 @@ def Pi_wave_forward(
         and leaf_species_index is not None
     )
     reuse_forward_pibar_stats = bool(
+        need_pibar
+        and
         use_uniform_fused
         and not batched
         and (
@@ -715,6 +721,23 @@ def Pi_wave_forward(
         and not use_uniform_csr
         and not use_uniform_spmm
     )
+    root_clade_ids_for_skip = None
+    if use_uniform_pingpong and not need_pibar:
+        root_clade_ids_for_skip = wave_layout.get('root_clade_ids_cpu')
+        if root_clade_ids_for_skip is None:
+            root_clade_ids_for_skip = [
+                int(r) for r in wave_layout['root_clade_ids'].detach().cpu().tolist()
+            ]
+
+    def _can_skip_final_pibar(ws: int, we: int, W: int) -> bool:
+        if root_clade_ids_for_skip is None:
+            return False
+        roots_in_wave = 0
+        for root_id in root_clade_ids_for_skip:
+            if ws <= root_id < we:
+                roots_in_wave += 1
+        return roots_in_wave == W
+
     use_forward_parent_reduced_dts = bool(
         use_uniform_fused
         and os.environ.get("GPUREC_FORWARD_PARENT_REDUCED_DTS", "1") != "0"
@@ -898,7 +921,10 @@ def Pi_wave_forward(
                                     leaf_species_idx=leaf_species_index,
                                     leaf_logp=uniform_leaf_logp,
                                 )
-                                if local_iter == n_iters - 1:
+                                if (
+                                    local_iter == n_iters - 1
+                                    and not _can_skip_final_pibar(ws, we, W)
+                                ):
                                     wave_pibar_uniform_parent_fused(
                                         Pi, Pibar, ws, W, S,
                                         mt_w, sp_parent, max_ancestor_depth,
@@ -1096,7 +1122,10 @@ def Pi_wave_forward(
                                     leaf_species_idx=leaf_species_index,
                                     leaf_logp=uniform_leaf_logp,
                                 )
-                                if local_iter == n_iters - 1:
+                                if (
+                                    local_iter == n_iters - 1
+                                    and not _can_skip_final_pibar(ws, we, W)
+                                ):
                                     wave_pibar_uniform_parent_fused(
                                         Pi, Pibar, ws, W, S,
                                         mt_w, sp_parent, max_ancestor_depth,
@@ -1217,6 +1246,6 @@ def Pi_wave_forward(
         'clade_species_map': clade_species_map_orig,
         'iterations': total_iters,
         'Pi_wave_ordered': Pi,
-        'Pibar_wave_ordered': Pibar,
-        'uniform_pibar_row_max': uniform_pibar_row_max,
+        'Pibar_wave_ordered': Pibar if need_pibar else None,
+        'uniform_pibar_row_max': uniform_pibar_row_max if need_pibar else None,
     }

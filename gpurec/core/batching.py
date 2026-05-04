@@ -558,6 +558,7 @@ def build_wave_layout(
 
     leaf_row_new = perm[leaf_row_index.to(device=device, dtype=torch.long)]
     root_ids_new = perm[root_clade_ids.to(device=device, dtype=torch.long)]
+    root_ids_new_cpu = [int(x) for x in root_ids_new.detach().cpu().tolist()]
     leaf_col_new = leaf_col_index.to(device=device, dtype=torch.long)
     leaf_species_index = torch.full((C,), -1, dtype=torch.long, device=device)
     if leaf_row_new.numel() > 0:
@@ -676,6 +677,7 @@ def build_wave_layout(
         'leaf_col_index': leaf_col_new,
         'leaf_species_index': leaf_species_index,
         'root_clade_ids': root_ids_new,
+        'root_clade_ids_cpu': root_ids_new_cpu,
         'original_root_clade_ids': root_clade_ids.to(device=device, dtype=torch.long),
         'wave_starts': wave_starts,
         'wave_metas': wave_metas,

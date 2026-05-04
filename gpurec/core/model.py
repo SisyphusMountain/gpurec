@@ -404,6 +404,7 @@ class GeneDataset(Dataset):
         tol_E: float = 1e-12,
         max_iters_Pi: int = 2000,
         tol_Pi: float = 1e-12,
+        fixed_iters_Pi: int | None = None,
         device: torch.device | None = None,
         dtype: torch.dtype | None = None,
         chunk_size: int | None = None,
@@ -421,6 +422,8 @@ class GeneDataset(Dataset):
         Args:
             chunk_size: If set, process families in chunks of this size to avoid OOM.
                 Recommended: 20 for S~2000.
+            fixed_iters_Pi: If set, use a fixed number of Pi iterations in
+                each wave instead of adaptive convergence checks.
             max_wave_size: If set, use fixed-size cross-family wave scheduling
                 with at most this many clades per wave. If ``None``, merge
                 families by their per-family wave index.
@@ -445,6 +448,7 @@ class GeneDataset(Dataset):
                     chunk_indices,
                     max_iters_E=max_iters_E, tol_E=tol_E,
                     max_iters_Pi=max_iters_Pi, tol_Pi=tol_Pi,
+                    fixed_iters_Pi=fixed_iters_Pi,
                     device=device, dtype=dtype,
                     chunk_size=chunk_size,
                     max_wave_size=max_wave_size,
@@ -567,9 +571,11 @@ class GeneDataset(Dataset):
             device=device, dtype=dtype,
             local_iters=max_iters_Pi,
             local_tolerance=tol_Pi,
+            fixed_iters=fixed_iters_Pi,
             pibar_mode=pibar_mode,
             family_idx=wave_layout.get('family_idx') if self.genewise else None,
             return_original=False,
+            need_pibar=False,
         )
 
         logL_vec = compute_log_likelihood(

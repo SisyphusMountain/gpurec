@@ -384,6 +384,122 @@ Correctness gate:
 - Loss-only NLL parity must be exact or within existing fp32 ordering noise.
 - Backward tests must run with the default `need_pibar=True`.
 
+### Proposal 1 follow-up: implemented, but not a speed win
+
+Implemented the explicit likelihood-only API:
+
+```python
+Pi_wave_forward(..., need_pibar=False)
+```
+
+When `need_pibar=False`, `Pi_wave_forward` returns:
+
+```python
+{
+    "Pi_wave_ordered": Pi,
+    "Pibar_wave_ordered": None,
+    "uniform_pibar_row_max": None,
+    ...
+}
+```
+
+The autograd and optimizer paths keep the default `need_pibar=True`, so
+backward still receives a full `Pibar_wave_ordered`. The no-grad
+`GeneDataset.compute_likelihood_batch(...)` path now passes `need_pibar=False`
+and accepts `fixed_iters_Pi` so likelihood-only fixed-iteration runs can use
+the API directly.
+
+The important safety correction is that the optimistic interpretation of this
+proposal was not valid. In fixed-even ping-pong,
+`wave_step_uniform_fused_into(..., STORE_PIBAR=False)` leaves final `Pi` in
+`Pi`, but it does not leave final `Pibar` in `Pibar`. Later cross-DTS waves read
+`Pibar[left_child]` and `Pibar[right_child]`, so final Pibar recomputation is
+still required for every row that can be consumed by a later split.
+
+The first attempted guard skipped by `meta["phase"] == 3`, but cross-family
+waves can be phase-mixed. In a 3-family run, a wave labelled phase 3 contained
+some roots and some non-root rows. Skipping that wave's Pibar recompute produced
+the same root NLL by accident, but full `Pi_wave_ordered` differed by
+`3.668`, which would corrupt later use of those rows. The final guard skips only
+waves whose entire contiguous row range consists of root clades. To avoid a
+per-forward device-to-host sync, `build_wave_layout` now stores
+`root_clade_ids_cpu` during layout construction.
+
+Skipped work accounting:
+
+| Workload | Total waves | Root-only waves skipped | Rows skipped |
+|---|---:|---:|---:|
+| 3 families | `45` | `1` | `1` |
+| 50 families | `49` | `1` | `1` |
+| 150 families | `65` | `1` | `1` |
+
+This explains why the original `36 ms` target was not attainable: almost all of
+the `_wave_pibar_uniform_parent_kernel` bucket is for non-root rows whose Pibar
+is needed by later DTS.
+
+Correctness evidence:
+
+| Check | Result |
+|---|---:|
+| 3-family direct fixed-6 NLL, `need_pibar=True` | `6421.17333984375` |
+| 3-family direct fixed-6 NLL, `need_pibar=False` | `6421.17333984375` |
+| Direct NLL delta | `0.0` |
+| Full `Pi_wave_ordered` max abs delta | `0.0` |
+| `need_pibar=False` return value | `Pibar_wave_ordered is None` |
+| Focused forward/backward smoke tests | `35 passed in 12.53 s` |
+| Model API likelihood tests | `3 passed in 55.70 s` |
+
+Commands:
+
+```bash
+.venv/bin/python -m py_compile \
+  gpurec/core/batching.py \
+  gpurec/core/forward.py \
+  gpurec/core/model.py \
+  profiling/bench_uniform_forward_parent_dts.py
+
+.venv/bin/python -m pytest -q \
+  tests/kernels/test_dts_fused_kernel.py::test_dts_parent_reduced_matches_existing_recompute \
+  tests/unit/test_genewise_wave.py::test_genewise_wave_large_s \
+  tests/unit/test_cross_family_wave.py::test_batched_wave_matches_individual_large_s \
+  tests/gradients/test_autograd_bridge.py
+
+.venv/bin/python -m pytest -q \
+  tests/unit/test_wave_v2.py::test_model_api_wave_matches_fp \
+  tests/unit/test_cross_family_wave.py::test_model_api_wave_vs_sequential \
+  tests/unit/test_cross_family_wave.py::test_batched_wave_100_families_large_s
+```
+
+Timing, proposal 0 enabled, fixed 6, 9 reps after moving root ids to CPU layout
+metadata:
+
+| Workload | `need_pibar=True` median | `need_pibar=False` median | Delta | Peak change |
+|---|---:|---:|---:|---:|
+| 3 families | `12.868 ms` | `12.884 ms` | `+0.016 ms` | `0.322501 -> 0.322431 GiB` |
+| 50 families | `135.997 ms` | `135.672 ms` | `-0.325 ms` | `5.273371 -> 5.272171 GiB` |
+| 150 families | `403.306 ms` | `404.224 ms` | `+0.918 ms` | `15.022059 -> 15.018502 GiB` |
+
+Nsight Systems, one warmed profiled rep:
+
+| Workload | Variant | Event time | `_wave_pibar_uniform_parent_kernel` | Launches | `_wave_step_uniform_kernel` |
+|---|---|---:|---:|---:|---:|
+| 50 families | `need_pibar=True` | `135.671 ms` | `12.395 ms` | `49` | `94.233 ms` |
+| 50 families | `need_pibar=False` | `133.750 ms` | `11.971 ms` | `48` | `92.833 ms` |
+| 150 families | `need_pibar=True` | `395.309 ms` | `35.533 ms` | `65` | `271.068 ms` |
+| 150 families | `need_pibar=False` | `395.480 ms` | `35.460 ms` | `64` | `271.292 ms` |
+
+The one removed Pibar launch saves only `0.073 ms` in the 150-family Nsight
+capture. Other buckets are unchanged within noise. The small peak-memory drop
+comes from not retaining `uniform_pibar_row_max` and not returning Pibar as a
+valid output, not from removing the full Pibar working set, which is still
+needed internally by later DTS.
+
+Decision: keep `need_pibar=False` as a semantic likelihood-only API and keep
+`compute_likelihood_batch` on that path, but do not count proposal 1 as a
+performance win. Recovering the original `36 ms` target would require a deeper
+liveness design, for example recomputing/storing Pibar only for child rows that
+future DTS will actually read, or folding child Pibar computation into DTS.
+
 ## Proposal 2: source-counter-driven wave-step kernel cleanup
 
 The dominant kernel is `_wave_step_uniform_kernel`. It is already fused and has

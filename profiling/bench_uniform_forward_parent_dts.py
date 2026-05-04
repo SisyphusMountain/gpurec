@@ -62,6 +62,11 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--full-diff-max-fams", type=int, default=int(os.getenv("FULL_DIFF_MAX_FAMS", "10")))
     parser.add_argument("--profile-cuda-api", action="store_true", default=os.getenv("PROFILE_CUDA_API", "0") != "0")
     parser.add_argument("--stats-only", action="store_true", default=os.getenv("STATS_ONLY", "0") != "0")
+    parser.add_argument(
+        "--need-pibar",
+        action=argparse.BooleanOptionalAction,
+        default=os.getenv("NEED_PIBAR", "1") != "0",
+    )
     args = parser.parse_args()
     mws = str(args.max_wave_size).strip().lower()
     args.max_wave_size = None if mws in ("", "0", "none", "null") else int(mws)
@@ -192,7 +197,13 @@ def _prepare(args: argparse.Namespace) -> tuple[GeneReconModel, dict, tuple]:
     return model, E_out, (log_pS, log_pD, log_pL, transfer_mat, max_transfer_vec)
 
 
-def _run_pi(model: GeneReconModel, E_out: dict, params: tuple) -> tuple[torch.Tensor, dict]:
+def _run_pi(
+    model: GeneReconModel,
+    E_out: dict,
+    params: tuple,
+    *,
+    need_pibar: bool,
+) -> tuple[torch.Tensor, dict]:
     static = model.static
     log_pS, log_pD, log_pL, transfer_mat, max_transfer_vec = params
     pi_out = Pi_wave_forward(
@@ -214,6 +225,7 @@ def _run_pi(model: GeneReconModel, E_out: dict, params: tuple) -> tuple[torch.Te
         fixed_iters=static.fixed_iters_Pi,
         pibar_mode=static.pibar_mode,
         return_original=False,
+        need_pibar=need_pibar,
         family_idx=(static.wave_layout.get("family_idx") if static.genewise else None),
     )
     nll = compute_log_likelihood(
@@ -226,7 +238,7 @@ def _run_pi(model: GeneReconModel, E_out: dict, params: tuple) -> tuple[torch.Te
 
 def _compare(args: argparse.Namespace, model: GeneReconModel, E_out: dict, params: tuple) -> None:
     _set_variant(args, "old")
-    old_nll, old_out = _run_pi(model, E_out, params)
+    old_nll, old_out = _run_pi(model, E_out, params, need_pibar=args.need_pibar)
     torch.cuda.synchronize()
     old_nll_value = float(old_nll.detach().cpu())
     keep_full_diff = args.fams <= args.full_diff_max_fams
@@ -234,13 +246,16 @@ def _compare(args: argparse.Namespace, model: GeneReconModel, E_out: dict, param
         del old_out
         torch.cuda.empty_cache()
     _set_variant(args, "new")
-    new_nll, new_out = _run_pi(model, E_out, params)
+    new_nll, new_out = _run_pi(model, E_out, params, need_pibar=args.need_pibar)
     torch.cuda.synchronize()
     nll_diff = float((new_nll - old_nll).abs().detach().cpu())
     print("compare", "old_nll", old_nll_value, "new_nll", float(new_nll.detach().cpu()), "nll_abs_diff", nll_diff)
     if keep_full_diff:
         pi_diff = _tensor_max_abs_diff(old_out["Pi_wave_ordered"], new_out["Pi_wave_ordered"])
-        pibar_diff = _tensor_max_abs_diff(old_out["Pibar_wave_ordered"], new_out["Pibar_wave_ordered"])
+        if old_out["Pibar_wave_ordered"] is not None and new_out["Pibar_wave_ordered"] is not None:
+            pibar_diff = _tensor_max_abs_diff(old_out["Pibar_wave_ordered"], new_out["Pibar_wave_ordered"])
+        else:
+            pibar_diff = "not_returned"
         print("compare_tensors", "Pi_max_abs", pi_diff, "Pibar_max_abs", pibar_diff)
         del old_out
     del new_out, old_nll, new_nll
@@ -262,7 +277,7 @@ def main() -> None:
 
     for _ in range(args.warmups):
         _set_variant(args, args.variant)
-        _, out = _run_pi(model, E_out, params)
+        _, out = _run_pi(model, E_out, params, need_pibar=args.need_pibar)
         del out
     torch.cuda.synchronize()
 
@@ -272,7 +287,9 @@ def main() -> None:
         torch.cuda.profiler.start()
     for _ in range(args.reps):
         _set_variant(args, args.variant)
-        ms, (nll, out) = _time_cuda_ms(lambda: _run_pi(model, E_out, params))
+        ms, (nll, out) = _time_cuda_ms(
+            lambda: _run_pi(model, E_out, params, need_pibar=args.need_pibar)
+        )
         times.append(ms)
         nll_value = float(nll.detach().cpu())
         del out, nll
@@ -286,6 +303,7 @@ def main() -> None:
         "impl", args.impl,
         "tile_splits", args.tile_splits,
         "ge2_only", int(args.ge2_only),
+        "need_pibar", int(args.need_pibar),
         "reps", len(times),
         "median_ms", statistics.median(times),
         "mean_ms", statistics.mean(times),
