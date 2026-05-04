@@ -361,6 +361,95 @@ def test_no_grad_genewise_uniform_uses_equivalent_inference_path(
     )
 
 
+def test_genewise_uniform_backward_matches_individual_uniform_trees(
+    species_path, gene_paths
+):
+    """Batched genewise gradients match running each gene tree independently.
+
+    This pins down the genewise autograd path as a true cross-family batching of
+    independent uniform-mode problems.  The weighted per-family backward also
+    checks that ``grad_output`` from ``nll_per_family()`` is applied row-wise to
+    the corresponding gene's parameters.
+    """
+    dtype = torch.float64
+    device = _device()
+    rates = torch.tensor(
+        [
+            [0.050, 0.040, 0.030],
+            [0.060, 0.025, 0.045],
+            [0.030, 0.055, 0.035],
+        ],
+        dtype=dtype,
+        device=device,
+    )
+    theta = torch.log2(rates)
+    solver_kwargs = dict(
+        fixed_iters_Pi=6,
+        max_iters_E=128,
+        tol_E=0.0,
+        neumann_terms=3,
+        use_pruning=False,
+        cg_tol=1e-10,
+        cg_maxiter=1000,
+    )
+
+    batched = GeneReconModel.from_trees(
+        species_tree=species_path,
+        gene_trees=gene_paths,
+        mode="genewise",
+        pibar_mode="uniform",
+        device=device,
+        dtype=dtype,
+        **solver_kwargs,
+    )
+    with torch.no_grad():
+        batched.theta.copy_(theta)
+
+    weights = torch.tensor([0.5, 1.25, 2.0], dtype=dtype, device=device)
+    batched.zero_grad(set_to_none=True)
+    batched.static.warm_E = None
+    per_family_nll = batched.nll_per_family()
+    (weights * per_family_nll).sum().backward()
+    batched_grad = batched.theta.grad.detach().clone()
+
+    single_nlls = []
+    single_grads = []
+    for i, gene_path in enumerate(gene_paths):
+        single = GeneReconModel.from_trees(
+            species_tree=species_path,
+            gene_trees=[gene_path],
+            mode="global",
+            pibar_mode="uniform",
+            device=device,
+            dtype=dtype,
+            **solver_kwargs,
+        )
+        with torch.no_grad():
+            single.theta.copy_(theta[i])
+        single.zero_grad(set_to_none=True)
+        single.static.warm_E = None
+        nll = single()
+        nll.backward()
+        single_nlls.append(nll.detach())
+        single_grads.append(single.theta.grad.detach().clone())
+
+    single_nll = torch.stack(single_nlls)
+    single_grad = torch.stack(single_grads)
+
+    torch.testing.assert_close(
+        per_family_nll.detach(),
+        single_nll,
+        rtol=1e-10,
+        atol=1e-10,
+    )
+    torch.testing.assert_close(
+        batched_grad,
+        weights.view(-1, 1) * single_grad,
+        rtol=2e-6,
+        atol=2e-6,
+    )
+
+
 def test_gradcheck_global_uniform_small():
     """Autograd bridge backward matches torch's finite-difference gradcheck."""
     data_dir = _ROOT / "data" / "test_trees_3"
