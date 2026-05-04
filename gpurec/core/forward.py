@@ -496,6 +496,7 @@ def Pi_wave_forward(
     family_idx: torch.Tensor | None = None,
     return_original: bool = True,
     need_pibar: bool = True,
+    return_root_rows: bool = False,
 ):
     """Wave-based Pi forward pass with wave-ordered layout (v2).
 
@@ -524,10 +525,15 @@ def Pi_wave_forward(
         need_pibar: if False, do not return final Pibar rows. In fixed even
                     uniform ping-pong mode, root-wave final Pibar recomputation
                     is skipped because no later cross-DTS can consume those rows.
+        return_root_rows: if True, gather and return only final root rows as
+                          ``Pi_root_rows`` and drop the full wave-ordered Pi
+                          reference from the output. This is for inference-only
+                          likelihood callers; backward needs the default full
+                          wave-ordered Pi/Pibar outputs.
 
     Returns:
         dict with 'Pi' (in original clade order when requested),
-        'clade_species_map', and 'iterations'
+        'Pi_root_rows' when requested, 'clade_species_map', and 'iterations'
     """
     ccp_helpers = wave_layout['ccp_helpers']
     leaf_row_index = wave_layout['leaf_row_index']
@@ -1554,6 +1560,11 @@ def Pi_wave_forward(
                     Pibar[ws:we] = Pibar_W_buf
 
     with _nvtx_range("Pi finalize permute"):
+        if return_root_rows:
+            Pi_root_rows = Pi[wave_layout['root_clade_ids']]
+        else:
+            Pi_root_rows = None
+
         if return_original:
             perm = wave_layout['perm']
             Pi_orig = Pi[perm]
@@ -1562,11 +1573,14 @@ def Pi_wave_forward(
             Pi_orig = None
             clade_species_map_orig = None
 
+    Pi_wave_ordered = None if return_root_rows else Pi
+
     return {
         'Pi': Pi_orig,
+        'Pi_root_rows': Pi_root_rows,
         'clade_species_map': clade_species_map_orig,
         'iterations': total_iters,
-        'Pi_wave_ordered': Pi,
+        'Pi_wave_ordered': Pi_wave_ordered,
         'Pibar_wave_ordered': Pibar if need_pibar else None,
         'uniform_pibar_row_max': uniform_pibar_row_max if need_pibar else None,
     }

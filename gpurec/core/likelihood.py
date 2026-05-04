@@ -179,3 +179,15 @@ def compute_log_likelihood(Pi, E, root_clade_idx):
     denominator = torch.log2((1-torch.exp2(E).mean(dim=-1)))
     return -(numerator - denominator)
 
+
+def compute_log_likelihood_root_rows(Pi_root_rows, E):
+    """Compute per-family NLL from already-gathered root rows.
+
+    ``Pi_root_rows`` is ``[G, S]`` in family order. This is equivalent to
+    ``compute_log_likelihood(Pi, E, root_ids)`` when ``Pi_root_rows`` has been
+    gathered as ``Pi[root_ids]``, but avoids keeping the full Pi matrix alive in
+    root-likelihood-only callers.
+    """
+    numerator = logsumexp2(Pi_root_rows, dim=-1) - math.log2(Pi_root_rows.shape[-1])
+    denominator = torch.log2((1 - torch.exp2(E).mean(dim=-1)))
+    return -(numerator - denominator)

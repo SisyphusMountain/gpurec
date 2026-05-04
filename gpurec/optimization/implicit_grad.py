@@ -404,6 +404,7 @@ def implicit_grad_loglik_vjp_wave_genewise(
             device=device, dtype=dtype,
             local_iters=local_iters, local_tolerance=local_tolerance,
             pibar_mode=pibar_mode,
+            return_original=False,
         )
 
         # Backward: per-family gradient

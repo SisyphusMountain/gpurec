@@ -19,7 +19,11 @@ import torch
 from gpurec import GeneReconModel
 from gpurec.api.autograd import _extract_parameters
 from gpurec.core.forward import Pi_wave_forward
-from gpurec.core.likelihood import E_fixed_point, compute_log_likelihood
+from gpurec.core.likelihood import (
+    E_fixed_point,
+    compute_log_likelihood,
+    compute_log_likelihood_root_rows,
+)
 
 
 DEFAULT_FLAGS = {
@@ -66,6 +70,12 @@ def _parse_args() -> argparse.Namespace:
         "--need-pibar",
         action=argparse.BooleanOptionalAction,
         default=os.getenv("NEED_PIBAR", "1") != "0",
+    )
+    parser.add_argument(
+        "--root-rows",
+        action=argparse.BooleanOptionalAction,
+        default=os.getenv("ROOT_ROWS", "0") != "0",
+        help="Return only root Pi rows instead of the full wave-ordered Pi output.",
     )
     parser.add_argument(
         "--topology-int32",
@@ -246,6 +256,7 @@ def _run_pi(
     *,
     need_pibar: bool,
     overlap_mode: str,
+    root_rows: bool,
 ) -> tuple[torch.Tensor, dict]:
     static = model.static
     log_pS, log_pD, log_pL, transfer_mat, max_transfer_vec = params
@@ -270,13 +281,17 @@ def _run_pi(
         pibar_mode=static.pibar_mode,
         return_original=False,
         need_pibar=need_pibar,
+        return_root_rows=root_rows,
         family_idx=(static.wave_layout.get("family_idx") if static.genewise else None),
     )
-    nll = compute_log_likelihood(
-        pi_out["Pi_wave_ordered"],
-        E_out["E"],
-        static.wave_layout["root_clade_ids"],
-    ).sum()
+    if root_rows:
+        nll = compute_log_likelihood_root_rows(pi_out["Pi_root_rows"], E_out["E"]).sum()
+    else:
+        nll = compute_log_likelihood(
+            pi_out["Pi_wave_ordered"],
+            E_out["E"],
+            static.wave_layout["root_clade_ids"],
+        ).sum()
     return nll, pi_out
 
 
@@ -286,6 +301,7 @@ def _compare(args: argparse.Namespace, model: GeneReconModel, E_out: dict, param
         model, E_out, params,
         need_pibar=args.need_pibar,
         overlap_mode=args.overlap_mode,
+        root_rows=args.root_rows,
     )
     torch.cuda.synchronize()
     old_nll_value = float(old_nll.detach().cpu())
@@ -298,11 +314,12 @@ def _compare(args: argparse.Namespace, model: GeneReconModel, E_out: dict, param
         model, E_out, params,
         need_pibar=args.need_pibar,
         overlap_mode=args.overlap_mode,
+        root_rows=args.root_rows,
     )
     torch.cuda.synchronize()
     nll_diff = float((new_nll - old_nll).abs().detach().cpu())
     print("compare", "old_nll", old_nll_value, "new_nll", float(new_nll.detach().cpu()), "nll_abs_diff", nll_diff)
-    if keep_full_diff:
+    if keep_full_diff and not args.root_rows:
         pi_diff = _tensor_max_abs_diff(old_out["Pi_wave_ordered"], new_out["Pi_wave_ordered"])
         if old_out["Pibar_wave_ordered"] is not None and new_out["Pibar_wave_ordered"] is not None:
             pibar_diff = _tensor_max_abs_diff(old_out["Pibar_wave_ordered"], new_out["Pibar_wave_ordered"])
@@ -344,6 +361,7 @@ def main() -> None:
             model, E_out, params,
             need_pibar=args.need_pibar,
             overlap_mode=args.overlap_mode,
+            root_rows=args.root_rows,
         )
         del out
     torch.cuda.synchronize()
@@ -359,10 +377,12 @@ def main() -> None:
                 model, E_out, params,
                 need_pibar=args.need_pibar,
                 overlap_mode=args.overlap_mode,
+                root_rows=args.root_rows,
             )
         )
         times.append(ms)
         nll_value = float(nll.detach().cpu())
+        live_after_last_gib = torch.cuda.memory_allocated() / (1024 ** 3)
         del out, nll
     if args.profile_cuda_api:
         torch.cuda.profiler.stop()
@@ -375,6 +395,7 @@ def main() -> None:
         "tile_splits", args.tile_splits,
         "ge2_only", int(args.ge2_only),
         "need_pibar", int(args.need_pibar),
+        "root_rows", int(args.root_rows),
         "topology_int32", int(args.topology_int32),
         "wave_block_s", args.wave_block_s,
         "wave_num_warps", args.wave_num_warps,
@@ -386,6 +407,7 @@ def main() -> None:
         "min_ms", min(times),
         "max_ms", max(times),
         "nll", nll_value,
+        "live_after_last_gib", live_after_last_gib,
         "peak_gib", peak,
     )
 

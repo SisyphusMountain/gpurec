@@ -14,7 +14,11 @@ import torch
 
 from gpurec.core.preprocess_cpp import _load_extension
 from gpurec.core.extract_parameters import extract_parameters
-from gpurec.core.likelihood import E_fixed_point, compute_log_likelihood
+from gpurec.core.likelihood import (
+    E_fixed_point,
+    compute_log_likelihood,
+    compute_log_likelihood_root_rows,
+)
 from gpurec.core.legacy import Pi_fixed_point
 from gpurec.core.forward import Pi_wave_forward
 from gpurec.core.scheduling import compute_clade_waves
@@ -315,6 +319,94 @@ def test_batched_wave_100_families_large_s(cpp_ext):
             f"batched={logLs_batched[i]:.6f}, "
             f"diff={abs(logLs_individual[i] - logLs_batched[i]):.2e}"
         )
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+def test_batched_wave_root_rows_match_full_wave_output(cpp_ext):
+    """Root-only forward output matches gathering roots from full wave Pi."""
+    device = torch.device("cuda")
+    dtype = torch.float32
+
+    batch_items, sh, pS, pD, pL, tf, mv, Eo = _load_families(
+        "test_trees_1000", 5, cpp_ext, device, dtype
+    )
+    batched = collate_gene_families(batch_items, dtype=dtype, device=device)
+    family_meta = batched["family_meta"]
+    root_ids = batched["root_clade_ids"]
+
+    families_waves = []
+    families_phases = []
+    for item in batch_items:
+        ch_dev = {k: (v.to(device) if torch.is_tensor(v) else v)
+                  for k, v in item["ccp"].items()}
+        waves_i, phases_i = compute_clade_waves(ch_dev)
+        families_waves.append(waves_i)
+        families_phases.append(phases_i)
+
+    offsets = [m["clade_offset"] for m in family_meta]
+    cross_waves = collate_wave(families_waves, offsets)
+    max_n_waves = max(len(p) for p in families_phases)
+    cross_phases = []
+    for k in range(max_n_waves):
+        phase_k = 1
+        for fp in families_phases:
+            if k < len(fp):
+                phase_k = max(phase_k, fp[k])
+        cross_phases.append(phase_k)
+
+    wave_layout = build_wave_layout(
+        waves=cross_waves,
+        phases=cross_phases,
+        ccp_helpers=batched["ccp"],
+        leaf_row_index=batched["leaf_row_index"],
+        leaf_col_index=batched["leaf_col_index"],
+        root_clade_ids=root_ids,
+        device=device,
+        dtype=dtype,
+    )
+
+    full = Pi_wave_forward(
+        wave_layout=wave_layout, species_helpers=sh,
+        E=Eo["E"], Ebar=Eo["E_bar"], E_s1=Eo["E_s1"], E_s2=Eo["E_s2"],
+        log_pS=pS, log_pD=pD, log_pL=pL,
+        transfer_mat=tf, max_transfer_mat=mv,
+        device=device, dtype=dtype,
+        local_iters=1000, local_tolerance=TOL,
+        fixed_iters=6,
+        return_original=False,
+        need_pibar=False,
+    )
+    roots_only = Pi_wave_forward(
+        wave_layout=wave_layout, species_helpers=sh,
+        E=Eo["E"], Ebar=Eo["E_bar"], E_s1=Eo["E_s1"], E_s2=Eo["E_s2"],
+        log_pS=pS, log_pD=pD, log_pL=pL,
+        transfer_mat=tf, max_transfer_mat=mv,
+        device=device, dtype=dtype,
+        local_iters=1000, local_tolerance=TOL,
+        fixed_iters=6,
+        return_original=False,
+        need_pibar=False,
+        return_root_rows=True,
+    )
+
+    expected_roots = full["Pi_wave_ordered"][wave_layout["root_clade_ids"]]
+    torch.testing.assert_close(
+        roots_only["Pi_root_rows"],
+        expected_roots,
+        rtol=0.0,
+        atol=0.0,
+    )
+    torch.testing.assert_close(
+        compute_log_likelihood_root_rows(roots_only["Pi_root_rows"], Eo["E"]),
+        compute_log_likelihood(full["Pi_wave_ordered"], Eo["E"], wave_layout["root_clade_ids"]),
+        rtol=0.0,
+        atol=0.0,
+    )
+    assert roots_only["Pi"] is None
+    assert roots_only["Pi_wave_ordered"] is None
+    assert roots_only["Pibar_wave_ordered"] is None
+    assert roots_only["uniform_pibar_row_max"] is None
+    assert roots_only["Pi_root_rows"].shape == (len(batch_items), int(sh["S"]))
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")

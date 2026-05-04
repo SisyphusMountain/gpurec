@@ -279,8 +279,13 @@ def optimize_theta_wave(
                         log_pS=log_pS, log_pD=log_pD, log_pL=log_pL,
                         transfer_mat=transfer_mat, max_transfer_mat=mt,
                         device=device, dtype=dtype, pibar_mode=pibar_mode,
+                        return_original=False,
                     )
-                    logL_b = compute_log_likelihood(Pi_out_b['Pi'], E_out['E'], roots_b)
+                    logL_b = compute_log_likelihood(
+                        Pi_out_b['Pi_wave_ordered'],
+                        E_out['E'],
+                        wl_b['root_clade_ids'],
+                    )
                     nll += float(logL_b.sum().item())
                 except torch.OutOfMemoryError as exc:
                     raise torch.OutOfMemoryError(

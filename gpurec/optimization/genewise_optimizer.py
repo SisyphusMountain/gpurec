@@ -6,7 +6,11 @@ import time
 
 import torch
 
-from gpurec.core.likelihood import E_fixed_point, compute_log_likelihood
+from gpurec.core.likelihood import (
+    E_fixed_point,
+    compute_log_likelihood,
+    compute_log_likelihood_root_rows,
+)
 from gpurec.core.forward import Pi_wave_forward
 from gpurec.core.backward import Pi_wave_backward
 from gpurec.core.extract_parameters import extract_parameters_uniform
@@ -348,6 +352,7 @@ def optimize_theta_genewise(
                 local_tolerance=local_tolerance,
                 pibar_mode=pibar_mode,
                 family_idx=merged_layout['family_idx'],
+                return_original=False,
             )
 
             nll_chunk = compute_log_likelihood(
@@ -462,10 +467,11 @@ def optimize_theta_genewise(
                 local_tolerance=local_tolerance,
                 pibar_mode=pibar_mode,
                 family_idx=merged_layout['family_idx'],
+                return_original=False,
+                need_pibar=False,
+                return_root_rows=True,
             )
-            nll_chunk = compute_log_likelihood(
-                Pi_out['Pi_wave_ordered'], E_chunk, merged_layout['root_clade_ids'],
-            )
+            nll_chunk = compute_log_likelihood_root_rows(Pi_out['Pi_root_rows'], E_chunk)
             nll[idx] = nll_chunk
 
         return nll, {'E': E_full, 'iterations': e_iters_max}

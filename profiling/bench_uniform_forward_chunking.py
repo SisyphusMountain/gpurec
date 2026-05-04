@@ -28,7 +28,11 @@ from gpurec.core.batching import (
     split_phase_waves,
 )
 from gpurec.core.forward import Pi_wave_forward
-from gpurec.core.likelihood import E_fixed_point, compute_log_likelihood
+from gpurec.core.likelihood import (
+    E_fixed_point,
+    compute_log_likelihood,
+    compute_log_likelihood_root_rows,
+)
 from gpurec.core.model import GeneDataset
 from gpurec.core.scheduling import compute_clade_waves
 
@@ -116,6 +120,12 @@ def _parse_args() -> argparse.Namespace:
         action="store_true",
         default=os.getenv("PROFILE_CUDA_API", "0") != "0",
         help="Bracket timed repetitions with cudaProfilerStart/Stop for Nsys capture.",
+    )
+    parser.add_argument(
+        "--root-rows",
+        action=argparse.BooleanOptionalAction,
+        default=os.getenv("ROOT_ROWS", "1") != "0",
+        help="Return only root Pi rows from each chunk.",
     )
     parser.add_argument(
         "--compare-unchunked-max-fams",
@@ -327,6 +337,7 @@ def _run_chunks(
     fixed_iters: int,
     device: torch.device,
     dtype: torch.dtype,
+    root_rows: bool,
 ) -> torch.Tensor:
     log_pS, log_pD, log_pL, transfer_mat, max_transfer_vec = params
     total = torch.zeros((), device=device, dtype=dtype)
@@ -351,12 +362,19 @@ def _run_chunks(
             pibar_mode="uniform",
             return_original=False,
             need_pibar=False,
+            return_root_rows=root_rows,
         )
-        total = total + compute_log_likelihood(
-            pi_out["Pi_wave_ordered"],
-            E_out["E"],
-            built.wave_layout["root_clade_ids"],
-        ).sum()
+        if root_rows:
+            total = total + compute_log_likelihood_root_rows(
+                pi_out["Pi_root_rows"],
+                E_out["E"],
+            ).sum()
+        else:
+            total = total + compute_log_likelihood(
+                pi_out["Pi_wave_ordered"],
+                E_out["E"],
+                built.wave_layout["root_clade_ids"],
+            ).sum()
         del pi_out
     return total
 
@@ -454,6 +472,7 @@ def main() -> None:
         "clade_budget", args.clade_budget if args.clade_budget is not None else "none",
         "max_wave_size", args.max_wave_size if args.max_wave_size is not None else "none",
         "max_root_wave_size", args.max_root_wave_size if args.max_root_wave_size is not None else "none",
+        "root_rows", int(args.root_rows),
         "S", int(ds.S),
         "total_clades", total_clades,
         "total_splits", total_splits,
@@ -487,6 +506,7 @@ def main() -> None:
             fixed_iters=args.fixed_iters,
             device=device,
             dtype=dtype,
+            root_rows=args.root_rows,
         )
         nll_unchunked = _run_chunks(
             unchunked,
@@ -496,6 +516,7 @@ def main() -> None:
             fixed_iters=args.fixed_iters,
             device=device,
             dtype=dtype,
+            root_rows=False,
         )
         torch.cuda.synchronize()
         print(
@@ -517,6 +538,7 @@ def main() -> None:
             fixed_iters=args.fixed_iters,
             device=device,
             dtype=dtype,
+            root_rows=args.root_rows,
         )
         del out
         torch.cuda.synchronize()
@@ -539,6 +561,7 @@ def main() -> None:
                 fixed_iters=args.fixed_iters,
                 device=device,
                 dtype=dtype,
+                root_rows=args.root_rows,
             )
         )
         times.append(ms)

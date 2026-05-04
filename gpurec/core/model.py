@@ -7,7 +7,10 @@ from typing import Any
 import torch
 from torch.utils.data import Dataset
 from .extract_parameters import extract_parameters, extract_parameters_uniform
-from .likelihood import E_fixed_point, compute_log_likelihood
+from .likelihood import (
+    E_fixed_point,
+    compute_log_likelihood_root_rows,
+)
 from .forward import Pi_wave_forward
 from .batching import (
     build_wave_layout,
@@ -576,11 +579,8 @@ class GeneDataset(Dataset):
             family_idx=wave_layout.get('family_idx') if self.genewise else None,
             return_original=False,
             need_pibar=False,
+            return_root_rows=True,
         )
 
-        logL_vec = compute_log_likelihood(
-            Pi_out['Pi_wave_ordered'],
-            E,
-            wave_layout['root_clade_ids'],
-        )
+        logL_vec = compute_log_likelihood_root_rows(Pi_out['Pi_root_rows'], E)
         return [float(x) for x in logL_vec.detach().cpu().tolist()]

@@ -1273,6 +1273,183 @@ global `[C, S]` addressing for `Pi` and `Pibar`. Row eviction would save memory,
 but it would complicate every split gather and probably reduce coalescing unless
 the live-row layout is carefully designed.
 
+### Proposal 6 follow-up: root-row output mode
+
+The proposal was tested with the same split used for the previous optimization
+passes: one static/API audit, one correctness pass, one profiler pass, and a
+supervisor pass that merged the findings into this document. The useful part of
+the proposal is not an internal row-eviction rewrite yet. It is a narrower
+root-row output mode for likelihood-only paths.
+
+#### Implementation
+
+`Pi_wave_forward(...)` now has a second output-lifetime switch:
+
+```python
+Pi_wave_forward(..., return_original=False, return_root_rows=True)
+```
+
+When `return_root_rows=True`, the forward pass gathers only:
+
+```python
+Pi_root_rows = Pi[wave_layout["root_clade_ids"]]
+```
+
+and does not return the full dense `Pi_wave_ordered` tensor. The likelihood can
+then be computed directly:
+
+```python
+numerator = logsumexp2(Pi_root_rows, dim=-1) - log2(S)
+denominator = log2(1 - exp2(E).mean(dim=-1))
+nll = -(numerator - denominator)
+```
+
+This is implemented as `compute_log_likelihood_root_rows(...)`. The full
+wave-ordered tensors are still returned by default, and they are still retained
+for autograd/backward paths that need `Pi_wave_ordered`, `Pibar_wave_ordered`,
+and the Pibar row maxima.
+
+Call-site policy after the pass:
+
+| Caller | Policy | Reason |
+|---|---|---|
+| `GeneDataset.compute_likelihood_batch` | `return_original=False`, `need_pibar=False`, `return_root_rows=True` | pure likelihood-only inference |
+| genewise NLL-only evaluation | `return_original=False`, `need_pibar=False`, `return_root_rows=True` | pure likelihood-only inference |
+| `wave_optimizer` forward/backward | `return_original=False`, full wave output kept | backward needs wave-ordered saved tensors |
+| genewise mini-batch training | `return_original=False`, full wave output kept | backward needs wave-ordered saved tensors |
+| implicit per-family gradient helper | `return_original=False`, full wave output kept | original-order copy was unused |
+| direct/debug callers | defaults preserve old behavior | avoids API breakage |
+
+#### Correctness evidence
+
+The root-row mode is intentionally output-only: it changes which tensors survive
+the call, not the recurrence. The dedicated unit test checks that root-row
+output equals the corresponding rows of full `Pi_wave_ordered`, and that both
+likelihood formulas are bitwise identical for the tested case.
+
+| Check | Result |
+|---|---:|
+| `test_batched_wave_root_rows_match_full_wave_output` | passed |
+| `test_model_nll_matches_compute_likelihood_batch` | passed |
+| genewise wave batch/per-family parity | passed |
+| model API wave vs fixed-point parity | passed |
+| integration likelihood helper | passed |
+| genewise optimization smoke test | passed |
+| 10-family chunked root-row vs unchunked full-output NLL | `abs_diff = 0.0` |
+| 3-family parent-DTS compare, root rows | `abs_diff = 0.0` |
+
+Commands used:
+
+```text
+pytest -q tests/unit/test_cross_family_wave.py::test_batched_wave_root_rows_match_full_wave_output tests/gradients/test_autograd_bridge.py::test_model_nll_matches_compute_likelihood_batch
+pytest -q tests/unit/test_genewise_wave.py::test_genewise_wave_batch_vs_per_family tests/unit/test_wave_v2.py::test_model_api_wave_matches_fp
+pytest -q tests/integration/test_gene_recon_model.py::test_log_likelihood_helper tests/unit/test_optimize_genewise.py::test_nll_decreases
+python profiling/bench_uniform_forward_chunking.py --fams 10 --family-chunk-size 5 --reps 1 --warmups 0 --compare-unchunked-max-fams 20 --root-rows
+python profiling/bench_uniform_forward_parent_dts.py --fams 3 --reps 1 --warmups 0 --no-need-pibar --root-rows --compare
+```
+
+#### Timing and memory
+
+Measured with fp32 global uniform mode, fixed 6 Pi iterations, proposal 0/1/2
+defaults enabled, `max_wave_size=32768`, DTS overlap off, and
+`need_pibar=False`. `live_after_last_gib` is measured immediately after the
+timed forward returns and before the benchmark releases the returned output.
+
+| Workload | Output mode | Median forward | NLL | Peak GPU | Live after return |
+|---|---|---:|---:|---:|---:|
+| 50 families | full wave output | `117.296 ms` | `107804.265625` | `5.272 GiB` | `2.431 GiB` |
+| 50 families | root rows | `116.902 ms` | `107804.265625` | `5.272 GiB` | `0.034 GiB` |
+| 150 families | full wave output | `346.679 ms` | `323018.6875` | `15.018 GiB` | `7.176 GiB` |
+| 150 families | root rows | `346.812 ms` | `323018.6875` | `15.018 GiB` | `0.068 GiB` |
+| 1000 families, 150-family chunks | full wave output | `2336.797 ms` | `2157097.0` | `15.679 GiB` | per-chunk full output retained during likelihood |
+| 1000 families, 150-family chunks | root rows | `2331.556 ms` | `2157097.0` | `15.679 GiB` | per-chunk root rows retained during likelihood |
+
+The timing difference is within run noise. That is expected because the root
+rows are gathered either way: full-output likelihood gathers them inside
+`compute_log_likelihood(...)`, while root-row mode gathers them inside
+`Pi_wave_forward(...)`. The improvement is memory liveness. At 150 families the
+returned resident output drops by about `7.108 GiB`, which is essentially one
+dense fp32 `[C, S]` matrix:
+
+```text
+954706 clades * 1999 species * 4 bytes = 7.11 GiB
+```
+
+Peak memory is unchanged because the dense internal `Pi` and the current-wave
+scratch are still needed while the recurrence is running. Root-row mode only
+controls what survives the call.
+
+#### Nsight Systems
+
+Nsys was run on 150 families with one profiled repetition after warmup. The
+kernel profile is intentionally almost identical, which confirms that this
+change is an output-lifetime optimization rather than a compute-kernel rewrite.
+
+| Metric | Full wave output | Root rows |
+|---|---:|---:|
+| CUDA-event time | `344.644 ms` | `344.947 ms` |
+| kernel span | `344.529 ms` | `344.848 ms` |
+| summed kernel time | `343.887 ms` | `344.209 ms` |
+| kernel launches | `845` | `845` |
+| CUDA streams with kernels | `1` | `1` |
+| device memcpy | `2 copies, 8 bytes, 0.0017 ms` | `2 copies, 8 bytes, 0.0019 ms` |
+
+Top kernel buckets:
+
+| Kernel bucket | Full wave output | Root rows | Interpretation |
+|---|---:|---:|---|
+| `_wave_step_uniform_kernel` | `224.984 ms / 390` | `225.457 ms / 390` | recurrence unchanged |
+| `_dts_fused_kernel` | `30.904 ms / 49` | `30.894 ms / 49` | DTS unchanged |
+| `_wave_pibar_uniform_parent_kernel` | `30.691 ms / 64` | `30.616 ms / 64` | Pibar update unchanged |
+| `_dts_parent_reduced_ge2_stage1_kernel` | `23.514 ms / 8` | `23.453 ms / 8` | parent DTS unchanged |
+| PyTorch index kernels | `12.271 ms / 50` | `12.270 ms / 50` | root gather moved, not removed |
+| fill kernels | `8.701 ms / 61` | `8.697 ms / 61` | unchanged initialization/setup |
+
+The single-stream profile also shows no new overlap opportunity introduced by
+root-row mode. The hot path is still dominated by the wave-step recurrence, then
+DTS/Pibar kernels.
+
+#### Liveness rewrite interpretation
+
+The larger row-liveness idea remains future work. A safe version would need at
+least:
+
+```text
+last_use[row] = max(wave_index(parent) for every split where row is a child)
+after wave k:
+    rows with last_use[row] <= k can be evicted
+```
+
+Current DTS kernels gather children by dense clade ids:
+
+```text
+Pi[left_child, species], Pi[right_child, species]
+Pibar[left_child, species], Pibar[right_child, species]
+```
+
+Compacting live rows would require either an extra
+`global_clade_id -> live_row_id` indirection in every split gather, or a
+rewritten scheduler that emits compact split metadata per wave. This can reduce
+peak memory, unlike root-row mode, but it is a larger algorithmic change and may
+trade memory savings for worse gather locality.
+
+#### Decision
+
+Keep root-row mode for likelihood-only inference paths. It does not make one
+forward chunk materially faster, but it removes multi-GiB returned tensors from
+the lifetime of large chunks and makes subsequent batching/chunk scheduling
+less fragile. Keep full wave output for autograd/backward until backward has a
+separate saved-tensor strategy.
+
+Artifacts:
+
+```text
+/tmp/gpurec_profile/forward_prop6/rootrows0_f150.nsys-rep
+/tmp/gpurec_profile/forward_prop6/rootrows0_f150.sqlite
+/tmp/gpurec_profile/forward_prop6/rootrows1_f150.nsys-rep
+/tmp/gpurec_profile/forward_prop6/rootrows1_f150.sqlite
+```
+
 ## Proposal 7: genewise uniform leaf-index path
 
 The fast uniform leaf path uses `leaf_species_index[C]` plus `leaf_logp[S]`.
