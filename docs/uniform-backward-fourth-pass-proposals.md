@@ -1765,6 +1765,245 @@ Risks:
 - every change needs parity tests with pruning on/off and with forced inactive
   rows.
 
+### Proposal 5 tested results
+
+Implemented in:
+
+- `06385ea` Add opt-in inactive zero-store elision
+
+Changed paths in that implementation:
+
+- `gpurec/core/backward.py`
+- `gpurec/core/kernels/wave_backward.py`
+- `tests/kernels/test_dts_backward_accum_kernel.py`
+- `tests/kernels/test_wave_backward_kernel.py`
+
+#### Implementation shape
+
+The implementation adds an opt-in flag:
+
+| Env flag | Default status |
+|---|---|
+| `GPUREC_BACKWARD_SKIP_INACTIVE_ZERO_STORES=1` | off |
+
+All behavior is unchanged unless the flag is set.
+
+Self-loop path:
+
+- `_wave_backward_uniform_kernel` can return immediately for inactive rows
+  without zeroing `v_k` or scratch.
+- This is allowed only when `gpurec/core/backward.py` proves
+  `active_mask_for_wave_kernel` is present, `accum_param_grads` is enabled,
+  and either the wave has no splits or `active_mask_for_split_kernels` is the
+  same mask.
+- The guard prevents stale `v_k` from being read by unmasked split or Pibar
+  consumers.
+
+DTS staged Pibar output path:
+
+- `dts_cross_backward_accum_fused` accepts
+  `skip_inactive_pibar_output_zero`.
+- For inactive parent rows it can skip writing `pibar_ud` and `pibar_A` zeros
+  when `output_pibar_ud` is active and the downstream from-UD Pibar VJP
+  receives the same active mask.
+- Under that same-active-mask invariant, stale inactive `pibar_ud` and
+  `pibar_A` are masked by the consumer.
+- `side_active` is still written to `false` for inactive sides when requested.
+
+#### Audit findings
+
+The audit found that most obvious fills are not redundant:
+
+- `grad_mt_partial.zero_()` is needed because the kernel uses `atomic_add` into
+  partial slots and the reducer reads all slots.
+- Parent-ragged `pibar_A` zeros are needed because `pibar_A` receives atomics.
+- `dts_r` `-inf` fill is dangerous to remove without a per-row has-DTS mask.
+- `accumulated_rhs` zero is required except root rows because non-root rows are
+  read and receive atomics.
+- Global gradient zeros are required.
+
+The two safe elisions are narrower:
+
+- direct staged `pibar_A` and side-active inactive writes are redundant only
+  under the same-active-mask invariant;
+- inactive self-loop `v_k` zero is redundant only if all downstream consumers
+  receive the same active mask, or if there are no splits.
+
+#### Correctness checks
+
+Worker checks:
+
+| Command / check | Result |
+|---|---:|
+| `pytest -q tests/kernels/test_dts_backward_accum_kernel.py ... tests/gradients/test_autograd_bridge.py` | `76 passed` |
+| `GPUREC_BACKWARD_SKIP_INACTIVE_ZERO_STORES=1 pytest -q tests/gradients/test_autograd_bridge.py` | `15 passed` |
+| `py_compile` | passed |
+| `git diff --check` | passed |
+
+Main-agent checks:
+
+| Command | Result |
+|---|---:|
+| `python -m py_compile gpurec/core/backward.py gpurec/core/kernels/wave_backward.py tests/kernels/test_dts_backward_accum_kernel.py tests/kernels/test_wave_backward_kernel.py` | passed |
+| `GPUREC_BACKWARD_SKIP_INACTIVE_ZERO_STORES=1 pytest -q tests/kernels/test_wave_backward_kernel.py::test_wave_backward_skip_inactive_zero_stores_keeps_stale_rows_masked tests/kernels/test_dts_backward_accum_kernel.py::test_dts_staged_skip_inactive_pibar_output_zero_keeps_stale_rows_masked tests/gradients/test_autograd_bridge.py` | `17 passed in 2.73s` |
+
+The added tests intentionally seed scratch buffers with sentinels.  They prove
+that skipped inactive rows remain stale but are masked from all consumers, and
+they compare active rows and outputs against the zero-writing baseline.
+
+#### Event-timed benchmarks
+
+All benchmark rows below use `FAMS=50`, `REPS=5`,
+`MAX_WAVE_SIZE=32768`, except the explicit 10-family smoke row.
+
+| Run | Mean | Median | Min | Peak allocation | Log |
+|---|---:|---:|---:|---:|---|
+| profiling-worker baseline before implementation, `WARMUPS=5` | `102.006 ms` | `101.909 ms` | `101.327 ms` | `10.308 GB` | - |
+| main sequential post-commit, flag off, `WARMUPS=8` | `101.924 ms` | `101.916 ms` | `101.612 ms` | `10.308 GB` | `/tmp/gpurec_profile/prop5_zero_fill/main_default_after_impl_timing.txt` |
+| main sequential post-commit, `GPUREC_BACKWARD_SKIP_INACTIVE_ZERO_STORES=1`, `WARMUPS=8` | `102.852 ms` | `102.743 ms` | `102.495 ms` | `10.308 GB` | `/tmp/gpurec_profile/prop5_zero_fill/main_skip_zero_after_impl_timing.txt` |
+
+Worker smoke medians:
+
+| Workload | Flag off | Opt-in flag on | Peak allocation |
+|---|---:|---:|---:|
+| 10 families | `34.485 ms` | `34.783 ms` | unchanged |
+| 50 families | `103.092 ms` | `103.643 ms` | unchanged |
+
+Against the back-to-back main sequential flag-off median `101.916 ms`, the
+opt-in path is `0.827 ms` slower by median, about `+0.8%`, with no measured
+peak-memory change.  A concurrent main timing pair that showed about `300 ms`
+is intentionally excluded because the two benchmarks were run simultaneously.
+
+#### Nsight Systems findings
+
+Profiling-worker artifacts are under:
+
+```text
+/tmp/gpurec_profile/prop5_zero_fill
+```
+
+Baseline artifacts:
+
+```text
+baseline_nsys.{1..5}.nsys-rep
+baseline_nsys.{1..5}.sqlite
+/tmp/gpurec_profile/prop5_zero_fill/nsys_aggregate.txt
+```
+
+Opt-in artifacts:
+
+```text
+impl_skip_zero_nsys.{1..5}.nsys-rep
+impl_skip_zero_nsys.{1..5}.sqlite
+/tmp/gpurec_profile/prop5_zero_fill/impl_skip_zero_nsys_aggregate.txt
+```
+
+Profiled shape:
+
+| Metric | Value |
+|---|---:|
+| `S` | `1999` |
+| `G` | `50` |
+| `C` | `321930` |
+| waves | `49` |
+| max wave size | `32768` |
+| split rows | `402275` |
+| leaves | `80545` |
+| roots | `50` |
+
+Baseline profiled timing and CUDA activity over 5 captured backward ranges:
+
+| Metric | Total | Per rep / notes |
+|---|---:|---|
+| Nsight-profiled backward mean | - | `115.358 ms` with profiling overhead |
+| GPU kernels | `14,590` | `2,918` per rep |
+| aggregate GPU kernel time | `455.819 ms` | - |
+| CUDA API launches | `14,590` | - |
+| CUDA API copies/memsets | `2,605` | all `cudaMemcpyAsync`; no `cudaMemset` |
+| CUDA API syncs | `1,025` | `995 cudaStreamSynchronize` + `30 cudaDeviceSynchronize` |
+| malloc/free/alloc/memset runtime API records in capture | `0` | - |
+
+Fill/zero-like baseline kernels over 5 captured backward ranges:
+
+| Kernel bucket | Kernels | Time | Per-rep interpretation |
+|---|---:|---:|---:|
+| vectorized `FillFunctor<float>` | `2,505` | `11.194 ms` | - |
+| unrolled `FillFunctor<float>` | `5` | `6.729 ms` | - |
+| `FillFunctor<long>` | `145` | `0.144 ms` | - |
+| total `FillFunctor` | `2,655` | `18.067 ms` | about `3.61 ms/rep` |
+
+GPU copies over 5 captured backward ranges:
+
+| Copy bucket | Copies | Bytes | Time |
+|---|---:|---:|---:|
+| D2D | `1,890` | `178.189 MB` | `1.946 ms` |
+| D2H | `715` | `0.003 MB` | `0.626 ms` |
+
+Top baseline kernels over 5 captured backward ranges:
+
+| Kernel bucket | Launches | Time |
+|---|---:|---:|
+| `_dts_cross_backward_accum_kernel` | `165` | `137.240 ms` |
+| `_wave_backward_uniform_kernel` | `180` | `124.323 ms` |
+| `_uniform_cross_pibar_vjp_tree_from_ud_compact_kernel` | `165` | `81.256 ms` |
+| `_dts_parent_reduced_ge2_stage1_kernel` | `30` | `36.038 ms` |
+| `_active_mask_from_rhs_absmax_kernel` | `245` | `15.130 ms` |
+| `_dts_eq1_to_rows_kernel` | `45` | `13.815 ms` |
+| vectorized `FillFunctor<float>` | `2,505` | `11.194 ms` |
+
+With `GPUREC_BACKWARD_SKIP_INACTIVE_ZERO_STORES=1`, the event-timed profiling
+worker run reported:
+
+| Metric | Result |
+|---|---:|
+| mean | `102.714 ms` |
+| median | `102.669 ms` |
+| min | `102.360 ms` |
+| peak allocation | `10.308 GB` |
+
+Nsight counts were unchanged under the opt-in flag:
+
+| Metric | Baseline | Opt-in |
+|---|---:|---:|
+| kernels | `14,590` | `14,590` |
+| copies | `2,605` | `2,605` |
+| `FillFunctor` kernels | `2,655` | `2,655` |
+| aggregate GPU kernel time | `455.819 ms` | `454.222 ms` |
+
+The opt-in flag reduced aggregate GPU kernel time by only `1.597 ms` across
+five profiled reps, or `0.35%`, while the event timing was noise/slower.
+
+#### Interpretation
+
+The implementation correctly removes some Triton inactive-row stores, but the
+visible zero/fill overhead in this workload is dominated by PyTorch
+`FillFunctor` kernels and copy/sync overhead, not by the inactive stores changed
+by this patch.  That is why `FillFunctor`, copy, and launch counts are
+unchanged under the flag.
+
+The guarded elision is useful as a diagnostic prototype and proves the required
+active-mask invariants.  It does not deliver a speedup on the measured
+50-family workload.
+
+The next useful Proposal 5 direction should target actual PyTorch
+`FillFunctor` sources, for example:
+
+- large `accumulated_rhs` or gradient zeros;
+- `grad_mt_partial.zero_()` through a non-atomic partial writer;
+- parent-ragged `pibar_A` zero by changing atomics to stores where ownership is
+  unique;
+- replacing PyTorch zero/full allocations with kernels that fully initialize
+  only consumed regions.
+
+Each of those needs deeper correctness work than this narrow inactive-store
+elision.
+
+#### Decision
+
+Keep `GPUREC_BACKWARD_SKIP_INACTIVE_ZERO_STORES=1` as an opt-in diagnostic
+prototype.  Do not enable it by default and do not promote this implementation
+as a performance path.
+
 ## Proposal 6: species-dimension Euler layout for uniform Pibar
 
 Uniform Pibar VJP ultimately needs subtree sums.  The current compact tree
