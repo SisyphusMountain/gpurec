@@ -820,10 +820,14 @@ def Pi_wave_backward(
     subtree_interval_start = None
     subtree_interval_end = None
     sp_parent = None
+    max_ancestor_depth = None
     depth_nodes = None
     if fused_cross_pibar_vjp_enabled:
         cache = species_helpers.get('_wave_forward_species_cache')
         if cache is not None and int(cache.get('S', -1)) == int(S):
+            cached_max_ancestor_depth = cache.get('max_ancestor_depth')
+            if cached_max_ancestor_depth is not None:
+                max_ancestor_depth = int(cached_max_ancestor_depth)
             cached_ancestor_cols = cache.get('ancestor_cols')
             if torch.is_tensor(cached_ancestor_cols) and cached_ancestor_cols.device == target_device:
                 ancestor_cols = cached_ancestor_cols
@@ -920,6 +924,7 @@ def Pi_wave_backward(
                 ancestor_cols_cpu[s_idx, :len(ancestors)] = torch.tensor(ancestors, dtype=torch.long)
             if ancestor_cols is None:
                 ancestor_cols = ancestor_cols_cpu.T.contiguous().to(target_device)
+            max_ancestor_depth = int(max_ancestor_depth)
 
             need_compact_levels = (
                 dts_pibar_ud_compact_levels_enabled
@@ -1082,8 +1087,13 @@ def Pi_wave_backward(
                     cache['subtree_interval_end'] = subtree_interval_end
                 if sp_parent is not None:
                     cache['sp_parent'] = sp_parent
+                if max_ancestor_depth is not None:
+                    cache['max_ancestor_depth'] = int(max_ancestor_depth)
                 if depth_nodes is not None:
                     cache['depth_nodes'] = depth_nodes
+
+        if max_ancestor_depth is None and torch.is_tensor(ancestor_cols):
+            max_ancestor_depth = int(ancestor_cols.shape[0])
 
     sp_parent_wave = (
         sp_parent.to(dtype=torch.int32).contiguous()
@@ -1239,6 +1249,7 @@ def Pi_wave_backward(
                     "aw4",
                     "spec_buf",
                     "term_buf",
+                    "pibar_corr",
                 )
             }
         dts_scratch = {}
@@ -1811,6 +1822,7 @@ def Pi_wave_backward(
                     accum_param_grads=accum_param_grads,
                     active_mask=active_mask_for_wave_kernel,
                     sp_parent=sp_parent_wave,
+                    max_ancestor_depth=max_ancestor_depth,
                     pibar_row_max=forward_pibar_row_max,
                     skip_inactive_zero_stores=skip_wave_inactive_zero_stores,
                     scratch=scratch_pool.get("wave") if scratch_pool is not None else None,

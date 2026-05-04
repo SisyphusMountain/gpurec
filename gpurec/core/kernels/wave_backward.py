@@ -65,6 +65,36 @@ def _scratch_view(scratch, name, shape, *, device, dtype):
     return view if view.is_contiguous() else None
 
 
+def _parent_from_children(sp_child1, sp_child2, S):
+    """Build species parent pointers from child arrays for direct kernel callers."""
+    device = sp_child1.device
+    parent = torch.full((S,), -1, device=device, dtype=sp_child1.dtype)
+    species = torch.arange(S, device=device, dtype=sp_child1.dtype)
+    c1 = sp_child1.to(dtype=sp_child1.dtype)
+    c2 = sp_child2.to(dtype=sp_child1.dtype)
+    mask1 = c1 < S
+    mask2 = c2 < S
+    parent[c1[mask1].long()] = species[mask1]
+    parent[c2[mask2].long()] = species[mask2]
+    return parent.contiguous()
+
+
+def _max_ancestor_depth_from_parent(sp_parent, S):
+    """Return root-path length including self."""
+    parent_values = sp_parent.detach().cpu().long().tolist()
+    max_depth = 1
+    for s_idx in range(S):
+        cur = s_idx
+        depth = 0
+        while cur >= 0:
+            depth += 1
+            if depth > S:
+                raise RuntimeError("Cycle detected in species parent pointers")
+            cur = parent_values[cur]
+        max_depth = max(max_depth, depth)
+    return max_depth
+
+
 @triton.jit
 def _active_mask_from_rhs_absmax_kernel(
     rhs_ptr,          # [W, S]
@@ -155,6 +185,7 @@ def _wave_backward_uniform_kernel(
     # Scratch buffer for speciation scatter [W, S]
     spec_buf_ptr,
     term_buf_ptr,
+    pibar_corr_ptr,
     # Optional in-kernel accumulation targets for global-mode param grads.
     grad_log_pD_ptr,
     grad_log_pS_ptr,
@@ -169,6 +200,7 @@ def _wave_backward_uniform_kernel(
     stride: tl.constexpr,
     BLOCK_S: tl.constexpr,
     NEUMANN_TERMS: tl.constexpr,
+    MAX_ANCESTOR_DEPTH: tl.constexpr,
     USE_LEAF_INDEX: tl.constexpr,
     ACCUM_PARAM_GRADS: tl.constexpr,
     PARAM_GRAD_TWO_STAGE: tl.constexpr,
@@ -191,9 +223,11 @@ def _wave_backward_uniform_kernel(
     3. Param VJP element-wise contributions
 
     The Neumann J^T application needs A = sum_s(u_d[s]) — a full-row reduction.
+    Uniform Pibar also subtracts, for each species, the subtree sum over all
+    descendants whose ancestor list contains that species.
     Each iteration uses 2 sub-passes:
-      Pass A: compute u_d[s], accumulate A, write spec scatter to buffer
-      Pass B: compute result[s] using A, read spec scatter from buffer
+      Pass A: compute u_d[s], accumulate A, scatter u_d to ancestor correction
+      Pass B: compute result[s] using A and correction, read spec contribution
     """
     NEG_LARGE = tl.full([1], value=-1e30, dtype=DTYPE)
 
@@ -228,6 +262,12 @@ def _wave_backward_uniform_kernel(
     if USE_PIBAR_ROW_MAX:
         row_max = tl.load(Pibar_row_max_ptr + ws + w)
         row_sum = tl.full([1], value=0.0, dtype=DTYPE)
+        for s_start in range(0, S, BLOCK_S):
+            s_offs = s_start + tl.arange(0, BLOCK_S)
+            valid_mask = s_offs < S
+            mask = valid_mask & row_active
+            pi_val = tl.load(Pi_star_ptr + pi_base + s_offs, mask=mask, other=-1e30)
+            row_sum += tl.sum(tl.exp2(pi_val - row_max), axis=0)
     else:
         row_max = tl.full([1], value=-1e30, dtype=DTYPE)
         row_sum = tl.full([1], value=0.0, dtype=DTYPE)
@@ -346,14 +386,23 @@ def _wave_backward_uniform_kernel(
         wt4 = e4 * inv_sum
         # wt5 = e5 * inv_sum  (only needed for param VJP log_pS, computed later)
 
-        # Pibar VJP ingredients: inv_denom = 1 / (row_sum - p_prime)
+        # Pibar VJP ingredients:
+        #   denom[s] = sum_j exp(Pi[j]-row_max)
+        #              - sum_{a in ancestors(s)} exp(Pi[a]-row_max)
         p_prime = tl.exp2(pi_w - row_max)
-        if USE_PIBAR_ROW_MAX:
-            mt_val = tl.load(mt_ptr + s_offs, mask=mask, other=-1e30)
-            inv_denom = tl.exp2(row_max + mt_val - pibar_w)
-        else:
-            denom = row_sum - p_prime
-            inv_denom = tl.where(denom > 0, 1.0 / denom, tl.zeros_like(denom))
+        ancestor_sum = tl.zeros([BLOCK_S], dtype=DTYPE)
+        cur = s_offs
+        for _depth in range(MAX_ANCESTOR_DEPTH):
+            anc_mask = mask & (cur >= 0) & (cur < S)
+            pi_anc = tl.load(Pi_star_ptr + pi_base + cur, mask=anc_mask, other=-1e30)
+            ancestor_sum += tl.where(
+                anc_mask,
+                tl.exp2(pi_anc - row_max),
+                tl.zeros([BLOCK_S], dtype=DTYPE),
+            )
+            cur = tl.load(sp_parent_ptr + cur, mask=anc_mask, other=-1)
+        denom = row_sum - ancestor_sum
+        inv_denom = tl.where(denom > 0, 1.0 / denom, tl.zeros_like(denom))
 
         # Store precomputed weights to scratch buffers
         diag_wt = w_L * (wt0 + wt1)        # diagonal J^T weight
@@ -376,9 +425,9 @@ def _wave_backward_uniform_kernel(
     # Neumann series: v = rhs + J^T(rhs) + (J^T)^2(rhs) + ...
     #
     # Each J^T application on vector `term` requires:
-    #   Pass A: compute u_d = term * pibar_wt * inv_denom, accumulate A = sum(u_d)
-    #           and, in the default path, scatter speciation contributions.
-    #   Pass B: result[s] = term[s] * diag_wt[s] + p_prime[s] * (A - u_d[s])
+    #   Pass A: compute u_d = term * pibar_wt * inv_denom, accumulate A = sum(u_d),
+    #           scatter u_d to ancestors, and scatter speciation contributions.
+    #   Pass B: result[s] = term[s] * diag_wt[s] + p_prime[s] * (A - correction[s])
     #                        + speciation contribution.
     #
     # SPEC_GATHER replaces the scatter/zero/read speciation path with:
@@ -399,23 +448,34 @@ def _wave_backward_uniform_kernel(
     # at the start of each iteration to avoid stale data at non-child positions.
 
     for _n in range(NEUMANN_TERMS):
+        # Zero the correction buffer before ancestor scatters.
+        for s_start in range(0, S, BLOCK_S):
+            s_offs = s_start + tl.arange(0, BLOCK_S)
+            valid_mask = s_offs < S
+            mask = valid_mask & row_active
+            zero = tl.zeros(s_offs.shape, dtype=DTYPE)
+            tl.store(pibar_corr_ptr + out_base + s_offs, zero, mask=mask)
+
         if not SPEC_GATHER:
-            # Zero the output buffer before scatter writes.
-            # Sub-pass A only writes to child positions (scatter); sub-pass B reads ALL positions.
-            # Without zeroing, non-child positions would have stale data from prior iterations.
+            # The scatter speciation path needs its ping-pong output buffer for
+            # child contributions.
             for s_start in range(0, S, BLOCK_S):
                 s_offs = s_start + tl.arange(0, BLOCK_S)
                 valid_mask = s_offs < S
                 mask = valid_mask & row_active
+                zero = tl.zeros(s_offs.shape, dtype=DTYPE)
+                # Zero the output buffer before speciation scatter writes.
+                # Sub-pass A only writes child positions; sub-pass B reads all
+                # positions, so non-child positions must not retain stale terms.
                 if _n % 2 == 0:
-                    tl.store(spec_buf_ptr + out_base + s_offs,
-                             tl.zeros(s_offs.shape, dtype=DTYPE), mask=mask)
+                    tl.store(spec_buf_ptr + out_base + s_offs, zero, mask=mask)
                 else:
-                    tl.store(term_buf_ptr + out_base + s_offs,
-                             tl.zeros(s_offs.shape, dtype=DTYPE), mask=mask)
+                    tl.store(term_buf_ptr + out_base + s_offs, zero, mask=mask)
+
+        tl.debug_barrier()
 
         # --- Sub-pass A: accumulate A = sum_s(term * pibar_wt * inv_denom) ---
-        # Also write speciation scatter contributions.
+        # Also write ancestor-correction and speciation scatter contributions.
         A_acc = tl.full([1], value=0.0, dtype=DTYPE)
 
         for s_start in range(0, S, BLOCK_S):
@@ -449,6 +509,12 @@ def _wave_backward_uniform_kernel(
 
             A_acc += tl.sum(u_d, axis=0)
 
+            cur = s_offs
+            for _depth in range(MAX_ANCESTOR_DEPTH):
+                anc_mask = mask & (cur >= 0) & (cur < S)
+                tl.atomic_add(pibar_corr_ptr + out_base + cur, u_d, mask=anc_mask)
+                cur = tl.load(sp_parent_ptr + cur, mask=anc_mask, other=-1)
+
             if not SPEC_GATHER:
                 # Speciation scatter: write term * sl_wt to child index
                 sl1_wt = tl.load(aw4_ptr + off, mask=mask, other=0.0)
@@ -469,6 +535,8 @@ def _wave_backward_uniform_kernel(
                 else:
                     tl.store(term_buf_ptr + out_base + c1, src1, mask=c1_valid)
                     tl.store(term_buf_ptr + out_base + c2, src2, mask=c2_valid)
+
+        tl.debug_barrier()
 
         # --- Sub-pass B: compute J^T result using A ---
         for s_start in range(0, S, BLOCK_S):
@@ -503,7 +571,8 @@ def _wave_backward_uniform_kernel(
                     p_prime = tl.load(aw3_ptr + off, mask=mask, other=0.0)
 
                 u_d = term_val * pibar_wt * inv_denom
-            result = term_val * diag_wt + p_prime * (A_acc - u_d)
+            correction = tl.load(pibar_corr_ptr + off, mask=mask, other=0.0)
+            result = term_val * diag_wt + p_prime * (A_acc - correction)
 
             # Add speciation contribution.
             if SPEC_GATHER:
@@ -1068,6 +1137,7 @@ def wave_backward_uniform_fused(
     accum_param_grads=None,
     active_mask=None,
     sp_parent=None,
+    max_ancestor_depth=None,
     pibar_row_max=None,
     skip_inactive_zero_stores=False,
     scratch=None,
@@ -1104,12 +1174,24 @@ def wave_backward_uniform_fused(
     accum_enabled = accum_param_grads is not None
     has_splits = dts_r is not None
     use_leaf_index = leaf_species_idx is not None and leaf_logp is not None
+    if sp_parent is None:
+        sp_parent = _parent_from_children(sp_child1, sp_child2, S)
+    else:
+        sp_parent = sp_parent.to(device=device).contiguous()
+    if device.type == "cuda" and sp_parent.dtype != torch.int32:
+        sp_parent = sp_parent.to(dtype=torch.int32)
+    if max_ancestor_depth is None:
+        max_ancestor_depth = _max_ancestor_depth_from_parent(sp_parent, S)
+    max_ancestor_depth = max(1, int(max_ancestor_depth))
     fast_nosplit_param_grads = (
         os.environ.get("GPUREC_FAST_NOSPLIT_PARAM_ACCUM", "0") != "0"
     )
     recompute_pibar_denom = (
         os.environ.get("GPUREC_RECOMPUTE_PIBAR_DENOM", "0") != "0"
     )
+    # The old recompute path used a self-only denominator. Keep one exact
+    # denominator pass and store/reuse it instead of allowing that approximation.
+    recompute_pibar_denom = False
     compact_pibar_scratch_mode = (
         os.environ.get("GPUREC_COMPACT_PIBAR_SCRATCH", "1")
         .strip()
@@ -1130,14 +1212,15 @@ def wave_backward_uniform_fused(
         and leaf_logp is not None
         and leaf_logp.numel() == 1
     )
-    spec_gather = (
-        os.environ.get("GPUREC_WAVE_SPEC_GATHER", "1") != "0"
-        and sp_parent is not None
-    )
-    use_pibar_row_max = (
-        os.environ.get("GPUREC_WAVE_REUSE_PIBAR_ROW_MAX", "1") != "0"
-        and pibar_row_max is not None
-    )
+    # Parent-gather speciation was an optimization for the old self-only
+    # correction. With the full ancestor correction it is not exact enough on
+    # all waves, so keep the scatter path as the only production path.
+    spec_gather = False
+    if pibar_row_max is None:
+        pibar_row_max = Pi_star.max(dim=1).values.contiguous()
+    else:
+        pibar_row_max = pibar_row_max.to(device=device, dtype=dtype).contiguous()
+    use_pibar_row_max = True
     param_two_stage_mode = (
         os.environ.get("GPUREC_SELF_LOOP_PARAM_TWO_STAGE", "0").strip().lower()
     )
@@ -1203,6 +1286,11 @@ def wave_backward_uniform_fused(
     term_buf = _scratch_view(scratch, "term_buf", scratch_shape, device=device, dtype=dtype)
     if term_buf is None:
         term_buf = torch.empty(scratch_shape, device=device, dtype=dtype)
+    pibar_corr_buf = _scratch_view(
+        scratch, "pibar_corr", scratch_shape, device=device, dtype=dtype
+    )
+    if pibar_corr_buf is None:
+        pibar_corr_buf = torch.empty(scratch_shape, device=device, dtype=dtype)
 
     if leaf_term_wt is None:
         if not use_leaf_index:
@@ -1249,7 +1337,7 @@ def wave_backward_uniform_fused(
         active_mask if active_mask is not None else rhs,
         mt_squeezed, DL_const, Ebar, E, SL1_const, SL2_const,
         sp_child1, sp_child2,
-        sp_parent if spec_gather else sp_child1,
+        sp_parent,
         leaf_term_wt,
         leaf_species_arg,
         leaf_logp_arg,
@@ -1257,6 +1345,7 @@ def wave_backward_uniform_fused(
         aw0, aw1, aw2, aw345, aw3, aw4,
         spec_buf,
         term_buf,
+        pibar_corr_buf,
         grad_log_pD_arg,
         grad_log_pS_arg,
         grad_E_arg,
@@ -1266,6 +1355,7 @@ def wave_backward_uniform_fused(
         grad_mt_arg,
         ws, S, S, BLOCK_S,
         neumann_terms,
+        max_ancestor_depth,
         USE_LEAF_INDEX=bool(use_leaf_index),
         ACCUM_PARAM_GRADS=bool(accum_enabled),
         PARAM_GRAD_TWO_STAGE=bool(param_two_stage_enabled),
