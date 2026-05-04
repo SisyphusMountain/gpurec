@@ -42,6 +42,12 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--max-wave-size", default=os.getenv("MAX_WAVE_SIZE", "32768"))
     parser.add_argument("--max-root-wave-size", default=os.getenv("MAX_ROOT_WAVE_SIZE", ""))
     parser.add_argument("--cache-dir", default=os.getenv("PREPROCESS_CACHE_DIR", "/tmp/gpurec_preprocess_cache"))
+    parser.add_argument(
+        "--mode",
+        choices=("global", "specieswise", "genewise"),
+        default=os.getenv("MODE", "global"),
+        help="Parameter-sharing mode used to construct GeneReconModel.",
+    )
     parser.add_argument("--variant", choices=("old", "new"), default=os.getenv("VARIANT", "new"))
     parser.add_argument(
         "--min-splits",
@@ -76,6 +82,12 @@ def _parse_args() -> argparse.Namespace:
         action=argparse.BooleanOptionalAction,
         default=os.getenv("ROOT_ROWS", "0") != "0",
         help="Return only root Pi rows instead of the full wave-ordered Pi output.",
+    )
+    parser.add_argument(
+        "--leaf-index",
+        action=argparse.BooleanOptionalAction,
+        default=os.getenv("GPUREC_FORWARD_LEAF_INDEX", "1") != "0",
+        help="Enable compact uniform leaf-index term in the wave-step kernel.",
     )
     parser.add_argument(
         "--topology-int32",
@@ -218,7 +230,7 @@ def _prepare(args: argparse.Namespace) -> tuple[GeneReconModel, dict, tuple]:
     model = GeneReconModel.from_trees(
         str(root / "sp.nwk"),
         genes,
-        mode="global",
+        mode=args.mode,
         pibar_mode="uniform",
         device="cuda",
         dtype=torch.float32,
@@ -337,6 +349,7 @@ def main() -> None:
     for key, value in DEFAULT_FLAGS.items():
         os.environ.setdefault(key, value)
     os.environ["GPUREC_FORWARD_TOPOLOGY_INT32"] = "1" if args.topology_int32 else "0"
+    os.environ["GPUREC_FORWARD_LEAF_INDEX"] = "1" if args.leaf_index else "0"
     if args.wave_block_s > 0:
         os.environ["GPUREC_FORWARD_WAVE_BLOCK_S"] = str(args.wave_block_s)
     else:
@@ -390,12 +403,14 @@ def main() -> None:
     print(
         "timing",
         "variant", args.variant,
+        "mode", args.mode,
         "min_splits", args.min_splits,
         "impl", args.impl,
         "tile_splits", args.tile_splits,
         "ge2_only", int(args.ge2_only),
         "need_pibar", int(args.need_pibar),
         "root_rows", int(args.root_rows),
+        "leaf_index", int(args.leaf_index),
         "topology_int32", int(args.topology_int32),
         "wave_block_s", args.wave_block_s,
         "wave_num_warps", args.wave_num_warps,

@@ -1476,6 +1476,134 @@ Tests:
 - `tests/integration/test_gene_recon_model.py`
 - gradient bridge tests with genewise uniform mode
 
+### Proposal 7 follow-up: implemented genewise leaf-index path
+
+Proposal 7 was implemented as a real genewise uniform forward optimization.
+The old genewise uniform path disabled `leaf_species_index` whenever
+`family_idx` was present, so it fell back to dense per-wave leaf masks.  That
+fallback is expensive for large `S`: each wave builds or touches dense `[W, S]`
+leaf data even though each leaf row has only one finite species entry.
+
+Implementation:
+
+- `use_uniform_leaf_index` in `gpurec/core/forward.py` no longer excludes
+  batched/genewise mode.  It is controlled by `GPUREC_FORWARD_LEAF_INDEX`
+  defaulting to on, plus the existing exclusions for the linear, two-kernel,
+  and SpMM paths.
+- `_wave_step_uniform_kernel` in `gpurec/core/kernels/wave_step.py` now takes
+  `family_idx_ptr` plus `LEAF_LOGP_MODE`.
+- `LEAF_LOGP_MODE=0` handles shared `[S]` leaf log-probabilities.
+- `LEAF_LOGP_MODE=1` handles genewise scalar `[G]` leaf log-probabilities.
+- `LEAF_LOGP_MODE=2` handles genewise specieswise `[G, S]` leaf
+  log-probabilities.
+- The fused, ping-pong `fused_into`, ancestor, and CSR uniform wrappers pass
+  `family_idx` through to the Triton kernel.
+- The two-kernel and linear uniform paths keep the dense-leaf fallback.
+- `profiling/bench_uniform_forward_parent_dts.py` now exposes `--mode` and
+  `--leaf-index` so genewise leaf addressing can be benchmarked directly.
+
+The fused kernel now computes the leaf term in the compact path:
+
+```text
+mode 0: leaf = leaf_logp[s]
+mode 1: leaf = leaf_logp[family_idx[row]]
+mode 2: leaf = leaf_logp[family_idx[row], s]
+
+t_leaf = leaf if leaf_species[row] == s else -inf
+```
+
+Correctness evidence:
+
+| Check | Result |
+|---|---:|
+| `test_wave_step_uniform_leaf_index_logp_modes_match_dense_leaf_term` for `[S]`, `[G]`, and `[G,S]` | `3 passed in 1.46 s` |
+| Genewise leaf-index vs dense fallback tests for `[G]` and `[G,S]` | passed as part of `test_genewise_wave.py` |
+| Genewise gradient bridge parity for supported `[G]` mode | passed |
+| `tests/unit/test_genewise_wave.py` plus `tests/gradients/test_autograd_bridge.py::test_model_nll_matches_compute_likelihood_batch` | `14 passed in 6.45 s` |
+
+The forward `[G,S]` path is covered against the dense leaf fallback.  The
+remaining public API gap is that the model gradient bridge still does not
+support combined genewise+specieswise training end to end, so `[G,S]` is
+forward-tested but not promoted as a full training mode.
+
+Timing, genewise uniform fp32, fixed 6, `test_trees_1000`, root-row output,
+`need_pibar=False`, parent-reduced DTS on, int32 topology on:
+
+| Workload | Leaf index | Ping-pong | Median forward | Peak GPU | NLL | Outcome |
+|---:|---|---|---:|---:|---:|---|
+| 10 families | disabled | default | `63.889 ms` | `2.793 GiB` | `22182.914062` | dense leaf fallback |
+| 10 families | enabled | default | `51.062 ms` | `2.131 GiB` | `22182.914062` | `-12.827 ms`, `-0.662 GiB` |
+| 25 families | disabled | default | `150.287 ms` | `5.845 GiB` | `54262.445312` | dense leaf fallback |
+| 25 families | enabled | default | `114.116 ms` | `4.257 GiB` | `54262.445312` | `-36.171 ms`, `-1.588 GiB` |
+| 50 families | disabled | default | `297.376 ms` | `10.646 GiB` | `107804.265625` | baseline |
+| 50 families | enabled | default | `224.115 ms` | `7.761 GiB` | `107804.265625` | `-73.261 ms`, `-2.885 GiB` |
+| 150 families | disabled | default | - | - | - | OOM on first timed rep |
+| 150 families | enabled | default | `664.441 ms` | `17.959 GiB` | `323018.6875` | fits |
+
+The 150-family disabled run reached `23.14 GiB` process memory and failed on a
+`250 MiB` allocation.  The compact leaf path therefore changes memory scaling,
+not only latency.
+
+Isolating compact leaf addressing from ping-pong on 50 families:
+
+| Leaf index | `GPUREC_UNIFORM_PINGPONG` | Median forward | Peak GPU |
+|---|---:|---:|---:|
+| disabled | `0` | `297.016 ms` | `10.646 GiB` |
+| enabled | `0` | `265.583 ms` | `8.005 GiB` |
+| enabled | default | `224.115 ms` | `7.761 GiB` |
+
+So compact leaf addressing itself saves about `31.4 ms` and `2.64 GiB` at 50
+families.  Once the path is compact enough to enter ping-pong, ping-pong
+accounts for the remaining roughly `41.5 ms` and `0.24 GiB` improvement.
+
+Nsight Systems, local 50-family pair:
+
+| Metric | Leaf index disabled | Leaf index enabled |
+|---|---:|---:|
+| Event time | `301.304 ms` | `225.514 ms` |
+| Kernel launches | `1506` | `1173` |
+| Kernel sum | `266.523 ms` | `224.579 ms` |
+| Kernel span | `301.166 ms` | `225.416 ms` |
+| CUDA streams | `1` | `1` |
+| Memcpy | `355 calls / 15.445 GB / 28.452 ms` | `2 calls / 8 bytes / 0.0016 ms` |
+
+Top buckets:
+
+| Bucket | Leaf index disabled | Leaf index enabled | Interpretation |
+|---|---:|---:|---|
+| `_wave_step_uniform_kernel` | `194.470 ms / 294` | `154.129 ms / 294` | compact leaf term plus ping-pong store pattern reduces wave-step work |
+| PyTorch elementwise | `45.080 ms / 1074` | `33.979 ms / 766` | dense leaf mask construction mostly removed |
+| `_dts_fused_kernel` | `14.764 ms / 39` | `14.746 ms / 39` | DTS unchanged |
+| `_dts_parent_reduced_ge2_stage1_kernel` | `11.417 ms / 7` | `11.421 ms / 7` | DTS unchanged |
+| `_wave_pibar_uniform_parent_kernel` | absent from disabled top buckets | `9.997 ms / 48` | enabled path enters ping-pong and pays final Pibar recompute |
+
+The old dense path built per-wave dense leaf masks through PyTorch
+fills/indexing/`any` checks and stayed on the non-ping-pong update pattern,
+which created large device-to-device copy traffic.  The new path eliminates the
+dense leaf masks and the memcpy-heavy non-ping-pong pattern.  DTS timings are
+unchanged, confirming that the win is specifically leaf addressing plus enabling
+the existing ping-pong fast path.
+
+Decision:
+
+- Keep `GPUREC_FORWARD_LEAF_INDEX=1` as the default.
+- Treat this as a real genewise uniform forward win: `-73.3 ms` and
+  `-2.9 GiB` at 50 families, and the 150-family case changes from OOM to
+  fitting at `17.959 GiB`.
+- Keep the dense fallback for the two-kernel and linear implementations.
+- Keep documenting the public API limitation: genewise scalar `[G]` is covered
+  by gradient bridge parity; genewise specieswise `[G,S]` is forward-tested
+  but not yet a full combined genewise+specieswise training path.
+
+Artifacts:
+
+```text
+/tmp/gpurec_profile/forward_prop7/genewise_leaf0_f50.nsys-rep
+/tmp/gpurec_profile/forward_prop7/genewise_leaf0_f50.sqlite
+/tmp/gpurec_profile/forward_prop7/genewise_leaf1_f50.nsys-rep
+/tmp/gpurec_profile/forward_prop7/genewise_leaf1_f50.sqlite
+```
+
 ## Proposal 8: uniform-only species preprocessing
 
 This is outside the GPU forward interval, but it improves end-to-end

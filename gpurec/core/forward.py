@@ -598,7 +598,7 @@ def Pi_wave_forward(
     )
     use_uniform_leaf_index = bool(
         use_uniform_fused
-        and not batched
+        and os.environ.get("GPUREC_FORWARD_LEAF_INDEX", "1") != "0"
         and not use_uniform_linear
         and not use_uniform_two_kernel
         and not use_uniform_spmm
@@ -901,6 +901,7 @@ def Pi_wave_forward(
                     compute_diff=compute_diff,
                     leaf_species_idx=leaf_species_index,
                     leaf_logp=uniform_leaf_logp,
+                    family_idx=family_idx if batched else None,
                     pibar_row_max=uniform_pibar_row_max,
                 )
 
@@ -920,6 +921,7 @@ def Pi_wave_forward(
                     compute_diff=compute_diff,
                     leaf_species_idx=leaf_species_index,
                     leaf_logp=uniform_leaf_logp,
+                    family_idx=family_idx if batched else None,
                     pibar_row_max=uniform_pibar_row_max,
                 )
 
@@ -961,6 +963,7 @@ def Pi_wave_forward(
                         leaf_wt, dts_r,
                         leaf_species_idx=leaf_species_index,
                         leaf_logp=uniform_leaf_logp,
+                        family_idx=family_idx if batched else None,
                     )
                     if (
                         local_iter == n_iters - 1
@@ -981,6 +984,7 @@ def Pi_wave_forward(
                         compute_diff=compute_diff,
                         leaf_species_idx=leaf_species_index,
                         leaf_logp=uniform_leaf_logp,
+                        family_idx=family_idx if batched else None,
                         pibar_row_max=uniform_pibar_row_max,
                     )
 
@@ -1187,6 +1191,7 @@ def Pi_wave_forward(
                                 compute_diff=compute_diff,
                                 leaf_species_idx=leaf_species_index,
                                 leaf_logp=uniform_leaf_logp,
+                                family_idx=family_idx if batched else None,
                                 pibar_row_max=uniform_pibar_row_max,
                             )
 
@@ -1206,6 +1211,7 @@ def Pi_wave_forward(
                                 compute_diff=compute_diff,
                                 leaf_species_idx=leaf_species_index,
                                 leaf_logp=uniform_leaf_logp,
+                                family_idx=family_idx if batched else None,
                                 pibar_row_max=uniform_pibar_row_max,
                             )
 
@@ -1247,6 +1253,7 @@ def Pi_wave_forward(
                                     leaf_wt, dts_r,
                                     leaf_species_idx=leaf_species_index,
                                     leaf_logp=uniform_leaf_logp,
+                                    family_idx=family_idx if batched else None,
                                 )
                                 if (
                                     local_iter == n_iters - 1
@@ -1267,6 +1274,7 @@ def Pi_wave_forward(
                                     compute_diff=compute_diff,
                                     leaf_species_idx=leaf_species_index,
                                     leaf_logp=uniform_leaf_logp,
+                                    family_idx=family_idx if batched else None,
                                     pibar_row_max=uniform_pibar_row_max,
                                 )
 
@@ -1388,6 +1396,7 @@ def Pi_wave_forward(
                                 compute_diff=compute_diff,
                                 leaf_species_idx=leaf_species_index,
                                 leaf_logp=uniform_leaf_logp,
+                                family_idx=family_idx if batched else None,
                                 pibar_row_max=uniform_pibar_row_max,
                             )
 
@@ -1407,6 +1416,7 @@ def Pi_wave_forward(
                                 compute_diff=compute_diff,
                                 leaf_species_idx=leaf_species_index,
                                 leaf_logp=uniform_leaf_logp,
+                                family_idx=family_idx if batched else None,
                                 pibar_row_max=uniform_pibar_row_max,
                             )
 
@@ -1448,6 +1458,7 @@ def Pi_wave_forward(
                                     leaf_wt, dts_r,
                                     leaf_species_idx=leaf_species_index,
                                     leaf_logp=uniform_leaf_logp,
+                                    family_idx=family_idx if batched else None,
                                 )
                                 if (
                                     local_iter == n_iters - 1
@@ -1468,6 +1479,7 @@ def Pi_wave_forward(
                                     compute_diff=compute_diff,
                                     leaf_species_idx=leaf_species_index,
                                     leaf_logp=uniform_leaf_logp,
+                                    family_idx=family_idx if batched else None,
                                     pibar_row_max=uniform_pibar_row_max,
                                 )
 

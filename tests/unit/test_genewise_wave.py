@@ -10,13 +10,139 @@ from pathlib import Path
 import pytest
 import torch
 
+from gpurec.core.batching import collate_gene_families, collate_wave, build_wave_layout
+from gpurec.core.forward import Pi_wave_forward
+from gpurec.core.likelihood import compute_log_likelihood_root_rows
 from gpurec.core.model import GeneDataset
 from gpurec.core.extract_parameters import extract_parameters_uniform
+from gpurec.core.scheduling import compute_clade_waves
+from gpurec.api.model import GeneReconModel
 
 _ROOT = Path(__file__).resolve().parent.parent
 TOL = 1e-3
 # uniform vs dense produces small diffs; genewise adds per-gene variation
 LOGL_ATOL = 5e-2
+
+
+def _set_deterministic_genewise_theta(ds, *, specieswise, scale=0.25):
+    gen = torch.Generator(device=ds.device)
+    gen.manual_seed(7)
+    for fam in ds.families:
+        shape = (ds.S, 3) if specieswise else (3,)
+        fam["theta"] = (
+            torch.randn(shape, generator=gen, dtype=ds.dtype, device=ds.device)
+            * scale
+            - 5.0
+        )
+
+
+def _build_genewise_wave_inputs(ds, indices, *, device, dtype):
+    batch_items = [
+        {
+            "ccp": ds.families[idx]["ccp_helpers"],
+            "leaf_row_index": ds.families[idx]["leaf_row_index"],
+            "leaf_col_index": ds.families[idx]["leaf_col_index"],
+            "root_clade_id": int(ds.families[idx]["root_clade_id"]),
+        }
+        for idx in indices
+    ]
+    batched = collate_gene_families(batch_items, dtype=dtype, device=device)
+
+    families_waves = []
+    families_phases = []
+    for idx in indices:
+        waves_i, phases_i = compute_clade_waves(ds.families[idx]["ccp_helpers"])
+        families_waves.append(waves_i)
+        families_phases.append(phases_i)
+
+    cross_waves = collate_wave(
+        families_waves,
+        [m["clade_offset"] for m in batched["family_meta"]],
+    )
+    max_n_waves = max(len(p) for p in families_phases)
+    cross_phases = [
+        max(fp[k] for fp in families_phases if k < len(fp))
+        for k in range(max_n_waves)
+    ]
+
+    wave_layout = build_wave_layout(
+        waves=cross_waves,
+        phases=cross_phases,
+        ccp_helpers=batched["ccp"],
+        leaf_row_index=batched["leaf_row_index"],
+        leaf_col_index=batched["leaf_col_index"],
+        root_clade_ids=batched["root_clade_ids"],
+        device=device,
+        dtype=dtype,
+        family_clade_counts=[m["C"] for m in batched["family_meta"]],
+        family_clade_offsets=[m["clade_offset"] for m in batched["family_meta"]],
+    )
+
+    log_pS, log_pD, log_pL, transfer_mat, max_transfer_vec = ds._extract_batch_params(
+        indices,
+        pibar_mode="uniform",
+        device=device,
+        dtype=dtype,
+    )
+    species_helpers, ancestors_T = ds._species_helpers_for_mode(
+        pibar_mode="uniform",
+        device=device,
+        dtype=dtype,
+    )
+    E_out = ds._solve_e_fixed_point(
+        species_helpers=species_helpers,
+        log_pS=log_pS,
+        log_pD=log_pD,
+        log_pL=log_pL,
+        transfer_mat=transfer_mat,
+        max_transfer_vec=max_transfer_vec,
+        max_iters_E=200,
+        tol_E=TOL,
+        device=device,
+        dtype=dtype,
+        pibar_mode="uniform",
+        ancestors_T=ancestors_T,
+    )
+
+    return wave_layout, species_helpers, E_out, log_pS, log_pD, log_pL, max_transfer_vec
+
+
+def _run_genewise_uniform_wave(ds, wave_layout, species_helpers, E_out,
+                               log_pS, log_pD, log_pL, max_transfer_vec):
+    return Pi_wave_forward(
+        wave_layout=wave_layout,
+        species_helpers=species_helpers,
+        E=E_out["E"],
+        Ebar=E_out["E_bar"],
+        E_s1=E_out["E_s1"],
+        E_s2=E_out["E_s2"],
+        log_pS=log_pS,
+        log_pD=log_pD,
+        log_pL=log_pL,
+        transfer_mat=None,
+        max_transfer_mat=max_transfer_vec,
+        device=ds.device,
+        dtype=ds.dtype,
+        local_iters=200,
+        local_tolerance=TOL,
+        fixed_iters=3,
+        pibar_mode="uniform",
+        family_idx=wave_layout["family_idx"],
+        return_original=True,
+        need_pibar=False,
+        return_root_rows=True,
+    )
+
+
+def _nll_from_root_rows(Pi_out, E_out):
+    return compute_log_likelihood_root_rows(Pi_out["Pi_root_rows"], E_out["E"])
+
+
+def _make_theta_init(G, S, *, specieswise, dtype, device):
+    gen = torch.Generator(device=device)
+    gen.manual_seed(11)
+    shape = (G, S, 3) if specieswise else (G, 3)
+    return torch.randn(shape, generator=gen, dtype=dtype, device=device) * 0.2 - 5.0
 
 
 # ------------------------------------------------------------------
@@ -213,6 +339,146 @@ def test_genewise_wave_batch_vs_per_family(data_dir):
         assert abs(lb - ls) < 1e-2, (
             f"Family {i}: batch={lb:.4f}, seq={ls:.4f}, diff={abs(lb - ls):.2e}"
         )
+
+
+# ------------------------------------------------------------------
+# Test: Proposal 7 genewise uniform leaf-index path
+# ------------------------------------------------------------------
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+@pytest.mark.parametrize("specieswise", [False, True], ids=["log_pS_G", "log_pS_GS"])
+def test_genewise_uniform_leaf_index_path_matches_dense_leaf_fallback(data_dir, specieswise):
+    """Proposal 7: batched genewise uniform leaf-index path matches dense leaf terms.
+
+    The fallback layout deletes ``leaf_species_index`` so a Proposal 7
+    implementation must use the compact leaf-index path for the normal layout
+    and the existing dense ``[C, S]`` leaf term for the reference layout.
+    """
+    sp = str(data_dir / "sp.nwk")
+    genes = [str(g) for g in sorted(data_dir.glob("g_*.nwk"))[:3]]
+    device = torch.device("cuda")
+    dtype = torch.float32
+
+    ds = GeneDataset(
+        sp,
+        genes,
+        genewise=True,
+        specieswise=specieswise,
+        pairwise=False,
+        dtype=dtype,
+        device=device,
+    )
+    _set_deterministic_genewise_theta(ds, specieswise=specieswise)
+
+    inputs = _build_genewise_wave_inputs(ds, list(range(len(genes))), device=device, dtype=dtype)
+    wave_layout, species_helpers, E_out, log_pS, log_pD, log_pL, max_transfer_vec = inputs
+    assert log_pS.shape == ((len(genes), ds.S) if specieswise else (len(genes),))
+
+    fallback_layout = dict(wave_layout)
+    fallback_layout["leaf_species_index"] = None
+
+    dense_out = _run_genewise_uniform_wave(
+        ds, fallback_layout, species_helpers, E_out,
+        log_pS, log_pD, log_pL, max_transfer_vec,
+    )
+    leaf_index_out = _run_genewise_uniform_wave(
+        ds, wave_layout, species_helpers, E_out,
+        log_pS, log_pD, log_pL, max_transfer_vec,
+    )
+
+    if leaf_index_out["clade_species_map"] is not None:
+        pytest.xfail("Proposal 7 is not active: batched genewise uniform still materializes dense leaf terms")
+
+    assert dense_out["clade_species_map"] is not None
+    dense_nll = _nll_from_root_rows(dense_out, E_out)
+    leaf_index_nll = _nll_from_root_rows(leaf_index_out, E_out)
+
+    assert torch.allclose(leaf_index_nll, dense_nll, atol=1e-4, rtol=1e-5)
+    assert torch.allclose(
+        leaf_index_out["Pi_root_rows"],
+        dense_out["Pi_root_rows"],
+        atol=1e-4,
+        rtol=1e-5,
+    )
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+def test_genewise_uniform_leaf_index_gradient_bridge_matches_dense_leaf_fallback(data_dir):
+    """Proposal 7 gradient bridge parity for genewise uniform leaf-index leaves."""
+    sp = str(data_dir / "sp.nwk")
+    genes = [str(g) for g in sorted(data_dir.glob("g_*.nwk"))[:2]]
+    device = torch.device("cuda")
+    dtype = torch.float32
+    specieswise = False
+
+    probe_ds = GeneDataset(
+        sp,
+        genes,
+        genewise=True,
+        specieswise=specieswise,
+        pairwise=False,
+        dtype=dtype,
+        device=device,
+    )
+    _set_deterministic_genewise_theta(probe_ds, specieswise=specieswise)
+    inputs = _build_genewise_wave_inputs(probe_ds, list(range(len(genes))), device=device, dtype=dtype)
+    probe_out = _run_genewise_uniform_wave(probe_ds, *inputs)
+    if probe_out["clade_species_map"] is not None:
+        pytest.xfail("Proposal 7 is not active: batched genewise uniform still materializes dense leaf terms")
+
+    theta_init = _make_theta_init(
+        len(genes), probe_ds.S, specieswise=specieswise, dtype=dtype, device=device
+    )
+    kwargs = dict(
+        mode="genewise",
+        pibar_mode="uniform",
+        max_iters_E=200,
+        tol_E=TOL,
+        max_iters_Pi=200,
+        tol_Pi=TOL,
+        fixed_iters_Pi=3,
+        neumann_terms=2,
+        use_pruning=False,
+        theta_init=theta_init,
+    )
+
+    fast_ds = GeneDataset(
+        sp,
+        genes,
+        genewise=True,
+        specieswise=specieswise,
+        pairwise=False,
+        dtype=dtype,
+        device=device,
+    )
+    dense_ds = GeneDataset(
+        sp,
+        genes,
+        genewise=True,
+        specieswise=specieswise,
+        pairwise=False,
+        dtype=dtype,
+        device=device,
+    )
+    fast_model = GeneReconModel(dataset=fast_ds, **kwargs)
+    dense_model = GeneReconModel(dataset=dense_ds, **kwargs)
+
+    dense_layout = dict(dense_model._static.wave_layout)
+    dense_layout["leaf_species_index"] = None
+    dense_model._static.wave_layout = dense_layout
+
+    fast_nll = fast_model()
+    dense_nll = dense_model()
+    fast_nll.backward()
+    dense_nll.backward()
+
+    assert torch.allclose(fast_nll, dense_nll, atol=1e-4, rtol=1e-5)
+    assert torch.allclose(
+        fast_model.theta.grad,
+        dense_model.theta.grad,
+        atol=2e-3,
+        rtol=2e-3,
+    )
 
 
 # ------------------------------------------------------------------

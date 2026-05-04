@@ -225,6 +225,108 @@ def test_wave_step_uniform_fused_matches_sparse_ancestor_reference(per_clade_con
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+@pytest.mark.parametrize("leaf_logp_mode", ["shared", "genewise_scalar", "genewise_specieswise"])
+def test_wave_step_uniform_leaf_index_logp_modes_match_dense_leaf_term(leaf_logp_mode):
+    torch.manual_seed(13)
+    device = torch.device("cuda")
+    dtype = torch.float32
+    (
+        sp_parent,
+        sp_child1,
+        sp_child2,
+        _ancestors,
+        _ancestor_cols,
+        _ancestor_csr_indptr,
+        _ancestor_csr_indices,
+        max_depth,
+    ) = _balanced_species_tree(device)
+
+    W = 4
+    S = int(sp_parent.numel())
+    G = 3
+    ws = 2
+    C = W + 4
+    Pi = torch.randn((C, S), device=device, dtype=dtype) * 1.2 - 3.0
+    mt = torch.randn((W, S), device=device, dtype=dtype) * 0.1
+    DL = torch.randn((W, S), device=device, dtype=dtype) * 0.2 - 2.0
+    Ebar = torch.randn((W, S), device=device, dtype=dtype) * 0.2 - 1.5
+    E = torch.randn((W, S), device=device, dtype=dtype) * 0.2 - 2.5
+    SL1 = torch.randn((W, S), device=device, dtype=dtype) * 0.2 - 2.0
+    SL2 = torch.randn((W, S), device=device, dtype=dtype) * 0.2 - 2.0
+
+    leaf_species_idx = torch.full((C,), -1, device=device, dtype=torch.long)
+    leaf_species_idx[ws:ws + W] = torch.tensor([2, -1, 5, 1], device=device)
+    family_idx = torch.tensor([0, 0, 0, 1, 2, 1, 2, 0], device=device, dtype=torch.long)
+
+    if leaf_logp_mode == "shared":
+        leaf_logp = torch.randn((S,), device=device, dtype=dtype) * 0.2 - 4.0
+    elif leaf_logp_mode == "genewise_scalar":
+        leaf_logp = torch.randn((G,), device=device, dtype=dtype) * 0.2 - 4.0
+    else:
+        leaf_logp = torch.randn((G, S), device=device, dtype=dtype) * 0.2 - 4.0
+
+    leaf_term = torch.full((W, S), -1e30, device=device, dtype=dtype)
+    for w in range(W):
+        species = int(leaf_species_idx[ws + w])
+        if species < 0:
+            continue
+        if leaf_logp_mode == "shared":
+            leaf_term[w, species] = leaf_logp[species]
+        elif leaf_logp_mode == "genewise_scalar":
+            leaf_term[w, species] = leaf_logp[family_idx[ws + w]]
+        else:
+            leaf_term[w, species] = leaf_logp[family_idx[ws + w], species]
+
+    Pibar_dense = torch.full_like(Pi, float("-inf"))
+    Pi_dense, max_diff_dense = wave_step_uniform_fused(
+        Pi,
+        Pibar_dense,
+        ws,
+        W,
+        S,
+        mt,
+        DL,
+        Ebar,
+        E,
+        SL1,
+        SL2,
+        sp_child1,
+        sp_child2,
+        sp_parent,
+        max_depth,
+        leaf_term,
+    )
+
+    Pibar_indexed = torch.full_like(Pi, float("-inf"))
+    Pi_indexed, max_diff_indexed = wave_step_uniform_fused(
+        Pi,
+        Pibar_indexed,
+        ws,
+        W,
+        S,
+        mt,
+        DL,
+        Ebar,
+        E,
+        SL1,
+        SL2,
+        sp_child1,
+        sp_child2,
+        sp_parent,
+        max_depth,
+        leaf_logp,
+        leaf_species_idx=leaf_species_idx,
+        leaf_logp=leaf_logp,
+        family_idx=family_idx if leaf_logp_mode != "shared" else None,
+    )
+    torch.cuda.synchronize()
+
+    torch.testing.assert_close(Pibar_indexed[ws:ws + W], Pibar_dense[ws:ws + W])
+    torch.testing.assert_close(Pi_indexed, Pi_dense, rtol=2e-5, atol=2e-5)
+    torch.testing.assert_close(max_diff_indexed, max_diff_dense, rtol=2e-5, atol=2e-5)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
 def test_wave_step_uniform_linear_fused_matches_sparse_ancestor_reference():
     torch.manual_seed(11)
     device = torch.device("cuda")

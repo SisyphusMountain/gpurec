@@ -28,6 +28,17 @@ def _uniform_num_warps() -> int:
     return num_warps
 
 
+def _leaf_logp_mode(use_leaf_index: bool, leaf_logp, family_idx) -> int:
+    """Return the Triton leaf-logp addressing mode for uniform leaf-index hits."""
+    if not use_leaf_index or family_idx is None:
+        return 0
+    if leaf_logp.ndim == 1:
+        return 1
+    if leaf_logp.ndim == 2:
+        return 2
+    raise ValueError("batched leaf_logp must have shape [G] or [G, S]")
+
+
 @triton.jit
 def _wave_pibar_step_kernel(
     # Pi[wt]: [W, S] log2-space (input, the current wave's Pi)
@@ -324,6 +335,7 @@ def _wave_step_uniform_kernel(
     leaf_term_ptr,
     leaf_species_ptr,
     leaf_logp_ptr,
+    family_idx_ptr,
     DTS_reduced_ptr,
     has_splits: tl.constexpr,
     # Outputs
@@ -340,6 +352,7 @@ def _wave_step_uniform_kernel(
     USE_ANCESTOR_CSR: tl.constexpr,
     USE_ANCESTOR_COLS: tl.constexpr,
     USE_LEAF_INDEX: tl.constexpr,
+    LEAF_LOGP_MODE: tl.constexpr,
     STORE_PIBAR: tl.constexpr,
     STORE_PIBAR_ROW_MAX: tl.constexpr,
     OUTPUT_GLOBAL: tl.constexpr,
@@ -464,8 +477,18 @@ def _wave_step_uniform_kernel(
         t4 = sl2_const + pi_s2
         if USE_LEAF_INDEX:
             leaf_species = tl.load(leaf_species_ptr + ws + w)
-            leaf_logp = tl.load(leaf_logp_ptr + s_offs, mask=mask, other=NEG_LARGE)
-            t5 = tl.where(mask & (leaf_species == s_offs), leaf_logp, NEG_LARGE)
+            leaf_hit = mask & (leaf_species == s_offs)
+            if LEAF_LOGP_MODE == 2:
+                family = tl.load(family_idx_ptr + ws + w)
+                leaf_logp = tl.load(leaf_logp_ptr + family * S + s_offs, mask=mask, other=NEG_LARGE)
+                t5 = tl.where(leaf_hit, leaf_logp, NEG_LARGE)
+            elif LEAF_LOGP_MODE == 1:
+                family = tl.load(family_idx_ptr + ws + w)
+                leaf_logp = tl.load(leaf_logp_ptr + family)
+                t5 = tl.where(leaf_hit, leaf_logp, NEG_LARGE)
+            else:
+                leaf_logp = tl.load(leaf_logp_ptr + s_offs, mask=mask, other=NEG_LARGE)
+                t5 = tl.where(leaf_hit, leaf_logp, NEG_LARGE)
         else:
             t5 = tl.load(leaf_term_ptr + out_base + s_offs, mask=mask, other=NEG_LARGE)
 
@@ -502,7 +525,7 @@ def wave_step_uniform_fused(Pi, Pibar, ws, W, S,
                             sp_child1, sp_child2, sp_parent, max_ancestor_depth,
                             leaf_term_wt, DTS_reduced=None, compute_diff=True,
                             leaf_species_idx=None, leaf_logp=None,
-                            pibar_row_max=None):
+                            pibar_row_max=None, family_idx=None):
     """Fused uniform-Pibar + wave step + convergence in one kernel.
 
     Computes Pibar inline using the uniform transfer matrix approximation,
@@ -536,6 +559,8 @@ def wave_step_uniform_fused(Pi, Pibar, ws, W, S,
     use_leaf_index = leaf_species_idx is not None and leaf_logp is not None
     leaf_species_arg = leaf_species_idx if use_leaf_index else sp_parent
     leaf_logp_arg = leaf_logp if use_leaf_index else leaf_term_wt
+    leaf_logp_mode = _leaf_logp_mode(use_leaf_index, leaf_logp, family_idx)
+    family_idx_arg = family_idx if family_idx is not None else sp_parent
 
     BLOCK_S = _uniform_block_s(S)
     num_warps = _uniform_num_warps()
@@ -553,6 +578,7 @@ def wave_step_uniform_fused(Pi, Pibar, ws, W, S,
         leaf_term_wt,
         leaf_species_arg,
         leaf_logp_arg,
+        family_idx_arg,
         DTS_reduced if has_splits else leaf_term_wt,  # dummy
         has_splits,
         Pi_new, Pibar, max_diff_buf,
@@ -565,6 +591,7 @@ def wave_step_uniform_fused(Pi, Pibar, ws, W, S,
         USE_ANCESTOR_CSR=False,
         USE_ANCESTOR_COLS=False,
         USE_LEAF_INDEX=use_leaf_index,
+        LEAF_LOGP_MODE=leaf_logp_mode,
         STORE_PIBAR=True,
         STORE_PIBAR_ROW_MAX=bool(pibar_row_max is not None),
         OUTPUT_GLOBAL=False,
@@ -581,7 +608,8 @@ def wave_step_uniform_fused_into(Pi_in, Pi_out, Pibar, ws, W, S,
                                  mt_squeezed, DL_const, Ebar, E, SL1_const, SL2_const,
                                  sp_child1, sp_child2, sp_parent, max_ancestor_depth,
                                  leaf_term_wt, DTS_reduced=None,
-                                 leaf_species_idx=None, leaf_logp=None):
+                                 leaf_species_idx=None, leaf_logp=None,
+                                 family_idx=None):
     """Fused uniform wave step writing Pi output directly into global rows."""
     fp64 = Pi_in.dtype == torch.float64
     has_splits = DTS_reduced is not None
@@ -589,6 +617,8 @@ def wave_step_uniform_fused_into(Pi_in, Pi_out, Pibar, ws, W, S,
     use_leaf_index = leaf_species_idx is not None and leaf_logp is not None
     leaf_species_arg = leaf_species_idx if use_leaf_index else sp_parent
     leaf_logp_arg = leaf_logp if use_leaf_index else leaf_term_wt
+    leaf_logp_mode = _leaf_logp_mode(use_leaf_index, leaf_logp, family_idx)
+    family_idx_arg = family_idx if family_idx is not None else sp_parent
     max_diff_buf = Pi_out
 
     BLOCK_S = _uniform_block_s(S)
@@ -608,6 +638,7 @@ def wave_step_uniform_fused_into(Pi_in, Pi_out, Pibar, ws, W, S,
         leaf_term_wt,
         leaf_species_arg,
         leaf_logp_arg,
+        family_idx_arg,
         DTS_reduced if has_splits else leaf_term_wt,
         has_splits,
         Pi_out_rows, Pibar, max_diff_buf, Pibar,
@@ -619,6 +650,7 @@ def wave_step_uniform_fused_into(Pi_in, Pi_out, Pibar, ws, W, S,
         USE_ANCESTOR_CSR=False,
         USE_ANCESTOR_COLS=False,
         USE_LEAF_INDEX=use_leaf_index,
+        LEAF_LOGP_MODE=leaf_logp_mode,
         STORE_PIBAR=False,
         STORE_PIBAR_ROW_MAX=False,
         OUTPUT_GLOBAL=False,
@@ -634,7 +666,7 @@ def wave_step_uniform_ancestor_fused(Pi, Pibar, ws, W, S,
                                      sp_child1, sp_child2, ancestor_cols,
                                      leaf_term_wt, DTS_reduced=None, compute_diff=True,
                                      leaf_species_idx=None, leaf_logp=None,
-                                     pibar_row_max=None):
+                                     pibar_row_max=None, family_idx=None):
     """Fused uniform-Pibar + wave step using precomputed ancestor lists.
 
     This is equivalent to :func:`wave_step_uniform_fused`, but uses a padded
@@ -649,6 +681,8 @@ def wave_step_uniform_ancestor_fused(Pi, Pibar, ws, W, S,
     use_leaf_index = leaf_species_idx is not None and leaf_logp is not None
     leaf_species_arg = leaf_species_idx if use_leaf_index else ancestor_cols
     leaf_logp_arg = leaf_logp if use_leaf_index else leaf_term_wt
+    leaf_logp_mode = _leaf_logp_mode(use_leaf_index, leaf_logp, family_idx)
+    family_idx_arg = family_idx if family_idx is not None else ancestor_cols
 
     BLOCK_S = _uniform_block_s(S)
     num_warps = _uniform_num_warps()
@@ -666,6 +700,7 @@ def wave_step_uniform_ancestor_fused(Pi, Pibar, ws, W, S,
         leaf_term_wt,
         leaf_species_arg,
         leaf_logp_arg,
+        family_idx_arg,
         DTS_reduced if has_splits else leaf_term_wt,  # dummy
         has_splits,
         Pi_new, Pibar, max_diff_buf,
@@ -678,6 +713,7 @@ def wave_step_uniform_ancestor_fused(Pi, Pibar, ws, W, S,
         USE_ANCESTOR_CSR=False,
         USE_ANCESTOR_COLS=True,
         USE_LEAF_INDEX=use_leaf_index,
+        LEAF_LOGP_MODE=leaf_logp_mode,
         STORE_PIBAR=True,
         STORE_PIBAR_ROW_MAX=bool(pibar_row_max is not None),
         OUTPUT_GLOBAL=False,
@@ -696,7 +732,7 @@ def wave_step_uniform_csr_fused(Pi, Pibar, ws, W, S,
                                 ancestor_csr_indices, max_ancestor_depth,
                                 leaf_term_wt, DTS_reduced=None, compute_diff=True,
                                 leaf_species_idx=None, leaf_logp=None,
-                                pibar_row_max=None):
+                                pibar_row_max=None, family_idx=None):
     """Fused uniform-Pibar + wave step using CSR ancestor rows.
 
     This is the hand-written Triton sparse-ancestor path. It keeps the existing
@@ -711,6 +747,8 @@ def wave_step_uniform_csr_fused(Pi, Pibar, ws, W, S,
     use_leaf_index = leaf_species_idx is not None and leaf_logp is not None
     leaf_species_arg = leaf_species_idx if use_leaf_index else ancestor_csr_indices
     leaf_logp_arg = leaf_logp if use_leaf_index else leaf_term_wt
+    leaf_logp_mode = _leaf_logp_mode(use_leaf_index, leaf_logp, family_idx)
+    family_idx_arg = family_idx if family_idx is not None else ancestor_csr_indices
 
     BLOCK_S = _uniform_block_s(S)
     num_warps = _uniform_num_warps()
@@ -728,6 +766,7 @@ def wave_step_uniform_csr_fused(Pi, Pibar, ws, W, S,
         leaf_term_wt,
         leaf_species_arg,
         leaf_logp_arg,
+        family_idx_arg,
         DTS_reduced if has_splits else leaf_term_wt,  # dummy
         has_splits,
         Pi_new, Pibar, max_diff_buf,
@@ -740,6 +779,7 @@ def wave_step_uniform_csr_fused(Pi, Pibar, ws, W, S,
         USE_ANCESTOR_CSR=True,
         USE_ANCESTOR_COLS=False,
         USE_LEAF_INDEX=use_leaf_index,
+        LEAF_LOGP_MODE=leaf_logp_mode,
         STORE_PIBAR=True,
         STORE_PIBAR_ROW_MAX=bool(pibar_row_max is not None),
         OUTPUT_GLOBAL=False,
