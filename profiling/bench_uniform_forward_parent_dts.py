@@ -17,6 +17,7 @@ from pathlib import Path
 import torch
 
 from gpurec import GeneReconModel
+from gpurec.api.model import _build_static_state
 from gpurec.api.autograd import _extract_parameters
 from gpurec.core.forward import Pi_wave_forward
 from gpurec.core.likelihood import (
@@ -24,11 +25,24 @@ from gpurec.core.likelihood import (
     compute_log_likelihood,
     compute_log_likelihood_root_rows,
 )
+from gpurec.core.model import GeneDataset
 
 
 DEFAULT_FLAGS = {
     "GPUREC_UNIFORM_PINGPONG": "1",
 }
+
+
+class _StaticBenchModel:
+    def __init__(self, *, static, theta: torch.Tensor, n_species: int, n_families: int):
+        self._static = static
+        self.theta = theta
+        self.n_species = n_species
+        self.n_families = n_families
+
+    @property
+    def static(self):
+        return self._static
 
 
 def _env_enabled(name: str, default: bool) -> bool:
@@ -57,9 +71,9 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--cache-dir", default=os.getenv("PREPROCESS_CACHE_DIR", "/tmp/gpurec_preprocess_cache"))
     parser.add_argument(
         "--mode",
-        choices=("global", "specieswise", "genewise"),
+        choices=("global", "specieswise", "genewise", "genewise_specieswise"),
         default=os.getenv("MODE", "global"),
-        help="Parameter-sharing mode used to construct GeneReconModel.",
+        help="Parameter-sharing mode used to construct the benchmark state.",
     )
     parser.add_argument("--variant", choices=("old", "new"), default=os.getenv("VARIANT", "new"))
     parser.add_argument(
@@ -115,6 +129,18 @@ def _parse_args() -> argparse.Namespace:
         help="Compare row-expanded constants against family-indexed constants before timing.",
     )
     parser.add_argument(
+        "--family-indexed-dts-params",
+        action=argparse.BooleanOptionalAction,
+        default=_env_enabled("GPUREC_FORWARD_FAMILY_INDEXED_DTS_PARAMS", True),
+        help="Load genewise uniform DTS pD/pS from [G] or [G,S] inside kernels instead of pre-expanding per split.",
+    )
+    parser.add_argument(
+        "--compare-family-dts-params",
+        action="store_true",
+        default=os.getenv("COMPARE_FAMILY_DTS_PARAMS", "0") != "0",
+        help="Compare row-expanded DTS pD/pS against family-indexed DTS pD/pS before timing.",
+    )
+    parser.add_argument(
         "--topology-int32",
         action=argparse.BooleanOptionalAction,
         default=os.getenv("GPUREC_FORWARD_TOPOLOGY_INT32", "1") != "0",
@@ -167,6 +193,10 @@ def _set_variant(args: argparse.Namespace, variant: str) -> None:
 
 def _set_family_indexed_consts(enabled: bool) -> None:
     os.environ["GPUREC_FORWARD_FAMILY_INDEXED_CONSTS"] = "1" if enabled else "0"
+
+
+def _set_family_indexed_dts_params(enabled: bool) -> None:
+    os.environ["GPUREC_FORWARD_FAMILY_INDEXED_DTS_PARAMS"] = "1" if enabled else "0"
 
 
 def _time_cuda_ms(fn):
@@ -257,19 +287,57 @@ def _prepare(args: argparse.Namespace) -> tuple[GeneReconModel, dict, tuple]:
     root = Path(args.dataset)
     genes = _selected_genes(root, args.start, args.fams)
     dtype = torch.float64 if args.dtype == "fp64" else torch.float32
-    model = GeneReconModel.from_trees(
-        str(root / "sp.nwk"),
-        genes,
-        mode=args.mode,
-        pibar_mode="uniform",
-        device="cuda",
-        dtype=dtype,
-        theta_init_rates=(0.05, 0.05, 0.05),
-        fixed_iters_Pi=args.fixed_iters,
-        max_wave_size=args.max_wave_size,
-        max_root_wave_size=args.max_root_wave_size,
-        preprocess_cache_dir=args.cache_dir,
-    )
+    if args.mode == "genewise_specieswise":
+        dataset = GeneDataset(
+            str(root / "sp.nwk"),
+            genes,
+            genewise=True,
+            specieswise=True,
+            pairwise=False,
+            dtype=dtype,
+            device=torch.device("cuda"),
+            preprocess_cache_dir=args.cache_dir,
+            retain_dense_species_matrices=False,
+        )
+        static = _build_static_state(
+            dataset,
+            pibar_mode="uniform",
+            max_iters_E=2000,
+            tol_E=1e-8,
+            max_iters_Pi=2000,
+            tol_Pi=1e-6,
+            fixed_iters_Pi=args.fixed_iters,
+            neumann_terms=3,
+            use_pruning=True,
+            pruning_threshold=1e-6,
+            cg_tol=1e-8,
+            cg_maxiter=500,
+            gmres_restart=40,
+            max_wave_size=args.max_wave_size,
+            max_root_wave_size=args.max_root_wave_size,
+        )
+        base = torch.log2(torch.tensor([0.05, 0.05, 0.05], dtype=dtype, device="cuda"))
+        theta = base.view(1, 1, 3).expand(len(genes), int(dataset.S), -1).clone()
+        model = _StaticBenchModel(
+            static=static,
+            theta=theta,
+            n_species=int(dataset.S),
+            n_families=len(genes),
+        )
+    else:
+        model = GeneReconModel.from_trees(
+            str(root / "sp.nwk"),
+            genes,
+            mode=args.mode,
+            pibar_mode="uniform",
+            device="cuda",
+            dtype=dtype,
+            theta_init_rates=(0.05, 0.05, 0.05),
+            fixed_iters_Pi=args.fixed_iters,
+            max_wave_size=args.max_wave_size,
+            max_root_wave_size=args.max_root_wave_size,
+            preprocess_cache_dir=args.cache_dir,
+        )
     static = model.static
     theta = model.theta.detach()
     log_pS, log_pD, log_pL, transfer_mat, max_transfer_vec = _extract_parameters(theta, static)
@@ -419,12 +487,67 @@ def _compare_family_consts(args: argparse.Namespace, model: GeneReconModel, E_ou
     torch.cuda.empty_cache()
 
 
+def _compare_family_dts_params(args: argparse.Namespace, model: GeneReconModel, E_out: dict, params: tuple) -> None:
+    _set_variant(args, args.variant)
+    _set_family_indexed_consts(args.family_indexed_consts)
+
+    compare_need_pibar = True
+    _set_family_indexed_dts_params(False)
+    row_nll, row_out = _run_pi(
+        model, E_out, params,
+        need_pibar=compare_need_pibar,
+        overlap_mode=args.overlap_mode,
+        root_rows=args.root_rows,
+    )
+    torch.cuda.synchronize()
+    row_nll_value = float(row_nll.detach().cpu())
+    keep_full_diff = args.fams <= args.full_diff_max_fams
+    if not keep_full_diff:
+        del row_out
+        torch.cuda.empty_cache()
+
+    _set_family_indexed_dts_params(True)
+    family_nll, family_out = _run_pi(
+        model, E_out, params,
+        need_pibar=compare_need_pibar,
+        overlap_mode=args.overlap_mode,
+        root_rows=args.root_rows,
+    )
+    torch.cuda.synchronize()
+    nll_diff = float((family_nll - row_nll).abs().detach().cpu())
+    print(
+        "compare_family_dts_params",
+        "row_expanded_nll", row_nll_value,
+        "family_indexed_nll", float(family_nll.detach().cpu()),
+        "nll_abs_diff", nll_diff,
+        "need_pibar", int(compare_need_pibar),
+    )
+    if keep_full_diff:
+        if args.root_rows:
+            pi_diff = _tensor_max_abs_diff(row_out["Pi_root_rows"], family_out["Pi_root_rows"])
+            pi_label = "Pi_root_rows_max_abs"
+        else:
+            pi_diff = _tensor_max_abs_diff(row_out["Pi_wave_ordered"], family_out["Pi_wave_ordered"])
+            pi_label = "Pi_max_abs"
+        if row_out["Pibar_wave_ordered"] is not None and family_out["Pibar_wave_ordered"] is not None:
+            pibar_diff = _tensor_max_abs_diff(row_out["Pibar_wave_ordered"], family_out["Pibar_wave_ordered"])
+        else:
+            pibar_diff = "not_returned"
+        print("compare_family_dts_param_tensors", pi_label, pi_diff, "Pibar_max_abs", pibar_diff)
+        del row_out
+    del family_out, row_nll, family_nll
+    _set_family_indexed_dts_params(args.family_indexed_dts_params)
+    gc.collect()
+    torch.cuda.empty_cache()
+
+
 def main() -> None:
     args = _parse_args()
     for key, value in DEFAULT_FLAGS.items():
         os.environ.setdefault(key, value)
     os.environ["GPUREC_FORWARD_LEAF_INDEX"] = "1" if args.leaf_index else "0"
     _set_family_indexed_consts(args.family_indexed_consts)
+    _set_family_indexed_dts_params(args.family_indexed_dts_params)
     os.environ["GPUREC_FORWARD_TOPOLOGY_INT32"] = "1" if args.topology_int32 else "0"
     if args.wave_block_s > 0:
         os.environ["GPUREC_FORWARD_WAVE_BLOCK_S"] = str(args.wave_block_s)
@@ -445,10 +568,13 @@ def main() -> None:
         _compare(args, model, E_out, params)
     if args.compare_family_consts:
         _compare_family_consts(args, model, E_out, params)
+    if args.compare_family_dts_params:
+        _compare_family_dts_params(args, model, E_out, params)
 
     for _ in range(args.warmups):
         _set_variant(args, args.variant)
         _set_family_indexed_consts(args.family_indexed_consts)
+        _set_family_indexed_dts_params(args.family_indexed_dts_params)
         _, out = _run_pi(
             model, E_out, params,
             need_pibar=args.need_pibar,
@@ -465,6 +591,7 @@ def main() -> None:
     for _ in range(args.reps):
         _set_variant(args, args.variant)
         _set_family_indexed_consts(args.family_indexed_consts)
+        _set_family_indexed_dts_params(args.family_indexed_dts_params)
         ms, (nll, out) = _time_cuda_ms(
             lambda: _run_pi(
                 model, E_out, params,
@@ -494,6 +621,8 @@ def main() -> None:
         "leaf_index", int(args.leaf_index),
         "family_indexed_consts", int(args.family_indexed_consts),
         "compare_family_consts", int(args.compare_family_consts),
+        "family_indexed_dts_params", int(args.family_indexed_dts_params),
+        "compare_family_dts_params", int(args.compare_family_dts_params),
         "topology_int32", int(args.topology_int32),
         "wave_block_s", args.wave_block_s,
         "wave_num_warps", args.wave_num_warps,

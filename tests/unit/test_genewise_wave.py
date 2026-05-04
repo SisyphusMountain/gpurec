@@ -12,7 +12,7 @@ import torch
 
 from gpurec.core.batching import collate_gene_families, collate_wave, build_wave_layout
 from gpurec.core.forward import Pi_wave_forward
-from gpurec.core.likelihood import compute_log_likelihood_root_rows
+from gpurec.core.likelihood import compute_log_likelihood, compute_log_likelihood_root_rows
 from gpurec.core.model import GeneDataset
 from gpurec.core.extract_parameters import extract_parameters_uniform
 from gpurec.core.scheduling import compute_clade_waves
@@ -107,8 +107,19 @@ def _build_genewise_wave_inputs(ds, indices, *, device, dtype):
     return wave_layout, species_helpers, E_out, log_pS, log_pD, log_pL, max_transfer_vec
 
 
-def _run_genewise_uniform_wave(ds, wave_layout, species_helpers, E_out,
-                               log_pS, log_pD, log_pL, max_transfer_vec):
+def _run_genewise_uniform_wave(
+    ds,
+    wave_layout,
+    species_helpers,
+    E_out,
+    log_pS,
+    log_pD,
+    log_pL,
+    max_transfer_vec,
+    *,
+    need_pibar=False,
+    return_root_rows=True,
+):
     return Pi_wave_forward(
         wave_layout=wave_layout,
         species_helpers=species_helpers,
@@ -129,13 +140,42 @@ def _run_genewise_uniform_wave(ds, wave_layout, species_helpers, E_out,
         pibar_mode="uniform",
         family_idx=wave_layout["family_idx"],
         return_original=True,
-        need_pibar=False,
-        return_root_rows=True,
+        need_pibar=need_pibar,
+        return_root_rows=return_root_rows,
     )
 
 
 def _nll_from_root_rows(Pi_out, E_out):
     return compute_log_likelihood_root_rows(Pi_out["Pi_root_rows"], E_out["E"])
+
+
+def _nll_from_wave_ordered(Pi_out, E_out, wave_layout):
+    return compute_log_likelihood(
+        Pi_out["Pi_wave_ordered"],
+        E_out["E"],
+        wave_layout["root_clade_ids"],
+    )
+
+
+def _assert_full_forward_parity(reference_out, candidate_out, E_out, wave_layout):
+    reference_nll = _nll_from_wave_ordered(reference_out, E_out, wave_layout)
+    candidate_nll = _nll_from_wave_ordered(candidate_out, E_out, wave_layout)
+
+    assert torch.allclose(candidate_nll, reference_nll, atol=1e-4, rtol=1e-5)
+    assert torch.allclose(
+        candidate_out["Pi_wave_ordered"],
+        reference_out["Pi_wave_ordered"],
+        atol=1e-4,
+        rtol=1e-5,
+    )
+    assert candidate_out["Pibar_wave_ordered"] is not None
+    assert reference_out["Pibar_wave_ordered"] is not None
+    assert torch.allclose(
+        candidate_out["Pibar_wave_ordered"],
+        reference_out["Pibar_wave_ordered"],
+        atol=1e-4,
+        rtol=1e-5,
+    )
 
 
 def _make_theta_init(G, S, *, specieswise, dtype, device):
@@ -427,34 +467,74 @@ def test_genewise_uniform_family_indexed_constants_match_row_expanded(
     inputs = _build_genewise_wave_inputs(ds, list(range(len(genes))), device=device, dtype=dtype)
     wave_layout, species_helpers, E_out, log_pS, log_pD, log_pL, max_transfer_vec = inputs
 
+    monkeypatch.setenv("GPUREC_FORWARD_FAMILY_INDEXED_DTS_PARAMS", "0")
     monkeypatch.setenv("GPUREC_FORWARD_FAMILY_INDEXED_CONSTS", "0")
     row_expanded_out = _run_genewise_uniform_wave(
         ds, wave_layout, species_helpers, E_out,
         log_pS, log_pD, log_pL, max_transfer_vec,
+        need_pibar=True,
+        return_root_rows=False,
     )
 
     monkeypatch.setenv("GPUREC_FORWARD_FAMILY_INDEXED_CONSTS", "1")
     family_indexed_out = _run_genewise_uniform_wave(
         ds, wave_layout, species_helpers, E_out,
         log_pS, log_pD, log_pL, max_transfer_vec,
+        need_pibar=True,
+        return_root_rows=False,
     )
 
-    row_nll = _nll_from_root_rows(row_expanded_out, E_out)
-    family_nll = _nll_from_root_rows(family_indexed_out, E_out)
+    _assert_full_forward_parity(row_expanded_out, family_indexed_out, E_out, wave_layout)
 
-    assert torch.allclose(family_nll, row_nll, atol=1e-4, rtol=1e-5)
-    assert torch.allclose(
-        family_indexed_out["Pi_root_rows"],
-        row_expanded_out["Pi_root_rows"],
-        atol=1e-4,
-        rtol=1e-5,
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+@pytest.mark.parametrize("specieswise", [False, True], ids=["log_pS_G", "log_pS_GS"])
+def test_genewise_uniform_family_indexed_dts_params_match_row_expanded(
+    data_dir, specieswise, monkeypatch
+):
+    """Proposal 1: family-indexed DTS pD/pS loads match old row expansion."""
+    sp = str(data_dir / "sp.nwk")
+    genes = [str(g) for g in sorted(data_dir.glob("g_*.nwk"))[:3]]
+    device = torch.device("cuda")
+    dtype = torch.float32
+
+    ds = GeneDataset(
+        sp,
+        genes,
+        genewise=True,
+        specieswise=specieswise,
+        pairwise=False,
+        dtype=dtype,
+        device=device,
     )
-    assert torch.allclose(
-        family_indexed_out["Pi"],
-        row_expanded_out["Pi"],
-        atol=1e-4,
-        rtol=1e-5,
+    _set_deterministic_genewise_theta(ds, specieswise=specieswise)
+
+    inputs = _build_genewise_wave_inputs(ds, list(range(len(genes))), device=device, dtype=dtype)
+    wave_layout, species_helpers, E_out, log_pS, log_pD, log_pL, max_transfer_vec = inputs
+    assert any(meta.get("has_splits", False) for meta in wave_layout["wave_metas"])
+    assert log_pD.shape == ((len(genes), ds.S) if specieswise else (len(genes),))
+    assert log_pS.shape == log_pD.shape
+
+    monkeypatch.setenv("GPUREC_FORWARD_PARENT_REDUCED_DTS", "1")
+    monkeypatch.setenv("GPUREC_FORWARD_FAMILY_INDEXED_CONSTS", "1")
+
+    monkeypatch.setenv("GPUREC_FORWARD_FAMILY_INDEXED_DTS_PARAMS", "0")
+    row_expanded_out = _run_genewise_uniform_wave(
+        ds, wave_layout, species_helpers, E_out,
+        log_pS, log_pD, log_pL, max_transfer_vec,
+        need_pibar=True,
+        return_root_rows=False,
     )
+
+    monkeypatch.setenv("GPUREC_FORWARD_FAMILY_INDEXED_DTS_PARAMS", "1")
+    family_indexed_out = _run_genewise_uniform_wave(
+        ds, wave_layout, species_helpers, E_out,
+        log_pS, log_pD, log_pL, max_transfer_vec,
+        need_pibar=True,
+        return_root_rows=False,
+    )
+
+    _assert_full_forward_parity(row_expanded_out, family_indexed_out, E_out, wave_layout)
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")

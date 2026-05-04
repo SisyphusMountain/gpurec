@@ -9,7 +9,19 @@ def _tl_float_dtype(dtype):
     return tl.float64 if dtype == torch.float64 else tl.float32
 
 
-def _prepare_param(p, n_splits, S):
+def _prepare_param(p, n_splits, S, *, family_indexed=False):
+    if family_indexed:
+        if p.dim() == 1:
+            return p.contiguous(), 3
+        if p.dim() == 2:
+            if p.shape[1] == 1:
+                return p.reshape(p.shape[0]).contiguous(), 3
+            if p.shape[1] == S:
+                return p.contiguous(), 4
+        raise ValueError(
+            "family-indexed DTS parameters must be [G], [G, 1], or [G, S]; "
+            f"got shape {tuple(p.shape)} with S={S}"
+        )
     if p.dim() == 0:
         return p.expand(S).contiguous(), 0
     if p.dim() == 1:
@@ -31,6 +43,22 @@ def _prepare_param(p, n_splits, S):
 
 
 @triton.jit
+def _load_dts_param(param_ptr, n, s_offs, family, S: tl.constexpr, mask,
+                    mode: tl.constexpr, BLOCK_S: tl.constexpr, DTYPE: tl.constexpr):
+    # Modes: 0 shared [S], 1 per-split [N,S], 2 per-split scalar [N],
+    # 3 family scalar [G], 4 family specieswise [G,S].
+    if mode == 4:
+        return tl.load(param_ptr + family * S + s_offs, mask=mask, other=-1e30)
+    if mode == 3:
+        return tl.load(param_ptr + family).to(DTYPE) + tl.zeros([BLOCK_S], dtype=DTYPE)
+    if mode == 2:
+        return tl.load(param_ptr + n).to(DTYPE) + tl.zeros([BLOCK_S], dtype=DTYPE)
+    if mode == 1:
+        return tl.load(param_ptr + n * S + s_offs, mask=mask, other=-1e30)
+    return tl.load(param_ptr + s_offs, mask=mask, other=-1e30)
+
+
+@triton.jit
 def _dts_fused_kernel(
     # Full Pi and Pibar tensors: [C, S]
     Pi_ptr, Pibar_ptr,
@@ -48,11 +76,13 @@ def _dts_fused_kernel(
     active_mask_ptr,
     # Output: [N, S]
     out_ptr,
+    family_idx_ptr,
+    family_offset,
     # Dimensions
     N: tl.constexpr,
     S: tl.constexpr,
     BLOCK_S: tl.constexpr,
-    # Param modes: 0 = shared [S], 1 = per-split [N, S], 2 = per-split scalar [N] / [N, 1]
+    # Param modes: 0=[S], 1=[N,S], 2=[N], 3=[G], 4=[G,S]
     mode_pD: tl.constexpr = 0,
     mode_pS: tl.constexpr = 0,
     USE_ACTIVE_MASK: tl.constexpr = False,
@@ -72,8 +102,12 @@ def _dts_fused_kernel(
     # Load left/right clade indices for this split
     left_idx = tl.load(lefts_ptr + n).to(tl.int64)
     right_idx = tl.load(rights_ptr + n).to(tl.int64)
-    if USE_ACTIVE_MASK:
+    family = tl.full((), 0, dtype=tl.int64)
+    if USE_ACTIVE_MASK or mode_pD == 3 or mode_pD == 4 or mode_pS == 3 or mode_pS == 4:
         parent_w = tl.load(reduce_idx_ptr + n).to(tl.int64)
+    if mode_pD == 3 or mode_pD == 4 or mode_pS == 3 or mode_pS == 4:
+        family = tl.load(family_idx_ptr + family_offset + parent_w).to(tl.int64)
+    if USE_ACTIVE_MASK:
         parent_active = tl.load(active_mask_ptr + parent_w)
         if parent_active == 0:
             out_base = n * S
@@ -91,21 +125,8 @@ def _dts_fused_kernel(
     pibar_l = tl.load(Pibar_ptr + base_l + s_offs, mask=mask, other=-1e30)
     pibar_r = tl.load(Pibar_ptr + base_r + s_offs, mask=mask, other=-1e30)
 
-    # Load parameters.  Backward often has per-split scalars as [N, 1]; avoid
-    # expanding them to [N, S] just to satisfy the kernel.
-    if mode_pD == 2:
-        log_pD_s = tl.load(log_pD_ptr + n)
-    elif mode_pD == 1:
-        log_pD_s = tl.load(log_pD_ptr + n * S + s_offs, mask=mask, other=-1e30)
-    else:
-        log_pD_s = tl.load(log_pD_ptr + s_offs, mask=mask, other=-1e30)
-
-    if mode_pS == 2:
-        log_pS_s = tl.load(log_pS_ptr + n)
-    elif mode_pS == 1:
-        log_pS_s = tl.load(log_pS_ptr + n * S + s_offs, mask=mask, other=-1e30)
-    else:
-        log_pS_s = tl.load(log_pS_ptr + s_offs, mask=mask, other=-1e30)
+    log_pD_s = _load_dts_param(log_pD_ptr, n, s_offs, family, S, mask, mode_pD, BLOCK_S, DTYPE)
+    log_pS_s = _load_dts_param(log_pS_ptr, n, s_offs, family, S, mask, mode_pS, BLOCK_S, DTYPE)
 
     # Compute first 3 DTS terms
     t0 = log_pD_s + pi_l + pi_r                          # D
@@ -157,6 +178,8 @@ def _dts_eq1_to_rows_kernel(
     eq1_parent_ids_ptr,
     active_mask_ptr,
     out_ptr,
+    family_idx_ptr,
+    family_offset,
     n_eq1: tl.constexpr,
     S: tl.constexpr,
     BLOCK_S: tl.constexpr,
@@ -172,6 +195,9 @@ def _dts_eq1_to_rows_kernel(
 
     parent_w = tl.load(eq1_parent_ids_ptr + n).to(tl.int64)
     out_base = parent_w * S
+    family = tl.full((), 0, dtype=tl.int64)
+    if mode_pD == 3 or mode_pD == 4 or mode_pS == 3 or mode_pS == 4:
+        family = tl.load(family_idx_ptr + family_offset + parent_w).to(tl.int64)
     if USE_ACTIVE_MASK:
         parent_active = tl.load(active_mask_ptr + parent_w)
         if parent_active == 0:
@@ -192,19 +218,8 @@ def _dts_eq1_to_rows_kernel(
     pibar_l = tl.load(Pibar_ptr + base_l + s_offs, mask=mask, other=-1e30)
     pibar_r = tl.load(Pibar_ptr + base_r + s_offs, mask=mask, other=-1e30)
 
-    if mode_pD == 2:
-        log_pD_s = tl.load(log_pD_ptr + n)
-    elif mode_pD == 1:
-        log_pD_s = tl.load(log_pD_ptr + n * S + s_offs, mask=mask, other=-1e30)
-    else:
-        log_pD_s = tl.load(log_pD_ptr + s_offs, mask=mask, other=-1e30)
-
-    if mode_pS == 2:
-        log_pS_s = tl.load(log_pS_ptr + n)
-    elif mode_pS == 1:
-        log_pS_s = tl.load(log_pS_ptr + n * S + s_offs, mask=mask, other=-1e30)
-    else:
-        log_pS_s = tl.load(log_pS_ptr + s_offs, mask=mask, other=-1e30)
+    log_pD_s = _load_dts_param(log_pD_ptr, n, s_offs, family, S, mask, mode_pD, BLOCK_S, DTYPE)
+    log_pS_s = _load_dts_param(log_pS_ptr, n, s_offs, family, S, mask, mode_pS, BLOCK_S, DTYPE)
 
     c1 = tl.load(sp_child1_ptr + s_offs, mask=mask, other=S)
     c2 = tl.load(sp_child2_ptr + s_offs, mask=mask, other=S)
@@ -254,6 +269,8 @@ def _dts_parent_reduced_ge2_kernel(
     ge2_parent_ids_ptr,
     active_mask_ptr,
     out_ptr,
+    family_idx_ptr,
+    family_offset,
     split_offset: tl.constexpr,
     n_groups: tl.constexpr,
     S: tl.constexpr,
@@ -277,6 +294,9 @@ def _dts_parent_reduced_ge2_kernel(
 
     parent_w = tl.load(ge2_parent_ids_ptr + group).to(tl.int64)
     out_base = parent_w * S
+    family = tl.full((), 0, dtype=tl.int64)
+    if mode_pD == 3 or mode_pD == 4 or mode_pS == 3 or mode_pS == 4:
+        family = tl.load(family_idx_ptr + family_offset + parent_w).to(tl.int64)
 
     if USE_ACTIVE_MASK:
         parent_active = tl.load(active_mask_ptr + parent_w)
@@ -306,19 +326,8 @@ def _dts_parent_reduced_ge2_kernel(
         pibar_l = tl.load(Pibar_ptr + base_l + s_offs, mask=mask, other=-1e30)
         pibar_r = tl.load(Pibar_ptr + base_r + s_offs, mask=mask, other=-1e30)
 
-        if mode_pD == 2:
-            log_pD_s = tl.load(log_pD_ptr + split_i)
-        elif mode_pD == 1:
-            log_pD_s = tl.load(log_pD_ptr + split_i * S + s_offs, mask=mask, other=-1e30)
-        else:
-            log_pD_s = tl.load(log_pD_ptr + s_offs, mask=mask, other=-1e30)
-
-        if mode_pS == 2:
-            log_pS_s = tl.load(log_pS_ptr + split_i)
-        elif mode_pS == 1:
-            log_pS_s = tl.load(log_pS_ptr + split_i * S + s_offs, mask=mask, other=-1e30)
-        else:
-            log_pS_s = tl.load(log_pS_ptr + s_offs, mask=mask, other=-1e30)
+        log_pD_s = _load_dts_param(log_pD_ptr, split_i, s_offs, family, S, mask, mode_pD, BLOCK_S, DTYPE)
+        log_pS_s = _load_dts_param(log_pS_ptr, split_i, s_offs, family, S, mask, mode_pS, BLOCK_S, DTYPE)
 
         c1 = tl.load(sp_child1_ptr + s_offs, mask=mask, other=S)
         c2 = tl.load(sp_child2_ptr + s_offs, mask=mask, other=S)
@@ -375,6 +384,8 @@ def _dts_parent_reduced_ge2_stage1_kernel(
     active_mask_ptr,
     partial_max_ptr,
     partial_sum_ptr,
+    family_idx_ptr,
+    family_offset,
     split_offset: tl.constexpr,
     n_groups: tl.constexpr,
     S: tl.constexpr,
@@ -393,6 +404,9 @@ def _dts_parent_reduced_ge2_stage1_kernel(
     mask = s_offs < S
 
     parent_w = tl.load(ge2_parent_ids_ptr + group).to(tl.int64)
+    family = tl.full((), 0, dtype=tl.int64)
+    if mode_pD == 3 or mode_pD == 4 or mode_pS == 3 or mode_pS == 4:
+        family = tl.load(family_idx_ptr + family_offset + parent_w).to(tl.int64)
     if USE_ACTIVE_MASK:
         parent_active = tl.load(active_mask_ptr + parent_w)
         if parent_active == 0:
@@ -420,19 +434,8 @@ def _dts_parent_reduced_ge2_stage1_kernel(
         pibar_l = tl.load(Pibar_ptr + base_l + s_offs, mask=mask, other=-1e30)
         pibar_r = tl.load(Pibar_ptr + base_r + s_offs, mask=mask, other=-1e30)
 
-        if mode_pD == 2:
-            log_pD_s = tl.load(log_pD_ptr + split_i)
-        elif mode_pD == 1:
-            log_pD_s = tl.load(log_pD_ptr + split_i * S + s_offs, mask=mask, other=-1e30)
-        else:
-            log_pD_s = tl.load(log_pD_ptr + s_offs, mask=mask, other=-1e30)
-
-        if mode_pS == 2:
-            log_pS_s = tl.load(log_pS_ptr + split_i)
-        elif mode_pS == 1:
-            log_pS_s = tl.load(log_pS_ptr + split_i * S + s_offs, mask=mask, other=-1e30)
-        else:
-            log_pS_s = tl.load(log_pS_ptr + s_offs, mask=mask, other=-1e30)
+        log_pD_s = _load_dts_param(log_pD_ptr, split_i, s_offs, family, S, mask, mode_pD, BLOCK_S, DTYPE)
+        log_pS_s = _load_dts_param(log_pS_ptr, split_i, s_offs, family, S, mask, mode_pS, BLOCK_S, DTYPE)
 
         c1 = tl.load(sp_child1_ptr + s_offs, mask=mask, other=S)
         c2 = tl.load(sp_child2_ptr + s_offs, mask=mask, other=S)
@@ -539,7 +542,8 @@ def _dts_parent_reduced_ge2_stage2_kernel(
 def dts_fused(Pi, Pibar, lefts, rights,
               sp_child1, sp_child2,
               log_pD, log_pS, log_split_probs,
-              out=None, active_mask=None, reduce_idx=None):
+              out=None, active_mask=None, reduce_idx=None,
+              family_idx=None, family_offset=0):
     """Fused DTS: gather + 5 terms + logsumexp + split_probs in one kernel.
 
     Args:
@@ -548,7 +552,9 @@ def dts_fused(Pi, Pibar, lefts, rights,
         lefts: [N] int32/int64 — left child clade indices per split
         rights: [N] int32/int64 — right child clade indices per split
         sp_child1, sp_child2: [S] long — species tree child indices (S=sentinel)
-        log_pD, log_pS: scalar, [S], [N], [N, 1], or [N, S] event probabilities
+        log_pD, log_pS: scalar, [S], [N], [N, 1], [N, S], [G], [G, 1],
+            or [G, S] event probabilities.  Family-indexed [G...] modes
+            require family_idx and reduce_idx.
         log_split_probs: [N, 1] or [N]
         out: optional [N, S] output buffer
 
@@ -561,12 +567,15 @@ def dts_fused(Pi, Pibar, lefts, rights,
         out = torch.empty((N, S), device=Pi.device, dtype=Pi.dtype)
     if active_mask is not None and reduce_idx is None:
         raise ValueError("reduce_idx is required when active_mask is provided")
+    family_indexed = family_idx is not None
+    if family_indexed and reduce_idx is None:
+        raise ValueError("reduce_idx is required when family_idx is provided")
 
     # Flatten log_split_probs to [N]
     lsp = log_split_probs.reshape(N).contiguous()
 
-    log_pD_vec, mode_pD = _prepare_param(log_pD, N, S)
-    log_pS_vec, mode_pS = _prepare_param(log_pS, N, S)
+    log_pD_vec, mode_pD = _prepare_param(log_pD, N, S, family_indexed=family_indexed)
+    log_pS_vec, mode_pS = _prepare_param(log_pS, N, S, family_indexed=family_indexed)
 
     BLOCK_S = 128
     grid = (N, (S + BLOCK_S - 1) // BLOCK_S)
@@ -580,6 +589,8 @@ def dts_fused(Pi, Pibar, lefts, rights,
         reduce_idx if reduce_idx is not None else lefts,
         active_mask if active_mask is not None else lefts,
         out,
+        family_idx if family_idx is not None else lefts,
+        int(family_offset),
         N, S,
         BLOCK_S=BLOCK_S,
         mode_pD=mode_pD,
@@ -607,6 +618,8 @@ def dts_fused_parent_reduced(
     ge2_parent_ids,
     out=None,
     active_mask=None,
+    family_idx=None,
+    family_offset=0,
     impl="tiled",
     tile_splits=64,
     ge2_max_fanout=None,
@@ -625,10 +638,11 @@ def dts_fused_parent_reduced(
         out.fill_(float("-inf"))
 
     lsp = log_split_probs.reshape(N).contiguous()
+    family_indexed = family_idx is not None
 
     if n_eq1 > 0:
-        log_pD_vec, mode_pD = _prepare_param(log_pD, N, S)
-        log_pS_vec, mode_pS = _prepare_param(log_pS, N, S)
+        log_pD_vec, mode_pD = _prepare_param(log_pD, N, S, family_indexed=family_indexed)
+        log_pS_vec, mode_pS = _prepare_param(log_pS, N, S, family_indexed=family_indexed)
         BLOCK_S = 128
         grid_eq1 = (n_eq1, triton.cdiv(S, BLOCK_S))
         _dts_eq1_to_rows_kernel[grid_eq1](
@@ -644,6 +658,8 @@ def dts_fused_parent_reduced(
             eq1_reduce_idx,
             active_mask if active_mask is not None else eq1_reduce_idx,
             out,
+            family_idx if family_idx is not None else eq1_reduce_idx,
+            int(family_offset),
             n_eq1,
             S,
             BLOCK_S=BLOCK_S,
@@ -657,8 +673,8 @@ def dts_fused_parent_reduced(
     if n_groups == 0:
         return out
 
-    log_pD_vec, mode_pD = _prepare_param(log_pD, N, S)
-    log_pS_vec, mode_pS = _prepare_param(log_pS, N, S)
+    log_pD_vec, mode_pD = _prepare_param(log_pD, N, S, family_indexed=family_indexed)
+    log_pS_vec, mode_pS = _prepare_param(log_pS, N, S, family_indexed=family_indexed)
     BLOCK_S = 128
     impl = str(impl).strip().lower()
     if impl in ("1", "true", "yes", "on"):
@@ -687,6 +703,8 @@ def dts_fused_parent_reduced(
             active_mask if active_mask is not None else ge2_parent_ids,
             partial_max,
             partial_sum,
+            family_idx if family_idx is not None else ge2_parent_ids,
+            int(family_offset),
             split_offset=n_eq1,
             n_groups=n_groups,
             S=S,
@@ -731,6 +749,8 @@ def dts_fused_parent_reduced(
         ge2_parent_ids,
         active_mask if active_mask is not None else ge2_parent_ids,
         out,
+        family_idx if family_idx is not None else ge2_parent_ids,
+        int(family_offset),
         split_offset=n_eq1,
         n_groups=n_groups,
         S=S,

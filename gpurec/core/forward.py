@@ -40,7 +40,9 @@ def _compute_dts_cross(Pi, Pibar, meta, sp_child1, sp_child2, log_pD, log_pS,
                        S, device, dtype, active_mask=None,
                        parent_reduced=False, parent_reduced_min_splits=8192,
                        parent_reduced_impl="tiled",
-                       parent_reduced_tile_splits=64):
+                       parent_reduced_tile_splits=64,
+                       family_idx=None,
+                       family_offset=0):
     """Compute DTS cross-clade terms and reduce to [W, S] for one wave."""
     sl = meta['sl']
     sr = meta['sr']
@@ -68,6 +70,8 @@ def _compute_dts_cross(Pi, Pibar, meta, sp_child1, sp_child2, log_pD, log_pS,
             meta.get('ge2_ptr', empty_ge2_ptr),
             meta.get('ge2_parent_ids', sl[:0]),
             active_mask=active_mask,
+            family_idx=family_idx,
+            family_offset=family_offset,
             impl=parent_reduced_impl,
             tile_splits=parent_reduced_tile_splits,
             ge2_max_fanout=meta.get('ge2_max_fanout'),
@@ -78,7 +82,9 @@ def _compute_dts_cross(Pi, Pibar, meta, sp_child1, sp_child2, log_pD, log_pS,
         sp_child1, sp_child2,
         log_pD, log_pS, wlsp,
         active_mask=active_mask,
-        reduce_idx=meta['reduce_idx'] if active_mask is not None else None,
+        reduce_idx=meta['reduce_idx'] if (active_mask is not None or family_idx is not None) else None,
+        family_idx=family_idx,
+        family_offset=family_offset,
     )
 
     NEG_INF = float('-inf')
@@ -623,6 +629,31 @@ def Pi_wave_forward(
             "GPUREC_FORWARD_FAMILY_INDEXED_CONSTS must be one of "
             "0/false/off/row or 1/true/on/auto/family"
         )
+    family_dts_env = os.environ.get(
+        "GPUREC_FORWARD_FAMILY_INDEXED_DTS_PARAMS",
+        os.environ.get("GPUREC_FORWARD_FAMILY_INDEXED_DTS", "1"),
+    ).strip().lower()
+    family_dts_shape_ok = bool(
+        batched
+        and log_pD.ndim in (1, 2)
+        and log_pS.ndim in (1, 2)
+        and E.ndim == 2
+        and log_pD.shape[0] == E.shape[0]
+        and log_pS.shape[0] == E.shape[0]
+    )
+    if family_dts_env in ("0", "false", "off", "no", "row", "rows", "expanded"):
+        use_family_indexed_dts_params = False
+    elif family_dts_env in ("1", "true", "on", "yes", "auto", "family", "indexed"):
+        use_family_indexed_dts_params = bool(
+            batched
+            and use_uniform_fused
+            and family_dts_shape_ok
+        )
+    else:
+        raise ValueError(
+            "GPUREC_FORWARD_FAMILY_INDEXED_DTS_PARAMS must be one of "
+            "0/false/off/row or 1/true/on/auto/family"
+        )
     reuse_forward_pibar_stats = bool(
         need_pibar
         and
@@ -716,14 +747,18 @@ def Pi_wave_forward(
 
     with _nvtx_range("Pi setup uniform linear"):
         mt_squeezed = max_transfer_mat.squeeze(-1) if max_transfer_mat.ndim > 1 else max_transfer_mat
-        if use_family_indexed_uniform_consts:
+        if use_family_indexed_uniform_consts or use_family_indexed_dts_params:
             family_idx = family_idx.to(device=device, dtype=torch.long).contiguous()
+        if use_family_indexed_uniform_consts:
             DL_const = DL_const.contiguous()
             SL1_const = SL1_const.contiguous()
             SL2_const = SL2_const.contiguous()
             Ebar = Ebar.contiguous()
             E = E.contiguous()
             mt_squeezed = mt_squeezed.contiguous()
+        if use_family_indexed_dts_params:
+            log_pD = log_pD.contiguous()
+            log_pS = log_pS.contiguous()
         uniform_leaf_logp = None
         if use_uniform_leaf_index:
             uniform_leaf_logp = log_pS.expand(S).contiguous() if log_pS.ndim == 0 else log_pS.contiguous()
@@ -777,11 +812,15 @@ def Pi_wave_forward(
     def _wave_dts_params(meta):
         """Return per-split (log_pD, log_pS) for DTS cross-clade computation.
 
-        When batched: gathers per-split params from [G, ...] via family_idx,
-        expanding [N_splits] scalars to [N_splits, S] for the kernel.
+        When family-indexed DTS params are enabled, returns the original
+        [G] or [G,S] tensors; the Triton DTS kernel addresses them through
+        family_idx[wave_start + reduce_idx[split]].
+        Otherwise, batched mode gathers the old per-split [N,S] fallback.
         When shared: returns the original params.
         """
         if not batched:
+            return log_pD, log_pS
+        if use_family_indexed_dts_params:
             return log_pD, log_pS
         # Each split's parent clade determines the family.
         # reduce_idx maps splits to wave-local clade indices.
@@ -882,6 +921,8 @@ def Pi_wave_forward(
             parent_reduced_min_splits=forward_parent_reduced_dts_min_splits,
             parent_reduced_impl=forward_parent_reduced_dts_impl,
             parent_reduced_tile_splits=forward_parent_reduced_dts_tile_splits,
+            family_idx=family_idx if use_family_indexed_dts_params else None,
+            family_offset=meta['start'],
         )
 
     total_iters = 0

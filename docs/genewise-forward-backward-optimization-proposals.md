@@ -564,6 +564,389 @@ Expected effect:
 This should be tested after Proposal 0, because otherwise the wave-step
 constant materialization may hide the DTS win.
 
+### Proposal 1 follow-up: implemented and promoted
+
+Proposal 1 is implemented and enabled by default for genewise uniform forward.
+The old path materialized per-split DTS parameters before launching Triton:
+
+```text
+fi_splits = family_idx[ws + reduce_idx]
+pD = log_pD[fi_splits]                  # [N] or [N,S]
+pS = log_pS[fi_splits]
+
+if scalar genewise:
+    pD = pD[:, None].expand(N, S).contiguous()
+    pS = pS[:, None].expand(N, S).contiguous()
+```
+
+The promoted path keeps the original family parameter tensors resident:
+
+```text
+_wave_dts_params(meta):
+    return log_pD, log_pS                # [G] or [G,S]
+
+Triton split program:
+    parent_w = reduce_idx[split]
+    family = family_idx[wave_start + parent_w]
+
+    mode 0: p = param[s]                 # shared [S]
+    mode 1: p = param[split, s]          # per-split [N,S]
+    mode 2: p = param[split]             # per-split scalar [N]
+    mode 3: p = param[family]            # family scalar [G]
+    mode 4: p = param[family, s]         # family specieswise [G,S]
+```
+
+Implementation details:
+
+- `dts_fused._prepare_param(..., family_indexed=True)` now returns modes `3`
+  and `4` for `[G]`/`[G,S]` parameters.
+- `_dts_fused_kernel`, `_dts_eq1_to_rows_kernel`,
+  `_dts_parent_reduced_ge2_kernel`, and
+  `_dts_parent_reduced_ge2_stage1_kernel` receive `family_idx` plus
+  `family_offset=wave_start`.
+- `_dts_parent_reduced_ge2_stage2_kernel` stays parameter-layout agnostic; it
+  only reduces partial max/sum buffers produced by stage 1.
+- Scalar parameter modes return a broadcast vector inside Triton.  This matters
+  because Triton rejects helper functions whose branches return a scalar in one
+  mode and a `[BLOCK_S]` vector in another.
+- `Pi_wave_forward` enables this path when
+  `GPUREC_FORWARD_FAMILY_INDEXED_DTS_PARAMS` is true, the mode is batched
+  uniform CUDA forward, and `log_pD/log_pS` have `[G]` or `[G,S]` layout.
+- The row-expanded fallback remains available:
+
+```bash
+GPUREC_FORWARD_FAMILY_INDEXED_DTS_PARAMS=0
+```
+
+- `profiling/bench_uniform_forward_parent_dts.py` now exposes:
+
+```bash
+--family-indexed-dts-params
+--no-family-indexed-dts-params
+--compare-family-dts-params
+```
+
+Both Proposal 1 timing paths below keep Proposal 0 enabled
+(`--family-indexed-consts`), so these measurements isolate DTS parameter
+materialization.
+
+#### Correctness
+
+Required compile gate:
+
+```bash
+python -m py_compile \
+  gpurec/core/forward.py \
+  gpurec/core/kernels/dts_fused.py \
+  profiling/bench_uniform_forward_parent_dts.py
+```
+
+Required unit and integration gates:
+
+```bash
+pytest -q tests/kernels/test_dts_fused_kernel.py \
+          tests/unit/test_genewise_wave.py \
+          tests/gradients/test_autograd_bridge.py::test_model_nll_matches_compute_likelihood_batch
+```
+
+Additional focused tests to add or verify before promotion:
+
+- scalar genewise `[G]` `log_pD/log_pS` family-indexed DTS matches the
+  row-expanded fallback;
+- specieswise genewise `[G,S]` `log_pD/log_pS` family-indexed DTS matches the
+  row-expanded fallback;
+- parent-reduced DTS direct and tiled implementations match for both parameter
+  layouts;
+- active-mask handling still writes `-inf` for inactive parent rows;
+- int32 split metadata still works for the family-indexed path.
+
+Result:
+
+```text
+python -m py_compile ...: passed
+pytest -q tests/kernels/test_dts_fused_kernel.py \
+          tests/unit/test_genewise_wave.py \
+          tests/gradients/test_autograd_bridge.py::test_model_nll_matches_compute_likelihood_batch
+
+45 passed in 7.76s
+```
+
+The dedicated Proposal 1 unit test covers both scalar genewise `[G]` and
+specieswise genewise `[G,S]` `log_pD/log_pS` layouts.  The full
+`tests/unit/test_genewise_wave.py` file also passed (`13 passed`) after adding
+the new parity checks.
+
+Focused row-expanded versus family-indexed DTS parameter parity:
+
+```bash
+PREPROCESS_CACHE_DIR=/tmp/gpurec_prop1_genewise_cache \
+FAMS=3 REPS=1 WARMUPS=0 MAX_WAVE_SIZE=32768 \
+python profiling/bench_uniform_forward_parent_dts.py \
+  --dataset tests/data/test_trees_1000 \
+  --mode genewise --dtype fp32 --variant new \
+  --need-pibar --no-root-rows --leaf-index \
+  --family-indexed-consts \
+  --family-indexed-dts-params --compare-family-dts-params \
+  --topology-int32 --overlap-mode off
+```
+
+Observed:
+
+| Check | Result |
+|---|---:|
+| row-expanded DTS-param NLL | `6421.17333984375` |
+| family-indexed DTS-param NLL | `6421.17333984375` |
+| NLL absolute difference | `0.0` |
+| full `Pi_wave_ordered` max abs difference | `0.0` |
+| full `Pibar_wave_ordered` max abs difference | `0.0` |
+
+The specieswise smoke compare also passed exactly:
+
+```text
+mode=genewise_specieswise, FAMS=3
+NLL diff: 0.0
+Pi max abs: 0.0
+Pibar max abs: 0.0
+```
+
+#### Timing
+
+CUDA-event timings should exclude model construction and E fixed-point setup,
+matching the Proposal 0 protocol.  Both paths should use `test_trees_1000`,
+fp32, fixed 6 Pi iterations, `pibar_mode="uniform"`, root-row output,
+`need_pibar=False`, compact leaf index, parent-reduced DTS, int32 topology,
+`max_wave_size=32768`, DTS overlap off, and family-indexed constants enabled.
+
+| Workload | Row-expanded DTS params | Family-indexed DTS params | Delta | Speedup | Peak old | Peak new | NLL |
+|---:|---:|---:|---:|---:|---:|---:|---:|
+| 50 families | `131.285 ms` | `116.467 ms` | `-14.818 ms` | `1.13x` | `5.989 GiB` | `5.259 GiB` | `107804.265625` |
+| 150 families | `387.446 ms` | `344.763 ms` | `-42.683 ms` | `1.12x` | `17.565 GiB` | `15.015 GiB` | `323018.6875` |
+
+Full 1000-tree genewise forward should be reported as resident chunks using the
+same chunking policy as Proposal 0:
+
+```text
+old row-expanded DTS-param chunk medians:
+start=0:   387.096 ms
+start=150: 393.559 ms
+start=300: 398.907 ms
+start=450: 391.349 ms
+start=600: 388.104 ms
+start=750: 391.566 ms
+start=900: 259.697 ms
+
+new family-indexed DTS-param chunk medians:
+start=0:   348.095 ms
+start=150: 350.568 ms
+start=300: 355.890 ms
+start=450: 348.351 ms
+start=600: 345.558 ms
+start=750: 348.924 ms
+start=900: 230.582 ms
+
+summed old 1000-tree time:
+2610.278 ms
+
+summed new 1000-tree time:
+2327.967 ms
+
+delta:
+-282.311 ms
+
+speedup:
+1.12x
+```
+
+Relative to the pre-Proposal-0 genewise forward baseline (`4.468 s`), the
+current Proposal-0-plus-Proposal-1 path is `1.92x` faster.  Relative to the
+Proposal 0 result (`2.618 s`), Proposal 1 adds another `1.12x`.
+
+#### Nsight Systems
+
+Paired 50-family captures should compare only the DTS parameter layout while
+keeping Proposal 0 enabled:
+
+```bash
+PREPROCESS_CACHE_DIR=/tmp/gpurec_prop1_genewise_cache \
+FAMS=50 REPS=1 WARMUPS=2 MAX_WAVE_SIZE=32768 \
+nsys profile --force-overwrite=true \
+  --capture-range=cudaProfilerApi --capture-range-end=stop \
+  --trace=cuda,nvtx,osrt --sample=none --cpuctxsw=none \
+  -o /tmp/gpurec_profile/prop1_genewise_forward/f50_row_dts_params \
+  python profiling/bench_uniform_forward_parent_dts.py \
+    --dataset tests/data/test_trees_1000 \
+    --mode genewise --dtype fp32 --variant new \
+    --no-need-pibar --root-rows --leaf-index \
+    --family-indexed-consts --no-family-indexed-dts-params \
+    --topology-int32 --overlap-mode off --profile-cuda-api
+
+PREPROCESS_CACHE_DIR=/tmp/gpurec_prop1_genewise_cache \
+FAMS=50 REPS=1 WARMUPS=2 MAX_WAVE_SIZE=32768 \
+nsys profile --force-overwrite=true \
+  --capture-range=cudaProfilerApi --capture-range-end=stop \
+  --trace=cuda,nvtx,osrt --sample=none --cpuctxsw=none \
+  -o /tmp/gpurec_profile/prop1_genewise_forward/f50_family_dts_params \
+  python profiling/bench_uniform_forward_parent_dts.py \
+    --dataset tests/data/test_trees_1000 \
+    --mode genewise --dtype fp32 --variant new \
+    --no-need-pibar --root-rows --leaf-index \
+    --family-indexed-consts --family-indexed-dts-params \
+    --topology-int32 --overlap-mode off --profile-cuda-api
+```
+
+| Metric / bucket | Row-expanded DTS params | Family-indexed DTS params | Delta | Interpretation |
+|---|---:|---:|---:|---|
+| CUDA-event interval under Nsys | `132.698 ms` | `117.608 ms` | `-15.091 ms` | end-to-end trend under profiler |
+| Visible PyTorch DTS expand/index/copy kernels | `~6.94 ms / 363 launches` | `~0.11 ms / 39 launches` | `~-6.83 ms` | per-wave scalar expansion disappears |
+| `_dts_fused_kernel` | `14.756 ms / 39` | `9.728 ms / 39` | `-5.028 ms` | scalar `[G]` loads remove `[N,S]` parameter reads |
+| `_dts_parent_reduced_ge2_stage1_kernel` | `11.394 ms / 7` | `7.530 ms / 7` | `-3.864 ms` | high-fanout parent-reduced path improves |
+| `_dts_parent_reduced_ge2_stage2_kernel` | `0.130 ms / 7` | `0.131 ms / 7` | `+0.001 ms` | unchanged, as expected |
+| `_dts_eq1_to_rows_kernel` | `0.160 ms / 6` | `0.057 ms / 6` | `-0.103 ms` | small bucket but same direction |
+| `_wave_step_uniform_kernel` | `77.846 ms / 294` | `78.517 ms / 294` | `+0.671 ms` | effectively unchanged; Proposal 1 targets DTS |
+| Kernel launch count | `879` | `558` | `-321` | PyTorch materialization launches disappear |
+| GPU memcpy API time | `0.027 ms` | `0.029 ms` | `+0.002 ms` | not material |
+
+Artifacts:
+
+```text
+/tmp/gpurec_profile/prop1_genewise_forward/f50_row_dts_params.nsys-rep
+/tmp/gpurec_profile/prop1_genewise_forward/f50_family_dts_params.nsys-rep
+```
+
+The unchanged `~3.95 ms / 40` PyTorch index bucket in both captures is not the
+DTS parameter materialization being removed here; it remained stable across the
+A/B run and is therefore outside Proposal 1.
+
+#### Nsight Compute
+
+Profile a representative DTS launch with large split fanout.  For the default
+parent-reduced tiled path, the most relevant kernel is expected to be
+`_dts_parent_reduced_ge2_stage1_kernel`; `_dts_parent_reduced_ge2_stage2_kernel`
+should not change because it reduces already computed partials.
+
+```bash
+PREPROCESS_CACHE_DIR=/tmp/gpurec_prop1_genewise_cache \
+FAMS=50 REPS=1 WARMUPS=1 MAX_WAVE_SIZE=32768 \
+ncu --target-processes all --force-overwrite --set detailed \
+  --kernel-name regex:_dts_parent_reduced_ge2_stage1_kernel \
+  --launch-skip 0 \
+  --launch-count 1 --profile-from-start off \
+  -o /tmp/gpurec_profile/prop1_genewise_forward/ncu/f50_row_dts_stage1_0 \
+  python profiling/bench_uniform_forward_parent_dts.py \
+    --dataset tests/data/test_trees_1000 \
+    --mode genewise --dtype fp32 --variant new \
+    --no-need-pibar --root-rows --leaf-index \
+    --family-indexed-consts --no-family-indexed-dts-params \
+    --topology-int32 --overlap-mode off --profile-cuda-api
+
+PREPROCESS_CACHE_DIR=/tmp/gpurec_prop1_genewise_cache \
+FAMS=50 REPS=1 WARMUPS=1 MAX_WAVE_SIZE=32768 \
+ncu --target-processes all --force-overwrite --set detailed \
+  --kernel-name regex:_dts_parent_reduced_ge2_stage1_kernel \
+  --launch-skip 0 \
+  --launch-count 1 --profile-from-start off \
+  -o /tmp/gpurec_profile/prop1_genewise_forward/ncu/f50_family_dts_stage1_0 \
+  python profiling/bench_uniform_forward_parent_dts.py \
+    --dataset tests/data/test_trees_1000 \
+    --mode genewise --dtype fp32 --variant new \
+    --no-need-pibar --root-rows --leaf-index \
+    --family-indexed-consts --family-indexed-dts-params \
+    --topology-int32 --overlap-mode off --profile-cuda-api
+```
+
+Representative launch:
+
+```text
+kernel: _dts_parent_reduced_ge2_stage1_kernel
+launch skip: 0
+grid: (6, 53, 16)
+block: (128, 1, 1)
+```
+
+NCU replay timing is slower than normal execution, so use these numbers for
+resource interpretation rather than wall time.
+
+| Metric | Row-expanded DTS params | Family-indexed DTS params | Interpretation |
+|---|---:|---:|---|
+| Duration | `1.209 ms` | `0.814 ms` | `-32.6%` representative launch time |
+| DRAM read bytes | `911.510 MB` | `607.770 MB` | `-33.3%`, main hardware reason |
+| DRAM write bytes | `6.463 MB` | `6.578 MB` | effectively unchanged |
+| L1/TEX hit rate | `47.57%` | `56.18%` | better local reuse |
+| L2 hit rate | `13.83%` | `15.71%` | slightly better; still low |
+| DRAM throughput | `77.26%` | `76.75%` | still DRAM-bound |
+| SM throughput / issue active | `9.85%` | `12.07%` | more issue progress after reducing memory pressure |
+| Achieved occupancy proxy | `94.49%` | `94.08%` | unchanged |
+| Registers/thread | `40` | `40` | no register regression |
+| Local spills | `0` | `0` | no spilling |
+| Long scoreboard samples | `135701` | `96353` | fewer global-memory wait samples |
+| Executed instructions | `136.1M` | `112.4M` | scalar broadcasts remove repeated parameter-load work |
+
+Artifacts:
+
+```text
+/tmp/gpurec_profile/prop1_genewise_forward/ncu/f50_row_dts_stage1_0.ncu-rep
+/tmp/gpurec_profile/prop1_genewise_forward/ncu/f50_family_dts_stage1_0.ncu-rep
+```
+
+#### Interpretation
+
+Proposal 1 is smaller than Proposal 0 but still worthwhile.  DTS kernels still
+read large `Pi` and `Pibar` child rows, so eliminating `[N_splits,S]`
+`log_pD/log_pS` materialization cannot make the DTS bucket disappear.  The win
+appears in the expected three places:
+
+- PyTorch gather, expand, and contiguous-copy buckets for DTS parameters shrink
+  from about `6.94 ms` to about `0.11 ms` in the 50-family Nsys capture.
+- Peak memory decreases from `17.565 GiB` to `15.015 GiB` in the 150-family
+  chunk.
+- NCU shows `-33.3%` DRAM reads for the representative stage-1 launch, with the
+  same register count, no spills, and the same high occupancy.
+
+The family-indexed path is also faster inside `_dts_fused_kernel` and
+`_dts_parent_reduced_ge2_stage1_kernel`, not only in Python-side launch count.
+That is because scalar `[G]` parameters stop being read from expanded
+`[N_splits,S]` tensors.  In the representative stage-1 launch, the kernel still
+saturates DRAM (`~77%`) while SM issue remains low (`12%`), so future DTS work
+should focus on child-row memory reuse and parent/split locality, not on
+micro-optimizing scalar family loads.
+
+For specieswise `[G,S]` parameters, the kernel still loads one value per split
+and species lane.  The full-output specieswise smoke test proves correctness,
+but the scalar `[G]` case is where the largest bandwidth reduction is expected.
+If future specieswise profiles show worse L2 behavior because split rows jump
+across many families, revisit the family-local scheduling proposal before
+promoting larger specieswise training chunks.
+
+#### Decision
+
+Decision: accept and promote Proposal 1 as the default genewise uniform forward
+path.
+
+Rationale:
+
+- Parity is exact for scalar `[G]` and specieswise `[G,S]` checks.
+- The full 1000-tree forward time improves from `2610.278 ms` to
+  `2327.967 ms`.
+- Peak memory decreases materially in the 150-family resident chunk.
+- Nsys confirms the PyTorch materialization launch count and time drop.
+- NCU confirms lower DRAM reads and no register, spill, or occupancy regression.
+
+Keep the row-expanded path available for at least one more profiling cycle:
+
+```bash
+GPUREC_FORWARD_FAMILY_INDEXED_DTS_PARAMS=0
+```
+
+#### Follow-up
+
+- Carry the same family-indexed `log_pD/log_pS` loading convention into
+  Proposal 3 for genewise DTS backward accumulation.
+- Run a second NCU pass on a larger 150-family high-fanout wave if future work
+  targets the remaining DTS memory bandwidth.
+- Inspect family locality if L2 hit rate regresses in larger specieswise runs,
+  because that would make the family-local scheduling proposal a prerequisite
+  rather than a later guardrail.
+
 ## Proposal 2: Port The Fused Uniform Backward Self-Loop To Genewise
 
 The fastest global backward self-loop path should become family-aware rather
@@ -862,8 +1245,8 @@ Tolerance policy:
 
 | Rank | Proposal | Why first | Main metric |
 |---:|---|---|---|
-| 0 | Family-indexed constants inside forward wave-step | Directly attacks the `1.93x` genewise forward gap | 1000-tree forward time and `_wave_step_uniform_kernel` bytes |
-| 1 | Family-indexed forward DTS parameters | Removes `[n_splits,S]` expansion in high-fanout waves | DTS bucket, PyTorch index/materialization time, peak memory |
+| 0 | Family-indexed constants inside forward wave-step | Accepted; removed `[W,S]` uniform constant materialization | 1000-tree forward: `4.468 s -> 2.618 s` |
+| 1 | Family-indexed forward DTS parameters | Accepted; removes `[n_splits,S]` DTS parameter expansion in high-fanout waves | 1000-tree forward: `2.610 s -> 2.328 s` |
 | 2 | Genewise profiling harnesses | Prevents benchmarking old generic paths | reproducible optimized forward/backward numbers |
 | 3 | Fused genewise backward self-loop | Required to make genewise backward use the uniform fast path | 10/50-family backward time, peak memory, NCU self-loop |
 | 4 | Fused genewise DTS backward accumulation | Removes generic `DTS_5` and split scatter work | DTS backward bucket and parameter scatter time |
@@ -876,12 +1259,16 @@ Tolerance policy:
 
 Forward:
 
-- Current genewise forward is `4.468 s` for 1000 trees.
+- Original optimized genewise forward before Proposal 0 was `4.468 s` for
+  1000 trees.
+- After Proposal 0, genewise forward was `2.618 s`.
+- After Proposal 1, genewise forward is `2.328 s`.
 - Current global/uniform forward is `2.318 s` for the same 1000 trees.
 - Genewise cannot be expected to be exactly free relative to global because it
-  really does load family-specific constants.  But the current `[W,S]`
-  materialization is avoidable.
-- A reasonable first target is `3.0-3.6 s` for 1000-tree genewise forward.
+  really does load family-specific constants and DTS parameters.  The two
+  largest avoidable forward materializations are now removed.
+- The current genewise forward is within about `0.4%` of the measured
+  global/uniform forward for this likelihood-only 1000-tree benchmark.
   Better than that may require deeper wave-step algorithm changes, not just
   removing materialization.
 
@@ -924,6 +1311,8 @@ reject or revise if:
     extra family_idx loads erase the removed materialization cost
 ```
 
-If Proposal 0 succeeds, Proposal 1 is the natural follow-up.  If Proposal 0
-fails, inspect NCU before moving on, because it would mean the extra
-family-indexed loads are hurting cache behavior more than expected.
+Proposal 0 and Proposal 1 both succeeded.  The next forward-specific work should
+be driven by profiler evidence, because the genewise forward is now close to the
+current global/uniform timing envelope.  The larger remaining implementation
+gap is genewise backward, starting with the self-loop and DTS backward
+accumulation proposals.
