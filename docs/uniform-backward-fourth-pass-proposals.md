@@ -2324,6 +2324,172 @@ Risks:
 
 This is a good research branch, not an immediate production default.
 
+### Proposal 7 tested results
+
+Implemented as an opt-in approximate pruning path behind:
+
+```text
+GPUREC_DTS_PIBAR_UD_SIDE_THRESHOLD=<non-negative float>
+GPUREC_DTS_PIBAR_UD_SIDE_BUDGET=<non-negative float>  # alias
+```
+
+Committed implementation: `c6efdf5 Add opt-in thresholded Pibar side pruning`.
+
+The implementation extends the fused DTS backward accumulation path.  Exact-zero
+side skipping remains unchanged and default behavior stays exact.  When a
+positive threshold or side-budget alias is set, `Pi_wave_backward` also enables
+staged Pibar side-active output even if exact-zero side skipping is unset.  The
+threshold is passed to Triton as a one-element device tensor to avoid scalar
+specialization/cache churn.  The DTS accumulation kernel computes `pibar_ud` and
+`pibar_A` exactly as before, but changes the side-active predicate from exact
+nonzero to an audited tight local bound:
+
+```text
+side_active = sum_s(abs(u_d[s])) > GPUREC_DTS_PIBAR_UD_SIDE_THRESHOLD
+```
+
+The downstream compact Pibar-from-UD kernel then skips sides whose bound is
+under the threshold.  The default threshold remains `0`, so production behavior
+is exact unless the user opts into the approximate path.
+
+#### Correctness
+
+Final checks:
+
+| Check | Result |
+|---|---:|
+| `python -m py_compile gpurec/core/backward.py gpurec/core/kernels/wave_backward.py tests/kernels/test_dts_backward_accum_kernel.py` | passed |
+| `pytest -q tests/kernels/test_dts_backward_accum_kernel.py tests/gradients/test_autograd_bridge.py` | `79 passed in 12.64s` |
+| `GPUREC_DTS_PIBAR_UD_SIDE_THRESHOLD=1e-12 pytest -q tests/gradients/test_autograd_bridge.py tests/kernels/test_dts_backward_accum_kernel.py::test_dts_staged_pibar_ud_side_threshold_uses_error_budget_bound tests/kernels/test_dts_backward_accum_kernel.py::test_uniform_cross_pibar_from_ud_threshold_masks_small_nonzero_sides` | `20 passed in 3.04s` |
+
+The new threshold test verifies that the thresholded side mask matches
+`sum(abs(pibar_ud)) > threshold`, that `pibar_ud`, `pibar_A`, and direct DTS RHS
+outputs are unchanged, and that the RHS difference after the downstream Pibar
+VJP is bounded by the skipped-side absolute mass.  This is a local kernel bound,
+not an end-to-end gradient-error guarantee.
+
+Direct 50-tree gradient diffs against the exact-zero default on the same model:
+
+| Threshold | Loss diff | Grad max abs diff | Grad relative diff |
+|---:|---:|---:|---:|
+| `1e-12` | `0` | `4.8828125e-04` | `7.573487251e-08` |
+| `1e-10` | `0` | `4.8828125e-04` | `7.573487251e-08` |
+| `1e-8` | `0` | `1.46484375e-03` | `2.272046175e-07` |
+| `1e-6` | `0` | `5.810546875e-02` | `9.012449828e-06` |
+| `1e-5` | `0` | `1.227050781` | `1.903217346e-04` |
+| `1e-4` | `0` | `2.700683594` | `4.188895798e-04` |
+
+On the 50-family benchmark shape:
+
+```text
+S=1999, C=321930, waves=49, split_rows=402275
+waves_with_pibar_ud=33
+total staged side rows=503358, parent-active side rows=483372
+```
+
+The side-count scan from
+`/tmp/gpurec_profile/prop7_side_threshold/side_threshold_stats_50.txt` uses the
+`sum(abs(u_d))` threshold and shows that the approximation is aggressive even
+for tiny thresholds:
+
+| Threshold | Active parent sides | Skipped parent sides | Skipped parent fraction |
+|---:|---:|---:|---:|
+| exact zero | `344227` | `139145` | `28.79%` |
+| `1e-12` | `163475` | `319897` | `66.18%` |
+| `1e-9` | `162312` | `321060` | `66.42%` |
+| `1e-6` | `161678` | `321694` | `66.55%` |
+| `1e-5` | `11036` | `472336` | `97.72%` |
+| `1e-4` | `5367` | `478005` | `98.89%` |
+
+The high-fanout late waves are where the threshold is most destructive: for the
+largest `84310`-side launch, exact-zero side skipping leaves `48436` active
+sides, `1e-12` leaves `579`, and `1e-6` leaves only `124`.
+
+#### Event-timed benchmarks
+
+Clean rows below use `FAMS=50`, `REPS=9`, `WARMUPS=10`,
+`MAX_WAVE_SIZE=32768`.  Earlier contaminated 7-rep sweep results with
+`1e-12` and `1e-5` around `300/270 ms` are discarded.
+
+| Variant | Mean backward | Median backward | Min backward | Peak allocation | Source |
+|---|---:|---:|---:|---:|---|
+| default exact-zero side skipping | `104.021 ms` | `103.902 ms` | `103.425 ms` | `10.308 GB` | `/tmp/gpurec_profile/prop7_side_threshold/timing2_default.txt` |
+| `GPUREC_DTS_PIBAR_UD_SIDE_THRESHOLD=1e-12` | `95.849 ms` | `95.738 ms` | `95.546 ms` | `10.308 GB` | `/tmp/gpurec_profile/prop7_side_threshold/timing2_1e-12.txt` |
+| `GPUREC_DTS_PIBAR_UD_SIDE_THRESHOLD=1e-8` | `109.346 ms` | `99.943 ms` | `95.858 ms` | `10.308 GB` | noisy row |
+| `GPUREC_DTS_PIBAR_UD_SIDE_THRESHOLD=1e-6` | `95.524 ms` | `95.747 ms` | `94.251 ms` | `10.308 GB` | `/tmp/gpurec_profile/prop7_side_threshold/timing2_1e-6.txt` |
+| `GPUREC_DTS_PIBAR_UD_SIDE_THRESHOLD=1e-5` | `90.207 ms` | `89.369 ms` | `88.730 ms` | `10.308 GB` | `/tmp/gpurec_profile/prop7_side_threshold/timing2_1e-5.txt` |
+| `GPUREC_DTS_PIBAR_UD_SIDE_THRESHOLD=1e-4` | `88.778 ms` | `88.763 ms` | `88.133 ms` | `10.308 GB` | `/tmp/gpurec_profile/prop7_side_threshold/timing2_1e-4.txt` |
+
+The `1e-8` row has outliers (`125.314`, `154.997`, `110.298 ms`), so it is not
+clean median evidence.  The `1e-12` row is the best conservative timing signal:
+it saves about `8.164 ms` median against the exact-zero default while keeping
+the measured 50-tree relative gradient diff below `1e-7`.  Higher thresholds
+are faster but visibly increase gradient difference.
+
+#### Profiling
+
+Nsight Systems aggregate across five captured reps:
+
+| Metric | Default exact-zero | Threshold `1e-12` | Threshold `1e-6` |
+|---|---:|---:|---:|
+| total GPU kernel time | `455.551 ms` | `413.736 ms` | `414.012 ms` |
+| kernels | `14590` | `14590` | `14590` |
+| Pibar compact bucket | `81.105 ms` | `39.208 ms` | `39.203 ms` |
+| DTS accumulation bucket | `137.209 ms` | `137.720 ms` | `137.781 ms` |
+| self-loop wave bucket | `124.282 ms` | `124.027 ms` | `124.148 ms` |
+
+The Pibar bucket saves about `41.9 ms` over five reps, or about `8.38 ms` per
+rep.  The extra DTS `sum(abs)` accounting costs only about `0.5 ms` over five
+reps, or about `0.1 ms` per rep.  Launch count is unchanged.
+
+Nsight Compute samples on the largest compact Pibar-from-UD launch show why side
+skipping helps: the kernel remains memory-bound, but exact-zero side skipping
+cuts the processed side traffic substantially.
+
+| Metric | Side skipping off | Exact-zero side skipping |
+|---|---:|---:|
+| representative launch duration | `3.837 ms` | `2.264 ms` |
+| grid / block | `84310 / 128` | `84310 / 128` |
+| registers/thread | `36` | `36` |
+| DRAM read | `2.014 GB` | `1.164 GB` |
+| DRAM write | `1.311 GB` | `0.745 GB` |
+| DRAM throughput | `88.13%` | `85.79%` |
+| global load instructions | `50.477 M` | `29.496 M` |
+| global store instructions | `3.857 M` | `2.228 M` |
+| global RED instructions | `5.282 M` | `3.051 M` |
+
+The thresholded `1e-12` NCU sample
+(`/tmp/gpurec_profile/prop7_side_threshold/ncu_pibar_threshold_1e-12_50.ncu-rep`,
+launch skip `33`, count `6`, basic set) sampled compact Pibar-from-UD durations
+of `16.13 us`, `26.53 us`, `37.92 us`, `37.38 us`, `58.11 us`, and `50.78 us`
+for grids `7970`, `27092`, `48458`, `46690`, `84310`, and `72400`.
+Throughput is low in these thresholded samples, roughly `10-25%` DRAM and
+`6-16%` SM, because most CTAs return immediately after `side_active == false`.
+
+Artifacts:
+
+```text
+/tmp/gpurec_profile/prop7_side_threshold/timing2_default.txt
+/tmp/gpurec_profile/prop7_side_threshold/timing2_1e-12.txt
+/tmp/gpurec_profile/prop7_side_threshold/timing2_1e-6.txt
+/tmp/gpurec_profile/prop7_side_threshold/timing2_1e-5.txt
+/tmp/gpurec_profile/prop7_side_threshold/timing2_1e-4.txt
+/tmp/gpurec_profile/prop7_side_threshold/nsys_default.*.sqlite/.nsys-rep
+/tmp/gpurec_profile/prop7_side_threshold/nsys_1e-12.*.sqlite/.nsys-rep
+/tmp/gpurec_profile/prop7_side_threshold/nsys_1e-6.*.sqlite/.nsys-rep
+/tmp/gpurec_profile/prop7_side_threshold/ncu_pibar_threshold_1e-12_50.ncu-rep
+```
+
+#### Final decision
+
+Keep Proposal 7 default-off as a research/diagnostic opt-in.  Exact-zero side
+skipping is already valuable and remains part of the benchmark default flags.
+The `1e-12` threshold gives most of the speedup, about `8 ms` median on the
+50-tree case, with a tiny measured relative gradient difference there.  It still
+skips about `66%` of parent-active Pibar sides and lacks a global accumulated
+error budget, so it should not be promoted without an end-to-end error budget
+tied to `pruning_threshold` and optimizer-level convergence tests.
+
 ## Proposal 8: split metadata and topology compression audit
 
 Species topology already has an int32 path.  Split metadata still flows through
