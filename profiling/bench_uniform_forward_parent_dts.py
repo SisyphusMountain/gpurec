@@ -31,6 +31,13 @@ DEFAULT_FLAGS = {
 }
 
 
+def _env_enabled(name: str, default: bool) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() not in ("0", "false", "off", "no", "row", "rows", "expanded")
+
+
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--dataset", default=os.getenv("DATASET", "tests/data/test_trees_1000"))
@@ -96,6 +103,18 @@ def _parse_args() -> argparse.Namespace:
         help="Enable compact uniform leaf-index term in the wave-step kernel.",
     )
     parser.add_argument(
+        "--family-indexed-consts",
+        action=argparse.BooleanOptionalAction,
+        default=_env_enabled("GPUREC_FORWARD_FAMILY_INDEXED_CONSTS", True),
+        help="Load genewise uniform constants from [G,S] inside Triton instead of pre-expanding [W,S].",
+    )
+    parser.add_argument(
+        "--compare-family-consts",
+        action="store_true",
+        default=os.getenv("COMPARE_FAMILY_CONSTS", "0") != "0",
+        help="Compare row-expanded constants against family-indexed constants before timing.",
+    )
+    parser.add_argument(
         "--topology-int32",
         action=argparse.BooleanOptionalAction,
         default=os.getenv("GPUREC_FORWARD_TOPOLOGY_INT32", "1") != "0",
@@ -144,6 +163,10 @@ def _set_variant(args: argparse.Namespace, variant: str) -> None:
     os.environ["GPUREC_FORWARD_PARENT_REDUCED_DTS_IMPL"] = str(args.impl)
     os.environ["GPUREC_FORWARD_PARENT_REDUCED_DTS_TILE_SPLITS"] = str(args.tile_splits)
     os.environ["GPUREC_FORWARD_PARENT_REDUCED_DTS_GE2_ONLY"] = "1" if args.ge2_only else "0"
+
+
+def _set_family_indexed_consts(enabled: bool) -> None:
+    os.environ["GPUREC_FORWARD_FAMILY_INDEXED_CONSTS"] = "1" if enabled else "0"
 
 
 def _time_cuda_ms(fn):
@@ -351,12 +374,58 @@ def _compare(args: argparse.Namespace, model: GeneReconModel, E_out: dict, param
     torch.cuda.empty_cache()
 
 
+def _compare_family_consts(args: argparse.Namespace, model: GeneReconModel, E_out: dict, params: tuple) -> None:
+    _set_variant(args, args.variant)
+    _set_family_indexed_consts(False)
+    row_nll, row_out = _run_pi(
+        model, E_out, params,
+        need_pibar=args.need_pibar,
+        overlap_mode=args.overlap_mode,
+        root_rows=args.root_rows,
+    )
+    torch.cuda.synchronize()
+    row_nll_value = float(row_nll.detach().cpu())
+    keep_full_diff = args.fams <= args.full_diff_max_fams
+    if not keep_full_diff:
+        del row_out
+        torch.cuda.empty_cache()
+
+    _set_family_indexed_consts(True)
+    family_nll, family_out = _run_pi(
+        model, E_out, params,
+        need_pibar=args.need_pibar,
+        overlap_mode=args.overlap_mode,
+        root_rows=args.root_rows,
+    )
+    torch.cuda.synchronize()
+    nll_diff = float((family_nll - row_nll).abs().detach().cpu())
+    print(
+        "compare_family_consts",
+        "row_nll", row_nll_value,
+        "family_nll", float(family_nll.detach().cpu()),
+        "nll_abs_diff", nll_diff,
+    )
+    if keep_full_diff and not args.root_rows:
+        pi_diff = _tensor_max_abs_diff(row_out["Pi_wave_ordered"], family_out["Pi_wave_ordered"])
+        if row_out["Pibar_wave_ordered"] is not None and family_out["Pibar_wave_ordered"] is not None:
+            pibar_diff = _tensor_max_abs_diff(row_out["Pibar_wave_ordered"], family_out["Pibar_wave_ordered"])
+        else:
+            pibar_diff = "not_returned"
+        print("compare_family_const_tensors", "Pi_max_abs", pi_diff, "Pibar_max_abs", pibar_diff)
+        del row_out
+    del family_out, row_nll, family_nll
+    _set_family_indexed_consts(args.family_indexed_consts)
+    gc.collect()
+    torch.cuda.empty_cache()
+
+
 def main() -> None:
     args = _parse_args()
     for key, value in DEFAULT_FLAGS.items():
         os.environ.setdefault(key, value)
-    os.environ["GPUREC_FORWARD_TOPOLOGY_INT32"] = "1" if args.topology_int32 else "0"
     os.environ["GPUREC_FORWARD_LEAF_INDEX"] = "1" if args.leaf_index else "0"
+    _set_family_indexed_consts(args.family_indexed_consts)
+    os.environ["GPUREC_FORWARD_TOPOLOGY_INT32"] = "1" if args.topology_int32 else "0"
     if args.wave_block_s > 0:
         os.environ["GPUREC_FORWARD_WAVE_BLOCK_S"] = str(args.wave_block_s)
     else:
@@ -374,9 +443,12 @@ def main() -> None:
         return
     if args.compare:
         _compare(args, model, E_out, params)
+    if args.compare_family_consts:
+        _compare_family_consts(args, model, E_out, params)
 
     for _ in range(args.warmups):
         _set_variant(args, args.variant)
+        _set_family_indexed_consts(args.family_indexed_consts)
         _, out = _run_pi(
             model, E_out, params,
             need_pibar=args.need_pibar,
@@ -392,6 +464,7 @@ def main() -> None:
         torch.cuda.profiler.start()
     for _ in range(args.reps):
         _set_variant(args, args.variant)
+        _set_family_indexed_consts(args.family_indexed_consts)
         ms, (nll, out) = _time_cuda_ms(
             lambda: _run_pi(
                 model, E_out, params,
@@ -419,6 +492,8 @@ def main() -> None:
         "need_pibar", int(args.need_pibar),
         "root_rows", int(args.root_rows),
         "leaf_index", int(args.leaf_index),
+        "family_indexed_consts", int(args.family_indexed_consts),
+        "compare_family_consts", int(args.compare_family_consts),
         "topology_int32", int(args.topology_int32),
         "wave_block_s", args.wave_block_s,
         "wave_num_warps", args.wave_num_warps,

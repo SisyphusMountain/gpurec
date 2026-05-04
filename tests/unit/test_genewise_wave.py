@@ -403,6 +403,61 @@ def test_genewise_uniform_leaf_index_path_matches_dense_leaf_fallback(data_dir, 
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+@pytest.mark.parametrize("specieswise", [False, True], ids=["log_pS_G", "log_pS_GS"])
+def test_genewise_uniform_family_indexed_constants_match_row_expanded(
+    data_dir, specieswise, monkeypatch
+):
+    """Proposal 0: [G,S] in-kernel constants match old per-wave [W,S] expansion."""
+    sp = str(data_dir / "sp.nwk")
+    genes = [str(g) for g in sorted(data_dir.glob("g_*.nwk"))[:3]]
+    device = torch.device("cuda")
+    dtype = torch.float32
+
+    ds = GeneDataset(
+        sp,
+        genes,
+        genewise=True,
+        specieswise=specieswise,
+        pairwise=False,
+        dtype=dtype,
+        device=device,
+    )
+    _set_deterministic_genewise_theta(ds, specieswise=specieswise)
+
+    inputs = _build_genewise_wave_inputs(ds, list(range(len(genes))), device=device, dtype=dtype)
+    wave_layout, species_helpers, E_out, log_pS, log_pD, log_pL, max_transfer_vec = inputs
+
+    monkeypatch.setenv("GPUREC_FORWARD_FAMILY_INDEXED_CONSTS", "0")
+    row_expanded_out = _run_genewise_uniform_wave(
+        ds, wave_layout, species_helpers, E_out,
+        log_pS, log_pD, log_pL, max_transfer_vec,
+    )
+
+    monkeypatch.setenv("GPUREC_FORWARD_FAMILY_INDEXED_CONSTS", "1")
+    family_indexed_out = _run_genewise_uniform_wave(
+        ds, wave_layout, species_helpers, E_out,
+        log_pS, log_pD, log_pL, max_transfer_vec,
+    )
+
+    row_nll = _nll_from_root_rows(row_expanded_out, E_out)
+    family_nll = _nll_from_root_rows(family_indexed_out, E_out)
+
+    assert torch.allclose(family_nll, row_nll, atol=1e-4, rtol=1e-5)
+    assert torch.allclose(
+        family_indexed_out["Pi_root_rows"],
+        row_expanded_out["Pi_root_rows"],
+        atol=1e-4,
+        rtol=1e-5,
+    )
+    assert torch.allclose(
+        family_indexed_out["Pi"],
+        row_expanded_out["Pi"],
+        atol=1e-4,
+        rtol=1e-5,
+    )
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
 def test_genewise_uniform_leaf_index_gradient_bridge_matches_dense_leaf_fallback(data_dir):
     """Proposal 7 gradient bridge parity for genewise uniform leaf-index leaves."""
     sp = str(data_dir / "sp.nwk")
