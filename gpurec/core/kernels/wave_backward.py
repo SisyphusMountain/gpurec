@@ -171,6 +171,7 @@ def _wave_backward_uniform_kernel(
     NEUMANN_TERMS: tl.constexpr,
     USE_LEAF_INDEX: tl.constexpr,
     ACCUM_PARAM_GRADS: tl.constexpr,
+    PARAM_GRAD_TWO_STAGE: tl.constexpr,
     FAST_NOSPLIT_PARAM_GRADS: tl.constexpr,
     COMPACT_PIBAR_SCRATCH: tl.constexpr,
     RECOMPUTE_PIBAR_DENOM: tl.constexpr,
@@ -206,7 +207,7 @@ def _wave_backward_uniform_kernel(
                 mask = s_offs < S
                 zero = tl.zeros([BLOCK_S], dtype=DTYPE)
                 tl.store(v_k_ptr + out_base + s_offs, zero, mask=mask)
-                if not ACCUM_PARAM_GRADS:
+                if (not ACCUM_PARAM_GRADS) and (not PARAM_GRAD_TWO_STAGE):
                     off = out_base + s_offs
                     tl.store(aw0_ptr + off, zero, mask=mask)
                     tl.store(aw1_ptr + off, zero, mask=mask)
@@ -538,6 +539,9 @@ def _wave_backward_uniform_kernel(
     # Recompute alpha = v_k * w_L and weighted terms.
     # Store per-element contributions for the caller to reduce.
     # ================================================================
+    if PARAM_GRAD_TWO_STAGE:
+        return
+
     for s_start in range(0, S, BLOCK_S):
         s_offs = s_start + tl.arange(0, BLOCK_S)
         valid_mask = s_offs < S
@@ -659,6 +663,396 @@ def _wave_backward_uniform_kernel(
                 tl.store(aw4_ptr + off, _aw4, mask=valid_mask)
 
 
+@triton.jit
+def _wave_backward_uniform_param_stage1_kernel(
+    Pi_star_ptr,       # [C, S]
+    Pibar_star_ptr,    # [C, S]
+    v_k_ptr,           # [W, S]
+    active_mask_ptr,   # optional [W]
+    mt_ptr, DL_const_ptr, Ebar_ptr, E_ptr, SL1_const_ptr, SL2_const_ptr,
+    sp_child1_ptr, sp_child2_ptr,
+    leaf_term_ptr,
+    leaf_species_ptr,
+    leaf_logp_ptr,
+    partial_vec_ptr,      # [5, N_TILES, S]
+    partial_scalar_ptr,   # [2, N_TILES, N_S_BLOCKS]
+    ws,
+    W: tl.constexpr,
+    S: tl.constexpr,
+    stride: tl.constexpr,
+    N_TILES: tl.constexpr,
+    N_S_BLOCKS: tl.constexpr,
+    TILE_ROWS: tl.constexpr,
+    BLOCK_S: tl.constexpr,
+    USE_LEAF_INDEX: tl.constexpr,
+    LEAF_HIT_ONLY_LOGP: tl.constexpr,
+    LEAF_LOGP_SCALAR: tl.constexpr,
+    USE_ACTIVE_MASK: tl.constexpr,
+    DTYPE: tl.constexpr,
+):
+    """Reduce no-split self-loop parameter VJPs into row-tile partials."""
+    NEG_LARGE: tl.constexpr = -1e30
+    M_SAFE: tl.constexpr = -1e29
+
+    tile = tl.program_id(0)
+    s_block = tl.program_id(1)
+    rows = tile * TILE_ROWS + tl.arange(0, TILE_ROWS)
+    s_offs = s_block * BLOCK_S + tl.arange(0, BLOCK_S)
+    row_mask = rows < W
+    valid_s = s_offs < S
+
+    if USE_ACTIVE_MASK:
+        active = tl.load(active_mask_ptr + rows, mask=row_mask, other=0)
+        row_mask = row_mask & (active != 0)
+
+    mask = row_mask[:, None] & valid_s[None, :]
+    row_global = ws + rows
+    pi_base = row_global[:, None] * stride
+    row_base = rows[:, None] * S
+    s_matrix = s_offs[None, :]
+
+    pi_w = tl.load(Pi_star_ptr + pi_base + s_matrix, mask=mask, other=NEG_LARGE)
+    pibar_w = tl.load(Pibar_star_ptr + pi_base + s_matrix, mask=mask, other=NEG_LARGE)
+    v_k_val = tl.load(v_k_ptr + row_base + s_matrix, mask=mask, other=0.0)
+
+    dl_c = tl.load(DL_const_ptr + s_offs, mask=valid_s, other=NEG_LARGE)
+    ebar = tl.load(Ebar_ptr + s_offs, mask=valid_s, other=NEG_LARGE)
+    e_val = tl.load(E_ptr + s_offs, mask=valid_s, other=NEG_LARGE)
+    sl1_c = tl.load(SL1_const_ptr + s_offs, mask=valid_s, other=NEG_LARGE)
+    sl2_c = tl.load(SL2_const_ptr + s_offs, mask=valid_s, other=NEG_LARGE)
+
+    c1 = tl.load(sp_child1_ptr + s_offs, mask=valid_s, other=0)
+    c2 = tl.load(sp_child2_ptr + s_offs, mask=valid_s, other=0)
+    c1_valid = c1 < S
+    c2_valid = c2 < S
+    pi_s1 = tl.load(
+        Pi_star_ptr + pi_base + c1[None, :],
+        mask=mask & c1_valid[None, :],
+        other=NEG_LARGE,
+    )
+    pi_s2 = tl.load(
+        Pi_star_ptr + pi_base + c2[None, :],
+        mask=mask & c2_valid[None, :],
+        other=NEG_LARGE,
+    )
+
+    t0 = dl_c[None, :] + pi_w
+    t1 = pi_w + ebar[None, :]
+    t2 = pibar_w + e_val[None, :]
+    t3 = sl1_c[None, :] + pi_s1
+    t4 = sl2_c[None, :] + pi_s2
+    if USE_LEAF_INDEX:
+        leaf_species = tl.load(leaf_species_ptr + row_global, mask=row_mask, other=-1)
+        leaf_hit = mask & (leaf_species[:, None] == s_matrix)
+        if LEAF_LOGP_SCALAR:
+            leaf_logp = tl.load(leaf_logp_ptr)
+            t5 = tl.where(leaf_hit, leaf_logp, NEG_LARGE)
+        elif LEAF_HIT_ONLY_LOGP:
+            leaf_logp = tl.load(leaf_logp_ptr + s_offs, mask=valid_s, other=NEG_LARGE)
+            t5 = tl.where(leaf_hit, leaf_logp[None, :], NEG_LARGE)
+        else:
+            leaf_logp = tl.load(leaf_logp_ptr + s_offs, mask=valid_s, other=NEG_LARGE)
+            t5 = tl.where(leaf_hit, leaf_logp[None, :], NEG_LARGE)
+    else:
+        t5 = tl.load(leaf_term_ptr + row_base + s_matrix, mask=mask, other=NEG_LARGE)
+
+    m = tl.maximum(t0, t1)
+    m = tl.maximum(m, t2)
+    m = tl.maximum(m, t3)
+    m = tl.maximum(m, t4)
+    m = tl.maximum(m, t5)
+    m_safe = tl.where(m > M_SAFE, m, tl.zeros_like(m))
+    e0 = tl.exp2(t0 - m_safe)
+    e1 = tl.exp2(t1 - m_safe)
+    e2 = tl.exp2(t2 - m_safe)
+    e3 = tl.exp2(t3 - m_safe)
+    e4 = tl.exp2(t4 - m_safe)
+    e5 = tl.exp2(t5 - m_safe)
+    dts_l_sum = e0 + e1 + e2 + e3 + e4 + e5
+    inv_sum = tl.where(dts_l_sum > 0.0, 1.0 / dts_l_sum, tl.zeros_like(dts_l_sum))
+
+    aw0 = v_k_val * e0 * inv_sum
+    aw1 = v_k_val * e1 * inv_sum
+    aw2 = v_k_val * e2 * inv_sum
+    aw3 = v_k_val * e3 * inv_sum
+    aw4 = v_k_val * e4 * inv_sum
+    aw5 = v_k_val * e5 * inv_sum
+
+    zero = tl.zeros([TILE_ROWS, BLOCK_S], dtype=DTYPE)
+    sum_aw0 = tl.sum(tl.where(mask, aw0, zero), axis=0)
+    sum_aw1 = tl.sum(tl.where(mask, aw1, zero), axis=0)
+    sum_aw2 = tl.sum(tl.where(mask, aw2, zero), axis=0)
+    sum_aw3 = tl.sum(tl.where(mask, aw3, zero), axis=0)
+    sum_aw4 = tl.sum(tl.where(mask, aw4, zero), axis=0)
+    sum_aw5 = tl.sum(tl.where(mask, aw5, zero), axis=0)
+
+    partial_base = tile * S + s_offs
+    partial_stride = N_TILES * S
+    tl.store(partial_vec_ptr + partial_base, sum_aw0 + sum_aw2, mask=valid_s)
+    tl.store(partial_vec_ptr + partial_stride + partial_base, sum_aw1, mask=valid_s)
+    tl.store(partial_vec_ptr + 2 * partial_stride + partial_base, sum_aw4, mask=valid_s)
+    tl.store(partial_vec_ptr + 3 * partial_stride + partial_base, sum_aw3, mask=valid_s)
+    tl.store(partial_vec_ptr + 4 * partial_stride + partial_base, sum_aw2, mask=valid_s)
+
+    scalar_idx = tile * N_S_BLOCKS + s_block
+    scalar_count = N_TILES * N_S_BLOCKS
+    grad_pd = tl.sum(tl.where(valid_s, sum_aw0, tl.zeros([BLOCK_S], dtype=DTYPE)), axis=0)
+    grad_ps = tl.sum(
+        tl.where(valid_s, sum_aw3 + sum_aw4 + sum_aw5, tl.zeros([BLOCK_S], dtype=DTYPE)),
+        axis=0,
+    )
+    tl.store(partial_scalar_ptr + scalar_idx, grad_pd)
+    tl.store(partial_scalar_ptr + scalar_count + scalar_idx, grad_ps)
+
+
+@triton.jit
+def _wave_backward_uniform_param_stage2_kernel(
+    partial_vec_ptr,      # [5, N_TILES, S]
+    partial_scalar_ptr,   # [2, N_TILES, N_S_BLOCKS]
+    grad_log_pD_ptr,
+    grad_log_pS_ptr,
+    grad_E_ptr,
+    grad_Ebar_ptr,
+    grad_E_s1_ptr,
+    grad_E_s2_ptr,
+    grad_mt_ptr,
+    S: tl.constexpr,
+    N_TILES: tl.constexpr,
+    N_S_BLOCKS: tl.constexpr,
+    BLOCK_TILES: tl.constexpr,
+    BLOCK_S: tl.constexpr,
+    BLOCK_SCALAR_PARTIALS: tl.constexpr,
+    DTYPE: tl.constexpr,
+):
+    """Reduce compact no-split self-loop parameter partials into gradients."""
+    s_block = tl.program_id(0)
+    s_offs = s_block * BLOCK_S + tl.arange(0, BLOCK_S)
+    valid_s = s_offs < S
+
+    acc_E = tl.zeros([BLOCK_S], dtype=DTYPE)
+    acc_Ebar = tl.zeros([BLOCK_S], dtype=DTYPE)
+    acc_E_s1 = tl.zeros([BLOCK_S], dtype=DTYPE)
+    acc_E_s2 = tl.zeros([BLOCK_S], dtype=DTYPE)
+    acc_mt = tl.zeros([BLOCK_S], dtype=DTYPE)
+    partial_stride = N_TILES * S
+
+    tile_start = 0
+    while tile_start < N_TILES:
+        tile_offs = tile_start + tl.arange(0, BLOCK_TILES)
+        mask = (tile_offs[:, None] < N_TILES) & valid_s[None, :]
+        partial_offs = tile_offs[:, None] * S + s_offs[None, :]
+        acc_E += tl.sum(tl.load(partial_vec_ptr + partial_offs, mask=mask, other=0.0), axis=0)
+        acc_Ebar += tl.sum(
+            tl.load(partial_vec_ptr + partial_stride + partial_offs, mask=mask, other=0.0),
+            axis=0,
+        )
+        acc_E_s1 += tl.sum(
+            tl.load(partial_vec_ptr + 2 * partial_stride + partial_offs, mask=mask, other=0.0),
+            axis=0,
+        )
+        acc_E_s2 += tl.sum(
+            tl.load(partial_vec_ptr + 3 * partial_stride + partial_offs, mask=mask, other=0.0),
+            axis=0,
+        )
+        acc_mt += tl.sum(
+            tl.load(partial_vec_ptr + 4 * partial_stride + partial_offs, mask=mask, other=0.0),
+            axis=0,
+        )
+        tile_start += BLOCK_TILES
+
+    tl.store(
+        grad_E_ptr + s_offs,
+        tl.load(grad_E_ptr + s_offs, mask=valid_s, other=0.0) + acc_E,
+        mask=valid_s,
+    )
+    tl.store(
+        grad_Ebar_ptr + s_offs,
+        tl.load(grad_Ebar_ptr + s_offs, mask=valid_s, other=0.0) + acc_Ebar,
+        mask=valid_s,
+    )
+    tl.store(
+        grad_E_s1_ptr + s_offs,
+        tl.load(grad_E_s1_ptr + s_offs, mask=valid_s, other=0.0) + acc_E_s1,
+        mask=valid_s,
+    )
+    tl.store(
+        grad_E_s2_ptr + s_offs,
+        tl.load(grad_E_s2_ptr + s_offs, mask=valid_s, other=0.0) + acc_E_s2,
+        mask=valid_s,
+    )
+    tl.store(
+        grad_mt_ptr + s_offs,
+        tl.load(grad_mt_ptr + s_offs, mask=valid_s, other=0.0) + acc_mt,
+        mask=valid_s,
+    )
+
+    if s_block == 0:
+        scalar_count = N_TILES * N_S_BLOCKS
+        acc_pD = tl.zeros([1], dtype=DTYPE)
+        acc_pS = tl.zeros([1], dtype=DTYPE)
+        scalar_start = 0
+        while scalar_start < scalar_count:
+            scalar_offs = scalar_start + tl.arange(0, BLOCK_SCALAR_PARTIALS)
+            scalar_mask = scalar_offs < scalar_count
+            pD_vals = tl.load(partial_scalar_ptr + scalar_offs, mask=scalar_mask, other=0.0)
+            pS_vals = tl.load(
+                partial_scalar_ptr + scalar_count + scalar_offs,
+                mask=scalar_mask,
+                other=0.0,
+            )
+            acc_pD += tl.sum(pD_vals, axis=0)
+            acc_pS += tl.sum(pS_vals, axis=0)
+            scalar_start += BLOCK_SCALAR_PARTIALS
+
+        scalar = tl.arange(0, 1)
+        tl.store(grad_log_pD_ptr + scalar, tl.load(grad_log_pD_ptr + scalar) + acc_pD)
+        tl.store(grad_log_pS_ptr + scalar, tl.load(grad_log_pS_ptr + scalar) + acc_pS)
+
+
+def _wave_backward_uniform_param_two_stage(
+    Pi_star,
+    Pibar_star,
+    ws,
+    W,
+    S,
+    v_k,
+    mt_squeezed,
+    DL_const,
+    Ebar,
+    E,
+    SL1_const,
+    SL2_const,
+    sp_child1,
+    sp_child2,
+    leaf_term_wt,
+    leaf_species_idx,
+    leaf_logp,
+    accum_param_grads,
+    *,
+    active_mask=None,
+    use_leaf_index=False,
+    leaf_hit_only_logp=False,
+    leaf_logp_scalar=False,
+    scratch=None,
+):
+    tile_rows_raw = max(
+        1,
+        int(os.environ.get("GPUREC_SELF_LOOP_PARAM_TWO_STAGE_TILE_ROWS", "16")),
+    )
+    tile_rows = triton.next_power_of_2(tile_rows_raw)
+    block_s_default = min(128, triton.next_power_of_2(S))
+    block_s_raw = max(
+        1,
+        int(os.environ.get("GPUREC_SELF_LOOP_PARAM_TWO_STAGE_BLOCK_S", str(block_s_default))),
+    )
+    block_s = min(triton.next_power_of_2(block_s_raw), triton.next_power_of_2(S))
+    reduce_block_tiles_raw = max(
+        1,
+        int(os.environ.get("GPUREC_SELF_LOOP_PARAM_TWO_STAGE_REDUCE_TILES", "16")),
+    )
+    reduce_block_tiles = triton.next_power_of_2(reduce_block_tiles_raw)
+    scalar_block_raw = max(
+        1,
+        int(os.environ.get("GPUREC_SELF_LOOP_PARAM_TWO_STAGE_SCALAR_BLOCK", "1024")),
+    )
+    scalar_block = triton.next_power_of_2(scalar_block_raw)
+    n_tiles = triton.cdiv(W, tile_rows)
+    n_s_blocks = triton.cdiv(S, block_s)
+
+    partial_vec = _scratch_view(
+        scratch, "param_two_stage_vec", (5, n_tiles, S),
+        device=Pi_star.device, dtype=Pi_star.dtype,
+    )
+    if partial_vec is None:
+        partial_vec = torch.empty((5, n_tiles, S), device=Pi_star.device, dtype=Pi_star.dtype)
+    partial_scalar = _scratch_view(
+        scratch, "param_two_stage_scalar", (2, n_tiles, n_s_blocks),
+        device=Pi_star.device, dtype=Pi_star.dtype,
+    )
+    if partial_scalar is None:
+        partial_scalar = torch.empty(
+            (2, n_tiles, n_s_blocks), device=Pi_star.device, dtype=Pi_star.dtype
+        )
+
+    (
+        grad_log_pD,
+        grad_log_pS,
+        grad_E,
+        grad_Ebar,
+        grad_E_s1,
+        grad_E_s2,
+        grad_mt,
+    ) = accum_param_grads
+
+    stage1_warps = int(
+        os.environ.get(
+            "GPUREC_SELF_LOOP_PARAM_TWO_STAGE_NUM_WARPS",
+            "8" if tile_rows * block_s >= 1024 else "4",
+        )
+    )
+    stage1_options = {}
+    if stage1_warps > 0:
+        stage1_options["num_warps"] = stage1_warps
+
+    _wave_backward_uniform_param_stage1_kernel[(n_tiles, n_s_blocks)](
+        Pi_star,
+        Pibar_star,
+        v_k,
+        active_mask if active_mask is not None else v_k,
+        mt_squeezed,
+        DL_const,
+        Ebar,
+        E,
+        SL1_const,
+        SL2_const,
+        sp_child1,
+        sp_child2,
+        leaf_term_wt,
+        leaf_species_idx,
+        leaf_logp,
+        partial_vec,
+        partial_scalar,
+        ws,
+        W,
+        S,
+        Pi_star.stride(0),
+        n_tiles,
+        n_s_blocks,
+        tile_rows,
+        block_s,
+        USE_LEAF_INDEX=bool(use_leaf_index),
+        LEAF_HIT_ONLY_LOGP=bool(leaf_hit_only_logp),
+        LEAF_LOGP_SCALAR=bool(leaf_logp_scalar),
+        USE_ACTIVE_MASK=bool(active_mask is not None),
+        DTYPE=_tl_float_dtype(Pi_star.dtype),
+        **stage1_options,
+    )
+
+    stage2_warps = int(os.environ.get("GPUREC_SELF_LOOP_PARAM_TWO_STAGE_REDUCE_WARPS", "4"))
+    stage2_options = {}
+    if stage2_warps > 0:
+        stage2_options["num_warps"] = stage2_warps
+    _wave_backward_uniform_param_stage2_kernel[(n_s_blocks,)](
+        partial_vec,
+        partial_scalar,
+        grad_log_pD,
+        grad_log_pS,
+        grad_E,
+        grad_Ebar,
+        grad_E_s1,
+        grad_E_s2,
+        grad_mt,
+        S,
+        n_tiles,
+        n_s_blocks,
+        reduce_block_tiles,
+        block_s,
+        scalar_block,
+        DTYPE=_tl_float_dtype(Pi_star.dtype),
+        **stage2_options,
+    )
+
+
 def wave_backward_uniform_fused(
     Pi_star, Pibar_star, ws, W, S,
     dts_r,
@@ -740,6 +1134,32 @@ def wave_backward_uniform_fused(
         os.environ.get("GPUREC_WAVE_REUSE_PIBAR_ROW_MAX", "1") != "0"
         and pibar_row_max is not None
     )
+    param_two_stage_mode = (
+        os.environ.get("GPUREC_SELF_LOOP_PARAM_TWO_STAGE", "0").strip().lower()
+    )
+    param_two_stage_requested = param_two_stage_mode not in (
+        "", "0", "false", "no", "off"
+    )
+    param_two_stage_enabled = False
+    if param_two_stage_requested and accum_enabled and not has_splits:
+        (
+            grad_log_pD_arg,
+            grad_log_pS_arg,
+            grad_E_arg,
+            grad_Ebar_arg,
+            grad_E_s1_arg,
+            grad_E_s2_arg,
+            grad_mt_arg,
+        ) = accum_param_grads
+        param_two_stage_enabled = (
+            grad_log_pD_arg.numel() == 1
+            and grad_log_pS_arg.numel() == 1
+            and grad_E_arg.numel() == S
+            and grad_Ebar_arg.numel() == S
+            and grad_E_s1_arg.numel() == S
+            and grad_E_s2_arg.numel() == S
+            and grad_mt_arg.numel() == S
+        )
 
     scratch_shape = (W, S)
 
@@ -844,6 +1264,7 @@ def wave_backward_uniform_fused(
         neumann_terms,
         USE_LEAF_INDEX=bool(use_leaf_index),
         ACCUM_PARAM_GRADS=bool(accum_enabled),
+        PARAM_GRAD_TWO_STAGE=bool(param_two_stage_enabled),
         FAST_NOSPLIT_PARAM_GRADS=bool(fast_nosplit_param_grads),
         COMPACT_PIBAR_SCRATCH=bool(compact_pibar_scratch),
         RECOMPUTE_PIBAR_DENOM=bool(recompute_pibar_denom),
@@ -855,6 +1276,33 @@ def wave_backward_uniform_fused(
         DTYPE=_tl_float_dtype(dtype),
         **launch_options,
     )
+
+    if param_two_stage_enabled:
+        _wave_backward_uniform_param_two_stage(
+            Pi_star,
+            Pibar_star,
+            ws,
+            W,
+            S,
+            v_k,
+            mt_squeezed,
+            DL_const,
+            Ebar,
+            E,
+            SL1_const,
+            SL2_const,
+            sp_child1,
+            sp_child2,
+            leaf_term_wt,
+            leaf_species_arg,
+            leaf_logp_arg,
+            accum_param_grads,
+            active_mask=active_mask,
+            use_leaf_index=use_leaf_index,
+            leaf_hit_only_logp=leaf_hit_only_logp,
+            leaf_logp_scalar=leaf_logp_scalar,
+            scratch=scratch,
+        )
 
     if accum_enabled:
         return v_k, None, None, None, None, None, None
