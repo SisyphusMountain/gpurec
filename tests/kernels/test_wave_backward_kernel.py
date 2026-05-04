@@ -474,6 +474,75 @@ def test_wave_speciation_gather_matches_scatter(setup_100, monkeypatch):
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+def test_wave_backward_skip_inactive_zero_stores_keeps_stale_rows_masked(monkeypatch):
+    """Inactive v_k rows may stay stale when every consumer receives the mask."""
+    monkeypatch.setenv("GPUREC_WAVE_SPEC_GATHER", "0")
+    device = torch.device("cuda")
+    dtype = torch.float32
+    W, S = 3, 8
+    ws = 0
+    torch.manual_seed(909)
+
+    Pi_star = (torch.randn(W, S, device=device, dtype=dtype) * 0.2 - 2.0).contiguous()
+    Pibar_star = (torch.randn(W, S, device=device, dtype=dtype) * 0.2 - 2.0).contiguous()
+    rhs = (torch.randn(W, S, device=device, dtype=dtype) * 0.01).contiguous()
+    active_mask = torch.tensor([True, False, True], device=device)
+    mt = (torch.randn(S, device=device, dtype=dtype) * 0.01 - 4.0).contiguous()
+    E = (torch.randn(S, device=device, dtype=dtype) * 0.01 - 1.0).contiguous()
+    Ebar = (torch.randn(S, device=device, dtype=dtype) * 0.01 - 1.0).contiguous()
+    DL_const = (1.0 - 4.0 + E).contiguous()
+    SL1_const = (-5.0 + E).contiguous()
+    SL2_const = (-5.0 + Ebar).contiguous()
+    leaf_wt = torch.full((W, S), NEG_INF, device=device, dtype=dtype)
+    sp_child1 = torch.tensor([1, 3, 5, S, S, S, S, S], device=device)
+    sp_child2 = torch.tensor([2, 4, 6, S, S, S, S, S], device=device)
+
+    def _scratch(fill):
+        return {
+            name: torch.full((W, S), fill, device=device, dtype=dtype)
+            for name in (
+                "v_k", "aw0", "aw1", "aw2", "aw345", "aw3", "aw4",
+                "spec_buf", "term_buf",
+            )
+        }
+
+    accum_zero = _zero_accum_param_grads(S, device, dtype)
+    v_zero, *_ = wave_backward_uniform_fused(
+        Pi_star, Pibar_star, ws, W, S, None, rhs,
+        mt, DL_const, Ebar, E, SL1_const, SL2_const,
+        sp_child1, sp_child2, leaf_wt,
+        neumann_terms=3,
+        accum_param_grads=accum_zero,
+        active_mask=active_mask,
+        skip_inactive_zero_stores=False,
+        scratch=_scratch(37.0),
+    )
+
+    sentinel = 123.0
+    accum_skip = _zero_accum_param_grads(S, device, dtype)
+    v_skip, *_ = wave_backward_uniform_fused(
+        Pi_star, Pibar_star, ws, W, S, None, rhs,
+        mt, DL_const, Ebar, E, SL1_const, SL2_const,
+        sp_child1, sp_child2, leaf_wt,
+        neumann_terms=3,
+        accum_param_grads=accum_skip,
+        active_mask=active_mask,
+        skip_inactive_zero_stores=True,
+        scratch=_scratch(sentinel),
+    )
+    torch.cuda.synchronize()
+
+    torch.testing.assert_close(v_skip[active_mask], v_zero[active_mask], rtol=1e-5, atol=1e-6)
+    torch.testing.assert_close(v_zero[~active_mask], torch.zeros_like(v_zero[~active_mask]))
+    torch.testing.assert_close(
+        v_skip[~active_mask],
+        torch.full_like(v_skip[~active_mask], sentinel),
+    )
+    for got, ref in zip(accum_skip, accum_zero):
+        torch.testing.assert_close(got, ref, rtol=1e-5, atol=1e-6)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
 def test_wave_backward_uniform_fused_supports_fp64_synthetic():
     """Exercise the fused self-loop kernel in fp64 on an exact small reference."""
     device = torch.device("cuda")

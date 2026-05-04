@@ -180,6 +180,7 @@ def _wave_backward_uniform_kernel(
     USE_PIBAR_ROW_MAX: tl.constexpr,
     SPEC_GATHER: tl.constexpr,
     USE_ACTIVE_MASK: tl.constexpr,
+    SKIP_INACTIVE_ZERO_STORES: tl.constexpr,
     DTYPE: tl.constexpr,
 ):
     """Fused backward kernel for uniform Pibar mode.
@@ -202,6 +203,8 @@ def _wave_backward_uniform_kernel(
     if USE_ACTIVE_MASK:
         row_active = tl.load(active_mask_ptr + w)
         if row_active == 0:
+            if SKIP_INACTIVE_ZERO_STORES:
+                return
             for s_start in range(0, S, BLOCK_S):
                 s_offs = s_start + tl.arange(0, BLOCK_S)
                 mask = s_offs < S
@@ -1066,6 +1069,7 @@ def wave_backward_uniform_fused(
     active_mask=None,
     sp_parent=None,
     pibar_row_max=None,
+    skip_inactive_zero_stores=False,
     scratch=None,
 ):
     """Fused backward: precompute + Neumann + param VJP in one kernel per wave.
@@ -1273,6 +1277,7 @@ def wave_backward_uniform_fused(
         USE_PIBAR_ROW_MAX=bool(use_pibar_row_max),
         SPEC_GATHER=bool(spec_gather),
         USE_ACTIVE_MASK=bool(active_mask is not None),
+        SKIP_INACTIVE_ZERO_STORES=bool(skip_inactive_zero_stores),
         DTYPE=_tl_float_dtype(dtype),
         **launch_options,
     )
@@ -1661,6 +1666,7 @@ def _dts_cross_backward_accum_kernel(
     GRAD_MT_TILE_SPLITS: tl.constexpr,
     OUTPUT_PIBAR_UD: tl.constexpr,
     OUTPUT_SIDE_ACTIVE: tl.constexpr,
+    SKIP_INACTIVE_PIBAR_OUTPUT_ZERO: tl.constexpr,
     DTYPE: tl.constexpr,
 ):
     """DTS cross-clade backward with direct accumulation of Pi adjoints.
@@ -1691,11 +1697,13 @@ def _dts_cross_backward_accum_kernel(
                 tl.store(param_pD_ptr + i + _scalar_off, zero_scalar)
                 tl.store(param_pS_ptr + i + _scalar_off, zero_scalar)
             if OUTPUT_PIBAR_UD:
-                tl.store(pibar_A_ptr + i + _scalar_off, zero_scalar)
-                tl.store(pibar_A_ptr + tl.num_programs(0) + i + _scalar_off, zero_scalar)
                 if OUTPUT_SIDE_ACTIVE:
                     tl.store(pibar_side_active_ptr + i + _scalar_off, 0)
                     tl.store(pibar_side_active_ptr + tl.num_programs(0) + i + _scalar_off, 0)
+                if SKIP_INACTIVE_PIBAR_OUTPUT_ZERO:
+                    return
+                tl.store(pibar_A_ptr + i + _scalar_off, zero_scalar)
+                tl.store(pibar_A_ptr + tl.num_programs(0) + i + _scalar_off, zero_scalar)
             for s_start in range(0, S, BLOCK_S):
                 s_offs = s_start + tl.arange(0, BLOCK_S)
                 mask = s_offs < S
@@ -1974,6 +1982,7 @@ def dts_cross_backward_accum_fused(
     pibar_row_max=None,
     grad_mt_two_stage=False,
     grad_mt_two_stage_tile_splits=128,
+    skip_inactive_pibar_output_zero=False,
     scratch=None,
 ):
     """Fused DTS backward with direct Pi-adjoint accumulation."""
@@ -2118,6 +2127,7 @@ def dts_cross_backward_accum_fused(
         GRAD_MT_TILE_SPLITS=grad_mt_two_stage_tile_splits,
         OUTPUT_PIBAR_UD=bool(output_pibar_ud),
         OUTPUT_SIDE_ACTIVE=bool(output_pibar_side_active),
+        SKIP_INACTIVE_PIBAR_OUTPUT_ZERO=bool(skip_inactive_pibar_output_zero),
         DTYPE=_tl_float_dtype(dtype),
     )
 

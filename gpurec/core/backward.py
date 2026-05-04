@@ -695,6 +695,9 @@ def Pi_wave_backward(
     fused_uniform_backward_view_rhs = (
         os.environ.get("GPUREC_FUSED_UNIFORM_BACKWARD_VIEW_RHS", "1") != "0"
     )
+    skip_inactive_zero_stores_enabled = (
+        os.environ.get("GPUREC_BACKWARD_SKIP_INACTIVE_ZERO_STORES", "0") != "0"
+    )
     backward_pruning_row_stats_enabled = (
         os.environ.get("GPUREC_BACKWARD_PRUNING_ROW_STATS", "0") != "0"
     )
@@ -1713,6 +1716,15 @@ def Pi_wave_backward(
                     correction_mode=cuda_self_loop_nosplit_correction,
                 )
             else:
+                skip_wave_inactive_zero_stores = (
+                    skip_inactive_zero_stores_enabled
+                    and active_mask_for_wave_kernel is not None
+                    and accum_param_grads is not None
+                    and (
+                        not meta['has_splits']
+                        or active_mask_for_split_kernels is active_mask_for_wave_kernel
+                    )
+                )
                 # G=1: extract shared [S] constants for the fused kernel.
                 v_k, aw0, aw1, aw2, aw345, aw3, aw4 = wave_backward_uniform_fused(
                     Pi_star_wave, Pibar_star_wave, ws, W, S,
@@ -1726,6 +1738,7 @@ def Pi_wave_backward(
                     active_mask=active_mask_for_wave_kernel,
                     sp_parent=sp_parent_wave,
                     pibar_row_max=forward_pibar_row_max,
+                    skip_inactive_zero_stores=skip_wave_inactive_zero_stores,
                     scratch=scratch_pool.get("wave") if scratch_pool is not None else None,
                 )
 
@@ -2048,6 +2061,11 @@ def Pi_wave_backward(
                                 ),
                                 grad_mt_two_stage_tile_splits=(
                                     dts_grad_mt_two_stage_tile_splits
+                                ),
+                                skip_inactive_pibar_output_zero=(
+                                    skip_inactive_zero_stores_enabled
+                                    and pibar_ud_fusion_match
+                                    and active_mask_for_split_kernels is not None
                                 ),
                                 scratch=(
                                     scratch_pool.get("dts")

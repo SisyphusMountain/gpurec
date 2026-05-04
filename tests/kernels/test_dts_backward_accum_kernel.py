@@ -1065,6 +1065,157 @@ def test_dts_staged_grad_mt_two_stage_matches_vector_atomics(dtype, atol, rtol, 
     assert torch.equal(two_stage_side.cpu(), atomic_side.cpu())
 
 
+def test_dts_staged_skip_inactive_pibar_output_zero_keeps_stale_rows_masked():
+    torch.manual_seed(44)
+    device = torch.device("cuda")
+    dtype = torch.float32
+    C, S, W, N = 10, 31, 3, 8
+    ws = 7
+
+    _, ancestors_dense, sp_child1, sp_child2, level_parents = _binary_tree_helpers(
+        S, device, dtype
+    )
+    Pi = (torch.randn(C, S, device=device, dtype=dtype) * 0.2 - 2.0).contiguous()
+    mt = (torch.randn(S, device=device, dtype=dtype) * 0.01 - 4.0).contiguous()
+    Pibar, row_max = _uniform_pibar_from_pi(Pi, mt, ancestors_dense)
+    v_k = (torch.randn(W, S, device=device, dtype=dtype) * 0.1).contiguous()
+
+    sl = torch.tensor([0, 1, 2, 3, 1, 4, 5, 2], device=device, dtype=torch.long)
+    sr = torch.tensor([1, 2, 3, 4, 0, 2, 6, 5], device=device, dtype=torch.long)
+    reduce_idx = torch.tensor([0, 1, 1, 2, 2, 0, 1, 2], device=device, dtype=torch.long)
+    wlsp = (torch.randn(N, device=device, dtype=dtype) * 0.1 - 1.0).contiguous()
+    active_mask = torch.tensor([True, False, True], device=device)
+
+    base_rhs = torch.zeros(C, S, device=device, dtype=dtype)
+    base_mt = torch.zeros(S, device=device, dtype=dtype)
+    base_pD = torch.zeros(1, device=device, dtype=dtype)
+    base_pS = torch.zeros(1, device=device, dtype=dtype)
+    base_ud, base_A, base_side, _, _ = dts_cross_backward_accum_fused(
+        Pi,
+        Pibar,
+        v_k,
+        ws,
+        sl,
+        sr,
+        reduce_idx,
+        wlsp,
+        _scalar_param(-4.0, device=device, dtype=dtype, shape="1d"),
+        _scalar_param(-5.0, device=device, dtype=dtype, shape="1d"),
+        sp_child1,
+        sp_child2,
+        base_rhs,
+        S,
+        active_mask=active_mask,
+        merge_s_term=True,
+        grad_log_pD=base_pD,
+        grad_log_pS=base_pS,
+        accum_param_reductions=True,
+        grad_mt=base_mt,
+        accum_mt_reduction=True,
+        output_pibar_ud=True,
+        output_pibar_side_active=True,
+        mt_squeezed=mt,
+        pibar_row_max=row_max,
+    )
+
+    sentinel = 77.0
+    skip_rhs = torch.zeros(C, S, device=device, dtype=dtype)
+    skip_mt = torch.zeros(S, device=device, dtype=dtype)
+    skip_pD = torch.zeros(1, device=device, dtype=dtype)
+    skip_pS = torch.zeros(1, device=device, dtype=dtype)
+    scratch = {
+        "pibar_ud": torch.full((2 * N, S), sentinel, device=device, dtype=dtype),
+        "pibar_A": torch.full((2 * N,), sentinel, device=device, dtype=dtype),
+        "pibar_side_active": torch.ones((2 * N,), device=device, dtype=torch.bool),
+    }
+    skip_ud, skip_A, skip_side, _, _ = dts_cross_backward_accum_fused(
+        Pi,
+        Pibar,
+        v_k,
+        ws,
+        sl,
+        sr,
+        reduce_idx,
+        wlsp,
+        _scalar_param(-4.0, device=device, dtype=dtype, shape="1d"),
+        _scalar_param(-5.0, device=device, dtype=dtype, shape="1d"),
+        sp_child1,
+        sp_child2,
+        skip_rhs,
+        S,
+        active_mask=active_mask,
+        merge_s_term=True,
+        grad_log_pD=skip_pD,
+        grad_log_pS=skip_pS,
+        accum_param_reductions=True,
+        grad_mt=skip_mt,
+        accum_mt_reduction=True,
+        output_pibar_ud=True,
+        output_pibar_side_active=True,
+        mt_squeezed=mt,
+        pibar_row_max=row_max,
+        skip_inactive_pibar_output_zero=True,
+        scratch=scratch,
+    )
+    torch.cuda.synchronize()
+
+    side_active_by_parent = torch.cat(
+        [active_mask[reduce_idx], active_mask[reduce_idx]]
+    )
+    torch.testing.assert_close(skip_rhs, base_rhs, atol=5e-5, rtol=5e-5)
+    torch.testing.assert_close(skip_mt, base_mt, atol=5e-5, rtol=5e-5)
+    torch.testing.assert_close(skip_pD, base_pD, atol=5e-5, rtol=5e-5)
+    torch.testing.assert_close(skip_pS, base_pS, atol=5e-5, rtol=5e-5)
+    torch.testing.assert_close(skip_ud[side_active_by_parent], base_ud[side_active_by_parent])
+    torch.testing.assert_close(skip_A[side_active_by_parent], base_A[side_active_by_parent])
+    torch.testing.assert_close(
+        skip_ud[~side_active_by_parent],
+        torch.full_like(skip_ud[~side_active_by_parent], sentinel),
+    )
+    torch.testing.assert_close(
+        skip_A[~side_active_by_parent],
+        torch.full_like(skip_A[~side_active_by_parent], sentinel),
+    )
+    assert torch.equal(skip_side.cpu(), base_side.cpu())
+
+    base_total_rhs = base_rhs.clone()
+    skip_total_rhs = skip_rhs.clone()
+    uniform_cross_pibar_vjp_tree_from_ud_fused(
+        Pi,
+        base_ud.clone(),
+        base_A,
+        sl,
+        sr,
+        sp_child1,
+        sp_child2,
+        level_parents,
+        base_total_rhs,
+        S,
+        active_mask=active_mask,
+        reduce_idx=reduce_idx,
+        pibar_row_max=row_max,
+        side_active=base_side,
+    )
+    uniform_cross_pibar_vjp_tree_from_ud_fused(
+        Pi,
+        skip_ud.clone(),
+        skip_A,
+        sl,
+        sr,
+        sp_child1,
+        sp_child2,
+        level_parents,
+        skip_total_rhs,
+        S,
+        active_mask=active_mask,
+        reduce_idx=reduce_idx,
+        pibar_row_max=row_max,
+        side_active=skip_side,
+    )
+    torch.cuda.synchronize()
+    torch.testing.assert_close(skip_total_rhs, base_total_rhs, atol=5e-5, rtol=5e-5)
+
+
 @pytest.mark.parametrize("dtype,atol,rtol", [(torch.float32, 4e-5, 4e-5), (torch.float64, 1e-9, 1e-10)])
 @pytest.mark.parametrize("active", [False, True])
 def test_dts_staged_pibar_ud_skip_zero_sides_matches_unpruned(dtype, atol, rtol, active):
