@@ -218,20 +218,20 @@ def _run_wave_scatter_or_gather(d, wave_idx, rhs, *, use_gather, monkeypatch):
 
     monkeypatch.setenv("GPUREC_WAVE_SPEC_GATHER", "1" if use_gather else "0")
     v_k, *_ = wave_backward_uniform_fused(
-        d['Pi_star_wave'].float().contiguous(),
-        d['Pibar_star_wave'].float().contiguous(),
+        d['Pi_star_wave'].to(dtype=dtype).contiguous(),
+        d['Pibar_star_wave'].to(dtype=dtype).contiguous(),
         ws, W, S,
-        dts_r.float().contiguous() if dts_r is not None else None,
-        rhs.float().clone().contiguous(),
-        mt.float().contiguous(),
-        DL_const.float().contiguous(),
-        d['Ebar'].float().contiguous(),
-        d['E'].float().contiguous(),
-        SL1_const.float().contiguous(),
-        SL2_const.float().contiguous(),
+        dts_r.to(dtype=dtype).contiguous() if dts_r is not None else None,
+        rhs.to(dtype=dtype).clone().contiguous(),
+        mt.to(dtype=dtype).contiguous(),
+        DL_const.to(dtype=dtype).contiguous(),
+        d['Ebar'].to(dtype=dtype).contiguous(),
+        d['E'].to(dtype=dtype).contiguous(),
+        SL1_const.to(dtype=dtype).contiguous(),
+        SL2_const.to(dtype=dtype).contiguous(),
         d['sp_child1'].long().contiguous(),
         d['sp_child2'].long().contiguous(),
-        leaf_wt.float().contiguous(),
+        leaf_wt.to(dtype=dtype).contiguous(),
         neumann_terms=3,
         accum_param_grads=accum,
         sp_parent=sp_parent,
@@ -445,9 +445,9 @@ class TestWaveBackwardKernel:
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
-def test_wave_speciation_gather_matches_scatter(setup_100, monkeypatch):
-    """The parent-gather Neumann path should match the default scatter path."""
-    d = setup_100
+def test_wave_speciation_gather_matches_scatter(monkeypatch):
+    """The exact scatter path is used even if the old gather flag is set."""
+    d = _setup("test_trees_100", n_families=1, dtype=torch.float64)
     wl = d['wave_layout']
     wave_indices = [0]
     for k in range(len(wl['wave_metas']) - 1, -1, -1):
@@ -468,9 +468,9 @@ def test_wave_speciation_gather_matches_scatter(setup_100, monkeypatch):
             d, wave_idx, rhs, use_gather=True, monkeypatch=monkeypatch
         )
 
-        torch.testing.assert_close(v_gather, v_scatter, rtol=1e-4, atol=5e-6)
+        torch.testing.assert_close(v_gather, v_scatter, rtol=1e-10, atol=1e-10)
         for got, ref in zip(accum_gather, accum_scatter):
-            torch.testing.assert_close(got, ref, rtol=1e-3, atol=3e-5)
+            torch.testing.assert_close(got, ref, rtol=1e-10, atol=1e-10)
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
@@ -579,20 +579,23 @@ def test_wave_backward_uniform_fused_supports_fp64_synthetic():
     denom = p_prime.sum(dim=1, keepdim=True) - p_prime @ ancestors_T_dense
     Pibar_star = (torch.log2(denom) + pi_max + mt.unsqueeze(0)).contiguous()
 
-    refs = _pytorch_single_wave_backward(
-        Pi_star, Pibar_star, ws, W, S, dts_r, rhs,
-        mt, DL_const, Ebar, E, SL1_const, SL2_const,
-        sp_child1, sp_child2, leaf_wt, ancestors_T, neumann_terms=3,
-    )
-    tris = wave_backward_uniform_fused(
-        Pi_star, Pibar_star, ws, W, S, dts_r, rhs.clone(),
-        mt, DL_const, Ebar, E, SL1_const, SL2_const,
-        sp_child1, sp_child2, leaf_wt, neumann_terms=3,
-        sp_parent=sp_parent,
-    )
+    for neumann_terms in (3, 20):
+        refs = _pytorch_single_wave_backward(
+            Pi_star, Pibar_star, ws, W, S, dts_r, rhs,
+            mt, DL_const, Ebar, E, SL1_const, SL2_const,
+            sp_child1, sp_child2, leaf_wt, ancestors_T,
+            neumann_terms=neumann_terms,
+        )
+        tris = wave_backward_uniform_fused(
+            Pi_star, Pibar_star, ws, W, S, dts_r, rhs.clone(),
+            mt, DL_const, Ebar, E, SL1_const, SL2_const,
+            sp_child1, sp_child2, leaf_wt,
+            neumann_terms=neumann_terms,
+            sp_parent=sp_parent,
+        )
 
-    for ref, tri in zip(refs, tris):
-        torch.testing.assert_close(tri, ref, rtol=1e-10, atol=1e-10)
+        for ref, tri in zip(refs, tris):
+            torch.testing.assert_close(tri, ref, rtol=1e-10, atol=1e-10)
 
 
 class TestWaveBackwardKernelLargeS:

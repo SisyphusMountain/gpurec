@@ -450,6 +450,101 @@ def test_genewise_uniform_backward_matches_individual_uniform_trees(
     )
 
 
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA fused path required")
+def test_global_uniform_fused_high_neumann_matches_tight_generic_gmres(
+    monkeypatch,
+):
+    """High-iteration fused uniform backward matches a tight generic solve.
+
+    The production generic path intentionally uses a short GMRES solve, and the
+    production fused path often uses a short Neumann series.  This test tightens
+    both sides so it checks implementation correctness rather than default
+    approximation settings.
+    """
+    data_dir = _ROOT / "data" / "test_trees_1000"
+    if not data_dir.exists():
+        pytest.skip("test_trees_1000 dataset not present")
+    gene_path = data_dir / "g_0002.nwk"
+    if not gene_path.exists():
+        pytest.skip("test_trees_1000/g_0002.nwk not present")
+
+    from gpurec.core import backward as backward_core
+
+    orig_gmres = backward_core._gmres_self_loop_solve
+
+    def tight_gmres(
+        rhs,
+        ingredients,
+        sp_child1,
+        sp_child2,
+        S,
+        W,
+        pibar_mode,
+        transfer_mat_T,
+        ancestors_T,
+        max_iters=30,
+        tol=1e-5,
+    ):
+        return orig_gmres(
+            rhs,
+            ingredients,
+            sp_child1,
+            sp_child2,
+            S,
+            W,
+            pibar_mode,
+            transfer_mat_T,
+            ancestors_T,
+            max_iters=40,
+            tol=1e-14,
+        )
+
+    monkeypatch.setattr(backward_core, "_gmres_self_loop_solve", tight_gmres)
+
+    solver_kwargs = dict(
+        fixed_iters_Pi=6,
+        max_iters_E=128,
+        tol_E=0.0,
+        neumann_terms=20,
+        use_pruning=False,
+        cg_tol=1e-10,
+        cg_maxiter=1000,
+    )
+
+    def run_backward(*, fused: bool):
+        monkeypatch.setenv(
+            "GPUREC_FUSED_UNIFORM_BACKWARD",
+            "1" if fused else "0",
+        )
+        model = GeneReconModel.from_trees(
+            species_tree=str(data_dir / "sp.nwk"),
+            gene_trees=[str(gene_path)],
+            mode="global",
+            pibar_mode="uniform",
+            device=torch.device("cuda"),
+            dtype=torch.float64,
+            theta_init_rates=(0.05, 0.05, 0.05),
+            **solver_kwargs,
+        )
+        model.zero_grad(set_to_none=True)
+        model.static.warm_E = None
+        nll = model()
+        nll.backward()
+        torch.cuda.synchronize()
+        return nll.detach(), model.theta.grad.detach().clone()
+
+    generic_nll, generic_grad = run_backward(fused=False)
+    fused_nll, fused_grad = run_backward(fused=True)
+
+    torch.testing.assert_close(fused_nll, generic_nll, rtol=1e-12, atol=1e-12)
+    torch.testing.assert_close(
+        fused_grad,
+        generic_grad,
+        rtol=1e-10,
+        atol=1e-8,
+    )
+
+
 def test_gradcheck_global_uniform_small():
     """Autograd bridge backward matches torch's finite-difference gradcheck."""
     data_dir = _ROOT / "data" / "test_trees_3"
