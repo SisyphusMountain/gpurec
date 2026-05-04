@@ -290,8 +290,15 @@ def _dts_layout_reference(
     grad_log_pD = torch.zeros_like(log_pD)
     grad_log_pS = torch.zeros_like(log_pS)
     grad_mt = torch.zeros_like(mt_squeezed) if mt_squeezed is not None else None
+    family_count = (
+        int(family_idx.max().item()) + 1
+        if family_idx is not None and int(family_idx.numel()) > 0
+        else None
+    )
 
     def _param_value(param, family, species):
+        if family_count is not None and param.ndim == 1 and int(param.shape[0]) == family_count:
+            return param[family]
         if param.ndim == 1 and int(param.shape[0]) == S:
             return param[species]
         if param.ndim == 1:
@@ -299,6 +306,9 @@ def _dts_layout_reference(
         return param[family, species]
 
     def _add_param(grad, family, species, value):
+        if family_count is not None and grad.ndim == 1 and int(grad.shape[0]) == family_count:
+            grad[family] += value
+            return
         if grad.ndim == 1 and int(grad.shape[0]) == S:
             grad[species] += value
         elif grad.ndim == 1:
@@ -381,14 +391,23 @@ def _dts_layout_reference(
 @pytest.mark.parametrize("layout", ["species", "family_scalar", "family_species"])
 @pytest.mark.parametrize("output_pibar_ud", [False, True])
 @pytest.mark.parametrize("active", [False, True])
-def test_dts_backward_accum_fused_parameter_layouts(layout, output_pibar_ud, active):
+@pytest.mark.parametrize("ambiguous_g_equals_s", [False, True])
+def test_dts_backward_accum_fused_parameter_layouts(
+    layout, output_pibar_ud, active, ambiguous_g_equals_s
+):
+    if ambiguous_g_equals_s and layout != "family_scalar":
+        pytest.skip("G == S ambiguity only applies to 1D family-scalar layout")
     torch.manual_seed(41)
     device = torch.device("cuda")
     dtype = torch.float32
-    C, S, W, N, G = 10, 13, 4, 7, 3
+    C, S, W, N, G = (18, 13, 4, 7, 13) if ambiguous_g_equals_s else (10, 13, 4, 7, 3)
     ws = 6
     Pi = (torch.randn(C, S, device=device, dtype=dtype) * 0.2 - 2.0).contiguous()
-    family_idx = torch.tensor([0, 1, 2, 0, 1, 2, 0, 1, 2, 0], device=device)
+    family_idx = (
+        (torch.arange(C, device=device) % G).to(torch.long)
+        if ambiguous_g_equals_s
+        else torch.tensor([0, 1, 2, 0, 1, 2, 0, 1, 2, 0], device=device)
+    )
     mt = (torch.randn((G, S), device=device, dtype=dtype) * 0.01 - 4.0).contiguous()
     if layout == "species":
         log_pD = (torch.randn(S, device=device, dtype=dtype) * 0.01 - 4.0).contiguous()

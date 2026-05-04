@@ -67,6 +67,8 @@ def _dts_layout_param_args(log_pD, log_pS, *, family_idx, S, device, dtype):
             param = param.to(device=device, dtype=dtype)
         if param.numel() == 1:
             return param.reshape(1).contiguous(), 0
+        if family_idx is not None and param.ndim == 1:
+            return param.contiguous(), 2
         if param.ndim == 1 and int(param.shape[0]) == int(S):
             return param.contiguous(), 1
         if family_idx is not None:
@@ -92,6 +94,8 @@ def _dts_grad_layout(grad, *, family_idx, S):
     """Return gradient addressing layout matching _dts_layout_param_args."""
     if grad.numel() == 1:
         return 0
+    if family_idx is not None and grad.ndim == 1:
+        return 2
     if grad.ndim == 1 and int(grad.shape[0]) == int(S):
         return 1
     if family_idx is not None:

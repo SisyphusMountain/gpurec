@@ -1267,6 +1267,183 @@ This proposal should be profiled separately for two wave shapes:
 
 Those shapes stressed different DTS kernels in the uniform backward docs.
 
+### Proposal 3 follow-up: implemented family-aware fused DTS backward
+
+Proposal 3 was implemented and accepted for optimized genewise backward.
+
+The code baseline before the worker pass was commit `8346ad3`,
+`Generalize fused backward DTS layouts`.  After that baseline, Worker 1 fixed
+an edge-case classifier bug in `gpurec/core/kernels/wave_backward.py`: 1D
+genewise scalar DTS parameters shaped `[G]` were previously classified as
+shared specieswise `[S]` when `G == S`.  The layout classifier now prefers the
+family-scalar layout when `family_idx` is present, and
+`tests/kernels/test_dts_backward_accum_kernel.py` adds explicit `G == S`
+family-scalar coverage.
+
+The fused DTS backward accumulation path now supports four parameter layouts:
+
+| Layout | Meaning | Tensor shape | Family index |
+|---:|---|---|---|
+| 0 | shared scalar | `[1]` | absent |
+| 1 | shared species | `[S]` | absent |
+| 2 | family scalar | `[G]` | parent family |
+| 3 | family species | `[G,S]` | parent family |
+
+For genewise scalar `[G]` parameters, the split parent row determines the
+family:
+
+```text
+split_parent = ws + reduce_idx[split]
+family = family_idx[split_parent]
+
+atomic_add grad_log_pD[family] += sum_s vd0
+atomic_add grad_log_pS[family] += sum_s (vd3 + vd4)
+```
+
+For genewise specieswise `[G,S]` parameters, the kernel accumulates directly to
+`grad_log_pD[family,s]` and `grad_log_pS[family,s]` using atomics.  For shared
+specieswise `[S]` parameters, `family_idx` is absent and the shared species
+layout accumulates directly to `[s]`.
+
+The fused kernel also keeps the direct Pi adjoint accumulation in
+`accumulated_rhs`, merges the S-term when that path is enabled, and handles
+`grad_mt` accumulation in-kernel.  When the fused flags are active, the
+generic materialized `DTS_5 = torch.stack(...)` branch is avoided.
+
+Worker 1 added guarded high-`S` checks that raise if the `DTS_5` fallback is
+entered.  The guarded call counts were:
+
+| Case | Fused DTS calls | Generic `DTS_5` fallback |
+|---|---:|---:|
+| shared specieswise `[S]` | 26 | 0 |
+| genewise scalar `[G]` | 26 | 0 |
+| genewise specieswise `[G,S]` | 26 | 0 |
+
+#### Correctness
+
+Local validation after the Worker 1 edge-case patch:
+
+```bash
+pytest -q \
+  tests/kernels/test_dts_backward_accum_kernel.py \
+  tests/gradients/test_genewise_fused_backward.py \
+  tests/unit/test_specieswise_uniform.py::test_specieswise_uniform_backward_optimized_matches_reference
+```
+
+Result:
+
+```text
+85 passed, 8 skipped in 4.77s
+```
+
+Worker 1 focused validation:
+
+| Check | Result |
+|---|---:|
+| full DTS kernel file | `81 passed, 8 skipped` |
+| genewise fused backward | `3 passed` |
+| specieswise optimized/reference backward | `1 passed` |
+| finite difference `[True-True-uniform]` | passed |
+| finite difference `[False-True-uniform]` | passed |
+
+The tests cover shared specieswise, genewise scalar, and genewise specieswise
+layouts, including the ambiguous `G == S` shape.  The fallback guards make the
+optimized checks meaningful: they fail if the run silently routes through the
+old materialized PyTorch DTS branch.
+
+#### Benchmark
+
+The main resident-chunk benchmark after Proposal 3 and Proposal 4 uses
+`tests/data/test_trees_1000`, because `tests/data/test_trees_100` has
+`S=199` and the optimized genewise guard intentionally does not activate when
+`S <= 256`.
+
+Current local 100-family genewise optimized run:
+
+```bash
+python profiling/proposal2/bench_genewise_backward.py \
+  --dataset tests/data/test_trees_1000 \
+  --fams 100 \
+  --start 0 \
+  --reps 2 \
+  --warmups 1 \
+  --max-wave-size 32768 \
+  --backward-path optimized-genewise \
+  --cache-dir /tmp/gpurec_current_bench_cache
+```
+
+| Path | Families | Median | Peak allocation |
+|---|---:|---:|---:|
+| optimized genewise | 100 | `651.534 ms` | `18.191 GB` |
+| global reference | 100 | `716.431 ms` | `18.184 GB` |
+| optimized specieswise | 100 | `963.523 ms` | `16.937 GiB` |
+
+The optimized genewise path is now essentially global-speed on the same
+100-family resident chunk, and slightly faster in these local runs.  The
+specieswise path is slower because per-species gradients add atomic and
+reduction pressure.
+
+Additional worker and profiler runs:
+
+| Run | Median / mean | Peak allocation |
+|---|---:|---:|
+| Worker 3, 50-family genewise optimized | `335.789 ms` median | `10.550 GB` |
+| Worker 3, 100-family genewise optimized, expandable segments | `632.345 ms` median | `18.186 GB` |
+| same local 100-family run under Nsys, reps 1/warmups 1 | `652.357 ms` backward | `18.191 GB` |
+| Worker 2, 10-family high-`S` optimized guard | `95.658 ms` median/mean | `1.976 GB` |
+| Worker 1, 2-family high-`S` fast benchmark | `35.439 ms` median | `0.506 GB` |
+
+Nsys profile for the 100-family genewise script,
+`/tmp/gpurec_prop34_genewise_bwd100.nsys-rep`:
+
+| Kernel bucket | Time | Launches | Kernel time |
+|---|---:|---:|---:|
+| `_wave_backward_uniform_kernel` | `985.688 ms` | 78 | `57.2%` |
+| `_wave_step_uniform_kernel` | `301.036 ms` | 672 | `17.5%` |
+| `_dts_cross_backward_accum_kernel` | `122.079 ms` | 68 | `7.1%` |
+| `_uniform_cross_pibar_vjp_tree_from_ud_compact_kernel` | `62.838 ms` | 68 | `3.6%` |
+| `_dts_parent_reduced_ge2_stage1_kernel` | `61.487 ms` | 26 | `3.6%` |
+| `_dts_fused_kernel` | `44.614 ms` | 132 | `2.6%` |
+| `_wave_pibar_uniform_parent_kernel` | `39.130 ms` | 112 | `2.3%` |
+
+CUDA memory operations were tiny relative to kernel time: D2H `2.674 ms`, H2D
+`2.565 ms`, D2D `1.670 ms`, and memset `0.309 ms`.
+
+NCU representative Proposal 3 launch,
+`/tmp/gpurec_profile/prop34_genewise_backward/ncu/dts_accum_skip0.csv`:
+
+| Metric | Value |
+|---|---:|
+| kernel | `_dts_cross_backward_accum_kernel` |
+| grid / block | `(7330,1,1)` / `(128,1,1)` |
+| duration | `1.020576 ms` |
+| registers/thread | `96` |
+| shared memory/block | `3072 B` |
+| waves/SM | `11.45` |
+| achieved active warps | `41.26%` |
+| SM throughput | `27.77%` |
+| memory throughput | `55.56%` |
+| DRAM throughput | `~546 GB/s` |
+| DRAM read/write | `352.35 MB / 205.13 MB` |
+| L1 / L2 sector hit rate | `60.49% / 66.05%` |
+| L2 atomic input cycles active | `25.91%` |
+| global load/store/reduction requests | `6.919M / 0.953M / 3.709M` |
+| local spilling requests | `0` |
+
+Proposal 3 removed the PyTorch materializations it targeted.  The remaining
+fused DTS accumulation cost is a memory plus global-reduction/atomic-pressure
+kernel, not a compute-bound kernel.  It has no local spilling, so the next DTS
+optimization target should be memory locality, reduction traffic, or staged
+family reductions rather than register trimming.
+
+#### Decision
+
+Decision: accept and promote Proposal 3 for optimized genewise backward.
+
+Keep the fallback gates.  Small-`S` fixtures intentionally use generic paths,
+and the optimized path should continue to fail loudly in guarded benchmarks if
+the family-aware fused DTS route is unavailable.
+
 ## Proposal 4: Make Uniform Pibar VJP Family-Aware
 
 Uniform Pibar itself is mostly independent of the gene family because the
@@ -1302,6 +1479,122 @@ Expected effect:
   custom-kernel path used by global mode;
 - reduce memory enough for larger genewise backward chunks;
 - preserve exact ancestor correction.
+
+### Proposal 4 follow-up: implemented family-aware staged Pibar VJP
+
+Proposal 4 was implemented and accepted for optimized genewise backward.
+
+Batched/genewise forward now saves `uniform_pibar_row_max` when staged Pibar UD
+fusion is enabled, including batched mode.  That saved row statistic lets the
+backward use the same compact/tree Pibar VJP from the UD path instead of the
+generic materialized PyTorch Pibar VJP.
+
+The fused DTS backward can now output staged `pibar_ud` and `pibar_A` using
+family-aware `mt` loads.  For family-indexed `mt`, the UD-producing path loads
+`mt[family_l,s]` and `mt[family_r,s]` for the two child sides rather than
+materializing row-expanded `mt` tensors.  Backward then calls
+`_uniform_cross_pibar_vjp_tree_from_ud_compact_kernel`; the direct tree and
+generic tree paths are not reached in the optimized genewise guard run.
+
+Worker 2's 2-family high-`S` guard reported:
+
+```text
+forward_row_max_saved True (11734,) finite True
+dts_calls=37
+dts_ud_calls=37
+from_ud_calls=37
+direct_tree_calls=0
+generic_tree_calls=0
+gradients finite
+```
+
+This proves both halves of the Proposal 4 route: forward saves the row maxima
+needed by the staged path, and backward consumes the compact UD data rather
+than routing through generic materialized Pibar VJP.
+
+#### Correctness
+
+Worker 2 focused Proposal 4 validation:
+
+```text
+29 passed, 8 skipped
+```
+
+Worker 2 broader regression:
+
+```text
+24 passed
+```
+
+The broader pass covered genewise wave, wave-step, autograd, and fused
+regression tests.  Worker 3 also reran the public autograd bridge and gradient
+parity checks:
+
+| Check | Result |
+|---|---:|
+| autograd bridge gradchecks, parity, finite difference | `8 passed` |
+| genewise fused backward tests | `3 passed` |
+| specieswise checks | `2 passed` |
+
+Extra genewise individual-uniform parity from Worker 3:
+
+| Metric | Max diff |
+|---|---:|
+| per-family NLL | `0.0` |
+| weighted gradient absolute/relative | `1.967215204623507e-07` |
+
+The exercised tolerances were:
+
+| Check | Tolerance |
+|---|---|
+| gradcheck | `eps=1e-4`, `atol=2e-3`, `rtol=2e-3` |
+| genewise batched vs individual uniform NLL | `1e-10` |
+| genewise batched vs individual uniform weighted gradient | `2e-6` |
+| specieswise optimized vs reference loss | `atol=2e-3`, `rtol=1e-5` |
+| specieswise optimized vs reference gradient | `atol=3e-2`, `rtol=2e-2` |
+
+#### Profiling
+
+NCU representative Proposal 4 launch,
+`/tmp/gpurec_profile/prop34_genewise_backward/ncu/pibar_ud_compact_skip0.csv`:
+
+| Metric | Value |
+|---|---:|
+| kernel | `_uniform_cross_pibar_vjp_tree_from_ud_compact_kernel` |
+| grid / block | `(14660,1,1)` / `(128,1,1)` |
+| duration | `0.378752 ms` |
+| registers/thread | `36` |
+| shared memory/block | `1024 B` |
+| waves/SM | `9.54` |
+| active warps | `94.32%` |
+| SM throughput | `24.91%` |
+| memory throughput | `78.04%` |
+| DRAM throughput | `~767 GB/s` |
+| DRAM read/write | `191.27 MB / 99.30 MB` |
+| L1 / L2 sector hit rate | `73.09% / 66.51%` |
+| L2 atomic input cycles active | `8.94%` |
+| global load/store/reduction requests | `4.851M / 0.366M / 0.501M` |
+| local spilling requests | `0` |
+
+Proposal 4 successfully converts genewise uniform Pibar VJP to the compact
+staged path.  The representative kernel is memory-bandwidth dominated, but it
+is not spill- or occupancy-limited.  Atomic pressure is visible but far smaller
+than in fused DTS accumulation.
+
+#### Decision
+
+Decision: accept and promote Proposal 4 for optimized genewise backward.
+
+Keep fallback gates because the family-aware fused path requires the forward
+row maxima and staged tree metadata.  Generic and direct-tree fallbacks remain
+useful for unsupported shapes, small fixtures, and debugging, but optimized
+genewise benchmarks should guard that they are not used accidentally.
+
+With Proposal 3 and Proposal 4 promoted, the remaining 100-family bottleneck is
+no longer generic DTS/Pibar materialization.  The Nsys profile is now dominated
+by the self-loop backward, then forward wave-step/fixed-point kernels, then
+fused DTS/Pibar.  Specieswise remains slower because per-species parameter
+gradients introduce additional atomic and reduction work.
 
 ## Proposal 5: Genewise Backward Saved-Tensor Strategy
 
@@ -1462,8 +1755,8 @@ Tolerance policy:
 | 1 | Family-indexed forward DTS parameters | Accepted; removes `[n_splits,S]` DTS parameter expansion in high-fanout waves | 1000-tree forward: `2.610 s -> 2.328 s` |
 | 2 | Genewise profiling harnesses | Prevents benchmarking old generic paths | reproducible optimized forward/backward numbers |
 | 3 | Fused genewise backward self-loop | Accepted; removes the generic self-loop for supported genewise uniform batches | 10-family backward: `531.569 ms -> 310.018 ms` locally |
-| 4 | Fused genewise DTS backward accumulation | Removes generic `DTS_5` and split scatter work | DTS backward bucket and parameter scatter time |
-| 5 | Family-aware uniform Pibar VJP | Reuses exact ancestor-corrected global Pibar VJP kernels | Pibar VJP bucket and memory |
+| 4 | Fused genewise DTS backward accumulation | Accepted; removes generic `DTS_5` and split scatter work | 100-family DTS bucket: `122.079 ms`, no guarded fallback |
+| 5 | Family-aware uniform Pibar VJP | Accepted; reuses exact ancestor-corrected compact UD tree VJP kernels | 100-family Pibar UD bucket: `62.838 ms`, no generic tree calls |
 | 6 | Saved-tensor and chunked autograd strategy | Required for 1000-family genewise training | full 1000-tree backward without OOM |
 | 7 | Preserve family locality in wave scheduling | Helps after family-indexed kernel loads exist | L2 hit rate and DRAM bytes |
 | 8 | Correctness matrix | Required for every production promotion | parity and gradcheck |
@@ -1490,46 +1783,31 @@ Backward:
 - Proposal 2 now makes the optimized genewise backward self-loop exist and fit
   for 10-family chunks.  In a clean local benchmark it improved the 10-family
   backward from `531.569 ms` median to `310.018 ms` median.
-- The optimized self-loop alone is not enough for 50/1000-family genewise
-  backward.  The remaining OOM happens in generic DTS/Pibar backward
-  materialization, not in `_wave_backward_uniform_kernel`.
-- Once DTS backward and Pibar VJP are family-aware, genewise backward should be
-  compared to global/uniform backward per resident chunk, not to the current
-  partially optimized 10-family smoke number.
-- The expected lower bound is the global/uniform fused path plus extra
-  family-indexed parameter loads and per-family gradient accumulation.  The
-  expected upper bound is much better than generic PyTorch autograd because the
-  generic path materializes large `[rows,S]` and `[splits,S]` tensors that the
-  uniform optimization work already showed how to avoid.
+- Proposal 3 and Proposal 4 remove the previous generic DTS/Pibar
+  materialization blocker from optimized genewise backward.
+- The current 100-family optimized genewise backward on `test_trees_1000` is
+  `651.534 ms` median with `18.191 GB` peak allocation.  The same local
+  100-family global reference run is `716.431 ms` median with `18.184 GB`
+  peak allocation, so the optimized genewise path is now essentially
+  global-speed per resident chunk.
+- The 100-family optimized specieswise run is `963.523 ms` median with
+  `16.937 GiB` peak allocation.  Specieswise remains slower because it
+  accumulates per-species parameter gradients and pays more atomic/reduction
+  cost.
+- Nsys now shows the 100-family backward dominated by
+  `_wave_backward_uniform_kernel`, followed by forward wave-step/fixed-point
+  work, then fused DTS and compact Pibar.  Future work should optimize those
+  remaining kernels or improve chunking, not chase the removed generic
+  DTS/Pibar branches.
 
 ## Immediate Next Experiment
 
-Start with Proposal 0.
+Proposal 0 through Proposal 4 have succeeded and are promoted for the supported
+optimized genewise uniform path.
 
-Implementation sketch:
-
-1. Add `CONST_MODE_FAMILY` to `_wave_step_uniform_kernel`.
-2. Pass original `[G,S]` constants and `family_idx` from `Pi_wave_forward`.
-3. Keep the old `CONST_MODE_ROW` as a fallback flag for comparison.
-4. Verify genewise likelihood parity against the current implementation.
-5. Profile 50-family and 150-family chunks with Nsys and NCU.
-
-The decision criterion should be strict:
-
-```text
-accept if:
-    NLL parity holds
-    peak memory decreases
-    PyTorch index/materialization bucket decreases
-    150-family genewise forward time decreases
-
-reject or revise if:
-    wave-step NCU shows much worse cache behavior
-    extra family_idx loads erase the removed materialization cost
-```
-
-Proposal 0 and Proposal 1 both succeeded.  The next forward-specific work should
-be driven by profiler evidence, because the genewise forward is now close to the
-current global/uniform timing envelope.  The larger remaining implementation
-gap is genewise backward, starting with the self-loop and DTS backward
-accumulation proposals.
+The next experiment should be Proposal 5: run the optimized backward under an
+explicit chunked-autograd scheduler and measure the full 1000-tree training
+pass without accidentally retaining all saved tensors.  The scheduler should
+start with 50-family and 100-family chunks on `tests/data/test_trees_1000`,
+print the active fused path flags, and reject guarded runs that fall back to
+generic DTS or generic Pibar VJP.
