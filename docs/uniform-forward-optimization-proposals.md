@@ -886,6 +886,142 @@ Risk:
   is already compute-heavy, while DTS is memory-bound. Partial overlap is
   plausible but not guaranteed.
 
+### Proposal 4 follow-up: implemented as opt-in, not promoted
+
+This proposal was tested with the same three-worker plus supervisor workflow:
+one worker checked dependency safety, one checked correctness, one profiled the
+CUDA timeline, and the supervisor consolidated the result. The implementation
+was kept opt-in because it changes stream ordering and can retain future `dts_r`
+buffers longer than the serialized path.
+
+Implementation:
+
+- `build_wave_layout(...)` now stores `dts_ready_after[j]` and
+  `dts_overlap_gap[j]` in each wave meta and in the layout dictionary.
+- `_ensure_dts_ready_after(...)` backfills those fields for older cached
+  layouts.
+- `Pi_wave_forward(...)` recognizes `GPUREC_FORWARD_DTS_OVERLAP_MODE`:
+  `off`, `next`, and `ready`.
+- `GPUREC_FORWARD_DTS_OVERLAP_MAX_PENDING` bounds how many future DTS buffers
+  can be live at once.
+- `profiling/bench_uniform_forward_parent_dts.py` exposes the same controls as
+  `--overlap-mode` and `--overlap-max-pending`, and prints readiness diagnostics
+  in the shape summary.
+
+The readiness rule is:
+
+```text
+dts_ready_after[j] =
+    max(wave_index(left_child), wave_index(right_child)) over splits in wave j
+
+DTS(j) may be launched while computing wave k only if:
+    dts_ready_after[j] < k
+```
+
+The strict `< k` is important. Cross-DTS reads both child `Pi` and child
+`Pibar`; with the fixed-iteration ping-pong path, a child's final `Pibar` is
+only guaranteed after that child wave finishes its final Pibar recompute. The
+root-only `need_pibar=False` skip remains safe because root-only rows have no
+later cross-DTS consumers.
+
+Readiness accounting:
+
+| Workload | Waves | DTS waves | Split rows | Ready-early DTS waves | Ready-early split rows | Max ready gap |
+|---|---:|---:|---:|---:|---:|---:|
+| 3 families | `45` | `44` | `23393` | `0` | `0` | `0` |
+| 50 families | `49` | `46` | `402275` | `0` | `0` | `0` |
+| 150 families | `65` | `57` | `1192970` | `15` | `334349` | `4` |
+
+This explains why 3-family and 50-family chunks cannot benefit from this
+scheduler: every DTS wave becomes ready only immediately before its consumer.
+The 150-family chunk has some theoretical window:
+
+```text
+wave 8:  ready after 3, gap 4, split rows 32768
+wave 9:  ready after 5, gap 3, split rows 32768
+wave 10: ready after 7, gap 2, split rows 14542
+wave 11: ready after 9, gap 1, split rows 32768
+```
+
+Correctness evidence:
+
+| Check | Result |
+|---|---:|
+| Direct 3-family `next` vs `off` NLL delta | `0.0` |
+| Direct 3-family `next` vs `off` significant `Pi` max abs delta | `0.0` |
+| Direct 3-family `ready` vs `off` NLL delta | `0.0` |
+| Direct 3-family `ready` vs `off` significant `Pi` max abs delta | `0.0` |
+| Direct 3-family `ready`, `need_pibar=False`, NLL delta | `0.0` |
+| Direct 3-family `ready`, `need_pibar=False`, significant `Pi` max abs delta | `0.0` |
+| Direct 3-family `ready`, `need_pibar=False`, returned Pibar | `None` |
+| Focused forward/backward smoke tests | `35 passed in 11.95 s` |
+| Model API likelihood tests | `3 passed in 46.14 s` |
+| `py_compile` on touched Python files | passed |
+
+Timing, 50 families, fixed 6, no Pibar output, `7` timed reps:
+
+| Mode | Pending cap | Median ms | Mean ms | Min ms | Max ms | Peak GiB |
+|---|---:|---:|---:|---:|---:|---:|
+| `off` | n/a | `116.169` | `116.260` | `115.800` | `117.056` | `5.272` |
+| `next` | n/a | `116.827` | `116.713` | `115.975` | `117.436` | `5.272` |
+| `ready` | `2` | `116.832` | `116.762` | `116.108` | `117.169` | `5.272` |
+| `ready` | `4` | `116.400` | `116.433` | `115.579` | `117.469` | `5.272` |
+
+Timing, 150 families, fixed 6, no Pibar output, `5` timed reps:
+
+| Mode | Pending cap | Median ms | Mean ms | Min ms | Max ms | Peak GiB |
+|---|---:|---:|---:|---:|---:|---:|
+| `off` | n/a | `344.612` | `344.595` | `343.136` | `346.139` | `15.018` |
+| `next` | n/a | `345.573` | `345.353` | `343.806` | `346.492` | `15.018` |
+| `ready` | `1` | `344.196` | `344.225` | `342.511` | `346.076` | `15.018` |
+| `ready` | `2` | `345.135` | `356.412` | `343.251` | `403.293` | `15.194` |
+| `ready` | `4` | `346.032` | `357.296` | `344.510` | `404.438` | `15.194` |
+
+The best result was `ready` with a pending cap of `1`, but its apparent
+`0.416 ms` median improvement over `off` is within run-to-run noise. Higher
+pending caps increased peak memory by about `0.176 GiB` and introduced large
+latency outliers because more future DTS outputs stayed live.
+
+Nsys, 150 families, one timed repetition after warmup:
+
+| Mode | Event time ms | Kernel span ms | Main stream busy ms | Prep stream busy ms | Main/prep overlap ms |
+|---|---:|---:|---:|---:|---:|
+| `off` | `341.569` | `341.470` | `341.470` | `0.000` | `0.000` |
+| `ready`, cap `1` | `344.518` | `344.418` | `271.920` | `72.290` | `0.462` |
+
+Main kernel buckets in the `off` trace:
+
+| Kernel bucket | Time ms | Launches | Stream |
+|---|---:|---:|---:|
+| `_wave_step_uniform_kernel` | `222.662` | `390` | `7` |
+| `_dts_fused_kernel` | `30.876` | `49` | `7` |
+| `_wave_pibar_uniform_parent_kernel` | `30.029` | `64` | `7` |
+| `_dts_parent_reduced_ge2_stage1_kernel` | `23.490` | `8` | `7` |
+| PyTorch indexing kernels | `12.265` | `50` | `7` |
+
+Main kernel buckets in the `ready`, cap `1` trace:
+
+| Kernel bucket | Time ms | Launches | Stream |
+|---|---:|---:|---:|
+| `_wave_step_uniform_kernel` | `225.222` | `390` | `7` |
+| `_dts_fused_kernel` | `30.895` | `49` | `29` |
+| `_wave_pibar_uniform_parent_kernel` | `30.699` | `64` | `7` |
+| `_dts_parent_reduced_ge2_stage1_kernel` | `23.493` | `8` | `29` |
+| PyTorch indexing kernels | `12.245` | `49` | `29` |
+| Prep-stream fill kernels | `4.818` | `57` | `29` |
+
+The timeline confirms the practical bottleneck: the readiness-aware scheduler
+does move DTS work to a second stream, but only `0.462 ms` of prep-stream work
+actually overlaps the main stream. The dominant `_wave_step_uniform_kernel`
+bucket already occupies the GPU heavily, so the memory-bound DTS kernels do not
+find enough spare bandwidth or scheduling slots to hide meaningful time.
+
+Decision:
+
+- Keep readiness diagnostics and `ready` mode as opt-in profiling machinery.
+- Keep `off` as the default.
+- Do not use pending caps above `1` unless the buffer lifetime policy changes.
+
 ## Proposal 5: forward-specific chunking and wave-size policy
 
 Backward uses `max_wave_size=32768` as a good time/memory tradeoff because

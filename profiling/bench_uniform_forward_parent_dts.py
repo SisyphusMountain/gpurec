@@ -84,6 +84,16 @@ def _parse_args() -> argparse.Namespace:
         default=int(os.getenv("GPUREC_FORWARD_WAVE_NUM_WARPS", "0")),
         help="Override GPUREC_FORWARD_WAVE_NUM_WARPS; 0 keeps the default.",
     )
+    parser.add_argument(
+        "--overlap-mode",
+        choices=("off", "next", "ready"),
+        default=os.getenv("OVERLAP_MODE", os.getenv("GPUREC_FORWARD_DTS_OVERLAP_MODE", "off")),
+    )
+    parser.add_argument(
+        "--overlap-max-pending",
+        type=int,
+        default=int(os.getenv("GPUREC_FORWARD_DTS_OVERLAP_MAX_PENDING", "2")),
+    )
     args = parser.parse_args()
     mws = str(args.max_wave_size).strip().lower()
     args.max_wave_size = None if mws in ("", "0", "none", "null") else int(mws)
@@ -143,6 +153,16 @@ def _tensor_max_abs_diff(a: torch.Tensor, b: torch.Tensor) -> float:
 def _print_shape(model: GeneReconModel) -> None:
     metas = model.static.wave_layout["wave_metas"]
     split_rows = sum(int(m["sl"].numel()) if m.get("has_splits", False) else 0 for m in metas)
+    ready_overlap_split_rows = sum(
+        int(m["sl"].numel())
+        for m in metas
+        if m.get("has_splits", False) and int(m.get("dts_overlap_gap", 0)) > 0
+    )
+    ready_overlap_waves = sum(
+        1 for m in metas
+        if m.get("has_splits", False) and int(m.get("dts_overlap_gap", 0)) > 0
+    )
+    max_ready_gap = max((int(m.get("dts_overlap_gap", 0)) for m in metas), default=0)
     ge2_groups = sum(int(m.get("n_ge2_clades", 0)) for m in metas)
     eq1_rows = sum(int(m.get("n_eq1", 0)) for m in metas)
     C = sum(int(m["W"]) for m in metas)
@@ -157,6 +177,9 @@ def _print_shape(model: GeneReconModel) -> None:
         "waves", len(metas),
         "maxW", max_w,
         "split_rows", split_rows,
+        "ready_overlap_waves", ready_overlap_waves,
+        "ready_overlap_split_rows", ready_overlap_split_rows,
+        "max_ready_gap", max_ready_gap,
         "eq1_rows", eq1_rows,
         "ge2_groups", ge2_groups,
         "max_splits", max_splits,
@@ -171,10 +194,12 @@ def _print_shape(model: GeneReconModel) -> None:
         n_eq1 = int(meta.get("n_eq1", 0))
         n_ge2 = int(meta.get("n_ge2_clades", 0))
         max_ge2 = int(meta.get("ge2_max_fanout", 0) or 0)
-        rows.append((k, int(meta["start"]), w, n_splits, n_eq1, n_ge2, max_ge2))
-    print("top_split_waves k start W split_rows n_eq1 n_ge2_groups max_ge2_fanout")
+        ready_after = int(meta.get("dts_ready_after", -1))
+        overlap_gap = int(meta.get("dts_overlap_gap", 0))
+        rows.append((k, int(meta["start"]), w, n_splits, ready_after, overlap_gap, n_eq1, n_ge2, max_ge2))
+    print("top_split_waves k start W split_rows dts_ready_after overlap_gap n_eq1 n_ge2_groups max_ge2_fanout")
     for row in sorted(rows, key=lambda r: r[3], reverse=True)[:12]:
-        print("%d %d %d %d %d %d %d" % row)
+        print("%d %d %d %d %d %d %d %d %d" % row)
 
 
 def _prepare(args: argparse.Namespace) -> tuple[GeneReconModel, dict, tuple]:
@@ -220,6 +245,7 @@ def _run_pi(
     params: tuple,
     *,
     need_pibar: bool,
+    overlap_mode: str,
 ) -> tuple[torch.Tensor, dict]:
     static = model.static
     log_pS, log_pD, log_pL, transfer_mat, max_transfer_vec = params
@@ -240,6 +266,7 @@ def _run_pi(
         local_iters=static.max_iters_Pi,
         local_tolerance=static.tol_Pi,
         fixed_iters=static.fixed_iters_Pi,
+        overlap_streams=overlap_mode != "off",
         pibar_mode=static.pibar_mode,
         return_original=False,
         need_pibar=need_pibar,
@@ -255,7 +282,11 @@ def _run_pi(
 
 def _compare(args: argparse.Namespace, model: GeneReconModel, E_out: dict, params: tuple) -> None:
     _set_variant(args, "old")
-    old_nll, old_out = _run_pi(model, E_out, params, need_pibar=args.need_pibar)
+    old_nll, old_out = _run_pi(
+        model, E_out, params,
+        need_pibar=args.need_pibar,
+        overlap_mode=args.overlap_mode,
+    )
     torch.cuda.synchronize()
     old_nll_value = float(old_nll.detach().cpu())
     keep_full_diff = args.fams <= args.full_diff_max_fams
@@ -263,7 +294,11 @@ def _compare(args: argparse.Namespace, model: GeneReconModel, E_out: dict, param
         del old_out
         torch.cuda.empty_cache()
     _set_variant(args, "new")
-    new_nll, new_out = _run_pi(model, E_out, params, need_pibar=args.need_pibar)
+    new_nll, new_out = _run_pi(
+        model, E_out, params,
+        need_pibar=args.need_pibar,
+        overlap_mode=args.overlap_mode,
+    )
     torch.cuda.synchronize()
     nll_diff = float((new_nll - old_nll).abs().detach().cpu())
     print("compare", "old_nll", old_nll_value, "new_nll", float(new_nll.detach().cpu()), "nll_abs_diff", nll_diff)
@@ -293,6 +328,8 @@ def main() -> None:
         os.environ["GPUREC_FORWARD_WAVE_NUM_WARPS"] = str(args.wave_num_warps)
     else:
         os.environ.pop("GPUREC_FORWARD_WAVE_NUM_WARPS", None)
+    os.environ["GPUREC_FORWARD_DTS_OVERLAP_MODE"] = args.overlap_mode
+    os.environ["GPUREC_FORWARD_DTS_OVERLAP_MAX_PENDING"] = str(args.overlap_max_pending)
     _set_variant(args, args.variant)
     model, E_out, params = _prepare(args)
     _print_shape(model)
@@ -303,7 +340,11 @@ def main() -> None:
 
     for _ in range(args.warmups):
         _set_variant(args, args.variant)
-        _, out = _run_pi(model, E_out, params, need_pibar=args.need_pibar)
+        _, out = _run_pi(
+            model, E_out, params,
+            need_pibar=args.need_pibar,
+            overlap_mode=args.overlap_mode,
+        )
         del out
     torch.cuda.synchronize()
 
@@ -314,7 +355,11 @@ def main() -> None:
     for _ in range(args.reps):
         _set_variant(args, args.variant)
         ms, (nll, out) = _time_cuda_ms(
-            lambda: _run_pi(model, E_out, params, need_pibar=args.need_pibar)
+            lambda: _run_pi(
+                model, E_out, params,
+                need_pibar=args.need_pibar,
+                overlap_mode=args.overlap_mode,
+            )
         )
         times.append(ms)
         nll_value = float(nll.detach().cpu())
@@ -333,6 +378,8 @@ def main() -> None:
         "topology_int32", int(args.topology_int32),
         "wave_block_s", args.wave_block_s,
         "wave_num_warps", args.wave_num_warps,
+        "overlap_mode", args.overlap_mode,
+        "overlap_max_pending", args.overlap_max_pending,
         "reps", len(times),
         "median_ms", statistics.median(times),
         "mean_ms", statistics.mean(times),

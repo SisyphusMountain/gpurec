@@ -666,6 +666,27 @@ def build_wave_layout(
 
         wave_metas.append(meta)
 
+    dts_ready_after: List[int] = []
+    dts_overlap_gap: List[int] = []
+    for wi, meta in enumerate(wave_metas):
+        if meta.get('has_splits', False):
+            sl_cpu = meta['sl'].detach().cpu().long()
+            sr_cpu = meta['sr'].detach().cpu().long()
+            left_child_waves = torch.searchsorted(wave_starts_cpu[1:], sl_cpu, right=True)
+            right_child_waves = torch.searchsorted(wave_starts_cpu[1:], sr_cpu, right=True)
+            ready_after = int(torch.maximum(left_child_waves, right_child_waves).max().item())
+            if ready_after >= wi:
+                # The wave layout is expected to be topological; keep the value
+                # conservative if a future scheduler relaxes that invariant.
+                ready_after = wi - 1
+        else:
+            ready_after = -1
+        gap = max(0, wi - ready_after - 1) if ready_after >= 0 else 0
+        meta['dts_ready_after'] = ready_after
+        meta['dts_overlap_gap'] = gap
+        dts_ready_after.append(ready_after)
+        dts_overlap_gap.append(gap)
+
     result = {
         'perm': perm,
         'inv_perm': inv_perm,
@@ -681,6 +702,8 @@ def build_wave_layout(
         'original_root_clade_ids': root_clade_ids.to(device=device, dtype=torch.long),
         'wave_starts': wave_starts,
         'wave_metas': wave_metas,
+        'dts_ready_after': dts_ready_after,
+        'dts_overlap_gap': dts_overlap_gap,
         'phases': phases,
     }
 

@@ -322,6 +322,48 @@ def _get_species_wave_helpers(species_helpers, S, device, use_uniform_fused):
     )
 
 
+def _ensure_dts_ready_after(wave_layout, wave_metas):
+    """Return per-wave cross-DTS child readiness diagnostics.
+
+    dts_ready_after[j] is the largest wave index containing a split child of
+    wave j.  A future wave's cross-DTS may be scheduled on another stream only
+    after that wave has completed and written final Pi/Pibar rows.
+    """
+    cached = wave_layout.get('dts_ready_after')
+    if (
+        isinstance(cached, list)
+        and len(cached) == len(wave_metas)
+        and all('dts_ready_after' in m for m in wave_metas)
+    ):
+        return cached
+
+    starts = [int(m['start']) for m in wave_metas]
+    if wave_metas:
+        starts.append(int(wave_metas[-1]['end']))
+    wave_ends_cpu = torch.tensor(starts[1:], dtype=torch.long)
+    ready_after = []
+    overlap_gap = []
+    for wi, meta in enumerate(wave_metas):
+        if meta.get('has_splits', False):
+            sl_cpu = meta['sl'].detach().cpu().long()
+            sr_cpu = meta['sr'].detach().cpu().long()
+            left_waves = torch.searchsorted(wave_ends_cpu, sl_cpu, right=True)
+            right_waves = torch.searchsorted(wave_ends_cpu, sr_cpu, right=True)
+            ready = int(torch.maximum(left_waves, right_waves).max().item())
+            if ready >= wi:
+                ready = wi - 1
+        else:
+            ready = -1
+        gap = max(0, wi - ready - 1) if ready >= 0 else 0
+        meta['dts_ready_after'] = ready
+        meta['dts_overlap_gap'] = gap
+        ready_after.append(ready)
+        overlap_gap.append(gap)
+    wave_layout['dts_ready_after'] = ready_after
+    wave_layout['dts_overlap_gap'] = overlap_gap
+    return ready_after
+
+
 # ---------------------------------------------------------------------------
 # Split parent reconstruction
 # ---------------------------------------------------------------------------
@@ -720,6 +762,21 @@ def Pi_wave_forward(
     use_fixed = fixed_iters is not None
     n_iters = fixed_iters if use_fixed else local_iters
     min_warmup = 0 if use_fixed else 3
+    forward_dts_overlap_mode = os.environ.get(
+        "GPUREC_FORWARD_DTS_OVERLAP_MODE",
+        "next" if overlap_streams else "off",
+    ).strip().lower()
+    if not overlap_streams:
+        forward_dts_overlap_mode = "off"
+    if forward_dts_overlap_mode in ("0", "false", "none"):
+        forward_dts_overlap_mode = "off"
+    if forward_dts_overlap_mode in ("1", "true"):
+        forward_dts_overlap_mode = "next"
+    if forward_dts_overlap_mode in ("lookahead", "readiness"):
+        forward_dts_overlap_mode = "ready"
+    forward_dts_overlap_max_pending = max(
+        1, int(os.environ.get("GPUREC_FORWARD_DTS_OVERLAP_MAX_PENDING", "2"))
+    )
     use_uniform_pingpong = bool(
         use_uniform_fused
         and use_uniform_leaf_index
@@ -785,12 +842,265 @@ def Pi_wave_forward(
 
     total_iters = 0
 
+    def _run_wave_self_loop(meta, dts_r, leaf_wt, DL_w, SL1_w, SL2_w,
+                            Ebar_w, E_w, mt_w, tm_T_w, fi_w_dense):
+        nonlocal total_iters
+        ws = meta['start']
+        we = meta['end']
+        W = meta['W']
+        for local_iter in range(n_iters):
+            total_iters += 1
+            Pi_W = Pi[ws:we]
+
+            if use_uniform_linear:
+                compute_diff = not use_fixed and local_iter >= min_warmup
+                Pi_new, max_diff = wave_step_uniform_linear_fused(
+                    Pi, ws, W, S,
+                    uniform_linear_op['op_cols'],
+                    uniform_linear_op['op_vals'],
+                    uniform_linear_op['v_scaled'],
+                    uniform_linear_op['row_scale'],
+                    leaf_wt, dts_r,
+                    compute_diff=compute_diff,
+                    debug_guard=uniform_linear_debug_guard,
+                )
+
+                if compute_diff and max_diff.item() < local_tolerance:
+                    Pi[ws:we] = Pi_new
+                    break
+
+                Pi[ws:we] = Pi_new
+            elif use_uniform_two_kernel:
+                compute_diff = not use_fixed and local_iter >= min_warmup
+                Pi_new, max_diff = wave_step_uniform_two_kernel_fused(
+                    Pi, Pibar, ws, W, S,
+                    mt_w, DL_w, Ebar_w, E_w, SL1_w, SL2_w,
+                    sp_child1, sp_child2, sp_parent, max_ancestor_depth,
+                    leaf_wt, dts_r,
+                    compute_diff=compute_diff,
+                )
+
+                if compute_diff and max_diff.item() < local_tolerance:
+                    Pi[ws:we] = Pi_new
+                    break
+
+                Pi[ws:we] = Pi_new
+            elif use_uniform_ancestor:
+                compute_diff = not use_fixed and local_iter >= min_warmup
+                Pi_new, max_diff = wave_step_uniform_ancestor_fused(
+                    Pi, Pibar, ws, W, S,
+                    mt_w, DL_w, Ebar_w, E_w, SL1_w, SL2_w,
+                    sp_child1, sp_child2, ancestor_cols,
+                    leaf_wt, dts_r,
+                    compute_diff=compute_diff,
+                    leaf_species_idx=leaf_species_index,
+                    leaf_logp=uniform_leaf_logp,
+                    pibar_row_max=uniform_pibar_row_max,
+                )
+
+                if compute_diff and max_diff.item() < local_tolerance:
+                    Pi[ws:we] = Pi_new
+                    break
+
+                Pi[ws:we] = Pi_new
+            elif use_uniform_csr:
+                compute_diff = not use_fixed and local_iter >= min_warmup
+                Pi_new, max_diff = wave_step_uniform_csr_fused(
+                    Pi, Pibar, ws, W, S,
+                    mt_w, DL_w, Ebar_w, E_w, SL1_w, SL2_w,
+                    sp_child1, sp_child2, ancestor_csr_indptr,
+                    ancestor_csr_indices, max_ancestor_depth,
+                    leaf_wt, dts_r,
+                    compute_diff=compute_diff,
+                    leaf_species_idx=leaf_species_index,
+                    leaf_logp=uniform_leaf_logp,
+                    pibar_row_max=uniform_pibar_row_max,
+                )
+
+                if compute_diff and max_diff.item() < local_tolerance:
+                    Pi[ws:we] = Pi_new
+                    break
+
+                Pi[ws:we] = Pi_new
+            elif use_uniform_spmm:
+                Pibar_W = _compute_Pibar_uniform_spmm(
+                    Pi_W,
+                    ancestors_spmm_mat,
+                    mt_w,
+                )
+
+                Pi_new = wave_step_fused(
+                    Pi_W, Pibar_W,
+                    DL_w, Ebar_w, E_w, SL1_w, SL2_w,
+                    sp_child1, sp_child2, leaf_wt, dts_r,
+                )
+
+                if not use_fixed and local_iter >= min_warmup:
+                    significant = Pi_new > -100.0
+                    if not significant.any() or torch.abs(Pi_new - Pi_W)[significant].max().item() < local_tolerance:
+                        Pi[ws:we] = Pi_new
+                        Pibar[ws:we] = Pibar_W
+                        break
+
+                Pi[ws:we] = Pi_new
+                Pibar[ws:we] = Pibar_W
+            elif use_uniform_fused:
+                if use_uniform_pingpong:
+                    pi_in = Pi if (local_iter % 2 == 0) else Pibar
+                    pi_out = Pibar if (local_iter % 2 == 0) else Pi
+                    wave_step_uniform_fused_into(
+                        pi_in, pi_out, Pibar, ws, W, S,
+                        mt_w, DL_w, Ebar_w, E_w, SL1_w, SL2_w,
+                        sp_child1, sp_child2, sp_parent, max_ancestor_depth,
+                        leaf_wt, dts_r,
+                        leaf_species_idx=leaf_species_index,
+                        leaf_logp=uniform_leaf_logp,
+                    )
+                    if (
+                        local_iter == n_iters - 1
+                        and not _can_skip_final_pibar(ws, we, W)
+                    ):
+                        wave_pibar_uniform_parent_fused(
+                            Pi, Pibar, ws, W, S,
+                            mt_w, sp_parent, max_ancestor_depth,
+                            row_max_out=uniform_pibar_row_max,
+                        )
+                else:
+                    compute_diff = not use_fixed and local_iter >= min_warmup
+                    Pi_new, max_diff = wave_step_uniform_fused(
+                        Pi, Pibar, ws, W, S,
+                        mt_w, DL_w, Ebar_w, E_w, SL1_w, SL2_w,
+                        sp_child1, sp_child2, sp_parent, max_ancestor_depth,
+                        leaf_wt, dts_r,
+                        compute_diff=compute_diff,
+                        leaf_species_idx=leaf_species_index,
+                        leaf_logp=uniform_leaf_logp,
+                        pibar_row_max=uniform_pibar_row_max,
+                    )
+
+                    if compute_diff and max_diff.item() < local_tolerance:
+                        Pi[ws:we] = Pi_new
+                        break
+
+                    Pi[ws:we] = Pi_new
+            else:
+                Pibar_W = _compute_Pibar_inline(Pi_W, tm_T_w, mt_w, pibar_mode,
+                                                ancestors_T=ancestors_T_mat,
+                                                topk_k=topk_k,
+                                                family_ids=fi_w_dense)
+
+                Pi_new = wave_step_fused(
+                    Pi_W, Pibar_W,
+                    DL_w, Ebar_w, E_w, SL1_w, SL2_w,
+                    sp_child1, sp_child2, leaf_wt, dts_r,
+                )
+
+                if not use_fixed and local_iter >= min_warmup:
+                    significant = Pi_new > -100.0
+                    if not significant.any() or torch.abs(Pi_new - Pi_W)[significant].max().item() < local_tolerance:
+                        Pi[ws:we] = Pi_new
+                        Pibar[ws:we] = Pibar_W
+                        break
+
+                Pi[ws:we] = Pi_new
+                Pibar[ws:we] = Pibar_W
+
+        if use_uniform_linear:
+            wave_pibar_uniform_fused(
+                Pi, Pibar, ws, W, S,
+                mt_w,
+                uniform_linear_op['ancestor_cols'],
+                row_max_out=uniform_pibar_row_max,
+            )
+
     with _nvtx_range("Pi wave forward v2"):
         if use_global_pibar:
             prev_tf32 = torch.backends.cuda.matmul.allow_tf32
             torch.backends.cuda.matmul.allow_tf32 = True
 
-            if overlap_streams and n_waves > 1:
+            if (
+                overlap_streams
+                and forward_dts_overlap_mode == "ready"
+                and n_waves > 1
+                and use_fixed
+            ):
+                stream_main = torch.cuda.current_stream(device)
+                stream_prep = torch.cuda.Stream(device=device)
+                dts_ready_after = _ensure_dts_ready_after(wave_layout, wave_metas)
+                dts_results = [None] * n_waves
+                dts_events = [None] * n_waves
+                dts_scheduled = [False] * n_waves
+
+                def _pending_dts_count():
+                    return sum(x is not None for x in dts_results)
+
+                def _schedule_ready_dts(completed_wave_idx: int, current_wave_idx: int):
+                    if completed_wave_idx < 0:
+                        return
+                    pending = _pending_dts_count()
+                    if pending >= forward_dts_overlap_max_pending:
+                        return
+                    ready_event = torch.cuda.Event()
+                    ready_event.record(stream_main)
+                    for future_wi in range(current_wave_idx + 1, n_waves):
+                        if pending >= forward_dts_overlap_max_pending:
+                            break
+                        if dts_scheduled[future_wi]:
+                            continue
+                        meta_future = wave_metas[future_wi]
+                        if not meta_future.get('has_splits', False):
+                            continue
+                        if int(dts_ready_after[future_wi]) > completed_wave_idx:
+                            continue
+                        with torch.cuda.stream(stream_prep):
+                            stream_prep.wait_event(ready_event)
+                            pD_future, pS_future = _wave_dts_params(meta_future)
+                            dts_results[future_wi] = _compute_wave_dts(
+                                meta_future, pD_future, pS_future)
+                            done = torch.cuda.Event()
+                            done.record(stream_prep)
+                            dts_events[future_wi] = done
+                        dts_scheduled[future_wi] = True
+                        pending += 1
+
+                for wi in range(n_waves):
+                    meta = wave_metas[wi]
+                    ws = meta['start']
+                    we = meta['end']
+
+                    if meta['has_splits']:
+                        if dts_scheduled[wi]:
+                            stream_main.wait_event(dts_events[wi])
+                            dts_r = dts_results[wi]
+                            dts_events[wi] = None
+                        else:
+                            pD_dts, pS_dts = _wave_dts_params(meta)
+                            dts_r = _compute_wave_dts(meta, pD_dts, pS_dts)
+                    else:
+                        dts_r = None
+
+                    _schedule_ready_dts(wi - 1, wi)
+
+                    leaf_wt = uniform_leaf_logp if use_uniform_leaf_index else _get_leaf_wt(ws, we)
+                    DL_w, SL1_w, SL2_w, Ebar_w, E_w, mt_w = _wave_consts(ws, we)
+
+                    tm_T_w = transfer_mat_T
+                    fi_w_dense = None
+                    if batched and transfer_mat_T is not None and transfer_mat_T.ndim == 3:
+                        fi_w_dense = family_idx[ws:we]
+
+                    _run_wave_self_loop(
+                        meta, dts_r, leaf_wt, DL_w, SL1_w, SL2_w,
+                        Ebar_w, E_w, mt_w, tm_T_w, fi_w_dense,
+                    )
+                    dts_results[wi] = None
+                    dts_events[wi] = None
+                    _schedule_ready_dts(wi, wi)
+            elif (
+                overlap_streams
+                and forward_dts_overlap_mode != "off"
+                and n_waves > 1
+            ):
                 stream_main = torch.cuda.current_stream(device)
                 stream_prep = torch.cuda.Stream(device=device)
 
