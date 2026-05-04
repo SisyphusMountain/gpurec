@@ -1,5 +1,6 @@
-from typing import Any, Dict, List, Tuple
 import heapq
+import os
+from typing import Any, Dict, List, Tuple
 
 import torch
 
@@ -519,7 +520,10 @@ def build_wave_layout(
     """
     C = int(ccp_helpers['C'])
     N_splits = int(ccp_helpers['N_splits'])
-    if C > torch.iinfo(torch.int32).max:
+    use_int32_split_metadata = (
+        os.environ.get("GPUREC_WAVE_SPLIT_METADATA_INT32", "1") != "0"
+    )
+    if use_int32_split_metadata and C > torch.iinfo(torch.int32).max:
         raise ValueError(f"wave split metadata requires int32 clade ids, got C={C}")
 
     # --- 2a. Build permutation ---
@@ -627,20 +631,21 @@ def build_wave_layout(
             n_eq1 = int((per_split_count == 1).sum().item())
             n_ge2_clades = int((clade_split_counts >= 2).sum().item())
 
-            sl_i32 = lefts_new[wst].to(torch.int32).contiguous()
-            sr_i32 = rights_new[wst].to(torch.int32).contiguous()
-            reduce_idx_i32 = reduce_idx.to(torch.int32).contiguous()
+            index_dtype = torch.int32 if use_int32_split_metadata else torch.long
+            sl_index = lefts_new[wst].to(index_dtype).contiguous()
+            sr_index = rights_new[wst].to(index_dtype).contiguous()
+            reduce_idx_index = reduce_idx.to(index_dtype).contiguous()
 
-            meta['sl'] = sl_i32
-            meta['sr'] = sr_i32
+            meta['sl'] = sl_index
+            meta['sr'] = sr_index
             meta['log_split_probs'] = log_split_probs[wst].unsqueeze(1).contiguous()
-            meta['reduce_idx'] = reduce_idx_i32
+            meta['reduce_idx'] = reduce_idx_index
             meta['n_ws'] = n_ws
             meta['n_eq1'] = n_eq1
             meta['n_ge2_clades'] = n_ge2_clades
 
             if n_eq1 > 0:
-                meta['eq1_reduce_idx'] = reduce_idx_i32[:n_eq1]
+                meta['eq1_reduce_idx'] = reduce_idx_index[:n_eq1]
 
             if n_ge2_clades > 0:
                 # Build CSR pointers for the ge2 portion (splits n_eq1:).
@@ -654,7 +659,7 @@ def build_wave_layout(
                 torch.cumsum(ge2_counts, dim=0, out=ge2_ptr[1:])
 
                 meta['ge2_ptr'] = ge2_ptr
-                meta['ge2_parent_ids'] = ge2_parent_ids.to(torch.int32).contiguous()  # wave-local clade indices
+                meta['ge2_parent_ids'] = ge2_parent_ids.to(index_dtype).contiguous()  # wave-local clade indices
                 meta['ge2_max_fanout'] = int(ge2_counts.max().item())
                 meta['ge2_mean_fanout'] = float(ge2_counts.float().mean().item())
 
