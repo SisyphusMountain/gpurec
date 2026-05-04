@@ -31,8 +31,19 @@ from gpurec.core.batching import (
 )
 from gpurec.core.model import GeneDataset
 from gpurec.core.scheduling import compute_clade_waves
+from gpurec.core.forward import Pi_wave_forward
+from gpurec.core.likelihood import (
+    E_fixed_point,
+    compute_log_likelihood_root_rows,
+)
+from gpurec.core._helpers import _nvtx_range
 
-from .autograd import ReconStaticState, _GeneReconFunction, _apply_to_static
+from .autograd import (
+    ReconStaticState,
+    _GeneReconFunction,
+    _apply_to_static,
+    _extract_parameters,
+)
 from .modes import _default_theta_init, _mode_to_flags
 
 
@@ -333,7 +344,88 @@ class GeneReconModel(torch.nn.Module):
         ``reduce="per_family"`` returns a ``[G]`` vector and is only valid in
         genewise mode.
         """
+        if not torch.is_grad_enabled():
+            return self._forward_inference(reduce=reduce)
         return _GeneReconFunction.apply(self.theta, self._static, reduce)
+
+    @torch.no_grad()
+    def _forward_inference(self, reduce: str = "sum") -> torch.Tensor:
+        """No-grad NLL path that avoids backward-only forward outputs.
+
+        The differentiable forward must save the full wave-ordered ``Pi`` and
+        ``Pibar`` tensors for the implicit backward pass. In inference/no-grad
+        contexts those tensors are dead: the likelihood only needs root rows.
+        This mirrors the optimized uniform forward path used by
+        ``GeneDataset.compute_likelihood_batch`` and the profiling harnesses.
+        """
+        if reduce not in ("sum", "per_family"):
+            raise ValueError(f"reduce must be 'sum' or 'per_family', got {reduce!r}")
+        if reduce == "per_family" and self._mode != "genewise":
+            raise ValueError(
+                "reduce='per_family' is only valid in genewise mode."
+            )
+
+        static = self._static
+        device = static.device
+        dtype = static.dtype
+
+        with _nvtx_range("inference extract parameters"):
+            log_pS, log_pD, log_pL, transfer_mat, max_transfer_vec = (
+                _extract_parameters(self.theta.detach(), static)
+            )
+
+        with _nvtx_range("inference E fixed point"):
+            E_out = E_fixed_point(
+                species_helpers=static.species_helpers,
+                log_pS=log_pS,
+                log_pD=log_pD,
+                log_pL=log_pL,
+                transfer_mat=transfer_mat,
+                max_transfer_mat=max_transfer_vec,
+                max_iters=static.max_iters_E,
+                tolerance=static.tol_E,
+                warm_start_E=static.warm_E,
+                dtype=dtype,
+                device=device,
+                pibar_mode=static.pibar_mode,
+                ancestors_T=static.ancestors_T,
+            )
+            E = E_out["E"]
+
+        with _nvtx_range("inference Pi waves root rows"):
+            Pi_out = Pi_wave_forward(
+                wave_layout=static.wave_layout,
+                species_helpers=static.species_helpers,
+                E=E,
+                Ebar=E_out["E_bar"],
+                E_s1=E_out["E_s1"],
+                E_s2=E_out["E_s2"],
+                log_pS=log_pS,
+                log_pD=log_pD,
+                log_pL=log_pL,
+                transfer_mat=transfer_mat,
+                max_transfer_mat=max_transfer_vec,
+                device=device,
+                dtype=dtype,
+                local_iters=static.max_iters_Pi,
+                local_tolerance=static.tol_Pi,
+                fixed_iters=static.fixed_iters_Pi,
+                pibar_mode=static.pibar_mode,
+                return_original=False,
+                need_pibar=False,
+                return_root_rows=True,
+                family_idx=(
+                    static.wave_layout.get("family_idx") if static.genewise else None
+                ),
+            )
+
+        with _nvtx_range("inference root likelihood"):
+            nll_vec = compute_log_likelihood_root_rows(
+                Pi_out["Pi_root_rows"],
+                E,
+            )
+            static.warm_E = E.detach()
+            return nll_vec.sum() if reduce == "sum" else nll_vec
 
     def nll(self) -> torch.Tensor:
         """Alias for ``self()``."""

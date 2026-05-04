@@ -326,6 +326,41 @@ def test_per_family_sums_to_total(species_path, gene_paths):
     assert torch.allclose(grad_A, grad_B, rtol=1e-12, atol=1e-12)
 
 
+def test_no_grad_genewise_uniform_uses_equivalent_inference_path(
+    species_path, gene_paths
+):
+    """No-grad genewise NLL should match the differentiable saved-tensor path.
+
+    The no-grad path is allowed to avoid returning/storing full ``Pi``/``Pibar``
+    and compute likelihood from root rows only, but it must preserve the scalar
+    and per-family NLL values.
+    """
+    model = _build_model(species_path, gene_paths, "genewise", "uniform")
+
+    model._static.warm_E = None
+    differentiable_total = model()
+
+    model._static.warm_E = None
+    with torch.no_grad():
+        inference_total = model()
+        inference_per_family = model.nll_per_family()
+
+    assert not inference_total.requires_grad
+    assert not inference_per_family.requires_grad
+    assert math.isclose(
+        float(inference_total.item()),
+        float(differentiable_total.detach().item()),
+        rel_tol=1e-12,
+        abs_tol=1e-12,
+    )
+    assert math.isclose(
+        float(inference_per_family.sum().item()),
+        float(inference_total.item()),
+        rel_tol=1e-12,
+        abs_tol=1e-12,
+    )
+
+
 def test_gradcheck_global_uniform_small():
     """Autograd bridge backward matches torch's finite-difference gradcheck."""
     data_dir = _ROOT / "data" / "test_trees_3"
