@@ -1242,6 +1242,155 @@ Risks:
 This is not a first coding target, but it is the most direct way to attack the
 non-kernel gap once the memory kernels stop dominating.
 
+### Proposal 3 tested results
+
+Implemented as an opt-in benchmark/prototype path, not a production default.
+`profiling/proposal8/bench_uniform_backward.py` now supports:
+
+```text
+--cuda-graph
+--cuda-graph-target=model|pi_backward
+--graph-fixed-schedule-mode
+--cuda-graph-profile-phase
+```
+
+The viable captured path is the direct `Pi_wave_backward` benchmark with
+precomputed forward/Pi inputs, static kwargs, static root IDs, and species
+topology hoisted out of the captured region.  `gpurec/core/backward.py` now
+reuses the species child/topology tensors cached by the forward path, which
+removes the CPU-to-CUDA topology copies that otherwise blocked direct
+`Pi_wave_backward` capture.
+
+Full model graph capture is still blocked before backward.  It fails in the
+forward `E_fixed_point` path at:
+
+```text
+gpurec/core/likelihood.py
+ancestor_sum = (expE_2d @ ancestors_T).contiguous()
+```
+
+with CUDA stream-capture unsupported.  This therefore is not a full
+forward-plus-backward production graph.  Device-pruning graph mode also remains
+not graph-safe because it still has host stats synchronizations such as
+`.sum().item()`.  The successful capture mode is fixed schedule via
+`GPUREC_BACKWARD_NO_CPU_PRUNING=1`.
+
+Correctness and validation:
+
+| Check | Result |
+|---|---:|
+| `python -m py_compile gpurec/core/backward.py profiling/proposal8/bench_uniform_backward.py` | passed |
+| `pytest -q tests/gradients/test_autograd_bridge.py` | `15 passed in 2.73s` |
+| `GPUREC_BACKWARD_NO_CPU_PRUNING=1 pytest -q tests/gradients/test_autograd_bridge.py` | `15 passed in 3.71s` |
+
+Direct `Pi_wave_backward` graph check, 50 families:
+
+```bash
+FAMS=50 REPS=5 WARMUPS=5 MAX_WAVE_SIZE=32768 \
+  python profiling/proposal8/bench_uniform_backward.py \
+    --cuda-graph --cuda-graph-target=pi_backward --graph-fixed-schedule-mode=no_cpu
+```
+
+| Metric | Normal direct Pi backward | CUDA graph replay |
+|---|---:|---:|
+| Median event time | `93.874 ms` | `92.189 ms` |
+| Peak allocation | `12.873 GB` | `15.489 GB` |
+
+The maximum output difference was `1.22070312e-04` on `grad_log_pD`, with
+relative error to that key's max of `1.79689305e-07`.  A second `REPS=1` check
+measured normal `94.083 ms`, graph replay `92.149 ms`, and maximum difference
+`6.10351562e-05` on `grad_log_pD` with relative error `8.98446281e-08`.
+
+For context, the full default backward after these changes still measures:
+
+| Workload | Median | Mean | Min | Peak allocation |
+|---|---:|---:|---:|---:|
+| `FAMS=50 REPS=3 WARMUPS=8 MAX_WAVE_SIZE=32768` | `101.971 ms` | `101.988 ms` | `101.362 ms` | `10.308 GB` |
+
+#### Nsight Systems
+
+Normal fixed-schedule direct Pi backward:
+
+```text
+/tmp/gpurec_profile/prop3_graph/pi_backward_normal50.nsys-rep
+```
+
+The captured event time under Nsight was `100.898 ms`; the paired replay was
+not profiled in that capture range and measured `92.641 ms`.  Nsight stats put
+the summed kernel total at about `96.7 ms`.
+
+Top normal kernel buckets:
+
+| Kernel bucket | Time | Launches | Share |
+|---|---:|---:|---:|
+| `_dts_cross_backward_accum_kernel` | `30.068548 ms` | 46 | `31.1%` |
+| `_wave_backward_uniform_kernel` | `26.827647 ms` | 49 | `27.7%` |
+| `_uniform_cross_pibar_vjp_tree_from_ud_compact_kernel` | `16.432025 ms` | 46 | `17.0%` |
+| `_dts_parent_reduced_ge2_stage1_kernel` | `7.230238 ms` | 6 | `7.5%` |
+| `_dts_eq1_to_rows_kernel` | `4.079860 ms` | 18 | `4.2%` |
+| `_active_mask_from_rhs_absmax_kernel` | `3.462378 ms` | 49 | `3.6%` |
+
+Normal CUDA API launch overhead:
+
+| CUDA API | Time | Calls |
+|---|---:|---:|
+| `cudaLaunchKernel` | `2.512846 ms` | 1415 |
+| `cuLaunchKernelEx` | `0.651806 ms` | 295 |
+| `cuLaunchKernel` | `0.152036 ms` | 100 |
+| `cudaMemcpyAsync` | `0.154900 ms` | 50 |
+
+The explicit launch/API budget is only about `3.3 ms`.  The `cudaDeviceSynchronize`
+entry at `78.587905 ms` is the event-timing synchronization and should not be
+counted as avoidable launch overhead.
+
+Default graph replay trace:
+
+```text
+/tmp/gpurec_profile/prop3_graph/pi_backward_graph_replay50.nsys-rep
+```
+
+This showed `cudaGraphLaunch_v10000` at `0.388115 ms` and one
+`cudaDeviceSynchronize` at `94.443833 ms`, but default graph tracing collapsed
+the graph nodes and did not emit useful kernel rows.
+
+Node-level graph replay trace:
+
+```text
+/tmp/gpurec_profile/prop3_graph/pi_backward_graph_replay50_node.nsys-rep
+```
+
+This used `--cuda-graph-trace=node`.  The event timing was distorted by node
+instrumentation, with normal `95.467 ms` and replay `96.720 ms`, so this capture
+is useful only for composition.  The node kernel composition matched the normal
+profile:
+
+| Kernel bucket | Node-trace time |
+|---|---:|
+| `_dts_cross_backward_accum_kernel` | `30.017434 ms` |
+| `_wave_backward_uniform_kernel` | `25.017150 ms` |
+| `_uniform_cross_pibar_vjp_tree_from_ud_compact_kernel` | `16.684564 ms` |
+| `_dts_parent_reduced_ge2_stage1_kernel` | `7.243548 ms` |
+| `_dts_eq1_to_rows_kernel` | `4.074898 ms` |
+| `_active_mask_from_rhs_absmax_kernel` | `3.449391 ms` |
+
+CUDA API in the node trace had one `cudaGraphLaunch_v10000` at `1.715360 ms`
+under instrumentation and one `cudaDeviceSynchronize` at `94.903605 ms`.
+
+#### Decision
+
+Do not promote CUDA graph replay as a production default now.  Proposal 3 is
+correct as a direct `Pi_wave_backward` benchmark path, but the non-instrumented
+replay saves only about `1.7 ms` versus `93.9 ms` normal direct Pi backward,
+roughly `1.8%`, while increasing peak allocation by about `2.6 GB` because of
+CUDA graph private pools.
+
+The Nsight launch/API budget is only about `3.3 ms` out of roughly
+`96-102 ms`, and the replay trace has essentially the same kernel composition
+as the normal fixed-schedule path.  Graphing therefore cannot address the
+dominant memory-bound kernels.  Keep the benchmark/prototype for future
+experiments, but revisit production graphing only after the top memory kernels
+shrink materially or after the forward path becomes graph-capturable.
+
 ## Proposal 4: tailored two-stage self-loop parameter reductions
 
 The current self-loop wave kernel atomically accumulates global-mode parameter
