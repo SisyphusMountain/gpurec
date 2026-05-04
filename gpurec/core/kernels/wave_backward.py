@@ -1373,9 +1373,9 @@ def _dts_cross_backward_kernel(
     i = tl.program_id(0)  # split index
 
     # Load split metadata (scalar per CTA)
-    sl = tl.load(sl_ptr + i)
-    sr = tl.load(sr_ptr + i)
-    parent_w = tl.load(reduce_idx_ptr + i)
+    sl = tl.load(sl_ptr + i).to(tl.int64)
+    sr = tl.load(sr_ptr + i).to(tl.int64)
+    parent_w = tl.load(reduce_idx_ptr + i).to(tl.int64)
     wlsp = tl.load(wlsp_ptr + i)
     if USE_ACTIVE_MASK:
         parent_active = tl.load(active_mask_ptr + parent_w)
@@ -1683,9 +1683,9 @@ def _dts_cross_backward_accum_kernel(
 
     i = tl.program_id(0)
 
-    sl = tl.load(sl_ptr + i)
-    sr = tl.load(sr_ptr + i)
-    parent_w = tl.load(reduce_idx_ptr + i)
+    sl = tl.load(sl_ptr + i).to(tl.int64)
+    sr = tl.load(sr_ptr + i).to(tl.int64)
+    parent_w = tl.load(reduce_idx_ptr + i).to(tl.int64)
     wlsp = tl.load(wlsp_ptr + i)
     if USE_ACTIVE_MASK:
         parent_active = tl.load(active_mask_ptr + parent_w)
@@ -2252,14 +2252,14 @@ def _dts_cross_backward_accum_parent_tiled_ge2_kernel(
             return
         split_start = group_i64
         split_end = group_i64 + 1
-        parent_w = tl.load(reduce_idx_ptr + group)
+        parent_w = tl.load(reduce_idx_ptr + group).to(tl.int64)
     else:
         ge2_group = group - N_EQ1
         start_ge2 = tl.load(ge2_ptr + ge2_group)
         end_ge2 = tl.load(ge2_ptr + ge2_group + 1)
         split_start = N_EQ1 + start_ge2 + tile_i64 * TILE_SPLITS
         split_end = N_EQ1 + tl.minimum(end_ge2, start_ge2 + (tile_i64 + 1) * TILE_SPLITS)
-        parent_w = tl.load(ge2_parent_ids_ptr + ge2_group)
+        parent_w = tl.load(ge2_parent_ids_ptr + ge2_group).to(tl.int64)
 
     if split_start >= split_end:
         return
@@ -2300,8 +2300,8 @@ def _dts_cross_backward_accum_parent_tiled_ge2_kernel(
         split_valid = split_i < split_end
         mask = valid_mask & split_valid
 
-        sl = tl.load(sl_ptr + split_i, mask=split_valid, other=0)
-        sr = tl.load(sr_ptr + split_i, mask=split_valid, other=0)
+        sl = tl.load(sl_ptr + split_i, mask=split_valid, other=0).to(tl.int64)
+        sr = tl.load(sr_ptr + split_i, mask=split_valid, other=0).to(tl.int64)
         wlsp = tl.load(wlsp_ptr + split_i, mask=split_valid, other=0.0)
 
         pi_l_base = sl * stride_C
@@ -2523,7 +2523,7 @@ def _build_parent_ragged_ge2_worklist(n_eq1, ge2_ptr, ge2_parent_ids, tile_split
     n_eq1 = int(n_eq1)
     tile_splits = max(1, int(tile_splits))
     if ge2_parent_ids.numel() == 0:
-        empty = torch.empty((0,), device=device, dtype=torch.long)
+        empty = torch.empty((0,), device=device, dtype=torch.int32)
         return empty, empty, empty
 
     ptr_cpu = ge2_ptr.detach().cpu().tolist()
@@ -2540,13 +2540,13 @@ def _build_parent_ragged_ge2_worklist(n_eq1, ge2_ptr, ge2_parent_ids, tile_split
             tile_parent_ids.append(int(parent))
 
     if not tile_split_starts:
-        empty = torch.empty((0,), device=device, dtype=torch.long)
+        empty = torch.empty((0,), device=device, dtype=torch.int32)
         return empty, empty, empty
 
     return (
-        torch.tensor(tile_split_starts, device=device, dtype=torch.long),
-        torch.tensor(tile_split_ends, device=device, dtype=torch.long),
-        torch.tensor(tile_parent_ids, device=device, dtype=torch.long),
+        torch.tensor(tile_split_starts, device=device, dtype=torch.int32),
+        torch.tensor(tile_split_ends, device=device, dtype=torch.int32),
+        torch.tensor(tile_parent_ids, device=device, dtype=torch.int32),
     )
 
 
@@ -2605,12 +2605,12 @@ def _dts_cross_backward_accum_parent_ragged_kernel(
     if work < N_EQ1:
         split_start = work.to(tl.int64)
         split_end = split_start + 1
-        parent_w = tl.load(reduce_idx_ptr + work)
+        parent_w = tl.load(reduce_idx_ptr + work).to(tl.int64)
     else:
         tile = work - N_EQ1
-        split_start = tl.load(ge2_tile_split_start_ptr + tile)
-        split_end = tl.load(ge2_tile_split_end_ptr + tile)
-        parent_w = tl.load(ge2_tile_parent_ids_ptr + tile)
+        split_start = tl.load(ge2_tile_split_start_ptr + tile).to(tl.int64)
+        split_end = tl.load(ge2_tile_split_end_ptr + tile).to(tl.int64)
+        parent_w = tl.load(ge2_tile_parent_ids_ptr + tile).to(tl.int64)
 
     s_offs = block * BLOCK_S + tl.arange(0, BLOCK_S)
     valid_mask = s_offs < S
@@ -2647,8 +2647,8 @@ def _dts_cross_backward_accum_parent_ragged_kernel(
         split_valid = split_i < split_end
         mask = valid_mask & split_valid
 
-        sl = tl.load(sl_ptr + split_i, mask=split_valid, other=0)
-        sr = tl.load(sr_ptr + split_i, mask=split_valid, other=0)
+        sl = tl.load(sl_ptr + split_i, mask=split_valid, other=0).to(tl.int64)
+        sr = tl.load(sr_ptr + split_i, mask=split_valid, other=0).to(tl.int64)
         wlsp = tl.load(wlsp_ptr + split_i, mask=split_valid, other=0.0)
 
         pi_l_base = sl * stride_C
@@ -2896,7 +2896,7 @@ def _add_grouped_dts_pi_accum_kernel(
     group = tl.program_id(0)
     block = tl.program_id(1)
 
-    child = tl.load(group_children_ptr + group)
+    child = tl.load(group_children_ptr + group).to(tl.int64)
     s_offs = block * BLOCK_S + tl.arange(0, BLOCK_S)
     mask = s_offs < S
     grad = tl.load(grouped_grad_ptr + group * S + s_offs, mask=mask, other=0.0)
@@ -3084,11 +3084,11 @@ def _uniform_cross_pibar_vjp_kernel(
     split_i = tl.where(row < n_ws, row, row - n_ws)
     is_right = row >= n_ws
 
-    child_l = tl.load(sl_ptr + split_i)
-    child_r = tl.load(sr_ptr + split_i)
+    child_l = tl.load(sl_ptr + split_i).to(tl.int64)
+    child_r = tl.load(sr_ptr + split_i).to(tl.int64)
     child = tl.where(is_right, child_r, child_l)
     if USE_ACTIVE_MASK:
-        parent_w = tl.load(reduce_idx_ptr + split_i)
+        parent_w = tl.load(reduce_idx_ptr + split_i).to(tl.int64)
         row_active = tl.load(active_mask_ptr + parent_w)
         if row_active == 0:
             return
@@ -3244,12 +3244,12 @@ def _group_cross_pibar_grad_kernel(
     is_right = side >= n_ws
 
     if USE_ACTIVE_MASK:
-        parent_w = tl.load(reduce_idx_ptr + split_i)
+        parent_w = tl.load(reduce_idx_ptr + split_i).to(tl.int64)
         row_active = tl.load(active_mask_ptr + parent_w)
         if row_active == 0:
             return
 
-    group = tl.load(group_inverse_ptr + side)
+    group = tl.load(group_inverse_ptr + side).to(tl.int64)
     if TRACK_GROUP_ACTIVE:
         tl.store(group_active_ptr + group, 1)
 
@@ -3293,7 +3293,7 @@ def _uniform_cross_pibar_vjp_tree_grouped_kernel(
         if group_active == 0:
             return
 
-    child = tl.load(group_children_ptr + row)
+    child = tl.load(group_children_ptr + row).to(tl.int64)
     pi_base = child * stride_C
     grad_base = row * S
     subtree_base = row * S
@@ -3411,11 +3411,11 @@ def _uniform_cross_pibar_vjp_tree_kernel(
     split_i = tl.where(row < n_ws, row, row - n_ws)
     is_right = row >= n_ws
 
-    child_l = tl.load(sl_ptr + split_i)
-    child_r = tl.load(sr_ptr + split_i)
+    child_l = tl.load(sl_ptr + split_i).to(tl.int64)
+    child_r = tl.load(sr_ptr + split_i).to(tl.int64)
     child = tl.where(is_right, child_r, child_l)
     if USE_ACTIVE_MASK:
-        parent_w = tl.load(reduce_idx_ptr + split_i)
+        parent_w = tl.load(reduce_idx_ptr + split_i).to(tl.int64)
         row_active = tl.load(active_mask_ptr + parent_w)
         if row_active == 0:
             return
@@ -3557,11 +3557,11 @@ def _uniform_cross_pibar_vjp_tree_prefix_kernel(
     split_i = tl.where(row < n_ws, row, row - n_ws)
     is_right = row >= n_ws
 
-    child_l = tl.load(sl_ptr + split_i)
-    child_r = tl.load(sr_ptr + split_i)
+    child_l = tl.load(sl_ptr + split_i).to(tl.int64)
+    child_r = tl.load(sr_ptr + split_i).to(tl.int64)
     child = tl.where(is_right, child_r, child_l)
     if USE_ACTIVE_MASK:
-        parent_w = tl.load(reduce_idx_ptr + split_i)
+        parent_w = tl.load(reduce_idx_ptr + split_i).to(tl.int64)
         row_active = tl.load(active_mask_ptr + parent_w)
         if row_active == 0:
             return
@@ -3793,11 +3793,11 @@ def _uniform_cross_pibar_vjp_tree_from_ud_kernel(
         if side_active == 0:
             return
 
-    child_l = tl.load(sl_ptr + split_i)
-    child_r = tl.load(sr_ptr + split_i)
+    child_l = tl.load(sl_ptr + split_i).to(tl.int64)
+    child_r = tl.load(sr_ptr + split_i).to(tl.int64)
     child = tl.where(is_right, child_r, child_l)
     if USE_ACTIVE_MASK:
-        parent_w = tl.load(reduce_idx_ptr + split_i)
+        parent_w = tl.load(reduce_idx_ptr + split_i).to(tl.int64)
         row_active = tl.load(active_mask_ptr + parent_w)
         if row_active == 0:
             return
@@ -3879,11 +3879,11 @@ def _uniform_cross_pibar_vjp_tree_from_ud_compact_kernel(
         if side_active == 0:
             return
 
-    child_l = tl.load(sl_ptr + split_i)
-    child_r = tl.load(sr_ptr + split_i)
+    child_l = tl.load(sl_ptr + split_i).to(tl.int64)
+    child_r = tl.load(sr_ptr + split_i).to(tl.int64)
     child = tl.where(is_right, child_r, child_l)
     if USE_ACTIVE_MASK:
-        parent_w = tl.load(reduce_idx_ptr + split_i)
+        parent_w = tl.load(reduce_idx_ptr + split_i).to(tl.int64)
         row_active = tl.load(active_mask_ptr + parent_w)
         if row_active == 0:
             return
@@ -3967,11 +3967,11 @@ def _uniform_cross_pibar_vjp_tree_from_ud_euler_prefix_kernel(
         if side_active == 0:
             return
 
-    child_l = tl.load(sl_ptr + split_i)
-    child_r = tl.load(sr_ptr + split_i)
+    child_l = tl.load(sl_ptr + split_i).to(tl.int64)
+    child_r = tl.load(sr_ptr + split_i).to(tl.int64)
     child = tl.where(is_right, child_r, child_l)
     if USE_ACTIVE_MASK:
-        parent_w = tl.load(reduce_idx_ptr + split_i)
+        parent_w = tl.load(reduce_idx_ptr + split_i).to(tl.int64)
         row_active = tl.load(active_mask_ptr + parent_w)
         if row_active == 0:
             return
@@ -4404,7 +4404,7 @@ def _uniform_cross_pibar_vjp_grouped_tree_kernel(
     NEG_LARGE: tl.constexpr = -1e30
 
     row = tl.program_id(0)
-    child = tl.load(child_ids_ptr + row)
+    child = tl.load(child_ids_ptr + row).to(tl.int64)
     pi_base = child * stride_C
     row_base = row * S
 

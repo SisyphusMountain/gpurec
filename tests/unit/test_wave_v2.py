@@ -182,6 +182,43 @@ def cpp_ext():
 
 
 # ------------------------------------------------------------------
+# Tests: wave metadata layout
+# ------------------------------------------------------------------
+
+def test_wave_layout_split_metadata_uses_int32_ids():
+    device = torch.device("cpu")
+    dtype = torch.float32
+    ccp_helpers = {
+        "C": 6,
+        "N_splits": 4,
+        "split_leftrights_sorted": torch.tensor(
+            [0, 1, 1, 2, 1, 2, 0, 0],
+            dtype=torch.long,
+        ),
+        "split_parents_sorted": torch.tensor([3, 3, 4, 5], dtype=torch.long),
+        "log_split_probs_sorted": torch.zeros(4, dtype=dtype),
+    }
+    wave_layout = build_wave_layout(
+        waves=[[0, 1, 2], [3, 4, 5]],
+        phases=[1, 1],
+        ccp_helpers=ccp_helpers,
+        leaf_row_index=torch.tensor([0], dtype=torch.long),
+        leaf_col_index=torch.tensor([0], dtype=torch.long),
+        root_clade_ids=torch.tensor([5], dtype=torch.long),
+        device=device,
+        dtype=dtype,
+    )
+
+    split_meta = wave_layout["wave_metas"][1]
+    assert split_meta["sl"].dtype == torch.int32
+    assert split_meta["sr"].dtype == torch.int32
+    assert split_meta["reduce_idx"].dtype == torch.int32
+    assert split_meta["eq1_reduce_idx"].dtype == torch.int32
+    assert split_meta["ge2_parent_ids"].dtype == torch.int32
+    assert split_meta["ge2_ptr"].dtype == torch.long
+
+
+# ------------------------------------------------------------------
 # Tests: wave matches FP
 # ------------------------------------------------------------------
 
@@ -250,5 +287,4 @@ def test_model_api_wave_matches_fp(cpp_ext):
             f"Family {i}: wave={logLs_wave[i]:.4f}, seq={logLs_seq[i]:.4f}, "
             f"diff={abs(logLs_wave[i] - logLs_seq[i]):.2e}"
         )
-
 

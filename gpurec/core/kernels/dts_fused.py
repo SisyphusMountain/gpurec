@@ -70,10 +70,10 @@ def _dts_fused_kernel(
     mask = s_offs < S
 
     # Load left/right clade indices for this split
-    left_idx = tl.load(lefts_ptr + n)
-    right_idx = tl.load(rights_ptr + n)
+    left_idx = tl.load(lefts_ptr + n).to(tl.int64)
+    right_idx = tl.load(rights_ptr + n).to(tl.int64)
     if USE_ACTIVE_MASK:
-        parent_w = tl.load(reduce_idx_ptr + n)
+        parent_w = tl.load(reduce_idx_ptr + n).to(tl.int64)
         parent_active = tl.load(active_mask_ptr + parent_w)
         if parent_active == 0:
             out_base = n * S
@@ -170,7 +170,7 @@ def _dts_eq1_to_rows_kernel(
     s_offs = s_block * BLOCK_S + tl.arange(0, BLOCK_S)
     mask = s_offs < S
 
-    parent_w = tl.load(eq1_parent_ids_ptr + n)
+    parent_w = tl.load(eq1_parent_ids_ptr + n).to(tl.int64)
     out_base = parent_w * S
     if USE_ACTIVE_MASK:
         parent_active = tl.load(active_mask_ptr + parent_w)
@@ -182,8 +182,8 @@ def _dts_eq1_to_rows_kernel(
             )
             return
 
-    left_idx = tl.load(lefts_ptr + n)
-    right_idx = tl.load(rights_ptr + n)
+    left_idx = tl.load(lefts_ptr + n).to(tl.int64)
+    right_idx = tl.load(rights_ptr + n).to(tl.int64)
     base_l = left_idx * S
     base_r = right_idx * S
 
@@ -275,7 +275,7 @@ def _dts_parent_reduced_ge2_kernel(
     s_offs = s_block * BLOCK_S + tl.arange(0, BLOCK_S)
     mask = s_offs < S
 
-    parent_w = tl.load(ge2_parent_ids_ptr + group)
+    parent_w = tl.load(ge2_parent_ids_ptr + group).to(tl.int64)
     out_base = parent_w * S
 
     if USE_ACTIVE_MASK:
@@ -296,8 +296,8 @@ def _dts_parent_reduced_ge2_kernel(
     split_rel = start
     while split_rel < end:
         split_i = split_offset + split_rel
-        left_idx = tl.load(lefts_ptr + split_i)
-        right_idx = tl.load(rights_ptr + split_i)
+        left_idx = tl.load(lefts_ptr + split_i).to(tl.int64)
+        right_idx = tl.load(rights_ptr + split_i).to(tl.int64)
         base_l = left_idx * S
         base_r = right_idx * S
 
@@ -392,7 +392,7 @@ def _dts_parent_reduced_ge2_stage1_kernel(
     s_offs = s_block * BLOCK_S + tl.arange(0, BLOCK_S)
     mask = s_offs < S
 
-    parent_w = tl.load(ge2_parent_ids_ptr + group)
+    parent_w = tl.load(ge2_parent_ids_ptr + group).to(tl.int64)
     if USE_ACTIVE_MASK:
         parent_active = tl.load(active_mask_ptr + parent_w)
         if parent_active == 0:
@@ -410,8 +410,8 @@ def _dts_parent_reduced_ge2_stage1_kernel(
     split_rel = tile_start
     while split_rel < tile_end:
         split_i = split_offset + split_rel
-        left_idx = tl.load(lefts_ptr + split_i)
-        right_idx = tl.load(rights_ptr + split_i)
+        left_idx = tl.load(lefts_ptr + split_i).to(tl.int64)
+        right_idx = tl.load(rights_ptr + split_i).to(tl.int64)
         base_l = left_idx * S
         base_r = right_idx * S
 
@@ -498,7 +498,7 @@ def _dts_parent_reduced_ge2_stage2_kernel(
     s_offs = s_block * BLOCK_S + tl.arange(0, BLOCK_S)
     mask = s_offs < S
 
-    parent_w = tl.load(ge2_parent_ids_ptr + group)
+    parent_w = tl.load(ge2_parent_ids_ptr + group).to(tl.int64)
     out_base = parent_w * S
     if USE_ACTIVE_MASK:
         parent_active = tl.load(active_mask_ptr + parent_w)
@@ -545,8 +545,8 @@ def dts_fused(Pi, Pibar, lefts, rights,
     Args:
         Pi: [C, S] contiguous — full Pi tensor
         Pibar: [C, S] contiguous — full Pibar tensor
-        lefts: [N] long — left child clade indices per split
-        rights: [N] long — right child clade indices per split
+        lefts: [N] int32/int64 — left child clade indices per split
+        rights: [N] int32/int64 — right child clade indices per split
         sp_child1, sp_child2: [S] long — species tree child indices (S=sentinel)
         log_pD, log_pS: scalar, [S], [N], [N, 1], or [N, S] event probabilities
         log_split_probs: [N, 1] or [N]

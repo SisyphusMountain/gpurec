@@ -125,7 +125,14 @@ def _uniform_pibar_from_pi(Pi, mt, ancestors_dense):
     return pibar.contiguous(), row_max.contiguous()
 
 
-def _run_accum_variant(*, merge_s_term, active_mask=None, dtype=torch.float32, scalar_shape="0d"):
+def _run_accum_variant(
+    *,
+    merge_s_term,
+    active_mask=None,
+    dtype=torch.float32,
+    scalar_shape="0d",
+    index_dtype=torch.long,
+):
     torch.manual_seed(17)
     device = torch.device("cuda")
     C, S, W, N = 9, 11, 3, 6
@@ -136,9 +143,9 @@ def _run_accum_variant(*, merge_s_term, active_mask=None, dtype=torch.float32, s
     v_k = (torch.randn(W, S, device=device, dtype=dtype) * 0.1).contiguous()
 
     # Duplicated child rows exercise the atomic accumulation path.
-    sl = torch.tensor([0, 1, 2, 3, 1, 4], device=device, dtype=torch.long)
-    sr = torch.tensor([1, 2, 3, 4, 0, 2], device=device, dtype=torch.long)
-    reduce_idx = torch.tensor([0, 1, 1, 2, 2, 0], device=device, dtype=torch.long)
+    sl = torch.tensor([0, 1, 2, 3, 1, 4], device=device, dtype=index_dtype)
+    sr = torch.tensor([1, 2, 3, 4, 0, 2], device=device, dtype=index_dtype)
+    reduce_idx = torch.tensor([0, 1, 1, 2, 2, 0], device=device, dtype=index_dtype)
     wlsp = (torch.randn(N, device=device, dtype=dtype) * 0.1 - 1.0).contiguous()
 
     sp_child1 = torch.tensor(
@@ -172,6 +179,13 @@ def _run_accum_variant(*, merge_s_term, active_mask=None, dtype=torch.float32, s
     )
     torch.cuda.synchronize()
     return accumulated_rhs, grad_pibar_l, grad_pibar_r, param_pD, param_pS
+
+
+def test_dts_backward_accum_accepts_int32_split_metadata():
+    base = _run_accum_variant(merge_s_term=True, index_dtype=torch.long)
+    actual = _run_accum_variant(merge_s_term=True, index_dtype=torch.int32)
+    for lhs, rhs in zip(actual, base):
+        torch.testing.assert_close(lhs, rhs, atol=2e-5, rtol=2e-5)
 
 
 def _run_accum_reduction_variant(

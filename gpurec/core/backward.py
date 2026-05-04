@@ -107,20 +107,22 @@ def _dts_cross_differentiable(
     """
     sl = meta['sl']
     sr = meta['sr']
+    sl_long = sl.long()
+    sr_long = sr.long()
     wlsp = meta['log_split_probs']
     W = meta['W']
     n_ws = sl.shape[0]
 
-    Pi_l = Pi[sl]
-    Pi_r = Pi[sr]
-    Pibar_l = Pibar[sl]
-    Pibar_r = Pibar[sr]
+    Pi_l = Pi[sl_long]
+    Pi_r = Pi[sr_long]
+    Pibar_l = Pibar[sl_long]
+    Pibar_r = Pibar[sr_long]
 
     Pi_pad = torch.cat([Pi, torch.full((Pi.shape[0], 1), NEG_INF, device=device, dtype=dtype)], dim=1)
-    Pi_l_s1 = Pi_pad[sl][:, sp_child1.long()]
-    Pi_l_s2 = Pi_pad[sl][:, sp_child2.long()]
-    Pi_r_s1 = Pi_pad[sr][:, sp_child1.long()]
-    Pi_r_s2 = Pi_pad[sr][:, sp_child2.long()]
+    Pi_l_s1 = Pi_pad[sl_long][:, sp_child1.long()]
+    Pi_l_s2 = Pi_pad[sl_long][:, sp_child2.long()]
+    Pi_r_s1 = Pi_pad[sr_long][:, sp_child1.long()]
+    Pi_r_s2 = Pi_pad[sr_long][:, sp_child2.long()]
 
     DTS = torch.stack([
         log_pD + Pi_l + Pi_r,
@@ -132,7 +134,7 @@ def _dts_cross_differentiable(
 
     dts_term = wlsp + logsumexp2(DTS, dim=0)
 
-    reduce_idx = meta['reduce_idx']
+    reduce_idx = meta['reduce_idx'].long()
     reduce_expand = reduce_idx.unsqueeze(1).expand(n_ws, S)
 
     seg_max = torch.full((W, S), NEG_INF, device=device, dtype=dtype)
@@ -1510,10 +1512,11 @@ def Pi_wave_backward(
         active_parent_splits = torch.zeros((), dtype=torch.int64, device=device_i)
         if meta.get('has_splits') and current_wave_scheduled:
             reduce_idx = meta['reduce_idx']
+            reduce_idx_long = reduce_idx.long()
             current_splits = int(reduce_idx.numel())
-            parent_chunk_ids = chunk_ids[reduce_idx]
+            parent_chunk_ids = chunk_ids[reduce_idx_long]
             chunk_scheduled_splits = active_chunks[parent_chunk_ids].to(torch.int64).sum()
-            active_parent_splits = active_i64[reduce_idx].sum()
+            active_parent_splits = active_i64[reduce_idx_long].sum()
 
         family_chunk_diag_values['waves'] += 1
         family_chunk_diag_values['rows_total'].append(
@@ -1656,8 +1659,9 @@ def Pi_wave_backward(
                 log_pD_dts = log_pD_shared
                 log_pS_dts = log_pS_shared
             else:
-                log_pD_dts = log_pD_clade[ws + reduce_idx]
-                log_pS_dts = log_pS_clade[ws + reduce_idx]
+                reduce_idx_long = reduce_idx.long()
+                log_pD_dts = log_pD_clade[ws + reduce_idx_long]
+                log_pS_dts = log_pS_clade[ws + reduce_idx_long]
             with torch.no_grad():
                 if _compute_dts_cross_kernelized is not None:
                     dts_r = _compute_dts_cross_kernelized(
@@ -2185,18 +2189,22 @@ def Pi_wave_backward(
                         grad_mt[0] += mt_contrib
 
             else:
-                Pi_l = Pi_star_wave[sl]
-                Pi_r = Pi_star_wave[sr]
-                Pibar_l = Pibar_star_wave[sl]
-                Pibar_r = Pibar_star_wave[sr]
+                sl_long = sl.long()
+                sr_long = sr.long()
+                reduce_idx_long = reduce_idx.long()
+
+                Pi_l = Pi_star_wave[sl_long]
+                Pi_r = Pi_star_wave[sr_long]
+                Pibar_l = Pibar_star_wave[sl_long]
+                Pibar_r = Pibar_star_wave[sr_long]
                 neg_inf_col = torch.full((Pi_star_wave.shape[0], 1), NEG_INF, device=device, dtype=dtype)
                 Pi_col_pad = torch.cat([Pi_star_wave, neg_inf_col], dim=1)
-                Pi_l_s1 = Pi_col_pad[sl][:, sp_child1.long()]
-                Pi_l_s2 = Pi_col_pad[sl][:, sp_child2.long()]
-                Pi_r_s1 = Pi_col_pad[sr][:, sp_child1.long()]
-                Pi_r_s2 = Pi_col_pad[sr][:, sp_child2.long()]
+                Pi_l_s1 = Pi_col_pad[sl_long][:, sp_child1.long()]
+                Pi_l_s2 = Pi_col_pad[sl_long][:, sp_child2.long()]
+                Pi_r_s1 = Pi_col_pad[sr_long][:, sp_child1.long()]
+                Pi_r_s2 = Pi_col_pad[sr_long][:, sp_child2.long()]
 
-                fi_splits = family_idx[ws + reduce_idx]
+                fi_splits = family_idx[ws + reduce_idx_long]
                 _pD_s = log_pD[fi_splits]
                 if _pD_s.ndim == 1:
                     _pD_s = _pD_s.unsqueeze(-1)
@@ -2212,9 +2220,9 @@ def Pi_wave_backward(
                     _pS_s + Pi_r_s1 + Pi_l_s2,
                 ], dim=0)
 
-                Pi_parent = Pi_W_star[reduce_idx]
+                Pi_parent = Pi_W_star[reduce_idx_long]
                 combined = wlsp + DTS_5
-                v_k_parent = v_k[reduce_idx]
+                v_k_parent = v_k[reduce_idx_long]
                 grad_DTS_5 = v_k_parent.unsqueeze(0) * _safe_exp2_ratio(
                     combined, Pi_parent.unsqueeze(0))
 
@@ -2225,7 +2233,7 @@ def Pi_wave_backward(
                 else:
                     grad_log_pD.scatter_add_(0, fi_split_expand, grad_DTS_5[0])
                     grad_log_pS.scatter_add_(0, fi_split_expand, grad_DTS_5[3] + grad_DTS_5[4])
-                child_ids_dts = torch.cat([sl, sr])
+                child_ids_dts = torch.cat([sl_long, sr_long])
                 fi_ch = family_idx[child_ids_dts]
                 fi_ch_expand = fi_ch.unsqueeze(1).expand(2 * n_ws, S)
                 grad_mt.scatter_add_(0, fi_ch_expand,
@@ -2233,7 +2241,7 @@ def Pi_wave_backward(
 
                 if pibar_mode in ('dense', 'topk') and grad_transfer_mat_acc is not None:
                     v_Pibar_ch = torch.cat([grad_DTS_5[2], grad_DTS_5[1]], dim=0)
-                    child_ids = torch.cat([sl, sr])
+                    child_ids = torch.cat([sl_long, sr_long])
                     Pi_ch = Pi_star_wave[child_ids]
                     Pi_max_ch = Pi_ch.max(dim=1, keepdim=True).values
                     p_prime_ch = torch.exp2(Pi_ch - Pi_max_ch)
@@ -2261,8 +2269,10 @@ def Pi_wave_backward(
                     grad_Pi_l.scatter_add_(1, idx2.unsqueeze(0).expand(n_ws, -1), grad_DTS_5[4][:, valid2])
 
             if not used_fused_direct_pi_accum:
-                accumulated_rhs.index_add_(0, sl, grad_Pi_l)
-                accumulated_rhs.index_add_(0, sr, grad_Pi_r)
+                sl_long = sl.long()
+                sr_long = sr.long()
+                accumulated_rhs.index_add_(0, sl_long, grad_Pi_l)
+                accumulated_rhs.index_add_(0, sr_long, grad_Pi_r)
 
             if (
                 use_fused
@@ -2364,7 +2374,7 @@ def Pi_wave_backward(
                             reduce_idx=reduce_idx,
                         )
                     else:
-                        all_children = torch.cat([sl, sr])
+                        all_children = torch.cat([sl.long(), sr.long()])
                         all_pibar_grad = torch.cat([grad_Pibar_l, grad_Pibar_r])
                         unique_children, inverse = torch.unique(
                             all_children, sorted=True, return_inverse=True
@@ -2447,7 +2457,7 @@ def Pi_wave_backward(
                 used_fused_pibar_vjp = True
 
             if not used_fused_pibar_vjp:
-                all_children = torch.cat([sl, sr])
+                all_children = torch.cat([sl.long(), sr.long()])
                 all_pibar_grad = torch.cat([grad_Pibar_l, grad_Pibar_r])
 
                 nz = all_pibar_grad.abs().sum(dim=1) > 0

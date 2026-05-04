@@ -84,12 +84,12 @@ def _compute_dts_cross(Pi, Pibar, meta, sp_child1, sp_child2, log_pD, log_pS,
     dts_r = torch.full((W, S), NEG_INF, device=device, dtype=dtype)
 
     if n_eq1 > 0:
-        dts_r[meta['eq1_reduce_idx']] = dts_term[:n_eq1]
+        dts_r[meta['eq1_reduce_idx'].long()] = dts_term[:n_eq1]
 
     if n_ge2_clades > 0:
         ge2_term = dts_term[n_eq1:].contiguous()
         y_ge2 = seg_logsumexp(ge2_term, meta['ge2_ptr'])
-        dts_r[meta['ge2_parent_ids']] = y_ge2
+        dts_r[meta['ge2_parent_ids'].long()] = y_ge2
 
     return dts_r
 
@@ -375,14 +375,17 @@ def compute_gradient_bounds(
             sl = meta['sl']
             sr = meta['sr']
             reduce_idx = meta['reduce_idx']
+            sl_long = sl.long()
+            sr_long = sr.long()
+            reduce_idx_long = reduce_idx.long()
             ws = meta['start']
 
-            gb_parents = grad_bound[reduce_idx + ws]
-            new_l = gb_parents + s[sr]
-            new_r = gb_parents + s[sl]
+            gb_parents = grad_bound[reduce_idx_long + ws]
+            new_l = gb_parents + s[sr_long]
+            new_r = gb_parents + s[sl_long]
 
-            grad_bound[sl] = logaddexp2(grad_bound[sl], new_l)
-            grad_bound[sr] = logaddexp2(grad_bound[sr], new_r)
+            grad_bound[sl_long] = logaddexp2(grad_bound[sl_long], new_l)
+            grad_bound[sr_long] = logaddexp2(grad_bound[sr_long], new_r)
     else:
         N_splits = int(ccp_helpers['N_splits'])
         split_leftrights = ccp_helpers['split_leftrights_sorted']
@@ -680,7 +683,7 @@ def Pi_wave_forward(
         # Each split's parent clade determines the family.
         # reduce_idx maps splits to wave-local clade indices.
         ws = meta['start']
-        reduce_idx = meta['reduce_idx']
+        reduce_idx = meta['reduce_idx'].long()
         fi_splits = family_idx[ws + reduce_idx]
         pD = log_pD[fi_splits]  # [N_splits] or [N_splits, S]
         pS = log_pS[fi_splits]
@@ -1132,12 +1135,14 @@ def Pi_wave_forward(
                 if meta['has_splits']:
                     sl = meta['sl']
                     sr = meta['sr']
-                    lr = torch.cat([sl, sr])
+                    sl_long = sl.long()
+                    sr_long = sr.long()
+                    lr = torch.cat([sl_long, sr_long])
                     pD_dts, pS_dts = _wave_dts_params(meta)
                     dts_r = _compute_DTS_reduced(
                         Pi, Pibar, lr, meta['n_ws'], S, W, pD_dts, pS_dts,
                         sp_child1, sp_child2, meta['log_split_probs'],
-                        meta['reduce_idx'], device, dtype)
+                        meta['reduce_idx'].long(), device, dtype)
                 else:
                     dts_r = None
 

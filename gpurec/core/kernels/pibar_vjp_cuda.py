@@ -309,10 +309,11 @@ def uniform_cross_pibar_vjp_tree_from_ud_cuda(
         raise ValueError("active_mask must be bool")
     if side_active is not None and side_active.dtype is not torch.bool:
         raise ValueError("side_active must be bool")
-    if sl.dtype != torch.int64 or sr.dtype != torch.int64:
-        raise ValueError("split child tensors must be int64")
-    if reduce_idx is not None and reduce_idx.dtype != torch.int64:
-        raise ValueError("reduce_idx must be int64")
+    index_dtypes = (torch.int32, torch.int64)
+    if sl.dtype not in index_dtypes or sr.dtype not in index_dtypes:
+        raise ValueError("split child tensors must be int32 or int64")
+    if reduce_idx is not None and reduce_idx.dtype not in index_dtypes:
+        raise ValueError("reduce_idx must be int32 or int64")
     if use_compact_levels:
         if compact_level_ptr.dtype != torch.int64:
             raise ValueError("compact level ptr must be int64")
@@ -328,12 +329,24 @@ def uniform_cross_pibar_vjp_tree_from_ud_cuda(
         if sp_child1.dtype != torch.int64 or sp_child2.dtype != torch.int64:
             raise ValueError("species child tensors must be int64")
 
+    sl_arg = sl.contiguous() if sl.dtype == torch.int64 else sl.to(torch.int64).contiguous()
+    sr_arg = sr.contiguous() if sr.dtype == torch.int64 else sr.to(torch.int64).contiguous()
+    reduce_arg = (
+        reduce_idx.contiguous()
+        if reduce_idx is not None and reduce_idx.dtype == torch.int64
+        else (
+            reduce_idx.to(torch.int64).contiguous()
+            if reduce_idx is not None
+            else sl_arg
+        )
+    )
+
     tensors = [
         Pi_star,
         pibar_ud,
         pibar_A,
-        sl,
-        sr,
+        sl_arg,
+        sr_arg,
         pibar_row_max,
         accumulated_rhs,
     ]
@@ -347,7 +360,7 @@ def uniform_cross_pibar_vjp_tree_from_ud_cuda(
     if use_padded_levels:
         tensors.extend([level_parents, sp_child1, sp_child2])
     if reduce_idx is not None:
-        tensors.append(reduce_idx)
+        tensors.append(reduce_arg)
     if active_mask is not None:
         tensors.append(active_mask)
     if side_active is not None:
@@ -382,7 +395,6 @@ def uniform_cross_pibar_vjp_tree_from_ud_cuda(
         raise ValueError("CUDA Pibar VJP shared-memory row scratch is too large")
     active_arg = active_mask.contiguous() if active_mask is not None else pibar_A
     side_arg = side_active.contiguous() if side_active is not None else pibar_A
-    reduce_arg = reduce_idx.contiguous() if reduce_idx is not None else sl
 
     with torch.cuda.device(device_index):
         _, compact_func, padded_func = _load_cuda_kernel(device_index, cc_major, cc_minor)
@@ -393,8 +405,8 @@ def uniform_cross_pibar_vjp_tree_from_ud_cuda(
                 ("ptr", pibar_ud),
                 ("ptr", pibar_A),
                 ("ptr", side_arg),
-                ("ptr", sl),
-                ("ptr", sr),
+                ("ptr", sl_arg),
+                ("ptr", sr_arg),
                 ("ptr", reduce_arg),
                 ("ptr", active_arg),
                 ("ptr", pibar_row_max),
@@ -419,8 +431,8 @@ def uniform_cross_pibar_vjp_tree_from_ud_cuda(
                 ("ptr", pibar_ud),
                 ("ptr", pibar_A),
                 ("ptr", side_arg),
-                ("ptr", sl),
-                ("ptr", sr),
+                ("ptr", sl_arg),
+                ("ptr", sr_arg),
                 ("ptr", reduce_arg),
                 ("ptr", active_arg),
                 ("ptr", pibar_row_max),

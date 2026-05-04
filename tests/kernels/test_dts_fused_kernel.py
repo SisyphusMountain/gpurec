@@ -109,6 +109,58 @@ def test_dts_fused_active_mask_skips_inactive_parent_rows(dtype, atol, rtol):
     torch.testing.assert_close(actual, expected, atol=atol, rtol=rtol)
 
 
+def test_dts_parent_reduced_accepts_int32_split_metadata():
+    torch.manual_seed(24)
+    device = torch.device("cuda")
+    dtype = torch.float32
+    C, S, N, W = 10, 13, 7, 4
+    Pi = (torch.randn(C, S, device=device, dtype=dtype) * 0.2 - 2.0).contiguous()
+    Pibar = (torch.randn(C, S, device=device, dtype=dtype) * 0.2 - 2.0).contiguous()
+    lefts_long = torch.tensor([0, 1, 2, 3, 4, 5, 6], device=device, dtype=torch.long)
+    rights_long = torch.tensor([1, 2, 3, 4, 5, 6, 7], device=device, dtype=torch.long)
+    reduce_idx_long = torch.tensor([0, 2, 1, 1, 3, 3, 3], device=device, dtype=torch.long)
+    n_eq1 = 2
+    eq1_long = torch.tensor([0, 2], device=device, dtype=torch.long)
+    ge2_ptr = torch.tensor([0, 2, 5], device=device, dtype=torch.long)
+    ge2_parent_long = torch.tensor([1, 3], device=device, dtype=torch.long)
+    active_mask = torch.tensor([True, False, True, True], device=device)
+    sp_child1 = torch.tensor([1, 3, S, 5, S, 7, S, 9, S, 11, S, S, S], device=device, dtype=torch.long)
+    sp_child2 = torch.tensor([2, 4, S, 6, S, 8, S, 10, S, 12, S, S, S], device=device, dtype=torch.long)
+    log_split_probs = (torch.randn(N, 1, device=device, dtype=dtype) * 0.1 - 1.0).contiguous()
+    log_pD = (torch.randn(S, device=device, dtype=dtype) * 0.1 - 4.0).contiguous()
+    log_pS = (torch.randn(S, device=device, dtype=dtype) * 0.1 - 4.0).contiguous()
+
+    dts_term = dts_fused(
+        Pi, Pibar, lefts_long, rights_long, sp_child1, sp_child2, log_pD, log_pS,
+        log_split_probs, active_mask=active_mask, reduce_idx=reduce_idx_long,
+    )
+    expected = torch.full((W, S), -float("inf"), device=device, dtype=dtype)
+    expected[eq1_long] = dts_term[:n_eq1]
+    expected[ge2_parent_long] = seg_logsumexp(dts_term[n_eq1:].contiguous(), ge2_ptr)
+
+    actual = dts_fused_parent_reduced(
+        Pi,
+        Pibar,
+        lefts_long.to(torch.int32),
+        rights_long.to(torch.int32),
+        sp_child1,
+        sp_child2,
+        log_pD,
+        log_pS,
+        log_split_probs,
+        W,
+        n_eq1,
+        eq1_long.to(torch.int32),
+        ge2_ptr,
+        ge2_parent_long.to(torch.int32),
+        active_mask=active_mask,
+        impl="tiled",
+        tile_splits=2,
+        ge2_max_fanout=3,
+    )
+    torch.testing.assert_close(actual, expected, atol=3e-5, rtol=3e-5)
+
+
 @pytest.mark.parametrize("dtype,atol,rtol", [(torch.float32, 3e-5, 3e-5), (torch.float64, 1e-10, 1e-10)])
 @pytest.mark.parametrize("active", [False, True])
 @pytest.mark.parametrize("split_params", [False, True])
