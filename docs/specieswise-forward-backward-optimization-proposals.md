@@ -63,6 +63,11 @@ dense `[W,S]` leaf matrix when `GPUREC_UNIFORM_IMPL=two`.
   - Adds the constant-specieswise semantic check: constant `[S,3]` rates must
     match global mode, and the specieswise gradient summed over species must
     match the global gradient.
+  - Adds an AleRax specieswise fixture regression over all 100 families in
+    `tests/data/test_trees_100`.  The test loads branch-specific D/L/T rates
+    from `output_specieswise/model_parameters/model_parameters.txt`, runs the
+    optimized specieswise uniform likelihood in fp64, and compares each family
+    with `output_specieswise/per_fam_likelihoods.txt`.
 
 - `profiling/bench_specieswise_uniform.py`
   - Adds a focused specieswise benchmark harness with forward, backward,
@@ -115,7 +120,13 @@ Additional worker checks:
 | full forward kernel test file | `7 passed` |
 | genewise family-indexed constant/DTS regression checks | `4 passed` |
 | two-kernel leaf-index smoke | root rows and `Pibar` max diff `0.0` |
-| specieswise unit tests | `3 passed` |
+| specieswise unit tests | `4 passed` |
+
+The AleRax fixture comparison uses the per-family log-likelihoods as written in
+`output_specieswise/per_fam_likelihoods.txt`; no extra `ln(S)` origin correction
+is applied for this fixture.  With fp64, fixed-point tolerances of `1e-10`, and
+4000 maximum E/Pi iterations, the local maximum absolute per-family difference
+was below `5e-4` nats.
 
 ## Forward Timing
 
