@@ -940,7 +940,7 @@ def _wave_backward_uniform_param_two_stage(
         int(os.environ.get("GPUREC_SELF_LOOP_PARAM_TWO_STAGE_TILE_ROWS", "16")),
     )
     tile_rows = triton.next_power_of_2(tile_rows_raw)
-    block_s_default = min(128, triton.next_power_of_2(S))
+    block_s_default = min(256, triton.next_power_of_2(S))
     block_s_raw = max(
         1,
         int(os.environ.get("GPUREC_SELF_LOOP_PARAM_TWO_STAGE_BLOCK_S", str(block_s_default))),
