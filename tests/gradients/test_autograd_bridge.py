@@ -581,6 +581,46 @@ def test_gradcheck_global_uniform_small():
         rtol=2e-3,
         nondet_tol=1e-8,
         fast_mode=False,
+        )
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+def test_gradcheck_specieswise_uniform_small():
+    """Specieswise uniform backward matches torch finite-difference gradcheck."""
+    data_dir = _ROOT / "data" / "test_trees_3"
+    if not data_dir.exists():
+        pytest.skip("test_trees_3 dataset not present")
+
+    model = GeneReconModel.from_trees(
+        species_tree=str(data_dir / "sp.nwk"),
+        gene_trees=[str(data_dir / "g.nwk")],
+        mode="specieswise",
+        pibar_mode="uniform",
+        device=_device(),
+        dtype=torch.float64,
+        theta_init_rates=(0.05, 0.05, 0.05),
+        max_iters_E=2000,
+        tol_E=1e-10,
+        max_iters_Pi=2000,
+        tol_Pi=1e-9,
+        fixed_iters_Pi=6,
+        neumann_terms=5,
+        use_pruning=False,
+    )
+    theta = model.theta.detach().clone().requires_grad_(True)
+
+    def fn(theta_in):
+        model.static.warm_E = None
+        return _GeneReconFunction.apply(theta_in, model.static, "sum")
+
+    assert torch.autograd.gradcheck(
+        fn,
+        (theta,),
+        eps=1e-4,
+        atol=2e-3,
+        rtol=2e-3,
+        nondet_tol=1e-8,
+        fast_mode=False,
     )
 
 

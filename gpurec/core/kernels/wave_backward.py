@@ -50,6 +50,60 @@ def _dts_scalar_param_args(log_pD, log_pS, *, device, dtype):
     return _extract(log_pD), _extract(log_pS), False
 
 
+def _dts_layout_param_args(log_pD, log_pS, *, family_idx, S, device, dtype):
+    """Return DTS parameter tensors plus a Triton addressing layout.
+
+    Layouts:
+      0: shared scalar, tensor [1]
+      1: shared species vector, tensor [S]
+      2: family scalar, tensor [G] addressed by family_idx[parent]
+      3: family species, tensor [G, S] addressed by family_idx[parent], s
+    """
+
+    def _normalize(param):
+        if not torch.is_tensor(param):
+            return _device_scalar_param(param, device=device, dtype=dtype), 0
+        if param.device != device or param.dtype != dtype:
+            param = param.to(device=device, dtype=dtype)
+        if param.numel() == 1:
+            return param.reshape(1).contiguous(), 0
+        if param.ndim == 1 and int(param.shape[0]) == int(S):
+            return param.contiguous(), 1
+        if family_idx is not None:
+            if param.ndim == 1:
+                return param.contiguous(), 2
+            if param.ndim == 2 and int(param.shape[1]) == 1:
+                return param.reshape(int(param.shape[0])).contiguous(), 2
+            if param.ndim == 2 and int(param.shape[1]) == int(S):
+                return param.contiguous(), 3
+        raise ValueError(
+            "DTS parameters must be scalar, [S], [G], or [G, S] for "
+            "the fused DTS backward path"
+        )
+
+    pD, layout_D = _normalize(log_pD)
+    pS, layout_S = _normalize(log_pS)
+    if layout_D != layout_S:
+        raise ValueError("log_pD/log_pS must use the same DTS parameter layout")
+    return pD, pS, layout_D
+
+
+def _dts_grad_layout(grad, *, family_idx, S):
+    """Return gradient addressing layout matching _dts_layout_param_args."""
+    if grad.numel() == 1:
+        return 0
+    if grad.ndim == 1 and int(grad.shape[0]) == int(S):
+        return 1
+    if family_idx is not None:
+        if grad.ndim == 1:
+            return 2
+        if grad.ndim == 2 and int(grad.shape[1]) == 1:
+            return 2
+        if grad.ndim == 2 and int(grad.shape[1]) == int(S):
+            return 3
+    raise ValueError("unsupported DTS gradient layout")
+
+
 def _scratch_view(scratch, name, shape, *, device, dtype):
     """Return a contiguous leading slice from caller-owned scratch if valid."""
     if not isinstance(scratch, dict):
@@ -1586,8 +1640,8 @@ def _dts_cross_backward_kernel(
     reduce_idx_ptr,    # [n_ws] int64 — wave-local parent index
     wlsp_ptr,          # [n_ws] float — log split probability (squeezed)
     # Scalar params
-    log_pD_arg,        # [1] scalar tensor or Python float
-    log_pS_arg,        # [1] scalar tensor or Python float
+    log_pD_arg,
+    log_pS_arg,
     # Species children [S] int64
     sp_child1_ptr,
     sp_child2_ptr,
@@ -1658,13 +1712,14 @@ def _dts_cross_backward_kernel(
         log_pD = log_pD_arg
         log_pS = log_pS_arg
 
+    parent_global = ws + parent_w
     # Base offsets into [C, S] for child clades
     pi_l_base = sl * stride_C
     pi_r_base = sr * stride_C
     pibar_l_base = sl * stride_C
     pibar_r_base = sr * stride_C
     # Parent clade in Pi_star: row (ws + parent_w)
-    parent_pi_base = (ws + parent_w) * stride_C
+    parent_pi_base = parent_global * stride_C
     # v_k is [W, S] contiguous, indexed by parent_w
     parent_vk_base = parent_w * S
     # Output row
@@ -1883,9 +1938,10 @@ def _dts_cross_backward_accum_kernel(
     sr_ptr,            # [n_ws] int64 — right child global clade index
     reduce_idx_ptr,    # [n_ws] int64 — wave-local parent index
     wlsp_ptr,          # [n_ws] float — log split probability (squeezed)
-    # Scalar params
+    # Params: scalar [1], shared species [S], family scalar [G], or [G, S]
     log_pD_arg,        # [1] scalar tensor or Python float
     log_pS_arg,        # [1] scalar tensor or Python float
+    family_idx_ptr,    # optional [C] clade -> family id
     # Species children [S] int64
     sp_child1_ptr,
     sp_child2_ptr,
@@ -1914,6 +1970,10 @@ def _dts_cross_backward_accum_kernel(
     USE_ATOMICS: tl.constexpr,
     MERGE_S_TERM: tl.constexpr,
     DEVICE_SCALAR_PARAMS: tl.constexpr,
+    PARAM_LAYOUT: tl.constexpr,
+    PARAM_GRAD_LAYOUT: tl.constexpr,
+    MT_LAYOUT: tl.constexpr,
+    GRAD_MT_LAYOUT: tl.constexpr,
     ACCUM_PARAM_REDUCTIONS: tl.constexpr,
     ACCUM_MT_REDUCTION: tl.constexpr,
     GRAD_MT_SCALAR: tl.constexpr,
@@ -1974,12 +2034,36 @@ def _dts_cross_backward_accum_kernel(
     else:
         parent_active = True
 
-    if DEVICE_SCALAR_PARAMS:
+    parent_global = ws + parent_w
+    if (
+        PARAM_LAYOUT == 2
+        or PARAM_LAYOUT == 3
+        or PARAM_GRAD_LAYOUT == 2
+        or PARAM_GRAD_LAYOUT == 3
+    ):
+        parent_family = tl.load(family_idx_ptr + parent_global).to(tl.int64)
+    else:
+        parent_family = 0
+
+    if MT_LAYOUT == 1 or GRAD_MT_LAYOUT == 1:
+        family_l = tl.load(family_idx_ptr + sl).to(tl.int64)
+        family_r = tl.load(family_idx_ptr + sr).to(tl.int64)
+    else:
+        family_l = 0
+        family_r = 0
+
+    if PARAM_LAYOUT == 0 and DEVICE_SCALAR_PARAMS:
         log_pD = tl.load(log_pD_arg).to(DTYPE)
         log_pS = tl.load(log_pS_arg).to(DTYPE)
-    else:
+    elif PARAM_LAYOUT == 0:
         log_pD = log_pD_arg
         log_pS = log_pS_arg
+    elif PARAM_LAYOUT == 2:
+        log_pD = tl.load(log_pD_arg + parent_family).to(DTYPE)
+        log_pS = tl.load(log_pS_arg + parent_family).to(DTYPE)
+    else:
+        log_pD = tl.zeros((1,), dtype=DTYPE)
+        log_pS = tl.zeros((1,), dtype=DTYPE)
 
     pi_l_base = sl * stride_C
     pi_r_base = sr * stride_C
@@ -2024,11 +2108,22 @@ def _dts_cross_backward_accum_kernel(
         Pi_parent = tl.load(Pi_star_ptr + parent_pi_base + s_offs, mask=mask, other=NEG_LARGE)
         v_k_val = tl.load(v_k_ptr + parent_vk_base + s_offs, mask=mask, other=0.0)
 
-        d0 = log_pD + Pi_l + Pi_r
+        if PARAM_LAYOUT == 1:
+            log_pD_s = tl.load(log_pD_arg + s_offs, mask=valid_mask, other=NEG_LARGE).to(DTYPE)
+            log_pS_s = tl.load(log_pS_arg + s_offs, mask=valid_mask, other=NEG_LARGE).to(DTYPE)
+        elif PARAM_LAYOUT == 3:
+            param_base = parent_family * S
+            log_pD_s = tl.load(log_pD_arg + param_base + s_offs, mask=valid_mask, other=NEG_LARGE).to(DTYPE)
+            log_pS_s = tl.load(log_pS_arg + param_base + s_offs, mask=valid_mask, other=NEG_LARGE).to(DTYPE)
+        else:
+            log_pD_s = log_pD
+            log_pS_s = log_pS
+
+        d0 = log_pD_s + Pi_l + Pi_r
         d1 = Pi_l + Pibar_r
         d2 = Pi_r + Pibar_l
-        d3 = log_pS + Pi_l_s1 + Pi_r_s2
-        d4 = log_pS + Pi_r_s1 + Pi_l_s2
+        d3 = log_pS_s + Pi_l_s1 + Pi_r_s2
+        d4 = log_pS_s + Pi_r_s1 + Pi_l_s2
 
         parent_valid = Pi_parent > NEG_LARGE
         w0 = tl.where(parent_valid, tl.exp2(wlsp + d0 - Pi_parent), tl.zeros_like(d0))
@@ -2054,17 +2149,23 @@ def _dts_cross_backward_accum_kernel(
             tl.store(pi_l_out, pi_l_cur + vd0 + vd1, mask=mask)
             tl.store(pi_r_out, pi_r_cur + vd0 + vd2, mask=mask)
         if OUTPUT_PIBAR_UD:
-            mt = tl.load(mt_ptr + s_offs, mask=valid_mask, other=0.0).to(DTYPE)
+            if MT_LAYOUT == 1:
+                mt_l = tl.load(mt_ptr + family_l * S + s_offs, mask=valid_mask, other=0.0).to(DTYPE)
+                mt_r = tl.load(mt_ptr + family_r * S + s_offs, mask=valid_mask, other=0.0).to(DTYPE)
+            else:
+                mt = tl.load(mt_ptr + s_offs, mask=valid_mask, other=0.0).to(DTYPE)
+                mt_l = mt
+                mt_r = mt
             finite_l = (Pibar_l > -1e29) & mask
             finite_r = (Pibar_r > -1e29) & mask
             inv_denom_l = tl.where(
                 finite_l,
-                tl.exp2(row_max_l + mt - Pibar_l),
+                tl.exp2(row_max_l + mt_l - Pibar_l),
                 tl.zeros([BLOCK_S], dtype=DTYPE),
             )
             inv_denom_r = tl.where(
                 finite_r,
-                tl.exp2(row_max_r + mt - Pibar_r),
+                tl.exp2(row_max_r + mt_r - Pibar_r),
                 tl.zeros([BLOCK_S], dtype=DTYPE),
             )
             ud_l = vd2 * inv_denom_l
@@ -2084,11 +2185,32 @@ def _dts_cross_backward_accum_kernel(
             tl.store(grad_Pibar_l_ptr + out_base + s_offs, vd2, mask=valid_mask)
             tl.store(grad_Pibar_r_ptr + out_base + s_offs, vd1, mask=valid_mask)
 
-        sum_pD += tl.sum(vd0, axis=0)
-        sum_pS += tl.sum(vd3 + vd4, axis=0)
+        if ACCUM_PARAM_REDUCTIONS and PARAM_GRAD_LAYOUT == 1:
+            tl.atomic_add(grad_log_pD_ptr + s_offs, vd0, sem="relaxed", mask=mask)
+            tl.atomic_add(grad_log_pS_ptr + s_offs, vd3 + vd4, sem="relaxed", mask=mask)
+        elif ACCUM_PARAM_REDUCTIONS and PARAM_GRAD_LAYOUT == 3:
+            grad_param_base = parent_family * S
+            tl.atomic_add(grad_log_pD_ptr + grad_param_base + s_offs, vd0, sem="relaxed", mask=mask)
+            tl.atomic_add(grad_log_pS_ptr + grad_param_base + s_offs, vd3 + vd4, sem="relaxed", mask=mask)
+        else:
+            sum_pD += tl.sum(vd0, axis=0)
+            sum_pS += tl.sum(vd3 + vd4, axis=0)
         if ACCUM_MT_REDUCTION:
             mt_contrib = vd1 + vd2
-            if GRAD_MT_SCALAR:
+            if GRAD_MT_LAYOUT == 1:
+                tl.atomic_add(
+                    grad_mt_ptr + family_l * S + s_offs,
+                    vd2,
+                    sem="relaxed",
+                    mask=mask,
+                )
+                tl.atomic_add(
+                    grad_mt_ptr + family_r * S + s_offs,
+                    vd1,
+                    sem="relaxed",
+                    mask=mask,
+                )
+            elif GRAD_MT_SCALAR:
                 tl.atomic_add(
                     grad_mt_ptr + _scalar_off,
                     tl.sum(tl.where(mask, mt_contrib, 0.0), axis=0),
@@ -2131,8 +2253,20 @@ def _dts_cross_backward_accum_kernel(
                 tl.store(pi_l_c2_out, pi_l_c2_cur + vd4, mask=c2_valid)
 
     if ACCUM_PARAM_REDUCTIONS:
-        tl.atomic_add(grad_log_pD_ptr + _scalar_off, sum_pD, sem="relaxed")
-        tl.atomic_add(grad_log_pS_ptr + _scalar_off, sum_pS, sem="relaxed")
+        if PARAM_GRAD_LAYOUT == 0:
+            tl.atomic_add(grad_log_pD_ptr + _scalar_off, sum_pD, sem="relaxed")
+            tl.atomic_add(grad_log_pS_ptr + _scalar_off, sum_pS, sem="relaxed")
+        elif PARAM_GRAD_LAYOUT == 2:
+            tl.atomic_add(
+                grad_log_pD_ptr + parent_family + _scalar_off,
+                sum_pD,
+                sem="relaxed",
+            )
+            tl.atomic_add(
+                grad_log_pS_ptr + parent_family + _scalar_off,
+                sum_pS,
+                sem="relaxed",
+            )
     else:
         tl.store(param_pD_ptr + i + _scalar_off, sum_pD)
         tl.store(param_pS_ptr + i + _scalar_off, sum_pS)
@@ -2175,8 +2309,15 @@ def _dts_cross_backward_accum_kernel(
             Pi_parent = tl.load(Pi_star_ptr + parent_pi_base + s_offs, mask=mask, other=NEG_LARGE)
             v_k_val = tl.load(v_k_ptr + parent_vk_base + s_offs, mask=mask, other=0.0)
 
-            d3 = log_pS + Pi_l_s1 + Pi_r_s2
-            d4 = log_pS + Pi_r_s1 + Pi_l_s2
+            if PARAM_LAYOUT == 1:
+                log_pS_s = tl.load(log_pS_arg + s_offs, mask=valid_mask, other=NEG_LARGE).to(DTYPE)
+            elif PARAM_LAYOUT == 3:
+                log_pS_s = tl.load(log_pS_arg + parent_family * S + s_offs, mask=valid_mask, other=NEG_LARGE).to(DTYPE)
+            else:
+                log_pS_s = log_pS
+
+            d3 = log_pS_s + Pi_l_s1 + Pi_r_s2
+            d4 = log_pS_s + Pi_r_s1 + Pi_l_s2
 
             parent_valid = Pi_parent > NEG_LARGE
             w3 = tl.where(parent_valid, tl.exp2(wlsp + d3 - Pi_parent), tl.zeros_like(d3))
@@ -2260,6 +2401,7 @@ def dts_cross_backward_accum_fused(
     grad_mt_two_stage_tile_splits=128,
     skip_inactive_pibar_output_zero=False,
     scratch=None,
+    family_idx=None,
 ):
     """Fused DTS backward with direct Pi-adjoint accumulation."""
     n_ws = sl.shape[0]
@@ -2267,23 +2409,53 @@ def dts_cross_backward_accum_fused(
     dtype = Pi_star.dtype
 
     wlsp_flat = wlsp.squeeze(-1) if wlsp.ndim > 1 else wlsp
-    log_pD_arg, log_pS_arg, device_scalar_params = _dts_scalar_param_args(
-        log_pD, log_pS, device=device, dtype=dtype
+    family_idx_arg = None
+    if family_idx is not None:
+        family_idx_arg = family_idx.to(device=device, dtype=torch.long).contiguous()
+    log_pD_arg, log_pS_arg, param_layout = _dts_layout_param_args(
+        log_pD, log_pS, family_idx=family_idx_arg, S=S, device=device, dtype=dtype
     )
+    device_scalar_params = False
+    if param_layout == 0:
+        use_device_scalars = (
+            os.environ.get("GPUREC_DTS_BACKWARD_DEVICE_SCALARS", "1") != "0"
+        )
+        if use_device_scalars:
+            device_scalar_params = True
+        else:
+            log_pD_arg = float(log_pD_arg.item())
+            log_pS_arg = float(log_pS_arg.item())
 
     if accum_param_reductions and (grad_log_pD is None or grad_log_pS is None):
         raise ValueError("grad_log_pD/grad_log_pS are required when accumulating DTS scalar reductions")
     if accum_param_reductions:
-        if grad_log_pD.numel() != 1 or grad_log_pS.numel() != 1:
-            raise ValueError("DTS scalar reduction targets must have one element")
+        param_grad_layout = _dts_grad_layout(grad_log_pD, family_idx=family_idx_arg, S=S)
+        if param_grad_layout != _dts_grad_layout(grad_log_pS, family_idx=family_idx_arg, S=S):
+            raise ValueError("grad_log_pD/grad_log_pS must use the same DTS gradient layout")
+    else:
+        param_grad_layout = 0
     if accum_mt_reduction and grad_mt is None:
         raise ValueError("grad_mt is required when accumulating DTS mt reductions")
-    if accum_mt_reduction and grad_mt.numel() not in (1, S):
-        raise ValueError("DTS mt reduction target must have one element or S elements")
+    if accum_mt_reduction:
+        if grad_mt.numel() == 1 or (grad_mt.ndim == 1 and int(grad_mt.shape[0]) == int(S)):
+            grad_mt_layout = 0
+        elif family_idx_arg is not None and grad_mt.ndim == 2 and int(grad_mt.shape[1]) == int(S):
+            grad_mt_layout = 1
+        else:
+            raise ValueError("DTS mt reduction target must be scalar, [S], or [G, S]")
+    else:
+        grad_mt_layout = 0
     if output_pibar_ud and (mt_squeezed is None or pibar_row_max is None):
         raise ValueError("mt_squeezed and pibar_row_max are required when outputting Pibar u_d")
-    if output_pibar_ud and mt_squeezed.numel() != S:
-        raise ValueError("mt_squeezed must have S elements when outputting Pibar u_d")
+    if output_pibar_ud:
+        if mt_squeezed.ndim == 1 and int(mt_squeezed.shape[0]) == int(S):
+            mt_layout = 0
+        elif family_idx_arg is not None and mt_squeezed.ndim == 2 and int(mt_squeezed.shape[1]) == int(S):
+            mt_layout = 1
+        else:
+            raise ValueError("mt_squeezed must have shape [S] or [G, S] when outputting Pibar u_d")
+    else:
+        mt_layout = 0
     if output_pibar_ud and pibar_row_max.numel() < Pi_star.shape[0]:
         raise ValueError("pibar_row_max must contain one row-max value per Pi row")
     if output_pibar_side_active and not output_pibar_ud:
@@ -2372,10 +2544,12 @@ def dts_cross_backward_accum_fused(
     mt_arg = mt_arg if output_pibar_ud else dummy
     pibar_row_max_arg = pibar_row_max_arg if output_pibar_ud else dummy
     side_active_threshold_arg = side_active_threshold_arg if side_threshold_enabled else dummy
+    family_idx_kernel_arg = family_idx_arg if family_idx_arg is not None else sl
     grad_mt_scalar = bool(accum_mt_reduction and grad_mt.numel() == 1)
     use_grad_mt_two_stage = bool(
         grad_mt_two_stage
         and accum_mt_reduction
+        and grad_mt_layout == 0
         and not grad_mt_scalar
         and grad_mt.numel() == S
     )
@@ -2400,7 +2574,7 @@ def dts_cross_backward_accum_fused(
         v_k,
         active_mask if active_mask is not None else v_k,
         sl, sr, reduce_idx, wlsp_flat,
-        log_pD_arg, log_pS_arg,
+        log_pD_arg, log_pS_arg, family_idx_kernel_arg,
         sp_child1, sp_child2,
         accumulated_rhs,
         grad_Pibar_l if grad_Pibar_l is not None else pibar_ud,
@@ -2415,6 +2589,10 @@ def dts_cross_backward_accum_fused(
         USE_ATOMICS=bool(use_atomics),
         MERGE_S_TERM=bool(merge_s_term),
         DEVICE_SCALAR_PARAMS=bool(device_scalar_params),
+        PARAM_LAYOUT=int(param_layout),
+        PARAM_GRAD_LAYOUT=int(param_grad_layout),
+        MT_LAYOUT=int(mt_layout),
+        GRAD_MT_LAYOUT=int(grad_mt_layout),
         ACCUM_PARAM_REDUCTIONS=bool(accum_param_reductions),
         ACCUM_MT_REDUCTION=bool(accum_mt_reduction),
         GRAD_MT_SCALAR=bool(grad_mt_scalar),

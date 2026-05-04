@@ -1982,8 +1982,6 @@ def Pi_wave_backward(
             reduce_idx = meta['reduce_idx']
             n_ws = sl.shape[0]
 
-            # Fused kernel currently supports only scalar log_pD/log_pS (shared-param case).
-            # For specieswise/genewise tensors, use the generic path below.
             fused_scalar_params = (log_pD.numel() == 1 and log_pS.numel() == 1)
             used_fused_pibar_vjp = False
             used_fused_direct_pi_accum = False
@@ -2262,6 +2260,70 @@ def Pi_wave_backward(
                     else:
                         grad_mt[0] += mt_contrib
 
+            elif use_fused and fused_dts_backward_accum_enabled:
+                dts_log_pD = log_pD_shared if _auto_wrapped else log_pD
+                dts_log_pS = log_pS_shared if _auto_wrapped else log_pS
+                dts_grad_log_pD = grad_log_pD[0] if _auto_wrapped else grad_log_pD
+                dts_grad_log_pS = grad_log_pS[0] if _auto_wrapped else grad_log_pS
+                dts_grad_mt = grad_mt[0] if _auto_wrapped else grad_mt
+                dts_mt = mt_shared if _auto_wrapped else mt_squeezed
+                dts_family_idx = None if _auto_wrapped else family_idx
+                pibar_ud_fusion_match = (
+                    dts_pibar_ud_fusion_enabled
+                    and fused_cross_pibar_vjp_enabled
+                    and fused_cross_pibar_vjp_impl == "tree"
+                    and level_parents is not None
+                    and forward_pibar_row_max is not None
+                    and torch.is_tensor(dts_mt)
+                    and n_ws >= dts_pibar_ud_min_splits
+                )
+                used_dts_mt_reduction_accum = True
+                used_dts_pibar_ud_fusion = pibar_ud_fusion_match
+                dts_accum_result = dts_cross_backward_accum_fused(
+                    Pi_star_wave, Pibar_star_wave, v_k, ws,
+                    sl, sr, reduce_idx, wlsp,
+                    dts_log_pD, dts_log_pS,
+                    sp_child1, sp_child2, accumulated_rhs, S,
+                    active_mask=active_mask_for_split_kernels,
+                    merge_s_term=merged_dts_backward_accum_enabled,
+                    grad_log_pD=dts_grad_log_pD,
+                    grad_log_pS=dts_grad_log_pS,
+                    grad_mt=dts_grad_mt,
+                    accum_param_reductions=True,
+                    accum_mt_reduction=True,
+                    output_pibar_ud=pibar_ud_fusion_match,
+                    output_pibar_side_active=(
+                        pibar_ud_fusion_match
+                        and dts_pibar_ud_skip_zero_sides_enabled
+                    ),
+                    pibar_side_threshold=dts_pibar_ud_side_threshold_arg,
+                    mt_squeezed=dts_mt,
+                    pibar_row_max=forward_pibar_row_max,
+                    grad_mt_two_stage=False,
+                    skip_inactive_pibar_output_zero=(
+                        skip_inactive_zero_stores_enabled
+                        and pibar_ud_fusion_match
+                        and active_mask_for_split_kernels is not None
+                    ),
+                    scratch=(
+                        scratch_pool.get("dts")
+                        if scratch_pool is not None
+                        else None
+                    ),
+                    family_idx=dts_family_idx,
+                )
+                if (
+                    pibar_ud_fusion_match
+                    and dts_pibar_ud_skip_zero_sides_enabled
+                ):
+                    (grad_Pibar_l, grad_Pibar_r, pibar_side_active,
+                     param_pD, param_pS) = dts_accum_result
+                else:
+                    (grad_Pibar_l, grad_Pibar_r,
+                     param_pD, param_pS) = dts_accum_result
+                used_fused_direct_pi_accum = True
+                grad_Pi_l = grad_Pi_r = None
+
             else:
                 sl_long = sl.long()
                 sr_long = sr.long()
@@ -2350,7 +2412,7 @@ def Pi_wave_backward(
 
             if (
                 use_fused
-                and fused_scalar_params
+                and (fused_scalar_params or used_dts_pibar_ud_fusion)
                 and fused_cross_pibar_vjp_enabled
                 and ancestor_cols is not None
             ):

@@ -259,6 +259,233 @@ def _run_accum_reduction_variant(
     )
 
 
+def _dts_layout_reference(
+    *,
+    Pi,
+    Pibar,
+    v_k,
+    ws,
+    sl,
+    sr,
+    reduce_idx,
+    wlsp,
+    log_pD,
+    log_pS,
+    sp_child1,
+    sp_child2,
+    family_idx,
+    active_mask,
+    mt_squeezed=None,
+    row_max=None,
+):
+    device = Pi.device
+    dtype = Pi.dtype
+    C, S = Pi.shape
+    n_ws = int(sl.numel())
+    rhs = torch.zeros_like(Pi)
+    grad_pibar_l = torch.zeros(n_ws, S, device=device, dtype=dtype)
+    grad_pibar_r = torch.zeros_like(grad_pibar_l)
+    pibar_ud = torch.zeros(2 * n_ws, S, device=device, dtype=dtype)
+    pibar_A = torch.zeros(2 * n_ws, device=device, dtype=dtype)
+    grad_log_pD = torch.zeros_like(log_pD)
+    grad_log_pS = torch.zeros_like(log_pS)
+    grad_mt = torch.zeros_like(mt_squeezed) if mt_squeezed is not None else None
+
+    def _param_value(param, family, species):
+        if param.ndim == 1 and int(param.shape[0]) == S:
+            return param[species]
+        if param.ndim == 1:
+            return param[family]
+        return param[family, species]
+
+    def _add_param(grad, family, species, value):
+        if grad.ndim == 1 and int(grad.shape[0]) == S:
+            grad[species] += value
+        elif grad.ndim == 1:
+            grad[family] += value
+        else:
+            grad[family, species] += value
+
+    def _mt_value(mt, family, species):
+        return mt[species] if mt.ndim == 1 else mt[family, species]
+
+    def _add_mt(grad, family, species, value):
+        if grad.ndim == 1:
+            grad[species] += value
+        else:
+            grad[family, species] += value
+
+    for i in range(n_ws):
+        parent_w = int(reduce_idx[i])
+        if active_mask is not None and not bool(active_mask[parent_w]):
+            continue
+        left = int(sl[i])
+        right = int(sr[i])
+        parent = ws + parent_w
+        parent_family = int(family_idx[parent]) if family_idx is not None else 0
+        left_family = int(family_idx[left]) if family_idx is not None else 0
+        right_family = int(family_idx[right]) if family_idx is not None else 0
+        for s in range(S):
+            c1 = int(sp_child1[s])
+            c2 = int(sp_child2[s])
+            log_pD_s = _param_value(log_pD, parent_family, s)
+            log_pS_s = _param_value(log_pS, parent_family, s)
+            pi_parent = Pi[parent, s]
+            if pi_parent <= -1e29:
+                continue
+
+            def _pi(row, col):
+                return Pi[row, col] if col < S else torch.tensor(-1e30, device=device, dtype=dtype)
+
+            d0 = log_pD_s + Pi[left, s] + Pi[right, s]
+            d1 = Pi[left, s] + Pibar[right, s]
+            d2 = Pi[right, s] + Pibar[left, s]
+            d3 = log_pS_s + _pi(left, c1) + _pi(right, c2)
+            d4 = log_pS_s + _pi(right, c1) + _pi(left, c2)
+            scale = v_k[parent_w, s]
+            vd0 = scale * torch.exp2(wlsp[i] + d0 - pi_parent)
+            vd1 = scale * torch.exp2(wlsp[i] + d1 - pi_parent)
+            vd2 = scale * torch.exp2(wlsp[i] + d2 - pi_parent)
+            vd3 = scale * torch.exp2(wlsp[i] + d3 - pi_parent)
+            vd4 = scale * torch.exp2(wlsp[i] + d4 - pi_parent)
+
+            rhs[left, s] += vd0 + vd1
+            rhs[right, s] += vd0 + vd2
+            if c1 < S:
+                rhs[left, c1] += vd3
+                rhs[right, c1] += vd4
+            if c2 < S:
+                rhs[right, c2] += vd3
+                rhs[left, c2] += vd4
+
+            grad_pibar_l[i, s] = vd2
+            grad_pibar_r[i, s] = vd1
+            _add_param(grad_log_pD, parent_family, s, vd0)
+            _add_param(grad_log_pS, parent_family, s, vd3 + vd4)
+            if grad_mt is not None:
+                _add_mt(grad_mt, left_family, s, vd2)
+                _add_mt(grad_mt, right_family, s, vd1)
+            if row_max is not None and mt_squeezed is not None:
+                mt_l = _mt_value(mt_squeezed, left_family, s)
+                mt_r = _mt_value(mt_squeezed, right_family, s)
+                ud_l = vd2 * torch.exp2(row_max[left] + mt_l - Pibar[left, s])
+                ud_r = vd1 * torch.exp2(row_max[right] + mt_r - Pibar[right, s])
+                pibar_ud[i, s] = ud_l
+                pibar_ud[n_ws + i, s] = ud_r
+                pibar_A[i] += ud_l
+                pibar_A[n_ws + i] += ud_r
+
+    return rhs, grad_pibar_l, grad_pibar_r, grad_log_pD, grad_log_pS, grad_mt, pibar_ud, pibar_A
+
+
+@pytest.mark.parametrize("layout", ["species", "family_scalar", "family_species"])
+@pytest.mark.parametrize("output_pibar_ud", [False, True])
+@pytest.mark.parametrize("active", [False, True])
+def test_dts_backward_accum_fused_parameter_layouts(layout, output_pibar_ud, active):
+    torch.manual_seed(41)
+    device = torch.device("cuda")
+    dtype = torch.float32
+    C, S, W, N, G = 10, 13, 4, 7, 3
+    ws = 6
+    Pi = (torch.randn(C, S, device=device, dtype=dtype) * 0.2 - 2.0).contiguous()
+    family_idx = torch.tensor([0, 1, 2, 0, 1, 2, 0, 1, 2, 0], device=device)
+    mt = (torch.randn((G, S), device=device, dtype=dtype) * 0.01 - 4.0).contiguous()
+    if layout == "species":
+        log_pD = (torch.randn(S, device=device, dtype=dtype) * 0.01 - 4.0).contiguous()
+        log_pS = (torch.randn(S, device=device, dtype=dtype) * 0.01 - 5.0).contiguous()
+        kernel_family_idx = None
+        kernel_mt = mt[0].contiguous()
+        ref_family_idx = None
+    elif layout == "family_scalar":
+        log_pD = (torch.randn(G, device=device, dtype=dtype) * 0.01 - 4.0).contiguous()
+        log_pS = (torch.randn(G, device=device, dtype=dtype) * 0.01 - 5.0).contiguous()
+        kernel_family_idx = family_idx
+        kernel_mt = mt
+        ref_family_idx = family_idx
+    else:
+        log_pD = (torch.randn(G, S, device=device, dtype=dtype) * 0.01 - 4.0).contiguous()
+        log_pS = (torch.randn(G, S, device=device, dtype=dtype) * 0.01 - 5.0).contiguous()
+        kernel_family_idx = family_idx
+        kernel_mt = mt
+        ref_family_idx = family_idx
+
+    ancestor_cols, ancestors_dense, sp_child1, sp_child2, _ = _binary_tree_helpers(S, device, dtype)
+    del ancestor_cols
+    Pibar, row_max = _uniform_pibar_from_pi(Pi, kernel_mt[0] if kernel_mt.ndim == 2 else kernel_mt, ancestors_dense)
+    v_k = (torch.randn(W, S, device=device, dtype=dtype) * 0.1).contiguous()
+    sl = torch.tensor([0, 1, 2, 3, 1, 4, 5], device=device, dtype=torch.long)
+    sr = torch.tensor([1, 2, 3, 4, 0, 2, 1], device=device, dtype=torch.long)
+    reduce_idx = torch.tensor([0, 1, 1, 2, 2, 0, 3], device=device, dtype=torch.long)
+    wlsp = (torch.randn(N, device=device, dtype=dtype) * 0.1 - 1.0).contiguous()
+    active_mask = torch.tensor([True, False, True, True], device=device) if active else None
+
+    ref = _dts_layout_reference(
+        Pi=Pi,
+        Pibar=Pibar,
+        v_k=v_k,
+        ws=ws,
+        sl=sl,
+        sr=sr,
+        reduce_idx=reduce_idx,
+        wlsp=wlsp,
+        log_pD=log_pD,
+        log_pS=log_pS,
+        sp_child1=sp_child1,
+        sp_child2=sp_child2,
+        family_idx=ref_family_idx,
+        active_mask=active_mask,
+        mt_squeezed=kernel_mt,
+        row_max=row_max if output_pibar_ud else None,
+    )
+
+    rhs = torch.zeros_like(Pi)
+    grad_log_pD = torch.zeros_like(log_pD)
+    grad_log_pS = torch.zeros_like(log_pS)
+    grad_mt = torch.zeros_like(kernel_mt)
+    result = dts_cross_backward_accum_fused(
+        Pi,
+        Pibar,
+        v_k,
+        ws,
+        sl,
+        sr,
+        reduce_idx,
+        wlsp,
+        log_pD,
+        log_pS,
+        sp_child1,
+        sp_child2,
+        rhs,
+        S,
+        active_mask=active_mask,
+        merge_s_term=True,
+        grad_log_pD=grad_log_pD,
+        grad_log_pS=grad_log_pS,
+        grad_mt=grad_mt,
+        accum_param_reductions=True,
+        accum_mt_reduction=True,
+        output_pibar_ud=output_pibar_ud,
+        mt_squeezed=kernel_mt if output_pibar_ud else None,
+        pibar_row_max=row_max if output_pibar_ud else None,
+        family_idx=kernel_family_idx,
+    )
+    torch.cuda.synchronize()
+
+    torch.testing.assert_close(rhs, ref[0], atol=5e-5, rtol=5e-5)
+    torch.testing.assert_close(grad_log_pD, ref[3], atol=5e-5, rtol=5e-5)
+    torch.testing.assert_close(grad_log_pS, ref[4], atol=5e-5, rtol=5e-5)
+    torch.testing.assert_close(grad_mt, ref[5], atol=5e-5, rtol=5e-5)
+    if output_pibar_ud:
+        pibar_ud, pibar_A, param_pD, param_pS = result
+        torch.testing.assert_close(pibar_ud, ref[6], atol=5e-5, rtol=5e-5)
+        torch.testing.assert_close(pibar_A, ref[7], atol=5e-5, rtol=5e-5)
+    else:
+        grad_pibar_l, grad_pibar_r, param_pD, param_pS = result
+        torch.testing.assert_close(grad_pibar_l, ref[1], atol=5e-5, rtol=5e-5)
+        torch.testing.assert_close(grad_pibar_r, ref[2], atol=5e-5, rtol=5e-5)
+    assert param_pD is None and param_pS is None
+
+
 def _run_nonaccum_variant(*, active_mask=None, dtype=torch.float32, scalar_shape="0d"):
     torch.manual_seed(23)
     device = torch.device("cuda")

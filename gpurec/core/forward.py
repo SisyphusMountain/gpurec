@@ -655,9 +655,7 @@ def Pi_wave_forward(
         )
     reuse_forward_pibar_stats = bool(
         need_pibar
-        and
-        use_uniform_fused
-        and not batched
+        and use_uniform_fused
         and (
             os.environ.get("GPUREC_REUSE_FORWARD_PIBAR_STATS", "0") != "0"
             or os.environ.get("GPUREC_DTS_PIBAR_UD_FUSION", "1") != "0"
