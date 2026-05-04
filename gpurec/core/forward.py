@@ -715,6 +715,39 @@ def Pi_wave_forward(
         and not use_uniform_csr
         and not use_uniform_spmm
     )
+    use_forward_parent_reduced_dts = bool(
+        use_uniform_fused
+        and os.environ.get("GPUREC_FORWARD_PARENT_REDUCED_DTS", "1") != "0"
+    )
+    forward_parent_reduced_dts_min_splits = int(
+        os.environ.get("GPUREC_FORWARD_PARENT_REDUCED_DTS_MIN_SPLITS", "0")
+    )
+    forward_parent_reduced_dts_impl = os.environ.get(
+        "GPUREC_FORWARD_PARENT_REDUCED_DTS_IMPL", "tiled"
+    )
+    forward_parent_reduced_dts_tile_splits = int(
+        os.environ.get("GPUREC_FORWARD_PARENT_REDUCED_DTS_TILE_SPLITS", "64")
+    )
+    forward_parent_reduced_dts_ge2_only = (
+        os.environ.get("GPUREC_FORWARD_PARENT_REDUCED_DTS_GE2_ONLY", "1") != "0"
+    )
+
+    def _compute_wave_dts(meta, pD_dts, pS_dts):
+        parent_reduced_wave = (
+            use_forward_parent_reduced_dts
+            and (
+                not forward_parent_reduced_dts_ge2_only
+                or meta.get('n_ge2_clades', 0) > 0
+            )
+        )
+        return _compute_dts_cross(
+            Pi, Pibar, meta, sp_child1, sp_child2,
+            pD_dts, pS_dts, S, device, dtype,
+            parent_reduced=parent_reduced_wave,
+            parent_reduced_min_splits=forward_parent_reduced_dts_min_splits,
+            parent_reduced_impl=forward_parent_reduced_dts_impl,
+            parent_reduced_tile_splits=forward_parent_reduced_dts_tile_splits,
+        )
 
     total_iters = 0
 
@@ -730,9 +763,7 @@ def Pi_wave_forward(
                 meta0 = wave_metas[0]
                 if meta0['has_splits']:
                     pD_dts0, pS_dts0 = _wave_dts_params(meta0)
-                    dts_r_current = _compute_dts_cross(
-                        Pi, Pibar, meta0, sp_child1, sp_child2,
-                        pD_dts0, pS_dts0, S, device, dtype)
+                    dts_r_current = _compute_wave_dts(meta0, pD_dts0, pS_dts0)
                 else:
                     dts_r_current = None
 
@@ -929,9 +960,8 @@ def Pi_wave_forward(
                             event_self_done.record(stream_main)
                             with torch.cuda.stream(stream_prep):
                                 stream_prep.wait_event(event_self_done)
-                                dts_r_next = _compute_dts_cross(
-                                    Pi, Pibar, meta_next, sp_child1, sp_child2,
-                                    pD_next, pS_next, S, device, dtype)
+                                dts_r_next = _compute_wave_dts(
+                                    meta_next, pD_next, pS_next)
                                 event_prep_done = torch.cuda.Event()
                                 event_prep_done.record(stream_prep)
                         else:
@@ -946,9 +976,7 @@ def Pi_wave_forward(
 
                     if meta['has_splits']:
                         pD_dts, pS_dts = _wave_dts_params(meta)
-                        dts_r = _compute_dts_cross(
-                            Pi, Pibar, meta, sp_child1, sp_child2,
-                            pD_dts, pS_dts, S, device, dtype)
+                        dts_r = _compute_wave_dts(meta, pD_dts, pS_dts)
                     else:
                         dts_r = None
 

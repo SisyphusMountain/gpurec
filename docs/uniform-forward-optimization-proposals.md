@@ -142,6 +142,10 @@ parent_reduced = (
     os.environ.get("GPUREC_FORWARD_PARENT_REDUCED_DTS", "1") != "0"
     and pibar_mode == "uniform"
     and torch.device(device).type == "cuda"
+    and (
+        os.environ.get("GPUREC_FORWARD_PARENT_REDUCED_DTS_GE2_ONLY", "1") == "0"
+        or meta.get("n_ge2_clades", 0) > 0
+    )
 )
 
 dts_r = _compute_dts_cross(
@@ -149,7 +153,7 @@ dts_r = _compute_dts_cross(
     pD_dts, pS_dts, S, device, dtype,
     parent_reduced=parent_reduced,
     parent_reduced_min_splits=int(os.environ.get(
-        "GPUREC_FORWARD_PARENT_REDUCED_DTS_MIN_SPLITS", "8192")),
+        "GPUREC_FORWARD_PARENT_REDUCED_DTS_MIN_SPLITS", "0")),
     parent_reduced_impl=os.environ.get(
         "GPUREC_FORWARD_PARENT_REDUCED_DTS_IMPL", "tiled"),
     parent_reduced_tile_splits=int(os.environ.get(
@@ -157,9 +161,11 @@ dts_r = _compute_dts_cross(
 )
 ```
 
-The default should be gated by split count and fanout. A useful first policy is
-`n_splits >= 8192`, using the existing `meta["ge2_max_fanout"]` to avoid a
-device scalar sync inside the kernel wrapper.
+The profiled default is now gated by ge2 presence, not by a large split-count
+threshold: `GE2_ONLY=1`, `MIN_SPLITS=0`, `IMPL=tiled`, and `TILE_SPLITS=64`.
+The old path remains available with `GPUREC_FORWARD_PARENT_REDUCED_DTS=0`.
+The existing `meta["ge2_max_fanout"]` is still passed to avoid a device scalar
+sync inside the kernel wrapper.
 
 Expected gain:
 
@@ -184,6 +190,146 @@ Profiling gate:
 - NCU: DRAM writes and reads for the largest high-fanout wave.
 - Correctness: compare NLL and `Pi_wave_ordered` against the current path for
   fixed 6 on 3, 50, and 150 families.
+
+### Proposal 0 follow-up: implemented and profiled
+
+Implemented the parent-reduced DTS path for uniform forward. The wiring reaches
+all three forward DTS call sites:
+
+- initial overlap-stream DTS prep;
+- next-wave overlap-stream DTS prep;
+- normal non-overlap wave loop.
+
+The controls are:
+
+```text
+GPUREC_FORWARD_PARENT_REDUCED_DTS=1
+GPUREC_FORWARD_PARENT_REDUCED_DTS_GE2_ONLY=1
+GPUREC_FORWARD_PARENT_REDUCED_DTS_MIN_SPLITS=0
+GPUREC_FORWARD_PARENT_REDUCED_DTS_IMPL=tiled
+GPUREC_FORWARD_PARENT_REDUCED_DTS_TILE_SPLITS=64
+```
+
+`impl=direct` remains available for experiments, but is not the default because
+it regressed on the 50-family benchmark.
+
+Correctness evidence:
+
+| Check | Result |
+|---|---:|
+| Focused kernel and forward command with parent-reduced DTS forced | `21 passed in 10.03 s` |
+| 3-family forced `MIN_SPLITS=0` NLL | old/new both `6421.17333984375` |
+| 3-family `Pi/Pibar` max abs delta | `0.00244140625` |
+| 50-family `MIN_SPLITS=8192` NLL | old `107804.2734375`, new `107804.265625`, diff `0.0078125` |
+| 150-family separate-run NLL | old/new both `323018.6875` |
+
+Focused command:
+
+```bash
+GPUREC_FORWARD_PARENT_REDUCED_DTS=1 \
+GPUREC_FORWARD_PARENT_REDUCED_DTS_MIN_SPLITS=0 \
+.venv/bin/python -m pytest -q \
+  tests/kernels/test_dts_fused_kernel.py::test_dts_parent_reduced_accepts_int32_split_metadata \
+  tests/kernels/test_dts_fused_kernel.py::test_dts_parent_reduced_matches_existing_recompute \
+  tests/unit/test_genewise_wave.py::test_genewise_wave_large_s \
+  tests/unit/test_cross_family_wave.py::test_batched_wave_matches_individual_large_s
+```
+
+Timing summary:
+
+| Workload | Policy | Old | New | Delta |
+|---|---|---:|---:|---:|
+| 3 families | `MIN_SPLITS=8192` | `13.0007 ms` | `12.9954 ms` | `-0.0053 ms` |
+| 3 families | `MIN_SPLITS=0`, ge2-only | `13.0003 ms` | `12.8738 ms` | `-0.1265 ms` |
+| 50 families | `MIN_SPLITS=8192`, ge2-only, 7 reps | `138.5752 ms` | `136.3438 ms` | `-2.2314 ms` |
+| 150 families | `MIN_SPLITS=8192`, ge2-only, 5 reps | `407.217 ms` | `402.447 ms` | `-4.770 ms` |
+
+50-family sweep:
+
+| Variant | Median time |
+|---|---:|
+| tiled, `tile16`, `MIN_SPLITS=8192` | `136.061 ms` |
+| tiled, `tile32`, `MIN_SPLITS=8192` | `135.952 ms` |
+| tiled, `tile64`, `MIN_SPLITS=8192` | `135.999 ms` |
+| tiled, `tile128`, `MIN_SPLITS=8192` | `136.175 ms` |
+| tiled, `tile256`, `MIN_SPLITS=8192` | `135.702 ms` |
+| tiled, `tile64`, `MIN_SPLITS=0` | `135.736 ms` |
+| direct, `tile64`, `MIN_SPLITS=8192` | `139.093 ms` |
+| direct, `tile64`, `MIN_SPLITS=0` | `140.707 ms` |
+
+150-family sweep:
+
+| Variant | Median time |
+|---|---:|
+| tiled, `tile32`, `MIN_SPLITS=8192` | `403.650 ms` |
+| tiled, `tile64`, `MIN_SPLITS=8192` | `403.895 ms` |
+| tiled, `tile256`, `MIN_SPLITS=8192` | `402.928 ms` |
+| tiled, `tile64`, `MIN_SPLITS=0` | `401.654 ms` |
+| tiled, `tile256`, `MIN_SPLITS=0` | `403.608 ms` |
+| direct, `tile64`, `MIN_SPLITS=8192` | `402.072 ms` |
+
+The direct 150-family number looks competitive in that short sweep, but the
+same implementation is clearly slower on 50 families, so it stays experimental.
+Peak allocation on the 150-family old/new run improved from `15.227 GiB` to
+`15.022 GiB`.
+
+Nsight Systems on 50 families, `MIN_SPLITS=0`, ge2-only, one profiled rep:
+
+| Metric | Old | New |
+|---|---:|---:|
+| Event timing | `136.869 ms` | `135.151 ms` |
+| `_wave_step_uniform_kernel` | `93.515 ms` | `93.883 ms` |
+| final Pibar | `12.219 ms` | `12.252 ms` |
+| DTS-related bucket | `19.439 ms` | `17.405 ms` |
+| DTS-related launches | `53` | `59` |
+
+Old DTS detail:
+
+| Kernel | Time | Launches |
+|---|---:|---:|
+| `_dts_fused_kernel` | `17.870 ms` | `46` |
+| `_seg_lse_hdim_kernel` | `1.569 ms` | `7` |
+
+New DTS detail:
+
+| Kernel | Time | Launches |
+|---|---:|---:|
+| `_dts_fused_kernel` | `9.731 ms` | `39` |
+| `_dts_parent_reduced_ge2_stage1_kernel` | `7.488 ms` | `7` |
+| `_dts_parent_reduced_ge2_stage2_kernel` | `0.130 ms` | `7` |
+| `_dts_eq1_to_rows_kernel` | `0.056 ms` | `6` |
+
+The DTS bucket saves `2.034 ms` even though DTS-related launch count increases.
+The win comes from reducing split-materialized work and memory traffic, not
+from launch reduction. Device copies were negligible in this isolated Pi-wave
+profile, about `1.7 us`.
+
+Nsight Compute on the largest 50-family DTS launch:
+
+| Metric | Old `_dts_fused_kernel` | New ge2 stage 1 |
+|---|---:|---:|
+| Grid | `(42155,16,1)` | `(13,60,16)` |
+| Duration | `2.168 ms` | `1.983 ms` |
+| Registers/thread | `34` | `40` |
+| Spills | none | none |
+| Compute/memory throughput | `88.43%` | `75.98%` |
+| SM throughput | `15.07%` | `14.18%` |
+| Achieved active warps | `92.28%` | `94.12%` |
+| Eligible warps/scheduler | `0.184` | `0.235` |
+| Issue active | `15.07%` | `14.28%` |
+| Long scoreboard stall ratio | `69.39` | `68.10` |
+| L1 hit rate | `69.37%` | `55.53%` |
+| L2 hit rate | `23.20%` | `12.23%` |
+| Instructions executed | `372.23M` | `320.28M` |
+
+The new stage-1 kernel remains memory-dependency limited, but it executes about
+`14%` fewer instructions and lowers DRAM pressure. The lower cache hit rates are
+acceptable because the algorithm does less total split-output materialization.
+
+Decision: promote tiled parent-reduced DTS for ge2-containing uniform forward
+waves by default with `MIN_SPLITS=0`, `GE2_ONLY=1`, and `TILE_SPLITS=64`. Keep
+the old path available with `GPUREC_FORWARD_PARENT_REDUCED_DTS=0`, and keep
+`impl=direct` as an experimental option only.
 
 ## Proposal 1: skip final Pibar for likelihood-only forward
 
