@@ -2060,6 +2060,233 @@ already make descendant sets contiguous, and estimate the average interval
 length/fragment count under the current order.  If descendant sets are already
 mostly contiguous, this proposal drops in priority.
 
+### Proposal 6 tested results
+
+No implementation branch was needed for the first diagnostic.  A CPU-side
+species-order report was run against the fourth-pass benchmark species tree:
+
+```text
+dataset: tests/data/test_trees_1000
+species tree: tests/data/test_trees_1000/sp.nwk
+mode: global
+pibar_mode: uniform
+device: cpu
+dtype: fp32
+```
+
+The report reconstructed parent/child species pointers from
+`species_helpers["s_P_indexes"]` and `species_helpers["s_C12_indexes"]`, then
+counted how many contiguous species-id intervals are needed to represent each
+node's descendant set under the current order.
+
+| Metric | Value |
+|---|---:|
+| species nodes | `1999` |
+| root count | `1` |
+| internal nodes | `999` |
+| non-contiguous descendant sets, all nodes | `0 / 1999` |
+| non-contiguous descendant sets, internal nodes | `0 / 999` |
+| average fragment count, all nodes | `1.000` |
+| average fragment count, internal nodes | `1.000` |
+| max fragment count | `1` |
+| average fill ratio | `1.000` |
+| subtree-size-weighted average fragment count | `1.000` |
+
+Largest subtree intervals were also contiguous:
+
+| Node | Fragments | Descendants | Interval width | Fill ratio |
+|---:|---:|---:|---:|---:|
+| `1998` | `1` | `1999` | `1999` | `1.000000` |
+| `1550` | `1` | `1551` | `1551` | `1.000000` |
+| `1549` | `1` | `859` | `859` | `1.000000` |
+| `1548` | `1` | `815` | `815` | `1.000000` |
+| `690` | `1` | `691` | `691` | `1.000000` |
+
+A DFS preorder pass preserving the current child order produced identical
+subtree interval sizes; every `end[node] - start[node] + 1` matched the
+descendant count exactly.
+
+#### Interpretation
+
+The current species ids already have the key Euler-layout property Proposal 6
+was meant to introduce: every subtree is represented by one contiguous interval.
+That means a broad species-dimension relayout is unlikely to provide the
+expected locality win on this workload.  The potential remaining work is not a
+global permutation, but a narrower kernel change that exploits the existing
+interval property with explicit `start/end` arrays or per-row prefix scans.
+
+#### Diagnostic decision
+
+Drop Proposal 6 as a broad layout refactor for the current benchmark tree.  The
+current species ids already behave like a postorder/Euler layout for subtree
+queries, so a codebase-wide species permutation is not justified by this
+workload.  The useful follow-up is narrower: exploit the existing contiguous
+subtree intervals directly inside the uniform `Pibar` VJP.
+
+#### Interval-prefix implementation
+
+Implemented in:
+
+- `b5c63c5` Add species Euler layout diagnostic
+- `1b50fcf` Add opt-in Euler-prefix Pibar VJP
+
+Changed paths in that implementation:
+
+- `gpurec/core/species_euler_layout.py`
+- `gpurec/core/backward.py`
+- `gpurec/core/kernels/wave_backward.py`
+- `tests/unit/test_species_euler_layout.py`
+- `tests/kernels/test_uniform_cross_pibar_vjp_kernel.py`
+
+The implementation adds an opt-in flag:
+
+| Env flag | Default status |
+|---|---|
+| `GPUREC_DTS_PIBAR_UD_EULER_PREFIX=1` | off |
+
+The new `_uniform_cross_pibar_vjp_tree_from_ud_euler_prefix_kernel` is wired
+through `Pi_wave_backward` only when the flag is enabled.  It builds cached
+int32 `subtree_interval_start/end` arrays in the current species order, and
+only uses them when every subtree is contiguous.  The kernel overwrites
+`pibar_ud` with per-row inclusive prefix sums and computes:
+
+```text
+subtree_sum = prefix[end - 1] - prefix[start - 1]
+```
+
+This changes the staged uniform `Pibar` VJP from a level-wise compact
+parent/child walk to a per-row interval-prefix calculation.  Kernel tests cover
+both fp32 and fp64.
+
+#### Correctness
+
+Commands and results:
+
+```bash
+python -m py_compile \
+  gpurec/core/backward.py \
+  gpurec/core/kernels/wave_backward.py \
+  gpurec/core/species_euler_layout.py \
+  tests/kernels/test_uniform_cross_pibar_vjp_kernel.py
+
+pytest -q \
+  tests/unit/test_species_euler_layout.py \
+  tests/kernels/test_uniform_cross_pibar_vjp_kernel.py
+# 7 passed in 1.34s
+
+GPUREC_DTS_PIBAR_UD_EULER_PREFIX=1 pytest -q \
+  tests/gradients/test_autograd_bridge.py \
+  tests/kernels/test_dts_backward_accum_kernel.py
+# 73 passed in 3.08s
+```
+
+The finite-difference command:
+
+```bash
+GPUREC_DTS_PIBAR_UD_EULER_PREFIX=1 pytest -q \
+  tests/gradients/test_wave_gradient.py::TestUniformExactFullChainFD::test_full_chain_gradient_uniform \
+  tests/gradients/test_wave_gradient.py::TestSpecieswiseUniformExactFD::test_specieswise_uniform_gradient_matches_fd \
+  tests/gradients/test_wave_gradient.py::TestGenewiseGradient::test_genewise_gradient_matches_fd
+```
+
+reported two passing tests.  The genewise test failed before backward because
+`E_fixed_point` received `ancestors_T=None`; the same genewise test also fails
+without the new flag, so this is treated as pre-existing and unrelated.
+
+Direct 50-family parity on the same model:
+
+| Metric | Value |
+|---|---:|
+| default loss | `107804.2734375` |
+| Euler-prefix loss | `107804.2734375` |
+| loss diff | `0` |
+| grad max abs diff | `4.8828125e-04` |
+| grad max relative to default max | `7.573488972e-08` |
+
+#### Event timings
+
+Workload:
+
+```text
+FAMS=50
+REPS=15
+WARMUPS=8
+MAX_WAVE_SIZE=32768
+peak allocation: 10.308 GB in both modes
+```
+
+Alternating timing pairs:
+
+| Run | Default median | Euler-prefix median | Median gain |
+|---|---:|---:|---:|
+| `15a` | `102.159 ms` | `101.288 ms` | `0.871 ms` |
+| `15b` | `102.776 ms` | `100.726 ms` | `2.050 ms` |
+
+Full timing summaries:
+
+| Run | Mean | Median | Min |
+|---|---:|---:|---:|
+| default `15a` | `102.284 ms` | `102.159 ms` | `101.648 ms` |
+| Euler-prefix `15a` | `101.225 ms` | `101.288 ms` | `100.752 ms` |
+| default `15b` | `102.829 ms` | `102.776 ms` | `102.134 ms` |
+| Euler-prefix `15b` | `100.771 ms` | `100.726 ms` | `100.225 ms` |
+
+The longer alternating runs show about `0.87-2.05 ms` median end-to-end speedup.
+An earlier 5-rep pair had default `101.832 ms` versus Euler-prefix
+`102.206 ms`, but that was treated as noise because the longer alternating
+runs and Nsight Systems kernel timing both favored Euler-prefix.
+
+#### Nsight Systems
+
+Aggregate across five captured reps:
+
+| Metric | Default | Euler-prefix |
+|---|---:|---:|
+| total kernel time | `455.570 ms` | `452.236 ms` |
+| kernel launches | `14,590` | `14,590` |
+| `Pibar` VJP kernel time | `81.090 ms` | `73.757 ms` |
+| `Pibar` VJP launches | `165` | `165` |
+| `Pibar` VJP regs/thread | `36` | `40` |
+| `Pibar` VJP block size | `128` | `256` |
+
+The staged `Pibar` VJP bucket saves `7.333 ms` over five reps, or about
+`1.47 ms/rep`.  Total kernel time saves `3.334 ms` over five reps, or about
+`0.67 ms/rep`, because other kernels and profiling noise varied.
+
+#### Nsight Compute
+
+Representative launches from `/tmp/gpurec_profile/prop6_euler`:
+
+| Kernel | Durations | DRAM throughput | L2 throughput | SM throughput | Regs/thread | Achieved occupancy |
+|---|---:|---:|---:|---:|---:|---:|
+| compact tree | `0.228, 0.695, 1.223, 1.263, 2.250, 1.893 ms` | `71.95-86.30%` | `63.56-65.01%` | `24.91-25.52%` | `36` | `94.01-98.83%` |
+| Euler-prefix | `0.180, 0.610, 1.120, 1.150, 2.090, 1.730 ms` | `91.19-93.42%` | `29.54-36.04%` | `13.00-15.33%` | `40` | `93.43-97.32%` |
+
+Euler-prefix removes scattered level-walk topology traffic and pushes the
+kernel closer to pure streaming DRAM bandwidth.  It is faster despite lower SM
+throughput because the memory access pattern is more coalesced.  The gains are
+bounded by the extra registers and the 2048-element cumulative sum per row.
+
+Artifacts:
+
+```text
+/tmp/gpurec_profile/prop6_euler/default_timing_15a.txt
+/tmp/gpurec_profile/prop6_euler/euler_prefix_timing_15a.txt
+/tmp/gpurec_profile/prop6_euler/default_timing_15b.txt
+/tmp/gpurec_profile/prop6_euler/euler_prefix_timing_15b.txt
+/tmp/gpurec_profile/prop6_euler/default_nsys.*.sqlite/.nsys-rep
+/tmp/gpurec_profile/prop6_euler/euler_prefix_nsys.*.sqlite/.nsys-rep
+/tmp/gpurec_profile/prop6_euler/ncu_compact_pibar_50.ncu-rep
+/tmp/gpurec_profile/prop6_euler/ncu_euler_prefix_pibar_50.ncu-rep
+```
+
+#### Final decision
+
+Keep `GPUREC_DTS_PIBAR_UD_EULER_PREFIX=1` as a validated opt-in performance
+path.  It is beneficial on the 50-family benchmark, but the speedup is modest
+and workload-sensitive.  Do not enable it by default until more datasets,
+species counts, and species-tree orderings are checked.
+
 ## Proposal 7: thresholded split-side Pibar pruning with an error budget
 
 Current split-side pruning is exact-zero only:
