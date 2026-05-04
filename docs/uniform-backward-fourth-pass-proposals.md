@@ -1454,6 +1454,271 @@ This proposal pairs naturally with Proposal 0.  If a CUDA shared-memory
 self-loop kernel is built, it should emit row-tile partial reductions rather
 than doing per-row global RED atomics.
 
+### Proposal 4 tested results
+
+Implemented in:
+
+- `3804d09` Prototype two-stage self-loop param reductions
+- `377e202` Tune self-loop two-stage reduction default
+
+The implementation changed only `gpurec/core/kernels/wave_backward.py`.  The
+path is opt-in with `GPUREC_SELF_LOOP_PARAM_TWO_STAGE=1`; the default remains
+off.
+
+#### Implementation shape
+
+Safe scope:
+
+- fused uniform self-loop only;
+- no-split waves only;
+- `accum_param_grads` enabled;
+- scalar `grad_log_pD` and `grad_log_pS`;
+- vector `grad_E`, `grad_Ebar`, `grad_E_s1`, `grad_E_s2`, and `grad_mt`
+  tensors of length `S`;
+- split waves and unsupported shapes fall back to the existing direct atomic
+  accumulation path.
+
+Mechanism:
+
+1. For eligible no-split waves, `_wave_backward_uniform_kernel` computes `v_k`
+   and exits before final parameter-VJP atomics.
+2. `_wave_backward_uniform_param_stage1_kernel` recomputes no-split final term
+   weights from `Pi/Pibar/v_k` over row tiles and species blocks, then writes
+   compact `partial_vec[5, n_tiles, S]` and
+   `partial_scalar[2, n_tiles, n_s_blocks]`.
+3. `_wave_backward_uniform_param_stage2_kernel` reduces those partials into the
+   existing gradient tensors.
+
+Final default tunables for the opt-in path:
+
+| Env flag | Final default / reported tuned value |
+|---|---|
+| `GPUREC_SELF_LOOP_PARAM_TWO_STAGE_TILE_ROWS` | `16` |
+| `GPUREC_SELF_LOOP_PARAM_TWO_STAGE_BLOCK_S` | `min(256, next_power_of_2(S))` |
+| `GPUREC_SELF_LOOP_PARAM_TWO_STAGE_REDUCE_TILES` | `16` |
+| `GPUREC_SELF_LOOP_PARAM_TWO_STAGE_SCALAR_BLOCK` | `1024` |
+| `GPUREC_SELF_LOOP_PARAM_TWO_STAGE_NUM_WARPS` | optional override, unset in reported tuned runs |
+| `GPUREC_SELF_LOOP_PARAM_TWO_STAGE_REDUCE_WARPS` | `4` |
+
+#### Correctness checks
+
+Worker checks passed:
+
+- `py_compile`;
+- implementation diff check;
+- synthetic no-split direct-vs-two-stage parity with `S=16`;
+- synthetic leaf-index plus active-mask parity with `S=17`;
+- large-`S` synthetic parity with `S=1999`, max gradient difference
+  `5.96e-08`;
+- real `Pi_wave_backward` parity on `test_trees_100`, with max differences
+  around `1e-10`;
+- `GPUREC_SELF_LOOP_PARAM_TWO_STAGE=1 pytest -q tests/kernels/test_wave_backward_kernel.py::test_wave_speciation_gather_matches_scatter`.
+
+Main-agent checks:
+
+| Command | Result |
+|---|---:|
+| `python -m py_compile gpurec/core/kernels/wave_backward.py` | passed |
+| `GPUREC_SELF_LOOP_PARAM_TWO_STAGE=1 pytest -q tests/kernels/test_wave_backward_kernel.py::test_wave_speciation_gather_matches_scatter tests/gradients/test_autograd_bridge.py` | `16 passed in 2.76s` before tuning |
+| same combined pytest after tuning | `16 passed in 3.11s` |
+| `GPUREC_SELF_LOOP_PARAM_TWO_STAGE=1 GPUREC_BACKWARD_NO_CPU_PRUNING=1 pytest -q tests/gradients/test_autograd_bridge.py` | `15 passed in 2.70s` |
+
+Direct Pi-backward graph/parity smoke:
+
+```bash
+GPUREC_SELF_LOOP_PARAM_TWO_STAGE=1 FAMS=50 REPS=1 WARMUPS=3 \
+MAX_WAVE_SIZE=32768 \
+python profiling/proposal8/bench_uniform_backward.py \
+  --cuda-graph --cuda-graph-target=pi_backward \
+  --graph-fixed-schedule-mode=no_cpu --cuda-graph-check
+```
+
+| Metric | Result |
+|---|---:|
+| normal Pi backward | `95.883 ms` |
+| graph replay | `94.196 ms` |
+| max output absolute difference | `3.125e-02` on `grad_log_pS` |
+| relative to that key's max | `1.9925e-07` |
+| normal peak allocation | `10.381 GB` |
+| graph peak allocation | `15.489 GB` |
+
+#### Event-timed benchmarks
+
+All benchmark rows below use 50 families with `MAX_WAVE_SIZE=32768`.
+
+| Run | Median | Mean | Min | Peak allocation | Log |
+|---|---:|---:|---:|---:|---|
+| profiling-worker baseline before implementation | `103.449 ms` | `103.472 ms` | `102.599 ms` | `10.308 GB` | `/tmp/gpurec_profile/prop4_selfloop/baseline_bench_50fams_default.log` |
+| current default after implementation, flag off | `101.799 ms` | `101.914 ms` | `101.478 ms` | `10.308 GB` | `current_default_bench_50fams.log` |
+| current default after tuned commit, flag off | `101.615 ms` | `101.653 ms` | `101.374 ms` | `10.308 GB` | `current_default_bench_50fams_after_tuned.log` |
+| two-stage initial default, `TILE_ROWS=16`, `BLOCK_S=128` | `103.930 ms` | `104.106 ms` | `103.548 ms` | `10.390 GB` | - |
+| final tuned default, `BLOCK_S=256`, `REPS=5`, `WARMUPS=5` | `102.722 ms` | `102.869 ms` | `102.450 ms` | `10.390 GB` | `/tmp/gpurec_profile/prop4_selfloop/twostage_bench_50fams_default_tuned.log` |
+
+Tuning sweep medians:
+
+| Sweep | Median results |
+|---|---|
+| `tile_rows=8/16/32/64`, `block_s=128`, `REPS=3` | `104.469`, `104.030`, `103.624`, `106.423 ms` |
+| `tile_rows=32`, `block_s=64/128/256`, `REPS=3` | `104.182`, `104.278`, `102.959 ms` |
+| `block_s=256`, `tile_rows=8/16/32`, `REPS=5` | `103.253`, `103.179`, `103.946 ms` |
+| `tile_rows=16`, `block_s=192/256/512`, `REPS=3` | `102.930`, `103.268`, `103.881 ms` |
+| `reduce_tiles=8/16/32/64`, `tile_rows=32`, `block_s=256`, `REPS=3` | `104.932`, `103.480`, `104.067`, `105.557 ms` |
+
+Against the back-to-back flag-off median `101.615 ms`, the final tuned
+two-stage default is `1.107 ms` slower, a `+1.1%` regression, and uses
+`0.082 GB` more peak memory.
+
+#### Nsight Systems, 50 families
+
+Baseline profile:
+
+```text
+/tmp/gpurec_profile/prop4_selfloop/nsys_baseline_50fams_default_profileapi.nsys-rep
+```
+
+| Kernel bucket | Time | Launches | Share / notes |
+|---|---:|---:|---|
+| `_dts_cross_backward_accum_kernel` | `27.448 ms` | 33 | `30.2%` |
+| `_wave_backward_uniform_kernel` | `24.477 ms` | 36 | `27.0%`, avg `679.9 us`, max `4.689 ms` |
+| `_uniform_cross_pibar_vjp_tree_from_ud_compact_kernel` | `16.232 ms` | 33 | `17.9%` |
+| `_dts_parent_reduced_ge2_stage1_kernel` | `7.201 ms` | 6 | `7.9%` |
+
+Tuned two-stage profile:
+
+```text
+/tmp/gpurec_profile/prop4_selfloop/nsys_twostage_50fams_t16_bs256_profileapi.nsys-rep
+```
+
+| Kernel bucket | Time | Launches | Share |
+|---|---:|---:|---:|
+| `_dts_cross_backward_accum_kernel` | `27.445606 ms` | 33 | `30.0%` |
+| `_wave_backward_uniform_kernel` | `21.576885 ms` | 36 | `23.6%` |
+| `_uniform_cross_pibar_vjp_tree_from_ud_compact_kernel` | `16.220101 ms` | 33 | `17.7%` |
+| `_dts_parent_reduced_ge2_stage1_kernel` | `7.207845 ms` | 6 | `7.9%` |
+| `_wave_backward_uniform_param_stage1_kernel` | `3.142828 ms` | 3 | `3.4%` |
+| `_active_mask_from_rhs_absmax_kernel` | `2.957896 ms` | 49 | `3.2%` |
+| `_dts_eq1_to_rows_kernel` | `2.765286 ms` | 9 | `3.0%` |
+| `_wave_backward_uniform_param_stage2_kernel` | `0.516296 ms` | 3 | `0.6%` |
+
+The main wave kernel saves about `2.90 ms` in aggregate
+(`24.477 -> 21.577 ms`), but the new stage-1 and stage-2 kernels add about
+`3.66 ms`.  Net kernel time therefore regresses by about `0.76 ms` before
+including launch, allocation, and extra memory effects.
+
+#### Nsight Compute, representative no-split launches
+
+Baseline max-wave launch:
+
+```text
+/tmp/gpurec_profile/prop4_selfloop/ncu_wave_backward_uniform_launch35_grid32768_sections.ncu-rep
+plus the atom-metrics raw CSV for the same launch
+```
+
+| Metric | Baseline `_wave_backward_uniform_kernel` |
+|---|---:|
+| launch shape | grid `32768`, block `256` |
+| registers/thread | `40` |
+| duration under NCU replay | `5.10 ms` |
+| memory throughput | `571.65 GB/s` |
+| compute-memory throughput | `87.51%` peak |
+| DRAM throughput | `58.09%` |
+| L2 throughput | `87.51%` |
+| DRAM bytes | `2.915 GB` total: `1.011 GB` read, `1.904 GB` write |
+| global RED requests / sectors | `10,846,208 / 41,484,288` |
+| global atom requests | `0` |
+| L2 atomic input active | `11.33%` |
+| theoretical occupancy | `100%` |
+| achieved occupancy | `99.41%` |
+| active warps/SM | `47.72` |
+
+Two-stage main-wave max launch:
+
+```text
+/tmp/gpurec_profile/prop4_selfloop/ncu_twostage_wave_backward_uniform_launch35_t16_bs256.ncu-rep
+/tmp/gpurec_profile/prop4_selfloop/ncu_twostage_wave_backward_uniform_launch35_atom_metrics.ncu-rep
+```
+
+| Metric | Two-stage `_wave_backward_uniform_kernel` |
+|---|---:|
+| launch shape | grid `32768`, block `256` |
+| registers/thread | `40` |
+| duration under NCU replay | `3.72-3.74 ms` |
+| memory throughput | `739.74 GB/s` |
+| memory throughput vs peak | `92.91%` |
+| DRAM throughput | `75.24%` |
+| L2 throughput | `92.91%` |
+| DRAM bytes | `2.762 GB` total: `0.790 GB` read, `1.973 GB` write |
+| global RED requests / sectors | `0 / 0` |
+| L2 atomic input active | `0%` |
+| theoretical occupancy | `100%` |
+| achieved occupancy | `97.99%` |
+
+This confirms the local objective: the eligible main wave no longer issues
+global RED operations, and the large no-split launch is about `27%` faster
+under NCU replay.
+
+Two-stage stage 1:
+
+```text
+/tmp/gpurec_profile/prop4_selfloop/ncu_twostage_param_stage1_launch2_t16_bs256.ncu-rep
+```
+
+| Metric | `_wave_backward_uniform_param_stage1_kernel` |
+|---|---:|
+| launch shape | grid `(2048, 8)`, block `256` |
+| registers/thread | `199` |
+| dynamic shared memory | `16.384 KB` |
+| duration | `1.25 ms` |
+| memory throughput | `735.24 GB/s` |
+| memory throughput vs peak | `74.78%` |
+| DRAM throughput | `74.78%` |
+| L2 throughput | `29.21%` |
+| L2 hit rate | `21.59%` |
+| executed instructions | `366,788,608` |
+| theoretical occupancy | `16.67%` |
+| achieved occupancy | `16.63%` |
+| active warps/SM | `7.98` |
+| local spilling | `0` |
+
+Stage 1 is limited by register/shared-memory occupancy and rereads
+`Pi/Pibar/constants/v_k` to recompute the final parameter weights.
+
+Two-stage stage 2:
+
+```text
+/tmp/gpurec_profile/prop4_selfloop/ncu_twostage_param_stage2_launch2_t16_bs256.ncu-rep
+```
+
+| Metric | `_wave_backward_uniform_param_stage2_kernel` |
+|---|---:|
+| launch shape | grid `8`, block `128` |
+| registers/thread | `168` |
+| duration | `215.55 us` |
+| memory throughput | `394.18 GB/s` |
+| memory throughput vs peak | `40.10%` |
+| achieved occupancy | `8.33%` |
+| active warps/SM | `4.0` |
+
+Stage 2 is small-grid underutilized, but it costs only about `0.17-0.21 ms`
+per large no-split wave.
+
+#### Decision
+
+Keep the two-stage self-loop parameter-reduction path as an opt-in diagnostic
+prototype.  Do not enable it by default for the current 50-family workload.
+
+The proposal is technically valid: it eliminates global RED operations from
+eligible no-split self-loop waves and speeds up the main wave kernel.  The
+end-to-end timing regresses because stage 1 recomputes much of the final weight
+calculation in a separate pass.  That pass has very high register pressure
+(`199` registers/thread), low occupancy (`~16.6%`), extra DRAM traffic, and
+partial writes.  Those costs exceed the atomic savings.
+
+This line is worth revisiting only if stage 1 can be fused into a lower-register
+CUDA/shared-memory kernel, if partial reductions can be accumulated inside the
+existing wave kernel without recomputing terms, or if the target workload has
+much larger no-split batches where scalar/vector atomics dominate more strongly.
+
 ## Proposal 5: zero-fill and allocation audit, not generic scratch pooling
 
 The current Nsight trace still contains:
