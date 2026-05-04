@@ -1068,6 +1068,179 @@ Correctness gate:
 - Chunk order must not change per-family likelihoods beyond expected fp32
   accumulation order differences.
 
+### Proposal 5 follow-up: clade-budget harness, memory win only
+
+Proposal 5 was tested with the same static-review, correctness, profiling, and
+supervisor split. This pass added a profiling harness rather than changing the
+training API:
+
+```text
+profiling/bench_uniform_forward_chunking.py
+```
+
+The harness loads `test_trees_1000` once, solves the global uniform `E` fixed
+point once, builds one wave layout per resident chunk, then times the full
+Pi/root-likelihood sweep over all chunks. It supports:
+
+- fixed family chunks, matching the old 150-family policy;
+- order-preserving clade-budget chunks;
+- a conservative `--auto-budget` mode based on free memory;
+- `max_wave_size` and `max_root_wave_size` sweeps;
+- Nsys capture through `--profile-cuda-api`.
+
+The public API still has two separate behaviors:
+
+- `GeneReconModel.forward()` builds one monolithic static layout and is the
+  backward-capable path. It should not silently chunk because backward needs the
+  saved `Pi/Pibar`.
+- `GeneDataset.compute_likelihood_batch()` already chunks by family count, but
+  each chunk re-extracts parameters and re-solves `E`. For global/specieswise
+  uniform inference, reusing one shared `E` is valid if the theta is truly
+  shared.
+
+The tested configuration was fp32, global uniform mode, fixed 6 Pi iterations,
+parent-reduced DTS enabled, int32 forward topology enabled, `need_pibar=False`,
+and DTS overlap disabled.
+
+Workstream summary:
+
+| Workstream | Result |
+|---|---|
+| Static/API review | Clade-budget inference is safe as an order-preserving chunk planner plus shared-E loop. Do not change autograd forward silently. |
+| Correctness | Fixed-family and clade-budget chunks matched unchunked small cases exactly. Existing model/wave tests passed. |
+| Profiling | Clade budgeting reduces peak memory, but does not produce a robust speedup. Larger chunks and larger waves hit DTS scratch/stability limits. |
+
+#### Correctness evidence
+
+| Check | Result |
+|---|---:|
+| 10 families, two 5-family chunks vs unchunked | NLL abs diff `0.0` |
+| 50 families, two 25-family chunks vs unchunked | NLL abs diff `0.0` |
+| Worker custom 6-family fixed chunks vs unchunked | scalar diff `0`, max per-family diff `0` |
+| Worker custom 6-family clade-budget chunks vs unchunked | scalar diff `0`, max per-family diff `0` |
+| Permuted 6-family order with chunking | output order preserved, max diff `0` |
+| `pytest -q tests/unit/test_cross_family_wave.py::test_batched_wave_matches_individual_large_s` | `3 passed in 12.90 s` |
+| `pytest -q tests/unit/test_wave_v2.py::test_model_api_wave_matches_fp` | `1 passed in 4.63 s` |
+| `pytest -q tests/gradients/test_autograd_bridge.py::test_model_nll_matches_compute_likelihood_batch` | `5 passed in 1.36 s` |
+| `pytest -q tests/unit/test_cross_family_wave.py::test_batched_wave_100_families_large_s` | `1 passed in 47.34 s` |
+
+The full 1000-family scalar NLL varies by up to `0.25` bits between some chunk
+policies because the chunked script accumulates fp32 chunk sums in a different
+order. The relative difference is about `1.2e-7`; per-family/order checks on
+small cases were exact.
+
+#### Harness validation
+
+The new harness was cross-checked against the existing parent-DTS benchmark on
+the first 150 families:
+
+| Path | Median Pi/root interval | NLL | Peak GPU |
+|---|---:|---:|---:|
+| `bench_uniform_forward_parent_dts.py`, 150 families | `344.309 ms` | `323018.6875` | `15.018 GiB` |
+| `bench_uniform_forward_chunking.py`, one 150-family chunk | `345.297 ms` | `323018.6875` | `15.018 GiB` |
+
+The `~1 ms` difference is timing noise plus a small scalar-accumulation wrapper;
+the harness is representative of the existing forward interval.
+
+#### 1000-family chunk policy sweep
+
+All rows use `max_wave_size=32768`, warmed allocator timing, `3` timed reps, and
+one warmup. `C_max` is the largest resident clade count.
+
+| Policy | Chunks | `C_max` | Total waves | Median ms | Peak GiB | NLL |
+|---|---:|---:|---:|---:|---:|---:|
+| fixed `150` families | `7` | `979570` | `453` | `2319.010` | `15.679` | `2157097.0` |
+| clade budget `950000` | `7` | `949705` | `456` | `2323.972` | `15.230` | `2157097.0` |
+| clade budget `900000` | `8` | `899877` | `500` | `2335.058` | `14.487` | `2157097.0` |
+| conservative auto budget, `891353` clades | `8` | `890072` | `499` | `2319.109` | `14.343` | `2157097.25` |
+| clade budget `1000000` | `7` | `999058` | `448` | `2499.909` | `15.969` | `2157097.0` |
+| clade budget `1050000` | `7` | `1049674` | `451` | `2335.260` | `16.720` | `2157097.0` |
+| clade budget `1100000` | `6` | `1098643` | `411` | failed | - | - |
+| clade budget `1200000` | `6` | `1198398` | `425` | failed | - | - |
+
+The accepted part of the proposal is memory stability, not speed. A
+`900k-950k` clade budget cuts peak allocation by about `0.45-1.19 GiB` with
+only `0.2-0.7%` timing cost. The conservative auto policy picked about `891k`
+clades on the RTX 4090 and matched the fixed-150 median while reducing peak
+memory by about `1.34 GiB`.
+
+The rejected part is “larger stable chunks”. Budgets at `1.1M` and `1.2M`
+clades failed during warmup with a Triton/CUDA illegal memory access in the DTS
+path. This is consistent with the earlier 175-family instability. A production
+packer therefore needs a DTS scratch/fanout guard in addition to the
+`2*C*S*sizeof(dtype)` Pi/Pibar estimate.
+
+#### Wave-size policy
+
+Whole-1000 timing with fixed 150-family chunks:
+
+| `max_wave_size` | Chunks | Total waves | Max `W` | Median ms | Peak GiB | Result |
+|---:|---:|---:|---:|---:|---:|---|
+| `32768` | `7` | `453` | `32768` | `2319.010` | `15.679` | current stable point |
+| `65536` | `7` | `368` | `65536` | `3180.165` | `16.236` | slower |
+| `131072` | `7` | `349` | `131072` | failed | - | DTS scratch OOM |
+| uncapped | `7` | `342` | `245080` | `3193.939` | `16.297` | slower |
+
+The earlier intuition that forward-only might prefer larger waves did not hold
+for the full 1000-family sweep after the current parent-reduced/need-Pibar
+changes. Larger waves reduce launch count, but they increase per-launch working
+set and scratch pressure; `32768` remains the right default.
+
+#### Nsight Systems
+
+Nsys captures were restricted to one warmed timed repetition. Device copies
+were negligible in all representative traces: `8-9` copies, `32-36` bytes, about
+`0.005 ms` total. All kernels ran on one CUDA stream.
+
+| Metric | fixed `150` | clade `950k` | clade `900k` |
+|---|---:|---:|---:|
+| Kernel span ms | `2507.159` | `2314.534` | `2323.195` |
+| Summed kernel ms | `2501.619` | `2309.747` | `2318.104` |
+| Kernel launches | `5919` | `5952` | `6581` |
+| Peak GiB in non-Nsys timing | `15.679` | `15.230` | `14.487` |
+
+Top kernel buckets:
+
+| Kernel bucket | fixed `150` | clade `950k` | clade `900k` |
+|---|---:|---:|---:|
+| `_wave_step_uniform_kernel` | `1639.133 ms / 2718` | `1511.665 ms / 2736` | `1523.250 ms / 3000` |
+| `_dts_fused_kernel` | `226.474 ms / 342` | `207.703 ms / 344` | `206.591 ms / 385` |
+| `_wave_pibar_uniform_parent_kernel` | `215.294 ms / 446` | `205.751 ms / 449` | `204.451 ms / 492` |
+| `_dts_parent_reduced_ge2_stage1_kernel` | `175.599 ms / 58` | `157.445 ms / 58` | `156.977 ms / 64` |
+| PyTorch index kernels | `90.069 ms / 349` | `82.226 ms / 351` | `81.998 ms / 393` |
+
+The Nsys picture matches the timing sweep qualitatively: lower clade budgets
+shrink the largest chunk and can reduce the largest kernel buckets, but once the
+budget gets too small the extra waves and launches eat the gain. The sweet spot
+is a memory/robustness choice around `900k-950k`, not a throughput breakthrough.
+
+Artifacts:
+
+```text
+/tmp/gpurec_profile/forward_prop5/chunk_fixed150.nsys-rep
+/tmp/gpurec_profile/forward_prop5/chunk_fixed150.sqlite
+/tmp/gpurec_profile/forward_prop5/chunk_clade950k.nsys-rep
+/tmp/gpurec_profile/forward_prop5/chunk_clade950k.sqlite
+/tmp/gpurec_profile/forward_prop5/chunk_clade900k.nsys-rep
+/tmp/gpurec_profile/forward_prop5/chunk_clade900k.sqlite
+```
+
+#### Decision
+
+Keep `max_wave_size=32768`. Do not promote `65536`, `131072`, or uncapped waves.
+
+Keep fixed 150-family chunks as the throughput baseline when memory is
+available. For inference deployments that need a safer memory envelope, use an
+order-preserving clade budget around `900k-950k` clades on this RTX 4090
+workload. This loses little or no throughput and saves roughly `0.45-1.34 GiB`
+of peak allocation.
+
+The long-term API change is still worthwhile: add a public likelihood-only
+chunked inference path that reuses global/specieswise `E`, accumulates in fp64
+or host `math.fsum` for stable scalar reporting, and chooses chunks by clades
+plus a DTS scratch/fanout guard. Do not route autograd `forward()` through this
+path without a separate backward design.
+
 ## Proposal 6: root-only and liveness-aware forward outputs
 
 The high-level autograd path already computes root likelihood from
