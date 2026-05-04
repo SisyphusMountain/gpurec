@@ -1624,6 +1624,138 @@ Uniform-only preprocessing should:
 This will not reduce a warmed GPU forward profile, but it reduces construction
 RSS, cache size, and repeated model setup for large datasets.
 
+### Proposal 8 follow-up: implemented compact species preprocessing
+
+Proposal 8 is now implemented for the high-level uniform path.  This is a
+setup/cache/RSS improvement, not a warmed GPU forward-kernel speedup.
+
+Implementation:
+
+- C++ `preprocess(...)` and `preprocess_multiple_families(...)` accept
+  `include_species_matrices=true` by default.  When it is false, they skip
+  dense `Recipients_mat` and `ancestors_dense`.
+- Compact preprocessing still emits `unnorm_row_max`, computed directly from
+  the species topology rather than from the dense unnormalized recipient
+  matrix.
+- `GeneDataset` keeps `retain_dense_species_matrices=true` by default for
+  backward compatibility.
+- `GeneReconModel.from_trees(...)` passes
+  `retain_dense_species_matrices=(pibar_mode != "uniform")`, so high-level
+  uniform model construction is compact by default.  Dense/topk/pairwise modes
+  retain the dense matrices.
+- The preprocessing cache key distinguishes
+  `light-v2:dense-species` from `light-v2:compact-species`.
+- Uniform static helpers no longer require `Recipients_mat` or
+  `ancestors_dense`.  `ancestors_T` is built from compact topology through
+  `gpurec/core/species.py`.
+- `Pi_wave_forward`'s CUDA `torch_spmm` fallback also derives its sparse
+  ancestor matrix from compact topology, so environment-selected fallback
+  implementations do not reintroduce a dense `ancestors_dense` dependency.
+- `wave_optimizer` and `genewise_optimizer` use the same compact topology
+  helper, so the optimizer paths do not silently require dense species matrices.
+
+The dense species mode for this dataset has three fp64 CPU matrices at
+`S=1999`:
+
+| Dense species tensor | Size |
+|---|---:|
+| `Recipients_mat` | `30.487 MiB` |
+| `ancestors_dense` | `30.487 MiB` |
+| `tr_mat_unnormalized` | `30.487 MiB` |
+
+Compact mode removes all three live dense tensors and keeps `unnorm_row_max`
+plus compact topology helpers.  A unique CPU tensor inventory for 10 families
+measured `98.501 MiB` in dense species mode versus `7.024 MiB` in compact
+species mode, saving about `91.5 MiB` of live CPU tensor memory.
+
+Correctness evidence:
+
+| Check | Result |
+|---|---:|
+| Full autograd bridge suite, including compact uniform construction, dense/topk retention, NLL batch match, and CUDA `torch_spmm` fallback | `20 passed` |
+| Multi-family light preprocess default, preprocess cache parity with single path, and dtype roundtrip | `3 passed` |
+| Genewise optimizer and genewise batch/per-family forward checks | `4 passed` |
+| Follow-up sparse-warning check after wrapping sparse construction | `2 passed`, no sparse warning |
+| CUDA `torch_spmm` fallback with compact uniform species helpers | matched default fused loss within `1e-7` |
+
+NLL parity against a dense-retaining uniform model:
+
+| Workload | Compact loss | Dense-retained loss | Abs diff |
+|---:|---:|---:|---:|
+| 10 families | `45471.82421875` | `45471.82421875` | `0.0` |
+| 50 families | `221312.875` | `221312.875` | `0.0` |
+
+This verifies that `unnorm_row_max` and compact topology reproduce the uniform
+model state needed by the forward pass.
+
+#### Construction and RSS
+
+Separate-process construction/RSS measurements include static build for
+`test_trees_1000`, fp32, fixed 6 Pi iterations.
+
+| Workload | Species mode | Construct time | Elapsed | Max RSS | CUDA peak | Clades | `ancestors_T` nnz |
+|---:|---|---:|---:|---:|---:|---:|---:|
+| 50 | compact | `0.874278 s` | `1.82 s` | `1167536 KB` | `45.466 MiB` | `321930` | `24809` |
+| 50 | dense-retaining simulation | `0.948574 s` | `1.91 s` | `1207700 KB` | `45.466 MiB` | `321930` | `24809` |
+| 150 | compact | `2.267044 s` | `3.24 s` | `1302944 KB` | `135.104 MiB` | `954706` | `24809` |
+| 150 | dense-retaining simulation | `2.294321 s` | `3.25 s` | `1332536 KB` | `135.104 MiB` | `954706` | `24809` |
+
+The RSS deltas are modest in these whole-process measurements because Python,
+parsed family state, and cached tensors dominate the process footprint.  The
+targeted tensor inventory above shows the actual dense species tensor removal
+more directly.  GPU peak during static construction is unchanged because the
+uniform static build no longer moves dense species matrices to GPU in either
+compact mode or the dense-retaining simulation.
+
+#### Cache size and dataset construction
+
+Measurements use `GeneDataset(preprocess_cache_dir=...)`.
+
+| Workload | Species mode | Cold dataset | Warm dataset | Species cache | Family cache | Total cache |
+|---:|---|---:|---:|---:|---:|---:|
+| 10 | compact | `0.258815 s` | `0.013052 s` | `0.105 MiB` | `7.192 MiB` | `7.297 MiB` |
+| 10 | dense | `0.190419 s` | `0.031644 s` | `61.080 MiB` | `7.192 MiB` | `68.272 MiB` |
+| 50 | compact | `0.676246 s` | `0.053537 s` | - | - | `34.944 MiB` |
+| 50 | dense | `0.725685 s` | `0.074977 s` | - | - | `95.919 MiB` |
+| 150 | compact | `2.158724 s` | `0.155700 s` | - | - | `103.456 MiB` |
+| 150 | dense | `2.390087 s` | `0.179270 s` | - | - | `164.431 MiB` |
+
+The species-cache delta is stable:
+
+```text
+61.080 MiB - 0.105 MiB = 60.975 MiB saved
+```
+
+The cold timing is not uniformly faster at 10 families because parsing and cache
+write overhead dominate at that size.  At larger workloads compact mode is
+slightly faster and consistently reduces warm-cache time and cache footprint.
+
+#### Interpretation
+
+This proposal removes dense species matrices from uniform setup and cache
+state.  It does not change the warmed GPU forward interval: the `Pi` wave loop,
+DTS kernels, and final likelihood kernels are unchanged.  The practical wins
+are:
+
+- lower CPU tensor/RSS pressure during model construction;
+- much smaller species cache entries;
+- lower warm-cache load time;
+- clearer separation between uniform topology helpers and dense transfer modes.
+
+The remaining setup opportunity is to precompute compact ancestor COO/CSR
+directly during preprocessing.  The profiling worker measured about `19-20 ms`
+of Python topology-to-sparse setup that still happens after compact
+preprocessing.  Moving that sparse construction into preprocessing/cache would
+not accelerate warmed kernel profiles, but it would further reduce repeated
+model setup time.
+
+#### Decision
+
+Keep compact species preprocessing as the high-level default for
+`pibar_mode="uniform"`.  Keep dense species matrices by default for dense/topk
+and low-level `GeneDataset` compatibility.  Count this as a setup/cache/RSS
+improvement, not as a forward GPU kernel optimization.
+
 ## Proposal 9: fp64 and tensor-core direction
 
 The backward docs record a severe fp64 forward penalty on RTX 4090:

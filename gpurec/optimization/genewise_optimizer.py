@@ -14,6 +14,7 @@ from gpurec.core.likelihood import (
 from gpurec.core.forward import Pi_wave_forward
 from gpurec.core.backward import Pi_wave_backward
 from gpurec.core.extract_parameters import extract_parameters_uniform
+from gpurec.core.species import uniform_ancestors_t_from_topology
 
 from .implicit_grad import _e_adjoint_and_theta_vjp
 
@@ -141,14 +142,15 @@ def optimize_theta_genewise(
     # Move species_helpers tensors to device (skip large [S,S] matrices for uniform modes)
     _skip_keys = set()
     if pibar_mode == 'uniform':
-        _skip_keys = {'Recipients_mat'}
+        _skip_keys = {'Recipients_mat', 'ancestors_dense'}
     def _move_tensor(t):
         if t.dtype.is_floating_point:
             return t.to(device=device, dtype=dtype)
         return t.to(device=device)
     species_helpers = {
-        k: (_move_tensor(v) if torch.is_tensor(v) and k not in _skip_keys else v)
+        k: (_move_tensor(v) if torch.is_tensor(v) else v)
         for k, v in species_helpers.items()
+        if k not in _skip_keys
     }
 
     # --- Phase A: precompute per-family scheduling primitives (once) ---
@@ -268,8 +270,11 @@ def optimize_theta_genewise(
     # Precompute ancestors_T for uniform mode
     _ancestors_T = None
     if pibar_mode == 'uniform':
-        anc_dense = species_helpers['ancestors_dense'].to(device=device, dtype=dtype)
-        _ancestors_T = anc_dense.T.to_sparse_coo()
+        _ancestors_T = uniform_ancestors_t_from_topology(
+            species_helpers,
+            device=device,
+            dtype=dtype,
+        )
 
     S = species_helpers['S']
     if torch.is_tensor(S):

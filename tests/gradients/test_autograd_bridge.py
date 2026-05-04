@@ -118,6 +118,100 @@ def test_model_nll_matches_compute_likelihood_batch(
     )
 
 
+def _loss_and_grad(model: GeneReconModel) -> tuple[float, torch.Tensor]:
+    model.zero_grad(set_to_none=True)
+    model._static.warm_E = None
+    loss = model()
+    loss.backward()
+    return float(loss.item()), model.theta.grad.detach().clone()
+
+
+def test_uniform_static_state_runs_without_dense_species_matrices(
+    species_path, gene_paths
+):
+    """Uniform mode must not need dense transfer matrices after construction.
+
+    This simulates Proposal 8's lazy preprocessing boundary by deleting the
+    dense recipients matrix from the runtime dataset after ``ReconStaticState``
+    has been built. Forward and backward should match an unmodified uniform
+    model because uniform extraction only needs ``unnorm_row_max`` and
+    ``ancestors_T``.
+    """
+    baseline = _build_model(species_path, gene_paths, "global", "uniform")
+    lazy = _build_model(species_path, gene_paths, "global", "uniform")
+    lazy.theta.data.copy_(baseline.theta.detach())
+
+    assert lazy._static.transfer_mat_unnormalized is None
+    assert lazy._static.ancestors_T is not None
+
+    lazy._static.species_helpers.pop("Recipients_mat", None)
+    lazy._dataset.tr_mat_unnormalized = None
+    lazy._dataset.species_helpers = {
+        k: v for k, v in lazy._dataset.species_helpers.items()
+        if k != "Recipients_mat"
+    }
+    for fam in lazy._dataset.families:
+        fam["transfer_mat_unnormalized"] = None
+
+    baseline_nll, baseline_grad = _loss_and_grad(baseline)
+    lazy_nll, lazy_grad = _loss_and_grad(lazy)
+
+    assert lazy_nll == pytest.approx(baseline_nll, rel=1e-12, abs=1e-12)
+    assert torch.allclose(lazy_grad, baseline_grad, rtol=1e-10, atol=1e-10)
+
+
+def test_uniform_model_construction_omits_dense_species_matrix(
+    species_path, gene_paths
+):
+    model = _build_model(species_path, gene_paths, "global", "uniform")
+
+    assert "Recipients_mat" not in model._static.species_helpers
+    assert "ancestors_dense" not in model._static.species_helpers
+    assert model._dataset.tr_mat_unnormalized is None
+    assert "Recipients_mat" not in model._dataset.species_helpers
+    assert "ancestors_dense" not in model._dataset.species_helpers
+    assert model._static.transfer_mat_unnormalized is None
+    assert model._static.ancestors_T is not None
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA fallback check")
+@pytest.mark.filterwarnings("ignore:Sparse CSR tensor support is in beta state:UserWarning")
+def test_uniform_torch_spmm_fallback_matches_default_without_dense_species_matrix(
+    species_path, gene_paths, monkeypatch
+):
+    baseline = _build_model(species_path, gene_paths, "global", "uniform")
+    fallback = _build_model(species_path, gene_paths, "global", "uniform")
+    fallback.theta.data.copy_(baseline.theta.detach())
+
+    baseline_loss = baseline().detach()
+    baseline._static.warm_E = None
+    fallback._static.warm_E = None
+    monkeypatch.setenv("GPUREC_UNIFORM_IMPL", "torch_spmm")
+    fallback_loss = fallback().detach()
+
+    assert "ancestors_dense" not in fallback._static.species_helpers
+    assert torch.allclose(fallback_loss, baseline_loss, rtol=1e-7, atol=1e-7)
+
+
+@pytest.mark.parametrize("pibar_mode", ["dense", "topk"])
+def test_dense_and_topk_static_state_retain_dense_transfer_matrix(
+    species_path, gene_paths, pibar_mode
+):
+    model = _build_model(species_path, gene_paths, "global", pibar_mode)
+
+    assert "Recipients_mat" in model._static.species_helpers
+    assert model._static.transfer_mat_unnormalized is not None
+    assert model._static.ancestors_T is None
+
+    loss = model()
+    assert torch.isfinite(loss)
+
+    model._static.warm_E = None
+    model._static.transfer_mat_unnormalized = None
+    with pytest.raises((AttributeError, TypeError)):
+        model()
+
+
 # ──────────────────────────────────────────────────────────────────────
 # 2. Gradient FD agreement (central differences)
 # ──────────────────────────────────────────────────────────────────────

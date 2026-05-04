@@ -595,6 +595,40 @@ std::pair<std::vector<double>, std::vector<double>> compute_ancestors_and_recipi
   return {std::move(ancestors), std::move(recipients)};
 }
 
+std::vector<double> compute_uniform_unnorm_row_max(
+    TreeNode* species_root,
+    int num_species) {
+
+  std::vector<TreeNode*> species_postorder;
+  collect_nodes_postorder(species_root, species_postorder);
+
+  std::unordered_map<TreeNode*, int> species_node_to_index;
+  species_node_to_index.reserve(species_postorder.size());
+  for (size_t i = 0; i < species_postorder.size(); ++i) {
+    species_node_to_index[species_postorder[i]] = static_cast<int>(i);
+  }
+
+  std::vector<double> row_max(num_species, -std::numeric_limits<double>::infinity());
+  for (TreeNode* node : species_postorder) {
+    int idx = species_node_to_index[node];
+    int depth = 0;
+    TreeNode* cur = node;
+    while (cur) {
+      ++depth;
+      cur = cur->parent;
+      if (depth > num_species) {
+        throw std::runtime_error("Cycle detected in species parent pointers");
+      }
+    }
+    int n_recipients = num_species - depth;
+    if (n_recipients > 0) {
+      row_max[idx] = -std::log2(static_cast<double>(n_recipients));
+    }
+  }
+
+  return row_max;
+}
+
 /**
  * @brief Amalgamate clades and splits from multiple gene trees
  *
@@ -1221,7 +1255,8 @@ compute_clade_waves(const CCPArrays &ccp, size_t C) {
 py::dict preprocess_multiple_families(
     const std::string &species_path,
     const std::map<std::string, std::vector<std::string>> &families,
-    bool include_details = false) {
+    bool include_details = false,
+    bool include_species_matrices = true) {
 
   // Parse species tree once (shared across all families)
   std::unique_ptr<TreeNode> species_root = parse_newick_file(species_path);
@@ -1231,7 +1266,14 @@ py::dict preprocess_multiple_families(
   enumerate_species(species_root.get(), species_order, species_data);
   auto species_name_to_index = build_species_name_map(species_data);
 
-  auto [ancestors, recipients] = compute_ancestors_and_recipients(species_root.get(), species_data.S);
+  std::vector<double> ancestors;
+  std::vector<double> recipients;
+  if (include_species_matrices) {
+    std::tie(ancestors, recipients) =
+        compute_ancestors_and_recipients(species_root.get(), species_data.S);
+  }
+  std::vector<double> unnorm_row_max =
+      compute_uniform_unnorm_row_max(species_root.get(), species_data.S);
 
   std::vector<int64_t> s_P_indexes;
   std::vector<int64_t> s_C1_indexes;
@@ -1261,8 +1303,11 @@ py::dict preprocess_multiple_families(
   species_dict["names"] = species_data.names;
   species_dict["s_P_indexes"] = to_long_tensor(s_P_indexes_ext);
   species_dict["s_C12_indexes"] = to_long_tensor(s_C12_indexes);
-  species_dict["ancestors_dense"] = to_double_matrix(ancestors, species_data.S, species_data.S);
-  species_dict["Recipients_mat"] = to_double_matrix(recipients, species_data.S, species_data.S);
+  species_dict["unnorm_row_max"] = to_double_tensor(unnorm_row_max);
+  if (include_species_matrices) {
+    species_dict["ancestors_dense"] = to_double_matrix(ancestors, species_data.S, species_data.S);
+    species_dict["Recipients_mat"] = to_double_matrix(recipients, species_data.S, species_data.S);
+  }
   species_dict["species_name_to_index"] = species_name_to_index;
 
   // Process each gene family
@@ -1395,7 +1440,8 @@ py::dict preprocess_multiple_families(
 }
 
 py::dict preprocess(const std::string &species_path,
-                    const std::vector<std::string> &gene_paths) {
+                    const std::vector<std::string> &gene_paths,
+                    bool include_species_matrices = true) {
   std::unique_ptr<TreeNode> species_root = parse_newick_file(species_path);
 
   std::vector<std::string> leaf_names;
@@ -1411,7 +1457,14 @@ py::dict preprocess(const std::string &species_path,
   enumerate_species(species_root.get(), species_order, species_data);
   auto species_name_to_index = build_species_name_map(species_data);
 
-  auto [ancestors, recipients] = compute_ancestors_and_recipients(species_root.get(), species_data.S);
+  std::vector<double> ancestors;
+  std::vector<double> recipients;
+  if (include_species_matrices) {
+    std::tie(ancestors, recipients) =
+        compute_ancestors_and_recipients(species_root.get(), species_data.S);
+  }
+  std::vector<double> unnorm_row_max =
+      compute_uniform_unnorm_row_max(species_root.get(), species_data.S);
 
   std::vector<int64_t> leaf_row_index;
   std::vector<int64_t> leaf_col_index;
@@ -1481,8 +1534,11 @@ py::dict preprocess(const std::string &species_path,
 
   species_dict["s_P_indexes"] = to_long_tensor(s_P_indexes_ext);
   species_dict["s_C12_indexes"] = to_long_tensor(s_C12_indexes);
-  species_dict["ancestors_dense"] = to_double_matrix(ancestors, species_data.S, species_data.S);
-  species_dict["Recipients_mat"] = to_double_matrix(recipients, species_data.S, species_data.S);
+  species_dict["unnorm_row_max"] = to_double_tensor(unnorm_row_max);
+  if (include_species_matrices) {
+    species_dict["ancestors_dense"] = to_double_matrix(ancestors, species_data.S, species_data.S);
+    species_dict["Recipients_mat"] = to_double_matrix(recipients, species_data.S, species_data.S);
+  }
   species_dict["species_name_to_index"] = species_name_to_index;
 
   py::dict ccp_dict;
@@ -2579,11 +2635,16 @@ py::list compute_cross_family_wave_stats(
 } // namespace
 
 PYBIND11_MODULE(preprocess_cpp, m) {
-  m.def("preprocess", &preprocess, "Preprocess species and gene trees");
+  m.def("preprocess", &preprocess,
+        py::arg("species_path"),
+        py::arg("gene_paths"),
+        py::arg("include_species_matrices") = true,
+        "Preprocess species and gene trees");
   m.def("preprocess_multiple_families", &preprocess_multiple_families,
         py::arg("species_path"),
         py::arg("families"),
         py::arg("include_details") = false,
+        py::arg("include_species_matrices") = true,
         "Preprocess multiple gene families with shared species tree. Defaults to light output; pass include_details=True for full debug fields.");
   m.def("compute_phased_waves", &compute_phased_waves,
         "Three-phase scheduler returning actual wave assignments (single family)");

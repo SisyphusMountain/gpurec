@@ -20,6 +20,7 @@ from .batching import (
 )
 from .scheduling import compute_clade_waves
 from .preprocess_cpp import _load_extension as _load_species_gene_ext
+from .species import uniform_ancestors_t_from_topology
 
 
 class GeneDataset(Dataset):
@@ -34,6 +35,7 @@ class GeneDataset(Dataset):
         device=None,
         preprocess_cache_dir: str | os.PathLike | None = None,
         refresh_preprocess_cache: bool = False,
+        retain_dense_species_matrices: bool = True,
     ):
         if device is None:
             device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -49,7 +51,11 @@ class GeneDataset(Dataset):
         family_names = [f"family_{i:06d}" for i in range(len(gene_tree_paths))]
         if use_single_preprocess:
             raw_by_family = {
-                name: ext.preprocess(species_tree_path, [str(path)])
+                name: ext.preprocess(
+                    species_tree_path,
+                    [str(path)],
+                    include_species_matrices=retain_dense_species_matrices,
+                )
                 for name, path in zip(family_names, gene_tree_paths)
             }
             self.species_helpers = raw_by_family[family_names[0]]['species']
@@ -61,6 +67,7 @@ class GeneDataset(Dataset):
                 family_names,
                 preprocess_cache_dir=preprocess_cache_dir,
                 refresh=refresh_preprocess_cache,
+                retain_dense_species_matrices=retain_dense_species_matrices,
             )
         else:
             families_input = {
@@ -70,11 +77,16 @@ class GeneDataset(Dataset):
             raw_all = ext.preprocess_multiple_families(
                 species_tree_path,
                 families_input,
+                include_species_matrices=retain_dense_species_matrices,
             )
             raw_by_family = raw_all['families']
             self.species_helpers = raw_all['species']
-        self.tr_mat_unnormalized = torch.log2(self.species_helpers["Recipients_mat"])
-        self.unnorm_row_max = self.tr_mat_unnormalized.max(dim=-1).values  # [S], precomputed
+        if "Recipients_mat" in self.species_helpers:
+            self.tr_mat_unnormalized = torch.log2(self.species_helpers["Recipients_mat"])
+            self.unnorm_row_max = self.tr_mat_unnormalized.max(dim=-1).values
+        else:
+            self.tr_mat_unnormalized = None
+            self.unnorm_row_max = self.species_helpers["unnorm_row_max"]
         self.S = int(self.species_helpers['S'])
 
         # creating an initial theta (log2-space: rates = 2^theta)
@@ -84,6 +96,11 @@ class GeneDataset(Dataset):
                 raise ValueError("specieswise and pairwise are mutually exclusive")
             # Pairwise: theta has D and L only; T is implicit in the transfer matrix
             theta = _THETA_INIT * torch.ones(2, dtype=dtype, device=device)
+            if self.tr_mat_unnormalized is None:
+                raise ValueError(
+                    "pairwise mode requires dense species transfer matrices; "
+                    "construct GeneDataset with retain_dense_species_matrices=True"
+                )
             self.tr_mat_unnormalized = self.tr_mat_unnormalized - 10.0
         elif specieswise:
             theta = _THETA_INIT * torch.ones(self.S, 3, dtype=dtype, device=device)
@@ -133,11 +150,13 @@ class GeneDataset(Dataset):
         *,
         preprocess_cache_dir: str | os.PathLike,
         refresh: bool,
+        retain_dense_species_matrices: bool,
     ):
         cache_dir = Path(preprocess_cache_dir)
         cache_dir.mkdir(parents=True, exist_ok=True)
 
-        version = "light-v1"
+        species_mode = "dense-species" if retain_dense_species_matrices else "compact-species"
+        version = f"light-v2:{species_mode}"
         species_hash = cls._hash_file(species_tree_path)
         species_key = hashlib.sha256(
             f"{version}:species:{species_hash}".encode("utf-8")
@@ -175,6 +194,7 @@ class GeneDataset(Dataset):
             raw_all = ext.preprocess_multiple_families(
                 species_tree_path,
                 missing,
+                include_species_matrices=retain_dense_species_matrices,
             )
             if species_helpers is None:
                 species_helpers = raw_all["species"]
@@ -188,6 +208,7 @@ class GeneDataset(Dataset):
             raw_species = ext.preprocess_multiple_families(
                 species_tree_path,
                 {},
+                include_species_matrices=retain_dense_species_matrices,
             )
             species_helpers = raw_species["species"]
             torch.save(species_helpers, species_cache)
@@ -208,7 +229,8 @@ class GeneDataset(Dataset):
         for fam in self.families:
             fam['ccp_helpers'] = {k: v.to(dtype=dtype) if torch.is_tensor(v) else v for k, v in fam['ccp_helpers'].items()}
             fam['theta'] = fam['theta'].to(dtype=dtype)
-        self.tr_mat_unnormalized = self.tr_mat_unnormalized.to(dtype=dtype)
+        if self.tr_mat_unnormalized is not None:
+            self.tr_mat_unnormalized = self.tr_mat_unnormalized.to(dtype=dtype)
         self.species_helpers = {k: v.to(dtype=dtype) if torch.is_tensor(v) else v for k, v in self.species_helpers.items()}
 
     def set_params(self, idx, D, T, L):
@@ -251,16 +273,21 @@ class GeneDataset(Dataset):
     ) -> tuple[dict[str, Any], torch.Tensor | None]:
         skip_keys = set()
         if pibar_mode == 'uniform':
-            skip_keys = {'Recipients_mat'}
+            skip_keys = {'Recipients_mat', 'ancestors_dense'}
 
         species_helpers = {
-            k: (self._move_tensor(v, device=device, dtype=dtype) if torch.is_tensor(v) and k not in skip_keys else v)
+            k: (self._move_tensor(v, device=device, dtype=dtype) if torch.is_tensor(v) else v)
             for k, v in self.species_helpers.items()
+            if k not in skip_keys
         }
 
         ancestors_T = None
         if pibar_mode == 'uniform':
-            ancestors_T = species_helpers['ancestors_dense'].T.to_sparse_coo()
+            ancestors_T = uniform_ancestors_t_from_topology(
+                self.species_helpers,
+                device=device,
+                dtype=dtype,
+            )
         return species_helpers, ancestors_T
 
     def _extract_single_params(
@@ -271,6 +298,12 @@ class GeneDataset(Dataset):
         dtype: torch.dtype,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor | None, torch.Tensor]:
         theta = fam['theta'].to(device=device, dtype=dtype)
+        if self.tr_mat_unnormalized is None:
+            raise ValueError(
+                "dense/topk/pairwise parameter extraction requires dense species "
+                "transfer matrices; construct GeneDataset with "
+                "retain_dense_species_matrices=True"
+            )
         transfer_mat_unnorm = self.tr_mat_unnormalized.to(device=device, dtype=dtype)
         log_pS, log_pD, log_pL, transfer_mat, max_transfer_mat = extract_parameters(
             theta,
@@ -309,6 +342,12 @@ class GeneDataset(Dataset):
             )
             return log_pS, log_pD, log_pL, transfer_mat, max_transfer_mat
 
+        if self.tr_mat_unnormalized is None:
+            raise ValueError(
+                "dense/topk/pairwise parameter extraction requires dense species "
+                "transfer matrices; construct GeneDataset with "
+                "retain_dense_species_matrices=True"
+            )
         transfer_mat_unnorm = self.tr_mat_unnormalized.to(device=device, dtype=dtype)
         if self.genewise:
             theta_stack = torch.stack([

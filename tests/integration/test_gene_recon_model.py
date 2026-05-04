@@ -193,9 +193,15 @@ def test_multi_family_preprocess_defaults_to_light(trees):
 
     default_raw = ext.preprocess_multiple_families(sp, families)
     full_raw = ext.preprocess_multiple_families(sp, families, True)
+    compact_raw = ext.preprocess_multiple_families(
+        sp,
+        families,
+        include_species_matrices=False,
+    )
 
     default_ccp = default_raw["families"]["f0"]["ccp"]
     full_ccp = full_raw["families"]["f0"]["ccp"]
+    compact_species = compact_raw["species"]
 
     assert "inclusion_children" not in default_ccp
     assert "inclusion_parents" not in default_ccp
@@ -203,6 +209,9 @@ def test_multi_family_preprocess_defaults_to_light(trees):
     assert "inclusion_children" in full_ccp
     assert "inclusion_parents" in full_ccp
     assert "ubiquitous_clade_id" in full_ccp
+    assert "Recipients_mat" not in compact_species
+    assert "ancestors_dense" not in compact_species
+    assert "unnorm_row_max" in compact_species
 
 
 # ──────────────────────────────────────────────────────────────────────

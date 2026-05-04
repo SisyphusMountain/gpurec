@@ -10,6 +10,7 @@ import torch
 from gpurec.core.likelihood import E_fixed_point, compute_log_likelihood
 from gpurec.core.forward import Pi_wave_forward
 from gpurec.core.extract_parameters import extract_parameters, extract_parameters_uniform
+from gpurec.core.species import uniform_ancestors_t_from_topology
 
 from .types import FixedPointInfo, LinearSolveStats, StepRecord
 from .implicit_grad import implicit_grad_loglik_vjp_wave
@@ -113,8 +114,11 @@ def optimize_theta_wave(
     # Precompute ancestors_T for uniform mode
     _ancestors_T = None
     if pibar_mode == 'uniform':
-        anc_dense = species_helpers['ancestors_dense'].to(device=device, dtype=dtype)
-        _ancestors_T = anc_dense.T.to_sparse_coo()
+        _ancestors_T = uniform_ancestors_t_from_topology(
+            species_helpers,
+            device=device,
+            dtype=dtype,
+        )
 
     _lazy_batch_ranges = None
     _lazy_batch_builder = None

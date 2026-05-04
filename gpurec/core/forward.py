@@ -27,6 +27,7 @@ from ._logmatmul_compat import (
     logspace_matmul_compressed as _logspace_matmul_compressed,
 )
 from ._helpers import _safe_exp2_ratio, _seg_logsumexp_host, _nvtx_range, _nvtx_here
+from .species import uniform_ancestors_t_from_topology
 
 NEG_INF = float("-inf")
 
@@ -658,11 +659,18 @@ def Pi_wave_forward(
             transfer_mat_c = None
         elif pibar_mode == 'uniform':
             if use_uniform_spmm:
-                anc_dense = species_helpers['ancestors_dense'].to(device=device, dtype=dtype)
-                ancestors_spmm_mat = anc_dense.to_sparse_csr()
+                ancestors_T_mat = uniform_ancestors_t_from_topology(
+                    species_helpers,
+                    device=device,
+                    dtype=dtype,
+                )
+                ancestors_spmm_mat = ancestors_T_mat.transpose(0, 1).to_sparse_csr()
             elif not use_uniform_fused:
-                anc_dense = species_helpers['ancestors_dense'].to(device=device, dtype=dtype)
-                ancestors_T_mat = anc_dense.T.to_sparse_coo()
+                ancestors_T_mat = uniform_ancestors_t_from_topology(
+                    species_helpers,
+                    device=device,
+                    dtype=dtype,
+                )
             if use_uniform_leaf_index:
                 clade_species_map = None
                 leaf_term = None

@@ -299,6 +299,7 @@ class GeneReconModel(torch.nn.Module):
             device=device,
             preprocess_cache_dir=preprocess_cache_dir,
             refresh_preprocess_cache=refresh_preprocess_cache,
+            retain_dense_species_matrices=pibar_mode != "uniform",
         )
         theta_init = None
         if theta_init_rates is not None:
