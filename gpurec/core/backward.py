@@ -543,6 +543,9 @@ def Pi_wave_backward(
     dts_pibar_ud_compact_levels_enabled = (
         os.environ.get("GPUREC_DTS_PIBAR_UD_COMPACT_LEVELS", "0") != "0"
     )
+    dts_pibar_ud_euler_prefix_enabled = (
+        os.environ.get("GPUREC_DTS_PIBAR_UD_EULER_PREFIX", "0") != "0"
+    )
     dts_pibar_ud_min_splits = int(
         os.environ.get("GPUREC_DTS_PIBAR_UD_MIN_SPLITS", "0")
     )
@@ -798,6 +801,8 @@ def Pi_wave_backward(
     compact_level_parents = None
     compact_level_child1 = None
     compact_level_child2 = None
+    subtree_interval_start = None
+    subtree_interval_end = None
     sp_parent = None
     depth_nodes = None
     if fused_cross_pibar_vjp_enabled:
@@ -827,6 +832,16 @@ def Pi_wave_backward(
                 compact_level_parents = cached_compact_level_parents
                 compact_level_child1 = cached_compact_level_child1
                 compact_level_child2 = cached_compact_level_child2
+            cached_subtree_interval_start = cache.get('subtree_interval_start')
+            cached_subtree_interval_end = cache.get('subtree_interval_end')
+            if (
+                torch.is_tensor(cached_subtree_interval_start)
+                and torch.is_tensor(cached_subtree_interval_end)
+                and cached_subtree_interval_start.device == target_device
+                and cached_subtree_interval_end.device == target_device
+            ):
+                subtree_interval_start = cached_subtree_interval_start
+                subtree_interval_end = cached_subtree_interval_end
             cached_sp_parent = cache.get('sp_parent')
             if torch.is_tensor(cached_sp_parent) and cached_sp_parent.device == target_device:
                 sp_parent = cached_sp_parent
@@ -845,6 +860,13 @@ def Pi_wave_backward(
                     or compact_level_parents is None
                     or compact_level_child1 is None
                     or compact_level_child2 is None
+                )
+            )
+            or (
+                dts_pibar_ud_euler_prefix_enabled
+                and (
+                    subtree_interval_start is None
+                    or subtree_interval_end is None
                 )
             )
             or (prefix_cross_pibar_vjp_impl and (sp_parent is None or depth_nodes is None))
@@ -965,6 +987,37 @@ def Pi_wave_backward(
                     compact_level_child1 = compact_level_child1_cpu.contiguous().to(target_device)
                     compact_level_child2 = compact_level_child2_cpu.contiguous().to(target_device)
 
+            if (
+                dts_pibar_ud_euler_prefix_enabled
+                and (
+                    subtree_interval_start is None
+                    or subtree_interval_end is None
+                )
+            ):
+                from .species_euler_layout import species_euler_layout_report
+
+                report = species_euler_layout_report(
+                    sp_child1=sp_child1_cpu,
+                    sp_child2=sp_child2_cpu,
+                    S=S,
+                )
+                if not report.all_subtrees_contiguous:
+                    raise RuntimeError(
+                        "GPUREC_DTS_PIBAR_UD_EULER_PREFIX requires every "
+                        "species subtree to be a contiguous current-order "
+                        "interval"
+                    )
+                subtree_interval_start_cpu = torch.tensor(
+                    report.current_interval_start,
+                    dtype=torch.int32,
+                )
+                subtree_interval_end_cpu = torch.tensor(
+                    report.current_interval_end,
+                    dtype=torch.int32,
+                )
+                subtree_interval_start = subtree_interval_start_cpu.contiguous().to(target_device)
+                subtree_interval_end = subtree_interval_end_cpu.contiguous().to(target_device)
+
             if prefix_cross_pibar_vjp_impl and depth_nodes is None:
                 depths = [-1] * S
 
@@ -1008,6 +1061,9 @@ def Pi_wave_backward(
                     cache['compact_level_parents'] = compact_level_parents
                     cache['compact_level_child1'] = compact_level_child1
                     cache['compact_level_child2'] = compact_level_child2
+                if subtree_interval_start is not None and subtree_interval_end is not None:
+                    cache['subtree_interval_start'] = subtree_interval_start
+                    cache['subtree_interval_end'] = subtree_interval_end
                 if sp_parent is not None:
                     cache['sp_parent'] = sp_parent
                 if depth_nodes is not None:
@@ -2234,6 +2290,16 @@ def Pi_wave_backward(
                         compact_level_child2=(
                             compact_level_child2
                             if dts_pibar_ud_compact_levels_enabled
+                            else None
+                        ),
+                        subtree_interval_start=(
+                            subtree_interval_start
+                            if dts_pibar_ud_euler_prefix_enabled
+                            else None
+                        ),
+                        subtree_interval_end=(
+                            subtree_interval_end
+                            if dts_pibar_ud_euler_prefix_enabled
                             else None
                         ),
                     )

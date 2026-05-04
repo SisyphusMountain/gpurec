@@ -3877,6 +3877,95 @@ def _uniform_cross_pibar_vjp_tree_from_ud_compact_kernel(
         tl.atomic_add(accumulated_rhs_ptr + pi_base + s_offs, contrib, sem="relaxed", mask=mask)
 
 
+@triton.jit
+def _uniform_cross_pibar_vjp_tree_from_ud_euler_prefix_kernel(
+    Pi_star_ptr,          # [C, S]
+    pibar_ud_ptr,         # [2 * n_ws, S], initial u_d; reused as prefix scratch
+    pibar_A_ptr,          # [2 * n_ws], sum_s u_d[s] per split side
+    side_active_ptr,      # optional [2 * n_ws] bool exact-zero side skip mask
+    sl_ptr,               # [n_ws]
+    sr_ptr,               # [n_ws]
+    reduce_idx_ptr,       # [n_ws], used with active_mask_ptr when enabled
+    active_mask_ptr,      # optional [W] bool parent row activity mask
+    pibar_row_max_ptr,    # [C], Pi-row max from forward uniform Pibar
+    subtree_start_ptr,    # [S], inclusive current-order descendant interval start
+    subtree_end_ptr,      # [S], exclusive current-order descendant interval end
+    accumulated_rhs_ptr,  # [C, S], updated atomically
+    n_ws: tl.constexpr,
+    S: tl.constexpr,
+    stride_C: tl.constexpr,
+    BLOCK_S: tl.constexpr,
+    USE_ACTIVE_MASK: tl.constexpr,
+    USE_SIDE_ACTIVE: tl.constexpr,
+    DTYPE: tl.constexpr,
+):
+    """Uniform Pibar from-u_d correction using one current-order prefix scan.
+
+    This path relies on species ids already being an Euler/postorder layout:
+    every subtree is a single current-order interval.  `pibar_ud` is scratch at
+    this point in the backward wave, so the kernel overwrites it with per-row
+    inclusive prefix sums before reading interval sums back from global memory.
+    """
+    NEG_LARGE: tl.constexpr = -1e30
+
+    row = tl.program_id(0)
+    split_i = tl.where(row < n_ws, row, row - n_ws)
+    is_right = row >= n_ws
+    if USE_SIDE_ACTIVE:
+        side_active = tl.load(side_active_ptr + row)
+        if side_active == 0:
+            return
+
+    child_l = tl.load(sl_ptr + split_i)
+    child_r = tl.load(sr_ptr + split_i)
+    child = tl.where(is_right, child_r, child_l)
+    if USE_ACTIVE_MASK:
+        parent_w = tl.load(reduce_idx_ptr + split_i)
+        row_active = tl.load(active_mask_ptr + parent_w)
+        if row_active == 0:
+            return
+    else:
+        row_active = True
+
+    offs = tl.arange(0, BLOCK_S)
+    valid = offs < S
+    row_base = row * S
+    pi_base = child * stride_C
+
+    u = tl.load(pibar_ud_ptr + row_base + offs, mask=valid, other=0.0).to(DTYPE)
+    prefix = tl.cumsum(u, axis=0)
+    tl.store(pibar_ud_ptr + row_base + offs, prefix, mask=valid)
+    tl.debug_barrier()
+
+    start = tl.load(subtree_start_ptr + offs, mask=valid, other=0)
+    end_exclusive = tl.load(subtree_end_ptr + offs, mask=valid, other=0)
+    end_inclusive = end_exclusive - 1
+
+    prefix_end = tl.load(
+        pibar_ud_ptr + row_base + end_inclusive,
+        mask=valid & (end_exclusive > start),
+        other=0.0,
+    ).to(DTYPE)
+    prefix_before = tl.load(
+        pibar_ud_ptr + row_base + start - 1,
+        mask=valid & (start > 0),
+        other=0.0,
+    ).to(DTYPE)
+    subtree_sum = prefix_end - prefix_before
+
+    row_max = tl.load(pibar_row_max_ptr + child).to(DTYPE)
+    A = tl.load(pibar_A_ptr + row).to(DTYPE)
+    pi_val = tl.load(Pi_star_ptr + pi_base + offs, mask=valid & row_active, other=NEG_LARGE)
+    p_prime = tl.exp2(pi_val - row_max)
+    contrib = p_prime * (A - subtree_sum)
+    tl.atomic_add(
+        accumulated_rhs_ptr + pi_base + offs,
+        contrib,
+        sem="relaxed",
+        mask=valid & row_active,
+    )
+
+
 def uniform_cross_pibar_vjp_tree_from_ud_fused(
     Pi_star,
     pibar_ud,
@@ -3897,6 +3986,8 @@ def uniform_cross_pibar_vjp_tree_from_ud_fused(
     compact_level_parents=None,
     compact_level_child1=None,
     compact_level_child2=None,
+    subtree_interval_start=None,
+    subtree_interval_end=None,
 ):
     """Uniform-Pibar VJP tree correction from DTS-staged u_d."""
     n_ws = sl.shape[0]
@@ -3929,6 +4020,11 @@ def uniform_cross_pibar_vjp_tree_from_ud_fused(
         and compact_level_parents is not None
         and compact_level_child1 is not None
         and compact_level_child2 is not None
+    )
+    use_euler_prefix = (
+        subtree_interval_start is not None
+        and subtree_interval_end is not None
+        and os.environ.get("GPUREC_DTS_PIBAR_UD_EULER_PREFIX", "0") != "0"
     )
     cuda_pibar_from_ud_enabled = (
         os.environ.get("GPUREC_CUDA_PIBAR_FROM_UD", "0") != "0"
@@ -3975,6 +4071,44 @@ def uniform_cross_pibar_vjp_tree_from_ud_fused(
                     stacklevel=2,
                 )
                 _cuda_pibar_from_ud_fallback_warned = True
+
+    if use_euler_prefix:
+        euler_max_s = int(os.environ.get("GPUREC_DTS_PIBAR_UD_EULER_PREFIX_MAX_S", "4096"))
+        if S > euler_max_s:
+            raise ValueError(
+                "Euler-prefix Pibar VJP requested for S="
+                f"{S}, above GPUREC_DTS_PIBAR_UD_EULER_PREFIX_MAX_S={euler_max_s}"
+            )
+        BLOCK_EULER = triton.next_power_of_2(S)
+        if BLOCK_EULER < 1:
+            BLOCK_EULER = 1
+        if subtree_interval_start.numel() != S or subtree_interval_end.numel() != S:
+            raise ValueError("subtree interval arrays must have one entry per species")
+        subtree_interval_start = subtree_interval_start.contiguous()
+        subtree_interval_end = subtree_interval_end.contiguous()
+        _uniform_cross_pibar_vjp_tree_from_ud_euler_prefix_kernel[(2 * n_ws,)](
+            Pi_star,
+            pibar_ud,
+            pibar_A,
+            side_active if side_active is not None else pibar_A,
+            sl,
+            sr,
+            reduce_idx if reduce_idx is not None else sl,
+            active_mask if active_mask is not None else pibar_ud,
+            pibar_row_max,
+            subtree_interval_start,
+            subtree_interval_end,
+            accumulated_rhs,
+            n_ws,
+            S,
+            stride_C,
+            BLOCK_EULER,
+            USE_ACTIVE_MASK=bool(active_mask is not None),
+            USE_SIDE_ACTIVE=bool(side_active is not None),
+            DTYPE=_tl_float_dtype(Pi_star.dtype),
+            num_warps=8,
+        )
+        return side_active
 
     if use_compact_levels:
         if compact_level_ptr.numel() < 2:
