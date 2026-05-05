@@ -1318,6 +1318,809 @@ def _wave_backward_uniform_param_two_stage(
     )
 
 
+def _env_flag_enabled(name, default="0"):
+    return os.environ.get(name, default).strip().lower() not in (
+        "",
+        "0",
+        "false",
+        "no",
+        "off",
+    )
+
+
+def _self_loop_prototype_requested(mode):
+    if mode == "2d":
+        return _env_flag_enabled("GPUREC_SELF_LOOP_2D_TRITON", "0")
+    if mode == "staged":
+        return _env_flag_enabled("GPUREC_SELF_LOOP_TREE_STAGED", "0")
+    return False
+
+
+def _self_loop_prototype_unavailable(mode, reason):
+    strict_names = (
+        "GPUREC_SELF_LOOP_PROTOTYPE_STRICT",
+        "GPUREC_SELF_LOOP_2D_STRICT" if mode == "2d" else "GPUREC_SELF_LOOP_TREE_STRICT",
+    )
+    if any(_env_flag_enabled(name, "0") for name in strict_names):
+        raise RuntimeError(reason)
+    return None
+
+
+def _compact_levels_from_children(sp_child1, sp_child2, S):
+    """Build compact bottom-up species levels for prototype self-loop kernels."""
+    device = sp_child1.device
+    child1_values = sp_child1.detach().cpu().long().tolist()
+    child2_values = sp_child2.detach().cpu().long().tolist()
+    levels = [-1] * S
+
+    for s_idx in range(S):
+        if levels[s_idx] >= 0:
+            continue
+        stack = [(s_idx, False)]
+        while stack:
+            node, expanded = stack.pop()
+            if levels[node] >= 0:
+                continue
+            c1 = child1_values[node]
+            c2 = child2_values[node]
+            if not expanded:
+                stack.append((node, True))
+                if c2 < S and levels[c2] < 0:
+                    stack.append((c2, False))
+                if c1 < S and levels[c1] < 0:
+                    stack.append((c1, False))
+                continue
+            child_levels = []
+            if c1 < S:
+                child_levels.append(levels[c1])
+            if c2 < S:
+                child_levels.append(levels[c2])
+            levels[node] = (max(child_levels) + 1) if child_levels else 0
+
+    max_level = max(levels) if levels else 0
+    ptr_values = [0]
+    flat_parents = []
+    flat_child1 = []
+    flat_child2 = []
+    for level in range(1, max_level + 1):
+        parents = [
+            s_idx for s_idx, node_level in enumerate(levels)
+            if node_level == level
+            and (child1_values[s_idx] < S or child2_values[s_idx] < S)
+        ]
+        flat_parents.extend(parents)
+        flat_child1.extend(child1_values[parent] for parent in parents)
+        flat_child2.extend(child2_values[parent] for parent in parents)
+        ptr_values.append(len(flat_parents))
+    if len(ptr_values) == 1:
+        ptr_values.append(0)
+
+    return (
+        torch.tensor(ptr_values, device=device, dtype=torch.long).contiguous(),
+        torch.tensor(flat_parents, device=device, dtype=torch.int32).contiguous(),
+        torch.tensor(flat_child1, device=device, dtype=torch.int32).contiguous(),
+        torch.tensor(flat_child2, device=device, dtype=torch.int32).contiguous(),
+    )
+
+
+@triton.jit
+def _wave_backward_uniform_2d_precompute_kernel(
+    Pi_star_ptr,
+    Pibar_star_ptr,
+    Pibar_row_max_ptr,
+    dts_r_ptr,
+    has_splits: tl.constexpr,
+    rhs_ptr,
+    active_mask_ptr,
+    mt_ptr, DL_const_ptr, Ebar_ptr, E_ptr, SL1_const_ptr, SL2_const_ptr,
+    sp_child1_ptr, sp_child2_ptr, sp_parent_ptr,
+    leaf_term_ptr,
+    leaf_species_ptr,
+    leaf_logp_ptr,
+    family_idx_ptr,
+    v_k_ptr,
+    diag_ptr,
+    pibar_coeff_ptr,
+    p_prime_ptr,
+    sl1_ptr,
+    sl2_ptr,
+    ws,
+    W: tl.constexpr,
+    S: tl.constexpr,
+    stride: tl.constexpr,
+    BLOCK_W: tl.constexpr,
+    BLOCK_S: tl.constexpr,
+    MAX_ANCESTOR_DEPTH: tl.constexpr,
+    USE_LEAF_INDEX: tl.constexpr,
+    LEAF_HIT_ONLY_LOGP: tl.constexpr,
+    LEAF_LOGP_MODE: tl.constexpr,
+    USE_ACTIVE_MASK: tl.constexpr,
+    CONST_LAYOUT: tl.constexpr,
+    DTYPE: tl.constexpr,
+):
+    """Precompute self-loop J^T coefficients for a block of rows and all species."""
+    NEG_LARGE: tl.constexpr = -1e30
+    M_SAFE: tl.constexpr = -1e29
+
+    block = tl.program_id(0)
+    rows = block * BLOCK_W + tl.arange(0, BLOCK_W)
+    s_offs = tl.arange(0, BLOCK_S)
+    row_valid = rows < W
+    species_valid = s_offs < S
+    if USE_ACTIVE_MASK:
+        row_active = tl.load(active_mask_ptr + rows, mask=row_valid, other=0) != 0
+    else:
+        row_active = row_valid
+    row_mask = row_valid & row_active
+    mask = species_valid[:, None] & row_mask[None, :]
+    store_mask = species_valid[:, None] & row_valid[None, :]
+
+    row_global = ws + rows
+    pi_offsets = row_global[None, :] * stride + s_offs[:, None]
+    out_offsets = rows[None, :] * S + s_offs[:, None]
+
+    row_max = tl.load(Pibar_row_max_ptr + row_global, mask=row_valid, other=NEG_LARGE).to(DTYPE)
+    pi_w = tl.load(Pi_star_ptr + pi_offsets, mask=mask, other=NEG_LARGE).to(DTYPE)
+    pibar_w = tl.load(Pibar_star_ptr + pi_offsets, mask=mask, other=NEG_LARGE).to(DTYPE)
+    p_prime = tl.exp2(pi_w - row_max[None, :])
+    row_sum = tl.sum(tl.where(mask, p_prime, tl.zeros([BLOCK_S, BLOCK_W], dtype=DTYPE)), axis=0)
+
+    family = tl.full([BLOCK_W], value=0, dtype=tl.int64)
+    const_base = tl.zeros([BLOCK_W], dtype=tl.int64)
+    if CONST_LAYOUT == 1:
+        const_offsets = out_offsets
+    elif CONST_LAYOUT == 2:
+        family = tl.load(family_idx_ptr + row_global, mask=row_valid, other=0).to(tl.int64)
+        const_base = family * stride
+        const_offsets = const_base[None, :] + s_offs[:, None]
+    else:
+        const_offsets = s_offs[:, None]
+
+    if CONST_LAYOUT == 0:
+        const_mask = species_valid[:, None]
+    else:
+        const_mask = mask
+    dl_c = tl.load(DL_const_ptr + const_offsets, mask=const_mask, other=NEG_LARGE).to(DTYPE)
+    ebar = tl.load(Ebar_ptr + const_offsets, mask=const_mask, other=NEG_LARGE).to(DTYPE)
+    e_val = tl.load(E_ptr + const_offsets, mask=const_mask, other=NEG_LARGE).to(DTYPE)
+    sl1_c = tl.load(SL1_const_ptr + const_offsets, mask=const_mask, other=NEG_LARGE).to(DTYPE)
+    sl2_c = tl.load(SL2_const_ptr + const_offsets, mask=const_mask, other=NEG_LARGE).to(DTYPE)
+
+    c1 = tl.load(sp_child1_ptr + s_offs, mask=species_valid, other=0)
+    c2 = tl.load(sp_child2_ptr + s_offs, mask=species_valid, other=0)
+    c1_valid = c1 < S
+    c2_valid = c2 < S
+    pi_s1 = tl.load(
+        Pi_star_ptr + row_global[None, :] * stride + c1[:, None],
+        mask=(species_valid & c1_valid)[:, None] & row_mask[None, :],
+        other=NEG_LARGE,
+    ).to(DTYPE)
+    pi_s2 = tl.load(
+        Pi_star_ptr + row_global[None, :] * stride + c2[:, None],
+        mask=(species_valid & c2_valid)[:, None] & row_mask[None, :],
+        other=NEG_LARGE,
+    ).to(DTYPE)
+
+    t0 = dl_c + pi_w
+    t1 = pi_w + ebar
+    t2 = pibar_w + e_val
+    t3 = sl1_c + pi_s1
+    t4 = sl2_c + pi_s2
+    if USE_LEAF_INDEX:
+        leaf_species = tl.load(leaf_species_ptr + row_global, mask=row_valid, other=-1)
+        leaf_hit = mask & (leaf_species[None, :] == s_offs[:, None])
+        if LEAF_LOGP_MODE == 3:
+            leaf_logp = tl.load(leaf_logp_ptr).to(DTYPE)
+            t5 = tl.where(leaf_hit, leaf_logp, NEG_LARGE)
+        elif LEAF_LOGP_MODE == 1:
+            leaf_logp = tl.load(leaf_logp_ptr + family, mask=row_valid, other=NEG_LARGE).to(DTYPE)
+            t5 = tl.where(leaf_hit, leaf_logp[None, :], NEG_LARGE)
+        elif LEAF_LOGP_MODE == 2:
+            leaf_logp = tl.load(
+                leaf_logp_ptr + const_base[None, :] + s_offs[:, None],
+                mask=leaf_hit,
+                other=NEG_LARGE,
+            ).to(DTYPE)
+            t5 = tl.where(leaf_hit, leaf_logp, NEG_LARGE)
+        else:
+            leaf_logp = tl.load(leaf_logp_ptr + s_offs, mask=species_valid, other=NEG_LARGE).to(DTYPE)
+            t5 = tl.where(leaf_hit, leaf_logp[:, None], NEG_LARGE)
+    else:
+        t5 = tl.load(leaf_term_ptr + out_offsets, mask=mask, other=NEG_LARGE).to(DTYPE)
+
+    m = tl.maximum(t0, t1)
+    m = tl.maximum(m, t2)
+    m = tl.maximum(m, t3)
+    m = tl.maximum(m, t4)
+    m = tl.maximum(m, t5)
+    m_safe = tl.where(m > M_SAFE, m, tl.zeros([BLOCK_S, BLOCK_W], dtype=DTYPE))
+    e0 = tl.exp2(t0 - m_safe)
+    e1 = tl.exp2(t1 - m_safe)
+    e2 = tl.exp2(t2 - m_safe)
+    e3 = tl.exp2(t3 - m_safe)
+    e4 = tl.exp2(t4 - m_safe)
+    e5 = tl.exp2(t5 - m_safe)
+    dts_l_sum = e0 + e1 + e2 + e3 + e4 + e5
+    inv_sum = tl.where(dts_l_sum > 0.0, 1.0 / dts_l_sum, tl.zeros_like(dts_l_sum))
+
+    if has_splits:
+        dts_r = tl.load(dts_r_ptr + out_offsets, mask=mask, other=NEG_LARGE).to(DTYPE)
+        dts_l = tl.log2(dts_l_sum) + m
+        pi_new_m = tl.maximum(dts_l, dts_r)
+        pi_new_ms = tl.where(pi_new_m > M_SAFE, pi_new_m, tl.zeros_like(pi_new_m))
+        pi_new = tl.log2(tl.exp2(dts_l - pi_new_ms) + tl.exp2(dts_r - pi_new_ms)) + pi_new_m
+        w_L = tl.where(dts_l > M_SAFE, tl.exp2(dts_l - pi_new), tl.zeros_like(dts_l))
+    else:
+        w_L = tl.full([BLOCK_S, BLOCK_W], value=1.0, dtype=DTYPE)
+
+    ancestor_sum = tl.zeros([BLOCK_S, BLOCK_W], dtype=DTYPE)
+    cur = s_offs
+    for _depth in range(MAX_ANCESTOR_DEPTH):
+        cur_valid = species_valid & (cur >= 0) & (cur < S)
+        pi_anc = tl.load(
+            Pi_star_ptr + row_global[None, :] * stride + cur[:, None],
+            mask=cur_valid[:, None] & row_mask[None, :],
+            other=NEG_LARGE,
+        ).to(DTYPE)
+        ancestor_sum += tl.where(
+            cur_valid[:, None] & row_mask[None, :],
+            tl.exp2(pi_anc - row_max[None, :]),
+            tl.zeros([BLOCK_S, BLOCK_W], dtype=DTYPE),
+        )
+        cur = tl.load(sp_parent_ptr + cur, mask=cur_valid, other=-1)
+    denom = row_sum[None, :] - ancestor_sum
+    inv_denom = tl.where(denom > 0.0, 1.0 / denom, tl.zeros_like(denom))
+
+    diag_wt = w_L * (e0 + e1) * inv_sum
+    pibar_u_coeff = w_L * e2 * inv_sum * inv_denom
+    sl1_wt = w_L * e3 * inv_sum
+    sl2_wt = w_L * e4 * inv_sum
+
+    zero = tl.zeros([BLOCK_S, BLOCK_W], dtype=DTYPE)
+    rhs_val = tl.load(rhs_ptr + out_offsets, mask=mask, other=0.0).to(DTYPE)
+    tl.store(v_k_ptr + out_offsets, tl.where(mask, rhs_val, zero), mask=store_mask)
+    tl.store(diag_ptr + out_offsets, tl.where(mask, diag_wt, zero), mask=store_mask)
+    tl.store(pibar_coeff_ptr + out_offsets, tl.where(mask, pibar_u_coeff, zero), mask=store_mask)
+    tl.store(p_prime_ptr + out_offsets, tl.where(mask, p_prime, zero), mask=store_mask)
+    tl.store(sl1_ptr + out_offsets, tl.where(mask, sl1_wt, zero), mask=store_mask)
+    tl.store(sl2_ptr + out_offsets, tl.where(mask, sl2_wt, zero), mask=store_mask)
+
+
+@triton.jit
+def _wave_backward_uniform_2d_jt_kernel(
+    term_in_ptr,
+    term_out_ptr,
+    active_mask_ptr,
+    diag_ptr,
+    pibar_coeff_ptr,
+    p_prime_ptr,
+    sl1_ptr,
+    sl2_ptr,
+    sp_child1_ptr,
+    sp_child2_ptr,
+    compact_level_ptr,
+    compact_level_parent_ptr,
+    compact_level_child1_ptr,
+    compact_level_child2_ptr,
+    pibar_corr_ptr,
+    v_k_ptr,
+    W: tl.constexpr,
+    S: tl.constexpr,
+    BLOCK_W: tl.constexpr,
+    BLOCK_S: tl.constexpr,
+    BLOCK_NODES: tl.constexpr,
+    N_LEVELS: tl.constexpr,
+    USE_ACTIVE_MASK: tl.constexpr,
+    DTYPE: tl.constexpr,
+):
+    """Apply one self-loop J^T term using in-program bottom-up tree reduction."""
+    block = tl.program_id(0)
+    rows = block * BLOCK_W + tl.arange(0, BLOCK_W)
+    s_offs = tl.arange(0, BLOCK_S)
+    row_valid = rows < W
+    species_valid = s_offs < S
+    if USE_ACTIVE_MASK:
+        row_active = tl.load(active_mask_ptr + rows, mask=row_valid, other=0) != 0
+    else:
+        row_active = row_valid
+    row_mask = row_valid & row_active
+    mask = species_valid[:, None] & row_mask[None, :]
+    store_mask = species_valid[:, None] & row_valid[None, :]
+    offsets = rows[None, :] * S + s_offs[:, None]
+
+    term_val = tl.load(term_in_ptr + offsets, mask=mask, other=0.0).to(DTYPE)
+    pibar_u_coeff = tl.load(pibar_coeff_ptr + offsets, mask=mask, other=0.0).to(DTYPE)
+    u_d = term_val * pibar_u_coeff
+    A = tl.sum(tl.where(mask, u_d, tl.zeros([BLOCK_S, BLOCK_W], dtype=DTYPE)), axis=0)
+    tl.store(pibar_corr_ptr + offsets, tl.where(mask, u_d, tl.zeros_like(u_d)), mask=store_mask)
+
+    tl.debug_barrier()
+
+    for level in range(0, N_LEVELS):
+        level_start = tl.load(compact_level_ptr + level)
+        level_end = tl.load(compact_level_ptr + level + 1)
+        node_start = level_start
+        while node_start < level_end:
+            node_offs = node_start + tl.arange(0, BLOCK_NODES)
+            node_mask = node_offs < level_end
+            parent = tl.load(compact_level_parent_ptr + node_offs, mask=node_mask, other=0)
+            c1 = tl.load(compact_level_child1_ptr + node_offs, mask=node_mask, other=S)
+            c2 = tl.load(compact_level_child2_ptr + node_offs, mask=node_mask, other=S)
+            reduce_mask = node_mask[:, None] & row_mask[None, :]
+            row_base = rows[None, :] * S
+            parent_val = tl.load(
+                pibar_corr_ptr + row_base + parent[:, None],
+                mask=reduce_mask,
+                other=0.0,
+            ).to(DTYPE)
+            c1_val = tl.load(
+                pibar_corr_ptr + row_base + c1[:, None],
+                mask=reduce_mask & (c1 < S)[:, None],
+                other=0.0,
+            ).to(DTYPE)
+            c2_val = tl.load(
+                pibar_corr_ptr + row_base + c2[:, None],
+                mask=reduce_mask & (c2 < S)[:, None],
+                other=0.0,
+            ).to(DTYPE)
+            tl.store(
+                pibar_corr_ptr + row_base + parent[:, None],
+                parent_val + c1_val + c2_val,
+                mask=reduce_mask,
+            )
+            node_start += BLOCK_NODES
+        tl.debug_barrier()
+
+    tl.debug_barrier()
+
+    corr = tl.load(pibar_corr_ptr + offsets, mask=mask, other=0.0).to(DTYPE)
+    diag_wt = tl.load(diag_ptr + offsets, mask=mask, other=0.0).to(DTYPE)
+    p_prime = tl.load(p_prime_ptr + offsets, mask=mask, other=0.0).to(DTYPE)
+    base = term_val * diag_wt + p_prime * (A[None, :] - corr)
+    tl.store(term_out_ptr + offsets, tl.where(mask, base, tl.zeros_like(base)), mask=store_mask)
+
+    tl.debug_barrier()
+
+    c1 = tl.load(sp_child1_ptr + s_offs, mask=species_valid, other=S)
+    c2 = tl.load(sp_child2_ptr + s_offs, mask=species_valid, other=S)
+    sl1_wt = tl.load(sl1_ptr + offsets, mask=mask, other=0.0).to(DTYPE)
+    sl2_wt = tl.load(sl2_ptr + offsets, mask=mask, other=0.0).to(DTYPE)
+    row_base = rows[None, :] * S
+    c1_mask = (species_valid & (c1 < S))[:, None] & row_mask[None, :]
+    c2_mask = (species_valid & (c2 < S))[:, None] & row_mask[None, :]
+    c1_cur = tl.load(term_out_ptr + row_base + c1[:, None], mask=c1_mask, other=0.0).to(DTYPE)
+    c2_cur = tl.load(term_out_ptr + row_base + c2[:, None], mask=c2_mask, other=0.0).to(DTYPE)
+    tl.store(term_out_ptr + row_base + c1[:, None], c1_cur + term_val * sl1_wt, mask=c1_mask)
+    tl.store(term_out_ptr + row_base + c2[:, None], c2_cur + term_val * sl2_wt, mask=c2_mask)
+
+    tl.debug_barrier()
+
+    result = tl.load(term_out_ptr + offsets, mask=mask, other=0.0).to(DTYPE)
+    v_prev = tl.load(v_k_ptr + offsets, mask=mask, other=0.0).to(DTYPE)
+    tl.store(v_k_ptr + offsets, v_prev + result, mask=mask)
+
+
+@triton.jit
+def _wave_backward_uniform_param_store_kernel(
+    Pi_star_ptr,
+    Pibar_star_ptr,
+    dts_r_ptr,
+    has_splits: tl.constexpr,
+    v_k_ptr,
+    active_mask_ptr,
+    mt_ptr, DL_const_ptr, Ebar_ptr, E_ptr, SL1_const_ptr, SL2_const_ptr,
+    sp_child1_ptr, sp_child2_ptr,
+    leaf_term_ptr,
+    leaf_species_ptr,
+    leaf_logp_ptr,
+    family_idx_ptr,
+    aw0_ptr,
+    aw1_ptr,
+    aw2_ptr,
+    aw345_ptr,
+    aw3_ptr,
+    aw4_ptr,
+    ws,
+    W: tl.constexpr,
+    S: tl.constexpr,
+    stride: tl.constexpr,
+    BLOCK_W: tl.constexpr,
+    BLOCK_S: tl.constexpr,
+    USE_LEAF_INDEX: tl.constexpr,
+    LEAF_HIT_ONLY_LOGP: tl.constexpr,
+    LEAF_LOGP_MODE: tl.constexpr,
+    USE_ACTIVE_MASK: tl.constexpr,
+    CONST_LAYOUT: tl.constexpr,
+    DTYPE: tl.constexpr,
+):
+    """Store per-element self-loop parameter VJP contributions after Neumann."""
+    NEG_LARGE: tl.constexpr = -1e30
+    M_SAFE: tl.constexpr = -1e29
+
+    block = tl.program_id(0)
+    rows = block * BLOCK_W + tl.arange(0, BLOCK_W)
+    s_offs = tl.arange(0, BLOCK_S)
+    row_valid = rows < W
+    species_valid = s_offs < S
+    if USE_ACTIVE_MASK:
+        row_active = tl.load(active_mask_ptr + rows, mask=row_valid, other=0) != 0
+    else:
+        row_active = row_valid
+    row_mask = row_valid & row_active
+    mask = species_valid[:, None] & row_mask[None, :]
+    store_mask = species_valid[:, None] & row_valid[None, :]
+    row_global = ws + rows
+    pi_offsets = row_global[None, :] * stride + s_offs[:, None]
+    out_offsets = rows[None, :] * S + s_offs[:, None]
+
+    family = tl.full([BLOCK_W], value=0, dtype=tl.int64)
+    const_base = tl.zeros([BLOCK_W], dtype=tl.int64)
+    if CONST_LAYOUT == 1:
+        const_offsets = out_offsets
+    elif CONST_LAYOUT == 2:
+        family = tl.load(family_idx_ptr + row_global, mask=row_valid, other=0).to(tl.int64)
+        const_base = family * stride
+        const_offsets = const_base[None, :] + s_offs[:, None]
+    else:
+        const_offsets = s_offs[:, None]
+
+    const_mask = species_valid[:, None] if CONST_LAYOUT == 0 else mask
+    pi_w = tl.load(Pi_star_ptr + pi_offsets, mask=mask, other=NEG_LARGE).to(DTYPE)
+    pibar_w = tl.load(Pibar_star_ptr + pi_offsets, mask=mask, other=NEG_LARGE).to(DTYPE)
+    v_k_val = tl.load(v_k_ptr + out_offsets, mask=mask, other=0.0).to(DTYPE)
+    dl_c = tl.load(DL_const_ptr + const_offsets, mask=const_mask, other=NEG_LARGE).to(DTYPE)
+    ebar = tl.load(Ebar_ptr + const_offsets, mask=const_mask, other=NEG_LARGE).to(DTYPE)
+    e_val = tl.load(E_ptr + const_offsets, mask=const_mask, other=NEG_LARGE).to(DTYPE)
+    sl1_c = tl.load(SL1_const_ptr + const_offsets, mask=const_mask, other=NEG_LARGE).to(DTYPE)
+    sl2_c = tl.load(SL2_const_ptr + const_offsets, mask=const_mask, other=NEG_LARGE).to(DTYPE)
+
+    c1 = tl.load(sp_child1_ptr + s_offs, mask=species_valid, other=0)
+    c2 = tl.load(sp_child2_ptr + s_offs, mask=species_valid, other=0)
+    c1_valid = c1 < S
+    c2_valid = c2 < S
+    pi_s1 = tl.load(
+        Pi_star_ptr + row_global[None, :] * stride + c1[:, None],
+        mask=(species_valid & c1_valid)[:, None] & row_mask[None, :],
+        other=NEG_LARGE,
+    ).to(DTYPE)
+    pi_s2 = tl.load(
+        Pi_star_ptr + row_global[None, :] * stride + c2[:, None],
+        mask=(species_valid & c2_valid)[:, None] & row_mask[None, :],
+        other=NEG_LARGE,
+    ).to(DTYPE)
+
+    t0 = dl_c + pi_w
+    t1 = pi_w + ebar
+    t2 = pibar_w + e_val
+    t3 = sl1_c + pi_s1
+    t4 = sl2_c + pi_s2
+    if USE_LEAF_INDEX:
+        leaf_species = tl.load(leaf_species_ptr + row_global, mask=row_valid, other=-1)
+        leaf_hit = mask & (leaf_species[None, :] == s_offs[:, None])
+        if LEAF_LOGP_MODE == 3:
+            leaf_logp = tl.load(leaf_logp_ptr).to(DTYPE)
+            t5 = tl.where(leaf_hit, leaf_logp, NEG_LARGE)
+        elif LEAF_LOGP_MODE == 1:
+            leaf_logp = tl.load(leaf_logp_ptr + family, mask=row_valid, other=NEG_LARGE).to(DTYPE)
+            t5 = tl.where(leaf_hit, leaf_logp[None, :], NEG_LARGE)
+        elif LEAF_LOGP_MODE == 2:
+            leaf_logp = tl.load(
+                leaf_logp_ptr + const_base[None, :] + s_offs[:, None],
+                mask=leaf_hit,
+                other=NEG_LARGE,
+            ).to(DTYPE)
+            t5 = tl.where(leaf_hit, leaf_logp, NEG_LARGE)
+        else:
+            leaf_logp = tl.load(leaf_logp_ptr + s_offs, mask=species_valid, other=NEG_LARGE).to(DTYPE)
+            t5 = tl.where(leaf_hit, leaf_logp[:, None], NEG_LARGE)
+    else:
+        t5 = tl.load(leaf_term_ptr + out_offsets, mask=mask, other=NEG_LARGE).to(DTYPE)
+
+    m = tl.maximum(t0, t1)
+    m = tl.maximum(m, t2)
+    m = tl.maximum(m, t3)
+    m = tl.maximum(m, t4)
+    m = tl.maximum(m, t5)
+    m_safe = tl.where(m > M_SAFE, m, tl.zeros([BLOCK_S, BLOCK_W], dtype=DTYPE))
+    e0 = tl.exp2(t0 - m_safe)
+    e1 = tl.exp2(t1 - m_safe)
+    e2 = tl.exp2(t2 - m_safe)
+    e3 = tl.exp2(t3 - m_safe)
+    e4 = tl.exp2(t4 - m_safe)
+    e5 = tl.exp2(t5 - m_safe)
+    dts_l_sum = e0 + e1 + e2 + e3 + e4 + e5
+    inv_sum = tl.where(dts_l_sum > 0.0, 1.0 / dts_l_sum, tl.zeros_like(dts_l_sum))
+
+    if has_splits:
+        dts_r = tl.load(dts_r_ptr + out_offsets, mask=mask, other=NEG_LARGE).to(DTYPE)
+        dts_l = tl.log2(dts_l_sum) + m
+        pi_new_m = tl.maximum(dts_l, dts_r)
+        pi_new_ms = tl.where(pi_new_m > M_SAFE, pi_new_m, tl.zeros_like(pi_new_m))
+        pi_new = tl.log2(tl.exp2(dts_l - pi_new_ms) + tl.exp2(dts_r - pi_new_ms)) + pi_new_m
+        w_L = tl.where(dts_l > M_SAFE, tl.exp2(dts_l - pi_new), tl.zeros_like(dts_l))
+    else:
+        w_L = tl.full([BLOCK_S, BLOCK_W], value=1.0, dtype=DTYPE)
+
+    alpha = v_k_val * w_L
+    _aw0 = alpha * e0 * inv_sum
+    _aw1 = alpha * e1 * inv_sum
+    _aw2 = alpha * e2 * inv_sum
+    _aw3 = alpha * e3 * inv_sum
+    _aw4 = alpha * e4 * inv_sum
+    _aw5 = alpha * e5 * inv_sum
+    _aw345 = _aw3 + _aw4 + _aw5
+    zero = tl.zeros([BLOCK_S, BLOCK_W], dtype=DTYPE)
+    tl.store(aw0_ptr + out_offsets, tl.where(mask, _aw0, zero), mask=store_mask)
+    tl.store(aw1_ptr + out_offsets, tl.where(mask, _aw1, zero), mask=store_mask)
+    tl.store(aw2_ptr + out_offsets, tl.where(mask, _aw2, zero), mask=store_mask)
+    tl.store(aw345_ptr + out_offsets, tl.where(mask, _aw345, zero), mask=store_mask)
+    tl.store(aw3_ptr + out_offsets, tl.where(mask, _aw3, zero), mask=store_mask)
+    tl.store(aw4_ptr + out_offsets, tl.where(mask, _aw4, zero), mask=store_mask)
+
+
+def _wave_backward_uniform_2d_prototype(
+    Pi_star, Pibar_star, ws, W, S,
+    dts_r,
+    rhs,
+    mt_squeezed, DL_const, Ebar, E, SL1_const, SL2_const,
+    sp_child1, sp_child2, leaf_term_wt,
+    *,
+    neumann_terms,
+    leaf_species_idx,
+    leaf_logp,
+    accum_param_grads,
+    active_mask,
+    sp_parent,
+    max_ancestor_depth,
+    pibar_row_max,
+    scratch,
+    family_idx,
+    const_layout,
+    leaf_logp_mode,
+    use_leaf_index,
+    leaf_hit_only_logp,
+    compact_level_ptr,
+    compact_level_parents,
+    compact_level_child1,
+    compact_level_child2,
+):
+    """Opt-in Proposal 0 prototype: row-block/full-species tree reduction."""
+    mode = "2d"
+    if not _self_loop_prototype_requested(mode):
+        return None
+    if Pi_star.device.type != "cuda":
+        return _self_loop_prototype_unavailable(mode, "GPUREC_SELF_LOOP_2D_TRITON requires CUDA tensors")
+    if Pi_star.dtype not in (torch.float32, torch.float64):
+        return _self_loop_prototype_unavailable(
+            mode,
+            "GPUREC_SELF_LOOP_2D_TRITON currently supports fp32/fp64 only",
+        )
+    if accum_param_grads is not None:
+        return _self_loop_prototype_unavailable(
+            mode,
+            "GPUREC_SELF_LOOP_2D_TRITON returns per-element parameter VJPs; "
+            "disable in-kernel self-loop parameter accumulation for this prototype",
+        )
+    max_s = int(os.environ.get("GPUREC_SELF_LOOP_2D_MAX_S", "2048"))
+    if S > max_s:
+        return _self_loop_prototype_unavailable(
+            mode,
+            f"GPUREC_SELF_LOOP_2D_TRITON requested for S={S}, above "
+            f"GPUREC_SELF_LOOP_2D_MAX_S={max_s}",
+        )
+    if const_layout not in (0, 1, 2):
+        return _self_loop_prototype_unavailable(mode, "unsupported self-loop constant layout")
+    if use_leaf_index and leaf_logp_mode not in (0, 1, 2, 3):
+        return _self_loop_prototype_unavailable(mode, "unsupported leaf log-probability layout")
+
+    device = Pi_star.device
+    dtype = Pi_star.dtype
+    if sp_parent is None:
+        sp_parent = _parent_from_children(sp_child1, sp_child2, S)
+    sp_parent = sp_parent.to(device=device, dtype=torch.int32).contiguous()
+    if max_ancestor_depth is None:
+        max_ancestor_depth = _max_ancestor_depth_from_parent(sp_parent, S)
+    max_ancestor_depth = max(1, int(max_ancestor_depth))
+
+    if (
+        compact_level_ptr is None
+        or compact_level_parents is None
+        or compact_level_child1 is None
+        or compact_level_child2 is None
+    ):
+        (
+            compact_level_ptr,
+            compact_level_parents,
+            compact_level_child1,
+            compact_level_child2,
+        ) = _compact_levels_from_children(sp_child1, sp_child2, S)
+    compact_level_ptr = compact_level_ptr.to(device=device, dtype=torch.long).contiguous()
+    compact_level_parents = compact_level_parents.to(device=device, dtype=torch.int32).contiguous()
+    compact_level_child1 = compact_level_child1.to(device=device, dtype=torch.int32).contiguous()
+    compact_level_child2 = compact_level_child2.to(device=device, dtype=torch.int32).contiguous()
+
+    block_w = triton.next_power_of_2(
+        max(1, int(os.environ.get("GPUREC_SELF_LOOP_2D_BLOCK_W", "1")))
+    )
+    block_s = triton.next_power_of_2(S)
+    block_nodes = triton.next_power_of_2(
+        max(1, int(os.environ.get("GPUREC_SELF_LOOP_2D_BLOCK_NODES", "64")))
+    )
+    n_row_blocks = triton.cdiv(W, block_w)
+    scratch_shape = (W, S)
+
+    v_k = _scratch_view(scratch, "v_k", scratch_shape, device=device, dtype=dtype)
+    if v_k is None:
+        v_k = torch.empty(scratch_shape, device=device, dtype=dtype)
+    aw0 = _scratch_view(scratch, "aw0", scratch_shape, device=device, dtype=dtype)
+    if aw0 is None:
+        aw0 = torch.empty(scratch_shape, device=device, dtype=dtype)
+    aw1 = _scratch_view(scratch, "aw1", scratch_shape, device=device, dtype=dtype)
+    if aw1 is None:
+        aw1 = torch.empty(scratch_shape, device=device, dtype=dtype)
+    aw2 = _scratch_view(scratch, "aw2", scratch_shape, device=device, dtype=dtype)
+    if aw2 is None:
+        aw2 = torch.empty(scratch_shape, device=device, dtype=dtype)
+    aw345 = _scratch_view(scratch, "aw345", scratch_shape, device=device, dtype=dtype)
+    if aw345 is None:
+        aw345 = torch.empty(scratch_shape, device=device, dtype=dtype)
+    aw3 = _scratch_view(scratch, "aw3", scratch_shape, device=device, dtype=dtype)
+    if aw3 is None:
+        aw3 = torch.empty(scratch_shape, device=device, dtype=dtype)
+    aw4 = _scratch_view(scratch, "aw4", scratch_shape, device=device, dtype=dtype)
+    if aw4 is None:
+        aw4 = torch.empty(scratch_shape, device=device, dtype=dtype)
+    spec_buf = _scratch_view(scratch, "spec_buf", scratch_shape, device=device, dtype=dtype)
+    if spec_buf is None:
+        spec_buf = torch.empty(scratch_shape, device=device, dtype=dtype)
+    term_buf = _scratch_view(scratch, "term_buf", scratch_shape, device=device, dtype=dtype)
+    if term_buf is None:
+        term_buf = torch.empty(scratch_shape, device=device, dtype=dtype)
+    pibar_corr = _scratch_view(scratch, "pibar_corr", scratch_shape, device=device, dtype=dtype)
+    if pibar_corr is None:
+        pibar_corr = torch.empty(scratch_shape, device=device, dtype=dtype)
+
+    if pibar_row_max is None:
+        pibar_row_max = Pi_star.max(dim=1).values.contiguous()
+    else:
+        pibar_row_max = pibar_row_max.to(device=device, dtype=dtype).contiguous()
+    if family_idx is not None:
+        family_idx = family_idx.to(device=device, dtype=torch.long).contiguous()
+    else:
+        family_idx = sp_parent
+    if leaf_term_wt is None:
+        if not use_leaf_index:
+            raise ValueError("leaf_term_wt is required when leaf indexing is not used")
+        leaf_term_wt = leaf_logp
+    leaf_species_arg = leaf_species_idx if use_leaf_index else sp_child1
+    leaf_logp_arg = leaf_logp if use_leaf_index else leaf_term_wt
+
+    precompute_warps = int(os.environ.get("GPUREC_SELF_LOOP_2D_NUM_WARPS", "8"))
+    launch_options = {}
+    if precompute_warps > 0:
+        launch_options["num_warps"] = precompute_warps
+
+    _wave_backward_uniform_2d_precompute_kernel[(n_row_blocks,)](
+        Pi_star,
+        Pibar_star,
+        pibar_row_max,
+        dts_r if dts_r is not None else Pi_star,
+        dts_r is not None,
+        rhs,
+        active_mask if active_mask is not None else rhs,
+        mt_squeezed,
+        DL_const,
+        Ebar,
+        E,
+        SL1_const,
+        SL2_const,
+        sp_child1,
+        sp_child2,
+        sp_parent,
+        leaf_term_wt,
+        leaf_species_arg,
+        leaf_logp_arg,
+        family_idx,
+        v_k,
+        aw0,
+        aw1,
+        aw2,
+        aw3,
+        aw4,
+        ws,
+        W,
+        S,
+        Pi_star.stride(0),
+        block_w,
+        block_s,
+        max_ancestor_depth,
+        USE_LEAF_INDEX=bool(use_leaf_index),
+        LEAF_HIT_ONLY_LOGP=bool(leaf_hit_only_logp),
+        LEAF_LOGP_MODE=int(leaf_logp_mode),
+        USE_ACTIVE_MASK=bool(active_mask is not None),
+        CONST_LAYOUT=int(const_layout),
+        DTYPE=_tl_float_dtype(dtype),
+        **launch_options,
+    )
+
+    jt_warps = int(os.environ.get("GPUREC_SELF_LOOP_2D_JT_NUM_WARPS", str(precompute_warps)))
+    jt_options = {}
+    if jt_warps > 0:
+        jt_options["num_warps"] = jt_warps
+    for n in range(int(neumann_terms)):
+        term_in = rhs if n == 0 else (spec_buf if n % 2 == 1 else term_buf)
+        term_out = spec_buf if n % 2 == 0 else term_buf
+        _wave_backward_uniform_2d_jt_kernel[(n_row_blocks,)](
+            term_in,
+            term_out,
+            active_mask if active_mask is not None else rhs,
+            aw0,
+            aw1,
+            aw2,
+            aw3,
+            aw4,
+            sp_child1,
+            sp_child2,
+            compact_level_ptr,
+            compact_level_parents,
+            compact_level_child1,
+            compact_level_child2,
+            pibar_corr,
+            v_k,
+            W,
+            S,
+            block_w,
+            block_s,
+            block_nodes,
+            compact_level_ptr.numel() - 1,
+            USE_ACTIVE_MASK=bool(active_mask is not None),
+            DTYPE=_tl_float_dtype(dtype),
+            **jt_options,
+        )
+
+    _wave_backward_uniform_param_store_kernel[(n_row_blocks,)](
+        Pi_star,
+        Pibar_star,
+        dts_r if dts_r is not None else Pi_star,
+        dts_r is not None,
+        v_k,
+        active_mask if active_mask is not None else rhs,
+        mt_squeezed,
+        DL_const,
+        Ebar,
+        E,
+        SL1_const,
+        SL2_const,
+        sp_child1,
+        sp_child2,
+        leaf_term_wt,
+        leaf_species_arg,
+        leaf_logp_arg,
+        family_idx,
+        aw0,
+        aw1,
+        aw2,
+        aw345,
+        aw3,
+        aw4,
+        ws,
+        W,
+        S,
+        Pi_star.stride(0),
+        block_w,
+        block_s,
+        USE_LEAF_INDEX=bool(use_leaf_index),
+        LEAF_HIT_ONLY_LOGP=bool(leaf_hit_only_logp),
+        LEAF_LOGP_MODE=int(leaf_logp_mode),
+        USE_ACTIVE_MASK=bool(active_mask is not None),
+        CONST_LAYOUT=int(const_layout),
+        DTYPE=_tl_float_dtype(dtype),
+        **launch_options,
+    )
+
+    return v_k, aw0, aw1, aw2, aw345, aw3, aw4
+
+
 def wave_backward_uniform_fused(
     Pi_star, Pibar_star, ws, W, S,
     dts_r,
@@ -1336,6 +2139,10 @@ def wave_backward_uniform_fused(
     scratch=None,
     family_idx=None,
     family_indexed_consts=False,
+    compact_level_ptr=None,
+    compact_level_parents=None,
+    compact_level_child1=None,
+    compact_level_child2=None,
 ):
     """Fused backward: precompute + Neumann + param VJP in one kernel per wave.
 
@@ -1535,6 +2342,45 @@ def wave_backward_uniform_fused(
     log_pD_grad_scalar = _grad_param_is_scalar(grad_log_pD_arg)
     log_pS_grad_scalar = _grad_param_is_scalar(grad_log_pS_arg)
     family_idx_arg = family_idx if family_idx is not None else sp_parent
+
+    prototype_result = _wave_backward_uniform_2d_prototype(
+        Pi_star,
+        Pibar_star,
+        ws,
+        W,
+        S,
+        dts_r,
+        rhs,
+        mt_squeezed,
+        DL_const,
+        Ebar,
+        E,
+        SL1_const,
+        SL2_const,
+        sp_child1,
+        sp_child2,
+        leaf_term_wt,
+        neumann_terms=neumann_terms,
+        leaf_species_idx=leaf_species_idx,
+        leaf_logp=leaf_logp,
+        accum_param_grads=accum_param_grads,
+        active_mask=active_mask,
+        sp_parent=sp_parent,
+        max_ancestor_depth=max_ancestor_depth,
+        pibar_row_max=pibar_row_max,
+        scratch=scratch,
+        family_idx=family_idx,
+        const_layout=const_layout,
+        leaf_logp_mode=leaf_logp_mode,
+        use_leaf_index=use_leaf_index,
+        leaf_hit_only_logp=leaf_hit_only_logp,
+        compact_level_ptr=compact_level_ptr,
+        compact_level_parents=compact_level_parents,
+        compact_level_child1=compact_level_child1,
+        compact_level_child2=compact_level_child2,
+    )
+    if prototype_result is not None:
+        return prototype_result
 
     block_s_env = os.environ.get("GPUREC_WAVE_BLOCK_S", "").strip()
     if block_s_env:

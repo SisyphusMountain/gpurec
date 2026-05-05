@@ -1439,6 +1439,14 @@ def Pi_wave_backward(
     fused_wave_param_accum_enabled = (
         os.environ.get("GPUREC_FUSED_WAVE_PARAM_ACCUM", "1") != "0"
     )
+    self_loop_2d_triton_enabled = (
+        os.environ.get("GPUREC_SELF_LOOP_2D_TRITON", "0").strip().lower()
+        not in ("", "0", "false", "off", "no")
+    )
+    self_loop_tree_staged_enabled = (
+        os.environ.get("GPUREC_SELF_LOOP_TREE_STAGED", "0").strip().lower()
+        not in ("", "0", "false", "off", "no")
+    )
     no_cpu_pruning = (
         os.environ.get("GPUREC_BACKWARD_NO_CPU_PRUNING", "0") != "0"
     )
@@ -1853,7 +1861,11 @@ def Pi_wave_backward(
 
         if use_fused:
             accum_param_grads = None
-            if fused_wave_param_accum_enabled:
+            if (
+                fused_wave_param_accum_enabled
+                and not self_loop_2d_triton_enabled
+                and not self_loop_tree_staged_enabled
+            ):
                 if _auto_wrapped:
                     accum_param_grads = (
                         grad_log_pD,
@@ -1954,6 +1966,10 @@ def Pi_wave_backward(
                     scratch=scratch_pool.get("wave") if scratch_pool is not None else None,
                     family_idx=family_idx if use_family_indexed_self_loop else None,
                     family_indexed_consts=use_family_indexed_self_loop,
+                    compact_level_ptr=compact_level_ptr,
+                    compact_level_parents=compact_level_parents,
+                    compact_level_child1=compact_level_child1,
+                    compact_level_child2=compact_level_child2,
                 )
 
             if accum_param_grads is None:
