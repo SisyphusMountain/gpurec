@@ -253,6 +253,17 @@ def _seg_lse_hdim_bwd_kernel(
 # Python wrappers with autograd
 # ---------------------------
 
+def _seg_lse_compute_dtype(x: torch.Tensor):
+    if x.dtype == torch.float32:
+        return tl.float32
+    if x.dtype == torch.float64:
+        return tl.float64
+    if x.dtype == torch.bfloat16:
+        # Keep bf16 inputs/outputs resident, but accumulate the stable
+        # max/sumexp reductions in fp32 inside the Triton kernel.
+        return tl.float32
+    raise TypeError("x must be float32, float64, or bfloat16")
+
 def _seg_lse_forward_impl(
     x: torch.Tensor,
     ptr: torch.Tensor,
@@ -271,12 +282,7 @@ def _seg_lse_forward_impl(
     G = ptr.numel() - 1
     y = torch.empty((G, S), dtype=x.dtype, device=x.device)
 
-    if x.dtype == torch.float32:
-        DTYPE = tl.float32
-    elif x.dtype == torch.float64:
-        DTYPE = tl.float64
-    else:
-        raise TypeError("x must be float32 or float64")
+    DTYPE = _seg_lse_compute_dtype(x)
 
     # Launch with autotuned configuration by default; manual override if both block sizes provided
     if block_h is None or block_s is None:
@@ -332,13 +338,7 @@ class SegLSEHdimFn(torch.autograd.Function):
         grad_x = torch.zeros_like(x)
         H, S = x.shape
         G = ptr.numel() - 1
-        # Triton dtype
-        if x.dtype == torch.float32:
-            DTYPE = tl.float32
-        elif x.dtype == torch.float64:
-            DTYPE = tl.float64
-        else:
-            raise TypeError("x must be float32 or float64")
+        DTYPE = _seg_lse_compute_dtype(x)
 
         # Grid launch (autotuned or manual if both provided)
         if ctx.block_h == 0 or ctx.block_s == 0:
@@ -587,4 +587,3 @@ def _main() -> None:
 
 if __name__ == "__main__":
     _main()
-

@@ -9,7 +9,7 @@ import torch
 from torch import Tensor
 from torch import func as tfunc
 
-from gpurec.core.likelihood import E_step
+from gpurec.core.likelihood import E_step, _uniform_ancestor_sum
 from gpurec.core.backward import Pi_wave_backward
 from gpurec.core.log2_utils import _safe_log2_internal as _safe_log2
 from gpurec.core.extract_parameters import extract_parameters, extract_parameters_uniform
@@ -152,11 +152,11 @@ def _e_adjoint_and_theta_vjp(
                 if expE.ndim == 1:
                     expE_2d = expE.unsqueeze(0)
                     row_sum = expE_2d.sum(dim=-1, keepdim=True)
-                    ancestor_sum = (expE_2d @ ancestors_T).contiguous()
+                    ancestor_sum = _uniform_ancestor_sum(expE_2d, ancestors_T)
                     Ebar_recomp = _safe_log2((row_sum - ancestor_sum).squeeze(0)) + max_E.squeeze(-1) + mt_sq
                 else:
                     row_sum = expE.sum(dim=-1, keepdim=True)
-                    ancestor_sum = (expE @ ancestors_T).contiguous()
+                    ancestor_sum = _uniform_ancestor_sum(expE, ancestors_T)
                     Ebar_recomp = _safe_log2(row_sum - ancestor_sum) + max_E + mt_sq
             ebar_to_e = torch.autograd.grad(
                 Ebar_recomp, E_req2,

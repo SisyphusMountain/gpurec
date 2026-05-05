@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 import torch
 
+import gpurec.api.autograd as autograd_bridge
 from gpurec import GeneReconModel
 from gpurec.optimization import optimize_global_rates_lbfgs
 
@@ -192,6 +193,30 @@ def _phase_names(result: dict[str, object]) -> list[str]:
     return names
 
 
+def _assert_record_dtypes(
+    records: list[dict[str, object]],
+    *,
+    kind: str,
+    phase_dtype: torch.dtype,
+    expected_dtype: torch.dtype,
+    fields: tuple[str, ...],
+) -> None:
+    matching = [
+        record
+        for record in records
+        if record.get("kind") == kind and record.get("dtype_arg") == phase_dtype
+    ]
+    assert matching, f"no {kind} records captured for dtype={phase_dtype}"
+
+    bad: list[str] = []
+    for idx, record in enumerate(matching, start=1):
+        for field in fields:
+            actual = record.get(field)
+            if actual is not None and actual != expected_dtype:
+                bad.append(f"{kind}[{idx}].{field}={actual}")
+    assert not bad, "unexpected tensor dtypes: " + ", ".join(bad)
+
+
 def test_global_lbfgs_reaches_alerax_reference(tmp_path):
     target_rates = _reference_rates(DATA_DIR)
     target_nll = _reference_nll_bits(DATA_DIR)
@@ -255,7 +280,9 @@ def test_global_lbfgs_moves_floor_initialization_into_interior(tmp_path):
     assert torch.all(result["rates"].detach().cpu() > MIN_RATE)
 
 
-def test_global_lbfgs_bf16_start_fp32_polish_matches_fp32_short_run(tmp_path):
+def test_global_lbfgs_bf16_start_uses_bf16_forward_backward_then_fp32_polish(
+    tmp_path, monkeypatch
+):
     bf16_kwargs = _bf16_start_kwargs()
     if not torch.cuda.is_bf16_supported():
         pytest.skip("CUDA device does not support bf16")
@@ -280,6 +307,84 @@ def test_global_lbfgs_bf16_start_fp32_polish_matches_fp32_short_run(tmp_path):
         init_rate=INTERIOR_INIT_RATES[0],
         cache_dir=tmp_path / "bf16-cache",
     )
+    dtype_records: list[dict[str, object]] = []
+
+    original_e_fixed_point = autograd_bridge.E_fixed_point
+    original_pi_wave_forward = autograd_bridge.Pi_wave_forward
+    original_implicit_grad = autograd_bridge.implicit_grad_loglik_vjp_wave
+
+    def record_e_fixed_point(*args, **kwargs):
+        result = original_e_fixed_point(*args, **kwargs)
+        dtype_records.append(
+            {
+                "kind": "forward_e",
+                "dtype_arg": kwargs.get("dtype"),
+                "E": result["E"].dtype,
+                "E_s1": result["E_s1"].dtype,
+                "E_s2": result["E_s2"].dtype,
+                "Ebar": result["E_bar"].dtype,
+            }
+        )
+        return result
+
+    def record_pi_wave_forward(*args, **kwargs):
+        result = original_pi_wave_forward(*args, **kwargs)
+        row_max = result.get("uniform_pibar_row_max")
+        dtype_records.append(
+            {
+                "kind": "forward_pi",
+                "dtype_arg": kwargs.get("dtype"),
+                "E": kwargs["E"].dtype,
+                "Ebar": kwargs["Ebar"].dtype,
+                "E_s1": kwargs["E_s1"].dtype,
+                "E_s2": kwargs["E_s2"].dtype,
+                "log_pS": kwargs["log_pS"].dtype,
+                "log_pD": kwargs["log_pD"].dtype,
+                "log_pL": kwargs["log_pL"].dtype,
+                "max_transfer_mat": kwargs["max_transfer_mat"].dtype,
+                "Pi_wave_ordered": result["Pi_wave_ordered"].dtype,
+                "Pibar_wave_ordered": result["Pibar_wave_ordered"].dtype,
+                "uniform_pibar_row_max": (
+                    row_max.dtype
+                    if torch.is_tensor(row_max) and row_max.numel() > 0
+                    else None
+                ),
+            }
+        )
+        return result
+
+    def record_implicit_grad(*args, **kwargs):
+        row_max = kwargs.get("uniform_pibar_row_max")
+        dtype_records.append(
+            {
+                "kind": "backward",
+                "dtype_arg": kwargs.get("dtype"),
+                "Pi_star_wave": kwargs["Pi_star_wave"].dtype,
+                "Pibar_star_wave": kwargs["Pibar_star_wave"].dtype,
+                "E_star": kwargs["E_star"].dtype,
+                "E_s1": kwargs["E_s1"].dtype,
+                "E_s2": kwargs["E_s2"].dtype,
+                "Ebar": kwargs["Ebar"].dtype,
+                "log_pS": kwargs["log_pS"].dtype,
+                "log_pD": kwargs["log_pD"].dtype,
+                "log_pL": kwargs["log_pL"].dtype,
+                "max_transfer_mat": kwargs["max_transfer_mat"].dtype,
+                "unnorm_row_max": kwargs["unnorm_row_max"].dtype,
+                "uniform_pibar_row_max": (
+                    row_max.dtype
+                    if torch.is_tensor(row_max) and row_max.numel() > 0
+                    else None
+                ),
+            }
+        )
+        return original_implicit_grad(*args, **kwargs)
+
+    monkeypatch.setattr(autograd_bridge, "E_fixed_point", record_e_fixed_point)
+    monkeypatch.setattr(autograd_bridge, "Pi_wave_forward", record_pi_wave_forward)
+    monkeypatch.setattr(
+        autograd_bridge, "implicit_grad_loglik_vjp_wave", record_implicit_grad
+    )
+
     try:
         bf16_result = optimize_global_rates_lbfgs(
             bf16_model,
@@ -299,6 +404,69 @@ def test_global_lbfgs_bf16_start_fp32_polish_matches_fp32_short_run(tmp_path):
     phase_names = [name.lower() for name in _phase_names(bf16_result)]
     assert any("bf16" in name or "bfloat" in name for name in phase_names)
     assert any("fp32" in name or "float32" in name for name in phase_names)
+
+    forward_fields = (
+        "E",
+        "Ebar",
+        "E_s1",
+        "E_s2",
+        "log_pS",
+        "log_pD",
+        "log_pL",
+        "max_transfer_mat",
+        "Pi_wave_ordered",
+        "Pibar_wave_ordered",
+        "uniform_pibar_row_max",
+    )
+    backward_fields = (
+        "Pi_star_wave",
+        "Pibar_star_wave",
+        "E_star",
+        "Ebar",
+        "E_s1",
+        "E_s2",
+        "log_pS",
+        "log_pD",
+        "log_pL",
+        "max_transfer_mat",
+        "unnorm_row_max",
+        "uniform_pibar_row_max",
+    )
+    _assert_record_dtypes(
+        dtype_records,
+        kind="forward_e",
+        phase_dtype=torch.bfloat16,
+        expected_dtype=torch.bfloat16,
+        fields=("E", "Ebar", "E_s1", "E_s2"),
+    )
+    _assert_record_dtypes(
+        dtype_records,
+        kind="forward_pi",
+        phase_dtype=torch.bfloat16,
+        expected_dtype=torch.bfloat16,
+        fields=forward_fields,
+    )
+    _assert_record_dtypes(
+        dtype_records,
+        kind="backward",
+        phase_dtype=torch.bfloat16,
+        expected_dtype=torch.bfloat16,
+        fields=backward_fields,
+    )
+    _assert_record_dtypes(
+        dtype_records,
+        kind="forward_pi",
+        phase_dtype=torch.float32,
+        expected_dtype=torch.float32,
+        fields=forward_fields,
+    )
+    _assert_record_dtypes(
+        dtype_records,
+        kind="backward",
+        phase_dtype=torch.float32,
+        expected_dtype=torch.float32,
+        fields=backward_fields,
+    )
 
     assert math.isfinite(fp32_result["negative_log_likelihood"])
     assert math.isfinite(bf16_result["negative_log_likelihood"])

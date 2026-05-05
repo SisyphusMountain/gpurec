@@ -14,6 +14,7 @@ import triton
 import triton.language as tl
 
 _cuda_pibar_from_ud_fallback_warned = False
+_SUPPORTED_FLOAT_DTYPES = (torch.float32, torch.float64, torch.bfloat16)
 
 
 def _tl_float_dtype(dtype):
@@ -232,8 +233,10 @@ def active_mask_from_rhs_absmax_fused(rhs, threshold, *, use_pruning=True):
         raise ValueError("rhs must be a 2D tensor")
     if rhs.device.type != "cuda":
         raise ValueError("active_mask_from_rhs_absmax_fused requires a CUDA tensor")
-    if rhs.dtype not in (torch.float32, torch.float64):
-        raise ValueError("active_mask_from_rhs_absmax_fused supports fp32/fp64 tensors")
+    if rhs.dtype not in _SUPPORTED_FLOAT_DTYPES:
+        raise ValueError(
+            "active_mask_from_rhs_absmax_fused supports fp32/fp64/bf16 tensors"
+        )
 
     W, S = rhs.shape
     active_mask = torch.empty((W,), device=rhs.device, dtype=torch.bool)
@@ -374,13 +377,13 @@ def _wave_backward_uniform_kernel(
     # Pass 1: Row statistics for uniform Pibar (same as forward)
     # ================================================================
     if USE_PIBAR_ROW_MAX:
-        row_max = tl.load(Pibar_row_max_ptr + ws + w)
+        row_max = tl.load(Pibar_row_max_ptr + ws + w).to(DTYPE)
         row_sum = tl.full([1], value=0.0, dtype=DTYPE)
         for s_start in range(0, S, BLOCK_S):
             s_offs = s_start + tl.arange(0, BLOCK_S)
             valid_mask = s_offs < S
             mask = valid_mask & row_active
-            pi_val = tl.load(Pi_star_ptr + pi_base + s_offs, mask=mask, other=-1e30)
+            pi_val = tl.load(Pi_star_ptr + pi_base + s_offs, mask=mask, other=-1e30).to(DTYPE)
             row_sum += tl.sum(tl.exp2(pi_val - row_max), axis=0)
     else:
         row_max = tl.full([1], value=-1e30, dtype=DTYPE)
@@ -390,7 +393,7 @@ def _wave_backward_uniform_kernel(
             s_offs = s_start + tl.arange(0, BLOCK_S)
             valid_mask = s_offs < S
             mask = valid_mask & row_active
-            pi_val = tl.load(Pi_star_ptr + pi_base + s_offs, mask=mask, other=-1e30)
+            pi_val = tl.load(Pi_star_ptr + pi_base + s_offs, mask=mask, other=-1e30).to(DTYPE)
             tile_max = tl.max(pi_val, axis=0)
             new_max = tl.maximum(row_max, tile_max)
             row_sum = row_sum * tl.exp2(row_max - new_max) + tl.sum(tl.exp2(pi_val - new_max), axis=0)
@@ -426,23 +429,23 @@ def _wave_backward_uniform_kernel(
         off = out_base + s_offs
 
         # Load Pi*, Pibar*
-        pi_w = tl.load(Pi_star_ptr + pi_base + s_offs, mask=mask, other=-1e30)
-        pibar_w = tl.load(Pibar_star_ptr + pi_base + s_offs, mask=mask, other=-1e30)
+        pi_w = tl.load(Pi_star_ptr + pi_base + s_offs, mask=mask, other=-1e30).to(DTYPE)
+        pibar_w = tl.load(Pibar_star_ptr + pi_base + s_offs, mask=mask, other=-1e30).to(DTYPE)
 
         # Load constants
-        dl_c = tl.load(DL_const_ptr + const_base + s_offs, mask=mask, other=-1e30)
-        ebar = tl.load(Ebar_ptr + const_base + s_offs, mask=mask, other=-1e30)
-        e_val = tl.load(E_ptr + const_base + s_offs, mask=mask, other=-1e30)
-        sl1_c = tl.load(SL1_const_ptr + const_base + s_offs, mask=mask, other=-1e30)
-        sl2_c = tl.load(SL2_const_ptr + const_base + s_offs, mask=mask, other=-1e30)
+        dl_c = tl.load(DL_const_ptr + const_base + s_offs, mask=mask, other=-1e30).to(DTYPE)
+        ebar = tl.load(Ebar_ptr + const_base + s_offs, mask=mask, other=-1e30).to(DTYPE)
+        e_val = tl.load(E_ptr + const_base + s_offs, mask=mask, other=-1e30).to(DTYPE)
+        sl1_c = tl.load(SL1_const_ptr + const_base + s_offs, mask=mask, other=-1e30).to(DTYPE)
+        sl2_c = tl.load(SL2_const_ptr + const_base + s_offs, mask=mask, other=-1e30).to(DTYPE)
 
         # Gather species children
         c1 = tl.load(sp_child1_ptr + s_offs, mask=mask, other=0)
         c2 = tl.load(sp_child2_ptr + s_offs, mask=mask, other=0)
         c1_valid = c1 < S
         c2_valid = c2 < S
-        pi_s1 = tl.load(Pi_star_ptr + pi_base + c1, mask=mask & c1_valid, other=-1e30)
-        pi_s2 = tl.load(Pi_star_ptr + pi_base + c2, mask=mask & c2_valid, other=-1e30)
+        pi_s1 = tl.load(Pi_star_ptr + pi_base + c1, mask=mask & c1_valid, other=-1e30).to(DTYPE)
+        pi_s2 = tl.load(Pi_star_ptr + pi_base + c2, mask=mask & c2_valid, other=-1e30).to(DTYPE)
 
         # 6 DTS_L terms
         t0 = dl_c + pi_w
@@ -461,7 +464,7 @@ def _wave_backward_uniform_kernel(
                     leaf_logp_ptr + family * stride + s_offs,
                     mask=leaf_hit,
                     other=-1e30,
-                )
+                ).to(DTYPE)
                 t5 = tl.where(leaf_hit, leaf_logp, NEG_LARGE)
             elif LEAF_LOGP_MODE == 1:
                 leaf_family = tl.load(family_idx_ptr + ws + w).to(tl.int64)
@@ -471,12 +474,12 @@ def _wave_backward_uniform_kernel(
                 )
                 t5 = tl.where(leaf_hit, leaf_logp, NEG_LARGE)
             elif LEAF_HIT_ONLY_LOGP:
-                t5 = tl.load(leaf_logp_ptr + s_offs, mask=leaf_hit, other=-1e30)
+                t5 = tl.load(leaf_logp_ptr + s_offs, mask=leaf_hit, other=-1e30).to(DTYPE)
             else:
-                leaf_logp = tl.load(leaf_logp_ptr + s_offs, mask=mask, other=-1e30)
+                leaf_logp = tl.load(leaf_logp_ptr + s_offs, mask=mask, other=-1e30).to(DTYPE)
                 t5 = tl.where(leaf_hit, leaf_logp, NEG_LARGE)
         else:
-            t5 = tl.load(leaf_term_ptr + off, mask=mask, other=-1e30)
+            t5 = tl.load(leaf_term_ptr + off, mask=mask, other=-1e30).to(DTYPE)
 
         # Logsumexp over 6 terms → DTS_L
         m = tl.maximum(t0, t1)
@@ -522,7 +525,7 @@ def _wave_backward_uniform_kernel(
         cur = s_offs
         for _depth in range(MAX_ANCESTOR_DEPTH):
             anc_mask = mask & (cur >= 0) & (cur < S)
-            pi_anc = tl.load(Pi_star_ptr + pi_base + cur, mask=anc_mask, other=-1e30)
+            pi_anc = tl.load(Pi_star_ptr + pi_base + cur, mask=anc_mask, other=-1e30).to(DTYPE)
             ancestor_sum += tl.where(
                 anc_mask,
                 tl.exp2(pi_anc - row_max),
@@ -568,7 +571,7 @@ def _wave_backward_uniform_kernel(
         s_offs = s_start + tl.arange(0, BLOCK_S)
         valid_mask = s_offs < S
         mask = valid_mask & row_active
-        rhs_val = tl.load(rhs_ptr + out_base + s_offs, mask=mask, other=0.0)
+        rhs_val = tl.load(rhs_ptr + out_base + s_offs, mask=mask, other=0.0).to(DTYPE)
         tl.store(v_k_ptr + out_base + s_offs, rhs_val, mask=valid_mask)
 
     # Buffer ping-pong: iteration 0 reads rhs_ptr, even iterations write
@@ -614,24 +617,24 @@ def _wave_backward_uniform_kernel(
 
             # Load term from appropriate buffer
             if _n == 0:
-                term_val = tl.load(rhs_ptr + off, mask=mask, other=0.0)
+                term_val = tl.load(rhs_ptr + off, mask=mask, other=0.0).to(DTYPE)
             elif _n % 2 == 1:
-                term_val = tl.load(spec_buf_ptr + off, mask=mask, other=0.0)
+                term_val = tl.load(spec_buf_ptr + off, mask=mask, other=0.0).to(DTYPE)
             else:
-                term_val = tl.load(term_buf_ptr + off, mask=mask, other=0.0)
+                term_val = tl.load(term_buf_ptr + off, mask=mask, other=0.0).to(DTYPE)
 
             if COMPACT_PIBAR_SCRATCH:
-                pibar_u_coeff = tl.load(aw1_ptr + off, mask=mask, other=0.0)
+                pibar_u_coeff = tl.load(aw1_ptr + off, mask=mask, other=0.0).to(DTYPE)
                 u_d = term_val * pibar_u_coeff
             else:
-                pibar_wt = tl.load(aw1_ptr + off, mask=mask, other=0.0)
+                pibar_wt = tl.load(aw1_ptr + off, mask=mask, other=0.0).to(DTYPE)
                 if RECOMPUTE_PIBAR_DENOM:
-                    pi_w = tl.load(Pi_star_ptr + pi_base + s_offs, mask=mask, other=-1e30)
+                    pi_w = tl.load(Pi_star_ptr + pi_base + s_offs, mask=mask, other=-1e30).to(DTYPE)
                     p_prime = tl.exp2(pi_w - row_max)
                     denom = row_sum - p_prime
                     inv_denom = tl.where(denom > 0, 1.0 / denom, tl.zeros_like(denom))
                 else:
-                    inv_denom = tl.load(aw2_ptr + off, mask=mask, other=0.0)
+                    inv_denom = tl.load(aw2_ptr + off, mask=mask, other=0.0).to(DTYPE)
 
                 u_d = term_val * pibar_wt * inv_denom
 
@@ -645,8 +648,8 @@ def _wave_backward_uniform_kernel(
 
             if not SPEC_GATHER:
                 # Speciation scatter: write term * sl_wt to child index
-                sl1_wt = tl.load(aw4_ptr + off, mask=mask, other=0.0)
-                sl2_wt = tl.load(aw345_ptr + off, mask=mask, other=0.0)
+                sl1_wt = tl.load(aw4_ptr + off, mask=mask, other=0.0).to(DTYPE)
+                sl2_wt = tl.load(aw345_ptr + off, mask=mask, other=0.0).to(DTYPE)
                 c1 = tl.load(sp_child1_ptr + s_offs, mask=mask, other=0)
                 c2 = tl.load(sp_child2_ptr + s_offs, mask=mask, other=0)
                 c1_valid = (c1 < S) & mask
@@ -675,31 +678,31 @@ def _wave_backward_uniform_kernel(
 
             # Reload term and weights
             if _n == 0:
-                term_val = tl.load(rhs_ptr + off, mask=mask, other=0.0)
+                term_val = tl.load(rhs_ptr + off, mask=mask, other=0.0).to(DTYPE)
             elif _n % 2 == 1:
-                term_val = tl.load(spec_buf_ptr + off, mask=mask, other=0.0)
+                term_val = tl.load(spec_buf_ptr + off, mask=mask, other=0.0).to(DTYPE)
             else:
-                term_val = tl.load(term_buf_ptr + off, mask=mask, other=0.0)
+                term_val = tl.load(term_buf_ptr + off, mask=mask, other=0.0).to(DTYPE)
 
-            diag_wt = tl.load(aw0_ptr + off, mask=mask, other=0.0)
+            diag_wt = tl.load(aw0_ptr + off, mask=mask, other=0.0).to(DTYPE)
             if COMPACT_PIBAR_SCRATCH:
-                pibar_u_coeff = tl.load(aw1_ptr + off, mask=mask, other=0.0)
-                pi_w = tl.load(Pi_star_ptr + pi_base + s_offs, mask=mask, other=-1e30)
+                pibar_u_coeff = tl.load(aw1_ptr + off, mask=mask, other=0.0).to(DTYPE)
+                pi_w = tl.load(Pi_star_ptr + pi_base + s_offs, mask=mask, other=-1e30).to(DTYPE)
                 p_prime = tl.exp2(pi_w - row_max)
                 u_d = term_val * pibar_u_coeff
             else:
-                pibar_wt = tl.load(aw1_ptr + off, mask=mask, other=0.0)
+                pibar_wt = tl.load(aw1_ptr + off, mask=mask, other=0.0).to(DTYPE)
                 if RECOMPUTE_PIBAR_DENOM:
-                    pi_w = tl.load(Pi_star_ptr + pi_base + s_offs, mask=mask, other=-1e30)
+                    pi_w = tl.load(Pi_star_ptr + pi_base + s_offs, mask=mask, other=-1e30).to(DTYPE)
                     p_prime = tl.exp2(pi_w - row_max)
                     denom = row_sum - p_prime
                     inv_denom = tl.where(denom > 0, 1.0 / denom, tl.zeros_like(denom))
                 else:
-                    inv_denom = tl.load(aw2_ptr + off, mask=mask, other=0.0)
-                    p_prime = tl.load(aw3_ptr + off, mask=mask, other=0.0)
+                    inv_denom = tl.load(aw2_ptr + off, mask=mask, other=0.0).to(DTYPE)
+                    p_prime = tl.load(aw3_ptr + off, mask=mask, other=0.0).to(DTYPE)
 
                 u_d = term_val * pibar_wt * inv_denom
-            correction = tl.load(pibar_corr_ptr + off, mask=mask, other=0.0)
+            correction = tl.load(pibar_corr_ptr + off, mask=mask, other=0.0).to(DTYPE)
             result = term_val * diag_wt + p_prime * (A_acc - correction)
 
             # Add speciation contribution.
@@ -708,20 +711,20 @@ def _wave_backward_uniform_kernel(
                 parent_valid = parent >= 0
                 parent_off = out_base + parent
                 if _n == 0:
-                    parent_term = tl.load(rhs_ptr + parent_off, mask=mask & parent_valid, other=0.0)
+                    parent_term = tl.load(rhs_ptr + parent_off, mask=mask & parent_valid, other=0.0).to(DTYPE)
                 elif _n % 2 == 1:
-                    parent_term = tl.load(spec_buf_ptr + parent_off, mask=mask & parent_valid, other=0.0)
+                    parent_term = tl.load(spec_buf_ptr + parent_off, mask=mask & parent_valid, other=0.0).to(DTYPE)
                 else:
-                    parent_term = tl.load(term_buf_ptr + parent_off, mask=mask & parent_valid, other=0.0)
-                parent_sl1 = tl.load(aw4_ptr + parent_off, mask=mask & parent_valid, other=0.0)
-                parent_sl2 = tl.load(aw345_ptr + parent_off, mask=mask & parent_valid, other=0.0)
+                    parent_term = tl.load(term_buf_ptr + parent_off, mask=mask & parent_valid, other=0.0).to(DTYPE)
+                parent_sl1 = tl.load(aw4_ptr + parent_off, mask=mask & parent_valid, other=0.0).to(DTYPE)
+                parent_sl2 = tl.load(aw345_ptr + parent_off, mask=mask & parent_valid, other=0.0).to(DTYPE)
                 parent_c1 = tl.load(sp_child1_ptr + parent, mask=mask & parent_valid, other=S)
                 parent_wt = tl.where(parent_c1 == s_offs, parent_sl1, parent_sl2)
                 spec_val = parent_term * parent_wt
             elif _n % 2 == 0:
-                spec_val = tl.load(spec_buf_ptr + off, mask=mask, other=0.0)
+                spec_val = tl.load(spec_buf_ptr + off, mask=mask, other=0.0).to(DTYPE)
             else:
-                spec_val = tl.load(term_buf_ptr + off, mask=mask, other=0.0)
+                spec_val = tl.load(term_buf_ptr + off, mask=mask, other=0.0).to(DTYPE)
             result = result + spec_val
 
             # Store result to output buffer
@@ -731,7 +734,7 @@ def _wave_backward_uniform_kernel(
                 tl.store(term_buf_ptr + off, result, mask=mask)
 
             # Accumulate into v_k
-            v_k_val = tl.load(v_k_ptr + off, mask=mask, other=0.0)
+            v_k_val = tl.load(v_k_ptr + off, mask=mask, other=0.0).to(DTYPE)
             tl.store(v_k_ptr + off, v_k_val + result, mask=mask)
 
     # ================================================================
@@ -748,17 +751,17 @@ def _wave_backward_uniform_kernel(
         mask = valid_mask & row_active
         off = out_base + s_offs
 
-        v_k_val = tl.load(v_k_ptr + off, mask=mask, other=0.0)
+        v_k_val = tl.load(v_k_ptr + off, mask=mask, other=0.0).to(DTYPE)
 
         if ACCUM_PARAM_GRADS and FAST_NOSPLIT_PARAM_GRADS and not has_splits and not COMPACT_PIBAR_SCRATCH:
-            diag_wt = tl.load(aw0_ptr + off, mask=mask, other=0.0)
-            pibar_wt = tl.load(aw1_ptr + off, mask=mask, other=0.0)
-            sl1_wt = tl.load(aw4_ptr + off, mask=mask, other=0.0)
-            sl2_wt = tl.load(aw345_ptr + off, mask=mask, other=0.0)
+            diag_wt = tl.load(aw0_ptr + off, mask=mask, other=0.0).to(DTYPE)
+            pibar_wt = tl.load(aw1_ptr + off, mask=mask, other=0.0).to(DTYPE)
+            sl1_wt = tl.load(aw4_ptr + off, mask=mask, other=0.0).to(DTYPE)
+            sl2_wt = tl.load(aw345_ptr + off, mask=mask, other=0.0).to(DTYPE)
             leaf_wt = 1.0 - diag_wt - pibar_wt - sl1_wt - sl2_wt
 
-            dl_c = tl.load(DL_const_ptr + const_base + s_offs, mask=mask, other=-1e30)
-            ebar = tl.load(Ebar_ptr + const_base + s_offs, mask=mask, other=-1e30)
+            dl_c = tl.load(DL_const_ptr + const_base + s_offs, mask=mask, other=-1e30).to(DTYPE)
+            ebar = tl.load(Ebar_ptr + const_base + s_offs, mask=mask, other=-1e30).to(DTYPE)
             m01 = tl.maximum(dl_c, ebar)
             e0_01 = tl.exp2(dl_c - m01)
             e1_01 = tl.exp2(ebar - m01)
@@ -805,19 +808,19 @@ def _wave_backward_uniform_kernel(
         else:
             # Reload Pi and Pibar to recompute weights
             # (we overwrote aw* buffers with Jt scratch data)
-            pi_w = tl.load(Pi_star_ptr + pi_base + s_offs, mask=mask, other=-1e30)
-            pibar_w = tl.load(Pibar_star_ptr + pi_base + s_offs, mask=mask, other=-1e30)
-            dl_c = tl.load(DL_const_ptr + const_base + s_offs, mask=mask, other=-1e30)
-            ebar = tl.load(Ebar_ptr + const_base + s_offs, mask=mask, other=-1e30)
-            e_val = tl.load(E_ptr + const_base + s_offs, mask=mask, other=-1e30)
-            sl1_c = tl.load(SL1_const_ptr + const_base + s_offs, mask=mask, other=-1e30)
-            sl2_c = tl.load(SL2_const_ptr + const_base + s_offs, mask=mask, other=-1e30)
+            pi_w = tl.load(Pi_star_ptr + pi_base + s_offs, mask=mask, other=-1e30).to(DTYPE)
+            pibar_w = tl.load(Pibar_star_ptr + pi_base + s_offs, mask=mask, other=-1e30).to(DTYPE)
+            dl_c = tl.load(DL_const_ptr + const_base + s_offs, mask=mask, other=-1e30).to(DTYPE)
+            ebar = tl.load(Ebar_ptr + const_base + s_offs, mask=mask, other=-1e30).to(DTYPE)
+            e_val = tl.load(E_ptr + const_base + s_offs, mask=mask, other=-1e30).to(DTYPE)
+            sl1_c = tl.load(SL1_const_ptr + const_base + s_offs, mask=mask, other=-1e30).to(DTYPE)
+            sl2_c = tl.load(SL2_const_ptr + const_base + s_offs, mask=mask, other=-1e30).to(DTYPE)
             c1 = tl.load(sp_child1_ptr + s_offs, mask=mask, other=0)
             c2 = tl.load(sp_child2_ptr + s_offs, mask=mask, other=0)
             c1_valid = c1 < S
             c2_valid = c2 < S
-            pi_s1 = tl.load(Pi_star_ptr + pi_base + c1, mask=mask & c1_valid, other=-1e30)
-            pi_s2 = tl.load(Pi_star_ptr + pi_base + c2, mask=mask & c2_valid, other=-1e30)
+            pi_s1 = tl.load(Pi_star_ptr + pi_base + c1, mask=mask & c1_valid, other=-1e30).to(DTYPE)
+            pi_s2 = tl.load(Pi_star_ptr + pi_base + c2, mask=mask & c2_valid, other=-1e30).to(DTYPE)
             if USE_LEAF_INDEX:
                 leaf_species = tl.load(leaf_species_ptr + ws + w)
                 leaf_hit = mask & (leaf_species == s_offs)
@@ -829,7 +832,7 @@ def _wave_backward_uniform_kernel(
                         leaf_logp_ptr + family * stride + s_offs,
                         mask=leaf_hit,
                         other=-1e30,
-                    )
+                    ).to(DTYPE)
                     t5 = tl.where(leaf_hit, leaf_logp, -1e30)
                 elif LEAF_LOGP_MODE == 1:
                     leaf_family = tl.load(family_idx_ptr + ws + w).to(tl.int64)
@@ -839,12 +842,12 @@ def _wave_backward_uniform_kernel(
                     )
                     t5 = tl.where(leaf_hit, leaf_logp, -1e30)
                 elif LEAF_HIT_ONLY_LOGP:
-                    t5 = tl.load(leaf_logp_ptr + s_offs, mask=leaf_hit, other=-1e30)
+                    t5 = tl.load(leaf_logp_ptr + s_offs, mask=leaf_hit, other=-1e30).to(DTYPE)
                 else:
-                    leaf_logp = tl.load(leaf_logp_ptr + s_offs, mask=mask, other=-1e30)
+                    leaf_logp = tl.load(leaf_logp_ptr + s_offs, mask=mask, other=-1e30).to(DTYPE)
                     t5 = tl.where(leaf_hit, leaf_logp, -1e30)
             else:
-                t5 = tl.load(leaf_term_ptr + off, mask=mask, other=-1e30)
+                t5 = tl.load(leaf_term_ptr + off, mask=mask, other=-1e30).to(DTYPE)
 
             # Recompute DTS_L terms and softmax weights
             t0 = dl_c + pi_w
@@ -864,7 +867,7 @@ def _wave_backward_uniform_kernel(
             inv_sum = tl.where(dts_l_sum > 0, 1.0 / dts_l_sum, tl.zeros_like(dts_l_sum))
 
             if has_splits:
-                dts_r = tl.load(dts_r_ptr + off, mask=mask, other=-1e30)
+                dts_r = tl.load(dts_r_ptr + off, mask=mask, other=-1e30).to(DTYPE)
                 dts_l = tl.log2(dts_l_sum) + m
                 pi_new_m = tl.maximum(dts_l, dts_r)
                 pi_new_ms = tl.where(pi_new_m > -1e29, pi_new_m, tl.zeros_like(pi_new_m))
@@ -1688,7 +1691,7 @@ def _dts_cross_backward_kernel(
     sl = tl.load(sl_ptr + i).to(tl.int64)
     sr = tl.load(sr_ptr + i).to(tl.int64)
     parent_w = tl.load(reduce_idx_ptr + i).to(tl.int64)
-    wlsp = tl.load(wlsp_ptr + i)
+    wlsp = tl.load(wlsp_ptr + i).to(DTYPE)
     if USE_ACTIVE_MASK:
         parent_active = tl.load(active_mask_ptr + parent_w)
         if parent_active == 0:
@@ -1743,10 +1746,10 @@ def _dts_cross_backward_kernel(
         mask = valid_mask & parent_active
 
         # Load child Pi/Pibar
-        Pi_l = tl.load(Pi_star_ptr + pi_l_base + s_offs, mask=mask, other=NEG_LARGE)
-        Pi_r = tl.load(Pi_star_ptr + pi_r_base + s_offs, mask=mask, other=NEG_LARGE)
-        Pibar_l = tl.load(Pibar_star_ptr + pibar_l_base + s_offs, mask=mask, other=NEG_LARGE)
-        Pibar_r = tl.load(Pibar_star_ptr + pibar_r_base + s_offs, mask=mask, other=NEG_LARGE)
+        Pi_l = tl.load(Pi_star_ptr + pi_l_base + s_offs, mask=mask, other=NEG_LARGE).to(DTYPE)
+        Pi_r = tl.load(Pi_star_ptr + pi_r_base + s_offs, mask=mask, other=NEG_LARGE).to(DTYPE)
+        Pibar_l = tl.load(Pibar_star_ptr + pibar_l_base + s_offs, mask=mask, other=NEG_LARGE).to(DTYPE)
+        Pibar_r = tl.load(Pibar_star_ptr + pibar_r_base + s_offs, mask=mask, other=NEG_LARGE).to(DTYPE)
 
         # Species child gathers (for speciation terms)
         c1 = tl.load(sp_child1_ptr + s_offs, mask=mask, other=0)
@@ -1822,13 +1825,13 @@ def _dts_cross_backward_kernel(
         c1_valid = (c1 < S) & mask
         c2_valid = (c2 < S) & mask
 
-        Pi_l_s1 = tl.load(Pi_star_ptr + pi_l_base + c1, mask=c1_valid, other=NEG_LARGE)
-        Pi_l_s2 = tl.load(Pi_star_ptr + pi_l_base + c2, mask=c2_valid, other=NEG_LARGE)
-        Pi_r_s1 = tl.load(Pi_star_ptr + pi_r_base + c1, mask=c1_valid, other=NEG_LARGE)
-        Pi_r_s2 = tl.load(Pi_star_ptr + pi_r_base + c2, mask=c2_valid, other=NEG_LARGE)
+        Pi_l_s1 = tl.load(Pi_star_ptr + pi_l_base + c1, mask=c1_valid, other=NEG_LARGE).to(DTYPE)
+        Pi_l_s2 = tl.load(Pi_star_ptr + pi_l_base + c2, mask=c2_valid, other=NEG_LARGE).to(DTYPE)
+        Pi_r_s1 = tl.load(Pi_star_ptr + pi_r_base + c1, mask=c1_valid, other=NEG_LARGE).to(DTYPE)
+        Pi_r_s2 = tl.load(Pi_star_ptr + pi_r_base + c2, mask=c2_valid, other=NEG_LARGE).to(DTYPE)
 
-        Pi_parent = tl.load(Pi_star_ptr + parent_pi_base + s_offs, mask=mask, other=NEG_LARGE)
-        v_k_val = tl.load(v_k_ptr + parent_vk_base + s_offs, mask=mask, other=0.0)
+        Pi_parent = tl.load(Pi_star_ptr + parent_pi_base + s_offs, mask=mask, other=NEG_LARGE).to(DTYPE)
+        v_k_val = tl.load(v_k_ptr + parent_vk_base + s_offs, mask=mask, other=0.0).to(DTYPE)
 
         d3 = log_pS + Pi_l_s1 + Pi_r_s2
         d4 = log_pS + Pi_r_s1 + Pi_l_s2
@@ -2004,7 +2007,7 @@ def _dts_cross_backward_accum_kernel(
     sl = tl.load(sl_ptr + i).to(tl.int64)
     sr = tl.load(sr_ptr + i).to(tl.int64)
     parent_w = tl.load(reduce_idx_ptr + i).to(tl.int64)
-    wlsp = tl.load(wlsp_ptr + i)
+    wlsp = tl.load(wlsp_ptr + i).to(DTYPE)
     if USE_ACTIVE_MASK:
         parent_active = tl.load(active_mask_ptr + parent_w)
         if parent_active == 0:
@@ -2095,22 +2098,22 @@ def _dts_cross_backward_accum_kernel(
         valid_mask = s_offs < S
         mask = valid_mask & parent_active
 
-        Pi_l = tl.load(Pi_star_ptr + pi_l_base + s_offs, mask=mask, other=NEG_LARGE)
-        Pi_r = tl.load(Pi_star_ptr + pi_r_base + s_offs, mask=mask, other=NEG_LARGE)
-        Pibar_l = tl.load(Pibar_star_ptr + pibar_l_base + s_offs, mask=mask, other=NEG_LARGE)
-        Pibar_r = tl.load(Pibar_star_ptr + pibar_r_base + s_offs, mask=mask, other=NEG_LARGE)
+        Pi_l = tl.load(Pi_star_ptr + pi_l_base + s_offs, mask=mask, other=NEG_LARGE).to(DTYPE)
+        Pi_r = tl.load(Pi_star_ptr + pi_r_base + s_offs, mask=mask, other=NEG_LARGE).to(DTYPE)
+        Pibar_l = tl.load(Pibar_star_ptr + pibar_l_base + s_offs, mask=mask, other=NEG_LARGE).to(DTYPE)
+        Pibar_r = tl.load(Pibar_star_ptr + pibar_r_base + s_offs, mask=mask, other=NEG_LARGE).to(DTYPE)
 
         c1 = tl.load(sp_child1_ptr + s_offs, mask=mask, other=0)
         c2 = tl.load(sp_child2_ptr + s_offs, mask=mask, other=0)
         c1_valid = (c1 < S) & mask
         c2_valid = (c2 < S) & mask
-        Pi_l_s1 = tl.load(Pi_star_ptr + pi_l_base + c1, mask=c1_valid, other=NEG_LARGE)
-        Pi_l_s2 = tl.load(Pi_star_ptr + pi_l_base + c2, mask=c2_valid, other=NEG_LARGE)
-        Pi_r_s1 = tl.load(Pi_star_ptr + pi_r_base + c1, mask=c1_valid, other=NEG_LARGE)
-        Pi_r_s2 = tl.load(Pi_star_ptr + pi_r_base + c2, mask=c2_valid, other=NEG_LARGE)
+        Pi_l_s1 = tl.load(Pi_star_ptr + pi_l_base + c1, mask=c1_valid, other=NEG_LARGE).to(DTYPE)
+        Pi_l_s2 = tl.load(Pi_star_ptr + pi_l_base + c2, mask=c2_valid, other=NEG_LARGE).to(DTYPE)
+        Pi_r_s1 = tl.load(Pi_star_ptr + pi_r_base + c1, mask=c1_valid, other=NEG_LARGE).to(DTYPE)
+        Pi_r_s2 = tl.load(Pi_star_ptr + pi_r_base + c2, mask=c2_valid, other=NEG_LARGE).to(DTYPE)
 
-        Pi_parent = tl.load(Pi_star_ptr + parent_pi_base + s_offs, mask=mask, other=NEG_LARGE)
-        v_k_val = tl.load(v_k_ptr + parent_vk_base + s_offs, mask=mask, other=0.0)
+        Pi_parent = tl.load(Pi_star_ptr + parent_pi_base + s_offs, mask=mask, other=NEG_LARGE).to(DTYPE)
+        v_k_val = tl.load(v_k_ptr + parent_vk_base + s_offs, mask=mask, other=0.0).to(DTYPE)
 
         if PARAM_LAYOUT == 1:
             log_pD_s = tl.load(log_pD_arg + s_offs, mask=valid_mask, other=NEG_LARGE).to(DTYPE)
@@ -2148,8 +2151,8 @@ def _dts_cross_backward_accum_kernel(
             tl.atomic_add(pi_l_out, vd0 + vd1, sem="relaxed", mask=mask)
             tl.atomic_add(pi_r_out, vd0 + vd2, sem="relaxed", mask=mask)
         else:
-            pi_l_cur = tl.load(pi_l_out, mask=mask, other=0.0)
-            pi_r_cur = tl.load(pi_r_out, mask=mask, other=0.0)
+            pi_l_cur = tl.load(pi_l_out, mask=mask, other=0.0).to(DTYPE)
+            pi_r_cur = tl.load(pi_r_out, mask=mask, other=0.0).to(DTYPE)
             tl.store(pi_l_out, pi_l_cur + vd0 + vd1, mask=mask)
             tl.store(pi_r_out, pi_r_cur + vd0 + vd2, mask=mask)
         if OUTPUT_PIBAR_UD:
@@ -2305,13 +2308,13 @@ def _dts_cross_backward_accum_kernel(
             c1_valid = (c1 < S) & mask
             c2_valid = (c2 < S) & mask
 
-            Pi_l_s1 = tl.load(Pi_star_ptr + pi_l_base + c1, mask=c1_valid, other=NEG_LARGE)
-            Pi_l_s2 = tl.load(Pi_star_ptr + pi_l_base + c2, mask=c2_valid, other=NEG_LARGE)
-            Pi_r_s1 = tl.load(Pi_star_ptr + pi_r_base + c1, mask=c1_valid, other=NEG_LARGE)
-            Pi_r_s2 = tl.load(Pi_star_ptr + pi_r_base + c2, mask=c2_valid, other=NEG_LARGE)
+            Pi_l_s1 = tl.load(Pi_star_ptr + pi_l_base + c1, mask=c1_valid, other=NEG_LARGE).to(DTYPE)
+            Pi_l_s2 = tl.load(Pi_star_ptr + pi_l_base + c2, mask=c2_valid, other=NEG_LARGE).to(DTYPE)
+            Pi_r_s1 = tl.load(Pi_star_ptr + pi_r_base + c1, mask=c1_valid, other=NEG_LARGE).to(DTYPE)
+            Pi_r_s2 = tl.load(Pi_star_ptr + pi_r_base + c2, mask=c2_valid, other=NEG_LARGE).to(DTYPE)
 
-            Pi_parent = tl.load(Pi_star_ptr + parent_pi_base + s_offs, mask=mask, other=NEG_LARGE)
-            v_k_val = tl.load(v_k_ptr + parent_vk_base + s_offs, mask=mask, other=0.0)
+            Pi_parent = tl.load(Pi_star_ptr + parent_pi_base + s_offs, mask=mask, other=NEG_LARGE).to(DTYPE)
+            v_k_val = tl.load(v_k_ptr + parent_vk_base + s_offs, mask=mask, other=0.0).to(DTYPE)
 
             if PARAM_LAYOUT == 1:
                 log_pS_s = tl.load(log_pS_arg + s_offs, mask=valid_mask, other=NEG_LARGE).to(DTYPE)
@@ -2339,10 +2342,10 @@ def _dts_cross_backward_accum_kernel(
                 tl.atomic_add(pi_r_c2_out, vd3, sem="relaxed", mask=c2_valid)
                 tl.atomic_add(pi_l_c2_out, vd4, sem="relaxed", mask=c2_valid)
             else:
-                pi_l_c1_cur = tl.load(pi_l_c1_out, mask=c1_valid, other=0.0)
-                pi_r_c1_cur = tl.load(pi_r_c1_out, mask=c1_valid, other=0.0)
-                pi_r_c2_cur = tl.load(pi_r_c2_out, mask=c2_valid, other=0.0)
-                pi_l_c2_cur = tl.load(pi_l_c2_out, mask=c2_valid, other=0.0)
+                pi_l_c1_cur = tl.load(pi_l_c1_out, mask=c1_valid, other=0.0).to(DTYPE)
+                pi_r_c1_cur = tl.load(pi_r_c1_out, mask=c1_valid, other=0.0).to(DTYPE)
+                pi_r_c2_cur = tl.load(pi_r_c2_out, mask=c2_valid, other=0.0).to(DTYPE)
+                pi_l_c2_cur = tl.load(pi_l_c2_out, mask=c2_valid, other=0.0).to(DTYPE)
                 tl.store(pi_l_c1_out, pi_l_c1_cur + vd3, mask=c1_valid)
                 tl.store(pi_r_c1_out, pi_r_c1_cur + vd4, mask=c1_valid)
                 tl.store(pi_r_c2_out, pi_r_c2_cur + vd3, mask=c2_valid)

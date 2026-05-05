@@ -119,15 +119,6 @@ def _apply_to_static(static: ReconStaticState, fn) -> ReconStaticState:
     return new
 
 
-def _float32_backward_static(static: ReconStaticState) -> ReconStaticState:
-    """Cast floating static tensors to fp32 for CUDA bf16 backward kernels."""
-
-    def _to_float32(t: torch.Tensor) -> torch.Tensor:
-        return t.to(dtype=torch.float32) if t.is_floating_point() else t
-
-    return _apply_to_static(static, _to_float32)
-
-
 def _extract_parameters(theta: torch.Tensor, static: ReconStaticState):
     """Replicates :meth:`GeneDataset._extract_batch_params` exactly."""
     use_uniform = static.pibar_mode == "uniform"
@@ -285,26 +276,6 @@ class _GeneReconFunction(torch.autograd.Function):
         transfer_mat = ctx.transfer_mat
         static: ReconStaticState = ctx.static
 
-        use_fp32_backward = (
-            static.device.type == "cuda" and static.dtype == torch.bfloat16
-        )
-        original_theta_dtype = theta.dtype
-        if use_fp32_backward:
-            theta = theta.float()
-            Pi_star_wave = Pi_star_wave.float()
-            Pibar_star_wave = Pibar_star_wave.float()
-            E_star = E_star.float()
-            E_s1 = E_s1.float()
-            E_s2 = E_s2.float()
-            Ebar = Ebar.float()
-            log_pS = log_pS.float()
-            log_pD = log_pD.float()
-            log_pL = log_pL.float()
-            max_transfer_vec = max_transfer_vec.float()
-            uniform_pibar_row_max = uniform_pibar_row_max.float()
-            transfer_mat = transfer_mat.float() if torch.is_tensor(transfer_mat) else None
-            static = _float32_backward_static(static)
-
         wave_layout = static.wave_layout
 
         if static.genewise:
@@ -413,8 +384,5 @@ class _GeneReconFunction(torch.autograd.Function):
             # remaining theta dims.
             gvec = grad_output.view((-1,) + (1,) * (theta.ndim - 1))
             grad_theta = grad_theta * gvec
-
-        if use_fp32_backward and grad_theta.dtype != original_theta_dtype:
-            grad_theta = grad_theta.to(dtype=original_theta_dtype)
 
         return grad_theta, None, None

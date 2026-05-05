@@ -19,7 +19,10 @@ NEG_INF = float("-inf")
 
 def _uniform_ancestor_sum(expE_2d, ancestors_T):
     """Compute ``expE_2d @ ancestors_T`` with a CUDA bf16 sparse fallback."""
-    if expE_2d.device.type == "cuda" and expE_2d.dtype == torch.bfloat16:
+    if (
+        expE_2d.device.type == "cuda"
+        and (expE_2d.dtype == torch.bfloat16 or ancestors_T.dtype == torch.bfloat16)
+    ):
         with torch.amp.autocast("cuda", enabled=False):
             return (expE_2d.float() @ ancestors_T.float()).contiguous()
     return (expE_2d @ ancestors_T).contiguous()
@@ -82,6 +85,8 @@ def E_step(E, sp_P_idx, sp_child12_idx, log_pS, log_pD, log_pL, transfer_mat, ma
         # slightly negative for species with many ancestors; safe log2 returns
         # -inf (zero transfer contribution) instead of NaN.
         Ebar = _safe_log2(Ebar_linear) + max_E_acc + max_transfer_acc.squeeze(-1)
+        if Ebar.dtype != E.dtype:
+            Ebar = Ebar.to(dtype=E.dtype)
     else:
         # Dense/topk: full matvec with [S,S] transfer matrix
         # (topk uses dense for E since E is [S] — cheap)
