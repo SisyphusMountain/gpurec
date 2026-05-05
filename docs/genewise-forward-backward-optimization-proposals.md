@@ -2021,6 +2021,90 @@ Backward:
   remaining kernels or improve chunking, not chase the removed generic
   DTS/Pibar branches.
 
+## Cross-Mode Triton Autotuning Opportunity
+
+The optimized global/uniform, genewise, and specieswise paths now share most
+of the same Triton kernels.  That makes Triton meta-parameter tuning a useful
+cross-mode follow-up rather than a mode-specific rewrite.  The relevant knobs
+are compile-time constants or launch options, so they affect register pressure,
+occupancy, instruction count, loop trip count, and memory coalescing without
+changing the mathematical recurrence.
+
+The current code already exposes a few knobs through environment variables,
+but the settings were chosen by focused sweeps rather than by an explicit
+autotuning cache:
+
+| Kernel area | Current knobs | Why it may matter |
+|---|---|---|
+| Forward wave step | `GPUREC_FORWARD_WAVE_BLOCK_S`, `GPUREC_FORWARD_WAVE_NUM_WARPS` | Changes species tile width and CTA warp count for `_wave_step_uniform_kernel`; affects ancestor-walk loop count, register pressure, and occupancy. |
+| Backward self-loop | `GPUREC_WAVE_BLOCK_S`, `GPUREC_WAVE_NUM_WARPS` | Same species-tile tradeoff for `_wave_backward_uniform_kernel`, currently the largest backward bucket in optimized genewise/global runs. |
+| Self-loop parameter two-stage reduction | `GPUREC_SELF_LOOP_PARAM_TWO_STAGE_TILE_ROWS`, `GPUREC_SELF_LOOP_PARAM_TWO_STAGE_BLOCK_S`, `GPUREC_SELF_LOOP_PARAM_TWO_STAGE_REDUCE_TILES`, `GPUREC_SELF_LOOP_PARAM_TWO_STAGE_SCALAR_BLOCK`, stage warps | Controls how row tiles write compact partial reductions before the final parameter-gradient reduction. |
+| Parent-reduced DTS forward/backward recompute | `GPUREC_FORWARD_PARENT_REDUCED_DTS_TILE_SPLITS`, `GPUREC_BACKWARD_PARENT_REDUCED_DTS_TILE_SPLITS`, fixed `BLOCK_S=128` today | Balances parallelism over high-fanout split groups against partial-buffer traffic and per-CTA serial work. |
+| DTS backward accumulation | mostly fixed `BLOCK_S=min(256,next_power_of_2(S))`, fixed warps in several launches | Still a major kernel; tile width may trade fewer species blocks for higher register pressure. |
+| Compact/tree Pibar VJP | mostly fixed `BLOCK_S=min(256,next_power_of_2(S))`, `num_warps=4` | The best point may differ between global, genewise, and specieswise because pruning density and active-side patterns differ. |
+| Segmented logsumexp fallback | `BLOCK_H`, `BLOCK_S`, `num_warps`, `num_stages`; `@triton.autotune` scaffold exists but is disabled | Low priority unless this path reappears in a hot profile, but it is an obvious mechanical autotune target. |
+
+The first autotune grid should stay small and profile-driven:
+
+```text
+forward wave:
+    BLOCK_S in {128, 256, 512}
+    num_warps in {4, 8}
+
+backward self-loop:
+    BLOCK_S in {128, 256, 512}
+    num_warps in {4, 8, 16}
+
+parent-reduced DTS:
+    TILE_SPLITS in {32, 64, 128, 256}
+
+DTS backward accumulation:
+    BLOCK_S in {128, 256, 512}
+    num_warps in {4, 8}
+
+compact/tree Pibar VJP:
+    BLOCK_S in {128, 256, 512}
+    num_warps in {4, 8}
+```
+
+This should not be raw `@triton.autotune` on every production run.  The compile
+and search cost is too high, and the correct key is not just `S`.  A practical
+design is an offline benchmark/autotune script that writes a small cache:
+
+```text
+(kernel, mode, dtype, S, wave_size_bucket, fanout_bucket, pruning_bucket)
+    -> {BLOCK_S, num_warps, num_stages, TILE_SPLITS, TILE_ROWS}
+```
+
+Production code would then read the cached choice and launch the already
+compiled specialization directly.  The benchmark key should include mode
+because specieswise/genewise/global now share kernels but not always the same
+constant layout, active mask density, or parameter-gradient layout.
+
+Correctness validation must account for reduction-order changes.  Changing
+`BLOCK_S` or `TILE_SPLITS` can alter fp32 summation order, so `Pi` entries and
+gradients may move by small amounts even when the algorithm is correct.  The
+autotuned configurations should therefore be validated with the same policy as
+other optimized kernels:
+
+```text
+1. fp64 high-iteration likelihood parity when implementations should match;
+2. fp32 likelihood parity at optimized tolerances;
+3. gradient parity versus the current optimized default;
+4. gradcheck / finite-difference checks on small trees;
+5. Nsys/NCU confirmation that the chosen config improves the intended kernel
+   without increasing launch count or moving time into another bucket.
+```
+
+Previous focused sweeps already give useful priors.  On the forward side,
+`BLOCK_S=256, num_warps=8` helped some 50-family runs but was not uniformly
+best at larger sizes.  On the backward side, the self-loop kernel was already
+near its best measured point at `BLOCK_S=256`, `num_warps=8`, while
+`num_warps=16` increased pressure.  Parent-reduced DTS settled near
+`TILE_SPLITS=64` in the documented global/uniform sweeps.  Autotuning is
+therefore expected to produce incremental gains and better mode/dataset
+robustness, not a new order-of-magnitude improvement.
+
 ## Immediate Next Experiment
 
 Proposal 0 through Proposal 4 have succeeded and are promoted for the supported
