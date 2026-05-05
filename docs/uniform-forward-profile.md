@@ -1,6 +1,6 @@
 # Uniform Forward Profile
 
-Last updated: 2026-05-01.
+Last updated: 2026-05-05.
 
 This note records the Nsight Systems and Nsight Compute results for the current
 CUDA uniform-mode forward pass. The current high-level `GeneReconModel` default
@@ -790,3 +790,292 @@ For likelihood-only uniform forward on this dataset:
    more memory-dependent while the wave-step is instruction/SM-heavy, so overlap
    may help, but it will require careful stream scheduling and memory pressure
    checks.
+
+## 2026-05-05 Three-Worker Proposal-Testing Round
+
+This round tested three scheduling/overlap ideas on the same full
+`tests/data/test_trees_1000` fp32 fixed-6 uniform likelihood workload.  The
+timed value is CUDA forward time only; preprocessing and layout are printed by
+the harness but are not included in `timing`.
+
+### A. Revalidate `125/65536` Scheduling
+
+Tested idea: no kernel change.  Use the existing chunk/wave knobs:
+
+```text
+before: family_chunk_size=150, max_wave_size=32768
+after:  family_chunk_size=125, max_wave_size=65536
+```
+
+Representative command:
+
+```bash
+python profiling/bench_uniform_forward_chunking.py \
+  --dataset tests/data/test_trees_1000 \
+  --cache-dir .preprocess_cache \
+  --fams 1000 \
+  --fixed-iters 6 \
+  --warmups 1 \
+  --reps 7 \
+  --family-chunk-size 125 \
+  --max-wave-size 65536 \
+  --overlap-mode off
+```
+
+Saved worker logs:
+
+```text
+/tmp/gpurec_overlap_c/confirm_current_off.log
+/tmp/gpurec_overlap_c/confirm_candidate_off.log
+/tmp/gpurec_profile/uniform_forward_waves/current_c150_w32768.nsys-rep
+/tmp/gpurec_profile/uniform_forward_waves/best_c125_w65536.nsys-rep
+```
+
+Full-run confirmation:
+
+| Schedule | Reps | Waves | Median | Mean | Min | Max | Peak GPU | Loss |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| `150/32768` | 7 | 453 | `2372.222 ms` | `2438.674 ms` | `2367.462 ms` | `2648.470 ms` | `15.662 GiB` | `2157097.0` |
+| `125/65536` | 7 | 422 | `2377.994 ms` | `2393.628 ms` | `2374.349 ms` | `2489.821 ms` | `13.701 GiB` | `2157097.0` |
+
+The earlier scheduling worker sweep still found the best 5-rep median at
+`125/65536`: `2317.698 ms` versus `2344.058 ms` for `150/32768`.  The later
+7-rep confirmation did not reproduce a median speedup, although it did
+reproduce the lower memory footprint.
+
+Profiling evidence from the Nsight traces:
+
+| Schedule | Wave-step launches | Wave-step GPU time | DTS GPU time | Final Pibar | Total captured GPU work |
+|---|---:|---:|---:|---:|---:|
+| `150/32768` | 2718 | `1519.114 ms` | `368.031 ms` | `201.669 ms` | `2313.328 ms` |
+| `125/65536` | 2532 | `1505.620 ms` | `370.309 ms` | `202.292 ms` | `2303.640 ms` |
+
+Correctness/loss agreement: both schedules reported exactly the same harness
+loss, `2157097.0`.
+
+Decision: **retest before changing defaults**.  `125/65536` is a valid
+lower-memory candidate and reduces launch count, but the speedup is within run
+noise and was not stable across the later confirmation.
+
+### B. Split-Row And Fanout Budgets
+
+Tested code change: add a scheduling-only post-pass for cross-family waves.
+For each candidate wave, compute per-clade split fanout from
+`split_parents_sorted`, preserve the original clade order, and start a new
+emitted wave before adding a clade when either budget would be exceeded:
+
+```python
+next_len = len(current) + 1
+next_rows = current_rows + split_counts[clade]
+over_rows = max_split_rows is not None and current and next_rows > max_split_rows
+over_fanout = (
+    max_split_fanout is not None
+    and current
+    and (next_rows / next_len) > max_split_fanout
+)
+if over_rows or over_fanout:
+    emit(current)
+    current = []
+current.append(clade)
+current_rows += split_counts[clade]
+```
+
+This is exposed through `--max-split-rows=...` and
+`--max-split-fanout=...`.  Unit coverage:
+
+```bash
+pytest -q tests/unit/test_uniform_forward_scheduling.py
+```
+
+Result: `2 passed`.
+
+Full-workload commands:
+
+```bash
+python profiling/bench_uniform_forward_chunking.py \
+  --dataset tests/data/test_trees_1000 \
+  --cache-dir .preprocess_cache \
+  --fams 1000 \
+  --fixed-iters 6 \
+  --warmups 1 \
+  --reps 3 \
+  --family-chunk-size 150 \
+  --max-wave-size 32768 \
+  --max-split-rows=65536 \
+  --overlap-mode off
+```
+
+```bash
+python profiling/bench_uniform_forward_chunking.py \
+  --dataset tests/data/test_trees_1000 \
+  --cache-dir .preprocess_cache \
+  --fams 1000 \
+  --fixed-iters 6 \
+  --warmups 1 \
+  --reps 3 \
+  --family-chunk-size 150 \
+  --max-wave-size 32768 \
+  --max-split-fanout=64 \
+  --overlap-mode off
+```
+
+Saved logs:
+
+```text
+/tmp/gpurec_supervisor_round/current.log
+/tmp/gpurec_supervisor_round/split65536_equal.log
+/tmp/gpurec_supervisor_round/fanout64_equal.log
+/tmp/gpurec_supervisor_round/split_smoke_compare.log
+```
+
+The `32768` and `131072` rows below come from the split-scheduler worker's
+final benchmark report; those two raw logs were not preserved in
+`/tmp/gpurec_supervisor_round`.
+
+Full-run timing:
+
+| Schedule | Reps | Waves | Max phase-3 split rows | Budget splits | Median | Mean | Min | Max | Peak GPU | Loss |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| baseline `150/32768` | 3 | 453 | 147050 | 0 | `2352.49 ms` | n/a | n/a | n/a | `15.662 GiB` | `2157097.0` |
+| `max_split_rows=32768` | 3 | 531 | 32663 | 78 | `2342.45 ms` | n/a | n/a | n/a | `15.662 GiB` | `2157097.0` |
+| `max_split_rows=65536` | 3 | 476 | 65474 | 23 | `2362.72 ms` | n/a | n/a | n/a | `15.662 GiB` | `2157097.0` |
+| `max_split_rows=131072` | 3 | 454 | 130076 | 1 | `2354.16 ms` | n/a | n/a | n/a | `15.662 GiB` | `2157097.0` |
+| `max_split_fanout=64` | 3 | 1286 | 109330 | 833 | `2466.007 ms` | `2464.902 ms` | `2458.757 ms` | `2469.942 ms` | `15.664 GiB` | `2157097.0` |
+
+The worker also ran an equal-baseline subset against the saved supervisor logs:
+`max_split_rows=65536` measured `2377.260 ms` median in that run versus
+`2372.222 ms` for the later `150/32768` confirmation.  The two batches disagree
+on the sign of the small split-row effect, which is the main result: the
+largest apparent gain, `max_split_rows=32768`, is only about `10 ms`, or
+`0.4%`, and therefore sits below the observed scheduling-run noise.
+
+Correctness/loss agreement:
+
+```text
+compare_unchunked chunked_nll 8976.357421875 unchunked_nll 8976.357421875 abs_diff 0.0
+compare_unsplit_schedule split_nll 8976.357421875 unsplit_nll 8976.357421875 abs_diff 0.0
+```
+
+Profiling evidence before the change showed why the idea was plausible:
+phase-3 waves had only `50,498` clade rows but `180.091 ms` of main wave work,
+and high-fanout waves with split rows / `W > 64` accounted for `131.798 ms`.
+The row budget did exactly what it was meant to do as a scheduler diagnostic:
+`max_split_rows=32768` reduced the worst phase-3 emitted split rows from
+`147050` to `32663`, and `max_split_rows=65536` reduced it to `65474`.  That
+did not produce a stable end-to-end speedup, because the extra wave launches and
+repeated per-wave setup offset the smaller high-fanout units.  The fanout budget
+was worse: it generated `833` extra waves and was clearly slower.  No
+post-split Nsight trace was available in the worker artifacts; the after-change
+evidence is therefore the harness timing plus emitted-wave/split-row counters.
+
+Decision: **drop fanout budget; do not promote split-row budget**.  Keep the
+harness for diagnostics, but this pass shows that splitting high-fanout waves
+alone does not reduce total forward time.
+
+### C. DTS Overlap And Readiness Modes
+
+Tested code path: the existing `overlap_streams` path is controlled by:
+
+```text
+GPUREC_FORWARD_DTS_OVERLAP_MODE=off|next|ready
+GPUREC_FORWARD_DTS_OVERLAP_MAX_PENDING=N
+```
+
+`next` schedules DTS for wave `k+1` on a prep stream.  `ready` precomputes a
+`dts_ready_after` dependency index and schedules any future split wave whose
+inputs are already available, up to `N` pending DTS results.  The benchmark
+harness sets these through `--overlap-mode` and `--overlap-max-pending`.
+
+Sweep command shape:
+
+```bash
+python profiling/bench_uniform_forward_chunking.py \
+  --dataset tests/data/test_trees_1000 \
+  --cache-dir .preprocess_cache \
+  --fams 1000 \
+  --fixed-iters 6 \
+  --warmups 2 \
+  --reps 5 \
+  --family-chunk-size 125 \
+  --max-wave-size 65536 \
+  --overlap-mode ready \
+  --overlap-max-pending 2
+```
+
+Saved logs:
+
+```text
+/tmp/gpurec_overlap_c/current_*.log
+/tmp/gpurec_overlap_c/candidate_*.log
+```
+
+Current schedule, `150/32768`:
+
+| Mode | Pending | Reps | Median | Mean | Min | Max | Peak GPU | Loss |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| `off`, later confirmation | 2 | 7 | `2372.222 ms` | `2438.674 ms` | `2367.462 ms` | `2648.470 ms` | `15.662 GiB` | `2157097.0` |
+| `next` | 2 | 5 | `2521.748 ms` | `2527.583 ms` | `2367.838 ms` | `2685.756 ms` | `15.662 GiB` | `2157097.0` |
+| `ready` | 1 | 5 | `2426.725 ms` | `2443.309 ms` | `2369.394 ms` | `2622.263 ms` | `15.662 GiB` | `2157097.0` |
+| `ready` | 2 | 5 | `2412.865 ms` | `2414.432 ms` | `2406.864 ms` | `2422.415 ms` | `15.843 GiB` | `2157097.0` |
+| `ready` | 4 | 5 | `2420.994 ms` | `2420.583 ms` | `2412.602 ms` | `2428.048 ms` | `15.843 GiB` | `2157097.0` |
+
+Candidate schedule, `125/65536`:
+
+| Mode | Pending | Reps | Median | Mean | Min | Max | Peak GPU | Loss |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| `off` | 2 | 5 | `2374.034 ms` | `2371.727 ms` | `2363.119 ms` | `2380.256 ms` | `13.701 GiB` | `2157097.0` |
+| `next` | 2 | 5 | `2423.289 ms` | `2429.836 ms` | `2415.871 ms` | `2467.611 ms` | `13.701 GiB` | `2157097.0` |
+| `ready` | 1 | 5 | `2423.594 ms` | `2433.449 ms` | `2420.669 ms` | `2473.581 ms` | `13.701 GiB` | `2157097.0` |
+| `ready` | 2 | 5 | `2421.261 ms` | `2431.995 ms` | `2419.633 ms` | `2473.330 ms` | `13.701 GiB` | `2157097.0` |
+| `ready` | 4 | 5 | `2425.111 ms` | `2433.368 ms` | `2416.123 ms` | `2476.376 ms` | `13.701 GiB` | `2157097.0` |
+
+Earlier single-chunk overlap timings were consistent with the full-workload
+result:
+
+| Families | Off median | Overlap median | Peak GPU | Loss |
+|---:|---:|---:|---:|---:|
+| 50 | `116.338 ms` | `116.849 ms` | `5.272 GiB` | `107804.265625` |
+| 150 | `342.651 ms` | `344.285 ms` | `15.018 GiB` | `323018.6875` |
+
+Full-workload Nsight Systems traces were collected for `150/32768 off` and
+`150/32768 ready2`:
+
+```bash
+nsys profile --trace=cuda,nvtx,osrt --capture-range=cudaProfilerApi \
+  --capture-range-end=stop --force-overwrite=true \
+  --output=/tmp/gpurec_overlap_c/nsys_current_ready2 \
+  python profiling/bench_uniform_forward_chunking.py ... \
+  --family-chunk-size 150 --max-wave-size 32768 \
+  --overlap-mode ready --overlap-max-pending 2 --profile-cuda-api
+```
+
+| Trace | Streams | Kernels | Sum kernel time | Union active GPU time | Overlap | Makespan |
+|---|---:|---:|---:|---:|---:|---:|
+| `off` | 1 | 5927 | `2354.576 ms` | `2354.576 ms` | `0.000 ms` | `2359.178 ms` |
+| `ready2` | 8 | 5927 | `2385.506 ms` | `2353.073 ms` | `32.433 ms` | `2409.969 ms` |
+
+So stream overlap is real, but too small to win.  The extra overlapped GPU work
+was about `32.4 ms`, while the ready trace's measured makespan was about
+`50.8 ms` longer than `off`.
+
+Kernel and API attribution explains the regression:
+
+| Metric | `off` | `ready2` | Change |
+|---|---:|---:|---:|
+| `_wave_step_uniform_kernel` | `1554.484 ms` | `1577.785 ms` | `+23.301 ms` |
+| `_dts_fused_kernel` | `207.985 ms` | `208.956 ms` | `+0.971 ms` |
+| `_dts_parent_reduced_ge2_stage1_kernel` | `157.592 ms` | `157.194 ms` | `-0.398 ms` |
+| CUDA launch overhead | `10.912 ms` | `11.632 ms` | `+0.720 ms` |
+| CUDA event/wait overhead | `0.016 ms` | `2.200 ms` | `+2.184 ms` |
+| CUDA malloc/free overhead | `0.000 ms` | `126.863 ms` | `+126.863 ms` |
+
+DTS is a real but smaller bucket than wave-step (`368.031 ms` versus
+`1519.114 ms` in the `150/32768` trace), so overlap has a limited ceiling.
+The tested stream/event scheduling did not expose a net gain; `ready` also
+increased current-schedule peak memory from `15.662 GiB` to `15.843 GiB` when
+two or more DTS results were pending.
+
+Decision: **drop as a default optimization**.  Keep the modes as experimental
+flags only.  Any retest should first reduce event/pending-result overhead or
+target overlap across chunks, because same-wave-loop DTS readiness did not beat
+the serialized path.
