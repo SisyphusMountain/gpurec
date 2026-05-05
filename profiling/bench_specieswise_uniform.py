@@ -56,8 +56,13 @@ OPTIMIZED_FLAGS = {
     "GPUREC_BACKWARD_PARENT_REDUCED_DTS": "tiled",
     "GPUREC_BACKWARD_PARENT_REDUCED_DTS_MIN_SPLITS": "0",
     "GPUREC_FUSED_CROSS_PIBAR_VJP": "1",
+    "GPUREC_FUSED_CROSS_PIBAR_VJP_IMPL": "tree",
     "GPUREC_BACKWARD_LEAF_INDEX": "1",
+    "GPUREC_FUSED_DTS_BACKWARD_ACCUM": "1",
     "GPUREC_DTS_PIBAR_UD_FUSION": "1",
+    "GPUREC_DTS_PIBAR_UD_SKIP_ZERO_SIDES": "1",
+    "GPUREC_DTS_PIBAR_UD_COMPACT_LEVELS": "1",
+    "GPUREC_DTS_GRAD_MT_TWO_STAGE": "1",
 }
 
 
@@ -117,7 +122,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--use-pruning",
         action=argparse.BooleanOptionalAction,
-        default=os.getenv("USE_PRUNING", "0") != "0",
+        default=os.getenv("USE_PRUNING", "1") != "0",
     )
     parser.add_argument(
         "--pruning-threshold",

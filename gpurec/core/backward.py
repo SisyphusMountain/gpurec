@@ -552,12 +552,12 @@ def Pi_wave_backward(
         else 0.0
     )
     dts_pibar_ud_skip_zero_sides_enabled = (
-        os.environ.get("GPUREC_DTS_PIBAR_UD_SKIP_ZERO_SIDES", "0") != "0"
+        os.environ.get("GPUREC_DTS_PIBAR_UD_SKIP_ZERO_SIDES", "1") != "0"
         or os.environ.get("GPUREC_DTS_PIBAR_UD_WORKLIST", "0") != "0"
         or dts_pibar_ud_side_threshold > 0.0
     )
     dts_pibar_ud_compact_levels_enabled = (
-        os.environ.get("GPUREC_DTS_PIBAR_UD_COMPACT_LEVELS", "0") != "0"
+        os.environ.get("GPUREC_DTS_PIBAR_UD_COMPACT_LEVELS", "1") != "0"
     )
     dts_pibar_ud_euler_prefix_enabled = (
         os.environ.get("GPUREC_DTS_PIBAR_UD_EULER_PREFIX", "0") != "0"
