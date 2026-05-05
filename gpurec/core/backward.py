@@ -6,19 +6,14 @@ import torch
 from .log2_utils import logsumexp2, logaddexp2, _safe_log2_internal as _safe_log2
 from .likelihood import _uniform_ancestor_sum
 from ._helpers import _safe_exp2_ratio  # noqa: F401
+from .memory_policy import (
+    env_choice,
+    env_flag_enabled,
+    proposal0_memory_gate,
+)
 
 NEG_INF = float("-inf")
 _SUPPORTED_BACKWARD_FLOAT_DTYPES = (torch.float32, torch.float64, torch.bfloat16)
-
-
-def _env_flag_enabled(name: str, default: str = "0") -> bool:
-    return os.environ.get(name, default).strip().lower() not in (
-        "",
-        "0",
-        "false",
-        "off",
-        "no",
-    )
 
 
 def _uniform_ancestor_left_sum(ancestors_T: torch.Tensor, rhs_T: torch.Tensor) -> torch.Tensor:
@@ -1317,9 +1312,9 @@ def Pi_wave_backward(
         and _auto_wrapped
         and "none" not in scratch_pool_scopes
     )
+    max_wave_W = max((int(meta.get('W', 0)) for meta in wave_metas), default=0)
     scratch_pool = None
     if scratch_pool_enabled:
-        max_wave_W = max((int(meta.get('W', 0)) for meta in wave_metas), default=0)
         max_dts_splits = max(
             (
                 int(meta['sl'].numel())
@@ -1449,16 +1444,28 @@ def Pi_wave_backward(
     fused_wave_param_accum_enabled = (
         os.environ.get("GPUREC_FUSED_WAVE_PARAM_ACCUM", "1") != "0"
     )
-    self_loop_2d_max_s = int(os.environ.get("GPUREC_SELF_LOOP_2D_MAX_S", "2048"))
-    self_loop_2d_triton_requested = _env_flag_enabled(
-        "GPUREC_SELF_LOOP_2D_TRITON", "1"
+    self_loop_2d_choice = env_choice("GPUREC_SELF_LOOP_2D_TRITON", "auto")
+    self_loop_2d_triton_requested = env_flag_enabled(
+        "GPUREC_SELF_LOOP_2D_TRITON", "auto"
     )
+    self_loop_2d_forced = self_loop_2d_choice in ("force", "forced", "always")
+    self_loop_2d_memory_ok = False
+    if self_loop_2d_triton_requested and dtype in (torch.float32, torch.float64):
+        if self_loop_2d_forced:
+            self_loop_2d_memory_ok = True
+        else:
+            self_loop_2d_memory_ok, _required_bytes, _budget_bytes = proposal0_memory_gate(
+                max(1, int(max_wave_W)),
+                S,
+                dtype,
+                device=device,
+            )
     self_loop_2d_triton_enabled = (
         self_loop_2d_triton_requested
         and can_use_fused_uniform_backward
         and device.type == "cuda"
         and dtype in (torch.float32, torch.float64)
-        and S <= self_loop_2d_max_s
+        and self_loop_2d_memory_ok
     )
     self_loop_tree_staged_enabled = (
         os.environ.get("GPUREC_SELF_LOOP_TREE_STAGED", "0").strip().lower()

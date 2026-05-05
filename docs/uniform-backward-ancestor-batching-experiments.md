@@ -87,7 +87,7 @@ Present opt-in paths related to this document:
 | `GPUREC_CUDA_SELF_LOOP_NOSPLIT_CORRECTION` | yes | `self` if the CUDA path is enabled | Use `tree` for current exact semantics. |
 | `GPUREC_SELF_LOOP_PARAM_TWO_STAGE` | yes | off | Removes self-loop parameter REDs in eligible no-split waves, but regressed end-to-end in prior tests. |
 | `GPUREC_DTS_PIBAR_UD_EULER_PREFIX` | yes | off | Cross-clade staged Pibar VJP interval-prefix path, not the self-loop kernel. |
-| `GPUREC_SELF_LOOP_2D_TRITON` | yes | off | Proposal 0 prototype. CUDA fp32/fp64 only, default `GPUREC_SELF_LOOP_2D_MAX_S=2048`; returns per-element parameter VJPs, so the model path disables in-kernel self-loop parameter accumulation when enabled. |
+| `GPUREC_SELF_LOOP_2D_TRITON` | yes | `auto` | Proposal 0 2D Triton self-loop path. CUDA fp32/fp64 only; default routing is controlled by the memory policy, not by a fixed species-count cap. It returns per-element parameter VJPs, so the model path disables in-kernel self-loop parameter accumulation when enabled. |
 | `GPUREC_SELF_LOOP_2D_BLOCK_W` | yes | `1` | Proposal 0 row block size. Larger values multiply the full-species vector width and are likely register-pressure limited. |
 | `GPUREC_SELF_LOOP_TREE_STAGED` | yes | off | Proposal 1 staged tree-DP prototype. CUDA fp32/fp64 only; returns per-element parameter VJPs, so the model path disables in-kernel self-loop parameter accumulation when enabled. |
 | `GPUREC_SELF_LOOP_TREE_TILE_W` | yes | `2` in implementation, `4` in harness variant | Proposal 1 row tile. Current benchmarked harness variant is `proposal1_tree_staged_w4_s256`. |
@@ -215,18 +215,23 @@ intentional approximation. The current exact semantics are not `self`.
 
 ## Proposal 0: 2D Triton Self-Loop Kernel
 
-`256bff7` implements this as an opt-in Triton prototype. One Triton program
+`256bff7` implemented this as an opt-in Triton prototype; `b013590` promoted it
+to the default path when eligible, and the subsequent memory-policy update
+removed the fixed `S <= 2048` default gate. One Triton program
 processes `BLOCK_W` clade rows and the full species vector
 `BLOCK_S=next_power_of_2(S)`. The implementation is intentionally conservative:
-it supports CUDA fp32/fp64 only, refuses `S > GPUREC_SELF_LOOP_2D_MAX_S`
-(`2048` by default), and returns per-element parameter VJPs instead of using
+it supports CUDA fp32/fp64 only, uses a tensor-payload memory estimate against
+the current GPU budget, and returns per-element parameter VJPs instead of using
 the fused in-kernel parameter accumulators.
 
 ```python
 if not env("GPUREC_SELF_LOOP_2D_TRITON"):
     return current_fused_triton()
 
-if dtype not in (fp32, fp64) or S > GPUREC_SELF_LOOP_2D_MAX_S:
+if dtype not in (fp32, fp64):
+    return unavailable_or_raise_if_strict()
+
+if not proposal0_memory_estimate_fits_gpu_budget(C, S, max_wave_rows, dtype):
     return unavailable_or_raise_if_strict()
 
 precompute_kernel:
@@ -276,12 +281,14 @@ Test matrix:
 
 | env flag | values |
 |---|---|
-| `GPUREC_SELF_LOOP_2D_TRITON` | `0`, `1` |
+| `GPUREC_SELF_LOOP_2D_TRITON` | `auto`, `0`, `1`, `force` |
 | `GPUREC_SELF_LOOP_2D_BLOCK_W` | `1`, `2`, maybe `4` if compilation permits |
 | `GPUREC_SELF_LOOP_2D_BLOCK_NODES` | default `64` |
 | `GPUREC_SELF_LOOP_2D_NUM_WARPS` | default `8` |
 | `GPUREC_SELF_LOOP_2D_JT_NUM_WARPS` | defaults to `GPUREC_SELF_LOOP_2D_NUM_WARPS` |
-| `GPUREC_SELF_LOOP_2D_MAX_S` | default `2048` |
+| `GPUREC_SELF_LOOP_2D_MEMORY_GATE` | default `1`; set `0` only for debugging/profiling |
+| `GPUREC_MEMORY_POLICY_FRACTION` | default `0.85` |
+| `GPUREC_MEMORY_POLICY_RESERVE_GIB` | default `1.0` |
 
 Correctness commands run by the documentation pass:
 

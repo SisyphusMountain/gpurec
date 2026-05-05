@@ -4,17 +4,19 @@ Date: 2026-05-05
 
 This document records the memory audit and tuning sweep that led to making
 Proposal 0, the 2D Triton self-loop backward path, the default uniform backward
-path when it is eligible.
+path when it is eligible. The default is no longer controlled by a fixed species
+count threshold. It is controlled by an explicit tensor-payload memory estimate
+and the current GPU memory budget.
 
 ## New Default
 
 The practical default for the full global/uniform forward+backward pipeline is:
 
 ```bash
-GPUREC_SELF_LOOP_2D_TRITON=1
+GPUREC_SELF_LOOP_2D_TRITON=auto
 GPUREC_SELF_LOOP_2D_BLOCK_W=1
-FAMILY_CHUNK_SIZE=25
-MAX_WAVE_SIZE=8192
+FAMILY_CHUNK_SIZE=auto
+MAX_WAVE_SIZE=auto
 ```
 
 The core backward path enables Proposal 0 by default only when it is eligible:
@@ -23,7 +25,7 @@ The core backward path enables Proposal 0 by default only when it is eligible:
 - uniform `Pibar` mode;
 - fused uniform backward active;
 - `fp32` or `fp64`;
-- `S <= GPUREC_SELF_LOOP_2D_MAX_S`, default `2048`.
+- estimated Proposal 0 payload fits the current GPU memory budget.
 
 This eligibility gate is important because Proposal 0 does not currently support
 `bf16`. If the default were a plain environment flip, `bf16` would disable the
@@ -31,6 +33,8 @@ baseline in-kernel parameter accumulation and then fall back to the older kernel
 which would be a silent regression.
 
 Set `GPUREC_SELF_LOOP_2D_TRITON=0` to force the older fused self-loop kernel.
+Set `GPUREC_SELF_LOOP_2D_TRITON=force` only for debugging or profiling a case
+that the memory policy rejects.
 
 ## Runtime And Memory Frontier
 
@@ -98,6 +102,48 @@ The full training pass also keeps several resident `[C, S]` tensors per chunk:
 At 50 families these are each about `2.4 GiB`; at 100 families each is about
 `4.7 GiB`. This is why resident family chunk size dominates memory, while
 `MAX_WAVE_SIZE` mainly controls per-wave scratch and launch granularity.
+
+The exact payload formulas used by the policy are:
+
+```text
+bytes(dtype) = tensor element size in bytes
+
+dense_state_bytes(C, S, dtype)
+    = 3 * C * S * bytes(dtype)
+
+proposal0_wave_scratch_bytes(W, S, dtype)
+    = 10 * W * S * bytes(dtype)
+
+baseline_wave_scratch_bytes(W, S, dtype)
+    = 8 * W * S * bytes(dtype)
+
+uniform_training_payload_bytes(C, S, W, dtype, proposal0)
+    = dense_state_bytes(C, S, dtype)
+      + selected_wave_scratch_bytes(W, S, dtype)
+      + small row/topology allowance
+```
+
+`C` is the number of clades resident in the current family chunk, `S` is the
+number of species, and `W` is the emitted maximum wave size after applying
+`MAX_WAVE_SIZE`.
+
+The formula is exact for tensor payload bytes. The policy then compares it to a
+conservative GPU memory budget:
+
+```text
+budget = min(total_vram * GPUREC_MEMORY_POLICY_FRACTION,
+             current_free_vram - GPUREC_MEMORY_POLICY_RESERVE_GIB)
+```
+
+Defaults:
+
+```bash
+GPUREC_MEMORY_POLICY_FRACTION=0.85
+GPUREC_MEMORY_POLICY_RESERVE_GIB=1.0
+```
+
+The margin is necessary because PyTorch allocator rounding, cached blocks,
+profiler state, and temporary tensors are not captured by the payload formula.
 
 ## Highest-Value Memory Improvements
 

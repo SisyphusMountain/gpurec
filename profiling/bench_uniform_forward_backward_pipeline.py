@@ -31,6 +31,7 @@ from gpurec.core.backward import Pi_wave_backward
 from gpurec.core.extract_parameters import extract_parameters_uniform
 from gpurec.core.forward import Pi_wave_forward
 from gpurec.core.likelihood import E_fixed_point, compute_log_likelihood
+from gpurec.core.memory_policy import choose_uniform_pipeline_policy
 from gpurec.core.model import GeneDataset
 from gpurec.optimization.implicit_grad import _e_adjoint_and_theta_vjp
 from profiling.bench_uniform_forward_chunking import (
@@ -66,7 +67,7 @@ DEFAULT_FLAGS = {
     "GPUREC_DTS_GRAD_MT_TWO_STAGE": "1",
     "GPUREC_BACKWARD_PARENT_REDUCED_DTS": "tiled",
     "GPUREC_BACKWARD_PARENT_REDUCED_DTS_TILE_SPLITS": "64",
-    "GPUREC_SELF_LOOP_2D_TRITON": "1",
+    "GPUREC_SELF_LOOP_2D_TRITON": "auto",
     "GPUREC_SELF_LOOP_2D_BLOCK_W": "1",
 }
 
@@ -144,6 +145,26 @@ def _parse_optional_int(value: str | None) -> int | None:
     return int(text)
 
 
+def _parse_auto_int(value: str | int | None) -> int | str:
+    if value is None:
+        return "auto"
+    text = str(value).strip().lower()
+    if text in ("", "auto", "default"):
+        return "auto"
+    return int(text)
+
+
+def _parse_auto_optional_int(value: str | int | None) -> int | str | None:
+    if value is None:
+        return "auto"
+    text = str(value).strip().lower()
+    if text in ("", "auto", "default"):
+        return "auto"
+    if text in ("0", "none", "null"):
+        return None
+    return int(text)
+
+
 def _parse_dtype(value: str) -> torch.dtype:
     text = value.strip().lower()
     if text in ("float32", "fp32", "single"):
@@ -158,8 +179,8 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--dataset", default=os.getenv("DATASET", "tests/data/test_trees_1000"))
     parser.add_argument("--start", type=int, default=int(os.getenv("FAMILY_START", "0")))
     parser.add_argument("--fams", type=int, default=int(os.getenv("FAMS", "1000")))
-    parser.add_argument("--family-chunk-size", type=int, default=int(os.getenv("FAMILY_CHUNK_SIZE", "25")))
-    parser.add_argument("--max-wave-size", default=os.getenv("MAX_WAVE_SIZE", "8192"))
+    parser.add_argument("--family-chunk-size", default=os.getenv("FAMILY_CHUNK_SIZE", "auto"))
+    parser.add_argument("--max-wave-size", default=os.getenv("MAX_WAVE_SIZE", "auto"))
     parser.add_argument("--fixed-iters", default=os.getenv("FIXED_ITERS_PI", "6"))
     parser.add_argument("--reps", type=int, default=int(os.getenv("REPS", "3")))
     parser.add_argument("--warmups", type=int, default=int(os.getenv("WARMUPS", "1")))
@@ -201,9 +222,10 @@ def _parse_args() -> argparse.Namespace:
         default=os.getenv("EMPTY_CACHE_BETWEEN_REPS", "0") != "0",
     )
     args = parser.parse_args()
-    args.max_wave_size = _parse_optional_int(args.max_wave_size)
+    args.family_chunk_size = _parse_auto_int(args.family_chunk_size)
+    args.max_wave_size = _parse_auto_optional_int(args.max_wave_size)
     args.fixed_iters = _parse_optional_int(args.fixed_iters)
-    if args.family_chunk_size < 0:
+    if isinstance(args.family_chunk_size, int) and args.family_chunk_size < 0:
         raise ValueError("--family-chunk-size must be non-negative")
     if args.reps <= 0:
         raise ValueError("--reps must be positive")
@@ -317,10 +339,13 @@ def _optimized_feature_status(
         and s_gt_256
     )
     proposal0_self_loop = int(
-        _env_enabled("GPUREC_SELF_LOOP_2D_TRITON", "1")
+        _env_enabled("GPUREC_SELF_LOOP_2D_TRITON", "auto")
         and cuda_dtype_ok
         and s_gt_256
-        and int(static.dataset.S) <= int(os.environ.get("GPUREC_SELF_LOOP_2D_MAX_S", "2048"))
+        and (
+            getattr(args, "memory_policy", None) is None
+            or bool(getattr(args.memory_policy, "proposal0", False))
+        )
     )
     optimized = int(
         root_row_output == 0
@@ -421,6 +446,33 @@ def _make_static_inputs(args: argparse.Namespace) -> StaticInputs:
     clade_counts = [int(f["C"]) for f in dataset.families]
     split_counts = [int(f["N_splits"]) for f in dataset.families]
     selected_indices = list(range(len(dataset.families)))
+    memory_policy = None
+    if args.family_chunk_size == "auto" or args.max_wave_size == "auto":
+        family_candidates = (
+            (25, 50, 10, 75, 100)
+            if args.family_chunk_size == "auto"
+            else (int(args.family_chunk_size),)
+        )
+        if args.max_wave_size == "auto":
+            wave_candidates = (8192, 16384, 4096, 32768)
+        elif args.max_wave_size is None:
+            wave_candidates = (max(1, sum(clade_counts)),)
+        else:
+            wave_candidates = (int(args.max_wave_size),)
+        memory_policy = choose_uniform_pipeline_policy(
+            clade_counts,
+            int(dataset.S),
+            dtype,
+            device=device,
+            family_chunk_candidates=family_candidates,
+            max_wave_candidates=wave_candidates,
+        )
+        if args.family_chunk_size == "auto":
+            args.family_chunk_size = memory_policy.family_chunk_size
+        if args.max_wave_size == "auto":
+            args.max_wave_size = memory_policy.max_wave_size
+        os.environ["GPUREC_SELF_LOOP_2D_TRITON"] = "1" if memory_policy.proposal0 else "0"
+    args.memory_policy = memory_policy
     specs = _make_chunks(
         selected_indices,
         clade_counts,
@@ -957,6 +1009,21 @@ def _print_policy(static: StaticInputs, args: argparse.Namespace) -> None:
         "preprocess_s", f"{static.preprocess_s:.6f}",
         "layout_s", f"{static.layout_s:.6f}",
     )
+    memory_policy = getattr(args, "memory_policy", None)
+    if memory_policy is not None:
+        print(
+            "memory_policy",
+            "proposal0", int(memory_policy.proposal0),
+            "family_chunk_size", memory_policy.family_chunk_size,
+            "max_wave_size", memory_policy.max_wave_size,
+            "estimated_payload_gib", f"{memory_policy.estimated_payload_bytes / (1024 ** 3):.3f}",
+            "budget_gib", (
+                f"{memory_policy.budget_bytes / (1024 ** 3):.3f}"
+                if memory_policy.budget_bytes is not None
+                else "unknown"
+            ),
+            "reason", memory_policy.reason,
+        )
     print("chunk_table idx first last families clades splits waves max_wave split_rows max_wave_split_rows")
     for idx, built in enumerate(static.built_chunks):
         print(

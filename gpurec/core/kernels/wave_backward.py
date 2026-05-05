@@ -13,6 +13,8 @@ import torch
 import triton
 import triton.language as tl
 
+from gpurec.core.memory_policy import proposal0_memory_gate
+
 _cuda_pibar_from_ud_fallback_warned = False
 _SUPPORTED_FLOAT_DTYPES = (torch.float32, torch.float64, torch.bfloat16)
 
@@ -1901,13 +1903,23 @@ def _wave_backward_uniform_2d_prototype(
             "GPUREC_SELF_LOOP_2D_TRITON returns per-element parameter VJPs; "
             "disable in-kernel self-loop parameter accumulation for this prototype",
         )
-    max_s = int(os.environ.get("GPUREC_SELF_LOOP_2D_MAX_S", "2048"))
-    if S > max_s:
-        return _self_loop_prototype_unavailable(
-            mode,
-            f"GPUREC_SELF_LOOP_2D_TRITON requested for S={S}, above "
-            f"GPUREC_SELF_LOOP_2D_MAX_S={max_s}",
+    choice = os.environ.get("GPUREC_SELF_LOOP_2D_TRITON", "auto").strip().lower()
+    force = choice in ("force", "forced", "always")
+    memory_gate = _env_flag_enabled("GPUREC_SELF_LOOP_2D_MEMORY_GATE", "1")
+    if memory_gate and not force:
+        ok, required_bytes, budget_bytes = proposal0_memory_gate(
+            W,
+            S,
+            Pi_star.dtype,
+            device=Pi_star.device,
         )
+        if not ok:
+            return _self_loop_prototype_unavailable(
+                mode,
+                "GPUREC_SELF_LOOP_2D_TRITON estimated scratch "
+                f"{required_bytes / (1024 ** 3):.2f} GiB above memory budget "
+                f"{(budget_bytes or 0) / (1024 ** 3):.2f} GiB",
+            )
     if const_layout not in (0, 1, 2):
         return _self_loop_prototype_unavailable(mode, "unsupported self-loop constant layout")
     if use_leaf_index and leaf_logp_mode not in (0, 1, 2, 3):
