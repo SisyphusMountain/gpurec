@@ -17,6 +17,13 @@ NEG_INF = float("-inf")
 # E solver
 # =========================================================================
 
+def _uniform_ancestor_sum(expE_2d, ancestors_T):
+    """Compute ``expE_2d @ ancestors_T`` with a CUDA bf16 sparse fallback."""
+    if expE_2d.device.type == "cuda" and expE_2d.dtype == torch.bfloat16:
+        with torch.amp.autocast("cuda", enabled=False):
+            return (expE_2d.float() @ ancestors_T.float()).contiguous()
+    return (expE_2d @ ancestors_T).contiguous()
+
 def E_step(E, sp_P_idx, sp_child12_idx, log_pS, log_pD, log_pL, transfer_mat, max_transfer_mat, pibar_mode='dense',
            ancestors_T=None):
     """E can either have shape [S] or [N_genes, S]. Likewise, transfer_mat can have shape [S, S] or [N_genes, S, S]."""
@@ -57,16 +64,24 @@ def E_step(E, sp_P_idx, sp_child12_idx, log_pS, log_pD, log_pL, transfer_mat, ma
         max_E = E.max(dim=-1, keepdim=True).values
         expE = torch.exp2(E - max_E)                     # [S] or [N, S]
         expE_2d = expE.unsqueeze(0) if expE.ndim == 1 else expE
-        row_sum = expE_2d.sum(dim=-1, keepdim=True)      # [1, 1] or [N, 1]
+        if expE_2d.device.type == "cuda" and expE_2d.dtype == torch.bfloat16:
+            expE_2d_acc = expE_2d.float()
+            max_E_acc = max_E.float()
+            max_transfer_acc = max_transfer_mat.float()
+        else:
+            expE_2d_acc = expE_2d
+            max_E_acc = max_E
+            max_transfer_acc = max_transfer_mat
+        row_sum = expE_2d_acc.sum(dim=-1, keepdim=True)  # [1, 1] or [N, 1]
         # Sparse COO matmul returns a column-major (non-contiguous) result when LHS
         # is 2D (batched case). Make it contiguous before subsequent arithmetic so
         # downstream Triton kernels that assume C-contiguous layout don't read garbage.
-        ancestor_sum = (expE_2d @ ancestors_T).contiguous()  # [1, S] or [N, S]
+        ancestor_sum = _uniform_ancestor_sum(expE_2d, ancestors_T)  # [1, S] or [N, S]
         Ebar_linear = (row_sum - ancestor_sum).squeeze(0) if expE.ndim == 1 else (row_sum - ancestor_sum)
         # Use safe log2: float32 cancellation can make row_sum - ancestor_sum
         # slightly negative for species with many ancestors; safe log2 returns
         # -inf (zero transfer contribution) instead of NaN.
-        Ebar = _safe_log2(Ebar_linear) + max_E + max_transfer_mat.squeeze(-1)
+        Ebar = _safe_log2(Ebar_linear) + max_E_acc + max_transfer_acc.squeeze(-1)
     else:
         # Dense/topk: full matvec with [S,S] transfer matrix
         # (topk uses dense for E since E is [S] — cheap)

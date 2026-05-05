@@ -55,6 +55,15 @@ def _copy_rates_to_model(model: "GeneReconModel", rates: torch.Tensor) -> None:
     model.static.warm_E = None
 
 
+def _cast_model_dtype_(
+    model: "GeneReconModel",
+    dtype: torch.dtype,
+) -> None:
+    """Cast resident model state and clear dtype-sensitive warm starts."""
+    model.to(dtype=dtype)
+    model.static.warm_E = None
+
+
 def _validate_global_uniform_model(model: "GeneReconModel") -> None:
     mode = getattr(model, "mode", None)
     if mode != "global":
@@ -180,13 +189,18 @@ def _run_lbfgs_phase(
             model.theta.clamp_(min=theta_min)
 
         opt.zero_grad(set_to_none=True)
+        forward_start = time.perf_counter()
         loss = model()
+        _synchronize(device)
+        forward_time = time.perf_counter() - forward_start
         if not torch.isfinite(loss.detach()):
             raise FloatingPointError(
                 f"Non-finite NLL in optimize_global_rates_lbfgs phase={phase}"
             )
+        backward_start = time.perf_counter()
         loss.backward()
         _synchronize(device)
+        backward_time = time.perf_counter() - backward_start
 
         grad = model.theta.grad.detach()
         if not torch.isfinite(grad).all():
@@ -219,6 +233,8 @@ def _run_lbfgs_phase(
             "gradient": grad_cpu,
             "relative_rate_step": rate_step,
             "nll_change": nll_change,
+            "forward_time_s": forward_time,
+            "backward_time_s": backward_time,
         }
         history.append(record)
 
@@ -252,6 +268,126 @@ def _run_lbfgs_phase(
     }
 
 
+def _run_bf16_start_phase(
+    model: "GeneReconModel",
+    *,
+    min_rate: float,
+    steps: int,
+    lr: float,
+    history: list[dict[str, Any]],
+    total_start: float,
+    verbose: bool,
+) -> dict[str, Any]:
+    if steps < 1:
+        return {"phase": "bf16_start", "time_s": 0.0, "evaluations": 0}
+
+    if model.theta.device.type != "cuda":
+        raise ValueError("bf16_start_steps requires a CUDA resident model")
+    if not torch.cuda.is_bf16_supported(model.theta.device):
+        raise ValueError("bf16_start_steps requires CUDA bf16 support")
+
+    device = model.theta.device
+    theta_min = math.log2(min_rate)
+    phase_start = time.perf_counter()
+    previous_rates: torch.Tensor | None = None
+    previous_nll: float | None = None
+    beta1 = 0.9
+    beta2 = 0.999
+    eps = 1e-8
+    m = torch.zeros_like(model.theta, dtype=torch.float32, device=device)
+    v = torch.zeros_like(model.theta, dtype=torch.float32, device=device)
+
+    for step_idx in range(1, steps + 1):
+        eval_start = time.perf_counter()
+        with torch.no_grad():
+            model.theta.clamp_(min=theta_min)
+
+        model.zero_grad(set_to_none=True)
+        forward_start = time.perf_counter()
+        loss = model()
+        _synchronize(device)
+        forward_time = time.perf_counter() - forward_start
+        if not torch.isfinite(loss.detach()):
+            raise FloatingPointError(
+                "Non-finite NLL in optimize_global_rates_lbfgs phase=bf16_start"
+            )
+
+        backward_start = time.perf_counter()
+        loss.backward()
+        _synchronize(device)
+        backward_time = time.perf_counter() - backward_start
+
+        grad = model.theta.grad.detach().float()
+        if not torch.isfinite(grad).all():
+            raise FloatingPointError(
+                "Non-finite theta gradient in optimize_global_rates_lbfgs "
+                "phase=bf16_start"
+            )
+
+        nll = float(loss.detach().float().cpu())
+        theta_cpu = model.theta.detach().cpu().clone()
+        rates_cpu = torch.exp2(theta_cpu.float())
+        grad_cpu = grad.detach().cpu().clone()
+        grad_inf = float(grad_cpu.abs().max().item())
+        rate_step = _max_relative_rate_step(rates_cpu, previous_rates)
+        nll_change = None if previous_nll is None else nll - previous_nll
+        eval_time = time.perf_counter() - eval_start
+
+        record = {
+            "phase": "bf16_start",
+            "eval": len(history) + 1,
+            "phase_eval": step_idx,
+            "elapsed_s": time.perf_counter() - total_start,
+            "eval_time_s": eval_time,
+            "theta": theta_cpu,
+            "rates": rates_cpu,
+            "nll": nll,
+            "negative_log_likelihood": nll,
+            "log_likelihood": -nll,
+            "grad_infinity_norm": grad_inf,
+            "gradient": grad_cpu,
+            "relative_rate_step": rate_step,
+            "nll_change": nll_change,
+            "forward_time_s": forward_time,
+            "backward_time_s": backward_time,
+        }
+        history.append(record)
+
+        if verbose:
+            step_s = "n/a" if rate_step is None else f"{rate_step:.3e}"
+            delta_s = "n/a" if nll_change is None else f"{nll_change:.3e}"
+            rates_s = ", ".join(f"{float(x):.6e}" for x in rates_cpu)
+            print(
+                f"  bf16_start eval {step_idx:3d}  NLL={nll:.6f}  "
+                f"|g|={grad_inf:.3e}  dNLL={delta_s}  rel_rate_step={step_s}  "
+                f"rates=({rates_s})  t={eval_time:.2f}s",
+                flush=True,
+            )
+
+        with torch.no_grad():
+            m.mul_(beta1).add_(grad, alpha=1.0 - beta1)
+            v.mul_(beta2).addcmul_(grad, grad, value=1.0 - beta2)
+            m_hat = m / (1.0 - beta1**step_idx)
+            v_hat = v / (1.0 - beta2**step_idx)
+            theta_fp32 = model.theta.detach().float()
+            theta_fp32.addcdiv_(m_hat, v_hat.sqrt().add_(eps), value=-lr)
+            theta_fp32.clamp_(min=theta_min)
+            model.theta.copy_(theta_fp32.to(dtype=model.theta.dtype))
+        model.static.warm_E = None
+
+        previous_rates = rates_cpu
+        previous_nll = nll
+
+    _synchronize(device)
+    return {
+        "phase": "bf16_start",
+        "time_s": time.perf_counter() - phase_start,
+        "evaluations": steps,
+        "optimizer": "adam_fp32_accum",
+        "lr": lr,
+    }
+
+
 @torch.no_grad()
 def _final_nll(model: "GeneReconModel") -> tuple[float, float]:
     start = time.perf_counter()
@@ -275,6 +411,8 @@ def optimize_global_rates_lbfgs(
     tolerance_change: float = 1e-7,
     line_search_fn: str | None = "strong_wolfe",
     dtype: torch.dtype | None = torch.float32,
+    bf16_start_steps: int = 0,
+    bf16_start_lr: float = 0.05,
     fp64_polish: bool = False,
     fp64_polish_steps: int = 4,
     fp64_polish_max_eval: int | None = None,
@@ -286,7 +424,9 @@ def optimize_global_rates_lbfgs(
     callers build ``GeneReconModel.from_trees(..., mode="global",
     pibar_mode="uniform")`` once, then this function only updates
     ``model.theta``. The default path is projected fp32 PyTorch L-BFGS with a
-    strong-Wolfe line search.
+    strong-Wolfe line search. If ``bf16_start_steps`` is positive, the helper
+    first evaluates and updates the global parameters with bf16 resident model
+    tensors and fp32 Adam accumulators, then casts the model to fp32 for LBFGS.
 
     Returns a dict with ``theta``, ``rates``, ``nll``,
     ``negative_log_likelihood``, ``log_likelihood``, ``history`` and
@@ -299,9 +439,24 @@ def optimize_global_rates_lbfgs(
         raise ValueError("steps must be >= 1")
     if fp64_polish_steps < 1:
         raise ValueError("fp64_polish_steps must be >= 1")
+    if bf16_start_steps < 0:
+        raise ValueError("bf16_start_steps must be >= 0")
+    if bf16_start_lr <= 0:
+        raise ValueError("bf16_start_lr must be strictly positive")
+    if bf16_start_steps > 0 and dtype == torch.bfloat16:
+        raise ValueError(
+            "bf16_start_steps hands off to fp32 LBFGS; use dtype=torch.float32 "
+            "or leave dtype at the default"
+        )
 
-    if dtype is not None and model.theta.dtype != dtype:
-        model.to(dtype=dtype)
+    if bf16_start_steps > 0:
+        if model.theta.device.type != "cuda":
+            raise ValueError("bf16_start_steps requires a CUDA resident model")
+        if not torch.cuda.is_bf16_supported(model.theta.device):
+            raise ValueError("bf16_start_steps requires CUDA bf16 support")
+        _cast_model_dtype_(model, torch.bfloat16)
+    elif dtype is not None and model.theta.dtype != dtype:
+        _cast_model_dtype_(model, dtype)
 
     initialization = _prepare_initial_theta(
         model,
@@ -314,6 +469,24 @@ def optimize_global_rates_lbfgs(
     total_start = time.perf_counter()
     history: list[dict[str, Any]] = []
     phase_timings = []
+
+    if bf16_start_steps > 0:
+        phase_timings.append(
+            _run_bf16_start_phase(
+                model,
+                min_rate=min_rate,
+                steps=bf16_start_steps,
+                lr=bf16_start_lr,
+                history=history,
+                total_start=total_start,
+                verbose=verbose,
+            )
+        )
+        lbfgs_dtype = torch.float32 if dtype is None else dtype
+        if model.theta.dtype != lbfgs_dtype:
+            _cast_model_dtype_(model, lbfgs_dtype)
+        elif model.static.dtype != lbfgs_dtype:
+            _cast_model_dtype_(model, lbfgs_dtype)
 
     phase_timings.append(
         _run_lbfgs_phase(

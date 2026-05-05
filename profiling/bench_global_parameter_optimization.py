@@ -5,6 +5,8 @@ The script targets the 3-parameter global mode and uses the public
 ``GeneReconModel`` autograd bridge. ``recommended-fp32`` uses the production
 ``optimize_global_rates_lbfgs`` helper when available, and can fall back to the
 direct experimental ``GeneReconModel`` LBFGS path with ``--helper-mode direct``.
+``bf16-start-fp32-polish`` uses the helper in two phases when bf16 is runnable:
+a short bf16 start followed by an fp32 polish seeded from the bf16 rates.
 """
 
 from __future__ import annotations
@@ -103,13 +105,15 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--cache-dir", default="/tmp/gpurec_paramopt_cache")
     parser.add_argument(
         "--strategies",
-        default="eval-target,recommended-fp32,scipy-lbfgsb-fp32,scipy-lbfgsb-fp64-polish,bad-floor-init-guard",
+        default="eval-target,recommended-fp32,bf16-start-fp32-polish,scipy-lbfgsb-fp32,scipy-lbfgsb-fp64-polish,bad-floor-init-guard",
     )
     parser.add_argument("--init-rate", type=float, default=0.05)
     parser.add_argument("--min-rate", type=float, default=1e-10)
     parser.add_argument("--maxiter", type=int, default=24)
     parser.add_argument("--maxfun", type=int, default=60)
     parser.add_argument("--torch-lbfgs-max-iter", type=int, default=12)
+    parser.add_argument("--bf16-start-steps", type=int, default=4)
+    parser.add_argument("--fp32-polish-steps", type=int, default=8)
     parser.add_argument("--adam-steps", type=int, default=3)
     parser.add_argument("--adam-lr", type=float, default=0.35)
     parser.add_argument("--fixed-iters-Pi", type=int, default=6)
@@ -204,7 +208,8 @@ def _make_model(
     init_rates: tuple[float, float, float],
     args: argparse.Namespace,
 ) -> GeneReconModel:
-    return GeneReconModel.from_trees(
+    build_start = time.perf_counter()
+    model = GeneReconModel.from_trees(
         species_tree=str(root / "sp.nwk"),
         gene_trees=_gene_paths(root),
         mode="global",
@@ -219,6 +224,10 @@ def _make_model(
         use_pruning=True,
         pruning_threshold=1e-6,
     )
+    if model.theta.device.type == "cuda":
+        torch.cuda.synchronize(model.theta.device)
+    model._bench_build_time_s = time.perf_counter() - build_start
+    return model
 
 
 def _rate_metrics(model: GeneReconModel, target_rates: torch.Tensor, target_nll: float) -> tuple[float, float, float, float, float]:
@@ -353,6 +362,8 @@ def _run_scipy_lbfgsb(
             "maxls": 20,
         },
     )
+    result.bench_build_time_s = float(getattr(model, "_bench_build_time_s", float("nan")))
+    result.bench_optimizer_time_s = records[-1].elapsed_s if records else 0.0
     return records, result
 
 
@@ -406,7 +417,13 @@ def _run_torch_lbfgs(
 
     result = opt.step(closure)
     model.clamp_theta_(min_rate=args.min_rate)
-    return records, result
+    result_value = _as_float(result)
+    return records, SimpleNamespace(
+        success=True,
+        message="ok" if result_value is None else f"optimizer_return={result_value:.8f}",
+        build_time_s=float(getattr(model, "_bench_build_time_s", float("nan"))),
+        optimizer_time_s=records[-1].elapsed_s if records else 0.0,
+    )
 
 
 def _as_float(value: object) -> float | None:
@@ -432,6 +449,35 @@ def _result_message(result: object) -> str:
     if isinstance(result, dict):
         return str(result.get("message", "ok"))
     return str(getattr(result, "message", "ok"))
+
+
+def _result_metric(result: object, name: str) -> float | None:
+    candidates = (name, f"bench_{name}")
+    for key in candidates:
+        value = None
+        if isinstance(result, dict):
+            value = result.get(key)
+            timing = result.get("timing")
+            if value is None and isinstance(timing, dict):
+                value = timing.get(key)
+        else:
+            value = getattr(result, key, None)
+        if value is not None:
+            try:
+                return float(value)
+            except (TypeError, ValueError):
+                return None
+    return None
+
+
+def _cuda_peak_memory_mb() -> tuple[float, float]:
+    if not torch.cuda.is_available():
+        return float("nan"), float("nan")
+    torch.cuda.synchronize()
+    return (
+        torch.cuda.max_memory_allocated() / (1024.0 * 1024.0),
+        torch.cuda.max_memory_reserved() / (1024.0 * 1024.0),
+    )
 
 
 def _records_from_helper_history(
@@ -587,7 +633,14 @@ def _run_production_helper_lbfgs(
             f"helper_total_s={total_s}; raw_message={_result_message(raw_result)}"
         )
 
-    return records, SimpleNamespace(success=_result_success(raw_result), message=message)
+    helper_timing = raw_result.get("timing", {}) if isinstance(raw_result, dict) else {}
+    helper_total_s = helper_timing.get("total_s") if isinstance(helper_timing, dict) else None
+    return records, SimpleNamespace(
+        success=_result_success(raw_result),
+        message=message,
+        build_time_s=float(getattr(model, "_bench_build_time_s", float("nan"))),
+        optimizer_time_s=float(helper_total_s) if helper_total_s is not None else (records[-1].elapsed_s if records else 0.0),
+    )
 
 
 def _run_recommended_lbfgs(
@@ -691,6 +744,210 @@ def _run_scipy_lbfgsb_fp64_polish(
     )
 
 
+def _helper_kwargs(
+    helper: ProductionHelper,
+    *,
+    init_rates: tuple[float, float, float],
+    dtype: torch.dtype,
+    steps: int,
+    max_eval: int | None,
+    args: argparse.Namespace,
+) -> dict[str, object]:
+    signature = inspect.signature(helper.func)
+    parameters = signature.parameters
+    has_var_kwargs = any(p.kind == inspect.Parameter.VAR_KEYWORD for p in parameters.values())
+    candidate_kwargs: dict[str, object] = {
+        "init_rates": init_rates,
+        "min_rate": args.min_rate,
+        "override_floor_init": args.allow_floor_init,
+        "steps": steps,
+        "lr": 1.0,
+        "max_eval": max_eval,
+        "max_evals": max_eval,
+        "maxfun": max_eval,
+        "history_size": 10,
+        "tolerance_grad": args.gtol,
+        "gtol": args.gtol,
+        "tolerance_change": args.ftol,
+        "ftol": args.ftol,
+        "line_search_fn": "strong_wolfe",
+        "dtype": dtype,
+        "fp64_polish": False,
+        "verbose": False,
+    }
+    return {
+        key: value
+        for key, value in candidate_kwargs.items()
+        if value is not None and (has_var_kwargs or key in parameters)
+    }
+
+
+def _run_helper_phase(
+    *,
+    helper: ProductionHelper,
+    phase_name: str,
+    root: Path,
+    dtype: torch.dtype,
+    init_rates: tuple[float, float, float],
+    steps: int,
+    max_eval: int | None,
+    target_rates: torch.Tensor,
+    target_nll: float,
+    args: argparse.Namespace,
+) -> tuple[list[EvalRecord], object]:
+    _validate_interior_init_rates(
+        init_rates,
+        min_rate=args.min_rate,
+        strategy=phase_name,
+        allow_floor_init=args.allow_floor_init,
+    )
+    model = _make_model(root, dtype=dtype, init_rates=init_rates, args=args)
+    kwargs = _helper_kwargs(
+        helper,
+        init_rates=init_rates,
+        dtype=dtype,
+        steps=steps,
+        max_eval=max_eval,
+        args=args,
+    )
+    raw_result = helper.func(model, **kwargs)
+    model.clamp_theta_(min_rate=args.min_rate)
+    records: list[EvalRecord] = []
+    if isinstance(raw_result, dict) and isinstance(raw_result.get("history"), list):
+        records = _records_from_helper_history(
+            history=raw_result["history"],
+            strategy=phase_name,
+            target_rates=target_rates,
+            target_nll=target_nll,
+        )
+    if not records:
+        eval_start = time.perf_counter()
+        nll, _grad, grad_inf, metrics = _evaluate_with_grad(
+            model,
+            target_rates=target_rates,
+            target_nll=target_nll,
+            min_rate=args.min_rate,
+        )
+        _record(records, phase_name, 1, eval_start, nll, grad_inf, metrics, target_nll)
+    timing = raw_result.get("timing", {}) if isinstance(raw_result, dict) else {}
+    optimizer_time_s = timing.get("total_s") if isinstance(timing, dict) else None
+    return records, SimpleNamespace(
+        success=_result_success(raw_result),
+        message=f"helper={helper.source}; raw_message={_result_message(raw_result)}",
+        build_time_s=float(getattr(model, "_bench_build_time_s", float("nan"))),
+        optimizer_time_s=float(optimizer_time_s) if optimizer_time_s is not None else (records[-1].elapsed_s if records else 0.0),
+    )
+
+
+def _run_bf16_start_fp32_polish(
+    *,
+    root: Path,
+    init_rates: tuple[float, float, float],
+    target_rates: torch.Tensor,
+    target_nll: float,
+    args: argparse.Namespace,
+) -> tuple[list[EvalRecord], object]:
+    helper = _resolve_production_helper()
+    if helper is None:
+        return [], SimpleNamespace(
+            success=False,
+            message=(
+                "bf16-start/fp32-polish requires optimize_global_rates_lbfgs, "
+                f"but no candidate was found in {PRODUCTION_HELPER_CANDIDATES!r}"
+            ),
+            build_time_s=0.0,
+            optimizer_time_s=0.0,
+        )
+
+    print(
+        "helper_status",
+        "strategy", "bf16-start-fp32-polish",
+        "mode", "production_helper_bf16_start",
+        "source", helper.source,
+        "bf16_start_steps", args.bf16_start_steps,
+        "fp32_polish_steps", args.fp32_polish_steps,
+        flush=True,
+    )
+
+    _validate_interior_init_rates(
+        init_rates,
+        min_rate=args.min_rate,
+        strategy="bf16-start-fp32-polish",
+        allow_floor_init=args.allow_floor_init,
+    )
+    model = _make_model(root, dtype=torch.float32, init_rates=init_rates, args=args)
+    signature = inspect.signature(helper.func)
+    parameters = signature.parameters
+    has_var_kwargs = any(
+        p.kind == inspect.Parameter.VAR_KEYWORD for p in parameters.values()
+    )
+    candidate_kwargs: dict[str, object] = {
+        "init_rates": init_rates,
+        "min_rate": args.min_rate,
+        "override_floor_init": args.allow_floor_init,
+        "steps": args.fp32_polish_steps,
+        "lr": 1.0,
+        "max_eval": args.maxfun,
+        "history_size": 10,
+        "tolerance_grad": args.gtol,
+        "tolerance_change": args.ftol,
+        "line_search_fn": "strong_wolfe",
+        "dtype": torch.float32,
+        "bf16_start_steps": args.bf16_start_steps,
+        "bf16_start_lr": 0.05,
+        "fp64_polish": False,
+        "verbose": False,
+    }
+    kwargs = {
+        key: value
+        for key, value in candidate_kwargs.items()
+        if has_var_kwargs or key in parameters
+    }
+
+    try:
+        raw_result = helper.func(model, **kwargs)
+    except Exception as exc:
+        return [], SimpleNamespace(
+            success=False,
+            message=f"bf16-start/fp32-polish failed: {type(exc).__name__}: {exc}",
+            build_time_s=float(getattr(model, "_bench_build_time_s", float("nan"))),
+            optimizer_time_s=0.0,
+        )
+
+    records: list[EvalRecord] = []
+    if isinstance(raw_result, dict) and isinstance(raw_result.get("history"), list):
+        records = _records_from_helper_history(
+            history=raw_result["history"],
+            strategy="bf16-start-fp32-polish",
+            target_rates=target_rates,
+            target_nll=target_nll,
+        )
+    timing = raw_result.get("timing", {}) if isinstance(raw_result, dict) else {}
+    optimizer_time_s = timing.get("total_s") if isinstance(timing, dict) else None
+    initialization = raw_result.get("initialization", "n/a") if isinstance(raw_result, dict) else "n/a"
+    phases = []
+    if isinstance(timing, dict):
+        phases = [
+            str(phase.get("phase", ""))
+            for phase in timing.get("phases", [])
+            if isinstance(phase, dict)
+        ]
+    message = (
+        f"helper={helper.source}; initialization={initialization}; "
+        f"phases={','.join(phases)}; raw_message={_result_message(raw_result)}"
+    )
+    return records, SimpleNamespace(
+        success=_result_success(raw_result),
+        message=message,
+        build_time_s=float(getattr(model, "_bench_build_time_s", float("nan"))),
+        optimizer_time_s=(
+            float(optimizer_time_s)
+            if optimizer_time_s is not None
+            else (records[-1].elapsed_s if records else 0.0)
+        ),
+    )
+
+
 def _run_bad_floor_init_guard(args: argparse.Namespace) -> tuple[list[EvalRecord], object]:
     init_rates = (args.min_rate, args.min_rate, args.min_rate)
     try:
@@ -787,12 +1044,17 @@ def _summarize(
     *,
     args: argparse.Namespace,
 ) -> None:
+    peak_alloc_mb, peak_reserved_mb = _cuda_peak_memory_mb()
+    build_time_s = _result_metric(result, "build_time_s")
+    optimizer_time_s = _result_metric(result, "optimizer_time_s")
     if not records:
         print(
             "summary",
             "strategy", strategy,
             "evals", 0,
             "success", int(_result_success(result)),
+            "build_time_s", f"{build_time_s:.6f}" if build_time_s is not None else "n/a",
+            "avg_eval_time_s", "n/a",
             "hit_eval", "n/a",
             "hit_time_s", "n/a",
             "best_nll", "n/a",
@@ -801,8 +1063,13 @@ def _summarize(
             "last_nll", "n/a",
             "last_gap", "n/a",
             "last_rate_rel", "n/a",
+            "last_D", "n/a",
+            "last_L", "n/a",
+            "last_T", "n/a",
             "last_grad_inf", "n/a",
-            "total_time_s", "0.000000",
+            "optimizer_time_s", f"{optimizer_time_s:.6f}" if optimizer_time_s is not None else "0.000000",
+            "peak_alloc_mb", f"{peak_alloc_mb:.2f}",
+            "peak_reserved_mb", f"{peak_reserved_mb:.2f}",
             "message", _result_message(result).replace("\n", " "),
             flush=True,
         )
@@ -812,11 +1079,16 @@ def _summarize(
     hit = _first_hit(records, nll_tol=args.nll_tol, rate_rtol=args.rate_rtol)
     status = _result_message(result)
     success = int(_result_success(result))
+    if optimizer_time_s is None:
+        optimizer_time_s = last.elapsed_s
+    avg_eval_time_s = optimizer_time_s / len(records) if records else float("nan")
     print(
         "summary",
         "strategy", strategy,
         "evals", len(records),
         "success", success,
+        "build_time_s", f"{build_time_s:.6f}" if build_time_s is not None else "n/a",
+        "avg_eval_time_s", f"{avg_eval_time_s:.6f}",
         "hit_eval", hit.eval_idx if hit is not None else "none",
         "hit_time_s", f"{hit.elapsed_s:.6f}" if hit is not None else "none",
         "best_nll", f"{best.nll:.8f}",
@@ -825,8 +1097,13 @@ def _summarize(
         "last_nll", f"{last.nll:.8f}",
         "last_gap", f"{last.target_nll_gap:.8e}",
         "last_rate_rel", f"{last.max_rate_rel_err:.8e}",
+        "last_D", f"{last.d_rate:.10e}",
+        "last_L", f"{last.l_rate:.10e}",
+        "last_T", f"{last.t_rate:.10e}",
         "last_grad_inf", f"{last.grad_inf:.8e}",
-        "total_time_s", f"{last.elapsed_s:.6f}",
+        "optimizer_time_s", f"{optimizer_time_s:.6f}",
+        "peak_alloc_mb", f"{peak_alloc_mb:.2f}",
+        "peak_reserved_mb", f"{peak_reserved_mb:.2f}",
         "message", str(status).replace("\n", " "),
         flush=True,
     )
@@ -862,21 +1139,24 @@ def _bf16_smoke(
     target_rates: torch.Tensor,
     target_nll: float,
     args: argparse.Namespace,
-) -> tuple[list[EvalRecord], str]:
+) -> tuple[list[EvalRecord], object]:
+    start = time.perf_counter()
     try:
-        return (
-            _eval_target(
-                root=root,
-                dtype=torch.bfloat16,
-                target_rates=target_rates,
-                target_nll=target_nll,
-                args=args,
-            ),
-            "ok",
+        records = _eval_target(
+            root=root,
+            dtype=torch.bfloat16,
+            target_rates=target_rates,
+            target_nll=target_nll,
+            args=args,
         )
+        return records, SimpleNamespace(success=True, message="ok", optimizer_time_s=records[-1].elapsed_s if records else 0.0)
     except Exception as exc:
         print("strategy_error", "strategy", "bf16-smoke", "type", type(exc).__name__, "message", str(exc).replace("\n", " "))
-        return [], f"{type(exc).__name__}: {exc}"
+        return [], SimpleNamespace(
+            success=False,
+            message=f"{type(exc).__name__}: {exc}",
+            optimizer_time_s=time.perf_counter() - start,
+        )
 
 
 def main() -> None:
@@ -913,6 +1193,7 @@ def main() -> None:
 
     for strategy in strategies:
         torch.cuda.empty_cache()
+        torch.cuda.reset_peak_memory_stats()
         if strategy == "eval-target":
             records = _eval_target(
                 root=root,
@@ -996,6 +1277,15 @@ def main() -> None:
             records, result = _run_adam_then_scipy(
                 root=root,
                 dtype=torch.float32,
+                init_rates=init_rates,
+                target_rates=target_rates,
+                target_nll=target_nll,
+                args=args,
+            )
+            _summarize(strategy, records, result, args=args)
+        elif strategy == "bf16-start-fp32-polish":
+            records, result = _run_bf16_start_fp32_polish(
+                root=root,
                 init_rates=init_rates,
                 target_rates=target_rates,
                 target_nll=target_nll,
