@@ -2461,6 +2461,406 @@ If a requested benchmark falls back to generic code, the harness should say so
 and mark the result as non-optimized.  This avoids comparing the new kernels to
 the wrong path.
 
+### Proposal 7 follow-up: dedicated harnesses accepted
+
+Proposal 7 is accepted.  The implementation adds both dedicated genewise
+chunking entrypoints, strengthens the backward harness with explicit active
+path verdicts, and adds subprocess tests that exercise the actual CLI
+contracts.  The purpose is measurement hygiene: a command-line benchmark now
+prints enough state to tell whether it measured the optimized genewise kernels
+or a fallback path.
+
+#### What changed
+
+Worker changes visible in the worktree:
+
+- `profiling/bench_genewise_forward_chunking.py` is a dedicated genewise
+  uniform forward inference harness.  It runs `GeneReconModel` in no-grad mode
+  with root-row likelihood output, family-indexed constants,
+  family-indexed DTS parameters, parent-reduced DTS, leaf-index leaves, and no
+  backward saved tensors.
+- `profiling/bench_genewise_backward_chunking.py` is a dedicated wrapper for
+  genewise uniform backward chunking.  It delegates to
+  `profiling/proposal2/bench_genewise_backward.py` so the benchmark logic stays
+  in one implementation.
+- The wrapper sets strict optimized defaults before delegation:
+
+```text
+BACKWARD_PATH=optimized-genewise
+STRICT_OPTIMIZED_KERNELS=1
+FAMILY_CHUNK_SIZE=50
+GPUREC_BENCH_VALIDATE_OPTIMIZED_FLAGS=1
+```
+
+- `profiling/proposal2/bench_genewise_backward.py` now prints an
+  `optimized_path_verdict` row after `active_path_flags`.
+- The verdict checks whether the run is actually the intended optimized
+  genewise backward path: full saved tensors for backward, no root-row-only
+  output, `family_idx`, fused uniform backward, fused genewise backward,
+  fused genewise self-loop, fused DTS backward accumulation, compact/tree
+  Pibar VJP, CUDA dtype support, `S > 256`, strict optimized kernels, and the
+  require-optimized guard.
+- When `GPUREC_BENCH_VALIDATE_OPTIMIZED_FLAGS=1`, strict optimized runs raise
+  if any required optimized feature is inactive.
+- `tests/unit/test_genewise_chunking_harnesses.py` adds subprocess contract
+  coverage for the proposed forward/backward harness CLIs.  It looks for the
+  active path flags, strict optimized verdict, root-row/full-saved-tensor
+  contract, fallback reporting, locality counters, and family-run counters.
+
+The forward harness CLI defaults are:
+
+| Option | Default / behavior |
+|---|---|
+| `--dataset` | `tests/data/test_trees_1000` |
+| `--family-start` / `--fams` | `0` / `50` |
+| `--family-chunk-size` | `150`, the usual 1000-family likelihood-only policy becomes `150x6 + 100` |
+| `--max-wave-size` | `32768` |
+| `--warmups` / `--reps` | `3` / `7` |
+| `--dtype` / `--device` | `fp32` / `cuda` |
+| `--strict-optimized-kernels` | enabled |
+
+It sets these forward defaults before building models:
+
+```text
+GPUREC_FORWARD_LEAF_INDEX=1
+GPUREC_FORWARD_PARENT_REDUCED_DTS=1
+GPUREC_FORWARD_PARENT_REDUCED_DTS_IMPL=tiled
+GPUREC_FORWARD_PARENT_REDUCED_DTS_GE2_ONLY=1
+GPUREC_FORWARD_FAMILY_INDEXED_CONSTS=1
+GPUREC_FORWARD_FAMILY_INDEXED_DTS_PARAMS=1
+GPUREC_UNIFORM_PINGPONG=1
+```
+
+The backward wrapper inherits the Proposal 5 benchmark CLI.  Important
+defaults from `--help` are:
+
+| Option | Default / behavior |
+|---|---|
+| `--dataset` | `tests/data/test_trees_1000` |
+| `--fams` | `50` |
+| `--start` | `0` |
+| `--reps` / `--warmups` | `9` / `5` |
+| `--family-chunk-size` | wrapper default is `50`, giving the memory-safe Proposal 5 policy for 1000 families |
+| `--max-wave-size` | `32768` |
+| `--pruning-threshold` / `--use-pruning` | `1e-6` / enabled |
+| `--backward-path` | wrapper default is `optimized-genewise` |
+| `--strict-optimized-kernels` | wrapper default is enabled |
+| `--empty-cache-between-chunks` | enabled |
+
+Both wrappers now default to chunked policies when the requested family count
+exceeds the chunk size.  Users can still pass `--family-chunk-size 0` for an
+explicit resident single-model experiment, but the default entrypoint behavior
+is OOM-resistant for the 1000-family profiling case.
+
+#### Why this matters
+
+Proposal 7 is mostly about measurement hygiene.  The earlier genewise work had
+multiple paths that could silently measure the wrong thing: dense leaf terms,
+row-expanded constants, row-expanded DTS parameters, generic self-loop, generic
+PyTorch DTS accumulation, or generic cross-Pibar VJP.  A timing number is only
+useful if the benchmark says which path was active.
+
+The current backward harness now makes the key choices explicit:
+
+```text
+active_path_flags
+  mode genewise
+  pibar_mode uniform
+  fixed_iters_Pi 6
+  family_idx 1
+  leaf_index 1
+  forward_family_consts 1
+  forward_family_dts_params 1
+  fused_genewise_backward 1
+  fused_genewise_self_loop 1
+  fused_uniform_backward 1
+  kernelized_backward_dts 1
+  fused_dts_backward_accum 1
+  dts_pibar_ud_fusion 1
+  fused_cross_pibar_vjp 1
+  cross_pibar_impl tree
+  strict_optimized_kernels 1
+  require_optimized_guard 1
+
+optimized_path_verdict
+  verdict optimized
+  generic_pytorch_fallback 0
+  root_row_output 0
+  full_saved_tensors_for_backward 1
+  compact_tree_pibar_vjp 1
+```
+
+That directly addresses the old mistake: a result cannot look like an
+optimized backward number unless the harness also shows the fused backward,
+compact Pibar, family-indexed forward constants, family-indexed DTS params,
+full saved tensors, and strict guard state.
+
+The forward harness prints the complementary inference contract:
+
+```text
+active_path_flags
+  mode genewise
+  pibar_mode uniform
+  fixed_iters_Pi 6
+  root_row_output 1
+  need_pibar 0
+  full_saved_tensors 0
+  backward_saved_tensors 0
+  forward_only_no_grad 1
+  family_idx 1
+  leaf_index 1
+  parent_reduced_dts 1
+  family_indexed_constants 1
+  family_indexed_dts_params 1
+  generic_pytorch_fallback 0
+```
+
+#### Commands and local evidence
+
+Strict optimized 10-family forward timing smoke:
+
+```bash
+PREPROCESS_CACHE_DIR=/tmp/gpurec_prop7_cache \
+python profiling/bench_genewise_forward_chunking.py \
+  --dataset tests/data/test_trees_1000 \
+  --fams 10 \
+  --family-chunk-size 5 \
+  --reps 1 \
+  --warmups 0 \
+  --max-wave-size 32768
+```
+
+Result:
+
+| Families | Chunk size | Chunks | Forward | Peak | Loss |
+|---:|---:|---:|---:|---:|---:|
+| 10 | 5 | 2 | `370.227 ms` | `0.605 GB` | `22182.91503906` |
+
+Per-chunk rows:
+
+| Chunk | Families | `C` | Waves | MaxW | Split rows | Forward | Peak |
+|---:|---:|---:|---:|---:|---:|---:|---:|
+| 0 | 5 | `32127` | `45` | `8038` | `40145` | `309.972 ms` | `0.565 GB` |
+| 1 | 5 | `34403` | `45` | `8607` | `42990` | `60.255 ms` | `0.605 GB` |
+
+Like the backward smoke below, this uses `--warmups 0`, so the first chunk
+includes one-time setup and compilation effects.  The useful evidence is the
+printed forward contract: root-row output is enabled, saved backward tensors
+are disabled, family-indexed constants/DTS params are enabled, and the generic
+fallback flag is zero.
+
+Strict optimized 2-family stats-only wrapper smoke:
+
+```bash
+PREPROCESS_CACHE_DIR=/tmp/gpurec_prop7_cache \
+python profiling/bench_genewise_backward_chunking.py \
+  --dataset tests/data/test_trees_1000 \
+  --fams 2 \
+  --family-chunk-size 1 \
+  --stats-only \
+  --reps 1 \
+  --warmups 0 \
+  --max-wave-size 4096
+```
+
+Key output:
+
+```text
+chunked_autograd_policy ... families 2 chunks 2 family_chunk_size 1 backward_path optimized-genewise
+active_path_flags ... family_idx 1 ... strict_optimized_kernels 1 require_optimized_guard 1
+optimized_path_verdict verdict optimized ... root_row_output 0 full_saved_tensors_for_backward 1 ... compact_tree_pibar_vjp 1
+chunk_shape 0 ... families 1 S 1999 C 6071 waves 42 maxW 1519 split_rows 7586 ... locality_preserved 1
+chunk_shape 1 ... families 1 S 1999 C 5663 waves 42 maxW 1417 split_rows 7076 ... locality_preserved 1
+```
+
+This proves the wrapper default selects optimized genewise backward, enables
+the strict guard, validates the active features, and prints chunk/locality
+shape rows before running any long timing loop.
+
+Strict optimized 10-family timing smoke:
+
+```bash
+PREPROCESS_CACHE_DIR=/tmp/gpurec_prop7_cache \
+python profiling/bench_genewise_backward_chunking.py \
+  --dataset tests/data/test_trees_1000 \
+  --fams 10 \
+  --family-chunk-size 5 \
+  --reps 1 \
+  --warmups 0 \
+  --backward-path optimized-genewise \
+  --strict-optimized-kernels \
+  --max-wave-size 32768
+```
+
+Result:
+
+| Families | Chunk size | Chunks | Forward | Backward | Total | Max backward peak | Loss |
+|---:|---:|---:|---:|---:|---:|---:|---:|
+| 10 | 5 | 2 | `353.190 ms` | `639.171 ms` | `992.360 ms` | `1.460 GB` | `22182.91503906` |
+
+Per-chunk rows:
+
+| Chunk | Families | `C` | Waves | MaxW | Split rows | Forward | Backward | Backward peak |
+|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 0 | 5 | `32127` | `45` | `8038` | `40145` | `297.819 ms` | `542.826 ms` | `1.359 GB` |
+| 1 | 5 | `34403` | `45` | `8607` | `42990` | `55.371 ms` | `96.345 ms` | `1.460 GB` |
+
+The first chunk includes more one-time setup and kernel warmup despite
+`--warmups 0`; this is a smoke result, not a stable performance gate.  It
+does prove that the chunked wrapper can run forward, save full tensors, run
+backward, produce finite gradients, and report timing/memory by chunk.
+
+Strict optimized 50-family timing sample:
+
+```bash
+PREPROCESS_CACHE_DIR=/tmp/gpurec_prop7_cache \
+python profiling/bench_genewise_backward_chunking.py \
+  --dataset tests/data/test_trees_1000 \
+  --fams 50 \
+  --family-chunk-size 50 \
+  --reps 1 \
+  --warmups 0 \
+  --backward-path optimized-genewise \
+  --strict-optimized-kernels \
+  --max-wave-size 32768
+```
+
+Result:
+
+| Families | Chunk size | `C` | Waves | MaxW | Split rows | Forward | Backward | Total | Max backward peak | Loss |
+|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 50 | 50 | `321930` | `49` | `32768` | `402275` | `385.250 ms` | `849.806 ms` | `1235.056 ms` | `10.542 GB` | `107804.26562500` |
+
+This 50-family single-rep sample is slower than the promoted Proposal 5
+multi-rep numbers, which is expected with `--warmups 0`.  The useful Proposal
+7 evidence is not the absolute time; it is that the timing row carries the
+optimized verdict, strict guard state, chunk shape, locality counters, and
+memory peak in the same output.
+
+Minimal Nsight Systems smoke on the backward wrapper:
+
+```bash
+PREPROCESS_CACHE_DIR=/tmp/gpurec_prop7_cache \
+nsys profile --force-overwrite=true --stats=false \
+  --trace=cuda,nvtx,osrt --sample=none --cpuctxsw=none \
+  -o /tmp/gpurec_profile/prop7_harness/backward_f2_chunk1 \
+  python profiling/bench_genewise_backward_chunking.py \
+    --dataset tests/data/test_trees_1000 \
+    --fams 2 \
+    --family-chunk-size 1 \
+    --max-wave-size 32768 \
+    --warmups 0 \
+    --reps 1
+```
+
+The generated trace is:
+
+```text
+/tmp/gpurec_profile/prop7_harness/backward_f2_chunk1.nsys-rep
+```
+
+Top CUDA kernel buckets from `nsys stats --report cuda_gpu_kern_sum`:
+
+| Kernel | Time | Instances | Share |
+|---|---:|---:|---:|
+| `_wave_backward_uniform_kernel` | `27.715 ms` | `51` | `44.0%` |
+| `_wave_step_uniform_kernel` | `10.922 ms` | `504` | `17.4%` |
+| `_uniform_cross_pibar_vjp_tree_kernel` | `3.685 ms` | `49` | `5.9%` |
+| `_wave_pibar_uniform_parent_kernel` | `1.421 ms` | `84` | `2.3%` |
+| `_dts_cross_backward_accum_kernel` | `1.225 ms` | `49` | `1.9%` |
+| `_dts_fused_kernel` | `0.760 ms` | `129` | `1.2%` |
+
+This is not a performance profile for decision-making because the shape is only
+two families and uses cold single-rep timing.  It is a harness smoke: the new
+entrypoint can be profiled directly with Nsight, and the trace contains the
+intended optimized Triton kernels rather than only generic PyTorch fallback
+work.
+
+Fallback-mode smoke:
+
+```bash
+PREPROCESS_CACHE_DIR=/tmp/gpurec_prop7_cache \
+python profiling/bench_genewise_backward_chunking.py \
+  --dataset tests/data/test_trees_1000 \
+  --fams 2 \
+  --family-chunk-size 0 \
+  --stats-only \
+  --reps 0 \
+  --warmups 0 \
+  --backward-path generic-self-loop-fallback \
+  --max-wave-size 4096
+```
+
+Key output:
+
+```text
+backward_path generic-self-loop-fallback
+active_path_flags ... fused_genewise_self_loop 0 fused_uniform_backward 0 ... require_optimized_guard 0
+optimized_path_verdict verdict non_optimized ... fused_uniform_backward 0 ... fused_genewise_self_loop 0 ... require_optimized_guard 0
+```
+
+This proves fallback runs are labeled non-optimized instead of silently
+competing with optimized results.
+
+#### Correctness and guard tests
+
+Focused correctness tests that already cover the optimized backward/chunking
+semantics:
+
+```bash
+pytest -q \
+  tests/gradients/test_genewise_fused_backward.py::test_genewise_uniform_backward_invariant_under_family_chunk_size \
+  tests/gradients/test_genewise_fused_backward.py::test_genewise_uniform_optimized_high_s_fp64_chunk_size_parity_is_strict \
+  tests/gradients/test_genewise_fused_backward.py::test_genewise_uniform_optimized_high_s_fp64_matches_generic_fallback \
+  tests/unit/test_genewise_wave.py::test_genewise_uniform_leaf_index_path_matches_dense_leaf_fallback \
+  tests/unit/test_genewise_wave.py::test_genewise_uniform_leaf_index_gradient_bridge_matches_dense_leaf_fallback
+```
+
+Result:
+
+```text
+6 passed in 6.18s
+```
+
+New Proposal 7 subprocess contract tests:
+
+```bash
+pytest -q tests/unit/test_genewise_chunking_harnesses.py
+```
+
+Current result:
+
+```text
+3 passed in 7.62s
+```
+
+The tests run the forward and backward wrappers in `--stats-only` mode through
+subprocesses, so they check the real command-line contract rather than helper
+functions.  The backward negative case disables strict optimized guards and
+requires either an explicit non-optimized/fallback marker or a guard-state
+marker such as `require_optimized_guard 0`.
+
+Strict preflight failure was also smoke-tested by forcing
+`GPUREC_FUSED_CROSS_PIBAR_VJP_IMPL=torch` through the backward wrapper.  The
+command exited nonzero before timing and reported
+`unsupported optimized features are inactive: compact_tree_pibar_vjp`, with
+`optimized_path_verdict verdict non_optimized generic_pytorch_fallback 1`.
+
+#### Decision
+
+Decision: accept Proposal 7.
+
+Use `profiling/bench_genewise_forward_chunking.py` as the supported genewise
+uniform likelihood-only forward profiling entrypoint, and use
+`profiling/bench_genewise_backward_chunking.py` as the supported genewise
+uniform backward chunking entrypoint.  The older Proposal 2 benchmark remains
+the underlying implementation for backward, but the new wrapper supplies safe
+optimized defaults and strict active-feature preflight checks.
+
+The next worker pass can use these wrappers for Proposal 8 correctness-matrix
+measurements and for the first small autotuning sweep, instead of calling
+older profiling scripts directly.
+
 ## Proposal 8: Correctness Matrix
 
 Genewise correctness should be checked against individual global/uniform runs.
@@ -2498,7 +2898,7 @@ Tolerance policy:
 |---:|---|---|---|
 | 0 | Family-indexed constants inside forward wave-step | Accepted; removed `[W,S]` uniform constant materialization | 1000-tree forward: `4.468 s -> 2.618 s` |
 | 1 | Family-indexed forward DTS parameters | Accepted; removes `[n_splits,S]` DTS parameter expansion in high-fanout waves | 1000-tree forward: `2.610 s -> 2.328 s` |
-| 2 | Genewise profiling harnesses | Prevents benchmarking old generic paths | reproducible optimized forward/backward numbers |
+| 2 | Genewise profiling harnesses | Accepted; dedicated forward/backward wrappers now print optimized/non-optimized contracts and default to chunked policies | subprocess CLI contract: `3 passed`; backward fallback smoke is labeled `non_optimized` |
 | 3 | Fused genewise backward self-loop | Accepted; removes the generic self-loop for supported genewise uniform batches | 10-family backward: `531.569 ms -> 310.018 ms` locally |
 | 4 | Fused genewise DTS backward accumulation | Accepted; removes generic `DTS_5` and split scatter work | 100-family DTS bucket: `122.079 ms`, no guarded fallback |
 | 5 | Family-aware uniform Pibar VJP | Accepted; reuses exact ancestor-corrected compact UD tree VJP kernels | 100-family Pibar UD bucket: `62.838 ms`, no generic tree calls |
@@ -2556,6 +2956,16 @@ Backward:
   `99.3%` same-family adjacent rows.  A synthetic round-robin negative control
   destroyed locality but did not produce a stable 50-family forward timing
   difference, so there is no scheduler change to promote.
+- Proposal 7 does not change kernel performance.  It improves benchmark
+  interpretability: the forward wrapper prints root-row/no-saved-tensor
+  inference status, and the backward wrapper prints whether the run used full
+  saved tensors, fused genewise/uniform backward, compact/tree Pibar VJP, and
+  an `optimized` or `non_optimized` verdict.  A local single-rep 10-family
+  forward wrapper sample reported `370.227 ms` and `0.605 GB` peak.  A local
+  single-rep 50-family backward wrapper sample reported `385.250 ms` forward,
+  `849.806 ms` backward, and `10.542 GB` max backward peak with the strict
+  optimized verdict.  Treat these as harness evidence only; the promoted
+  Proposal 5 multi-rep numbers remain the performance envelope.
 
 ## Cross-Mode Triton Autotuning Opportunity
 
@@ -2644,12 +3054,14 @@ robustness, not a new order-of-magnitude improvement.
 ## Immediate Next Experiment
 
 Proposal 0 through Proposal 6 have succeeded and are promoted for the supported
-optimized genewise uniform path.
+optimized genewise uniform path.  Proposal 7 is partially promoted for backward
+profiling only.
 
-The next experiment should be Proposal 7 plus the first small autotuning pass:
-standardize the genewise forward/backward profiling harness output, include
-the Proposal 6 locality counters as guardrails, and then sweep the shared
-wave-step and self-loop Triton launch parameters on 50-family and 100-family
-chunks.  Nsys/NCU should confirm whether any gain comes from the intended
-kernel buckets rather than from changing launch count or moving time into DTS
-or Pibar VJP.
+The immediate next experiment should finish Proposal 7 before starting a larger
+autotuning pass: align the subprocess contract test with the new
+`optimized_path_verdict` wording and decide whether the backward wrapper should
+default to chunk size 50.  After the forward/backward harness contract is
+green, use those entrypoints for the first small wave-step and self-loop Triton
+launch-parameter sweep on 50-family and 100-family chunks.  Nsys/NCU should
+confirm whether any gain comes from the intended kernel buckets rather than
+from changing launch count or moving time into DTS or Pibar VJP.

@@ -428,6 +428,115 @@ def _wave_shape_stats(model: GeneReconModel) -> dict[str, int]:
     }
 
 
+def _env_enabled(name: str, default: str = "0") -> bool:
+    return os.environ.get(name, default).strip().lower() not in (
+        "",
+        "0",
+        "false",
+        "off",
+        "no",
+    )
+
+
+def _optimized_feature_status(
+    args: argparse.Namespace,
+    model: GeneReconModel,
+) -> dict[str, int | str]:
+    wl = model.static.wave_layout
+    pibar_impl = os.environ.get("GPUREC_FUSED_CROSS_PIBAR_VJP_IMPL", "tree").lower()
+    tree_pibar_vjp = pibar_impl in ("tree", "prefix", "tree_prefix")
+    cuda_dtype_ok = (
+        model.static.device.type == "cuda"
+        and model.static.dtype in (torch.float32, torch.float64)
+    )
+    fused_uniform_backward = int(
+        _env_enabled("GPUREC_FUSED_UNIFORM_BACKWARD", "1")
+        and model.static.pibar_mode == "uniform"
+        and cuda_dtype_ok
+        and int(model.n_species) > 256
+    )
+    fused_genewise_backward = int(_env_enabled("GPUREC_FUSED_GENEWISE_BACKWARD", "1"))
+    fused_genewise_self_loop = int(
+        _env_enabled(
+            "GPUREC_FUSED_GENEWISE_BACKWARD_SELF_LOOP",
+            os.environ.get("GPUREC_FUSED_GENEWISE_BACKWARD", "1"),
+        )
+    )
+    fused_dts_backward_accum = int(
+        _env_enabled("GPUREC_KERNELIZED_BACKWARD_DTS", "1")
+        and _env_enabled("GPUREC_FUSED_DTS_BACKWARD_ACCUM", "1")
+    )
+    compact_tree_pibar_vjp = int(
+        _env_enabled("GPUREC_FUSED_CROSS_PIBAR_VJP", "1")
+        and tree_pibar_vjp
+        and _env_enabled("GPUREC_DTS_PIBAR_UD_FUSION", "1")
+        and _env_enabled("GPUREC_DTS_PIBAR_UD_COMPACT_LEVELS", "1")
+    )
+    full_saved_tensors_for_backward = 1
+    root_row_output = 0
+    optimized = int(
+        args.backward_path == "optimized-genewise"
+        and root_row_output == 0
+        and full_saved_tensors_for_backward == 1
+        and int(wl.get("family_idx") is not None) == 1
+        and fused_uniform_backward
+        and fused_genewise_backward
+        and fused_genewise_self_loop
+        and fused_dts_backward_accum
+        and compact_tree_pibar_vjp
+    )
+    return {
+        "verdict": "optimized" if optimized else "non_optimized",
+        "generic_pytorch_fallback": int(not optimized),
+        "root_row_output": root_row_output,
+        "full_saved_tensors_for_backward": full_saved_tensors_for_backward,
+        "fused_uniform_backward": fused_uniform_backward,
+        "fused_genewise_backward": fused_genewise_backward,
+        "fused_genewise_self_loop": fused_genewise_self_loop,
+        "fused_dts_backward_accum": fused_dts_backward_accum,
+        "compact_tree_pibar_vjp": compact_tree_pibar_vjp,
+        "family_idx": int(wl.get("family_idx") is not None),
+        "cuda_dtype_ok": int(cuda_dtype_ok),
+        "species_gate_s_gt_256": int(int(model.n_species) > 256),
+        "cross_pibar_impl": pibar_impl,
+        "strict_optimized_kernels": int(args.strict_optimized_kernels),
+        "require_optimized_guard": int(
+            _env_enabled("GPUREC_REQUIRE_OPTIMIZED_GENEWISE_BACKWARD", "0")
+        ),
+    }
+
+
+def _validate_optimized_feature_status(
+    args: argparse.Namespace,
+    model: GeneReconModel,
+) -> None:
+    if args.backward_path != "optimized-genewise" or not args.strict_optimized_kernels:
+        return
+    if os.environ.get("GPUREC_BENCH_VALIDATE_OPTIMIZED_FLAGS", "0") == "0":
+        return
+    status = _optimized_feature_status(args, model)
+    required = (
+        "family_idx",
+        "full_saved_tensors_for_backward",
+        "fused_uniform_backward",
+        "fused_genewise_backward",
+        "fused_genewise_self_loop",
+        "fused_dts_backward_accum",
+        "compact_tree_pibar_vjp",
+        "require_optimized_guard",
+    )
+    missing = [key for key in required if int(status[key]) != 1]
+    if int(status["root_row_output"]) != 0:
+        missing.append("root_row_output_disabled")
+    if missing:
+        details = " ".join(f"{key}={status[key]}" for key in sorted(status))
+        raise RuntimeError(
+            "strict optimized genewise backward profiling requested, but "
+            f"unsupported optimized features are inactive: {', '.join(missing)}. "
+            f"Active status: {details}"
+        )
+
+
 def _print_wave_shape(model: GeneReconModel) -> None:
     wl = model.static.wave_layout
     metas = wl["wave_metas"]
@@ -494,6 +603,7 @@ def _print_wave_shape(model: GeneReconModel) -> None:
 
 def _print_active_path_flags(args: argparse.Namespace, model: GeneReconModel) -> None:
     wl = model.static.wave_layout
+    status = _optimized_feature_status(args, model)
     print(
         "active_path_flags",
         "mode", "genewise",
@@ -515,6 +625,26 @@ def _print_active_path_flags(args: argparse.Namespace, model: GeneReconModel) ->
         "strict_optimized_kernels", int(args.strict_optimized_kernels),
         "require_optimized_guard", os.environ.get("GPUREC_REQUIRE_OPTIMIZED_GENEWISE_BACKWARD", "unset"),
     )
+    print(
+        "optimized_path_verdict",
+        "verdict", status["verdict"],
+        "backward_path", args.backward_path,
+        "generic_pytorch_fallback", status["generic_pytorch_fallback"],
+        "root_row_output", status["root_row_output"],
+        "full_saved_tensors_for_backward", status["full_saved_tensors_for_backward"],
+        "fused_uniform_backward", status["fused_uniform_backward"],
+        "fused_genewise_backward", status["fused_genewise_backward"],
+        "fused_genewise_self_loop", status["fused_genewise_self_loop"],
+        "fused_dts_backward_accum", status["fused_dts_backward_accum"],
+        "compact_tree_pibar_vjp", status["compact_tree_pibar_vjp"],
+        "family_idx", status["family_idx"],
+        "cuda_dtype_ok", status["cuda_dtype_ok"],
+        "species_gate_s_gt_256", status["species_gate_s_gt_256"],
+        "cross_pibar_impl", status["cross_pibar_impl"],
+        "strict_optimized_kernels", status["strict_optimized_kernels"],
+        "require_optimized_guard", status["require_optimized_guard"],
+    )
+    _validate_optimized_feature_status(args, model)
 
 
 @torch.no_grad()
