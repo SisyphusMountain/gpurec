@@ -539,3 +539,254 @@ The large wave-step launch is compute-heavy with high occupancy and no spilling.
 The most useful remaining optimization target in the profiled 150-family chunk
 is now the algorithmic cost of the uniform wave-step/Pibar work itself, not
 copy overhead.
+
+## 2026-05-05 1000-Family Wave Scheduling Profile
+
+This pass profiles the current optimized global/uniform likelihood-only
+forward path on the full `tests/data/test_trees_1000` workload.  The dataset
+has 1000 gene trees and `S=1999` species rows.  The forward pass uses fp32,
+fixed 6 Pi iterations, root-row likelihood output, uniform ping-pong, leaf
+indexing, parent-reduced DTS, and cached light preprocessing.
+
+The main question was whether total likelihood time can be reduced by changing
+resident family chunk size or `max_wave_size`.
+
+### Commands
+
+Representative timing command:
+
+```bash
+PREPROCESS_CACHE_DIR=/tmp/gpurec_uniform_wave_profile_cache \
+python profiling/bench_uniform_forward_chunking.py \
+  --dataset tests/data/test_trees_1000 \
+  --fams 1000 \
+  --family-chunk-size 150 \
+  --max-wave-size 32768 \
+  --warmups 1 \
+  --reps 3
+```
+
+Nsight Systems trace for the current scheduling point:
+
+```bash
+PREPROCESS_CACHE_DIR=/tmp/gpurec_uniform_wave_profile_cache \
+nsys profile --force-overwrite=true --stats=false \
+  --trace=cuda,nvtx,osrt --sample=none --cpuctxsw=none \
+  --capture-range=cudaProfilerApi --capture-range-end=stop \
+  -o /tmp/gpurec_profile/uniform_forward_waves/current_c150_w32768 \
+  python profiling/bench_uniform_forward_chunking.py \
+    --dataset tests/data/test_trees_1000 \
+    --fams 1000 \
+    --family-chunk-size 150 \
+    --max-wave-size 32768 \
+    --warmups 0 \
+    --reps 1 \
+    --profile-cuda-api
+```
+
+Wave attribution CSVs produced from the Nsight traces:
+
+```text
+/tmp/gpurec_profile/uniform_forward_waves/current_c150_w32768_wave_attribution.csv
+/tmp/gpurec_profile/uniform_forward_waves/best_c125_w65536_wave_attribution.csv
+```
+
+The Nsight traces themselves are:
+
+```text
+/tmp/gpurec_profile/uniform_forward_waves/current_c150_w32768.nsys-rep
+/tmp/gpurec_profile/uniform_forward_waves/best_c125_w65536.nsys-rep
+```
+
+### Current Baseline
+
+Current default-style scheduling, `family_chunk_size=150` and
+`max_wave_size=32768`, gives:
+
+| Quantity | Value |
+|---|---:|
+| Families | `1000` |
+| Chunks | `7` |
+| Species rows | `1999` |
+| Clades | `6,417,248` |
+| Splits | `8,018,810` |
+| Total scheduled waves | `453` |
+| Max emitted wave size | `32768` |
+| Timing, 3 reps | median `2325.985 ms`, mean `2327.033 ms` |
+| Peak GPU allocation | `15.662 GiB` |
+
+The same point in the later 5-rep candidate batch measured median
+`2344.058 ms`, so small differences below about `20 ms` should be interpreted
+as scheduling noise unless repeated.
+
+### Family Chunk Size Sweep
+
+This sweep keeps `max_wave_size=32768`.
+
+| Family chunk size | Chunks | Total waves | Peak GPU | Median forward |
+|---:|---:|---:|---:|---:|
+| 50 | 20 | 999 | `5.740 GiB` | `2346.708 ms` |
+| 75 | 14 | 727 | `8.345 GiB` | `2335.023 ms` |
+| 100 | 10 | 575 | `10.757 GiB` | `2340.733 ms` |
+| 125 | 8 | 509 | `13.336 GiB` | `2329.322 ms` |
+| 150 | 7 | 453 | `15.662 GiB` | `2333.388 ms` |
+| 175 | 6 | 417 | failed | Triton/CUDA illegal memory access in DTS path |
+
+The timing is nearly flat from 50 to 150 families.  Larger resident chunks
+reduce the number of chunks and wave launches, but the large wave-step kernels
+are already big enough to saturate the GPU.  The main visible effect of chunk
+size is memory.  Chunk 175 remains too close to the memory/stability limit.
+
+### Wave Size Sweep
+
+This sweep keeps `family_chunk_size=150`.
+
+| `max_wave_size` | Total waves | Max emitted wave | Peak GPU | Median forward |
+|---:|---:|---:|---:|---:|
+| none | 342 | `245080` | `16.281 GiB` | `2327.208 ms` |
+| 131072 | 349 | `131072` | `16.281 GiB` | `2336.541 ms` |
+| 65536 | 368 | `65536` | `16.219 GiB` | `2320.090 ms` |
+| 32768 | 453 | `32768` | `15.662 GiB` | `2331.891 ms` |
+| 16384 | 633 | `16384` | `15.296 GiB` | `2339.478 ms` |
+| 8192 | 1011 | `8192` | `15.112 GiB` | `2371.568 ms` |
+| 4096 | 1777 | `4096` | `15.023 GiB` | `2363.096 ms` |
+
+The best point in this quick sweep is `65536`, but only by about `12 ms`
+relative to `32768`.  Very small wave caps lose because they add hundreds of
+extra launches without improving kernel efficiency enough to compensate.
+
+The best repeated candidate was:
+
+| Family chunk size | `max_wave_size` | Chunks | Total waves | Peak GPU | Median forward, 5 reps |
+|---:|---:|---:|---:|---:|---:|
+| 125 | 65536 | 8 | 422 | `13.701 GiB` | `2317.698 ms` |
+| 100 | 65536 | 10 | 504 | `10.969 GiB` | `2333.683 ms` |
+| 150 | 65536 | 7 | 368 | `16.219 GiB` | `2339.796 ms` |
+| 150 | 32768 | 7 | 453 | `15.662 GiB` | `2344.058 ms` |
+| 150 | none | 7 | 342 | `16.281 GiB` | `2355.218 ms` |
+
+This suggests `family_chunk_size=125, max_wave_size=65536` is a reasonable
+candidate if we want a slightly faster and lower-memory default.  The speedup
+over the current 150/32768 point is only about `1.1%` in this run, so this is
+not an order-of-magnitude scheduling opportunity.
+
+### Nsight Kernel Breakdown
+
+The current `150/32768` trace maps exactly to `453 waves * 6 = 2718`
+`_wave_step_uniform_kernel` launches.
+
+| Bucket | GPU time | Notes |
+|---|---:|---|
+| `_wave_step_uniform_kernel` | `1519.114 ms` | `65.7%`, 2718 launches |
+| DTS kernels | `368.031 ms` | mostly `_dts_fused_kernel` plus parent-reduced stage 1 |
+| `_wave_pibar_uniform_parent_kernel` | `201.669 ms` | final Pibar recompute after ping-pong |
+| Other setup/index/fill kernels | `224.515 ms` | allocation fills, index_put, small setup |
+| Total captured GPU work | `2313.328 ms` | one profiled repetition |
+
+For `125/65536`, the same accounting is:
+
+| Bucket | GPU time | Notes |
+|---|---:|---|
+| `_wave_step_uniform_kernel` | `1505.620 ms` | `65.4%`, 2532 launches |
+| DTS kernels | `370.309 ms` | essentially unchanged |
+| `_wave_pibar_uniform_parent_kernel` | `202.292 ms` | essentially unchanged |
+| Other setup/index/fill kernels | `225.419 ms` | essentially unchanged |
+| Total captured GPU work | `2303.640 ms` | one profiled repetition |
+
+The `65536` cap saves about `186` wave-step launches versus `32768`, but the
+total GPU-time difference in the Nsight trace is only about `9.7 ms`.
+
+### Per-Wave Attribution
+
+Current `150/32768`, grouped by emitted wave size:
+
+| Wave size bucket | Waves | Rows | Wave-step | Pibar | DTS | Main wave work |
+|---:|---:|---:|---:|---:|---:|---:|
+| `<=1024` | 112 | 45,525 | `19.689 ms` | `2.546 ms` | `98.146 ms` | `120.382 ms` |
+| `<=4096` | 62 | 150,463 | `39.817 ms` | `5.273 ms` | `60.470 ms` | `105.560 ms` |
+| `<=8192` | 40 | 244,663 | `62.013 ms` | `8.204 ms` | `16.354 ms` | `86.571 ms` |
+| `<=16384` | 59 | 740,215 | `179.568 ms` | `23.853 ms` | `29.311 ms` | `232.732 ms` |
+| `<=32768` | 180 | 5,236,382 | `1218.026 ms` | `161.793 ms` | `163.750 ms` | `1543.569 ms` |
+
+Phase grouping for the same trace:
+
+| Phase | Waves | Rows | Wave-step | Pibar | DTS | Main wave work |
+|---:|---:|---:|---:|---:|---:|---:|
+| 1 | 53 | 1,605,562 | `360.700 ms` | `48.912 ms` | `0.000 ms` | `409.612 ms` |
+| 2 | 342 | 4,761,188 | `1140.963 ms` | `150.557 ms` | `207.591 ms` | `1499.111 ms` |
+| 3 | 58 | 50,498 | `17.451 ms` | `2.201 ms` | `160.439 ms` | `180.091 ms` |
+
+The important point is that `W` is not the only cost predictor.  The late
+phase-3 waves have only about `50k` rows total, but still cost `180 ms` because
+their split fanout is huge.  The worst current DTS waves look like:
+
+| Global wave | Chunk | Wave | Phase | `W` | Split rows | Split rows / `W` | DTS | Main |
+|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 257 | 3 | 58 | 3 | 1626 | 147050 | `90.4` | `7.326 ms` | `7.876 ms` |
+| 123 | 1 | 58 | 3 | 1752 | 129438 | `73.9` | `6.451 ms` | `7.027 ms` |
+| 387 | 5 | 58 | 3 | 1829 | 124075 | `67.8` | `6.196 ms` | `6.759 ms` |
+| 59 | 0 | 59 | 3 | 841 | 122949 | `146.2` | `6.122 ms` | `6.416 ms` |
+| 388 | 5 | 59 | 3 | 829 | 109117 | `131.6` | `5.450 ms` | `5.730 ms` |
+
+High-fanout waves with split rows / `W > 64` account for only `15,924` clade
+rows but `131.798 ms` of main wave work.  Splitting by clade-row count cannot
+address this; the scheduler would need a split-row or fanout budget.
+
+### Nsight Compute Samples
+
+Nsight Compute was run on the first large wave-step launch for the two main
+caps.  The first launch is representative of a full emitted leaf wave.
+
+| Metric | `W=32768` | `W=65536` |
+|---|---:|---:|
+| Grid size | `32768` | `65536` |
+| Launch waves per SM | `21.33` | `42.67` |
+| Duration | `1.314 ms` | `2.658 ms` |
+| Registers/thread | `40` | `40` |
+| SM throughput | `82.99%` | `81.55%` |
+| L1/TEX throughput | `83.28%` | `81.81%` |
+| L2 throughput | `57.96%` | `51.12%` |
+| Active warps | `98.13%` | `99.04%` |
+| Eligible warps/scheduler | `3.87` | `3.29` |
+| Issue active | `76.81%` | `75.47%` |
+| ALU pipe active | `44.60%` | `43.83%` |
+
+Doubling the wave size roughly doubles kernel duration and does not improve
+per-row efficiency materially.  Both launches are already large enough to fill
+the device.  This explains why changing `max_wave_size` only moves end-to-end
+time by about 1%.
+
+### Scheduling Interpretation
+
+- Resident chunk size is now mostly a memory knob, not a speed knob.  Chunks
+  from 50 to 150 families all land around `2.33 s`.
+- `max_wave_size` has a shallow optimum around `65536`, but `32768` is close
+  and uses less peak memory for 150-family chunks.
+- Very small caps like `8192` or `4096` add hundreds of launches and are slower.
+- Larger or unsplit waves do not significantly improve wave-step efficiency,
+  because a `32768`-row wave already has high occupancy and issue utilization.
+- The remaining scheduling-specific bottleneck is not large-wave occupancy.  It
+  is high-fanout DTS work in late/root-like waves, where `W` is small but
+  `split_rows` is enormous.
+
+### Recommendation
+
+For likelihood-only uniform forward on this dataset:
+
+1. Keep the current chunked strategy.  It is already near the scheduling
+   optimum for this GPU and workload.
+2. Consider changing the profiling/default candidate to
+   `family_chunk_size=125, max_wave_size=65536`.  It measured `2317.7 ms`
+   median with `13.70 GiB` peak, versus the current 150/32768 candidate at
+   `2344.1 ms` and `15.66 GiB` in the same repeated batch.  This is a small
+   improvement, so it should be revalidated before promotion.
+3. Do not chase smaller wave caps for occupancy.  They reduce peak memory
+   slightly but increase launch count and slow the pass.
+4. If we want a real scheduling improvement, add a second scheduler budget
+   based on `split_rows` or fanout for high-fanout phase-3 waves.  A clade-row
+   cap alone misses these waves.
+5. A more speculative direction is overlapping high-fanout DTS from one chunk
+   with wave-step work from another chunk or with the previous wave.  DTS is
+   more memory-dependent while the wave-step is instruction/SM-heavy, so overlap
+   may help, but it will require careful stream scheduling and memory pressure
+   checks.
