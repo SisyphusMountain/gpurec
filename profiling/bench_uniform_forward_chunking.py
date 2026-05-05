@@ -62,6 +62,9 @@ class BuiltChunk:
     waves: int
     max_wave: int
     split_rows: int
+    max_wave_split_rows: int
+    split_budget_splits: int
+    top_split_waves: list[tuple[int, int, int, int, float]]
 
 
 def _parse_optional_int(value: str | None) -> int | None:
@@ -71,6 +74,15 @@ def _parse_optional_int(value: str | None) -> int | None:
     if text in ("", "0", "none", "null"):
         return None
     return int(text)
+
+
+def _parse_optional_float(value: str | None) -> float | None:
+    if value is None:
+        return None
+    text = str(value).strip().lower()
+    if text in ("", "0", "none", "null"):
+        return None
+    return float(text)
 
 
 def _parse_args() -> argparse.Namespace:
@@ -84,6 +96,8 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--cache-dir", default=os.getenv("PREPROCESS_CACHE_DIR", "/tmp/gpurec_preprocess_cache"))
     parser.add_argument("--max-wave-size", default=os.getenv("MAX_WAVE_SIZE", "32768"))
     parser.add_argument("--max-root-wave-size", default=os.getenv("MAX_ROOT_WAVE_SIZE", ""))
+    parser.add_argument("--max-split-rows", default=os.getenv("MAX_SPLIT_ROWS", ""))
+    parser.add_argument("--max-split-fanout", default=os.getenv("MAX_SPLIT_FANOUT", ""))
     parser.add_argument("--family-chunk-size", type=int, default=int(os.getenv("FAMILY_CHUNK_SIZE", "150")))
     parser.add_argument("--clade-budget", default=os.getenv("CLADE_BUDGET", ""))
     parser.add_argument(
@@ -138,9 +152,21 @@ def _parse_args() -> argparse.Namespace:
         action=argparse.BooleanOptionalAction,
         default=os.getenv("EMPTY_CACHE_BETWEEN_REPS", "0") != "0",
     )
+    parser.add_argument(
+        "--overlap-mode",
+        choices=("off", "next", "ready"),
+        default=os.getenv("OVERLAP_MODE", os.getenv("GPUREC_FORWARD_DTS_OVERLAP_MODE", "off")),
+    )
+    parser.add_argument(
+        "--overlap-max-pending",
+        type=int,
+        default=int(os.getenv("GPUREC_FORWARD_DTS_OVERLAP_MAX_PENDING", "2")),
+    )
     args = parser.parse_args()
     args.max_wave_size = _parse_optional_int(args.max_wave_size)
     args.max_root_wave_size = _parse_optional_int(args.max_root_wave_size)
+    args.max_split_rows = _parse_optional_int(args.max_split_rows)
+    args.max_split_fanout = _parse_optional_float(args.max_split_fanout)
     args.clade_budget = _parse_optional_int(args.clade_budget)
     if args.family_chunk_size <= 0:
         args.family_chunk_size = 0
@@ -205,6 +231,59 @@ def _make_chunks(
     return chunks
 
 
+def _split_count_by_clade(ccp_helpers: dict) -> list[int]:
+    counts = [0] * int(ccp_helpers["C"])
+    split_parents = ccp_helpers["split_parents_sorted"].detach().cpu().tolist()
+    for parent in split_parents:
+        counts[int(parent)] += 1
+    return counts
+
+
+def _split_waves_by_split_budget(
+    waves: Sequence[Sequence[int]],
+    phases: Sequence[int],
+    split_counts: Sequence[int],
+    *,
+    max_split_rows: int | None,
+    max_split_fanout: float | None,
+) -> tuple[list[list[int]], list[int], int]:
+    if max_split_rows is None and max_split_fanout is None:
+        return [list(w) for w in waves], list(phases), 0
+    if max_split_rows is not None and max_split_rows <= 0:
+        raise ValueError("max_split_rows must be positive")
+    if max_split_fanout is not None and max_split_fanout <= 0:
+        raise ValueError("max_split_fanout must be positive")
+
+    out_waves: list[list[int]] = []
+    out_phases: list[int] = []
+    n_split = 0
+    for wave, phase in zip(waves, phases):
+        current: list[int] = []
+        current_rows = 0
+        for clade in wave:
+            rows = int(split_counts[int(clade)])
+            next_len = len(current) + 1
+            next_rows = current_rows + rows
+            over_rows = max_split_rows is not None and current and next_rows > max_split_rows
+            over_fanout = (
+                max_split_fanout is not None
+                and current
+                and (next_rows / next_len) > max_split_fanout
+            )
+            if over_rows or over_fanout:
+                out_waves.append(current)
+                out_phases.append(int(phase))
+                n_split += 1
+                current = []
+                current_rows = 0
+            current.append(int(clade))
+            current_rows += rows
+        if current:
+            out_waves.append(current)
+            out_phases.append(int(phase))
+    return out_waves, out_phases, n_split
+
+
 def _set_shared_theta(ds: GeneDataset, rate: float, *, device: torch.device, dtype: torch.dtype) -> None:
     theta = torch.log2(torch.tensor([rate, rate, rate], dtype=dtype, device=device))
     for fam in ds.families:
@@ -250,6 +329,8 @@ def _build_chunk(
     dtype: torch.dtype,
     max_wave_size: int | None,
     max_root_wave_size: int | None,
+    max_split_rows: int | None,
+    max_split_fanout: float | None,
 ) -> BuiltChunk:
     items = []
     fam_waves = []
@@ -289,6 +370,14 @@ def _build_chunk(
         phase=3,
         max_wave_size=max_root_wave_size,
     )
+    split_counts_by_clade = _split_count_by_clade(batched["ccp"])
+    cross_waves, cross_phases, split_budget_splits = _split_waves_by_split_budget(
+        cross_waves,
+        cross_phases,
+        split_counts_by_clade,
+        max_split_rows=max_split_rows,
+        max_split_fanout=max_split_fanout,
+    )
     family_clade_counts = [m["C"] for m in batched["family_meta"]]
     family_clade_offsets = [m["clade_offset"] for m in batched["family_meta"]]
     wave_layout = build_wave_layout(
@@ -306,6 +395,13 @@ def _build_chunk(
     metas = wave_layout["wave_metas"]
     max_wave = max((int(m["W"]) for m in metas), default=0)
     split_rows = sum(int(m["sl"].numel()) for m in metas if m.get("has_splits", False))
+    rows = []
+    for k, m in enumerate(metas):
+        W = int(m["W"])
+        n_splits = int(m["sl"].numel()) if m.get("has_splits", False) else 0
+        rows.append((k, int(m["phase"]), W, n_splits, (n_splits / W) if W else 0.0))
+    top_split_waves = rows
+    max_wave_split_rows = max((r[3] for r in rows), default=0)
     # Keep species_helpers in the signature so call sites make the dependency
     # explicit; the layout itself does not consume it.
     _ = species_helpers
@@ -315,6 +411,9 @@ def _build_chunk(
         waves=len(metas),
         max_wave=max_wave,
         split_rows=split_rows,
+        max_wave_split_rows=max_wave_split_rows,
+        split_budget_splits=split_budget_splits,
+        top_split_waves=top_split_waves,
     )
 
 
@@ -338,6 +437,7 @@ def _run_chunks(
     device: torch.device,
     dtype: torch.dtype,
     root_rows: bool,
+    overlap_mode: str,
 ) -> torch.Tensor:
     log_pS, log_pD, log_pL, transfer_mat, max_transfer_vec = params
     total = torch.zeros((), device=device, dtype=dtype)
@@ -363,6 +463,7 @@ def _run_chunks(
             return_original=False,
             need_pibar=False,
             return_root_rows=root_rows,
+            overlap_streams=overlap_mode != "off",
         )
         if root_rows:
             total = total + compute_log_likelihood_root_rows(
@@ -380,7 +481,7 @@ def _run_chunks(
 
 
 def _print_chunks(chunks: Sequence[BuiltChunk]) -> None:
-    print("chunk_table idx first last families clades splits waves max_wave split_rows")
+    print("chunk_table idx first last families clades splits waves max_wave split_rows max_wave_split_rows split_budget_splits")
     for ci, built in enumerate(chunks):
         indices = built.spec.indices
         print(
@@ -394,13 +495,27 @@ def _print_chunks(chunks: Sequence[BuiltChunk]) -> None:
             built.waves,
             built.max_wave,
             built.split_rows,
+            built.max_wave_split_rows,
+            built.split_budget_splits,
         )
+    rows = []
+    for ci, built in enumerate(chunks):
+        for k, phase, W, split_rows, fanout in built.top_split_waves:
+            rows.append((ci, k, phase, W, split_rows, fanout))
+    print("top_split_waves chunk wave phase W split_rows fanout")
+    for row in sorted(rows, key=lambda r: r[4], reverse=True)[:12]:
+        print("%d %d %d %d %d %.3f" % row)
+    print("top_phase3_split_waves chunk wave phase W split_rows fanout")
+    for row in sorted((r for r in rows if r[2] == 3), key=lambda r: r[4], reverse=True)[:12]:
+        print("%d %d %d %d %d %.3f" % row)
 
 
 def main() -> None:
     args = _parse_args()
     for key, value in DEFAULT_FLAGS.items():
         os.environ.setdefault(key, value)
+    os.environ["GPUREC_FORWARD_DTS_OVERLAP_MODE"] = args.overlap_mode
+    os.environ["GPUREC_FORWARD_DTS_OVERLAP_MAX_PENDING"] = str(args.overlap_max_pending)
 
     device = torch.device("cuda")
     dtype = torch.float32
@@ -453,6 +568,8 @@ def main() -> None:
             dtype=dtype,
             max_wave_size=args.max_wave_size,
             max_root_wave_size=args.max_root_wave_size,
+            max_split_rows=args.max_split_rows,
+            max_split_fanout=args.max_split_fanout,
         )
         for spec in specs
     ]
@@ -464,6 +581,12 @@ def main() -> None:
     max_chunk_clades = max((spec.clades for spec in specs), default=0)
     min_chunk_clades = min((spec.clades for spec in specs), default=0)
     total_waves = sum(b.waves for b in built_chunks)
+    max_wave_split_rows = max((b.max_wave_split_rows for b in built_chunks), default=0)
+    max_phase3_split_rows = max(
+        (row[3] for b in built_chunks for row in b.top_split_waves if row[1] == 3),
+        default=0,
+    )
+    split_budget_splits = sum(b.split_budget_splits for b in built_chunks)
     print(
         "policy",
         "families", len(ds.families),
@@ -472,13 +595,20 @@ def main() -> None:
         "clade_budget", args.clade_budget if args.clade_budget is not None else "none",
         "max_wave_size", args.max_wave_size if args.max_wave_size is not None else "none",
         "max_root_wave_size", args.max_root_wave_size if args.max_root_wave_size is not None else "none",
+        "max_split_rows", args.max_split_rows if args.max_split_rows is not None else "none",
+        "max_split_fanout", args.max_split_fanout if args.max_split_fanout is not None else "none",
         "root_rows", int(args.root_rows),
+        "overlap_mode", args.overlap_mode,
+        "overlap_max_pending", args.overlap_max_pending,
         "S", int(ds.S),
         "total_clades", total_clades,
         "total_splits", total_splits,
         "min_chunk_clades", min_chunk_clades,
         "max_chunk_clades", max_chunk_clades,
         "total_waves", total_waves,
+        "max_wave_split_rows", max_wave_split_rows,
+        "max_phase3_split_rows", max_phase3_split_rows,
+        "split_budget_splits", split_budget_splits,
         "preprocess_s", f"{preprocess_s:.6f}",
         "layout_s", f"{layout_s:.6f}",
     )
@@ -496,6 +626,8 @@ def main() -> None:
                 dtype=dtype,
                 max_wave_size=args.max_wave_size,
                 max_root_wave_size=args.max_root_wave_size,
+                max_split_rows=args.max_split_rows,
+                max_split_fanout=args.max_split_fanout,
             )
         ]
         nll_chunked = _run_chunks(
@@ -507,6 +639,7 @@ def main() -> None:
             device=device,
             dtype=dtype,
             root_rows=args.root_rows,
+            overlap_mode=args.overlap_mode,
         )
         nll_unchunked = _run_chunks(
             unchunked,
@@ -517,6 +650,7 @@ def main() -> None:
             device=device,
             dtype=dtype,
             root_rows=False,
+            overlap_mode=args.overlap_mode,
         )
         torch.cuda.synchronize()
         print(
@@ -526,6 +660,57 @@ def main() -> None:
             "abs_diff", float((nll_chunked - nll_unchunked).abs().detach().cpu()),
         )
         del unchunked, nll_chunked, nll_unchunked
+        gc.collect()
+        torch.cuda.empty_cache()
+
+    if (
+        (args.max_split_rows is not None or args.max_split_fanout is not None)
+        and len(ds.families) <= args.compare_unchunked_max_fams
+    ):
+        unsplit_schedule = [
+            _build_chunk(
+                ds,
+                spec,
+                species_helpers=species_helpers,
+                device=device,
+                dtype=dtype,
+                max_wave_size=args.max_wave_size,
+                max_root_wave_size=args.max_root_wave_size,
+                max_split_rows=None,
+                max_split_fanout=None,
+            )
+            for spec in specs
+        ]
+        nll_split = _run_chunks(
+            built_chunks,
+            species_helpers=species_helpers,
+            E_out=E_out,
+            params=params,
+            fixed_iters=args.fixed_iters,
+            device=device,
+            dtype=dtype,
+            root_rows=args.root_rows,
+            overlap_mode=args.overlap_mode,
+        )
+        nll_unsplit = _run_chunks(
+            unsplit_schedule,
+            species_helpers=species_helpers,
+            E_out=E_out,
+            params=params,
+            fixed_iters=args.fixed_iters,
+            device=device,
+            dtype=dtype,
+            root_rows=args.root_rows,
+            overlap_mode=args.overlap_mode,
+        )
+        torch.cuda.synchronize()
+        print(
+            "compare_unsplit_schedule",
+            "split_nll", float(nll_split.detach().cpu()),
+            "unsplit_nll", float(nll_unsplit.detach().cpu()),
+            "abs_diff", float((nll_split - nll_unsplit).abs().detach().cpu()),
+        )
+        del unsplit_schedule, nll_split, nll_unsplit
         gc.collect()
         torch.cuda.empty_cache()
 
@@ -539,6 +724,7 @@ def main() -> None:
             device=device,
             dtype=dtype,
             root_rows=args.root_rows,
+            overlap_mode=args.overlap_mode,
         )
         del out
         torch.cuda.synchronize()
@@ -562,6 +748,7 @@ def main() -> None:
                 device=device,
                 dtype=dtype,
                 root_rows=args.root_rows,
+                overlap_mode=args.overlap_mode,
             )
         )
         times.append(ms)
@@ -577,6 +764,8 @@ def main() -> None:
     print(
         "timing",
         "reps", len(times),
+        "overlap_mode", args.overlap_mode,
+        "overlap_max_pending", args.overlap_max_pending,
         "median_ms", statistics.median(times),
         "mean_ms", statistics.mean(times),
         "min_ms", min(times),
