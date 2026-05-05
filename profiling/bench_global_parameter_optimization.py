@@ -2,19 +2,24 @@
 """Benchmark global/uniform DTL-rate optimization strategies.
 
 The script targets the 3-parameter global mode and uses the public
-``GeneReconModel`` autograd bridge.  It is intentionally profiling-only: it
-does not change production optimizer APIs.
+``GeneReconModel`` autograd bridge. ``recommended-fp32`` uses the production
+``optimize_global_rates_lbfgs`` helper when available, and can fall back to the
+direct experimental ``GeneReconModel`` LBFGS path with ``--helper-mode direct``.
 """
 
 from __future__ import annotations
 
 import argparse
+import importlib
+import inspect
 import math
 import os
 import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from types import SimpleNamespace
+from typing import Any, Callable
 
 import numpy as np
 import torch
@@ -26,6 +31,13 @@ if str(REPO_ROOT) not in sys.path:
 
 from gpurec import GeneReconModel
 
+
+PRODUCTION_HELPER_CANDIDATES = (
+    ("gpurec.optimization", "optimize_global_rates_lbfgs"),
+    ("gpurec.optimization.global_parameter_optimizer", "optimize_global_rates_lbfgs"),
+    ("gpurec.api", "optimize_global_rates_lbfgs"),
+    ("gpurec", "optimize_global_rates_lbfgs"),
+)
 
 DEFAULT_FLAGS = {
     "GPUREC_FORWARD_LEAF_INDEX": "1",
@@ -68,6 +80,12 @@ class EvalRecord:
     target_nll_gap: float
 
 
+@dataclass(frozen=True)
+class ProductionHelper:
+    source: str
+    func: Callable[..., Any]
+
+
 def _parse_dtype(text: str) -> torch.dtype:
     text = text.lower().strip()
     if text in ("fp32", "float32"):
@@ -83,7 +101,10 @@ def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--dataset", default="tests/data/test_trees_100")
     parser.add_argument("--cache-dir", default="/tmp/gpurec_paramopt_cache")
-    parser.add_argument("--strategies", default="eval-target,scipy-lbfgsb-fp32,torch-lbfgs-fp32,adam3-scipy-fp32,scipy-lbfgsb-fp64,bf16-smoke")
+    parser.add_argument(
+        "--strategies",
+        default="eval-target,recommended-fp32,scipy-lbfgsb-fp32,scipy-lbfgsb-fp64-polish,bad-floor-init-guard",
+    )
     parser.add_argument("--init-rate", type=float, default=0.05)
     parser.add_argument("--min-rate", type=float, default=1e-10)
     parser.add_argument("--maxiter", type=int, default=24)
@@ -97,8 +118,36 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--rate-rtol", type=float, default=1e-2)
     parser.add_argument("--gtol", type=float, default=1e-3)
     parser.add_argument("--ftol", type=float, default=1e-7)
+    parser.add_argument(
+        "--helper-mode",
+        choices=("auto", "direct", "require"),
+        default="auto",
+        help=(
+            "For recommended-fp32, use optimize_global_rates_lbfgs when "
+            "available (auto), always use the direct GeneReconModel LBFGS path "
+            "(direct), or fail unless the helper is importable (require)."
+        ),
+    )
+    parser.add_argument(
+        "--allow-floor-init",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Allow optimizer initialization at or below --min-rate.",
+    )
     parser.add_argument("--print-evals", action=argparse.BooleanOptionalAction, default=True)
     return parser.parse_args()
+
+
+def _resolve_production_helper() -> ProductionHelper | None:
+    for module_name, attr_name in PRODUCTION_HELPER_CANDIDATES:
+        try:
+            module = importlib.import_module(module_name)
+        except ImportError:
+            continue
+        func = getattr(module, attr_name, None)
+        if callable(func):
+            return ProductionHelper(f"{module_name}.{attr_name}", func)
+    return None
 
 
 def _gene_paths(root: Path) -> list[str]:
@@ -124,6 +173,28 @@ def _reference_nll(root: Path) -> float:
     # AleRax writes natural-log likelihoods.  gpurec's internal dynamic
     # program and optimizer report log2 NLL, so convert nats to bits here.
     return -total_ll / math.log(2.0)
+
+
+def _validate_interior_init_rates(
+    init_rates: tuple[float, float, float],
+    *,
+    min_rate: float,
+    strategy: str,
+    allow_floor_init: bool,
+) -> None:
+    if not math.isfinite(min_rate) or min_rate <= 0.0:
+        raise ValueError(f"{strategy}: min_rate must be finite and positive, got {min_rate!r}")
+    bad_rates = [rate for rate in init_rates if not math.isfinite(rate) or rate <= 0.0]
+    if bad_rates:
+        raise ValueError(f"{strategy}: init rates must be finite and positive, got {init_rates!r}")
+    if allow_floor_init:
+        return
+    floorish = [rate for rate in init_rates if rate <= min_rate * (1.0 + 1e-12)]
+    if floorish:
+        raise ValueError(
+            f"{strategy}: refusing init_rates={init_rates!r} at/below min_rate={min_rate:.3e}; "
+            "use an interior initialization such as 0.02 or 0.05, and keep min_rate as a constraint"
+        )
 
 
 def _make_model(
@@ -236,6 +307,12 @@ def _run_scipy_lbfgsb(
     target_nll: float,
     args: argparse.Namespace,
 ) -> tuple[list[EvalRecord], object]:
+    _validate_interior_init_rates(
+        init_rates,
+        min_rate=args.min_rate,
+        strategy=name,
+        allow_floor_init=args.allow_floor_init,
+    )
     min_theta = math.log2(args.min_rate)
     model = _make_model(root, dtype=dtype, init_rates=init_rates, args=args)
     records: list[EvalRecord] = []
@@ -281,14 +358,23 @@ def _run_scipy_lbfgsb(
 
 def _run_torch_lbfgs(
     *,
+    name: str | None = None,
     root: Path,
     dtype: torch.dtype,
     init_rates: tuple[float, float, float],
     target_rates: torch.Tensor,
     target_nll: float,
     args: argparse.Namespace,
+    print_evals: bool | None = None,
 ) -> tuple[list[EvalRecord], object]:
-    name = f"torch-lbfgs-{_dtype_name(dtype)}"
+    name = name or f"torch-lbfgs-{_dtype_name(dtype)}"
+    _validate_interior_init_rates(
+        init_rates,
+        min_rate=args.min_rate,
+        strategy=name,
+        allow_floor_init=args.allow_floor_init,
+    )
+    should_print_evals = args.print_evals if print_evals is None else print_evals
     model = _make_model(root, dtype=dtype, init_rates=init_rates, args=args)
     opt = torch.optim.LBFGS(
         model.parameters(),
@@ -314,13 +400,316 @@ def _run_torch_lbfgs(
         )
         eval_count += 1
         _record(records, name, eval_count, start, nll, grad_inf, metrics, target_nll)
-        if args.print_evals:
+        if should_print_evals:
             _print_record(records[-1])
         return model.theta.grad.new_tensor(nll)
 
     result = opt.step(closure)
     model.clamp_theta_(min_rate=args.min_rate)
     return records, result
+
+
+def _as_float(value: object) -> float | None:
+    if value is None:
+        return None
+    if isinstance(value, torch.Tensor):
+        if value.numel() != 1:
+            return None
+        return float(value.detach().to(dtype=torch.float64, device="cpu"))
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _result_success(result: object) -> bool:
+    if isinstance(result, dict):
+        return bool(result.get("success", True))
+    return bool(getattr(result, "success", True))
+
+
+def _result_message(result: object) -> str:
+    if isinstance(result, dict):
+        return str(result.get("message", "ok"))
+    return str(getattr(result, "message", "ok"))
+
+
+def _records_from_helper_history(
+    *,
+    history: list[dict[str, Any]],
+    strategy: str,
+    target_rates: torch.Tensor,
+    target_nll: float,
+) -> list[EvalRecord]:
+    records: list[EvalRecord] = []
+    target = target_rates.to(dtype=torch.float64)
+    for idx, item in enumerate(history, start=1):
+        rates = torch.as_tensor(item["rates"], dtype=torch.float64, device="cpu").reshape(-1)
+        rel = torch.max(torch.abs(rates[:3] - target) / torch.clamp(target.abs(), min=1e-30)).item()
+        nll = float(item.get("negative_log_likelihood", item["nll"]))
+        records.append(
+            EvalRecord(
+                strategy=strategy,
+                eval_idx=int(item.get("eval", idx)),
+                elapsed_s=float(item.get("elapsed_s", 0.0)),
+                nll=nll,
+                grad_inf=float(item.get("grad_infinity_norm", float("nan"))),
+                d_rate=float(rates[0]),
+                l_rate=float(rates[1]),
+                t_rate=float(rates[2]),
+                max_rate_rel_err=float(rel),
+                target_nll_gap=nll - target_nll,
+            )
+        )
+    return records
+
+
+def _run_production_helper_lbfgs(
+    *,
+    helper: ProductionHelper,
+    root: Path,
+    dtype: torch.dtype,
+    init_rates: tuple[float, float, float],
+    target_rates: torch.Tensor,
+    target_nll: float,
+    args: argparse.Namespace,
+) -> tuple[list[EvalRecord], object]:
+    name = f"recommended-fp32-helper"
+    if dtype != torch.float32:
+        raise ValueError(f"{name}: production helper benchmark currently expects fp32, got {_dtype_name(dtype)}")
+    _validate_interior_init_rates(
+        init_rates,
+        min_rate=args.min_rate,
+        strategy=name,
+        allow_floor_init=args.allow_floor_init,
+    )
+    model = _make_model(root, dtype=dtype, init_rates=init_rates, args=args)
+    records: list[EvalRecord] = []
+    start = time.perf_counter()
+    eval_count = 0
+
+    def helper_callback(*callback_args: object, **callback_kwargs: object) -> None:
+        nonlocal eval_count
+        nll = _as_float(callback_kwargs.get("nll"))
+        if nll is None:
+            for value in callback_args:
+                nll = _as_float(value)
+                if nll is not None:
+                    break
+        if nll is None:
+            return
+
+        grad_value = callback_kwargs.get("grad")
+        if isinstance(grad_value, torch.Tensor):
+            grad_inf = float(torch.max(torch.abs(grad_value)).detach().cpu())
+        elif model.theta.grad is not None:
+            grad_inf = float(torch.max(torch.abs(model.theta.grad)).detach().cpu())
+        else:
+            grad_inf = float("nan")
+
+        eval_count += 1
+        metrics = _rate_metrics(model, target_rates, target_nll)
+        _record(records, name, eval_count, start, nll, grad_inf, metrics, target_nll)
+        if args.print_evals:
+            _print_record(records[-1])
+
+    signature = inspect.signature(helper.func)
+    parameters = signature.parameters
+    has_var_kwargs = any(p.kind == inspect.Parameter.VAR_KEYWORD for p in parameters.values())
+    candidate_kwargs: dict[str, object] = {
+        "init_rates": init_rates,
+        "min_rate": args.min_rate,
+        "override_floor_init": args.allow_floor_init,
+        "steps": args.torch_lbfgs_max_iter,
+        "lr": 1.0,
+        "max_eval": args.maxfun,
+        "max_evals": args.maxfun,
+        "maxfun": args.maxfun,
+        "history_size": 10,
+        "tolerance_grad": args.gtol,
+        "gtol": args.gtol,
+        "tolerance_change": args.ftol,
+        "ftol": args.ftol,
+        "line_search_fn": "strong_wolfe",
+        "dtype": dtype,
+        "fp64_polish": False,
+        "verbose": False,
+    }
+    kwargs = {
+        key: value
+        for key, value in candidate_kwargs.items()
+        if has_var_kwargs or key in parameters
+    }
+    if has_var_kwargs or "callback" in parameters:
+        kwargs["callback"] = helper_callback
+    elif "eval_callback" in parameters:
+        kwargs["eval_callback"] = helper_callback
+
+    print(
+        "helper_status",
+        "strategy", "recommended-fp32",
+        "mode", "production_helper",
+        "source", helper.source,
+        "callback", int("callback" in kwargs or "eval_callback" in kwargs),
+        flush=True,
+    )
+    raw_result = helper.func(model, **kwargs)
+    model.clamp_theta_(min_rate=args.min_rate)
+
+    if isinstance(raw_result, dict) and isinstance(raw_result.get("history"), list):
+        records = _records_from_helper_history(
+            history=raw_result["history"],
+            strategy=name,
+            target_rates=target_rates,
+            target_nll=target_nll,
+        )
+        if args.print_evals:
+            for record in records:
+                _print_record(record)
+
+    if not records:
+        nll, _grad, grad_inf, metrics = _evaluate_with_grad(
+            model,
+            target_rates=target_rates,
+            target_nll=target_nll,
+            min_rate=args.min_rate,
+        )
+        _record(records, name, 1, start, nll, grad_inf, metrics, target_nll)
+        if args.print_evals:
+            _print_record(records[-1])
+        message = f"helper={helper.source}; final_eval_only; raw_message={_result_message(raw_result)}"
+    else:
+        timing = raw_result.get("timing", {}) if isinstance(raw_result, dict) else {}
+        total_s = timing.get("total_s", "n/a") if isinstance(timing, dict) else "n/a"
+        initialization = raw_result.get("initialization", "n/a") if isinstance(raw_result, dict) else "n/a"
+        message = (
+            f"helper={helper.source}; initialization={initialization}; "
+            f"helper_total_s={total_s}; raw_message={_result_message(raw_result)}"
+        )
+
+    return records, SimpleNamespace(success=_result_success(raw_result), message=message)
+
+
+def _run_recommended_lbfgs(
+    *,
+    root: Path,
+    init_rates: tuple[float, float, float],
+    target_rates: torch.Tensor,
+    target_nll: float,
+    args: argparse.Namespace,
+) -> tuple[list[EvalRecord], object]:
+    if args.helper_mode != "direct":
+        helper = _resolve_production_helper()
+        if helper is not None:
+            try:
+                return _run_production_helper_lbfgs(
+                    helper=helper,
+                    root=root,
+                    dtype=torch.float32,
+                    init_rates=init_rates,
+                    target_rates=target_rates,
+                    target_nll=target_nll,
+                    args=args,
+                )
+            except TypeError as exc:
+                if args.helper_mode == "require":
+                    raise
+                print(
+                    "helper_status",
+                    "strategy", "recommended-fp32",
+                    "mode", "direct_fallback",
+                    "reason", f"incompatible_helper:{type(exc).__name__}:{str(exc).replace(chr(10), ' ')}",
+                    flush=True,
+                )
+        elif args.helper_mode == "require":
+            raise RuntimeError(
+                "recommended-fp32 requires optimize_global_rates_lbfgs, but no "
+                f"candidate was found in {PRODUCTION_HELPER_CANDIDATES!r}"
+            )
+
+    print(
+        "helper_status",
+        "strategy", "recommended-fp32",
+        "mode", "direct_fallback",
+        "reason", "helper_unavailable" if args.helper_mode != "direct" else "helper_mode_direct",
+        flush=True,
+    )
+    return _run_torch_lbfgs(
+        name="recommended-fp32-direct",
+        root=root,
+        dtype=torch.float32,
+        init_rates=init_rates,
+        target_rates=target_rates,
+        target_nll=target_nll,
+        args=args,
+    )
+
+
+def _run_scipy_lbfgsb_fp64_polish(
+    *,
+    root: Path,
+    init_rates: tuple[float, float, float],
+    target_rates: torch.Tensor,
+    target_nll: float,
+    args: argparse.Namespace,
+) -> tuple[list[EvalRecord], object]:
+    seed_records, _seed_result = _run_torch_lbfgs(
+        name="fp64-polish-seed-fp32",
+        root=root,
+        dtype=torch.float32,
+        init_rates=init_rates,
+        target_rates=target_rates,
+        target_nll=target_nll,
+        args=args,
+        print_evals=False,
+    )
+    if not seed_records:
+        raise RuntimeError("fp64 polish could not run because the fp32 seed produced no records")
+    seed = seed_records[-1]
+    seed_rates = (seed.d_rate, seed.l_rate, seed.t_rate)
+    print(
+        "polish_seed",
+        "strategy", "scipy-lbfgsb-fp64-polish",
+        "seed_strategy", "fp64-polish-seed-fp32",
+        "seed_evals", len(seed_records),
+        "seed_time_s", f"{seed.elapsed_s:.6f}",
+        "seed_gap", f"{seed.target_nll_gap:.8e}",
+        "seed_rate_rel", f"{seed.max_rate_rel_err:.8e}",
+        "D", f"{seed.d_rate:.10e}",
+        "L", f"{seed.l_rate:.10e}",
+        "T", f"{seed.t_rate:.10e}",
+        flush=True,
+    )
+    return _run_scipy_lbfgsb(
+        name="scipy-lbfgsb-fp64-polish",
+        root=root,
+        dtype=torch.float64,
+        init_rates=seed_rates,
+        target_rates=target_rates,
+        target_nll=target_nll,
+        args=args,
+    )
+
+
+def _run_bad_floor_init_guard(args: argparse.Namespace) -> tuple[list[EvalRecord], object]:
+    init_rates = (args.min_rate, args.min_rate, args.min_rate)
+    try:
+        _validate_interior_init_rates(
+            init_rates,
+            min_rate=args.min_rate,
+            strategy="bad-floor-init-guard",
+            allow_floor_init=False,
+        )
+    except ValueError as exc:
+        print(
+            "guard",
+            "strategy", "bad-floor-init-guard",
+            "status", "rejected",
+            "message", str(exc).replace("\n", " "),
+            flush=True,
+        )
+        return [], SimpleNamespace(success=True, message=str(exc))
+    return [], SimpleNamespace(success=False, message="floor initialization was not rejected")
 
 
 def _run_adam_then_scipy(
@@ -333,6 +722,12 @@ def _run_adam_then_scipy(
     args: argparse.Namespace,
 ) -> tuple[list[EvalRecord], object]:
     name = f"adam{args.adam_steps}-scipy-{_dtype_name(dtype)}"
+    _validate_interior_init_rates(
+        init_rates,
+        min_rate=args.min_rate,
+        strategy=name,
+        allow_floor_init=args.allow_floor_init,
+    )
     model = _make_model(root, dtype=dtype, init_rates=init_rates, args=args)
     opt = torch.optim.Adam(model.parameters(), lr=args.adam_lr)
     records: list[EvalRecord] = []
@@ -393,13 +788,30 @@ def _summarize(
     args: argparse.Namespace,
 ) -> None:
     if not records:
-        print("summary", "strategy", strategy, "status", "no_records")
+        print(
+            "summary",
+            "strategy", strategy,
+            "evals", 0,
+            "success", int(_result_success(result)),
+            "hit_eval", "n/a",
+            "hit_time_s", "n/a",
+            "best_nll", "n/a",
+            "best_gap", "n/a",
+            "best_rate_rel", "n/a",
+            "last_nll", "n/a",
+            "last_gap", "n/a",
+            "last_rate_rel", "n/a",
+            "last_grad_inf", "n/a",
+            "total_time_s", "0.000000",
+            "message", _result_message(result).replace("\n", " "),
+            flush=True,
+        )
         return
     best = min(records, key=lambda r: r.nll)
     last = records[-1]
     hit = _first_hit(records, nll_tol=args.nll_tol, rate_rtol=args.rate_rtol)
-    status = getattr(result, "message", "ok")
-    success = int(bool(getattr(result, "success", True)))
+    status = _result_message(result)
+    success = int(_result_success(result))
     print(
         "summary",
         "strategy", strategy,
@@ -494,6 +906,8 @@ def main() -> None:
         "min_rate", f"{args.min_rate:.10e}",
         "nll_tol", f"{args.nll_tol:.3e}",
         "rate_rtol", f"{args.rate_rtol:.3e}",
+        "helper_mode", args.helper_mode,
+        "allow_floor_init", int(args.allow_floor_init),
         flush=True,
     )
 
@@ -517,6 +931,15 @@ def main() -> None:
                 args=args,
             )
             _summarize("eval-target-fp64", records, object(), args=args)
+        elif strategy == "recommended-fp32":
+            records, result = _run_recommended_lbfgs(
+                root=root,
+                init_rates=init_rates,
+                target_rates=target_rates,
+                target_nll=target_nll,
+                args=args,
+            )
+            _summarize(strategy, records, result, args=args)
         elif strategy == "scipy-lbfgsb-fp32":
             records, result = _run_scipy_lbfgsb(
                 name=strategy,
@@ -538,6 +961,26 @@ def main() -> None:
                 target_nll=target_nll,
                 args=args,
             )
+            _summarize(strategy, records, result, args=args)
+        elif strategy == "scipy-lbfgsb-fp64-polish":
+            try:
+                records, result = _run_scipy_lbfgsb_fp64_polish(
+                    root=root,
+                    init_rates=init_rates,
+                    target_rates=target_rates,
+                    target_nll=target_nll,
+                    args=args,
+                )
+            except Exception as exc:
+                print(
+                    "strategy_error",
+                    "strategy", strategy,
+                    "type", type(exc).__name__,
+                    "message", str(exc).replace("\n", " "),
+                    flush=True,
+                )
+                records = []
+                result = SimpleNamespace(success=False, message=f"{type(exc).__name__}: {exc}")
             _summarize(strategy, records, result, args=args)
         elif strategy == "torch-lbfgs-fp32":
             records, result = _run_torch_lbfgs(
@@ -567,6 +1010,9 @@ def main() -> None:
                 args=args,
             )
             _summarize(strategy, records, status, args=args)
+        elif strategy == "bad-floor-init-guard":
+            records, result = _run_bad_floor_init_guard(args)
+            _summarize(strategy, records, result, args=args)
         else:
             raise ValueError(f"unknown strategy: {strategy}")
 

@@ -1,0 +1,380 @@
+"""Production helper for global uniform DTL-rate optimization."""
+from __future__ import annotations
+
+import math
+import time
+from collections.abc import Sequence
+from typing import TYPE_CHECKING, Any
+
+import torch
+
+if TYPE_CHECKING:
+    from gpurec.api.model import GeneReconModel
+
+
+_DEFAULT_INTERIOR_INIT_RATES = (0.05, 0.05, 0.05)
+GlobalLBFGSRecord = dict[str, Any]
+GlobalLBFGSResult = dict[str, Any]
+
+
+def _synchronize(device: torch.device) -> None:
+    if device.type == "cuda":
+        torch.cuda.synchronize(device)
+
+
+def _as_rate_tensor(
+    rates: Sequence[float] | torch.Tensor,
+    *,
+    device: torch.device,
+    dtype: torch.dtype,
+    name: str,
+) -> torch.Tensor:
+    rate_t = torch.as_tensor(rates, device=device, dtype=dtype)
+    if tuple(rate_t.shape) != (3,):
+        raise ValueError(f"{name} must contain exactly three rates (D, L, T)")
+    if not torch.isfinite(rate_t).all():
+        raise ValueError(f"{name} must be finite")
+    if (rate_t <= 0).any():
+        raise ValueError(f"{name} must be strictly positive")
+    return rate_t
+
+
+def _max_relative_rate_step(
+    rates: torch.Tensor,
+    previous_rates: torch.Tensor | None,
+) -> float | None:
+    if previous_rates is None:
+        return None
+    denom = torch.clamp(previous_rates.abs(), min=1e-30)
+    return float(torch.max(torch.abs(rates - previous_rates) / denom).item())
+
+
+def _copy_rates_to_model(model: "GeneReconModel", rates: torch.Tensor) -> None:
+    with torch.no_grad():
+        model.theta.copy_(torch.log2(rates).to(device=model.theta.device, dtype=model.theta.dtype))
+    model.static.warm_E = None
+
+
+def _validate_global_uniform_model(model: "GeneReconModel") -> None:
+    mode = getattr(model, "mode", None)
+    if mode != "global":
+        raise ValueError(f"optimize_global_rates_lbfgs requires mode='global', got {mode!r}")
+
+    static = getattr(model, "static", None)
+    pibar_mode = getattr(static, "pibar_mode", None)
+    if pibar_mode != "uniform":
+        raise ValueError(
+            "optimize_global_rates_lbfgs requires a GeneReconModel built with "
+            f"pibar_mode='uniform', got {pibar_mode!r}"
+        )
+
+    theta = getattr(model, "theta", None)
+    if not torch.is_tensor(theta) or tuple(theta.shape) != (3,):
+        shape = None if theta is None else tuple(theta.shape)
+        raise ValueError(
+            "optimize_global_rates_lbfgs requires a global three-parameter "
+            f"theta tensor, got shape {shape}"
+        )
+
+
+def _prepare_initial_theta(
+    model: "GeneReconModel",
+    *,
+    init_rates: Sequence[float] | torch.Tensor | None,
+    interior_init_rates: Sequence[float] | torch.Tensor,
+    min_rate: float,
+    override_floor_init: bool,
+) -> str:
+    device = model.theta.device
+    dtype = model.theta.dtype
+    min_theta = math.log2(min_rate)
+    floor_tol = max(1e-12, 16.0 * torch.finfo(dtype).eps * max(1.0, abs(min_theta)))
+
+    interior_rates = _as_rate_tensor(
+        interior_init_rates,
+        device=device,
+        dtype=dtype,
+        name="interior_init_rates",
+    )
+    if (interior_rates <= min_rate).any():
+        raise ValueError("interior_init_rates must be strictly above min_rate")
+
+    if init_rates is not None:
+        requested_rates = _as_rate_tensor(
+            init_rates,
+            device=device,
+            dtype=dtype,
+            name="init_rates",
+        )
+        if (requested_rates <= min_rate).any():
+            if not override_floor_init:
+                raise ValueError(
+                    "init_rates contains a value at or below min_rate; use an "
+                    "interior initialization or enable override_floor_init"
+                )
+            _copy_rates_to_model(model, interior_rates)
+            return "overrode_requested_floor_init"
+        _copy_rates_to_model(model, requested_rates)
+        return "used_requested_init_rates"
+
+    theta = model.theta.detach()
+    if not torch.isfinite(theta).all():
+        raise ValueError("model.theta contains non-finite values")
+
+    if (theta <= min_theta + floor_tol).any():
+        if not override_floor_init:
+            raise ValueError(
+                "model.theta is initialized at the lower rate floor; use an "
+                "interior initialization or enable override_floor_init"
+            )
+        _copy_rates_to_model(model, interior_rates)
+        return "overrode_model_floor_init"
+
+    with torch.no_grad():
+        model.theta.clamp_(min=min_theta)
+    return "used_model_theta"
+
+
+def _run_lbfgs_phase(
+    model: "GeneReconModel",
+    *,
+    phase: str,
+    min_rate: float,
+    steps: int,
+    lr: float,
+    max_eval: int | None,
+    history_size: int,
+    tolerance_grad: float,
+    tolerance_change: float,
+    line_search_fn: str | None,
+    history: list[dict[str, Any]],
+    total_start: float,
+    verbose: bool,
+) -> dict[str, Any]:
+    if steps < 1:
+        return {"phase": phase, "time_s": 0.0, "evaluations": 0}
+
+    opt_kwargs: dict[str, Any] = {
+        "lr": lr,
+        "max_iter": int(steps),
+        "history_size": int(history_size),
+        "tolerance_grad": float(tolerance_grad),
+        "tolerance_change": float(tolerance_change),
+        "line_search_fn": line_search_fn,
+    }
+    if max_eval is not None:
+        opt_kwargs["max_eval"] = int(max_eval)
+
+    opt = torch.optim.LBFGS(model.parameters(), **opt_kwargs)
+    device = model.theta.device
+    theta_min = math.log2(min_rate)
+    phase_start = time.perf_counter()
+    eval_count = 0
+    previous_rates: torch.Tensor | None = None
+    previous_nll: float | None = None
+
+    def closure() -> torch.Tensor:
+        nonlocal eval_count, previous_rates, previous_nll
+        eval_start = time.perf_counter()
+        with torch.no_grad():
+            model.theta.clamp_(min=theta_min)
+
+        opt.zero_grad(set_to_none=True)
+        loss = model()
+        if not torch.isfinite(loss.detach()):
+            raise FloatingPointError(
+                f"Non-finite NLL in optimize_global_rates_lbfgs phase={phase}"
+            )
+        loss.backward()
+        _synchronize(device)
+
+        grad = model.theta.grad.detach()
+        if not torch.isfinite(grad).all():
+            raise FloatingPointError(
+                f"Non-finite theta gradient in optimize_global_rates_lbfgs phase={phase}"
+            )
+
+        nll = float(loss.detach().cpu())
+        theta_cpu = model.theta.detach().cpu().clone()
+        rates_cpu = torch.exp2(theta_cpu)
+        grad_cpu = grad.detach().cpu().clone()
+        grad_inf = float(grad_cpu.abs().max().item())
+        rate_step = _max_relative_rate_step(rates_cpu, previous_rates)
+        nll_change = None if previous_nll is None else nll - previous_nll
+        eval_time = time.perf_counter() - eval_start
+        eval_count += 1
+
+        record = {
+            "phase": phase,
+            "eval": len(history) + 1,
+            "phase_eval": eval_count,
+            "elapsed_s": time.perf_counter() - total_start,
+            "eval_time_s": eval_time,
+            "theta": theta_cpu,
+            "rates": rates_cpu,
+            "nll": nll,
+            "negative_log_likelihood": nll,
+            "log_likelihood": -nll,
+            "grad_infinity_norm": grad_inf,
+            "gradient": grad_cpu,
+            "relative_rate_step": rate_step,
+            "nll_change": nll_change,
+        }
+        history.append(record)
+
+        if verbose:
+            step_s = "n/a" if rate_step is None else f"{rate_step:.3e}"
+            delta_s = "n/a" if nll_change is None else f"{nll_change:.3e}"
+            rates_s = ", ".join(f"{float(x):.6e}" for x in rates_cpu)
+            print(
+                f"  {phase} eval {eval_count:3d}  NLL={nll:.6f}  "
+                f"|g|={grad_inf:.3e}  dNLL={delta_s}  rel_rate_step={step_s}  "
+                f"rates=({rates_s})  t={eval_time:.2f}s",
+                flush=True,
+            )
+
+        previous_rates = rates_cpu
+        previous_nll = nll
+        return loss
+
+    result_loss = opt.step(closure)
+    model.clamp_theta_(min_rate=min_rate)
+    _synchronize(device)
+
+    result_value = None
+    if torch.is_tensor(result_loss):
+        result_value = float(result_loss.detach().cpu())
+    return {
+        "phase": phase,
+        "time_s": time.perf_counter() - phase_start,
+        "evaluations": eval_count,
+        "optimizer_return": result_value,
+    }
+
+
+@torch.no_grad()
+def _final_nll(model: "GeneReconModel") -> tuple[float, float]:
+    start = time.perf_counter()
+    nll = float(model().detach().cpu())
+    _synchronize(model.theta.device)
+    return nll, time.perf_counter() - start
+
+
+def optimize_global_rates_lbfgs(
+    model: "GeneReconModel",
+    *,
+    init_rates: Sequence[float] | torch.Tensor | None = None,
+    min_rate: float = 1e-10,
+    interior_init_rates: Sequence[float] | torch.Tensor = _DEFAULT_INTERIOR_INIT_RATES,
+    override_floor_init: bool = True,
+    steps: int = 12,
+    lr: float = 1.0,
+    max_eval: int | None = None,
+    history_size: int = 10,
+    tolerance_grad: float = 1e-3,
+    tolerance_change: float = 1e-7,
+    line_search_fn: str | None = "strong_wolfe",
+    dtype: torch.dtype | None = torch.float32,
+    fp64_polish: bool = False,
+    fp64_polish_steps: int = 4,
+    fp64_polish_max_eval: int | None = None,
+    verbose: bool = False,
+) -> dict[str, Any]:
+    """Optimize global DTL rates for a resident uniform ``GeneReconModel``.
+
+    The helper intentionally keeps a small surface around the public model API:
+    callers build ``GeneReconModel.from_trees(..., mode="global",
+    pibar_mode="uniform")`` once, then this function only updates
+    ``model.theta``. The default path is projected fp32 PyTorch L-BFGS with a
+    strong-Wolfe line search.
+
+    Returns a dict with ``theta``, ``rates``, ``nll``,
+    ``negative_log_likelihood``, ``log_likelihood``, ``history`` and
+    ``timing``.
+    """
+    _validate_global_uniform_model(model)
+    if min_rate <= 0:
+        raise ValueError("min_rate must be strictly positive")
+    if steps < 1:
+        raise ValueError("steps must be >= 1")
+    if fp64_polish_steps < 1:
+        raise ValueError("fp64_polish_steps must be >= 1")
+
+    if dtype is not None and model.theta.dtype != dtype:
+        model.to(dtype=dtype)
+
+    initialization = _prepare_initial_theta(
+        model,
+        init_rates=init_rates,
+        interior_init_rates=interior_init_rates,
+        min_rate=min_rate,
+        override_floor_init=override_floor_init,
+    )
+
+    total_start = time.perf_counter()
+    history: list[dict[str, Any]] = []
+    phase_timings = []
+
+    phase_timings.append(
+        _run_lbfgs_phase(
+            model,
+            phase="fp32_lbfgs" if model.theta.dtype == torch.float32 else "lbfgs",
+            min_rate=min_rate,
+            steps=steps,
+            lr=lr,
+            max_eval=max_eval,
+            history_size=history_size,
+            tolerance_grad=tolerance_grad,
+            tolerance_change=tolerance_change,
+            line_search_fn=line_search_fn,
+            history=history,
+            total_start=total_start,
+            verbose=verbose,
+        )
+    )
+
+    if fp64_polish and model.theta.dtype != torch.float64:
+        model.to(dtype=torch.float64)
+        model.static.warm_E = None
+        phase_timings.append(
+            _run_lbfgs_phase(
+                model,
+                phase="fp64_polish",
+                min_rate=min_rate,
+                steps=fp64_polish_steps,
+                lr=lr,
+                max_eval=fp64_polish_max_eval,
+                history_size=history_size,
+                tolerance_grad=tolerance_grad,
+                tolerance_change=tolerance_change,
+                line_search_fn=line_search_fn,
+                history=history,
+                total_start=total_start,
+                verbose=verbose,
+            )
+        )
+
+    model.clamp_theta_(min_rate=min_rate)
+    final_nll, final_eval_s = _final_nll(model)
+    total_s = time.perf_counter() - total_start
+    theta = model.theta.detach().cpu().clone()
+    rates = torch.exp2(theta)
+
+    timing = {
+        "total_s": total_s,
+        "final_eval_s": final_eval_s,
+        "evaluations": len(history),
+        "phases": phase_timings,
+    }
+
+    return {
+        "theta": theta,
+        "rates": rates,
+        "nll": final_nll,
+        "negative_log_likelihood": final_nll,
+        "log_likelihood": -final_nll,
+        "history": history,
+        "timing": timing,
+        "initialization": initialization,
+        "min_rate": min_rate,
+    }
