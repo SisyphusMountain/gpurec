@@ -178,6 +178,141 @@ def _species_parent_from_children(sp_child1, sp_child2, S):
     return parent.contiguous()
 
 
+def _balanced_self_loop_topology(device, dtype):
+    """Small binary species tree with internal nodes that expose subtree bugs."""
+    S = 7
+    sp_child1 = torch.tensor([1, 3, 5, S, S, S, S], device=device, dtype=torch.long)
+    sp_child2 = torch.tensor([2, 4, 6, S, S, S, S], device=device, dtype=torch.long)
+    sp_parent = _species_parent_from_children(sp_child1, sp_child2, S)
+
+    ancestors_dense = torch.zeros((S, S), device=device, dtype=dtype)
+    for desc in range(S):
+        cur = desc
+        while cur >= 0:
+            ancestors_dense[desc, cur] = 1.0
+            cur = int(sp_parent[cur].item())
+    ancestors_T = ancestors_dense.T.contiguous().to_sparse_coo()
+
+    level_parents = torch.tensor(
+        [[1, 2], [0, -1]], device=device, dtype=torch.long,
+    )
+    compact_level_ptr = torch.tensor([0, 2, 3], device=device, dtype=torch.long)
+    compact_level_parents = torch.tensor([1, 2, 0], device=device, dtype=torch.int32)
+    compact_level_child1 = torch.tensor([3, 5, 1], device=device, dtype=torch.int32)
+    compact_level_child2 = torch.tensor([4, 6, 2], device=device, dtype=torch.int32)
+
+    return {
+        "S": S,
+        "sp_child1": sp_child1,
+        "sp_child2": sp_child2,
+        "sp_parent": sp_parent,
+        "ancestors_dense": ancestors_dense,
+        "ancestors_T": ancestors_T,
+        "level_parents": level_parents,
+        "compact_level_ptr": compact_level_ptr,
+        "compact_level_parents": compact_level_parents,
+        "compact_level_child1": compact_level_child1,
+        "compact_level_child2": compact_level_child2,
+    }
+
+
+def _subtree_sums_from_children(values, sp_child1, sp_child2):
+    """Reference subtree sums in species-id order for [W, S] values."""
+    result = values.clone()
+    S = values.shape[1]
+
+    def visit(node):
+        c1 = int(sp_child1[node].item())
+        c2 = int(sp_child2[node].item())
+        if c1 < S:
+            result[:, node] += visit(c1)
+        if c2 < S:
+            result[:, node] += visit(c2)
+        return result[:, node].clone()
+
+    has_parent = torch.zeros(S, dtype=torch.bool, device=values.device)
+    for child in torch.cat([sp_child1.long(), sp_child2.long()]):
+        if int(child.item()) < S:
+            has_parent[int(child.item())] = True
+    for root in torch.nonzero(~has_parent, as_tuple=False).flatten().tolist():
+        visit(int(root))
+    return result
+
+
+def _uniform_pibar_from_pi(Pi_star, mt, ancestors_dense):
+    row_max = Pi_star.max(dim=1, keepdim=True).values
+    p_prime = torch.exp2(Pi_star - row_max)
+    ancestor_sum = p_prime @ ancestors_dense.T
+    denom = p_prime.sum(dim=1, keepdim=True) - ancestor_sum
+    Pibar_star = torch.where(
+        denom > 0,
+        torch.log2(denom) + row_max + mt.unsqueeze(0),
+        torch.full_like(Pi_star, NEG_INF),
+    )
+    return Pibar_star.contiguous(), row_max.squeeze(1).contiguous()
+
+
+def _synthetic_self_loop_case(device, dtype, *, W=3):
+    torch.manual_seed(20260505)
+    topo = _balanced_self_loop_topology(device, dtype)
+    S = topo["S"]
+
+    Pi_star = (torch.randn(W, S, device=device, dtype=dtype) * 0.25 - 2.0).contiguous()
+    mt = torch.linspace(-4.25, -3.75, S, device=device, dtype=dtype).contiguous()
+    Pibar_star, pibar_row_max = _uniform_pibar_from_pi(
+        Pi_star, mt, topo["ancestors_dense"],
+    )
+    rhs = (torch.randn(W, S, device=device, dtype=dtype) * 0.01).contiguous()
+
+    E = (torch.randn(S, device=device, dtype=dtype) * 0.02 - 0.55).contiguous()
+    Ebar = (torch.randn(S, device=device, dtype=dtype) * 0.02 - 0.75).contiguous()
+    DL_const = (torch.randn(S, device=device, dtype=dtype) * 0.02 - 4.0).contiguous()
+    SL1_const = (torch.randn(S, device=device, dtype=dtype) * 0.02 - 5.0).contiguous()
+    SL2_const = (torch.randn(S, device=device, dtype=dtype) * 0.02 - 5.1).contiguous()
+    log_pS = torch.linspace(-5.2, -4.8, S, device=device, dtype=dtype).contiguous()
+
+    leaf_species_idx = torch.tensor([3, 5, -1], device=device, dtype=torch.int32)
+    if W != 3:
+        leaf_species_idx = torch.full((W,), -1, device=device, dtype=torch.int32)
+        leaf_species_idx[:min(W, 2)] = torch.tensor(
+            [3, 5][:min(W, 2)], device=device, dtype=torch.int32,
+        )
+    leaf_wt = torch.full((W, S), NEG_INF, device=device, dtype=dtype)
+    for w, s in enumerate(leaf_species_idx.tolist()):
+        if 0 <= s < S:
+            leaf_wt[w, s] = log_pS[s]
+
+    topo.update({
+        "Pi_star": Pi_star,
+        "Pibar_star": Pibar_star,
+        "pibar_row_max": pibar_row_max,
+        "rhs": rhs,
+        "mt": mt,
+        "DL_const": DL_const,
+        "Ebar": Ebar,
+        "E": E,
+        "SL1_const": SL1_const,
+        "SL2_const": SL2_const,
+        "leaf_wt": leaf_wt.contiguous(),
+        "leaf_species_idx": leaf_species_idx.contiguous(),
+        "leaf_logp": log_pS,
+    })
+    return topo
+
+
+def _accum_from_per_element_refs(refs):
+    _v, aw0, aw1, aw2, aw345, aw3, aw4 = refs
+    return (
+        aw0.sum().reshape(1).contiguous(),
+        aw345.sum().reshape(1).contiguous(),
+        (aw0 + aw2).sum(dim=0).contiguous(),
+        aw1.sum(dim=0).contiguous(),
+        aw4.sum(dim=0).contiguous(),
+        aw3.sum(dim=0).contiguous(),
+        aw2.sum(dim=0).contiguous(),
+    )
+
+
 def _compute_wave_dts_r(d, meta, S, device, dtype):
     if not meta['has_splits']:
         return None
@@ -667,6 +802,170 @@ def test_wave_backward_uniform_fused_supports_bf16_synthetic():
         assert torch.isfinite(tri.float()).all()
     for ref, tri in zip(refs, tris):
         torch.testing.assert_close(tri.float(), ref.float(), rtol=6e-2, atol=6e-3)
+
+
+def test_uniform_pibar_jt_correction_is_subtree_sum_not_self_only():
+    """The uniform-Pibar VJP correction is a descendant subtree sum."""
+    device = torch.device("cpu")
+    dtype = torch.float64
+    topo = _balanced_self_loop_topology(device, dtype)
+    W, S = 2, topo["S"]
+
+    p_prime = torch.linspace(0.2, 1.4, W * S, device=device, dtype=dtype).reshape(W, S)
+    pibar_coeff = torch.linspace(1.1, 2.4, W * S, device=device, dtype=dtype).reshape(W, S)
+    v = torch.linspace(-0.05, 0.08, W * S, device=device, dtype=dtype).reshape(W, S)
+    u_d = v * pibar_coeff
+
+    ingredients = {
+        "w_L": torch.ones(W, S, device=device, dtype=dtype),
+        "w_terms": torch.zeros(6, W, S, device=device, dtype=dtype),
+        "p_prime": p_prime,
+        "pibar_inv_denom": pibar_coeff,
+    }
+    ingredients["w_terms"][2] = 1.0
+
+    actual = _self_loop_Jt_apply(
+        v, ingredients,
+        topo["sp_child1"], topo["sp_child2"], S, W,
+        pibar_mode="uniform", transfer_mat_T=None, ancestors_T=topo["ancestors_T"],
+    )
+    subtree = _subtree_sums_from_children(u_d, topo["sp_child1"], topo["sp_child2"])
+    expected = p_prime * (u_d.sum(dim=1, keepdim=True) - subtree)
+    self_only = p_prime * (u_d.sum(dim=1, keepdim=True) - u_d)
+
+    torch.testing.assert_close(actual, expected, rtol=1e-12, atol=1e-12)
+    assert (expected - self_only).abs()[:, :3].max().item() > 1e-3
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+@pytest.mark.parametrize(
+    "case_name,env",
+    [
+        ("proposal0_2d_triton", {
+            "GPUREC_SELF_LOOP_2D_TRITON": "1",
+            "GPUREC_SELF_LOOP_2D_BLOCK_W": "1",
+        }),
+        ("proposal1_tree_staged", {
+            "GPUREC_SELF_LOOP_TREE_STAGED": "1",
+            "GPUREC_SELF_LOOP_TREE_TILE_W": "2",
+            "GPUREC_SELF_LOOP_TREE_TILE_S": "128",
+        }),
+        ("proposal2_tree_transposed", {
+            "GPUREC_SELF_LOOP_TREE_TRANSPOSED": "1",
+            "GPUREC_SELF_LOOP_TREE_TILE_W": "16",
+        }),
+        ("proposal3_hybrid_router", {
+            "GPUREC_SELF_LOOP_TREE_STAGED": "1",
+            "GPUREC_SELF_LOOP_TREE_MIN_W": "0",
+            "GPUREC_SELF_LOOP_TREE_SPLIT_WAVES": "1",
+        }),
+    ],
+)
+def test_documented_self_loop_prototype_flags_match_synthetic_reference(
+    monkeypatch,
+    case_name,
+    env,
+):
+    """Documented self-loop prototype flags preserve the synthetic reference."""
+    device = torch.device("cuda")
+    dtype = torch.float32
+    d = _synthetic_self_loop_case(device, dtype)
+    S = d["S"]
+
+    refs = _pytorch_single_wave_backward(
+        d["Pi_star"], d["Pibar_star"], 0, d["Pi_star"].shape[0], S,
+        None, d["rhs"],
+        d["mt"], d["DL_const"], d["Ebar"], d["E"], d["SL1_const"], d["SL2_const"],
+        d["sp_child1"], d["sp_child2"], d["leaf_wt"], d["ancestors_T"],
+        neumann_terms=4,
+    )
+
+    for key, value in env.items():
+        monkeypatch.setenv(key, value)
+    tris = wave_backward_uniform_fused(
+        d["Pi_star"], d["Pibar_star"], 0, d["Pi_star"].shape[0], S,
+        None, d["rhs"].clone(),
+        d["mt"], d["DL_const"], d["Ebar"], d["E"], d["SL1_const"], d["SL2_const"],
+        d["sp_child1"], d["sp_child2"], d["leaf_wt"],
+        neumann_terms=4,
+        sp_parent=d["sp_parent"],
+        pibar_row_max=d["pibar_row_max"],
+    )
+
+    for ref, tri in zip(refs, tris):
+        torch.testing.assert_close(
+            tri, ref, rtol=2e-5, atol=2e-6,
+            msg=f"{case_name} does not match synthetic self-loop reference",
+        )
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+def test_cuda_nosplit_tree_correction_matches_synthetic_reference():
+    """Proposal 5 tree correction matches reference and differs from self-only."""
+    pytest.importorskip("cuda.bindings")
+    from gpurec.core.kernels.wave_backward_cuda import wave_backward_uniform_nosplit_cuda
+
+    device = torch.device("cuda")
+    dtype = torch.float32
+    d = _synthetic_self_loop_case(device, dtype)
+    S = d["S"]
+    W = d["Pi_star"].shape[0]
+    neumann_terms = 4
+
+    refs = _pytorch_single_wave_backward(
+        d["Pi_star"], d["Pibar_star"], 0, W, S,
+        None, d["rhs"],
+        d["mt"], d["DL_const"], d["Ebar"], d["E"], d["SL1_const"], d["SL2_const"],
+        d["sp_child1"], d["sp_child2"], d["leaf_wt"], d["ancestors_T"],
+        neumann_terms=neumann_terms,
+    )
+    expected_accum = _accum_from_per_element_refs(refs)
+
+    accum_tree = _zero_accum_param_grads(S, device, dtype)
+    v_tree, *_ = wave_backward_uniform_nosplit_cuda(
+        d["Pi_star"], d["Pibar_star"], 0, W, S,
+        d["rhs"].clone(),
+        d["mt"], d["DL_const"], d["Ebar"], d["E"], d["SL1_const"], d["SL2_const"],
+        d["sp_child1"].to(torch.int32).contiguous(),
+        d["sp_child2"].to(torch.int32).contiguous(),
+        d["sp_parent"].to(torch.int32).contiguous(),
+        d["leaf_species_idx"],
+        d["leaf_logp"],
+        d["pibar_row_max"],
+        d["compact_level_ptr"],
+        d["compact_level_parents"],
+        d["compact_level_child1"],
+        d["compact_level_child2"],
+        accum_tree,
+        neumann_terms=neumann_terms,
+        correction_mode="tree",
+    )
+
+    accum_self = _zero_accum_param_grads(S, device, dtype)
+    v_self, *_ = wave_backward_uniform_nosplit_cuda(
+        d["Pi_star"], d["Pibar_star"], 0, W, S,
+        d["rhs"].clone(),
+        d["mt"], d["DL_const"], d["Ebar"], d["E"], d["SL1_const"], d["SL2_const"],
+        d["sp_child1"].to(torch.int32).contiguous(),
+        d["sp_child2"].to(torch.int32).contiguous(),
+        d["sp_parent"].to(torch.int32).contiguous(),
+        d["leaf_species_idx"],
+        d["leaf_logp"],
+        d["pibar_row_max"],
+        d["compact_level_ptr"],
+        d["compact_level_parents"],
+        d["compact_level_child1"],
+        d["compact_level_child2"],
+        accum_self,
+        neumann_terms=neumann_terms,
+        correction_mode="self",
+    )
+    torch.cuda.synchronize()
+
+    torch.testing.assert_close(v_tree, refs[0], rtol=2e-4, atol=2e-6)
+    for got, ref in zip(accum_tree, expected_accum):
+        torch.testing.assert_close(got, ref, rtol=2e-4, atol=2e-6)
+    assert (v_self - v_tree).abs().max().item() > 1e-6
 
 
 class TestWaveBackwardKernelLargeS:
