@@ -1271,6 +1271,73 @@ Those shapes stressed different DTS kernels in the uniform backward docs.
 
 Proposal 3 was implemented and accepted for optimized genewise backward.
 
+#### What changed in code
+
+Before Proposal 3, the optimized genewise path still used the old PyTorch DTS
+backward after the fused self-loop.  Each split wave materialized a
+`[5,n_splits,S]` tensor and then scattered the five VJP components:
+
+```python
+# old genewise DTS backward, after Proposal 2 but before Proposal 3
+fi = family_idx[ws + reduce_idx]        # parent family per split
+pD = log_pD[fi]                         # [n_splits] or [n_splits,S]
+pS = log_pS[fi]
+
+DTS_5 = torch.stack([
+    pD + Pi_l + Pi_r,                   # D
+    Pi_l + Pibar_r,                     # T left
+    Pi_r + Pibar_l,                     # T right
+    pS + Pi_l_s1 + Pi_r_s2,             # S orientation 1
+    pS + Pi_r_s1 + Pi_l_s2,             # S orientation 2
+], dim=0)
+
+grad_DTS_5 = v_parent * exp2(wlsp + DTS_5 - Pi_parent)
+
+grad_log_pD.scatter_add_(family, grad_DTS_5[0].sum(dim=1))
+grad_log_pS.scatter_add_(family, (grad_DTS_5[3] + grad_DTS_5[4]).sum(dim=1))
+accumulated_rhs.index_add_(0, left_child,  grad_DTS_5[0] + grad_DTS_5[1] + S_terms)
+accumulated_rhs.index_add_(0, right_child, grad_DTS_5[0] + grad_DTS_5[2] + S_terms)
+grad_Pibar_l = grad_DTS_5[2]
+grad_Pibar_r = grad_DTS_5[1]
+```
+
+The memory problem is the explicit `DTS_5` and `grad_DTS_5`: on high-fanout
+root-like waves, their size is proportional to `5 * n_splits * S`, and the
+following scatter/index operations add several large temporary tensors.
+
+Proposal 3 moves that work into `_dts_cross_backward_accum_kernel`.  The new
+path recomputes the five terms inside the Triton program, accumulates direct
+Pi adjoints immediately, and writes parameter gradients directly to the right
+layout:
+
+```text
+for split in split_wave:
+    parent = ws + reduce_idx[split]
+    family = family_idx[parent]              # only for genewise layouts
+
+    for species tile s:
+        pD_s = load_param(log_pD, family, s) # [G] or [G,S]
+        pS_s = load_param(log_pS, family, s)
+
+        vd0 = v_parent_s * exp2(wlsp + pD_s + Pi_l_s + Pi_r_s - Pi_parent_s)
+        vd1 = v_parent_s * exp2(wlsp + Pi_l_s + Pibar_r_s - Pi_parent_s)
+        vd2 = v_parent_s * exp2(wlsp + Pi_r_s + Pibar_l_s - Pi_parent_s)
+        vd3 = v_parent_s * exp2(wlsp + pS_s + Pi_l_child1 + Pi_r_child2 - Pi_parent_s)
+        vd4 = v_parent_s * exp2(wlsp + pS_s + Pi_r_child1 + Pi_l_child2 - Pi_parent_s)
+
+        atomic_add accumulated_rhs[left,  s] += vd0 + vd1
+        atomic_add accumulated_rhs[right, s] += vd0 + vd2
+        atomic_add S-term child adjoints
+
+        accumulate grad_log_pD / grad_log_pS in [G], [G,S], or [S]
+        accumulate grad_mt
+        optionally write compact Pibar-UD inputs for Proposal 4
+```
+
+This changes the algorithmic shape from "materialize five dense split/species
+planes, then reduce/scatter them" to "stream through each split/species tile
+once and atomically accumulate only the final VJP destinations".
+
 The code baseline before the worker pass was commit `8346ad3`,
 `Generalize fused backward DTS layouts`.  After that baseline, Worker 1 fixed
 an edge-case classifier bug in `gpurec/core/kernels/wave_backward.py`: 1D
@@ -1357,6 +1424,56 @@ The main resident-chunk benchmark after Proposal 3 and Proposal 4 uses
 `tests/data/test_trees_1000`, because `tests/data/test_trees_100` has
 `S=199` and the optimized genewise guard intentionally does not activate when
 `S <= 256`.
+
+The controlled before/after comparison below keeps Proposal 2's optimized
+family-indexed self-loop enabled and changes only the DTS/Pibar part of the
+backward.  The 10-family runs use `max_wave_size=4096`; the 50-family runs use
+`max_wave_size=32768`.
+
+```bash
+# before Proposal 3 and Proposal 4, but after Proposal 2 self-loop
+GPUREC_FUSED_DTS_BACKWARD_ACCUM=0
+GPUREC_DTS_PIBAR_UD_FUSION=0
+GPUREC_FUSED_CROSS_PIBAR_VJP=0
+
+# Proposal 3 only
+GPUREC_FUSED_DTS_BACKWARD_ACCUM=1
+GPUREC_DTS_PIBAR_UD_FUSION=0
+GPUREC_FUSED_CROSS_PIBAR_VJP=0
+
+# Proposal 3 + Proposal 4, current promoted path
+GPUREC_FUSED_DTS_BACKWARD_ACCUM=1
+GPUREC_DTS_PIBAR_UD_FUSION=1
+GPUREC_FUSED_CROSS_PIBAR_VJP=1
+GPUREC_FUSED_CROSS_PIBAR_VJP_IMPL=tree
+```
+
+Clean 10-family timing:
+
+| Path | Median | Mean | Min | Peak allocation | Speedup vs old DTS/Pibar |
+|---|---:|---:|---:|---:|---:|
+| old generic DTS + old generic Pibar | `344.178 ms` | `344.377 ms` | `343.806 ms` | `6.594 GB` | baseline |
+| Proposal 3 only: fused DTS, generic Pibar | `217.141 ms` | `218.669 ms` | `217.080 ms` | `2.847 GB` | `1.59x` |
+| Proposal 3 + 4: fused DTS, staged Pibar | `95.779 ms` | `95.614 ms` | `95.004 ms` | `1.976 GB` | `3.59x` |
+
+Proposal 3 alone saves `127.037 ms` median on this 10-family shape and removes
+`3.747 GB` of peak allocation.  That is the cost of eliminating the dense
+`DTS_5`/`grad_DTS_5` materialization and the PyTorch scatter/add work around
+it.  Proposal 4 then saves another `121.362 ms` median by replacing the generic
+Pibar VJP with the compact staged path.
+
+The 50-family result is more important because this is the resident chunk size
+that was failing before Proposals 3 and 4:
+
+| Path | Result | Peak allocation | Interpretation |
+|---|---:|---:|---|
+| old generic DTS + old generic Pibar | OOM | `22.80 GiB` in use at failure | failed while allocating `grad_DTS_5` in `_safe_exp2_ratio` |
+| Proposal 3 only: fused DTS, generic Pibar | `1271.534 ms` | `14.864 GB` | now fits; generic Pibar is still very slow |
+| Proposal 3 + 4: fused DTS, staged Pibar | `337.239 ms` median | `10.550 GB` | `3.77x` faster than Proposal 3-only and `4.314 GB` lower peak |
+
+So Proposal 3 is the change that turns the 50-family optimized-genewise
+backward from "cannot complete" into a valid run.  Proposal 4 is the change
+that makes the now-valid run close to the global/uniform timing envelope.
 
 Current local 100-family genewise optimized run:
 
@@ -1484,6 +1601,78 @@ Expected effect:
 
 Proposal 4 was implemented and accepted for optimized genewise backward.
 
+#### What changed in code
+
+Before Proposal 4, even with Proposal 3's fused DTS accumulation, the
+non-scalar genewise path still had to materialize Pibar side gradients and then
+run the generic PyTorch Pibar VJP:
+
+```python
+# old Pibar VJP after Proposal 3 only
+grad_Pibar_l, grad_Pibar_r = materialized_split_side_gradients
+all_children = torch.cat([sl, sr])
+all_pibar_grad = torch.cat([grad_Pibar_l, grad_Pibar_r])
+
+nz = all_pibar_grad.abs().sum(dim=1) > 0
+Pi_ch = Pi_star_wave[all_children[nz]]
+p_prime = exp2(Pi_ch - Pi_ch.max(dim=1, keepdim=True))
+
+anc_sum = p_prime @ ancestors_T
+denom = p_prime.sum(dim=1, keepdim=True) - anc_sum
+u_d = all_pibar_grad[nz] / denom
+A = u_d.sum(dim=1, keepdim=True)
+correction = (ancestors_T @ u_d.T).T
+pi_from_pibar = p_prime * (A - correction)
+
+accumulated_rhs.index_add_(0, all_children[nz], pi_from_pibar)
+```
+
+That code is mathematically correct, but it rebuilds dense `[active_sides,S]`
+temporaries, performs sparse/dense ancestor products through PyTorch, and pays
+extra filtering, concatenation, and `index_add_` overhead.  It also cannot use
+the stable row-max values already computed during the forward pass unless those
+values are saved for batched/genewise mode.
+
+Proposal 4 makes the DTS kernel produce the normalized Pibar-UD inputs
+directly, then passes them to the compact tree VJP kernel:
+
+```text
+# inside fused DTS backward, for each side of each split
+family_l = family_idx[left_child]
+family_r = family_idx[right_child]
+mt_l_s = mt[family_l, s]
+mt_r_s = mt[family_r, s]
+
+ud_l[split,s] = grad_Pibar_l[split,s] * exp2(row_max[left]  + mt_l_s - Pibar[left,s])
+ud_r[split,s] = grad_Pibar_r[split,s] * exp2(row_max[right] + mt_r_s - Pibar[right,s])
+A_l[split] = sum_s ud_l[split,s]
+A_r[split] = sum_s ud_r[split,s]
+
+# then compact tree VJP
+for active side:
+    use pibar_ud[side,:] and A[side]
+    walk compact species-tree levels
+    atomic_add accumulated_rhs[child,:] += exact ancestor-corrected contribution
+```
+
+The forward-pass change is deliberately small but important:
+
+```python
+# old condition: batched/genewise runs did not save this row-max buffer
+reuse_forward_pibar_stats = need_pibar and use_uniform_fused and not batched
+
+# current condition: save one [C] row-max buffer whenever staged UD fusion needs it
+reuse_forward_pibar_stats = (
+    need_pibar
+    and use_uniform_fused
+    and GPUREC_DTS_PIBAR_UD_FUSION
+)
+```
+
+This keeps the extra saved state to one `[C]` vector, not a row-expanded
+`[C,S]` tensor.  Family dependence stays in-kernel through `mt[family,s]`
+loads.
+
 Batched/genewise forward now saves `uniform_pibar_row_max` when staged Pibar UD
 fusion is enabled, including batched mode.  That saved row statistic lets the
 backward use the same compact/tree Pibar VJP from the UD path instead of the
@@ -1511,6 +1700,38 @@ gradients finite
 This proves both halves of the Proposal 4 route: forward saves the row maxima
 needed by the staged path, and backward consumes the compact UD data rather
 than routing through generic materialized Pibar VJP.
+
+#### Before/after timing
+
+The Proposal 4 isolated comparison starts from Proposal 3-only: fused DTS is
+enabled, but staged Pibar UD fusion and fused cross-Pibar VJP are disabled.
+The promoted path then enables the staged UD route.
+
+| Families | Proposal 3 only: generic Pibar | Proposal 3 + 4: staged Pibar | Median speedup | Peak allocation change |
+|---:|---:|---:|---:|---:|
+| 10 | `217.141 ms`, `2.847 GB` | `95.779 ms`, `1.976 GB` | `2.27x` | `-0.871 GB` |
+| 50 | `1271.534 ms`, `14.864 GB` | `337.239 ms`, `10.550 GB` | `3.77x` | `-4.314 GB` |
+
+The larger gain at 50 families is expected.  The old Pibar VJP path scales with
+the number of split sides that survive pruning and with dense `[side,S]`
+temporaries.  The staged route keeps one compact side worklist and performs the
+ancestor correction in the same Triton tree kernel family already used by the
+global path.
+
+The combined effect from the old generic DTS/Pibar route to the promoted
+Proposal 3+4 route on the 10-family shape is:
+
+```text
+344.178 ms -> 95.779 ms  (3.59x faster)
+6.594 GB  -> 1.976 GB    (-4.618 GB peak allocation)
+```
+
+On the 50-family shape, the combined effect is stronger qualitatively:
+
+```text
+old generic DTS/Pibar: OOM in grad_DTS_5
+promoted Proposal 3+4: 337.239 ms median, 10.550 GB peak
+```
 
 #### Correctness
 
