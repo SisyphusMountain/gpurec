@@ -94,6 +94,37 @@ def _loss_and_grad(model: GeneReconModel) -> tuple[torch.Tensor, torch.Tensor]:
     return loss.detach(), model.theta.grad.detach().clone()
 
 
+def _chunked_genewise_nll_and_grad(
+    data_dir: Path,
+    gene_paths: list[str],
+    *,
+    rates: torch.Tensor,
+    weights: torch.Tensor,
+    chunk_size: int,
+    dtype: torch.dtype,
+    solver_kwargs: dict,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    nll_parts = []
+    grad_parts = []
+    for start in range(0, len(gene_paths), chunk_size):
+        stop = min(start + chunk_size, len(gene_paths))
+        model = _build_genewise_model(
+            data_dir,
+            gene_paths[start:stop],
+            dtype=dtype,
+            rates=rates[start:stop],
+            **solver_kwargs,
+        )
+        model.zero_grad(set_to_none=True)
+        model.static.warm_E = None
+        per_family_nll = model.nll_per_family()
+        (weights[start:stop] * per_family_nll).sum().backward()
+        torch.cuda.synchronize()
+        nll_parts.append(per_family_nll.detach())
+        grad_parts.append(model.theta.grad.detach().clone())
+    return torch.cat(nll_parts), torch.cat(grad_parts)
+
+
 @contextmanager
 def _tight_generic_uniform_self_loop(monkeypatch: pytest.MonkeyPatch):
     from gpurec.core import backward as backward_core
@@ -260,6 +291,121 @@ def test_genewise_uniform_batched_gradient_matches_per_family_global_fp64(
         rtol=2e-6,
         atol=2e-6,
     )
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+def test_genewise_uniform_backward_invariant_under_family_chunk_size(
+    monkeypatch,
+):
+    """Chunked genewise autograd gives the same per-family NLLs and gradients."""
+    data_dir = _ROOT / "data" / "test_trees_20"
+    if not data_dir.exists():
+        pytest.skip("test_trees_20 dataset not present")
+    genes = _gene_paths(data_dir, 4)
+    dtype = torch.float64
+    device = _cuda_device()
+    rates = torch.tensor(
+        [
+            [0.050, 0.040, 0.030],
+            [0.060, 0.025, 0.045],
+            [0.030, 0.055, 0.035],
+            [0.052, 0.035, 0.050],
+        ],
+        device=device,
+        dtype=dtype,
+    )
+    weights = torch.tensor([0.5, 1.25, 2.0, 0.75], device=device, dtype=dtype)
+    solver_kwargs = dict(
+        fixed_iters_Pi=6,
+        max_iters_E=128,
+        tol_E=0.0,
+        neumann_terms=8,
+        use_pruning=False,
+        cg_tol=1e-10,
+        cg_maxiter=1000,
+    )
+
+    _set_env(monkeypatch, _optimized_genewise_env())
+    ref_nll, ref_grad = _chunked_genewise_nll_and_grad(
+        data_dir,
+        genes,
+        rates=rates,
+        weights=weights,
+        chunk_size=len(genes),
+        dtype=dtype,
+        solver_kwargs=solver_kwargs,
+    )
+    for chunk_size in (1, 2):
+        nll, grad = _chunked_genewise_nll_and_grad(
+            data_dir,
+            genes,
+            rates=rates,
+            weights=weights,
+            chunk_size=chunk_size,
+            dtype=dtype,
+            solver_kwargs=solver_kwargs,
+        )
+        torch.testing.assert_close(nll, ref_nll, rtol=1e-10, atol=1e-10)
+        torch.testing.assert_close(grad, ref_grad, rtol=2e-6, atol=2e-6)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+def test_genewise_uniform_optimized_high_s_fp64_chunk_size_parity_is_strict(
+    monkeypatch,
+):
+    """High-S fp64 optimized genewise backward remains stable when chunked."""
+    data_dir = _ROOT / "data" / "test_trees_1000"
+    if not data_dir.exists():
+        pytest.skip("test_trees_1000 dataset not present")
+    genes = _gene_paths(data_dir, 2)
+    dtype = torch.float64
+    device = _cuda_device()
+    rates = torch.tensor(
+        [
+            [0.050, 0.040, 0.030],
+            [0.062, 0.028, 0.044],
+        ],
+        device=device,
+        dtype=dtype,
+    )
+    weights = torch.tensor([1.0, 1.5], device=device, dtype=dtype)
+    solver_kwargs = dict(
+        fixed_iters_Pi=6,
+        max_iters_E=128,
+        tol_E=0.0,
+        neumann_terms=20,
+        use_pruning=False,
+        cg_tol=1e-10,
+        cg_maxiter=1000,
+        max_wave_size=4096,
+    )
+
+    _set_env(monkeypatch, _optimized_genewise_env())
+    try:
+        with _fail_if_generic_self_loop_used(monkeypatch):
+            ref_nll, ref_grad = _chunked_genewise_nll_and_grad(
+                data_dir,
+                genes,
+                rates=rates,
+                weights=weights,
+                chunk_size=len(genes),
+                dtype=dtype,
+                solver_kwargs=solver_kwargs,
+            )
+            chunked_nll, chunked_grad = _chunked_genewise_nll_and_grad(
+                data_dir,
+                genes,
+                rates=rates,
+                weights=weights,
+                chunk_size=1,
+                dtype=dtype,
+                solver_kwargs=solver_kwargs,
+            )
+    except _GenericSelfLoopReached:
+        pytest.xfail("optimized batched genewise backward still routes through the generic self-loop")
+
+    torch.testing.assert_close(chunked_nll, ref_nll, rtol=1e-12, atol=1e-12)
+    torch.testing.assert_close(chunked_grad, ref_grad, rtol=1e-10, atol=1e-8)
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")

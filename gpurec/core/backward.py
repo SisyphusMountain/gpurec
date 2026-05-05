@@ -1231,6 +1231,19 @@ def Pi_wave_backward(
         and device.type == 'cuda'
         and S > 256
     )
+    require_optimized_genewise_backward = (
+        os.environ.get("GPUREC_REQUIRE_OPTIMIZED_GENEWISE_BACKWARD", "0") != "0"
+        and not _auto_wrapped
+        and pibar_mode == 'uniform'
+    )
+    if require_optimized_genewise_backward and not can_use_fused_uniform_backward:
+        raise RuntimeError(
+            "GPUREC_REQUIRE_OPTIMIZED_GENEWISE_BACKWARD=1 requested the "
+            "optimized genewise uniform backward, but the fused self-loop gate "
+            "is inactive. Check GPUREC_FUSED_UNIFORM_BACKWARD, "
+            "GPUREC_FUSED_GENEWISE_BACKWARD_SELF_LOOP, tensor shapes, dtype, "
+            "device, and S > 256."
+        )
     scratch_pool_requested = (
         os.environ.get("GPUREC_BACKWARD_SCRATCH_POOL", "0") != "0"
     )
@@ -1744,6 +1757,11 @@ def Pi_wave_backward(
                         parent_reduced_tile_splits=parent_reduced_backward_dts_tile_splits,
                     )
                 else:
+                    if require_optimized_genewise_backward:
+                        raise RuntimeError(
+                            "Optimized genewise backward reached the generic "
+                            "PyTorch DTS forward-recompute fallback."
+                        )
                     dts_r = _dts_cross_differentiable(
                         Pi_star_wave.detach(), Pibar_star_wave.detach(), meta,
                         sp_child1, sp_child2, log_pD_dts, log_pS_dts, S, device, dtype,
@@ -1900,6 +1918,11 @@ def Pi_wave_backward(
                 _scatter_accum(grad_mt, aw2)
 
         else:
+            if require_optimized_genewise_backward:
+                raise RuntimeError(
+                    "Optimized genewise backward reached the generic self-loop "
+                    "VJP/GMRES fallback."
+                )
             Pibar_W_star = Pibar_star_wave[ws:we]
             ingredients = _self_loop_vjp_precompute(
                 Pi_W_star, Pibar_W_star, dts_r,
@@ -2325,6 +2348,11 @@ def Pi_wave_backward(
                 grad_Pi_l = grad_Pi_r = None
 
             else:
+                if require_optimized_genewise_backward:
+                    raise RuntimeError(
+                        "Optimized genewise backward reached the generic "
+                        "PyTorch DTS backward accumulation fallback."
+                    )
                 sl_long = sl.long()
                 sr_long = sr.long()
                 reduce_idx_long = reduce_idx.long()
@@ -2593,6 +2621,11 @@ def Pi_wave_backward(
                 used_fused_pibar_vjp = True
 
             if not used_fused_pibar_vjp:
+                if require_optimized_genewise_backward:
+                    raise RuntimeError(
+                        "Optimized genewise backward reached the generic "
+                        "cross-Pibar VJP fallback."
+                    )
                 all_children = torch.cat([sl.long(), sr.long()])
                 all_pibar_grad = torch.cat([grad_Pibar_l, grad_Pibar_r])
 

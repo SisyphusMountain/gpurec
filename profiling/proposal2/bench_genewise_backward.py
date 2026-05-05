@@ -25,6 +25,12 @@ from gpurec.core.likelihood import E_fixed_point, compute_log_likelihood
 
 
 DEFAULT_FLAGS = {
+    "GPUREC_FORWARD_LEAF_INDEX": "1",
+    "GPUREC_FORWARD_PARENT_REDUCED_DTS": "1",
+    "GPUREC_FORWARD_PARENT_REDUCED_DTS_MIN_SPLITS": "0",
+    "GPUREC_FORWARD_PARENT_REDUCED_DTS_IMPL": "tiled",
+    "GPUREC_FORWARD_PARENT_REDUCED_DTS_GE2_ONLY": "1",
+    "GPUREC_FORWARD_TOPOLOGY_INT32": "1",
     "GPUREC_KERNELIZED_BACKWARD_DTS": "1",
     "GPUREC_FUSED_DTS_BACKWARD_ACCUM": "1",
     "GPUREC_FUSED_CROSS_PIBAR_VJP": "1",
@@ -33,6 +39,7 @@ DEFAULT_FLAGS = {
     "GPUREC_UNIFORM_PINGPONG": "1",
     "GPUREC_BACKWARD_LEAF_INDEX": "1",
     "GPUREC_FUSED_WAVE_PARAM_ACCUM": "1",
+    "GPUREC_DTS_PIBAR_UD_FUSION": "1",
     "GPUREC_DTS_PIBAR_UD_SKIP_ZERO_SIDES": "1",
     "GPUREC_DTS_PIBAR_UD_COMPACT_LEVELS": "1",
     "GPUREC_DTS_GRAD_MT_TWO_STAGE": "1",
@@ -48,6 +55,16 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--start", type=int, default=int(os.getenv("FAMILY_START", "0")))
     parser.add_argument("--reps", type=int, default=int(os.getenv("REPS", "9")))
     parser.add_argument("--warmups", type=int, default=int(os.getenv("WARMUPS", "5")))
+    parser.add_argument(
+        "--family-chunk-size",
+        type=int,
+        default=int(os.getenv("FAMILY_CHUNK_SIZE", "0")),
+        help=(
+            "Explicit autograd resident chunk size. 0 keeps the legacy "
+            "single-model benchmark; 50 and 100 are the Proposal 5 first "
+            "policies for test_trees_1000."
+        ),
+    )
     parser.add_argument("--max-wave-size", default=os.getenv("MAX_WAVE_SIZE", "32768"))
     parser.add_argument("--max-root-wave-size", type=int, default=None)
     parser.add_argument("--pruning-threshold", type=float, default=float(os.getenv("PRUNING_THRESHOLD", "1e-6")))
@@ -69,6 +86,22 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--diag-chunk-rows", type=int, default=int(os.getenv("DIAG_CHUNK_ROWS", "256")))
     parser.add_argument("--profile-cuda-api", action="store_true", default=os.getenv("PROFILE_CUDA_API", "0") != "0")
     parser.add_argument("--cuda-graph", action="store_true", default=os.getenv("CUDA_GRAPH", "0") != "0")
+    parser.add_argument(
+        "--strict-optimized-kernels",
+        action=argparse.BooleanOptionalAction,
+        default=os.getenv("STRICT_OPTIMIZED_KERNELS", "1") != "0",
+        help=(
+            "When benchmarking --backward-path=optimized-genewise, fail if "
+            "Pi_wave_backward reaches generic self-loop, DTS, or Pibar VJP "
+            "fallbacks."
+        ),
+    )
+    parser.add_argument(
+        "--empty-cache-between-chunks",
+        action=argparse.BooleanOptionalAction,
+        default=os.getenv("EMPTY_CACHE_BETWEEN_CHUNKS", "1") != "0",
+        help="Release the CUDA caching allocator between resident chunks.",
+    )
     parser.add_argument(
         "--cuda-graph-target",
         choices=("model", "pi_backward"),
@@ -120,10 +153,15 @@ def _configure_backward_path_env(args: argparse.Namespace) -> None:
         os.environ["GPUREC_KERNELIZED_BACKWARD_DTS"] = "1"
         os.environ["GPUREC_FUSED_DTS_BACKWARD_ACCUM"] = "1"
         os.environ["GPUREC_FUSED_CROSS_PIBAR_VJP"] = "1"
+        os.environ["GPUREC_DTS_PIBAR_UD_FUSION"] = "1"
         os.environ.setdefault("GPUREC_FUSED_CROSS_PIBAR_VJP_IMPL", "tree")
+        os.environ["GPUREC_REQUIRE_OPTIMIZED_GENEWISE_BACKWARD"] = (
+            "1" if args.strict_optimized_kernels else "0"
+        )
     elif args.backward_path == "generic-self-loop-fallback":
         os.environ["GPUREC_FUSED_GENEWISE_BACKWARD_SELF_LOOP"] = "0"
         os.environ["GPUREC_FUSED_UNIFORM_BACKWARD"] = "0"
+        os.environ["GPUREC_REQUIRE_OPTIMIZED_GENEWISE_BACKWARD"] = "0"
     else:
         raise ValueError(f"unknown backward path: {args.backward_path}")
 
@@ -283,6 +321,34 @@ def _family_runs(values: torch.Tensor) -> int:
     return int(1 + (values[1:] != values[:-1]).sum().item())
 
 
+def _chunk_ranges(total: int, chunk_size: int) -> list[tuple[int, int]]:
+    if chunk_size <= 0 or chunk_size >= total:
+        return [(0, total)]
+    return [
+        (start, min(start + chunk_size, total))
+        for start in range(0, total, chunk_size)
+    ]
+
+
+def _wave_shape_stats(model: GeneReconModel) -> dict[str, int]:
+    wl = model.static.wave_layout
+    metas = wl["wave_metas"]
+    split_rows = sum(
+        int(m["sl"].numel()) if m.get("has_splits", False) else 0
+        for m in metas
+    )
+    return {
+        "S": int(model.n_species),
+        "G": int(model.n_families),
+        "C": int(model.static.Pi_shape[0]) if hasattr(model.static, "Pi_shape") else int(sum(m["W"] for m in metas)),
+        "waves": len(metas),
+        "maxW": max((int(m["W"]) for m in metas), default=0),
+        "split_rows": split_rows,
+        "leaves": int(wl["leaf_row_index"].numel()),
+        "roots": int(model.static.root_clade_ids.numel()),
+    }
+
+
 def _print_wave_shape(model: GeneReconModel) -> None:
     wl = model.static.wave_layout
     metas = wl["wave_metas"]
@@ -290,21 +356,17 @@ def _print_wave_shape(model: GeneReconModel) -> None:
     if family_idx is not None:
         family_idx = family_idx.detach().cpu()
 
-    split_rows = sum(int(m["sl"].numel()) if m.get("has_splits", False) else 0 for m in metas)
-    leaves = int(model.static.wave_layout["leaf_row_index"].numel())
-    roots = int(model.static.root_clade_ids.numel())
-    max_w = max((int(m["W"]) for m in metas), default=0)
-
+    stats = _wave_shape_stats(model)
     print(
         "shape",
-        "S", model.n_species,
-        "G", model.n_families,
-        "C", int(model.static.Pi_shape[0]) if hasattr(model.static, "Pi_shape") else int(sum(m["W"] for m in metas)),
-        "waves", len(metas),
-        "maxW", max_w,
-        "split_rows", split_rows,
-        "leaves", leaves,
-        "roots", roots,
+        "S", stats["S"],
+        "G", stats["G"],
+        "C", stats["C"],
+        "waves", stats["waves"],
+        "maxW", stats["maxW"],
+        "split_rows", stats["split_rows"],
+        "leaves", stats["leaves"],
+        "roots", stats["roots"],
     )
 
     rows = []
@@ -331,6 +393,31 @@ def _print_wave_shape(model: GeneReconModel) -> None:
     print("top_split_rows k start W split_rows fanout families family_runs split_families")
     for row in sorted(rows, key=lambda r: r[3], reverse=True)[:12]:
         print("%d %d %d %d %.3f %d %d %d" % row)
+
+
+def _print_active_path_flags(args: argparse.Namespace, model: GeneReconModel) -> None:
+    wl = model.static.wave_layout
+    print(
+        "active_path_flags",
+        "mode", "genewise",
+        "pibar_mode", model.static.pibar_mode,
+        "fixed_iters_Pi", model.static.fixed_iters_Pi,
+        "S", model.n_species,
+        "family_idx", int(wl.get("family_idx") is not None),
+        "leaf_index", os.environ.get("GPUREC_BACKWARD_LEAF_INDEX", "unset"),
+        "forward_family_consts", os.environ.get("GPUREC_FORWARD_FAMILY_INDEXED_CONSTS", "unset"),
+        "forward_family_dts_params", os.environ.get("GPUREC_FORWARD_FAMILY_INDEXED_DTS_PARAMS", "unset"),
+        "fused_genewise_backward", os.environ.get("GPUREC_FUSED_GENEWISE_BACKWARD", "unset"),
+        "fused_genewise_self_loop", os.environ.get("GPUREC_FUSED_GENEWISE_BACKWARD_SELF_LOOP", "unset"),
+        "fused_uniform_backward", os.environ.get("GPUREC_FUSED_UNIFORM_BACKWARD", "unset"),
+        "kernelized_backward_dts", os.environ.get("GPUREC_KERNELIZED_BACKWARD_DTS", "unset"),
+        "fused_dts_backward_accum", os.environ.get("GPUREC_FUSED_DTS_BACKWARD_ACCUM", "unset"),
+        "dts_pibar_ud_fusion", os.environ.get("GPUREC_DTS_PIBAR_UD_FUSION", "unset"),
+        "fused_cross_pibar_vjp", os.environ.get("GPUREC_FUSED_CROSS_PIBAR_VJP", "unset"),
+        "cross_pibar_impl", os.environ.get("GPUREC_FUSED_CROSS_PIBAR_VJP_IMPL", "unset"),
+        "strict_optimized_kernels", int(args.strict_optimized_kernels),
+        "require_optimized_guard", os.environ.get("GPUREC_REQUIRE_OPTIMIZED_GENEWISE_BACKWARD", "unset"),
+    )
 
 
 @torch.no_grad()
@@ -693,21 +780,12 @@ def _run_cuda_graph_bench(model: GeneReconModel, args: argparse.Namespace) -> No
         raise ValueError(f"unknown cuda graph target: {args.cuda_graph_target}")
 
 
-def main() -> None:
-    args = _parse_args()
-    for key, value in DEFAULT_FLAGS.items():
-        os.environ.setdefault(key, value)
-    _configure_backward_path_env(args)
-    _configure_cuda_graph_env(args)
-
-    root = Path(args.dataset)
-    genes = _selected_genes(root, args.start, args.fams)
-
-    torch.cuda.empty_cache()
-    gc.collect()
-
-    t0 = time.perf_counter()
-    model = GeneReconModel.from_trees(
+def _make_genewise_model(
+    args: argparse.Namespace,
+    root: Path,
+    genes: list[str],
+) -> GeneReconModel:
+    return GeneReconModel.from_trees(
         species_tree=str(root / "sp.nwk"),
         gene_trees=genes,
         mode="genewise",
@@ -723,6 +801,260 @@ def main() -> None:
         max_wave_size=args.max_wave_size,
         max_root_wave_size=args.max_root_wave_size,
     )
+
+
+def _time_cuda_event(fn) -> tuple[float, object]:
+    start = torch.cuda.Event(enable_timing=True)
+    end = torch.cuda.Event(enable_timing=True)
+    start.record()
+    out = fn()
+    end.record()
+    torch.cuda.synchronize()
+    return start.elapsed_time(end), out
+
+
+def _run_chunked_autograd_bench(
+    args: argparse.Namespace,
+    root: Path,
+    genes: list[str],
+) -> None:
+    if args.cuda_graph:
+        raise ValueError("--cuda-graph is only supported by the legacy single-model benchmark")
+
+    ranges = _chunk_ranges(len(genes), args.family_chunk_size)
+    print(
+        "chunked_autograd_policy",
+        "dataset", root,
+        "family_range", f"{args.start}:{args.start + args.fams}",
+        "families", len(genes),
+        "chunks", len(ranges),
+        "family_chunk_size", args.family_chunk_size,
+        "backward_path", args.backward_path,
+        "use_pruning", args.use_pruning,
+        "pruning_threshold", args.pruning_threshold,
+        "max_wave_size", args.max_wave_size if args.max_wave_size is not None else "none",
+        "max_root_wave_size", args.max_root_wave_size if args.max_root_wave_size is not None else "none",
+    )
+    print("env_flags")
+    for key in sorted(k for k in os.environ if k.startswith("GPUREC_")):
+        print(key, os.environ[key])
+
+    first_model = _make_genewise_model(args, root, genes[ranges[0][0]:ranges[0][1]])
+    _print_active_path_flags(args, first_model)
+    print("chunk_table idx family_start family_stop families S C waves maxW split_rows leaves roots")
+    first_stats = _wave_shape_stats(first_model)
+    print(
+        "chunk_shape",
+        0,
+        args.start + ranges[0][0],
+        args.start + ranges[0][1],
+        first_stats["G"],
+        first_stats["S"],
+        first_stats["C"],
+        first_stats["waves"],
+        first_stats["maxW"],
+        first_stats["split_rows"],
+        first_stats["leaves"],
+        first_stats["roots"],
+    )
+    del first_model
+    torch.cuda.synchronize()
+    gc.collect()
+    torch.cuda.empty_cache()
+
+    if args.stats_only:
+        for chunk_idx, (lo, hi) in enumerate(ranges[1:], start=1):
+            model = _make_genewise_model(args, root, genes[lo:hi])
+            stats = _wave_shape_stats(model)
+            print(
+                "chunk_shape",
+                chunk_idx,
+                args.start + lo,
+                args.start + hi,
+                stats["G"],
+                stats["S"],
+                stats["C"],
+                stats["waves"],
+                stats["maxW"],
+                stats["split_rows"],
+                stats["leaves"],
+                stats["roots"],
+            )
+            del model
+            torch.cuda.synchronize()
+            gc.collect()
+            torch.cuda.empty_cache()
+        return
+
+    def run_pass(*, timed: bool) -> dict[str, object]:
+        chunk_rows = []
+        total_forward_ms = 0.0
+        total_backward_ms = 0.0
+        total_loss = 0.0
+        max_forward_peak_gb = 0.0
+        max_backward_peak_gb = 0.0
+        grad_chunks = []
+        build_s_total = 0.0
+
+        for chunk_idx, (lo, hi) in enumerate(ranges):
+            t0 = time.perf_counter()
+            model = _make_genewise_model(args, root, genes[lo:hi])
+            torch.cuda.synchronize()
+            build_s = time.perf_counter() - t0
+            build_s_total += build_s
+            stats = _wave_shape_stats(model)
+            if timed and chunk_idx > 0:
+                print(
+                    "chunk_shape",
+                    chunk_idx,
+                    args.start + lo,
+                    args.start + hi,
+                    stats["G"],
+                    stats["S"],
+                    stats["C"],
+                    stats["waves"],
+                    stats["maxW"],
+                    stats["split_rows"],
+                    stats["leaves"],
+                    stats["roots"],
+                )
+
+            model.zero_grad(set_to_none=True)
+            model.static.warm_E = None
+            torch.cuda.reset_peak_memory_stats()
+            forward_ms, loss = _time_cuda_event(model)
+            forward_peak_gb = torch.cuda.max_memory_allocated() / 1e9
+
+            backward_ms, _ = _time_cuda_event(loss.backward)
+            backward_peak_gb = torch.cuda.max_memory_allocated() / 1e9
+
+            loss_value = float(loss.detach().cpu())
+            total_loss += loss_value
+            if model.theta.grad is None:
+                raise RuntimeError("theta.grad was not populated for chunked autograd")
+            grad_chunk = model.theta.grad.detach().cpu().clone()
+            if not torch.isfinite(grad_chunk).all():
+                raise FloatingPointError(f"non-finite theta gradient in chunk {chunk_idx}")
+            grad_chunks.append(grad_chunk)
+
+            total_forward_ms += forward_ms
+            total_backward_ms += backward_ms
+            max_forward_peak_gb = max(max_forward_peak_gb, forward_peak_gb)
+            max_backward_peak_gb = max(max_backward_peak_gb, backward_peak_gb)
+            chunk_rows.append({
+                "idx": chunk_idx,
+                "lo": args.start + lo,
+                "hi": args.start + hi,
+                "families": hi - lo,
+                "forward_ms": forward_ms,
+                "backward_ms": backward_ms,
+                "forward_peak_gb": forward_peak_gb,
+                "backward_peak_gb": backward_peak_gb,
+                "loss": loss_value,
+                "build_s": build_s,
+                **stats,
+            })
+
+            del loss, model
+            if args.empty_cache_between_chunks:
+                gc.collect()
+                torch.cuda.empty_cache()
+
+        grad = torch.cat(grad_chunks, dim=0) if grad_chunks else torch.empty(0)
+        return {
+            "chunks": chunk_rows,
+            "forward_ms": total_forward_ms,
+            "backward_ms": total_backward_ms,
+            "loss": total_loss,
+            "forward_peak_gb": max_forward_peak_gb,
+            "backward_peak_gb": max_backward_peak_gb,
+            "grad_absmax": float(grad.abs().max()) if grad.numel() else 0.0,
+            "build_s": build_s_total,
+        }
+
+    for _ in range(args.warmups):
+        run_pass(timed=False)
+
+    reps = []
+    for rep in range(args.reps):
+        if args.profile_cuda_api:
+            torch.cuda.cudart().cudaProfilerStart()
+        result = run_pass(timed=True)
+        if args.profile_cuda_api:
+            torch.cuda.cudart().cudaProfilerStop()
+        reps.append(result)
+        print(
+            "chunked_rep",
+            rep,
+            "forward_ms", f"{result['forward_ms']:.3f}",
+            "backward_ms", f"{result['backward_ms']:.3f}",
+            "total_ms", f"{(result['forward_ms'] + result['backward_ms']):.3f}",
+            "loss", f"{result['loss']:.8f}",
+            "max_forward_peak_gb", f"{result['forward_peak_gb']:.3f}",
+            "max_backward_peak_gb", f"{result['backward_peak_gb']:.3f}",
+            "grad_absmax", f"{result['grad_absmax']:.8e}",
+            "build_s", f"{result['build_s']:.3f}",
+        )
+        print("chunk_timing_table rep idx family_start family_stop families C waves maxW split_rows forward_ms backward_ms forward_peak_gb backward_peak_gb loss build_s")
+        for row in result["chunks"]:
+            print(
+                "chunk_timing",
+                rep,
+                row["idx"],
+                row["lo"],
+                row["hi"],
+                row["families"],
+                row["C"],
+                row["waves"],
+                row["maxW"],
+                row["split_rows"],
+                f"{row['forward_ms']:.3f}",
+                f"{row['backward_ms']:.3f}",
+                f"{row['forward_peak_gb']:.3f}",
+                f"{row['backward_peak_gb']:.3f}",
+                f"{row['loss']:.8f}",
+                f"{row['build_s']:.3f}",
+            )
+
+    forward_times = [float(r["forward_ms"]) for r in reps]
+    backward_times = [float(r["backward_ms"]) for r in reps]
+    total_times = [f + b for f, b in zip(forward_times, backward_times)]
+    print(
+        "chunked_summary",
+        "reps", len(reps),
+        "chunks", len(ranges),
+        "family_chunk_size", args.family_chunk_size,
+        "forward_median_ms", f"{statistics.median(forward_times):.3f}",
+        "forward_mean_ms", f"{statistics.mean(forward_times):.3f}",
+        "backward_median_ms", f"{statistics.median(backward_times):.3f}",
+        "backward_mean_ms", f"{statistics.mean(backward_times):.3f}",
+        "total_median_ms", f"{statistics.median(total_times):.3f}",
+        "total_mean_ms", f"{statistics.mean(total_times):.3f}",
+        "max_backward_peak_gb", f"{max(float(r['backward_peak_gb']) for r in reps):.3f}",
+        "loss_last", f"{float(reps[-1]['loss']):.8f}",
+    )
+
+
+def main() -> None:
+    args = _parse_args()
+    for key, value in DEFAULT_FLAGS.items():
+        os.environ.setdefault(key, value)
+    _configure_backward_path_env(args)
+    _configure_cuda_graph_env(args)
+
+    root = Path(args.dataset)
+    genes = _selected_genes(root, args.start, args.fams)
+
+    torch.cuda.empty_cache()
+    gc.collect()
+
+    if args.family_chunk_size > 0:
+        _install_optimized_backward_guard(args)
+        _run_chunked_autograd_bench(args, root, genes)
+        return
+
+    t0 = time.perf_counter()
+    model = _make_genewise_model(args, root, genes)
     torch.cuda.synchronize()
 
     print("build_s", f"{time.perf_counter() - t0:.3f}")
@@ -732,6 +1064,7 @@ def main() -> None:
     print("env_flags")
     for key in sorted(k for k in os.environ if k.startswith("GPUREC_")):
         print(key, os.environ[key])
+    _print_active_path_flags(args, model)
     _print_wave_shape(model)
 
     if args.stats_only:

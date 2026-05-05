@@ -1866,6 +1866,312 @@ This proposal is mostly engineering support, but it is required to benchmark
 the real optimized genewise backward over all 1000 trees without accidentally
 falling back to old generic scripts.
 
+### Proposal 5 follow-up: implemented explicit chunked autograd harness
+
+Proposal 5 was implemented and accepted as the benchmark and training-step
+strategy for full genewise uniform backward passes.
+
+#### What changed in code
+
+Before Proposal 5, `profiling/proposal2/bench_genewise_backward.py` measured a
+single resident `GeneReconModel`:
+
+```text
+build one model over all requested families
+for rep:
+    loss = model()
+    loss.backward()
+```
+
+That is the right resident-chunk microbenchmark, but it cannot represent a
+1000-family training step because autograd must keep the full forward state
+resident until that model's backward pass consumes it.  The Proposal 5 harness
+adds `--family-chunk-size` and changes the large benchmark shape to:
+
+```text
+for rep:
+    total_loss = 0
+    grad_chunks = []
+
+    for family_start, family_stop in chunk_ranges:
+        model = build GeneReconModel for this family chunk
+        model.static.warm_E = None
+
+        loss = model()                 # saves chunk-local Pi/Pibar/row stats
+        loss.backward()                # consumes those saved tensors
+        grad_chunks.append(theta.grad)
+        total_loss += loss
+
+        delete loss/model
+        optionally empty CUDA cache
+
+    grad_theta = concat(grad_chunks)
+```
+
+The important lifetime change is that each chunk's full `Pi`, `Pibar`,
+`uniform_pibar_row_max`, adjoints, and backward scratch die immediately after
+that chunk's `loss.backward()`.  Only the small per-family loss and
+`theta.grad` slice survive across chunks.
+
+Worker A added the following harness features to
+`profiling/proposal2/bench_genewise_backward.py`:
+
+- `--family-chunk-size`, with `0` preserving the old single-model benchmark;
+- chunked autograd scheduling over the requested family range;
+- per-chunk shape rows: families, `S`, clade rows `C`, wave count, max wave
+  rows, split rows, leaves, and roots;
+- per-chunk timing rows: forward CUDA-event time, backward CUDA-event time,
+  forward peak allocation, backward peak allocation, loss, and build time;
+- active path flag printing so the result records the optimized route actually
+  used;
+- `--strict-optimized-kernels`, enabled by default for optimized genewise
+  runs;
+- `--empty-cache-between-chunks`, enabled by default to keep the allocator from
+  carrying a large previous resident chunk into the next one.
+
+Worker A also added a core fallback guard in `gpurec/core/backward.py`:
+`GPUREC_REQUIRE_OPTIMIZED_GENEWISE_BACKWARD=1`.  For genewise uniform backward,
+that guard raises if the run reaches any of these generic routes:
+
+- fused self-loop gate inactive;
+- generic DTS forward recompute fallback;
+- generic PyTorch DTS backward accumulation fallback;
+- generic cross-Pibar VJP fallback.
+
+The benchmark helper sets this guard automatically for
+`--backward-path optimized-genewise --strict-optimized-kernels`.
+
+Worker B added `_chunked_genewise_nll_and_grad` and chunk-size invariance tests
+to `tests/gradients/test_genewise_fused_backward.py`.  The helper runs the same
+semantic chunked autograd schedule as the benchmark, but compares per-family
+NLLs and concatenated gradients against larger resident chunks.
+
+#### Correctness
+
+Focused correctness commands:
+
+```bash
+pytest -q \
+  tests/gradients/test_genewise_fused_backward.py::test_genewise_uniform_backward_invariant_under_family_chunk_size \
+  tests/gradients/test_genewise_fused_backward.py::test_genewise_uniform_optimized_high_s_fp64_chunk_size_parity_is_strict \
+  tests/gradients/test_genewise_fused_backward.py::test_genewise_uniform_optimized_high_s_fp64_matches_generic_fallback
+```
+
+Result:
+
+```text
+3 passed
+```
+
+Public autograd bridge checks:
+
+```bash
+pytest -q \
+  tests/gradients/test_autograd_bridge.py::test_genewise_uniform_backward_matches_individual_uniform_trees \
+  tests/gradients/test_autograd_bridge.py::test_per_family_sums_to_total \
+  tests/gradients/test_autograd_bridge.py::test_no_grad_genewise_uniform_uses_equivalent_inference_path
+```
+
+Result:
+
+```text
+3 passed
+```
+
+Full genewise fused backward file:
+
+```bash
+pytest -q tests/gradients/test_genewise_fused_backward.py
+```
+
+Result:
+
+```text
+5 passed
+```
+
+The measured parity errors were:
+
+| Check | NLL max abs diff | Gradient max abs diff |
+|---|---:|---:|
+| small fp64 chunk size 1 vs resident 4 | `0.0` | `1.947263035262e-07` |
+| small fp64 chunk size 2 vs resident 4 | `0.0` | `2.388680298004e-08` |
+| high-`S` fp64 optimized chunk size 1 vs resident 2 | `0.0` | `8.394351880270e-10` |
+| high-`S` fp64 optimized vs generic fallback | `0.0` | `9.208633855451e-12` |
+
+These checks prove that splitting families changes only the autograd tensor
+lifetime, not the per-family objective or gradient.
+
+#### Commands
+
+Worker A strict guard smoke:
+
+```bash
+python profiling/proposal2/bench_genewise_backward.py \
+  --dataset tests/data/test_trees_1000 \
+  --fams 4 \
+  --start 0 \
+  --family-chunk-size 2 \
+  --reps 1 \
+  --warmups 0 \
+  --max-wave-size 4096 \
+  --backward-path optimized-genewise \
+  --cache-dir /tmp/gpurec_prop5_smoke_cache
+```
+
+Worker C full 1000-family chunk-size 50 run:
+
+```bash
+PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
+python profiling/proposal2/bench_genewise_backward.py \
+  --dataset tests/data/test_trees_1000 \
+  --start 0 \
+  --fams 1000 \
+  --family-chunk-size 50 \
+  --warmups 1 \
+  --reps 1 \
+  --backward-path optimized-genewise
+```
+
+Worker C full 1000-family chunk-size 100 run:
+
+```bash
+PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
+python profiling/proposal2/bench_genewise_backward.py \
+  --dataset tests/data/test_trees_1000 \
+  --start 0 \
+  --fams 1000 \
+  --family-chunk-size 100 \
+  --warmups 1 \
+  --reps 1 \
+  --backward-path optimized-genewise
+```
+
+Parent local strict guard smoke:
+
+```bash
+PREPROCESS_CACHE_DIR=/tmp/gpurec_prop5_cache \
+python profiling/proposal2/bench_genewise_backward.py \
+  --dataset tests/data/test_trees_1000 \
+  --fams 2 \
+  --family-chunk-size 1 \
+  --reps 1 \
+  --warmups 0 \
+  --backward-path optimized-genewise \
+  --max-wave-size 4096
+```
+
+All optimized benchmark runs printed the active path flags:
+
+```text
+mode genewise
+pibar_mode uniform
+fixed_iters_Pi 6
+family_idx 1
+leaf_index 1
+forward_family_consts 1
+forward_family_dts_params 1
+fused_genewise_backward 1
+fused_genewise_self_loop 1
+fused_uniform_backward 1
+kernelized_backward_dts 1
+fused_dts_backward_accum 1
+dts_pibar_ud_fusion 1
+fused_cross_pibar_vjp 1
+cross_pibar_impl tree
+strict_optimized_kernels 1
+require_optimized_guard 1
+```
+
+So the full 1000-family results are guarded optimized-kernel results, not
+silent generic fallbacks.
+
+#### Benchmark
+
+Resident microbenchmarks from the Proposal 3/4 baseline and Worker C:
+
+| Run | Families resident | Forward | Backward | Peak allocation | Shape |
+|---|---:|---:|---:|---:|---|
+| optimized resident smoke | 10 | not reported | `95.509 ms` | `2.812 GB` | `S=1999`, `C=66530`, `45` waves, maxW `16645`, split rows `83135` |
+| optimized resident chunk | 100 | about `229-276 ms` locally | `651.534 ms` median in the Proposal 3/4 run; `683-736 ms` per 100-family chunk in Worker C | `18.191 GB` to `18.840 GB` | `S=1999`, about `625k-653k` clade rows |
+
+A single resident 1000-family backward is not a valid training policy on the
+24 GB RTX 4090 target.  Extrapolating the resident 100-family state already
+exceeds memory by a wide margin, and Proposal 5's purpose is to avoid that
+unbounded saved-tensor lifetime.  The useful comparison is therefore resident
+per-chunk memory versus full-dataset chunked autograd time.
+
+Full 1000-family chunked autograd:
+
+| Chunk size | Chunks | Forward total | Backward total | Total event time | Max backward peak | Loss |
+|---:|---:|---:|---:|---:|---:|---:|
+| 50 | 20 | `2980.171 ms` | `7672.296 ms` | `10652.466 ms` | `10.787 GB` (`10.046 GiB`) | `2157097.03906250` |
+| 100 | 10 | `2574.073 ms` | `6723.733 ms` | `9297.806 ms` | `18.840 GB` (`17.546 GiB`) | `2157097.01562500` |
+
+Chunk shape ranges:
+
+| Chunk size | `C` range | Waves | Max wave rows | Split rows | Leaves | Roots |
+|---:|---:|---:|---:|---:|---:|---:|
+| 50 | `312366-331290` | `49-54` | `32768` | `390320-413975` | `78154-82885` | `50` |
+| 100 | `624908-652936` | `56-61` | `32768` | `780860-815895` | `156352-163359` | `100` |
+
+Per-chunk backward times:
+
+| Chunk size | Backward times by chunk |
+|---:|---|
+| 50 | `378.349`, `359.613`, `420.895`, `390.491`, `382.500`, `403.112`, `387.854`, `420.363`, `390.251`, `402.881`, `373.290`, `376.255`, `375.781`, `359.001`, `361.643`, `364.908`, `395.473`, `384.066`, `367.112`, `378.456` ms |
+| 100 | `683.279`, `667.243`, `666.241`, `677.759`, `676.506`, `666.291`, `667.945`, `653.834`, `705.125`, `659.508` ms |
+
+Small strict guard smokes:
+
+| Run | Chunk size | Families | Forward | Backward | Total | Peak | Interpretation |
+|---|---:|---:|---:|---:|---:|---:|---|
+| Worker A smoke | 2 | 4 | `2203.145 ms` | `2877.023 ms` | `5080.168 ms` | `0.627 GB` max | verifies harness and strict optimized guard on two chunks |
+| Parent local smoke | 1 | 2 | `4450.047 ms` | `5915.515 ms` | `10365.562 ms` | `0.258 GB` | deliberately slow chunk size 1 guard smoke |
+
+The smoke runs use tiny chunks and, for the parent smoke, `max_wave_size=4096`.
+They should not be used as performance guidance; they only prove that the
+strict optimized route can be exercised under chunked autograd.
+
+#### Interpretation
+
+Chunk size 100 is the faster 1000-family policy in this benchmark:
+
+```text
+chunk 50:  10.652 s total, 10.787 GB peak
+chunk 100:  9.298 s total, 18.840 GB peak
+```
+
+The speedup comes from halving the number of chunks.  Each 100-family chunk
+also has larger waves and fewer repeated model/build and launch overheads.  The
+cost is memory: `18.840 GB` allocated is close enough to a 24 GB card that
+allocator fragmentation, additional optimizer state, larger parameter layouts,
+or a slightly larger dataset could push it over the limit.
+
+Chunk size 50 is slower by about `1.15x` on event time, but it leaves a much
+larger memory margin.  Its `10.787 GB` peak leaves room for optimizer state,
+diagnostics, other allocations, or less favorable family mixes.  It is the
+safer default for general training and CI/profiling reproducibility.
+
+The loss differs by only about `0.0234` between the two full 1000-family fp32
+runs on a `~2.16e6` total loss.  That is consistent with fp32 reduction-order
+differences across different chunk groupings; the correctness tests above use
+fp64 and explicit chunk parity to verify the underlying gradients.
+
+#### Decision
+
+Decision: accept Proposal 5.
+
+Use explicit chunked autograd as the production strategy for full genewise
+training passes.  Recommend chunk size 50 as the conservative default on 24 GB
+GPUs, with chunk size 100 as the faster high-memory option when the benchmark
+prints the strict optimized flags and the observed peak leaves enough margin
+for the intended optimizer.
+
+Keep `GPUREC_REQUIRE_OPTIMIZED_GENEWISE_BACKWARD=1` in optimized profiling
+runs.  A full 1000-family timing is only meaningful if generic self-loop,
+generic DTS, and generic Pibar VJP fallbacks are forbidden.
+
 ## Proposal 6: Preserve Family Locality In Cross-Family Waves
 
 Once constants are loaded by `family_idx` inside kernels, row order matters.
@@ -1978,7 +2284,7 @@ Tolerance policy:
 | 3 | Fused genewise backward self-loop | Accepted; removes the generic self-loop for supported genewise uniform batches | 10-family backward: `531.569 ms -> 310.018 ms` locally |
 | 4 | Fused genewise DTS backward accumulation | Accepted; removes generic `DTS_5` and split scatter work | 100-family DTS bucket: `122.079 ms`, no guarded fallback |
 | 5 | Family-aware uniform Pibar VJP | Accepted; reuses exact ancestor-corrected compact UD tree VJP kernels | 100-family Pibar UD bucket: `62.838 ms`, no generic tree calls |
-| 6 | Saved-tensor and chunked autograd strategy | Required for 1000-family genewise training | full 1000-tree backward without OOM |
+| 6 | Saved-tensor and chunked autograd strategy | Accepted; streams full genewise training through resident chunks with strict optimized guards | 1000-family chunked backward: chunk 100 `6.724 s`, `18.840 GB`; chunk 50 `7.672 s`, `10.787 GB` |
 | 7 | Preserve family locality in wave scheduling | Helps after family-indexed kernel loads exist | L2 hit rate and DRAM bytes |
 | 8 | Correctness matrix | Required for every production promotion | parity and gradcheck |
 
@@ -2011,6 +2317,12 @@ Backward:
   100-family global reference run is `716.431 ms` median with `18.184 GB`
   peak allocation, so the optimized genewise path is now essentially
   global-speed per resident chunk.
+- Proposal 5 makes the full 1000-family optimized genewise training pass
+  measurable by streaming resident chunks.  Chunk size 100 completed the full
+  pass in `9.298 s` forward+backward event time with `18.840 GB` peak
+  allocation.  Chunk size 50 completed in `10.652 s` with `10.787 GB` peak.
+  The recommended default is 50 for memory margin, with 100 available as the
+  faster high-memory setting.
 - The 100-family optimized specieswise run is `963.523 ms` median with
   `16.937 GiB` peak allocation.  Specieswise remains slower because it
   accumulates per-species parameter gradients and pays more atomic/reduction
@@ -2107,12 +2419,12 @@ robustness, not a new order-of-magnitude improvement.
 
 ## Immediate Next Experiment
 
-Proposal 0 through Proposal 4 have succeeded and are promoted for the supported
+Proposal 0 through Proposal 5 have succeeded and are promoted for the supported
 optimized genewise uniform path.
 
-The next experiment should be Proposal 5: run the optimized backward under an
-explicit chunked-autograd scheduler and measure the full 1000-tree training
-pass without accidentally retaining all saved tensors.  The scheduler should
-start with 50-family and 100-family chunks on `tests/data/test_trees_1000`,
-print the active fused path flags, and reject guarded runs that fall back to
-generic DTS or generic Pibar VJP.
+The next experiment should be Proposal 6: inspect whether the existing
+cross-family wave order already preserves family locality well enough for the
+family-indexed forward and backward kernels.  Use the Proposal 5 chunked
+benchmark as the outer harness, then profile 50-family and 100-family chunks
+with NCU to measure L2 hit rate, DRAM bytes, and sector utilization for the
+family-indexed wave-step, DTS, self-loop, and compact Pibar kernels.
