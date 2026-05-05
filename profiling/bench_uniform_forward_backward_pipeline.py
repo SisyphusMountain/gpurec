@@ -66,6 +66,8 @@ DEFAULT_FLAGS = {
     "GPUREC_DTS_GRAD_MT_TWO_STAGE": "1",
     "GPUREC_BACKWARD_PARENT_REDUCED_DTS": "tiled",
     "GPUREC_BACKWARD_PARENT_REDUCED_DTS_TILE_SPLITS": "64",
+    "GPUREC_SELF_LOOP_2D_TRITON": "1",
+    "GPUREC_SELF_LOOP_2D_BLOCK_W": "1",
 }
 
 
@@ -156,8 +158,8 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--dataset", default=os.getenv("DATASET", "tests/data/test_trees_1000"))
     parser.add_argument("--start", type=int, default=int(os.getenv("FAMILY_START", "0")))
     parser.add_argument("--fams", type=int, default=int(os.getenv("FAMS", "1000")))
-    parser.add_argument("--family-chunk-size", type=int, default=int(os.getenv("FAMILY_CHUNK_SIZE", "75")))
-    parser.add_argument("--max-wave-size", default=os.getenv("MAX_WAVE_SIZE", "32768"))
+    parser.add_argument("--family-chunk-size", type=int, default=int(os.getenv("FAMILY_CHUNK_SIZE", "25")))
+    parser.add_argument("--max-wave-size", default=os.getenv("MAX_WAVE_SIZE", "8192"))
     parser.add_argument("--fixed-iters", default=os.getenv("FIXED_ITERS_PI", "6"))
     parser.add_argument("--reps", type=int, default=int(os.getenv("REPS", "3")))
     parser.add_argument("--warmups", type=int, default=int(os.getenv("WARMUPS", "1")))
@@ -314,6 +316,12 @@ def _optimized_feature_status(
         and cuda_dtype_ok
         and s_gt_256
     )
+    proposal0_self_loop = int(
+        _env_enabled("GPUREC_SELF_LOOP_2D_TRITON", "1")
+        and cuda_dtype_ok
+        and s_gt_256
+        and int(static.dataset.S) <= int(os.environ.get("GPUREC_SELF_LOOP_2D_MAX_S", "2048"))
+    )
     optimized = int(
         root_row_output == 0
         and full_saved_tensors_for_backward == 1
@@ -324,6 +332,7 @@ def _optimized_feature_status(
         and kernelized_backward_dts
         and fused_dts_backward_accum
         and compact_tree_pibar_vjp
+        and proposal0_self_loop
     )
     return {
         "verdict": "optimized" if optimized else "non_optimized",
@@ -338,6 +347,7 @@ def _optimized_feature_status(
         "kernelized_backward_dts": kernelized_backward_dts,
         "fused_dts_backward_accum": fused_dts_backward_accum,
         "compact_tree_pibar_vjp": compact_tree_pibar_vjp,
+        "proposal0_self_loop": proposal0_self_loop,
         "cuda_dtype_ok": int(cuda_dtype_ok),
         "species_gate_s_gt_256": int(s_gt_256),
         "has_fused_backward_module": int(has_fused),
@@ -361,6 +371,7 @@ def _validate_optimized_feature_status(
         "kernelized_backward_dts",
         "fused_dts_backward_accum",
         "compact_tree_pibar_vjp",
+        "proposal0_self_loop",
     )
     missing = [key for key in required if int(status[key]) != 1]
     if int(status["root_row_output"]) != 0:
@@ -782,6 +793,7 @@ def _run_pipeline_pass(
 
     torch.cuda.synchronize()
     peak_gib = torch.cuda.max_memory_allocated() / (1024 ** 3)
+    peak_reserved_gib = torch.cuda.max_memory_reserved() / (1024 ** 3)
     grad_detached = grad_theta.detach()
     grad_norm = float(torch.linalg.vector_norm(grad_detached).detach().cpu())
     grad_finite = bool(torch.isfinite(grad_detached).all().detach().cpu())
@@ -796,6 +808,7 @@ def _run_pipeline_pass(
         "e_adjoint_ms": e_adjoint_ms,
         "total_ms": forward_ms + backward_ms,
         "peak_gib": peak_gib,
+        "peak_reserved_gib": peak_reserved_gib,
         "loss": loss_value,
         "grad": grad_detached.clone(),
         "grad_norm": grad_norm,
@@ -986,6 +999,8 @@ def _print_active_path_flags(
         "dts_pibar_ud_fusion", os.environ.get("GPUREC_DTS_PIBAR_UD_FUSION", "unset"),
         "fused_cross_pibar_vjp", os.environ.get("GPUREC_FUSED_CROSS_PIBAR_VJP", "unset"),
         "compact_pibar_vjp_impl", os.environ.get("GPUREC_FUSED_CROSS_PIBAR_VJP_IMPL", "unset"),
+        "proposal0_self_loop", os.environ.get("GPUREC_SELF_LOOP_2D_TRITON", "unset"),
+        "proposal0_block_w", os.environ.get("GPUREC_SELF_LOOP_2D_BLOCK_W", "unset"),
         "strict_optimized_kernels", int(args.strict_optimized_kernels),
     )
     print(
@@ -1002,6 +1017,7 @@ def _print_active_path_flags(
         "kernelized_backward_dts", status["kernelized_backward_dts"],
         "fused_dts_backward_accum", status["fused_dts_backward_accum"],
         "compact_tree_pibar_vjp", status["compact_tree_pibar_vjp"],
+        "proposal0_self_loop", status["proposal0_self_loop"],
         "cuda_dtype_ok", status["cuda_dtype_ok"],
         "species_gate_s_gt_256", status["species_gate_s_gt_256"],
         "has_fused_backward_module", status["has_fused_backward_module"],
@@ -1029,6 +1045,7 @@ def _print_rep(rep: int, result: dict[str, Any]) -> None:
         "e_adjoint_ms", f"{result['e_adjoint_ms']:.3f}",
         "total_ms", f"{result['total_ms']:.3f}",
         "peak_gib", f"{result['peak_gib']:.3f}",
+        "peak_reserved_gib", f"{result['peak_reserved_gib']:.3f}",
         "loss", f"{result['loss']:.10f}",
         "grad_norm", f"{result['grad_norm']:.8e}",
         "grad_finite", result["grad_finite"],
@@ -1045,6 +1062,7 @@ def _print_summary(results: list[dict[str, Any]]) -> None:
     backward = [float(r["backward_ms"]) for r in results]
     total = [float(r["total_ms"]) for r in results]
     peak = [float(r["peak_gib"]) for r in results]
+    peak_reserved = [float(r["peak_reserved_gib"]) for r in results]
     generic_calls = sum(int(r["generic_self_loop_calls"]) for r in results)
     grad_finite = int(all(int(r["grad_finite"]) for r in results))
     last = results[-1]
@@ -1054,6 +1072,7 @@ def _print_summary(results: list[dict[str, Any]]) -> None:
         "backward_ms", f"{statistics.median(backward):.3f}",
         "total_ms", f"{statistics.median(total):.3f}",
         "peak_gib", f"{max(peak):.3f}",
+        "peak_reserved_gib", f"{max(peak_reserved):.3f}",
         "loss", f"{float(last['loss']):.10f}",
         "grad_norm", f"{float(last['grad_norm']):.8e}",
         "grad_finite", grad_finite,
@@ -1068,6 +1087,7 @@ def _print_summary(results: list[dict[str, Any]]) -> None:
         "total_median_ms", f"{statistics.median(total):.3f}",
         "total_mean_ms", f"{statistics.mean(total):.3f}",
         "max_peak_gib", f"{max(peak):.3f}",
+        "max_peak_reserved_gib", f"{max(peak_reserved):.3f}",
         "loss_last", f"{float(last['loss']):.10f}",
         "grad_norm_last", f"{float(last['grad_norm']):.8e}",
         "grad_finite", grad_finite,

@@ -98,7 +98,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--warmups", type=int, default=int(os.getenv("WARMUPS", "5")))
     parser.add_argument("--dtype", type=_parse_dtype, default=_parse_dtype(os.getenv("DTYPE", "fp32")))
     parser.add_argument("--cache-dir", default=os.getenv("PREPROCESS_CACHE_DIR", "/tmp/gpurec_ancestor_batching_cache"))
-    parser.add_argument("--max-wave-size", default=os.getenv("MAX_WAVE_SIZE", "32768"))
+    parser.add_argument("--max-wave-size", default=os.getenv("MAX_WAVE_SIZE", "8192"))
     parser.add_argument("--max-root-wave-size", default=os.getenv("MAX_ROOT_WAVE_SIZE", ""))
     parser.add_argument("--fixed-iters-Pi", type=int, default=int(os.getenv("FIXED_ITERS_PI", "6")))
     parser.add_argument("--neumann-terms", type=int, default=int(os.getenv("NEUMANN_TERMS", "3")))
@@ -323,4 +323,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

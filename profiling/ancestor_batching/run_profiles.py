@@ -36,8 +36,8 @@ VARIANTS = [
     Variant(
         name="baseline",
         proposal="baseline",
-        description="current optimized global/uniform backward",
-        env={},
+        description="optimized global/uniform backward with Proposal 0 disabled",
+        env={"GPUREC_SELF_LOOP_2D_TRITON": "0"},
         ncu_kernel_regex="_wave_backward_uniform_kernel",
     ),
     Variant(

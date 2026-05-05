@@ -11,6 +11,16 @@ NEG_INF = float("-inf")
 _SUPPORTED_BACKWARD_FLOAT_DTYPES = (torch.float32, torch.float64, torch.bfloat16)
 
 
+def _env_flag_enabled(name: str, default: str = "0") -> bool:
+    return os.environ.get(name, default).strip().lower() not in (
+        "",
+        "0",
+        "false",
+        "off",
+        "no",
+    )
+
+
 def _uniform_ancestor_left_sum(ancestors_T: torch.Tensor, rhs_T: torch.Tensor) -> torch.Tensor:
     """Compute ``ancestors_T @ rhs_T`` with a CUDA bf16 sparse fallback."""
     if (
@@ -1439,9 +1449,16 @@ def Pi_wave_backward(
     fused_wave_param_accum_enabled = (
         os.environ.get("GPUREC_FUSED_WAVE_PARAM_ACCUM", "1") != "0"
     )
+    self_loop_2d_max_s = int(os.environ.get("GPUREC_SELF_LOOP_2D_MAX_S", "2048"))
+    self_loop_2d_triton_requested = _env_flag_enabled(
+        "GPUREC_SELF_LOOP_2D_TRITON", "1"
+    )
     self_loop_2d_triton_enabled = (
-        os.environ.get("GPUREC_SELF_LOOP_2D_TRITON", "0").strip().lower()
-        not in ("", "0", "false", "off", "no")
+        self_loop_2d_triton_requested
+        and can_use_fused_uniform_backward
+        and device.type == "cuda"
+        and dtype in (torch.float32, torch.float64)
+        and S <= self_loop_2d_max_s
     )
     self_loop_tree_staged_enabled = (
         os.environ.get("GPUREC_SELF_LOOP_TREE_STAGED", "0").strip().lower()

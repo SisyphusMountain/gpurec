@@ -1330,7 +1330,7 @@ def _env_flag_enabled(name, default="0"):
 
 def _self_loop_prototype_requested(mode):
     if mode == "2d":
-        return _env_flag_enabled("GPUREC_SELF_LOOP_2D_TRITON", "0")
+        return _env_flag_enabled("GPUREC_SELF_LOOP_2D_TRITON", "1")
     if mode == "staged":
         return _env_flag_enabled("GPUREC_SELF_LOOP_TREE_STAGED", "0")
     return False
