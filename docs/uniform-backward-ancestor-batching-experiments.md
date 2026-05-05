@@ -12,23 +12,28 @@ profiling agents. Each proposal below must be tested with an opt-in flag first;
 no prototype should become the default without parity, finite-difference or
 gradcheck coverage where applicable, warmed timing, and Nsight evidence.
 
-Documentation-owner constraint for this pass: no production code or tests were
-edited. All current measurements below were collected with existing opt-in
-paths.
+Documentation-owner constraint for this pass: this document is the only file
+edited by the documentation agent. Production and test commits by other workers
+are observed and summarized here, but not modified here.
 
 ## Current Result At A Glance
 
-The most important current result is Proposal 5: the existing NVRTC CUDA
+The most important profiling result remains Proposal 5: the existing NVRTC CUDA
 no-split row kernel, run in exact `tree` correction mode, is a strong control
-for the current full-ancestor baseline.
+for the current full-ancestor baseline. Since that result, three support commits
+landed:
+
+- `cdffa29 Add ancestor batching profiling harness`
+- `256bff7 Add opt-in 2D self-loop backward prototype`
+- `1b14648 Add uniform ancestor batching correctness tests`
 
 | Item | Current status | Decision |
 |---|---|---|
-| Proposal 0, 2D Triton self-loop | not implemented in current tree | keep as future experiment; high register-risk |
-| Proposal 1, staged Triton tree DP | not implemented in current tree | highest-priority new implementation after Proposal 5 control |
-| Proposal 2, species-major/transposed scratch | not implemented in current tree | lower priority; current species ids already have contiguous subtrees |
-| Proposal 3, hybrid wave router | not implemented directly | needed if Proposal 1 or 5 is promoted |
-| Proposal 4, forward path prefix | not implemented for this pass | reject as fp32 production direction until a full fused forward kernel exists |
+| Proposal 0, 2D Triton self-loop | opt-in prototype landed in `256bff7`; synthetic and 10-family parity pass | keep opt-in; do not promote until clean timing and Nsight results exist |
+| Proposal 1, staged Triton tree DP | flag plumbing is present, but no staged tree-DP implementation is present | highest-priority new implementation after Proposal 5 control |
+| Proposal 2, species-major/transposed scratch | no production implementation | lower priority; current species ids already have contiguous subtrees |
+| Proposal 3, hybrid wave router | no threshold router implementation | needed if Proposal 1 or 5 is promoted |
+| Proposal 4, forward path prefix | no production implementation in this pass | reject as fp32 production direction until a full fused forward kernel exists |
 | Proposal 5, existing CUDA no-split row kernel | implemented earlier; retested on current semantics | keep opt-in, but exact `tree` mode passes the performance gate on 50 families |
 
 The key decision nuance: `GPUREC_CUDA_SELF_LOOP_NOSPLIT_CORRECTION=self` is a
@@ -81,10 +86,38 @@ Present opt-in paths related to this document:
 | `GPUREC_CUDA_SELF_LOOP_NOSPLIT_CORRECTION` | yes | `self` if the CUDA path is enabled | Use `tree` for current exact semantics. |
 | `GPUREC_SELF_LOOP_PARAM_TWO_STAGE` | yes | off | Removes self-loop parameter REDs in eligible no-split waves, but regressed end-to-end in prior tests. |
 | `GPUREC_DTS_PIBAR_UD_EULER_PREFIX` | yes | off | Cross-clade staged Pibar VJP interval-prefix path, not the self-loop kernel. |
-| `GPUREC_SELF_LOOP_2D_TRITON` | no | n/a | Proposal 0, not implemented. |
-| `GPUREC_SELF_LOOP_TREE_STAGED` | no | n/a | Proposal 1, not implemented. |
-| `GPUREC_SELF_LOOP_TREE_TRANSPOSED` | no | n/a | Proposal 2, not implemented. |
-| `GPUREC_FORWARD_UNIFORM_PATH_PREFIX` | no | n/a | Proposal 4, not implemented. |
+| `GPUREC_SELF_LOOP_2D_TRITON` | yes | off | Proposal 0 prototype. CUDA fp32/fp64 only, default `GPUREC_SELF_LOOP_2D_MAX_S=2048`; returns per-element parameter VJPs, so the model path disables in-kernel self-loop parameter accumulation when enabled. |
+| `GPUREC_SELF_LOOP_2D_BLOCK_W` | yes | `1` | Proposal 0 row block size. Larger values multiply the full-species vector width and are likely register-pressure limited. |
+| `GPUREC_SELF_LOOP_TREE_STAGED` | partial | off | Flag plumbing only. In the model path it currently disables in-kernel parameter accumulation, but there is no staged tree-DP replacement kernel yet. |
+| `GPUREC_SELF_LOOP_TREE_TRANSPOSED` | no | n/a | Proposal 2, not implemented in production. |
+| `GPUREC_FORWARD_UNIFORM_PATH_PREFIX` | no | n/a | Proposal 4, not implemented in production. |
+
+Reusable harness:
+
+- `profiling/ancestor_batching/bench_uniform_backward.py` is the single-variant
+  CUDA-event benchmark.
+- `profiling/ancestor_batching/run_profiles.py` orchestrates timing, parity,
+  Nsys, and NCU captures and writes ignored artifacts under
+  `profiling/ancestor_batching/artifacts/`.
+- `profiling/ancestor_batching/README.md` documents the harness contract.
+
+Current harness availability dry-run:
+
+```bash
+python profiling/ancestor_batching/run_profiles.py \
+  --dry-run \
+  --phases timing \
+  --fams 10 \
+  --run-id doc_available_dryrun
+```
+
+Result on `1b14648`: selected `baseline`, `proposal0_2d_triton_bw1`,
+`proposal0_2d_triton_bw2`, `proposal1_tree_staged_w4_s256`,
+`proposal5_cuda_nosplit_self`, and `proposal5_cuda_nosplit_tree`; skipped
+Proposal 2, Proposal 3, and Proposal 4 because their required production flags
+or implementation markers are absent. The Proposal 1 selection should be read
+carefully: the source contains `GPUREC_SELF_LOOP_TREE_STAGED`, but the staged
+tree-DP algorithm is not implemented yet.
 
 ## Baseline Problem
 
@@ -148,6 +181,24 @@ Performance gates:
 - Nsight Compute on one representative large `_wave_backward_uniform_kernel` or
   replacement launch, using `--kernel-id` rather than launch-skip heuristics.
 
+Preferred harness commands for new batches:
+
+```bash
+python profiling/ancestor_batching/run_profiles.py --phases timing
+python profiling/ancestor_batching/run_profiles.py \
+  --phases nsys,ncu \
+  --variants baseline,proposal5_cuda_nosplit_tree
+python profiling/ancestor_batching/bench_uniform_backward.py \
+  --fams 50 \
+  --reps 9 \
+  --warmups 5 \
+  --cache-dir /tmp/gpurec_ancestor_batching_cache
+```
+
+The older `profiling/proposal8/bench_uniform_backward.py` commands remain
+recorded below because they are the exact commands used for the Proposal 5
+control result.
+
 Promotion threshold:
 
 - A prototype must reduce end-to-end backward time by at least `3%` on the
@@ -161,24 +212,47 @@ intentional approximation. The current exact semantics are not `self`.
 
 ## Proposal 0: 2D Triton Self-Loop Kernel
 
-Implement a Triton variant where one program processes a block of clade rows and
-the full species vector:
+`256bff7` implements this as an opt-in Triton prototype. One Triton program
+processes `BLOCK_W` clade rows and the full species vector
+`BLOCK_S=next_power_of_2(S)`. The implementation is intentionally conservative:
+it supports CUDA fp32/fp64 only, refuses `S > GPUREC_SELF_LOOP_2D_MAX_S`
+(`2048` by default), and returns per-element parameter VJPs instead of using
+the fused in-kernel parameter accumulators.
 
 ```python
-offs_w = block_w + arange(BLOCK_W)
-offs_s = arange(BLOCK_S)          # BLOCK_S ~= next_power_of_2(S)
+if not env("GPUREC_SELF_LOOP_2D_TRITON"):
+    return current_fused_triton()
 
-term      = load(term_ptr      + offs_w[:, None] * S + offs_s[None, :])
-pibar_c   = load(pibar_coeff   + offs_w[:, None] * S + offs_s[None, :])
-u         = term * pibar_c
-A         = sum(u, axis=1)
+if dtype not in (fp32, fp64) or S > GPUREC_SELF_LOOP_2D_MAX_S:
+    return unavailable_or_raise_if_strict()
 
-# bottom-up tree reduction, still inside the program
-corr = u
-for level in postorder_levels:
-    corr[:, parent] = corr[:, parent] + corr[:, child1] + corr[:, child2]
+precompute_kernel:
+    # one program per row block, full species vector in-program
+    rows = block_id * BLOCK_W + arange(BLOCK_W)
+    species = arange(next_power_of_2(S))
+    diag, pibar_coeff, p_prime, sl1_wt, sl2_wt = make_self_loop_weights(...)
+    v_k = rhs
 
-result = term * diag + p_prime * (A[:, None] - corr) + speciation_gather(term)
+for n in range(neumann_terms):
+    jt_kernel:
+        term = rhs if n == 0 else previous_term_buffer
+        u = term * pibar_coeff
+        A = sum_species(u)
+        corr = u
+
+        # compact levels are built from the species children once and supplied
+        # to every row-block program.
+        for level in compact_bottom_up_levels:
+            corr[parent] = corr[parent] + corr[child1] + corr[child2]
+            barrier_inside_program()
+
+        out = term * diag + p_prime * (A - corr)
+        out[child1] += term[parent] * sl1_wt[parent]
+        out[child2] += term[parent] * sl2_wt[parent]
+        v_k += out
+
+param_store_kernel:
+    aw0, aw1, aw2, aw345, aw3, aw4 = per_element_param_vjp(v_k)
 ```
 
 Expected benefit:
@@ -201,11 +275,71 @@ Test matrix:
 |---|---|
 | `GPUREC_SELF_LOOP_2D_TRITON` | `0`, `1` |
 | `GPUREC_SELF_LOOP_2D_BLOCK_W` | `1`, `2`, maybe `4` if compilation permits |
+| `GPUREC_SELF_LOOP_2D_BLOCK_NODES` | default `64` |
+| `GPUREC_SELF_LOOP_2D_NUM_WARPS` | default `8` |
+| `GPUREC_SELF_LOOP_2D_JT_NUM_WARPS` | defaults to `GPUREC_SELF_LOOP_2D_NUM_WARPS` |
+| `GPUREC_SELF_LOOP_2D_MAX_S` | default `2048` |
 
-Status: not implemented. Decision: keep as a high-risk experiment. The current
-CUDA tree-mode result shows that full-row local tree DP is valuable, but a
-Triton 2D implementation must prove it can avoid register spill and occupancy
-collapse.
+Correctness commands run by the documentation pass:
+
+```bash
+pytest -q \
+  tests/kernels/test_wave_backward_kernel.py::test_uniform_pibar_jt_correction_is_subtree_sum_not_self_only \
+  tests/kernels/test_wave_backward_kernel.py::test_documented_self_loop_prototype_flags_match_synthetic_reference \
+  tests/kernels/test_wave_backward_kernel.py::test_cuda_nosplit_tree_correction_matches_synthetic_reference
+
+pytest -q -m 'not slow' \
+  tests/gradients/test_uniform_backward_ancestor_batching.py
+```
+
+Results:
+
+```text
+6 passed in 1.43s
+1 passed, 1 deselected in 12.14s
+```
+
+The 10-family model parity test was also rerun with `-s` to capture deltas:
+
+| Case | Loss abs diff | Theta grad max abs diff | Relative to baseline grad inf | Interpretation |
+|---|---:|---:|---:|---|
+| `proposal0_2d_triton` | `0.000e+00` | `4.590e-02` | `3.448e-05` | real Proposal 0 prototype plus external parameter accumulation |
+| `proposal1_tree_staged` | `0.000e+00` | `4.614e-02` | `3.467e-05` | no staged tree DP yet; flag changes parameter accumulation path |
+| `proposal2_tree_transposed` | `0.000e+00` | `1.221e-04` | `9.171e-08` | no production flag effect |
+| `proposal3_hybrid_tree_router` | `0.000e+00` | `4.590e-02` | `3.448e-05` | no router yet; staged flag side effect only |
+| `proposal4_forward_path_prefix` | `0.000e+00` | `1.221e-04` | `9.171e-08` | no production flag effect |
+| `proposal5_cuda_nosplit_tree` | `0.000e+00` | `2.075e-03` | `1.559e-06` | exact CUDA tree no-split path |
+
+The larger Proposal 0 deltas are still far inside the test tolerance
+(`grad_rel_to_baseline_inf < 2e-3`) and are expected for changed fp32
+accumulation order. They are not performance evidence.
+
+Timing smoke attempt:
+
+```bash
+python profiling/ancestor_batching/run_profiles.py \
+  --phases timing \
+  --variants baseline,proposal0_2d_triton_bw1 \
+  --fams 10 \
+  --reps 3 \
+  --warmups 1 \
+  --cache-dir /tmp/gpurec_ancestor_batching_cache \
+  --run-id doc_p0_smoke
+```
+
+Result on `1b14648`: both selected variants returned code `1` before timing.
+The logs reached model shape reporting (`S=1999`, `C=66530`, `waves=45`,
+`max_wave_rows=16645`, `split_rows=83135`) and then failed in forward
+allocation with only about `186 MiB` free on the RTX 4090 because concurrent
+Python GPU workers were holding roughly `22 GiB`. Treat this as an invalid
+timing attempt caused by local GPU memory pressure, not as a Proposal 0
+performance result.
+
+Status: implemented as an opt-in prototype. Decision: keep opt-in and
+high-risk. The current CUDA tree-mode result shows that full-row local tree DP
+is valuable, and the Proposal 0 prototype now has synthetic/reference and
+10-family parity coverage. It still needs clean warmed timings plus Nsys/NCU
+before it can be compared to Proposal 5 or considered for promotion.
 
 ## Proposal 1: Extra Triton Kernels For Tree DP
 
@@ -247,11 +381,19 @@ Test matrix:
 | `GPUREC_SELF_LOOP_TREE_TILE_W` | `1`, `2`, `4`, `8` |
 | `GPUREC_SELF_LOOP_TREE_TILE_S` | `128`, `256` |
 
-Status: not implemented. Decision: this is now the highest-priority new
-implementation proposal. Proposal 5 proves that no-split full-row tree
-correction can remove about `110 ms` from the 50-family profiled interval, but
-split waves still run through the current Triton ancestor-walk path and account
-for about `141 ms` of self-loop time in the CUDA-tree Nsys capture.
+Status: partially plumbed but not implemented. `GPUREC_SELF_LOOP_TREE_STAGED`
+now exists in source and is registered by the profiling harness, but there is
+no staged tree-DP replacement path. In the full model path, enabling the flag
+currently disables in-kernel self-loop parameter accumulation and then falls
+through to the existing fused Triton self-loop algorithm. This is why the
+10-family correctness test can pass for `proposal1_tree_staged` while not yet
+testing the algorithm described above.
+
+Decision: this remains the highest-priority new implementation proposal.
+Proposal 5 proves that no-split full-row tree correction can remove about
+`110 ms` from the 50-family profiled interval, but split waves still run through
+the current Triton ancestor-walk path and account for about `141 ms` of
+self-loop time in the CUDA-tree Nsys capture.
 
 ## Proposal 2: Species-Major / Transposed Scratch
 
@@ -288,11 +430,14 @@ Test matrix:
 | `GPUREC_SELF_LOOP_TREE_TRANSPOSED` | `0`, `1` |
 | `GPUREC_SELF_LOOP_TREE_TILE_W` | `16`, `32`, `64`, `128` |
 
-Status: not implemented. Decision: lower priority than Proposal 1. Older
-Euler-layout diagnostics showed that, for `tests/data/test_trees_1000`, every
-subtree is already one contiguous current-order interval. That reduces the
-expected value of a broad transposed/species relayout. A narrow interval-prefix
-self-loop variant may be more promising than a full species-major scratch.
+Status: not implemented in production. The new correctness test includes a
+`GPUREC_SELF_LOOP_TREE_TRANSPOSED` case to ensure the documented flag does not
+break the synthetic path, but `rg` finds no production reference to that flag.
+Decision: lower priority than Proposal 1. Older Euler-layout diagnostics showed
+that, for `tests/data/test_trees_1000`, every subtree is already one contiguous
+current-order interval. That reduces the expected value of a broad
+transposed/species relayout. A narrow interval-prefix self-loop variant may be
+more promising than a full species-major scratch.
 
 ## Proposal 3: Hybrid Wave Router
 
@@ -331,8 +476,12 @@ Test matrix:
 | `GPUREC_SELF_LOOP_TREE_MIN_W` | `0`, `1024`, `4096`, `8192`, `16384` |
 | `GPUREC_SELF_LOOP_TREE_SPLIT_WAVES` | `0`, `1` |
 
-Status: not implemented as a new router, but the existing CUDA no-split flag is
-already a coarse router for no-split fp32 waves. Decision: required before any
+Status: not implemented as a threshold router. The existing CUDA no-split flag
+is already a coarse router for no-split fp32 waves, and the correctness tests
+exercise a documented `proposal3_hybrid_tree_router` env bundle. In current
+production code that bundle only has the Proposal 1 flag side effect; the
+`GPUREC_SELF_LOOP_TREE_MIN_W` implementation marker is absent and the profiling
+harness skips the Proposal 3 variant by default. Decision: required before any
 default promotion. Current data support routing only large no-split waves to
 the CUDA tree path; split waves need Proposal 1 or another implementation.
 
@@ -374,11 +523,13 @@ Test matrix:
 | `GPUREC_FORWARD_UNIFORM_PATH_PREFIX` | `0`, `1` |
 | `GPUREC_FORWARD_UNIFORM_PATH_TILE_W` | `1`, `2`, `4`, `8` |
 
-Status: not implemented in this pass. Decision: do not pursue a production fp32
-forward path until a full fused forward DTS_L/Pibar kernel exists. Older
-Pibar-only CUDA prefix results were correct but `2.0-2.4x` slower than the
-current fp32 parent-walk Pibar kernel; fp64 remained a separate promising
-direction.
+Status: not implemented in production. The new correctness test includes a
+`GPUREC_FORWARD_UNIFORM_PATH_PREFIX` env bundle, but current production code has
+no such flag reference and the profiling harness skips Proposal 4 by default.
+Decision: do not pursue a production fp32 forward path until a full fused
+forward DTS_L/Pibar kernel exists. Older Pibar-only CUDA prefix results were
+correct but `2.0-2.4x` slower than the current fp32 parent-walk Pibar kernel;
+fp64 remained a separate promising direction.
 
 ## Proposal 5: Existing CUDA Shared-Memory Row Kernel As An Upper Bound
 
@@ -437,6 +588,12 @@ rescues the current 100-family OOM in the local control environment. Do not
 promote until the implementation worker either changes the enabled default to
 `tree` or adds a separate exact flag, and until a full `tests/kernels` pass plus
 paired timing are run.
+
+Additional coverage in `1b14648` now directly tests that CUDA no-split
+`correction_mode="tree"` matches the synthetic PyTorch reference and that
+`correction_mode="self"` differs on a topology where subtree correction matters.
+That strengthens the semantic case for `tree` as the only exact Proposal 5
+promotion candidate.
 
 ## Current Result Batch: Proposal 5 Control
 
@@ -697,11 +854,11 @@ Interpretation:
 
 | Proposal | Decision | Rationale |
 |---|---|---|
-| 0: 2D Triton self-loop | pending, high-risk | Full-row tree correction is valuable, but a single Triton program over `S=1999` risks excessive vector lanes and spills. |
-| 1: staged Triton tree DP | pursue next | Kernel-boundary synchronization can batch row/species work and may handle split waves, which remain the largest self-loop bucket after Proposal 5. |
-| 2: species-major/transposed scratch | defer | Current species ids already provide contiguous subtree intervals; transposition may cost more than it saves. |
-| 3: hybrid router | required if promoting | Current evidence supports routing large no-split fp32 waves to exact CUDA `tree`; small/split/bf16 cases need separate thresholds. |
-| 4: forward path prefix | reject for fp32 production for now | Older fp32 Pibar-only prefix prototypes were slower and forward is not the current bottleneck after the bf16 fix. |
+| 0: 2D Triton self-loop | keep opt-in; needs clean profiling | The prototype landed and passes synthetic plus 10-family parity, but no valid timing/Nsight batch exists yet. The full-species Triton program still has high register/occupancy risk at `S=1999`. |
+| 1: staged Triton tree DP | pursue next | Only flag plumbing exists today. Kernel-boundary synchronization can batch row/species work and may handle split waves, which remain the largest self-loop bucket after Proposal 5. |
+| 2: species-major/transposed scratch | defer | No production implementation. Current species ids already provide contiguous subtree intervals; transposition may cost more than it saves. |
+| 3: hybrid router | required if promoting | No threshold router exists. Current evidence supports routing large no-split fp32 waves to exact CUDA `tree`; small/split/bf16 cases need separate thresholds. |
+| 4: forward path prefix | reject for fp32 production for now | No production implementation. Older fp32 Pibar-only prefix prototypes were slower and forward is not the current bottleneck after the bf16 fix. |
 | 5: CUDA no-split row kernel | keep opt-in; exact `tree` is promising | `tree` mode cuts the 50-family median by about `25%`, explains the Nsys self-loop bucket reduction, and completes 100 families where the current default OOMed locally. Needs full-test and default-mode cleanup before promotion. |
 
 ## Open Follow-Ups
@@ -710,15 +867,20 @@ Interpretation:
    Proposal 5 promotion. Consider changing the opt-in default correction mode
    or adding a more explicit flag name so `self` cannot be mistaken for current
    exact semantics.
-2. Correctness worker: run the full `tests/kernels/test_wave_backward_kernel.py`
-   and `tests/gradients/test_autograd_bridge.py` suites with
+2. Correctness worker: run the full `tests/kernels/test_wave_backward_kernel.py`,
+   `tests/gradients/test_autograd_bridge.py`, and
+   `tests/gradients/test_uniform_backward_ancestor_batching.py` suites with
    `GPUREC_CUDA_SELF_LOOP_NOSPLIT=1 GPUREC_CUDA_SELF_LOOP_NOSPLIT_CORRECTION=tree`.
 3. Profiling worker: collect alternating 50-family paired runs for default vs
    CUDA `tree`, and rerun the 100-family default on a clean-memory GPU to
    distinguish true OOM from local memory pressure.
-4. Implementation worker: prototype Proposal 1 for split waves, because Nsys
+4. Profiling worker: rerun Proposal 0 timing on a clean GPU using
+   `profiling/ancestor_batching/run_profiles.py --phases timing --variants baseline,proposal0_2d_triton_bw1,proposal0_2d_triton_bw2`.
+   If it beats baseline on 10 families, collect Nsys/NCU before testing larger
+   workloads.
+5. Implementation worker: prototype Proposal 1 for split waves, because Nsys
    shows about `140.967 ms` of split-wave Triton self-loop time remains after
    routing no-split waves to CUDA `tree`.
-5. Profiling worker: if Proposal 5 is considered for default, collect one Nsys
+6. Profiling worker: if Proposal 5 is considered for default, collect one Nsys
    capture with `GPUREC_CUDA_SELF_LOOP_NOSPLIT_CORRECTION=self` only as a
    semantic lower-bound comparison, not as a promotion candidate.
