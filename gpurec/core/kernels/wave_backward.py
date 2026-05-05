@@ -1504,11 +1504,14 @@ def wave_backward_uniform_fused(
     term_buf = _scratch_view(scratch, "term_buf", scratch_shape, device=device, dtype=dtype)
     if term_buf is None:
         term_buf = torch.empty(scratch_shape, device=device, dtype=dtype)
+    pibar_corr_dtype = torch.float32 if dtype == torch.bfloat16 else dtype
     pibar_corr_buf = _scratch_view(
-        scratch, "pibar_corr", scratch_shape, device=device, dtype=dtype
+        scratch, "pibar_corr", scratch_shape, device=device, dtype=pibar_corr_dtype
     )
     if pibar_corr_buf is None:
-        pibar_corr_buf = torch.empty(scratch_shape, device=device, dtype=dtype)
+        pibar_corr_buf = torch.empty(
+            scratch_shape, device=device, dtype=pibar_corr_dtype
+        )
 
     if leaf_term_wt is None:
         if not use_leaf_index:

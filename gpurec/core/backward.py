@@ -1330,9 +1330,12 @@ def Pi_wave_backward(
                     "aw4",
                     "spec_buf",
                     "term_buf",
-                    "pibar_corr",
                 )
             }
+            pibar_corr_dtype = torch.float32 if dtype == torch.bfloat16 else dtype
+            scratch_pool["wave"]["pibar_corr"] = torch.empty(
+                (max_wave_W, S), device=device, dtype=pibar_corr_dtype
+            )
         dts_scratch = {}
         if max_dts_splits > 0 and _scratch_scope_enabled("dts", "dts_ud", "pibar_ud"):
             dts_scratch["pibar_ud"] = torch.empty(

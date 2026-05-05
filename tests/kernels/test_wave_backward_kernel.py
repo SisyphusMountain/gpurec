@@ -598,6 +598,77 @@ def test_wave_backward_uniform_fused_supports_fp64_synthetic():
             torch.testing.assert_close(tri, ref, rtol=1e-10, atol=1e-10)
 
 
+def test_wave_backward_uniform_fused_supports_bf16_synthetic():
+    """Exercise the bf16 fused self-loop path against an fp32 reference."""
+    if not torch.cuda.is_bf16_supported():
+        pytest.skip("CUDA device does not support bf16")
+    device = torch.device("cuda")
+    W, S = 3, 8
+    ws = 0
+    torch.manual_seed(5678)
+
+    ref_dtype = torch.float32
+    Pi_star = (torch.randn(W, S, device=device, dtype=ref_dtype) * 0.1).contiguous()
+    Pibar_star = (torch.randn(W, S, device=device, dtype=ref_dtype) * 0.1).contiguous()
+    dts_r = (torch.randn(W, S, device=device, dtype=ref_dtype) * 0.1).contiguous()
+    rhs = (torch.randn(W, S, device=device, dtype=ref_dtype) * 0.01).contiguous()
+
+    mt = torch.zeros(S, device=device, dtype=ref_dtype)
+    DL_const = torch.randn(S, device=device, dtype=ref_dtype) * 0.05
+    Ebar = torch.randn(S, device=device, dtype=ref_dtype) * 0.05
+    E = torch.randn(S, device=device, dtype=ref_dtype) * 0.05
+    SL1_const = torch.randn(S, device=device, dtype=ref_dtype) * 0.05
+    SL2_const = torch.randn(S, device=device, dtype=ref_dtype) * 0.05
+    leaf_wt = torch.randn(W, S, device=device, dtype=ref_dtype) * 0.05
+
+    sp_child1 = torch.tensor([1, 3, 5, S, S, S, S, S], device=device, dtype=torch.long)
+    sp_child2 = torch.tensor([2, 4, 6, S, S, S, S, S], device=device, dtype=torch.long)
+    sp_parent = _species_parent_from_children(sp_child1, sp_child2, S)
+    ancestors_T_dense = torch.zeros((S, S), device=device, dtype=ref_dtype)
+    for desc in range(S):
+        cur = desc
+        while cur >= 0:
+            ancestors_T_dense[cur, desc] = 1.0
+            cur = int(sp_parent[cur].item())
+    ancestors_T = ancestors_T_dense.to_sparse_coo()
+    pi_max = Pi_star.max(dim=1, keepdim=True).values
+    p_prime = torch.exp2(Pi_star - pi_max)
+    denom = p_prime.sum(dim=1, keepdim=True) - p_prime @ ancestors_T_dense
+    Pibar_star = (torch.log2(denom) + pi_max + mt.unsqueeze(0)).contiguous()
+
+    refs = _pytorch_single_wave_backward(
+        Pi_star, Pibar_star, ws, W, S, dts_r, rhs,
+        mt, DL_const, Ebar, E, SL1_const, SL2_const,
+        sp_child1, sp_child2, leaf_wt, ancestors_T,
+        neumann_terms=3,
+    )
+    bf16 = torch.bfloat16
+    tris = wave_backward_uniform_fused(
+        Pi_star.to(bf16).contiguous(),
+        Pibar_star.to(bf16).contiguous(),
+        ws, W, S,
+        dts_r.to(bf16).contiguous(),
+        rhs.to(bf16).contiguous(),
+        mt.to(bf16).contiguous(),
+        DL_const.to(bf16).contiguous(),
+        Ebar.to(bf16).contiguous(),
+        E.to(bf16).contiguous(),
+        SL1_const.to(bf16).contiguous(),
+        SL2_const.to(bf16).contiguous(),
+        sp_child1,
+        sp_child2,
+        leaf_wt.to(bf16).contiguous(),
+        neumann_terms=3,
+        sp_parent=sp_parent,
+    )
+
+    for tri in tris:
+        assert tri.dtype == torch.bfloat16
+        assert torch.isfinite(tri.float()).all()
+    for ref, tri in zip(refs, tris):
+        torch.testing.assert_close(tri.float(), ref.float(), rtol=6e-2, atol=6e-3)
+
+
 class TestWaveBackwardKernelLargeS:
     """Test at S=1999 (test_trees_1000) — the production scale."""
 

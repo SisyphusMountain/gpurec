@@ -153,6 +153,7 @@ rounding would be too coarse.
 | Adam first/second moments | fp32 | Moment accumulation is sensitive to repeated small updates. |
 | gradient consumed by optimizer | cast to fp32 | The update rule should see smooth gradients even if backward produced bf16 tensors internally. |
 | uniform ancestor sum in `E_step` | fp32 accumulation for CUDA bf16 input | `row_sum - ancestor_sum` has cancellation risk before `safe_log2`. |
+| self-loop `pibar_corr` scratch in backward | fp32 buffer for CUDA bf16 input | This buffer receives many global `atomic_add` updates during the ancestor correction. bf16 atomics were measured as the bf16 backward performance cliff. |
 | selected reductions/logsumexp-style accumulations | fp32 where kernels require it | Reductions over many species/clades amplify bf16 rounding. |
 | final fp32 polish objective | fp32 original static state | The final answer should be comparable to the existing fp32 baseline. |
 | stored forward dynamic state | bf16 target | This is where memory pressure should fall if kernels avoid cast-back copies. |
@@ -327,14 +328,50 @@ python profiling/bench_global_parameter_optimization.py \
   --fp32-polish-steps 12
 ```
 
+## bf16 Backward Atomic Fix
+
+The original resident-bf16 timing was misleadingly bad because the fused
+self-loop backward kernel used bf16 for the `pibar_corr` scratch buffer. That
+scratch receives one `atomic_add` per visited ancestor in each Neumann
+iteration. On the measured CC 8.9 GPU, the resulting bf16 global atomics made
+large self-loop launches about `6x` slower than fp32.
+
+The fix keeps only this internal scratch buffer in fp32 when the model dtype is
+bf16. Saved forward tensors, RHS tensors, and returned wave adjoints remain
+bf16. Detailed profiling is in `docs/bf16-backward-profile.md`.
+
+Warmed first-100-family direct model timing after the fix:
+
+| dtype | forward avg | backward avg | peak allocation |
+|---|---:|---:|---:|
+| fp32 | `0.229 s` | `0.633 s` | `18.18 GB` |
+| bf16 | `0.187 s` | `0.672 s` | `9.30 GB` |
+
+Nsight Systems confirms that `_wave_backward_uniform_kernel` changed from
+`2913 ms` over 43 launches before the fix to `495 ms` after the fix, matching
+the fp32 bucket at `481 ms`.
+
+The end-to-end parameter-optimization CLI still has to account for first-use
+Triton compilation. In a fresh process on the same first-100-family workload,
+the fixed-one bf16 bootstrap measured:
+
+| strategy | optimizer time | final NLL |
+|---|---:|---:|
+| fp32 baseline | `13.34 s` | `175341.65625` |
+| bf16 fixed-one + fp32 polish | `14.13 s` | `175341.84375` |
+
+So the kernel is fixed, but a one-evaluation bf16 bootstrap is not automatically
+an end-to-end cold-start speedup unless the bf16 kernels are already compiled or
+more bf16 work is useful before the fp32 handoff.
+
 ## Remaining Caveats
 
-- The bf16 backward phase is slower per evaluation than fp32. On the larger
-  slice, one bf16 eval spent `3.64 s` in backward, while fp32 LBFGS evals
-  averaged about `1.07 s` of backward time. This is why more bf16 evaluations
-  are quickly dominated.
-- The current win comes from changing the starting point for fp32 L-BFGS, not
-  from faster bf16 kernels.
-- If future kernels remove the fp32 sparse fallbacks and reduce bf16 backward
-  time, the rate-step thresholds should be revisited. Until then, positive
-  "small" thresholds are not the right default.
+- The warmed bf16 backward kernel is now near fp32 speed, but the bf16 gradient
+  is still low-precision and should be used as a bootstrap signal, not as the
+  final optimizer precision.
+- The first bf16 evaluation in a fresh process can still pay Triton JIT compile
+  time. Benchmark cold-start optimization separately from warmed-kernel
+  throughput.
+- Since one bf16 bootstrap evaluation is no longer dominated by the old atomic
+  slowdown, the threshold schedule should be revisited if we want bf16 to do
+  more than one initial update.
