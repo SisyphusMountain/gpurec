@@ -30,7 +30,7 @@ landed:
 
 | Item | Current status | Decision |
 |---|---|---|
-| Proposal 0, 2D Triton self-loop | opt-in prototype landed in `256bff7`; parity passes; 10/50/100-family timing is promising but memory-heavy | keep opt-in; collect Nsys/NCU before any promotion discussion |
+| Proposal 0, 2D Triton self-loop | opt-in prototype landed in `256bff7`; parity passes; 10/50/100-family timing is promising but memory-heavy; Nsys/NCU confirm the self-loop bucket shrinks sharply | keep opt-in; promotion blocked by memory footprint and register pressure, not by lack of profiling |
 | Proposal 1, staged Triton tree DP | opt-in staged prototype landed in `a018169`; parity passes; current `W=4,S=256` timing regresses | reject current configuration for promotion; keep as correctness scaffold |
 | Proposal 2, species-major/transposed scratch | no production implementation | lower priority; current species ids already have contiguous subtrees |
 | Proposal 3, hybrid wave router | no threshold router implementation | needed if Proposal 1 or 5 is promoted |
@@ -1005,16 +1005,139 @@ Interpretation:
   without the one-row-per-block occupancy cap, or to extend tree batching to
   split waves.
 
+## Final Profiling Harness Pass
+
+Jason's reusable harness ran the final cross-variant timing and Nsight pass on
+current HEAD `7797fa9`:
+
+```bash
+python profiling/ancestor_batching/run_profiles.py \
+  --phases timing \
+  --variants available \
+  --fams 10,50,100 \
+  --warmups 5 \
+  --reps 9 \
+  --run-id 20260505_ancestor_batching_current_timing_final
+
+python profiling/ancestor_batching/run_profiles.py \
+  --phases nsys,ncu \
+  --variants available \
+  --nsys-fams 50 \
+  --ncu-fams 50 \
+  --nsys-warmups 2 \
+  --ncu-warmups 2 \
+  --run-id 20260505_ancestor_batching_current_nsys_ncu50
+```
+
+Exact commands are recorded in:
+
+- `profiling/ancestor_batching/artifacts/20260505_ancestor_batching_current_timing_final/commands.sh`
+- `profiling/ancestor_batching/artifacts/20260505_ancestor_batching_current_nsys_ncu50/commands.sh`
+- `profiling/ancestor_batching/artifacts/20260505_ancestor_batching_current_ncu_exact/commands.sh`
+
+Artifacts are intentionally ignored by git; the reusable scripts and this
+summary are committed instead.
+
+### Timing Grid
+
+CUDA-event medians after 5 warmups and 9 reps:
+
+| Variant | 10 families | 50 families | 100 families |
+|---|---:|---:|---:|
+| baseline | `88.759 ms` | `327.119 ms` | `627.119 ms` |
+| Proposal 0 `BLOCK_W=1` | `50.129 ms` (`1.77x`) | `171.197 ms` (`1.91x`) | `319.123 ms` (`1.97x`) |
+| Proposal 0 `BLOCK_W=2` | `51.321 ms` (`1.73x`) | `172.123 ms` (`1.90x`) | `323.025 ms` (`1.94x`) |
+| Proposal 1 staged tree | `116.310 ms` (`0.76x`) | `455.811 ms` (`0.72x`) | OOM |
+| Proposal 5 CUDA no-split `self` | `64.940 ms` (`1.37x`) | `217.025 ms` (`1.51x`) | `408.205 ms` (`1.54x`) |
+| Proposal 5 CUDA no-split `tree` | `66.727 ms` (`1.33x`) | `224.516 ms` (`1.46x`) | `421.959 ms` (`1.49x`) |
+
+The timing grid changes the earlier interpretation of Proposal 0: the 2D Triton
+prototype is the fastest measured path in fp32 on this workload. The blocker is
+not speed; it is memory and implementation maturity. At 50 families it uses
+about `14.2 GB`, and at 100 families about `21.3 GB`, leaving too little room
+for larger batches, bf16/fp32 dual state, or optimizer-side memory variation.
+
+Proposal 1 is rejected as implemented. It is slower at every measured family
+count and OOMs at 100 families.
+
+Proposal 5 `tree` remains the strongest conservative candidate because it gives
+a clean `1.46-1.49x` improvement with much lower memory risk. Proposal 5
+`self` is faster, but it is only a semantic lower-bound/control and must not be
+promoted as an exact replacement.
+
+Parity stayed finite in the timing harness. Max theta-gradient deltas versus
+baseline were about:
+
+| Variant family | Max abs grad delta | Max relative-to-baseline-inf |
+|---|---:|---:|
+| Proposal 0 / Proposal 1 | up to `1.17` at 50 families | `1.82e-4` |
+| Proposal 5 | up to `0.039` | `3.04e-6` |
+
+Both are inside the `2e-3` relative parity gate. The larger Proposal 0/1 delta
+is consistent with routing through external per-element parameter VJPs and a
+different fp32 accumulation order.
+
+### Nsys Summary
+
+Fifty-family Nsys kernel buckets:
+
+| Variant | Main self-loop bucket |
+|---|---|
+| baseline | `_wave_backward_uniform_kernel`: 36 launches, `261.975 ms` total, `49.953 ms` max |
+| Proposal 0 `BLOCK_W=1` | `_wave_backward_uniform_2d_jt_kernel`: 108 launches, `46.145 ms` total |
+| Proposal 0 `BLOCK_W=2` | `_wave_backward_uniform_2d_jt_kernel`: 108 launches, `44.225 ms` total; precompute `18.495 ms` |
+| Proposal 1 staged tree | `_wave_backward_uniform_param_store_kernel`: `191.721 ms`; tree reduce `50.394 ms` |
+| Proposal 5 CUDA `self` | remaining Triton wave bucket `140.878 ms` plus `gpurec_wave_backward_nosplit_uniform_fp32` `8.645 ms` |
+| Proposal 5 CUDA `tree` | remaining Triton wave bucket `140.566 ms` plus `gpurec_wave_backward_nosplit_uniform_fp32` `16.435 ms` |
+
+This explains the timing table:
+
+- Proposal 0 attacks the entire self-loop bucket, including split waves, with a
+  new 2D `J^T` formulation.
+- Proposal 5 only replaces no-split waves, so the remaining split-wave Triton
+  bucket is still about `140 ms`.
+- Proposal 1 removes the original wave bucket but replaces it with too many
+  expensive staged kernels; the parameter-store stage alone is larger than the
+  useful Proposal 0 `J^T` subtotal.
+
+### NCU Exact Counters
+
+Focused NCU counters, selected with exact `--kernel-id` filters:
+
+| Kernel | NCU duration | SM throughput | Memory throughput | DRAM throughput | Achieved warps | Regs/thread | Dynamic shared memory |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| baseline `_wave_backward_uniform_kernel` | `58.092 ms` | `18.28%` | `74.19%` | `21.29%` | `99.06%` | `40` | `2048 B` |
+| Proposal 0 `BLOCK_W=1` `_2d_jt` | `3.091 ms` | `27.10%` | `85.48%` | `85.48%` | `32.92%` | `114` | `4096 B` |
+| Proposal 0 `BLOCK_W=2` `_2d_precompute` | `3.634 ms` | `26.43%` | `59.66%` | `59.66%` | `16.45%` | `255` | `16384 B` |
+| Proposal 1 `_param_store` | `37.311 ms` | `4.06%` | `71.62%` | `71.62%` | `86.75%` | `40` | `8192 B` |
+| Proposal 5 CUDA `self` `nosplit` | `3.813 ms` | `34.51%` | `39.23%` | `27.56%` | `16.58%` | `40` | `55972 B` |
+| Proposal 5 CUDA `tree` `nosplit` | `7.261 ms` | `22.94%` | `22.94%` | `14.48%` | `16.62%` | `40` | `55972 B` |
+
+Important interpretation:
+
+- Proposal 0 is fast because it converts the self-loop work into fewer, much
+  more bandwidth-efficient kernels. The `J^T` kernel is now near DRAM-bandwidth
+  limited rather than L2/topology limited.
+- Proposal 0 is also fragile: `BLOCK_W=2` precompute reaches `255`
+  registers/thread and very low achieved active warps. This is why larger row
+  blocks should not be assumed safe, even if the timing grid is good.
+- Proposal 5 CUDA has low occupancy because shared memory limits it to one CTA
+  per SM, but it removes so much global scratch traffic that it still wins over
+  the exact Triton baseline.
+- Proposal 1's worst visible stage is memory-bandwidth heavy but does little
+  useful work per byte; it is a launch/scratch decomposition failure, not a
+  tree-DP mathematical failure.
+
 ## Proposal Decisions
 
 | Proposal | Decision | Rationale |
 |---|---|---|
-| 0: 2D Triton self-loop | keep opt-in; promising but memory-heavy | The prototype passes parity and beats baseline/P5 on event timing at 50 families, but peak allocation rises to `14.217 GB` at 50 and `21.329 GB` at 100. Needs Nsys/NCU before promotion. |
+| 0: 2D Triton self-loop | keep opt-in; fastest measured but memory-heavy | The prototype passes parity and gives `1.9x` 50-family and `1.94-1.97x` 100-family speedups. Nsys shows the self-loop bucket collapsing, but peak allocation rises to `14.2 GB` at 50 and `21.3 GB` at 100, and NCU shows very high register pressure (`255` regs/thread for the `BLOCK_W=2` precompute). |
 | 1: staged Triton tree DP | reject current configuration | The `W=4,S=256` staged prototype passes parity, but regresses to `457.069 ms` median backward at 50 families and OOMs before valid 100-family timing. |
 | 2: species-major/transposed scratch | defer | No production implementation. Current species ids already provide contiguous subtree intervals; transposition may cost more than it saves. |
 | 3: hybrid router | required if promoting | No threshold router exists. Current evidence supports routing large no-split fp32 waves to exact CUDA `tree`; small/split/bf16 cases need separate thresholds. |
 | 4: forward path prefix | reject for fp32 production for now | No production implementation. Older fp32 Pibar-only prefix prototypes were slower and forward is not the current bottleneck after the bf16 fix. |
-| 5: CUDA no-split row kernel | keep opt-in; exact `tree` is promising | `tree` mode cuts the 50-family median by about `25%`, explains the Nsys self-loop bucket reduction, and completes 100 families where the current default OOMed locally. Needs full-test and default-mode cleanup before promotion. |
+| 5: CUDA no-split row kernel | keep opt-in; exact `tree` is conservative and promising | `tree` mode gives `1.46x` at 50 families and `1.49x` at 100 families with lower memory risk than Proposal 0. Nsys confirms it replaces only no-split waves, leaving split-wave Triton work as the next target. Needs full-test and default-mode cleanup before promotion. |
 
 ## Open Follow-Ups
 
@@ -1026,12 +1149,11 @@ Interpretation:
    `tests/gradients/test_autograd_bridge.py`, and
    `tests/gradients/test_uniform_backward_ancestor_batching.py` suites with
    `GPUREC_CUDA_SELF_LOOP_NOSPLIT=1 GPUREC_CUDA_SELF_LOOP_NOSPLIT_CORRECTION=tree`.
-3. Profiling worker: collect alternating 50-family paired runs for default vs
-   CUDA `tree`, and rerun the 100-family default on a clean-memory GPU to
-   distinguish true OOM from local memory pressure.
-4. Profiling worker: collect Nsys/NCU for Proposal 0 `BLOCK_W=2` on the
-   50-family workload. Focus on registers, spills, DRAM/L2 traffic, launch
-   count, and why peak allocation rises by about `4.4 GB`.
+3. Profiling worker: rerun alternating 50-family paired runs for Proposal 0,
+   Proposal 5 `tree`, and default after a fresh process restart to separate
+   benchmark noise from real allocator effects.
+4. Implementation worker: reduce Proposal 0 scratch footprint. The speedup is
+   real, but the `14.2 GB`/`21.3 GB` peak allocation is too high for promotion.
 5. Implementation worker: do not promote the current Proposal 1 staged kernel.
    If staged work continues, reduce launch count and scratch footprint before
    rerunning broad timings.
