@@ -64,6 +64,16 @@ def _cast_model_dtype_(
     model.static.warm_E = None
 
 
+def _make_temporary_static_dtype(model: "GeneReconModel", dtype: torch.dtype):
+    """Return a cast static state without mutating the model's current static."""
+    from gpurec.api.autograd import _apply_to_static
+
+    return _apply_to_static(
+        model.static,
+        lambda tensor: tensor.to(dtype=dtype) if tensor.is_floating_point() else tensor,
+    )
+
+
 def _validate_global_uniform_model(model: "GeneReconModel") -> None:
     mode = getattr(model, "mode", None)
     if mode != "global":
@@ -425,8 +435,10 @@ def optimize_global_rates_lbfgs(
     pibar_mode="uniform")`` once, then this function only updates
     ``model.theta``. The default path is projected fp32 PyTorch L-BFGS with a
     strong-Wolfe line search. If ``bf16_start_steps`` is positive, the helper
-    first evaluates and updates the global parameters with bf16 resident model
-    tensors and fp32 Adam accumulators, then casts the model to fp32 for LBFGS.
+    first evaluates and updates the global parameters with a temporary bf16
+    static state, fp32 ``theta`` and fp32 Adam accumulators, then restores the
+    original static state for fp32 LBFGS. The fp32 static tensors are not
+    rounded in-place by the bf16 phase.
 
     Returns a dict with ``theta``, ``rates``, ``nll``,
     ``negative_log_likelihood``, ``log_likelihood``, ``history`` and
@@ -449,12 +461,18 @@ def optimize_global_rates_lbfgs(
             "or leave dtype at the default"
         )
 
+    original_static = None
     if bf16_start_steps > 0:
         if model.theta.device.type != "cuda":
             raise ValueError("bf16_start_steps requires a CUDA resident model")
         if not torch.cuda.is_bf16_supported(model.theta.device):
             raise ValueError("bf16_start_steps requires CUDA bf16 support")
-        _cast_model_dtype_(model, torch.bfloat16)
+        if model.theta.dtype != torch.float32:
+            with torch.no_grad():
+                model.theta.data = model.theta.data.to(dtype=torch.float32)
+        original_static = model.static
+        model._static = _make_temporary_static_dtype(model, torch.bfloat16)
+        model.static.warm_E = None
     elif dtype is not None and model.theta.dtype != dtype:
         _cast_model_dtype_(model, dtype)
 
@@ -482,6 +500,10 @@ def optimize_global_rates_lbfgs(
                 verbose=verbose,
             )
         )
+        if original_static is None:
+            raise RuntimeError("internal error: missing original static after bf16 start")
+        model._static = original_static
+        model.static.warm_E = None
         lbfgs_dtype = torch.float32 if dtype is None else dtype
         if model.theta.dtype != lbfgs_dtype:
             _cast_model_dtype_(model, lbfgs_dtype)
