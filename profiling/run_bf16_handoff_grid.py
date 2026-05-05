@@ -37,7 +37,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--rate-thresholds", type=_csv_floats, default=[1e-2, 5e-3, 1e-3])
     parser.add_argument("--nll-thresholds", type=_csv_floats, default=[1e-1, 1e-2, 1e-3])
     parser.add_argument("--criteria", choices=("any", "all"), default="any")
-    parser.add_argument("--bf16-fixed-steps", type=int, default=4)
+    parser.add_argument("--bf16-fixed-steps", type=int, default=1)
     parser.add_argument("--bf16-min-steps", type=int, default=2)
     parser.add_argument("--bf16-max-steps", type=int, default=8)
     parser.add_argument("--fp32-polish-steps", type=int, default=4)

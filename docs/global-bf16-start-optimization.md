@@ -6,8 +6,8 @@ Scope: document the new global/uniform DTL-rate optimization pass that uses a
 real bf16 initial phase for both forward and backward, then hands off to fp32
 when the parameter updates or objective improvements become small.
 
-Status: true resident-bf16 forward/backward is implemented and the strengthened
-integration test passes. Full threshold-sweep results are being collected.
+Status: true resident-bf16 forward/backward is implemented, the strengthened
+integration test passes, and the first threshold sweep is complete.
 
 ## Executive Summary
 
@@ -24,27 +24,29 @@ The new pass changes the intended contract:
   state;
 - fp32 remains reserved for scalar optimizer state and selected numerically
   sensitive reductions/accumulators;
-- handoff to fp32 is driven by convergence signals rather than a fixed warmup
-  length alone;
+- handoff to fp32 can be driven by convergence signals, but the measured robust
+  recommendation is a fixed one-evaluation bf16 bootstrap;
 - the original fp32 static state is restored before the fp32 L-BFGS polish.
 
-Provisional default recommendation: keep the production default at pure fp32
-until the threshold sweep is complete:
+Measured recommendation for the current global/uniform optimizer:
 
 ```python
 optimize_global_rates_lbfgs(
     model,
     min_rate=1e-10,
     steps=12,
-    max_eval=60,
     dtype=torch.float32,
-    bf16_start_steps=0,
+    bf16_start_steps=1,
+    bf16_switch_rate_rtol=None,
+    bf16_switch_nll_abs_tol=None,
 )
 ```
 
-The final default bf16-to-fp32 handoff threshold should not be promoted until it
-matches fp32 final NLL/rates within the accepted tolerance and improves total
-time or resident memory on the larger workload.
+This is not because "small" was found to be a reliable bf16 convergence signal.
+The useful setting was: do exactly one bf16 forward/backward/update, then hand
+off to fp32. NLL-improvement thresholds are unsafe in bf16 because the scalar
+NLL is quantized; rate-step thresholds in the tested `1e-2..1e-3` range did not
+fire early enough to reduce time.
 
 ## What Changed Technically
 
@@ -105,7 +107,7 @@ for step in range(max_bf16_steps):
     grad = backward_bf16_saved_tensors(loss, static_bf16)
     theta_bf16 = adam_update_fp32_moments(theta_bf16, grad).bfloat16()
 
-    rates = exp2(theta)
+    rates = exp2(theta_bf16.float())
     rel_step = None
     nll_gain = None
     if previous is not None:
@@ -125,9 +127,7 @@ The key behavioral difference is that bf16 is no longer just a forward-storage
 experiment. Backward is expected to accept bf16 saved tensors directly through
 the uniform CUDA path.
 
-### Expected code-level touch points
-
-The current worker-side implementation shape, inferred from the active diff, is:
+### Code-level touch points
 
 - `gpurec/api/autograd.py`: removed the bf16 backward cast-back block that
   converted saved tensors and static tensors to fp32 before implicit gradient
@@ -140,9 +140,6 @@ The current worker-side implementation shape, inferred from the active diff, is:
   `theta` tensor in bf16 during bf16 start, keeps only the three-parameter Adam
   moment vectors in fp32, swaps in a temporary bf16 static state, and restores
   the original static state before fp32 L-BFGS.
-
-This section should be revised after worker code lands if any API names or
-handoff knobs differ.
 
 ## What Remains Internally fp32
 
@@ -160,9 +157,10 @@ rounding would be too coarse.
 | final fp32 polish objective | fp32 original static state | The final answer should be comparable to the existing fp32 baseline. |
 | stored forward dynamic state | bf16 target | This is where memory pressure should fall if kernels avoid cast-back copies. |
 
-The document should call out any additional fp32 islands found by profiling.
-Those are acceptable when they are true accumulators, but not if they silently
-materialize whole saved bf16 forward tensors as fp32.
+The strengthened integration test monkeypatches the autograd bridge and checks
+that the bf16 phase passes bf16 saved forward tensors and bf16 backward inputs.
+The remaining fp32 islands above are internal accumulation/update choices, not a
+whole-state cast-back of saved Pi/Pibar/E tensors.
 
 ## Handoff Criteria
 
@@ -179,27 +177,30 @@ small_gain = nll_improvement <= nll_improvement_threshold
 handoff = min_bf16_steps_done and (small_step or small_gain)
 ```
 
-The worker sweep should fill in this table.
+Threshold sweep results:
 
 | Policy ID | `rate_step_threshold` | `nll_improvement_threshold` | Min bf16 evals | Max bf16 evals | Result |
 |---|---:|---:|---:|---:|---|
-| fixed-old | n/a | n/a | 4 | 4 | Prior fixed-step comparison retained below. |
-| rate-1e-2 | `1e-2` | disabled | TBD | TBD | Pending worker result. |
-| rate-5e-3 | `5e-3` | disabled | TBD | TBD | Pending worker result. |
-| rate-1e-3 | `1e-3` | disabled | TBD | TBD | Pending worker result. |
-| gain-1e-1 | disabled | `1e-1` bits | TBD | TBD | Pending worker result. |
-| gain-1e-2 | disabled | `1e-2` bits | TBD | TBD | Pending worker result. |
-| combined | TBD | TBD | TBD | TBD | Pending worker result. |
+| fixed-1 | disabled | disabled | 1 | 1 | Best measured speed/quality tradeoff. |
+| fixed-2 | disabled | disabled | 2 | 2 | Better large-slice NLL than fixed-1, but slower than fp32. |
+| fixed-4 | disabled | disabled | 4 | 4 | Slower than fp32. |
+| rate-1e-2 | `1e-2` | disabled | 2 | 8 | Did not fire before max on the large slice; slow. |
+| rate-5e-3 | `5e-3` | disabled | 2 | 8 | Did not fire before max on the large slice; slow. |
+| rate-1e-3 | `1e-3` | disabled | 2 | 8 | Did not fire before max on the large slice; slow. |
+| gain-1e-3 | disabled/rate combined | `1e-3` bits | 2 | 8 | Fired after 2 evals on the large slice, but final NLL was much worse. |
 
-Required result fields for each threshold:
+Interpretation:
 
-- number of bf16 evaluations before handoff;
-- fp32 polish evaluations;
-- final NLL and NLL delta versus fp32 baseline;
-- final rates `(D, L, T)` and max relative rate error versus fp32 baseline;
-- total optimizer time;
-- peak allocated and peak reserved GPU memory;
-- any non-finite, instability, or convergence anomaly.
+- bf16 NLL-improvement thresholds are not reliable because the bf16 scalar NLL
+  can stay unchanged even while the fp32 objective is still far from the fp32
+  solution. On the first 100 families of `test_trees_1000`, `abs(dNLL) <= 1e-3`
+  switched after two bf16 evals and finished at `175528.015625`, about
+  `+186.36` bits worse than fp32.
+- rate-step thresholds from `1e-2` down to `1e-3` were too conservative on the
+  larger workload: they never fired before the max of eight bf16 evals, making
+  the run much slower.
+- The measured useful setting is therefore not a positive "small" threshold; it
+  is a fixed one-evaluation bf16 bootstrap followed by fp32.
 
 ## Benchmark Matrix
 
@@ -249,18 +250,32 @@ This benchmark used `g_0000.nwk` through `g_0099.nwk`.
 Old-path read: slower, worse final NLL under the same evaluation budget, and
 higher peak allocation because fp32 state and cast-back tensors were both live.
 
-### Worker Results Intake
-
-Fill this table from the new pure-bf16 start benchmark results.
+### New Resident-bf16 Results
 
 | Workload | Strategy | Handoff threshold | bf16 evals | fp32 evals | Total evals | Final NLL | Rates `(D,L,T)` | Peak alloc | Peak reserved | Total time | Recommendation |
 |---|---|---|---:|---:|---:|---:|---|---:|---:|---:|---|
-| `test_trees_100` | fp32 baseline | n/a | 0 | TBD | TBD | TBD | TBD | TBD | TBD | TBD | reference |
-| `test_trees_100` | old bf16-start | fixed 4 | 4 | TBD | 14 | see prior table | see prior table | `817 MB` | TBD | `4.160 s` | reject |
-| `test_trees_100` | new pure-bf16 start | TBD | TBD | TBD | TBD | TBD | TBD | TBD | TBD | TBD | pending |
-| first 100 of `test_trees_1000` | fp32 baseline | n/a | 0 | TBD | 13 | `175341.65625` | `(1.88e-5, 1.85e-5, 3.241e-2)` | `18.19 GB` | `20.70 GB` | `12.070 s` | reference |
-| first 100 of `test_trees_1000` | old bf16-start | fixed 4 | 4 | TBD | 13 | `175490.60938` | `(2.12e-4, 2.04e-4, 3.240e-2)` | `23.54 GB` | `24.29 GB` | `16.072 s` | reject |
-| first 100 of `test_trees_1000` | new pure-bf16 start | TBD | TBD | TBD | TBD | TBD | TBD | TBD | TBD | TBD | pending |
+| `test_trees_100` | fp32 baseline | n/a | 0 | 12 | 12 | `14047.62890625` | `(1.912e-2, 1.993e-2, 2.083e-2)` | `779.59 MB` | `1044 MB` | `2.352 s` | reference |
+| `test_trees_100` | pure bf16 start | fixed 1 | 1 | 7 | 8 | `14047.62890625` | `(1.912e-2, 1.993e-2, 2.083e-2)` | `780.60 MB` | `1044 MB` | `1.923 s` | use if bf16 start is enabled |
+| `test_trees_100` | pure bf16 start | fixed 4 | 4 | 10 | 14 | `14047.62890625` | `(1.912e-2, 1.993e-2, 2.083e-2)` | `780.60 MB` | `1044 MB` | `4.806 s` | reject |
+| `test_trees_100` | pure bf16 start | best threshold tested | 7 | 6 | 13 | `14047.63281250` | `(1.912e-2, 1.993e-2, 2.083e-2)` | `780.60 MB` | `1044 MB` | `2.635 s` | reject |
+| first 100 of `test_trees_1000` | fp32 baseline | n/a | 0 | 13 | 13 | `175341.65625` | `(1.884e-5, 1.848e-5, 3.241e-2)` | `17349.46 MB` | `19740 MB` | `17.749 s` | reference |
+| first 100 of `test_trees_1000` | pure bf16 start | fixed 1 | 1 | 13 | 14 | `175341.859375` | `(1.927e-5, 1.873e-5, 3.239e-2)` | `17349.21 MB` | `19638 MB` | `15.790 s` | best measured time/quality |
+| first 100 of `test_trees_1000` | pure bf16 start | fixed 2 | 2 | 13 | 15 | `175339.53125` | `(1.597e-5, 1.512e-5, 3.241e-2)` | `17349.21 MB` | `19638 MB` | `19.175 s` | slower, better NLL |
+| first 100 of `test_trees_1000` | pure bf16 start | fixed 4 | 4 | 10 | 14 | `175558.421875` | `(2.939e-4, 2.851e-4, 3.262e-2)` | `17349.21 MB` | `19638 MB` | `36.115 s` | reject |
+| first 100 of `test_trees_1000` | pure bf16 start | NLL threshold, 2 evals | 2 | 9 | 11 | `175528.015625` | `(2.563e-4, 2.501e-4, 3.248e-2)` | `17349.21 MB` | `19638 MB` | `15.68 s` | reject: bad NLL |
+| first 100 of `test_trees_1000` | pure bf16 start | rate-only max 8 | 8 | 13 | 21 | `175338.40625` | `(1.375e-5, 1.394e-5, 3.240e-2)` | `17349.21 MB` | `19638 MB` | `39.08 s` | reject: too slow |
+
+The larger slice shows a modest speed win for fixed-one bf16 start:
+
+```text
+17.749 s fp32 baseline -> 15.790 s fixed-one bf16 start
+speedup = 1.12x
+NLL delta = +0.203125 bits
+```
+
+Memory did not improve materially. Peak allocated memory changed from
+`17349.46 MB` to `17349.21 MB` on the larger slice, so the current benefit is
+optimizer trajectory, not resident memory reduction.
 
 ## Recommendation Rule
 
@@ -275,30 +290,51 @@ Use the following promotion rule when worker results arrive:
 4. If several thresholds tie on quality and time, choose the more conservative
    earlier handoff to reduce bf16 numerical exposure.
 
-Pending data, the clear default recommendation is:
+The measured recommendation is:
 
 ```text
-default bf16 handoff threshold: disabled / no bf16 start
+bf16 start evaluations: 1
+rate-step threshold: disabled
+NLL-improvement threshold: disabled
+fp32 polish: 12 LBFGS steps / max_eval as before
 ```
 
-If the worker sweep shows parity and a material speed or memory win, update this
-line to the chosen threshold, for example:
+Equivalent helper call:
 
-```text
-default bf16 handoff threshold: rel_rate_step <= <value>
-minimum bf16 evaluations: <value>
-maximum bf16 evaluations: <value>
-fallback: force fp32 after <value> bf16 evaluations
+```python
+optimize_global_rates_lbfgs(
+    model,
+    min_rate=1e-10,
+    steps=12,
+    max_eval=60,
+    dtype=torch.float32,
+    bf16_start_steps=1,
+    bf16_switch_rate_rtol=None,
+    bf16_switch_nll_abs_tol=None,
+)
 ```
 
-## Open Items For Workers
+For the benchmark CLI this is:
 
-- Confirm that no whole saved forward tensors are cast to fp32 in the bf16
-  backward path.
-- Report any kernels that still allocate large fp32 temporaries during bf16
-  backward.
-- Fill the threshold sweep table.
-- Fill the benchmark matrix for `test_trees_100` and the first 100 families of
-  `test_trees_1000`.
-- Provide the final default threshold recommendation with the exact command and
-  environment used to produce it.
+```bash
+python profiling/bench_global_parameter_optimization.py \
+  --strategies bf16-start-fp32-polish \
+  --bf16-start-steps 1 \
+  --bf16-threshold-min-steps 1 \
+  --bf16-threshold-max-steps 1 \
+  --bf16-switch-rate-rtol 0 \
+  --bf16-switch-nll-abs-tol 0 \
+  --fp32-polish-steps 12
+```
+
+## Remaining Caveats
+
+- The bf16 backward phase is slower per evaluation than fp32. On the larger
+  slice, one bf16 eval spent `3.64 s` in backward, while fp32 LBFGS evals
+  averaged about `1.07 s` of backward time. This is why more bf16 evaluations
+  are quickly dominated.
+- The current win comes from changing the starting point for fp32 L-BFGS, not
+  from faster bf16 kernels.
+- If future kernels remove the fp32 sparse fallbacks and reduce bf16 backward
+  time, the rate-step thresholds should be revisited. Until then, positive
+  "small" thresholds are not the right default.

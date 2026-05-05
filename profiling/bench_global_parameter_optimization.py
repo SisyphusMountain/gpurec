@@ -122,13 +122,13 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--maxiter", type=int, default=24)
     parser.add_argument("--maxfun", type=int, default=60)
     parser.add_argument("--torch-lbfgs-max-iter", type=int, default=12)
-    parser.add_argument("--bf16-start-steps", type=int, default=4)
+    parser.add_argument("--bf16-start-steps", type=int, default=1)
     parser.add_argument("--bf16-start-lr", type=float, default=0.05)
-    parser.add_argument("--fp32-polish-steps", type=int, default=8)
-    parser.add_argument("--bf16-threshold-min-steps", type=int, default=2)
-    parser.add_argument("--bf16-threshold-max-steps", type=int, default=12)
-    parser.add_argument("--bf16-switch-rate-rtol", type=float, default=5e-3)
-    parser.add_argument("--bf16-switch-nll-abs-tol", type=float, default=1e-2)
+    parser.add_argument("--fp32-polish-steps", type=int, default=12)
+    parser.add_argument("--bf16-threshold-min-steps", type=int, default=1)
+    parser.add_argument("--bf16-threshold-max-steps", type=int, default=1)
+    parser.add_argument("--bf16-switch-rate-rtol", type=float, default=0.0)
+    parser.add_argument("--bf16-switch-nll-abs-tol", type=float, default=0.0)
     parser.add_argument(
         "--bf16-switch-criteria",
         choices=("any", "all"),
