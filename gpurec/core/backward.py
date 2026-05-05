@@ -1488,7 +1488,14 @@ def Pi_wave_backward(
     device_pruning_wave_active_flags = []
 
     accumulated_rhs = torch.zeros(C, S, device=device, dtype=dtype)
-    for r in root_clade_ids_perm:
+    if torch.is_tensor(root_clade_ids_perm):
+        root_ids_iter = root_clade_ids_perm.detach()
+        if root_ids_iter.device.type != "cpu":
+            root_ids_iter = root_ids_iter.cpu()
+        root_ids_iter = root_ids_iter.tolist()
+    else:
+        root_ids_iter = root_clade_ids_perm
+    for r in root_ids_iter:
         r = int(r)
         root_Pi = Pi_star_wave[r]
         lse = logsumexp2(root_Pi, dim=0)
