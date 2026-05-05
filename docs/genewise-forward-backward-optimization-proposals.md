@@ -2206,6 +2206,224 @@ If family locality is already preserved by the existing collate order, this
 proposal becomes a documentation/guardrail item.  If not, it may be a real
 forward and backward win.
 
+### Proposal 6 follow-up: current scheduler already preserves family locality
+
+Proposal 6 was tested and accepted as a scheduler guardrail item.  No
+scheduler change is needed for the current genewise uniform path: the existing
+scheduler already emits family-major row blocks at each wave depth, and the
+`max_wave_size` split step slices those blocks contiguously rather than
+interleaving families.
+
+#### What was inspected
+
+The production genewise builders all follow the same ordering pattern:
+
+- `gpurec/api/model.py::_build_static_state`;
+- `gpurec/core/model.py::GeneDataset.compute_likelihood_batch`;
+- `gpurec/optimization/wave_optimizer.py` lazy family batches;
+- `gpurec/optimization/genewise_optimizer.py` chunked optimization layouts.
+
+They build per-family waves, merge them with `collate_wave(...)`, optionally
+split oversized waves with `split_phase_waves(...)`, and then call
+`build_wave_layout(...)`.
+
+The actual current ordering is:
+
+```text
+for depth k in cross-family wave depths:
+    wave = []
+
+    for family in resident family order:
+        if family has wave depth k:
+            for local_clade in family_waves[family][k]:
+                wave.append(local_clade + family_clade_offset[family])
+
+    for start in range(0, len(wave), max_wave_size):
+        emit wave[start : start + max_wave_size]
+
+build_wave_layout emitted waves:
+    inv_perm = concatenated emitted clades
+    family_idx[new_row] = family owning inv_perm[new_row]
+```
+
+This is exactly the locality-preserving order proposed above: within each
+emitted wave, rows for a family form one contiguous run; families appear in
+resident family order; and splitting can cut a family run at a wave boundary
+but does not interleave another family into the middle of that run.
+
+No scheduler code was changed.  The tested implementation is the existing
+`collate_wave` plus `split_phase_waves` behavior.
+
+Worker code/test changes were limited to instrumentation and guardrails:
+
+- `profiling/proposal2/bench_genewise_backward.py` now computes
+  `_wave_family_locality(model)` from `wave_metas` and `family_idx`, then
+  prints `family_locality_summary` plus per-chunk `family_runs`,
+  `family_touches`, `extra_family_runs`, `interleaved_waves`,
+  `locality_preserved`, `run_per_row`, and `runs_per_family_touch` fields.
+- `tests/unit/test_genewise_wave.py` now has helpers for collated wave
+  construction, topological validation, family-run validation, and split-wave
+  parity.
+- The added tests assert that `split_phase_waves` preserves topological order,
+  keeps each family's rows in a single ordered block per emitted wave, and
+  leaves genewise uniform likelihood/gradient unchanged after forced wave
+  splitting.
+
+#### Locality metrics
+
+Locality was measured on `tests/data/test_trees_1000`, `S=1999`,
+`max_wave_size=32768`, using the same 50-family and 100-family resident chunk
+sizes used by the Proposal 5 backward benchmark.
+
+| Resident families | `C` | Waves before split | Waves after split | Mixed waves | Total family runs | Max runs/wave | Family reappears inside a wave | Same-family adjacent rows | Family-boundary cuts |
+|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 50 | `321930` | `47` | `49` | `48` | `2165` | `50` | `0` | `99.342614%` | `2` |
+| 100 | `635372` | `47` | `56` | `56` | `4333` | `100` | `0` | `99.326792%` | `9` |
+
+Run length distribution:
+
+| Resident families | Min run | Median run | P90 run | Max run |
+|---:|---:|---:|---:|---:|
+| 50 | `1` | `46` | `376` | `1994` |
+| 100 | `1` | `46` | `372` | `2290` |
+
+The short runs are mostly roots and small late-depth waves.  The hot large
+waves still have long contiguous family blocks.  The `0` reappearance count is
+the important guardrail: no emitted wave has a pattern like
+`family 0, family 1, family 0`.
+
+As a negative-control comparison, a synthetic round-robin scheduler was built
+in memory for the same per-depth rows.  It preserved dependency correctness
+but deliberately destroyed family locality:
+
+| Resident families | Ordering | Same-family adjacent rows | Total family runs | Max runs/wave | Locality violations |
+|---:|---|---:|---:|---:|---:|
+| 50 | current family-major | `99.343%` | `2165` | `50` | `0` |
+| 50 | synthetic round-robin | `0.115%` | `321561` | `32768` | `48` |
+| 100 | current family-major | `99.327%` | `4333` | `100` | `0` |
+| 100 | synthetic round-robin | `0.050%` | `635053` | `32768` | `55` |
+
+This shows the metric has enough sensitivity to catch the bad ordering
+Proposal 6 was concerned about.
+
+#### Correctness checks
+
+Focused checks:
+
+```bash
+pytest -q \
+  tests/unit/test_genewise_wave.py::test_genewise_wave_order_is_topological_and_family_blocked_after_splitting \
+  tests/unit/test_genewise_wave.py::test_genewise_uniform_split_wave_layout_preserves_likelihood_and_gradient \
+  tests/unit/test_genewise_wave.py::test_genewise_uniform_family_indexed_constants_match_row_expanded \
+  tests/unit/test_genewise_wave.py::test_genewise_uniform_family_indexed_dts_params_match_row_expanded \
+  tests/gradients/test_genewise_fused_backward.py::test_genewise_uniform_backward_invariant_under_family_chunk_size
+```
+
+Result:
+
+```text
+7 passed in 2.81s
+```
+
+The synthetic round-robin negative-control forward also produced identical
+root-row NLLs to the current family-major layout for the 50-family and
+100-family chunks:
+
+```text
+50 families:  max abs NLL diff 0
+100 families: max abs NLL diff 0
+```
+
+That confirms the ordering choice is a performance/locality concern, not a
+semantic dependency.
+
+#### Benchmark and profiling comparison
+
+A controlled forward-only comparison was run on a 50-family chunk after both
+layouts were compiled and warmed.  The benchmark alternated the current
+family-major layout with the synthetic round-robin layout for 12 samples each,
+using fixed 6 Pi iterations, root-row output, uniform Pibar, and
+`max_wave_size=32768`.
+
+| 50-family forward layout | Median | Mean | Min | Max |
+|---|---:|---:|---:|---:|
+| current family-major | `132.483 ms` | `130.991 ms` | `119.523 ms` | `133.070 ms` |
+| synthetic round-robin | `132.777 ms` | `130.480 ms` | `116.671 ms` | `135.028 ms` |
+
+Peak allocation was unchanged in the earlier 50-family spot pass
+(`5.666 GB` for both layouts), because the same clade rows and tensors are
+resident.  A 100-family spot pass also preserved correctness and allocation,
+but its timing was not used for the decision because the alternating 50-family
+run already showed no stable forward benefit from changing row locality.
+
+The interpretation is narrow: family locality is already good, and making it
+bad did not create a stable forward timing loss in this quick comparison.  That
+means family constant vector locality is not the dominant current forward
+limit for this shape, or it is hidden under the larger wave-step traffic.  It
+does not justify changing the scheduler.
+
+The backward locality/profile worker then ran the promoted optimized genewise
+path with strict kernel guards enabled:
+
+```text
+GPUREC_REQUIRE_OPTIMIZED_GENEWISE_BACKWARD=1
+strict_optimized_kernels=1
+forward_family_consts=1
+forward_family_dts_params=1
+fused_genewise_backward=1
+fused_genewise_self_loop=1
+fused_uniform_backward=1
+fused_dts_backward_accum=1
+fused_cross_pibar_vjp=1
+```
+
+Resident warmed backward timing:
+
+| Resident families | `max_wave_size` | Backward median | Peak alloc | Locality result |
+|---:|---:|---:|---:|---|
+| 50 | `32768` | `341.446 ms` | `10.550 GB` | `extra_family_runs=0`, `runs_per_family_touch=1.0` |
+| 100 | `32768` | `637.644 ms` | `18.191 GB` | `extra_family_runs=0`, `runs_per_family_touch=1.0` |
+| 50 | `4096` | `352.922 ms` | `9.022 GB` | `extra_family_runs=0`, `runs_per_family_touch=1.0` |
+| 100 | `4096` | `673.838 ms` | `17.822 GB` | `extra_family_runs=0`, `runs_per_family_touch=1.0` |
+
+The smaller `4096` split size preserved locality, but added waves and slowed
+the backward pass by `3.4%` for 50 families and `5.7%` for 100 families.  That
+is consistent with launch/scheduling overhead and less work per launch; it is
+not evidence that extra splitting helps family-cache locality.
+
+Full 1000-family cold chunked passes were used for coverage rather than final
+timing:
+
+| Family chunk size | Chunks | Total backward | Peak backward alloc | Locality result |
+|---:|---:|---:|---:|---|
+| 100 | 10 | `10298.976 ms` | `18.844 GB` | every chunk `extra_family_runs=0` |
+| 50 | 20 | `16132.647 ms` | `10.789 GB` | every chunk `extra_family_runs=0` |
+
+Representative Proposal 6 NCU captures:
+
+| Kernel | Shape | L2 hit | DRAM bytes | Global load sectors/request | Achieved active warps | Issue active |
+|---|---:|---:|---:|---:|---:|---:|
+| `_wave_step_uniform_kernel` | 50 fams, `grid=(32768,1,1)` | `92.13%` | `494.6 MB` | `6.21` | `98.09%` | `76.53%` |
+| `_wave_backward_uniform_kernel` | 50 fams, skipped to large launch, `grid=(609,1,1)` | `97.27%` | `5.57 MB` | `6.74` | `12.28%` | `6.17%` |
+
+The forward wave-step launch is already highly occupied and mostly limited by
+the large wave-step traffic.  The sampled backward launch has very high cache
+hit rate but poor warp and issue utilization because the launch is small
+(`609` programs).  Neither profile suggests that changing family row order is
+the next bottleneck; future work should focus on the wave-step and self-loop
+kernels themselves, chunk sizing, and launch parameter autotuning.
+
+#### Decision
+
+Decision: accept Proposal 6 as already satisfied by the current scheduler.
+
+Keep the family-major wave order as an invariant for genewise chunks.  If a
+future load-balancing scheduler is introduced, it should report the locality
+metrics above and reject wave layouts where a family appears in multiple runs
+inside the same emitted wave.  It is acceptable for `max_wave_size` to cut a
+single family block across adjacent emitted waves; it should not interleave
+another family into that block.
+
 ## Proposal 7: Genewise-Specific Profiling Harnesses
 
 The previous confusion between optimized and old paths shows that genewise
@@ -2285,7 +2503,7 @@ Tolerance policy:
 | 4 | Fused genewise DTS backward accumulation | Accepted; removes generic `DTS_5` and split scatter work | 100-family DTS bucket: `122.079 ms`, no guarded fallback |
 | 5 | Family-aware uniform Pibar VJP | Accepted; reuses exact ancestor-corrected compact UD tree VJP kernels | 100-family Pibar UD bucket: `62.838 ms`, no generic tree calls |
 | 6 | Saved-tensor and chunked autograd strategy | Accepted; streams full genewise training through resident chunks with strict optimized guards | 1000-family chunked backward: chunk 100 `6.724 s`, `18.840 GB`; chunk 50 `7.672 s`, `10.787 GB` |
-| 7 | Preserve family locality in wave scheduling | Helps after family-indexed kernel loads exist | L2 hit rate and DRAM bytes |
+| 7 | Preserve family locality in wave scheduling | Accepted as current scheduler invariant; no code change needed | 50/100-family waves have `0` family reappearances and about `99.3%` same-family adjacency |
 | 8 | Correctness matrix | Required for every production promotion | parity and gradcheck |
 
 ## Expected Performance Envelope
@@ -2332,6 +2550,12 @@ Backward:
   work, then fused DTS and compact Pibar.  Future work should optimize those
   remaining kernels or improve chunking, not chase the removed generic
   DTS/Pibar branches.
+- Proposal 6 does not change the performance envelope.  It confirms that the
+  promoted wave layout already preserves family locality: current 50-family
+  and 100-family chunks have no family reappearance inside a wave and about
+  `99.3%` same-family adjacent rows.  A synthetic round-robin negative control
+  destroyed locality but did not produce a stable 50-family forward timing
+  difference, so there is no scheduler change to promote.
 
 ## Cross-Mode Triton Autotuning Opportunity
 
@@ -2419,12 +2643,13 @@ robustness, not a new order-of-magnitude improvement.
 
 ## Immediate Next Experiment
 
-Proposal 0 through Proposal 5 have succeeded and are promoted for the supported
+Proposal 0 through Proposal 6 have succeeded and are promoted for the supported
 optimized genewise uniform path.
 
-The next experiment should be Proposal 6: inspect whether the existing
-cross-family wave order already preserves family locality well enough for the
-family-indexed forward and backward kernels.  Use the Proposal 5 chunked
-benchmark as the outer harness, then profile 50-family and 100-family chunks
-with NCU to measure L2 hit rate, DRAM bytes, and sector utilization for the
-family-indexed wave-step, DTS, self-loop, and compact Pibar kernels.
+The next experiment should be Proposal 7 plus the first small autotuning pass:
+standardize the genewise forward/backward profiling harness output, include
+the Proposal 6 locality counters as guardrails, and then sweep the shared
+wave-step and self-loop Triton launch parameters on 50-family and 100-family
+chunks.  Nsys/NCU should confirm whether any gain comes from the intended
+kernel buckets rather than from changing launch count or moving time into DTS
+or Pibar VJP.

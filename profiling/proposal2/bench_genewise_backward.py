@@ -321,6 +321,79 @@ def _family_runs(values: torch.Tensor) -> int:
     return int(1 + (values[1:] != values[:-1]).sum().item())
 
 
+def _wave_family_locality(model: GeneReconModel) -> tuple[list[dict[str, int | float]], dict[str, int | float]]:
+    wl = model.static.wave_layout
+    metas = wl["wave_metas"]
+    family_idx = wl.get("family_idx")
+    if family_idx is not None:
+        family_idx = family_idx.detach().cpu()
+
+    rows: list[dict[str, int | float]] = []
+    totals: dict[str, int | float] = {
+        "rows": 0,
+        "family_runs": 0,
+        "family_touches": 0,
+        "extra_family_runs": 0,
+        "interleaved_waves": 0,
+        "split_rows": 0,
+        "split_family_touches": 0,
+        "locality_preserved": 1,
+        "run_per_row": 0.0,
+        "runs_per_family_touch": 0.0,
+        "split_family_touch_per_split_row": 0.0,
+    }
+
+    for k, meta in enumerate(metas):
+        ws = int(meta["start"])
+        we = int(meta["end"])
+        w = int(meta["W"])
+        n_splits = int(meta["sl"].numel()) if meta.get("has_splits", False) else 0
+        fanout = (n_splits / w) if w else 0.0
+        fams = runs = split_fams = 0
+        if family_idx is not None:
+            fi = family_idx[ws:we]
+            fams = int(torch.unique(fi).numel())
+            runs = _family_runs(fi)
+            if n_splits:
+                parent_fi = family_idx[ws + meta["reduce_idx"].detach().cpu()]
+                split_fams = int(torch.unique(parent_fi).numel())
+
+        extra_runs = max(0, runs - fams)
+        rows.append({
+            "k": k,
+            "start": ws,
+            "W": w,
+            "split_rows": n_splits,
+            "fanout": fanout,
+            "families": fams,
+            "family_runs": runs,
+            "split_families": split_fams,
+            "extra_family_runs": extra_runs,
+        })
+
+        totals["rows"] = int(totals["rows"]) + w
+        totals["family_runs"] = int(totals["family_runs"]) + runs
+        totals["family_touches"] = int(totals["family_touches"]) + fams
+        totals["extra_family_runs"] = int(totals["extra_family_runs"]) + extra_runs
+        totals["interleaved_waves"] = int(totals["interleaved_waves"]) + int(extra_runs > 0)
+        totals["split_rows"] = int(totals["split_rows"]) + n_splits
+        totals["split_family_touches"] = int(totals["split_family_touches"]) + split_fams
+
+    total_rows = int(totals["rows"])
+    family_touches = int(totals["family_touches"])
+    split_rows = int(totals["split_rows"])
+    totals["run_per_row"] = (int(totals["family_runs"]) / total_rows) if total_rows else 0.0
+    totals["runs_per_family_touch"] = (
+        int(totals["family_runs"]) / family_touches
+    ) if family_touches else 0.0
+    totals["split_family_touch_per_split_row"] = (
+        int(totals["split_family_touches"]) / split_rows
+    ) if split_rows else 0.0
+    totals["locality_preserved"] = int(int(totals["extra_family_runs"]) == 0)
+
+    return rows, totals
+
+
 def _chunk_ranges(total: int, chunk_size: int) -> list[tuple[int, int]]:
     if chunk_size <= 0 or chunk_size >= total:
         return [(0, total)]
@@ -337,6 +410,7 @@ def _wave_shape_stats(model: GeneReconModel) -> dict[str, int]:
         int(m["sl"].numel()) if m.get("has_splits", False) else 0
         for m in metas
     )
+    _, locality = _wave_family_locality(model)
     return {
         "S": int(model.n_species),
         "G": int(model.n_families),
@@ -346,15 +420,17 @@ def _wave_shape_stats(model: GeneReconModel) -> dict[str, int]:
         "split_rows": split_rows,
         "leaves": int(wl["leaf_row_index"].numel()),
         "roots": int(model.static.root_clade_ids.numel()),
+        "family_runs": int(locality["family_runs"]),
+        "family_touches": int(locality["family_touches"]),
+        "extra_family_runs": int(locality["extra_family_runs"]),
+        "interleaved_waves": int(locality["interleaved_waves"]),
+        "locality_preserved": int(locality["locality_preserved"]),
     }
 
 
 def _print_wave_shape(model: GeneReconModel) -> None:
     wl = model.static.wave_layout
     metas = wl["wave_metas"]
-    family_idx = wl.get("family_idx")
-    if family_idx is not None:
-        family_idx = family_idx.detach().cpu()
 
     stats = _wave_shape_stats(model)
     print(
@@ -369,30 +445,51 @@ def _print_wave_shape(model: GeneReconModel) -> None:
         "roots", stats["roots"],
     )
 
-    rows = []
-    for k, meta in enumerate(metas):
-        ws = int(meta["start"])
-        we = int(meta["end"])
-        w = int(meta["W"])
-        n_splits = int(meta["sl"].numel()) if meta.get("has_splits", False) else 0
-        fanout = (n_splits / w) if w else 0.0
-        fams = runs = split_fams = 0
-        if family_idx is not None:
-            fi = family_idx[ws:we]
-            fams = int(torch.unique(fi).numel())
-            runs = _family_runs(fi)
-            if n_splits:
-                parent_fi = family_idx[ws + meta["reduce_idx"].detach().cpu()]
-                split_fams = int(torch.unique(parent_fi).numel())
-        rows.append((k, ws, w, n_splits, fanout, fams, runs, split_fams))
+    rows, locality = _wave_family_locality(model)
+    print(
+        "family_locality_summary",
+        "rows", int(locality["rows"]),
+        "family_runs", int(locality["family_runs"]),
+        "family_touches", int(locality["family_touches"]),
+        "extra_family_runs", int(locality["extra_family_runs"]),
+        "interleaved_waves", int(locality["interleaved_waves"]),
+        "locality_preserved", int(locality["locality_preserved"]),
+        "run_per_row", f"{float(locality['run_per_row']):.8f}",
+        "runs_per_family_touch", f"{float(locality['runs_per_family_touch']):.8f}",
+        "split_rows", int(locality["split_rows"]),
+        "split_family_touches", int(locality["split_family_touches"]),
+        "split_family_touch_per_split_row", f"{float(locality['split_family_touch_per_split_row']):.8f}",
+    )
 
     print("top_wave_rows k start W split_rows fanout families family_runs split_families")
-    for row in sorted(rows, key=lambda r: r[2], reverse=True)[:12]:
-        print("%d %d %d %d %.3f %d %d %d" % row)
+    for row in sorted(rows, key=lambda r: int(r["W"]), reverse=True)[:12]:
+        print(
+            "%d %d %d %d %.3f %d %d %d" % (
+                int(row["k"]),
+                int(row["start"]),
+                int(row["W"]),
+                int(row["split_rows"]),
+                float(row["fanout"]),
+                int(row["families"]),
+                int(row["family_runs"]),
+                int(row["split_families"]),
+            )
+        )
 
     print("top_split_rows k start W split_rows fanout families family_runs split_families")
-    for row in sorted(rows, key=lambda r: r[3], reverse=True)[:12]:
-        print("%d %d %d %d %.3f %d %d %d" % row)
+    for row in sorted(rows, key=lambda r: int(r["split_rows"]), reverse=True)[:12]:
+        print(
+            "%d %d %d %d %.3f %d %d %d" % (
+                int(row["k"]),
+                int(row["start"]),
+                int(row["W"]),
+                int(row["split_rows"]),
+                float(row["fanout"]),
+                int(row["families"]),
+                int(row["family_runs"]),
+                int(row["split_families"]),
+            )
+        )
 
 
 def _print_active_path_flags(args: argparse.Namespace, model: GeneReconModel) -> None:
@@ -841,8 +938,13 @@ def _run_chunked_autograd_bench(
 
     first_model = _make_genewise_model(args, root, genes[ranges[0][0]:ranges[0][1]])
     _print_active_path_flags(args, first_model)
-    print("chunk_table idx family_start family_stop families S C waves maxW split_rows leaves roots")
+    print(
+        "chunk_table idx family_start family_stop families S C waves maxW "
+        "split_rows leaves roots family_runs family_touches extra_family_runs "
+        "interleaved_waves locality_preserved run_per_row runs_per_family_touch"
+    )
     first_stats = _wave_shape_stats(first_model)
+    _, first_locality = _wave_family_locality(first_model)
     print(
         "chunk_shape",
         0,
@@ -856,6 +958,13 @@ def _run_chunked_autograd_bench(
         first_stats["split_rows"],
         first_stats["leaves"],
         first_stats["roots"],
+        first_stats["family_runs"],
+        first_stats["family_touches"],
+        first_stats["extra_family_runs"],
+        first_stats["interleaved_waves"],
+        first_stats["locality_preserved"],
+        f"{float(first_locality['run_per_row']):.8f}",
+        f"{float(first_locality['runs_per_family_touch']):.8f}",
     )
     del first_model
     torch.cuda.synchronize()
@@ -866,6 +975,7 @@ def _run_chunked_autograd_bench(
         for chunk_idx, (lo, hi) in enumerate(ranges[1:], start=1):
             model = _make_genewise_model(args, root, genes[lo:hi])
             stats = _wave_shape_stats(model)
+            _, locality = _wave_family_locality(model)
             print(
                 "chunk_shape",
                 chunk_idx,
@@ -879,6 +989,13 @@ def _run_chunked_autograd_bench(
                 stats["split_rows"],
                 stats["leaves"],
                 stats["roots"],
+                stats["family_runs"],
+                stats["family_touches"],
+                stats["extra_family_runs"],
+                stats["interleaved_waves"],
+                stats["locality_preserved"],
+                f"{float(locality['run_per_row']):.8f}",
+                f"{float(locality['runs_per_family_touch']):.8f}",
             )
             del model
             torch.cuda.synchronize()
@@ -903,6 +1020,7 @@ def _run_chunked_autograd_bench(
             build_s = time.perf_counter() - t0
             build_s_total += build_s
             stats = _wave_shape_stats(model)
+            _, locality = _wave_family_locality(model)
             if timed and chunk_idx > 0:
                 print(
                     "chunk_shape",
@@ -917,6 +1035,13 @@ def _run_chunked_autograd_bench(
                     stats["split_rows"],
                     stats["leaves"],
                     stats["roots"],
+                    stats["family_runs"],
+                    stats["family_touches"],
+                    stats["extra_family_runs"],
+                    stats["interleaved_waves"],
+                    stats["locality_preserved"],
+                    f"{float(locality['run_per_row']):.8f}",
+                    f"{float(locality['runs_per_family_touch']):.8f}",
                 )
 
             model.zero_grad(set_to_none=True)
@@ -952,6 +1077,8 @@ def _run_chunked_autograd_bench(
                 "backward_peak_gb": backward_peak_gb,
                 "loss": loss_value,
                 "build_s": build_s,
+                "run_per_row": float(locality["run_per_row"]),
+                "runs_per_family_touch": float(locality["runs_per_family_touch"]),
                 **stats,
             })
 
@@ -995,7 +1122,13 @@ def _run_chunked_autograd_bench(
             "grad_absmax", f"{result['grad_absmax']:.8e}",
             "build_s", f"{result['build_s']:.3f}",
         )
-        print("chunk_timing_table rep idx family_start family_stop families C waves maxW split_rows forward_ms backward_ms forward_peak_gb backward_peak_gb loss build_s")
+        print(
+            "chunk_timing_table rep idx family_start family_stop families C waves "
+            "maxW split_rows family_runs family_touches extra_family_runs "
+            "interleaved_waves locality_preserved run_per_row "
+            "runs_per_family_touch forward_ms backward_ms forward_peak_gb "
+            "backward_peak_gb loss build_s"
+        )
         for row in result["chunks"]:
             print(
                 "chunk_timing",
@@ -1008,6 +1141,13 @@ def _run_chunked_autograd_bench(
                 row["waves"],
                 row["maxW"],
                 row["split_rows"],
+                row["family_runs"],
+                row["family_touches"],
+                row["extra_family_runs"],
+                row["interleaved_waves"],
+                row["locality_preserved"],
+                f"{row['run_per_row']:.8f}",
+                f"{row['runs_per_family_touch']:.8f}",
                 f"{row['forward_ms']:.3f}",
                 f"{row['backward_ms']:.3f}",
                 f"{row['forward_peak_gb']:.3f}",

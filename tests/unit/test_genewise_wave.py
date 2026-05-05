@@ -10,7 +10,12 @@ from pathlib import Path
 import pytest
 import torch
 
-from gpurec.core.batching import collate_gene_families, collate_wave, build_wave_layout
+from gpurec.core.batching import (
+    build_wave_layout,
+    collate_gene_families,
+    collate_wave,
+    split_phase_waves,
+)
 from gpurec.core.forward import Pi_wave_forward
 from gpurec.core.likelihood import compute_log_likelihood, compute_log_likelihood_root_rows
 from gpurec.core.model import GeneDataset
@@ -185,6 +190,94 @@ def _make_theta_init(G, S, *, specieswise, dtype, device):
     return torch.randn(shape, generator=gen, dtype=dtype, device=device) * 0.2 - 5.0
 
 
+def _build_collated_waves(ds, indices):
+    batch_items = [
+        {
+            "ccp": ds.families[idx]["ccp_helpers"],
+            "leaf_row_index": ds.families[idx]["leaf_row_index"],
+            "leaf_col_index": ds.families[idx]["leaf_col_index"],
+            "root_clade_id": int(ds.families[idx]["root_clade_id"]),
+        }
+        for idx in indices
+    ]
+    batched = collate_gene_families(
+        batch_items,
+        dtype=ds.dtype,
+        device=ds.device,
+    )
+
+    families_waves = []
+    families_phases = []
+    for idx in indices:
+        waves_i, phases_i = compute_clade_waves(ds.families[idx]["ccp_helpers"])
+        families_waves.append(waves_i)
+        families_phases.append(phases_i)
+
+    cross_waves = collate_wave(
+        families_waves,
+        [m["clade_offset"] for m in batched["family_meta"]],
+    )
+    max_n_waves = max(len(p) for p in families_phases)
+    cross_phases = [
+        max(fp[k] for fp in families_phases if k < len(fp))
+        for k in range(max_n_waves)
+    ]
+    return batched, cross_waves, cross_phases
+
+
+def _assert_topological_waves(waves, ccp_helpers):
+    wave_by_clade = {}
+    for wave_idx, wave in enumerate(waves):
+        for clade in wave:
+            clade = int(clade)
+            assert clade not in wave_by_clade, f"clade {clade} appears twice"
+            wave_by_clade[clade] = wave_idx
+
+    assert len(wave_by_clade) == int(ccp_helpers["C"])
+
+    n_splits = int(ccp_helpers["N_splits"])
+    split_lr = ccp_helpers["split_leftrights_sorted"].detach().cpu().long()
+    split_parents = ccp_helpers["split_parents_sorted"].detach().cpu().long()
+    lefts = split_lr[:n_splits]
+    rights = split_lr[n_splits:]
+
+    for parent, left, right in zip(
+        split_parents.tolist(),
+        lefts.tolist(),
+        rights.tolist(),
+    ):
+        parent_wave = wave_by_clade[int(parent)]
+        assert wave_by_clade[int(left)] < parent_wave
+        assert wave_by_clade[int(right)] < parent_wave
+
+
+def _family_runs(family_ids):
+    runs = []
+    last = None
+    for family in family_ids:
+        if family != last:
+            runs.append(family)
+            last = family
+    return runs
+
+
+def _assert_wave_family_blocks(wave_layout):
+    family_idx = wave_layout["family_idx"].detach().cpu().long()
+    wave_starts = wave_layout["wave_starts"].detach().cpu().long().tolist()
+    max_runs = 0
+
+    for wi, (ws, we) in enumerate(zip(wave_starts, wave_starts[1:])):
+        wave_families = family_idx[ws:we].tolist()
+        if not wave_families:
+            continue
+        runs = _family_runs(wave_families)
+        assert runs == sorted(runs), f"wave {wi} interleaves family blocks: {runs}"
+        assert len(runs) == len(set(runs)), f"wave {wi} repeats a family run: {runs}"
+        max_runs = max(max_runs, len(runs))
+
+    return max_runs
+
+
 # ------------------------------------------------------------------
 # Fixtures
 # ------------------------------------------------------------------
@@ -203,6 +296,134 @@ def data_dir_large():
     if not d.exists():
         pytest.skip("test_trees_1000 not found")
     return d
+
+
+# ------------------------------------------------------------------
+# Test: Proposal 6 family-local wave order
+# ------------------------------------------------------------------
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+def test_genewise_wave_order_is_topological_and_family_blocked_after_splitting(
+    data_dir_large,
+):
+    """Proposal 6 guardrail: max-wave splitting keeps family-local blocks."""
+    sp = str(data_dir_large / "sp.nwk")
+    genes = [str(g) for g in sorted(data_dir_large.glob("g_*.nwk"))[:4]]
+    device = torch.device("cuda")
+    dtype = torch.float32
+
+    ds = GeneDataset(
+        sp,
+        genes,
+        genewise=True,
+        specieswise=False,
+        pairwise=False,
+        dtype=dtype,
+        device=device,
+    )
+
+    batched, cross_waves, cross_phases = _build_collated_waves(
+        ds,
+        list(range(len(genes))),
+    )
+    _assert_topological_waves(cross_waves, batched["ccp"])
+
+    max_wave_size = 257
+    split_waves, split_phases = split_phase_waves(
+        cross_waves,
+        cross_phases,
+        phase=None,
+        max_wave_size=max_wave_size,
+    )
+
+    assert len(split_waves) > len(cross_waves)
+    assert max(len(w) for w in split_waves) <= max_wave_size
+    assert [c for wave in split_waves for c in wave] == [
+        c for wave in cross_waves for c in wave
+    ]
+    _assert_topological_waves(split_waves, batched["ccp"])
+
+    wave_layout = build_wave_layout(
+        waves=split_waves,
+        phases=split_phases,
+        ccp_helpers=batched["ccp"],
+        leaf_row_index=batched["leaf_row_index"],
+        leaf_col_index=batched["leaf_col_index"],
+        root_clade_ids=batched["root_clade_ids"],
+        device=device,
+        dtype=dtype,
+        family_clade_counts=[m["C"] for m in batched["family_meta"]],
+        family_clade_offsets=[m["clade_offset"] for m in batched["family_meta"]],
+    )
+
+    max_runs = _assert_wave_family_blocks(wave_layout)
+    assert max_runs <= len(genes)
+    assert any(
+        wave_layout["family_idx"][s - 1].item()
+        == wave_layout["family_idx"][s].item()
+        for s in wave_layout["wave_starts"][1:-1].detach().cpu().tolist()
+    ), "expected max_wave_size splitting to cut at least one family block"
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+def test_genewise_uniform_split_wave_layout_preserves_likelihood_and_gradient():
+    """Proposal 6 parity: locality-preserving split waves do not change results."""
+    data_dir = _ROOT / "data" / "test_trees_20"
+    if not data_dir.exists():
+        pytest.skip("test_trees_20 not found")
+
+    sp = str(data_dir / "sp.nwk")
+    genes = [str(g) for g in sorted(data_dir.glob("g_*.nwk"))[:3]]
+    device = torch.device("cuda")
+    dtype = torch.float64
+    theta = torch.log2(
+        torch.tensor(
+            [
+                [0.050, 0.040, 0.030],
+                [0.060, 0.025, 0.045],
+                [0.030, 0.055, 0.035],
+            ],
+            dtype=dtype,
+            device=device,
+        )
+    )
+    solver_kwargs = dict(
+        fixed_iters_Pi=6,
+        max_iters_E=128,
+        tol_E=0.0,
+        neumann_terms=3,
+        use_pruning=False,
+        cg_tol=1e-10,
+        cg_maxiter=1000,
+    )
+
+    def run(max_wave_size):
+        model = GeneReconModel.from_trees(
+            species_tree=sp,
+            gene_trees=genes,
+            mode="genewise",
+            pibar_mode="uniform",
+            device=device,
+            dtype=dtype,
+            max_wave_size=max_wave_size,
+            **solver_kwargs,
+        )
+        with torch.no_grad():
+            model.theta.copy_(theta)
+        model.zero_grad(set_to_none=True)
+        model.static.warm_E = None
+        nll = model()
+        nll.backward()
+        torch.cuda.synchronize()
+        _assert_wave_family_blocks(model.static.wave_layout)
+        return nll.detach(), model.theta.grad.detach().clone(), model.static.wave_layout
+
+    unsplit_nll, unsplit_grad, unsplit_layout = run(max_wave_size=None)
+    split_nll, split_grad, split_layout = run(max_wave_size=17)
+
+    assert len(split_layout["wave_metas"]) > len(unsplit_layout["wave_metas"])
+    torch.testing.assert_close(split_nll, unsplit_nll, rtol=1e-12, atol=1e-12)
+    torch.testing.assert_close(split_grad, unsplit_grad, rtol=3e-6, atol=3e-6)
 
 
 # ------------------------------------------------------------------
