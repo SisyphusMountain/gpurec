@@ -385,12 +385,40 @@ def _time_cuda_ms(enabled: bool, fn):
     return float(start.elapsed_time(end)), out
 
 
-def _root_count_tensor(state: UniformChunkedState) -> torch.Tensor:
+def _root_count_tensor(
+    state: UniformChunkedState,
+    count: int | None = None,
+) -> torch.Tensor:
     return torch.zeros(
-        (len(state.dataset.families),),
+        (len(state.dataset.families) if count is None else int(count),),
         device=state.device,
         dtype=torch.long,
     )
+
+
+def _selected_chunks(
+    state: UniformChunkedState,
+    chunk_indices: Sequence[int] | torch.Tensor | None,
+) -> list[tuple[int, UniformBuiltChunk]]:
+    if chunk_indices is None:
+        return list(enumerate(state.built_chunks))
+    if torch.is_tensor(chunk_indices):
+        indices = [int(x) for x in chunk_indices.detach().cpu().reshape(-1).tolist()]
+    else:
+        indices = [int(x) for x in chunk_indices]
+    if not indices:
+        raise ValueError("chunk_indices must not be empty")
+    n_chunks = len(state.built_chunks)
+    selected: list[tuple[int, UniformBuiltChunk]] = []
+    seen: set[int] = set()
+    for idx in indices:
+        if idx < 0 or idx >= n_chunks:
+            raise IndexError(f"chunk index {idx} out of range for {n_chunks} chunks")
+        if idx in seen:
+            raise ValueError(f"duplicate chunk index {idx}")
+        seen.add(idx)
+        selected.append((idx, state.built_chunks[idx]))
+    return selected
 
 
 def _evaluate_chunked_uniform(
@@ -399,10 +427,13 @@ def _evaluate_chunked_uniform(
     *,
     need_grad: bool,
     per_family: bool = False,
+    chunk_indices: Sequence[int] | torch.Tensor | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor | None, dict[str, Any]]:
     if per_family and need_grad:
         raise ValueError("per-family output is only supported for no-grad evaluation")
 
+    selected_chunks = _selected_chunks(state, chunk_indices)
+    selected_family_count = sum(len(chunk.spec.indices) for _idx, chunk in selected_chunks)
     theta_eval = theta.detach().to(device=state.device, dtype=state.dtype)
     log_pS, log_pD, log_pL, transfer_mat, max_transfer_vec = extract_parameters_uniform(
         theta_eval,
@@ -446,7 +477,7 @@ def _evaluate_chunked_uniform(
     pi_backward_ms = 0.0
     chunk_stats: list[dict[str, Any]] = []
 
-    for chunk_idx, built in enumerate(state.built_chunks):
+    for chunk_idx, built in selected_chunks:
         def run_forward():
             pi_out = Pi_wave_forward(
                 wave_layout=built.wave_layout,
@@ -560,7 +591,7 @@ def _evaluate_chunked_uniform(
                 log_pL,
                 max_transfer_vec,
                 state.species_helpers,
-                _root_count_tensor(state),
+                _root_count_tensor(state, selected_family_count),
                 theta_eval,
                 state.unnorm_row_max,
                 False,
@@ -594,6 +625,9 @@ def _evaluate_chunked_uniform(
     )
     stats = {
         "loss": float(total_loss.detach().cpu()),
+        "selected_chunks": [int(idx) for idx, _chunk in selected_chunks],
+        "selected_families": int(selected_family_count),
+        "total_families": len(state.dataset.families),
         "forward_ms": forward_ms,
         "e_ms": float(e_ms),
         "pi_forward_ms": pi_forward_ms,
@@ -841,25 +875,89 @@ class UniformChunkedReconModel(torch.nn.Module):
         return _UniformChunkedFunction.apply(self.theta, self._state)
 
     @torch.no_grad()
-    def nll(self) -> torch.Tensor:
+    def nll(
+        self,
+        chunk_indices: Sequence[int] | torch.Tensor | None = None,
+    ) -> torch.Tensor:
         loss, _grad, stats = _evaluate_chunked_uniform(
             self._state,
             self.theta,
             need_grad=False,
+            chunk_indices=chunk_indices,
         )
         self._state.last_stats = stats
         return loss
 
     @torch.no_grad()
-    def nll_per_family(self) -> torch.Tensor:
+    def nll_per_family(
+        self,
+        chunk_indices: Sequence[int] | torch.Tensor | None = None,
+    ) -> torch.Tensor:
         loss, _grad, stats = _evaluate_chunked_uniform(
             self._state,
             self.theta,
             need_grad=False,
             per_family=True,
+            chunk_indices=chunk_indices,
         )
         self._state.last_stats = stats
         return loss
+
+    @torch.no_grad()
+    def loss_and_grad(
+        self,
+        *,
+        chunk_indices: Sequence[int] | torch.Tensor | None = None,
+        reduction: str = "sum",
+    ) -> tuple[torch.Tensor, torch.Tensor, dict[str, Any]]:
+        """Evaluate selected chunks and return ``(loss, grad, stats)``.
+
+        This bypasses PyTorch autograd and exposes the custom chunked gradient
+        directly, which is useful for stochastic optimizers that sample chunks.
+
+        ``reduction`` controls the returned loss and gradient scale:
+
+        - ``"sum"``: selected-family NLL sum.
+        - ``"mean"``: selected-family mean NLL.
+        - ``"full_sum_estimate"``: selected sum scaled by
+          ``total_families / selected_families``.
+        """
+        if reduction not in ("sum", "mean", "full_sum_estimate"):
+            raise ValueError(
+                "reduction must be 'sum', 'mean', or 'full_sum_estimate', "
+                f"got {reduction!r}"
+            )
+        loss, grad, stats = _evaluate_chunked_uniform(
+            self._state,
+            self.theta,
+            need_grad=True,
+            chunk_indices=chunk_indices,
+        )
+        if grad is None:
+            raise RuntimeError("internal error: missing chunked uniform gradient")
+        selected_families = int(stats["selected_families"])
+        total_families = int(stats["total_families"])
+        if reduction == "mean":
+            scale = 1.0 / float(selected_families)
+        elif reduction == "full_sum_estimate":
+            scale = float(total_families) / float(selected_families)
+        else:
+            scale = 1.0
+        if scale != 1.0:
+            scale_t = torch.as_tensor(scale, device=loss.device, dtype=loss.dtype)
+            loss = loss * scale_t
+            grad = grad * scale_t.to(device=grad.device, dtype=grad.dtype)
+        stats = dict(stats)
+        stats["reduction"] = reduction
+        stats["scale"] = float(scale)
+        stats["reduced_loss"] = float(loss.detach().cpu())
+        stats["reduced_grad_norm"] = float(torch.linalg.vector_norm(grad).detach().cpu())
+        self._state.last_stats = stats
+        return (
+            loss.to(device=self.theta.device, dtype=self.theta.dtype),
+            grad.to(device=self.theta.device, dtype=self.theta.dtype),
+            stats,
+        )
 
     @torch.no_grad()
     def log_likelihood(self) -> float:
@@ -894,6 +992,14 @@ class UniformChunkedReconModel(torch.nn.Module):
     @property
     def chunks(self) -> list[UniformBuiltChunk]:
         return list(self._state.built_chunks)
+
+    @property
+    def n_chunks(self) -> int:
+        return len(self._state.built_chunks)
+
+    @property
+    def chunk_family_counts(self) -> list[int]:
+        return [len(chunk.spec.indices) for chunk in self._state.built_chunks]
 
     @property
     def last_stats(self) -> dict[str, Any]:

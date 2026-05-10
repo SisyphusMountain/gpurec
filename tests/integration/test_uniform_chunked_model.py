@@ -97,6 +97,53 @@ def test_chunked_uniform_from_folder_and_adam_step(tmp_path):
     assert after < before
 
 
+def test_chunked_uniform_chunk_subset_nll_and_gradient(tmp_path):
+    model = UniformChunkedReconModel.from_folder(
+        DATA_DIR,
+        max_families=4,
+        device="cuda",
+        dtype=torch.float32,
+        theta_init_rates=(0.05, 0.05, 0.05),
+        preprocess_cache_dir=str(tmp_path),
+        family_chunk_size=2,
+        max_wave_size=32768,
+        fixed_iters_Pi=6,
+        neumann_terms=4,
+        use_pruning=False,
+    )
+
+    assert model.n_chunks == 2
+    full_vec = model.nll_per_family()
+    chunk0 = model.nll_per_family(chunk_indices=[0])
+    chunk1 = model.nll_per_family(chunk_indices=[1])
+    torch.testing.assert_close(
+        torch.cat([chunk0, chunk1]),
+        full_vec,
+        rtol=1e-6,
+        atol=1e-4,
+    )
+
+    model.zero_grad(set_to_none=True)
+    full_loss = model()
+    full_loss.backward()
+    full_grad = model.theta.grad.detach().clone()
+
+    subset_loss, subset_grad, stats = model.loss_and_grad(chunk_indices=[0, 1])
+    torch.testing.assert_close(subset_loss, full_loss.detach(), rtol=1e-6, atol=1e-4)
+    torch.testing.assert_close(subset_grad, full_grad, rtol=1e-5, atol=1e-4)
+    assert stats["selected_families"] == 4
+    assert stats["selected_chunks"] == [0, 1]
+
+    mean_loss, mean_grad, mean_stats = model.loss_and_grad(
+        chunk_indices=[0],
+        reduction="mean",
+    )
+    selected = mean_stats["selected_families"]
+    sum_loss, sum_grad, _ = model.loss_and_grad(chunk_indices=[0], reduction="sum")
+    torch.testing.assert_close(mean_loss * selected, sum_loss, rtol=1e-6, atol=1e-4)
+    torch.testing.assert_close(mean_grad * selected, sum_grad, rtol=1e-5, atol=1e-4)
+
+
 def test_chunked_uniform_to_float64_casts_static_state(tmp_path):
     model = UniformChunkedReconModel.from_folder(
         DATA_DIR,
