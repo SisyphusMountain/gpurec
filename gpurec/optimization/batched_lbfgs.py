@@ -1,0 +1,751 @@
+"""Row-wise batched L-BFGS for independent objectives.
+
+This optimizer is meant for tensors such as genewise DTL parameters where
+``theta.shape == [G, ...]`` and row ``g`` only affects objective ``f_g``.
+It keeps one L-BFGS history per row while still evaluating all rows in one
+batched closure.
+"""
+from __future__ import annotations
+
+from collections.abc import Callable
+from typing import Any
+
+import torch
+from torch import Tensor
+from torch.optim import Optimizer
+
+
+LossClosure = Callable[[], Tensor]
+
+
+def _row_dot(a: Tensor, b: Tensor) -> Tensor:
+    return (a * b).sum(dim=1)
+
+
+class BatchedLBFGS(Optimizer):
+    """Limited-memory BFGS with independent state along dimension 0.
+
+    Parameters
+    ----------
+    params:
+        Iterable containing exactly one dense real parameter tensor with shape
+        ``[B, ...]``. Row ``i`` is optimized against loss ``loss_vec[i]``.
+    lr:
+        Initial step-size multiplier.
+    max_iter:
+        Maximum L-BFGS iterations performed by one :meth:`step` call.
+    history_size:
+        Number of ``s/y`` curvature pairs retained per row.
+    lower_bound:
+        Optional scalar lower bound applied to the parameter values after every
+        candidate step. For gpurec rates in log2-space this is
+        ``math.log2(min_rate)``.
+    upper_bound:
+        Optional scalar upper bound applied after every candidate step. For
+        ALERax-style DTL rate comparisons in log2-space this is typically
+        ``math.log2(2.0)``.
+    line_search_fn:
+        ``"strong_wolfe"``, ``"armijo"``, or ``None``. ``None`` takes the
+        row-wise initial step without backtracking.
+    """
+
+    def __init__(
+        self,
+        params,
+        *,
+        lr: float = 1.0,
+        max_iter: int = 1,
+        max_eval: int | None = None,
+        tolerance_grad: float = 1e-7,
+        tolerance_change: float = 1e-9,
+        history_size: int = 10,
+        line_search_fn: str | None = "armijo",
+        max_ls: int = 20,
+        c1: float = 1e-4,
+        c2: float = 0.9,
+        shrink: float = 0.5,
+        lower_bound: float | Tensor | None = None,
+        upper_bound: float | Tensor | None = None,
+    ) -> None:
+        if lr < 0.0:
+            raise ValueError(f"Invalid learning rate: {lr}")
+        if max_iter < 1:
+            raise ValueError(f"max_iter must be >= 1, got {max_iter}")
+        if max_eval is not None and max_eval < 1:
+            raise ValueError(f"max_eval must be >= 1, got {max_eval}")
+        if history_size < 1:
+            raise ValueError(f"history_size must be >= 1, got {history_size}")
+        if line_search_fn not in ("armijo", "strong_wolfe", None):
+            raise ValueError(
+                "BatchedLBFGS only supports line_search_fn='armijo', "
+                "'strong_wolfe', or None"
+            )
+        if max_ls < 1:
+            raise ValueError(f"max_ls must be >= 1, got {max_ls}")
+        if not (0.0 < c1 < 1.0):
+            raise ValueError(f"c1 must be in (0, 1), got {c1}")
+        if not (c1 < c2 < 1.0):
+            raise ValueError(f"c2 must be in (c1, 1), got {c2}")
+        if not (0.0 < shrink < 1.0):
+            raise ValueError(f"shrink must be in (0, 1), got {shrink}")
+
+        defaults = {
+            "lr": float(lr),
+            "max_iter": int(max_iter),
+            "max_eval": int(max_eval) if max_eval is not None else None,
+            "tolerance_grad": float(tolerance_grad),
+            "tolerance_change": float(tolerance_change),
+            "history_size": int(history_size),
+            "line_search_fn": line_search_fn,
+            "max_ls": int(max_ls),
+            "c1": float(c1),
+            "c2": float(c2),
+            "shrink": float(shrink),
+            "lower_bound": lower_bound,
+            "upper_bound": upper_bound,
+        }
+        super().__init__(params, defaults)
+
+        if len(self.param_groups) != 1:
+            raise ValueError("BatchedLBFGS supports exactly one parameter group")
+        self._params = self.param_groups[0]["params"]
+        if len(self._params) != 1:
+            raise ValueError("BatchedLBFGS supports exactly one parameter tensor")
+
+        p = self._params[0]
+        if p.ndim < 1:
+            raise ValueError("BatchedLBFGS parameter must have a batch dimension")
+        if torch.is_complex(p):
+            raise TypeError("BatchedLBFGS only supports real-valued parameters")
+        if p.is_sparse:
+            raise TypeError("BatchedLBFGS parameter must be dense")
+        self._param = p
+
+    def _batch_size(self) -> int:
+        return int(self._param.shape[0])
+
+    def _flat_param(self) -> Tensor:
+        return self._param.detach().reshape(self._batch_size(), -1)
+
+    def _set_flat_param(self, flat: Tensor) -> None:
+        with torch.no_grad():
+            self._param.copy_(flat.reshape_as(self._param))
+
+    def _project_flat(
+        self,
+        flat: Tensor,
+        lower_bound: float | Tensor | None,
+        upper_bound: float | Tensor | None,
+    ) -> Tensor:
+        projected = flat
+        if lower_bound is not None:
+            if torch.is_tensor(lower_bound):
+                lb = lower_bound.to(device=flat.device, dtype=flat.dtype)
+            else:
+                lb = torch.as_tensor(lower_bound, device=flat.device, dtype=flat.dtype)
+            projected = torch.maximum(projected, lb)
+        if upper_bound is not None:
+            if torch.is_tensor(upper_bound):
+                ub = upper_bound.to(device=flat.device, dtype=flat.dtype)
+            else:
+                ub = torch.as_tensor(upper_bound, device=flat.device, dtype=flat.dtype)
+            projected = torch.minimum(projected, ub)
+        return projected
+
+    def _gather_flat_grad(self) -> Tensor:
+        grad = self._param.grad
+        if grad is None:
+            return torch.zeros_like(self._flat_param())
+        if grad.is_sparse:
+            grad = grad.to_dense()
+        if torch.is_complex(grad):
+            raise TypeError("BatchedLBFGS only supports real-valued gradients")
+        return grad.detach().reshape(self._batch_size(), -1)
+
+    def _loss_vector(self, loss: Tensor) -> Tensor:
+        if not torch.is_tensor(loss):
+            raise TypeError("BatchedLBFGS closure must return a Tensor")
+        B = self._batch_size()
+        if loss.numel() != B:
+            raise ValueError(
+                "BatchedLBFGS closure must return one loss per parameter row; "
+                f"got shape {tuple(loss.shape)} for batch size {B}"
+            )
+        return loss.detach().reshape(B)
+
+    def _evaluate_with_grad(self, closure: LossClosure) -> tuple[Tensor, Tensor]:
+        with torch.enable_grad():
+            loss = closure()
+        return self._loss_vector(loss), self._gather_flat_grad()
+
+    def _evaluate_flat_with_grad(
+        self,
+        closure: LossClosure,
+        flat: Tensor,
+    ) -> tuple[Tensor, Tensor]:
+        self._set_flat_param(flat)
+        return self._evaluate_with_grad(closure)
+
+    def _evaluate_loss(
+        self,
+        closure: LossClosure,
+        loss_closure: LossClosure | None,
+    ) -> Tensor:
+        if loss_closure is None:
+            with torch.enable_grad():
+                loss = closure()
+        else:
+            with torch.no_grad():
+                loss = loss_closure()
+        return self._loss_vector(loss)
+
+    def _direction(
+        self,
+        flat_grad: Tensor,
+        old_dirs: list[Tensor],
+        old_stps: list[Tensor],
+        ro: list[Tensor],
+        H_diag: Tensor,
+    ) -> Tensor:
+        if not old_dirs:
+            return -flat_grad
+
+        q = flat_grad.clone()
+        alphas: list[Tensor] = []
+        for y_k, s_k, ro_k in zip(reversed(old_dirs), reversed(old_stps), reversed(ro)):
+            alpha = _row_dot(s_k, q) * ro_k
+            q = q - alpha[:, None] * y_k
+            alphas.append(alpha)
+
+        r = H_diag[:, None] * q
+        for y_k, s_k, ro_k, alpha in zip(old_dirs, old_stps, ro, reversed(alphas)):
+            beta = _row_dot(y_k, r) * ro_k
+            r = r + (alpha - beta)[:, None] * s_k
+        return -r
+
+    def _append_history(
+        self,
+        state: dict[str, Any],
+        s_k: Tensor,
+        y_k: Tensor,
+        active: Tensor,
+        history_size: int,
+        tolerance_change: float,
+    ) -> None:
+        old_dirs: list[Tensor] = state["old_dirs"]
+        old_stps: list[Tensor] = state["old_stps"]
+        ro: list[Tensor] = state["ro"]
+        H_diag: Tensor = state["H_diag"]
+
+        ys = _row_dot(y_k, s_k)
+        yy = _row_dot(y_k, y_k)
+        step_norm = s_k.abs().amax(dim=1)
+        valid = (
+            active
+            & torch.isfinite(ys)
+            & torch.isfinite(yy)
+            & (ys > 1e-10)
+            & (yy > 1e-30)
+            & (step_norm > tolerance_change)
+        )
+        if not bool(valid.any()):
+            return
+
+        if len(old_dirs) == history_size:
+            old_dirs.pop(0)
+            old_stps.pop(0)
+            ro.pop(0)
+
+        old_dirs.append(torch.where(valid[:, None], y_k, torch.zeros_like(y_k)))
+        old_stps.append(torch.where(valid[:, None], s_k, torch.zeros_like(s_k)))
+        ro.append(torch.where(valid, 1.0 / ys.clamp_min(1e-30), torch.zeros_like(ys)))
+        state["H_diag"] = torch.where(valid, ys / yy.clamp_min(1e-30), H_diag)
+
+    def _batched_strong_wolfe(
+        self,
+        closure: LossClosure,
+        *,
+        start_flat: Tensor,
+        start_loss: Tensor,
+        start_grad: Tensor,
+        direction: Tensor,
+        gtd0: Tensor,
+        alpha0: Tensor,
+        active: Tensor,
+        c1: float,
+        c2: float,
+        max_ls: int,
+        max_evals: int,
+        tolerance_change: float,
+        lower_bound: float | Tensor | None,
+        upper_bound: float | Tensor | None,
+    ) -> tuple[Tensor, Tensor, Tensor, Tensor, Tensor, int, Tensor]:
+        """Masked batched strong-Wolfe search.
+
+        The implementation follows the usual bracketing + zoom structure, but
+        every scalar line-search state is stored as a length-``B`` tensor. Each
+        closure call evaluates all rows at once; masks decide which rows consume
+        the freshly evaluated trial point.
+        """
+        B = start_flat.shape[0]
+        device = start_flat.device
+        dtype = start_flat.dtype
+
+        accepted = torch.zeros(B, device=device, dtype=torch.bool)
+        wolfe_ok = torch.zeros(B, device=device, dtype=torch.bool)
+        accepted_alpha = torch.zeros(B, device=device, dtype=dtype)
+        accepted_flat = start_flat.clone()
+        accepted_loss = start_loss.clone()
+        accepted_grad = start_grad.clone()
+
+        prev_alpha = torch.zeros(B, device=device, dtype=dtype)
+        prev_flat = start_flat.clone()
+        prev_loss = start_loss.clone()
+        prev_grad = start_grad.clone()
+        prev_gtd = gtd0.clone()
+
+        trial_alpha = alpha0.clone()
+        bracketing = active.clone()
+        zooming = torch.zeros(B, device=device, dtype=torch.bool)
+
+        low_alpha = torch.zeros(B, device=device, dtype=dtype)
+        high_alpha = torch.zeros(B, device=device, dtype=dtype)
+        low_flat = start_flat.clone()
+        high_flat = start_flat.clone()
+        low_loss = start_loss.clone()
+        high_loss = start_loss.clone()
+        low_grad = start_grad.clone()
+        high_grad = start_grad.clone()
+        low_gtd = gtd0.clone()
+        high_gtd = gtd0.clone()
+
+        evals = 0
+
+        def _candidate_flat(mask: Tensor, alpha: Tensor) -> tuple[Tensor, Tensor]:
+            trial_flat = self._project_flat(
+                start_flat + alpha[:, None] * direction,
+                lower_bound,
+                upper_bound,
+            )
+            keep_flat = torch.where(accepted[:, None], accepted_flat, start_flat)
+            return torch.where(mask[:, None], trial_flat, keep_flat), trial_flat
+
+        def _record_accept(
+            mask: Tensor,
+            alpha: Tensor,
+            flat: Tensor,
+            loss: Tensor,
+            grad: Tensor,
+            *,
+            exact_wolfe: bool,
+        ) -> None:
+            nonlocal accepted, wolfe_ok, accepted_alpha, accepted_flat
+            nonlocal accepted_loss, accepted_grad
+            accepted = accepted | mask
+            wolfe_ok = wolfe_ok | (mask & exact_wolfe)
+            accepted_alpha = torch.where(mask, alpha, accepted_alpha)
+            accepted_flat = torch.where(mask[:, None], flat, accepted_flat)
+            accepted_loss = torch.where(mask, loss, accepted_loss)
+            accepted_grad = torch.where(mask[:, None], grad, accepted_grad)
+
+        # Bracket a minimizer or accept rows that already satisfy strong Wolfe.
+        while bool(bracketing.any()) and evals < max_ls and evals < max_evals:
+            candidate_flat, trial_flat = _candidate_flat(bracketing, trial_alpha)
+            trial_loss, trial_grad = self._evaluate_flat_with_grad(closure, candidate_flat)
+            trial_gtd = _row_dot(trial_grad, direction)
+            evals += 1
+
+            finite_trial = (
+                torch.isfinite(trial_loss)
+                & torch.isfinite(trial_gtd)
+                & torch.isfinite(trial_grad).all(dim=1)
+            )
+            armijo_rhs = start_loss + c1 * trial_alpha * gtd0
+            has_prev_step = prev_alpha > 0
+            bracket_high = bracketing & (
+                ~finite_trial
+                | (trial_loss > armijo_rhs)
+                | (has_prev_step & (trial_loss >= prev_loss))
+            )
+            curvature_ok = (
+                bracketing
+                & finite_trial
+                & ~bracket_high
+                & (trial_gtd.abs() <= -c2 * gtd0)
+            )
+            sign_flip = (
+                bracketing
+                & finite_trial
+                & ~bracket_high
+                & ~curvature_ok
+                & (trial_gtd >= 0)
+            )
+            keep_expanding = (
+                bracketing
+                & finite_trial
+                & ~bracket_high
+                & ~curvature_ok
+                & ~sign_flip
+            )
+
+            if bool(curvature_ok.any()):
+                _record_accept(
+                    curvature_ok,
+                    trial_alpha,
+                    trial_flat,
+                    trial_loss,
+                    trial_grad,
+                    exact_wolfe=True,
+                )
+
+            bracket_now = bracket_high | sign_flip
+            if bool(bracket_now.any()):
+                low_alpha = torch.where(bracket_now, prev_alpha, low_alpha)
+                low_flat = torch.where(bracket_now[:, None], prev_flat, low_flat)
+                low_loss = torch.where(bracket_now, prev_loss, low_loss)
+                low_grad = torch.where(bracket_now[:, None], prev_grad, low_grad)
+                low_gtd = torch.where(bracket_now, prev_gtd, low_gtd)
+
+                high_alpha = torch.where(bracket_now, trial_alpha, high_alpha)
+                high_flat = torch.where(bracket_now[:, None], trial_flat, high_flat)
+                high_loss = torch.where(bracket_now, trial_loss, high_loss)
+                high_grad = torch.where(bracket_now[:, None], trial_grad, high_grad)
+                high_gtd = torch.where(bracket_now, trial_gtd, high_gtd)
+                zooming = zooming | bracket_now
+
+            if bool(keep_expanding.any()):
+                prev_alpha = torch.where(keep_expanding, trial_alpha, prev_alpha)
+                prev_flat = torch.where(keep_expanding[:, None], trial_flat, prev_flat)
+                prev_loss = torch.where(keep_expanding, trial_loss, prev_loss)
+                prev_grad = torch.where(keep_expanding[:, None], trial_grad, prev_grad)
+                prev_gtd = torch.where(keep_expanding, trial_gtd, prev_gtd)
+                trial_alpha = torch.where(keep_expanding, trial_alpha * 2.0, trial_alpha)
+
+            bracketing = keep_expanding & ~accepted
+
+        # Zoom each bracket independently. Bisection is less fancy than the
+        # cubic interpolation in torch.optim.LBFGS, but it is stable and easy to
+        # mask across rows.
+        d_norm = direction.abs().amax(dim=1).clamp_min(1e-30)
+        zooming = zooming & ~accepted
+        while bool(zooming.any()) and evals < max_ls and evals < max_evals:
+            bracket_width = (high_alpha - low_alpha).abs()
+            bracket_tiny = zooming & (bracket_width * d_norm <= tolerance_change)
+            if bool(bracket_tiny.any()):
+                _record_accept(
+                    bracket_tiny,
+                    low_alpha,
+                    low_flat,
+                    low_loss,
+                    low_grad,
+                    exact_wolfe=False,
+                )
+                zooming = zooming & ~bracket_tiny
+                if not bool(zooming.any()):
+                    break
+
+            alpha_mid = 0.5 * (low_alpha + high_alpha)
+            candidate_flat, trial_flat = _candidate_flat(zooming, alpha_mid)
+            trial_loss, trial_grad = self._evaluate_flat_with_grad(closure, candidate_flat)
+            trial_gtd = _row_dot(trial_grad, direction)
+            evals += 1
+
+            finite_trial = (
+                torch.isfinite(trial_loss)
+                & torch.isfinite(trial_gtd)
+                & torch.isfinite(trial_grad).all(dim=1)
+            )
+            armijo_rhs = start_loss + c1 * alpha_mid * gtd0
+            high_update = zooming & (
+                ~finite_trial
+                | (trial_loss > armijo_rhs)
+                | (trial_loss >= low_loss)
+            )
+            curvature_ok = (
+                zooming
+                & finite_trial
+                & ~high_update
+                & (trial_gtd.abs() <= -c2 * gtd0)
+            )
+            low_update = zooming & finite_trial & ~high_update & ~curvature_ok
+
+            if bool(curvature_ok.any()):
+                _record_accept(
+                    curvature_ok,
+                    alpha_mid,
+                    trial_flat,
+                    trial_loss,
+                    trial_grad,
+                    exact_wolfe=True,
+                )
+
+            if bool(high_update.any()):
+                high_alpha = torch.where(high_update, alpha_mid, high_alpha)
+                high_flat = torch.where(high_update[:, None], trial_flat, high_flat)
+                high_loss = torch.where(high_update, trial_loss, high_loss)
+                high_grad = torch.where(high_update[:, None], trial_grad, high_grad)
+                high_gtd = torch.where(high_update, trial_gtd, high_gtd)
+
+            if bool(low_update.any()):
+                flip_high_to_low = low_update & (
+                    trial_gtd * (high_alpha - low_alpha) >= 0
+                )
+                if bool(flip_high_to_low.any()):
+                    high_alpha = torch.where(flip_high_to_low, low_alpha, high_alpha)
+                    high_flat = torch.where(flip_high_to_low[:, None], low_flat, high_flat)
+                    high_loss = torch.where(flip_high_to_low, low_loss, high_loss)
+                    high_grad = torch.where(flip_high_to_low[:, None], low_grad, high_grad)
+                    high_gtd = torch.where(flip_high_to_low, low_gtd, high_gtd)
+
+                low_alpha = torch.where(low_update, alpha_mid, low_alpha)
+                low_flat = torch.where(low_update[:, None], trial_flat, low_flat)
+                low_loss = torch.where(low_update, trial_loss, low_loss)
+                low_grad = torch.where(low_update[:, None], trial_grad, low_grad)
+                low_gtd = torch.where(low_update, trial_gtd, low_gtd)
+
+            zooming = zooming & ~accepted
+
+        # If the bracket became too expensive to finish, return the best low
+        # endpoint for rows that at least made progress. This mirrors the scalar
+        # LBFGS behavior of returning the current low bracket on insufficient
+        # progress, but marks those rows as not exact-Wolfe in state.
+        fallback = zooming & (low_alpha > 0) & torch.isfinite(low_loss)
+        if bool(fallback.any()):
+            _record_accept(
+                fallback,
+                low_alpha,
+                low_flat,
+                low_loss,
+                low_grad,
+                exact_wolfe=False,
+            )
+
+        accepted_flat = torch.where(accepted[:, None], accepted_flat, start_flat)
+        accepted_loss = torch.where(accepted, accepted_loss, start_loss)
+        accepted_grad = torch.where(accepted[:, None], accepted_grad, start_grad)
+        accepted_alpha = torch.where(accepted, accepted_alpha, torch.zeros_like(accepted_alpha))
+        self._set_flat_param(accepted_flat)
+        return (
+            accepted,
+            accepted_flat,
+            accepted_loss,
+            accepted_grad,
+            accepted_alpha,
+            evals,
+            wolfe_ok,
+        )
+
+    @torch.no_grad()
+    def step(  # type: ignore[override]
+        self,
+        closure: LossClosure,
+        *,
+        loss_closure: LossClosure | None = None,
+    ) -> Tensor:
+        """Perform one batched L-BFGS step and return final per-row losses.
+
+        ``closure`` must zero gradients, compute a loss vector with shape
+        ``[B]``, call ``loss_vec.sum().backward()``, and return the vector.
+        ``loss_closure`` is optional and should return the same vector without
+        backward; it is used for cheaper Armijo line-search probes.
+        """
+        closure = torch.enable_grad()(closure)
+        group = self.param_groups[0]
+        lr = float(group["lr"])
+        max_iter = int(group["max_iter"])
+        max_eval = group["max_eval"]
+        tolerance_grad = float(group["tolerance_grad"])
+        tolerance_change = float(group["tolerance_change"])
+        history_size = int(group["history_size"])
+        line_search_fn = group["line_search_fn"]
+        max_ls = int(group["max_ls"])
+        c1 = float(group["c1"])
+        c2 = float(group["c2"])
+        shrink = float(group["shrink"])
+        lower_bound = group["lower_bound"]
+        upper_bound = group["upper_bound"]
+
+        if max_eval is None:
+            max_eval = max_iter * (max_ls + 1) + 1
+        max_eval = int(max_eval)
+
+        state = self.state[self._param]
+        B = self._batch_size()
+        device = self._param.device
+        dtype = self._param.dtype
+        state.setdefault("func_evals", 0)
+        state.setdefault("n_iter", 0)
+        state.setdefault("old_dirs", [])
+        state.setdefault("old_stps", [])
+        state.setdefault("ro", [])
+        state.setdefault("H_diag", torch.ones(B, device=device, dtype=dtype))
+
+        loss, flat_grad = self._evaluate_with_grad(closure)
+        func_evals = 1
+        state["func_evals"] += 1
+        flat_param = self._flat_param().clone()
+
+        accepted_total = torch.zeros(B, device=device, dtype=torch.bool)
+        wolfe_total = torch.zeros(B, device=device, dtype=torch.bool)
+        final_alpha = torch.zeros(B, device=device, dtype=dtype)
+        n_iter = 0
+
+        while n_iter < max_iter and func_evals < max_eval:
+            n_iter += 1
+            state["n_iter"] += 1
+
+            finite_grad = torch.isfinite(flat_grad).all(dim=1)
+            finite_loss = torch.isfinite(loss)
+            grad_norm = flat_grad.abs().amax(dim=1)
+            active = finite_loss & finite_grad & (grad_norm > tolerance_grad)
+            if not bool(active.any()):
+                break
+
+            H_diag = state["H_diag"]
+            direction = self._direction(
+                flat_grad,
+                state["old_dirs"],
+                state["old_stps"],
+                state["ro"],
+                H_diag,
+            )
+            direction = torch.where(active[:, None], direction, torch.zeros_like(direction))
+
+            gtd = _row_dot(flat_grad, direction)
+            bad_dir = active & (~torch.isfinite(gtd) | (gtd >= -tolerance_change))
+            if bool(bad_dir.any()):
+                direction = torch.where(bad_dir[:, None], -flat_grad, direction)
+                gtd = _row_dot(flat_grad, direction)
+
+            active = active & torch.isfinite(gtd) & (gtd < -tolerance_change)
+            if not bool(active.any()):
+                break
+
+            if state["n_iter"] == 1:
+                grad_l1 = flat_grad.abs().sum(dim=1).clamp_min(1e-30)
+                alpha = torch.minimum(torch.ones_like(grad_l1), 1.0 / grad_l1) * lr
+            else:
+                alpha = torch.full((B,), lr, device=device, dtype=dtype)
+            alpha = torch.where(active, alpha, torch.zeros_like(alpha))
+
+            start_flat = flat_param.clone()
+            start_loss = loss.clone()
+            start_grad = flat_grad.clone()
+            accepted = torch.zeros(B, device=device, dtype=torch.bool)
+            accepted_flat = start_flat.clone()
+            accepted_loss = start_loss.clone()
+
+            if line_search_fn is None:
+                trial_flat = self._project_flat(
+                    start_flat + alpha[:, None] * direction,
+                    lower_bound,
+                    upper_bound,
+                )
+                accepted = active.clone()
+                final_alpha = torch.where(active, alpha, final_alpha)
+                accepted_flat = torch.where(active[:, None], trial_flat, start_flat)
+                self._set_flat_param(accepted_flat)
+                loss, flat_grad = self._evaluate_with_grad(closure)
+                func_evals += 1
+                state["func_evals"] += 1
+            elif line_search_fn == "armijo":
+                searching = active.clone()
+                for _ in range(max_ls):
+                    if func_evals >= max_eval:
+                        break
+                    trial_flat = self._project_flat(
+                        start_flat + alpha[:, None] * direction,
+                        lower_bound,
+                        upper_bound,
+                    )
+                    candidate_flat = torch.where(
+                        searching[:, None],
+                        trial_flat,
+                        accepted_flat,
+                    )
+                    self._set_flat_param(candidate_flat)
+                    trial_loss = self._evaluate_loss(closure, loss_closure)
+                    func_evals += 1
+                    state["func_evals"] += 1
+
+                    armijo_rhs = start_loss + c1 * alpha * gtd
+                    ok = searching & torch.isfinite(trial_loss) & (trial_loss <= armijo_rhs)
+                    if bool(ok.any()):
+                        accepted = accepted | ok
+                        accepted_flat = torch.where(ok[:, None], trial_flat, accepted_flat)
+                        accepted_loss = torch.where(ok, trial_loss, accepted_loss)
+
+                    searching = active & ~accepted
+                    if not bool(searching.any()):
+                        break
+                    alpha = torch.where(searching, alpha * shrink, alpha)
+
+                accepted_flat = torch.where(active[:, None] & accepted[:, None], accepted_flat, start_flat)
+                final_alpha = torch.where(active & accepted, alpha, final_alpha)
+                self._set_flat_param(accepted_flat)
+                loss, flat_grad = self._evaluate_with_grad(closure)
+                func_evals += 1
+                state["func_evals"] += 1
+                accepted_loss = torch.where(accepted, accepted_loss, start_loss)
+                loss = torch.where(active, loss, accepted_loss)
+            else:
+                (
+                    accepted,
+                    accepted_flat,
+                    loss,
+                    flat_grad,
+                    alpha,
+                    ls_evals,
+                    wolfe_ok,
+                ) = self._batched_strong_wolfe(
+                    closure,
+                    start_flat=start_flat,
+                    start_loss=start_loss,
+                    start_grad=start_grad,
+                    direction=direction,
+                    gtd0=gtd,
+                    alpha0=alpha,
+                    active=active,
+                    c1=c1,
+                    c2=c2,
+                    max_ls=max_ls,
+                    max_evals=max_eval - func_evals,
+                    tolerance_change=tolerance_change,
+                    lower_bound=lower_bound,
+                    upper_bound=upper_bound,
+                )
+                func_evals += ls_evals
+                state["func_evals"] += ls_evals
+                final_alpha = torch.where(active & accepted, alpha, final_alpha)
+                wolfe_total = wolfe_total | wolfe_ok
+
+            accepted_total = accepted_total | accepted
+            new_flat = self._flat_param().clone()
+            s_k = new_flat - start_flat
+            y_k = flat_grad - start_grad
+            self._append_history(
+                state,
+                s_k,
+                y_k,
+                active & accepted,
+                history_size,
+                tolerance_change,
+            )
+
+            flat_param = new_flat
+
+            step_norm = s_k.abs().amax(dim=1)
+            loss_change = (loss - start_loss).abs()
+            still_progressing = active & accepted & (
+                (step_norm > tolerance_change) | (loss_change > tolerance_change)
+            )
+            if not bool(still_progressing.any()):
+                break
+
+        state["last_loss"] = loss.detach()
+        state["last_grad"] = flat_grad.detach()
+        state["last_accepted"] = accepted_total.detach()
+        state["last_wolfe_satisfied"] = wolfe_total.detach()
+        state["last_alpha"] = final_alpha.detach()
+        state["last_n_iter"] = n_iter
+        return loss.detach()

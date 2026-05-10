@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Tuple
 
+import os
 import torch
 
 from .terms import (
@@ -90,7 +91,24 @@ def Pi_step(
             DTS_term[end_rows_ge2:end_rows_ge2 + num_segs_eq1],
         )
 
-    return logaddexp2(DTS_reduced, DTS_L_term)
+    Pi_next = logaddexp2(DTS_reduced, DTS_L_term)
+
+    if os.environ.get("GPUREC_TERMINAL_LEAF_SPECIES", "0") != "0":
+        # Optional diagnostic mode: force observed gene/species leaf cells to
+        # remain pure observations instead of continuation states.
+        species_child1 = torch.full((S,), S, dtype=torch.long, device=Pi.device)
+        sp_parent_slots = sp_P_idx.long()
+        sp_children = sp_c12_idx.long()
+        first_child = sp_parent_slots < S
+        if bool(first_child.any()):
+            species_child1[sp_parent_slots[first_child]] = sp_children[first_child]
+        species_is_leaf = species_child1 >= S
+        clade_is_leaf = torch.isfinite(clade_species_map).any(dim=1)
+        terminal_mask = clade_is_leaf.unsqueeze(1) & species_is_leaf.unsqueeze(0)
+        leaf_only = log_pS + clade_species_map
+        Pi_next = torch.where(terminal_mask, leaf_only, Pi_next)
+
+    return Pi_next
 
 
 # ---------------------------------------------------------------------------
@@ -128,7 +146,8 @@ def Pi_fixed_point(
         Pi = warm_start_Pi
     else:
         Pi = torch.full((C, S), -1000.0, dtype=dtype, device=device)
-        Pi[leaf_row_index.to(device), leaf_col_index.to(device)] = 0.0
+        if os.environ.get("GPUREC_PI_INIT_LEAF_OBSERVATIONS", "1") != "0":
+            Pi[leaf_row_index.to(device), leaf_col_index.to(device)] = 0.0
 
     converged_iter = max_iters
     log_2 = torch.tensor([1.0], dtype=dtype, device=device)

@@ -23,6 +23,7 @@ tests/data/**/output/
 
 # Notebooks (large, tracked separately)
 *.ipynb
+!notebooks/uniform_chunked_optimization.ipynb
 
 # IDE
 .vscode/

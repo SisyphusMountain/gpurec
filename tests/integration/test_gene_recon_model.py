@@ -10,12 +10,14 @@ Covers:
 """
 from __future__ import annotations
 
+import math
 from pathlib import Path
 
 import pytest
 import torch
 
 from gpurec import GeneReconModel
+from gpurec.optimization import BatchedLBFGS
 from gpurec.optimization.theta_optimizer import optimize_theta_wave
 
 
@@ -248,6 +250,118 @@ def test_lbfgs_closure_runs(trees):
     assert nll_final < nll_initial, (
         f"L-BFGS did not improve NLL: {nll_initial} -> {nll_final}"
     )
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+def test_batched_lbfgs_improves_genewise_per_family_nll(trees):
+    """BatchedLBFGS optimizes genewise rows against per-family losses."""
+    sp, genes = trees
+    genes = genes[:3]
+    model = GeneReconModel.from_trees(
+        species_tree=sp,
+        gene_trees=genes,
+        mode="genewise",
+        pibar_mode="uniform",
+        device="cuda",
+        dtype=torch.float32,
+        theta_init_rates=(0.20, 0.01, 0.20),
+        fixed_iters_Pi=6,
+        max_iters_E=256,
+        tol_E=1e-8,
+        neumann_terms=2,
+        cg_maxiter=200,
+    )
+    model.static.warm_E = None
+    with torch.no_grad():
+        start = model.nll_per_family().detach().clone()
+
+    opt = BatchedLBFGS(
+        [model.theta],
+        lr=1.0,
+        max_iter=2,
+        history_size=5,
+        lower_bound=math.log2(1e-10),
+        tolerance_grad=1e-5,
+    )
+
+    def closure() -> torch.Tensor:
+        opt.zero_grad(set_to_none=True)
+        loss = model.nll_per_family()
+        loss.sum().backward()
+        return loss
+
+    def loss_only() -> torch.Tensor:
+        warm_E = model.static.warm_E
+        try:
+            return model.nll_per_family().detach()
+        finally:
+            model.static.warm_E = warm_E
+
+    for _ in range(3):
+        opt.step(closure, loss_closure=loss_only)
+
+    model.static.warm_E = None
+    with torch.no_grad():
+        end = model.nll_per_family().detach()
+
+    assert torch.all(torch.isfinite(end))
+    assert torch.all(end <= start + 1e-3), f"per-family NLL increased: {start} -> {end}"
+    assert float(end.sum()) < float(start.sum()) - 1e-3
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+def test_batched_lbfgs_strong_wolfe_improves_genewise_nll(trees):
+    sp, genes = trees
+    genes = genes[:3]
+    model = GeneReconModel.from_trees(
+        species_tree=sp,
+        gene_trees=genes,
+        mode="genewise",
+        pibar_mode="uniform",
+        device="cuda",
+        dtype=torch.float32,
+        theta_init_rates=(0.20, 0.01, 0.20),
+        fixed_iters_Pi=6,
+        max_iters_E=256,
+        tol_E=1e-8,
+        neumann_terms=2,
+        cg_maxiter=200,
+    )
+    model.static.warm_E = None
+    with torch.no_grad():
+        start = model.nll_per_family().detach().clone()
+
+    opt = BatchedLBFGS(
+        [model.theta],
+        lr=1.0,
+        max_iter=1,
+        history_size=5,
+        line_search_fn="strong_wolfe",
+        max_ls=10,
+        lower_bound=math.log2(1e-10),
+        tolerance_grad=1e-5,
+    )
+
+    def closure() -> torch.Tensor:
+        opt.zero_grad(set_to_none=True)
+        loss = model.nll_per_family()
+        loss.sum().backward()
+        return loss
+
+    for _ in range(2):
+        opt.step(closure)
+
+    state = opt.state[model.theta]
+    assert torch.all(state["last_accepted"])
+    assert torch.all(state["last_wolfe_satisfied"])
+
+    model.static.warm_E = None
+    with torch.no_grad():
+        end = model.nll_per_family().detach()
+
+    assert torch.all(torch.isfinite(end))
+    assert torch.all(end <= start + 1e-3), f"per-family NLL increased: {start} -> {end}"
+    assert float(end.sum()) < float(start.sum()) - 1e-3
 
 
 # ──────────────────────────────────────────────────────────────────────

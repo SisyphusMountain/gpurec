@@ -5,6 +5,7 @@ this module owns E_step, E_fixed_point, and compute_log_likelihood.
 """
 import torch
 import math
+import os
 
 from .terms import gather_E_children
 from .log2_utils import logsumexp2, logaddexp2, _safe_log2_internal as _safe_log2
@@ -103,6 +104,116 @@ def E_step(E, sp_P_idx, sp_child12_idx, log_pS, log_pD, log_pL, transfer_mat, ma
     return E_new, E_s1, E_s2, Ebar
 
 
+def _E_fixed_point_alerax_gs(
+    *,
+    species_helpers,
+    log_pS,
+    log_pD,
+    log_pL,
+    max_transfer_mat,
+    ancestors_T,
+    max_iters,
+    dtype,
+    device,
+):
+    """AleRax-compatible extinction update for uniform-transfer GLOBAL runs."""
+    S = int(species_helpers["S"])
+
+    def _prob_param(p: torch.Tensor, name: str) -> torch.Tensor:
+        p = p.to(device=device, dtype=dtype)
+        if p.ndim == 0:
+            return torch.exp2(p).expand(S)
+        if p.ndim == 1 and p.shape[0] == S:
+            return torch.exp2(p)
+        raise NotImplementedError(
+            f"GPUREC_E_ALERAX_GS currently supports scalar or [S] {name}, "
+            f"got shape {tuple(p.shape)}"
+        )
+
+    pS = _prob_param(log_pS, "log_pS")
+    pD = _prob_param(log_pD, "log_pD")
+    pL = _prob_param(log_pL, "log_pL")
+    transfer_scale = torch.exp2(max_transfer_mat.to(device=device, dtype=dtype).squeeze(-1))
+    if transfer_scale.ndim == 0:
+        transfer_scale = transfer_scale.expand(S)
+    if transfer_scale.ndim != 1 or transfer_scale.shape[0] != S:
+        raise NotImplementedError(
+            "GPUREC_E_ALERAX_GS currently supports scalar or [S] max_transfer_mat, "
+            f"got shape {tuple(transfer_scale.shape)}"
+        )
+
+    sp_P_idx = species_helpers["s_P_indexes"].to(device=device).long()
+    sp_child12_idx = species_helpers["s_C12_indexes"].to(device=device).long()
+    child1 = torch.full((S,), S, dtype=torch.long, device=device)
+    child2 = torch.full((S,), S, dtype=torch.long, device=device)
+    first_child = sp_P_idx < S
+    if bool(first_child.any()):
+        p = sp_P_idx[first_child]
+        c = sp_child12_idx[first_child]
+        child1[p] = c
+    if bool((~first_child).any()):
+        p = sp_P_idx[~first_child] - S
+        c = sp_child12_idx[~first_child]
+        child2[p] = c
+
+    child1_cpu = child1.detach().cpu().tolist()
+    child2_cpu = child2.detach().cpu().tolist()
+    depths = [0] * S
+    for s_idx in range(S):
+        c1 = child1_cpu[s_idx]
+        if c1 < S:
+            c2 = child2_cpu[s_idx]
+            depths[s_idx] = max(depths[c1], depths[c2]) + 1
+    species_levels = [
+        torch.tensor(
+            [s_idx for s_idx, depth in enumerate(depths) if depth == level],
+            dtype=torch.long,
+            device=device,
+        )
+        for level in range(max(depths) + 1)
+    ]
+
+    E_prob = torch.zeros((S,), dtype=dtype, device=device)
+    Ebar_prob = torch.zeros((S,), dtype=dtype, device=device)
+    ancestors_T = ancestors_T.to(device=device, dtype=dtype)
+
+    for iteration in range(max_iters):
+        for level_idx in species_levels:
+            if level_idx.numel() == 0:
+                continue
+            value = pL[level_idx] + pD[level_idx] * E_prob[level_idx] * E_prob[level_idx]
+            value = value + E_prob[level_idx] * Ebar_prob[level_idx]
+            c1 = child1[level_idx]
+            valid = c1 < S
+            if bool(valid.any()):
+                internal_idx = level_idx[valid]
+                value = value.clone()
+                value[valid] = value[valid] + (
+                    pS[internal_idx]
+                    * E_prob[c1[valid]]
+                    * E_prob[child2[internal_idx]]
+                )
+            E_prob[level_idx] = value
+
+        row_sum = E_prob.sum().unsqueeze(0)
+        ancestor_sum = (E_prob.unsqueeze(0) @ ancestors_T).squeeze(0)
+        Ebar_prob = (row_sum - ancestor_sum) * transfer_scale
+
+    E = _safe_log2(E_prob)
+    E_s12 = gather_E_children(E, species_helpers["s_P_indexes"], species_helpers["s_C12_indexes"])
+    E_s1, E_s2 = torch.chunk(E_s12, 2, dim=-1)
+    E_s1 = E_s1.view(E.shape)
+    E_s2 = E_s2.view(E.shape)
+    Ebar = _safe_log2(Ebar_prob)
+    return {
+        "E": E,
+        "iterations": max_iters,
+        "E_s1": E_s1,
+        "E_s2": E_s2,
+        "E_bar": Ebar,
+    }
+
+
 def E_fixed_point(species_helpers,
                           log_pS,
                           log_pD,
@@ -118,6 +229,37 @@ def E_fixed_point(species_helpers,
                           ancestors_T=None):
 
     S = species_helpers['S']
+
+    alerax_e_compat = (
+        os.environ.get("GPUREC_E_ALERAX_GS", "0") != "0"
+        or os.environ.get("GPUREC_ALERAX_COMPAT", "0") != "0"
+    )
+    if alerax_e_compat and (pibar_mode != "uniform" or ancestors_T is None):
+        raise NotImplementedError(
+            "GPUREC_ALERAX_COMPAT currently supports uniform-transfer "
+            "E evaluation with ancestors_T only"
+        )
+    if (
+        alerax_e_compat
+        and pibar_mode == "uniform"
+        and ancestors_T is not None
+    ):
+        return _E_fixed_point_alerax_gs(
+            species_helpers=species_helpers,
+            log_pS=log_pS,
+            log_pD=log_pD,
+            log_pL=log_pL,
+            max_transfer_mat=max_transfer_mat,
+            ancestors_T=ancestors_T,
+            max_iters=(
+                int(os.environ.get("GPUREC_ALERAX_COMPAT_E_ITERS", "4"))
+                if os.environ.get("GPUREC_ALERAX_COMPAT", "0") != "0"
+                else max_iters
+            ),
+            dtype=dtype,
+            device=device,
+        )
+
     # Determine batch size from parameters if present
     N = None
     if isinstance(transfer_mat, torch.Tensor) and transfer_mat.ndim == 3:

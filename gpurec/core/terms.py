@@ -5,6 +5,8 @@
 by the legacy fixed-point solver in ``legacy.py``.
 """
 import torch
+import math
+import os
 from .log2_utils import logsumexp2
 
 NEG_INF = float("-inf")
@@ -71,7 +73,9 @@ def compute_DTS_L(log_pD, log_pS, Pi, Pibar, Pi_s12, E, Ebar, E_s1, E_s2, clade_
     # If too heavy in memory, don't create the DTS_L array and just do logaddexp 5 times
     DTS_L = torch.empty((6, Pi.shape[0], Pi.shape[1]), dtype=log_pD.dtype, device=log_pD.device)
     # DL
-    DTS_L[0] = ((log_2 + log_pD + E).unsqueeze(0) + Pi)
+    dl_loss_multiplier = float(os.environ.get("GPUREC_DL_LOSS_MULTIPLIER", "2.0"))
+    log_dl_loss_multiplier = math.log2(dl_loss_multiplier)
+    DTS_L[0] = ((log_dl_loss_multiplier + log_pD + E).unsqueeze(0) + Pi)
     # TL
     DTS_L[1] = (Pi + Ebar.unsqueeze(0))
     DTS_L[2] = (Pibar + E.unsqueeze(0))
@@ -83,4 +87,3 @@ def compute_DTS_L(log_pD, log_pS, Pi, Pibar, Pi_s12, E, Ebar, E_s1, E_s2, clade_
     DTS_L[5] = (log_pS + clade_species_map)
     DTS_L_term = logsumexp2(DTS_L, dim=0)
     return DTS_L_term
-

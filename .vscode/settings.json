@@ -5,5 +5,6 @@
       "python.testing.pytestPath": "/home/enzo/miniforge3/envs/WP2/bin/pytest",
       "python.testing.autoTestDiscoverOnSaveEnabled": true,
       "python.testing.unittestEnabled": false,
-      "python.testing.nosetestsEnabled": false
+    "python.testing.nosetestsEnabled": false,
+    "cmake.sourceDirectory": "/home/enzo/Documents/git/gpurec/gpurec/AleRax"
   }

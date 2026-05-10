@@ -16,7 +16,9 @@ __all__: list[str] = []
 
 try:
     from gpurec.api import GeneReconModel  # noqa: F401
+    from gpurec.api import UniformChunkedReconModel  # noqa: F401
     __all__.append("GeneReconModel")
+    __all__.append("UniformChunkedReconModel")
 except ImportError:
     # JIT C++ build or torch may be missing in some environments; allow
     # partial import of subpackages even if the high-level API can't load.

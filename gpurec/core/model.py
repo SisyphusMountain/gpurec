@@ -156,7 +156,7 @@ class GeneDataset(Dataset):
         cache_dir.mkdir(parents=True, exist_ok=True)
 
         species_mode = "dense-species" if retain_dense_species_matrices else "compact-species"
-        version = f"light-v2:{species_mode}"
+        version = f"light-v3:{species_mode}"
         species_hash = cls._hash_file(species_tree_path)
         species_key = hashlib.sha256(
             f"{version}:species:{species_hash}".encode("utf-8")

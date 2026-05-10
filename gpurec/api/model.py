@@ -51,6 +51,7 @@ def _build_static_state(
     dataset: GeneDataset,
     *,
     pibar_mode: str,
+    fixed_iters_E: Optional[int],
     max_iters_E: int,
     tol_E: float,
     max_iters_Pi: int,
@@ -163,6 +164,7 @@ def _build_static_state(
         genewise=bool(dataset.genewise),
         specieswise=bool(dataset.specieswise),
         pibar_mode=pibar_mode,
+        fixed_iters_E=fixed_iters_E,
         max_iters_E=max_iters_E,
         tol_E=tol_E,
         max_iters_Pi=max_iters_Pi,
@@ -191,6 +193,7 @@ class GeneReconModel(torch.nn.Module):
         dataset: GeneDataset,
         mode: str,
         pibar_mode: str = "uniform",
+        fixed_iters_E: Optional[int] = None,
         max_iters_E: int = 2000,
         tol_E: float = 1e-8,
         max_iters_Pi: int = 2000,
@@ -214,6 +217,10 @@ class GeneReconModel(torch.nn.Module):
             )
         # Validate mode early
         _mode_to_flags(mode)
+        if fixed_iters_E is not None:
+            fixed_iters_E = int(fixed_iters_E)
+            if fixed_iters_E < 1:
+                raise ValueError("fixed_iters_E must be >= 1 when provided")
 
         # Sanity check: dataset flags must be consistent with mode
         ds_g, ds_sw, _ = (dataset.genewise, dataset.specieswise, dataset.pairwise)
@@ -237,6 +244,7 @@ class GeneReconModel(torch.nn.Module):
         self._static = _build_static_state(
             dataset,
             pibar_mode=pibar_mode,
+            fixed_iters_E=fixed_iters_E,
             max_iters_E=max_iters_E,
             tol_E=tol_E,
             max_iters_Pi=max_iters_Pi,
@@ -375,6 +383,12 @@ class GeneReconModel(torch.nn.Module):
             )
 
         with _nvtx_range("inference E fixed point"):
+            e_max_iters = (
+                static.fixed_iters_E
+                if static.fixed_iters_E is not None
+                else static.max_iters_E
+            )
+            e_tolerance = -1.0 if static.fixed_iters_E is not None else static.tol_E
             E_out = E_fixed_point(
                 species_helpers=static.species_helpers,
                 log_pS=log_pS,
@@ -382,9 +396,11 @@ class GeneReconModel(torch.nn.Module):
                 log_pL=log_pL,
                 transfer_mat=transfer_mat,
                 max_transfer_mat=max_transfer_vec,
-                max_iters=static.max_iters_E,
-                tolerance=static.tol_E,
-                warm_start_E=static.warm_E,
+                max_iters=e_max_iters,
+                tolerance=e_tolerance,
+                warm_start_E=(
+                    None if static.fixed_iters_E is not None else static.warm_E
+                ),
                 dtype=dtype,
                 device=device,
                 pibar_mode=static.pibar_mode,
@@ -424,7 +440,9 @@ class GeneReconModel(torch.nn.Module):
                 Pi_out["Pi_root_rows"],
                 E,
             )
-            static.warm_E = E.detach()
+            static.warm_E = (
+                None if static.fixed_iters_E is not None else E.detach()
+            )
             return nll_vec.sum() if reduce == "sum" else nll_vec
 
     def nll(self) -> torch.Tensor:
@@ -482,14 +500,25 @@ class GeneReconModel(torch.nn.Module):
     # ──────────────────────────────────────────────────────────────────
     # Parameter management
     # ──────────────────────────────────────────────────────────────────
-    def clamp_theta_(self, min_rate: float = 1e-10) -> None:
+    def clamp_theta_(
+        self,
+        min_rate: float = 1e-10,
+        max_rate: Optional[float] = None,
+    ) -> None:
         """In-place safety floor on theta to prevent rate underflow.
 
         Matches the clamp applied between Adam steps inside
         ``optimize_theta_wave`` (see ``wave_optimizer.py:531``).
         """
+        if min_rate <= 0:
+            raise ValueError("min_rate must be strictly positive")
+        if max_rate is not None and max_rate < min_rate:
+            raise ValueError("max_rate must be greater than or equal to min_rate")
         with torch.no_grad():
-            self.theta.clamp_(min=math.log2(min_rate))
+            self.theta.clamp_(
+                min=math.log2(min_rate),
+                max=None if max_rate is None else math.log2(max_rate),
+            )
 
     @property
     def rates(self) -> torch.Tensor:

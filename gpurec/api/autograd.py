@@ -16,6 +16,7 @@ convention and returns NLL from ``forward()``, so users write
 from __future__ import annotations
 
 from dataclasses import dataclass, field, fields
+import os
 from typing import Any, Optional
 
 import torch
@@ -60,6 +61,7 @@ class ReconStaticState:
 
     # Solver knobs
     pibar_mode: str = "uniform"
+    fixed_iters_E: Optional[int] = None
     max_iters_E: int = 2000
     tol_E: float = 1e-8
     max_iters_Pi: int = 2000
@@ -152,6 +154,14 @@ class _GeneReconFunction(torch.autograd.Function):
 
     @staticmethod
     def forward(ctx, theta: torch.Tensor, static: ReconStaticState, reduce: str):
+        if os.environ.get("GPUREC_ALERAX_COMPAT", "0") != "0":
+            raise NotImplementedError(
+                "GPUREC_ALERAX_COMPAT changes the forward objective to "
+                "AleRax's fixed four-pass evaluator. The current custom "
+                "backward differentiates GPUREC's converged fixed-point "
+                "objective, so gradient-based optimization is disabled in "
+                "this mode."
+            )
         if reduce not in ("sum", "per_family"):
             raise ValueError(f"reduce must be 'sum' or 'per_family', got {reduce!r}")
         if reduce == "per_family" and not static.genewise:
@@ -171,6 +181,12 @@ class _GeneReconFunction(torch.autograd.Function):
 
             # 2. E fixed-point with warm start
             with _nvtx_range("forward E fixed point"):
+                e_max_iters = (
+                    static.fixed_iters_E
+                    if static.fixed_iters_E is not None
+                    else static.max_iters_E
+                )
+                e_tolerance = -1.0 if static.fixed_iters_E is not None else static.tol_E
                 E_out = E_fixed_point(
                     species_helpers=static.species_helpers,
                     log_pS=log_pS,
@@ -178,9 +194,11 @@ class _GeneReconFunction(torch.autograd.Function):
                     log_pL=log_pL,
                     transfer_mat=transfer_mat,
                     max_transfer_mat=max_transfer_vec,
-                    max_iters=static.max_iters_E,
-                    tolerance=static.tol_E,
-                    warm_start_E=static.warm_E,
+                    max_iters=e_max_iters,
+                    tolerance=e_tolerance,
+                    warm_start_E=(
+                        None if static.fixed_iters_E is not None else static.warm_E
+                    ),
                     dtype=dtype,
                     device=device,
                     pibar_mode=static.pibar_mode,
@@ -251,7 +269,9 @@ class _GeneReconFunction(torch.autograd.Function):
 
         # 6. Update warm-start cache (in-place mutation of the shared static).
         with _nvtx_range("forward reduce"):
-            static.warm_E = E.detach()
+            static.warm_E = (
+                None if static.fixed_iters_E is not None else E.detach()
+            )
 
             # 7. Reduce.
             return nll_vec.sum() if reduce == "sum" else nll_vec

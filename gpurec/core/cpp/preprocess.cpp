@@ -85,6 +85,35 @@ torch::Tensor to_uint8_tensor(const std::vector<uint8_t>& vec) {
       .clone();
 }
 
+void binarize_gene_tree(TreeNode *node, const std::string &path) {
+  if (node == nullptr) {
+    return;
+  }
+  for (TreeNode *child : node->children) {
+    binarize_gene_tree(child, path);
+  }
+  if (node->children.size() == 1) {
+    throw std::runtime_error(
+        "Unary node in gene tree " + path +
+        ". GPUREC expects binary gene trees or multifurcations that can be "
+        "resolved deterministically.");
+  }
+  while (node->children.size() > 2) {
+    TreeNode *right = node->children.back();
+    node->children.pop_back();
+    TreeNode *left = node->children.back();
+    node->children.pop_back();
+
+    TreeNode *internal = new TreeNode();
+    internal->parent = node;
+    left->parent = internal;
+    right->parent = internal;
+    internal->children.push_back(left);
+    internal->children.push_back(right);
+    node->children.push_back(internal);
+  }
+}
+
 // ============================================================================
 // Clade and CladeSplit Classes
 // ============================================================================
@@ -651,6 +680,7 @@ CladeData amalgamate_clades_and_splits(
 
   for (const std::string &path : gene_paths) {
     std::unique_ptr<TreeNode> tree = parse_newick_file(path);
+    binarize_gene_tree(tree.get(), path);
     std::vector<std::string> tree_leaves;
     std::unordered_map<std::string, int> tree_leaf_map;
     collect_leaf_names(tree.get(), tree_leaves, tree_leaf_map);
