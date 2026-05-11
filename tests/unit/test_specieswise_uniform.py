@@ -17,7 +17,7 @@ from gpurec.core.likelihood import (
     compute_log_likelihood,
     compute_log_likelihood_root_rows,
 )
-from gpurec.core.species_euler_layout import species_child_arrays_from_helpers
+from gpurec.core.species import species_child_arrays_from_helpers
 
 
 _ROOT = Path(__file__).resolve().parent.parent
