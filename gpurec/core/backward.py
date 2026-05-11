@@ -543,183 +543,57 @@ def Pi_wave_backward(
             species_cache['sp_child2_cpu'] = sp_child2_cpu
 
     fused_cross_pibar_vjp_enabled = (
-        os.environ.get("GPUREC_FUSED_CROSS_PIBAR_VJP", "1") != "0"
-        and _HAS_FUSED_BACKWARD
+        _HAS_FUSED_BACKWARD
         and pibar_mode == 'uniform'
         and dtype in _SUPPORTED_BACKWARD_FLOAT_DTYPES
         and device.type == 'cuda'
     )
-    dts_pibar_ud_fusion_enabled = (
-        os.environ.get("GPUREC_DTS_PIBAR_UD_FUSION", "1") != "0"
-    )
-    dts_pibar_ud_side_threshold = float(
-        os.environ.get(
-            "GPUREC_DTS_PIBAR_UD_SIDE_THRESHOLD",
-            os.environ.get("GPUREC_DTS_PIBAR_UD_SIDE_BUDGET", "0"),
-        )
-    )
-    if dts_pibar_ud_side_threshold < 0.0:
-        raise ValueError("GPUREC_DTS_PIBAR_UD_SIDE_THRESHOLD must be non-negative")
-    dts_pibar_ud_side_threshold_arg = (
-        torch.tensor([dts_pibar_ud_side_threshold], device=target_device, dtype=dtype)
-        if dts_pibar_ud_side_threshold > 0.0
-        else 0.0
-    )
-    dts_pibar_ud_skip_zero_sides_enabled = (
-        os.environ.get("GPUREC_DTS_PIBAR_UD_SKIP_ZERO_SIDES", "1") != "0"
-        or os.environ.get("GPUREC_DTS_PIBAR_UD_WORKLIST", "0") != "0"
-        or dts_pibar_ud_side_threshold > 0.0
-    )
-    dts_pibar_ud_compact_levels_enabled = (
-        os.environ.get("GPUREC_DTS_PIBAR_UD_COMPACT_LEVELS", "1") != "0"
-    )
-    dts_pibar_ud_min_splits = int(
-        os.environ.get("GPUREC_DTS_PIBAR_UD_MIN_SPLITS", "0")
-    )
+    dts_pibar_ud_side_threshold_arg = 0.0
+    dts_pibar_ud_skip_zero_sides_enabled = True
+    dts_pibar_ud_compact_levels_enabled = True
+    dts_pibar_ud_min_splits = 0
     kernelized_active_mask_enabled = (
-        os.environ.get("GPUREC_KERNELIZED_ACTIVE_MASK", "1") != "0"
-        and _HAS_FUSED_BACKWARD
+        _HAS_FUSED_BACKWARD
         and pibar_mode == 'uniform'
         and device.type == 'cuda'
         and dtype in _SUPPORTED_BACKWARD_FLOAT_DTYPES
     )
-    kernelized_backward_dts_enabled = (
-        os.environ.get("GPUREC_KERNELIZED_BACKWARD_DTS", "1") != "0"
-        and device.type == 'cuda'
-    )
-    dts_parent_reduced_env = os.environ.get("GPUREC_BACKWARD_PARENT_REDUCED_DTS")
-    if dts_parent_reduced_env is None:
-        dts_parent_reduced_env = os.environ.get("GPUREC_DTS_PARENT_REDUCED")
-    if dts_parent_reduced_env is None:
-        dts_parent_reduced_env = "tiled"
+    kernelized_backward_dts_enabled = device.type == 'cuda'
     parent_reduced_backward_dts_enabled = (
-        dts_parent_reduced_env.strip().lower()
-        not in ("", "0", "false", "off", "no")
-        and kernelized_backward_dts_enabled
+        kernelized_backward_dts_enabled
         and pibar_mode == 'uniform'
         and device.type == 'cuda'
         and dtype in _SUPPORTED_BACKWARD_FLOAT_DTYPES
     )
-    parent_reduced_backward_dts_min_splits = int(
-        os.environ.get(
-            "GPUREC_BACKWARD_PARENT_REDUCED_DTS_MIN_SPLITS",
-            os.environ.get("GPUREC_DTS_PARENT_REDUCED_MIN_SPLITS", "8192"),
-        )
-    )
-    parent_reduced_backward_dts_impl = dts_parent_reduced_env.strip().lower()
-    if parent_reduced_backward_dts_impl in ("1", "true", "yes", "on"):
-        parent_reduced_backward_dts_impl = os.environ.get(
-            "GPUREC_BACKWARD_PARENT_REDUCED_DTS_IMPL",
-            os.environ.get("GPUREC_DTS_PARENT_REDUCED_IMPL", "tiled"),
-        ).strip().lower()
-    parent_reduced_backward_dts_tile_splits = int(
-        os.environ.get(
-            "GPUREC_BACKWARD_PARENT_REDUCED_DTS_TILE_SPLITS",
-            os.environ.get("GPUREC_DTS_PARENT_REDUCED_TILE_SPLITS", "64"),
-        )
-    )
-    fused_dts_backward_accum_enabled = (
-        os.environ.get("GPUREC_FUSED_DTS_BACKWARD_ACCUM", "1") != "0"
-    )
-    fused_uniform_backward_enabled = (
-        os.environ.get("GPUREC_FUSED_UNIFORM_BACKWARD", "1") != "0"
-    )
-    fused_uniform_backward_view_rhs = (
-        os.environ.get("GPUREC_FUSED_UNIFORM_BACKWARD_VIEW_RHS", "1") != "0"
-    )
-    skip_inactive_zero_stores_enabled = (
-        os.environ.get("GPUREC_BACKWARD_SKIP_INACTIVE_ZERO_STORES", "0") != "0"
-    )
-    backward_pruning_row_stats_enabled = (
-        os.environ.get("GPUREC_BACKWARD_PRUNING_ROW_STATS", "0") != "0"
-    )
-    hybrid_row_pruning_env = os.environ.get("GPUREC_BACKWARD_HYBRID_ROW_PRUNING")
-    if hybrid_row_pruning_env is None:
-        hybrid_row_pruning_env = os.environ.get("GPUREC_BACKWARD_HYBRID_ROW_MASK")
-    if hybrid_row_pruning_env is None:
-        hybrid_row_pruning_env = os.environ.get("GPUREC_FUSED_ROW_ACTIVE_MASK")
-    if hybrid_row_pruning_env is None:
-        hybrid_row_pruning_env = "1"
+    parent_reduced_backward_dts_min_splits = 8192
+    parent_reduced_backward_dts_impl = "tiled"
+    parent_reduced_backward_dts_tile_splits = 64
+    fused_dts_backward_accum_enabled = True
+    fused_uniform_backward_enabled = True
+    fused_uniform_backward_view_rhs = True
+    skip_inactive_zero_stores_enabled = False
+    backward_pruning_row_stats_enabled = False
     hybrid_row_pruning_enabled = (
-        (hybrid_row_pruning_env != "0")
-        and _HAS_FUSED_BACKWARD
+        _HAS_FUSED_BACKWARD
         and pibar_mode == 'uniform'
         and device.type == 'cuda'
         and dtype in _SUPPORTED_BACKWARD_FLOAT_DTYPES
     )
-    hybrid_row_pruning_targets = os.environ.get(
-        "GPUREC_BACKWARD_HYBRID_ROW_PRUNING_TARGETS",
-        os.environ.get("GPUREC_BACKWARD_ROW_MASK_TARGETS", "all"),
-    ).strip().lower()
-    if hybrid_row_pruning_targets in ("", "1", "true", "yes", "on"):
-        hybrid_row_pruning_targets = "all"
-    hybrid_prune_self = hybrid_row_pruning_targets in ("all", "self", "wave")
-    hybrid_prune_splits = hybrid_row_pruning_targets in (
-        "all",
-        "split",
-        "splits",
-        "dts",
-        "dts_pibar",
-        "pibar",
-    )
-    hybrid_row_pruning_require_partial = (
-        os.environ.get("GPUREC_BACKWARD_HYBRID_ROW_PRUNING_REQUIRE_PARTIAL", "0")
-        != "0"
-    )
-    hybrid_row_pruning_min_inactive_frac = float(
-        os.environ.get("GPUREC_BACKWARD_HYBRID_ROW_PRUNING_MIN_INACTIVE_FRAC", "0")
-    )
-    family_chunk_pruning_diag_enabled = (
-        os.environ.get(
-            "GPUREC_BACKWARD_FAMILY_CHUNK_DIAG",
-            os.environ.get("GPUREC_BACKWARD_FAMILY_PRUNING_DIAG", "0"),
-        )
-        != "0"
-    )
+    hybrid_prune_self = True
+    hybrid_prune_splits = True
+    hybrid_row_pruning_require_partial = False
+    hybrid_row_pruning_min_inactive_frac = 0.0
+    family_chunk_pruning_diag_enabled = False
     family_chunk_rows = 256
-    if family_chunk_pruning_diag_enabled:
-        family_chunk_rows = max(
-            1,
-            int(
-                os.environ.get(
-                    "GPUREC_BACKWARD_FAMILY_CHUNK_ROWS",
-                    os.environ.get("GPUREC_BACKWARD_FAMILY_CHUNK_SIZE", "256"),
-                )
-            ),
-        )
     wave_topology_int32_enabled = (
-        os.environ.get("GPUREC_WAVE_TOPOLOGY_INT32", "1") != "0"
-        and device.type == 'cuda'
+        device.type == 'cuda'
         and dtype in _SUPPORTED_BACKWARD_FLOAT_DTYPES
     )
-    dts_reduction_accum_impl = os.environ.get(
-        "GPUREC_DTS_BACKWARD_REDUCTION_ACCUM", "scalar"
-    ).strip().lower()
-    dts_reduction_accum_scalar_enabled = dts_reduction_accum_impl in (
-        "1",
-        "true",
-        "yes",
-        "on",
-        "scalar",
-        "scalars",
-        "all",
-        "full",
-    )
-    dts_reduction_accum_mt_enabled = dts_reduction_accum_impl in (
-        "mt",
-        "grad_mt",
-        "all",
-        "full",
-    )
-    dts_reduction_accum_min_splits = int(
-        os.environ.get("GPUREC_DTS_BACKWARD_REDUCTION_ACCUM_MIN_SPLITS", "8192")
-    )
-    dts_grad_mt_two_stage_enabled = (
-        os.environ.get("GPUREC_DTS_GRAD_MT_TWO_STAGE", "0") != "0"
-    )
-    dts_grad_mt_two_stage_tile_splits = int(
-        os.environ.get("GPUREC_DTS_GRAD_MT_TWO_STAGE_TILE_SPLITS", "128")
-    )
+    dts_reduction_accum_scalar_enabled = True
+    dts_reduction_accum_mt_enabled = False
+    dts_reduction_accum_min_splits = 8192
+    dts_grad_mt_two_stage_enabled = True
+    dts_grad_mt_two_stage_tile_splits = 128
     _compute_dts_cross_kernelized = None
     if kernelized_backward_dts_enabled:
         from .forward import _compute_dts_cross as _compute_dts_cross_kernelized
@@ -1374,8 +1248,7 @@ def Pi_wave_backward(
     if reuse_forward_pibar_stats_enabled:
         forward_pibar_row_max = uniform_pibar_row_max.contiguous()
     elif (
-        dts_pibar_ud_fusion_enabled
-        and uniform_pibar_row_max is not None
+        uniform_pibar_row_max is not None
         and torch.is_tensor(uniform_pibar_row_max)
         and uniform_pibar_row_max.numel() == C
         and pibar_mode == 'uniform'
@@ -1816,8 +1689,7 @@ def Pi_wave_backward(
                         n_ws >= dts_reduction_accum_min_splits
                     )
                     pibar_ud_fusion_match = (
-                        dts_pibar_ud_fusion_enabled
-                        and fused_cross_pibar_vjp_enabled
+                        fused_cross_pibar_vjp_enabled
                         and level_parents is not None
                         and forward_pibar_row_max is not None
                         and mt_shared is not None
@@ -1928,8 +1800,7 @@ def Pi_wave_backward(
                 dts_mt = mt_shared if _auto_wrapped else mt_squeezed
                 dts_family_idx = None if _auto_wrapped else family_idx
                 pibar_ud_fusion_match = (
-                    dts_pibar_ud_fusion_enabled
-                    and fused_cross_pibar_vjp_enabled
+                    fused_cross_pibar_vjp_enabled
                     and level_parents is not None
                     and forward_pibar_row_max is not None
                     and torch.is_tensor(dts_mt)
