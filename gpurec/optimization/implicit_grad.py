@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import time
+from dataclasses import dataclass
+import math
 from typing import Optional
 
 import torch
@@ -12,7 +14,48 @@ from gpurec.core.backward import Pi_wave_backward
 from gpurec.core.log2_utils import _safe_log2_internal as _safe_log2
 from gpurec.core.extract_parameters import extract_parameters_uniform
 
-from .linear_solvers import _cg, _gmres
+
+@dataclass
+class _SolveStats:
+    method: str
+    iters: int
+    rel_res: float
+    fallback_used: bool = False
+    success: bool = True
+
+
+@torch.no_grad()
+def _cg(Av, b: torch.Tensor, *, tol: float = 1e-8, maxiter: int = 500):
+    x = torch.zeros_like(b)
+    r = b - Av(x)
+    p = r.clone()
+    rr_old = float(torch.dot(r, r))
+    bnorm = max(float(b.norm()) if b.numel() > 0 else 1.0, 1.0)
+    rel_res = float(r.norm()) / bnorm
+    if rel_res <= tol:
+        return x, _SolveStats("CG", 0, rel_res)
+
+    success = True
+    iters = 0
+    for k in range(1, maxiter + 1):
+        Ap = Av(p)
+        pAp = float(torch.dot(p, Ap))
+        if pAp <= 0.0 or not math.isfinite(pAp):
+            success = False
+            iters = k - 1
+            break
+        alpha = rr_old / pAp
+        x = x + alpha * p
+        r = r - alpha * Ap
+        rel_res = float(r.norm()) / bnorm
+        iters = k
+        if rel_res <= tol:
+            return x, _SolveStats("CG", iters, rel_res)
+        rr_new = float(torch.dot(r, r))
+        p = r + (rr_new / max(rr_old, 1e-30)) * p
+        rr_old = rr_new
+
+    return x, _SolveStats("CG", iters, rel_res, success=success)
 
 
 @torch.no_grad()
@@ -47,7 +90,7 @@ def implicit_grad_loglik_vjp_wave(
 
     Steps:
     1. Pi backward: wave-by-wave Neumann series (root→leaves)
-    2. E adjoint: solve (I - G_E^T) w = q via CG/GMRES
+    2. E adjoint: solve (I - G_E^T) w = q via the retained CG solve
     3. θ gradient: VJP through extract_parameters
 
     Returns (grad_theta, pi_backward_info).
@@ -101,7 +144,6 @@ def _e_adjoint_and_theta_vjp(
     device, dtype,
     *,
     genewise=False,
-    cg_tol=1e-8, cg_maxiter=500, gmres_restart=40,
     pibar_mode='uniform',
     ancestors_T=None,
 ):
@@ -168,7 +210,7 @@ def _e_adjoint_and_theta_vjp(
             es_to_e = torch.autograd.grad(total, E_req3, retain_graph=False)[0]
         q_E = q_E + es_to_e
 
-    # Solve (I - G_E^T) w = q_E via CG/GMRES
+    # Solve (I - G_E^T) w = q_E via one fixed CG path.
     torch.cuda.synchronize()
     _t_qE = time.perf_counter()
 
@@ -194,10 +236,7 @@ def _e_adjoint_and_theta_vjp(
         gE, = vjpG(wE.clone())
         return (wE - gE).reshape(-1)
 
-    w_flat, statsG, okG = _cg(AG_flat, q_flat, tol=cg_tol, maxiter=cg_maxiter)
-    if not okG:
-        w_flat, statsG = _gmres(AG_flat, q_flat, tol=cg_tol, restart=gmres_restart, maxiter=cg_maxiter)
-        statsG.fallback_used = True
+    w_flat, statsG = _cg(AG_flat, q_flat)
 
     torch.cuda.synchronize()
     _t_cg = time.perf_counter() - _t_qE

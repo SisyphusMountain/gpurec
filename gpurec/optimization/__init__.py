@@ -7,12 +7,8 @@ row-wise batched L-BFGS implementation used for genewise polishing.
 
 from .batched_lbfgs import BatchedLBFGS
 from .implicit_grad import implicit_grad_loglik_vjp_wave
-from .types import FixedPointInfo, LinearSolveStats, StepRecord
 
 __all__ = [
     "BatchedLBFGS",
-    "FixedPointInfo",
-    "LinearSolveStats",
-    "StepRecord",
     "implicit_grad_loglik_vjp_wave",
 ]
