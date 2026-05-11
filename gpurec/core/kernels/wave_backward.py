@@ -290,14 +290,11 @@ def _wave_backward_uniform_kernel(
     MAX_ANCESTOR_DEPTH: tl.constexpr,
     USE_LEAF_INDEX: tl.constexpr,
     ACCUM_PARAM_GRADS: tl.constexpr,
-    PARAM_GRAD_TWO_STAGE: tl.constexpr,
     FAST_NOSPLIT_PARAM_GRADS: tl.constexpr,
     COMPACT_PIBAR_SCRATCH: tl.constexpr,
-    RECOMPUTE_PIBAR_DENOM: tl.constexpr,
     LEAF_HIT_ONLY_LOGP: tl.constexpr,
     LEAF_LOGP_MODE: tl.constexpr,
     USE_PIBAR_ROW_MAX: tl.constexpr,
-    SPEC_GATHER: tl.constexpr,
     USE_ACTIVE_MASK: tl.constexpr,
     SKIP_INACTIVE_ZERO_STORES: tl.constexpr,
     CONST_LAYOUT: tl.constexpr,
@@ -343,7 +340,7 @@ def _wave_backward_uniform_kernel(
                 mask = s_offs < S
                 zero = tl.zeros([BLOCK_S], dtype=DTYPE)
                 tl.store(v_k_ptr + out_base + s_offs, zero, mask=mask)
-                if (not ACCUM_PARAM_GRADS) and (not PARAM_GRAD_TWO_STAGE):
+                if not ACCUM_PARAM_GRADS:
                     off = out_base + s_offs
                     tl.store(aw0_ptr + off, zero, mask=mask)
                     tl.store(aw1_ptr + off, zero, mask=mask)
@@ -528,7 +525,7 @@ def _wave_backward_uniform_kernel(
             tl.store(aw1_ptr + off, pibar_wt * inv_denom, mask=mask)
         else:
             tl.store(aw1_ptr + off, pibar_wt, mask=mask)
-        if (not RECOMPUTE_PIBAR_DENOM) and (not COMPACT_PIBAR_SCRATCH):
+        if not COMPACT_PIBAR_SCRATCH:
             tl.store(aw2_ptr + off, inv_denom, mask=mask)
             tl.store(aw3_ptr + off, p_prime, mask=mask)
         tl.store(aw4_ptr + off, sl1_wt, mask=mask)
@@ -543,10 +540,6 @@ def _wave_backward_uniform_kernel(
     #   Pass B: result[s] = term[s] * diag_wt[s] + p_prime[s] * (A - correction[s])
     #                        + speciation contribution.
     #
-    # SPEC_GATHER replaces the scatter/zero/read speciation path with:
-    #   spec[s] = term[parent[s]] * sl_weight[parent[s] -> s]
-    # This removes one full zero pass and the speciation scatter stores, but
-    # adds parent-index gathers from the current term and scratch weights.
     # ================================================================
     # Copy rhs → v_k (v_k accumulates the Neumann sum)
     for s_start in range(0, S, BLOCK_S):
@@ -569,21 +562,17 @@ def _wave_backward_uniform_kernel(
             zero = tl.zeros(s_offs.shape, dtype=DTYPE)
             tl.store(pibar_corr_ptr + out_base + s_offs, zero, mask=mask)
 
-        if not SPEC_GATHER:
-            # The scatter speciation path needs its ping-pong output buffer for
-            # child contributions.
-            for s_start in range(0, S, BLOCK_S):
-                s_offs = s_start + tl.arange(0, BLOCK_S)
-                valid_mask = s_offs < S
-                mask = valid_mask & row_active
-                zero = tl.zeros(s_offs.shape, dtype=DTYPE)
-                # Zero the output buffer before speciation scatter writes.
-                # Sub-pass A only writes child positions; sub-pass B reads all
-                # positions, so non-child positions must not retain stale terms.
-                if _n % 2 == 0:
-                    tl.store(spec_buf_ptr + out_base + s_offs, zero, mask=mask)
-                else:
-                    tl.store(term_buf_ptr + out_base + s_offs, zero, mask=mask)
+        # Zero the output buffer before speciation scatter writes. Sub-pass A
+        # only writes child positions; sub-pass B reads all positions.
+        for s_start in range(0, S, BLOCK_S):
+            s_offs = s_start + tl.arange(0, BLOCK_S)
+            valid_mask = s_offs < S
+            mask = valid_mask & row_active
+            zero = tl.zeros(s_offs.shape, dtype=DTYPE)
+            if _n % 2 == 0:
+                tl.store(spec_buf_ptr + out_base + s_offs, zero, mask=mask)
+            else:
+                tl.store(term_buf_ptr + out_base + s_offs, zero, mask=mask)
 
         tl.debug_barrier()
 
@@ -610,14 +599,7 @@ def _wave_backward_uniform_kernel(
                 u_d = term_val * pibar_u_coeff
             else:
                 pibar_wt = tl.load(aw1_ptr + off, mask=mask, other=0.0).to(DTYPE)
-                if RECOMPUTE_PIBAR_DENOM:
-                    pi_w = tl.load(Pi_star_ptr + pi_base + s_offs, mask=mask, other=-1e30).to(DTYPE)
-                    p_prime = tl.exp2(pi_w - row_max)
-                    denom = row_sum - p_prime
-                    inv_denom = tl.where(denom > 0, 1.0 / denom, tl.zeros_like(denom))
-                else:
-                    inv_denom = tl.load(aw2_ptr + off, mask=mask, other=0.0).to(DTYPE)
-
+                inv_denom = tl.load(aw2_ptr + off, mask=mask, other=0.0).to(DTYPE)
                 u_d = term_val * pibar_wt * inv_denom
 
             A_acc += tl.sum(u_d, axis=0)
@@ -628,26 +610,22 @@ def _wave_backward_uniform_kernel(
                 tl.atomic_add(pibar_corr_ptr + out_base + cur, u_d, mask=anc_mask)
                 cur = tl.load(sp_parent_ptr + cur, mask=anc_mask, other=-1)
 
-            if not SPEC_GATHER:
-                # Speciation scatter: write term * sl_wt to child index
-                sl1_wt = tl.load(aw4_ptr + off, mask=mask, other=0.0).to(DTYPE)
-                sl2_wt = tl.load(aw345_ptr + off, mask=mask, other=0.0).to(DTYPE)
-                c1 = tl.load(sp_child1_ptr + s_offs, mask=mask, other=0)
-                c2 = tl.load(sp_child2_ptr + s_offs, mask=mask, other=0)
-                c1_valid = (c1 < S) & mask
-                c2_valid = (c2 < S) & mask
-
-                # No conflict: each child appears as target of exactly one parent.
-                src1 = term_val * sl1_wt
-                src2 = term_val * sl2_wt
-                # Write to output buffer at child index (using the OTHER buffer)
-                if _n % 2 == 0:
-                    # Writing to spec_buf
-                    tl.store(spec_buf_ptr + out_base + c1, src1, mask=c1_valid)
-                    tl.store(spec_buf_ptr + out_base + c2, src2, mask=c2_valid)
-                else:
-                    tl.store(term_buf_ptr + out_base + c1, src1, mask=c1_valid)
-                    tl.store(term_buf_ptr + out_base + c2, src2, mask=c2_valid)
+            # Speciation scatter: write term * sl_wt to child index. No
+            # conflict: each child appears as target of exactly one parent.
+            sl1_wt = tl.load(aw4_ptr + off, mask=mask, other=0.0).to(DTYPE)
+            sl2_wt = tl.load(aw345_ptr + off, mask=mask, other=0.0).to(DTYPE)
+            c1 = tl.load(sp_child1_ptr + s_offs, mask=mask, other=0)
+            c2 = tl.load(sp_child2_ptr + s_offs, mask=mask, other=0)
+            c1_valid = (c1 < S) & mask
+            c2_valid = (c2 < S) & mask
+            src1 = term_val * sl1_wt
+            src2 = term_val * sl2_wt
+            if _n % 2 == 0:
+                tl.store(spec_buf_ptr + out_base + c1, src1, mask=c1_valid)
+                tl.store(spec_buf_ptr + out_base + c2, src2, mask=c2_valid)
+            else:
+                tl.store(term_buf_ptr + out_base + c1, src1, mask=c1_valid)
+                tl.store(term_buf_ptr + out_base + c2, src2, mask=c2_valid)
 
         tl.debug_barrier()
 
@@ -674,36 +652,14 @@ def _wave_backward_uniform_kernel(
                 u_d = term_val * pibar_u_coeff
             else:
                 pibar_wt = tl.load(aw1_ptr + off, mask=mask, other=0.0).to(DTYPE)
-                if RECOMPUTE_PIBAR_DENOM:
-                    pi_w = tl.load(Pi_star_ptr + pi_base + s_offs, mask=mask, other=-1e30).to(DTYPE)
-                    p_prime = tl.exp2(pi_w - row_max)
-                    denom = row_sum - p_prime
-                    inv_denom = tl.where(denom > 0, 1.0 / denom, tl.zeros_like(denom))
-                else:
-                    inv_denom = tl.load(aw2_ptr + off, mask=mask, other=0.0).to(DTYPE)
-                    p_prime = tl.load(aw3_ptr + off, mask=mask, other=0.0).to(DTYPE)
-
+                inv_denom = tl.load(aw2_ptr + off, mask=mask, other=0.0).to(DTYPE)
+                p_prime = tl.load(aw3_ptr + off, mask=mask, other=0.0).to(DTYPE)
                 u_d = term_val * pibar_wt * inv_denom
             correction = tl.load(pibar_corr_ptr + off, mask=mask, other=0.0).to(DTYPE)
             result = term_val * diag_wt + p_prime * (A_acc - correction)
 
             # Add speciation contribution.
-            if SPEC_GATHER:
-                parent = tl.load(sp_parent_ptr + s_offs, mask=mask, other=-1)
-                parent_valid = parent >= 0
-                parent_off = out_base + parent
-                if _n == 0:
-                    parent_term = tl.load(rhs_ptr + parent_off, mask=mask & parent_valid, other=0.0).to(DTYPE)
-                elif _n % 2 == 1:
-                    parent_term = tl.load(spec_buf_ptr + parent_off, mask=mask & parent_valid, other=0.0).to(DTYPE)
-                else:
-                    parent_term = tl.load(term_buf_ptr + parent_off, mask=mask & parent_valid, other=0.0).to(DTYPE)
-                parent_sl1 = tl.load(aw4_ptr + parent_off, mask=mask & parent_valid, other=0.0).to(DTYPE)
-                parent_sl2 = tl.load(aw345_ptr + parent_off, mask=mask & parent_valid, other=0.0).to(DTYPE)
-                parent_c1 = tl.load(sp_child1_ptr + parent, mask=mask & parent_valid, other=S)
-                parent_wt = tl.where(parent_c1 == s_offs, parent_sl1, parent_sl2)
-                spec_val = parent_term * parent_wt
-            elif _n % 2 == 0:
+            if _n % 2 == 0:
                 spec_val = tl.load(spec_buf_ptr + off, mask=mask, other=0.0).to(DTYPE)
             else:
                 spec_val = tl.load(term_buf_ptr + off, mask=mask, other=0.0).to(DTYPE)
@@ -724,9 +680,6 @@ def _wave_backward_uniform_kernel(
     # Recompute alpha = v_k * w_L and weighted terms.
     # Store per-element contributions for the caller to reduce.
     # ================================================================
-    if PARAM_GRAD_TWO_STAGE:
-        return
-
     for s_start in range(0, S, BLOCK_S):
         s_offs = s_start + tl.arange(0, BLOCK_S)
         valid_mask = s_offs < S
@@ -910,396 +863,6 @@ def _wave_backward_uniform_kernel(
                 tl.store(aw4_ptr + off, _aw4, mask=valid_mask)
 
 
-@triton.jit
-def _wave_backward_uniform_param_stage1_kernel(
-    Pi_star_ptr,       # [C, S]
-    Pibar_star_ptr,    # [C, S]
-    v_k_ptr,           # [W, S]
-    active_mask_ptr,   # optional [W]
-    mt_ptr, DL_const_ptr, Ebar_ptr, E_ptr, SL1_const_ptr, SL2_const_ptr,
-    sp_child1_ptr, sp_child2_ptr,
-    leaf_term_ptr,
-    leaf_species_ptr,
-    leaf_logp_ptr,
-    partial_vec_ptr,      # [5, N_TILES, S]
-    partial_scalar_ptr,   # [2, N_TILES, N_S_BLOCKS]
-    ws,
-    W: tl.constexpr,
-    S: tl.constexpr,
-    stride: tl.constexpr,
-    N_TILES: tl.constexpr,
-    N_S_BLOCKS: tl.constexpr,
-    TILE_ROWS: tl.constexpr,
-    BLOCK_S: tl.constexpr,
-    USE_LEAF_INDEX: tl.constexpr,
-    LEAF_HIT_ONLY_LOGP: tl.constexpr,
-    LEAF_LOGP_SCALAR: tl.constexpr,
-    USE_ACTIVE_MASK: tl.constexpr,
-    DTYPE: tl.constexpr,
-):
-    """Reduce no-split self-loop parameter VJPs into row-tile partials."""
-    NEG_LARGE: tl.constexpr = -1e30
-    M_SAFE: tl.constexpr = -1e29
-
-    tile = tl.program_id(0)
-    s_block = tl.program_id(1)
-    rows = tile * TILE_ROWS + tl.arange(0, TILE_ROWS)
-    s_offs = s_block * BLOCK_S + tl.arange(0, BLOCK_S)
-    row_mask = rows < W
-    valid_s = s_offs < S
-
-    if USE_ACTIVE_MASK:
-        active = tl.load(active_mask_ptr + rows, mask=row_mask, other=0)
-        row_mask = row_mask & (active != 0)
-
-    mask = row_mask[:, None] & valid_s[None, :]
-    row_global = ws + rows
-    pi_base = row_global[:, None] * stride
-    row_base = rows[:, None] * S
-    s_matrix = s_offs[None, :]
-
-    pi_w = tl.load(Pi_star_ptr + pi_base + s_matrix, mask=mask, other=NEG_LARGE)
-    pibar_w = tl.load(Pibar_star_ptr + pi_base + s_matrix, mask=mask, other=NEG_LARGE)
-    v_k_val = tl.load(v_k_ptr + row_base + s_matrix, mask=mask, other=0.0)
-
-    dl_c = tl.load(DL_const_ptr + s_offs, mask=valid_s, other=NEG_LARGE)
-    ebar = tl.load(Ebar_ptr + s_offs, mask=valid_s, other=NEG_LARGE)
-    e_val = tl.load(E_ptr + s_offs, mask=valid_s, other=NEG_LARGE)
-    sl1_c = tl.load(SL1_const_ptr + s_offs, mask=valid_s, other=NEG_LARGE)
-    sl2_c = tl.load(SL2_const_ptr + s_offs, mask=valid_s, other=NEG_LARGE)
-
-    c1 = tl.load(sp_child1_ptr + s_offs, mask=valid_s, other=0)
-    c2 = tl.load(sp_child2_ptr + s_offs, mask=valid_s, other=0)
-    c1_valid = c1 < S
-    c2_valid = c2 < S
-    pi_s1 = tl.load(
-        Pi_star_ptr + pi_base + c1[None, :],
-        mask=mask & c1_valid[None, :],
-        other=NEG_LARGE,
-    )
-    pi_s2 = tl.load(
-        Pi_star_ptr + pi_base + c2[None, :],
-        mask=mask & c2_valid[None, :],
-        other=NEG_LARGE,
-    )
-
-    t0 = dl_c[None, :] + pi_w
-    t1 = pi_w + ebar[None, :]
-    t2 = pibar_w + e_val[None, :]
-    t3 = sl1_c[None, :] + pi_s1
-    t4 = sl2_c[None, :] + pi_s2
-    if USE_LEAF_INDEX:
-        leaf_species = tl.load(leaf_species_ptr + row_global, mask=row_mask, other=-1)
-        leaf_hit = mask & (leaf_species[:, None] == s_matrix)
-        if LEAF_LOGP_SCALAR:
-            leaf_logp = tl.load(leaf_logp_ptr)
-            t5 = tl.where(leaf_hit, leaf_logp, NEG_LARGE)
-        elif LEAF_HIT_ONLY_LOGP:
-            leaf_logp = tl.load(leaf_logp_ptr + s_offs, mask=valid_s, other=NEG_LARGE)
-            t5 = tl.where(leaf_hit, leaf_logp[None, :], NEG_LARGE)
-        else:
-            leaf_logp = tl.load(leaf_logp_ptr + s_offs, mask=valid_s, other=NEG_LARGE)
-            t5 = tl.where(leaf_hit, leaf_logp[None, :], NEG_LARGE)
-    else:
-        t5 = tl.load(leaf_term_ptr + row_base + s_matrix, mask=mask, other=NEG_LARGE)
-
-    m = tl.maximum(t0, t1)
-    m = tl.maximum(m, t2)
-    m = tl.maximum(m, t3)
-    m = tl.maximum(m, t4)
-    m = tl.maximum(m, t5)
-    m_safe = tl.where(m > M_SAFE, m, tl.zeros_like(m))
-    e0 = tl.exp2(t0 - m_safe)
-    e1 = tl.exp2(t1 - m_safe)
-    e2 = tl.exp2(t2 - m_safe)
-    e3 = tl.exp2(t3 - m_safe)
-    e4 = tl.exp2(t4 - m_safe)
-    e5 = tl.exp2(t5 - m_safe)
-    dts_l_sum = e0 + e1 + e2 + e3 + e4 + e5
-    inv_sum = tl.where(dts_l_sum > 0.0, 1.0 / dts_l_sum, tl.zeros_like(dts_l_sum))
-
-    aw0 = v_k_val * e0 * inv_sum
-    aw1 = v_k_val * e1 * inv_sum
-    aw2 = v_k_val * e2 * inv_sum
-    aw3 = v_k_val * e3 * inv_sum
-    aw4 = v_k_val * e4 * inv_sum
-    aw5 = v_k_val * e5 * inv_sum
-
-    zero = tl.zeros([TILE_ROWS, BLOCK_S], dtype=DTYPE)
-    sum_aw0 = tl.sum(tl.where(mask, aw0, zero), axis=0)
-    sum_aw1 = tl.sum(tl.where(mask, aw1, zero), axis=0)
-    sum_aw2 = tl.sum(tl.where(mask, aw2, zero), axis=0)
-    sum_aw3 = tl.sum(tl.where(mask, aw3, zero), axis=0)
-    sum_aw4 = tl.sum(tl.where(mask, aw4, zero), axis=0)
-    sum_aw5 = tl.sum(tl.where(mask, aw5, zero), axis=0)
-
-    partial_base = tile * S + s_offs
-    partial_stride = N_TILES * S
-    tl.store(partial_vec_ptr + partial_base, sum_aw0 + sum_aw2, mask=valid_s)
-    tl.store(partial_vec_ptr + partial_stride + partial_base, sum_aw1, mask=valid_s)
-    tl.store(partial_vec_ptr + 2 * partial_stride + partial_base, sum_aw4, mask=valid_s)
-    tl.store(partial_vec_ptr + 3 * partial_stride + partial_base, sum_aw3, mask=valid_s)
-    tl.store(partial_vec_ptr + 4 * partial_stride + partial_base, sum_aw2, mask=valid_s)
-
-    scalar_idx = tile * N_S_BLOCKS + s_block
-    scalar_count = N_TILES * N_S_BLOCKS
-    grad_pd = tl.sum(tl.where(valid_s, sum_aw0, tl.zeros([BLOCK_S], dtype=DTYPE)), axis=0)
-    grad_ps = tl.sum(
-        tl.where(valid_s, sum_aw3 + sum_aw4 + sum_aw5, tl.zeros([BLOCK_S], dtype=DTYPE)),
-        axis=0,
-    )
-    tl.store(partial_scalar_ptr + scalar_idx, grad_pd)
-    tl.store(partial_scalar_ptr + scalar_count + scalar_idx, grad_ps)
-
-
-@triton.jit
-def _wave_backward_uniform_param_stage2_kernel(
-    partial_vec_ptr,      # [5, N_TILES, S]
-    partial_scalar_ptr,   # [2, N_TILES, N_S_BLOCKS]
-    grad_log_pD_ptr,
-    grad_log_pS_ptr,
-    grad_E_ptr,
-    grad_Ebar_ptr,
-    grad_E_s1_ptr,
-    grad_E_s2_ptr,
-    grad_mt_ptr,
-    S: tl.constexpr,
-    N_TILES: tl.constexpr,
-    N_S_BLOCKS: tl.constexpr,
-    BLOCK_TILES: tl.constexpr,
-    BLOCK_S: tl.constexpr,
-    BLOCK_SCALAR_PARTIALS: tl.constexpr,
-    DTYPE: tl.constexpr,
-):
-    """Reduce compact no-split self-loop parameter partials into gradients."""
-    s_block = tl.program_id(0)
-    s_offs = s_block * BLOCK_S + tl.arange(0, BLOCK_S)
-    valid_s = s_offs < S
-
-    acc_E = tl.zeros([BLOCK_S], dtype=DTYPE)
-    acc_Ebar = tl.zeros([BLOCK_S], dtype=DTYPE)
-    acc_E_s1 = tl.zeros([BLOCK_S], dtype=DTYPE)
-    acc_E_s2 = tl.zeros([BLOCK_S], dtype=DTYPE)
-    acc_mt = tl.zeros([BLOCK_S], dtype=DTYPE)
-    partial_stride = N_TILES * S
-
-    tile_start = 0
-    while tile_start < N_TILES:
-        tile_offs = tile_start + tl.arange(0, BLOCK_TILES)
-        mask = (tile_offs[:, None] < N_TILES) & valid_s[None, :]
-        partial_offs = tile_offs[:, None] * S + s_offs[None, :]
-        acc_E += tl.sum(tl.load(partial_vec_ptr + partial_offs, mask=mask, other=0.0), axis=0)
-        acc_Ebar += tl.sum(
-            tl.load(partial_vec_ptr + partial_stride + partial_offs, mask=mask, other=0.0),
-            axis=0,
-        )
-        acc_E_s1 += tl.sum(
-            tl.load(partial_vec_ptr + 2 * partial_stride + partial_offs, mask=mask, other=0.0),
-            axis=0,
-        )
-        acc_E_s2 += tl.sum(
-            tl.load(partial_vec_ptr + 3 * partial_stride + partial_offs, mask=mask, other=0.0),
-            axis=0,
-        )
-        acc_mt += tl.sum(
-            tl.load(partial_vec_ptr + 4 * partial_stride + partial_offs, mask=mask, other=0.0),
-            axis=0,
-        )
-        tile_start += BLOCK_TILES
-
-    tl.store(
-        grad_E_ptr + s_offs,
-        tl.load(grad_E_ptr + s_offs, mask=valid_s, other=0.0) + acc_E,
-        mask=valid_s,
-    )
-    tl.store(
-        grad_Ebar_ptr + s_offs,
-        tl.load(grad_Ebar_ptr + s_offs, mask=valid_s, other=0.0) + acc_Ebar,
-        mask=valid_s,
-    )
-    tl.store(
-        grad_E_s1_ptr + s_offs,
-        tl.load(grad_E_s1_ptr + s_offs, mask=valid_s, other=0.0) + acc_E_s1,
-        mask=valid_s,
-    )
-    tl.store(
-        grad_E_s2_ptr + s_offs,
-        tl.load(grad_E_s2_ptr + s_offs, mask=valid_s, other=0.0) + acc_E_s2,
-        mask=valid_s,
-    )
-    tl.store(
-        grad_mt_ptr + s_offs,
-        tl.load(grad_mt_ptr + s_offs, mask=valid_s, other=0.0) + acc_mt,
-        mask=valid_s,
-    )
-
-    if s_block == 0:
-        scalar_count = N_TILES * N_S_BLOCKS
-        acc_pD = tl.zeros([1], dtype=DTYPE)
-        acc_pS = tl.zeros([1], dtype=DTYPE)
-        scalar_start = 0
-        while scalar_start < scalar_count:
-            scalar_offs = scalar_start + tl.arange(0, BLOCK_SCALAR_PARTIALS)
-            scalar_mask = scalar_offs < scalar_count
-            pD_vals = tl.load(partial_scalar_ptr + scalar_offs, mask=scalar_mask, other=0.0)
-            pS_vals = tl.load(
-                partial_scalar_ptr + scalar_count + scalar_offs,
-                mask=scalar_mask,
-                other=0.0,
-            )
-            acc_pD += tl.sum(pD_vals, axis=0)
-            acc_pS += tl.sum(pS_vals, axis=0)
-            scalar_start += BLOCK_SCALAR_PARTIALS
-
-        scalar = tl.arange(0, 1)
-        tl.store(grad_log_pD_ptr + scalar, tl.load(grad_log_pD_ptr + scalar) + acc_pD)
-        tl.store(grad_log_pS_ptr + scalar, tl.load(grad_log_pS_ptr + scalar) + acc_pS)
-
-
-def _wave_backward_uniform_param_two_stage(
-    Pi_star,
-    Pibar_star,
-    ws,
-    W,
-    S,
-    v_k,
-    mt_squeezed,
-    DL_const,
-    Ebar,
-    E,
-    SL1_const,
-    SL2_const,
-    sp_child1,
-    sp_child2,
-    leaf_term_wt,
-    leaf_species_idx,
-    leaf_logp,
-    accum_param_grads,
-    *,
-    active_mask=None,
-    use_leaf_index=False,
-    leaf_hit_only_logp=False,
-    leaf_logp_scalar=False,
-    scratch=None,
-):
-    tile_rows_raw = max(
-        1,
-        int(os.environ.get("GPUREC_SELF_LOOP_PARAM_TWO_STAGE_TILE_ROWS", "16")),
-    )
-    tile_rows = triton.next_power_of_2(tile_rows_raw)
-    block_s_default = min(256, triton.next_power_of_2(S))
-    block_s_raw = max(
-        1,
-        int(os.environ.get("GPUREC_SELF_LOOP_PARAM_TWO_STAGE_BLOCK_S", str(block_s_default))),
-    )
-    block_s = min(triton.next_power_of_2(block_s_raw), triton.next_power_of_2(S))
-    reduce_block_tiles_raw = max(
-        1,
-        int(os.environ.get("GPUREC_SELF_LOOP_PARAM_TWO_STAGE_REDUCE_TILES", "16")),
-    )
-    reduce_block_tiles = triton.next_power_of_2(reduce_block_tiles_raw)
-    scalar_block_raw = max(
-        1,
-        int(os.environ.get("GPUREC_SELF_LOOP_PARAM_TWO_STAGE_SCALAR_BLOCK", "1024")),
-    )
-    scalar_block = triton.next_power_of_2(scalar_block_raw)
-    n_tiles = triton.cdiv(W, tile_rows)
-    n_s_blocks = triton.cdiv(S, block_s)
-
-    partial_vec = _scratch_view(
-        scratch, "param_two_stage_vec", (5, n_tiles, S),
-        device=Pi_star.device, dtype=Pi_star.dtype,
-    )
-    if partial_vec is None:
-        partial_vec = torch.empty((5, n_tiles, S), device=Pi_star.device, dtype=Pi_star.dtype)
-    partial_scalar = _scratch_view(
-        scratch, "param_two_stage_scalar", (2, n_tiles, n_s_blocks),
-        device=Pi_star.device, dtype=Pi_star.dtype,
-    )
-    if partial_scalar is None:
-        partial_scalar = torch.empty(
-            (2, n_tiles, n_s_blocks), device=Pi_star.device, dtype=Pi_star.dtype
-        )
-
-    (
-        grad_log_pD,
-        grad_log_pS,
-        grad_E,
-        grad_Ebar,
-        grad_E_s1,
-        grad_E_s2,
-        grad_mt,
-    ) = accum_param_grads
-
-    stage1_warps = int(
-        os.environ.get(
-            "GPUREC_SELF_LOOP_PARAM_TWO_STAGE_NUM_WARPS",
-            "8" if tile_rows * block_s >= 1024 else "4",
-        )
-    )
-    stage1_options = {}
-    if stage1_warps > 0:
-        stage1_options["num_warps"] = stage1_warps
-
-    _wave_backward_uniform_param_stage1_kernel[(n_tiles, n_s_blocks)](
-        Pi_star,
-        Pibar_star,
-        v_k,
-        active_mask if active_mask is not None else v_k,
-        mt_squeezed,
-        DL_const,
-        Ebar,
-        E,
-        SL1_const,
-        SL2_const,
-        sp_child1,
-        sp_child2,
-        leaf_term_wt,
-        leaf_species_idx,
-        leaf_logp,
-        partial_vec,
-        partial_scalar,
-        ws,
-        W,
-        S,
-        Pi_star.stride(0),
-        n_tiles,
-        n_s_blocks,
-        tile_rows,
-        block_s,
-        USE_LEAF_INDEX=bool(use_leaf_index),
-        LEAF_HIT_ONLY_LOGP=bool(leaf_hit_only_logp),
-        LEAF_LOGP_SCALAR=bool(leaf_logp_scalar),
-        USE_ACTIVE_MASK=bool(active_mask is not None),
-        DTYPE=_tl_float_dtype(Pi_star.dtype),
-        **stage1_options,
-    )
-
-    stage2_warps = int(os.environ.get("GPUREC_SELF_LOOP_PARAM_TWO_STAGE_REDUCE_WARPS", "4"))
-    stage2_options = {}
-    if stage2_warps > 0:
-        stage2_options["num_warps"] = stage2_warps
-    _wave_backward_uniform_param_stage2_kernel[(n_s_blocks,)](
-        partial_vec,
-        partial_scalar,
-        grad_log_pD,
-        grad_log_pS,
-        grad_E,
-        grad_Ebar,
-        grad_E_s1,
-        grad_E_s2,
-        grad_mt,
-        S,
-        n_tiles,
-        n_s_blocks,
-        reduce_block_tiles,
-        block_s,
-        scalar_block,
-        DTYPE=_tl_float_dtype(Pi_star.dtype),
-        **stage2_options,
-    )
-
-
 def _env_flag_enabled(name, default="0"):
     return os.environ.get(name, default).strip().lower() not in (
         "",
@@ -1310,13 +873,13 @@ def _env_flag_enabled(name, default="0"):
     )
 
 
-def _self_loop_prototype_requested(mode):
+def _self_loop_2d_requested(mode):
     if mode == "2d":
         return _env_flag_enabled("GPUREC_SELF_LOOP_2D_TRITON", "1")
     return False
 
 
-def _self_loop_prototype_unavailable(mode, reason):
+def _self_loop_2d_unavailable(mode, reason):
     strict_names = (
         "GPUREC_SELF_LOOP_PROTOTYPE_STRICT",
         "GPUREC_SELF_LOOP_2D_STRICT" if mode == "2d" else "GPUREC_SELF_LOOP_TREE_STRICT",
@@ -1327,7 +890,7 @@ def _self_loop_prototype_unavailable(mode, reason):
 
 
 def _compact_levels_from_children(sp_child1, sp_child2, S):
-    """Build compact bottom-up species levels for prototype self-loop kernels."""
+    """Build compact bottom-up species levels for the 2D self-loop kernel."""
     device = sp_child1.device
     child1_values = sp_child1.detach().cpu().long().tolist()
     child2_values = sp_child2.detach().cpu().long().tolist()
@@ -1838,7 +1401,7 @@ def _wave_backward_uniform_param_store_kernel(
     tl.store(aw4_ptr + out_offsets, tl.where(mask, _aw4, zero), mask=store_mask)
 
 
-def _wave_backward_uniform_2d_prototype(
+def _wave_backward_uniform_2d(
     Pi_star, Pibar_star, ws, W, S,
     dts_r,
     rhs,
@@ -1864,22 +1427,22 @@ def _wave_backward_uniform_2d_prototype(
     compact_level_child1,
     compact_level_child2,
 ):
-    """Opt-in Proposal 0 prototype: row-block/full-species tree reduction."""
+    """Retained 2D row-block/full-species tree-reduction self-loop."""
     mode = "2d"
-    if not _self_loop_prototype_requested(mode):
+    if not _self_loop_2d_requested(mode):
         return None
     if Pi_star.device.type != "cuda":
-        return _self_loop_prototype_unavailable(mode, "GPUREC_SELF_LOOP_2D_TRITON requires CUDA tensors")
+        return _self_loop_2d_unavailable(mode, "GPUREC_SELF_LOOP_2D_TRITON requires CUDA tensors")
     if Pi_star.dtype not in (torch.float32, torch.float64):
-        return _self_loop_prototype_unavailable(
+        return _self_loop_2d_unavailable(
             mode,
             "GPUREC_SELF_LOOP_2D_TRITON currently supports fp32/fp64 only",
         )
     if accum_param_grads is not None:
-        return _self_loop_prototype_unavailable(
+        return _self_loop_2d_unavailable(
             mode,
             "GPUREC_SELF_LOOP_2D_TRITON returns per-element parameter VJPs; "
-            "disable in-kernel self-loop parameter accumulation for this prototype",
+            "disable in-kernel self-loop parameter accumulation",
         )
     choice = os.environ.get("GPUREC_SELF_LOOP_2D_TRITON", "auto").strip().lower()
     force = choice in ("force", "forced", "always")
@@ -1892,16 +1455,16 @@ def _wave_backward_uniform_2d_prototype(
             device=Pi_star.device,
         )
         if not ok:
-            return _self_loop_prototype_unavailable(
+            return _self_loop_2d_unavailable(
                 mode,
                 "GPUREC_SELF_LOOP_2D_TRITON estimated scratch "
                 f"{required_bytes / (1024 ** 3):.2f} GiB above memory budget "
                 f"{(budget_bytes or 0) / (1024 ** 3):.2f} GiB",
             )
     if const_layout not in (0, 1, 2):
-        return _self_loop_prototype_unavailable(mode, "unsupported self-loop constant layout")
+        return _self_loop_2d_unavailable(mode, "unsupported self-loop constant layout")
     if use_leaf_index and leaf_logp_mode not in (0, 1, 2, 3):
-        return _self_loop_prototype_unavailable(mode, "unsupported leaf log-probability layout")
+        return _self_loop_2d_unavailable(mode, "unsupported leaf log-probability layout")
 
     device = Pi_star.device
     dtype = Pi_star.dtype
@@ -2200,12 +1763,6 @@ def wave_backward_uniform_fused(
     fast_nosplit_param_grads = (
         os.environ.get("GPUREC_FAST_NOSPLIT_PARAM_ACCUM", "0") != "0"
     )
-    recompute_pibar_denom = (
-        os.environ.get("GPUREC_RECOMPUTE_PIBAR_DENOM", "0") != "0"
-    )
-    # The old recompute path used a self-only denominator. Keep one exact
-    # denominator pass and store/reuse it instead of allowing that approximation.
-    recompute_pibar_denom = False
     compact_pibar_scratch_mode = (
         os.environ.get("GPUREC_COMPACT_PIBAR_SCRATCH", "1")
         .strip()
@@ -2216,53 +1773,14 @@ def wave_backward_uniform_fused(
     )
     if compact_pibar_scratch_mode in ("leaf", "nosplit", "no_split"):
         compact_pibar_scratch = not has_splits
-    if compact_pibar_scratch:
-        recompute_pibar_denom = False
     leaf_hit_only_logp = (
         os.environ.get("GPUREC_LEAF_HIT_ONLY_LOGP", "0") != "0"
     )
-    leaf_logp_scalar = leaf_logp_mode == 3
-    # Parent-gather speciation was an optimization for the old self-only
-    # correction. With the full ancestor correction it is not exact enough on
-    # all waves, so keep the scatter path as the only production path.
-    spec_gather = False
     if pibar_row_max is None:
         pibar_row_max = Pi_star.max(dim=1).values.contiguous()
     else:
         pibar_row_max = pibar_row_max.to(device=device, dtype=dtype).contiguous()
     use_pibar_row_max = True
-    param_two_stage_mode = (
-        os.environ.get("GPUREC_SELF_LOOP_PARAM_TWO_STAGE", "0").strip().lower()
-    )
-    param_two_stage_requested = param_two_stage_mode not in (
-        "", "0", "false", "no", "off"
-    )
-    param_two_stage_enabled = False
-    if (
-        param_two_stage_requested
-        and accum_enabled
-        and not has_splits
-        and const_layout == 0
-    ):
-        (
-            grad_log_pD_arg,
-            grad_log_pS_arg,
-            grad_E_arg,
-            grad_Ebar_arg,
-            grad_E_s1_arg,
-            grad_E_s2_arg,
-            grad_mt_arg,
-        ) = accum_param_grads
-        param_two_stage_enabled = (
-            grad_log_pD_arg.numel() == 1
-            and grad_log_pS_arg.numel() == 1
-            and grad_E_arg.numel() == S
-            and grad_Ebar_arg.numel() == S
-            and grad_E_s1_arg.numel() == S
-            and grad_E_s2_arg.numel() == S
-            and grad_mt_arg.numel() == S
-        )
-
     scratch_shape = (W, S)
 
     v_k = _scratch_view(scratch, "v_k", scratch_shape, device=device, dtype=dtype)
@@ -2274,9 +1792,7 @@ def wave_backward_uniform_fused(
     aw1 = _scratch_view(scratch, "aw1", scratch_shape, device=device, dtype=dtype)
     if aw1 is None:
         aw1 = torch.empty(scratch_shape, device=device, dtype=dtype)
-    need_pibar_denom_scratch = not (
-        accum_enabled and (compact_pibar_scratch or recompute_pibar_denom)
-    )
+    need_pibar_denom_scratch = not (accum_enabled and compact_pibar_scratch)
     if need_pibar_denom_scratch:
         aw2 = _scratch_view(scratch, "aw2", scratch_shape, device=device, dtype=dtype)
         if aw2 is None:
@@ -2333,7 +1849,7 @@ def wave_backward_uniform_fused(
     log_pS_grad_scalar = _grad_param_is_scalar(grad_log_pS_arg)
     family_idx_arg = family_idx if family_idx is not None else sp_parent
 
-    prototype_result = _wave_backward_uniform_2d_prototype(
+    self_loop_2d_result = _wave_backward_uniform_2d(
         Pi_star,
         Pibar_star,
         ws,
@@ -2369,18 +1885,15 @@ def wave_backward_uniform_fused(
         compact_level_child1=compact_level_child1,
         compact_level_child2=compact_level_child2,
     )
-    if prototype_result is not None:
-        return prototype_result
+    if self_loop_2d_result is not None:
+        return self_loop_2d_result
 
     block_s_env = os.environ.get("GPUREC_WAVE_BLOCK_S", "").strip()
     if block_s_env:
         BLOCK_S = int(block_s_env)
     else:
         BLOCK_S = min(256, triton.next_power_of_2(S))
-    num_warps_env = os.environ.get(
-        "GPUREC_WAVE_NUM_WARPS",
-        "8" if spec_gather else "",
-    ).strip()
+    num_warps_env = os.environ.get("GPUREC_WAVE_NUM_WARPS", "").strip()
     launch_options = {}
     if num_warps_env:
         num_warps = int(num_warps_env)
@@ -2419,14 +1932,11 @@ def wave_backward_uniform_fused(
         max_ancestor_depth,
         USE_LEAF_INDEX=bool(use_leaf_index),
         ACCUM_PARAM_GRADS=bool(accum_enabled),
-        PARAM_GRAD_TWO_STAGE=bool(param_two_stage_enabled),
         FAST_NOSPLIT_PARAM_GRADS=bool(fast_nosplit_param_grads),
         COMPACT_PIBAR_SCRATCH=bool(compact_pibar_scratch),
-        RECOMPUTE_PIBAR_DENOM=bool(recompute_pibar_denom),
         LEAF_HIT_ONLY_LOGP=bool(leaf_hit_only_logp),
         LEAF_LOGP_MODE=int(leaf_logp_mode),
         USE_PIBAR_ROW_MAX=bool(use_pibar_row_max),
-        SPEC_GATHER=bool(spec_gather),
         USE_ACTIVE_MASK=bool(active_mask is not None),
         SKIP_INACTIVE_ZERO_STORES=bool(skip_inactive_zero_stores),
         CONST_LAYOUT=int(const_layout),
@@ -2435,33 +1945,6 @@ def wave_backward_uniform_fused(
         DTYPE=_tl_float_dtype(dtype),
         **launch_options,
     )
-
-    if param_two_stage_enabled:
-        _wave_backward_uniform_param_two_stage(
-            Pi_star,
-            Pibar_star,
-            ws,
-            W,
-            S,
-            v_k,
-            mt_squeezed,
-            DL_const,
-            Ebar,
-            E,
-            SL1_const,
-            SL2_const,
-            sp_child1,
-            sp_child2,
-            leaf_term_wt,
-            leaf_species_arg,
-            leaf_logp_arg,
-            accum_param_grads,
-            active_mask=active_mask,
-            use_leaf_index=use_leaf_index,
-            leaf_hit_only_logp=leaf_hit_only_logp,
-            leaf_logp_scalar=leaf_logp_scalar,
-            scratch=scratch,
-        )
 
     if accum_enabled:
         return v_k, None, None, None, None, None, None
