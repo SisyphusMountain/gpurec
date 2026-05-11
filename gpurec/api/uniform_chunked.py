@@ -101,9 +101,6 @@ class UniformChunkedState:
     neumann_terms: int = 3
     use_pruning: bool = True
     pruning_threshold: float = 1e-6
-    cg_tol: float = 1e-8
-    cg_maxiter: int = 500
-    gmres_restart: int = 40
     warm_start_E: bool = True
     profile: bool = False
     warm_E: torch.Tensor | None = None
@@ -158,9 +155,6 @@ def _apply_to_chunked_state(state: UniformChunkedState, fn) -> UniformChunkedSta
         neumann_terms=state.neumann_terms,
         use_pruning=state.use_pruning,
         pruning_threshold=state.pruning_threshold,
-        cg_tol=state.cg_tol,
-        cg_maxiter=state.cg_maxiter,
-        gmres_restart=state.gmres_restart,
         warm_start_E=state.warm_start_E,
         profile=state.profile,
         warm_E=None,
@@ -598,12 +592,7 @@ def _evaluate_chunked_uniform(
                 state.device,
                 state.dtype,
                 genewise=False,
-                cg_tol=state.cg_tol,
-                cg_maxiter=state.cg_maxiter,
-                gmres_restart=state.gmres_restart,
                 pibar_mode="uniform",
-                transfer_mat=transfer_mat,
-                transfer_mat_unnormalized=None,
                 ancestors_T=state.ancestors_T,
             )
 
@@ -712,9 +701,6 @@ class UniformChunkedReconModel(torch.nn.Module):
         neumann_terms: int = 3,
         use_pruning: bool = True,
         pruning_threshold: float = 1e-6,
-        cg_tol: float = 1e-8,
-        cg_maxiter: int = 500,
-        gmres_restart: int = 40,
         warm_start_E: bool = True,
         profile: bool = False,
         set_optimized_env: bool = True,
@@ -831,9 +817,6 @@ class UniformChunkedReconModel(torch.nn.Module):
             neumann_terms=neumann_terms,
             use_pruning=use_pruning,
             pruning_threshold=pruning_threshold,
-            cg_tol=cg_tol,
-            cg_maxiter=cg_maxiter,
-            gmres_restart=gmres_restart,
             warm_start_E=warm_start_E,
             profile=profile,
         )

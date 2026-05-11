@@ -4,12 +4,10 @@ This branch keeps focused tests for the retained performance path:
 
 - `tests/integration/test_gene_recon_model.py`
 - `tests/integration/test_uniform_chunked_model.py`
-- `tests/gradients/test_autograd_bridge.py`
-- `tests/gradients/test_genewise_fused_backward.py`
-- `tests/kernels/*uniform*`, DTS, and backward kernel tests
+- `tests/kernels/test_wave_step_uniform_forward_kernel.py`
 - `tests/unit/test_batched_lbfgs.py`
 - `tests/unit/test_memory_policy.py`
-- `tests/unit/test_genewise_wave.py`
+- `tests/unit/test_species_euler_layout.py`
 - `tests/unit/test_specieswise_uniform.py`
 
 Many scale tests skip unless the corresponding local datasets

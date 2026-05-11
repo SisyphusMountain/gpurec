@@ -25,10 +25,7 @@ from gpurec.core.likelihood import E_fixed_point, compute_log_likelihood
 from gpurec.core.forward import Pi_wave_forward
 from gpurec.core.backward import Pi_wave_backward
 from gpurec.core._helpers import _nvtx_range
-from gpurec.core.extract_parameters import (
-    extract_parameters,
-    extract_parameters_uniform,
-)
+from gpurec.core.extract_parameters import extract_parameters_uniform
 from gpurec.optimization.implicit_grad import (
     implicit_grad_loglik_vjp_wave,
     _e_adjoint_and_theta_vjp,
@@ -52,7 +49,6 @@ class ReconStaticState:
     species_helpers: dict[str, Any]
     root_clade_ids: torch.Tensor                              # Long[G] original order
     unnorm_row_max: torch.Tensor                              # [S]
-    transfer_mat_unnormalized: Optional[torch.Tensor]         # [S, S] log2 (dense only)
     ancestors_T: Optional[torch.Tensor]                       # sparse COO (uniform only)
 
     # Mode flags (mapped from "global" / "specieswise" / "genewise")
@@ -70,9 +66,6 @@ class ReconStaticState:
     neumann_terms: int = 3
     use_pruning: bool = True
     pruning_threshold: float = 1e-6
-    cg_tol: float = 1e-8
-    cg_maxiter: int = 500
-    gmres_restart: int = 40
 
     # Warm start cache, mutated across calls
     warm_E: Optional[torch.Tensor] = None
@@ -122,29 +115,17 @@ def _apply_to_static(static: ReconStaticState, fn) -> ReconStaticState:
 
 
 def _extract_parameters(theta: torch.Tensor, static: ReconStaticState):
-    """Replicates :meth:`GeneDataset._extract_batch_params` exactly."""
-    use_uniform = static.pibar_mode == "uniform"
-    if use_uniform:
-        log_pS, log_pD, log_pL, transfer_mat, max_transfer_mat = (
-            extract_parameters_uniform(
-                theta,
-                static.unnorm_row_max,
-                specieswise=static.specieswise,
-                genewise=static.genewise,
-            )
+    """Extract parameters for the retained uniform-transfer path."""
+    if static.pibar_mode != "uniform":
+        raise ValueError("The lean branch supports only pibar_mode='uniform'.")
+    return (
+        extract_parameters_uniform(
+            theta,
+            static.unnorm_row_max,
+            specieswise=static.specieswise,
+            genewise=static.genewise,
         )
-        return log_pS, log_pD, log_pL, transfer_mat, max_transfer_mat
-    # dense / topk
-    log_pS, log_pD, log_pL, transfer_mat, max_transfer_mat = extract_parameters(
-        theta,
-        static.transfer_mat_unnormalized,
-        genewise=static.genewise,
-        specieswise=static.specieswise,
-        pairwise=False,
     )
-    if max_transfer_mat.ndim >= 2 and max_transfer_mat.shape[-1] == 1:
-        max_transfer_mat = max_transfer_mat.squeeze(-1)
-    return log_pS, log_pD, log_pL, transfer_mat, max_transfer_mat
 
 
 class _GeneReconFunction(torch.autograd.Function):
@@ -349,12 +330,7 @@ class _GeneReconFunction(torch.autograd.Function):
                 static.device,
                 static.dtype,
                 genewise=True,
-                cg_tol=static.cg_tol,
-                cg_maxiter=static.cg_maxiter,
-                gmres_restart=static.gmres_restart,
                 pibar_mode=static.pibar_mode,
-                transfer_mat=transfer_mat,
-                transfer_mat_unnormalized=static.transfer_mat_unnormalized,
                 ancestors_T=static.ancestors_T,
             )
         else:
@@ -381,12 +357,7 @@ class _GeneReconFunction(torch.autograd.Function):
                 neumann_terms=static.neumann_terms,
                 use_pruning=static.use_pruning,
                 pruning_threshold=static.pruning_threshold,
-                cg_tol=static.cg_tol,
-                cg_maxiter=static.cg_maxiter,
-                gmres_restart=static.gmres_restart,
                 pibar_mode=static.pibar_mode,
-                transfer_mat=transfer_mat,
-                transfer_mat_unnormalized=static.transfer_mat_unnormalized,
                 ancestors_T=static.ancestors_T,
                 uniform_pibar_row_max=(
                     uniform_pibar_row_max

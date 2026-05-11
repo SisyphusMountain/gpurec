@@ -7,7 +7,6 @@ Public exports:
 """
 from .autograd import ReconStaticState, _GeneReconFunction
 from .model import GeneReconModel
-from .modes import _MODE_MAP, _mode_to_flags, _default_theta_init
 from .uniform_chunked import UniformChunkedReconModel
 
 __all__ = [

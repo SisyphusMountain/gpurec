@@ -5,7 +5,6 @@ this module owns E_step, E_fixed_point, and compute_log_likelihood.
 """
 import torch
 import math
-import os
 
 from .terms import gather_E_children
 from .log2_utils import logsumexp2, logaddexp2, _safe_log2_internal as _safe_log2
@@ -28,9 +27,14 @@ def _uniform_ancestor_sum(expE_2d, ancestors_T):
             return (expE_2d.float() @ ancestors_T.float()).contiguous()
     return (expE_2d @ ancestors_T).contiguous()
 
-def E_step(E, sp_P_idx, sp_child12_idx, log_pS, log_pD, log_pL, transfer_mat, max_transfer_mat, pibar_mode='dense',
+def E_step(E, sp_P_idx, sp_child12_idx, log_pS, log_pD, log_pL, transfer_mat, max_transfer_mat, pibar_mode='uniform',
            ancestors_T=None):
-    """E can either have shape [S] or [N_genes, S]. Likewise, transfer_mat can have shape [S, S] or [N_genes, S, S]."""
+    """One uniform-transfer extinction fixed-point step.
+
+    ``E`` can have shape ``[S]`` or ``[N_genes, S]``.
+    """
+    if pibar_mode != "uniform":
+        raise ValueError("The lean branch supports only pibar_mode='uniform'.")
     E_stack = torch.empty((4, *E.shape), dtype=E.dtype, device=E.device)
     # S
     E_s12 = gather_E_children(E, sp_P_idx, sp_child12_idx)
@@ -62,39 +66,23 @@ def E_step(E, sp_P_idx, sp_child12_idx, log_pS, log_pD, log_pL, transfer_mat, ma
     E_stack[0] = pS + E_s1 + E_s2
     # D
     E_stack[1] = pD + 2 * E
-    # T: compute Ebar
-    if pibar_mode == 'uniform':
-        # Exact Ebar = row_sum(E) - ancestor_sum(E), in log-space
-        max_E = E.max(dim=-1, keepdim=True).values
-        expE = torch.exp2(E - max_E)                     # [S] or [N, S]
-        expE_2d = expE.unsqueeze(0) if expE.ndim == 1 else expE
-        if expE_2d.device.type == "cuda" and expE_2d.dtype == torch.bfloat16:
-            expE_2d_acc = expE_2d.float()
-            max_E_acc = max_E.float()
-            max_transfer_acc = max_transfer_mat.float()
-        else:
-            expE_2d_acc = expE_2d
-            max_E_acc = max_E
-            max_transfer_acc = max_transfer_mat
-        row_sum = expE_2d_acc.sum(dim=-1, keepdim=True)  # [1, 1] or [N, 1]
-        # Sparse COO matmul returns a column-major (non-contiguous) result when LHS
-        # is 2D (batched case). Make it contiguous before subsequent arithmetic so
-        # downstream Triton kernels that assume C-contiguous layout don't read garbage.
-        ancestor_sum = _uniform_ancestor_sum(expE_2d, ancestors_T)  # [1, S] or [N, S]
-        Ebar_linear = (row_sum - ancestor_sum).squeeze(0) if expE.ndim == 1 else (row_sum - ancestor_sum)
-        # Use safe log2: float32 cancellation can make row_sum - ancestor_sum
-        # slightly negative for species with many ancestors; safe log2 returns
-        # -inf (zero transfer contribution) instead of NaN.
-        Ebar = _safe_log2(Ebar_linear) + max_E_acc + max_transfer_acc.squeeze(-1)
-        if Ebar.dtype != E.dtype:
-            Ebar = Ebar.to(dtype=E.dtype)
+    max_E = E.max(dim=-1, keepdim=True).values
+    expE = torch.exp2(E - max_E)
+    expE_2d = expE.unsqueeze(0) if expE.ndim == 1 else expE
+    if expE_2d.device.type == "cuda" and expE_2d.dtype == torch.bfloat16:
+        expE_2d_acc = expE_2d.float()
+        max_E_acc = max_E.float()
+        max_transfer_acc = max_transfer_mat.float()
     else:
-        # Dense/topk: full matvec with [S,S] transfer matrix
-        # (topk uses dense for E since E is [S] — cheap)
-        max_E = E.max(dim=-1, keepdim=True).values
-        expE = torch.exp2(E - max_E)
-        Ebar_linear = torch.einsum("...ij, ...j-> ...i", transfer_mat, expE)
-        Ebar = torch.log2(Ebar_linear) + max_E + max_transfer_mat.squeeze(-1)
+        expE_2d_acc = expE_2d
+        max_E_acc = max_E
+        max_transfer_acc = max_transfer_mat
+    row_sum = expE_2d_acc.sum(dim=-1, keepdim=True)
+    ancestor_sum = _uniform_ancestor_sum(expE_2d, ancestors_T)
+    Ebar_linear = (row_sum - ancestor_sum).squeeze(0) if expE.ndim == 1 else (row_sum - ancestor_sum)
+    Ebar = _safe_log2(Ebar_linear) + max_E_acc + max_transfer_acc.squeeze(-1)
+    if Ebar.dtype != E.dtype:
+        Ebar = Ebar.to(dtype=E.dtype)
     E_stack[2] = E + Ebar
     # L
     # should broadcast correctly if log_pL is [S] and if log_pL is [N_genes, S]
@@ -102,116 +90,6 @@ def E_step(E, sp_P_idx, sp_child12_idx, log_pS, log_pD, log_pL, transfer_mat, ma
 
     E_new = logsumexp2(E_stack, dim=0)
     return E_new, E_s1, E_s2, Ebar
-
-
-def _E_fixed_point_alerax_gs(
-    *,
-    species_helpers,
-    log_pS,
-    log_pD,
-    log_pL,
-    max_transfer_mat,
-    ancestors_T,
-    max_iters,
-    dtype,
-    device,
-):
-    """AleRax-compatible extinction update for uniform-transfer GLOBAL runs."""
-    S = int(species_helpers["S"])
-
-    def _prob_param(p: torch.Tensor, name: str) -> torch.Tensor:
-        p = p.to(device=device, dtype=dtype)
-        if p.ndim == 0:
-            return torch.exp2(p).expand(S)
-        if p.ndim == 1 and p.shape[0] == S:
-            return torch.exp2(p)
-        raise NotImplementedError(
-            f"GPUREC_E_ALERAX_GS currently supports scalar or [S] {name}, "
-            f"got shape {tuple(p.shape)}"
-        )
-
-    pS = _prob_param(log_pS, "log_pS")
-    pD = _prob_param(log_pD, "log_pD")
-    pL = _prob_param(log_pL, "log_pL")
-    transfer_scale = torch.exp2(max_transfer_mat.to(device=device, dtype=dtype).squeeze(-1))
-    if transfer_scale.ndim == 0:
-        transfer_scale = transfer_scale.expand(S)
-    if transfer_scale.ndim != 1 or transfer_scale.shape[0] != S:
-        raise NotImplementedError(
-            "GPUREC_E_ALERAX_GS currently supports scalar or [S] max_transfer_mat, "
-            f"got shape {tuple(transfer_scale.shape)}"
-        )
-
-    sp_P_idx = species_helpers["s_P_indexes"].to(device=device).long()
-    sp_child12_idx = species_helpers["s_C12_indexes"].to(device=device).long()
-    child1 = torch.full((S,), S, dtype=torch.long, device=device)
-    child2 = torch.full((S,), S, dtype=torch.long, device=device)
-    first_child = sp_P_idx < S
-    if bool(first_child.any()):
-        p = sp_P_idx[first_child]
-        c = sp_child12_idx[first_child]
-        child1[p] = c
-    if bool((~first_child).any()):
-        p = sp_P_idx[~first_child] - S
-        c = sp_child12_idx[~first_child]
-        child2[p] = c
-
-    child1_cpu = child1.detach().cpu().tolist()
-    child2_cpu = child2.detach().cpu().tolist()
-    depths = [0] * S
-    for s_idx in range(S):
-        c1 = child1_cpu[s_idx]
-        if c1 < S:
-            c2 = child2_cpu[s_idx]
-            depths[s_idx] = max(depths[c1], depths[c2]) + 1
-    species_levels = [
-        torch.tensor(
-            [s_idx for s_idx, depth in enumerate(depths) if depth == level],
-            dtype=torch.long,
-            device=device,
-        )
-        for level in range(max(depths) + 1)
-    ]
-
-    E_prob = torch.zeros((S,), dtype=dtype, device=device)
-    Ebar_prob = torch.zeros((S,), dtype=dtype, device=device)
-    ancestors_T = ancestors_T.to(device=device, dtype=dtype)
-
-    for iteration in range(max_iters):
-        for level_idx in species_levels:
-            if level_idx.numel() == 0:
-                continue
-            value = pL[level_idx] + pD[level_idx] * E_prob[level_idx] * E_prob[level_idx]
-            value = value + E_prob[level_idx] * Ebar_prob[level_idx]
-            c1 = child1[level_idx]
-            valid = c1 < S
-            if bool(valid.any()):
-                internal_idx = level_idx[valid]
-                value = value.clone()
-                value[valid] = value[valid] + (
-                    pS[internal_idx]
-                    * E_prob[c1[valid]]
-                    * E_prob[child2[internal_idx]]
-                )
-            E_prob[level_idx] = value
-
-        row_sum = E_prob.sum().unsqueeze(0)
-        ancestor_sum = (E_prob.unsqueeze(0) @ ancestors_T).squeeze(0)
-        Ebar_prob = (row_sum - ancestor_sum) * transfer_scale
-
-    E = _safe_log2(E_prob)
-    E_s12 = gather_E_children(E, species_helpers["s_P_indexes"], species_helpers["s_C12_indexes"])
-    E_s1, E_s2 = torch.chunk(E_s12, 2, dim=-1)
-    E_s1 = E_s1.view(E.shape)
-    E_s2 = E_s2.view(E.shape)
-    Ebar = _safe_log2(Ebar_prob)
-    return {
-        "E": E,
-        "iterations": max_iters,
-        "E_s1": E_s1,
-        "E_s2": E_s2,
-        "E_bar": Ebar,
-    }
 
 
 def E_fixed_point(species_helpers,
@@ -225,40 +103,12 @@ def E_fixed_point(species_helpers,
                           warm_start_E,
                           dtype,
                           device,
-                          pibar_mode='dense',
+                          pibar_mode='uniform',
                           ancestors_T=None):
 
     S = species_helpers['S']
-
-    alerax_e_compat = (
-        os.environ.get("GPUREC_E_ALERAX_GS", "0") != "0"
-        or os.environ.get("GPUREC_ALERAX_COMPAT", "0") != "0"
-    )
-    if alerax_e_compat and (pibar_mode != "uniform" or ancestors_T is None):
-        raise NotImplementedError(
-            "GPUREC_ALERAX_COMPAT currently supports uniform-transfer "
-            "E evaluation with ancestors_T only"
-        )
-    if (
-        alerax_e_compat
-        and pibar_mode == "uniform"
-        and ancestors_T is not None
-    ):
-        return _E_fixed_point_alerax_gs(
-            species_helpers=species_helpers,
-            log_pS=log_pS,
-            log_pD=log_pD,
-            log_pL=log_pL,
-            max_transfer_mat=max_transfer_mat,
-            ancestors_T=ancestors_T,
-            max_iters=(
-                int(os.environ.get("GPUREC_ALERAX_COMPAT_E_ITERS", "4"))
-                if os.environ.get("GPUREC_ALERAX_COMPAT", "0") != "0"
-                else max_iters
-            ),
-            dtype=dtype,
-            device=device,
-        )
+    if pibar_mode != "uniform":
+        raise ValueError("The lean branch supports only pibar_mode='uniform'.")
 
     # Determine batch size from parameters if present
     N = None
@@ -300,7 +150,7 @@ def E_fixed_point(species_helpers,
                     log_pL=log_pL,
                     transfer_mat=transfer_mat,
                     max_transfer_mat=max_transfer_mat,
-                    pibar_mode=pibar_mode,
+                    pibar_mode="uniform",
                     ancestors_T=ancestors_T,
                 )
                 

@@ -6,7 +6,7 @@ from typing import Any
 
 import torch
 from torch.utils.data import Dataset
-from .extract_parameters import extract_parameters, extract_parameters_uniform
+from .extract_parameters import extract_parameters_uniform
 from .likelihood import (
     E_fixed_point,
     compute_log_likelihood_root_rows,
@@ -30,19 +30,21 @@ class GeneDataset(Dataset):
         gene_tree_paths,
         genewise, # whether to have a different theta for each gene family
         specieswise, # no need for genewise: it only appear when collating or gradient steps
-        pairwise, # changes the size of theta
+        pairwise=False,
         dtype=torch.float32,
         device=None,
         preprocess_cache_dir: str | os.PathLike | None = None,
         refresh_preprocess_cache: bool = False,
-        retain_dense_species_matrices: bool = True,
+        retain_dense_species_matrices: bool = False,
     ):
         if device is None:
             device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        if pairwise:
+            raise NotImplementedError("The lean branch keeps uniform transfer only; pairwise transfer is not supported.")
 
         self.genewise = genewise
         self.specieswise = specieswise
-        self.pairwise = pairwise
+        self.pairwise = False
         self.device = device
         self.dtype = dtype
         ext = _load_species_gene_ext()
@@ -82,27 +84,14 @@ class GeneDataset(Dataset):
             raw_by_family = raw_all['families']
             self.species_helpers = raw_all['species']
         if "Recipients_mat" in self.species_helpers:
-            self.tr_mat_unnormalized = torch.log2(self.species_helpers["Recipients_mat"])
-            self.unnorm_row_max = self.tr_mat_unnormalized.max(dim=-1).values
+            self.unnorm_row_max = torch.log2(self.species_helpers["Recipients_mat"]).max(dim=-1).values
         else:
-            self.tr_mat_unnormalized = None
             self.unnorm_row_max = self.species_helpers["unnorm_row_max"]
         self.S = int(self.species_helpers['S'])
 
         # creating an initial theta (log2-space: rates = 2^theta)
         _THETA_INIT = math.log2(1e-10)
-        if pairwise:
-            if specieswise:
-                raise ValueError("specieswise and pairwise are mutually exclusive")
-            # Pairwise: theta has D and L only; T is implicit in the transfer matrix
-            theta = _THETA_INIT * torch.ones(2, dtype=dtype, device=device)
-            if self.tr_mat_unnormalized is None:
-                raise ValueError(
-                    "pairwise mode requires dense species transfer matrices; "
-                    "construct GeneDataset with retain_dense_species_matrices=True"
-                )
-            self.tr_mat_unnormalized = self.tr_mat_unnormalized - 10.0
-        elif specieswise:
+        if specieswise:
             theta = _THETA_INIT * torch.ones(self.S, 3, dtype=dtype, device=device)
         else:
             theta = _THETA_INIT * torch.ones(3, dtype=dtype, device=device)
@@ -122,7 +111,6 @@ class GeneDataset(Dataset):
                 'C': int(ccp['C']),
                 'N_splits': int(ccp['N_splits']),
                 'theta': theta.clone(),
-                'transfer_mat_unnormalized': self.tr_mat_unnormalized,
                 'log_split_probs': ccp['log_split_probs_sorted'],
             })
         # stored on CPU. Only move when computing likelihood and optimizing.
@@ -229,8 +217,6 @@ class GeneDataset(Dataset):
         for fam in self.families:
             fam['ccp_helpers'] = {k: v.to(dtype=dtype) if torch.is_tensor(v) else v for k, v in fam['ccp_helpers'].items()}
             fam['theta'] = fam['theta'].to(dtype=dtype)
-        if self.tr_mat_unnormalized is not None:
-            self.tr_mat_unnormalized = self.tr_mat_unnormalized.to(dtype=dtype)
         self.species_helpers = {k: v.to(dtype=dtype) if torch.is_tensor(v) else v for k, v in self.species_helpers.items()}
 
     def set_params(self, idx, D, T, L):
@@ -271,48 +257,21 @@ class GeneDataset(Dataset):
         device: torch.device,
         dtype: torch.dtype,
     ) -> tuple[dict[str, Any], torch.Tensor | None]:
-        skip_keys = set()
-        if pibar_mode == 'uniform':
-            skip_keys = {'Recipients_mat', 'ancestors_dense'}
+        if pibar_mode != "uniform":
+            raise ValueError("The lean branch supports only pibar_mode='uniform'.")
 
         species_helpers = {
             k: (self._move_tensor(v, device=device, dtype=dtype) if torch.is_tensor(v) else v)
             for k, v in self.species_helpers.items()
-            if k not in skip_keys
+            if k not in {'Recipients_mat', 'ancestors_dense'}
         }
 
-        ancestors_T = None
-        if pibar_mode == 'uniform':
-            ancestors_T = uniform_ancestors_t_from_topology(
-                self.species_helpers,
-                device=device,
-                dtype=dtype,
-            )
-        return species_helpers, ancestors_T
-
-    def _extract_single_params(
-        self,
-        fam: dict[str, Any],
-        *,
-        device: torch.device,
-        dtype: torch.dtype,
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor | None, torch.Tensor]:
-        theta = fam['theta'].to(device=device, dtype=dtype)
-        if self.tr_mat_unnormalized is None:
-            raise ValueError(
-                "dense/topk/pairwise parameter extraction requires dense species "
-                "transfer matrices; construct GeneDataset with "
-                "retain_dense_species_matrices=True"
-            )
-        transfer_mat_unnorm = self.tr_mat_unnormalized.to(device=device, dtype=dtype)
-        log_pS, log_pD, log_pL, transfer_mat, max_transfer_mat = extract_parameters(
-            theta,
-            transfer_mat_unnorm,
-            genewise=self.genewise,
-            specieswise=self.specieswise,
-            pairwise=self.pairwise,
+        ancestors_T = uniform_ancestors_t_from_topology(
+            self.species_helpers,
+            device=device,
+            dtype=dtype,
         )
-        return log_pS, log_pD, log_pL, transfer_mat, self._normalize_max_transfer(max_transfer_mat)
+        return species_helpers, ancestors_T
 
     def _extract_batch_params(
         self,
@@ -322,9 +281,10 @@ class GeneDataset(Dataset):
         device: torch.device,
         dtype: torch.dtype,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor | None, torch.Tensor]:
-        use_uniform_extract = (pibar_mode == 'uniform') and not self.pairwise
+        if pibar_mode != "uniform":
+            raise ValueError("The lean branch supports only pibar_mode='uniform'.")
 
-        if use_uniform_extract and not self.genewise:
+        if not self.genewise:
             unnorm_row_max = self.unnorm_row_max.to(device=device, dtype=dtype)
             theta0 = self.families[indices[0]]['theta'].to(device=device, dtype=dtype)
             log_pS, log_pD, log_pL, transfer_mat, max_transfer_mat = extract_parameters_uniform(
@@ -332,39 +292,13 @@ class GeneDataset(Dataset):
             )
             return log_pS, log_pD, log_pL, transfer_mat, max_transfer_mat
 
-        if use_uniform_extract and self.genewise:
-            unnorm_row_max = self.unnorm_row_max.to(device=device, dtype=dtype)
-            theta_stack = torch.stack([
-                self.families[i]['theta'].to(device=device, dtype=dtype) for i in indices
-            ], dim=0)
-            log_pS, log_pD, log_pL, transfer_mat, max_transfer_mat = extract_parameters_uniform(
-                theta_stack, unnorm_row_max, specieswise=self.specieswise, genewise=True,
-            )
-            return log_pS, log_pD, log_pL, transfer_mat, max_transfer_mat
-
-        if self.tr_mat_unnormalized is None:
-            raise ValueError(
-                "dense/topk/pairwise parameter extraction requires dense species "
-                "transfer matrices; construct GeneDataset with "
-                "retain_dense_species_matrices=True"
-            )
-        transfer_mat_unnorm = self.tr_mat_unnormalized.to(device=device, dtype=dtype)
-        if self.genewise:
-            theta_stack = torch.stack([
-                self.families[i]['theta'].to(device=device, dtype=dtype) for i in indices
-            ], dim=0)
-            log_pS, log_pD, log_pL, transfer_mat, max_transfer_mat = extract_parameters(
-                theta_stack, transfer_mat_unnorm,
-                genewise=True, specieswise=self.specieswise, pairwise=self.pairwise,
-            )
-        else:
-            theta0 = self.families[indices[0]]['theta'].to(device=device, dtype=dtype)
-            log_pS, log_pD, log_pL, transfer_mat, max_transfer_mat = extract_parameters(
-                theta0, transfer_mat_unnorm,
-                genewise=False, specieswise=self.specieswise, pairwise=self.pairwise,
-            )
-
-        return log_pS, log_pD, log_pL, transfer_mat, self._normalize_max_transfer(max_transfer_mat)
+        unnorm_row_max = self.unnorm_row_max.to(device=device, dtype=dtype)
+        theta_stack = torch.stack([
+            self.families[i]['theta'].to(device=device, dtype=dtype) for i in indices
+        ], dim=0)
+        return extract_parameters_uniform(
+            theta_stack, unnorm_row_max, specieswise=self.specieswise, genewise=True,
+        )
 
     def _solve_e_fixed_point(
         self,
@@ -379,9 +313,11 @@ class GeneDataset(Dataset):
         tol_E: float,
         device: torch.device,
         dtype: torch.dtype,
-        pibar_mode: str = 'dense',
+        pibar_mode: str = 'uniform',
         ancestors_T: torch.Tensor | None = None,
     ) -> dict[str, torch.Tensor | int]:
+        if pibar_mode != "uniform":
+            raise ValueError("The lean branch supports only pibar_mode='uniform'.")
         return E_fixed_point(
             species_helpers=species_helpers,
             log_pS=log_pS,
@@ -394,7 +330,7 @@ class GeneDataset(Dataset):
             warm_start_E=None,
             dtype=dtype,
             device=device,
-            pibar_mode=pibar_mode,
+            pibar_mode="uniform",
             ancestors_T=ancestors_T,
         )
 
@@ -409,7 +345,7 @@ class GeneDataset(Dataset):
         tol_Pi: float = 1e-6,
         device: torch.device | None = None,
         dtype: torch.dtype | None = None,
-        pibar_mode: str = 'dense',
+        pibar_mode: str = 'uniform',
     ) -> dict:
         """Compute log-likelihood for a single family via the batched pathway.
 
@@ -452,14 +388,13 @@ class GeneDataset(Dataset):
         chunk_size: int | None = None,
         max_wave_size: int | None = 32768,
         max_root_wave_size: int | None = None,
-        pibar_mode: str = 'dense',
+        pibar_mode: str = 'uniform',
     ) -> list[float]:
         """Compute log-likelihoods for a batch of gene families.
 
         Returns a list of per-family log-likelihoods, in the same order as `indices`.
 
-        Uses wave-ordered forward pass for non-genewise families,
-        falls back to fixed-point for genewise.
+        Uses the retained wave-ordered uniform-transfer forward path.
 
         Args:
             chunk_size: If set, process families in chunks of this size to avoid OOM.
@@ -471,9 +406,10 @@ class GeneDataset(Dataset):
                 families by their per-family wave index.
             max_root_wave_size: If set with index-merged scheduling, split
                 only phase-3 root waves to cap DTS scratch memory.
-            pibar_mode: 'dense' (cuBLAS matmul) or 'uniform' (O(W*S) exact for scalar/specieswise T).
-                Use 'uniform' for large S where the transfer matrix is nearly uniform.
+            pibar_mode: must be ``"uniform"`` on the lean branch.
         """
+        if pibar_mode != "uniform":
+            raise ValueError("The lean branch supports only pibar_mode='uniform'.")
         device, dtype = self._resolve_device_dtype(device, dtype)
 
         if indices is None:

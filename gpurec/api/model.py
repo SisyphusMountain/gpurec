@@ -44,7 +44,30 @@ from .autograd import (
     _apply_to_static,
     _extract_parameters,
 )
-from .modes import _default_theta_init, _mode_to_flags
+
+_MODE_MAP: dict[str, tuple[bool, bool]] = {
+    "global": (False, False),
+    "specieswise": (False, True),
+    "genewise": (True, False),
+}
+
+
+def _mode_to_flags(mode: str) -> tuple[bool, bool]:
+    if mode not in _MODE_MAP:
+        raise ValueError(f"Unknown mode {mode!r}. Valid: {sorted(_MODE_MAP)}")
+    return _MODE_MAP[mode]
+
+
+def _default_theta_init(dataset: GeneDataset, mode: str) -> torch.Tensor:
+    base = math.log2(1e-10)
+    genewise, specieswise = _mode_to_flags(mode)
+    if genewise:
+        shape = (len(dataset.families), 3)
+    elif specieswise:
+        shape = (int(dataset.S), 3)
+    else:
+        shape = (3,)
+    return torch.full(shape, base, dtype=dataset.dtype, device=dataset.device)
 
 
 def _build_static_state(
@@ -60,9 +83,6 @@ def _build_static_state(
     neumann_terms: int,
     use_pruning: bool,
     pruning_threshold: float,
-    cg_tol: float,
-    cg_maxiter: int,
-    gmres_restart: int,
     max_wave_size: Optional[int] = 8192,
     max_root_wave_size: Optional[int] = None,
 ) -> ReconStaticState:
@@ -138,19 +158,16 @@ def _build_static_state(
         family_clade_offsets=family_clade_offsets,
     )
 
-    # 2. Species helpers on device. Skip Recipients_mat for uniform mode
-    #    (mirrors GeneDataset._species_helpers_for_mode lines 131-150).
+    if pibar_mode != "uniform":
+        raise ValueError("The lean branch supports only pibar_mode='uniform'.")
+
+    # 2. Species helpers on device.
     species_helpers, ancestors_T = dataset._species_helpers_for_mode(
-        pibar_mode=pibar_mode, device=device, dtype=dtype,
+        pibar_mode="uniform", device=device, dtype=dtype,
     )
 
     # 3. Other static tensors
     unnorm_row_max = dataset.unnorm_row_max.to(device=device, dtype=dtype)
-    transfer_mat_unnormalized = (
-        dataset.tr_mat_unnormalized.to(device=device, dtype=dtype)
-        if pibar_mode in ("dense", "topk")
-        else None
-    )
 
     return ReconStaticState(
         device=device,
@@ -159,11 +176,10 @@ def _build_static_state(
         species_helpers=species_helpers,
         root_clade_ids=batched["root_clade_ids"],
         unnorm_row_max=unnorm_row_max,
-        transfer_mat_unnormalized=transfer_mat_unnormalized,
         ancestors_T=ancestors_T,
         genewise=bool(dataset.genewise),
         specieswise=bool(dataset.specieswise),
-        pibar_mode=pibar_mode,
+        pibar_mode="uniform",
         fixed_iters_E=fixed_iters_E,
         max_iters_E=max_iters_E,
         tol_E=tol_E,
@@ -173,9 +189,6 @@ def _build_static_state(
         neumann_terms=neumann_terms,
         use_pruning=use_pruning,
         pruning_threshold=pruning_threshold,
-        cg_tol=cg_tol,
-        cg_maxiter=cg_maxiter,
-        gmres_restart=gmres_restart,
     )
 
 
@@ -202,20 +215,13 @@ class GeneReconModel(torch.nn.Module):
         neumann_terms: int = 3,
         use_pruning: bool = True,
         pruning_threshold: float = 1e-6,
-        cg_tol: float = 1e-8,
-        cg_maxiter: int = 500,
-        gmres_restart: int = 40,
         theta_init: Optional[torch.Tensor] = None,
         max_wave_size: Optional[int] = 8192,
         max_root_wave_size: Optional[int] = None,
     ):
         super().__init__()
-        if dataset.pairwise:
-            raise NotImplementedError(
-                "GeneReconModel does not support pairwise transfer mode. "
-                "The lean branch keeps global, specieswise, and genewise "
-                "uniform-transfer modes."
-            )
+        if pibar_mode != "uniform":
+            raise ValueError("The lean branch supports only pibar_mode='uniform'.")
         # Validate mode early
         _mode_to_flags(mode)
         if fixed_iters_E is not None:
@@ -224,8 +230,8 @@ class GeneReconModel(torch.nn.Module):
                 raise ValueError("fixed_iters_E must be >= 1 when provided")
 
         # Sanity check: dataset flags must be consistent with mode
-        ds_g, ds_sw, _ = (dataset.genewise, dataset.specieswise, dataset.pairwise)
-        expected_g, expected_sw, _ = _mode_to_flags(mode)
+        ds_g, ds_sw = (dataset.genewise, dataset.specieswise)
+        expected_g, expected_sw = _mode_to_flags(mode)
         if (ds_g, ds_sw) != (expected_g, expected_sw):
             raise ValueError(
                 f"Dataset flags (genewise={ds_g}, specieswise={ds_sw}) do not "
@@ -254,9 +260,6 @@ class GeneReconModel(torch.nn.Module):
             neumann_terms=neumann_terms,
             use_pruning=use_pruning,
             pruning_threshold=pruning_threshold,
-            cg_tol=cg_tol,
-            cg_maxiter=cg_maxiter,
-            gmres_restart=gmres_restart,
             max_wave_size=max_wave_size,
             max_root_wave_size=max_root_wave_size,
         )
@@ -290,8 +293,7 @@ class GeneReconModel(torch.nn.Module):
         mode : str
             "global" | "specieswise" | "genewise".
         pibar_mode : str
-            "uniform" (default, fast for nearly-uniform transfer matrices) or
-            "dense" (full ``Pi @ T.T`` matmul).
+            Must be ``"uniform"`` on the lean branch.
         device : str | torch.device
             Target device. Defaults to ``"cuda"``.
         dtype : torch.dtype
@@ -306,7 +308,9 @@ class GeneReconModel(torch.nn.Module):
         refresh_preprocess_cache : bool
             Ignore existing preprocessing cache entries and overwrite them.
         """
-        genewise, specieswise, pairwise = _mode_to_flags(mode)
+        if pibar_mode != "uniform":
+            raise ValueError("The lean branch supports only pibar_mode='uniform'.")
+        genewise, specieswise = _mode_to_flags(mode)
         if isinstance(device, str):
             device = torch.device(device)
         ds = GeneDataset(
@@ -314,12 +318,12 @@ class GeneReconModel(torch.nn.Module):
             gene_tree_paths=gene_trees,
             genewise=genewise,
             specieswise=specieswise,
-            pairwise=pairwise,
+            pairwise=False,
             dtype=dtype,
             device=device,
             preprocess_cache_dir=preprocess_cache_dir,
             refresh_preprocess_cache=refresh_preprocess_cache,
-            retain_dense_species_matrices=pibar_mode != "uniform",
+            retain_dense_species_matrices=False,
         )
         theta_init = None
         if theta_init_rates is not None:
