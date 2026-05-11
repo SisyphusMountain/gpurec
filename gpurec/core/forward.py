@@ -305,19 +305,10 @@ def Pi_wave_forward(
         else:
             uniform_leaf_logp = log_pS.expand(S).contiguous() if log_pS.ndim == 0 else log_pS.contiguous()
 
-    def _wave_consts(ws, we):
-        """Return per-wave constants: (DL, SL1, SL2, Ebar_w, E_w, mt_w).
-
-        Batched constants stay in [P, S] form and Triton addresses them
-        through family_idx. Shared constants stay in [S] form.
-        """
-        if batched:
-            return DL_const, SL1_const, SL2_const, Ebar_family, E_family, mt_family
-        return DL_const, SL1_const, SL2_const, Ebar, E, mt_squeezed
-
-    def _wave_dts_params(meta):
-        """Return DTS parameters; genewise scalar params keep zero species stride."""
-        return log_pD_param, log_pS_param
+    if batched:
+        wave_consts = (DL_const, SL1_const, SL2_const, Ebar_family, E_family, mt_family)
+    else:
+        wave_consts = (DL_const, SL1_const, SL2_const, Ebar, E, mt_squeezed)
 
     n_waves = len(wave_metas)
 
@@ -408,12 +399,11 @@ def Pi_wave_forward(
     with _nvtx_range("Pi wave forward v2"):
         for meta in wave_metas:
             if meta['has_splits']:
-                pD_dts, pS_dts = _wave_dts_params(meta)
-                dts_r = _compute_wave_dts(meta, pD_dts, pS_dts)
+                dts_r = _compute_wave_dts(meta, log_pD_param, log_pS_param)
             else:
                 dts_r = None
 
-            DL_w, SL1_w, SL2_w, Ebar_w, E_w, mt_w = _wave_consts(meta['start'], meta['end'])
+            DL_w, SL1_w, SL2_w, Ebar_w, E_w, mt_w = wave_consts
             _run_wave_self_loop(
                 meta, dts_r, uniform_leaf_logp, DL_w, SL1_w, SL2_w,
                 Ebar_w, E_w, mt_w,
