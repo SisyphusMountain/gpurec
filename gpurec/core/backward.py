@@ -838,9 +838,7 @@ def Pi_wave_backward(
         raise RuntimeError(
             "GPUREC_REQUIRE_OPTIMIZED_GENEWISE_BACKWARD=1 requested the "
             "optimized genewise uniform backward, but the fused self-loop gate "
-            "is inactive. Check GPUREC_FUSED_UNIFORM_BACKWARD, "
-            "GPUREC_FUSED_GENEWISE_BACKWARD_SELF_LOOP, tensor shapes, dtype, "
-            "device, and S > 256."
+            "is inactive. Check tensor shapes, dtype, device, and S > 256."
         )
     scratch_pool_requested = (
         os.environ.get("GPUREC_BACKWARD_SCRATCH_POOL", "0") != "0"
@@ -949,8 +947,7 @@ def Pi_wave_backward(
     leaf_species_index = wave_layout.get('leaf_species_index')
 
     use_uniform_leaf_index = bool(
-        os.environ.get("GPUREC_BACKWARD_LEAF_INDEX", "1") != "0"
-        and can_use_fused_uniform_backward
+        can_use_fused_uniform_backward
         and device.type == 'cuda'
         and leaf_species_index is not None
     )
@@ -972,9 +969,7 @@ def Pi_wave_backward(
             )
         else:
             uniform_leaf_logp = log_pS_family
-    fused_wave_param_accum_enabled = (
-        os.environ.get("GPUREC_FUSED_WAVE_PARAM_ACCUM", "1") != "0"
-    )
+    fused_wave_param_accum_enabled = True
     self_loop_2d_choice = env_choice("GPUREC_SELF_LOOP_2D_TRITON", "auto")
     self_loop_2d_triton_requested = env_flag_enabled(
         "GPUREC_SELF_LOOP_2D_TRITON", "auto"

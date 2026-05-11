@@ -47,7 +47,6 @@ class ReconStaticState:
     # Wave layout + likelihood inputs (precomputed once)
     wave_layout: dict[str, Any]
     species_helpers: dict[str, Any]
-    root_clade_ids: torch.Tensor                              # Long[G] original order
     unnorm_row_max: torch.Tensor                              # [S]
     ancestors_T: Optional[torch.Tensor]                       # sparse COO (uniform only)
 

@@ -263,15 +263,8 @@ def _run_forward(
 
 def _set_reference_env(monkeypatch: pytest.MonkeyPatch) -> None:
     flags = {
-        "GPUREC_FORWARD_LEAF_INDEX": "0",
-        "GPUREC_FORWARD_PARENT_REDUCED_DTS": "0",
         "GPUREC_FORWARD_TOPOLOGY_INT32": "0",
-        "GPUREC_FUSED_UNIFORM_BACKWARD": "0",
-        "GPUREC_KERNELIZED_BACKWARD_DTS": "0",
-        "GPUREC_BACKWARD_PARENT_REDUCED_DTS": "0",
-        "GPUREC_FUSED_CROSS_PIBAR_VJP": "0",
-        "GPUREC_BACKWARD_LEAF_INDEX": "0",
-        "GPUREC_DTS_PIBAR_UD_FUSION": "0",
+        "GPUREC_SELF_LOOP_2D_TRITON": "0",
     }
     for key, value in flags.items():
         monkeypatch.setenv(key, value)
@@ -279,20 +272,8 @@ def _set_reference_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def _set_optimized_env(monkeypatch: pytest.MonkeyPatch) -> None:
     flags = {
-        "GPUREC_UNIFORM_PINGPONG": "1",
-        "GPUREC_FORWARD_LEAF_INDEX": "1",
-        "GPUREC_FORWARD_PARENT_REDUCED_DTS": "1",
-        "GPUREC_FORWARD_PARENT_REDUCED_DTS_MIN_SPLITS": "0",
-        "GPUREC_FORWARD_PARENT_REDUCED_DTS_IMPL": "tiled",
-        "GPUREC_FORWARD_PARENT_REDUCED_DTS_GE2_ONLY": "1",
         "GPUREC_FORWARD_TOPOLOGY_INT32": "1",
-        "GPUREC_FUSED_UNIFORM_BACKWARD": "1",
-        "GPUREC_KERNELIZED_BACKWARD_DTS": "1",
-        "GPUREC_BACKWARD_PARENT_REDUCED_DTS": "tiled",
-        "GPUREC_BACKWARD_PARENT_REDUCED_DTS_MIN_SPLITS": "0",
-        "GPUREC_FUSED_CROSS_PIBAR_VJP": "1",
-        "GPUREC_BACKWARD_LEAF_INDEX": "1",
-        "GPUREC_DTS_PIBAR_UD_FUSION": "1",
+        "GPUREC_SELF_LOOP_2D_TRITON": "auto",
     }
     for key, value in flags.items():
         monkeypatch.setenv(key, value)

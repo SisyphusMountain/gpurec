@@ -257,53 +257,36 @@ def _optimized_feature_status(
     static: StaticInputs,
 ) -> dict[str, int | str]:
     has_fused = _has_fused_backward_module()
-    pibar_impl = os.environ.get("GPUREC_FUSED_CROSS_PIBAR_VJP_IMPL", "tree").lower()
-    tree_pibar_vjp = pibar_impl in ("tree", "prefix", "tree_prefix")
     cuda_dtype_ok = static.device.type == "cuda" and static.dtype in (torch.float32, torch.float64)
     s_gt_256 = int(static.dataset.S) > 256
     fixed_even = args.fixed_iters is not None and args.fixed_iters % 2 == 0
 
     full_saved_tensors_for_backward = 1
     root_row_output = 0
-    forward_parent_reduced_dts = int(
-        _env_enabled("GPUREC_FORWARD_PARENT_REDUCED_DTS", "1")
-        and static.device.type == "cuda"
-    )
-    backward_parent_reduced_dts = int(
-        _env_enabled("GPUREC_BACKWARD_PARENT_REDUCED_DTS", "tiled")
-        and _env_enabled("GPUREC_KERNELIZED_BACKWARD_DTS", "1")
-        and static.device.type == "cuda"
-    )
+    forward_parent_reduced_dts = int(static.device.type == "cuda")
+    backward_parent_reduced_dts = int(static.device.type == "cuda" and cuda_dtype_ok)
     pingpong = int(
-        _env_enabled("GPUREC_UNIFORM_PINGPONG", "1")
-        and fixed_even
+        fixed_even
         and static.device.type == "cuda"
     )
     fused_uniform_backward = int(
-        _env_enabled("GPUREC_FUSED_UNIFORM_BACKWARD", "1")
-        and has_fused
+        has_fused
         and cuda_dtype_ok
         and s_gt_256
     )
     kernelized_active_mask = int(
-        _env_enabled("GPUREC_KERNELIZED_ACTIVE_MASK", "1")
-        and has_fused
+        has_fused
         and cuda_dtype_ok
     )
     kernelized_backward_dts = int(
-        _env_enabled("GPUREC_KERNELIZED_BACKWARD_DTS", "1")
-        and static.device.type == "cuda"
+        static.device.type == "cuda"
+        and cuda_dtype_ok
     )
     fused_dts_backward_accum = int(
         kernelized_backward_dts
-        and _env_enabled("GPUREC_FUSED_DTS_BACKWARD_ACCUM", "1")
     )
     compact_tree_pibar_vjp = int(
-        _env_enabled("GPUREC_FUSED_CROSS_PIBAR_VJP", "1")
-        and tree_pibar_vjp
-        and _env_enabled("GPUREC_DTS_PIBAR_UD_FUSION", "1")
-        and _env_enabled("GPUREC_DTS_PIBAR_UD_COMPACT_LEVELS", "1")
-        and has_fused
+        has_fused
         and cuda_dtype_ok
         and s_gt_256
     )
@@ -345,7 +328,7 @@ def _optimized_feature_status(
         "cuda_dtype_ok": int(cuda_dtype_ok),
         "species_gate_s_gt_256": int(s_gt_256),
         "has_fused_backward_module": int(has_fused),
-        "cross_pibar_impl": pibar_impl,
+        "cross_pibar_impl": "tree",
         "strict_optimized_kernels": int(args.strict_optimized_kernels),
     }
 
@@ -943,7 +926,6 @@ def _print_policy(static: StaticInputs, args: argparse.Namespace) -> None:
     print(
         "pipeline_policy",
         "mode", "global",
-        "pibar_mode", "uniform",
         "dataset", static.root,
         "family_range", f"{args.start}:{args.start + args.fams}",
         "families", len(static.genes),
@@ -1004,23 +986,18 @@ def _print_active_path_flags(
     print(
         "active_path_flags",
         "mode", "global",
-        "pibar_mode", "uniform",
         "fixed_iters", args.fixed_iters if args.fixed_iters is not None else "none",
         "chunks", len(static.built_chunks),
         "root_row_output", status["root_row_output"],
         "full_saved_tensors_for_backward", status["full_saved_tensors_for_backward"],
-        "forward_parent_reduced_dts", os.environ.get("GPUREC_FORWARD_PARENT_REDUCED_DTS", "unset"),
-        "forward_parent_reduced_dts_impl", os.environ.get("GPUREC_FORWARD_PARENT_REDUCED_DTS_IMPL", "unset"),
-        "forward_parent_reduced_dts_ge2_only", os.environ.get("GPUREC_FORWARD_PARENT_REDUCED_DTS_GE2_ONLY", "unset"),
-        "backward_parent_reduced_dts", os.environ.get("GPUREC_BACKWARD_PARENT_REDUCED_DTS", "unset"),
-        "pingpong", os.environ.get("GPUREC_UNIFORM_PINGPONG", "unset"),
-        "fused_uniform_backward", os.environ.get("GPUREC_FUSED_UNIFORM_BACKWARD", "unset"),
-        "kernelized_active_mask", os.environ.get("GPUREC_KERNELIZED_ACTIVE_MASK", "unset"),
-        "kernelized_backward_dts", os.environ.get("GPUREC_KERNELIZED_BACKWARD_DTS", "unset"),
-        "fused_dts_backward_accum", os.environ.get("GPUREC_FUSED_DTS_BACKWARD_ACCUM", "unset"),
-        "dts_pibar_ud_fusion", os.environ.get("GPUREC_DTS_PIBAR_UD_FUSION", "unset"),
-        "fused_cross_pibar_vjp", os.environ.get("GPUREC_FUSED_CROSS_PIBAR_VJP", "unset"),
-        "compact_pibar_vjp_impl", os.environ.get("GPUREC_FUSED_CROSS_PIBAR_VJP_IMPL", "unset"),
+        "forward_parent_reduced_dts", status["forward_parent_reduced_dts"],
+        "backward_parent_reduced_dts", status["backward_parent_reduced_dts"],
+        "pingpong", status["pingpong"],
+        "fused_uniform_backward", status["fused_uniform_backward"],
+        "kernelized_active_mask", status["kernelized_active_mask"],
+        "kernelized_backward_dts", status["kernelized_backward_dts"],
+        "fused_dts_backward_accum", status["fused_dts_backward_accum"],
+        "compact_tree_pibar_vjp", status["compact_tree_pibar_vjp"],
         "proposal0_self_loop", os.environ.get("GPUREC_SELF_LOOP_2D_TRITON", "unset"),
         "proposal0_block_w", os.environ.get("GPUREC_SELF_LOOP_2D_BLOCK_W", "unset"),
         "strict_optimized_kernels", int(args.strict_optimized_kernels),

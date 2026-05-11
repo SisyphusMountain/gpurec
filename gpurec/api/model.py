@@ -170,7 +170,6 @@ def _build_static_state(
         dtype=dtype,
         wave_layout=wave_layout,
         species_helpers=species_helpers,
-        root_clade_ids=batched["root_clade_ids"],
         unnorm_row_max=unnorm_row_max,
         ancestors_T=ancestors_T,
         genewise=bool(dataset.genewise),

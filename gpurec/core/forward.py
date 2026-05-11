@@ -72,9 +72,6 @@ def _get_species_wave_helpers(species_helpers, S, device):
         sp_child1 = cache.get('sp_child1')
         sp_child2 = cache.get('sp_child2')
         sp_parent = cache.get('sp_parent')
-        ancestor_cols = cache.get('ancestor_cols')
-        ancestor_csr_indptr = cache.get('ancestor_csr_indptr')
-        ancestor_csr_indices = cache.get('ancestor_csr_indices')
         cache_ok = (
             torch.is_tensor(sp_child1)
             and torch.is_tensor(sp_child2)
@@ -82,12 +79,6 @@ def _get_species_wave_helpers(species_helpers, S, device):
             and sp_child2.device == target_device
             and torch.is_tensor(sp_parent)
             and sp_parent.device == target_device
-            and torch.is_tensor(ancestor_cols)
-            and ancestor_cols.device == target_device
-            and torch.is_tensor(ancestor_csr_indptr)
-            and ancestor_csr_indptr.device == target_device
-            and torch.is_tensor(ancestor_csr_indices)
-            and ancestor_csr_indices.device == target_device
         )
         if cache_ok:
             return (
@@ -113,44 +104,26 @@ def _get_species_wave_helpers(species_helpers, S, device):
     sp_parent_cpu[c_cpu[~mask_c1]] = p_cpu[~mask_c1] - S
 
     parent_values = sp_parent_cpu.tolist()
-    ancestor_lists = []
     max_ancestor_depth = 0
     for s_idx in range(S):
         depth = 0
         cur = s_idx
-        ancestors = []
         while cur >= 0:
-            ancestors.append(cur)
             depth += 1
             if depth > S:
                 raise RuntimeError("Cycle detected in species parent pointers")
             cur = parent_values[cur]
-        ancestor_lists.append(ancestors)
         max_ancestor_depth = max(max_ancestor_depth, depth)
-    ancestor_cols_cpu = torch.full((S, max_ancestor_depth), -1, dtype=torch.long)
-    for s_idx, ancestors in enumerate(ancestor_lists):
-        ancestor_cols_cpu[s_idx, :len(ancestors)] = torch.tensor(ancestors, dtype=torch.long)
-    csr_indptr = [0]
-    csr_indices = []
-    for ancestors in ancestor_lists:
-        csr_indices.extend(ancestors)
-        csr_indptr.append(len(csr_indices))
 
     sp_child1 = sp_child1_cpu.to(device=target_device, dtype=index_dtype)
     sp_child2 = sp_child2_cpu.to(device=target_device, dtype=index_dtype)
     sp_parent = sp_parent_cpu.to(device=target_device, dtype=index_dtype)
-    ancestor_cols = ancestor_cols_cpu.T.contiguous().to(device=target_device, dtype=index_dtype)
-    ancestor_csr_indptr = torch.tensor(csr_indptr, dtype=torch.int32, device=target_device)
-    ancestor_csr_indices = torch.tensor(csr_indices, dtype=torch.int32, device=target_device)
     species_helpers['_wave_forward_species_cache'] = {
         'S': int(S),
         'index_dtype': str(index_dtype),
         'sp_child1': sp_child1,
         'sp_child2': sp_child2,
         'sp_parent': sp_parent,
-        'ancestor_cols': ancestor_cols,
-        'ancestor_csr_indptr': ancestor_csr_indptr,
-        'ancestor_csr_indices': ancestor_csr_indices,
         'max_ancestor_depth': int(max_ancestor_depth),
     }
     return (
