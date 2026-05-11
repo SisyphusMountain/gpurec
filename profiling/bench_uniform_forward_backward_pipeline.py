@@ -399,11 +399,9 @@ def _make_static_inputs(args: argparse.Namespace) -> StaticInputs:
         gene_tree_paths=genes,
         genewise=False,
         specieswise=False,
-        pairwise=False,
         dtype=dtype,
         device=device,
         preprocess_cache_dir=args.cache_dir,
-        retain_dense_species_matrices=False,
     )
     preprocess_s = time.perf_counter() - t0
 
@@ -617,8 +615,6 @@ def _backward_chunk(
         neumann_terms=args.neumann_terms,
         use_pruning=args.use_pruning,
         pruning_threshold=args.pruning_threshold,
-        pibar_mode="uniform",
-        transfer_mat=transfer_mat,
         ancestors_T=static.ancestors_T,
         uniform_pibar_row_max=pi_out.get("uniform_pibar_row_max"),
     )

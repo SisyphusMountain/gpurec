@@ -30,21 +30,16 @@ class GeneDataset(Dataset):
         gene_tree_paths,
         genewise, # whether to have a different theta for each gene family
         specieswise, # no need for genewise: it only appear when collating or gradient steps
-        pairwise=False,
         dtype=torch.float32,
         device=None,
         preprocess_cache_dir: str | os.PathLike | None = None,
         refresh_preprocess_cache: bool = False,
-        retain_dense_species_matrices: bool = False,
     ):
         if device is None:
             device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-        if pairwise:
-            raise NotImplementedError("The lean branch keeps uniform transfer only; pairwise transfer is not supported.")
 
         self.genewise = genewise
         self.specieswise = specieswise
-        self.pairwise = False
         self.device = device
         self.dtype = dtype
         ext = _load_species_gene_ext()
@@ -56,7 +51,7 @@ class GeneDataset(Dataset):
                 name: ext.preprocess(
                     species_tree_path,
                     [str(path)],
-                    include_species_matrices=retain_dense_species_matrices,
+                    include_species_matrices=False,
                 )
                 for name, path in zip(family_names, gene_tree_paths)
             }
@@ -69,7 +64,6 @@ class GeneDataset(Dataset):
                 family_names,
                 preprocess_cache_dir=preprocess_cache_dir,
                 refresh=refresh_preprocess_cache,
-                retain_dense_species_matrices=retain_dense_species_matrices,
             )
         else:
             families_input = {
@@ -79,7 +73,7 @@ class GeneDataset(Dataset):
             raw_all = ext.preprocess_multiple_families(
                 species_tree_path,
                 families_input,
-                include_species_matrices=retain_dense_species_matrices,
+                include_species_matrices=False,
             )
             raw_by_family = raw_all['families']
             self.species_helpers = raw_all['species']
@@ -138,13 +132,11 @@ class GeneDataset(Dataset):
         *,
         preprocess_cache_dir: str | os.PathLike,
         refresh: bool,
-        retain_dense_species_matrices: bool,
     ):
         cache_dir = Path(preprocess_cache_dir)
         cache_dir.mkdir(parents=True, exist_ok=True)
 
-        species_mode = "dense-species" if retain_dense_species_matrices else "compact-species"
-        version = f"light-v3:{species_mode}"
+        version = "light-v3:compact-species"
         species_hash = cls._hash_file(species_tree_path)
         species_key = hashlib.sha256(
             f"{version}:species:{species_hash}".encode("utf-8")
@@ -182,7 +174,7 @@ class GeneDataset(Dataset):
             raw_all = ext.preprocess_multiple_families(
                 species_tree_path,
                 missing,
-                include_species_matrices=retain_dense_species_matrices,
+                include_species_matrices=False,
             )
             if species_helpers is None:
                 species_helpers = raw_all["species"]
@@ -196,7 +188,7 @@ class GeneDataset(Dataset):
             raw_species = ext.preprocess_multiple_families(
                 species_tree_path,
                 {},
-                include_species_matrices=retain_dense_species_matrices,
+                include_species_matrices=False,
             )
             species_helpers = raw_species["species"]
             torch.save(species_helpers, species_cache)
@@ -333,7 +325,6 @@ class GeneDataset(Dataset):
         tol_Pi: float = 1e-6,
         device: torch.device | None = None,
         dtype: torch.dtype | None = None,
-        pibar_mode: str = 'uniform',
     ) -> dict:
         """Compute log-likelihood for a single family via the batched pathway.
 
@@ -349,7 +340,6 @@ class GeneDataset(Dataset):
             tol_Pi=tol_Pi,
             device=device,
             dtype=dtype,
-            pibar_mode=pibar_mode,
         )[0]
 
         return {
@@ -376,7 +366,6 @@ class GeneDataset(Dataset):
         chunk_size: int | None = None,
         max_wave_size: int | None = 32768,
         max_root_wave_size: int | None = None,
-        pibar_mode: str = 'uniform',
     ) -> list[float]:
         """Compute log-likelihoods for a batch of gene families.
 
@@ -394,10 +383,7 @@ class GeneDataset(Dataset):
                 families by their per-family wave index.
             max_root_wave_size: If set with index-merged scheduling, split
                 only phase-3 root waves to cap DTS scratch memory.
-            pibar_mode: must be ``"uniform"`` on the lean branch.
         """
-        if pibar_mode != "uniform":
-            raise ValueError("The lean branch supports only pibar_mode='uniform'.")
         device, dtype = self._resolve_device_dtype(device, dtype)
 
         if indices is None:

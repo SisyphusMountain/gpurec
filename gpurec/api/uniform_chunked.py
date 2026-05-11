@@ -535,8 +535,6 @@ def _evaluate_chunked_uniform(
                     neumann_terms=state.neumann_terms,
                     use_pruning=state.use_pruning,
                     pruning_threshold=state.pruning_threshold,
-                    pibar_mode="uniform",
-                    transfer_mat=transfer_mat,
                     ancestors_T=state.ancestors_T,
                     uniform_pibar_row_max=pi_out.get("uniform_pibar_row_max"),
                 )
@@ -724,12 +722,10 @@ class UniformChunkedReconModel(torch.nn.Module):
             gene_tree_paths=gene_paths,
             genewise=False,
             specieswise=False,
-            pairwise=False,
             dtype=dtype,
             device=device,
             preprocess_cache_dir=preprocess_cache_dir,
             refresh_preprocess_cache=refresh_preprocess_cache,
-            retain_dense_species_matrices=False,
         )
         species_helpers, ancestors_T = dataset._species_helpers_for_mode(
             device=device,

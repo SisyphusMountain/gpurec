@@ -183,7 +183,6 @@ def _make_model(
         str(data_dir / "sp.nwk"),
         genes,
         mode=mode,
-        pibar_mode="uniform",
         device=device,
         dtype=dtype,
         theta_init_rates=(0.05, 0.05, 0.05),
@@ -414,11 +413,9 @@ def test_specieswise_uniform_matches_alerax_specieswise_reference(
         genes,
         genewise=False,
         specieswise=True,
-        pairwise=False,
         dtype=dtype,
         device=device,
         preprocess_cache_dir=tmp_path / "preprocess",
-        retain_dense_species_matrices=False,
     )
     theta = _load_alerax_specieswise_theta(
         data_dir_100,
@@ -438,7 +435,6 @@ def test_specieswise_uniform_matches_alerax_specieswise_reference(
         tol_Pi=1e-10,
         device=device,
         dtype=dtype,
-        pibar_mode="uniform",
         chunk_size=100,
     )
     torch.cuda.synchronize()

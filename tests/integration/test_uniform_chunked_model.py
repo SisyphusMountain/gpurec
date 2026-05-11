@@ -46,7 +46,6 @@ def test_chunked_uniform_matches_resident_global_model(tmp_path):
 
     resident = GeneReconModel.from_trees(
         mode="global",
-        pibar_mode="uniform",
         max_wave_size=32768,
         **kwargs,
     )

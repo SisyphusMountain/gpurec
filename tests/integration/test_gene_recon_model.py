@@ -27,12 +27,16 @@ def test_gene_recon_model_forward_backward_modes(trees, mode):
         species_tree=sp,
         gene_trees=genes,
         mode=mode,
-        pibar_mode="uniform",
         device="cuda",
         dtype=torch.float32,
         fixed_iters_Pi=2,
         neumann_terms=2,
     )
+
+    pi = model.pi_matrix()
+    assert pi.ndim == 2
+    assert pi.shape[1] == model.n_species
+    assert torch.isfinite(pi).any()
 
     loss = model()
     assert torch.isfinite(loss)
@@ -48,7 +52,6 @@ def test_pytorch_adam_updates_global_model(trees):
         species_tree=sp,
         gene_trees=genes,
         mode="global",
-        pibar_mode="uniform",
         device="cuda",
         dtype=torch.float32,
         fixed_iters_Pi=2,
@@ -73,7 +76,6 @@ def test_batched_lbfgs_genewise_runs_one_polish_step(trees):
         species_tree=sp,
         gene_trees=genes,
         mode="genewise",
-        pibar_mode="uniform",
         device="cuda",
         dtype=torch.float32,
         fixed_iters_Pi=2,

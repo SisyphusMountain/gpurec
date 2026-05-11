@@ -200,7 +200,6 @@ class GeneReconModel(torch.nn.Module):
         *,
         dataset: GeneDataset,
         mode: str,
-        pibar_mode: str = "uniform",
         fixed_iters_E: Optional[int] = None,
         max_iters_E: int = 2000,
         tol_E: float = 1e-8,
@@ -215,8 +214,6 @@ class GeneReconModel(torch.nn.Module):
         max_root_wave_size: Optional[int] = None,
     ):
         super().__init__()
-        if pibar_mode != "uniform":
-            raise ValueError("The lean branch supports only pibar_mode='uniform'.")
         # Validate mode early
         _mode_to_flags(mode)
         if fixed_iters_E is not None:
@@ -268,7 +265,6 @@ class GeneReconModel(torch.nn.Module):
         gene_trees: list[str],
         *,
         mode: str = "global",
-        pibar_mode: str = "uniform",
         device: Any = "cuda",
         dtype: torch.dtype = torch.float32,
         theta_init_rates: Optional[tuple[float, float, float]] = None,
@@ -286,8 +282,6 @@ class GeneReconModel(torch.nn.Module):
             Paths to gene trees (Newick).
         mode : str
             "global" | "specieswise" | "genewise".
-        pibar_mode : str
-            Must be ``"uniform"`` on the lean branch.
         device : str | torch.device
             Target device. Defaults to ``"cuda"``.
         dtype : torch.dtype
@@ -302,8 +296,6 @@ class GeneReconModel(torch.nn.Module):
         refresh_preprocess_cache : bool
             Ignore existing preprocessing cache entries and overwrite them.
         """
-        if pibar_mode != "uniform":
-            raise ValueError("The lean branch supports only pibar_mode='uniform'.")
         genewise, specieswise = _mode_to_flags(mode)
         if isinstance(device, str):
             device = torch.device(device)
@@ -312,12 +304,10 @@ class GeneReconModel(torch.nn.Module):
             gene_tree_paths=gene_trees,
             genewise=genewise,
             specieswise=specieswise,
-            pairwise=False,
             dtype=dtype,
             device=device,
             preprocess_cache_dir=preprocess_cache_dir,
             refresh_preprocess_cache=refresh_preprocess_cache,
-            retain_dense_species_matrices=False,
         )
         theta_init = None
         if theta_init_rates is not None:
@@ -336,7 +326,6 @@ class GeneReconModel(torch.nn.Module):
         return cls(
             dataset=ds,
             mode=mode,
-            pibar_mode=pibar_mode,
             theta_init=theta_init,
             **solver_kwargs,
         )
@@ -455,6 +444,65 @@ class GeneReconModel(torch.nn.Module):
                 "per-family gradients are not defined."
             )
         return self.forward(reduce="per_family")
+
+    @torch.no_grad()
+    def pi_matrix(self, *, original_order: bool = True) -> torch.Tensor:
+        """Return converged Pi rows for the retained uniform-transfer path.
+
+        The model mode controls parameter sharing:
+        ``global`` uses one theta vector, ``specieswise`` uses ``[S, 3]``
+        theta, and ``genewise`` uses ``[G, 3]`` theta addressed by the cached
+        family index.  The returned tensor is ``[C_total, S]``.
+        """
+        static = self._static
+        log_pS, log_pD, log_pL, transfer_mat, max_transfer_vec = (
+            _extract_parameters(self.theta.detach(), static)
+        )
+        e_max_iters = (
+            static.fixed_iters_E
+            if static.fixed_iters_E is not None
+            else static.max_iters_E
+        )
+        e_tolerance = -1.0 if static.fixed_iters_E is not None else static.tol_E
+        E_out = E_fixed_point(
+            species_helpers=static.species_helpers,
+            log_pS=log_pS,
+            log_pD=log_pD,
+            log_pL=log_pL,
+            transfer_mat=transfer_mat,
+            max_transfer_mat=max_transfer_vec,
+            max_iters=e_max_iters,
+            tolerance=e_tolerance,
+            warm_start_E=None,
+            dtype=static.dtype,
+            device=static.device,
+            ancestors_T=static.ancestors_T,
+        )
+        Pi_out = Pi_wave_forward(
+            wave_layout=static.wave_layout,
+            species_helpers=static.species_helpers,
+            E=E_out["E"],
+            Ebar=E_out["E_bar"],
+            E_s1=E_out["E_s1"],
+            E_s2=E_out["E_s2"],
+            log_pS=log_pS,
+            log_pD=log_pD,
+            log_pL=log_pL,
+            transfer_mat=transfer_mat,
+            max_transfer_mat=max_transfer_vec,
+            device=static.device,
+            dtype=static.dtype,
+            local_iters=static.max_iters_Pi,
+            local_tolerance=static.tol_Pi,
+            fixed_iters=static.fixed_iters_Pi,
+            return_original=original_order,
+            need_pibar=False,
+            return_root_rows=False,
+            family_idx=(
+                static.wave_layout.get("family_idx") if static.genewise else None
+            ),
+        )
+        return Pi_out["Pi"] if original_order else Pi_out["Pi_wave_ordered"]
 
     @torch.no_grad()
     def log_likelihood(self) -> float:
