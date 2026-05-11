@@ -82,7 +82,6 @@ def implicit_grad_loglik_vjp_wave(
     neumann_terms: int = 3,
     use_pruning: bool = True,
     pruning_threshold: float = 1e-6,
-    pibar_mode: str = 'uniform',
     ancestors_T: Optional[torch.Tensor] = None,
     uniform_pibar_row_max: Optional[torch.Tensor] = None,
 ):
@@ -95,9 +94,6 @@ def implicit_grad_loglik_vjp_wave(
 
     Returns (grad_theta, pi_backward_info).
     """
-    if pibar_mode != "uniform":
-        raise ValueError("The lean branch supports only pibar_mode='uniform'.")
-
     # --- Step 1: Pi backward (can be pre-computed for batched mode) ---
     torch.cuda.synchronize()
     _t_pi_bwd_0 = time.perf_counter()
@@ -114,8 +110,6 @@ def implicit_grad_loglik_vjp_wave(
         neumann_terms=neumann_terms,
         use_pruning=use_pruning,
         pruning_threshold=pruning_threshold,
-        pibar_mode="uniform",
-        transfer_mat=None,
         ancestors_T=ancestors_T,
         uniform_pibar_row_max=uniform_pibar_row_max,
     )

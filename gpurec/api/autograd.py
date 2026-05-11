@@ -238,8 +238,6 @@ class _GeneReconFunction(torch.autograd.Function):
                     else theta.new_empty(0)
                 ),
             )
-            # transfer_mat may be None (uniform mode); store as ctx attribute.
-            ctx.transfer_mat = transfer_mat
             ctx.static = static
             ctx.reduce = reduce
 
@@ -269,7 +267,6 @@ class _GeneReconFunction(torch.autograd.Function):
             max_transfer_vec,
             uniform_pibar_row_max,
         ) = ctx.saved_tensors
-        transfer_mat = ctx.transfer_mat
         static: ReconStaticState = ctx.static
 
         wave_layout = static.wave_layout
@@ -297,7 +294,6 @@ class _GeneReconFunction(torch.autograd.Function):
                 neumann_terms=static.neumann_terms,
                 use_pruning=static.use_pruning,
                 pruning_threshold=static.pruning_threshold,
-                transfer_mat=transfer_mat,
                 ancestors_T=static.ancestors_T,
                 family_idx=wave_layout["family_idx"],
                 uniform_pibar_row_max=(

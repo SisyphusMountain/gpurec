@@ -29,80 +29,6 @@ def _uniform_ancestor_left_sum(ancestors_T: torch.Tensor, rhs_T: torch.Tensor) -
 
 
 # ---------------------------------------------------------------------------
-# Differentiable self-loop step (for torch.func.vjp tracing)
-# ---------------------------------------------------------------------------
-
-def _self_loop_differentiable(
-    Pi_W, mt_squeezed, DL_const, Ebar, E, SL1_const, SL2_const,
-    sp_child1, sp_child2, leaf_wt, dts_r, S,
-    pibar_mode='uniform', transfer_mat_T=None, ancestors_T=None,
-):
-    """Pure-PyTorch differentiable self-loop step (Pibar + DTS_L).
-
-    Computes one iteration of g_k(Pi_W) = logaddexp2(dts_r, DTS_L(Pi_W, Pibar(Pi_W))).
-    Used by the backward pass to build VJP closures via torch.func.vjp.
-
-    Args:
-        Pi_W: [W, S] log2-space, requires_grad
-        mt_squeezed: [S] or [W, S] max transfer mat
-        DL_const, Ebar, E, SL1_const, SL2_const: [S] or [W, S] precomputed constants
-        sp_child1, sp_child2: [S] species child indices
-        leaf_wt: [W, S] leaf term
-        dts_r: [W, S] or None, cross-clade DTS (frozen)
-        S: int
-        pibar_mode: 'dense', 'uniform', or 'topk'
-        transfer_mat_T: [S, S] for dense/topk mode (may require grad for theta VJP)
-        ancestors_T: [S, S] sparse COO, ancestors.T (for uniform mode)
-
-    Returns:
-        Pi_new: [W, S] log2-space
-    """
-    W = Pi_W.shape[0]
-
-    def _expand(t):
-        return t.unsqueeze(0).expand(W, -1) if t.ndim == 1 else t
-
-    mt_w = _expand(mt_squeezed)
-    DL_w = _expand(DL_const)
-    Ebar_w = _expand(Ebar)
-    E_w = _expand(E)
-    SL1_w = _expand(SL1_const)
-    SL2_w = _expand(SL2_const)
-
-    # --- Pibar ---
-    Pi_max = Pi_W.max(dim=1, keepdim=True).values
-    Pi_exp = torch.exp2(Pi_W - Pi_max)
-    if pibar_mode == 'uniform':
-        row_sum = Pi_exp.sum(dim=1, keepdim=True)
-        ancestor_sum = _uniform_ancestor_sum(Pi_exp, ancestors_T)
-        Pibar_W = _safe_log2(row_sum - ancestor_sum) + Pi_max + mt_w
-    else:  # dense or topk
-        Pibar_W = _safe_log2(Pi_exp @ transfer_mat_T) + Pi_max + mt_w
-
-    # --- Species children of Pi_W ---
-    Pi_W_pad = torch.cat([Pi_W, torch.full((W, 1), NEG_INF, device=Pi_W.device, dtype=Pi_W.dtype)], dim=1)
-    Pi_s1 = Pi_W_pad[:, sp_child1.long()]
-    Pi_s2 = Pi_W_pad[:, sp_child2.long()]
-
-    # --- DTS_L: 6 terms ---
-    DTS_L = torch.stack([
-        DL_w + Pi_W,
-        Pi_W + Ebar_w,
-        Pibar_W + E_w,
-        SL1_w + Pi_s1,
-        SL2_w + Pi_s2,
-        leaf_wt,
-    ], dim=0)
-
-    DTS_L_term = logsumexp2(DTS_L, dim=0)
-
-    if dts_r is not None:
-        return logaddexp2(dts_r, DTS_L_term)
-    else:
-        return DTS_L_term
-
-
-# ---------------------------------------------------------------------------
 # Differentiable cross-clade DTS
 # ---------------------------------------------------------------------------
 
@@ -180,7 +106,7 @@ def _self_loop_vjp_precompute(
     Pi_star, Pibar_star, dts_r,
     mt_w, DL_w, Ebar_w, E_w, SL1_w, SL2_w,
     sp_child1, sp_child2, leaf_wt, S,
-    pibar_mode, transfer_mat_T, ancestors_T,
+    ancestors_T,
 ):
     """Precompute softmax weights and Pibar VJP ingredients for one wave.
 
@@ -204,12 +130,9 @@ def _self_loop_vjp_precompute(
     Pi_max = Pi_star.max(dim=1, keepdim=True).values
     p_prime = torch.exp2(Pi_star - Pi_max)
 
-    if pibar_mode == 'uniform':
-        row_sum = p_prime.sum(dim=1, keepdim=True)
-        anc_sum = _uniform_ancestor_sum(p_prime, ancestors_T)
-        pibar_denom = row_sum - anc_sum
-    else:
-        pibar_matmul = p_prime @ transfer_mat_T
+    row_sum = p_prime.sum(dim=1, keepdim=True)
+    anc_sum = _uniform_ancestor_sum(p_prime, ancestors_T)
+    pibar_denom = row_sum - anc_sum
 
     Pi_pad = torch.cat([Pi_star, torch.full((W, 1), NEG_INF, device=device, dtype=dtype)], dim=1)
     Pi_s1 = Pi_pad[:, sp_child1.long()]
@@ -244,17 +167,10 @@ def _self_loop_vjp_precompute(
         'w_terms': w_terms,
         'p_prime': p_prime,
     }
-    if pibar_mode == 'uniform':
-        pos = pibar_denom > 0
-        inv_denom = torch.where(pos, 1.0 / torch.where(pos, pibar_denom, torch.ones_like(pibar_denom)),
-                                torch.zeros_like(pibar_denom))
-        result['pibar_inv_denom'] = inv_denom
-    else:
-        pos = pibar_matmul > 0
-        inv_matmul = torch.where(pos, 1.0 / torch.where(pos, pibar_matmul, torch.ones_like(pibar_matmul)),
-                                 torch.zeros_like(pibar_matmul))
-        result['pibar_inv_matmul'] = inv_matmul
-        result['pibar_matmul'] = pibar_matmul
+    pos = pibar_denom > 0
+    inv_denom = torch.where(pos, 1.0 / torch.where(pos, pibar_denom, torch.ones_like(pibar_denom)),
+                            torch.zeros_like(pibar_denom))
+    result['pibar_inv_denom'] = inv_denom
     if valid1.any():
         result['sc1_valid'] = valid1
         result['sc1_idx'] = sc1[valid1].unsqueeze(0)
@@ -270,13 +186,13 @@ def _self_loop_vjp_precompute(
 
 def _gmres_self_loop_solve(
     rhs, ingredients, sp_child1, sp_child2, S, W,
-    pibar_mode, transfer_mat_T, ancestors_T,
+    ancestors_T,
     max_iters=30, tol=1e-5,
 ):
     """Solve (I - J_self^T) v = rhs via GMRES.
 
-    Used when spectral radius of J_self^T is close to 1 (e.g., pibar_mode='uniform'),
-    making the Neumann series diverge. Returns v [W, S].
+    Used when the uniform-Pibar self-loop makes the Neumann series diverge.
+    Returns v [W, S].
     """
     return_dtype = rhs.dtype
     if rhs.device.type == "cuda" and rhs.dtype == torch.bfloat16:
@@ -289,8 +205,6 @@ def _gmres_self_loop_solve(
             )
             for key, value in ingredients.items()
         }
-        if torch.is_tensor(transfer_mat_T) and transfer_mat_T.is_floating_point():
-            transfer_mat_T = transfer_mat_T.float()
         if torch.is_tensor(ancestors_T) and ancestors_T.is_floating_point():
             ancestors_T = ancestors_T.float()
 
@@ -313,7 +227,7 @@ def _gmres_self_loop_solve(
         vj_2d = V[j].reshape(W, S)
         Jt_vj = _self_loop_Jt_apply(
             vj_2d, ingredients, sp_child1, sp_child2, S, W,
-            pibar_mode, transfer_mat_T, ancestors_T,
+            ancestors_T,
         )
         w = (vj_2d - Jt_vj).reshape(n)
 
@@ -369,7 +283,7 @@ def _gmres_self_loop_solve(
 
 def _self_loop_Jt_apply(
     v, ingredients, sp_child1, sp_child2, S, W,
-    pibar_mode, transfer_mat_T, ancestors_T,
+    ancestors_T,
 ):
     """Apply J_self^T @ v analytically using precomputed ingredients.
 
@@ -390,16 +304,12 @@ def _self_loop_Jt_apply(
 
     v_Pibar = alpha * w_terms[2]
 
-    if pibar_mode == 'uniform':
-        u_d = v_Pibar * ingredients['pibar_inv_denom']
-        A = u_d.sum(dim=1, keepdim=True)
-        correction = _uniform_ancestor_left_sum(ancestors_T, u_d.T).T
-        if correction.dtype != result.dtype:
-            correction = correction.to(dtype=result.dtype)
-        result = result + p_prime * (A - correction)
-    else:  # dense / topk
-        u_mr = v_Pibar * ingredients['pibar_inv_matmul']
-        result = result + p_prime * (u_mr @ transfer_mat_T.T)
+    u_d = v_Pibar * ingredients['pibar_inv_denom']
+    A = u_d.sum(dim=1, keepdim=True)
+    correction = _uniform_ancestor_left_sum(ancestors_T, u_d.T).T
+    if correction.dtype != result.dtype:
+        correction = correction.to(dtype=result.dtype)
+    result = result + p_prime * (A - correction)
 
     sc1_valid = ingredients.get('sc1_valid')
     sc2_valid = ingredients.get('sc2_valid')
@@ -441,8 +351,6 @@ def Pi_wave_backward(
     neumann_terms=3,
     pruning_threshold=1e-6,
     use_pruning=True,
-    pibar_mode='uniform',
-    transfer_mat=None,
     ancestors_T=None,
     family_idx=None,
     uniform_pibar_row_max=None,
@@ -466,9 +374,7 @@ def Pi_wave_backward(
         neumann_terms: number of Neumann series terms (default 3)
         pruning_threshold: linear-space adjoint magnitude threshold for pruning
         use_pruning: whether to prune waves with negligible adjoint gradient
-        pibar_mode: 'dense', 'uniform', or 'topk'
-        transfer_mat: [S, S] linear-space transfer matrix (for dense mode)
-        ancestors_T: [S, S] sparse CSR = ancestors.T (for uniform mode)
+        ancestors_T: [S, S] sparse CSR = ancestors.T
         family_idx: Long[C] clade→family mapping. None → auto-wrapped as G=1.
         uniform_pibar_row_max: optional [C] final forward-side row max values
             for uniform Pibar. Used only by opt-in fused cross-Pibar VJP paths.
@@ -480,7 +386,6 @@ def Pi_wave_backward(
             'grad_log_pS': [S] or [G, S] gradient wrt log_pS
             'grad_log_pD': [S] or [G, S] gradient wrt log_pD
             'grad_max_transfer_mat': [S] or [G, S] gradient wrt max_transfer_mat
-            'grad_transfer_mat': [S, S] gradient wrt transfer_mat (dense mode only)
     """
     # Fused Triton backward kernels (optional)
     try:
@@ -543,7 +448,6 @@ def Pi_wave_backward(
 
     fused_cross_pibar_vjp_enabled = (
         _HAS_FUSED_BACKWARD
-        and pibar_mode == 'uniform'
         and dtype in _SUPPORTED_BACKWARD_FLOAT_DTYPES
         and device.type == 'cuda'
     )
@@ -553,14 +457,12 @@ def Pi_wave_backward(
     dts_pibar_ud_min_splits = 0
     kernelized_active_mask_enabled = (
         _HAS_FUSED_BACKWARD
-        and pibar_mode == 'uniform'
         and device.type == 'cuda'
         and dtype in _SUPPORTED_BACKWARD_FLOAT_DTYPES
     )
     kernelized_backward_dts_enabled = device.type == 'cuda'
     parent_reduced_backward_dts_enabled = (
         kernelized_backward_dts_enabled
-        and pibar_mode == 'uniform'
         and device.type == 'cuda'
         and dtype in _SUPPORTED_BACKWARD_FLOAT_DTYPES
     )
@@ -574,7 +476,6 @@ def Pi_wave_backward(
     backward_pruning_row_stats_enabled = False
     hybrid_row_pruning_enabled = (
         _HAS_FUSED_BACKWARD
-        and pibar_mode == 'uniform'
         and device.type == 'cuda'
         and dtype in _SUPPORTED_BACKWARD_FLOAT_DTYPES
     )
@@ -873,10 +774,6 @@ def Pi_wave_backward(
 
     mt_squeezed = max_transfer_mat.squeeze(-1) if max_transfer_mat.ndim > 2 else max_transfer_mat
 
-    transfer_mat_T = None
-    if pibar_mode in ('dense', 'topk') and transfer_mat is not None:
-        transfer_mat_T = transfer_mat.T.contiguous()
-
     G = int(E.shape[0]) if E.ndim == 2 else 1
 
     def _family_species_shape_ok(p):
@@ -934,7 +831,6 @@ def Pi_wave_backward(
         fused_uniform_backward_enabled
         and _HAS_FUSED_BACKWARD
         and (_auto_wrapped or family_indexed_self_loop_supported)
-        and pibar_mode == 'uniform'
         and dtype in _SUPPORTED_BACKWARD_FLOAT_DTYPES
         and device.type == 'cuda'
         and S > 256
@@ -942,7 +838,6 @@ def Pi_wave_backward(
     require_optimized_genewise_backward = (
         os.environ.get("GPUREC_REQUIRE_OPTIMIZED_GENEWISE_BACKWARD", "0") != "0"
         and not _auto_wrapped
-        and pibar_mode == 'uniform'
     )
     if require_optimized_genewise_backward and not can_use_fused_uniform_backward:
         raise RuntimeError(
@@ -1061,7 +956,6 @@ def Pi_wave_backward(
     use_uniform_leaf_index = bool(
         os.environ.get("GPUREC_BACKWARD_LEAF_INDEX", "1") != "0"
         and can_use_fused_uniform_backward
-        and pibar_mode == 'uniform'
         and device.type == 'cuda'
         and leaf_species_index is not None
     )
@@ -1212,7 +1106,6 @@ def Pi_wave_backward(
     grad_mt = torch.zeros_like(mt_squeezed)
     grad_E_acc = torch.zeros_like(E)
     grad_Ebar_acc = torch.zeros_like(Ebar)
-    grad_transfer_mat_acc = torch.zeros(S, S, device=device, dtype=dtype) if pibar_mode in ('dense', 'topk') else None
     grad_E_s1_acc = torch.zeros_like(E_s1)
     grad_E_s2_acc = torch.zeros_like(E_s2)
     forward_pibar_row_max = (
@@ -1221,7 +1114,6 @@ def Pi_wave_backward(
             uniform_pibar_row_max is not None
             and torch.is_tensor(uniform_pibar_row_max)
             and uniform_pibar_row_max.numel() == C
-            and pibar_mode == 'uniform'
             and device.type == 'cuda'
             and dtype in _SUPPORTED_BACKWARD_FLOAT_DTYPES
         )
@@ -1561,7 +1453,7 @@ def Pi_wave_backward(
                 Pi_W_star, Pibar_W_star, dts_r,
                 mt_w, DL_w, Ebar_w, E_w, SL1_w, SL2_w,
                 sp_child1, sp_child2, leaf_wt, S,
-                pibar_mode, transfer_mat_T, ancestors_T,
+                ancestors_T,
             )
 
             if use_compact:
@@ -1585,21 +1477,11 @@ def Pi_wave_backward(
                 solve_ing = ingredients
                 solve_W = W
 
-            if pibar_mode == 'uniform':
-                v_k = _gmres_self_loop_solve(
-                    rhs_active, solve_ing, sp_child1, sp_child2, S, solve_W,
-                    pibar_mode, transfer_mat_T, ancestors_T,
-                    max_iters=5, tol=1e-8,
-                )
-            else:
-                v_k = rhs_active.clone()
-                term = rhs_active
-                for _n in range(neumann_terms):
-                    term = _self_loop_Jt_apply(
-                        term, solve_ing, sp_child1, sp_child2, S, solve_W,
-                        pibar_mode, transfer_mat_T, ancestors_T,
-                    )
-                    v_k = v_k + term
+            v_k = _gmres_self_loop_solve(
+                rhs_active, solve_ing, sp_child1, sp_child2, S, solve_W,
+                ancestors_T,
+                max_iters=5, tol=1e-8,
+            )
 
             if use_compact:
                 v_k_full = torch.zeros(W, S, device=device, dtype=dtype)
@@ -1623,13 +1505,6 @@ def Pi_wave_backward(
             _scatter_accum(grad_E_s1_acc, aw4)
             _scatter_accum(grad_E_s2_acc, aw3)
             _scatter_accum(grad_mt, aw2)
-
-            if pibar_mode in ('dense', 'topk') and grad_transfer_mat_acc is not None:
-                v_Pibar_full = alpha_full * wt[2]
-                matmul_r = ingredients['pibar_matmul']
-                mr_safe = torch.where(matmul_r > 0, matmul_r, torch.ones_like(matmul_r))
-                u_mr = torch.where(matmul_r > 0, v_Pibar_full / mr_safe, torch.zeros_like(v_Pibar_full))
-                grad_transfer_mat_acc = grad_transfer_mat_acc + u_mr.T @ ingredients['p_prime']
 
         if meta['has_splits'] and dts_r is not None:
             sl = meta['sl']
@@ -1789,17 +1664,6 @@ def Pi_wave_backward(
                 grad_mt.scatter_add_(0, fi_ch_expand,
                                      torch.cat([grad_DTS_5[2], grad_DTS_5[1]], dim=0).to(dtype=grad_mt.dtype))
 
-                if pibar_mode in ('dense', 'topk') and grad_transfer_mat_acc is not None:
-                    v_Pibar_ch = torch.cat([grad_DTS_5[2], grad_DTS_5[1]], dim=0)
-                    child_ids = torch.cat([sl_long, sr_long])
-                    Pi_ch = Pi_star_wave[child_ids]
-                    Pi_max_ch = Pi_ch.max(dim=1, keepdim=True).values
-                    p_prime_ch = torch.exp2(Pi_ch - Pi_max_ch)
-                    matmul_ch = p_prime_ch @ transfer_mat_T
-                    mc_safe = torch.where(matmul_ch > 0, matmul_ch, torch.ones_like(matmul_ch))
-                    u_mc = torch.where(matmul_ch > 0, v_Pibar_ch / mc_safe, torch.zeros_like(v_Pibar_ch))
-                    grad_transfer_mat_acc = grad_transfer_mat_acc + u_mc.T @ p_prime_ch
-
                 grad_Pi_l = grad_DTS_5[0] + grad_DTS_5[1]
                 grad_Pi_r = grad_DTS_5[0] + grad_DTS_5[2]
                 grad_Pibar_l = grad_DTS_5[2]
@@ -1887,23 +1751,17 @@ def Pi_wave_backward(
                     Pi_max_p = Pi_ch.max(dim=1, keepdim=True).values
                     p_prime = torch.exp2(Pi_ch - Pi_max_p)
 
-                    if pibar_mode == 'uniform':
-                        anc_sum = _uniform_ancestor_sum(p_prime, ancestors_T)
-                        if anc_sum.dtype != p_prime.dtype:
-                            anc_sum = anc_sum.to(dtype=p_prime.dtype)
-                        denom = p_prime.sum(dim=1, keepdim=True) - anc_sum
-                        denom_safe = torch.where(denom > 0, denom, torch.ones_like(denom))
-                        u_d = torch.where(denom > 0, u / denom_safe, torch.zeros_like(u))
-                        A = u_d.sum(dim=1, keepdim=True)
-                        correction = _uniform_ancestor_left_sum(ancestors_T, u_d.T).T
-                        if correction.dtype != p_prime.dtype:
-                            correction = correction.to(dtype=p_prime.dtype)
-                        pi_from_pibar = p_prime * (A - correction)
-                    else:
-                        matmul_r = p_prime @ transfer_mat_T
-                        mr_safe = torch.where(matmul_r > 0, matmul_r, torch.ones_like(matmul_r))
-                        u_mr = torch.where(matmul_r > 0, u / mr_safe, torch.zeros_like(u))
-                        pi_from_pibar = p_prime * (u_mr @ transfer_mat_T.T)
+                    anc_sum = _uniform_ancestor_sum(p_prime, ancestors_T)
+                    if anc_sum.dtype != p_prime.dtype:
+                        anc_sum = anc_sum.to(dtype=p_prime.dtype)
+                    denom = p_prime.sum(dim=1, keepdim=True) - anc_sum
+                    denom_safe = torch.where(denom > 0, denom, torch.ones_like(denom))
+                    u_d = torch.where(denom > 0, u / denom_safe, torch.zeros_like(u))
+                    A = u_d.sum(dim=1, keepdim=True)
+                    correction = _uniform_ancestor_left_sum(ancestors_T, u_d.T).T
+                    if correction.dtype != p_prime.dtype:
+                        correction = correction.to(dtype=p_prime.dtype)
+                    pi_from_pibar = p_prime * (A - correction)
 
                     accumulated_rhs.index_add_(0, nz_children, pi_from_pibar)
 
@@ -2000,8 +1858,6 @@ def Pi_wave_backward(
         'n_clades_skipped': n_clades_skipped,
         'n_clades_active': n_clades_total - n_clades_skipped,
     }
-    if grad_transfer_mat_acc is not None:
-        result['grad_transfer_mat'] = grad_transfer_mat_acc
     if family_chunk_diag_result is not None:
         result['family_chunk_pruning_diag'] = family_chunk_diag_result
 
