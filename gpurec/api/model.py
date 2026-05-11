@@ -159,7 +159,7 @@ def _build_static_state(
 
     # 2. Species helpers on device.
     species_helpers, ancestors_T = dataset._species_helpers_for_mode(
-        pibar_mode="uniform", device=device, dtype=dtype,
+        device=device, dtype=dtype,
     )
 
     # 3. Other static tensors

@@ -733,7 +733,6 @@ class UniformChunkedReconModel(torch.nn.Module):
             retain_dense_species_matrices=False,
         )
         species_helpers, ancestors_T = dataset._species_helpers_for_mode(
-            pibar_mode="uniform",
             device=device,
             dtype=dtype,
         )

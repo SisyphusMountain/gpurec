@@ -408,7 +408,6 @@ def _make_static_inputs(args: argparse.Namespace) -> StaticInputs:
     preprocess_s = time.perf_counter() - t0
 
     species_helpers, ancestors_T = dataset._species_helpers_for_mode(
-        pibar_mode="uniform",
         device=device,
         dtype=dtype,
     )

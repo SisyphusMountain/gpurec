@@ -253,13 +253,9 @@ class GeneDataset(Dataset):
     def _species_helpers_for_mode(
         self,
         *,
-        pibar_mode: str,
         device: torch.device,
         dtype: torch.dtype,
     ) -> tuple[dict[str, Any], torch.Tensor | None]:
-        if pibar_mode != "uniform":
-            raise ValueError("The lean branch supports only pibar_mode='uniform'.")
-
         species_helpers = {
             k: (self._move_tensor(v, device=device, dtype=dtype) if torch.is_tensor(v) else v)
             for k, v in self.species_helpers.items()
@@ -277,13 +273,9 @@ class GeneDataset(Dataset):
         self,
         indices: list[int],
         *,
-        pibar_mode: str,
         device: torch.device,
         dtype: torch.dtype,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor | None, torch.Tensor]:
-        if pibar_mode != "uniform":
-            raise ValueError("The lean branch supports only pibar_mode='uniform'.")
-
         if not self.genewise:
             unnorm_row_max = self.unnorm_row_max.to(device=device, dtype=dtype)
             theta0 = self.families[indices[0]]['theta'].to(device=device, dtype=dtype)
@@ -313,11 +305,8 @@ class GeneDataset(Dataset):
         tol_E: float,
         device: torch.device,
         dtype: torch.dtype,
-        pibar_mode: str = 'uniform',
         ancestors_T: torch.Tensor | None = None,
     ) -> dict[str, torch.Tensor | int]:
-        if pibar_mode != "uniform":
-            raise ValueError("The lean branch supports only pibar_mode='uniform'.")
         return E_fixed_point(
             species_helpers=species_helpers,
             log_pS=log_pS,
@@ -430,7 +419,6 @@ class GeneDataset(Dataset):
                     chunk_size=chunk_size,
                     max_wave_size=max_wave_size,
                     max_root_wave_size=max_root_wave_size,
-                    pibar_mode=pibar_mode,
                 ))
             return all_logLs
 
@@ -453,13 +441,11 @@ class GeneDataset(Dataset):
 
         log_pS, log_pD, log_pL, transfer_mat, max_transfer_vec = self._extract_batch_params(
             indices,
-            pibar_mode=pibar_mode,
             device=device,
             dtype=dtype,
         )
 
         species_helpers, ancestors_T = self._species_helpers_for_mode(
-            pibar_mode=pibar_mode,
             device=device,
             dtype=dtype,
         )
@@ -476,7 +462,6 @@ class GeneDataset(Dataset):
             tol_E=tol_E,
             device=device,
             dtype=dtype,
-            pibar_mode=pibar_mode,
             ancestors_T=ancestors_T,
         )
         E = E_out['E']
@@ -484,9 +469,7 @@ class GeneDataset(Dataset):
         E_s2 = E_out['E_s2']
         Ebar = E_out['E_bar']
 
-        # Free large [S,S] tensors after E_step when using uniform modes
-        if pibar_mode == 'uniform':
-            transfer_mat = None
+        transfer_mat = None
 
         offsets = [m['clade_offset'] for m in batched['family_meta']]
         # Wave scheduling: merge all families into cross-family waves
