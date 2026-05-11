@@ -881,15 +881,7 @@ def Pi_wave_backward(
     if pibar_mode in ('dense', 'topk') and transfer_mat is not None:
         transfer_mat_T = transfer_mat.T.contiguous()
 
-    G = log_pD.shape[0]
-
-    def _family_param_shape_ok(p):
-        return (
-            torch.is_tensor(p)
-            and p.ndim in (1, 2)
-            and int(p.shape[0]) == int(G)
-            and (p.ndim == 1 or int(p.shape[1]) in (1, S))
-        )
+    G = int(E.shape[0]) if E.ndim == 2 else 1
 
     def _family_species_shape_ok(p):
         return (
@@ -899,6 +891,58 @@ def Pi_wave_backward(
             and int(p.shape[1]) == int(S)
         )
 
+    def _as_family_param(t: torch.Tensor, *, name: str) -> torch.Tensor:
+        if not torch.is_tensor(t):
+            raise TypeError(f"{name} must be a tensor")
+        if t.device != device or t.dtype != dtype:
+            t = t.to(device=device, dtype=dtype)
+        if t.ndim == 0:
+            return t.reshape(1, 1)
+        if t.ndim == 1:
+            if int(t.shape[0]) == G and G > 1:
+                return t.reshape(G, 1)
+            if int(t.shape[0]) == S:
+                return t.reshape(1, S)
+            if int(t.shape[0]) == 1:
+                return t.reshape(1, 1)
+        if t.ndim == 2:
+            if int(t.shape[1]) == S:
+                return t
+            if int(t.shape[1]) == 1:
+                return t
+        raise ValueError(f"{name} must have shape [], [S], [P], [P, 1], or [P, S]")
+
+    def _as_family_species(t: torch.Tensor, *, name: str) -> torch.Tensor:
+        param = _as_family_param(t, name=name)
+        if int(param.shape[1]) == S:
+            return param.contiguous()
+        return param.expand(-1, S).contiguous()
+
+    mt_family = _as_family_species(mt_squeezed, name="max_transfer_mat")
+    E_family = _as_family_species(E, name="E")
+    Ebar_family = _as_family_species(Ebar, name="Ebar")
+    E_s1_family = _as_family_species(E_s1, name="E_s1")
+    E_s2_family = _as_family_species(E_s2, name="E_s2")
+    log_pD_param = _as_family_param(log_pD, name="log_pD")
+    log_pS_param = _as_family_param(log_pS, name="log_pS")
+    log_pD_family = _as_family_species(log_pD, name="log_pD")
+    log_pS_family = _as_family_species(log_pS, name="log_pS")
+    if _auto_wrapped:
+        mt_shared = mt_squeezed[0] if mt_squeezed.ndim == 2 else mt_squeezed
+        E_shared = E[0]
+        Ebar_shared = Ebar[0]
+        E_s1_shared = E_s1[0]
+        E_s2_shared = E_s2[0]
+        log_pD_shared = log_pD[0]
+        log_pS_shared = log_pS[0]
+        DL_shared = (1.0 + log_pD_shared + E_shared).contiguous()
+        SL1_shared = (log_pS_shared + E_s2_shared).contiguous()
+        SL2_shared = (log_pS_shared + E_s1_shared).contiguous()
+    else:
+        mt_shared = E_shared = Ebar_shared = E_s1_shared = E_s2_shared = None
+        log_pD_shared = log_pS_shared = None
+        DL_shared = SL1_shared = SL2_shared = None
+
     fused_genewise_self_loop_env = os.environ.get(
         "GPUREC_FUSED_GENEWISE_BACKWARD_SELF_LOOP",
         os.environ.get("GPUREC_FUSED_GENEWISE_BACKWARD", "1"),
@@ -907,15 +951,14 @@ def Pi_wave_backward(
         "", "0", "false", "off", "no"
     )
     family_indexed_self_loop_supported = (
-        (not _auto_wrapped)
-        and fused_genewise_self_loop_requested
-        and _family_species_shape_ok(E)
-        and _family_species_shape_ok(Ebar)
-        and _family_species_shape_ok(E_s1)
-        and _family_species_shape_ok(E_s2)
-        and _family_species_shape_ok(mt_squeezed)
-        and _family_param_shape_ok(log_pD)
-        and _family_param_shape_ok(log_pS)
+        fused_genewise_self_loop_requested
+        and _family_species_shape_ok(E_family)
+        and _family_species_shape_ok(Ebar_family)
+        and _family_species_shape_ok(E_s1_family)
+        and _family_species_shape_ok(E_s2_family)
+        and _family_species_shape_ok(mt_family)
+        and _family_species_shape_ok(log_pD_family)
+        and _family_species_shape_ok(log_pS_family)
     )
     can_use_fused_uniform_backward = (
         fused_uniform_backward_enabled
@@ -1021,34 +1064,9 @@ def Pi_wave_backward(
         if not scratch_pool:
             scratch_pool = None
 
-    # Shared/global mode has one parameter/E row for every clade.  Keeping the
-    # constants as [S] avoids materializing several [C, S] copies before the
-    # wave loop, which is both slow and the main source of backward OOMs.
-    if _auto_wrapped:
-        mt_shared = mt_squeezed[0]
-        E_shared = E[0]
-        Ebar_shared = Ebar[0]
-        E_s1_shared = E_s1[0]
-        E_s2_shared = E_s2[0]
-        log_pD_shared = log_pD[0]
-        log_pS_shared = log_pS[0]
-        DL_shared = 1.0 + log_pD_shared + E_shared
-        SL1_shared = log_pS_shared + E_s2_shared
-        SL2_shared = log_pS_shared + E_s1_shared
-        mt_family = E_family = Ebar_family = None
-        DL_family = SL1_family = SL2_family = None
-    else:
-        mt_shared = E_shared = Ebar_shared = E_s1_shared = E_s2_shared = None
-        log_pD_shared = log_pS_shared = None
-        DL_shared = SL1_shared = SL2_shared = None
-        mt_family = mt_squeezed.contiguous()
-        E_family = E.contiguous()
-        Ebar_family = Ebar.contiguous()
-        _pD_family = log_pD.unsqueeze(-1) if log_pD.ndim == 1 else log_pD
-        _pS_family = log_pS.unsqueeze(-1) if log_pS.ndim == 1 else log_pS
-        DL_family = (1.0 + _pD_family + E).contiguous()
-        SL1_family = (_pS_family + E_s2).contiguous()
-        SL2_family = (_pS_family + E_s1).contiguous()
+    DL_family = (1.0 + log_pD_family + E_family).contiguous()
+    SL1_family = (log_pS_family + E_s2_family).contiguous()
+    SL2_family = (log_pS_family + E_s1_family).contiguous()
 
     def _wave_consts(ws, we, *, family_indexed):
         """Return constants for the current self-loop wave."""
@@ -1094,7 +1112,7 @@ def Pi_wave_backward(
                 )
             )
         else:
-            uniform_leaf_logp = log_pS.contiguous()
+            uniform_leaf_logp = log_pS_family
     fused_wave_param_accum_enabled = (
         os.environ.get("GPUREC_FUSED_WAVE_PARAM_ACCUM", "1") != "0"
     )
@@ -1194,10 +1212,7 @@ def Pi_wave_backward(
         leaf_mask = _get_leaf_mask(ws, we)
         if _auto_wrapped:
             return log_pS_shared + leaf_mask
-        log_pS_w = log_pS[family_idx[ws:we]]
-        if log_pS_w.ndim == 1:
-            log_pS_w = log_pS_w.unsqueeze(-1)
-        return log_pS_w + leaf_mask
+        return log_pS_family[family_idx[ws:we]] + leaf_mask
 
     n_waves_total = K
     n_waves_skipped = 0
@@ -1231,20 +1246,7 @@ def Pi_wave_backward(
     grad_E_s1_acc = torch.zeros_like(E_s1)
     grad_E_s2_acc = torch.zeros_like(E_s2)
     forward_pibar_row_max = None
-    reuse_forward_pibar_stats_enabled = (
-        os.environ.get("GPUREC_REUSE_FORWARD_PIBAR_STATS", "0") != "0"
-        and uniform_pibar_row_max is not None
-        and torch.is_tensor(uniform_pibar_row_max)
-        and uniform_pibar_row_max.numel() == C
-        and fused_cross_pibar_vjp_enabled
-        and pibar_mode == 'uniform'
-        and _auto_wrapped
-        and mt_shared is not None
-        and mt_shared.ndim == 1
-        and dtype in _SUPPORTED_BACKWARD_FLOAT_DTYPES
-        and device.type == 'cuda'
-        and S > 256
-    )
+    reuse_forward_pibar_stats_enabled = False
     if reuse_forward_pibar_stats_enabled:
         forward_pibar_row_max = uniform_pibar_row_max.contiguous()
     elif (
@@ -1448,18 +1450,8 @@ def Pi_wave_backward(
 
         if meta['has_splits']:
             reduce_idx = meta['reduce_idx']
-            if _auto_wrapped:
-                log_pD_dts = log_pD_shared
-                log_pS_dts = log_pS_shared
-            else:
-                reduce_idx_long = reduce_idx.long()
-                fi_splits_dts = family_idx[ws + reduce_idx_long]
-                log_pD_dts = log_pD[fi_splits_dts]
-                log_pS_dts = log_pS[fi_splits_dts]
-                if log_pD_dts.ndim == 1:
-                    log_pD_dts = log_pD_dts.unsqueeze(-1)
-                if log_pS_dts.ndim == 1:
-                    log_pS_dts = log_pS_dts.unsqueeze(-1)
+            log_pD_dts = log_pD_shared if _auto_wrapped else log_pD_param
+            log_pS_dts = log_pS_shared if _auto_wrapped else log_pS_param
             with torch.no_grad():
                 if _compute_dts_cross_kernelized is not None:
                     dts_r = _compute_dts_cross_kernelized(
@@ -1470,6 +1462,8 @@ def Pi_wave_backward(
                         parent_reduced_min_splits=parent_reduced_backward_dts_min_splits,
                         parent_reduced_impl=parent_reduced_backward_dts_impl,
                         parent_reduced_tile_splits=parent_reduced_backward_dts_tile_splits,
+                        family_idx=None if _auto_wrapped else family_idx,
+                        family_offset=0 if _auto_wrapped else ws,
                     )
                 else:
                     if require_optimized_genewise_backward:
@@ -1675,7 +1669,9 @@ def Pi_wave_backward(
             reduce_idx = meta['reduce_idx']
             n_ws = sl.shape[0]
 
-            fused_scalar_params = (log_pD.numel() == 1 and log_pS.numel() == 1)
+            # Shared and family-indexed parameter layouts use the same fused
+            # DTS kernel; only the layout metadata differs.
+            fused_scalar_params = False
             used_fused_pibar_vjp = False
             used_fused_direct_pi_accum = False
             used_dts_mt_reduction_accum = False
@@ -1692,8 +1688,8 @@ def Pi_wave_backward(
                         fused_cross_pibar_vjp_enabled
                         and level_parents is not None
                         and forward_pibar_row_max is not None
-                        and mt_shared is not None
-                        and mt_shared.ndim == 1
+                        and mt_family is not None
+                        and mt_family.ndim == 2
                         and n_ws >= dts_pibar_ud_min_splits
                     )
                     use_dts_reduction_accum_scalar = (
@@ -1731,7 +1727,7 @@ def Pi_wave_backward(
                             and dts_pibar_ud_skip_zero_sides_enabled
                         ),
                         pibar_side_threshold=dts_pibar_ud_side_threshold_arg,
-                        mt_squeezed=mt_shared,
+                        mt_squeezed=mt_family,
                         pibar_row_max=forward_pibar_row_max,
                         grad_mt_two_stage=(
                             dts_grad_mt_two_stage_enabled
@@ -1792,13 +1788,22 @@ def Pi_wave_backward(
                         grad_mt[0] += mt_contrib
 
             elif use_fused and fused_dts_backward_accum_enabled:
-                dts_log_pD = log_pD_shared if _auto_wrapped else log_pD
-                dts_log_pS = log_pS_shared if _auto_wrapped else log_pS
-                dts_grad_log_pD = grad_log_pD[0] if _auto_wrapped else grad_log_pD
-                dts_grad_log_pS = grad_log_pS[0] if _auto_wrapped else grad_log_pS
-                dts_grad_mt = grad_mt[0] if _auto_wrapped else grad_mt
-                dts_mt = mt_shared if _auto_wrapped else mt_squeezed
-                dts_family_idx = None if _auto_wrapped else family_idx
+                if _auto_wrapped:
+                    dts_log_pD = log_pD_shared
+                    dts_log_pS = log_pS_shared
+                    dts_grad_log_pD = grad_log_pD[0]
+                    dts_grad_log_pS = grad_log_pS[0]
+                    dts_grad_mt = grad_mt[0] if grad_mt.ndim == 2 else grad_mt
+                    dts_mt = mt_shared
+                    dts_family_idx = None
+                else:
+                    dts_log_pD = log_pD_param
+                    dts_log_pS = log_pS_param
+                    dts_grad_log_pD = grad_log_pD
+                    dts_grad_log_pS = grad_log_pS
+                    dts_grad_mt = grad_mt
+                    dts_mt = mt_family
+                    dts_family_idx = family_idx
                 pibar_ud_fusion_match = (
                     fused_cross_pibar_vjp_enabled
                     and level_parents is not None
@@ -1828,7 +1833,15 @@ def Pi_wave_backward(
                     pibar_side_threshold=dts_pibar_ud_side_threshold_arg,
                     mt_squeezed=dts_mt,
                     pibar_row_max=forward_pibar_row_max,
-                    grad_mt_two_stage=False,
+                    grad_mt_two_stage=(
+                        dts_grad_mt_two_stage_enabled
+                        and pibar_ud_fusion_match
+                        and dts_grad_mt.ndim == 1
+                        and int(dts_grad_mt.numel()) == S
+                    ),
+                    grad_mt_two_stage_tile_splits=(
+                        dts_grad_mt_two_stage_tile_splits
+                    ),
                     skip_inactive_pibar_output_zero=(
                         skip_inactive_zero_stores_enabled
                         and pibar_ud_fusion_match
@@ -2016,7 +2029,7 @@ def Pi_wave_backward(
                         active_mask=active_mask_for_split_kernels,
                         reduce_idx=reduce_idx,
                         Pibar_star=Pibar_star_wave,
-                        mt_squeezed=mt_shared,
+                        mt_squeezed=mt_family,
                         pibar_row_max=forward_pibar_row_max,
                     )
                 used_fused_pibar_vjp = True

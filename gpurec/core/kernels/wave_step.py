@@ -95,6 +95,8 @@ def _wave_step_uniform_kernel(
     # Dimensions
     S: tl.constexpr,
     stride: tl.constexpr,
+    CONST_ROW_STRIDE: tl.constexpr,
+    CONST_SPECIES_STRIDE: tl.constexpr,
     BLOCK_S: tl.constexpr,
     MAX_ANCESTOR_DEPTH: tl.constexpr,
     COMPUTE_DIFF: tl.constexpr,
@@ -131,10 +133,10 @@ def _wave_step_uniform_kernel(
         out_base = w * stride         # offset into [W, S] outputs
     const_base = 0
     if CONST_LAYOUT == 1:
-        const_base = w * stride
+        const_base = w * CONST_ROW_STRIDE
     elif CONST_LAYOUT == 2:
         family_const = tl.load(family_idx_ptr + ws + w)
-        const_base = family_const * stride
+        const_base = family_const * CONST_ROW_STRIDE
 
     # === Pass 1: Online max + sum over the Pi row ===
     row_max = tl.full([1], value=NEG_LARGE, dtype=DTYPE)
@@ -202,7 +204,8 @@ def _wave_step_uniform_kernel(
                 ancestor_sum += tl.where(cur_valid, tl.exp2(pi_anc - row_max), tl.zeros([BLOCK_S], dtype=DTYPE))
                 cur = tl.load(sp_parent_ptr + cur, mask=cur_valid, other=-1)
 
-        mt = tl.load(mt_ptr + const_base + s_offs, mask=mask, other=0.0)
+        const_offsets = const_base + s_offs * CONST_SPECIES_STRIDE
+        mt = tl.load(mt_ptr + const_offsets, mask=mask, other=0.0)
         denom = row_sum - ancestor_sum
         pibar_w = tl.where(denom > 0.0, tl.log2(denom) + row_max + mt, NEG_LARGE)
 
@@ -212,11 +215,11 @@ def _wave_step_uniform_kernel(
         if STORE_PIBAR:
             tl.store(Pibar_out_ptr + pi_base + s_offs, pibar_w, mask=mask)
 
-        dl_const = tl.load(DL_const_ptr + const_base + s_offs, mask=mask, other=NEG_LARGE)
-        ebar = tl.load(Ebar_ptr + const_base + s_offs, mask=mask, other=NEG_LARGE)
-        e_val = tl.load(E_ptr + const_base + s_offs, mask=mask, other=NEG_LARGE)
-        sl1_const = tl.load(SL1_const_ptr + const_base + s_offs, mask=mask, other=NEG_LARGE)
-        sl2_const = tl.load(SL2_const_ptr + const_base + s_offs, mask=mask, other=NEG_LARGE)
+        dl_const = tl.load(DL_const_ptr + const_offsets, mask=mask, other=NEG_LARGE)
+        ebar = tl.load(Ebar_ptr + const_offsets, mask=mask, other=NEG_LARGE)
+        e_val = tl.load(E_ptr + const_offsets, mask=mask, other=NEG_LARGE)
+        sl1_const = tl.load(SL1_const_ptr + const_offsets, mask=mask, other=NEG_LARGE)
+        sl2_const = tl.load(SL2_const_ptr + const_offsets, mask=mask, other=NEG_LARGE)
 
         # Gather species children
         c1 = tl.load(sp_child1_ptr + s_offs, mask=mask, other=0)
@@ -314,6 +317,14 @@ def wave_step_uniform_fused(Pi, Pibar, ws, W, S,
     max_diff_buf = torch.empty(W, dtype=Pi.dtype, device=Pi.device) if compute_diff else Pi_new
     has_splits = DTS_reduced is not None
     const_layout = _uniform_const_layout(DL_const, family_idx, family_indexed_consts)
+    const_row_stride = 0
+    const_species_stride = 1
+    if const_layout == 1:
+        const_row_stride = int(DL_const.stride(0))
+        const_species_stride = int(DL_const.stride(1))
+    elif const_layout == 2:
+        const_row_stride = 0 if int(DL_const.shape[0]) == 1 else int(DL_const.stride(0))
+        const_species_stride = int(DL_const.stride(1)) if DL_const.ndim == 2 else 1
     use_leaf_index = leaf_species_idx is not None and leaf_logp is not None
     leaf_species_arg = leaf_species_idx if use_leaf_index else sp_parent
     leaf_logp_arg = leaf_logp if use_leaf_index else leaf_term_wt
@@ -343,6 +354,8 @@ def wave_step_uniform_fused(Pi, Pibar, ws, W, S,
         pibar_row_max if pibar_row_max is not None else Pibar,
         S,
         stride=S,
+        CONST_ROW_STRIDE=const_row_stride,
+        CONST_SPECIES_STRIDE=const_species_stride,
         BLOCK_S=BLOCK_S,
         MAX_ANCESTOR_DEPTH=int(max_ancestor_depth),
         COMPUTE_DIFF=bool(compute_diff),
@@ -373,6 +386,14 @@ def wave_step_uniform_fused_into(Pi_in, Pi_out, Pibar, ws, W, S,
     fp64 = Pi_in.dtype == torch.float64
     has_splits = DTS_reduced is not None
     const_layout = _uniform_const_layout(DL_const, family_idx, family_indexed_consts)
+    const_row_stride = 0
+    const_species_stride = 1
+    if const_layout == 1:
+        const_row_stride = int(DL_const.stride(0))
+        const_species_stride = int(DL_const.stride(1))
+    elif const_layout == 2:
+        const_row_stride = 0 if int(DL_const.shape[0]) == 1 else int(DL_const.stride(0))
+        const_species_stride = int(DL_const.stride(1)) if DL_const.ndim == 2 else 1
     use_leaf_index = leaf_species_idx is not None and leaf_logp is not None
     leaf_species_arg = leaf_species_idx if use_leaf_index else sp_parent
     leaf_logp_arg = leaf_logp if use_leaf_index else leaf_term_wt
@@ -403,6 +424,8 @@ def wave_step_uniform_fused_into(Pi_in, Pi_out, Pibar, ws, W, S,
         Pi_out_rows, Pibar, max_diff_buf, Pibar,
         S,
         stride=S,
+        CONST_ROW_STRIDE=const_row_stride,
+        CONST_SPECIES_STRIDE=const_species_stride,
         BLOCK_S=BLOCK_S,
         MAX_ANCESTOR_DEPTH=int(max_ancestor_depth),
         COMPUTE_DIFF=False,
@@ -431,6 +454,8 @@ def _wave_pibar_uniform_parent_kernel(
     row_max_out_ptr,
     S: tl.constexpr,
     stride: tl.constexpr,
+    CONST_ROW_STRIDE: tl.constexpr,
+    CONST_SPECIES_STRIDE: tl.constexpr,
     BLOCK_S: tl.constexpr,
     MAX_ANCESTOR_DEPTH: tl.constexpr,
     STORE_ROW_MAX: tl.constexpr,
@@ -445,10 +470,10 @@ def _wave_pibar_uniform_parent_kernel(
     pi_base = (ws + w) * stride
     const_base = 0
     if CONST_LAYOUT == 1:
-        const_base = w * stride
+        const_base = w * CONST_ROW_STRIDE
     elif CONST_LAYOUT == 2:
         family_const = tl.load(family_idx_ptr + ws + w)
-        const_base = family_const * stride
+        const_base = family_const * CONST_ROW_STRIDE
 
     row_max = tl.full([1], value=NEG_LARGE, dtype=DTYPE)
     row_sum = tl.full([1], value=0.0, dtype=DTYPE)
@@ -479,7 +504,7 @@ def _wave_pibar_uniform_parent_kernel(
             ancestor_sum += tl.where(cur_valid, tl.exp2(pi_anc - row_max), tl.zeros([BLOCK_S], dtype=DTYPE))
             cur = tl.load(sp_parent_ptr + cur, mask=cur_valid, other=-1)
 
-        mt = tl.load(mt_ptr + const_base + s_offs, mask=mask, other=0.0)
+        mt = tl.load(mt_ptr + const_base + s_offs * CONST_SPECIES_STRIDE, mask=mask, other=0.0)
         denom = row_sum - ancestor_sum
         pibar_w = tl.where(denom > 0.0, tl.log2(denom) + row_max + mt, NEG_LARGE)
         tl.store(Pibar_out_ptr + pi_base + s_offs, pibar_w, mask=mask)
@@ -492,6 +517,14 @@ def wave_pibar_uniform_parent_fused(Pi, Pibar, ws, W, S,
     """Compute uniform Pibar rows by walking species parent pointers."""
     fp64 = Pi.dtype == torch.float64
     const_layout = _uniform_const_layout(mt_squeezed, family_idx, family_indexed_consts)
+    const_row_stride = 0
+    const_species_stride = 1
+    if const_layout == 1:
+        const_row_stride = int(mt_squeezed.stride(0))
+        const_species_stride = int(mt_squeezed.stride(1))
+    elif const_layout == 2:
+        const_row_stride = 0 if int(mt_squeezed.shape[0]) == 1 else int(mt_squeezed.stride(0))
+        const_species_stride = int(mt_squeezed.stride(1)) if mt_squeezed.ndim == 2 else 1
     family_idx_arg = family_idx if family_idx is not None else sp_parent
     BLOCK_S = _uniform_block_s(S)
     num_warps = _uniform_num_warps()
@@ -507,6 +540,8 @@ def wave_pibar_uniform_parent_fused(Pi, Pibar, ws, W, S,
         row_max_out if row_max_out is not None else Pibar,
         S,
         stride=S,
+        CONST_ROW_STRIDE=const_row_stride,
+        CONST_SPECIES_STRIDE=const_species_stride,
         BLOCK_S=BLOCK_S,
         MAX_ANCESTOR_DEPTH=int(max_ancestor_depth),
         STORE_ROW_MAX=bool(row_max_out is not None),

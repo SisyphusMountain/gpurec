@@ -11,31 +11,36 @@ def _tl_float_dtype(dtype):
 
 def _prepare_param(p, n_splits, S, *, family_indexed=False):
     if family_indexed:
+        if p.dim() == 0:
+            return p.reshape(1), 4, 0, 0
         if p.dim() == 1:
-            return p.contiguous(), 3
+            if p.numel() == S:
+                return p, 4, 0, int(p.stride(0))
+            return p, 4, int(p.stride(0)), 0
         if p.dim() == 2:
             if p.shape[1] == 1:
-                return p.reshape(p.shape[0]).contiguous(), 3
+                return p, 4, int(p.stride(0)), 0
             if p.shape[1] == S:
-                return p.contiguous(), 4
+                row_stride = 0 if int(p.shape[0]) == 1 else int(p.stride(0))
+                return p, 4, row_stride, int(p.stride(1))
         raise ValueError(
             "family-indexed DTS parameters must be [G], [G, 1], or [G, S]; "
             f"got shape {tuple(p.shape)} with S={S}"
         )
     if p.dim() == 0:
-        return p.expand(S).contiguous(), 0
+        return p.expand(S).contiguous(), 0, 0, 1
     if p.dim() == 1:
         if p.numel() == S:
-            return p.contiguous(), 0
+            return p.contiguous(), 0, 0, 1
         if p.numel() == n_splits:
-            return p.contiguous(), 2
+            return p.contiguous(), 2, 0, 1
     if p.dim() == 2:
         if p.shape[0] != n_splits:
             raise ValueError(f"per-split parameter first dim must be {n_splits}, got {tuple(p.shape)}")
         if p.shape[1] == 1:
-            return p.reshape(n_splits).contiguous(), 2
+            return p.reshape(n_splits).contiguous(), 2, 0, 1
         if p.shape[1] == S:
-            return p.contiguous(), 1
+            return p.contiguous(), 1, 0, 1
     raise ValueError(
         "DTS parameters must be scalar, [S], [N], [N, 1], or [N, S]; "
         f"got shape {tuple(p.shape)} with N={n_splits}, S={S}"
@@ -44,11 +49,13 @@ def _prepare_param(p, n_splits, S, *, family_indexed=False):
 
 @triton.jit
 def _load_dts_param(param_ptr, n, s_offs, family, S: tl.constexpr, mask,
-                    mode: tl.constexpr, BLOCK_S: tl.constexpr, DTYPE: tl.constexpr):
+                    mode: tl.constexpr, ROW_STRIDE: tl.constexpr,
+                    SPECIES_STRIDE: tl.constexpr,
+                    BLOCK_S: tl.constexpr, DTYPE: tl.constexpr):
     # Modes: 0 shared [S], 1 per-split [N,S], 2 per-split scalar [N],
     # 3 family scalar [G], 4 family specieswise [G,S].
     if mode == 4:
-        return tl.load(param_ptr + family * S + s_offs, mask=mask, other=-1e30)
+        return tl.load(param_ptr + family * ROW_STRIDE + s_offs * SPECIES_STRIDE, mask=mask, other=-1e30)
     if mode == 3:
         return tl.load(param_ptr + family).to(DTYPE) + tl.zeros([BLOCK_S], dtype=DTYPE)
     if mode == 2:
@@ -85,6 +92,10 @@ def _dts_fused_kernel(
     # Param modes: 0=[S], 1=[N,S], 2=[N], 3=[G], 4=[G,S]
     mode_pD: tl.constexpr = 0,
     mode_pS: tl.constexpr = 0,
+    ROW_STRIDE_D: tl.constexpr = 0,
+    SPECIES_STRIDE_D: tl.constexpr = 1,
+    ROW_STRIDE_S: tl.constexpr = 0,
+    SPECIES_STRIDE_S: tl.constexpr = 1,
     USE_ACTIVE_MASK: tl.constexpr = False,
     DTYPE: tl.constexpr = tl.float32,
 ):
@@ -125,8 +136,8 @@ def _dts_fused_kernel(
     pibar_l = tl.load(Pibar_ptr + base_l + s_offs, mask=mask, other=-1e30)
     pibar_r = tl.load(Pibar_ptr + base_r + s_offs, mask=mask, other=-1e30)
 
-    log_pD_s = _load_dts_param(log_pD_ptr, n, s_offs, family, S, mask, mode_pD, BLOCK_S, DTYPE)
-    log_pS_s = _load_dts_param(log_pS_ptr, n, s_offs, family, S, mask, mode_pS, BLOCK_S, DTYPE)
+    log_pD_s = _load_dts_param(log_pD_ptr, n, s_offs, family, S, mask, mode_pD, ROW_STRIDE_D, SPECIES_STRIDE_D, BLOCK_S, DTYPE)
+    log_pS_s = _load_dts_param(log_pS_ptr, n, s_offs, family, S, mask, mode_pS, ROW_STRIDE_S, SPECIES_STRIDE_S, BLOCK_S, DTYPE)
 
     # Compute first 3 DTS terms
     t0 = log_pD_s + pi_l + pi_r                          # D
@@ -185,6 +196,10 @@ def _dts_eq1_to_rows_kernel(
     BLOCK_S: tl.constexpr,
     mode_pD: tl.constexpr = 0,
     mode_pS: tl.constexpr = 0,
+    ROW_STRIDE_D: tl.constexpr = 0,
+    SPECIES_STRIDE_D: tl.constexpr = 1,
+    ROW_STRIDE_S: tl.constexpr = 0,
+    SPECIES_STRIDE_S: tl.constexpr = 1,
     USE_ACTIVE_MASK: tl.constexpr = False,
     DTYPE: tl.constexpr = tl.float32,
 ):
@@ -218,8 +233,8 @@ def _dts_eq1_to_rows_kernel(
     pibar_l = tl.load(Pibar_ptr + base_l + s_offs, mask=mask, other=-1e30)
     pibar_r = tl.load(Pibar_ptr + base_r + s_offs, mask=mask, other=-1e30)
 
-    log_pD_s = _load_dts_param(log_pD_ptr, n, s_offs, family, S, mask, mode_pD, BLOCK_S, DTYPE)
-    log_pS_s = _load_dts_param(log_pS_ptr, n, s_offs, family, S, mask, mode_pS, BLOCK_S, DTYPE)
+    log_pD_s = _load_dts_param(log_pD_ptr, n, s_offs, family, S, mask, mode_pD, ROW_STRIDE_D, SPECIES_STRIDE_D, BLOCK_S, DTYPE)
+    log_pS_s = _load_dts_param(log_pS_ptr, n, s_offs, family, S, mask, mode_pS, ROW_STRIDE_S, SPECIES_STRIDE_S, BLOCK_S, DTYPE)
 
     c1 = tl.load(sp_child1_ptr + s_offs, mask=mask, other=S)
     c2 = tl.load(sp_child2_ptr + s_offs, mask=mask, other=S)
@@ -277,6 +292,10 @@ def _dts_parent_reduced_ge2_kernel(
     BLOCK_S: tl.constexpr,
     mode_pD: tl.constexpr = 0,
     mode_pS: tl.constexpr = 0,
+    ROW_STRIDE_D: tl.constexpr = 0,
+    SPECIES_STRIDE_D: tl.constexpr = 1,
+    ROW_STRIDE_S: tl.constexpr = 0,
+    SPECIES_STRIDE_S: tl.constexpr = 1,
     USE_ACTIVE_MASK: tl.constexpr = False,
     DTYPE: tl.constexpr = tl.float32,
 ):
@@ -326,8 +345,8 @@ def _dts_parent_reduced_ge2_kernel(
         pibar_l = tl.load(Pibar_ptr + base_l + s_offs, mask=mask, other=-1e30)
         pibar_r = tl.load(Pibar_ptr + base_r + s_offs, mask=mask, other=-1e30)
 
-        log_pD_s = _load_dts_param(log_pD_ptr, split_i, s_offs, family, S, mask, mode_pD, BLOCK_S, DTYPE)
-        log_pS_s = _load_dts_param(log_pS_ptr, split_i, s_offs, family, S, mask, mode_pS, BLOCK_S, DTYPE)
+        log_pD_s = _load_dts_param(log_pD_ptr, split_i, s_offs, family, S, mask, mode_pD, ROW_STRIDE_D, SPECIES_STRIDE_D, BLOCK_S, DTYPE)
+        log_pS_s = _load_dts_param(log_pS_ptr, split_i, s_offs, family, S, mask, mode_pS, ROW_STRIDE_S, SPECIES_STRIDE_S, BLOCK_S, DTYPE)
 
         c1 = tl.load(sp_child1_ptr + s_offs, mask=mask, other=S)
         c2 = tl.load(sp_child2_ptr + s_offs, mask=mask, other=S)
@@ -394,6 +413,10 @@ def _dts_parent_reduced_ge2_stage1_kernel(
     BLOCK_S: tl.constexpr,
     mode_pD: tl.constexpr = 0,
     mode_pS: tl.constexpr = 0,
+    ROW_STRIDE_D: tl.constexpr = 0,
+    SPECIES_STRIDE_D: tl.constexpr = 1,
+    ROW_STRIDE_S: tl.constexpr = 0,
+    SPECIES_STRIDE_S: tl.constexpr = 1,
     USE_ACTIVE_MASK: tl.constexpr = False,
     DTYPE: tl.constexpr = tl.float32,
 ):
@@ -434,8 +457,8 @@ def _dts_parent_reduced_ge2_stage1_kernel(
         pibar_l = tl.load(Pibar_ptr + base_l + s_offs, mask=mask, other=-1e30)
         pibar_r = tl.load(Pibar_ptr + base_r + s_offs, mask=mask, other=-1e30)
 
-        log_pD_s = _load_dts_param(log_pD_ptr, split_i, s_offs, family, S, mask, mode_pD, BLOCK_S, DTYPE)
-        log_pS_s = _load_dts_param(log_pS_ptr, split_i, s_offs, family, S, mask, mode_pS, BLOCK_S, DTYPE)
+        log_pD_s = _load_dts_param(log_pD_ptr, split_i, s_offs, family, S, mask, mode_pD, ROW_STRIDE_D, SPECIES_STRIDE_D, BLOCK_S, DTYPE)
+        log_pS_s = _load_dts_param(log_pS_ptr, split_i, s_offs, family, S, mask, mode_pS, ROW_STRIDE_S, SPECIES_STRIDE_S, BLOCK_S, DTYPE)
 
         c1 = tl.load(sp_child1_ptr + s_offs, mask=mask, other=S)
         c2 = tl.load(sp_child2_ptr + s_offs, mask=mask, other=S)
@@ -574,8 +597,12 @@ def dts_fused(Pi, Pibar, lefts, rights,
     # Flatten log_split_probs to [N]
     lsp = log_split_probs.reshape(N).contiguous()
 
-    log_pD_vec, mode_pD = _prepare_param(log_pD, N, S, family_indexed=family_indexed)
-    log_pS_vec, mode_pS = _prepare_param(log_pS, N, S, family_indexed=family_indexed)
+    log_pD_vec, mode_pD, row_stride_D, species_stride_D = _prepare_param(
+        log_pD, N, S, family_indexed=family_indexed
+    )
+    log_pS_vec, mode_pS, row_stride_S, species_stride_S = _prepare_param(
+        log_pS, N, S, family_indexed=family_indexed
+    )
 
     BLOCK_S = 128
     grid = (N, (S + BLOCK_S - 1) // BLOCK_S)
@@ -595,6 +622,10 @@ def dts_fused(Pi, Pibar, lefts, rights,
         BLOCK_S=BLOCK_S,
         mode_pD=mode_pD,
         mode_pS=mode_pS,
+        ROW_STRIDE_D=row_stride_D,
+        SPECIES_STRIDE_D=species_stride_D,
+        ROW_STRIDE_S=row_stride_S,
+        SPECIES_STRIDE_S=species_stride_S,
         USE_ACTIVE_MASK=bool(active_mask is not None),
         DTYPE=_tl_float_dtype(Pi.dtype),
     )
@@ -641,8 +672,12 @@ def dts_fused_parent_reduced(
     family_indexed = family_idx is not None
 
     if n_eq1 > 0:
-        log_pD_vec, mode_pD = _prepare_param(log_pD, N, S, family_indexed=family_indexed)
-        log_pS_vec, mode_pS = _prepare_param(log_pS, N, S, family_indexed=family_indexed)
+        log_pD_vec, mode_pD, row_stride_D, species_stride_D = _prepare_param(
+            log_pD, N, S, family_indexed=family_indexed
+        )
+        log_pS_vec, mode_pS, row_stride_S, species_stride_S = _prepare_param(
+            log_pS, N, S, family_indexed=family_indexed
+        )
         BLOCK_S = 128
         grid_eq1 = (n_eq1, triton.cdiv(S, BLOCK_S))
         _dts_eq1_to_rows_kernel[grid_eq1](
@@ -665,6 +700,10 @@ def dts_fused_parent_reduced(
             BLOCK_S=BLOCK_S,
             mode_pD=mode_pD,
             mode_pS=mode_pS,
+            ROW_STRIDE_D=row_stride_D,
+            SPECIES_STRIDE_D=species_stride_D,
+            ROW_STRIDE_S=row_stride_S,
+            SPECIES_STRIDE_S=species_stride_S,
             USE_ACTIVE_MASK=bool(active_mask is not None),
             DTYPE=_tl_float_dtype(Pi.dtype),
         )
@@ -673,8 +712,12 @@ def dts_fused_parent_reduced(
     if n_groups == 0:
         return out
 
-    log_pD_vec, mode_pD = _prepare_param(log_pD, N, S, family_indexed=family_indexed)
-    log_pS_vec, mode_pS = _prepare_param(log_pS, N, S, family_indexed=family_indexed)
+    log_pD_vec, mode_pD, row_stride_D, species_stride_D = _prepare_param(
+        log_pD, N, S, family_indexed=family_indexed
+    )
+    log_pS_vec, mode_pS, row_stride_S, species_stride_S = _prepare_param(
+        log_pS, N, S, family_indexed=family_indexed
+    )
     BLOCK_S = 128
     impl = str(impl).strip().lower()
     if impl in ("1", "true", "yes", "on"):
@@ -713,6 +756,10 @@ def dts_fused_parent_reduced(
             BLOCK_S=BLOCK_S,
             mode_pD=mode_pD,
             mode_pS=mode_pS,
+            ROW_STRIDE_D=row_stride_D,
+            SPECIES_STRIDE_D=species_stride_D,
+            ROW_STRIDE_S=row_stride_S,
+            SPECIES_STRIDE_S=species_stride_S,
             USE_ACTIVE_MASK=bool(active_mask is not None),
             DTYPE=_tl_float_dtype(Pi.dtype),
         )
@@ -757,6 +804,10 @@ def dts_fused_parent_reduced(
         BLOCK_S=BLOCK_S,
         mode_pD=mode_pD,
         mode_pS=mode_pS,
+        ROW_STRIDE_D=row_stride_D,
+        SPECIES_STRIDE_D=species_stride_D,
+        ROW_STRIDE_S=row_stride_S,
+        SPECIES_STRIDE_S=species_stride_S,
         USE_ACTIVE_MASK=bool(active_mask is not None),
         DTYPE=_tl_float_dtype(Pi.dtype),
     )

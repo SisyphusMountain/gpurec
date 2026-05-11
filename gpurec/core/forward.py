@@ -302,16 +302,53 @@ def Pi_wave_forward(
         Pibar = torch.full((C, S), NEG_INF, dtype=dtype, device=device)
 
     batched = family_idx is not None
+    if batched:
+        family_idx = family_idx.to(device=device, dtype=torch.long).contiguous()
     use_family_indexed_uniform_consts = batched
-    family_dts_shape_ok = bool(
-        batched
-        and log_pD.ndim in (1, 2)
-        and log_pS.ndim in (1, 2)
-        and E.ndim == 2
-        and log_pD.shape[0] == E.shape[0]
-        and log_pS.shape[0] == E.shape[0]
-    )
-    use_family_indexed_dts_params = family_dts_shape_ok
+    use_family_indexed_dts_params = batched
+
+    def _as_family_param(t: torch.Tensor, *, name: str) -> torch.Tensor:
+        if not torch.is_tensor(t):
+            raise TypeError(f"{name} must be a tensor")
+        if t.device != torch.device(device) or t.dtype != dtype:
+            t = t.to(device=device, dtype=dtype)
+        if t.ndim == 0:
+            return t.reshape(1, 1)
+        if t.ndim == 1:
+            if int(t.shape[0]) == S:
+                return t.reshape(1, S)
+            return t.reshape(int(t.shape[0]), 1)
+        if t.ndim == 2:
+            if int(t.shape[1]) == S:
+                return t
+            if int(t.shape[1]) == 1:
+                return t
+        raise ValueError(f"{name} must have shape [], [S], [P], [P, 1], or [P, S]")
+
+    def _as_family_species(t: torch.Tensor, *, name: str) -> torch.Tensor:
+        param = _as_family_param(t, name=name)
+        if int(param.shape[1]) == S:
+            return param.contiguous()
+        return param.expand(-1, S).contiguous()
+
+    if batched:
+        E_family = _as_family_species(E, name="E")
+        Ebar_family = _as_family_species(Ebar, name="Ebar")
+        E_s1_family = _as_family_species(E_s1, name="E_s1")
+        E_s2_family = _as_family_species(E_s2, name="E_s2")
+        mt_family = _as_family_species(max_transfer_mat.squeeze(-1), name="max_transfer_mat")
+        log_pD_param = _as_family_param(log_pD, name="log_pD")
+        log_pS_param = _as_family_param(log_pS, name="log_pS")
+        log_pD_family = _as_family_species(log_pD, name="log_pD")
+        log_pS_family = _as_family_species(log_pS, name="log_pS")
+    else:
+        E_family = Ebar_family = E_s1_family = E_s2_family = None
+        mt_family = None
+        log_pD_param = log_pD
+        log_pS_param = log_pS
+        log_pD_family = log_pD
+        log_pS_family = log_pS
+
     uniform_pibar_row_max = (
         torch.empty((C,), dtype=dtype, device=device)
         if need_pibar else None
@@ -325,53 +362,43 @@ def Pi_wave_forward(
             max_ancestor_depth,
         ) = _get_species_wave_helpers(species_helpers, S, device)
 
-    # Precompute constant DTS_L terms — [S] when shared, [G, S] when batched.
-    # When genewise non-specieswise, log_pD/log_pS are [G] (1D) but E is [G, S].
-    # Unsqueeze to [G, 1] so broadcasting produces [G, S].
     with _nvtx_range("Pi setup DTS constants"):
-        _pD = log_pD.unsqueeze(-1) if batched and log_pD.ndim == 1 else log_pD
-        _pS = log_pS.unsqueeze(-1) if batched and log_pS.ndim == 1 else log_pS
         dl_loss_multiplier = float(os.environ.get("GPUREC_DL_LOSS_MULTIPLIER", "2.0"))
-        DL_const = math.log2(dl_loss_multiplier) + _pD + E
-        SL1_const = _pS + E_s2
-        SL2_const = _pS + E_s1
-
-    if batched and not family_dts_shape_ok:
-        raise ValueError("Batched uniform DTS parameters must be [G] or [G, S].")
+        if batched:
+            DL_const = math.log2(dl_loss_multiplier) + log_pD_family + E_family
+            SL1_const = log_pS_family + E_s2_family
+            SL2_const = log_pS_family + E_s1_family
+        else:
+            DL_const = math.log2(dl_loss_multiplier) + log_pD + E
+            SL1_const = log_pS + E_s2
+            SL2_const = log_pS + E_s1
 
     with _nvtx_range("Pi setup uniform tensors"):
         mt_squeezed = max_transfer_mat.squeeze(-1) if max_transfer_mat.ndim > 1 else max_transfer_mat
         if batched:
-            family_idx = family_idx.to(device=device, dtype=torch.long).contiguous()
             DL_const = DL_const.contiguous()
             SL1_const = SL1_const.contiguous()
             SL2_const = SL2_const.contiguous()
-            Ebar = Ebar.contiguous()
-            E = E.contiguous()
-            mt_squeezed = mt_squeezed.contiguous()
-        if use_family_indexed_dts_params:
-            log_pD = log_pD.contiguous()
-            log_pS = log_pS.contiguous()
-        uniform_leaf_logp = log_pS.expand(S).contiguous() if log_pS.ndim == 0 else log_pS.contiguous()
+            Ebar_family = Ebar_family.contiguous()
+            E_family = E_family.contiguous()
+            mt_family = mt_family.contiguous()
+            uniform_leaf_logp = log_pS_family.contiguous()
+        else:
+            uniform_leaf_logp = log_pS.expand(S).contiguous() if log_pS.ndim == 0 else log_pS.contiguous()
 
     def _wave_consts(ws, we):
         """Return per-wave constants: (DL, SL1, SL2, Ebar_w, E_w, mt_w).
 
-        Batched constants stay in [G, S] form and Triton addresses them
+        Batched constants stay in [P, S] form and Triton addresses them
         through family_idx. Shared constants stay in [S] form.
         """
+        if batched:
+            return DL_const, SL1_const, SL2_const, Ebar_family, E_family, mt_family
         return DL_const, SL1_const, SL2_const, Ebar, E, mt_squeezed
 
     def _wave_dts_params(meta):
-        """Return per-split (log_pD, log_pS) for DTS cross-clade computation.
-
-        When family-indexed DTS params are enabled, returns the original
-        [G] or [G,S] tensors; the Triton DTS kernel addresses them through
-        family_idx[wave_start + reduce_idx[split]].
-        Otherwise, batched mode gathers the old per-split [N,S] fallback.
-        When shared: returns the original params.
-        """
-        return log_pD, log_pS
+        """Return DTS parameters; genewise scalar params keep zero species stride."""
+        return log_pD_param, log_pS_param
 
     n_waves = len(wave_metas)
 
