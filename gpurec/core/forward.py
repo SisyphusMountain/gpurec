@@ -33,7 +33,7 @@ def _compute_dts_cross(Pi, Pibar, meta, sp_child1, sp_child2, log_pD, log_pS,
     n_eq1 = meta.get('n_eq1', 0)
     n_ge2_clades = meta.get('n_ge2_clades', 0)
 
-    if sl.numel() >= 8192:
+    if n_ge2_clades > 0:
         empty_ge2_ptr = None
         if n_ge2_clades == 0:
             empty_ge2_ptr = torch.zeros((1,), dtype=torch.long, device=device)
