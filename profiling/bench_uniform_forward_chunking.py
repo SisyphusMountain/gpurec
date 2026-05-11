@@ -35,17 +35,7 @@ from gpurec.core.likelihood import (
 )
 from gpurec.core.model import GeneDataset
 from gpurec.core.scheduling import compute_clade_waves
-
-
-DEFAULT_FLAGS = {
-    "GPUREC_UNIFORM_PINGPONG": "1",
-    "GPUREC_FORWARD_PARENT_REDUCED_DTS": "1",
-    "GPUREC_FORWARD_PARENT_REDUCED_DTS_MIN_SPLITS": "0",
-    "GPUREC_FORWARD_PARENT_REDUCED_DTS_IMPL": "tiled",
-    "GPUREC_FORWARD_PARENT_REDUCED_DTS_GE2_ONLY": "1",
-    "GPUREC_FORWARD_TOPOLOGY_INT32": "1",
-    "GPUREC_FORWARD_DTS_OVERLAP_MODE": "off",
-}
+from gpurec.api.uniform_chunked import UNIFORM_OPTIMIZED_DEFAULT_FLAGS as DEFAULT_FLAGS
 
 
 @dataclass
