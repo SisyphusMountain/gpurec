@@ -11,6 +11,7 @@ from .memory_policy import (
     env_flag_enabled,
     proposal0_memory_gate,
 )
+from .extract_parameters import as_family_param, as_family_species
 
 NEG_INF = float("-inf")
 _SUPPORTED_BACKWARD_FLOAT_DTYPES = (torch.float32, torch.float64, torch.bfloat16)
@@ -485,9 +486,7 @@ def Pi_wave_backward(
     try:
         from .kernels.wave_backward import (
             wave_backward_uniform_fused,
-            dts_cross_backward_fused,
             dts_cross_backward_accum_fused,
-            uniform_cross_pibar_vjp_tree_fused,
             uniform_cross_pibar_vjp_tree_from_ud_fused,
             active_mask_from_rhs_absmax_fused,
         )
@@ -589,9 +588,6 @@ def Pi_wave_backward(
         device.type == 'cuda'
         and dtype in _SUPPORTED_BACKWARD_FLOAT_DTYPES
     )
-    dts_reduction_accum_scalar_enabled = True
-    dts_reduction_accum_mt_enabled = False
-    dts_reduction_accum_min_splits = 8192
     dts_grad_mt_two_stage_enabled = True
     dts_grad_mt_two_stage_tile_splits = 128
     _compute_dts_cross_kernelized = None
@@ -891,42 +887,16 @@ def Pi_wave_backward(
             and int(p.shape[1]) == int(S)
         )
 
-    def _as_family_param(t: torch.Tensor, *, name: str) -> torch.Tensor:
-        if not torch.is_tensor(t):
-            raise TypeError(f"{name} must be a tensor")
-        if t.device != device or t.dtype != dtype:
-            t = t.to(device=device, dtype=dtype)
-        if t.ndim == 0:
-            return t.reshape(1, 1)
-        if t.ndim == 1:
-            if int(t.shape[0]) == G and G > 1:
-                return t.reshape(G, 1)
-            if int(t.shape[0]) == S:
-                return t.reshape(1, S)
-            if int(t.shape[0]) == 1:
-                return t.reshape(1, 1)
-        if t.ndim == 2:
-            if int(t.shape[1]) == S:
-                return t
-            if int(t.shape[1]) == 1:
-                return t
-        raise ValueError(f"{name} must have shape [], [S], [P], [P, 1], or [P, S]")
-
-    def _as_family_species(t: torch.Tensor, *, name: str) -> torch.Tensor:
-        param = _as_family_param(t, name=name)
-        if int(param.shape[1]) == S:
-            return param.contiguous()
-        return param.expand(-1, S).contiguous()
-
-    mt_family = _as_family_species(mt_squeezed, name="max_transfer_mat")
-    E_family = _as_family_species(E, name="E")
-    Ebar_family = _as_family_species(Ebar, name="Ebar")
-    E_s1_family = _as_family_species(E_s1, name="E_s1")
-    E_s2_family = _as_family_species(E_s2, name="E_s2")
-    log_pD_param = _as_family_param(log_pD, name="log_pD")
-    log_pS_param = _as_family_param(log_pS, name="log_pS")
-    log_pD_family = _as_family_species(log_pD, name="log_pD")
-    log_pS_family = _as_family_species(log_pS, name="log_pS")
+    param_kwargs = dict(S=S, device=target_device, dtype=dtype, family_rows=G)
+    mt_family = as_family_species(mt_squeezed, name="max_transfer_mat", **param_kwargs)
+    E_family = as_family_species(E, name="E", **param_kwargs)
+    Ebar_family = as_family_species(Ebar, name="Ebar", **param_kwargs)
+    E_s1_family = as_family_species(E_s1, name="E_s1", **param_kwargs)
+    E_s2_family = as_family_species(E_s2, name="E_s2", **param_kwargs)
+    log_pD_param = as_family_param(log_pD, name="log_pD", **param_kwargs)
+    log_pS_param = as_family_param(log_pS, name="log_pS", **param_kwargs)
+    log_pD_family = as_family_species(log_pD, name="log_pD", **param_kwargs)
+    log_pS_family = as_family_species(log_pS, name="log_pS", **param_kwargs)
     if _auto_wrapped:
         mt_shared = mt_squeezed[0] if mt_squeezed.ndim == 2 else mt_squeezed
         E_shared = E[0]
@@ -1245,19 +1215,18 @@ def Pi_wave_backward(
     grad_transfer_mat_acc = torch.zeros(S, S, device=device, dtype=dtype) if pibar_mode in ('dense', 'topk') else None
     grad_E_s1_acc = torch.zeros_like(E_s1)
     grad_E_s2_acc = torch.zeros_like(E_s2)
-    forward_pibar_row_max = None
-    reuse_forward_pibar_stats_enabled = False
-    if reuse_forward_pibar_stats_enabled:
-        forward_pibar_row_max = uniform_pibar_row_max.contiguous()
-    elif (
-        uniform_pibar_row_max is not None
-        and torch.is_tensor(uniform_pibar_row_max)
-        and uniform_pibar_row_max.numel() == C
-        and pibar_mode == 'uniform'
-        and device.type == 'cuda'
-        and dtype in _SUPPORTED_BACKWARD_FLOAT_DTYPES
-    ):
-        forward_pibar_row_max = uniform_pibar_row_max.contiguous()
+    forward_pibar_row_max = (
+        uniform_pibar_row_max.contiguous()
+        if (
+            uniform_pibar_row_max is not None
+            and torch.is_tensor(uniform_pibar_row_max)
+            and uniform_pibar_row_max.numel() == C
+            and pibar_mode == 'uniform'
+            and device.type == 'cuda'
+            and dtype in _SUPPORTED_BACKWARD_FLOAT_DTYPES
+        )
+        else None
+    )
     def _compute_active_mask(rhs):
         if kernelized_active_mask_enabled:
             threshold = pruning_threshold if use_pruning else 0.0
@@ -1669,125 +1638,13 @@ def Pi_wave_backward(
             reduce_idx = meta['reduce_idx']
             n_ws = sl.shape[0]
 
-            # Shared and family-indexed parameter layouts use the same fused
-            # DTS kernel; only the layout metadata differs.
-            fused_scalar_params = False
             used_fused_pibar_vjp = False
             used_fused_direct_pi_accum = False
             used_dts_mt_reduction_accum = False
             used_dts_pibar_ud_fusion = False
             pibar_side_active = None
 
-            if use_fused and fused_scalar_params:
-                # G=1: pass shared params to fused kernel.
-                if fused_dts_backward_accum_enabled:
-                    reduction_threshold_match = (
-                        n_ws >= dts_reduction_accum_min_splits
-                    )
-                    pibar_ud_fusion_match = (
-                        fused_cross_pibar_vjp_enabled
-                        and level_parents is not None
-                        and forward_pibar_row_max is not None
-                        and mt_family is not None
-                        and mt_family.ndim == 2
-                        and n_ws >= dts_pibar_ud_min_splits
-                    )
-                    use_dts_reduction_accum_scalar = (
-                        dts_reduction_accum_scalar_enabled
-                        and reduction_threshold_match
-                    )
-                    use_dts_reduction_accum_mt = (
-                        (
-                            dts_reduction_accum_mt_enabled
-                            and reduction_threshold_match
-                        )
-                        or pibar_ud_fusion_match
-                    )
-                    used_dts_mt_reduction_accum = use_dts_reduction_accum_mt
-                    used_dts_pibar_ud_fusion = pibar_ud_fusion_match
-                    dts_accum_result = dts_cross_backward_accum_fused(
-                        Pi_star_wave, Pibar_star_wave, v_k, ws,
-                        sl, sr, reduce_idx, wlsp,
-                        log_pD, log_pS,
-                        sp_child1, sp_child2, accumulated_rhs, S,
-                        active_mask=active_mask_for_split_kernels,
-                        merge_s_term=True,
-                        grad_log_pD=grad_log_pD,
-                        grad_log_pS=grad_log_pS,
-                        grad_mt=(
-                            grad_mt
-                            if grad_mt.ndim == 1
-                            else grad_mt[0]
-                        ),
-                        accum_param_reductions=use_dts_reduction_accum_scalar,
-                        accum_mt_reduction=use_dts_reduction_accum_mt,
-                        output_pibar_ud=pibar_ud_fusion_match,
-                        output_pibar_side_active=(
-                            pibar_ud_fusion_match
-                            and dts_pibar_ud_skip_zero_sides_enabled
-                        ),
-                        pibar_side_threshold=dts_pibar_ud_side_threshold_arg,
-                        mt_squeezed=mt_family,
-                        pibar_row_max=forward_pibar_row_max,
-                        grad_mt_two_stage=(
-                            dts_grad_mt_two_stage_enabled
-                            and pibar_ud_fusion_match
-                        ),
-                        grad_mt_two_stage_tile_splits=(
-                            dts_grad_mt_two_stage_tile_splits
-                        ),
-                        skip_inactive_pibar_output_zero=(
-                            skip_inactive_zero_stores_enabled
-                            and pibar_ud_fusion_match
-                            and active_mask_for_split_kernels is not None
-                        ),
-                        scratch=(
-                            scratch_pool.get("dts")
-                            if scratch_pool is not None
-                            else None
-                        ),
-                    )
-                    if (
-                        pibar_ud_fusion_match
-                        and dts_pibar_ud_skip_zero_sides_enabled
-                    ):
-                        (grad_Pibar_l, grad_Pibar_r, pibar_side_active,
-                         param_pD, param_pS) = dts_accum_result
-                    else:
-                        (grad_Pibar_l, grad_Pibar_r,
-                         param_pD, param_pS) = dts_accum_result
-                    used_fused_direct_pi_accum = True
-                    grad_Pi_l = grad_Pi_r = None
-                else:
-                    (grad_Pi_l, grad_Pi_r, grad_Pibar_l, grad_Pibar_r,
-                     param_pD, param_pS) = dts_cross_backward_fused(
-                        Pi_star_wave, Pibar_star_wave, v_k, ws,
-                        sl, sr, reduce_idx, wlsp,
-                        log_pD, log_pS,
-                        sp_child1, sp_child2, S,
-                        active_mask=active_mask_for_split_kernels,
-                    )
-
-                # Accumulate into G=1 row. The direct DTS accumulation path can
-                # optionally do these reductions in-kernel.
-                if not (
-                    used_fused_direct_pi_accum
-                    and param_pD is None
-                    and param_pS is None
-                ):
-                    grad_log_pD[0] += param_pD.sum()
-                    grad_log_pS[0] += param_pS.sum()
-                if not (
-                    used_fused_direct_pi_accum
-                    and used_dts_mt_reduction_accum
-                ):
-                    mt_contrib = grad_Pibar_l.sum(dim=0) + grad_Pibar_r.sum(dim=0)
-                    if grad_mt.ndim == 1:
-                        grad_mt[0] += mt_contrib.sum()
-                    else:
-                        grad_mt[0] += mt_contrib
-
-            elif use_fused and fused_dts_backward_accum_enabled:
+            if use_fused and fused_dts_backward_accum_enabled:
                 if _auto_wrapped:
                     dts_log_pD = log_pD_shared
                     dts_log_pS = log_pS_shared
@@ -1969,69 +1826,48 @@ def Pi_wave_backward(
 
             if (
                 use_fused
-                and (fused_scalar_params or used_dts_pibar_ud_fusion)
+                and used_dts_pibar_ud_fusion
                 and fused_cross_pibar_vjp_enabled
                 and level_parents is not None
-                and (used_dts_pibar_ud_fusion or ancestor_cols is not None)
             ):
-                if used_dts_pibar_ud_fusion:
-                    uniform_cross_pibar_vjp_tree_from_ud_fused(
-                        Pi_star_wave,
-                        grad_Pibar_l,
-                        grad_Pibar_r,
-                        sl,
-                        sr,
-                        sp_child1,
-                        sp_child2,
-                        level_parents,
-                        accumulated_rhs,
-                        S,
-                        active_mask=active_mask_for_split_kernels,
-                        reduce_idx=reduce_idx,
-                        pibar_row_max=forward_pibar_row_max,
-                        skip_zero_sides=dts_pibar_ud_skip_zero_sides_enabled,
-                        side_active=pibar_side_active,
-                        compact_level_ptr=(
-                            compact_level_ptr
-                            if dts_pibar_ud_compact_levels_enabled
-                            else None
-                        ),
-                        compact_level_parents=(
-                            compact_level_parents
-                            if dts_pibar_ud_compact_levels_enabled
-                            else None
-                        ),
-                        compact_level_child1=(
-                            compact_level_child1
-                            if dts_pibar_ud_compact_levels_enabled
-                            else None
-                        ),
-                        compact_level_child2=(
-                            compact_level_child2
-                            if dts_pibar_ud_compact_levels_enabled
-                            else None
-                        ),
-                        side_active_threshold=dts_pibar_ud_side_threshold_arg,
-                    )
-                elif ancestor_cols is not None:
-                    uniform_cross_pibar_vjp_tree_fused(
-                        Pi_star_wave,
-                        grad_Pibar_l,
-                        grad_Pibar_r,
-                        sl,
-                        sr,
-                        ancestor_cols,
-                        sp_child1,
-                        sp_child2,
-                        level_parents,
-                        accumulated_rhs,
-                        S,
-                        active_mask=active_mask_for_split_kernels,
-                        reduce_idx=reduce_idx,
-                        Pibar_star=Pibar_star_wave,
-                        mt_squeezed=mt_family,
-                        pibar_row_max=forward_pibar_row_max,
-                    )
+                uniform_cross_pibar_vjp_tree_from_ud_fused(
+                    Pi_star_wave,
+                    grad_Pibar_l,
+                    grad_Pibar_r,
+                    sl,
+                    sr,
+                    sp_child1,
+                    sp_child2,
+                    level_parents,
+                    accumulated_rhs,
+                    S,
+                    active_mask=active_mask_for_split_kernels,
+                    reduce_idx=reduce_idx,
+                    pibar_row_max=forward_pibar_row_max,
+                    skip_zero_sides=dts_pibar_ud_skip_zero_sides_enabled,
+                    side_active=pibar_side_active,
+                    compact_level_ptr=(
+                        compact_level_ptr
+                        if dts_pibar_ud_compact_levels_enabled
+                        else None
+                    ),
+                    compact_level_parents=(
+                        compact_level_parents
+                        if dts_pibar_ud_compact_levels_enabled
+                        else None
+                    ),
+                    compact_level_child1=(
+                        compact_level_child1
+                        if dts_pibar_ud_compact_levels_enabled
+                        else None
+                    ),
+                    compact_level_child2=(
+                        compact_level_child2
+                        if dts_pibar_ud_compact_levels_enabled
+                        else None
+                    ),
+                    side_active_threshold=dts_pibar_ud_side_threshold_arg,
+                )
                 used_fused_pibar_vjp = True
 
             if not used_fused_pibar_vjp:

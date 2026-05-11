@@ -12,6 +12,7 @@ from .kernels.wave_step import (
 )
 from .kernels.dts_fused import dts_fused, dts_fused_parent_reduced
 from ._helpers import _nvtx_range
+from .extract_parameters import as_family_param, as_family_species
 
 NEG_INF = float("-inf")
 
@@ -290,7 +291,8 @@ def Pi_wave_forward(
 
     C = int(ccp_helpers['C'])
     S = int(species_helpers['S'])
-    if torch.device(device).type != "cuda":
+    target_device = torch.device(device)
+    if target_device.type != "cuda":
         raise ValueError("The lean forward path requires CUDA.")
     if leaf_species_index is None:
         raise ValueError("The lean forward path requires leaf_species_index in the wave layout.")
@@ -304,43 +306,21 @@ def Pi_wave_forward(
     batched = family_idx is not None
     if batched:
         family_idx = family_idx.to(device=device, dtype=torch.long).contiguous()
-    use_family_indexed_uniform_consts = batched
-    use_family_indexed_dts_params = batched
-
-    def _as_family_param(t: torch.Tensor, *, name: str) -> torch.Tensor:
-        if not torch.is_tensor(t):
-            raise TypeError(f"{name} must be a tensor")
-        if t.device != torch.device(device) or t.dtype != dtype:
-            t = t.to(device=device, dtype=dtype)
-        if t.ndim == 0:
-            return t.reshape(1, 1)
-        if t.ndim == 1:
-            if int(t.shape[0]) == S:
-                return t.reshape(1, S)
-            return t.reshape(int(t.shape[0]), 1)
-        if t.ndim == 2:
-            if int(t.shape[1]) == S:
-                return t
-            if int(t.shape[1]) == 1:
-                return t
-        raise ValueError(f"{name} must have shape [], [S], [P], [P, 1], or [P, S]")
-
-    def _as_family_species(t: torch.Tensor, *, name: str) -> torch.Tensor:
-        param = _as_family_param(t, name=name)
-        if int(param.shape[1]) == S:
-            return param.contiguous()
-        return param.expand(-1, S).contiguous()
 
     if batched:
-        E_family = _as_family_species(E, name="E")
-        Ebar_family = _as_family_species(Ebar, name="Ebar")
-        E_s1_family = _as_family_species(E_s1, name="E_s1")
-        E_s2_family = _as_family_species(E_s2, name="E_s2")
-        mt_family = _as_family_species(max_transfer_mat.squeeze(-1), name="max_transfer_mat")
-        log_pD_param = _as_family_param(log_pD, name="log_pD")
-        log_pS_param = _as_family_param(log_pS, name="log_pS")
-        log_pD_family = _as_family_species(log_pD, name="log_pD")
-        log_pS_family = _as_family_species(log_pS, name="log_pS")
+        family_rows = int(E.shape[0]) if E.ndim == 2 else None
+        param_kwargs = dict(S=S, device=target_device, dtype=dtype, family_rows=family_rows)
+        E_family = as_family_species(E, name="E", **param_kwargs)
+        Ebar_family = as_family_species(Ebar, name="Ebar", **param_kwargs)
+        E_s1_family = as_family_species(E_s1, name="E_s1", **param_kwargs)
+        E_s2_family = as_family_species(E_s2, name="E_s2", **param_kwargs)
+        mt_family = as_family_species(
+            max_transfer_mat.squeeze(-1), name="max_transfer_mat", **param_kwargs
+        )
+        log_pD_param = as_family_param(log_pD, name="log_pD", **param_kwargs)
+        log_pS_param = as_family_param(log_pS, name="log_pS", **param_kwargs)
+        log_pD_family = as_family_species(log_pD, name="log_pD", **param_kwargs)
+        log_pS_family = as_family_species(log_pS, name="log_pS", **param_kwargs)
     else:
         E_family = Ebar_family = E_s1_family = E_s2_family = None
         mt_family = None
@@ -431,7 +411,7 @@ def Pi_wave_forward(
             parent_reduced_min_splits=0,
             parent_reduced_impl="tiled",
             parent_reduced_tile_splits=64,
-            family_idx=family_idx if use_family_indexed_dts_params else None,
+            family_idx=family_idx if batched else None,
             family_offset=meta['start'],
         )
 
@@ -456,7 +436,7 @@ def Pi_wave_forward(
                     leaf_species_idx=leaf_species_index,
                     leaf_logp=uniform_leaf_logp,
                     family_idx=family_idx if batched else None,
-                    family_indexed_consts=use_family_indexed_uniform_consts,
+                    family_indexed_consts=batched,
                 )
                 if (
                     local_iter == n_iters - 1
@@ -467,7 +447,7 @@ def Pi_wave_forward(
                         mt_w, sp_parent, max_ancestor_depth,
                         row_max_out=uniform_pibar_row_max,
                         family_idx=family_idx if batched else None,
-                        family_indexed_consts=use_family_indexed_uniform_consts,
+                        family_indexed_consts=batched,
                     )
             else:
                 compute_diff = not use_fixed and local_iter >= min_warmup
@@ -480,7 +460,7 @@ def Pi_wave_forward(
                     leaf_species_idx=leaf_species_index,
                     leaf_logp=uniform_leaf_logp,
                     family_idx=family_idx if batched else None,
-                    family_indexed_consts=use_family_indexed_uniform_consts,
+                    family_indexed_consts=batched,
                     pibar_row_max=uniform_pibar_row_max,
                 )
 

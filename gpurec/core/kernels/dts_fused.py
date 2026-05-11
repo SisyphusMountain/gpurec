@@ -53,11 +53,9 @@ def _load_dts_param(param_ptr, n, s_offs, family, S: tl.constexpr, mask,
                     SPECIES_STRIDE: tl.constexpr,
                     BLOCK_S: tl.constexpr, DTYPE: tl.constexpr):
     # Modes: 0 shared [S], 1 per-split [N,S], 2 per-split scalar [N],
-    # 3 family scalar [G], 4 family specieswise [G,S].
+    # 4 family-indexed with explicit row/species strides.
     if mode == 4:
         return tl.load(param_ptr + family * ROW_STRIDE + s_offs * SPECIES_STRIDE, mask=mask, other=-1e30)
-    if mode == 3:
-        return tl.load(param_ptr + family).to(DTYPE) + tl.zeros([BLOCK_S], dtype=DTYPE)
     if mode == 2:
         return tl.load(param_ptr + n).to(DTYPE) + tl.zeros([BLOCK_S], dtype=DTYPE)
     if mode == 1:
@@ -89,7 +87,7 @@ def _dts_fused_kernel(
     N: tl.constexpr,
     S: tl.constexpr,
     BLOCK_S: tl.constexpr,
-    # Param modes: 0=[S], 1=[N,S], 2=[N], 3=[G], 4=[G,S]
+    # Param modes: 0=[S], 1=[N,S], 2=[N], 4=family-indexed strided
     mode_pD: tl.constexpr = 0,
     mode_pS: tl.constexpr = 0,
     ROW_STRIDE_D: tl.constexpr = 0,
@@ -114,9 +112,9 @@ def _dts_fused_kernel(
     left_idx = tl.load(lefts_ptr + n).to(tl.int64)
     right_idx = tl.load(rights_ptr + n).to(tl.int64)
     family = tl.full((), 0, dtype=tl.int64)
-    if USE_ACTIVE_MASK or mode_pD == 3 or mode_pD == 4 or mode_pS == 3 or mode_pS == 4:
+    if USE_ACTIVE_MASK or mode_pD == 4 or mode_pS == 4:
         parent_w = tl.load(reduce_idx_ptr + n).to(tl.int64)
-    if mode_pD == 3 or mode_pD == 4 or mode_pS == 3 or mode_pS == 4:
+    if mode_pD == 4 or mode_pS == 4:
         family = tl.load(family_idx_ptr + family_offset + parent_w).to(tl.int64)
     if USE_ACTIVE_MASK:
         parent_active = tl.load(active_mask_ptr + parent_w)
@@ -211,7 +209,7 @@ def _dts_eq1_to_rows_kernel(
     parent_w = tl.load(eq1_parent_ids_ptr + n).to(tl.int64)
     out_base = parent_w * S
     family = tl.full((), 0, dtype=tl.int64)
-    if mode_pD == 3 or mode_pD == 4 or mode_pS == 3 or mode_pS == 4:
+    if mode_pD == 4 or mode_pS == 4:
         family = tl.load(family_idx_ptr + family_offset + parent_w).to(tl.int64)
     if USE_ACTIVE_MASK:
         parent_active = tl.load(active_mask_ptr + parent_w)
@@ -314,7 +312,7 @@ def _dts_parent_reduced_ge2_kernel(
     parent_w = tl.load(ge2_parent_ids_ptr + group).to(tl.int64)
     out_base = parent_w * S
     family = tl.full((), 0, dtype=tl.int64)
-    if mode_pD == 3 or mode_pD == 4 or mode_pS == 3 or mode_pS == 4:
+    if mode_pD == 4 or mode_pS == 4:
         family = tl.load(family_idx_ptr + family_offset + parent_w).to(tl.int64)
 
     if USE_ACTIVE_MASK:
@@ -428,7 +426,7 @@ def _dts_parent_reduced_ge2_stage1_kernel(
 
     parent_w = tl.load(ge2_parent_ids_ptr + group).to(tl.int64)
     family = tl.full((), 0, dtype=tl.int64)
-    if mode_pD == 3 or mode_pD == 4 or mode_pS == 3 or mode_pS == 4:
+    if mode_pD == 4 or mode_pS == 4:
         family = tl.load(family_idx_ptr + family_offset + parent_w).to(tl.int64)
     if USE_ACTIVE_MASK:
         parent_active = tl.load(active_mask_ptr + parent_w)
