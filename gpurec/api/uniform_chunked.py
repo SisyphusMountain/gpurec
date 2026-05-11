@@ -456,7 +456,6 @@ def _evaluate_chunked_uniform(
             warm_start_E=state.warm_E if state.warm_start_E else None,
             dtype=state.dtype,
             device=state.device,
-            pibar_mode="uniform",
             ancestors_T=state.ancestors_T,
         ),
     )

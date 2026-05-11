@@ -27,14 +27,21 @@ def _uniform_ancestor_sum(expE_2d, ancestors_T):
             return (expE_2d.float() @ ancestors_T.float()).contiguous()
     return (expE_2d @ ancestors_T).contiguous()
 
-def E_step(E, sp_P_idx, sp_child12_idx, log_pS, log_pD, log_pL, transfer_mat, max_transfer_mat, pibar_mode='uniform',
-           ancestors_T=None):
+def E_step(
+    E,
+    sp_P_idx,
+    sp_child12_idx,
+    log_pS,
+    log_pD,
+    log_pL,
+    transfer_mat,
+    max_transfer_mat,
+    ancestors_T=None,
+):
     """One uniform-transfer extinction fixed-point step.
 
     ``E`` can have shape ``[S]`` or ``[N_genes, S]``.
     """
-    if pibar_mode != "uniform":
-        raise ValueError("The lean branch supports only pibar_mode='uniform'.")
     E_stack = torch.empty((4, *E.shape), dtype=E.dtype, device=E.device)
     # S
     E_s12 = gather_E_children(E, sp_P_idx, sp_child12_idx)
@@ -103,12 +110,9 @@ def E_fixed_point(species_helpers,
                           warm_start_E,
                           dtype,
                           device,
-                          pibar_mode='uniform',
                           ancestors_T=None):
 
     S = species_helpers['S']
-    if pibar_mode != "uniform":
-        raise ValueError("The lean branch supports only pibar_mode='uniform'.")
 
     # Determine batch size from parameters if present
     N = None
@@ -150,7 +154,6 @@ def E_fixed_point(species_helpers,
                     log_pL=log_pL,
                     transfer_mat=transfer_mat,
                     max_transfer_mat=max_transfer_mat,
-                    pibar_mode="uniform",
                     ancestors_T=ancestors_T,
                 )
                 

@@ -330,7 +330,6 @@ class GeneDataset(Dataset):
             warm_start_E=None,
             dtype=dtype,
             device=device,
-            pibar_mode="uniform",
             ancestors_T=ancestors_T,
         )
 

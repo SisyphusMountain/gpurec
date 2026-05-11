@@ -510,7 +510,6 @@ def _compute_e_and_params(
         warm_start_E=None,
         dtype=static.dtype,
         device=static.device,
-        pibar_mode="uniform",
         ancestors_T=static.ancestors_T,
     )
     return e_out, (log_pS, log_pD, log_pL, transfer_mat, max_transfer_vec)

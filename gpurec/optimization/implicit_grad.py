@@ -219,7 +219,7 @@ def _e_adjoint_and_theta_vjp(
         return E_step(
             E_in, sp_P_idx, sp_c12_idx,
             log_pS, log_pD, log_pL,
-            None, max_transfer_mat, pibar_mode="uniform",
+            None, max_transfer_mat,
             ancestors_T=ancestors_T,
         )[0]
 
@@ -269,7 +269,7 @@ def _e_adjoint_and_theta_vjp(
             return E_step(
                 E_star.detach(), sp_P_idx, sp_c12_idx,
                 th_pS, th_pD, th_pL, None, th_mt,
-                pibar_mode='uniform', ancestors_T=ancestors_T,
+                ancestors_T=ancestors_T,
             )[0]
 
         E_from_theta = G_E_theta(log_pS_r2, log_pD_r2, log_pL_r2, mt_r2)
