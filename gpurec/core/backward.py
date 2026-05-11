@@ -460,15 +460,10 @@ def Pi_wave_backward(
         and device.type == 'cuda'
         and dtype in _SUPPORTED_BACKWARD_FLOAT_DTYPES
     )
-    kernelized_backward_dts_enabled = device.type == 'cuda'
-    parent_reduced_backward_dts_enabled = (
-        kernelized_backward_dts_enabled
-        and device.type == 'cuda'
+    kernelized_backward_dts_enabled = (
+        device.type == 'cuda'
         and dtype in _SUPPORTED_BACKWARD_FLOAT_DTYPES
     )
-    parent_reduced_backward_dts_min_splits = 8192
-    parent_reduced_backward_dts_impl = "tiled"
-    parent_reduced_backward_dts_tile_splits = 64
     fused_dts_backward_accum_enabled = True
     fused_uniform_backward_enabled = True
     fused_uniform_backward_view_rhs = True
@@ -1319,10 +1314,6 @@ def Pi_wave_backward(
                         Pi_star_wave.detach(), Pibar_star_wave.detach(), meta,
                         sp_child1, sp_child2, log_pD_dts, log_pS_dts, S, device, dtype,
                         active_mask=active_mask_for_dts_forward,
-                        parent_reduced=parent_reduced_backward_dts_enabled,
-                        parent_reduced_min_splits=parent_reduced_backward_dts_min_splits,
-                        parent_reduced_impl=parent_reduced_backward_dts_impl,
-                        parent_reduced_tile_splits=parent_reduced_backward_dts_tile_splits,
                         family_idx=None if _auto_wrapped else family_idx,
                         family_offset=0 if _auto_wrapped else ws,
                     )
