@@ -34,13 +34,13 @@ from gpurec.core.likelihood import E_fixed_point, compute_log_likelihood
 from gpurec.core.memory_policy import choose_uniform_pipeline_policy
 from gpurec.core.model import GeneDataset
 from gpurec.optimization.implicit_grad import _e_adjoint_and_theta_vjp
-from gpurec.api.uniform_chunked import UNIFORM_OPTIMIZED_DEFAULT_FLAGS as DEFAULT_FLAGS
-from profiling.bench_uniform_forward_chunking import (
-    BuiltChunk,
-    ChunkSpec,
+from gpurec.api.uniform_chunked import (
+    UNIFORM_OPTIMIZED_DEFAULT_FLAGS as DEFAULT_FLAGS,
+    UniformBuiltChunk as BuiltChunk,
+    UniformChunkSpec as ChunkSpec,
     _build_chunk,
     _make_chunks,
-    _selected_genes,
+    _selected_gene_paths,
 )
 
 
@@ -386,7 +386,12 @@ def _make_static_inputs(args: argparse.Namespace) -> StaticInputs:
     device = torch.device("cuda")
     dtype = args.dtype
     root = Path(args.dataset)
-    genes = _selected_genes(root, args.start, args.fams)
+    genes = _selected_gene_paths(
+        root,
+        gene_glob="g_*.nwk",
+        start=args.start,
+        max_families=args.fams,
+    )
 
     t0 = time.perf_counter()
     dataset = GeneDataset(
@@ -455,13 +460,10 @@ def _make_static_inputs(args: argparse.Namespace) -> StaticInputs:
         _build_chunk(
             dataset,
             spec,
-            species_helpers=species_helpers,
             device=device,
             dtype=dtype,
             max_wave_size=args.max_wave_size,
             max_root_wave_size=None,
-            max_split_rows=None,
-            max_split_fanout=None,
         )
         for spec in specs
     ]
@@ -848,13 +850,10 @@ def _one_chunk_layout(static: StaticInputs, args: argparse.Namespace) -> list[Bu
         _build_chunk(
             static.dataset,
             spec,
-            species_helpers=static.species_helpers,
             device=static.device,
             dtype=static.dtype,
             max_wave_size=args.max_wave_size,
             max_root_wave_size=None,
-            max_split_rows=None,
-            max_split_fanout=None,
         )
     ]
 
@@ -942,10 +941,10 @@ def _print_policy(static: StaticInputs, args: argparse.Namespace) -> None:
     max_wave_split_rows = max((b.max_wave_split_rows for b in static.built_chunks), default=0)
     max_phase3_split_rows = max(
         (
-            row[3]
+            int(meta["sl"].numel())
             for b in static.built_chunks
-            for row in b.top_split_waves
-            if row[1] == 3
+            for meta in b.wave_layout["wave_metas"]
+            if int(meta["phase"]) == 3 and meta.get("has_splits", False)
         ),
         default=0,
     )
