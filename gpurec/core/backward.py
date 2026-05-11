@@ -487,13 +487,8 @@ def Pi_wave_backward(
             wave_backward_uniform_fused,
             dts_cross_backward_fused,
             dts_cross_backward_accum_fused,
-            uniform_cross_pibar_vjp_fused,
             uniform_cross_pibar_vjp_tree_fused,
             uniform_cross_pibar_vjp_tree_from_ud_fused,
-            uniform_cross_pibar_vjp_tree_prefix_fused,
-            uniform_cross_pibar_vjp_tree_grouped_fused,
-            uniform_cross_pibar_vjp_grouped_tree_fused,
-            pibar_row_stats_fused,
             active_mask_from_rhs_absmax_fused,
         )
         _HAS_FUSED_BACKWARD = True
@@ -554,24 +549,6 @@ def Pi_wave_backward(
         and dtype in _SUPPORTED_BACKWARD_FLOAT_DTYPES
         and device.type == 'cuda'
     )
-    fused_cross_pibar_vjp_impl = os.environ.get(
-        "GPUREC_FUSED_CROSS_PIBAR_VJP_IMPL", "tree"
-    ).lower()
-    prefix_cross_pibar_vjp_impl = fused_cross_pibar_vjp_impl in ("prefix", "tree_prefix")
-    tree_cross_pibar_vjp_impl = fused_cross_pibar_vjp_impl in (
-        "tree",
-        "prefix",
-        "tree_prefix",
-    )
-    grouped_cross_pibar_vjp_enabled = (
-        os.environ.get("GPUREC_GROUPED_CROSS_PIBAR_VJP", "0") != "0"
-    )
-    grouped_cross_pibar_reduce_impl = os.environ.get(
-        "GPUREC_GROUPED_CROSS_PIBAR_REDUCE_IMPL", "torch"
-    ).lower()
-    grouped_cross_pibar_use_active = (
-        os.environ.get("GPUREC_GROUPED_CROSS_PIBAR_USE_ACTIVE", "1") != "0"
-    )
     dts_pibar_ud_fusion_enabled = (
         os.environ.get("GPUREC_DTS_PIBAR_UD_FUSION", "1") != "0"
     )
@@ -596,14 +573,8 @@ def Pi_wave_backward(
     dts_pibar_ud_compact_levels_enabled = (
         os.environ.get("GPUREC_DTS_PIBAR_UD_COMPACT_LEVELS", "1") != "0"
     )
-    dts_pibar_ud_euler_prefix_enabled = (
-        os.environ.get("GPUREC_DTS_PIBAR_UD_EULER_PREFIX", "0") != "0"
-    )
     dts_pibar_ud_min_splits = int(
         os.environ.get("GPUREC_DTS_PIBAR_UD_MIN_SPLITS", "0")
-    )
-    cross_pibar_row_stats_enabled = (
-        os.environ.get("GPUREC_CROSS_PIBAR_ROW_STATS", "0") != "0"
     )
     kernelized_active_mask_enabled = (
         os.environ.get("GPUREC_KERNELIZED_ACTIVE_MASK", "1") != "0"
@@ -759,11 +730,8 @@ def Pi_wave_backward(
     compact_level_parents = None
     compact_level_child1 = None
     compact_level_child2 = None
-    subtree_interval_start = None
-    subtree_interval_end = None
     sp_parent = None
     max_ancestor_depth = None
-    depth_nodes = None
     if fused_cross_pibar_vjp_enabled:
         cache = species_helpers.get('_wave_forward_species_cache')
         if cache is not None and int(cache.get('S', -1)) == int(S):
@@ -794,29 +762,15 @@ def Pi_wave_backward(
                 compact_level_parents = cached_compact_level_parents
                 compact_level_child1 = cached_compact_level_child1
                 compact_level_child2 = cached_compact_level_child2
-            cached_subtree_interval_start = cache.get('subtree_interval_start')
-            cached_subtree_interval_end = cache.get('subtree_interval_end')
-            if (
-                torch.is_tensor(cached_subtree_interval_start)
-                and torch.is_tensor(cached_subtree_interval_end)
-                and cached_subtree_interval_start.device == target_device
-                and cached_subtree_interval_end.device == target_device
-            ):
-                subtree_interval_start = cached_subtree_interval_start
-                subtree_interval_end = cached_subtree_interval_end
             cached_sp_parent = cache.get('sp_parent')
             if torch.is_tensor(cached_sp_parent) and cached_sp_parent.device == target_device:
                 sp_parent = cached_sp_parent
-            cached_depth_nodes = cache.get('depth_nodes')
-            if torch.is_tensor(cached_depth_nodes) and cached_depth_nodes.device == target_device:
-                depth_nodes = cached_depth_nodes
 
         if (
             ancestor_cols is None
-            or (tree_cross_pibar_vjp_impl and level_parents is None)
+            or level_parents is None
             or (
                 dts_pibar_ud_compact_levels_enabled
-                and tree_cross_pibar_vjp_impl
                 and (
                     compact_level_ptr is None
                     or compact_level_parents is None
@@ -824,14 +778,6 @@ def Pi_wave_backward(
                     or compact_level_child2 is None
                 )
             )
-            or (
-                dts_pibar_ud_euler_prefix_enabled
-                and (
-                    subtree_interval_start is None
-                    or subtree_interval_end is None
-                )
-            )
-            or (prefix_cross_pibar_vjp_impl and (sp_parent is None or depth_nodes is None))
         ):
             if p_cpu is None or c_cpu is None or mask_c1 is None:
                 sp_P_idx = species_helpers['s_P_indexes']
@@ -870,7 +816,6 @@ def Pi_wave_backward(
 
             need_compact_levels = (
                 dts_pibar_ud_compact_levels_enabled
-                and tree_cross_pibar_vjp_impl
                 and (
                     compact_level_ptr is None
                     or compact_level_parents is None
@@ -878,7 +823,7 @@ def Pi_wave_backward(
                     or compact_level_child2 is None
                 )
             )
-            if tree_cross_pibar_vjp_impl and (level_parents is None or need_compact_levels):
+            if level_parents is None or need_compact_levels:
                 child1_values = sp_child1_cpu.tolist()
                 child2_values = sp_child2_cpu.tolist()
                 levels = [-1] * S
@@ -950,67 +895,6 @@ def Pi_wave_backward(
                     compact_level_child1 = compact_level_child1_cpu.contiguous().to(target_device)
                     compact_level_child2 = compact_level_child2_cpu.contiguous().to(target_device)
 
-            if (
-                dts_pibar_ud_euler_prefix_enabled
-                and (
-                    subtree_interval_start is None
-                    or subtree_interval_end is None
-                )
-            ):
-                from .species_euler_layout import species_euler_layout_report
-
-                report = species_euler_layout_report(
-                    sp_child1=sp_child1_cpu,
-                    sp_child2=sp_child2_cpu,
-                    S=S,
-                )
-                if not report.all_subtrees_contiguous:
-                    raise RuntimeError(
-                        "GPUREC_DTS_PIBAR_UD_EULER_PREFIX requires every "
-                        "species subtree to be a contiguous current-order "
-                        "interval"
-                    )
-                subtree_interval_start_cpu = torch.tensor(
-                    report.current_interval_start,
-                    dtype=torch.int32,
-                )
-                subtree_interval_end_cpu = torch.tensor(
-                    report.current_interval_end,
-                    dtype=torch.int32,
-                )
-                subtree_interval_start = subtree_interval_start_cpu.contiguous().to(target_device)
-                subtree_interval_end = subtree_interval_end_cpu.contiguous().to(target_device)
-
-            if prefix_cross_pibar_vjp_impl and depth_nodes is None:
-                depths = [-1] * S
-
-                def _species_depth(s_idx):
-                    cached_depth = depths[s_idx]
-                    if cached_depth >= 0:
-                        return cached_depth
-                    parent = parent_values[s_idx]
-                    depth = 0 if parent < 0 else _species_depth(parent) + 1
-                    depths[s_idx] = depth
-                    return depth
-
-                for s_idx in range(S):
-                    _species_depth(s_idx)
-                max_depth = max(depths) if depths else 0
-                depth_lists = [
-                    [s_idx for s_idx, depth in enumerate(depths) if depth == level]
-                    for level in range(max_depth + 1)
-                ]
-                max_depth_width = max((len(nodes) for nodes in depth_lists), default=1)
-                depth_nodes_cpu = torch.full(
-                    (max(len(depth_lists), 1), max_depth_width),
-                    -1,
-                    dtype=torch.long,
-                )
-                for level, nodes in enumerate(depth_lists):
-                    if nodes:
-                        depth_nodes_cpu[level, :len(nodes)] = torch.tensor(nodes, dtype=torch.long)
-                depth_nodes = depth_nodes_cpu.contiguous().to(target_device)
-
             if cache is not None and int(cache.get('S', -1)) == int(S):
                 if level_parents is not None:
                     cache['level_parents'] = level_parents
@@ -1024,15 +908,10 @@ def Pi_wave_backward(
                     cache['compact_level_parents'] = compact_level_parents
                     cache['compact_level_child1'] = compact_level_child1
                     cache['compact_level_child2'] = compact_level_child2
-                if subtree_interval_start is not None and subtree_interval_end is not None:
-                    cache['subtree_interval_start'] = subtree_interval_start
-                    cache['subtree_interval_end'] = subtree_interval_end
                 if sp_parent is not None:
                     cache['sp_parent'] = sp_parent
                 if max_ancestor_depth is not None:
                     cache['max_ancestor_depth'] = int(max_ancestor_depth)
-                if depth_nodes is not None:
-                    cache['depth_nodes'] = depth_nodes
 
         if max_ancestor_depth is None and torch.is_tensor(ancestor_cols):
             max_ancestor_depth = int(ancestor_cols.shape[0])
@@ -1477,7 +1356,6 @@ def Pi_wave_backward(
     grad_transfer_mat_acc = torch.zeros(S, S, device=device, dtype=dtype) if pibar_mode in ('dense', 'topk') else None
     grad_E_s1_acc = torch.zeros_like(E_s1)
     grad_E_s2_acc = torch.zeros_like(E_s2)
-    cross_pibar_row_stats = None
     forward_pibar_row_max = None
     reuse_forward_pibar_stats_enabled = (
         os.environ.get("GPUREC_REUSE_FORWARD_PIBAR_STATS", "0") != "0"
@@ -1505,17 +1383,6 @@ def Pi_wave_backward(
         and dtype in _SUPPORTED_BACKWARD_FLOAT_DTYPES
     ):
         forward_pibar_row_max = uniform_pibar_row_max.contiguous()
-    if (
-        cross_pibar_row_stats_enabled
-        and not reuse_forward_pibar_stats_enabled
-        and fused_cross_pibar_vjp_enabled
-        and pibar_mode == 'uniform'
-        and dtype in _SUPPORTED_BACKWARD_FLOAT_DTYPES
-        and device.type == 'cuda'
-        and S > 256
-    ):
-        cross_pibar_row_stats = pibar_row_stats_fused(Pi_star_wave)
-
     def _compute_active_mask(rhs):
         if kernelized_active_mask_enabled:
             threshold = pruning_threshold if use_pruning else 0.0
@@ -1951,7 +1818,6 @@ def Pi_wave_backward(
                     pibar_ud_fusion_match = (
                         dts_pibar_ud_fusion_enabled
                         and fused_cross_pibar_vjp_enabled
-                        and fused_cross_pibar_vjp_impl == "tree"
                         and level_parents is not None
                         and forward_pibar_row_max is not None
                         and mt_shared is not None
@@ -2064,7 +1930,6 @@ def Pi_wave_backward(
                 pibar_ud_fusion_match = (
                     dts_pibar_ud_fusion_enabled
                     and fused_cross_pibar_vjp_enabled
-                    and fused_cross_pibar_vjp_impl == "tree"
                     and level_parents is not None
                     and forward_pibar_row_max is not None
                     and torch.is_tensor(dts_mt)
@@ -2222,7 +2087,8 @@ def Pi_wave_backward(
                 use_fused
                 and (fused_scalar_params or used_dts_pibar_ud_fusion)
                 and fused_cross_pibar_vjp_enabled
-                and ancestor_cols is not None
+                and level_parents is not None
+                and (used_dts_pibar_ud_fusion or ancestor_cols is not None)
             ):
                 if used_dts_pibar_ud_fusion:
                     uniform_cross_pibar_vjp_tree_from_ud_fused(
@@ -2261,110 +2127,9 @@ def Pi_wave_backward(
                             if dts_pibar_ud_compact_levels_enabled
                             else None
                         ),
-                        subtree_interval_start=(
-                            subtree_interval_start
-                            if dts_pibar_ud_euler_prefix_enabled
-                            else None
-                        ),
-                        subtree_interval_end=(
-                            subtree_interval_end
-                            if dts_pibar_ud_euler_prefix_enabled
-                            else None
-                        ),
                         side_active_threshold=dts_pibar_ud_side_threshold_arg,
                     )
-                elif (
-                    grouped_cross_pibar_vjp_enabled
-                    and fused_cross_pibar_vjp_impl == "tree"
-                    and level_parents is not None
-                    and active_mask_for_split_kernels is None
-                ):
-                    if grouped_cross_pibar_reduce_impl in ("triton", "kernel"):
-                        group_children = meta.get('_cross_pibar_group_children')
-                        group_inverse = meta.get('_cross_pibar_group_inverse')
-                        if (
-                            not torch.is_tensor(group_children)
-                            or not torch.is_tensor(group_inverse)
-                            or group_children.device != sl.device
-                            or group_inverse.device != sl.device
-                        ):
-                            all_children = torch.cat((sl, sr), dim=0)
-                            group_children, group_inverse = torch.unique(
-                                all_children,
-                                sorted=True,
-                                return_inverse=True,
-                            )
-                            group_children = group_children.contiguous()
-                            group_inverse = group_inverse.contiguous()
-                            meta['_cross_pibar_group_children'] = group_children
-                            meta['_cross_pibar_group_inverse'] = group_inverse
-                        uniform_cross_pibar_vjp_tree_grouped_fused(
-                            Pi_star_wave,
-                            grad_Pibar_l,
-                            grad_Pibar_r,
-                            group_children,
-                            group_inverse,
-                            ancestor_cols,
-                            sp_child1,
-                            sp_child2,
-                            level_parents,
-                            accumulated_rhs,
-                            S,
-                            active_mask=(
-                                active_mask
-                                if grouped_cross_pibar_use_active
-                                else active_mask_for_split_kernels
-                            ),
-                            reduce_idx=reduce_idx,
-                        )
-                    else:
-                        all_children = torch.cat([sl.long(), sr.long()])
-                        all_pibar_grad = torch.cat([grad_Pibar_l, grad_Pibar_r])
-                        unique_children, inverse = torch.unique(
-                            all_children, sorted=True, return_inverse=True
-                        )
-                        grouped_pibar_grad = torch.zeros(
-                            (unique_children.shape[0], S),
-                            device=device,
-                            dtype=dtype,
-                        )
-                        grouped_pibar_grad.index_add_(0, inverse, all_pibar_grad)
-                        uniform_cross_pibar_vjp_grouped_tree_fused(
-                            Pi_star_wave,
-                            unique_children,
-                            grouped_pibar_grad,
-                            ancestor_cols,
-                            sp_child1,
-                            sp_child2,
-                            level_parents,
-                            accumulated_rhs,
-                            S,
-                            row_stats=cross_pibar_row_stats,
-                        )
-                elif (
-                    prefix_cross_pibar_vjp_impl
-                    and level_parents is not None
-                    and depth_nodes is not None
-                    and sp_parent is not None
-                ):
-                    uniform_cross_pibar_vjp_tree_prefix_fused(
-                        Pi_star_wave,
-                        grad_Pibar_l,
-                        grad_Pibar_r,
-                        sl,
-                        sr,
-                        sp_parent,
-                        sp_child1,
-                        sp_child2,
-                        depth_nodes,
-                        level_parents,
-                        accumulated_rhs,
-                        S,
-                        active_mask=active_mask_for_split_kernels,
-                        reduce_idx=reduce_idx,
-                        row_stats=cross_pibar_row_stats,
-                    )
-                elif fused_cross_pibar_vjp_impl == "tree" and level_parents is not None:
+                elif ancestor_cols is not None:
                     uniform_cross_pibar_vjp_tree_fused(
                         Pi_star_wave,
                         grad_Pibar_l,
@@ -2379,24 +2144,9 @@ def Pi_wave_backward(
                         S,
                         active_mask=active_mask_for_split_kernels,
                         reduce_idx=reduce_idx,
-                        row_stats=cross_pibar_row_stats,
                         Pibar_star=Pibar_star_wave,
                         mt_squeezed=mt_shared,
                         pibar_row_max=forward_pibar_row_max,
-                    )
-                else:
-                    uniform_cross_pibar_vjp_fused(
-                        Pi_star_wave,
-                        grad_Pibar_l,
-                        grad_Pibar_r,
-                        sl,
-                        sr,
-                        ancestor_cols,
-                        accumulated_rhs,
-                        S,
-                        active_mask=active_mask_for_split_kernels,
-                        reduce_idx=reduce_idx,
-                        row_stats=cross_pibar_row_stats,
                     )
                 used_fused_pibar_vjp = True
 
