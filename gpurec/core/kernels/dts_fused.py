@@ -32,17 +32,8 @@ def _prepare_param(p, n_splits, S, *, family_indexed=False):
     if p.dim() == 1:
         if p.numel() == S:
             return p.contiguous(), 0, 0, 1
-        if p.numel() == n_splits:
-            return p.contiguous(), 2, 0, 1
-    if p.dim() == 2:
-        if p.shape[0] != n_splits:
-            raise ValueError(f"per-split parameter first dim must be {n_splits}, got {tuple(p.shape)}")
-        if p.shape[1] == 1:
-            return p.reshape(n_splits).contiguous(), 2, 0, 1
-        if p.shape[1] == S:
-            return p.contiguous(), 1, 0, 1
     raise ValueError(
-        "DTS parameters must be scalar, [S], [N], [N, 1], or [N, S]; "
+        "DTS parameters must be scalar, [S], [G], [G, 1], or [G, S]; "
         f"got shape {tuple(p.shape)} with N={n_splits}, S={S}"
     )
 
@@ -52,14 +43,9 @@ def _load_dts_param(param_ptr, n, s_offs, family, S: tl.constexpr, mask,
                     mode: tl.constexpr, ROW_STRIDE: tl.constexpr,
                     SPECIES_STRIDE: tl.constexpr,
                     BLOCK_S: tl.constexpr, DTYPE: tl.constexpr):
-    # Modes: 0 shared [S], 1 per-split [N,S], 2 per-split scalar [N],
-    # 4 family-indexed with explicit row/species strides.
+    # Modes: 0 shared [S], 4 family-indexed with explicit row/species strides.
     if mode == 4:
         return tl.load(param_ptr + family * ROW_STRIDE + s_offs * SPECIES_STRIDE, mask=mask, other=-1e30)
-    if mode == 2:
-        return tl.load(param_ptr + n).to(DTYPE) + tl.zeros([BLOCK_S], dtype=DTYPE)
-    if mode == 1:
-        return tl.load(param_ptr + n * S + s_offs, mask=mask, other=-1e30)
     return tl.load(param_ptr + s_offs, mask=mask, other=-1e30)
 
 
