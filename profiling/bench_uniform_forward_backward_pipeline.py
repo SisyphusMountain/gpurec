@@ -193,9 +193,6 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--max-iters-Pi", type=int, default=int(os.getenv("MAX_ITERS_PI", "2000")))
     parser.add_argument("--tol-Pi", type=float, default=float(os.getenv("TOL_PI", "1e-6")))
     parser.add_argument("--neumann-terms", type=int, default=int(os.getenv("NEUMANN_TERMS", "3")))
-    parser.add_argument("--cg-tol", type=float, default=float(os.getenv("CG_TOL", "1e-8")))
-    parser.add_argument("--cg-maxiter", type=int, default=int(os.getenv("CG_MAXITER", "500")))
-    parser.add_argument("--gmres-restart", type=int, default=int(os.getenv("GMRES_RESTART", "40")))
     parser.add_argument("--use-pruning", action=argparse.BooleanOptionalAction, default=os.getenv("USE_PRUNING", "1") != "0")
     parser.add_argument("--pruning-threshold", type=float, default=float(os.getenv("PRUNING_THRESHOLD", "1e-6")))
     parser.add_argument("--stats-only", action="store_true", default=os.getenv("STATS_ONLY", "0") != "0")
@@ -687,12 +684,7 @@ def _finish_theta_gradient(
         static.device,
         static.dtype,
         genewise=False,
-        cg_tol=args.cg_tol,
-        cg_maxiter=args.cg_maxiter,
-        gmres_restart=args.gmres_restart,
         pibar_mode="uniform",
-        transfer_mat=transfer_mat,
-        transfer_mat_unnormalized=None,
         ancestors_T=static.ancestors_T,
     )
 
