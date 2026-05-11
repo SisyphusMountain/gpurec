@@ -6,14 +6,17 @@ from pathlib import Path
 import pytest
 import torch
 
-from gpurec import GeneReconModel, UniformChunkedReconModel
-
-
-pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
-
 _ROOT = Path(__file__).resolve().parents[1]
 DATA_DIR = _ROOT / "data" / "test_trees_20"
 HOGENOM_DIR = _ROOT / "data" / "hogenom_bench"
+
+from gpurec import GeneReconModel, UniformChunkedReconModel
+
+
+pytestmark = [
+    pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required"),
+    pytest.mark.skipif(not DATA_DIR.exists(), reason=f"dataset not present: {DATA_DIR}"),
+]
 
 
 def _genes(n: int) -> list[str]:

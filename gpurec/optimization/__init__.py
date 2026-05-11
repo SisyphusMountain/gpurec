@@ -1,7 +1,19 @@
-"""Optimization subpackage for reconciliation parameter estimation."""
-from .types import FixedPointInfo, LinearSolveStats, StepRecord
-from .implicit_grad import implicit_grad_loglik_vjp_wave, implicit_grad_loglik_vjp_wave_genewise
-from .global_optimizer import GlobalLBFGSRecord, GlobalLBFGSResult, optimize_global_rates_lbfgs
-from .wave_optimizer import optimize_theta_wave
-from .genewise_optimizer import optimize_theta_genewise
+"""Lean optimizer exports.
+
+The high-level optimization path is the standard PyTorch optimizer interface on
+``GeneReconModel.theta``.  The only custom optimizer retained here is the
+row-wise batched L-BFGS implementation used for genewise polishing.
+"""
+
 from .batched_lbfgs import BatchedLBFGS
+from .implicit_grad import implicit_grad_loglik_vjp_wave, implicit_grad_loglik_vjp_wave_genewise
+from .types import FixedPointInfo, LinearSolveStats, StepRecord
+
+__all__ = [
+    "BatchedLBFGS",
+    "FixedPointInfo",
+    "LinearSolveStats",
+    "StepRecord",
+    "implicit_grad_loglik_vjp_wave",
+    "implicit_grad_loglik_vjp_wave_genewise",
+]

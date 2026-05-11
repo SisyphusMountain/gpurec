@@ -1,2 +1,0 @@
-fam, leaves, ccps
-my_family, 8, 27

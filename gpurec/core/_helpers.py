@@ -1,4 +1,4 @@
-"""Shared helpers used by forward.py, backward.py, legacy.py, and likelihood.py.
+"""Shared helpers used by forward.py, backward.py, and likelihood.py.
 
 Centralises utilities that were previously copy-pasted across modules.
 """

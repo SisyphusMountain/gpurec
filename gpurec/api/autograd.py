@@ -299,8 +299,9 @@ class _GeneReconFunction(torch.autograd.Function):
         wave_layout = static.wave_layout
 
         if static.genewise:
-            # Cross-family batched genewise path. Mirrors
-            # gpurec/optimization/genewise_optimizer.py:359-407 exactly.
+            # Cross-family batched genewise path. This is the retained
+            # per-family gradient path used by PyTorch optimizers and
+            # BatchedLBFGS.
             pi_bwd = Pi_wave_backward(
                 wave_layout=wave_layout,
                 Pi_star_wave=Pi_star_wave,

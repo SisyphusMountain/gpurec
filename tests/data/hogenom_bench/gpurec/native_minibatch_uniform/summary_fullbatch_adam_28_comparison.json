@@ -1,8 +1,0 @@
-{
-  "initial_nll": 717620.5625,
-  "final_nll": 660086.125,
-  "best_nll": 660086.125,
-  "elapsed_s": 88.67255963792559,
-  "steps": 28,
-  "path": "/home/enzo/Documents/git/gpurec/gpurec/tests/data/hogenom_bench/gpurec/native_minibatch_uniform/fullbatch_adam_28_comparison.csv"
-}

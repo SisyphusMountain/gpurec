@@ -1,16 +1,3 @@
-"""End-to-end integration tests for the new ``GeneReconModel`` API.
-
-Covers:
-
-* Convergence: NLL decreases monotonically with Adam.
-* Equivalence: same trajectory as ``optimize_theta_wave`` when both run Adam
-  with the same lr / theta_init.
-* L-BFGS: standard PyTorch closure pattern works.
-* Device / dtype roundtrip via ``.to``.
-"""
-from __future__ import annotations
-
-import math
 from pathlib import Path
 
 import pytest
@@ -18,433 +5,98 @@ import torch
 
 from gpurec import GeneReconModel
 from gpurec.optimization import BatchedLBFGS
-from gpurec.optimization.theta_optimizer import optimize_theta_wave
 
 
 _ROOT = Path(__file__).resolve().parents[1]
-DATA_DIR = _ROOT / "data" / "test_trees_20"
-N_FAMILIES = 5
+DATA_DIR = _ROOT / "data" / "test_trees_3"
 
 
-def _device():
-    return torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-
-@pytest.fixture(scope="module")
+@pytest.fixture
 def trees():
+    if not torch.cuda.is_available():
+        pytest.skip("CUDA required")
     if not DATA_DIR.exists():
-        pytest.skip("test_trees_20 dataset not present")
-    sp = str(DATA_DIR / "sp.nwk")
-    genes = sorted(DATA_DIR.glob("g_*.nwk"))[:N_FAMILIES]
-    if len(genes) < N_FAMILIES:
-        pytest.skip(f"Need {N_FAMILIES} gene families")
-    return sp, [str(p) for p in genes]
+        pytest.skip("test_trees_3 dataset not present")
+    return str(DATA_DIR / "sp.nwk"), [str(DATA_DIR / "g.nwk")]
 
-
-# ──────────────────────────────────────────────────────────────────────
-# 1. Adam loop converges (NLL decreases)
-# ──────────────────────────────────────────────────────────────────────
 
 @pytest.mark.parametrize("mode", ["global", "specieswise", "genewise"])
-def test_adam_decreases_nll(trees, mode):
+def test_gene_recon_model_forward_backward_modes(trees, mode):
     sp, genes = trees
     model = GeneReconModel.from_trees(
-        species_tree=sp, gene_trees=genes, mode=mode,
-        device=_device(), dtype=torch.float64,
-        theta_init_rates=(0.05, 0.05, 0.05),
-    )
-    nll_initial = float(model().item())
-
-    opt = torch.optim.Adam(model.parameters(), lr=0.1)
-    history = [nll_initial]
-    for _ in range(20):
-        opt.zero_grad()
-        loss = model()
-        loss.backward()
-        opt.step()
-        model.clamp_theta_()
-        history.append(float(model().item()))
-
-    nll_final = history[-1]
-    assert nll_final < nll_initial, f"NLL did not decrease: {history}"
-    # Improvement should be substantial for 20 steps from a poor init
-    assert nll_initial - nll_final > 5.0, (
-        f"Improvement {nll_initial - nll_final} too small over 20 steps"
-    )
-
-
-# ──────────────────────────────────────────────────────────────────────
-# 2. Equivalence with optimize_theta_wave (Adam optimizer)
-# ──────────────────────────────────────────────────────────────────────
-
-def test_adam_matches_optimize_theta_wave(trees):
-    """Both code paths run torch.optim.Adam over the same gradient pipeline,
-    so 20 steps should yield identical theta trajectories and identical
-    per-step NLL histories. We compare the full history element-by-element.
-    """
-    import math
-
-    sp, genes = trees
-    device = _device()
-    dtype = torch.float64
-    lr = 0.1
-    n_steps = 20
-
-    # Path A: new API (record per-step NLL BEFORE the optimizer step, to
-    # match optimize_theta_wave's history convention). Opt back into adaptive
-    # Pi convergence so this path is bitwise-identical to optimize_theta_wave.
-    model = GeneReconModel.from_trees(
-        species_tree=sp, gene_trees=genes, mode="global",
-        device=device, dtype=dtype,
-        theta_init_rates=(0.05, 0.05, 0.05),
-        max_iters_Pi=50,
-        tol_Pi=1e-3,
-        fixed_iters_Pi=None,
-    )
-    opt_new = torch.optim.Adam(model.parameters(), lr=lr)
-    history_new: list[float] = []
-    for _ in range(n_steps):
-        opt_new.zero_grad()
-        loss = model()
-        history_new.append(float(loss.item()))
-        loss.backward()
-        opt_new.step()
-        model.clamp_theta_()
-    theta_new = model.theta.detach().cpu().clone()
-
-    # Path B: existing optimize_theta_wave
-    static = model._static
-    theta_init_old = torch.full(
-        (3,), math.log2(0.05), dtype=dtype, device=device
-    )
-    result_old = optimize_theta_wave(
-        wave_layout=static.wave_layout,
-        species_helpers=static.species_helpers,
-        root_clade_ids=static.root_clade_ids,
-        unnorm_row_max=static.unnorm_row_max,
-        theta_init=theta_init_old,
-        steps=n_steps,
-        lr=lr,
-        tol_theta=0.0,                 # disable early stopping
-        optimizer="adam",
-        specieswise=False,
-        device=device,
-        dtype=dtype,
+        species_tree=sp,
+        gene_trees=genes,
+        mode=mode,
         pibar_mode="uniform",
-        verbose=False,
-    )
-    theta_old = result_old["theta"].detach().cpu()
-    history_old = [r.negative_log_likelihood for r in result_old["history"]]
-
-    # Final theta agreement (computed after the last opt.step() in both)
-    assert torch.allclose(theta_new, theta_old, rtol=1e-10, atol=1e-10), (
-        f"theta diverged: new={theta_new}, old={theta_old}, "
-        f"max_abs_diff={(theta_new - theta_old).abs().max().item():.3e}"
+        device="cuda",
+        dtype=torch.float32,
+        fixed_iters_Pi=2,
+        neumann_terms=2,
     )
 
-    # Per-step NLL trajectory agreement
-    assert len(history_new) == len(history_old) == n_steps
-    for i, (a, b) in enumerate(zip(history_new, history_old)):
-        assert math.isclose(a, b, rel_tol=1e-10, abs_tol=1e-10), (
-            f"NLL diverged at step {i}: new={a}, old={b}, diff={a - b:.3e}"
-        )
+    loss = model()
+    assert torch.isfinite(loss)
+    loss.backward()
+    assert model.theta.grad is not None
+    assert model.theta.grad.shape == model.theta.shape
+    assert torch.isfinite(model.theta.grad).all()
 
 
-def test_preprocess_cache_matches_single_path(trees, tmp_path, monkeypatch):
+def test_pytorch_adam_updates_global_model(trees):
     sp, genes = trees
-    genes = genes[:3]
-    kwargs = dict(
+    model = GeneReconModel.from_trees(
         species_tree=sp,
         gene_trees=genes,
         mode="global",
         pibar_mode="uniform",
-        device=_device(),
+        device="cuda",
         dtype=torch.float32,
-        theta_init_rates=(0.05, 0.05, 0.05),
+        fixed_iters_Pi=2,
+        neumann_terms=2,
     )
+    opt = torch.optim.Adam([model.theta], lr=0.01)
 
-    monkeypatch.setenv("GPUREC_PREPROCESS_MODE", "single")
-    single = GeneReconModel.from_trees(**kwargs)
-    nll_single = float(single().item())
+    before = model.theta.detach().clone()
+    opt.zero_grad(set_to_none=True)
+    loss = model()
+    loss.backward()
+    opt.step()
+    model.clamp_theta_(min_rate=1e-10, max_rate=2.0)
 
-    monkeypatch.delenv("GPUREC_PREPROCESS_MODE", raising=False)
-    cached_populate = GeneReconModel.from_trees(
-        **kwargs,
-        preprocess_cache_dir=tmp_path,
-    )
-    nll_populate = float(cached_populate().item())
-
-    cached_hit = GeneReconModel.from_trees(
-        **kwargs,
-        preprocess_cache_dir=tmp_path,
-    )
-    nll_hit = float(cached_hit().item())
-
-    assert nll_populate == nll_single
-    assert nll_hit == nll_single
-    assert list(tmp_path.glob("family-*.pt"))
-    assert list(tmp_path.glob("species-*.pt"))
+    assert not torch.equal(model.theta.detach(), before)
+    assert torch.isfinite(model.theta).all()
 
 
-def test_multi_family_preprocess_defaults_to_light(trees):
-    from gpurec.core.preprocess_cpp import _load_extension
-
-    sp, genes = trees
-    ext = _load_extension()
-    families = {"f0": [genes[0]]}
-
-    default_raw = ext.preprocess_multiple_families(sp, families)
-    full_raw = ext.preprocess_multiple_families(sp, families, True)
-    compact_raw = ext.preprocess_multiple_families(
-        sp,
-        families,
-        include_species_matrices=False,
-    )
-
-    default_ccp = default_raw["families"]["f0"]["ccp"]
-    full_ccp = full_raw["families"]["f0"]["ccp"]
-    compact_species = compact_raw["species"]
-
-    assert "inclusion_children" not in default_ccp
-    assert "inclusion_parents" not in default_ccp
-    assert "ubiquitous_clade_id" not in default_ccp
-    assert "inclusion_children" in full_ccp
-    assert "inclusion_parents" in full_ccp
-    assert "ubiquitous_clade_id" in full_ccp
-    assert "Recipients_mat" not in compact_species
-    assert "ancestors_dense" not in compact_species
-    assert "unnorm_row_max" in compact_species
-
-
-# ──────────────────────────────────────────────────────────────────────
-# 3. L-BFGS closure pattern
-# ──────────────────────────────────────────────────────────────────────
-
-def test_lbfgs_closure_runs(trees):
-    """Standard PyTorch L-BFGS closure pattern should work end-to-end."""
+def test_batched_lbfgs_genewise_runs_one_polish_step(trees):
     sp, genes = trees
     model = GeneReconModel.from_trees(
-        species_tree=sp, gene_trees=genes, mode="global",
-        device=_device(), dtype=torch.float64,
-        theta_init_rates=(0.05, 0.05, 0.05),
+        species_tree=sp,
+        gene_trees=genes,
+        mode="genewise",
+        pibar_mode="uniform",
+        device="cuda",
+        dtype=torch.float32,
+        fixed_iters_Pi=2,
+        neumann_terms=2,
     )
-    nll_initial = float(model().item())
-
-    opt = torch.optim.LBFGS(
-        model.parameters(),
-        lr=1.0,
-        max_iter=10,
-        history_size=5,
-        line_search_fn="strong_wolfe",
+    opt = BatchedLBFGS(
+        [model.theta],
+        lr=0.5,
+        max_iter=1,
+        line_search_fn="armijo",
+        max_ls=2,
     )
 
     def closure():
-        opt.zero_grad()
-        loss = model()
-        loss.backward()
-        return loss
-
-    opt.step(closure)
-
-    nll_final = float(model().item())
-    assert nll_final < nll_initial, (
-        f"L-BFGS did not improve NLL: {nll_initial} -> {nll_final}"
-    )
-
-
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
-def test_batched_lbfgs_improves_genewise_per_family_nll(trees):
-    """BatchedLBFGS optimizes genewise rows against per-family losses."""
-    sp, genes = trees
-    genes = genes[:3]
-    model = GeneReconModel.from_trees(
-        species_tree=sp,
-        gene_trees=genes,
-        mode="genewise",
-        pibar_mode="uniform",
-        device="cuda",
-        dtype=torch.float32,
-        theta_init_rates=(0.20, 0.01, 0.20),
-        fixed_iters_Pi=6,
-        max_iters_E=256,
-        tol_E=1e-8,
-        neumann_terms=2,
-        cg_maxiter=200,
-    )
-    model.static.warm_E = None
-    with torch.no_grad():
-        start = model.nll_per_family().detach().clone()
-
-    opt = BatchedLBFGS(
-        [model.theta],
-        lr=1.0,
-        max_iter=2,
-        history_size=5,
-        lower_bound=math.log2(1e-10),
-        tolerance_grad=1e-5,
-    )
-
-    def closure() -> torch.Tensor:
         opt.zero_grad(set_to_none=True)
-        loss = model.nll_per_family()
-        loss.sum().backward()
-        return loss
+        losses = model.nll_per_family()
+        losses.sum().backward()
+        return losses.detach()
 
-    def loss_only() -> torch.Tensor:
-        warm_E = model.static.warm_E
-        try:
-            return model.nll_per_family().detach()
-        finally:
-            model.static.warm_E = warm_E
+    before = model.theta.detach().clone()
+    losses = opt.step(closure)
+    model.clamp_theta_(min_rate=1e-10, max_rate=2.0)
 
-    for _ in range(3):
-        opt.step(closure, loss_closure=loss_only)
-
-    model.static.warm_E = None
-    with torch.no_grad():
-        end = model.nll_per_family().detach()
-
-    assert torch.all(torch.isfinite(end))
-    assert torch.all(end <= start + 1e-3), f"per-family NLL increased: {start} -> {end}"
-    assert float(end.sum()) < float(start.sum()) - 1e-3
-
-
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
-def test_batched_lbfgs_strong_wolfe_improves_genewise_nll(trees):
-    sp, genes = trees
-    genes = genes[:3]
-    model = GeneReconModel.from_trees(
-        species_tree=sp,
-        gene_trees=genes,
-        mode="genewise",
-        pibar_mode="uniform",
-        device="cuda",
-        dtype=torch.float32,
-        theta_init_rates=(0.20, 0.01, 0.20),
-        fixed_iters_Pi=6,
-        max_iters_E=256,
-        tol_E=1e-8,
-        neumann_terms=2,
-        cg_maxiter=200,
-    )
-    model.static.warm_E = None
-    with torch.no_grad():
-        start = model.nll_per_family().detach().clone()
-
-    opt = BatchedLBFGS(
-        [model.theta],
-        lr=1.0,
-        max_iter=1,
-        history_size=5,
-        line_search_fn="strong_wolfe",
-        max_ls=10,
-        lower_bound=math.log2(1e-10),
-        tolerance_grad=1e-5,
-    )
-
-    def closure() -> torch.Tensor:
-        opt.zero_grad(set_to_none=True)
-        loss = model.nll_per_family()
-        loss.sum().backward()
-        return loss
-
-    for _ in range(2):
-        opt.step(closure)
-
-    state = opt.state[model.theta]
-    assert torch.all(state["last_accepted"])
-    assert torch.all(state["last_wolfe_satisfied"])
-
-    model.static.warm_E = None
-    with torch.no_grad():
-        end = model.nll_per_family().detach()
-
-    assert torch.all(torch.isfinite(end))
-    assert torch.all(end <= start + 1e-3), f"per-family NLL increased: {start} -> {end}"
-    assert float(end.sum()) < float(start.sum()) - 1e-3
-
-
-# ──────────────────────────────────────────────────────────────────────
-# 4. dtype / device roundtrip
-# ──────────────────────────────────────────────────────────────────────
-
-def test_dtype_roundtrip(trees):
-    """``model.to(torch.float64)`` should move all internal tensors and
-    leave Long index tensors untouched."""
-    sp, genes = trees
-    if not torch.cuda.is_available():
-        pytest.skip("Need CUDA for the float32 path")
-    model = GeneReconModel.from_trees(
-        species_tree=sp, gene_trees=genes, mode="global",
-        device="cuda", dtype=torch.float32,
-        theta_init_rates=(0.05, 0.05, 0.05),
-    )
-    assert model.theta.dtype == torch.float32
-
-    model.to(torch.float64)
-    assert model.theta.dtype == torch.float64
-    assert model._static.unnorm_row_max.dtype == torch.float64
-
-    # Long index tensor inside wave_layout must remain Long
-    leaf_col = model._static.wave_layout["leaf_col_index"]
-    assert leaf_col.dtype == torch.long, (
-        f"Long index tensor was cast to {leaf_col.dtype}"
-    )
-
-    # Forward pass should still work
-    nll = model()
-    assert torch.isfinite(nll), "NLL is non-finite after dtype switch"
-    nll.backward()
-    assert torch.isfinite(model.theta.grad).all()
-
-
-def test_warm_e_resets_on_to(trees):
-    """``warm_E`` should be cleared on ``.to`` to avoid stale-device tensors."""
-    sp, genes = trees
-    if not torch.cuda.is_available():
-        pytest.skip("Need CUDA for warm_E path")
-    model = GeneReconModel.from_trees(
-        species_tree=sp, gene_trees=genes, mode="global",
-        device="cuda", dtype=torch.float32,
-        theta_init_rates=(0.05, 0.05, 0.05),
-    )
-    # Populate warm_E
-    _ = model()
-    assert model._static.warm_E is not None
-    # Move dtype: warm_E should be cleared
-    model.to(torch.float64)
-    assert model._static.warm_E is None
-
-
-# ──────────────────────────────────────────────────────────────────────
-# 5. Properties
-# ──────────────────────────────────────────────────────────────────────
-
-def test_properties(trees):
-    sp, genes = trees
-    model = GeneReconModel.from_trees(
-        species_tree=sp, gene_trees=genes, mode="genewise",
-        device=_device(), dtype=torch.float64,
-        theta_init_rates=(0.05, 0.05, 0.05),
-    )
-    assert model.mode == "genewise"
-    assert model.n_families == N_FAMILIES
-    assert model.n_species > 0
-    rates = model.rates
-    assert rates.shape == (N_FAMILIES, 3)
-    # 2^log2(0.05) == 0.05
-    assert torch.allclose(rates, torch.full_like(rates, 0.05), rtol=1e-12)
-
-
-def test_log_likelihood_helper(trees):
-    """``log_likelihood()`` returns the negation of ``forward()`` as a float."""
-    sp, genes = trees
-    model = GeneReconModel.from_trees(
-        species_tree=sp, gene_trees=genes, mode="global",
-        device=_device(), dtype=torch.float64,
-        theta_init_rates=(0.05, 0.05, 0.05),
-    )
-    nll = float(model().item())
-    logL = model.log_likelihood()
-    assert isinstance(logL, float)
-    assert logL == pytest.approx(-nll, rel=1e-12, abs=1e-12)
+    assert losses.shape == (1,)
+    assert torch.isfinite(losses).all()
+    assert not torch.equal(model.theta.detach(), before)

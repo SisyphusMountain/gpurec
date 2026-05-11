@@ -80,7 +80,7 @@ def _build_model(species_path, gene_paths, mode, pibar_mode, dtype=torch.float64
 
 def _sync_dataset_theta(model: GeneReconModel) -> None:
     """Copy ``model.theta`` into ``model._dataset.families[i]['theta']`` so the
-    legacy ``GeneDataset.compute_likelihood_batch`` evaluates at the same point.
+    ``GeneDataset.compute_likelihood_batch`` evaluates at the same point.
     GeneDataset stores per-family theta independently of model.theta."""
     theta = model.theta.detach()
     for i, fam in enumerate(model._dataset.families):
@@ -102,7 +102,7 @@ def test_model_nll_matches_compute_likelihood_batch(
     # New API
     new_nll = float(model().item())
 
-    # Existing API: sync theta into the dataset, then call the legacy path.
+    # Existing API: sync theta into the dataset, then call the dataset path.
     _sync_dataset_theta(model)
     nll_per_fam = model._dataset.compute_likelihood_batch(
         pibar_mode=pibar_mode,
