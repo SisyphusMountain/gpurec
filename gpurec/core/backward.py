@@ -487,10 +487,6 @@ def Pi_wave_backward(
             wave_backward_uniform_fused,
             dts_cross_backward_fused,
             dts_cross_backward_accum_fused,
-            dts_cross_backward_accum_grouped_fused,
-            dts_cross_backward_accum_parent_tiled_fused,
-            dts_cross_backward_accum_parent_ragged_fused,
-            _build_parent_ragged_ge2_worklist,
             uniform_cross_pibar_vjp_fused,
             uniform_cross_pibar_vjp_tree_fused,
             uniform_cross_pibar_vjp_tree_from_ud_fused,
@@ -653,91 +649,6 @@ def Pi_wave_backward(
     )
     fused_dts_backward_accum_enabled = (
         os.environ.get("GPUREC_FUSED_DTS_BACKWARD_ACCUM", "1") != "0"
-    )
-    dts_backward_accum_impl = os.environ.get(
-        "GPUREC_DTS_BACKWARD_ACCUM_IMPL", "direct"
-    ).lower()
-    parent_tiled_dts_backward_accum_enabled = (
-        os.environ.get("GPUREC_PARENT_TILED_DTS_BACKWARD_ACCUM", "0") != "0"
-        or dts_backward_accum_impl in (
-            "parent_tiled",
-            "parent_tiled_all",
-            "parent-tiled",
-            "parent-tiled-all",
-        )
-    )
-    parent_ragged_dts_backward_accum_enabled = (
-        os.environ.get("GPUREC_PARENT_RAGGED_DTS_BACKWARD_ACCUM", "0") != "0"
-        or dts_backward_accum_impl in (
-            "parent_ragged",
-            "parent_ragged_all",
-            "parent-ragged",
-            "parent-ragged-all",
-        )
-    )
-    grouped_dts_backward_accum_enabled = (
-        os.environ.get("GPUREC_GROUPED_DTS_BACKWARD_ACCUM", "0") != "0"
-        or dts_backward_accum_impl in (
-            "grouped",
-            "grouped_all",
-            "child_grouped",
-            "child_grouped_all",
-        )
-    )
-    noatomic_dts_backward_accum_enabled = (
-        os.environ.get("GPUREC_NOATOMIC_DTS_BACKWARD_ACCUM", "0") != "0"
-        or dts_backward_accum_impl in (
-            "noatomic",
-            "noatomic_all",
-            "nonatomic",
-            "nonatomic_all",
-        )
-    )
-    merged_dts_backward_accum_enabled = (
-        os.environ.get("GPUREC_MERGED_DTS_BACKWARD_ACCUM", "1") != "0"
-        or dts_backward_accum_impl in (
-            "merged",
-            "merged_s",
-            "merge_s",
-            "merged_s_term",
-        )
-    )
-    grouped_dts_backward_accum_all = dts_backward_accum_impl in (
-        "grouped_all",
-        "child_grouped_all",
-    )
-    noatomic_dts_backward_accum_all = dts_backward_accum_impl in (
-        "noatomic_all",
-        "nonatomic_all",
-    )
-    parent_tiled_dts_backward_accum_all = dts_backward_accum_impl in (
-        "parent_tiled_all",
-        "parent-tiled-all",
-    )
-    parent_ragged_dts_backward_accum_all = dts_backward_accum_impl in (
-        "parent_ragged_all",
-        "parent-ragged-all",
-    )
-    grouped_dts_backward_min_splits = int(
-        os.environ.get("GPUREC_GROUPED_DTS_BACKWARD_MIN_SPLITS", "8192")
-    )
-    grouped_dts_backward_min_fanout = float(
-        os.environ.get("GPUREC_GROUPED_DTS_BACKWARD_MIN_FANOUT", "64")
-    )
-    parent_tiled_dts_backward_min_splits = int(
-        os.environ.get("GPUREC_PARENT_TILED_DTS_BACKWARD_MIN_SPLITS", "8192")
-    )
-    parent_tiled_dts_backward_min_fanout = float(
-        os.environ.get("GPUREC_PARENT_TILED_DTS_BACKWARD_MIN_FANOUT", "64")
-    )
-    parent_tiled_dts_backward_tile_splits = int(
-        os.environ.get("GPUREC_PARENT_TILED_DTS_BACKWARD_TILE_SPLITS", "16")
-    )
-    parent_ragged_dts_backward_tile_splits = int(
-        os.environ.get(
-            "GPUREC_PARENT_RAGGED_DTS_BACKWARD_TILE_SPLITS",
-            str(parent_tiled_dts_backward_tile_splits),
-        )
     )
     fused_uniform_backward_enabled = (
         os.environ.get("GPUREC_FUSED_UNIFORM_BACKWARD", "1") != "0"
@@ -2034,243 +1945,83 @@ def Pi_wave_backward(
             if use_fused and fused_scalar_params:
                 # G=1: pass shared params to fused kernel.
                 if fused_dts_backward_accum_enabled:
-                    dts_accum_threshold_match = (
-                        n_ws >= grouped_dts_backward_min_splits
-                        and (n_ws / max(W, 1)) >= grouped_dts_backward_min_fanout
+                    reduction_threshold_match = (
+                        n_ws >= dts_reduction_accum_min_splits
                     )
-                    use_noatomic_dts_accum = (
-                        noatomic_dts_backward_accum_enabled
-                        and (noatomic_dts_backward_accum_all or dts_accum_threshold_match)
+                    pibar_ud_fusion_match = (
+                        dts_pibar_ud_fusion_enabled
+                        and fused_cross_pibar_vjp_enabled
+                        and fused_cross_pibar_vjp_impl == "tree"
+                        and level_parents is not None
+                        and forward_pibar_row_max is not None
+                        and mt_shared is not None
+                        and mt_shared.ndim == 1
+                        and n_ws >= dts_pibar_ud_min_splits
                     )
-                    use_grouped_dts_accum = (
-                        grouped_dts_backward_accum_enabled
-                        and (grouped_dts_backward_accum_all or dts_accum_threshold_match)
+                    use_dts_reduction_accum_scalar = (
+                        dts_reduction_accum_scalar_enabled
+                        and reduction_threshold_match
                     )
-                    group_children = group_inverse = None
-                    if use_noatomic_dts_accum or use_grouped_dts_accum:
-                        group_children = meta.get('_dts_accum_group_children')
-                        group_inverse = meta.get('_dts_accum_group_inverse')
-                        if (
-                            not torch.is_tensor(group_children)
-                            or not torch.is_tensor(group_inverse)
-                            or group_children.device != sl.device
-                            or group_inverse.device != sl.device
-                        ):
-                            all_children = torch.cat((sl, sr), dim=0)
-                            group_children, group_inverse = torch.unique(
-                                all_children,
-                                sorted=True,
-                                return_inverse=True,
-                            )
-                            group_children = group_children.contiguous()
-                            group_inverse = group_inverse.contiguous()
-                            meta['_dts_accum_group_children'] = group_children
-                            meta['_dts_accum_group_inverse'] = group_inverse
-                    child_rows_unique = (
-                        torch.is_tensor(group_children)
-                        and int(group_children.shape[0]) == int(2 * n_ws)
-                    )
-                    if use_noatomic_dts_accum and child_rows_unique:
-                        (grad_Pibar_l, grad_Pibar_r,
-                         param_pD, param_pS) = dts_cross_backward_accum_fused(
-                            Pi_star_wave, Pibar_star_wave, v_k, ws,
-                            sl, sr, reduce_idx, wlsp,
-                            log_pD, log_pS,
-                            sp_child1, sp_child2, accumulated_rhs, S,
-                            active_mask=active_mask_for_split_kernels,
-                            use_atomics=False,
-                        )
-                    elif use_grouped_dts_accum:
-                        (grad_Pibar_l, grad_Pibar_r,
-                         param_pD, param_pS) = dts_cross_backward_accum_grouped_fused(
-                            Pi_star_wave, Pibar_star_wave, v_k, ws,
-                            sl, sr, reduce_idx, wlsp,
-                            log_pD, log_pS,
-                            sp_child1, sp_child2, accumulated_rhs, S,
-                            active_mask=active_mask_for_split_kernels,
-                            group_children=group_children,
-                            group_inverse=group_inverse,
-                        )
-                    else:
-                        reduction_threshold_match = (
-                            n_ws >= dts_reduction_accum_min_splits
-                        )
-                        pibar_ud_fusion_match = (
-                            dts_pibar_ud_fusion_enabled
-                            and fused_cross_pibar_vjp_enabled
-                            and fused_cross_pibar_vjp_impl == "tree"
-                            and level_parents is not None
-                            and forward_pibar_row_max is not None
-                            and mt_shared is not None
-                            and mt_shared.ndim == 1
-                            and n_ws >= dts_pibar_ud_min_splits
-                        )
-                        use_dts_reduction_accum_scalar = (
-                            dts_reduction_accum_scalar_enabled
+                    use_dts_reduction_accum_mt = (
+                        (
+                            dts_reduction_accum_mt_enabled
                             and reduction_threshold_match
                         )
-                        use_dts_reduction_accum_mt = (
-                            (
-                                dts_reduction_accum_mt_enabled
-                                and reduction_threshold_match
-                            )
-                            or pibar_ud_fusion_match
-                        )
-                        used_dts_mt_reduction_accum = use_dts_reduction_accum_mt
-                        used_dts_pibar_ud_fusion = pibar_ud_fusion_match
-                        ge2_ptr = meta.get('ge2_ptr')
-                        ge2_parent_ids = meta.get('ge2_parent_ids')
-                        ge2_fanout = float(meta.get('ge2_mean_fanout', 0.0))
-                        parent_tiled_threshold_match = (
-                            n_ws >= parent_tiled_dts_backward_min_splits
-                            and ge2_fanout >= parent_tiled_dts_backward_min_fanout
-                        )
-                        use_parent_tiled_dts_accum = (
-                            parent_tiled_dts_backward_accum_enabled
-                            and (
-                                parent_tiled_dts_backward_accum_all
-                                or parent_tiled_threshold_match
-                            )
+                        or pibar_ud_fusion_match
+                    )
+                    used_dts_mt_reduction_accum = use_dts_reduction_accum_mt
+                    used_dts_pibar_ud_fusion = pibar_ud_fusion_match
+                    dts_accum_result = dts_cross_backward_accum_fused(
+                        Pi_star_wave, Pibar_star_wave, v_k, ws,
+                        sl, sr, reduce_idx, wlsp,
+                        log_pD, log_pS,
+                        sp_child1, sp_child2, accumulated_rhs, S,
+                        active_mask=active_mask_for_split_kernels,
+                        merge_s_term=True,
+                        grad_log_pD=grad_log_pD,
+                        grad_log_pS=grad_log_pS,
+                        grad_mt=(
+                            grad_mt
+                            if grad_mt.ndim == 1
+                            else grad_mt[0]
+                        ),
+                        accum_param_reductions=use_dts_reduction_accum_scalar,
+                        accum_mt_reduction=use_dts_reduction_accum_mt,
+                        output_pibar_ud=pibar_ud_fusion_match,
+                        output_pibar_side_active=(
+                            pibar_ud_fusion_match
+                            and dts_pibar_ud_skip_zero_sides_enabled
+                        ),
+                        pibar_side_threshold=dts_pibar_ud_side_threshold_arg,
+                        mt_squeezed=mt_shared,
+                        pibar_row_max=forward_pibar_row_max,
+                        grad_mt_two_stage=(
+                            dts_grad_mt_two_stage_enabled
                             and pibar_ud_fusion_match
-                            and merged_dts_backward_accum_enabled
-                            and use_dts_reduction_accum_scalar
-                            and torch.is_tensor(ge2_ptr)
-                            and torch.is_tensor(ge2_parent_ids)
-                            and int(meta.get('n_ge2_clades', 0)) > 0
-                        )
-                        use_parent_ragged_dts_accum = (
-                            parent_ragged_dts_backward_accum_enabled
-                            and (
-                                parent_ragged_dts_backward_accum_all
-                                or parent_tiled_threshold_match
-                            )
+                        ),
+                        grad_mt_two_stage_tile_splits=(
+                            dts_grad_mt_two_stage_tile_splits
+                        ),
+                        skip_inactive_pibar_output_zero=(
+                            skip_inactive_zero_stores_enabled
                             and pibar_ud_fusion_match
-                            and merged_dts_backward_accum_enabled
-                            and use_dts_reduction_accum_scalar
-                            and torch.is_tensor(ge2_ptr)
-                            and torch.is_tensor(ge2_parent_ids)
-                            and int(meta.get('n_ge2_clades', 0)) > 0
-                        )
-                        if use_parent_ragged_dts_accum:
-                            ragged_key = (
-                                "_dts_accum_parent_ragged_worklist_"
-                                f"{int(parent_ragged_dts_backward_tile_splits)}"
-                            )
-                            ragged_worklist = meta.get(ragged_key)
-                            if (
-                                not isinstance(ragged_worklist, tuple)
-                                or len(ragged_worklist) != 3
-                                or not all(torch.is_tensor(t) for t in ragged_worklist)
-                                or any(t.device != ge2_ptr.device for t in ragged_worklist)
-                            ):
-                                ragged_worklist = _build_parent_ragged_ge2_worklist(
-                                    int(meta.get('n_eq1', 0)),
-                                    ge2_ptr,
-                                    ge2_parent_ids,
-                                    parent_ragged_dts_backward_tile_splits,
-                                )
-                                meta[ragged_key] = ragged_worklist
-                            (grad_Pibar_l, grad_Pibar_r,
-                             param_pD, param_pS) = dts_cross_backward_accum_parent_ragged_fused(
-                                Pi_star_wave, Pibar_star_wave, v_k, ws,
-                                sl, sr, reduce_idx, wlsp,
-                                int(meta.get('n_eq1', 0)),
-                                ge2_ptr,
-                                ge2_parent_ids,
-                                log_pD, log_pS,
-                                sp_child1, sp_child2, accumulated_rhs, S,
-                                active_mask=active_mask_for_split_kernels,
-                                grad_log_pD=grad_log_pD,
-                                grad_log_pS=grad_log_pS,
-                                grad_mt=(
-                                    grad_mt
-                                    if grad_mt.ndim == 1
-                                    else grad_mt[0]
-                                ),
-                                accum_mt_reduction=use_dts_reduction_accum_mt,
-                                mt_squeezed=mt_shared,
-                                pibar_row_max=forward_pibar_row_max,
-                                tile_splits=parent_ragged_dts_backward_tile_splits,
-                                ge2_tile_split_starts=ragged_worklist[0],
-                                ge2_tile_split_ends=ragged_worklist[1],
-                                ge2_tile_parent_ids=ragged_worklist[2],
-                            )
-                        elif use_parent_tiled_dts_accum:
-                            (grad_Pibar_l, grad_Pibar_r,
-                             param_pD, param_pS) = dts_cross_backward_accum_parent_tiled_fused(
-                                Pi_star_wave, Pibar_star_wave, v_k, ws,
-                                sl, sr, reduce_idx, wlsp,
-                                int(meta.get('n_eq1', 0)),
-                                ge2_ptr,
-                                ge2_parent_ids,
-                                log_pD, log_pS,
-                                sp_child1, sp_child2, accumulated_rhs, S,
-                                active_mask=active_mask_for_split_kernels,
-                                grad_log_pD=grad_log_pD,
-                                grad_log_pS=grad_log_pS,
-                                grad_mt=(
-                                    grad_mt
-                                    if grad_mt.ndim == 1
-                                    else grad_mt[0]
-                                ),
-                                accum_mt_reduction=use_dts_reduction_accum_mt,
-                                mt_squeezed=mt_shared,
-                                pibar_row_max=forward_pibar_row_max,
-                                tile_splits=parent_tiled_dts_backward_tile_splits,
-                                ge2_max_fanout=meta.get('ge2_max_fanout'),
-                            )
-                        else:
-                            dts_accum_result = dts_cross_backward_accum_fused(
-                                Pi_star_wave, Pibar_star_wave, v_k, ws,
-                                sl, sr, reduce_idx, wlsp,
-                                log_pD, log_pS,
-                                sp_child1, sp_child2, accumulated_rhs, S,
-                                active_mask=active_mask_for_split_kernels,
-                                merge_s_term=merged_dts_backward_accum_enabled,
-                                grad_log_pD=grad_log_pD,
-                                grad_log_pS=grad_log_pS,
-                                grad_mt=(
-                                    grad_mt
-                                    if grad_mt.ndim == 1
-                                    else grad_mt[0]
-                                ),
-                                accum_param_reductions=use_dts_reduction_accum_scalar,
-                                accum_mt_reduction=use_dts_reduction_accum_mt,
-                                output_pibar_ud=pibar_ud_fusion_match,
-                                output_pibar_side_active=(
-                                    pibar_ud_fusion_match
-                                    and dts_pibar_ud_skip_zero_sides_enabled
-                                ),
-                                pibar_side_threshold=dts_pibar_ud_side_threshold_arg,
-                                mt_squeezed=mt_shared,
-                                pibar_row_max=forward_pibar_row_max,
-                                grad_mt_two_stage=(
-                                    dts_grad_mt_two_stage_enabled
-                                    and pibar_ud_fusion_match
-                                ),
-                                grad_mt_two_stage_tile_splits=(
-                                    dts_grad_mt_two_stage_tile_splits
-                                ),
-                                skip_inactive_pibar_output_zero=(
-                                    skip_inactive_zero_stores_enabled
-                                    and pibar_ud_fusion_match
-                                    and active_mask_for_split_kernels is not None
-                                ),
-                                scratch=(
-                                    scratch_pool.get("dts")
-                                    if scratch_pool is not None
-                                    else None
-                                ),
-                            )
-                            if (
-                                pibar_ud_fusion_match
-                                and dts_pibar_ud_skip_zero_sides_enabled
-                            ):
-                                (grad_Pibar_l, grad_Pibar_r, pibar_side_active,
-                                 param_pD, param_pS) = dts_accum_result
-                            else:
-                                (grad_Pibar_l, grad_Pibar_r,
-                                 param_pD, param_pS) = dts_accum_result
+                            and active_mask_for_split_kernels is not None
+                        ),
+                        scratch=(
+                            scratch_pool.get("dts")
+                            if scratch_pool is not None
+                            else None
+                        ),
+                    )
+                    if (
+                        pibar_ud_fusion_match
+                        and dts_pibar_ud_skip_zero_sides_enabled
+                    ):
+                        (grad_Pibar_l, grad_Pibar_r, pibar_side_active,
+                         param_pD, param_pS) = dts_accum_result
+                    else:
+                        (grad_Pibar_l, grad_Pibar_r,
+                         param_pD, param_pS) = dts_accum_result
                     used_fused_direct_pi_accum = True
                     grad_Pi_l = grad_Pi_r = None
                 else:
@@ -2327,7 +2078,7 @@ def Pi_wave_backward(
                     dts_log_pD, dts_log_pS,
                     sp_child1, sp_child2, accumulated_rhs, S,
                     active_mask=active_mask_for_split_kernels,
-                    merge_s_term=merged_dts_backward_accum_enabled,
+                    merge_s_term=True,
                     grad_log_pD=dts_grad_log_pD,
                     grad_log_pS=dts_grad_log_pS,
                     grad_mt=dts_grad_mt,
