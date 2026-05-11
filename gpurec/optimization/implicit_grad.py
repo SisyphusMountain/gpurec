@@ -128,7 +128,6 @@ def implicit_grad_loglik_vjp_wave(
         max_transfer_mat, species_helpers, root_clade_ids_perm,
         theta, unnorm_row_max, specieswise,
         device, dtype,
-        pibar_mode="uniform",
         ancestors_T=ancestors_T,
     )
     statsG.pi_bwd_time = _t_pi_bwd
@@ -144,7 +143,6 @@ def _e_adjoint_and_theta_vjp(
     device, dtype,
     *,
     genewise=False,
-    pibar_mode='uniform',
     ancestors_T=None,
 ):
     """E adjoint solve + theta VJP from pre-computed Pi backward result.
@@ -152,9 +150,6 @@ def _e_adjoint_and_theta_vjp(
     Takes pi_bwd dict (from Pi_wave_backward) and completes the gradient
     computation through E adjoint solve and extract_parameters VJP.
     """
-    if pibar_mode != "uniform":
-        raise ValueError("The lean branch supports only pibar_mode='uniform'.")
-
     # --- Step 2: E adjoint ---
     sp_P_idx = species_helpers['s_P_indexes']
     sp_c12_idx = species_helpers['s_C12_indexes']

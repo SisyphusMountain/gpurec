@@ -655,7 +655,6 @@ def _finish_theta_gradient(
         static.device,
         static.dtype,
         genewise=False,
-        pibar_mode="uniform",
         ancestors_T=static.ancestors_T,
     )
 

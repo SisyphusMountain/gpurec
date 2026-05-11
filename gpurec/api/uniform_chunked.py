@@ -590,7 +590,6 @@ def _evaluate_chunked_uniform(
                 state.device,
                 state.dtype,
                 genewise=False,
-                pibar_mode="uniform",
                 ancestors_T=state.ancestors_T,
             )
 
