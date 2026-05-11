@@ -463,7 +463,6 @@ def _run_chunks(
             return_original=False,
             need_pibar=False,
             return_root_rows=root_rows,
-            overlap_streams=overlap_mode != "off",
         )
         if root_rows:
             total = total + compute_log_likelihood_root_rows(

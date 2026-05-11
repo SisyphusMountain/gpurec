@@ -1,11 +1,40 @@
 import pytest
 import torch
 
-from gpurec.core.forward import _compute_Pibar_inline
-from gpurec.core.kernels.wave_step import (
-    wave_step_fused,
-    wave_step_uniform_fused,
-)
+from gpurec.core.kernels.wave_step import wave_step_uniform_fused
+
+
+def _logsumexp2_reference(terms: torch.Tensor) -> torch.Tensor:
+    vmax = terms.max(dim=0).values
+    safe = torch.where(torch.isfinite(vmax), vmax, torch.zeros_like(vmax))
+    return torch.log2(torch.exp2(terms - safe).sum(dim=0)) + vmax
+
+
+def _uniform_pibar_reference(Pi_W, mt, ancestors):
+    pi_max = Pi_W.max(dim=1, keepdim=True).values
+    pi_exp = torch.exp2(Pi_W - pi_max)
+    row_sum = pi_exp.sum(dim=1, keepdim=True)
+    ancestor_sum = pi_exp @ ancestors.T
+    denom = row_sum - ancestor_sum
+    return torch.where(denom > 0, torch.log2(denom) + pi_max + mt, float("-inf"))
+
+
+def _wave_step_reference(Pi_W, Pibar_W, DL, Ebar, E, SL1, SL2, sp_child1, sp_child2, leaf_term):
+    W, S = Pi_W.shape
+    pad = torch.full((W, 1), float("-inf"), device=Pi_W.device, dtype=Pi_W.dtype)
+    Pi_pad = torch.cat([Pi_W, pad], dim=1)
+    terms = torch.stack(
+        [
+            DL + Pi_W,
+            Pi_W + Ebar,
+            Pibar_W + E,
+            SL1 + Pi_pad[:, sp_child1],
+            SL2 + Pi_pad[:, sp_child2],
+            leaf_term,
+        ],
+        dim=0,
+    )
+    return _logsumexp2_reference(terms)
 
 
 def _balanced_species_tree(device):
@@ -86,14 +115,8 @@ def test_wave_step_uniform_fused_matches_sparse_ancestor_reference(per_clade_con
 
     leaf_term = torch.randn((W, S), device=device, dtype=dtype) * 0.2 - 4.0
     Pi_W = Pi[ws:ws + W]
-    Pibar_ref = _compute_Pibar_inline(
-        Pi_W,
-        None,
-        mt,
-        "uniform",
-        ancestors_T=ancestors.T.to_sparse_coo(),
-    )
-    Pi_ref = wave_step_fused(
+    Pibar_ref = _uniform_pibar_reference(Pi_W, mt, ancestors)
+    Pi_ref = _wave_step_reference(
         Pi_W,
         Pibar_ref,
         DL,
