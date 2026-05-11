@@ -214,7 +214,6 @@ def _prepare_forward(model: GeneReconModel):
         warm_start_E=None,
         dtype=static.dtype,
         device=static.device,
-        pibar_mode=static.pibar_mode,
         ancestors_T=static.ancestors_T,
     )
     return E_out, params
@@ -247,7 +246,6 @@ def _run_forward(
         local_iters=static.max_iters_Pi,
         local_tolerance=static.tol_Pi,
         fixed_iters=static.fixed_iters_Pi,
-        pibar_mode=static.pibar_mode,
         return_original=False,
         need_pibar=need_pibar,
         return_root_rows=root_rows,

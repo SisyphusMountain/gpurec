@@ -56,7 +56,6 @@ class ReconStaticState:
     specieswise: bool
 
     # Solver knobs
-    pibar_mode: str = "uniform"
     fixed_iters_E: Optional[int] = None
     max_iters_E: int = 2000
     tol_E: float = 1e-8
@@ -116,8 +115,6 @@ def _apply_to_static(static: ReconStaticState, fn) -> ReconStaticState:
 
 def _extract_parameters(theta: torch.Tensor, static: ReconStaticState):
     """Extract parameters for the retained uniform-transfer path."""
-    if static.pibar_mode != "uniform":
-        raise ValueError("The lean branch supports only pibar_mode='uniform'.")
     return (
         extract_parameters_uniform(
             theta,
@@ -182,7 +179,6 @@ class _GeneReconFunction(torch.autograd.Function):
                     ),
                     dtype=dtype,
                     device=device,
-                    pibar_mode=static.pibar_mode,
                     ancestors_T=static.ancestors_T,
                 )
                 E = E_out["E"]
@@ -209,7 +205,6 @@ class _GeneReconFunction(torch.autograd.Function):
                     local_iters=static.max_iters_Pi,
                     local_tolerance=static.tol_Pi,
                     fixed_iters=static.fixed_iters_Pi,
-                    pibar_mode=static.pibar_mode,
                     return_original=False,
                     family_idx=(
                         static.wave_layout.get("family_idx") if static.genewise else None
@@ -302,7 +297,6 @@ class _GeneReconFunction(torch.autograd.Function):
                 neumann_terms=static.neumann_terms,
                 use_pruning=static.use_pruning,
                 pruning_threshold=static.pruning_threshold,
-                pibar_mode=static.pibar_mode,
                 transfer_mat=transfer_mat,
                 ancestors_T=static.ancestors_T,
                 family_idx=wave_layout["family_idx"],
@@ -330,7 +324,6 @@ class _GeneReconFunction(torch.autograd.Function):
                 static.device,
                 static.dtype,
                 genewise=True,
-                pibar_mode=static.pibar_mode,
                 ancestors_T=static.ancestors_T,
             )
         else:
@@ -357,7 +350,6 @@ class _GeneReconFunction(torch.autograd.Function):
                 neumann_terms=static.neumann_terms,
                 use_pruning=static.use_pruning,
                 pruning_threshold=static.pruning_threshold,
-                pibar_mode=static.pibar_mode,
                 ancestors_T=static.ancestors_T,
                 uniform_pibar_row_max=(
                     uniform_pibar_row_max

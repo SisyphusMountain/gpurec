@@ -73,7 +73,6 @@ def _default_theta_init(dataset: GeneDataset, mode: str) -> torch.Tensor:
 def _build_static_state(
     dataset: GeneDataset,
     *,
-    pibar_mode: str,
     fixed_iters_E: Optional[int],
     max_iters_E: int,
     tol_E: float,
@@ -158,9 +157,6 @@ def _build_static_state(
         family_clade_offsets=family_clade_offsets,
     )
 
-    if pibar_mode != "uniform":
-        raise ValueError("The lean branch supports only pibar_mode='uniform'.")
-
     # 2. Species helpers on device.
     species_helpers, ancestors_T = dataset._species_helpers_for_mode(
         pibar_mode="uniform", device=device, dtype=dtype,
@@ -179,7 +175,6 @@ def _build_static_state(
         ancestors_T=ancestors_T,
         genewise=bool(dataset.genewise),
         specieswise=bool(dataset.specieswise),
-        pibar_mode="uniform",
         fixed_iters_E=fixed_iters_E,
         max_iters_E=max_iters_E,
         tol_E=tol_E,
@@ -250,7 +245,6 @@ class GeneReconModel(torch.nn.Module):
 
         self._static = _build_static_state(
             dataset,
-            pibar_mode=pibar_mode,
             fixed_iters_E=fixed_iters_E,
             max_iters_E=max_iters_E,
             tol_E=tol_E,
@@ -408,7 +402,6 @@ class GeneReconModel(torch.nn.Module):
                 ),
                 dtype=dtype,
                 device=device,
-                pibar_mode=static.pibar_mode,
                 ancestors_T=static.ancestors_T,
             )
             E = E_out["E"]
@@ -431,7 +424,6 @@ class GeneReconModel(torch.nn.Module):
                 local_iters=static.max_iters_Pi,
                 local_tolerance=static.tol_Pi,
                 fixed_iters=static.fixed_iters_Pi,
-                pibar_mode=static.pibar_mode,
                 return_original=False,
                 need_pibar=False,
                 return_root_rows=True,
