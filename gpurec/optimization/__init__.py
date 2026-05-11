@@ -6,9 +6,7 @@ row-wise batched L-BFGS implementation used for genewise polishing.
 """
 
 from .batched_lbfgs import BatchedLBFGS
-from .implicit_grad import implicit_grad_loglik_vjp_wave
 
 __all__ = [
     "BatchedLBFGS",
-    "implicit_grad_loglik_vjp_wave",
 ]
