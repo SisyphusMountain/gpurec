@@ -97,8 +97,13 @@ def test_wave_step_uniform_fused_matches_sparse_ancestor_reference(per_clade_con
     ws = 1
     C = W + 2
     Pi = torch.randn((C, S), device=device, dtype=dtype) * 1.5 - 3.0
+    family_idx = None
+    family_indexed_consts = False
 
     if per_clade_constants:
+        family_idx = torch.zeros((C,), device=device, dtype=torch.long)
+        family_idx[ws:ws + W] = torch.arange(W, device=device, dtype=torch.long)
+        family_indexed_consts = True
         mt = torch.randn((W, S), device=device, dtype=dtype) * 0.1
         DL = torch.randn((W, S), device=device, dtype=dtype) * 0.2 - 2.0
         Ebar = torch.randn((W, S), device=device, dtype=dtype) * 0.2 - 1.5
@@ -147,6 +152,8 @@ def test_wave_step_uniform_fused_matches_sparse_ancestor_reference(per_clade_con
         sp_parent,
         max_depth,
         leaf_term,
+        family_idx=family_idx,
+        family_indexed_consts=family_indexed_consts,
     )
     torch.cuda.synchronize()
 
@@ -181,12 +188,12 @@ def test_wave_step_uniform_leaf_index_logp_modes_match_dense_leaf_term(leaf_logp
     ws = 2
     C = W + 4
     Pi = torch.randn((C, S), device=device, dtype=dtype) * 1.2 - 3.0
-    mt = torch.randn((W, S), device=device, dtype=dtype) * 0.1
-    DL = torch.randn((W, S), device=device, dtype=dtype) * 0.2 - 2.0
-    Ebar = torch.randn((W, S), device=device, dtype=dtype) * 0.2 - 1.5
-    E = torch.randn((W, S), device=device, dtype=dtype) * 0.2 - 2.5
-    SL1 = torch.randn((W, S), device=device, dtype=dtype) * 0.2 - 2.0
-    SL2 = torch.randn((W, S), device=device, dtype=dtype) * 0.2 - 2.0
+    mt = torch.randn((G, S), device=device, dtype=dtype) * 0.1
+    DL = torch.randn((G, S), device=device, dtype=dtype) * 0.2 - 2.0
+    Ebar = torch.randn((G, S), device=device, dtype=dtype) * 0.2 - 1.5
+    E = torch.randn((G, S), device=device, dtype=dtype) * 0.2 - 2.5
+    SL1 = torch.randn((G, S), device=device, dtype=dtype) * 0.2 - 2.0
+    SL2 = torch.randn((G, S), device=device, dtype=dtype) * 0.2 - 2.0
 
     leaf_species_idx = torch.full((C,), -1, device=device, dtype=torch.long)
     leaf_species_idx[ws:ws + W] = torch.tensor([2, -1, 5, 1], device=device)
@@ -229,6 +236,8 @@ def test_wave_step_uniform_leaf_index_logp_modes_match_dense_leaf_term(leaf_logp
         sp_parent,
         max_depth,
         leaf_term,
+        family_idx=family_idx,
+        family_indexed_consts=True,
     )
 
     Pibar_indexed = torch.full_like(Pi, float("-inf"))
@@ -251,7 +260,8 @@ def test_wave_step_uniform_leaf_index_logp_modes_match_dense_leaf_term(leaf_logp
         leaf_logp,
         leaf_species_idx=leaf_species_idx,
         leaf_logp=leaf_logp,
-        family_idx=family_idx if leaf_logp_mode != "shared" else None,
+        family_idx=family_idx,
+        family_indexed_consts=True,
     )
     torch.cuda.synchronize()
 
