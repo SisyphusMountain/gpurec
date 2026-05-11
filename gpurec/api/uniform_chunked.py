@@ -490,7 +490,6 @@ def _evaluate_chunked_uniform(
                 local_iters=state.max_iters_Pi,
                 local_tolerance=state.tol_Pi,
                 fixed_iters=state.fixed_iters_Pi,
-                pibar_mode="uniform",
                 return_original=False,
                 need_pibar=need_grad,
                 return_root_rows=not need_grad,

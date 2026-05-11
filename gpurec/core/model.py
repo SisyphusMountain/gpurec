@@ -550,7 +550,6 @@ class GeneDataset(Dataset):
             local_iters=max_iters_Pi,
             local_tolerance=tol_Pi,
             fixed_iters=fixed_iters_Pi,
-            pibar_mode=pibar_mode,
             family_idx=wave_layout.get('family_idx') if self.genewise else None,
             return_original=False,
             need_pibar=False,

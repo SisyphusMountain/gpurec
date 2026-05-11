@@ -578,7 +578,6 @@ def _forward_chunk(
         local_iters=args.max_iters_Pi,
         local_tolerance=args.tol_Pi,
         fixed_iters=args.fixed_iters,
-        pibar_mode="uniform",
         return_original=False,
         need_pibar=True,
         return_root_rows=False,

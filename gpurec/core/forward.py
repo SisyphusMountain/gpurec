@@ -244,7 +244,6 @@ def Pi_wave_forward(
     local_iters: int = 50,
     local_tolerance: float = 1e-3,
     fixed_iters: int | None = None,
-    pibar_mode: str = 'uniform',
     family_idx: torch.Tensor | None = None,
     return_original: bool = True,
     need_pibar: bool = True,
@@ -267,7 +266,6 @@ def Pi_wave_forward(
         local_iters: max iterations per wave self-loop
         local_tolerance: convergence threshold
         fixed_iters: if set, use fixed iteration count (no convergence check / GPU sync)
-        pibar_mode: retained API shim; only 'uniform' is supported
         family_idx: Long[C] clade→family mapping in wave-ordered space.
                     When provided, parameters are [G, ...] and indexed per-clade.
         need_pibar: if False, do not return final Pibar rows. In fixed even
@@ -292,8 +290,6 @@ def Pi_wave_forward(
 
     C = int(ccp_helpers['C'])
     S = int(species_helpers['S'])
-    if pibar_mode != "uniform":
-        raise ValueError("The lean forward path supports only pibar_mode='uniform'.")
     if torch.device(device).type != "cuda":
         raise ValueError("The lean forward path requires CUDA.")
     if leaf_species_index is None:
