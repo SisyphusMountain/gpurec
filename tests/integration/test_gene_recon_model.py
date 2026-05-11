@@ -85,7 +85,6 @@ def test_batched_lbfgs_genewise_runs_one_polish_step(trees):
         [model.theta],
         lr=0.5,
         max_iter=1,
-        line_search_fn="armijo",
         max_ls=2,
     )
 
