@@ -16,7 +16,7 @@ from gpurec.core.likelihood import (
     compute_log_likelihood,
     compute_log_likelihood_root_rows,
 )
-from gpurec.core.species import species_child_arrays_from_helpers
+from gpurec.core.species import species_wave_topology
 
 
 _ROOT = Path(__file__).resolve().parent.parent
@@ -70,7 +70,9 @@ def _alerax_label_by_species_index(species_helpers: dict) -> list[str]:
     """Replicate AleRax internal-node labels in gpurec species order."""
     S = int(species_helpers["S"])
     names = list(species_helpers["names"])
-    child1, child2 = species_child_arrays_from_helpers(species_helpers, S=S)
+    topology = species_wave_topology(species_helpers, S=S, device=torch.device("cpu"))
+    child1 = [int(x) for x in topology["sp_child1_cpu"].tolist()]
+    child2 = [int(x) for x in topology["sp_child2_cpu"].tolist()]
     parent = [-1] * S
     for p, (c1, c2) in enumerate(zip(child1, child2)):
         if c1 < S:

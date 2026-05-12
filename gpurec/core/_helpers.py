@@ -5,8 +5,6 @@ Centralises utilities that were previously copy-pasted across modules.
 
 from __future__ import annotations
 
-import inspect
-import os
 from contextlib import contextmanager
 
 import torch
@@ -58,29 +56,3 @@ def _nvtx_range(name: str):
                 nvtx.range_pop()
             except Exception:
                 pass
-
-
-@contextmanager
-def _nvtx_here(name: str):
-    """NVTX range whose label includes caller file:line for easy mapping."""
-    try:
-        frame = inspect.currentframe().f_back
-        info = inspect.getframeinfo(frame, context=0)
-        base = os.path.basename(info.filename)
-        label = f"{name} [{base}:{info.lineno}]"
-    except Exception:
-        label = name
-    record_function = None
-    try:
-        record_function = getattr(
-            getattr(torch, "autograd", None).profiler, "record_function", None
-        )
-    except Exception:
-        record_function = None
-    if record_function is not None:
-        with record_function(label):
-            with _nvtx_range(label):
-                yield
-    else:
-        with _nvtx_range(label):
-            yield

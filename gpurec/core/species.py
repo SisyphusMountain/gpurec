@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-import math
-from typing import Any, Mapping
+from typing import Any
 
 import torch
 
@@ -26,44 +25,6 @@ def species_parent_from_helpers(species_helpers: dict, *, dtype: torch.dtype = t
     parent[sp_c[mask_c1]] = sp_p[mask_c1]
     parent[sp_c[~mask_c1]] = sp_p[~mask_c1] - S
     return parent.to(dtype=dtype)
-
-
-def _to_long_list(values: Any, name: str) -> list[int]:
-    if torch.is_tensor(values):
-        if values.ndim != 1:
-            raise ValueError(f"{name} must be a 1D tensor")
-        return [int(v) for v in values.detach().cpu().long().tolist()]
-    return [int(v) for v in values]
-
-
-def species_child_arrays_from_helpers(
-    species_helpers: Mapping[str, Any],
-    *,
-    S: int | None = None,
-) -> tuple[list[int], list[int]]:
-    """Build child arrays from compact species helper indices."""
-    if S is None:
-        S = int(species_helpers["S"])
-    if S < 0:
-        raise ValueError("S must be non-negative")
-
-    p_values = _to_long_list(species_helpers["s_P_indexes"], "s_P_indexes")
-    c_values = _to_long_list(species_helpers["s_C12_indexes"], "s_C12_indexes")
-    if len(p_values) != len(c_values):
-        raise ValueError("s_P_indexes and s_C12_indexes must have the same length")
-
-    child1 = [S] * S
-    child2 = [S] * S
-    for p, c in zip(p_values, c_values):
-        if c < 0 or c >= S:
-            raise ValueError(f"child index out of range: {c}")
-        if 0 <= p < S:
-            child1[p] = c
-        elif S <= p < 2 * S:
-            child2[p - S] = c
-        else:
-            raise ValueError(f"parent index out of range: {p}")
-    return child1, child2
 
 
 def species_wave_topology(
@@ -216,36 +177,6 @@ def species_wave_topology(
     }
     cache[key] = topology
     return topology
-
-
-def uniform_unnorm_row_max_from_topology(
-    species_helpers: dict,
-    *,
-    dtype: torch.dtype = torch.float64,
-) -> torch.Tensor:
-    """Compute ``log2(max_j Recipients_mat[i,j])`` without materializing ``[S,S]``.
-
-    In uniform transfer mode, every non-ancestor recipient of species ``i`` has
-    weight ``1 / (S - |ancestors(i)|)`` and ancestor recipients have weight 0.
-    """
-    S = int(species_helpers["S"])
-    parent = species_parent_from_helpers(species_helpers)
-    values = torch.empty((S,), dtype=torch.float64)
-    for s_idx in range(S):
-        depth = 0
-        cur = s_idx
-        while cur >= 0:
-            depth += 1
-            cur = int(parent[cur])
-            if depth > S:
-                raise RuntimeError("Cycle detected in species parent pointers")
-        n_recipients = S - depth
-        if n_recipients <= 0:
-            values[s_idx] = float("-inf")
-        else:
-            values[s_idx] = -math.log2(float(n_recipients))
-    return values.to(dtype=dtype)
-
 
 def uniform_ancestors_t_from_topology(
     species_helpers: dict,

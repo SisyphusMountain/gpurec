@@ -61,13 +61,6 @@ def logsumexp2(x: torch.Tensor, dim: int, keepdim: bool = False) -> torch.Tensor
     return result
 
 
-def logaddexp2(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
-    """log2(2^a + 2^b) — base-2 logaddexp."""
-    m = torch.maximum(a, b)
-    m_safe = torch.where(m == _NEG_INF, torch.zeros_like(m), m)
-    return _safe_log2_internal(torch.exp2(a - m_safe) + torch.exp2(b - m_safe)) + m
-
-
 class _Log2Softmax(torch.autograd.Function):
     """Custom autograd for base-2 log-softmax with stable backward.
 

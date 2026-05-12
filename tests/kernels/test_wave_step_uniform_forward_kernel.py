@@ -1,7 +1,10 @@
 import pytest
 import torch
 
-from gpurec.core.kernels.wave_step import wave_step_uniform_fused
+from gpurec.core.kernels.wave_step import (
+    wave_pibar_uniform_parent_fused,
+    wave_step_uniform_fused_into,
+)
 
 
 def _logsumexp2_reference(terms: torch.Tensor) -> torch.Tensor:
@@ -135,8 +138,22 @@ def test_wave_step_uniform_fused_matches_sparse_ancestor_reference(per_clade_con
     )
 
     Pibar = torch.full_like(Pi, float("-inf"))
-    Pi_fused, max_diff = wave_step_uniform_fused(
+    wave_pibar_uniform_parent_fused(
         Pi,
+        Pibar,
+        ws,
+        W,
+        S,
+        mt,
+        sp_parent,
+        max_depth,
+        family_idx=family_idx,
+        family_indexed_consts=family_indexed_consts,
+    )
+    Pi_out = Pi.clone()
+    wave_step_uniform_fused_into(
+        Pi,
+        Pi_out,
         Pibar,
         ws,
         W,
@@ -155,12 +172,14 @@ def test_wave_step_uniform_fused_matches_sparse_ancestor_reference(per_clade_con
         family_idx=family_idx,
         family_indexed_consts=family_indexed_consts,
     )
+    Pi_fused = Pi_out[ws:ws + W]
     torch.cuda.synchronize()
 
     torch.testing.assert_close(Pibar[ws:ws + W], Pibar_ref, rtol=2e-5, atol=2e-5)
     torch.testing.assert_close(Pi_fused, Pi_ref, rtol=2e-5, atol=2e-5)
 
     significant = Pi_ref > -100.0
+    max_diff = torch.abs(Pi_fused - Pi_W)[significant].max()
     expected_diff = torch.abs(Pi_ref - Pi_W)[significant].max()
     torch.testing.assert_close(max_diff, expected_diff, rtol=2e-5, atol=2e-5)
 
@@ -219,8 +238,10 @@ def test_wave_step_uniform_leaf_index_logp_modes_match_dense_leaf_term(leaf_logp
             leaf_term[w, species] = leaf_logp[family_idx[ws + w], species]
 
     Pibar_dense = torch.full_like(Pi, float("-inf"))
-    Pi_dense, max_diff_dense = wave_step_uniform_fused(
+    Pi_dense_out = Pi.clone()
+    wave_step_uniform_fused_into(
         Pi,
+        Pi_dense_out,
         Pibar_dense,
         ws,
         W,
@@ -239,10 +260,15 @@ def test_wave_step_uniform_leaf_index_logp_modes_match_dense_leaf_term(leaf_logp
         family_idx=family_idx,
         family_indexed_consts=True,
     )
+    Pi_dense = Pi_dense_out[ws:ws + W]
+    significant_dense = Pi_dense > -100.0
+    max_diff_dense = torch.abs(Pi_dense - Pi[ws:ws + W])[significant_dense].max()
 
     Pibar_indexed = torch.full_like(Pi, float("-inf"))
-    Pi_indexed, max_diff_indexed = wave_step_uniform_fused(
+    Pi_indexed_out = Pi.clone()
+    wave_step_uniform_fused_into(
         Pi,
+        Pi_indexed_out,
         Pibar_indexed,
         ws,
         W,
@@ -263,8 +289,10 @@ def test_wave_step_uniform_leaf_index_logp_modes_match_dense_leaf_term(leaf_logp
         family_idx=family_idx,
         family_indexed_consts=True,
     )
+    Pi_indexed = Pi_indexed_out[ws:ws + W]
+    significant_indexed = Pi_indexed > -100.0
+    max_diff_indexed = torch.abs(Pi_indexed - Pi[ws:ws + W])[significant_indexed].max()
     torch.cuda.synchronize()
 
-    torch.testing.assert_close(Pibar_indexed[ws:ws + W], Pibar_dense[ws:ws + W])
     torch.testing.assert_close(Pi_indexed, Pi_dense, rtol=2e-5, atol=2e-5)
     torch.testing.assert_close(max_diff_indexed, max_diff_dense, rtol=2e-5, atol=2e-5)

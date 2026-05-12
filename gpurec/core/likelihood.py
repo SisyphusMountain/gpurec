@@ -7,7 +7,7 @@ import torch
 import math
 
 from .terms import gather_E_children
-from .log2_utils import logsumexp2, logaddexp2, _safe_log2_internal as _safe_log2
+from .log2_utils import logsumexp2, _safe_log2_internal as _safe_log2
 from ._helpers import _nvtx_range
 
 NEG_INF = float("-inf")
