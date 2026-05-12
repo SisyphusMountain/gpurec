@@ -48,26 +48,3 @@ def compute_clade_waves(
             waves.append(wlist)
             phases.append(int(ph))
     return waves, phases
-
-
-# ---------------------------------------------------------------------------
-# Stats helper
-# ---------------------------------------------------------------------------
-
-
-def wave_stats(
-    waves: List[List[int]],
-    ccp_helpers: Dict[str, Any],
-) -> List[Dict[str, Any]]:
-    """Return per-wave statistics for verification and tuning."""
-    split_counts: List[int] = ccp_helpers["split_counts"].tolist()
-    stats = []
-    for k, wave_clades in enumerate(waves):
-        counts = [split_counts[c] for c in wave_clades]
-        stats.append({
-            "wave": k,
-            "n_clades": len(wave_clades),
-            "n_splits": sum(counts),
-            "max_splits_per_clade": max(counts) if counts else 0,
-        })
-    return stats

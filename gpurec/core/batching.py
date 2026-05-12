@@ -1,27 +1,6 @@
-import heapq
-import os
 from typing import Any, Dict, List, Tuple
 
 import torch
-
-
-def _reconstruct_split_parents(ccp_helpers):
-    """Reconstruct split_parents_sorted from legacy segment metadata."""
-    seg_parent_ids = ccp_helpers['seg_parent_ids']
-    num_ge2 = int(ccp_helpers['num_segs_ge2'])
-    num_eq1 = int(ccp_helpers['num_segs_eq1'])
-    end_rows_ge2 = int(ccp_helpers['end_rows_ge2'])
-    ptr_ge2 = ccp_helpers['ptr_ge2']
-    N_splits = int(ccp_helpers['N_splits'])
-
-    split_parents = torch.empty(N_splits, dtype=torch.long, device=seg_parent_ids.device)
-    for i in range(num_ge2):
-        start = int(ptr_ge2[i].item())
-        end = int(ptr_ge2[i + 1].item())
-        split_parents[start:end] = seg_parent_ids[i]
-    for i in range(num_eq1):
-        split_parents[end_rows_ge2 + i] = seg_parent_ids[num_ge2 + i]
-    return split_parents
 
 
 def collate_gene_families(
@@ -113,18 +92,9 @@ def collate_gene_families(
         lefts_i = lefts_i + clade_offset
         rights_i = rights_i + clade_offset
 
-        # Build split_parents_sorted for this family (if available, or reconstruct)
-        if "split_parents_sorted" in ccp:
-            sp_sorted_i = ccp["split_parents_sorted"].to(torch.long).cpu()
-        else:
-            # Reconstruct from seg_parent_ids + ptr_ge2
-            sp_sorted_i = torch.empty(N_i, dtype=torch.long)
-            for si in range(num_ge2_i):
-                s_start = int(ptr_ge2_i[si].item())
-                s_end = int(ptr_ge2_i[si + 1].item())
-                sp_sorted_i[s_start:s_end] = seg_parent_ids_i[si]
-            for si in range(num_eq1_i):
-                sp_sorted_i[end_rows_ge2_i + si] = seg_parent_ids_i[num_ge2_i + si]
+        if "split_parents_sorted" not in ccp:
+            raise RuntimeError("preprocessed CCP helpers must include split_parents_sorted")
+        sp_sorted_i = ccp["split_parents_sorted"].to(torch.long).cpu()
 
         # (>=2) rows for this family
         if end_rows_ge2_i > 0:
@@ -332,169 +302,6 @@ def split_phase_waves(
     return out_waves, out_phases
 
 
-def collate_wave_cross(
-    batch_items: List[Dict[str, Any]],
-    family_meta: List[Dict[str, int]],
-    max_wave_size: int = 256,
-) -> Tuple[List[List[int]], List[int]]:
-    """Phased cross-family wave scheduling with priority-queue load balancing.
-
-    Replicates the C++ ``compute_phased_cross_family_wave_stats`` algorithm
-    but returns the actual global clade IDs per wave (not just stats).
-
-    Three phases:
-      Phase 1 (leaves): All leaf clades across families, chunked.
-      Phase 2 (internal): Priority queue (higher split-count first) mixing
-        clades from all families once dependencies are satisfied.
-      Phase 3 (roots): All root clades, chunked.
-
-    Args:
-        batch_items: list of per-family dicts with 'ccp' and 'root_clade_id'
-        family_meta: list of per-family dicts with 'clade_offset' (from collate_gene_families)
-        max_wave_size: maximum number of clades per wave
-
-    Returns:
-        waves: list of lists of globally-offset clade IDs
-        phases: list of phase labels (1, 2, or 3)
-    """
-    n_fam = len(batch_items)
-
-    # Build per-family dependency structures
-    fam_children: List[List[set]] = []   # fam_children[fi][c] = set of child clades
-    fam_parents_of: List[List[List[int]]] = []  # fam_parents_of[fi][c] = parents that depend on c
-    fam_remaining: List[List[int]] = []  # fam_remaining[fi][c] = # children not yet processed
-    fam_split_count: List[List[int]] = []  # fam_split_count[fi][c] = number of splits
-    fam_root: List[int] = []
-    fam_C: List[int] = []
-
-    for fi, item in enumerate(batch_items):
-        ccp = item["ccp"]
-        C_i = int(ccp["C"])
-        N_i = int(ccp["N_splits"])
-        root_i = int(item["root_clade_id"])
-
-        fam_C.append(C_i)
-        fam_root.append(root_i)
-
-        lr = ccp["split_leftrights_sorted"]
-        if hasattr(lr, 'tolist'):
-            lr_list = lr.tolist()
-        else:
-            lr_list = list(lr)
-        lefts = lr_list[:N_i]
-        rights = lr_list[N_i:]
-
-        # Get or reconstruct split_parents
-        if "split_parents_sorted" in ccp:
-            sp = ccp["split_parents_sorted"]
-            sp_list = sp.tolist() if hasattr(sp, 'tolist') else list(sp)
-        else:
-            # Reconstruct
-            num_ge2 = int(ccp["num_segs_ge2"])
-            num_eq1 = int(ccp["num_segs_eq1"])
-            end_rows_ge2 = int(ccp["end_rows_ge2"])
-            ptr_ge2 = ccp["ptr_ge2"]
-            seg_parent_ids = ccp["seg_parent_ids"]
-            sp_list = [0] * N_i
-            for si in range(num_ge2):
-                s_start = int(ptr_ge2[si].item())
-                s_end = int(ptr_ge2[si + 1].item())
-                pid = int(seg_parent_ids[si].item())
-                for j in range(s_start, s_end):
-                    sp_list[j] = pid
-            for si in range(num_eq1):
-                sp_list[end_rows_ge2 + si] = int(seg_parent_ids[num_ge2 + si].item())
-
-        children: List[set] = [set() for _ in range(C_i)]
-        parents_of: List[List[int]] = [[] for _ in range(C_i)]
-        split_count: List[int] = [0] * C_i
-
-        for idx in range(N_i):
-            p = sp_list[idx]
-            l = lefts[idx]
-            r = rights[idx]
-            split_count[p] += 1
-            if l not in children[p]:
-                children[p].add(l)
-                parents_of[l].append(p)
-            if r != l and r not in children[p]:
-                children[p].add(r)
-                parents_of[r].append(p)
-
-        remaining = [len(children[c]) for c in range(C_i)]
-
-        fam_children.append(children)
-        fam_parents_of.append(parents_of)
-        fam_remaining.append(remaining)
-        fam_split_count.append(split_count)
-
-    offsets = [m["clade_offset"] for m in family_meta]
-    waves: List[List[int]] = []
-    phases: List[int] = []
-
-    # Phase 1: leaf clades (no splits, not root)
-    all_leaves: List[Tuple[int, int]] = []  # (family, local_clade)
-    for fi in range(n_fam):
-        for c in range(fam_C[fi]):
-            if c == fam_root[fi]:
-                continue
-            if fam_split_count[fi][c] == 0:
-                all_leaves.append((fi, c))
-
-    for start in range(0, len(all_leaves), max_wave_size):
-        end = min(start + max_wave_size, len(all_leaves))
-        wave = [all_leaves[i][1] + offsets[all_leaves[i][0]]
-                for i in range(start, end)]
-        waves.append(wave)
-        phases.append(1)
-        # Update remaining for parents
-        for i in range(start, end):
-            fi, c = all_leaves[i]
-            for p in fam_parents_of[fi][c]:
-                fam_remaining[fi][p] -= 1
-
-    # Phase 2: internal non-root clades, priority queue
-    # Use max-heap: negate split_count for min-heap → max priority
-    ready: List[Tuple[int, int, int]] = []  # (-split_count, family, clade)
-    for fi in range(n_fam):
-        for c in range(fam_C[fi]):
-            if c == fam_root[fi]:
-                continue
-            if fam_split_count[fi][c] == 0:
-                continue  # leaf, already done
-            if fam_remaining[fi][c] == 0:
-                heapq.heappush(ready, (-fam_split_count[fi][c], fi, c))
-
-    while ready:
-        batch: List[Tuple[int, int]] = []
-        while ready and len(batch) < max_wave_size:
-            _, fi, c = heapq.heappop(ready)
-            batch.append((fi, c))
-
-        wave = [c + offsets[fi] for fi, c in batch]
-        waves.append(wave)
-        phases.append(2)
-
-        # Update parents
-        for fi, c in batch:
-            for p in fam_parents_of[fi][c]:
-                fam_remaining[fi][p] -= 1
-                if fam_remaining[fi][p] == 0:
-                    if p != fam_root[fi]:
-                        heapq.heappush(ready, (-fam_split_count[fi][p], fi, p))
-
-    # Phase 3: root clades
-    all_roots = [(fi, fam_root[fi]) for fi in range(n_fam)]
-    for start in range(0, len(all_roots), max_wave_size):
-        end = min(start + max_wave_size, len(all_roots))
-        wave = [all_roots[i][1] + offsets[all_roots[i][0]]
-                for i in range(start, end)]
-        waves.append(wave)
-        phases.append(3)
-
-    return waves, phases
-
-
 def build_wave_layout(
     waves: List[List[int]],
     phases: List[int],
@@ -539,10 +346,7 @@ def build_wave_layout(
     """
     C = int(ccp_helpers['C'])
     N_splits = int(ccp_helpers['N_splits'])
-    use_int32_split_metadata = (
-        os.environ.get("GPUREC_WAVE_SPLIT_METADATA_INT32", "1") != "0"
-    )
-    if use_int32_split_metadata and C > torch.iinfo(torch.int32).max:
+    if C > torch.iinfo(torch.int32).max:
         raise ValueError(f"wave split metadata requires int32 clade ids, got C={C}")
 
     # --- 2a. Build permutation ---
@@ -568,11 +372,10 @@ def build_wave_layout(
     lefts_new = perm[lefts_orig]
     rights_new = perm[rights_orig]
 
-    split_parents = ccp_helpers.get('split_parents_sorted', None)
-    if split_parents is not None:
-        sp_new = perm[split_parents.to(device=device, dtype=torch.long)]
-    else:
-        sp_new = perm[_reconstruct_split_parents(ccp_helpers).to(device)]
+    if 'split_parents_sorted' not in ccp_helpers:
+        raise RuntimeError("preprocessed CCP helpers must include split_parents_sorted")
+    split_parents = ccp_helpers['split_parents_sorted']
+    sp_new = perm[split_parents.to(device=device, dtype=torch.long)]
 
     leaf_row_new = perm[leaf_row_index.to(device=device, dtype=torch.long)]
     root_ids_new = perm[root_clade_ids.to(device=device, dtype=torch.long)]
@@ -634,7 +437,6 @@ def build_wave_layout(
             reduce_idx = sp_new[wst] - ws  # [n_ws] wave-local clade index
 
             # Sort splits: single-split clades first, then multi-split clades.
-            # This enables using direct copy for eq1 and seg_logsumexp for ge2.
             clade_split_counts = torch.zeros(W, dtype=torch.long, device=device)
             clade_split_counts.scatter_add_(0, reduce_idx,
                                             torch.ones(n_ws, dtype=torch.long, device=device))
@@ -650,7 +452,7 @@ def build_wave_layout(
             n_eq1 = int((per_split_count == 1).sum().item())
             n_ge2_clades = int((clade_split_counts >= 2).sum().item())
 
-            index_dtype = torch.int32 if use_int32_split_metadata else torch.long
+            index_dtype = torch.int32
             sl_index = lefts_new[wst].to(index_dtype).contiguous()
             sr_index = rights_new[wst].to(index_dtype).contiguous()
             reduce_idx_index = reduce_idx.to(index_dtype).contiguous()
@@ -668,8 +470,7 @@ def build_wave_layout(
 
             if n_ge2_clades > 0:
                 # Build CSR pointers for the ge2 portion (splits n_eq1:).
-                # Splits are sorted by parent clade (ascending), so same-parent
-                # splits are contiguous — perfect for seg_logsumexp CSR format.
+                # Splits are sorted by parent clade, so same-parent splits are contiguous.
                 ge2_reduce = reduce_idx[n_eq1:]  # [n_ge2_splits]
                 # Unique parent clades in order of first appearance (= ascending,
                 # since we sorted by clade index)
