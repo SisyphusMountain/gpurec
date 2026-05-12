@@ -93,8 +93,8 @@ def test_chunked_uniform_from_folder_and_adam_step(tmp_path):
         model.clamp_theta_()
     after = float(model.nll().item())
 
-    assert model.batch_summary()["chunks"] == 2
-    assert model.batch_summary()["fixed_iters_E"] == 4
+    assert len(model._state.built_chunks) == 2
+    assert model._state.fixed_iters_E == 4
     assert torch.isfinite(model.theta).all()
     assert after < before
 
@@ -114,7 +114,7 @@ def test_chunked_uniform_chunk_subset_nll_and_gradient(tmp_path):
         use_pruning=False,
     )
 
-    assert model.n_chunks == 2
+    assert len(model._state.built_chunks) == 2
     full_vec = model.nll_per_family()
     chunk0 = model.nll_per_family(chunk_indices=[0])
     chunk1 = model.nll_per_family(chunk_indices=[1])
@@ -146,36 +146,6 @@ def test_chunked_uniform_chunk_subset_nll_and_gradient(tmp_path):
     torch.testing.assert_close(mean_grad * selected, sum_grad, rtol=1e-5, atol=1e-4)
 
 
-def test_chunked_uniform_to_float64_casts_static_state(tmp_path):
-    model = UniformChunkedReconModel.from_folder(
-        DATA_DIR,
-        max_families=3,
-        device="cuda",
-        dtype=torch.float32,
-        theta_init_rates=(0.05, 0.05, 0.05),
-        preprocess_cache_dir=str(tmp_path),
-        family_chunk_size=2,
-        max_wave_size=32768,
-        fixed_iters_Pi=6,
-    )
-    _ = model.nll()
-    assert model._state.warm_E is not None
-
-    model.to(torch.float64)
-
-    assert model.theta.dtype == torch.float64
-    assert model._state.dtype == torch.float64
-    assert model._state.unnorm_row_max.dtype == torch.float64
-    assert model._state.warm_E is None
-    assert model.chunks[0].wave_layout["leaf_col_index"].dtype == torch.long
-
-    loss = model()
-    loss.backward()
-    assert loss.dtype == torch.float64
-    assert model.theta.grad.dtype == torch.float64
-    assert torch.isfinite(model.theta.grad).all()
-
-
 def test_chunked_uniform_accepts_hogenom_unrooted_binary_newick(tmp_path):
     if not HOGENOM_DIR.exists():
         pytest.skip(f"dataset not present: {HOGENOM_DIR}")
@@ -192,7 +162,6 @@ def test_chunked_uniform_accepts_hogenom_unrooted_binary_newick(tmp_path):
         fixed_iters_Pi=6,
     )
 
-    summary = model.batch_summary()
-    assert summary["families"] == 3
-    assert summary["total_clades"] > 0
-    assert summary["total_waves"] > 0
+    assert len(model._state.dataset.families) == 3
+    assert sum(c.spec.clades for c in model._state.built_chunks) > 0
+    assert sum(c.waves for c in model._state.built_chunks) > 0

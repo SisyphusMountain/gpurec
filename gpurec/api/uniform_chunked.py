@@ -80,61 +80,6 @@ class UniformChunkedState:
     warm_E: torch.Tensor | None = None
 
 
-def _apply_tensor_tree(obj: Any, fn) -> Any:
-    if torch.is_tensor(obj):
-        if obj.is_floating_point() or obj.is_complex():
-            return fn(obj)
-        moved = fn(obj)
-        return moved if moved.dtype == obj.dtype else moved.to(dtype=obj.dtype)
-    if isinstance(obj, dict):
-        return {k: _apply_tensor_tree(v, fn) for k, v in obj.items()}
-    if isinstance(obj, list):
-        return [_apply_tensor_tree(v, fn) for v in obj]
-    if isinstance(obj, tuple):
-        return tuple(_apply_tensor_tree(v, fn) for v in obj)
-    return obj
-
-
-def _apply_to_built_chunk(chunk: UniformBuiltChunk, fn) -> UniformBuiltChunk:
-    return UniformBuiltChunk(
-        spec=chunk.spec,
-        wave_layout=_apply_tensor_tree(chunk.wave_layout, fn),
-        waves=chunk.waves,
-        max_wave=chunk.max_wave,
-        split_rows=chunk.split_rows,
-        max_wave_split_rows=chunk.max_wave_split_rows,
-    )
-
-
-def _apply_to_chunked_state(state: UniformChunkedState, fn) -> UniformChunkedState:
-    """Move/cast tensor fields while preserving integer index dtypes."""
-    new_state = UniformChunkedState(
-        dataset=state.dataset,
-        species_helpers=_apply_tensor_tree(state.species_helpers, fn),
-        ancestors_T=_apply_tensor_tree(state.ancestors_T, fn),
-        unnorm_row_max=_apply_tensor_tree(state.unnorm_row_max, fn),
-        built_chunks=[
-            _apply_to_built_chunk(chunk, fn)
-            for chunk in state.built_chunks
-        ],
-        device=state.device,
-        dtype=state.dtype,
-        fixed_iters_Pi=state.fixed_iters_Pi,
-        fixed_iters_E=state.fixed_iters_E,
-        max_iters_E=state.max_iters_E,
-        tol_E=state.tol_E,
-        neumann_terms=state.neumann_terms,
-        use_pruning=state.use_pruning,
-        pruning_threshold=state.pruning_threshold,
-        warm_start_E=state.warm_start_E,
-        profile=state.profile,
-        warm_E=None,
-    )
-    new_state.device = new_state.unnorm_row_max.device
-    new_state.dtype = new_state.unnorm_row_max.dtype
-    return new_state
-
-
 def _set_default_flags() -> None:
     for key, value in UNIFORM_OPTIMIZED_DEFAULT_FLAGS.items():
         os.environ.setdefault(key, value)
@@ -900,55 +845,6 @@ class UniformChunkedReconModel(torch.nn.Module):
                 min=math.log2(min_rate),
                 max=None if max_rate is None else math.log2(max_rate),
             )
-
-    @property
-    def n_families(self) -> int:
-        return len(self._state.dataset.families)
-
-    @property
-    def n_species(self) -> int:
-        return int(self._state.dataset.S)
-
-    @property
-    def chunks(self) -> list[UniformBuiltChunk]:
-        return list(self._state.built_chunks)
-
-    @property
-    def n_chunks(self) -> int:
-        return len(self._state.built_chunks)
-
-    def batch_summary(self) -> dict[str, Any]:
-        chunks = self._state.built_chunks
-        total_clades = sum(c.spec.clades for c in chunks)
-        total_splits = sum(c.spec.splits for c in chunks)
-        return {
-            "families": self.n_families,
-            "species": self.n_species,
-            "chunks": len(chunks),
-            "family_chunk_size": self.family_chunk_size,
-            "max_wave_size": self.max_wave_size,
-            "max_root_wave_size": self.max_root_wave_size,
-            "clade_budget": self.clade_budget,
-            "fixed_iters_E": self._state.fixed_iters_E,
-            "fixed_iters_Pi": self._state.fixed_iters_Pi,
-            "total_clades": total_clades,
-            "total_splits": total_splits,
-            "max_chunk_clades": max((c.spec.clades for c in chunks), default=0),
-            "max_chunk_splits": max((c.spec.splits for c in chunks), default=0),
-            "max_wave": max((c.max_wave for c in chunks), default=0),
-            "total_waves": sum(c.waves for c in chunks),
-            "dtype": str(self._state.dtype).replace("torch.", ""),
-            "device": str(self._state.device),
-            "memory_policy": self.memory_policy,
-        }
-
-    def _apply(self, fn):
-        super()._apply(fn)
-        self._state = _apply_to_chunked_state(self._state, fn)
-        # The original auto policy estimate was dtype-specific.  The already
-        # built chunking remains valid, but the estimate should not be reused.
-        self.memory_policy = None
-        return self
 
 
 __all__ = ["UniformChunkedReconModel", "UniformBuiltChunk", "UniformChunkSpec"]
