@@ -554,7 +554,6 @@ def _forward_chunk(
         dtype=static.dtype,
         fixed_iters=args.fixed_iters,
         return_original=False,
-        need_pibar=True,
         return_root_rows=False,
     )
     loss = compute_log_likelihood(

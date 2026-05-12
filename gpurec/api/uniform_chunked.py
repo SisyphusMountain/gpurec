@@ -485,7 +485,6 @@ def _evaluate_chunked_uniform(
                 dtype=state.dtype,
                 fixed_iters=state.fixed_iters_Pi,
                 return_original=False,
-                need_pibar=need_grad,
                 return_root_rows=not need_grad,
             )
             if need_grad:

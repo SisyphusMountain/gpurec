@@ -517,7 +517,6 @@ class GeneDataset(Dataset):
             fixed_iters=fixed_iters_Pi,
             family_idx=wave_layout.get('family_idx') if self.genewise else None,
             return_original=False,
-            need_pibar=False,
             return_root_rows=True,
         )
 

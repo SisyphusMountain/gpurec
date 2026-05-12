@@ -223,7 +223,6 @@ def _run_forward(
     E_out: dict,
     params: tuple,
     *,
-    need_pibar: bool = True,
     root_rows: bool = False,
 ):
     static = model.static
@@ -242,7 +241,6 @@ def _run_forward(
         dtype=static.dtype,
         fixed_iters=static.fixed_iters_Pi,
         return_original=False,
-        need_pibar=need_pibar,
         return_root_rows=root_rows,
         family_idx=None,
     )
@@ -302,11 +300,11 @@ def test_specieswise_uniform_forward_optimized_matches_reference(data_dir_100, m
     E_out, params = _prepare_forward(model)
 
     _set_reference_env(monkeypatch)
-    ref_nll, ref_out = _run_forward(model, E_out, params, need_pibar=True, root_rows=False)
+    ref_nll, ref_out = _run_forward(model, E_out, params, root_rows=False)
     torch.cuda.synchronize()
 
     _set_optimized_env(monkeypatch)
-    opt_nll, opt_out = _run_forward(model, E_out, params, need_pibar=True, root_rows=False)
+    opt_nll, opt_out = _run_forward(model, E_out, params, root_rows=False)
     torch.cuda.synchronize()
 
     assert torch.allclose(opt_nll, ref_nll, atol=1e-4, rtol=1e-5)

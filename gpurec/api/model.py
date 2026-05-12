@@ -412,7 +412,6 @@ class GeneReconModel(torch.nn.Module):
                 dtype=dtype,
                 fixed_iters=static.fixed_iters_Pi,
                 return_original=False,
-                need_pibar=False,
                 return_root_rows=True,
                 family_idx=(
                     static.wave_layout.get("family_idx") if static.genewise else None
@@ -490,7 +489,6 @@ class GeneReconModel(torch.nn.Module):
             dtype=static.dtype,
             fixed_iters=static.fixed_iters_Pi,
             return_original=original_order,
-            need_pibar=False,
             return_root_rows=False,
             family_idx=(
                 static.wave_layout.get("family_idx") if static.genewise else None

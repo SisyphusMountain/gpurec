@@ -159,7 +159,6 @@ def Pi_wave_forward(
     fixed_iters: int,
     family_idx: torch.Tensor | None = None,
     return_original: bool = True,
-    need_pibar: bool = True,
     return_root_rows: bool = False,
 ):
     """Wave-based Pi forward pass with wave-ordered layout (v2).
@@ -179,14 +178,10 @@ def Pi_wave_forward(
             ping-pong state ends with final Pi rows in ``Pi``.
         family_idx: Long[C] clade→family mapping in wave-ordered space.
                     When provided, parameters are [G, ...] and indexed per-clade.
-        need_pibar: if False, do not return final Pibar rows. In fixed even
-                    uniform ping-pong mode, root-wave final Pibar recomputation
-                    is skipped because no later cross-DTS can consume those rows.
         return_root_rows: if True, gather and return only final root rows as
                           ``Pi_root_rows`` and drop the full wave-ordered Pi
                           reference from the output. This is for inference-only
-                          likelihood callers; backward needs the default full
-                          wave-ordered Pi/Pibar outputs.
+                          likelihood callers and skips saved Pibar state.
 
     Returns:
         dict with 'Pi' (in original clade order when requested),
@@ -240,9 +235,10 @@ def Pi_wave_forward(
         log_pD_family = log_pD
         log_pS_family = log_pS
 
+    return_saved_state = not return_root_rows
     uniform_pibar_row_max = (
         torch.empty((C,), dtype=dtype, device=device)
-        if need_pibar else None
+        if return_saved_state else None
     )
 
     with _nvtx_range("Pi setup species helpers"):
@@ -282,7 +278,7 @@ def Pi_wave_forward(
         wave_consts = (DL_const, SL1_const, SL2_const, Ebar, E, mt_squeezed)
 
     root_clade_ids_for_skip = None
-    if not need_pibar:
+    if not return_saved_state:
         root_clade_ids_for_skip = wave_layout.get('root_clade_ids_cpu')
         if root_clade_ids_for_skip is None:
             root_clade_ids_for_skip = [
@@ -367,6 +363,6 @@ def Pi_wave_forward(
         'clade_species_map': None,
         'iterations': total_iters,
         'Pi_wave_ordered': Pi_wave_ordered,
-        'Pibar_wave_ordered': Pibar if need_pibar else None,
-        'uniform_pibar_row_max': uniform_pibar_row_max if need_pibar else None,
+        'Pibar_wave_ordered': Pibar if return_saved_state else None,
+        'uniform_pibar_row_max': uniform_pibar_row_max if return_saved_state else None,
     }

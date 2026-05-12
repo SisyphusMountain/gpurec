@@ -1792,8 +1792,8 @@ def wave_backward_uniform_fused(
     aw1 = _scratch_view(scratch, "aw1", scratch_shape, device=device, dtype=dtype)
     if aw1 is None:
         aw1 = torch.empty(scratch_shape, device=device, dtype=dtype)
-    need_pibar_denom_scratch = not (accum_enabled and compact_pibar_scratch)
-    if need_pibar_denom_scratch:
+    use_pibar_denom_scratch = not (accum_enabled and compact_pibar_scratch)
+    if use_pibar_denom_scratch:
         aw2 = _scratch_view(scratch, "aw2", scratch_shape, device=device, dtype=dtype)
         if aw2 is None:
             aw2 = torch.empty(scratch_shape, device=device, dtype=dtype)
@@ -1802,7 +1802,7 @@ def wave_backward_uniform_fused(
     aw345 = _scratch_view(scratch, "aw345", scratch_shape, device=device, dtype=dtype)
     if aw345 is None:
         aw345 = torch.empty(scratch_shape, device=device, dtype=dtype)
-    if need_pibar_denom_scratch:
+    if use_pibar_denom_scratch:
         aw3 = _scratch_view(scratch, "aw3", scratch_shape, device=device, dtype=dtype)
         if aw3 is None:
             aw3 = torch.empty(scratch_shape, device=device, dtype=dtype)
