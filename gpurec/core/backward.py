@@ -1,5 +1,4 @@
 """Backward pass: Pi_wave_backward and helpers (VJP / Neumann / GMRES)."""
-import os
 
 import torch
 
@@ -451,8 +450,6 @@ def Pi_wave_backward(
         and dtype in _SUPPORTED_BACKWARD_FLOAT_DTYPES
         and device.type == 'cuda'
     )
-    dts_pibar_ud_skip_zero_sides_enabled = True
-    dts_pibar_ud_compact_levels_enabled = True
     kernelized_active_mask_enabled = (
         _HAS_FUSED_BACKWARD
         and device.type == 'cuda'
@@ -462,21 +459,10 @@ def Pi_wave_backward(
         device.type == 'cuda'
         and dtype in _SUPPORTED_BACKWARD_FLOAT_DTYPES
     )
-    fused_dts_backward_accum_enabled = True
-    fused_uniform_backward_enabled = True
-    fused_uniform_backward_view_rhs = True
-    hybrid_row_pruning_enabled = (
-        _HAS_FUSED_BACKWARD
-        and device.type == 'cuda'
-        and dtype in _SUPPORTED_BACKWARD_FLOAT_DTYPES
-    )
-    hybrid_prune_self = True
-    hybrid_prune_splits = True
     wave_topology_int32_enabled = (
         device.type == 'cuda'
         and dtype in _SUPPORTED_BACKWARD_FLOAT_DTYPES
     )
-    dts_grad_mt_two_stage_enabled = True
     dts_grad_mt_two_stage_tile_splits = 128
     _compute_dts_cross_kernelized = None
     if kernelized_backward_dts_enabled:
@@ -527,15 +513,10 @@ def Pi_wave_backward(
         if (
             ancestor_cols is None
             or level_parents is None
-            or (
-                dts_pibar_ud_compact_levels_enabled
-                and (
-                    compact_level_ptr is None
-                    or compact_level_parents is None
-                    or compact_level_child1 is None
-                    or compact_level_child2 is None
-                )
-            )
+            or compact_level_ptr is None
+            or compact_level_parents is None
+            or compact_level_child1 is None
+            or compact_level_child2 is None
         ):
             if p_cpu is None or c_cpu is None or mask_c1 is None:
                 sp_P_idx = species_helpers['s_P_indexes']
@@ -573,13 +554,10 @@ def Pi_wave_backward(
             max_ancestor_depth = int(max_ancestor_depth)
 
             need_compact_levels = (
-                dts_pibar_ud_compact_levels_enabled
-                and (
-                    compact_level_ptr is None
-                    or compact_level_parents is None
-                    or compact_level_child1 is None
-                    or compact_level_child2 is None
-                )
+                compact_level_ptr is None
+                or compact_level_parents is None
+                or compact_level_child1 is None
+                or compact_level_child2 is None
             )
             if level_parents is None or need_compact_levels:
                 child1_values = sp_child1_cpu.tolist()
@@ -733,16 +711,8 @@ def Pi_wave_backward(
         log_pD_shared = log_pS_shared = None
         DL_shared = SL1_shared = SL2_shared = None
 
-    fused_genewise_self_loop_env = os.environ.get(
-        "GPUREC_FUSED_GENEWISE_BACKWARD_SELF_LOOP",
-        os.environ.get("GPUREC_FUSED_GENEWISE_BACKWARD", "1"),
-    ).strip().lower()
-    fused_genewise_self_loop_requested = fused_genewise_self_loop_env not in (
-        "", "0", "false", "off", "no"
-    )
     family_indexed_self_loop_supported = (
-        fused_genewise_self_loop_requested
-        and _family_species_shape_ok(E_family)
+        _family_species_shape_ok(E_family)
         and _family_species_shape_ok(Ebar_family)
         and _family_species_shape_ok(E_s1_family)
         and _family_species_shape_ok(E_s2_family)
@@ -751,104 +721,14 @@ def Pi_wave_backward(
         and _family_species_shape_ok(log_pS_family)
     )
     can_use_fused_uniform_backward = (
-        fused_uniform_backward_enabled
-        and _HAS_FUSED_BACKWARD
+        _HAS_FUSED_BACKWARD
         and (_auto_wrapped or family_indexed_self_loop_supported)
         and dtype in _SUPPORTED_BACKWARD_FLOAT_DTYPES
         and device.type == 'cuda'
         and S > 256
     )
-    require_optimized_genewise_backward = (
-        os.environ.get("GPUREC_REQUIRE_OPTIMIZED_GENEWISE_BACKWARD", "0") != "0"
-        and not _auto_wrapped
-    )
-    if require_optimized_genewise_backward and not can_use_fused_uniform_backward:
-        raise RuntimeError(
-            "GPUREC_REQUIRE_OPTIMIZED_GENEWISE_BACKWARD=1 requested the "
-            "optimized genewise uniform backward, but the fused self-loop gate "
-            "is inactive. Check tensor shapes, dtype, device, and S > 256."
-        )
-    scratch_pool_requested = (
-        os.environ.get("GPUREC_BACKWARD_SCRATCH_POOL", "0") != "0"
-    )
-    scratch_pool_scope_env = os.environ.get(
-        "GPUREC_BACKWARD_SCRATCH_POOL_SCOPES",
-        os.environ.get("GPUREC_BACKWARD_SCRATCH_POOL_SCOPE", "all"),
-    ).strip().lower()
-    if scratch_pool_scope_env in ("", "1", "true", "yes", "on"):
-        scratch_pool_scope_env = "all"
-    scratch_pool_scopes = {
-        scope.strip()
-        for scope in scratch_pool_scope_env.replace(";", ",").split(",")
-        if scope.strip()
-    }
-    scratch_pool_all_scopes = (
-        "all" in scratch_pool_scopes or "*" in scratch_pool_scopes
-    )
 
-    def _scratch_scope_enabled(*names):
-        return scratch_pool_all_scopes or any(name in scratch_pool_scopes for name in names)
-
-    scratch_pool_enabled = (
-        scratch_pool_requested
-        and can_use_fused_uniform_backward
-        and _auto_wrapped
-        and "none" not in scratch_pool_scopes
-    )
     max_wave_W = max((int(meta.get('W', 0)) for meta in wave_metas), default=0)
-    scratch_pool = None
-    if scratch_pool_enabled:
-        max_dts_splits = max(
-            (
-                int(meta['sl'].numel())
-                for meta in wave_metas
-                if meta.get('has_splits') and torch.is_tensor(meta.get('sl'))
-            ),
-            default=0,
-        )
-        scratch_pool = {}
-        if max_wave_W > 0 and _scratch_scope_enabled("self", "wave", "self_loop"):
-            scratch_pool["wave"] = {
-                name: torch.empty((max_wave_W, S), device=device, dtype=dtype)
-                for name in (
-                    "v_k",
-                    "aw0",
-                    "aw1",
-                    "aw345",
-                    "aw4",
-                    "spec_buf",
-                    "term_buf",
-                )
-            }
-            pibar_corr_dtype = torch.float32 if dtype == torch.bfloat16 else dtype
-            scratch_pool["wave"]["pibar_corr"] = torch.empty(
-                (max_wave_W, S), device=device, dtype=pibar_corr_dtype
-            )
-        dts_scratch = {}
-        if max_dts_splits > 0 and _scratch_scope_enabled("dts", "dts_ud", "pibar_ud"):
-            dts_scratch["pibar_ud"] = torch.empty(
-                (2 * max_dts_splits, S), device=device, dtype=dtype
-            )
-            dts_scratch["pibar_A"] = torch.empty(
-                (2 * max_dts_splits,), device=device, dtype=dtype
-            )
-            dts_scratch["pibar_side_active"] = torch.empty(
-                (2 * max_dts_splits,), device=device, dtype=torch.bool
-            )
-        if (
-            max_dts_splits > 0
-            and dts_grad_mt_two_stage_enabled
-            and _scratch_scope_enabled("dts", "grad_mt", "dts_grad_mt")
-        ):
-            mt_tile_splits = max(1, int(dts_grad_mt_two_stage_tile_splits))
-            max_grad_mt_tiles = (max_dts_splits + mt_tile_splits - 1) // mt_tile_splits
-            dts_scratch["grad_mt_partial"] = torch.empty(
-                (max_grad_mt_tiles, S), device=device, dtype=dtype
-            )
-        if dts_scratch:
-            scratch_pool["dts"] = dts_scratch
-        if not scratch_pool:
-            scratch_pool = None
 
     DL_family = (1.0 + log_pD_family + E_family).contiguous()
     SL1_family = (log_pS_family + E_s2_family).contiguous()
@@ -882,18 +762,10 @@ def Pi_wave_backward(
     uniform_leaf_logp = None
     if use_uniform_leaf_index:
         if _auto_wrapped:
-            use_scalar_leaf_logp = (
-                os.environ.get("GPUREC_SCALAR_LEAF_LOGP", "0") != "0"
-                and log_pS_shared.ndim == 0
-            )
             uniform_leaf_logp = (
-                log_pS_shared.contiguous()
-                if use_scalar_leaf_logp
-                else (
-                    log_pS_shared.expand(S).contiguous()
-                    if log_pS_shared.ndim == 0
-                    else log_pS_shared.contiguous()
-                )
+                log_pS_shared.expand(S).contiguous()
+                if log_pS_shared.ndim == 0
+                else log_pS_shared.contiguous()
             )
         else:
             uniform_leaf_logp = log_pS_family
@@ -920,12 +792,6 @@ def Pi_wave_backward(
         and device.type == "cuda"
         and dtype in (torch.float32, torch.float64)
         and self_loop_2d_memory_ok
-    )
-    no_cpu_pruning = (
-        os.environ.get("GPUREC_BACKWARD_NO_CPU_PRUNING", "0") != "0"
-    )
-    device_pruning_requested = (
-        os.environ.get("GPUREC_DEVICE_PRUNING", "0") != "0"
     )
 
     if wave_topology_int32_enabled:
@@ -957,33 +823,8 @@ def Pi_wave_backward(
         sp_child1_wave = sp_child1
         sp_child2_wave = sp_child2
         leaf_species_index_wave = leaf_species_index
-    dense_leaf_mask_from_index = (
-        os.environ.get("GPUREC_DENSE_LEAF_MASK_FROM_INDEX", "0") != "0"
-        and leaf_species_index is not None
-        and not (can_use_fused_uniform_backward and use_uniform_leaf_index)
-    )
-    leaf_species_lanes = (
-        torch.arange(S, device=device)
-        if dense_leaf_mask_from_index else None
-    )
-    leaf_zero = (
-        torch.tensor(0.0, device=device, dtype=dtype)
-        if dense_leaf_mask_from_index else None
-    )
-    leaf_neg_inf = (
-        torch.tensor(NEG_INF, device=device, dtype=dtype)
-        if dense_leaf_mask_from_index else None
-    )
-
     def _get_leaf_mask(ws, we):
         W = we - ws
-        if dense_leaf_mask_from_index:
-            return torch.where(
-                leaf_species_index[ws:we].unsqueeze(1) == leaf_species_lanes.unsqueeze(0),
-                leaf_zero,
-                leaf_neg_inf,
-            )
-
         lwt = torch.full((W, S), NEG_INF, device=device, dtype=dtype)
         mask = (leaf_row_index >= ws) & (leaf_row_index < we)
         if mask.any():
@@ -1000,10 +841,6 @@ def Pi_wave_backward(
     n_waves_skipped = 0
     n_clades_total = C
     n_clades_skipped = 0
-    device_pruning_clades_total = 0
-    device_pruning_waves_total = 0
-    device_pruning_active_counts = []
-    device_pruning_wave_active_flags = []
 
     accumulated_rhs = torch.zeros(C, S, device=device, dtype=dtype)
     if torch.is_tensor(root_clade_ids_perm):
@@ -1055,62 +892,29 @@ def Pi_wave_backward(
         W = meta['W']
 
         use_fused = can_use_fused_uniform_backward
-        rhs_slice = accumulated_rhs[ws:we]
         # The fused uniform kernel treats rhs as read-only, and this wave's
         # later cross-DTS/Pibar adjoints accumulate into child rows.
-        rhs_k = (
-            rhs_slice
-            if (use_fused and fused_uniform_backward_view_rhs)
-            else rhs_slice.clone()
-        )
-        no_cpu_pruning_wave = no_cpu_pruning and use_fused
-        device_pruning_wave = device_pruning_requested and use_fused
-        kernel_pruning_wave = no_cpu_pruning_wave or device_pruning_wave
-        active_mask = None
+        rhs_k = accumulated_rhs[ws:we]
+        active_mask = _compute_active_mask(rhs_k)
+        wave_active = bool(active_mask.any())
+        if not wave_active:
+            n_waves_skipped += 1
+            n_clades_skipped += W
+            continue
+
         active_mask_for_dts_forward = None
         active_mask_for_wave_kernel = None
         active_mask_for_split_kernels = None
 
-        if kernel_pruning_wave:
-            if use_pruning or device_pruning_wave:
-                active_mask = _compute_active_mask(rhs_k)
-            active_mask_for_existing_policy = active_mask is not None
-            if active_mask_for_existing_policy:
-                active_mask = active_mask.contiguous()
-                active_mask_for_dts_forward = active_mask
-                active_mask_for_wave_kernel = active_mask
-                active_mask_for_split_kernels = active_mask
-            if device_pruning_wave:
-                device_pruning_clades_total += W
-                device_pruning_waves_total += 1
-                device_pruning_active_counts.append(active_mask.sum())
-                device_pruning_wave_active_flags.append(active_mask.any())
+        if use_fused:
+            active_mask = active_mask.contiguous()
+            active_mask_for_dts_forward = active_mask
+            active_mask_for_wave_kernel = active_mask
+            active_mask_for_split_kernels = active_mask
             n_active = W
-            use_compact = False
-            active_idx = None
-            rhs_active = rhs_k
         else:
-            active_mask = _compute_active_mask(rhs_k)
-            wave_active = bool(active_mask.any())
-
-            if not wave_active:
-                n_waves_skipped += 1
-                n_clades_skipped += W
-                continue
-
-            if use_fused:
-                apply_hybrid_row_pruning = hybrid_row_pruning_enabled
-                if apply_hybrid_row_pruning:
-                    active_mask = active_mask.contiguous()
-                    if hybrid_prune_self:
-                        active_mask_for_dts_forward = active_mask
-                        active_mask_for_wave_kernel = active_mask
-                    if hybrid_prune_splits:
-                        active_mask_for_split_kernels = active_mask
-                n_active = W
-            else:
-                n_active = int(active_mask.sum().item())
-                n_clades_skipped += (W - n_active)
+            n_active = int(active_mask.sum().item())
+            n_clades_skipped += (W - n_active)
 
         Pi_W_star = Pi_star_wave[ws:we].detach()
 
@@ -1130,11 +934,6 @@ def Pi_wave_backward(
                         family_offset=0 if _auto_wrapped else ws,
                     )
                 else:
-                    if require_optimized_genewise_backward:
-                        raise RuntimeError(
-                            "Optimized genewise backward reached the generic "
-                            "PyTorch DTS forward-recompute fallback."
-                        )
                     dts_r = _dts_cross_differentiable(
                         Pi_star_wave.detach(), Pibar_star_wave.detach(), meta,
                         sp_child1, sp_child2, log_pD_dts, log_pS_dts, S, device, dtype,
@@ -1147,7 +946,7 @@ def Pi_wave_backward(
             ws, we, family_indexed=use_family_indexed_self_loop
         )
 
-        if not kernel_pruning_wave and not use_fused:
+        if not use_fused:
             use_compact = (n_active < W)
             if use_compact:
                 active_idx = active_mask.nonzero(as_tuple=True)[0]
@@ -1155,7 +954,7 @@ def Pi_wave_backward(
             else:
                 active_idx = None
                 rhs_active = rhs_k
-        elif not kernel_pruning_wave:
+        else:
             use_compact = False
             active_idx = None
             rhs_active = rhs_k
@@ -1218,7 +1017,7 @@ def Pi_wave_backward(
                 max_ancestor_depth=max_ancestor_depth,
                 pibar_row_max=forward_pibar_row_max,
                 skip_inactive_zero_stores=False,
-                scratch=scratch_pool.get("wave") if scratch_pool is not None else None,
+                scratch=None,
                 family_idx=family_idx if use_family_indexed_self_loop else None,
                 family_indexed_consts=use_family_indexed_self_loop,
                 compact_level_ptr=compact_level_ptr,
@@ -1237,11 +1036,6 @@ def Pi_wave_backward(
                 _scatter_accum(grad_mt, aw2)
 
         else:
-            if require_optimized_genewise_backward:
-                raise RuntimeError(
-                    "Optimized genewise backward reached the generic self-loop "
-                    "VJP/GMRES fallback."
-                )
             Pibar_W_star = Pibar_star_wave[ws:we]
             ingredients = _self_loop_vjp_precompute(
                 Pi_W_star, Pibar_W_star, dts_r,
@@ -1307,13 +1101,11 @@ def Pi_wave_backward(
             reduce_idx = meta['reduce_idx']
             n_ws = sl.shape[0]
 
-            used_fused_pibar_vjp = False
-            used_fused_direct_pi_accum = False
-            used_dts_mt_reduction_accum = False
-            used_dts_pibar_ud_fusion = False
+            use_fused_pibar_vjp = False
             pibar_side_active = None
+            pibar_ud_fusion_match = False
 
-            if use_fused and fused_dts_backward_accum_enabled:
+            if use_fused:
                 if _auto_wrapped:
                     dts_log_pD = log_pD_shared
                     dts_log_pS = log_pS_shared
@@ -1336,8 +1128,6 @@ def Pi_wave_backward(
                     and forward_pibar_row_max is not None
                     and torch.is_tensor(dts_mt)
                 )
-                used_dts_mt_reduction_accum = True
-                used_dts_pibar_ud_fusion = pibar_ud_fusion_match
                 dts_accum_result = dts_cross_backward_accum_fused(
                     Pi_star_wave, Pibar_star_wave, v_k, ws,
                     sl, sr, reduce_idx, wlsp,
@@ -1351,16 +1141,12 @@ def Pi_wave_backward(
                     accum_param_reductions=True,
                     accum_mt_reduction=True,
                     output_pibar_ud=pibar_ud_fusion_match,
-                    output_pibar_side_active=(
-                        pibar_ud_fusion_match
-                        and dts_pibar_ud_skip_zero_sides_enabled
-                    ),
+                    output_pibar_side_active=pibar_ud_fusion_match,
                     pibar_side_threshold=0.0,
                     mt_squeezed=dts_mt,
                     pibar_row_max=forward_pibar_row_max,
                     grad_mt_two_stage=(
-                        dts_grad_mt_two_stage_enabled
-                        and pibar_ud_fusion_match
+                        pibar_ud_fusion_match
                         and dts_grad_mt.ndim == 1
                         and int(dts_grad_mt.numel()) == S
                     ),
@@ -1368,31 +1154,17 @@ def Pi_wave_backward(
                         dts_grad_mt_two_stage_tile_splits
                     ),
                     skip_inactive_pibar_output_zero=False,
-                    scratch=(
-                        scratch_pool.get("dts")
-                        if scratch_pool is not None
-                        else None
-                    ),
+                    scratch=None,
                     family_idx=dts_family_idx,
                 )
-                if (
-                    pibar_ud_fusion_match
-                    and dts_pibar_ud_skip_zero_sides_enabled
-                ):
+                if pibar_ud_fusion_match:
                     (grad_Pibar_l, grad_Pibar_r, pibar_side_active,
                      param_pD, param_pS) = dts_accum_result
                 else:
                     (grad_Pibar_l, grad_Pibar_r,
                      param_pD, param_pS) = dts_accum_result
-                used_fused_direct_pi_accum = True
-                grad_Pi_l = grad_Pi_r = None
 
             else:
-                if require_optimized_genewise_backward:
-                    raise RuntimeError(
-                        "Optimized genewise backward reached the generic "
-                        "PyTorch DTS backward accumulation fallback."
-                    )
                 sl_long = sl.long()
                 sr_long = sr.long()
                 reduce_idx_long = reduce_idx.long()
@@ -1471,15 +1243,12 @@ def Pi_wave_backward(
                     grad_Pi_r.scatter_add_(1, idx2.unsqueeze(0).expand(n_ws, -1), grad_DTS_5[3][:, valid2].to(dtype=grad_Pi_r.dtype))
                     grad_Pi_l.scatter_add_(1, idx2.unsqueeze(0).expand(n_ws, -1), grad_DTS_5[4][:, valid2].to(dtype=grad_Pi_l.dtype))
 
-            if not used_fused_direct_pi_accum:
-                sl_long = sl.long()
-                sr_long = sr.long()
                 accumulated_rhs.index_add_(0, sl_long, grad_Pi_l)
                 accumulated_rhs.index_add_(0, sr_long, grad_Pi_r)
 
             if (
                 use_fused
-                and used_dts_pibar_ud_fusion
+                and pibar_ud_fusion_match
                 and fused_cross_pibar_vjp_enabled
                 and level_parents is not None
             ):
@@ -1497,38 +1266,17 @@ def Pi_wave_backward(
                     active_mask=active_mask_for_split_kernels,
                     reduce_idx=reduce_idx,
                     pibar_row_max=forward_pibar_row_max,
-                    skip_zero_sides=dts_pibar_ud_skip_zero_sides_enabled,
+                    skip_zero_sides=True,
                     side_active=pibar_side_active,
-                    compact_level_ptr=(
-                        compact_level_ptr
-                        if dts_pibar_ud_compact_levels_enabled
-                        else None
-                    ),
-                    compact_level_parents=(
-                        compact_level_parents
-                        if dts_pibar_ud_compact_levels_enabled
-                        else None
-                    ),
-                    compact_level_child1=(
-                        compact_level_child1
-                        if dts_pibar_ud_compact_levels_enabled
-                        else None
-                    ),
-                    compact_level_child2=(
-                        compact_level_child2
-                        if dts_pibar_ud_compact_levels_enabled
-                        else None
-                    ),
+                    compact_level_ptr=compact_level_ptr,
+                    compact_level_parents=compact_level_parents,
+                    compact_level_child1=compact_level_child1,
+                    compact_level_child2=compact_level_child2,
                     side_active_threshold=0.0,
                 )
-                used_fused_pibar_vjp = True
+                use_fused_pibar_vjp = True
 
-            if not used_fused_pibar_vjp:
-                if require_optimized_genewise_backward:
-                    raise RuntimeError(
-                        "Optimized genewise backward reached the generic "
-                        "cross-Pibar VJP fallback."
-                    )
+            if not use_fused_pibar_vjp:
                 all_children = torch.cat([sl.long(), sr.long()])
                 all_pibar_grad = torch.cat([grad_Pibar_l, grad_Pibar_r])
 
@@ -1553,12 +1301,6 @@ def Pi_wave_backward(
                     pi_from_pibar = p_prime * (A - correction)
 
                     accumulated_rhs.index_add_(0, nz_children, pi_from_pibar)
-
-    if device_pruning_active_counts:
-        n_device_active = int(torch.stack(device_pruning_active_counts).sum().item())
-        n_device_waves_active = int(torch.stack(device_pruning_wave_active_flags).sum().item())
-        n_clades_skipped += device_pruning_clades_total - n_device_active
-        n_waves_skipped += device_pruning_waves_total - n_device_waves_active
 
     result = {
         'v_Pi': accumulated_rhs,
