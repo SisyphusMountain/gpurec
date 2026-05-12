@@ -28,7 +28,6 @@ def E_step(
     log_pS,
     log_pD,
     log_pL,
-    transfer_mat,
     max_transfer_mat,
     ancestors_T=None,
 ):
@@ -97,7 +96,6 @@ def E_fixed_point(species_helpers,
                           log_pS,
                           log_pD,
                           log_pL,
-                          transfer_mat,
                           max_transfer_mat,
                           max_iters,
                           tolerance,
@@ -110,8 +108,8 @@ def E_fixed_point(species_helpers,
 
     # Determine batch size from parameters if present
     N = None
-    if isinstance(transfer_mat, torch.Tensor) and transfer_mat.ndim == 3:
-        N = transfer_mat.shape[0]
+    if isinstance(max_transfer_mat, torch.Tensor) and max_transfer_mat.ndim >= 2:
+        N = max_transfer_mat.shape[0]
     elif isinstance(log_pS, torch.Tensor) and log_pS.ndim == 2:
         N = log_pS.shape[0]
     # If parameters are per-gene scalars (shape [N]) in the genewise/non-specieswise case,
@@ -146,7 +144,6 @@ def E_fixed_point(species_helpers,
                     log_pS=log_pS,
                     log_pD=log_pD,
                     log_pL=log_pL,
-                    transfer_mat=transfer_mat,
                     max_transfer_mat=max_transfer_mat,
                     ancestors_T=ancestors_T,
                 )

@@ -204,7 +204,6 @@ def _prepare_forward(model: GeneReconModel):
         log_pS=log_pS,
         log_pD=log_pD,
         log_pL=log_pL,
-        transfer_mat=transfer_mat,
         max_transfer_mat=max_transfer_vec,
         max_iters=static.max_iters_E,
         tolerance=static.tol_E,

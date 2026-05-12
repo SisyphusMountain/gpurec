@@ -167,7 +167,6 @@ class _GeneReconFunction(torch.autograd.Function):
                     log_pS=log_pS,
                     log_pD=log_pD,
                     log_pL=log_pL,
-                    transfer_mat=transfer_mat,
                     max_transfer_mat=max_transfer_vec,
                     max_iters=e_max_iters,
                     tolerance=e_tolerance,
