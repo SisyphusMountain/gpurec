@@ -91,7 +91,7 @@ def Pi_wave_forward(
 
     Returns:
         dict with 'Pi' (in original clade order when requested),
-        'Pi_root_rows' when requested, 'clade_species_map', and 'iterations'
+        'Pi_root_rows' when requested.
     """
     ccp_helpers = wave_layout['ccp_helpers']
     leaf_row_index = wave_layout['leaf_row_index']
@@ -199,16 +199,12 @@ def Pi_wave_forward(
                 roots_in_wave += 1
         return roots_in_wave == W
 
-    total_iters = 0
-
     def _run_wave_self_loop(meta, dts_r, leaf_wt, DL_w, SL1_w, SL2_w,
                             Ebar_w, E_w, mt_w):
-        nonlocal total_iters
         ws = meta['start']
         we = meta['end']
         W = meta['W']
         for local_iter in range(fixed_iters):
-            total_iters += 1
             pi_in = Pi if (local_iter % 2 == 0) else Pibar
             pi_out = Pibar if (local_iter % 2 == 0) else Pi
             wave_step_uniform_fused_into(
@@ -265,8 +261,6 @@ def Pi_wave_forward(
     return {
         'Pi': Pi_orig,
         'Pi_root_rows': Pi_root_rows,
-        'clade_species_map': None,
-        'iterations': total_iters,
         'Pi_wave_ordered': Pi_wave_ordered,
         'Pibar_wave_ordered': Pibar if return_saved_state else None,
         'uniform_pibar_row_max': uniform_pibar_row_max if return_saved_state else None,

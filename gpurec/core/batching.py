@@ -334,14 +334,11 @@ def build_wave_layout(
     Returns:
         Dict with:
           'perm': Long[C] — original-to-new mapping
-          'inv_perm': Long[C] — new-to-original mapping
           'ccp_helpers': remapped CCP dict (all clade IDs in new space)
           'leaf_row_index': remapped leaf row indices
           'leaf_col_index': unchanged leaf col indices
           'root_clade_ids': remapped root clade IDs
-          'wave_starts': Long[K+1] — start/end indices for each wave
           'wave_metas': list of per-wave metadata dicts
-          'phases': list of phase labels
           'family_idx': Long[C] clade→family (only if family_clade_counts provided)
     """
     C = int(ccp_helpers['C'])
@@ -363,7 +360,6 @@ def build_wave_layout(
     inv_perm = torch.tensor(all_clades, dtype=torch.long, device=device)
     perm = torch.empty(C, dtype=torch.long, device=device)
     perm[inv_perm] = torch.arange(C, dtype=torch.long, device=device)
-    wave_starts = torch.tensor(wave_starts_list, dtype=torch.long, device=device)
 
     # --- 2b. Remap all clade-index tensors (fully vectorized) ---
     split_lr = ccp_helpers['split_leftrights_sorted'].to(device=device, dtype=torch.long)
@@ -485,30 +481,8 @@ def build_wave_layout(
 
         wave_metas.append(meta)
 
-    dts_ready_after: List[int] = []
-    dts_overlap_gap: List[int] = []
-    for wi, meta in enumerate(wave_metas):
-        if meta.get('has_splits', False):
-            sl_cpu = meta['sl'].detach().cpu().long()
-            sr_cpu = meta['sr'].detach().cpu().long()
-            left_child_waves = torch.searchsorted(wave_starts_cpu[1:], sl_cpu, right=True)
-            right_child_waves = torch.searchsorted(wave_starts_cpu[1:], sr_cpu, right=True)
-            ready_after = int(torch.maximum(left_child_waves, right_child_waves).max().item())
-            if ready_after >= wi:
-                # The wave layout is expected to be topological; keep the value
-                # conservative if a future scheduler relaxes that invariant.
-                ready_after = wi - 1
-        else:
-            ready_after = -1
-        gap = max(0, wi - ready_after - 1) if ready_after >= 0 else 0
-        meta['dts_ready_after'] = ready_after
-        meta['dts_overlap_gap'] = gap
-        dts_ready_after.append(ready_after)
-        dts_overlap_gap.append(gap)
-
     result = {
         'perm': perm,
-        'inv_perm': inv_perm,
         'ccp_helpers': {
             'C': C,
             'N_splits': N_splits,
@@ -518,12 +492,7 @@ def build_wave_layout(
         'leaf_species_index': leaf_species_index,
         'root_clade_ids': root_ids_new,
         'root_clade_ids_cpu': root_ids_new_cpu,
-        'original_root_clade_ids': root_clade_ids.to(device=device, dtype=torch.long),
-        'wave_starts': wave_starts,
         'wave_metas': wave_metas,
-        'dts_ready_after': dts_ready_after,
-        'dts_overlap_gap': dts_overlap_gap,
-        'phases': phases,
     }
 
     # Build clade→family mapping in wave-ordered space

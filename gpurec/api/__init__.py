@@ -5,7 +5,7 @@ Public exports:
     ReconStaticState — opaque container holding the precomputed wave layout
         and other static state shared across forward calls.
 """
-from .autograd import ReconStaticState, _GeneReconFunction
+from .autograd import ReconStaticState
 from .model import GeneReconModel
 from .uniform_chunked import UniformChunkedReconModel
 
