@@ -15,7 +15,7 @@ convention and returns NLL from ``forward()``, so users write
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field, fields
+from dataclasses import dataclass
 import os
 from typing import Any, Optional
 
@@ -37,8 +37,7 @@ class ReconStaticState:
     """Container for non-differentiable state shared across ``forward()`` calls.
 
     Built once by :class:`gpurec.api.model.GeneReconModel` from a
-    :class:`GeneDataset`. Mutated only via ``warm_E`` (warm start cache) and
-    via ``_apply_to_static`` when the parent module is moved (``.to``).
+    :class:`GeneDataset`. Mutated only via ``warm_E`` (warm start cache).
     """
 
     device: torch.device
@@ -65,49 +64,6 @@ class ReconStaticState:
 
     # Warm start cache, mutated across calls
     warm_E: Optional[torch.Tensor] = None
-
-
-def _apply_tensor_tree(obj: Any, fn) -> Any:
-    """Recursively apply ``fn`` to every Tensor inside dicts / lists / tuples.
-
-    Mirrors :meth:`gpurec.core.model.GeneDataset._move_tensor` semantics:
-    floating-point tensors get the full ``fn`` (which may change dtype),
-    integer tensors only get the device portion via a stripped-dtype call.
-    """
-    if torch.is_tensor(obj):
-        if obj.is_floating_point():
-            return fn(obj)
-        # For Long/Int index tensors, fn() may try to cast dtype, which would
-        # break indexing. We replicate the existing pattern: only move device.
-        moved = fn(obj)
-        if moved.dtype != obj.dtype:
-            moved = moved.to(dtype=obj.dtype)
-        return moved
-    if isinstance(obj, dict):
-        return {k: _apply_tensor_tree(v, fn) for k, v in obj.items()}
-    if isinstance(obj, list):
-        return [_apply_tensor_tree(v, fn) for v in obj]
-    if isinstance(obj, tuple):
-        return tuple(_apply_tensor_tree(v, fn) for v in obj)
-    return obj
-
-
-def _apply_to_static(static: ReconStaticState, fn) -> ReconStaticState:
-    """Walk a ``ReconStaticState`` and apply ``fn`` to every tensor field.
-
-    Returns a new dataclass instance; the original is left untouched. Updates
-    ``device``/``dtype`` to match the post-``fn`` state of ``unnorm_row_max``.
-    """
-    updated: dict[str, Any] = {}
-    for f in fields(static):
-        val = getattr(static, f.name)
-        updated[f.name] = _apply_tensor_tree(val, fn)
-    new = ReconStaticState(**updated)
-    # Sync device/dtype to whatever fn produced
-    probe = new.unnorm_row_max
-    new.device = probe.device
-    new.dtype = probe.dtype
-    return new
 
 
 def _extract_parameters(theta: torch.Tensor, static: ReconStaticState):

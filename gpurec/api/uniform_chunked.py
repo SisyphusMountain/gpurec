@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import math
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -78,7 +78,6 @@ class UniformChunkedState:
     warm_start_E: bool = True
     profile: bool = False
     warm_E: torch.Tensor | None = None
-    last_stats: dict[str, Any] = field(default_factory=dict)
 
 
 def _apply_tensor_tree(obj: Any, fn) -> Any:
@@ -130,7 +129,6 @@ def _apply_to_chunked_state(state: UniformChunkedState, fn) -> UniformChunkedSta
         warm_start_E=state.warm_start_E,
         profile=state.profile,
         warm_E=None,
-        last_stats={},
     )
     new_state.device = new_state.unnorm_row_max.device
     new_state.dtype = new_state.unnorm_row_max.dtype
@@ -616,7 +614,6 @@ class _UniformChunkedFunction(torch.autograd.Function):
             )
         if grad_theta is None:
             raise RuntimeError("internal error: missing chunked uniform gradient")
-        state.last_stats = stats
         ctx.save_for_backward(grad_theta.detach().to(device=theta.device, dtype=theta.dtype))
         return loss.to(device=theta.device, dtype=theta.dtype)
 
@@ -822,7 +819,6 @@ class UniformChunkedReconModel(torch.nn.Module):
             need_grad=False,
             chunk_indices=chunk_indices,
         )
-        self._state.last_stats = stats
         return loss
 
     @torch.no_grad()
@@ -837,7 +833,6 @@ class UniformChunkedReconModel(torch.nn.Module):
             per_family=True,
             chunk_indices=chunk_indices,
         )
-        self._state.last_stats = stats
         return loss
 
     @torch.no_grad()
@@ -889,7 +884,6 @@ class UniformChunkedReconModel(torch.nn.Module):
         stats["scale"] = float(scale)
         stats["reduced_loss"] = float(loss.detach().cpu())
         stats["reduced_grad_norm"] = float(torch.linalg.vector_norm(grad).detach().cpu())
-        self._state.last_stats = stats
         return (
             loss.to(device=self.theta.device, dtype=self.theta.dtype),
             grad.to(device=self.theta.device, dtype=self.theta.dtype),

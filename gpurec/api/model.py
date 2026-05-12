@@ -41,7 +41,6 @@ from gpurec.core._helpers import _nvtx_range
 from .autograd import (
     ReconStaticState,
     _GeneReconFunction,
-    _apply_to_static,
     _extract_parameters,
 )
 
@@ -508,16 +507,3 @@ class GeneReconModel(torch.nn.Module):
     def static(self) -> ReconStaticState:
         """Read-only access to the cached static state (for advanced use)."""
         return self._static
-
-    # ──────────────────────────────────────────────────────────────────
-    # Device / dtype handling
-    # ──────────────────────────────────────────────────────────────────
-    def _apply(self, fn):
-        """Override so that ``.to(device)`` / ``.to(dtype)`` walks the
-        non-Parameter tensors held inside ``self._static`` (wave_layout,
-        species_helpers, etc.)."""
-        super()._apply(fn)
-        self._static = _apply_to_static(self._static, fn)
-        # Reset warm-start cache when moving (its old device/dtype is stale)
-        self._static.warm_E = None
-        return self
