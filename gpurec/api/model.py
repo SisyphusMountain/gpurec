@@ -84,8 +84,7 @@ def _build_static_state(
     max_root_wave_size: Optional[int] = None,
 ) -> ReconStaticState:
     """Absorb the wave-layout boilerplate that lives in
-    ``experiments/validate_three_modes.py:100-149`` and
-    ``GeneDataset.compute_likelihood_batch:393-428``.
+    ``experiments/validate_three_modes.py:100-149``.
 
     Builds a single cross-family wave layout for the entire dataset and
     moves species helpers (and ``ancestors_T`` for uniform mode) onto the
@@ -345,22 +344,18 @@ class GeneReconModel(torch.nn.Module):
         The differentiable forward must save the full wave-ordered ``Pi`` and
         ``Pibar`` tensors for the implicit backward pass. In inference/no-grad
         contexts those tensors are dead: the likelihood only needs root rows.
-        This mirrors the optimized uniform forward path used by
-        ``GeneDataset.compute_likelihood_batch`` and the profiling harnesses.
+        This mirrors the optimized uniform forward path used by the profiling
+        harnesses.
         """
         if reduce not in ("sum", "per_family"):
             raise ValueError(f"reduce must be 'sum' or 'per_family', got {reduce!r}")
-        if reduce == "per_family" and self._mode != "genewise":
-            raise ValueError(
-                "reduce='per_family' is only valid in genewise mode."
-            )
 
         static = self._static
         device = static.device
         dtype = static.dtype
 
         with _nvtx_range("inference extract parameters"):
-            log_pS, log_pD, log_pL, transfer_mat, max_transfer_vec = (
+            log_pS, log_pD, log_pL, max_transfer_vec = (
                 _extract_parameters(self.theta.detach(), static)
             )
 
@@ -443,7 +438,7 @@ class GeneReconModel(torch.nn.Module):
         family index.  The returned tensor is ``[C_total, S]``.
         """
         static = self._static
-        log_pS, log_pD, log_pL, transfer_mat, max_transfer_vec = (
+        log_pS, log_pD, log_pL, max_transfer_vec = (
             _extract_parameters(self.theta.detach(), static)
         )
         e_max_iters = (

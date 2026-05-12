@@ -418,8 +418,8 @@ def _make_static_inputs(args: argparse.Namespace) -> StaticInputs:
 def _compute_e_and_params(
     static: StaticInputs,
     args: argparse.Namespace,
-) -> tuple[dict[str, torch.Tensor], tuple[torch.Tensor, torch.Tensor, torch.Tensor, None, torch.Tensor]]:
-    log_pS, log_pD, log_pL, transfer_mat, max_transfer_vec = extract_parameters_uniform(
+) -> tuple[dict[str, torch.Tensor], tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]]:
+    log_pS, log_pD, log_pL, max_transfer_vec = extract_parameters_uniform(
         static.theta,
         static.unnorm_row_max,
         specieswise=False,
@@ -437,7 +437,7 @@ def _compute_e_and_params(
         device=static.device,
         ancestors_T=static.ancestors_T,
     )
-    return e_out, (log_pS, log_pD, log_pL, transfer_mat, max_transfer_vec)
+    return e_out, (log_pS, log_pD, log_pL, max_transfer_vec)
 
 
 def _accumulate_pi_backward(
@@ -482,9 +482,9 @@ def _forward_chunk(
     static: StaticInputs,
     args: argparse.Namespace,
     e_out: dict[str, torch.Tensor],
-    params: tuple[torch.Tensor, torch.Tensor, torch.Tensor, None, torch.Tensor],
+    params: tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor],
 ) -> tuple[dict[str, torch.Tensor | None], torch.Tensor]:
-    log_pS, log_pD, log_pL, transfer_mat, max_transfer_vec = params
+    log_pS, log_pD, log_pL, max_transfer_vec = params
     pi_out = Pi_wave_forward(
         wave_layout=built.wave_layout,
         species_helpers=static.species_helpers,
@@ -515,10 +515,10 @@ def _backward_chunk(
     static: StaticInputs,
     args: argparse.Namespace,
     e_out: dict[str, torch.Tensor],
-    params: tuple[torch.Tensor, torch.Tensor, torch.Tensor, None, torch.Tensor],
+    params: tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor],
     pi_out: dict[str, torch.Tensor | None],
 ) -> dict[str, Any]:
-    log_pS, log_pD, log_pL, transfer_mat, max_transfer_vec = params
+    log_pS, log_pD, log_pL, max_transfer_vec = params
     return Pi_wave_backward(
         wave_layout=built.wave_layout,
         Pi_star_wave=pi_out["Pi_wave_ordered"],
@@ -548,9 +548,9 @@ def _finish_theta_gradient(
     static: StaticInputs,
     args: argparse.Namespace,
     e_out: dict[str, torch.Tensor],
-    params: tuple[torch.Tensor, torch.Tensor, torch.Tensor, None, torch.Tensor],
+    params: tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor],
 ) -> tuple[torch.Tensor, Any]:
-    log_pS, log_pD, log_pL, transfer_mat, max_transfer_vec = params
+    log_pS, log_pD, log_pL, max_transfer_vec = params
     root_count = torch.zeros(
         (len(static.genes),),
         device=static.device,

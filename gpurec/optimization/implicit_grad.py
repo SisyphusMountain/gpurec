@@ -223,7 +223,7 @@ def _e_adjoint_and_theta_vjp(
 
     theta_req = theta.detach().requires_grad_(True)
     with torch.enable_grad():
-        log_pS_r, log_pD_r, log_pL_r, _, mt_r = extract_parameters_uniform(
+        log_pS_r, log_pD_r, log_pL_r, mt_r = extract_parameters_uniform(
             theta_req, unnorm_row_max, specieswise=specieswise, genewise=genewise,
         )
         param_loss = (
@@ -236,7 +236,7 @@ def _e_adjoint_and_theta_vjp(
     # E adjoint contribution to theta
     theta_req2 = theta.detach().requires_grad_(True)
     with torch.enable_grad():
-        log_pS_r2, log_pD_r2, log_pL_r2, _, mt_r2 = extract_parameters_uniform(
+        log_pS_r2, log_pD_r2, log_pL_r2, mt_r2 = extract_parameters_uniform(
             theta_req2, unnorm_row_max, specieswise=specieswise, genewise=genewise,
         )
 

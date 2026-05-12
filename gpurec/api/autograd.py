@@ -2,10 +2,10 @@
 ``torch.autograd.Function`` so a notebook user can call standard
 ``loss.backward()`` and use any ``torch.optim`` optimizer.
 
-The forward pass mirrors :class:`gpurec.core.model.GeneDataset.compute_likelihood_batch`
-(without ``@torch.no_grad``) and the backward pass delegates to the existing
-:func:`gpurec.optimization.implicit_grad.implicit_grad_loglik_vjp_wave` (or
-the genewise pair ``Pi_wave_backward + _e_adjoint_and_theta_vjp(genewise=True)``).
+The forward pass mirrors the retained wave-ordered inference path and the
+backward pass delegates to the existing
+:func:`gpurec.optimization.implicit_grad.implicit_grad_loglik_vjp_wave` (or the
+genewise pair ``Pi_wave_backward + _e_adjoint_and_theta_vjp(genewise=True)``).
 No new gradient math is written here.
 
 Sign convention: ``compute_log_likelihood`` actually returns NLL despite its
@@ -150,7 +150,7 @@ class _GeneReconFunction(torch.autograd.Function):
         with torch.no_grad():
             # 1. Extract parameters
             with _nvtx_range("forward extract parameters"):
-                log_pS, log_pD, log_pL, transfer_mat, max_transfer_vec = (
+                log_pS, log_pD, log_pL, max_transfer_vec = (
                     _extract_parameters(theta, static)
                 )
 

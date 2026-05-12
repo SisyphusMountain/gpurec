@@ -6,19 +6,6 @@ from typing import Any
 
 import torch
 from torch.utils.data import Dataset
-from .extract_parameters import extract_parameters_uniform
-from .likelihood import (
-    E_fixed_point,
-    compute_log_likelihood_root_rows,
-)
-from .forward import Pi_wave_forward
-from .batching import (
-    build_wave_layout,
-    collate_gene_families,
-    collate_wave,
-    split_phase_waves,
-)
-from .scheduling import compute_clade_waves
 from .preprocess_cpp import _load_extension as _load_species_gene_ext
 from .species import uniform_ancestors_t_from_topology
 
@@ -83,13 +70,6 @@ class GeneDataset(Dataset):
             self.unnorm_row_max = self.species_helpers["unnorm_row_max"]
         self.S = int(self.species_helpers['S'])
 
-        # creating an initial theta (log2-space: rates = 2^theta)
-        _THETA_INIT = math.log2(1e-10)
-        if specieswise:
-            theta = _THETA_INIT * torch.ones(self.S, 3, dtype=dtype, device=device)
-        else:
-            theta = _THETA_INIT * torch.ones(3, dtype=dtype, device=device)
-
         _INV_LN2 = 1.0 / math.log(2.0)
         families = []
         for i, (gpath, family_name) in enumerate(zip(gene_tree_paths, family_names)):
@@ -104,7 +84,6 @@ class GeneDataset(Dataset):
                 'leaf_col_index': raw['leaf_col_index'],
                 'C': int(ccp['C']),
                 'N_splits': int(ccp['N_splits']),
-                'theta': theta.clone(),
                 'log_split_probs': ccp['log_split_probs_sorted'],
             })
         # stored on CPU. Only move when computing likelihood and optimizing.
@@ -203,44 +182,11 @@ class GeneDataset(Dataset):
         # custom collate_fn to work with batches
         return self.families[idx]
     
-    def change_dtype(self, dtype):
-        """We may want to change dtype at the very end of optimization."""
-        self.dtype = dtype
-        for fam in self.families:
-            fam['ccp_helpers'] = {k: v.to(dtype=dtype) if torch.is_tensor(v) else v for k, v in fam['ccp_helpers'].items()}
-            fam['theta'] = fam['theta'].to(dtype=dtype)
-        self.species_helpers = {k: v.to(dtype=dtype) if torch.is_tensor(v) else v for k, v in self.species_helpers.items()}
-
-    def set_params(self, idx, D, T, L):
-        # only if genewise
-        theta = torch.log2(torch.tensor([D, L, T], device=self.device, dtype=self.dtype))
-        self.families[idx]['theta'] = theta.to(device=self.device, dtype=self.dtype)
-
-    @staticmethod
-    def _normalize_max_transfer(max_transfer_mat: torch.Tensor) -> torch.Tensor:
-        if max_transfer_mat.ndim >= 2 and max_transfer_mat.shape[-1] == 1:
-            return max_transfer_mat.squeeze(-1)
-        return max_transfer_mat
-
-    def _resolve_device_dtype(
-        self,
-        device: torch.device | None,
-        dtype: torch.dtype | None,
-    ) -> tuple[torch.device, torch.dtype]:
-        return (self.device if device is None else device,
-                self.dtype if dtype is None else dtype)
-
     @staticmethod
     def _move_tensor(t: torch.Tensor, *, device: torch.device, dtype: torch.dtype) -> torch.Tensor:
         if t.dtype.is_floating_point:
             return t.to(device=device, dtype=dtype)
         return t.to(device=device)
-
-    def _move_mapping(self, mapping: dict[str, Any], *, device: torch.device, dtype: torch.dtype) -> dict[str, Any]:
-        return {
-            k: (self._move_tensor(v, device=device, dtype=dtype) if torch.is_tensor(v) else v)
-            for k, v in mapping.items()
-        }
 
     def _species_helpers_for_mode(
         self,
@@ -260,256 +206,3 @@ class GeneDataset(Dataset):
             dtype=dtype,
         )
         return species_helpers, ancestors_T
-
-    def _extract_batch_params(
-        self,
-        indices: list[int],
-        *,
-        device: torch.device,
-        dtype: torch.dtype,
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor | None, torch.Tensor]:
-        if not self.genewise:
-            unnorm_row_max = self.unnorm_row_max.to(device=device, dtype=dtype)
-            theta0 = self.families[indices[0]]['theta'].to(device=device, dtype=dtype)
-            log_pS, log_pD, log_pL, transfer_mat, max_transfer_mat = extract_parameters_uniform(
-                theta0, unnorm_row_max, specieswise=self.specieswise,
-            )
-            return log_pS, log_pD, log_pL, transfer_mat, max_transfer_mat
-
-        unnorm_row_max = self.unnorm_row_max.to(device=device, dtype=dtype)
-        theta_stack = torch.stack([
-            self.families[i]['theta'].to(device=device, dtype=dtype) for i in indices
-        ], dim=0)
-        return extract_parameters_uniform(
-            theta_stack, unnorm_row_max, specieswise=self.specieswise, genewise=True,
-        )
-
-    def _solve_e_fixed_point(
-        self,
-        *,
-        species_helpers: dict[str, Any],
-        log_pS: torch.Tensor,
-        log_pD: torch.Tensor,
-        log_pL: torch.Tensor,
-        transfer_mat: torch.Tensor | None,
-        max_transfer_vec: torch.Tensor,
-        max_iters_E: int,
-        tol_E: float,
-        device: torch.device,
-        dtype: torch.dtype,
-        ancestors_T: torch.Tensor | None = None,
-    ) -> dict[str, torch.Tensor | int]:
-        return E_fixed_point(
-            species_helpers=species_helpers,
-            log_pS=log_pS,
-            log_pD=log_pD,
-            log_pL=log_pL,
-            max_transfer_mat=max_transfer_vec,
-            max_iters=max_iters_E,
-            tolerance=tol_E,
-            warm_start_E=None,
-            dtype=dtype,
-            device=device,
-            ancestors_T=ancestors_T,
-        )
-
-    @torch.no_grad()
-    def compute_likelihood(
-        self,
-        idx: int = 0,
-        *,
-        max_iters_E: int = 2000,
-        tol_E: float = 1e-6,
-        device: torch.device | None = None,
-        dtype: torch.dtype | None = None,
-    ) -> dict:
-        """Compute log-likelihood for a single family via the batched pathway.
-
-        A single-family evaluation is treated as a batch of size 1 to ensure
-        consistency between `compute_likelihood` and `compute_likelihood_batch`.
-        """
-
-        logL = self.compute_likelihood_batch(
-            indices=[idx],
-            max_iters_E=max_iters_E,
-            tol_E=tol_E,
-            device=device,
-            dtype=dtype,
-        )[0]
-
-        return {
-            'log_likelihood': float(logL),
-            'Pi': None,
-            'E': None,
-            'Ebar': None,
-            'E_s1': None,
-            'E_s2': None,
-        }
-
-    @torch.no_grad()
-    def compute_likelihood_batch(
-        self,
-        indices: list[int] | None = None,
-        *,
-        max_iters_E: int = 2000,
-        tol_E: float = 1e-12,
-        fixed_iters_Pi: int = 6,
-        device: torch.device | None = None,
-        dtype: torch.dtype | None = None,
-        chunk_size: int | None = None,
-        max_wave_size: int | None = 32768,
-        max_root_wave_size: int | None = None,
-    ) -> list[float]:
-        """Compute log-likelihoods for a batch of gene families.
-
-        Returns a list of per-family log-likelihoods, in the same order as `indices`.
-
-        Uses the retained wave-ordered uniform-transfer forward path.
-
-        Args:
-            chunk_size: If set, process families in chunks of this size to avoid OOM.
-                Recommended: 20 for S~2000.
-            fixed_iters_Pi: Fixed number of Pi iterations in each wave. Must
-                be positive and even.
-            max_wave_size: If set, use fixed-size cross-family wave scheduling
-                with at most this many clades per wave. If ``None``, merge
-                families by their per-family wave index.
-            max_root_wave_size: If set with index-merged scheduling, split
-                only phase-3 root waves to cap DTS scratch memory.
-        """
-        device, dtype = self._resolve_device_dtype(device, dtype)
-
-        if indices is None:
-            indices = list(range(len(self.families)))
-        if len(indices) == 0:
-            return []
-
-        # Handle chunking: split large batches to avoid OOM
-        if chunk_size is not None and len(indices) > chunk_size:
-            all_logLs = []
-            for start in range(0, len(indices), chunk_size):
-                chunk_indices = indices[start:start + chunk_size]
-                all_logLs.extend(self.compute_likelihood_batch(
-                    chunk_indices,
-                    max_iters_E=max_iters_E, tol_E=tol_E,
-                    fixed_iters_Pi=fixed_iters_Pi,
-                    device=device, dtype=dtype,
-                    chunk_size=chunk_size,
-                    max_wave_size=max_wave_size,
-                    max_root_wave_size=max_root_wave_size,
-                ))
-            return all_logLs
-
-        # Build batch items compatible with collate_gene_families
-        batch_items = []
-        for idx in indices:
-            fam = self.families[idx]
-            batch_items.append({
-                'ccp': fam['ccp_helpers'],
-                'leaf_row_index': fam['leaf_row_index'],
-                'leaf_col_index': fam['leaf_col_index'],
-                'root_clade_id': int(fam['root_clade_id']),
-            })
-
-        batched = collate_gene_families(batch_items, dtype=dtype, device=device)
-        ccp_helpers = batched['ccp']
-        leaf_row_index = batched['leaf_row_index']
-        leaf_col_index = batched['leaf_col_index']
-        root_clade_ids = batched['root_clade_ids']  # Long[F]
-
-        log_pS, log_pD, log_pL, transfer_mat, max_transfer_vec = self._extract_batch_params(
-            indices,
-            device=device,
-            dtype=dtype,
-        )
-
-        species_helpers, ancestors_T = self._species_helpers_for_mode(
-            device=device,
-            dtype=dtype,
-        )
-
-        # E fixed point (vectorized across genes when parameters are batched)
-        E_out = self._solve_e_fixed_point(
-            species_helpers=species_helpers,
-            log_pS=log_pS,
-            log_pD=log_pD,
-            log_pL=log_pL,
-            max_transfer_vec=max_transfer_vec,
-            max_iters_E=max_iters_E,
-            tol_E=tol_E,
-            device=device,
-            dtype=dtype,
-            ancestors_T=ancestors_T,
-        )
-        E = E_out['E']
-        E_s1 = E_out['E_s1']
-        E_s2 = E_out['E_s2']
-        Ebar = E_out['E_bar']
-
-        transfer_mat = None
-
-        offsets = [m['clade_offset'] for m in batched['family_meta']]
-        # Wave scheduling: merge all families into cross-family waves
-        families_waves = []
-        families_phases = []
-        for idx in indices:
-            fam = self.families[idx]
-            waves_i, phases_i = compute_clade_waves(fam['ccp_helpers'])
-            families_waves.append(waves_i)
-            families_phases.append(phases_i)
-
-        cross_waves = collate_wave(families_waves, offsets)
-
-        max_n_waves = max(len(p) for p in families_phases)
-        cross_phases = []
-        for k in range(max_n_waves):
-            phase_k = 1
-            for fp in families_phases:
-                if k < len(fp):
-                    phase_k = max(phase_k, fp[k])
-            cross_phases.append(phase_k)
-
-        cross_waves, cross_phases = split_phase_waves(
-            cross_waves,
-            cross_phases,
-            phase=None,
-            max_wave_size=max_wave_size,
-        )
-        cross_waves, cross_phases = split_phase_waves(
-            cross_waves,
-            cross_phases,
-            phase=3,
-            max_wave_size=max_root_wave_size,
-        )
-
-        family_clade_counts = [m['C'] for m in batched['family_meta']]
-        family_clade_offsets = [m['clade_offset'] for m in batched['family_meta']]
-
-        wave_layout = build_wave_layout(
-            waves=cross_waves,
-            phases=cross_phases,
-            ccp_helpers=ccp_helpers,
-            leaf_row_index=leaf_row_index,
-            leaf_col_index=leaf_col_index,
-            root_clade_ids=root_clade_ids,
-            device=device,
-            dtype=dtype,
-            family_clade_counts=family_clade_counts,
-            family_clade_offsets=family_clade_offsets,
-        )
-
-        Pi_out = Pi_wave_forward(
-            wave_layout=wave_layout,
-            species_helpers=species_helpers,
-            E=E, Ebar=Ebar, E_s1=E_s1, E_s2=E_s2,
-            log_pS=log_pS, log_pD=log_pD,
-            max_transfer_mat=max_transfer_vec,
-            device=device, dtype=dtype,
-            fixed_iters=fixed_iters_Pi,
-            family_idx=wave_layout.get('family_idx') if self.genewise else None,
-            return_original=False,
-            return_root_rows=True,
-        )
-
-        logL_vec = compute_log_likelihood_root_rows(Pi_out['Pi_root_rows'], E)
-        return [float(x) for x in logL_vec.detach().cpu().tolist()]

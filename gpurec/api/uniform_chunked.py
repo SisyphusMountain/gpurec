@@ -401,7 +401,7 @@ def _evaluate_chunked_uniform(
     selected_chunks = _selected_chunks(state, chunk_indices)
     selected_family_count = sum(len(chunk.spec.indices) for _idx, chunk in selected_chunks)
     theta_eval = theta.detach().to(device=state.device, dtype=state.dtype)
-    log_pS, log_pD, log_pL, transfer_mat, max_transfer_vec = extract_parameters_uniform(
+    log_pS, log_pD, log_pL, max_transfer_vec = extract_parameters_uniform(
         theta_eval,
         state.unnorm_row_max,
         specieswise=False,

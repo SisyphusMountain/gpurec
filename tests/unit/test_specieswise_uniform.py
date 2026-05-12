@@ -10,7 +10,6 @@ import torch
 
 from gpurec import GeneReconModel
 from gpurec.api.autograd import _extract_parameters
-from gpurec.core.model import GeneDataset
 from gpurec.core.forward import Pi_wave_forward
 from gpurec.core.likelihood import (
     E_fixed_point,
@@ -198,7 +197,7 @@ def _make_model(
 def _prepare_forward(model: GeneReconModel):
     static = model.static
     params = _extract_parameters(model.theta.detach(), static)
-    log_pS, log_pD, log_pL, transfer_mat, max_transfer_vec = params
+    log_pS, log_pD, log_pL, max_transfer_vec = params
     E_out = E_fixed_point(
         species_helpers=static.species_helpers,
         log_pS=log_pS,
@@ -223,7 +222,7 @@ def _run_forward(
     root_rows: bool = False,
 ):
     static = model.static
-    log_pS, log_pD, log_pL, transfer_mat, max_transfer_vec = params
+    log_pS, log_pD, log_pL, max_transfer_vec = params
     pi_out = Pi_wave_forward(
         wave_layout=static.wave_layout,
         species_helpers=static.species_helpers,
@@ -368,33 +367,29 @@ def test_specieswise_uniform_matches_alerax_specieswise_reference(
     device = torch.device("cuda")
     dtype = torch.float64
     genes = _genes(data_dir_100, 100)
-    ds = GeneDataset(
+    model = GeneReconModel.from_trees(
         str(data_dir_100 / "sp.nwk"),
         genes,
-        genewise=False,
-        specieswise=True,
+        mode="specieswise",
         dtype=dtype,
         device=device,
+        fixed_iters_Pi=6,
+        max_iters_E=4000,
+        tol_E=1e-10,
         preprocess_cache_dir=tmp_path / "preprocess",
     )
     theta = _load_alerax_specieswise_theta(
         data_dir_100,
-        ds.species_helpers,
+        model.static.species_helpers,
         dtype=dtype,
         device=device,
     )
-    for family in ds.families:
-        family["theta"] = theta.clone()
+    with torch.no_grad():
+        model.theta.copy_(theta)
 
     _set_optimized_env(monkeypatch)
-    gpurec_nll_bits = ds.compute_likelihood_batch(
-        indices=list(range(100)),
-        max_iters_E=4000,
-        tol_E=1e-10,
-        device=device,
-        dtype=dtype,
-        chunk_size=100,
-    )
+    with torch.no_grad():
+        gpurec_nll_bits = model(reduce="per_family").detach().cpu().tolist()
     torch.cuda.synchronize()
 
     alerax_log_likelihood_nats = _load_alerax_per_family_likelihoods(data_dir_100)
