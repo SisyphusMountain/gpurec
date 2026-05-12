@@ -328,13 +328,10 @@ def Pi_wave_backward(
             neumann_terms=neumann_terms,
             leaf_species_idx=leaf_species_index_wave,
             leaf_logp=uniform_leaf_logp,
-            accum_param_grads=None,
             active_mask=active_mask,
             sp_parent=sp_parent_wave,
             max_ancestor_depth=max_ancestor_depth,
             pibar_row_max=forward_pibar_row_max,
-            skip_inactive_zero_stores=False,
-            scratch=None,
             family_idx=family_idx if use_family_indexed_self_loop else None,
             family_indexed_consts=use_family_indexed_self_loop,
             compact_level_ptr=compact_level_ptr,
@@ -396,7 +393,6 @@ def Pi_wave_backward(
                 ),
                 grad_mt_two_stage_tile_splits=dts_grad_mt_two_stage_tile_splits,
                 skip_inactive_pibar_output_zero=False,
-                scratch=None,
                 family_idx=dts_family_idx,
             )
             grad_Pibar_l, grad_Pibar_r, pibar_side_active, _param_pD, _param_pS = dts_accum_result

@@ -84,21 +84,6 @@ def _dts_grad_layout(grad, *, family_idx, S):
     raise ValueError("unsupported DTS gradient layout")
 
 
-def _scratch_view(scratch, name, shape, *, device, dtype):
-    """Return a contiguous leading slice from caller-owned scratch if valid."""
-    if not isinstance(scratch, dict):
-        return None
-    buf = scratch.get(name)
-    if not torch.is_tensor(buf):
-        return None
-    if buf.device != device or buf.dtype != dtype or buf.ndim != len(shape):
-        return None
-    if any(int(buf.shape[i]) < int(shape[i]) for i in range(len(shape))):
-        return None
-    view = buf[tuple(slice(0, int(dim)) for dim in shape)]
-    return view if view.is_contiguous() else None
-
-
 def _uniform_backward_const_layout(const_tensor, family_idx, family_indexed):
     """Return addressing mode for self-loop constants.
 
@@ -135,36 +120,6 @@ def _uniform_backward_leaf_logp_mode(use_leaf_index, leaf_logp, family_idx, fami
     if leaf_logp.numel() == 1:
         return 3
     return 0
-
-
-def _parent_from_children(sp_child1, sp_child2, S):
-    """Build species parent pointers from child arrays for direct kernel callers."""
-    device = sp_child1.device
-    parent = torch.full((S,), -1, device=device, dtype=sp_child1.dtype)
-    species = torch.arange(S, device=device, dtype=sp_child1.dtype)
-    c1 = sp_child1.to(dtype=sp_child1.dtype)
-    c2 = sp_child2.to(dtype=sp_child1.dtype)
-    mask1 = c1 < S
-    mask2 = c2 < S
-    parent[c1[mask1].long()] = species[mask1]
-    parent[c2[mask2].long()] = species[mask2]
-    return parent.contiguous()
-
-
-def _max_ancestor_depth_from_parent(sp_parent, S):
-    """Return root-path length including self."""
-    parent_values = sp_parent.detach().cpu().long().tolist()
-    max_depth = 1
-    for s_idx in range(S):
-        cur = s_idx
-        depth = 0
-        while cur >= 0:
-            depth += 1
-            if depth > S:
-                raise RuntimeError("Cycle detected in species parent pointers")
-            cur = parent_values[cur]
-        max_depth = max(max_depth, depth)
-    return max_depth
 
 
 @triton.jit
@@ -225,63 +180,6 @@ def active_mask_from_rhs_absmax_fused(rhs, threshold, *, use_pruning=True):
         DTYPE=_tl_float_dtype(rhs.dtype),
     )
     return active_mask
-
-def _compact_levels_from_children(sp_child1, sp_child2, S):
-    """Build compact bottom-up species levels for the 2D self-loop kernel."""
-    device = sp_child1.device
-    child1_values = sp_child1.detach().cpu().long().tolist()
-    child2_values = sp_child2.detach().cpu().long().tolist()
-    levels = [-1] * S
-
-    for s_idx in range(S):
-        if levels[s_idx] >= 0:
-            continue
-        stack = [(s_idx, False)]
-        while stack:
-            node, expanded = stack.pop()
-            if levels[node] >= 0:
-                continue
-            c1 = child1_values[node]
-            c2 = child2_values[node]
-            if not expanded:
-                stack.append((node, True))
-                if c2 < S and levels[c2] < 0:
-                    stack.append((c2, False))
-                if c1 < S and levels[c1] < 0:
-                    stack.append((c1, False))
-                continue
-            child_levels = []
-            if c1 < S:
-                child_levels.append(levels[c1])
-            if c2 < S:
-                child_levels.append(levels[c2])
-            levels[node] = (max(child_levels) + 1) if child_levels else 0
-
-    max_level = max(levels) if levels else 0
-    ptr_values = [0]
-    flat_parents = []
-    flat_child1 = []
-    flat_child2 = []
-    for level in range(1, max_level + 1):
-        parents = [
-            s_idx for s_idx, node_level in enumerate(levels)
-            if node_level == level
-            and (child1_values[s_idx] < S or child2_values[s_idx] < S)
-        ]
-        flat_parents.extend(parents)
-        flat_child1.extend(child1_values[parent] for parent in parents)
-        flat_child2.extend(child2_values[parent] for parent in parents)
-        ptr_values.append(len(flat_parents))
-    if len(ptr_values) == 1:
-        ptr_values.append(0)
-
-    return (
-        torch.tensor(ptr_values, device=device, dtype=torch.long).contiguous(),
-        torch.tensor(flat_parents, device=device, dtype=torch.int32).contiguous(),
-        torch.tensor(flat_child1, device=device, dtype=torch.int32).contiguous(),
-        torch.tensor(flat_child2, device=device, dtype=torch.int32).contiguous(),
-    )
-
 
 @triton.jit
 def _wave_backward_uniform_2d_precompute_kernel(
@@ -748,12 +646,10 @@ def _wave_backward_uniform_2d(
     neumann_terms,
     leaf_species_idx,
     leaf_logp,
-    accum_param_grads,
     active_mask,
     sp_parent,
     max_ancestor_depth,
     pibar_row_max,
-    scratch,
     family_idx,
     const_layout,
     leaf_logp_mode,
@@ -770,11 +666,6 @@ def _wave_backward_uniform_2d(
     if Pi_star.dtype not in (torch.float32, torch.float64):
         raise RuntimeError(
             "2D self-loop fast path currently supports fp32/fp64 only",
-        )
-    if accum_param_grads is not None:
-        raise RuntimeError(
-            "2D self-loop fast path returns per-element parameter VJPs; "
-            "disable in-kernel self-loop parameter accumulation",
         )
     ok, required_bytes, budget_bytes = proposal0_memory_gate(
         W,
@@ -796,10 +687,10 @@ def _wave_backward_uniform_2d(
     device = Pi_star.device
     dtype = Pi_star.dtype
     if sp_parent is None:
-        sp_parent = _parent_from_children(sp_child1, sp_child2, S)
+        raise ValueError("sp_parent is required for the retained 2D self-loop path")
     sp_parent = sp_parent.to(device=device, dtype=torch.int32).contiguous()
     if max_ancestor_depth is None:
-        max_ancestor_depth = _max_ancestor_depth_from_parent(sp_parent, S)
+        raise ValueError("max_ancestor_depth is required for the retained 2D self-loop path")
     max_ancestor_depth = max(1, int(max_ancestor_depth))
 
     if (
@@ -808,12 +699,7 @@ def _wave_backward_uniform_2d(
         or compact_level_child1 is None
         or compact_level_child2 is None
     ):
-        (
-            compact_level_ptr,
-            compact_level_parents,
-            compact_level_child1,
-            compact_level_child2,
-        ) = _compact_levels_from_children(sp_child1, sp_child2, S)
+        raise ValueError("compact species levels are required for the retained 2D self-loop path")
     compact_level_ptr = compact_level_ptr.to(device=device, dtype=torch.long).contiguous()
     compact_level_parents = compact_level_parents.to(device=device, dtype=torch.int32).contiguous()
     compact_level_child1 = compact_level_child1.to(device=device, dtype=torch.int32).contiguous()
@@ -829,41 +715,20 @@ def _wave_backward_uniform_2d(
     n_row_blocks = triton.cdiv(W, block_w)
     scratch_shape = (W, S)
 
-    v_k = _scratch_view(scratch, "v_k", scratch_shape, device=device, dtype=dtype)
-    if v_k is None:
-        v_k = torch.empty(scratch_shape, device=device, dtype=dtype)
-    aw0 = _scratch_view(scratch, "aw0", scratch_shape, device=device, dtype=dtype)
-    if aw0 is None:
-        aw0 = torch.empty(scratch_shape, device=device, dtype=dtype)
-    aw1 = _scratch_view(scratch, "aw1", scratch_shape, device=device, dtype=dtype)
-    if aw1 is None:
-        aw1 = torch.empty(scratch_shape, device=device, dtype=dtype)
-    aw2 = _scratch_view(scratch, "aw2", scratch_shape, device=device, dtype=dtype)
-    if aw2 is None:
-        aw2 = torch.empty(scratch_shape, device=device, dtype=dtype)
-    aw345 = _scratch_view(scratch, "aw345", scratch_shape, device=device, dtype=dtype)
-    if aw345 is None:
-        aw345 = torch.empty(scratch_shape, device=device, dtype=dtype)
-    aw3 = _scratch_view(scratch, "aw3", scratch_shape, device=device, dtype=dtype)
-    if aw3 is None:
-        aw3 = torch.empty(scratch_shape, device=device, dtype=dtype)
-    aw4 = _scratch_view(scratch, "aw4", scratch_shape, device=device, dtype=dtype)
-    if aw4 is None:
-        aw4 = torch.empty(scratch_shape, device=device, dtype=dtype)
-    spec_buf = _scratch_view(scratch, "spec_buf", scratch_shape, device=device, dtype=dtype)
-    if spec_buf is None:
-        spec_buf = torch.empty(scratch_shape, device=device, dtype=dtype)
-    term_buf = _scratch_view(scratch, "term_buf", scratch_shape, device=device, dtype=dtype)
-    if term_buf is None:
-        term_buf = torch.empty(scratch_shape, device=device, dtype=dtype)
-    pibar_corr = _scratch_view(scratch, "pibar_corr", scratch_shape, device=device, dtype=dtype)
-    if pibar_corr is None:
-        pibar_corr = torch.empty(scratch_shape, device=device, dtype=dtype)
+    v_k = torch.empty(scratch_shape, device=device, dtype=dtype)
+    aw0 = torch.empty(scratch_shape, device=device, dtype=dtype)
+    aw1 = torch.empty(scratch_shape, device=device, dtype=dtype)
+    aw2 = torch.empty(scratch_shape, device=device, dtype=dtype)
+    aw345 = torch.empty(scratch_shape, device=device, dtype=dtype)
+    aw3 = torch.empty(scratch_shape, device=device, dtype=dtype)
+    aw4 = torch.empty(scratch_shape, device=device, dtype=dtype)
+    spec_buf = torch.empty(scratch_shape, device=device, dtype=dtype)
+    term_buf = torch.empty(scratch_shape, device=device, dtype=dtype)
+    pibar_corr = torch.empty(scratch_shape, device=device, dtype=dtype)
 
     if pibar_row_max is None:
-        pibar_row_max = Pi_star.max(dim=1).values.contiguous()
-    else:
-        pibar_row_max = pibar_row_max.to(device=device, dtype=dtype).contiguous()
+        raise ValueError("pibar_row_max is required for the retained 2D self-loop path")
+    pibar_row_max = pibar_row_max.to(device=device, dtype=dtype).contiguous()
     if family_idx is not None:
         family_idx = family_idx.to(device=device, dtype=torch.long).contiguous()
     else:
@@ -1010,13 +875,10 @@ def wave_backward_uniform_fused(
     neumann_terms=3,
     leaf_species_idx=None,
     leaf_logp=None,
-    accum_param_grads=None,
     active_mask=None,
     sp_parent=None,
     max_ancestor_depth=None,
     pibar_row_max=None,
-    skip_inactive_zero_stores=False,
-    scratch=None,
     family_idx=None,
     family_indexed_consts=False,
     compact_level_ptr=None,
@@ -1042,11 +904,6 @@ def wave_backward_uniform_fused(
         leaf_species_idx: optional [C] row -> species leaf index, -1 for non-leaves
         leaf_logp: optional [S], [G], or [G, S] log_pS values used with
             leaf_species_idx
-        accum_param_grads: optional tuple of seven tensors
-            (grad_log_pD, grad_log_pS, grad_E, grad_Ebar,
-             grad_E_s1, grad_E_s2, grad_mt). When provided, the kernel
-            atomically accumulates param VJP results and returns None for
-            the per-element contribution tensors.
 
     Returns:
         v_k: [W, S] Neumann-solved adjoint
@@ -1069,21 +926,19 @@ def wave_backward_uniform_fused(
     if family_idx is not None:
         family_idx = family_idx.to(device=Pi_star.device, dtype=torch.long).contiguous()
     if sp_parent is None:
-        sp_parent = _parent_from_children(sp_child1, sp_child2, S)
-    else:
-        sp_parent = sp_parent.to(device=Pi_star.device).contiguous()
+        raise ValueError("sp_parent is required for the retained backward fast path")
+    sp_parent = sp_parent.to(device=Pi_star.device).contiguous()
     if Pi_star.device.type == "cuda" and sp_parent.dtype != torch.int32:
         sp_parent = sp_parent.to(dtype=torch.int32)
     if max_ancestor_depth is None:
-        max_ancestor_depth = _max_ancestor_depth_from_parent(sp_parent, S)
+        raise ValueError("max_ancestor_depth is required for the retained backward fast path")
     max_ancestor_depth = max(1, int(max_ancestor_depth))
     leaf_hit_only_logp = (
         os.environ.get("GPUREC_LEAF_HIT_ONLY_LOGP", "0") != "0"
     )
     if pibar_row_max is None:
-        pibar_row_max = Pi_star.max(dim=1).values.contiguous()
-    else:
-        pibar_row_max = pibar_row_max.to(device=Pi_star.device, dtype=Pi_star.dtype).contiguous()
+        raise ValueError("pibar_row_max is required for the retained backward fast path")
+    pibar_row_max = pibar_row_max.to(device=Pi_star.device, dtype=Pi_star.dtype).contiguous()
 
     return _wave_backward_uniform_2d(
         Pi_star,
@@ -1105,12 +960,10 @@ def wave_backward_uniform_fused(
         neumann_terms=neumann_terms,
         leaf_species_idx=leaf_species_idx,
         leaf_logp=leaf_logp,
-        accum_param_grads=accum_param_grads,
         active_mask=active_mask,
         sp_parent=sp_parent,
         max_ancestor_depth=max_ancestor_depth,
         pibar_row_max=pibar_row_max,
-        scratch=scratch,
         family_idx=family_idx,
         const_layout=const_layout,
         leaf_logp_mode=leaf_logp_mode,
@@ -1601,7 +1454,6 @@ def dts_cross_backward_accum_fused(
     grad_mt_two_stage=False,
     grad_mt_two_stage_tile_splits=128,
     skip_inactive_pibar_output_zero=False,
-    scratch=None,
     family_idx=None,
 ):
     """Fused DTS backward with direct Pi-adjoint accumulation."""
@@ -1676,50 +1528,25 @@ def dts_cross_backward_accum_fused(
         grad_Pibar_l = None
         grad_Pibar_r = None
     else:
-        grad_Pibar_l = _scratch_view(
-            scratch, "grad_Pibar_l", (n_ws, S), device=device, dtype=dtype
-        )
-        if grad_Pibar_l is None:
-            grad_Pibar_l = torch.empty((n_ws, S), device=device, dtype=dtype)
-        grad_Pibar_r = _scratch_view(
-            scratch, "grad_Pibar_r", (n_ws, S), device=device, dtype=dtype
-        )
-        if grad_Pibar_r is None:
-            grad_Pibar_r = torch.empty((n_ws, S), device=device, dtype=dtype)
+        grad_Pibar_l = torch.empty((n_ws, S), device=device, dtype=dtype)
+        grad_Pibar_r = torch.empty((n_ws, S), device=device, dtype=dtype)
     if output_pibar_ud:
-        pibar_ud = _scratch_view(
-            scratch, "pibar_ud", (2 * n_ws, S), device=device, dtype=dtype
-        )
-        if pibar_ud is None:
-            pibar_ud = torch.empty((2 * n_ws, S), device=device, dtype=dtype)
-        pibar_A = _scratch_view(
-            scratch, "pibar_A", (2 * n_ws,), device=device, dtype=dtype
-        )
-        if pibar_A is None:
-            pibar_A = torch.empty((2 * n_ws,), device=device, dtype=dtype)
+        pibar_ud = torch.empty((2 * n_ws, S), device=device, dtype=dtype)
+        pibar_A = torch.empty((2 * n_ws,), device=device, dtype=dtype)
     else:
         pibar_ud = None
         pibar_A = None
     pibar_side_active = (
-        _scratch_view(
-            scratch, "pibar_side_active", (2 * n_ws,),
-            device=device, dtype=torch.bool
-        )
+        torch.empty((2 * n_ws,), device=device, dtype=torch.bool)
         if output_pibar_side_active
         else None
     )
-    if output_pibar_side_active and pibar_side_active is None:
-        pibar_side_active = torch.empty((2 * n_ws,), device=device, dtype=torch.bool)
     if accum_param_reductions:
         param_pD = None
         param_pS = None
     else:
-        param_pD = _scratch_view(scratch, "param_pD", (n_ws,), device=device, dtype=dtype)
-        if param_pD is None:
-            param_pD = torch.empty(n_ws, device=device, dtype=dtype)
-        param_pS = _scratch_view(scratch, "param_pS", (n_ws,), device=device, dtype=dtype)
-        if param_pS is None:
-            param_pS = torch.empty(n_ws, device=device, dtype=dtype)
+        param_pD = torch.empty(n_ws, device=device, dtype=dtype)
+        param_pS = torch.empty(n_ws, device=device, dtype=dtype)
     param_pD_arg = grad_log_pD if accum_param_reductions else param_pD
     param_pS_arg = grad_log_pS if accum_param_reductions else param_pS
     dummy = pibar_ud if output_pibar_ud else grad_Pibar_l
@@ -1750,12 +1577,7 @@ def dts_cross_backward_accum_fused(
     grad_mt_two_stage_tile_splits = max(1, int(grad_mt_two_stage_tile_splits))
     n_grad_mt_tiles = triton.cdiv(n_ws, grad_mt_two_stage_tile_splits)
     if use_grad_mt_two_stage:
-        grad_mt_partial = _scratch_view(
-            scratch, "grad_mt_partial", (n_grad_mt_tiles, S),
-            device=device, dtype=dtype
-        )
-        if grad_mt_partial is None:
-            grad_mt_partial = torch.empty((n_grad_mt_tiles, S), device=device, dtype=dtype)
+        grad_mt_partial = torch.empty((n_grad_mt_tiles, S), device=device, dtype=dtype)
         grad_mt_partial.zero_()
     else:
         grad_mt_partial = dummy
