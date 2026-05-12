@@ -6,6 +6,7 @@ from .log2_utils import logsumexp2
 from ._helpers import _safe_exp2_ratio  # noqa: F401
 from .memory_policy import proposal0_memory_gate
 from .extract_parameters import as_family_param, as_family_species
+from .species import species_wave_topology
 
 _SUPPORTED_BACKWARD_FLOAT_DTYPES = (torch.float32, torch.float64)
 
@@ -87,232 +88,24 @@ def Pi_wave_backward(
         raise RuntimeError("Pi_wave_backward fused path requires float32 or float64")
     if S <= 256:
         raise RuntimeError("Pi_wave_backward fused path requires S > 256")
-    species_cache = species_helpers.get('_wave_forward_species_cache')
-    sp_child1_cpu = sp_child2_cpu = None
-    sp_child1 = sp_child2 = None
-    p_cpu = c_cpu = mask_c1 = None
-    if species_cache is not None and int(species_cache.get('S', -1)) == int(S):
-        cached_child1 = species_cache.get('sp_child1')
-        cached_child2 = species_cache.get('sp_child2')
-        cached_child1_cpu = species_cache.get('sp_child1_cpu')
-        cached_child2_cpu = species_cache.get('sp_child2_cpu')
-        if (
-            torch.is_tensor(cached_child1)
-            and torch.is_tensor(cached_child2)
-            and cached_child1.device == target_device
-            and cached_child2.device == target_device
-            and torch.is_tensor(cached_child1_cpu)
-            and torch.is_tensor(cached_child2_cpu)
-        ):
-            sp_child1 = cached_child1
-            sp_child2 = cached_child2
-            sp_child1_cpu = cached_child1_cpu
-            sp_child2_cpu = cached_child2_cpu
-
-    if sp_child1 is None or sp_child2 is None:
-        sp_P_idx = species_helpers['s_P_indexes']
-        sp_c12_idx = species_helpers['s_C12_indexes']
-        p_cpu = sp_P_idx.cpu().long()
-        c_cpu = sp_c12_idx.cpu().long()
-        mask_c1 = p_cpu < S
-        sp_child1_cpu = torch.full((S,), S, dtype=torch.long)
-        sp_child2_cpu = torch.full((S,), S, dtype=torch.long)
-        sp_child1_cpu[p_cpu[mask_c1]] = c_cpu[mask_c1]
-        sp_child2_cpu[p_cpu[~mask_c1] - S] = c_cpu[~mask_c1]
-        sp_child1 = sp_child1_cpu.to(target_device)
-        sp_child2 = sp_child2_cpu.to(target_device)
-        if species_cache is not None and int(species_cache.get('S', -1)) == int(S):
-            species_cache['sp_child1'] = sp_child1
-            species_cache['sp_child2'] = sp_child2
-            species_cache['sp_child1_cpu'] = sp_child1_cpu
-            species_cache['sp_child2_cpu'] = sp_child2_cpu
 
     dts_grad_mt_two_stage_tile_splits = 128
 
-    ancestor_cols = None
-    level_parents = None
-    compact_level_ptr = None
-    compact_level_parents = None
-    compact_level_child1 = None
-    compact_level_child2 = None
-    sp_parent = None
-    max_ancestor_depth = None
-    cache = species_helpers.get('_wave_forward_species_cache')
-    if cache is not None and int(cache.get('S', -1)) == int(S):
-        cached_max_ancestor_depth = cache.get('max_ancestor_depth')
-        if cached_max_ancestor_depth is not None:
-            max_ancestor_depth = int(cached_max_ancestor_depth)
-        cached_ancestor_cols = cache.get('ancestor_cols')
-        if torch.is_tensor(cached_ancestor_cols) and cached_ancestor_cols.device == target_device:
-            ancestor_cols = cached_ancestor_cols
-        cached_level_parents = cache.get('level_parents')
-        if torch.is_tensor(cached_level_parents) and cached_level_parents.device == target_device:
-            level_parents = cached_level_parents
-        cached_compact_level_ptr = cache.get('compact_level_ptr')
-        cached_compact_level_parents = cache.get('compact_level_parents')
-        cached_compact_level_child1 = cache.get('compact_level_child1')
-        cached_compact_level_child2 = cache.get('compact_level_child2')
-        if (
-            torch.is_tensor(cached_compact_level_ptr)
-            and torch.is_tensor(cached_compact_level_parents)
-            and torch.is_tensor(cached_compact_level_child1)
-            and torch.is_tensor(cached_compact_level_child2)
-            and cached_compact_level_ptr.device == target_device
-            and cached_compact_level_parents.device == target_device
-            and cached_compact_level_child1.device == target_device
-            and cached_compact_level_child2.device == target_device
-        ):
-            compact_level_ptr = cached_compact_level_ptr
-            compact_level_parents = cached_compact_level_parents
-            compact_level_child1 = cached_compact_level_child1
-            compact_level_child2 = cached_compact_level_child2
-        cached_sp_parent = cache.get('sp_parent')
-        if torch.is_tensor(cached_sp_parent) and cached_sp_parent.device == target_device:
-            sp_parent = cached_sp_parent
-
-    if (
-        ancestor_cols is None
-        or level_parents is None
-        or compact_level_ptr is None
-        or compact_level_parents is None
-        or compact_level_child1 is None
-        or compact_level_child2 is None
-    ):
-        if p_cpu is None or c_cpu is None or mask_c1 is None:
-            sp_P_idx = species_helpers['s_P_indexes']
-            sp_c12_idx = species_helpers['s_C12_indexes']
-            p_cpu = sp_P_idx.cpu().long()
-            c_cpu = sp_c12_idx.cpu().long()
-            mask_c1 = p_cpu < S
-        sp_parent_cpu = torch.full((S,), -1, dtype=torch.long)
-        sp_parent_cpu[c_cpu[mask_c1]] = p_cpu[mask_c1]
-        sp_parent_cpu[c_cpu[~mask_c1]] = p_cpu[~mask_c1] - S
-        if sp_parent is None:
-            sp_parent = sp_parent_cpu.to(target_device)
-
-        parent_values = sp_parent_cpu.tolist()
-        ancestor_lists = []
-        max_ancestor_depth = 0
-        for s_idx in range(S):
-            cur = s_idx
-            depth = 0
-            ancestors = []
-            while cur >= 0:
-                ancestors.append(cur)
-                depth += 1
-                if depth > S:
-                    raise RuntimeError("Cycle detected in species parent pointers")
-                cur = parent_values[cur]
-            ancestor_lists.append(ancestors)
-            max_ancestor_depth = max(max_ancestor_depth, depth)
-
-        ancestor_cols_cpu = torch.full((S, max_ancestor_depth), -1, dtype=torch.long)
-        for s_idx, ancestors in enumerate(ancestor_lists):
-            ancestor_cols_cpu[s_idx, :len(ancestors)] = torch.tensor(ancestors, dtype=torch.long)
-        if ancestor_cols is None:
-            ancestor_cols = ancestor_cols_cpu.T.contiguous().to(target_device)
-        max_ancestor_depth = int(max_ancestor_depth)
-
-        need_compact_levels = (
-            compact_level_ptr is None
-            or compact_level_parents is None
-            or compact_level_child1 is None
-            or compact_level_child2 is None
-        )
-        if level_parents is None or need_compact_levels:
-            child1_values = sp_child1_cpu.tolist()
-            child2_values = sp_child2_cpu.tolist()
-            levels = [-1] * S
-
-            for s_idx in range(S):
-                if levels[s_idx] >= 0:
-                    continue
-                stack = [(s_idx, False)]
-                while stack:
-                    node, expanded = stack.pop()
-                    if levels[node] >= 0:
-                        continue
-                    c1 = child1_values[node]
-                    c2 = child2_values[node]
-                    if not expanded:
-                        stack.append((node, True))
-                        if c2 < S and levels[c2] < 0:
-                            stack.append((c2, False))
-                        if c1 < S and levels[c1] < 0:
-                            stack.append((c1, False))
-                        continue
-                    child_levels = []
-                    if c1 < S:
-                        child_levels.append(levels[c1])
-                    if c2 < S:
-                        child_levels.append(levels[c2])
-                    levels[node] = (max(child_levels) + 1) if child_levels else 0
-
-            max_level = max(levels) if levels else 0
-            level_lists = []
-            max_level_width = 1
-            for level in range(1, max_level + 1):
-                parents = [
-                    s_idx for s_idx, node_level in enumerate(levels)
-                    if node_level == level
-                    and (child1_values[s_idx] < S or child2_values[s_idx] < S)
-                ]
-                if parents:
-                    level_lists.append(parents)
-                    max_level_width = max(max_level_width, len(parents))
-
-            if level_parents is None:
-                level_parents_cpu = torch.full(
-                    (max(len(level_lists), 1), max_level_width),
-                    -1,
-                    dtype=torch.long,
-                )
-                for level, parents in enumerate(level_lists):
-                    level_parents_cpu[level, :len(parents)] = torch.tensor(parents, dtype=torch.long)
-                level_parents = level_parents_cpu.contiguous().to(target_device)
-            if need_compact_levels:
-                ptr_values = [0]
-                flat_parents = []
-                flat_child1 = []
-                flat_child2 = []
-                for parents in level_lists:
-                    flat_parents.extend(parents)
-                    flat_child1.extend(child1_values[parent] for parent in parents)
-                    flat_child2.extend(child2_values[parent] for parent in parents)
-                    ptr_values.append(len(flat_parents))
-                if len(ptr_values) == 1:
-                    ptr_values.append(0)
-                compact_level_ptr_cpu = torch.tensor(ptr_values, dtype=torch.long)
-                compact_level_parents_cpu = torch.tensor(flat_parents, dtype=torch.int32)
-                compact_level_child1_cpu = torch.tensor(flat_child1, dtype=torch.int32)
-                compact_level_child2_cpu = torch.tensor(flat_child2, dtype=torch.int32)
-                compact_level_ptr = compact_level_ptr_cpu.contiguous().to(target_device)
-                compact_level_parents = compact_level_parents_cpu.contiguous().to(target_device)
-                compact_level_child1 = compact_level_child1_cpu.contiguous().to(target_device)
-                compact_level_child2 = compact_level_child2_cpu.contiguous().to(target_device)
-
-        if cache is not None and int(cache.get('S', -1)) == int(S):
-            if level_parents is not None:
-                cache['level_parents'] = level_parents
-            if (
-                compact_level_ptr is not None
-                and compact_level_parents is not None
-                and compact_level_child1 is not None
-                and compact_level_child2 is not None
-            ):
-                cache['compact_level_ptr'] = compact_level_ptr
-                cache['compact_level_parents'] = compact_level_parents
-                cache['compact_level_child1'] = compact_level_child1
-                cache['compact_level_child2'] = compact_level_child2
-            if sp_parent is not None:
-                cache['sp_parent'] = sp_parent
-            if max_ancestor_depth is not None:
-                cache['max_ancestor_depth'] = int(max_ancestor_depth)
-
-    if max_ancestor_depth is None and torch.is_tensor(ancestor_cols):
-        max_ancestor_depth = int(ancestor_cols.shape[0])
-
-    sp_parent_wave = sp_parent.to(dtype=torch.int32).contiguous()
+    species_topology = species_wave_topology(
+        species_helpers,
+        S=S,
+        device=target_device,
+    )
+    sp_child1 = species_topology["sp_child1"]
+    sp_child2 = species_topology["sp_child2"]
+    sp_child1_wave = sp_child1
+    sp_child2_wave = sp_child2
+    sp_parent_wave = species_topology["sp_parent"]
+    max_ancestor_depth = int(species_topology["max_ancestor_depth"])
+    compact_level_ptr = species_topology["compact_level_ptr"]
+    compact_level_parents = species_topology["compact_level_parents"]
+    compact_level_child1 = species_topology["compact_level_child1"]
+    compact_level_child2 = species_topology["compact_level_child2"]
 
     # Auto-wrap single-family inputs into batched format (G=1).
     _auto_wrapped = family_idx is None
@@ -426,25 +219,6 @@ def Pi_wave_backward(
             f"{(budget_bytes or 0) / (1024 ** 3):.2f} GiB budget)"
         )
 
-    cached_child1_i32 = None
-    cached_child2_i32 = None
-    if species_cache is not None and int(species_cache.get('S', -1)) == int(S):
-        cached_child1_i32 = species_cache.get('sp_child1_int32')
-        cached_child2_i32 = species_cache.get('sp_child2_int32')
-    if (
-        torch.is_tensor(cached_child1_i32)
-        and torch.is_tensor(cached_child2_i32)
-        and cached_child1_i32.device == target_device
-        and cached_child2_i32.device == target_device
-    ):
-        sp_child1_wave = cached_child1_i32
-        sp_child2_wave = cached_child2_i32
-    else:
-        sp_child1_wave = sp_child1_cpu.to(device=target_device, dtype=torch.int32)
-        sp_child2_wave = sp_child2_cpu.to(device=target_device, dtype=torch.int32)
-        if species_cache is not None and int(species_cache.get('S', -1)) == int(S):
-            species_cache['sp_child1_int32'] = sp_child1_wave
-            species_cache['sp_child2_int32'] = sp_child2_wave
     leaf_species_index_wave = leaf_species_index.to(device=device, dtype=torch.int32).contiguous()
 
     n_waves_total = K
@@ -633,9 +407,6 @@ def Pi_wave_backward(
                 grad_Pibar_r,
                 sl,
                 sr,
-                sp_child1,
-                sp_child2,
-                level_parents,
                 accumulated_rhs,
                 S,
                 active_mask=active_mask,

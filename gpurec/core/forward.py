@@ -9,6 +9,7 @@ from .kernels.wave_step import (
 from .kernels.dts_fused import dts_fused_parent_reduced
 from ._helpers import _nvtx_range
 from .extract_parameters import as_family_param, as_family_species
+from .species import species_wave_topology
 
 NEG_INF = float("-inf")
 
@@ -41,83 +42,6 @@ def _compute_dts_cross(Pi, Pibar, meta, sp_child1, sp_child2, log_pD, log_pS,
         family_offset=family_offset,
         tile_splits=64,
         ge2_max_fanout=meta.get('ge2_max_fanout'),
-    )
-
-
-def _get_species_wave_helpers(species_helpers, S, device):
-    """Return cached species child/parent helpers for wave kernels."""
-    target_device = torch.device(device)
-    if target_device.type == 'cuda' and target_device.index is None:
-        target_device = torch.device('cuda', torch.cuda.current_device())
-    index_dtype = torch.int32
-    cache = species_helpers.get('_wave_forward_species_cache')
-    if (
-        cache is not None
-        and int(cache.get('S', -1)) == int(S)
-        and cache.get('index_dtype') == str(index_dtype)
-    ):
-        sp_child1 = cache.get('sp_child1')
-        sp_child2 = cache.get('sp_child2')
-        sp_parent = cache.get('sp_parent')
-        cache_ok = (
-            torch.is_tensor(sp_child1)
-            and torch.is_tensor(sp_child2)
-            and sp_child1.device == target_device
-            and sp_child2.device == target_device
-            and torch.is_tensor(sp_parent)
-            and sp_parent.device == target_device
-        )
-        if cache_ok:
-            return (
-                sp_child1,
-                sp_child2,
-                sp_parent,
-                int(cache.get('max_ancestor_depth', 0)),
-            )
-
-    sp_P_idx = species_helpers['s_P_indexes']
-    sp_c12_idx = species_helpers['s_C12_indexes']
-    p_cpu = sp_P_idx.cpu().long()
-    c_cpu = sp_c12_idx.cpu().long()
-    mask_c1 = p_cpu < S
-
-    sp_child1_cpu = torch.full((S,), S, dtype=torch.long)
-    sp_child2_cpu = torch.full((S,), S, dtype=torch.long)
-    sp_child1_cpu[p_cpu[mask_c1]] = c_cpu[mask_c1]
-    sp_child2_cpu[p_cpu[~mask_c1] - S] = c_cpu[~mask_c1]
-
-    sp_parent_cpu = torch.full((S,), -1, dtype=torch.long)
-    sp_parent_cpu[c_cpu[mask_c1]] = p_cpu[mask_c1]
-    sp_parent_cpu[c_cpu[~mask_c1]] = p_cpu[~mask_c1] - S
-
-    parent_values = sp_parent_cpu.tolist()
-    max_ancestor_depth = 0
-    for s_idx in range(S):
-        depth = 0
-        cur = s_idx
-        while cur >= 0:
-            depth += 1
-            if depth > S:
-                raise RuntimeError("Cycle detected in species parent pointers")
-            cur = parent_values[cur]
-        max_ancestor_depth = max(max_ancestor_depth, depth)
-
-    sp_child1 = sp_child1_cpu.to(device=target_device, dtype=index_dtype)
-    sp_child2 = sp_child2_cpu.to(device=target_device, dtype=index_dtype)
-    sp_parent = sp_parent_cpu.to(device=target_device, dtype=index_dtype)
-    species_helpers['_wave_forward_species_cache'] = {
-        'S': int(S),
-        'index_dtype': str(index_dtype),
-        'sp_child1': sp_child1,
-        'sp_child2': sp_child2,
-        'sp_parent': sp_parent,
-        'max_ancestor_depth': int(max_ancestor_depth),
-    }
-    return (
-        sp_child1,
-        sp_child2,
-        sp_parent,
-        int(max_ancestor_depth),
     )
 
 
@@ -224,12 +148,11 @@ def Pi_wave_forward(
     )
 
     with _nvtx_range("Pi setup species helpers"):
-        (
-            sp_child1,
-            sp_child2,
-            sp_parent,
-            max_ancestor_depth,
-        ) = _get_species_wave_helpers(species_helpers, S, device)
+        species_topology = species_wave_topology(species_helpers, S=S, device=device)
+        sp_child1 = species_topology["sp_child1"]
+        sp_child2 = species_topology["sp_child2"]
+        sp_parent = species_topology["sp_parent"]
+        max_ancestor_depth = int(species_topology["max_ancestor_depth"])
 
     with _nvtx_range("Pi setup DTS constants"):
         if batched:
