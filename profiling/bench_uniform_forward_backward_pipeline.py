@@ -854,7 +854,11 @@ def _print_policy(static: StaticInputs, args: argparse.Namespace) -> None:
             int(meta["sl"].numel())
             for b in static.built_chunks
             for meta in b.wave_layout["wave_metas"]
-            if int(meta["phase"]) == 3 and meta.get("has_splits", False)
+            if meta.get("has_splits", False)
+            and any(
+                int(meta["start"]) <= int(root_id) < int(meta["end"])
+                for root_id in b.wave_layout["root_clade_ids_cpu"]
+            )
         ),
         default=0,
     )

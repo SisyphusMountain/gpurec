@@ -15,12 +15,6 @@ def dtype_nbytes(dtype: torch.dtype) -> int:
     return torch.empty((), dtype=dtype).element_size()
 
 
-def next_power_of_2_int(value: int) -> int:
-    if value <= 1:
-        return 1
-    return 1 << (int(value) - 1).bit_length()
-
-
 def cuda_memory_budget_bytes(
     device: torch.device | int | None = None,
     *,
@@ -58,11 +52,9 @@ def proposal0_wave_scratch_bytes(
     dtype: torch.dtype,
     *,
     scratch_tensors: int = 10,
-    round_species_to_power_of_2: bool = False,
 ) -> int:
     """Exact payload bytes for Proposal 0's current `[W, S]` scratch set."""
-    species = next_power_of_2_int(S) if round_species_to_power_of_2 else int(S)
-    return int(scratch_tensors) * int(W) * species * dtype_nbytes(dtype)
+    return int(scratch_tensors) * int(W) * int(S) * dtype_nbytes(dtype)
 
 
 def uniform_training_dense_state_bytes(

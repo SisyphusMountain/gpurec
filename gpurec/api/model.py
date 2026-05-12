@@ -32,10 +32,7 @@ from gpurec.core.batching import (
 from gpurec.core.model import GeneDataset
 from gpurec.core.scheduling import compute_clade_waves
 from gpurec.core.forward import Pi_wave_forward
-from gpurec.core.likelihood import (
-    E_fixed_point,
-    compute_log_likelihood_root_rows,
-)
+from gpurec.core.likelihood import E_fixed_point, compute_log_likelihood_root_rows
 from gpurec.core._helpers import _nvtx_range
 
 from .autograd import (
@@ -328,37 +325,29 @@ class GeneReconModel(torch.nn.Module):
     def forward(self, reduce: str = "sum") -> torch.Tensor:
         """Returns negative log-likelihood (a loss).
 
-        ``reduce="sum"`` (default) returns a scalar (sum over families).
-        ``reduce="per_family"`` returns a ``[G]`` vector and is only valid in
-        genewise mode.
+        ``reduce="sum"`` (default) returns a scalar. ``reduce="per_family"``
+        returns differentiable per-family losses in genewise mode and a
+        no-grad diagnostic vector in shared-theta modes.
         """
-        if not torch.is_grad_enabled():
-            return self._forward_inference(reduce=reduce)
+        if reduce == "per_family" and self._mode != "genewise":
+            if torch.is_grad_enabled():
+                raise ValueError(
+                    "reduce='per_family' is only differentiable in genewise mode."
+                )
+            return self._forward_per_family_inference()
         return _GeneReconFunction.apply(self.theta, self._static, reduce)
 
     @torch.no_grad()
-    def _forward_inference(self, reduce: str = "sum") -> torch.Tensor:
-        """No-grad NLL path that avoids backward-only forward outputs.
-
-        The differentiable forward must save the full wave-ordered ``Pi`` and
-        ``Pibar`` tensors for the implicit backward pass. In inference/no-grad
-        contexts those tensors are dead: the likelihood only needs root rows.
-        This mirrors the optimized uniform forward path used by the profiling
-        harnesses.
-        """
-        if reduce not in ("sum", "per_family"):
-            raise ValueError(f"reduce must be 'sum' or 'per_family', got {reduce!r}")
-
+    def _forward_per_family_inference(self) -> torch.Tensor:
+        """Per-family diagnostic NLL for shared-theta modes."""
         static = self._static
-        device = static.device
-        dtype = static.dtype
 
-        with _nvtx_range("inference extract parameters"):
+        with _nvtx_range("per-family extract parameters"):
             log_pS, log_pD, log_pL, max_transfer_vec = (
                 _extract_parameters(self.theta.detach(), static)
             )
 
-        with _nvtx_range("inference E fixed point"):
+        with _nvtx_range("per-family E fixed point"):
             e_max_iters = (
                 static.fixed_iters_E
                 if static.fixed_iters_E is not None
@@ -373,45 +362,31 @@ class GeneReconModel(torch.nn.Module):
                 max_transfer_mat=max_transfer_vec,
                 max_iters=e_max_iters,
                 tolerance=e_tolerance,
-                warm_start_E=(
-                    None if static.fixed_iters_E is not None else static.warm_E
-                ),
-                dtype=dtype,
-                device=device,
+                warm_start_E=None,
+                dtype=static.dtype,
+                device=static.device,
                 ancestors_T=static.ancestors_T,
             )
-            E = E_out["E"]
 
-        with _nvtx_range("inference Pi waves root rows"):
+        with _nvtx_range("per-family Pi root rows"):
             Pi_out = Pi_wave_forward(
                 wave_layout=static.wave_layout,
                 species_helpers=static.species_helpers,
-                E=E,
+                E=E_out["E"],
                 Ebar=E_out["E_bar"],
                 E_s1=E_out["E_s1"],
                 E_s2=E_out["E_s2"],
                 log_pS=log_pS,
                 log_pD=log_pD,
                 max_transfer_mat=max_transfer_vec,
-                device=device,
-                dtype=dtype,
+                device=static.device,
+                dtype=static.dtype,
                 fixed_iters=static.fixed_iters_Pi,
                 return_original=False,
                 return_root_rows=True,
-                family_idx=(
-                    static.wave_layout.get("family_idx") if static.genewise else None
-                ),
             )
 
-        with _nvtx_range("inference root likelihood"):
-            nll_vec = compute_log_likelihood_root_rows(
-                Pi_out["Pi_root_rows"],
-                E,
-            )
-            static.warm_E = (
-                None if static.fixed_iters_E is not None else E.detach()
-            )
-            return nll_vec.sum() if reduce == "sum" else nll_vec
+        return compute_log_likelihood_root_rows(Pi_out["Pi_root_rows"], E_out["E"])
 
     def nll_per_family(self) -> torch.Tensor:
         """Per-family NLL ``[G]``. Only valid in genewise mode."""

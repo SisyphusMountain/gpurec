@@ -93,13 +93,11 @@ def Pi_wave_forward(
         dict with 'Pi' (in original clade order when requested),
         'Pi_root_rows' when requested.
     """
-    ccp_helpers = wave_layout['ccp_helpers']
     leaf_row_index = wave_layout['leaf_row_index']
-    leaf_col_index = wave_layout['leaf_col_index']
     leaf_species_index = wave_layout.get('leaf_species_index')
     wave_metas = wave_layout['wave_metas']
 
-    C = int(ccp_helpers['C'])
+    C = int(wave_layout['C'])
     S = int(species_helpers['S'])
     target_device = torch.device(device)
     if target_device.type != "cuda":
@@ -112,7 +110,8 @@ def Pi_wave_forward(
     with _nvtx_range("Pi setup tensors"):
         _PI_INIT = torch.finfo(dtype).min
         Pi = torch.full((C, S), _PI_INIT, dtype=dtype, device=device)
-        Pi[leaf_row_index.to(device), leaf_col_index.to(device)] = 0.0
+        leaf_rows = leaf_row_index.to(device)
+        Pi[leaf_rows, leaf_species_index[leaf_rows]] = 0.0
         Pibar = torch.full((C, S), NEG_INF, dtype=dtype, device=device)
 
     batched = family_idx is not None

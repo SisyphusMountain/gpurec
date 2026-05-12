@@ -30,19 +30,8 @@ class GeneDataset:
         self.dtype = dtype
         ext = _load_species_gene_ext()
 
-        use_single_preprocess = os.environ.get("GPUREC_PREPROCESS_MODE", "").lower() == "single"
         family_names = [f"family_{i:06d}" for i in range(len(gene_tree_paths))]
-        if use_single_preprocess:
-            raw_by_family = {
-                name: ext.preprocess(
-                    species_tree_path,
-                    [str(path)],
-                    include_species_matrices=False,
-                )
-                for name, path in zip(family_names, gene_tree_paths)
-            }
-            self.species_helpers = raw_by_family[family_names[0]]['species']
-        elif preprocess_cache_dir is not None:
+        if preprocess_cache_dir is not None:
             self.species_helpers, raw_by_family = self._preprocess_with_cache(
                 ext,
                 species_tree_path,

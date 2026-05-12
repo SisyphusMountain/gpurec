@@ -18,22 +18,20 @@ def collate_gene_families(
           'C' (int), 'N_splits' (int),
           'split_leftrights_sorted' (Long[2*N_i]),
           'log_split_probs_sorted' (Float[N_i]),
-          'seg_parent_ids' (Long[num_ge2_i + num_eq1_i + num_eq0_i]),
-          'ptr_ge2' (Long[num_ge2_i + 1]),
-          'num_segs_ge2' (int), 'num_segs_eq1' (int), 'num_segs_eq0' (int),
+          'split_parents_sorted' (Long[N_i]),
+          'num_segs_eq1' (int),
           'end_rows_ge2' (int).
       - 'leaf_row_index': Long[K_i]
       - 'leaf_col_index': Long[K_i]
       - 'root_clade_id': int
 
     Returns a dict with:
-      - 'ccp': merged CCP helpers compatible with Pi_step()
+      - 'ccp': merged CCP helpers consumed by build_wave_layout()
       - 'root_clade_ids': Long[F] (roots offset into concatenated clade axis)
       - 'family_meta': bookkeeping (clade offsets, per-family sizes)
     """
     # ---- running offsets and accumulators ----
     clade_offset = 0
-    row_offset_ge2 = 0  # counts DTS rows only in the >=2 block
 
     root_ids: List[int] = []
     leaf_row_parts, leaf_col_parts = [], []
@@ -42,14 +40,11 @@ def collate_gene_families(
     ge2_left_parts: List[torch.Tensor] = []
     ge2_right_parts: List[torch.Tensor] = []
     ge2_logp_parts: List[torch.Tensor] = []
-    ge2_parent_ids_parts: List[torch.Tensor] = []
-    ge2_ptr_pieces: List[torch.Tensor] = []  # we will build [0] + cat of (ptr[1:]+offset)
 
     # (=1) block
     eq1_left_parts: List[torch.Tensor] = []
     eq1_right_parts: List[torch.Tensor] = []
     eq1_logp_parts: List[torch.Tensor] = []
-    eq1_parent_ids_parts: List[torch.Tensor] = []
 
     # split_parents_sorted (one entry per split, needed for wave scheduling)
     ge2_split_parents_parts: List[torch.Tensor] = []
@@ -58,10 +53,6 @@ def collate_gene_families(
     # Totals & per-family meta
     total_C = 0
     total_N = 0
-    total_num_ge2 = 0
-    total_num_eq1 = 0
-    total_num_eq0 = 0
-    total_end_rows_ge2 = 0
 
     family_meta: List[Dict[str, int]] = []
 
@@ -72,16 +63,12 @@ def collate_gene_families(
         # Family sizes
         C_i = int(ccp["C"])
         N_i = int(ccp["N_splits"])
-        num_ge2_i = int(ccp["num_segs_ge2"])
         num_eq1_i = int(ccp["num_segs_eq1"])
-        num_eq0_i = int(ccp.get("num_segs_eq0", 0))
         end_rows_ge2_i = int(ccp["end_rows_ge2"])
 
         # Pull split arrays
         leftrights_i = ccp["split_leftrights_sorted"].to(torch.long).cpu()  # [2*N_i]
         logp_i = ccp["log_split_probs_sorted"].to(dtype).cpu()              # [N_i]
-        seg_parent_ids_i = ccp["seg_parent_ids"].to(torch.long).cpu()       # [num_ge2_i + num_eq1_i + num_eq0_i]
-        ptr_ge2_i = ccp["ptr_ge2"].to(torch.long).cpu()                     # [num_ge2_i + 1]
 
         # Split left/right halves so we can cut the ge2 vs eq1 ranges cleanly
         assert leftrights_i.numel() == 2 * N_i
@@ -103,12 +90,7 @@ def collate_gene_families(
             ge2_left_parts.append(ge2_left)
             ge2_right_parts.append(ge2_right)
             ge2_logp_parts.append(logp_i[:end_rows_ge2_i])
-            ge2_parent_ids_parts.append(seg_parent_ids_i[:num_ge2_i] + clade_offset)
             ge2_split_parents_parts.append(sp_sorted_i[:end_rows_ge2_i] + clade_offset)
-            # stitch the ptrs: skip the leading 0 and add the current global row offset
-            if num_ge2_i > 0:
-                ge2_ptr_pieces.append(ptr_ge2_i[1:] + row_offset_ge2)
-            row_offset_ge2 += end_rows_ge2_i
 
         # (=1) rows for this family (exactly one split per clade)
         if num_eq1_i > 0:
@@ -119,7 +101,6 @@ def collate_gene_families(
             eq1_left_parts.append(eq1_left)
             eq1_right_parts.append(eq1_right)
             eq1_logp_parts.append(logp_i[start:stop])
-            eq1_parent_ids_parts.append(seg_parent_ids_i[num_ge2_i:num_ge2_i+num_eq1_i] + clade_offset)
             eq1_split_parents_parts.append(sp_sorted_i[start:stop] + clade_offset)
 
         # Species/clade leaf mappings
@@ -132,18 +113,9 @@ def collate_gene_families(
         # Totals and offsets
         total_C += C_i
         total_N += N_i
-        total_num_ge2 += num_ge2_i
-        total_num_eq1 += num_eq1_i
-        total_num_eq0 += num_eq0_i
-        total_end_rows_ge2 += end_rows_ge2_i
 
         family_meta.append({
             "C": C_i,
-            "N_splits": N_i,
-            "num_segs_ge2": num_ge2_i,
-            "num_segs_eq1": num_eq1_i,
-            "num_segs_eq0": num_eq0_i,
-            "end_rows_ge2": end_rows_ge2_i,
             "clade_offset": clade_offset,
         })
 
@@ -178,31 +150,6 @@ def collate_gene_families(
         eq1_logp = torch.empty((0,), dtype=dtype)
     log_split_probs_sorted_batch = torch.cat([ge2_logp, eq1_logp], dim=0)
 
-    # seg_parent_ids: [all GE2 parents] ⧺ [all EQ1 parents] (EQ0 not used in Pi_step)
-    if len(ge2_parent_ids_parts) > 0:
-        seg_parent_ids_ge2 = torch.cat(ge2_parent_ids_parts, dim=0)
-    else:
-        seg_parent_ids_ge2 = torch.empty((0,), dtype=torch.long)
-    if len(eq1_parent_ids_parts) > 0:
-        seg_parent_ids_eq1 = torch.cat(eq1_parent_ids_parts, dim=0)
-    else:
-        seg_parent_ids_eq1 = torch.empty((0,), dtype=torch.long)
-    seg_parent_ids_batch = torch.cat([seg_parent_ids_ge2, seg_parent_ids_eq1], dim=0)
-
-    # ptr_ge2: stitch families’ >=2 pointers into one global pointer for the
-    #          first total_end_rows_ge2 rows of DTS_term
-    if total_num_ge2 > 0:
-        ptr_start = torch.tensor([0], dtype=torch.long)
-        if len(ge2_ptr_pieces) > 0:
-            ptr_rest = torch.cat(ge2_ptr_pieces, dim=0)
-            ptr_ge2_batch = torch.cat([ptr_start, ptr_rest], dim=0)
-        else:
-            # No family has >=2 segments, but total_num_ge2>0 implies logic error
-            ptr_ge2_batch = ptr_start
-    else:
-        # Degenerate case: no clade has >=2 splits in the entire batch
-        ptr_ge2_batch = torch.tensor([0], dtype=torch.long)
-
     # split_parents_sorted: [all ge2 split parents ; all eq1 split parents]
     if len(ge2_split_parents_parts) > 0:
         ge2_sp = torch.cat(ge2_split_parents_parts, dim=0)
@@ -217,8 +164,6 @@ def collate_gene_families(
     # Sanity checks
     assert split_leftrights_sorted_batch.numel() == 2 * total_N
     assert log_split_probs_sorted_batch.numel() == total_N
-    assert ptr_ge2_batch.numel() == (total_num_ge2 + 1)
-    assert seg_parent_ids_batch.numel() == (total_num_ge2 + total_num_eq1)
     assert split_parents_sorted_batch.numel() == total_N
 
     leaf_row_index = torch.cat(leaf_row_parts, 0).to(device)
@@ -230,18 +175,11 @@ def collate_gene_families(
             "split_leftrights_sorted": split_leftrights_sorted_batch.to(device),
             "log_split_probs_sorted": log_split_probs_sorted_batch.to(device),
             "split_parents_sorted": split_parents_sorted_batch.to(device),
-            "seg_parent_ids": seg_parent_ids_batch.to(device),
-            "ptr_ge2": ptr_ge2_batch.to(device),
-            "num_segs_ge2": total_num_ge2,
-            "num_segs_eq1": total_num_eq1,
-            "num_segs_eq0": total_num_eq0,
-            "end_rows_ge2": total_end_rows_ge2,
-            "stop_reduce_ptr_idx": total_num_ge2,
         },
         "leaf_row_index": leaf_row_index,
         "leaf_col_index": leaf_col_index,
         "root_clade_ids": torch.tensor(root_ids, dtype=torch.long, device=device),
-        "family_meta": family_meta,  # optional, but useful bookkeeping
+        "family_meta": family_meta,
     }
     return out
 
@@ -266,7 +204,7 @@ def collate_wave(
     max_waves = max(len(w) for w in families_waves) if families_waves else 0
     cross_waves: List[List[int]] = [[] for _ in range(max_waves)]
 
-    for fam_idx, (fam_waves, offset) in enumerate(zip(families_waves, families_clade_offsets)):
+    for fam_waves, offset in zip(families_waves, families_clade_offsets):
         for k, wave_clades in enumerate(fam_waves):
             cross_waves[k].extend(c + offset for c in wave_clades)
 
@@ -334,9 +272,9 @@ def build_wave_layout(
     Returns:
         Dict with:
           'perm': Long[C] — original-to-new mapping
-          'ccp_helpers': remapped CCP dict (all clade IDs in new space)
+          'C': total clade count
           'leaf_row_index': remapped leaf row indices
-          'leaf_col_index': unchanged leaf col indices
+          'leaf_species_index': species id per leaf clade, -1 otherwise
           'root_clade_ids': remapped root clade IDs
           'wave_metas': list of per-wave metadata dicts
           'family_idx': Long[C] clade→family (only if family_clade_counts provided)
@@ -424,7 +362,6 @@ def build_wave_layout(
             'start': ws,
             'end': we,
             'W': W,
-            'phase': phases[wi],
             'has_splits': n_ws > 0,
         }
 
@@ -457,9 +394,7 @@ def build_wave_layout(
             meta['sr'] = sr_index
             meta['log_split_probs'] = log_split_probs[wst].unsqueeze(1).contiguous()
             meta['reduce_idx'] = reduce_idx_index
-            meta['n_ws'] = n_ws
             meta['n_eq1'] = n_eq1
-            meta['n_ge2_clades'] = n_ge2_clades
 
             if n_eq1 > 0:
                 meta['eq1_reduce_idx'] = reduce_idx_index[:n_eq1]
@@ -477,18 +412,13 @@ def build_wave_layout(
                 meta['ge2_ptr'] = ge2_ptr
                 meta['ge2_parent_ids'] = ge2_parent_ids.to(index_dtype).contiguous()  # wave-local clade indices
                 meta['ge2_max_fanout'] = int(ge2_counts.max().item())
-                meta['ge2_mean_fanout'] = float(ge2_counts.float().mean().item())
 
         wave_metas.append(meta)
 
     result = {
         'perm': perm,
-        'ccp_helpers': {
-            'C': C,
-            'N_splits': N_splits,
-        },
+        'C': C,
         'leaf_row_index': leaf_row_new,
-        'leaf_col_index': leaf_col_new,
         'leaf_species_index': leaf_species_index,
         'root_clade_ids': root_ids_new,
         'root_clade_ids_cpu': root_ids_new_cpu,
