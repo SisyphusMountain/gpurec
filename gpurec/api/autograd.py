@@ -60,7 +60,7 @@ class ReconStaticState:
     tol_E: float = 1e-8
     max_iters_Pi: int = 2000
     tol_Pi: float = 1e-6
-    fixed_iters_Pi: Optional[int] = 6
+    fixed_iters_Pi: int = 6
     neumann_terms: int = 3
     use_pruning: bool = True
     pruning_threshold: float = 1e-6
@@ -196,13 +196,9 @@ class _GeneReconFunction(torch.autograd.Function):
                     E_s2=E_s2,
                     log_pS=log_pS,
                     log_pD=log_pD,
-                    log_pL=log_pL,
-                    transfer_mat=transfer_mat,
                     max_transfer_mat=max_transfer_vec,
                     device=device,
                     dtype=dtype,
-                    local_iters=static.max_iters_Pi,
-                    local_tolerance=static.tol_Pi,
                     fixed_iters=static.fixed_iters_Pi,
                     return_original=False,
                     family_idx=(

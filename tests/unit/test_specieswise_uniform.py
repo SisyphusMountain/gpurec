@@ -186,7 +186,7 @@ def _make_model(
         device=device,
         dtype=dtype,
         theta_init_rates=(0.05, 0.05, 0.05),
-        fixed_iters_Pi=3,
+        fixed_iters_Pi=4,
         max_iters_Pi=500,
         tol_Pi=TOL,
         max_iters_E=500,
@@ -237,13 +237,9 @@ def _run_forward(
         E_s2=E_out["E_s2"],
         log_pS=log_pS,
         log_pD=log_pD,
-        log_pL=log_pL,
-        transfer_mat=transfer_mat,
         max_transfer_mat=max_transfer_vec,
         device=static.device,
         dtype=static.dtype,
-        local_iters=static.max_iters_Pi,
-        local_tolerance=static.tol_Pi,
         fixed_iters=static.fixed_iters_Pi,
         return_original=False,
         need_pibar=need_pibar,
@@ -263,7 +259,6 @@ def _run_forward(
 
 def _set_reference_env(monkeypatch: pytest.MonkeyPatch) -> None:
     flags = {
-        "GPUREC_FORWARD_TOPOLOGY_INT32": "0",
         "GPUREC_SELF_LOOP_2D_TRITON": "0",
     }
     for key, value in flags.items():
@@ -272,7 +267,6 @@ def _set_reference_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def _set_optimized_env(monkeypatch: pytest.MonkeyPatch) -> None:
     flags = {
-        "GPUREC_FORWARD_TOPOLOGY_INT32": "1",
         "GPUREC_SELF_LOOP_2D_TRITON": "auto",
     }
     for key, value in flags.items():

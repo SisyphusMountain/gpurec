@@ -1,12 +1,8 @@
 """Forward pass: Pi_wave_forward and helpers."""
-import math
-import os
 
 import torch
 
-from .kernels.scatter_lse import seg_logsumexp
 from .kernels.wave_step import (
-    wave_step_uniform_fused,
     wave_step_uniform_fused_into,
     wave_pibar_uniform_parent_fused,
 )
@@ -34,9 +30,6 @@ def _compute_dts_cross(Pi, Pibar, meta, sp_child1, sp_child2, log_pD, log_pS,
     n_ge2_clades = meta.get('n_ge2_clades', 0)
 
     if n_ge2_clades > 0:
-        empty_ge2_ptr = None
-        if n_ge2_clades == 0:
-            empty_ge2_ptr = torch.zeros((1,), dtype=torch.long, device=device)
         return dts_fused_parent_reduced(
             Pi, Pibar, sl, sr,
             sp_child1, sp_child2,
@@ -44,7 +37,7 @@ def _compute_dts_cross(Pi, Pibar, meta, sp_child1, sp_child2, log_pD, log_pS,
             W,
             n_eq1,
             meta.get('eq1_reduce_idx', sl[:0]),
-            meta.get('ge2_ptr', empty_ge2_ptr),
+            meta['ge2_ptr'],
             meta.get('ge2_parent_ids', sl[:0]),
             active_mask=active_mask,
             family_idx=family_idx,
@@ -66,10 +59,6 @@ def _compute_dts_cross(Pi, Pibar, meta, sp_child1, sp_child2, log_pD, log_pS,
     dts_r = torch.full((W, S), NEG_INF, device=device, dtype=dtype)
     if n_eq1 > 0:
         dts_r[meta['eq1_reduce_idx'].long()] = dts_term[:n_eq1]
-    if n_ge2_clades > 0:
-        ge2_term = dts_term[n_eq1:].contiguous()
-        y_ge2 = seg_logsumexp(ge2_term, meta['ge2_ptr'])
-        dts_r[meta['ge2_parent_ids'].long()] = y_ge2
     return dts_r
 
 
@@ -78,12 +67,7 @@ def _get_species_wave_helpers(species_helpers, S, device):
     target_device = torch.device(device)
     if target_device.type == 'cuda' and target_device.index is None:
         target_device = torch.device('cuda', torch.cuda.current_device())
-    use_topology_int32 = bool(
-        target_device.type == 'cuda'
-        and int(S) < 2 ** 31
-        and os.environ.get("GPUREC_FORWARD_TOPOLOGY_INT32", "1") != "0"
-    )
-    index_dtype = torch.int32 if use_topology_int32 else torch.long
+    index_dtype = torch.int32
     cache = species_helpers.get('_wave_forward_species_cache')
     if (
         cache is not None
@@ -156,34 +140,6 @@ def _get_species_wave_helpers(species_helpers, S, device):
 
 
 # ---------------------------------------------------------------------------
-# Split parent reconstruction
-# ---------------------------------------------------------------------------
-
-def _reconstruct_split_parents(ccp_helpers):
-    """Reconstruct split_parents_sorted from seg_parent_ids and segment structure."""
-    seg_parent_ids = ccp_helpers['seg_parent_ids']
-    num_ge2 = int(ccp_helpers['num_segs_ge2'])
-    num_eq1 = int(ccp_helpers['num_segs_eq1'])
-    end_rows_ge2 = int(ccp_helpers['end_rows_ge2'])
-    ptr_ge2 = ccp_helpers['ptr_ge2']
-    N_splits = int(ccp_helpers['N_splits'])
-
-    split_parents = torch.empty(N_splits, dtype=torch.long, device=seg_parent_ids.device)
-
-    for i in range(num_ge2):
-        start = int(ptr_ge2[i].item())
-        end = int(ptr_ge2[i + 1].item())
-        parent_id = seg_parent_ids[i]
-        split_parents[start:end] = parent_id
-
-    for i in range(num_eq1):
-        row = end_rows_ge2 + i
-        parent_id = seg_parent_ids[num_ge2 + i]
-        split_parents[row] = parent_id
-
-    return split_parents
-
-# ---------------------------------------------------------------------------
 # Pi wave forward
 # ---------------------------------------------------------------------------
 
@@ -196,15 +152,11 @@ def Pi_wave_forward(
     E_s2,
     log_pS,
     log_pD,
-    log_pL,
-    transfer_mat,
     max_transfer_mat,
     device,
     dtype,
     *,
-    local_iters: int = 50,
-    local_tolerance: float = 1e-3,
-    fixed_iters: int | None = None,
+    fixed_iters: int,
     family_idx: torch.Tensor | None = None,
     return_original: bool = True,
     need_pibar: bool = True,
@@ -220,13 +172,11 @@ def Pi_wave_forward(
                      and precomputed per-wave metadata
         species_helpers: species tree helpers dict
         E, Ebar, E_s1, E_s2: converged E vectors [S] or [G, S]
-        log_pS, log_pD, log_pL: event probabilities (scalar, [S], [G], or [G, S])
-        transfer_mat: unused in the lean uniform path
+        log_pS, log_pD: event probabilities (scalar, [S], [G], or [G, S])
         max_transfer_mat: [S] or [G, S] log2-space uniform transfer maxima
         device, dtype: target device and float dtype
-        local_iters: max iterations per wave self-loop
-        local_tolerance: convergence threshold
-        fixed_iters: if set, use fixed iteration count (no convergence check / GPU sync)
+        fixed_iters: fixed self-loop iteration count. Must be even so the
+            ping-pong state ends with final Pi rows in ``Pi``.
         family_idx: Long[C] clade→family mapping in wave-ordered space.
                     When provided, parameters are [G, ...] and indexed per-clade.
         need_pibar: if False, do not return final Pibar rows. In fixed even
@@ -247,7 +197,6 @@ def Pi_wave_forward(
     leaf_col_index = wave_layout['leaf_col_index']
     leaf_species_index = wave_layout.get('leaf_species_index')
     wave_metas = wave_layout['wave_metas']
-    wave_starts = wave_layout['wave_starts']
 
     C = int(ccp_helpers['C'])
     S = int(species_helpers['S'])
@@ -256,6 +205,8 @@ def Pi_wave_forward(
         raise ValueError("The lean forward path requires CUDA.")
     if leaf_species_index is None:
         raise ValueError("The lean forward path requires leaf_species_index in the wave layout.")
+    if fixed_iters < 1 or fixed_iters % 2 != 0:
+        raise ValueError("The lean forward path requires a positive even fixed_iters value.")
 
     with _nvtx_range("Pi setup tensors"):
         _PI_INIT = torch.finfo(dtype).min
@@ -303,13 +254,12 @@ def Pi_wave_forward(
         ) = _get_species_wave_helpers(species_helpers, S, device)
 
     with _nvtx_range("Pi setup DTS constants"):
-        dl_loss_multiplier = float(os.environ.get("GPUREC_DL_LOSS_MULTIPLIER", "2.0"))
         if batched:
-            DL_const = math.log2(dl_loss_multiplier) + log_pD_family + E_family
+            DL_const = 1.0 + log_pD_family + E_family
             SL1_const = log_pS_family + E_s2_family
             SL2_const = log_pS_family + E_s1_family
         else:
-            DL_const = math.log2(dl_loss_multiplier) + log_pD + E
+            DL_const = 1.0 + log_pD + E
             SL1_const = log_pS + E_s2
             SL2_const = log_pS + E_s1
 
@@ -331,14 +281,8 @@ def Pi_wave_forward(
     else:
         wave_consts = (DL_const, SL1_const, SL2_const, Ebar, E, mt_squeezed)
 
-    n_waves = len(wave_metas)
-
-    use_fixed = fixed_iters is not None
-    n_iters = fixed_iters if use_fixed else local_iters
-    min_warmup = 0 if use_fixed else 3
-    use_uniform_pingpong = bool(use_fixed and n_iters % 2 == 0)
     root_clade_ids_for_skip = None
-    if use_uniform_pingpong and not need_pibar:
+    if not need_pibar:
         root_clade_ids_for_skip = wave_layout.get('root_clade_ids_cpu')
         if root_clade_ids_for_skip is None:
             root_clade_ids_for_skip = [
@@ -354,14 +298,6 @@ def Pi_wave_forward(
                 roots_in_wave += 1
         return roots_in_wave == W
 
-    def _compute_wave_dts(meta, pD_dts, pS_dts):
-        return _compute_dts_cross(
-            Pi, Pibar, meta, sp_child1, sp_child2,
-            pD_dts, pS_dts, S, device, dtype,
-            family_idx=family_idx if batched else None,
-            family_offset=meta['start'],
-        )
-
     total_iters = 0
 
     def _run_wave_self_loop(meta, dts_r, leaf_wt, DL_w, SL1_w, SL2_w,
@@ -370,57 +306,38 @@ def Pi_wave_forward(
         ws = meta['start']
         we = meta['end']
         W = meta['W']
-        for local_iter in range(n_iters):
+        for local_iter in range(fixed_iters):
             total_iters += 1
-            if use_uniform_pingpong:
-                pi_in = Pi if (local_iter % 2 == 0) else Pibar
-                pi_out = Pibar if (local_iter % 2 == 0) else Pi
-                wave_step_uniform_fused_into(
-                    pi_in, pi_out, Pibar, ws, W, S,
-                    mt_w, DL_w, Ebar_w, E_w, SL1_w, SL2_w,
-                    sp_child1, sp_child2, sp_parent, max_ancestor_depth,
-                    leaf_wt, dts_r,
-                    leaf_species_idx=leaf_species_index,
-                    leaf_logp=uniform_leaf_logp,
-                    family_idx=family_idx if batched else None,
-                    family_indexed_consts=batched,
-                )
-                if (
-                    local_iter == n_iters - 1
-                    and not _can_skip_final_pibar(ws, we, W)
-                ):
-                    wave_pibar_uniform_parent_fused(
-                        Pi, Pibar, ws, W, S,
-                        mt_w, sp_parent, max_ancestor_depth,
-                        row_max_out=uniform_pibar_row_max,
-                        family_idx=family_idx if batched else None,
-                        family_indexed_consts=batched,
-                    )
-            else:
-                compute_diff = not use_fixed and local_iter >= min_warmup
-                Pi_new, max_diff = wave_step_uniform_fused(
+            pi_in = Pi if (local_iter % 2 == 0) else Pibar
+            pi_out = Pibar if (local_iter % 2 == 0) else Pi
+            wave_step_uniform_fused_into(
+                pi_in, pi_out, Pibar, ws, W, S,
+                mt_w, DL_w, Ebar_w, E_w, SL1_w, SL2_w,
+                sp_child1, sp_child2, sp_parent, max_ancestor_depth,
+                leaf_wt, dts_r,
+                leaf_species_idx=leaf_species_index,
+                leaf_logp=uniform_leaf_logp,
+                family_idx=family_idx if batched else None,
+                family_indexed_consts=batched,
+            )
+            if local_iter == fixed_iters - 1 and not _can_skip_final_pibar(ws, we, W):
+                wave_pibar_uniform_parent_fused(
                     Pi, Pibar, ws, W, S,
-                    mt_w, DL_w, Ebar_w, E_w, SL1_w, SL2_w,
-                    sp_child1, sp_child2, sp_parent, max_ancestor_depth,
-                    leaf_wt, dts_r,
-                    compute_diff=compute_diff,
-                    leaf_species_idx=leaf_species_index,
-                    leaf_logp=uniform_leaf_logp,
+                    mt_w, sp_parent, max_ancestor_depth,
+                    row_max_out=uniform_pibar_row_max,
                     family_idx=family_idx if batched else None,
                     family_indexed_consts=batched,
-                    pibar_row_max=uniform_pibar_row_max,
                 )
-
-                if compute_diff and max_diff.item() < local_tolerance:
-                    Pi[ws:we] = Pi_new
-                    break
-
-                Pi[ws:we] = Pi_new
 
     with _nvtx_range("Pi wave forward v2"):
         for meta in wave_metas:
             if meta['has_splits']:
-                dts_r = _compute_wave_dts(meta, log_pD_param, log_pS_param)
+                dts_r = _compute_dts_cross(
+                    Pi, Pibar, meta, sp_child1, sp_child2,
+                    log_pD_param, log_pS_param, S, device, dtype,
+                    family_idx=family_idx if batched else None,
+                    family_offset=meta['start'],
+                )
             else:
                 dts_r = None
 

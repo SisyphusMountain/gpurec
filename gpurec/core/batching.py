@@ -5,6 +5,25 @@ from typing import Any, Dict, List, Tuple
 import torch
 
 
+def _reconstruct_split_parents(ccp_helpers):
+    """Reconstruct split_parents_sorted from legacy segment metadata."""
+    seg_parent_ids = ccp_helpers['seg_parent_ids']
+    num_ge2 = int(ccp_helpers['num_segs_ge2'])
+    num_eq1 = int(ccp_helpers['num_segs_eq1'])
+    end_rows_ge2 = int(ccp_helpers['end_rows_ge2'])
+    ptr_ge2 = ccp_helpers['ptr_ge2']
+    N_splits = int(ccp_helpers['N_splits'])
+
+    split_parents = torch.empty(N_splits, dtype=torch.long, device=seg_parent_ids.device)
+    for i in range(num_ge2):
+        start = int(ptr_ge2[i].item())
+        end = int(ptr_ge2[i + 1].item())
+        split_parents[start:end] = seg_parent_ids[i]
+    for i in range(num_eq1):
+        split_parents[end_rows_ge2 + i] = seg_parent_ids[num_ge2 + i]
+    return split_parents
+
+
 def collate_gene_families(
     batch: List[Dict[str, Any]],
     *,
@@ -553,7 +572,6 @@ def build_wave_layout(
     if split_parents is not None:
         sp_new = perm[split_parents.to(device=device, dtype=torch.long)]
     else:
-        from .forward import _reconstruct_split_parents
         sp_new = perm[_reconstruct_split_parents(ccp_helpers).to(device)]
 
     leaf_row_new = perm[leaf_row_index.to(device=device, dtype=torch.long)]

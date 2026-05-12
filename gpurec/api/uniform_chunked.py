@@ -45,7 +45,6 @@ UNIFORM_OPTIMIZED_DEFAULT_FLAGS = {
     "GPUREC_FORWARD_PARENT_REDUCED_DTS_IMPL": "tiled",
     "GPUREC_FORWARD_PARENT_REDUCED_DTS_TILE_SPLITS": "64",
     "GPUREC_FORWARD_PARENT_REDUCED_DTS_GE2_ONLY": "1",
-    "GPUREC_FORWARD_TOPOLOGY_INT32": "1",
     "GPUREC_FORWARD_DTS_OVERLAP_MODE": "off",
     "GPUREC_KERNELIZED_ACTIVE_MASK": "1",
     "GPUREC_KERNELIZED_BACKWARD_DTS": "1",
@@ -92,7 +91,7 @@ class UniformChunkedState:
     built_chunks: list[UniformBuiltChunk]
     device: torch.device
     dtype: torch.dtype
-    fixed_iters_Pi: int | None = 6
+    fixed_iters_Pi: int = 6
     fixed_iters_E: int | None = None
     max_iters_E: int = 2000
     tol_E: float = 1e-8
@@ -481,13 +480,9 @@ def _evaluate_chunked_uniform(
                 E_s2=e_out["E_s2"],
                 log_pS=log_pS,
                 log_pD=log_pD,
-                log_pL=log_pL,
-                transfer_mat=transfer_mat,
                 max_transfer_mat=max_transfer_vec,
                 device=state.device,
                 dtype=state.dtype,
-                local_iters=state.max_iters_Pi,
-                local_tolerance=state.tol_Pi,
                 fixed_iters=state.fixed_iters_Pi,
                 return_original=False,
                 need_pibar=need_grad,
@@ -687,7 +682,7 @@ class UniformChunkedReconModel(torch.nn.Module):
         clade_budget: int | None = None,
         family_chunk_candidates: Sequence[int] = (25, 50, 10, 75, 100),
         max_wave_candidates: Sequence[int] = (8192, 16384, 4096, 32768),
-        fixed_iters_Pi: int | None = 6,
+        fixed_iters_Pi: int = 6,
         fixed_iters_E: int | None = None,
         max_iters_E: int = 2000,
         tol_E: float = 1e-8,
@@ -712,6 +707,9 @@ class UniformChunkedReconModel(torch.nn.Module):
             fixed_iters_E = int(fixed_iters_E)
             if fixed_iters_E < 1:
                 raise ValueError("fixed_iters_E must be >= 1 when provided")
+        fixed_iters_Pi = int(fixed_iters_Pi)
+        if fixed_iters_Pi < 1 or fixed_iters_Pi % 2 != 0:
+            raise ValueError("fixed_iters_Pi must be a positive even integer")
 
         gene_paths = [str(p) for p in gene_trees]
         if not gene_paths:

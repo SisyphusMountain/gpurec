@@ -78,7 +78,7 @@ def _build_static_state(
     tol_E: float,
     max_iters_Pi: int,
     tol_Pi: float,
-    fixed_iters_Pi: Optional[int],
+    fixed_iters_Pi: int,
     neumann_terms: int,
     use_pruning: bool,
     pruning_threshold: float,
@@ -204,7 +204,7 @@ class GeneReconModel(torch.nn.Module):
         tol_E: float = 1e-8,
         max_iters_Pi: int = 2000,
         tol_Pi: float = 1e-6,
-        fixed_iters_Pi: Optional[int] = 6,
+        fixed_iters_Pi: int = 6,
         neumann_terms: int = 3,
         use_pruning: bool = True,
         pruning_threshold: float = 1e-6,
@@ -219,6 +219,9 @@ class GeneReconModel(torch.nn.Module):
             fixed_iters_E = int(fixed_iters_E)
             if fixed_iters_E < 1:
                 raise ValueError("fixed_iters_E must be >= 1 when provided")
+        fixed_iters_Pi = int(fixed_iters_Pi)
+        if fixed_iters_Pi < 1 or fixed_iters_Pi % 2 != 0:
+            raise ValueError("fixed_iters_Pi must be a positive even integer")
 
         # Sanity check: dataset flags must be consistent with mode
         ds_g, ds_sw = (dataset.genewise, dataset.specieswise)
@@ -404,13 +407,9 @@ class GeneReconModel(torch.nn.Module):
                 E_s2=E_out["E_s2"],
                 log_pS=log_pS,
                 log_pD=log_pD,
-                log_pL=log_pL,
-                transfer_mat=transfer_mat,
                 max_transfer_mat=max_transfer_vec,
                 device=device,
                 dtype=dtype,
-                local_iters=static.max_iters_Pi,
-                local_tolerance=static.tol_Pi,
                 fixed_iters=static.fixed_iters_Pi,
                 return_original=False,
                 need_pibar=False,
@@ -486,13 +485,9 @@ class GeneReconModel(torch.nn.Module):
             E_s2=E_out["E_s2"],
             log_pS=log_pS,
             log_pD=log_pD,
-            log_pL=log_pL,
-            transfer_mat=transfer_mat,
             max_transfer_mat=max_transfer_vec,
             device=static.device,
             dtype=static.dtype,
-            local_iters=static.max_iters_Pi,
-            local_tolerance=static.tol_Pi,
             fixed_iters=static.fixed_iters_Pi,
             return_original=original_order,
             need_pibar=False,
