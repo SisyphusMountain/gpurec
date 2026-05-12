@@ -38,28 +38,6 @@ from gpurec.optimization.implicit_grad import _e_adjoint_and_theta_vjp
 
 
 UNIFORM_OPTIMIZED_DEFAULT_FLAGS = {
-    "GPUREC_FORWARD_LEAF_INDEX": "1",
-    "GPUREC_UNIFORM_PINGPONG": "1",
-    "GPUREC_FORWARD_PARENT_REDUCED_DTS": "1",
-    "GPUREC_FORWARD_PARENT_REDUCED_DTS_MIN_SPLITS": "0",
-    "GPUREC_FORWARD_PARENT_REDUCED_DTS_IMPL": "tiled",
-    "GPUREC_FORWARD_PARENT_REDUCED_DTS_TILE_SPLITS": "64",
-    "GPUREC_FORWARD_PARENT_REDUCED_DTS_GE2_ONLY": "1",
-    "GPUREC_FORWARD_DTS_OVERLAP_MODE": "off",
-    "GPUREC_KERNELIZED_ACTIVE_MASK": "1",
-    "GPUREC_KERNELIZED_BACKWARD_DTS": "1",
-    "GPUREC_FUSED_DTS_BACKWARD_ACCUM": "1",
-    "GPUREC_FUSED_CROSS_PIBAR_VJP": "1",
-    "GPUREC_FUSED_CROSS_PIBAR_VJP_IMPL": "tree",
-    "GPUREC_FUSED_UNIFORM_BACKWARD": "1",
-    "GPUREC_BACKWARD_LEAF_INDEX": "1",
-    "GPUREC_FUSED_WAVE_PARAM_ACCUM": "1",
-    "GPUREC_DTS_PIBAR_UD_FUSION": "1",
-    "GPUREC_DTS_PIBAR_UD_SKIP_ZERO_SIDES": "1",
-    "GPUREC_DTS_PIBAR_UD_COMPACT_LEVELS": "1",
-    "GPUREC_DTS_GRAD_MT_TWO_STAGE": "1",
-    "GPUREC_BACKWARD_PARENT_REDUCED_DTS": "tiled",
-    "GPUREC_BACKWARD_PARENT_REDUCED_DTS_TILE_SPLITS": "64",
     "GPUREC_SELF_LOOP_2D_TRITON": "auto",
     "GPUREC_SELF_LOOP_2D_BLOCK_W": "1",
 }
@@ -95,8 +73,6 @@ class UniformChunkedState:
     fixed_iters_E: int | None = None
     max_iters_E: int = 2000
     tol_E: float = 1e-8
-    max_iters_Pi: int = 2000
-    tol_Pi: float = 1e-6
     neumann_terms: int = 3
     use_pruning: bool = True
     pruning_threshold: float = 1e-6
@@ -149,8 +125,6 @@ def _apply_to_chunked_state(state: UniformChunkedState, fn) -> UniformChunkedSta
         fixed_iters_E=state.fixed_iters_E,
         max_iters_E=state.max_iters_E,
         tol_E=state.tol_E,
-        max_iters_Pi=state.max_iters_Pi,
-        tol_Pi=state.tol_Pi,
         neumann_terms=state.neumann_terms,
         use_pruning=state.use_pruning,
         pruning_threshold=state.pruning_threshold,
@@ -685,8 +659,6 @@ class UniformChunkedReconModel(torch.nn.Module):
         fixed_iters_E: int | None = None,
         max_iters_E: int = 2000,
         tol_E: float = 1e-8,
-        max_iters_Pi: int = 2000,
-        tol_Pi: float = 1e-6,
         neumann_terms: int = 3,
         use_pruning: bool = True,
         pruning_threshold: float = 1e-6,
@@ -801,8 +773,6 @@ class UniformChunkedReconModel(torch.nn.Module):
             fixed_iters_E=fixed_iters_E,
             max_iters_E=max_iters_E,
             tol_E=tol_E,
-            max_iters_Pi=max_iters_Pi,
-            tol_Pi=tol_Pi,
             neumann_terms=neumann_terms,
             use_pruning=use_pruning,
             pruning_threshold=pruning_threshold,

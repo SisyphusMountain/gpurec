@@ -451,10 +451,8 @@ def Pi_wave_backward(
         and dtype in _SUPPORTED_BACKWARD_FLOAT_DTYPES
         and device.type == 'cuda'
     )
-    dts_pibar_ud_side_threshold_arg = 0.0
     dts_pibar_ud_skip_zero_sides_enabled = True
     dts_pibar_ud_compact_levels_enabled = True
-    dts_pibar_ud_min_splits = 0
     kernelized_active_mask_enabled = (
         _HAS_FUSED_BACKWARD
         and device.type == 'cuda'
@@ -467,8 +465,6 @@ def Pi_wave_backward(
     fused_dts_backward_accum_enabled = True
     fused_uniform_backward_enabled = True
     fused_uniform_backward_view_rhs = True
-    skip_inactive_zero_stores_enabled = False
-    backward_pruning_row_stats_enabled = False
     hybrid_row_pruning_enabled = (
         _HAS_FUSED_BACKWARD
         and device.type == 'cuda'
@@ -476,10 +472,6 @@ def Pi_wave_backward(
     )
     hybrid_prune_self = True
     hybrid_prune_splits = True
-    hybrid_row_pruning_require_partial = False
-    hybrid_row_pruning_min_inactive_frac = 0.0
-    family_chunk_pruning_diag_enabled = False
-    family_chunk_rows = 256
     wave_topology_int32_enabled = (
         device.type == 'cuda'
         and dtype in _SUPPORTED_BACKWARD_FLOAT_DTYPES
@@ -702,70 +694,6 @@ def Pi_wave_backward(
         max_transfer_mat = max_transfer_mat.unsqueeze(0)
     else:
         family_idx = family_idx.to(device=device, dtype=torch.long).contiguous()
-
-    family_chunk_diag_wave_info = None
-    family_chunk_diag_values = None
-    family_chunk_diag_family_count = 1
-    if family_chunk_pruning_diag_enabled:
-        diag_family_idx = None
-        layout_family_idx = wave_layout.get('family_idx')
-        if torch.is_tensor(layout_family_idx) and int(layout_family_idx.numel()) == C:
-            diag_family_idx = layout_family_idx.to(device=device, dtype=torch.long)
-        elif torch.is_tensor(family_idx) and int(family_idx.numel()) == C:
-            diag_family_idx = family_idx.to(device=device, dtype=torch.long)
-        else:
-            diag_family_idx = torch.zeros(C, dtype=torch.long, device=device)
-
-        diag_family_cpu = diag_family_idx.detach().cpu().tolist()
-        family_chunk_diag_family_count = (
-            max((int(f) for f in diag_family_cpu), default=0) + 1
-        )
-        family_chunk_diag_wave_info = []
-        for meta in wave_metas:
-            ws_i = int(meta['start'])
-            W_i = int(meta['W'])
-            chunk_ids_cpu = torch.empty(W_i, dtype=torch.long)
-            chunk_sizes = []
-            chunk_families = []
-            start_i = 0
-            chunk_i = 0
-            while start_i < W_i:
-                fam_i = int(diag_family_cpu[ws_i + start_i])
-                end_i = start_i + 1
-                while (
-                    end_i < W_i
-                    and int(diag_family_cpu[ws_i + end_i]) == fam_i
-                    and (end_i - start_i) < family_chunk_rows
-                ):
-                    end_i += 1
-                chunk_ids_cpu[start_i:end_i] = chunk_i
-                chunk_sizes.append(end_i - start_i)
-                chunk_families.append(fam_i)
-                start_i = end_i
-                chunk_i += 1
-
-            family_chunk_diag_wave_info.append({
-                'chunk_ids': chunk_ids_cpu.to(device=device),
-                'chunk_sizes': torch.tensor(chunk_sizes, dtype=torch.long, device=device),
-                'chunk_families': torch.tensor(chunk_families, dtype=torch.long, device=device),
-                'n_chunks': int(chunk_i),
-                'n_family_slots': len(set(chunk_families)),
-            })
-
-        family_chunk_diag_values = {
-            'waves': 0,
-            'rows_total': [],
-            'rows_current': [],
-            'rows_active': [],
-            'rows_chunk_scheduled': [],
-            'chunks_total': [],
-            'chunks_active': [],
-            'family_slots_total': [],
-            'family_slots_active': [],
-            'splits_current': [],
-            'splits_chunk_scheduled': [],
-            'splits_active_parent': [],
-        }
 
     mt_squeezed = max_transfer_mat.squeeze(-1) if max_transfer_mat.ndim > 2 else max_transfer_mat
 
@@ -1120,79 +1048,6 @@ def Pi_wave_backward(
             return clade_max >= pruning_threshold
         return clade_max > 0
 
-    def _record_family_chunk_diag(k, active_mask, current_wave_scheduled):
-        if family_chunk_diag_values is None or active_mask is None:
-            return
-
-        info = family_chunk_diag_wave_info[k]
-        meta = wave_metas[k]
-        W = int(meta['W'])
-        device_i = active_mask.device
-        active_i64 = active_mask.to(torch.int64)
-        chunk_ids = info['chunk_ids']
-        chunk_sizes = info['chunk_sizes']
-        chunk_families = info['chunk_families']
-        n_chunks = int(info['n_chunks'])
-
-        chunk_active_counts = torch.zeros(
-            n_chunks, dtype=torch.int64, device=device_i
-        )
-        chunk_active_counts.scatter_add_(0, chunk_ids, active_i64)
-        active_chunks = chunk_active_counts > 0
-
-        active_rows = active_i64.sum()
-        active_chunk_rows = chunk_sizes[active_chunks].sum()
-        active_chunk_count = active_chunks.to(torch.int64).sum()
-
-        family_active_counts = torch.zeros(
-            family_chunk_diag_family_count, dtype=torch.int64, device=device_i
-        )
-        family_active_counts.scatter_add_(
-            0, chunk_families, active_chunks.to(torch.int64)
-        )
-        active_family_slots = (family_active_counts > 0).to(torch.int64).sum()
-
-        current_rows = W if current_wave_scheduled else 0
-        current_splits = 0
-        chunk_scheduled_splits = torch.zeros((), dtype=torch.int64, device=device_i)
-        active_parent_splits = torch.zeros((), dtype=torch.int64, device=device_i)
-        if meta.get('has_splits') and current_wave_scheduled:
-            reduce_idx = meta['reduce_idx']
-            reduce_idx_long = reduce_idx.long()
-            current_splits = int(reduce_idx.numel())
-            parent_chunk_ids = chunk_ids[reduce_idx_long]
-            chunk_scheduled_splits = active_chunks[parent_chunk_ids].to(torch.int64).sum()
-            active_parent_splits = active_i64[reduce_idx_long].sum()
-
-        family_chunk_diag_values['waves'] += 1
-        family_chunk_diag_values['rows_total'].append(
-            torch.tensor(W, dtype=torch.int64, device=device_i)
-        )
-        family_chunk_diag_values['rows_current'].append(
-            torch.tensor(current_rows, dtype=torch.int64, device=device_i)
-        )
-        family_chunk_diag_values['rows_active'].append(active_rows)
-        family_chunk_diag_values['rows_chunk_scheduled'].append(active_chunk_rows)
-        family_chunk_diag_values['chunks_total'].append(
-            torch.tensor(n_chunks, dtype=torch.int64, device=device_i)
-        )
-        family_chunk_diag_values['chunks_active'].append(active_chunk_count)
-        family_chunk_diag_values['family_slots_total'].append(
-            torch.tensor(
-                int(info['n_family_slots']), dtype=torch.int64, device=device_i
-            )
-        )
-        family_chunk_diag_values['family_slots_active'].append(active_family_slots)
-        family_chunk_diag_values['splits_current'].append(
-            torch.tensor(current_splits, dtype=torch.int64, device=device_i)
-        )
-        family_chunk_diag_values['splits_chunk_scheduled'].append(
-            chunk_scheduled_splits
-        )
-        family_chunk_diag_values['splits_active_parent'].append(
-            active_parent_splits
-        )
-
     for k in range(K - 1, -1, -1):
         meta = wave_metas[k]
         ws = meta['start']
@@ -1220,17 +1075,11 @@ def Pi_wave_backward(
             if use_pruning or device_pruning_wave:
                 active_mask = _compute_active_mask(rhs_k)
             active_mask_for_existing_policy = active_mask is not None
-            if family_chunk_pruning_diag_enabled and active_mask is None:
-                active_mask = _compute_active_mask(rhs_k)
             if active_mask_for_existing_policy:
                 active_mask = active_mask.contiguous()
                 active_mask_for_dts_forward = active_mask
                 active_mask_for_wave_kernel = active_mask
                 active_mask_for_split_kernels = active_mask
-            if active_mask is not None:
-                _record_family_chunk_diag(
-                    k, active_mask, current_wave_scheduled=True
-                )
             if device_pruning_wave:
                 device_pruning_clades_total += W
                 device_pruning_waves_total += 1
@@ -1243,9 +1092,6 @@ def Pi_wave_backward(
         else:
             active_mask = _compute_active_mask(rhs_k)
             wave_active = bool(active_mask.any())
-            _record_family_chunk_diag(
-                k, active_mask, current_wave_scheduled=wave_active
-            )
 
             if not wave_active:
                 n_waves_skipped += 1
@@ -1254,24 +1100,6 @@ def Pi_wave_backward(
 
             if use_fused:
                 apply_hybrid_row_pruning = hybrid_row_pruning_enabled
-                n_active_for_policy = None
-                if apply_hybrid_row_pruning and (
-                    hybrid_row_pruning_require_partial
-                    or hybrid_row_pruning_min_inactive_frac > 0.0
-                ):
-                    n_active_for_policy = int(active_mask.sum().item())
-                    n_inactive_for_policy = W - n_active_for_policy
-                    if (
-                        hybrid_row_pruning_require_partial
-                        and n_inactive_for_policy == 0
-                    ):
-                        apply_hybrid_row_pruning = False
-                    if hybrid_row_pruning_min_inactive_frac > 0.0:
-                        inactive_frac = n_inactive_for_policy / W
-                        apply_hybrid_row_pruning = (
-                            apply_hybrid_row_pruning
-                            and inactive_frac >= hybrid_row_pruning_min_inactive_frac
-                        )
                 if apply_hybrid_row_pruning:
                     active_mask = active_mask.contiguous()
                     if hybrid_prune_self:
@@ -1279,18 +1107,7 @@ def Pi_wave_backward(
                         active_mask_for_wave_kernel = active_mask
                     if hybrid_prune_splits:
                         active_mask_for_split_kernels = active_mask
-                # The fused Triton path does not consume compact row indices.
-                # Keep optional row statistics out of the production path
-                # because sum().item() synchronizes the wave loop.
-                if backward_pruning_row_stats_enabled:
-                    n_active = (
-                        n_active_for_policy
-                        if n_active_for_policy is not None
-                        else int(active_mask.sum().item())
-                    )
-                    n_clades_skipped += (W - n_active)
-                else:
-                    n_active = W
+                n_active = W
             else:
                 n_active = int(active_mask.sum().item())
                 n_clades_skipped += (W - n_active)
@@ -1387,15 +1204,6 @@ def Pi_wave_backward(
                         grad_E_s2_acc,
                         grad_mt,
                     )
-            skip_wave_inactive_zero_stores = (
-                skip_inactive_zero_stores_enabled
-                and active_mask_for_wave_kernel is not None
-                and accum_param_grads is not None
-                and (
-                    not meta['has_splits']
-                    or active_mask_for_split_kernels is active_mask_for_wave_kernel
-                )
-            )
             v_k, aw0, aw1, aw2, aw345, aw3, aw4 = wave_backward_uniform_fused(
                 Pi_star_wave, Pibar_star_wave, ws, W, S,
                 dts_r, rhs_k,
@@ -1409,7 +1217,7 @@ def Pi_wave_backward(
                 sp_parent=sp_parent_wave,
                 max_ancestor_depth=max_ancestor_depth,
                 pibar_row_max=forward_pibar_row_max,
-                skip_inactive_zero_stores=skip_wave_inactive_zero_stores,
+                skip_inactive_zero_stores=False,
                 scratch=scratch_pool.get("wave") if scratch_pool is not None else None,
                 family_idx=family_idx if use_family_indexed_self_loop else None,
                 family_indexed_consts=use_family_indexed_self_loop,
@@ -1527,7 +1335,6 @@ def Pi_wave_backward(
                     and level_parents is not None
                     and forward_pibar_row_max is not None
                     and torch.is_tensor(dts_mt)
-                    and n_ws >= dts_pibar_ud_min_splits
                 )
                 used_dts_mt_reduction_accum = True
                 used_dts_pibar_ud_fusion = pibar_ud_fusion_match
@@ -1548,7 +1355,7 @@ def Pi_wave_backward(
                         pibar_ud_fusion_match
                         and dts_pibar_ud_skip_zero_sides_enabled
                     ),
-                    pibar_side_threshold=dts_pibar_ud_side_threshold_arg,
+                    pibar_side_threshold=0.0,
                     mt_squeezed=dts_mt,
                     pibar_row_max=forward_pibar_row_max,
                     grad_mt_two_stage=(
@@ -1560,11 +1367,7 @@ def Pi_wave_backward(
                     grad_mt_two_stage_tile_splits=(
                         dts_grad_mt_two_stage_tile_splits
                     ),
-                    skip_inactive_pibar_output_zero=(
-                        skip_inactive_zero_stores_enabled
-                        and pibar_ud_fusion_match
-                        and active_mask_for_split_kernels is not None
-                    ),
+                    skip_inactive_pibar_output_zero=False,
                     scratch=(
                         scratch_pool.get("dts")
                         if scratch_pool is not None
@@ -1716,7 +1519,7 @@ def Pi_wave_backward(
                         if dts_pibar_ud_compact_levels_enabled
                         else None
                     ),
-                    side_active_threshold=dts_pibar_ud_side_threshold_arg,
+                    side_active_threshold=0.0,
                 )
                 used_fused_pibar_vjp = True
 
@@ -1757,77 +1560,6 @@ def Pi_wave_backward(
         n_clades_skipped += device_pruning_clades_total - n_device_active
         n_waves_skipped += device_pruning_waves_total - n_device_waves_active
 
-    family_chunk_diag_result = None
-    if family_chunk_diag_values is not None:
-        def _diag_sum(name):
-            vals = family_chunk_diag_values[name]
-            if not vals:
-                return 0
-            return int(torch.stack(vals).sum().item())
-
-        rows_total_diag = _diag_sum('rows_total')
-        rows_current_diag = _diag_sum('rows_current')
-        rows_active_diag = _diag_sum('rows_active')
-        rows_chunk_scheduled_diag = _diag_sum('rows_chunk_scheduled')
-        chunks_total_diag = _diag_sum('chunks_total')
-        chunks_active_diag = _diag_sum('chunks_active')
-        family_slots_total_diag = _diag_sum('family_slots_total')
-        family_slots_active_diag = _diag_sum('family_slots_active')
-        splits_current_diag = _diag_sum('splits_current')
-        splits_chunk_scheduled_diag = _diag_sum('splits_chunk_scheduled')
-        splits_active_parent_diag = _diag_sum('splits_active_parent')
-
-        family_chunk_diag_result = {
-            'enabled': True,
-            'chunk_rows': family_chunk_rows,
-            'n_families': family_chunk_diag_family_count,
-            'waves_observed': int(family_chunk_diag_values['waves']),
-            'rows_total_observed': rows_total_diag,
-            'rows_current_whole_wave_scheduled': rows_current_diag,
-            'rows_active': rows_active_diag,
-            'rows_chunk_scheduled': rows_chunk_scheduled_diag,
-            'rows_skippable_by_chunk': max(
-                0, rows_current_diag - rows_chunk_scheduled_diag
-            ),
-            'rows_skippable_by_row_mask': max(
-                0, rows_current_diag - rows_active_diag
-            ),
-            'rows_in_active_chunks_but_inactive': max(
-                0, rows_chunk_scheduled_diag - rows_active_diag
-            ),
-            'chunks_total': chunks_total_diag,
-            'chunks_active': chunks_active_diag,
-            'chunks_inactive': max(0, chunks_total_diag - chunks_active_diag),
-            'family_slots_total': family_slots_total_diag,
-            'family_slots_active': family_slots_active_diag,
-            'family_slots_inactive': max(
-                0, family_slots_total_diag - family_slots_active_diag
-            ),
-            'splits_current_whole_wave_scheduled': splits_current_diag,
-            'splits_chunk_scheduled': splits_chunk_scheduled_diag,
-            'splits_active_parent': splits_active_parent_diag,
-            'splits_skippable_by_chunk': max(
-                0, splits_current_diag - splits_chunk_scheduled_diag
-            ),
-            'splits_skippable_by_active_parent': max(
-                0, splits_current_diag - splits_active_parent_diag
-            ),
-        }
-        if rows_current_diag > 0:
-            family_chunk_diag_result['row_chunk_scheduled_fraction'] = (
-                rows_chunk_scheduled_diag / rows_current_diag
-            )
-            family_chunk_diag_result['row_active_fraction'] = (
-                rows_active_diag / rows_current_diag
-            )
-        if splits_current_diag > 0:
-            family_chunk_diag_result['split_chunk_scheduled_fraction'] = (
-                splits_chunk_scheduled_diag / splits_current_diag
-            )
-            family_chunk_diag_result['split_active_parent_fraction'] = (
-                splits_active_parent_diag / splits_current_diag
-            )
-
     result = {
         'v_Pi': accumulated_rhs,
         'grad_E': grad_E_acc,
@@ -1844,9 +1576,6 @@ def Pi_wave_backward(
         'n_clades_skipped': n_clades_skipped,
         'n_clades_active': n_clades_total - n_clades_skipped,
     }
-    if family_chunk_diag_result is not None:
-        result['family_chunk_pruning_diag'] = family_chunk_diag_result
-
     # Unwrap G=1 results back to original shapes.
     if _auto_wrapped:
         for key in ('grad_E', 'grad_Ebar', 'grad_E_s1', 'grad_E_s2',

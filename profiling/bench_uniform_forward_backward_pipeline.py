@@ -162,8 +162,6 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--theta-rate", type=float, default=float(os.getenv("THETA_RATE", "0.05")))
     parser.add_argument("--max-iters-E", type=int, default=int(os.getenv("MAX_ITERS_E", "2000")))
     parser.add_argument("--tol-E", type=float, default=float(os.getenv("TOL_E", "1e-8")))
-    parser.add_argument("--max-iters-Pi", type=int, default=int(os.getenv("MAX_ITERS_PI", "2000")))
-    parser.add_argument("--tol-Pi", type=float, default=float(os.getenv("TOL_PI", "1e-6")))
     parser.add_argument("--neumann-terms", type=int, default=int(os.getenv("NEUMANN_TERMS", "3")))
     parser.add_argument("--use-pruning", action=argparse.BooleanOptionalAction, default=os.getenv("USE_PRUNING", "1") != "0")
     parser.add_argument("--pruning-threshold", type=float, default=float(os.getenv("PRUNING_THRESHOLD", "1e-6")))

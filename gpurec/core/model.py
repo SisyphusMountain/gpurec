@@ -321,8 +321,6 @@ class GeneDataset(Dataset):
         *,
         max_iters_E: int = 2000,
         tol_E: float = 1e-6,
-        max_iters_Pi: int = 2000,
-        tol_Pi: float = 1e-6,
         device: torch.device | None = None,
         dtype: torch.dtype | None = None,
     ) -> dict:
@@ -336,8 +334,6 @@ class GeneDataset(Dataset):
             indices=[idx],
             max_iters_E=max_iters_E,
             tol_E=tol_E,
-            max_iters_Pi=max_iters_Pi,
-            tol_Pi=tol_Pi,
             device=device,
             dtype=dtype,
         )[0]
@@ -358,8 +354,6 @@ class GeneDataset(Dataset):
         *,
         max_iters_E: int = 2000,
         tol_E: float = 1e-12,
-        max_iters_Pi: int = 2000,
-        tol_Pi: float = 1e-12,
         fixed_iters_Pi: int = 6,
         device: torch.device | None = None,
         dtype: torch.dtype | None = None,
@@ -399,7 +393,6 @@ class GeneDataset(Dataset):
                 all_logLs.extend(self.compute_likelihood_batch(
                     chunk_indices,
                     max_iters_E=max_iters_E, tol_E=tol_E,
-                    max_iters_Pi=max_iters_Pi, tol_Pi=tol_Pi,
                     fixed_iters_Pi=fixed_iters_Pi,
                     device=device, dtype=dtype,
                     chunk_size=chunk_size,

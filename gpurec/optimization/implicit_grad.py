@@ -1,7 +1,6 @@
 """Implicit gradient: build VJP closures & solve the two transpose systems."""
 from __future__ import annotations
 
-import time
 from dataclasses import dataclass
 import math
 from typing import Optional
@@ -20,7 +19,6 @@ class _SolveStats:
     method: str
     iters: int
     rel_res: float
-    fallback_used: bool = False
     success: bool = True
 
 
@@ -95,8 +93,6 @@ def implicit_grad_loglik_vjp_wave(
     Returns (grad_theta, pi_backward_info).
     """
     # --- Step 1: Pi backward (can be pre-computed for batched mode) ---
-    torch.cuda.synchronize()
-    _t_pi_bwd_0 = time.perf_counter()
     pi_bwd = Pi_wave_backward(
         wave_layout=wave_layout,
         Pi_star_wave=Pi_star_wave,
@@ -113,8 +109,6 @@ def implicit_grad_loglik_vjp_wave(
         ancestors_T=ancestors_T,
         uniform_pibar_row_max=uniform_pibar_row_max,
     )
-    torch.cuda.synchronize()
-    _t_pi_bwd = time.perf_counter() - _t_pi_bwd_0
 
     grad_theta, statsG = _e_adjoint_and_theta_vjp(
         pi_bwd, E_star, Ebar, E_s1, E_s2,
@@ -124,7 +118,6 @@ def implicit_grad_loglik_vjp_wave(
         device, dtype,
         ancestors_T=ancestors_T,
     )
-    statsG.pi_bwd_time = _t_pi_bwd
     return grad_theta, statsG
 
 
@@ -199,10 +192,6 @@ def _e_adjoint_and_theta_vjp(
             es_to_e = torch.autograd.grad(total, E_req3, retain_graph=False)[0]
         q_E = q_E + es_to_e
 
-    # Solve (I - G_E^T) w = q_E via one fixed CG path.
-    torch.cuda.synchronize()
-    _t_qE = time.perf_counter()
-
     def G_E_fun(E_in):
         """E_step as a function of E only."""
         return E_step(
@@ -226,9 +215,6 @@ def _e_adjoint_and_theta_vjp(
         return (wE - gE).reshape(-1)
 
     w_flat, statsG = _cg(AG_flat, q_flat)
-
-    torch.cuda.synchronize()
-    _t_cg = time.perf_counter() - _t_qE
 
     wE = w_flat.view(E_shape)
 
@@ -268,12 +254,6 @@ def _e_adjoint_and_theta_vjp(
             grad_outputs=wE,
             retain_graph=False,
         )[0]
-
-    torch.cuda.synchronize()
-    _t_theta_vjp = time.perf_counter() - _t_qE - _t_cg  # remainder after CG
-    # Stash sub-timings on statsG for the caller
-    statsG.cg_time = _t_cg
-    statsG.theta_vjp_time = _t_theta_vjp
 
     grad_theta = (grad_theta_pi + gtheta_E).detach()
     return grad_theta, statsG

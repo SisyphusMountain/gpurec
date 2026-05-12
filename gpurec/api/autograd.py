@@ -58,8 +58,6 @@ class ReconStaticState:
     fixed_iters_E: Optional[int] = None
     max_iters_E: int = 2000
     tol_E: float = 1e-8
-    max_iters_Pi: int = 2000
-    tol_Pi: float = 1e-6
     fixed_iters_Pi: int = 6
     neumann_terms: int = 3
     use_pruning: bool = True

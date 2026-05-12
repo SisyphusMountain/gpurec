@@ -38,7 +38,6 @@ model = GeneReconModel.from_trees(
     species_tree="sp.nwk",
     gene_trees=["g_0.nwk", "g_1.nwk"],
     mode="genewise",          # also: "global", "specieswise"
-    pibar_mode="uniform",
     device="cuda",
     dtype=torch.float32,
     fixed_iters_Pi=6,
@@ -59,7 +58,7 @@ For genewise row-wise polishing:
 ```python
 from gpurec.optimization import BatchedLBFGS
 
-opt = BatchedLBFGS([model.theta], lr=1.0, line_search_fn="armijo")
+opt = BatchedLBFGS([model.theta], lr=1.0)
 ```
 
 ## Performance Check
