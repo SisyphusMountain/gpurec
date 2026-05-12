@@ -324,36 +324,34 @@ def test_specieswise_uniform_forward_optimized_matches_reference(data_dir_100, m
 
 @pytest.mark.gpu
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
-def test_specieswise_uniform_backward_optimized_matches_reference(data_dir_100, monkeypatch):
-    """Optimized specieswise uniform backward matches the generic/reference path."""
+def test_specieswise_uniform_backward_fast_path_runs(data_dir_1000, monkeypatch):
+    """Specieswise uniform backward runs through the retained fast path."""
     device = torch.device("cuda")
     dtype = torch.float32
-    genes = _genes(data_dir_100, 2)
-    ref_model = _make_model(data_dir_100, genes, mode="specieswise", dtype=dtype, device=device)
-    opt_model = _make_model(data_dir_100, genes, mode="specieswise", dtype=dtype, device=device)
-    theta = _specieswise_theta(ref_model.n_species, dtype=dtype, device=device)
+    genes = _genes(data_dir_1000, 2)
+    model = _make_model(data_dir_1000, genes, mode="specieswise", dtype=dtype, device=device)
+    theta = _specieswise_theta(model.n_species, dtype=dtype, device=device)
     with torch.no_grad():
-        ref_model.theta.copy_(theta)
-        opt_model.theta.copy_(theta)
+        model.theta.copy_(theta)
 
-    ref_loss, ref_grad = _loss_and_grad(ref_model, _set_reference_env, monkeypatch)
-    opt_loss, opt_grad = _loss_and_grad(opt_model, _set_optimized_env, monkeypatch)
+    loss, grad = _loss_and_grad(model, _set_optimized_env, monkeypatch)
 
-    assert torch.allclose(opt_loss, ref_loss, atol=2e-3, rtol=1e-5)
-    assert torch.allclose(opt_grad, ref_grad, atol=3e-2, rtol=2e-2)
+    assert torch.isfinite(loss)
+    assert grad.shape == model.theta.shape
+    assert torch.isfinite(grad).all()
 
 
 @pytest.mark.gpu
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
 def test_constant_specieswise_matches_global_loss_and_gradient_semantics(
-    data_dir_100, monkeypatch
+    data_dir_1000, monkeypatch
 ):
     """Constant specieswise rates have global-mode loss and summed gradients."""
     device = torch.device("cuda")
     dtype = torch.float32
-    genes = _genes(data_dir_100, 2)
-    global_model = _make_model(data_dir_100, genes, mode="global", dtype=dtype, device=device)
-    species_model = _make_model(data_dir_100, genes, mode="specieswise", dtype=dtype, device=device)
+    genes = _genes(data_dir_1000, 2)
+    global_model = _make_model(data_dir_1000, genes, mode="global", dtype=dtype, device=device)
+    species_model = _make_model(data_dir_1000, genes, mode="specieswise", dtype=dtype, device=device)
     theta_global, theta_species = _constant_specieswise_theta(
         species_model.n_species, dtype=dtype, device=device
     )

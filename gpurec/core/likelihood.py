@@ -18,13 +18,7 @@ NEG_INF = float("-inf")
 # =========================================================================
 
 def _uniform_ancestor_sum(expE_2d, ancestors_T):
-    """Compute ``expE_2d @ ancestors_T`` with a CUDA bf16 sparse fallback."""
-    if (
-        expE_2d.device.type == "cuda"
-        and (expE_2d.dtype == torch.bfloat16 or ancestors_T.dtype == torch.bfloat16)
-    ):
-        with torch.amp.autocast("cuda", enabled=False):
-            return (expE_2d.float() @ ancestors_T.float()).contiguous()
+    """Compute the retained uniform ancestor sum."""
     return (expE_2d @ ancestors_T).contiguous()
 
 def E_step(

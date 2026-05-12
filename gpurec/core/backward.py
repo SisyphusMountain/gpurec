@@ -1,330 +1,13 @@
-"""Backward pass: Pi_wave_backward and helpers (VJP / Neumann / GMRES)."""
+"""Backward pass: retained fused CUDA path for Pi adjoints."""
 
 import torch
 
-from .log2_utils import logsumexp2, logaddexp2, _safe_log2_internal as _safe_log2
-from .likelihood import _uniform_ancestor_sum
+from .log2_utils import logsumexp2
 from ._helpers import _safe_exp2_ratio  # noqa: F401
 from .memory_policy import proposal0_memory_gate
 from .extract_parameters import as_family_param, as_family_species
 
-NEG_INF = float("-inf")
-_SUPPORTED_BACKWARD_FLOAT_DTYPES = (torch.float32, torch.float64, torch.bfloat16)
-
-
-def _uniform_ancestor_left_sum(ancestors_T: torch.Tensor, rhs_T: torch.Tensor) -> torch.Tensor:
-    """Compute ``ancestors_T @ rhs_T`` with a CUDA bf16 sparse fallback."""
-    if (
-        rhs_T.device.type == "cuda"
-        and (rhs_T.dtype == torch.bfloat16 or ancestors_T.dtype == torch.bfloat16)
-    ):
-        with torch.amp.autocast("cuda", enabled=False):
-            return (ancestors_T.float() @ rhs_T.float()).contiguous()
-    return (ancestors_T @ rhs_T).contiguous()
-
-
-# ---------------------------------------------------------------------------
-# Differentiable cross-clade DTS
-# ---------------------------------------------------------------------------
-
-def _dts_cross_differentiable(
-    Pi, Pibar, meta, sp_child1, sp_child2, log_pD, log_pS, S, device, dtype,
-):
-    """Differentiable DTS cross-clade computation for one wave.
-
-    Same as _compute_dts_cross but uses pure PyTorch ops (no Triton)
-    so that torch.func.vjp can trace through it.
-
-    Args:
-        Pi, Pibar: [C, S] full tensors (Pi requires_grad for children)
-        meta: wave metadata dict
-        sp_child1, sp_child2: [S] species child indices
-        log_pD, log_pS: scalar or [S] event probabilities
-        S: int
-
-    Returns:
-        dts_r: [W, S] reduced DTS cross-clade terms
-    """
-    sl = meta['sl']
-    sr = meta['sr']
-    sl_long = sl.long()
-    sr_long = sr.long()
-    wlsp = meta['log_split_probs']
-    W = meta['W']
-    n_ws = sl.shape[0]
-
-    Pi_l = Pi[sl_long]
-    Pi_r = Pi[sr_long]
-    Pibar_l = Pibar[sl_long]
-    Pibar_r = Pibar[sr_long]
-
-    Pi_pad = torch.cat([Pi, torch.full((Pi.shape[0], 1), NEG_INF, device=device, dtype=dtype)], dim=1)
-    Pi_l_s1 = Pi_pad[sl_long][:, sp_child1.long()]
-    Pi_l_s2 = Pi_pad[sl_long][:, sp_child2.long()]
-    Pi_r_s1 = Pi_pad[sr_long][:, sp_child1.long()]
-    Pi_r_s2 = Pi_pad[sr_long][:, sp_child2.long()]
-
-    DTS = torch.stack([
-        log_pD + Pi_l + Pi_r,
-        Pi_l + Pibar_r,
-        Pi_r + Pibar_l,
-        log_pS + Pi_l_s1 + Pi_r_s2,
-        log_pS + Pi_r_s1 + Pi_l_s2,
-    ], dim=0)
-
-    dts_term = wlsp + logsumexp2(DTS, dim=0)
-
-    reduce_idx = meta['reduce_idx'].long()
-    reduce_expand = reduce_idx.unsqueeze(1).expand(n_ws, S)
-
-    seg_max = torch.full((W, S), NEG_INF, device=device, dtype=dtype)
-    seg_max.scatter_reduce_(0, reduce_expand, dts_term.detach(), reduce='amax',
-                            include_self=True)
-
-    # Avoid -inf - (-inf) -> NaN when a whole segment/species slice is unreachable.
-    # In that case seg_max is -inf and all corresponding dts_term are -inf, so using
-    # a finite shift (0) yields exp2(-inf)=0 and the reduced result remains -inf.
-    seg_max_safe = torch.where(seg_max == NEG_INF, torch.zeros_like(seg_max), seg_max)
-    shifted = torch.exp2(dts_term - seg_max_safe[reduce_idx])
-    seg_sum = torch.zeros((W, S), device=device, dtype=dtype)
-    seg_sum.scatter_add_(0, reduce_expand, shifted)
-    dts_r = _safe_log2(seg_sum) + seg_max
-
-    return dts_r
-
-
-# ---------------------------------------------------------------------------
-# VJP precompute
-# ---------------------------------------------------------------------------
-
-def _self_loop_vjp_precompute(
-    Pi_star, Pibar_star, dts_r,
-    mt_w, DL_w, Ebar_w, E_w, SL1_w, SL2_w,
-    sp_child1, sp_child2, leaf_wt, S,
-    ancestors_T,
-):
-    """Precompute softmax weights and Pibar VJP ingredients for one wave.
-
-    Evaluates the self-loop g(Pi) at Pi=Pi_star and caches all quantities
-    needed by _self_loop_Jt_apply (Neumann VJP) and param VJP.
-    Called ONCE per wave.
-    """
-    W = Pi_star.shape[0]
-    device, dtype = Pi_star.device, Pi_star.dtype
-
-    def _expand(t):
-        return t.unsqueeze(0).expand(W, -1) if t.ndim == 1 else t
-
-    mt = _expand(mt_w)
-    DL = _expand(DL_w)
-    Ebar = _expand(Ebar_w)
-    E = _expand(E_w)
-    SL1 = _expand(SL1_w)
-    SL2 = _expand(SL2_w)
-
-    Pi_max = Pi_star.max(dim=1, keepdim=True).values
-    p_prime = torch.exp2(Pi_star - Pi_max)
-
-    row_sum = p_prime.sum(dim=1, keepdim=True)
-    anc_sum = _uniform_ancestor_sum(p_prime, ancestors_T)
-    pibar_denom = row_sum - anc_sum
-
-    Pi_pad = torch.cat([Pi_star, torch.full((W, 1), NEG_INF, device=device, dtype=dtype)], dim=1)
-    Pi_s1 = Pi_pad[:, sp_child1.long()]
-    Pi_s2 = Pi_pad[:, sp_child2.long()]
-
-    terms = torch.stack([
-        DL + Pi_star,
-        Pi_star + Ebar,
-        Pibar_star + E,
-        SL1 + Pi_s1,
-        SL2 + Pi_s2,
-        leaf_wt,
-    ], dim=0)
-
-    DTS_L = logsumexp2(terms, dim=0)
-
-    if dts_r is not None:
-        Pi_new = logaddexp2(dts_r, DTS_L)
-        w_L = _safe_exp2_ratio(DTS_L, Pi_new)
-    else:
-        w_L = torch.ones(W, S, device=device, dtype=dtype)
-
-    w_terms = _safe_exp2_ratio(terms, DTS_L.unsqueeze(0))
-
-    sc1 = sp_child1.long()
-    sc2 = sp_child2.long()
-    valid1 = sc1 < S
-    valid2 = sc2 < S
-
-    result = {
-        'w_L': w_L,
-        'w_terms': w_terms,
-        'p_prime': p_prime,
-    }
-    pos = pibar_denom > 0
-    inv_denom = torch.where(pos, 1.0 / torch.where(pos, pibar_denom, torch.ones_like(pibar_denom)),
-                            torch.zeros_like(pibar_denom))
-    result['pibar_inv_denom'] = inv_denom
-    if valid1.any():
-        result['sc1_valid'] = valid1
-        result['sc1_idx'] = sc1[valid1].unsqueeze(0)
-    if valid2.any():
-        result['sc2_valid'] = valid2
-        result['sc2_idx'] = sc2[valid2].unsqueeze(0)
-    return result
-
-
-# ---------------------------------------------------------------------------
-# GMRES solver for (I - J^T) v = rhs
-# ---------------------------------------------------------------------------
-
-def _gmres_self_loop_solve(
-    rhs, ingredients, sp_child1, sp_child2, S, W,
-    ancestors_T,
-    max_iters=30, tol=1e-5,
-):
-    """Solve (I - J_self^T) v = rhs via GMRES.
-
-    Used when the uniform-Pibar self-loop makes the Neumann series diverge.
-    Returns v [W, S].
-    """
-    return_dtype = rhs.dtype
-    if rhs.device.type == "cuda" and rhs.dtype == torch.bfloat16:
-        rhs = rhs.float()
-        ingredients = {
-            key: (
-                value.float()
-                if torch.is_tensor(value) and value.is_floating_point()
-                else value
-            )
-            for key, value in ingredients.items()
-        }
-        if torch.is_tensor(ancestors_T) and ancestors_T.is_floating_point():
-            ancestors_T = ancestors_T.float()
-
-    n = W * S
-    b = rhs.reshape(n)
-    beta = b.norm()
-    if beta < 1e-30:
-        return rhs.clone()
-
-    V = [b / beta]
-    H = torch.zeros(max_iters + 1, max_iters, device=rhs.device, dtype=rhs.dtype)
-
-    cs = torch.zeros(max_iters, device=rhs.device, dtype=rhs.dtype)
-    sn = torch.zeros(max_iters, device=rhs.device, dtype=rhs.dtype)
-    g = torch.zeros(max_iters + 1, device=rhs.device, dtype=rhs.dtype)
-    g[0] = beta
-
-    converged_j = 0
-    for j in range(max_iters):
-        vj_2d = V[j].reshape(W, S)
-        Jt_vj = _self_loop_Jt_apply(
-            vj_2d, ingredients, sp_child1, sp_child2, S, W,
-            ancestors_T,
-        )
-        w = (vj_2d - Jt_vj).reshape(n)
-
-        for i in range(j + 1):
-            H[i, j] = w.dot(V[i])
-            w = w - H[i, j] * V[i]
-        H[j + 1, j] = w.norm()
-
-        if H[j + 1, j] > 1e-14:
-            V.append(w / H[j + 1, j])
-        else:
-            V.append(torch.zeros_like(w))
-
-        for i in range(j):
-            temp = cs[i] * H[i, j] + sn[i] * H[i + 1, j]
-            H[i + 1, j] = -sn[i] * H[i, j] + cs[i] * H[i + 1, j]
-            H[i, j] = temp
-
-        denom = (H[j, j] ** 2 + H[j + 1, j] ** 2).sqrt()
-        if denom > 1e-14:
-            cs[j] = H[j, j] / denom
-            sn[j] = H[j + 1, j] / denom
-        else:
-            cs[j] = 1.0
-            sn[j] = 0.0
-
-        H[j, j] = cs[j] * H[j, j] + sn[j] * H[j + 1, j]
-        H[j + 1, j] = 0.0
-        temp = cs[j] * g[j] + sn[j] * g[j + 1]
-        g[j + 1] = -sn[j] * g[j] + cs[j] * g[j + 1]
-        g[j] = temp
-
-        converged_j = j + 1
-        if abs(float(g[j + 1])) / float(beta) < tol:
-            break
-
-    m = converged_j
-    y = torch.zeros(m, device=rhs.device, dtype=rhs.dtype)
-    for i in range(m - 1, -1, -1):
-        y[i] = (g[i] - H[i, i + 1:m] @ y[i + 1:m]) / H[i, i] if H[i, i].abs() > 1e-14 else 0.0
-
-    v = torch.zeros(n, device=rhs.device, dtype=rhs.dtype)
-    for i in range(m):
-        v = v + float(y[i]) * V[i]
-
-    v = v.reshape(W, S)
-    return v.to(dtype=return_dtype) if v.dtype != return_dtype else v
-
-
-# ---------------------------------------------------------------------------
-# Analytical J^T application
-# ---------------------------------------------------------------------------
-
-def _self_loop_Jt_apply(
-    v, ingredients, sp_child1, sp_child2, S, W,
-    ancestors_T,
-):
-    """Apply J_self^T @ v analytically using precomputed ingredients.
-
-    This is the VJP of one self-loop step g(Pi) = logaddexp2(dts_r, DTS_L(Pi)).
-    The Jacobian J = dg/dPi is block-diagonal per clade (no cross-clade coupling
-    in the self-loop). Each block captures:
-      - diagonal: d(DTS_L)/d(Pi) through DL+Pi and Pi+Ebar terms
-      - Pibar path: d(DTS_L)/d(Pibar) * d(Pibar)/d(Pi) through Pibar+E term
-      - speciation: d(DTS_L)/d(Pi_s1) * d(Pi_s1)/d(Pi) scatter through SL terms
-    """
-    w_L = ingredients['w_L']
-    w_terms = ingredients['w_terms']
-    p_prime = ingredients['p_prime']
-
-    alpha = v * w_L
-
-    result = alpha * (w_terms[0] + w_terms[1])
-
-    v_Pibar = alpha * w_terms[2]
-
-    u_d = v_Pibar * ingredients['pibar_inv_denom']
-    A = u_d.sum(dim=1, keepdim=True)
-    correction = _uniform_ancestor_left_sum(ancestors_T, u_d.T).T
-    if correction.dtype != result.dtype:
-        correction = correction.to(dtype=result.dtype)
-    result = result + p_prime * (A - correction)
-
-    sc1_valid = ingredients.get('sc1_valid')
-    sc2_valid = ingredients.get('sc2_valid')
-    sc1_idx = ingredients.get('sc1_idx')
-    sc2_idx = ingredients.get('sc2_idx')
-
-    if sc1_valid is not None:
-        src = alpha * w_terms[3]
-        if src.dtype != result.dtype:
-            src = src.to(dtype=result.dtype)
-        idx = sc1_idx.expand(W, -1) if sc1_idx.shape[0] == 1 else sc1_idx
-        result.scatter_add_(1, idx, src[:, sc1_valid])
-    if sc2_valid is not None:
-        src = alpha * w_terms[4]
-        if src.dtype != result.dtype:
-            src = src.to(dtype=result.dtype)
-        idx = sc2_idx.expand(W, -1) if sc2_idx.shape[0] == 1 else sc2_idx
-        result.scatter_add_(1, idx, src[:, sc2_valid])
-
-    return result
+_SUPPORTED_BACKWARD_FLOAT_DTYPES = (torch.float32, torch.float64)
 
 
 # ---------------------------------------------------------------------------
@@ -382,17 +65,13 @@ def Pi_wave_backward(
             'grad_log_pD': [S] or [G, S] gradient wrt log_pD
             'grad_max_transfer_mat': [S] or [G, S] gradient wrt max_transfer_mat
     """
-    # Fused Triton backward kernels (optional)
-    try:
-        from .kernels.wave_backward import (
-            wave_backward_uniform_fused,
-            dts_cross_backward_accum_fused,
-            uniform_cross_pibar_vjp_tree_from_ud_fused,
-            active_mask_from_rhs_absmax_fused,
-        )
-        _HAS_FUSED_BACKWARD = True
-    except ImportError:
-        _HAS_FUSED_BACKWARD = False
+    from .kernels.wave_backward import (
+        wave_backward_uniform_fused,
+        dts_cross_backward_accum_fused,
+        uniform_cross_pibar_vjp_tree_from_ud_fused,
+        active_mask_from_rhs_absmax_fused,
+    )
+    from .forward import _compute_dts_cross as _compute_dts_cross_for_backward
 
     wave_metas = wave_layout['wave_metas']
     C, S = Pi_star_wave.shape
@@ -401,6 +80,13 @@ def Pi_wave_backward(
     target_device = torch.device(device)
     if target_device.type == 'cuda' and target_device.index is None:
         target_device = torch.device('cuda', torch.cuda.current_device())
+    device = target_device
+    if target_device.type != 'cuda':
+        raise RuntimeError("Pi_wave_backward only retains the fused CUDA fast path")
+    if dtype not in _SUPPORTED_BACKWARD_FLOAT_DTYPES:
+        raise RuntimeError("Pi_wave_backward fused path requires float32 or float64")
+    if S <= 256:
+        raise RuntimeError("Pi_wave_backward fused path requires S > 256")
     species_cache = species_helpers.get('_wave_forward_species_cache')
     sp_child1_cpu = sp_child2_cpu = None
     sp_child1 = sp_child2 = None
@@ -441,37 +127,7 @@ def Pi_wave_backward(
             species_cache['sp_child1_cpu'] = sp_child1_cpu
             species_cache['sp_child2_cpu'] = sp_child2_cpu
 
-    fused_cross_pibar_vjp_enabled = (
-        _HAS_FUSED_BACKWARD
-        and dtype in _SUPPORTED_BACKWARD_FLOAT_DTYPES
-        and device.type == 'cuda'
-    )
-    kernelized_active_mask_enabled = (
-        _HAS_FUSED_BACKWARD
-        and device.type == 'cuda'
-        and dtype in _SUPPORTED_BACKWARD_FLOAT_DTYPES
-    )
-    kernelized_backward_dts_enabled = (
-        device.type == 'cuda'
-        and dtype in _SUPPORTED_BACKWARD_FLOAT_DTYPES
-    )
-    wave_topology_int32_enabled = (
-        device.type == 'cuda'
-        and dtype in _SUPPORTED_BACKWARD_FLOAT_DTYPES
-    )
     dts_grad_mt_two_stage_tile_splits = 128
-    if kernelized_backward_dts_enabled:
-        from .forward import _compute_dts_cross as _compute_dts_cross_for_backward
-    else:
-        def _compute_dts_cross_for_backward(
-            Pi, Pibar, meta, sp_child1, sp_child2, log_pD, log_pS,
-            S, device, dtype, active_mask=None, family_idx=None,
-            family_offset=0,
-        ):
-            return _dts_cross_differentiable(
-                Pi, Pibar, meta, sp_child1, sp_child2,
-                log_pD, log_pS, S, device, dtype,
-            )
 
     ancestor_cols = None
     level_parents = None
@@ -481,187 +137,182 @@ def Pi_wave_backward(
     compact_level_child2 = None
     sp_parent = None
     max_ancestor_depth = None
-    if fused_cross_pibar_vjp_enabled:
-        cache = species_helpers.get('_wave_forward_species_cache')
-        if cache is not None and int(cache.get('S', -1)) == int(S):
-            cached_max_ancestor_depth = cache.get('max_ancestor_depth')
-            if cached_max_ancestor_depth is not None:
-                max_ancestor_depth = int(cached_max_ancestor_depth)
-            cached_ancestor_cols = cache.get('ancestor_cols')
-            if torch.is_tensor(cached_ancestor_cols) and cached_ancestor_cols.device == target_device:
-                ancestor_cols = cached_ancestor_cols
-            cached_level_parents = cache.get('level_parents')
-            if torch.is_tensor(cached_level_parents) and cached_level_parents.device == target_device:
-                level_parents = cached_level_parents
-            cached_compact_level_ptr = cache.get('compact_level_ptr')
-            cached_compact_level_parents = cache.get('compact_level_parents')
-            cached_compact_level_child1 = cache.get('compact_level_child1')
-            cached_compact_level_child2 = cache.get('compact_level_child2')
-            if (
-                torch.is_tensor(cached_compact_level_ptr)
-                and torch.is_tensor(cached_compact_level_parents)
-                and torch.is_tensor(cached_compact_level_child1)
-                and torch.is_tensor(cached_compact_level_child2)
-                and cached_compact_level_ptr.device == target_device
-                and cached_compact_level_parents.device == target_device
-                and cached_compact_level_child1.device == target_device
-                and cached_compact_level_child2.device == target_device
-            ):
-                compact_level_ptr = cached_compact_level_ptr
-                compact_level_parents = cached_compact_level_parents
-                compact_level_child1 = cached_compact_level_child1
-                compact_level_child2 = cached_compact_level_child2
-            cached_sp_parent = cache.get('sp_parent')
-            if torch.is_tensor(cached_sp_parent) and cached_sp_parent.device == target_device:
-                sp_parent = cached_sp_parent
-
+    cache = species_helpers.get('_wave_forward_species_cache')
+    if cache is not None and int(cache.get('S', -1)) == int(S):
+        cached_max_ancestor_depth = cache.get('max_ancestor_depth')
+        if cached_max_ancestor_depth is not None:
+            max_ancestor_depth = int(cached_max_ancestor_depth)
+        cached_ancestor_cols = cache.get('ancestor_cols')
+        if torch.is_tensor(cached_ancestor_cols) and cached_ancestor_cols.device == target_device:
+            ancestor_cols = cached_ancestor_cols
+        cached_level_parents = cache.get('level_parents')
+        if torch.is_tensor(cached_level_parents) and cached_level_parents.device == target_device:
+            level_parents = cached_level_parents
+        cached_compact_level_ptr = cache.get('compact_level_ptr')
+        cached_compact_level_parents = cache.get('compact_level_parents')
+        cached_compact_level_child1 = cache.get('compact_level_child1')
+        cached_compact_level_child2 = cache.get('compact_level_child2')
         if (
-            ancestor_cols is None
-            or level_parents is None
-            or compact_level_ptr is None
+            torch.is_tensor(cached_compact_level_ptr)
+            and torch.is_tensor(cached_compact_level_parents)
+            and torch.is_tensor(cached_compact_level_child1)
+            and torch.is_tensor(cached_compact_level_child2)
+            and cached_compact_level_ptr.device == target_device
+            and cached_compact_level_parents.device == target_device
+            and cached_compact_level_child1.device == target_device
+            and cached_compact_level_child2.device == target_device
+        ):
+            compact_level_ptr = cached_compact_level_ptr
+            compact_level_parents = cached_compact_level_parents
+            compact_level_child1 = cached_compact_level_child1
+            compact_level_child2 = cached_compact_level_child2
+        cached_sp_parent = cache.get('sp_parent')
+        if torch.is_tensor(cached_sp_parent) and cached_sp_parent.device == target_device:
+            sp_parent = cached_sp_parent
+
+    if (
+        ancestor_cols is None
+        or level_parents is None
+        or compact_level_ptr is None
+        or compact_level_parents is None
+        or compact_level_child1 is None
+        or compact_level_child2 is None
+    ):
+        if p_cpu is None or c_cpu is None or mask_c1 is None:
+            sp_P_idx = species_helpers['s_P_indexes']
+            sp_c12_idx = species_helpers['s_C12_indexes']
+            p_cpu = sp_P_idx.cpu().long()
+            c_cpu = sp_c12_idx.cpu().long()
+            mask_c1 = p_cpu < S
+        sp_parent_cpu = torch.full((S,), -1, dtype=torch.long)
+        sp_parent_cpu[c_cpu[mask_c1]] = p_cpu[mask_c1]
+        sp_parent_cpu[c_cpu[~mask_c1]] = p_cpu[~mask_c1] - S
+        if sp_parent is None:
+            sp_parent = sp_parent_cpu.to(target_device)
+
+        parent_values = sp_parent_cpu.tolist()
+        ancestor_lists = []
+        max_ancestor_depth = 0
+        for s_idx in range(S):
+            cur = s_idx
+            depth = 0
+            ancestors = []
+            while cur >= 0:
+                ancestors.append(cur)
+                depth += 1
+                if depth > S:
+                    raise RuntimeError("Cycle detected in species parent pointers")
+                cur = parent_values[cur]
+            ancestor_lists.append(ancestors)
+            max_ancestor_depth = max(max_ancestor_depth, depth)
+
+        ancestor_cols_cpu = torch.full((S, max_ancestor_depth), -1, dtype=torch.long)
+        for s_idx, ancestors in enumerate(ancestor_lists):
+            ancestor_cols_cpu[s_idx, :len(ancestors)] = torch.tensor(ancestors, dtype=torch.long)
+        if ancestor_cols is None:
+            ancestor_cols = ancestor_cols_cpu.T.contiguous().to(target_device)
+        max_ancestor_depth = int(max_ancestor_depth)
+
+        need_compact_levels = (
+            compact_level_ptr is None
             or compact_level_parents is None
             or compact_level_child1 is None
             or compact_level_child2 is None
-        ):
-            if p_cpu is None or c_cpu is None or mask_c1 is None:
-                sp_P_idx = species_helpers['s_P_indexes']
-                sp_c12_idx = species_helpers['s_C12_indexes']
-                p_cpu = sp_P_idx.cpu().long()
-                c_cpu = sp_c12_idx.cpu().long()
-                mask_c1 = p_cpu < S
-            sp_parent_cpu = torch.full((S,), -1, dtype=torch.long)
-            sp_parent_cpu[c_cpu[mask_c1]] = p_cpu[mask_c1]
-            sp_parent_cpu[c_cpu[~mask_c1]] = p_cpu[~mask_c1] - S
-            if sp_parent is None:
-                sp_parent = sp_parent_cpu.to(target_device)
+        )
+        if level_parents is None or need_compact_levels:
+            child1_values = sp_child1_cpu.tolist()
+            child2_values = sp_child2_cpu.tolist()
+            levels = [-1] * S
 
-            parent_values = sp_parent_cpu.tolist()
-            ancestor_lists = []
-            max_ancestor_depth = 0
             for s_idx in range(S):
-                cur = s_idx
-                depth = 0
-                ancestors = []
-                while cur >= 0:
-                    ancestors.append(cur)
-                    depth += 1
-                    if depth > S:
-                        raise RuntimeError("Cycle detected in species parent pointers")
-                    cur = parent_values[cur]
-                ancestor_lists.append(ancestors)
-                max_ancestor_depth = max(max_ancestor_depth, depth)
-
-            ancestor_cols_cpu = torch.full((S, max_ancestor_depth), -1, dtype=torch.long)
-            for s_idx, ancestors in enumerate(ancestor_lists):
-                ancestor_cols_cpu[s_idx, :len(ancestors)] = torch.tensor(ancestors, dtype=torch.long)
-            if ancestor_cols is None:
-                ancestor_cols = ancestor_cols_cpu.T.contiguous().to(target_device)
-            max_ancestor_depth = int(max_ancestor_depth)
-
-            need_compact_levels = (
-                compact_level_ptr is None
-                or compact_level_parents is None
-                or compact_level_child1 is None
-                or compact_level_child2 is None
-            )
-            if level_parents is None or need_compact_levels:
-                child1_values = sp_child1_cpu.tolist()
-                child2_values = sp_child2_cpu.tolist()
-                levels = [-1] * S
-
-                for s_idx in range(S):
-                    if levels[s_idx] >= 0:
+                if levels[s_idx] >= 0:
+                    continue
+                stack = [(s_idx, False)]
+                while stack:
+                    node, expanded = stack.pop()
+                    if levels[node] >= 0:
                         continue
-                    stack = [(s_idx, False)]
-                    while stack:
-                        node, expanded = stack.pop()
-                        if levels[node] >= 0:
-                            continue
-                        c1 = child1_values[node]
-                        c2 = child2_values[node]
-                        if not expanded:
-                            stack.append((node, True))
-                            if c2 < S and levels[c2] < 0:
-                                stack.append((c2, False))
-                            if c1 < S and levels[c1] < 0:
-                                stack.append((c1, False))
-                            continue
-                        child_levels = []
-                        if c1 < S:
-                            child_levels.append(levels[c1])
-                        if c2 < S:
-                            child_levels.append(levels[c2])
-                        levels[node] = (max(child_levels) + 1) if child_levels else 0
+                    c1 = child1_values[node]
+                    c2 = child2_values[node]
+                    if not expanded:
+                        stack.append((node, True))
+                        if c2 < S and levels[c2] < 0:
+                            stack.append((c2, False))
+                        if c1 < S and levels[c1] < 0:
+                            stack.append((c1, False))
+                        continue
+                    child_levels = []
+                    if c1 < S:
+                        child_levels.append(levels[c1])
+                    if c2 < S:
+                        child_levels.append(levels[c2])
+                    levels[node] = (max(child_levels) + 1) if child_levels else 0
 
-                max_level = max(levels) if levels else 0
-                level_lists = []
-                max_level_width = 1
-                for level in range(1, max_level + 1):
-                    parents = [
-                        s_idx for s_idx, node_level in enumerate(levels)
-                        if node_level == level
-                        and (child1_values[s_idx] < S or child2_values[s_idx] < S)
-                    ]
-                    if parents:
-                        level_lists.append(parents)
-                        max_level_width = max(max_level_width, len(parents))
+            max_level = max(levels) if levels else 0
+            level_lists = []
+            max_level_width = 1
+            for level in range(1, max_level + 1):
+                parents = [
+                    s_idx for s_idx, node_level in enumerate(levels)
+                    if node_level == level
+                    and (child1_values[s_idx] < S or child2_values[s_idx] < S)
+                ]
+                if parents:
+                    level_lists.append(parents)
+                    max_level_width = max(max_level_width, len(parents))
 
-                if level_parents is None:
-                    level_parents_cpu = torch.full(
-                        (max(len(level_lists), 1), max_level_width),
-                        -1,
-                        dtype=torch.long,
-                    )
-                    for level, parents in enumerate(level_lists):
-                        level_parents_cpu[level, :len(parents)] = torch.tensor(parents, dtype=torch.long)
-                    level_parents = level_parents_cpu.contiguous().to(target_device)
-                if need_compact_levels:
-                    ptr_values = [0]
-                    flat_parents = []
-                    flat_child1 = []
-                    flat_child2 = []
-                    for parents in level_lists:
-                        flat_parents.extend(parents)
-                        flat_child1.extend(child1_values[parent] for parent in parents)
-                        flat_child2.extend(child2_values[parent] for parent in parents)
-                        ptr_values.append(len(flat_parents))
-                    if len(ptr_values) == 1:
-                        ptr_values.append(0)
-                    compact_level_ptr_cpu = torch.tensor(ptr_values, dtype=torch.long)
-                    compact_level_parents_cpu = torch.tensor(flat_parents, dtype=torch.int32)
-                    compact_level_child1_cpu = torch.tensor(flat_child1, dtype=torch.int32)
-                    compact_level_child2_cpu = torch.tensor(flat_child2, dtype=torch.int32)
-                    compact_level_ptr = compact_level_ptr_cpu.contiguous().to(target_device)
-                    compact_level_parents = compact_level_parents_cpu.contiguous().to(target_device)
-                    compact_level_child1 = compact_level_child1_cpu.contiguous().to(target_device)
-                    compact_level_child2 = compact_level_child2_cpu.contiguous().to(target_device)
+            if level_parents is None:
+                level_parents_cpu = torch.full(
+                    (max(len(level_lists), 1), max_level_width),
+                    -1,
+                    dtype=torch.long,
+                )
+                for level, parents in enumerate(level_lists):
+                    level_parents_cpu[level, :len(parents)] = torch.tensor(parents, dtype=torch.long)
+                level_parents = level_parents_cpu.contiguous().to(target_device)
+            if need_compact_levels:
+                ptr_values = [0]
+                flat_parents = []
+                flat_child1 = []
+                flat_child2 = []
+                for parents in level_lists:
+                    flat_parents.extend(parents)
+                    flat_child1.extend(child1_values[parent] for parent in parents)
+                    flat_child2.extend(child2_values[parent] for parent in parents)
+                    ptr_values.append(len(flat_parents))
+                if len(ptr_values) == 1:
+                    ptr_values.append(0)
+                compact_level_ptr_cpu = torch.tensor(ptr_values, dtype=torch.long)
+                compact_level_parents_cpu = torch.tensor(flat_parents, dtype=torch.int32)
+                compact_level_child1_cpu = torch.tensor(flat_child1, dtype=torch.int32)
+                compact_level_child2_cpu = torch.tensor(flat_child2, dtype=torch.int32)
+                compact_level_ptr = compact_level_ptr_cpu.contiguous().to(target_device)
+                compact_level_parents = compact_level_parents_cpu.contiguous().to(target_device)
+                compact_level_child1 = compact_level_child1_cpu.contiguous().to(target_device)
+                compact_level_child2 = compact_level_child2_cpu.contiguous().to(target_device)
 
-            if cache is not None and int(cache.get('S', -1)) == int(S):
-                if level_parents is not None:
-                    cache['level_parents'] = level_parents
-                if (
-                    compact_level_ptr is not None
-                    and compact_level_parents is not None
-                    and compact_level_child1 is not None
-                    and compact_level_child2 is not None
-                ):
-                    cache['compact_level_ptr'] = compact_level_ptr
-                    cache['compact_level_parents'] = compact_level_parents
-                    cache['compact_level_child1'] = compact_level_child1
-                    cache['compact_level_child2'] = compact_level_child2
-                if sp_parent is not None:
-                    cache['sp_parent'] = sp_parent
-                if max_ancestor_depth is not None:
-                    cache['max_ancestor_depth'] = int(max_ancestor_depth)
+        if cache is not None and int(cache.get('S', -1)) == int(S):
+            if level_parents is not None:
+                cache['level_parents'] = level_parents
+            if (
+                compact_level_ptr is not None
+                and compact_level_parents is not None
+                and compact_level_child1 is not None
+                and compact_level_child2 is not None
+            ):
+                cache['compact_level_ptr'] = compact_level_ptr
+                cache['compact_level_parents'] = compact_level_parents
+                cache['compact_level_child1'] = compact_level_child1
+                cache['compact_level_child2'] = compact_level_child2
+            if sp_parent is not None:
+                cache['sp_parent'] = sp_parent
+            if max_ancestor_depth is not None:
+                cache['max_ancestor_depth'] = int(max_ancestor_depth)
 
-        if max_ancestor_depth is None and torch.is_tensor(ancestor_cols):
-            max_ancestor_depth = int(ancestor_cols.shape[0])
+    if max_ancestor_depth is None and torch.is_tensor(ancestor_cols):
+        max_ancestor_depth = int(ancestor_cols.shape[0])
 
-    sp_parent_wave = (
-        sp_parent.to(dtype=torch.int32).contiguous()
-        if wave_topology_int32_enabled and torch.is_tensor(sp_parent)
-        else sp_parent
-    )
+    sp_parent_wave = sp_parent.to(dtype=torch.int32).contiguous()
 
     # Auto-wrap single-family inputs into batched format (G=1).
     _auto_wrapped = family_idx is None
@@ -725,13 +376,8 @@ def Pi_wave_backward(
         and _family_species_shape_ok(log_pD_family)
         and _family_species_shape_ok(log_pS_family)
     )
-    can_use_fused_uniform_backward = (
-        _HAS_FUSED_BACKWARD
-        and (_auto_wrapped or family_indexed_self_loop_supported)
-        and dtype in _SUPPORTED_BACKWARD_FLOAT_DTYPES
-        and device.type == 'cuda'
-        and S > 256
-    )
+    if not (_auto_wrapped or family_indexed_self_loop_supported):
+        raise RuntimeError("Pi_wave_backward requires shared or family-indexed species constants")
 
     max_wave_W = max((int(meta.get('W', 0)) for meta in wave_metas), default=0)
 
@@ -755,81 +401,51 @@ def Pi_wave_backward(
             SL2_family[fi_w],
         )
 
-    leaf_row_index = wave_layout['leaf_row_index']
-    leaf_col_index = wave_layout['leaf_col_index']
     leaf_species_index = wave_layout.get('leaf_species_index')
-
-    use_uniform_leaf_index = bool(
-        can_use_fused_uniform_backward
-        and leaf_species_index is not None
-    )
-    uniform_leaf_logp = None
-    if use_uniform_leaf_index:
-        if _auto_wrapped:
-            uniform_leaf_logp = (
-                log_pS_shared.expand(S).contiguous()
-                if log_pS_shared.ndim == 0
-                else log_pS_shared.contiguous()
-            )
-        else:
-            uniform_leaf_logp = log_pS_family
-    self_loop_2d_memory_ok = False
-    if dtype in (torch.float32, torch.float64):
-        self_loop_2d_memory_ok, _required_bytes, _budget_bytes = proposal0_memory_gate(
-            max(1, int(max_wave_W)),
-            S,
-            dtype,
-            device=device,
-        )
-    self_loop_2d_triton_enabled = (
-        can_use_fused_uniform_backward
-        and device.type == "cuda"
-        and dtype in (torch.float32, torch.float64)
-        and self_loop_2d_memory_ok
-    )
-
-    if wave_topology_int32_enabled:
-        cached_child1_i32 = None
-        cached_child2_i32 = None
-        if species_cache is not None and int(species_cache.get('S', -1)) == int(S):
-            cached_child1_i32 = species_cache.get('sp_child1_int32')
-            cached_child2_i32 = species_cache.get('sp_child2_int32')
-        if (
-            torch.is_tensor(cached_child1_i32)
-            and torch.is_tensor(cached_child2_i32)
-            and cached_child1_i32.device == target_device
-            and cached_child2_i32.device == target_device
-        ):
-            sp_child1_wave = cached_child1_i32
-            sp_child2_wave = cached_child2_i32
-        else:
-            sp_child1_wave = sp_child1_cpu.to(device=target_device, dtype=torch.int32)
-            sp_child2_wave = sp_child2_cpu.to(device=target_device, dtype=torch.int32)
-            if species_cache is not None and int(species_cache.get('S', -1)) == int(S):
-                species_cache['sp_child1_int32'] = sp_child1_wave
-                species_cache['sp_child2_int32'] = sp_child2_wave
-        leaf_species_index_wave = (
-            leaf_species_index.to(device=device, dtype=torch.int32).contiguous()
-            if torch.is_tensor(leaf_species_index)
-            else leaf_species_index
+    if leaf_species_index is None:
+        raise RuntimeError("Pi_wave_backward fused path requires leaf_species_index")
+    if _auto_wrapped:
+        uniform_leaf_logp = (
+            log_pS_shared.expand(S).contiguous()
+            if log_pS_shared.ndim == 0
+            else log_pS_shared.contiguous()
         )
     else:
-        sp_child1_wave = sp_child1
-        sp_child2_wave = sp_child2
-        leaf_species_index_wave = leaf_species_index
-    def _get_leaf_mask(ws, we):
-        W = we - ws
-        lwt = torch.full((W, S), NEG_INF, device=device, dtype=dtype)
-        mask = (leaf_row_index >= ws) & (leaf_row_index < we)
-        if mask.any():
-            lwt[leaf_row_index[mask] - ws, leaf_col_index[mask]] = 0.0
-        return lwt
+        uniform_leaf_logp = log_pS_family
 
-    def _get_leaf_wt(ws, we):
-        leaf_mask = _get_leaf_mask(ws, we)
-        if _auto_wrapped:
-            return log_pS_shared + leaf_mask
-        return log_pS_family[family_idx[ws:we]] + leaf_mask
+    self_loop_2d_memory_ok, required_bytes, budget_bytes = proposal0_memory_gate(
+        max(1, int(max_wave_W)),
+        S,
+        dtype,
+        device=device,
+    )
+    if not self_loop_2d_memory_ok:
+        raise RuntimeError(
+            "Pi_wave_backward fused path requires 2D self-loop scratch "
+            f"({required_bytes / (1024 ** 3):.2f} GiB requested, "
+            f"{(budget_bytes or 0) / (1024 ** 3):.2f} GiB budget)"
+        )
+
+    cached_child1_i32 = None
+    cached_child2_i32 = None
+    if species_cache is not None and int(species_cache.get('S', -1)) == int(S):
+        cached_child1_i32 = species_cache.get('sp_child1_int32')
+        cached_child2_i32 = species_cache.get('sp_child2_int32')
+    if (
+        torch.is_tensor(cached_child1_i32)
+        and torch.is_tensor(cached_child2_i32)
+        and cached_child1_i32.device == target_device
+        and cached_child2_i32.device == target_device
+    ):
+        sp_child1_wave = cached_child1_i32
+        sp_child2_wave = cached_child2_i32
+    else:
+        sp_child1_wave = sp_child1_cpu.to(device=target_device, dtype=torch.int32)
+        sp_child2_wave = sp_child2_cpu.to(device=target_device, dtype=torch.int32)
+        if species_cache is not None and int(species_cache.get('S', -1)) == int(S):
+            species_cache['sp_child1_int32'] = sp_child1_wave
+            species_cache['sp_child2_int32'] = sp_child2_wave
+    leaf_species_index_wave = leaf_species_index.to(device=device, dtype=torch.int32).contiguous()
 
     n_waves_total = K
     n_waves_skipped = 0
@@ -861,32 +477,16 @@ def Pi_wave_backward(
         uniform_pibar_row_max is not None
         and torch.is_tensor(uniform_pibar_row_max)
         and uniform_pibar_row_max.numel() == C
-        and device.type == 'cuda'
-        and dtype in _SUPPORTED_BACKWARD_FLOAT_DTYPES
     )
-    if can_use_fused_uniform_backward:
-        forward_pibar_row_max = (
-            uniform_pibar_row_max.contiguous()
-            if has_forward_pibar_row_max
-            else Pi_star_wave.max(dim=1).values.contiguous()
-        )
-    else:
-        forward_pibar_row_max = None
-    if kernelized_active_mask_enabled:
-        active_mask_threshold = pruning_threshold if use_pruning else 0.0
+    if not has_forward_pibar_row_max:
+        raise RuntimeError("Pi_wave_backward fused path requires uniform_pibar_row_max from forward")
+    forward_pibar_row_max = uniform_pibar_row_max.to(device=device, dtype=dtype).contiguous()
+    active_mask_threshold = pruning_threshold if use_pruning else 0.0
 
-        def _compute_active_mask(rhs):
-            return active_mask_from_rhs_absmax_fused(
-                rhs, active_mask_threshold, use_pruning=use_pruning
-            )
-    elif use_pruning:
-        def _compute_active_mask(rhs):
-            clade_max = rhs.abs().max(dim=1).values
-            return clade_max >= pruning_threshold
-    else:
-        def _compute_active_mask(rhs):
-            clade_max = rhs.abs().max(dim=1).values
-            return clade_max > 0
+    def _compute_active_mask(rhs):
+        return active_mask_from_rhs_absmax_fused(
+            rhs, active_mask_threshold, use_pruning=use_pruning
+        )
 
     for k in range(K - 1, -1, -1):
         meta = wave_metas[k]
@@ -894,34 +494,19 @@ def Pi_wave_backward(
         we = meta['end']
         W = meta['W']
 
-        use_fused = can_use_fused_uniform_backward
         # The fused uniform kernel treats rhs as read-only, and this wave's
         # later cross-DTS/Pibar adjoints accumulate into child rows.
         rhs_k = accumulated_rhs[ws:we]
-        active_mask = _compute_active_mask(rhs_k)
+        active_mask = _compute_active_mask(rhs_k).contiguous()
         wave_active = bool(active_mask.any())
         if not wave_active:
             n_waves_skipped += 1
             n_clades_skipped += W
             continue
 
-        active_mask_for_dts_forward = None
-        active_mask_for_wave_kernel = None
-        active_mask_for_split_kernels = None
+        n_clades_skipped += W - int(active_mask.sum().item())
 
-        if use_fused:
-            active_mask = active_mask.contiguous()
-            active_mask_for_dts_forward = active_mask
-            active_mask_for_wave_kernel = active_mask
-            active_mask_for_split_kernels = active_mask
-            n_active = W
-        else:
-            n_active = int(active_mask.sum().item())
-            n_clades_skipped += (W - n_active)
-
-        Pi_W_star = Pi_star_wave[ws:we].detach()
-
-        leaf_wt = None if (use_fused and use_uniform_leaf_index) else _get_leaf_wt(ws, we)
+        leaf_wt = None
 
         if meta['has_splits']:
             reduce_idx = meta['reduce_idx']
@@ -931,30 +516,17 @@ def Pi_wave_backward(
                 dts_r = _compute_dts_cross_for_backward(
                     Pi_star_wave.detach(), Pibar_star_wave.detach(), meta,
                     sp_child1, sp_child2, log_pD_dts, log_pS_dts, S, device, dtype,
-                    active_mask=active_mask_for_dts_forward,
+                    active_mask=active_mask,
                     family_idx=None if _auto_wrapped else family_idx,
                     family_offset=0 if _auto_wrapped else ws,
                 )
         else:
             dts_r = None
 
-        use_family_indexed_self_loop = bool(use_fused and not _auto_wrapped)
+        use_family_indexed_self_loop = not _auto_wrapped
         mt_w, DL_w, E_w, Ebar_w, SL1_w, SL2_w = _wave_consts(
             ws, we, family_indexed=use_family_indexed_self_loop
         )
-
-        if not use_fused:
-            use_compact = (n_active < W)
-            if use_compact:
-                active_idx = active_mask.nonzero(as_tuple=True)[0]
-                rhs_active = rhs_k[active_idx]
-            else:
-                active_idx = None
-                rhs_active = rhs_k
-        else:
-            use_compact = False
-            active_idx = None
-            rhs_active = rhs_k
 
         # Per-wave family indices for scatter accumulation.
         fi_w = family_idx[ws:we]
@@ -974,306 +546,109 @@ def Pi_wave_backward(
             else:
                 acc.scatter_add_(0, fi_expand, contrib)
 
-        if use_fused:
-            accum_param_grads = None
-            if not self_loop_2d_triton_enabled:
-                if _auto_wrapped:
-                    accum_param_grads = (
-                        grad_log_pD,
-                        grad_log_pS,
-                        grad_E_acc[0],
-                        grad_Ebar_acc[0],
-                        grad_E_s1_acc[0],
-                        grad_E_s2_acc[0],
-                        grad_mt[0],
-                    )
-                elif use_family_indexed_self_loop:
-                    accum_param_grads = (
-                        grad_log_pD,
-                        grad_log_pS,
-                        grad_E_acc,
-                        grad_Ebar_acc,
-                        grad_E_s1_acc,
-                        grad_E_s2_acc,
-                        grad_mt,
-                    )
-            v_k, aw0, aw1, aw2, aw345, aw3, aw4 = wave_backward_uniform_fused(
-                Pi_star_wave, Pibar_star_wave, ws, W, S,
-                dts_r, rhs_k,
-                mt_w, DL_w, Ebar_w, E_w, SL1_w, SL2_w,
-                sp_child1_wave, sp_child2_wave, leaf_wt,
-                neumann_terms=neumann_terms,
-                leaf_species_idx=leaf_species_index_wave if use_uniform_leaf_index else None,
-                leaf_logp=uniform_leaf_logp if use_uniform_leaf_index else None,
-                accum_param_grads=accum_param_grads,
-                active_mask=active_mask_for_wave_kernel,
-                sp_parent=sp_parent_wave,
-                max_ancestor_depth=max_ancestor_depth,
-                pibar_row_max=forward_pibar_row_max,
-                skip_inactive_zero_stores=False,
-                scratch=None,
-                family_idx=family_idx if use_family_indexed_self_loop else None,
-                family_indexed_consts=use_family_indexed_self_loop,
-                compact_level_ptr=compact_level_ptr,
-                compact_level_parents=compact_level_parents,
-                compact_level_child1=compact_level_child1,
-                compact_level_child2=compact_level_child2,
-            )
+        v_k, aw0, aw1, aw2, aw345, aw3, aw4 = wave_backward_uniform_fused(
+            Pi_star_wave, Pibar_star_wave, ws, W, S,
+            dts_r, rhs_k,
+            mt_w, DL_w, Ebar_w, E_w, SL1_w, SL2_w,
+            sp_child1_wave, sp_child2_wave, leaf_wt,
+            neumann_terms=neumann_terms,
+            leaf_species_idx=leaf_species_index_wave,
+            leaf_logp=uniform_leaf_logp,
+            accum_param_grads=None,
+            active_mask=active_mask,
+            sp_parent=sp_parent_wave,
+            max_ancestor_depth=max_ancestor_depth,
+            pibar_row_max=forward_pibar_row_max,
+            skip_inactive_zero_stores=False,
+            scratch=None,
+            family_idx=family_idx if use_family_indexed_self_loop else None,
+            family_indexed_consts=use_family_indexed_self_loop,
+            compact_level_ptr=compact_level_ptr,
+            compact_level_parents=compact_level_parents,
+            compact_level_child1=compact_level_child1,
+            compact_level_child2=compact_level_child2,
+        )
 
-            if accum_param_grads is None:
-                _scatter_accum(grad_log_pD, aw0)
-                _scatter_accum(grad_log_pS, aw345)
-                _scatter_accum(grad_E_acc, aw0 + aw2)
-                _scatter_accum(grad_Ebar_acc, aw1)
-                _scatter_accum(grad_E_s1_acc, aw4)
-                _scatter_accum(grad_E_s2_acc, aw3)
-                _scatter_accum(grad_mt, aw2)
-
-        else:
-            Pibar_W_star = Pibar_star_wave[ws:we]
-            ingredients = _self_loop_vjp_precompute(
-                Pi_W_star, Pibar_W_star, dts_r,
-                mt_w, DL_w, Ebar_w, E_w, SL1_w, SL2_w,
-                sp_child1, sp_child2, leaf_wt, S,
-                ancestors_T,
-            )
-
-            if use_compact:
-                compact_ing = {
-                    'w_L': ingredients['w_L'][active_idx],
-                    'w_terms': ingredients['w_terms'][:, active_idx],
-                    'p_prime': ingredients['p_prime'][active_idx],
-                }
-                if 'pibar_inv_denom' in ingredients:
-                    compact_ing['pibar_inv_denom'] = ingredients['pibar_inv_denom'][active_idx]
-                if 'pibar_inv_matmul' in ingredients:
-                    compact_ing['pibar_inv_matmul'] = ingredients['pibar_inv_matmul'][active_idx]
-                if 'pibar_matmul' in ingredients:
-                    compact_ing['pibar_matmul'] = ingredients['pibar_matmul'][active_idx]
-                for key in ('sc1_valid', 'sc1_idx', 'sc2_valid', 'sc2_idx'):
-                    if key in ingredients:
-                        compact_ing[key] = ingredients[key]
-                solve_ing = compact_ing
-                solve_W = n_active
-            else:
-                solve_ing = ingredients
-                solve_W = W
-
-            v_k = _gmres_self_loop_solve(
-                rhs_active, solve_ing, sp_child1, sp_child2, S, solve_W,
-                ancestors_T,
-                max_iters=5, tol=1e-8,
-            )
-
-            if use_compact:
-                v_k_full = torch.zeros(W, S, device=device, dtype=dtype)
-                v_k_full[active_idx] = v_k
-                v_k = v_k_full
-
-            alpha_full = v_k * ingredients['w_L']
-            wt = ingredients['w_terms']
-
-            aw0 = alpha_full * wt[0]
-            aw1 = alpha_full * wt[1]
-            aw2 = alpha_full * wt[2]
-            aw3 = alpha_full * wt[3]
-            aw4 = alpha_full * wt[4]
-            aw5 = alpha_full * wt[5]
-
-            _scatter_accum(grad_log_pD, aw0)
-            _scatter_accum(grad_log_pS, aw3 + aw4 + aw5)
-            _scatter_accum(grad_E_acc, aw0 + aw2)
-            _scatter_accum(grad_Ebar_acc, aw1)
-            _scatter_accum(grad_E_s1_acc, aw4)
-            _scatter_accum(grad_E_s2_acc, aw3)
-            _scatter_accum(grad_mt, aw2)
+        _scatter_accum(grad_log_pD, aw0)
+        _scatter_accum(grad_log_pS, aw345)
+        _scatter_accum(grad_E_acc, aw0 + aw2)
+        _scatter_accum(grad_Ebar_acc, aw1)
+        _scatter_accum(grad_E_s1_acc, aw4)
+        _scatter_accum(grad_E_s2_acc, aw3)
+        _scatter_accum(grad_mt, aw2)
 
         if meta['has_splits'] and dts_r is not None:
             sl = meta['sl']
             sr = meta['sr']
             wlsp = meta['log_split_probs']
             reduce_idx = meta['reduce_idx']
-            n_ws = sl.shape[0]
 
-            pibar_side_active = None
-
-            if use_fused:
-                if _auto_wrapped:
-                    dts_log_pD = log_pD_shared
-                    dts_log_pS = log_pS_shared
-                    dts_grad_log_pD = grad_log_pD[0]
-                    dts_grad_log_pS = grad_log_pS[0]
-                    dts_grad_mt = grad_mt[0] if grad_mt.ndim == 2 else grad_mt
-                    dts_mt = mt_shared
-                    dts_family_idx = None
-                else:
-                    dts_log_pD = log_pD_param
-                    dts_log_pS = log_pS_param
-                    dts_grad_log_pD = grad_log_pD
-                    dts_grad_log_pS = grad_log_pS
-                    dts_grad_mt = grad_mt
-                    dts_mt = mt_family
-                    dts_family_idx = family_idx
-                dts_accum_result = dts_cross_backward_accum_fused(
-                    Pi_star_wave, Pibar_star_wave, v_k, ws,
-                    sl, sr, reduce_idx, wlsp,
-                    dts_log_pD, dts_log_pS,
-                    sp_child1, sp_child2, accumulated_rhs, S,
-                    active_mask=active_mask_for_split_kernels,
-                    merge_s_term=True,
-                    grad_log_pD=dts_grad_log_pD,
-                    grad_log_pS=dts_grad_log_pS,
-                    grad_mt=dts_grad_mt,
-                    accum_param_reductions=True,
-                    accum_mt_reduction=True,
-                    output_pibar_ud=True,
-                    output_pibar_side_active=True,
-                    pibar_side_threshold=0.0,
-                    mt_squeezed=dts_mt,
-                    pibar_row_max=forward_pibar_row_max,
-                    grad_mt_two_stage=(
-                        dts_grad_mt.ndim == 1
-                        and int(dts_grad_mt.numel()) == S
-                    ),
-                    grad_mt_two_stage_tile_splits=(
-                        dts_grad_mt_two_stage_tile_splits
-                    ),
-                    skip_inactive_pibar_output_zero=False,
-                    scratch=None,
-                    family_idx=dts_family_idx,
-                )
-                (grad_Pibar_l, grad_Pibar_r, pibar_side_active,
-                 param_pD, param_pS) = dts_accum_result
-
-                uniform_cross_pibar_vjp_tree_from_ud_fused(
-                    Pi_star_wave,
-                    grad_Pibar_l,
-                    grad_Pibar_r,
-                    sl,
-                    sr,
-                    sp_child1,
-                    sp_child2,
-                    level_parents,
-                    accumulated_rhs,
-                    S,
-                    active_mask=active_mask_for_split_kernels,
-                    reduce_idx=reduce_idx,
-                    pibar_row_max=forward_pibar_row_max,
-                    skip_zero_sides=True,
-                    side_active=pibar_side_active,
-                    compact_level_ptr=compact_level_ptr,
-                    compact_level_parents=compact_level_parents,
-                    compact_level_child1=compact_level_child1,
-                    compact_level_child2=compact_level_child2,
-                    side_active_threshold=0.0,
-                )
-
+            if _auto_wrapped:
+                dts_log_pD = log_pD_shared
+                dts_log_pS = log_pS_shared
+                dts_grad_log_pD = grad_log_pD[0]
+                dts_grad_log_pS = grad_log_pS[0]
+                dts_grad_mt = grad_mt[0] if grad_mt.ndim == 2 else grad_mt
+                dts_mt = mt_shared
+                dts_family_idx = None
             else:
-                sl_long = sl.long()
-                sr_long = sr.long()
-                reduce_idx_long = reduce_idx.long()
+                dts_log_pD = log_pD_param
+                dts_log_pS = log_pS_param
+                dts_grad_log_pD = grad_log_pD
+                dts_grad_log_pS = grad_log_pS
+                dts_grad_mt = grad_mt
+                dts_mt = mt_family
+                dts_family_idx = family_idx
+            dts_accum_result = dts_cross_backward_accum_fused(
+                Pi_star_wave, Pibar_star_wave, v_k, ws,
+                sl, sr, reduce_idx, wlsp,
+                dts_log_pD, dts_log_pS,
+                sp_child1, sp_child2, accumulated_rhs, S,
+                active_mask=active_mask,
+                merge_s_term=True,
+                grad_log_pD=dts_grad_log_pD,
+                grad_log_pS=dts_grad_log_pS,
+                grad_mt=dts_grad_mt,
+                accum_param_reductions=True,
+                accum_mt_reduction=True,
+                output_pibar_ud=True,
+                output_pibar_side_active=True,
+                pibar_side_threshold=0.0,
+                mt_squeezed=dts_mt,
+                pibar_row_max=forward_pibar_row_max,
+                grad_mt_two_stage=(
+                    dts_grad_mt.ndim == 1
+                    and int(dts_grad_mt.numel()) == S
+                ),
+                grad_mt_two_stage_tile_splits=dts_grad_mt_two_stage_tile_splits,
+                skip_inactive_pibar_output_zero=False,
+                scratch=None,
+                family_idx=dts_family_idx,
+            )
+            grad_Pibar_l, grad_Pibar_r, pibar_side_active, _param_pD, _param_pS = dts_accum_result
 
-                Pi_l = Pi_star_wave[sl_long]
-                Pi_r = Pi_star_wave[sr_long]
-                Pibar_l = Pibar_star_wave[sl_long]
-                Pibar_r = Pibar_star_wave[sr_long]
-                neg_inf_col = torch.full((Pi_star_wave.shape[0], 1), NEG_INF, device=device, dtype=dtype)
-                Pi_col_pad = torch.cat([Pi_star_wave, neg_inf_col], dim=1)
-                Pi_l_s1 = Pi_col_pad[sl_long][:, sp_child1.long()]
-                Pi_l_s2 = Pi_col_pad[sl_long][:, sp_child2.long()]
-                Pi_r_s1 = Pi_col_pad[sr_long][:, sp_child1.long()]
-                Pi_r_s2 = Pi_col_pad[sr_long][:, sp_child2.long()]
-
-                fi_splits = family_idx[ws + reduce_idx_long]
-                _pD_s = log_pD[fi_splits]
-                if _pD_s.ndim == 1:
-                    _pD_s = _pD_s.unsqueeze(-1)
-                _pS_s = log_pS[fi_splits]
-                if _pS_s.ndim == 1:
-                    _pS_s = _pS_s.unsqueeze(-1)
-
-                DTS_5 = torch.stack([
-                    _pD_s + Pi_l + Pi_r,
-                    Pi_l + Pibar_r,
-                    Pi_r + Pibar_l,
-                    _pS_s + Pi_l_s1 + Pi_r_s2,
-                    _pS_s + Pi_r_s1 + Pi_l_s2,
-                ], dim=0)
-
-                Pi_parent = Pi_W_star[reduce_idx_long]
-                combined = wlsp + DTS_5
-                v_k_parent = v_k[reduce_idx_long]
-                grad_DTS_5 = v_k_parent.unsqueeze(0) * _safe_exp2_ratio(
-                    combined, Pi_parent.unsqueeze(0))
-                if grad_DTS_5.dtype != dtype:
-                    grad_DTS_5 = grad_DTS_5.to(dtype=dtype)
-
-                fi_split_expand = fi_splits.unsqueeze(1).expand(n_ws, S)
-                if grad_log_pD.ndim == 1:
-                    grad_log_pD.scatter_add_(
-                        0,
-                        fi_splits,
-                        grad_DTS_5[0].sum(dim=1).to(dtype=grad_log_pD.dtype),
-                    )
-                    grad_log_pS.scatter_add_(
-                        0,
-                        fi_splits,
-                        (grad_DTS_5[3] + grad_DTS_5[4]).sum(dim=1).to(dtype=grad_log_pS.dtype),
-                    )
-                else:
-                    grad_log_pD.scatter_add_(0, fi_split_expand, grad_DTS_5[0].to(dtype=grad_log_pD.dtype))
-                    grad_log_pS.scatter_add_(0, fi_split_expand, (grad_DTS_5[3] + grad_DTS_5[4]).to(dtype=grad_log_pS.dtype))
-                child_ids_dts = torch.cat([sl_long, sr_long])
-                fi_ch = family_idx[child_ids_dts]
-                fi_ch_expand = fi_ch.unsqueeze(1).expand(2 * n_ws, S)
-                grad_mt.scatter_add_(0, fi_ch_expand,
-                                     torch.cat([grad_DTS_5[2], grad_DTS_5[1]], dim=0).to(dtype=grad_mt.dtype))
-
-                grad_Pi_l = grad_DTS_5[0] + grad_DTS_5[1]
-                grad_Pi_r = grad_DTS_5[0] + grad_DTS_5[2]
-                grad_Pibar_l = grad_DTS_5[2]
-                grad_Pibar_r = grad_DTS_5[1]
-
-                sc1 = sp_child1.long()
-                sc2 = sp_child2.long()
-                valid1 = sc1 < S
-                valid2 = sc2 < S
-                if valid1.any():
-                    idx1 = sc1[valid1]
-                    grad_Pi_l.scatter_add_(1, idx1.unsqueeze(0).expand(n_ws, -1), grad_DTS_5[3][:, valid1].to(dtype=grad_Pi_l.dtype))
-                    grad_Pi_r.scatter_add_(1, idx1.unsqueeze(0).expand(n_ws, -1), grad_DTS_5[4][:, valid1].to(dtype=grad_Pi_r.dtype))
-                if valid2.any():
-                    idx2 = sc2[valid2]
-                    grad_Pi_r.scatter_add_(1, idx2.unsqueeze(0).expand(n_ws, -1), grad_DTS_5[3][:, valid2].to(dtype=grad_Pi_r.dtype))
-                    grad_Pi_l.scatter_add_(1, idx2.unsqueeze(0).expand(n_ws, -1), grad_DTS_5[4][:, valid2].to(dtype=grad_Pi_l.dtype))
-
-                accumulated_rhs.index_add_(0, sl_long, grad_Pi_l)
-                accumulated_rhs.index_add_(0, sr_long, grad_Pi_r)
-
-                all_children = torch.cat([sl.long(), sr.long()])
-                all_pibar_grad = torch.cat([grad_Pibar_l, grad_Pibar_r])
-
-                nz = all_pibar_grad.abs().sum(dim=1) > 0
-                if nz.any():
-                    nz_children = all_children[nz]
-                    u = all_pibar_grad[nz]
-                    Pi_ch = Pi_star_wave[nz_children]
-                    Pi_max_p = Pi_ch.max(dim=1, keepdim=True).values
-                    p_prime = torch.exp2(Pi_ch - Pi_max_p)
-
-                    anc_sum = _uniform_ancestor_sum(p_prime, ancestors_T)
-                    if anc_sum.dtype != p_prime.dtype:
-                        anc_sum = anc_sum.to(dtype=p_prime.dtype)
-                    denom = p_prime.sum(dim=1, keepdim=True) - anc_sum
-                    denom_safe = torch.where(denom > 0, denom, torch.ones_like(denom))
-                    u_d = torch.where(denom > 0, u / denom_safe, torch.zeros_like(u))
-                    A = u_d.sum(dim=1, keepdim=True)
-                    correction = _uniform_ancestor_left_sum(ancestors_T, u_d.T).T
-                    if correction.dtype != p_prime.dtype:
-                        correction = correction.to(dtype=p_prime.dtype)
-                    pi_from_pibar = p_prime * (A - correction)
-
-                    accumulated_rhs.index_add_(0, nz_children, pi_from_pibar)
+            uniform_cross_pibar_vjp_tree_from_ud_fused(
+                Pi_star_wave,
+                grad_Pibar_l,
+                grad_Pibar_r,
+                sl,
+                sr,
+                sp_child1,
+                sp_child2,
+                level_parents,
+                accumulated_rhs,
+                S,
+                active_mask=active_mask,
+                reduce_idx=reduce_idx,
+                pibar_row_max=forward_pibar_row_max,
+                skip_zero_sides=True,
+                side_active=pibar_side_active,
+                compact_level_ptr=compact_level_ptr,
+                compact_level_parents=compact_level_parents,
+                compact_level_child1=compact_level_child1,
+                compact_level_child2=compact_level_child2,
+                side_active_threshold=0.0,
+            )
 
     result = {
         'v_Pi': accumulated_rhs,

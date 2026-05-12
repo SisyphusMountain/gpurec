@@ -204,23 +204,9 @@ def choose_uniform_pipeline_policy(
                         reason="first_profiled_candidate_with_estimated_payload_within_budget",
                     )
 
-    fallback_chunk = 1
-    fallback_wave = min(int(max_wave_candidates[0]), 4096)
-    est = estimate_chunk_payload_bytes(
-        clade_counts,
-        S,
-        dtype,
-        family_chunk_size=fallback_chunk,
-        max_wave_size=fallback_wave,
-        proposal0=False,
-    )
-    return UniformPipelinePolicy(
-        proposal0=False,
-        family_chunk_size=fallback_chunk,
-        max_wave_size=fallback_wave,
-        estimated_payload_bytes=est,
-        budget_bytes=budget,
-        reason="fallback_smallest_baseline_candidate",
+    raise RuntimeError(
+        "no retained uniform pipeline policy fits the memory budget "
+        f"({(budget or 0) / (1024 ** 3):.2f} GiB)"
     )
 
 

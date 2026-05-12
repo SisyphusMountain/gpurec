@@ -1,11 +1,4 @@
-"""Fused Triton kernels for wave-backward.
-
-Two kernels:
-1. _wave_backward_uniform_kernel: self-loop backward (Neumann VJP + param VJP)
-2. _dts_cross_backward_accum_kernel: cross-clade DTS backward with direct accumulation
-
-Both use one CTA per work-item, multi-pass over species dimension.
-"""
+"""Fused Triton kernels for the retained wave-backward fast path."""
 
 import os
 
@@ -144,11 +137,6 @@ def _uniform_backward_leaf_logp_mode(use_leaf_index, leaf_logp, family_idx, fami
     return 0
 
 
-def _grad_param_is_scalar(grad):
-    """Whether a log_pD/log_pS gradient tensor is family-scalar."""
-    return grad.ndim == 1 or (grad.ndim == 2 and int(grad.shape[1]) == 1)
-
-
 def _parent_from_children(sp_child1, sp_child2, S):
     """Build species parent pointers from child arrays for direct kernel callers."""
     device = sp_child1.device
@@ -239,629 +227,6 @@ def active_mask_from_rhs_absmax_fused(rhs, threshold, *, use_pruning=True):
     return active_mask
 
 
-@triton.jit
-def _wave_backward_uniform_kernel(
-    # Converged values from forward pass
-    Pi_star_ptr,      # [C, S] — read rows [ws:ws+W]
-    Pibar_star_ptr,   # [C, S] — read rows [ws:ws+W]
-    Pibar_row_max_ptr, # optional [C] forward Pi row maxima for uniform Pibar
-    dts_r_ptr,        # [W, S] or None — cross-clade DTS
-    has_splits: tl.constexpr,
-    # Incoming adjoint
-    rhs_ptr,          # [W, S]
-    active_mask_ptr,  # optional [W] bool row activity mask
-    # Constants [S]
-    mt_ptr, DL_const_ptr, Ebar_ptr, E_ptr, SL1_const_ptr, SL2_const_ptr,
-    # Species children [S] long
-    sp_child1_ptr, sp_child2_ptr,
-    sp_parent_ptr,
-    # Leaf term [W, S]
-    leaf_term_ptr,
-    leaf_species_ptr,
-    leaf_logp_ptr,
-    family_idx_ptr,
-    # Outputs
-    v_k_ptr,          # [W, S] — Neumann-solved adjoint
-    # Per-element param grad contributions [W, S] each — reduced by caller
-    aw0_ptr,          # grad contribution to log_pD, E (from term 0)
-    aw1_ptr,          # grad contribution to Ebar (from term 1)
-    aw2_ptr,          # grad contribution to E, mt (from term 2)
-    aw345_ptr,        # grad contribution to log_pS (from terms 3+4+5)
-    aw3_ptr,          # grad contribution to E_s2 (from term 3)
-    aw4_ptr,          # grad contribution to E_s1 (from term 4)
-    # Scratch buffer for speciation scatter [W, S]
-    spec_buf_ptr,
-    term_buf_ptr,
-    pibar_corr_ptr,
-    # Optional in-kernel accumulation targets for global-mode param grads.
-    grad_log_pD_ptr,
-    grad_log_pS_ptr,
-    grad_E_ptr,
-    grad_Ebar_ptr,
-    grad_E_s1_ptr,
-    grad_E_s2_ptr,
-    grad_mt_ptr,
-    # Dimensions
-    ws,               # wave start offset into [C, S]
-    S: tl.constexpr,
-    stride: tl.constexpr,
-    BLOCK_S: tl.constexpr,
-    NEUMANN_TERMS: tl.constexpr,
-    MAX_ANCESTOR_DEPTH: tl.constexpr,
-    USE_LEAF_INDEX: tl.constexpr,
-    ACCUM_PARAM_GRADS: tl.constexpr,
-    FAST_NOSPLIT_PARAM_GRADS: tl.constexpr,
-    COMPACT_PIBAR_SCRATCH: tl.constexpr,
-    LEAF_HIT_ONLY_LOGP: tl.constexpr,
-    LEAF_LOGP_MODE: tl.constexpr,
-    USE_PIBAR_ROW_MAX: tl.constexpr,
-    USE_ACTIVE_MASK: tl.constexpr,
-    SKIP_INACTIVE_ZERO_STORES: tl.constexpr,
-    CONST_LAYOUT: tl.constexpr,
-    LOG_PD_GRAD_SCALAR: tl.constexpr,
-    LOG_PS_GRAD_SCALAR: tl.constexpr,
-    DTYPE: tl.constexpr,
-):
-    """Fused backward kernel for uniform Pibar mode.
-
-    Per clade w, computes:
-    1. Softmax weights (w_L, w_terms) from converged Pi/Pibar
-    2. Neumann series: v_k = (I + J^T + (J^T)^2 + ...) @ rhs
-    3. Param VJP element-wise contributions
-
-    The Neumann J^T application needs A = sum_s(u_d[s]) — a full-row reduction.
-    Uniform Pibar also subtracts, for each species, the subtree sum over all
-    descendants whose ancestor list contains that species.
-    Each iteration uses 2 sub-passes:
-      Pass A: compute u_d[s], accumulate A, scatter u_d to ancestor correction
-      Pass B: compute result[s] using A and correction, read spec contribution
-    """
-    NEG_LARGE = tl.full([1], value=-1e30, dtype=DTYPE)
-
-    w = tl.program_id(0)
-    pi_base = (ws + w) * stride      # offset into [C, S]
-    out_base = w * stride             # offset into [W, S]
-    family = tl.full([1], value=0, dtype=tl.int64)
-    const_base = 0
-    grad_family_base = 0
-    if CONST_LAYOUT == 1:
-        const_base = out_base
-    elif CONST_LAYOUT == 2:
-        family = tl.load(family_idx_ptr + ws + w).to(tl.int64) + tl.zeros([1], dtype=tl.int64)
-        const_base = family * stride
-        grad_family_base = family * stride
-    if USE_ACTIVE_MASK:
-        row_active = tl.load(active_mask_ptr + w)
-        if row_active == 0:
-            if SKIP_INACTIVE_ZERO_STORES:
-                return
-            for s_start in range(0, S, BLOCK_S):
-                s_offs = s_start + tl.arange(0, BLOCK_S)
-                mask = s_offs < S
-                zero = tl.zeros([BLOCK_S], dtype=DTYPE)
-                tl.store(v_k_ptr + out_base + s_offs, zero, mask=mask)
-                if not ACCUM_PARAM_GRADS:
-                    off = out_base + s_offs
-                    tl.store(aw0_ptr + off, zero, mask=mask)
-                    tl.store(aw1_ptr + off, zero, mask=mask)
-                    tl.store(aw2_ptr + off, zero, mask=mask)
-                    tl.store(aw345_ptr + off, zero, mask=mask)
-                    tl.store(aw3_ptr + off, zero, mask=mask)
-                    tl.store(aw4_ptr + off, zero, mask=mask)
-            return
-    else:
-        row_active = True
-
-    # ================================================================
-    # Pass 1: Row statistics for uniform Pibar (same as forward)
-    # ================================================================
-    if USE_PIBAR_ROW_MAX:
-        row_max = tl.load(Pibar_row_max_ptr + ws + w).to(DTYPE)
-        row_sum = tl.full([1], value=0.0, dtype=DTYPE)
-        for s_start in range(0, S, BLOCK_S):
-            s_offs = s_start + tl.arange(0, BLOCK_S)
-            valid_mask = s_offs < S
-            mask = valid_mask & row_active
-            pi_val = tl.load(Pi_star_ptr + pi_base + s_offs, mask=mask, other=-1e30).to(DTYPE)
-            row_sum += tl.sum(tl.exp2(pi_val - row_max), axis=0)
-    else:
-        row_max = tl.full([1], value=-1e30, dtype=DTYPE)
-        row_sum = tl.full([1], value=0.0, dtype=DTYPE)
-
-        for s_start in range(0, S, BLOCK_S):
-            s_offs = s_start + tl.arange(0, BLOCK_S)
-            valid_mask = s_offs < S
-            mask = valid_mask & row_active
-            pi_val = tl.load(Pi_star_ptr + pi_base + s_offs, mask=mask, other=-1e30).to(DTYPE)
-            tile_max = tl.max(pi_val, axis=0)
-            new_max = tl.maximum(row_max, tile_max)
-            row_sum = row_sum * tl.exp2(row_max - new_max) + tl.sum(tl.exp2(pi_val - new_max), axis=0)
-            row_max = new_max
-
-    # ================================================================
-    # Pass 2: Compute softmax weights and store to [W, S] buffers
-    # We need w_L[s], w_terms[0..5][s], inv_denom[s], p_prime[s]
-    # These are consumed by the Neumann loop. Since S doesn't fit in
-    # registers across passes, we store per-element to global memory.
-    #
-    # Actually, we interleave: compute weights and immediately use them.
-    # But Neumann needs full-row A, so we can't do it in one pass.
-    #
-    # Strategy: store weights to reusable buffers, then iterate Neumann.
-    # We reuse the output buffers (aw0..aw4) as scratch during Neumann,
-    # then overwrite with final param contributions.
-    #
-    # Stored per-element (to aw* buffers temporarily):
-    #   aw0 = w_L * (w_terms[0] + w_terms[1])  — diagonal weight
-    #   aw1 = w_L * w_terms[2]                  — Pibar weight
-    #   aw2 = inv_denom                         — for Pibar VJP
-    #   aw3 = p_prime                            — for Pibar VJP
-    #   aw4 = w_L * w_terms[3]                  — SL1 weight
-    #   aw345 = w_L * w_terms[4]                — SL2 weight
-    # ================================================================
-    M_SAFE = tl.full([1], value=-1e29, dtype=DTYPE)
-
-    for s_start in range(0, S, BLOCK_S):
-        s_offs = s_start + tl.arange(0, BLOCK_S)
-        valid_mask = s_offs < S
-        mask = valid_mask & row_active
-        off = out_base + s_offs
-
-        # Load Pi*, Pibar*
-        pi_w = tl.load(Pi_star_ptr + pi_base + s_offs, mask=mask, other=-1e30).to(DTYPE)
-        pibar_w = tl.load(Pibar_star_ptr + pi_base + s_offs, mask=mask, other=-1e30).to(DTYPE)
-
-        # Load constants
-        dl_c = tl.load(DL_const_ptr + const_base + s_offs, mask=mask, other=-1e30).to(DTYPE)
-        ebar = tl.load(Ebar_ptr + const_base + s_offs, mask=mask, other=-1e30).to(DTYPE)
-        e_val = tl.load(E_ptr + const_base + s_offs, mask=mask, other=-1e30).to(DTYPE)
-        sl1_c = tl.load(SL1_const_ptr + const_base + s_offs, mask=mask, other=-1e30).to(DTYPE)
-        sl2_c = tl.load(SL2_const_ptr + const_base + s_offs, mask=mask, other=-1e30).to(DTYPE)
-
-        # Gather species children
-        c1 = tl.load(sp_child1_ptr + s_offs, mask=mask, other=0)
-        c2 = tl.load(sp_child2_ptr + s_offs, mask=mask, other=0)
-        c1_valid = c1 < S
-        c2_valid = c2 < S
-        pi_s1 = tl.load(Pi_star_ptr + pi_base + c1, mask=mask & c1_valid, other=-1e30).to(DTYPE)
-        pi_s2 = tl.load(Pi_star_ptr + pi_base + c2, mask=mask & c2_valid, other=-1e30).to(DTYPE)
-
-        # 6 DTS_L terms
-        t0 = dl_c + pi_w
-        t1 = pi_w + ebar
-        t2 = pibar_w + e_val
-        t3 = sl1_c + pi_s1
-        t4 = sl2_c + pi_s2
-        if USE_LEAF_INDEX:
-            leaf_species = tl.load(leaf_species_ptr + ws + w)
-            leaf_hit = mask & (leaf_species == s_offs)
-            if LEAF_LOGP_MODE == 3:
-                leaf_logp = tl.load(leaf_logp_ptr).to(DTYPE) + tl.zeros([BLOCK_S], dtype=DTYPE)
-                t5 = tl.where(leaf_hit, leaf_logp, NEG_LARGE)
-            elif LEAF_LOGP_MODE == 2:
-                leaf_logp = tl.load(
-                    leaf_logp_ptr + family * stride + s_offs,
-                    mask=leaf_hit,
-                    other=-1e30,
-                ).to(DTYPE)
-                t5 = tl.where(leaf_hit, leaf_logp, NEG_LARGE)
-            elif LEAF_LOGP_MODE == 1:
-                leaf_family = tl.load(family_idx_ptr + ws + w).to(tl.int64)
-                leaf_logp = (
-                    tl.load(leaf_logp_ptr + leaf_family).to(DTYPE)
-                    + tl.zeros([BLOCK_S], dtype=DTYPE)
-                )
-                t5 = tl.where(leaf_hit, leaf_logp, NEG_LARGE)
-            elif LEAF_HIT_ONLY_LOGP:
-                t5 = tl.load(leaf_logp_ptr + s_offs, mask=leaf_hit, other=-1e30).to(DTYPE)
-            else:
-                leaf_logp = tl.load(leaf_logp_ptr + s_offs, mask=mask, other=-1e30).to(DTYPE)
-                t5 = tl.where(leaf_hit, leaf_logp, NEG_LARGE)
-        else:
-            t5 = tl.load(leaf_term_ptr + off, mask=mask, other=-1e30).to(DTYPE)
-
-        # Logsumexp over 6 terms → DTS_L
-        m = tl.maximum(t0, t1)
-        m = tl.maximum(m, t2)
-        m = tl.maximum(m, t3)
-        m = tl.maximum(m, t4)
-        m = tl.maximum(m, t5)
-        m_safe = tl.where(m > M_SAFE, m, tl.zeros_like(m))
-        e0 = tl.exp2(t0 - m_safe)
-        e1 = tl.exp2(t1 - m_safe)
-        e2 = tl.exp2(t2 - m_safe)
-        e3 = tl.exp2(t3 - m_safe)
-        e4 = tl.exp2(t4 - m_safe)
-        e5 = tl.exp2(t5 - m_safe)
-        dts_l_sum = e0 + e1 + e2 + e3 + e4 + e5
-        dts_l = tl.log2(dts_l_sum) + m
-
-        # w_L = exp2(DTS_L - Pi_new), w_terms[i] = exp2(terms[i] - DTS_L) = e_i / dts_l_sum
-        if has_splits:
-            dts_r = tl.load(dts_r_ptr + off, mask=mask, other=-1e30)
-            pi_new_m = tl.maximum(dts_l, dts_r)
-            pi_new_ms = tl.where(pi_new_m > M_SAFE, pi_new_m, tl.zeros_like(pi_new_m))
-            pi_new = tl.log2(tl.exp2(dts_l - pi_new_ms) + tl.exp2(dts_r - pi_new_ms)) + pi_new_m
-            # w_L: safe when DTS_L = -inf → w_L = 0
-            w_L = tl.where(dts_l > M_SAFE, tl.exp2(dts_l - pi_new), tl.zeros_like(dts_l))
-        else:
-            w_L = tl.full(s_offs.shape, value=1.0, dtype=DTYPE)
-
-        # Per-term softmax weights (divide by dts_l_sum, not dts_l_sum + dts_r)
-        inv_sum = tl.where(dts_l_sum > 0, 1.0 / dts_l_sum, tl.zeros_like(dts_l_sum))
-        wt0 = e0 * inv_sum
-        wt1 = e1 * inv_sum
-        wt2 = e2 * inv_sum
-        wt3 = e3 * inv_sum
-        wt4 = e4 * inv_sum
-        # wt5 = e5 * inv_sum  (only needed for param VJP log_pS, computed later)
-
-        # Pibar VJP ingredients:
-        #   denom[s] = sum_j exp(Pi[j]-row_max)
-        #              - sum_{a in ancestors(s)} exp(Pi[a]-row_max)
-        p_prime = tl.exp2(pi_w - row_max)
-        ancestor_sum = tl.zeros([BLOCK_S], dtype=DTYPE)
-        cur = s_offs
-        for _depth in range(MAX_ANCESTOR_DEPTH):
-            anc_mask = mask & (cur >= 0) & (cur < S)
-            pi_anc = tl.load(Pi_star_ptr + pi_base + cur, mask=anc_mask, other=-1e30).to(DTYPE)
-            ancestor_sum += tl.where(
-                anc_mask,
-                tl.exp2(pi_anc - row_max),
-                tl.zeros([BLOCK_S], dtype=DTYPE),
-            )
-            cur = tl.load(sp_parent_ptr + cur, mask=anc_mask, other=-1)
-        denom = row_sum - ancestor_sum
-        inv_denom = tl.where(denom > 0, 1.0 / denom, tl.zeros_like(denom))
-
-        # Store precomputed weights to scratch buffers
-        diag_wt = w_L * (wt0 + wt1)        # diagonal J^T weight
-        pibar_wt = w_L * wt2               # Pibar path weight
-        sl1_wt = w_L * wt3                 # SL1 speciation weight
-        sl2_wt = w_L * wt4                 # SL2 speciation weight
-
-        tl.store(aw0_ptr + off, diag_wt, mask=mask)
-        if COMPACT_PIBAR_SCRATCH:
-            tl.store(aw1_ptr + off, pibar_wt * inv_denom, mask=mask)
-        else:
-            tl.store(aw1_ptr + off, pibar_wt, mask=mask)
-        if not COMPACT_PIBAR_SCRATCH:
-            tl.store(aw2_ptr + off, inv_denom, mask=mask)
-            tl.store(aw3_ptr + off, p_prime, mask=mask)
-        tl.store(aw4_ptr + off, sl1_wt, mask=mask)
-        tl.store(aw345_ptr + off, sl2_wt, mask=mask)
-
-    # ================================================================
-    # Neumann series: v = rhs + J^T(rhs) + (J^T)^2(rhs) + ...
-    #
-    # Each J^T application on vector `term` requires:
-    #   Pass A: compute u_d = term * pibar_wt * inv_denom, accumulate A = sum(u_d),
-    #           scatter u_d to ancestors, and scatter speciation contributions.
-    #   Pass B: result[s] = term[s] * diag_wt[s] + p_prime[s] * (A - correction[s])
-    #                        + speciation contribution.
-    #
-    # ================================================================
-    # Copy rhs → v_k (v_k accumulates the Neumann sum)
-    for s_start in range(0, S, BLOCK_S):
-        s_offs = s_start + tl.arange(0, BLOCK_S)
-        valid_mask = s_offs < S
-        mask = valid_mask & row_active
-        rhs_val = tl.load(rhs_ptr + out_base + s_offs, mask=mask, other=0.0).to(DTYPE)
-        tl.store(v_k_ptr + out_base + s_offs, rhs_val, mask=valid_mask)
-
-    # Buffer ping-pong: iteration 0 reads rhs_ptr, even iterations write
-    # spec_buf, and odd iterations write term_buf. Output buffer is zeroed
-    # at the start of each iteration to avoid stale data at non-child positions.
-
-    for _n in range(NEUMANN_TERMS):
-        # Zero the correction buffer before ancestor scatters.
-        for s_start in range(0, S, BLOCK_S):
-            s_offs = s_start + tl.arange(0, BLOCK_S)
-            valid_mask = s_offs < S
-            mask = valid_mask & row_active
-            zero = tl.zeros(s_offs.shape, dtype=DTYPE)
-            tl.store(pibar_corr_ptr + out_base + s_offs, zero, mask=mask)
-
-        # Zero the output buffer before speciation scatter writes. Sub-pass A
-        # only writes child positions; sub-pass B reads all positions.
-        for s_start in range(0, S, BLOCK_S):
-            s_offs = s_start + tl.arange(0, BLOCK_S)
-            valid_mask = s_offs < S
-            mask = valid_mask & row_active
-            zero = tl.zeros(s_offs.shape, dtype=DTYPE)
-            if _n % 2 == 0:
-                tl.store(spec_buf_ptr + out_base + s_offs, zero, mask=mask)
-            else:
-                tl.store(term_buf_ptr + out_base + s_offs, zero, mask=mask)
-
-        tl.debug_barrier()
-
-        # --- Sub-pass A: accumulate A = sum_s(term * pibar_wt * inv_denom) ---
-        # Also write ancestor-correction and speciation scatter contributions.
-        A_acc = tl.full([1], value=0.0, dtype=DTYPE)
-
-        for s_start in range(0, S, BLOCK_S):
-            s_offs = s_start + tl.arange(0, BLOCK_S)
-            valid_mask = s_offs < S
-            mask = valid_mask & row_active
-            off = out_base + s_offs
-
-            # Load term from appropriate buffer
-            if _n == 0:
-                term_val = tl.load(rhs_ptr + off, mask=mask, other=0.0).to(DTYPE)
-            elif _n % 2 == 1:
-                term_val = tl.load(spec_buf_ptr + off, mask=mask, other=0.0).to(DTYPE)
-            else:
-                term_val = tl.load(term_buf_ptr + off, mask=mask, other=0.0).to(DTYPE)
-
-            if COMPACT_PIBAR_SCRATCH:
-                pibar_u_coeff = tl.load(aw1_ptr + off, mask=mask, other=0.0).to(DTYPE)
-                u_d = term_val * pibar_u_coeff
-            else:
-                pibar_wt = tl.load(aw1_ptr + off, mask=mask, other=0.0).to(DTYPE)
-                inv_denom = tl.load(aw2_ptr + off, mask=mask, other=0.0).to(DTYPE)
-                u_d = term_val * pibar_wt * inv_denom
-
-            A_acc += tl.sum(u_d, axis=0)
-
-            cur = s_offs
-            for _depth in range(MAX_ANCESTOR_DEPTH):
-                anc_mask = mask & (cur >= 0) & (cur < S)
-                tl.atomic_add(pibar_corr_ptr + out_base + cur, u_d, mask=anc_mask)
-                cur = tl.load(sp_parent_ptr + cur, mask=anc_mask, other=-1)
-
-            # Speciation scatter: write term * sl_wt to child index. No
-            # conflict: each child appears as target of exactly one parent.
-            sl1_wt = tl.load(aw4_ptr + off, mask=mask, other=0.0).to(DTYPE)
-            sl2_wt = tl.load(aw345_ptr + off, mask=mask, other=0.0).to(DTYPE)
-            c1 = tl.load(sp_child1_ptr + s_offs, mask=mask, other=0)
-            c2 = tl.load(sp_child2_ptr + s_offs, mask=mask, other=0)
-            c1_valid = (c1 < S) & mask
-            c2_valid = (c2 < S) & mask
-            src1 = term_val * sl1_wt
-            src2 = term_val * sl2_wt
-            if _n % 2 == 0:
-                tl.store(spec_buf_ptr + out_base + c1, src1, mask=c1_valid)
-                tl.store(spec_buf_ptr + out_base + c2, src2, mask=c2_valid)
-            else:
-                tl.store(term_buf_ptr + out_base + c1, src1, mask=c1_valid)
-                tl.store(term_buf_ptr + out_base + c2, src2, mask=c2_valid)
-
-        tl.debug_barrier()
-
-        # --- Sub-pass B: compute J^T result using A ---
-        for s_start in range(0, S, BLOCK_S):
-            s_offs = s_start + tl.arange(0, BLOCK_S)
-            valid_mask = s_offs < S
-            mask = valid_mask & row_active
-            off = out_base + s_offs
-
-            # Reload term and weights
-            if _n == 0:
-                term_val = tl.load(rhs_ptr + off, mask=mask, other=0.0).to(DTYPE)
-            elif _n % 2 == 1:
-                term_val = tl.load(spec_buf_ptr + off, mask=mask, other=0.0).to(DTYPE)
-            else:
-                term_val = tl.load(term_buf_ptr + off, mask=mask, other=0.0).to(DTYPE)
-
-            diag_wt = tl.load(aw0_ptr + off, mask=mask, other=0.0).to(DTYPE)
-            if COMPACT_PIBAR_SCRATCH:
-                pibar_u_coeff = tl.load(aw1_ptr + off, mask=mask, other=0.0).to(DTYPE)
-                pi_w = tl.load(Pi_star_ptr + pi_base + s_offs, mask=mask, other=-1e30).to(DTYPE)
-                p_prime = tl.exp2(pi_w - row_max)
-                u_d = term_val * pibar_u_coeff
-            else:
-                pibar_wt = tl.load(aw1_ptr + off, mask=mask, other=0.0).to(DTYPE)
-                inv_denom = tl.load(aw2_ptr + off, mask=mask, other=0.0).to(DTYPE)
-                p_prime = tl.load(aw3_ptr + off, mask=mask, other=0.0).to(DTYPE)
-                u_d = term_val * pibar_wt * inv_denom
-            correction = tl.load(pibar_corr_ptr + off, mask=mask, other=0.0).to(DTYPE)
-            result = term_val * diag_wt + p_prime * (A_acc - correction)
-
-            # Add speciation contribution.
-            if _n % 2 == 0:
-                spec_val = tl.load(spec_buf_ptr + off, mask=mask, other=0.0).to(DTYPE)
-            else:
-                spec_val = tl.load(term_buf_ptr + off, mask=mask, other=0.0).to(DTYPE)
-            result = result + spec_val
-
-            # Store result to output buffer
-            if _n % 2 == 0:
-                tl.store(spec_buf_ptr + off, result, mask=mask)
-            else:
-                tl.store(term_buf_ptr + off, result, mask=mask)
-
-            # Accumulate into v_k
-            v_k_val = tl.load(v_k_ptr + off, mask=mask, other=0.0).to(DTYPE)
-            tl.store(v_k_ptr + off, v_k_val + result, mask=mask)
-
-    # ================================================================
-    # Pass final: Param VJP contributions
-    # Recompute alpha = v_k * w_L and weighted terms.
-    # Store per-element contributions for the caller to reduce.
-    # ================================================================
-    for s_start in range(0, S, BLOCK_S):
-        s_offs = s_start + tl.arange(0, BLOCK_S)
-        valid_mask = s_offs < S
-        mask = valid_mask & row_active
-        off = out_base + s_offs
-
-        v_k_val = tl.load(v_k_ptr + off, mask=mask, other=0.0).to(DTYPE)
-
-        if ACCUM_PARAM_GRADS and FAST_NOSPLIT_PARAM_GRADS and not has_splits and not COMPACT_PIBAR_SCRATCH:
-            diag_wt = tl.load(aw0_ptr + off, mask=mask, other=0.0).to(DTYPE)
-            pibar_wt = tl.load(aw1_ptr + off, mask=mask, other=0.0).to(DTYPE)
-            sl1_wt = tl.load(aw4_ptr + off, mask=mask, other=0.0).to(DTYPE)
-            sl2_wt = tl.load(aw345_ptr + off, mask=mask, other=0.0).to(DTYPE)
-            leaf_wt = 1.0 - diag_wt - pibar_wt - sl1_wt - sl2_wt
-
-            dl_c = tl.load(DL_const_ptr + const_base + s_offs, mask=mask, other=-1e30).to(DTYPE)
-            ebar = tl.load(Ebar_ptr + const_base + s_offs, mask=mask, other=-1e30).to(DTYPE)
-            m01 = tl.maximum(dl_c, ebar)
-            e0_01 = tl.exp2(dl_c - m01)
-            e1_01 = tl.exp2(ebar - m01)
-            frac_d = e0_01 / (e0_01 + e1_01)
-
-            _aw0 = v_k_val * diag_wt * frac_d
-            _aw1 = v_k_val * diag_wt * (1.0 - frac_d)
-            _aw2 = v_k_val * pibar_wt
-            _aw3 = v_k_val * sl1_wt
-            _aw4 = v_k_val * sl2_wt
-            _aw345 = v_k_val * (sl1_wt + sl2_wt + leaf_wt)
-
-            if LOG_PD_GRAD_SCALAR:
-                tl.atomic_add(
-                    grad_log_pD_ptr + family,
-                    tl.sum(tl.where(mask, _aw0, 0.0), axis=0),
-                    sem="relaxed",
-                )
-            else:
-                tl.atomic_add(
-                    grad_log_pD_ptr + grad_family_base + s_offs,
-                    _aw0,
-                    sem="relaxed",
-                    mask=mask,
-                )
-            if LOG_PS_GRAD_SCALAR:
-                tl.atomic_add(
-                    grad_log_pS_ptr + family,
-                    tl.sum(tl.where(mask, _aw345, 0.0), axis=0),
-                    sem="relaxed",
-                )
-            else:
-                tl.atomic_add(
-                    grad_log_pS_ptr + grad_family_base + s_offs,
-                    _aw345,
-                    sem="relaxed",
-                    mask=mask,
-                )
-            tl.atomic_add(grad_E_ptr + grad_family_base + s_offs, _aw0 + _aw2, sem="relaxed", mask=mask)
-            tl.atomic_add(grad_Ebar_ptr + grad_family_base + s_offs, _aw1, sem="relaxed", mask=mask)
-            tl.atomic_add(grad_E_s1_ptr + grad_family_base + s_offs, _aw4, sem="relaxed", mask=mask)
-            tl.atomic_add(grad_E_s2_ptr + grad_family_base + s_offs, _aw3, sem="relaxed", mask=mask)
-            tl.atomic_add(grad_mt_ptr + grad_family_base + s_offs, _aw2, sem="relaxed", mask=mask)
-        else:
-            # Reload Pi and Pibar to recompute weights
-            # (we overwrote aw* buffers with Jt scratch data)
-            pi_w = tl.load(Pi_star_ptr + pi_base + s_offs, mask=mask, other=-1e30).to(DTYPE)
-            pibar_w = tl.load(Pibar_star_ptr + pi_base + s_offs, mask=mask, other=-1e30).to(DTYPE)
-            dl_c = tl.load(DL_const_ptr + const_base + s_offs, mask=mask, other=-1e30).to(DTYPE)
-            ebar = tl.load(Ebar_ptr + const_base + s_offs, mask=mask, other=-1e30).to(DTYPE)
-            e_val = tl.load(E_ptr + const_base + s_offs, mask=mask, other=-1e30).to(DTYPE)
-            sl1_c = tl.load(SL1_const_ptr + const_base + s_offs, mask=mask, other=-1e30).to(DTYPE)
-            sl2_c = tl.load(SL2_const_ptr + const_base + s_offs, mask=mask, other=-1e30).to(DTYPE)
-            c1 = tl.load(sp_child1_ptr + s_offs, mask=mask, other=0)
-            c2 = tl.load(sp_child2_ptr + s_offs, mask=mask, other=0)
-            c1_valid = c1 < S
-            c2_valid = c2 < S
-            pi_s1 = tl.load(Pi_star_ptr + pi_base + c1, mask=mask & c1_valid, other=-1e30).to(DTYPE)
-            pi_s2 = tl.load(Pi_star_ptr + pi_base + c2, mask=mask & c2_valid, other=-1e30).to(DTYPE)
-            if USE_LEAF_INDEX:
-                leaf_species = tl.load(leaf_species_ptr + ws + w)
-                leaf_hit = mask & (leaf_species == s_offs)
-                if LEAF_LOGP_MODE == 3:
-                    leaf_logp = tl.load(leaf_logp_ptr).to(DTYPE) + tl.zeros([BLOCK_S], dtype=DTYPE)
-                    t5 = tl.where(leaf_hit, leaf_logp, -1e30)
-                elif LEAF_LOGP_MODE == 2:
-                    leaf_logp = tl.load(
-                        leaf_logp_ptr + family * stride + s_offs,
-                        mask=leaf_hit,
-                        other=-1e30,
-                    ).to(DTYPE)
-                    t5 = tl.where(leaf_hit, leaf_logp, -1e30)
-                elif LEAF_LOGP_MODE == 1:
-                    leaf_family = tl.load(family_idx_ptr + ws + w).to(tl.int64)
-                    leaf_logp = (
-                        tl.load(leaf_logp_ptr + leaf_family).to(DTYPE)
-                        + tl.zeros([BLOCK_S], dtype=DTYPE)
-                    )
-                    t5 = tl.where(leaf_hit, leaf_logp, -1e30)
-                elif LEAF_HIT_ONLY_LOGP:
-                    t5 = tl.load(leaf_logp_ptr + s_offs, mask=leaf_hit, other=-1e30).to(DTYPE)
-                else:
-                    leaf_logp = tl.load(leaf_logp_ptr + s_offs, mask=mask, other=-1e30).to(DTYPE)
-                    t5 = tl.where(leaf_hit, leaf_logp, -1e30)
-            else:
-                t5 = tl.load(leaf_term_ptr + off, mask=mask, other=-1e30).to(DTYPE)
-
-            # Recompute DTS_L terms and softmax weights
-            t0 = dl_c + pi_w
-            t1 = pi_w + ebar
-            t2 = pibar_w + e_val
-            t3 = sl1_c + pi_s1
-            t4 = sl2_c + pi_s2
-            m = tl.maximum(tl.maximum(tl.maximum(t0, t1), tl.maximum(t2, t3)), tl.maximum(t4, t5))
-            m_safe = tl.where(m > -1e29, m, tl.zeros_like(m))
-            e0 = tl.exp2(t0 - m_safe)
-            e1 = tl.exp2(t1 - m_safe)
-            e2 = tl.exp2(t2 - m_safe)
-            e3 = tl.exp2(t3 - m_safe)
-            e4 = tl.exp2(t4 - m_safe)
-            e5 = tl.exp2(t5 - m_safe)
-            dts_l_sum = e0 + e1 + e2 + e3 + e4 + e5
-            inv_sum = tl.where(dts_l_sum > 0, 1.0 / dts_l_sum, tl.zeros_like(dts_l_sum))
-
-            if has_splits:
-                dts_r = tl.load(dts_r_ptr + off, mask=mask, other=-1e30).to(DTYPE)
-                dts_l = tl.log2(dts_l_sum) + m
-                pi_new_m = tl.maximum(dts_l, dts_r)
-                pi_new_ms = tl.where(pi_new_m > -1e29, pi_new_m, tl.zeros_like(pi_new_m))
-                pi_new = tl.log2(tl.exp2(dts_l - pi_new_ms) + tl.exp2(dts_r - pi_new_ms)) + pi_new_m
-                w_L = tl.where(dts_l > -1e29, tl.exp2(dts_l - pi_new), tl.zeros_like(dts_l))
-            else:
-                w_L = tl.full(s_offs.shape, value=1.0, dtype=DTYPE)
-
-            alpha = v_k_val * w_L
-
-            # Per-element param contributions
-            _aw0 = alpha * e0 * inv_sum   # → log_pD, E
-            _aw1 = alpha * e1 * inv_sum   # → Ebar
-            _aw2 = alpha * e2 * inv_sum   # → E, mt
-            _aw3 = alpha * e3 * inv_sum   # → log_pS, E_s2
-            _aw4 = alpha * e4 * inv_sum   # → log_pS, E_s1
-            _aw5 = alpha * e5 * inv_sum   # → log_pS
-
-            _aw345 = _aw3 + _aw4 + _aw5
-            if ACCUM_PARAM_GRADS:
-                if LOG_PD_GRAD_SCALAR:
-                    tl.atomic_add(
-                        grad_log_pD_ptr + family,
-                        tl.sum(tl.where(mask, _aw0, 0.0), axis=0),
-                        sem="relaxed",
-                    )
-                else:
-                    tl.atomic_add(
-                        grad_log_pD_ptr + grad_family_base + s_offs,
-                        _aw0,
-                        sem="relaxed",
-                        mask=mask,
-                    )
-                if LOG_PS_GRAD_SCALAR:
-                    tl.atomic_add(
-                        grad_log_pS_ptr + family,
-                        tl.sum(tl.where(mask, _aw345, 0.0), axis=0),
-                        sem="relaxed",
-                    )
-                else:
-                    tl.atomic_add(
-                        grad_log_pS_ptr + grad_family_base + s_offs,
-                        _aw345,
-                        sem="relaxed",
-                        mask=mask,
-                    )
-                tl.atomic_add(grad_E_ptr + grad_family_base + s_offs, _aw0 + _aw2, sem="relaxed", mask=mask)
-                tl.atomic_add(grad_Ebar_ptr + grad_family_base + s_offs, _aw1, sem="relaxed", mask=mask)
-                tl.atomic_add(grad_E_s1_ptr + grad_family_base + s_offs, _aw4, sem="relaxed", mask=mask)
-                tl.atomic_add(grad_E_s2_ptr + grad_family_base + s_offs, _aw3, sem="relaxed", mask=mask)
-                tl.atomic_add(grad_mt_ptr + grad_family_base + s_offs, _aw2, sem="relaxed", mask=mask)
-            else:
-                tl.store(aw0_ptr + off, _aw0, mask=valid_mask)
-                tl.store(aw1_ptr + off, _aw1, mask=valid_mask)
-                tl.store(aw2_ptr + off, _aw2, mask=valid_mask)
-                tl.store(aw345_ptr + off, _aw345, mask=valid_mask)
-                tl.store(aw3_ptr + off, _aw3, mask=valid_mask)
-                tl.store(aw4_ptr + off, _aw4, mask=valid_mask)
-
 
 def _env_flag_enabled(name, default="0"):
     return os.environ.get(name, default).strip().lower() not in (
@@ -871,22 +236,6 @@ def _env_flag_enabled(name, default="0"):
         "no",
         "off",
     )
-
-
-def _self_loop_2d_requested(mode):
-    if mode == "2d":
-        return _env_flag_enabled("GPUREC_SELF_LOOP_2D_TRITON", "1")
-    return False
-
-
-def _self_loop_2d_unavailable(mode, reason):
-    strict_names = (
-        "GPUREC_SELF_LOOP_PROTOTYPE_STRICT",
-        "GPUREC_SELF_LOOP_2D_STRICT" if mode == "2d" else "GPUREC_SELF_LOOP_TREE_STRICT",
-    )
-    if any(_env_flag_enabled(name, "0") for name in strict_names):
-        raise RuntimeError(reason)
-    return None
 
 
 def _compact_levels_from_children(sp_child1, sp_child2, S):
@@ -1428,19 +777,14 @@ def _wave_backward_uniform_2d(
     compact_level_child2,
 ):
     """Retained 2D row-block/full-species tree-reduction self-loop."""
-    mode = "2d"
-    if not _self_loop_2d_requested(mode):
-        return None
     if Pi_star.device.type != "cuda":
-        return _self_loop_2d_unavailable(mode, "GPUREC_SELF_LOOP_2D_TRITON requires CUDA tensors")
+        raise RuntimeError("GPUREC self-loop 2D fast path requires CUDA tensors")
     if Pi_star.dtype not in (torch.float32, torch.float64):
-        return _self_loop_2d_unavailable(
-            mode,
+        raise RuntimeError(
             "GPUREC_SELF_LOOP_2D_TRITON currently supports fp32/fp64 only",
         )
     if accum_param_grads is not None:
-        return _self_loop_2d_unavailable(
-            mode,
+        raise RuntimeError(
             "GPUREC_SELF_LOOP_2D_TRITON returns per-element parameter VJPs; "
             "disable in-kernel self-loop parameter accumulation",
         )
@@ -1455,16 +799,15 @@ def _wave_backward_uniform_2d(
             device=Pi_star.device,
         )
         if not ok:
-            return _self_loop_2d_unavailable(
-                mode,
+            raise RuntimeError(
                 "GPUREC_SELF_LOOP_2D_TRITON estimated scratch "
                 f"{required_bytes / (1024 ** 3):.2f} GiB above memory budget "
                 f"{(budget_bytes or 0) / (1024 ** 3):.2f} GiB",
             )
     if const_layout not in (0, 1, 2):
-        return _self_loop_2d_unavailable(mode, "unsupported self-loop constant layout")
+        raise RuntimeError("unsupported self-loop constant layout")
     if use_leaf_index and leaf_logp_mode not in (0, 1, 2, 3):
-        return _self_loop_2d_unavailable(mode, "unsupported leaf log-probability layout")
+        raise RuntimeError("unsupported leaf log-probability layout")
 
     device = Pi_star.device
     dtype = Pi_star.dtype
@@ -1725,20 +1068,10 @@ def wave_backward_uniform_fused(
         v_k: [W, S] Neumann-solved adjoint
         aw0, aw1, aw2, aw345, aw3, aw4: [W, S] per-element param grad contributions
     """
-    device = Pi_star.device
-    dtype = Pi_star.dtype
-
-    accum_enabled = accum_param_grads is not None
-    has_splits = dts_r is not None
     use_leaf_index = leaf_species_idx is not None and leaf_logp is not None
     const_layout = _uniform_backward_const_layout(
         DL_const, family_idx, bool(family_indexed_consts)
     )
-    if accum_enabled and const_layout == 1:
-        raise ValueError(
-            "in-kernel parameter accumulation is not supported for row-expanded "
-            "backward constants"
-        )
     if bool(family_indexed_consts) and use_leaf_index:
         if leaf_logp.ndim == 1:
             leaf_logp = leaf_logp.unsqueeze(-1).expand(-1, S).contiguous()
@@ -1750,106 +1083,25 @@ def wave_backward_uniform_fused(
         use_leaf_index, leaf_logp, family_idx, bool(family_indexed_consts)
     )
     if family_idx is not None:
-        family_idx = family_idx.to(device=device, dtype=torch.long).contiguous()
+        family_idx = family_idx.to(device=Pi_star.device, dtype=torch.long).contiguous()
     if sp_parent is None:
         sp_parent = _parent_from_children(sp_child1, sp_child2, S)
     else:
-        sp_parent = sp_parent.to(device=device).contiguous()
-    if device.type == "cuda" and sp_parent.dtype != torch.int32:
+        sp_parent = sp_parent.to(device=Pi_star.device).contiguous()
+    if Pi_star.device.type == "cuda" and sp_parent.dtype != torch.int32:
         sp_parent = sp_parent.to(dtype=torch.int32)
     if max_ancestor_depth is None:
         max_ancestor_depth = _max_ancestor_depth_from_parent(sp_parent, S)
     max_ancestor_depth = max(1, int(max_ancestor_depth))
-    fast_nosplit_param_grads = (
-        os.environ.get("GPUREC_FAST_NOSPLIT_PARAM_ACCUM", "0") != "0"
-    )
-    compact_pibar_scratch_mode = (
-        os.environ.get("GPUREC_COMPACT_PIBAR_SCRATCH", "1")
-        .strip()
-        .lower()
-    )
-    compact_pibar_scratch = compact_pibar_scratch_mode not in (
-        "0", "false", "no", "off", ""
-    )
-    if compact_pibar_scratch_mode in ("leaf", "nosplit", "no_split"):
-        compact_pibar_scratch = not has_splits
     leaf_hit_only_logp = (
         os.environ.get("GPUREC_LEAF_HIT_ONLY_LOGP", "0") != "0"
     )
     if pibar_row_max is None:
         pibar_row_max = Pi_star.max(dim=1).values.contiguous()
     else:
-        pibar_row_max = pibar_row_max.to(device=device, dtype=dtype).contiguous()
-    use_pibar_row_max = True
-    scratch_shape = (W, S)
+        pibar_row_max = pibar_row_max.to(device=Pi_star.device, dtype=Pi_star.dtype).contiguous()
 
-    v_k = _scratch_view(scratch, "v_k", scratch_shape, device=device, dtype=dtype)
-    if v_k is None:
-        v_k = torch.empty(scratch_shape, device=device, dtype=dtype)
-    aw0 = _scratch_view(scratch, "aw0", scratch_shape, device=device, dtype=dtype)
-    if aw0 is None:
-        aw0 = torch.empty(scratch_shape, device=device, dtype=dtype)
-    aw1 = _scratch_view(scratch, "aw1", scratch_shape, device=device, dtype=dtype)
-    if aw1 is None:
-        aw1 = torch.empty(scratch_shape, device=device, dtype=dtype)
-    use_pibar_denom_scratch = not (accum_enabled and compact_pibar_scratch)
-    if use_pibar_denom_scratch:
-        aw2 = _scratch_view(scratch, "aw2", scratch_shape, device=device, dtype=dtype)
-        if aw2 is None:
-            aw2 = torch.empty(scratch_shape, device=device, dtype=dtype)
-    else:
-        aw2 = aw0
-    aw345 = _scratch_view(scratch, "aw345", scratch_shape, device=device, dtype=dtype)
-    if aw345 is None:
-        aw345 = torch.empty(scratch_shape, device=device, dtype=dtype)
-    if use_pibar_denom_scratch:
-        aw3 = _scratch_view(scratch, "aw3", scratch_shape, device=device, dtype=dtype)
-        if aw3 is None:
-            aw3 = torch.empty(scratch_shape, device=device, dtype=dtype)
-    else:
-        aw3 = aw0
-    aw4 = _scratch_view(scratch, "aw4", scratch_shape, device=device, dtype=dtype)
-    if aw4 is None:
-        aw4 = torch.empty(scratch_shape, device=device, dtype=dtype)
-    spec_buf = _scratch_view(scratch, "spec_buf", scratch_shape, device=device, dtype=dtype)
-    if spec_buf is None:
-        spec_buf = torch.empty(scratch_shape, device=device, dtype=dtype)
-    term_buf = _scratch_view(scratch, "term_buf", scratch_shape, device=device, dtype=dtype)
-    if term_buf is None:
-        term_buf = torch.empty(scratch_shape, device=device, dtype=dtype)
-    pibar_corr_dtype = torch.float32 if dtype == torch.bfloat16 else dtype
-    pibar_corr_buf = _scratch_view(
-        scratch, "pibar_corr", scratch_shape, device=device, dtype=pibar_corr_dtype
-    )
-    if pibar_corr_buf is None:
-        pibar_corr_buf = torch.empty(
-            scratch_shape, device=device, dtype=pibar_corr_dtype
-        )
-
-    if leaf_term_wt is None:
-        if not use_leaf_index:
-            raise ValueError("leaf_term_wt is required when leaf_species_idx/leaf_logp are not provided")
-        leaf_term_wt = leaf_logp
-    leaf_species_arg = leaf_species_idx if use_leaf_index else sp_child1
-    leaf_logp_arg = leaf_logp if use_leaf_index else leaf_term_wt
-    if accum_enabled:
-        (
-            grad_log_pD_arg,
-            grad_log_pS_arg,
-            grad_E_arg,
-            grad_Ebar_arg,
-            grad_E_s1_arg,
-            grad_E_s2_arg,
-            grad_mt_arg,
-        ) = accum_param_grads
-    else:
-        grad_log_pD_arg = grad_log_pS_arg = aw0
-        grad_E_arg = grad_Ebar_arg = grad_E_s1_arg = grad_E_s2_arg = grad_mt_arg = aw0
-    log_pD_grad_scalar = _grad_param_is_scalar(grad_log_pD_arg)
-    log_pS_grad_scalar = _grad_param_is_scalar(grad_log_pS_arg)
-    family_idx_arg = family_idx if family_idx is not None else sp_parent
-
-    self_loop_2d_result = _wave_backward_uniform_2d(
+    return _wave_backward_uniform_2d(
         Pi_star,
         Pibar_star,
         ws,
@@ -1885,70 +1137,6 @@ def wave_backward_uniform_fused(
         compact_level_child1=compact_level_child1,
         compact_level_child2=compact_level_child2,
     )
-    if self_loop_2d_result is not None:
-        return self_loop_2d_result
-
-    block_s_env = os.environ.get("GPUREC_WAVE_BLOCK_S", "").strip()
-    if block_s_env:
-        BLOCK_S = int(block_s_env)
-    else:
-        BLOCK_S = min(256, triton.next_power_of_2(S))
-    num_warps_env = os.environ.get("GPUREC_WAVE_NUM_WARPS", "").strip()
-    launch_options = {}
-    if num_warps_env:
-        num_warps = int(num_warps_env)
-        if num_warps > 0:
-            launch_options["num_warps"] = num_warps
-
-    grid = (W,)
-    _wave_backward_uniform_kernel[grid](
-        Pi_star, Pibar_star,
-        pibar_row_max if use_pibar_row_max else Pi_star,
-        dts_r if has_splits else Pi_star,  # dummy ptr when no splits
-        has_splits,
-        rhs,
-        active_mask if active_mask is not None else rhs,
-        mt_squeezed, DL_const, Ebar, E, SL1_const, SL2_const,
-        sp_child1, sp_child2,
-        sp_parent,
-        leaf_term_wt,
-        leaf_species_arg,
-        leaf_logp_arg,
-        family_idx_arg,
-        v_k,
-        aw0, aw1, aw2, aw345, aw3, aw4,
-        spec_buf,
-        term_buf,
-        pibar_corr_buf,
-        grad_log_pD_arg,
-        grad_log_pS_arg,
-        grad_E_arg,
-        grad_Ebar_arg,
-        grad_E_s1_arg,
-        grad_E_s2_arg,
-        grad_mt_arg,
-        ws, S, S, BLOCK_S,
-        neumann_terms,
-        max_ancestor_depth,
-        USE_LEAF_INDEX=bool(use_leaf_index),
-        ACCUM_PARAM_GRADS=bool(accum_enabled),
-        FAST_NOSPLIT_PARAM_GRADS=bool(fast_nosplit_param_grads),
-        COMPACT_PIBAR_SCRATCH=bool(compact_pibar_scratch),
-        LEAF_HIT_ONLY_LOGP=bool(leaf_hit_only_logp),
-        LEAF_LOGP_MODE=int(leaf_logp_mode),
-        USE_PIBAR_ROW_MAX=bool(use_pibar_row_max),
-        USE_ACTIVE_MASK=bool(active_mask is not None),
-        SKIP_INACTIVE_ZERO_STORES=bool(skip_inactive_zero_stores),
-        CONST_LAYOUT=int(const_layout),
-        LOG_PD_GRAD_SCALAR=bool(log_pD_grad_scalar),
-        LOG_PS_GRAD_SCALAR=bool(log_pS_grad_scalar),
-        DTYPE=_tl_float_dtype(dtype),
-        **launch_options,
-    )
-
-    if accum_enabled:
-        return v_k, None, None, None, None, None, None
-    return v_k, aw0, aw1, aw2, aw345, aw3, aw4
 
 
 # =========================================================================

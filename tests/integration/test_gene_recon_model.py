@@ -8,7 +8,7 @@ from gpurec.optimization import BatchedLBFGS
 
 
 _ROOT = Path(__file__).resolve().parents[1]
-DATA_DIR = _ROOT / "data" / "test_trees_3"
+DATA_DIR = _ROOT / "data" / "test_trees_1000"
 
 
 @pytest.fixture
@@ -16,8 +16,11 @@ def trees():
     if not torch.cuda.is_available():
         pytest.skip("CUDA required")
     if not DATA_DIR.exists():
-        pytest.skip("test_trees_3 dataset not present")
-    return str(DATA_DIR / "sp.nwk"), [str(DATA_DIR / "g.nwk")]
+        pytest.skip("test_trees_1000 dataset not present")
+    genes = sorted(DATA_DIR.glob("g_*.nwk"))[:1]
+    if not genes:
+        pytest.skip("test_trees_1000 gene trees not present")
+    return str(DATA_DIR / "sp.nwk"), [str(genes[0])]
 
 
 @pytest.mark.parametrize("mode", ["global", "specieswise", "genewise"])

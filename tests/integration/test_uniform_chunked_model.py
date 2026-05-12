@@ -7,7 +7,7 @@ import pytest
 import torch
 
 _ROOT = Path(__file__).resolve().parents[1]
-DATA_DIR = _ROOT / "data" / "test_trees_20"
+DATA_DIR = _ROOT / "data" / "test_trees_1000"
 HOGENOM_DIR = _ROOT / "data" / "hogenom_bench"
 
 from gpurec import GeneReconModel, UniformChunkedReconModel

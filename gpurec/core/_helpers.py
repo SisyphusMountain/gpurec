@@ -11,8 +11,6 @@ from contextlib import contextmanager
 
 import torch
 
-from .log2_utils import logsumexp2
-
 
 NEG_INF = float("-inf")
 
@@ -27,33 +25,6 @@ def _safe_exp2_ratio(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
     a_safe = torch.where(neg_inf_a, torch.zeros_like(a), a)
     b_safe = torch.where(neg_inf_a, torch.zeros_like(b), b)
     return torch.where(neg_inf_a, torch.zeros_like(a), torch.exp2(a_safe - b_safe))
-
-
-# ---------------------------------------------------------------------------
-# Segmented logsumexp (CPU fallback + CUDA dispatch)
-# ---------------------------------------------------------------------------
-
-def _seg_logsumexp_host(x: torch.Tensor, ptr: torch.Tensor) -> torch.Tensor:
-    """CPU fallback for segmented logsumexp; uses Triton kernel when CUDA is available."""
-    from .kernels.scatter_lse import seg_logsumexp
-
-    if x.is_cuda and ptr.is_cuda:
-        return seg_logsumexp(x, ptr)
-
-    num_segs = int(ptr.numel()) - 1
-    out = []
-    for i in range(num_segs):
-        s = int(ptr[i].item())
-        e = int(ptr[i + 1].item())
-        if e > s:
-            out.append(logsumexp2(x[s:e], dim=0))
-        else:
-            out.append(torch.full_like(x[0], NEG_INF))
-    return (
-        torch.stack(out, dim=0)
-        if out
-        else torch.empty((0, *x.shape[1:]), device=x.device, dtype=x.dtype)
-    )
 
 
 # ---------------------------------------------------------------------------

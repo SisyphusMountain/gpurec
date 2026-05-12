@@ -62,42 +62,6 @@ class StaticInputs:
     layout_s: float
 
 
-class FallbackTracker:
-    """Detect use of generic self-loop code paths during a benchmark pass."""
-
-    def __init__(self) -> None:
-        self.generic_self_loop_calls = 0
-        self.generic_self_loop_names: set[str] = set()
-        self._installed = False
-
-    def install(self, *, block: bool) -> None:
-        if self._installed:
-            return
-        from gpurec.core import backward as backward_core
-
-        for name in ("_self_loop_vjp_precompute", "_gmres_self_loop_solve"):
-            original = getattr(backward_core, name, None)
-            if original is None:
-                continue
-
-            def wrapped(*args, _original=original, _name=name, **kwargs):
-                self.generic_self_loop_calls += 1
-                self.generic_self_loop_names.add(_name)
-                if block:
-                    raise RuntimeError(
-                        "strict global/uniform pipeline reached the generic "
-                        f"self-loop fallback: {_name}"
-                    )
-                return _original(*args, **kwargs)
-
-            setattr(backward_core, name, wrapped)
-        self._installed = True
-
-    def reset(self) -> None:
-        self.generic_self_loop_calls = 0
-        self.generic_self_loop_names.clear()
-
-
 def _env_enabled(name: str, default: str = "0") -> bool:
     return os.environ.get(name, default).strip().lower() not in (
         "",
@@ -311,7 +275,7 @@ def _optimized_feature_status(
     )
     return {
         "verdict": "optimized" if optimized else "non_optimized",
-        "generic_pytorch_fallback": int(not optimized),
+        "generic_pytorch_path": int(not optimized),
         "root_row_output": root_row_output,
         "full_saved_tensors_for_backward": full_saved_tensors_for_backward,
         "forward_parent_reduced_dts": forward_parent_reduced_dts,
@@ -635,12 +599,10 @@ def _run_pipeline_pass(
     chunks: Sequence[BuiltChunk],
     static: StaticInputs,
     args: argparse.Namespace,
-    tracker: FallbackTracker,
     *,
     timed: bool,
     root_clade_id_lists: Sequence[Sequence[int]] | None = None,
 ) -> dict[str, Any]:
-    tracker.reset()
     if root_clade_id_lists is None:
         if len(chunks) == len(static.built_chunks) and all(
             chunk is static_chunk
@@ -802,8 +764,6 @@ def _run_pipeline_pass(
         "saved_full_state": int(saved_full_state),
         "pibar_row_max_saved": int(pibar_row_max_saved),
         "root_rows_only": int(root_rows_only),
-        "generic_self_loop_calls": tracker.generic_self_loop_calls,
-        "generic_self_loop_names": ",".join(sorted(tracker.generic_self_loop_names)) or "none",
         "chunk_rows": chunk_rows,
     }
 
@@ -829,7 +789,6 @@ def _one_chunk_layout(static: StaticInputs, args: argparse.Namespace) -> list[Bu
 def _maybe_compare_unchunked(
     static: StaticInputs,
     args: argparse.Namespace,
-    tracker: FallbackTracker,
 ) -> None:
     if len(static.genes) > args.compare_unchunked_max_fams:
         print(
@@ -850,8 +809,8 @@ def _maybe_compare_unchunked(
         return
 
     unchunked = _one_chunk_layout(static, args)
-    chunked_result = _run_pipeline_pass(static.built_chunks, static, args, tracker, timed=False)
-    unchunked_result = _run_pipeline_pass(unchunked, static, args, tracker, timed=False)
+    chunked_result = _run_pipeline_pass(static.built_chunks, static, args, timed=False)
+    unchunked_result = _run_pipeline_pass(unchunked, static, args, timed=False)
 
     grad_a = chunked_result["grad"]
     grad_b = unchunked_result["grad"]
@@ -998,7 +957,7 @@ def _print_active_path_flags(
     print(
         "optimized_path_verdict",
         "verdict", status["verdict"],
-        "generic_pytorch_fallback", status["generic_pytorch_fallback"],
+        "generic_pytorch_path", status["generic_pytorch_path"],
         "root_row_output", status["root_row_output"],
         "full_saved_tensors_for_backward", status["full_saved_tensors_for_backward"],
         "forward_parent_reduced_dts", status["forward_parent_reduced_dts"],
@@ -1044,8 +1003,6 @@ def _print_rep(rep: int, result: dict[str, Any]) -> None:
         "saved_full_state", result["saved_full_state"],
         "pibar_row_max_saved", result["pibar_row_max_saved"],
         "root_rows_only", result["root_rows_only"],
-        "generic_self_loop_calls", result["generic_self_loop_calls"],
-        "generic_self_loop_names", result["generic_self_loop_names"],
     )
 
 
@@ -1055,7 +1012,6 @@ def _print_summary(results: list[dict[str, Any]]) -> None:
     total = [float(r["total_ms"]) for r in results]
     peak = [float(r["peak_gib"]) for r in results]
     peak_reserved = [float(r["peak_reserved_gib"]) for r in results]
-    generic_calls = sum(int(r["generic_self_loop_calls"]) for r in results)
     grad_finite = int(all(int(r["grad_finite"]) for r in results))
     last = results[-1]
     print(
@@ -1083,7 +1039,6 @@ def _print_summary(results: list[dict[str, Any]]) -> None:
         "loss_last", f"{float(last['loss']):.10f}",
         "grad_norm_last", f"{float(last['grad_norm']):.8e}",
         "grad_finite", grad_finite,
-        "generic_self_loop_calls", generic_calls,
     )
 
 
@@ -1108,13 +1063,10 @@ def main() -> None:
     if args.stats_only:
         return
 
-    tracker = FallbackTracker()
-    tracker.install(block=args.strict_optimized_kernels)
-
-    _maybe_compare_unchunked(static, args, tracker)
+    _maybe_compare_unchunked(static, args)
 
     for _ in range(args.warmups):
-        result = _run_pipeline_pass(static.built_chunks, static, args, tracker, timed=False)
+        result = _run_pipeline_pass(static.built_chunks, static, args, timed=False)
         del result
         if args.empty_cache_between_reps:
             gc.collect()
@@ -1125,7 +1077,7 @@ def main() -> None:
         if args.profile_cuda_api:
             torch.cuda.cudart().cudaProfilerStart()
         try:
-            result = _run_pipeline_pass(static.built_chunks, static, args, tracker, timed=True)
+            result = _run_pipeline_pass(static.built_chunks, static, args, timed=True)
         finally:
             if args.profile_cuda_api:
                 torch.cuda.cudart().cudaProfilerStop()
