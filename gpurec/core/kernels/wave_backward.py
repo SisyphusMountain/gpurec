@@ -226,18 +226,6 @@ def active_mask_from_rhs_absmax_fused(rhs, threshold, *, use_pruning=True):
     )
     return active_mask
 
-
-
-def _env_flag_enabled(name, default="0"):
-    return os.environ.get(name, default).strip().lower() not in (
-        "",
-        "0",
-        "false",
-        "no",
-        "off",
-    )
-
-
 def _compact_levels_from_children(sp_child1, sp_child2, S):
     """Build compact bottom-up species levels for the 2D self-loop kernel."""
     device = sp_child1.device
@@ -781,29 +769,25 @@ def _wave_backward_uniform_2d(
         raise RuntimeError("GPUREC self-loop 2D fast path requires CUDA tensors")
     if Pi_star.dtype not in (torch.float32, torch.float64):
         raise RuntimeError(
-            "GPUREC_SELF_LOOP_2D_TRITON currently supports fp32/fp64 only",
+            "2D self-loop fast path currently supports fp32/fp64 only",
         )
     if accum_param_grads is not None:
         raise RuntimeError(
-            "GPUREC_SELF_LOOP_2D_TRITON returns per-element parameter VJPs; "
+            "2D self-loop fast path returns per-element parameter VJPs; "
             "disable in-kernel self-loop parameter accumulation",
         )
-    choice = os.environ.get("GPUREC_SELF_LOOP_2D_TRITON", "auto").strip().lower()
-    force = choice in ("force", "forced", "always")
-    memory_gate = _env_flag_enabled("GPUREC_SELF_LOOP_2D_MEMORY_GATE", "1")
-    if memory_gate and not force:
-        ok, required_bytes, budget_bytes = proposal0_memory_gate(
-            W,
-            S,
-            Pi_star.dtype,
-            device=Pi_star.device,
+    ok, required_bytes, budget_bytes = proposal0_memory_gate(
+        W,
+        S,
+        Pi_star.dtype,
+        device=Pi_star.device,
+    )
+    if not ok:
+        raise RuntimeError(
+            "2D self-loop fast path estimated scratch "
+            f"{required_bytes / (1024 ** 3):.2f} GiB above memory budget "
+            f"{(budget_bytes or 0) / (1024 ** 3):.2f} GiB",
         )
-        if not ok:
-            raise RuntimeError(
-                "GPUREC_SELF_LOOP_2D_TRITON estimated scratch "
-                f"{required_bytes / (1024 ** 3):.2f} GiB above memory budget "
-                f"{(budget_bytes or 0) / (1024 ** 3):.2f} GiB",
-            )
     if const_layout not in (0, 1, 2):
         raise RuntimeError("unsupported self-loop constant layout")
     if use_leaf_index and leaf_logp_mode not in (0, 1, 2, 3):
@@ -1634,14 +1618,7 @@ def dts_cross_backward_accum_fused(
     )
     device_scalar_params = False
     if param_layout == 0:
-        use_device_scalars = (
-            os.environ.get("GPUREC_DTS_BACKWARD_DEVICE_SCALARS", "1") != "0"
-        )
-        if use_device_scalars:
-            device_scalar_params = True
-        else:
-            log_pD_arg = float(log_pD_arg.item())
-            log_pS_arg = float(log_pS_arg.item())
+        device_scalar_params = True
 
     if accum_param_reductions and (grad_log_pD is None or grad_log_pS is None):
         raise ValueError("grad_log_pD/grad_log_pS are required when accumulating DTS scalar reductions")
@@ -1880,92 +1857,6 @@ def _pibar_ud_side_active_kernel(
 
 
 @triton.jit
-def _uniform_cross_pibar_vjp_tree_from_ud_kernel(
-    Pi_star_ptr,          # [C, S]
-    pibar_ud_ptr,         # [2 * n_ws, S], initial subtree values u_d
-    pibar_A_ptr,          # [2 * n_ws], sum_s u_d[s] per split side
-    side_active_ptr,      # optional [2 * n_ws] bool exact-zero side skip mask
-    sl_ptr,               # [n_ws]
-    sr_ptr,               # [n_ws]
-    reduce_idx_ptr,       # [n_ws], used with active_mask_ptr when enabled
-    active_mask_ptr,      # optional [W] bool parent row activity mask
-    pibar_row_max_ptr,    # [C], Pi-row max from forward uniform Pibar
-    sp_child1_ptr,        # [S]
-    sp_child2_ptr,        # [S]
-    level_parents_ptr,    # [N_LEVELS, MAX_LEVEL_WIDTH]
-    accumulated_rhs_ptr,  # [C, S], updated atomically
-    n_ws: tl.constexpr,
-    S: tl.constexpr,
-    stride_C: tl.constexpr,
-    BLOCK_S: tl.constexpr,
-    N_LEVELS: tl.constexpr,
-    MAX_LEVEL_WIDTH: tl.constexpr,
-    USE_ACTIVE_MASK: tl.constexpr,
-    USE_SIDE_ACTIVE: tl.constexpr,
-    DTYPE: tl.constexpr,
-):
-    """Uniform Pibar VJP tree correction when DTS has already staged u_d."""
-    NEG_LARGE: tl.constexpr = -1e30
-
-    row = tl.program_id(0)
-    split_i = tl.where(row < n_ws, row, row - n_ws)
-    is_right = row >= n_ws
-    if USE_SIDE_ACTIVE:
-        side_active = tl.load(side_active_ptr + row)
-        if side_active == 0:
-            return
-
-    child_l = tl.load(sl_ptr + split_i).to(tl.int64)
-    child_r = tl.load(sr_ptr + split_i).to(tl.int64)
-    child = tl.where(is_right, child_r, child_l)
-    if USE_ACTIVE_MASK:
-        parent_w = tl.load(reduce_idx_ptr + split_i).to(tl.int64)
-        row_active = tl.load(active_mask_ptr + parent_w)
-        if row_active == 0:
-            return
-    else:
-        row_active = True
-
-    pi_base = child * stride_C
-    row_base = row * S
-    row_max = tl.load(pibar_row_max_ptr + child).to(DTYPE)
-    A = tl.load(pibar_A_ptr + row).to(DTYPE)
-
-    # pibar_ud is intentionally reused in-place as subtree_buf.  It already
-    # contains u_d for each species from the DTS kernel.
-    tl.debug_barrier()
-    for level in range(0, N_LEVELS):
-        for p_start in range(0, MAX_LEVEL_WIDTH, BLOCK_S):
-            p_offs = p_start + tl.arange(0, BLOCK_S)
-            parent = tl.load(
-                level_parents_ptr + level * MAX_LEVEL_WIDTH + p_offs,
-                mask=p_offs < MAX_LEVEL_WIDTH,
-                other=-1,
-            )
-            parent_valid = (parent >= 0) & (parent < S) & row_active
-            c1 = tl.load(sp_child1_ptr + parent, mask=parent_valid, other=S)
-            c2 = tl.load(sp_child2_ptr + parent, mask=parent_valid, other=S)
-            c1_valid = parent_valid & (c1 < S)
-            c2_valid = parent_valid & (c2 < S)
-
-            parent_val = tl.load(pibar_ud_ptr + row_base + parent, mask=parent_valid, other=0.0)
-            c1_val = tl.load(pibar_ud_ptr + row_base + c1, mask=c1_valid, other=0.0)
-            c2_val = tl.load(pibar_ud_ptr + row_base + c2, mask=c2_valid, other=0.0)
-            tl.store(pibar_ud_ptr + row_base + parent, parent_val + c1_val + c2_val, mask=parent_valid)
-        tl.debug_barrier()
-
-    for s_start in range(0, S, BLOCK_S):
-        s_offs = s_start + tl.arange(0, BLOCK_S)
-        valid_mask = s_offs < S
-        mask = valid_mask & row_active
-        pi_val = tl.load(Pi_star_ptr + pi_base + s_offs, mask=mask, other=NEG_LARGE)
-        p_prime = tl.exp2(pi_val - row_max)
-        subtree_sum = tl.load(pibar_ud_ptr + row_base + s_offs, mask=mask, other=0.0)
-        contrib = p_prime * (A - subtree_sum)
-        tl.atomic_add(accumulated_rhs_ptr + pi_base + s_offs, contrib, sem="relaxed", mask=mask)
-
-
-@triton.jit
 def _uniform_cross_pibar_vjp_tree_from_ud_compact_kernel(
     Pi_star_ptr,          # [C, S]
     pibar_ud_ptr,         # [2 * n_ws, S], initial subtree values u_d
@@ -2117,47 +2008,20 @@ def uniform_cross_pibar_vjp_tree_from_ud_fused(
             num_warps=4,
         )
 
-    use_compact_levels = (
-        compact_level_ptr is not None
-        and compact_level_parents is not None
-        and compact_level_child1 is not None
-        and compact_level_child2 is not None
-    )
-    if use_compact_levels:
-        if compact_level_ptr.numel() < 2:
-            raise ValueError("compact_level_ptr must contain at least start and end offsets")
-        compact_level_ptr = compact_level_ptr.contiguous()
-        compact_level_parents = compact_level_parents.contiguous()
-        compact_level_child1 = compact_level_child1.contiguous()
-        compact_level_child2 = compact_level_child2.contiguous()
-        _uniform_cross_pibar_vjp_tree_from_ud_compact_kernel[(2 * n_ws,)](
-            Pi_star,
-            pibar_ud,
-            pibar_A,
-            side_active if side_active is not None else pibar_A,
-            sl,
-            sr,
-            reduce_idx if reduce_idx is not None else sl,
-            active_mask if active_mask is not None else pibar_ud,
-            pibar_row_max,
-            compact_level_ptr,
-            compact_level_parents,
-            compact_level_child1,
-            compact_level_child2,
-            accumulated_rhs,
-            n_ws,
-            S,
-            stride_C,
-            BLOCK_S,
-            N_LEVELS=compact_level_ptr.numel() - 1,
-            USE_ACTIVE_MASK=bool(active_mask is not None),
-            USE_SIDE_ACTIVE=bool(side_active is not None),
-            DTYPE=_tl_float_dtype(Pi_star.dtype),
-            num_warps=4,
-        )
-        return side_active
-
-    _uniform_cross_pibar_vjp_tree_from_ud_kernel[(2 * n_ws,)](
+    if (
+        compact_level_ptr is None
+        or compact_level_parents is None
+        or compact_level_child1 is None
+        or compact_level_child2 is None
+    ):
+        raise ValueError("compact species levels are required for Pibar VJP")
+    if compact_level_ptr.numel() < 2:
+        raise ValueError("compact_level_ptr must contain at least start and end offsets")
+    compact_level_ptr = compact_level_ptr.contiguous()
+    compact_level_parents = compact_level_parents.contiguous()
+    compact_level_child1 = compact_level_child1.contiguous()
+    compact_level_child2 = compact_level_child2.contiguous()
+    _uniform_cross_pibar_vjp_tree_from_ud_compact_kernel[(2 * n_ws,)](
         Pi_star,
         pibar_ud,
         pibar_A,
@@ -2167,16 +2031,16 @@ def uniform_cross_pibar_vjp_tree_from_ud_fused(
         reduce_idx if reduce_idx is not None else sl,
         active_mask if active_mask is not None else pibar_ud,
         pibar_row_max,
-        sp_child1,
-        sp_child2,
-        level_parents,
+        compact_level_ptr,
+        compact_level_parents,
+        compact_level_child1,
+        compact_level_child2,
         accumulated_rhs,
         n_ws,
         S,
         stride_C,
         BLOCK_S,
-        N_LEVELS=level_parents.shape[0],
-        MAX_LEVEL_WIDTH=level_parents.shape[1],
+        N_LEVELS=compact_level_ptr.numel() - 1,
         USE_ACTIVE_MASK=bool(active_mask is not None),
         USE_SIDE_ACTIVE=bool(side_active is not None),
         DTYPE=_tl_float_dtype(Pi_star.dtype),

@@ -38,7 +38,6 @@ from gpurec.optimization.implicit_grad import _e_adjoint_and_theta_vjp
 
 
 UNIFORM_OPTIMIZED_DEFAULT_FLAGS = {
-    "GPUREC_SELF_LOOP_2D_TRITON": "auto",
     "GPUREC_SELF_LOOP_2D_BLOCK_W": "1",
 }
 
@@ -730,9 +729,6 @@ class UniformChunkedReconModel(torch.nn.Module):
                 chunk_value = memory_policy.family_chunk_size
             if wave_value == "auto":
                 wave_value = memory_policy.max_wave_size
-            os.environ["GPUREC_SELF_LOOP_2D_TRITON"] = (
-                "1" if memory_policy.proposal0 else "0"
-            )
 
         family_chunk_n = 0 if chunk_value is None else int(chunk_value)
         max_wave_n = None if wave_value is None else int(wave_value)

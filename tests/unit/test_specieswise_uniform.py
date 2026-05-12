@@ -254,19 +254,11 @@ def _run_forward(
 
 
 def _set_reference_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    flags = {
-        "GPUREC_SELF_LOOP_2D_TRITON": "0",
-    }
-    for key, value in flags.items():
-        monkeypatch.setenv(key, value)
+    return None
 
 
 def _set_optimized_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    flags = {
-        "GPUREC_SELF_LOOP_2D_TRITON": "auto",
-    }
-    for key, value in flags.items():
-        monkeypatch.setenv(key, value)
+    return None
 
 
 def _loss_and_grad(

@@ -62,16 +62,6 @@ class StaticInputs:
     layout_s: float
 
 
-def _env_enabled(name: str, default: str = "0") -> bool:
-    return os.environ.get(name, default).strip().lower() not in (
-        "",
-        "0",
-        "false",
-        "off",
-        "no",
-    )
-
-
 def _parse_optional_int(value: str | None) -> int | None:
     if value is None:
         return None
@@ -253,13 +243,8 @@ def _optimized_feature_status(
         and s_gt_256
     )
     proposal0_self_loop = int(
-        _env_enabled("GPUREC_SELF_LOOP_2D_TRITON", "auto")
-        and cuda_dtype_ok
+        cuda_dtype_ok
         and s_gt_256
-        and (
-            getattr(args, "memory_policy", None) is None
-            or bool(getattr(args.memory_policy, "proposal0", False))
-        )
     )
     optimized = int(
         root_row_output == 0
@@ -387,7 +372,6 @@ def _make_static_inputs(args: argparse.Namespace) -> StaticInputs:
             args.family_chunk_size = memory_policy.family_chunk_size
         if args.max_wave_size == "auto":
             args.max_wave_size = memory_policy.max_wave_size
-        os.environ["GPUREC_SELF_LOOP_2D_TRITON"] = "1" if memory_policy.proposal0 else "0"
     args.memory_policy = memory_policy
     specs = _make_chunks(
         selected_indices,
@@ -902,7 +886,6 @@ def _print_policy(static: StaticInputs, args: argparse.Namespace) -> None:
     if memory_policy is not None:
         print(
             "memory_policy",
-            "proposal0", int(memory_policy.proposal0),
             "family_chunk_size", memory_policy.family_chunk_size,
             "max_wave_size", memory_policy.max_wave_size,
             "estimated_payload_gib", f"{memory_policy.estimated_payload_bytes / (1024 ** 3):.3f}",
@@ -950,7 +933,7 @@ def _print_active_path_flags(
         "kernelized_backward_dts", status["kernelized_backward_dts"],
         "fused_dts_backward_accum", status["fused_dts_backward_accum"],
         "compact_tree_pibar_vjp", status["compact_tree_pibar_vjp"],
-        "proposal0_self_loop", os.environ.get("GPUREC_SELF_LOOP_2D_TRITON", "unset"),
+        "proposal0_self_loop", status["proposal0_self_loop"],
         "proposal0_block_w", os.environ.get("GPUREC_SELF_LOOP_2D_BLOCK_W", "unset"),
         "strict_optimized_kernels", int(args.strict_optimized_kernels),
     )

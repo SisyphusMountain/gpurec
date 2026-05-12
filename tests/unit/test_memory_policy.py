@@ -25,7 +25,6 @@ def test_uniform_memory_policy_payload_formulas_are_explicit():
             S,
             torch.float32,
             max_wave_rows=W,
-            proposal0=True,
         )
         == expected
     )
@@ -51,7 +50,6 @@ def test_chunk_payload_uses_largest_resident_chunk():
             torch.float64,
             family_chunk_size=2,
             max_wave_size=16,
-            proposal0=True,
         )
         == expected
     )

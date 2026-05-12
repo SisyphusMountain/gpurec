@@ -11,20 +11,6 @@ import torch
 GIB = 1024 ** 3
 
 
-def env_flag_enabled(name: str, default: str = "0") -> bool:
-    return os.environ.get(name, default).strip().lower() not in (
-        "",
-        "0",
-        "false",
-        "off",
-        "no",
-    )
-
-
-def env_choice(name: str, default: str = "auto") -> str:
-    return os.environ.get(name, default).strip().lower()
-
-
 def dtype_nbytes(dtype: torch.dtype) -> int:
     return torch.empty((), dtype=dtype).element_size()
 
@@ -79,17 +65,6 @@ def proposal0_wave_scratch_bytes(
     return int(scratch_tensors) * int(W) * species * dtype_nbytes(dtype)
 
 
-def baseline_wave_scratch_bytes(
-    W: int,
-    S: int,
-    dtype: torch.dtype,
-    *,
-    scratch_tensors: int = 8,
-) -> int:
-    """Approximate payload bytes for the older fused self-loop scratch set."""
-    return int(scratch_tensors) * int(W) * int(S) * dtype_nbytes(dtype)
-
-
 def uniform_training_dense_state_bytes(
     C: int,
     S: int,
@@ -111,17 +86,12 @@ def uniform_training_payload_bytes(
     dtype: torch.dtype,
     *,
     max_wave_rows: int,
-    proposal0: bool,
     dense_state_tensors: int = 3,
 ) -> int:
     dense = uniform_training_dense_state_bytes(
         C, S, dtype, dense_state_tensors=dense_state_tensors
     )
-    wave = (
-        proposal0_wave_scratch_bytes(max_wave_rows, S, dtype)
-        if proposal0
-        else baseline_wave_scratch_bytes(max_wave_rows, S, dtype)
-    )
+    wave = proposal0_wave_scratch_bytes(max_wave_rows, S, dtype)
     # Row maxima, root outputs, E/theta adjoints, active masks, and compact
     # topology arrays are small relative to dense `[C, S]` state but not zero.
     small_state = int(C) * dtype_nbytes(dtype) * 8
@@ -135,7 +105,6 @@ def estimate_chunk_payload_bytes(
     *,
     family_chunk_size: int,
     max_wave_size: int,
-    proposal0: bool,
 ) -> int:
     if family_chunk_size <= 0:
         chunk_clades = sum(int(c) for c in clade_counts)
@@ -152,13 +121,11 @@ def estimate_chunk_payload_bytes(
         S,
         dtype,
         max_wave_rows=max_wave_rows,
-        proposal0=proposal0,
     )
 
 
 @dataclass(frozen=True)
 class UniformPipelinePolicy:
-    proposal0: bool
     family_chunk_size: int
     max_wave_size: int
     estimated_payload_bytes: int
@@ -181,28 +148,23 @@ def choose_uniform_pipeline_policy(
     whether a candidate is feasible on the current GPU and workload.
     """
     budget = cuda_memory_budget_bytes(device)
-    proposal0_enabled = env_flag_enabled("GPUREC_SELF_LOOP_2D_TRITON", "1")
-    modes = [True, False] if proposal0_enabled else [False]
-    for proposal0 in modes:
-        for chunk_size in family_chunk_candidates:
-            for max_wave in max_wave_candidates:
-                est = estimate_chunk_payload_bytes(
-                    clade_counts,
-                    S,
-                    dtype,
+    for chunk_size in family_chunk_candidates:
+        for max_wave in max_wave_candidates:
+            est = estimate_chunk_payload_bytes(
+                clade_counts,
+                S,
+                dtype,
+                family_chunk_size=int(chunk_size),
+                max_wave_size=int(max_wave),
+            )
+            if budget is None or est <= budget:
+                return UniformPipelinePolicy(
                     family_chunk_size=int(chunk_size),
                     max_wave_size=int(max_wave),
-                    proposal0=proposal0,
+                    estimated_payload_bytes=est,
+                    budget_bytes=budget,
+                    reason="first_profiled_candidate_with_estimated_payload_within_budget",
                 )
-                if budget is None or est <= budget:
-                    return UniformPipelinePolicy(
-                        proposal0=proposal0,
-                        family_chunk_size=int(chunk_size),
-                        max_wave_size=int(max_wave),
-                        estimated_payload_bytes=est,
-                        budget_bytes=budget,
-                        reason="first_profiled_candidate_with_estimated_payload_within_budget",
-                    )
 
     raise RuntimeError(
         "no retained uniform pipeline policy fits the memory budget "

@@ -6,7 +6,7 @@ from .kernels.wave_step import (
     wave_step_uniform_fused_into,
     wave_pibar_uniform_parent_fused,
 )
-from .kernels.dts_fused import dts_fused, dts_fused_parent_reduced
+from .kernels.dts_fused import dts_fused_parent_reduced
 from ._helpers import _nvtx_range
 from .extract_parameters import as_family_param, as_family_species
 
@@ -27,39 +27,21 @@ def _compute_dts_cross(Pi, Pibar, meta, sp_child1, sp_child2, log_pD, log_pS,
     wlsp = meta['log_split_probs']
     W = meta['W']
     n_eq1 = meta.get('n_eq1', 0)
-    n_ge2_clades = meta.get('n_ge2_clades', 0)
-
-    if n_ge2_clades > 0:
-        return dts_fused_parent_reduced(
-            Pi, Pibar, sl, sr,
-            sp_child1, sp_child2,
-            log_pD, log_pS, wlsp,
-            W,
-            n_eq1,
-            meta.get('eq1_reduce_idx', sl[:0]),
-            meta['ge2_ptr'],
-            meta.get('ge2_parent_ids', sl[:0]),
-            active_mask=active_mask,
-            family_idx=family_idx,
-            family_offset=family_offset,
-            tile_splits=64,
-            ge2_max_fanout=meta.get('ge2_max_fanout'),
-        )
-
-    dts_term = dts_fused(
+    return dts_fused_parent_reduced(
         Pi, Pibar, sl, sr,
         sp_child1, sp_child2,
         log_pD, log_pS, wlsp,
+        W,
+        n_eq1,
+        meta.get('eq1_reduce_idx', sl[:0]),
+        meta.get('ge2_ptr', sl.new_zeros((1,), dtype=torch.long)),
+        meta.get('ge2_parent_ids', sl[:0]),
         active_mask=active_mask,
-        reduce_idx=meta['reduce_idx'] if (active_mask is not None or family_idx is not None) else None,
         family_idx=family_idx,
         family_offset=family_offset,
+        tile_splits=64,
+        ge2_max_fanout=meta.get('ge2_max_fanout'),
     )
-
-    dts_r = torch.full((W, S), NEG_INF, device=device, dtype=dtype)
-    if n_eq1 > 0:
-        dts_r[meta['eq1_reduce_idx'].long()] = dts_term[:n_eq1]
-    return dts_r
 
 
 def _get_species_wave_helpers(species_helpers, S, device):
