@@ -49,6 +49,22 @@ std::string extract_species_name(const std::string &leaf_name) {
   return leaf_name;
 }
 
+std::string species_for_gene_leaf(
+    const std::string &leaf_name,
+    const std::map<std::string, std::string> *leaf_species_map,
+    const std::string &family_name) {
+  if (leaf_species_map != nullptr && !leaf_species_map->empty()) {
+    auto it = leaf_species_map->find(leaf_name);
+    if (it == leaf_species_map->end()) {
+      throw std::runtime_error(
+          "Gene leaf " + leaf_name + " is missing from mapping for family " +
+          family_name);
+    }
+    return it->second;
+  }
+  return extract_species_name(leaf_name);
+}
+
 // ============================================================================
 // Tensor Conversion Helpers
 // ============================================================================
@@ -679,15 +695,17 @@ CladeData amalgamate_clades_and_splits(
   gene_trees.reserve(gene_paths.size());
 
   for (const std::string &path : gene_paths) {
-    std::unique_ptr<TreeNode> tree = parse_newick_file(path);
-    binarize_gene_tree(tree.get(), path);
-    std::vector<std::string> tree_leaves;
-    std::unordered_map<std::string, int> tree_leaf_map;
-    collect_leaf_names(tree.get(), tree_leaves, tree_leaf_map);
-    for (const std::string &name : tree_leaves) {
-      all_leaves_set.insert(name);
+    auto parsed_trees = parse_newick_trees_file(path);
+    for (auto &tree : parsed_trees) {
+      binarize_gene_tree(tree.get(), path);
+      std::vector<std::string> tree_leaves;
+      std::unordered_map<std::string, int> tree_leaf_map;
+      collect_leaf_names(tree.get(), tree_leaves, tree_leaf_map);
+      for (const std::string &name : tree_leaves) {
+        all_leaves_set.insert(name);
+      }
+      gene_trees.push_back(std::move(tree));
     }
-    gene_trees.push_back(std::move(tree));
   }
 
   // Create unified leaf ordering
@@ -1285,6 +1303,7 @@ compute_clade_waves(const CCPArrays &ccp, size_t C) {
 py::dict preprocess_multiple_families(
     const std::string &species_path,
     const std::map<std::string, std::vector<std::string>> &families,
+    const std::map<std::string, std::map<std::string, std::string>> &leaf_species_maps = {},
     bool include_details = false,
     bool include_species_matrices = true) {
 
@@ -1344,6 +1363,9 @@ py::dict preprocess_multiple_families(
   py::dict families_dict;
 
   for (const auto& [family_name, gene_paths] : families) {
+    auto map_it = leaf_species_maps.find(family_name);
+    const std::map<std::string, std::string> *leaf_species_map =
+        map_it == leaf_species_maps.end() ? nullptr : &map_it->second;
     std::vector<std::string> leaf_names;
     std::unordered_map<std::string, int> leaf_to_index;
 
@@ -1378,7 +1400,8 @@ py::dict preprocess_multiple_families(
             }
             if (clade.size() == 1) {
               const std::string &leaf_name = leaf_names[leaf_idx];
-              std::string species = extract_species_name(leaf_name);
+              std::string species = species_for_gene_leaf(
+                  leaf_name, leaf_species_map, family_name);
               auto it = species_name_to_index.find(species);
               if (it == species_name_to_index.end()) {
                 throw std::runtime_error("Species " + species +
@@ -2673,6 +2696,7 @@ PYBIND11_MODULE(preprocess_cpp, m) {
   m.def("preprocess_multiple_families", &preprocess_multiple_families,
         py::arg("species_path"),
         py::arg("families"),
+        py::arg("leaf_species_maps") = std::map<std::string, std::map<std::string, std::string>>{},
         py::arg("include_details") = false,
         py::arg("include_species_matrices") = true,
         "Preprocess multiple gene families with shared species tree. Defaults to light output; pass include_details=True for full debug fields.");

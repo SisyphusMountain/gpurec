@@ -32,7 +32,7 @@ from gpurec.core.likelihood import (
     compute_log_likelihood_root_rows,
 )
 from gpurec.core.memory_policy import UniformPipelinePolicy, choose_uniform_pipeline_policy
-from gpurec.core.model import GeneDataset
+from gpurec.core.model import GeneDataset, parse_alerax_family_file
 from gpurec.core.scheduling import compute_clade_waves
 from gpurec.optimization.implicit_grad import _e_adjoint_and_theta_vjp
 
@@ -583,10 +583,12 @@ class UniformChunkedReconModel(torch.nn.Module):
         self,
         *,
         species_tree: str | os.PathLike[str],
-        gene_trees: Sequence[str | os.PathLike[str]],
+        gene_trees: Sequence[str | os.PathLike[str] | Sequence[str | os.PathLike[str]]],
         device: str | torch.device = "cuda",
         dtype: torch.dtype = torch.float32,
         theta_init_rates: tuple[float, float, float] = (0.05, 0.05, 0.05),
+        family_names: Sequence[str] | None = None,
+        leaf_species_maps: Sequence[dict[str, str]] | None = None,
         preprocess_cache_dir: str | os.PathLike[str] | None = None,
         refresh_preprocess_cache: bool = False,
         family_chunk_size: int | str = "auto",
@@ -622,7 +624,7 @@ class UniformChunkedReconModel(torch.nn.Module):
         if fixed_iters_Pi < 1 or fixed_iters_Pi % 2 != 0:
             raise ValueError("fixed_iters_Pi must be a positive even integer")
 
-        gene_paths = [str(p) for p in gene_trees]
+        gene_paths = list(gene_trees)
         if not gene_paths:
             raise ValueError("gene_trees must not be empty")
 
@@ -635,6 +637,8 @@ class UniformChunkedReconModel(torch.nn.Module):
             device=device,
             preprocess_cache_dir=preprocess_cache_dir,
             refresh_preprocess_cache=refresh_preprocess_cache,
+            family_names=family_names,
+            leaf_species_maps=leaf_species_maps,
         )
         species_helpers, ancestors_T = dataset._species_helpers_for_mode(
             device=device,
@@ -721,7 +725,8 @@ class UniformChunkedReconModel(torch.nn.Module):
         self.max_root_wave_size = max_root_wave_size
         self.clade_budget = clade_budget
         self.memory_policy = memory_policy
-        self.gene_trees = gene_paths
+        self.gene_trees = dataset.gene_tree_paths
+        self.family_names = dataset.family_names
         self.species_tree = str(species_tree)
 
     @classmethod
@@ -747,6 +752,30 @@ class UniformChunkedReconModel(torch.nn.Module):
             max_families=max_families,
         )
         return cls(species_tree=species_tree, gene_trees=genes, **kwargs)
+
+    @classmethod
+    def from_alerax_families(
+        cls,
+        species_tree: str | os.PathLike[str],
+        families_file: str | os.PathLike[str],
+        *,
+        start: int = 0,
+        max_families: int | None = None,
+        **kwargs: Any,
+    ) -> "UniformChunkedReconModel":
+        """Build the uniform model from an AleRax family/CCP list."""
+        family_names, tree_paths, leaf_maps = parse_alerax_family_file(
+            families_file,
+            start=start,
+            max_families=max_families,
+        )
+        return cls(
+            species_tree=species_tree,
+            gene_trees=tree_paths,
+            family_names=family_names,
+            leaf_species_maps=leaf_maps,
+            **kwargs,
+        )
 
     def forward(self) -> torch.Tensor:
         if not torch.is_grad_enabled() or not self.theta.requires_grad:

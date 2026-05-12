@@ -29,7 +29,7 @@ from gpurec.core.batching import (
     collate_wave,
     split_phase_waves,
 )
-from gpurec.core.model import GeneDataset
+from gpurec.core.model import GeneDataset, parse_alerax_family_file
 from gpurec.core.scheduling import compute_clade_waves
 from gpurec.core.forward import Pi_wave_forward
 from gpurec.core.likelihood import E_fixed_point, compute_log_likelihood_root_rows
@@ -310,6 +310,60 @@ class GeneReconModel(torch.nn.Module):
                 theta_init = (
                     base.unsqueeze(0).expand(len(gene_trees), -1).clone()
                 )
+            else:
+                theta_init = base
+        return cls(
+            dataset=ds,
+            mode=mode,
+            theta_init=theta_init,
+            **solver_kwargs,
+        )
+
+    @classmethod
+    def from_alerax_families(
+        cls,
+        species_tree: str,
+        families_file: str | os.PathLike,
+        *,
+        mode: str = "global",
+        start: int = 0,
+        max_families: int | None = None,
+        device: Any = "cuda",
+        dtype: torch.dtype = torch.float32,
+        theta_init_rates: Optional[tuple[float, float, float]] = None,
+        preprocess_cache_dir: str | os.PathLike | None = None,
+        refresh_preprocess_cache: bool = False,
+        **solver_kwargs,
+    ) -> "GeneReconModel":
+        """Build from an AleRax ``[FAMILIES]`` file with CCP/tree samples."""
+        genewise, specieswise = _mode_to_flags(mode)
+        if isinstance(device, str):
+            device = torch.device(device)
+        family_names, tree_paths, leaf_maps = parse_alerax_family_file(
+            families_file,
+            start=start,
+            max_families=max_families,
+        )
+        ds = GeneDataset(
+            species_tree_path=species_tree,
+            gene_tree_paths=tree_paths,
+            genewise=genewise,
+            specieswise=specieswise,
+            dtype=dtype,
+            device=device,
+            preprocess_cache_dir=preprocess_cache_dir,
+            refresh_preprocess_cache=refresh_preprocess_cache,
+            family_names=family_names,
+            leaf_species_maps=leaf_maps,
+        )
+        theta_init = None
+        if theta_init_rates is not None:
+            D, L, T = theta_init_rates
+            base = torch.log2(torch.tensor([D, L, T], dtype=dtype, device=device))
+            if mode == "specieswise":
+                theta_init = base.unsqueeze(0).expand(int(ds.S), -1).clone()
+            elif mode == "genewise":
+                theta_init = base.unsqueeze(0).expand(len(family_names), -1).clone()
             else:
                 theta_init = base
         return cls(

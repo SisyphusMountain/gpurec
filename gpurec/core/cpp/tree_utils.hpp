@@ -44,6 +44,7 @@ private:
 
 // Parse a Newick file into a TreeNode structure (owned by unique_ptr)
 std::unique_ptr<TreeNode> parse_newick_file(const std::string &path);
+std::vector<std::unique_ptr<TreeNode>> parse_newick_trees_file(const std::string &path);
 
 // Post-order traversal collection
 void collect_nodes_postorder(TreeNode *node, std::vector<TreeNode *> &order);
@@ -64,4 +65,3 @@ void enumerate_species(TreeNode *root, std::vector<TreeNode *> &order,
 
 std::unordered_map<std::string, int>
 build_species_name_map(const SpeciesData &species);
-

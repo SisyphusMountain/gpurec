@@ -6,6 +6,30 @@
 #include <sstream>
 #include <stdexcept>
 
+namespace {
+
+std::string trim_copy(const std::string &s) {
+  auto not_space = [](unsigned char ch) { return !std::isspace(ch); };
+  auto begin = std::find_if(s.begin(), s.end(), not_space);
+  auto end = std::find_if(s.rbegin(), s.rend(), not_space).base();
+  if (begin >= end) {
+    return "";
+  }
+  return std::string(begin, end);
+}
+
+std::string read_text_file(const std::string &path) {
+  std::ifstream f(path);
+  if (!f) {
+    throw std::runtime_error("Unable to open Newick file: " + path);
+  }
+  std::ostringstream buffer;
+  buffer << f.rdbuf();
+  return buffer.str();
+}
+
+}  // namespace
+
 NewickParser::NewickParser(const std::string &text) : text_(text), pos_(0) {}
 
 TreeNode *NewickParser::parse() {
@@ -116,15 +140,38 @@ void NewickParser::trim(std::string &s) {
 }
 
 std::unique_ptr<TreeNode> parse_newick_file(const std::string &path) {
-  std::ifstream f(path);
-  if (!f) {
-    throw std::runtime_error("Unable to open Newick file: " + path);
-  }
-  std::ostringstream buffer;
-  buffer << f.rdbuf();
-  std::string text = buffer.str();
+  std::string text = read_text_file(path);
   NewickParser parser(text);
   return std::unique_ptr<TreeNode>(parser.parse());
+}
+
+std::vector<std::unique_ptr<TreeNode>> parse_newick_trees_file(const std::string &path) {
+  std::string text = read_text_file(path);
+  std::vector<std::unique_ptr<TreeNode>> trees;
+  size_t start = 0;
+  while (start < text.size()) {
+    size_t semi = text.find(';', start);
+    std::string record;
+    if (semi == std::string::npos) {
+      record = trim_copy(text.substr(start));
+      start = text.size();
+      if (!record.empty()) {
+        record.push_back(';');
+      }
+    } else {
+      record = trim_copy(text.substr(start, semi - start + 1));
+      start = semi + 1;
+    }
+    if (record.empty() || record == ";") {
+      continue;
+    }
+    NewickParser parser(record);
+    trees.emplace_back(parser.parse());
+  }
+  if (trees.empty()) {
+    throw std::runtime_error("No Newick trees found in file: " + path);
+  }
+  return trees;
 }
 
 void collect_nodes_postorder(TreeNode *node, std::vector<TreeNode *> &order) {
@@ -178,4 +225,3 @@ std::unordered_map<std::string, int> build_species_name_map(const SpeciesData &s
   }
   return mapping;
 }
-
