@@ -896,10 +896,6 @@ class UniformChunkedReconModel(torch.nn.Module):
             stats,
         )
 
-    @torch.no_grad()
-    def log_likelihood(self) -> float:
-        return float(-self.nll().item())
-
     def clamp_theta_(self, min_rate: float = 1e-10, max_rate: float | None = None) -> None:
         if min_rate <= 0:
             raise ValueError("min_rate must be strictly positive")
@@ -910,13 +906,6 @@ class UniformChunkedReconModel(torch.nn.Module):
                 min=math.log2(min_rate),
                 max=None if max_rate is None else math.log2(max_rate),
             )
-
-    def clear_warm_start(self) -> None:
-        self._state.warm_E = None
-
-    @property
-    def rates(self) -> torch.Tensor:
-        return torch.exp2(self.theta.detach())
 
     @property
     def n_families(self) -> int:
@@ -933,14 +922,6 @@ class UniformChunkedReconModel(torch.nn.Module):
     @property
     def n_chunks(self) -> int:
         return len(self._state.built_chunks)
-
-    @property
-    def chunk_family_counts(self) -> list[int]:
-        return [len(chunk.spec.indices) for chunk in self._state.built_chunks]
-
-    @property
-    def last_stats(self) -> dict[str, Any]:
-        return dict(self._state.last_stats)
 
     def batch_summary(self) -> dict[str, Any]:
         chunks = self._state.built_chunks

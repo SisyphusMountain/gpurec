@@ -414,10 +414,6 @@ class GeneReconModel(torch.nn.Module):
             )
             return nll_vec.sum() if reduce == "sum" else nll_vec
 
-    def nll(self) -> torch.Tensor:
-        """Alias for ``self()``."""
-        return self.forward(reduce="sum")
-
     def nll_per_family(self) -> torch.Tensor:
         """Per-family NLL ``[G]``. Only valid in genewise mode."""
         if self._mode != "genewise":
@@ -481,11 +477,6 @@ class GeneReconModel(torch.nn.Module):
         )
         return Pi_out["Pi"] if original_order else Pi_out["Pi_wave_ordered"]
 
-    @torch.no_grad()
-    def log_likelihood(self) -> float:
-        """Inference helper: returns ``+log_likelihood`` (Python float)."""
-        return float(-self.forward(reduce="sum").item())
-
     # ──────────────────────────────────────────────────────────────────
     # Parameter management
     # ──────────────────────────────────────────────────────────────────
@@ -508,19 +499,6 @@ class GeneReconModel(torch.nn.Module):
                 min=math.log2(min_rate),
                 max=None if max_rate is None else math.log2(max_rate),
             )
-
-    @property
-    def rates(self) -> torch.Tensor:
-        """Natural-space rates: ``2^theta``. Shape mirrors ``self.theta``."""
-        return torch.exp2(self.theta.detach())
-
-    @property
-    def mode(self) -> str:
-        return self._mode
-
-    @property
-    def n_families(self) -> int:
-        return len(self._dataset.families)
 
     @property
     def n_species(self) -> int:

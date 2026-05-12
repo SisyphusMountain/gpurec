@@ -165,14 +165,6 @@ class BatchedLBFGS(Optimizer):
             loss = closure()
         return self._loss_vector(loss), self._gather_flat_grad()
 
-    def _evaluate_flat_with_grad(
-        self,
-        closure: LossClosure,
-        flat: Tensor,
-    ) -> tuple[Tensor, Tensor]:
-        self._set_flat_param(flat)
-        return self._evaluate_with_grad(closure)
-
     def _evaluate_loss(
         self,
         closure: LossClosure,

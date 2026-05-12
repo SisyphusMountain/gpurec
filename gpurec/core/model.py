@@ -5,12 +5,11 @@ from pathlib import Path
 from typing import Any
 
 import torch
-from torch.utils.data import Dataset
 from .preprocess_cpp import _load_extension as _load_species_gene_ext
 from .species import uniform_ancestors_t_from_topology
 
 
-class GeneDataset(Dataset):
+class GeneDataset:
     def __init__(
         self,
         species_tree_path,
@@ -173,14 +172,6 @@ class GeneDataset(Dataset):
             torch.save(species_helpers, species_cache)
 
         return species_helpers, raw_by_family
-    
-    def __len__(self):
-        return len(self.families)
-    
-    def __getitem__(self, idx):
-        # Will work for a single sample, but will need
-        # custom collate_fn to work with batches
-        return self.families[idx]
     
     @staticmethod
     def _move_tensor(t: torch.Tensor, *, device: torch.device, dtype: torch.dtype) -> torch.Tensor:
