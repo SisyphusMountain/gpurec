@@ -268,6 +268,10 @@ def Pi_wave_backward(
         os.environ.get("GPUREC_BACKWARD_NO_CPU_PRUNING", "1").strip().lower()
         not in ("", "0", "false", "no", "off")
     )
+    skip_inactive_pibar_zero = (
+        os.environ.get("GPUREC_DTS_SKIP_INACTIVE_PIBAR_ZERO", "1").strip().lower()
+        not in ("", "0", "false", "no", "off")
+    )
     cuda_self_loop_nosplit_mode = os.environ.get(
         "GPUREC_CUDA_SELF_LOOP_NOSPLIT",
         "auto",
@@ -486,7 +490,7 @@ def Pi_wave_backward(
                     and int(dts_grad_mt.numel()) == S
                 ),
                 grad_mt_two_stage_tile_splits=dts_grad_mt_two_stage_tile_splits,
-                skip_inactive_pibar_output_zero=False,
+                skip_inactive_pibar_output_zero=skip_inactive_pibar_zero,
                 family_idx=dts_family_idx,
             )
             grad_Pibar_l, grad_Pibar_r, pibar_side_active, _param_pD, _param_pS = dts_accum_result

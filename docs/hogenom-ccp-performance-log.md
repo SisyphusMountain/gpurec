@@ -1089,6 +1089,34 @@ Therefore, test skipping the expensive inactive-row zero fill of `pibar_ud`
 and `pibar_A`.  Accept only if targeted parity tests pass and `nsys` confirms
 that the DTS bucket or total GPU kernel time shrinks.
 
+Result: accepted.  `GPUREC_DTS_SKIP_INACTIVE_PIBAR_ZERO` now defaults to `1`;
+set it to `0` to restore the old zero-fill behavior for diagnostics.
+
+Correctness:
+
+- targeted scheduler/model/chunked parity suite: 15 passed;
+- HOGENOM loss/gradient are unchanged within the existing fp32 run noise:
+  loss 667283.5625 bits, gradient infinity norm about 645.922.
+
+Event timing:
+
+| setting | median fwd+bwd | median forward | median backward | peak alloc | decision |
+| --- | ---: | ---: | ---: | ---: | --- |
+| skip inactive zero fill | 1.2080 s | 0.3193 s | 0.8884 s | 5.904 GiB | accepted |
+| old zero fill (`GPUREC_DTS_SKIP_INACTIVE_PIBAR_ZERO=0`) | 1.2209 s | 0.3191 s | 0.9015 s | 5.904 GiB | slower |
+
+Nsight Systems confirmation:
+
+| setting | profiled pass | CUDA launches | GPU kernel time | DTS accumulation bucket |
+| --- | ---: | ---: | ---: | ---: |
+| old auto no-split baseline | 1.343 s earlier | 47,722 | 1.1136 s | 0.1633 s |
+| skip inactive zero fill | 1.313 s | 47,722 | 1.1004 s | 0.1524 s |
+
+The launch count is unchanged; the win is from removing unnecessary memory
+writes in inactive DTS split rows.  The Pibar-from-UD bucket remains stable
+(`0.1071 s -> 0.1068 s`), so the skipped rows are correctly handled by the
+existing side-active mask.
+
 ## Commands
 
 Warm whole-dataset stream timing:
