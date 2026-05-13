@@ -1069,6 +1069,26 @@ Plan:
 - accept no code change without parity tests and an `nsys` whole-dataset
   confirmation.
 
+NCU result for `profiling/hogenom_ccp/ncu_dts_current_depthff315_skip172.ncu-rep`:
+
+- launch shape: grid 43,245, block 256, duration 3.22 ms;
+- registers/thread: 40; no local memory spills;
+- theoretical occupancy: 100%; achieved occupancy: 98.72%;
+- DRAM throughput: 60.05%; L2 throughput: 53.77%; L2 hit rate: 72.08%;
+- compute throughput: 27.84%; issue slots busy: 16.91%;
+- branch efficiency: 67.34%; average eligible warps/scheduler: 0.40.
+
+Diagnosis: the current DTS accumulation kernel is not register/occupancy
+limited.  Another broad launch-shape sweep is unlikely to help.  The profile
+instead points to memory traffic and irregular branch behavior.
+
+Next narrow experiment: when a split parent is inactive, the DTS kernel already
+writes `pibar_side_active=false` for both child-side rows.  The downstream
+Pibar-from-UD kernel checks that mask before reading `pibar_ud` or `pibar_A`.
+Therefore, test skipping the expensive inactive-row zero fill of `pibar_ud`
+and `pibar_A`.  Accept only if targeted parity tests pass and `nsys` confirms
+that the DTS bucket or total GPU kernel time shrinks.
+
 ## Commands
 
 Warm whole-dataset stream timing:
