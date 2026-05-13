@@ -2029,6 +2029,45 @@ change.  The NCU result remains useful: the next Pibar improvement would need
 to address uncoalesced loads/stores structurally rather than retuning block
 shape.
 
+## Pibar VJP Compact-Level Ordering Plan
+
+The Pibar VJP compact tree walk processes species-tree nodes level by level.
+Nodes within one level are independent, so their order is semantically
+irrelevant but affects memory coalescing for:
+
+- `pibar_ud[row, parent]` loads/stores;
+- `pibar_ud[row, child1]` and `pibar_ud[row, child2]` loads;
+- the final `accumulated_rhs[child, species]` atomic-add pattern indirectly
+  through the per-row tree accumulation.
+
+The current ordering is ascending parent species id.  That should make parent
+loads/stores relatively regular, but child accesses can be scattered.  Since
+NCU reports about 60% excessive global sectors in the Pibar VJP kernel, test
+whether alternative within-level orderings improve the whole pass:
+
+- add a diagnostic `GPUREC_SPECIES_COMPACT_LEVEL_ORDER` option with current
+  `parent` ordering as the default;
+- prototype `child_min`, `child1`, and `child2` orderings;
+- include the ordering in the species-topology cache key so same-process
+  diagnostics are not silently reused;
+- verify targeted correctness, then benchmark HOGENOM event timing;
+- run `nsys` only if an ordering shows a real event-time improvement; promote
+  nothing unless total GPU kernel time improves.
+
+Result: rejected and removed.  The diagnostic ordering knob passed the focused
+species-topology/kernel tests, but whole-dataset event timing did not improve:
+
+| compact level order | median fwd+bwd | median forward | median backward | peak alloc | decision |
+| --- | ---: | ---: | ---: | ---: | --- |
+| parent/current | 0.7802 s | 0.3075 s | 0.4729 s | 5.780 GiB | baseline |
+| child_min | 0.7868 s | 0.3098 s | 0.4769 s | 5.780 GiB | rejected |
+| child1 | 0.7815 s | 0.3082 s | 0.4732 s | 5.780 GiB | tied/slower |
+| child2 | 0.7924 s | 0.3100 s | 0.4830 s | 5.780 GiB | rejected |
+
+The existing parent order is already the best measured option.  Because the
+prototype added an unused diagnostic knob without a performance win, the code
+change was removed and no `nsys` follow-up was run.
+
 ## Commands
 
 Warm whole-dataset stream timing:
