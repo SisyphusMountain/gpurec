@@ -1865,6 +1865,45 @@ still the GPU buckets in wave-step, DTS accumulation, Pibar VJP, CUDA self-loop,
 and parent-reduced DTS.  A solver-side rewrite would add correctness risk for
 too little expected gain at this point.
 
+## Current DTS Backward NCU Plan
+
+After the prepared-origination fast path, `_dts_cross_backward_accum_kernel` is
+the second largest kernel bucket at about 0.154 s over 244 launches.  The
+largest observed launch in
+`profiling/hogenom_ccp/nsys_stream_depthff315_prepared_orig.sqlite` is matching
+DTS launch index 172, at about 3.03 ms.
+
+Next experiment:
+
+- capture one Nsight Compute report for that launch under the current accepted
+  defaults;
+- inspect occupancy, registers, spills, memory throughput, branch/barrier
+  stalls, and source counters before changing kernel code;
+- only prototype a DTS accumulation change if NCU points to a concrete
+  bottleneck that is not already covered by the earlier launch-shape sweeps.
+
+NCU result for
+`profiling/hogenom_ccp/ncu_dts_backward_prepared_launch172.ncu-rep`:
+
+- launch shape: grid 43,245 blocks, block size 256;
+- duration: 3.21 ms for the sampled large launch;
+- registers/thread: 40; no local memory spilling;
+- theoretical occupancy: 100%; achieved occupancy: 98.75%;
+- DRAM throughput: 57.49%; L2 throughput: 52.04%;
+- compute throughput: 27.72%; issue slots busy: 16.89%;
+- active warps per scheduler: 11.86, but eligible warps per scheduler only
+  0.40;
+- branch efficiency: 67.34%;
+- NCU reports about 48.4M excessive global sectors, about 26% of total sectors.
+
+Diagnosis: this kernel is no longer register- or occupancy-limited under the
+current defaults.  The remaining DTS accumulation cost is dominated by latency,
+branch divergence, and imperfect global-memory access patterns.  The earlier
+launch-shape sweeps are consistent with this NCU result: changing block size or
+warps is unlikely to move the total pass much.  A real improvement would need a
+structural rewrite of how split-side rows are grouped or how child/parent rows
+are accessed, and should not be attempted without a more specific design.
+
 ## Commands
 
 Warm whole-dataset stream timing:
