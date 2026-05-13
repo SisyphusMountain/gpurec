@@ -421,6 +421,40 @@ allocation in the same 5-6 GiB envelope.  Larger budgets show that fewer waves
 alone are not enough; the induced per-wave split layout can cross a memory
 threshold and erase the timing gain.
 
+Nsight follow-up plan:
+
+- profile the accepted `depth_first_fit, clade_budget=315000` layout with
+  Nsight Systems using the same no-host-pruning fast path;
+- compare total launches, total kernel time, and the dominant kernel buckets
+  against the previous sequential chunk-300 `nsys` report;
+- accept the policy as an opt-in scheduling improvement only if the profiler
+  confirms that the wave-count reduction does not move time into another kernel
+  bucket or CPU-side gap.
+
+Nsight Systems result for `depth_first_fit, clade_budget=315000`:
+
+| layout | waves | `nsys` pass | kernel launches | GPU kernel time | peak alloc |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| sequential chunk 300 | 371 | 1.371 s | 52,557 | 1.147 s | 5.92 GiB |
+| depth first-fit 315k | 258 | 1.343 s | 48,030 | 1.143 s | 5.90 GiB |
+
+Top kernel comparison:
+
+| kernel | sequential total | depth first-fit total | note |
+| --- | ---: | ---: | --- |
+| `_wave_backward_uniform_2d_jt_kernel` | 0.267 s / 2226 launches | 0.265 s / 1548 launches | fewer but larger launches |
+| `_wave_step_uniform_kernel` | 0.195 s / 2226 launches | 0.192 s / 1548 launches | fewer but larger launches |
+| `_dts_cross_backward_accum_kernel` | 0.161 s / 358 launches | 0.166 s / 244 launches | regresses per launch |
+| `_uniform_cross_pibar_vjp_tree_from_ud_compact_kernel` | 0.106 s / 358 launches | 0.107 s / 244 launches | unchanged total |
+| `_dts_parent_reduced_ge2_stage1_kernel` | 0.101 s / 708 launches | 0.097 s / 478 launches | small win |
+
+The scheduling change lowers launch count and profiler wall time, but most GPU
+time is still row/split work in the same backward buckets.  Further scheduling
+work should use a better memory/work proxy than clade count alone; otherwise
+larger waves can simply trade fewer launches for heavier DTS and Pibar work.
+The next kernel-side target is still the retained 2D self-loop backward path
+and its parameter-gradient/reduction overhead.
+
 ## DTS Accumulation Plan
 
 The current tuned chunk-300 profile still spends about 0.179 s of GPU time in
