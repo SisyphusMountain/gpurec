@@ -35,12 +35,15 @@ Measured warm runtime after the scheduler change:
 | 100 | 11 | 927 | 8192 | 1.624 s | 2.65 GiB | 2.83 GiB |
 | 200 | 6 | 522 | 8192 | 1.390 s | 4.23 GiB | 8.47 GiB |
 | 250 | 5 | 430 | 8192 | 1.360 s | 5.05 GiB | 10.27 GiB |
-| 300 | 4 | 371 | 8192 | 1.333 s | 5.92 GiB | 11.95 GiB |
+| 300 | 4 | 371 | 8192 | 1.315 s | 5.92 GiB | 11.95 GiB |
 | 400 | 3 | 286 | 8192 | 1.307 s | 7.92 GiB | 16.31 GiB |
 | 600 | 2 | 193 | 8192 | 1.289 s | 15.24 GiB | 16.71 GiB |
 
+The chunk-300 row includes the later DTS launch-warp tuning; the other rows are
+the scheduler/self-loop-tuned measurements used for memory tradeoff decisions.
+
 The best warm value inside the 5-6 GiB allocated target is chunk size 300 at
-about 1.33 s.  Larger chunks keep reducing waves but give small returns relative
+about 1.32 s.  Larger chunks keep reducing waves but give small returns relative
 to memory: chunk 600 uses 15.24 GiB for only about 44 ms over chunk 300.
 
 The first pass for large chunks is still expensive because Triton compiles
@@ -50,24 +53,23 @@ compilation, but warm-up is still much slower than steady state.
 
 ## Nsight Findings
 
-Nsight Systems on tuned chunk size 300 measured one profiled pass at 1.471 s
-(`nsys` overhead relative to the uninstrumented 1.332 s median).  The measured
-pass had 53,309 CUDA kernel launches and 1.206 s of GPU kernel time.  NVTX
-forward time was 0.360 s and backward time was 1.111 s.
+Nsight Systems on tuned chunk size 300 measured one profiled pass at 1.458 s
+(`nsys` overhead relative to the uninstrumented 1.315 s median).  The measured
+pass had 53,309 CUDA kernel launches and 1.190 s of GPU kernel time.
 
 Top kernel families in the chunk-300 `nsys` report:
 
 | kernel | launches | total GPU time | avg launch |
 | --- | ---: | ---: | ---: |
-| `_wave_backward_uniform_2d_jt_kernel` | 2172 | 0.271 s | 125.0 us |
-| `_wave_step_uniform_kernel` | 2226 | 0.216 s | 97.1 us |
-| `_dts_cross_backward_accum_kernel` | 349 | 0.179 s | 514.3 us |
-| `_dts_parent_reduced_ge2_stage1_kernel` | 699 | 0.108 s | 154.4 us |
-| `_uniform_cross_pibar_vjp_tree_from_ud_compact_kernel` | 349 | 0.107 s | 306.2 us |
-| `_wave_backward_uniform_2d_precompute_kernel` | 362 | 0.068 s | 186.5 us |
+| `_wave_backward_uniform_2d_jt_kernel` | 2172 | 0.271 s | 124.7 us |
+| `_wave_step_uniform_kernel` | 2226 | 0.215 s | 96.6 us |
+| `_dts_cross_backward_accum_kernel` | 349 | 0.166 s | 474.6 us |
+| `_dts_parent_reduced_ge2_stage1_kernel` | 699 | 0.108 s | 154.5 us |
+| `_uniform_cross_pibar_vjp_tree_from_ud_compact_kernel` | 349 | 0.106 s | 304.4 us |
+| `_wave_backward_uniform_2d_precompute_kernel` | 362 | 0.067 s | 186.1 us |
 
-GPU metrics over the measured pass: GR active 83.4%, SMs active 72.5%, SM issue
-24.0%, compute warps in flight 41.8%, DRAM read 27.4%, DRAM write 20.2%.
+GPU metrics over the measured pass: GR active 83.5%, SMs active 72.6%, SM issue
+24.7%, compute warps in flight 48.1%, DRAM read 27.7%, DRAM write 20.5%.
 
 Nsight Compute on representative chunk-300 kernels:
 
@@ -80,10 +82,13 @@ Nsight Compute on representative chunk-300 kernels:
 - Early `_wave_backward_uniform_2d_jt_kernel` launches still include tiny grids
   such as grid 1, which are expected after the leaf/frontier phase and are
   deeply underutilized individually.  They are not the main total-time driver.
-- `_dts_cross_backward_accum_kernel` is a more concerning backward target:
-  a representative grid 2718 reaches only about 52% memory throughput and 26%
-  compute throughput, with 96 registers/thread and 41.7% theoretical occupancy.
-  Some later launches are very small grids and show tail/underfill effects.
+- `_dts_cross_backward_accum_kernel` improved after forcing 8 launch warps:
+  a representative grid 2718 now uses 40 registers/thread, reaches 100%
+  theoretical occupancy and 94.1% achieved occupancy, and takes 225.6 us.
+  Throughput is still only 55.9% memory, 52.1% DRAM, and 31.3% compute, so the
+  kernel remains a target, but the launch shape is better than the earlier
+  96-register, 41.7%-theoretical-occupancy version.  Some later launches are
+  very small grids and show tail/underfill effects.
 
 Self-loop configuration sweep at chunk size 300:
 
@@ -130,6 +135,8 @@ leaner no-split/path-specific kernel from `main` for the cases where it applies.
 - HOGENOM chunk-size 300 top kernels were profiled with Nsight Compute.
 - Tuned chunk-size 300 was re-profiled with Nsight Systems after changing the
   retained 2D JT launch defaults.
+- DTS launch-warp tuning was re-profiled with Nsight Systems and Nsight Compute
+  before promoting `GPUREC_DTS_NUM_WARPS=8` to the default.
 - First-fit clade packing was timed and rejected as a default because it raised
   peak allocation without improving warm runtime.
 
@@ -226,6 +233,26 @@ Nsight Systems run measured 1.495 s under profiler overhead and
 `_dts_cross_backward_accum_kernel` at 0.187 s, worse than the tuned-default
 `nsys` report at 1.471 s / 0.179 s.  Keep 128 as the default; retain the
 environment override only for future diagnostics.
+
+Next DTS experiment: reduce the Triton species block size for
+`_dts_cross_backward_accum_kernel`.  The current block size is 256 species,
+which NCU reports at 96 registers/thread and only 41.7% theoretical occupancy.
+Test `GPUREC_DTS_BLOCK_S=64` and `128` against the default `256`; accept a
+change only if whole-dataset warm timing improves and the follow-up `nsys`
+kernel table confirms lower DTS cost.
+
+DTS launch-shape sweep:
+
+| setting | warm fwd+bwd | `nsys` pass | DTS kernel GPU time | conclusion |
+| --- | ---: | ---: | ---: | --- |
+| default before sweep | 1.332 s | 1.471 s | 0.179 s | baseline |
+| `GPUREC_DTS_BLOCK_S=128` | 1.332 s | not run | not run | no clear win |
+| `GPUREC_DTS_BLOCK_S=64` | 1.329 s | 1.479 s | 0.183 s | rejected |
+| `GPUREC_DTS_NUM_WARPS=8` | 1.315 s | 1.458 s | 0.166 s | accepted |
+| `GPUREC_DTS_NUM_WARPS=16` | 1.315 s | not run | not run | tied with 8 |
+
+Set `_dts_cross_backward_accum_kernel` default `num_warps` to 8.  Keep
+`GPUREC_DTS_NUM_WARPS` and `GPUREC_DTS_BLOCK_S` as diagnostic overrides.
 
 ## Commands
 

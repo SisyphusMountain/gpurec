@@ -1586,7 +1586,18 @@ def dts_cross_backward_accum_fused(
         grad_mt_partial = dummy
 
     stride_C = Pi_star.stride(0)
-    BLOCK_S = min(256, triton.next_power_of_2(S))
+    block_s_env = os.environ.get("GPUREC_DTS_BLOCK_S")
+    if block_s_env is None:
+        BLOCK_S = min(256, triton.next_power_of_2(S))
+    else:
+        BLOCK_S = min(
+            max(1, triton.next_power_of_2(int(block_s_env))),
+            triton.next_power_of_2(S),
+        )
+    dts_num_warps = int(os.environ.get("GPUREC_DTS_NUM_WARPS", "8"))
+    launch_options = {}
+    if dts_num_warps > 0:
+        launch_options["num_warps"] = dts_num_warps
 
     _dts_cross_backward_accum_kernel[(n_ws,)](
         Pi_star, Pibar_star,
@@ -1622,6 +1633,7 @@ def dts_cross_backward_accum_fused(
         SIDE_ACTIVE_THRESHOLD_ENABLED=side_threshold_enabled,
         SKIP_INACTIVE_PIBAR_OUTPUT_ZERO=bool(skip_inactive_pibar_output_zero),
         DTYPE=_tl_float_dtype(dtype),
+        **launch_options,
     )
 
     if use_grad_mt_two_stage:
