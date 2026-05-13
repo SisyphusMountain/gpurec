@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ctypes
 from functools import lru_cache
+import os
 from pathlib import Path
 import sysconfig
 
@@ -528,7 +529,9 @@ def wave_backward_uniform_nosplit_cuda(
 
     from cuda.bindings import driver
 
-    block = 256
+    block = int(os.environ.get("GPUREC_CUDA_SELF_LOOP_BLOCK", "512"))
+    if block <= 0 or block % 32 != 0:
+        raise ValueError("GPUREC_CUDA_SELF_LOOP_BLOCK must be a positive multiple of 32")
     shared_bytes = int(S) * 7 * 4
 
     correction_mode_value = 0 if str(correction_mode).lower() in ("self", "diagonal", "0") else 1

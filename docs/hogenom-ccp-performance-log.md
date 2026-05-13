@@ -1552,6 +1552,45 @@ Next experiment:
 - accept a new default only if targeted parity still passes and whole-dataset
   event timing improves; profile with `nsys` if the timing win is material.
 
+Result: accepted.  `GPUREC_CUDA_SELF_LOOP_BLOCK` now defaults to 512; set it to
+256 to restore the previous launch shape for diagnostics.
+
+Correctness:
+
+- targeted scheduler/model/chunked parity suite with block 512 default:
+  16 passed.
+
+Event timing:
+
+| block size | median fwd+bwd | median forward | median backward | peak alloc | decision |
+| ---: | ---: | ---: | ---: | ---: | --- |
+| 256 | 0.9330 s | 0.3154 s | 0.6180 s | 5.779 GiB | previous default |
+| 512 | 0.9118 s | 0.3145 s | 0.5976 s | 5.779 GiB | accepted |
+| 768 | 0.9245 s | 0.3152 s | 0.6098 s | 5.779 GiB | rejected |
+| 1024 | 0.9867 s | 0.3141 s | 0.6721 s | 5.779 GiB | rejected |
+
+Nsight Systems result for
+`profiling/hogenom_ccp/nsys_stream_depthff315_cuda_split_block512.nsys-rep`:
+
+| setting | profiled pass | CUDA launches | GPU kernel time | CUDA self-loop bucket |
+| --- | ---: | ---: | ---: | ---: |
+| block 256 | 1.052 s | 42,096 | 0.8330 s | 0.1485 s |
+| block 512 | 1.036 s | 42,096 | 0.8285 s | 0.1393 s |
+
+Nsight Compute on a full 8192-row launch
+(`profiling/hogenom_ccp/ncu_cuda_split_block512_wave164.ncu-rep`) confirms the
+intended occupancy effect:
+
+- block 512, grid 8192, duration 1.87 ms;
+- registers/thread 40, no local spilling;
+- dynamic shared memory 37.1 KB/block, still limiting residency to two
+  blocks/SM;
+- achieved occupancy rises to about 66%;
+- compute/memory throughput rises to about 34%, DRAM throughput stays low at
+  about 8.7%;
+- long-scoreboard stalls fall versus block 256, while barrier stalls remain
+  prominent from the in-block reductions.
+
 ## Commands
 
 Warm whole-dataset stream timing:
