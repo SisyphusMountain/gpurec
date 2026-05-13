@@ -295,6 +295,21 @@ def Pi_wave_backward(
         "GPUREC_CUDA_SELF_LOOP_NOSPLIT_CORRECTION",
         "tree",
     )
+    cuda_self_loop_split_mode = os.environ.get(
+        "GPUREC_CUDA_SELF_LOOP_SPLIT",
+        "auto",
+    ).strip().lower()
+    cuda_self_loop_split_enabled = (
+        cuda_self_loop_split_mode not in ("", "0", "false", "no", "off")
+    )
+    cuda_self_loop_split_required = cuda_self_loop_split_mode in (
+        "1",
+        "true",
+        "yes",
+        "on",
+        "force",
+        "required",
+    )
 
     for k in range(K - 1, -1, -1):
         meta = wave_metas[k]
@@ -363,10 +378,13 @@ def Pi_wave_backward(
             else:
                 acc.scatter_add_(0, fi_expand, contrib)
 
+        cuda_self_loop_wave_enabled = (
+            (dts_r is None and cuda_self_loop_nosplit_enabled)
+            or (dts_r is not None and cuda_self_loop_split_enabled)
+        )
         use_cuda_nosplit = (
-            cuda_self_loop_nosplit_enabled
+            cuda_self_loop_wave_enabled
             and _auto_wrapped
-            and dts_r is None
             and dtype == torch.float32
             and torch.is_tensor(uniform_leaf_logp)
             and int(uniform_leaf_logp.numel()) == S
@@ -412,16 +430,24 @@ def Pi_wave_backward(
                         grad_E_s2_acc[0],
                         grad_mt[0] if grad_mt.ndim == 2 else grad_mt,
                     ),
+                    dts_r=dts_r,
                     active_mask=active_mask,
                     neumann_terms=neumann_terms,
                     correction_mode=cuda_self_loop_nosplit_correction,
+                    has_leaf_term=wave_has_leaf_term,
                 )
                 aw0 = aw1 = aw2 = aw345 = aw3 = aw4 = None
                 self_loop_grads_accumulated = True
             except (ImportError, RuntimeError):
-                if cuda_self_loop_nosplit_required:
+                if (
+                    (dts_r is None and cuda_self_loop_nosplit_required)
+                    or (dts_r is not None and cuda_self_loop_split_required)
+                ):
                     raise
-                cuda_self_loop_nosplit_enabled = False
+                if dts_r is None:
+                    cuda_self_loop_nosplit_enabled = False
+                else:
+                    cuda_self_loop_split_enabled = False
                 use_cuda_nosplit = False
                 self_loop_grads_accumulated = False
         if not use_cuda_nosplit:

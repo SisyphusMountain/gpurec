@@ -1474,6 +1474,63 @@ Next prototype:
 - verify with the targeted parity suite forced on/off, then benchmark HOGENOM
   and run `nsys` only if the event timing improves.
 
+Result: accepted and promoted to default `auto`.  Set
+`GPUREC_CUDA_SELF_LOOP_SPLIT=0` to force the retained Triton 2D split-wave
+self-loop path.
+
+Correctness:
+
+- targeted scheduler/model/chunked parity suite with split CUDA forced on:
+  16 passed;
+- same targeted suite with the promoted default: 16 passed;
+- same targeted suite with `GPUREC_CUDA_SELF_LOOP_SPLIT=0`: 16 passed;
+- direct HOGENOM fallback-vs-split comparison had identical loss
+  667283.5625 bits; the fp32 gradient max absolute delta was 0.0116, mean
+  absolute delta 0.00044, on a gradient with infinity norm about 646.
+
+Event timing on the accepted depth-first 315k / wave-cap 8192 layout:
+
+| setting | median fwd+bwd | median forward | median backward | peak alloc | decision |
+| --- | ---: | ---: | ---: | ---: | --- |
+| promoted CUDA split self-loop | 0.9330 s | 0.3154 s | 0.6180 s | 5.779 GiB | accepted |
+| previous default after deadline scheduling | 1.1434 s | 0.3145 s | 0.8288 s | 5.904 GiB | baseline |
+
+Nsight Systems result for
+`profiling/hogenom_ccp/nsys_stream_depthff315_cuda_split.nsys-rep`:
+
+| setting | profiled pass | CUDA launches | GPU kernel time |
+| --- | ---: | ---: | ---: |
+| previous non-leaf leaf-term specialization | 1.258 s | 47,220 | 1.0449 s |
+| CUDA split self-loop | 1.052 s | 42,096 | 0.8330 s |
+
+Top bucket movement:
+
+| kernel bucket | previous | CUDA split |
+| --- | ---: | ---: |
+| `_wave_backward_uniform_2d_jt_kernel` | 0.2098 s / 1464 launches | removed |
+| `_wave_backward_uniform_2d_precompute_kernel` | 0.0491 s / 244 launches | removed |
+| `_wave_backward_uniform_param_store_kernel` | 0.0441 s / 244 launches | removed |
+| `gpurec_wave_backward_nosplit_uniform_fp32` | 0.0187 s / 14 launches | 0.1485 s / 258 launches |
+| PyTorch sum reductions | 0.0447 s / 2887 launches | 0.0032 s / 1423 launches |
+
+Nsight Compute on a full 8192-row CUDA split launch
+(`profiling/hogenom_ccp/ncu_cuda_split_wave164.ncu-rep`):
+
+- duration 1.93 ms; grid 8192, block 256;
+- registers/thread 40, no local spilling;
+- dynamic shared memory 37.1 KB/block, limiting residency to two blocks/SM;
+- achieved occupancy about 33%, matching the shared-memory limit;
+- compute and memory throughput both about 27%, DRAM throughput about 8%;
+- branch efficiency 95.4%;
+- main stalls are barrier and long scoreboard, consistent with the in-block
+  species-tree reductions.
+
+Diagnosis: the CUDA split path is not a perfect kernel, but it removes enough
+scratch traffic, follow-up reductions, and launches from the retained 2D path
+to reduce whole-dataset forward+backward by about 18% and slightly lower peak
+allocation.  The next kernel work should target the CUDA row kernel's shared
+memory footprint/barriers, not return to the 2D Triton strategy.
+
 ## Commands
 
 Warm whole-dataset stream timing:

@@ -1,4 +1,4 @@
-"""Runtime CUDA kernels for opt-in no-split wave-backward paths."""
+"""Runtime CUDA kernels for opt-in wave-backward self-loop paths."""
 
 from __future__ import annotations
 
@@ -35,10 +35,11 @@ extern "C" __device__ __forceinline__ float gpurec_block_sum(float val) {
     return val;
 }
 
-extern "C" __device__ __forceinline__ void gpurec_weights_nosplit(
+extern "C" __device__ __forceinline__ void gpurec_weights_uniform(
     const float* __restrict__ Pi,
     const float* __restrict__ Pibar,
     const float* __restrict__ row_max_ptr,
+    const float* __restrict__ dts_r_ptr,
     const float* __restrict__ mt,
     const float* __restrict__ DL,
     const float* __restrict__ Ebar,
@@ -54,6 +55,8 @@ extern "C" __device__ __forceinline__ void gpurec_weights_nosplit(
     int s,
     int S,
     int stride,
+    int has_splits,
+    int has_leaf_term,
     float* q0,
     float* q1,
     float* q2,
@@ -78,7 +81,7 @@ extern "C" __device__ __forceinline__ void gpurec_weights_nosplit(
     const float t3 = SL1[s] + pi_c1;
     const float t4 = SL2[s] + pi_c2;
     const int leaf_s = leaf_species[global_row];
-    const float t5 = (leaf_s == s) ? leaf_logp[s] : neg;
+    const float t5 = (has_leaf_term != 0 && leaf_s == s) ? leaf_logp[s] : neg;
 
     float m = fmaxf(fmaxf(fmaxf(t0, t1), fmaxf(t2, t3)), fmaxf(t4, t5));
     const float m_safe = (m > -1.0e29f) ? m : 0.0f;
@@ -90,13 +93,23 @@ extern "C" __device__ __forceinline__ void gpurec_weights_nosplit(
     const float e5 = exp2f(t5 - m_safe);
     const float sum = e0 + e1 + e2 + e3 + e4 + e5;
     const float inv_sum = (sum > 0.0f) ? (1.0f / sum) : 0.0f;
+    float w_left = 1.0f;
+    if (has_splits != 0) {
+        const float dts_l = log2f(sum) + m;
+        const float dts_r = dts_r_ptr[w * S + s];
+        const float pi_new_m = fmaxf(dts_l, dts_r);
+        const float pi_new_ms = (pi_new_m > -1.0e29f) ? pi_new_m : 0.0f;
+        const float pi_new =
+            log2f(exp2f(dts_l - pi_new_ms) + exp2f(dts_r - pi_new_ms)) + pi_new_m;
+        w_left = (dts_l > -1.0e29f) ? exp2f(dts_l - pi_new) : 0.0f;
+    }
 
-    *q0 = e0 * inv_sum;
-    *q1 = e1 * inv_sum;
-    *q2 = e2 * inv_sum;
-    *q3 = e3 * inv_sum;
-    *q4 = e4 * inv_sum;
-    *q5 = e5 * inv_sum;
+    *q0 = w_left * e0 * inv_sum;
+    *q1 = w_left * e1 * inv_sum;
+    *q2 = w_left * e2 * inv_sum;
+    *q3 = w_left * e3 * inv_sum;
+    *q4 = w_left * e4 * inv_sum;
+    *q5 = w_left * e5 * inv_sum;
 
     const float row_max = row_max_ptr[global_row];
     const float inv_denom = (pibar > -1.0e29f) ? exp2f(row_max + mt[s] - pibar) : 0.0f;
@@ -107,6 +120,7 @@ extern "C" __global__ void gpurec_wave_backward_nosplit_uniform_fp32(
     const float* __restrict__ Pi,
     const float* __restrict__ Pibar,
     const float* __restrict__ pibar_row_max,
+    const float* __restrict__ dts_r,
     const float* __restrict__ rhs,
     const unsigned char* __restrict__ active_mask,
     const float* __restrict__ mt,
@@ -139,6 +153,8 @@ extern "C" __global__ void gpurec_wave_backward_nosplit_uniform_fp32(
     int neumann_terms,
     int n_levels,
     int use_active_mask,
+    int has_splits,
+    int has_leaf_term,
     int correction_mode,
     int event_grad_mode
 ) {
@@ -170,10 +186,11 @@ extern "C" __global__ void gpurec_wave_backward_nosplit_uniform_fp32(
 
     for (int s = threadIdx.x; s < S; s += blockDim.x) {
         float q0, q1, q2, q3, q4, q5, pc;
-        gpurec_weights_nosplit(
-            Pi, Pibar, pibar_row_max, mt, DL, Ebar, E, SL1, SL2,
+        gpurec_weights_uniform(
+            Pi, Pibar, pibar_row_max, dts_r, mt, DL, Ebar, E, SL1, SL2,
             sp_child1, sp_child2, leaf_species, leaf_logp,
             ws, w, s, S, stride,
+            has_splits, has_leaf_term,
             &q0, &q1, &q2, &q3, &q4, &q5, &pc
         );
         const float r = rhs[out_base + s];
@@ -250,10 +267,11 @@ extern "C" __global__ void gpurec_wave_backward_nosplit_uniform_fp32(
         v_out[out_base + s] = v;
 
         float q0, q1, q2, q3, q4, q5, pc;
-        gpurec_weights_nosplit(
-            Pi, Pibar, pibar_row_max, mt, DL, Ebar, E, SL1, SL2,
+        gpurec_weights_uniform(
+            Pi, Pibar, pibar_row_max, dts_r, mt, DL, Ebar, E, SL1, SL2,
             sp_child1, sp_child2, leaf_species, leaf_logp,
             ws, w, s, S, stride,
+            has_splits, has_leaf_term,
             &q0, &q1, &q2, &q3, &q4, &q5, &pc
         );
 
@@ -418,11 +436,13 @@ def wave_backward_uniform_nosplit_cuda(
     compact_level_child2,
     accum_param_grads,
     *,
+    dts_r=None,
     active_mask=None,
     neumann_terms=3,
     correction_mode="tree",
+    has_leaf_term=True,
 ):
-    """Run the opt-in fp32 CUDA no-split self-loop kernel."""
+    """Run the opt-in fp32 CUDA self-loop kernel."""
     if accum_param_grads is None or len(accum_param_grads) != 7:
         raise ValueError("CUDA no-split wave path requires seven gradient tensors")
     float_tensors = (
@@ -439,12 +459,16 @@ def wave_backward_uniform_nosplit_cuda(
         pibar_row_max,
         *accum_param_grads,
     )
+    if dts_r is not None:
+        float_tensors = (*float_tensors, dts_r)
     if any(t.dtype != torch.float32 for t in float_tensors):
-        raise ValueError("CUDA no-split wave path currently supports fp32 only")
+        raise ValueError("CUDA wave self-loop path currently supports fp32 only")
     if Pi_star.device.type != "cuda":
-        raise ValueError("CUDA no-split wave path requires CUDA tensors")
+        raise ValueError("CUDA wave self-loop path requires CUDA tensors")
     if active_mask is not None and active_mask.dtype is not torch.bool:
         raise ValueError("active_mask must be a bool tensor")
+    if dts_r is not None and tuple(dts_r.shape) != (int(W), int(S)):
+        raise ValueError("dts_r must have shape [W, S] for CUDA split waves")
     if accum_param_grads[0].numel() not in (1, int(S)):
         raise ValueError("grad_log_pD must be scalar or [S]")
     if accum_param_grads[1].numel() != accum_param_grads[0].numel():
@@ -477,9 +501,11 @@ def wave_backward_uniform_nosplit_cuda(
     ]
     if active_mask is not None:
         tensors.append(active_mask)
+    if dts_r is not None:
+        tensors.append(dts_r)
     for t in tensors:
         if not torch.is_tensor(t) or t.device != Pi_star.device or not t.is_contiguous():
-            raise ValueError("all CUDA no-split wave tensors must be contiguous on the same device")
+            raise ValueError("all CUDA wave self-loop tensors must be contiguous on the same device")
 
     if sp_child1.dtype != torch.int32 or sp_child2.dtype != torch.int32:
         raise ValueError("species child tensors must be int32")
@@ -509,10 +535,12 @@ def wave_backward_uniform_nosplit_cuda(
     event_grad_mode = 1 if accum_param_grads[0].numel() == int(S) else 0
     n_levels = int(compact_level_ptr.numel()) - 1
     active_arg = active_mask.contiguous() if active_mask is not None else rhs
+    dts_arg = dts_r if dts_r is not None else rhs
     params, _keepalive = _kernel_params(
         ("ptr", Pi_star),
         ("ptr", Pibar_star),
         ("ptr", pibar_row_max),
+        ("ptr", dts_arg),
         ("ptr", rhs),
         ("ptr", active_arg),
         ("ptr", mt_squeezed),
@@ -545,6 +573,8 @@ def wave_backward_uniform_nosplit_cuda(
         ("int", neumann_terms),
         ("int", n_levels),
         ("int", 1 if active_mask is not None else 0),
+        ("int", 1 if dts_r is not None else 0),
+        ("int", 1 if has_leaf_term else 0),
         ("int", correction_mode_value),
         ("int", event_grad_mode),
     )
