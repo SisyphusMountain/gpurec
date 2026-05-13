@@ -1022,6 +1022,30 @@ Next experiment:
 - keep the 315k/8192 layout as the default if larger batches only improve event
   timing within noise or exceed the 5-6 GiB lean target.
 
+Result: rejected as a default.  The only lean-memory candidate with an apparent
+event-time improvement was `clade_budget=320000, max_dts_partial_rows=100000`,
+but Nsight Systems did not confirm a GPU-time win.
+
+| clade budget | DTS partial-row cap | batches | event median fwd+bwd | median forward | median backward | peak alloc | decision |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| 315000 | none | 5 | 1.2197 s | 0.3182 s | 0.9012 s | 5.904 GiB | current default |
+| 320000 | 100000 | 5 | 1.2151 s | 0.3184 s | 0.8965 s | 5.928 GiB | profiled, rejected |
+| 325000 | 100000 | 5 | 1.2159 s | 0.3194 s | 0.8965 s | 6.305 GiB | rejected memory |
+| 340000 | 100000 | 5 | 1.2185 s | 0.3206 s | 0.8990 s | 6.665 GiB | rejected memory |
+| 350000 | 100000 | 5 | 1.2211 s | 0.3197 s | 0.9009 s | 6.722 GiB | rejected |
+
+Nsight Systems comparison:
+
+| layout | profiled pass | CUDA launches | GPU kernel time | note |
+| --- | ---: | ---: | ---: | --- |
+| 315k default, auto no-split | 1.343 s earlier | 47,722 | 1.1136 s | baseline |
+| 320k + DTS rows 100k, auto no-split | 1.340 s | 47,612 | 1.1199 s | fewer launches but slower kernels |
+
+The 320k layout removes 110 launches and slightly reduces the 2D `J^T` bucket
+(`0.2319 s -> 0.2309 s`), but `_dts_cross_backward_accum_kernel` regresses
+(`0.1633 s -> 0.1716 s`).  Keep the 315k/8192 layout as the default and treat
+the DTS partial-row cap as a diagnostic/memory-guard option only.
+
 ## Commands
 
 Warm whole-dataset stream timing:
