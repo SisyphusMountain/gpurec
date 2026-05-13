@@ -2970,6 +2970,33 @@ same leaf-first constraint would require changing batch composition, increasing
 `max_wave_size`, or changing the computation model, not another within-batch DAG
 ordering.
 
+## No-Family Final-Pibar Fusion Retest Plan
+
+The latest NCU on the no-family-cap 305k layout says the hot wave-step launch is
+healthy but has a remaining memory-coalescing issue.  One existing runtime knob
+changes the work inside that kernel without code edits:
+`GPUREC_FUSE_FINAL_PIBAR=0` moves final Pibar recomputation back out of the last
+wave-step iteration and into separate `_wave_pibar_uniform_parent_kernel`
+launches.
+
+This was previously tested on an older conservative layout and was roughly tied
+or slightly worse after profiling.  Retest it on the current best runtime layout
+because the accepted CUDA Pibar VJP route and no-family-cap batch composition
+changed the dominant buckets.  Accept only if whole-pass CUDA-event timing
+improves and `nsys` confirms lower total GPU kernel time rather than merely
+moving cost between the wave-step and final-Pibar buckets.
+
+Result: rejected by event timing.
+
+| setting | median fwd+bwd | median forward | median backward | peak alloc | peak reserved | decision |
+| --- | ---: | ---: | ---: | ---: | ---: | --- |
+| fused final Pibar, default | 0.7386 s | 0.3059 s | 0.4331 s | 5.675 GiB | 8.027 GiB | baseline |
+| `GPUREC_FUSE_FINAL_PIBAR=0` | 0.7467 s | 0.3075 s | 0.4392 s | 5.675 GiB | 8.027 GiB | reject |
+
+Both runs produced the same loss (`667283.5` bits) and matching gradient norms
+within the usual fp32 noise.  Since disabling fusion regressed the whole-pass
+event median by about `8.1 ms`, do not spend an `nsys` pass on this toggle.
+
 ## Commands
 
 Warm whole-dataset stream timing, conservative memory layout:
