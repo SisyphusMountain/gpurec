@@ -2329,6 +2329,65 @@ Median forward is `0.3094 s`, median backward is `0.4777 s`, and median
 forward+backward is `0.7875 s`.  Peak allocated memory is `5.780 GiB`; peak
 reserved memory is `6.963 GiB`.
 
+## Backward Root RHS Initialization Plan
+
+The next small overhead target is the backward initialization of
+`accumulated_rhs` in `Pi_wave_backward`.  Each resident batch currently does:
+
+```python
+accumulated_rhs = torch.zeros(C, S, device=device, dtype=dtype)
+accumulated_rhs.index_copy_(0, root_ids_device, root_rhs)
+```
+
+The zero initialization is required: every non-root Pi adjoint starts at exact
+zero, and the pruning mask depends on those zeros.  The root rows are the only
+non-zero initial rows.  The current path therefore performs one dense
+initialization plus a separate root-row scatter per batch.
+
+Experiment:
+
+- add an opt-in `GPUREC_BACKWARD_FUSED_ROOT_RHS_INIT=1` path;
+- prepare a static `root_position_index` in the wave layout, mapping every
+  wave-ordered clade row to its root-row position or `-1`;
+- allocate `accumulated_rhs` with `torch.empty` and initialize zeros/root RHS
+  in one Triton kernel;
+- keep the existing `torch.zeros` + `index_copy_` path as the default until
+  correctness and profiling justify changing it;
+- verify targeted model and chunked parity with the flag enabled;
+- benchmark HOGENOM event timing and run `nsys` only if the median improves
+  enough to check total GPU kernel time and the fill bucket.
+
+Result: rejected.  The opt-in path passed the targeted parity suite, but event
+timing did not improve, so no `nsys` run was warranted.
+
+Correctness:
+
+```bash
+GPUREC_BACKWARD_FUSED_ROOT_RHS_INIT=1 pytest -q \
+  tests/unit/test_specieswise_uniform.py \
+  tests/unit/test_global_wave_scheduler.py \
+  tests/integration/test_gene_recon_model.py::test_gene_recon_model_forward_backward_modes \
+  tests/integration/test_gene_recon_model.py::test_memory_safe_resident_batches_match_resident_and_slice \
+  tests/integration/test_uniform_chunked_model.py::test_chunked_uniform_matches_resident_global_model \
+  tests/integration/test_uniform_chunked_model.py::test_chunked_uniform_chunk_subset_nll_and_gradient
+```
+
+Result: 21 passed.
+
+Event timing:
+
+| setting | median fwd+bwd | median forward | median backward | peak alloc | peak reserved | decision |
+| --- | ---: | ---: | ---: | ---: | ---: | --- |
+| default root RHS init | 0.7770 s | 0.3087 s | 0.4682 s | 5.786 GiB | 6.982 GiB | baseline |
+| fused root RHS init, block 512 | 0.7792 s | 0.3083 s | 0.4709 s | 5.786 GiB | 6.982 GiB | rejected |
+| fused root RHS init, block 1024 | 0.7880 s | 0.3104 s | 0.4777 s | 5.786 GiB | 6.982 GiB | rejected |
+| fused root RHS init, block 2048 | 0.7851 s | 0.3098 s | 0.4753 s | 5.786 GiB | 6.982 GiB | rejected |
+| fused root RHS init, block 4096 | 0.7877 s | 0.3113 s | 0.4764 s | 5.786 GiB | 6.984 GiB | rejected |
+
+The dense zero fill is apparently faster than the prototype's per-element root
+mapping work.  The code change was removed; keep the default PyTorch
+`zeros + index_copy_` initialization.
+
 ## Commands
 
 Warm whole-dataset stream timing:
