@@ -2244,6 +2244,91 @@ Total GPU kernel time is slightly worse, and peak reserved memory rises to about
 remains a useful diagnostic for lower-launch scheduling experiments but is not
 a profiler-confirmed speed win.
 
+## Current Scheduling Audit
+
+The desired scheduling model is:
+
+- process all leaf clades first, because leaf initialization is a distinct
+  operation;
+- schedule every remaining non-leaf clade from all resident-batch DAGs into
+  globally packed ready waves;
+- cap each wave at `max_wave_size` clades;
+- minimize the number of non-leaf waves subject to the cap and topological
+  dependencies.
+
+For this model, a hard lower bound for each resident batch is:
+
+```text
+ceil(leaves / max_wave_size)
++ max(max_bottom_up_depth, ceil(nonleaves / max_wave_size))
+```
+
+The current `schedule_global_phased_waves` implementation already applies this
+leaf phase plus global non-leaf scheduling, including deadline and
+Coffman-Graham-style compaction attempts when greedy ready scheduling leaves a
+gap.
+
+Audit command:
+
+```bash
+python - <<'PY'
+# Build the HOGENOM+CCP model with the profiling configuration and compare each
+# resident batch's scheduled wave count with the leaf-first lower bound.
+PY
+```
+
+Result for the warm HOGENOM+CCP configuration
+`--chunk-size 300 --clade-budget 315000 --batch-packing depth_first_fit
+--max-wave-size 8192`:
+
+| batch | families | clades | waves | lower bound | gap | leaf waves | non-leaf bound | max depth |
+|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 0 | 91 | 314985 | 102 | 102 | 0 | 4 | 98 | 98 |
+| 1 | 146 | 314902 | 65 | 65 | 0 | 4 | 61 | 61 |
+| 2 | 300 | 273898 | 48 | 48 | 0 | 3 | 45 | 45 |
+| 3 | 300 | 104120 | 30 | 30 | 0 | 2 | 28 | 28 |
+| 4 | 218 | 15208 | 13 | 13 | 0 | 1 | 12 | 12 |
+
+Total scheduled waves are 258 and the summed lower bound is also 258.  This
+means the current within-batch scheduler cannot reduce the wave count further
+without changing the batching/memory constraints, increasing the wave cap, or
+removing the separate leaf phase.
+
+The earlier no-family-cap diagnostic
+`--chunk-size 0 --clade-budget 315000 --batch-packing depth_first_fit` also hit
+its per-batch lower bounds:
+
+| batch | families | clades | waves | lower bound | gap | max depth |
+|---:|---:|---:|---:|---:|---:|---:|
+| 0 | 90 | 314552 | 102 | 102 | 0 | 98 |
+| 1 | 145 | 314585 | 65 | 65 | 0 | 61 |
+| 2 | 381 | 313923 | 49 | 49 | 0 | 45 |
+| 3 | 439 | 80053 | 24 | 24 | 0 | 23 |
+
+The 240-wave no-family-cap layout reduces launches by changing resident batch
+composition, not by finding a better within-batch DAG schedule.  The prior
+`nsys` result rejected it as a default because total GPU kernel time did not
+improve and reserved memory rose substantially.
+
+Current timing check after the audit, with the accepted 5-batch layout and one
+warmup:
+
+```bash
+python scripts/profile_hogenom_ccp_pass.py \
+  --chunk-size 300 \
+  --clade-budget 315000 \
+  --batch-packing depth_first_fit \
+  --max-wave-size 8192 \
+  --warmup-runs 1 \
+  --profile-runs 5 \
+  --mode stream-batches \
+  --no-cuda-profiler-api
+```
+
+Median forward is `0.3094 s`, median backward is `0.4777 s`, and median
+forward+backward is `0.7875 s`.  Peak allocated memory is `5.780 GiB`; peak
+reserved memory is `6.963 GiB`.
+
 ## Commands
 
 Warm whole-dataset stream timing:
