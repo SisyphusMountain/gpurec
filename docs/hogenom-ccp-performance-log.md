@@ -429,6 +429,30 @@ Conclusion: the no-split CUDA router is a real HOGENOM speed win, currently
 kept opt-in while deciding whether to make the auto/fallback behavior robust
 enough for the default path.
 
+Promotion plan:
+
+- change `GPUREC_CUDA_SELF_LOOP_NOSPLIT` default from off to `auto`;
+- in `auto`, try the CUDA no-split path for eligible waves but fall back to the
+  retained 2D Triton path if the NVRTC/CUDA loader is unavailable;
+- keep `GPUREC_CUDA_SELF_LOOP_NOSPLIT=0` as an explicit disable switch;
+- treat `1`, `true`, `on`, `yes`, `force`, and `required` as explicit modes
+  that should raise on CUDA no-split setup failure rather than silently falling
+  back;
+- rerun the targeted suite in default/auto mode and with the disable switch;
+- rerun HOGENOM default timing to confirm the promoted behavior matches the
+  opt-in result.
+
+Promotion result:
+
+- default mode is now `auto`: eligible no-split waves use the CUDA row kernel
+  when available, and `GPUREC_CUDA_SELF_LOOP_NOSPLIT=0` disables it;
+- explicit modes `1`, `true`, `on`, `yes`, `force`, and `required` still raise
+  on setup failure;
+- targeted suite in default/auto mode: 15 passed;
+- targeted suite with `GPUREC_CUDA_SELF_LOOP_NOSPLIT=0`: 15 passed;
+- HOGENOM default timing after promotion: median forward+backward 1.2186 s,
+  median forward 0.3189 s, median backward 0.8996 s, peak allocated 5.904 GiB.
+
 ## Post-Leaf DAG Scheduling Plan
 
 The current resident scheduler already runs a leaf-only phase first, then packs

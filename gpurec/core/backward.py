@@ -268,9 +268,20 @@ def Pi_wave_backward(
         os.environ.get("GPUREC_BACKWARD_NO_CPU_PRUNING", "1").strip().lower()
         not in ("", "0", "false", "no", "off")
     )
+    cuda_self_loop_nosplit_mode = os.environ.get(
+        "GPUREC_CUDA_SELF_LOOP_NOSPLIT",
+        "auto",
+    ).strip().lower()
     cuda_self_loop_nosplit_enabled = (
-        os.environ.get("GPUREC_CUDA_SELF_LOOP_NOSPLIT", "0").strip().lower()
-        not in ("", "0", "false", "no", "off")
+        cuda_self_loop_nosplit_mode not in ("", "0", "false", "no", "off")
+    )
+    cuda_self_loop_nosplit_required = cuda_self_loop_nosplit_mode in (
+        "1",
+        "true",
+        "yes",
+        "on",
+        "force",
+        "required",
     )
     cuda_self_loop_nosplit_correction = os.environ.get(
         "GPUREC_CUDA_SELF_LOOP_NOSPLIT_CORRECTION",
@@ -354,47 +365,54 @@ def Pi_wave_backward(
         )
         self_loop_grads_accumulated = False
         if use_cuda_nosplit:
-            from .kernels.wave_backward_cuda import wave_backward_uniform_nosplit_cuda
+            try:
+                from .kernels.wave_backward_cuda import wave_backward_uniform_nosplit_cuda
 
-            v_k = wave_backward_uniform_nosplit_cuda(
-                Pi_star_wave,
-                Pibar_star_wave,
-                ws,
-                W,
-                S,
-                rhs_k,
-                mt_w,
-                DL_w,
-                Ebar_w,
-                E_w,
-                SL1_w,
-                SL2_w,
-                sp_child1_wave,
-                sp_child2_wave,
-                sp_parent_wave,
-                leaf_species_index_wave,
-                uniform_leaf_logp,
-                forward_pibar_row_max,
-                compact_level_ptr,
-                compact_level_parents,
-                compact_level_child1,
-                compact_level_child2,
-                (
-                    grad_log_pD[0],
-                    grad_log_pS[0],
-                    grad_E_acc[0],
-                    grad_Ebar_acc[0],
-                    grad_E_s1_acc[0],
-                    grad_E_s2_acc[0],
-                    grad_mt[0] if grad_mt.ndim == 2 else grad_mt,
-                ),
-                active_mask=active_mask,
-                neumann_terms=neumann_terms,
-                correction_mode=cuda_self_loop_nosplit_correction,
-            )
-            aw0 = aw1 = aw2 = aw345 = aw3 = aw4 = None
-            self_loop_grads_accumulated = True
-        else:
+                v_k = wave_backward_uniform_nosplit_cuda(
+                    Pi_star_wave,
+                    Pibar_star_wave,
+                    ws,
+                    W,
+                    S,
+                    rhs_k,
+                    mt_w,
+                    DL_w,
+                    Ebar_w,
+                    E_w,
+                    SL1_w,
+                    SL2_w,
+                    sp_child1_wave,
+                    sp_child2_wave,
+                    sp_parent_wave,
+                    leaf_species_index_wave,
+                    uniform_leaf_logp,
+                    forward_pibar_row_max,
+                    compact_level_ptr,
+                    compact_level_parents,
+                    compact_level_child1,
+                    compact_level_child2,
+                    (
+                        grad_log_pD[0],
+                        grad_log_pS[0],
+                        grad_E_acc[0],
+                        grad_Ebar_acc[0],
+                        grad_E_s1_acc[0],
+                        grad_E_s2_acc[0],
+                        grad_mt[0] if grad_mt.ndim == 2 else grad_mt,
+                    ),
+                    active_mask=active_mask,
+                    neumann_terms=neumann_terms,
+                    correction_mode=cuda_self_loop_nosplit_correction,
+                )
+                aw0 = aw1 = aw2 = aw345 = aw3 = aw4 = None
+                self_loop_grads_accumulated = True
+            except (ImportError, RuntimeError):
+                if cuda_self_loop_nosplit_required:
+                    raise
+                cuda_self_loop_nosplit_enabled = False
+                use_cuda_nosplit = False
+                self_loop_grads_accumulated = False
+        if not use_cuda_nosplit:
             v_k, aw0, aw1, aw2, aw345, aw3, aw4 = wave_backward_uniform_fused(
                 Pi_star_wave, Pibar_star_wave, ws, W, S,
                 dts_r, rhs_k,
