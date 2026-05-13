@@ -265,6 +265,36 @@ Nsight Compute on `NUM_WARPS=8 BLOCK_S=256` full-wave launches reports about
 launch helper.  Set the default `GPUREC_WAVE_STEP_NUM_WARPS` value to 8 and keep
 `BLOCK_S=256`.
 
+## Pibar From-UD Retuning Plan
+
+After the forward wave-step retune, `_uniform_cross_pibar_vjp_tree_from_ud_compact_kernel`
+is still about 0.106 s of GPU time.  It uses the same compact species-level
+tree reduction shape for every split side and currently hardcodes
+`BLOCK_S=256` and `num_warps=4`.
+
+Next experiment:
+
+- add diagnostic overrides for this Pibar-from-UD correction kernel;
+- test `GPUREC_PIBAR_UD_NUM_WARPS` in `{2, 4, 8}`;
+- test `GPUREC_PIBAR_UD_BLOCK_S` in `{128, 256, 512}`;
+- accept a default change only if warm whole-dataset timing improves and `nsys`
+  confirms the Pibar-from-UD bucket shrinks.
+
+Results:
+
+| setting | warm fwd+bwd | backward | `nsys` pass | Pibar-from-UD GPU time | conclusion |
+| --- | ---: | ---: | ---: | ---: | --- |
+| `NUM_WARPS=4 BLOCK_S=256` | 1.264 s | 0.936 s | 1.380 s | 0.1064 s | baseline |
+| `NUM_WARPS=2 BLOCK_S=256` | 1.270 s | 0.942 s | not run | not run | rejected |
+| `NUM_WARPS=8 BLOCK_S=256` | 1.262 s | 0.935 s | 1.386 s | 0.1041 s | rejected |
+| `NUM_WARPS=8 BLOCK_S=128` | 1.276 s | 0.948 s | not run | not run | rejected |
+| `NUM_WARPS=8 BLOCK_S=512` | 1.264 s | 0.936 s | not run | not run | tied baseline |
+
+The 8-warp variant shrank the target bucket, but the full `nsys` pass regressed
+and total GPU kernel time increased slightly (`1.1614 s -> 1.1624 s`).  Keep the
+default at `NUM_WARPS=4 BLOCK_S=256`; retain the environment overrides only for
+future diagnostics.
+
 ## Next Batch-Policy Plan
 
 Equal family chunks are a blunt proxy for active runtime tensor size.  HOGENOM

@@ -1823,7 +1823,18 @@ def uniform_cross_pibar_vjp_tree_from_ud_fused(
             else None
         )
 
-    BLOCK_S = min(256, triton.next_power_of_2(S))
+    pibar_ud_block_s_env = os.environ.get("GPUREC_PIBAR_UD_BLOCK_S")
+    if pibar_ud_block_s_env is None:
+        BLOCK_S = min(256, triton.next_power_of_2(S))
+    else:
+        BLOCK_S = min(
+            max(1, triton.next_power_of_2(int(pibar_ud_block_s_env))),
+            triton.next_power_of_2(S),
+        )
+    pibar_ud_num_warps = int(os.environ.get("GPUREC_PIBAR_UD_NUM_WARPS", "4"))
+    launch_options = {}
+    if pibar_ud_num_warps > 0:
+        launch_options["num_warps"] = pibar_ud_num_warps
     stride_C = Pi_star.stride(0)
     if side_active is not None:
         if side_active.numel() != 2 * n_ws:
@@ -1839,7 +1850,7 @@ def uniform_cross_pibar_vjp_tree_from_ud_fused(
             BLOCK_S,
             SIDE_ACTIVE_THRESHOLD_ENABLED=bool(side_active_threshold_enabled),
             DTYPE=_tl_float_dtype(Pi_star.dtype),
-            num_warps=4,
+            **launch_options,
         )
 
     if (
@@ -1878,6 +1889,6 @@ def uniform_cross_pibar_vjp_tree_from_ud_fused(
         USE_ACTIVE_MASK=bool(active_mask is not None),
         USE_SIDE_ACTIVE=bool(side_active is not None),
         DTYPE=_tl_float_dtype(Pi_star.dtype),
-        num_warps=4,
+        **launch_options,
     )
     return side_active
