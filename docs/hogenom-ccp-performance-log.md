@@ -2814,6 +2814,50 @@ split-count difference can plausibly explain.  Keep the validated
 `--chunk-size 0 --clade-budget 305000` high-performance option and do not add a
 new packing policy from this search.
 
+## DTS Parent Tile-Splits Retest Plan
+
+The no-family-cap 305k layout has larger split-bearing batches than the
+conservative 300-family layout, and the current `nsys` profiles still spend
+about `0.096 s` in `_dts_parent_reduced_ge2_stage1_kernel`.  The existing
+parent-reduced DTS retune picked `BLOCK_S=256` and `TILE_SPLITS=64` before the
+CUDA split/Pibar changes and before the 305k no-family-cap runtime layout was
+validated.
+
+Next experiment:
+
+- keep `--chunk-size 0 --clade-budget 305000 --batch-packing depth_first_fit
+  --max-wave-size 8192`;
+- run a narrow event screen for `GPUREC_DTS_PARENT_TILE_SPLITS` in `{32, 128}`
+  against the default 64;
+- do not retest broad launch-shape knobs unless this screen shows a clear
+  timing or memory signal;
+- run `nsys` only if a setting improves the whole-dataset median enough to
+  justify checking total GPU kernel time and the stage-1 bucket.
+
+Result: no default change.
+
+Event timing on the no-family-cap 305k layout:
+
+| `GPUREC_DTS_PARENT_TILE_SPLITS` | median fwd+bwd | median forward | median backward | peak alloc | peak reserved | decision |
+| ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| 64 / default | 0.7565 s | 0.3069 s | 0.4496 s | 5.675 GiB | 8.027 GiB | baseline |
+| 32 | 0.7371 s | 0.3073 s | 0.4303 s | 6.358 GiB | 9.457 GiB | `nsys` check; memory higher |
+| 128 | 0.7464 s | 0.3087 s | 0.4378 s | 5.630 GiB | 7.543 GiB | `nsys` check; memory lower |
+
+Nsight Systems validation:
+
+| tile splits | profiled pass | CUDA launches | GPU kernel time | DTS stage 1 | DTS stage 2 | DTS backward | decision |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| 64 / default | 0.7840 s | 13,624 | 0.7184 s | 0.0959 s | 0.0081 s | 0.1532 s | baseline |
+| 32 | 0.7820 s | 13,624 | 0.7164 s | 0.0961 s | 0.0094 s | 0.1504 s | reject default: tiny `nsys` win, +0.68 GiB alloc |
+| 128 | 0.7785 s | 13,624 | 0.7203 s | 0.0971 s | 0.0075 s | 0.1579 s | reject: GPU kernel time worse |
+
+The `32` setting looked strong in CUDA-event timing, but `nsys` shows only a
+small whole-GPU improvement and no improvement in the targeted parent-reduced
+stage-1 bucket.  The gain comes from neighboring-bucket movement and costs
+about `0.68 GiB` of peak allocation.  The `128` setting reduces memory, but
+total GPU kernel time regresses.  Keep `TILE_SPLITS=64`.
+
 ## Commands
 
 Warm whole-dataset stream timing, conservative memory layout:
