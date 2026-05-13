@@ -1188,6 +1188,29 @@ Plan:
 - only prototype another 2D `J^T` change if NCU identifies a concrete source of
   remaining overhead; otherwise move to the next profiler bucket.
 
+NCU result for
+`profiling/hogenom_ccp/ncu_jt_current_after_scratch_skip1218.ncu-rep`:
+
+- launch shape: grid 8192, block 64, duration 440.10 us;
+- registers/thread: 255; local spilling requests: 1,179,648;
+- theoretical occupancy: 16.67%; achieved occupancy: 16.26%;
+- DRAM throughput: 87.10%; L2 throughput: 65.95%; L2 hit rate: 65.56%;
+- compute throughput: 26.45%; issue slots busy: 17.18%;
+- branch efficiency: 100%.
+
+Diagnosis: the inactive scratch-zero skip reduced total Jt time by avoiding
+unnecessary stores, but the remaining Jt kernel is still the same full-row 2D
+strategy: one program owns a whole species row, carries a very wide live vector,
+spills to local memory, and is occupancy-limited by registers.  The profiler
+does not point to another launch-shape knob; earlier `BLOCK_W`, `BLOCK_NODES`,
+and `JT_NUM_WARPS` sweeps already rejected those.  A meaningful Jt improvement
+would need a different algorithm, likely staged level kernels or a CUDA split
+path, and must be weighed against extra launches and prior staged-tree results.
+
+Next concrete target should therefore be a different profiler bucket unless we
+are ready to prototype a broader replacement for the retained 2D split-wave
+path.
+
 ## Commands
 
 Warm whole-dataset stream timing:
