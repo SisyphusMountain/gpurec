@@ -2635,6 +2635,59 @@ reserved memory rises to about `11.0 GiB`.  Keep the 300-family cap for
 memory-conservative runs; use `--chunk-size 0` when runtime is prioritized and
 the larger CUDA reservation is acceptable.
 
+## No-Family-Cap Clade-Budget Knee Search Plan
+
+The no-family-cap `315000` layout improves runtime but increases peak reserved
+memory substantially.  Before treating that as the only high-performance
+scheduling option, look for a nearby clade-budget knee:
+
+- keep `family_chunk_size=0` and `batch_packing=depth_first_fit`;
+- sweep clade budgets below `315000` with metadata only first;
+- record batch count, total waves, max clades, max splits, and max DTS partial
+  rows;
+- benchmark only layouts that retain most of the 240-wave improvement while
+  reducing max active batch size;
+- require event timing and, for any promoted candidate, `nsys` confirmation.
+
+Metadata sweep:
+
+| clade budget | batches | total waves | max clades | max splits | max DTS partial rows |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 260,000 | 4 | 261 | 259,972 | 707,510 | 53,583 |
+| 275,000 | 4 | 255 | 274,985 | 739,740 | 53,583 |
+| 290,000 | 4 | 251 | 289,974 | 788,865 | 56,916 |
+| 300,000 | 4 | 247 | 299,948 | 824,740 | 57,052 |
+| 305,000 | 4 | 245 | 304,913 | 841,056 | 57,052 |
+| 310,000 | 4 | 243 | 309,998 | 859,025 | 57,052 |
+| 315,000 | 4 | 240 | 314,585 | 873,723 | 85,464 |
+
+Event timing:
+
+| clade budget | waves | median fwd+bwd | median forward | median backward | peak alloc | peak reserved |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 300,000 | 247 | 0.7443 s | 0.3056 s | 0.4388 s | 5.489 GiB | 10.309 GiB |
+| 305,000 | 245 | 0.7435 s | 0.3056 s | 0.4379 s | 5.675 GiB | 8.027 GiB |
+| 310,000 | 243 | 0.7406 s | 0.3070 s | 0.4341 s | 5.843 GiB | 8.027 GiB |
+| 315,000 | 240 | 0.7456 s | 0.3079 s | 0.4377 s | 5.980 GiB | 10.994 GiB |
+
+Nsight Systems validation:
+
+| layout | waves | profiled pass | CUDA launches | GPU kernel time | DTS backward | CUDA self-loop |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 300-family cap / 315k | 258 | 0.8050 s | 15,606 | 0.7305 s | 0.1572 s | 0.1030 s |
+| no family cap / 315k | 240 | 0.7869 s | 13,464 | 0.7239 s | 0.1508 s | 0.1063 s |
+| no family cap / 310k | 243 | 0.8000 s | 13,560 | 0.7425 s | 0.1784 s | 0.0987 s |
+| no family cap / 305k | 245 | 0.7840 s | 13,624 | 0.7184 s | 0.1532 s | 0.0992 s |
+
+Result: the `305000` no-family-cap layout is the best validated
+speed/memory knee.  The `310000` layout had the best five-run event median, but
+`nsys` rejected it because DTS backward jumped to `0.1784 s` and total GPU
+kernel time regressed.  The `300000` layout has lower peak allocation but worse
+reserved memory and no timing advantage over 305k.  Keep the 300-family cap as
+the conservative memory-default recommendation; use
+`--chunk-size 0 --clade-budget 305000` as the best validated higher-memory
+runtime option under the current CUDA Pibar default.
+
 ## Commands
 
 Warm whole-dataset stream timing:
