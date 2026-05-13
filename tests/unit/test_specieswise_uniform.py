@@ -16,6 +16,7 @@ from gpurec.core.likelihood import (
     compute_log_likelihood,
     compute_log_likelihood_root_rows,
 )
+from gpurec.core.log2_utils import logsumexp2
 from gpurec.core.species import species_wave_topology
 
 
@@ -310,6 +311,84 @@ def test_specieswise_uniform_forward_optimized_matches_reference(data_dir_100, m
         opt_out["Pibar_wave_ordered"],
         ref_out["Pibar_wave_ordered"],
         atol=1e-4,
+        rtol=1e-5,
+    )
+
+
+@pytest.mark.gpu
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+def test_gpu_logsumexp_traces_match_final_values(data_dir_100):
+    """Opt-in convergence traces stay on GPU and match final E/root rows."""
+    device = torch.device("cuda")
+    dtype = torch.float32
+    genes = _genes(data_dir_100, 2)
+    model = GeneReconModel.from_trees(
+        str(data_dir_100 / "sp.nwk"),
+        genes,
+        mode="genewise",
+        device=device,
+        dtype=dtype,
+        theta_init_rates=(0.05, 0.05, 0.05),
+        fixed_iters_E=4,
+        fixed_iters_Pi=4,
+        neumann_terms=2,
+        use_pruning=False,
+        preprocess_cache_dir="/tmp/gpurec_preprocess_cache",
+    )
+    static = model.static
+    log_pS, log_pD, log_pL, max_transfer_vec = _extract_parameters(
+        model.theta.detach(),
+        static,
+    )
+
+    E_out = E_fixed_point(
+        species_helpers=static.species_helpers,
+        log_pS=log_pS,
+        log_pD=log_pD,
+        log_pL=log_pL,
+        max_transfer_mat=max_transfer_vec,
+        max_iters=static.fixed_iters_E,
+        tolerance=-1.0,
+        warm_start_E=None,
+        dtype=static.dtype,
+        device=static.device,
+        ancestors_T=static.ancestors_T,
+        trace_logsumexp=True,
+    )
+    Pi_out = Pi_wave_forward(
+        wave_layout=static.wave_layout,
+        species_helpers=static.species_helpers,
+        E=E_out["E"],
+        Ebar=E_out["E_bar"],
+        E_s1=E_out["E_s1"],
+        E_s2=E_out["E_s2"],
+        log_pS=log_pS,
+        log_pD=log_pD,
+        max_transfer_mat=max_transfer_vec,
+        device=static.device,
+        dtype=static.dtype,
+        fixed_iters=static.fixed_iters_Pi,
+        return_original=False,
+        return_root_rows=True,
+        family_idx=static.wave_layout["family_idx"],
+        trace_root_logsumexp=True,
+    )
+    torch.cuda.synchronize()
+
+    assert E_out["E_logsumexp_trace"].device.type == "cuda"
+    assert Pi_out["root_logsumexp_trace"].device.type == "cuda"
+    assert E_out["E_logsumexp_trace"].shape == (4, len(genes))
+    assert Pi_out["root_logsumexp_trace"].shape == (4, len(genes))
+    torch.testing.assert_close(
+        E_out["E_logsumexp_trace"][-1],
+        logsumexp2(E_out["E"], dim=-1),
+        atol=1e-5,
+        rtol=1e-5,
+    )
+    torch.testing.assert_close(
+        Pi_out["root_logsumexp_trace"][-1],
+        logsumexp2(Pi_out["Pi_root_rows"], dim=-1),
+        atol=1e-5,
         rtol=1e-5,
     )
 

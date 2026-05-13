@@ -9,6 +9,7 @@ from .kernels.wave_step import (
 from .kernels.dts_fused import dts_fused_parent_reduced
 from ._helpers import _nvtx_range
 from .extract_parameters import as_family_param, as_family_species
+from .log2_utils import logsumexp2
 from .species import species_wave_topology
 
 NEG_INF = float("-inf")
@@ -67,6 +68,7 @@ def Pi_wave_forward(
     return_original: bool = True,
     return_root_rows: bool = False,
     progress_callback=None,
+    trace_root_logsumexp: bool = False,
 ):
     """Wave-based Pi forward pass with wave-ordered layout (v2).
 
@@ -89,6 +91,9 @@ def Pi_wave_forward(
                           ``Pi_root_rows`` and drop the full wave-ordered Pi
                           reference from the output. This is for inference-only
                           likelihood callers and skips saved Pibar state.
+        trace_root_logsumexp: if True, record a GPU-resident
+                              ``[fixed_iters, n_roots]`` trace of base-2
+                              logsumexp values for root rows.
 
     Returns:
         dict with 'Pi' (in original clade order when requested),
@@ -183,12 +188,38 @@ def Pi_wave_forward(
         wave_consts = (DL_const, SL1_const, SL2_const, Ebar, E, mt_squeezed)
 
     root_clade_ids_for_skip = None
-    if not return_saved_state:
+    if not return_saved_state or trace_root_logsumexp:
         root_clade_ids_for_skip = wave_layout.get('root_clade_ids_cpu')
         if root_clade_ids_for_skip is None:
             root_clade_ids_for_skip = [
                 int(r) for r in wave_layout['root_clade_ids'].detach().cpu().tolist()
             ]
+
+    root_logsumexp_trace = None
+    roots_by_wave = None
+    if trace_root_logsumexp:
+        root_ids = wave_layout['root_clade_ids'].to(device=device, dtype=torch.long)
+        root_logsumexp_trace = torch.full(
+            (fixed_iters, root_ids.numel()),
+            NEG_INF,
+            dtype=dtype,
+            device=device,
+        )
+        roots_by_wave = [None] * len(wave_metas)
+        if root_clade_ids_for_skip is None:
+            raise RuntimeError("root clade ids are required for root logsumexp tracing")
+        for wave_index, meta in enumerate(wave_metas):
+            ws = meta['start']
+            we = meta['end']
+            family_positions = [
+                family_pos
+                for family_pos, root_id in enumerate(root_clade_ids_for_skip)
+                if ws <= root_id < we
+            ]
+            if family_positions:
+                pos = torch.tensor(family_positions, dtype=torch.long, device=device)
+                rows = root_ids[pos]
+                roots_by_wave[wave_index] = (rows, pos)
 
     def _can_skip_final_pibar(ws: int, we: int, W: int) -> bool:
         if root_clade_ids_for_skip is None:
@@ -229,6 +260,14 @@ def Pi_wave_forward(
                 family_idx=family_idx if batched else None,
                 family_indexed_consts=batched,
             )
+            if root_logsumexp_trace is not None:
+                root_entry = roots_by_wave[wave_index]
+                if root_entry is not None:
+                    root_rows, root_positions = root_entry
+                    root_logsumexp_trace[local_iter, root_positions] = logsumexp2(
+                        pi_out[root_rows],
+                        dim=-1,
+                    )
             _progress("pi_iter", wave_index, local_iter + 1, meta)
             if local_iter == fixed_iters - 1 and not _can_skip_final_pibar(ws, we, W):
                 wave_pibar_uniform_parent_fused(
@@ -281,4 +320,5 @@ def Pi_wave_forward(
         'Pi_wave_ordered': Pi_wave_ordered,
         'Pibar_wave_ordered': Pibar if return_saved_state else None,
         'uniform_pibar_row_max': uniform_pibar_row_max if return_saved_state else None,
+        'root_logsumexp_trace': root_logsumexp_trace,
     }

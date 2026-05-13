@@ -103,7 +103,8 @@ def E_fixed_point(species_helpers,
                           dtype,
                           device,
                           ancestors_T=None,
-                          progress_callback=None):
+                          progress_callback=None,
+                          trace_logsumexp: bool = False):
 
     S = species_helpers['S']
 
@@ -132,6 +133,10 @@ def E_fixed_point(species_helpers,
             E = torch.full((N, S), -1.0, dtype=dtype, device=device)  # log2(0.5)
     E_s1 = torch.full_like(E, NEG_INF)
     E_s2 = torch.full_like(E, NEG_INF)
+    E_logsumexp_trace = None
+    if trace_logsumexp:
+        trace_shape = (max_iters,) if E.ndim == 1 else (max_iters, E.shape[0])
+        E_logsumexp_trace = torch.empty(trace_shape, dtype=dtype, device=device)
 
     converged_iter = max_iters
     # Group the entire fixed-point solve under a single NVTX range
@@ -158,6 +163,9 @@ def E_fixed_point(species_helpers,
                     # callers pass a negative tolerance and avoid this sync.
                     max_diff = torch.abs(E_new - E).max().item()
                     converged = max_diff < tolerance
+
+                if E_logsumexp_trace is not None:
+                    E_logsumexp_trace[iteration].copy_(logsumexp2(E_new, dim=-1))
                 
                 E = E_new
 
@@ -173,7 +181,11 @@ def E_fixed_point(species_helpers,
         'iterations': converged_iter,
         'E_s1': E_s1,
         'E_s2': E_s2,
-        'E_bar': E_bar
+        'E_bar': E_bar,
+        'E_logsumexp_trace': (
+            None if E_logsumexp_trace is None
+            else E_logsumexp_trace[:converged_iter]
+        ),
         }
 
 
