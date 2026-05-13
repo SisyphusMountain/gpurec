@@ -1117,6 +1117,28 @@ writes in inactive DTS split rows.  The Pibar-from-UD bucket remains stable
 (`0.1071 s -> 0.1068 s`), so the skipped rows are correctly handled by the
 existing side-active mask.
 
+## 2D Self-Loop Inactive Scratch-Zero Plan
+
+The DTS inactive-row skip shows that zero-filling masked rows is a real
+backward cost.  The retained 2D self-loop path has a similar pattern: the
+precompute and `J^T` kernels use the active mask for computation, but still
+write zeros into temporary scratch rows for inactive clades.  Those scratch
+rows are not read by later 2D work because every later load is also guarded by
+the active mask.  The final parameter-store kernel is different: its per-element
+parameter output arrays are reduced across all rows, so inactive parameter rows
+must remain explicitly zero.
+
+Next experiment:
+
+- add an environment-controlled default-on skip for inactive scratch zero fills
+  in `_wave_backward_uniform_2d_precompute_kernel` and
+  `_wave_backward_uniform_2d_jt_kernel`;
+- do not change `_wave_backward_uniform_param_store_kernel`;
+- verify targeted parity tests and HOGENOM loss/gradient;
+- compare default skip against `GPUREC_SELF_LOOP_2D_SKIP_INACTIVE_SCRATCH_ZERO=0`;
+- accept only if `nsys` confirms the 2D precompute/`J^T` buckets or total GPU
+  kernel time shrink.
+
 ## Commands
 
 Warm whole-dataset stream timing:
