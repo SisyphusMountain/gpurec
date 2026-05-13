@@ -455,6 +455,61 @@ larger waves can simply trade fewer launches for heavier DTS and Pibar work.
 The next kernel-side target is still the retained 2D self-loop backward path
 and its parameter-gradient/reduction overhead.
 
+## 2D Backward Alternative Survey Plan
+
+The accepted HOGENOM scheduling policy still spends about 0.265 s in
+`_wave_backward_uniform_2d_jt_kernel`, 0.066 s in its precompute kernel,
+0.049 s in parameter-store, and about 0.054 s in PyTorch reductions.  Before
+rewriting that path, inspect `main` and archived docs for the older non-2D /
+no-split / staged alternatives:
+
+- grep `main` docs and kernels for `2D`, `nosplit`, `staged`, and
+  self-loop backward variants;
+- identify which alternatives still match the current uniform resident layout
+  and which are obsolete because they assume removed metadata;
+- prototype only an opt-in path that can be benchmarked against the current
+  retained 2D path with identical likelihood/gradient tests;
+- reject any alternative that loses the current 1.247 s HOGENOM stream timing
+  or materially worsens the 5-6 GiB memory target.
+
+Survey outcome:
+
+- The exact CUDA no-split kernel in `main` is implementation-ready but was
+  routed only for global/shared no-split waves with scalar D/S parameter
+  gradients.  HOGENOM specieswise rates use species-vector D/S gradients, so
+  adopting that path would require a new gradient layout in the CUDA kernel and
+  would only affect leaf/no-split waves.
+- The staged tree prototype exists in `main`, but the archived timings reject
+  it versus Proposal 0 2D in its current form.
+- Proposal 0 2D remains the fastest documented broad self-loop strategy, but
+  it returns full per-element parameter VJPs.  In the current HOGENOM `nsys`
+  report, parameter-store plus PyTorch reductions account for about 0.103 s of
+  GPU kernel time.
+
+Next experiment: add an opt-in 2D parameter-accumulation path for the
+auto-wrapped shared/specieswise layout.  It should keep the existing 2D
+precompute and `J^T` kernels, but replace the final per-element parameter-store
+outputs and host-side PyTorch reductions with a Triton atomic accumulation
+kernel.  This is narrower than porting the CUDA no-split path and directly
+targets overhead visible in the current HOGENOM profile.  Accept it only if
+the targeted parity suite passes and warm HOGENOM timing improves under
+`nsys`/event timing.
+
+Result: rejected and removed.  The opt-in prototype passed the targeted parity
+suite, but warm HOGENOM timing regressed:
+
+| setting | warm fwd+bwd | backward | peak alloc | `nsys` pass | GPU kernel time |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| depth first-fit 315k baseline | 1.247 s | 0.927 s | 5.90 GiB | 1.343 s | 1.143 s |
+| 2D param accumulation prototype | 1.267 s | 0.948 s | 5.78 GiB | 1.429 s | 1.223 s |
+
+Nsight Systems showed why: `_wave_backward_uniform_param_accum_kernel` cost
+0.193 s, replacing `_wave_backward_uniform_param_store_kernel` at 0.049 s plus
+PyTorch reductions at 0.054 s.  The atomic accumulation path saved some memory
+and launch count, but the atomics were much slower than storing row
+contributions and reducing them with PyTorch.  Do not revive this approach
+unless it uses a staged reduction rather than per-row atomics.
+
 ## DTS Accumulation Plan
 
 The current tuned chunk-300 profile still spends about 0.179 s of GPU time in
