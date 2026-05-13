@@ -2915,6 +2915,61 @@ backward and CUDA self-loop buckets moved up in the profiled pass.  Since the
 acceptance gate is whole-pass `nsys` improvement, remove the code and keep the
 current one-iteration kernel.
 
+## Current No-Family-Cap Wave-Step NCU Plan
+
+The rejected multi-iteration prototype showed that launch consolidation can
+reduce the wave-step bucket locally, but not enough to improve the whole pass.
+Before attempting any other forward rewrite, refresh Nsight Compute on the
+current best no-family-cap 305k layout rather than relying only on the older
+conservative-layout wave-step NCU.
+
+The largest `_wave_step_uniform_kernel` launch in
+`nsys_stream_depthff305_nofam_cuda_pibar.sqlite` is match index 29, about
+`0.448 ms` with grid 8192.  Capture that launch and inspect occupancy,
+registers, spills, memory throughput, branch efficiency, and scheduler stalls.
+Only prototype another wave-step change if NCU points to a concrete bottleneck
+not already covered by previous launch-shape, final-Pibar, and multi-iteration
+experiments.
+
+NCU result for
+`profiling/hogenom_ccp/ncu_wave_step_nofam305_launch29.ncu-rep`:
+
+- grid 8192, block size 256, 40 registers/thread, no local-memory spilling;
+- duration 280.70 us under NCU, versus about 0.448 ms in the `nsys` trace;
+- 100% theoretical occupancy and 92.63% achieved occupancy;
+- 88.17% compute throughput and 88.17% memory throughput;
+- 89.06% L1/TEX throughput, 39.44% DRAM throughput, 19.75% L2 throughput;
+- 64.26% issue active, 98.91% branch efficiency;
+- NCU reports 23.8M excessive global-memory sectors, 27% of total sectors.
+
+This does not look like a wave-count or occupancy problem for the forward
+wave-step kernel.  The kernel is already full-width, highly occupied, and close
+to the balanced compute/memory roof for this launch.  The concrete remaining
+signal is memory coalescing inside the row program, but earlier launch-shape and
+multi-iteration experiments did not produce a whole-pass `nsys` win.
+
+## Current Scheduling Audit
+
+The user-proposed policy is the one currently implemented in the resident batch
+scheduler: process all split-count-zero leaf clades first, then schedule every
+remaining clade in the resident batch as one global capacity-constrained DAG
+with `max_wave_size=8192`.
+
+A fresh metadata audit on the HOGENOM CCP cache shows the current HOGENOM
+layouts are not leaving avoidable waves inside a batch:
+
+| layout | waves by batch | lower bound by batch | total waves | total lower bound |
+| --- | --- | --- | ---: | ---: |
+| no family cap, `clade_budget=305000` | `[102, 64, 51, 28]` | `[102, 64, 51, 28]` | 245 | 245 |
+| chunk 300, `clade_budget=315000` | `[102, 65, 48, 30, 13]` | `[102, 65, 48, 30, 13]` | 258 | 258 |
+
+For these layouts, the lower bound is
+`ceil(leaves / 8192) + max(critical_depth, ceil(nonleaves / 8192))` per batch.
+Since every batch reaches that bound, further wave-count reduction under the
+same leaf-first constraint would require changing batch composition, increasing
+`max_wave_size`, or changing the computation model, not another within-batch DAG
+ordering.
+
 ## Commands
 
 Warm whole-dataset stream timing, conservative memory layout:
