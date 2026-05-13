@@ -610,6 +610,25 @@ Nsight Systems run measured 1.495 s under profiler overhead and
 `nsys` report at 1.471 s / 0.179 s.  Keep 128 as the default; retain the
 environment override only for future diagnostics.
 
+Retest after depth-aware packing and the no-host-pruning fast path:
+
+| `GPUREC_DTS_GRAD_MT_TILE_SPLITS` | event median fwd+bwd | median forward | median backward | peak alloc | decision |
+| ---: | ---: | ---: | ---: | ---: | --- |
+| 32 | 1.2504 s | 0.3191 s | 0.9307 s | 5.904 GiB | rejected |
+| 64 | 1.2465 s | 0.3179 s | 0.9284 s | 5.904 GiB | tied |
+| 128 | 1.2468 s | 0.3197 s | 0.9276 s | 5.904 GiB | current default |
+| 256 | 1.2426 s | 0.3192 s | 0.9235 s | 5.904 GiB | rejected after `nsys` |
+| 512 | 1.2447 s | 0.3183 s | 0.9265 s | 5.904 GiB | rejected |
+
+The 256 retest again looked better in event timings, but Nsight Systems still
+did not confirm a GPU-time win.  The report
+`profiling/hogenom_ccp/nsys_stream_depthff315_dtsgradmt256.nsys-rep` measured
+1.347 s profiled, 48,030 CUDA kernel launches, and 1.145 s of GPU kernel time;
+the accepted depth-first 315k baseline measured 1.343 s profiled, 48,030
+launches, and 1.143 s GPU kernel time.  `_dts_cross_backward_accum_kernel`
+measured 0.167 s at tile 256 versus 0.166 s in the baseline.  Keep the tile
+default at 128.
+
 Next DTS experiment: reduce the Triton species block size for
 `_dts_cross_backward_accum_kernel`.  The current block size is 256 species,
 which NCU reports at 96 registers/thread and only 41.7% theoretical occupancy.
