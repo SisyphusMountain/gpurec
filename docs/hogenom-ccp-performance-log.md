@@ -1448,6 +1448,32 @@ Correctness and HOGENOM check:
 - loss and gradient match the existing run: loss 667283.5625 bits, gradient
   infinity norm about 645.922.
 
+## CUDA Split-Wave Self-Loop Prototype Plan
+
+The deadline scheduler check confirms that the accepted HOGENOM batches already
+hit the leaf-first wave-count lower bound.  The next scheduling-adjacent
+overhead is therefore inside each split-bearing wave: split waves still use the
+retained Triton 2D self-loop path, which launches precompute, one `J^T` kernel
+per Neumann term, a parameter-store kernel, and follow-up reductions.  The CUDA
+no-split path already avoids that scratch-heavy sequence for no-split waves by
+doing the row-local self-loop solve and shared/specieswise gradient
+accumulation in one launch per wave.
+
+Next prototype:
+
+- extend the opt-in CUDA row kernel to accept an optional split-side `dts_r`
+  matrix;
+- compute the left-side mixture weight
+  `w_L = exp2(dts_l - logaddexp2(dts_l, dts_r))` inside the CUDA weights helper;
+- multiply the self-loop diagonal, Pibar coefficient, speciation weights, and
+  DTL parameter adjoints by `w_L`, matching the retained 2D Triton formulas;
+- route only auto-wrapped shared/specieswise fp32 CUDA waves with compact
+  species levels available;
+- keep the existing Triton 2D path as the fallback and make split CUDA
+  separately controlled by `GPUREC_CUDA_SELF_LOOP_SPLIT`;
+- verify with the targeted parity suite forced on/off, then benchmark HOGENOM
+  and run `nsys` only if the event timing improves.
+
 ## Commands
 
 Warm whole-dataset stream timing:
