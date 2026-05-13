@@ -1211,6 +1211,32 @@ Next concrete target should therefore be a different profiler bucket unless we
 are ready to prototype a broader replacement for the retained 2D split-wave
 path.
 
+## Self-Loop Gradient Reduction Reuse Plan
+
+The current accepted `nsys` profile still shows the self-loop parameter-store
+kernel at about 0.044 s and PyTorch reduction kernels at about 0.050 s.  The
+2D parameter-accumulation prototype was rejected because per-row atomics were
+slower than store-plus-reduce, so do not revive that path.  There is, however,
+a narrower Python-side redundancy in the specieswise auto-wrapped path:
+
+- `grad_log_pD` reduces `aw0.sum(dim=0)`;
+- `grad_max_transfer_mat` reduces `aw2.sum(dim=0)`;
+- `grad_E` currently reduces `(aw0 + aw2).sum(dim=0)`, which materializes a
+  full `[W, S]` add and launches another full reduction even though the needed
+  two row sums are already available.
+
+Next experiment:
+
+- add a narrow `G == 1`, vector-parameter fast path that computes
+  `aw0_sum = aw0.sum(dim=0)` and `aw2_sum = aw2.sum(dim=0)` once and reuses
+  them for `grad_log_pD`, `grad_max_transfer_mat`, and `grad_E`;
+- leave genewise/family-indexed and scalar-global behavior on the existing
+  `_scatter_accum` path;
+- verify targeted parity tests;
+- benchmark HOGENOM event timing and profile with `nsys`;
+- accept only if the PyTorch add/reduction bucket or total GPU kernel time
+  shrinks without changing likelihood/gradient.
+
 ## Commands
 
 Warm whole-dataset stream timing:
