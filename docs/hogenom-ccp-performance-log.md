@@ -3055,6 +3055,40 @@ and larger compiled row program are much worse than the original dependent
 parent walk.  Since the event median regressed by about `52.7 ms`, do not run
 `nsys` and do not keep the opt-in code.
 
+## No-Family DTS Parent Block Retest Plan
+
+The current no-family-cap 305k `nsys` trace is still GPU-kernel dominated:
+`0.718 s` of GPU kernel time inside a `0.784 s` measured pass.  The largest
+remaining forward-side non-wave-step bucket is
+`_dts_parent_reduced_ge2_stage1_kernel`, about `0.096 s` over 456 launches.
+
+The parent-reduced DTS block-size retune picked `GPUREC_DTS_PARENT_BLOCK_S=256`
+on an older conservative layout.  The no-family-cap layout has different wave
+composition and fewer batches, so retest only this existing diagnostic knob
+before considering any structural DTS parent rewrite:
+
+- baseline: current default `BLOCK_S=256`;
+- `GPUREC_DTS_PARENT_BLOCK_S=128`;
+- `GPUREC_DTS_PARENT_BLOCK_S=512`.
+
+Use the no-family-cap 305k HOGENOM stream timing with one warmup and five
+measured runs.  Run `nsys` only if one setting clearly improves whole-pass event
+time, then verify that the parent stage-1 bucket and total GPU kernel time
+actually shrink.
+
+Result: rejected; keep `GPUREC_DTS_PARENT_BLOCK_S=256`.
+
+| setting | median fwd+bwd | median forward | median backward | peak alloc | peak reserved | decision |
+| --- | ---: | ---: | ---: | ---: | ---: | --- |
+| default `BLOCK_S=256` | 0.7386 s | 0.3059 s | 0.4331 s | 5.675 GiB | 8.027 GiB | baseline |
+| `GPUREC_DTS_PARENT_BLOCK_S=128` | 0.7510 s | 0.3100 s | 0.4417 s | 5.675 GiB | 8.027 GiB | reject |
+| `GPUREC_DTS_PARENT_BLOCK_S=512` | 0.7516 s | 0.3067 s | 0.4452 s | 5.675 GiB | 8.027 GiB | reject |
+
+The alternate block sizes also have very expensive first-specialization warmups
+in this run (`85.8 s` for 128 and `108.4 s` for 512 forward+backward warmup),
+while their steady measured passes remain slower than the default.  Since the
+event screen did not improve, do not run `nsys` and do not change the default.
+
 ## Commands
 
 Warm whole-dataset stream timing, conservative memory layout:
