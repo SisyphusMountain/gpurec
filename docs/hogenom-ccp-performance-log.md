@@ -535,6 +535,47 @@ that cap, the next scheduling knob is the cap itself:
   allocation outside the 5-6 GiB target or if whole-dataset timing regresses;
 - profile any apparent win with Nsight Systems before promoting it.
 
+Follow-up experiment after adding the scheduler compaction guard:
+
+- rerun event timings for the current accepted setting
+  `depth_first_fit, clade_budget=315000, max_wave_size=8192`;
+- rerun candidate caps 12288 and 16384 with the same warm cache and
+  `GPUREC_BACKWARD_NO_CPU_PRUNING=1`;
+- accept a larger cap only if the median full-stream forward+backward improves
+  by more than run-to-run noise, the peak allocation remains acceptable for the
+  5-6 GiB lean target, and an `nsys` pass shows the improvement is not just
+  shifted into larger DTS/Pibar kernels;
+- if the larger cap is only marginally faster but crosses the memory target,
+  keep 8192 as the default and record the larger cap as an opt-in borderline
+  speed/memory tradeoff.
+
+Wave-cap sweep result:
+
+| `max_wave_size` | waves by batch | total waves | event median fwd+bwd | median forward | median backward | peak alloc | peak reserved | decision |
+| ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| 8192 | `[102, 65, 48, 30, 13]` | 258 | 1.2468 s | 0.3197 s | 0.9276 s | 5.904 GiB | 7.234 GiB | keep lean default |
+| 12288 | `[101, 64, 47, 29, 13]` | 254 | 1.2530 s | 0.3194 s | 0.9335 s | 6.008 GiB | 6.656 GiB | rejected |
+| 16384 | `[100, 63, 47, 29, 13]` | 252 | 1.2407 s | 0.3191 s | 0.9214 s | 6.347 GiB | 6.770 GiB | not default; borderline opt-in |
+
+Nsight Systems for `max_wave_size=16384` produced
+`profiling/hogenom_ccp/nsys_stream_depthff315_wave16384.nsys-rep`.  The
+profiled pass took 1.355 s with 47,844 CUDA kernel launches and 1.148 s of GPU
+kernel time.  Compared with the accepted 8192-cap `nsys` report (48,030
+launches, 1.143 s GPU kernel time, 1.343 s profiled pass), the larger cap
+removes only 186 launches and shifts work into larger kernels:
+
+| kernel | 8192 total | 16384 total | note |
+| --- | ---: | ---: | --- |
+| `_wave_backward_uniform_2d_jt_kernel` | 0.265 s / 1548 launches | 0.264 s / 1512 launches | launch count slightly lower |
+| `_wave_step_uniform_kernel` | 0.192 s / 1548 launches | 0.193 s / 1512 launches | no real improvement |
+| `_dts_cross_backward_accum_kernel` | 0.166 s / 244 launches | 0.170 s / 244 launches | worse per launch |
+| `_uniform_cross_pibar_vjp_tree_from_ud_compact_kernel` | 0.107 s / 244 launches | 0.107 s / 244 launches | unchanged total |
+| `_wave_backward_uniform_2d_precompute_kernel` | 0.066 s / 258 launches | 0.067 s / 252 launches | unchanged total |
+
+Conclusion: keep `max_wave_size=8192` as the lean default.  `16384` can be an
+explicit speed/memory experiment because event timings were about 6 ms faster,
+but `nsys` does not show a GPU-time win and peak allocation rises to 6.35 GiB.
+
 ## DTS Accumulation Plan
 
 The current tuned chunk-300 profile still spends about 0.179 s of GPU time in
