@@ -2112,6 +2112,72 @@ non-trivial because the stream pass switches resident batches, allocates
 batch-local tensors, and uses autograd.  Do not pursue that before exhausting
 lower-risk GPU-kernel work; the dominant cost is still real kernel time.
 
+## Dense Runtime Fill Audit Plan
+
+The current prepared-origination `nsys` profile still has a PyTorch
+`FillFunctor<float>` bucket of about 0.0228 s over 1,809 launches.  A previous
+DTS-R output fill skip removed many fill launches but did not improve total GPU
+kernel time, so do not repeat that change blindly.  First identify whether any
+remaining large dense fills are provably redundant.
+
+Initial audit from
+`profiling/hogenom_ccp/nsys_stream_depthff315_prepared_orig.sqlite`:
+
+- 12 fill launches exceed 0.5 ms each;
+- the largest pairs occur around forward setup and line up with dense `Pi` and
+  `Pibar` initialization for large batches;
+- other large fills occur around backward setup and likely include dense
+  accumulated adjoint buffers;
+- the ten largest dense fills alone account for roughly 15-16 ms of GPU time.
+
+Next experiment:
+
+- inspect forward and backward consumers before changing code;
+- only replace a `torch.full`/`torch.zeros` with `empty` if every read is
+  guarded or every element is overwritten before use;
+- verify targeted model/chunked parity and HOGENOM loss/gradient before any
+  timing conclusion;
+- run whole-dataset event timing first, and only run `nsys` if the timing
+  suggests the removed fill launches also reduce total GPU kernel time.
+
+Forward `Pibar` initialization is the narrow candidate.  `Pi` must keep its
+`-inf` initialization because each wave's first self-loop iteration reads the
+current clade row as the fixed-point initial state.  `Pibar`, however, is first
+written as the ping-pong output for a wave before that wave reads it, and
+cross-clade DTS only reads child rows from earlier waves.  Final root-only
+waves may intentionally skip final Pibar storage, but those rows were already
+being treated as not needed by backward.  Test this as an opt-in
+`GPUREC_FORWARD_EMPTY_PIBAR_INIT=1` mode before considering a default change.
+
+Correctness with `GPUREC_FORWARD_EMPTY_PIBAR_INIT=1`:
+
+- targeted species/scheduler/model/chunked parity suite: 21 passed.
+
+Event timing:
+
+| setting | median fwd+bwd | median forward | median backward | peak alloc | loss / grad |
+| --- | ---: | ---: | ---: | ---: | --- |
+| default Pibar fill | 0.7790 s | 0.3090 s | 0.4700 s | 5.780 GiB | unchanged |
+| empty Pibar init | 0.7706 s | 0.3024 s | 0.4683 s | 5.780 GiB | unchanged |
+
+Next validation: run `nsys` for the empty-Pibar mode and accept it only if total
+GPU kernel time and the FillFunctor bucket shrink rather than merely shifting
+time elsewhere.
+
+Nsight Systems validation for
+`profiling/hogenom_ccp/nsys_stream_depthff315_empty_pibar.nsys-rep`:
+
+| setting | CUDA launches | GPU kernel time | FillFunctor bucket | wave-step bucket | DTS backward bucket | CUDA self-loop bucket | decision |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| default Pibar fill | 15,606 | 0.7457 s | 0.0228 s / 1,809 | 0.2128 s | 0.1540 s | 0.0994 s | baseline |
+| empty Pibar init | 15,601 | 0.7523 s | 0.0172 s / 1,804 | 0.2146 s | 0.1572 s | 0.1063 s | rejected |
+
+The opt-in path removes exactly the expected five large Pibar fill launches and
+shrinks the fill bucket by about 5.6 ms, but the main wave-step, DTS backward,
+and CUDA self-loop buckets all move up in the profiled pass.  Because total GPU
+kernel time regresses by about 6.7 ms, do not promote the change.  The code path
+was removed instead of kept as a diagnostic knob.
+
 ## Commands
 
 Warm whole-dataset stream timing:
