@@ -1904,6 +1904,44 @@ warps is unlikely to move the total pass much.  A real improvement would need a
 structural rewrite of how split-side rows are grouped or how child/parent rows
 are accessed, and should not be attempted without a more specific design.
 
+## DTS-R Output Fill Skip Plan
+
+The current prepared-origination profile still contains 1,809 PyTorch
+`FillFunctor<float>` launches, about 0.0228 s of GPU time.  One repeated source
+is `dts_fused_parent_reduced`, which allocates every DTS-R output as
+`torch.full((W, S), -inf)` before launching the eq1/ge2 parent-reduced kernels.
+
+For wave-ordered CCP batches, a wave with `meta["has_splits"]` should contain
+only non-leaf/root clades.  The layout metadata partitions all parent rows into
+exactly-one-split parents (`n_eq1`) and multi-split parents (`ge2_parent_ids`).
+If `n_eq1 + len(ge2_parent_ids) == W`, every output row is overwritten by the
+Triton kernels.  With pruning active, inactive eq1/ge2 rows are explicitly
+written as `-inf`, so the initial full-tensor fill is still redundant.
+
+Next experiment:
+
+- allocate DTS-R with `torch.empty` when parent coverage is complete;
+- keep the existing `-inf` fill fallback if a future layout has incomplete
+  coverage or a caller passes an output tensor that cannot be assumed complete;
+- verify targeted model/chunked tests;
+- benchmark the accepted HOGENOM stream pass;
+- run `nsys` only if event timing improves enough to check that FillFunctor
+  launches and total GPU kernel time decrease.
+
+Result: rejected.  Targeted correctness passed (19 tests) and event timing
+looked slightly better, but Nsight Systems did not confirm a real improvement.
+
+| setting | median fwd+bwd | CUDA launches | GPU kernel time | FillFunctor launches/time | decision |
+| --- | ---: | ---: | ---: | ---: | --- |
+| prepared-orig baseline | 0.7796 s | 15,606 | 0.7457 s | 1,809 / 0.0228 s | baseline |
+| DTS-R fill skip | 0.7766 s | 15,118 | 0.7524 s | 1,321 / 0.0178 s | rejected |
+
+The fill skip removed 488 fill launches and about 5 ms from the FillFunctor
+bucket, but profiler noise or allocator/cache effects moved more time into the
+main kernels (`_dts_cross_backward_accum_kernel` and the CUDA self-loop both
+rose in the profiled pass).  Since the acceptance criterion required lower
+total GPU kernel time, the code change was reverted.
+
 ## Commands
 
 Warm whole-dataset stream timing:
