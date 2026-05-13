@@ -283,6 +283,65 @@ event-timing improvement over the default 8-warps setting:
 | 8 | 1.2468-1.2531 s | 0.9276-0.9341 s | 5.904 GiB | keep default |
 | 16 | 1.2508 s | 0.9326 s | 5.904 GiB | rejected |
 
+## Current 2D Jt NCU Plan
+
+The accepted depth-first 315k profile still spends about 0.263-0.265 s in
+`_wave_backward_uniform_2d_jt_kernel`, making it the largest single kernel
+bucket.  Before changing that path again, refresh Nsight Compute on the current
+default layout because the scheduler, no-host-pruning default, and several
+launch-shape defaults have changed since the earlier representative NCU note.
+
+Plan:
+
+- run Nsight Compute on a representative `_wave_backward_uniform_2d_jt_kernel`
+  launch from the accepted HOGENOM layout;
+- capture occupancy, register count, memory throughput, DRAM throughput, and
+  stall/memory-pressure evidence;
+- only prototype another 2D-kernel change if NCU points to a concrete knob such
+  as row blocking, species blocking, or register pressure.  Otherwise continue
+  treating the 2D path as tuned and move to a different bucket.
+
+Initial NCU result:
+
+- `ncu_jt_current_depthff315_skip20.ncu-rep` captured a tail wave with grid 31
+  and was not representative.
+- `ncu_jt_current_depthff315_skip540.ncu-rep` captured a full wave with grid
+  8192 and block size 64.  Duration was 402.6 us for the profiled launch.
+- The kernel is memory-bound on the full wave: DRAM throughput 86.4%, L2
+  throughput 66.0%, SM throughput 28.9%.
+- It uses 255 registers/thread, giving only 16.7% theoretical occupancy and
+  16.0% achieved occupancy.
+- NCU reports 1.18M local spill instructions and 1.18M local-memory spill
+  requests for the launch, plus 53% excessive global sectors.
+
+Next experiment:
+
+- sweep existing Jt launch-shape knobs before rewriting the kernel:
+  `GPUREC_SELF_LOOP_2D_BLOCK_NODES` in `{32, 64, 128, 256}` and
+  `GPUREC_SELF_LOOP_2D_JT_NUM_WARPS` in `{1, 2, 4}`;
+- accept a setting only if warm whole-dataset forward+backward improves and a
+  follow-up NCU/`nsys` profile confirms reduced Jt cost or lower register/local
+  memory pressure;
+- if the knobs do not help, the next code-level target is reducing the amount
+  of per-program species-tree state kept live in `_wave_backward_uniform_2d_jt_kernel`.
+
+Sweep result:
+
+| setting | median fwd+bwd | median forward | median backward | peak alloc | decision |
+| --- | ---: | ---: | ---: | ---: | --- |
+| `GPUREC_SELF_LOOP_2D_BLOCK_NODES=32` | 1.2589 s | 0.3188 s | 0.9401 s | 5.904 GiB | rejected |
+| `GPUREC_SELF_LOOP_2D_BLOCK_NODES=64` | 1.2460 s | 0.3185 s | 0.9283 s | 5.904 GiB | tied |
+| `GPUREC_SELF_LOOP_2D_BLOCK_NODES=128` | 1.2466 s | 0.3193 s | 0.9274 s | 5.904 GiB | keep default |
+| `GPUREC_SELF_LOOP_2D_BLOCK_NODES=256` | 1.2549 s | 0.3201 s | 0.9348 s | 5.904 GiB | rejected |
+| `GPUREC_SELF_LOOP_2D_JT_NUM_WARPS=1` | 1.5681 s | 0.3176 s | 1.2506 s | 5.904 GiB | rejected |
+| `GPUREC_SELF_LOOP_2D_JT_NUM_WARPS=2` | 1.2448 s | 0.3203 s | 0.9242 s | 5.904 GiB | keep default |
+| `GPUREC_SELF_LOOP_2D_JT_NUM_WARPS=4` | 1.2491 s | 0.3197 s | 0.9299 s | 5.904 GiB | rejected |
+
+Conclusion: keep the current `BLOCK_NODES=128` and `JT_NUM_WARPS=2` defaults.
+The existing knobs do not remove the register/local-memory pressure shown by
+NCU.  Further Jt work should be a code-level reduction in live per-program
+state or memory traffic, not another launch-shape sweep.
+
 ## Post-Leaf DAG Scheduling Plan
 
 The current resident scheduler already runs a leaf-only phase first, then packs
