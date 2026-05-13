@@ -87,6 +87,23 @@ def test_global_scheduler_uses_reverse_compaction_when_forward_greedy_wastes_wav
     _assert_topological(waves, [0], items)
 
 
+def test_global_scheduler_uses_layered_compaction_when_ready_order_wastes_wave():
+    # The post-leaf graph has six non-leaf clades and cap=2, so three non-leaf
+    # waves are possible.  Forward and reverse ready-queue schedules both need
+    # four non-leaf waves on this DAG unless we assign clades by layered
+    # first-fit compaction.
+    parents = [0, 0, 0, 1, 1, 1, 2, 2, 2, 3, 3, 4, 6]
+    lefts = [7, 3, 3, 6, 7, 7, 6, 6, 4, 5, 5, 7, 7]
+    rights = [7, 6, 3, 4, 5, 6, 3, 4, 4, 5, 7, 7, 7]
+    items = [{"ccp": _ccp(8, parents, lefts, rights, root=0)}]
+
+    waves, phases = schedule_global_phased_waves(items, [0], max_wave_size=2)
+
+    assert waves == [[5, 7], [6, 4], [3, 1], [2, 0]]
+    assert phases == [1, 2, 2, 2]
+    _assert_topological(waves, [0], items)
+
+
 def test_global_scheduler_can_cap_dts_partial_rows_per_wave():
     parents = [0, 0, 0]
     lefts = [1, 3, 5]

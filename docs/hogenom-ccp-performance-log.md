@@ -283,6 +283,58 @@ event-timing improvement over the default 8-warps setting:
 | 8 | 1.2468-1.2531 s | 0.9276-0.9341 s | 5.904 GiB | keep default |
 | 16 | 1.2508 s | 0.9326 s | 5.904 GiB | rejected |
 
+## Post-Leaf DAG Scheduling Plan
+
+The current resident scheduler already runs a leaf-only phase first, then packs
+ready non-leaf clades from all families into capped waves.  That is the right
+dependency model, but the implementation is still a list-scheduling heuristic:
+it uses a forward ready queue and, only when the simple lower bound is missed, a
+reverse latest-valid compaction pass.  The user concern is valid: after the leaf
+phase this should be treated as a single capacity-constrained DAG layering
+problem, not as per-CCP waves.
+
+Next implementation step:
+
+- keep the leaf phase unchanged because leaves use different initialization;
+- build additional post-leaf schedule candidates over the full batch DAG;
+- add a Coffman-Graham-style candidate, because it is designed to layer a DAG
+  under a fixed width cap and should improve cases where ready-queue order
+  wastes slots;
+- choose the valid candidate with the fewest non-leaf waves, using the existing
+  forward and reverse schedules as fallbacks;
+- preserve the DTS partial-row guard as an optional secondary capacity
+  constraint;
+- accept only after topological/unit tests, resident parity tests, and a fresh
+  HOGENOM timing check.
+
+Implementation result:
+
+- added a Coffman-Graham-style layered compaction candidate for the post-leaf
+  non-leaf DAG;
+- the scheduler now compares forward ready-queue, reverse latest-valid, and
+  layered candidates when the forward schedule misses the simple lower bound;
+- added a unit regression where forward and reverse ready-queue schedules need
+  four non-leaf waves at cap 2, while the layered candidate reaches the feasible
+  three-wave schedule;
+- targeted scheduler/model parity tests pass.
+
+HOGENOM result for the accepted depth-first 315k / wave-cap 8192 layout:
+
+| batch | leaf clades | non-leaf clades | max depth | leaf waves | work lower bound | total lower bound | scheduled waves |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 0 | 27,830 | 287,155 | 98 | 4 | 36 | 102 | 102 |
+| 1 | 24,939 | 289,963 | 61 | 4 | 36 | 65 | 65 |
+| 2 | 23,300 | 250,598 | 45 | 3 | 31 | 48 | 48 |
+| 3 | 8,739 | 95,381 | 28 | 2 | 12 | 30 | 30 |
+| 4 | 1,783 | 13,425 | 12 | 1 | 2 | 13 | 13 |
+
+The HOGENOM wave counts are already equal to the lower bound
+`leaf_waves + max(max_depth, ceil(nonleaf_clades / 8192))`, so this scheduling
+change fixes non-optimal DAG layouts but does not reduce the accepted HOGENOM
+wave count.  A fresh stream timing run measured median forward+backward
+1.2477 s, median forward 0.3200 s, median backward 0.9283 s, and peak allocated
+5.904 GiB, matching the previous HOGENOM result within noise.
+
 ## Forward Wave-Step Retuning Plan
 
 With the latest no-host-pruning and 2D `J^T` defaults, the next largest kernel

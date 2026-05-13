@@ -414,6 +414,21 @@ def _clade_dts_partial_tiles(
     return (split_count + tile_splits - 1) // tile_splits
 
 
+def _dts_guard_allows_append(
+    *,
+    batch_nonempty: bool,
+    batch_ge2_groups: int,
+    batch_max_tiles: int,
+    candidate_tiles: int,
+    max_dts_partial_rows: int | None,
+) -> bool:
+    if max_dts_partial_rows is None or not batch_nonempty:
+        return True
+    new_ge2_groups = batch_ge2_groups + (1 if candidate_tiles > 0 else 0)
+    new_max_tiles = max(batch_max_tiles, candidate_tiles)
+    return new_ge2_groups * new_max_tiles <= max_dts_partial_rows
+
+
 def _schedule_forward_nonleaf_waves(
     families: Sequence[Dict[str, Any]],
     *,
@@ -467,19 +482,19 @@ def _schedule_forward_nonleaf_waves(
                 c,
                 tile_splits=dts_partial_tile_splits,
             )
-            new_ge2_groups = batch_ge2_groups + (1 if tiles > 0 else 0)
-            new_max_tiles = max(batch_max_tiles, tiles)
-            if (
-                max_dts_partial_rows is not None
-                and batch
-                and new_ge2_groups * new_max_tiles > max_dts_partial_rows
+            if not _dts_guard_allows_append(
+                batch_nonempty=bool(batch),
+                batch_ge2_groups=batch_ge2_groups,
+                batch_max_tiles=batch_max_tiles,
+                candidate_tiles=tiles,
+                max_dts_partial_rows=max_dts_partial_rows,
             ):
                 queued[fi][c] = True
                 deferred.append(entry)
                 continue
             batch.append((fi, c))
-            batch_ge2_groups = new_ge2_groups
-            batch_max_tiles = new_max_tiles
+            batch_ge2_groups += 1 if tiles > 0 else 0
+            batch_max_tiles = max(batch_max_tiles, tiles)
         for entry in deferred:
             heapq.heappush(ready, entry)
         if not batch:
@@ -561,19 +576,19 @@ def _schedule_reverse_compacted_nonleaf_waves(
                 c,
                 tile_splits=dts_partial_tile_splits,
             )
-            new_ge2_groups = batch_ge2_groups + (1 if tiles > 0 else 0)
-            new_max_tiles = max(batch_max_tiles, tiles)
-            if (
-                max_dts_partial_rows is not None
-                and batch
-                and new_ge2_groups * new_max_tiles > max_dts_partial_rows
+            if not _dts_guard_allows_append(
+                batch_nonempty=bool(batch),
+                batch_ge2_groups=batch_ge2_groups,
+                batch_max_tiles=batch_max_tiles,
+                candidate_tiles=tiles,
+                max_dts_partial_rows=max_dts_partial_rows,
             ):
                 queued[fi][c] = True
                 deferred.append(entry)
                 continue
             batch.append((fi, c))
-            batch_ge2_groups = new_ge2_groups
-            batch_max_tiles = new_max_tiles
+            batch_ge2_groups += 1 if tiles > 0 else 0
+            batch_max_tiles = max(batch_max_tiles, tiles)
         for entry in deferred:
             heapq.heappush(ready, entry)
         if not batch:
@@ -591,6 +606,147 @@ def _schedule_reverse_compacted_nonleaf_waves(
                     push_ready(fi, child)
 
     return list(reversed(reverse_batches))
+
+
+def _schedule_coffman_graham_nonleaf_waves(
+    families: Sequence[Dict[str, Any]],
+    *,
+    wave_cap: int,
+    max_dts_partial_rows: int | None,
+    dts_partial_tile_splits: int,
+) -> List[List[Tuple[int, int]]]:
+    """Layer the non-leaf DAG with a width cap using a CG-style ordering."""
+    labels = [[-1] * fam["C"] for fam in families]
+    successors_remaining: List[List[int]] = [
+        [0] * fam["C"]
+        for fam in families
+    ]
+    total_nonleaves = 0
+
+    for fi, fam in enumerate(families):
+        for c in range(fam["C"]):
+            if int(fam["split_counts"][c]) == 0:
+                continue
+            total_nonleaves += 1
+            successors_remaining[fi][c] = sum(
+                1
+                for parent in fam["parents_of"][c]
+                if int(fam["split_counts"][parent]) != 0
+            )
+
+    ready: List[Tuple[Tuple[int, ...], int, int, int]] = []
+    queued = [[False] * fam["C"] for fam in families]
+
+    def push_ready(fi: int, c: int) -> None:
+        if (
+            int(families[fi]["split_counts"][c]) == 0
+            or labels[fi][c] >= 0
+            or queued[fi][c]
+            or successors_remaining[fi][c] != 0
+        ):
+            return
+        queued[fi][c] = True
+        successor_labels = tuple(
+            sorted(
+                (
+                    labels[fi][parent]
+                    for parent in families[fi]["parents_of"][c]
+                    if int(families[fi]["split_counts"][parent]) != 0
+                ),
+                reverse=True,
+            )
+        )
+        heapq.heappush(
+            ready,
+            (successor_labels, int(families[fi]["priority"][c]), fi, c),
+        )
+
+    for fi, fam in enumerate(families):
+        for c in range(fam["C"]):
+            push_ready(fi, c)
+
+    labeled_count = 0
+    label_order: List[Tuple[int, int]] = []
+    while ready:
+        _successor_labels, _priority, fi, c = heapq.heappop(ready)
+        if labels[fi][c] >= 0 or successors_remaining[fi][c] != 0:
+            continue
+        queued[fi][c] = False
+        labels[fi][c] = labeled_count
+        labeled_count += 1
+        label_order.append((fi, c))
+
+        for child in families[fi]["children"][c]:
+            if int(families[fi]["split_counts"][child]) == 0:
+                continue
+            successors_remaining[fi][child] -= 1
+            push_ready(fi, child)
+
+    if labeled_count != total_nonleaves:
+        raise RuntimeError(
+            "Coffman-Graham scheduler did not label all non-leaf clades: "
+            f"labeled={labeled_count}, total={total_nonleaves}"
+        )
+
+    assigned_wave = [[-1] * fam["C"] for fam in families]
+    waves: List[List[Tuple[int, int]]] = []
+    wave_ge2_groups: List[int] = []
+    wave_max_tiles: List[int] = []
+
+    def ensure_wave(level: int) -> None:
+        while len(waves) <= level:
+            waves.append([])
+            wave_ge2_groups.append(0)
+            wave_max_tiles.append(0)
+
+    for fi, c in reversed(label_order):
+        earliest = 0
+        for child in families[fi]["children"][c]:
+            if int(families[fi]["split_counts"][child]) == 0:
+                continue
+            child_wave = assigned_wave[fi][child]
+            if child_wave < 0:
+                raise RuntimeError("CG level assignment visited a parent before its child")
+            earliest = max(earliest, child_wave + 1)
+
+        tiles = _clade_dts_partial_tiles(
+            families[fi],
+            c,
+            tile_splits=dts_partial_tile_splits,
+        )
+        level = earliest
+        while True:
+            ensure_wave(level)
+            if (
+                len(waves[level]) < wave_cap
+                and _dts_guard_allows_append(
+                    batch_nonempty=bool(waves[level]),
+                    batch_ge2_groups=wave_ge2_groups[level],
+                    batch_max_tiles=wave_max_tiles[level],
+                    candidate_tiles=tiles,
+                    max_dts_partial_rows=max_dts_partial_rows,
+                )
+            ):
+                waves[level].append((fi, c))
+                assigned_wave[fi][c] = level
+                wave_ge2_groups[level] += 1 if tiles > 0 else 0
+                wave_max_tiles[level] = max(wave_max_tiles[level], tiles)
+                break
+            level += 1
+
+    return [wave for wave in waves if wave]
+
+
+def _materialized_nonleaf_wave_count(
+    batches: Sequence[Sequence[Tuple[int, int]]],
+    families: Sequence[Dict[str, Any]],
+    *,
+    root_cap: int | None,
+) -> int:
+    count = 0
+    for batch in batches:
+        count += len(_split_root_wave(batch, families, root_cap=root_cap))
+    return count
 
 
 def _simple_leaf_first_wave_lower_bound(
@@ -667,24 +823,43 @@ def schedule_global_phased_waves(
         dts_partial_tile_splits=dts_partial_tile_splits,
     )
     best_batches = forward_batches
+    best_nonleaf_count = _materialized_nonleaf_wave_count(
+        best_batches,
+        families,
+        root_cap=root_cap,
+    )
 
     lower_bound = _simple_leaf_first_wave_lower_bound(families, wave_cap=wave_cap)
-    if len(leaf_waves) + len(forward_batches) > lower_bound:
-        reverse_batches = _schedule_reverse_compacted_nonleaf_waves(
-            families,
-            wave_cap=wave_cap,
-            root_cap=root_cap,
-            max_dts_partial_rows=max_dts_partial_rows,
-            dts_partial_tile_splits=dts_partial_tile_splits,
-        )
-        if len(reverse_batches) < len(forward_batches):
-            best_batches = reverse_batches
+    if len(leaf_waves) + best_nonleaf_count > lower_bound:
+        for candidate_batches in (
+            _schedule_reverse_compacted_nonleaf_waves(
+                families,
+                wave_cap=wave_cap,
+                root_cap=root_cap,
+                max_dts_partial_rows=max_dts_partial_rows,
+                dts_partial_tile_splits=dts_partial_tile_splits,
+            ),
+            _schedule_coffman_graham_nonleaf_waves(
+                families,
+                wave_cap=wave_cap,
+                max_dts_partial_rows=max_dts_partial_rows,
+                dts_partial_tile_splits=dts_partial_tile_splits,
+            ),
+        ):
+            candidate_count = _materialized_nonleaf_wave_count(
+                candidate_batches,
+                families,
+                root_cap=root_cap,
+            )
+            if candidate_count < best_nonleaf_count:
+                best_batches = candidate_batches
+                best_nonleaf_count = candidate_count
 
     nonleaf_waves, nonleaf_phases = _materialize_nonleaf_waves(
         best_batches,
         families,
         family_clade_offsets,
-        root_cap=None,
+        root_cap=root_cap,
     )
     waves.extend(nonleaf_waves)
     phases.extend(nonleaf_phases)
