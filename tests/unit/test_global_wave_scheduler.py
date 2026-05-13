@@ -1,7 +1,11 @@
 import torch
 
 from gpurec.api.model import _family_index_chunks
-from gpurec.core.batching import schedule_global_phased_waves
+from gpurec.core.batching import (
+    _family_schedule_data,
+    _schedule_deadline_nonleaf_waves,
+    schedule_global_phased_waves,
+)
 
 
 def _ccp(C, parents, lefts, rights, root):
@@ -102,6 +106,33 @@ def test_global_scheduler_uses_layered_compaction_when_ready_order_wastes_wave()
     assert waves == [[5, 7], [6, 4], [3, 1], [2, 0]]
     assert phases == [1, 2, 2, 2]
     _assert_topological(waves, [0], items)
+
+
+def test_deadline_nonleaf_scheduler_respects_target_horizon():
+    # Leaves 4 and 5 are handled first.  The remaining DAG has two bottom
+    # clades and two top clades, so cap=2 fits exactly two non-leaf waves.
+    item = {"ccp": _ccp(6, [0, 1, 2, 3], [2, 3, 4, 4], [4, 5, 5, 5], root=0)}
+    families = [_family_schedule_data(item["ccp"])]
+
+    candidate = _schedule_deadline_nonleaf_waves(
+        families,
+        wave_cap=2,
+        target_waves=2,
+        max_dts_partial_rows=None,
+        dts_partial_tile_splits=64,
+    )
+
+    assert candidate == [[(0, 2), (0, 3)], [(0, 0), (0, 1)]]
+    assert (
+        _schedule_deadline_nonleaf_waves(
+            families,
+            wave_cap=2,
+            target_waves=1,
+            max_dts_partial_rows=None,
+            dts_partial_tile_splits=64,
+        )
+        is None
+    )
 
 
 def test_global_scheduler_can_cap_dts_partial_rows_per_wave():

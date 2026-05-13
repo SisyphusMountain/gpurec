@@ -1404,6 +1404,50 @@ another launch-shape sweep is unlikely to help.  Further wave-step improvement
 would require reducing math/loads algorithmically, not just changing
 `num_warps` or `BLOCK_S`.
 
+## Deadline Post-Leaf Scheduling Plan
+
+The scheduler already performs the structurally correct leaf-first global pass.
+The remaining risk is that the post-leaf heuristics are still not explicitly
+trying a fixed wave horizon: they compare forward ready-queue, reverse
+compaction, and a Coffman-Graham-style layering, but none of those attempts says
+"can this DAG fit in exactly the lower-bound number of non-leaf waves?"  The
+simple lower bound is only necessary, not sufficient, so a failed lower-bound
+attempt is still useful evidence rather than a guarantee that the existing
+heuristics are wasting waves.
+
+Next implementation step:
+
+- keep the leaf phase unchanged;
+- add a deadline/latest-fit post-leaf candidate that tries target non-leaf wave
+  counts from the lower bound upward;
+- schedule backward from the target horizon, prioritizing ready clades with the
+  latest bottom-up earliest level so no clade falls below its legal wave;
+- keep the existing forward ready queue, reverse compaction, and
+  Coffman-Graham-style candidate as fallbacks;
+- preserve the optional DTS partial-row guard and root wave split behavior;
+- accept only after a fixed-horizon scheduler regression plus the targeted
+  scheduler/model/chunked parity suite.
+
+Implementation result:
+
+- added a deadline/latest-fit candidate that attempts non-leaf wave horizons
+  from the simple lower bound up to the current best heuristic count;
+- the candidate schedules backward from the target horizon and rejects a target
+  as soon as a ready clade would fall below its bottom-up earliest wave;
+- kept the existing forward, reverse, and Coffman-Graham candidates as
+  fallbacks;
+- added a direct regression for the fixed-horizon candidate.
+
+Correctness and HOGENOM check:
+
+- targeted scheduler/model/chunked parity suite: 16 passed;
+- accepted HOGENOM depth-first 315k / wave-cap 8192 layout remains
+  `[102, 65, 48, 30, 13]` waves by batch, 258 total;
+- fresh stream timing measured median forward+backward 1.1434 s, median
+  forward 0.3145 s, median backward 0.8288 s, peak allocated 5.904 GiB;
+- loss and gradient match the existing run: loss 667283.5625 bits, gradient
+  infinity norm about 645.922.
+
 ## Commands
 
 Warm whole-dataset stream timing:
