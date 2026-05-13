@@ -342,6 +342,28 @@ The existing knobs do not remove the register/local-memory pressure shown by
 NCU.  Further Jt work should be a code-level reduction in live per-program
 state or memory traffic, not another launch-shape sweep.
 
+Row-blocking follow-up:
+
+- test `GPUREC_SELF_LOOP_2D_BLOCK_W` in `{2, 4}` against the current default
+  1;
+- accept only if whole-dataset timing improves and NCU does not show worse
+  register spilling;
+- reject immediately if Triton compilation fails or if the larger row block
+  worsens warm timing, because larger row blocks multiply the already large
+  `[S, W]` live vectors in the Jt program.
+
+Row-blocking result:
+
+| `GPUREC_SELF_LOOP_2D_BLOCK_W` | median fwd+bwd | median forward | median backward | peak alloc | decision |
+| ---: | ---: | ---: | ---: | ---: | --- |
+| 1 | 1.2448-1.2477 s | 0.3200 s | 0.9242-0.9283 s | 5.904 GiB | keep default |
+| 2 | 1.9433 s | 0.3178 s | 1.6256 s | 5.904 GiB | rejected |
+| 4 | 5.2160 s | 0.3161 s | 4.8995 s | 5.904 GiB | rejected |
+
+Conclusion: keep one row per Jt program.  Larger row blocks reduce the number
+of row programs but multiply the already register-heavy live tensor shape and
+make backward much slower.
+
 ## Post-Leaf DAG Scheduling Plan
 
 The current resident scheduler already runs a leaf-only phase first, then packs
