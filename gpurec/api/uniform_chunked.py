@@ -131,7 +131,58 @@ def _make_chunks(
     *,
     family_chunk_size: int,
     clade_budget: int | None,
+    batch_packing: str = "sequential",
 ) -> list[UniformChunkSpec]:
+    packing = str(batch_packing).strip().lower().replace("-", "_")
+    if packing in ("", "sequential", "contiguous", "input_order"):
+        packing = "sequential"
+    elif packing in ("clade_first_fit", "first_fit_decreasing", "ffd", "clade_ffd"):
+        packing = "clade_first_fit"
+    else:
+        raise ValueError(
+            "batch_packing must be 'sequential' or 'clade_first_fit', "
+            f"got {batch_packing!r}"
+        )
+
+    if packing == "clade_first_fit":
+        if clade_budget is None:
+            raise ValueError("batch_packing='clade_first_fit' requires clade_budget")
+        chunks: list[UniformChunkSpec] = []
+        mutable_indices: list[list[int]] = []
+        chunk_clades: list[int] = []
+        chunk_splits: list[int] = []
+        order = sorted(indices, key=lambda idx: int(clade_counts[idx]), reverse=True)
+        for idx in order:
+            idx = int(idx)
+            n_clades = int(clade_counts[idx])
+            n_splits = int(split_counts[idx])
+            best_j: int | None = None
+            best_remaining: int | None = None
+            for j, current_clades in enumerate(chunk_clades):
+                if family_chunk_size > 0 and len(mutable_indices[j]) >= family_chunk_size:
+                    continue
+                remaining = clade_budget - current_clades - n_clades
+                if remaining < 0:
+                    continue
+                if best_remaining is None or remaining < best_remaining:
+                    best_j = j
+                    best_remaining = remaining
+            if best_j is None:
+                mutable_indices.append([idx])
+                chunk_clades.append(n_clades)
+                chunk_splits.append(n_splits)
+            else:
+                mutable_indices[best_j].append(idx)
+                chunk_clades[best_j] += n_clades
+                chunk_splits[best_j] += n_splits
+        for chunk_indices, clades, splits in zip(
+            mutable_indices,
+            chunk_clades,
+            chunk_splits,
+        ):
+            chunks.append(UniformChunkSpec(chunk_indices, clades, splits))
+        return chunks
+
     chunks: list[UniformChunkSpec] = []
     current: list[int] = []
     current_clades = 0
@@ -602,6 +653,7 @@ class UniformChunkedReconModel(torch.nn.Module):
         max_wave_size: int | str | None = "auto",
         max_root_wave_size: int | None = None,
         clade_budget: int | None = None,
+        batch_packing: str = "sequential",
         family_chunk_candidates: Sequence[int] = (25, 50, 10, 75, 100),
         max_wave_candidates: Sequence[int] = (8192, 16384, 4096, 32768),
         fixed_iters_Pi: int = 6,
@@ -698,6 +750,7 @@ class UniformChunkedReconModel(torch.nn.Module):
             split_counts,
             family_chunk_size=family_chunk_n,
             clade_budget=clade_budget,
+            batch_packing=batch_packing,
         )
         built_chunks = [
             _build_chunk(

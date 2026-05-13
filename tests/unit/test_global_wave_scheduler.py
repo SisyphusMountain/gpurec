@@ -1,5 +1,6 @@
 import torch
 
+from gpurec.api.model import _family_index_chunks
 from gpurec.core.batching import schedule_global_phased_waves
 
 
@@ -61,3 +62,19 @@ def test_global_scheduler_respects_cap_and_topological_order():
             parent_wave = wave_of[offset + parent]
             assert wave_of[offset + left] < parent_wave
             assert wave_of[offset + right] < parent_wave
+
+
+def test_clade_first_fit_packs_non_contiguous_families():
+    chunks = _family_index_chunks(
+        total=5,
+        clade_counts=[8, 7, 6, 5, 4],
+        family_chunk_size=0,
+        clade_budget=12,
+        batch_packing="clade_first_fit",
+    )
+
+    assert chunks == [[0, 4], [1, 3], [2]]
+    assert all(
+        sum([8, 7, 6, 5, 4][idx] for idx in chunk) <= 12
+        for chunk in chunks
+    )

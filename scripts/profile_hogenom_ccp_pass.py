@@ -48,6 +48,8 @@ class DatasetConfig:
         dtype: torch.dtype,
         max_families: int | None,
         family_chunk_size: int,
+        clade_budget: int | None,
+        batch_packing: str,
         fixed_iters_E: int,
         fixed_iters_Pi: int,
         neumann_terms: int,
@@ -59,6 +61,8 @@ class DatasetConfig:
         self.dtype = dtype
         self.max_families = max_families
         self.family_chunk_size = family_chunk_size
+        self.clade_budget = clade_budget
+        self.batch_packing = batch_packing
         self.fixed_iters_E = fixed_iters_E
         self.fixed_iters_Pi = fixed_iters_Pi
         self.neumann_terms = neumann_terms
@@ -97,6 +101,21 @@ def parse_args() -> argparse.Namespace:
         description="Profile one HOGENOM CCP forward/backward pass."
     )
     parser.add_argument("--chunk-size", type=int, default=25)
+    parser.add_argument(
+        "--batch-packing",
+        choices=("sequential", "clade_first_fit"),
+        default="sequential",
+        help="Resident batch packing policy.",
+    )
+    parser.add_argument(
+        "--clade-budget",
+        type=int,
+        default=None,
+        help=(
+            "Optional sequential resident-batch clade budget. Use "
+            "--chunk-size 0 to make the clade budget the only batch cap."
+        ),
+    )
     parser.add_argument("--max-families", type=int, default=None)
     parser.add_argument("--warmup-runs", type=int, default=1)
     parser.add_argument("--profile-runs", type=int, default=1)
@@ -129,6 +148,8 @@ def dataset_config(args: argparse.Namespace) -> DatasetConfig:
         dtype=torch.float32,
         max_families=args.max_families,
         family_chunk_size=args.chunk_size,
+        clade_budget=args.clade_budget,
+        batch_packing=args.batch_packing,
         fixed_iters_E=FIXED_ITERS_E,
         fixed_iters_Pi=FIXED_ITERS_PI,
         neumann_terms=NEUMANN_TERMS,
@@ -173,6 +194,8 @@ def build_model(
         neumann_terms=config.neumann_terms,
         use_pruning=True,
         family_chunk_size=config.family_chunk_size,
+        clade_budget=config.clade_budget,
+        batch_packing=config.batch_packing,
         lazy_preprocess=True,
         prefetch_batches="all",
         origination_probs=origination_probs,
@@ -329,6 +352,8 @@ def main() -> None:
                 "device": config.device,
                 "dtype": str(config.dtype),
                 "chunk_size": config.family_chunk_size,
+                "clade_budget": config.clade_budget,
+                "batch_packing": config.batch_packing,
                 "max_families": config.max_families,
                 "fixed_iters_E": config.fixed_iters_E,
                 "fixed_iters_Pi": config.fixed_iters_Pi,

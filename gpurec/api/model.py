@@ -125,6 +125,20 @@ def _normalize_clade_budget(value: int | None) -> int | None:
     return budget
 
 
+def _normalize_batch_packing(value: str | None) -> str:
+    if value is None:
+        return "sequential"
+    text = str(value).strip().lower().replace("-", "_")
+    if text in ("", "sequential", "contiguous", "input_order"):
+        return "sequential"
+    if text in ("clade_first_fit", "first_fit_decreasing", "ffd", "clade_ffd"):
+        return "clade_first_fit"
+    raise ValueError(
+        "batch_packing must be 'sequential' or 'clade_first_fit', "
+        f"got {value!r}"
+    )
+
+
 def _normalize_prefetch_batches(value: int | str | None, *, lazy: bool) -> int | str:
     if value is None:
         return "all" if lazy else 0
@@ -175,7 +189,36 @@ def _family_index_chunks(
     clade_counts: Sequence[int],
     family_chunk_size: int,
     clade_budget: int | None,
+    batch_packing: str = "sequential",
 ) -> list[list[int]]:
+    batch_packing = _normalize_batch_packing(batch_packing)
+    if batch_packing == "clade_first_fit":
+        if clade_budget is None:
+            raise ValueError("batch_packing='clade_first_fit' requires clade_budget")
+        chunks: list[list[int]] = []
+        chunk_clades: list[int] = []
+        order = sorted(range(total), key=lambda idx: int(clade_counts[idx]), reverse=True)
+        for idx in order:
+            n_clades = int(clade_counts[idx])
+            best_j: int | None = None
+            best_remaining: int | None = None
+            for j, current_clades in enumerate(chunk_clades):
+                if family_chunk_size > 0 and len(chunks[j]) >= family_chunk_size:
+                    continue
+                remaining = clade_budget - current_clades - n_clades
+                if remaining < 0:
+                    continue
+                if best_remaining is None or remaining < best_remaining:
+                    best_j = j
+                    best_remaining = remaining
+            if best_j is None:
+                chunks.append([idx])
+                chunk_clades.append(n_clades)
+            else:
+                chunks[best_j].append(idx)
+                chunk_clades[best_j] += n_clades
+        return chunks
+
     chunks: list[list[int]] = []
     current: list[int] = []
     current_clades = 0
@@ -223,6 +266,7 @@ def _build_batch_specs(
     mode: str,
     family_chunk_size: int,
     clade_budget: int | None,
+    batch_packing: str,
     max_wave_size: int | None,
     max_root_wave_size: int | None,
 ) -> list[_ResidentBatchSpec]:
@@ -232,6 +276,7 @@ def _build_batch_specs(
         clade_counts=clade_counts,
         family_chunk_size=family_chunk_size,
         clade_budget=clade_budget,
+        batch_packing=batch_packing,
     )
     specs: list[_ResidentBatchSpec] = []
     for batch_index, family_indices in enumerate(chunks):
@@ -639,6 +684,7 @@ class GeneReconModel(torch.nn.Module):
         max_root_wave_size: Optional[int] = None,
         family_chunk_size: int | str | None = None,
         clade_budget: int | None = None,
+        batch_packing: str | None = None,
         lazy_preprocess: bool = False,
         prefetch_batches: int | str | None = None,
         origination_probs: torch.Tensor | Sequence[float] | None = None,
@@ -678,6 +724,7 @@ class GeneReconModel(torch.nn.Module):
         self.register_buffer("origination_probs", prepared_origination_probs)
         self.family_chunk_size = _normalize_family_chunk_size(family_chunk_size)
         self.clade_budget = _normalize_clade_budget(clade_budget)
+        self.batch_packing = _normalize_batch_packing(batch_packing)
         self.lazy_preprocess = bool(lazy_preprocess)
         self.prefetch_batches = _normalize_prefetch_batches(
             prefetch_batches,
@@ -727,6 +774,7 @@ class GeneReconModel(torch.nn.Module):
                 mode=mode,
                 family_chunk_size=self.family_chunk_size,
                 clade_budget=self.clade_budget,
+                batch_packing=self.batch_packing,
                 max_wave_size=max_wave_size,
                 max_root_wave_size=max_root_wave_size,
             )

@@ -50,24 +50,24 @@ compilation, but warm-up is still much slower than steady state.
 
 ## Nsight Findings
 
-Nsight Systems on chunk size 300 measured one profiled pass at 1.496 s
-(`nsys` overhead relative to the uninstrumented 1.371 s median).  The measured
-pass had 53,309 CUDA kernel launches and 1.231 s of GPU kernel time.  NVTX
-forward time was 0.360 s and backward time was 1.135 s.
+Nsight Systems on tuned chunk size 300 measured one profiled pass at 1.471 s
+(`nsys` overhead relative to the uninstrumented 1.332 s median).  The measured
+pass had 53,309 CUDA kernel launches and 1.206 s of GPU kernel time.  NVTX
+forward time was 0.360 s and backward time was 1.111 s.
 
 Top kernel families in the chunk-300 `nsys` report:
 
 | kernel | launches | total GPU time | avg launch |
 | --- | ---: | ---: | ---: |
-| `_wave_backward_uniform_2d_jt_kernel` | 2172 | 0.294 s | 135.6 us |
-| `_wave_step_uniform_kernel` | 2226 | 0.217 s | 97.3 us |
-| `_dts_cross_backward_accum_kernel` | 349 | 0.181 s | 517.7 us |
+| `_wave_backward_uniform_2d_jt_kernel` | 2172 | 0.271 s | 125.0 us |
+| `_wave_step_uniform_kernel` | 2226 | 0.216 s | 97.1 us |
+| `_dts_cross_backward_accum_kernel` | 349 | 0.179 s | 514.3 us |
 | `_dts_parent_reduced_ge2_stage1_kernel` | 699 | 0.108 s | 154.4 us |
-| `_uniform_cross_pibar_vjp_tree_from_ud_compact_kernel` | 349 | 0.106 s | 304.9 us |
-| `_wave_backward_uniform_2d_precompute_kernel` | 362 | 0.067 s | 186.1 us |
+| `_uniform_cross_pibar_vjp_tree_from_ud_compact_kernel` | 349 | 0.107 s | 306.2 us |
+| `_wave_backward_uniform_2d_precompute_kernel` | 362 | 0.068 s | 186.5 us |
 
-GPU metrics over the measured pass: GR active 82.9%, SMs active 72.3%, SM issue
-27.0%, compute warps in flight 45.5%, DRAM read 26.7%, DRAM write 20.0%.
+GPU metrics over the measured pass: GR active 83.4%, SMs active 72.5%, SM issue
+24.0%, compute warps in flight 41.8%, DRAM read 27.4%, DRAM write 20.2%.
 
 Nsight Compute on representative chunk-300 kernels:
 
@@ -128,19 +128,70 @@ leaner no-split/path-specific kernel from `main` for the cases where it applies.
   after a warm pass.
 - HOGENOM chunk-size 300 and 200 were profiled with Nsight Systems.
 - HOGENOM chunk-size 300 top kernels were profiled with Nsight Compute.
+- Tuned chunk-size 300 was re-profiled with Nsight Systems after changing the
+  retained 2D JT launch defaults.
+- First-fit clade packing was timed and rejected as a default because it raised
+  peak allocation without improving warm runtime.
 
 ## Next Hypotheses
 
 1. Treat chunk size 300 as the current 5-6 GiB target configuration.
-2. Try suboptimal-option diagnostics before redesign:
-   `GPUREC_SELF_LOOP_2D_BLOCK_W`, `GPUREC_SELF_LOOP_2D_NUM_WARPS`,
-   `GPUREC_SELF_LOOP_2D_BLOCK_NODES`, and pruning on/off.
+2. Do not promote clade-only first-fit packing.  It reduced scheduled waves but
+   increased peak allocation, so the next batching attempt needs a better memory
+   proxy.
 3. Inspect the DTS backward accumulation path first.  It is now a larger share
    of wall time than launch overhead and has lower utilization than the packed
    forward wave kernel.
 4. If profiling supports it, prototype a lower-scratch or lower-register
    backward path and compare against the retained 2D path for correctness and
    warm runtime.
+
+## Next Batch-Policy Plan
+
+Equal family chunks are a blunt proxy for active runtime tensor size.  HOGENOM
+families vary substantially in clade and split count, and the current best
+family-count chunk (`300`) has four batches with a 5.92 GiB peak.  Before
+rewriting kernels, test these batch layouts:
+
+- family-count `300` baseline;
+- sequential clade budgets around the same largest active batch size;
+- if sequential clade budgets help, consider a first-fit decreasing clade/split
+  bin packer as an explicit opt-in mode.
+
+Acceptance criteria for changing batching defaults or adding a new policy:
+
+- likelihood and specieswise gradient must match the current stream baseline;
+- measured warm forward+backward must improve at comparable peak allocation;
+- any result that changes defaults must be profiled with `nsys` after timing.
+
+Initial metadata-only results:
+
+| policy | budget/chunk | batches | total waves | largest clades | largest splits |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| family count | 300 | 4 | 371 | 305750 | 806746 |
+| sequential clade | 300000 | 4 | 371 | 299999 | 793473 |
+| sequential clade | 325000 | 4 | 349 | 324477 | 861792 |
+| sequential clade | 350000 | 3 | 278 | 349853 | 924182 |
+| first-fit decreasing clade | 275000 | 4 | 315 | 275000 | 743092 |
+| first-fit decreasing clade | 300000 | 4 | 291 | 300000 | 822127 |
+| first-fit decreasing clade | 325000 | 4 | 279 | 325000 | 905606 |
+| first-fit decreasing clade | 350000 | 3 | 243 | 349998 | 922425 |
+
+Sequential clade budgets do not improve the 5-6 GiB target in timing:
+325k clades measured 1.337 s at 6.53 GiB, compared with the family-count 300
+baseline at 1.332 s and 5.92 GiB.  First-fit decreasing clade packing was worth
+testing as an explicit opt-in policy because its metadata suggested many fewer
+waves at similar clade caps.
+
+Timing the first-fit policy exposed a missing memory proxy.  First-fit
+decreasing clade packing with `clade_budget=300000` and no family-count cap
+reduced the metadata wave count to 291, but the measured run used 8.85 GiB and
+1.331 s.  Adding `family_chunk_size=300` reduced the metadata wave count to 316,
+but still used 8.85 GiB and measured 1.341 s.  This is not an improvement over
+plain family-count 300, so clade-only bin packing should not become the default.
+If we revisit non-contiguous batches, the policy needs a better memory proxy
+than clade count alone, likely involving the dense static/runtime layout induced
+by family composition.
 
 ## Commands
 
