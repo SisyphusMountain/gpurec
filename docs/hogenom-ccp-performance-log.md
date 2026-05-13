@@ -261,6 +261,28 @@ Results:
 
 Set the retained 2D `J^T` default to 2 warps and leave `BLOCK_NODES=128`.
 
+Follow-up precompute/store sweep plan:
+
+The retained 2D self-loop path has a separate
+`GPUREC_SELF_LOOP_2D_NUM_WARPS` knob for the precompute and parameter-store
+kernels.  The accepted retune above targeted the `J^T` kernel via
+`GPUREC_SELF_LOOP_2D_JT_NUM_WARPS`, but the current HOGENOM profile still spends
+about 0.066 s in `_wave_backward_uniform_2d_precompute_kernel` and 0.049 s in
+`_wave_backward_uniform_param_store_kernel`.  Test
+`GPUREC_SELF_LOOP_2D_NUM_WARPS` in `{4, 8, 16}` on the accepted depth-first
+315k layout.  Accept only if event timing improves and an `nsys` profile shows
+the precompute/store buckets shrink without increasing the dominant `J^T`
+bucket.
+
+Result: rejected without `nsys` follow-up.  Neither alternative was a clear
+event-timing improvement over the default 8-warps setting:
+
+| `GPUREC_SELF_LOOP_2D_NUM_WARPS` | event median fwd+bwd | median backward | peak alloc | decision |
+| ---: | ---: | ---: | ---: | --- |
+| 4 | 1.2562 s | 0.9377 s | 5.904 GiB | rejected |
+| 8 | 1.2468-1.2531 s | 0.9276-0.9341 s | 5.904 GiB | keep default |
+| 16 | 1.2508 s | 0.9326 s | 5.904 GiB | rejected |
+
 ## Forward Wave-Step Retuning Plan
 
 With the latest no-host-pruning and 2D `J^T` defaults, the next largest kernel
