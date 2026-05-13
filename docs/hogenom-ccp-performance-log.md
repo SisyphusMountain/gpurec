@@ -35,15 +35,16 @@ Measured warm runtime after the scheduler change:
 | 100 | 11 | 927 | 8192 | 1.624 s | 2.65 GiB | 2.83 GiB |
 | 200 | 6 | 522 | 8192 | 1.390 s | 4.23 GiB | 8.47 GiB |
 | 250 | 5 | 430 | 8192 | 1.360 s | 5.05 GiB | 10.27 GiB |
-| 300 | 4 | 371 | 8192 | 1.264 s | 5.92 GiB | 11.95 GiB |
+| 300 | 4 | 371 | 8192 | 1.256 s | 5.92 GiB | 11.95 GiB |
 | 400 | 3 | 286 | 8192 | 1.307 s | 7.92 GiB | 16.31 GiB |
 | 600 | 2 | 193 | 8192 | 1.289 s | 15.24 GiB | 16.71 GiB |
 
 The chunk-300 row includes the later DTS launch-warp tuning, no-host pruning,
 2D `J^T` warp retuning, and forward wave-step warp retuning.  Without the
 no-host-pruning override the same tuned code measured 1.321 s before the
-wave-step retune.  The other rows are the scheduler/self-loop-tuned measurements
-used for memory tradeoff decisions.
+wave-step retune.  The row also includes the DTS parent-reduction block retune.
+The other rows are the scheduler/self-loop-tuned measurements used for memory
+tradeoff decisions.
 
 The best warm value inside the 5-6 GiB allocated target is chunk size 300 at
 about 1.26 s.  Larger chunks keep reducing waves but give small returns relative
@@ -57,18 +58,18 @@ compilation, but warm-up is still much slower than steady state.
 ## Nsight Findings
 
 Nsight Systems on tuned chunk size 300 with
-`GPUREC_BACKWARD_NO_CPU_PRUNING=1` measured one profiled pass at 1.380 s
-(`nsys` overhead relative to the uninstrumented 1.264 s median).  The measured
-pass had 52,557 CUDA kernel launches and 1.161 s of GPU kernel time.
+`GPUREC_BACKWARD_NO_CPU_PRUNING=1` measured one profiled pass at 1.371 s
+(`nsys` overhead relative to the uninstrumented 1.256 s median).  The measured
+pass had 52,557 CUDA kernel launches and 1.147 s of GPU kernel time.
 
 Top kernel families in the chunk-300 `nsys` report:
 
 | kernel | launches | total GPU time | avg launch |
 | --- | ---: | ---: | ---: |
 | `_wave_backward_uniform_2d_jt_kernel` | 2226 | 0.268 s | 120.4 us |
-| `_wave_step_uniform_kernel` | 2226 | 0.198 s | 88.9 us |
+| `_wave_step_uniform_kernel` | 2226 | 0.195 s | 87.5 us |
 | `_dts_cross_backward_accum_kernel` | 358 | 0.161 s | 451.1 us |
-| `_dts_parent_reduced_ge2_stage1_kernel` | 708 | 0.108 s | 152.5 us |
+| `_dts_parent_reduced_ge2_stage1_kernel` | 708 | 0.101 s | 142.9 us |
 | `_uniform_cross_pibar_vjp_tree_from_ud_compact_kernel` | 358 | 0.106 s | 296.9 us |
 | `_wave_backward_uniform_2d_precompute_kernel` | 371 | 0.067 s | 181.8 us |
 
@@ -150,6 +151,9 @@ leaner no-split/path-specific kernel from `main` for the cases where it applies.
 - The forward wave-step warp retune was checked warm, with Nsight Systems, and
   with Nsight Compute before changing the default to
   `GPUREC_WAVE_STEP_NUM_WARPS=8`.
+- The DTS parent-reduction block retune was checked warm, with Nsight Systems,
+  and with Nsight Compute before changing the default to
+  `GPUREC_DTS_PARENT_BLOCK_S=256`.
 - First-fit clade packing was timed and rejected as a default because it raised
   peak allocation without improving warm runtime.
 
@@ -294,6 +298,38 @@ The 8-warp variant shrank the target bucket, but the full `nsys` pass regressed
 and total GPU kernel time increased slightly (`1.1614 s -> 1.1624 s`).  Keep the
 default at `NUM_WARPS=4 BLOCK_S=256`; retain the environment overrides only for
 future diagnostics.
+
+## Parent-Reduced DTS Retuning Plan
+
+The parent-reduced DTS forward recompute still accounts for a meaningful share
+of the pass: `_dts_parent_reduced_ge2_stage1_kernel` is about 0.108 s,
+`_dts_eq1_to_rows_kernel` about 0.020 s, and stage 2 about 0.009 s.  This path
+uses `BLOCK_S=128` and `tile_splits=64` today.
+
+Next experiment:
+
+- add diagnostic overrides for the parent-reduced DTS launch shape;
+- test `GPUREC_DTS_PARENT_NUM_WARPS` in `{2, 4, 8}`;
+- test `GPUREC_DTS_PARENT_BLOCK_S` in `{64, 128, 256}`;
+- test `GPUREC_DTS_PARENT_TILE_SPLITS` in `{32, 64, 128}`;
+- accept a default change only if whole-dataset timing improves and `nsys`
+  confirms the combined DTS stage buckets shrink.
+
+Results:
+
+| setting | warm fwd+bwd | forward | peak alloc | `nsys` pass | stage1 GPU time | conclusion |
+| --- | ---: | ---: | ---: | ---: | ---: | --- |
+| `BLOCK_S=128 TILE_SPLITS=64` | 1.264 s | 0.328 s | 5.92 GiB | 1.380 s | 0.1078 s | baseline |
+| `BLOCK_S=256 TILE_SPLITS=64` | 1.256 s | 0.324 s | 5.92 GiB | 1.371 s | 0.1012 s | accepted |
+| `BLOCK_S=512 TILE_SPLITS=64` | 1.260 s | 0.325 s | 5.92 GiB | not run | not run | worse than 256 |
+| `BLOCK_S=128 TILE_SPLITS=32` | 1.277 s | 0.332 s | 7.39 GiB | not run | not run | rejected |
+| `BLOCK_S=128 TILE_SPLITS=128` | 1.272 s | 0.329 s | 5.47 GiB | not run | not run | memory lower but slower |
+| `NUM_WARPS=8 BLOCK_S=128` | 1.272 s | 0.333 s | 5.92 GiB | not run | not run | rejected |
+
+Nsight Compute on `BLOCK_S=256` stage-1 launches reports roughly 87-88% DRAM
+throughput, 97-100% achieved occupancy, and 40 registers/thread.  The kernel is
+memory-bound but better packed with 6 species blocks per row instead of 11.
+Set the default DTS parent block size to 256 and keep `tile_splits=64`.
 
 ## Next Batch-Policy Plan
 
