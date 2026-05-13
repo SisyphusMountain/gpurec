@@ -2178,6 +2178,72 @@ and CUDA self-loop buckets all move up in the profiled pass.  Because total GPU
 kernel time regresses by about 6.7 ms, do not promote the change.  The code path
 was removed instead of kept as a diagnostic knob.
 
+## Family-Count Cap Scheduling Audit Plan
+
+The accepted `depth_first_fit` HOGENOM layout uses both
+`family_chunk_size=300` and `clade_budget=315000`.  The current batch metadata
+shows that the first two batches are clade-budget limited, but batches 2 and 3
+hit the 300-family cap with substantial clade headroom:
+
+| batch | families | clades | waves | max depth | leaf waves | work waves |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 0 | 91 | 314,985 | 102 | 98 | 4 | 36 |
+| 1 | 146 | 314,902 | 65 | 61 | 4 | 36 |
+| 2 | 300 | 273,898 | 48 | 45 | 3 | 31 |
+| 3 | 300 | 104,120 | 30 | 28 | 2 | 12 |
+| 4 | 218 | 15,208 | 13 | 12 | 1 | 2 |
+
+This suggests the family-count cap may be a stale constraint from older
+resident batching.  Next experiment:
+
+- build metadata for `family_chunk_size=0, clade_budget=315000,
+  batch_packing=depth_first_fit`;
+- compare total batches, lower-bound waves, max clades, max split count, and
+  DTS partial-row memory proxy against the accepted 300-family cap layout;
+- only run full timing if the metadata reduces waves or batch count while
+  staying inside the same clade/memory envelope;
+- accept no default change without HOGENOM loss/gradient parity and `nsys`
+  confirmation.
+
+Metadata result:
+
+| family cap | batches | total waves | max clades | max splits | max DTS partial rows | decision |
+| ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| 300 | 5 | 258 | 314,985 | 805,558 | 85,464 | baseline |
+| 0 / no cap | 4 | 240 | 314,585 | 873,723 | 85,464 | benchmark |
+
+The no-family-cap layout keeps the worst clade count and DTS partial-row proxy
+inside the current envelope while removing one resident batch and 18 waves.  It
+does increase the largest split count, so full timing and memory must decide
+whether the grouping is actually better.
+
+Event timing:
+
+| family cap | batches | median fwd+bwd | median forward | median backward | peak alloc | peak reserved | decision |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| 300 | 5 | 0.7788 s | 0.3070 s | 0.4720 s | 5.780 GiB | 6.965 GiB | baseline |
+| 0 / no cap | 4 | 0.7734 s | 0.3067 s | 0.4667 s | 5.980 GiB | 10.992 GiB | validate with `nsys` |
+
+The no-cap layout is modestly faster and still under 6 GiB allocated, but it
+substantially increases reserved memory.  Loss and gradient differ only at the
+usual fp32 accumulation-order scale.  Run Nsight Systems before deciding
+whether the lower wave/batch count translates into lower GPU kernel time.
+
+Nsight Systems validation for
+`profiling/hogenom_ccp/nsys_stream_depthff315_no_family_cap.nsys-rep`:
+
+| family cap | CUDA launches | GPU kernel time | wave-step bucket | DTS backward bucket | Pibar VJP bucket | CUDA self-loop bucket | decision |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| 300 | 15,606 | 0.7457 s | 0.2128 s / 1,548 | 0.1540 s / 244 | 0.1063 s / 244 | 0.0994 s / 258 | baseline |
+| 0 / no cap | 13,464 | 0.7468 s | 0.2134 s / 1,440 | 0.1553 s / 227 | 0.1066 s / 227 | 0.1003 s / 240 | rejected default |
+
+The no-cap layout removes 2,142 CUDA launches, 18 self-loop waves, and one
+resident batch, but larger batches make the main kernels heavier per launch.
+Total GPU kernel time is slightly worse, and peak reserved memory rises to about
+11 GiB.  Keep the 300-family cap as the default for now; `--chunk-size 0`
+remains a useful diagnostic for lower-launch scheduling experiments but is not
+a profiler-confirmed speed win.
+
 ## Commands
 
 Warm whole-dataset stream timing:
