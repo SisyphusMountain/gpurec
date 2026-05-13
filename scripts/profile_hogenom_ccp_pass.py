@@ -51,6 +51,7 @@ class DatasetConfig:
         clade_budget: int | None,
         batch_packing: str,
         max_wave_size: int | None,
+        max_dts_partial_rows: int | None,
         fixed_iters_E: int,
         fixed_iters_Pi: int,
         neumann_terms: int,
@@ -66,6 +67,7 @@ class DatasetConfig:
         self.clade_budget = clade_budget
         self.batch_packing = batch_packing
         self.max_wave_size = max_wave_size
+        self.max_dts_partial_rows = max_dts_partial_rows
         self.fixed_iters_E = fixed_iters_E
         self.fixed_iters_Pi = fixed_iters_Pi
         self.neumann_terms = neumann_terms
@@ -126,6 +128,15 @@ def parse_args() -> argparse.Namespace:
         default=8192,
         help="Maximum clades scheduled into one resident wave.",
     )
+    parser.add_argument(
+        "--max-dts-partial-rows",
+        type=int,
+        default=None,
+        help=(
+            "Optional scheduler cap for GE2 DTS partial rows per wave: "
+            "n_ge2_groups * ceil(max_ge2_fanout / 64)."
+        ),
+    )
     parser.add_argument("--max-families", type=int, default=None)
     parser.add_argument("--warmup-runs", type=int, default=1)
     parser.add_argument("--profile-runs", type=int, default=1)
@@ -167,6 +178,7 @@ def dataset_config(args: argparse.Namespace) -> DatasetConfig:
         clade_budget=args.clade_budget,
         batch_packing=args.batch_packing,
         max_wave_size=args.max_wave_size,
+        max_dts_partial_rows=args.max_dts_partial_rows,
         fixed_iters_E=FIXED_ITERS_E,
         fixed_iters_Pi=FIXED_ITERS_PI,
         neumann_terms=NEUMANN_TERMS,
@@ -215,6 +227,7 @@ def build_model(
         clade_budget=config.clade_budget,
         batch_packing=config.batch_packing,
         max_wave_size=config.max_wave_size,
+        max_dts_partial_rows=config.max_dts_partial_rows,
         lazy_preprocess=True,
         prefetch_batches="all",
         origination_probs=origination_probs,
@@ -374,6 +387,7 @@ def main() -> None:
                 "clade_budget": config.clade_budget,
                 "batch_packing": config.batch_packing,
                 "max_wave_size": config.max_wave_size,
+                "max_dts_partial_rows": config.max_dts_partial_rows,
                 "max_families": config.max_families,
                 "fixed_iters_E": config.fixed_iters_E,
                 "fixed_iters_Pi": config.fixed_iters_Pi,
@@ -407,6 +421,7 @@ def main() -> None:
                 "batches": len(model.batch_metadata),
                 "chunk_size": model.family_chunk_size,
                 "max_wave_size": model.max_wave_size,
+                "max_dts_partial_rows": model.max_dts_partial_rows,
                 "selected_batch": batch_index,
             }
         ),

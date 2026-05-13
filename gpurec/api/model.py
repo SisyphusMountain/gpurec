@@ -362,6 +362,7 @@ def _build_batch_specs(
     batch_packing: str,
     max_wave_size: int | None,
     max_root_wave_size: int | None,
+    max_dts_partial_rows: int | None,
 ) -> list[_ResidentBatchSpec]:
     clade_counts = [int(fam["C"]) for fam in dataset.families]
     leaf_counts: list[int] | None = None
@@ -417,6 +418,7 @@ def _build_batch_specs(
             family_clade_offsets,
             max_wave_size=max_wave_size,
             max_root_wave_size=max_root_wave_size,
+            max_dts_partial_rows=max_dts_partial_rows,
         )
 
         metadata = BatchMetadata(
@@ -464,6 +466,7 @@ def _build_static_state(
     origination_probs: torch.Tensor | None,
     max_wave_size: Optional[int] = 8192,
     max_root_wave_size: Optional[int] = None,
+    max_dts_partial_rows: Optional[int] = None,
 ) -> ReconStaticState:
     """Absorb the wave-layout boilerplate that lives in
     ``experiments/validate_three_modes.py:100-149``.
@@ -494,6 +497,7 @@ def _build_static_state(
         offsets,
         max_wave_size=max_wave_size,
         max_root_wave_size=max_root_wave_size,
+        max_dts_partial_rows=max_dts_partial_rows,
     )
 
     family_clade_counts = [m["C"] for m in batched["family_meta"]]
@@ -790,6 +794,7 @@ class GeneReconModel(torch.nn.Module):
         theta_init: Optional[torch.Tensor] = None,
         max_wave_size: Optional[int] = 8192,
         max_root_wave_size: Optional[int] = None,
+        max_dts_partial_rows: Optional[int] = None,
         family_chunk_size: int | str | None = None,
         clade_budget: int | None = None,
         batch_packing: str | None = None,
@@ -857,6 +862,7 @@ class GeneReconModel(torch.nn.Module):
         self._pruning_threshold = pruning_threshold
         self.max_wave_size = max_wave_size
         self.max_root_wave_size = max_root_wave_size
+        self.max_dts_partial_rows = max_dts_partial_rows
 
         self._static: ReconStaticState | None = None
         self._batch_specs: list[_ResidentBatchSpec] = []
@@ -885,6 +891,7 @@ class GeneReconModel(torch.nn.Module):
                 batch_packing=self.batch_packing,
                 max_wave_size=max_wave_size,
                 max_root_wave_size=max_root_wave_size,
+                max_dts_partial_rows=max_dts_partial_rows,
             )
             self._batch_statics = [None for _ in self._batch_specs]
             self.batch_metadata = [spec.metadata for spec in self._batch_specs]
@@ -908,6 +915,7 @@ class GeneReconModel(torch.nn.Module):
                 pruning_threshold=pruning_threshold,
                 max_wave_size=max_wave_size,
                 max_root_wave_size=max_root_wave_size,
+                max_dts_partial_rows=max_dts_partial_rows,
                 origination_probs=self.origination_probs,
             )
             self.batch_metadata = [

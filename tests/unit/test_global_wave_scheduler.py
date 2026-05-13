@@ -87,6 +87,44 @@ def test_global_scheduler_uses_reverse_compaction_when_forward_greedy_wastes_wav
     _assert_topological(waves, [0], items)
 
 
+def test_global_scheduler_can_cap_dts_partial_rows_per_wave():
+    parents = [0, 0, 0]
+    lefts = [1, 3, 5]
+    rights = [2, 4, 5]
+    for i in range(10):
+        parents.append(1)
+        lefts.append(6 + i)
+        rights.append(6 + ((i + 1) % 10))
+    for parent, pairs in {
+        2: [(6, 7), (8, 9)],
+        3: [(10, 11), (12, 13)],
+        4: [(14, 15), (6, 10)],
+        5: [(7, 11), (8, 12)],
+    }.items():
+        for left, right in pairs:
+            parents.append(parent)
+            lefts.append(left)
+            rights.append(right)
+    items = [{"ccp": _ccp(16, parents, lefts, rights, root=0)}]
+
+    uncapped, _ = schedule_global_phased_waves(items, [0], max_wave_size=16)
+    capped, phases = schedule_global_phased_waves(
+        items,
+        [0],
+        max_wave_size=16,
+        max_dts_partial_rows=8,
+        dts_partial_tile_splits=4,
+    )
+
+    assert len(uncapped) == 3
+    assert len(capped) == 4
+    assert phases == [1, 2, 2, 3]
+    assert capped[1] == [1, 2]
+    assert all(len(wave) <= 16 for wave in capped)
+    assert sorted(clade for wave in capped for clade in wave) == list(range(16))
+    _assert_topological(capped, [0], items)
+
+
 def test_clade_first_fit_packs_non_contiguous_families():
     chunks = _family_index_chunks(
         total=5,

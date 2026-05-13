@@ -576,6 +576,67 @@ Conclusion: keep `max_wave_size=8192` as the lean default.  `16384` can be an
 explicit speed/memory experiment because event timings were about 6 ms faster,
 but `nsys` does not show a GPU-time win and peak allocation rises to 6.35 GiB.
 
+## Batch Memory-Proxy Diagnosis Plan
+
+The accepted depth-first batch policy still uses clade count as its hard memory
+cap.  The HOGENOM runs show that this is incomplete: moving from 315k to 320k
+clades saves only two waves but raises peak allocation from about 5.90 GiB to
+about 8.02 GiB.  Before adding another packing heuristic, measure what changes
+across the accepted and rejected layouts:
+
+- total clades and total splits per batch;
+- max split rows in any wave and total split rows in split-bearing waves;
+- max ge2 parent count and max ge2 fanout;
+- wave-count lower bound versus actual waves;
+- which batch owns the measured peak allocation.
+
+Use that table to decide whether the next policy should add a split budget,
+a max-wave-split budget, a family composition penalty, or no new policy at all.
+Do not promote a batch policy unless likelihood/gradient tests pass and HOGENOM
+timing plus `nsys` improve within the 5-6 GiB target.
+
+Diagnosis result:
+
+The memory cliff is not explained by total clades or total splits alone.  It is
+caused by the parent-reduced DTS forward scratch for GE2 clades.  That scratch
+allocates two `[n_ge2_groups * ceil(max_ge2_fanout / tile_splits), S]` partial
+arrays for a wave.  At the default `tile_splits=64`, the accepted 315k layout's
+largest batch-0 parent partial is about 0.844 GiB, while the rejected 320k
+layout puts a `ge2_max_fanout=9774` clade in a wave with 1910 GE2 groups,
+making the parent partial about 2.885 GiB.  That accounts for the observed
+batch-0 peak allocation jump from about 5.90 GiB to about 8.05 GiB.
+
+Next experiment:
+
+- add an opt-in scheduler cap on the GE2 DTS partial-row proxy
+  `n_ge2_groups * ceil(max_ge2_fanout / tile_splits)`;
+- expose it in the HOGENOM profiler as `--max-dts-partial-rows`;
+- test whether rejected larger clade budgets such as 320k or 325k can stay in
+  the 5-6 GiB envelope by splitting only the problematic high-fanout waves;
+- accept only if likelihood/gradient tests pass and warm timing plus `nsys`
+  beat or tie the current 315k/8192 default without a memory cliff.
+
+Result: implemented as an opt-in scheduler guard, not a new default.  The
+profiler script exposes it as `--max-dts-partial-rows`, and the model accepts
+`max_dts_partial_rows`.
+
+| layout | DTS partial-row cap | total waves | event median fwd+bwd | peak alloc | `nsys` pass | GPU kernel time | decision |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| depth-first 315k | none | 258 | 1.2468 s | 5.904 GiB | 1.343 s | 1.143 s | current lean default |
+| depth-first 320k | none | 256 | 1.252 s earlier | 8.02 GiB | not profiled | not profiled | rejected memory cliff |
+| depth-first 320k | 100000 | 256 | 1.2456 s | 5.928 GiB | 1.347 s | 1.142 s | opt-in memory guard |
+| depth-first 325k | 100000 | 255 | 1.2413 s | 6.305 GiB | not profiled | not profiled | too much memory |
+| depth-first 325k | 80000 | 255 | 1.2444 s | 6.024 GiB | not profiled | not profiled | borderline memory |
+| depth-first 325k | 70000 | 255 | 1.2566 s | 5.948 GiB | not profiled | not profiled | slower |
+
+The 320k capped layout produced
+`profiling/hogenom_ccp/nsys_stream_depthff320_dtsrows100k.nsys-rep`: 47,920
+CUDA kernel launches and 1.142 s GPU kernel time.  That is only a fractional GPU
+kernel-time improvement over the 315k baseline, while profiled wall time was
+slightly worse.  The value of the cap is avoiding pathological scratch when
+experimenting with larger clade budgets; it should not replace the 315k default
+unless a follow-up profile shows a clear end-to-end win.
+
 ## DTS Accumulation Plan
 
 The current tuned chunk-300 profile still spends about 0.179 s of GPU time in

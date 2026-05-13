@@ -402,11 +402,25 @@ def _materialize_nonleaf_waves(
     return waves, phases
 
 
+def _clade_dts_partial_tiles(
+    fam: Dict[str, Any],
+    c: int,
+    *,
+    tile_splits: int,
+) -> int:
+    split_count = int(fam["split_counts"][c])
+    if split_count < 2:
+        return 0
+    return (split_count + tile_splits - 1) // tile_splits
+
+
 def _schedule_forward_nonleaf_waves(
     families: Sequence[Dict[str, Any]],
     *,
     wave_cap: int,
     root_cap: int | None,
+    max_dts_partial_rows: int | None,
+    dts_partial_tile_splits: int,
 ) -> List[List[Tuple[int, int]]]:
     scheduled = [[False] * fam["C"] for fam in families]
     queued = [[False] * fam["C"] for fam in families]
@@ -437,14 +451,37 @@ def _schedule_forward_nonleaf_waves(
     batches: List[List[Tuple[int, int]]] = []
     while ready:
         batch: List[Tuple[int, int]] = []
+        batch_ge2_groups = 0
+        batch_max_tiles = 0
+        deferred: List[Tuple[int, int, int]] = []
         while ready and len(batch) < wave_cap:
-            _neg_priority, fi, c = heapq.heappop(ready)
+            entry = heapq.heappop(ready)
+            _neg_priority, fi, c = entry
             if scheduled[fi][c]:
                 continue
             queued[fi][c] = False
             if remaining[fi][c] != 0:
                 continue
+            tiles = _clade_dts_partial_tiles(
+                families[fi],
+                c,
+                tile_splits=dts_partial_tile_splits,
+            )
+            new_ge2_groups = batch_ge2_groups + (1 if tiles > 0 else 0)
+            new_max_tiles = max(batch_max_tiles, tiles)
+            if (
+                max_dts_partial_rows is not None
+                and batch
+                and new_ge2_groups * new_max_tiles > max_dts_partial_rows
+            ):
+                queued[fi][c] = True
+                deferred.append(entry)
+                continue
             batch.append((fi, c))
+            batch_ge2_groups = new_ge2_groups
+            batch_max_tiles = new_max_tiles
+        for entry in deferred:
+            heapq.heappush(ready, entry)
         if not batch:
             continue
 
@@ -465,6 +502,8 @@ def _schedule_reverse_compacted_nonleaf_waves(
     *,
     wave_cap: int,
     root_cap: int | None,
+    max_dts_partial_rows: int | None,
+    dts_partial_tile_splits: int,
 ) -> List[List[Tuple[int, int]]]:
     """Build a latest-valid non-leaf schedule and return it in forward order."""
     scheduled = [[False] * fam["C"] for fam in families]
@@ -508,12 +547,35 @@ def _schedule_reverse_compacted_nonleaf_waves(
     reverse_batches: List[List[Tuple[int, int]]] = []
     while ready:
         batch: List[Tuple[int, int]] = []
+        batch_ge2_groups = 0
+        batch_max_tiles = 0
+        deferred: List[Tuple[int, int, int, int]] = []
         while ready and len(batch) < wave_cap:
-            _priority, _neg_fanout, fi, c = heapq.heappop(ready)
+            entry = heapq.heappop(ready)
+            _priority, _neg_fanout, fi, c = entry
             if scheduled[fi][c] or successors_remaining[fi][c] != 0:
                 continue
             queued[fi][c] = False
+            tiles = _clade_dts_partial_tiles(
+                families[fi],
+                c,
+                tile_splits=dts_partial_tile_splits,
+            )
+            new_ge2_groups = batch_ge2_groups + (1 if tiles > 0 else 0)
+            new_max_tiles = max(batch_max_tiles, tiles)
+            if (
+                max_dts_partial_rows is not None
+                and batch
+                and new_ge2_groups * new_max_tiles > max_dts_partial_rows
+            ):
+                queued[fi][c] = True
+                deferred.append(entry)
+                continue
             batch.append((fi, c))
+            batch_ge2_groups = new_ge2_groups
+            batch_max_tiles = new_max_tiles
+        for entry in deferred:
+            heapq.heappush(ready, entry)
         if not batch:
             continue
 
@@ -550,6 +612,8 @@ def schedule_global_phased_waves(
     *,
     max_wave_size: int | None,
     max_root_wave_size: int | None = None,
+    max_dts_partial_rows: int | None = None,
+    dts_partial_tile_splits: int = 64,
 ) -> Tuple[List[List[int]], List[int]]:
     """Schedule one resident batch with globally packed ready waves.
 
@@ -574,6 +638,13 @@ def schedule_global_phased_waves(
     )
     if root_cap is not None and root_cap <= 0:
         raise ValueError("max_root_wave_size must be positive")
+    if max_dts_partial_rows is not None:
+        max_dts_partial_rows = int(max_dts_partial_rows)
+        if max_dts_partial_rows <= 0:
+            raise ValueError("max_dts_partial_rows must be positive when provided")
+    dts_partial_tile_splits = int(dts_partial_tile_splits)
+    if dts_partial_tile_splits <= 0:
+        raise ValueError("dts_partial_tile_splits must be positive")
 
     families = [_family_schedule_data(item["ccp"]) for item in items]
 
@@ -592,6 +663,8 @@ def schedule_global_phased_waves(
         families,
         wave_cap=wave_cap,
         root_cap=root_cap,
+        max_dts_partial_rows=max_dts_partial_rows,
+        dts_partial_tile_splits=dts_partial_tile_splits,
     )
     best_batches = forward_batches
 
@@ -601,6 +674,8 @@ def schedule_global_phased_waves(
             families,
             wave_cap=wave_cap,
             root_cap=root_cap,
+            max_dts_partial_rows=max_dts_partial_rows,
+            dts_partial_tile_splits=dts_partial_tile_splits,
         )
         if len(reverse_batches) < len(forward_batches):
             best_batches = reverse_batches
