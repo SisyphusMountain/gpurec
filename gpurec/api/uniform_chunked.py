@@ -21,8 +21,7 @@ from gpurec.core.backward import Pi_wave_backward
 from gpurec.core.batching import (
     build_wave_layout,
     collate_gene_families,
-    collate_wave,
-    split_phase_waves,
+    schedule_global_phased_waves,
 )
 from gpurec.core.extract_parameters import extract_parameters_uniform
 from gpurec.core.forward import Pi_wave_forward
@@ -30,10 +29,10 @@ from gpurec.core.likelihood import (
     E_fixed_point,
     compute_log_likelihood,
     compute_log_likelihood_root_rows,
+    prepare_origination_probs,
 )
 from gpurec.core.memory_policy import UniformPipelinePolicy, choose_uniform_pipeline_policy
 from gpurec.core.model import GeneDataset, parse_alerax_family_file
-from gpurec.core.scheduling import compute_clade_waves
 from gpurec.optimization.implicit_grad import _e_adjoint_and_theta_vjp
 
 
@@ -68,6 +67,7 @@ class UniformChunkedState:
     built_chunks: list[UniformBuiltChunk]
     device: torch.device
     dtype: torch.dtype
+    origination_probs: torch.Tensor | None = None
     fixed_iters_Pi: int = 6
     fixed_iters_E: int | None = None
     max_iters_E: int = 2000
@@ -173,8 +173,6 @@ def _build_chunk(
     max_root_wave_size: int | None,
 ) -> UniformBuiltChunk:
     items = []
-    fam_waves = []
-    fam_phases = []
     for idx in spec.indices:
         fam = dataset.families[idx]
         items.append(
@@ -185,33 +183,14 @@ def _build_chunk(
                 "root_clade_id": int(fam["root_clade_id"]),
             }
         )
-        waves_i, phases_i = compute_clade_waves(fam["ccp_helpers"])
-        fam_waves.append(waves_i)
-        fam_phases.append(phases_i)
 
     batched = collate_gene_families(items, dtype=dtype, device=device)
     offsets = [m["clade_offset"] for m in batched["family_meta"]]
-    cross_waves = collate_wave(fam_waves, offsets)
-    max_n_waves = max(len(p) for p in fam_phases)
-    cross_phases: list[int] = []
-    for k in range(max_n_waves):
-        phase_k = 1
-        for phases_i in fam_phases:
-            if k < len(phases_i):
-                phase_k = max(phase_k, int(phases_i[k]))
-        cross_phases.append(phase_k)
-
-    cross_waves, cross_phases = split_phase_waves(
-        cross_waves,
-        cross_phases,
-        phase=None,
+    cross_waves, cross_phases = schedule_global_phased_waves(
+        items,
+        offsets,
         max_wave_size=max_wave_size,
-    )
-    cross_waves, cross_phases = split_phase_waves(
-        cross_waves,
-        cross_phases,
-        phase=3,
-        max_wave_size=max_root_wave_size,
+        max_root_wave_size=max_root_wave_size,
     )
 
     family_clade_counts = [m["C"] for m in batched["family_meta"]]
@@ -330,6 +309,16 @@ def _selected_chunks(
     return selected
 
 
+def _origination_probs_for_indices(
+    origination_probs: torch.Tensor | None,
+    indices: Sequence[int],
+) -> torch.Tensor | None:
+    if origination_probs is None or origination_probs.ndim == 1:
+        return origination_probs
+    idx = torch.as_tensor(indices, dtype=torch.long, device=origination_probs.device)
+    return origination_probs.index_select(0, idx)
+
+
 def _evaluate_chunked_uniform(
     state: UniformChunkedState,
     theta: torch.Tensor,
@@ -342,6 +331,15 @@ def _evaluate_chunked_uniform(
         raise ValueError("per-family output is only supported for no-grad evaluation")
 
     selected_chunks = _selected_chunks(state, chunk_indices)
+    selected_family_indices = [
+        family_idx
+        for _chunk_idx, chunk in selected_chunks
+        for family_idx in chunk.spec.indices
+    ]
+    selected_origination_probs = _origination_probs_for_indices(
+        state.origination_probs,
+        selected_family_indices,
+    )
     selected_family_count = sum(len(chunk.spec.indices) for _idx, chunk in selected_chunks)
     theta_eval = theta.detach().to(device=state.device, dtype=state.dtype)
     log_pS, log_pD, log_pL, max_transfer_vec = extract_parameters_uniform(
@@ -385,6 +383,11 @@ def _evaluate_chunked_uniform(
     chunk_stats: list[dict[str, Any]] = []
 
     for chunk_idx, built in selected_chunks:
+        chunk_origination_probs = _origination_probs_for_indices(
+            state.origination_probs,
+            built.spec.indices,
+        )
+
         def run_forward():
             pi_out = Pi_wave_forward(
                 wave_layout=built.wave_layout,
@@ -407,11 +410,13 @@ def _evaluate_chunked_uniform(
                     pi_out["Pi_wave_ordered"],
                     e_out["E"],
                     built.wave_layout["root_clade_ids"],
+                    chunk_origination_probs,
                 )
             else:
                 loss_vec = compute_log_likelihood_root_rows(
                     pi_out["Pi_root_rows"],
                     e_out["E"],
+                    chunk_origination_probs,
                 )
             return pi_out, loss_vec
 
@@ -446,6 +451,7 @@ def _evaluate_chunked_uniform(
                     pruning_threshold=state.pruning_threshold,
                     ancestors_T=state.ancestors_T,
                     uniform_pibar_row_max=pi_out.get("uniform_pibar_row_max"),
+                    origination_probs=chunk_origination_probs,
                 )
 
             bwd_ms, pi_bwd = _time_cuda_ms(profile, run_backward)
@@ -498,6 +504,7 @@ def _evaluate_chunked_uniform(
                 state.dtype,
                 genewise=False,
                 ancestors_T=state.ancestors_T,
+                origination_probs=selected_origination_probs,
             )
 
         e_adjoint_ms, (grad_theta, _stats) = _time_cuda_ms(profile, run_e_adjoint)
@@ -607,6 +614,7 @@ class UniformChunkedReconModel(torch.nn.Module):
         warm_start_E: bool = True,
         profile: bool = False,
         set_optimized_env: bool = True,
+        origination_probs: torch.Tensor | Sequence[float] | None = None,
     ) -> None:
         super().__init__()
         if set_optimized_env:
@@ -645,6 +653,13 @@ class UniformChunkedReconModel(torch.nn.Module):
             dtype=dtype,
         )
         unnorm_row_max = dataset.unnorm_row_max.to(device=device, dtype=dtype)
+        prepared_origination_probs = prepare_origination_probs(
+            origination_probs,
+            S=int(dataset.S),
+            device=device,
+            dtype=dtype,
+            family_count=len(dataset.families) if origination_probs is not None else None,
+        )
 
         clade_counts = [int(f["C"]) for f in dataset.families]
         split_counts = [int(f["N_splits"]) for f in dataset.families]
@@ -702,6 +717,7 @@ class UniformChunkedReconModel(torch.nn.Module):
         if torch.any(rates <= 0):
             raise ValueError("theta_init_rates must be strictly positive")
         self.theta = torch.nn.Parameter(torch.log2(rates))
+        self.register_buffer("origination_probs", prepared_origination_probs)
         self._state = UniformChunkedState(
             dataset=dataset,
             species_helpers=species_helpers,
@@ -710,6 +726,7 @@ class UniformChunkedReconModel(torch.nn.Module):
             built_chunks=built_chunks,
             device=device,
             dtype=dtype,
+            origination_probs=self.origination_probs,
             fixed_iters_Pi=fixed_iters_Pi,
             fixed_iters_E=fixed_iters_E,
             max_iters_E=max_iters_E,

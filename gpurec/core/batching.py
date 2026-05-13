@@ -1,4 +1,5 @@
-from typing import Any, Dict, List, Tuple
+import heapq
+from typing import Any, Dict, List, Sequence, Tuple
 
 import torch
 
@@ -238,6 +239,211 @@ def split_phase_waves(
             out_waves.append(wave)
             out_phases.append(ph)
     return out_waves, out_phases
+
+
+def _cpu_long_list(value: Any) -> List[int]:
+    if torch.is_tensor(value):
+        return [int(x) for x in value.detach().cpu().tolist()]
+    return [int(x) for x in value]
+
+
+def _ccp_split_counts(ccp: Dict[str, Any], C: int, parents: Sequence[int]) -> List[int]:
+    if "split_counts" in ccp:
+        counts = _cpu_long_list(ccp["split_counts"])
+        if len(counts) != C:
+            raise ValueError(f"split_counts has length {len(counts)} but C={C}")
+        return counts
+    counts = [0] * C
+    for p in parents:
+        counts[int(p)] += 1
+    return counts
+
+
+def _family_schedule_data(ccp: Dict[str, Any]) -> Dict[str, Any]:
+    """Build the dependency data needed for cross-family wave scheduling."""
+    C = int(ccp["C"])
+    N = int(ccp["N_splits"])
+    parents = _cpu_long_list(ccp["split_parents_sorted"])
+    leftrights = _cpu_long_list(ccp["split_leftrights_sorted"])
+    if len(parents) != N:
+        raise ValueError(f"split_parents_sorted has length {len(parents)} but N_splits={N}")
+    if len(leftrights) != 2 * N:
+        raise ValueError(
+            f"split_leftrights_sorted has length {len(leftrights)} but 2*N_splits={2 * N}"
+        )
+    lefts = leftrights[:N]
+    rights = leftrights[N:]
+    split_counts = _ccp_split_counts(ccp, C, parents)
+
+    children: List[List[int]] = [[] for _ in range(C)]
+    parents_of: List[List[int]] = [[] for _ in range(C)]
+    remaining = [0] * C
+    child_sets: List[set[int]] = [set() for _ in range(C)]
+    for p, l, r in zip(parents, lefts, rights):
+        p = int(p)
+        for child in (int(l), int(r)):
+            if child not in child_sets[p]:
+                child_sets[p].add(child)
+                children[p].append(child)
+                parents_of[child].append(p)
+                remaining[p] += 1
+
+    # Bottom-up levels identify when a clade can first become ready; lambda is
+    # a root-distance priority used to keep long chains moving when a ready set
+    # is larger than the wave cap.
+    bfs_level = [0] * C
+    remaining_bfs = list(remaining)
+    queue = [c for c in range(C) if remaining_bfs[c] == 0]
+    head = 0
+    max_level = 0
+    while head < len(queue):
+        c = queue[head]
+        head += 1
+        for p in parents_of[c]:
+            if bfs_level[p] <= bfs_level[c]:
+                bfs_level[p] = bfs_level[c] + 1
+                max_level = max(max_level, bfs_level[p])
+            remaining_bfs[p] -= 1
+            if remaining_bfs[p] == 0:
+                queue.append(p)
+
+    levels: List[List[int]] = [[] for _ in range(max_level + 1)]
+    for c, level in enumerate(bfs_level):
+        levels[level].append(c)
+    priority = [0] * C
+    for level in range(max_level, -1, -1):
+        for c in levels[level]:
+            for child in children[c]:
+                priority[child] = max(priority[child], priority[c] + 1)
+
+    return {
+        "C": C,
+        "split_counts": split_counts,
+        "children": children,
+        "parents_of": parents_of,
+        "remaining": remaining,
+        "priority": priority,
+        "root_id": int(ccp.get("root_clade_id", -1)),
+    }
+
+
+def schedule_global_phased_waves(
+    items: Sequence[Dict[str, Any]],
+    family_clade_offsets: Sequence[int],
+    *,
+    max_wave_size: int | None,
+    max_root_wave_size: int | None = None,
+) -> Tuple[List[List[int]], List[int]]:
+    """Schedule one resident batch with globally packed ready waves.
+
+    The retained kernels still need leaf clades handled before non-leaf clades,
+    but after the leaf phase this schedules all ready clades from all families
+    into waves capped by ``max_wave_size``.  This replaces the older lockstep
+    ``family wave k -> resident wave k`` collation, which left many waves far
+    below the GPU-friendly cap.
+    """
+    if len(items) != len(family_clade_offsets):
+        raise ValueError("items and family_clade_offsets must have matching lengths")
+    total_clades = sum(int(item["ccp"]["C"]) for item in items)
+    if total_clades == 0:
+        return [], []
+    wave_cap = total_clades if max_wave_size is None else int(max_wave_size)
+    if wave_cap <= 0:
+        raise ValueError("max_wave_size must be positive")
+    root_cap = (
+        None
+        if max_root_wave_size is None
+        else int(max_root_wave_size)
+    )
+    if root_cap is not None and root_cap <= 0:
+        raise ValueError("max_root_wave_size must be positive")
+
+    families = [_family_schedule_data(item["ccp"]) for item in items]
+    scheduled = [[False] * fam["C"] for fam in families]
+    queued = [[False] * fam["C"] for fam in families]
+    remaining = [list(fam["remaining"]) for fam in families]
+
+    waves: List[List[int]] = []
+    phases: List[int] = []
+
+    all_leaves: List[Tuple[int, int]] = []
+    for fi, fam in enumerate(families):
+        for c, count in enumerate(fam["split_counts"]):
+            if int(count) == 0:
+                all_leaves.append((fi, c))
+
+    all_leaves.sort(key=lambda item: (item[0], item[1]))
+    for start in range(0, len(all_leaves), wave_cap):
+        chunk = all_leaves[start:start + wave_cap]
+        wave = [
+            int(family_clade_offsets[fi]) + c
+            for fi, c in chunk
+        ]
+        waves.append(wave)
+        phases.append(1)
+        for fi, c in chunk:
+            scheduled[fi][c] = True
+            for parent in families[fi]["parents_of"][c]:
+                remaining[fi][parent] -= 1
+
+    ready: List[Tuple[int, int, int]] = []
+
+    def push_ready(fi: int, c: int) -> None:
+        if scheduled[fi][c] or queued[fi][c] or remaining[fi][c] != 0:
+            return
+        queued[fi][c] = True
+        priority = int(families[fi]["priority"][c])
+        # heapq is a min-heap.  Use negative priority so long root-distance
+        # chains are drained first, then stable family/clade tie breakers.
+        heapq.heappush(ready, (-priority, fi, c))
+
+    for fi, fam in enumerate(families):
+        for c in range(fam["C"]):
+            push_ready(fi, c)
+
+    while ready:
+        batch: List[Tuple[int, int]] = []
+        while ready and len(batch) < wave_cap:
+            _neg_priority, fi, c = heapq.heappop(ready)
+            if scheduled[fi][c]:
+                continue
+            queued[fi][c] = False
+            if remaining[fi][c] != 0:
+                continue
+            batch.append((fi, c))
+        if not batch:
+            continue
+
+        all_roots = all(c == families[fi]["root_id"] for fi, c in batch)
+        phase = 3 if all_roots else 2
+        if phase == 3 and root_cap is not None and len(batch) > root_cap:
+            chunks = [
+                batch[start:start + root_cap]
+                for start in range(0, len(batch), root_cap)
+            ]
+        else:
+            chunks = [batch]
+
+        for chunk in chunks:
+            waves.append([
+                int(family_clade_offsets[fi]) + c
+                for fi, c in chunk
+            ])
+            phases.append(phase)
+            for fi, c in chunk:
+                scheduled[fi][c] = True
+            for fi, c in chunk:
+                for parent in families[fi]["parents_of"][c]:
+                    remaining[fi][parent] -= 1
+                    push_ready(fi, parent)
+
+    scheduled_count = sum(sum(1 for done in family if done) for family in scheduled)
+    if scheduled_count != total_clades:
+        raise RuntimeError(
+            "global wave scheduler did not cover all clades: "
+            f"scheduled={scheduled_count}, total={total_clades}"
+        )
+    return waves, phases
 
 
 def build_wave_layout(
