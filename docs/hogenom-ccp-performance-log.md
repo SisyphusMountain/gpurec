@@ -2388,6 +2388,118 @@ The dense zero fill is apparently faster than the prototype's per-element root
 mapping work.  The code change was removed; keep the default PyTorch
 `zeros + index_copy_` initialization.
 
+## CUDA Pibar-From-UD Plan
+
+The current accepted profile still spends about `0.106 s` in
+`_uniform_cross_pibar_vjp_tree_from_ud_compact_kernel`.  The NCU diagnosis for a
+large launch showed high achieved occupancy but poor memory coalescing:
+DRAM throughput was high, useful bytes per sector were low, and excessive
+global sectors were about 60% of total sectors.  Retuning
+`GPUREC_PIBAR_UD_BLOCK_S` and `GPUREC_PIBAR_UD_NUM_WARPS` did not reduce total
+GPU time.
+
+The `main` branch contains an opt-in `GPUREC_CUDA_PIBAR_FROM_UD` prototype in
+`gpurec/core/kernels/pibar_vjp_cuda.py`.  It runs one split-side row per CUDA
+block, copies that row's `u_d` into shared memory, performs the species-tree
+subtree reduction there, and atomically accumulates the final child-row RHS.
+This directly targets the current compact Triton kernel's repeated global
+loads/stores during the bottom-up tree walk.
+
+Experiment:
+
+- port only the compact-level CUDA path as an opt-in
+  `GPUREC_CUDA_PIBAR_FROM_UD=1` route;
+- keep the existing Triton compact path as the default and fallback;
+- support fp32 CUDA only, matching the HOGENOM profile and the main-branch
+  prototype;
+- preserve `active_mask`, `side_active`, and compact species-level semantics;
+- verify targeted parity with the flag enabled;
+- benchmark HOGENOM event timing first, then run `nsys` only if the CUDA route
+  improves the whole-dataset median.
+
+## CUDA Pibar Shared-Padding Follow-Up Plan
+
+The CUDA Pibar route improves the whole-dataset event median, and `nsys`
+confirms lower total GPU kernel time.  NCU on the largest CUDA Pibar launch
+shows:
+
+- duration about `1.62 ms` for grid `86490`, block `256`;
+- 26 registers/thread, no spills;
+- theoretical occupancy 100%, achieved occupancy about 95%;
+- DRAM throughput about 89%;
+- shared-memory load/store bank conflicts are high, with NCU estimating
+  uncoalesced shared accesses as a large remaining source of stalls.
+
+Next experiment: add an opt-in
+`GPUREC_CUDA_PIBAR_FROM_UD_PAD_SHARED=1` mode that stores species row scratch
+at `s + floor(s / 32)` in dynamic shared memory.  This slightly increases
+shared memory per CTA but may reduce bank conflicts in the bottom-up subtree
+reduction.  Keep padding off unless event timing and `nsys` improve.
+
+Result: accepted for the unpadded CUDA Pibar route; rejected for shared padding.
+`GPUREC_CUDA_PIBAR_FROM_UD` now defaults to `auto`, with
+`GPUREC_CUDA_PIBAR_FROM_UD=0` as the escape hatch and
+`GPUREC_CUDA_PIBAR_FROM_UD_STRICT=1` for experiments that must fail instead of
+falling back.
+
+Correctness:
+
+```bash
+GPUREC_CUDA_PIBAR_FROM_UD=1 \
+GPUREC_CUDA_PIBAR_FROM_UD_STRICT=1 \
+pytest -q \
+  tests/unit/test_specieswise_uniform.py \
+  tests/unit/test_global_wave_scheduler.py \
+  tests/integration/test_gene_recon_model.py::test_gene_recon_model_forward_backward_modes \
+  tests/integration/test_gene_recon_model.py::test_memory_safe_resident_batches_match_resident_and_slice \
+  tests/integration/test_uniform_chunked_model.py::test_chunked_uniform_matches_resident_global_model \
+  tests/integration/test_uniform_chunked_model.py::test_chunked_uniform_chunk_subset_nll_and_gradient
+```
+
+Result: 21 passed.  The same suite also passed with
+`GPUREC_CUDA_PIBAR_FROM_UD_PAD_SHARED=1`, and passed again with the promoted
+default `auto` route and no environment variable.
+
+Event timing:
+
+| setting | median fwd+bwd | median forward | median backward | peak alloc | peak reserved | decision |
+| --- | ---: | ---: | ---: | ---: | ---: | --- |
+| Triton compact Pibar | 0.7843 s | 0.3103 s | 0.4749 s | 5.780 GiB | 6.965 GiB | baseline |
+| CUDA Pibar, strict env | 0.7540 s | 0.3085 s | 0.4452 s | 5.780 GiB | 6.965 GiB | accept |
+| CUDA Pibar, default auto | 0.7609 s | 0.3094 s | 0.4515 s | 5.780 GiB | 6.963 GiB | promoted |
+| CUDA Pibar + shared padding | 0.7608 s | 0.3114 s | 0.4494 s | 5.780 GiB | 6.965 GiB | reject padding |
+
+Nsight Systems for
+`profiling/hogenom_ccp/nsys_stream_depthff315_cuda_pibar.nsys-rep`:
+
+| setting | profiled pass | CUDA launches | GPU kernel time | Pibar VJP bucket |
+| --- | ---: | ---: | ---: | ---: |
+| Triton compact Pibar baseline | 0.8190 s | 15,606 | 0.7457 s | 0.1063 s / 244 |
+| CUDA Pibar | 0.8050 s | 15,606 | 0.7305 s | 0.0827 s / 244 |
+
+The CUDA path reduces the Pibar VJP bucket by about `23.6 ms`; total GPU kernel
+time drops by about `15.2 ms`.  Some neighboring buckets move up slightly in
+the profiled pass (`wave_step`, DTS backward, CUDA self-loop), but not enough
+to erase the Pibar win.
+
+Nsight Compute on the largest CUDA Pibar launch
+(`profiling/hogenom_ccp/ncu_cuda_pibar_launch172.ncu-rep`):
+
+- grid `86490`, block `256`, duration `1.62 ms`;
+- 26 registers/thread, no spills;
+- theoretical occupancy 100%, achieved occupancy about 95%;
+- DRAM throughput about 89%, L2 hit rate about 16%;
+- branch efficiency about 95%;
+- uncoalesced global accesses are much lower than the Triton compact path
+  (about 13% excessive sectors here versus about 60% in the Triton NCU);
+- shared-memory bank conflicts remain significant, but the simple
+  `s + floor(s / 32)` padding experiment did not improve end-to-end timing.
+
+Diagnosis: moving the per-split-side species-tree reduction into row-local CUDA
+shared memory is a real improvement for the current HOGENOM CCP workload.  It
+does not reduce launch count or memory footprint, but it improves the dominant
+Pibar VJP kernel enough to promote as the default auto path.
+
 ## Commands
 
 Warm whole-dataset stream timing:

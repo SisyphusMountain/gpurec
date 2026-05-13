@@ -8,6 +8,7 @@ import triton.language as tl
 
 from gpurec.core.memory_policy import proposal0_memory_gate
 
+_cuda_pibar_from_ud_fallback_warned = False
 _SUPPORTED_FLOAT_DTYPES = (torch.float32, torch.float64, torch.bfloat16)
 
 
@@ -1890,6 +1891,64 @@ def uniform_cross_pibar_vjp_tree_from_ud_fused(
             DTYPE=_tl_float_dtype(Pi_star.dtype),
             **launch_options,
         )
+
+    cuda_pibar_from_ud_mode = os.environ.get(
+        "GPUREC_CUDA_PIBAR_FROM_UD",
+        "auto",
+    ).strip().lower()
+    cuda_pibar_from_ud_enabled = cuda_pibar_from_ud_mode not in (
+        "",
+        "0",
+        "false",
+        "no",
+        "off",
+    )
+    cuda_pibar_from_ud_required = (
+        cuda_pibar_from_ud_mode
+        in ("1", "true", "yes", "on", "force", "required")
+        or os.environ.get("GPUREC_CUDA_PIBAR_FROM_UD_STRICT", "0") != "0"
+    )
+    if (
+        cuda_pibar_from_ud_enabled
+        and Pi_star.dtype == torch.float32
+        and Pi_star.device.type == "cuda"
+    ):
+        try:
+            from .pibar_vjp_cuda import uniform_cross_pibar_vjp_tree_from_ud_cuda
+
+            return uniform_cross_pibar_vjp_tree_from_ud_cuda(
+                Pi_star,
+                pibar_ud,
+                pibar_A,
+                sl,
+                sr,
+                accumulated_rhs,
+                S,
+                active_mask=active_mask,
+                reduce_idx=reduce_idx,
+                pibar_row_max=pibar_row_max,
+                side_active=side_active,
+                compact_level_ptr=compact_level_ptr,
+                compact_level_parents=compact_level_parents,
+                compact_level_child1=compact_level_child1,
+                compact_level_child2=compact_level_child2,
+            )
+        except Exception as exc:
+            if cuda_pibar_from_ud_required:
+                raise
+
+            if cuda_pibar_from_ud_mode not in ("auto", ""):
+                import warnings
+
+                global _cuda_pibar_from_ud_fallback_warned
+                if not _cuda_pibar_from_ud_fallback_warned:
+                    warnings.warn(
+                        "GPUREC_CUDA_PIBAR_FROM_UD requested, but the CUDA "
+                        f"prototype was unavailable ({exc}); falling back to Triton.",
+                        RuntimeWarning,
+                        stacklevel=2,
+                    )
+                    _cuda_pibar_from_ud_fallback_warned = True
 
     if (
         compact_level_ptr is None
