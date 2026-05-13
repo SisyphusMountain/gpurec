@@ -710,7 +710,7 @@ def _wave_backward_uniform_2d(
     )
     block_s = triton.next_power_of_2(S)
     block_nodes = triton.next_power_of_2(
-        max(1, int(os.environ.get("GPUREC_SELF_LOOP_2D_BLOCK_NODES", "64")))
+        max(1, int(os.environ.get("GPUREC_SELF_LOOP_2D_BLOCK_NODES", "128")))
     )
     n_row_blocks = triton.cdiv(W, block_w)
     scratch_shape = (W, S)
@@ -788,7 +788,7 @@ def _wave_backward_uniform_2d(
         **launch_options,
     )
 
-    jt_warps = int(os.environ.get("GPUREC_SELF_LOOP_2D_JT_NUM_WARPS", str(precompute_warps)))
+    jt_warps = int(os.environ.get("GPUREC_SELF_LOOP_2D_JT_NUM_WARPS", "4"))
     jt_options = {}
     if jt_warps > 0:
         jt_options["num_warps"] = jt_warps

@@ -33,15 +33,15 @@ Measured warm runtime after the scheduler change:
 | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
 | 25 | 43 | 3185 | 3217 | 3.145 s | 1.08 GiB | 1.72 GiB |
 | 100 | 11 | 927 | 8192 | 1.624 s | 2.65 GiB | 2.83 GiB |
-| 200 | 6 | 522 | 8192 | 1.440 s | 4.23 GiB | 8.47 GiB |
-| 250 | 5 | 430 | 8192 | 1.395 s | 5.05 GiB | 10.27 GiB |
-| 300 | 4 | 371 | 8192 | 1.371 s | 5.92 GiB | 11.95 GiB |
-| 400 | 3 | 286 | 8192 | 1.321 s | 7.92 GiB | 16.31 GiB |
-| 600 | 2 | 193 | 8192 | 1.296 s | 15.24 GiB | 16.71 GiB |
+| 200 | 6 | 522 | 8192 | 1.390 s | 4.23 GiB | 8.47 GiB |
+| 250 | 5 | 430 | 8192 | 1.360 s | 5.05 GiB | 10.27 GiB |
+| 300 | 4 | 371 | 8192 | 1.333 s | 5.92 GiB | 11.95 GiB |
+| 400 | 3 | 286 | 8192 | 1.307 s | 7.92 GiB | 16.31 GiB |
+| 600 | 2 | 193 | 8192 | 1.289 s | 15.24 GiB | 16.71 GiB |
 
 The best warm value inside the 5-6 GiB allocated target is chunk size 300 at
-about 1.37 s.  Larger chunks keep reducing waves but give small returns relative
-to memory: chunk 600 uses 15.24 GiB for only about 75 ms over chunk 300.
+about 1.33 s.  Larger chunks keep reducing waves but give small returns relative
+to memory: chunk 600 uses 15.24 GiB for only about 44 ms over chunk 300.
 
 The first pass for large chunks is still expensive because Triton compiles
 larger wave/kernel variants.  Removing `W: tl.constexpr` from the retained 2D
@@ -84,6 +84,22 @@ Nsight Compute on representative chunk-300 kernels:
   a representative grid 2718 reaches only about 52% memory throughput and 26%
   compute throughput, with 96 registers/thread and 41.7% theoretical occupancy.
   Some later launches are very small grids and show tail/underfill effects.
+
+Self-loop configuration sweep at chunk size 300:
+
+| setting | warm fwd+bwd | conclusion |
+| --- | ---: | --- |
+| default before sweep | 1.371 s | baseline |
+| `GPUREC_SELF_LOOP_2D_BLOCK_W=2` | 1.406 s | worse |
+| `GPUREC_SELF_LOOP_2D_JT_NUM_WARPS=4` | 1.341 s | better |
+| `GPUREC_SELF_LOOP_2D_JT_NUM_WARPS=2` | 1.341 s | roughly tied |
+| `GPUREC_SELF_LOOP_2D_JT_NUM_WARPS=1` | 1.651 s | much worse |
+| `GPUREC_SELF_LOOP_2D_JT_NUM_WARPS=4 GPUREC_SELF_LOOP_2D_BLOCK_NODES=32` | 1.353 s | worse than 128 |
+| `GPUREC_SELF_LOOP_2D_JT_NUM_WARPS=4 GPUREC_SELF_LOOP_2D_BLOCK_NODES=128` | 1.333 s | best measured |
+| `GPUREC_SELF_LOOP_2D_JT_NUM_WARPS=4 GPUREC_SELF_LOOP_2D_BLOCK_NODES=256` | 1.340 s | worse than 128 |
+
+The retained 2D path now defaults to `JT_NUM_WARPS=4` and
+`BLOCK_NODES=128`.  The environment variables still override those defaults.
 
 ## Main Branch Notes
 
