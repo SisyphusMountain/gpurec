@@ -1046,6 +1046,29 @@ The 320k layout removes 110 launches and slightly reduces the 2D `J^T` bucket
 (`0.1633 s -> 0.1716 s`).  Keep the 315k/8192 layout as the default and treat
 the DTS partial-row cap as a diagnostic/memory-guard option only.
 
+## Current DTS Accumulation NCU Plan
+
+The current auto no-split baseline still spends about 0.163 s of GPU time in
+`_dts_cross_backward_accum_kernel`.  The previous DTS launch-shape sweeps found
+`GPUREC_DTS_NUM_WARPS=8` best, but those measurements predate the promoted
+CUDA no-split default and were mostly Nsight Systems summaries.  Before making
+another DTS kernel change, capture Nsight Compute for a representative heavy
+current-default DTS launch.
+
+Plan:
+
+- use the accepted `depth_first_fit, clade_budget=315000, max_wave_size=8192`
+  layout and current default auto no-split path;
+- select a heavy launch from the current `nsys` report rather than guessing;
+  launch index 172 is the largest DTS launch in the captured pass at about
+  3.1 ms;
+- run `ncu --set full` on that launch;
+- inspect occupancy, register pressure, memory throughput, cache behavior, and
+  replay/spill diagnostics before deciding whether to rewrite the kernel or
+  only test a narrow launch-shape option;
+- accept no code change without parity tests and an `nsys` whole-dataset
+  confirmation.
+
 ## Commands
 
 Warm whole-dataset stream timing:
