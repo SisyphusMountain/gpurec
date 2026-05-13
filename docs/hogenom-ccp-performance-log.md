@@ -1167,6 +1167,27 @@ Nsight Systems confirmation:
 The launch count is unchanged.  The win comes from avoiding inactive-row
 temporary-buffer writes in the retained 2D self-loop kernels.
 
+## Current 2D Jt NCU After Scratch-Zero Skip Plan
+
+After the inactive scratch-zero skip, the split-wave 2D `J^T` kernel remains
+the largest single GPU bucket: 1,464 launches and 0.2097 s in
+`profiling/hogenom_ccp/nsys_stream_depthff315_skip_inactive_2d_scratch.sqlite`.
+The previous NCU capture predates the scratch-zero change, so the next step is
+to profile the current kernel before changing it again.
+
+Plan:
+
+- use the accepted `depth_first_fit, clade_budget=315000, max_wave_size=8192`
+  layout and all current defaults;
+- select a heavy current launch from the latest `nsys` report; matching launch
+  index 1218 is the largest observed 2D `J^T` launch at about 455 us;
+- run `ncu --set full` on that launch;
+- compare the post-skip NCU result with the older Jt diagnosis, especially
+  register pressure, local spills, occupancy, memory throughput, and excessive
+  sector traffic;
+- only prototype another 2D `J^T` change if NCU identifies a concrete source of
+  remaining overhead; otherwise move to the next profiler bucket.
+
 ## Commands
 
 Warm whole-dataset stream timing:
