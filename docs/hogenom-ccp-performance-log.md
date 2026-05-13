@@ -2586,6 +2586,55 @@ The paired result is a tie, not a clear win.  Since NCU already indicated this
 kernel is memory/divergence limited, do not spend another `nsys` run or promote
 a 16-warp default.
 
+## Post-CUDA-Pibar No-Family-Cap Scheduling Retest Plan
+
+The accepted `family_chunk_size=300, clade_budget=315000` HOGENOM layout has 5
+resident batches and 258 waves.  The earlier no-family-cap diagnostic
+(`--chunk-size 0 --clade-budget 315000`) produced 4 resident batches and 240
+waves, but was rejected because total GPU kernel time did not improve and peak
+reserved memory rose to about 11 GiB.
+
+That rejection predates the promoted CUDA Pibar route, which changes the
+relative cost of split-side Pibar VJP work.  Retest exactly this one lower-wave
+layout under current defaults before looking at more aggressive clade budgets.
+
+Experiment:
+
+- benchmark the accepted 300-family cap and no-family-cap layouts with one
+  warmup and five measured HOGENOM stream passes;
+- require identical loss/gradient within existing fp32 run noise;
+- accept the no-family-cap layout only if event timing improves materially and
+  a follow-up `nsys` run confirms lower total GPU kernel time;
+- keep the 300-family cap if the win is only a CUDA-event fluctuation or if the
+  memory-reservation tradeoff remains poor.
+
+Result: keep the 300-family cap as the conservative memory-default layout, but
+record `--chunk-size 0 --clade-budget 315000` as a faster high-memory
+scheduling option under the CUDA Pibar default.
+
+Event timing:
+
+| family cap | batches | waves | median fwd+bwd | median forward | median backward | peak alloc | peak reserved |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 300 | 5 | 258 | 0.7569 s | 0.3090 s | 0.4483 s | 5.780 GiB | 6.963 GiB |
+| none (`--chunk-size 0`) | 4 | 240 | 0.7456 s | 0.3079 s | 0.4377 s | 5.980 GiB | 10.994 GiB |
+
+Nsight Systems for
+`profiling/hogenom_ccp/nsys_stream_depthff315_cuda_pibar_no_family_cap.nsys-rep`:
+
+| family cap | profiled pass | CUDA launches | GPU kernel time | wave-step | DTS backward | CUDA self-loop | CUDA Pibar |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 300 | 0.8050 s | 15,606 | 0.7305 s | 0.2151 s / 1,548 | 0.1572 s / 244 | 0.1030 s / 258 | 0.0827 s / 244 |
+| none | 0.7869 s | 13,464 | 0.7239 s | 0.2140 s / 1,440 | 0.1508 s / 227 | 0.1063 s / 240 | 0.0830 s / 227 |
+
+The no-family-cap layout removes 18 waves and 2,142 launches.  GPU kernel time
+drops by about `6.6 ms`; measured-pass wall time drops by about `18 ms`; median
+event timing drops by about `11 ms`.  The main tradeoff is memory reservation:
+peak allocated remains near the lean envelope at `5.98 GiB`, but PyTorch peak
+reserved memory rises to about `11.0 GiB`.  Keep the 300-family cap for
+memory-conservative runs; use `--chunk-size 0` when runtime is prioritized and
+the larger CUDA reservation is acceptable.
+
 ## Commands
 
 Warm whole-dataset stream timing:
