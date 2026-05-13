@@ -1237,6 +1237,35 @@ Next experiment:
 - accept only if the PyTorch add/reduction bucket or total GPU kernel time
   shrinks without changing likelihood/gradient.
 
+Result: accepted for the specieswise auto-wrapped path.  The change reuses
+`aw0.sum(dim=0)` and `aw2.sum(dim=0)` for `grad_E` instead of materializing
+and reducing `(aw0 + aw2)`.  Genewise/family-indexed and scalar-global paths
+still use the existing `_scatter_accum` implementation.
+
+Correctness:
+
+- targeted scheduler/model/chunked parity suite: 15 passed;
+- HOGENOM loss/gradient are unchanged within the existing fp32 run noise:
+  loss 667283.5625 bits, gradient infinity norm about 645.922.
+
+Event timing:
+
+| setting | median fwd+bwd | median forward | median backward | peak alloc | decision |
+| --- | ---: | ---: | ---: | ---: | --- |
+| reduction reuse | 1.1548 s | 0.3185 s | 0.8365 s | 5.904 GiB | accepted |
+| previous accepted baseline | 1.1742 s | 0.3189 s | 0.8552 s | 5.904 GiB | baseline |
+
+Nsight Systems confirmation:
+
+| setting | profiled pass | CUDA launches | GPU kernel time | PyTorch sum-reduce bucket | CUDA add bucket |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| previous accepted baseline | 1.283 s | 47,722 | 1.0709 s | 0.0497 s / 3131 launches | 0.0166 s |
+| reduction reuse | 1.281 s | 47,478 | 1.0605 s | 0.0448 s / 2887 launches | 0.0057 s |
+
+The measured profiler improvement is modest but real: one full-wave reduction
+launch per split wave is removed, and the large `aw0 + aw2` elementwise add is
+eliminated for the HOGENOM specieswise path.
+
 ## Commands
 
 Warm whole-dataset stream timing:

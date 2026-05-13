@@ -438,13 +438,33 @@ def Pi_wave_backward(
             )
 
         if not self_loop_grads_accumulated:
-            _scatter_accum(grad_log_pD, aw0)
-            _scatter_accum(grad_log_pS, aw345)
-            _scatter_accum(grad_E_acc, aw0 + aw2)
-            _scatter_accum(grad_Ebar_acc, aw1)
-            _scatter_accum(grad_E_s1_acc, aw4)
-            _scatter_accum(grad_E_s2_acc, aw3)
-            _scatter_accum(grad_mt, aw2)
+            if (
+                G == 1
+                and grad_log_pD.ndim == 2
+                and grad_log_pS.ndim == 2
+                and grad_E_acc.ndim == 2
+                and grad_Ebar_acc.ndim == 2
+                and grad_E_s1_acc.ndim == 2
+                and grad_E_s2_acc.ndim == 2
+                and grad_mt.ndim == 2
+            ):
+                aw0_sum = aw0.sum(dim=0)
+                aw2_sum = aw2.sum(dim=0)
+                grad_log_pD[0] += aw0_sum.to(dtype=grad_log_pD.dtype)
+                grad_log_pS[0] += aw345.sum(dim=0).to(dtype=grad_log_pS.dtype)
+                grad_E_acc[0] += (aw0_sum + aw2_sum).to(dtype=grad_E_acc.dtype)
+                grad_Ebar_acc[0] += aw1.sum(dim=0).to(dtype=grad_Ebar_acc.dtype)
+                grad_E_s1_acc[0] += aw4.sum(dim=0).to(dtype=grad_E_s1_acc.dtype)
+                grad_E_s2_acc[0] += aw3.sum(dim=0).to(dtype=grad_E_s2_acc.dtype)
+                grad_mt[0] += aw2_sum.to(dtype=grad_mt.dtype)
+            else:
+                _scatter_accum(grad_log_pD, aw0)
+                _scatter_accum(grad_log_pS, aw345)
+                _scatter_accum(grad_E_acc, aw0 + aw2)
+                _scatter_accum(grad_Ebar_acc, aw1)
+                _scatter_accum(grad_E_s1_acc, aw4)
+                _scatter_accum(grad_E_s2_acc, aw3)
+                _scatter_accum(grad_mt, aw2)
 
         if meta['has_splits'] and dts_r is not None:
             sl = meta['sl']
