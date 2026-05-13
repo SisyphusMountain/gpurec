@@ -1683,6 +1683,77 @@ Next experiment:
   `nsys` confirms lower GPU kernel time without shifting more cost into DTS or
   Pibar buckets.
 
+## Post-CUDA-Split Scheduling Metadata Sweep
+
+The HOGENOM CCP intra-batch scheduler is already doing the intended
+leaf-first, then globally packed post-leaf DAG schedule.  On the current
+`depth_first_fit` HOGENOM batches, each inspected batch reaches the simple
+lower bound:
+
+```text
+leaf_waves + max(longest_post_leaf_depth, ceil(nonleaf_clades / wave_cap))
+```
+
+For the accepted `clade_budget=315000, max_wave_size=8192` configuration:
+
+| batch | clades | leaves | nonleaves | depth | lower bound | actual waves |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 0 | 314,985 | 27,830 | 287,155 | 98 | 102 | 102 |
+| 1 | 314,902 | 24,939 | 289,963 | 61 | 65 | 65 |
+| 2 | 273,898 | 23,300 | 250,598 | 45 | 48 | 48 |
+| 3 | 104,120 | 8,739 | 95,381 | 28 | 30 | 30 |
+| 4 | 15,208 | 1,783 | 13,425 | 12 | 13 | 13 |
+
+This means a better ready-queue heuristic cannot reduce the wave count for
+this batch layout unless it violates dependencies or mixes leaf/non-leaf
+semantics.  The underfilled tail waves are caused by depth-dominated batches:
+for example, the deepest batch has depth 98, so it needs 98 post-leaf waves
+even though its non-leaf work alone would need only 36 waves at cap 8192.
+
+Metadata-only retest of larger batch budgets and wave caps:
+
+| clade budget | wave cap | batches | total waves | max clades | max splits |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 315,000 | 8,192 | 5 | 258 | 314,985 | 805,558 |
+| 350,000 | 8,192 | 5 | 247 | 349,825 | 899,027 |
+| 400,000 | 8,192 | 5 | 229 | 399,997 | 1,056,554 |
+| 400,000 | 16,384 | 5 | 224 | 399,994 | 1,056,233 |
+| 450,000 | 8,192 | 5 | 220 | 449,992 | 1,135,851 |
+| 500,000 | 8,192 | 4 | 210 | 499,957 | 1,265,563 |
+
+Next benchmark: time the 350k, 400k, and 500k candidates with the current
+CUDA self-loop defaults.  Accept a larger budget only if event timing improves
+without exceeding the lean memory target.
+
+Event timing result:
+
+| clade budget | wave cap | median fwd+bwd | median forward | median backward | peak alloc | peak reserved | decision |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| 315,000 | 8,192 | 0.8866 s | 0.3159 s | 0.5705 s | 5.779 GiB | 6.961 GiB | baseline |
+| 320,000 | 8,192 | 0.8861 s | 0.3162 s | 0.5699 s | 7.922 GiB | 8.273 GiB | rejected: memory |
+| 350,000 | 8,192 | 0.8866 s | 0.3164 s | 0.5702 s | 8.370 GiB | 8.941 GiB | rejected: memory |
+| 315,000 | 16,384 | 0.8840 s | 0.3157 s | 0.5684 s | 5.728 GiB | 6.268 GiB | neutral |
+| 315,000 | 24,576 | 0.8825 s | 0.3146 s | 0.5681 s | 5.522 GiB | 11.051 GiB | rejected: reserved memory |
+| 315,000 | 32,768 | 0.8803 s | 0.3153 s | 0.5645 s | 5.523 GiB | 11.047 GiB | rejected: nsys neutral/reserved memory |
+
+Nsight Systems for
+`profiling/hogenom_ccp/nsys_stream_depthff315_wave32768.nsys-rep`:
+
+| setting | profiled pass | CUDA launches | GPU kernel time | wave-step bucket | CUDA self-loop bucket |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 315k / 8192 | 0.996 s | 42,096 | 0.7856 s | 0.2151 s / 1,548 | 0.1008 s / 258 |
+| 315k / 32768 | 0.998 s | 42,024 | 0.7862 s | 0.2149 s / 1,494 | 0.1031 s / 249 |
+
+Diagnosis: increasing the wave cap removes only nine resident waves and does
+not reduce total GPU kernel time in Nsight.  Larger clade budgets reduce waves
+more, but they immediately leave the lean memory envelope and do not improve
+the measured median at 320k or 350k.  The current HOGENOM scheduling bottleneck
+is therefore not an intra-batch wave heuristic: the scheduler already reaches
+the leaf-first DAG lower bound for the accepted layout.  Meaningful reductions
+in wave count would require either substantially larger resident batches, a
+different memory representation that makes those larger batches cheap, or a
+kernel path that can process multiple dependency levels inside one launch.
+
 ## Commands
 
 Warm whole-dataset stream timing:
