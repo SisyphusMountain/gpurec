@@ -1827,6 +1827,44 @@ launched thousands of tiny PyTorch kernels.  Treating model-owned origination
 probabilities as already prepared removes that overhead without changing the
 public validation path.
 
+## E-Adjoint Host Synchronization Audit Plan
+
+After the prepared-origination fast path, the accepted HOGENOM `nsys` profile is
+much cleaner but still reports 599 `cudaStreamSynchronize` runtime calls during
+one measured streamed pass.  The likely source is the E-adjoint CG solve in
+`gpurec/optimization/implicit_grad.py`, which currently converts device
+residual dot products and norms to Python floats each iteration.
+
+Next experiment:
+
+- instrument the current code externally, without changing solver math, to
+  count CG iterations per resident batch and measure how much of the backward
+  pass sits in the E-adjoint solve;
+- use Nsight Systems runtime tables to compare synchronization count/time
+  before and after any candidate change;
+- only prototype a solver-side change if the measurement shows that scalar CG
+  synchronization is material relative to the 0.78 s whole-dataset pass;
+- preserve exact gradient semantics unless a deliberate solver tolerance/change
+  is separately tested for likelihood/gradient parity.
+
+Instrumentation result: do not change the solver yet.
+
+One measured HOGENOM streamed pass after warmup:
+
+| batch | CG iterations | CG wall time |
+| ---: | ---: | ---: |
+| 0 | 7 | 0.00495 s |
+| 1 | 7 | 0.00485 s |
+| 2 | 7 | 0.00485 s |
+| 3 | 8 | 0.00552 s |
+| 4 | 8 | 0.00544 s |
+
+Total measured CG wall time was about 0.0256 s inside a 0.7935 s
+forward+backward pass.  That is not zero, but the larger remaining costs are
+still the GPU buckets in wave-step, DTS accumulation, Pibar VJP, CUDA self-loop,
+and parent-reduced DTS.  A solver-side rewrite would add correctness risk for
+too little expected gain at this point.
+
 ## Commands
 
 Warm whole-dataset stream timing:
