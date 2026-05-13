@@ -193,6 +193,40 @@ If we revisit non-contiguous batches, the policy needs a better memory proxy
 than clade count alone, likely involving the dense static/runtime layout induced
 by family composition.
 
+## DTS Accumulation Plan
+
+The current tuned chunk-300 profile still spends about 0.179 s of GPU time in
+`_dts_cross_backward_accum_kernel`.  NCU showed this kernel at roughly 52%
+memory throughput, 26% compute throughput, 96 registers/thread, and 41.7%
+theoretical occupancy.  Before rewriting it, sweep the existing two-stage
+`grad_mt` reduction tile size:
+
+- current hardcoded tile: 128 split rows per partial tile;
+- candidate tile sizes: 32, 64, 128, 256, 512;
+- acceptance criterion: whole-dataset warm forward+backward improves without
+  changing likelihood/gradient and without increasing peak allocation
+  materially.
+
+If none of those improve the pass, the next kernel-level work should target
+register pressure and memory traffic inside `_dts_cross_backward_accum_kernel`
+rather than its reduction staging.
+
+Tile-size sweep results at chunk size 300:
+
+| `GPUREC_DTS_GRAD_MT_TILE_SPLITS` | warm fwd+bwd | peak alloc | conclusion |
+| ---: | ---: | ---: | --- |
+| 64 | 1.336 s | 5.92 GiB | worse |
+| 128 | 1.332 s | 5.92 GiB | current default |
+| 192 | 1.332 s | 5.92 GiB | no clear win |
+| 256 | 1.326-1.331 s | 5.92 GiB | not confirmed by `nsys` |
+| 512 | 1.338 s | 5.92 GiB | worse |
+
+The 256 value looked slightly better in one uninstrumented run, but a follow-up
+Nsight Systems run measured 1.495 s under profiler overhead and
+`_dts_cross_backward_accum_kernel` at 0.187 s, worse than the tuned-default
+`nsys` report at 1.471 s / 0.179 s.  Keep 128 as the default; retain the
+environment override only for future diagnostics.
+
 ## Commands
 
 Warm whole-dataset stream timing:

@@ -1574,6 +1574,9 @@ def dts_cross_backward_accum_fused(
         and not grad_mt_scalar
         and grad_mt.numel() == S
     )
+    env_tile_splits = os.environ.get("GPUREC_DTS_GRAD_MT_TILE_SPLITS")
+    if env_tile_splits is not None:
+        grad_mt_two_stage_tile_splits = int(env_tile_splits)
     grad_mt_two_stage_tile_splits = max(1, int(grad_mt_two_stage_tile_splits))
     n_grad_mt_tiles = triton.cdiv(n_ws, grad_mt_two_stage_tile_splits)
     if use_grad_mt_two_stage:
