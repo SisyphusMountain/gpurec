@@ -2068,6 +2068,50 @@ The existing parent order is already the best measured option.  Because the
 prototype added an unused diagnostic knob without a performance win, the code
 change was removed and no `nsys` follow-up was run.
 
+## Current CPU And Launch Overhead Audit Plan
+
+After the prepared-origination fast path and rejected Pibar follow-ups, the
+accepted uninstrumented stream pass is around 0.78 s and the current `nsys`
+profile reports about 0.746 s of GPU kernel time.  Before considering larger
+changes such as launch consolidation or CUDA graph capture, audit the existing
+`nsys_stream_depthff315_prepared_orig.sqlite` report for:
+
+- measured-pass NVTX wall time versus GPU kernel time;
+- CUDA kernel launch count and launch API self time;
+- synchronization and memcpy API time;
+- whether the CPU/GPU gap is large enough to justify a graph/capture prototype
+  with the added complexity of autograd, batch switching, and dynamic tensor
+  lifetimes.
+
+Only plan a launch-overhead prototype if the audit shows a meaningful
+recoverable CPU gap.  Otherwise keep focusing on the dominant GPU kernel
+buckets.
+
+Audit result from
+`profiling/hogenom_ccp/nsys_stream_depthff315_prepared_orig.sqlite`:
+
+- measured-pass NVTX wall time: 0.8190 s;
+- GPU kernel active sum: 0.7457 s;
+- first-to-last kernel window: 0.8187 s;
+- inferred inter-kernel/non-kernel gap: 0.0731 s across 15,605 gaps;
+- largest single inter-kernel gap: 292.8 us;
+- gaps at least 50 us: 76 gaps, totaling 0.0063 s;
+- gaps at least 10 us: 2,092 gaps, totaling 0.0434 s;
+- CUDA runtime launch API self time: about 0.173 s across
+  `cudaLaunchKernel*` / `cuLaunchKernel*` calls, but this is not directly
+  additive with wall time because the CPU is launching while GPU kernels are
+  executing;
+- CUDA memcpy activity: 1,983 copies, 0.0019 s GPU copy time, about 171 MB;
+- CUDA synchronization API time is about 0.412 s, mostly CPU waiting for queued
+  GPU work rather than standalone overhead.
+
+Diagnosis: launch/CPU overhead exists, but the recoverable envelope in the
+current stream pass is at most about 73 ms and is spread over thousands of
+small gaps.  A CUDA graph or launch-consolidation prototype would be
+non-trivial because the stream pass switches resident batches, allocates
+batch-local tensors, and uses autograd.  Do not pursue that before exhausting
+lower-risk GPU-kernel work; the dominant cost is still real kernel time.
+
 ## Commands
 
 Warm whole-dataset stream timing:
