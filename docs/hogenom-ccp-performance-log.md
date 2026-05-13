@@ -2858,6 +2858,63 @@ stage-1 bucket.  The gain comes from neighboring-bucket movement and costs
 about `0.68 GiB` of peak allocation.  The `128` setting reduces memory, but
 total GPU kernel time regresses.  Keep `TILE_SPLITS=64`.
 
+## Forward Multi-Iteration Wave-Step Plan
+
+The current fixed-Pi forward path launches `_wave_step_uniform_kernel` once per
+wave per fixed local Pi iteration.  With the HOGENOM setting
+`fixed_iters_Pi=6`, the current 305k no-family-cap layout therefore launches
+`245 * 6 = 1470` wave-step kernels, making this the largest remaining kernel
+bucket at about `0.214 s`.
+
+Within one wave, the fixed local Pi iterations are row-local once `dts_r` has
+been computed from already-finished child waves.  That means the six local
+iterations can in principle run inside one kernel per wave without violating
+cross-wave dependencies.  The risks are larger Triton code, higher compile
+time, possible register pressure, and losing per-iteration root tracing.
+
+Prototype plan:
+
+- add an opt-in `GPUREC_WAVE_STEP_MULTI_ITER=1` route for even fixed iterations
+  when no progress callback or root-logsumexp tracing is active;
+- keep the existing one-iteration kernel as the default and fallback;
+- make the multi-iteration kernel ping-pong between the global `Pi` and
+  `Pibar` row storage internally, and still compute final Pibar rows/row maxima
+  when required for backward;
+- verify targeted forward/backward parity with the flag enabled and disabled;
+- benchmark HOGENOM event timing first, then run `nsys` only if launch
+  consolidation improves the whole pass rather than just shifting time into a
+  heavier wave-step kernel.
+
+Result: rejected and removed.
+
+Correctness before removal:
+
+- `GPUREC_WAVE_STEP_MULTI_ITER=1 pytest -q tests/unit/test_specieswise_uniform.py
+  tests/unit/test_global_wave_scheduler.py`: 13 passed;
+- `GPUREC_WAVE_STEP_MULTI_ITER=1 pytest -q` on the targeted
+  `GeneReconModel` and `UniformChunkedReconModel` parity subset: 8 passed.
+
+Event timing on the no-family-cap 305k layout looked promising:
+
+| setting | median fwd+bwd | median forward | median backward | peak alloc | peak reserved |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| default one launch per wave iteration | 0.7565 s | 0.3069 s | 0.4496 s | 5.675 GiB | 8.027 GiB |
+| opt-in multi-iteration wave-step | 0.7333 s | 0.2974 s | 0.4359 s | 5.675 GiB | 8.027 GiB |
+
+Nsight Systems did not validate the event win:
+
+| setting | profiled pass | CUDA launches | GPU kernel time | wave-step bucket | DTS backward | CUDA self-loop |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| default | 0.7840 s | 13,624 | 0.7184 s | 0.2136 s / 1,470 | 0.1532 s | 0.0992 s |
+| multi-iteration wave-step | 0.7895 s | 12,399 | 0.7332 s | 0.2048 s / 245 | 0.1721 s | 0.1039 s |
+
+The prototype did exactly what it was meant to do locally: it removed 1,225
+wave-step launches and reduced the wave-step bucket by about `8.8 ms`.
+However, total GPU kernel time regressed by about `14.8 ms`, mostly because DTS
+backward and CUDA self-loop buckets moved up in the profiled pass.  Since the
+acceptance gate is whole-pass `nsys` improvement, remove the code and keep the
+current one-iteration kernel.
+
 ## Commands
 
 Warm whole-dataset stream timing, conservative memory layout:
