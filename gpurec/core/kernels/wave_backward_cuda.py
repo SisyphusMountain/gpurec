@@ -157,7 +157,8 @@ extern "C" __global__ void gpurec_wave_backward_nosplit_uniform_fp32(
     int has_splits,
     int has_leaf_term,
     int correction_mode,
-    int event_grad_mode
+    int event_grad_mode,
+    int child_edge_weight_mode
 ) {
     const int w = blockIdx.x;
     if (w >= W) {
@@ -170,8 +171,9 @@ extern "C" __global__ void gpurec_wave_backward_nosplit_uniform_fp32(
     float* vacc = work + S;
     float* diag = vacc + S;
     float* pcoef = diag + S;
-    float* sl1w = pcoef + S;
-    float* sl2w = sl1w + S;
+    float* edgew = pcoef + S;
+    float* sl1w = edgew;
+    float* sl2w = edgew + ((child_edge_weight_mode != 0) ? 0 : S);
 
     __shared__ float A_shared;
     const int out_base = w * S;
@@ -183,6 +185,13 @@ extern "C" __global__ void gpurec_wave_backward_nosplit_uniform_fp32(
             v_out[out_base + s] = 0.0f;
         }
         return;
+    }
+
+    if (child_edge_weight_mode != 0) {
+        for (int s = threadIdx.x; s < S; s += blockDim.x) {
+            edgew[s] = 0.0f;
+        }
+        __syncthreads();
     }
 
     for (int s = threadIdx.x; s < S; s += blockDim.x) {
@@ -199,8 +208,19 @@ extern "C" __global__ void gpurec_wave_backward_nosplit_uniform_fp32(
         vacc[s] = r;
         diag[s] = q0 + q1;
         pcoef[s] = pc;
-        sl1w[s] = q3;
-        sl2w[s] = q4;
+        if (child_edge_weight_mode != 0) {
+            const int c1 = sp_child1[s];
+            const int c2 = sp_child2[s];
+            if (c1 >= 0 && c1 < S) {
+                edgew[c1] = q3;
+            }
+            if (c2 >= 0 && c2 < S) {
+                edgew[c2] = q4;
+            }
+        } else {
+            sl1w[s] = q3;
+            sl2w[s] = q4;
+        }
     }
     __syncthreads();
 
@@ -246,8 +266,13 @@ extern "C" __global__ void gpurec_wave_backward_nosplit_uniform_fp32(
             float result = term[s] * diag[s] + pprime * (A_shared - work[s]);
             const int parent = sp_parent[s];
             if (parent >= 0 && parent < S) {
-                const int pc1 = sp_child1[parent];
-                const float side_w = (pc1 == s) ? sl1w[parent] : sl2w[parent];
+                float side_w;
+                if (child_edge_weight_mode != 0) {
+                    side_w = edgew[s];
+                } else {
+                    const int pc1 = sp_child1[parent];
+                    side_w = (pc1 == s) ? sl1w[parent] : sl2w[parent];
+                }
                 result += term[parent] * side_w;
             }
             work[s] = result;
@@ -532,7 +557,14 @@ def wave_backward_uniform_nosplit_cuda(
     block = int(os.environ.get("GPUREC_CUDA_SELF_LOOP_BLOCK", "512"))
     if block <= 0 or block % 32 != 0:
         raise ValueError("GPUREC_CUDA_SELF_LOOP_BLOCK must be a positive multiple of 32")
-    shared_bytes = int(S) * 7 * 4
+    child_edge_weight_mode = (
+        os.environ.get("GPUREC_CUDA_SELF_LOOP_CHILD_EDGE_WEIGHT", "1")
+        .strip()
+        .lower()
+        not in ("", "0", "false", "no", "off")
+    )
+    shared_arrays = 6 if child_edge_weight_mode else 7
+    shared_bytes = int(S) * shared_arrays * 4
 
     correction_mode_value = 0 if str(correction_mode).lower() in ("self", "diagonal", "0") else 1
     event_grad_mode = 1 if accum_param_grads[0].numel() == int(S) else 0
@@ -580,6 +612,7 @@ def wave_backward_uniform_nosplit_cuda(
         ("int", 1 if has_leaf_term else 0),
         ("int", correction_mode_value),
         ("int", event_grad_mode),
+        ("int", 1 if child_edge_weight_mode else 0),
     )
 
     with torch.cuda.device(device_index):

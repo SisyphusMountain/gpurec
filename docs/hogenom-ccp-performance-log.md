@@ -1619,6 +1619,50 @@ Next experiment:
 - benchmark HOGENOM, then run `nsys` and optionally `ncu` if the event timing
   improves.
 
+Result: accepted and promoted to default.  Set
+`GPUREC_CUDA_SELF_LOOP_CHILD_EDGE_WEIGHT=0` to restore the old two-array
+`sl1w/sl2w` layout for diagnostics.
+
+Correctness:
+
+- targeted scheduler/model/chunked parity suite with child-edge mode forced on:
+  16 passed;
+- same targeted suite with the promoted default: 16 passed;
+- same targeted suite with `GPUREC_CUDA_SELF_LOOP_CHILD_EDGE_WEIGHT=0`:
+  16 passed.
+
+Event timing:
+
+| setting | median fwd+bwd | median forward | median backward | peak alloc | decision |
+| --- | ---: | ---: | ---: | ---: | --- |
+| child-edge shared array | 0.8922 s | 0.3145 s | 0.5772 s | 5.779 GiB | accepted |
+| two parent-side arrays | 0.9118 s | 0.3145 s | 0.5976 s | 5.779 GiB | previous default |
+
+Nsight Systems result for
+`profiling/hogenom_ccp/nsys_stream_depthff315_cuda_child_edge.nsys-rep`:
+
+| setting | profiled pass | CUDA launches | GPU kernel time | CUDA self-loop bucket |
+| --- | ---: | ---: | ---: | ---: |
+| two parent-side arrays | 1.036 s | 42,096 | 0.8285 s | 0.1393 s |
+| child-edge shared array | 0.996 s | 42,096 | 0.7856 s | 0.1008 s |
+
+Nsight Compute on a full 8192-row launch
+(`profiling/hogenom_ccp/ncu_cuda_child_edge_wave164.ncu-rep`):
+
+- duration 1.27 ms versus 1.87 ms for the two-array block-512 launch;
+- dynamic shared memory drops from 37.1 KB/block to 31.8 KB/block;
+- occupancy limit rises from two to three blocks/SM, and achieved occupancy is
+  about 99%;
+- registers/thread: 39; no local spilling;
+- compute/memory throughput rises to about 49%, with DRAM still only about
+  12.7%;
+- barrier and long-scoreboard stalls both fall substantially.
+
+Diagnosis: this is the intended next step after the block-size sweep.  It
+removes one row-sized shared array, unlocks the third resident block per SM,
+and reduces the CUDA self-loop bucket by about 38 ms in the profiled pass
+without changing launch count or memory footprint at the model level.
+
 ## Commands
 
 Warm whole-dataset stream timing:
