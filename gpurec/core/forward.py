@@ -66,6 +66,7 @@ def Pi_wave_forward(
     family_idx: torch.Tensor | None = None,
     return_original: bool = True,
     return_root_rows: bool = False,
+    progress_callback=None,
 ):
     """Wave-based Pi forward pass with wave-ordered layout (v2).
 
@@ -198,8 +199,20 @@ def Pi_wave_forward(
                 roots_in_wave += 1
         return roots_in_wave == W
 
+    def _progress(event: str, wave_index: int | None = None,
+                  local_iter: int | None = None, meta=None) -> None:
+        if progress_callback is not None:
+            progress_callback(
+                event,
+                wave_index,
+                len(wave_metas),
+                local_iter,
+                fixed_iters,
+                meta,
+            )
+
     def _run_wave_self_loop(meta, dts_r, leaf_wt, DL_w, SL1_w, SL2_w,
-                            Ebar_w, E_w, mt_w):
+                            Ebar_w, E_w, mt_w, wave_index):
         ws = meta['start']
         we = meta['end']
         W = meta['W']
@@ -216,6 +229,7 @@ def Pi_wave_forward(
                 family_idx=family_idx if batched else None,
                 family_indexed_consts=batched,
             )
+            _progress("pi_iter", wave_index, local_iter + 1, meta)
             if local_iter == fixed_iters - 1 and not _can_skip_final_pibar(ws, we, W):
                 wave_pibar_uniform_parent_fused(
                     Pi, Pibar, ws, W, S,
@@ -226,8 +240,11 @@ def Pi_wave_forward(
                 )
 
     with _nvtx_range("Pi wave forward v2"):
-        for meta in wave_metas:
+        _progress("start")
+        for wave_index, meta in enumerate(wave_metas):
+            _progress("wave_start", wave_index, None, meta)
             if meta['has_splits']:
+                _progress("dts_start", wave_index, None, meta)
                 dts_r = _compute_dts_cross(
                     Pi, Pibar, meta, sp_child1, sp_child2,
                     log_pD_param, log_pS_param, S, device, dtype,
@@ -240,8 +257,9 @@ def Pi_wave_forward(
             DL_w, SL1_w, SL2_w, Ebar_w, E_w, mt_w = wave_consts
             _run_wave_self_loop(
                 meta, dts_r, uniform_leaf_logp, DL_w, SL1_w, SL2_w,
-                Ebar_w, E_w, mt_w,
+                Ebar_w, E_w, mt_w, wave_index,
             )
+        _progress("done")
 
     with _nvtx_range("Pi finalize permute"):
         if return_root_rows:

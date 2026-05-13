@@ -102,7 +102,8 @@ def E_fixed_point(species_helpers,
                           warm_start_E,
                           dtype,
                           device,
-                          ancestors_T=None):
+                          ancestors_T=None,
+                          progress_callback=None):
 
     S = species_helpers['S']
 
@@ -149,14 +150,23 @@ def E_fixed_point(species_helpers,
                 )
                 
                 E_new, E_s1, E_s2, E_bar = result
-                
-                # Check convergence (sup-norm across all dims)
-                if torch.abs(E_new - E).max().item() < tolerance:
-                    converged_iter = iteration + 1
-                    E = E_new
-                    break
+
+                max_diff = None
+                converged = False
+                if tolerance >= 0.0:
+                    # Check convergence (sup-norm across all dims). Fixed-pass
+                    # callers pass a negative tolerance and avoid this sync.
+                    max_diff = torch.abs(E_new - E).max().item()
+                    converged = max_diff < tolerance
                 
                 E = E_new
+
+                if progress_callback is not None:
+                    progress_callback(iteration + 1, max_iters, max_diff, converged)
+
+                if converged:
+                    converged_iter = iteration + 1
+                    break
     
     return {
         'E': E,
