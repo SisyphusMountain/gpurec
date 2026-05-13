@@ -35,17 +35,18 @@ Measured warm runtime after the scheduler change:
 | 100 | 11 | 927 | 8192 | 1.624 s | 2.65 GiB | 2.83 GiB |
 | 200 | 6 | 522 | 8192 | 1.390 s | 4.23 GiB | 8.47 GiB |
 | 250 | 5 | 430 | 8192 | 1.360 s | 5.05 GiB | 10.27 GiB |
-| 300 | 4 | 371 | 8192 | 1.284 s | 5.92 GiB | 11.95 GiB |
+| 300 | 4 | 371 | 8192 | 1.264 s | 5.92 GiB | 11.95 GiB |
 | 400 | 3 | 286 | 8192 | 1.307 s | 7.92 GiB | 16.31 GiB |
 | 600 | 2 | 193 | 8192 | 1.289 s | 15.24 GiB | 16.71 GiB |
 
 The chunk-300 row includes the later DTS launch-warp tuning, no-host pruning,
-and 2D `J^T` warp retuning.  Without the no-host-pruning override the same
-tuned code measured 1.321 s.  The other rows are the scheduler/self-loop-tuned
-measurements used for memory tradeoff decisions.
+2D `J^T` warp retuning, and forward wave-step warp retuning.  Without the
+no-host-pruning override the same tuned code measured 1.321 s before the
+wave-step retune.  The other rows are the scheduler/self-loop-tuned measurements
+used for memory tradeoff decisions.
 
 The best warm value inside the 5-6 GiB allocated target is chunk size 300 at
-about 1.28 s.  Larger chunks keep reducing waves but give small returns relative
+about 1.26 s.  Larger chunks keep reducing waves but give small returns relative
 to memory: chunk 600 uses 15.24 GiB for only about 44 ms over chunk 300.
 
 The first pass for large chunks is still expensive because Triton compiles
@@ -56,17 +57,17 @@ compilation, but warm-up is still much slower than steady state.
 ## Nsight Findings
 
 Nsight Systems on tuned chunk size 300 with
-`GPUREC_BACKWARD_NO_CPU_PRUNING=1` measured one profiled pass at 1.404 s
-(`nsys` overhead relative to the uninstrumented 1.284 s median).  The measured
-pass had 52,557 CUDA kernel launches and 1.183 s of GPU kernel time.
+`GPUREC_BACKWARD_NO_CPU_PRUNING=1` measured one profiled pass at 1.380 s
+(`nsys` overhead relative to the uninstrumented 1.264 s median).  The measured
+pass had 52,557 CUDA kernel launches and 1.161 s of GPU kernel time.
 
 Top kernel families in the chunk-300 `nsys` report:
 
 | kernel | launches | total GPU time | avg launch |
 | --- | ---: | ---: | ---: |
 | `_wave_backward_uniform_2d_jt_kernel` | 2226 | 0.268 s | 120.4 us |
-| `_wave_step_uniform_kernel` | 2226 | 0.214 s | 96.0 us |
-| `_dts_cross_backward_accum_kernel` | 358 | 0.165 s | 459.7 us |
+| `_wave_step_uniform_kernel` | 2226 | 0.198 s | 88.9 us |
+| `_dts_cross_backward_accum_kernel` | 358 | 0.161 s | 451.1 us |
 | `_dts_parent_reduced_ge2_stage1_kernel` | 708 | 0.108 s | 152.5 us |
 | `_uniform_cross_pibar_vjp_tree_from_ud_compact_kernel` | 358 | 0.106 s | 296.9 us |
 | `_wave_backward_uniform_2d_precompute_kernel` | 371 | 0.067 s | 181.8 us |
@@ -146,6 +147,9 @@ leaner no-split/path-specific kernel from `main` for the cases where it applies.
   covered by the same targeted CUDA parity suite as the default path.
 - The 2D `J^T` warp retune was checked warm and with Nsight Systems before
   changing the default to `GPUREC_SELF_LOOP_2D_JT_NUM_WARPS=2`.
+- The forward wave-step warp retune was checked warm, with Nsight Systems, and
+  with Nsight Compute before changing the default to
+  `GPUREC_WAVE_STEP_NUM_WARPS=8`.
 - First-fit clade packing was timed and rejected as a default because it raised
   peak allocation without improving warm runtime.
 
@@ -224,6 +228,42 @@ Results:
 | `JT_NUM_WARPS=2 BLOCK_NODES=256` | 1.290 s | 0.941 s | not run | not run | does not stack |
 
 Set the retained 2D `J^T` default to 2 warps and leave `BLOCK_NODES=128`.
+
+## Forward Wave-Step Retuning Plan
+
+With the latest no-host-pruning and 2D `J^T` defaults, the next largest kernel
+bucket is `_wave_step_uniform_kernel`: 2,226 launches and 0.214 s total GPU time
+in the chunk-300 `nsys` run.  Earlier NCU showed a representative full wave as
+healthy, so expect only small gains, but this bucket is now large enough to test
+instead of guessing.
+
+Next experiment:
+
+- add diagnostic environment overrides for the shared uniform wave-step launch
+  shape;
+- test `GPUREC_WAVE_STEP_NUM_WARPS` in `{2, 4, 8}` and
+  `GPUREC_WAVE_STEP_BLOCK_S` in `{128, 256, 512}`;
+- accept a default change only if warm whole-dataset timing improves and an
+  `nsys` run confirms the wave-step bucket shrinks without moving cost into
+  final Pibar row recomputation.
+
+Results:
+
+| setting | warm fwd+bwd | forward | `nsys` pass | wave-step GPU time | conclusion |
+| --- | ---: | ---: | ---: | ---: | --- |
+| `NUM_WARPS=4 BLOCK_S=256` | 1.284 s | 0.348 s | 1.404 s | 0.2136 s | baseline |
+| `NUM_WARPS=2 BLOCK_S=256` | 1.291 s | 0.355 s | not run | not run | rejected |
+| `NUM_WARPS=8 BLOCK_S=256` | 1.264 s | 0.328 s | 1.380 s | 0.1979 s | accepted |
+| `NUM_WARPS=16 BLOCK_S=256` | 1.480 s | 0.542 s | not run | not run | rejected |
+| `NUM_WARPS=8 BLOCK_S=128` | 1.459 s | 0.520 s | not run | not run | rejected |
+| `NUM_WARPS=8 BLOCK_S=512` | 1.274 s | 0.341 s | not run | not run | worse than 256 |
+
+Nsight Compute on `NUM_WARPS=8 BLOCK_S=256` full-wave launches reports about
+89% compute/memory throughput, 93% achieved occupancy, 40 registers/thread, and
+10.67 waves per SM.  The final Pibar recomputation bucket also improved in the
+`nsys` run (`0.0305 s -> 0.0276 s`) because it shares the uniform wave-step
+launch helper.  Set the default `GPUREC_WAVE_STEP_NUM_WARPS` value to 8 and keep
+`BLOCK_S=256`.
 
 ## Next Batch-Policy Plan
 

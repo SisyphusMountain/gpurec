@@ -1,5 +1,7 @@
 """Fused Triton kernels for wave-step computation."""
 
+import os
+
 import torch
 import triton
 import triton.language as tl
@@ -7,11 +9,14 @@ import triton.language as tl
 
 def _uniform_block_s(S: int, *, default_cap: int = 256) -> int:
     """Return the species tile width for uniform forward kernels."""
-    return int(min(default_cap, triton.next_power_of_2(S)))
+    env_value = os.environ.get("GPUREC_WAVE_STEP_BLOCK_S")
+    if env_value is not None:
+        default_cap = max(1, int(env_value))
+    return int(min(triton.next_power_of_2(default_cap), triton.next_power_of_2(S)))
 
 
 def _uniform_num_warps() -> int:
-    return 4
+    return int(os.environ.get("GPUREC_WAVE_STEP_NUM_WARPS", "8"))
 
 
 def _leaf_logp_mode(use_leaf_index: bool, leaf_logp, family_idx, S: int) -> int:
