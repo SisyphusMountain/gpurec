@@ -637,6 +637,31 @@ slightly worse.  The value of the cap is avoiding pathological scratch when
 experimenting with larger clade budgets; it should not replace the 315k default
 unless a follow-up profile shows a clear end-to-end win.
 
+Follow-up stacking plan:
+
+- combine the DTS partial-row cap with larger `max_wave_size` values, because
+  the cap may remove the memory cliff that made larger waves risky;
+- test `clade_budget=320000, max_dts_partial_rows=100000` with
+  `max_wave_size` 12288 and 16384;
+- reject the combination if peak allocation crosses the lean target or if
+  `nsys` shows the same pattern as the uncapped large-wave sweep: fewer launches
+  but no GPU-kernel-time improvement.
+
+Stacking result: rejected as a default.  The capped 320k layout gets fewer
+waves with larger caps, but timing does not improve materially and memory
+crosses the lean target:
+
+| clade budget | DTS partial-row cap | `max_wave_size` | total waves | event median fwd+bwd | peak alloc | decision |
+| ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| 320000 | 100000 | 8192 | 256 | 1.2456 s | 5.928 GiB | opt-in memory guard |
+| 320000 | 100000 | 12288 | 252 | 1.2453 s | 6.081 GiB | rejected default |
+| 320000 | 100000 | 16384 | 250 | 1.2450 s | 6.397 GiB | rejected |
+
+The larger wave caps also reintroduced very expensive first-run compilation /
+setup costs, with warmup passes around 58-71 s.  Keep the lean default at
+315k/8192 and keep the capped 320k layout as an opt-in memory-guarded
+experiment only.
+
 ## DTS Accumulation Plan
 
 The current tuned chunk-300 profile still spends about 0.179 s of GPU time in
