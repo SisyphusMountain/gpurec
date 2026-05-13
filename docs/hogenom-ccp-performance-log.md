@@ -27,6 +27,17 @@ The new scheduler handles split-count-zero leaf clades first, then uses a
 global ready queue across the resident batch and packs ready clades up to
 `max_wave_size`.  This is closer to the DAG schedule we want.
 
+The forward ready-queue policy is not optimal on all CCP-like DAGs: a low-level
+regression case with cap 2 used seven total waves where a latest-valid reverse
+compaction uses six.  The scheduler now keeps the forward policy when it hits
+the simple leaf-first lower bound, but if it exceeds that bound it also builds a
+reverse non-leaf schedule from roots/sinks backward and uses it when it reduces
+the wave count.  The accepted HOGENOM `depth_first_fit, clade_budget=315000`
+layout remains at 258 waves (`[102, 65, 48, 30, 13]` by batch), so this is a
+guard against wasted waves rather than a new HOGENOM timing win.  A post-change
+warm event run measured median forward+backward at 1.2468 s, peak allocated
+5.904 GiB.
+
 Measured warm runtime after the scheduler change:
 
 | family chunk | batches | total waves | max wave | warm fwd+bwd | peak alloc | peak reserved |
@@ -509,6 +520,20 @@ PyTorch reductions at 0.054 s.  The atomic accumulation path saved some memory
 and launch count, but the atomics were much slower than storing row
 contributions and reducing them with PyTorch.  Do not revive this approach
 unless it uses a staged reduction rather than per-row atomics.
+
+## Depth-Aware Wave-Cap Sweep Plan
+
+The accepted depth-aware policy was measured only at the default
+`max_wave_size=8192`.  Since the per-batch scheduler is lower-bound optimal for
+that cap, the next scheduling knob is the cap itself:
+
+- expose `max_wave_size` in `scripts/profile_hogenom_ccp_pass.py` so HOGENOM
+  timing runs can vary it without ad hoc scripts;
+- test the accepted depth-aware packing around `clade_budget=315000` with
+  wave caps above and below 8192;
+- reject larger caps if the 2D self-loop scratch or static layout pushes peak
+  allocation outside the 5-6 GiB target or if whole-dataset timing regresses;
+- profile any apparent win with Nsight Systems before promoting it.
 
 ## DTS Accumulation Plan
 

@@ -341,6 +341,209 @@ def family_schedule_summary(ccp: Dict[str, Any]) -> Dict[str, int]:
     }
 
 
+def _leaf_phase_waves(
+    families: Sequence[Dict[str, Any]],
+    family_clade_offsets: Sequence[int],
+    *,
+    wave_cap: int,
+) -> List[List[int]]:
+    all_leaves: List[Tuple[int, int]] = []
+    for fi, fam in enumerate(families):
+        for c, count in enumerate(fam["split_counts"]):
+            if int(count) == 0:
+                all_leaves.append((fi, c))
+
+    all_leaves.sort(key=lambda item: (item[0], item[1]))
+    return [
+        [
+            int(family_clade_offsets[fi]) + c
+            for fi, c in all_leaves[start:start + wave_cap]
+        ]
+        for start in range(0, len(all_leaves), wave_cap)
+    ]
+
+
+def _split_root_wave(
+    batch: Sequence[Tuple[int, int]],
+    families: Sequence[Dict[str, Any]],
+    *,
+    root_cap: int | None,
+) -> List[List[Tuple[int, int]]]:
+    if root_cap is None or len(batch) <= root_cap:
+        return [list(batch)]
+    if all(c == families[fi]["root_id"] for fi, c in batch):
+        return [
+            list(batch[start:start + root_cap])
+            for start in range(0, len(batch), root_cap)
+        ]
+    return [list(batch)]
+
+
+def _materialize_nonleaf_waves(
+    batches: Sequence[Sequence[Tuple[int, int]]],
+    families: Sequence[Dict[str, Any]],
+    family_clade_offsets: Sequence[int],
+    *,
+    root_cap: int | None,
+) -> Tuple[List[List[int]], List[int]]:
+    waves: List[List[int]] = []
+    phases: List[int] = []
+    for batch in batches:
+        for chunk in _split_root_wave(batch, families, root_cap=root_cap):
+            if not chunk:
+                continue
+            waves.append([
+                int(family_clade_offsets[fi]) + c
+                for fi, c in chunk
+            ])
+            phases.append(
+                3 if all(c == families[fi]["root_id"] for fi, c in chunk) else 2
+            )
+    return waves, phases
+
+
+def _schedule_forward_nonleaf_waves(
+    families: Sequence[Dict[str, Any]],
+    *,
+    wave_cap: int,
+    root_cap: int | None,
+) -> List[List[Tuple[int, int]]]:
+    scheduled = [[False] * fam["C"] for fam in families]
+    queued = [[False] * fam["C"] for fam in families]
+    remaining = [list(fam["remaining"]) for fam in families]
+
+    for fi, fam in enumerate(families):
+        for c, count in enumerate(fam["split_counts"]):
+            if int(count) == 0:
+                scheduled[fi][c] = True
+                for parent in fam["parents_of"][c]:
+                    remaining[fi][parent] -= 1
+
+    ready: List[Tuple[int, int, int]] = []
+
+    def push_ready(fi: int, c: int) -> None:
+        if scheduled[fi][c] or queued[fi][c] or remaining[fi][c] != 0:
+            return
+        queued[fi][c] = True
+        priority = int(families[fi]["priority"][c])
+        # heapq is a min-heap.  Use negative priority so long root-distance
+        # chains are drained first, then stable family/clade tie breakers.
+        heapq.heappush(ready, (-priority, fi, c))
+
+    for fi, fam in enumerate(families):
+        for c in range(fam["C"]):
+            push_ready(fi, c)
+
+    batches: List[List[Tuple[int, int]]] = []
+    while ready:
+        batch: List[Tuple[int, int]] = []
+        while ready and len(batch) < wave_cap:
+            _neg_priority, fi, c = heapq.heappop(ready)
+            if scheduled[fi][c]:
+                continue
+            queued[fi][c] = False
+            if remaining[fi][c] != 0:
+                continue
+            batch.append((fi, c))
+        if not batch:
+            continue
+
+        for chunk in _split_root_wave(batch, families, root_cap=root_cap):
+            batches.append(chunk)
+            for fi, c in chunk:
+                scheduled[fi][c] = True
+            for fi, c in chunk:
+                for parent in families[fi]["parents_of"][c]:
+                    remaining[fi][parent] -= 1
+                    push_ready(fi, parent)
+
+    return batches
+
+
+def _schedule_reverse_compacted_nonleaf_waves(
+    families: Sequence[Dict[str, Any]],
+    *,
+    wave_cap: int,
+    root_cap: int | None,
+) -> List[List[Tuple[int, int]]]:
+    """Build a latest-valid non-leaf schedule and return it in forward order."""
+    scheduled = [[False] * fam["C"] for fam in families]
+    queued = [[False] * fam["C"] for fam in families]
+    successors_remaining: List[List[int]] = [
+        [0] * fam["C"]
+        for fam in families
+    ]
+
+    for fi, fam in enumerate(families):
+        for c in range(fam["C"]):
+            if int(fam["split_counts"][c]) == 0:
+                continue
+            successors_remaining[fi][c] = sum(
+                1
+                for parent in fam["parents_of"][c]
+                if int(fam["split_counts"][parent]) != 0
+            )
+
+    ready: List[Tuple[int, int, int, int]] = []
+
+    def push_ready(fi: int, c: int) -> None:
+        if (
+            int(families[fi]["split_counts"][c]) == 0
+            or scheduled[fi][c]
+            or queued[fi][c]
+            or successors_remaining[fi][c] != 0
+        ):
+            return
+        queued[fi][c] = True
+        priority = int(families[fi]["priority"][c])
+        fanout = len(families[fi]["children"][c])
+        # Reverse scheduling starts from sinks.  Lower root-distance priority
+        # is later in the forward pass; larger fanout helps unlock predecessors.
+        heapq.heappush(ready, (priority, -fanout, fi, c))
+
+    for fi, fam in enumerate(families):
+        for c in range(fam["C"]):
+            push_ready(fi, c)
+
+    reverse_batches: List[List[Tuple[int, int]]] = []
+    while ready:
+        batch: List[Tuple[int, int]] = []
+        while ready and len(batch) < wave_cap:
+            _priority, _neg_fanout, fi, c = heapq.heappop(ready)
+            if scheduled[fi][c] or successors_remaining[fi][c] != 0:
+                continue
+            queued[fi][c] = False
+            batch.append((fi, c))
+        if not batch:
+            continue
+
+        for chunk in _split_root_wave(batch, families, root_cap=root_cap):
+            reverse_batches.append(chunk)
+            for fi, c in chunk:
+                scheduled[fi][c] = True
+            for fi, c in chunk:
+                for child in families[fi]["children"][c]:
+                    if int(families[fi]["split_counts"][child]) == 0:
+                        continue
+                    successors_remaining[fi][child] -= 1
+                    push_ready(fi, child)
+
+    return list(reversed(reverse_batches))
+
+
+def _simple_leaf_first_wave_lower_bound(
+    families: Sequence[Dict[str, Any]],
+    *,
+    wave_cap: int,
+) -> int:
+    total_leaves = sum(int(fam["leaf_count"]) for fam in families)
+    total_nonleaves = sum(int(fam["nonleaf_count"]) for fam in families)
+    max_depth = max((int(fam["max_level"]) for fam in families), default=0)
+    leaf_waves = (total_leaves + wave_cap - 1) // wave_cap
+    work_waves = (total_nonleaves + wave_cap - 1) // wave_cap
+    return leaf_waves + max(max_depth, work_waves)
+
+
 def schedule_global_phased_waves(
     items: Sequence[Dict[str, Any]],
     family_clade_offsets: Sequence[int],
@@ -373,89 +576,51 @@ def schedule_global_phased_waves(
         raise ValueError("max_root_wave_size must be positive")
 
     families = [_family_schedule_data(item["ccp"]) for item in items]
-    scheduled = [[False] * fam["C"] for fam in families]
-    queued = [[False] * fam["C"] for fam in families]
-    remaining = [list(fam["remaining"]) for fam in families]
 
     waves: List[List[int]] = []
     phases: List[int] = []
 
-    all_leaves: List[Tuple[int, int]] = []
-    for fi, fam in enumerate(families):
-        for c, count in enumerate(fam["split_counts"]):
-            if int(count) == 0:
-                all_leaves.append((fi, c))
+    leaf_waves = _leaf_phase_waves(
+        families,
+        family_clade_offsets,
+        wave_cap=wave_cap,
+    )
+    waves.extend(leaf_waves)
+    phases.extend([1] * len(leaf_waves))
 
-    all_leaves.sort(key=lambda item: (item[0], item[1]))
-    for start in range(0, len(all_leaves), wave_cap):
-        chunk = all_leaves[start:start + wave_cap]
-        wave = [
-            int(family_clade_offsets[fi]) + c
-            for fi, c in chunk
-        ]
-        waves.append(wave)
-        phases.append(1)
-        for fi, c in chunk:
-            scheduled[fi][c] = True
-            for parent in families[fi]["parents_of"][c]:
-                remaining[fi][parent] -= 1
+    forward_batches = _schedule_forward_nonleaf_waves(
+        families,
+        wave_cap=wave_cap,
+        root_cap=root_cap,
+    )
+    best_batches = forward_batches
 
-    ready: List[Tuple[int, int, int]] = []
+    lower_bound = _simple_leaf_first_wave_lower_bound(families, wave_cap=wave_cap)
+    if len(leaf_waves) + len(forward_batches) > lower_bound:
+        reverse_batches = _schedule_reverse_compacted_nonleaf_waves(
+            families,
+            wave_cap=wave_cap,
+            root_cap=root_cap,
+        )
+        if len(reverse_batches) < len(forward_batches):
+            best_batches = reverse_batches
 
-    def push_ready(fi: int, c: int) -> None:
-        if scheduled[fi][c] or queued[fi][c] or remaining[fi][c] != 0:
-            return
-        queued[fi][c] = True
-        priority = int(families[fi]["priority"][c])
-        # heapq is a min-heap.  Use negative priority so long root-distance
-        # chains are drained first, then stable family/clade tie breakers.
-        heapq.heappush(ready, (-priority, fi, c))
+    nonleaf_waves, nonleaf_phases = _materialize_nonleaf_waves(
+        best_batches,
+        families,
+        family_clade_offsets,
+        root_cap=None,
+    )
+    waves.extend(nonleaf_waves)
+    phases.extend(nonleaf_phases)
 
-    for fi, fam in enumerate(families):
-        for c in range(fam["C"]):
-            push_ready(fi, c)
-
-    while ready:
-        batch: List[Tuple[int, int]] = []
-        while ready and len(batch) < wave_cap:
-            _neg_priority, fi, c = heapq.heappop(ready)
-            if scheduled[fi][c]:
-                continue
-            queued[fi][c] = False
-            if remaining[fi][c] != 0:
-                continue
-            batch.append((fi, c))
-        if not batch:
-            continue
-
-        all_roots = all(c == families[fi]["root_id"] for fi, c in batch)
-        phase = 3 if all_roots else 2
-        if phase == 3 and root_cap is not None and len(batch) > root_cap:
-            chunks = [
-                batch[start:start + root_cap]
-                for start in range(0, len(batch), root_cap)
-            ]
-        else:
-            chunks = [batch]
-
-        for chunk in chunks:
-            waves.append([
-                int(family_clade_offsets[fi]) + c
-                for fi, c in chunk
-            ])
-            phases.append(phase)
-            for fi, c in chunk:
-                scheduled[fi][c] = True
-            for fi, c in chunk:
-                for parent in families[fi]["parents_of"][c]:
-                    remaining[fi][parent] -= 1
-                    push_ready(fi, parent)
-
-    scheduled_count = sum(sum(1 for done in family if done) for family in scheduled)
-    if scheduled_count != total_clades:
+    scheduled_clades = [clade for wave in waves for clade in wave]
+    scheduled_count = len(set(scheduled_clades))
+    if len(scheduled_clades) != total_clades or scheduled_count != total_clades:
         raise RuntimeError(
             "global wave scheduler did not cover all clades: "
-            f"scheduled={scheduled_count}, total={total_clades}"
+            f"scheduled={scheduled_count}, rows={len(scheduled_clades)}, "
+            f"total={total_clades}"
         )
     return waves, phases
 

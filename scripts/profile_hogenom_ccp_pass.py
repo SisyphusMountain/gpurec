@@ -50,6 +50,7 @@ class DatasetConfig:
         family_chunk_size: int,
         clade_budget: int | None,
         batch_packing: str,
+        max_wave_size: int | None,
         fixed_iters_E: int,
         fixed_iters_Pi: int,
         neumann_terms: int,
@@ -64,6 +65,7 @@ class DatasetConfig:
         self.family_chunk_size = family_chunk_size
         self.clade_budget = clade_budget
         self.batch_packing = batch_packing
+        self.max_wave_size = max_wave_size
         self.fixed_iters_E = fixed_iters_E
         self.fixed_iters_Pi = fixed_iters_Pi
         self.neumann_terms = neumann_terms
@@ -118,6 +120,12 @@ def parse_args() -> argparse.Namespace:
             "--chunk-size 0 to make the clade budget the only batch cap."
         ),
     )
+    parser.add_argument(
+        "--max-wave-size",
+        type=int,
+        default=8192,
+        help="Maximum clades scheduled into one resident wave.",
+    )
     parser.add_argument("--max-families", type=int, default=None)
     parser.add_argument("--warmup-runs", type=int, default=1)
     parser.add_argument("--profile-runs", type=int, default=1)
@@ -158,6 +166,7 @@ def dataset_config(args: argparse.Namespace) -> DatasetConfig:
         family_chunk_size=args.chunk_size,
         clade_budget=args.clade_budget,
         batch_packing=args.batch_packing,
+        max_wave_size=args.max_wave_size,
         fixed_iters_E=FIXED_ITERS_E,
         fixed_iters_Pi=FIXED_ITERS_PI,
         neumann_terms=NEUMANN_TERMS,
@@ -205,6 +214,7 @@ def build_model(
         family_chunk_size=config.family_chunk_size,
         clade_budget=config.clade_budget,
         batch_packing=config.batch_packing,
+        max_wave_size=config.max_wave_size,
         lazy_preprocess=True,
         prefetch_batches="all",
         origination_probs=origination_probs,
@@ -363,6 +373,7 @@ def main() -> None:
                 "chunk_size": config.family_chunk_size,
                 "clade_budget": config.clade_budget,
                 "batch_packing": config.batch_packing,
+                "max_wave_size": config.max_wave_size,
                 "max_families": config.max_families,
                 "fixed_iters_E": config.fixed_iters_E,
                 "fixed_iters_Pi": config.fixed_iters_Pi,
@@ -395,6 +406,7 @@ def main() -> None:
                 "species": model.n_species,
                 "batches": len(model.batch_metadata),
                 "chunk_size": model.family_chunk_size,
+                "max_wave_size": model.max_wave_size,
                 "selected_batch": batch_index,
             }
         ),

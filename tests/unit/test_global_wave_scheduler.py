@@ -18,6 +18,19 @@ def _ccp(C, parents, lefts, rights, root):
     }
 
 
+def _assert_topological(waves, offsets, items):
+    wave_of = {clade: wave_idx for wave_idx, wave in enumerate(waves) for clade in wave}
+    for offset, item in zip(offsets, items):
+        ccp = item["ccp"]
+        parents = ccp["split_parents_sorted"].tolist()
+        lefts = ccp["split_leftrights_sorted"][: len(parents)].tolist()
+        rights = ccp["split_leftrights_sorted"][len(parents) :].tolist()
+        for parent, left, right in zip(parents, lefts, rights):
+            parent_wave = wave_of[offset + parent]
+            assert wave_of[offset + left] < parent_wave
+            assert wave_of[offset + right] < parent_wave
+
+
 def test_global_scheduler_packs_ready_clades_after_leaf_phase():
     # Two identical tiny DAGs:
     # root 0 depends on internal 1 and leaf 2; internal 1 depends on leaf 3.
@@ -35,6 +48,7 @@ def test_global_scheduler_packs_ready_clades_after_leaf_phase():
     assert waves[0] == [2, 3, 6, 7]
     assert waves[1] == [1, 5]
     assert waves[2] == [0, 4]
+    _assert_topological(waves, [0, 4], items)
 
 
 def test_global_scheduler_respects_cap_and_topological_order():
@@ -52,16 +66,25 @@ def test_global_scheduler_respects_cap_and_topological_order():
     assert all(len(wave) <= 2 for wave in waves)
     wave_of = {clade: wave_idx for wave_idx, wave in enumerate(waves) for clade in wave}
     assert sorted(wave_of) == list(range(8))
+    _assert_topological(waves, offsets, items)
 
-    for offset, item in zip(offsets, items):
-        ccp = item["ccp"]
-        parents = ccp["split_parents_sorted"].tolist()
-        lefts = ccp["split_leftrights_sorted"][: len(parents)].tolist()
-        rights = ccp["split_leftrights_sorted"][len(parents) :].tolist()
-        for parent, left, right in zip(parents, lefts, rights):
-            parent_wave = wave_of[offset + parent]
-            assert wave_of[offset + left] < parent_wave
-            assert wave_of[offset + right] < parent_wave
+
+def test_global_scheduler_uses_reverse_compaction_when_forward_greedy_wastes_wave():
+    # This CCP-like DAG has two leaves and eight non-leaf clades.  A pure
+    # bottom-up ready queue takes six non-leaf waves at cap=2, but a latest-valid
+    # reverse compaction packs the same DAG in five non-leaf waves.
+    parents = [0, 0, 1, 0, 2, 1, 4, 1, 5, 8, 1, 4, 7, 5, 1, 2, 7, 4, 5, 2, 3, 0, 1, 2]
+    lefts = [1, 2, 3, 4, 5, 6, 7, 8, 9, 9, 6, 5, 9, 8, 9, 7, 8, 5, 8, 3, 8, 7, 8, 6]
+    rights = [3, 2, 5, 5, 7, 7, 7, 8, 9, 9, 9, 7, 8, 6, 8, 8, 8, 7, 9, 6, 9, 3, 8, 8]
+    items = [{"ccp": _ccp(10, parents, lefts, rights, root=0)}]
+
+    waves, phases = schedule_global_phased_waves(items, [0], max_wave_size=2)
+
+    assert len(waves) == 6
+    assert phases == [1, 2, 2, 2, 2, 3]
+    assert all(len(wave) <= 2 for wave in waves)
+    assert sorted(clade for wave in waves for clade in wave) == list(range(10))
+    _assert_topological(waves, [0], items)
 
 
 def test_clade_first_fit_packs_non_contiguous_families():
