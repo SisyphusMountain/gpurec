@@ -2500,6 +2500,45 @@ shared memory is a real improvement for the current HOGENOM CCP workload.  It
 does not reduce launch count or memory footprint, but it improves the dominant
 Pibar VJP kernel enough to promote as the default auto path.
 
+## CUDA Pibar Block-Size Sweep Plan
+
+The promoted CUDA Pibar kernel still has one low-risk launch-shape knob:
+`GPUREC_CUDA_PIBAR_FROM_UD_BLOCK`.  The accepted route uses 256 threads per
+split-side row.  NCU reports high achieved occupancy but low eligible warps per
+scheduler, with stalls dominated by L1TEX/global-memory dependencies.  A
+different block size may change how quickly each row copies `u_d`, performs
+the compact-level shared-memory reduction, and writes child RHS contributions.
+
+Experiment:
+
+- keep `GPUREC_CUDA_PIBAR_FROM_UD=auto` semantics unchanged;
+- sweep `GPUREC_CUDA_PIBAR_FROM_UD_BLOCK` in `{128, 512, 1024}` against the
+  default 256;
+- use the accepted HOGENOM stream pass with one warmup and three measured runs
+  for the first screen;
+- accept a new default only if event timing improves and a follow-up `nsys`
+  run confirms lower total GPU kernel time, not just a local CUDA-event fluctuation.
+
+Result: rejected.  Keep the default block size at 256.
+
+First screen:
+
+| block | measured runs | median fwd+bwd | median forward | median backward | decision |
+| ---: | ---: | ---: | ---: | ---: | --- |
+| 128 | 3 | 0.7574 s | 0.3092 s | 0.4490 s | paired check |
+| 512 | 3 | 0.7799 s | 0.3082 s | 0.4718 s | rejected |
+| 1024 | 3 | 0.8744 s | 0.3081 s | 0.5663 s | rejected |
+
+Paired five-run check:
+
+| block | measured runs | median fwd+bwd | median forward | median backward | peak alloc | peak reserved |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 256 | 5 | 0.7562 s | 0.3103 s | 0.4459 s | 5.780 GiB | 6.963 GiB |
+| 128 | 5 | 0.7634 s | 0.3102 s | 0.4534 s | 5.780 GiB | 6.963 GiB |
+
+The apparent 128-thread improvement in the three-run screen was noise.  Since
+the paired check favors 256, no `nsys` run is needed.
+
 ## Commands
 
 Warm whole-dataset stream timing:
