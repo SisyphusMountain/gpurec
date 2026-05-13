@@ -1387,6 +1387,23 @@ Plan:
   concrete bottleneck that has not already been covered by the earlier
   `GPUREC_WAVE_STEP_NUM_WARPS` / `BLOCK_S` sweeps.
 
+NCU result for `profiling/hogenom_ccp/ncu_wave_step_current_skip47.ncu-rep`:
+
+- launch shape: grid 8192, block 256, duration 508.99 us;
+- registers/thread: 40; no local memory spills;
+- theoretical occupancy: 100%; achieved occupancy: 95.10%;
+- compute throughput: 90.35%; memory throughput: 90.35%;
+- DRAM throughput: 28.67%; L1/TEX throughput: 90.88%; L2 throughput: 19.09%;
+- L1/TEX hit rate: 94.14%; L2 hit rate: 75.89%;
+- issue slots busy: 62.60%; branch efficiency: 99.38%.
+
+Diagnosis: the current full fused-final-Pibar wave-step launch is healthy.  It
+is not register- or occupancy-limited and has no spills.  The bottleneck is the
+kernel doing substantial real work with high compute/L1 pipe utilization, so
+another launch-shape sweep is unlikely to help.  Further wave-step improvement
+would require reducing math/loads algorithmically, not just changing
+`num_warps` or `BLOCK_S`.
+
 ## Commands
 
 Warm whole-dataset stream timing:
