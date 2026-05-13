@@ -1139,6 +1139,34 @@ Next experiment:
 - accept only if `nsys` confirms the 2D precompute/`J^T` buckets or total GPU
   kernel time shrink.
 
+Result: accepted.  `GPUREC_SELF_LOOP_2D_SKIP_INACTIVE_SCRATCH_ZERO` now defaults
+to `1`; set it to `0` to restore the old scratch zero-fill behavior for
+diagnostics.  The parameter-store kernel is unchanged and still zero-fills
+inactive rows before reduction.
+
+Correctness:
+
+- targeted scheduler/model/chunked parity suite: 15 passed;
+- HOGENOM loss/gradient are unchanged within the existing fp32 run noise:
+  loss 667283.5625 bits, gradient infinity norm about 645.922.
+
+Event timing:
+
+| setting | median fwd+bwd | median forward | median backward | peak alloc | decision |
+| --- | ---: | ---: | ---: | ---: | --- |
+| skip inactive 2D scratch zero fill | 1.1742 s | 0.3189 s | 0.8552 s | 5.904 GiB | accepted |
+| old scratch zero fill (`GPUREC_SELF_LOOP_2D_SKIP_INACTIVE_SCRATCH_ZERO=0`) | 1.2071 s | 0.3187 s | 0.8877 s | 5.904 GiB | slower |
+
+Nsight Systems confirmation:
+
+| setting | profiled pass | CUDA launches | GPU kernel time | 2D `J^T` | 2D precompute |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| DTS inactive skip only | 1.313 s | 47,722 | 1.1004 s | 0.2320 s | 0.0610 s |
+| skip inactive 2D scratch zero fill | 1.283 s | 47,722 | 1.0709 s | 0.2097 s | 0.0521 s |
+
+The launch count is unchanged.  The win comes from avoiding inactive-row
+temporary-buffer writes in the retained 2D self-loop kernels.
+
 ## Commands
 
 Warm whole-dataset stream timing:

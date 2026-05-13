@@ -213,6 +213,7 @@ def _wave_backward_uniform_2d_precompute_kernel(
     LEAF_HIT_ONLY_LOGP: tl.constexpr,
     LEAF_LOGP_MODE: tl.constexpr,
     USE_ACTIVE_MASK: tl.constexpr,
+    SKIP_INACTIVE_SCRATCH_ZERO: tl.constexpr,
     CONST_LAYOUT: tl.constexpr,
     DTYPE: tl.constexpr,
 ):
@@ -231,7 +232,10 @@ def _wave_backward_uniform_2d_precompute_kernel(
         row_active = row_valid
     row_mask = row_valid & row_active
     mask = species_valid[:, None] & row_mask[None, :]
-    store_mask = species_valid[:, None] & row_valid[None, :]
+    if SKIP_INACTIVE_SCRATCH_ZERO:
+        store_mask = mask
+    else:
+        store_mask = species_valid[:, None] & row_valid[None, :]
 
     row_global = ws + rows
     pi_offsets = row_global[None, :] * stride + s_offs[:, None]
@@ -389,6 +393,7 @@ def _wave_backward_uniform_2d_jt_kernel(
     BLOCK_NODES: tl.constexpr,
     N_LEVELS: tl.constexpr,
     USE_ACTIVE_MASK: tl.constexpr,
+    SKIP_INACTIVE_SCRATCH_ZERO: tl.constexpr,
     DTYPE: tl.constexpr,
 ):
     """Apply one self-loop J^T term using in-program bottom-up tree reduction."""
@@ -403,7 +408,10 @@ def _wave_backward_uniform_2d_jt_kernel(
         row_active = row_valid
     row_mask = row_valid & row_active
     mask = species_valid[:, None] & row_mask[None, :]
-    store_mask = species_valid[:, None] & row_valid[None, :]
+    if SKIP_INACTIVE_SCRATCH_ZERO:
+        store_mask = mask
+    else:
+        store_mask = species_valid[:, None] & row_valid[None, :]
     offsets = rows[None, :] * S + s_offs[:, None]
 
     term_val = tl.load(term_in_ptr + offsets, mask=mask, other=0.0).to(DTYPE)
@@ -729,6 +737,13 @@ def _wave_backward_uniform_2d(
     if pibar_row_max is None:
         raise ValueError("pibar_row_max is required for the retained 2D self-loop path")
     pibar_row_max = pibar_row_max.to(device=device, dtype=dtype).contiguous()
+    skip_inactive_scratch_zero = (
+        os.environ.get(
+            "GPUREC_SELF_LOOP_2D_SKIP_INACTIVE_SCRATCH_ZERO",
+            "1",
+        ).strip().lower()
+        not in ("", "0", "false", "no", "off")
+    )
     if family_idx is not None:
         family_idx = family_idx.to(device=device, dtype=torch.long).contiguous()
     else:
@@ -783,6 +798,7 @@ def _wave_backward_uniform_2d(
         LEAF_HIT_ONLY_LOGP=bool(leaf_hit_only_logp),
         LEAF_LOGP_MODE=int(leaf_logp_mode),
         USE_ACTIVE_MASK=bool(active_mask is not None),
+        SKIP_INACTIVE_SCRATCH_ZERO=bool(skip_inactive_scratch_zero),
         CONST_LAYOUT=int(const_layout),
         DTYPE=_tl_float_dtype(dtype),
         **launch_options,
@@ -819,6 +835,7 @@ def _wave_backward_uniform_2d(
             block_nodes,
             compact_level_ptr.numel() - 1,
             USE_ACTIVE_MASK=bool(active_mask is not None),
+            SKIP_INACTIVE_SCRATCH_ZERO=bool(skip_inactive_scratch_zero),
             DTYPE=_tl_float_dtype(dtype),
             **jt_options,
         )
