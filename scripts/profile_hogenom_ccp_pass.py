@@ -53,6 +53,7 @@ class DatasetConfig:
         fixed_iters_E: int,
         fixed_iters_Pi: int,
         neumann_terms: int,
+        use_pruning: bool,
     ) -> None:
         self.species_tree = species_tree
         self.families_file = families_file
@@ -66,6 +67,7 @@ class DatasetConfig:
         self.fixed_iters_E = fixed_iters_E
         self.fixed_iters_Pi = fixed_iters_Pi
         self.neumann_terms = neumann_terms
+        self.use_pruning = use_pruning
 
 
 @contextmanager
@@ -136,6 +138,12 @@ def parse_args() -> argparse.Namespace:
         default=True,
         help="Bracket measured passes with cudaProfilerStart/Stop.",
     )
+    parser.add_argument(
+        "--pruning",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Enable backward active-row pruning.",
+    )
     return parser.parse_args()
 
 
@@ -153,6 +161,7 @@ def dataset_config(args: argparse.Namespace) -> DatasetConfig:
         fixed_iters_E=FIXED_ITERS_E,
         fixed_iters_Pi=FIXED_ITERS_PI,
         neumann_terms=NEUMANN_TERMS,
+        use_pruning=args.pruning,
     )
 
 
@@ -192,7 +201,7 @@ def build_model(
         fixed_iters_E=config.fixed_iters_E,
         fixed_iters_Pi=config.fixed_iters_Pi,
         neumann_terms=config.neumann_terms,
-        use_pruning=True,
+        use_pruning=config.use_pruning,
         family_chunk_size=config.family_chunk_size,
         clade_budget=config.clade_budget,
         batch_packing=config.batch_packing,
@@ -358,6 +367,7 @@ def main() -> None:
                 "fixed_iters_E": config.fixed_iters_E,
                 "fixed_iters_Pi": config.fixed_iters_Pi,
                 "neumann_terms": config.neumann_terms,
+                "use_pruning": config.use_pruning,
                 "mode": args.mode,
             }
         ),

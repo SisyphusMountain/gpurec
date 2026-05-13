@@ -35,12 +35,14 @@ Measured warm runtime after the scheduler change:
 | 100 | 11 | 927 | 8192 | 1.624 s | 2.65 GiB | 2.83 GiB |
 | 200 | 6 | 522 | 8192 | 1.390 s | 4.23 GiB | 8.47 GiB |
 | 250 | 5 | 430 | 8192 | 1.360 s | 5.05 GiB | 10.27 GiB |
-| 300 | 4 | 371 | 8192 | 1.315 s | 5.92 GiB | 11.95 GiB |
+| 300 | 4 | 371 | 8192 | 1.292 s | 5.92 GiB | 11.95 GiB |
 | 400 | 3 | 286 | 8192 | 1.307 s | 7.92 GiB | 16.31 GiB |
 | 600 | 2 | 193 | 8192 | 1.289 s | 15.24 GiB | 16.71 GiB |
 
-The chunk-300 row includes the later DTS launch-warp tuning; the other rows are
-the scheduler/self-loop-tuned measurements used for memory tradeoff decisions.
+The chunk-300 row includes the later DTS launch-warp tuning and
+`GPUREC_BACKWARD_NO_CPU_PRUNING=1`; without the no-host-pruning override the
+same tuned code measured 1.321 s.  The other rows are the
+scheduler/self-loop-tuned measurements used for memory tradeoff decisions.
 
 The best warm value inside the 5-6 GiB allocated target is chunk size 300 at
 about 1.32 s.  Larger chunks keep reducing waves but give small returns relative
@@ -53,23 +55,26 @@ compilation, but warm-up is still much slower than steady state.
 
 ## Nsight Findings
 
-Nsight Systems on tuned chunk size 300 measured one profiled pass at 1.458 s
-(`nsys` overhead relative to the uninstrumented 1.315 s median).  The measured
-pass had 53,309 CUDA kernel launches and 1.190 s of GPU kernel time.
+Nsight Systems on tuned chunk size 300 with
+`GPUREC_BACKWARD_NO_CPU_PRUNING=1` measured one profiled pass at 1.407 s
+(`nsys` overhead relative to the uninstrumented 1.292 s median).  The measured
+pass had 52,557 CUDA kernel launches and 1.186 s of GPU kernel time.
 
 Top kernel families in the chunk-300 `nsys` report:
 
 | kernel | launches | total GPU time | avg launch |
 | --- | ---: | ---: | ---: |
-| `_wave_backward_uniform_2d_jt_kernel` | 2172 | 0.271 s | 124.7 us |
-| `_wave_step_uniform_kernel` | 2226 | 0.215 s | 96.6 us |
-| `_dts_cross_backward_accum_kernel` | 349 | 0.166 s | 474.6 us |
-| `_dts_parent_reduced_ge2_stage1_kernel` | 699 | 0.108 s | 154.5 us |
-| `_uniform_cross_pibar_vjp_tree_from_ud_compact_kernel` | 349 | 0.106 s | 304.4 us |
-| `_wave_backward_uniform_2d_precompute_kernel` | 362 | 0.067 s | 186.1 us |
+| `_wave_backward_uniform_2d_jt_kernel` | 2226 | 0.271 s | 121.6 us |
+| `_wave_step_uniform_kernel` | 2226 | 0.214 s | 96.0 us |
+| `_dts_cross_backward_accum_kernel` | 358 | 0.165 s | 459.7 us |
+| `_dts_parent_reduced_ge2_stage1_kernel` | 708 | 0.108 s | 152.5 us |
+| `_uniform_cross_pibar_vjp_tree_from_ud_compact_kernel` | 358 | 0.106 s | 296.9 us |
+| `_wave_backward_uniform_2d_precompute_kernel` | 371 | 0.067 s | 181.8 us |
 
-GPU metrics over the measured pass: GR active 83.5%, SMs active 72.6%, SM issue
-24.7%, compute warps in flight 48.1%, DRAM read 27.7%, DRAM write 20.5%.
+The corresponding `nsys` export did not include GPU metrics counters.  The
+previous profiled pass with the same kernel defaults but host pruning enabled
+reported GR active 83.5%, SMs active 72.6%, SM issue 24.7%, compute warps in
+flight 48.1%, DRAM read 27.7%, and DRAM write 20.5%.
 
 Nsight Compute on representative chunk-300 kernels:
 
@@ -137,6 +142,8 @@ leaner no-split/path-specific kernel from `main` for the cases where it applies.
   retained 2D JT launch defaults.
 - DTS launch-warp tuning was re-profiled with Nsight Systems and Nsight Compute
   before promoting `GPUREC_DTS_NUM_WARPS=8` to the default.
+- The no-host-pruning mode was timed warm, checked with Nsight Systems, and
+  covered by the same targeted CUDA parity suite as the default path.
 - First-fit clade packing was timed and rejected as a default because it raised
   peak allocation without improving warm runtime.
 
@@ -152,6 +159,38 @@ leaner no-split/path-specific kernel from `main` for the cases where it applies.
 4. If profiling supports it, prototype a lower-scratch or lower-register
    backward path and compare against the retained 2D path for correctness and
    warm runtime.
+
+## Host Pruning Sync Plan
+
+The remaining chunk-300 `nsys` pass has 1.190 s of GPU kernel time inside a
+1.458 s profiled pass.  One possible source of the CPU/GPU gap is the backward
+wave loop: for every wave it builds a device active mask, then synchronizes on
+`active_mask.any()` and `active_mask.sum().item()` before launching the actual
+wave kernels.  That makes sense when pruning skips enough waves, but it can be
+counterproductive after global scheduling if most waves are active.
+
+Next experiment:
+
+- add an opt-in `GPUREC_BACKWARD_NO_CPU_PRUNING=1` mode;
+- in that mode, keep the device active mask when pruning is enabled, but do not
+  query it from the host and do not skip entire waves on the CPU;
+- benchmark HOGENOM chunk 300 against the current default, then confirm any
+  improvement with `nsys`;
+- only promote it if likelihood/gradient parity holds and measured
+  forward+backward time improves.
+
+Results:
+
+| setting | warm fwd+bwd | backward | `nsys` pass | GPU kernel time | conclusion |
+| --- | ---: | ---: | ---: | ---: | --- |
+| default host pruning | 1.321 s | 0.971 s | 1.458 s | 1.190 s | baseline |
+| `GPUREC_BACKWARD_NO_CPU_PRUNING=1` | 1.292 s | 0.944 s | 1.407 s | 1.186 s | accepted opt-in |
+| no active pruning/mask | 1.515 s | 1.169 s | not run | not run | rejected |
+
+The accepted mode still builds and passes the device active mask to kernels, so
+it preserves the default pruning approximation.  It only stops synchronizing on
+per-wave host `.any()` and `.sum().item()` decisions.  The no-mask run changes
+the gradient slightly and is slower, so the active mask itself is still useful.
 
 ## Next Batch-Policy Plan
 

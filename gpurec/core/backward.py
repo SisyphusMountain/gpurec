@@ -1,5 +1,7 @@
 """Backward pass: retained fused CUDA path for Pi adjoints."""
 
+import os
+
 import torch
 
 from .log2_utils import logsumexp2
@@ -262,6 +264,11 @@ def Pi_wave_backward(
             rhs, active_mask_threshold, use_pruning=use_pruning
         )
 
+    no_cpu_pruning = (
+        os.environ.get("GPUREC_BACKWARD_NO_CPU_PRUNING", "0").strip().lower()
+        not in ("", "0", "false", "no", "off")
+    )
+
     for k in range(K - 1, -1, -1):
         meta = wave_metas[k]
         ws = meta['start']
@@ -271,14 +278,19 @@ def Pi_wave_backward(
         # The fused uniform kernel treats rhs as read-only, and this wave's
         # later cross-DTS/Pibar adjoints accumulate into child rows.
         rhs_k = accumulated_rhs[ws:we]
-        active_mask = _compute_active_mask(rhs_k).contiguous()
-        wave_active = bool(active_mask.any())
-        if not wave_active:
-            n_waves_skipped += 1
-            n_clades_skipped += W
-            continue
+        if no_cpu_pruning:
+            active_mask = (
+                _compute_active_mask(rhs_k).contiguous() if use_pruning else None
+            )
+        else:
+            active_mask = _compute_active_mask(rhs_k).contiguous()
+            wave_active = bool(active_mask.any())
+            if not wave_active:
+                n_waves_skipped += 1
+                n_clades_skipped += W
+                continue
 
-        n_clades_skipped += W - int(active_mask.sum().item())
+            n_clades_skipped += W - int(active_mask.sum().item())
 
         leaf_wt = None
 
