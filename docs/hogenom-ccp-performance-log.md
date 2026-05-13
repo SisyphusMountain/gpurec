@@ -1317,6 +1317,27 @@ the wave-step bucket grows by 0.0257 s while the separate Pibar bucket
 disappears at 0.0270 s, and 258 launches are removed.  The event timing is
 within noise, so this is a cleanup rather than a user-visible speed jump.
 
+## Non-Leaf Leaf-Term Specialization Plan
+
+The global scheduler already emits leaf waves first, followed by non-leaf
+internal/root waves.  However, the forward wave-step kernel and the retained 2D
+self-loop backward kernels still carry the leaf-hit term on every wave by
+checking `leaf_species_index[row] == species`.  For non-leaf waves that term is
+always impossible and should be the constant `-inf`.
+
+Next experiment:
+
+- store the wave phase in `wave_metas` so forward/backward can identify
+  leaf-only waves without re-inspecting rows;
+- add a `HAS_LEAF_TERM` constexpr to the forward wave-step and retained 2D
+  backward kernels;
+- pass `HAS_LEAF_TERM=false` for non-leaf waves so those kernels skip the
+  leaf-species load, equality mask, leaf-logp load, and `t5` contribution;
+- keep the conservative old behavior when phase metadata is absent;
+- verify targeted parity tests and HOGENOM loss/gradient;
+- benchmark event timing and confirm with `nsys`, accepting only if the
+  wave-step and/or retained 2D buckets shrink.
+
 ## Commands
 
 Warm whole-dataset stream timing:
