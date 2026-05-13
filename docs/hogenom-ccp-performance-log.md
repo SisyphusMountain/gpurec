@@ -996,6 +996,32 @@ DTS launch-shape sweep:
 Set `_dts_cross_backward_accum_kernel` default `num_warps` to 8.  Keep
 `GPUREC_DTS_NUM_WARPS` and `GPUREC_DTS_BLOCK_S` as diagnostic overrides.
 
+## Post-Promotion Batch-Scheduling Sweep Plan
+
+After promoting the CUDA no-split self-loop path to default `auto`, the accepted
+HOGENOM CCP stream baseline is about 1.22 s forward+backward at 5.90 GiB peak
+allocation with `batch_packing="depth_first_fit"`, `clade_budget=315000`, and
+`max_wave_size=8192`.  The per-batch scheduler is already at the leaf-first
+lower bound for that layout, so further scheduling work should change batch
+composition or memory guards rather than only reorder clades within a batch.
+
+Next experiment:
+
+- use the current default auto no-split path, not the older retained-2D
+  baseline;
+- retest larger depth-first clade budgets with the DTS partial-row scheduler
+  cap, because that cap directly targets the GE2 scratch memory cliff observed
+  at 320k+ clades;
+- start with `max_wave_size=8192` to isolate batch composition from larger-wave
+  effects;
+- measure warm whole-dataset stream timing and peak allocation for candidate
+  budgets 320k, 325k, 340k, and 350k with `max_dts_partial_rows=100000`;
+- profile any apparent event-time win with Nsight Systems and accept it only if
+  the profiler shows lower total GPU kernel time or a meaningful launch-count
+  reduction without moving cost into DTS/Pibar buckets;
+- keep the 315k/8192 layout as the default if larger batches only improve event
+  timing within noise or exceed the 5-6 GiB lean target.
+
 ## Commands
 
 Warm whole-dataset stream timing:
