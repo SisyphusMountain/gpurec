@@ -105,7 +105,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--chunk-size", type=int, default=25)
     parser.add_argument(
         "--batch-packing",
-        choices=("sequential", "clade_first_fit"),
+        choices=("sequential", "clade_first_fit", "depth_first_fit"),
         default="sequential",
         help="Resident batch packing policy.",
     )

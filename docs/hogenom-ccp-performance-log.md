@@ -378,6 +378,49 @@ If we revisit non-contiguous batches, the policy needs a better memory proxy
 than clade count alone, likely involving the dense static/runtime layout induced
 by family composition.
 
+## Depth-Aware Batch-Packing Plan
+
+The per-batch global scheduler now matches the leaf-first lower bound on the
+HOGENOM chunk-300 layout:
+
+| batch | waves | lower bound | leaf waves | critical depth | non-leaf work waves |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 0 | 85 | 85 | 3 | 82 | 33 |
+| 1 | 88 | 88 | 4 | 84 | 30 |
+| 2 | 98 | 98 | 4 | 94 | 35 |
+| 3 | 100 | 100 | 2 | 98 | 19 |
+
+So the remaining scheduling waste is not inside a resident batch.  It is that
+equal family-count chunks pay the long CCP critical-path tail four times.  The
+next experiment is an opt-in depth-aware first-fit batch policy:
+
+- compute per-family leaf count, non-leaf count, and CCP critical depth;
+- sort families by descending critical depth and clade count;
+- place each family into the existing clade-budgeted batch that minimizes the
+  increase in the batch lower bound
+  `ceil(leaves / max_wave_size) + max(depth, ceil(nonleaves / max_wave_size))`;
+- fall back to opening a new batch when no existing batch fits the clade budget;
+- accept only if warm HOGENOM timing improves without exceeding the current
+  5-6 GiB target materially and the standard likelihood/gradient tests pass.
+
+Metadata and timing results:
+
+| packing | budget/chunk | batches | total waves | warm fwd+bwd | peak alloc | conclusion |
+| --- | ---: | ---: | ---: | ---: | ---: | --- |
+| sequential family count | 300 | 4 | 371 | 1.256 s | 5.92 GiB | previous lean baseline |
+| clade first-fit | 300000 | 4 | 291 | 1.331 s | 8.85 GiB | rejected earlier |
+| depth first-fit | 300000 | 5 | 263 | 1.251 s | 5.44 GiB | accepted opt-in |
+| depth first-fit | 315000 | 5 | 258 | 1.247 s | 5.90 GiB | best lean setting |
+| depth first-fit | 320000 | 5 | 256 | 1.252 s | 8.02 GiB | rejected |
+| depth first-fit | 325000 | 5 | 255 | 1.249 s | 8.09 GiB | rejected |
+
+Use `batch_packing="depth_first_fit"` with `clade_budget=315000` as the current
+best HOGENOM CCP lean scheduling option.  It improves the median stream
+forward+backward pass by about 9 ms over the chunk-300 baseline and keeps peak
+allocation in the same 5-6 GiB envelope.  Larger budgets show that fewer waves
+alone are not enough; the induced per-wave split layout can cross a memory
+threshold and erase the timing gain.
+
 ## DTS Accumulation Plan
 
 The current tuned chunk-300 profile still spends about 0.179 s of GPU time in

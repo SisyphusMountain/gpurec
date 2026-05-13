@@ -78,3 +78,19 @@ def test_clade_first_fit_packs_non_contiguous_families():
         sum([8, 7, 6, 5, 4][idx] for idx in chunk) <= 12
         for chunk in chunks
     )
+
+
+def test_depth_first_fit_groups_deep_families_under_clade_budget():
+    chunks = _family_index_chunks(
+        total=5,
+        clade_counts=[6, 6, 6, 6, 6],
+        family_chunk_size=0,
+        clade_budget=12,
+        batch_packing="depth_first_fit",
+        leaf_counts=[1, 1, 1, 1, 1],
+        nonleaf_counts=[5, 5, 5, 5, 5],
+        schedule_depths=[10, 9, 2, 1, 1],
+        max_wave_size=8,
+    )
+
+    assert chunks == [[0, 1], [2, 3], [4]]

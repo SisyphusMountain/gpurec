@@ -30,6 +30,7 @@ from gpurec.core.backward import Pi_wave_backward
 from gpurec.core.batching import (
     build_wave_layout,
     collate_gene_families,
+    family_schedule_summary,
     schedule_global_phased_waves,
 )
 from gpurec.core.model import GeneDataset, parse_alerax_family_file
@@ -133,8 +134,17 @@ def _normalize_batch_packing(value: str | None) -> str:
         return "sequential"
     if text in ("clade_first_fit", "first_fit_decreasing", "ffd", "clade_ffd"):
         return "clade_first_fit"
+    if text in (
+        "depth_first_fit",
+        "depth_ffd",
+        "critical_path_first_fit",
+        "critical_first_fit",
+        "wave_first_fit",
+    ):
+        return "depth_first_fit"
     raise ValueError(
-        "batch_packing must be 'sequential' or 'clade_first_fit', "
+        "batch_packing must be 'sequential', 'clade_first_fit', or "
+        "'depth_first_fit', "
         f"got {value!r}"
     )
 
@@ -190,6 +200,10 @@ def _family_index_chunks(
     family_chunk_size: int,
     clade_budget: int | None,
     batch_packing: str = "sequential",
+    leaf_counts: Sequence[int] | None = None,
+    nonleaf_counts: Sequence[int] | None = None,
+    schedule_depths: Sequence[int] | None = None,
+    max_wave_size: int | None = None,
 ) -> list[list[int]]:
     batch_packing = _normalize_batch_packing(batch_packing)
     if batch_packing == "clade_first_fit":
@@ -217,6 +231,85 @@ def _family_index_chunks(
             else:
                 chunks[best_j].append(idx)
                 chunk_clades[best_j] += n_clades
+        return chunks
+    if batch_packing == "depth_first_fit":
+        if clade_budget is None:
+            raise ValueError("batch_packing='depth_first_fit' requires clade_budget")
+        if leaf_counts is None or nonleaf_counts is None or schedule_depths is None:
+            raise ValueError(
+                "batch_packing='depth_first_fit' requires leaf_counts, "
+                "nonleaf_counts, and schedule_depths"
+            )
+        if (
+            len(leaf_counts) != total
+            or len(nonleaf_counts) != total
+            or len(schedule_depths) != total
+        ):
+            raise ValueError("depth_first_fit scheduling stats must match total families")
+
+        wave_cap = (
+            sum(int(c) for c in clade_counts)
+            if max_wave_size is None
+            else int(max_wave_size)
+        )
+        if wave_cap <= 0:
+            raise ValueError("max_wave_size must be positive")
+
+        def lower_bound(leaves: int, nonleaves: int, depth: int) -> int:
+            leaf_waves = math.ceil(int(leaves) / wave_cap)
+            work_waves = math.ceil(int(nonleaves) / wave_cap)
+            return leaf_waves + max(int(depth), work_waves)
+
+        chunks: list[list[int]] = []
+        chunk_clades: list[int] = []
+        chunk_leaves: list[int] = []
+        chunk_nonleaves: list[int] = []
+        chunk_depths: list[int] = []
+        order = sorted(
+            range(total),
+            key=lambda idx: (int(schedule_depths[idx]), int(clade_counts[idx])),
+            reverse=True,
+        )
+        for idx in order:
+            n_clades = int(clade_counts[idx])
+            n_leaves = int(leaf_counts[idx])
+            n_nonleaves = int(nonleaf_counts[idx])
+            depth = int(schedule_depths[idx])
+            best_j: int | None = None
+            best_key: tuple[int, int, int] | None = None
+            for j, current_clades in enumerate(chunk_clades):
+                if family_chunk_size > 0 and len(chunks[j]) >= family_chunk_size:
+                    continue
+                new_clades = current_clades + n_clades
+                if new_clades > clade_budget:
+                    continue
+                before = lower_bound(
+                    chunk_leaves[j],
+                    chunk_nonleaves[j],
+                    chunk_depths[j],
+                )
+                after = lower_bound(
+                    chunk_leaves[j] + n_leaves,
+                    chunk_nonleaves[j] + n_nonleaves,
+                    max(chunk_depths[j], depth),
+                )
+                remaining = clade_budget - new_clades
+                key = (after - before, after, remaining)
+                if best_key is None or key < best_key:
+                    best_j = j
+                    best_key = key
+            if best_j is None:
+                chunks.append([idx])
+                chunk_clades.append(n_clades)
+                chunk_leaves.append(n_leaves)
+                chunk_nonleaves.append(n_nonleaves)
+                chunk_depths.append(depth)
+            else:
+                chunks[best_j].append(idx)
+                chunk_clades[best_j] += n_clades
+                chunk_leaves[best_j] += n_leaves
+                chunk_nonleaves[best_j] += n_nonleaves
+                chunk_depths[best_j] = max(chunk_depths[best_j], depth)
         return chunks
 
     chunks: list[list[int]] = []
@@ -271,12 +364,27 @@ def _build_batch_specs(
     max_root_wave_size: int | None,
 ) -> list[_ResidentBatchSpec]:
     clade_counts = [int(fam["C"]) for fam in dataset.families]
+    leaf_counts: list[int] | None = None
+    nonleaf_counts: list[int] | None = None
+    schedule_depths: list[int] | None = None
+    if _normalize_batch_packing(batch_packing) == "depth_first_fit":
+        summaries = [
+            family_schedule_summary(fam["ccp_helpers"])
+            for fam in dataset.families
+        ]
+        leaf_counts = [int(summary["leaf_count"]) for summary in summaries]
+        nonleaf_counts = [int(summary["nonleaf_count"]) for summary in summaries]
+        schedule_depths = [int(summary["max_level"]) for summary in summaries]
     chunks = _family_index_chunks(
         total=len(dataset.families),
         clade_counts=clade_counts,
         family_chunk_size=family_chunk_size,
         clade_budget=clade_budget,
         batch_packing=batch_packing,
+        leaf_counts=leaf_counts,
+        nonleaf_counts=nonleaf_counts,
+        schedule_depths=schedule_depths,
+        max_wave_size=max_wave_size,
     )
     specs: list[_ResidentBatchSpec] = []
     for batch_index, family_indices in enumerate(chunks):

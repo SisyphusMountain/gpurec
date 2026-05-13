@@ -323,7 +323,21 @@ def _family_schedule_data(ccp: Dict[str, Any]) -> Dict[str, Any]:
         "parents_of": parents_of,
         "remaining": remaining,
         "priority": priority,
+        "leaf_count": sum(1 for count in split_counts if int(count) == 0),
+        "nonleaf_count": sum(1 for count in split_counts if int(count) != 0),
+        "max_level": max_level,
         "root_id": int(ccp.get("root_clade_id", -1)),
+    }
+
+
+def family_schedule_summary(ccp: Dict[str, Any]) -> Dict[str, int]:
+    """Return compact per-family scheduling stats for resident batch packing."""
+    data = _family_schedule_data(ccp)
+    return {
+        "clade_count": int(data["C"]),
+        "leaf_count": int(data["leaf_count"]),
+        "nonleaf_count": int(data["nonleaf_count"]),
+        "max_level": int(data["max_level"]),
     }
 
 
