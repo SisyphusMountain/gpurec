@@ -2997,6 +2997,64 @@ Both runs produced the same loss (`667283.5` bits) and matching gradient norms
 within the usual fp32 noise.  Since disabling fusion regressed the whole-pass
 event median by about `8.1 ms`, do not spend an `nsys` pass on this toggle.
 
+## Wave-Step Ancestor-Table Plan
+
+The current wave-step Pibar computation walks the species parent pointers inside
+the row kernel:
+
+```text
+cur = species
+repeat max_ancestor_depth:
+    Pi[row, cur]
+    cur = parent[cur]
+```
+
+NCU reports 27% excessive global sectors and long-scoreboard stalls for the
+current full-width launch.  The scattered `Pi[row, cur]` reads are intrinsic to
+the ancestor sum, but the `parent[cur]` load is also a dependent pointer chase
+after the first depth.  A small precomputed ancestor table
+`ancestor_by_depth[depth, species]` would make the topology loads contiguous and
+remove the loop-carried pointer dependency:
+
+```text
+ancestor = ancestor_by_depth[depth, species]
+Pi[row, ancestor]
+```
+
+Prototype plan:
+
+- add a cached int32 species ancestor table to `species_wave_topology`;
+- add an opt-in `GPUREC_WAVE_STEP_ANCESTOR_TABLE=1` path in
+  `_wave_step_uniform_kernel`;
+- keep the parent-pointer walk as the default fallback until parity and
+  profiling pass;
+- verify targeted forward/backward parity with the flag forced on;
+- benchmark the no-family-cap 305k HOGENOM stream pass and only run `nsys` if
+  event timing improves materially.
+
+Result: rejected and removed.
+
+Correctness before removal:
+
+- `GPUREC_WAVE_STEP_ANCESTOR_TABLE=1 pytest -q
+  tests/kernels/test_wave_step_uniform_forward_kernel.py
+  tests/unit/test_specieswise_uniform.py`: 10 passed;
+- `GPUREC_WAVE_STEP_ANCESTOR_TABLE=1 pytest -q` on the targeted
+  `GeneReconModel` and `UniformChunkedReconModel` resident parity subset:
+  8 passed.
+
+Event timing on the no-family-cap 305k layout:
+
+| setting | median fwd+bwd | median forward | median backward | peak alloc | peak reserved | decision |
+| --- | ---: | ---: | ---: | ---: | ---: | --- |
+| parent-pointer walk, default | 0.7386 s | 0.3059 s | 0.4331 s | 5.675 GiB | 8.027 GiB | baseline |
+| ancestor table prototype | 0.7913 s | 0.3515 s | 0.4394 s | 5.675 GiB | 8.027 GiB | reject |
+
+The topology loads become contiguous, but the extra ancestor-table memory stream
+and larger compiled row program are much worse than the original dependent
+parent walk.  Since the event median regressed by about `52.7 ms`, do not run
+`nsys` and do not keep the opt-in code.
+
 ## Commands
 
 Warm whole-dataset stream timing, conservative memory layout:
