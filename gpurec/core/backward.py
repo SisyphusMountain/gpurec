@@ -265,7 +265,7 @@ def Pi_wave_backward(
         )
 
     no_cpu_pruning = (
-        os.environ.get("GPUREC_BACKWARD_NO_CPU_PRUNING", "0").strip().lower()
+        os.environ.get("GPUREC_BACKWARD_NO_CPU_PRUNING", "1").strip().lower()
         not in ("", "0", "false", "no", "off")
     )
 

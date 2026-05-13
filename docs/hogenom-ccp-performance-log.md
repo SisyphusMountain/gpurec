@@ -213,6 +213,23 @@ it preserves the default pruning approximation.  It only stops synchronizing on
 per-wave host `.any()` and `.sum().item()` decisions.  The no-mask run changes
 the gradient slightly and is slower, so the active mask itself is still useful.
 
+Follow-up: promote no-host-pruning to the default.  Every accepted HOGENOM
+profile now uses `GPUREC_BACKWARD_NO_CPU_PRUNING=1`; leaving it opt-in makes
+default model calls slower than the measured path.  Change the default so the
+device active mask is still computed and passed to kernels, but host-side
+wave-skipping synchronizations are disabled unless
+`GPUREC_BACKWARD_NO_CPU_PRUNING=0` is set for diagnostics.  Accept only if the
+targeted parity tests pass with the new default and with the diagnostic
+host-pruning path.
+
+Result: promoted.  The environment variable now defaults to `1`, so ordinary
+calls use the measured no-host-pruning path.  Setting
+`GPUREC_BACKWARD_NO_CPU_PRUNING=0` restores the old host wave-skipping path for
+diagnostics.  Targeted parity tests passed under both defaults.  On the accepted
+HOGENOM depth-first 315k layout, the new default measured 1.253 s in one noisy
+three-pass run, while forcing the old path measured 1.274 s in a one-pass
+diagnostic run.
+
 ## 2D Self-Loop Retuning Plan
 
 After no-host pruning, the largest remaining kernel bucket is still
