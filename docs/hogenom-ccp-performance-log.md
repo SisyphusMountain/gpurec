@@ -1365,6 +1365,28 @@ Nsight Systems confirmation:
 The launch count is unchanged; the win comes from compiling non-leaf wave
 kernels without the impossible leaf-hit term.
 
+## Current Wave-Step NCU Plan
+
+After final-Pibar fusion and non-leaf leaf-term specialization,
+`_wave_step_uniform_kernel` is the largest current GPU bucket:
+1,548 launches and 0.2151 s in
+`profiling/hogenom_ccp/nsys_stream_depthff315_nonleaf_leafterm.sqlite`.  The
+previous wave-step NCU diagnosis predates both changes, so profile the current
+kernel before trying another launch-shape or code change.
+
+Plan:
+
+- use the accepted `depth_first_fit, clade_budget=315000, max_wave_size=8192`
+  layout and all current defaults;
+- select a heavy current wave-step launch from the latest `nsys` report; launch
+  index 47 is one of the full fused-final-Pibar launches at about 448 us;
+- run `ncu --set full` on that launch;
+- inspect memory throughput, occupancy, registers, spills, branch efficiency,
+  and scheduler statistics;
+- only run another launch-shape sweep or kernel edit if NCU points to a
+  concrete bottleneck that has not already been covered by the earlier
+  `GPUREC_WAVE_STEP_NUM_WARPS` / `BLOCK_S` sweeps.
+
 ## Commands
 
 Warm whole-dataset stream timing:
