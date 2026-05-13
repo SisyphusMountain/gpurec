@@ -364,6 +364,71 @@ Conclusion: keep one row per Jt program.  Larger row blocks reduce the number
 of row programs but multiply the already register-heavy live tensor shape and
 make backward much slower.
 
+## CUDA No-Split Specieswise Plan
+
+The next code-level 2D alternative should be narrow: restore the exact CUDA
+no-split row kernel from `main` only for no-split waves, then adapt it for the
+HOGENOM specieswise parameter layout.  The main-branch kernel is attractive
+because it runs all Neumann terms for one no-split wave inside one CUDA launch
+using shared row-local state, avoiding the retained 2D path's precompute,
+six Jt launches, parameter-store launch, and full `[W, S]` Jt scratch traffic
+for leaf/no-split waves.
+
+Constraints before promotion:
+
+- keep it opt-in behind an environment variable until correctness and profiling
+  are clear;
+- route only auto-wrapped specieswise/shared no-split waves where constants are
+  `[S]` and `dts_r is None`;
+- extend the CUDA kernel's old scalar `grad_log_pD` and `grad_log_pS`
+  accumulation to species-vector gradients by atomically accumulating per
+  species, matching the existing vector E/Ebar/transfer accumulators;
+- return only `v_k` and skip the external per-element `aw*` reductions when the
+  CUDA path already accumulated all self-loop parameter gradients;
+- verify with targeted resident/model parity tests before timing;
+- accept as a default only if whole-HOGENOM stream timing improves and `nsys`
+  confirms the self-loop bucket shrinks enough to offset the extra atomics and
+  NVRTC path overhead.
+
+Opt-in implementation result:
+
+- added `gpurec/core/kernels/wave_backward_cuda.py`, an NVRTC no-split fp32
+  CUDA row kernel adapted from `main`;
+- extended old scalar D/S accumulation to species-vector D/S accumulation;
+- routes only when `GPUREC_CUDA_SELF_LOOP_NOSPLIT=1`, `_auto_wrapped` is true,
+  `dts_r is None`, dtype is fp32, and compact species-tree levels are present;
+- preloads wheel-provided `libnvrtc-builtins.so` from `nvidia/cu13/lib` so the
+  CUDA Python NVRTC bindings can compile in this venv.
+
+Correctness checks:
+
+- default path targeted suite: 15 passed;
+- opt-in CUDA no-split targeted model/chunked suite: 8 passed;
+- HOGENOM same-process comparison against the retained Triton path:
+  loss diff 0, max gradient abs diff 0.0224, mean gradient abs diff 0.0006,
+  gradient-norm relative delta 7.9e-6.
+
+Performance result on HOGENOM depth-first 315k / wave-cap 8192:
+
+| setting | median fwd+bwd | median forward | median backward | peak alloc | decision |
+| --- | ---: | ---: | ---: | ---: | --- |
+| retained 2D default | 1.2477 s | 0.3200 s | 0.9283 s | 5.904 GiB | baseline |
+| `GPUREC_CUDA_SELF_LOOP_NOSPLIT=1` | 1.2171 s | 0.3190 s | 0.8981 s | 5.904 GiB | opt-in win |
+
+Nsight Systems result:
+
+- report: `profiling/hogenom_ccp/nsys_stream_depthff315_cuda_nosplit.nsys-rep`;
+- total CUDA kernel time: 1.114 s versus prior 1.143 s baseline;
+- `_wave_backward_uniform_2d_jt_kernel`: 0.232 s / 1464 launches versus
+  roughly 0.265 s / 1548 launches in the baseline;
+- `_wave_backward_uniform_2d_precompute_kernel`: 0.061 s / 244 launches;
+- `_wave_backward_uniform_param_store_kernel`: 0.045 s / 244 launches;
+- `gpurec_wave_backward_nosplit_uniform_fp32`: 0.0187 s / 14 launches.
+
+Conclusion: the no-split CUDA router is a real HOGENOM speed win, currently
+kept opt-in while deciding whether to make the auto/fallback behavior robust
+enough for the default path.
+
 ## Post-Leaf DAG Scheduling Plan
 
 The current resident scheduler already runs a leaf-only phase first, then packs

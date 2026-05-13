@@ -268,6 +268,14 @@ def Pi_wave_backward(
         os.environ.get("GPUREC_BACKWARD_NO_CPU_PRUNING", "1").strip().lower()
         not in ("", "0", "false", "no", "off")
     )
+    cuda_self_loop_nosplit_enabled = (
+        os.environ.get("GPUREC_CUDA_SELF_LOOP_NOSPLIT", "0").strip().lower()
+        not in ("", "0", "false", "no", "off")
+    )
+    cuda_self_loop_nosplit_correction = os.environ.get(
+        "GPUREC_CUDA_SELF_LOOP_NOSPLIT_CORRECTION",
+        "tree",
+    )
 
     for k in range(K - 1, -1, -1):
         meta = wave_metas[k]
@@ -332,33 +340,89 @@ def Pi_wave_backward(
             else:
                 acc.scatter_add_(0, fi_expand, contrib)
 
-        v_k, aw0, aw1, aw2, aw345, aw3, aw4 = wave_backward_uniform_fused(
-            Pi_star_wave, Pibar_star_wave, ws, W, S,
-            dts_r, rhs_k,
-            mt_w, DL_w, Ebar_w, E_w, SL1_w, SL2_w,
-            sp_child1_wave, sp_child2_wave, leaf_wt,
-            neumann_terms=neumann_terms,
-            leaf_species_idx=leaf_species_index_wave,
-            leaf_logp=uniform_leaf_logp,
-            active_mask=active_mask,
-            sp_parent=sp_parent_wave,
-            max_ancestor_depth=max_ancestor_depth,
-            pibar_row_max=forward_pibar_row_max,
-            family_idx=family_idx if use_family_indexed_self_loop else None,
-            family_indexed_consts=use_family_indexed_self_loop,
-            compact_level_ptr=compact_level_ptr,
-            compact_level_parents=compact_level_parents,
-            compact_level_child1=compact_level_child1,
-            compact_level_child2=compact_level_child2,
+        use_cuda_nosplit = (
+            cuda_self_loop_nosplit_enabled
+            and _auto_wrapped
+            and dts_r is None
+            and dtype == torch.float32
+            and torch.is_tensor(uniform_leaf_logp)
+            and int(uniform_leaf_logp.numel()) == S
+            and compact_level_ptr is not None
+            and compact_level_parents is not None
+            and compact_level_child1 is not None
+            and compact_level_child2 is not None
         )
+        self_loop_grads_accumulated = False
+        if use_cuda_nosplit:
+            from .kernels.wave_backward_cuda import wave_backward_uniform_nosplit_cuda
 
-        _scatter_accum(grad_log_pD, aw0)
-        _scatter_accum(grad_log_pS, aw345)
-        _scatter_accum(grad_E_acc, aw0 + aw2)
-        _scatter_accum(grad_Ebar_acc, aw1)
-        _scatter_accum(grad_E_s1_acc, aw4)
-        _scatter_accum(grad_E_s2_acc, aw3)
-        _scatter_accum(grad_mt, aw2)
+            v_k = wave_backward_uniform_nosplit_cuda(
+                Pi_star_wave,
+                Pibar_star_wave,
+                ws,
+                W,
+                S,
+                rhs_k,
+                mt_w,
+                DL_w,
+                Ebar_w,
+                E_w,
+                SL1_w,
+                SL2_w,
+                sp_child1_wave,
+                sp_child2_wave,
+                sp_parent_wave,
+                leaf_species_index_wave,
+                uniform_leaf_logp,
+                forward_pibar_row_max,
+                compact_level_ptr,
+                compact_level_parents,
+                compact_level_child1,
+                compact_level_child2,
+                (
+                    grad_log_pD[0],
+                    grad_log_pS[0],
+                    grad_E_acc[0],
+                    grad_Ebar_acc[0],
+                    grad_E_s1_acc[0],
+                    grad_E_s2_acc[0],
+                    grad_mt[0] if grad_mt.ndim == 2 else grad_mt,
+                ),
+                active_mask=active_mask,
+                neumann_terms=neumann_terms,
+                correction_mode=cuda_self_loop_nosplit_correction,
+            )
+            aw0 = aw1 = aw2 = aw345 = aw3 = aw4 = None
+            self_loop_grads_accumulated = True
+        else:
+            v_k, aw0, aw1, aw2, aw345, aw3, aw4 = wave_backward_uniform_fused(
+                Pi_star_wave, Pibar_star_wave, ws, W, S,
+                dts_r, rhs_k,
+                mt_w, DL_w, Ebar_w, E_w, SL1_w, SL2_w,
+                sp_child1_wave, sp_child2_wave, leaf_wt,
+                neumann_terms=neumann_terms,
+                leaf_species_idx=leaf_species_index_wave,
+                leaf_logp=uniform_leaf_logp,
+                active_mask=active_mask,
+                sp_parent=sp_parent_wave,
+                max_ancestor_depth=max_ancestor_depth,
+                pibar_row_max=forward_pibar_row_max,
+                family_idx=family_idx if use_family_indexed_self_loop else None,
+                family_indexed_consts=use_family_indexed_self_loop,
+                compact_level_ptr=compact_level_ptr,
+                compact_level_parents=compact_level_parents,
+                compact_level_child1=compact_level_child1,
+                compact_level_child2=compact_level_child2,
+            )
+
+        if not self_loop_grads_accumulated:
+            _scatter_accum(grad_log_pD, aw0)
+            _scatter_accum(grad_log_pS, aw345)
+            _scatter_accum(grad_E_acc, aw0 + aw2)
+            _scatter_accum(grad_Ebar_acc, aw1)
+            _scatter_accum(grad_E_s1_acc, aw4)
+            _scatter_accum(grad_E_s2_acc, aw3)
+            _scatter_accum(grad_mt, aw2)
 
         if meta['has_splits'] and dts_r is not None:
             sl = meta['sl']
