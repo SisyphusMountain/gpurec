@@ -91,6 +91,8 @@ def _wave_step_uniform_kernel(
     LEAF_LOGP_MODE: tl.constexpr,
     STORE_PIBAR: tl.constexpr,
     STORE_PIBAR_ROW_MAX: tl.constexpr,
+    STORE_FINAL_PIBAR: tl.constexpr,
+    STORE_FINAL_PIBAR_ROW_MAX: tl.constexpr,
     OUTPUT_GLOBAL: tl.constexpr,
     FP64: tl.constexpr,
     TOPOLOGY_INT32: tl.constexpr,
@@ -237,6 +239,41 @@ def _wave_step_uniform_kernel(
     if COMPUTE_DIFF:
         tl.store(max_diff_ptr + w, tl.max(local_max_diff, axis=0))
 
+    if STORE_FINAL_PIBAR:
+        final_row_max = tl.full([1], value=NEG_LARGE, dtype=DTYPE)
+        final_row_sum = tl.full([1], value=0.0, dtype=DTYPE)
+        for s_start in range(0, S, BLOCK_S):
+            s_offs = s_start + tl.arange(0, BLOCK_S)
+            mask = s_offs < S
+            pi_val = tl.load(Pi_new_ptr + out_base + s_offs, mask=mask, other=NEG_LARGE)
+            tile_max = tl.max(pi_val, axis=0)
+            new_max = tl.maximum(final_row_max, tile_max)
+            final_row_sum = final_row_sum * tl.exp2(final_row_max - new_max) + tl.sum(tl.exp2(pi_val - new_max), axis=0)
+            final_row_max = new_max
+
+        if STORE_FINAL_PIBAR_ROW_MAX:
+            tl.store(pibar_row_max_ptr + ws + w, tl.max(final_row_max, axis=0))
+
+        for s_start in range(0, S, BLOCK_S):
+            s_offs = s_start + tl.arange(0, BLOCK_S)
+            mask = s_offs < S
+            if TOPOLOGY_INT32:
+                cur = s_offs
+            else:
+                cur = s_offs.to(tl.int64)
+            ancestor_sum = tl.zeros([BLOCK_S], dtype=DTYPE)
+            for _ in range(0, MAX_ANCESTOR_DEPTH):
+                cur_valid = mask & (cur >= 0) & (cur < S)
+                pi_anc = tl.load(Pi_new_ptr + out_base + cur, mask=cur_valid, other=NEG_LARGE)
+                ancestor_sum += tl.where(cur_valid, tl.exp2(pi_anc - final_row_max), tl.zeros([BLOCK_S], dtype=DTYPE))
+                cur = tl.load(sp_parent_ptr + cur, mask=cur_valid, other=-1)
+
+            const_offsets = const_base + s_offs * CONST_SPECIES_STRIDE
+            mt = tl.load(mt_ptr + const_offsets, mask=mask, other=0.0)
+            denom = final_row_sum - ancestor_sum
+            pibar_w = tl.where(denom > 0.0, tl.log2(denom) + final_row_max + mt, NEG_LARGE)
+            tl.store(Pibar_out_ptr + pi_base + s_offs, pibar_w, mask=mask)
+
 
 def wave_step_uniform_fused_into(Pi_in, Pi_out, Pibar, ws, W, S,
                                  mt_squeezed, DL_const, Ebar, E, SL1_const, SL2_const,
@@ -244,7 +281,9 @@ def wave_step_uniform_fused_into(Pi_in, Pi_out, Pibar, ws, W, S,
                                  leaf_term_wt, DTS_reduced=None,
                                  leaf_species_idx=None, leaf_logp=None,
                                  family_idx=None,
-                                 family_indexed_consts=False):
+                                 family_indexed_consts=False,
+                                 store_final_pibar=False,
+                                 final_pibar_row_max=None):
     """Fused uniform wave step writing Pi output directly into global rows."""
     fp64 = Pi_in.dtype == torch.float64
     has_splits = DTS_reduced is not None
@@ -265,6 +304,7 @@ def wave_step_uniform_fused_into(Pi_in, Pi_out, Pibar, ws, W, S,
     num_warps = _uniform_num_warps()
     grid = (W,)
     Pi_out_rows = Pi_out.narrow(0, int(ws), int(W))
+    row_max_arg = final_pibar_row_max if final_pibar_row_max is not None else Pibar
 
     _wave_step_uniform_kernel[grid](
         Pi_in, ws,
@@ -278,7 +318,7 @@ def wave_step_uniform_fused_into(Pi_in, Pi_out, Pibar, ws, W, S,
         family_idx_arg,
         DTS_reduced if has_splits else leaf_term_wt,
         has_splits,
-        Pi_out_rows, Pibar, max_diff_buf, Pibar,
+        Pi_out_rows, Pibar, max_diff_buf, row_max_arg,
         S,
         stride=S,
         CONST_ROW_STRIDE=const_row_stride,
@@ -290,6 +330,8 @@ def wave_step_uniform_fused_into(Pi_in, Pi_out, Pibar, ws, W, S,
         LEAF_LOGP_MODE=leaf_logp_mode,
         STORE_PIBAR=False,
         STORE_PIBAR_ROW_MAX=False,
+        STORE_FINAL_PIBAR=bool(store_final_pibar),
+        STORE_FINAL_PIBAR_ROW_MAX=bool(final_pibar_row_max is not None),
         OUTPUT_GLOBAL=False,
         FP64=fp64,
         TOPOLOGY_INT32=sp_parent.dtype == torch.int32,

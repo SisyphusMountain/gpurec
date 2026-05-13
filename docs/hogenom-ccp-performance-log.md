@@ -1289,6 +1289,34 @@ Next experiment:
 - accept only if the removed Pibar launches are not replaced by an equal or
   larger increase in `_wave_step_uniform_kernel` time.
 
+Result: accepted as a small launch/GPU-time cleanup, with
+`GPUREC_FUSE_FINAL_PIBAR=0` retained as the old separate-recompute path.
+
+Correctness:
+
+- targeted scheduler/model/chunked parity suite: 15 passed;
+- HOGENOM loss/gradient are unchanged within the existing fp32 run noise:
+  loss 667283.5625 bits, gradient infinity norm about 645.922.
+
+Event timing:
+
+| setting | median fwd+bwd | median forward | median backward | peak alloc | decision |
+| --- | ---: | ---: | ---: | ---: | --- |
+| fused final Pibar | 1.1568 s | 0.3193 s | 0.8375 s | 5.904 GiB | accepted, tied |
+| old separate final Pibar (`GPUREC_FUSE_FINAL_PIBAR=0`) | 1.1568 s | 0.3201 s | 0.8376 s | 5.904 GiB | tied |
+
+Nsight Systems confirmation:
+
+| setting | profiled pass | CUDA launches | GPU kernel time | wave-step bucket | final Pibar bucket |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| reduction-reuse baseline | 1.281 s | 47,478 | 1.0605 s | 0.1937 s | 0.0270 s |
+| fused final Pibar | 1.265 s | 47,220 | 1.0528 s | 0.2194 s | removed |
+
+The final Pibar work moves into `_wave_step_uniform_kernel`, but not one-for-one:
+the wave-step bucket grows by 0.0257 s while the separate Pibar bucket
+disappears at 0.0270 s, and 258 launches are removed.  The event timing is
+within noise, so this is a cleanup rather than a user-visible speed jump.
+
 ## Commands
 
 Warm whole-dataset stream timing:

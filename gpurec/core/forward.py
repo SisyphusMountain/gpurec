@@ -1,5 +1,7 @@
 """Forward pass: Pi_wave_forward and helpers."""
 
+import os
+
 import torch
 
 from .kernels.wave_step import (
@@ -230,6 +232,11 @@ def Pi_wave_forward(
                 roots_in_wave += 1
         return roots_in_wave == W
 
+    fuse_final_pibar = (
+        os.environ.get("GPUREC_FUSE_FINAL_PIBAR", "1").strip().lower()
+        not in ("", "0", "false", "no", "off")
+    )
+
     def _progress(event: str, wave_index: int | None = None,
                   local_iter: int | None = None, meta=None) -> None:
         if progress_callback is not None:
@@ -250,6 +257,11 @@ def Pi_wave_forward(
         for local_iter in range(fixed_iters):
             pi_in = Pi if (local_iter % 2 == 0) else Pibar
             pi_out = Pibar if (local_iter % 2 == 0) else Pi
+            needs_final_pibar = (
+                local_iter == fixed_iters - 1
+                and not _can_skip_final_pibar(ws, we, W)
+            )
+            store_final_pibar = fuse_final_pibar and needs_final_pibar
             wave_step_uniform_fused_into(
                 pi_in, pi_out, Pibar, ws, W, S,
                 mt_w, DL_w, Ebar_w, E_w, SL1_w, SL2_w,
@@ -259,6 +271,8 @@ def Pi_wave_forward(
                 leaf_logp=uniform_leaf_logp,
                 family_idx=family_idx if batched else None,
                 family_indexed_consts=batched,
+                store_final_pibar=store_final_pibar,
+                final_pibar_row_max=uniform_pibar_row_max if store_final_pibar else None,
             )
             if root_logsumexp_trace is not None:
                 root_entry = roots_by_wave[wave_index]
@@ -269,7 +283,7 @@ def Pi_wave_forward(
                         dim=-1,
                     )
             _progress("pi_iter", wave_index, local_iter + 1, meta)
-            if local_iter == fixed_iters - 1 and not _can_skip_final_pibar(ws, we, W):
+            if needs_final_pibar and not store_final_pibar:
                 wave_pibar_uniform_parent_fused(
                     Pi, Pibar, ws, W, S,
                     mt_w, sp_parent, max_ancestor_depth,
