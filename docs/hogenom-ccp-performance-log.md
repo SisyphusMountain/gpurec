@@ -1531,6 +1531,27 @@ to reduce whole-dataset forward+backward by about 18% and slightly lower peak
 allocation.  The next kernel work should target the CUDA row kernel's shared
 memory footprint/barriers, not return to the 2D Triton strategy.
 
+## CUDA Self-Loop Block-Size Plan
+
+The promoted CUDA split/no-split self-loop kernel uses 37.1 KB dynamic shared
+memory per block, so full HOGENOM split waves are limited to two resident
+blocks per SM.  With the current hardcoded 256-thread launch, that is only 16
+resident warps per SM and about 33% achieved occupancy.  A 512-thread block
+would still be limited to two blocks by shared memory, but would expose 32
+resident warps per SM.  That may hide the barrier and long-scoreboard stalls
+seen in NCU without changing the algorithm.
+
+Next experiment:
+
+- add a diagnostic `GPUREC_CUDA_SELF_LOOP_BLOCK` launch override, keeping 256 as
+  the initial default;
+- test 512 against 256 on the accepted HOGENOM layout with split CUDA default
+  enabled;
+- optionally test 1024 if 512 is promising, since it may also reach 32 resident
+  warps but with only one block per SM under the thread limit;
+- accept a new default only if targeted parity still passes and whole-dataset
+  event timing improves; profile with `nsys` if the timing win is material.
+
 ## Commands
 
 Warm whole-dataset stream timing:
