@@ -2738,6 +2738,82 @@ bucket.  Keep `max_wave_size=8192` for both the conservative 300-family-cap
 layout and the higher-memory `--chunk-size 0 --clade-budget 305000` runtime
 layout.
 
+## Main-Branch 2D Backward Alternative Audit Plan
+
+The retained split-wave backward path still spends meaningful time in the 2D
+Triton `J^T` strategy, and the objective calls out the possibility that an
+older/main-branch alternative may trade memory or compile overhead differently.
+Before changing code, audit the main branch rather than guessing:
+
+- grep main-branch docs for `2D` and related backward-kernel notes;
+- inspect the main-branch backward kernel code around any alternative path;
+- compare the alternative against the current retained path in terms of launch
+  count, scratch memory, supported parameter modes, and expected correctness
+  surface;
+- only prototype if there is a concrete low-risk switch or environment-gated
+  candidate;
+- require targeted parity tests, warm HOGENOM timing, and `nsys` confirmation
+  before accepting any change.
+
+Audit result:
+
+- main's Proposal 1 staged tree path is not a good restoration candidate as
+  implemented; the archived profile says it passed parity but regressed in
+  timing, added many launches/scratch stages, and OOMed at larger sizes;
+- main's Proposal 0 2D path is the retained branch that was later superseded
+  for HOGENOM split/no-split waves by the CUDA self-loop route already present
+  here;
+- the useful main-branch alternatives already acted on in this branch are the
+  exact CUDA self-loop and CUDA Pibar routes, so do not spend time re-porting
+  the staged tree prototype without a new design that reduces launches and
+  scratch traffic.
+
+## Batch-Composition Local-Search Plan
+
+The intra-batch scheduler is already leaf-first and lower-bound optimal for
+the accepted HOGENOM batch layouts, so a better ready-queue heuristic cannot
+remove waves by itself.  The remaining scheduling lever is batch composition:
+assign families to resident batches so the sum of per-batch lower bounds is
+small while staying within clade, split, and observed memory envelopes.
+
+Next experiment:
+
+- load HOGENOM family scheduling metadata from the preprocessing cache only;
+- compare the existing `depth_first_fit` batches against metadata-only local
+  search / random-restart packings under `clade_budget` values near the current
+  best (`300000`, `305000`, `310000`, `315000`);
+- score candidates by summed leaf-first lower bound, max clades, max splits,
+  and an approximate DTS partial-row proxy before materializing expensive
+  statics;
+- only build and time a candidate if metadata reduces waves or improves the
+  DTS/split envelope relative to the validated `305000` no-family-cap layout;
+- accept no new packing policy without HOGENOM loss/gradient parity, warm
+  event timing, and `nsys` confirmation of lower total GPU kernel time.
+
+Metadata search result: no new benchmark candidate.
+
+The search loaded 1,055 HOGENOM families from the preprocessing cache and
+tested the existing `depth_first_fit` heuristic against deterministic orderings
+by clade count, non-leaf count, per-family wave cost, split count, plus 30
+random greedy starts per budget and a short move/swap local search.  The local
+search used the same leaf-first lower-bound objective that the exact scheduler
+matches on these layouts.
+
+| clade budget | best metadata packing | batches | lower-bound waves | waves by batch | max clades | max splits | decision |
+| ---: | --- | ---: | ---: | --- | ---: | ---: | --- |
+| 300,000 | `depth_first_fit` | 4 | 247 | `[102, 64, 51, 30]` | 299,948 | 824,740 | no improvement |
+| 305,000 | `depth_first_fit` | 4 | 245 | `[102, 64, 51, 28]` | 304,913 | 841,056 | keep validated runtime candidate |
+| 310,000 | `depth_first_fit` + tiny local-search split reduction | 4 | 243 | `[102, 64, 50, 27]` | 309,993 | 858,401 | no material change; prior `nsys` rejected 310k |
+| 315,000 | `depth_first_fit` | 4 | 240 | `[102, 65, 49, 24]` | 314,585 | 873,723 | no improvement |
+
+The only metadata change was a tiny max-split reduction for the already
+rejected 310k budget (`859,025 -> 858,401`) with the same wave count.  That is
+not enough to justify materializing a custom packing and re-running Nsight,
+because the prior 310k profile regressed in DTS backward by much more than this
+split-count difference can plausibly explain.  Keep the validated
+`--chunk-size 0 --clade-budget 305000` high-performance option and do not add a
+new packing policy from this search.
+
 ## Commands
 
 Warm whole-dataset stream timing, conservative memory layout:
