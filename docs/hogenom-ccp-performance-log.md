@@ -1266,6 +1266,29 @@ The measured profiler improvement is modest but real: one full-wave reduction
 launch per split wave is removed, and the large `aw0 + aw2` elementwise add is
 eliminated for the HOGENOM specieswise path.
 
+## Final Pibar Recompute Fusion Plan
+
+The current accepted profile still launches `_wave_pibar_uniform_parent_kernel`
+258 times, costing about 0.027 s of GPU kernel time.  This kernel runs after
+the last fixed Pi iteration to recompute final Pibar rows and row maxima for
+backward.  The last wave-step launch already has the final Pi output in hand,
+but it cannot compute Pibar during the main pass because row max/sum of the
+final result are only known after all species entries have been produced.
+
+Next experiment:
+
+- add an optional final-Pibar mode to `_wave_step_uniform_kernel`;
+- on the last Pi iteration, after storing final Pi, perform the same row
+  max/sum and ancestor-walk Pibar computation inside the wave-step kernel;
+- keep the separate `_wave_pibar_uniform_parent_kernel` as a fallback and for
+  non-final callers;
+- preserve the existing root-wave skip, since all-root waves do not need saved
+  Pibar rows for backward;
+- verify forward/backward parity and HOGENOM loss/gradient;
+- benchmark event timing and confirm with `nsys`;
+- accept only if the removed Pibar launches are not replaced by an equal or
+  larger increase in `_wave_step_uniform_kernel` time.
+
 ## Commands
 
 Warm whole-dataset stream timing:
