@@ -2688,24 +2688,94 @@ the conservative memory-default recommendation; use
 `--chunk-size 0 --clade-budget 305000` as the best validated higher-memory
 runtime option under the current CUDA Pibar default.
 
+## 305k No-Family-Cap Wave-Cap Retest Plan
+
+The best validated high-performance layout now uses
+`family_chunk_size=0`, `clade_budget=305000`, `batch_packing=depth_first_fit`,
+and `max_wave_size=8192`.  Larger wave caps were rejected earlier for the
+300-family/315k layout because they removed few waves and did not reduce total
+GPU time.  Retest this only for the new 305k no-family-cap layout:
+
+- run metadata first for `max_wave_size` in `{8192, 12288, 16384, 24576,
+  32768}`;
+- benchmark only caps that remove a meaningful number of waves without
+  increasing max active batch size;
+- accept a wave-cap change only if event timing improves and `nsys` confirms
+  lower total GPU kernel time.
+
+Metadata sweep, forcing all batch statics to build:
+
+| `max_wave_size` | waves by batch | total waves | max wave | max clades | max splits | max DTS partial rows |
+| ---: | --- | ---: | ---: | ---: | ---: | ---: |
+| 8,192 | `[102, 64, 51, 28]` | 245 | 8,192 | 304,913 | 841,056 | 68,969 |
+| 12,288 | `[101, 63, 50, 27]` | 241 | 12,288 | 304,923 | 841,607 | 62,510 |
+| 16,384 | `[100, 63, 49, 27]` | 239 | 16,384 | 304,923 | 841,607 | 75,840 |
+| 24,576 | `[100, 62, 49, 27]` | 238 | 24,576 | 304,923 | 841,607 | 62,510 |
+| 32,768 | `[99, 62, 48, 27]` | 236 | 27,144 | 304,923 | 841,607 | 62,510 |
+
+The max-DTS-partial-row values here come from fully materialized batch statics.
+They should be preferred over the earlier lazy metadata table for this field.
+
+Event timing:
+
+| `max_wave_size` | total waves | event median fwd+bwd | median forward | median backward | peak alloc | peak reserved | decision |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| 8,192 | 245 | 0.7435 s | 0.3056 s | 0.4379 s | 5.675 GiB | 8.027 GiB | baseline |
+| 12,288 | 241 | 0.7373 s | 0.3060 s | 0.4316 s | 5.572 GiB | 6.852 GiB | send to `nsys` |
+| 32,768 | 236 | 0.7440 s | 0.3068 s | 0.4370 s | 5.492 GiB | 7.170 GiB | rejected |
+
+Nsight Systems validation:
+
+| layout | waves | profiled pass | CUDA launches | GPU kernel time | wave-step | DTS backward | CUDA self-loop | CUDA Pibar |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 305k / wave 8,192 | 245 | 0.7840 s | 13,624 | 0.7184 s | 0.2136 s / 1,470 | 0.1532 s / 232 | 0.0992 s / 245 | 0.0829 s / 232 |
+| 305k / wave 12,288 | 241 | 0.7921 s | 13,592 | 0.7345 s | 0.2134 s / 1,446 | 0.1658 s / 232 | 0.1023 s / 241 | 0.0830 s / 232 |
+
+Result: reject the larger wave cap for now.  `max_wave_size=12288` removes four
+waves and 32 launches, but the profiler run is slower: total GPU kernel time
+increases by about `16 ms`, mainly from DTS backward and the CUDA self-loop
+bucket.  Keep `max_wave_size=8192` for both the conservative 300-family-cap
+layout and the higher-memory `--chunk-size 0 --clade-budget 305000` runtime
+layout.
+
 ## Commands
 
-Warm whole-dataset stream timing:
+Warm whole-dataset stream timing, conservative memory layout:
 
 ```bash
 python scripts/profile_hogenom_ccp_pass.py \
-  --chunk-size 200 \
+  --chunk-size 300 \
+  --clade-budget 315000 \
+  --batch-packing depth_first_fit \
+  --max-wave-size 8192 \
   --warmup-runs 1 \
-  --profile-runs 1 \
+  --profile-runs 5 \
   --mode stream-batches \
   --no-cuda-profiler-api
 ```
 
-Production closure timing:
+Warm whole-dataset stream timing, best validated runtime layout:
 
 ```bash
 python scripts/profile_hogenom_ccp_pass.py \
-  --chunk-size 200 \
+  --chunk-size 0 \
+  --clade-budget 305000 \
+  --batch-packing depth_first_fit \
+  --max-wave-size 8192 \
+  --warmup-runs 1 \
+  --profile-runs 5 \
+  --mode stream-batches \
+  --no-cuda-profiler-api
+```
+
+Production closure timing, conservative memory layout:
+
+```bash
+python scripts/profile_hogenom_ccp_pass.py \
+  --chunk-size 300 \
+  --clade-budget 315000 \
+  --batch-packing depth_first_fit \
+  --max-wave-size 8192 \
   --warmup-runs 1 \
   --profile-runs 1 \
   --mode full \
