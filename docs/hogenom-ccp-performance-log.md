@@ -1591,6 +1591,34 @@ intended occupancy effect:
 - long-scoreboard stalls fall versus block 256, while barrier stalls remain
   prominent from the in-block reductions.
 
+## CUDA Self-Loop Shared-Array Reduction Plan
+
+The block-512 CUDA self-loop kernel is still shared-memory constrained: it
+allocates seven row-sized shared arrays,
+`term/work/vacc/diag/pcoef/sl1w/sl2w`.  The `sl1w` and `sl2w` arrays are only
+used to add the speciation contribution from a species' parent:
+`term[parent] * side_weight(parent -> child)`.  Because the species topology is
+a tree, every child species has at most one parent.  We can precompute one
+child-indexed `edgew[S]` array instead of two parent-indexed arrays:
+
+```text
+edgew[sp_child1[parent]] = q3(parent)
+edgew[sp_child2[parent]] = q4(parent)
+```
+
+Then the Neumann update uses `term[parent[s]] * edgew[s]`.
+
+Next experiment:
+
+- add an environment-controlled CUDA mode that replaces `sl1w/sl2w` with one
+  `edgew` array;
+- reduce dynamic shared memory from `7*S*sizeof(float)` to
+  `6*S*sizeof(float)` in that mode;
+- keep the old layout as a diagnostic fallback;
+- verify targeted parity with the new mode forced on;
+- benchmark HOGENOM, then run `nsys` and optionally `ncu` if the event timing
+  improves.
+
 ## Commands
 
 Warm whole-dataset stream timing:
