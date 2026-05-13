@@ -35,17 +35,17 @@ Measured warm runtime after the scheduler change:
 | 100 | 11 | 927 | 8192 | 1.624 s | 2.65 GiB | 2.83 GiB |
 | 200 | 6 | 522 | 8192 | 1.390 s | 4.23 GiB | 8.47 GiB |
 | 250 | 5 | 430 | 8192 | 1.360 s | 5.05 GiB | 10.27 GiB |
-| 300 | 4 | 371 | 8192 | 1.292 s | 5.92 GiB | 11.95 GiB |
+| 300 | 4 | 371 | 8192 | 1.284 s | 5.92 GiB | 11.95 GiB |
 | 400 | 3 | 286 | 8192 | 1.307 s | 7.92 GiB | 16.31 GiB |
 | 600 | 2 | 193 | 8192 | 1.289 s | 15.24 GiB | 16.71 GiB |
 
-The chunk-300 row includes the later DTS launch-warp tuning and
-`GPUREC_BACKWARD_NO_CPU_PRUNING=1`; without the no-host-pruning override the
-same tuned code measured 1.321 s.  The other rows are the
-scheduler/self-loop-tuned measurements used for memory tradeoff decisions.
+The chunk-300 row includes the later DTS launch-warp tuning, no-host pruning,
+and 2D `J^T` warp retuning.  Without the no-host-pruning override the same
+tuned code measured 1.321 s.  The other rows are the scheduler/self-loop-tuned
+measurements used for memory tradeoff decisions.
 
 The best warm value inside the 5-6 GiB allocated target is chunk size 300 at
-about 1.32 s.  Larger chunks keep reducing waves but give small returns relative
+about 1.28 s.  Larger chunks keep reducing waves but give small returns relative
 to memory: chunk 600 uses 15.24 GiB for only about 44 ms over chunk 300.
 
 The first pass for large chunks is still expensive because Triton compiles
@@ -56,15 +56,15 @@ compilation, but warm-up is still much slower than steady state.
 ## Nsight Findings
 
 Nsight Systems on tuned chunk size 300 with
-`GPUREC_BACKWARD_NO_CPU_PRUNING=1` measured one profiled pass at 1.407 s
-(`nsys` overhead relative to the uninstrumented 1.292 s median).  The measured
-pass had 52,557 CUDA kernel launches and 1.186 s of GPU kernel time.
+`GPUREC_BACKWARD_NO_CPU_PRUNING=1` measured one profiled pass at 1.404 s
+(`nsys` overhead relative to the uninstrumented 1.284 s median).  The measured
+pass had 52,557 CUDA kernel launches and 1.183 s of GPU kernel time.
 
 Top kernel families in the chunk-300 `nsys` report:
 
 | kernel | launches | total GPU time | avg launch |
 | --- | ---: | ---: | ---: |
-| `_wave_backward_uniform_2d_jt_kernel` | 2226 | 0.271 s | 121.6 us |
+| `_wave_backward_uniform_2d_jt_kernel` | 2226 | 0.268 s | 120.4 us |
 | `_wave_step_uniform_kernel` | 2226 | 0.214 s | 96.0 us |
 | `_dts_cross_backward_accum_kernel` | 358 | 0.165 s | 459.7 us |
 | `_dts_parent_reduced_ge2_stage1_kernel` | 708 | 0.108 s | 152.5 us |
@@ -144,6 +144,8 @@ leaner no-split/path-specific kernel from `main` for the cases where it applies.
   before promoting `GPUREC_DTS_NUM_WARPS=8` to the default.
 - The no-host-pruning mode was timed warm, checked with Nsight Systems, and
   covered by the same targeted CUDA parity suite as the default path.
+- The 2D `J^T` warp retune was checked warm and with Nsight Systems before
+  changing the default to `GPUREC_SELF_LOOP_2D_JT_NUM_WARPS=2`.
 - First-fit clade packing was timed and rejected as a default because it raised
   peak allocation without improving warm runtime.
 
@@ -191,6 +193,37 @@ The accepted mode still builds and passes the device active mask to kernels, so
 it preserves the default pruning approximation.  It only stops synchronizing on
 per-wave host `.any()` and `.sum().item()` decisions.  The no-mask run changes
 the gradient slightly and is slower, so the active mask itself is still useful.
+
+## 2D Self-Loop Retuning Plan
+
+After no-host pruning, the largest remaining kernel bucket is still
+`_wave_backward_uniform_2d_jt_kernel`: 2,226 launches and 0.271 s total GPU time
+in the chunk-300 `nsys` run.  Earlier tuning selected
+`GPUREC_SELF_LOOP_2D_JT_NUM_WARPS=4` and `GPUREC_SELF_LOOP_2D_BLOCK_NODES=128`,
+but that was measured before the host-pruning change.
+
+Next experiment: rerun a narrow launch-shape sweep under
+`GPUREC_BACKWARD_NO_CPU_PRUNING=1`.
+
+- keep `BLOCK_W=1`, since `BLOCK_W=2` was already worse;
+- test `JT_NUM_WARPS` in `{2, 4, 8}`;
+- test `BLOCK_NODES` in `{64, 128, 256}`;
+- accept a change only if warm whole-dataset time improves and a follow-up
+  profiler run confirms the 2D `J^T` bucket shrinks.
+
+Results:
+
+| setting | warm fwd+bwd | backward | `nsys` pass | 2D `J^T` GPU time | conclusion |
+| --- | ---: | ---: | ---: | ---: | --- |
+| no-host baseline, `JT_NUM_WARPS=4`, `BLOCK_NODES=128` | 1.292 s | 0.944 s | 1.407 s | 0.2708 s | baseline |
+| `JT_NUM_WARPS=2` | 1.284 s | 0.937 s | 1.404 s | 0.2680 s | accepted |
+| `JT_NUM_WARPS=8` | 1.298 s | 0.949 s | not run | not run | rejected |
+| `BLOCK_NODES=64` | 1.289 s | 0.942 s | not run | not run | small win, not best |
+| `BLOCK_NODES=256` | 1.290 s | 0.940 s | not run | not run | small win, not best |
+| `JT_NUM_WARPS=2 BLOCK_NODES=64` | 1.288 s | 0.941 s | not run | not run | does not stack |
+| `JT_NUM_WARPS=2 BLOCK_NODES=256` | 1.290 s | 0.941 s | not run | not run | does not stack |
+
+Set the retained 2D `J^T` default to 2 warps and leave `BLOCK_NODES=128`.
 
 ## Next Batch-Policy Plan
 

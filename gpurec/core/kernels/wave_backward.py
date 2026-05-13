@@ -788,7 +788,7 @@ def _wave_backward_uniform_2d(
         **launch_options,
     )
 
-    jt_warps = int(os.environ.get("GPUREC_SELF_LOOP_2D_JT_NUM_WARPS", "4"))
+    jt_warps = int(os.environ.get("GPUREC_SELF_LOOP_2D_JT_NUM_WARPS", "2"))
     jt_options = {}
     if jt_warps > 0:
         jt_options["num_warps"] = jt_warps
