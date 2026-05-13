@@ -272,6 +272,10 @@ def Pi_wave_backward(
         os.environ.get("GPUREC_DTS_SKIP_INACTIVE_PIBAR_ZERO", "1").strip().lower()
         not in ("", "0", "false", "no", "off")
     )
+    specialize_nonleaf_leaf_term = (
+        os.environ.get("GPUREC_SPECIALIZE_NONLEAF_LEAF_TERM", "1").strip().lower()
+        not in ("", "0", "false", "no", "off")
+    )
     cuda_self_loop_nosplit_mode = os.environ.get(
         "GPUREC_CUDA_SELF_LOOP_NOSPLIT",
         "auto",
@@ -316,6 +320,10 @@ def Pi_wave_backward(
             n_clades_skipped += W - int(active_mask.sum().item())
 
         leaf_wt = None
+        wave_has_leaf_term = (
+            not specialize_nonleaf_leaf_term
+            or int(meta.get('phase', 1)) == 1
+        )
 
         if meta['has_splits']:
             reduce_idx = meta['reduce_idx']
@@ -425,6 +433,7 @@ def Pi_wave_backward(
                 neumann_terms=neumann_terms,
                 leaf_species_idx=leaf_species_index_wave,
                 leaf_logp=uniform_leaf_logp,
+                has_leaf_term=wave_has_leaf_term,
                 active_mask=active_mask,
                 sp_parent=sp_parent_wave,
                 max_ancestor_depth=max_ancestor_depth,

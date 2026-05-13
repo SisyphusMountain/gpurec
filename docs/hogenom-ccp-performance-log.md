@@ -1338,6 +1338,33 @@ Next experiment:
 - benchmark event timing and confirm with `nsys`, accepting only if the
   wave-step and/or retained 2D buckets shrink.
 
+Result: accepted.  Wave metadata now records the scheduler phase, and
+`GPUREC_SPECIALIZE_NONLEAF_LEAF_TERM` defaults to `1`; set it to `0` to force
+the old behavior where every wave carries the leaf-hit term.
+
+Correctness:
+
+- targeted scheduler/model/chunked parity suite: 15 passed;
+- HOGENOM loss/gradient are unchanged within the existing fp32 run noise:
+  loss 667283.5625 bits, gradient infinity norm about 645.922.
+
+Event timing:
+
+| setting | median fwd+bwd | median forward | median backward | peak alloc | decision |
+| --- | ---: | ---: | ---: | ---: | --- |
+| non-leaf leaf-term specialization | 1.1470 s | 0.3135 s | 0.8336 s | 5.904 GiB | accepted |
+| old leaf term on every wave (`GPUREC_SPECIALIZE_NONLEAF_LEAF_TERM=0`) | 1.1513 s | 0.3185 s | 0.8327 s | 5.904 GiB | slower |
+
+Nsight Systems confirmation:
+
+| setting | profiled pass | CUDA launches | GPU kernel time | wave-step bucket | 2D precompute |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| final-Pibar fusion baseline | 1.265 s | 47,220 | 1.0528 s | 0.2194 s | 0.0522 s |
+| non-leaf leaf-term specialization | 1.258 s | 47,220 | 1.0449 s | 0.2151 s | 0.0491 s |
+
+The launch count is unchanged; the win comes from compiling non-leaf wave
+kernels without the impossible leaf-hit term.
+
 ## Commands
 
 Warm whole-dataset stream timing:

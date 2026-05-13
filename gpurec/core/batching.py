@@ -998,6 +998,7 @@ def build_wave_layout(
             'end': we,
             'W': W,
             'has_splits': n_ws > 0,
+            'phase': phases[wi],
         }
 
         if n_ws > 0:

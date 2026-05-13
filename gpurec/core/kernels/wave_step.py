@@ -88,6 +88,7 @@ def _wave_step_uniform_kernel(
     MAX_ANCESTOR_DEPTH: tl.constexpr,
     COMPUTE_DIFF: tl.constexpr,
     USE_LEAF_INDEX: tl.constexpr,
+    HAS_LEAF_TERM: tl.constexpr,
     LEAF_LOGP_MODE: tl.constexpr,
     STORE_PIBAR: tl.constexpr,
     STORE_PIBAR_ROW_MAX: tl.constexpr,
@@ -209,8 +210,10 @@ def _wave_step_uniform_kernel(
             else:
                 leaf_logp = tl.load(leaf_logp_ptr + s_offs, mask=mask, other=NEG_LARGE)
                 t5 = tl.where(leaf_hit, leaf_logp, NEG_LARGE)
-        else:
+        elif HAS_LEAF_TERM:
             t5 = tl.load(leaf_term_ptr + out_base + s_offs, mask=mask, other=NEG_LARGE)
+        else:
+            t5 = tl.full([BLOCK_S], value=NEG_LARGE, dtype=DTYPE)
 
         m = tl.maximum(t0, t1)
         m = tl.maximum(m, t2)
@@ -283,7 +286,8 @@ def wave_step_uniform_fused_into(Pi_in, Pi_out, Pibar, ws, W, S,
                                  family_idx=None,
                                  family_indexed_consts=False,
                                  store_final_pibar=False,
-                                 final_pibar_row_max=None):
+                                 final_pibar_row_max=None,
+                                 has_leaf_term=True):
     """Fused uniform wave step writing Pi output directly into global rows."""
     fp64 = Pi_in.dtype == torch.float64
     has_splits = DTS_reduced is not None
@@ -293,9 +297,16 @@ def wave_step_uniform_fused_into(Pi_in, Pi_out, Pibar, ws, W, S,
     if const_layout == 2:
         const_row_stride = 0 if int(DL_const.shape[0]) == 1 else int(DL_const.stride(0))
         const_species_stride = int(DL_const.stride(1)) if DL_const.ndim == 2 else 1
-    use_leaf_index = leaf_species_idx is not None and leaf_logp is not None
+    requested_has_leaf_term = bool(has_leaf_term)
+    use_leaf_index = (
+        requested_has_leaf_term
+        and leaf_species_idx is not None
+        and leaf_logp is not None
+    )
     leaf_species_arg = leaf_species_idx if use_leaf_index else sp_parent
-    leaf_logp_arg = leaf_logp if use_leaf_index else leaf_term_wt
+    has_leaf_term = bool(requested_has_leaf_term and (use_leaf_index or leaf_term_wt is not None))
+    leaf_term_arg = leaf_term_wt if leaf_term_wt is not None else Pi_in
+    leaf_logp_arg = leaf_logp if use_leaf_index else leaf_term_arg
     leaf_logp_mode = _leaf_logp_mode(use_leaf_index, leaf_logp, family_idx, S)
     family_idx_arg = family_idx if family_idx is not None else sp_parent
     max_diff_buf = Pi_out
@@ -312,7 +323,7 @@ def wave_step_uniform_fused_into(Pi_in, Pi_out, Pibar, ws, W, S,
         DL_const, Ebar, E, SL1_const, SL2_const,
         sp_child1, sp_child2,
         sp_parent,
-        leaf_term_wt,
+        leaf_term_arg,
         leaf_species_arg,
         leaf_logp_arg,
         family_idx_arg,
@@ -327,6 +338,7 @@ def wave_step_uniform_fused_into(Pi_in, Pi_out, Pibar, ws, W, S,
         MAX_ANCESTOR_DEPTH=int(max_ancestor_depth),
         COMPUTE_DIFF=False,
         USE_LEAF_INDEX=use_leaf_index,
+        HAS_LEAF_TERM=has_leaf_term,
         LEAF_LOGP_MODE=leaf_logp_mode,
         STORE_PIBAR=False,
         STORE_PIBAR_ROW_MAX=False,

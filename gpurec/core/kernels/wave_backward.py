@@ -210,6 +210,7 @@ def _wave_backward_uniform_2d_precompute_kernel(
     BLOCK_S: tl.constexpr,
     MAX_ANCESTOR_DEPTH: tl.constexpr,
     USE_LEAF_INDEX: tl.constexpr,
+    HAS_LEAF_TERM: tl.constexpr,
     LEAF_HIT_ONLY_LOGP: tl.constexpr,
     LEAF_LOGP_MODE: tl.constexpr,
     USE_ACTIVE_MASK: tl.constexpr,
@@ -307,8 +308,10 @@ def _wave_backward_uniform_2d_precompute_kernel(
         else:
             leaf_logp = tl.load(leaf_logp_ptr + s_offs, mask=species_valid, other=NEG_LARGE).to(DTYPE)
             t5 = tl.where(leaf_hit, leaf_logp[:, None], NEG_LARGE)
-    else:
+    elif HAS_LEAF_TERM:
         t5 = tl.load(leaf_term_ptr + out_offsets, mask=mask, other=NEG_LARGE).to(DTYPE)
+    else:
+        t5 = tl.full([BLOCK_S, BLOCK_W], value=NEG_LARGE, dtype=DTYPE)
 
     m = tl.maximum(t0, t1)
     m = tl.maximum(m, t2)
@@ -513,6 +516,7 @@ def _wave_backward_uniform_param_store_kernel(
     BLOCK_W: tl.constexpr,
     BLOCK_S: tl.constexpr,
     USE_LEAF_INDEX: tl.constexpr,
+    HAS_LEAF_TERM: tl.constexpr,
     LEAF_HIT_ONLY_LOGP: tl.constexpr,
     LEAF_LOGP_MODE: tl.constexpr,
     USE_ACTIVE_MASK: tl.constexpr,
@@ -599,8 +603,10 @@ def _wave_backward_uniform_param_store_kernel(
         else:
             leaf_logp = tl.load(leaf_logp_ptr + s_offs, mask=species_valid, other=NEG_LARGE).to(DTYPE)
             t5 = tl.where(leaf_hit, leaf_logp[:, None], NEG_LARGE)
-    else:
+    elif HAS_LEAF_TERM:
         t5 = tl.load(leaf_term_ptr + out_offsets, mask=mask, other=NEG_LARGE).to(DTYPE)
+    else:
+        t5 = tl.full([BLOCK_S, BLOCK_W], value=NEG_LARGE, dtype=DTYPE)
 
     m = tl.maximum(t0, t1)
     m = tl.maximum(m, t2)
@@ -654,6 +660,7 @@ def _wave_backward_uniform_2d(
     neumann_terms,
     leaf_species_idx,
     leaf_logp,
+    has_leaf_term,
     active_mask,
     sp_parent,
     max_ancestor_depth,
@@ -748,10 +755,15 @@ def _wave_backward_uniform_2d(
         family_idx = family_idx.to(device=device, dtype=torch.long).contiguous()
     else:
         family_idx = sp_parent
+    requested_has_leaf_term = bool(has_leaf_term)
+    use_leaf_index = bool(use_leaf_index and requested_has_leaf_term)
+    has_materialized_leaf_term = leaf_term_wt is not None
     if leaf_term_wt is None:
-        if not use_leaf_index:
-            raise ValueError("leaf_term_wt is required when leaf indexing is not used")
-        leaf_term_wt = leaf_logp
+        leaf_term_wt = leaf_logp if use_leaf_index else Pi_star
+    has_leaf_term = bool(
+        requested_has_leaf_term
+        and (use_leaf_index or has_materialized_leaf_term)
+    )
     leaf_species_arg = leaf_species_idx if use_leaf_index else sp_child1
     leaf_logp_arg = leaf_logp if use_leaf_index else leaf_term_wt
 
@@ -795,6 +807,7 @@ def _wave_backward_uniform_2d(
         block_s,
         max_ancestor_depth,
         USE_LEAF_INDEX=bool(use_leaf_index),
+        HAS_LEAF_TERM=bool(has_leaf_term),
         LEAF_HIT_ONLY_LOGP=bool(leaf_hit_only_logp),
         LEAF_LOGP_MODE=int(leaf_logp_mode),
         USE_ACTIVE_MASK=bool(active_mask is not None),
@@ -872,6 +885,7 @@ def _wave_backward_uniform_2d(
         block_w,
         block_s,
         USE_LEAF_INDEX=bool(use_leaf_index),
+        HAS_LEAF_TERM=bool(has_leaf_term),
         LEAF_HIT_ONLY_LOGP=bool(leaf_hit_only_logp),
         LEAF_LOGP_MODE=int(leaf_logp_mode),
         USE_ACTIVE_MASK=bool(active_mask is not None),
@@ -892,6 +906,7 @@ def wave_backward_uniform_fused(
     neumann_terms=3,
     leaf_species_idx=None,
     leaf_logp=None,
+    has_leaf_term=True,
     active_mask=None,
     sp_parent=None,
     max_ancestor_depth=None,
@@ -926,7 +941,12 @@ def wave_backward_uniform_fused(
         v_k: [W, S] Neumann-solved adjoint
         aw0, aw1, aw2, aw345, aw3, aw4: [W, S] per-element param grad contributions
     """
-    use_leaf_index = leaf_species_idx is not None and leaf_logp is not None
+    requested_has_leaf_term = bool(has_leaf_term)
+    use_leaf_index = (
+        requested_has_leaf_term
+        and leaf_species_idx is not None
+        and leaf_logp is not None
+    )
     const_layout = _uniform_backward_const_layout(
         DL_const, family_idx, bool(family_indexed_consts)
     )
@@ -977,6 +997,7 @@ def wave_backward_uniform_fused(
         neumann_terms=neumann_terms,
         leaf_species_idx=leaf_species_idx,
         leaf_logp=leaf_logp,
+        has_leaf_term=requested_has_leaf_term,
         active_mask=active_mask,
         sp_parent=sp_parent,
         max_ancestor_depth=max_ancestor_depth,

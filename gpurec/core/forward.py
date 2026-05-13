@@ -236,6 +236,10 @@ def Pi_wave_forward(
         os.environ.get("GPUREC_FUSE_FINAL_PIBAR", "1").strip().lower()
         not in ("", "0", "false", "no", "off")
     )
+    specialize_nonleaf_leaf_term = (
+        os.environ.get("GPUREC_SPECIALIZE_NONLEAF_LEAF_TERM", "1").strip().lower()
+        not in ("", "0", "false", "no", "off")
+    )
 
     def _progress(event: str, wave_index: int | None = None,
                   local_iter: int | None = None, meta=None) -> None:
@@ -254,6 +258,10 @@ def Pi_wave_forward(
         ws = meta['start']
         we = meta['end']
         W = meta['W']
+        has_leaf_term = (
+            not specialize_nonleaf_leaf_term
+            or int(meta.get('phase', 1)) == 1
+        )
         for local_iter in range(fixed_iters):
             pi_in = Pi if (local_iter % 2 == 0) else Pibar
             pi_out = Pibar if (local_iter % 2 == 0) else Pi
@@ -273,6 +281,7 @@ def Pi_wave_forward(
                 family_indexed_consts=batched,
                 store_final_pibar=store_final_pibar,
                 final_pibar_row_max=uniform_pibar_row_max if store_final_pibar else None,
+                has_leaf_term=has_leaf_term,
             )
             if root_logsumexp_trace is not None:
                 root_entry = roots_by_wave[wave_index]
