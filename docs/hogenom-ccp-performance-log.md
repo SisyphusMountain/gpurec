@@ -1942,6 +1942,93 @@ main kernels (`_dts_cross_backward_accum_kernel` and the CUDA self-loop both
 rose in the profiled pass).  Since the acceptance criterion required lower
 total GPU kernel time, the code change was reverted.
 
+## Current Pibar VJP NCU Plan
+
+After the prepared-origination fast path, the Pibar-from-UD VJP kernel remains
+one of the largest single GPU buckets:
+`_uniform_cross_pibar_vjp_tree_from_ud_compact_kernel` takes about 0.106 s
+over 244 launches in
+`profiling/hogenom_ccp/nsys_stream_depthff315_prepared_orig.sqlite`.  The
+largest observed launch is match index 172, at about 2.05 ms.
+
+Next experiment:
+
+- capture one Nsight Compute report for match index 172 under the current
+  accepted HOGENOM settings;
+- inspect achieved occupancy, register pressure, spills, memory throughput,
+  branch divergence, and warp issue stalls;
+- compare the result with the DTS NCU result before changing code, because both
+  kernels walk cross-clade CCP structure and may be limited by similar memory
+  and divergence patterns;
+- only prototype a Pibar VJP change if NCU points to a concrete structural
+  bottleneck that can be improved without changing likelihood or gradient
+  semantics.
+
+NCU result for
+`profiling/hogenom_ccp/ncu_pibar_vjp_prepared_launch172.ncu-rep`:
+
+- launch shape: grid 86,490 blocks, block size 128;
+- duration: 2.06 ms for the sampled large launch;
+- registers/thread: 36; no local memory spilling;
+- theoretical occupancy: 100%; achieved occupancy: 97.49%;
+- DRAM throughput: 88.45%; L2 throughput: 68.71%;
+- compute throughput: 47.40%; issue slots busy: 34.71%;
+- active warps per scheduler: 11.63, but eligible warps per scheduler only
+  0.82;
+- branch efficiency: 99.74%;
+- NCU reports about 153.0M excessive global sectors, about 60% of total
+  sectors;
+- average useful bytes per global-load sector is 10.1 / 32; average useful
+  bytes per global-store sector is 4.4 / 32.
+
+Diagnosis: this launch is not occupancy-, register-, spill-, or branch-limited.
+It is primarily a DRAM/coalescing problem, likely from each split-side program
+walking species-tree rows and then atomically adding into child rows of
+`accumulated_rhs`.  A real fix probably requires a structural change to the
+Pibar VJP layout or accumulation order, not a simple occupancy tweak.
+
+Before attempting that rewrite, run a narrow launch-option sweep for the
+existing `GPUREC_PIBAR_UD_BLOCK_S` and `GPUREC_PIBAR_UD_NUM_WARPS` knobs.  This
+is low risk and may reveal a suboptimal default, but should only be promoted if
+whole-dataset timing improves and a follow-up `nsys` pass confirms lower total
+GPU kernel time.
+
+Event timing sweep:
+
+| setting | median fwd+bwd | median forward | median backward | peak alloc | decision |
+| --- | ---: | ---: | ---: | ---: | --- |
+| default | 0.7856 s | 0.3106 s | 0.4750 s | 5.780 GiB | baseline |
+| `BLOCK_S=64, WARPS=4` | 0.7951 s | 0.3099 s | 0.4852 s | 5.780 GiB | rejected |
+| `BLOCK_S=128, WARPS=4` | 0.7910 s | 0.3095 s | 0.4815 s | 5.780 GiB | rejected |
+| `BLOCK_S=256, WARPS=4` | 0.7849 s | 0.3108 s | 0.4741 s | 5.780 GiB | tied |
+| `BLOCK_S=512, WARPS=4` | 0.7843 s | 0.3093 s | 0.4750 s | 5.780 GiB | tied |
+| `BLOCK_S=128, WARPS=8` | 0.7907 s | 0.3109 s | 0.4798 s | 5.780 GiB | rejected |
+| `BLOCK_S=256, WARPS=8` | 0.7793 s | 0.3088 s | 0.4707 s | 5.780 GiB | validate with `nsys` |
+| `BLOCK_S=128, WARPS=2` | 0.8005 s | 0.3098 s | 0.4904 s | 5.780 GiB | rejected |
+
+The only candidate with a visible event-time improvement is
+`BLOCK_S=256, WARPS=8`, and the likelihood/gradient reported by the profiler
+remain unchanged.  Next validation: run Nsight Systems for this candidate and
+compare CUDA launch count, total GPU kernel time, and the Pibar VJP bucket
+against the prepared-origination baseline before promoting a default.
+
+Nsight Systems validation for
+`profiling/hogenom_ccp/nsys_stream_depthff315_pibar_w8.nsys-rep`:
+
+| setting | CUDA launches | GPU kernel time | Pibar VJP bucket | DTS backward bucket | CUDA self-loop bucket | decision |
+| --- | ---: | ---: | ---: | ---: | ---: | --- |
+| default prepared-origination baseline | 15,606 | 0.7457 s | 0.1063 s / 244 | 0.1540 s / 244 | 0.0994 s / 258 | baseline |
+| `BLOCK_S=256, WARPS=8` | 15,606 | 0.7459 s | 0.1038 s / 244 | 0.1519 s / 244 | 0.1047 s / 258 | rejected |
+
+The candidate does reduce the targeted Pibar VJP bucket by about 2.5 ms, and
+DTS accumulation is also slightly lower in this profiled pass.  The CUDA
+self-loop bucket rises by about 5.3 ms, leaving total GPU kernel time
+unchanged/slightly worse.  Because the acceptance criterion requires a real
+whole-pass `nsys` improvement, do not promote the Pibar VJP launch-option
+change.  The NCU result remains useful: the next Pibar improvement would need
+to address uncoalesced loads/stores structurally rather than retuning block
+shape.
+
 ## Commands
 
 Warm whole-dataset stream timing:
