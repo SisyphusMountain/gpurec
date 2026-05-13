@@ -2539,6 +2539,53 @@ Paired five-run check:
 The apparent 128-thread improvement in the three-run screen was noise.  Since
 the paired check favors 256, no `nsys` run is needed.
 
+## Post-CUDA-Pibar DTS Launch-Shape Sanity Plan
+
+After promoting CUDA Pibar, the largest remaining buckets in
+`nsys_stream_depthff315_cuda_pibar` are:
+
+- `_wave_step_uniform_kernel`: about `0.215 s`;
+- `_dts_cross_backward_accum_kernel`: about `0.157 s`;
+- `gpurec_wave_backward_nosplit_uniform_fp32`: about `0.103 s`;
+- `_dts_parent_reduced_ge2_stage1_kernel`: about `0.096 s`;
+- `gpurec_pibar_from_ud_shared_fp32`: about `0.083 s`.
+
+The DTS NCU result says `_dts_cross_backward_accum_kernel` is not occupancy- or
+register-limited, so a broad rewrite is not justified by launch-shape tuning.
+However, the old DTS launch-shape sweep predates CUDA Pibar and several
+accepted changes.  Run a narrow sanity check of existing diagnostic knobs only:
+
+- default `GPUREC_DTS_NUM_WARPS=8`, implicit `BLOCK_S=256`;
+- `GPUREC_DTS_NUM_WARPS=4`;
+- `GPUREC_DTS_NUM_WARPS=16`;
+- `GPUREC_DTS_BLOCK_S=128` with default 8 warps.
+
+Use the accepted HOGENOM stream timing with one warmup and three measured runs.
+Run `nsys` only if a setting gives a clear event-time improvement.
+
+Result: no change.  Keep `GPUREC_DTS_NUM_WARPS=8` and implicit
+`GPUREC_DTS_BLOCK_S=256`.
+
+First screen:
+
+| setting | measured runs | median fwd+bwd | median forward | median backward | peak reserved | decision |
+| --- | ---: | ---: | ---: | ---: | ---: | --- |
+| default | 3 | 0.7648 s | 0.3108 s | 0.4546 s | 6.963 GiB | baseline |
+| `GPUREC_DTS_NUM_WARPS=4` | 3 | 0.7760 s | 0.3105 s | 0.4655 s | 6.965 GiB | rejected |
+| `GPUREC_DTS_NUM_WARPS=16` | 3 | 0.7564 s | 0.3110 s | 0.4455 s | 6.965 GiB | paired check |
+| `GPUREC_DTS_BLOCK_S=128` | 3 | 0.7631 s | 0.3093 s | 0.4538 s | 6.963 GiB | rejected |
+
+Paired five-run check:
+
+| setting | measured runs | median fwd+bwd | median forward | median backward | peak reserved |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| default | 5 | 0.7575 s | 0.3097 s | 0.4471 s | 6.963 GiB |
+| `GPUREC_DTS_NUM_WARPS=16` | 5 | 0.7572 s | 0.3111 s | 0.4460 s | 6.965 GiB |
+
+The paired result is a tie, not a clear win.  Since NCU already indicated this
+kernel is memory/divergence limited, do not spend another `nsys` run or promote
+a 16-warp default.
+
 ## Commands
 
 Warm whole-dataset stream timing:
