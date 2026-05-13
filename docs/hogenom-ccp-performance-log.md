@@ -1663,6 +1663,26 @@ removes one row-sized shared array, unlocks the third resident block per SM,
 and reduces the CUDA self-loop bucket by about 38 ms in the profiled pass
 without changing launch count or memory footprint at the model level.
 
+## Post-CUDA-Split Scheduling Retest Plan
+
+After the CUDA split self-loop changes, the accepted HOGENOM run is no longer
+dominated by the retained 2D self-loop path.  The largest bucket is now the
+forward wave-step launch family, with 1,548 launches over 258 waves.  Earlier
+batch/wave scheduling sweeps were measured before split waves used the CUDA
+self-loop path, so the memory and timing tradeoffs may have shifted.
+
+Next experiment:
+
+- keep the accepted depth-first packing policy and uniform origination setup;
+- retest a narrow set of larger clade budgets and wave caps under the new
+  CUDA split default;
+- start with metadata-only wave counts to avoid blind full runs;
+- then benchmark only candidates that reduce total waves or plausibly remain
+  inside the 5-6 GiB lean memory target;
+- accept a scheduling change only if whole-dataset event timing improves and
+  `nsys` confirms lower GPU kernel time without shifting more cost into DTS or
+  Pibar buckets.
+
 ## Commands
 
 Warm whole-dataset stream timing:
