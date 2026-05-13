@@ -462,12 +462,14 @@ def _evaluate_chunked_uniform(
                     e_out["E"],
                     built.wave_layout["root_clade_ids"],
                     chunk_origination_probs,
+                    origination_probs_prepared=True,
                 )
             else:
                 loss_vec = compute_log_likelihood_root_rows(
                     pi_out["Pi_root_rows"],
                     e_out["E"],
                     chunk_origination_probs,
+                    origination_probs_prepared=True,
                 )
             return pi_out, loss_vec
 
@@ -503,6 +505,7 @@ def _evaluate_chunked_uniform(
                     ancestors_T=state.ancestors_T,
                     uniform_pibar_row_max=pi_out.get("uniform_pibar_row_max"),
                     origination_probs=chunk_origination_probs,
+                    origination_probs_prepared=True,
                 )
 
             bwd_ms, pi_bwd = _time_cuda_ms(profile, run_backward)
@@ -556,6 +559,7 @@ def _evaluate_chunked_uniform(
                 genewise=False,
                 ancestors_T=state.ancestors_T,
                 origination_probs=selected_origination_probs,
+                origination_probs_prepared=True,
             )
 
         e_adjoint_ms, (grad_theta, _stats) = _time_cuda_ms(profile, run_e_adjoint)

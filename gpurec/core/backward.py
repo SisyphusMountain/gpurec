@@ -5,6 +5,7 @@ import os
 import torch
 
 from .log2_utils import logsumexp2
+from .likelihood import prepare_origination_probs
 from ._helpers import _safe_exp2_ratio  # noqa: F401
 from .memory_policy import proposal0_memory_gate
 from .extract_parameters import as_family_param, as_family_species
@@ -35,6 +36,8 @@ def Pi_wave_backward(
     ancestors_T=None,
     family_idx=None,
     uniform_pibar_row_max=None,
+    origination_probs=None,
+    origination_probs_prepared: bool = False,
 ):
     """Wave-decomposed backward pass for implicit gradient computation.
 
@@ -59,6 +62,11 @@ def Pi_wave_backward(
         family_idx: Long[C] clade→family mapping. None → auto-wrapped as G=1.
         uniform_pibar_row_max: optional [C] final forward-side row max values
             for uniform Pibar. Used only by opt-in fused cross-Pibar VJP paths.
+        origination_probs: optional [S] or [F, S] root-species origination
+            probabilities. ``None`` keeps the historical uniform distribution.
+        origination_probs_prepared: when True, skip validation/renormalization
+            for model-owned origination probabilities already prepared at
+            construction time.
 
     Returns:
         dict with:
@@ -230,17 +238,33 @@ def Pi_wave_backward(
 
     accumulated_rhs = torch.zeros(C, S, device=device, dtype=dtype)
     if torch.is_tensor(root_clade_ids_perm):
-        root_ids_iter = root_clade_ids_perm.detach()
-        if root_ids_iter.device.type != "cpu":
-            root_ids_iter = root_ids_iter.cpu()
-        root_ids_iter = root_ids_iter.tolist()
+        root_ids_device = root_clade_ids_perm.to(device=device, dtype=torch.long)
     else:
-        root_ids_iter = root_clade_ids_perm
-    for r in root_ids_iter:
-        r = int(r)
-        root_Pi = Pi_star_wave[r]
-        lse = logsumexp2(root_Pi, dim=0)
-        accumulated_rhs[r] = -_safe_exp2_ratio(root_Pi, lse)
+        root_ids_device = torch.as_tensor(
+            root_clade_ids_perm,
+            device=device,
+            dtype=torch.long,
+        )
+    origin_probs = prepare_origination_probs(
+        origination_probs,
+        S=S,
+        device=device,
+        dtype=dtype,
+        family_count=(
+            int(root_ids_device.numel()) if origination_probs is not None else None
+        ),
+        assume_prepared=origination_probs_prepared,
+    )
+    root_Pi = Pi_star_wave.index_select(0, root_ids_device)
+    if origin_probs is None:
+        root_terms = root_Pi
+    elif origin_probs.ndim == 1:
+        root_terms = root_Pi + torch.log2(origin_probs).view(1, S)
+    else:
+        root_terms = root_Pi + torch.log2(origin_probs)
+    lse = logsumexp2(root_terms, dim=-1, keepdim=True)
+    root_rhs = -_safe_exp2_ratio(root_terms, lse)
+    accumulated_rhs.index_copy_(0, root_ids_device, root_rhs)
 
     grad_log_pD = torch.zeros_like(log_pD)
     grad_log_pS = torch.zeros_like(log_pS)

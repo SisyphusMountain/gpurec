@@ -193,22 +193,133 @@ def E_fixed_point(species_helpers,
 # Log-likelihood
 # =========================================================================
 
-def compute_log_likelihood(Pi, E, root_clade_idx):
+def prepare_origination_probs(
+    origination_probs,
+    *,
+    S: int,
+    device,
+    dtype,
+    family_count: int | None = None,
+    assume_prepared: bool = False,
+):
+    """Validate and normalize species origination probabilities.
+
+    ``origination_probs`` may be ``[S]`` for one shared distribution or
+    ``[G, S]`` for family-specific distributions.  Rows are normalized so callers
+    can pass positive weights without pre-normalizing them.
+    """
+    if origination_probs is None:
+        return None
+    probs = torch.as_tensor(origination_probs, device=device, dtype=dtype)
+    if probs.ndim == 1:
+        if int(probs.shape[0]) != int(S):
+            raise ValueError(
+                f"origination_probs must have length {S}, got {tuple(probs.shape)}"
+            )
+    elif probs.ndim == 2:
+        if int(probs.shape[1]) != int(S):
+            raise ValueError(
+                "origination_probs with two dimensions must have shape "
+                f"[families, {S}], got {tuple(probs.shape)}"
+            )
+        if family_count is not None and int(probs.shape[0]) != int(family_count):
+            raise ValueError(
+                "family-specific origination_probs must have one row per family: "
+                f"expected {family_count}, got {int(probs.shape[0])}"
+            )
+    else:
+        raise ValueError(
+            "origination_probs must be None, [S], or [families, S], "
+            f"got shape {tuple(probs.shape)}"
+        )
+
+    if assume_prepared:
+        return probs
+
+    if not torch.isfinite(probs).all().item():
+        raise ValueError("origination_probs must be finite")
+    if (probs < 0).any().item():
+        raise ValueError("origination_probs must be non-negative")
+    row_sum = probs.sum(dim=-1, keepdim=True)
+    if (row_sum <= 0).any().item():
+        raise ValueError("each origination probability row must have positive mass")
+    return probs / row_sum
+
+
+def _weighted_logsumexp2(values, origination_probs):
+    log_weights = torch.log2(origination_probs)
+    return logsumexp2(values + log_weights, dim=-1)
+
+
+def compute_origination_denominator(
+    E,
+    origination_probs=None,
+    *,
+    origination_probs_prepared: bool = False,
+):
+    """Return the log2 denominator for the root origination distribution."""
+    if origination_probs is None:
+        return torch.log2(1 - torch.exp2(E).mean(dim=-1))
+    probs = prepare_origination_probs(
+        origination_probs,
+        S=int(E.shape[-1]),
+        device=E.device,
+        dtype=E.dtype,
+        assume_prepared=origination_probs_prepared,
+    )
+    return torch.log2((probs * (1 - torch.exp2(E))).sum(dim=-1))
+
+
+def compute_log_likelihood(
+    Pi,
+    E,
+    root_clade_idx,
+    origination_probs=None,
+    *,
+    origination_probs_prepared: bool = False,
+):
     """Computes log-likelihood in a batched way over the number
     of gene families.
     Output has shape len(root_clade_idx).
-    Result is in log2 units (bits)."""
+    Result is in log2 units (bits).
+
+    By default the root species origination distribution is uniform.  Passing
+    ``origination_probs`` as ``[S]`` or ``[G, S]`` uses those probabilities for
+    both the root ``Pi`` mixture and the ``1 - E`` denominator.
+    """
 
     # This will broadcast if root_clade_idx has shape [N_gene_trees]
     root_probs = Pi[root_clade_idx, :]
-    # We remove log2(|S|) because we assume a uniform prior over the root species
-    numerator = logsumexp2(root_probs, dim=-1) - math.log2(Pi.shape[-1])
-    # Will still work if E has shape [N_gene_trees, S]
-    denominator = torch.log2((1-torch.exp2(E).mean(dim=-1)))
+    if origination_probs is None:
+        # We remove log2(|S|) because we assume a uniform prior over the root species
+        numerator = logsumexp2(root_probs, dim=-1) - math.log2(Pi.shape[-1])
+        # Will still work if E has shape [N_gene_trees, S]
+        denominator = torch.log2((1-torch.exp2(E).mean(dim=-1)))
+    else:
+        probs = prepare_origination_probs(
+            origination_probs,
+            S=int(Pi.shape[-1]),
+            device=Pi.device,
+            dtype=Pi.dtype,
+            family_count=int(root_probs.shape[0]) if root_probs.ndim == 2 else None,
+            assume_prepared=origination_probs_prepared,
+        )
+        numerator = _weighted_logsumexp2(root_probs, probs)
+        denominator = compute_origination_denominator(
+            E,
+            probs,
+            origination_probs_prepared=True,
+        )
     return -(numerator - denominator)
 
 
-def compute_log_likelihood_root_rows(Pi_root_rows, E):
+def compute_log_likelihood_root_rows(
+    Pi_root_rows,
+    E,
+    origination_probs=None,
+    *,
+    origination_probs_prepared: bool = False,
+):
     """Compute per-family NLL from already-gathered root rows.
 
     ``Pi_root_rows`` is ``[G, S]`` in family order. This is equivalent to
@@ -216,6 +327,22 @@ def compute_log_likelihood_root_rows(Pi_root_rows, E):
     gathered as ``Pi[root_ids]``, but avoids keeping the full Pi matrix alive in
     root-likelihood-only callers.
     """
-    numerator = logsumexp2(Pi_root_rows, dim=-1) - math.log2(Pi_root_rows.shape[-1])
-    denominator = torch.log2((1 - torch.exp2(E).mean(dim=-1)))
+    if origination_probs is None:
+        numerator = logsumexp2(Pi_root_rows, dim=-1) - math.log2(Pi_root_rows.shape[-1])
+        denominator = torch.log2((1 - torch.exp2(E).mean(dim=-1)))
+    else:
+        probs = prepare_origination_probs(
+            origination_probs,
+            S=int(Pi_root_rows.shape[-1]),
+            device=Pi_root_rows.device,
+            dtype=Pi_root_rows.dtype,
+            family_count=int(Pi_root_rows.shape[0]),
+            assume_prepared=origination_probs_prepared,
+        )
+        numerator = _weighted_logsumexp2(Pi_root_rows, probs)
+        denominator = compute_origination_denominator(
+            E,
+            probs,
+            origination_probs_prepared=True,
+        )
     return -(numerator - denominator)

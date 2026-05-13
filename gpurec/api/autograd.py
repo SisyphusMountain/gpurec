@@ -52,6 +52,7 @@ class ReconStaticState:
     # Mode flags (mapped from "global" / "specieswise" / "genewise")
     genewise: bool
     specieswise: bool
+    origination_probs: Optional[torch.Tensor] = None           # [S] or [G, S]
 
     # Solver knobs
     fixed_iters_E: Optional[int] = None
@@ -64,6 +65,7 @@ class ReconStaticState:
 
     # Warm start cache, mutated across calls
     warm_E: Optional[torch.Tensor] = None
+    clear_runtime_after_backward: bool = False
 
 
 def _extract_parameters(theta: torch.Tensor, static: ReconStaticState):
@@ -163,7 +165,11 @@ class _GeneReconFunction(torch.autograd.Function):
             #    gpurec/core/likelihood.py:180). nll_vec is per-family.
             with _nvtx_range("forward root likelihood"):
                 nll_vec = compute_log_likelihood(
-                    Pi_out["Pi_wave_ordered"], E, static.wave_layout["root_clade_ids"]
+                    Pi_out["Pi_wave_ordered"],
+                    E,
+                    static.wave_layout["root_clade_ids"],
+                    static.origination_probs,
+                    origination_probs_prepared=True,
                 )
 
         # 5. Save state for backward.
@@ -192,7 +198,9 @@ class _GeneReconFunction(torch.autograd.Function):
         # 6. Update warm-start cache (in-place mutation of the shared static).
         with _nvtx_range("forward reduce"):
             static.warm_E = (
-                None if static.fixed_iters_E is not None else E.detach()
+                None
+                if static.fixed_iters_E is not None or static.clear_runtime_after_backward
+                else E.detach()
             )
 
             # 7. Reduce.
@@ -249,6 +257,8 @@ class _GeneReconFunction(torch.autograd.Function):
                     if uniform_pibar_row_max.numel() > 0
                     else None
                 ),
+                origination_probs=static.origination_probs,
+                origination_probs_prepared=True,
             )
             grad_theta, _stats = _e_adjoint_and_theta_vjp(
                 pi_bwd,
@@ -269,6 +279,8 @@ class _GeneReconFunction(torch.autograd.Function):
                 static.dtype,
                 genewise=True,
                 ancestors_T=static.ancestors_T,
+                origination_probs=static.origination_probs,
+                origination_probs_prepared=True,
             )
         else:
             # Shared theta path: delegate to the public wrapper.
@@ -300,6 +312,8 @@ class _GeneReconFunction(torch.autograd.Function):
                     if uniform_pibar_row_max.numel() > 0
                     else None
                 ),
+                origination_probs=static.origination_probs,
+                origination_probs_prepared=True,
             )
 
         # grad_theta is d(NLL_total)/d(theta). The forward returned NLL_total
@@ -312,5 +326,8 @@ class _GeneReconFunction(torch.autograd.Function):
             # remaining theta dims.
             gvec = grad_output.view((-1,) + (1,) * (theta.ndim - 1))
             grad_theta = grad_theta * gvec
+
+        if static.clear_runtime_after_backward:
+            static.warm_E = None
 
         return grad_theta, None, None

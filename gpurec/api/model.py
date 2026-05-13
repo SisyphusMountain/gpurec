@@ -694,6 +694,7 @@ def _evaluate_static_state(
             E_out["E"],
             static.wave_layout["root_clade_ids"],
             static.origination_probs,
+            origination_probs_prepared=True,
         )
         pi_bwd = Pi_wave_backward(
             wave_layout=static.wave_layout,
@@ -720,6 +721,7 @@ def _evaluate_static_state(
             ),
             uniform_pibar_row_max=pi_out.get("uniform_pibar_row_max"),
             origination_probs=static.origination_probs,
+            origination_probs_prepared=True,
         )
         grad_theta, _stats = _e_adjoint_and_theta_vjp(
             pi_bwd,
@@ -741,6 +743,7 @@ def _evaluate_static_state(
             genewise=static.genewise,
             ancestors_T=static.ancestors_T,
             origination_probs=static.origination_probs,
+            origination_probs_prepared=True,
         )
         static.warm_E = None
         return loss_vec.sum().detach(), grad_theta.detach()
@@ -749,6 +752,7 @@ def _evaluate_static_state(
         pi_out["Pi_root_rows"],
         E_out["E"],
         static.origination_probs,
+        origination_probs_prepared=True,
     )
     static.warm_E = None
     return (loss_vec.detach() if per_family else loss_vec.sum().detach()), None

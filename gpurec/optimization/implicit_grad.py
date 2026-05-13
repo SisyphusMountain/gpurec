@@ -8,7 +8,12 @@ from typing import Optional
 import torch
 from torch import func as tfunc
 
-from gpurec.core.likelihood import E_step, _uniform_ancestor_sum
+from gpurec.core.likelihood import (
+    E_step,
+    _uniform_ancestor_sum,
+    compute_origination_denominator,
+    prepare_origination_probs,
+)
 from gpurec.core.backward import Pi_wave_backward
 from gpurec.core.log2_utils import _safe_log2_internal as _safe_log2
 from gpurec.core.extract_parameters import extract_parameters_uniform
@@ -82,6 +87,8 @@ def implicit_grad_loglik_vjp_wave(
     pruning_threshold: float = 1e-6,
     ancestors_T: Optional[torch.Tensor] = None,
     uniform_pibar_row_max: Optional[torch.Tensor] = None,
+    origination_probs: Optional[torch.Tensor] = None,
+    origination_probs_prepared: bool = False,
 ):
     """Compute ∇θ logL using wave-decomposed backward pass + E adjoint.
 
@@ -108,6 +115,8 @@ def implicit_grad_loglik_vjp_wave(
         pruning_threshold=pruning_threshold,
         ancestors_T=ancestors_T,
         uniform_pibar_row_max=uniform_pibar_row_max,
+        origination_probs=origination_probs,
+        origination_probs_prepared=origination_probs_prepared,
     )
 
     grad_theta, statsG = _e_adjoint_and_theta_vjp(
@@ -117,6 +126,8 @@ def implicit_grad_loglik_vjp_wave(
         theta, unnorm_row_max, specieswise,
         device, dtype,
         ancestors_T=ancestors_T,
+        origination_probs=origination_probs,
+        origination_probs_prepared=origination_probs_prepared,
     )
     return grad_theta, statsG
 
@@ -131,6 +142,8 @@ def _e_adjoint_and_theta_vjp(
     *,
     genewise=False,
     ancestors_T=None,
+    origination_probs=None,
+    origination_probs_prepared: bool = False,
 ):
     """E adjoint solve + theta VJP from pre-computed Pi backward result.
 
@@ -143,13 +156,27 @@ def _e_adjoint_and_theta_vjp(
 
     # Direct dNLL/dE from likelihood denominator
     n_fam = root_clade_ids_perm.numel()
+    origin_probs = prepare_origination_probs(
+        origination_probs,
+        S=int(E_star.shape[-1]),
+        device=device,
+        dtype=dtype,
+        family_count=int(n_fam) if origination_probs is not None else None,
+        assume_prepared=origination_probs_prepared,
+    )
     E_req_d = E_star.detach().requires_grad_(True)
     with torch.enable_grad():
-        mean_E_exp = torch.exp2(E_req_d).mean(dim=-1)
-        denom = torch.log2(1.0 - mean_E_exp)
+        denom = compute_origination_denominator(
+            E_req_d,
+            origin_probs,
+            origination_probs_prepared=True,
+        )
         # Shared-E mode: denominator contributes once per family => n_fam * denom.
         # Genewise mode: E is per-family [G, S], so each row contributes once.
-        if E_req_d.ndim > 1 and E_req_d.shape[0] == n_fam:
+        family_specific_origin = origin_probs is not None and origin_probs.ndim == 2
+        if family_specific_origin:
+            direct_obj = denom.sum()
+        elif E_req_d.ndim > 1 and E_req_d.shape[0] == n_fam:
             direct_obj = denom.sum()
         else:
             direct_obj = (n_fam * denom).sum() if denom.ndim > 0 else (n_fam * denom)

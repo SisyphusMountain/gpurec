@@ -1754,6 +1754,79 @@ in wave count would require either substantially larger resident batches, a
 different memory representation that makes those larger batches cheap, or a
 kernel path that can process multiple dependency levels inside one launch.
 
+## Prepared Origination Fast-Path Plan
+
+Nsight Systems NVTX ranges in the accepted child-edge profile show a surprising
+forward-side overhead:
+
+| NVTX range | count | total wall time |
+| --- | ---: | ---: |
+| `forward root likelihood` | 5 | 0.2151 s |
+| `forward Pi waves` | 5 | 0.0918 s |
+| `forward E fixed point` | 5 | 0.0170 s |
+
+The model constructor already validates and normalizes `origination_probs`, and
+batched resident mode slices those prepared rows for each batch.  However the
+hot likelihood and implicit-gradient paths call `prepare_origination_probs`
+again.  That helper performs CUDA `.item()` validations (`isfinite`, negative
+check, row-sum check), so each batch can introduce host synchronization and
+extra tiny PyTorch kernels even when the probability tensor is already resident
+and normalized.
+
+Next experiment:
+
+- add internal `origination_probs_prepared` flags to the likelihood, Pi
+  backward root-adjoint initialization, and E-adjoint denominator path;
+- pass `origination_probs_prepared=True` only from model/static paths where the
+  constructor has already called `prepare_origination_probs`;
+- keep public likelihood helpers validating by default;
+- verify origination-probability unit tests and the targeted model parity
+  suite;
+- benchmark the accepted HOGENOM stream pass and run `nsys` to confirm the
+  `forward root likelihood` range and tiny validation kernels shrink.
+
+Result: accepted.  Internal model paths now pass
+`origination_probs_prepared=True`, keeping public helper validation as the
+default.  The Pi backward root adjoint is also initialized with one vectorized
+root-row operation instead of a Python loop over family roots.
+
+Correctness:
+
+- origination-probability unit tests plus targeted scheduler/model/chunked
+  parity suite: 19 passed.
+
+Event timing:
+
+| setting | median fwd+bwd | median forward | median backward | peak alloc | peak reserved |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| before prepared-orig fast path | 0.8866 s | 0.3159 s | 0.5705 s | 5.779 GiB | 6.961 GiB |
+| prepared-orig fast path | 0.7796 s | 0.3092 s | 0.4706 s | 5.780 GiB | 6.965 GiB |
+
+Nsight Systems for
+`profiling/hogenom_ccp/nsys_stream_depthff315_prepared_orig.nsys-rep`:
+
+| setting | profiled pass | CUDA launches | GPU kernel time | `forward root likelihood` NVTX |
+| --- | ---: | ---: | ---: | ---: |
+| before prepared-orig fast path | 0.9965 s | 42,096 | 0.7856 s | 0.2151 s / 5 |
+| prepared-orig fast path | 0.8190 s | 15,606 | 0.7457 s | 0.0016 s / 5 |
+
+Top GPU buckets after the change:
+
+| kernel bucket | launches | GPU time |
+| --- | ---: | ---: |
+| `_wave_step_uniform_kernel` | 1,548 | 0.2128 s |
+| `_dts_cross_backward_accum_kernel` | 244 | 0.1540 s |
+| `_uniform_cross_pibar_vjp_tree_from_ud_compact_kernel` | 244 | 0.1063 s |
+| `gpurec_wave_backward_nosplit_uniform_fp32` | 258 | 0.0994 s |
+| `_dts_parent_reduced_ge2_stage1_kernel` | 478 | 0.0969 s |
+
+Diagnosis: the weighted-origination support had accidentally put validation
+and root-row adjoint setup in the hot path.  The repeated CUDA `.item()`
+checks synchronized the host after Pi forward, and the per-root backward loop
+launched thousands of tiny PyTorch kernels.  Treating model-owned origination
+probabilities as already prepared removes that overhead without changing the
+public validation path.
+
 ## Commands
 
 Warm whole-dataset stream timing:
