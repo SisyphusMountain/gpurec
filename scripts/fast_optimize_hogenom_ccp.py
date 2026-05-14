@@ -195,6 +195,126 @@ def restore_theta(model: GeneReconModel, theta: torch.Tensor) -> None:
     model.clear()
 
 
+def optimizer_lr(optimizer: torch.optim.Optimizer) -> float:
+    return float(optimizer.param_groups[0]["lr"])
+
+
+def set_optimizer_lr(optimizer: torch.optim.Optimizer, lr: float) -> None:
+    for group in optimizer.param_groups:
+        group["lr"] = lr
+
+
+def tensor_cosine(
+    previous: torch.Tensor | None,
+    current: torch.Tensor | None,
+) -> float | None:
+    if previous is None or current is None:
+        return None
+    if not tensor_is_finite(previous) or not tensor_is_finite(current):
+        return None
+    previous_flat = previous.detach().reshape(-1)
+    current_flat = current.detach().reshape(-1)
+    denom = torch.linalg.vector_norm(previous_flat) * torch.linalg.vector_norm(current_flat)
+    if float(denom.cpu()) == 0.0:
+        return None
+    return float(torch.dot(previous_flat, current_flat).div(denom).cpu())
+
+
+def sign_flip_fraction(
+    previous: torch.Tensor | None,
+    current: torch.Tensor | None,
+) -> float | None:
+    if previous is None or current is None:
+        return None
+    if not tensor_is_finite(previous) or not tensor_is_finite(current):
+        return None
+    active = (previous != 0) & (current != 0)
+    active_count = int(active.sum().cpu())
+    if active_count == 0:
+        return None
+    flips = (previous.sign() != current.sign()) & active
+    return float(flips.sum().cpu()) / active_count
+
+
+def maybe_decay_adam_lr_for_oscillation(
+    optimizer: torch.optim.Optimizer,
+    args: argparse.Namespace,
+    *,
+    previous_grad: torch.Tensor | None,
+    current_grad: torch.Tensor | None,
+    previous_step: torch.Tensor | None,
+    current_step: torch.Tensor | None,
+    cooldown_remaining: int,
+) -> tuple[dict[str, Any], int]:
+    mode = args.adam_oscillation_detection
+    old_lr = optimizer_lr(optimizer)
+    metrics: dict[str, Any] = {
+        "adam_lr": old_lr,
+        "adam_lr_reduced": False,
+        "adam_oscillating": False,
+        "adam_oscillation_cooldown": cooldown_remaining,
+    }
+    if mode == "off":
+        return metrics, cooldown_remaining
+
+    grad_cos = None
+    grad_flips = None
+    step_cos = None
+    step_flips = None
+    reasons: list[str] = []
+
+    if mode in {"gradient", "both"}:
+        grad_cos = tensor_cosine(previous_grad, current_grad)
+        grad_flips = sign_flip_fraction(previous_grad, current_grad)
+        metrics["adam_grad_cosine"] = grad_cos
+        metrics["adam_grad_flip_fraction"] = grad_flips
+        if grad_cos is not None and grad_cos <= args.adam_oscillation_cos_threshold:
+            reasons.append(f"gradient_cosine={grad_cos:.3g}")
+        if (
+            grad_flips is not None
+            and grad_flips >= args.adam_oscillation_flip_fraction
+        ):
+            reasons.append(f"gradient_flips={grad_flips:.3g}")
+
+    if mode in {"parameters", "both"}:
+        step_cos = tensor_cosine(previous_step, current_step)
+        step_flips = sign_flip_fraction(previous_step, current_step)
+        metrics["adam_step_cosine"] = step_cos
+        metrics["adam_step_flip_fraction"] = step_flips
+        if step_cos is not None and step_cos <= args.adam_oscillation_cos_threshold:
+            reasons.append(f"step_cosine={step_cos:.3g}")
+        if (
+            step_flips is not None
+            and step_flips >= args.adam_oscillation_flip_fraction
+        ):
+            reasons.append(f"step_flips={step_flips:.3g}")
+
+    if cooldown_remaining > 0:
+        cooldown_remaining -= 1
+        metrics["adam_oscillation_cooldown"] = cooldown_remaining
+        if reasons:
+            metrics["adam_oscillating"] = True
+            metrics["adam_oscillation_reason"] = ",".join(reasons)
+        return metrics, cooldown_remaining
+
+    if not reasons:
+        return metrics, cooldown_remaining
+
+    metrics["adam_oscillating"] = True
+    metrics["adam_oscillation_reason"] = ",".join(reasons)
+    new_lr = max(args.adam_min_lr, old_lr * args.adam_oscillation_lr_decay)
+    if new_lr < old_lr:
+        set_optimizer_lr(optimizer, new_lr)
+        cooldown_remaining = max(0, args.adam_oscillation_cooldown)
+        metrics["adam_lr"] = new_lr
+        metrics["adam_lr_previous"] = old_lr
+        metrics["adam_lr_reduced"] = True
+        metrics["adam_oscillation_cooldown"] = cooldown_remaining
+    else:
+        metrics["adam_lr_at_min"] = True
+    return metrics, cooldown_remaining
+
+
 def projected_gradient(
     theta: torch.Tensor,
     grad: torch.Tensor,
@@ -247,6 +367,19 @@ def log_row(row: dict[str, Any], summary: dict[str, dict[str, float]]) -> None:
             f"grad_evals={int(row.get('batched_bfgs_grad_evals', 0))} "
             f"loss_evals={int(row.get('batched_bfgs_loss_evals', 0))}"
         )
+    adam_text = ""
+    if "adam_lr" in row:
+        adam_text += f" adam_lr={float(row['adam_lr']):.6g}"
+    if row.get("adam_lr_reduced"):
+        adam_text += (
+            f" adam_lr_reduced=True"
+            f" reason={row.get('adam_oscillation_reason', 'oscillation')}"
+        )
+    elif row.get("adam_oscillating"):
+        adam_text += (
+            f" adam_oscillating=True"
+            f" reason={row.get('adam_oscillation_reason', 'oscillation')}"
+        )
     print(
         f"phase={row['phase']} iter={row['iteration']:04d} "
         f"objective_bits={row['objective_bits']:.6f} "
@@ -257,7 +390,7 @@ def log_row(row: dict[str, Any], summary: dict[str, dict[str, float]]) -> None:
         f"theta_step_inf={row['theta_step_inf']:.3g} "
         f"eval_s={row['eval_s']:.3f} step_s={row['step_s']:.3f} "
         f"closure_evals={row.get('closure_evals', 1)}"
-        f"{bfgs_text}",
+        f"{bfgs_text}{adam_text}",
         flush=True,
     )
     print("  " + format_rate_summary(summary), flush=True)
@@ -299,15 +432,33 @@ def first_order_step(
     model: GeneReconModel,
     optimizer: torch.optim.Optimizer,
     args: argparse.Namespace,
-) -> tuple[dict[str, float], float]:
+) -> tuple[dict[str, Any], float, torch.Tensor | None, torch.Tensor]:
     theta_before = model.theta.detach().clone()
     _objective, metrics = evaluate(model, args)
+    if model.theta.grad is None:
+        raise RuntimeError("missing theta gradient")
+    grad_snapshot = model.theta.grad.detach().clone()
+    if not metrics_are_finite(metrics) or not tensor_is_finite(grad_snapshot):
+        model.theta.grad = None
+        model.clear()
+        metrics["accepted_step"] = 0.0
+        metrics["reject_reason"] = "nonfinite_first_order_gradient"
+        return metrics, 0.0, grad_snapshot, torch.zeros_like(theta_before)
+
     optimizer.step()
     synchronize()
     clamp_rates(model, args)
-    theta_step = float((model.theta.detach() - theta_before).abs().amax().cpu())
+    step_snapshot = model.theta.detach() - theta_before
+    if not tensor_is_finite(step_snapshot) or not tensor_is_finite(model.theta):
+        optimizer.state.pop(model.theta, None)
+        restore_theta(model, theta_before)
+        metrics["accepted_step"] = 0.0
+        metrics["reject_reason"] = "nonfinite_first_order_step"
+        return metrics, 0.0, grad_snapshot, torch.zeros_like(theta_before)
+
+    theta_step = float(step_snapshot.abs().amax().cpu())
     model.clear()
-    return metrics, theta_step
+    return metrics, theta_step, grad_snapshot, step_snapshot.detach().clone()
 
 
 def lbfgs_step(
@@ -578,7 +729,7 @@ def write_outputs(
     species_names: list[str],
     out_dir: Path,
     args: argparse.Namespace,
-    final_metrics: dict[str, float],
+    final_metrics: dict[str, Any],
 ) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
     torch.save(model.theta.detach().cpu(), out_dir / "theta_final.pt")
@@ -638,6 +789,42 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Adagrad warmup steps for --optimizer adagrad-lbfgs/adagrad-batched-bfgs.",
     )
     parser.add_argument("--lr", type=float, default=1.0, help="Learning rate for Adagrad/Adam or LBFGS if no separate LBFGS lr is given.")
+    parser.add_argument(
+        "--adam-oscillation-detection",
+        choices=("off", "gradient", "parameters", "both"),
+        default="both",
+        help="For Adam, decay the learning rate when successive gradients and/or parameter updates reverse direction.",
+    )
+    parser.add_argument(
+        "--adam-oscillation-lr-decay",
+        type=float,
+        default=0.5,
+        help="Multiplicative Adam learning-rate decay applied after oscillation is detected.",
+    )
+    parser.add_argument(
+        "--adam-min-lr",
+        type=float,
+        default=1e-6,
+        help="Lower bound for automatic Adam learning-rate decay.",
+    )
+    parser.add_argument(
+        "--adam-oscillation-cos-threshold",
+        type=float,
+        default=-0.25,
+        help="Decay Adam lr when the cosine between successive gradients/updates is at or below this value.",
+    )
+    parser.add_argument(
+        "--adam-oscillation-flip-fraction",
+        type=float,
+        default=0.5,
+        help="Decay Adam lr when at least this fraction of gradient/update entries flips sign.",
+    )
+    parser.add_argument(
+        "--adam-oscillation-cooldown",
+        type=int,
+        default=5,
+        help="Number of optimizer steps to wait before another automatic Adam lr decay.",
+    )
     parser.add_argument("--lbfgs-lr", type=float, default=0.1)
     parser.add_argument("--lbfgs-history-size", type=int, default=10)
     parser.add_argument("--lbfgs-line-search", choices=("none", "strong_wolfe"), default="none")
@@ -688,20 +875,42 @@ def run_phase(
     start_iteration: int,
     max_steps: int,
     history_path: Path,
-) -> tuple[int, dict[str, float]]:
+) -> tuple[int, dict[str, Any]]:
     previous_objective: float | None = None
     stable_loss_steps = 0
-    final_metrics: dict[str, float] = {}
+    final_metrics: dict[str, Any] = {}
+    previous_adam_grad: torch.Tensor | None = None
+    previous_adam_step: torch.Tensor | None = None
+    adam_cooldown_remaining = 0
 
     for local_step in range(max_steps):
         step_start = time.perf_counter()
+        optimizer_metrics: dict[str, Any] = {}
         if isinstance(optimizer, torch.optim.LBFGS):
             metrics, theta_step, closure_evals = lbfgs_step(model, optimizer, args)
         elif isinstance(optimizer, BatchedLBFGS):
             metrics, theta_step, closure_evals = batched_bfgs_step(model, optimizer, args)
         else:
-            metrics, theta_step = first_order_step(model, optimizer, args)
+            metrics, theta_step, grad_snapshot, step_snapshot = first_order_step(
+                model,
+                optimizer,
+                args,
+            )
             closure_evals = 1
+            if isinstance(optimizer, torch.optim.Adam):
+                optimizer_metrics, adam_cooldown_remaining = (
+                    maybe_decay_adam_lr_for_oscillation(
+                        optimizer,
+                        args,
+                        previous_grad=previous_adam_grad,
+                        current_grad=grad_snapshot,
+                        previous_step=previous_adam_step,
+                        current_step=step_snapshot,
+                        cooldown_remaining=adam_cooldown_remaining,
+                    )
+                )
+                previous_adam_grad = grad_snapshot.detach().clone()
+                previous_adam_step = step_snapshot.detach().clone()
         step_s = time.perf_counter() - step_start
 
         objective = metrics["objective_bits"]
@@ -721,6 +930,7 @@ def run_phase(
             "closure_evals": closure_evals,
             "delta_objective_bits": delta,
             **metrics,
+            **optimizer_metrics,
         }
         summary = rate_summary(model.theta)
         row["rates"] = summary
@@ -758,6 +968,16 @@ def main(argv: list[str] | None = None) -> None:
         raise ValueError("--fixed-iters-pi must be even")
     if args.max_rate <= args.min_rate:
         raise ValueError("--max-rate must be greater than --min-rate")
+    if not (0.0 < args.adam_oscillation_lr_decay < 1.0):
+        raise ValueError("--adam-oscillation-lr-decay must be in (0, 1)")
+    if args.adam_min_lr <= 0.0:
+        raise ValueError("--adam-min-lr must be positive")
+    if not (-1.0 <= args.adam_oscillation_cos_threshold <= 1.0):
+        raise ValueError("--adam-oscillation-cos-threshold must be in [-1, 1]")
+    if not (0.0 <= args.adam_oscillation_flip_fraction <= 1.0):
+        raise ValueError("--adam-oscillation-flip-fraction must be in [0, 1]")
+    if args.adam_oscillation_cooldown < 0:
+        raise ValueError("--adam-oscillation-cooldown must be non-negative")
     if args.optimizer in {"batched-bfgs", "adagrad-batched-bfgs"} and args.mode != "genewise":
         raise ValueError("batched BFGS optimizers require --mode genewise")
 
@@ -784,6 +1004,16 @@ def main(argv: list[str] | None = None) -> None:
         "origination=uniform",
         flush=True,
     )
+    if args.optimizer == "adam":
+        print(
+            "adam_oscillation="
+            f"detection={args.adam_oscillation_detection} "
+            f"decay={args.adam_oscillation_lr_decay} min_lr={args.adam_min_lr} "
+            f"cos_threshold={args.adam_oscillation_cos_threshold} "
+            f"flip_fraction={args.adam_oscillation_flip_fraction} "
+            f"cooldown={args.adam_oscillation_cooldown}",
+            flush=True,
+        )
 
     species_names = load_species_names(args.species_tree)
     origination_probs = uniform_origination(
