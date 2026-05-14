@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+from collections import Counter
 import csv
 import json
 import math
@@ -189,6 +190,20 @@ def metrics_are_finite(metrics: dict[str, float]) -> bool:
     return all(math.isfinite(float(value)) for value in metrics.values())
 
 
+def _add_iteration_distribution(
+    metrics: dict[str, float],
+    prefix: str,
+    values: list[int],
+) -> None:
+    if not values:
+        return
+    metrics[f"{prefix}_min"] = float(min(values))
+    metrics[f"{prefix}_max"] = float(max(values))
+    metrics[f"{prefix}_mean"] = float(sum(values) / len(values))
+    for value, count in sorted(Counter(values).items()):
+        metrics[f"{prefix}_count_{value}"] = float(count)
+
+
 def solver_iteration_metrics(model: GeneReconModel) -> dict[str, float]:
     if getattr(model, "_batched_resident", False):
         statics = [
@@ -202,40 +217,40 @@ def solver_iteration_metrics(model: GeneReconModel) -> dict[str, float]:
     if not statics:
         return {}
 
-    e_iters = [float(static.last_solver_stats["E_iterations"]) for static in statics]
-    pi_iters = [float(static.last_solver_stats["Pi_max_iterations"]) for static in statics]
+    e_iters = [int(static.last_solver_stats["E_iterations"]) for static in statics]
+    pi_iters: list[int] = []
+    for static in statics:
+        wave_iterations = static.last_solver_stats.get("Pi_wave_iterations")
+        if wave_iterations:
+            pi_iters.extend(int(value) for value in wave_iterations)
+        else:
+            pi_iters.append(int(static.last_solver_stats["Pi_max_iterations"]))
     pi_converged = sum(
         float(static.last_solver_stats["Pi_converged_waves"]) for static in statics
     )
     pi_waves = sum(float(static.last_solver_stats["Pi_wave_count"]) for static in statics)
-    metrics = {
-        "solver_E_iterations_max": max(e_iters),
-        "solver_E_iterations_mean": sum(e_iters) / len(e_iters),
-        "solver_Pi_iterations_max": max(pi_iters),
-        "solver_Pi_iterations_mean": sum(pi_iters) / len(pi_iters),
+    metrics: dict[str, float] = {
         "solver_Pi_converged_waves": pi_converged,
         "solver_Pi_wave_count": pi_waves,
     }
+    _add_iteration_distribution(metrics, "solver_E_iterations", e_iters)
+    _add_iteration_distribution(metrics, "solver_Pi_iterations", pi_iters)
     neumann_terms = [
-        float(static.last_solver_stats["Neumann_terms"])
+        int(static.last_solver_stats["Neumann_terms"])
         for static in statics
         if "Neumann_terms" in static.last_solver_stats
     ]
-    if neumann_terms:
-        metrics.update(
-            solver_Neumann_terms_max=max(neumann_terms),
-            solver_Neumann_terms_mean=sum(neumann_terms) / len(neumann_terms),
-        )
+    _add_iteration_distribution(metrics, "solver_Neumann_terms", neumann_terms)
     e_adjoint_iters = [
-        float(static.last_solver_stats["E_adjoint_iterations"])
+        int(static.last_solver_stats["E_adjoint_iterations"])
         for static in statics
         if "E_adjoint_iterations" in static.last_solver_stats
     ]
-    if e_adjoint_iters:
-        metrics.update(
-            solver_E_adjoint_iterations_max=max(e_adjoint_iters),
-            solver_E_adjoint_iterations_mean=sum(e_adjoint_iters) / len(e_adjoint_iters),
-        )
+    _add_iteration_distribution(
+        metrics,
+        "solver_E_adjoint_iterations",
+        e_adjoint_iters,
+    )
     return metrics
 
 
@@ -403,6 +418,15 @@ def append_jsonl(path: Path, row: dict[str, Any]) -> None:
         handle.write(json.dumps(row, sort_keys=True) + "\n")
 
 
+def _format_iteration_hist(row: dict[str, Any], prefix: str) -> str:
+    marker = f"{prefix}_count_"
+    pairs: list[tuple[int, int]] = []
+    for key, value in row.items():
+        if key.startswith(marker):
+            pairs.append((int(key[len(marker):]), int(float(value))))
+    return ",".join(f"{iteration}:{count}" for iteration, count in sorted(pairs))
+
+
 def log_row(row: dict[str, Any], summary: dict[str, dict[str, float]]) -> None:
     delta = row.get("delta_objective_bits")
     delta_text = "nan" if delta is None else f"{float(delta):.6g}"
@@ -433,26 +457,32 @@ def log_row(row: dict[str, Any], summary: dict[str, dict[str, float]]) -> None:
         )
     solver_text = ""
     if "solver_E_iterations_max" in row:
-        solver_text = (
-            f" solver_E_iter_max={row['solver_E_iterations_max']:.0f}"
-            f" solver_Pi_iter_max={row['solver_Pi_iterations_max']:.0f}"
-        )
+        e_hist = _format_iteration_hist(row, "solver_E_iterations")
+        pi_hist = _format_iteration_hist(row, "solver_Pi_iterations")
+        if e_hist:
+            solver_text += f" solver_E_iter_hist={e_hist}"
+        else:
+            solver_text += f" solver_E_iter_max={row['solver_E_iterations_max']:.0f}"
+        if pi_hist:
+            solver_text += f" solver_Pi_iter_hist={pi_hist}"
+        else:
+            solver_text += f" solver_Pi_iter_max={row['solver_Pi_iterations_max']:.0f}"
         wave_count = row.get("solver_Pi_wave_count", 0.0)
         if wave_count:
             solver_text += (
                 f" solver_Pi_converged="
                 f"{row['solver_Pi_converged_waves']:.0f}/{wave_count:.0f}"
             )
-        if "solver_Neumann_terms_max" in row:
-            solver_text += (
-                f" solver_Neumann_terms_max="
-                f"{row['solver_Neumann_terms_max']:.0f}"
-            )
-        if "solver_E_adjoint_iterations_max" in row:
-            solver_text += (
-                f" solver_E_adj_iter_max="
-                f"{row['solver_E_adjoint_iterations_max']:.0f}"
-            )
+        neumann_hist = _format_iteration_hist(row, "solver_Neumann_terms")
+        if neumann_hist:
+            solver_text += f" solver_Neumann_terms_hist={neumann_hist}"
+        elif "solver_Neumann_terms_max" in row:
+            solver_text += f" solver_Neumann_terms_max={row['solver_Neumann_terms_max']:.0f}"
+        e_adj_hist = _format_iteration_hist(row, "solver_E_adjoint_iterations")
+        if e_adj_hist:
+            solver_text += f" solver_E_adj_iter_hist={e_adj_hist}"
+        elif "solver_E_adjoint_iterations_max" in row:
+            solver_text += f" solver_E_adj_iter_max={row['solver_E_adjoint_iterations_max']:.0f}"
     print(
         f"phase={row['phase']} iter={row['iteration']:04d} "
         f"objective_bits={row['objective_bits']:.6f} "

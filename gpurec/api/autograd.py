@@ -207,6 +207,9 @@ class _GeneReconFunction(torch.autograd.Function):
                     "Pi_max_iterations": int(
                         Pi_out.get("Pi_max_iterations", static.fixed_iters_Pi)
                     ),
+                    "Pi_wave_iterations": [
+                        int(value) for value in Pi_out.get("Pi_wave_iterations", [])
+                    ],
                     "Pi_converged_waves": int(
                         sum(Pi_out.get("Pi_wave_converged", []))
                     ),

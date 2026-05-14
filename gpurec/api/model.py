@@ -726,6 +726,9 @@ def _evaluate_static_state(
         "E_iterations": int(E_out["iterations"]),
         "E_convergence_delta": E_out.get("E_convergence_delta"),
         "Pi_max_iterations": int(pi_out.get("Pi_max_iterations", static.fixed_iters_Pi)),
+        "Pi_wave_iterations": [
+            int(value) for value in pi_out.get("Pi_wave_iterations", [])
+        ],
         "Pi_converged_waves": int(sum(pi_out.get("Pi_wave_converged", []))),
         "Pi_wave_count": int(len(pi_out.get("Pi_wave_converged", []))),
     }
