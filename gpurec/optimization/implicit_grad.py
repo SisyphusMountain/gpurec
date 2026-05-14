@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-import math
 from typing import Optional
 
 import torch
@@ -27,38 +26,69 @@ class _SolveStats:
     success: bool = True
 
 
+def _as_float(value: torch.Tensor) -> float:
+    return float(value.detach().cpu())
+
+
 @torch.no_grad()
-def _cg(Av, b: torch.Tensor, *, tol: float = 1e-8, maxiter: int = 500):
+def _bicgstab(Av, b: torch.Tensor, *, tol: float = 1e-7, maxiter: int = 500):
+    """Solve a nonsymmetric linear system with BiCGSTAB."""
     x = torch.zeros_like(b)
     r = b - Av(x)
-    p = r.clone()
-    rr_old = float(torch.dot(r, r))
-    bnorm = max(float(b.norm()) if b.numel() > 0 else 1.0, 1.0)
-    rel_res = float(r.norm()) / bnorm
+    bnorm = max(_as_float(torch.linalg.vector_norm(b)), 1.0)
+    rel_res = _as_float(torch.linalg.vector_norm(r)) / bnorm
     if rel_res <= tol:
-        return x, _SolveStats("CG", 0, rel_res)
+        return x, _SolveStats("BiCGSTAB", 0, rel_res)
 
-    success = True
+    r_hat = r.clone()
+    rho_old = torch.ones((), dtype=b.dtype, device=b.device)
+    alpha = torch.ones((), dtype=b.dtype, device=b.device)
+    omega = torch.ones((), dtype=b.dtype, device=b.device)
+    v = torch.zeros_like(b)
+    p = torch.zeros_like(b)
+
+    success = False
     iters = 0
     for k in range(1, maxiter + 1):
-        Ap = Av(p)
-        pAp = float(torch.dot(p, Ap))
-        if pAp <= 0.0 or not math.isfinite(pAp):
-            success = False
-            iters = k - 1
+        rho = torch.dot(r_hat, r)
+        if _as_float(rho.abs()) <= 1e-30:
             break
-        alpha = rr_old / pAp
-        x = x + alpha * p
-        r = r - alpha * Ap
-        rel_res = float(r.norm()) / bnorm
+
+        beta = (rho / rho_old) * (alpha / omega)
+        p = r + beta * (p - omega * v)
+        v = Av(p)
+        denom = torch.dot(r_hat, v)
+        if _as_float(denom.abs()) <= 1e-30:
+            break
+
+        alpha = rho / denom
+        s = r - alpha * v
+        rel_s = _as_float(torch.linalg.vector_norm(s)) / bnorm
+        if rel_s <= tol:
+            x = x + alpha * p
+            rel_res = rel_s
+            success = True
+            iters = k
+            break
+
+        t = Av(s)
+        tt = torch.dot(t, t)
+        if _as_float(tt.abs()) <= 1e-30:
+            break
+
+        omega = torch.dot(t, s) / tt
+        x = x + alpha * p + omega * s
+        r = s - omega * t
+        rel_res = _as_float(torch.linalg.vector_norm(r)) / bnorm
         iters = k
         if rel_res <= tol:
-            return x, _SolveStats("CG", iters, rel_res)
-        rr_new = float(torch.dot(r, r))
-        p = r + (rr_new / max(rr_old, 1e-30)) * p
-        rr_old = rr_new
+            success = True
+            break
+        if _as_float(omega.abs()) <= 1e-30:
+            break
+        rho_old = rho
 
-    return x, _SolveStats("CG", iters, rel_res, success=success)
+    return x, _SolveStats("BiCGSTAB", iters, rel_res, success=success)
 
 
 @torch.no_grad()
@@ -241,7 +271,8 @@ def _e_adjoint_and_theta_vjp(
         gE, = vjpG(wE.clone())
         return (wE - gE).reshape(-1)
 
-    w_flat, statsG = _cg(AG_flat, q_flat)
+    solve_tol = 1e-7 if dtype == torch.float32 else 1e-10
+    w_flat, statsG = _bicgstab(AG_flat, q_flat, tol=solve_tol)
 
     wE = w_flat.view(E_shape)
 
