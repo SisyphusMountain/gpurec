@@ -84,6 +84,31 @@ def _extract_parameters(theta: torch.Tensor, static: ReconStaticState):
     )
 
 
+def _record_backward_solver_stats(static: ReconStaticState, stats: Any) -> None:
+    """Attach backward solver telemetry to the last forward solver record."""
+    if static.last_solver_stats is None:
+        static.last_solver_stats = {}
+    neumann_terms = getattr(stats, "neumann_terms", None)
+    if neumann_terms is None:
+        neumann_terms = static.neumann_terms
+    static.last_solver_stats.update(
+        {
+            "Neumann_terms": int(neumann_terms),
+            "E_adjoint_iterations": int(getattr(stats, "iters", 0)),
+            "E_adjoint_rel_res": float(getattr(stats, "rel_res", float("nan"))),
+            "E_adjoint_success": bool(getattr(stats, "success", True)),
+        }
+    )
+    for source, target in (
+        ("gradient_convergence_delta", "Gradient_convergence_delta"),
+        ("gradient_convergence_threshold", "Gradient_convergence_threshold"),
+        ("gradient_converged", "Gradient_converged"),
+    ):
+        value = getattr(stats, source, None)
+        if value is not None:
+            static.last_solver_stats[target] = value
+
+
 class _GeneReconFunction(torch.autograd.Function):
     """``forward`` runs the existing E + Pi pipeline; ``backward`` calls the
     existing implicit gradient. Inputs other than ``theta`` are treated as
@@ -334,6 +359,8 @@ class _GeneReconFunction(torch.autograd.Function):
                 gradient_convergence_rtol=static.gradient_change_rtol,
                 gradient_convergence_check_interval=static.convergence_check_interval,
             )
+
+        _record_backward_solver_stats(static, _stats)
 
         # grad_theta is d(NLL_total)/d(theta). The forward returned NLL_total
         # (or NLL_per_family). No sign flip required.

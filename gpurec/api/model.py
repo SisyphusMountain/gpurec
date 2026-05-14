@@ -46,6 +46,7 @@ from .autograd import (
     ReconStaticState,
     _GeneReconFunction,
     _extract_parameters,
+    _record_backward_solver_stats,
 )
 
 _MODE_MAP: dict[str, tuple[bool, bool]] = {
@@ -772,6 +773,7 @@ def _evaluate_static_state(
             gradient_convergence_rtol=static.gradient_change_rtol,
             gradient_convergence_check_interval=static.convergence_check_interval,
         )
+        _record_backward_solver_stats(static, _stats)
         static.warm_E = None
         return (loss_vec.detach() if per_family else loss_vec.sum().detach()), grad_theta.detach()
 

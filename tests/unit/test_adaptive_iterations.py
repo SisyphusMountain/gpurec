@@ -58,3 +58,7 @@ def test_adaptive_iterations_match_fixed_when_tolerances_force_max(one_gene_tree
 
     torch.testing.assert_close(loss_adaptive.detach(), loss_fixed.detach(), rtol=1e-6, atol=1e-5)
     torch.testing.assert_close(adaptive.theta.grad, fixed.theta.grad, rtol=1e-5, atol=1e-4)
+    assert fixed.static.last_solver_stats["Neumann_terms"] == 4
+    assert adaptive.static.last_solver_stats["Neumann_terms"] == 4
+    assert fixed.static.last_solver_stats["E_adjoint_iterations"] >= 0
+    assert adaptive.static.last_solver_stats["E_adjoint_iterations"] >= 0

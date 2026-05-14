@@ -24,6 +24,10 @@ class _SolveStats:
     iters: int
     rel_res: float
     success: bool = True
+    neumann_terms: int | None = None
+    gradient_convergence_delta: float | None = None
+    gradient_convergence_threshold: float | None = None
+    gradient_converged: bool | None = None
 
 
 def _as_float(value: torch.Tensor) -> float:
@@ -185,6 +189,7 @@ def implicit_grad_loglik_vjp_wave(
             origination_probs=origination_probs,
             origination_probs_prepared=origination_probs_prepared,
         )
+        statsG.neumann_terms = int(terms)
         return grad_theta, statsG
 
     if gradient_convergence_tol < 0.0:
@@ -203,6 +208,9 @@ def implicit_grad_loglik_vjp_wave(
         if previous_grad is not None:
             delta, scale = _change_metrics(previous_grad, grad_theta)
             threshold = gradient_convergence_tol + gradient_convergence_rtol * scale
+            statsG.gradient_convergence_delta = delta
+            statsG.gradient_convergence_threshold = threshold
+            statsG.gradient_converged = delta <= threshold
             if delta <= threshold:
                 break
         previous_grad = grad_theta.detach()

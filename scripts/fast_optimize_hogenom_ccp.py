@@ -208,7 +208,7 @@ def solver_iteration_metrics(model: GeneReconModel) -> dict[str, float]:
         float(static.last_solver_stats["Pi_converged_waves"]) for static in statics
     )
     pi_waves = sum(float(static.last_solver_stats["Pi_wave_count"]) for static in statics)
-    return {
+    metrics = {
         "solver_E_iterations_max": max(e_iters),
         "solver_E_iterations_mean": sum(e_iters) / len(e_iters),
         "solver_Pi_iterations_max": max(pi_iters),
@@ -216,6 +216,27 @@ def solver_iteration_metrics(model: GeneReconModel) -> dict[str, float]:
         "solver_Pi_converged_waves": pi_converged,
         "solver_Pi_wave_count": pi_waves,
     }
+    neumann_terms = [
+        float(static.last_solver_stats["Neumann_terms"])
+        for static in statics
+        if "Neumann_terms" in static.last_solver_stats
+    ]
+    if neumann_terms:
+        metrics.update(
+            solver_Neumann_terms_max=max(neumann_terms),
+            solver_Neumann_terms_mean=sum(neumann_terms) / len(neumann_terms),
+        )
+    e_adjoint_iters = [
+        float(static.last_solver_stats["E_adjoint_iterations"])
+        for static in statics
+        if "E_adjoint_iterations" in static.last_solver_stats
+    ]
+    if e_adjoint_iters:
+        metrics.update(
+            solver_E_adjoint_iterations_max=max(e_adjoint_iters),
+            solver_E_adjoint_iterations_mean=sum(e_adjoint_iters) / len(e_adjoint_iters),
+        )
+    return metrics
 
 
 def restore_theta(model: GeneReconModel, theta: torch.Tensor) -> None:
@@ -421,6 +442,16 @@ def log_row(row: dict[str, Any], summary: dict[str, dict[str, float]]) -> None:
             solver_text += (
                 f" solver_Pi_converged="
                 f"{row['solver_Pi_converged_waves']:.0f}/{wave_count:.0f}"
+            )
+        if "solver_Neumann_terms_max" in row:
+            solver_text += (
+                f" solver_Neumann_terms_max="
+                f"{row['solver_Neumann_terms_max']:.0f}"
+            )
+        if "solver_E_adjoint_iterations_max" in row:
+            solver_text += (
+                f" solver_E_adj_iter_max="
+                f"{row['solver_E_adjoint_iterations_max']:.0f}"
             )
     print(
         f"phase={row['phase']} iter={row['iteration']:04d} "
