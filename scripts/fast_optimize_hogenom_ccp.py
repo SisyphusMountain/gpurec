@@ -640,7 +640,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--lr", type=float, default=1.0, help="Learning rate for Adagrad/Adam or LBFGS if no separate LBFGS lr is given.")
     parser.add_argument("--lbfgs-lr", type=float, default=0.1)
     parser.add_argument("--lbfgs-history-size", type=int, default=10)
-    parser.add_argument("--lbfgs-line-search", choices=("none", "strong_wolfe"), default="strong_wolfe")
+    parser.add_argument("--lbfgs-line-search", choices=("none", "strong_wolfe"), default="none")
     parser.add_argument("--grad-inf-tol", type=float, default=1e-3)
     parser.add_argument("--loss-change-tol", type=float, default=1e-5)
     parser.add_argument("--theta-step-tol", type=float, default=1e-6)
@@ -780,7 +780,8 @@ def main(argv: list[str] | None = None) -> None:
     )
     print(
         f"mode={args.mode} optimizer={args.optimizer} lr={args.lr} lbfgs_lr={args.lbfgs_lr} "
-        f"max_rate={args.max_rate} origination=uniform",
+        f"lbfgs_line_search={args.lbfgs_line_search} max_rate={args.max_rate} "
+        "origination=uniform",
         flush=True,
     )
 
