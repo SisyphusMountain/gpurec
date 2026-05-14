@@ -172,11 +172,44 @@ def evaluate(
         "grad_norm": float(torch.linalg.vector_norm(grad).cpu()),
         "eval_s": elapsed,
     }
+    metrics.update(gradient_constraint_metrics(model.theta.detach(), grad, args))
     return objective, metrics
 
 
 def clamp_rates(model: GeneReconModel, args: argparse.Namespace) -> None:
     model.clamp_theta_(min_rate=args.min_rate, max_rate=args.max_rate)
+
+
+def projected_gradient(
+    theta: torch.Tensor,
+    grad: torch.Tensor,
+    args: argparse.Namespace,
+) -> torch.Tensor:
+    lower = math.log2(args.min_rate)
+    upper = math.log2(args.max_rate)
+    bound_tol = 1e-6
+    blocked_lower = (theta <= lower + bound_tol) & (grad > 0)
+    blocked_upper = (theta >= upper - bound_tol) & (grad < 0)
+    return torch.where(blocked_lower | blocked_upper, torch.zeros_like(grad), grad)
+
+
+def gradient_constraint_metrics(
+    theta: torch.Tensor,
+    grad: torch.Tensor,
+    args: argparse.Namespace,
+) -> dict[str, float]:
+    projected = projected_gradient(theta, grad, args)
+    lower = math.log2(args.min_rate)
+    upper = math.log2(args.max_rate)
+    bound_tol = 1e-6
+    lower_bound = theta <= lower + bound_tol
+    upper_bound = theta >= upper - bound_tol
+    return {
+        "projected_grad_inf": float(projected.abs().amax().cpu()),
+        "projected_grad_norm": float(torch.linalg.vector_norm(projected).cpu()),
+        "lower_bound_entries": float(lower_bound.sum().cpu()),
+        "upper_bound_entries": float(upper_bound.sum().cpu()),
+    }
 
 
 def append_jsonl(path: Path, row: dict[str, Any]) -> None:
@@ -201,6 +234,7 @@ def log_row(row: dict[str, Any], summary: dict[str, dict[str, float]]) -> None:
         f"data_nll_bits={row['data_nll_bits']:.6f} "
         f"delta_objective_bits={delta_text} "
         f"grad_inf={row['grad_inf']:.6g} grad_norm={row['grad_norm']:.6g} "
+        f"projected_grad_inf={row.get('projected_grad_inf', row['grad_inf']):.6g} "
         f"theta_step_inf={row['theta_step_inf']:.3g} "
         f"eval_s={row['eval_s']:.3f} step_s={row['step_s']:.3f} "
         f"closure_evals={row.get('closure_evals', 1)}"
@@ -216,8 +250,9 @@ def termination_status(
     stable_loss_steps: int,
     args: argparse.Namespace,
 ) -> tuple[str, str] | None:
-    if row["grad_inf"] <= args.grad_inf_tol:
-        return "converged", "gradient_tolerance"
+    optimality = row.get("projected_grad_inf", row["grad_inf"])
+    if optimality <= args.grad_inf_tol:
+        return "converged", "projected_gradient_tolerance"
     if row["iteration"] < args.min_steps:
         return None
     if row["theta_step_inf"] <= args.theta_step_tol and row["iteration"] >= args.min_steps:
@@ -642,6 +677,7 @@ def run_phase(
                 "stable_loss_steps": stable_loss_steps,
                 "grad_inf": metrics["grad_inf"],
                 "grad_inf_tol": args.grad_inf_tol,
+                "projected_grad_inf": metrics.get("projected_grad_inf", metrics["grad_inf"]),
                 "theta_step_inf": theta_step,
                 "theta_step_tol": args.theta_step_tol,
             }
