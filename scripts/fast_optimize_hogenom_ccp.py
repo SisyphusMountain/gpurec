@@ -210,22 +210,24 @@ def log_row(row: dict[str, Any], summary: dict[str, dict[str, float]]) -> None:
     print("  " + format_rate_summary(summary), flush=True)
 
 
-def converged(
+def termination_status(
     row: dict[str, Any],
     *,
     stable_loss_steps: int,
     args: argparse.Namespace,
-) -> bool:
+) -> tuple[str, str] | None:
     if row["grad_inf"] <= args.grad_inf_tol:
-        return True
+        return "converged", "gradient_tolerance"
+    if row["iteration"] < args.min_steps:
+        return None
     if row["theta_step_inf"] <= args.theta_step_tol and row["iteration"] >= args.min_steps:
-        return True
+        return "stalled", "theta_step_tolerance_high_gradient"
     if (
         stable_loss_steps >= args.loss_patience
         and row["iteration"] >= args.min_steps
     ):
-        return True
-    return False
+        return "stalled", "loss_change_patience_high_gradient"
+    return None
 
 
 def make_batched_bfgs(model: GeneReconModel, args: argparse.Namespace) -> BatchedLBFGS:
@@ -629,12 +631,19 @@ def run_phase(
         log_row(row, summary)
         final_metrics = metrics
 
-        if converged(row, stable_loss_steps=stable_loss_steps, args=args):
+        status = termination_status(row, stable_loss_steps=stable_loss_steps, args=args)
+        if status is not None:
+            event, reason = status
             row = {
-                "event": "converged",
+                "event": event,
+                "reason": reason,
                 "phase": phase,
                 "iteration": start_iteration + local_step,
                 "stable_loss_steps": stable_loss_steps,
+                "grad_inf": metrics["grad_inf"],
+                "grad_inf_tol": args.grad_inf_tol,
+                "theta_step_inf": theta_step,
+                "theta_step_tol": args.theta_step_tol,
             }
             append_jsonl(history_path, row)
             print(json.dumps(row, sort_keys=True), flush=True)
