@@ -180,6 +180,21 @@ def clamp_rates(model: GeneReconModel, args: argparse.Namespace) -> None:
     model.clamp_theta_(min_rate=args.min_rate, max_rate=args.max_rate)
 
 
+def tensor_is_finite(value: torch.Tensor) -> bool:
+    return bool(torch.isfinite(value).all().item())
+
+
+def metrics_are_finite(metrics: dict[str, float]) -> bool:
+    return all(math.isfinite(float(value)) for value in metrics.values())
+
+
+def restore_theta(model: GeneReconModel, theta: torch.Tensor) -> None:
+    with torch.no_grad():
+        model.theta.copy_(theta)
+        model.theta.grad = None
+    model.clear()
+
+
 def projected_gradient(
     theta: torch.Tensor,
     grad: torch.Tensor,
@@ -221,8 +236,12 @@ def log_row(row: dict[str, Any], summary: dict[str, dict[str, float]]) -> None:
     delta = row.get("delta_objective_bits")
     delta_text = "nan" if delta is None else f"{float(delta):.6g}"
     bfgs_text = ""
+    if "accepted_step" in row:
+        bfgs_text += f" accepted_step={bool(row['accepted_step'])}"
+    if "reject_reason" in row:
+        bfgs_text += f" reject_reason={row['reject_reason']}"
     if "accepted_rows" in row:
-        bfgs_text = (
+        bfgs_text += (
             f" accepted_rows={int(row['accepted_rows'])} "
             f"accepted_fraction={row['accepted_fraction']:.3f} "
             f"grad_evals={int(row.get('batched_bfgs_grad_evals', 0))} "
@@ -298,24 +317,67 @@ def lbfgs_step(
 ) -> tuple[dict[str, float], float, int]:
     theta_before = model.theta.detach().clone()
     closure_evals = 0
+    start_metrics: dict[str, float] | None = None
     last_metrics: dict[str, float] | None = None
+    saw_nonfinite_trial = False
+
+    def reject_step(reason: str) -> tuple[dict[str, float], float, int]:
+        optimizer.state.pop(model.theta, None)
+        restore_theta(model, theta_before)
+        if start_metrics is None:
+            _objective, metrics = evaluate(model, args)
+            model.theta.grad = None
+            model.clear()
+        else:
+            metrics = dict(start_metrics)
+        metrics["accepted_step"] = 0.0
+        metrics["reject_reason"] = reason
+        metrics["lbfgs_nonfinite_trial"] = float(saw_nonfinite_trial)
+        return metrics, 0.0, closure_evals
 
     def closure() -> torch.Tensor:
-        nonlocal closure_evals, last_metrics
+        nonlocal closure_evals, last_metrics, start_metrics, saw_nonfinite_trial
         closure_evals += 1
+        with torch.no_grad():
+            if not tensor_is_finite(model.theta):
+                saw_nonfinite_trial = True
+                model.theta.copy_(theta_before)
+            clamp_rates(model, args)
         optimizer.zero_grad(set_to_none=True)
         objective, metrics = evaluate(model, args, zero_grad=False)
+        if start_metrics is None:
+            start_metrics = dict(metrics)
+        if not tensor_is_finite(objective) or not metrics_are_finite(metrics):
+            saw_nonfinite_trial = True
         last_metrics = metrics
         return objective
 
-    optimizer.step(closure)
+    try:
+        optimizer.step(closure)
+    except RuntimeError:
+        return reject_step("lbfgs_runtime_error")
     synchronize()
-    clamp_rates(model, args)
-    theta_step = float((model.theta.detach() - theta_before).abs().amax().cpu())
-    model.clear()
-    if last_metrics is None:
+    if start_metrics is None or last_metrics is None:
         raise RuntimeError("LBFGS closure was not called")
-    return last_metrics, theta_step, closure_evals
+    if saw_nonfinite_trial or not tensor_is_finite(model.theta):
+        return reject_step("nonfinite_lbfgs_trial")
+
+    clamp_rates(model, args)
+    if not tensor_is_finite(model.theta):
+        return reject_step("nonfinite_projected_theta")
+    _objective, final_metrics = evaluate(model, args)
+    model.theta.grad = None
+    if (
+        not metrics_are_finite(final_metrics)
+        or final_metrics["objective_bits"] > start_metrics["objective_bits"]
+    ):
+        return reject_step("post_clamp_objective_increase_or_nonfinite")
+
+    theta_step = float((model.theta.detach() - theta_before).abs().amax().cpu())
+    final_metrics["accepted_step"] = 1.0
+    final_metrics["lbfgs_nonfinite_trial"] = float(saw_nonfinite_trial)
+    model.clear()
+    return final_metrics, theta_step, closure_evals
 
 
 def activate_batch(model: GeneReconModel, batch_idx: int):
