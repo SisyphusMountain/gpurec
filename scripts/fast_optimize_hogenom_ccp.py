@@ -16,7 +16,9 @@ if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
 
 from gpurec import GeneReconModel  # noqa: E402
+from gpurec.api.model import _evaluate_static_state  # noqa: E402
 from gpurec.core.preprocess_cpp import _load_extension  # noqa: E402
+from gpurec.optimization import BatchedLBFGS  # noqa: E402
 
 
 HOGENOM_DIR = REPO / "tests" / "data" / "HOGENOM" / "hogenom"
@@ -64,18 +66,18 @@ def pS_values(theta: torch.Tensor) -> torch.Tensor:
     return torch.softmax(theta_logits(theta), dim=1)[:, 0]
 
 
-def regularization(theta: torch.Tensor, args: argparse.Namespace) -> torch.Tensor:
-    if args.regularization == "none" or args.regularization_weight == 0.0:
-        return theta.new_zeros(())
-
+def regularization_vector(theta: torch.Tensor, args: argparse.Namespace) -> torch.Tensor:
     theta2 = theta.reshape(-1, 3)
+    if args.regularization == "none" or args.regularization_weight == 0.0:
+        return theta2.new_zeros((theta2.shape[0],))
+
     if args.regularization == "square-theta":
         center = theta2.new_tensor(args.regularization_center)
-        penalty = (theta2 - center).square().sum()
+        penalty = (theta2 - center).square().sum(dim=1)
     elif args.regularization == "gaussian-theta":
         center = theta2.new_tensor(args.regularization_center)
         std = theta2.new_tensor(args.regularization_std)
-        penalty = 0.5 * ((theta2 - center) / std).square().sum()
+        penalty = 0.5 * ((theta2 - center) / std).square().sum(dim=1)
     elif args.regularization == "beta-ps":
         logits = theta_logits(theta)
         log_probs = torch.log_softmax(logits, dim=1)
@@ -87,11 +89,23 @@ def regularization(theta: torch.Tensor, args: argparse.Namespace) -> torch.Tenso
         penalty = -(
             (args.beta_ps_alpha - 1.0) * log_pS
             + (args.beta_ps_beta - 1.0) * log_not_pS
-        ).sum()
+        )
     else:
         raise ValueError(f"unknown regularization {args.regularization!r}")
 
     return penalty * args.regularization_weight
+
+
+def regularization(theta: torch.Tensor, args: argparse.Namespace) -> torch.Tensor:
+    return regularization_vector(theta, args).sum()
+
+
+def regularization_grad(theta: torch.Tensor, args: argparse.Namespace) -> torch.Tensor:
+    if args.regularization == "none" or args.regularization_weight == 0.0:
+        return torch.zeros_like(theta)
+    penalty = regularization_vector(theta, args).sum()
+    (grad,) = torch.autograd.grad(penalty, theta, retain_graph=False, create_graph=False)
+    return grad.detach()
 
 
 def rate_summary(theta: torch.Tensor) -> dict[str, dict[str, float]]:
@@ -173,6 +187,14 @@ def append_jsonl(path: Path, row: dict[str, Any]) -> None:
 def log_row(row: dict[str, Any], summary: dict[str, dict[str, float]]) -> None:
     delta = row.get("delta_objective_bits")
     delta_text = "nan" if delta is None else f"{float(delta):.6g}"
+    bfgs_text = ""
+    if "accepted_rows" in row:
+        bfgs_text = (
+            f" accepted_rows={int(row['accepted_rows'])} "
+            f"accepted_fraction={row['accepted_fraction']:.3f} "
+            f"grad_evals={int(row.get('batched_bfgs_grad_evals', 0))} "
+            f"loss_evals={int(row.get('batched_bfgs_loss_evals', 0))}"
+        )
     print(
         f"phase={row['phase']} iter={row['iteration']:04d} "
         f"objective_bits={row['objective_bits']:.6f} "
@@ -181,7 +203,8 @@ def log_row(row: dict[str, Any], summary: dict[str, dict[str, float]]) -> None:
         f"grad_inf={row['grad_inf']:.6g} grad_norm={row['grad_norm']:.6g} "
         f"theta_step_inf={row['theta_step_inf']:.3g} "
         f"eval_s={row['eval_s']:.3f} step_s={row['step_s']:.3f} "
-        f"closure_evals={row.get('closure_evals', 1)}",
+        f"closure_evals={row.get('closure_evals', 1)}"
+        f"{bfgs_text}",
         flush=True,
     )
     print("  " + format_rate_summary(summary), flush=True)
@@ -203,6 +226,17 @@ def converged(
     ):
         return True
     return False
+
+
+def make_batched_bfgs(model: GeneReconModel, args: argparse.Namespace) -> BatchedLBFGS:
+    return BatchedLBFGS(
+        [model.theta],
+        lr=args.lbfgs_lr,
+        max_iter=1,
+        history_size=args.lbfgs_history_size,
+        lower_bound=math.log2(args.min_rate),
+        upper_bound=math.log2(args.max_rate),
+    )
 
 
 def first_order_step(
@@ -247,6 +281,149 @@ def lbfgs_step(
     return last_metrics, theta_step, closure_evals
 
 
+def activate_batch(model: GeneReconModel, batch_idx: int):
+    if model.current_batch_index != batch_idx:
+        model.clear()
+        model._current_batch_index = batch_idx
+    static = model._ensure_batch_static(batch_idx)
+    model._schedule_prefetch()
+    return static
+
+
+def genewise_data_loss_vector(
+    model: GeneReconModel,
+    *,
+    need_grad: bool,
+) -> tuple[torch.Tensor, torch.Tensor | None]:
+    if model.theta.ndim != 2 or model.theta.shape[1] != 3:
+        raise ValueError("batched BFGS expects genewise theta with shape [G, 3]")
+
+    data_loss = model.theta.new_zeros((model.theta.shape[0],))
+    data_grad = torch.zeros_like(model.theta) if need_grad else None
+    for batch_idx, meta in enumerate(model.batch_metadata):
+        static = activate_batch(model, batch_idx)
+        theta_batch = model._theta_for_batch_index(batch_idx, model.theta)
+        loss_i, grad_i = _evaluate_static_state(
+            static,
+            theta_batch,
+            need_grad=need_grad,
+            per_family=True,
+        )
+        idx = torch.as_tensor(
+            meta.family_indices,
+            dtype=torch.long,
+            device=model.theta.device,
+        )
+        data_loss = data_loss.index_copy(
+            0,
+            idx,
+            loss_i.to(device=data_loss.device, dtype=data_loss.dtype).reshape(-1),
+        )
+        if need_grad:
+            if grad_i is None or data_grad is None:
+                raise RuntimeError("internal error: missing genewise batch gradient")
+            data_grad.index_copy_(
+                0,
+                idx,
+                grad_i.to(device=data_grad.device, dtype=data_grad.dtype),
+            )
+    model.clear()
+    return data_loss, data_grad
+
+
+def genewise_objective_vector(
+    model: GeneReconModel,
+    args: argparse.Namespace,
+    *,
+    need_grad: bool,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    data_loss, data_grad = genewise_data_loss_vector(model, need_grad=need_grad)
+    reg_vec = regularization_vector(model.theta, args)
+    objective = data_loss + reg_vec.detach()
+
+    if need_grad:
+        if data_grad is None:
+            raise RuntimeError("internal error: missing genewise data gradient")
+        model.theta.grad = data_grad + regularization_grad(model.theta, args)
+
+    return objective.detach(), data_loss.detach(), reg_vec.detach()
+
+
+def batched_bfgs_step(
+    model: GeneReconModel,
+    optimizer: BatchedLBFGS,
+    args: argparse.Namespace,
+) -> tuple[dict[str, float], float, int]:
+    theta_before = model.theta.detach().clone()
+    grad_evals = 0
+    loss_evals = 0
+
+    def closure() -> torch.Tensor:
+        nonlocal grad_evals
+        grad_evals += 1
+        optimizer.zero_grad(set_to_none=True)
+        objective_vec, _data_vec, _reg_vec = genewise_objective_vector(
+            model,
+            args,
+            need_grad=True,
+        )
+        return objective_vec
+
+    def loss_closure() -> torch.Tensor:
+        nonlocal loss_evals
+        loss_evals += 1
+        objective_vec, _data_vec, _reg_vec = genewise_objective_vector(
+            model,
+            args,
+            need_grad=False,
+        )
+        return objective_vec
+
+    synchronize()
+    start = time.perf_counter()
+    optimizer.step(closure, loss_closure=loss_closure)
+    synchronize()
+    eval_elapsed = time.perf_counter() - start
+    clamp_rates(model, args)
+
+    objective_vec, data_vec, reg_vec = genewise_objective_vector(
+        model,
+        args,
+        need_grad=False,
+    )
+    state = optimizer.state[model.theta]
+    grad = state.get("last_grad")
+    if grad is None:
+        raise RuntimeError("BatchedLBFGS did not report a final gradient")
+    grad = grad.reshape_as(model.theta).detach()
+
+    theta_step = float((model.theta.detach() - theta_before).abs().amax().cpu())
+    accepted = state.get("last_accepted")
+    alpha = state.get("last_alpha")
+    metrics = {
+        "data_nll_bits": float(data_vec.sum().cpu()),
+        "regularization_bits": float(reg_vec.sum().cpu()),
+        "objective_bits": float(objective_vec.sum().cpu()),
+        "log_likelihood_bits": float(-data_vec.sum().cpu()),
+        "grad_inf": float(grad.abs().amax().cpu()),
+        "grad_norm": float(torch.linalg.vector_norm(grad).cpu()),
+        "eval_s": eval_elapsed,
+        "batched_bfgs_grad_evals": float(grad_evals),
+        "batched_bfgs_loss_evals": float(loss_evals),
+    }
+    if accepted is not None:
+        accepted_cpu = accepted.detach().cpu()
+        metrics["accepted_rows"] = float(accepted_cpu.sum())
+        metrics["accepted_fraction"] = float(accepted_cpu.float().mean())
+    if alpha is not None:
+        alpha_cpu = alpha.detach().cpu()
+        metrics["alpha_mean"] = float(alpha_cpu.mean())
+        metrics["alpha_max"] = float(alpha_cpu.max())
+    model.theta.grad = None
+    model.clear()
+    return metrics, theta_step, grad_evals + loss_evals
+
+
 def build_model(args: argparse.Namespace, origination_probs: torch.Tensor) -> GeneReconModel:
     return GeneReconModel.from_alerax_families(
         str(args.species_tree),
@@ -279,6 +456,24 @@ def prepare_all_batches(model: GeneReconModel) -> None:
     model.clear()
 
 
+def parameter_row_names(
+    model: GeneReconModel,
+    species_names: list[str],
+    args: argparse.Namespace,
+) -> list[str]:
+    row_count = int(model.theta.detach().reshape(-1, 3).shape[0])
+    if args.mode == "specieswise":
+        return species_names[:row_count]
+    if args.mode == "genewise":
+        names = [f"family_{i}" for i in range(row_count)]
+        for meta in model.batch_metadata:
+            for idx, name in zip(meta.family_indices, meta.family_names):
+                if 0 <= idx < row_count:
+                    names[idx] = name
+        return names
+    return ["global"]
+
+
 def write_outputs(
     model: GeneReconModel,
     species_names: list[str],
@@ -300,7 +495,7 @@ def write_outputs(
     theta = model.theta.detach().reshape(-1, 3).cpu()
     rates = torch.exp2(theta)
     ps = pS_values(theta).cpu()
-    names = species_names if args.mode == "specieswise" else ["global"]
+    names = parameter_row_names(model, species_names, args)
     with (out_dir / "rates_final.tsv").open("w", newline="", encoding="utf-8") as handle:
         writer = csv.writer(handle, delimiter="\t")
         writer.writerow(["row", "name", "D", "T", "L", "pS", "theta_D", "theta_T", "theta_L"])
@@ -324,9 +519,25 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Fast exact optimization of the HOGENOM CCP likelihood."
     )
-    parser.add_argument("--optimizer", choices=("adagrad", "adam", "lbfgs", "adagrad-lbfgs"), default="adagrad")
+    parser.add_argument(
+        "--optimizer",
+        choices=(
+            "adagrad",
+            "adam",
+            "lbfgs",
+            "adagrad-lbfgs",
+            "batched-bfgs",
+            "adagrad-batched-bfgs",
+        ),
+        default="adagrad",
+    )
     parser.add_argument("--steps", type=int, default=200, help="Maximum optimization steps after any warmup phase.")
-    parser.add_argument("--warmup-steps", type=int, default=20, help="Adagrad warmup steps for --optimizer adagrad-lbfgs.")
+    parser.add_argument(
+        "--warmup-steps",
+        type=int,
+        default=20,
+        help="Adagrad warmup steps for --optimizer adagrad-lbfgs/adagrad-batched-bfgs.",
+    )
     parser.add_argument("--lr", type=float, default=1.0, help="Learning rate for Adagrad/Adam or LBFGS if no separate LBFGS lr is given.")
     parser.add_argument("--lbfgs-lr", type=float, default=0.1)
     parser.add_argument("--lbfgs-history-size", type=int, default=10)
@@ -337,7 +548,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--loss-patience", type=int, default=5)
     parser.add_argument("--min-steps", type=int, default=5)
 
-    parser.add_argument("--mode", choices=("global", "specieswise"), default="specieswise")
+    parser.add_argument("--mode", choices=("global", "specieswise", "genewise"), default="specieswise")
     parser.add_argument("--max-families", type=int, default=None)
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--species-tree", type=Path, default=SPECIES_TREE)
@@ -387,6 +598,8 @@ def run_phase(
         step_start = time.perf_counter()
         if isinstance(optimizer, torch.optim.LBFGS):
             metrics, theta_step, closure_evals = lbfgs_step(model, optimizer, args)
+        elif isinstance(optimizer, BatchedLBFGS):
+            metrics, theta_step, closure_evals = batched_bfgs_step(model, optimizer, args)
         else:
             metrics, theta_step = first_order_step(model, optimizer, args)
             closure_evals = 1
@@ -438,6 +651,8 @@ def main(argv: list[str] | None = None) -> None:
         raise ValueError("--fixed-iters-pi must be even")
     if args.max_rate <= args.min_rate:
         raise ValueError("--max-rate must be greater than --min-rate")
+    if args.optimizer in {"batched-bfgs", "adagrad-batched-bfgs"} and args.mode != "genewise":
+        raise ValueError("batched BFGS optimizers require --mode genewise")
 
     torch.backends.cuda.matmul.allow_tf32 = True
     torch.set_float32_matmul_precision("high")
@@ -457,7 +672,7 @@ def main(argv: list[str] | None = None) -> None:
         flush=True,
     )
     print(
-        f"optimizer={args.optimizer} lr={args.lr} lbfgs_lr={args.lbfgs_lr} "
+        f"mode={args.mode} optimizer={args.optimizer} lr={args.lr} lbfgs_lr={args.lbfgs_lr} "
         f"max_rate={args.max_rate} origination=uniform",
         flush=True,
     )
@@ -496,7 +711,7 @@ def main(argv: list[str] | None = None) -> None:
 
         iteration = 0
         final_metrics = initial
-        if args.optimizer == "adagrad-lbfgs":
+        if args.optimizer in {"adagrad-lbfgs", "adagrad-batched-bfgs"}:
             warm_optimizer = torch.optim.Adagrad(
                 [model.theta],
                 lr=args.lr,
@@ -511,18 +726,23 @@ def main(argv: list[str] | None = None) -> None:
                 max_steps=args.warmup_steps,
                 history_path=history_path,
             )
-            lbfgs_optimizer = torch.optim.LBFGS(
-                [model.theta],
-                lr=args.lbfgs_lr,
-                max_iter=1,
-                max_eval=20,
-                history_size=args.lbfgs_history_size,
-                line_search_fn=None if args.lbfgs_line_search == "none" else args.lbfgs_line_search,
-            )
+            if args.optimizer == "adagrad-batched-bfgs":
+                lbfgs_optimizer: torch.optim.Optimizer = make_batched_bfgs(model, args)
+                phase = "batched-bfgs"
+            else:
+                lbfgs_optimizer = torch.optim.LBFGS(
+                    [model.theta],
+                    lr=args.lbfgs_lr,
+                    max_iter=1,
+                    max_eval=20,
+                    history_size=args.lbfgs_history_size,
+                    line_search_fn=None if args.lbfgs_line_search == "none" else args.lbfgs_line_search,
+                )
+                phase = "lbfgs"
             iteration, final_metrics = run_phase(
                 model=model,
                 args=args,
-                phase="lbfgs",
+                phase=phase,
                 optimizer=lbfgs_optimizer,
                 start_iteration=iteration,
                 max_steps=args.steps,
@@ -537,6 +757,8 @@ def main(argv: list[str] | None = None) -> None:
                 )
             elif args.optimizer == "adam":
                 optimizer = torch.optim.Adam([model.theta], lr=args.lr)
+            elif args.optimizer == "batched-bfgs":
+                optimizer = make_batched_bfgs(model, args)
             else:
                 optimizer = torch.optim.LBFGS(
                     [model.theta],

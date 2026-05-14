@@ -644,8 +644,8 @@ def _evaluate_static_state(
             "objective, so gradient-based optimization is disabled in "
             "this mode."
         )
-    if need_grad and per_family:
-        raise ValueError("per-family streaming evaluation is no-grad only")
+    if need_grad and per_family and not static.genewise:
+        raise ValueError("per-family gradients are only independent in genewise mode")
 
     theta_eval = theta.detach().to(device=static.device, dtype=static.dtype)
     log_pS, log_pD, log_pL, max_transfer_vec = _extract_parameters(theta_eval, static)
@@ -746,7 +746,7 @@ def _evaluate_static_state(
             origination_probs_prepared=True,
         )
         static.warm_E = None
-        return loss_vec.sum().detach(), grad_theta.detach()
+        return (loss_vec.detach() if per_family else loss_vec.sum().detach()), grad_theta.detach()
 
     loss_vec = compute_log_likelihood_root_rows(
         pi_out["Pi_root_rows"],
