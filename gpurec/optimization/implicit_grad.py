@@ -30,6 +30,24 @@ def _as_float(value: torch.Tensor) -> float:
     return float(value.detach().cpu())
 
 
+def _change_metrics(previous: torch.Tensor, current: torch.Tensor) -> tuple[float, float]:
+    diff = torch.abs(current - previous)
+    max_delta = _as_float(diff.max())
+    scale = max(_as_float(previous.abs().max()), _as_float(current.abs().max()), 1.0)
+    return max_delta, scale
+
+
+def _iteration_schedule(max_terms: int, interval: int) -> list[int]:
+    if max_terms < 1:
+        raise ValueError("max_terms must be positive")
+    if interval < 1:
+        raise ValueError("interval must be positive")
+    terms = list(range(interval, max_terms + 1, interval))
+    if not terms or terms[-1] != max_terms:
+        terms.append(max_terms)
+    return terms
+
+
 @torch.no_grad()
 def _bicgstab(Av, b: torch.Tensor, *, tol: float = 1e-7, maxiter: int = 500):
     """Solve a nonsymmetric linear system with BiCGSTAB."""
@@ -119,6 +137,11 @@ def implicit_grad_loglik_vjp_wave(
     uniform_pibar_row_max: Optional[torch.Tensor] = None,
     origination_probs: Optional[torch.Tensor] = None,
     origination_probs_prepared: bool = False,
+    genewise: bool = False,
+    family_idx: Optional[torch.Tensor] = None,
+    gradient_convergence_tol: float = -1.0,
+    gradient_convergence_rtol: float = 0.0,
+    gradient_convergence_check_interval: int = 4,
 ):
     """Compute ∇θ logL using wave-decomposed backward pass + E adjoint.
 
@@ -129,37 +152,64 @@ def implicit_grad_loglik_vjp_wave(
 
     Returns (grad_theta, pi_backward_info).
     """
-    # --- Step 1: Pi backward (can be pre-computed for batched mode) ---
-    pi_bwd = Pi_wave_backward(
-        wave_layout=wave_layout,
-        Pi_star_wave=Pi_star_wave,
-        Pibar_star_wave=Pibar_star_wave,
-        E=E_star, Ebar=Ebar, E_s1=E_s1, E_s2=E_s2,
-        log_pS=log_pS, log_pD=log_pD, log_pL=log_pL,
-        max_transfer_mat=max_transfer_mat,
-        species_helpers=species_helpers,
-        root_clade_ids_perm=root_clade_ids_perm,
-        device=device, dtype=dtype,
-        neumann_terms=neumann_terms,
-        use_pruning=use_pruning,
-        pruning_threshold=pruning_threshold,
-        ancestors_T=ancestors_T,
-        uniform_pibar_row_max=uniform_pibar_row_max,
-        origination_probs=origination_probs,
-        origination_probs_prepared=origination_probs_prepared,
-    )
+    def compute_with_terms(terms: int):
+        # --- Step 1: Pi backward (can be pre-computed for batched mode) ---
+        pi_bwd = Pi_wave_backward(
+            wave_layout=wave_layout,
+            Pi_star_wave=Pi_star_wave,
+            Pibar_star_wave=Pibar_star_wave,
+            E=E_star, Ebar=Ebar, E_s1=E_s1, E_s2=E_s2,
+            log_pS=log_pS, log_pD=log_pD, log_pL=log_pL,
+            max_transfer_mat=max_transfer_mat,
+            species_helpers=species_helpers,
+            root_clade_ids_perm=root_clade_ids_perm,
+            device=device, dtype=dtype,
+            neumann_terms=terms,
+            use_pruning=use_pruning,
+            pruning_threshold=pruning_threshold,
+            ancestors_T=ancestors_T,
+            family_idx=family_idx,
+            uniform_pibar_row_max=uniform_pibar_row_max,
+            origination_probs=origination_probs,
+            origination_probs_prepared=origination_probs_prepared,
+        )
 
-    grad_theta, statsG = _e_adjoint_and_theta_vjp(
-        pi_bwd, E_star, Ebar, E_s1, E_s2,
-        log_pS, log_pD, log_pL,
-        max_transfer_mat, species_helpers, root_clade_ids_perm,
-        theta, unnorm_row_max, specieswise,
-        device, dtype,
-        ancestors_T=ancestors_T,
-        origination_probs=origination_probs,
-        origination_probs_prepared=origination_probs_prepared,
-    )
-    return grad_theta, statsG
+        grad_theta, statsG = _e_adjoint_and_theta_vjp(
+            pi_bwd, E_star, Ebar, E_s1, E_s2,
+            log_pS, log_pD, log_pL,
+            max_transfer_mat, species_helpers, root_clade_ids_perm,
+            theta, unnorm_row_max, specieswise,
+            device, dtype,
+            genewise=genewise,
+            ancestors_T=ancestors_T,
+            origination_probs=origination_probs,
+            origination_probs_prepared=origination_probs_prepared,
+        )
+        return grad_theta, statsG
+
+    if gradient_convergence_tol < 0.0:
+        return compute_with_terms(neumann_terms)
+
+    previous_grad = None
+    final_grad = None
+    final_stats = None
+    for terms in _iteration_schedule(
+        neumann_terms,
+        gradient_convergence_check_interval,
+    ):
+        grad_theta, statsG = compute_with_terms(terms)
+        final_grad = grad_theta
+        final_stats = statsG
+        if previous_grad is not None:
+            delta, scale = _change_metrics(previous_grad, grad_theta)
+            threshold = gradient_convergence_tol + gradient_convergence_rtol * scale
+            if delta <= threshold:
+                break
+        previous_grad = grad_theta.detach()
+
+    if final_grad is None or final_stats is None:
+        raise RuntimeError("internal error: gradient convergence loop did not run")
+    return final_grad, final_stats
 
 
 def _e_adjoint_and_theta_vjp(

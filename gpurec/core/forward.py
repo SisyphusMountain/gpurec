@@ -71,6 +71,8 @@ def Pi_wave_forward(
     return_root_rows: bool = False,
     progress_callback=None,
     trace_root_logsumexp: bool = False,
+    convergence_tolerance: float = -1.0,
+    convergence_check_interval: int = 4,
 ):
     """Wave-based Pi forward pass with wave-ordered layout (v2).
 
@@ -96,6 +98,13 @@ def Pi_wave_forward(
         trace_root_logsumexp: if True, record a GPU-resident
                               ``[fixed_iters, n_roots]`` trace of base-2
                               logsumexp values for root rows.
+        convergence_tolerance: when non-negative, treat ``fixed_iters`` as a
+                               maximum and stop a wave early when the max row
+                               update changes by less than this value at a
+                               convergence check.
+        convergence_check_interval: check every N local self-loop iterations.
+                                    Must be even when convergence is enabled so
+                                    final Pi rows remain in ``Pi``.
 
     Returns:
         dict with 'Pi' (in original clade order when requested),
@@ -114,6 +123,12 @@ def Pi_wave_forward(
         raise ValueError("The lean forward path requires leaf_species_index in the wave layout.")
     if fixed_iters < 1 or fixed_iters % 2 != 0:
         raise ValueError("The lean forward path requires a positive even fixed_iters value.")
+    if convergence_check_interval < 1:
+        raise ValueError("convergence_check_interval must be positive")
+    if convergence_tolerance >= 0.0 and convergence_check_interval % 2 != 0:
+        raise ValueError(
+            "Pi convergence checks require an even convergence_check_interval"
+        )
 
     with _nvtx_range("Pi setup tensors"):
         _PI_INIT = torch.finfo(dtype).min
@@ -152,6 +167,12 @@ def Pi_wave_forward(
     uniform_pibar_row_max = (
         torch.empty((C,), dtype=dtype, device=device)
         if return_saved_state else None
+    )
+    max_wave_W = max((int(meta.get('W', 0)) for meta in wave_metas), default=0)
+    max_diff_scratch = (
+        torch.empty((max_wave_W,), dtype=dtype, device=device)
+        if convergence_tolerance >= 0.0 and max_wave_W > 0
+        else None
     )
 
     with _nvtx_range("Pi setup species helpers"):
@@ -253,6 +274,10 @@ def Pi_wave_forward(
                 meta,
             )
 
+    pi_wave_iterations = [fixed_iters] * len(wave_metas)
+    pi_wave_converged = [False] * len(wave_metas)
+    pi_wave_deltas: list[float | None] = [None] * len(wave_metas)
+
     def _run_wave_self_loop(meta, dts_r, leaf_wt, DL_w, SL1_w, SL2_w,
                             Ebar_w, E_w, mt_w, wave_index):
         ws = meta['start']
@@ -263,6 +288,7 @@ def Pi_wave_forward(
             or int(meta.get('phase', 1)) == 1
         )
         for local_iter in range(fixed_iters):
+            iteration_count = local_iter + 1
             pi_in = Pi if (local_iter % 2 == 0) else Pibar
             pi_out = Pibar if (local_iter % 2 == 0) else Pi
             needs_final_pibar = (
@@ -270,6 +296,10 @@ def Pi_wave_forward(
                 and not _can_skip_final_pibar(ws, we, W)
             )
             store_final_pibar = fuse_final_pibar and needs_final_pibar
+            check_convergence = (
+                max_diff_scratch is not None
+                and iteration_count % convergence_check_interval == 0
+            )
             wave_step_uniform_fused_into(
                 pi_in, pi_out, Pibar, ws, W, S,
                 mt_w, DL_w, Ebar_w, E_w, SL1_w, SL2_w,
@@ -281,6 +311,8 @@ def Pi_wave_forward(
                 family_indexed_consts=batched,
                 store_final_pibar=store_final_pibar,
                 final_pibar_row_max=uniform_pibar_row_max if store_final_pibar else None,
+                compute_diff=check_convergence,
+                max_diff_out=max_diff_scratch[:W] if check_convergence else None,
                 has_leaf_term=has_leaf_term,
             )
             if root_logsumexp_trace is not None:
@@ -292,6 +324,22 @@ def Pi_wave_forward(
                         dim=-1,
                     )
             _progress("pi_iter", wave_index, local_iter + 1, meta)
+            if check_convergence:
+                assert max_diff_scratch is not None
+                max_diff = float(max_diff_scratch[:W].amax().detach().cpu())
+                pi_wave_deltas[wave_index] = max_diff
+                if max_diff < convergence_tolerance:
+                    pi_wave_iterations[wave_index] = iteration_count
+                    pi_wave_converged[wave_index] = True
+                    if not _can_skip_final_pibar(ws, we, W):
+                        wave_pibar_uniform_parent_fused(
+                            Pi, Pibar, ws, W, S,
+                            mt_w, sp_parent, max_ancestor_depth,
+                            row_max_out=uniform_pibar_row_max,
+                            family_idx=family_idx if batched else None,
+                            family_indexed_consts=batched,
+                        )
+                    return
             if needs_final_pibar and not store_final_pibar:
                 wave_pibar_uniform_parent_fused(
                     Pi, Pibar, ws, W, S,
@@ -344,4 +392,8 @@ def Pi_wave_forward(
         'Pibar_wave_ordered': Pibar if return_saved_state else None,
         'uniform_pibar_row_max': uniform_pibar_row_max if return_saved_state else None,
         'root_logsumexp_trace': root_logsumexp_trace,
+        'Pi_wave_iterations': pi_wave_iterations,
+        'Pi_wave_converged': pi_wave_converged,
+        'Pi_wave_convergence_deltas': pi_wave_deltas,
+        'Pi_max_iterations': max(pi_wave_iterations, default=0),
     }

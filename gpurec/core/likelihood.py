@@ -104,7 +104,9 @@ def E_fixed_point(species_helpers,
                           device,
                           ancestors_T=None,
                           progress_callback=None,
-                          trace_logsumexp: bool = False):
+                          trace_logsumexp: bool = False,
+                          check_interval: int = 1,
+                          convergence_metric: str = "max_diff"):
 
     S = species_helpers['S']
 
@@ -138,7 +140,17 @@ def E_fixed_point(species_helpers,
         trace_shape = (max_iters,) if E.ndim == 1 else (max_iters, E.shape[0])
         E_logsumexp_trace = torch.empty(trace_shape, dtype=dtype, device=device)
 
+    if check_interval < 1:
+        raise ValueError("check_interval must be positive")
+    if convergence_metric not in ("max_diff", "logsumexp"):
+        raise ValueError(
+            "convergence_metric must be 'max_diff' or 'logsumexp', "
+            f"got {convergence_metric!r}"
+        )
+
     converged_iter = max_iters
+    convergence_delta = None
+    previous_checked_logsumexp = None
     # Group the entire fixed-point solve under a single NVTX range
     with _nvtx_range("E step"):
         for iteration in range(max_iters):
@@ -158,11 +170,30 @@ def E_fixed_point(species_helpers,
 
                 max_diff = None
                 converged = False
-                if tolerance >= 0.0:
-                    # Check convergence (sup-norm across all dims). Fixed-pass
-                    # callers pass a negative tolerance and avoid this sync.
-                    max_diff = torch.abs(E_new - E).max().item()
-                    converged = max_diff < tolerance
+                if tolerance >= 0.0 and (
+                    (iteration + 1) % check_interval == 0
+                    or iteration + 1 == max_iters
+                ):
+                    # Fixed-pass callers pass a negative tolerance and avoid
+                    # this sync.  The logsumexp metric is useful when the
+                    # individual E coordinates move but their aggregate
+                    # contribution to the likelihood is already stable.
+                    if convergence_metric == "max_diff":
+                        max_diff = torch.abs(E_new - E).max().item()
+                        converged = max_diff < tolerance
+                    else:
+                        current_logsumexp = logsumexp2(E_new, dim=-1).detach()
+                        if previous_checked_logsumexp is not None:
+                            max_diff = (
+                                torch.abs(
+                                    current_logsumexp - previous_checked_logsumexp
+                                )
+                                .max()
+                                .item()
+                            )
+                            converged = max_diff < tolerance
+                        previous_checked_logsumexp = current_logsumexp
+                    convergence_delta = max_diff
 
                 if E_logsumexp_trace is not None:
                     E_logsumexp_trace[iteration].copy_(logsumexp2(E_new, dim=-1))
@@ -182,6 +213,8 @@ def E_fixed_point(species_helpers,
         'E_s1': E_s1,
         'E_s2': E_s2,
         'E_bar': E_bar,
+        'E_convergence_delta': convergence_delta,
+        'E_convergence_metric': convergence_metric,
         'E_logsumexp_trace': (
             None if E_logsumexp_trace is None
             else E_logsumexp_trace[:converged_iter]

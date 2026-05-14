@@ -173,6 +173,7 @@ def evaluate(
         "eval_s": elapsed,
     }
     metrics.update(gradient_constraint_metrics(model.theta.detach(), grad, args))
+    metrics.update(solver_iteration_metrics(model))
     return objective, metrics
 
 
@@ -186,6 +187,35 @@ def tensor_is_finite(value: torch.Tensor) -> bool:
 
 def metrics_are_finite(metrics: dict[str, float]) -> bool:
     return all(math.isfinite(float(value)) for value in metrics.values())
+
+
+def solver_iteration_metrics(model: GeneReconModel) -> dict[str, float]:
+    if getattr(model, "_batched_resident", False):
+        statics = [
+            static
+            for static in getattr(model, "_batch_statics", [])
+            if static is not None and static.last_solver_stats is not None
+        ]
+    else:
+        static = model.static
+        statics = [static] if static.last_solver_stats is not None else []
+    if not statics:
+        return {}
+
+    e_iters = [float(static.last_solver_stats["E_iterations"]) for static in statics]
+    pi_iters = [float(static.last_solver_stats["Pi_max_iterations"]) for static in statics]
+    pi_converged = sum(
+        float(static.last_solver_stats["Pi_converged_waves"]) for static in statics
+    )
+    pi_waves = sum(float(static.last_solver_stats["Pi_wave_count"]) for static in statics)
+    return {
+        "solver_E_iterations_max": max(e_iters),
+        "solver_E_iterations_mean": sum(e_iters) / len(e_iters),
+        "solver_Pi_iterations_max": max(pi_iters),
+        "solver_Pi_iterations_mean": sum(pi_iters) / len(pi_iters),
+        "solver_Pi_converged_waves": pi_converged,
+        "solver_Pi_wave_count": pi_waves,
+    }
 
 
 def restore_theta(model: GeneReconModel, theta: torch.Tensor) -> None:
@@ -380,6 +410,18 @@ def log_row(row: dict[str, Any], summary: dict[str, dict[str, float]]) -> None:
             f" adam_oscillating=True"
             f" reason={row.get('adam_oscillation_reason', 'oscillation')}"
         )
+    solver_text = ""
+    if "solver_E_iterations_max" in row:
+        solver_text = (
+            f" solver_E_iter_max={row['solver_E_iterations_max']:.0f}"
+            f" solver_Pi_iter_max={row['solver_Pi_iterations_max']:.0f}"
+        )
+        wave_count = row.get("solver_Pi_wave_count", 0.0)
+        if wave_count:
+            solver_text += (
+                f" solver_Pi_converged="
+                f"{row['solver_Pi_converged_waves']:.0f}/{wave_count:.0f}"
+            )
     print(
         f"phase={row['phase']} iter={row['iteration']:04d} "
         f"objective_bits={row['objective_bits']:.6f} "
@@ -390,7 +432,7 @@ def log_row(row: dict[str, Any], summary: dict[str, dict[str, float]]) -> None:
         f"theta_step_inf={row['theta_step_inf']:.3g} "
         f"eval_s={row['eval_s']:.3f} step_s={row['step_s']:.3f} "
         f"closure_evals={row.get('closure_evals', 1)}"
-        f"{bfgs_text}{adam_text}",
+        f"{bfgs_text}{adam_text}{solver_text}",
         flush=True,
     )
     print("  " + format_rate_summary(summary), flush=True)
@@ -688,6 +730,12 @@ def build_model(args: argparse.Namespace, origination_probs: torch.Tensor) -> Ge
         fixed_iters_E=args.fixed_iters_e,
         fixed_iters_Pi=args.fixed_iters_pi,
         neumann_terms=args.neumann_terms,
+        adaptive_iters=args.adaptive_iterations,
+        convergence_check_interval=args.convergence_check_interval,
+        e_logsumexp_tol=args.e_logsumexp_tol,
+        pi_max_diff_tol=args.pi_max_diff_tol,
+        gradient_change_tol=args.gradient_change_tol,
+        gradient_change_rtol=args.gradient_change_rtol,
         use_pruning=True,
         family_chunk_size=args.family_chunk_size,
         clade_budget=args.clade_budget,
@@ -849,6 +897,21 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--fixed-iters-e", type=int, default=6)
     parser.add_argument("--fixed-iters-pi", type=int, default=6)
     parser.add_argument("--neumann-terms", type=int, default=6)
+    parser.add_argument(
+        "--adaptive-iterations",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=(
+            "Check E/Pi/gradient convergence instead of always using the "
+            "iteration counts exactly. The fixed iteration arguments become "
+            "maximum iteration counts."
+        ),
+    )
+    parser.add_argument("--convergence-check-interval", type=int, default=4)
+    parser.add_argument("--e-logsumexp-tol", type=float, default=1e-5)
+    parser.add_argument("--pi-max-diff-tol", type=float, default=1e-5)
+    parser.add_argument("--gradient-change-tol", type=float, default=1e-4)
+    parser.add_argument("--gradient-change-rtol", type=float, default=1e-4)
 
     parser.add_argument("--init-d", type=float, default=0.05)
     parser.add_argument("--init-l", type=float, default=0.05)
@@ -968,6 +1031,8 @@ def main(argv: list[str] | None = None) -> None:
         raise ValueError("--fixed-iters-pi must be even")
     if args.max_rate <= args.min_rate:
         raise ValueError("--max-rate must be greater than --min-rate")
+    if args.adaptive_iterations and args.convergence_check_interval % 2 != 0:
+        raise ValueError("--convergence-check-interval must be even in adaptive mode")
     if not (0.0 < args.adam_oscillation_lr_decay < 1.0):
         raise ValueError("--adam-oscillation-lr-decay must be in (0, 1)")
     if args.adam_min_lr <= 0.0:
@@ -998,6 +1063,22 @@ def main(argv: list[str] | None = None) -> None:
         f"packing={args.batch_packing} max_wave_size={args.max_wave_size}",
         flush=True,
     )
+    print(
+        "solver="
+        f"fixed_iters_e={args.fixed_iters_e} fixed_iters_pi={args.fixed_iters_pi} "
+        f"neumann_terms={args.neumann_terms} adaptive={args.adaptive_iterations} "
+        f"check_interval={args.convergence_check_interval}",
+        flush=True,
+    )
+    if args.adaptive_iterations:
+        print(
+            "solver_tolerances="
+            f"e_logsumexp={args.e_logsumexp_tol} "
+            f"pi_max_diff={args.pi_max_diff_tol} "
+            f"gradient_change={args.gradient_change_tol} "
+            f"gradient_change_rtol={args.gradient_change_rtol}",
+            flush=True,
+        )
     print(
         f"mode={args.mode} optimizer={args.optimizer} lr={args.lr} lbfgs_lr={args.lbfgs_lr} "
         f"lbfgs_line_search={args.lbfgs_line_search} max_rate={args.max_rate} "

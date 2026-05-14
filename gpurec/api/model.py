@@ -26,7 +26,6 @@ from typing import Any, Optional, Sequence
 
 import torch
 
-from gpurec.core.backward import Pi_wave_backward
 from gpurec.core.batching import (
     build_wave_layout,
     collate_gene_families,
@@ -41,7 +40,7 @@ from gpurec.core.likelihood import (
     compute_log_likelihood_root_rows,
     prepare_origination_probs,
 )
-from gpurec.optimization.implicit_grad import _e_adjoint_and_theta_vjp
+from gpurec.optimization.implicit_grad import implicit_grad_loglik_vjp_wave
 
 from .autograd import (
     ReconStaticState,
@@ -461,6 +460,12 @@ def _build_static_state(
     tol_E: float,
     fixed_iters_Pi: int,
     neumann_terms: int,
+    adaptive_iters: bool,
+    convergence_check_interval: int,
+    e_logsumexp_tol: float,
+    pi_max_diff_tol: float,
+    gradient_change_tol: float,
+    gradient_change_rtol: float,
     use_pruning: bool,
     pruning_threshold: float,
     origination_probs: torch.Tensor | None,
@@ -539,6 +544,12 @@ def _build_static_state(
         tol_E=tol_E,
         fixed_iters_Pi=fixed_iters_Pi,
         neumann_terms=neumann_terms,
+        adaptive_iters=adaptive_iters,
+        convergence_check_interval=convergence_check_interval,
+        e_logsumexp_tol=e_logsumexp_tol,
+        pi_max_diff_tol=pi_max_diff_tol,
+        gradient_change_tol=gradient_change_tol,
+        gradient_change_rtol=gradient_change_rtol,
         use_pruning=use_pruning,
         pruning_threshold=pruning_threshold,
     )
@@ -556,6 +567,12 @@ def _build_batch_static_state(
     tol_E: float,
     fixed_iters_Pi: int,
     neumann_terms: int,
+    adaptive_iters: bool,
+    convergence_check_interval: int,
+    e_logsumexp_tol: float,
+    pi_max_diff_tol: float,
+    gradient_change_tol: float,
+    gradient_change_rtol: float,
     use_pruning: bool,
     pruning_threshold: float,
     origination_probs: torch.Tensor | None,
@@ -590,6 +607,12 @@ def _build_batch_static_state(
         tol_E=tol_E,
         fixed_iters_Pi=fixed_iters_Pi,
         neumann_terms=neumann_terms,
+        adaptive_iters=adaptive_iters,
+        convergence_check_interval=convergence_check_interval,
+        e_logsumexp_tol=e_logsumexp_tol,
+        pi_max_diff_tol=pi_max_diff_tol,
+        gradient_change_tol=gradient_change_tol,
+        gradient_change_rtol=gradient_change_rtol,
         use_pruning=use_pruning,
         pruning_threshold=pruning_threshold,
         clear_runtime_after_backward=True,
@@ -654,7 +677,11 @@ def _evaluate_static_state(
         if static.fixed_iters_E is not None
         else static.max_iters_E
     )
-    e_tolerance = -1.0 if static.fixed_iters_E is not None else static.tol_E
+    e_tolerance = (
+        static.e_logsumexp_tol
+        if static.adaptive_iters
+        else (-1.0 if static.fixed_iters_E is not None else static.tol_E)
+    )
     E_out = E_fixed_point(
         species_helpers=static.species_helpers,
         log_pS=log_pS,
@@ -667,6 +694,8 @@ def _evaluate_static_state(
         dtype=static.dtype,
         device=static.device,
         ancestors_T=static.ancestors_T,
+        check_interval=static.convergence_check_interval,
+        convergence_metric="logsumexp" if static.adaptive_iters else "max_diff",
     )
 
     pi_out = Pi_wave_forward(
@@ -687,7 +716,18 @@ def _evaluate_static_state(
         family_idx=(
             static.wave_layout.get("family_idx") if static.genewise else None
         ),
+        convergence_tolerance=(
+            static.pi_max_diff_tol if static.adaptive_iters else -1.0
+        ),
+        convergence_check_interval=static.convergence_check_interval,
     )
+    static.last_solver_stats = {
+        "E_iterations": int(E_out["iterations"]),
+        "E_convergence_delta": E_out.get("E_convergence_delta"),
+        "Pi_max_iterations": int(pi_out.get("Pi_max_iterations", static.fixed_iters_Pi)),
+        "Pi_converged_waves": int(sum(pi_out.get("Pi_wave_converged", []))),
+        "Pi_wave_count": int(len(pi_out.get("Pi_wave_converged", []))),
+    }
     if need_grad:
         loss_vec = compute_log_likelihood(
             pi_out["Pi_wave_ordered"],
@@ -696,11 +736,12 @@ def _evaluate_static_state(
             static.origination_probs,
             origination_probs_prepared=True,
         )
-        pi_bwd = Pi_wave_backward(
-            wave_layout=static.wave_layout,
+        grad_theta, _stats = implicit_grad_loglik_vjp_wave(
+            static.wave_layout,
+            static.species_helpers,
             Pi_star_wave=pi_out["Pi_wave_ordered"],
             Pibar_star_wave=pi_out["Pibar_wave_ordered"],
-            E=E_out["E"],
+            E_star=E_out["E"],
             Ebar=E_out["E_bar"],
             E_s1=E_out["E_s1"],
             E_s2=E_out["E_s2"],
@@ -708,8 +749,10 @@ def _evaluate_static_state(
             log_pD=log_pD,
             log_pL=log_pL,
             max_transfer_mat=max_transfer_vec,
-            species_helpers=static.species_helpers,
             root_clade_ids_perm=static.wave_layout["root_clade_ids"],
+            theta=theta_eval,
+            unnorm_row_max=static.unnorm_row_max,
+            specieswise=static.specieswise,
             device=static.device,
             dtype=static.dtype,
             neumann_terms=static.neumann_terms,
@@ -722,28 +765,12 @@ def _evaluate_static_state(
             uniform_pibar_row_max=pi_out.get("uniform_pibar_row_max"),
             origination_probs=static.origination_probs,
             origination_probs_prepared=True,
-        )
-        grad_theta, _stats = _e_adjoint_and_theta_vjp(
-            pi_bwd,
-            E_out["E"],
-            E_out["E_bar"],
-            E_out["E_s1"],
-            E_out["E_s2"],
-            log_pS,
-            log_pD,
-            log_pL,
-            max_transfer_vec,
-            static.species_helpers,
-            static.wave_layout["root_clade_ids"],
-            theta_eval,
-            static.unnorm_row_max,
-            static.specieswise,
-            static.device,
-            static.dtype,
             genewise=static.genewise,
-            ancestors_T=static.ancestors_T,
-            origination_probs=static.origination_probs,
-            origination_probs_prepared=True,
+            gradient_convergence_tol=(
+                static.gradient_change_tol if static.adaptive_iters else -1.0
+            ),
+            gradient_convergence_rtol=static.gradient_change_rtol,
+            gradient_convergence_check_interval=static.convergence_check_interval,
         )
         static.warm_E = None
         return (loss_vec.detach() if per_family else loss_vec.sum().detach()), grad_theta.detach()
@@ -793,6 +820,12 @@ class GeneReconModel(torch.nn.Module):
         tol_E: float = 1e-8,
         fixed_iters_Pi: int = 6,
         neumann_terms: int = 3,
+        adaptive_iters: bool = False,
+        convergence_check_interval: int = 4,
+        e_logsumexp_tol: float = 1e-5,
+        pi_max_diff_tol: float = 1e-5,
+        gradient_change_tol: float = 1e-4,
+        gradient_change_rtol: float = 1e-4,
         use_pruning: bool = True,
         pruning_threshold: float = 1e-6,
         theta_init: Optional[torch.Tensor] = None,
@@ -816,6 +849,24 @@ class GeneReconModel(torch.nn.Module):
         fixed_iters_Pi = int(fixed_iters_Pi)
         if fixed_iters_Pi < 1 or fixed_iters_Pi % 2 != 0:
             raise ValueError("fixed_iters_Pi must be a positive even integer")
+        neumann_terms = int(neumann_terms)
+        if neumann_terms < 1:
+            raise ValueError("neumann_terms must be positive")
+        convergence_check_interval = int(convergence_check_interval)
+        if convergence_check_interval < 1:
+            raise ValueError("convergence_check_interval must be positive")
+        if adaptive_iters and convergence_check_interval % 2 != 0:
+            raise ValueError(
+                "adaptive_iters requires an even convergence_check_interval"
+            )
+        for name, value in (
+            ("e_logsumexp_tol", e_logsumexp_tol),
+            ("pi_max_diff_tol", pi_max_diff_tol),
+            ("gradient_change_tol", gradient_change_tol),
+            ("gradient_change_rtol", gradient_change_rtol),
+        ):
+            if float(value) < 0.0:
+                raise ValueError(f"{name} must be non-negative")
 
         # Sanity check: dataset flags must be consistent with mode
         ds_g, ds_sw = (dataset.genewise, dataset.specieswise)
@@ -862,6 +913,12 @@ class GeneReconModel(torch.nn.Module):
         self._tol_E = tol_E
         self._fixed_iters_Pi = fixed_iters_Pi
         self._neumann_terms = neumann_terms
+        self._adaptive_iters = bool(adaptive_iters)
+        self._convergence_check_interval = convergence_check_interval
+        self._e_logsumexp_tol = float(e_logsumexp_tol)
+        self._pi_max_diff_tol = float(pi_max_diff_tol)
+        self._gradient_change_tol = float(gradient_change_tol)
+        self._gradient_change_rtol = float(gradient_change_rtol)
         self._use_pruning = use_pruning
         self._pruning_threshold = pruning_threshold
         self.max_wave_size = max_wave_size
@@ -915,6 +972,12 @@ class GeneReconModel(torch.nn.Module):
                 tol_E=tol_E,
                 fixed_iters_Pi=fixed_iters_Pi,
                 neumann_terms=neumann_terms,
+                adaptive_iters=self._adaptive_iters,
+                convergence_check_interval=self._convergence_check_interval,
+                e_logsumexp_tol=self._e_logsumexp_tol,
+                pi_max_diff_tol=self._pi_max_diff_tol,
+                gradient_change_tol=self._gradient_change_tol,
+                gradient_change_rtol=self._gradient_change_rtol,
                 use_pruning=use_pruning,
                 pruning_threshold=pruning_threshold,
                 max_wave_size=max_wave_size,
@@ -1070,6 +1133,12 @@ class GeneReconModel(torch.nn.Module):
             tol_E=self._tol_E,
             fixed_iters_Pi=self._fixed_iters_Pi,
             neumann_terms=self._neumann_terms,
+            adaptive_iters=self._adaptive_iters,
+            convergence_check_interval=self._convergence_check_interval,
+            e_logsumexp_tol=self._e_logsumexp_tol,
+            pi_max_diff_tol=self._pi_max_diff_tol,
+            gradient_change_tol=self._gradient_change_tol,
+            gradient_change_rtol=self._gradient_change_rtol,
             use_pruning=self._use_pruning,
             pruning_threshold=self._pruning_threshold,
             origination_probs=_origination_probs_for_family_indices(
@@ -1319,7 +1388,11 @@ class GeneReconModel(torch.nn.Module):
             if static.fixed_iters_E is not None
             else static.max_iters_E
         )
-        e_tolerance = -1.0 if static.fixed_iters_E is not None else static.tol_E
+        e_tolerance = (
+            static.e_logsumexp_tol
+            if static.adaptive_iters
+            else (-1.0 if static.fixed_iters_E is not None else static.tol_E)
+        )
         E_out = E_fixed_point(
             species_helpers=static.species_helpers,
             log_pS=log_pS,
@@ -1332,6 +1405,8 @@ class GeneReconModel(torch.nn.Module):
             dtype=static.dtype,
             device=static.device,
             ancestors_T=static.ancestors_T,
+            check_interval=static.convergence_check_interval,
+            convergence_metric="logsumexp" if static.adaptive_iters else "max_diff",
         )
         Pi_out = Pi_wave_forward(
             wave_layout=static.wave_layout,
@@ -1351,6 +1426,10 @@ class GeneReconModel(torch.nn.Module):
             family_idx=(
                 static.wave_layout.get("family_idx") if static.genewise else None
             ),
+            convergence_tolerance=(
+                static.pi_max_diff_tol if static.adaptive_iters else -1.0
+            ),
+            convergence_check_interval=static.convergence_check_interval,
         )
         return Pi_out["Pi"] if original_order else Pi_out["Pi_wave_ordered"]
 

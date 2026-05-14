@@ -4,8 +4,7 @@
 
 The forward pass mirrors the retained wave-ordered inference path and the
 backward pass delegates to the existing
-:func:`gpurec.optimization.implicit_grad.implicit_grad_loglik_vjp_wave` (or the
-genewise pair ``Pi_wave_backward + _e_adjoint_and_theta_vjp(genewise=True)``).
+:func:`gpurec.optimization.implicit_grad.implicit_grad_loglik_vjp_wave`.
 No new gradient math is written here.
 
 Sign convention: ``compute_log_likelihood`` actually returns NLL despite its
@@ -23,12 +22,10 @@ import torch
 
 from gpurec.core.likelihood import E_fixed_point, compute_log_likelihood
 from gpurec.core.forward import Pi_wave_forward
-from gpurec.core.backward import Pi_wave_backward
 from gpurec.core._helpers import _nvtx_range
 from gpurec.core.extract_parameters import extract_parameters_uniform
 from gpurec.optimization.implicit_grad import (
     implicit_grad_loglik_vjp_wave,
-    _e_adjoint_and_theta_vjp,
 )
 
 
@@ -60,12 +57,19 @@ class ReconStaticState:
     tol_E: float = 1e-8
     fixed_iters_Pi: int = 6
     neumann_terms: int = 3
+    adaptive_iters: bool = False
+    convergence_check_interval: int = 4
+    e_logsumexp_tol: float = 1e-5
+    pi_max_diff_tol: float = 1e-5
+    gradient_change_tol: float = 1e-4
+    gradient_change_rtol: float = 1e-4
     use_pruning: bool = True
     pruning_threshold: float = 1e-6
 
     # Warm start cache, mutated across calls
     warm_E: Optional[torch.Tensor] = None
     clear_runtime_after_backward: bool = False
+    last_solver_stats: Optional[dict[str, Any]] = None
 
 
 def _extract_parameters(theta: torch.Tensor, static: ReconStaticState):
@@ -119,7 +123,11 @@ class _GeneReconFunction(torch.autograd.Function):
                     if static.fixed_iters_E is not None
                     else static.max_iters_E
                 )
-                e_tolerance = -1.0 if static.fixed_iters_E is not None else static.tol_E
+                e_tolerance = (
+                    static.e_logsumexp_tol
+                    if static.adaptive_iters
+                    else (-1.0 if static.fixed_iters_E is not None else static.tol_E)
+                )
                 E_out = E_fixed_point(
                     species_helpers=static.species_helpers,
                     log_pS=log_pS,
@@ -134,6 +142,10 @@ class _GeneReconFunction(torch.autograd.Function):
                     dtype=dtype,
                     device=device,
                     ancestors_T=static.ancestors_T,
+                    check_interval=static.convergence_check_interval,
+                    convergence_metric=(
+                        "logsumexp" if static.adaptive_iters else "max_diff"
+                    ),
                 )
                 E = E_out["E"]
                 E_s1 = E_out["E_s1"]
@@ -159,7 +171,22 @@ class _GeneReconFunction(torch.autograd.Function):
                     family_idx=(
                         static.wave_layout.get("family_idx") if static.genewise else None
                     ),
+                    convergence_tolerance=(
+                        static.pi_max_diff_tol if static.adaptive_iters else -1.0
+                    ),
+                    convergence_check_interval=static.convergence_check_interval,
                 )
+                static.last_solver_stats = {
+                    "E_iterations": int(E_out["iterations"]),
+                    "E_convergence_delta": E_out.get("E_convergence_delta"),
+                    "Pi_max_iterations": int(
+                        Pi_out.get("Pi_max_iterations", static.fixed_iters_Pi)
+                    ),
+                    "Pi_converged_waves": int(
+                        sum(Pi_out.get("Pi_wave_converged", []))
+                    ),
+                    "Pi_wave_count": int(len(Pi_out.get("Pi_wave_converged", []))),
+                }
 
             # 4. NLL: compute_log_likelihood returns NLL despite the name (see
             #    gpurec/core/likelihood.py:180). nll_vec is per-family.
@@ -231,11 +258,12 @@ class _GeneReconFunction(torch.autograd.Function):
             # Cross-family batched genewise path. This is the retained
             # per-family gradient path used by PyTorch optimizers and
             # BatchedLBFGS.
-            pi_bwd = Pi_wave_backward(
-                wave_layout=wave_layout,
+            grad_theta, _stats = implicit_grad_loglik_vjp_wave(
+                wave_layout,
+                static.species_helpers,
                 Pi_star_wave=Pi_star_wave,
                 Pibar_star_wave=Pibar_star_wave,
-                E=E_star,
+                E_star=E_star,
                 Ebar=Ebar,
                 E_s1=E_s1,
                 E_s2=E_s2,
@@ -243,15 +271,16 @@ class _GeneReconFunction(torch.autograd.Function):
                 log_pD=log_pD,
                 log_pL=log_pL,
                 max_transfer_mat=max_transfer_vec,
-                species_helpers=static.species_helpers,
                 root_clade_ids_perm=wave_layout["root_clade_ids"],
+                theta=theta,
+                unnorm_row_max=static.unnorm_row_max,
+                specieswise=static.specieswise,
                 device=static.device,
                 dtype=static.dtype,
                 neumann_terms=static.neumann_terms,
                 use_pruning=static.use_pruning,
                 pruning_threshold=static.pruning_threshold,
                 ancestors_T=static.ancestors_T,
-                family_idx=wave_layout["family_idx"],
                 uniform_pibar_row_max=(
                     uniform_pibar_row_max
                     if uniform_pibar_row_max.numel() > 0
@@ -259,28 +288,13 @@ class _GeneReconFunction(torch.autograd.Function):
                 ),
                 origination_probs=static.origination_probs,
                 origination_probs_prepared=True,
-            )
-            grad_theta, _stats = _e_adjoint_and_theta_vjp(
-                pi_bwd,
-                E_star,
-                Ebar,
-                E_s1,
-                E_s2,
-                log_pS,
-                log_pD,
-                log_pL,
-                max_transfer_vec,
-                static.species_helpers,
-                wave_layout["root_clade_ids"],
-                theta,
-                static.unnorm_row_max,
-                static.specieswise,
-                static.device,
-                static.dtype,
                 genewise=True,
-                ancestors_T=static.ancestors_T,
-                origination_probs=static.origination_probs,
-                origination_probs_prepared=True,
+                family_idx=wave_layout["family_idx"],
+                gradient_convergence_tol=(
+                    static.gradient_change_tol if static.adaptive_iters else -1.0
+                ),
+                gradient_convergence_rtol=static.gradient_change_rtol,
+                gradient_convergence_check_interval=static.convergence_check_interval,
             )
         else:
             # Shared theta path: delegate to the public wrapper.
@@ -314,6 +328,11 @@ class _GeneReconFunction(torch.autograd.Function):
                 ),
                 origination_probs=static.origination_probs,
                 origination_probs_prepared=True,
+                gradient_convergence_tol=(
+                    static.gradient_change_tol if static.adaptive_iters else -1.0
+                ),
+                gradient_convergence_rtol=static.gradient_change_rtol,
+                gradient_convergence_check_interval=static.convergence_check_interval,
             )
 
         # grad_theta is d(NLL_total)/d(theta). The forward returned NLL_total

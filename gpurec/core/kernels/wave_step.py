@@ -287,6 +287,8 @@ def wave_step_uniform_fused_into(Pi_in, Pi_out, Pibar, ws, W, S,
                                  family_indexed_consts=False,
                                  store_final_pibar=False,
                                  final_pibar_row_max=None,
+                                 compute_diff=False,
+                                 max_diff_out=None,
                                  has_leaf_term=True):
     """Fused uniform wave step writing Pi output directly into global rows."""
     fp64 = Pi_in.dtype == torch.float64
@@ -309,7 +311,12 @@ def wave_step_uniform_fused_into(Pi_in, Pi_out, Pibar, ws, W, S,
     leaf_logp_arg = leaf_logp if use_leaf_index else leaf_term_arg
     leaf_logp_mode = _leaf_logp_mode(use_leaf_index, leaf_logp, family_idx, S)
     family_idx_arg = family_idx if family_idx is not None else sp_parent
-    max_diff_buf = Pi_out
+    if compute_diff:
+        if max_diff_out is None:
+            raise ValueError("max_diff_out is required when compute_diff=True")
+        max_diff_buf = max_diff_out
+    else:
+        max_diff_buf = Pi_out
 
     BLOCK_S = _uniform_block_s(S)
     num_warps = _uniform_num_warps()
@@ -336,7 +343,7 @@ def wave_step_uniform_fused_into(Pi_in, Pi_out, Pibar, ws, W, S,
         CONST_SPECIES_STRIDE=const_species_stride,
         BLOCK_S=BLOCK_S,
         MAX_ANCESTOR_DEPTH=int(max_ancestor_depth),
-        COMPUTE_DIFF=False,
+        COMPUTE_DIFF=bool(compute_diff),
         USE_LEAF_INDEX=use_leaf_index,
         HAS_LEAF_TERM=has_leaf_term,
         LEAF_LOGP_MODE=leaf_logp_mode,
