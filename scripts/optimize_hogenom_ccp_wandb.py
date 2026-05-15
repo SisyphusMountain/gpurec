@@ -67,6 +67,8 @@ class RunConfig:
     gradient_change_rtol: float
     steps: int
     lr: float
+    lr_decay_every: int
+    lr_decay_factor: float
     min_rate: float
     max_rate: float
     grad_inf_tol: float
@@ -304,6 +306,18 @@ def gradient_stats(grad: torch.Tensor) -> dict[str, float]:
         "grad/abs_mean": float(abs_g.mean().cpu()),
         "grad/abs_median": float(torch.quantile(abs_g.cpu(), 0.5)),
     }
+
+
+def scheduled_lr(config: RunConfig, step: int) -> float:
+    if config.lr_decay_every == 0:
+        return config.lr
+    decay_count = step // config.lr_decay_every
+    return config.lr * (config.lr_decay_factor ** decay_count)
+
+
+def set_optimizer_lr(optimizer: torch.optim.Optimizer, lr: float) -> None:
+    for group in optimizer.param_groups:
+        group["lr"] = lr
 
 
 def pi_iteration_count(model: GeneReconModel) -> tuple[int, int]:
@@ -614,6 +628,8 @@ def run(config: RunConfig, args: argparse.Namespace) -> None:
         for step in range(start_step, config.steps):
             last_step = step
             step_t0 = time.perf_counter()
+            current_lr = scheduled_lr(config, step)
+            set_optimizer_lr(optimizer, current_lr)
             optimizer.zero_grad(set_to_none=True)
             theta_before = model.theta.detach().clone()
             objective, metrics = evaluate_and_backward(model, config)
@@ -638,7 +654,7 @@ def run(config: RunConfig, args: argparse.Namespace) -> None:
 
             row = {
                 "step": step,
-                "lr": optimizer.param_groups[0]["lr"],
+                "lr": current_lr,
                 "delta_objective_bits": delta,
                 "theta_step_inf": theta_step,
                 "step_s": time.perf_counter() - step_t0,
@@ -694,6 +710,7 @@ def run(config: RunConfig, args: argparse.Namespace) -> None:
                     f"loglik_bits={metrics['likelihood/log_likelihood_bits']:.6f} "
                     f"objective_bits={objective_bits:.6f} "
                     f"delta={float('nan') if delta is None else delta:.6g} "
+                    f"lr={current_lr:.6g} "
                     f"grad_norm={metrics['grad/norm']:.6g} "
                     f"grad_inf={metrics['grad/inf']:.6g} "
                     f"Pi_iter={metrics['solver/pi_iterations']:.0f}/{metrics['solver/pi_iteration_cap']:.0f} "
@@ -779,6 +796,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--gradient-change-rtol", type=float, default=1e-4)
     parser.add_argument("--steps", type=int, default=5000)
     parser.add_argument("--lr", type=float, default=0.01)
+    parser.add_argument(
+        "--lr-decay-every",
+        type=int,
+        default=100,
+        help="Multiply the learning rate by --lr-decay-factor every N steps. Use 0 to disable.",
+    )
+    parser.add_argument("--lr-decay-factor", type=float, default=0.5)
     parser.add_argument("--min-rate", type=float, default=1e-10)
     parser.add_argument("--max-rate", type=float, default=100.0)
     parser.add_argument("--grad-inf-tol", type=float, default=1e-3)
@@ -823,6 +847,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         raise ValueError("--convergence-check-interval must be positive")
     if args.steps < 1:
         raise ValueError("--steps must be positive")
+    if args.lr_decay_every < 0:
+        raise ValueError("--lr-decay-every must be non-negative")
+    if not (0.0 < args.lr_decay_factor <= 1.0):
+        raise ValueError("--lr-decay-factor must be in (0, 1]")
     if args.log_every < 1:
         raise ValueError("--log-every must be positive")
     if args.plot_every < 1:
@@ -855,6 +883,8 @@ def config_from_args(args: argparse.Namespace) -> RunConfig:
         gradient_change_rtol=args.gradient_change_rtol,
         steps=args.steps,
         lr=args.lr,
+        lr_decay_every=args.lr_decay_every,
+        lr_decay_factor=args.lr_decay_factor,
         min_rate=args.min_rate,
         max_rate=args.max_rate,
         grad_inf_tol=args.grad_inf_tol,
