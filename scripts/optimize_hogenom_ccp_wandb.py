@@ -65,6 +65,7 @@ class RunConfig:
     pi_max_diff_tol: float
     gradient_change_tol: float
     gradient_change_rtol: float
+    parameter_mode: str
     optimizer: str
     adam_warmup_steps: int
     steps: int
@@ -136,6 +137,18 @@ def _jsonable(value: Any) -> Any:
     if isinstance(value, (list, tuple)):
         return [_jsonable(v) for v in value]
     return value
+
+
+def internal_parameter_mode(config: RunConfig) -> str:
+    if config.parameter_mode in {"uniform", "global"}:
+        return "global"
+    return config.parameter_mode
+
+
+def final_rates_path(config: RunConfig) -> Path:
+    if internal_parameter_mode(config) == "global":
+        return config.out_dir / "uniform_node_rates_final.tsv"
+    return config.out_dir / "specieswise_node_rates_final.tsv"
 
 
 def synchronize() -> None:
@@ -393,7 +406,7 @@ def build_model(config: RunConfig) -> GeneReconModel:
     return GeneReconModel.from_alerax_families(
         str(config.species_tree),
         config.families_file,
-        mode="specieswise",
+        mode=internal_parameter_mode(config),
         start=0,
         max_families=config.max_families,
         device=device,
@@ -490,15 +503,16 @@ def plot_tree_rates(
 def current_rate_by_label(model: GeneReconModel, labels: list[str]) -> dict[str, dict[str, float]]:
     theta = model.theta.detach().reshape(-1, 3).cpu()
     rates = torch.exp2(theta)
-    pS = pS_values(model.theta.detach()).cpu()
-    if len(labels) != int(theta.shape[0]):
-        raise RuntimeError(f"species label count {len(labels)} != theta rows {theta.shape[0]}")
+    pS = pS_values(theta).cpu()
+    theta_rows = int(theta.shape[0])
+    if theta_rows not in {1, len(labels)}:
+        raise RuntimeError(f"species label count {len(labels)} is incompatible with theta rows {theta_rows}")
     return {
         label: {
-            "D": float(rates[row, 0]),
-            "T": float(rates[row, 2]),
-            "L": float(rates[row, 1]),
-            "pS": float(pS[row]),
+            "D": float(rates[0 if theta_rows == 1 else row, 0]),
+            "T": float(rates[0 if theta_rows == 1 else row, 2]),
+            "L": float(rates[0 if theta_rows == 1 else row, 1]),
+            "pS": float(pS[0 if theta_rows == 1 else row]),
         }
         for row, label in enumerate(labels)
     }
@@ -511,7 +525,9 @@ def write_rate_table(path: Path, model: GeneReconModel, labels: list[str]) -> No
     with path.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.writer(handle, delimiter="\t")
         writer.writerow(["row", "label", "D", "T", "L", "pS", "theta_D", "theta_T", "theta_L"])
+        theta_rows = int(theta.shape[0])
         for row, label in enumerate(labels):
+            theta_row = 0 if theta_rows == 1 else row
             vals = rates[label]
             writer.writerow(
                 [
@@ -521,9 +537,9 @@ def write_rate_table(path: Path, model: GeneReconModel, labels: list[str]) -> No
                     vals["T"],
                     vals["L"],
                     vals["pS"],
-                    float(theta[row, 0]),
-                    float(theta[row, 2]),
-                    float(theta[row, 1]),
+                    float(theta[theta_row, 0]),
+                    float(theta[theta_row, 2]),
+                    float(theta[theta_row, 1]),
                 ]
             )
 
@@ -607,6 +623,11 @@ def load_checkpoint(
     checkpoint = torch.load(path, map_location=device, weights_only=False)
     next_step = int(checkpoint.get("next_step", int(checkpoint.get("step", -1)) + 1))
     theta = checkpoint["theta"].to(device=device, dtype=model.theta.dtype)
+    if tuple(theta.shape) != tuple(model.theta.shape):
+        raise RuntimeError(
+            f"checkpoint theta shape {tuple(theta.shape)} does not match "
+            f"{config.parameter_mode} model theta shape {tuple(model.theta.shape)}"
+        )
     with torch.no_grad():
         model.theta.copy_(theta)
         model.theta.grad = None
@@ -687,6 +708,8 @@ def run(config: RunConfig, args: argparse.Namespace) -> None:
         "dataset/species": model.n_species,
         "dataset/batches": len(model.batch_metadata),
         "dataset/waves": sum(meta.wave_count for meta in model.batch_metadata),
+        "model/parameter_mode": config.parameter_mode,
+        "model/internal_parameter_mode": internal_parameter_mode(config),
     }
     wandb.log(build_info, step=0)
     print(
@@ -694,7 +717,8 @@ def run(config: RunConfig, args: argparse.Namespace) -> None:
         f"families={int(build_info['dataset/families'])} "
         f"species={int(build_info['dataset/species'])} "
         f"batches={int(build_info['dataset/batches'])} "
-        f"waves={int(build_info['dataset/waves'])}",
+        f"waves={int(build_info['dataset/waves'])} "
+        f"mode={config.parameter_mode}",
         flush=True,
     )
 
@@ -759,6 +783,7 @@ def run(config: RunConfig, args: argparse.Namespace) -> None:
 
             row = {
                 "step": step,
+                "model/parameter_mode": config.parameter_mode,
                 "optimizer/phase": phase,
                 "lr": current_lr,
                 "delta_objective_bits": delta,
@@ -805,7 +830,7 @@ def run(config: RunConfig, args: argparse.Namespace) -> None:
                     layout_cache=layout_cache,
                     rate_by_label=current_rate_by_label(model, labels),
                     out_path=plot_path,
-                    title=f"HOGENOM CCP rates step {step}",
+                    title=f"HOGENOM CCP rates step {step} ({config.parameter_mode})",
                 )
                 image = wandb.image(plot_path)
                 if image is not None:
@@ -816,6 +841,7 @@ def run(config: RunConfig, args: argparse.Namespace) -> None:
             if step % config.log_every == 0:
                 print(
                     f"step={step:04d} "
+                    f"mode={config.parameter_mode} "
                     f"phase={phase} "
                     f"nll_bits={metrics['likelihood/data_nll_bits']:.6f} "
                     f"loglik_bits={metrics['likelihood/log_likelihood_bits']:.6f} "
@@ -839,7 +865,7 @@ def run(config: RunConfig, args: argparse.Namespace) -> None:
     except KeyboardInterrupt:
         stop_reason = "keyboard_interrupt"
     finally:
-        final_rates = config.out_dir / "specieswise_node_rates_final.tsv"
+        final_rates = final_rates_path(config)
         write_rate_table(final_rates, model, labels)
         final_plot = config.out_dir / "tree_plots" / "rates_final.png"
         plot_tree_rates(
@@ -847,7 +873,7 @@ def run(config: RunConfig, args: argparse.Namespace) -> None:
             layout_cache=layout_cache,
             rate_by_label=current_rate_by_label(model, labels),
             out_path=final_plot,
-            title="HOGENOM CCP rates final",
+            title=f"HOGENOM CCP rates final ({config.parameter_mode})",
         )
         final_payload: dict[str, Any] = {
             "run/stop_reason": stop_reason,
@@ -888,13 +914,23 @@ def parse_family_chunk_size(text: str) -> int | str | None:
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Optimize HOGENOM CCP specieswise rates with wandb logging."
+        description="Optimize HOGENOM CCP D/T/L rates with wandb logging."
     )
     parser.add_argument("--species-tree", type=Path, default=SPECIES_TREE)
     parser.add_argument("--families-file", type=Path, default=FAMILIES_FILE)
     parser.add_argument("--preprocess-cache", type=Path, default=PREPROCESS_CACHE)
     parser.add_argument("--out-dir", type=Path, default=OUT_DIR)
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
+    parser.add_argument(
+        "--mode",
+        dest="parameter_mode",
+        choices=("specieswise", "uniform", "global"),
+        default="specieswise",
+        help=(
+            "Parameter sharing mode. 'specieswise' optimizes one D/T/L vector per "
+            "species-tree node; 'uniform'/'global' optimize one shared D/T/L vector."
+        ),
+    )
     parser.add_argument("--max-families", type=int, default=None)
     parser.add_argument("--family-chunk-size", type=parse_family_chunk_size, default="0")
     parser.add_argument("--clade-budget", type=int, default=305_000)
@@ -1014,6 +1050,7 @@ def config_from_args(args: argparse.Namespace) -> RunConfig:
         pi_max_diff_tol=args.pi_max_diff_tol,
         gradient_change_tol=args.gradient_change_tol,
         gradient_change_rtol=args.gradient_change_rtol,
+        parameter_mode=args.parameter_mode,
         optimizer=args.optimizer,
         adam_warmup_steps=args.adam_warmup_steps,
         steps=args.steps,
