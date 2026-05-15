@@ -77,6 +77,8 @@ class RunConfig:
     beta_prior_weight: float
     log_every: int
     plot_every: int
+    checkpoint_every: int
+    resume_from: Path | None
     wandb_project: str
     wandb_entity: str | None
     wandb_run_name: str | None
@@ -478,6 +480,63 @@ def write_rate_table(path: Path, model: GeneReconModel, labels: list[str]) -> No
             )
 
 
+def _optimizer_state_to_device(optimizer: torch.optim.Optimizer, device: torch.device) -> None:
+    for state in optimizer.state.values():
+        for key, value in list(state.items()):
+            if torch.is_tensor(value):
+                state[key] = value.to(device=device)
+
+
+def save_checkpoint(
+    path: Path,
+    *,
+    model: GeneReconModel,
+    optimizer: torch.optim.Optimizer,
+    step: int,
+    previous_objective: float | None,
+    stable_loss_steps: int,
+    config: RunConfig,
+    row: dict[str, Any] | None = None,
+) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "step": int(step),
+        "next_step": int(step) + 1,
+        "theta": model.theta.detach().cpu(),
+        "optimizer_state": optimizer.state_dict(),
+        "previous_objective": previous_objective,
+        "stable_loss_steps": int(stable_loss_steps),
+        "config": _jsonable(asdict(config)),
+        "last_row": row,
+    }
+    tmp_path = path.with_name(path.name + ".tmp")
+    torch.save(payload, tmp_path)
+    tmp_path.replace(path)
+
+
+def load_checkpoint(
+    path: Path,
+    *,
+    model: GeneReconModel,
+    optimizer: torch.optim.Optimizer,
+    device: torch.device,
+) -> tuple[int, float | None, int]:
+    checkpoint = torch.load(path, map_location=device, weights_only=False)
+    theta = checkpoint["theta"].to(device=device, dtype=model.theta.dtype)
+    with torch.no_grad():
+        model.theta.copy_(theta)
+        model.theta.grad = None
+    if "optimizer_state" in checkpoint:
+        optimizer.load_state_dict(checkpoint["optimizer_state"])
+        _optimizer_state_to_device(optimizer, device)
+    model.clear()
+    return (
+        int(checkpoint.get("next_step", int(checkpoint.get("step", -1)) + 1)),
+        checkpoint.get("previous_objective"),
+        int(checkpoint.get("stable_loss_steps", 0)),
+    )
+
+
 def evaluate_and_backward(
     model: GeneReconModel,
     config: RunConfig,
@@ -511,7 +570,7 @@ def evaluate_and_backward(
 def run(config: RunConfig, args: argparse.Namespace) -> None:
     config.out_dir.mkdir(parents=True, exist_ok=True)
     history_path = config.out_dir / "history.jsonl"
-    if history_path.exists():
+    if config.resume_from is None and history_path.exists():
         history_path.unlink()
 
     wandb = WandbSink(args, config)
@@ -520,6 +579,17 @@ def run(config: RunConfig, args: argparse.Namespace) -> None:
     model = build_model(config)
     labels = species_labels(model)
     optimizer = torch.optim.Adam([model.theta], lr=config.lr)
+    start_step = 0
+    previous_objective: float | None = None
+    stable_loss_steps = 0
+    if config.resume_from is not None:
+        start_step, previous_objective, stable_loss_steps = load_checkpoint(
+            config.resume_from,
+            model=model,
+            optimizer=optimizer,
+            device=torch.device(config.device),
+        )
+        print(f"resumed checkpoint={config.resume_from} next_step={start_step}", flush=True)
 
     build_info = {
         "dataset/families": sum(meta.family_count for meta in model.batch_metadata),
@@ -537,13 +607,11 @@ def run(config: RunConfig, args: argparse.Namespace) -> None:
         flush=True,
     )
 
-    previous_objective: float | None = None
-    stable_loss_steps = 0
     stop_reason = "max_steps"
-    last_step = 0
+    last_step = max(0, start_step - 1)
     started = time.perf_counter()
     try:
-        for step in range(config.steps):
+        for step in range(start_step, config.steps):
             last_step = step
             step_t0 = time.perf_counter()
             optimizer.zero_grad(set_to_none=True)
@@ -578,6 +646,30 @@ def run(config: RunConfig, args: argparse.Namespace) -> None:
             }
             with history_path.open("a", encoding="utf-8") as handle:
                 handle.write(json.dumps(row, sort_keys=True) + "\n")
+
+            if config.checkpoint_every and step % config.checkpoint_every == 0:
+                checkpoint_dir = config.out_dir / "checkpoints"
+                save_checkpoint(
+                    checkpoint_dir / "latest.pt",
+                    model=model,
+                    optimizer=optimizer,
+                    step=step,
+                    previous_objective=previous_objective,
+                    stable_loss_steps=stable_loss_steps,
+                    config=config,
+                    row=row,
+                )
+                if step % config.plot_every == 0:
+                    save_checkpoint(
+                        checkpoint_dir / f"step_{step:06d}.pt",
+                        model=model,
+                        optimizer=optimizer,
+                        step=step,
+                        previous_objective=previous_objective,
+                        stable_loss_steps=stable_loss_steps,
+                        config=config,
+                        row=row,
+                    )
 
             log_payload = dict(row)
             if step % config.plot_every == 0:
@@ -632,12 +724,23 @@ def run(config: RunConfig, args: argparse.Namespace) -> None:
             "run/stop_reason": stop_reason,
             "run/elapsed_s": time.perf_counter() - started,
             "outputs/final_rates_tsv": str(final_rates),
+            "outputs/latest_checkpoint": str(config.out_dir / "checkpoints" / "latest.pt"),
         }
         image = wandb.image(final_plot)
         if image is not None:
             final_payload["tree/final_rates"] = image
         wandb.log(final_payload, step=last_step)
         torch.save(model.theta.detach().cpu(), config.out_dir / "theta_final.pt")
+        save_checkpoint(
+            config.out_dir / "checkpoints" / "latest.pt",
+            model=model,
+            optimizer=optimizer,
+            step=last_step,
+            previous_objective=previous_objective,
+            stable_loss_steps=stable_loss_steps,
+            config=config,
+            row=None,
+        )
         model.close()
         wandb.finish()
         print(f"stopped reason={stop_reason}", flush=True)
@@ -686,6 +789,21 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--beta-prior-weight", type=float, default=1.0)
     parser.add_argument("--log-every", type=int, default=1)
     parser.add_argument("--plot-every", type=int, default=10)
+    parser.add_argument(
+        "--checkpoint-every",
+        type=int,
+        default=1,
+        help=(
+            "Write an atomic checkpoints/latest.pt every N optimizer steps. "
+            "Numbered checkpoints are also archived on plot steps. Use 0 to disable."
+        ),
+    )
+    parser.add_argument(
+        "--resume-from",
+        type=Path,
+        default=None,
+        help="Resume theta and optimizer state from a checkpoint .pt file.",
+    )
     parser.add_argument("--wandb-project", default="gpurec-hogenom-ccp")
     parser.add_argument("--wandb-entity", default=None)
     parser.add_argument("--wandb-run-name", default=None)
@@ -709,6 +827,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         raise ValueError("--log-every must be positive")
     if args.plot_every < 1:
         raise ValueError("--plot-every must be positive")
+    if args.checkpoint_every < 0:
+        raise ValueError("--checkpoint-every must be non-negative")
+    if args.resume_from is not None and not args.resume_from.exists():
+        raise FileNotFoundError(args.resume_from)
     return args
 
 
@@ -743,6 +865,8 @@ def config_from_args(args: argparse.Namespace) -> RunConfig:
         beta_prior_weight=args.beta_prior_weight,
         log_every=args.log_every,
         plot_every=args.plot_every,
+        checkpoint_every=args.checkpoint_every,
+        resume_from=args.resume_from,
         wandb_project=args.wandb_project,
         wandb_entity=args.wandb_entity,
         wandb_run_name=args.wandb_run_name,
