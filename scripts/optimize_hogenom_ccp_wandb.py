@@ -17,6 +17,7 @@ if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
 
 from gpurec import GeneReconModel  # noqa: E402
+from gpurec.api.model import _GeneReconFullLossFunction  # noqa: E402
 
 
 HOGENOM_DIR = REPO / "tests" / "data" / "HOGENOM" / "hogenom"
@@ -82,6 +83,7 @@ class RunConfig:
     beta_ps_alpha: float
     beta_ps_beta: float
     beta_prior_weight: float
+    branchscale_prior_weight: float
     log_every: int
     plot_every: int
     checkpoint_every: int
@@ -90,6 +92,12 @@ class RunConfig:
     wandb_entity: str | None
     wandb_run_name: str | None
     wandb_mode: str
+
+
+@dataclass
+class BranchScaledParameters:
+    shared_theta: torch.nn.Parameter
+    branch_log_l: torch.nn.Parameter
 
 
 class WandbSink:
@@ -140,15 +148,23 @@ def _jsonable(value: Any) -> Any:
 
 
 def internal_parameter_mode(config: RunConfig) -> str:
+    if config.parameter_mode == "branchscaled":
+        return "specieswise"
     if config.parameter_mode in {"uniform", "global"}:
         return "global"
     return config.parameter_mode
 
 
 def final_rates_path(config: RunConfig) -> Path:
+    if config.parameter_mode == "branchscaled":
+        return config.out_dir / "branchscaled_node_rates_final.tsv"
     if internal_parameter_mode(config) == "global":
         return config.out_dir / "uniform_node_rates_final.tsv"
     return config.out_dir / "specieswise_node_rates_final.tsv"
+
+
+def is_branchscaled(config: RunConfig) -> bool:
+    return config.parameter_mode == "branchscaled"
 
 
 def synchronize() -> None:
@@ -287,6 +303,102 @@ def beta_ps_prior_bits(theta: torch.Tensor, *, alpha: float, beta: float, weight
     return penalty * weight
 
 
+def make_branchscaled_parameters(model: GeneReconModel) -> BranchScaledParameters:
+    base = model.theta.detach().reshape(-1, 3)[0].clone()
+    branch_log_l = torch.zeros(
+        (model.n_species,),
+        dtype=model.theta.dtype,
+        device=model.theta.device,
+    )
+    model.theta.requires_grad_(False)
+    return BranchScaledParameters(
+        shared_theta=torch.nn.Parameter(base),
+        branch_log_l=torch.nn.Parameter(branch_log_l),
+    )
+
+
+def effective_theta(
+    model: GeneReconModel,
+    branch_params: BranchScaledParameters | None,
+) -> torch.Tensor:
+    if branch_params is None:
+        return model.theta
+    return branch_params.shared_theta.unsqueeze(0) + (
+        branch_params.branch_log_l / LN2
+    ).unsqueeze(1)
+
+
+def branchscale_prior_bits(
+    branch_params: BranchScaledParameters | None,
+    *,
+    weight: float,
+) -> torch.Tensor:
+    if branch_params is None:
+        return torch.zeros((), dtype=torch.float32)
+    if weight == 0.0:
+        return branch_params.branch_log_l.new_zeros(())
+    return weight * torch.abs(torch.exp(branch_params.branch_log_l) - 1.0).sum()
+
+
+def trainable_parameters(
+    model: GeneReconModel,
+    branch_params: BranchScaledParameters | None,
+) -> list[torch.nn.Parameter]:
+    if branch_params is None:
+        return [model.theta]
+    return [branch_params.shared_theta, branch_params.branch_log_l]
+
+
+def parameters_gradient_stats(params: list[torch.nn.Parameter]) -> dict[str, float]:
+    grads = []
+    for param in params:
+        if param.grad is None:
+            raise RuntimeError("missing trainable parameter gradient")
+        grads.append(param.grad.detach().reshape(-1))
+    return gradient_stats(torch.cat(grads))
+
+
+def parameters_have_finite_grad(params: list[torch.nn.Parameter]) -> bool:
+    return all(param.grad is not None and torch.isfinite(param.grad).all().item() for param in params)
+
+
+def clamp_parameters_(
+    config: RunConfig,
+    model: GeneReconModel,
+    branch_params: BranchScaledParameters | None,
+) -> None:
+    if branch_params is None:
+        model.clamp_theta_(min_rate=config.min_rate, max_rate=config.max_rate)
+        return
+    if config.min_rate <= 0:
+        raise ValueError("min_rate must be strictly positive")
+    if config.max_rate is not None and config.max_rate < config.min_rate:
+        raise ValueError("max_rate must be greater than or equal to min_rate")
+    min_theta = math.log2(config.min_rate)
+    max_theta = None if config.max_rate is None else math.log2(config.max_rate)
+    with torch.no_grad():
+        branch_params.shared_theta.clamp_(min=min_theta, max=max_theta)
+        lower = ((min_theta - branch_params.shared_theta).amax() * LN2).item()
+        upper = None
+        if max_theta is not None:
+            upper = ((max_theta - branch_params.shared_theta).amin() * LN2).item()
+        branch_params.branch_log_l.clamp_(min=lower, max=upper)
+
+
+def branchscale_stats(branch_params: BranchScaledParameters | None) -> dict[str, float]:
+    if branch_params is None:
+        return {}
+    metrics: dict[str, float] = {}
+    for stat, value in tensor_stats(torch.exp(branch_params.branch_log_l)).items():
+        metrics[f"branchscale/l_{stat}"] = value
+    for stat, value in tensor_stats(branch_params.branch_log_l).items():
+        metrics[f"branchscale/log_l_{stat}"] = value
+    shared_rates = torch.exp2(branch_params.shared_theta.detach())
+    for name, column in RATE_FIELDS:
+        metrics[f"shared_rates/{name}"] = float(shared_rates[column].cpu())
+    return metrics
+
+
 def tensor_stats(values: torch.Tensor) -> dict[str, float]:
     vals = values.detach().float().reshape(-1).cpu()
     quantiles = torch.quantile(vals, QUANTILE_PROBS.to(vals))
@@ -351,14 +463,14 @@ def phase_lr(config: RunConfig, phase: str, step: int) -> float:
 
 def build_optimizers(
     config: RunConfig,
-    model: GeneReconModel,
+    params: list[torch.nn.Parameter],
 ) -> dict[str, torch.optim.Optimizer]:
     optimizers: dict[str, torch.optim.Optimizer] = {}
     if config.optimizer in {"adam", "adam-lbfgs"}:
-        optimizers["adam"] = torch.optim.Adam([model.theta], lr=config.lr)
+        optimizers["adam"] = torch.optim.Adam(params, lr=config.lr)
     if config.optimizer in {"lbfgs", "adam-lbfgs"}:
         optimizers["lbfgs"] = torch.optim.LBFGS(
-            [model.theta],
+            params,
             lr=config.lbfgs_lr,
             max_iter=1,
             history_size=config.lbfgs_history_size,
@@ -500,8 +612,12 @@ def plot_tree_rates(
     plt.close(fig)
 
 
-def current_rate_by_label(model: GeneReconModel, labels: list[str]) -> dict[str, dict[str, float]]:
-    theta = model.theta.detach().reshape(-1, 3).cpu()
+def current_rate_by_label(
+    model: GeneReconModel,
+    labels: list[str],
+    branch_params: BranchScaledParameters | None = None,
+) -> dict[str, dict[str, float]]:
+    theta = effective_theta(model, branch_params).detach().reshape(-1, 3).cpu()
     rates = torch.exp2(theta)
     pS = pS_values(theta).cpu()
     theta_rows = int(theta.shape[0])
@@ -518,30 +634,65 @@ def current_rate_by_label(model: GeneReconModel, labels: list[str]) -> dict[str,
     }
 
 
-def write_rate_table(path: Path, model: GeneReconModel, labels: list[str]) -> None:
-    rates = current_rate_by_label(model, labels)
-    theta = model.theta.detach().reshape(-1, 3).cpu()
+def write_rate_table(
+    path: Path,
+    model: GeneReconModel,
+    labels: list[str],
+    branch_params: BranchScaledParameters | None = None,
+) -> None:
+    rates = current_rate_by_label(model, labels, branch_params)
+    theta = effective_theta(model, branch_params).detach().reshape(-1, 3).cpu()
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.writer(handle, delimiter="\t")
-        writer.writerow(["row", "label", "D", "T", "L", "pS", "theta_D", "theta_T", "theta_L"])
+        columns = ["row", "label", "D", "T", "L", "pS", "theta_D", "theta_T", "theta_L"]
+        if branch_params is not None:
+            columns.extend(
+                [
+                    "l_e",
+                    "log_l_e",
+                    "shared_D",
+                    "shared_T",
+                    "shared_L",
+                    "shared_theta_D",
+                    "shared_theta_T",
+                    "shared_theta_L",
+                ]
+            )
+            branch_l = torch.exp(branch_params.branch_log_l.detach()).cpu()
+            branch_log_l = branch_params.branch_log_l.detach().cpu()
+            shared_theta = branch_params.shared_theta.detach().cpu()
+            shared_rates = torch.exp2(shared_theta)
+        writer.writerow(columns)
         theta_rows = int(theta.shape[0])
         for row, label in enumerate(labels):
             theta_row = 0 if theta_rows == 1 else row
             vals = rates[label]
-            writer.writerow(
-                [
-                    row,
-                    label,
-                    vals["D"],
-                    vals["T"],
-                    vals["L"],
-                    vals["pS"],
-                    float(theta[theta_row, 0]),
-                    float(theta[theta_row, 2]),
-                    float(theta[theta_row, 1]),
-                ]
-            )
+            output_row = [
+                row,
+                label,
+                vals["D"],
+                vals["T"],
+                vals["L"],
+                vals["pS"],
+                float(theta[theta_row, 0]),
+                float(theta[theta_row, 2]),
+                float(theta[theta_row, 1]),
+            ]
+            if branch_params is not None:
+                output_row.extend(
+                    [
+                        float(branch_l[row]),
+                        float(branch_log_l[row]),
+                        float(shared_rates[0]),
+                        float(shared_rates[2]),
+                        float(shared_rates[1]),
+                        float(shared_theta[0]),
+                        float(shared_theta[2]),
+                        float(shared_theta[1]),
+                    ]
+                )
+            writer.writerow(output_row)
 
 
 class NonFiniteObjectiveOrGradient(RuntimeError):
@@ -584,6 +735,7 @@ def save_checkpoint(
     path: Path,
     *,
     model: GeneReconModel,
+    branch_params: BranchScaledParameters | None,
     optimizers: dict[str, torch.optim.Optimizer],
     optimizer_phase: str,
     step: int,
@@ -593,10 +745,11 @@ def save_checkpoint(
     row: dict[str, Any] | None = None,
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
+    theta = effective_theta(model, branch_params).detach().cpu()
     payload = {
         "step": int(step),
         "next_step": int(step) + 1,
-        "theta": model.theta.detach().cpu(),
+        "theta": theta,
         "optimizer_phase": optimizer_phase,
         "optimizer_state": optimizers[optimizer_phase].state_dict(),
         "optimizer_states": {
@@ -607,6 +760,11 @@ def save_checkpoint(
         "config": _jsonable(asdict(config)),
         "last_row": row,
     }
+    if branch_params is not None:
+        payload["branchscaled"] = {
+            "shared_theta": branch_params.shared_theta.detach().cpu(),
+            "branch_log_l": branch_params.branch_log_l.detach().cpu(),
+        }
     tmp_path = path.with_name(path.name + ".tmp")
     torch.save(payload, tmp_path)
     tmp_path.replace(path)
@@ -616,21 +774,54 @@ def load_checkpoint(
     path: Path,
     *,
     model: GeneReconModel,
+    branch_params: BranchScaledParameters | None,
     optimizers: dict[str, torch.optim.Optimizer],
     config: RunConfig,
     device: torch.device,
 ) -> tuple[int, float | None, int]:
     checkpoint = torch.load(path, map_location=device, weights_only=False)
     next_step = int(checkpoint.get("next_step", int(checkpoint.get("step", -1)) + 1))
-    theta = checkpoint["theta"].to(device=device, dtype=model.theta.dtype)
-    if tuple(theta.shape) != tuple(model.theta.shape):
-        raise RuntimeError(
-            f"checkpoint theta shape {tuple(theta.shape)} does not match "
-            f"{config.parameter_mode} model theta shape {tuple(model.theta.shape)}"
+    if branch_params is not None:
+        branch_state = checkpoint.get("branchscaled")
+        if not isinstance(branch_state, dict):
+            raise RuntimeError(
+                "checkpoint does not contain branchscaled parameters; "
+                "cannot resume it with --mode branchscaled"
+            )
+        shared_theta = branch_state["shared_theta"].to(
+            device=device,
+            dtype=branch_params.shared_theta.dtype,
         )
-    with torch.no_grad():
-        model.theta.copy_(theta)
-        model.theta.grad = None
+        branch_log_l = branch_state["branch_log_l"].to(
+            device=device,
+            dtype=branch_params.branch_log_l.dtype,
+        )
+        if tuple(shared_theta.shape) != tuple(branch_params.shared_theta.shape):
+            raise RuntimeError(
+                f"checkpoint shared_theta shape {tuple(shared_theta.shape)} does not "
+                f"match model shape {tuple(branch_params.shared_theta.shape)}"
+            )
+        if tuple(branch_log_l.shape) != tuple(branch_params.branch_log_l.shape):
+            raise RuntimeError(
+                f"checkpoint branch_log_l shape {tuple(branch_log_l.shape)} does not "
+                f"match model shape {tuple(branch_params.branch_log_l.shape)}"
+            )
+        with torch.no_grad():
+            branch_params.shared_theta.copy_(shared_theta)
+            branch_params.branch_log_l.copy_(branch_log_l)
+            model.theta.copy_(effective_theta(model, branch_params))
+            for param in trainable_parameters(model, branch_params):
+                param.grad = None
+    else:
+        theta = checkpoint["theta"].to(device=device, dtype=model.theta.dtype)
+        if tuple(theta.shape) != tuple(model.theta.shape):
+            raise RuntimeError(
+                f"checkpoint theta shape {tuple(theta.shape)} does not match "
+                f"{config.parameter_mode} model theta shape {tuple(model.theta.shape)}"
+            )
+        with torch.no_grad():
+            model.theta.copy_(theta)
+            model.theta.grad = None
     optimizer_states = checkpoint.get("optimizer_states")
     if isinstance(optimizer_states, dict):
         for name, optimizer_state in optimizer_states.items():
@@ -651,30 +842,48 @@ def load_checkpoint(
 def evaluate_and_backward(
     model: GeneReconModel,
     config: RunConfig,
+    branch_params: BranchScaledParameters | None,
+    params: list[torch.nn.Parameter],
 ) -> tuple[torch.Tensor, dict[str, float]]:
-    model.theta.grad = None
-    data_nll = model.full_loss()
+    for param in params:
+        param.grad = None
+    theta_eval = effective_theta(model, branch_params)
+    data_nll = (
+        _GeneReconFullLossFunction.apply(theta_eval, model)
+        if branch_params is not None
+        else model.full_loss()
+    )
     prior = beta_ps_prior_bits(
-        model.theta,
+        theta_eval,
         alpha=config.beta_ps_alpha,
         beta=config.beta_ps_beta,
         weight=config.beta_prior_weight,
     )
-    objective = data_nll + prior
+    branch_prior = (
+        branchscale_prior_bits(
+            branch_params,
+            weight=config.branchscale_prior_weight,
+        )
+        if branch_params is not None
+        else data_nll.new_zeros(())
+    )
+    objective = data_nll + prior + branch_prior
     objective.backward()
     synchronize()
-    if model.theta.grad is None:
-        raise RuntimeError("missing theta gradient")
+    for param in params:
+        if param.grad is None:
+            raise RuntimeError("missing trainable parameter gradient")
     pi_iters, pi_iter_cap = pi_iteration_count(model)
     metrics = {
         "likelihood/data_nll_bits": float(data_nll.detach().cpu()),
         "likelihood/log_likelihood_bits": float((-data_nll).detach().cpu()),
         "objective/bits": float(objective.detach().cpu()),
         "regularization/beta_ps_bits": float(prior.detach().cpu()),
+        "regularization/branchscale_bits": float(branch_prior.detach().cpu()),
         "solver/pi_iterations": float(pi_iters),
         "solver/pi_iteration_cap": float(pi_iter_cap),
     }
-    metrics.update(gradient_stats(model.theta.grad))
+    metrics.update(parameters_gradient_stats(params))
     return objective, metrics
 
 
@@ -689,7 +898,9 @@ def run(config: RunConfig, args: argparse.Namespace) -> None:
     layout_cache = tree_layout(root)
     model = build_model(config)
     labels = species_labels(model)
-    optimizers = build_optimizers(config, model)
+    branch_params = make_branchscaled_parameters(model) if is_branchscaled(config) else None
+    params = trainable_parameters(model, branch_params)
+    optimizers = build_optimizers(config, params)
     start_step = 0
     previous_objective: float | None = None
     stable_loss_steps = 0
@@ -697,6 +908,7 @@ def run(config: RunConfig, args: argparse.Namespace) -> None:
         start_step, previous_objective, stable_loss_steps = load_checkpoint(
             config.resume_from,
             model=model,
+            branch_params=branch_params,
             optimizers=optimizers,
             config=config,
             device=torch.device(config.device),
@@ -733,7 +945,7 @@ def run(config: RunConfig, args: argparse.Namespace) -> None:
             optimizer = optimizers[phase]
             current_lr = phase_lr(config, phase, step)
             set_optimizer_lr(optimizer, current_lr)
-            theta_before = model.theta.detach().clone()
+            theta_before = effective_theta(model, branch_params).detach().clone()
             closure_evals = 0
             closure_s = 0.0
             objective: torch.Tensor | None = None
@@ -743,13 +955,17 @@ def run(config: RunConfig, args: argparse.Namespace) -> None:
                 nonlocal closure_evals, closure_s, objective, metrics
                 optimizer.zero_grad(set_to_none=True)
                 closure_t0 = time.perf_counter()
-                objective_i, metrics_i = evaluate_and_backward(model, config)
+                objective_i, metrics_i = evaluate_and_backward(
+                    model,
+                    config,
+                    branch_params,
+                    params,
+                )
                 closure_s += time.perf_counter() - closure_t0
                 closure_evals += 1
                 if (
                     not torch.isfinite(objective_i).item()
-                    or model.theta.grad is None
-                    or not torch.isfinite(model.theta.grad).all().item()
+                    or not parameters_have_finite_grad(params)
                 ):
                     raise NonFiniteObjectiveOrGradient
                 objective = objective_i
@@ -776,10 +992,12 @@ def run(config: RunConfig, args: argparse.Namespace) -> None:
                 stable_loss_steps = 0
             previous_objective = objective_bits
 
-            model.clamp_theta_(min_rate=config.min_rate, max_rate=config.max_rate)
-            theta_step = float((model.theta.detach() - theta_before).abs().amax().cpu())
+            clamp_parameters_(config, model, branch_params)
+            theta_after = effective_theta(model, branch_params).detach()
+            theta_step = float((theta_after - theta_before).abs().amax().cpu())
             model.clear()
-            metrics.update(rate_stats(model.theta))
+            metrics.update(rate_stats(theta_after))
+            metrics.update(branchscale_stats(branch_params))
 
             row = {
                 "step": step,
@@ -801,6 +1019,7 @@ def run(config: RunConfig, args: argparse.Namespace) -> None:
                 save_checkpoint(
                     checkpoint_dir / "latest.pt",
                     model=model,
+                    branch_params=branch_params,
                     optimizers=optimizers,
                     optimizer_phase=phase,
                     step=step,
@@ -813,6 +1032,7 @@ def run(config: RunConfig, args: argparse.Namespace) -> None:
                     save_checkpoint(
                         checkpoint_dir / f"step_{step:06d}.pt",
                         model=model,
+                        branch_params=branch_params,
                         optimizers=optimizers,
                         optimizer_phase=phase,
                         step=step,
@@ -828,7 +1048,7 @@ def run(config: RunConfig, args: argparse.Namespace) -> None:
                 plot_tree_rates(
                     root=root,
                     layout_cache=layout_cache,
-                    rate_by_label=current_rate_by_label(model, labels),
+                    rate_by_label=current_rate_by_label(model, labels, branch_params),
                     out_path=plot_path,
                     title=f"HOGENOM CCP rates step {step} ({config.parameter_mode})",
                 )
@@ -839,6 +1059,14 @@ def run(config: RunConfig, args: argparse.Namespace) -> None:
             if step % config.log_every == 0 or "tree/rates" in log_payload:
                 wandb.log(log_payload, step=step)
             if step % config.log_every == 0:
+                branch_text = ""
+                if branch_params is not None:
+                    branch_text = (
+                        f"branch_prior={metrics['regularization/branchscale_bits']:.6g} "
+                        f"l_med={metrics['branchscale/l_median']:.6g} "
+                        f"l_p95={metrics['branchscale/l_p95']:.6g} "
+                        f"l_max={metrics['branchscale/l_max']:.6g} "
+                    )
                 print(
                     f"step={step:04d} "
                     f"mode={config.parameter_mode} "
@@ -851,6 +1079,7 @@ def run(config: RunConfig, args: argparse.Namespace) -> None:
                     f"grad_norm={metrics['grad/norm']:.6g} "
                     f"grad_inf={metrics['grad/inf']:.6g} "
                     f"Pi_iter={metrics['solver/pi_iterations']:.0f}/{metrics['solver/pi_iteration_cap']:.0f} "
+                    f"{branch_text}"
                     f"closure_evals={closure_evals} "
                     f"step_s={row['step_s']:.3f}",
                     flush=True,
@@ -866,12 +1095,12 @@ def run(config: RunConfig, args: argparse.Namespace) -> None:
         stop_reason = "keyboard_interrupt"
     finally:
         final_rates = final_rates_path(config)
-        write_rate_table(final_rates, model, labels)
+        write_rate_table(final_rates, model, labels, branch_params)
         final_plot = config.out_dir / "tree_plots" / "rates_final.png"
         plot_tree_rates(
             root=root,
             layout_cache=layout_cache,
-            rate_by_label=current_rate_by_label(model, labels),
+            rate_by_label=current_rate_by_label(model, labels, branch_params),
             out_path=final_plot,
             title=f"HOGENOM CCP rates final ({config.parameter_mode})",
         )
@@ -881,14 +1110,30 @@ def run(config: RunConfig, args: argparse.Namespace) -> None:
             "outputs/final_rates_tsv": str(final_rates),
             "outputs/latest_checkpoint": str(config.out_dir / "checkpoints" / "latest.pt"),
         }
+        branch_params_path = config.out_dir / "branchscaled_parameters_final.pt"
+        if branch_params is not None:
+            final_payload["outputs/branchscaled_parameters_pt"] = str(branch_params_path)
         image = wandb.image(final_plot)
         if image is not None:
             final_payload["tree/final_rates"] = image
         wandb.log(final_payload, step=last_step)
-        torch.save(model.theta.detach().cpu(), config.out_dir / "theta_final.pt")
+        torch.save(
+            effective_theta(model, branch_params).detach().cpu(),
+            config.out_dir / "theta_final.pt",
+        )
+        if branch_params is not None:
+            torch.save(
+                {
+                    "shared_theta": branch_params.shared_theta.detach().cpu(),
+                    "branch_log_l": branch_params.branch_log_l.detach().cpu(),
+                    "branch_l": torch.exp(branch_params.branch_log_l.detach()).cpu(),
+                },
+                branch_params_path,
+            )
         save_checkpoint(
             config.out_dir / "checkpoints" / "latest.pt",
             model=model,
+            branch_params=branch_params,
             optimizers=optimizers,
             optimizer_phase=optimizer_phase(config, last_step),
             step=last_step,
@@ -924,11 +1169,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--mode",
         dest="parameter_mode",
-        choices=("specieswise", "uniform", "global"),
+        choices=("specieswise", "uniform", "global", "branchscaled"),
         default="specieswise",
         help=(
             "Parameter sharing mode. 'specieswise' optimizes one D/T/L vector per "
-            "species-tree node; 'uniform'/'global' optimize one shared D/T/L vector."
+            "species-tree node; 'uniform'/'global' optimize one shared D/T/L vector; "
+            "'branchscaled' optimizes shared D/T/L rates times one branch multiplier per node."
         ),
     )
     parser.add_argument("--max-families", type=int, default=None)
@@ -974,6 +1220,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--beta-ps-alpha", type=float, default=4.0)
     parser.add_argument("--beta-ps-beta", type=float, default=1.0)
     parser.add_argument("--beta-prior-weight", type=float, default=1.0)
+    parser.add_argument("--branchscale-prior-weight", type=float, default=1.0)
     parser.add_argument("--log-every", type=int, default=1)
     parser.add_argument("--plot-every", type=int, default=10)
     parser.add_argument(
@@ -1020,6 +1267,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         raise ValueError("--lbfgs-lr must be positive")
     if args.lbfgs_history_size < 1:
         raise ValueError("--lbfgs-history-size must be positive")
+    if args.branchscale_prior_weight < 0.0:
+        raise ValueError("--branchscale-prior-weight must be non-negative")
     if args.log_every < 1:
         raise ValueError("--log-every must be positive")
     if args.plot_every < 1:
@@ -1067,6 +1316,7 @@ def config_from_args(args: argparse.Namespace) -> RunConfig:
         beta_ps_alpha=args.beta_ps_alpha,
         beta_ps_beta=args.beta_ps_beta,
         beta_prior_weight=args.beta_prior_weight,
+        branchscale_prior_weight=args.branchscale_prior_weight,
         log_every=args.log_every,
         plot_every=args.plot_every,
         checkpoint_every=args.checkpoint_every,
