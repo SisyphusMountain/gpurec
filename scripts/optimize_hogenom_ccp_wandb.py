@@ -35,6 +35,10 @@ OUT_DIR = HOGENOM_DIR / "output_gpurec_wandb_adam"
 LN2 = math.log(2.0)
 RATE_FIELDS = (("D", 0), ("T", 2), ("L", 1))
 QUANTILE_PROBS = torch.tensor([0.0, 0.5, 0.95, 1.0])
+STAGED_SOLVER_PHASES = (
+    (50, 4, "fixed4"),
+    (50, 8, "fixed8"),
+)
 
 
 @dataclass
@@ -66,6 +70,7 @@ class RunConfig:
     pi_max_diff_tol: float
     gradient_change_tol: float
     gradient_change_rtol: float
+    solver_iteration_schedule: str
     parameter_mode: str
     optimizer: str
     adam_warmup_steps: int
@@ -98,6 +103,15 @@ class RunConfig:
 class BranchScaledParameters:
     shared_theta: torch.nn.Parameter
     branch_log_l: torch.nn.Parameter
+
+
+@dataclass(frozen=True)
+class SolverIterationSettings:
+    phase: str
+    pi_iters: int
+    neumann_terms: int
+    pi_max_diff_tol: float
+    gradient_change_tol: float
 
 
 class WandbSink:
@@ -399,6 +413,61 @@ def branchscale_stats(branch_params: BranchScaledParameters | None) -> dict[str,
     return metrics
 
 
+def solver_iteration_settings(config: RunConfig, step: int) -> SolverIterationSettings:
+    if config.solver_iteration_schedule == "staged":
+        offset = 0
+        for length, iterations, phase in STAGED_SOLVER_PHASES:
+            if step < offset + length:
+                return SolverIterationSettings(
+                    phase=phase,
+                    pi_iters=iterations,
+                    neumann_terms=iterations,
+                    pi_max_diff_tol=-1.0,
+                    gradient_change_tol=-1.0,
+                )
+            offset += length
+    return SolverIterationSettings(
+        phase="adaptive",
+        pi_iters=config.max_iters_pi,
+        neumann_terms=config.max_neumann_terms,
+        pi_max_diff_tol=config.pi_max_diff_tol,
+        gradient_change_tol=config.gradient_change_tol,
+    )
+
+
+def materialize_batch_statics(model: GeneReconModel) -> None:
+    if not getattr(model, "_batched_resident", False):
+        return
+    for batch_idx in range(len(getattr(model, "_batch_specs", []))):
+        model._ensure_batch_static(batch_idx)
+
+
+def _model_statics(model: GeneReconModel) -> list[Any]:
+    if getattr(model, "_batched_resident", False):
+        return [
+            static
+            for static in getattr(model, "_batch_statics", [])
+            if static is not None
+        ]
+    static = getattr(model, "_static", None)
+    return [] if static is None else [static]
+
+
+def apply_solver_iteration_settings(
+    model: GeneReconModel,
+    settings: SolverIterationSettings,
+) -> None:
+    model._fixed_iters_Pi = int(settings.pi_iters)
+    model._neumann_terms = int(settings.neumann_terms)
+    model._pi_max_diff_tol = float(settings.pi_max_diff_tol)
+    model._gradient_change_tol = float(settings.gradient_change_tol)
+    for static in _model_statics(model):
+        static.fixed_iters_Pi = int(settings.pi_iters)
+        static.neumann_terms = int(settings.neumann_terms)
+        static.pi_max_diff_tol = float(settings.pi_max_diff_tol)
+        static.gradient_change_tol = float(settings.gradient_change_tol)
+
+
 def tensor_stats(values: torch.Tensor) -> dict[str, float]:
     vals = values.detach().float().reshape(-1).cpu()
     quantiles = torch.quantile(vals, QUANTILE_PROBS.to(vals))
@@ -479,17 +548,16 @@ def build_optimizers(
     return optimizers
 
 
-def pi_iteration_count(model: GeneReconModel) -> tuple[int, int]:
-    if getattr(model, "_batched_resident", False):
-        statics = [
-            static
-            for static in getattr(model, "_batch_statics", [])
-            if static is not None and static.last_solver_stats is not None
-        ]
-    else:
-        static = model.static
-        statics = [static] if static.last_solver_stats is not None else []
+def _statics_with_solver_stats(model: GeneReconModel) -> list[Any]:
+    return [
+        static
+        for static in _model_statics(model)
+        if static.last_solver_stats is not None
+    ]
 
+
+def pi_iteration_count(model: GeneReconModel) -> tuple[int, int]:
+    statics = _statics_with_solver_stats(model)
     total = 0
     cap_total = 0
     for static in statics:
@@ -503,6 +571,14 @@ def pi_iteration_count(model: GeneReconModel) -> tuple[int, int]:
             total += int(stats.get("Pi_max_iterations", static.fixed_iters_Pi)) * wave_count
             cap_total += int(static.fixed_iters_Pi) * wave_count
     return total, cap_total
+
+
+def neumann_iteration_count(model: GeneReconModel) -> int:
+    terms = [
+        int(static.last_solver_stats.get("Neumann_terms", static.neumann_terms))
+        for static in _statics_with_solver_stats(model)
+    ]
+    return max(terms, default=0)
 
 
 def build_model(config: RunConfig) -> GeneReconModel:
@@ -874,6 +950,7 @@ def evaluate_and_backward(
         if param.grad is None:
             raise RuntimeError("missing trainable parameter gradient")
     pi_iters, pi_iter_cap = pi_iteration_count(model)
+    neumann_terms = neumann_iteration_count(model)
     metrics = {
         "likelihood/data_nll_bits": float(data_nll.detach().cpu()),
         "likelihood/log_likelihood_bits": float((-data_nll).detach().cpu()),
@@ -882,6 +959,7 @@ def evaluate_and_backward(
         "regularization/branchscale_bits": float(branch_prior.detach().cpu()),
         "solver/pi_iterations": float(pi_iters),
         "solver/pi_iteration_cap": float(pi_iter_cap),
+        "solver/neumann_terms": float(neumann_terms),
     }
     metrics.update(parameters_gradient_stats(params))
     return objective, metrics
@@ -897,6 +975,8 @@ def run(config: RunConfig, args: argparse.Namespace) -> None:
     root = parse_newick(config.species_tree)
     layout_cache = tree_layout(root)
     model = build_model(config)
+    if config.solver_iteration_schedule == "staged":
+        materialize_batch_statics(model)
     labels = species_labels(model)
     branch_params = make_branchscaled_parameters(model) if is_branchscaled(config) else None
     params = trainable_parameters(model, branch_params)
@@ -922,6 +1002,7 @@ def run(config: RunConfig, args: argparse.Namespace) -> None:
         "dataset/waves": sum(meta.wave_count for meta in model.batch_metadata),
         "model/parameter_mode": config.parameter_mode,
         "model/internal_parameter_mode": internal_parameter_mode(config),
+        "solver/iteration_schedule": config.solver_iteration_schedule,
     }
     wandb.log(build_info, step=0)
     print(
@@ -941,6 +1022,8 @@ def run(config: RunConfig, args: argparse.Namespace) -> None:
         for step in range(start_step, config.steps):
             last_step = step
             step_t0 = time.perf_counter()
+            solver_settings = solver_iteration_settings(config, step)
+            apply_solver_iteration_settings(model, solver_settings)
             phase = optimizer_phase(config, step)
             optimizer = optimizers[phase]
             current_lr = phase_lr(config, phase, step)
@@ -1002,6 +1085,11 @@ def run(config: RunConfig, args: argparse.Namespace) -> None:
             row = {
                 "step": step,
                 "model/parameter_mode": config.parameter_mode,
+                "solver/schedule_phase": solver_settings.phase,
+                "solver/pi_iteration_limit": solver_settings.pi_iters,
+                "solver/neumann_limit": solver_settings.neumann_terms,
+                "solver/pi_convergence_tolerance": solver_settings.pi_max_diff_tol,
+                "solver/gradient_convergence_tolerance": solver_settings.gradient_change_tol,
                 "optimizer/phase": phase,
                 "lr": current_lr,
                 "delta_objective_bits": delta,
@@ -1079,6 +1167,8 @@ def run(config: RunConfig, args: argparse.Namespace) -> None:
                     f"grad_norm={metrics['grad/norm']:.6g} "
                     f"grad_inf={metrics['grad/inf']:.6g} "
                     f"Pi_iter={metrics['solver/pi_iterations']:.0f}/{metrics['solver/pi_iteration_cap']:.0f} "
+                    f"Neumann={metrics['solver/neumann_terms']:.0f}/{solver_settings.neumann_terms} "
+                    f"solver_phase={solver_settings.phase} "
                     f"{branch_text}"
                     f"closure_evals={closure_evals} "
                     f"step_s={row['step_s']:.3f}",
@@ -1190,6 +1280,17 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--gradient-change-tol", type=float, default=1e-4)
     parser.add_argument("--gradient-change-rtol", type=float, default=1e-4)
     parser.add_argument(
+        "--solver-iteration-schedule",
+        choices=("staged", "adaptive"),
+        default="staged",
+        help=(
+            "Pi/Neumann schedule. 'staged' runs exactly 4 iterations for steps "
+            "0-49, exactly 8 for steps 50-99, then adaptive convergence up to "
+            "--max-iters-pi/--max-neumann-terms. 'adaptive' keeps the previous "
+            "adaptive behavior from step 0."
+        ),
+    )
+    parser.add_argument(
         "--optimizer",
         choices=("adam", "lbfgs", "adam-lbfgs"),
         default="adam",
@@ -1299,6 +1400,7 @@ def config_from_args(args: argparse.Namespace) -> RunConfig:
         pi_max_diff_tol=args.pi_max_diff_tol,
         gradient_change_tol=args.gradient_change_tol,
         gradient_change_rtol=args.gradient_change_rtol,
+        solver_iteration_schedule=args.solver_iteration_schedule,
         parameter_mode=args.parameter_mode,
         optimizer=args.optimizer,
         adam_warmup_steps=args.adam_warmup_steps,
