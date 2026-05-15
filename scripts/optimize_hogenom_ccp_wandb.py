@@ -65,10 +65,14 @@ class RunConfig:
     pi_max_diff_tol: float
     gradient_change_tol: float
     gradient_change_rtol: float
+    optimizer: str
+    adam_warmup_steps: int
     steps: int
     lr: float
     lr_decay_every: int
     lr_decay_factor: float
+    lbfgs_lr: float
+    lbfgs_history_size: int
     min_rate: float
     max_rate: float
     grad_inf_tol: float
@@ -320,6 +324,36 @@ def set_optimizer_lr(optimizer: torch.optim.Optimizer, lr: float) -> None:
         group["lr"] = lr
 
 
+def optimizer_phase(config: RunConfig, step: int) -> str:
+    if config.optimizer == "adam-lbfgs":
+        return "adam" if step < config.adam_warmup_steps else "lbfgs"
+    return config.optimizer
+
+
+def phase_lr(config: RunConfig, phase: str, step: int) -> float:
+    if phase == "adam":
+        return scheduled_lr(config, step)
+    return config.lbfgs_lr
+
+
+def build_optimizers(
+    config: RunConfig,
+    model: GeneReconModel,
+) -> dict[str, torch.optim.Optimizer]:
+    optimizers: dict[str, torch.optim.Optimizer] = {}
+    if config.optimizer in {"adam", "adam-lbfgs"}:
+        optimizers["adam"] = torch.optim.Adam([model.theta], lr=config.lr)
+    if config.optimizer in {"lbfgs", "adam-lbfgs"}:
+        optimizers["lbfgs"] = torch.optim.LBFGS(
+            [model.theta],
+            lr=config.lbfgs_lr,
+            max_iter=1,
+            history_size=config.lbfgs_history_size,
+            line_search_fn=None,
+        )
+    return optimizers
+
+
 def pi_iteration_count(model: GeneReconModel) -> tuple[int, int]:
     if getattr(model, "_batched_resident", False):
         statics = [
@@ -494,18 +528,48 @@ def write_rate_table(path: Path, model: GeneReconModel, labels: list[str]) -> No
             )
 
 
+class NonFiniteObjectiveOrGradient(RuntimeError):
+    pass
+
+
+def _move_optimizer_value_to_device(value: Any, device: torch.device) -> Any:
+    if torch.is_tensor(value):
+        return value.to(device=device)
+    if isinstance(value, dict):
+        return {key: _move_optimizer_value_to_device(val, device) for key, val in value.items()}
+    if isinstance(value, list):
+        return [_move_optimizer_value_to_device(val, device) for val in value]
+    if isinstance(value, tuple):
+        return tuple(_move_optimizer_value_to_device(val, device) for val in value)
+    return value
+
+
 def _optimizer_state_to_device(optimizer: torch.optim.Optimizer, device: torch.device) -> None:
     for state in optimizer.state.values():
         for key, value in list(state.items()):
-            if torch.is_tensor(value):
-                state[key] = value.to(device=device)
+            state[key] = _move_optimizer_value_to_device(value, device)
+
+
+def _load_optimizer_state(
+    name: str,
+    optimizer: torch.optim.Optimizer,
+    optimizer_state: dict[str, Any],
+    device: torch.device,
+) -> None:
+    try:
+        optimizer.load_state_dict(optimizer_state)
+    except ValueError as exc:
+        print(f"warning: skipped incompatible {name} optimizer state: {exc}", file=sys.stderr)
+        return
+    _optimizer_state_to_device(optimizer, device)
 
 
 def save_checkpoint(
     path: Path,
     *,
     model: GeneReconModel,
-    optimizer: torch.optim.Optimizer,
+    optimizers: dict[str, torch.optim.Optimizer],
+    optimizer_phase: str,
     step: int,
     previous_objective: float | None,
     stable_loss_steps: int,
@@ -517,7 +581,11 @@ def save_checkpoint(
         "step": int(step),
         "next_step": int(step) + 1,
         "theta": model.theta.detach().cpu(),
-        "optimizer_state": optimizer.state_dict(),
+        "optimizer_phase": optimizer_phase,
+        "optimizer_state": optimizers[optimizer_phase].state_dict(),
+        "optimizer_states": {
+            name: optimizer.state_dict() for name, optimizer in optimizers.items()
+        },
         "previous_objective": previous_objective,
         "stable_loss_steps": int(stable_loss_steps),
         "config": _jsonable(asdict(config)),
@@ -532,20 +600,28 @@ def load_checkpoint(
     path: Path,
     *,
     model: GeneReconModel,
-    optimizer: torch.optim.Optimizer,
+    optimizers: dict[str, torch.optim.Optimizer],
+    config: RunConfig,
     device: torch.device,
 ) -> tuple[int, float | None, int]:
     checkpoint = torch.load(path, map_location=device, weights_only=False)
+    next_step = int(checkpoint.get("next_step", int(checkpoint.get("step", -1)) + 1))
     theta = checkpoint["theta"].to(device=device, dtype=model.theta.dtype)
     with torch.no_grad():
         model.theta.copy_(theta)
         model.theta.grad = None
-    if "optimizer_state" in checkpoint:
-        optimizer.load_state_dict(checkpoint["optimizer_state"])
-        _optimizer_state_to_device(optimizer, device)
+    optimizer_states = checkpoint.get("optimizer_states")
+    if isinstance(optimizer_states, dict):
+        for name, optimizer_state in optimizer_states.items():
+            if name in optimizers:
+                _load_optimizer_state(name, optimizers[name], optimizer_state, device)
+    elif "optimizer_state" in checkpoint:
+        phase = checkpoint.get("optimizer_phase") or optimizer_phase(config, next_step)
+        if phase in optimizers:
+            _load_optimizer_state(phase, optimizers[phase], checkpoint["optimizer_state"], device)
     model.clear()
     return (
-        int(checkpoint.get("next_step", int(checkpoint.get("step", -1)) + 1)),
+        next_step,
         checkpoint.get("previous_objective"),
         int(checkpoint.get("stable_loss_steps", 0)),
     )
@@ -592,7 +668,7 @@ def run(config: RunConfig, args: argparse.Namespace) -> None:
     layout_cache = tree_layout(root)
     model = build_model(config)
     labels = species_labels(model)
-    optimizer = torch.optim.Adam([model.theta], lr=config.lr)
+    optimizers = build_optimizers(config, model)
     start_step = 0
     previous_objective: float | None = None
     stable_loss_steps = 0
@@ -600,7 +676,8 @@ def run(config: RunConfig, args: argparse.Namespace) -> None:
         start_step, previous_objective, stable_loss_steps = load_checkpoint(
             config.resume_from,
             model=model,
-            optimizer=optimizer,
+            optimizers=optimizers,
+            config=config,
             device=torch.device(config.device),
         )
         print(f"resumed checkpoint={config.resume_from} next_step={start_step}", flush=True)
@@ -628,11 +705,45 @@ def run(config: RunConfig, args: argparse.Namespace) -> None:
         for step in range(start_step, config.steps):
             last_step = step
             step_t0 = time.perf_counter()
-            current_lr = scheduled_lr(config, step)
+            phase = optimizer_phase(config, step)
+            optimizer = optimizers[phase]
+            current_lr = phase_lr(config, phase, step)
             set_optimizer_lr(optimizer, current_lr)
-            optimizer.zero_grad(set_to_none=True)
             theta_before = model.theta.detach().clone()
-            objective, metrics = evaluate_and_backward(model, config)
+            closure_evals = 0
+            closure_s = 0.0
+            objective: torch.Tensor | None = None
+            metrics: dict[str, float] | None = None
+
+            def closure() -> torch.Tensor:
+                nonlocal closure_evals, closure_s, objective, metrics
+                optimizer.zero_grad(set_to_none=True)
+                closure_t0 = time.perf_counter()
+                objective_i, metrics_i = evaluate_and_backward(model, config)
+                closure_s += time.perf_counter() - closure_t0
+                closure_evals += 1
+                if (
+                    not torch.isfinite(objective_i).item()
+                    or model.theta.grad is None
+                    or not torch.isfinite(model.theta.grad).all().item()
+                ):
+                    raise NonFiniteObjectiveOrGradient
+                objective = objective_i
+                metrics = metrics_i
+                return objective_i
+
+            try:
+                if phase == "lbfgs":
+                    optimizer.step(closure)
+                else:
+                    objective = closure()
+                    optimizer.step()
+            except NonFiniteObjectiveOrGradient:
+                stop_reason = "nonfinite_objective_or_gradient"
+                break
+            if objective is None or metrics is None:
+                raise RuntimeError("optimizer did not evaluate the objective")
+            synchronize()
             objective_bits = metrics["objective/bits"]
             delta = None if previous_objective is None else previous_objective - objective_bits
             if delta is not None and abs(delta) <= config.loss_change_tol:
@@ -641,12 +752,6 @@ def run(config: RunConfig, args: argparse.Namespace) -> None:
                 stable_loss_steps = 0
             previous_objective = objective_bits
 
-            if not torch.isfinite(objective).item() or not torch.isfinite(model.theta.grad).all().item():
-                stop_reason = "nonfinite_objective_or_gradient"
-                break
-
-            optimizer.step()
-            synchronize()
             model.clamp_theta_(min_rate=config.min_rate, max_rate=config.max_rate)
             theta_step = float((model.theta.detach() - theta_before).abs().amax().cpu())
             model.clear()
@@ -654,9 +759,12 @@ def run(config: RunConfig, args: argparse.Namespace) -> None:
 
             row = {
                 "step": step,
+                "optimizer/phase": phase,
                 "lr": current_lr,
                 "delta_objective_bits": delta,
                 "theta_step_inf": theta_step,
+                "closure_evals": closure_evals,
+                "closure_mean_s": closure_s / max(closure_evals, 1),
                 "step_s": time.perf_counter() - step_t0,
                 **metrics,
             }
@@ -668,7 +776,8 @@ def run(config: RunConfig, args: argparse.Namespace) -> None:
                 save_checkpoint(
                     checkpoint_dir / "latest.pt",
                     model=model,
-                    optimizer=optimizer,
+                    optimizers=optimizers,
+                    optimizer_phase=phase,
                     step=step,
                     previous_objective=previous_objective,
                     stable_loss_steps=stable_loss_steps,
@@ -679,7 +788,8 @@ def run(config: RunConfig, args: argparse.Namespace) -> None:
                     save_checkpoint(
                         checkpoint_dir / f"step_{step:06d}.pt",
                         model=model,
-                        optimizer=optimizer,
+                        optimizers=optimizers,
+                        optimizer_phase=phase,
                         step=step,
                         previous_objective=previous_objective,
                         stable_loss_steps=stable_loss_steps,
@@ -706,6 +816,7 @@ def run(config: RunConfig, args: argparse.Namespace) -> None:
             if step % config.log_every == 0:
                 print(
                     f"step={step:04d} "
+                    f"phase={phase} "
                     f"nll_bits={metrics['likelihood/data_nll_bits']:.6f} "
                     f"loglik_bits={metrics['likelihood/log_likelihood_bits']:.6f} "
                     f"objective_bits={objective_bits:.6f} "
@@ -714,6 +825,7 @@ def run(config: RunConfig, args: argparse.Namespace) -> None:
                     f"grad_norm={metrics['grad/norm']:.6g} "
                     f"grad_inf={metrics['grad/inf']:.6g} "
                     f"Pi_iter={metrics['solver/pi_iterations']:.0f}/{metrics['solver/pi_iteration_cap']:.0f} "
+                    f"closure_evals={closure_evals} "
                     f"step_s={row['step_s']:.3f}",
                     flush=True,
                 )
@@ -751,7 +863,8 @@ def run(config: RunConfig, args: argparse.Namespace) -> None:
         save_checkpoint(
             config.out_dir / "checkpoints" / "latest.pt",
             model=model,
-            optimizer=optimizer,
+            optimizers=optimizers,
+            optimizer_phase=optimizer_phase(config, last_step),
             step=last_step,
             previous_objective=previous_objective,
             stable_loss_steps=stable_loss_steps,
@@ -794,6 +907,18 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--pi-max-diff-tol", type=float, default=1e-5)
     parser.add_argument("--gradient-change-tol", type=float, default=1e-4)
     parser.add_argument("--gradient-change-rtol", type=float, default=1e-4)
+    parser.add_argument(
+        "--optimizer",
+        choices=("adam", "lbfgs", "adam-lbfgs"),
+        default="adam",
+        help="Use Adam, PyTorch LBFGS, or Adam warmup followed by LBFGS.",
+    )
+    parser.add_argument(
+        "--adam-warmup-steps",
+        type=int,
+        default=100,
+        help="Number of Adam steps before switching to LBFGS when --optimizer adam-lbfgs.",
+    )
     parser.add_argument("--steps", type=int, default=5000)
     parser.add_argument("--lr", type=float, default=0.01)
     parser.add_argument(
@@ -803,6 +928,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Multiply the learning rate by --lr-decay-factor every N steps. Use 0 to disable.",
     )
     parser.add_argument("--lr-decay-factor", type=float, default=0.5)
+    parser.add_argument("--lbfgs-lr", type=float, default=0.1)
+    parser.add_argument("--lbfgs-history-size", type=int, default=20)
     parser.add_argument("--min-rate", type=float, default=1e-10)
     parser.add_argument("--max-rate", type=float, default=100.0)
     parser.add_argument("--grad-inf-tol", type=float, default=1e-3)
@@ -845,12 +972,18 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         raise ValueError("--max-neumann-terms must be positive")
     if args.convergence_check_interval < 1:
         raise ValueError("--convergence-check-interval must be positive")
+    if args.adam_warmup_steps < 0:
+        raise ValueError("--adam-warmup-steps must be non-negative")
     if args.steps < 1:
         raise ValueError("--steps must be positive")
     if args.lr_decay_every < 0:
         raise ValueError("--lr-decay-every must be non-negative")
     if not (0.0 < args.lr_decay_factor <= 1.0):
         raise ValueError("--lr-decay-factor must be in (0, 1]")
+    if args.lbfgs_lr <= 0.0:
+        raise ValueError("--lbfgs-lr must be positive")
+    if args.lbfgs_history_size < 1:
+        raise ValueError("--lbfgs-history-size must be positive")
     if args.log_every < 1:
         raise ValueError("--log-every must be positive")
     if args.plot_every < 1:
@@ -881,10 +1014,14 @@ def config_from_args(args: argparse.Namespace) -> RunConfig:
         pi_max_diff_tol=args.pi_max_diff_tol,
         gradient_change_tol=args.gradient_change_tol,
         gradient_change_rtol=args.gradient_change_rtol,
+        optimizer=args.optimizer,
+        adam_warmup_steps=args.adam_warmup_steps,
         steps=args.steps,
         lr=args.lr,
         lr_decay_every=args.lr_decay_every,
         lr_decay_factor=args.lr_decay_factor,
+        lbfgs_lr=args.lbfgs_lr,
+        lbfgs_history_size=args.lbfgs_history_size,
         min_rate=args.min_rate,
         max_rate=args.max_rate,
         grad_inf_tol=args.grad_inf_tol,
