@@ -2,7 +2,7 @@ use std::fs;
 use std::io::{self, Read};
 use std::path::PathBuf;
 
-use gpurec_backtrack::{sample_recphyloxml, BacktrackInput};
+use gpurec_backtrack::{sample_recphyloxml, sample_recphyloxmls, BacktrackInput};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut samples = 1usize;
@@ -73,10 +73,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let dir = output_dir.ok_or("--output-dir is required in multi-sample mode")?;
     fs::create_dir_all(&dir)?;
     let base_seed = input.seed.unwrap_or(0);
-    for sample_idx in 0..samples {
-        let mut sample_input = input.clone();
-        sample_input.seed = Some(base_seed + sample_idx as u64);
-        let xml = sample_recphyloxml(&sample_input)?;
+    for (sample_idx, xml) in sample_recphyloxmls(&input, samples, base_seed)?
+        .into_iter()
+        .enumerate()
+    {
         fs::write(dir.join(format!("sample_{sample_idx}.xml")), xml)?;
     }
 

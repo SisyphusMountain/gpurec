@@ -104,26 +104,48 @@ struct WorkItem {
 }
 
 #[derive(Clone, Debug)]
-struct Sampler<'a> {
+struct PreparedBacktracker<'a> {
     input: &'a BacktrackInput,
     species: SpeciesTopology,
     splits_by_parent: Vec<Vec<usize>>,
     pibar: Matrix,
     ebar: Vec<f64>,
+    max_events: usize,
+}
+
+#[derive(Clone, Debug)]
+struct Sampler<'a> {
+    prepared: &'a PreparedBacktracker<'a>,
     rng: StdRng,
     nodes: Vec<FlatNode>,
     node_mapping: Vec<Option<usize>>,
     event_mapping: Vec<Event>,
-    max_events: usize,
 }
 
 pub fn sample_recphyloxml(input: &BacktrackInput) -> Result<String, BacktrackError> {
-    let mut sampler = Sampler::new(input)?;
-    let rec_tree = sampler.sample()?;
-    Ok(rec_tree.to_xml())
+    let prepared = PreparedBacktracker::new(input)?;
+    prepared.sample_to_xml(input.seed.unwrap_or(0))
 }
 
-impl<'a> Sampler<'a> {
+pub fn sample_recphyloxmls(
+    input: &BacktrackInput,
+    num_samples: usize,
+    base_seed: u64,
+) -> Result<Vec<String>, BacktrackError> {
+    if num_samples == 0 {
+        return Err(BacktrackError::InvalidInput(
+            "num_samples must be positive".to_string(),
+        ));
+    }
+    let prepared = PreparedBacktracker::new(input)?;
+    let mut out = Vec::with_capacity(num_samples);
+    for sample_idx in 0..num_samples {
+        out.push(prepared.sample_to_xml(base_seed + sample_idx as u64)?);
+    }
+    Ok(out)
+}
+
+impl<'a> PreparedBacktracker<'a> {
     fn new(input: &'a BacktrackInput) -> Result<Self, BacktrackError> {
         input.pi.validate("pi")?;
         let c = input.pi.rows;
@@ -161,19 +183,32 @@ impl<'a> Sampler<'a> {
 
         let pibar = compute_pibar(&input.pi, &input.max_transfer, &species);
         let ebar = compute_ebar(&input.e, &input.max_transfer, &species);
-        let seed = input.seed.unwrap_or(0);
         Ok(Self {
             input,
             species,
             splits_by_parent,
             pibar,
             ebar,
+            max_events: input.max_events.unwrap_or(100_000),
+        })
+    }
+
+    fn sample_to_xml(&'a self, seed: u64) -> Result<String, BacktrackError> {
+        let mut sampler = Sampler::new(self, seed);
+        let rec_tree = sampler.sample()?;
+        Ok(rec_tree.to_xml())
+    }
+}
+
+impl<'a> Sampler<'a> {
+    fn new(prepared: &'a PreparedBacktracker<'a>, seed: u64) -> Self {
+        Self {
+            prepared,
             rng: StdRng::seed_from_u64(seed),
             nodes: Vec::new(),
             node_mapping: Vec::new(),
             event_mapping: Vec::new(),
-            max_events: input.max_events.unwrap_or(100_000),
-        })
+        }
     }
 
     fn sample(&mut self) -> Result<RecTree, BacktrackError> {
@@ -181,15 +216,15 @@ impl<'a> Sampler<'a> {
         let root = self.add_node("", Event::Speciation, root_species, None);
         let mut stack = vec![WorkItem {
             node_idx: root,
-            clade: Some(self.input.root_clade),
+            clade: Some(self.prepared.input.root_clade),
             species: root_species,
         }];
 
         while let Some(item) = stack.pop() {
-            if self.nodes.len() > self.max_events {
+            if self.nodes.len() > self.prepared.max_events {
                 return Err(BacktrackError::Sampling(format!(
                     "sample exceeded max_events={}",
-                    self.max_events
+                    self.prepared.max_events
                 )));
             }
             if let Some(clade) = item.clade {
@@ -199,7 +234,7 @@ impl<'a> Sampler<'a> {
         }
 
         Ok(RecTree::new_owned(
-            self.species.rust_tree.clone(),
+            self.prepared.species.rust_tree.clone(),
             FlatTree {
                 nodes: std::mem::take(&mut self.nodes),
                 root,
@@ -210,10 +245,11 @@ impl<'a> Sampler<'a> {
     }
 
     fn sample_root_species(&mut self) -> Result<usize, BacktrackError> {
-        let s = self.input.pi.cols;
+        let input = self.prepared.input;
+        let s = input.pi.cols;
         let mut candidates = Vec::with_capacity(s);
         for species in 0..s {
-            let prior = match &self.input.origination_probs {
+            let prior = match &input.origination_probs {
                 Some(probs) => {
                     if probs[species] <= 0.0 {
                         NEG_INF
@@ -223,10 +259,7 @@ impl<'a> Sampler<'a> {
                 }
                 None => -(s as f64).log2(),
             };
-            candidates.push((
-                species,
-                prior + self.input.pi.get(self.input.root_clade, species),
-            ));
+            candidates.push((species, prior + input.pi.get(input.root_clade, species)));
         }
         sample_index(&candidates, &mut self.rng)
     }
@@ -242,85 +275,84 @@ impl<'a> Sampler<'a> {
     }
 
     fn sample_term(&mut self, clade: usize, species: usize) -> Result<Term, BacktrackError> {
-        let mut candidates = Vec::with_capacity(6 + self.splits_by_parent[clade].len() * 5);
-        let pi_cs = self.input.pi.get(clade, species);
-        let e_s = self.input.e[species];
-        let child1 = self.species.child1[species];
-        let child2 = self.species.child2[species];
+        let input = self.prepared.input;
+        let species_topology = &self.prepared.species;
+        let mut candidates =
+            Vec::with_capacity(6 + self.prepared.splits_by_parent[clade].len() * 5);
+        let pi_cs = input.pi.get(clade, species);
+        let e_s = input.e[species];
+        let child1 = species_topology.child1[species];
+        let child2 = species_topology.child2[species];
 
         candidates.push(Candidate {
             term: Term::HiddenDupLoss,
-            log_weight: 1.0 + self.input.log_p_d[species] + e_s + pi_cs,
+            log_weight: 1.0 + input.log_p_d[species] + e_s + pi_cs,
         });
         candidates.push(Candidate {
             term: Term::HiddenTransferLossRecipient,
-            log_weight: pi_cs + self.ebar[species],
+            log_weight: pi_cs + self.prepared.ebar[species],
         });
         candidates.push(Candidate {
             term: Term::HiddenTransferLossDonor,
-            log_weight: self.pibar.get(clade, species) + e_s,
+            log_weight: self.prepared.pibar.get(clade, species) + e_s,
         });
 
         if let (Some(c1), Some(c2)) = (child1, child2) {
             candidates.push(Candidate {
                 term: Term::HiddenSpeciationLeft,
-                log_weight: self.input.log_p_s[species]
-                    + self.input.e[c2]
-                    + self.input.pi.get(clade, c1),
+                log_weight: input.log_p_s[species] + input.e[c2] + input.pi.get(clade, c1),
             });
             candidates.push(Candidate {
                 term: Term::HiddenSpeciationRight,
-                log_weight: self.input.log_p_s[species]
-                    + self.input.e[c1]
-                    + self.input.pi.get(clade, c2),
+                log_weight: input.log_p_s[species] + input.e[c1] + input.pi.get(clade, c2),
             });
         }
 
-        if self.input.leaf_species[clade] == Some(species) {
+        if input.leaf_species[clade] == Some(species) {
             candidates.push(Candidate {
                 term: Term::Leaf,
-                log_weight: self.input.log_p_s[species],
+                log_weight: input.log_p_s[species],
             });
         }
 
-        for split_idx in &self.splits_by_parent[clade] {
-            let split = &self.input.splits[*split_idx];
+        for split_idx in &self.prepared.splits_by_parent[clade] {
+            let split = &input.splits[*split_idx];
             let left = split.left;
             let right = split.right;
             let base = split.log_prob;
             candidates.push(Candidate {
                 term: Term::SplitDup(*split_idx),
                 log_weight: base
-                    + self.input.log_p_d[species]
-                    + self.input.pi.get(left, species)
-                    + self.input.pi.get(right, species),
+                    + input.log_p_d[species]
+                    + input.pi.get(left, species)
+                    + input.pi.get(right, species),
             });
             candidates.push(Candidate {
                 term: Term::SplitTransferRight(*split_idx),
                 log_weight: base
-                    + self.input.pi.get(left, species)
-                    + self.pibar.get(right, species),
+                    + input.pi.get(left, species)
+                    + self.prepared.pibar.get(right, species),
             });
             candidates.push(Candidate {
                 term: Term::SplitTransferLeft(*split_idx),
                 log_weight: base
-                    + self.input.pi.get(right, species)
-                    + self.pibar.get(left, species),
+                    + input.pi.get(right, species)
+                    + self.prepared.pibar.get(left, species),
             });
             if let (Some(c1), Some(c2)) = (child1, child2) {
                 candidates.push(Candidate {
                     term: Term::SplitSpeciation(*split_idx, false),
                     log_weight: base
-                        + self.input.log_p_s[species]
-                        + self.input.pi.get(left, c1)
-                        + self.input.pi.get(right, c2),
+                        + input.log_p_s[species]
+                        + input.pi.get(left, c1)
+                        + input.pi.get(right, c2),
                 });
                 candidates.push(Candidate {
                     term: Term::SplitSpeciation(*split_idx, true),
                     log_weight: base
-                        + self.input.log_p_s[species]
-                        + self.input.pi.get(right, c1)
-                        + self.input.pi.get(left, c2),
+                        + input.log_p_s[species]
+                        + input.pi.get(right, c1)
+                        + input.pi.get(left, c2),
                 });
             }
         }
@@ -343,7 +375,7 @@ impl<'a> Sampler<'a> {
     ) -> Result<Vec<WorkItem>, BacktrackError> {
         match term {
             Term::Leaf => {
-                self.nodes[node_idx].name = leaf_name(self.input, clade);
+                self.nodes[node_idx].name = leaf_name(self.prepared.input, clade);
                 self.event_mapping[node_idx] = Event::Leaf;
                 Ok(Vec::new())
             }
@@ -383,12 +415,12 @@ impl<'a> Sampler<'a> {
                 }])
             }
             Term::HiddenSpeciationLeft | Term::HiddenSpeciationRight => {
-                let c1 = self.species.child1[species].ok_or_else(|| {
+                let c1 = self.prepared.species.child1[species].ok_or_else(|| {
                     BacktrackError::Sampling(
                         "sampled hidden speciation at a leaf species".to_string(),
                     )
                 })?;
-                let c2 = self.species.child2[species].ok_or_else(|| {
+                let c2 = self.prepared.species.child2[species].ok_or_else(|| {
                     BacktrackError::Sampling(
                         "sampled hidden speciation at a unary species".to_string(),
                     )
@@ -409,7 +441,7 @@ impl<'a> Sampler<'a> {
                 }])
             }
             Term::SplitDup(split_idx) => {
-                let split = self.input.splits[split_idx].clone();
+                let split = self.prepared.input.splits[split_idx].clone();
                 self.event_mapping[node_idx] = Event::Duplication;
                 let left = self.add_node("", Event::Leaf, species, Some(node_idx));
                 let right = self.add_node("", Event::Leaf, species, Some(node_idx));
@@ -428,7 +460,7 @@ impl<'a> Sampler<'a> {
                 ])
             }
             Term::SplitTransferRight(split_idx) => {
-                let split = self.input.splits[split_idx].clone();
+                let split = self.prepared.input.splits[split_idx].clone();
                 let recipient = self.sample_pibar_recipient(split.right, species)?;
                 self.event_mapping[node_idx] = Event::Transfer;
                 let donor_child = self.add_node("", Event::Leaf, species, Some(node_idx));
@@ -448,7 +480,7 @@ impl<'a> Sampler<'a> {
                 ])
             }
             Term::SplitTransferLeft(split_idx) => {
-                let split = self.input.splits[split_idx].clone();
+                let split = self.prepared.input.splits[split_idx].clone();
                 let recipient = self.sample_pibar_recipient(split.left, species)?;
                 self.event_mapping[node_idx] = Event::Transfer;
                 let donor_child = self.add_node("", Event::Leaf, species, Some(node_idx));
@@ -468,13 +500,13 @@ impl<'a> Sampler<'a> {
                 ])
             }
             Term::SplitSpeciation(split_idx, swapped) => {
-                let split = self.input.splits[split_idx].clone();
-                let c1 = self.species.child1[species].ok_or_else(|| {
+                let split = self.prepared.input.splits[split_idx].clone();
+                let c1 = self.prepared.species.child1[species].ok_or_else(|| {
                     BacktrackError::Sampling(
                         "sampled split speciation at a leaf species".to_string(),
                     )
                 })?;
-                let c2 = self.species.child2[species].ok_or_else(|| {
+                let c2 = self.prepared.species.child2[species].ok_or_else(|| {
                     BacktrackError::Sampling(
                         "sampled split speciation at a unary species".to_string(),
                     )
@@ -519,12 +551,13 @@ impl<'a> Sampler<'a> {
         clade: usize,
         donor: usize,
     ) -> Result<usize, BacktrackError> {
-        let candidates = (0..self.input.pi.cols)
-            .filter(|recipient| !self.species.ancestors[donor].contains(recipient))
+        let input = self.prepared.input;
+        let candidates = (0..input.pi.cols)
+            .filter(|recipient| !self.prepared.species.ancestors[donor].contains(recipient))
             .map(|recipient| {
                 (
                     recipient,
-                    self.input.pi.get(clade, recipient) + self.input.max_transfer[donor],
+                    input.pi.get(clade, recipient) + input.max_transfer[donor],
                 )
             })
             .collect::<Vec<_>>();
@@ -532,14 +565,10 @@ impl<'a> Sampler<'a> {
     }
 
     fn sample_extinction_recipient(&mut self, donor: usize) -> Result<usize, BacktrackError> {
-        let candidates = (0..self.input.pi.cols)
-            .filter(|recipient| !self.species.ancestors[donor].contains(recipient))
-            .map(|recipient| {
-                (
-                    recipient,
-                    self.input.e[recipient] + self.input.max_transfer[donor],
-                )
-            })
+        let input = self.prepared.input;
+        let candidates = (0..input.pi.cols)
+            .filter(|recipient| !self.prepared.species.ancestors[donor].contains(recipient))
+            .map(|recipient| (recipient, input.e[recipient] + input.max_transfer[donor]))
             .collect::<Vec<_>>();
         sample_index(&candidates, &mut self.rng)
     }
@@ -562,7 +591,7 @@ impl<'a> Sampler<'a> {
             bd_event: None,
         });
         self.node_mapping
-            .push(Some(self.species.gp_to_rust[gp_species]));
+            .push(Some(self.prepared.species.gp_to_rust[gp_species]));
         self.event_mapping.push(event);
         idx
     }
