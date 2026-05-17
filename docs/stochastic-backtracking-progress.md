@@ -91,6 +91,14 @@ python scripts/compare_backtracking_alerax_events.py \
   --output-name output_alerax_corrected \
   --families 20 --samples 20 \
   --backtrack-binary crates/gpurec-backtrack/target/release/gpurec-backtrack
+python scripts/compare_backtracking_alerax_events.py \
+  --dataset tests/data/HOGENOM/hogenom \
+  --output-name output_alerax_corrected \
+  --families-file tests/data/HOGENOM/hogenom/hogenom_families.local.txt \
+  --species-tree tests/data/HOGENOM/hogenom/hogenom_S.tree \
+  --families 5 --samples 10 \
+  --backtrack-binary crates/gpurec-backtrack/target/release/gpurec-backtrack \
+  --preprocess-cache-dir /tmp/gpurec_backtrack_hogenom_native_cache
 ```
 
 For all `test_trees_100` families, `DL`, `L`, and `Leaf` match exactly. With
@@ -107,6 +115,13 @@ AleRax sample ranges than `test_trees_100`.
 Higher-sample checks support that variance explanation: with 100 gpurec samples,
 `family_0011` has `SL` delta -0.22 and `TL` delta -0.98, while `family_0004`
 has `SL` delta -1.01 and `TL` delta +0.07.
+
+The comparison script also supports AleRax `[FAMILIES]` files and per-family
+rate files. On the first five native `tests/data/HOGENOM/hogenom` families,
+`DL`, `L`, and `Leaf` match exactly. With 10 gpurec samples per family, the
+largest absolute mean deltas were `SL` -2.94 (`CLU_003896_4_2_C`), `T` -1.10
+(`CLU_000604_8_1_C`), and `TL` +1.08 (`CLU_000604_8_1_C`) across wide AleRax
+sample ranges.
 
 ## Next Checks
 

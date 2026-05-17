@@ -13,6 +13,7 @@ import torch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from gpurec import GeneReconModel, recphyloxml_event_counts, sample_recphyloxmls
+from gpurec.core.model import parse_alerax_family_file
 
 
 EVENT_KEYS = ("S", "SL", "D", "DL", "T", "TL", "L", "Leaf")
@@ -28,7 +29,13 @@ def parse_alerax_event_counts(path: Path) -> dict[str, int]:
     return counts
 
 
-def load_global_rates(output_dir: Path) -> tuple[float, float, float]:
+def load_rates(output_dir: Path, family_name: str | None = None) -> tuple[float, float, float]:
+    if family_name is not None:
+        family_rates = output_dir / "model_parameters" / f"{family_name}_rates.txt"
+        if family_rates.exists():
+            first_row = family_rates.read_text().splitlines()[1].split()
+            return tuple(map(float, first_row[:3]))
+
     params = output_dir / "model_parameters" / "model_parameters.txt"
     first_row = params.read_text().splitlines()[1].split()
     return tuple(map(float, first_row[1:4]))
@@ -56,8 +63,20 @@ def compare_family(
     max_iters_e: int,
     tol_e: float,
     backtrack_binary: Path | None,
+    families_file: Path | None,
+    species_tree: Path | None,
+    preprocess_cache_dir: Path | None,
 ) -> list[tuple[str, str, int, float, int, int, float, int, float]]:
-    family_name = f"family_{family_index:04d}"
+    if families_file is None:
+        family_name = f"family_{family_index:04d}"
+    else:
+        names, _tree_paths, _leaf_maps = parse_alerax_family_file(
+            families_file,
+            start=family_index,
+            max_families=1,
+        )
+        family_name = names[0]
+
     alerax_dir = output_dir / "reconciliations" / "all"
     alerax_counts = [
         parse_alerax_event_counts(path)
@@ -66,24 +85,42 @@ def compare_family(
     if not alerax_counts:
         raise FileNotFoundError(f"no AleRax event counts found for {family_name} in {alerax_dir}")
 
-    duplication, loss, transfer = load_global_rates(output_dir)
-    gene_tree = dataset / f"g_{family_index:04d}.nwk"
-    if not gene_tree.exists():
-        gene_tree = dataset / f"g_{family_index}.nwk"
-    if not gene_tree.exists():
-        raise FileNotFoundError(gene_tree)
+    duplication, loss, transfer = load_rates(output_dir, family_name if families_file else None)
+    if families_file is None:
+        gene_tree = dataset / f"g_{family_index:04d}.nwk"
+        if not gene_tree.exists():
+            gene_tree = dataset / f"g_{family_index}.nwk"
+        if not gene_tree.exists():
+            raise FileNotFoundError(gene_tree)
 
-    model = GeneReconModel.from_trees(
-        str(dataset / "sp.nwk"),
-        [str(gene_tree)],
-        mode="global",
-        device="cuda",
-        dtype=torch.float64,
-        theta_init_rates=(duplication, loss, transfer),
-        fixed_iters_Pi=fixed_iters_pi,
-        max_iters_E=max_iters_e,
-        tol_E=tol_e,
-    )
+        model = GeneReconModel.from_trees(
+            str(dataset / "sp.nwk"),
+            [str(gene_tree)],
+            mode="global",
+            device="cuda",
+            dtype=torch.float64,
+            theta_init_rates=(duplication, loss, transfer),
+            fixed_iters_Pi=fixed_iters_pi,
+            max_iters_E=max_iters_e,
+            tol_E=tol_e,
+        )
+    else:
+        if species_tree is None:
+            raise ValueError("--species-tree is required when --families-file is used")
+        model = GeneReconModel.from_alerax_families(
+            str(species_tree),
+            families_file,
+            mode="global",
+            start=family_index,
+            max_families=1,
+            device="cuda",
+            dtype=torch.float64,
+            theta_init_rates=(duplication, loss, transfer),
+            preprocess_cache_dir=preprocess_cache_dir,
+            fixed_iters_Pi=fixed_iters_pi,
+            max_iters_E=max_iters_e,
+            tol_E=tol_e,
+        )
     gpurec_counts = [
         recphyloxml_event_counts(xml)
         for xml in sample_recphyloxmls(
@@ -118,6 +155,9 @@ def main() -> None:
     parser.add_argument("--max-iters-e", type=int, default=4000)
     parser.add_argument("--tol-e", type=float, default=1e-10)
     parser.add_argument("--backtrack-binary", type=Path)
+    parser.add_argument("--families-file", type=Path)
+    parser.add_argument("--species-tree", type=Path)
+    parser.add_argument("--preprocess-cache-dir", type=Path)
     args = parser.parse_args()
 
     if not torch.cuda.is_available():
@@ -140,6 +180,9 @@ def main() -> None:
             max_iters_e=args.max_iters_e,
             tol_e=args.tol_e,
             backtrack_binary=args.backtrack_binary,
+            families_file=args.families_file,
+            species_tree=args.species_tree,
+            preprocess_cache_dir=args.preprocess_cache_dir,
         ):
             family, key, a_min, a_mean, a_max, g_min, g_mean, g_max, delta = row
             print(
