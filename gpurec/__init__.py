@@ -16,6 +16,7 @@ from gpurec.backtracking import (
     export_backtracking_input,
     recphyloxml_event_counts,
     sample_recphyloxml,
+    sample_recphyloxmls,
 )
 
 __all__ = [
@@ -24,4 +25,5 @@ __all__ = [
     "export_backtracking_input",
     "recphyloxml_event_counts",
     "sample_recphyloxml",
+    "sample_recphyloxmls",
 ]

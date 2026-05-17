@@ -9,6 +9,8 @@
   species topology, leaf mappings, and root origination probabilities.
 - Added `gpurec.backtracking.sample_recphyloxml()` as a Python bridge that
   runs the Rust sampler and returns one XML document.
+- Added `sample_recphyloxmls()` plus Rust CLI `--samples/--output-dir` support
+  so bulk comparisons reuse one exported state and one Rust process.
 - Added `gpurec.backtracking.recphyloxml_event_counts()` to report
   AleRax-style `S`, `SL`, `D`, `DL`, `T`, `TL`, `L`, and `Leaf` counts from
   gpurec RecPhyloXML.

@@ -11,6 +11,7 @@ from gpurec import (
     export_backtracking_input,
     recphyloxml_event_counts,
     sample_recphyloxml,
+    sample_recphyloxmls,
 )
 
 
@@ -98,8 +99,9 @@ def test_rust_backtracking_family_0000_matches_alerax_event_ranges():
         for key in ("S", "SL", "D", "DL", "T", "TL", "L", "Leaf")
     }
 
-    for seed in range(2):
-        xml = sample_recphyloxml(model, family_index=0, seed=seed, max_events=50_000)
+    for seed, xml in enumerate(
+        sample_recphyloxmls(model, family_index=0, num_samples=2, seed=0, max_events=50_000)
+    ):
         counts = recphyloxml_event_counts(xml)
         for key, (lower, upper) in ranges.items():
             assert lower <= counts[key] <= upper, (seed, key, counts[key], lower, upper)

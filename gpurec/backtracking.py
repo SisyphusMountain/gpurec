@@ -269,6 +269,56 @@ def sample_recphyloxml(
         return output_path.read_text()
 
 
+def sample_recphyloxmls(
+    model: GeneReconModel,
+    *,
+    family_index: int = 0,
+    num_samples: int,
+    seed: int = 0,
+    max_events: int | None = None,
+    cargo_manifest: str | Path = _BACKTRACK_MANIFEST,
+) -> list[str]:
+    """Run the Rust sampler once and return multiple RecPhyloXML documents."""
+
+    if num_samples < 1:
+        raise ValueError("num_samples must be positive")
+    payload = export_backtracking_input(
+        model,
+        family_index=family_index,
+        seed=seed,
+        max_events=max_events,
+    )
+    manifest = Path(cargo_manifest)
+    with tempfile.TemporaryDirectory(prefix="gpurec-backtrack-") as tmp:
+        tmp_path = Path(tmp)
+        input_path = tmp_path / "input.json"
+        output_dir = tmp_path / "samples"
+        input_path.write_text(json.dumps(payload))
+        subprocess.run(
+            [
+                "cargo",
+                "run",
+                "--quiet",
+                "--manifest-path",
+                str(manifest),
+                "--",
+                "--samples",
+                str(num_samples),
+                "--seed",
+                str(seed),
+                "--output-dir",
+                str(output_dir),
+                str(input_path),
+            ],
+            check=True,
+            cwd=str(_REPO_ROOT),
+        )
+        return [
+            (output_dir / f"sample_{sample_idx}.xml").read_text()
+            for sample_idx in range(num_samples)
+        ]
+
+
 def recphyloxml_event_counts(xml: str, *, alerax_style: bool = True) -> dict[str, int]:
     """Count events in a RecPhyloXML document.
 
