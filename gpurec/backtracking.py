@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import tempfile
 import xml.etree.ElementTree as ET
@@ -21,6 +22,7 @@ from gpurec.core.preprocess_cpp import _load_extension as _load_species_gene_ext
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 _BACKTRACK_MANIFEST = _REPO_ROOT / "crates" / "gpurec-backtrack" / "Cargo.toml"
+_BACKTRACK_BINARY_ENV = "GPUREC_BACKTRACK_BIN"
 _EVENT_KEYS = ("S", "SL", "D", "DL", "T", "TL", "L", "Leaf")
 
 
@@ -74,6 +76,20 @@ def _family_origination_probs(
             raise ValueError(f"origination_probs shape {tuple(probs.shape)} incompatible with S={S}")
         return _tensor_list(probs[family_index], dtype=torch.float64)
     raise ValueError(f"unsupported origination_probs shape {tuple(probs.shape)}")
+
+
+def _backtrack_command(
+    *,
+    cargo_manifest: str | Path,
+    backtrack_binary: str | Path | None,
+) -> list[str]:
+    if backtrack_binary is None:
+        backtrack_binary = os.environ.get(_BACKTRACK_BINARY_ENV)
+    if backtrack_binary is not None:
+        return [str(Path(backtrack_binary))]
+
+    manifest = Path(cargo_manifest)
+    return ["cargo", "run", "--quiet", "--manifest-path", str(manifest), "--"]
 
 
 def _evaluate_backtracking_state(model: GeneReconModel) -> dict[str, Any]:
@@ -238,6 +254,7 @@ def sample_recphyloxml(
     seed: int | None = None,
     max_events: int | None = None,
     cargo_manifest: str | Path = _BACKTRACK_MANIFEST,
+    backtrack_binary: str | Path | None = None,
 ) -> str:
     """Run the Rust sampler and return one RecPhyloXML document."""
 
@@ -247,22 +264,16 @@ def sample_recphyloxml(
         seed=seed,
         max_events=max_events,
     )
-    manifest = Path(cargo_manifest)
     with tempfile.TemporaryDirectory(prefix="gpurec-backtrack-") as tmp:
         input_path = Path(tmp) / "input.json"
         output_path = Path(tmp) / "sample.xml"
         input_path.write_text(json.dumps(payload))
+        command = _backtrack_command(
+            cargo_manifest=cargo_manifest,
+            backtrack_binary=backtrack_binary,
+        )
         subprocess.run(
-            [
-                "cargo",
-                "run",
-                "--quiet",
-                "--manifest-path",
-                str(manifest),
-                "--",
-                str(input_path),
-                str(output_path),
-            ],
+            command + [str(input_path), str(output_path)],
             check=True,
             cwd=str(_REPO_ROOT),
         )
@@ -277,6 +288,7 @@ def sample_recphyloxmls(
     seed: int = 0,
     max_events: int | None = None,
     cargo_manifest: str | Path = _BACKTRACK_MANIFEST,
+    backtrack_binary: str | Path | None = None,
 ) -> list[str]:
     """Run the Rust sampler once and return multiple RecPhyloXML documents."""
 
@@ -288,20 +300,18 @@ def sample_recphyloxmls(
         seed=seed,
         max_events=max_events,
     )
-    manifest = Path(cargo_manifest)
     with tempfile.TemporaryDirectory(prefix="gpurec-backtrack-") as tmp:
         tmp_path = Path(tmp)
         input_path = tmp_path / "input.json"
         output_dir = tmp_path / "samples"
         input_path.write_text(json.dumps(payload))
+        command = _backtrack_command(
+            cargo_manifest=cargo_manifest,
+            backtrack_binary=backtrack_binary,
+        )
         subprocess.run(
-            [
-                "cargo",
-                "run",
-                "--quiet",
-                "--manifest-path",
-                str(manifest),
-                "--",
+            command
+            + [
                 "--samples",
                 str(num_samples),
                 "--seed",

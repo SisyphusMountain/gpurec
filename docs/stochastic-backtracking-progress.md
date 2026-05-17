@@ -11,6 +11,8 @@
   runs the Rust sampler and returns one XML document.
 - Added `sample_recphyloxmls()` plus Rust CLI `--samples/--output-dir` support
   so bulk comparisons reuse one exported state and one Rust process.
+- Added `GPUREC_BACKTRACK_BIN` / `backtrack_binary` support so Python callers
+  can invoke a prebuilt Rust binary instead of paying `cargo run` startup.
 - Added `gpurec.backtracking.recphyloxml_event_counts()` to report
   AleRax-style `S`, `SL`, `D`, `DL`, `T`, `TL`, `L`, and `Leaf` counts from
   gpurec RecPhyloXML.
@@ -27,6 +29,8 @@ Commands run:
 ```bash
 cargo test --manifest-path crates/gpurec-backtrack/Cargo.toml
 pytest -q tests/integration/test_stochastic_backtracking.py
+GPUREC_BACKTRACK_BIN=crates/gpurec-backtrack/target/release/gpurec-backtrack \
+  pytest -q tests/integration/test_stochastic_backtracking.py
 ```
 
 Both pass locally.
@@ -78,6 +82,8 @@ Current broader check:
 
 ```bash
 python scripts/compare_backtracking_alerax_events.py --families 10 --samples 20
+python scripts/compare_backtracking_alerax_events.py --families 10 --samples 20 \
+  --backtrack-binary crates/gpurec-backtrack/target/release/gpurec-backtrack
 ```
 
 For families `0000` through `0009`, `DL`, `L`, and `Leaf` match exactly. The
@@ -89,5 +95,5 @@ largest absolute mean deltas in this 20-sample run were small: `D` +0.33
 
 - Compare more families from `test_trees_100`, then move to the available
   HOGENOM fixtures.
-- Call a prebuilt Rust binary from the Python bridge for large bulk runs instead
-  of invoking `cargo run`.
+- Add larger-run summary artifacts once the broader fixture comparisons are
+  complete.

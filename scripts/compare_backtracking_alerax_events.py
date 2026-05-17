@@ -55,6 +55,7 @@ def compare_family(
     fixed_iters_pi: int,
     max_iters_e: int,
     tol_e: float,
+    backtrack_binary: Path | None,
 ) -> list[tuple[str, str, int, float, int, int, float, int, float]]:
     family_name = f"family_{family_index:04d}"
     alerax_dir = output_dir / "reconciliations" / "all"
@@ -89,6 +90,7 @@ def compare_family(
             num_samples=samples,
             seed=seed,
             max_events=100_000,
+            backtrack_binary=backtrack_binary,
         )
     ]
     alerax_summary = summarize(alerax_counts)
@@ -113,6 +115,7 @@ def main() -> None:
     parser.add_argument("--fixed-iters-pi", type=int, default=6)
     parser.add_argument("--max-iters-e", type=int, default=4000)
     parser.add_argument("--tol-e", type=float, default=1e-10)
+    parser.add_argument("--backtrack-binary", type=Path)
     args = parser.parse_args()
 
     if not torch.cuda.is_available():
@@ -134,6 +137,7 @@ def main() -> None:
             fixed_iters_pi=args.fixed_iters_pi,
             max_iters_e=args.max_iters_e,
             tol_e=args.tol_e,
+            backtrack_binary=args.backtrack_binary,
         ):
             family, key, a_min, a_mean, a_max, g_min, g_mean, g_max, delta = row
             print(
