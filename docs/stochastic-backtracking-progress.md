@@ -28,6 +28,7 @@ Commands run:
 
 ```bash
 cargo test --manifest-path crates/gpurec-backtrack/Cargo.toml
+cargo build --release --manifest-path crates/gpurec-backtrack/Cargo.toml
 pytest -q tests/integration/test_stochastic_backtracking.py
 GPUREC_BACKTRACK_BIN=crates/gpurec-backtrack/target/release/gpurec-backtrack \
   pytest -q tests/integration/test_stochastic_backtracking.py
@@ -39,8 +40,10 @@ Both pass locally.
 
 AleRax represents visible speciation-loss and transfer-loss histories in
 RecPhyloXML, but its saved `test_trees_100` samples do not emit same-species
-duplication-loss self-loops. The Rust sampler now contracts `HiddenDupLoss`
-while retaining visible `SL`/`TL`, which removes the earlier `DL` residual.
+duplication-loss self-loops or transfers whose recipient is immediately lost.
+The Rust sampler now contracts those hidden self-loops while retaining visible
+`SL` and donor-loss `TL`, which removes the earlier `DL` and HOGENOM `TL`
+residuals.
 
 First comparison target: `tests/data/test_trees_100`, `output_global`,
 `family_0000`, using AleRax global rates from
@@ -78,22 +81,30 @@ This matches the AleRax event taxonomy for the first small-family check. Raw
 XML tag counts differ because RecPhyloXML represents `SL` as a `<speciation>`
 node with an explicit direct `<loss>` child.
 
-Current broader check:
+Current broader checks:
 
 ```bash
-python scripts/compare_backtracking_alerax_events.py --families 10 --samples 20
-python scripts/compare_backtracking_alerax_events.py --families 10 --samples 20 \
+python scripts/compare_backtracking_alerax_events.py --families 100 --samples 20 \
+  --backtrack-binary crates/gpurec-backtrack/target/release/gpurec-backtrack
+python scripts/compare_backtracking_alerax_events.py \
+  --dataset tests/data/hogenom_bench \
+  --output-name output_alerax_corrected \
+  --families 20 --samples 20 \
   --backtrack-binary crates/gpurec-backtrack/target/release/gpurec-backtrack
 ```
 
-For families `0000` through `0009`, `DL`, `L`, and `Leaf` match exactly. The
-largest absolute mean deltas in this 20-sample run were small: `D` +0.33
-(`family_0006`), `T` -0.28 (`family_0006`), `SL` +0.22 (`family_0006`), and
-`TL` +0.15 (`family_0006`/`0008`).
+For all `test_trees_100` families, `DL`, `L`, and `Leaf` match exactly. With
+20 gpurec samples per family, the largest absolute mean deltas were `D` +0.33
+(`family_0006`), `T` -0.32 (`family_0098`), `SL` +0.30 (`family_0040`), and
+`TL` -0.26 (`family_0065`).
+
+For the first 20 HOGENOM bench families, `DL`, `L`, and `Leaf` also match
+exactly. With 20 gpurec samples per family, the largest absolute mean deltas
+were `SL` -2.42 (`family_0011`), `T` +1.27 (`family_0012`), `TL` +1.43
+(`family_0004`), and `S` +0.99 (`family_0013`); these families have much wider
+AleRax sample ranges than `test_trees_100`.
 
 ## Next Checks
 
-- Compare more families from `test_trees_100`, then move to the available
-  HOGENOM fixtures.
-- Add larger-run summary artifacts once the broader fixture comparisons are
-  complete.
+- Increase HOGENOM sample counts for selected high-variance families.
+- Add larger-run summary artifacts if we need committed comparison tables.

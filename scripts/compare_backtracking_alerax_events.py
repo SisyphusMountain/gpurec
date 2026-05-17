@@ -69,6 +69,8 @@ def compare_family(
     duplication, loss, transfer = load_global_rates(output_dir)
     gene_tree = dataset / f"g_{family_index:04d}.nwk"
     if not gene_tree.exists():
+        gene_tree = dataset / f"g_{family_index}.nwk"
+    if not gene_tree.exists():
         raise FileNotFoundError(gene_tree)
 
     model = GeneReconModel.from_trees(

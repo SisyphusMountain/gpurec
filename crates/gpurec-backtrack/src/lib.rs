@@ -398,13 +398,11 @@ impl<'a> Sampler<'a> {
                 }])
             }
             Term::HiddenTransferLossRecipient => {
-                let recipient = self.sample_extinction_recipient(species)?;
-                self.event_mapping[node_idx] = Event::Transfer;
-                let cont = self.add_node("", Event::Leaf, species, Some(node_idx));
-                let loss = self.add_node("loss", Event::Loss, recipient, Some(node_idx));
-                self.set_children_random(node_idx, cont, loss);
+                // A transfer to an immediately extinct recipient leaves the
+                // retained lineage on the donor branch, so AleRax does not emit
+                // a RecPhyloXML transfer-loss node for it.
                 Ok(vec![WorkItem {
-                    node_idx: cont,
+                    node_idx,
                     clade: Some(clade),
                     species,
                 }])
@@ -567,15 +565,6 @@ impl<'a> Sampler<'a> {
                     input.pi.get(clade, recipient) + input.max_transfer[donor],
                 )
             })
-            .collect::<Vec<_>>();
-        sample_index(&candidates, &mut self.rng)
-    }
-
-    fn sample_extinction_recipient(&mut self, donor: usize) -> Result<usize, BacktrackError> {
-        let input = self.prepared.input;
-        let candidates = (0..input.pi.cols)
-            .filter(|recipient| !self.prepared.species.ancestors[donor].contains(recipient))
-            .map(|recipient| (recipient, input.e[recipient] + input.max_transfer[donor]))
             .collect::<Vec<_>>();
         sample_index(&candidates, &mut self.rng)
     }
@@ -850,6 +839,25 @@ mod tests {
         let root = sampler.add_node("", Event::Speciation, 2, None);
 
         let children = sampler.apply_term(root, 2, 2, Term::HiddenDupLoss).unwrap();
+
+        assert_eq!(sampler.nodes.len(), 1);
+        assert_eq!(sampler.event_mapping[root], Event::Speciation);
+        assert_eq!(children.len(), 1);
+        assert_eq!(children[0].node_idx, root);
+        assert_eq!(children[0].clade, Some(2));
+        assert_eq!(children[0].species, 2);
+    }
+
+    #[test]
+    fn hidden_transfer_recipient_loss_requeues_without_xml_nodes() {
+        let input = speciation_input();
+        let prepared = PreparedBacktracker::new(&input).unwrap();
+        let mut sampler = Sampler::new(&prepared, 3);
+        let root = sampler.add_node("", Event::Speciation, 2, None);
+
+        let children = sampler
+            .apply_term(root, 2, 2, Term::HiddenTransferLossRecipient)
+            .unwrap();
 
         assert_eq!(sampler.nodes.len(), 1);
         assert_eq!(sampler.event_mapping[root], Event::Speciation);
