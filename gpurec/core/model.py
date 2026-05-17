@@ -205,6 +205,7 @@ class GeneDataset:
         self.families = families
         self.family_names = list(family_names)
         self.gene_tree_paths = family_tree_paths
+        self.leaf_species_maps = [dict(m) for m in leaf_species_maps]
         self.species_tree_path = species_tree_path
 
         self.num_families = len(families)

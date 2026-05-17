@@ -1,0 +1,349 @@
+"""Rust stochastic backtracking bridge for gpurec models."""
+
+from __future__ import annotations
+
+import json
+import subprocess
+import tempfile
+import xml.etree.ElementTree as ET
+from pathlib import Path
+from typing import Any
+
+import torch
+
+from gpurec.api.autograd import _extract_parameters
+from gpurec.api.model import GeneReconModel
+from gpurec.core.forward import Pi_wave_forward
+from gpurec.core.likelihood import E_fixed_point
+from gpurec.core.model import GeneDataset
+from gpurec.core.preprocess_cpp import _load_extension as _load_species_gene_ext
+
+
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+_BACKTRACK_MANIFEST = _REPO_ROOT / "crates" / "gpurec-backtrack" / "Cargo.toml"
+_EVENT_KEYS = ("S", "SL", "D", "DL", "T", "TL", "L", "Leaf")
+
+
+def _tensor_list(value: Any, *, dtype: torch.dtype | None = None) -> list:
+    tensor = torch.as_tensor(value)
+    if dtype is not None:
+        tensor = tensor.to(dtype=dtype)
+    return tensor.detach().cpu().tolist()
+
+
+def _family_offsets(dataset: GeneDataset) -> list[int]:
+    offsets: list[int] = []
+    total = 0
+    for family in dataset.families:
+        offsets.append(total)
+        total += int(family["C"])
+    return offsets
+
+
+def _species_vector(param: torch.Tensor, *, family_index: int, S: int) -> torch.Tensor:
+    param = torch.as_tensor(param).detach()
+    if param.ndim == 0:
+        return param.reshape(1).expand(S)
+    if param.ndim == 1:
+        if int(param.shape[0]) == S:
+            return param
+        return param[family_index].reshape(1).expand(S)
+    if param.ndim == 2:
+        if int(param.shape[1]) == S:
+            return param[family_index]
+        if int(param.shape[1]) == 1:
+            return param[family_index, 0].reshape(1).expand(S)
+    raise ValueError(f"cannot convert parameter with shape {tuple(param.shape)} to [S]")
+
+
+def _family_origination_probs(
+    probs: torch.Tensor | None,
+    *,
+    family_index: int,
+    S: int,
+) -> list[float] | None:
+    if probs is None:
+        return None
+    probs = probs.detach()
+    if probs.ndim == 1:
+        if int(probs.shape[0]) != S:
+            raise ValueError(f"origination_probs length {int(probs.shape[0])} != S={S}")
+        return _tensor_list(probs, dtype=torch.float64)
+    if probs.ndim == 2:
+        if int(probs.shape[1]) != S:
+            raise ValueError(f"origination_probs shape {tuple(probs.shape)} incompatible with S={S}")
+        return _tensor_list(probs[family_index], dtype=torch.float64)
+    raise ValueError(f"unsupported origination_probs shape {tuple(probs.shape)}")
+
+
+def _evaluate_backtracking_state(model: GeneReconModel) -> dict[str, Any]:
+    static = model._active_static()
+    theta = model._active_theta().detach()
+    log_pS, log_pD, log_pL, max_transfer_vec = _extract_parameters(theta, static)
+    e_max_iters = static.fixed_iters_E if static.fixed_iters_E is not None else static.max_iters_E
+    e_tolerance = (
+        static.e_logsumexp_tol
+        if static.adaptive_iters
+        else (-1.0 if static.fixed_iters_E is not None else static.tol_E)
+    )
+    E_out = E_fixed_point(
+        species_helpers=static.species_helpers,
+        log_pS=log_pS,
+        log_pD=log_pD,
+        log_pL=log_pL,
+        max_transfer_mat=max_transfer_vec,
+        max_iters=e_max_iters,
+        tolerance=e_tolerance,
+        warm_start_E=None,
+        dtype=static.dtype,
+        device=static.device,
+        ancestors_T=static.ancestors_T,
+        check_interval=static.convergence_check_interval,
+        convergence_metric="logsumexp" if static.adaptive_iters else "max_diff",
+    )
+    Pi_out = Pi_wave_forward(
+        wave_layout=static.wave_layout,
+        species_helpers=static.species_helpers,
+        E=E_out["E"],
+        Ebar=E_out["E_bar"],
+        E_s1=E_out["E_s1"],
+        E_s2=E_out["E_s2"],
+        log_pS=log_pS,
+        log_pD=log_pD,
+        max_transfer_mat=max_transfer_vec,
+        device=static.device,
+        dtype=static.dtype,
+        fixed_iters=static.fixed_iters_Pi,
+        return_original=True,
+        return_root_rows=False,
+        family_idx=(static.wave_layout.get("family_idx") if static.genewise else None),
+        convergence_tolerance=(static.pi_max_diff_tol if static.adaptive_iters else -1.0),
+        convergence_check_interval=static.convergence_check_interval,
+    )
+    return {
+        "E": E_out["E"],
+        "Pi": Pi_out["Pi"],
+        "log_pS": log_pS,
+        "log_pD": log_pD,
+        "max_transfer": max_transfer_vec,
+        "origination_probs": static.origination_probs,
+    }
+
+
+def _family_details(dataset: GeneDataset, family_index: int) -> dict[str, Any]:
+    ext = _load_species_gene_ext()
+    name = dataset.family_names[family_index]
+    leaf_map = dataset.leaf_species_maps[family_index]
+    raw_all = ext.preprocess_multiple_families(
+        str(dataset.species_tree_path),
+        {name: dataset.gene_tree_paths[family_index]},
+        leaf_species_maps={name: leaf_map} if leaf_map else {},
+        include_details=True,
+        include_species_matrices=False,
+    )
+    return raw_all["families"][name]
+
+
+def export_backtracking_input(
+    model: GeneReconModel,
+    *,
+    family_index: int = 0,
+    seed: int | None = None,
+    max_events: int | None = None,
+) -> dict[str, Any]:
+    """Build the JSON-serializable state consumed by the Rust sampler.
+
+    The exported probabilities are base-2 logs in gpurec's local clade order
+    for the selected family.
+    """
+
+    dataset = model._dataset
+    if family_index < 0 or family_index >= len(dataset.families):
+        raise IndexError(f"family_index {family_index} outside 0..{len(dataset.families)}")
+
+    state = _evaluate_backtracking_state(model)
+    offsets = _family_offsets(dataset)
+    offset = offsets[family_index]
+    family = dataset.families[family_index]
+    C = int(family["C"])
+    S = int(dataset.S)
+    ccp = family["ccp_helpers"]
+    details = _family_details(dataset, family_index)
+    detail_ccp = details["ccp"]
+
+    pi = state["Pi"][offset : offset + C].detach().to(dtype=torch.float64).cpu().contiguous()
+    e = _species_vector(state["E"], family_index=family_index, S=S).to(dtype=torch.float64)
+    log_p_s = _species_vector(state["log_pS"], family_index=family_index, S=S).to(dtype=torch.float64)
+    log_p_d = _species_vector(state["log_pD"], family_index=family_index, S=S).to(dtype=torch.float64)
+    max_transfer = _species_vector(state["max_transfer"], family_index=family_index, S=S).to(
+        dtype=torch.float64
+    )
+
+    N = int(ccp["N_splits"])
+    parents = torch.as_tensor(ccp["split_parents_sorted"], dtype=torch.long).cpu()
+    leftrights = torch.as_tensor(ccp["split_leftrights_sorted"], dtype=torch.long).cpu()
+    lefts = leftrights[:N]
+    rights = leftrights[N:]
+    log_probs = torch.as_tensor(ccp["log_split_probs_sorted"], dtype=torch.float64).cpu()
+    splits = [
+        {
+            "parent": int(parent),
+            "left": int(left),
+            "right": int(right),
+            "log_prob": float(log_prob),
+        }
+        for parent, left, right, log_prob in zip(parents, lefts, rights, log_probs)
+    ]
+
+    leaf_species: list[int | None] = [None] * C
+    leaf_rows = torch.as_tensor(family["leaf_row_index"], dtype=torch.long).cpu()
+    leaf_cols = torch.as_tensor(family["leaf_col_index"], dtype=torch.long).cpu()
+    for row, col in zip(leaf_rows.tolist(), leaf_cols.tolist()):
+        leaf_species[int(row)] = int(col)
+
+    labels = list(detail_ccp.get("clade_leaf_labels", [""] * C))
+    if len(labels) != C:
+        labels = [""] * C
+
+    species_names = [str(x) for x in dataset.species_helpers["names"]]
+    species_newick = Path(dataset.species_tree_path).read_text()
+    origination_probs = _family_origination_probs(
+        state["origination_probs"],
+        family_index=family_index,
+        S=S,
+    )
+
+    return {
+        "species_newick": species_newick,
+        "species_names_postorder": species_names,
+        "root_clade": int(family["root_clade_id"]),
+        "leaf_species": leaf_species,
+        "clade_leaf_labels": labels,
+        "splits": splits,
+        "pi": {"rows": C, "cols": S, "data": pi.reshape(-1).tolist()},
+        "e": _tensor_list(e, dtype=torch.float64),
+        "log_p_s": _tensor_list(log_p_s, dtype=torch.float64),
+        "log_p_d": _tensor_list(log_p_d, dtype=torch.float64),
+        "max_transfer": _tensor_list(max_transfer, dtype=torch.float64),
+        "origination_probs": origination_probs,
+        "seed": seed,
+        "max_events": max_events,
+    }
+
+
+def sample_recphyloxml(
+    model: GeneReconModel,
+    *,
+    family_index: int = 0,
+    seed: int | None = None,
+    max_events: int | None = None,
+    cargo_manifest: str | Path = _BACKTRACK_MANIFEST,
+) -> str:
+    """Run the Rust sampler and return one RecPhyloXML document."""
+
+    payload = export_backtracking_input(
+        model,
+        family_index=family_index,
+        seed=seed,
+        max_events=max_events,
+    )
+    manifest = Path(cargo_manifest)
+    with tempfile.TemporaryDirectory(prefix="gpurec-backtrack-") as tmp:
+        input_path = Path(tmp) / "input.json"
+        output_path = Path(tmp) / "sample.xml"
+        input_path.write_text(json.dumps(payload))
+        subprocess.run(
+            [
+                "cargo",
+                "run",
+                "--quiet",
+                "--manifest-path",
+                str(manifest),
+                "--",
+                str(input_path),
+                str(output_path),
+            ],
+            check=True,
+            cwd=str(_REPO_ROOT),
+        )
+        return output_path.read_text()
+
+
+def recphyloxml_event_counts(xml: str, *, alerax_style: bool = True) -> dict[str, int]:
+    """Count events in a RecPhyloXML document.
+
+    When ``alerax_style`` is true, a speciation/duplication/transfer node with
+    an immediate loss child is counted as ``SL``/``DL``/``TL`` and that direct
+    loss child is not also counted as ``L``. This matches AleRax's
+    ``*_eventCounts_*.txt`` convention more closely than raw XML tag counts.
+    """
+
+    root = ET.fromstring(xml)
+    counts = {key: 0 for key in _EVENT_KEYS}
+
+    def local_name(tag: str) -> str:
+        return tag.rsplit("}", 1)[-1]
+
+    def direct_children(clade) -> list:
+        return [child for child in clade if local_name(child.tag) == "clade"]
+
+    def event_name(clade) -> str | None:
+        events = next((child for child in clade if local_name(child.tag) == "eventsRec"), None)
+        if events is None:
+            return None
+        for event in events:
+            name = local_name(event.tag)
+            if name in {"speciation", "duplication", "branchingOut", "loss", "leaf"}:
+                return name
+        return None
+
+    def visit(clade, *, suppress_loss: bool = False) -> None:
+        event = event_name(clade)
+        children = direct_children(clade)
+        child_events = [event_name(child) for child in children]
+        has_loss_child = "loss" in child_events
+
+        loss_children_are_composite = False
+        if event == "speciation":
+            if alerax_style and has_loss_child:
+                counts["SL"] += 1
+                loss_children_are_composite = True
+            else:
+                counts["S"] += 1
+        elif event == "duplication":
+            if alerax_style and has_loss_child:
+                counts["DL"] += 1
+                loss_children_are_composite = True
+            else:
+                counts["D"] += 1
+        elif event == "branchingOut":
+            if alerax_style and has_loss_child:
+                counts["TL"] += 1
+                loss_children_are_composite = True
+            else:
+                counts["T"] += 1
+        elif event == "loss":
+            if not suppress_loss:
+                counts["L"] += 1
+        elif event == "leaf":
+            counts["Leaf"] += 1
+
+        for child in children:
+            visit(
+                child,
+                suppress_loss=loss_children_are_composite and event_name(child) == "loss",
+            )
+
+    for rec_gene_tree in root.iter():
+        if local_name(rec_gene_tree.tag) != "recGeneTree":
+            continue
+        phylogeny = next(
+            (child for child in rec_gene_tree if local_name(child.tag) == "phylogeny"),
+            None,
+        )
+        if phylogeny is None:
+            continue
+        clade = next((child for child in phylogeny if local_name(child.tag) == "clade"), None)
+        if clade is not None:
+            visit(clade)
+    return counts

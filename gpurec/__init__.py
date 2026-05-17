@@ -12,8 +12,16 @@ Lower-level access:
 """
 
 from gpurec.api import GeneReconModel, UniformChunkedReconModel
+from gpurec.backtracking import (
+    export_backtracking_input,
+    recphyloxml_event_counts,
+    sample_recphyloxml,
+)
 
 __all__ = [
     "GeneReconModel",
     "UniformChunkedReconModel",
+    "export_backtracking_input",
+    "recphyloxml_event_counts",
+    "sample_recphyloxml",
 ]
