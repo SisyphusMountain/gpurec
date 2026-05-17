@@ -13,6 +13,8 @@
   AleRax-style `S`, `SL`, `D`, `DL`, `T`, `TL`, `L`, and `Leaf` counts from
   gpurec RecPhyloXML.
 - Added a CUDA integration smoke test on `tests/data/test_trees_3`.
+- Added a skipped-when-missing AleRax event-range integration test for
+  `tests/data/test_trees_100/output_global/family_0000`.
 
 ## Verification
 
