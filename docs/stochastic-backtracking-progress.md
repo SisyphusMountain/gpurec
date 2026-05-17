@@ -104,7 +104,11 @@ were `SL` -2.42 (`family_0011`), `T` +1.27 (`family_0012`), `TL` +1.43
 (`family_0004`), and `S` +0.99 (`family_0013`); these families have much wider
 AleRax sample ranges than `test_trees_100`.
 
+Higher-sample checks support that variance explanation: with 100 gpurec samples,
+`family_0011` has `SL` delta -0.22 and `TL` delta -0.98, while `family_0004`
+has `SL` delta -1.01 and `TL` delta +0.07.
+
 ## Next Checks
 
-- Increase HOGENOM sample counts for selected high-variance families.
-- Add larger-run summary artifacts if we need committed comparison tables.
+- Run larger HOGENOM batches when runtime budget allows.
+- Add committed comparison tables if we need reproducible audit artifacts.
