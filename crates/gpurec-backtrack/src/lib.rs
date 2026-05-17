@@ -120,6 +120,7 @@ struct Sampler<'a> {
     nodes: Vec<FlatNode>,
     node_mapping: Vec<Option<usize>>,
     event_mapping: Vec<Event>,
+    sampled_terms: usize,
 }
 
 pub fn sample_recphyloxml(input: &BacktrackInput) -> Result<String, BacktrackError> {
@@ -208,6 +209,7 @@ impl<'a> Sampler<'a> {
             nodes: Vec::new(),
             node_mapping: Vec::new(),
             event_mapping: Vec::new(),
+            sampled_terms: 0,
         }
     }
 
@@ -224,6 +226,13 @@ impl<'a> Sampler<'a> {
             if self.nodes.len() > self.prepared.max_events {
                 return Err(BacktrackError::Sampling(format!(
                     "sample exceeded max_events={}",
+                    self.prepared.max_events
+                )));
+            }
+            self.sampled_terms += 1;
+            if self.sampled_terms > self.prepared.max_events {
+                return Err(BacktrackError::Sampling(format!(
+                    "sample exceeded max_events={} sampled terms",
                     self.prepared.max_events
                 )));
             }
@@ -380,12 +389,10 @@ impl<'a> Sampler<'a> {
                 Ok(Vec::new())
             }
             Term::HiddenDupLoss => {
-                self.event_mapping[node_idx] = Event::Duplication;
-                let cont = self.add_node("", Event::Leaf, species, Some(node_idx));
-                let loss = self.add_node("loss", Event::Loss, species, Some(node_idx));
-                self.set_children_random(node_idx, cont, loss);
+                // AleRax marginalizes this unobservable same-species self-loop
+                // out of RecPhyloXML, unlike visible speciation/transfer losses.
                 Ok(vec![WorkItem {
-                    node_idx: cont,
+                    node_idx,
                     clade: Some(clade),
                     species,
                 }])
@@ -833,6 +840,23 @@ mod tests {
                 .count(),
             1
         );
+    }
+
+    #[test]
+    fn hidden_dup_loss_requeues_without_xml_nodes() {
+        let input = speciation_input();
+        let prepared = PreparedBacktracker::new(&input).unwrap();
+        let mut sampler = Sampler::new(&prepared, 3);
+        let root = sampler.add_node("", Event::Speciation, 2, None);
+
+        let children = sampler.apply_term(root, 2, 2, Term::HiddenDupLoss).unwrap();
+
+        assert_eq!(sampler.nodes.len(), 1);
+        assert_eq!(sampler.event_mapping[root], Event::Speciation);
+        assert_eq!(children.len(), 1);
+        assert_eq!(children[0].node_idx, root);
+        assert_eq!(children[0].clade, Some(2));
+        assert_eq!(children[0].species, 2);
     }
 
     #[test]
