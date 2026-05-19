@@ -1616,6 +1616,24 @@ def test_hogenom_scripts_use_public_model_surface():
     assert offenders == []
 
 
+def test_hogenom_scripts_are_marked_as_legacy_experiment_surface():
+    root = Path(__file__).resolve().parents[2]
+    scripts_readme = (root / "scripts" / "README.md").read_text(encoding="utf-8")
+    project_readme = (root / "README.md").read_text(encoding="utf-8")
+
+    assert "gpurec optimize" in scripts_readme
+    assert "legacy" in scripts_readme
+    assert "HOGENOM reproducers" in scripts_readme
+    assert "legacy checkout-local experiment launchers" in project_readme
+    for script_name in (
+        "hogenom_ccp_wandb_opt.py",
+        "fast_optimize_hogenom_ccp.py",
+    ):
+        script_text = (root / "scripts" / script_name).read_text(encoding="utf-8")
+        assert script_name in scripts_readme
+        assert "Legacy checkout-local HOGENOM experiment launcher" in script_text
+
+
 def test_xml_species_and_transfer_counts():
     xml = """
     <recPhylo>

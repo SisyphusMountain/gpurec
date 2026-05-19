@@ -127,9 +127,9 @@ Rust toolchain and the local `rustree/` checkout expected by
 ## HOGENOM Workflows
 
 The installed `gpurec` CLI is the supported general workflow.  The HOGENOM
-scripts under `scripts/` are checkout-local experiment launchers and diagnostics
-for a local, untracked HOGENOM benchmark layout.  The HOGENOM data under
-`tests/data/HOGENOM/...` is intentionally not distributed with the package.
+scripts under `scripts/` are legacy checkout-local experiment launchers and
+diagnostics for a local, untracked HOGENOM benchmark layout.  The HOGENOM data
+under `tests/data/HOGENOM/...` is intentionally not distributed with the package.
 The optimization launchers default to those local paths; pass explicit
 `--species-tree`, `--families-file`, `--preprocess-cache`, and `--out-dir`
 values to those launchers for other datasets.  The one-pass profiler is tied to

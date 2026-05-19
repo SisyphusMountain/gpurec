@@ -1,3 +1,10 @@
+"""Legacy checkout-local HOGENOM experiment launcher.
+
+Prefer the installed ``gpurec optimize`` workflow for supported production
+runs.  This script is retained for reproducing historical HOGENOM experiments
+with experiment-specific optimizer and reporting logic.
+"""
+
 from __future__ import annotations
 
 import argparse

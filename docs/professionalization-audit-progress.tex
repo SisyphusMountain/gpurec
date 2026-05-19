@@ -676,6 +676,16 @@ sampler, drops unused heavy detail fields, stores leaf labels on each public
 are not reused without labels.  The public-surface guard now forbids private
 preprocessing imports from returning to the workflow and backtracking bridge.
 
+\subsection{Legacy HOGENOM Script Boundary}
+
+The large checkout-local HOGENOM launchers are now explicitly marked as legacy
+experiment reproducers rather than supported production workflow code.  The
+project README and a new \texttt{scripts/README.md} point production users to
+\texttt{gpurec optimize} and state that new shared workflow behavior belongs in
+\texttt{gpurec.workflow} first.  A CPU unit guard checks that the two large
+launchers keep their legacy module headers and remain named in the scripts
+README.
+
 \section{Verification Log}
 
 \begin{center}
@@ -1142,6 +1152,18 @@ Workflow and family parser regressions after metadata refactor &
 \texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
 CPU unit gate after backtracking public metadata &
 \texttt{141 passed, 27 deselected} \\
+\texttt{python -m py\_compile scripts/fast\_optimize\_hogenom\_ccp.py ...} &
+Legacy HOGENOM script-boundary syntax &
+\texttt{ok} \\
+\texttt{pytest -q tests/unit/test\_workflow.py::test\_hogenom\_scripts\_... ...} &
+Focused legacy HOGENOM script-boundary regressions &
+\texttt{2 passed} \\
+\texttt{pytest -q tests/unit/test\_workflow.py} &
+Workflow suite after HOGENOM script-boundary docs &
+\texttt{105 passed} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
+CPU unit gate after HOGENOM script-boundary docs &
+\texttt{142 passed, 27 deselected} \\
 \bottomrule
 \end{tabular}
 \end{center}
