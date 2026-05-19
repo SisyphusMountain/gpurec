@@ -9,6 +9,9 @@ Fast CPU gate:
 CUDA_VISIBLE_DEVICES='' pytest -q -m "unit and not gpu"
 ```
 
+The GitHub Actions workflow in `.github/workflows/cpu-unit.yml` runs this same
+gate on pushes and pull requests.
+
 The explicit equivalent is useful when bisecting a specific audit surface:
 
 ```bash

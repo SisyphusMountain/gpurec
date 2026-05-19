@@ -608,6 +608,14 @@ optimize-then-sample command, and a unit test pins the mapping for output
 directory, sample count, seed, family selection, event limit, and backtracking
 binary options.
 
+\subsection{CPU Unit CI Gate}
+
+The documented fast CPU gate is now represented in repository automation.
+A new GitHub Actions workflow installs the package with development test
+dependencies and runs the CPU unit marker expression on pushes and pull
+requests.  The test README points to the workflow so local and automated
+validation use the same gate.
+
 \section{Verification Log}
 
 \begin{center}
@@ -983,6 +991,12 @@ Shared sampling CLI mapping regressions &
 \texttt{68 passed after sampling CLI mapping cleanup} \\
 \texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
 CPU unit gate after sampling CLI mapping cleanup &
+\texttt{101 passed, 27 deselected} \\
+\texttt{rg -n "CPU Unit Tests\textbar{}pytest -q -m ...\textbar{}cpu-unit.yml" .github/... tests/README.md} &
+CPU CI gate source check &
+\texttt{workflow and README command present} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
+CPU unit gate after CI workflow addition &
 \texttt{101 passed, 27 deselected} \\
 \bottomrule
 \end{tabular}
