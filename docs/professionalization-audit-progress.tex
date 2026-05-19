@@ -929,6 +929,14 @@ requires the bundled C++ preprocessing sources under
 that downstream source-distribution installers rely on, complementing the
 wheel install and CLI smoke checks.
 
+\subsection{Legacy Checkpoint Safe Loading}
+
+The retained HOGENOM checkpoint rate exporter and legacy W\&B optimizer resume
+path now use PyTorch's \texttt{weights\_only=True} loading mode and reject
+non-dictionary checkpoint payloads.  This brings legacy script checkpoint
+consumers in line with the supported workflow loader and removes the remaining
+tracked \texttt{weights\_only=False} checkpoint loads.
+
 \section{Verification Log}
 
 \begin{center}
@@ -1718,6 +1726,21 @@ CPU unit gate after path config and sdist guards &
 \texttt{236 passed, 28 deselected} \\
 \texttt{python scripts/check\_release\_metadata.py} &
 Release metadata checker after sdist guard &
+\texttt{expected license blockers} \\
+\texttt{python -m py\_compile scripts/export\_hogenom\_rates\_from\_checkpoint.py ...} &
+Legacy checkpoint safe-load syntax &
+\texttt{ok} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q tests/unit/test\_legacy\_scripts.py ...} &
+Focused legacy checkpoint safe-load guards &
+\texttt{14 passed} \\
+\texttt{rg -n "weights\_only=False\textbar{}torch\textbackslash{}.load\textbackslash{}(" scripts gpurec tests -g '*.py'} &
+Tracked Torch load call audit &
+\texttt{only weights\_only=True loads remain} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
+CPU unit gate after legacy checkpoint safe-loading &
+\texttt{239 passed, 28 deselected} \\
+\texttt{python scripts/check\_release\_metadata.py} &
+Release metadata checker after legacy checkpoint safe-loading &
 \texttt{expected license blockers} \\
 \bottomrule
 \end{tabular}

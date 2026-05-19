@@ -3,7 +3,10 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+import torch
 
+from scripts import export_hogenom_rates_from_checkpoint as export_rates
+from scripts import hogenom_ccp_wandb_opt as hogenom_opt
 from scripts.compare_backtracking_alerax_events import load_rates
 from scripts.export_hogenom_rates_from_checkpoint import (
     parse_newick,
@@ -121,3 +124,60 @@ def test_export_rates_parse_newick_keeps_valid_single_leaf(tmp_path: Path):
     tree_path.write_text("SpeciesA;\n", encoding="utf-8")
 
     assert species_order_labels(parse_newick(tree_path)) == ["SpeciesA"]
+
+
+def test_export_rates_checkpoint_loader_uses_weights_only(
+    tmp_path: Path,
+    monkeypatch,
+):
+    calls: list[tuple[Path, str, bool]] = []
+
+    def fake_load(path, *, map_location, weights_only):
+        calls.append((path, map_location, weights_only))
+        return {"theta": torch.zeros(1, 3)}
+
+    monkeypatch.setattr(export_rates.torch, "load", fake_load)
+
+    checkpoint = export_rates.load_checkpoint(tmp_path / "checkpoint.pt")
+
+    assert torch.equal(checkpoint["theta"], torch.zeros(1, 3))
+    assert calls == [(tmp_path / "checkpoint.pt", "cpu", True)]
+
+
+def test_export_rates_checkpoint_loader_rejects_non_dict_payload(
+    tmp_path: Path,
+    monkeypatch,
+):
+    def fake_load(path, *, map_location, weights_only):
+        return []
+
+    monkeypatch.setattr(export_rates.torch, "load", fake_load)
+
+    with pytest.raises(RuntimeError, match="dictionary payload"):
+        export_rates.load_checkpoint(tmp_path / "checkpoint.pt")
+
+
+def test_hogenom_wandb_checkpoint_loader_uses_weights_only(
+    tmp_path: Path,
+    monkeypatch,
+):
+    calls: list[tuple[Path, torch.device, bool]] = []
+    device = torch.device("cpu")
+
+    def fake_load(path, *, map_location, weights_only):
+        calls.append((path, map_location, weights_only))
+        raise RuntimeError("blocked unsafe legacy checkpoint")
+
+    monkeypatch.setattr(hogenom_opt.torch, "load", fake_load)
+
+    with pytest.raises(RuntimeError, match="could not safely load checkpoint"):
+        hogenom_opt.load_checkpoint(
+            tmp_path / "checkpoint.pt",
+            model=None,  # type: ignore[arg-type]
+            branch_params=None,
+            optimizers={},
+            config=None,  # type: ignore[arg-type]
+            device=device,
+        )
+
+    assert calls == [(tmp_path / "checkpoint.pt", device, True)]

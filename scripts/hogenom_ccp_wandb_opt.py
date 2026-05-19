@@ -12,6 +12,7 @@ import csv
 import datetime as _datetime
 import json
 import math
+import pickle
 import sys
 import time
 from dataclasses import asdict, dataclass
@@ -996,7 +997,15 @@ def load_checkpoint(
     config: RunConfig,
     device: torch.device,
 ) -> tuple[int, float | None, int, dict[str, Any] | None]:
-    checkpoint = torch.load(path, map_location=device, weights_only=False)
+    try:
+        checkpoint = torch.load(path, map_location=device, weights_only=True)
+    except (OSError, pickle.UnpicklingError, RuntimeError, TypeError, ValueError) as exc:
+        raise RuntimeError(
+            f"could not safely load checkpoint {path}; regenerate the artifact "
+            "or migrate it from a trusted source before retrying"
+        ) from exc
+    if not isinstance(checkpoint, dict):
+        raise RuntimeError(f"checkpoint {path} must contain a dictionary payload")
     next_step = int(checkpoint.get("next_step", int(checkpoint.get("step", -1)) + 1))
     if branch_params is not None:
         branch_state = checkpoint.get("branchscaled")

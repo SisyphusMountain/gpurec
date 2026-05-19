@@ -4,8 +4,10 @@ from __future__ import annotations
 import argparse
 import csv
 import math
+import pickle
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import torch
 
@@ -134,6 +136,19 @@ def species_order_labels(root: TreeNode) -> list[str]:
     return labels
 
 
+def load_checkpoint(path: Path) -> dict[str, Any]:
+    try:
+        checkpoint = torch.load(path, map_location="cpu", weights_only=True)
+    except (OSError, pickle.UnpicklingError, RuntimeError, TypeError, ValueError) as exc:
+        raise RuntimeError(
+            f"could not safely load checkpoint {path}; regenerate the artifact "
+            "or migrate it from a trusted source before retrying"
+        ) from exc
+    if not isinstance(checkpoint, dict):
+        raise RuntimeError(f"checkpoint {path} must contain a dictionary payload")
+    return checkpoint
+
+
 def load_effective_theta(checkpoint: dict) -> tuple[torch.Tensor, dict[str, torch.Tensor] | None]:
     branch = checkpoint.get("branchscaled")
     if branch is not None:
@@ -217,10 +232,13 @@ def main() -> None:
     parser.add_argument("--out", required=True, type=Path)
     args = parser.parse_args()
 
-    checkpoint = torch.load(args.checkpoint, map_location="cpu", weights_only=False)
-    labels = species_order_labels(parse_newick(args.tree))
-    theta, branch = load_effective_theta(checkpoint)
-    write_rates(args.out, labels, theta, branch)
+    try:
+        checkpoint = load_checkpoint(args.checkpoint)
+        labels = species_order_labels(parse_newick(args.tree))
+        theta, branch = load_effective_theta(checkpoint)
+        write_rates(args.out, labels, theta, branch)
+    except (OSError, RuntimeError, ValueError) as exc:
+        parser.error(str(exc))
     print(
         f"wrote {args.out} from step={checkpoint.get('step', 'unknown')} "
         f"phase={checkpoint.get('optimizer_phase', 'unknown')}"
