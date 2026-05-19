@@ -98,6 +98,16 @@ def _selected_indices(
     return list(range(int(total)))
 
 
+def _validate_selected_indices(selected: Sequence[int], clade_counts: Sequence[int]) -> None:
+    limit = len(clade_counts)
+    for position, idx in enumerate(selected):
+        if idx < 0 or idx >= limit:
+            raise ValueError(
+                f"family index {idx} at selected position {position} is outside "
+                f"valid range [0, {limit})"
+            )
+
+
 def _require_indexed_stats(
     name: str,
     values: Sequence[int] | None,
@@ -158,6 +168,7 @@ def plan_family_batches(
         total=total,
         clade_counts=clade_counts,
     )
+    _validate_selected_indices(selected, clade_counts)
     family_limit = int(family_chunk_size)
     if family_limit < 0:
         raise ValueError("family_chunk_size must be non-negative")

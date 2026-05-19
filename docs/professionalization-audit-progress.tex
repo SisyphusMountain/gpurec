@@ -992,6 +992,14 @@ integer controls are normalized.  Numeric strings and integral values are
 stored as floats, while booleans are rejected before they can masquerade as
 rates, tolerances, or optimizer learning rates in downstream workflow code.
 
+\subsection{Batch Planner Family Index Validation}
+
+The shared resident/chunked batch planner now validates selected family indices
+against the available count arrays before any packing policy runs.  Negative
+indices no longer alias the last family through Python indexing, and positive
+out-of-range indices now fail with a clear \texttt{ValueError} instead of a
+late raw \texttt{IndexError} or inconsistent family metadata.
+
 \section{Verification Log}
 
 \begin{center}
@@ -1886,6 +1894,18 @@ CPU unit gate after direct \texttt{RunConfig} float normalization &
 \texttt{256 passed, 28 deselected} \\
 \texttt{python scripts/check\_release\_metadata.py} &
 Release metadata checker after direct \texttt{RunConfig} float normalization &
+\texttt{expected license blockers} \\
+\texttt{python -m py\_compile gpurec/core/batch\_planning.py tests/unit/test\_global\_wave\_scheduler.py} &
+Batch planner family-index validation syntax &
+\texttt{ok} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q tests/unit/test\_global\_wave\_scheduler.py} &
+Focused global scheduler and batch-planning guards &
+\texttt{16 passed} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
+CPU unit gate after batch planner family-index validation &
+\texttt{258 passed, 28 deselected} \\
+\texttt{python scripts/check\_release\_metadata.py} &
+Release metadata checker after batch planner family-index validation &
 \texttt{expected license blockers} \\
 \bottomrule
 \end{tabular}

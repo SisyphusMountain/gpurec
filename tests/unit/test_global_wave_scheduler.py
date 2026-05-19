@@ -302,6 +302,17 @@ def test_model_family_index_chunks_delegates_to_shared_planner():
     assert chunks == [[0, 4], [1, 3], [2]]
 
 
+@pytest.mark.parametrize("indices", [[-1], [2]])
+def test_plan_family_batches_rejects_out_of_range_indices(indices):
+    with pytest.raises(ValueError, match="family index"):
+        plan_family_batches(
+            indices=indices,
+            clade_counts=[5, 7],
+            family_chunk_size=0,
+            clade_budget=None,
+        )
+
+
 def test_depth_first_fit_groups_deep_families_under_clade_budget():
     chunks = [
         plan.indices
