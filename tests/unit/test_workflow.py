@@ -265,9 +265,15 @@ def test_workflow_and_backtracking_use_public_model_surface():
 def test_hogenom_wandb_helpers_use_public_model_surface():
     root = Path(__file__).resolve().parents[2]
     paths = [
+        root / "scripts" / "export_hogenom_rates_from_checkpoint.py",
         root / "scripts" / "hogenom_ccp_wandb_opt.py",
+        root / "scripts" / "hogenom_opt_helpers.py",
+        root / "scripts" / "make_hogenom_branchscale_penalty_report.py",
+        root / "scripts" / "optimize_hogenom_ccp_global_uniform.py",
         root / "scripts" / "optimize_hogenom_ccp_hydra.py",
+        root / "scripts" / "optimize_hogenom_ccp_specieswise_uniform.py",
         root / "scripts" / "optimize_hogenom_ccp_wandb.py",
+        root / "scripts" / "optimize_hogenom_penalty316_kkt.py",
     ]
     forbidden = (
         "model._",

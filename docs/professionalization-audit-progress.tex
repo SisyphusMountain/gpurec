@@ -219,6 +219,15 @@ lean-path performance regression analysis, and second-order optimization
 opportunities.  Local absolute workspace paths were removed from the lean-path
 note before tracking it.
 
+\subsection{HOGENOM Helper Scripts}
+
+The remaining source-like HOGENOM helper scripts were promoted under
+\texttt{scripts/}: rate export, global/specieswise uniform optimization,
+branchscale penalty reporting, KKT checking, shared optimizer helpers, and the
+R tree-rate plotting utility.  The helper scripts that select resident batches
+now use \texttt{select\_batch()} instead of private batch state, and the
+integration resident-batch test was adjusted to use public family names.
+
 \section{Verification Log}
 
 \begin{center}
@@ -232,18 +241,18 @@ Workflow and origination likelihood units &
 \texttt{pytest -q tests/unit/test\_global\_wave\_scheduler.py tests/unit/test\_workflow.py} &
 Shared batch planner and workflow units &
 \texttt{23 passed after batch-planner cleanup} \\
-\texttt{python -m py\_compile ...HOGENOM W\&B scripts...} &
-Curated experiment launcher syntax &
+\texttt{python -m py\_compile ...HOGENOM scripts...} &
+Curated experiment-helper syntax &
 \texttt{ok} \\
 \texttt{rg -n "/home/\textbar secret\textbar token\textbar api key" docs/...} &
 Promoted audit-note hygiene &
 \texttt{no matches} \\
 \texttt{pytest -q tests/unit/test\_workflow.py} &
 Workflow and public-surface source guards &
-\texttt{14 passed after W\&B launcher cleanup} \\
+\texttt{14 passed after HOGENOM helper cleanup} \\
 \texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q ...CPU fast gate...} &
 CPU-only audit gate &
-\texttt{37 passed after W\&B launcher cleanup} \\
+\texttt{37 passed after HOGENOM helper cleanup} \\
 \texttt{pytest --collect-only -q} &
 Collection after recursion exclusions &
 \texttt{64 tests collected in 0.85s} \\
@@ -266,8 +275,8 @@ YAML config UX &
 \section{Next Audit Targets}
 
 \begin{enumerate}[leftmargin=*]
-  \item Finish curating the remaining HOGENOM helper scripts and modified
-        notebooks into tracked source or explicitly ignored local artifacts.
+  \item Decide whether the remaining modified notebooks should be stripped and
+        committed or kept as local artifacts.
   \item Keep committing small, verified increments so the branch remains
         reviewable despite the larger audit scope.
 \end{enumerate}
