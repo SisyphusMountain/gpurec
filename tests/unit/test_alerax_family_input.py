@@ -176,6 +176,34 @@ def test_family_preprocess_cache_rejects_inconsistent_split_lengths(tmp_path):
 
 
 @pytest.mark.parametrize(
+    ("field", "values"),
+    [
+        ("split_parents_sorted", [-1]),
+        ("split_parents_sorted", [3]),
+        ("split_leftrights_sorted", [-1, 2]),
+        ("split_leftrights_sorted", [1, 3]),
+    ],
+)
+def test_family_preprocess_cache_rejects_split_clade_ids_outside_range(
+    tmp_path,
+    field: str,
+    values: list[int],
+):
+    path = tmp_path / "family.pt"
+    payload = _valid_family_cache_payload()
+    payload["ccp"][field] = torch.tensor(values, dtype=torch.long)
+    torch.save(payload, path)
+
+    with pytest.raises(RuntimeError, match=f"{field}.*outside range"):
+        _load_preprocess_cache(
+            path,
+            label="family 'fam0'",
+            required_keys=("ccp", "leaf_row_index", "leaf_col_index"),
+            validator=_validate_family_preprocess_cache,
+        )
+
+
+@pytest.mark.parametrize(
     ("bad_line", "message"),
     [
         ("maping = fam.map", "unknown AleRax family key"),

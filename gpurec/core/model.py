@@ -386,7 +386,7 @@ def _validate_family_preprocess_cache(
         ndim=1,
         length=C,
     )
-    _cache_tensor(
+    split_parents = _cache_tensor(
         ccp,
         "split_parents_sorted",
         path=path,
@@ -395,7 +395,7 @@ def _validate_family_preprocess_cache(
         ndim=1,
         length=N,
     )
-    _cache_tensor(
+    split_leftrights = _cache_tensor(
         ccp,
         "split_leftrights_sorted",
         path=path,
@@ -404,6 +404,19 @@ def _validate_family_preprocess_cache(
         ndim=1,
         length=2 * N,
     )
+    for key, tensor in (
+        ("split_parents_sorted", split_parents),
+        ("split_leftrights_sorted", split_leftrights),
+    ):
+        if tensor.numel() > 0:
+            min_clade = int(tensor.min().item())
+            max_clade = int(tensor.max().item())
+            if min_clade < 0 or max_clade >= C:
+                raise _invalid_preprocess_cache(
+                    path,
+                    label,
+                    f"{key!r} contains clade ids outside range [0, {C})",
+                )
     _cache_tensor(
         ccp,
         "log_split_probs_sorted",

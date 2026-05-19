@@ -1101,6 +1101,15 @@ eagerly import the CUDA-only public API.  A release-metadata unit guard runs
 both documented help commands with \texttt{CUDA\_VISIBLE\_DEVICES=''} and
 asserts that stderr stays empty.
 
+\subsection{Preprocess Cache Split Clade Validation}
+
+Family preprocessing cache validation now checks that
+\texttt{split\_parents\_sorted} and \texttt{split\_leftrights\_sorted} contain
+only clade IDs inside the cached CCP range.  Corrupt or stale caches with
+negative clade IDs, or IDs greater than or equal to \texttt{C}, fail during
+safe cache loading with a field-specific \texttt{RuntimeError} instead of
+surviving until batching reindexes tensors.
+
 \section{Verification Log}
 
 \begin{center}
@@ -2157,6 +2166,21 @@ CPU unit gate after quiet CLI help import fix &
 \texttt{297 passed, 28 deselected} \\
 \texttt{python scripts/check\_release\_metadata.py} &
 Release metadata checker after quiet CLI help import fix &
+\texttt{expected license blockers} \\
+\texttt{python -m py\_compile gpurec/core/model.py tests/unit/test\_alerax\_family\_input.py} &
+Preprocess cache split-clade validation syntax &
+\texttt{ok} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q tests/unit/test\_alerax\_family\_input.py -k preprocess\_cache} &
+Focused preprocess cache validation regressions &
+\texttt{10 passed, 13 deselected} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q tests/unit/test\_alerax\_family\_input.py} &
+AleRax family input and cache validation units &
+\texttt{23 passed} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
+CPU unit gate after split-clade cache validation &
+\texttt{301 passed, 28 deselected} \\
+\texttt{python scripts/check\_release\_metadata.py} &
+Release metadata checker after split-clade cache validation &
 \texttt{expected license blockers} \\
 \bottomrule
 \end{tabular}
