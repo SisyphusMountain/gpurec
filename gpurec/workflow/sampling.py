@@ -7,8 +7,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-import torch
-
 from gpurec.api.model import GeneReconModel
 from gpurec.backtracking import (
     EVENT_KEYS,
@@ -18,6 +16,7 @@ from gpurec.backtracking import (
 
 from .checkpoint import load_checkpoint, restore_model_theta
 from .config import RunConfig, SamplingConfig
+from .model_factory import build_alerax_workflow_model
 
 
 SPECIES_COLUMNS = (
@@ -193,36 +192,9 @@ class SamplingRunner:
     def _load_model(self) -> tuple[RunConfig, GeneReconModel]:
         payload = load_checkpoint(self.config.checkpoint, map_location="cpu")
         run_config = RunConfig.from_dict(payload["config"])
-        if not str(run_config.device).startswith("cuda"):
-            raise RuntimeError("gpurec production sampling currently requires CUDA")
-        if not torch.cuda.is_available():
-            raise RuntimeError("CUDA was requested but is not available")
-        model = GeneReconModel.from_alerax_families(
-            str(run_config.species_tree),
-            run_config.families_file,
-            mode=run_config.mode,
-            start=run_config.start,
-            max_families=run_config.max_families,
-            device=run_config.device,
-            dtype=run_config.torch_dtype,
-            theta_init_rates=run_config.theta_init_rates,
-            preprocess_cache_dir=run_config.preprocess_cache,
-            fixed_iters_E=run_config.fixed_iters_e,
-            max_iters_E=run_config.max_iters_e,
-            tol_E=run_config.tol_e,
-            fixed_iters_Pi=run_config.fixed_iters_pi,
-            neumann_terms=run_config.neumann_terms,
-            adaptive_iters=run_config.adaptive_iters,
-            convergence_check_interval=run_config.convergence_check_interval,
-            e_logsumexp_tol=run_config.e_logsumexp_tol,
-            pi_max_diff_tol=run_config.pi_max_diff_tol,
-            gradient_change_tol=run_config.gradient_change_tol,
-            gradient_change_rtol=run_config.gradient_change_rtol,
-            family_chunk_size=run_config.family_chunk_size,
-            clade_budget=run_config.clade_budget,
-            batch_packing=run_config.batch_packing,
-            max_wave_size=run_config.max_wave_size,
-            lazy_preprocess=True,
+        model = build_alerax_workflow_model(
+            run_config,
+            refresh_preprocess_cache=False,
             prefetch_batches=0,
         )
         restore_model_theta(model, payload)

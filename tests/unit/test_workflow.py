@@ -9,6 +9,7 @@ import pytest
 import torch
 
 import gpurec.backtracking as backtracking
+import gpurec.workflow.model_factory as workflow_model_factory
 import gpurec.workflow.sampling as sampling_workflow
 from gpurec.backtracking import (
     EVENT_KEYS,
@@ -24,6 +25,7 @@ from gpurec.api.model import GeneReconModel
 from gpurec.workflow.checkpoint import load_checkpoint, restore_model_theta, save_checkpoint
 from gpurec.workflow.config import RunConfig, SamplingConfig
 from gpurec.workflow.diagnostics import parameter_stats
+from gpurec.workflow.model_factory import build_alerax_workflow_model
 from gpurec.workflow.optimize import _write_rate_table
 from gpurec.workflow.sampling import SamplingRunner, _xml_species_and_transfer_counts
 
@@ -100,6 +102,69 @@ def test_run_config_requires_budget_for_nonsequential_packing(tmp_path: Path):
             clade_budget=None,
             device="cpu",
         )
+
+
+def test_build_alerax_workflow_model_forwards_run_config(tmp_path: Path, monkeypatch):
+    config = RunConfig(
+        species_tree=tmp_path / "sp.nwk",
+        families_file=tmp_path / "families.txt",
+        out_dir=tmp_path / "out",
+        mode="specieswise",
+        device="cuda",
+        dtype="float64",
+        start=2,
+        max_families=5,
+        preprocess_cache=tmp_path / "cache",
+        refresh_preprocess_cache=True,
+        family_chunk_size=4,
+        clade_budget=42,
+        batch_packing="sequential",
+        max_wave_size=64,
+        fixed_iters_e=3,
+        fixed_iters_pi=8,
+        neumann_terms=6,
+    )
+    sentinel = object()
+    call: dict[str, object] = {}
+
+    def fake_from_alerax_families(*args: object, **kwargs: object) -> object:
+        call["args"] = args
+        call["kwargs"] = kwargs
+        return sentinel
+
+    monkeypatch.setattr(workflow_model_factory.torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(
+        workflow_model_factory.GeneReconModel,
+        "from_alerax_families",
+        staticmethod(fake_from_alerax_families),
+    )
+
+    model = build_alerax_workflow_model(
+        config,
+        refresh_preprocess_cache=False,
+        prefetch_batches=0,
+    )
+
+    assert model is sentinel
+    assert call["args"] == (str(config.species_tree), config.families_file)
+    kwargs = call["kwargs"]
+    assert kwargs["mode"] == "specieswise"
+    assert kwargs["start"] == 2
+    assert kwargs["max_families"] == 5
+    assert kwargs["device"] == "cuda"
+    assert kwargs["dtype"] is torch.float64
+    assert kwargs["theta_init_rates"] == config.theta_init_rates
+    assert kwargs["preprocess_cache_dir"] == config.preprocess_cache
+    assert kwargs["refresh_preprocess_cache"] is False
+    assert kwargs["family_chunk_size"] == 4
+    assert kwargs["clade_budget"] == 42
+    assert kwargs["batch_packing"] == "sequential"
+    assert kwargs["max_wave_size"] == 64
+    assert kwargs["fixed_iters_E"] == 3
+    assert kwargs["fixed_iters_Pi"] == 8
+    assert kwargs["neumann_terms"] == 6
+    assert kwargs["lazy_preprocess"] is True
+    assert kwargs["prefetch_batches"] == 0
 
 
 def test_cli_forwards_refresh_preprocess_cache(tmp_path: Path):

@@ -436,6 +436,13 @@ checkpoint/model loading and the Rust sampler boundary.  The test covers family
 selection, deterministic seed offsets, XML and event-count file emission,
 species and transfer aggregation, summary JSON output, and model cleanup.
 
+\subsection{Workflow Model Factory}
+
+Optimization and sampling now share a \texttt{RunConfig}-to-model factory for
+AleRax family construction.  The factory keeps the common configuration mapping
+in one place while leaving the workflow-specific prefetch and preprocess-refresh
+choices explicit at each call site.
+
 \section{Verification Log}
 
 \begin{center}
@@ -623,6 +630,18 @@ Workflow and SamplingRunner regressions &
 \texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
 CPU unit gate after sampling-runner coverage &
 \texttt{52 passed, 27 deselected} \\
+\texttt{python -m py\_compile gpurec/workflow/model\_factory.py ... tests/unit/test\_workflow.py} &
+Workflow model factory syntax &
+\texttt{ok} \\
+\texttt{pytest -q tests/unit/test\_workflow.py} &
+Workflow model factory regressions &
+\texttt{30 passed after model-factory cleanup} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
+CPU unit gate after model-factory cleanup &
+\texttt{53 passed, 27 deselected} \\
+\texttt{rg -n "from\_alerax\_families" gpurec/workflow/optimize.py gpurec/workflow/sampling.py} &
+Direct workflow model-construction guard &
+\texttt{no matches} \\
 \bottomrule
 \end{tabular}
 \end{center}
