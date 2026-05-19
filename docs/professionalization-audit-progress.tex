@@ -461,6 +461,14 @@ constructors share an early theta-initialization helper, so bad API inputs fail
 with clear \texttt{ValueError} messages before tree parsing or missing-file
 errors can hide the issue.
 
+\subsection{Sampling CLI Error Handling}
+
+\texttt{gpurec sample} now reports expected user-facing failures through
+\texttt{argparse} instead of printing Python tracebacks.  Invalid sampling
+configuration, missing checkpoints, and workflow/runtime sampling errors are
+converted into concise CLI errors.  The \texttt{run} command also no longer
+keeps a dead checkpoint override branch after rejecting \texttt{--checkpoint}.
+
 \section{Verification Log}
 
 \begin{center}
@@ -675,6 +683,15 @@ Workflow and public constructor theta-init regressions &
 \texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
 CPU unit gate after theta-init validation &
 \texttt{57 passed, 27 deselected} \\
+\texttt{python -m py\_compile gpurec/cli.py tests/unit/test\_workflow.py} &
+Sampling CLI error handling syntax &
+\texttt{ok} \\
+\texttt{pytest -q tests/unit/test\_workflow.py} &
+Workflow and sampling CLI error regressions &
+\texttt{36 passed after sampling CLI cleanup} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
+CPU unit gate after sampling CLI cleanup &
+\texttt{59 passed, 27 deselected} \\
 \bottomrule
 \end{tabular}
 \end{center}

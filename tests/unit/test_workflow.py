@@ -324,6 +324,28 @@ def test_cli_reports_missing_required_options_without_traceback(capsys):
     assert "Traceback" not in captured.err
 
 
+def test_cli_sample_rejects_invalid_seed_without_traceback(tmp_path: Path, capsys):
+    with pytest.raises(SystemExit) as exc_info:
+        main(["sample", "--checkpoint", str(tmp_path / "best.pt"), "--seed", "-1"])
+
+    captured = capsys.readouterr()
+    assert exc_info.value.code == 2
+    assert "seed must be non-negative" in captured.err
+    assert "Traceback" not in captured.err
+
+
+def test_cli_sample_reports_missing_checkpoint_without_traceback(tmp_path: Path, capsys):
+    checkpoint = tmp_path / "missing.pt"
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(["sample", "--checkpoint", str(checkpoint)])
+
+    captured = capsys.readouterr()
+    assert exc_info.value.code == 2
+    assert str(checkpoint) in captured.err
+    assert "Traceback" not in captured.err
+
+
 def test_cli_run_rejects_checkpoint_argument_without_traceback(capsys):
     with pytest.raises(SystemExit) as exc_info:
         main(["run", "--checkpoint", "existing.pt"])

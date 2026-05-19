@@ -8,6 +8,9 @@ from typing import Any
 from gpurec.workflow import RunConfig, SamplingConfig, optimize, sample
 
 
+_EXPECTED_WORKFLOW_ERRORS = (ValueError, OSError, RuntimeError)
+
+
 def _chunk_size(value: str) -> int | None:
     text = value.strip().lower()
     if text in {"none", "null"}:
@@ -404,8 +407,8 @@ def main(argv: list[str] | None = None) -> None:
         )
         return
     if args.command == "sample":
-        result = sample(
-            SamplingConfig(
+        try:
+            sampling_config = SamplingConfig(
                 checkpoint=args.checkpoint,
                 out_dir=args.sample_out_dir,
                 samples=args.samples,
@@ -415,7 +418,9 @@ def main(argv: list[str] | None = None) -> None:
                 max_events=args.max_events,
                 backtrack_binary=args.backtrack_binary,
             )
-        )
+            result = sample(sampling_config)
+        except _EXPECTED_WORKFLOW_ERRORS as exc:
+            parser.error(str(exc))
         print(
             f"sampled families={result.families_sampled} "
             f"samples={result.samples_per_family} xml={result.xml_files} "
@@ -435,11 +440,11 @@ def main(argv: list[str] | None = None) -> None:
         except ValueError as exc:
             parser.error(str(exc))
         opt_result = optimize(run_config)
-        checkpoint = args.checkpoint or (run_config.out_dir / "checkpoints" / "best.pt")
+        checkpoint = run_config.out_dir / "checkpoints" / "best.pt"
         if not checkpoint.exists():
             checkpoint = run_config.out_dir / "checkpoints" / "latest.pt"
-        sampling_result = sample(
-            SamplingConfig(
+        try:
+            sampling_config = SamplingConfig(
                 checkpoint=checkpoint,
                 out_dir=args.sample_out_dir,
                 samples=args.samples,
@@ -449,7 +454,9 @@ def main(argv: list[str] | None = None) -> None:
                 max_events=args.max_events,
                 backtrack_binary=args.backtrack_binary,
             )
-        )
+            sampling_result = sample(sampling_config)
+        except _EXPECTED_WORKFLOW_ERRORS as exc:
+            parser.error(str(exc))
         print(
             f"status={opt_result.status} reason={opt_result.reason} "
             f"sampled_families={sampling_result.families_sampled} "
