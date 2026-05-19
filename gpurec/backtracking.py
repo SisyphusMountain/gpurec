@@ -15,7 +15,6 @@ from typing import Any
 import torch
 
 from gpurec.api.model import FamilyInput, GeneReconModel, ReconciliationState
-from gpurec.core.preprocess_cpp import _load_extension as _load_species_gene_ext
 
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -164,22 +163,6 @@ def _run_backtracking_payload(
         return read_output(tmp_path)
 
 
-def _family_details(species_tree_path: Path, family: FamilyInput) -> dict[str, Any]:
-    ext = _load_species_gene_ext()
-    raw_all = ext.preprocess_multiple_families(
-        str(species_tree_path),
-        {family.name: family.gene_tree_paths},
-        leaf_species_maps=(
-            {family.name: family.leaf_species_map}
-            if family.leaf_species_map
-            else {}
-        ),
-        include_details=True,
-        include_species_matrices=False,
-    )
-    return raw_all["families"][family.name]
-
-
 def export_backtracking_input(
     model: GeneReconModel,
     *,
@@ -200,8 +183,6 @@ def export_backtracking_input(
     C = family.clade_count
     S = model.n_species
     ccp = family.ccp_helpers
-    details = _family_details(model.species_tree_path, family)
-    detail_ccp = details["ccp"]
 
     pi = state.pi[offset : offset + C].detach().to(dtype=torch.float64).cpu().contiguous()
     e = _species_vector(
@@ -247,7 +228,7 @@ def export_backtracking_input(
     for row, col in zip(leaf_rows.tolist(), leaf_cols.tolist()):
         leaf_species[int(row)] = int(col)
 
-    labels = list(detail_ccp.get("clade_leaf_labels", [""] * C))
+    labels = list(family.clade_leaf_labels)
     if len(labels) != C:
         labels = [""] * C
 

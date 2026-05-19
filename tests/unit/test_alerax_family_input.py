@@ -138,9 +138,15 @@ def test_alerax_family_file_multi_tree_ccp_matches_split_files(tmp_path):
 
     ccp_dist = from_distribution.families[0]["ccp_helpers"]
     ccp_split = from_split_files.families[0]["ccp_helpers"]
+    labels_dist = from_distribution.families[0]["clade_leaf_labels"]
+    labels_split = from_split_files.families[0]["clade_leaf_labels"]
     assert int(ccp_dist["C"]) == int(ccp_split["C"])
     assert int(ccp_dist["N_splits"]) == int(ccp_split["N_splits"])
     assert int(ccp_dist["root_clade_id"]) == int(ccp_split["root_clade_id"])
+    assert "clade_leaves" not in ccp_dist
+    assert "clade_is_leaf" not in ccp_dist
+    assert labels_dist == labels_split
+    assert sorted(label for label in labels_dist if label) == ["a1", "b1", "c1"]
     for key in (
         "split_counts",
         "split_parents_sorted",

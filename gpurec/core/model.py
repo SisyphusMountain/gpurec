@@ -157,6 +157,14 @@ def _load_preprocess_cache(
 
 
 class GeneDataset:
+    @staticmethod
+    def _drop_unused_family_details(raw: dict[str, Any]) -> dict[str, Any]:
+        ccp = raw.get("ccp")
+        if isinstance(ccp, dict):
+            ccp.pop("clade_leaves", None)
+            ccp.pop("clade_is_leaf", None)
+        return raw
+
     def __init__(
         self,
         species_tree_path,
@@ -217,9 +225,13 @@ class GeneDataset:
                 str(species_tree_path),
                 families_input,
                 leaf_species_maps=leaf_species_input,
+                include_details=True,
                 include_species_matrices=False,
             )
-            raw_by_family = raw_all['families']
+            raw_by_family = {
+                name: self._drop_unused_family_details(raw)
+                for name, raw in raw_all['families'].items()
+            }
             self.species_helpers = raw_all['species']
         if "Recipients_mat" in self.species_helpers:
             self.unnorm_row_max = torch.log2(self.species_helpers["Recipients_mat"]).max(dim=-1).values
@@ -232,16 +244,21 @@ class GeneDataset:
         for family_name in family_names:
             raw = raw_by_family[family_name]
             ccp = raw['ccp']
+            clade_leaf_labels = list(ccp.pop('clade_leaf_labels', []))
             # Convert log_split_probs from ln (C++ output) to log2
             ccp['log_split_probs_sorted'] = ccp['log_split_probs_sorted'] * _INV_LN2
+            C = int(ccp['C'])
+            if len(clade_leaf_labels) != C:
+                clade_leaf_labels = [""] * C
             families.append({
                 'ccp_helpers': ccp,
                 'root_clade_id': int(ccp['root_clade_id']),
                 'leaf_row_index': raw['leaf_row_index'],
                 'leaf_col_index': raw['leaf_col_index'],
-                'C': int(ccp['C']),
+                'C': C,
                 'N_splits': int(ccp['N_splits']),
                 'log_split_probs': ccp['log_split_probs_sorted'],
+                'clade_leaf_labels': clade_leaf_labels,
             })
         # stored on CPU. Only move when computing likelihood and optimizing.
         self.families = families
@@ -275,7 +292,7 @@ class GeneDataset:
         cache_dir = Path(preprocess_cache_dir)
         cache_dir.mkdir(parents=True, exist_ok=True)
 
-        version = "light-v4:compact-species:alerax-maps"
+        version = "light-v5:compact-species:alerax-maps:leaf-labels"
         species_hash = cls._hash_file(species_tree_path)
         species_key = hashlib.sha256(
             f"{version}:species:{species_hash}".encode("utf-8")
@@ -311,10 +328,12 @@ class GeneDataset:
             cache_path = cache_dir / f"family-{family_key}.pt"
             family_cache_paths[name] = cache_path
             if cache_path.exists() and not refresh:
-                raw_by_family[name] = _load_preprocess_cache(
-                    cache_path,
-                    label=f"family {name!r}",
-                    required_keys=("ccp", "leaf_row_index", "leaf_col_index"),
+                raw_by_family[name] = cls._drop_unused_family_details(
+                    _load_preprocess_cache(
+                        cache_path,
+                        label=f"family {name!r}",
+                        required_keys=("ccp", "leaf_row_index", "leaf_col_index"),
+                    )
                 )
             else:
                 missing[name] = paths
@@ -326,6 +345,7 @@ class GeneDataset:
                 str(species_tree_path),
                 missing,
                 leaf_species_maps=missing_maps,
+                include_details=True,
                 include_species_matrices=False,
             )
             if species_helpers is None:
@@ -333,6 +353,7 @@ class GeneDataset:
                 torch.save(species_helpers, species_cache)
 
             for name, raw in raw_all["families"].items():
+                raw = cls._drop_unused_family_details(raw)
                 raw_by_family[name] = raw
                 torch.save(raw, family_cache_paths[name])
 

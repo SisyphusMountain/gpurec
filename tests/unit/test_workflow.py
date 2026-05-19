@@ -888,6 +888,7 @@ def test_export_backtracking_input_rejects_nonfinite_payload_tensors(
         },
         leaf_row_index=torch.tensor([0, 1], dtype=torch.long),
         leaf_col_index=torch.tensor([0, 1], dtype=torch.long),
+        clade_leaf_labels=["a", "b"],
     )
     model = SimpleNamespace(
         n_species=2,
@@ -910,12 +911,6 @@ def test_export_backtracking_input_rejects_nonfinite_payload_tensors(
     )
 
     monkeypatch.setattr(backtracking, "_evaluate_backtracking_state", lambda _: state)
-    monkeypatch.setattr(
-        backtracking,
-        "_family_details",
-        lambda *_: {"ccp": {"clade_leaf_labels": ["a", "b"]}},
-    )
-
     with pytest.raises(ValueError, match=r"backtracking payload\.pi\.data\[0\]"):
         export_backtracking_input(model, family_index=0)  # type: ignore[arg-type]
 
@@ -1565,6 +1560,8 @@ def test_workflow_and_backtracking_use_public_model_surface():
         "model._batch_statics",
         "model._static",
         'getattr(model, "_',
+        "from gpurec.core.preprocess_cpp",
+        "_load_species_gene_ext",
         "from gpurec.api.autograd import _extract_parameters",
         "Pi_wave_forward",
         "E_fixed_point",

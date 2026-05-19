@@ -18,7 +18,7 @@ and exposes ``theta`` as an ``nn.Parameter`` so notebook users can use any
 from __future__ import annotations
 
 from concurrent.futures import Future, ThreadPoolExecutor
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import math
 import os
 from pathlib import Path
@@ -130,6 +130,7 @@ class FamilyInput:
     ccp_helpers: dict[str, Any]
     leaf_row_index: Any
     leaf_col_index: Any
+    clade_leaf_labels: list[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -1348,6 +1349,7 @@ class GeneReconModel(torch.nn.Module):
             ccp_helpers=family["ccp_helpers"],
             leaf_row_index=family["leaf_row_index"],
             leaf_col_index=family["leaf_col_index"],
+            clade_leaf_labels=list(family.get("clade_leaf_labels", [])),
         )
 
     def active_theta(self, theta: torch.Tensor | None = None) -> torch.Tensor:
