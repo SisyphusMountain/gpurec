@@ -400,6 +400,8 @@ def main(argv: list[str] | None = None) -> None:
             f"final_nll_bits={result.final_nll_bits:.6f} out_dir={result.out_dir}",
             flush=True,
         )
+        if result.status == "failed":
+            parser.exit(status=1)
         return
     if args.command == "sample":
         try:

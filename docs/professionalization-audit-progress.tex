@@ -880,6 +880,15 @@ batch.  The invariant now raises an explicit \texttt{RuntimeError}, and a
 source guard covers all Python scripts under \texttt{scripts/} so optimized
 interpreters cannot silently remove retained script checks.
 
+\subsection{CLI Failed Optimization Exit Status}
+
+\texttt{gpurec optimize} now exits nonzero when the workflow returns an
+\texttt{OptimizationResult} with \texttt{status="failed"}.  The command still
+prints its status summary to stdout, but scripts and CI no longer see a
+successful process exit for failed optimization runs.  A focused CLI regression
+keeps the existing no-traceback behavior and confirms \texttt{gpurec run}
+continues to refuse sampling after failed optimization.
+
 \section{Verification Log}
 
 \begin{center}
@@ -1604,6 +1613,15 @@ Python script assert-source scan &
 \texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
 CPU unit gate after script runtime invariant cleanup &
 \texttt{221 passed, 28 deselected} \\
+\texttt{python -m py\_compile gpurec/cli.py tests/unit/test\_workflow.py} &
+CLI failed-status syntax &
+\texttt{ok} \\
+\texttt{pytest -q tests/unit/test\_workflow.py::test\_cli\_optimize\_... ...} &
+Focused failed-optimization CLI exit guards &
+\texttt{2 passed} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
+CPU unit gate after CLI failed-status exit handling &
+\texttt{222 passed, 28 deselected} \\
 \bottomrule
 \end{tabular}
 \end{center}

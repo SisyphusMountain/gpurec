@@ -1017,6 +1017,31 @@ def test_cli_optimize_reports_workflow_errors_without_traceback(
     assert "Traceback" not in captured.err
 
 
+def test_cli_optimize_failed_result_exits_nonzero_without_traceback(
+    tmp_path: Path,
+    capsys,
+    monkeypatch,
+):
+    def failed_optimize(config):
+        return SimpleNamespace(
+            out_dir=config.out_dir,
+            status="failed",
+            reason="nonfinite_objective_or_gradient",
+            final_nll_bits=math.inf,
+        )
+
+    monkeypatch.setattr("gpurec.cli.optimize", failed_optimize)
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(_minimal_workflow_cli_args("optimize", tmp_path))
+
+    captured = capsys.readouterr()
+    assert exc_info.value.code == 1
+    assert "status=failed" in captured.out
+    assert "nonfinite_objective_or_gradient" in captured.out
+    assert "Traceback" not in captured.err
+
+
 def test_cli_run_reports_optimize_errors_without_traceback(
     tmp_path: Path,
     capsys,
