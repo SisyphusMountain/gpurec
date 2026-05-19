@@ -26,6 +26,8 @@ def theta_init_base_from_rates(
     if rates.numel() != 3:
         raise ValueError("theta_init_rates must contain exactly three D/L/T rates")
     rates = rates.reshape(3)
+    if not torch.isfinite(rates).all().item():
+        raise ValueError("theta_init_rates must be finite")
     if torch.any(rates <= 0):
         raise ValueError("theta_init_rates must be strictly positive")
     return torch.log2(rates).to(device=device, dtype=dtype)

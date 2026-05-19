@@ -641,6 +641,14 @@ mistakes such as misspelled \texttt{mapping} or tree keys before preprocessing,
 instead of silently dropping mappings or accepting partially parsed family
 metadata.
 
+\subsection{Public Theta Initialization Finiteness}
+
+Public model constructor helpers now reject non-finite
+\texttt{theta\_init\_rates}.  \texttt{NaN} and \texttt{Infinity} values fail
+with a clear \texttt{ValueError} before device validation, tree IO, or
+preprocessing, matching the workflow-level numeric finiteness checks for direct
+API users.
+
 \section{Verification Log}
 
 \begin{center}
@@ -1059,6 +1067,18 @@ Workflow and family parser regressions &
 \texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
 CPU unit gate after strict AleRax family-field cleanup &
 \texttt{106 passed, 27 deselected} \\
+\texttt{python -m py\_compile gpurec/api/\_validation.py tests/unit/test\_workflow.py} &
+Public theta-init finiteness syntax &
+\texttt{ok} \\
+\texttt{pytest -q tests/unit/test\_workflow.py::test\_public\_model\_constructors\_reject\_nonfinite\_theta\_init\_before\_io} &
+Focused public theta-init finiteness regression &
+\texttt{2 passed} \\
+\texttt{pytest -q tests/unit/test\_workflow.py} &
+Workflow suite after public theta-init finiteness cleanup &
+\texttt{71 passed} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
+CPU unit gate after public theta-init finiteness cleanup &
+\texttt{108 passed, 27 deselected} \\
 \bottomrule
 \end{tabular}
 \end{center}
