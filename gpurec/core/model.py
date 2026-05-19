@@ -32,6 +32,12 @@ def parse_alerax_mapping_file(path: str | os.PathLike) -> dict[str, str]:
         for gene in genes.split(";"):
             gene = gene.strip()
             if gene:
+                previous = mapping.get(gene)
+                if previous is not None:
+                    raise ValueError(
+                        f"duplicate AleRax mapping for gene {gene!r} in {path}: "
+                        f"{previous!r} and {species!r}"
+                    )
                 mapping[gene] = species
     return mapping
 
@@ -56,6 +62,7 @@ def parse_alerax_family_file(
     base_dir = Path(families_file).resolve().parent
     records: list[dict[str, Any]] = []
     current: dict[str, Any] | None = None
+    seen_names: set[str] = set()
 
     def finish() -> None:
         nonlocal current
@@ -63,6 +70,11 @@ def parse_alerax_family_file(
             return
         if not current["tree_paths"]:
             raise ValueError(f"family {current['name']!r} has no gene tree path")
+        if current["name"] in seen_names:
+            raise ValueError(
+                f"duplicate AleRax family name {current['name']!r} in {families_file}"
+            )
+        seen_names.add(current["name"])
         records.append(current)
         current = None
 

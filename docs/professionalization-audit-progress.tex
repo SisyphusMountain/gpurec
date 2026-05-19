@@ -722,6 +722,15 @@ output directory, leaving unrelated user files in \texttt{reconciliations/all}
 untouched.  The workflow regression seeds stale generated artifacts before a
 rerun and verifies that the final directory contains only current samples.
 
+\subsection{AleRax Input Uniqueness}
+
+AleRax family and mapping parsers now reject duplicate identifiers before any
+preprocessing occurs.  Repeated family names can no longer collapse through the
+dicts used for raw and cached preprocessing payloads, and duplicate gene
+mapping entries can no longer use last-writer-wins semantics to silently move a
+gene leaf between species.  The new parser regressions cover both duplicate
+family records and duplicate cross-species gene assignments.
+
 \section{Verification Log}
 
 \begin{center}
@@ -1245,6 +1254,18 @@ Workflow suite after sampling cleanup &
 \texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
 CPU unit gate after sampling cleanup &
 \texttt{155 passed, 27 deselected} \\
+\texttt{python -m py\_compile gpurec/core/model.py tests/unit/test\_alerax\_family\_input.py} &
+AleRax uniqueness syntax &
+\texttt{ok} \\
+\texttt{pytest -q tests/unit/test\_alerax\_family\_input.py::test\_alerax\_...} &
+Focused duplicate AleRax input regressions &
+\texttt{2 passed} \\
+\texttt{pytest -q tests/unit/test\_alerax\_family\_input.py} &
+AleRax parser and family input suite after uniqueness guards &
+\texttt{9 passed} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
+CPU unit gate after AleRax uniqueness guards &
+\texttt{157 passed, 27 deselected} \\
 \bottomrule
 \end{tabular}
 \end{center}
@@ -1252,8 +1273,10 @@ CPU unit gate after sampling cleanup &
 \section{Next Audit Targets}
 
 \begin{enumerate}[leftmargin=*]
-  \item Review the larger promoted HOGENOM helper scripts for consolidation
-        opportunities once the experiment interfaces settle.
+  \item Harden nested preprocess cache validation for species and family cache
+        payloads so stale or corrupted cache files fail at load time.
+  \item Finish release metadata work: license, classifiers, project URLs, and
+        artifact checks before any redistribution.
   \item Keep committing small, verified increments so the branch remains
         reviewable despite the larger audit scope.
 \end{enumerate}

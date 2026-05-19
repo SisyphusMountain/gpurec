@@ -7,6 +7,7 @@ from gpurec.core.model import (
     GeneDataset,
     _load_preprocess_cache,
     parse_alerax_family_file,
+    parse_alerax_mapping_file,
 )
 
 
@@ -86,6 +87,37 @@ def test_alerax_family_file_rejects_malformed_family_entries(
 
     with pytest.raises(ValueError, match=message):
         parse_alerax_family_file(families)
+
+
+def test_alerax_family_file_rejects_duplicate_family_names(tmp_path):
+    _write(tmp_path / "a.nwk", "(a:1,b:1);\n")
+    _write(tmp_path / "b.nwk", "(c:1,d:1);\n")
+    families = _write(
+        tmp_path / "families.txt",
+        "\n".join(
+            [
+                "[FAMILIES]",
+                "- duplicated",
+                "starting_gene_tree = a.nwk",
+                "- duplicated",
+                "starting_gene_tree = b.nwk",
+                "",
+            ]
+        ),
+    )
+
+    with pytest.raises(ValueError, match="duplicate AleRax family name 'duplicated'"):
+        parse_alerax_family_file(families)
+
+
+def test_alerax_mapping_file_rejects_duplicate_gene_assignments(tmp_path):
+    mapping = _write(
+        tmp_path / "fam.map",
+        "SpeciesA: gene1\nSpeciesB: gene1\n",
+    )
+
+    with pytest.raises(ValueError, match="gene1.*SpeciesA.*SpeciesB"):
+        parse_alerax_mapping_file(mapping)
 
 
 def test_alerax_family_file_multi_tree_ccp_matches_split_files(tmp_path):
