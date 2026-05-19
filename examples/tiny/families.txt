@@ -1,0 +1,4 @@
+[FAMILIES]
+- tiny_family
+starting_gene_tree = gene.nwk
+mapping = gene.map

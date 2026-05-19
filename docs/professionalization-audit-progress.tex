@@ -761,6 +761,14 @@ re-resolving already-installed runtime dependencies, and smokes
 workflow continues to contain the build, metadata-check, wheel-install, and CLI
 smoke commands.
 
+\subsection{Checked Minimal Workflow Example}
+
+The README now points users to a minimal flat JSON workflow config under
+\texttt{examples/}, backed by a tiny AleRax-style species tree, gene tree,
+family file, and mapping file.  A CPU unit test loads the JSON through
+\texttt{RunConfig.from\_json()} and parses the family file, giving the public
+config shape a checked example without requiring CUDA or optimizer execution.
+
 \section{Verification Log}
 
 \begin{center}
@@ -1335,6 +1343,18 @@ Release metadata and packaging workflow source guards &
 \texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
 CPU unit gate after packaging CI guard &
 \texttt{165 passed, 27 deselected} \\
+\texttt{python -m py\_compile tests/unit/test\_examples.py} &
+Minimal workflow example test syntax &
+\texttt{ok} \\
+\texttt{pytest -q tests/unit/test\_examples.py} &
+Checked minimal config and tiny AleRax fixture &
+\texttt{1 passed} \\
+\texttt{python -c "RunConfig.from\_json('examples/minimal-run-config.json')"} &
+Direct minimal config load smoke &
+\texttt{genewise cuda 1 10} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
+CPU unit gate after minimal workflow example &
+\texttt{166 passed, 27 deselected} \\
 \bottomrule
 \end{tabular}
 \end{center}
@@ -1348,7 +1368,6 @@ CPU unit gate after packaging CI guard &
         \texttt{rustree} or treat the sampler as a separately installed binary.
   \item Add Python-version CI coverage or narrow the declared Python support
         claim to the versions that are actually tested.
-  \item Add a checked minimal JSON workflow config example for onboarding.
   \item Review whether cache refresh guidance should be promoted into the README
         once cache validation and release documentation settle.
   \item Keep committing small, verified increments so the branch remains
