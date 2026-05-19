@@ -170,6 +170,12 @@ def _normalize_family_tree_paths(
     return normalized
 
 
+def _bool_control(name: str, value: bool) -> bool:
+    if not isinstance(value, bool):
+        raise ValueError(f"{name} must be true or false")
+    return value
+
+
 def _load_preprocess_cache(
     path: str | os.PathLike,
     *,
@@ -490,6 +496,10 @@ class GeneDataset:
     ):
         if device is None:
             device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        refresh_preprocess_cache = _bool_control(
+            "refresh_preprocess_cache",
+            refresh_preprocess_cache,
+        )
 
         self.genewise = genewise
         self.specieswise = specieswise

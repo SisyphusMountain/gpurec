@@ -251,6 +251,11 @@ def _normalize_gene_solver_kwargs(kwargs: dict[str, Any]) -> dict[str, Any]:
             "adaptive_iters",
             normalized["adaptive_iters"],
         )
+    if "use_pruning" in normalized:
+        normalized["use_pruning"] = bool_value(
+            "use_pruning",
+            normalized["use_pruning"],
+        )
     if "family_chunk_size" in normalized:
         normalized["family_chunk_size"] = _normalize_family_chunk_size(
             normalized["family_chunk_size"]
@@ -881,6 +886,7 @@ class GeneReconModel(torch.nn.Module):
             gradient_change_rtol,
         )
         pruning_threshold = nonnegative_float("pruning_threshold", pruning_threshold)
+        use_pruning = bool_value("use_pruning", use_pruning)
         family_chunk_requested = family_chunk_size is not None
         family_chunk_size = _normalize_family_chunk_size(family_chunk_size)
         clade_budget = _normalize_clade_budget(clade_budget)
@@ -1055,6 +1061,10 @@ class GeneReconModel(torch.nn.Module):
         """
         genewise, specieswise = _mode_to_flags(mode)
         require_default_objective("GeneReconModel")
+        refresh_preprocess_cache = bool_value(
+            "refresh_preprocess_cache",
+            refresh_preprocess_cache,
+        )
         solver_kwargs = _normalize_gene_solver_kwargs(solver_kwargs)
         theta_base = theta_init_base_from_rates(
             theta_init_rates,
@@ -1110,6 +1120,10 @@ class GeneReconModel(torch.nn.Module):
         """Build from an AleRax ``[FAMILIES]`` file with CCP/tree samples."""
         genewise, specieswise = _mode_to_flags(mode)
         require_default_objective("GeneReconModel")
+        refresh_preprocess_cache = bool_value(
+            "refresh_preprocess_cache",
+            refresh_preprocess_cache,
+        )
         start, max_families = normalize_family_selection(start, max_families)
         solver_kwargs = _normalize_gene_solver_kwargs(solver_kwargs)
         theta_base = theta_init_base_from_rates(

@@ -598,6 +598,7 @@ def test_public_model_constructors_reject_nonfinite_theta_init_before_io(
         ("gradient_change_rtol", math.nan),
         ("pruning_threshold", math.inf),
         ("adaptive_iters", "false"),
+        ("use_pruning", "false"),
         ("family_chunk_size", True),
         ("family_chunk_size", 1.5),
         ("clade_budget", True),
@@ -632,6 +633,12 @@ def test_gene_recon_init_rejects_invalid_solver_controls_before_device(
         ("from_trees", {"fixed_iters_Pi": math.inf}, "fixed_iters_Pi"),
         ("from_trees", {"fixed_iters_Pi": 4.5}, "fixed_iters_Pi"),
         ("from_trees", {"adaptive_iters": "false"}, "adaptive_iters"),
+        ("from_trees", {"use_pruning": "false"}, "use_pruning"),
+        (
+            "from_trees",
+            {"refresh_preprocess_cache": "false"},
+            "refresh_preprocess_cache",
+        ),
         ("from_trees", {"family_chunk_size": True}, "family_chunk_size"),
         ("from_trees", {"clade_budget": True}, "clade_budget"),
         ("from_trees", {"lazy_preprocess": "false"}, "lazy_preprocess"),
@@ -649,6 +656,11 @@ def test_gene_recon_init_rejects_invalid_solver_controls_before_device(
             "from_alerax_families",
             {"adaptive_iters": True, "convergence_check_interval": 3},
             "adaptive_iters",
+        ),
+        (
+            "from_alerax_families",
+            {"refresh_preprocess_cache": "false"},
+            "refresh_preprocess_cache",
         ),
         (
             "from_alerax_families",

@@ -67,6 +67,20 @@ def test_preprocess_cache_load_uses_weights_only(tmp_path, monkeypatch):
     ]
 
 
+def test_gene_dataset_rejects_nonbool_cache_refresh_before_extension_load(tmp_path):
+    with pytest.raises(ValueError, match="refresh_preprocess_cache"):
+        GeneDataset(
+            tmp_path / "missing_species.nwk",
+            [tmp_path / "missing_gene.nwk"],
+            genewise=False,
+            specieswise=False,
+            dtype=torch.float64,
+            device="cpu",
+            preprocess_cache_dir=tmp_path / "cache",
+            refresh_preprocess_cache="false",
+        )
+
+
 def _valid_species_cache_payload() -> dict[str, object]:
     return {
         "S": 3,

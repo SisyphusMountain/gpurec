@@ -1122,6 +1122,16 @@ unparseable \texttt{prefetch\_batches} values with parameter-specific
 \texttt{family\_chunk\_size=None}: only an explicitly supplied chunk-size
 control requests resident batching.
 
+\subsection{Boolean Control Validation}
+
+Additional public boolean controls now reject truthy strings and other
+non-boolean values before CUDA setup or preprocessing.  \texttt{GeneReconModel}
+validates \texttt{use\_pruning} in both direct and factory construction,
+factory methods validate \texttt{refresh\_preprocess\_cache}, and
+\texttt{GeneDataset} validates cache refresh before loading the C++ extension
+or touching input paths.  This prevents values such as \texttt{"false"} from
+silently enabling pruning or cache refresh work.
+
 \section{Verification Log}
 
 \begin{center}
@@ -2205,6 +2215,21 @@ CPU unit gate after resident-batch control validation &
 \texttt{314 passed, 28 deselected} \\
 \texttt{python scripts/check\_release\_metadata.py} &
 Release metadata checker after resident-batch control validation &
+\texttt{expected license blockers} \\
+\texttt{python -m py\_compile gpurec/api/model.py gpurec/core/model.py ...} &
+Boolean control validation syntax &
+\texttt{ok} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q tests/unit/test\_workflow.py -k "..."} &
+Focused model boolean control validation &
+\texttt{47 passed, 169 deselected} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q tests/unit/test\_alerax\_family\_input.py -k "..."} &
+Focused \texttt{GeneDataset} cache-refresh boolean validation &
+\texttt{1 passed, 23 deselected} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
+CPU unit gate after boolean control validation &
+\texttt{319 passed, 28 deselected} \\
+\texttt{python scripts/check\_release\_metadata.py} &
+Release metadata checker after boolean control validation &
 \texttt{expected license blockers} \\
 \bottomrule
 \end{tabular}
