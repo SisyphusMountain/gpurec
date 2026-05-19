@@ -10,6 +10,7 @@ import subprocess
 import tempfile
 import xml.etree.ElementTree as ET
 from collections.abc import Callable
+from numbers import Integral
 from pathlib import Path
 from typing import Any
 
@@ -24,15 +25,33 @@ _BACKTRACK_BINARY_ENV = "GPUREC_BACKTRACK_BIN"
 EVENT_KEYS = ("S", "SL", "D", "DL", "T", "TL", "L", "Leaf")
 
 
+def _optional_int_limit(
+    name: str,
+    value: int | None,
+    *,
+    minimum: int,
+) -> int | None:
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, Integral):
+        raise ValueError(f"{name} must be an integer")
+    number = int(value)
+    if number < minimum:
+        if minimum == 0:
+            raise ValueError(f"{name} must be non-negative")
+        raise ValueError(f"{name} must be positive")
+    return number
+
+
 def _validate_backtracking_limits(
     *,
     seed: int | None,
     max_events: int | None,
-) -> None:
-    if seed is not None and seed < 0:
-        raise ValueError("seed must be non-negative")
-    if max_events is not None and max_events < 1:
-        raise ValueError("max_events must be positive when provided")
+) -> tuple[int | None, int | None]:
+    return (
+        _optional_int_limit("seed", seed, minimum=0),
+        _optional_int_limit("max_events", max_events, minimum=1),
+    )
 
 
 def _tensor_list(value: Any, *, dtype: torch.dtype | None = None) -> list:
@@ -217,7 +236,7 @@ def export_backtracking_input(
     for the selected family.
     """
 
-    _validate_backtracking_limits(seed=seed, max_events=max_events)
+    seed, max_events = _validate_backtracking_limits(seed=seed, max_events=max_events)
     family = model.family_input(family_index)
     offset, parameter_family_index = _activate_family_batch(model, family_index)
     state = _evaluate_backtracking_state(model)
@@ -353,8 +372,9 @@ def sample_recphyloxmls(
 ) -> list[str]:
     """Run the Rust sampler once and return multiple RecPhyloXML documents."""
 
-    if num_samples < 1:
-        raise ValueError("num_samples must be positive")
+    num_samples = int(
+        _optional_int_limit("num_samples", num_samples, minimum=1)
+    )
     payload = export_backtracking_input(
         model,
         family_index=family_index,

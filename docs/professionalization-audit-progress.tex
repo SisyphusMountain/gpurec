@@ -1081,6 +1081,14 @@ collecting the entire non-GPU integration marker set after installing only
 that require \texttt{torch}, while keeping the lightweight Rust fixture smoke in
 the Rust-focused job.
 
+\subsection{Backtracking Limit Type Validation}
+
+Public stochastic backtracking entry points now validate \texttt{seed},
+\texttt{max\_events}, and \texttt{num\_samples} as integer limits before model
+access or payload construction.  Booleans, fractional values, and strings raise
+parameter-specific \texttt{ValueError}s instead of leaking through as invalid
+JSON/Rust CLI values or surfacing as low-context Python comparison errors.
+
 \section{Verification Log}
 
 \begin{center}
@@ -2107,6 +2115,18 @@ CPU unit gate after Rust backtracking CI collection-scope fix &
 \texttt{295 passed, 28 deselected} \\
 \texttt{python scripts/check\_release\_metadata.py} &
 Release metadata checker after Rust backtracking CI collection-scope fix &
+\texttt{expected license blockers} \\
+\texttt{python -m py\_compile gpurec/backtracking.py tests/unit/test\_workflow.py} &
+Backtracking limit type validation syntax &
+\texttt{ok} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q tests/unit/test\_workflow.py -k "..."} &
+Focused public backtracking limit validation &
+\texttt{1 passed, 198 deselected} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
+CPU unit gate after backtracking limit type validation &
+\texttt{295 passed, 28 deselected} \\
+\texttt{python scripts/check\_release\_metadata.py} &
+Release metadata checker after backtracking limit type validation &
 \texttt{expected license blockers} \\
 \bottomrule
 \end{tabular}

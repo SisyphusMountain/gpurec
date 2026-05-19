@@ -1420,10 +1420,20 @@ def test_public_backtracking_rejects_invalid_seed_and_event_limits():
     model = object()
     with pytest.raises(ValueError, match="seed"):
         export_backtracking_input(model, seed=-1)  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="seed"):
+        export_backtracking_input(model, seed=True)  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="seed"):
+        export_backtracking_input(model, seed=1.5)  # type: ignore[arg-type]
     with pytest.raises(ValueError, match="max_events"):
         sample_recphyloxml(model, max_events=0)  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="max_events"):
+        sample_recphyloxml(model, max_events="10")  # type: ignore[arg-type]
     with pytest.raises(ValueError, match="seed"):
         sample_recphyloxmls(model, num_samples=1, seed=-1)  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="num_samples"):
+        sample_recphyloxmls(model, num_samples=True)  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="num_samples"):
+        sample_recphyloxmls(model, num_samples=1.5)  # type: ignore[arg-type]
 
 
 def test_export_backtracking_input_rejects_nonfinite_payload_tensors(
