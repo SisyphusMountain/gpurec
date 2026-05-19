@@ -1255,7 +1255,7 @@ def test_cli_run_refuses_sampling_after_failed_optimization(
         main(_minimal_workflow_cli_args("run", tmp_path))
 
     captured = capsys.readouterr()
-    assert exc_info.value.code == 2
+    assert exc_info.value.code == 1
     assert "optimization failed" in captured.err
     assert "nonfinite_objective_or_gradient" in captured.err
     assert "Traceback" not in captured.err
@@ -1348,6 +1348,28 @@ def test_sampling_config_rejects_invalid_seed_and_event_limits(tmp_path: Path):
         SamplingConfig(checkpoint=checkpoint, seed=-1)
     with pytest.raises(ValueError, match="max_events"):
         SamplingConfig(checkpoint=checkpoint, max_events=0)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("samples", True),
+        ("seed", True),
+        ("family_start", 1.5),
+        ("max_families", 2.2),
+        ("max_events", True),
+    ],
+)
+def test_sampling_config_rejects_nonintegral_limits(
+    tmp_path: Path,
+    field: str,
+    value: object,
+):
+    with pytest.raises(ValueError, match=field):
+        SamplingConfig(
+            checkpoint=tmp_path / "checkpoints" / "best.pt",
+            **{field: value},
+        )
 
 
 def test_public_backtracking_rejects_invalid_seed_and_event_limits():

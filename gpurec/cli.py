@@ -433,9 +433,13 @@ def main(argv: list[str] | None = None) -> None:
         except _EXPECTED_WORKFLOW_ERRORS as exc:
             parser.error(str(exc))
         if opt_result.status == "failed":
-            parser.error(
-                "optimization failed; refusing to sample from a failed run "
-                f"({opt_result.reason})"
+            parser.exit(
+                status=1,
+                message=(
+                    "optimization failed; refusing to sample from a failed run "
+                    f"({opt_result.reason})"
+                    "\n"
+                ),
             )
         checkpoint = run_config.out_dir / "checkpoints" / "best.pt"
         if not checkpoint.exists():

@@ -1000,6 +1000,15 @@ indices no longer alias the last family through Python indexing, and positive
 out-of-range indices now fail with a clear \texttt{ValueError} instead of a
 late raw \texttt{IndexError} or inconsistent family metadata.
 
+\subsection{SamplingConfig and Run Failure Ergonomics}
+
+\texttt{SamplingConfig} now normalizes its integer controls with the same
+helpers used by \texttt{RunConfig}, rejecting booleans and non-integral floats
+before they can reach range loops, subprocess payloads, or Rust backtracking
+arguments.  The \texttt{gpurec run} command also reports optimization failure as
+a runtime exit status 1 instead of an argparse usage error, while still
+refusing to invoke sampling after a failed optimization.
+
 \section{Verification Log}
 
 \begin{center}
@@ -1906,6 +1915,18 @@ CPU unit gate after batch planner family-index validation &
 \texttt{258 passed, 28 deselected} \\
 \texttt{python scripts/check\_release\_metadata.py} &
 Release metadata checker after batch planner family-index validation &
+\texttt{expected license blockers} \\
+\texttt{python -m py\_compile gpurec/cli.py gpurec/workflow/config.py tests/unit/test\_workflow.py} &
+\texttt{SamplingConfig} integer validation and run-failure CLI syntax &
+\texttt{ok} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q tests/unit/test\_workflow.py -k "..."} &
+Focused sampling-config and \texttt{gpurec run} failure guards &
+\texttt{10 passed, 169 deselected} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
+CPU unit gate after sampling-config and \texttt{gpurec run} ergonomics &
+\texttt{263 passed, 28 deselected} \\
+\texttt{python scripts/check\_release\_metadata.py} &
+Release metadata checker after sampling-config and run-failure ergonomics &
 \texttt{expected license blockers} \\
 \bottomrule
 \end{tabular}

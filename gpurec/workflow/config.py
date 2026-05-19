@@ -454,13 +454,17 @@ class SamplingConfig:
             self.out_dir = _resolve_path(self.out_dir)
         if self.backtrack_binary is not None:
             self.backtrack_binary = _resolve_path(self.backtrack_binary)
-        if self.samples < 1:
-            raise ValueError("samples must be positive")
-        if self.seed < 0:
-            raise ValueError("seed must be non-negative")
-        if self.family_start < 0:
-            raise ValueError("family_start must be non-negative")
-        if self.max_families is not None and self.max_families < 1:
-            raise ValueError("max_families must be positive when provided")
-        if self.max_events is not None and self.max_events < 1:
-            raise ValueError("max_events must be positive when provided")
+        self.samples = _normalize_positive_int("samples", self.samples)
+        self.seed = _normalize_nonnegative_int("seed", self.seed)
+        self.family_start = _normalize_nonnegative_int(
+            "family_start",
+            self.family_start,
+        )
+        self.max_families = _normalize_optional_positive_int(
+            "max_families",
+            self.max_families,
+        )
+        self.max_events = _normalize_optional_positive_int(
+            "max_events",
+            self.max_events,
+        )
