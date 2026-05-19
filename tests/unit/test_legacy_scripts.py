@@ -5,6 +5,10 @@ from pathlib import Path
 import pytest
 
 from scripts.compare_backtracking_alerax_events import load_rates
+from scripts.export_hogenom_rates_from_checkpoint import (
+    parse_newick,
+    species_order_labels,
+)
 
 
 def _rate_output_dir(tmp_path: Path) -> Path:
@@ -100,3 +104,20 @@ def test_compare_backtracking_load_rates_reports_malformed_files(
         load_rates(output_dir, family_name)
 
     assert str(path) in str(exc_info.value)
+
+
+def test_export_rates_parse_newick_rejects_empty_file(tmp_path: Path):
+    tree_path = tmp_path / "empty.nwk"
+    tree_path.write_text("", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="empty Newick file") as exc_info:
+        parse_newick(tree_path)
+
+    assert str(tree_path) in str(exc_info.value)
+
+
+def test_export_rates_parse_newick_keeps_valid_single_leaf(tmp_path: Path):
+    tree_path = tmp_path / "one.nwk"
+    tree_path.write_text("SpeciesA;\n", encoding="utf-8")
+
+    assert species_order_labels(parse_newick(tree_path)) == ["SpeciesA"]

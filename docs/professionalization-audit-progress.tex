@@ -906,6 +906,13 @@ addition to \texttt{python -m gpurec.cli --help}.  The metadata unit guard
 requires both commands so future workflow or documentation edits cannot drift
 back to testing only the source-tree module form.
 
+\subsection{Empty Newick Export Guard}
+
+\texttt{export\_hogenom\_rates\_from\_checkpoint.py} now rejects empty Newick
+species-tree files before constructing a blank leaf label.  The check matches
+the retained HOGENOM optimizer parser and keeps empty input files from becoming
+valid-looking one-row rate exports or later tensor-shape errors.
+
 \section{Verification Log}
 
 \begin{center}
@@ -1660,6 +1667,15 @@ CPU unit gate after installed console-script smoke guard &
 \texttt{python scripts/check\_release\_metadata.py} &
 Release metadata checker after installed smoke guard &
 \texttt{expected license blockers} \\
+\texttt{python -m py\_compile scripts/export\_hogenom\_rates\_from\_checkpoint.py tests/unit/test\_legacy\_scripts.py} &
+Export-rate Newick parser syntax &
+\texttt{ok} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q tests/unit/test\_legacy\_scripts.py} &
+Focused legacy script parser guards &
+\texttt{10 passed} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
+CPU unit gate after empty Newick export guard &
+\texttt{232 passed, 28 deselected} \\
 \bottomrule
 \end{tabular}
 \end{center}

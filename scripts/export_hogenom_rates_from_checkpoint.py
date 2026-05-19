@@ -18,6 +18,8 @@ class TreeNode:
 
 def parse_newick(path: Path) -> TreeNode:
     text = path.read_text(encoding="utf-8").strip()
+    if not text:
+        raise ValueError(f"empty Newick file: {path}")
     idx = 0
 
     def skip_ws() -> None:
