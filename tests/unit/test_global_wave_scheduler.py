@@ -31,10 +31,19 @@ def _ccp(C, parents, lefts, rights, root):
     }
 
 
-def test_core_batching_contracts_do_not_use_runtime_asserts():
-    source = Path("gpurec/core/batching.py").read_text(encoding="utf-8")
+def test_core_runtime_contracts_do_not_use_asserts():
+    sources = [
+        Path("gpurec/core/batching.py"),
+        Path("gpurec/core/forward.py"),
+    ]
 
-    assert "assert " not in source
+    offenders = [
+        str(path)
+        for path in sources
+        if "assert " in path.read_text(encoding="utf-8")
+    ]
+
+    assert offenders == []
 
 
 def test_collate_gene_families_validates_split_lengths_under_optimized_python():

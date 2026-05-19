@@ -864,6 +864,14 @@ variable and tells users to unset it or set it to \texttt{0}.  Forward/autograd
 paths retain the same guard so late environment changes fail with the same
 message instead of a delayed \texttt{NotImplementedError}.
 
+\subsection{Core Runtime Invariants}
+
+The remaining production \texttt{assert} in the adaptive Pi convergence path
+was replaced with an explicit \texttt{RuntimeError} invariant.  The
+optimized-Python source guard now covers both \texttt{gpurec/core/batching.py}
+and \texttt{gpurec/core/forward.py}, so core validation failures keep their
+runtime checks when Python is launched with \texttt{-O}.
+
 \section{Verification Log}
 
 \begin{center}
@@ -1563,6 +1571,18 @@ Focused compatibility flag and device precedence guards &
 \texttt{3 passed} \\
 \texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
 CPU unit gate after compatibility flag guard &
+\texttt{220 passed, 28 deselected} \\
+\texttt{python -m py\_compile gpurec/core/forward.py tests/unit/test\_global\_...} &
+Core runtime invariant syntax &
+\texttt{ok} \\
+\texttt{pytest -q tests/unit/test\_global\_wave\_scheduler.py::test\_core\_... ...} &
+Focused no-runtime-assert guards &
+\texttt{2 passed} \\
+\texttt{rg -n "assert " gpurec/core/forward.py gpurec/core/batching.py} &
+Core assert-source scan &
+\texttt{no matches} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
+CPU unit gate after core runtime invariant cleanup &
 \texttt{220 passed, 28 deselected} \\
 \bottomrule
 \end{tabular}

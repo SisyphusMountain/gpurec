@@ -325,7 +325,10 @@ def Pi_wave_forward(
                     )
             _progress("pi_iter", wave_index, local_iter + 1, meta)
             if check_convergence:
-                assert max_diff_scratch is not None
+                if max_diff_scratch is None:
+                    raise RuntimeError(
+                        "internal error: missing Pi convergence scratch buffer"
+                    )
                 max_diff = float(max_diff_scratch[:W].amax().detach().cpu())
                 pi_wave_deltas[wave_index] = max_diff
                 if max_diff < convergence_tolerance:
