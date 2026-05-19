@@ -429,6 +429,13 @@ branch-transition note.  The supported runtime surface remains up front, while
 performance-pruning history and retained benchmark context are linked through
 \texttt{docs/lean-fast-path.md}.
 
+\subsection{Sampling Runner Coverage}
+
+\texttt{SamplingRunner.run()} now has a fast CPU unit test that stubs only
+checkpoint/model loading and the Rust sampler boundary.  The test covers family
+selection, deterministic seed offsets, XML and event-count file emission,
+species and transfer aggregation, summary JSON output, and model cleanup.
+
 \section{Verification Log}
 
 \begin{center}
@@ -607,6 +614,15 @@ CPU unit gate after runner-helper cleanup &
 \texttt{rg -n "\# gpurec lean fast path\textbar{}Removed from this branch\textbar{}This branch" README.md} &
 README branch-transition phrase guard &
 \texttt{no matches} \\
+\texttt{python -m py\_compile tests/unit/test\_workflow.py gpurec/workflow/sampling.py} &
+Sampling runner coverage syntax &
+\texttt{ok} \\
+\texttt{pytest -q tests/unit/test\_workflow.py} &
+Workflow and SamplingRunner regressions &
+\texttt{29 passed after sampling-runner coverage} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
+CPU unit gate after sampling-runner coverage &
+\texttt{52 passed, 27 deselected} \\
 \bottomrule
 \end{tabular}
 \end{center}

@@ -9,6 +9,7 @@ import pytest
 import torch
 
 import gpurec.backtracking as backtracking
+import gpurec.workflow.sampling as sampling_workflow
 from gpurec.backtracking import (
     EVENT_KEYS,
     _activate_family_batch,
@@ -24,7 +25,7 @@ from gpurec.workflow.checkpoint import load_checkpoint, restore_model_theta, sav
 from gpurec.workflow.config import RunConfig, SamplingConfig
 from gpurec.workflow.diagnostics import parameter_stats
 from gpurec.workflow.optimize import _write_rate_table
-from gpurec.workflow.sampling import _xml_species_and_transfer_counts
+from gpurec.workflow.sampling import SamplingRunner, _xml_species_and_transfer_counts
 
 
 def test_run_config_json_roundtrip(tmp_path: Path):
@@ -448,6 +449,156 @@ def test_recphyloxml_event_counts_uses_shared_event_schema():
         "TL": 0,
         "L": 3,
         "Leaf": 1,
+    }
+
+
+def test_sampling_runner_writes_outputs_and_aggregates(tmp_path: Path, monkeypatch):
+    xml = """
+    <recPhylo>
+      <recGeneTree>
+        <phylogeny>
+          <clade>
+            <eventsRec><speciation speciesLocation="A"/></eventsRec>
+            <clade>
+              <eventsRec>
+                <branchingOut speciesLocation="A"/>
+                <transferBack destinationSpecies="B"/>
+              </eventsRec>
+              <clade><eventsRec><leaf speciesLocation="B"/></eventsRec></clade>
+            </clade>
+            <clade><eventsRec><loss speciesLocation="C"/></eventsRec></clade>
+          </clade>
+        </phylogeny>
+      </recGeneTree>
+    </recPhylo>
+    """
+
+    class FakeModel:
+        family_names = ["fam0", "fam1", "fam2"]
+
+        def __init__(self):
+            self.closed = False
+
+        def close(self):
+            self.closed = True
+
+    model = FakeModel()
+    run_config = RunConfig(
+        species_tree=tmp_path / "sp.nwk",
+        families_file=tmp_path / "families.txt",
+        out_dir=tmp_path / "run_out",
+        device="cuda",
+    )
+    config = SamplingConfig(
+        checkpoint=tmp_path / "checkpoints" / "best.pt",
+        out_dir=tmp_path / "sample_out",
+        samples=2,
+        seed=5,
+        family_start=1,
+        max_families=2,
+        max_events=123,
+        backtrack_binary=tmp_path / "fake-backtrack",
+    )
+    calls: list[dict[str, object]] = []
+
+    def fake_sample_recphyloxmls(
+        model_arg: object,
+        *,
+        family_index: int,
+        num_samples: int,
+        seed: int,
+        max_events: int | None,
+        backtrack_binary: Path | None,
+    ) -> list[str]:
+        assert model_arg is model
+        calls.append(
+            {
+                "family_index": family_index,
+                "num_samples": num_samples,
+                "seed": seed,
+                "max_events": max_events,
+                "backtrack_binary": backtrack_binary,
+            }
+        )
+        return [xml for _ in range(num_samples)]
+
+    runner = SamplingRunner(config)
+    monkeypatch.setattr(runner, "_load_model", lambda: (run_config, model))
+    monkeypatch.setattr(
+        sampling_workflow,
+        "sample_recphyloxmls",
+        fake_sample_recphyloxmls,
+    )
+
+    result = runner.run()
+
+    assert result.out_dir == config.out_dir
+    assert result.families_sampled == 2
+    assert result.samples_per_family == 2
+    assert result.xml_files == 4
+    assert model.closed
+    assert calls == [
+        {
+            "family_index": 1,
+            "num_samples": 2,
+            "seed": 7,
+            "max_events": 123,
+            "backtrack_binary": config.backtrack_binary,
+        },
+        {
+            "family_index": 2,
+            "num_samples": 2,
+            "seed": 9,
+            "max_events": 123,
+            "backtrack_binary": config.backtrack_binary,
+        },
+    ]
+
+    recon_dir = config.out_dir / "reconciliations"
+    all_dir = recon_dir / "all"
+    assert sorted(path.name for path in all_dir.glob("*.xml")) == [
+        "fam1_sample_0.xml",
+        "fam1_sample_1.xml",
+        "fam2_sample_0.xml",
+        "fam2_sample_1.xml",
+    ]
+    assert (all_dir / "fam1_eventCounts_0.txt").read_text(encoding="utf-8") == (
+        "S:0\nSL:1\nD:0\nDL:0\nT:1\nTL:0\nL:0\nLeaf:1\n"
+    )
+
+    event_rows = (recon_dir / "event_counts.tsv").read_text(encoding="utf-8").splitlines()
+    assert event_rows[0] == "family\tsample\t" + "\t".join(EVENT_KEYS)
+    assert event_rows[1:] == [
+        "fam1\t0\t0\t1\t0\t0\t1\t0\t0\t1",
+        "fam1\t1\t0\t1\t0\t0\t1\t0\t0\t1",
+        "fam2\t0\t0\t1\t0\t0\t1\t0\t0\t1",
+        "fam2\t1\t0\t1\t0\t0\t1\t0\t0\t1",
+    ]
+
+    species_lines = (
+        recon_dir / "totalSpeciesEventCounts.txt"
+    ).read_text(encoding="utf-8").splitlines()
+    species_header = [column.strip() for column in species_lines[0].split(",")]
+    species_rows = {}
+    for line in species_lines[1:]:
+        parts = [part.strip() for part in line.split(",")]
+        species_rows[parts[0]] = dict(zip(species_header[1:], map(float, parts[1:])))
+
+    assert species_rows["A"]["speciations"] == pytest.approx(2.0)
+    assert species_rows["A"]["transfers"] == pytest.approx(2.0)
+    assert species_rows["A"]["origination"] == pytest.approx(2.0)
+    assert species_rows["B"]["transfers_to"] == pytest.approx(2.0)
+    assert species_rows["B"]["copies"] == pytest.approx(2.0)
+    assert species_rows["B"]["singletons"] == pytest.approx(2.0)
+    assert species_rows["C"]["losses"] == pytest.approx(2.0)
+
+    assert (recon_dir / "totalTransfers.txt").read_text(encoding="utf-8") == "A B 2\n"
+    assert json.loads((recon_dir / "summary.json").read_text(encoding="utf-8")) == {
+        "checkpoint": str(config.checkpoint),
+        "families_sampled": 2,
+        "out_dir": str(config.out_dir),
+        "samples_per_family": 2,
+        "xml_files": 4,
     }
 
 
