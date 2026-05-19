@@ -677,6 +677,17 @@ class UniformChunkedReconModel(torch.nn.Module):
         clade_counts = [int(f["C"]) for f in dataset.families]
         split_counts = [int(f["N_splits"]) for f in dataset.families]
         normalized_packing = normalize_batch_packing(batch_packing)
+        leaf_counts: list[int] | None = None
+        nonleaf_counts: list[int] | None = None
+        schedule_depths: list[int] | None = None
+        if normalized_packing == "depth_first_fit":
+            summaries = [
+                family_schedule_summary(fam["ccp_helpers"])
+                for fam in dataset.families
+            ]
+            leaf_counts = [int(summary["leaf_count"]) for summary in summaries]
+            nonleaf_counts = [int(summary["nonleaf_count"]) for summary in summaries]
+            schedule_depths = [int(summary["max_level"]) for summary in summaries]
         chunk_value = _as_auto_int(family_chunk_size)
         wave_value = _as_auto_int(max_wave_size)
         memory_policy: UniformPipelinePolicy | None = None
@@ -698,6 +709,11 @@ class UniformChunkedReconModel(torch.nn.Module):
                 device=device,
                 family_chunk_candidates=chunk_candidates,
                 max_wave_candidates=wave_candidates,
+                clade_budget=clade_budget,
+                batch_packing=normalized_packing,
+                leaf_counts=leaf_counts,
+                nonleaf_counts=nonleaf_counts,
+                schedule_depths=schedule_depths,
             )
             if chunk_value == "auto":
                 chunk_value = memory_policy.family_chunk_size
@@ -706,17 +722,6 @@ class UniformChunkedReconModel(torch.nn.Module):
 
         family_chunk_n = 0 if chunk_value is None else int(chunk_value)
         max_wave_n = None if wave_value is None else int(wave_value)
-        leaf_counts: list[int] | None = None
-        nonleaf_counts: list[int] | None = None
-        schedule_depths: list[int] | None = None
-        if normalized_packing == "depth_first_fit":
-            summaries = [
-                family_schedule_summary(fam["ccp_helpers"])
-                for fam in dataset.families
-            ]
-            leaf_counts = [int(summary["leaf_count"]) for summary in summaries]
-            nonleaf_counts = [int(summary["nonleaf_count"]) for summary in summaries]
-            schedule_depths = [int(summary["max_level"]) for summary in summaries]
         specs = _make_chunks(
             list(range(len(dataset.families))),
             clade_counts,

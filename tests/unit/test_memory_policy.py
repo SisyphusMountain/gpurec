@@ -1,6 +1,8 @@
+import pytest
 import torch
 
 from gpurec.core.memory_policy import (
+    choose_uniform_pipeline_policy,
     estimate_chunk_payload_bytes,
     proposal0_wave_scratch_bytes,
     uniform_training_dense_state_bytes,
@@ -53,3 +55,47 @@ def test_chunk_payload_uses_largest_resident_chunk():
         )
         == expected
     )
+
+
+def test_chunk_payload_uses_packed_plan_for_clade_first_fit():
+    clades = [100, 1, 100, 1]
+    S = 3
+    itemsize = torch.empty((), dtype=torch.float32).element_size()
+
+    expected_C = 200
+    expected_W = 200
+    expected = (
+        3 * expected_C * S * itemsize
+        + 10 * expected_W * S * itemsize
+        + expected_C * itemsize * 8
+    )
+    assert (
+        estimate_chunk_payload_bytes(
+            clades,
+            S,
+            torch.float32,
+            family_chunk_size=2,
+            max_wave_size=1024,
+            clade_budget=200,
+            batch_packing="clade_first_fit",
+        )
+        == expected
+    )
+
+
+def test_policy_budget_uses_packed_clade_first_fit_plan(monkeypatch):
+    monkeypatch.setattr(
+        "gpurec.core.memory_policy.cuda_memory_budget_bytes",
+        lambda device=None: 10_000,
+    )
+
+    with pytest.raises(RuntimeError, match="no retained uniform pipeline policy"):
+        choose_uniform_pipeline_policy(
+            [100, 1, 100, 1],
+            1,
+            torch.float32,
+            family_chunk_candidates=(2,),
+            max_wave_candidates=(1024,),
+            clade_budget=200,
+            batch_packing="clade_first_fit",
+        )

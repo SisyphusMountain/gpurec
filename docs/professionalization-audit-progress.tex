@@ -563,6 +563,14 @@ match the supported checkpoint version.  This turns future or incompatible
 checkpoint files into explicit errors before optimization resume or sampling can
 use partially compatible metadata.
 
+\subsection{Packed Memory Policy Planning}
+
+Automatic uniform pipeline selection now estimates resident chunk memory with
+the same batch planner used to build chunks.  Non-sequential packing policies
+such as \texttt{clade\_first\_fit} and \texttt{depth\_first\_fit} therefore use
+the planned maximum chunk size, instead of a contiguous-window approximation
+that could under-estimate memory for reordered batches.
+
 \section{Verification Log}
 
 \begin{center}
@@ -894,6 +902,15 @@ Checkpoint version validation regressions &
 \texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
 CPU unit gate after checkpoint-version cleanup &
 \texttt{83 passed, 27 deselected} \\
+\texttt{python -m py\_compile gpurec/core/memory\_policy.py gpurec/api/uniform\_chunked.py tests/unit/test\_memory\_policy.py} &
+Packed memory-policy syntax &
+\texttt{ok} \\
+\texttt{pytest -q tests/unit/test\_memory\_policy.py} &
+Packed memory-policy regressions &
+\texttt{4 passed after packed memory-policy cleanup} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
+CPU unit gate after packed memory-policy cleanup &
+\texttt{85 passed, 27 deselected} \\
 \bottomrule
 \end{tabular}
 \end{center}

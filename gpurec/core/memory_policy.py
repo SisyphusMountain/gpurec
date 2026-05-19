@@ -7,6 +7,8 @@ from typing import Sequence
 
 import torch
 
+from .batch_planning import plan_family_batches
+
 
 GIB = 1024 ** 3
 
@@ -97,16 +99,23 @@ def estimate_chunk_payload_bytes(
     *,
     family_chunk_size: int,
     max_wave_size: int,
+    clade_budget: int | None = None,
+    batch_packing: str = "sequential",
+    leaf_counts: Sequence[int] | None = None,
+    nonleaf_counts: Sequence[int] | None = None,
+    schedule_depths: Sequence[int] | None = None,
 ) -> int:
-    if family_chunk_size <= 0:
-        chunk_clades = sum(int(c) for c in clade_counts)
-    else:
-        chunk_clades = 0
-        for start in range(0, len(clade_counts), family_chunk_size):
-            chunk_clades = max(
-                chunk_clades,
-                sum(int(c) for c in clade_counts[start:start + family_chunk_size]),
-            )
+    plans = plan_family_batches(
+        clade_counts=clade_counts,
+        family_chunk_size=int(family_chunk_size),
+        clade_budget=clade_budget,
+        batch_packing=batch_packing,
+        leaf_counts=leaf_counts,
+        nonleaf_counts=nonleaf_counts,
+        schedule_depths=schedule_depths,
+        max_wave_size=int(max_wave_size),
+    )
+    chunk_clades = max((int(plan.clades) for plan in plans), default=0)
     max_wave_rows = min(int(max_wave_size), max(1, int(chunk_clades)))
     return uniform_training_payload_bytes(
         chunk_clades,
@@ -133,6 +142,11 @@ def choose_uniform_pipeline_policy(
     device: torch.device | int | None = None,
     family_chunk_candidates: Sequence[int] = (25, 50, 10, 75, 100),
     max_wave_candidates: Sequence[int] = (8192, 16384, 4096, 32768),
+    clade_budget: int | None = None,
+    batch_packing: str = "sequential",
+    leaf_counts: Sequence[int] | None = None,
+    nonleaf_counts: Sequence[int] | None = None,
+    schedule_depths: Sequence[int] | None = None,
 ) -> UniformPipelinePolicy:
     """Choose a practical uniform training policy from measured-safe candidates.
 
@@ -148,6 +162,11 @@ def choose_uniform_pipeline_policy(
                 dtype,
                 family_chunk_size=int(chunk_size),
                 max_wave_size=int(max_wave),
+                clade_budget=clade_budget,
+                batch_packing=batch_packing,
+                leaf_counts=leaf_counts,
+                nonleaf_counts=nonleaf_counts,
+                schedule_depths=schedule_depths,
             )
             if budget is None or est <= budget:
                 return UniformPipelinePolicy(
