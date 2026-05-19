@@ -27,16 +27,56 @@ def parse_alerax_event_counts(path: Path) -> dict[str, int]:
     return counts
 
 
+def _read_rate_row(
+    path: Path,
+    *,
+    columns: tuple[int, int, int],
+    expected_format: str,
+) -> tuple[float, float, float]:
+    if not path.exists():
+        raise FileNotFoundError(f"missing AleRax rate file: {path}")
+    rows = [
+        line.split()
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    if len(rows) < 2:
+        raise ValueError(
+            f"{path} must contain a header row and at least one rate row "
+            f"with columns: {expected_format}"
+        )
+    first_row = rows[1]
+    if len(first_row) <= max(columns):
+        raise ValueError(
+            f"{path} first rate row must have columns: {expected_format}; "
+            f"got {first_row!r}"
+        )
+    try:
+        rates = tuple(float(first_row[column]) for column in columns)
+    except ValueError as exc:
+        raise ValueError(
+            f"could not parse D/L/T rates from {path}; expected columns: "
+            f"{expected_format}; got {first_row!r}"
+        ) from exc
+    return rates
+
+
 def load_rates(output_dir: Path, family_name: str | None = None) -> tuple[float, float, float]:
     if family_name is not None:
         family_rates = output_dir / "model_parameters" / f"{family_name}_rates.txt"
         if family_rates.exists():
-            first_row = family_rates.read_text().splitlines()[1].split()
-            return tuple(map(float, first_row[:3]))
+            return _read_rate_row(
+                family_rates,
+                columns=(0, 1, 2),
+                expected_format="D L T",
+            )
 
     params = output_dir / "model_parameters" / "model_parameters.txt"
-    first_row = params.read_text().splitlines()[1].split()
-    return tuple(map(float, first_row[1:4]))
+    return _read_rate_row(
+        params,
+        columns=(1, 2, 3),
+        expected_format="node D L T",
+    )
 
 
 def summarize(counts: list[dict[str, int]]) -> dict[str, tuple[int, float, int]]:

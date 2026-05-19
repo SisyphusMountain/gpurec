@@ -889,6 +889,15 @@ successful process exit for failed optimization runs.  A focused CLI regression
 keeps the existing no-traceback behavior and confirms \texttt{gpurec run}
 continues to refuse sampling after failed optimization.
 
+\subsection{Backtracking Comparison Rate Parsing}
+
+The legacy \texttt{compare\_backtracking\_alerax\_events.py} diagnostic now
+validates AleRax rate files before indexing into them.  Family-specific
+\texttt{*\_rates.txt} files and global \texttt{model\_parameters.txt} files are
+read with explicit UTF-8 decoding, checked for a header plus data row, checked
+for the expected D/L/T columns, and non-numeric rates are reported as
+path-rich \texttt{ValueError}s instead of raw \texttt{IndexError}s.
+
 \section{Verification Log}
 
 \begin{center}
@@ -1622,6 +1631,15 @@ Focused failed-optimization CLI exit guards &
 \texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
 CPU unit gate after CLI failed-status exit handling &
 \texttt{222 passed, 28 deselected} \\
+\texttt{python -m py\_compile scripts/compare\_backtracking\_alerax\_events.py tests/unit/test\_legacy\_scripts.py} &
+Backtracking comparison rate parser syntax &
+\texttt{ok} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q tests/unit/test\_legacy\_scripts.py} &
+Focused legacy script rate parser guards &
+\texttt{8 passed} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
+CPU unit gate after backtracking comparison rate parser &
+\texttt{230 passed, 28 deselected} \\
 \bottomrule
 \end{tabular}
 \end{center}
