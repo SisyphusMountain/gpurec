@@ -6,6 +6,8 @@ import torch
 from gpurec.core.model import (
     GeneDataset,
     _load_preprocess_cache,
+    _validate_family_preprocess_cache,
+    _validate_species_preprocess_cache,
     parse_alerax_family_file,
     parse_alerax_mapping_file,
 )
@@ -54,6 +56,114 @@ def test_preprocess_cache_load_uses_weights_only(tmp_path, monkeypatch):
             "weights_only": True,
         }
     ]
+
+
+def _valid_species_cache_payload() -> dict[str, object]:
+    return {
+        "S": 3,
+        "names": ["Root", "A", "B"],
+        "s_P_indexes": torch.tensor([0, 3], dtype=torch.long),
+        "s_C12_indexes": torch.tensor([1, 2], dtype=torch.long),
+        "unnorm_row_max": torch.zeros(3, dtype=torch.float64),
+        "species_name_to_index": {"Root": 0, "A": 1, "B": 2},
+    }
+
+
+def _valid_family_cache_payload() -> dict[str, object]:
+    return {
+        "ccp": {
+            "C": 3,
+            "N_splits": 1,
+            "root_clade_id": 0,
+            "num_segs_eq1": 1,
+            "end_rows_ge2": 0,
+            "split_counts": torch.tensor([1, 0, 0], dtype=torch.long),
+            "split_parents_sorted": torch.tensor([0], dtype=torch.long),
+            "split_leftrights_sorted": torch.tensor([1, 2], dtype=torch.long),
+            "log_split_probs_sorted": torch.zeros(1, dtype=torch.float64),
+            "clade_leaf_labels": ["", "a", "b"],
+        },
+        "leaf_row_index": torch.tensor([1, 2], dtype=torch.long),
+        "leaf_col_index": torch.tensor([1, 2], dtype=torch.long),
+    }
+
+
+def test_species_preprocess_cache_rejects_missing_nested_helpers(tmp_path):
+    path = tmp_path / "species.pt"
+    torch.save({"S": 3}, path)
+
+    with pytest.raises(RuntimeError, match="names"):
+        _load_preprocess_cache(
+            path,
+            label="species",
+            required_keys=("S",),
+            validator=_validate_species_preprocess_cache,
+        )
+
+
+def test_species_preprocess_cache_rejects_inconsistent_topology_lengths(tmp_path):
+    path = tmp_path / "species.pt"
+    payload = _valid_species_cache_payload()
+    payload["s_C12_indexes"] = torch.tensor([1], dtype=torch.long)
+    torch.save(payload, path)
+
+    with pytest.raises(RuntimeError, match="same length"):
+        _load_preprocess_cache(
+            path,
+            label="species",
+            required_keys=("S",),
+            validator=_validate_species_preprocess_cache,
+        )
+
+
+def test_family_preprocess_cache_rejects_missing_nested_ccp_helpers(tmp_path):
+    path = tmp_path / "family.pt"
+    torch.save(
+        {
+            "ccp": {"C": 3, "N_splits": 1},
+            "leaf_row_index": torch.tensor([1, 2], dtype=torch.long),
+            "leaf_col_index": torch.tensor([1, 2], dtype=torch.long),
+        },
+        path,
+    )
+
+    with pytest.raises(RuntimeError, match="root_clade_id"):
+        _load_preprocess_cache(
+            path,
+            label="family 'fam0'",
+            required_keys=("ccp", "leaf_row_index", "leaf_col_index"),
+            validator=_validate_family_preprocess_cache,
+        )
+
+
+def test_family_preprocess_cache_rejects_wrong_index_tensor_dtype(tmp_path):
+    path = tmp_path / "family.pt"
+    payload = _valid_family_cache_payload()
+    payload["ccp"]["split_parents_sorted"] = torch.tensor([0.0], dtype=torch.float32)
+    torch.save(payload, path)
+
+    with pytest.raises(RuntimeError, match="split_parents_sorted.*torch.int64"):
+        _load_preprocess_cache(
+            path,
+            label="family 'fam0'",
+            required_keys=("ccp", "leaf_row_index", "leaf_col_index"),
+            validator=_validate_family_preprocess_cache,
+        )
+
+
+def test_family_preprocess_cache_rejects_inconsistent_split_lengths(tmp_path):
+    path = tmp_path / "family.pt"
+    payload = _valid_family_cache_payload()
+    payload["ccp"]["split_leftrights_sorted"] = torch.tensor([1], dtype=torch.long)
+    torch.save(payload, path)
+
+    with pytest.raises(RuntimeError, match="split_leftrights_sorted.*expected 2"):
+        _load_preprocess_cache(
+            path,
+            label="family 'fam0'",
+            required_keys=("ccp", "leaf_row_index", "leaf_col_index"),
+            validator=_validate_family_preprocess_cache,
+        )
 
 
 @pytest.mark.parametrize(

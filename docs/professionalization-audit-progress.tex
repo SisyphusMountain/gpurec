@@ -731,6 +731,16 @@ mapping entries can no longer use last-writer-wins semantics to silently move a
 gene leaf between species.  The new parser regressions cover both duplicate
 family records and duplicate cross-species gene assignments.
 
+\subsection{Nested Preprocess Cache Validation}
+
+Preprocess cache loading now validates nested species and family payload
+structure instead of checking only top-level keys.  Species caches must include
+consistent topology tensors, species labels, row maxima, and name-index maps;
+family caches must include a CCP dictionary with consistent split counts,
+split-helper tensor lengths, root clade bounds, clade labels, and leaf mapping
+tensors.  Malformed caches now fail with cache-specific refresh guidance before
+model construction reaches lower-level tensor or CUDA code.
+
 \section{Verification Log}
 
 \begin{center}
@@ -1266,6 +1276,21 @@ AleRax parser and family input suite after uniqueness guards &
 \texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
 CPU unit gate after AleRax uniqueness guards &
 \texttt{157 passed, 27 deselected} \\
+\texttt{python -m py\_compile gpurec/core/model.py tests/unit/test\_alerax\_family\_input.py} &
+Nested preprocess cache validation syntax &
+\texttt{ok} \\
+\texttt{pytest -q tests/unit/test\_alerax\_family\_input.py::test\_species\_preprocess\_... ...} &
+Focused malformed cache regressions &
+\texttt{5 passed} \\
+\texttt{pytest -q tests/unit/test\_alerax\_family\_input.py} &
+AleRax input suite after cache validation &
+\texttt{14 passed} \\
+\texttt{python tiny GeneDataset cache write/read smoke} &
+Valid generated preprocess caches under new validators &
+\texttt{ok} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
+CPU unit gate after nested cache validation &
+\texttt{162 passed, 27 deselected} \\
 \bottomrule
 \end{tabular}
 \end{center}
@@ -1273,10 +1298,10 @@ CPU unit gate after AleRax uniqueness guards &
 \section{Next Audit Targets}
 
 \begin{enumerate}[leftmargin=*]
-  \item Harden nested preprocess cache validation for species and family cache
-        payloads so stale or corrupted cache files fail at load time.
   \item Finish release metadata work: license, classifiers, project URLs, and
         artifact checks before any redistribution.
+  \item Review whether cache refresh guidance should be promoted into the README
+        once cache validation and release documentation settle.
   \item Keep committing small, verified increments so the branch remains
         reviewable despite the larger audit scope.
 \end{enumerate}

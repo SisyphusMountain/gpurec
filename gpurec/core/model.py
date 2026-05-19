@@ -3,7 +3,7 @@ import os
 import hashlib
 import pickle
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any, Callable, Sequence
 
 import torch
 from .preprocess_cpp import _load_extension as _load_species_gene_ext
@@ -149,6 +149,7 @@ def _load_preprocess_cache(
     *,
     label: str,
     required_keys: Sequence[str],
+    validator: Callable[[dict[str, Any], Path, str], None] | None = None,
 ) -> dict[str, Any]:
     path = Path(path)
     try:
@@ -165,7 +166,265 @@ def _load_preprocess_cache(
         raise RuntimeError(
             f"{label} preprocess cache {path} is missing key(s): {', '.join(missing)}"
         )
+    if validator is not None:
+        validator(payload, path, label)
     return payload
+
+
+def _invalid_preprocess_cache(path: Path, label: str, reason: str) -> RuntimeError:
+    return RuntimeError(
+        f"{label} preprocess cache {path} is invalid: {reason}; "
+        "delete it or rerun with refresh_preprocess_cache=True"
+    )
+
+
+def _cache_int(
+    payload: dict[str, Any],
+    key: str,
+    *,
+    path: Path,
+    label: str,
+    minimum: int | None = None,
+) -> int:
+    if key not in payload:
+        raise _invalid_preprocess_cache(path, label, f"missing key {key!r}")
+    value = payload[key]
+    if isinstance(value, bool):
+        raise _invalid_preprocess_cache(path, label, f"{key!r} must be an integer")
+    if torch.is_tensor(value):
+        if value.ndim != 0 or value.dtype == torch.bool:
+            raise _invalid_preprocess_cache(path, label, f"{key!r} must be an integer")
+        value = value.item()
+    if isinstance(value, float) and not value.is_integer():
+        raise _invalid_preprocess_cache(path, label, f"{key!r} must be an integer")
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError) as exc:
+        raise _invalid_preprocess_cache(
+            path,
+            label,
+            f"{key!r} must be an integer",
+        ) from exc
+    if minimum is not None and parsed < minimum:
+        raise _invalid_preprocess_cache(
+            path,
+            label,
+            f"{key!r} must be at least {minimum}",
+        )
+    return parsed
+
+
+def _cache_tensor(
+    payload: dict[str, Any],
+    key: str,
+    *,
+    path: Path,
+    label: str,
+    dtype: torch.dtype | None = None,
+    floating: bool = False,
+    ndim: int | None = None,
+    length: int | None = None,
+    shape: tuple[int, ...] | None = None,
+) -> torch.Tensor:
+    if key not in payload:
+        raise _invalid_preprocess_cache(path, label, f"missing key {key!r}")
+    tensor = payload[key]
+    if not torch.is_tensor(tensor):
+        raise _invalid_preprocess_cache(path, label, f"{key!r} must be a tensor")
+    if dtype is not None and tensor.dtype != dtype:
+        raise _invalid_preprocess_cache(
+            path,
+            label,
+            f"{key!r} must have dtype {dtype}, got {tensor.dtype}",
+        )
+    if floating and not tensor.dtype.is_floating_point:
+        raise _invalid_preprocess_cache(
+            path,
+            label,
+            f"{key!r} must be a floating-point tensor",
+        )
+    if ndim is not None and tensor.ndim != ndim:
+        raise _invalid_preprocess_cache(
+            path,
+            label,
+            f"{key!r} must have {ndim} dimension(s), got {tensor.ndim}",
+        )
+    if length is not None and tensor.numel() != length:
+        raise _invalid_preprocess_cache(
+            path,
+            label,
+            f"{key!r} has length {tensor.numel()} but expected {length}",
+        )
+    if shape is not None and tuple(tensor.shape) != shape:
+        raise _invalid_preprocess_cache(
+            path,
+            label,
+            f"{key!r} has shape {tuple(tensor.shape)} but expected {shape}",
+        )
+    return tensor
+
+
+def _validate_species_preprocess_cache(
+    payload: dict[str, Any],
+    path: Path,
+    label: str,
+) -> None:
+    S = _cache_int(payload, "S", path=path, label=label, minimum=1)
+    names = payload.get("names")
+    if not isinstance(names, (list, tuple)) or len(names) != S:
+        raise _invalid_preprocess_cache(
+            path,
+            label,
+            f"'names' must contain {S} species labels",
+        )
+    _cache_tensor(
+        payload,
+        "s_P_indexes",
+        path=path,
+        label=label,
+        dtype=torch.long,
+        ndim=1,
+    )
+    _cache_tensor(
+        payload,
+        "s_C12_indexes",
+        path=path,
+        label=label,
+        dtype=torch.long,
+        ndim=1,
+    )
+    if payload["s_P_indexes"].numel() != payload["s_C12_indexes"].numel():
+        raise _invalid_preprocess_cache(
+            path,
+            label,
+            "'s_P_indexes' and 's_C12_indexes' must have the same length",
+        )
+    _cache_tensor(
+        payload,
+        "unnorm_row_max",
+        path=path,
+        label=label,
+        floating=True,
+        ndim=1,
+        length=S,
+    )
+    if "Recipients_mat" in payload:
+        _cache_tensor(
+            payload,
+            "Recipients_mat",
+            path=path,
+            label=label,
+            floating=True,
+            shape=(S, S),
+        )
+    species_name_to_index = payload.get("species_name_to_index")
+    if not isinstance(species_name_to_index, dict):
+        raise _invalid_preprocess_cache(
+            path,
+            label,
+            "'species_name_to_index' must be a dictionary",
+        )
+
+
+def _validate_family_preprocess_cache(
+    payload: dict[str, Any],
+    path: Path,
+    label: str,
+) -> None:
+    ccp = payload.get("ccp")
+    if not isinstance(ccp, dict):
+        raise _invalid_preprocess_cache(path, label, "'ccp' must be a dictionary")
+    C = _cache_int(ccp, "C", path=path, label=label, minimum=1)
+    N = _cache_int(ccp, "N_splits", path=path, label=label, minimum=0)
+    root = _cache_int(ccp, "root_clade_id", path=path, label=label, minimum=0)
+    if root >= C:
+        raise _invalid_preprocess_cache(
+            path,
+            label,
+            f"'root_clade_id'={root} outside clade range [0, {C})",
+        )
+    num_eq1 = _cache_int(ccp, "num_segs_eq1", path=path, label=label, minimum=0)
+    end_rows_ge2 = _cache_int(ccp, "end_rows_ge2", path=path, label=label, minimum=0)
+    if num_eq1 + end_rows_ge2 != N:
+        raise _invalid_preprocess_cache(
+            path,
+            label,
+            "'num_segs_eq1' + 'end_rows_ge2' must equal 'N_splits'",
+        )
+    _cache_tensor(
+        ccp,
+        "split_counts",
+        path=path,
+        label=label,
+        dtype=torch.long,
+        ndim=1,
+        length=C,
+    )
+    _cache_tensor(
+        ccp,
+        "split_parents_sorted",
+        path=path,
+        label=label,
+        dtype=torch.long,
+        ndim=1,
+        length=N,
+    )
+    _cache_tensor(
+        ccp,
+        "split_leftrights_sorted",
+        path=path,
+        label=label,
+        dtype=torch.long,
+        ndim=1,
+        length=2 * N,
+    )
+    _cache_tensor(
+        ccp,
+        "log_split_probs_sorted",
+        path=path,
+        label=label,
+        floating=True,
+        ndim=1,
+        length=N,
+    )
+    clade_leaf_labels = ccp.get("clade_leaf_labels")
+    if not isinstance(clade_leaf_labels, (list, tuple)) or len(clade_leaf_labels) != C:
+        raise _invalid_preprocess_cache(
+            path,
+            label,
+            f"'clade_leaf_labels' must contain {C} labels",
+        )
+
+    leaf_rows = _cache_tensor(
+        payload,
+        "leaf_row_index",
+        path=path,
+        label=label,
+        dtype=torch.long,
+        ndim=1,
+    )
+    leaf_cols = _cache_tensor(
+        payload,
+        "leaf_col_index",
+        path=path,
+        label=label,
+        dtype=torch.long,
+        ndim=1,
+        length=int(leaf_rows.numel()),
+    )
+    if leaf_rows.numel() > 0:
+        if int(leaf_rows.min().item()) < 0 or int(leaf_rows.max().item()) >= C:
+            raise _invalid_preprocess_cache(
+                path,
+                label,
+                "'leaf_row_index' contains clade rows outside the CCP range",
+            )
+    if leaf_cols.numel() > 0 and int(leaf_cols.min().item()) < 0:
+        raise _invalid_preprocess_cache(
+            path,
+            label,
+            "'leaf_col_index' contains negative species indexes",
+        )
 
 
 class GeneDataset:
@@ -317,6 +576,7 @@ class GeneDataset:
                 species_cache,
                 label="species",
                 required_keys=("S",),
+                validator=_validate_species_preprocess_cache,
             )
 
         raw_by_family = {}
@@ -345,6 +605,7 @@ class GeneDataset:
                         cache_path,
                         label=f"family {name!r}",
                         required_keys=("ccp", "leaf_row_index", "leaf_col_index"),
+                        validator=_validate_family_preprocess_cache,
                     )
                 )
             else:
