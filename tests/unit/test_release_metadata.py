@@ -48,6 +48,8 @@ classifiers = [
     "Operating System :: POSIX :: Linux",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
     "Topic :: Scientific/Engineering :: Bio-Informatics",
 ]
 
@@ -85,3 +87,15 @@ def test_cpu_ci_builds_and_smokes_release_artifacts():
         "python -m gpurec.cli --help",
     ):
         assert required in workflow
+
+
+def test_cpu_ci_matrix_covers_declared_python_versions():
+    workflow = (ROOT / ".github" / "workflows" / "cpu-unit.yml").read_text(
+        encoding="utf-8"
+    )
+    pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+
+    assert 'python-version: ["3.10", "3.11", "3.12"]' in workflow
+    assert "python-version: ${{ matrix.python-version }}" in workflow
+    for version in ("3.10", "3.11", "3.12"):
+        assert f"Programming Language :: Python :: {version}" in pyproject

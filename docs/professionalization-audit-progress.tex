@@ -769,6 +769,13 @@ family file, and mapping file.  A CPU unit test loads the JSON through
 \texttt{RunConfig.from\_json()} and parses the family file, giving the public
 config shape a checked example without requiring CUDA or optimizer execution.
 
+\subsection{Python Version CI Matrix}
+
+The CPU unit workflow now runs the declared support range on Python 3.10, 3.11,
+and 3.12 instead of only Python 3.10.  The PyPI classifiers and release metadata
+checker now require the same version set, and a source-level guard verifies that
+the workflow matrix and classifiers stay aligned.
+
 \section{Verification Log}
 
 \begin{center}
@@ -1355,6 +1362,18 @@ Direct minimal config load smoke &
 \texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
 CPU unit gate after minimal workflow example &
 \texttt{166 passed, 27 deselected} \\
+\texttt{python -m py\_compile scripts/check\_release\_metadata.py tests/unit/test\_release\_metadata.py} &
+Python-version CI guard syntax &
+\texttt{ok} \\
+\texttt{pytest -q tests/unit/test\_release\_metadata.py} &
+Release metadata and Python-version CI guards &
+\texttt{4 passed} \\
+\texttt{python scripts/check\_release\_metadata.py} &
+Release metadata checker after Python matrix &
+\texttt{license blockers only} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
+CPU unit gate after Python-version CI matrix &
+\texttt{167 passed, 27 deselected} \\
 \bottomrule
 \end{tabular}
 \end{center}
@@ -1366,8 +1385,8 @@ CPU unit gate after minimal workflow example &
         \texttt{pyproject.toml} license metadata and license classifier.
   \item Resolve the Rust backtracking clean-checkout story: vendor/publish
         \texttt{rustree} or treat the sampler as a separately installed binary.
-  \item Add Python-version CI coverage or narrow the declared Python support
-        claim to the versions that are actually tested.
+  \item Add CPU CI coverage for \texttt{crates/gpurec-backtrack} once the
+        \texttt{rustree} release model is resolved.
   \item Review whether cache refresh guidance should be promoted into the README
         once cache validation and release documentation settle.
   \item Keep committing small, verified increments so the branch remains
