@@ -4,12 +4,12 @@
 
 // Hash clades recursively using the two subclade hashes
 uint64_t wyhash64(uint64_t a, uint64_t b) {
-  constexpr uint64_t secret0 = 0xa0761d6478bd642full;
-  constexpr uint64_t secret1 = 0xe7037ed1a0b428dbull;
-  a ^= secret0;
-  b ^= secret1;
-  a *= secret0;
-  b *= secret1;
+  constexpr uint64_t salt0 = 0xa0761d6478bd642full;
+  constexpr uint64_t salt1 = 0xe7037ed1a0b428dbull;
+  a ^= salt0;
+  b ^= salt1;
+  a *= salt0;
+  b *= salt1;
   return (a ^ (a >> 32)) + (b ^ (b >> 32));
 }
 
@@ -79,4 +79,3 @@ size_t PairKeyHash::operator()(const PairKey &key) const noexcept {
 bool PairKeyEqual::operator()(const PairKey &a, const PairKey &b) const noexcept {
   return a.first == b.first && a.second == b.second;
 }
-

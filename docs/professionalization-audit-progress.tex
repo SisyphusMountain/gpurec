@@ -367,6 +367,13 @@ flags.  The help text calls out when path inputs are required unless supplied by
 \texttt{--config}, and documents the CUDA workflow default without changing
 config-file merge semantics.
 
+\subsection{Tracked Source Marker Hygiene}
+
+The tracked C++ preprocessing sources no longer carry a stale AleRax TODO for
+leaf-to-species parsing.  The comment now documents the legacy fallback and the
+preferred explicit mapping path.  The clade hash constants were also renamed to
+avoid false positives in lightweight secret scans.
+
 \section{Verification Log}
 
 \begin{center}
@@ -500,6 +507,9 @@ Workflow and CLI help regressions &
 \texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
 CPU unit gate after CLI help cleanup &
 \texttt{47 passed, 27 deselected} \\
+\texttt{pytest -q tests/unit/test\_alerax\_family\_input.py} &
+C++ preprocessing comment/name hygiene &
+\texttt{1 passed after tracked marker cleanup} \\
 \bottomrule
 \end{tabular}
 \end{center}

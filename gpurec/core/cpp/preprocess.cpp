@@ -39,8 +39,9 @@ inline size_t bitvec_num_words(int num_leaves) {
   return (static_cast<size_t>(num_leaves) + BITS_PER_WORD - 1) / BITS_PER_WORD;
 }
 
-// Default way of parsing names: assume species name is prefix before first '_'
-// TODO: replicate ALERax behavior instead of this.
+// Fallback for legacy inputs without an explicit leaf->species map: assume the
+// species name is the prefix before the first '_'.  Curated AleRax inputs pass
+// an explicit map through species_for_gene_leaf instead.
 std::string extract_species_name(const std::string &leaf_name) {
   auto pos = leaf_name.find('_');
   if (pos != std::string::npos) {
