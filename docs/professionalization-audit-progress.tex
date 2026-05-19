@@ -407,6 +407,14 @@ checkout unless a prebuilt binary is supplied.
 PyTorch modules plus workflow metadata objects instead of claiming that
 \texttt{GeneReconModel} is the only public symbol.
 
+\subsection{Backtracking Event Schema}
+
+The RecPhyloXML event-count key order is now exported once from
+\texttt{gpurec.backtracking.EVENT\_KEYS}.  Workflow sampling, top-level package
+exports, and the AleRax comparison script reuse that constant instead of
+duplicating their own tuples.  A CPU unit test now covers the AleRax-style
+\texttt{SL}/\texttt{DL}/\texttt{TL} direct-loss counting behavior.
+
 \section{Verification Log}
 
 \begin{center}
@@ -564,6 +572,15 @@ Package import and CLI smoke after metadata cleanup &
 \texttt{python -c "import gpurec.api; print(gpurec.api.\_\_all\_\_)"} &
 API package export smoke &
 \texttt{exports match documented public surface} \\
+\texttt{python -m py\_compile gpurec/backtracking.py gpurec/workflow/sampling.py ...} &
+Backtracking event schema syntax &
+\texttt{ok} \\
+\texttt{pytest -q tests/unit/test\_workflow.py} &
+Workflow and RecPhyloXML event schema regressions &
+\texttt{27 passed after event-key consolidation} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
+CPU unit gate after event-key consolidation &
+\texttt{50 passed, 27 deselected} \\
 \bottomrule
 \end{tabular}
 \end{center}

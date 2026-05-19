@@ -8,9 +8,11 @@ import pytest
 import torch
 
 from gpurec.backtracking import (
+    EVENT_KEYS,
     _activate_family_batch,
     _backtrack_command,
     export_backtracking_input,
+    recphyloxml_event_counts,
     sample_recphyloxml,
     sample_recphyloxmls,
 )
@@ -312,6 +314,55 @@ def test_public_backtracking_rejects_invalid_seed_and_event_limits():
         sample_recphyloxml(model, max_events=0)  # type: ignore[arg-type]
     with pytest.raises(ValueError, match="seed"):
         sample_recphyloxmls(model, num_samples=1, seed=-1)  # type: ignore[arg-type]
+
+
+def test_recphyloxml_event_counts_uses_shared_event_schema():
+    xml = """
+    <recPhylo>
+      <recGeneTree>
+        <phylogeny>
+          <clade>
+            <eventsRec><speciation speciesLocation="A"/></eventsRec>
+            <clade><eventsRec><loss speciesLocation="B"/></eventsRec></clade>
+            <clade>
+              <eventsRec><duplication speciesLocation="A"/></eventsRec>
+              <clade><eventsRec><loss speciesLocation="A"/></eventsRec></clade>
+              <clade>
+                <eventsRec><branchingOut speciesLocation="A"/></eventsRec>
+                <clade><eventsRec><loss speciesLocation="C"/></eventsRec></clade>
+                <clade><eventsRec><leaf speciesLocation="D"/></eventsRec></clade>
+              </clade>
+            </clade>
+          </clade>
+        </phylogeny>
+      </recGeneTree>
+    </recPhylo>
+    """
+
+    counts = recphyloxml_event_counts(xml)
+    raw_counts = recphyloxml_event_counts(xml, alerax_style=False)
+
+    assert tuple(counts) == EVENT_KEYS
+    assert counts == {
+        "S": 0,
+        "SL": 1,
+        "D": 0,
+        "DL": 1,
+        "T": 0,
+        "TL": 1,
+        "L": 0,
+        "Leaf": 1,
+    }
+    assert raw_counts == {
+        "S": 1,
+        "SL": 0,
+        "D": 1,
+        "DL": 0,
+        "T": 1,
+        "TL": 0,
+        "L": 3,
+        "Leaf": 1,
+    }
 
 
 class _DummyModel:

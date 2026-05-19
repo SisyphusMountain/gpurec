@@ -10,13 +10,16 @@ from typing import Any
 import torch
 
 from gpurec.api.model import GeneReconModel
-from gpurec.backtracking import recphyloxml_event_counts, sample_recphyloxmls
+from gpurec.backtracking import (
+    EVENT_KEYS,
+    recphyloxml_event_counts,
+    sample_recphyloxmls,
+)
 
 from .checkpoint import load_checkpoint, restore_model_theta
 from .config import RunConfig, SamplingConfig
 
 
-EVENT_KEYS = ("S", "SL", "D", "DL", "T", "TL", "L", "Leaf")
 SPECIES_COLUMNS = (
     "speciations",
     "duplications",

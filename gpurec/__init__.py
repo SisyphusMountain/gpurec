@@ -13,6 +13,7 @@ Lower-level access:
 
 from gpurec.api import GeneReconModel, UniformChunkedReconModel
 from gpurec.backtracking import (
+    EVENT_KEYS,
     export_backtracking_input,
     recphyloxml_event_counts,
     sample_recphyloxml,
@@ -30,6 +31,7 @@ from gpurec.workflow import (
 __all__ = [
     "GeneReconModel",
     "UniformChunkedReconModel",
+    "EVENT_KEYS",
     "export_backtracking_input",
     "recphyloxml_event_counts",
     "sample_recphyloxml",

@@ -19,7 +19,7 @@ from gpurec.core.preprocess_cpp import _load_extension as _load_species_gene_ext
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 _BACKTRACK_MANIFEST = _REPO_ROOT / "crates" / "gpurec-backtrack" / "Cargo.toml"
 _BACKTRACK_BINARY_ENV = "GPUREC_BACKTRACK_BIN"
-_EVENT_KEYS = ("S", "SL", "D", "DL", "T", "TL", "L", "Leaf")
+EVENT_KEYS = ("S", "SL", "D", "DL", "T", "TL", "L", "Leaf")
 
 
 def _validate_backtracking_limits(
@@ -316,7 +316,7 @@ def recphyloxml_event_counts(xml: str, *, alerax_style: bool = True) -> dict[str
     """
 
     root = ET.fromstring(xml)
-    counts = {key: 0 for key in _EVENT_KEYS}
+    counts = {key: 0 for key in EVENT_KEYS}
 
     def local_name(tag: str) -> str:
         return tag.rsplit("}", 1)[-1]

@@ -13,10 +13,8 @@ import torch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from gpurec import GeneReconModel, recphyloxml_event_counts, sample_recphyloxmls
+from gpurec.backtracking import EVENT_KEYS
 from gpurec.core.model import parse_alerax_family_file
-
-
-EVENT_KEYS = ("S", "SL", "D", "DL", "T", "TL", "L", "Leaf")
 
 
 def parse_alerax_event_counts(path: Path) -> dict[str, int]:
