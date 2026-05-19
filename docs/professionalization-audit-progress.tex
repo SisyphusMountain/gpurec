@@ -248,11 +248,21 @@ future private model imports or \texttt{model.\_} calls fail in unit tests.
 
 \subsection{Fresh Subagent Follow-up Findings}
 
-The latest audit slice found three high-value follow-ups that remain open:
-make the promoted HOGENOM workflows discoverable from \texttt{README.md} and
-packaging metadata, auto-apply the registered \texttt{unit} and
-\texttt{integration} pytest markers by test path, and either restore or rename
-the currently hollow specieswise-uniform GPU parity test.
+The latest audit slice found three high-value follow-ups: make the promoted
+HOGENOM workflows discoverable from \texttt{README.md} and packaging metadata,
+auto-apply the registered \texttt{unit} and \texttt{integration} pytest markers
+by test path, and either restore or rename the currently hollow
+specieswise-uniform GPU parity test.  The pytest marker item is addressed
+below; the README and parity-test items remain open.
+
+\subsection{Pytest Marker Hygiene}
+
+The registered \texttt{unit} and \texttt{integration} markers now correspond
+to the repository layout.  \texttt{tests/conftest.py} auto-applies them for
+files under \texttt{tests/unit} and \texttt{tests/integration}, while keeping
+the existing \texttt{gpu} and \texttt{slow} marker rules.  \texttt{tests/README.md}
+now documents \texttt{pytest -m "unit and not gpu"} as the concise CPU unit
+gate.
 
 \section{Verification Log}
 
@@ -288,6 +298,12 @@ CPU-only audit gate &
 \texttt{pytest --collect-only -q} &
 Collection after recursion exclusions &
 \texttt{64 tests collected in 0.80s} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
+Marker-based CPU unit gate &
+\texttt{37 passed, 27 deselected} \\
+\texttt{pytest --collect-only -q -m unit} / \texttt{-m integration} &
+Path-based marker selection &
+\texttt{43 unit, 16 integration selected} \\
 \texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m 'not gpu' ...GPU modules...} &
 GPU marker check &
 \texttt{22 deselected; exit 5 treated as expected} \\
@@ -312,8 +328,6 @@ YAML config UX &
   \item Add a README HOGENOM workflow matrix explaining the installed CLI,
         curated W\&B launcher, Hydra launcher, checkpoint export, and profiling
         harness.
-  \item Auto-mark unit and integration tests by directory so
-        \texttt{pytest -m "unit and not gpu"} becomes a useful CPU gate.
   \item Fix the no-op optimized/reference toggles in the specieswise-uniform
         GPU parity test or retitle it as a smoke test with a separate parity
         check.

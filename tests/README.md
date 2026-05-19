@@ -6,6 +6,12 @@ accidental traversal of large local fixtures under `tests/data`.
 Fast CPU gate:
 
 ```bash
+CUDA_VISIBLE_DEVICES='' pytest -q -m "unit and not gpu"
+```
+
+The explicit equivalent is useful when bisecting a specific audit surface:
+
+```bash
 CUDA_VISIBLE_DEVICES='' pytest -q \
   tests/unit/test_batched_lbfgs.py \
   tests/unit/test_memory_policy.py \
@@ -31,7 +37,8 @@ GPUREC_BACKTRACK_BIN=crates/gpurec-backtrack/target/release/gpurec-backtrack \
   pytest -q tests/integration/test_stochastic_backtracking.py::test_rust_stochastic_backtracking_exports_recphyloxml
 ```
 
-`pytest.ini` marks known CUDA modules as `gpu`, marks selected expensive checks
-as `slow`, and excludes large data/output directories from recursive
-collection.  Use explicit test paths for audit gates rather than bare `pytest`
+`pytest.ini` declares the coarse test markers; `tests/conftest.py` auto-applies
+`unit` and `integration` by directory, marks known CUDA modules as `gpu`, marks
+selected expensive checks as `slow`, and excludes large data/output directories
+from recursive collection.  Use explicit test paths for targeted audit gates
 when a local checkout contains large generated datasets.

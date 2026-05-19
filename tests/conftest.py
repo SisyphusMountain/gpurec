@@ -32,7 +32,17 @@ def pytest_collection_modifyitems(config, items):
     """Auto-apply coarse markers that are easy to miss in module fixtures."""
     gpu_marker = pytest.mark.gpu
     slow_marker = pytest.mark.slow
+    unit_marker = pytest.mark.unit
+    integration_marker = pytest.mark.integration
     for item in items:
+        try:
+            test_section = item.path.relative_to(DATA_DIR.parent).parts[0]
+        except ValueError:
+            test_section = ""
+        if test_section == "unit":
+            item.add_marker(unit_marker)
+        elif test_section == "integration":
+            item.add_marker(integration_marker)
         if item.path.name in GPU_TEST_FILES:
             item.add_marker(gpu_marker)
         if any(pattern in item.nodeid for pattern in SLOW_TEST_PATTERNS):
