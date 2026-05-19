@@ -307,6 +307,21 @@ workspace paths in reproduced command lines.  Those commands now use
 repo-relative paths so the notes remain useful outside this checkout and pass
 the documentation hygiene scan.
 
+\subsection{Editor Workspace Hygiene}
+
+Three tracked \texttt{.vscode} files were removed because they contained
+developer-local interpreter, pytest, CMake, and C++ include paths.  The
+repository already ignores \texttt{.vscode/}, so editor settings now remain
+local instead of becoming project metadata.
+
+\subsection{Notebook Policy Hygiene}
+
+The tracked notebook allowlist in \texttt{.gitignore} now matches the two
+notebooks that are actually kept in git.  The reconciliation notebook also no
+longer embeds a developer-local repository fallback path or Conda CUDA library
+path; it expects to be launched from the repository root and accepts any CUDA
+13 library override through an environment variable.
+
 \section{Verification Log}
 
 \begin{center}
@@ -368,6 +383,15 @@ Workflow and HOGENOM public-surface guards &
 \texttt{rg -n "/home/\textbar Documents/git\textbar gpurec/gpurec" docs --glob '!professionalization-...'} &
 Tracked documentation path hygiene &
 \texttt{no matches after validation-note cleanup} \\
+\texttt{git ls-files .vscode} &
+Tracked editor workspace settings &
+\texttt{no files after editor-hygiene cleanup} \\
+\texttt{rg -n "/home/enzo\textbar miniforge\textbar Documents/git" ...tracked notebooks...} &
+Tracked notebook local path hygiene &
+\texttt{no matches after notebook cleanup} \\
+\texttt{notebook JSON inspection} &
+Tracked notebook output stripping &
+\texttt{0 outputs, 0 execution counts} \\
 \texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m 'not gpu' ...GPU modules...} &
 GPU marker check &
 \texttt{22 deselected; exit 5 treated as expected} \\

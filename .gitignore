@@ -29,7 +29,8 @@ wandb/
 
 # Notebooks (large, tracked separately)
 *.ipynb
-!notebooks/uniform_chunked_optimization.ipynb
+!notebooks/optimize_hogenom_ccp_adam_oscillation.ipynb
+!notebooks/reconcile_hogenom_ccp_gpurec.ipynb
 
 # IDE
 .vscode/
