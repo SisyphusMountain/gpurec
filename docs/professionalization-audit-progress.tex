@@ -211,6 +211,14 @@ configuration.  The model now exposes public helpers for experiment tooling:
 helpers instead of importing private autograd functions or reaching into private
 resident-batch state.
 
+\subsection{Audit Notes}
+
+Four source-like audit notes were promoted into \texttt{docs/}: AleRax
+\texttt{ScaledValue} follow-up timings, core simplification candidates, the
+lean-path performance regression analysis, and second-order optimization
+opportunities.  Local absolute workspace paths were removed from the lean-path
+note before tracking it.
+
 \section{Verification Log}
 
 \begin{center}
@@ -227,6 +235,9 @@ Shared batch planner and workflow units &
 \texttt{python -m py\_compile ...HOGENOM W\&B scripts...} &
 Curated experiment launcher syntax &
 \texttt{ok} \\
+\texttt{rg -n "/home/\textbar secret\textbar token\textbar api key" docs/...} &
+Promoted audit-note hygiene &
+\texttt{no matches} \\
 \texttt{pytest -q tests/unit/test\_workflow.py} &
 Workflow and public-surface source guards &
 \texttt{14 passed after W\&B launcher cleanup} \\
@@ -255,9 +266,8 @@ YAML config UX &
 \section{Next Audit Targets}
 
 \begin{enumerate}[leftmargin=*]
-  \item Finish curating the remaining HOGENOM helper scripts, analysis docs,
-        and modified notebooks into tracked source or explicitly ignored local
-        artifacts.
+  \item Finish curating the remaining HOGENOM helper scripts and modified
+        notebooks into tracked source or explicitly ignored local artifacts.
   \item Keep committing small, verified increments so the branch remains
         reviewable despite the larger audit scope.
 \end{enumerate}
