@@ -590,6 +590,15 @@ Cargo fallback when the Rust sources and local \texttt{rustree} checkout are
 present.  A \texttt{release} optional dependency group records the maintainer
 tooling needed for \texttt{python -m build} and \texttt{twine check}.
 
+\subsection{Workflow Numeric Finiteness}
+
+\texttt{RunConfig} now rejects non-finite floating-point controls before
+optimization starts.  Tolerances, stopping thresholds, rate bounds,
+theta-initialization rates, and optimizer learning rates are checked with
+\texttt{math.isfinite()} before their range checks, so JSON or CLI values such
+as \texttt{NaN} and \texttt{Infinity} cannot propagate into optimizer state,
+checkpoint metadata, or stopping diagnostics.
+
 \section{Verification Log}
 
 \begin{center}
@@ -948,6 +957,15 @@ Installed backtracking help text &
 \texttt{python -m pip wheel . -w /tmp/gpurec-wheel-docs-check --no-deps} &
 Release-extra wheel metadata smoke &
 \texttt{built gpurec-0.1.0 wheel; release extra present} \\
+\texttt{python -m py\_compile gpurec/workflow/config.py tests/unit/test\_workflow.py} &
+Workflow numeric finiteness syntax &
+\texttt{ok} \\
+\texttt{pytest -q tests/unit/test\_workflow.py} &
+Workflow numeric finiteness regressions &
+\texttt{67 passed after non-finite validation cleanup} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
+CPU unit gate after non-finite validation cleanup &
+\texttt{100 passed, 27 deselected} \\
 \bottomrule
 \end{tabular}
 \end{center}

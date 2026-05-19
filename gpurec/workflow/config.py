@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 from dataclasses import asdict, dataclass, fields
 from pathlib import Path
 from typing import Any
@@ -32,6 +33,13 @@ def _normalize_optional_positive_int(name: str, value: int | str | None) -> int 
     number = int(value)
     if number <= 0:
         raise ValueError(f"{name} must be positive when provided")
+    return number
+
+
+def _finite_float(name: str, value: float) -> float:
+    number = float(value)
+    if not math.isfinite(number):
+        raise ValueError(f"{name} must be finite")
     return number
 
 
@@ -161,21 +169,28 @@ class RunConfig:
             "loss_change_tol",
             "best_likelihood_min_delta",
         ):
-            if float(getattr(self, name)) < 0.0:
+            if _finite_float(name, getattr(self, name)) < 0.0:
                 raise ValueError(f"{name} must be non-negative")
-        if self.min_rate <= 0.0 or self.max_rate <= self.min_rate:
+        min_rate = _finite_float("min_rate", self.min_rate)
+        max_rate = _finite_float("max_rate", self.max_rate)
+        if min_rate <= 0.0 or max_rate <= min_rate:
             raise ValueError("rate bounds must satisfy 0 < min_rate < max_rate")
+        theta_init_d = _finite_float("theta_init_d", self.theta_init_d)
+        theta_init_l = _finite_float("theta_init_l", self.theta_init_l)
+        theta_init_t = _finite_float("theta_init_t", self.theta_init_t)
         if (
-            self.theta_init_d <= 0.0
-            or self.theta_init_l <= 0.0
-            or self.theta_init_t <= 0.0
+            theta_init_d <= 0.0
+            or theta_init_l <= 0.0
+            or theta_init_t <= 0.0
         ):
             raise ValueError("theta_init_d/l/t must be strictly positive")
         if self.optimizer not in {"adam", "adagrad", "lbfgs", "adam-lbfgs"}:
             raise ValueError("optimizer must be adam, adagrad, lbfgs, or adam-lbfgs")
         if self.steps < 1:
             raise ValueError("steps must be positive")
-        if self.lr <= 0.0 or self.lbfgs_lr <= 0.0:
+        lr = _finite_float("lr", self.lr)
+        lbfgs_lr = _finite_float("lbfgs_lr", self.lbfgs_lr)
+        if lr <= 0.0 or lbfgs_lr <= 0.0:
             raise ValueError("optimizer learning rates must be positive")
         if self.adam_warmup_steps < 0:
             raise ValueError("adam_warmup_steps must be non-negative")

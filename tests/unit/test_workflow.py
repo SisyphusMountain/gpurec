@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -141,6 +142,35 @@ def test_run_config_rejects_negative_tolerances(tmp_path: Path, field: str):
             out_dir=tmp_path / "out",
             device="cpu",
             **{field: -1.0},
+        )
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("tol_e", math.nan),
+        ("tol_e", math.inf),
+        ("best_likelihood_min_delta", math.nan),
+        ("min_rate", math.nan),
+        ("max_rate", math.inf),
+        ("theta_init_d", math.nan),
+        ("theta_init_l", math.inf),
+        ("lr", math.nan),
+        ("lbfgs_lr", math.inf),
+    ],
+)
+def test_run_config_rejects_nonfinite_float_controls(
+    tmp_path: Path,
+    field: str,
+    value: float,
+):
+    with pytest.raises(ValueError, match=field):
+        RunConfig(
+            species_tree=tmp_path / "sp.nwk",
+            families_file=tmp_path / "families.txt",
+            out_dir=tmp_path / "out",
+            device="cpu",
+            **{field: value},
         )
 
 
