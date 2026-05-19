@@ -114,9 +114,12 @@ binary through `GPUREC_BACKTRACK_BIN` or `--backtrack-binary`.
 
 The installed `gpurec` CLI is the supported general workflow.  The HOGENOM
 scripts under `scripts/` are checkout-local experiment launchers and diagnostics
-for the bundled HOGENOM benchmark layout.  Their default paths point under
-`tests/data/HOGENOM/...`; pass explicit `--species-tree`, `--families-file`,
-`--preprocess-cache`, and `--out-dir` values for other datasets.
+for the bundled HOGENOM benchmark layout.  The optimization launchers default
+to paths under `tests/data/HOGENOM/...`; pass explicit `--species-tree`,
+`--families-file`, `--preprocess-cache`, and `--out-dir` values to those
+launchers for other datasets.  The one-pass profiler is tied to the bundled
+HOGENOM layout and exposes profiling and batch-control flags instead of dataset
+path overrides.
 
 | Task | Command | Notes |
 | --- | --- | --- |
@@ -124,7 +127,7 @@ for the bundled HOGENOM benchmark layout.  Their default paths point under
 | Curated HOGENOM W&B run | `python scripts/optimize_hogenom_ccp_wandb.py` | Uses argparse flags, checkpoints, plots, and optional W&B logging. |
 | Hydra HOGENOM run | `python scripts/optimize_hogenom_ccp_hydra.py` | Uses `configs/hogenom_ccp_wandb.yaml` and Hydra override syntax. |
 | Checkpoint rate export | `python scripts/export_hogenom_rates_from_checkpoint.py` | Exports D/T/L rates from a HOGENOM optimization checkpoint. |
-| One-pass profiling | `python scripts/profile_hogenom_ccp_pass.py` | Profiles full, streamed, active-batch, or largest-batch forward/backward passes. |
+| One-pass profiling | `python scripts/profile_hogenom_ccp_pass.py` | Profiles full, streamed, active-batch, or largest-batch forward/backward passes on the bundled HOGENOM layout. |
 
 Optional script dependencies are intentionally separate from the core package
 and are grouped under the `hogenom` extra.  The R plotting helper also needs

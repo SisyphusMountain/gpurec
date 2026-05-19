@@ -352,6 +352,13 @@ own optimization, while existing \texttt{run --checkpoint} invocations fail
 early with guidance to use the sample subcommand for existing checkpoints or
 \texttt{--resume-from}.
 
+\subsection{README HOGENOM Path Scope}
+
+The HOGENOM workflow README text now distinguishes the optimization launchers,
+which accept explicit dataset path overrides, from the one-pass profiling
+harness, which is tied to the bundled HOGENOM layout and exposes profiling and
+batch-control flags.
+
 \section{Verification Log}
 
 \begin{center}
@@ -473,6 +480,9 @@ Workflow and run-checkpoint regressions &
 \texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
 CPU unit gate after run CLI cleanup &
 \texttt{45 passed, 27 deselected} \\
+\texttt{python scripts/profile\_hogenom\_ccp\_pass.py --help} &
+Profiler path-scope documentation check &
+\texttt{help shows profiling controls, not dataset path overrides} \\
 \bottomrule
 \end{tabular}
 \end{center}
