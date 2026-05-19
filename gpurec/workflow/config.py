@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import math
 from dataclasses import asdict, dataclass, fields
+from numbers import Integral, Real
 from pathlib import Path
 from typing import Any
 
@@ -27,10 +28,47 @@ def dtype_from_name(name: str) -> torch.dtype:
     raise ValueError(f"unsupported dtype {name!r}; expected float32 or float64")
 
 
-def _normalize_optional_positive_int(name: str, value: int | str | None) -> int | None:
+def _normalize_int(name: str, value: int | float | str) -> int:
+    if isinstance(value, bool):
+        raise ValueError(f"{name} must be an integer")
+    if isinstance(value, str):
+        try:
+            return int(value.strip())
+        except ValueError as exc:
+            raise ValueError(f"{name} must be an integer") from exc
+    if isinstance(value, Integral):
+        return int(value)
+    if isinstance(value, Real):
+        number = float(value)
+        if not math.isfinite(number):
+            raise ValueError(f"{name} must be finite")
+        if not number.is_integer():
+            raise ValueError(f"{name} must be an integer")
+        return int(number)
+    raise ValueError(f"{name} must be an integer")
+
+
+def _normalize_positive_int(name: str, value: int | float | str) -> int:
+    number = _normalize_int(name, value)
+    if number <= 0:
+        raise ValueError(f"{name} must be positive")
+    return number
+
+
+def _normalize_nonnegative_int(name: str, value: int | float | str) -> int:
+    number = _normalize_int(name, value)
+    if number < 0:
+        raise ValueError(f"{name} must be non-negative")
+    return number
+
+
+def _normalize_optional_positive_int(
+    name: str,
+    value: int | float | str | None,
+) -> int | None:
     if value is None:
         return None
-    number = int(value)
+    number = _normalize_int(name, value)
     if number <= 0:
         raise ValueError(f"{name} must be positive when provided")
     return number
@@ -202,6 +240,11 @@ class RunConfig:
             self.preprocess_cache = _resolve_path(self.preprocess_cache)
         if self.resume_from is not None:
             self.resume_from = _resolve_path(self.resume_from)
+        self.start = _normalize_nonnegative_int("start", self.start)
+        self.max_families = _normalize_optional_positive_int(
+            "max_families",
+            self.max_families,
+        )
         self.family_chunk_size = int(_normalize_family_chunk_size(self.family_chunk_size))
         self.clade_budget = _normalize_optional_positive_int(
             "clade_budget",
@@ -212,6 +255,50 @@ class RunConfig:
             self.max_wave_size,
         )
         self.batch_packing = _normalize_batch_packing(self.batch_packing)
+        if self.fixed_iters_e is not None:
+            self.fixed_iters_e = _normalize_positive_int(
+                "fixed_iters_e",
+                self.fixed_iters_e,
+            )
+        self.max_iters_e = _normalize_positive_int("max_iters_e", self.max_iters_e)
+        self.fixed_iters_pi = _normalize_positive_int(
+            "fixed_iters_pi",
+            self.fixed_iters_pi,
+        )
+        self.neumann_terms = _normalize_positive_int(
+            "neumann_terms",
+            self.neumann_terms,
+        )
+        self.convergence_check_interval = _normalize_positive_int(
+            "convergence_check_interval",
+            self.convergence_check_interval,
+        )
+        self.steps = _normalize_positive_int("steps", self.steps)
+        self.adam_warmup_steps = _normalize_nonnegative_int(
+            "adam_warmup_steps",
+            self.adam_warmup_steps,
+        )
+        self.lbfgs_history_size = _normalize_positive_int(
+            "lbfgs_history_size",
+            self.lbfgs_history_size,
+        )
+        self.lbfgs_max_iter = _normalize_positive_int(
+            "lbfgs_max_iter",
+            self.lbfgs_max_iter,
+        )
+        self.loss_patience = _normalize_nonnegative_int(
+            "loss_patience",
+            self.loss_patience,
+        )
+        self.best_likelihood_patience = _normalize_nonnegative_int(
+            "best_likelihood_patience",
+            self.best_likelihood_patience,
+        )
+        self.checkpoint_every = _normalize_nonnegative_int(
+            "checkpoint_every",
+            self.checkpoint_every,
+        )
+        self.log_every = _normalize_positive_int("log_every", self.log_every)
         if not self.device:
             self.device = _default_device()
         self.validate()

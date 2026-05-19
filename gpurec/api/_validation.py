@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+from numbers import Integral, Real
 from typing import Any, Optional, Sequence
 
 import torch
@@ -37,8 +38,17 @@ def positive_float(name: str, value: float) -> float:
 
 
 def positive_int(name: str, value: int) -> int:
-    finite_float(name, value)
-    number = int(value)
+    if isinstance(value, bool):
+        raise ValueError(f"{name} must be an integer")
+    if isinstance(value, Integral):
+        number = int(value)
+    elif isinstance(value, Real):
+        number_float = finite_float(name, float(value))
+        if not number_float.is_integer():
+            raise ValueError(f"{name} must be an integer")
+        number = int(number_float)
+    else:
+        raise ValueError(f"{name} must be an integer")
     if number < 1:
         raise ValueError(f"{name} must be positive")
     return number

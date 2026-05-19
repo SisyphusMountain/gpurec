@@ -274,6 +274,38 @@ def test_run_config_rejects_nonfinite_float_controls(
         )
 
 
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("start", 0.5),
+        ("max_families", 1.5),
+        ("fixed_iters_e", 1.5),
+        ("max_iters_e", 2000.5),
+        ("fixed_iters_pi", 64.5),
+        ("neumann_terms", True),
+        ("convergence_check_interval", 4.5),
+        ("steps", 1.5),
+        ("adam_warmup_steps", 0.5),
+        ("lbfgs_max_iter", 1.5),
+        ("checkpoint_every", 0.5),
+        ("log_every", 1.5),
+    ],
+)
+def test_run_config_rejects_nonintegral_integer_controls(
+    tmp_path: Path,
+    field: str,
+    value: object,
+):
+    with pytest.raises(ValueError, match=field):
+        RunConfig(
+            species_tree=tmp_path / "sp.nwk",
+            families_file=tmp_path / "families.txt",
+            out_dir=tmp_path / "out",
+            device="cpu",
+            **{field: value},
+        )
+
+
 def test_family_chunk_size_normalization_is_shared():
     for value in (None, "", "0", "all", "none", "null", 0):
         assert normalize_family_chunk_size(value) == 0
@@ -365,12 +397,17 @@ def test_public_model_constructors_reject_nonfinite_theta_init_before_io(
     ("field", "value"),
     [
         ("fixed_iters_E", 0),
+        ("fixed_iters_E", 1.5),
         ("fixed_iters_E", math.nan),
         ("fixed_iters_Pi", 3),
+        ("fixed_iters_Pi", 4.5),
         ("neumann_terms", 0),
+        ("neumann_terms", True),
         ("neumann_terms", math.inf),
         ("convergence_check_interval", 0),
+        ("convergence_check_interval", 2.5),
         ("max_iters_E", 0),
+        ("max_iters_E", 10.5),
         ("max_iters_E", math.inf),
         ("tol_E", math.nan),
         ("e_logsumexp_tol", math.inf),
@@ -398,12 +435,20 @@ def test_gene_recon_init_rejects_invalid_solver_controls_before_device(
     ("factory", "kwargs", "message"),
     [
         ("from_trees", {"tol_E": math.nan}, "tol_E"),
+        ("from_trees", {"fixed_iters_E": 1.5}, "fixed_iters_E"),
         ("from_trees", {"max_iters_E": 0}, "max_iters_E"),
+        ("from_trees", {"max_iters_E": 20.5}, "max_iters_E"),
         ("from_trees", {"fixed_iters_Pi": math.inf}, "fixed_iters_Pi"),
+        ("from_trees", {"fixed_iters_Pi": 4.5}, "fixed_iters_Pi"),
         (
             "from_alerax_families",
             {"gradient_change_rtol": math.inf},
             "gradient_change_rtol",
+        ),
+        (
+            "from_alerax_families",
+            {"neumann_terms": True},
+            "neumann_terms",
         ),
         (
             "from_alerax_families",
@@ -415,7 +460,7 @@ def test_gene_recon_init_rejects_invalid_solver_controls_before_device(
 def test_gene_recon_factories_reject_invalid_solver_controls_before_device_or_io(
     tmp_path: Path,
     factory: str,
-    kwargs: dict[str, float],
+    kwargs: dict[str, object],
     message: str,
 ):
     with pytest.raises(ValueError, match=message):
@@ -439,20 +484,24 @@ def test_gene_recon_factories_reject_invalid_solver_controls_before_device_or_io
     ("factory", "kwargs", "message"),
     [
         ("from_trees", {"tol_E": math.nan}, "tol_E"),
+        ("from_trees", {"fixed_iters_E": 1.5}, "fixed_iters_E"),
         ("from_trees", {"max_iters_E": 0}, "max_iters_E"),
+        ("from_trees", {"max_iters_E": 20.5}, "max_iters_E"),
         ("from_trees", {"fixed_iters_Pi": math.nan}, "fixed_iters_Pi"),
+        ("from_trees", {"fixed_iters_Pi": 4.5}, "fixed_iters_Pi"),
         (
             "from_alerax_families",
             {"pruning_threshold": math.inf},
             "pruning_threshold",
         ),
         ("from_alerax_families", {"neumann_terms": 0}, "neumann_terms"),
+        ("from_alerax_families", {"neumann_terms": True}, "neumann_terms"),
     ],
 )
 def test_uniform_chunked_factories_reject_invalid_solver_controls_before_device_or_io(
     tmp_path: Path,
     factory: str,
-    kwargs: dict[str, float],
+    kwargs: dict[str, object],
     message: str,
 ):
     with pytest.raises(ValueError, match=message):
@@ -476,13 +525,15 @@ def test_uniform_chunked_factories_reject_invalid_solver_controls_before_device_
     ("kwargs", "message"),
     [
         ({"fixed_iters_Pi": math.inf}, "fixed_iters_Pi"),
+        ({"fixed_iters_Pi": 4.5}, "fixed_iters_Pi"),
         ({"neumann_terms": math.nan}, "neumann_terms"),
+        ({"neumann_terms": True}, "neumann_terms"),
         ({"pi_max_diff_tol": math.nan}, "pi_max_diff_tol"),
         ({"gradient_change_tol": math.inf}, "gradient_change_tol"),
     ],
 )
 def test_gene_recon_configure_solver_iterations_rejects_nonfinite_tolerances(
-    kwargs: dict[str, float],
+    kwargs: dict[str, object],
     message: str,
 ):
     with pytest.raises(ValueError, match=message):

@@ -805,6 +805,15 @@ validation rejects stale preprocessing artifacts.  A source-level unit guard
 checks that the production README keeps the cache directory, refresh flag,
 validation-error context, and original-input recovery path visible.
 
+\subsection{Integral Solver Controls}
+
+The shared public API integer validator now rejects boolean and fractional
+solver controls instead of coercing them through \texttt{int(...)}.  Direct
+\texttt{GeneReconModel} and \texttt{UniformChunkedReconModel} construction,
+pre-IO factory validation, solver reconfiguration, and direct
+\texttt{RunConfig} construction now fail with clear integer-control errors for
+values such as \texttt{4.5} or \texttt{True} before CUDA setup or file parsing.
+
 \section{Verification Log}
 
 \begin{center}
@@ -1439,6 +1448,15 @@ README cache guidance and CLI refresh forwarding guards &
 \texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
 CPU unit gate after README cache guidance &
 \texttt{171 passed, 28 deselected} \\
+\texttt{python -m py\_compile gpurec/api/\_validation.py gpurec/workflow/config.py ...} &
+Integral solver-control validation syntax &
+\texttt{ok} \\
+\texttt{pytest -q tests/unit/test\_workflow.py::test\_run\_config\_... ...} &
+Focused fractional and boolean integer-control guards &
+\texttt{56 passed} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
+CPU unit gate after integral solver-control validation &
+\texttt{198 passed, 28 deselected} \\
 \bottomrule
 \end{tabular}
 \end{center}
@@ -1452,8 +1470,12 @@ CPU unit gate after README cache guidance &
         document a Rust-toolchain requirement for source-checkout sampling.
   \item Add an installed-artifact sampling smoke once the backtracking binary
         distribution model is settled.
-  \item Continue auditing legacy script and production API boundaries for
-        low-risk code-quality and test-coverage improvements.
+  \item Normalize backtracking subprocess failures into CLI-friendly workflow
+        errors with captured stderr and missing-output context.
+  \item Extend CPU CI to run all non-GPU integration tests through marker
+        selection, not only hard-coded integration paths.
+  \item Tighten release-readiness build hygiene ordering so ignored local
+        \texttt{build/} artifacts cannot shadow the release build module.
   \item Keep committing small, verified increments so the branch remains
         reviewable despite the larger audit scope.
 \end{enumerate}
