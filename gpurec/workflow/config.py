@@ -7,6 +7,8 @@ from typing import Any
 
 import torch
 
+from gpurec.core.batch_planning import normalize_batch_packing as _normalize_batch_packing
+
 
 def _default_device() -> str:
     return "cuda" if torch.cuda.is_available() else "cpu"
@@ -47,34 +49,6 @@ def _normalize_optional_positive_int(name: str, value: int | str | None) -> int 
     if number <= 0:
         raise ValueError(f"{name} must be positive when provided")
     return number
-
-
-def _normalize_batch_packing(value: str | None) -> str:
-    if value is None:
-        return "sequential"
-    text = str(value).strip().lower().replace("-", "_")
-    aliases = {
-        "": "sequential",
-        "sequential": "sequential",
-        "contiguous": "sequential",
-        "input_order": "sequential",
-        "clade_first_fit": "clade_first_fit",
-        "first_fit_decreasing": "clade_first_fit",
-        "ffd": "clade_first_fit",
-        "clade_ffd": "clade_first_fit",
-        "depth_first_fit": "depth_first_fit",
-        "depth_ffd": "depth_first_fit",
-        "critical_path_first_fit": "depth_first_fit",
-        "critical_first_fit": "depth_first_fit",
-        "wave_first_fit": "depth_first_fit",
-    }
-    try:
-        return aliases[text]
-    except KeyError as exc:
-        raise ValueError(
-            "batch_packing must be 'sequential', 'clade_first_fit', or "
-            f"'depth_first_fit', got {value!r}"
-        ) from exc
 
 
 def _jsonable(value: Any) -> Any:

@@ -1,6 +1,8 @@
 import torch
 
+from gpurec.api.uniform_chunked import _make_chunks
 from gpurec.api.model import _family_index_chunks
+from gpurec.core.batch_planning import plan_family_batches
 from gpurec.core.batching import (
     _family_schedule_data,
     _schedule_deadline_nonleaf_waves,
@@ -174,6 +176,25 @@ def test_global_scheduler_can_cap_dts_partial_rows_per_wave():
 
 
 def test_clade_first_fit_packs_non_contiguous_families():
+    chunks = [
+        plan.indices
+        for plan in plan_family_batches(
+            total=5,
+            clade_counts=[8, 7, 6, 5, 4],
+            family_chunk_size=0,
+            clade_budget=12,
+            batch_packing="clade_first_fit",
+        )
+    ]
+
+    assert chunks == [[0, 4], [1, 3], [2]]
+    assert all(
+        sum([8, 7, 6, 5, 4][idx] for idx in chunk) <= 12
+        for chunk in chunks
+    )
+
+
+def test_model_family_index_chunks_delegates_to_shared_planner():
     chunks = _family_index_chunks(
         total=5,
         clade_counts=[8, 7, 6, 5, 4],
@@ -183,16 +204,32 @@ def test_clade_first_fit_packs_non_contiguous_families():
     )
 
     assert chunks == [[0, 4], [1, 3], [2]]
-    assert all(
-        sum([8, 7, 6, 5, 4][idx] for idx in chunk) <= 12
-        for chunk in chunks
-    )
 
 
 def test_depth_first_fit_groups_deep_families_under_clade_budget():
-    chunks = _family_index_chunks(
-        total=5,
+    chunks = [
+        plan.indices
+        for plan in plan_family_batches(
+            total=5,
+            clade_counts=[6, 6, 6, 6, 6],
+            family_chunk_size=0,
+            clade_budget=12,
+            batch_packing="depth_first_fit",
+            leaf_counts=[1, 1, 1, 1, 1],
+            nonleaf_counts=[5, 5, 5, 5, 5],
+            schedule_depths=[10, 9, 2, 1, 1],
+            max_wave_size=8,
+        )
+    ]
+
+    assert chunks == [[0, 1], [2, 3], [4]]
+
+
+def test_uniform_chunk_specs_use_shared_depth_first_fit_planner():
+    specs = _make_chunks(
+        [0, 1, 2, 3, 4],
         clade_counts=[6, 6, 6, 6, 6],
+        split_counts=[10, 20, 30, 40, 50],
         family_chunk_size=0,
         clade_budget=12,
         batch_packing="depth_first_fit",
@@ -202,4 +239,6 @@ def test_depth_first_fit_groups_deep_families_under_clade_budget():
         max_wave_size=8,
     )
 
-    assert chunks == [[0, 1], [2, 3], [4]]
+    assert [spec.indices for spec in specs] == [[0, 1], [2, 3], [4]]
+    assert [spec.clades for spec in specs] == [12, 12, 6]
+    assert [spec.splits for spec in specs] == [30, 70, 50]

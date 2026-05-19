@@ -21,8 +21,10 @@ from gpurec.core.backward import Pi_wave_backward
 from gpurec.core.batching import (
     build_wave_layout,
     collate_gene_families,
+    family_schedule_summary,
     schedule_global_phased_waves,
 )
+from gpurec.core.batch_planning import normalize_batch_packing, plan_family_batches
 from gpurec.core.extract_parameters import extract_parameters_uniform
 from gpurec.core.forward import Pi_wave_forward
 from gpurec.core.likelihood import (
@@ -132,86 +134,27 @@ def _make_chunks(
     family_chunk_size: int,
     clade_budget: int | None,
     batch_packing: str = "sequential",
+    leaf_counts: Sequence[int] | None = None,
+    nonleaf_counts: Sequence[int] | None = None,
+    schedule_depths: Sequence[int] | None = None,
+    max_wave_size: int | None = None,
 ) -> list[UniformChunkSpec]:
-    packing = str(batch_packing).strip().lower().replace("-", "_")
-    if packing in ("", "sequential", "contiguous", "input_order"):
-        packing = "sequential"
-    elif packing in ("clade_first_fit", "first_fit_decreasing", "ffd", "clade_ffd"):
-        packing = "clade_first_fit"
-    else:
-        raise ValueError(
-            "batch_packing must be 'sequential' or 'clade_first_fit', "
-            f"got {batch_packing!r}"
-        )
-
-    if packing == "clade_first_fit":
-        if clade_budget is None:
-            raise ValueError("batch_packing='clade_first_fit' requires clade_budget")
-        chunks: list[UniformChunkSpec] = []
-        mutable_indices: list[list[int]] = []
-        chunk_clades: list[int] = []
-        chunk_splits: list[int] = []
-        order = sorted(indices, key=lambda idx: int(clade_counts[idx]), reverse=True)
-        for idx in order:
-            idx = int(idx)
-            n_clades = int(clade_counts[idx])
-            n_splits = int(split_counts[idx])
-            best_j: int | None = None
-            best_remaining: int | None = None
-            for j, current_clades in enumerate(chunk_clades):
-                if family_chunk_size > 0 and len(mutable_indices[j]) >= family_chunk_size:
-                    continue
-                remaining = clade_budget - current_clades - n_clades
-                if remaining < 0:
-                    continue
-                if best_remaining is None or remaining < best_remaining:
-                    best_j = j
-                    best_remaining = remaining
-            if best_j is None:
-                mutable_indices.append([idx])
-                chunk_clades.append(n_clades)
-                chunk_splits.append(n_splits)
-            else:
-                mutable_indices[best_j].append(idx)
-                chunk_clades[best_j] += n_clades
-                chunk_splits[best_j] += n_splits
-        for chunk_indices, clades, splits in zip(
-            mutable_indices,
-            chunk_clades,
-            chunk_splits,
-        ):
-            chunks.append(UniformChunkSpec(chunk_indices, clades, splits))
-        return chunks
-
-    chunks: list[UniformChunkSpec] = []
-    current: list[int] = []
-    current_clades = 0
-    current_splits = 0
-
-    def flush() -> None:
-        nonlocal current, current_clades, current_splits
-        if current:
-            chunks.append(UniformChunkSpec(list(current), current_clades, current_splits))
-            current = []
-            current_clades = 0
-            current_splits = 0
-
-    for idx in indices:
-        n_clades = int(clade_counts[idx])
-        n_splits = int(split_counts[idx])
-        family_cap_hit = family_chunk_size > 0 and len(current) >= family_chunk_size
-        clade_cap_hit = (
-            clade_budget is not None
-            and current
-            and current_clades + n_clades > clade_budget
-        )
-        if family_cap_hit or clade_cap_hit:
-            flush()
-        current.append(int(idx))
-        current_clades += n_clades
-        current_splits += n_splits
-    flush()
-    return chunks
+    plans = plan_family_batches(
+        indices=indices,
+        clade_counts=clade_counts,
+        split_counts=split_counts,
+        family_chunk_size=family_chunk_size,
+        clade_budget=clade_budget,
+        batch_packing=batch_packing,
+        leaf_counts=leaf_counts,
+        nonleaf_counts=nonleaf_counts,
+        schedule_depths=schedule_depths,
+        max_wave_size=max_wave_size,
+    )
+    return [
+        UniformChunkSpec(plan.indices, plan.clades, plan.splits)
+        for plan in plans
+    ]
 
 
 def _build_chunk(
@@ -719,6 +662,7 @@ class UniformChunkedReconModel(torch.nn.Module):
 
         clade_counts = [int(f["C"]) for f in dataset.families]
         split_counts = [int(f["N_splits"]) for f in dataset.families]
+        normalized_packing = normalize_batch_packing(batch_packing)
         chunk_value = _as_auto_int(family_chunk_size)
         wave_value = _as_auto_int(max_wave_size)
         memory_policy: UniformPipelinePolicy | None = None
@@ -748,13 +692,28 @@ class UniformChunkedReconModel(torch.nn.Module):
 
         family_chunk_n = 0 if chunk_value is None else int(chunk_value)
         max_wave_n = None if wave_value is None else int(wave_value)
+        leaf_counts: list[int] | None = None
+        nonleaf_counts: list[int] | None = None
+        schedule_depths: list[int] | None = None
+        if normalized_packing == "depth_first_fit":
+            summaries = [
+                family_schedule_summary(fam["ccp_helpers"])
+                for fam in dataset.families
+            ]
+            leaf_counts = [int(summary["leaf_count"]) for summary in summaries]
+            nonleaf_counts = [int(summary["nonleaf_count"]) for summary in summaries]
+            schedule_depths = [int(summary["max_level"]) for summary in summaries]
         specs = _make_chunks(
             list(range(len(dataset.families))),
             clade_counts,
             split_counts,
             family_chunk_size=family_chunk_n,
             clade_budget=clade_budget,
-            batch_packing=batch_packing,
+            batch_packing=normalized_packing,
+            leaf_counts=leaf_counts,
+            nonleaf_counts=nonleaf_counts,
+            schedule_depths=schedule_depths,
+            max_wave_size=max_wave_n,
         )
         built_chunks = [
             _build_chunk(
@@ -798,6 +757,7 @@ class UniformChunkedReconModel(torch.nn.Module):
         self.max_wave_size = max_wave_n
         self.max_root_wave_size = max_root_wave_size
         self.clade_budget = clade_budget
+        self.batch_packing = normalized_packing
         self.memory_policy = memory_policy
         self.gene_trees = dataset.gene_tree_paths
         self.family_names = dataset.family_names

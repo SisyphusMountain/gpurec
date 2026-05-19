@@ -33,6 +33,11 @@ from gpurec.core.batching import (
     family_schedule_summary,
     schedule_global_phased_waves,
 )
+from gpurec.core.batch_planning import (
+    normalize_batch_packing,
+    normalize_clade_budget,
+    plan_family_batches,
+)
 from gpurec.core.model import GeneDataset, parse_alerax_family_file
 from gpurec.core.forward import Pi_wave_forward
 from gpurec.core.likelihood import (
@@ -159,35 +164,11 @@ def _normalize_family_chunk_size(value: int | str | None) -> int:
 
 
 def _normalize_clade_budget(value: int | None) -> int | None:
-    if value is None:
-        return None
-    budget = int(value)
-    if budget <= 0:
-        raise ValueError("clade_budget must be positive when provided")
-    return budget
+    return normalize_clade_budget(value)
 
 
 def _normalize_batch_packing(value: str | None) -> str:
-    if value is None:
-        return "sequential"
-    text = str(value).strip().lower().replace("-", "_")
-    if text in ("", "sequential", "contiguous", "input_order"):
-        return "sequential"
-    if text in ("clade_first_fit", "first_fit_decreasing", "ffd", "clade_ffd"):
-        return "clade_first_fit"
-    if text in (
-        "depth_first_fit",
-        "depth_ffd",
-        "critical_path_first_fit",
-        "critical_first_fit",
-        "wave_first_fit",
-    ):
-        return "depth_first_fit"
-    raise ValueError(
-        "batch_packing must be 'sequential', 'clade_first_fit', or "
-        "'depth_first_fit', "
-        f"got {value!r}"
-    )
+    return normalize_batch_packing(value)
 
 
 def _normalize_prefetch_batches(value: int | str | None, *, lazy: bool) -> int | str:
@@ -246,138 +227,20 @@ def _family_index_chunks(
     schedule_depths: Sequence[int] | None = None,
     max_wave_size: int | None = None,
 ) -> list[list[int]]:
-    batch_packing = _normalize_batch_packing(batch_packing)
-    if batch_packing == "clade_first_fit":
-        if clade_budget is None:
-            raise ValueError("batch_packing='clade_first_fit' requires clade_budget")
-        chunks: list[list[int]] = []
-        chunk_clades: list[int] = []
-        order = sorted(range(total), key=lambda idx: int(clade_counts[idx]), reverse=True)
-        for idx in order:
-            n_clades = int(clade_counts[idx])
-            best_j: int | None = None
-            best_remaining: int | None = None
-            for j, current_clades in enumerate(chunk_clades):
-                if family_chunk_size > 0 and len(chunks[j]) >= family_chunk_size:
-                    continue
-                remaining = clade_budget - current_clades - n_clades
-                if remaining < 0:
-                    continue
-                if best_remaining is None or remaining < best_remaining:
-                    best_j = j
-                    best_remaining = remaining
-            if best_j is None:
-                chunks.append([idx])
-                chunk_clades.append(n_clades)
-            else:
-                chunks[best_j].append(idx)
-                chunk_clades[best_j] += n_clades
-        return chunks
-    if batch_packing == "depth_first_fit":
-        if clade_budget is None:
-            raise ValueError("batch_packing='depth_first_fit' requires clade_budget")
-        if leaf_counts is None or nonleaf_counts is None or schedule_depths is None:
-            raise ValueError(
-                "batch_packing='depth_first_fit' requires leaf_counts, "
-                "nonleaf_counts, and schedule_depths"
-            )
-        if (
-            len(leaf_counts) != total
-            or len(nonleaf_counts) != total
-            or len(schedule_depths) != total
-        ):
-            raise ValueError("depth_first_fit scheduling stats must match total families")
-
-        wave_cap = (
-            sum(int(c) for c in clade_counts)
-            if max_wave_size is None
-            else int(max_wave_size)
+    return [
+        plan.indices
+        for plan in plan_family_batches(
+            total=total,
+            clade_counts=clade_counts,
+            family_chunk_size=family_chunk_size,
+            clade_budget=clade_budget,
+            batch_packing=batch_packing,
+            leaf_counts=leaf_counts,
+            nonleaf_counts=nonleaf_counts,
+            schedule_depths=schedule_depths,
+            max_wave_size=max_wave_size,
         )
-        if wave_cap <= 0:
-            raise ValueError("max_wave_size must be positive")
-
-        def lower_bound(leaves: int, nonleaves: int, depth: int) -> int:
-            leaf_waves = math.ceil(int(leaves) / wave_cap)
-            work_waves = math.ceil(int(nonleaves) / wave_cap)
-            return leaf_waves + max(int(depth), work_waves)
-
-        chunks: list[list[int]] = []
-        chunk_clades: list[int] = []
-        chunk_leaves: list[int] = []
-        chunk_nonleaves: list[int] = []
-        chunk_depths: list[int] = []
-        order = sorted(
-            range(total),
-            key=lambda idx: (int(schedule_depths[idx]), int(clade_counts[idx])),
-            reverse=True,
-        )
-        for idx in order:
-            n_clades = int(clade_counts[idx])
-            n_leaves = int(leaf_counts[idx])
-            n_nonleaves = int(nonleaf_counts[idx])
-            depth = int(schedule_depths[idx])
-            best_j: int | None = None
-            best_key: tuple[int, int, int] | None = None
-            for j, current_clades in enumerate(chunk_clades):
-                if family_chunk_size > 0 and len(chunks[j]) >= family_chunk_size:
-                    continue
-                new_clades = current_clades + n_clades
-                if new_clades > clade_budget:
-                    continue
-                before = lower_bound(
-                    chunk_leaves[j],
-                    chunk_nonleaves[j],
-                    chunk_depths[j],
-                )
-                after = lower_bound(
-                    chunk_leaves[j] + n_leaves,
-                    chunk_nonleaves[j] + n_nonleaves,
-                    max(chunk_depths[j], depth),
-                )
-                remaining = clade_budget - new_clades
-                key = (after - before, after, remaining)
-                if best_key is None or key < best_key:
-                    best_j = j
-                    best_key = key
-            if best_j is None:
-                chunks.append([idx])
-                chunk_clades.append(n_clades)
-                chunk_leaves.append(n_leaves)
-                chunk_nonleaves.append(n_nonleaves)
-                chunk_depths.append(depth)
-            else:
-                chunks[best_j].append(idx)
-                chunk_clades[best_j] += n_clades
-                chunk_leaves[best_j] += n_leaves
-                chunk_nonleaves[best_j] += n_nonleaves
-                chunk_depths[best_j] = max(chunk_depths[best_j], depth)
-        return chunks
-
-    chunks: list[list[int]] = []
-    current: list[int] = []
-    current_clades = 0
-
-    def flush() -> None:
-        nonlocal current, current_clades
-        if current:
-            chunks.append(list(current))
-            current = []
-            current_clades = 0
-
-    for idx in range(total):
-        n_clades = int(clade_counts[idx])
-        family_cap_hit = family_chunk_size > 0 and len(current) >= family_chunk_size
-        clade_cap_hit = (
-            clade_budget is not None
-            and current
-            and current_clades + n_clades > clade_budget
-        )
-        if family_cap_hit or clade_cap_hit:
-            flush()
-        current.append(idx)
-        current_clades += n_clades
-    flush()
-    return chunks
+    ]
 
 
 def _origination_probs_for_family_indices(

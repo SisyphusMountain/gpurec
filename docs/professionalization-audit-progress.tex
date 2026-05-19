@@ -191,6 +191,16 @@ or reimplementing the E/Pi solve with lower-level forward helpers.  The
 source-level guard was extended to block those imports from returning to
 \texttt{gpurec/backtracking.py} or \texttt{gpurec/workflow/*.py}.
 
+\subsection{Shared Batch Planning}
+
+Batch packing now has a shared implementation in
+\texttt{gpurec.core.batch\_planning}.  \texttt{GeneReconModel},
+\texttt{UniformChunkedReconModel}, and workflow configuration normalization use
+the same packing vocabulary and planner.  This removes the previous duplicated
+sequential and clade-first-fit logic and lets the uniform chunked API plan
+\texttt{depth\_first\_fit} chunks with the same scheduling statistics as the
+resident model.
+
 \section{Verification Log}
 
 \begin{center}
@@ -201,12 +211,15 @@ Command & Scope & Result \\
 \texttt{pytest -q tests/unit/test\_workflow.py tests/unit/test\_origination\_probs.py} &
 Workflow and origination likelihood units &
 \texttt{17 passed after model-access cleanup} \\
+\texttt{pytest -q tests/unit/test\_global\_wave\_scheduler.py tests/unit/test\_workflow.py} &
+Shared batch planner and workflow units &
+\texttt{23 passed after batch-planner cleanup} \\
 \texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q ...CPU fast gate...} &
 CPU-only audit gate &
-\texttt{34 passed after model-access cleanup} \\
+\texttt{36 passed after batch-planner cleanup} \\
 \texttt{pytest --collect-only -q} &
 Collection after recursion exclusions &
-\texttt{61 tests collected in 0.79s} \\
+\texttt{63 tests collected in 0.84s} \\
 \texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m 'not gpu' ...GPU modules...} &
 GPU marker check &
 \texttt{22 deselected; exit 5 treated as expected} \\
@@ -226,8 +239,6 @@ YAML config UX &
 \section{Next Audit Targets}
 
 \begin{enumerate}[leftmargin=*]
-  \item Move batch-planning logic toward one shared implementation used by both
-        high-level model APIs.
   \item Curate the remaining HOGENOM/W\&B helper scripts and configs into
         source-like experiment tooling, or explicitly ignore/drop generated
         artifacts.
