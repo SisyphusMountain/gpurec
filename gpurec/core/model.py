@@ -309,7 +309,7 @@ def _validate_species_preprocess_cache(
             label,
             f"'names' must contain {S} species labels",
         )
-    _cache_tensor(
+    s_parents = _cache_tensor(
         payload,
         "s_P_indexes",
         path=path,
@@ -317,7 +317,7 @@ def _validate_species_preprocess_cache(
         dtype=torch.long,
         ndim=1,
     )
-    _cache_tensor(
+    s_children = _cache_tensor(
         payload,
         "s_C12_indexes",
         path=path,
@@ -325,12 +325,25 @@ def _validate_species_preprocess_cache(
         dtype=torch.long,
         ndim=1,
     )
-    if payload["s_P_indexes"].numel() != payload["s_C12_indexes"].numel():
+    if s_parents.numel() != s_children.numel():
         raise _invalid_preprocess_cache(
             path,
             label,
             "'s_P_indexes' and 's_C12_indexes' must have the same length",
         )
+    for key, tensor, upper_bound in (
+        ("s_P_indexes", s_parents, 2 * S),
+        ("s_C12_indexes", s_children, S),
+    ):
+        if tensor.numel() > 0:
+            min_index = int(tensor.min().item())
+            max_index = int(tensor.max().item())
+            if min_index < 0 or max_index >= upper_bound:
+                raise _invalid_preprocess_cache(
+                    path,
+                    label,
+                    f"{key!r} contains topology ids outside range [0, {upper_bound})",
+                )
     _cache_tensor(
         payload,
         "unnorm_row_max",

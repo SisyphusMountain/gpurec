@@ -1132,6 +1132,15 @@ factory methods validate \texttt{refresh\_preprocess\_cache}, and
 or touching input paths.  This prevents values such as \texttt{"false"} from
 silently enabling pruning or cache refresh work.
 
+\subsection{Species Cache Topology Validation}
+
+Species preprocessing cache validation now checks that cached topology tensors
+only contain valid encoded species IDs.  \texttt{s\_C12\_indexes} entries must
+fall inside \texttt{[0, S)}, and \texttt{s\_P\_indexes} entries must fall
+inside \texttt{[0, 2S)} to account for the second-child parent encoding.
+Corrupt species cache files therefore fail during safe cache loading instead
+of later raising raw tensor indexing errors in species-tree helper code.
+
 \section{Verification Log}
 
 \begin{center}
@@ -2230,6 +2239,21 @@ CPU unit gate after boolean control validation &
 \texttt{319 passed, 28 deselected} \\
 \texttt{python scripts/check\_release\_metadata.py} &
 Release metadata checker after boolean control validation &
+\texttt{expected license blockers} \\
+\texttt{python -m py\_compile gpurec/core/model.py tests/unit/test\_alerax\_family\_input.py} &
+Species cache topology validation syntax &
+\texttt{ok} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q tests/unit/test\_alerax\_family\_input.py -k species\_preprocess\_cache} &
+Focused species cache topology validation &
+\texttt{6 passed, 22 deselected} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q tests/unit/test\_alerax\_family\_input.py} &
+AleRax family input and cache validation units &
+\texttt{28 passed} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
+CPU unit gate after species cache topology validation &
+\texttt{323 passed, 28 deselected} \\
+\texttt{python scripts/check\_release\_metadata.py} &
+Release metadata checker after species cache topology validation &
 \texttt{expected license blockers} \\
 \bottomrule
 \end{tabular}

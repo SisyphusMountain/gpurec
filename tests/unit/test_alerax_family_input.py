@@ -139,6 +139,34 @@ def test_species_preprocess_cache_rejects_inconsistent_topology_lengths(tmp_path
         )
 
 
+@pytest.mark.parametrize(
+    ("field", "values"),
+    [
+        ("s_P_indexes", [-1, 3]),
+        ("s_P_indexes", [0, 6]),
+        ("s_C12_indexes", [-1, 2]),
+        ("s_C12_indexes", [1, 3]),
+    ],
+)
+def test_species_preprocess_cache_rejects_topology_ids_outside_range(
+    tmp_path,
+    field: str,
+    values: list[int],
+):
+    path = tmp_path / "species.pt"
+    payload = _valid_species_cache_payload()
+    payload[field] = torch.tensor(values, dtype=torch.long)
+    torch.save(payload, path)
+
+    with pytest.raises(RuntimeError, match=f"{field}.*outside range"):
+        _load_preprocess_cache(
+            path,
+            label="species",
+            required_keys=("S",),
+            validator=_validate_species_preprocess_cache,
+        )
+
+
 def test_family_preprocess_cache_rejects_missing_nested_ccp_helpers(tmp_path):
     path = tmp_path / "family.pt"
     torch.save(
