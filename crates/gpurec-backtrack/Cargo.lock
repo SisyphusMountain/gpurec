@@ -405,6 +405,7 @@ dependencies = [
 [[package]]
 name = "rustree"
 version = "0.1.0"
+source = "git+https://github.com/SisyphusMountain/rustree.git?rev=e3a58478f0e57c80af04c730acade639d8e9015e#e3a58478f0e57c80af04c730acade639d8e9015e"
 dependencies = [
  "log",
  "pest",

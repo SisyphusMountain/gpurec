@@ -5,11 +5,10 @@ edition = "2021"
 
 [dependencies]
 rand = "0.8"
-rustree = { path = "../../rustree" }
+rustree = { git = "https://github.com/SisyphusMountain/rustree.git", rev = "e3a58478f0e57c80af04c730acade639d8e9015e" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "1"
 
 [dev-dependencies]
 quick-xml = "0.31"
-

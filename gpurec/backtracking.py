@@ -128,7 +128,15 @@ def _backtrack_command(
             f"Set {_BACKTRACK_BINARY_ENV} or pass backtrack_binary; default "
             f"source manifest not found at {manifest}"
         )
-    return ["cargo", "run", "--quiet", "--manifest-path", str(manifest), "--"]
+    return [
+        "cargo",
+        "run",
+        "--locked",
+        "--quiet",
+        "--manifest-path",
+        str(manifest),
+        "--",
+    ]
 
 
 def _evaluate_backtracking_state(model: GeneReconModel) -> ReconciliationState:

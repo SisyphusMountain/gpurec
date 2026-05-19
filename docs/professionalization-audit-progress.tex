@@ -397,9 +397,9 @@ unconditionally by the retained CUDA kernels and remains a core dependency.
 \texttt{numpy} moved from core dependencies into the \texttt{hogenom} extra,
 where the checkout-local scripts that import it already live, and the unused
 \texttt{more-itertools} dependency was removed.  The README now documents the
-runtime C++/OpenMP extension-build requirement and clarifies that the Rust
-\texttt{cargo run} backtracking fallback needs a local \texttt{rustree/}
-checkout unless a prebuilt binary is supplied.
+runtime C++/OpenMP extension-build requirement and clarifies that installed
+sampling should use a prebuilt backtracking binary, while source checkouts can
+fall back to Cargo.
 
 \subsection{API Package Docstring}
 
@@ -775,6 +775,16 @@ The CPU unit workflow now runs the declared support range on Python 3.10, 3.11,
 and 3.12 instead of only Python 3.10.  The PyPI classifiers and release metadata
 checker now require the same version set, and a source-level guard verifies that
 the workflow matrix and classifiers stay aligned.
+
+\subsection{Rust Backtracking Clean Checkout}
+
+\texttt{crates/gpurec-backtrack} no longer depends on an ignored local
+\texttt{rustree/} checkout.  Its Cargo manifest now pins \texttt{rustree} to a
+public git revision, the Python source-checkout fallback invokes Cargo with
+\texttt{--locked}, and CPU CI runs both the Rust unit tests and a backtracking
+CLI help smoke.  The remaining release decision is whether public artifacts
+should ship a prebuilt sampler or document the Rust toolchain requirement for
+source-checkout sampling.
 
 \section{Verification Log}
 
@@ -1374,6 +1384,21 @@ Release metadata checker after Python matrix &
 \texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
 CPU unit gate after Python-version CI matrix &
 \texttt{167 passed, 27 deselected} \\
+\texttt{python -m py\_compile gpurec/backtracking.py gpurec/cli.py ...} &
+Rust backtracking fallback and guard syntax &
+\texttt{ok} \\
+\texttt{pytest -q tests/unit/test\_release\_metadata.py tests/unit/test\_workflow.py::...} &
+Rust dependency, CI, and Cargo fallback guards &
+\texttt{8 passed} \\
+\texttt{cargo test --locked --manifest-path crates/gpurec-backtrack/Cargo.toml} &
+Rust backtracking crate from locked clean dependency graph &
+\texttt{4 passed} \\
+\texttt{cargo run --locked --quiet --manifest-path crates/gpurec-backtrack/Cargo.toml -- --help} &
+Rust backtracking CLI smoke &
+\texttt{usage printed} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
+CPU unit gate after Rust clean-checkout path &
+\texttt{170 passed, 27 deselected} \\
 \bottomrule
 \end{tabular}
 \end{center}
@@ -1383,10 +1408,10 @@ CPU unit gate after Python-version CI matrix &
 \begin{enumerate}[leftmargin=*]
   \item Choose and add a redistributable license, then update
         \texttt{pyproject.toml} license metadata and license classifier.
-  \item Resolve the Rust backtracking clean-checkout story: vendor/publish
-        \texttt{rustree} or treat the sampler as a separately installed binary.
-  \item Add CPU CI coverage for \texttt{crates/gpurec-backtrack} once the
-        \texttt{rustree} release model is resolved.
+  \item Decide whether releases should ship a prebuilt backtracking binary or
+        document a Rust-toolchain requirement for source-checkout sampling.
+  \item Add a CPU Python-to-real-Rust backtracking fixture that exercises the
+        JSON payload contract and parses the emitted RecPhyloXML.
   \item Review whether cache refresh guidance should be promoted into the README
         once cache validation and release documentation settle.
   \item Keep committing small, verified increments so the branch remains

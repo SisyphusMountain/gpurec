@@ -17,12 +17,10 @@ from gpurec import (
 
 DATA_DIR = Path(__file__).resolve().parents[1] / "data" / "test_trees_3"
 DATA_DIR_100 = Path(__file__).resolve().parents[1] / "data" / "test_trees_100"
-RUSTREE_DIR = Path(__file__).resolve().parents[2] / "rustree"
 
 
 @pytest.mark.gpu
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
-@pytest.mark.skipif(not RUSTREE_DIR.exists(), reason="local rustree checkout required")
 def test_rust_stochastic_backtracking_exports_recphyloxml():
     model = GeneReconModel.from_trees(
         str(DATA_DIR / "sp.nwk"),
@@ -61,7 +59,6 @@ def _parse_alerax_event_counts(path: Path) -> dict[str, int]:
 
 @pytest.mark.gpu
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
-@pytest.mark.skipif(not RUSTREE_DIR.exists(), reason="local rustree checkout required")
 @pytest.mark.skipif(
     not (DATA_DIR_100 / "output_global" / "reconciliations" / "all").exists(),
     reason="test_trees_100 AleRax reconciliation fixture not present",

@@ -8,9 +8,10 @@ yet encoded as automated build steps.
 - Choose and add a project license.  After a `LICENSE` file exists, add matching
   `pyproject.toml` license metadata and a license classifier.  Project URLs and
   non-license classifiers are already present.
-- Decide the Rust backtracking release model.  The Python package currently
-  expects a compiled sampler via `GPUREC_BACKTRACK_BIN` or `--backtrack-binary`;
-  the source-tree `cargo run` fallback depends on a local `rustree/` checkout.
+- Decide the Rust backtracking binary distribution model.  The Python package
+  supports a compiled sampler via `GPUREC_BACKTRACK_BIN` or
+  `--backtrack-binary`; the source-tree `cargo run` fallback uses a locked
+  Cargo build and the pinned `rustree` git dependency.
 - Build source and wheel artifacts from a clean checkout and install them in a
   fresh environment with a PyTorch build that matches the target CUDA runtime.
 
@@ -45,8 +46,8 @@ python -m build
 python -m twine check dist/*
 ```
 
-Do not publish artifacts until the license and Rust backtracking release model
-above are resolved.
+Do not publish artifacts until the license and binary distribution expectation
+for sampling above are resolved.
 
 ## Source Checkout Hygiene
 
@@ -72,6 +73,8 @@ Run these CPU-safe gates before release packaging:
 ```bash
 python -m gpurec.cli --help
 CUDA_VISIBLE_DEVICES='' pytest -q -m "unit and not gpu"
+cargo test --locked --manifest-path crates/gpurec-backtrack/Cargo.toml
+cargo run --locked --quiet --manifest-path crates/gpurec-backtrack/Cargo.toml -- --help
 ```
 
 GPU validation should use a small species tree and a small family subset before

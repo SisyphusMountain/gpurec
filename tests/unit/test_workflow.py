@@ -1810,6 +1810,22 @@ def test_backtracking_command_reports_missing_source_manifest(tmp_path: Path, mo
         )
 
 
+def test_backtracking_command_uses_locked_cargo_fallback(tmp_path: Path, monkeypatch):
+    monkeypatch.delenv("GPUREC_BACKTRACK_BIN", raising=False)
+    manifest = tmp_path / "Cargo.toml"
+    manifest.write_text("[package]\nname = \"fixture\"\n", encoding="utf-8")
+
+    assert _backtrack_command(cargo_manifest=manifest, backtrack_binary=None) == [
+        "cargo",
+        "run",
+        "--locked",
+        "--quiet",
+        "--manifest-path",
+        str(manifest),
+        "--",
+    ]
+
+
 def test_workflow_and_backtracking_use_public_model_surface():
     root = Path(__file__).resolve().parents[2]
     paths = [root / "gpurec" / "backtracking.py"]

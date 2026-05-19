@@ -35,6 +35,13 @@ pytest -q tests/kernels/test_wave_step_uniform_forward_kernel.py
 pytest -q tests/integration/test_gene_recon_model.py::test_gene_recon_model_forward_backward_modes
 ```
 
+Rust backtracking checks are CPU-safe:
+
+```bash
+cargo test --locked --manifest-path crates/gpurec-backtrack/Cargo.toml
+cargo run --locked --quiet --manifest-path crates/gpurec-backtrack/Cargo.toml -- --help
+```
+
 Backtracking smoke should prefer a prebuilt Rust binary to avoid `cargo run`
 startup during Python tests:
 

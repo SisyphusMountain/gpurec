@@ -99,3 +99,37 @@ def test_cpu_ci_matrix_covers_declared_python_versions():
     assert "python-version: ${{ matrix.python-version }}" in workflow
     for version in ("3.10", "3.11", "3.12"):
         assert f"Programming Language :: Python :: {version}" in pyproject
+
+
+def test_rust_backtracking_uses_pinned_git_dependency():
+    manifest = (ROOT / "crates" / "gpurec-backtrack" / "Cargo.toml").read_text(
+        encoding="utf-8"
+    )
+    lockfile = (ROOT / "crates" / "gpurec-backtrack" / "Cargo.lock").read_text(
+        encoding="utf-8"
+    )
+
+    assert (
+        'rustree = { git = "https://github.com/SisyphusMountain/rustree.git"'
+        in manifest
+    )
+    assert 'rev = "e3a58478f0e57c80af04c730acade639d8e9015e"' in manifest
+    assert 'path = "../../rustree"' not in manifest
+    assert "git+https://github.com/SisyphusMountain/rustree.git" in lockfile
+
+
+def test_cpu_ci_runs_rust_backtracking_gate():
+    workflow = (ROOT / ".github" / "workflows" / "cpu-unit.yml").read_text(
+        encoding="utf-8"
+    )
+
+    assert "\n  rust-backtrack:\n" in workflow
+    assert "rustup default stable" in workflow
+    assert (
+        "cargo test --locked --manifest-path crates/gpurec-backtrack/Cargo.toml"
+        in workflow
+    )
+    assert (
+        "cargo run --locked --quiet --manifest-path "
+        "crates/gpurec-backtrack/Cargo.toml -- --help"
+    ) in workflow

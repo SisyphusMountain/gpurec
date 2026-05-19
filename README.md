@@ -126,8 +126,8 @@ Sampling writes RecPhyloXML files and AleRax-style summaries under
 `totalSpeciesEventCounts.txt`, and `totalTransfers.txt`.
 Sampling uses the Rust backtracking binary.  Installed environments should
 provide a compiled binary through `GPUREC_BACKTRACK_BIN` or
-`--backtrack-binary`.  The source-checkout `cargo run` fallback also requires a
-Rust toolchain and the local `rustree/` checkout expected by
+`--backtrack-binary`.  The source-checkout `cargo run` fallback requires a Rust
+toolchain and fetches the pinned `rustree` git dependency declared by
 `crates/gpurec-backtrack/Cargo.toml`; otherwise use a prebuilt binary.
 
 ## HOGENOM Workflows
