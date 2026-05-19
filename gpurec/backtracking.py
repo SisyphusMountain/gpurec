@@ -13,10 +13,9 @@ from typing import Any
 import torch
 
 from gpurec.api.autograd import _extract_parameters
-from gpurec.api.model import GeneReconModel
+from gpurec.api.model import FamilyInput, GeneReconModel
 from gpurec.core.forward import Pi_wave_forward
 from gpurec.core.likelihood import E_fixed_point
-from gpurec.core.model import GeneDataset
 from gpurec.core.preprocess_cpp import _load_extension as _load_species_gene_ext
 
 
@@ -33,15 +32,6 @@ def _tensor_list(value: Any, *, dtype: torch.dtype | None = None) -> list:
     return tensor.detach().cpu().tolist()
 
 
-def _family_offsets(dataset: GeneDataset) -> list[int]:
-    offsets: list[int] = []
-    total = 0
-    for family in dataset.families:
-        offsets.append(total)
-        total += int(family["C"])
-    return offsets
-
-
 def _activate_family_batch(model: GeneReconModel, family_index: int) -> tuple[int, int]:
     """Select the resident batch containing ``family_index``.
 
@@ -49,23 +39,8 @@ def _activate_family_batch(model: GeneReconModel, family_index: int) -> tuple[in
     the active Pi matrix is batch-local, so backtracking must both activate the
     family batch and slice Pi with the family offset inside that batch.
     """
-
-    if not getattr(model, "_batched_resident", False):
-        return _family_offsets(model._dataset)[family_index], family_index
-
-    for batch_idx, metadata in enumerate(model.batch_metadata):
-        family_indices = list(metadata.family_indices)
-        if family_index not in family_indices:
-            continue
-        model._current_batch_index = batch_idx
-        model._ensure_batch_static(batch_idx)
-        offset = 0
-        for local_idx, idx in enumerate(family_indices):
-            if int(idx) == int(family_index):
-                return offset, local_idx
-            offset += int(model._dataset.families[int(idx)]["C"])
-        break
-    raise IndexError(f"family_index {family_index} is not present in any resident batch")
+    active = model.activate_family(family_index)
+    return active.clade_offset, active.local_family_index
 
 
 def _species_vector(param: torch.Tensor, *, family_index: int, S: int) -> torch.Tensor:
@@ -125,8 +100,8 @@ def _backtrack_command(
 
 
 def _evaluate_backtracking_state(model: GeneReconModel) -> dict[str, Any]:
-    static = model._active_static()
-    theta = model._active_theta().detach()
+    static = model.static
+    theta = model.active_theta().detach()
     log_pS, log_pD, log_pL, max_transfer_vec = _extract_parameters(theta, static)
     e_max_iters = static.fixed_iters_E if static.fixed_iters_E is not None else static.max_iters_E
     e_tolerance = (
@@ -178,18 +153,20 @@ def _evaluate_backtracking_state(model: GeneReconModel) -> dict[str, Any]:
     }
 
 
-def _family_details(dataset: GeneDataset, family_index: int) -> dict[str, Any]:
+def _family_details(species_tree_path: Path, family: FamilyInput) -> dict[str, Any]:
     ext = _load_species_gene_ext()
-    name = dataset.family_names[family_index]
-    leaf_map = dataset.leaf_species_maps[family_index]
     raw_all = ext.preprocess_multiple_families(
-        str(dataset.species_tree_path),
-        {name: dataset.gene_tree_paths[family_index]},
-        leaf_species_maps={name: leaf_map} if leaf_map else {},
+        str(species_tree_path),
+        {family.name: family.gene_tree_paths},
+        leaf_species_maps=(
+            {family.name: family.leaf_species_map}
+            if family.leaf_species_map
+            else {}
+        ),
         include_details=True,
         include_species_matrices=False,
     )
-    return raw_all["families"][name]
+    return raw_all["families"][family.name]
 
 
 def export_backtracking_input(
@@ -205,17 +182,13 @@ def export_backtracking_input(
     for the selected family.
     """
 
-    dataset = model._dataset
-    if family_index < 0 or family_index >= len(dataset.families):
-        raise IndexError(f"family_index {family_index} outside 0..{len(dataset.families)}")
-
+    family = model.family_input(family_index)
     offset, parameter_family_index = _activate_family_batch(model, family_index)
     state = _evaluate_backtracking_state(model)
-    family = dataset.families[family_index]
-    C = int(family["C"])
-    S = int(dataset.S)
-    ccp = family["ccp_helpers"]
-    details = _family_details(dataset, family_index)
+    C = family.clade_count
+    S = model.n_species
+    ccp = family.ccp_helpers
+    details = _family_details(model.species_tree_path, family)
     detail_ccp = details["ccp"]
 
     pi = state["Pi"][offset : offset + C].detach().to(dtype=torch.float64).cpu().contiguous()
@@ -257,8 +230,8 @@ def export_backtracking_input(
     ]
 
     leaf_species: list[int | None] = [None] * C
-    leaf_rows = torch.as_tensor(family["leaf_row_index"], dtype=torch.long).cpu()
-    leaf_cols = torch.as_tensor(family["leaf_col_index"], dtype=torch.long).cpu()
+    leaf_rows = torch.as_tensor(family.leaf_row_index, dtype=torch.long).cpu()
+    leaf_cols = torch.as_tensor(family.leaf_col_index, dtype=torch.long).cpu()
     for row, col in zip(leaf_rows.tolist(), leaf_cols.tolist()):
         leaf_species[int(row)] = int(col)
 
@@ -266,8 +239,8 @@ def export_backtracking_input(
     if len(labels) != C:
         labels = [""] * C
 
-    species_names = [str(x) for x in dataset.species_helpers["names"]]
-    species_newick = Path(dataset.species_tree_path).read_text()
+    species_names = model.species_names
+    species_newick = model.species_tree_path.read_text()
     origination_probs = _family_origination_probs(
         state["origination_probs"],
         family_index=parameter_family_index,
@@ -277,7 +250,7 @@ def export_backtracking_input(
     return {
         "species_newick": species_newick,
         "species_names_postorder": species_names,
-        "root_clade": int(family["root_clade_id"]),
+        "root_clade": family.root_clade_id,
         "leaf_species": leaf_species,
         "clade_leaf_labels": labels,
         "splits": splits,

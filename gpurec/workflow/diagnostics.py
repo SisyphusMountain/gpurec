@@ -61,19 +61,8 @@ def parameter_stats(theta: torch.Tensor) -> dict[str, float]:
     return out
 
 
-def _model_statics(model: Any) -> list[Any]:
-    if getattr(model, "_batched_resident", False):
-        return [static for static in getattr(model, "_batch_statics", []) if static is not None]
-    static = getattr(model, "_static", None)
-    return [] if static is None else [static]
-
-
 def solver_stats(model: Any) -> dict[str, float]:
-    stats = [
-        static.last_solver_stats
-        for static in _model_statics(model)
-        if getattr(static, "last_solver_stats", None) is not None
-    ]
+    stats = model.solver_stat_records() if hasattr(model, "solver_stat_records") else []
     if not stats:
         return {}
     e_iterations = [int(row.get("E_iterations", 0)) for row in stats]

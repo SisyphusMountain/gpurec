@@ -8,6 +8,7 @@ import torch
 
 from gpurec.backtracking import _activate_family_batch, _backtrack_command
 from gpurec.cli import _run_config_from_args, build_parser, main
+from gpurec.api.model import GeneReconModel
 from gpurec.workflow.checkpoint import load_checkpoint, restore_model_theta, save_checkpoint
 from gpurec.workflow.config import RunConfig, SamplingConfig
 from gpurec.workflow.diagnostics import parameter_stats
@@ -196,6 +197,7 @@ def test_activate_family_batch_returns_batch_local_offset():
     model._dataset = SimpleNamespace(
         families=[{"C": 2}, {"C": 3}, {"C": 5}, {"C": 7}]
     )
+    model.n_families = 4
     model.batch_metadata = [
         SimpleNamespace(family_indices=[0]),
         SimpleNamespace(family_indices=[1, 2, 3]),
@@ -203,15 +205,23 @@ def test_activate_family_batch_returns_batch_local_offset():
     model._current_batch_index = 0
     ensured: list[int] = []
 
-    def ensure(idx: int):
+    def select_batch(idx: int):
         ensured.append(idx)
+        model._current_batch_index = idx
+        return model.batch_metadata[idx]
 
-    model._ensure_batch_static = ensure
+    model.select_batch = select_batch
+    model.activate_family = lambda family_index: GeneReconModel.activate_family(
+        model,
+        family_index,
+    )
 
     assert _activate_family_batch(model, 1) == (0, 0)
+    active = model.activate_family(3)
+    assert (active.clade_offset, active.local_family_index) == (8, 2)
     assert _activate_family_batch(model, 3) == (8, 2)
     assert model._current_batch_index == 1
-    assert ensured == [1, 1]
+    assert ensured == [1, 1, 1]
 
 
 def test_backtracking_command_reports_missing_source_manifest(tmp_path: Path, monkeypatch):
@@ -222,6 +232,31 @@ def test_backtracking_command_reports_missing_source_manifest(tmp_path: Path, mo
             cargo_manifest=tmp_path / "missing" / "Cargo.toml",
             backtrack_binary=None,
         )
+
+
+def test_workflow_and_backtracking_use_public_model_surface():
+    root = Path(__file__).resolve().parents[2]
+    paths = [root / "gpurec" / "backtracking.py"]
+    paths.extend(sorted((root / "gpurec" / "workflow").glob("*.py")))
+    forbidden = (
+        "model._dataset",
+        "model._active_static",
+        "model._active_theta",
+        "model._current_batch_index",
+        "model._ensure_batch_static",
+        "model._batch_statics",
+        "model._static",
+        'getattr(model, "_',
+    )
+
+    offenders: list[str] = []
+    for path in paths:
+        text = path.read_text(encoding="utf-8")
+        for token in forbidden:
+            if token in text:
+                offenders.append(f"{path.relative_to(root)} contains {token}")
+
+    assert offenders == []
 
 
 def test_xml_species_and_transfer_counts():

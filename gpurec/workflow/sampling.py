@@ -231,7 +231,7 @@ class SamplingRunner:
         all_dir = out_dir / "reconciliations" / "all"
         all_dir.mkdir(parents=True, exist_ok=True)
 
-        family_names = list(model._dataset.family_names)
+        family_names = model.family_names
         start = self.config.family_start
         stop = len(family_names)
         if self.config.max_families is not None:

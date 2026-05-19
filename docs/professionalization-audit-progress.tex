@@ -168,6 +168,20 @@ negative log-likelihood helpers.  The historical
 \texttt{compute\_log\_likelihood} names remain as compatibility aliases.
 High-level API call sites and tests were moved to the new names.
 
+\subsection{Model Access Boundaries}
+
+\texttt{GeneReconModel} now exposes narrow public accessors for workflow and
+export code: \texttt{family\_names}, \texttt{species\_names},
+\texttt{species\_tree\_path}, \texttt{n\_families}, \texttt{family\_input()},
+\texttt{activate\_family()}, \texttt{select\_batch()},
+\texttt{active\_theta()}, \texttt{solver\_stat\_records()}, and
+\texttt{full\_nll\_per\_family()}.  Workflow diagnostics and optimization now
+use those accessors, and backtracking export uses \texttt{FamilyInput} plus
+public batch activation instead of reaching through private model attributes.
+A source-level unit guard checks that \texttt{gpurec/backtracking.py} and
+\texttt{gpurec/workflow/*.py} no longer contain the forbidden private access
+patterns.
+
 \section{Verification Log}
 
 \begin{center}
@@ -177,13 +191,13 @@ Command & Scope & Result \\
 \midrule
 \texttt{pytest -q tests/unit/test\_workflow.py tests/unit/test\_origination\_probs.py} &
 Workflow and origination likelihood units &
-\texttt{15 passed} \\
+\texttt{17 passed after model-access cleanup} \\
 \texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q ...CPU fast gate...} &
 CPU-only audit gate &
-\texttt{33 passed after NLL alias cleanup} \\
+\texttt{34 passed after model-access cleanup} \\
 \texttt{pytest --collect-only -q} &
 Collection after recursion exclusions &
-\texttt{60 tests collected in 0.77s} \\
+\texttt{61 tests collected in 0.79s} \\
 \texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m 'not gpu' ...GPU modules...} &
 GPU marker check &
 \texttt{22 deselected; exit 5 treated as expected} \\
@@ -203,14 +217,14 @@ YAML config UX &
 \section{Next Audit Targets}
 
 \begin{enumerate}[leftmargin=*]
-  \item Add a low-risk \texttt{UniformChunkedReconModel.from\_trees} alias and
-        constructor smoke coverage.
   \item Move batch-planning logic toward one shared implementation used by both
         high-level model APIs.
-  \item Add public model accessors or context managers for backtracking and
-        workflow code currently using private attributes.
-  \item Rename or alias \texttt{compute\_log\_likelihood} to reflect its NLL
-        contract without breaking existing callers.
+  \item Add a model-owned \texttt{reconciliation\_state()} result object so
+        backtracking can also stop importing private parameter extraction
+        helpers.
+  \item Curate the remaining HOGENOM/W\&B helper scripts and configs into
+        source-like experiment tooling, or explicitly ignore/drop generated
+        artifacts.
   \item Keep committing small, verified increments so the branch remains
         reviewable despite the larger audit scope.
 \end{enumerate}

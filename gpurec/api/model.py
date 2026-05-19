@@ -21,6 +21,7 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 import math
 import os
+from pathlib import Path
 from threading import Lock
 from typing import Any, Optional, Sequence
 
@@ -89,6 +90,33 @@ class BatchMetadata:
     max_wave_size: int
     root_clade_rows: list[int]
     parameter_mapping: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class ActiveFamilyBatch:
+    """Location of one family in the currently selected resident batch."""
+
+    family_index: int
+    batch_index: int
+    local_family_index: int
+    clade_offset: int
+    metadata: BatchMetadata
+
+
+@dataclass(frozen=True)
+class FamilyInput:
+    """Read-only family metadata needed by workflow/export utilities."""
+
+    index: int
+    name: str
+    gene_tree_paths: list[str]
+    leaf_species_map: dict[str, str]
+    clade_count: int
+    split_count: int
+    root_clade_id: int
+    ccp_helpers: dict[str, Any]
+    leaf_row_index: Any
+    leaf_col_index: Any
 
 
 @dataclass(frozen=True)
@@ -1282,15 +1310,133 @@ class GeneReconModel(torch.nn.Module):
     def current_batch_index(self) -> int:
         return self._current_batch_index
 
+    @property
+    def mode(self) -> str:
+        return self._mode
+
+    @property
+    def family_names(self) -> list[str]:
+        return list(self._dataset.family_names)
+
+    @property
+    def species_tree_path(self) -> Path:
+        return Path(self._dataset.species_tree_path)
+
+    @property
+    def n_families(self) -> int:
+        return len(self._dataset.families)
+
+    @property
+    def species_names(self) -> list[str]:
+        return [str(name) for name in self._dataset.species_helpers["names"]]
+
+    @property
+    def cached_static_states(self) -> list[ReconStaticState]:
+        """Static states that are currently built and available for diagnostics."""
+        if self._batched_resident:
+            return [static for static in self._batch_statics if static is not None]
+        return [] if self._static is None else [self._static]
+
+    def solver_stat_records(self) -> list[dict[str, Any]]:
+        """Copies of solver stats from already-built static states."""
+        records: list[dict[str, Any]] = []
+        for static in self.cached_static_states:
+            stats = static.last_solver_stats
+            if stats is not None:
+                records.append(dict(stats))
+        return records
+
+    def family_input(self, family_index: int) -> FamilyInput:
+        family_index = int(family_index)
+        if family_index < 0 or family_index >= self.n_families:
+            raise IndexError(
+                f"family_index {family_index} outside 0..{self.n_families}"
+            )
+        family = self._dataset.families[family_index]
+        leaf_map = self._dataset.leaf_species_maps[family_index] or {}
+        return FamilyInput(
+            index=family_index,
+            name=self._dataset.family_names[family_index],
+            gene_tree_paths=list(self._dataset.gene_tree_paths[family_index]),
+            leaf_species_map=dict(leaf_map),
+            clade_count=int(family["C"]),
+            split_count=int(family["N_splits"]),
+            root_clade_id=int(family["root_clade_id"]),
+            ccp_helpers=family["ccp_helpers"],
+            leaf_row_index=family["leaf_row_index"],
+            leaf_col_index=family["leaf_col_index"],
+        )
+
+    def active_theta(self, theta: torch.Tensor | None = None) -> torch.Tensor:
+        """Return theta as addressed by the currently selected resident batch."""
+        return self._active_theta(theta)
+
+    def select_batch(self, batch_index: int) -> BatchMetadata:
+        """Select a resident batch and return its metadata.
+
+        In non-batched mode only batch ``0`` exists.  Selecting a new batch
+        clears warm runtime state from the previous active batch.
+        """
+        batch_index = int(batch_index)
+        if batch_index < 0 or batch_index >= len(self.batch_metadata):
+            raise IndexError(
+                f"batch index {batch_index} out of range for {len(self.batch_metadata)} batches"
+            )
+        if batch_index != self._current_batch_index:
+            self.clear()
+            self._current_batch_index = batch_index
+        self._ensure_batch_static(batch_index)
+        self._schedule_prefetch()
+        return self.current_batch_metadata
+
+    def activate_family(self, family_index: int) -> ActiveFamilyBatch:
+        """Select the resident batch containing ``family_index``.
+
+        Returns the family offset inside the active Pi matrix plus the local
+        family index used by batch-local parameter tensors.
+        """
+        family_index = int(family_index)
+        if family_index < 0 or family_index >= self.n_families:
+            raise IndexError(
+                f"family_index {family_index} outside 0..{self.n_families}"
+            )
+
+        if not self._batched_resident:
+            offset = 0
+            for idx in range(family_index):
+                offset += int(self._dataset.families[idx]["C"])
+            metadata = self.select_batch(0)
+            return ActiveFamilyBatch(
+                family_index=family_index,
+                batch_index=0,
+                local_family_index=family_index,
+                clade_offset=offset,
+                metadata=metadata,
+            )
+
+        for batch_idx, metadata in enumerate(self.batch_metadata):
+            family_indices = [int(idx) for idx in metadata.family_indices]
+            if family_index not in family_indices:
+                continue
+            offset = 0
+            for local_idx, idx in enumerate(family_indices):
+                if idx == family_index:
+                    metadata = self.select_batch(batch_idx)
+                    return ActiveFamilyBatch(
+                        family_index=family_index,
+                        batch_index=batch_idx,
+                        local_family_index=local_idx,
+                        clade_offset=offset,
+                        metadata=metadata,
+                    )
+                offset += int(self._dataset.families[idx]["C"])
+        raise IndexError(f"family_index {family_index} is not present in any resident batch")
+
     def next(self) -> BatchMetadata:
         """Advance to the next resident batch and return its metadata."""
         if self._current_batch_index + 1 >= len(self.batch_metadata):
             raise StopIteration("already at the final resident batch")
-        self.clear()
-        self._current_batch_index += 1
-        self._ensure_batch_static(self._current_batch_index)
-        self._schedule_prefetch()
-        return self.current_batch_metadata
+        return self.select_batch(self._current_batch_index + 1)
 
     def clear(self) -> None:
         """Release active runtime caches held by the model."""
@@ -1372,6 +1518,34 @@ class GeneReconModel(torch.nn.Module):
                 "per-family gradients are not defined."
             )
         return self.forward(reduce="per_family")
+
+    @torch.no_grad()
+    def full_nll_per_family(self) -> torch.Tensor:
+        """Per-family NLL for every family, streaming resident batches if needed."""
+        if self._mode != "genewise":
+            raise ValueError("full_nll_per_family() is only valid in genewise mode")
+        values = torch.empty(
+            (self.n_families,),
+            device=self.theta.device,
+            dtype=self.theta.dtype,
+        )
+        previous_batch = self.current_batch_index
+        try:
+            if len(self.batch_metadata) > 1:
+                for batch_idx, metadata in enumerate(self.batch_metadata):
+                    self.select_batch(batch_idx)
+                    batch_values = self.forward(reduce="per_family").detach()
+                    idx = torch.as_tensor(
+                        metadata.family_indices,
+                        dtype=torch.long,
+                        device=values.device,
+                    )
+                    values.index_copy_(0, idx, batch_values.to(values.device, values.dtype))
+            else:
+                values.copy_(self.forward(reduce="per_family").detach())
+        finally:
+            self.select_batch(previous_batch)
+        return values
 
     @torch.no_grad()
     def pi_matrix(self, *, original_order: bool = True) -> torch.Tensor:

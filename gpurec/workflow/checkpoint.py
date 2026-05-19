@@ -14,9 +14,6 @@ CHECKPOINT_VERSION = 1
 def _family_names(model: Any) -> list[str]:
     if hasattr(model, "family_names"):
         return list(model.family_names)
-    dataset = getattr(model, "_dataset", None)
-    if dataset is not None and hasattr(dataset, "family_names"):
-        return list(dataset.family_names)
     return []
 
 

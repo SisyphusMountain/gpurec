@@ -40,7 +40,7 @@ def _is_finite_tensor(tensor: torch.Tensor | None) -> bool:
 
 
 def _family_names(model: GeneReconModel) -> list[str]:
-    return list(model._dataset.family_names)
+    return model.family_names
 
 
 def _parameter_labels(model: GeneReconModel, mode: str) -> list[str]:
@@ -48,8 +48,7 @@ def _parameter_labels(model: GeneReconModel, mode: str) -> list[str]:
     if mode == "genewise":
         return _family_names(model)
     if mode == "specieswise":
-        names = [str(name) for name in model._dataset.species_helpers["names"]]
-        return names[:theta_rows]
+        return model.species_names[:theta_rows]
     return ["global"]
 
 
@@ -83,22 +82,7 @@ def _write_rate_table(path: Path, model: GeneReconModel, mode: str) -> None:
 
 @torch.no_grad()
 def _per_family_nll(model: GeneReconModel) -> list[tuple[str, float]]:
-    values = [math.nan] * len(model._dataset.families)
-    previous_batch = int(getattr(model, "_current_batch_index", 0))
-    try:
-        if getattr(model, "_batched_resident", False):
-            for batch_idx, metadata in enumerate(model.batch_metadata):
-                model._current_batch_index = batch_idx
-                model._ensure_batch_static(batch_idx)
-                batch_values = model(reduce="per_family").detach().cpu().reshape(-1).tolist()
-                for family_index, value in zip(metadata.family_indices, batch_values):
-                    values[int(family_index)] = float(value)
-        else:
-            batch_values = model(reduce="per_family").detach().cpu().reshape(-1).tolist()
-            for idx, value in enumerate(batch_values):
-                values[idx] = float(value)
-    finally:
-        model._current_batch_index = previous_batch
+    values = model.full_nll_per_family().detach().cpu().reshape(-1).tolist()
     return list(zip(_family_names(model), values))
 
 
@@ -505,7 +489,7 @@ class OptimizationRunner:
             write_csv(config.out_dir / "optimization_history.csv", self.history)
             summary = {
                 **final_status,
-                "families": len(model._dataset.families),
+                "families": model.n_families,
                 "species": int(model.n_species),
                 "batches": len(model.batch_metadata),
                 "final_nll_bits": float(final_loss.detach().cpu()),
