@@ -913,6 +913,22 @@ species-tree files before constructing a blank leaf label.  The check matches
 the retained HOGENOM optimizer parser and keeps empty input files from becoming
 valid-looking one-row rate exports or later tensor-shape errors.
 
+\subsection{Path Config Validation}
+
+\texttt{RunConfig.from\_dict()} now rejects missing or \texttt{null} required
+\texttt{species\_tree}, \texttt{families\_file}, and \texttt{out\_dir} fields
+and rejects non-string path values before path normalization.  The CLI mirrors
+that check for \texttt{--config} input, so malformed JSON config files report
+an \texttt{argparse} error instead of a raw \texttt{TypeError} traceback.
+
+\subsection{Source Archive Package-Data Guard}
+
+The package CI job now inspects the built \texttt{*.tar.gz} source archive and
+requires the bundled C++ preprocessing sources under
+\texttt{gpurec/core/cpp/}.  This exercises the \texttt{MANIFEST.in} surface
+that downstream source-distribution installers rely on, complementing the
+wheel install and CLI smoke checks.
+
 \section{Verification Log}
 
 \begin{center}
@@ -1676,6 +1692,33 @@ Focused legacy script parser guards &
 \texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
 CPU unit gate after empty Newick export guard &
 \texttt{232 passed, 28 deselected} \\
+\texttt{python -m py\_compile gpurec/cli.py gpurec/workflow/config.py ...} &
+Path config and package-smoke guard syntax &
+\texttt{ok} \\
+\texttt{pytest -q tests/unit/test\_workflow.py::test\_run\_config\_... ...} &
+Focused path config and package-smoke guards &
+\texttt{8 passed} \\
+\texttt{pytest -q tests/unit/test\_release\_metadata.py} &
+Focused release metadata and sdist guard coverage &
+\texttt{7 passed} \\
+\texttt{python -m pip install -e ".[release]"} &
+Release tooling installation for local artifact verification &
+\texttt{ok} \\
+\texttt{python -m build} &
+Local source and wheel artifact build &
+\texttt{built sdist and wheel} \\
+\texttt{python -m twine check dist/*} &
+Artifact metadata check after sdist guard &
+\texttt{passed} \\
+\texttt{python - <<'PY' ... tarfile.open ... PY} &
+Local sdist C++ package-data inspection &
+\texttt{sdist package data ok} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
+CPU unit gate after path config and sdist guards &
+\texttt{236 passed, 28 deselected} \\
+\texttt{python scripts/check\_release\_metadata.py} &
+Release metadata checker after sdist guard &
+\texttt{expected license blockers} \\
 \bottomrule
 \end{tabular}
 \end{center}

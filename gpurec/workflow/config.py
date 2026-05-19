@@ -156,6 +156,11 @@ _JSON_FLOAT_FIELDS = {
     "best_likelihood_min_delta",
 }
 _JSON_BOOL_FIELDS = {"refresh_preprocess_cache", "adaptive_iters"}
+_RUN_CONFIG_REQUIRED_PATH_FIELDS = ("species_tree", "families_file", "out_dir")
+_RUN_CONFIG_PATH_FIELDS = _RUN_CONFIG_REQUIRED_PATH_FIELDS + (
+    "preprocess_cache",
+    "resume_from",
+)
 
 
 def _validate_json_scalar_types(data: dict[str, Any]) -> None:
@@ -174,6 +179,11 @@ def _validate_json_scalar_types(data: dict[str, Any]) -> None:
             continue
         if not isinstance(data[name], bool):
             raise ValueError(f"{name} must be true or false")
+    for name in _RUN_CONFIG_PATH_FIELDS:
+        if name not in data or data[name] is None:
+            continue
+        if not isinstance(data[name], (str, Path)):
+            raise ValueError(f"{name} must be a path string")
 
 
 @dataclass
@@ -388,6 +398,13 @@ class RunConfig:
         unknown = sorted(str(key) for key in data if key not in allowed)
         if unknown:
             raise ValueError(f"unknown RunConfig field(s): {', '.join(unknown)}")
+        missing = [
+            name for name in _RUN_CONFIG_REQUIRED_PATH_FIELDS if data.get(name) is None
+        ]
+        if missing:
+            raise ValueError(
+                f"missing required RunConfig field(s): {', '.join(missing)}"
+            )
         _validate_json_scalar_types(data)
         return cls(**dict(data))
 

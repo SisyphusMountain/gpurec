@@ -89,7 +89,11 @@ def _run_config_from_args(args: argparse.Namespace) -> RunConfig:
         _set_if_present(data, args, name)
     if args.adaptive_iters is not None:
         data["adaptive_iters"] = args.adaptive_iters
-    missing = [name for name in ("species_tree", "families_file", "out_dir") if name not in data]
+    missing = [
+        name
+        for name in ("species_tree", "families_file", "out_dir")
+        if data.get(name) is None
+    ]
     if missing:
         raise ValueError(f"missing required optimize option(s): {', '.join(missing)}")
     return RunConfig.from_dict(data)

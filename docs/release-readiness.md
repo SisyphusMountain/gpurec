@@ -19,8 +19,9 @@ yet encoded as automated build steps.
 
 The CPU GitHub Actions workflow includes a packaging job that installs
 `.[release]`, builds source and wheel artifacts, runs `twine check`, installs
-the built wheel with existing runtime dependencies, and smokes both
-`gpurec --help` and `python -m gpurec.cli --help`.
+the built wheel with existing runtime dependencies, checks the source archive
+for packaged C++ preprocessing sources, and smokes both `gpurec --help` and
+`python -m gpurec.cli --help`.
 
 Install release tooling from the dedicated extra:
 

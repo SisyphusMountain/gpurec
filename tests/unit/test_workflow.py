@@ -94,6 +94,35 @@ def test_run_config_from_json_rejects_nonstandard_numeric_constants(tmp_path: Pa
         RunConfig.from_json(path)
 
 
+@pytest.mark.parametrize(
+    ("value", "message"),
+    [
+        (None, "species_tree"),
+        (42, "species_tree must be a path string"),
+    ],
+)
+def test_run_config_from_json_rejects_bad_required_path(
+    tmp_path: Path,
+    value: object,
+    message: str,
+):
+    path = tmp_path / "config.json"
+    path.write_text(
+        json.dumps(
+            {
+                "species_tree": value,
+                "families_file": str(tmp_path / "families.txt"),
+                "out_dir": str(tmp_path / "out"),
+                "device": "cpu",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match=message):
+        RunConfig.from_json(path)
+
+
 def test_sampling_config_from_cli_args_maps_shared_fields(tmp_path: Path):
     args = SimpleNamespace(
         sample_out_dir=tmp_path / "samples",
@@ -909,6 +938,7 @@ def test_cli_rejects_nonstandard_json_constants_without_traceback(
         ("fixed_iters_pi", "64", "fixed_iters_pi"),
         ("lr", "0.01", "lr"),
         ("adaptive_iters", "false", "adaptive_iters"),
+        ("species_tree", 42, "species_tree must be a path string"),
     ],
 )
 def test_cli_rejects_bad_typed_json_config_values_without_traceback(
@@ -934,6 +964,32 @@ def test_cli_rejects_bad_typed_json_config_values_without_traceback(
     captured = capsys.readouterr()
     assert exc_info.value.code == 2
     assert message in captured.err
+    assert "Traceback" not in captured.err
+
+
+def test_cli_rejects_null_required_json_path_without_traceback(
+    tmp_path: Path,
+    capsys,
+):
+    path = tmp_path / "config.json"
+    path.write_text(
+        json.dumps(
+            {
+                "species_tree": None,
+                "families_file": str(tmp_path / "families.txt"),
+                "out_dir": str(tmp_path / "out"),
+                "device": "cpu",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(["optimize", "--config", str(path)])
+
+    captured = capsys.readouterr()
+    assert exc_info.value.code == 2
+    assert "species_tree" in captured.err
     assert "Traceback" not in captured.err
 
 
