@@ -374,6 +374,13 @@ leaf-to-species parsing.  The comment now documents the legacy fallback and the
 preferred explicit mapping path.  The clade hash constants were also renamed to
 avoid false positives in lightweight secret scans.
 
+\subsection{Documentation Map}
+
+\texttt{docs/README.md} now gives the documentation directory an index.  It
+separates current operating notes, validation notes, and historical performance
+or research logs, and the main README links to that map so users do not have to
+infer which notes are current guidance.
+
 \section{Verification Log}
 
 \begin{center}
@@ -510,6 +517,9 @@ CPU unit gate after CLI help cleanup &
 \texttt{pytest -q tests/unit/test\_alerax\_family\_input.py} &
 C++ preprocessing comment/name hygiene &
 \texttt{1 passed after tracked marker cleanup} \\
+\texttt{pdflatex -interaction=nonstopmode -halt-on-error ...professionalization...} &
+Documentation map audit-log build &
+\texttt{ok after docs index update} \\
 \bottomrule
 \end{tabular}
 \end{center}

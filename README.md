@@ -169,3 +169,8 @@ total_median_ms    ~5979
 generic_self_loop_calls 0
 strict_optimized_verdict pass
 ```
+
+## Documentation
+
+See `docs/README.md` for the current documentation map.  It separates current
+operating notes from historical performance and research logs.
