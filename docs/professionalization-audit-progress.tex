@@ -523,6 +523,15 @@ tree or family-file IO, and unavailable CUDA devices fail with a clear runtime
 message before preprocessing starts.  The AleRax constructor applies the same
 early checks before parsing the families file.
 
+\subsection{Sampling Filename Safety}
+
+Sampling output filenames no longer trust raw AleRax family labels as path
+components.  The workflow now prefixes files with the numeric family index and a
+sanitized stem, while retaining the original family label in
+\texttt{event\_counts.tsv} for traceability.  This prevents labels containing
+path separators or parent-directory fragments from escaping
+\texttt{reconciliations/all}.
+
 \section{Verification Log}
 
 \begin{center}
@@ -808,6 +817,15 @@ Uniform chunked constructor regressions &
 \texttt{53 passed after uniform-guard cleanup} \\
 \texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
 CPU unit gate after uniform-guard cleanup &
+\texttt{77 passed, 27 deselected} \\
+\texttt{python -m py\_compile gpurec/workflow/sampling.py tests/unit/test\_workflow.py} &
+Sampling filename-safety syntax &
+\texttt{ok} \\
+\texttt{pytest -q tests/unit/test\_workflow.py} &
+Sampling filename-safety regressions &
+\texttt{53 passed after filename-safety cleanup} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
+CPU unit gate after filename-safety cleanup &
 \texttt{77 passed, 27 deselected} \\
 \bottomrule
 \end{tabular}

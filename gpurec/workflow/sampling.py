@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import xml.etree.ElementTree as ET
 from collections import defaultdict
 from dataclasses import dataclass
@@ -31,6 +32,8 @@ SPECIES_COLUMNS = (
     "transfers_to",
 )
 
+_UNSAFE_FILENAME_STEM = re.compile(r"[^A-Za-z0-9._-]+")
+
 
 @dataclass
 class SamplingResult:
@@ -53,6 +56,13 @@ def _events_for_clade(clade: ET.Element) -> list[ET.Element]:
         if _local_name(child.tag) == "eventsRec":
             return list(child)
     return []
+
+
+def _family_file_stem(family_index: int, family_name: str) -> str:
+    safe_name = _UNSAFE_FILENAME_STEM.sub("_", str(family_name)).strip("._-")
+    if not safe_name:
+        safe_name = "family"
+    return f"{int(family_index):06d}_{safe_name}"
 
 
 def _xml_species_and_transfer_counts(
@@ -227,6 +237,7 @@ class SamplingRunner:
         try:
             for family_index in range(start, stop):
                 family = family_names[family_index]
+                family_file_stem = _family_file_stem(family_index, family)
                 xmls = sample_recphyloxmls(
                     model,
                     family_index=family_index,
@@ -236,13 +247,13 @@ class SamplingRunner:
                     backtrack_binary=self.config.backtrack_binary,
                 )
                 for sample_index, xml in enumerate(xmls):
-                    xml_path = all_dir / f"{family}_sample_{sample_index}.xml"
+                    xml_path = all_dir / f"{family_file_stem}_sample_{sample_index}.xml"
                     xml_path.write_text(xml, encoding="utf-8")
                     xml_count += 1
 
                     event_counts = recphyloxml_event_counts(xml)
                     _write_event_counts(
-                        all_dir / f"{family}_eventCounts_{sample_index}.txt",
+                        all_dir / f"{family_file_stem}_eventCounts_{sample_index}.txt",
                         event_counts,
                     )
                     event_rows.append(

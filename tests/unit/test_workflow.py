@@ -769,7 +769,7 @@ def test_sampling_runner_writes_outputs_and_aggregates(tmp_path: Path, monkeypat
     """
 
     class FakeModel:
-        family_names = ["fam0", "fam1", "fam2"]
+        family_names = ["fam0", "../fam/a", "fam2"]
 
         def __init__(self):
             self.closed = False
@@ -852,20 +852,22 @@ def test_sampling_runner_writes_outputs_and_aggregates(tmp_path: Path, monkeypat
     recon_dir = config.out_dir / "reconciliations"
     all_dir = recon_dir / "all"
     assert sorted(path.name for path in all_dir.glob("*.xml")) == [
-        "fam1_sample_0.xml",
-        "fam1_sample_1.xml",
-        "fam2_sample_0.xml",
-        "fam2_sample_1.xml",
+        "000001_fam_a_sample_0.xml",
+        "000001_fam_a_sample_1.xml",
+        "000002_fam2_sample_0.xml",
+        "000002_fam2_sample_1.xml",
     ]
-    assert (all_dir / "fam1_eventCounts_0.txt").read_text(encoding="utf-8") == (
-        "S:0\nSL:1\nD:0\nDL:0\nT:1\nTL:0\nL:0\nLeaf:1\n"
-    )
+    for path in all_dir.iterdir():
+        assert path.resolve().is_relative_to(all_dir.resolve())
+    assert (
+        all_dir / "000001_fam_a_eventCounts_0.txt"
+    ).read_text(encoding="utf-8") == "S:0\nSL:1\nD:0\nDL:0\nT:1\nTL:0\nL:0\nLeaf:1\n"
 
     event_rows = (recon_dir / "event_counts.tsv").read_text(encoding="utf-8").splitlines()
     assert event_rows[0] == "family\tsample\t" + "\t".join(EVENT_KEYS)
     assert event_rows[1:] == [
-        "fam1\t0\t0\t1\t0\t0\t1\t0\t0\t1",
-        "fam1\t1\t0\t1\t0\t0\t1\t0\t0\t1",
+        "../fam/a\t0\t0\t1\t0\t0\t1\t0\t0\t1",
+        "../fam/a\t1\t0\t1\t0\t0\t1\t0\t0\t1",
         "fam2\t0\t0\t1\t0\t0\t1\t0\t0\t1",
         "fam2\t1\t0\t1\t0\t0\t1\t0\t0\t1",
     ]
