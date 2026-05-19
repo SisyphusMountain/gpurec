@@ -9,7 +9,12 @@ This branch is anchored to the measured `test_trees_1000` path:
 - Proposal 0 uniform backward self-loop
 - fused DTS backward accumulation
 - tree-based cross-Pibar VJP
-- memory policy default: family chunk size `25`, max wave size `8192`
+- benchmark memory policy: family chunk size `25`, max wave size `8192`
+
+The benchmark memory policy above records the measured pruning baseline, not
+the production workflow defaults.  `RunConfig` currently defaults to one
+resident batch (`family_chunk_size=0`), `clade_budget=305000`, and
+`max_wave_size=8192`.
 
 Measured full-dataset result before this pruning:
 

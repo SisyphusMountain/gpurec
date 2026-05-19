@@ -146,7 +146,8 @@ class WandbSink:
             import wandb  # type: ignore
         except ImportError as exc:
             raise RuntimeError(
-                "wandb is not installed. Install it with `uv pip install wandb`, "
+                "wandb is not installed. Install the checkout extras with "
+                "`pip install -e \".[hogenom,dev]\"`, install wandb directly, "
                 "or run with `--wandb-mode disabled` for a local smoke test."
             ) from exc
         self._wandb = wandb

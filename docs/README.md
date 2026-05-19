@@ -12,6 +12,8 @@ file as the map for deeper context.
   and scheduling code.
 - `professionalization-audit-progress.tex`: running audit log for repository
   cleanup and verification work.
+- `release-readiness.md`: release blockers, clean-checkout hygiene, and
+  packaging verification gates.
 
 ## Validation Notes
 

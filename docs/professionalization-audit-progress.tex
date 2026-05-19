@@ -357,7 +357,7 @@ early with guidance to use the sample subcommand for existing checkpoints or
 
 The HOGENOM workflow README text now distinguishes the optimization launchers,
 which accept explicit dataset path overrides, from the one-pass profiling
-harness, which is tied to the bundled HOGENOM layout and exposes profiling and
+harness, which is tied to the local HOGENOM layout and exposes profiling and
 batch-control flags.
 
 \subsection{CLI Help Surface}
@@ -442,6 +442,16 @@ Optimization and sampling now share a \texttt{RunConfig}-to-model factory for
 AleRax family construction.  The factory keeps the common configuration mapping
 in one place while leaving the workflow-specific prefetch and preprocess-refresh
 choices explicit at each call site.
+
+\subsection{Release Readiness Documentation}
+
+The installation docs now distinguish source and development installs and call
+out PyTorch/CUDA compatibility before package installation.  The README states
+that HOGENOM benchmark data is local and not distributed.  The W\&B launcher
+now recommends the project \texttt{hogenom} extra before a direct
+\texttt{wandb} install.  A new release-readiness note records unresolved
+redistribution blockers, including license selection, Rust backtracking binary
+packaging, clean-checkout hygiene, and CPU-safe pre-release gates.
 
 \section{Verification Log}
 
@@ -641,6 +651,12 @@ CPU unit gate after model-factory cleanup &
 \texttt{53 passed, 27 deselected} \\
 \texttt{rg -n "from\_alerax\_families" gpurec/workflow/optimize.py gpurec/workflow/sampling.py} &
 Direct workflow model-construction guard &
+\texttt{no matches} \\
+\texttt{python -m py\_compile scripts/hogenom\_ccp\_wandb\_opt.py} &
+HOGENOM W\&B dependency-message syntax &
+\texttt{ok} \\
+\texttt{rg -n "bundled HOGENOM\textbar{}uv pip install wandb\textbar{}memory policy default" README.md docs/lean-fast-path.md scripts} &
+Release-doc wording guard &
 \texttt{no matches} \\
 \bottomrule
 \end{tabular}

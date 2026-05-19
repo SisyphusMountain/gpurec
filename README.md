@@ -24,13 +24,22 @@ supported runtime surface.
 
 ## Installation
 
+For a source checkout:
+
+```bash
+pip install .
+```
+
+For development:
+
 ```bash
 pip install -e ".[dev]"
 ```
 
 The CUDA kernels import Triton directly, so Triton is a core dependency rather
-than an optional extra.  The preprocessing extension is compiled at
-runtime through PyTorch's C++ extension loader; source checkouts therefore need
+than an optional extra.  Install a PyTorch build that matches the local CUDA
+runtime before installing `gpurec`.  The preprocessing extension is compiled at
+runtime through PyTorch's C++ extension loader; source installs therefore need
 a working C++ compiler, OpenMP support, and the normal PyTorch extension build
 tooling available in the Python environment.
 
@@ -119,12 +128,13 @@ Rust toolchain and the local `rustree/` checkout expected by
 
 The installed `gpurec` CLI is the supported general workflow.  The HOGENOM
 scripts under `scripts/` are checkout-local experiment launchers and diagnostics
-for the bundled HOGENOM benchmark layout.  The optimization launchers default
-to paths under `tests/data/HOGENOM/...`; pass explicit `--species-tree`,
-`--families-file`, `--preprocess-cache`, and `--out-dir` values to those
-launchers for other datasets.  The one-pass profiler is tied to the bundled
-HOGENOM layout and exposes profiling and batch-control flags instead of dataset
-path overrides.
+for a local, untracked HOGENOM benchmark layout.  The HOGENOM data under
+`tests/data/HOGENOM/...` is intentionally not distributed with the package.
+The optimization launchers default to those local paths; pass explicit
+`--species-tree`, `--families-file`, `--preprocess-cache`, and `--out-dir`
+values to those launchers for other datasets.  The one-pass profiler is tied to
+that local HOGENOM layout and exposes profiling and batch-control flags instead
+of dataset path overrides.
 
 | Task | Command | Notes |
 | --- | --- | --- |
@@ -132,7 +142,7 @@ path overrides.
 | Curated HOGENOM W&B run | `python scripts/optimize_hogenom_ccp_wandb.py` | Uses argparse flags, checkpoints, plots, and optional W&B logging. |
 | Hydra HOGENOM run | `python scripts/optimize_hogenom_ccp_hydra.py` | Uses `configs/hogenom_ccp_wandb.yaml` and Hydra override syntax. |
 | Checkpoint rate export | `python scripts/export_hogenom_rates_from_checkpoint.py` | Exports D/T/L rates from a HOGENOM optimization checkpoint. |
-| One-pass profiling | `python scripts/profile_hogenom_ccp_pass.py` | Profiles full, streamed, active-batch, or largest-batch forward/backward passes on the bundled HOGENOM layout. |
+| One-pass profiling | `python scripts/profile_hogenom_ccp_pass.py` | Profiles full, streamed, active-batch, or largest-batch forward/backward passes on the local HOGENOM layout. |
 
 Optional script dependencies are intentionally separate from the core package
 and are grouped under the `hogenom` extra.  The R plotting helper also needs
