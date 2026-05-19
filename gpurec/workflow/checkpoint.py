@@ -68,6 +68,18 @@ def _validate_checkpoint_payload(payload: Any, path: Path) -> dict[str, Any]:
     missing = sorted(_REQUIRED_CHECKPOINT_KEYS - set(payload))
     if missing:
         raise RuntimeError(f"checkpoint {path} is missing key(s): {', '.join(missing)}")
+    try:
+        checkpoint_version = int(payload["version"])
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError(
+            f"checkpoint {path} has unsupported version {payload['version']!r}; "
+            f"expected {CHECKPOINT_VERSION}"
+        ) from exc
+    if checkpoint_version != CHECKPOINT_VERSION:
+        raise RuntimeError(
+            f"checkpoint {path} has unsupported version {payload['version']!r}; "
+            f"expected {CHECKPOINT_VERSION}"
+        )
     if not isinstance(payload["config"], dict):
         raise RuntimeError(f"checkpoint {path} has invalid config metadata")
     if not torch.is_tensor(payload["theta"]):

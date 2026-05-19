@@ -556,6 +556,13 @@ the expected dictionary keys.  The release-readiness notes now state that legacy
 pickle-only checkpoints and caches should be regenerated or migrated only from a
 trusted source.
 
+\subsection{Checkpoint Version Validation}
+
+Checkpoint loading now rejects payloads whose stored schema version does not
+match the supported checkpoint version.  This turns future or incompatible
+checkpoint files into explicit errors before optimization resume or sampling can
+use partially compatible metadata.
+
 \section{Verification Log}
 
 \begin{center}
@@ -878,6 +885,15 @@ Checkpoint/cache safe-load regressions &
 \texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
 CPU unit gate after safe-load cleanup &
 \texttt{81 passed, 27 deselected} \\
+\texttt{python -m py\_compile gpurec/workflow/checkpoint.py tests/unit/test\_workflow.py} &
+Checkpoint version validation syntax &
+\texttt{ok} \\
+\texttt{pytest -q tests/unit/test\_workflow.py} &
+Checkpoint version validation regressions &
+\texttt{58 passed after checkpoint-version cleanup} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
+CPU unit gate after checkpoint-version cleanup &
+\texttt{83 passed, 27 deselected} \\
 \bottomrule
 \end{tabular}
 \end{center}

@@ -1007,6 +1007,26 @@ def test_checkpoint_load_uses_weights_only(tmp_path: Path, monkeypatch):
     ]
 
 
+@pytest.mark.parametrize("version", [CHECKPOINT_VERSION + 1, "next"])
+def test_checkpoint_load_rejects_unsupported_version(tmp_path: Path, version):
+    path = tmp_path / "future.pt"
+    torch.save(
+        {
+            "version": version,
+            "config": {
+                "species_tree": str(tmp_path / "sp.nwk"),
+                "families_file": str(tmp_path / "families.txt"),
+                "out_dir": str(tmp_path / "out"),
+            },
+            "theta": torch.zeros(3),
+        },
+        path,
+    )
+
+    with pytest.raises(RuntimeError, match="unsupported version"):
+        load_checkpoint(path)
+
+
 def test_optimization_runner_reports_discarded_resume_optimizer_state(tmp_path: Path):
     config = RunConfig(
         species_tree=tmp_path / "sp.nwk",
