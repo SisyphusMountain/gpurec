@@ -616,6 +616,14 @@ dependencies and runs the CPU unit marker expression on pushes and pull
 requests.  The test README points to the workflow so local and automated
 validation use the same gate.
 
+\subsection{Optimization Runner CPU Coverage}
+
+\texttt{OptimizationRunner.run()} now has fast CPU coverage using a small fake
+PyTorch model with real gradients and optimizer state.  The test exercises the
+runner loop without CUDA or tree preprocessing and checks history JSONL,
+summary JSON, best/latest checkpoints, final rates, per-family likelihoods,
+theta output, optimizer status, and model cleanup.
+
 \section{Verification Log}
 
 \begin{center}
@@ -998,6 +1006,18 @@ CPU CI gate source check &
 \texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
 CPU unit gate after CI workflow addition &
 \texttt{101 passed, 27 deselected} \\
+\texttt{python -m py\_compile tests/unit/test\_workflow.py} &
+Optimization runner CPU coverage syntax &
+\texttt{ok} \\
+\texttt{pytest -q tests/unit/test\_workflow.py::test\_optimization\_runner\_run\_writes\_outputs\_with\_fake\_model} &
+Focused optimization runner regression &
+\texttt{1 passed} \\
+\texttt{pytest -q tests/unit/test\_workflow.py} &
+Workflow suite after optimization runner coverage &
+\texttt{69 passed} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
+CPU unit gate after optimization runner coverage &
+\texttt{102 passed, 27 deselected} \\
 \bottomrule
 \end{tabular}
 \end{center}

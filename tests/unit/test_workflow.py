@@ -1085,6 +1085,119 @@ def test_checkpoint_load_rejects_unsupported_version(tmp_path: Path, version):
         load_checkpoint(path)
 
 
+def test_optimization_runner_run_writes_outputs_with_fake_model(tmp_path: Path):
+    class FakeOptimizationModel:
+        def __init__(self):
+            self.theta = torch.nn.Parameter(
+                torch.tensor(
+                    [
+                        [0.25, -0.15, 0.05],
+                        [0.10, 0.20, -0.05],
+                    ],
+                    dtype=torch.float32,
+                )
+            )
+            self.family_names = ["fam0", "fam1"]
+            self.species_names = ["sp0", "sp1", "sp2"]
+            self.n_families = 2
+            self.n_species = 3
+            self.batch_metadata = [SimpleNamespace(batch_index=0)]
+            self.clears = 0
+            self.closed = False
+
+        def full_loss(self):
+            return self.theta.square().sum() + 5.0
+
+        def full_nll_per_family(self):
+            return self.theta.detach().square().sum(dim=1) + 2.0
+
+        def clamp_theta_(self, min_rate, max_rate):
+            with torch.no_grad():
+                self.theta.clamp_(min=-4.0, max=4.0)
+
+        def solver_stat_records(self):
+            return [
+                {
+                    "E_iterations": 2,
+                    "Pi_max_iterations": 4,
+                    "Pi_wave_iterations": [1, 2],
+                    "Pi_wave_count": 2,
+                    "Pi_converged_waves": 2,
+                    "Neumann_terms": 3,
+                    "Gradient_converged": True,
+                }
+            ]
+
+        def clear(self):
+            self.clears += 1
+
+        def close(self):
+            self.closed = True
+
+    class FakeRunner(OptimizationRunner):
+        def build_model(self):
+            self.fake_model = FakeOptimizationModel()
+            return self.fake_model
+
+    config = RunConfig(
+        species_tree=tmp_path / "sp.nwk",
+        families_file=tmp_path / "families.txt",
+        out_dir=tmp_path / "out",
+        mode="genewise",
+        device="cpu",
+        optimizer="adam",
+        steps=1,
+        lr=0.05,
+        checkpoint_every=1,
+        log_every=10,
+        grad_inf_tol=0.0,
+        loss_patience=0,
+        best_likelihood_patience=0,
+    )
+    runner = FakeRunner(config)
+
+    result = runner.run()
+
+    assert result.status == "not_converged"
+    assert result.reason == "max_steps"
+    assert result.steps_completed == 1
+    assert result.best_step == 1
+    assert result.out_dir == config.out_dir
+    assert runner.fake_model.closed
+    assert runner.fake_model.clears >= 1
+
+    history_rows = [
+        json.loads(line)
+        for line in (config.out_dir / "history.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    assert [row["optimizer/phase"] for row in history_rows] == ["adam", "final_eval"]
+    assert history_rows[-1]["step"] == 1
+    assert history_rows[-1]["best_step"] == 1
+
+    summary = json.loads((config.out_dir / "summary.json").read_text(encoding="utf-8"))
+    assert summary["status"] == "not_converged"
+    assert summary["families"] == 2
+    assert summary["species"] == 3
+    assert summary["batches"] == 1
+    assert summary["final_nll_bits"] == pytest.approx(result.final_nll_bits)
+
+    latest = load_checkpoint(config.out_dir / "checkpoints" / "latest.pt")
+    best = load_checkpoint(config.out_dir / "checkpoints" / "best.pt")
+    assert latest["status"]["status"] == "not_converged"
+    assert best["status"]["best_step"] == 1
+    assert latest["last_row"]["optimizer/phase"] == "final_eval"
+    assert latest["family_names"] == ["fam0", "fam1"]
+
+    assert (config.out_dir / "optimization_history.csv").exists()
+    assert (config.out_dir / "theta_final.pt").exists()
+    assert "fam0" in (config.out_dir / "rates_final.tsv").read_text(encoding="utf-8")
+    per_family = (config.out_dir / "per_fam_likelihoods.tsv").read_text(
+        encoding="utf-8"
+    )
+    assert "fam0" in per_family
+    assert "fam1" in per_family
+
+
 def test_optimization_runner_reports_discarded_resume_optimizer_state(tmp_path: Path):
     config = RunConfig(
         species_tree=tmp_path / "sp.nwk",
