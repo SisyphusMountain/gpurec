@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, fields
 from pathlib import Path
 from typing import Any
 
@@ -199,6 +199,12 @@ class RunConfig:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "RunConfig":
+        if not isinstance(data, dict):
+            raise ValueError("RunConfig data must be a JSON object")
+        allowed = {field.name for field in fields(cls)}
+        unknown = sorted(str(key) for key in data if key not in allowed)
+        if unknown:
+            raise ValueError(f"unknown RunConfig field(s): {', '.join(unknown)}")
         return cls(**dict(data))
 
     @classmethod

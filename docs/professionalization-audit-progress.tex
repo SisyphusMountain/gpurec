@@ -322,6 +322,14 @@ longer embeds a developer-local repository fallback path or Conda CUDA library
 path; it expects to be launched from the repository root and accepts any CUDA
 13 library override through an environment variable.
 
+\subsection{CLI Config Error Hygiene}
+
+The CLI now reports missing JSON config files, unsupported config keys, and
+missing required optimize inputs through argparse errors instead of leaking
+Python exceptions.  \texttt{RunConfig.from\_dict} rejects unknown fields before
+dataclass construction, so stale or misspelled JSON keys fail with a stable
+message rather than a raw constructor traceback.
+
 \section{Verification Log}
 
 \begin{center}
@@ -404,6 +412,15 @@ CLI parser smoke &
 \texttt{python -m gpurec.cli optimize --config configs/hogenom\_ccp\_wandb.yaml} &
 YAML config UX &
 \texttt{argparse error, no traceback} \\
+\texttt{python -m py\_compile gpurec/cli.py gpurec/workflow/config.py ...} &
+CLI config error syntax &
+\texttt{ok} \\
+\texttt{pytest -q tests/unit/test\_workflow.py} &
+Workflow and CLI config error regressions &
+\texttt{17 passed after CLI config cleanup} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
+CPU unit gate after CLI config cleanup &
+\texttt{40 passed, 27 deselected} \\
 \bottomrule
 \end{tabular}
 \end{center}

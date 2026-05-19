@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -111,6 +112,59 @@ def test_cli_rejects_hydra_yaml_config_without_traceback(tmp_path: Path, capsys)
     captured = capsys.readouterr()
     assert exc_info.value.code == 2
     assert "flat JSON RunConfig" in captured.err
+    assert "Traceback" not in captured.err
+
+
+def test_cli_reports_missing_json_config_without_traceback(tmp_path: Path, capsys):
+    path = tmp_path / "missing.json"
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(["optimize", "--config", str(path)])
+
+    captured = capsys.readouterr()
+    assert exc_info.value.code == 2
+    assert "could not read config" in captured.err
+    assert str(path) in captured.err
+    assert "Traceback" not in captured.err
+
+
+def test_cli_rejects_unknown_json_config_keys_without_traceback(
+    tmp_path: Path,
+    capsys,
+):
+    path = tmp_path / "config.json"
+    path.write_text(
+        json.dumps(
+            {
+                "species_tree": str(tmp_path / "sp.nwk"),
+                "families_file": str(tmp_path / "families.txt"),
+                "out_dir": str(tmp_path / "out"),
+                "device": "cpu",
+                "unexpected": True,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(["optimize", "--config", str(path)])
+
+    captured = capsys.readouterr()
+    assert exc_info.value.code == 2
+    assert "unknown RunConfig field" in captured.err
+    assert "unexpected" in captured.err
+    assert "Traceback" not in captured.err
+
+
+def test_cli_reports_missing_required_options_without_traceback(capsys):
+    with pytest.raises(SystemExit) as exc_info:
+        main(["optimize"])
+
+    captured = capsys.readouterr()
+    assert exc_info.value.code == 2
+    assert "missing required optimize option" in captured.err
+    assert "species_tree" in captured.err
+    assert "Traceback" not in captured.err
 
 
 def test_workflow_rate_outputs_use_normalized_survival_probability(tmp_path: Path):

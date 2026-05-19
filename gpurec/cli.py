@@ -27,7 +27,12 @@ def _config_data(path: Path | None) -> dict[str, Any]:
             "explicit CLI flags"
         )
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
+        text = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        detail = exc.strerror or str(exc)
+        raise ValueError(f"could not read config {path}: {detail}") from exc
+    try:
+        data = json.loads(text)
     except json.JSONDecodeError as exc:
         raise ValueError(f"invalid JSON config {path}: {exc.msg}") from exc
     if not isinstance(data, dict):
@@ -95,7 +100,7 @@ def _run_config_from_args(args: argparse.Namespace) -> RunConfig:
         data["adaptive_iters"] = args.adaptive_iters
     missing = [name for name in ("species_tree", "families_file", "out_dir") if name not in data]
     if missing:
-        raise SystemExit(f"missing required optimize option(s): {', '.join(missing)}")
+        raise ValueError(f"missing required optimize option(s): {', '.join(missing)}")
     return RunConfig.from_dict(data)
 
 
