@@ -532,6 +532,14 @@ sanitized stem, while retaining the original family label in
 path separators or parent-directory fragments from escaping
 \texttt{reconciliations/all}.
 
+\subsection{Shared API Validation Helpers}
+
+Public model constructors now share CUDA-device and
+\texttt{theta\_init\_rates} validation through \texttt{gpurec.api.\_validation}.
+This removes duplicated error-ordering logic between \texttt{GeneReconModel}
+and \texttt{UniformChunkedReconModel} while preserving the existing constructor
+regression tests.
+
 \section{Verification Log}
 
 \begin{center}
@@ -826,6 +834,15 @@ Sampling filename-safety regressions &
 \texttt{53 passed after filename-safety cleanup} \\
 \texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
 CPU unit gate after filename-safety cleanup &
+\texttt{77 passed, 27 deselected} \\
+\texttt{python -m py\_compile gpurec/api/\_validation.py gpurec/api/model.py gpurec/api/uniform\_chunked.py ...} &
+Shared API validation syntax &
+\texttt{ok} \\
+\texttt{pytest -q tests/unit/test\_workflow.py} &
+Shared API validation regressions &
+\texttt{53 passed after validation-helper refactor} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
+CPU unit gate after validation-helper refactor &
 \texttt{77 passed, 27 deselected} \\
 \bottomrule
 \end{tabular}

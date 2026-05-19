@@ -1,0 +1,31 @@
+from __future__ import annotations
+
+from typing import Any, Optional, Sequence
+
+import torch
+
+
+def require_cuda_device(device: Any, *, owner: str) -> torch.device:
+    resolved = torch.device(device)
+    if resolved.type != "cuda":
+        raise ValueError(f"{owner} currently requires a CUDA device")
+    if not torch.cuda.is_available():
+        raise RuntimeError("CUDA was requested but is not available")
+    return resolved
+
+
+def theta_init_base_from_rates(
+    theta_init_rates: Optional[Sequence[float]],
+    *,
+    dtype: torch.dtype,
+    device: torch.device,
+) -> torch.Tensor | None:
+    if theta_init_rates is None:
+        return None
+    rates = torch.as_tensor(theta_init_rates, dtype=torch.float64, device="cpu")
+    if rates.numel() != 3:
+        raise ValueError("theta_init_rates must contain exactly three D/L/T rates")
+    rates = rates.reshape(3)
+    if torch.any(rates <= 0):
+        raise ValueError("theta_init_rates must be strictly positive")
+    return torch.log2(rates).to(device=device, dtype=dtype)

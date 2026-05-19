@@ -37,6 +37,8 @@ from gpurec.core.memory_policy import UniformPipelinePolicy, choose_uniform_pipe
 from gpurec.core.model import GeneDataset, parse_alerax_family_file
 from gpurec.optimization.implicit_grad import _e_adjoint_and_theta_vjp
 
+from ._validation import require_cuda_device, theta_init_base_from_rates
+
 
 UNIFORM_OPTIMIZED_DEFAULT_FLAGS = {
     "GPUREC_SELF_LOOP_2D_BLOCK_W": "1",
@@ -98,30 +100,6 @@ def _as_auto_int(value: int | str | None) -> int | str | None:
             return None
         return int(text)
     return int(value)
-
-
-def _require_cuda_device(device: str | torch.device) -> torch.device:
-    resolved = torch.device(device)
-    if resolved.type != "cuda":
-        raise ValueError("UniformChunkedReconModel currently requires a CUDA device")
-    if not torch.cuda.is_available():
-        raise RuntimeError("CUDA was requested but is not available")
-    return resolved
-
-
-def _theta_init_from_rates(
-    theta_init_rates: tuple[float, float, float],
-    *,
-    dtype: torch.dtype,
-    device: torch.device,
-) -> torch.Tensor:
-    rates = torch.as_tensor(theta_init_rates, dtype=torch.float64, device="cpu")
-    if rates.numel() != 3:
-        raise ValueError("theta_init_rates must contain exactly three D/L/T rates")
-    rates = rates.reshape(3)
-    if torch.any(rates <= 0):
-        raise ValueError("theta_init_rates must be strictly positive")
-    return torch.log2(rates).to(device=device, dtype=dtype)
 
 
 def _selected_gene_paths(
@@ -644,12 +622,14 @@ class UniformChunkedReconModel(torch.nn.Module):
             _set_default_flags()
         if dtype not in (torch.float32, torch.float64, torch.bfloat16):
             raise ValueError(f"dtype must be fp32, fp64, or bf16, got {dtype}")
-        theta_init = _theta_init_from_rates(
+        theta_init = theta_init_base_from_rates(
             theta_init_rates,
             dtype=dtype,
             device=torch.device("cpu"),
         )
-        device = _require_cuda_device(device)
+        if theta_init is None:
+            raise ValueError("theta_init_rates must be provided")
+        device = require_cuda_device(device, owner="UniformChunkedReconModel")
         theta_init = theta_init.to(device=device)
         if fixed_iters_E is not None:
             fixed_iters_E = int(fixed_iters_E)
@@ -853,12 +833,15 @@ class UniformChunkedReconModel(torch.nn.Module):
                 "UniformChunkedReconModel.from_alerax_families only supports "
                 f"mode='global' or mode='uniform', got {mode!r}"
             )
-        _theta_init_from_rates(
+        theta_init_base_from_rates(
             kwargs.get("theta_init_rates", (0.05, 0.05, 0.05)),
             dtype=kwargs.get("dtype", torch.float32),
             device=torch.device("cpu"),
         )
-        _require_cuda_device(kwargs.get("device", "cuda"))
+        require_cuda_device(
+            kwargs.get("device", "cuda"),
+            owner="UniformChunkedReconModel",
+        )
         family_names, tree_paths, leaf_maps = parse_alerax_family_file(
             families_file,
             start=start,
