@@ -1072,6 +1072,15 @@ constructor reject values such as \texttt{"false"} with a clear
 possibly raising the unrelated odd-\texttt{convergence\_check\_interval}
 message.
 
+\subsection{Rust Backtracking CI Collection Scope}
+
+The Rust backtracking GitHub Actions job now runs the explicit CPU-safe
+\texttt{tests/integration/test\_rust\_backtracking\_fixture.py} file instead of
+collecting the entire non-GPU integration marker set after installing only
+\texttt{pytest}.  This avoids collection-time imports of GPU integration modules
+that require \texttt{torch}, while keeping the lightweight Rust fixture smoke in
+the Rust-focused job.
+
 \section{Verification Log}
 
 \begin{center}
@@ -2086,6 +2095,18 @@ CPU unit gate after adaptive iteration boolean validation &
 \texttt{295 passed, 28 deselected} \\
 \texttt{python scripts/check\_release\_metadata.py} &
 Release metadata checker after adaptive iteration boolean validation &
+\texttt{expected license blockers} \\
+\texttt{python -m py\_compile tests/unit/test\_release\_metadata.py} &
+Rust backtracking CI collection-scope guard syntax &
+\texttt{ok} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q tests/unit/test\_release\_metadata.py} &
+Focused CI workflow release-metadata guards &
+\texttt{8 passed} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
+CPU unit gate after Rust backtracking CI collection-scope fix &
+\texttt{295 passed, 28 deselected} \\
+\texttt{python scripts/check\_release\_metadata.py} &
+Release metadata checker after Rust backtracking CI collection-scope fix &
 \texttt{expected license blockers} \\
 \bottomrule
 \end{tabular}
