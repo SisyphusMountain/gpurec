@@ -330,6 +330,13 @@ Python exceptions.  \texttt{RunConfig.from\_dict} rejects unknown fields before
 dataclass construction, so stale or misspelled JSON keys fail with a stable
 message rather than a raw constructor traceback.
 
+\subsection{CLI Batch-Control Vocabulary}
+
+\texttt{gpurec optimize} no longer accepts \texttt{--family-chunk-size auto},
+which the workflow could not execute.  The parser now accepts the workflow's
+all-resident aliases and rejects \texttt{auto} before constructing
+\texttt{RunConfig}, keeping CLI syntax aligned with production behavior.
+
 \section{Verification Log}
 
 \begin{center}
@@ -421,6 +428,15 @@ Workflow and CLI config error regressions &
 \texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
 CPU unit gate after CLI config cleanup &
 \texttt{40 passed, 27 deselected} \\
+\texttt{python -m gpurec.cli optimize --family-chunk-size auto} &
+CLI batch-control vocabulary &
+\texttt{argparse error, no traceback} \\
+\texttt{pytest -q tests/unit/test\_workflow.py} &
+Workflow and CLI batch-control regressions &
+\texttt{19 passed after parser cleanup} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
+CPU unit gate after CLI parser cleanup &
+\texttt{42 passed, 27 deselected} \\
 \bottomrule
 \end{tabular}
 \end{center}

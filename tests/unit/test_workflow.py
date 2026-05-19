@@ -102,6 +102,38 @@ def test_cli_forwards_refresh_preprocess_cache(tmp_path: Path):
     assert config.refresh_preprocess_cache is True
 
 
+def test_cli_accepts_family_chunk_all_alias(tmp_path: Path):
+    args = build_parser().parse_args(
+        [
+            "optimize",
+            "--species-tree",
+            str(tmp_path / "sp.nwk"),
+            "--families-file",
+            str(tmp_path / "families.txt"),
+            "--out-dir",
+            str(tmp_path / "out"),
+            "--device",
+            "cpu",
+            "--family-chunk-size",
+            "all",
+        ]
+    )
+
+    config = _run_config_from_args(args)
+
+    assert config.family_chunk_size == 0
+
+
+def test_cli_rejects_auto_family_chunk_size_at_parse(capsys):
+    with pytest.raises(SystemExit) as exc_info:
+        build_parser().parse_args(["optimize", "--family-chunk-size", "auto"])
+
+    captured = capsys.readouterr()
+    assert exc_info.value.code == 2
+    assert "family chunk size 'auto' is not supported" in captured.err
+    assert "Traceback" not in captured.err
+
+
 def test_cli_rejects_hydra_yaml_config_without_traceback(tmp_path: Path, capsys):
     path = tmp_path / "config.yaml"
     path.write_text("paths:\n  species_tree: sp.nwk\n", encoding="utf-8")

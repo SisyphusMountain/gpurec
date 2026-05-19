@@ -8,13 +8,26 @@ from typing import Any
 from gpurec.workflow import RunConfig, SamplingConfig, optimize, sample
 
 
-def _chunk_size(value: str) -> int | str | None:
+def _chunk_size(value: str) -> int | None:
     text = value.strip().lower()
     if text in {"none", "null"}:
         return None
-    if text in {"auto"}:
-        return "auto"
-    return int(text)
+    if text in {"", "0", "all"}:
+        return 0
+    if text == "auto":
+        raise argparse.ArgumentTypeError(
+            "family chunk size 'auto' is not supported; use 0 for one resident "
+            "batch or a positive integer"
+        )
+    try:
+        size = int(text)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(
+            "family chunk size must be 0, all, none, or a positive integer"
+        ) from exc
+    if size < 0:
+        raise argparse.ArgumentTypeError("family chunk size must be non-negative")
+    return size
 
 
 def _config_data(path: Path | None) -> dict[str, Any]:
