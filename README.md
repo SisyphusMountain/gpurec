@@ -127,8 +127,9 @@ gpurec sample \
   --samples 100
 ```
 
-Sampling writes RecPhyloXML files and AleRax-style summaries under
-`output_gpurec/reconciliations/`, including per-sample event counts,
+Sampling writes per-sample RecPhyloXML files and event-count files under
+`output_gpurec/reconciliations/all/`.  Aggregate summaries live under
+`output_gpurec/reconciliations/`, including `event_counts.tsv`,
 `totalSpeciesEventCounts.txt`, and `totalTransfers.txt`.
 Sampling uses the Rust backtracking binary.  Installed environments should
 provide a compiled binary through `GPUREC_BACKTRACK_BIN` or

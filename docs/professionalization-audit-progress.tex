@@ -945,6 +945,15 @@ Subsequent batch selection or explicit prefetch scheduling no longer recreates
 a worker after the model has been closed, preventing accidental CPU work and
 thread leakage in notebooks, services, or long audit runs.
 
+\subsection{Sampling Output Documentation}
+
+The project README now matches the sampling workflow's output layout:
+per-sample RecPhyloXML and event-count files live under
+\texttt{output\_gpurec/reconciliations/all/}, while aggregate summaries remain
+under \texttt{output\_gpurec/reconciliations/}.  A source guard keeps the
+README tied to the current \texttt{event\_counts.tsv},
+\texttt{totalSpeciesEventCounts.txt}, and \texttt{totalTransfers.txt} outputs.
+
 \section{Verification Log}
 
 \begin{center}
@@ -1761,6 +1770,18 @@ CPU unit gate after prefetch lifecycle guard &
 \texttt{240 passed, 28 deselected} \\
 \texttt{python scripts/check\_release\_metadata.py} &
 Release metadata checker after prefetch lifecycle guard &
+\texttt{expected license blockers} \\
+\texttt{python -m py\_compile tests/unit/test\_workflow.py} &
+README sampling-layout guard syntax &
+\texttt{ok} \\
+\texttt{pytest -q tests/unit/test\_workflow.py::test\_project\_readme\_... ...} &
+Focused sampling documentation and output-layout guards &
+\texttt{3 passed} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
+CPU unit gate after sampling documentation guard &
+\texttt{241 passed, 28 deselected} \\
+\texttt{python scripts/check\_release\_metadata.py} &
+Release metadata checker after sampling documentation guard &
 \texttt{expected license blockers} \\
 \bottomrule
 \end{tabular}

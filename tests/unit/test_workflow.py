@@ -2302,6 +2302,16 @@ def test_project_readme_documents_preprocess_cache_refresh_guidance():
     assert "original tree inputs" in normalized
 
 
+def test_project_readme_documents_sampling_output_layout():
+    root = Path(__file__).resolve().parents[2]
+    project_readme = (root / "README.md").read_text(encoding="utf-8")
+
+    assert "output_gpurec/reconciliations/all/" in project_readme
+    assert "event_counts.tsv" in project_readme
+    assert "totalSpeciesEventCounts.txt" in project_readme
+    assert "totalTransfers.txt" in project_readme
+
+
 def test_xml_species_and_transfer_counts():
     xml = """
     <recPhylo>
