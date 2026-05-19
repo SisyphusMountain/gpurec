@@ -5,6 +5,7 @@ import json
 import math
 import sys
 from pathlib import Path
+from threading import Lock
 from types import SimpleNamespace
 
 import pytest
@@ -12,6 +13,7 @@ import torch
 
 import gpurec
 import gpurec.backtracking as backtracking
+import gpurec.api.model as api_model
 import gpurec.workflow.model_factory as workflow_model_factory
 import gpurec.workflow.sampling as sampling_workflow
 from gpurec.backtracking import (
@@ -158,6 +160,60 @@ def test_top_level_exports_api_metadata_types():
         "ReconciliationState",
     ):
         assert name in gpurec.__all__
+
+
+def test_close_prevents_later_prefetch_restart(monkeypatch):
+    class FakeExecutor:
+        instances: list["FakeExecutor"] = []
+
+        def __init__(self, *, max_workers: int, thread_name_prefix: str):
+            self.max_workers = max_workers
+            self.thread_name_prefix = thread_name_prefix
+            self.submitted: list[int] = []
+            self.shutdown_kwargs: dict[str, bool] | None = None
+            FakeExecutor.instances.append(self)
+
+        def submit(self, func, batch_idx: int):
+            self.submitted.append(batch_idx)
+            return object()
+
+        def shutdown(self, *, wait: bool, cancel_futures: bool) -> None:
+            self.shutdown_kwargs = {
+                "wait": wait,
+                "cancel_futures": cancel_futures,
+            }
+
+    monkeypatch.setattr(api_model, "ThreadPoolExecutor", FakeExecutor)
+
+    model = GeneReconModel.__new__(GeneReconModel)
+    model._batched_resident = True
+    model.prefetch_batches = "all"
+    model._current_batch_index = 0
+    model._batch_specs = [object(), object(), object()]
+    model._batch_statics = [object(), None, None]
+    model._batch_futures = {}
+    model._prefetch_executor = None
+    model._prefetch_closed = False
+    model._batch_lock = Lock()
+    model._build_batch_static = lambda batch_idx: object()
+
+    model._schedule_prefetch()
+    assert len(FakeExecutor.instances) == 1
+    assert FakeExecutor.instances[0].submitted == [1, 2]
+
+    model.close()
+    assert FakeExecutor.instances[0].shutdown_kwargs == {
+        "wait": False,
+        "cancel_futures": True,
+    }
+    assert model._prefetch_executor is None
+    assert model._batch_futures == {}
+
+    model._schedule_prefetch()
+
+    assert len(FakeExecutor.instances) == 1
+    assert model._prefetch_executor is None
+    assert model._batch_futures == {}
 
 
 def test_family_input_returns_defensive_copies():

@@ -904,6 +904,7 @@ class GeneReconModel(torch.nn.Module):
         self._batch_statics: list[ReconStaticState | None] = []
         self._batch_futures: dict[int, Future[ReconStaticState]] = {}
         self._prefetch_executor: ThreadPoolExecutor | None = None
+        self._prefetch_closed = False
         self._batch_lock = Lock()
         self._current_batch_index = 0
 
@@ -1158,6 +1159,8 @@ class GeneReconModel(torch.nn.Module):
             return existing
 
     def _submit_prefetch(self, batch_idx: int) -> None:
+        if self._prefetch_closed:
+            return
         if batch_idx < 0 or batch_idx >= len(self._batch_specs):
             return
         with self._batch_lock:
@@ -1177,7 +1180,11 @@ class GeneReconModel(torch.nn.Module):
             )
 
     def _schedule_prefetch(self) -> None:
-        if not self._batched_resident or self.prefetch_batches == 0:
+        if (
+            self._prefetch_closed
+            or not self._batched_resident
+            or self.prefetch_batches == 0
+        ):
             return
         start = self._current_batch_index + 1
         if self.prefetch_batches == "all":
@@ -1445,6 +1452,7 @@ class GeneReconModel(torch.nn.Module):
     def close(self) -> None:
         """Stop background batch preprocessing and drop pending futures."""
         with self._batch_lock:
+            self._prefetch_closed = True
             executor = self._prefetch_executor
             self._prefetch_executor = None
             self._batch_futures.clear()

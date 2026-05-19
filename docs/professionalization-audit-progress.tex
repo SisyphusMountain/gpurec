@@ -937,6 +937,14 @@ non-dictionary checkpoint payloads.  This brings legacy script checkpoint
 consumers in line with the supported workflow loader and removes the remaining
 tracked \texttt{weights\_only=False} checkpoint loads.
 
+\subsection{Prefetch Close Lifecycle}
+
+\texttt{GeneReconModel.close()} now marks background resident-batch prefetching
+as closed before clearing pending futures and shutting down the executor.
+Subsequent batch selection or explicit prefetch scheduling no longer recreates
+a worker after the model has been closed, preventing accidental CPU work and
+thread leakage in notebooks, services, or long audit runs.
+
 \section{Verification Log}
 
 \begin{center}
@@ -1741,6 +1749,18 @@ CPU unit gate after legacy checkpoint safe-loading &
 \texttt{239 passed, 28 deselected} \\
 \texttt{python scripts/check\_release\_metadata.py} &
 Release metadata checker after legacy checkpoint safe-loading &
+\texttt{expected license blockers} \\
+\texttt{python -m py\_compile gpurec/api/model.py tests/unit/test\_workflow.py} &
+Prefetch close lifecycle syntax &
+\texttt{ok} \\
+\texttt{pytest -q tests/unit/test\_workflow.py::test\_close\_prevents\_...} &
+Focused prefetch lifecycle guard &
+\texttt{1 passed} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
+CPU unit gate after prefetch lifecycle guard &
+\texttt{240 passed, 28 deselected} \\
+\texttt{python scripts/check\_release\_metadata.py} &
+Release metadata checker after prefetch lifecycle guard &
 \texttt{expected license blockers} \\
 \bottomrule
 \end{tabular}
