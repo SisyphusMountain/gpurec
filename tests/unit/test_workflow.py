@@ -573,6 +573,41 @@ def test_gene_recon_constructors_reject_cpu_device_before_io(tmp_path: Path):
         )
 
 
+@pytest.mark.parametrize(
+    "factory",
+    [
+        pytest.param(GeneReconModel.from_alerax_families, id="resident"),
+        pytest.param(UniformChunkedReconModel.from_alerax_families, id="uniform"),
+    ],
+)
+@pytest.mark.parametrize(
+    ("kwargs", "message"),
+    [
+        ({"start": -1}, "start"),
+        ({"start": 0.5}, "start"),
+        ({"start": True}, "start"),
+        ({"max_families": 0}, "max_families"),
+        ({"max_families": 1.5}, "max_families"),
+        ({"max_families": True}, "max_families"),
+    ],
+)
+def test_alerax_constructors_validate_selection_before_device_or_io(
+    tmp_path: Path,
+    factory,
+    kwargs: dict[str, object],
+    message: str,
+):
+    with pytest.raises(ValueError, match=message) as exc_info:
+        factory(
+            tmp_path / "missing_species.nwk",
+            tmp_path / "missing_families.txt",
+            device="cpu",
+            **kwargs,
+        )
+
+    assert "CUDA" not in str(exc_info.value)
+
+
 def test_uniform_chunked_alerax_constructor_validates_mode_before_io(tmp_path: Path):
     with pytest.raises(ValueError, match="from_alerax_families"):
         UniformChunkedReconModel.from_alerax_families(

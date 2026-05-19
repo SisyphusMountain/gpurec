@@ -1,7 +1,8 @@
+import hashlib
 import math
 import os
-import hashlib
 import pickle
+from numbers import Integral, Real
 from pathlib import Path
 from typing import Any, Callable, Sequence
 
@@ -42,6 +43,34 @@ def parse_alerax_mapping_file(path: str | os.PathLike) -> dict[str, str]:
     return mapping
 
 
+def _normalize_family_index(name: str, value: int) -> int:
+    if isinstance(value, bool):
+        raise ValueError(f"{name} must be an integer")
+    if isinstance(value, Integral):
+        return int(value)
+    if isinstance(value, Real):
+        number = float(value)
+        if not math.isfinite(number) or not number.is_integer():
+            raise ValueError(f"{name} must be an integer")
+        return int(number)
+    raise ValueError(f"{name} must be an integer")
+
+
+def normalize_family_selection(
+    start: int,
+    max_families: int | None,
+) -> tuple[int, int | None]:
+    start_int = _normalize_family_index("start", start)
+    if start_int < 0:
+        raise ValueError("start must be non-negative")
+    if max_families is None:
+        return start_int, None
+    max_int = _normalize_family_index("max_families", max_families)
+    if max_int <= 0:
+        raise ValueError("max_families must be positive when provided")
+    return start_int, max_int
+
+
 def parse_alerax_family_file(
     families_file: str | os.PathLike,
     *,
@@ -54,10 +83,7 @@ def parse_alerax_family_file(
     leaf-to-species maps. ``starting_gene_tree`` and ``gene_tree`` entries are
     both accepted because AleRax uses both forms in local fixtures.
     """
-    if start < 0:
-        raise ValueError("start must be non-negative")
-    if max_families is not None and int(max_families) <= 0:
-        raise ValueError("max_families must be positive when provided")
+    start, max_families = normalize_family_selection(start, max_families)
 
     base_dir = Path(families_file).resolve().parent
     records: list[dict[str, Any]] = []
@@ -112,7 +138,7 @@ def parse_alerax_family_file(
             current["mapping"] = _resolve_family_path(value, base_dir)
     finish()
 
-    stop = None if max_families is None else start + int(max_families)
+    stop = None if max_families is None else start + max_families
     selected = records[start:stop]
     if not selected:
         raise ValueError(

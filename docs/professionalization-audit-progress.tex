@@ -835,6 +835,15 @@ multi-sample XML file; missing outputs are reported before the temporary
 directory disappears.  Focused fake-binary regressions cover nonzero exits,
 stderr/stdout propagation, and missing single or batched output files.
 
+\subsection{AleRax Family Selection Validation}
+
+AleRax family-window controls now normalize through a shared parser-layer
+helper before any CUDA requirement or filesystem access.  The parser and both
+public \texttt{from\_alerax\_families(...)} constructors reject negative,
+fractional, boolean, and non-positive selection values with
+\texttt{ValueError}s tied to \texttt{start} or \texttt{max\_families}, so CPU
+hosts see the actionable input error instead of a masked CUDA-device failure.
+
 \section{Verification Log}
 
 \begin{center}
@@ -1499,6 +1508,15 @@ Focused backtracking subprocess and missing-output guards &
 \texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
 CPU unit gate after backtracking error context &
 \texttt{201 passed, 28 deselected} \\
+\texttt{python -m py\_compile gpurec/core/model.py gpurec/api/model.py ...} &
+AleRax family-selection validation syntax &
+\texttt{ok} \\
+\texttt{pytest -q tests/unit/test\_alerax\_family\_input.py::test\_alerax\_... ...} &
+Focused AleRax selection precedence guards &
+\texttt{20 passed} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
+CPU unit gate after AleRax selection validation &
+\texttt{218 passed, 28 deselected} \\
 \bottomrule
 \end{tabular}
 \end{center}
@@ -1514,8 +1532,6 @@ CPU unit gate after backtracking error context &
         distribution model is settled.
   \item Replace file-name-based GPU marker inference with explicit module-level
         GPU intent plus a meta-test for marker coverage.
-  \item Validate AleRax family selection before CUDA checks in public
-        constructors so invalid selection errors are not masked on CPU hosts.
   \item Keep committing small, verified increments so the branch remains
         reviewable despite the larger audit scope.
 \end{enumerate}

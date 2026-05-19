@@ -34,7 +34,11 @@ from gpurec.core.likelihood import (
     prepare_origination_probs,
 )
 from gpurec.core.memory_policy import UniformPipelinePolicy, choose_uniform_pipeline_policy
-from gpurec.core.model import GeneDataset, parse_alerax_family_file
+from gpurec.core.model import (
+    GeneDataset,
+    normalize_family_selection,
+    parse_alerax_family_file,
+)
 from gpurec.optimization.implicit_grad import _e_adjoint_and_theta_vjp
 
 from ._validation import (
@@ -107,13 +111,6 @@ def _as_auto_int(value: int | str | None) -> int | str | None:
     return int(value)
 
 
-def _validate_family_selection(start: int, max_families: int | None) -> None:
-    if start < 0:
-        raise ValueError("start must be non-negative")
-    if max_families is not None and int(max_families) <= 0:
-        raise ValueError("max_families must be positive when provided")
-
-
 def _normalize_uniform_solver_kwargs(kwargs: dict[str, Any]) -> dict[str, Any]:
     """Validate public solver kwargs before CUDA setup or AleRax parsing."""
     normalized = dict(kwargs)
@@ -157,7 +154,7 @@ def _selected_gene_paths(
     start: int,
     max_families: int | None,
 ) -> list[str]:
-    _validate_family_selection(start, max_families)
+    start, max_families = normalize_family_selection(start, max_families)
     paths = sorted(folder.glob(gene_glob))
     if not paths and gene_glob == "g_*.nwk":
         single = folder / "g.nwk"
@@ -165,7 +162,7 @@ def _selected_gene_paths(
             paths = [single]
     if not paths:
         raise FileNotFoundError(f"no gene trees matching {gene_glob!r} in {folder}")
-    stop = None if max_families is None else start + int(max_families)
+    stop = None if max_families is None else start + max_families
     selected = paths[start:stop]
     if not selected:
         raise ValueError(
@@ -858,7 +855,7 @@ class UniformChunkedReconModel(torch.nn.Module):
         **kwargs: Any,
     ) -> "UniformChunkedReconModel":
         """Build a model from a folder containing ``sp.nwk`` and gene trees."""
-        _validate_family_selection(start, max_families)
+        start, max_families = normalize_family_selection(start, max_families)
         root = Path(folder)
         species_tree = root / species_tree_name
         if not species_tree.exists():
@@ -889,6 +886,7 @@ class UniformChunkedReconModel(torch.nn.Module):
                 "UniformChunkedReconModel.from_alerax_families only supports "
                 f"mode='global' or mode='uniform', got {mode!r}"
             )
+        start, max_families = normalize_family_selection(start, max_families)
         kwargs = _normalize_uniform_solver_kwargs(kwargs)
         theta_init_base_from_rates(
             kwargs.get("theta_init_rates", (0.05, 0.05, 0.05)),

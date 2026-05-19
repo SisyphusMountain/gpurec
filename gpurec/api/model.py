@@ -39,7 +39,11 @@ from gpurec.core.batch_planning import (
     normalize_family_chunk_size,
     plan_family_batches,
 )
-from gpurec.core.model import GeneDataset, parse_alerax_family_file
+from gpurec.core.model import (
+    GeneDataset,
+    normalize_family_selection,
+    parse_alerax_family_file,
+)
 from gpurec.core.forward import Pi_wave_forward
 from gpurec.core.likelihood import (
     E_fixed_point,
@@ -1060,6 +1064,7 @@ class GeneReconModel(torch.nn.Module):
     ) -> "GeneReconModel":
         """Build from an AleRax ``[FAMILIES]`` file with CCP/tree samples."""
         genewise, specieswise = _mode_to_flags(mode)
+        start, max_families = normalize_family_selection(start, max_families)
         solver_kwargs = _normalize_gene_solver_kwargs(solver_kwargs)
         theta_base = theta_init_base_from_rates(
             theta_init_rates,

@@ -18,13 +18,22 @@ def _write(path, text: str):
     return path
 
 
-def test_alerax_family_selection_validates_before_io(tmp_path):
+@pytest.mark.parametrize(
+    ("kwargs", "message"),
+    [
+        ({"start": -1}, "start"),
+        ({"start": 0.5}, "start"),
+        ({"start": True}, "start"),
+        ({"max_families": 0}, "max_families"),
+        ({"max_families": 1.5}, "max_families"),
+        ({"max_families": True}, "max_families"),
+    ],
+)
+def test_alerax_family_selection_validates_before_io(tmp_path, kwargs, message):
     missing = tmp_path / "missing_families.txt"
 
-    with pytest.raises(ValueError, match="start"):
-        parse_alerax_family_file(missing, start=-1)
-    with pytest.raises(ValueError, match="max_families"):
-        parse_alerax_family_file(missing, max_families=0)
+    with pytest.raises(ValueError, match=message):
+        parse_alerax_family_file(missing, **kwargs)
 
 
 def test_preprocess_cache_load_uses_weights_only(tmp_path, monkeypatch):
