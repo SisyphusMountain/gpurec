@@ -483,6 +483,13 @@ notebook API, workflow config, and CLI parser all reuse that helper, so aliases
 such as \texttt{all}/\texttt{none}/\texttt{null}, non-negative validation, and
 the workflow rejection of unsupported \texttt{auto} stay aligned.
 
+\subsection{Resume Optimizer State Reporting}
+
+Optimization resume now records whether checkpoint optimizer state was
+\texttt{restored}, \texttt{missing}, or \texttt{discarded}.  Incompatible
+optimizer state is still non-fatal, but the exception text is carried into
+history rows and checkpoint/summary status instead of being silently swallowed.
+
 \section{Verification Log}
 
 \begin{center}
@@ -724,6 +731,15 @@ Workflow chunk-size normalization regressions &
 \texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
 CPU unit gate after chunk-normalization cleanup &
 \texttt{62 passed, 27 deselected} \\
+\texttt{python -m py\_compile gpurec/workflow/optimize.py tests/unit/test\_workflow.py} &
+Resume optimizer-state reporting syntax &
+\texttt{ok} \\
+\texttt{pytest -q tests/unit/test\_workflow.py} &
+Workflow resume optimizer-state regressions &
+\texttt{40 passed after resume-status cleanup} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
+CPU unit gate after resume-status cleanup &
+\texttt{63 passed, 27 deselected} \\
 \bottomrule
 \end{tabular}
 \end{center}

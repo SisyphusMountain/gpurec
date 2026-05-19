@@ -35,7 +35,7 @@ from gpurec.workflow.checkpoint import load_checkpoint, restore_model_theta, sav
 from gpurec.workflow.config import RunConfig, SamplingConfig
 from gpurec.workflow.diagnostics import parameter_stats
 from gpurec.workflow.model_factory import build_alerax_workflow_model
-from gpurec.workflow.optimize import _write_rate_table
+from gpurec.workflow.optimize import OptimizationRunner, _write_rate_table
 from gpurec.workflow.sampling import SamplingRunner, _xml_species_and_transfer_counts
 
 
@@ -809,6 +809,41 @@ def test_checkpoint_roundtrip_restores_theta_and_status(tmp_path: Path):
     assert payload["status"]["best_nll_bits"] == 12.0
     assert torch.equal(model.theta, torch.full_like(model.theta, 2.0))
     assert model.cleared
+
+
+def test_optimization_runner_reports_discarded_resume_optimizer_state(tmp_path: Path):
+    config = RunConfig(
+        species_tree=tmp_path / "sp.nwk",
+        families_file=tmp_path / "families.txt",
+        out_dir=tmp_path / "out",
+        device="cpu",
+    )
+    runner = OptimizationRunner(config)
+
+    class FakeOptimizer:
+        def __init__(self, *, fail: bool = False):
+            self.fail = fail
+            self.loaded = None
+
+        def load_state_dict(self, state):
+            if self.fail:
+                raise ValueError("incompatible optimizer state")
+            self.loaded = state
+
+    missing = runner._restore_optimizer_state(FakeOptimizer(), None)
+    assert missing == {"resume_optimizer_state": "missing"}
+
+    restored_optimizer = FakeOptimizer()
+    restored = runner._restore_optimizer_state(restored_optimizer, {"state": []})
+    assert restored == {"resume_optimizer_state": "restored"}
+    assert restored_optimizer.loaded == {"state": []}
+
+    discarded = runner._restore_optimizer_state(
+        FakeOptimizer(fail=True),
+        {"state": ["bad"]},
+    )
+    assert discarded["resume_optimizer_state"] == "discarded"
+    assert "incompatible optimizer state" in discarded["resume_optimizer_error"]
 
 
 def test_activate_family_batch_returns_batch_local_offset():

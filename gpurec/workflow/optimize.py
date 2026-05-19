@@ -147,6 +147,22 @@ class OptimizationRunner:
         self.history.append(row)
         append_jsonl(self.history_jsonl, row)
 
+    def _restore_optimizer_state(
+        self,
+        optimizer: torch.optim.Optimizer,
+        state: Any,
+    ) -> dict[str, Any]:
+        if state is None:
+            return {"resume_optimizer_state": "missing"}
+        try:
+            optimizer.load_state_dict(state)
+        except ValueError as exc:
+            return {
+                "resume_optimizer_state": "discarded",
+                "resume_optimizer_error": str(exc),
+            }
+        return {"resume_optimizer_state": "restored"}
+
     def _save_status(
         self,
         path: Path,
@@ -184,6 +200,7 @@ class OptimizationRunner:
         start_step = 0
         status = {"status": "running", "reason": "running"}
         final_row: dict[str, Any] = {}
+        resume_info: dict[str, Any] = {}
 
         try:
             if config.resume_from is not None:
@@ -200,12 +217,10 @@ class OptimizationRunner:
             optimizer = self._make_optimizer(model, current_phase)
             if config.resume_from is not None:
                 payload = load_checkpoint(config.resume_from, map_location=config.device)
-                state = payload.get("optimizer_state")
-                if state is not None:
-                    try:
-                        optimizer.load_state_dict(state)
-                    except ValueError:
-                        pass
+                resume_info = self._restore_optimizer_state(
+                    optimizer,
+                    payload.get("optimizer_state"),
+                )
 
             for step in range(start_step, config.steps):
                 phase = self._phase_for_step(step)
@@ -280,6 +295,7 @@ class OptimizationRunner:
                     checkpoint_status = {
                         "status": "running",
                         "reason": "running",
+                        **resume_info,
                         "best_nll_bits": best_nll,
                         "best_step": best_step,
                         "previous_objective": previous_objective,
@@ -335,6 +351,7 @@ class OptimizationRunner:
                     "stable_loss_steps": stable_loss_steps,
                     "best_nll_bits": best_nll,
                     "best_step": best_step,
+                    **resume_info,
                     "step_s": time.perf_counter() - t0,
                     **metrics,
                 }
@@ -344,6 +361,7 @@ class OptimizationRunner:
                 checkpoint_status = {
                     "status": "running",
                     "reason": "running",
+                    **resume_info,
                     "best_nll_bits": best_nll,
                     "best_step": best_step,
                     "previous_objective": previous_objective,
@@ -418,6 +436,7 @@ class OptimizationRunner:
                 "stable_loss_steps": stable_loss_steps,
                 "best_nll_bits": best_nll,
                 "best_step": best_step,
+                **resume_info,
                 "step_s": 0.0,
                 **final_metrics,
             }
@@ -425,6 +444,7 @@ class OptimizationRunner:
 
             final_status = {
                 **status,
+                **resume_info,
                 "elapsed_s": time.perf_counter() - started,
                 "best_nll_bits": best_nll,
                 "best_step": best_step,
