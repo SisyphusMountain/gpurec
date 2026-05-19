@@ -1258,6 +1258,16 @@ parameters.  Saved configuration fields that define the run identity
 stale checkpoint from overwriting theta rows or convergence metadata for a
 different family set or optimizer mode.
 
+\subsection{Installed Wheel Smoke Isolation}
+
+The package CI job now runs its installed-wheel CLI smoke from a fresh
+\texttt{mktemp} directory after installing \texttt{dist/*.whl}.  The smoke also
+imports \texttt{gpurec} and rejects paths under \texttt{GITHUB\_WORKSPACE},
+while requiring the module to resolve from an installed
+\texttt{site-packages} or \texttt{dist-packages} location.  The release-metadata
+guard checks the temp-directory handoff and import-path assertions so the smoke
+continues to verify the built artifact instead of the checkout tree.
+
 \section{Verification Log}
 
 \begin{center}
@@ -2527,6 +2537,18 @@ CPU unit gate after resume checkpoint identity validation &
 \texttt{381 passed, 28 deselected} \\
 \texttt{python scripts/check\_release\_metadata.py} &
 Release metadata checker after resume checkpoint identity validation &
+\texttt{expected license blockers} \\
+\texttt{python -m py\_compile tests/unit/test\_release\_metadata.py} &
+Installed wheel smoke isolation guard syntax &
+\texttt{ok} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q tests/unit/test\_release\_metadata.py -k "..."} &
+Focused wheel-smoke CI metadata guard &
+\texttt{2 passed, 11 deselected} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
+CPU unit gate after installed wheel smoke isolation &
+\texttt{381 passed, 28 deselected} \\
+\texttt{python scripts/check\_release\_metadata.py} &
+Release metadata checker after installed wheel smoke isolation &
 \texttt{expected license blockers} \\
 \bottomrule
 \end{tabular}

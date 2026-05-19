@@ -124,5 +124,24 @@ jobs:
         run: |
           python -m pip uninstall -y gpurec
           python -m pip install --no-deps dist/*.whl
+          smoke_dir=$(mktemp -d)
+          cd "$smoke_dir"
           gpurec --help
           python -m gpurec.cli --help
+          python - <<'PY'
+          import os
+          from pathlib import Path
+          import gpurec
+
+          package_path = Path(gpurec.__file__).resolve()
+          workspace = Path(os.environ["GITHUB_WORKSPACE"]).resolve()
+          if package_path.is_relative_to(workspace):
+              raise SystemExit(f"imported gpurec from checkout: {package_path}")
+          if (
+              "site-packages" not in package_path.parts
+              and "dist-packages" not in package_path.parts
+          ):
+              raise SystemExit(
+                  f"gpurec import is not from installed packages: {package_path}"
+              )
+          PY

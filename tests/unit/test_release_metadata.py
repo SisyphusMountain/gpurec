@@ -105,10 +105,22 @@ def test_cpu_ci_builds_and_smokes_release_artifacts():
         "gpurec/core/cpp/clade_utils.hpp",
         "wheel missing required package data",
         "python -m pip install --no-deps dist/*.whl",
+        "smoke_dir=$(mktemp -d)",
+        'cd "$smoke_dir"',
         "gpurec --help",
         "python -m gpurec.cli --help",
+        "import gpurec",
+        'Path(os.environ["GITHUB_WORKSPACE"]).resolve()',
+        "package_path.is_relative_to(workspace)",
+        '"site-packages" not in package_path.parts',
+        '"dist-packages" not in package_path.parts',
+        "imported gpurec from checkout",
     ):
         assert required in workflow
+    assert workflow.index("python -m pip install --no-deps dist/*.whl") < workflow.index(
+        'cd "$smoke_dir"'
+    )
+    assert workflow.index('cd "$smoke_dir"') < workflow.index("gpurec --help")
 
 
 @pytest.mark.parametrize(
