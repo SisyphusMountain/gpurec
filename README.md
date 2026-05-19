@@ -1,9 +1,10 @@
-# gpurec lean fast path
+# gpurec
 
-This branch keeps the measured high-performance uniform-transfer path and
-removes the research/proposal code that was not part of that path.
+`gpurec` provides GPU-accelerated PyTorch reconciliation models and workflow
+tooling for AleRax-style family inputs, checkpointed optimization, and
+stochastic RecPhyloXML sampling.
 
-Retained runtime surface:
+## Runtime Surface
 
 - `GeneReconModel` for `mode="global"`, `mode="specieswise"`, and
   `mode="genewise"`.
@@ -17,13 +18,9 @@ Retained runtime surface:
 - The optimized uniform CUDA forward/backward kernels used by the 1000-tree
   benchmark.
 
-Removed from this branch:
-
-- Legacy full-matrix Pi fixed-point baselines.
-- Old optimizer facades (`optimize_theta_wave`, `optimize_theta_genewise`,
-  global L-BFGS wrappers).
-- Failed/prototype forward kernel variants and proposal benchmark scripts.
-- Historical docs, generated result tables, and vendored `rustree` sources.
+Performance-pruning history and retained benchmark context live in
+[`docs/lean-fast-path.md`](docs/lean-fast-path.md); the README focuses on the
+supported runtime surface.
 
 ## Installation
 
@@ -31,8 +28,8 @@ Removed from this branch:
 pip install -e ".[dev]"
 ```
 
-The lean CUDA kernels import Triton directly, so Triton is a core dependency
-rather than an optional extra.  The preprocessing extension is compiled at
+The CUDA kernels import Triton directly, so Triton is a core dependency rather
+than an optional extra.  The preprocessing extension is compiled at
 runtime through PyTorch's C++ extension loader; source checkouts therefore need
 a working C++ compiler, OpenMP support, and the normal PyTorch extension build
 tooling available in the Python environment.
@@ -81,7 +78,7 @@ opt = BatchedLBFGS([model.theta], lr=1.0)
 The production workflow accepts an AleRax `[FAMILIES]` file and a species tree.
 It defaults to genewise D/T/L parameters, writes resumable checkpoints, logs
 optimization diagnostics, and can sample RecPhyloXML reconciliation scenarios.
-The retained lean likelihood path currently requires CUDA.
+The optimized likelihood path currently requires CUDA.
 The `--config` option accepts a flat JSON `RunConfig`; Hydra-style YAML
 configs should be converted to JSON or passed as explicit CLI flags.
 
@@ -153,7 +150,7 @@ python scripts/optimize_hogenom_ccp_wandb.py \
 
 ## Performance Check
 
-The retained full-dataset harness is:
+The full-dataset benchmark harness is:
 
 ```bash
 python profiling/bench_uniform_forward_backward_pipeline.py \

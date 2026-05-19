@@ -422,6 +422,13 @@ single private runner for temporary JSON input creation, backtracking command
 execution, and output readback.  A fake-binary unit test covers both public
 sampling helpers without requiring Rust, CUDA, or a real reconciliation model.
 
+\subsection{README Runtime Positioning}
+
+The README now opens as stable package documentation instead of a
+branch-transition note.  The supported runtime surface remains up front, while
+performance-pruning history and retained benchmark context are linked through
+\texttt{docs/lean-fast-path.md}.
+
 \section{Verification Log}
 
 \begin{center}
@@ -597,6 +604,9 @@ Workflow and fake-binary backtracking regressions &
 \texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
 CPU unit gate after runner-helper cleanup &
 \texttt{51 passed, 27 deselected} \\
+\texttt{rg -n "\# gpurec lean fast path\textbar{}Removed from this branch\textbar{}This branch" README.md} &
+README branch-transition phrase guard &
+\texttt{no matches} \\
 \bottomrule
 \end{tabular}
 \end{center}
