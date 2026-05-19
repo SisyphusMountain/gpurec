@@ -977,6 +977,14 @@ the source of truth for per-clade split counts.  Supplied
 counts exactly, and out-of-range split parent ids now fail with an explicit
 \texttt{ValueError} before scheduling can build a non-topological wave layout.
 
+\subsection{Python Support Range Metadata}
+
+The package metadata now declares \texttt{requires-python = ">=3.10,<3.13"},
+matching the CI matrix and PyPI classifiers for Python 3.10 through 3.12.
+The release metadata guard asserts that these supported versions remain
+documented together, avoiding accidental advertisement of untested future
+Python versions.
+
 \section{Verification Log}
 
 \begin{center}
@@ -1841,6 +1849,24 @@ CPU unit gate after split-count consistency guard &
 \texttt{251 passed, 28 deselected} \\
 \texttt{python scripts/check\_release\_metadata.py} &
 Release metadata checker after split-count consistency guard &
+\texttt{expected license blockers} \\
+\texttt{python -m py\_compile tests/unit/test\_release\_metadata.py scripts/check\_release\_metadata.py} &
+Python support-range metadata guard syntax &
+\texttt{ok} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q tests/unit/test\_release\_metadata.py} &
+Focused release metadata guards after Python range cap &
+\texttt{7 passed} \\
+\texttt{python -m build} &
+Local source and wheel artifact build after Python range cap &
+\texttt{built sdist and wheel} \\
+\texttt{python -m twine check dist/*} &
+Artifact metadata check after Python range cap &
+\texttt{passed} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
+CPU unit gate after Python range cap &
+\texttt{251 passed, 28 deselected} \\
+\texttt{python scripts/check\_release\_metadata.py} &
+Release metadata checker after Python range cap &
 \texttt{expected license blockers} \\
 \bottomrule
 \end{tabular}

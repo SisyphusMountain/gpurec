@@ -37,7 +37,7 @@ name = "fixture"
 version = "0.0.0"
 description = "fixture"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.10,<3.13"
 license = { file = "LICENSE" }
 authors = [{ name = "Fixture Maintainer" }]
 classifiers = [
@@ -98,10 +98,12 @@ def test_cpu_ci_matrix_covers_declared_python_versions():
         encoding="utf-8"
     )
     pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    supported_versions = ("3.10", "3.11", "3.12")
 
     assert 'python-version: ["3.10", "3.11", "3.12"]' in workflow
     assert "python-version: ${{ matrix.python-version }}" in workflow
-    for version in ("3.10", "3.11", "3.12"):
+    assert 'requires-python = ">=3.10,<3.13"' in pyproject
+    for version in supported_versions:
         assert f"Programming Language :: Python :: {version}" in pyproject
 
 
