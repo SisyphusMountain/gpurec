@@ -866,6 +866,83 @@ def test_public_backtracking_rejects_invalid_seed_and_event_limits():
         sample_recphyloxmls(model, num_samples=1, seed=-1)  # type: ignore[arg-type]
 
 
+def test_export_backtracking_input_rejects_nonfinite_payload_tensors(
+    tmp_path: Path,
+    monkeypatch,
+):
+    species_tree = tmp_path / "sp.nwk"
+    species_tree.write_text("(s0,s1);", encoding="utf-8")
+    family = FamilyInput(
+        index=0,
+        name="fam0",
+        gene_tree_paths=["g0.nwk"],
+        leaf_species_map={},
+        clade_count=2,
+        split_count=0,
+        root_clade_id=0,
+        ccp_helpers={
+            "N_splits": 0,
+            "split_parents_sorted": torch.empty(0, dtype=torch.long),
+            "split_leftrights_sorted": torch.empty(0, dtype=torch.long),
+            "log_split_probs_sorted": torch.empty(0, dtype=torch.float64),
+        },
+        leaf_row_index=torch.tensor([0, 1], dtype=torch.long),
+        leaf_col_index=torch.tensor([0, 1], dtype=torch.long),
+    )
+    model = SimpleNamespace(
+        n_species=2,
+        species_names=["s0", "s1"],
+        species_tree_path=species_tree,
+    )
+    model.family_input = lambda family_index: family
+    model.activate_family = lambda family_index: SimpleNamespace(
+        clade_offset=0,
+        local_family_index=0,
+    )
+    state = ReconciliationState(
+        e=torch.zeros(2, dtype=torch.float64),
+        pi=torch.tensor([[math.nan, 0.0], [0.0, 0.0]], dtype=torch.float64),
+        log_p_s=torch.zeros(2, dtype=torch.float64),
+        log_p_d=torch.zeros(2, dtype=torch.float64),
+        log_p_l=torch.zeros(2, dtype=torch.float64),
+        max_transfer=torch.zeros(2, dtype=torch.float64),
+        origination_probs=None,
+    )
+
+    monkeypatch.setattr(backtracking, "_evaluate_backtracking_state", lambda _: state)
+    monkeypatch.setattr(
+        backtracking,
+        "_family_details",
+        lambda *_: {"ccp": {"clade_leaf_labels": ["a", "b"]}},
+    )
+
+    with pytest.raises(ValueError, match=r"backtracking payload\.pi\.data\[0\]"):
+        export_backtracking_input(model, family_index=0)  # type: ignore[arg-type]
+
+
+def test_backtracking_payload_writer_rejects_nonfinite_json_before_subprocess(
+    tmp_path: Path,
+    monkeypatch,
+):
+    calls: list[object] = []
+
+    def fake_run(*args: object, **kwargs: object) -> None:
+        calls.append((args, kwargs))
+
+    monkeypatch.setattr(backtracking.subprocess, "run", fake_run)
+
+    with pytest.raises(ValueError, match=r"backtracking payload\.value"):
+        backtracking._run_backtracking_payload(
+            {"value": math.inf},
+            cargo_manifest=tmp_path / "missing" / "Cargo.toml",
+            backtrack_binary=tmp_path / "fake-backtracker",
+            build_args=lambda *_: [],
+            read_output=lambda _: None,
+        )
+
+    assert calls == []
+
+
 def test_backtracking_sampler_helpers_share_subprocess_io(tmp_path: Path, monkeypatch):
     fake_backtracker = tmp_path / "fake_backtracker.py"
     fake_backtracker.write_text(

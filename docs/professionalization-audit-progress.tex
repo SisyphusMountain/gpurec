@@ -658,6 +658,15 @@ AleRax factory helpers also preflight supplied solver kwargs before device
 validation or file parsing.  The uniform chunked API applies the same early
 checks for its public solver controls, including the AleRax family constructor.
 
+\subsection{Backtracking Payload Finiteness}
+
+Backtracking JSON payloads now reject non-finite numeric values before the Rust
+sampler is launched.  Exported tensors and nested payload lists are checked
+recursively, and the subprocess bridge writes JSON with non-standard
+\texttt{NaN}/\texttt{Infinity} emission disabled.  The new CPU regressions cover
+both a fake reconciliation state with a non-finite \texttt{pi} entry and a
+hand-built subprocess payload that must fail before process launch.
+
 \section{Verification Log}
 
 \begin{center}
@@ -1100,6 +1109,18 @@ Workflow suite after direct API numeric validation &
 \texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
 CPU unit gate after direct API numeric validation &
 \texttt{139 passed, 27 deselected} \\
+\texttt{python -m py\_compile gpurec/backtracking.py tests/unit/test\_workflow.py} &
+Backtracking payload finiteness syntax &
+\texttt{ok} \\
+\texttt{pytest -q tests/unit/test\_workflow.py::test\_export\_backtracking\_... ...} &
+Focused backtracking payload finiteness regressions &
+\texttt{3 passed} \\
+\texttt{pytest -q tests/unit/test\_workflow.py} &
+Workflow suite after backtracking payload finiteness &
+\texttt{104 passed} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
+CPU unit gate after backtracking payload finiteness &
+\texttt{141 passed, 27 deselected} \\
 \bottomrule
 \end{tabular}
 \end{center}

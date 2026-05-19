@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import subprocess
 import tempfile
@@ -39,6 +40,29 @@ def _tensor_list(value: Any, *, dtype: torch.dtype | None = None) -> list:
     if dtype is not None:
         tensor = tensor.to(dtype=dtype)
     return tensor.detach().cpu().tolist()
+
+
+def _validate_finite_json_numbers(value: Any, *, path: str) -> None:
+    if value is None or isinstance(value, (str, bool, int)):
+        return
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            raise ValueError(f"{path} must be finite")
+        return
+    if isinstance(value, list):
+        for idx, item in enumerate(value):
+            _validate_finite_json_numbers(item, path=f"{path}[{idx}]")
+        return
+    if isinstance(value, tuple):
+        for idx, item in enumerate(value):
+            _validate_finite_json_numbers(item, path=f"{path}[{idx}]")
+        return
+    if isinstance(value, dict):
+        for key, item in value.items():
+            child_path = (
+                f"{path}.{key}" if isinstance(key, str) else f"{path}[{key!r}]"
+            )
+            _validate_finite_json_numbers(item, path=child_path)
 
 
 def _activate_family_batch(model: GeneReconModel, family_index: int) -> tuple[int, int]:
@@ -123,7 +147,11 @@ def _run_backtracking_payload(
     with tempfile.TemporaryDirectory(prefix="gpurec-backtrack-") as tmp:
         tmp_path = Path(tmp)
         input_path = tmp_path / "input.json"
-        input_path.write_text(json.dumps(payload), encoding="utf-8")
+        _validate_finite_json_numbers(payload, path="backtracking payload")
+        input_path.write_text(
+            json.dumps(payload, allow_nan=False),
+            encoding="utf-8",
+        )
         command = _backtrack_command(
             cargo_manifest=cargo_manifest,
             backtrack_binary=backtrack_binary,
@@ -231,7 +259,7 @@ def export_backtracking_input(
         S=S,
     )
 
-    return {
+    payload = {
         "species_newick": species_newick,
         "species_names_postorder": species_names,
         "root_clade": family.root_clade_id,
@@ -247,6 +275,8 @@ def export_backtracking_input(
         "seed": seed,
         "max_events": max_events,
     }
+    _validate_finite_json_numbers(payload, path="backtracking payload")
+    return payload
 
 
 def sample_recphyloxml(
