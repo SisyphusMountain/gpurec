@@ -4,6 +4,7 @@ import json
 import math
 import time
 from dataclasses import dataclass
+from numbers import Integral, Real
 from pathlib import Path
 from typing import Any
 
@@ -36,8 +37,67 @@ class OptimizationResult:
     steps_completed: int
 
 
+_MISSING = object()
+
+
 def _is_finite_tensor(tensor: torch.Tensor | None) -> bool:
     return tensor is not None and bool(torch.isfinite(tensor).all().item())
+
+
+def _invalid_resume_field(path: Path, key: str) -> RuntimeError:
+    return RuntimeError(f"checkpoint {path} has invalid {key}")
+
+
+def _resume_int(
+    path: Path,
+    key: str,
+    value: Any,
+    *,
+    default: int | object = _MISSING,
+    allow_none: bool = False,
+    nonnegative: bool = False,
+) -> int | None:
+    if value is _MISSING:
+        if default is not _MISSING:
+            return int(default)
+        raise _invalid_resume_field(path, key)
+    if value is None:
+        if allow_none:
+            return None
+        raise _invalid_resume_field(path, key)
+    if isinstance(value, bool):
+        raise _invalid_resume_field(path, key)
+    if isinstance(value, Integral):
+        number = int(value)
+    elif isinstance(value, Real):
+        raw = float(value)
+        if not math.isfinite(raw) or not raw.is_integer():
+            raise _invalid_resume_field(path, key)
+        number = int(raw)
+    else:
+        raise _invalid_resume_field(path, key)
+    if nonnegative and number < 0:
+        raise _invalid_resume_field(path, key)
+    return number
+
+
+def _resume_float(
+    path: Path,
+    key: str,
+    value: Any,
+    *,
+    allow_none: bool = False,
+) -> float | None:
+    if value is None:
+        if allow_none:
+            return None
+        raise _invalid_resume_field(path, key)
+    if isinstance(value, bool) or not isinstance(value, Real):
+        raise _invalid_resume_field(path, key)
+    number = float(value)
+    if not math.isfinite(number):
+        raise _invalid_resume_field(path, key)
+    return number
 
 
 def _family_names(model: GeneReconModel) -> list[str]:
@@ -210,12 +270,50 @@ class OptimizationRunner:
                     map_location=config.device,
                 )
                 restore_model_theta(model, resume_payload)
-                start_step = int(resume_payload.get("next_step", 0))
-                ckpt_status = resume_payload.get("status") or {}
-                best_nll = ckpt_status.get("best_nll_bits")
-                best_step = ckpt_status.get("best_step")
-                previous_objective = ckpt_status.get("previous_objective")
-                stable_loss_steps = int(ckpt_status.get("stable_loss_steps", 0))
+                start_step = int(
+                    _resume_int(
+                        config.resume_from,
+                        "next_step",
+                        resume_payload.get("next_step", _MISSING),
+                        default=0,
+                        nonnegative=True,
+                    )
+                )
+                ckpt_status = resume_payload.get("status")
+                if ckpt_status is None:
+                    ckpt_status = {}
+                elif not isinstance(ckpt_status, dict):
+                    raise RuntimeError(
+                        f"checkpoint {config.resume_from} has invalid status metadata"
+                    )
+                best_nll = _resume_float(
+                    config.resume_from,
+                    "status.best_nll_bits",
+                    ckpt_status.get("best_nll_bits"),
+                    allow_none=True,
+                )
+                best_step = _resume_int(
+                    config.resume_from,
+                    "status.best_step",
+                    ckpt_status.get("best_step"),
+                    allow_none=True,
+                    nonnegative=True,
+                )
+                previous_objective = _resume_float(
+                    config.resume_from,
+                    "status.previous_objective",
+                    ckpt_status.get("previous_objective"),
+                    allow_none=True,
+                )
+                stable_loss_steps = int(
+                    _resume_int(
+                        config.resume_from,
+                        "status.stable_loss_steps",
+                        ckpt_status.get("stable_loss_steps", _MISSING),
+                        default=0,
+                        nonnegative=True,
+                    )
+                )
 
             current_phase = self._phase_for_step(start_step)
             optimizer = self._make_optimizer(model, current_phase)

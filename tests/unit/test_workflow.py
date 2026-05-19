@@ -2227,6 +2227,78 @@ def test_optimization_runner_resume_loads_checkpoint_once(tmp_path: Path, monkey
     ]["resume_optimizer_state"] == "missing"
 
 
+@pytest.mark.parametrize(
+    ("payload_update", "status_update", "message"),
+    [
+        ({"next_step": True}, {}, r"invalid next_step"),
+        (
+            {},
+            {"previous_objective": "not-a-number"},
+            r"invalid status\.previous_objective",
+        ),
+        ({}, {"best_step": 1.5}, r"invalid status\.best_step"),
+        ({}, {"stable_loss_steps": -1}, r"invalid status\.stable_loss_steps"),
+    ],
+)
+def test_optimization_runner_resume_rejects_invalid_metadata(
+    tmp_path: Path,
+    monkeypatch,
+    payload_update: dict[str, object],
+    status_update: dict[str, object],
+    message: str,
+):
+    class FakeResumeModel:
+        def __init__(self):
+            self.theta = torch.nn.Parameter(torch.zeros(3, dtype=torch.float32))
+            self.closed = False
+
+        def clear(self):
+            return None
+
+        def close(self):
+            self.closed = True
+
+    class FakeResumeRunner(OptimizationRunner):
+        def build_model(self):
+            self.fake_model = FakeResumeModel()
+            return self.fake_model
+
+    def fake_load_checkpoint(path, *, map_location):
+        payload = {
+            "theta": torch.tensor([0.25, -0.125, 0.0625], dtype=torch.float32),
+            "optimizer_state": None,
+            "next_step": 1,
+            "status": {
+                "previous_objective": 1.5,
+                "stable_loss_steps": 0,
+            },
+        }
+        payload.update(payload_update)
+        payload["status"].update(status_update)
+        return payload
+
+    workflow_optimize_module = importlib.import_module("gpurec.workflow.optimize")
+    monkeypatch.setattr(workflow_optimize_module, "load_checkpoint", fake_load_checkpoint)
+    config = RunConfig(
+        species_tree=tmp_path / "sp.nwk",
+        families_file=tmp_path / "families.txt",
+        out_dir=tmp_path / "out",
+        mode="global",
+        device="cpu",
+        optimizer="adam",
+        steps=1,
+        resume_from=tmp_path / "resume.pt",
+        checkpoint_every=0,
+        log_every=10,
+    )
+    runner = FakeResumeRunner(config)
+
+    with pytest.raises(RuntimeError, match=message):
+        runner.run()
+
+    assert runner.fake_model.closed
+
+
 def test_activate_family_batch_returns_batch_local_offset():
     model = SimpleNamespace()
     model._batched_resident = True

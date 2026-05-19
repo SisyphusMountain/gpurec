@@ -1028,6 +1028,16 @@ before CUDA setup or filesystem IO, so invalid public constructor arguments
 produce immediate \texttt{ValueError}s instead of silently changing batch
 packing behavior.
 
+\subsection{Resume Checkpoint Metadata Validation}
+
+Workflow resume now validates checkpoint progress metadata before feeding it
+back into optimization control flow.  The runner rejects malformed
+\texttt{next\_step}, \texttt{best\_step}, \texttt{previous\_objective},
+\texttt{best\_nll\_bits}, and \texttt{stable\_loss\_steps} values with
+checkpoint-specific \texttt{RuntimeError}s, instead of letting strings,
+booleans, fractional counters, or negative patience counters fail later inside
+optimizer comparisons.
+
 \section{Verification Log}
 
 \begin{center}
@@ -1982,6 +1992,18 @@ CPU unit gate after batch-control integer normalization &
 \texttt{282 passed, 28 deselected} \\
 \texttt{python scripts/check\_release\_metadata.py} &
 Release metadata checker after batch-control integer normalization &
+\texttt{expected license blockers} \\
+\texttt{python -m py\_compile gpurec/workflow/optimize.py tests/unit/test\_workflow.py} &
+Resume checkpoint metadata validation syntax &
+\texttt{ok} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q tests/unit/test\_workflow.py -k "..."} &
+Focused resume checkpoint metadata validation &
+\texttt{5 passed, 191 deselected} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
+CPU unit gate after resume checkpoint metadata validation &
+\texttt{286 passed, 28 deselected} \\
+\texttt{python scripts/check\_release\_metadata.py} &
+Release metadata checker after resume checkpoint metadata validation &
 \texttt{expected license blockers} \\
 \bottomrule
 \end{tabular}
