@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib
 import json
 import math
+import os
 import sys
 from pathlib import Path
 from threading import Lock
@@ -777,6 +778,85 @@ def test_uniform_chunked_factories_reject_invalid_solver_controls_before_device_
                 device="cpu",
                 **kwargs,
             )
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "message"),
+    [
+        ({"refresh_preprocess_cache": "false"}, "refresh_preprocess_cache"),
+        ({"use_pruning": "false"}, "use_pruning"),
+        ({"warm_start_E": "false"}, "warm_start_E"),
+        ({"profile": "false"}, "profile"),
+        ({"set_optimized_env": "false"}, "set_optimized_env"),
+    ],
+)
+def test_uniform_chunked_init_rejects_nonbool_controls_before_side_effects(
+    tmp_path: Path,
+    monkeypatch,
+    kwargs: dict[str, object],
+    message: str,
+):
+    monkeypatch.delenv("GPUREC_SELF_LOOP_2D_BLOCK_W", raising=False)
+
+    with pytest.raises(ValueError, match=message) as exc_info:
+        UniformChunkedReconModel(
+            species_tree=tmp_path / "missing_species.nwk",
+            gene_trees=[tmp_path / "missing_gene.nwk"],
+            device="cpu",
+            **kwargs,
+        )
+
+    assert "CUDA" not in str(exc_info.value)
+    assert "GPUREC_SELF_LOOP_2D_BLOCK_W" not in os.environ
+
+
+@pytest.mark.parametrize(
+    ("factory", "args"),
+    [
+        (
+            "from_trees",
+            lambda tmp_path: (
+                tmp_path / "missing_species.nwk",
+                [tmp_path / "missing_gene.nwk"],
+            ),
+        ),
+        (
+            "from_folder",
+            lambda tmp_path: (tmp_path / "missing_folder",),
+        ),
+        (
+            "from_alerax_families",
+            lambda tmp_path: (
+                tmp_path / "missing_species.nwk",
+                tmp_path / "missing_families.txt",
+            ),
+        ),
+    ],
+)
+@pytest.mark.parametrize(
+    ("kwargs", "message"),
+    [
+        ({"refresh_preprocess_cache": "false"}, "refresh_preprocess_cache"),
+        ({"use_pruning": "false"}, "use_pruning"),
+        ({"warm_start_E": "false"}, "warm_start_E"),
+        ({"profile": "false"}, "profile"),
+        ({"set_optimized_env": "false"}, "set_optimized_env"),
+    ],
+)
+def test_uniform_chunked_factories_reject_nonbool_controls_before_device_or_io(
+    tmp_path: Path,
+    factory: str,
+    args,
+    kwargs: dict[str, object],
+    message: str,
+):
+    make_model = getattr(UniformChunkedReconModel, factory)
+
+    with pytest.raises(ValueError, match=message) as exc_info:
+        make_model(*args(tmp_path), device="cpu", **kwargs)
+
+    assert "CUDA" not in str(exc_info.value)
+    assert "missing" not in str(exc_info.value)
 
 
 @pytest.mark.parametrize(

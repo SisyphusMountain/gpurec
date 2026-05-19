@@ -1159,6 +1159,18 @@ A release-metadata unit guard parses \texttt{pyproject.toml} and asserts that
 the core dependency list includes \texttt{ninja}, preventing fresh installs from
 silently losing the build backend required before compiler/OpenMP checks begin.
 
+\subsection{Uniform Chunked Boolean Validation}
+
+\texttt{UniformChunkedReconModel} now validates
+\texttt{refresh\_preprocess\_cache}, \texttt{use\_pruning},
+\texttt{warm\_start\_E}, \texttt{profile}, and
+\texttt{set\_optimized\_env} before CUDA device checks, file probing, or
+preprocessing.  The direct constructor and the \texttt{from\_trees},
+\texttt{from\_folder}, and \texttt{from\_alerax\_families} factories reject
+truthy strings such as \texttt{"false"} with parameter-specific
+\texttt{ValueError}s.  Invalid \texttt{set\_optimized\_env} values also fail
+before optimized environment defaults are installed.
+
 \section{Verification Log}
 
 \begin{center}
@@ -2302,6 +2314,21 @@ CPU unit gate after Ninja runtime dependency &
 \texttt{333 passed, 28 deselected} \\
 \texttt{python scripts/check\_release\_metadata.py} &
 Release metadata checker after Ninja runtime dependency &
+\texttt{expected license blockers} \\
+\texttt{python -m py\_compile gpurec/api/uniform\_chunked.py tests/unit/test\_workflow.py} &
+Uniform chunked boolean validation syntax &
+\texttt{ok} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q tests/unit/test\_workflow.py -k "..."} &
+Focused uniform chunked boolean validation &
+\texttt{20 passed, 225 deselected} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q tests/unit/test\_workflow.py -k "..."} &
+Uniform chunked constructor validation ordering &
+\texttt{29 passed, 216 deselected} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
+CPU unit gate after uniform chunked boolean validation &
+\texttt{353 passed, 28 deselected} \\
+\texttt{python scripts/check\_release\_metadata.py} &
+Release metadata checker after uniform chunked boolean validation &
 \texttt{expected license blockers} \\
 \bottomrule
 \end{tabular}

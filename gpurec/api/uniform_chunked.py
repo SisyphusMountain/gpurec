@@ -43,6 +43,7 @@ from gpurec.core.model import (
 from gpurec.optimization.implicit_grad import _e_adjoint_and_theta_vjp
 
 from ._validation import (
+    bool_value,
     nonnegative_float,
     positive_int,
     require_cuda_device,
@@ -158,6 +159,15 @@ def _normalize_uniform_solver_kwargs(kwargs: dict[str, Any]) -> dict[str, Any]:
             "pruning_threshold",
             normalized["pruning_threshold"],
         )
+    for name in (
+        "refresh_preprocess_cache",
+        "use_pruning",
+        "warm_start_E",
+        "profile",
+        "set_optimized_env",
+    ):
+        if name in normalized:
+            normalized[name] = bool_value(name, normalized[name])
     return normalized
 
 
@@ -670,8 +680,6 @@ class UniformChunkedReconModel(torch.nn.Module):
     ) -> None:
         super().__init__()
         require_default_objective("UniformChunkedReconModel")
-        if set_optimized_env:
-            _set_default_flags()
         if dtype not in (torch.float32, torch.float64, torch.bfloat16):
             raise ValueError(f"dtype must be fp32, fp64, or bf16, got {dtype}")
         theta_init = theta_init_base_from_rates(
@@ -690,10 +698,20 @@ class UniformChunkedReconModel(torch.nn.Module):
         neumann_terms = positive_int("neumann_terms", neumann_terms)
         tol_E = nonnegative_float("tol_E", tol_E)
         pruning_threshold = nonnegative_float("pruning_threshold", pruning_threshold)
+        refresh_preprocess_cache = bool_value(
+            "refresh_preprocess_cache",
+            refresh_preprocess_cache,
+        )
+        use_pruning = bool_value("use_pruning", use_pruning)
+        warm_start_E = bool_value("warm_start_E", warm_start_E)
+        profile = bool_value("profile", profile)
+        set_optimized_env = bool_value("set_optimized_env", set_optimized_env)
         chunk_value = _as_auto_int("family_chunk_size", family_chunk_size)
         wave_value = _as_auto_int("max_wave_size", max_wave_size)
         normalized_packing = normalize_batch_packing(batch_packing)
 
+        if set_optimized_env:
+            _set_default_flags()
         device = require_cuda_device(device, owner="UniformChunkedReconModel")
         theta_init = theta_init.to(device=device)
 
@@ -850,6 +868,7 @@ class UniformChunkedReconModel(torch.nn.Module):
                 f"or mode='uniform', got {mode!r}"
             )
         require_default_objective("UniformChunkedReconModel")
+        kwargs = _normalize_uniform_solver_kwargs(kwargs)
         return cls(species_tree=species_tree, gene_trees=gene_trees, **kwargs)
 
     @classmethod
@@ -866,6 +885,7 @@ class UniformChunkedReconModel(torch.nn.Module):
         """Build a model from a folder containing ``sp.nwk`` and gene trees."""
         require_default_objective("UniformChunkedReconModel")
         start, max_families = normalize_family_selection(start, max_families)
+        kwargs = _normalize_uniform_solver_kwargs(kwargs)
         root = Path(folder)
         species_tree = root / species_tree_name
         if not species_tree.exists():
