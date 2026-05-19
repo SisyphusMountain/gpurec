@@ -27,8 +27,8 @@ from gpurec.core.extract_parameters import extract_parameters_uniform
 from gpurec.core.forward import Pi_wave_forward
 from gpurec.core.likelihood import (
     E_fixed_point,
-    compute_log_likelihood,
-    compute_log_likelihood_root_rows,
+    compute_nll,
+    compute_nll_root_rows,
     prepare_origination_probs,
 )
 from gpurec.core.memory_policy import UniformPipelinePolicy, choose_uniform_pipeline_policy
@@ -457,7 +457,7 @@ def _evaluate_chunked_uniform(
                 return_root_rows=not need_grad,
             )
             if need_grad:
-                loss_vec = compute_log_likelihood(
+                loss_vec = compute_nll(
                     pi_out["Pi_wave_ordered"],
                     e_out["E"],
                     built.wave_layout["root_clade_ids"],
@@ -465,7 +465,7 @@ def _evaluate_chunked_uniform(
                     origination_probs_prepared=True,
                 )
             else:
-                loss_vec = compute_log_likelihood_root_rows(
+                loss_vec = compute_nll_root_rows(
                     pi_out["Pi_root_rows"],
                     e_out["E"],
                     chunk_origination_probs,

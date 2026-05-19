@@ -160,6 +160,14 @@ alias matching \texttt{GeneReconModel.from\_trees(...)}.  It explicitly accepts
 only \texttt{global}/\texttt{uniform} mode because the chunked implementation is
 global-only.
 
+\subsection{Likelihood Naming}
+
+\texttt{gpurec.core.likelihood} now exposes \texttt{compute\_nll} and
+\texttt{compute\_nll\_root\_rows} as the contract-accurate names for the
+negative log-likelihood helpers.  The historical
+\texttt{compute\_log\_likelihood} names remain as compatibility aliases.
+High-level API call sites and tests were moved to the new names.
+
 \section{Verification Log}
 
 \begin{center}
@@ -172,10 +180,10 @@ Workflow and origination likelihood units &
 \texttt{15 passed} \\
 \texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q ...CPU fast gate...} &
 CPU-only audit gate &
-\texttt{32 passed} \\
+\texttt{33 passed after NLL alias cleanup} \\
 \texttt{pytest --collect-only -q} &
 Collection after recursion exclusions &
-\texttt{58 tests collected in 1.08s} \\
+\texttt{60 tests collected in 0.77s} \\
 \texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m 'not gpu' ...GPU modules...} &
 GPU marker check &
 \texttt{22 deselected; exit 5 treated as expected} \\

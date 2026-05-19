@@ -1,7 +1,7 @@
-"""Likelihood computation: E solver and log-likelihood.
+"""Likelihood computation: E solver and negative log-likelihood.
 
 The heavy Pi forward/backward code lives in forward.py and backward.py;
-this module owns E_step, E_fixed_point, and compute_log_likelihood.
+this module owns E_step, E_fixed_point, and compute_nll.
 """
 import torch
 import math
@@ -223,7 +223,7 @@ def E_fixed_point(species_helpers,
 
 
 # =========================================================================
-# Log-likelihood
+# Negative log-likelihood
 # =========================================================================
 
 def prepare_origination_probs(
@@ -303,7 +303,7 @@ def compute_origination_denominator(
     return torch.log2((probs * (1 - torch.exp2(E))).sum(dim=-1))
 
 
-def compute_log_likelihood(
+def compute_nll(
     Pi,
     E,
     root_clade_idx,
@@ -311,10 +311,10 @@ def compute_log_likelihood(
     *,
     origination_probs_prepared: bool = False,
 ):
-    """Computes log-likelihood in a batched way over the number
-    of gene families.
-    Output has shape len(root_clade_idx).
-    Result is in log2 units (bits).
+    """Compute per-family negative log-likelihood in bits.
+
+    Output has shape ``len(root_clade_idx)``.  The sign convention is NLL, so
+    lower values are better and summing the result gives the training loss.
 
     By default the root species origination distribution is uniform.  Passing
     ``origination_probs`` as ``[S]`` or ``[G, S]`` uses those probabilities for
@@ -346,7 +346,29 @@ def compute_log_likelihood(
     return -(numerator - denominator)
 
 
-def compute_log_likelihood_root_rows(
+def compute_log_likelihood(
+    Pi,
+    E,
+    root_clade_idx,
+    origination_probs=None,
+    *,
+    origination_probs_prepared: bool = False,
+):
+    """Compatibility alias for :func:`compute_nll`.
+
+    The historical name is misleading: this function returns negative
+    log-likelihood, not log-likelihood.
+    """
+    return compute_nll(
+        Pi,
+        E,
+        root_clade_idx,
+        origination_probs=origination_probs,
+        origination_probs_prepared=origination_probs_prepared,
+    )
+
+
+def compute_nll_root_rows(
     Pi_root_rows,
     E,
     origination_probs=None,
@@ -356,7 +378,7 @@ def compute_log_likelihood_root_rows(
     """Compute per-family NLL from already-gathered root rows.
 
     ``Pi_root_rows`` is ``[G, S]`` in family order. This is equivalent to
-    ``compute_log_likelihood(Pi, E, root_ids)`` when ``Pi_root_rows`` has been
+    ``compute_nll(Pi, E, root_ids)`` when ``Pi_root_rows`` has been
     gathered as ``Pi[root_ids]``, but avoids keeping the full Pi matrix alive in
     root-likelihood-only callers.
     """
@@ -379,3 +401,23 @@ def compute_log_likelihood_root_rows(
             origination_probs_prepared=True,
         )
     return -(numerator - denominator)
+
+
+def compute_log_likelihood_root_rows(
+    Pi_root_rows,
+    E,
+    origination_probs=None,
+    *,
+    origination_probs_prepared: bool = False,
+):
+    """Compatibility alias for :func:`compute_nll_root_rows`.
+
+    The historical name is misleading: this function returns negative
+    log-likelihood, not log-likelihood.
+    """
+    return compute_nll_root_rows(
+        Pi_root_rows,
+        E,
+        origination_probs=origination_probs,
+        origination_probs_prepared=origination_probs_prepared,
+    )

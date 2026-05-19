@@ -36,8 +36,8 @@ from gpurec.core.model import GeneDataset, parse_alerax_family_file
 from gpurec.core.forward import Pi_wave_forward
 from gpurec.core.likelihood import (
     E_fixed_point,
-    compute_log_likelihood,
-    compute_log_likelihood_root_rows,
+    compute_nll,
+    compute_nll_root_rows,
     prepare_origination_probs,
 )
 from gpurec.optimization.implicit_grad import implicit_grad_loglik_vjp_wave
@@ -733,7 +733,7 @@ def _evaluate_static_state(
         "Pi_wave_count": int(len(pi_out.get("Pi_wave_converged", []))),
     }
     if need_grad:
-        loss_vec = compute_log_likelihood(
+        loss_vec = compute_nll(
             pi_out["Pi_wave_ordered"],
             E_out["E"],
             static.wave_layout["root_clade_ids"],
@@ -780,7 +780,7 @@ def _evaluate_static_state(
         static.warm_E = None
         return (loss_vec.detach() if per_family else loss_vec.sum().detach()), grad_theta.detach()
 
-    loss_vec = compute_log_likelihood_root_rows(
+    loss_vec = compute_nll_root_rows(
         pi_out["Pi_root_rows"],
         E_out["E"],
         static.origination_probs,

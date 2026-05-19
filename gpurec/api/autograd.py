@@ -7,9 +7,8 @@ backward pass delegates to the existing
 :func:`gpurec.optimization.implicit_grad.implicit_grad_loglik_vjp_wave`.
 No new gradient math is written here.
 
-Sign convention: ``compute_log_likelihood`` actually returns NLL despite its
-name (see ``gpurec/core/likelihood.py:180``). The bridge keeps the NLL
-convention and returns NLL from ``forward()``, so users write
+Sign convention: the core likelihood helper is ``compute_nll``.  The bridge
+keeps the NLL convention and returns NLL from ``forward()``, so users write
 ``loss = model(); loss.backward()`` directly.
 """
 from __future__ import annotations
@@ -20,7 +19,7 @@ from typing import Any, Optional
 
 import torch
 
-from gpurec.core.likelihood import E_fixed_point, compute_log_likelihood
+from gpurec.core.likelihood import E_fixed_point, compute_nll
 from gpurec.core.forward import Pi_wave_forward
 from gpurec.core._helpers import _nvtx_range
 from gpurec.core.extract_parameters import extract_parameters_uniform
@@ -216,10 +215,9 @@ class _GeneReconFunction(torch.autograd.Function):
                     "Pi_wave_count": int(len(Pi_out.get("Pi_wave_converged", []))),
                 }
 
-            # 4. NLL: compute_log_likelihood returns NLL despite the name (see
-            #    gpurec/core/likelihood.py:180). nll_vec is per-family.
+            # 4. NLL: nll_vec is per-family.
             with _nvtx_range("forward root likelihood"):
-                nll_vec = compute_log_likelihood(
+                nll_vec = compute_nll(
                     Pi_out["Pi_wave_ordered"],
                     E,
                     static.wave_layout["root_clade_ids"],

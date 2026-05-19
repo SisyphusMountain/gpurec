@@ -3,6 +3,8 @@ import torch
 from gpurec.core.likelihood import (
     compute_log_likelihood,
     compute_log_likelihood_root_rows,
+    compute_nll,
+    compute_nll_root_rows,
 )
 
 
@@ -29,8 +31,8 @@ def test_weighted_origination_likelihood_matches_manual_formula():
     weights = torch.tensor([0.15, 0.60, 0.25], dtype=dtype)
 
     expected = _manual_weighted_nll(Pi[roots], E, weights)
-    actual = compute_log_likelihood(Pi, E, roots, origination_probs=weights)
-    root_actual = compute_log_likelihood_root_rows(Pi[roots], E, origination_probs=weights)
+    actual = compute_nll(Pi, E, roots, origination_probs=weights)
+    root_actual = compute_nll_root_rows(Pi[roots], E, origination_probs=weights)
 
     torch.testing.assert_close(actual, expected, rtol=1e-12, atol=1e-12)
     torch.testing.assert_close(root_actual, expected, rtol=1e-12, atol=1e-12)
@@ -61,7 +63,7 @@ def test_family_specific_origination_likelihood_matches_manual_formula():
     )
 
     expected = _manual_weighted_nll(root_rows, E, weights)
-    actual = compute_log_likelihood_root_rows(root_rows, E, origination_probs=weights)
+    actual = compute_nll_root_rows(root_rows, E, origination_probs=weights)
 
     torch.testing.assert_close(actual, expected, rtol=1e-12, atol=1e-12)
 
@@ -80,9 +82,9 @@ def test_uniform_origination_probs_preserve_default_likelihood():
     E = torch.tensor([-3.0, -2.0, -4.0], dtype=dtype)
     uniform = torch.ones(3, dtype=dtype)
 
-    default = compute_log_likelihood(Pi, E, roots)
-    weighted = compute_log_likelihood(Pi, E, roots, origination_probs=uniform)
-    root_weighted = compute_log_likelihood_root_rows(
+    default = compute_nll(Pi, E, roots)
+    weighted = compute_nll(Pi, E, roots, origination_probs=uniform)
+    root_weighted = compute_nll_root_rows(
         Pi[roots],
         E,
         origination_probs=uniform,
@@ -90,3 +92,23 @@ def test_uniform_origination_probs_preserve_default_likelihood():
 
     torch.testing.assert_close(weighted, default, rtol=1e-12, atol=1e-12)
     torch.testing.assert_close(root_weighted, default, rtol=1e-12, atol=1e-12)
+
+
+def test_legacy_log_likelihood_names_alias_nll_helpers():
+    dtype = torch.float64
+    Pi = torch.tensor([[-3.0, -2.0], [-4.0, -1.0]], dtype=dtype)
+    roots = torch.tensor([1], dtype=torch.long)
+    E = torch.tensor([-4.0, -3.0], dtype=dtype)
+
+    torch.testing.assert_close(
+        compute_log_likelihood(Pi, E, roots),
+        compute_nll(Pi, E, roots),
+        rtol=0.0,
+        atol=0.0,
+    )
+    torch.testing.assert_close(
+        compute_log_likelihood_root_rows(Pi[roots], E),
+        compute_nll_root_rows(Pi[roots], E),
+        rtol=0.0,
+        atol=0.0,
+    )
