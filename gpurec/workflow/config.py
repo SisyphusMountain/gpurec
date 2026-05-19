@@ -7,7 +7,10 @@ from typing import Any
 
 import torch
 
-from gpurec.core.batch_planning import normalize_batch_packing as _normalize_batch_packing
+from gpurec.core.batch_planning import (
+    normalize_batch_packing as _normalize_batch_packing,
+    normalize_family_chunk_size as _normalize_family_chunk_size,
+)
 
 
 def _default_device() -> str:
@@ -21,25 +24,6 @@ def dtype_from_name(name: str) -> torch.dtype:
     if text in {"float64", "fp64", "double"}:
         return torch.float64
     raise ValueError(f"unsupported dtype {name!r}; expected float32 or float64")
-
-
-def _normalize_family_chunk_size(value: int | str | None) -> int:
-    if value is None:
-        return 0
-    if isinstance(value, str):
-        text = value.strip().lower()
-        if text in {"", "0", "all", "none", "null"}:
-            return 0
-        if text == "auto":
-            raise ValueError(
-                "family_chunk_size='auto' is not supported by gpurec.workflow; "
-                "use 0 for one resident batch or a positive integer"
-            )
-        value = int(text)
-    size = int(value)
-    if size < 0:
-        raise ValueError("family_chunk_size must be non-negative")
-    return size
 
 
 def _normalize_optional_positive_int(name: str, value: int | str | None) -> int | None:
@@ -131,7 +115,7 @@ class RunConfig:
             self.preprocess_cache = _resolve_path(self.preprocess_cache)
         if self.resume_from is not None:
             self.resume_from = _resolve_path(self.resume_from)
-        self.family_chunk_size = _normalize_family_chunk_size(self.family_chunk_size)
+        self.family_chunk_size = int(_normalize_family_chunk_size(self.family_chunk_size))
         self.clade_budget = _normalize_optional_positive_int(
             "clade_budget",
             self.clade_budget,

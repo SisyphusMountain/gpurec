@@ -54,6 +54,37 @@ def normalize_clade_budget(value: int | None) -> int | None:
     return budget
 
 
+def normalize_family_chunk_size(
+    value: int | str | None,
+    *,
+    allow_auto: bool = False,
+) -> int | str:
+    """Normalize family chunk-size controls shared by APIs and workflows."""
+    if value is None:
+        return 0
+    if isinstance(value, str):
+        text = value.strip().lower()
+        if text in {"", "0", "all", "none", "null"}:
+            return 0
+        if text == "auto":
+            if allow_auto:
+                return "auto"
+            raise ValueError(
+                "family chunk size 'auto' is not supported; use 0 for one "
+                "resident batch or a positive integer"
+            )
+        try:
+            value = int(text)
+        except ValueError as exc:
+            raise ValueError(
+                "family_chunk_size must be 0, all, none, or a positive integer"
+            ) from exc
+    size = int(value)
+    if size < 0:
+        raise ValueError("family_chunk_size must be non-negative")
+    return size
+
+
 def _selected_indices(
     *,
     indices: Sequence[int] | None,

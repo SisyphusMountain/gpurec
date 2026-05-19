@@ -36,6 +36,7 @@ from gpurec.core.batching import (
 from gpurec.core.batch_planning import (
     normalize_batch_packing,
     normalize_clade_budget,
+    normalize_family_chunk_size,
     plan_family_batches,
 )
 from gpurec.core.model import GeneDataset, parse_alerax_family_file
@@ -150,17 +151,7 @@ class _ResidentBatchSpec:
 
 
 def _normalize_family_chunk_size(value: int | str | None) -> int:
-    if value is None:
-        return 0
-    if isinstance(value, str):
-        text = value.strip().lower()
-        if text in ("", "0", "all", "none", "null"):
-            return 0
-        value = int(text)
-    size = int(value)
-    if size < 0:
-        raise ValueError("family_chunk_size must be non-negative")
-    return size
+    return int(normalize_family_chunk_size(value))
 
 
 def _normalize_clade_budget(value: int | None) -> int | None:

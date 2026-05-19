@@ -22,6 +22,7 @@ from gpurec.backtracking import (
     sample_recphyloxmls,
 )
 from gpurec.cli import _run_config_from_args, build_parser, main
+from gpurec.core.batch_planning import normalize_family_chunk_size
 from gpurec.api import (
     ActiveFamilyBatch,
     BatchMetadata,
@@ -112,6 +113,15 @@ def test_run_config_rejects_unsupported_auto_chunking(tmp_path: Path):
             family_chunk_size="auto",
             device="cpu",
         )
+
+
+def test_family_chunk_size_normalization_is_shared():
+    for value in (None, "", "0", "all", "none", "null", 0):
+        assert normalize_family_chunk_size(value) == 0
+    assert normalize_family_chunk_size("12") == 12
+    assert normalize_family_chunk_size("auto", allow_auto=True) == "auto"
+    with pytest.raises(ValueError, match="auto"):
+        normalize_family_chunk_size("auto")
 
 
 def test_run_config_requires_budget_for_nonsequential_packing(tmp_path: Path):

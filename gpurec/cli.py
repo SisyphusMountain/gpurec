@@ -5,32 +5,18 @@ import json
 from pathlib import Path
 from typing import Any
 
+from gpurec.core.batch_planning import normalize_family_chunk_size
 from gpurec.workflow import RunConfig, SamplingConfig, optimize, sample
 
 
 _EXPECTED_WORKFLOW_ERRORS = (ValueError, OSError, RuntimeError)
 
 
-def _chunk_size(value: str) -> int | None:
-    text = value.strip().lower()
-    if text in {"none", "null"}:
-        return None
-    if text in {"", "0", "all"}:
-        return 0
-    if text == "auto":
-        raise argparse.ArgumentTypeError(
-            "family chunk size 'auto' is not supported; use 0 for one resident "
-            "batch or a positive integer"
-        )
+def _chunk_size(value: str) -> int:
     try:
-        size = int(text)
+        return int(normalize_family_chunk_size(value))
     except ValueError as exc:
-        raise argparse.ArgumentTypeError(
-            "family chunk size must be 0, all, none, or a positive integer"
-        ) from exc
-    if size < 0:
-        raise argparse.ArgumentTypeError("family chunk size must be non-negative")
-    return size
+        raise argparse.ArgumentTypeError(str(exc)) from exc
 
 
 def _config_data(path: Path | None) -> dict[str, Any]:

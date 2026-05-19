@@ -476,6 +476,13 @@ returned by model helper methods.  The chunked AleRax constructor now accepts
 the same \texttt{mode="global"/"uniform"} shape as the chunked tree
 constructor and rejects unsupported modes before file IO.
 
+\subsection{Family Chunk Normalization}
+
+Family chunk-size parsing now lives in the shared batch-planning module.  The
+notebook API, workflow config, and CLI parser all reuse that helper, so aliases
+such as \texttt{all}/\texttt{none}/\texttt{null}, non-negative validation, and
+the workflow rejection of unsupported \texttt{auto} stay aligned.
+
 \section{Verification Log}
 
 \begin{center}
@@ -708,6 +715,15 @@ Workflow public API homogeneity regressions &
 \texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
 CPU unit gate after API homogeneity cleanup &
 \texttt{61 passed, 27 deselected} \\
+\texttt{python -m py\_compile gpurec/core/batch\_planning.py gpurec/api/model.py ...} &
+Shared family chunk-size normalization syntax &
+\texttt{ok} \\
+\texttt{pytest -q tests/unit/test\_workflow.py} &
+Workflow chunk-size normalization regressions &
+\texttt{39 passed after chunk-normalization cleanup} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
+CPU unit gate after chunk-normalization cleanup &
+\texttt{62 passed, 27 deselected} \\
 \bottomrule
 \end{tabular}
 \end{center}
