@@ -131,6 +131,57 @@ def test_top_level_exports_api_metadata_types():
         assert name in gpurec.__all__
 
 
+def test_family_input_returns_defensive_copies():
+    ccp_helpers = {
+        "split_counts": torch.tensor([0, 1], dtype=torch.long),
+        "nested": {
+            "weights": torch.tensor([0.25, 0.75], dtype=torch.float32),
+            "labels": ["left"],
+        },
+    }
+    leaf_row_index = torch.tensor([0, 1], dtype=torch.long)
+    leaf_col_index = torch.tensor([1, 0], dtype=torch.long)
+    family_record = {
+        "C": 2,
+        "N_splits": 1,
+        "root_clade_id": 0,
+        "ccp_helpers": ccp_helpers,
+        "leaf_row_index": leaf_row_index,
+        "leaf_col_index": leaf_col_index,
+        "clade_leaf_labels": ["gene_a", ""],
+    }
+    dataset = SimpleNamespace(
+        families=[family_record],
+        family_names=["fam0"],
+        gene_tree_paths=[["g0.nwk"]],
+        leaf_species_maps=[{"gene_a": "SpeciesA"}],
+    )
+    model = object.__new__(GeneReconModel)
+    object.__setattr__(model, "_dataset", dataset)
+
+    public_family = GeneReconModel.family_input(model, 0)
+    public_family.ccp_helpers["split_counts"][0] = 99
+    public_family.ccp_helpers["nested"]["weights"][0] = 42.0
+    public_family.ccp_helpers["nested"]["labels"].append("mutated")
+    public_family.leaf_row_index[0] = 99
+    public_family.leaf_col_index[0] = 99
+    public_family.gene_tree_paths.append("mutated.nwk")
+    public_family.leaf_species_map["gene_a"] = "Mutated"
+    public_family.clade_leaf_labels.append("mutated")
+
+    torch.testing.assert_close(ccp_helpers["split_counts"], torch.tensor([0, 1]))
+    torch.testing.assert_close(
+        ccp_helpers["nested"]["weights"],
+        torch.tensor([0.25, 0.75]),
+    )
+    assert ccp_helpers["nested"]["labels"] == ["left"]
+    torch.testing.assert_close(leaf_row_index, torch.tensor([0, 1]))
+    torch.testing.assert_close(leaf_col_index, torch.tensor([1, 0]))
+    assert dataset.gene_tree_paths == [["g0.nwk"]]
+    assert dataset.leaf_species_maps == [{"gene_a": "SpeciesA"}]
+    assert family_record["clade_leaf_labels"] == ["gene_a", ""]
+
+
 def test_run_config_normalizes_batch_controls(tmp_path: Path):
     config = RunConfig(
         species_tree=tmp_path / "sp.nwk",

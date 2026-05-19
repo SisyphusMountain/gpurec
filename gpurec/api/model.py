@@ -307,6 +307,18 @@ def _origination_probs_for_family_indices(
     return origination_probs.index_select(0, idx)
 
 
+def _public_family_value(value: Any) -> Any:
+    if torch.is_tensor(value):
+        return value.detach().clone()
+    if isinstance(value, dict):
+        return {key: _public_family_value(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_public_family_value(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_public_family_value(item) for item in value)
+    return value
+
+
 def _build_batch_specs(
     dataset: GeneDataset,
     *,
@@ -1346,9 +1358,9 @@ class GeneReconModel(torch.nn.Module):
             clade_count=int(family["C"]),
             split_count=int(family["N_splits"]),
             root_clade_id=int(family["root_clade_id"]),
-            ccp_helpers=family["ccp_helpers"],
-            leaf_row_index=family["leaf_row_index"],
-            leaf_col_index=family["leaf_col_index"],
+            ccp_helpers=_public_family_value(family["ccp_helpers"]),
+            leaf_row_index=_public_family_value(family["leaf_row_index"]),
+            leaf_col_index=_public_family_value(family["leaf_col_index"]),
             clade_leaf_labels=list(family.get("clade_leaf_labels", [])),
         )
 

@@ -705,6 +705,14 @@ out-of-range clade IDs.  A subprocess regression exercises the malformed
 collation path under \texttt{python -O} so optimized interpreters cannot bypass
 these checks.
 
+\subsection{Family Input Copy Boundary}
+
+The public \texttt{family\_input()} accessor now returns defensive copies of
+CCP helper containers and leaf-index tensors instead of references into the
+model's cached preprocessing state.  The regression mutates tensors, nested
+helper containers, gene-tree paths, leaf-species maps, and clade labels returned
+from \texttt{FamilyInput}; the model-side dataset records remain unchanged.
+
 \section{Verification Log}
 
 \begin{center}
@@ -1207,6 +1215,15 @@ Focused batching validation and scheduler regressions &
 \texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
 CPU unit gate after batching validation &
 \texttt{154 passed, 27 deselected} \\
+\texttt{python -m py\_compile gpurec/api/model.py tests/unit/test\_workflow.py} &
+FamilyInput copy-boundary syntax &
+\texttt{ok} \\
+\texttt{pytest -q tests/unit/test\_workflow.py::test\_family\_input\_returns\_defensive\_copies} &
+Focused FamilyInput mutation regression &
+\texttt{1 passed} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
+CPU unit gate after FamilyInput copy boundary &
+\texttt{155 passed, 27 deselected} \\
 \bottomrule
 \end{tabular}
 \end{center}
