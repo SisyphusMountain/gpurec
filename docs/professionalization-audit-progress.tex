@@ -1038,6 +1038,14 @@ checkpoint-specific \texttt{RuntimeError}s, instead of letting strings,
 booleans, fractional counters, or negative patience counters fail later inside
 optimizer comparisons.
 
+\subsection{CPU Unit Test README Coverage}
+
+The tests README explicit CPU unit command now includes the legacy script unit
+module that is selected by the marker-based CPU gate.  A release-metadata guard
+parses that documented command and compares it with every non-GPU
+\texttt{tests/unit/test\_*.py} module, so future CPU unit modules cannot drift
+out of the bisect-friendly explicit command without a focused test failure.
+
 \section{Verification Log}
 
 \begin{center}
@@ -2004,6 +2012,18 @@ CPU unit gate after resume checkpoint metadata validation &
 \texttt{286 passed, 28 deselected} \\
 \texttt{python scripts/check\_release\_metadata.py} &
 Release metadata checker after resume checkpoint metadata validation &
+\texttt{expected license blockers} \\
+\texttt{python -m py\_compile tests/unit/test\_release\_metadata.py} &
+CPU unit README coverage guard syntax &
+\texttt{ok} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q tests/unit/test\_release\_metadata.py} &
+Focused release metadata and tests README coverage guards &
+\texttt{8 passed} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
+CPU unit gate after tests README coverage guard &
+\texttt{287 passed, 28 deselected} \\
+\texttt{python scripts/check\_release\_metadata.py} &
+Release metadata checker after tests README coverage guard &
 \texttt{expected license blockers} \\
 \bottomrule
 \end{tabular}

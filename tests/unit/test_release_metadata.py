@@ -1,12 +1,24 @@
 from __future__ import annotations
 
-from pathlib import Path
+import re
 import subprocess
 import sys
+from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[2]
 CHECK_SCRIPT = ROOT / "scripts" / "check_release_metadata.py"
+
+
+def _has_module_level_gpu_marker(text: str) -> bool:
+    return (
+        re.search(
+            r"^pytestmark\s*=\s*(?:pytest\.mark\.gpu|\[[^\]]*pytest\.mark\.gpu)",
+            text,
+            flags=re.M | re.S,
+        )
+        is not None
+    )
 
 
 def test_release_metadata_check_reports_only_current_license_blockers():
@@ -145,6 +157,29 @@ def test_cpu_ci_runs_rust_backtracking_gate():
     ) in workflow
     assert 'pytest -q -m "integration and not gpu"' in workflow
     assert "test_rust_backtracking_fixture.py" not in workflow
+
+
+def test_tests_readme_explicit_cpu_unit_paths_match_marker_gate():
+    readme = (ROOT / "tests" / "README.md").read_text(encoding="utf-8")
+    match = re.search(
+        r"The explicit equivalent is useful.*?```bash\n(?P<block>.*?)```",
+        readme,
+        flags=re.S,
+    )
+
+    assert match is not None
+    documented_paths = {
+        line.strip().rstrip(" \\")
+        for line in match.group("block").splitlines()
+        if line.strip().startswith("tests/unit/")
+    }
+    cpu_unit_modules = {
+        path.relative_to(ROOT).as_posix()
+        for path in sorted((ROOT / "tests" / "unit").glob("test_*.py"))
+        if not _has_module_level_gpu_marker(path.read_text(encoding="utf-8"))
+    }
+
+    assert documented_paths == cpu_unit_modules
 
 
 def test_release_readiness_orders_clean_checkout_before_build():
