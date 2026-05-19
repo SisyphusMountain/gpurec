@@ -3,7 +3,11 @@ from __future__ import annotations
 import pytest
 import torch
 
-from gpurec.core.model import GeneDataset, parse_alerax_family_file
+from gpurec.core.model import (
+    GeneDataset,
+    _load_preprocess_cache,
+    parse_alerax_family_file,
+)
 
 
 def _write(path, text: str):
@@ -18,6 +22,37 @@ def test_alerax_family_selection_validates_before_io(tmp_path):
         parse_alerax_family_file(missing, start=-1)
     with pytest.raises(ValueError, match="max_families"):
         parse_alerax_family_file(missing, max_families=0)
+
+
+def test_preprocess_cache_load_uses_weights_only(tmp_path, monkeypatch):
+    calls = []
+
+    def fake_load(path, *, map_location, weights_only):
+        calls.append(
+            {
+                "path": path,
+                "map_location": map_location,
+                "weights_only": weights_only,
+            }
+        )
+        return {"S": 3}
+
+    monkeypatch.setattr("gpurec.core.model.torch.load", fake_load)
+
+    payload = _load_preprocess_cache(
+        tmp_path / "species.pt",
+        label="species",
+        required_keys=("S",),
+    )
+
+    assert payload == {"S": 3}
+    assert calls == [
+        {
+            "path": tmp_path / "species.pt",
+            "map_location": "cpu",
+            "weights_only": True,
+        }
+    ]
 
 
 def test_alerax_family_file_multi_tree_ccp_matches_split_files(tmp_path):

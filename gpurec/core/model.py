@@ -1,6 +1,7 @@
 import math
 import os
 import hashlib
+import pickle
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -115,6 +116,30 @@ def _normalize_family_tree_paths(
             raise ValueError("each family must have at least one tree path")
         normalized.append(paths)
     return normalized
+
+
+def _load_preprocess_cache(
+    path: str | os.PathLike,
+    *,
+    label: str,
+    required_keys: Sequence[str],
+) -> dict[str, Any]:
+    path = Path(path)
+    try:
+        payload = torch.load(path, map_location="cpu", weights_only=True)
+    except (pickle.UnpicklingError, RuntimeError, TypeError, ValueError) as exc:
+        raise RuntimeError(
+            f"could not safely load {label} preprocess cache {path}; "
+            "delete it or rerun with refresh_preprocess_cache=True"
+        ) from exc
+    if not isinstance(payload, dict):
+        raise RuntimeError(f"{label} preprocess cache {path} must contain a dictionary")
+    missing = sorted(key for key in required_keys if key not in payload)
+    if missing:
+        raise RuntimeError(
+            f"{label} preprocess cache {path} is missing key(s): {', '.join(missing)}"
+        )
+    return payload
 
 
 class GeneDataset:
@@ -245,10 +270,10 @@ class GeneDataset:
 
         species_helpers = None
         if species_cache.exists() and not refresh:
-            species_helpers = torch.load(
+            species_helpers = _load_preprocess_cache(
                 species_cache,
-                map_location="cpu",
-                weights_only=False,
+                label="species",
+                required_keys=("S",),
             )
 
         raw_by_family = {}
@@ -272,10 +297,10 @@ class GeneDataset:
             cache_path = cache_dir / f"family-{family_key}.pt"
             family_cache_paths[name] = cache_path
             if cache_path.exists() and not refresh:
-                raw_by_family[name] = torch.load(
+                raw_by_family[name] = _load_preprocess_cache(
                     cache_path,
-                    map_location="cpu",
-                    weights_only=False,
+                    label=f"family {name!r}",
+                    required_keys=("ccp", "leaf_row_index", "leaf_col_index"),
                 )
             else:
                 missing[name] = paths

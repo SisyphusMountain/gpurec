@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import pickle
 from pathlib import Path
 from typing import Any
 
@@ -9,6 +10,7 @@ from .config import RunConfig
 
 
 CHECKPOINT_VERSION = 1
+_REQUIRED_CHECKPOINT_KEYS = {"version", "config", "theta"}
 
 
 def _family_names(model: Any) -> list[str]:
@@ -45,8 +47,47 @@ def save_checkpoint(
     tmp.replace(path)
 
 
+def _safe_torch_load(
+    path: Path,
+    *,
+    map_location: str | torch.device,
+    artifact: str,
+) -> Any:
+    try:
+        return torch.load(path, map_location=map_location, weights_only=True)
+    except (pickle.UnpicklingError, RuntimeError, TypeError, ValueError) as exc:
+        raise RuntimeError(
+            f"could not safely load {artifact} {path}; regenerate the artifact "
+            "or migrate it from a trusted source before retrying"
+        ) from exc
+
+
+def _validate_checkpoint_payload(payload: Any, path: Path) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        raise RuntimeError(f"checkpoint {path} must contain a dictionary payload")
+    missing = sorted(_REQUIRED_CHECKPOINT_KEYS - set(payload))
+    if missing:
+        raise RuntimeError(f"checkpoint {path} is missing key(s): {', '.join(missing)}")
+    if not isinstance(payload["config"], dict):
+        raise RuntimeError(f"checkpoint {path} has invalid config metadata")
+    if not torch.is_tensor(payload["theta"]):
+        raise RuntimeError(f"checkpoint {path} has invalid theta tensor")
+    optimizer_state = payload.get("optimizer_state")
+    if optimizer_state is not None and not isinstance(optimizer_state, dict):
+        raise RuntimeError(f"checkpoint {path} has invalid optimizer state")
+    status = payload.get("status")
+    if status is not None and not isinstance(status, dict):
+        raise RuntimeError(f"checkpoint {path} has invalid status metadata")
+    family_names = payload.get("family_names")
+    if family_names is not None and not isinstance(family_names, list):
+        raise RuntimeError(f"checkpoint {path} has invalid family metadata")
+    return payload
+
+
 def load_checkpoint(path: str | Path, *, map_location: str | torch.device = "cpu") -> dict[str, Any]:
-    return torch.load(Path(path), map_location=map_location, weights_only=False)
+    path = Path(path)
+    payload = _safe_torch_load(path, map_location=map_location, artifact="checkpoint")
+    return _validate_checkpoint_payload(payload, path)
 
 
 def load_checkpoint_config(path: str | Path) -> RunConfig:

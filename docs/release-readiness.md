@@ -41,3 +41,11 @@ CUDA_VISIBLE_DEVICES='' pytest -q -m "unit and not gpu"
 
 GPU validation should use a small species tree and a small family subset before
 running memory-heavy HOGENOM or 1000-tree benchmark checks.
+
+## Artifact Loading
+
+Checkpoints and preprocessing caches are loaded through PyTorch's
+`weights_only=True` path and checked for expected dictionary keys.  Regenerate
+legacy preprocessing caches if safe loading rejects them.  Treat old pickle-only
+checkpoints as trusted migration inputs rather than loading them through normal
+CLI workflows.

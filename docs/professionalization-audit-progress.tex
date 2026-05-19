@@ -547,6 +547,15 @@ and \texttt{max\_families} before checking for species or gene-tree files.  Bad
 selection arguments therefore report deterministic user-input errors instead of
 being masked by missing-file diagnostics from the folder scan.
 
+\subsection{Safe Artifact Loading}
+
+User-supplied optimization checkpoints and preprocessing caches now load through
+PyTorch's \texttt{weights\_only=True} path.  The workflow validates checkpoint
+payload shape before using it, and preprocessing cache entries are checked for
+the expected dictionary keys.  The release-readiness notes now state that legacy
+pickle-only checkpoints and caches should be regenerated or migrated only from a
+trusted source.
+
 \section{Verification Log}
 
 \begin{center}
@@ -860,6 +869,15 @@ Uniform folder selection validation regressions &
 \texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
 CPU unit gate after folder-selection cleanup &
 \texttt{79 passed, 27 deselected} \\
+\texttt{python -m py\_compile gpurec/workflow/checkpoint.py gpurec/core/model.py ...} &
+Safe artifact loading syntax &
+\texttt{ok} \\
+\texttt{pytest -q tests/unit/test\_workflow.py tests/unit/test\_alerax\_family\_input.py} &
+Checkpoint/cache safe-load regressions &
+\texttt{59 passed after safe-load cleanup} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
+CPU unit gate after safe-load cleanup &
+\texttt{81 passed, 27 deselected} \\
 \bottomrule
 \end{tabular}
 \end{center}

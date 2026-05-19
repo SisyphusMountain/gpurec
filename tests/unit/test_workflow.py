@@ -31,7 +31,12 @@ from gpurec.api import (
 )
 from gpurec.api.model import GeneReconModel
 from gpurec.api.uniform_chunked import UniformChunkedReconModel
-from gpurec.workflow.checkpoint import load_checkpoint, restore_model_theta, save_checkpoint
+from gpurec.workflow.checkpoint import (
+    CHECKPOINT_VERSION,
+    load_checkpoint,
+    restore_model_theta,
+    save_checkpoint,
+)
 from gpurec.workflow.config import RunConfig, SamplingConfig
 from gpurec.workflow.diagnostics import parameter_stats
 from gpurec.workflow.model_factory import build_alerax_workflow_model
@@ -935,13 +940,18 @@ def test_checkpoint_roundtrip_restores_theta_and_status(tmp_path: Path):
     model = _DummyModel()
     with torch.no_grad():
         model.theta.fill_(2.0)
+    optimizer = torch.optim.Adam([model.theta], lr=0.1)
+    loss = model.theta.square().sum()
+    loss.backward()
+    optimizer.step()
+    expected_theta = model.theta.detach().clone()
 
     path = tmp_path / "latest.pt"
     save_checkpoint(
         path,
         config=config,
         model=model,
-        optimizer=None,
+        optimizer=optimizer,
         step=4,
         status={"status": "running", "best_nll_bits": 12.0},
     )
@@ -953,8 +963,48 @@ def test_checkpoint_roundtrip_restores_theta_and_status(tmp_path: Path):
 
     assert int(payload["step"]) == 4
     assert payload["status"]["best_nll_bits"] == 12.0
-    assert torch.equal(model.theta, torch.full_like(model.theta, 2.0))
+    assert isinstance(payload["optimizer_state"], dict)
+    assert payload["optimizer_state"]["state"]
+    assert torch.equal(model.theta, expected_theta)
     assert model.cleared
+
+
+def test_checkpoint_load_uses_weights_only(tmp_path: Path, monkeypatch):
+    calls: list[dict[str, object]] = []
+
+    def fake_load(path, *, map_location, weights_only):
+        calls.append(
+            {
+                "path": path,
+                "map_location": map_location,
+                "weights_only": weights_only,
+            }
+        )
+        return {
+            "version": CHECKPOINT_VERSION,
+            "config": {
+                "species_tree": str(tmp_path / "sp.nwk"),
+                "families_file": str(tmp_path / "families.txt"),
+                "out_dir": str(tmp_path / "out"),
+            },
+            "theta": torch.zeros(3),
+            "optimizer_state": None,
+            "status": {},
+            "family_names": [],
+        }
+
+    monkeypatch.setattr("gpurec.workflow.checkpoint.torch.load", fake_load)
+
+    payload = load_checkpoint(tmp_path / "checkpoint.pt", map_location="cpu")
+
+    assert payload["version"] == CHECKPOINT_VERSION
+    assert calls == [
+        {
+            "path": tmp_path / "checkpoint.pt",
+            "map_location": "cpu",
+            "weights_only": True,
+        }
+    ]
 
 
 def test_optimization_runner_reports_discarded_resume_optimizer_state(tmp_path: Path):
