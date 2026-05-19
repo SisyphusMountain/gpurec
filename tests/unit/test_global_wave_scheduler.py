@@ -160,6 +160,17 @@ def test_global_scheduler_respects_cap_and_topological_order():
     _assert_topological(waves, offsets, items)
 
 
+def test_global_scheduler_rejects_split_counts_that_disagree_with_parents():
+    ccp = _ccp(3, [0], [1], [2], root=0)
+    ccp["split_counts"] = torch.tensor([0, 1, 0], dtype=torch.long)
+
+    with pytest.raises(
+        ValueError,
+        match="split_counts does not match split_parents_sorted",
+    ):
+        schedule_global_phased_waves([{"ccp": ccp}], [0], max_wave_size=2)
+
+
 def test_global_scheduler_uses_reverse_compaction_when_forward_greedy_wastes_wave():
     # This CCP-like DAG has two leaves and eight non-leaf clades.  A pure
     # bottom-up ready queue takes six non-leaf waves at cap=2, but a latest-valid

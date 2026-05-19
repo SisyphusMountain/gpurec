@@ -969,6 +969,14 @@ species' final copy count instead of incrementing it once per leaf.  A species
 with two sampled gene copies is no longer reported as two singleton events,
 while one-copy species still contribute one singleton to the aggregate output.
 
+\subsection{Global Scheduler Split-Count Consistency}
+
+The global phased-wave scheduler now treats \texttt{split\_parents\_sorted} as
+the source of truth for per-clade split counts.  Supplied
+\texttt{split\_counts} metadata is accepted only when it matches those derived
+counts exactly, and out-of-range split parent ids now fail with an explicit
+\texttt{ValueError} before scheduling can build a non-topological wave layout.
+
 \section{Verification Log}
 
 \begin{center}
@@ -1821,6 +1829,18 @@ CPU unit gate after sampling singleton aggregation &
 \texttt{250 passed, 28 deselected} \\
 \texttt{python scripts/check\_release\_metadata.py} &
 Release metadata checker after sampling singleton aggregation &
+\texttt{expected license blockers} \\
+\texttt{python -m py\_compile gpurec/core/batching.py tests/unit/test\_global\_wave\_scheduler.py} &
+Global scheduler split-count consistency syntax &
+\texttt{ok} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q tests/unit/test\_global\_wave\_scheduler.py} &
+Focused global wave scheduler guards &
+\texttt{14 passed} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
+CPU unit gate after split-count consistency guard &
+\texttt{251 passed, 28 deselected} \\
+\texttt{python scripts/check\_release\_metadata.py} &
+Release metadata checker after split-count consistency guard &
 \texttt{expected license blockers} \\
 \bottomrule
 \end{tabular}

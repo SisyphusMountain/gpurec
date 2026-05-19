@@ -329,15 +329,23 @@ def _validate_wave_clade_coverage(all_clades: Sequence[int], C: int) -> None:
 
 
 def _ccp_split_counts(ccp: Dict[str, Any], C: int, parents: Sequence[int]) -> List[int]:
+    derived = [0] * C
+    for row, parent in enumerate(parents):
+        parent_id = int(parent)
+        if parent_id < 0 or parent_id >= C:
+            raise ValueError(
+                f"split_parents_sorted contains parent {parent_id} at row {row}, "
+                f"outside valid range [0, {C})"
+            )
+        derived[parent_id] += 1
     if "split_counts" in ccp:
         counts = _cpu_long_list(ccp["split_counts"])
         if len(counts) != C:
             raise ValueError(f"split_counts has length {len(counts)} but C={C}")
+        if counts != derived:
+            raise ValueError("split_counts does not match split_parents_sorted")
         return counts
-    counts = [0] * C
-    for p in parents:
-        counts[int(p)] += 1
-    return counts
+    return derived
 
 
 def _family_schedule_data(ccp: Dict[str, Any]) -> Dict[str, Any]:
