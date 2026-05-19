@@ -82,17 +82,12 @@ jobs:
       - name: Check artifact metadata
         run: python -m twine check dist/*
 
-      - name: Check source artifact package data
+      - name: Check artifact package data
         run: |
           python - <<'PY'
           from pathlib import Path
           import tarfile
-
-          sdists = list(Path("dist").glob("*.tar.gz"))
-          if len(sdists) != 1:
-              raise SystemExit(f"expected one source archive, found {sdists}")
-          with tarfile.open(sdists[0]) as archive:
-              names = set(archive.getnames())
+          import zipfile
 
           required = [
               "gpurec/core/cpp/preprocess.cpp",
@@ -101,6 +96,12 @@ jobs:
               "gpurec/core/cpp/tree_utils.cpp",
               "gpurec/core/cpp/tree_utils.hpp",
           ]
+
+          sdists = list(Path("dist").glob("*.tar.gz"))
+          if len(sdists) != 1:
+              raise SystemExit(f"expected one source archive, found {sdists}")
+          with tarfile.open(sdists[0]) as archive:
+              names = set(archive.getnames())
           missing = [
               path
               for path in required
@@ -108,6 +109,15 @@ jobs:
           ]
           if missing:
               raise SystemExit(f"sdist missing required package data: {missing}")
+
+          wheels = list(Path("dist").glob("*.whl"))
+          if len(wheels) != 1:
+              raise SystemExit(f"expected one wheel, found {wheels}")
+          with zipfile.ZipFile(wheels[0]) as archive:
+              names = set(archive.namelist())
+          missing = [path for path in required if path not in names]
+          if missing:
+              raise SystemExit(f"wheel missing required package data: {missing}")
           PY
 
       - name: Install built wheel and smoke CLI

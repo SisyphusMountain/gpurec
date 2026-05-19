@@ -1009,6 +1009,15 @@ arguments.  The \texttt{gpurec run} command also reports optimization failure as
 a runtime exit status 1 instead of an argparse usage error, while still
 refusing to invoke sampling after a failed optimization.
 
+\subsection{Wheel Package-Data Verification}
+
+The release CI package job now checks required runtime C++ preprocessing sources
+inside both the source archive and the built wheel.  This closes the gap where
+\texttt{MANIFEST.in} could keep the sdist healthy while a broken
+\texttt{tool.setuptools.package-data} entry silently produced wheels missing the
+\texttt{gpurec/core/cpp/*.cpp} and \texttt{*.hpp} files needed by runtime
+extension compilation.
+
 \section{Verification Log}
 
 \begin{center}
@@ -1927,6 +1936,27 @@ CPU unit gate after sampling-config and \texttt{gpurec run} ergonomics &
 \texttt{263 passed, 28 deselected} \\
 \texttt{python scripts/check\_release\_metadata.py} &
 Release metadata checker after sampling-config and run-failure ergonomics &
+\texttt{expected license blockers} \\
+\texttt{python -m py\_compile tests/unit/test\_release\_metadata.py} &
+Wheel package-data CI guard syntax &
+\texttt{ok} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q tests/unit/test\_release\_metadata.py} &
+Focused release metadata and artifact guard tests &
+\texttt{7 passed} \\
+\texttt{python -m build} &
+Local source and wheel artifact build after wheel package-data guard &
+\texttt{built sdist and wheel} \\
+\texttt{python -m twine check dist/*} &
+Artifact metadata check after wheel package-data guard &
+\texttt{passed} \\
+\texttt{python - <<'PY' ... zipfile.ZipFile ... PY} &
+Local sdist and wheel C++ package-data inspection &
+\texttt{artifact package data ok} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
+CPU unit gate after wheel package-data guard &
+\texttt{263 passed, 28 deselected} \\
+\texttt{python scripts/check\_release\_metadata.py} &
+Release metadata checker after wheel package-data guard &
 \texttt{expected license blockers} \\
 \bottomrule
 \end{tabular}
