@@ -954,6 +954,14 @@ under \texttt{output\_gpurec/reconciliations/}.  A source guard keeps the
 README tied to the current \texttt{event\_counts.tsv},
 \texttt{totalSpeciesEventCounts.txt}, and \texttt{totalTransfers.txt} outputs.
 
+\subsection{Rate Export Checkpoint Payload Validation}
+
+\texttt{export\_hogenom\_rates\_from\_checkpoint.py} now validates the tensor
+shape and structure of safe-loaded checkpoint payloads before deriving D/L/T
+rates.  Missing \texttt{theta} tensors, malformed branch-scaled payloads, and
+branch/species row mismatches now raise explicit \texttt{ValueError}s instead
+of leaking raw \texttt{KeyError}, \texttt{AttributeError}, or indexing failures.
+
 \section{Verification Log}
 
 \begin{center}
@@ -1782,6 +1790,18 @@ CPU unit gate after sampling documentation guard &
 \texttt{241 passed, 28 deselected} \\
 \texttt{python scripts/check\_release\_metadata.py} &
 Release metadata checker after sampling documentation guard &
+\texttt{expected license blockers} \\
+\texttt{python -m py\_compile scripts/export\_hogenom\_rates\_from\_checkpoint.py tests/unit/test\_legacy\_scripts.py} &
+Rate-export checkpoint payload validation syntax &
+\texttt{ok} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q tests/unit/test\_legacy\_scripts.py} &
+Focused legacy rate-export payload validation guards &
+\texttt{21 passed} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
+CPU unit gate after rate-export payload validation &
+\texttt{249 passed, 28 deselected} \\
+\texttt{python scripts/check\_release\_metadata.py} &
+Release metadata checker after rate-export payload validation &
 \texttt{expected license blockers} \\
 \bottomrule
 \end{tabular}

@@ -149,17 +149,41 @@ def load_checkpoint(path: Path) -> dict[str, Any]:
     return checkpoint
 
 
-def load_effective_theta(checkpoint: dict) -> tuple[torch.Tensor, dict[str, torch.Tensor] | None]:
+def _checkpoint_tensor(payload: dict[str, Any], key: str) -> torch.Tensor:
+    if key not in payload:
+        raise ValueError(f"checkpoint is missing tensor {key!r}")
+    value = payload[key]
+    if not torch.is_tensor(value):
+        raise ValueError(f"checkpoint tensor {key!r} must be a tensor")
+    return value.detach().cpu()
+
+
+def _reshape_theta_rows(theta: torch.Tensor, *, key: str) -> torch.Tensor:
+    if theta.numel() == 0 or theta.numel() % 3 != 0:
+        raise ValueError(f"checkpoint tensor {key!r} must contain D/L/T triples")
+    return theta.reshape(-1, 3)
+
+
+def load_effective_theta(
+    checkpoint: dict[str, Any],
+) -> tuple[torch.Tensor, dict[str, torch.Tensor] | None]:
     branch = checkpoint.get("branchscaled")
     if branch is not None:
-        shared_theta = branch["shared_theta"].detach().cpu().reshape(3)
-        branch_log_l = branch["branch_log_l"].detach().cpu().reshape(-1)
+        if not isinstance(branch, dict):
+            raise ValueError("checkpoint branchscaled payload must be a dictionary")
+        shared_theta = _checkpoint_tensor(branch, "shared_theta")
+        if shared_theta.numel() != 3:
+            raise ValueError("checkpoint tensor 'shared_theta' must contain one D/L/T triple")
+        shared_theta = shared_theta.reshape(3)
+        branch_log_l = _checkpoint_tensor(branch, "branch_log_l").reshape(-1)
+        if branch_log_l.numel() == 0:
+            raise ValueError("checkpoint tensor 'branch_log_l' must not be empty")
         theta = shared_theta.reshape(1, 3) + branch_log_l.reshape(-1, 1) / math.log(2.0)
         return theta, {
             "shared_theta": shared_theta,
             "branch_log_l": branch_log_l,
         }
-    theta = checkpoint["theta"].detach().cpu().reshape(-1, 3)
+    theta = _reshape_theta_rows(_checkpoint_tensor(checkpoint, "theta"), key="theta")
     return theta, None
 
 
@@ -167,6 +191,11 @@ def write_rates(path: Path, labels: list[str], theta: torch.Tensor, branch: dict
     theta_rows = int(theta.shape[0])
     if theta_rows not in {1, len(labels)}:
         raise ValueError(f"theta rows ({theta_rows}) do not match species-tree labels ({len(labels)})")
+    if branch is not None and int(branch["branch_log_l"].numel()) != len(labels):
+        raise ValueError(
+            f"branchscaled branch rows ({int(branch['branch_log_l'].numel())}) do "
+            f"not match species-tree labels ({len(labels)})"
+        )
 
     rates = torch.exp2(theta)
     p_s = 1.0 / (1.0 + rates.sum(dim=1))

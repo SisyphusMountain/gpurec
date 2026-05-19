@@ -157,6 +157,61 @@ def test_export_rates_checkpoint_loader_rejects_non_dict_payload(
         export_rates.load_checkpoint(tmp_path / "checkpoint.pt")
 
 
+@pytest.mark.parametrize(
+    ("checkpoint", "message"),
+    [
+        ({}, "theta"),
+        ({"theta": [1.0, 2.0, 3.0]}, "must be a tensor"),
+        ({"theta": torch.zeros(2)}, "D/L/T triples"),
+        ({"branchscaled": []}, "branchscaled payload"),
+        (
+            {
+                "branchscaled": {
+                    "shared_theta": torch.zeros(2),
+                    "branch_log_l": torch.zeros(1),
+                }
+            },
+            "shared_theta",
+        ),
+        (
+            {
+                "branchscaled": {
+                    "shared_theta": torch.zeros(3),
+                    "branch_log_l": "bad",
+                }
+            },
+            "branch_log_l",
+        ),
+        (
+            {
+                "branchscaled": {
+                    "shared_theta": torch.zeros(3),
+                    "branch_log_l": torch.zeros(0),
+                }
+            },
+            "must not be empty",
+        ),
+    ],
+)
+def test_export_rates_load_effective_theta_reports_malformed_checkpoint(
+    checkpoint: dict[str, object],
+    message: str,
+):
+    with pytest.raises(ValueError, match=message):
+        export_rates.load_effective_theta(checkpoint)
+
+
+def test_export_rates_write_rates_validates_branch_rows(tmp_path: Path):
+    path = tmp_path / "rates.tsv"
+    branch = {
+        "shared_theta": torch.zeros(3),
+        "branch_log_l": torch.zeros(1),
+    }
+
+    with pytest.raises(ValueError, match="branchscaled branch rows"):
+        export_rates.write_rates(path, ["A", "B"], torch.zeros(1, 3), branch)
+
+
 def test_hogenom_wandb_checkpoint_loader_uses_weights_only(
     tmp_path: Path,
     monkeypatch,
