@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import pytest
 import torch
 
 from gpurec.core.model import GeneDataset, parse_alerax_family_file
@@ -8,6 +9,15 @@ from gpurec.core.model import GeneDataset, parse_alerax_family_file
 def _write(path, text: str):
     path.write_text(text)
     return path
+
+
+def test_alerax_family_selection_validates_before_io(tmp_path):
+    missing = tmp_path / "missing_families.txt"
+
+    with pytest.raises(ValueError, match="start"):
+        parse_alerax_family_file(missing, start=-1)
+    with pytest.raises(ValueError, match="max_families"):
+        parse_alerax_family_file(missing, max_families=0)
 
 
 def test_alerax_family_file_multi_tree_ccp_matches_split_files(tmp_path):

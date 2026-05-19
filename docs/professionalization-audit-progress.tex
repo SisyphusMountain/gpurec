@@ -499,6 +499,14 @@ public \texttt{ValueError}.  The \texttt{optimize} and \texttt{run} CLI paths no
 catch the same expected workflow failures as \texttt{sample}, converting normal
 configuration/runtime failures into concise argparse errors without tracebacks.
 
+\subsection{AleRax Selection Validation}
+
+\texttt{parse\_alerax\_family\_file()} now validates \texttt{start} and
+\texttt{max\_families} before opening the families file.  Invalid direct-API
+selection arguments therefore produce deterministic \texttt{ValueError}
+messages instead of being masked by a missing-file error or by the later empty
+selection check.
+
 \section{Verification Log}
 
 \begin{center}
@@ -758,6 +766,15 @@ Workflow CUDA-device and CLI error regressions &
 \texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
 CPU unit gate after public-error cleanup &
 \texttt{66 passed, 27 deselected} \\
+\texttt{python -m py\_compile gpurec/core/model.py tests/unit/test\_alerax\_family\_input.py} &
+AleRax selection validation syntax &
+\texttt{ok} \\
+\texttt{pytest -q tests/unit/test\_alerax\_family\_input.py tests/unit/test\_workflow.py} &
+AleRax parser and workflow regressions &
+\texttt{45 passed after selection-validation cleanup} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
+CPU unit gate after selection-validation cleanup &
+\texttt{67 passed, 27 deselected} \\
 \bottomrule
 \end{tabular}
 \end{center}

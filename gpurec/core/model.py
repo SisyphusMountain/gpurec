@@ -47,6 +47,11 @@ def parse_alerax_family_file(
     leaf-to-species maps. ``starting_gene_tree`` and ``gene_tree`` entries are
     both accepted because AleRax uses both forms in local fixtures.
     """
+    if start < 0:
+        raise ValueError("start must be non-negative")
+    if max_families is not None and int(max_families) <= 0:
+        raise ValueError("max_families must be positive when provided")
+
     base_dir = Path(families_file).resolve().parent
     records: list[dict[str, Any]] = []
     current: dict[str, Any] | None = None
@@ -80,8 +85,6 @@ def parse_alerax_family_file(
             current["mapping"] = _resolve_family_path(value, base_dir)
     finish()
 
-    if start < 0:
-        raise ValueError("start must be non-negative")
     stop = None if max_families is None else start + int(max_families)
     selected = records[start:stop]
     if not selected:
