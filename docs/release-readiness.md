@@ -19,8 +19,8 @@ yet encoded as automated build steps.
 
 The CPU GitHub Actions workflow includes a packaging job that installs
 `.[release]`, builds source and wheel artifacts, runs `twine check`, installs
-the built wheel with existing runtime dependencies, and smokes
-`python -m gpurec.cli --help`.
+the built wheel with existing runtime dependencies, and smokes both
+`gpurec --help` and `python -m gpurec.cli --help`.
 
 Install release tooling from the dedicated extra:
 
@@ -71,6 +71,7 @@ for sampling above are resolved.
 Run these CPU-safe gates before release packaging:
 
 ```bash
+CUDA_VISIBLE_DEVICES='' gpurec --help
 python -m gpurec.cli --help
 CUDA_VISIBLE_DEVICES='' pytest -q -m "unit and not gpu"
 cargo test --locked --manifest-path crates/gpurec-backtrack/Cargo.toml

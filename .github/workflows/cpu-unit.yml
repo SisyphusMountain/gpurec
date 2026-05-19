@@ -86,4 +86,5 @@ jobs:
         run: |
           python -m pip uninstall -y gpurec
           python -m pip install --no-deps dist/*.whl
+          gpurec --help
           python -m gpurec.cli --help

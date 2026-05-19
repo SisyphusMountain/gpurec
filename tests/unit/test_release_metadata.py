@@ -84,6 +84,7 @@ def test_cpu_ci_builds_and_smokes_release_artifacts():
         "python -m build",
         "python -m twine check dist/*",
         "python -m pip install --no-deps dist/*.whl",
+        "gpurec --help",
         "python -m gpurec.cli --help",
     ):
         assert required in workflow
@@ -144,4 +145,6 @@ def test_release_readiness_orders_clean_checkout_before_build():
 
     assert guide.index("git clean -Xdn") < guide.index("python -m build")
     assert "stale `build/`, `dist/`, or `*.egg-info/`" in guide
+    assert "gpurec --help" in guide
+    assert "python -m gpurec.cli --help" in guide
     assert 'pytest -q -m "integration and not gpu"' in guide

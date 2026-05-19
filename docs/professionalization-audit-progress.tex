@@ -898,6 +898,14 @@ read with explicit UTF-8 decoding, checked for a header plus data row, checked
 for the expected D/L/T columns, and non-numeric rates are reported as
 path-rich \texttt{ValueError}s instead of raw \texttt{IndexError}s.
 
+\subsection{Installed Console Script Release Smoke}
+
+The package CI job and release checklist now smoke the installed
+\texttt{gpurec --help} console script after installing the built wheel, in
+addition to \texttt{python -m gpurec.cli --help}.  The metadata unit guard
+requires both commands so future workflow or documentation edits cannot drift
+back to testing only the source-tree module form.
+
 \section{Verification Log}
 
 \begin{center}
@@ -1640,6 +1648,18 @@ Focused legacy script rate parser guards &
 \texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
 CPU unit gate after backtracking comparison rate parser &
 \texttt{230 passed, 28 deselected} \\
+\texttt{python -m py\_compile tests/unit/test\_release\_metadata.py} &
+Installed console-script smoke guard syntax &
+\texttt{ok} \\
+\texttt{pytest -q tests/unit/test\_release\_metadata.py} &
+Focused release metadata and package-smoke guards &
+\texttt{7 passed} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
+CPU unit gate after installed console-script smoke guard &
+\texttt{230 passed, 28 deselected} \\
+\texttt{python scripts/check\_release\_metadata.py} &
+Release metadata checker after installed smoke guard &
+\texttt{expected license blockers} \\
 \bottomrule
 \end{tabular}
 \end{center}
