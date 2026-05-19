@@ -102,9 +102,15 @@ gpurec optimize \
   --species-tree S.tree \
   --families-file families.txt \
   --out-dir output_gpurec \
+  --preprocess-cache output_gpurec/preprocess_cache \
   --mode genewise \
   --device cuda
 ```
+
+`--preprocess-cache` stores reusable CPU preprocessing artifacts for unchanged
+species and gene trees.  If cache loading fails with safe-loading or cache-shape
+validation errors after a code upgrade, rerun with `--refresh-preprocess-cache`
+to regenerate those entries from the original tree inputs.
 
 Main outputs include:
 

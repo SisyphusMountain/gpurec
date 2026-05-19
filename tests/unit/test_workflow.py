@@ -1913,6 +1913,17 @@ def test_hogenom_scripts_are_marked_as_legacy_experiment_surface():
         assert "Legacy checkout-local HOGENOM experiment launcher" in script_text
 
 
+def test_project_readme_documents_preprocess_cache_refresh_guidance():
+    root = Path(__file__).resolve().parents[2]
+    project_readme = (root / "README.md").read_text(encoding="utf-8")
+    normalized = " ".join(project_readme.split())
+
+    assert "--preprocess-cache output_gpurec/preprocess_cache" in normalized
+    assert "--refresh-preprocess-cache" in normalized
+    assert "safe-loading or cache-shape validation errors" in normalized
+    assert "original tree inputs" in normalized
+
+
 def test_xml_species_and_transfer_counts():
     xml = """
     <recPhylo>

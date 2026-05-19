@@ -795,6 +795,16 @@ the real \texttt{gpurec-backtrack} CLI with that JSON, writes RecPhyloXML to a
 temporary file, parses it with the standard XML parser, and checks the expected
 root speciation plus A/B leaf events.
 
+\subsection{Preprocess Cache README Guidance}
+
+The production workflow section of the README now documents
+\texttt{--preprocess-cache} directly in the main \texttt{gpurec optimize}
+example and explains when to rerun with the refresh flag.  The guidance points
+users back to the original tree inputs when safe-loading or cache-shape
+validation rejects stale preprocessing artifacts.  A source-level unit guard
+checks that the production README keeps the cache directory, refresh flag,
+validation-error context, and original-input recovery path visible.
+
 \section{Verification Log}
 
 \begin{center}
@@ -1420,6 +1430,15 @@ Release metadata, workflow, and Rust CI guards &
 \texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
 CPU unit selector after Rust JSON fixture &
 \texttt{170 passed, 28 deselected} \\
+\texttt{python -m py\_compile tests/unit/test\_workflow.py} &
+README preprocess-cache guidance guard syntax &
+\texttt{ok} \\
+\texttt{pytest -q tests/unit/test\_workflow.py::test\_project\_readme\_... ...} &
+README cache guidance and CLI refresh forwarding guards &
+\texttt{2 passed} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
+CPU unit gate after README cache guidance &
+\texttt{171 passed, 28 deselected} \\
 \bottomrule
 \end{tabular}
 \end{center}
@@ -1433,8 +1452,8 @@ CPU unit selector after Rust JSON fixture &
         document a Rust-toolchain requirement for source-checkout sampling.
   \item Add an installed-artifact sampling smoke once the backtracking binary
         distribution model is settled.
-  \item Review whether cache refresh guidance should be promoted into the README
-        once cache validation and release documentation settle.
+  \item Continue auditing legacy script and production API boundaries for
+        low-risk code-quality and test-coverage improvements.
   \item Keep committing small, verified increments so the branch remains
         reviewable despite the larger audit scope.
 \end{enumerate}
