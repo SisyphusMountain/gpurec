@@ -5,11 +5,21 @@ from pathlib import Path
 from typing import Any
 
 from gpurec.core.batch_planning import normalize_family_chunk_size
-from gpurec.workflow import RunConfig, SamplingConfig, optimize, sample
-from gpurec.workflow.config import load_json_object
 
 
 _EXPECTED_WORKFLOW_ERRORS = (ValueError, OSError, RuntimeError)
+
+
+def optimize(config: Any) -> Any:
+    from gpurec.workflow.optimize import optimize as _optimize
+
+    return _optimize(config)
+
+
+def sample(config: Any) -> Any:
+    from gpurec.workflow.sampling import sample as _sample
+
+    return _sample(config)
 
 
 def _chunk_size(value: str) -> int:
@@ -28,6 +38,8 @@ def _config_data(path: Path | None) -> dict[str, Any]:
             "Hydra-style YAML configs must be converted to JSON or passed as "
             "explicit CLI flags"
         )
+    from gpurec.workflow.config import load_json_object
+
     return load_json_object(path)
 
 
@@ -38,6 +50,8 @@ def _set_if_present(data: dict[str, Any], args: argparse.Namespace, name: str) -
 
 
 def _run_config_from_args(args: argparse.Namespace) -> RunConfig:
+    from gpurec.workflow.config import RunConfig
+
     data = _config_data(args.config)
     for name in (
         "species_tree",
@@ -103,6 +117,8 @@ def _sampling_config_from_args(
     args: argparse.Namespace,
     checkpoint: Path,
 ) -> SamplingConfig:
+    from gpurec.workflow.config import SamplingConfig
+
     return SamplingConfig(
         checkpoint=checkpoint,
         out_dir=args.sample_out_dir,

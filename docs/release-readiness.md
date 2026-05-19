@@ -73,7 +73,7 @@ Run these CPU-safe gates before release packaging:
 
 ```bash
 CUDA_VISIBLE_DEVICES='' gpurec --help
-python -m gpurec.cli --help
+CUDA_VISIBLE_DEVICES='' python -m gpurec.cli --help
 CUDA_VISIBLE_DEVICES='' pytest -q -m "unit and not gpu"
 cargo test --locked --manifest-path crates/gpurec-backtrack/Cargo.toml
 cargo run --locked --quiet --manifest-path crates/gpurec-backtrack/Cargo.toml -- --help

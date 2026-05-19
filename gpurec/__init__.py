@@ -11,29 +11,27 @@ Lower-level access:
   from gpurec.core.forward import Pi_wave_forward
 """
 
-from gpurec.api import (
-    ActiveFamilyBatch,
-    BatchMetadata,
-    FamilyInput,
-    GeneReconModel,
-    ReconciliationState,
-    UniformChunkedReconModel,
-)
-from gpurec.backtracking import (
-    EVENT_KEYS,
-    export_backtracking_input,
-    recphyloxml_event_counts,
-    sample_recphyloxml,
-    sample_recphyloxmls,
-)
-from gpurec.workflow import (
-    OptimizationRunner,
-    RunConfig,
-    SamplingConfig,
-    SamplingRunner,
-    optimize,
-    sample,
-)
+from importlib import import_module
+
+_LAZY_EXPORTS = {
+    "GeneReconModel": "gpurec.api",
+    "UniformChunkedReconModel": "gpurec.api",
+    "ActiveFamilyBatch": "gpurec.api",
+    "BatchMetadata": "gpurec.api",
+    "FamilyInput": "gpurec.api",
+    "ReconciliationState": "gpurec.api",
+    "EVENT_KEYS": "gpurec.backtracking",
+    "export_backtracking_input": "gpurec.backtracking",
+    "recphyloxml_event_counts": "gpurec.backtracking",
+    "sample_recphyloxml": "gpurec.backtracking",
+    "sample_recphyloxmls": "gpurec.backtracking",
+    "RunConfig": "gpurec.workflow",
+    "SamplingConfig": "gpurec.workflow",
+    "OptimizationRunner": "gpurec.workflow",
+    "SamplingRunner": "gpurec.workflow",
+    "optimize": "gpurec.workflow",
+    "sample": "gpurec.workflow",
+}
 
 __all__ = [
     "GeneReconModel",
@@ -54,3 +52,17 @@ __all__ = [
     "optimize",
     "sample",
 ]
+
+
+def __getattr__(name: str):
+    try:
+        module_name = _LAZY_EXPORTS[name]
+    except KeyError as exc:
+        raise AttributeError(f"module 'gpurec' has no attribute {name!r}") from exc
+    value = getattr(import_module(module_name), name)
+    globals()[name] = value
+    return value
+
+
+def __dir__() -> list[str]:
+    return sorted(set(globals()) | set(__all__))

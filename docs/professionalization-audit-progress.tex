@@ -1089,6 +1089,18 @@ access or payload construction.  Booleans, fractional values, and strings raise
 parameter-specific \texttt{ValueError}s instead of leaking through as invalid
 JSON/Rust CLI values or surfacing as low-context Python comparison errors.
 
+\subsection{Quiet CLI Help Imports}
+
+The installed \texttt{gpurec --help} and module-form
+\texttt{python -m gpurec.cli --help} release smokes no longer import the
+workflow, model, C++ preprocessing-extension, or Torch stacks just to render
+argparse help.  The CLI lazily imports workflow configuration and execution
+helpers only after a real subcommand is parsed, and the top-level package
+exports are now lazy attributes so importing \texttt{gpurec.cli} does not
+eagerly import the CUDA-only public API.  A release-metadata unit guard runs
+both documented help commands with \texttt{CUDA\_VISIBLE\_DEVICES=''} and
+asserts that stderr stays empty.
+
 \section{Verification Log}
 
 \begin{center}
@@ -2127,6 +2139,24 @@ CPU unit gate after backtracking limit type validation &
 \texttt{295 passed, 28 deselected} \\
 \texttt{python scripts/check\_release\_metadata.py} &
 Release metadata checker after backtracking limit type validation &
+\texttt{expected license blockers} \\
+\texttt{python -m py\_compile gpurec/\_\_init\_\_.py gpurec/cli.py ...} &
+Quiet CLI help import syntax &
+\texttt{ok} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q tests/unit/test\_release\_metadata.py -k cli\_help} &
+Installed and module CLI help stderr guards &
+\texttt{2 passed, 8 deselected} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q tests/unit/test\_workflow.py -k "..."} &
+CLI lazy proxy compatibility regressions &
+\texttt{4 passed, 195 deselected} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q tests/unit/test\_release\_metadata.py} &
+Release metadata and CLI help guards &
+\texttt{10 passed} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
+CPU unit gate after quiet CLI help import fix &
+\texttt{297 passed, 28 deselected} \\
+\texttt{python scripts/check\_release\_metadata.py} &
+Release metadata checker after quiet CLI help import fix &
 \texttt{expected license blockers} \\
 \bottomrule
 \end{tabular}

@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import os
 import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
+
+import pytest
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -105,6 +109,32 @@ def test_cpu_ci_builds_and_smokes_release_artifacts():
         "python -m gpurec.cli --help",
     ):
         assert required in workflow
+
+
+@pytest.mark.parametrize(
+    "command",
+    (
+        ("gpurec", "--help"),
+        (sys.executable, "-m", "gpurec.cli", "--help"),
+    ),
+)
+def test_cli_help_smokes_are_quiet_on_cpu(command: tuple[str, ...]):
+    if command[0] == "gpurec" and shutil.which("gpurec") is None:
+        pytest.skip("gpurec console script is not installed")
+    env = os.environ.copy()
+    env["CUDA_VISIBLE_DEVICES"] = ""
+
+    result = subprocess.run(
+        command,
+        check=False,
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+
+    assert result.returncode == 0
+    assert "usage: gpurec" in result.stdout
+    assert result.stderr == ""
 
 
 def test_cpu_ci_matrix_covers_declared_python_versions():
