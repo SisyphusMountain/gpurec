@@ -1229,6 +1229,15 @@ prevents \texttt{adam-lbfgs} resumes at the Adam/LBFGS boundary from loading
 Adam moments and learning-rate metadata into a freshly constructed LBFGS
 optimizer.
 
+\subsection{Non-GPU Integration CI Gate}
+
+The Rust backtracking CI job now runs the marker-selected
+\texttt{pytest -q -m "integration and not gpu"} gate instead of one hard-coded
+fixture path.  This aligns the workflow with \texttt{tests/README.md} and keeps
+future CPU-safe integration tests under \texttt{tests/integration/} covered
+without editing the workflow.  The release-metadata guard now asserts the
+marker command is present and the old file-specific command is absent.
+
 \section{Verification Log}
 
 \begin{center}
@@ -2459,6 +2468,21 @@ CPU unit gate after optimizer phase checkpoint compatibility &
 \texttt{378 passed, 28 deselected} \\
 \texttt{python scripts/check\_release\_metadata.py} &
 Release metadata checker after optimizer phase checkpoint compatibility &
+\texttt{expected license blockers} \\
+\texttt{python -m py\_compile tests/unit/test\_release\_metadata.py} &
+Non-GPU integration CI gate guard syntax &
+\texttt{ok} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q tests/unit/test\_release\_metadata.py -k "..."} &
+Focused CI and test README guard &
+\texttt{2 passed, 10 deselected} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "integration and not gpu"} &
+Marker-selected non-GPU integration gate &
+\texttt{1 passed, 405 deselected} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
+CPU unit gate after non-GPU integration CI alignment &
+\texttt{378 passed, 28 deselected} \\
+\texttt{python scripts/check\_release\_metadata.py} &
+Release metadata checker after non-GPU integration CI alignment &
 \texttt{expected license blockers} \\
 \bottomrule
 \end{tabular}

@@ -55,8 +55,8 @@ jobs:
       - name: Smoke Rust backtracking CLI
         run: cargo run --locked --quiet --manifest-path crates/gpurec-backtrack/Cargo.toml -- --help
 
-      - name: Run Rust backtracking integration fixture
-        run: pytest -q tests/integration/test_rust_backtracking_fixture.py
+      - name: Run non-GPU integration gate
+        run: pytest -q -m "integration and not gpu"
 
   package:
     runs-on: ubuntu-latest
