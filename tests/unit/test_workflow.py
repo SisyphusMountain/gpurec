@@ -289,6 +289,152 @@ def test_public_model_constructors_reject_nonfinite_theta_init_before_io(
         )
 
 
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("fixed_iters_E", 0),
+        ("fixed_iters_E", math.nan),
+        ("fixed_iters_Pi", 3),
+        ("neumann_terms", 0),
+        ("neumann_terms", math.inf),
+        ("convergence_check_interval", 0),
+        ("max_iters_E", 0),
+        ("max_iters_E", math.inf),
+        ("tol_E", math.nan),
+        ("e_logsumexp_tol", math.inf),
+        ("pi_max_diff_tol", math.nan),
+        ("gradient_change_tol", math.inf),
+        ("gradient_change_rtol", math.nan),
+        ("pruning_threshold", math.inf),
+    ],
+)
+def test_gene_recon_init_rejects_invalid_solver_controls_before_device(
+    field: str,
+    value: float,
+):
+    dataset = SimpleNamespace(
+        genewise=False,
+        specieswise=False,
+        device=torch.device("cpu"),
+    )
+
+    with pytest.raises(ValueError, match=field):
+        GeneReconModel(dataset=dataset, mode="global", **{field: value})
+
+
+@pytest.mark.parametrize(
+    ("factory", "kwargs", "message"),
+    [
+        ("from_trees", {"tol_E": math.nan}, "tol_E"),
+        ("from_trees", {"max_iters_E": 0}, "max_iters_E"),
+        ("from_trees", {"fixed_iters_Pi": math.inf}, "fixed_iters_Pi"),
+        (
+            "from_alerax_families",
+            {"gradient_change_rtol": math.inf},
+            "gradient_change_rtol",
+        ),
+        (
+            "from_alerax_families",
+            {"adaptive_iters": True, "convergence_check_interval": 3},
+            "adaptive_iters",
+        ),
+    ],
+)
+def test_gene_recon_factories_reject_invalid_solver_controls_before_device_or_io(
+    tmp_path: Path,
+    factory: str,
+    kwargs: dict[str, float],
+    message: str,
+):
+    with pytest.raises(ValueError, match=message):
+        if factory == "from_trees":
+            GeneReconModel.from_trees(
+                tmp_path / "missing_species.nwk",
+                [tmp_path / "missing_gene.nwk"],
+                device="cpu",
+                **kwargs,
+            )
+        else:
+            GeneReconModel.from_alerax_families(
+                tmp_path / "missing_species.nwk",
+                tmp_path / "missing_families.txt",
+                device="cpu",
+                **kwargs,
+            )
+
+
+@pytest.mark.parametrize(
+    ("factory", "kwargs", "message"),
+    [
+        ("from_trees", {"tol_E": math.nan}, "tol_E"),
+        ("from_trees", {"max_iters_E": 0}, "max_iters_E"),
+        ("from_trees", {"fixed_iters_Pi": math.nan}, "fixed_iters_Pi"),
+        (
+            "from_alerax_families",
+            {"pruning_threshold": math.inf},
+            "pruning_threshold",
+        ),
+        ("from_alerax_families", {"neumann_terms": 0}, "neumann_terms"),
+    ],
+)
+def test_uniform_chunked_factories_reject_invalid_solver_controls_before_device_or_io(
+    tmp_path: Path,
+    factory: str,
+    kwargs: dict[str, float],
+    message: str,
+):
+    with pytest.raises(ValueError, match=message):
+        if factory == "from_trees":
+            UniformChunkedReconModel.from_trees(
+                tmp_path / "missing_species.nwk",
+                [tmp_path / "missing_gene.nwk"],
+                device="cpu",
+                **kwargs,
+            )
+        else:
+            UniformChunkedReconModel.from_alerax_families(
+                tmp_path / "missing_species.nwk",
+                tmp_path / "missing_families.txt",
+                device="cpu",
+                **kwargs,
+            )
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "message"),
+    [
+        ({"fixed_iters_Pi": math.inf}, "fixed_iters_Pi"),
+        ({"neumann_terms": math.nan}, "neumann_terms"),
+        ({"pi_max_diff_tol": math.nan}, "pi_max_diff_tol"),
+        ({"gradient_change_tol": math.inf}, "gradient_change_tol"),
+    ],
+)
+def test_gene_recon_configure_solver_iterations_rejects_nonfinite_tolerances(
+    kwargs: dict[str, float],
+    message: str,
+):
+    with pytest.raises(ValueError, match=message):
+        GeneReconModel.configure_solver_iterations(SimpleNamespace(), **kwargs)
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "message"),
+    [
+        ({"min_rate": math.nan}, "min_rate"),
+        ({"max_rate": math.inf}, "max_rate"),
+        ({"min_rate": 0.0}, "min_rate"),
+    ],
+)
+def test_gene_recon_clamp_theta_rejects_invalid_rates(
+    kwargs: dict[str, float],
+    message: str,
+):
+    model = SimpleNamespace(theta=torch.nn.Parameter(torch.zeros(3)))
+
+    with pytest.raises(ValueError, match=message):
+        GeneReconModel.clamp_theta_(model, **kwargs)
+
+
 def test_gene_recon_constructors_reject_cpu_device_before_io(tmp_path: Path):
     with pytest.raises(ValueError, match="requires a CUDA device"):
         GeneReconModel.from_trees(

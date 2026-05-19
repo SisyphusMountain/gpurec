@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from typing import Any, Optional, Sequence
 
 import torch
@@ -12,6 +13,35 @@ def require_cuda_device(device: Any, *, owner: str) -> torch.device:
     if not torch.cuda.is_available():
         raise RuntimeError("CUDA was requested but is not available")
     return resolved
+
+
+def finite_float(name: str, value: float) -> float:
+    number = float(value)
+    if not math.isfinite(number):
+        raise ValueError(f"{name} must be finite")
+    return number
+
+
+def nonnegative_float(name: str, value: float) -> float:
+    number = finite_float(name, value)
+    if number < 0.0:
+        raise ValueError(f"{name} must be non-negative")
+    return number
+
+
+def positive_float(name: str, value: float) -> float:
+    number = finite_float(name, value)
+    if number <= 0.0:
+        raise ValueError(f"{name} must be positive")
+    return number
+
+
+def positive_int(name: str, value: int) -> int:
+    finite_float(name, value)
+    number = int(value)
+    if number < 1:
+        raise ValueError(f"{name} must be positive")
+    return number
 
 
 def theta_init_base_from_rates(

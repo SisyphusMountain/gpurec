@@ -649,6 +649,15 @@ with a clear \texttt{ValueError} before device validation, tree IO, or
 preprocessing, matching the workflow-level numeric finiteness checks for direct
 API users.
 
+\subsection{Direct API Numeric Validation}
+
+The direct model entry points now validate finite solver controls before
+touching CUDA-backed state.  They cover iteration counts, tolerances, pruning
+thresholds, solver-iteration reconfiguration, and theta clamping.  The tree and
+AleRax factory helpers also preflight supplied solver kwargs before device
+validation or file parsing.  The uniform chunked API applies the same early
+checks for its public solver controls, including the AleRax family constructor.
+
 \section{Verification Log}
 
 \begin{center}
@@ -1079,6 +1088,18 @@ Workflow suite after public theta-init finiteness cleanup &
 \texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
 CPU unit gate after public theta-init finiteness cleanup &
 \texttt{108 passed, 27 deselected} \\
+\texttt{python -m py\_compile gpurec/api/\_validation.py gpurec/api/model.py ...} &
+Direct API numeric validation syntax &
+\texttt{ok} \\
+\texttt{pytest -q tests/unit/test\_workflow.py::test\_gene\_recon\_init\_... ...} &
+Focused direct API numeric validation regressions &
+\texttt{31 passed} \\
+\texttt{pytest -q tests/unit/test\_workflow.py} &
+Workflow suite after direct API numeric validation &
+\texttt{102 passed} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
+CPU unit gate after direct API numeric validation &
+\texttt{139 passed, 27 deselected} \\
 \bottomrule
 \end{tabular}
 \end{center}

@@ -55,7 +55,13 @@ from .autograd import (
     _extract_parameters,
     _record_backward_solver_stats,
 )
-from ._validation import require_cuda_device, theta_init_base_from_rates
+from ._validation import (
+    nonnegative_float,
+    positive_float,
+    positive_int,
+    require_cuda_device,
+    theta_init_base_from_rates,
+)
 
 _MODE_MAP: dict[str, tuple[bool, bool]] = {
     "global": (False, False),
@@ -177,6 +183,57 @@ def _normalize_prefetch_batches(value: int | str | None, *, lazy: bool) -> int |
     if count < 0:
         raise ValueError("prefetch_batches must be non-negative or 'all'")
     return count
+
+
+def _normalize_gene_solver_kwargs(kwargs: dict[str, Any]) -> dict[str, Any]:
+    """Validate public solver kwargs before CUDA setup or tree parsing."""
+    normalized = dict(kwargs)
+    if normalized.get("fixed_iters_E") is not None:
+        normalized["fixed_iters_E"] = positive_int(
+            "fixed_iters_E",
+            normalized["fixed_iters_E"],
+        )
+    if "fixed_iters_Pi" in normalized:
+        fixed_iters_Pi = positive_int(
+            "fixed_iters_Pi",
+            normalized["fixed_iters_Pi"],
+        )
+        if fixed_iters_Pi % 2 != 0:
+            raise ValueError("fixed_iters_Pi must be a positive even integer")
+        normalized["fixed_iters_Pi"] = fixed_iters_Pi
+    if "neumann_terms" in normalized:
+        normalized["neumann_terms"] = positive_int(
+            "neumann_terms",
+            normalized["neumann_terms"],
+        )
+    if "convergence_check_interval" in normalized:
+        convergence_check_interval = positive_int(
+            "convergence_check_interval",
+            normalized["convergence_check_interval"],
+        )
+        normalized["convergence_check_interval"] = convergence_check_interval
+    if "max_iters_E" in normalized:
+        normalized["max_iters_E"] = positive_int(
+            "max_iters_E",
+            normalized["max_iters_E"],
+        )
+    for name in (
+        "tol_E",
+        "e_logsumexp_tol",
+        "pi_max_diff_tol",
+        "gradient_change_tol",
+        "gradient_change_rtol",
+        "pruning_threshold",
+    ):
+        if name in normalized:
+            normalized[name] = nonnegative_float(name, normalized[name])
+    adaptive_iters = bool(normalized.get("adaptive_iters", False))
+    convergence_check_interval = int(
+        normalized.get("convergence_check_interval", 4)
+    )
+    if adaptive_iters and convergence_check_interval % 2 != 0:
+        raise ValueError("adaptive_iters requires an even convergence_check_interval")
+    return normalized
 
 
 def _parameter_mapping(
@@ -744,30 +801,32 @@ class GeneReconModel(torch.nn.Module):
         # Validate mode early
         _mode_to_flags(mode)
         if fixed_iters_E is not None:
-            fixed_iters_E = int(fixed_iters_E)
-            if fixed_iters_E < 1:
-                raise ValueError("fixed_iters_E must be >= 1 when provided")
-        fixed_iters_Pi = int(fixed_iters_Pi)
-        if fixed_iters_Pi < 1 or fixed_iters_Pi % 2 != 0:
+            fixed_iters_E = positive_int("fixed_iters_E", fixed_iters_E)
+        fixed_iters_Pi = positive_int("fixed_iters_Pi", fixed_iters_Pi)
+        if fixed_iters_Pi % 2 != 0:
             raise ValueError("fixed_iters_Pi must be a positive even integer")
-        neumann_terms = int(neumann_terms)
-        if neumann_terms < 1:
-            raise ValueError("neumann_terms must be positive")
-        convergence_check_interval = int(convergence_check_interval)
-        if convergence_check_interval < 1:
-            raise ValueError("convergence_check_interval must be positive")
+        neumann_terms = positive_int("neumann_terms", neumann_terms)
+        convergence_check_interval = positive_int(
+            "convergence_check_interval",
+            convergence_check_interval,
+        )
         if adaptive_iters and convergence_check_interval % 2 != 0:
             raise ValueError(
                 "adaptive_iters requires an even convergence_check_interval"
             )
-        for name, value in (
-            ("e_logsumexp_tol", e_logsumexp_tol),
-            ("pi_max_diff_tol", pi_max_diff_tol),
-            ("gradient_change_tol", gradient_change_tol),
-            ("gradient_change_rtol", gradient_change_rtol),
-        ):
-            if float(value) < 0.0:
-                raise ValueError(f"{name} must be non-negative")
+        max_iters_E = positive_int("max_iters_E", max_iters_E)
+        tol_E = nonnegative_float("tol_E", tol_E)
+        e_logsumexp_tol = nonnegative_float("e_logsumexp_tol", e_logsumexp_tol)
+        pi_max_diff_tol = nonnegative_float("pi_max_diff_tol", pi_max_diff_tol)
+        gradient_change_tol = nonnegative_float(
+            "gradient_change_tol",
+            gradient_change_tol,
+        )
+        gradient_change_rtol = nonnegative_float(
+            "gradient_change_rtol",
+            gradient_change_rtol,
+        )
+        pruning_threshold = nonnegative_float("pruning_threshold", pruning_threshold)
 
         # Sanity check: dataset flags must be consistent with mode
         ds_g, ds_sw = (dataset.genewise, dataset.specieswise)
@@ -934,6 +993,7 @@ class GeneReconModel(torch.nn.Module):
             Ignore existing preprocessing cache entries and overwrite them.
         """
         genewise, specieswise = _mode_to_flags(mode)
+        solver_kwargs = _normalize_gene_solver_kwargs(solver_kwargs)
         theta_base = theta_init_base_from_rates(
             theta_init_rates,
             dtype=dtype,
@@ -987,6 +1047,7 @@ class GeneReconModel(torch.nn.Module):
     ) -> "GeneReconModel":
         """Build from an AleRax ``[FAMILIES]`` file with CCP/tree samples."""
         genewise, specieswise = _mode_to_flags(mode)
+        solver_kwargs = _normalize_gene_solver_kwargs(solver_kwargs)
         theta_base = theta_init_base_from_rates(
             theta_init_rates,
             dtype=dtype,
@@ -1232,24 +1293,21 @@ class GeneReconModel(torch.nn.Module):
     ) -> None:
         """Update solver iteration controls on the model and built batches."""
         if fixed_iters_Pi is not None:
-            fixed_iters_Pi = int(fixed_iters_Pi)
-            if fixed_iters_Pi < 1 or fixed_iters_Pi % 2 != 0:
+            fixed_iters_Pi = positive_int("fixed_iters_Pi", fixed_iters_Pi)
+            if fixed_iters_Pi % 2 != 0:
                 raise ValueError("fixed_iters_Pi must be a positive even integer")
             self._fixed_iters_Pi = fixed_iters_Pi
         if neumann_terms is not None:
-            neumann_terms = int(neumann_terms)
-            if neumann_terms < 1:
-                raise ValueError("neumann_terms must be positive")
+            neumann_terms = positive_int("neumann_terms", neumann_terms)
             self._neumann_terms = neumann_terms
         if pi_max_diff_tol is not None:
-            pi_max_diff_tol = float(pi_max_diff_tol)
-            if pi_max_diff_tol < 0.0:
-                raise ValueError("pi_max_diff_tol must be non-negative")
+            pi_max_diff_tol = nonnegative_float("pi_max_diff_tol", pi_max_diff_tol)
             self._pi_max_diff_tol = pi_max_diff_tol
         if gradient_change_tol is not None:
-            gradient_change_tol = float(gradient_change_tol)
-            if gradient_change_tol < 0.0:
-                raise ValueError("gradient_change_tol must be non-negative")
+            gradient_change_tol = nonnegative_float(
+                "gradient_change_tol",
+                gradient_change_tol,
+            )
             self._gradient_change_tol = gradient_change_tol
 
         for static in self.cached_static_states:
@@ -1621,8 +1679,9 @@ class GeneReconModel(torch.nn.Module):
         Useful after ordinary PyTorch optimizer steps to keep rates in a
         numerically valid range.
         """
-        if min_rate <= 0:
-            raise ValueError("min_rate must be strictly positive")
+        min_rate = positive_float("min_rate", min_rate)
+        if max_rate is not None:
+            max_rate = positive_float("max_rate", max_rate)
         if max_rate is not None and max_rate < min_rate:
             raise ValueError("max_rate must be greater than or equal to min_rate")
         with torch.no_grad():

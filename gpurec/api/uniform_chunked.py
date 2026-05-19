@@ -37,7 +37,12 @@ from gpurec.core.memory_policy import UniformPipelinePolicy, choose_uniform_pipe
 from gpurec.core.model import GeneDataset, parse_alerax_family_file
 from gpurec.optimization.implicit_grad import _e_adjoint_and_theta_vjp
 
-from ._validation import require_cuda_device, theta_init_base_from_rates
+from ._validation import (
+    nonnegative_float,
+    positive_int,
+    require_cuda_device,
+    theta_init_base_from_rates,
+)
 
 
 UNIFORM_OPTIMIZED_DEFAULT_FLAGS = {
@@ -107,6 +112,42 @@ def _validate_family_selection(start: int, max_families: int | None) -> None:
         raise ValueError("start must be non-negative")
     if max_families is not None and int(max_families) <= 0:
         raise ValueError("max_families must be positive when provided")
+
+
+def _normalize_uniform_solver_kwargs(kwargs: dict[str, Any]) -> dict[str, Any]:
+    """Validate public solver kwargs before CUDA setup or AleRax parsing."""
+    normalized = dict(kwargs)
+    if normalized.get("fixed_iters_E") is not None:
+        normalized["fixed_iters_E"] = positive_int(
+            "fixed_iters_E",
+            normalized["fixed_iters_E"],
+        )
+    if "fixed_iters_Pi" in normalized:
+        fixed_iters_Pi = positive_int(
+            "fixed_iters_Pi",
+            normalized["fixed_iters_Pi"],
+        )
+        if fixed_iters_Pi % 2 != 0:
+            raise ValueError("fixed_iters_Pi must be a positive even integer")
+        normalized["fixed_iters_Pi"] = fixed_iters_Pi
+    if "max_iters_E" in normalized:
+        normalized["max_iters_E"] = positive_int(
+            "max_iters_E",
+            normalized["max_iters_E"],
+        )
+    if "neumann_terms" in normalized:
+        normalized["neumann_terms"] = positive_int(
+            "neumann_terms",
+            normalized["neumann_terms"],
+        )
+    if "tol_E" in normalized:
+        normalized["tol_E"] = nonnegative_float("tol_E", normalized["tol_E"])
+    if "pruning_threshold" in normalized:
+        normalized["pruning_threshold"] = nonnegative_float(
+            "pruning_threshold",
+            normalized["pruning_threshold"],
+        )
+    return normalized
 
 
 def _selected_gene_paths(
@@ -635,15 +676,18 @@ class UniformChunkedReconModel(torch.nn.Module):
         )
         if theta_init is None:
             raise ValueError("theta_init_rates must be provided")
+        if fixed_iters_E is not None:
+            fixed_iters_E = positive_int("fixed_iters_E", fixed_iters_E)
+        fixed_iters_Pi = positive_int("fixed_iters_Pi", fixed_iters_Pi)
+        if fixed_iters_Pi % 2 != 0:
+            raise ValueError("fixed_iters_Pi must be a positive even integer")
+        max_iters_E = positive_int("max_iters_E", max_iters_E)
+        neumann_terms = positive_int("neumann_terms", neumann_terms)
+        tol_E = nonnegative_float("tol_E", tol_E)
+        pruning_threshold = nonnegative_float("pruning_threshold", pruning_threshold)
+
         device = require_cuda_device(device, owner="UniformChunkedReconModel")
         theta_init = theta_init.to(device=device)
-        if fixed_iters_E is not None:
-            fixed_iters_E = int(fixed_iters_E)
-            if fixed_iters_E < 1:
-                raise ValueError("fixed_iters_E must be >= 1 when provided")
-        fixed_iters_Pi = int(fixed_iters_Pi)
-        if fixed_iters_Pi < 1 or fixed_iters_Pi % 2 != 0:
-            raise ValueError("fixed_iters_Pi must be a positive even integer")
 
         gene_paths = list(gene_trees)
         if not gene_paths:
@@ -845,6 +889,7 @@ class UniformChunkedReconModel(torch.nn.Module):
                 "UniformChunkedReconModel.from_alerax_families only supports "
                 f"mode='global' or mode='uniform', got {mode!r}"
             )
+        kwargs = _normalize_uniform_solver_kwargs(kwargs)
         theta_init_base_from_rates(
             kwargs.get("theta_init_rates", (0.05, 0.05, 0.05)),
             dtype=kwargs.get("dtype", torch.float32),
