@@ -21,9 +21,9 @@ Command:
 
 ```bash
 AleRax_oliver/build/bin/alerax \
-  -s /home/enzo/Documents/git/gpurec/gpurec/tests/data/test_trees_100/sp.nwk \
-  -f /home/enzo/Documents/git/gpurec/gpurec/output_alerax_backtracking_validation/family_0003_1000/families_family_0003.txt \
-  -p /home/enzo/Documents/git/gpurec/gpurec/output_alerax_backtracking_validation/family_0003_1000/alerax \
+  -s tests/data/test_trees_100/sp.nwk \
+  -f output_alerax_backtracking_validation/family_0003_1000/families_family_0003.txt \
+  -p output_alerax_backtracking_validation/family_0003_1000/alerax \
   -g 1000 \
   --seed 20260517 \
   --model-parametrization GLOBAL \

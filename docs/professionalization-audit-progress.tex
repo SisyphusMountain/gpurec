@@ -300,6 +300,13 @@ API for output labels and exported uniform origination tables.  The workflow
 source guard now blocks this private extension import from returning to the
 curated HOGENOM scripts.
 
+\subsection{Validation Note Path Hygiene}
+
+The fresh AleRax backtracking validation notes still contained local absolute
+workspace paths in reproduced command lines.  Those commands now use
+repo-relative paths so the notes remain useful outside this checkout and pass
+the documentation hygiene scan.
+
 \section{Verification Log}
 
 \begin{center}
@@ -358,6 +365,9 @@ Private species-name loader guard &
 \texttt{pytest -q tests/unit/test\_workflow.py} &
 Workflow and HOGENOM public-surface guards &
 \texttt{14 passed after species-name cleanup} \\
+\texttt{rg -n "/home/\textbar Documents/git\textbar gpurec/gpurec" docs --glob '!professionalization-...'} &
+Tracked documentation path hygiene &
+\texttt{no matches after validation-note cleanup} \\
 \texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m 'not gpu' ...GPU modules...} &
 GPU marker check &
 \texttt{22 deselected; exit 5 treated as expected} \\
