@@ -1046,6 +1046,14 @@ parses that documented command and compares it with every non-GPU
 \texttt{tests/unit/test\_*.py} module, so future CPU unit modules cannot drift
 out of the bisect-friendly explicit command without a focused test failure.
 
+\subsection{Memory-Policy Dimension Validation}
+
+Uniform memory-policy helpers now validate dimension-like inputs before
+estimating chunk payloads or choosing automatic policy candidates.  Boolean and
+non-integral numeric values for wave rows, species counts, dense-state counts,
+\texttt{family\_chunk\_size}, and auto-policy candidate lists now raise
+\texttt{ValueError}s instead of being silently coerced by \texttt{int(...)}.
+
 \section{Verification Log}
 
 \begin{center}
@@ -2024,6 +2032,18 @@ CPU unit gate after tests README coverage guard &
 \texttt{287 passed, 28 deselected} \\
 \texttt{python scripts/check\_release\_metadata.py} &
 Release metadata checker after tests README coverage guard &
+\texttt{expected license blockers} \\
+\texttt{python -m py\_compile gpurec/core/memory\_policy.py tests/unit/test\_memory\_policy.py} &
+Memory-policy dimension validation syntax &
+\texttt{ok} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q tests/unit/test\_memory\_policy.py} &
+Focused memory-policy dimension validation &
+\texttt{15 passed} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
+CPU unit gate after memory-policy dimension validation &
+\texttt{292 passed, 28 deselected} \\
+\texttt{python scripts/check\_release\_metadata.py} &
+Release metadata checker after memory-policy dimension validation &
 \texttt{expected license blockers} \\
 \bottomrule
 \end{tabular}

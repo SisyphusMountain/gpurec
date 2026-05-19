@@ -1,8 +1,10 @@
 """Memory estimates and GPU policy helpers for uniform wave kernels."""
 from __future__ import annotations
 
+import math
 import os
 from dataclasses import dataclass
+from numbers import Integral, Real
 from typing import Sequence
 
 import torch
@@ -13,15 +15,28 @@ from .batch_planning import plan_family_batches
 GIB = 1024 ** 3
 
 
-def _positive_int(name: str, value: int) -> int:
-    number = int(value)
+def _int_dimension(name: str, value: int | float) -> int:
+    if isinstance(value, bool):
+        raise ValueError(f"{name} must be an integer")
+    if isinstance(value, Integral):
+        return int(value)
+    if isinstance(value, Real):
+        number = float(value)
+        if not math.isfinite(number) or not number.is_integer():
+            raise ValueError(f"{name} must be an integer")
+        return int(number)
+    raise ValueError(f"{name} must be an integer")
+
+
+def _positive_int(name: str, value: int | float) -> int:
+    number = _int_dimension(name, value)
     if number <= 0:
         raise ValueError(f"{name} must be positive")
     return number
 
 
-def _nonnegative_int(name: str, value: int) -> int:
-    number = int(value)
+def _nonnegative_int(name: str, value: int | float) -> int:
+    number = _int_dimension(name, value)
     if number < 0:
         raise ValueError(f"{name} must be non-negative")
     return number
@@ -129,9 +144,10 @@ def estimate_chunk_payload_bytes(
 ) -> int:
     species = _positive_int("S", S)
     max_wave = _positive_int("max_wave_size", max_wave_size)
+    family_chunk = _nonnegative_int("family_chunk_size", family_chunk_size)
     plans = plan_family_batches(
         clade_counts=clade_counts,
-        family_chunk_size=int(family_chunk_size),
+        family_chunk_size=family_chunk,
         clade_budget=clade_budget,
         batch_packing=batch_packing,
         leaf_counts=leaf_counts,

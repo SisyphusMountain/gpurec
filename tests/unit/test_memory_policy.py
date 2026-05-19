@@ -110,7 +110,15 @@ def test_policy_budget_uses_packed_clade_first_fit_plan(monkeypatch):
             "W",
         ),
         (
+            lambda: proposal0_wave_scratch_bytes(True, 3, torch.float32),
+            "W",
+        ),
+        (
             lambda: uniform_training_dense_state_bytes(3, 0, torch.float32),
+            "S",
+        ),
+        (
+            lambda: uniform_training_dense_state_bytes(3, 1.5, torch.float32),
             "S",
         ),
         (
@@ -133,6 +141,16 @@ def test_policy_budget_uses_packed_clade_first_fit_plan(monkeypatch):
             "max_wave_size",
         ),
         (
+            lambda: estimate_chunk_payload_bytes(
+                [1],
+                2,
+                torch.float32,
+                family_chunk_size=1.5,
+                max_wave_size=1,
+            ),
+            "family_chunk_size",
+        ),
+        (
             lambda: proposal0_memory_gate(
                 1,
                 2,
@@ -149,6 +167,24 @@ def test_policy_budget_uses_packed_clade_first_fit_plan(monkeypatch):
                 family_chunk_candidates=(-1,),
             ),
             "family_chunk_candidates",
+        ),
+        (
+            lambda: choose_uniform_pipeline_policy(
+                [1],
+                2,
+                torch.float32,
+                family_chunk_candidates=(True,),
+            ),
+            "family_chunk_candidates",
+        ),
+        (
+            lambda: choose_uniform_pipeline_policy(
+                [1],
+                2,
+                torch.float32,
+                max_wave_candidates=(1.5,),
+            ),
+            "max_wave_candidates",
         ),
     ],
 )
