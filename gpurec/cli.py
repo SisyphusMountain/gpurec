@@ -383,9 +383,9 @@ def main(argv: list[str] | None = None) -> None:
     if args.command == "optimize":
         try:
             config = _run_config_from_args(args)
-        except ValueError as exc:
+            result = optimize(config)
+        except _EXPECTED_WORKFLOW_ERRORS as exc:
             parser.error(str(exc))
-        result = optimize(config)
         print(
             f"status={result.status} reason={result.reason} "
             f"final_nll_bits={result.final_nll_bits:.6f} out_dir={result.out_dir}",
@@ -423,9 +423,9 @@ def main(argv: list[str] | None = None) -> None:
             )
         try:
             run_config = _run_config_from_args(args)
-        except ValueError as exc:
+            opt_result = optimize(run_config)
+        except _EXPECTED_WORKFLOW_ERRORS as exc:
             parser.error(str(exc))
-        opt_result = optimize(run_config)
         checkpoint = run_config.out_dir / "checkpoints" / "best.pt"
         if not checkpoint.exists():
             checkpoint = run_config.out_dir / "checkpoints" / "latest.pt"

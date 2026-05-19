@@ -170,13 +170,22 @@ def _theta_init_base_from_rates(
 ) -> torch.Tensor | None:
     if theta_init_rates is None:
         return None
-    rates = torch.as_tensor(theta_init_rates, dtype=dtype, device=device)
+    rates = torch.as_tensor(theta_init_rates, dtype=torch.float64, device="cpu")
     if rates.numel() != 3:
         raise ValueError("theta_init_rates must contain exactly three D/L/T rates")
     rates = rates.reshape(3)
     if torch.any(rates <= 0):
         raise ValueError("theta_init_rates must be strictly positive")
-    return torch.log2(rates)
+    return torch.log2(rates).to(device=device, dtype=dtype)
+
+
+def _require_cuda_device(device: Any, *, owner: str) -> torch.device:
+    resolved = torch.device(device)
+    if resolved.type != "cuda":
+        raise ValueError(f"{owner} currently requires a CUDA device")
+    if not torch.cuda.is_available():
+        raise RuntimeError("CUDA was requested but is not available")
+    return resolved
 
 
 def _normalize_prefetch_batches(value: int | str | None, *, lazy: bool) -> int | str:
@@ -797,6 +806,8 @@ class GeneReconModel(torch.nn.Module):
                 "GeneReconModel.from_trees()."
             )
 
+        _require_cuda_device(dataset.device, owner="GeneReconModel")
+
         self._mode = mode
         self._dataset = dataset
         prepared_origination_probs = prepare_origination_probs(
@@ -948,13 +959,14 @@ class GeneReconModel(torch.nn.Module):
             Ignore existing preprocessing cache entries and overwrite them.
         """
         genewise, specieswise = _mode_to_flags(mode)
-        if isinstance(device, str):
-            device = torch.device(device)
         theta_base = _theta_init_base_from_rates(
             theta_init_rates,
             dtype=dtype,
-            device=device,
+            device=torch.device("cpu"),
         )
+        device = _require_cuda_device(device, owner="GeneReconModel")
+        if theta_base is not None:
+            theta_base = theta_base.to(device=device)
         ds = GeneDataset(
             species_tree_path=species_tree,
             gene_tree_paths=gene_trees,
@@ -1000,13 +1012,14 @@ class GeneReconModel(torch.nn.Module):
     ) -> "GeneReconModel":
         """Build from an AleRax ``[FAMILIES]`` file with CCP/tree samples."""
         genewise, specieswise = _mode_to_flags(mode)
-        if isinstance(device, str):
-            device = torch.device(device)
         theta_base = _theta_init_base_from_rates(
             theta_init_rates,
             dtype=dtype,
-            device=device,
+            device=torch.device("cpu"),
         )
+        device = _require_cuda_device(device, owner="GeneReconModel")
+        if theta_base is not None:
+            theta_base = theta_base.to(device=device)
         family_names, tree_paths, leaf_maps = parse_alerax_family_file(
             families_file,
             start=start,

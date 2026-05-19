@@ -175,6 +175,21 @@ def test_gene_recon_constructors_reject_bad_theta_init_before_io(tmp_path: Path)
         )
 
 
+def test_gene_recon_constructors_reject_cpu_device_before_io(tmp_path: Path):
+    with pytest.raises(ValueError, match="requires a CUDA device"):
+        GeneReconModel.from_trees(
+            tmp_path / "missing_species.nwk",
+            [tmp_path / "missing_gene.nwk"],
+            device="cpu",
+        )
+    with pytest.raises(ValueError, match="requires a CUDA device"):
+        GeneReconModel.from_alerax_families(
+            tmp_path / "missing_species.nwk",
+            tmp_path / "missing_families.txt",
+            device="cpu",
+        )
+
+
 def test_uniform_chunked_alerax_constructor_validates_mode_before_io(tmp_path: Path):
     with pytest.raises(ValueError, match="from_alerax_families"):
         UniformChunkedReconModel.from_alerax_families(
@@ -290,6 +305,20 @@ def test_cli_accepts_family_chunk_all_alias(tmp_path: Path):
     assert config.family_chunk_size == 0
 
 
+def _minimal_workflow_cli_args(command: str, tmp_path: Path) -> list[str]:
+    return [
+        command,
+        "--species-tree",
+        str(tmp_path / "sp.nwk"),
+        "--families-file",
+        str(tmp_path / "families.txt"),
+        "--out-dir",
+        str(tmp_path / "out"),
+        "--device",
+        "cuda",
+    ]
+
+
 def test_cli_rejects_auto_family_chunk_size_at_parse(capsys):
     with pytest.raises(SystemExit) as exc_info:
         build_parser().parse_args(["optimize", "--family-chunk-size", "auto"])
@@ -384,6 +413,44 @@ def test_cli_sample_reports_missing_checkpoint_without_traceback(tmp_path: Path,
     captured = capsys.readouterr()
     assert exc_info.value.code == 2
     assert str(checkpoint) in captured.err
+    assert "Traceback" not in captured.err
+
+
+def test_cli_optimize_reports_workflow_errors_without_traceback(
+    tmp_path: Path,
+    capsys,
+    monkeypatch,
+):
+    def fail_optimize(config):
+        raise RuntimeError("workflow failed")
+
+    monkeypatch.setattr("gpurec.cli.optimize", fail_optimize)
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(_minimal_workflow_cli_args("optimize", tmp_path))
+
+    captured = capsys.readouterr()
+    assert exc_info.value.code == 2
+    assert "workflow failed" in captured.err
+    assert "Traceback" not in captured.err
+
+
+def test_cli_run_reports_optimize_errors_without_traceback(
+    tmp_path: Path,
+    capsys,
+    monkeypatch,
+):
+    def fail_optimize(config):
+        raise RuntimeError("workflow failed")
+
+    monkeypatch.setattr("gpurec.cli.optimize", fail_optimize)
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(_minimal_workflow_cli_args("run", tmp_path))
+
+    captured = capsys.readouterr()
+    assert exc_info.value.code == 2
+    assert "workflow failed" in captured.err
     assert "Traceback" not in captured.err
 
 

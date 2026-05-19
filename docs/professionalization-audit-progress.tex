@@ -490,6 +490,15 @@ Optimization resume now records whether checkpoint optimizer state was
 optimizer state is still non-fatal, but the exception text is carried into
 history rows and checkpoint/summary status instead of being silently swallowed.
 
+\subsection{CUDA-Only API and CLI Error Parity}
+
+\texttt{GeneReconModel} now rejects non-CUDA devices during construction instead
+of accepting CPU state that fails later inside the retained CUDA forward path.
+Theta initialization is still validated first, so bad rates keep their specific
+public \texttt{ValueError}.  The \texttt{optimize} and \texttt{run} CLI paths now
+catch the same expected workflow failures as \texttt{sample}, converting normal
+configuration/runtime failures into concise argparse errors without tracebacks.
+
 \section{Verification Log}
 
 \begin{center}
@@ -740,6 +749,15 @@ Workflow resume optimizer-state regressions &
 \texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
 CPU unit gate after resume-status cleanup &
 \texttt{63 passed, 27 deselected} \\
+\texttt{python -m py\_compile gpurec/api/model.py gpurec/cli.py tests/unit/test\_workflow.py} &
+CUDA-only API and CLI error-parity syntax &
+\texttt{ok} \\
+\texttt{pytest -q tests/unit/test\_workflow.py} &
+Workflow CUDA-device and CLI error regressions &
+\texttt{43 passed after public-error cleanup} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
+CPU unit gate after public-error cleanup &
+\texttt{66 passed, 27 deselected} \\
 \bottomrule
 \end{tabular}
 \end{center}
