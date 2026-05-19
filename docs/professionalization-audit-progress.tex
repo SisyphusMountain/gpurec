@@ -182,6 +182,15 @@ A source-level unit guard checks that \texttt{gpurec/backtracking.py} and
 \texttt{gpurec/workflow/*.py} no longer contain the forbidden private access
 patterns.
 
+\subsection{Reconciliation State API}
+
+\texttt{GeneReconModel.reconciliation\_state()} now owns the solved E/Pi state
+used by export paths and \texttt{pi\_matrix()}.  Backtracking now requests that
+public state object instead of importing private autograd parameter extraction
+or reimplementing the E/Pi solve with lower-level forward helpers.  The
+source-level guard was extended to block those imports from returning to
+\texttt{gpurec/backtracking.py} or \texttt{gpurec/workflow/*.py}.
+
 \section{Verification Log}
 
 \begin{center}
@@ -219,9 +228,6 @@ YAML config UX &
 \begin{enumerate}[leftmargin=*]
   \item Move batch-planning logic toward one shared implementation used by both
         high-level model APIs.
-  \item Add a model-owned \texttt{reconciliation\_state()} result object so
-        backtracking can also stop importing private parameter extraction
-        helpers.
   \item Curate the remaining HOGENOM/W\&B helper scripts and configs into
         source-like experiment tooling, or explicitly ignore/drop generated
         artifacts.

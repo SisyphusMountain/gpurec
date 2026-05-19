@@ -12,10 +12,7 @@ from typing import Any
 
 import torch
 
-from gpurec.api.autograd import _extract_parameters
-from gpurec.api.model import FamilyInput, GeneReconModel
-from gpurec.core.forward import Pi_wave_forward
-from gpurec.core.likelihood import E_fixed_point
+from gpurec.api.model import FamilyInput, GeneReconModel, ReconciliationState
 from gpurec.core.preprocess_cpp import _load_extension as _load_species_gene_ext
 
 
@@ -99,58 +96,8 @@ def _backtrack_command(
     return ["cargo", "run", "--quiet", "--manifest-path", str(manifest), "--"]
 
 
-def _evaluate_backtracking_state(model: GeneReconModel) -> dict[str, Any]:
-    static = model.static
-    theta = model.active_theta().detach()
-    log_pS, log_pD, log_pL, max_transfer_vec = _extract_parameters(theta, static)
-    e_max_iters = static.fixed_iters_E if static.fixed_iters_E is not None else static.max_iters_E
-    e_tolerance = (
-        static.e_logsumexp_tol
-        if static.adaptive_iters
-        else (-1.0 if static.fixed_iters_E is not None else static.tol_E)
-    )
-    E_out = E_fixed_point(
-        species_helpers=static.species_helpers,
-        log_pS=log_pS,
-        log_pD=log_pD,
-        log_pL=log_pL,
-        max_transfer_mat=max_transfer_vec,
-        max_iters=e_max_iters,
-        tolerance=e_tolerance,
-        warm_start_E=None,
-        dtype=static.dtype,
-        device=static.device,
-        ancestors_T=static.ancestors_T,
-        check_interval=static.convergence_check_interval,
-        convergence_metric="logsumexp" if static.adaptive_iters else "max_diff",
-    )
-    Pi_out = Pi_wave_forward(
-        wave_layout=static.wave_layout,
-        species_helpers=static.species_helpers,
-        E=E_out["E"],
-        Ebar=E_out["E_bar"],
-        E_s1=E_out["E_s1"],
-        E_s2=E_out["E_s2"],
-        log_pS=log_pS,
-        log_pD=log_pD,
-        max_transfer_mat=max_transfer_vec,
-        device=static.device,
-        dtype=static.dtype,
-        fixed_iters=static.fixed_iters_Pi,
-        return_original=True,
-        return_root_rows=False,
-        family_idx=(static.wave_layout.get("family_idx") if static.genewise else None),
-        convergence_tolerance=(static.pi_max_diff_tol if static.adaptive_iters else -1.0),
-        convergence_check_interval=static.convergence_check_interval,
-    )
-    return {
-        "E": E_out["E"],
-        "Pi": Pi_out["Pi"],
-        "log_pS": log_pS,
-        "log_pD": log_pD,
-        "max_transfer": max_transfer_vec,
-        "origination_probs": static.origination_probs,
-    }
+def _evaluate_backtracking_state(model: GeneReconModel) -> ReconciliationState:
+    return model.reconciliation_state(original_order=True)
 
 
 def _family_details(species_tree_path: Path, family: FamilyInput) -> dict[str, Any]:
@@ -191,24 +138,24 @@ def export_backtracking_input(
     details = _family_details(model.species_tree_path, family)
     detail_ccp = details["ccp"]
 
-    pi = state["Pi"][offset : offset + C].detach().to(dtype=torch.float64).cpu().contiguous()
+    pi = state.pi[offset : offset + C].detach().to(dtype=torch.float64).cpu().contiguous()
     e = _species_vector(
-        state["E"],
+        state.e,
         family_index=parameter_family_index,
         S=S,
     ).to(dtype=torch.float64)
     log_p_s = _species_vector(
-        state["log_pS"],
+        state.log_p_s,
         family_index=parameter_family_index,
         S=S,
     ).to(dtype=torch.float64)
     log_p_d = _species_vector(
-        state["log_pD"],
+        state.log_p_d,
         family_index=parameter_family_index,
         S=S,
     ).to(dtype=torch.float64)
     max_transfer = _species_vector(
-        state["max_transfer"],
+        state.max_transfer,
         family_index=parameter_family_index,
         S=S,
     ).to(dtype=torch.float64)
@@ -242,7 +189,7 @@ def export_backtracking_input(
     species_names = model.species_names
     species_newick = model.species_tree_path.read_text()
     origination_probs = _family_origination_probs(
-        state["origination_probs"],
+        state.origination_probs,
         family_index=parameter_family_index,
         S=S,
     )

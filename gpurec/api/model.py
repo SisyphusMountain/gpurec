@@ -120,6 +120,19 @@ class FamilyInput:
 
 
 @dataclass(frozen=True)
+class ReconciliationState:
+    """Solved reconciliation tensors for the currently selected model batch."""
+
+    e: torch.Tensor
+    pi: torch.Tensor
+    log_p_s: torch.Tensor
+    log_p_d: torch.Tensor
+    log_p_l: torch.Tensor
+    max_transfer: torch.Tensor
+    origination_probs: torch.Tensor | None
+
+
+@dataclass(frozen=True)
 class _ResidentBatchSpec:
     index: int
     family_indices: list[int]
@@ -1548,14 +1561,14 @@ class GeneReconModel(torch.nn.Module):
         return values
 
     @torch.no_grad()
-    def pi_matrix(self, *, original_order: bool = True) -> torch.Tensor:
-        """Return converged Pi rows for the retained uniform-transfer path.
+    def reconciliation_state(self, *, original_order: bool = True) -> ReconciliationState:
+        """Solve E/Pi for the currently selected batch and return export state.
 
         The model mode controls parameter sharing:
         ``global`` uses one theta vector, ``specieswise`` uses ``[S, 3]``
         theta, and ``genewise`` uses ``[G, 3]`` theta addressed by the cached
-        family index.  In memory-safe resident-batch mode, this returns the
-        active batch matrix; otherwise it returns the full resident matrix.
+        family index.  In memory-safe resident-batch mode, this returns tensors
+        for the active batch; otherwise it returns the full resident state.
         """
         static = self._active_static()
         theta = self._active_theta()
@@ -1610,7 +1623,21 @@ class GeneReconModel(torch.nn.Module):
             ),
             convergence_check_interval=static.convergence_check_interval,
         )
-        return Pi_out["Pi"] if original_order else Pi_out["Pi_wave_ordered"]
+        pi = Pi_out["Pi"] if original_order else Pi_out["Pi_wave_ordered"]
+        return ReconciliationState(
+            e=E_out["E"],
+            pi=pi,
+            log_p_s=log_pS,
+            log_p_d=log_pD,
+            log_p_l=log_pL,
+            max_transfer=max_transfer_vec,
+            origination_probs=static.origination_probs,
+        )
+
+    @torch.no_grad()
+    def pi_matrix(self, *, original_order: bool = True) -> torch.Tensor:
+        """Return converged Pi rows for the retained uniform-transfer path."""
+        return self.reconciliation_state(original_order=original_order).pi
 
     # ──────────────────────────────────────────────────────────────────
     # Parameter management

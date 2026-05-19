@@ -247,6 +247,9 @@ def test_workflow_and_backtracking_use_public_model_surface():
         "model._batch_statics",
         "model._static",
         'getattr(model, "_',
+        "from gpurec.api.autograd import _extract_parameters",
+        "Pi_wave_forward",
+        "E_fixed_point",
     )
 
     offenders: list[str] = []
