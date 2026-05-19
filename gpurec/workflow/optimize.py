@@ -100,6 +100,49 @@ def _resume_float(
     return number
 
 
+def _normalize_resume_identity_value(key: str, value: Any) -> Any:
+    if key in {"species_tree", "families_file"} and value is not None:
+        return str(Path(value).expanduser().resolve())
+    return value
+
+
+def _validate_resume_compatibility(
+    *,
+    path: Path,
+    config: RunConfig,
+    model: GeneReconModel,
+    payload: dict[str, Any],
+) -> None:
+    checkpoint_config = payload.get("config")
+    if isinstance(checkpoint_config, dict):
+        current_config = config.to_dict()
+        for key in ("species_tree", "families_file", "mode", "start", "max_families"):
+            if key not in checkpoint_config:
+                continue
+            checkpoint_value = _normalize_resume_identity_value(
+                key,
+                checkpoint_config.get(key),
+            )
+            current_value = _normalize_resume_identity_value(
+                key,
+                current_config.get(key),
+            )
+            if checkpoint_value != current_value:
+                raise RuntimeError(
+                    f"checkpoint {path} is incompatible with current run: "
+                    f"config.{key} differs"
+                )
+
+    checkpoint_family_names = payload.get("family_names")
+    if checkpoint_family_names is not None:
+        model_family_names = list(getattr(model, "family_names", []))
+        if list(checkpoint_family_names) != model_family_names:
+            raise RuntimeError(
+                f"checkpoint {path} is incompatible with current run: "
+                "family_names differ"
+            )
+
+
 def _family_names(model: GeneReconModel) -> list[str]:
     return model.family_names
 
@@ -289,6 +332,12 @@ class OptimizationRunner:
                 resume_payload = load_checkpoint(
                     config.resume_from,
                     map_location=config.device,
+                )
+                _validate_resume_compatibility(
+                    path=config.resume_from,
+                    config=config,
+                    model=model,
+                    payload=resume_payload,
                 )
                 restore_model_theta(model, resume_payload)
                 start_step = int(

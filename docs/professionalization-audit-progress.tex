@@ -1247,6 +1247,17 @@ reproducible by documenting the required locked release build before setting
 release-metadata guard checks that the tests README keeps the build command,
 environment variable, and targeted stochastic backtracking smoke together.
 
+\subsection{Resume Checkpoint Identity Validation}
+
+Optimization resume now validates checkpoint identity before restoring model
+parameters.  Saved configuration fields that define the run identity
+(\texttt{species\_tree}, \texttt{families\_file}, \texttt{mode},
+\texttt{start}, and \texttt{max\_families}) are compared with the active
+\texttt{RunConfig}, with path fields normalized to absolute paths, and saved
+\texttt{family\_names} must match the current model ordering.  This prevents a
+stale checkpoint from overwriting theta rows or convergence metadata for a
+different family set or optimizer mode.
+
 \section{Verification Log}
 
 \begin{center}
@@ -2504,6 +2515,18 @@ CPU unit gate after backtracking smoke README guidance &
 \texttt{379 passed, 28 deselected} \\
 \texttt{python scripts/check\_release\_metadata.py} &
 Release metadata checker after backtracking smoke README guidance &
+\texttt{expected license blockers} \\
+\texttt{python -m py\_compile gpurec/workflow/optimize.py tests/unit/test\_workflow.py} &
+Resume checkpoint identity validation syntax &
+\texttt{ok} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q tests/unit/test\_workflow.py -k "..."} &
+Focused resume checkpoint identity guards &
+\texttt{7 passed, 264 deselected} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
+CPU unit gate after resume checkpoint identity validation &
+\texttt{381 passed, 28 deselected} \\
+\texttt{python scripts/check\_release\_metadata.py} &
+Release metadata checker after resume checkpoint identity validation &
 \texttt{expected license blockers} \\
 \bottomrule
 \end{tabular}

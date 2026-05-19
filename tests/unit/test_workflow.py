@@ -2731,6 +2731,79 @@ def test_optimization_runner_discards_resume_optimizer_state_on_phase_mismatch(
 
 
 @pytest.mark.parametrize(
+    ("payload_update", "message"),
+    [
+        ({"family_names": ["fam_a", "fam_b"]}, "family_names differ"),
+        ({"config": {"mode": "genewise"}}, r"config\.mode differs"),
+    ],
+)
+def test_optimization_runner_resume_rejects_incompatible_checkpoint_identity(
+    tmp_path: Path,
+    monkeypatch,
+    payload_update: dict[str, object],
+    message: str,
+):
+    class FakeResumeModel:
+        def __init__(self):
+            self.theta = torch.nn.Parameter(torch.zeros(2, 3, dtype=torch.float32))
+            self.family_names = ["fam_b", "fam_a"]
+            self.closed = False
+
+        def clear(self):
+            raise AssertionError("theta should not be restored before identity check")
+
+        def close(self):
+            self.closed = True
+
+    class FakeResumeRunner(OptimizationRunner):
+        def build_model(self):
+            self.fake_model = FakeResumeModel()
+            return self.fake_model
+
+    config = RunConfig(
+        species_tree=tmp_path / "sp.nwk",
+        families_file=tmp_path / "families.txt",
+        out_dir=tmp_path / "out",
+        mode="global",
+        device="cpu",
+        optimizer="adam",
+        steps=1,
+        resume_from=tmp_path / "resume.pt",
+        checkpoint_every=0,
+        log_every=10,
+    )
+
+    def fake_load_checkpoint(path, *, map_location):
+        payload = {
+            "theta": torch.zeros(2, 3, dtype=torch.float32),
+            "optimizer_state": None,
+            "next_step": 1,
+            "config": config.to_dict(),
+            "family_names": ["fam_b", "fam_a"],
+            "status": {
+                "previous_objective": 1.5,
+                "stable_loss_steps": 0,
+            },
+        }
+        if "config" in payload_update:
+            config_update = payload_update["config"]
+            assert isinstance(config_update, dict)
+            payload["config"] = {**payload["config"], **config_update}
+        if "family_names" in payload_update:
+            payload["family_names"] = payload_update["family_names"]
+        return payload
+
+    workflow_optimize_module = importlib.import_module("gpurec.workflow.optimize")
+    monkeypatch.setattr(workflow_optimize_module, "load_checkpoint", fake_load_checkpoint)
+    runner = FakeResumeRunner(config)
+
+    with pytest.raises(RuntimeError, match=message):
+        runner.run()
+
+    assert runner.fake_model.closed
+
+
+@pytest.mark.parametrize(
     ("payload_update", "status_update", "message"),
     [
         ({"next_step": True}, {}, r"invalid next_step"),
