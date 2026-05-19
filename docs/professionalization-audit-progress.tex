@@ -515,6 +515,14 @@ checks, gradient-norm stopping, loss-change stopping, and
 \texttt{best\_likelihood\_min\_delta}; zero remains accepted for exacting
 regression runs.
 
+\subsection{Uniform Chunked Constructor Guardrails}
+
+\texttt{UniformChunkedReconModel} now matches the public error ordering of the
+main API more closely.  Invalid \texttt{theta\_init\_rates} are rejected before
+tree or family-file IO, and unavailable CUDA devices fail with a clear runtime
+message before preprocessing starts.  The AleRax constructor applies the same
+early checks before parsing the families file.
+
 \section{Verification Log}
 
 \begin{center}
@@ -792,6 +800,15 @@ Workflow tolerance validation regressions &
 \texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
 CPU unit gate after tolerance-validation cleanup &
 \texttt{75 passed, 27 deselected} \\
+\texttt{python -m py\_compile gpurec/api/uniform\_chunked.py tests/unit/test\_workflow.py} &
+Uniform chunked constructor guard syntax &
+\texttt{ok} \\
+\texttt{pytest -q tests/unit/test\_workflow.py} &
+Uniform chunked constructor regressions &
+\texttt{53 passed after uniform-guard cleanup} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
+CPU unit gate after uniform-guard cleanup &
+\texttt{77 passed, 27 deselected} \\
 \bottomrule
 \end{tabular}
 \end{center}

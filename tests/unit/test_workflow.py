@@ -223,6 +223,43 @@ def test_uniform_chunked_alerax_constructor_validates_mode_before_io(tmp_path: P
         )
 
 
+def test_uniform_chunked_constructors_reject_bad_theta_init_before_io(tmp_path: Path):
+    with pytest.raises(ValueError, match="theta_init_rates"):
+        UniformChunkedReconModel.from_trees(
+            tmp_path / "missing_species.nwk",
+            [tmp_path / "missing_gene.nwk"],
+            device="cpu",
+            theta_init_rates=(0.0, 0.1, 0.1),
+        )
+    with pytest.raises(ValueError, match="theta_init_rates"):
+        UniformChunkedReconModel.from_alerax_families(
+            tmp_path / "missing_species.nwk",
+            tmp_path / "missing_families.txt",
+            device="cpu",
+            theta_init_rates=(0.1, -0.1, 0.1),
+        )
+
+
+def test_uniform_chunked_constructors_reject_unavailable_cuda_before_io(
+    tmp_path: Path,
+    monkeypatch,
+):
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+
+    with pytest.raises(RuntimeError, match="CUDA was requested"):
+        UniformChunkedReconModel.from_trees(
+            tmp_path / "missing_species.nwk",
+            [tmp_path / "missing_gene.nwk"],
+            device="cuda",
+        )
+    with pytest.raises(RuntimeError, match="CUDA was requested"):
+        UniformChunkedReconModel.from_alerax_families(
+            tmp_path / "missing_species.nwk",
+            tmp_path / "missing_families.txt",
+            device="cuda",
+        )
+
+
 def test_build_alerax_workflow_model_forwards_run_config(tmp_path: Path, monkeypatch):
     config = RunConfig(
         species_tree=tmp_path / "sp.nwk",
