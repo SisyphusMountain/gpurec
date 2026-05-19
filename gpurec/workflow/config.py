@@ -169,6 +169,12 @@ class RunConfig:
             raise ValueError("adaptive convergence_check_interval must be even")
         if self.min_rate <= 0.0 or self.max_rate <= self.min_rate:
             raise ValueError("rate bounds must satisfy 0 < min_rate < max_rate")
+        if (
+            self.theta_init_d <= 0.0
+            or self.theta_init_l <= 0.0
+            or self.theta_init_t <= 0.0
+        ):
+            raise ValueError("theta_init_d/l/t must be strictly positive")
         if self.optimizer not in {"adam", "adagrad", "lbfgs", "adam-lbfgs"}:
             raise ValueError("optimizer must be adam, adagrad, lbfgs, or adam-lbfgs")
         if self.steps < 1:

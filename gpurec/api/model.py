@@ -171,6 +171,23 @@ def _normalize_batch_packing(value: str | None) -> str:
     return normalize_batch_packing(value)
 
 
+def _theta_init_base_from_rates(
+    theta_init_rates: Optional[tuple[float, float, float]],
+    *,
+    dtype: torch.dtype,
+    device: torch.device,
+) -> torch.Tensor | None:
+    if theta_init_rates is None:
+        return None
+    rates = torch.as_tensor(theta_init_rates, dtype=dtype, device=device)
+    if rates.numel() != 3:
+        raise ValueError("theta_init_rates must contain exactly three D/L/T rates")
+    rates = rates.reshape(3)
+    if torch.any(rates <= 0):
+        raise ValueError("theta_init_rates must be strictly positive")
+    return torch.log2(rates)
+
+
 def _normalize_prefetch_batches(value: int | str | None, *, lazy: bool) -> int | str:
     if value is None:
         return "all" if lazy else 0
@@ -942,6 +959,11 @@ class GeneReconModel(torch.nn.Module):
         genewise, specieswise = _mode_to_flags(mode)
         if isinstance(device, str):
             device = torch.device(device)
+        theta_base = _theta_init_base_from_rates(
+            theta_init_rates,
+            dtype=dtype,
+            device=device,
+        )
         ds = GeneDataset(
             species_tree_path=species_tree,
             gene_tree_paths=gene_trees,
@@ -953,19 +975,15 @@ class GeneReconModel(torch.nn.Module):
             refresh_preprocess_cache=refresh_preprocess_cache,
         )
         theta_init = None
-        if theta_init_rates is not None:
-            D, L, T = theta_init_rates
-            base = torch.log2(
-                torch.tensor([D, L, T], dtype=dtype, device=device)
-            )
+        if theta_base is not None:
             if mode == "specieswise":
-                theta_init = base.unsqueeze(0).expand(int(ds.S), -1).clone()
+                theta_init = theta_base.unsqueeze(0).expand(int(ds.S), -1).clone()
             elif mode == "genewise":
                 theta_init = (
-                    base.unsqueeze(0).expand(len(gene_trees), -1).clone()
+                    theta_base.unsqueeze(0).expand(len(gene_trees), -1).clone()
                 )
             else:
-                theta_init = base
+                theta_init = theta_base
         return cls(
             dataset=ds,
             mode=mode,
@@ -993,6 +1011,11 @@ class GeneReconModel(torch.nn.Module):
         genewise, specieswise = _mode_to_flags(mode)
         if isinstance(device, str):
             device = torch.device(device)
+        theta_base = _theta_init_base_from_rates(
+            theta_init_rates,
+            dtype=dtype,
+            device=device,
+        )
         family_names, tree_paths, leaf_maps = parse_alerax_family_file(
             families_file,
             start=start,
@@ -1011,15 +1034,13 @@ class GeneReconModel(torch.nn.Module):
             leaf_species_maps=leaf_maps,
         )
         theta_init = None
-        if theta_init_rates is not None:
-            D, L, T = theta_init_rates
-            base = torch.log2(torch.tensor([D, L, T], dtype=dtype, device=device))
+        if theta_base is not None:
             if mode == "specieswise":
-                theta_init = base.unsqueeze(0).expand(int(ds.S), -1).clone()
+                theta_init = theta_base.unsqueeze(0).expand(int(ds.S), -1).clone()
             elif mode == "genewise":
-                theta_init = base.unsqueeze(0).expand(len(family_names), -1).clone()
+                theta_init = theta_base.unsqueeze(0).expand(len(family_names), -1).clone()
             else:
-                theta_init = base
+                theta_init = theta_base
         return cls(
             dataset=ds,
             mode=mode,

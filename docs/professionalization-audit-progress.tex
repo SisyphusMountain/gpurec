@@ -453,6 +453,14 @@ now recommends the project \texttt{hogenom} extra before a direct
 redistribution blockers, including license selection, Rust backtracking binary
 packaging, clean-checkout hygiene, and CPU-safe pre-release gates.
 
+\subsection{Theta Initialization Validation}
+
+\texttt{RunConfig} now rejects nonpositive D/L/T initialization rates before
+workflow construction.  The public \texttt{GeneReconModel} tree and AleRax
+constructors share an early theta-initialization helper, so bad API inputs fail
+with clear \texttt{ValueError} messages before tree parsing or missing-file
+errors can hide the issue.
+
 \section{Verification Log}
 
 \begin{center}
@@ -658,6 +666,15 @@ HOGENOM W\&B dependency-message syntax &
 \texttt{rg -n "bundled HOGENOM\textbar{}uv pip install wandb\textbar{}memory policy default" README.md docs/lean-fast-path.md scripts} &
 Release-doc wording guard &
 \texttt{no matches} \\
+\texttt{python -m py\_compile gpurec/api/model.py gpurec/workflow/config.py tests/unit/test\_workflow.py} &
+Theta initialization validation syntax &
+\texttt{ok} \\
+\texttt{pytest -q tests/unit/test\_workflow.py} &
+Workflow and public constructor theta-init regressions &
+\texttt{34 passed after theta-init validation} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
+CPU unit gate after theta-init validation &
+\texttt{57 passed, 27 deselected} \\
 \bottomrule
 \end{tabular}
 \end{center}

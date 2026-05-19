@@ -104,6 +104,45 @@ def test_run_config_requires_budget_for_nonsequential_packing(tmp_path: Path):
         )
 
 
+@pytest.mark.parametrize(
+    "rates",
+    [
+        {"theta_init_d": 0.0},
+        {"theta_init_l": -0.1},
+        {"theta_init_t": 0.0},
+    ],
+)
+def test_run_config_rejects_nonpositive_theta_init_rates(
+    tmp_path: Path,
+    rates: dict[str, float],
+):
+    with pytest.raises(ValueError, match="theta_init"):
+        RunConfig(
+            species_tree=tmp_path / "sp.nwk",
+            families_file=tmp_path / "families.txt",
+            out_dir=tmp_path / "out",
+            device="cpu",
+            **rates,
+        )
+
+
+def test_gene_recon_constructors_reject_bad_theta_init_before_io(tmp_path: Path):
+    with pytest.raises(ValueError, match="theta_init_rates"):
+        GeneReconModel.from_trees(
+            tmp_path / "missing_species.nwk",
+            [tmp_path / "missing_gene.nwk"],
+            device="cpu",
+            theta_init_rates=(0.0, 0.1, 0.1),
+        )
+    with pytest.raises(ValueError, match="theta_init_rates"):
+        GeneReconModel.from_alerax_families(
+            tmp_path / "missing_species.nwk",
+            tmp_path / "missing_families.txt",
+            device="cpu",
+            theta_init_rates=(0.1, -0.1, 0.1),
+        )
+
+
 def test_build_alerax_workflow_model_forwards_run_config(tmp_path: Path, monkeypatch):
     config = RunConfig(
         species_tree=tmp_path / "sp.nwk",
