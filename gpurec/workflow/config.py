@@ -59,6 +59,85 @@ def _resolve_path(value: str | Path) -> Path:
     return Path(value).expanduser().resolve()
 
 
+def _reject_json_constant(constant: str) -> None:
+    raise ValueError(f"invalid JSON numeric constant {constant}")
+
+
+def load_json_object(path: str | Path, *, description: str = "config") -> dict[str, Any]:
+    path = Path(path)
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        detail = exc.strerror or str(exc)
+        raise ValueError(f"could not read {description} {path}: {detail}") from exc
+    try:
+        data = json.loads(text, parse_constant=_reject_json_constant)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"invalid JSON {description} {path}: {exc.msg}") from exc
+    except ValueError as exc:
+        raise ValueError(f"invalid JSON {description} {path}: {exc}") from exc
+    if not isinstance(data, dict):
+        raise ValueError(f"{description} {path} must contain a JSON object")
+    return data
+
+
+_JSON_INT_FIELDS = {
+    "start",
+    "max_families",
+    "clade_budget",
+    "max_wave_size",
+    "fixed_iters_e",
+    "max_iters_e",
+    "fixed_iters_pi",
+    "neumann_terms",
+    "convergence_check_interval",
+    "steps",
+    "adam_warmup_steps",
+    "lbfgs_history_size",
+    "lbfgs_max_iter",
+    "loss_patience",
+    "best_likelihood_patience",
+    "checkpoint_every",
+    "log_every",
+}
+_JSON_FLOAT_FIELDS = {
+    "tol_e",
+    "e_logsumexp_tol",
+    "pi_max_diff_tol",
+    "gradient_change_tol",
+    "gradient_change_rtol",
+    "theta_init_d",
+    "theta_init_l",
+    "theta_init_t",
+    "min_rate",
+    "max_rate",
+    "lr",
+    "lbfgs_lr",
+    "grad_inf_tol",
+    "loss_change_tol",
+    "best_likelihood_min_delta",
+}
+_JSON_BOOL_FIELDS = {"refresh_preprocess_cache", "adaptive_iters"}
+
+
+def _validate_json_scalar_types(data: dict[str, Any]) -> None:
+    for name in _JSON_INT_FIELDS:
+        if name not in data or data[name] is None:
+            continue
+        if isinstance(data[name], bool) or not isinstance(data[name], int):
+            raise ValueError(f"{name} must be an integer")
+    for name in _JSON_FLOAT_FIELDS:
+        if name not in data:
+            continue
+        if isinstance(data[name], bool) or not isinstance(data[name], (int, float)):
+            raise ValueError(f"{name} must be a number")
+    for name in _JSON_BOOL_FIELDS:
+        if name not in data:
+            continue
+        if not isinstance(data[name], bool):
+            raise ValueError(f"{name} must be true or false")
+
+
 @dataclass
 class RunConfig:
     species_tree: Path
@@ -222,15 +301,22 @@ class RunConfig:
         unknown = sorted(str(key) for key in data if key not in allowed)
         if unknown:
             raise ValueError(f"unknown RunConfig field(s): {', '.join(unknown)}")
+        _validate_json_scalar_types(data)
         return cls(**dict(data))
 
     @classmethod
     def from_json(cls, path: str | Path) -> "RunConfig":
-        return cls.from_dict(json.loads(Path(path).read_text(encoding="utf-8")))
+        return cls.from_dict(load_json_object(path))
 
     def write_json(self, path: str | Path) -> None:
         Path(path).write_text(
-            json.dumps(self.to_dict(), indent=2, sort_keys=True) + "\n",
+            json.dumps(
+                self.to_dict(),
+                allow_nan=False,
+                indent=2,
+                sort_keys=True,
+            )
+            + "\n",
             encoding="utf-8",
         )
 

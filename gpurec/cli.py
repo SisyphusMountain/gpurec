@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 import argparse
-import json
 from pathlib import Path
 from typing import Any
 
 from gpurec.core.batch_planning import normalize_family_chunk_size
 from gpurec.workflow import RunConfig, SamplingConfig, optimize, sample
+from gpurec.workflow.config import load_json_object
 
 
 _EXPECTED_WORKFLOW_ERRORS = (ValueError, OSError, RuntimeError)
@@ -28,18 +28,7 @@ def _config_data(path: Path | None) -> dict[str, Any]:
             "Hydra-style YAML configs must be converted to JSON or passed as "
             "explicit CLI flags"
         )
-    try:
-        text = path.read_text(encoding="utf-8")
-    except OSError as exc:
-        detail = exc.strerror or str(exc)
-        raise ValueError(f"could not read config {path}: {detail}") from exc
-    try:
-        data = json.loads(text)
-    except json.JSONDecodeError as exc:
-        raise ValueError(f"invalid JSON config {path}: {exc.msg}") from exc
-    if not isinstance(data, dict):
-        raise ValueError(f"config {path} must contain a JSON object")
-    return data
+    return load_json_object(path)
 
 
 def _set_if_present(data: dict[str, Any], args: argparse.Namespace, name: str) -> None:
@@ -437,6 +426,11 @@ def main(argv: list[str] | None = None) -> None:
             opt_result = optimize(run_config)
         except _EXPECTED_WORKFLOW_ERRORS as exc:
             parser.error(str(exc))
+        if opt_result.status == "failed":
+            parser.error(
+                "optimization failed; refusing to sample from a failed run "
+                f"({opt_result.reason})"
+            )
         checkpoint = run_config.out_dir / "checkpoints" / "best.pt"
         if not checkpoint.exists():
             checkpoint = run_config.out_dir / "checkpoints" / "latest.pt"

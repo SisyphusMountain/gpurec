@@ -686,6 +686,15 @@ project README and a new \texttt{scripts/README.md} point production users to
 launchers keep their legacy module headers and remain named in the scripts
 README.
 
+\subsection{Workflow JSON and Resume Guards}
+
+Workflow config loading now uses a strict JSON object loader shared by
+\texttt{RunConfig.from\_json()} and the CLI.  Non-standard
+\texttt{NaN}/\texttt{Infinity} constants and badly typed scalar JSON values fail
+with field-specific, no-traceback errors.  \texttt{gpurec run} refuses to sample
+when optimization returns failed, and resume now loads a checkpoint once so
+\texttt{theta}/status and optimizer state cannot come from different reads.
+
 \section{Verification Log}
 
 \begin{center}
@@ -1164,6 +1173,18 @@ Workflow suite after HOGENOM script-boundary docs &
 \texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
 CPU unit gate after HOGENOM script-boundary docs &
 \texttt{142 passed, 27 deselected} \\
+\texttt{python -m py\_compile gpurec/workflow/config.py gpurec/cli.py ...} &
+Workflow JSON and resume guard syntax &
+\texttt{ok} \\
+\texttt{pytest -q tests/unit/test\_workflow.py::test\_run\_config\_... ...} &
+Focused workflow JSON/resume regressions &
+\texttt{9 passed} \\
+\texttt{pytest -q tests/unit/test\_workflow.py} &
+Workflow suite after JSON/resume guards &
+\texttt{114 passed} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
+CPU unit gate after JSON/resume guards &
+\texttt{151 passed, 27 deselected} \\
 \bottomrule
 \end{tabular}
 \end{center}

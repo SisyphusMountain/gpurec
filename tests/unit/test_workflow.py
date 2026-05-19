@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib
 import json
 import math
 import sys
@@ -71,6 +72,26 @@ def test_run_config_json_roundtrip(tmp_path: Path):
     assert loaded.species_tree.is_absolute()
     assert loaded.families_file.is_absolute()
     assert loaded.out_dir.is_absolute()
+
+
+def test_run_config_from_json_rejects_nonstandard_numeric_constants(tmp_path: Path):
+    path = tmp_path / "config.json"
+    path.write_text(
+        "\n".join(
+            [
+                "{",
+                f'  "species_tree": "{tmp_path / "sp.nwk"}",',
+                f'  "families_file": "{tmp_path / "families.txt"}",',
+                f'  "out_dir": "{tmp_path / "out"}",',
+                '  "tol_e": NaN',
+                "}",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="invalid JSON numeric constant NaN"):
+        RunConfig.from_json(path)
 
 
 def test_sampling_config_from_cli_args_maps_shared_fields(tmp_path: Path):
@@ -668,6 +689,71 @@ def test_cli_reports_missing_json_config_without_traceback(tmp_path: Path, capsy
     assert "Traceback" not in captured.err
 
 
+@pytest.mark.parametrize("constant", ["NaN", "Infinity", "-Infinity"])
+def test_cli_rejects_nonstandard_json_constants_without_traceback(
+    tmp_path: Path,
+    capsys,
+    constant: str,
+):
+    path = tmp_path / "config.json"
+    path.write_text(
+        "\n".join(
+            [
+                "{",
+                f'  "species_tree": "{tmp_path / "sp.nwk"}",',
+                f'  "families_file": "{tmp_path / "families.txt"}",',
+                f'  "out_dir": "{tmp_path / "out"}",',
+                f'  "tol_e": {constant}',
+                "}",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(["optimize", "--config", str(path)])
+
+    captured = capsys.readouterr()
+    assert exc_info.value.code == 2
+    assert "invalid JSON config" in captured.err
+    assert constant in captured.err
+    assert "Traceback" not in captured.err
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("fixed_iters_pi", "64", "fixed_iters_pi"),
+        ("lr", "0.01", "lr"),
+        ("adaptive_iters", "false", "adaptive_iters"),
+    ],
+)
+def test_cli_rejects_bad_typed_json_config_values_without_traceback(
+    tmp_path: Path,
+    capsys,
+    field: str,
+    value: object,
+    message: str,
+):
+    path = tmp_path / "config.json"
+    payload = {
+        "species_tree": str(tmp_path / "sp.nwk"),
+        "families_file": str(tmp_path / "families.txt"),
+        "out_dir": str(tmp_path / "out"),
+        "device": "cpu",
+        field: value,
+    }
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(["optimize", "--config", str(path)])
+
+    captured = capsys.readouterr()
+    assert exc_info.value.code == 2
+    assert message in captured.err
+    assert "Traceback" not in captured.err
+
+
 def test_cli_rejects_unknown_json_config_keys_without_traceback(
     tmp_path: Path,
     capsys,
@@ -764,6 +850,39 @@ def test_cli_run_reports_optimize_errors_without_traceback(
     captured = capsys.readouterr()
     assert exc_info.value.code == 2
     assert "workflow failed" in captured.err
+    assert "Traceback" not in captured.err
+
+
+def test_cli_run_refuses_sampling_after_failed_optimization(
+    tmp_path: Path,
+    capsys,
+    monkeypatch,
+):
+    checkpoint_dir = tmp_path / "out" / "checkpoints"
+    checkpoint_dir.mkdir(parents=True)
+    (checkpoint_dir / "latest.pt").write_bytes(b"not used")
+
+    def failed_optimize(config):
+        return SimpleNamespace(
+            out_dir=config.out_dir,
+            status="failed",
+            reason="nonfinite_objective_or_gradient",
+            final_nll_bits=math.inf,
+        )
+
+    def unexpected_sample(config):
+        raise AssertionError("sample should not be called")
+
+    monkeypatch.setattr("gpurec.cli.optimize", failed_optimize)
+    monkeypatch.setattr("gpurec.cli.sample", unexpected_sample)
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(_minimal_workflow_cli_args("run", tmp_path))
+
+    captured = capsys.readouterr()
+    assert exc_info.value.code == 2
+    assert "optimization failed" in captured.err
+    assert "nonfinite_objective_or_gradient" in captured.err
     assert "Traceback" not in captured.err
 
 
@@ -1502,6 +1621,78 @@ def test_optimization_runner_reports_discarded_resume_optimizer_state(tmp_path: 
     )
     assert discarded["resume_optimizer_state"] == "discarded"
     assert "incompatible optimizer state" in discarded["resume_optimizer_error"]
+
+
+def test_optimization_runner_resume_loads_checkpoint_once(tmp_path: Path, monkeypatch):
+    class FakeResumeModel:
+        def __init__(self):
+            self.theta = torch.nn.Parameter(torch.zeros(3, dtype=torch.float32))
+            self.family_names: list[str] = []
+            self.n_families = 0
+            self.n_species = 2
+            self.batch_metadata = []
+            self.closed = False
+
+        def full_loss(self):
+            return self.theta.square().sum() + 1.0
+
+        def clamp_theta_(self, min_rate, max_rate):
+            with torch.no_grad():
+                self.theta.clamp_(min=-4.0, max=4.0)
+
+        def solver_stat_records(self):
+            return []
+
+        def clear(self):
+            return None
+
+        def close(self):
+            self.closed = True
+
+    class FakeResumeRunner(OptimizationRunner):
+        def build_model(self):
+            self.fake_model = FakeResumeModel()
+            return self.fake_model
+
+    resume_path = tmp_path / "resume.pt"
+    load_calls: list[tuple[Path, str]] = []
+
+    def fake_load_checkpoint(path, *, map_location):
+        load_calls.append((Path(path), str(map_location)))
+        return {
+            "theta": torch.tensor([0.25, -0.125, 0.0625], dtype=torch.float32),
+            "optimizer_state": None,
+            "next_step": 1,
+            "status": {
+                "previous_objective": 1.5,
+                "stable_loss_steps": 0,
+            },
+        }
+
+    workflow_optimize_module = importlib.import_module("gpurec.workflow.optimize")
+    monkeypatch.setattr(workflow_optimize_module, "load_checkpoint", fake_load_checkpoint)
+    config = RunConfig(
+        species_tree=tmp_path / "sp.nwk",
+        families_file=tmp_path / "families.txt",
+        out_dir=tmp_path / "out",
+        mode="global",
+        device="cpu",
+        optimizer="adam",
+        steps=1,
+        resume_from=resume_path,
+        checkpoint_every=0,
+        log_every=10,
+    )
+    runner = FakeResumeRunner(config)
+
+    result = runner.run()
+
+    assert load_calls == [(resume_path.resolve(), "cpu")]
+    assert result.status == "not_converged"
+    assert runner.fake_model.closed
+    assert load_checkpoint(config.out_dir / "checkpoints" / "latest.pt")[
+        "last_row"
+    ]["resume_optimizer_state"] == "missing"
 
 
 def test_activate_family_batch_returns_batch_local_offset():

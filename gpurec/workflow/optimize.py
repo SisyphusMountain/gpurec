@@ -201,13 +201,17 @@ class OptimizationRunner:
         status = {"status": "running", "reason": "running"}
         final_row: dict[str, Any] = {}
         resume_info: dict[str, Any] = {}
+        resume_payload: dict[str, Any] | None = None
 
         try:
             if config.resume_from is not None:
-                payload = load_checkpoint(config.resume_from, map_location=config.device)
-                restore_model_theta(model, payload)
-                start_step = int(payload.get("next_step", 0))
-                ckpt_status = payload.get("status") or {}
+                resume_payload = load_checkpoint(
+                    config.resume_from,
+                    map_location=config.device,
+                )
+                restore_model_theta(model, resume_payload)
+                start_step = int(resume_payload.get("next_step", 0))
+                ckpt_status = resume_payload.get("status") or {}
                 best_nll = ckpt_status.get("best_nll_bits")
                 best_step = ckpt_status.get("best_step")
                 previous_objective = ckpt_status.get("previous_objective")
@@ -216,10 +220,13 @@ class OptimizationRunner:
             current_phase = self._phase_for_step(start_step)
             optimizer = self._make_optimizer(model, current_phase)
             if config.resume_from is not None:
-                payload = load_checkpoint(config.resume_from, map_location=config.device)
                 resume_info = self._restore_optimizer_state(
                     optimizer,
-                    payload.get("optimizer_state"),
+                    (
+                        None
+                        if resume_payload is None
+                        else resume_payload.get("optimizer_state")
+                    ),
                 )
 
             for step in range(start_step, config.steps):
