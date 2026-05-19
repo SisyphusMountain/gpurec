@@ -1,7 +1,7 @@
-"""Notebook-friendly API for gpurec.
+"""Notebook-friendly public API for gpurec.
 
-Public exports:
-    GeneReconModel — torch.nn.Module wrapping the gradient pipeline.
+Exports the high-level PyTorch modules plus lightweight metadata objects used
+by workflow scripts and diagnostics.
 """
 from .model import (
     ActiveFamilyBatch,

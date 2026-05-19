@@ -401,6 +401,12 @@ runtime C++/OpenMP extension-build requirement and clarifies that the Rust
 \texttt{cargo run} backtracking fallback needs a local \texttt{rustree/}
 checkout unless a prebuilt binary is supplied.
 
+\subsection{API Package Docstring}
+
+\texttt{gpurec.api} now describes its actual public exports as high-level
+PyTorch modules plus workflow metadata objects instead of claiming that
+\texttt{GeneReconModel} is the only public symbol.
+
 \section{Verification Log}
 
 \begin{center}
@@ -555,6 +561,9 @@ Install metadata dependency shape &
 \texttt{python -c "import gpurec"} / \texttt{python -m gpurec.cli --help} &
 Package import and CLI smoke after metadata cleanup &
 \texttt{ok} \\
+\texttt{python -c "import gpurec.api; print(gpurec.api.\_\_all\_\_)"} &
+API package export smoke &
+\texttt{exports match documented public surface} \\
 \bottomrule
 \end{tabular}
 \end{center}
