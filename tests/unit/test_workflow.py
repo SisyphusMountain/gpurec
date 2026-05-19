@@ -115,6 +115,30 @@ def test_run_config_rejects_unsupported_auto_chunking(tmp_path: Path):
         )
 
 
+@pytest.mark.parametrize(
+    "field",
+    [
+        "tol_e",
+        "e_logsumexp_tol",
+        "pi_max_diff_tol",
+        "gradient_change_tol",
+        "gradient_change_rtol",
+        "grad_inf_tol",
+        "loss_change_tol",
+        "best_likelihood_min_delta",
+    ],
+)
+def test_run_config_rejects_negative_tolerances(tmp_path: Path, field: str):
+    with pytest.raises(ValueError, match=field):
+        RunConfig(
+            species_tree=tmp_path / "sp.nwk",
+            families_file=tmp_path / "families.txt",
+            out_dir=tmp_path / "out",
+            device="cpu",
+            **{field: -1.0},
+        )
+
+
 def test_family_chunk_size_normalization_is_shared():
     for value in (None, "", "0", "all", "none", "null", 0):
         assert normalize_family_chunk_size(value) == 0

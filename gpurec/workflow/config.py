@@ -151,6 +151,18 @@ class RunConfig:
             raise ValueError("convergence_check_interval must be positive")
         if self.adaptive_iters and self.convergence_check_interval % 2 != 0:
             raise ValueError("adaptive convergence_check_interval must be even")
+        for name in (
+            "tol_e",
+            "e_logsumexp_tol",
+            "pi_max_diff_tol",
+            "gradient_change_tol",
+            "gradient_change_rtol",
+            "grad_inf_tol",
+            "loss_change_tol",
+            "best_likelihood_min_delta",
+        ):
+            if float(getattr(self, name)) < 0.0:
+                raise ValueError(f"{name} must be non-negative")
         if self.min_rate <= 0.0 or self.max_rate <= self.min_rate:
             raise ValueError("rate bounds must satisfy 0 < min_rate < max_rate")
         if (

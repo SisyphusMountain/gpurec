@@ -507,6 +507,14 @@ selection arguments therefore produce deterministic \texttt{ValueError}
 messages instead of being masked by a missing-file error or by the later empty
 selection check.
 
+\subsection{Workflow Tolerance Validation}
+
+\texttt{RunConfig} now rejects negative solver and optimizer tolerances before
+the workflow starts.  This covers E/Pi adaptive stopping, gradient-change
+checks, gradient-norm stopping, loss-change stopping, and
+\texttt{best\_likelihood\_min\_delta}; zero remains accepted for exacting
+regression runs.
+
 \section{Verification Log}
 
 \begin{center}
@@ -775,6 +783,15 @@ AleRax parser and workflow regressions &
 \texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
 CPU unit gate after selection-validation cleanup &
 \texttt{67 passed, 27 deselected} \\
+\texttt{python -m py\_compile gpurec/workflow/config.py tests/unit/test\_workflow.py} &
+Workflow tolerance validation syntax &
+\texttt{ok} \\
+\texttt{pytest -q tests/unit/test\_workflow.py} &
+Workflow tolerance validation regressions &
+\texttt{51 passed after tolerance-validation cleanup} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
+CPU unit gate after tolerance-validation cleanup &
+\texttt{75 passed, 27 deselected} \\
 \bottomrule
 \end{tabular}
 \end{center}
