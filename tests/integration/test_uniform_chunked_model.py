@@ -14,6 +14,7 @@ from gpurec import GeneReconModel, UniformChunkedReconModel
 
 
 pytestmark = [
+    pytest.mark.gpu,
     pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required"),
     pytest.mark.skipif(not DATA_DIR.exists(), reason=f"dataset not present: {DATA_DIR}"),
 ]

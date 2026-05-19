@@ -13,12 +13,16 @@ _ROOT = Path(__file__).resolve().parents[1]
 HOGENOM_DIR = _ROOT / "data" / "HOGENOM" / "hogenom"
 
 
-@pytest.mark.gpu
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
-@pytest.mark.skipif(
-    not (HOGENOM_DIR / "hogenom_families.local.txt").exists(),
-    reason=f"HOGENOM local AleRax fixture not present: {HOGENOM_DIR}",
-)
+pytestmark = [
+    pytest.mark.gpu,
+    pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required"),
+    pytest.mark.skipif(
+        not (HOGENOM_DIR / "hogenom_families.local.txt").exists(),
+        reason=f"HOGENOM local AleRax fixture not present: {HOGENOM_DIR}",
+    ),
+]
+
+
 def test_hogenom_alerax_family_file_likelihood_matches_reference(tmp_path):
     """Local AleRax CCP/tree-sample input gives AleRax-compatible likelihood."""
     families = HOGENOM_DIR / "hogenom_families.local.txt"

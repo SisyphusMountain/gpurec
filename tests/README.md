@@ -53,7 +53,9 @@ GPUREC_BACKTRACK_BIN=crates/gpurec-backtrack/target/release/gpurec-backtrack \
 ```
 
 `pytest.ini` declares the coarse test markers; `tests/conftest.py` auto-applies
-`unit` and `integration` by directory, marks known CUDA modules as `gpu`, marks
-selected expensive checks as `slow`, and excludes large data/output directories
-from recursive collection.  Use explicit test paths for targeted audit gates
-when a local checkout contains large generated datasets.
+`unit` and `integration` by directory, marks selected expensive checks as
+`slow`, and excludes large data/output directories from recursive collection.
+GPU-only modules declare `pytestmark = pytest.mark.gpu` at module scope so CUDA
+intent stays local to the test module instead of a filename list in conftest.
+Use explicit test paths for targeted audit gates when a local checkout contains
+large generated datasets.

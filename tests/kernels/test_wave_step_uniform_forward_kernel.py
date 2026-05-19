@@ -7,6 +7,12 @@ from gpurec.core.kernels.wave_step import (
 )
 
 
+pytestmark = [
+    pytest.mark.gpu,
+    pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required"),
+]
+
+
 def _logsumexp2_reference(terms: torch.Tensor) -> torch.Tensor:
     vmax = terms.max(dim=0).values
     safe = torch.where(torch.isfinite(vmax), vmax, torch.zeros_like(vmax))
@@ -86,7 +92,6 @@ def _balanced_species_tree(device):
     )
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
 @pytest.mark.parametrize("per_clade_constants", [False, True])
 def test_wave_step_uniform_fused_matches_sparse_ancestor_reference(per_clade_constants):
     torch.manual_seed(7)
@@ -184,7 +189,6 @@ def test_wave_step_uniform_fused_matches_sparse_ancestor_reference(per_clade_con
     torch.testing.assert_close(max_diff, expected_diff, rtol=2e-5, atol=2e-5)
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
 @pytest.mark.parametrize("leaf_logp_mode", ["shared", "genewise_scalar", "genewise_specieswise"])
 def test_wave_step_uniform_leaf_index_logp_modes_match_dense_leaf_term(leaf_logp_mode):
     torch.manual_seed(13)

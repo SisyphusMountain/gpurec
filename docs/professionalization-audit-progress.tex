@@ -844,6 +844,16 @@ fractional, boolean, and non-positive selection values with
 \texttt{ValueError}s tied to \texttt{start} or \texttt{max\_families}, so CPU
 hosts see the actionable input error instead of a masked CUDA-device failure.
 
+\subsection{Explicit GPU Marker Policy}
+
+GPU test intent now lives in the GPU-only modules themselves via module-level
+\texttt{pytestmark = pytest.mark.gpu}.  The collection hook no longer maintains
+a filename allowlist or infers GPU markers from \texttt{skipif} reason text; it
+only applies directory-level \texttt{unit}/\texttt{integration} markers and the
+known slow-test marker.  A source-level guard checks that CUDA-gated test
+modules keep module-level GPU intent, and \texttt{tests/README.md} documents
+the explicit-marker policy.
+
 \section{Verification Log}
 
 \begin{center}
@@ -1517,6 +1527,24 @@ Focused AleRax selection precedence guards &
 \texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
 CPU unit gate after AleRax selection validation &
 \texttt{218 passed, 28 deselected} \\
+\texttt{python -m py\_compile tests/conftest.py tests/integration/test\_... ...} &
+GPU marker policy syntax &
+\texttt{ok} \\
+\texttt{pytest -q tests/unit/test\_workflow.py::test\_gpu\_tests\_...} &
+GPU marker policy source guard &
+\texttt{1 passed} \\
+\texttt{pytest -q --collect-only -m gpu} &
+Explicit GPU marker collection &
+\texttt{27 selected, 220 deselected} \\
+\texttt{pytest -q --collect-only -m "unit and gpu"} &
+Unit GPU marker collection &
+\texttt{6 selected, 241 deselected} \\
+\texttt{pytest -q -m "integration and not gpu"} &
+Non-GPU integration selector after explicit GPU markers &
+\texttt{1 passed, 246 deselected} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
+CPU unit gate after explicit GPU marker policy &
+\texttt{219 passed, 28 deselected} \\
 \bottomrule
 \end{tabular}
 \end{center}
@@ -1530,8 +1558,6 @@ CPU unit gate after AleRax selection validation &
         document a Rust-toolchain requirement for source-checkout sampling.
   \item Add an installed-artifact sampling smoke once the backtracking binary
         distribution model is settled.
-  \item Replace file-name-based GPU marker inference with explicit module-level
-        GPU intent plus a meta-test for marker coverage.
   \item Keep committing small, verified increments so the branch remains
         reviewable despite the larger audit scope.
 \end{enumerate}

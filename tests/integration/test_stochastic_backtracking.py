@@ -19,8 +19,12 @@ DATA_DIR = Path(__file__).resolve().parents[1] / "data" / "test_trees_3"
 DATA_DIR_100 = Path(__file__).resolve().parents[1] / "data" / "test_trees_100"
 
 
-@pytest.mark.gpu
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+pytestmark = [
+    pytest.mark.gpu,
+    pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required"),
+]
+
+
 def test_rust_stochastic_backtracking_exports_recphyloxml():
     model = GeneReconModel.from_trees(
         str(DATA_DIR / "sp.nwk"),
@@ -57,8 +61,6 @@ def _parse_alerax_event_counts(path: Path) -> dict[str, int]:
     return counts
 
 
-@pytest.mark.gpu
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
 @pytest.mark.skipif(
     not (DATA_DIR_100 / "output_global" / "reconciliations" / "all").exists(),
     reason="test_trees_100 AleRax reconciliation fixture not present",

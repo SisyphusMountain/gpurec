@@ -24,6 +24,12 @@ _ROOT = Path(__file__).resolve().parent.parent
 TOL = 1e-3
 
 
+pytestmark = [
+    pytest.mark.gpu,
+    pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required"),
+]
+
+
 @pytest.fixture(scope="module")
 def data_dir_100():
     d = _ROOT / "data" / "test_trees_100"
@@ -266,8 +272,6 @@ def _loss_and_grad(
     return loss.detach().clone(), model.theta.grad.detach().clone()
 
 
-@pytest.mark.gpu
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
 def test_specieswise_uniform_forward_root_rows_match_saved_state(data_dir_100):
     """Full saved-state likelihood agrees with the root-row output mode."""
     device = torch.device("cuda")
@@ -292,8 +296,6 @@ def test_specieswise_uniform_forward_root_rows_match_saved_state(data_dir_100):
     assert not torch.isnan(full_out["Pibar_wave_ordered"]).any()
 
 
-@pytest.mark.gpu
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
 def test_gpu_logsumexp_traces_match_final_values(data_dir_100):
     """Opt-in convergence traces stay on GPU and match final E/root rows."""
     device = torch.device("cuda")
@@ -370,8 +372,6 @@ def test_gpu_logsumexp_traces_match_final_values(data_dir_100):
     )
 
 
-@pytest.mark.gpu
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
 def test_specieswise_uniform_backward_fast_path_runs(data_dir_1000):
     """Specieswise uniform backward runs through the retained fast path."""
     device = torch.device("cuda")
@@ -389,8 +389,6 @@ def test_specieswise_uniform_backward_fast_path_runs(data_dir_1000):
     assert torch.isfinite(grad).all()
 
 
-@pytest.mark.gpu
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
 def test_constant_specieswise_matches_global_loss_and_gradient_semantics(
     data_dir_1000,
 ):
@@ -414,8 +412,6 @@ def test_constant_specieswise_matches_global_loss_and_gradient_semantics(
     assert torch.allclose(species_grad.sum(dim=0), global_grad, atol=5e-2, rtol=2e-2)
 
 
-@pytest.mark.gpu
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
 def test_specieswise_uniform_matches_alerax_specieswise_reference(
     data_dir_100,
     tmp_path,

@@ -11,6 +11,12 @@ _ROOT = Path(__file__).resolve().parents[1]
 DATA_DIR = _ROOT / "data" / "test_trees_1000"
 
 
+pytestmark = [
+    pytest.mark.gpu,
+    pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required"),
+]
+
+
 @pytest.fixture
 def trees():
     if not torch.cuda.is_available():

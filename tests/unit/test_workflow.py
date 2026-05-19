@@ -2073,6 +2073,30 @@ def test_hogenom_scripts_are_marked_as_legacy_experiment_surface():
         assert "Legacy checkout-local HOGENOM experiment launcher" in script_text
 
 
+def test_gpu_tests_use_explicit_module_level_markers():
+    root = Path(__file__).resolve().parents[2]
+    conftest = (root / "tests" / "conftest.py").read_text(encoding="utf-8")
+
+    assert "GPU_TEST_FILES" not in conftest
+    assert "item.path.name" not in conftest
+    offenders: list[str] = []
+    this_file = Path(__file__).resolve()
+    for path in sorted((root / "tests").rglob("test_*.py")):
+        if path == this_file:
+            continue
+        text = path.read_text(encoding="utf-8")
+        if (
+            "not torch.cuda.is_available()" not in text
+            and 'reason="CUDA required"' not in text
+            and 'pytest.skip("CUDA required")' not in text
+        ):
+            continue
+        if "pytestmark" not in text or "pytest.mark.gpu" not in text:
+            offenders.append(str(path.relative_to(root)))
+
+    assert offenders == []
+
+
 def test_project_readme_documents_preprocess_cache_refresh_guidance():
     root = Path(__file__).resolve().parents[2]
     project_readme = (root / "README.md").read_text(encoding="utf-8")

@@ -9,6 +9,12 @@ from gpurec import GeneReconModel
 _ROOT = Path(__file__).resolve().parent.parent
 
 
+pytestmark = [
+    pytest.mark.gpu,
+    pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required"),
+]
+
+
 @pytest.fixture(scope="module")
 def one_gene_tree():
     if not torch.cuda.is_available():
@@ -22,7 +28,6 @@ def one_gene_tree():
     return str(data_dir / "sp.nwk"), [str(genes[0])]
 
 
-@pytest.mark.gpu
 def test_adaptive_iterations_match_fixed_when_tolerances_force_max(one_gene_tree, tmp_path):
     sp, genes = one_gene_tree
     kwargs = dict(
