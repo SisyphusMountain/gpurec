@@ -26,6 +26,7 @@ hogenom = [
     "wandb",
 ]
 dev = ["pytest", "ipython"]
+release = ["build", "twine"]
 
 [tool.setuptools.packages.find]
 where = ["."]

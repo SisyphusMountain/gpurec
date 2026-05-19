@@ -13,6 +13,24 @@ yet encoded as automated build steps.
 - Build source and wheel artifacts from a clean checkout and install them in a
   fresh environment with a PyTorch build that matches the target CUDA runtime.
 
+## Maintainer Build Path
+
+Install release tooling from the dedicated extra:
+
+```bash
+python -m pip install -e ".[release]"
+```
+
+Build and inspect distribution artifacts from a clean checkout:
+
+```bash
+python -m build
+python -m twine check dist/*
+```
+
+Do not publish artifacts until the license and Rust backtracking release model
+above are resolved.
+
 ## Source Checkout Hygiene
 
 - Preview ignored generated files before building local archives or containers:

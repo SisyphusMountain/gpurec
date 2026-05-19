@@ -341,7 +341,11 @@ def _add_sampling_args(
     parser.add_argument(
         "--backtrack-binary",
         type=Path,
-        help="Rust backtracking binary; otherwise GPUREC_BACKTRACK_BIN or cargo fallback is used.",
+        help=(
+            "Rust backtracking binary. Installed sampling requires this or "
+            "GPUREC_BACKTRACK_BIN; source checkouts can fall back to cargo "
+            "when crates/gpurec-backtrack and rustree are present."
+        ),
     )
 
 

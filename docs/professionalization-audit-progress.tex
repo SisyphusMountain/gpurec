@@ -580,6 +580,16 @@ and policy candidate validation now happens before probing CUDA memory.
 This keeps CPU-only or memory-constrained validation paths from touching CUDA
 when user-supplied policy candidates are already invalid.
 
+\subsection{Release Tooling Documentation}
+
+Packaging documentation now distinguishes source-checkout benchmark scripts
+from installed package commands.  The sampling CLI help states that installed
+sampling requires a Rust backtracking binary through \texttt{--backtrack-binary}
+or \texttt{GPUREC\_BACKTRACK\_BIN}, while source checkouts can still use the
+Cargo fallback when the Rust sources and local \texttt{rustree} checkout are
+present.  A \texttt{release} optional dependency group records the maintainer
+tooling needed for \texttt{python -m build} and \texttt{twine check}.
+
 \section{Verification Log}
 
 \begin{center}
@@ -929,6 +939,15 @@ Memory-policy validation regressions &
 \texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
 CPU unit gate after memory-policy validation cleanup &
 \texttt{91 passed, 27 deselected} \\
+\texttt{python -m py\_compile gpurec/cli.py} &
+Release-tooling CLI syntax &
+\texttt{ok} \\
+\texttt{python -m gpurec.cli sample --help} &
+Installed backtracking help text &
+\texttt{backtracking binary requirement present} \\
+\texttt{python -m pip wheel . -w /tmp/gpurec-wheel-docs-check --no-deps} &
+Release-extra wheel metadata smoke &
+\texttt{built gpurec-0.1.0 wheel; release extra present} \\
 \bottomrule
 \end{tabular}
 \end{center}

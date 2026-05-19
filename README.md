@@ -158,9 +158,10 @@ python scripts/optimize_hogenom_ccp_wandb.py \
   --no-timestamped-out-dir
 ```
 
-## Performance Check
+## Source-Checkout Performance Check
 
-The full-dataset benchmark harness is:
+The full-dataset benchmark harness lives under `profiling/` and is intended
+for source checkouts, not installed wheels:
 
 ```bash
 python profiling/bench_uniform_forward_backward_pipeline.py \
