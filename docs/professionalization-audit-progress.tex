@@ -1238,6 +1238,15 @@ future CPU-safe integration tests under \texttt{tests/integration/} covered
 without editing the workflow.  The release-metadata guard now asserts the
 marker command is present and the old file-specific command is absent.
 
+\subsection{Backtracking Smoke Build Guidance}
+
+\texttt{tests/README.md} now makes the prebuilt-binary backtracking smoke
+reproducible by documenting the required locked release build before setting
+\texttt{GPUREC\_BACKTRACK\_BIN} to
+\texttt{crates/gpurec-backtrack/target/release/gpurec-backtrack}.  A
+release-metadata guard checks that the tests README keeps the build command,
+environment variable, and targeted stochastic backtracking smoke together.
+
 \section{Verification Log}
 
 \begin{center}
@@ -2483,6 +2492,18 @@ CPU unit gate after non-GPU integration CI alignment &
 \texttt{378 passed, 28 deselected} \\
 \texttt{python scripts/check\_release\_metadata.py} &
 Release metadata checker after non-GPU integration CI alignment &
+\texttt{expected license blockers} \\
+\texttt{python -m py\_compile tests/unit/test\_release\_metadata.py} &
+Backtracking smoke README guard syntax &
+\texttt{ok} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q tests/unit/test\_release\_metadata.py -k "..."} &
+Focused tests README backtracking smoke guard &
+\texttt{2 passed, 11 deselected} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
+CPU unit gate after backtracking smoke README guidance &
+\texttt{379 passed, 28 deselected} \\
+\texttt{python scripts/check\_release\_metadata.py} &
+Release metadata checker after backtracking smoke README guidance &
 \texttt{expected license blockers} \\
 \bottomrule
 \end{tabular}

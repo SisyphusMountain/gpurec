@@ -49,6 +49,7 @@ Backtracking smoke should prefer a prebuilt Rust binary to avoid `cargo run`
 startup during Python tests:
 
 ```bash
+cargo build --locked --release --manifest-path crates/gpurec-backtrack/Cargo.toml
 GPUREC_BACKTRACK_BIN=crates/gpurec-backtrack/target/release/gpurec-backtrack \
   pytest -q tests/integration/test_stochastic_backtracking.py::test_rust_stochastic_backtracking_exports_recphyloxml
 ```
