@@ -687,6 +687,43 @@ def test_gene_recon_factories_reject_invalid_dtype_before_device_or_io(
     assert "CUDA" not in str(exc_info.value)
 
 
+@pytest.mark.parametrize("dtype", [torch.int64, torch.float16, "float32"])
+@pytest.mark.parametrize("factory", ["from_trees", "from_folder", "from_alerax_families"])
+def test_uniform_chunked_factories_reject_invalid_dtype_before_device_or_io(
+    tmp_path: Path,
+    factory: str,
+    dtype: object,
+):
+    with pytest.raises(ValueError, match="dtype") as exc_info:
+        if factory == "from_trees":
+            UniformChunkedReconModel.from_trees(
+                tmp_path / "missing_species.nwk",
+                [tmp_path / "missing_gene.nwk"],
+                device="cpu",
+                dtype=dtype,
+                theta_init_rates=(0.1, 0.1, 0.1),
+            )
+        elif factory == "from_folder":
+            UniformChunkedReconModel.from_folder(
+                tmp_path / "missing_folder",
+                device="cpu",
+                dtype=dtype,
+                theta_init_rates=(0.1, 0.1, 0.1),
+            )
+        else:
+            UniformChunkedReconModel.from_alerax_families(
+                tmp_path / "missing_species.nwk",
+                tmp_path / "missing_families.txt",
+                device="cpu",
+                dtype=dtype,
+                theta_init_rates=(0.1, 0.1, 0.1),
+            )
+
+    message = str(exc_info.value)
+    assert "CUDA" not in message
+    assert "missing" not in message
+
+
 @pytest.mark.parametrize(
     ("field", "value"),
     [

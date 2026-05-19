@@ -130,6 +130,8 @@ def _as_auto_int(name: str, value: int | float | str | None) -> int | str | None
 def _normalize_uniform_solver_kwargs(kwargs: dict[str, Any]) -> dict[str, Any]:
     """Validate public solver kwargs before CUDA setup or AleRax parsing."""
     normalized = dict(kwargs)
+    if "dtype" in normalized:
+        normalized["dtype"] = _validate_uniform_dtype(normalized["dtype"])
     if normalized.get("fixed_iters_E") is not None:
         normalized["fixed_iters_E"] = positive_int(
             "fixed_iters_E",
@@ -170,6 +172,12 @@ def _normalize_uniform_solver_kwargs(kwargs: dict[str, Any]) -> dict[str, Any]:
         if name in normalized:
             normalized[name] = bool_value(name, normalized[name])
     return normalized
+
+
+def _validate_uniform_dtype(dtype: Any) -> torch.dtype:
+    if dtype not in (torch.float32, torch.float64, torch.bfloat16):
+        raise ValueError(f"dtype must be fp32, fp64, or bf16, got {dtype}")
+    return dtype
 
 
 def _selected_gene_paths(
@@ -681,8 +689,7 @@ class UniformChunkedReconModel(torch.nn.Module):
     ) -> None:
         super().__init__()
         require_default_objective("UniformChunkedReconModel")
-        if dtype not in (torch.float32, torch.float64, torch.bfloat16):
-            raise ValueError(f"dtype must be fp32, fp64, or bf16, got {dtype}")
+        dtype = _validate_uniform_dtype(dtype)
         theta_init = theta_init_base_from_rates(
             theta_init_rates,
             dtype=dtype,

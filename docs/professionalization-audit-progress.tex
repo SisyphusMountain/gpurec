@@ -1209,6 +1209,16 @@ uses locked Cargo commands, and points to the current
 release-metadata unit guard keeps the archived progress note aligned with the
 current Rust CI commands.
 
+\subsection{Uniform Factory Dtype Validation}
+
+\texttt{UniformChunkedReconModel} now uses one dtype validator for direct
+construction and factory kwargs.  The \texttt{from\_trees},
+\texttt{from\_folder}, and \texttt{from\_alerax\_families} factories reject
+unsupported dtypes before CUDA device checks, AleRax parsing, or folder/file
+probing, so invalid values such as \texttt{torch.int64},
+\texttt{torch.float16}, or \texttt{"float32"} surface as parameter-specific
+\texttt{ValueError}s instead of unrelated CUDA or IO errors.
+
 \section{Verification Log}
 
 \begin{center}
@@ -2415,6 +2425,18 @@ CPU unit gate after backtracking note refresh &
 \texttt{368 passed, 28 deselected} \\
 \texttt{python scripts/check\_release\_metadata.py} &
 Release metadata checker after backtracking note refresh &
+\texttt{expected license blockers} \\
+\texttt{python -m py\_compile gpurec/api/uniform\_chunked.py tests/unit/test\_workflow.py} &
+Uniform factory dtype validation syntax &
+\texttt{ok} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q tests/unit/test\_workflow.py -k "..."} &
+Focused public dtype validation ordering &
+\texttt{15 passed, 253 deselected} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
+CPU unit gate after uniform factory dtype validation &
+\texttt{377 passed, 28 deselected} \\
+\texttt{python scripts/check\_release\_metadata.py} &
+Release metadata checker after uniform factory dtype validation &
 \texttt{expected license blockers} \\
 \bottomrule
 \end{tabular}
