@@ -633,6 +633,14 @@ best/latest checkpoints.  The CPU fake-model regression now checks every saved
 checkpoint row against the saved theta-derived loss, preventing pre-step metrics
 from being paired with post-step weights.
 
+\subsection{Strict AleRax Family Fields}
+
+AleRax family-file parsing now rejects malformed assignment lines, unknown
+family keys, and empty values inside family records.  This catches common input
+mistakes such as misspelled \texttt{mapping} or tree keys before preprocessing,
+instead of silently dropping mappings or accepting partially parsed family
+metadata.
+
 \section{Verification Log}
 
 \begin{center}
@@ -1039,6 +1047,18 @@ Workflow suite after checkpoint consistency fix &
 \texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
 CPU unit gate after checkpoint consistency fix &
 \texttt{102 passed, 27 deselected} \\
+\texttt{python -m py\_compile gpurec/core/model.py tests/unit/test\_alerax\_family\_input.py} &
+Strict AleRax family-field syntax &
+\texttt{ok} \\
+\texttt{pytest -q tests/unit/test\_alerax\_family\_input.py} &
+Strict AleRax family-field regressions &
+\texttt{7 passed} \\
+\texttt{pytest -q tests/unit/test\_workflow.py tests/unit/test\_alerax\_family\_input.py} &
+Workflow and family parser regressions &
+\texttt{76 passed} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
+CPU unit gate after strict AleRax family-field cleanup &
+\texttt{106 passed, 27 deselected} \\
 \bottomrule
 \end{tabular}
 \end{center}

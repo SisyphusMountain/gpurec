@@ -55,6 +55,39 @@ def test_preprocess_cache_load_uses_weights_only(tmp_path, monkeypatch):
     ]
 
 
+@pytest.mark.parametrize(
+    ("bad_line", "message"),
+    [
+        ("maping = fam.map", "unknown AleRax family key"),
+        ("gene_trees = fam.nwk", "unknown AleRax family key"),
+        ("mapping fam.map", "invalid AleRax family line"),
+        ("mapping = ", "empty AleRax family value"),
+    ],
+)
+def test_alerax_family_file_rejects_malformed_family_entries(
+    tmp_path,
+    bad_line: str,
+    message: str,
+):
+    _write(tmp_path / "fam.nwk", "(a:1,b:1);\n")
+    _write(tmp_path / "fam.map", "A:a\nB:b\n")
+    families = _write(
+        tmp_path / "families.txt",
+        "\n".join(
+            [
+                "[FAMILIES]",
+                "- fam0",
+                "starting_gene_tree = fam.nwk",
+                bad_line,
+                "",
+            ]
+        ),
+    )
+
+    with pytest.raises(ValueError, match=message):
+        parse_alerax_family_file(families)
+
+
 def test_alerax_family_file_multi_tree_ccp_matches_split_files(tmp_path):
     species_tree = _write(tmp_path / "sp.nwk", "((A:1,B:1)AB:1,C:1)root;\n")
     tree_a = _write(tmp_path / "a.nwk", "((a1:1,b1:1):1,c1:1);\n")

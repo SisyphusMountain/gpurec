@@ -66,6 +66,8 @@ def parse_alerax_family_file(
         records.append(current)
         current = None
 
+    allowed_keys = {"starting_gene_tree", "gene_tree", "mapping"}
+
     for raw in Path(families_file).read_text().splitlines():
         line = raw.strip()
         if not line or line.startswith("#") or line.startswith("["):
@@ -77,9 +79,21 @@ def parse_alerax_family_file(
                 raise ValueError(f"empty family name in {families_file}")
             current = {"name": name, "tree_paths": [], "mapping": None}
             continue
-        if current is None or "=" not in line:
+        if current is None:
             continue
+        if "=" not in line:
+            raise ValueError(
+                f"invalid AleRax family line for family {current['name']!r}: {raw!r}"
+            )
         key, value = [part.strip() for part in line.split("=", 1)]
+        if key not in allowed_keys:
+            raise ValueError(
+                f"unknown AleRax family key {key!r} in family {current['name']!r}"
+            )
+        if not value:
+            raise ValueError(
+                f"empty AleRax family value for key {key!r} in family {current['name']!r}"
+            )
         if key in {"starting_gene_tree", "gene_tree"}:
             current["tree_paths"].append(_resolve_family_path(value, base_dir))
         elif key == "mapping":
