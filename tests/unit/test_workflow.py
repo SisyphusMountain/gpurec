@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 import torch
 
+import gpurec.backtracking as backtracking
 from gpurec.backtracking import (
     EVENT_KEYS,
     _activate_family_batch,
@@ -314,6 +316,90 @@ def test_public_backtracking_rejects_invalid_seed_and_event_limits():
         sample_recphyloxml(model, max_events=0)  # type: ignore[arg-type]
     with pytest.raises(ValueError, match="seed"):
         sample_recphyloxmls(model, num_samples=1, seed=-1)  # type: ignore[arg-type]
+
+
+def test_backtracking_sampler_helpers_share_subprocess_io(tmp_path: Path, monkeypatch):
+    fake_backtracker = tmp_path / "fake_backtracker.py"
+    fake_backtracker.write_text(
+        """import json
+import pathlib
+import sys
+
+args = sys.argv[1:]
+if args[0] == "--samples":
+    num_samples = int(args[1])
+    seed = args[3]
+    output_dir = pathlib.Path(args[5])
+    input_path = pathlib.Path(args[6])
+    payload = json.loads(input_path.read_text(encoding="utf-8"))
+    output_dir.mkdir()
+    for idx in range(num_samples):
+        (output_dir / f"sample_{idx}.xml").write_text(
+            f"<sample family='{payload['family_index']}' seed='{seed}' index='{idx}'/>",
+            encoding="utf-8",
+        )
+else:
+    input_path = pathlib.Path(args[0])
+    output_path = pathlib.Path(args[1])
+    payload = json.loads(input_path.read_text(encoding="utf-8"))
+    output_path.write_text(
+        f"<single family='{payload['family_index']}' "
+        f"seed='{payload['seed']}' max='{payload['max_events']}'/>",
+        encoding="utf-8",
+    )
+""",
+        encoding="utf-8",
+    )
+
+    exported: list[dict[str, int | None]] = []
+
+    def fake_export(
+        model: object,
+        *,
+        family_index: int = 0,
+        seed: int | None = None,
+        max_events: int | None = None,
+    ) -> dict[str, int | None]:
+        payload = {
+            "family_index": family_index,
+            "seed": seed,
+            "max_events": max_events,
+        }
+        exported.append(payload)
+        return payload
+
+    monkeypatch.setattr(backtracking, "export_backtracking_input", fake_export)
+    monkeypatch.setattr(
+        backtracking,
+        "_backtrack_command",
+        lambda **_: [sys.executable, str(fake_backtracker)],
+    )
+
+    single_xml = sample_recphyloxml(
+        object(),
+        family_index=3,
+        seed=7,
+        max_events=9,
+        backtrack_binary=fake_backtracker,
+    )
+    batch_xmls = sample_recphyloxmls(
+        object(),
+        family_index=4,
+        num_samples=2,
+        seed=11,
+        max_events=13,
+        backtrack_binary=fake_backtracker,
+    )
+
+    assert single_xml == "<single family='3' seed='7' max='9'/>"
+    assert batch_xmls == [
+        "<sample family='4' seed='11' index='0'/>",
+        "<sample family='4' seed='11' index='1'/>",
+    ]
+    assert exported == [
+        {"family_index": 3, "seed": 7, "max_events": 9},
+        {"family_index": 4, "seed": 11, "max_events": 13},
+    ]
 
 
 def test_recphyloxml_event_counts_uses_shared_event_schema():

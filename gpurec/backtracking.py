@@ -7,6 +7,7 @@ import os
 import subprocess
 import tempfile
 import xml.etree.ElementTree as ET
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -109,6 +110,30 @@ def _backtrack_command(
 
 def _evaluate_backtracking_state(model: GeneReconModel) -> ReconciliationState:
     return model.reconciliation_state(original_order=True)
+
+
+def _run_backtracking_payload(
+    payload: dict[str, Any],
+    *,
+    cargo_manifest: str | Path,
+    backtrack_binary: str | Path | None,
+    build_args: Callable[[Path, Path], list[str]],
+    read_output: Callable[[Path], Any],
+) -> Any:
+    with tempfile.TemporaryDirectory(prefix="gpurec-backtrack-") as tmp:
+        tmp_path = Path(tmp)
+        input_path = tmp_path / "input.json"
+        input_path.write_text(json.dumps(payload), encoding="utf-8")
+        command = _backtrack_command(
+            cargo_manifest=cargo_manifest,
+            backtrack_binary=backtrack_binary,
+        )
+        subprocess.run(
+            command + build_args(input_path, tmp_path),
+            check=True,
+            cwd=str(_REPO_ROOT),
+        )
+        return read_output(tmp_path)
 
 
 def _family_details(species_tree_path: Path, family: FamilyInput) -> dict[str, Any]:
@@ -241,20 +266,20 @@ def sample_recphyloxml(
         seed=seed,
         max_events=max_events,
     )
-    with tempfile.TemporaryDirectory(prefix="gpurec-backtrack-") as tmp:
-        input_path = Path(tmp) / "input.json"
-        output_path = Path(tmp) / "sample.xml"
-        input_path.write_text(json.dumps(payload))
-        command = _backtrack_command(
-            cargo_manifest=cargo_manifest,
-            backtrack_binary=backtrack_binary,
-        )
-        subprocess.run(
-            command + [str(input_path), str(output_path)],
-            check=True,
-            cwd=str(_REPO_ROOT),
-        )
-        return output_path.read_text()
+
+    def build_args(input_path: Path, tmp_path: Path) -> list[str]:
+        return [str(input_path), str(tmp_path / "sample.xml")]
+
+    def read_output(tmp_path: Path) -> str:
+        return (tmp_path / "sample.xml").read_text(encoding="utf-8")
+
+    return _run_backtracking_payload(
+        payload,
+        cargo_manifest=cargo_manifest,
+        backtrack_binary=backtrack_binary,
+        build_args=build_args,
+        read_output=read_output,
+    )
 
 
 def sample_recphyloxmls(
@@ -277,33 +302,32 @@ def sample_recphyloxmls(
         seed=seed,
         max_events=max_events,
     )
-    with tempfile.TemporaryDirectory(prefix="gpurec-backtrack-") as tmp:
-        tmp_path = Path(tmp)
-        input_path = tmp_path / "input.json"
-        output_dir = tmp_path / "samples"
-        input_path.write_text(json.dumps(payload))
-        command = _backtrack_command(
-            cargo_manifest=cargo_manifest,
-            backtrack_binary=backtrack_binary,
-        )
-        subprocess.run(
-            command
-            + [
-                "--samples",
-                str(num_samples),
-                "--seed",
-                str(seed),
-                "--output-dir",
-                str(output_dir),
-                str(input_path),
-            ],
-            check=True,
-            cwd=str(_REPO_ROOT),
-        )
+
+    def build_args(input_path: Path, tmp_path: Path) -> list[str]:
         return [
-            (output_dir / f"sample_{sample_idx}.xml").read_text()
+            "--samples",
+            str(num_samples),
+            "--seed",
+            str(seed),
+            "--output-dir",
+            str(tmp_path / "samples"),
+            str(input_path),
+        ]
+
+    def read_output(tmp_path: Path) -> list[str]:
+        output_dir = tmp_path / "samples"
+        return [
+            (output_dir / f"sample_{sample_idx}.xml").read_text(encoding="utf-8")
             for sample_idx in range(num_samples)
         ]
+
+    return _run_backtracking_payload(
+        payload,
+        cargo_manifest=cargo_manifest,
+        backtrack_binary=backtrack_binary,
+        build_args=build_args,
+        read_output=read_output,
+    )
 
 
 def recphyloxml_event_counts(xml: str, *, alerax_style: bool = True) -> dict[str, int]:

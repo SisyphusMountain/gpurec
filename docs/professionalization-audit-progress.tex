@@ -415,6 +415,13 @@ exports, and the AleRax comparison script reuse that constant instead of
 duplicating their own tuples.  A CPU unit test now covers the AleRax-style
 \texttt{SL}/\texttt{DL}/\texttt{TL} direct-loss counting behavior.
 
+\subsection{Backtracking Runner Helper}
+
+\texttt{sample\_recphyloxml()} and \texttt{sample\_recphyloxmls()} now share a
+single private runner for temporary JSON input creation, backtracking command
+execution, and output readback.  A fake-binary unit test covers both public
+sampling helpers without requiring Rust, CUDA, or a real reconciliation model.
+
 \section{Verification Log}
 
 \begin{center}
@@ -581,6 +588,15 @@ Workflow and RecPhyloXML event schema regressions &
 \texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
 CPU unit gate after event-key consolidation &
 \texttt{50 passed, 27 deselected} \\
+\texttt{python -m py\_compile gpurec/backtracking.py tests/unit/test\_workflow.py} &
+Backtracking runner helper syntax &
+\texttt{ok} \\
+\texttt{pytest -q tests/unit/test\_workflow.py} &
+Workflow and fake-binary backtracking regressions &
+\texttt{28 passed after runner-helper cleanup} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
+CPU unit gate after runner-helper cleanup &
+\texttt{51 passed, 27 deselected} \\
 \bottomrule
 \end{tabular}
 \end{center}
