@@ -253,7 +253,8 @@ HOGENOM workflows discoverable from \texttt{README.md} and packaging metadata,
 auto-apply the registered \texttt{unit} and \texttt{integration} pytest markers
 by test path, and either restore or rename the currently hollow
 specieswise-uniform GPU parity test.  The README workflow and pytest marker
-items are addressed below; the parity-test item remains open.
+items are addressed below, and the specieswise GPU test was retitled as honest
+smoke/invariant coverage.
 
 \subsection{README HOGENOM Workflow Discoverability}
 
@@ -271,6 +272,15 @@ files under \texttt{tests/unit} and \texttt{tests/integration}, while keeping
 the existing \texttt{gpu} and \texttt{slow} marker rules.  \texttt{tests/README.md}
 now documents \texttt{pytest -m "unit and not gpu"} as the concise CPU unit
 gate.
+
+\subsection{Specieswise GPU Test Hygiene}
+
+The no-op reference/optimized environment toggles were removed from the
+specieswise uniform GPU tests.  The former parity test now checks a real
+forward invariant instead: the full saved-state likelihood must agree with the
+root-row output mode, and the saved Pi/Pibar tensors must be present without
+NaNs.  This avoids claiming optimized/reference parity where no separate
+reference path is selected.
 
 \section{Verification Log}
 
@@ -315,6 +325,9 @@ Path-based marker selection &
 \texttt{python scripts/... --help} &
 HOGENOM launcher/export/profile help smoke &
 \texttt{ok for W\&B, Hydra, export, profile} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q tests/unit/test\_specieswise\_uniform.py} &
+GPU specieswise test collection under CPU-only gate &
+\texttt{5 skipped} \\
 \texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m 'not gpu' ...GPU modules...} &
 GPU marker check &
 \texttt{22 deselected; exit 5 treated as expected} \\
@@ -336,9 +349,6 @@ YAML config UX &
 \begin{enumerate}[leftmargin=*]
   \item Review the larger promoted HOGENOM helper scripts for consolidation
         opportunities once the experiment interfaces settle.
-  \item Fix the no-op optimized/reference toggles in the specieswise-uniform
-        GPU parity test or retitle it as a smoke test with a separate parity
-        check.
   \item Keep committing small, verified increments so the branch remains
         reviewable despite the larger audit scope.
 \end{enumerate}

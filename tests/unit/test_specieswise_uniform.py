@@ -1,4 +1,4 @@
-"""Specieswise uniform forward/backward optimization parity tests."""
+"""Specieswise uniform forward/backward tests."""
 
 from __future__ import annotations
 
@@ -254,20 +254,9 @@ def _run_forward(
     return nll, pi_out
 
 
-def _set_reference_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    return None
-
-
-def _set_optimized_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    return None
-
-
 def _loss_and_grad(
     model: GeneReconModel,
-    set_env,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    set_env(monkeypatch)
     model.static.warm_E = None
     model.zero_grad(set_to_none=True)
     loss = model()
@@ -279,8 +268,8 @@ def _loss_and_grad(
 
 @pytest.mark.gpu
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
-def test_specieswise_uniform_forward_optimized_matches_reference(data_dir_100, monkeypatch):
-    """Optimized specieswise uniform Pi/Pibar matches the reference toggles."""
+def test_specieswise_uniform_forward_root_rows_match_saved_state(data_dir_100):
+    """Full saved-state likelihood agrees with the root-row output mode."""
     device = torch.device("cuda")
     dtype = torch.float32
     genes = _genes(data_dir_100, 3)
@@ -290,29 +279,17 @@ def test_specieswise_uniform_forward_optimized_matches_reference(data_dir_100, m
 
     E_out, params = _prepare_forward(model)
 
-    _set_reference_env(monkeypatch)
-    ref_nll, ref_out = _run_forward(model, E_out, params, root_rows=False)
+    full_nll, full_out = _run_forward(model, E_out, params, root_rows=False)
     torch.cuda.synchronize()
 
-    _set_optimized_env(monkeypatch)
-    opt_nll, opt_out = _run_forward(model, E_out, params, root_rows=False)
+    root_nll, root_out = _run_forward(model, E_out, params, root_rows=True)
     torch.cuda.synchronize()
 
-    assert torch.allclose(opt_nll, ref_nll, atol=1e-4, rtol=1e-5)
-    assert torch.allclose(
-        opt_out["Pi_wave_ordered"],
-        ref_out["Pi_wave_ordered"],
-        atol=1e-4,
-        rtol=1e-5,
-    )
-    assert ref_out["Pibar_wave_ordered"] is not None
-    assert opt_out["Pibar_wave_ordered"] is not None
-    assert torch.allclose(
-        opt_out["Pibar_wave_ordered"],
-        ref_out["Pibar_wave_ordered"],
-        atol=1e-4,
-        rtol=1e-5,
-    )
+    assert torch.allclose(full_nll, root_nll, atol=1e-4, rtol=1e-5)
+    assert root_out["Pi_root_rows"].shape[0] == len(genes)
+    assert full_out["Pibar_wave_ordered"] is not None
+    assert not torch.isnan(full_out["Pi_wave_ordered"]).any()
+    assert not torch.isnan(full_out["Pibar_wave_ordered"]).any()
 
 
 @pytest.mark.gpu
@@ -395,7 +372,7 @@ def test_gpu_logsumexp_traces_match_final_values(data_dir_100):
 
 @pytest.mark.gpu
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
-def test_specieswise_uniform_backward_fast_path_runs(data_dir_1000, monkeypatch):
+def test_specieswise_uniform_backward_fast_path_runs(data_dir_1000):
     """Specieswise uniform backward runs through the retained fast path."""
     device = torch.device("cuda")
     dtype = torch.float32
@@ -405,7 +382,7 @@ def test_specieswise_uniform_backward_fast_path_runs(data_dir_1000, monkeypatch)
     with torch.no_grad():
         model.theta.copy_(theta)
 
-    loss, grad = _loss_and_grad(model, _set_optimized_env, monkeypatch)
+    loss, grad = _loss_and_grad(model)
 
     assert torch.isfinite(loss)
     assert grad.shape == model.theta.shape
@@ -415,7 +392,7 @@ def test_specieswise_uniform_backward_fast_path_runs(data_dir_1000, monkeypatch)
 @pytest.mark.gpu
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
 def test_constant_specieswise_matches_global_loss_and_gradient_semantics(
-    data_dir_1000, monkeypatch
+    data_dir_1000,
 ):
     """Constant specieswise rates have global-mode loss and summed gradients."""
     device = torch.device("cuda")
@@ -430,8 +407,8 @@ def test_constant_specieswise_matches_global_loss_and_gradient_semantics(
         global_model.theta.copy_(theta_global)
         species_model.theta.copy_(theta_species)
 
-    global_loss, global_grad = _loss_and_grad(global_model, _set_optimized_env, monkeypatch)
-    species_loss, species_grad = _loss_and_grad(species_model, _set_optimized_env, monkeypatch)
+    global_loss, global_grad = _loss_and_grad(global_model)
+    species_loss, species_grad = _loss_and_grad(species_model)
 
     assert torch.allclose(species_loss, global_loss, atol=2e-3, rtol=1e-5)
     assert torch.allclose(species_grad.sum(dim=0), global_grad, atol=5e-2, rtol=2e-2)
@@ -441,7 +418,6 @@ def test_constant_specieswise_matches_global_loss_and_gradient_semantics(
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
 def test_specieswise_uniform_matches_alerax_specieswise_reference(
     data_dir_100,
-    monkeypatch,
     tmp_path,
 ):
     """Specieswise uniform likelihood matches the AleRax PER-SPECIES fixture."""
@@ -468,7 +444,6 @@ def test_specieswise_uniform_matches_alerax_specieswise_reference(
     with torch.no_grad():
         model.theta.copy_(theta)
 
-    _set_optimized_env(monkeypatch)
     with torch.no_grad():
         gpurec_nll_bits = model(reduce="per_family").detach().cpu().tolist()
     torch.cuda.synchronize()
