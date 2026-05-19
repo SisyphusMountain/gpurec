@@ -2270,6 +2270,7 @@ def test_checkpoint_roundtrip_restores_theta_and_status(tmp_path: Path):
         config=config,
         model=model,
         optimizer=optimizer,
+        optimizer_phase="adam",
         step=4,
         status={"status": "running", "best_nll_bits": 12.0},
     )
@@ -2280,6 +2281,7 @@ def test_checkpoint_roundtrip_restores_theta_and_status(tmp_path: Path):
     restore_model_theta(model, payload)
 
     assert int(payload["step"]) == 4
+    assert payload["optimizer_phase"] == "adam"
     assert payload["status"]["best_nll_bits"] == 12.0
     assert isinstance(payload["optimizer_state"], dict)
     assert payload["optimizer_state"]["state"]
@@ -2434,7 +2436,17 @@ def test_optimization_runner_run_writes_outputs_with_fake_model(tmp_path: Path):
             self.fake_model = FakeOptimizationModel()
             return self.fake_model
 
-        def _save_status(self, path, *, model, optimizer, step, status, row):
+        def _save_status(
+            self,
+            path,
+            *,
+            model,
+            optimizer,
+            step,
+            status,
+            row,
+            optimizer_phase=None,
+        ):
             super()._save_status(
                 path,
                 model=model,
@@ -2442,6 +2454,7 @@ def test_optimization_runner_run_writes_outputs_with_fake_model(tmp_path: Path):
                 step=step,
                 status=status,
                 row=row,
+                optimizer_phase=optimizer_phase,
             )
             if row is not None and "likelihood/data_nll_bits" in row:
                 expected_loss = float((model.theta.detach().square().sum() + 5.0).cpu())
@@ -2542,6 +2555,21 @@ def test_optimization_runner_reports_discarded_resume_optimizer_state(tmp_path: 
     assert restored == {"resume_optimizer_state": "restored"}
     assert restored_optimizer.loaded == {"state": []}
 
+    mismatch_optimizer = FakeOptimizer()
+    mismatch = runner._restore_optimizer_state(
+        mismatch_optimizer,
+        {"state": ["adam"]},
+        current_phase="lbfgs",
+        checkpoint_phase="adam",
+    )
+    assert mismatch == {
+        "resume_optimizer_state": "discarded",
+        "resume_optimizer_reason": "phase_mismatch",
+        "resume_optimizer_checkpoint_phase": "adam",
+        "resume_optimizer_current_phase": "lbfgs",
+    }
+    assert mismatch_optimizer.loaded is None
+
     discarded = runner._restore_optimizer_state(
         FakeOptimizer(fail=True),
         {"state": ["bad"]},
@@ -2620,6 +2648,86 @@ def test_optimization_runner_resume_loads_checkpoint_once(tmp_path: Path, monkey
     assert load_checkpoint(config.out_dir / "checkpoints" / "latest.pt")[
         "last_row"
     ]["resume_optimizer_state"] == "missing"
+
+
+def test_optimization_runner_discards_resume_optimizer_state_on_phase_mismatch(
+    tmp_path: Path,
+    monkeypatch,
+):
+    class FakeResumeModel:
+        def __init__(self):
+            self.theta = torch.nn.Parameter(torch.zeros(3, dtype=torch.float32))
+            self.family_names: list[str] = []
+            self.n_families = 0
+            self.n_species = 2
+            self.batch_metadata = []
+            self.closed = False
+
+        def full_loss(self):
+            return self.theta.square().sum() + 1.0
+
+        def clamp_theta_(self, min_rate, max_rate):
+            with torch.no_grad():
+                self.theta.clamp_(min=-4.0, max=4.0)
+
+        def solver_stat_records(self):
+            return []
+
+        def clear(self):
+            return None
+
+        def close(self):
+            self.closed = True
+
+    class FakeResumeRunner(OptimizationRunner):
+        def build_model(self):
+            self.fake_model = FakeResumeModel()
+            return self.fake_model
+
+    theta = torch.nn.Parameter(torch.zeros(3, dtype=torch.float32))
+    adam = torch.optim.Adam([theta], lr=0.01)
+    theta.square().sum().backward()
+    adam.step()
+    adam_state = adam.state_dict()
+    resume_path = tmp_path / "resume.pt"
+
+    def fake_load_checkpoint(path, *, map_location):
+        return {
+            "theta": torch.tensor([0.25, -0.125, 0.0625], dtype=torch.float32),
+            "optimizer_state": adam_state,
+            "optimizer_phase": "adam",
+            "next_step": 1,
+            "status": {
+                "previous_objective": 1.5,
+                "stable_loss_steps": 0,
+            },
+        }
+
+    workflow_optimize_module = importlib.import_module("gpurec.workflow.optimize")
+    monkeypatch.setattr(workflow_optimize_module, "load_checkpoint", fake_load_checkpoint)
+    config = RunConfig(
+        species_tree=tmp_path / "sp.nwk",
+        families_file=tmp_path / "families.txt",
+        out_dir=tmp_path / "out",
+        mode="global",
+        device="cpu",
+        optimizer="adam-lbfgs",
+        adam_warmup_steps=1,
+        steps=1,
+        lbfgs_lr=0.5,
+        resume_from=resume_path,
+        checkpoint_every=0,
+        log_every=10,
+    )
+    runner = FakeResumeRunner(config)
+
+    runner.run()
+
+    row = load_checkpoint(config.out_dir / "checkpoints" / "latest.pt")["last_row"]
+    assert row["resume_optimizer_state"] == "discarded"
+    assert row["resume_optimizer_reason"] == "phase_mismatch"
+    assert row["resume_optimizer_checkpoint_phase"] == "adam"
+    assert row["resume_optimizer_current_phase"] == "lbfgs"
 
 
 @pytest.mark.parametrize(

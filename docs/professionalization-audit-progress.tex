@@ -1219,6 +1219,16 @@ probing, so invalid values such as \texttt{torch.int64},
 \texttt{torch.float16}, or \texttt{"float32"} surface as parameter-specific
 \texttt{ValueError}s instead of unrelated CUDA or IO errors.
 
+\subsection{Optimizer Phase Checkpoint Compatibility}
+
+Optimization checkpoints now record the phase that produced the serialized
+optimizer state.  Resume only reloads an optimizer state when the checkpoint
+phase matches the phase selected for \texttt{next\_step}; otherwise it discards
+the state with \texttt{resume\_optimizer\_reason=phase\_mismatch}.  This
+prevents \texttt{adam-lbfgs} resumes at the Adam/LBFGS boundary from loading
+Adam moments and learning-rate metadata into a freshly constructed LBFGS
+optimizer.
+
 \section{Verification Log}
 
 \begin{center}
@@ -2437,6 +2447,18 @@ CPU unit gate after uniform factory dtype validation &
 \texttt{377 passed, 28 deselected} \\
 \texttt{python scripts/check\_release\_metadata.py} &
 Release metadata checker after uniform factory dtype validation &
+\texttt{expected license blockers} \\
+\texttt{python -m py\_compile gpurec/workflow/checkpoint.py gpurec/workflow/optimize.py ...} &
+Optimizer phase checkpoint compatibility syntax &
+\texttt{ok} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q tests/unit/test\_workflow.py -k "..."} &
+Focused optimizer resume phase validation &
+\texttt{4 passed, 265 deselected} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
+CPU unit gate after optimizer phase checkpoint compatibility &
+\texttt{378 passed, 28 deselected} \\
+\texttt{python scripts/check\_release\_metadata.py} &
+Release metadata checker after optimizer phase checkpoint compatibility &
 \texttt{expected license blockers} \\
 \bottomrule
 \end{tabular}

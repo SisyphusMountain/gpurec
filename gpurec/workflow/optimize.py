@@ -211,9 +211,28 @@ class OptimizationRunner:
         self,
         optimizer: torch.optim.Optimizer,
         state: Any,
+        *,
+        current_phase: str | None = None,
+        checkpoint_phase: Any = None,
     ) -> dict[str, Any]:
         if state is None:
             return {"resume_optimizer_state": "missing"}
+        if checkpoint_phase is not None and not isinstance(checkpoint_phase, str):
+            return {
+                "resume_optimizer_state": "discarded",
+                "resume_optimizer_reason": "invalid_phase",
+            }
+        if (
+            current_phase is not None
+            and checkpoint_phase is not None
+            and checkpoint_phase != current_phase
+        ):
+            return {
+                "resume_optimizer_state": "discarded",
+                "resume_optimizer_reason": "phase_mismatch",
+                "resume_optimizer_checkpoint_phase": checkpoint_phase,
+                "resume_optimizer_current_phase": current_phase,
+            }
         try:
             optimizer.load_state_dict(state)
         except ValueError as exc:
@@ -232,12 +251,14 @@ class OptimizationRunner:
         step: int,
         status: dict[str, Any],
         row: dict[str, Any] | None,
+        optimizer_phase: str | None = None,
     ) -> None:
         save_checkpoint(
             path,
             config=self.config,
             model=model,
             optimizer=optimizer,
+            optimizer_phase=optimizer_phase,
             step=step,
             status=status,
             row=row,
@@ -324,6 +345,12 @@ class OptimizationRunner:
                         None
                         if resume_payload is None
                         else resume_payload.get("optimizer_state")
+                    ),
+                    current_phase=current_phase,
+                    checkpoint_phase=(
+                        None
+                        if resume_payload is None
+                        else resume_payload.get("optimizer_phase")
                     ),
                 )
 
@@ -478,6 +505,7 @@ class OptimizationRunner:
                         step=step,
                         status=checkpoint_status,
                         row=row,
+                        optimizer_phase=phase,
                     )
                 if config.checkpoint_every and step % config.checkpoint_every == 0:
                     self._save_status(
@@ -487,6 +515,7 @@ class OptimizationRunner:
                         step=step,
                         status=checkpoint_status,
                         row=row,
+                        optimizer_phase=phase,
                     )
 
                 if step % config.log_every == 0:
@@ -562,6 +591,7 @@ class OptimizationRunner:
                     step=int(final_row["step"]),
                     status=final_status,
                     row=final_row,
+                    optimizer_phase=current_phase,
                 )
             self._save_status(
                 config.out_dir / "checkpoints" / "latest.pt",
@@ -570,6 +600,7 @@ class OptimizationRunner:
                 step=int(final_row["step"]),
                 status=final_status,
                 row=final_row,
+                optimizer_phase=current_phase,
             )
             _write_rate_table(config.out_dir / "rates_final.tsv", model, config.mode)
             if config.mode == "genewise":

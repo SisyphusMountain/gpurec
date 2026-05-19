@@ -28,6 +28,7 @@ def save_checkpoint(
     step: int,
     status: dict[str, Any],
     row: dict[str, Any] | None = None,
+    optimizer_phase: str | None = None,
 ) -> None:
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -38,6 +39,7 @@ def save_checkpoint(
         "config": config.to_dict(),
         "theta": model.theta.detach().cpu(),
         "optimizer_state": None if optimizer is None else optimizer.state_dict(),
+        "optimizer_phase": optimizer_phase,
         "status": status,
         "last_row": row,
         "family_names": _family_names(model),
@@ -92,6 +94,9 @@ def _validate_checkpoint_payload(payload: Any, path: Path) -> dict[str, Any]:
     optimizer_state = payload.get("optimizer_state")
     if optimizer_state is not None and not isinstance(optimizer_state, dict):
         raise RuntimeError(f"checkpoint {path} has invalid optimizer state")
+    optimizer_phase = payload.get("optimizer_phase")
+    if optimizer_phase is not None and not isinstance(optimizer_phase, str):
+        raise RuntimeError(f"checkpoint {path} has invalid optimizer phase")
     status = payload.get("status")
     if status is not None and not isinstance(status, dict):
         raise RuntimeError(f"checkpoint {path} has invalid status metadata")
