@@ -1955,6 +1955,8 @@ def test_hogenom_scripts_are_marked_as_legacy_experiment_surface():
     assert "legacy" in scripts_readme
     assert "HOGENOM reproducers" in scripts_readme
     assert "legacy checkout-local experiment launchers" in project_readme
+    assert "Legacy HOGENOM W&B wrapper" in project_readme
+    assert "Curated HOGENOM W&B run" not in project_readme
     for script_name in (
         "hogenom_ccp_wandb_opt.py",
         "fast_optimize_hogenom_ccp.py",

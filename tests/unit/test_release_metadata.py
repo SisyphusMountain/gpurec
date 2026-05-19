@@ -135,6 +135,13 @@ def test_cpu_ci_runs_rust_backtracking_gate():
         "cargo run --locked --quiet --manifest-path "
         "crates/gpurec-backtrack/Cargo.toml -- --help"
     ) in workflow
-    assert (
-        "pytest -q tests/integration/test_rust_backtracking_fixture.py" in workflow
-    )
+    assert 'pytest -q -m "integration and not gpu"' in workflow
+    assert "test_rust_backtracking_fixture.py" not in workflow
+
+
+def test_release_readiness_orders_clean_checkout_before_build():
+    guide = (ROOT / "docs" / "release-readiness.md").read_text(encoding="utf-8")
+
+    assert guide.index("git clean -Xdn") < guide.index("python -m build")
+    assert "stale `build/`, `dist/`, or `*.egg-info/`" in guide
+    assert 'pytest -q -m "integration and not gpu"' in guide

@@ -41,23 +41,15 @@ classifier first.
 
 Build and inspect distribution artifacts from a clean checkout:
 
-```bash
-python -m build
-python -m twine check dist/*
-```
-
-Do not publish artifacts until the license and binary distribution expectation
-for sampling above are resolved.
-
-## Source Checkout Hygiene
-
-- Preview ignored generated files before building local archives or containers:
+Before invoking the build module, preview ignored checkout artifacts and remove
+stale `build/`, `dist/`, or `*.egg-info/` directories that could shadow release
+tooling or contaminate the artifact set:
 
 ```bash
 git clean -Xdn
 ```
 
-- Remove ignored artifacts only after confirming the preview:
+Only after confirming the preview, remove ignored artifacts:
 
 ```bash
 git clean -Xdf
@@ -65,6 +57,14 @@ git clean -Xdf
 
 The repository intentionally ignores local caches, HOGENOM datasets, W&B runs,
 generated profiling files, AleRax checkouts, and `rustree/`.
+
+```bash
+python -m build
+python -m twine check dist/*
+```
+
+Do not publish artifacts until the license and binary distribution expectation
+for sampling above are resolved.
 
 ## Lightweight Verification
 
@@ -75,7 +75,7 @@ python -m gpurec.cli --help
 CUDA_VISIBLE_DEVICES='' pytest -q -m "unit and not gpu"
 cargo test --locked --manifest-path crates/gpurec-backtrack/Cargo.toml
 cargo run --locked --quiet --manifest-path crates/gpurec-backtrack/Cargo.toml -- --help
-pytest -q tests/integration/test_rust_backtracking_fixture.py
+pytest -q -m "integration and not gpu"
 ```
 
 GPU validation should use a small species tree and a small family subset before

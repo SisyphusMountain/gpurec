@@ -586,8 +586,8 @@ Packaging documentation now distinguishes source-checkout benchmark scripts
 from installed package commands.  The sampling CLI help states that installed
 sampling requires a Rust backtracking binary through \texttt{--backtrack-binary}
 or \texttt{GPUREC\_BACKTRACK\_BIN}, while source checkouts can still use the
-Cargo fallback when the Rust sources and local \texttt{rustree} checkout are
-present.  A \texttt{release} optional dependency group records the maintainer
+locked Cargo fallback with the pinned public \texttt{rustree} git dependency.
+A \texttt{release} optional dependency group records the maintainer
 tooling needed for \texttt{python -m build} and \texttt{twine check}.
 
 \subsection{Workflow Numeric Finiteness}
@@ -813,6 +813,17 @@ solver controls instead of coercing them through \texttt{int(...)}.  Direct
 pre-IO factory validation, solver reconfiguration, and direct
 \texttt{RunConfig} construction now fail with clear integer-control errors for
 values such as \texttt{4.5} or \texttt{True} before CUDA setup or file parsing.
+
+\subsection{CI and Release Documentation Alignment}
+
+The Rust backtracking CI job now runs all tests marked
+\texttt{integration and not gpu} instead of naming the current JSON fixture
+directly, so future CPU-safe integration tests enter CI by marker.  Release
+readiness now places ignored-artifact cleanup before the build command and
+explicitly calls out stale \texttt{build/}, \texttt{dist/}, and
+\texttt{*.egg-info/} directories.  The older audit-log wording for source
+checkout backtracking was updated to the pinned git dependency, and the README
+labels the HOGENOM W\&B launcher as a legacy checkout-local wrapper.
 
 \section{Verification Log}
 
@@ -1457,6 +1468,18 @@ Focused fractional and boolean integer-control guards &
 \texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
 CPU unit gate after integral solver-control validation &
 \texttt{198 passed, 28 deselected} \\
+\texttt{python -m py\_compile tests/unit/test\_release\_metadata.py tests/unit/test\_workflow.py} &
+CI and release-doc guard syntax &
+\texttt{ok} \\
+\texttt{pytest -q tests/unit/test\_release\_metadata.py tests/unit/test\_workflow.py::test\_hogenom\_...} &
+Workflow, release-doc, and HOGENOM README guards &
+\texttt{8 passed} \\
+\texttt{pytest -q -m "integration and not gpu"} &
+Marker-selected CPU integration gate &
+\texttt{1 passed, 226 deselected} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
+CPU unit gate after CI and release-doc alignment &
+\texttt{199 passed, 28 deselected} \\
 \bottomrule
 \end{tabular}
 \end{center}
@@ -1472,10 +1495,8 @@ CPU unit gate after integral solver-control validation &
         distribution model is settled.
   \item Normalize backtracking subprocess failures into CLI-friendly workflow
         errors with captured stderr and missing-output context.
-  \item Extend CPU CI to run all non-GPU integration tests through marker
-        selection, not only hard-coded integration paths.
-  \item Tighten release-readiness build hygiene ordering so ignored local
-        \texttt{build/} artifacts cannot shadow the release build module.
+  \item Replace file-name-based GPU marker inference with explicit module-level
+        GPU intent plus a meta-test for marker coverage.
   \item Keep committing small, verified increments so the branch remains
         reviewable despite the larger audit scope.
 \end{enumerate}

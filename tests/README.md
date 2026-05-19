@@ -11,7 +11,8 @@ CUDA_VISIBLE_DEVICES='' pytest -q -m "unit and not gpu"
 
 The GitHub Actions workflow in `.github/workflows/cpu-unit.yml` runs this same
 gate on Python 3.10, 3.11, and 3.12 for pushes and pull requests.  It also
-builds/checks distribution artifacts in a CPU packaging job.
+builds/checks distribution artifacts in a CPU packaging job and runs the
+Rust backtracking plus non-GPU integration gate.
 
 The explicit equivalent is useful when bisecting a specific audit surface:
 
@@ -40,7 +41,7 @@ Rust backtracking checks are CPU-safe:
 ```bash
 cargo test --locked --manifest-path crates/gpurec-backtrack/Cargo.toml
 cargo run --locked --quiet --manifest-path crates/gpurec-backtrack/Cargo.toml -- --help
-pytest -q tests/integration/test_rust_backtracking_fixture.py
+pytest -q -m "integration and not gpu"
 ```
 
 Backtracking smoke should prefer a prebuilt Rust binary to avoid `cargo run`
