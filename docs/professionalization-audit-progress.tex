@@ -252,8 +252,16 @@ The latest audit slice found three high-value follow-ups: make the promoted
 HOGENOM workflows discoverable from \texttt{README.md} and packaging metadata,
 auto-apply the registered \texttt{unit} and \texttt{integration} pytest markers
 by test path, and either restore or rename the currently hollow
-specieswise-uniform GPU parity test.  The pytest marker item is addressed
-below; the README and parity-test items remain open.
+specieswise-uniform GPU parity test.  The README workflow and pytest marker
+items are addressed below; the parity-test item remains open.
+
+\subsection{README HOGENOM Workflow Discoverability}
+
+\texttt{README.md} now distinguishes the installed \texttt{gpurec} CLI from
+checkout-local HOGENOM experiment launchers.  It documents the curated W\&B
+launcher, Hydra YAML launcher, checkpoint rate export, profiling harness,
+local benchmark default paths, optional dependencies, and a one-family smoke
+command that disables W\&B logging.
 
 \subsection{Pytest Marker Hygiene}
 
@@ -304,6 +312,9 @@ Marker-based CPU unit gate &
 \texttt{pytest --collect-only -q -m unit} / \texttt{-m integration} &
 Path-based marker selection &
 \texttt{43 unit, 16 integration selected} \\
+\texttt{python scripts/... --help} &
+HOGENOM launcher/export/profile help smoke &
+\texttt{ok for W\&B, Hydra, export, profile} \\
 \texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m 'not gpu' ...GPU modules...} &
 GPU marker check &
 \texttt{22 deselected; exit 5 treated as expected} \\
@@ -325,9 +336,6 @@ YAML config UX &
 \begin{enumerate}[leftmargin=*]
   \item Review the larger promoted HOGENOM helper scripts for consolidation
         opportunities once the experiment interfaces settle.
-  \item Add a README HOGENOM workflow matrix explaining the installed CLI,
-        curated W\&B launcher, Hydra launcher, checkpoint export, and profiling
-        harness.
   \item Fix the no-op optimized/reference toggles in the specieswise-uniform
         GPU parity test or retitle it as a smoke test with a separate parity
         check.

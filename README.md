@@ -104,6 +104,37 @@ Sampling uses the Rust backtracking binary.  In an editable/source checkout it
 can fall back to `cargo run`; installed environments should provide a compiled
 binary through `GPUREC_BACKTRACK_BIN` or `--backtrack-binary`.
 
+## HOGENOM Workflows
+
+The installed `gpurec` CLI is the supported general workflow.  The HOGENOM
+scripts under `scripts/` are checkout-local experiment launchers and diagnostics
+for the bundled HOGENOM benchmark layout.  Their default paths point under
+`tests/data/HOGENOM/...`; pass explicit `--species-tree`, `--families-file`,
+`--preprocess-cache`, and `--out-dir` values for other datasets.
+
+| Task | Command | Notes |
+| --- | --- | --- |
+| General installed workflow | `gpurec optimize`, `gpurec sample`, `gpurec run` | Uses flat JSON for `--config`; Hydra YAML is not accepted by the main CLI. |
+| Curated HOGENOM W&B run | `python scripts/optimize_hogenom_ccp_wandb.py` | Uses argparse flags, checkpoints, plots, and optional W&B logging. |
+| Hydra HOGENOM run | `python scripts/optimize_hogenom_ccp_hydra.py` | Uses `configs/hogenom_ccp_wandb.yaml` and Hydra override syntax. |
+| Checkpoint rate export | `python scripts/export_hogenom_rates_from_checkpoint.py` | Exports D/T/L rates from a HOGENOM optimization checkpoint. |
+| One-pass profiling | `python scripts/profile_hogenom_ccp_pass.py` | Profiles full, streamed, active-batch, or largest-batch forward/backward passes. |
+
+Optional script dependencies are intentionally separate from the core package:
+use `wandb` for online W&B logging, `hydra-core` and `omegaconf` for the Hydra
+launcher, and `matplotlib`/`pandas` for plotting and report helpers.  The R
+plotting helper also needs its CRAN/Bioconductor plotting packages.
+
+Minimal HOGENOM smoke when CUDA memory allows:
+
+```bash
+python scripts/optimize_hogenom_ccp_wandb.py \
+  --max-families 1 \
+  --steps 1 \
+  --wandb-mode disabled \
+  --no-timestamped-out-dir
+```
+
 ## Performance Check
 
 The retained full-dataset harness is:
