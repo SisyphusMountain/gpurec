@@ -962,6 +962,13 @@ rates.  Missing \texttt{theta} tensors, malformed branch-scaled payloads, and
 branch/species row mismatches now raise explicit \texttt{ValueError}s instead
 of leaking raw \texttt{KeyError}, \texttt{AttributeError}, or indexing failures.
 
+\subsection{Sampling Singleton Aggregation}
+
+The RecPhyloXML sampling parser now derives \texttt{singletons} from each
+species' final copy count instead of incrementing it once per leaf.  A species
+with two sampled gene copies is no longer reported as two singleton events,
+while one-copy species still contribute one singleton to the aggregate output.
+
 \section{Verification Log}
 
 \begin{center}
@@ -1802,6 +1809,18 @@ CPU unit gate after rate-export payload validation &
 \texttt{249 passed, 28 deselected} \\
 \texttt{python scripts/check\_release\_metadata.py} &
 Release metadata checker after rate-export payload validation &
+\texttt{expected license blockers} \\
+\texttt{python -m py\_compile gpurec/workflow/sampling.py tests/unit/test\_workflow.py} &
+Sampling singleton aggregation syntax &
+\texttt{ok} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q tests/unit/test\_workflow.py -k "..."} &
+Focused sampling singleton and aggregate-output guards &
+\texttt{3 passed, 166 deselected} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
+CPU unit gate after sampling singleton aggregation &
+\texttt{250 passed, 28 deselected} \\
+\texttt{python scripts/check\_release\_metadata.py} &
+Release metadata checker after sampling singleton aggregation &
 \texttt{expected license blockers} \\
 \bottomrule
 \end{tabular}

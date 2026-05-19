@@ -130,7 +130,6 @@ def _xml_species_and_transfer_counts(
                     row = species_row(species)
                     row["presence"] = 1.0
                     row["copies"] += 1.0
-                    row["singletons"] += 1.0
         if donor and destination:
             transfers[(donor, destination)] += 1.0
         child_donor = branch_donor or active_donor
@@ -150,6 +149,9 @@ def _xml_species_and_transfer_counts(
         )
         if first_clade is not None:
             visit(first_clade)
+
+    for row in species_counts.values():
+        row["singletons"] = 1.0 if row["copies"] == 1.0 else 0.0
     return dict(species_counts), dict(transfers)
 
 

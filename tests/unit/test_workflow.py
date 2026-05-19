@@ -2344,3 +2344,27 @@ def test_xml_species_and_transfer_counts():
     assert species["Recipient"]["copies"] == 1.0
     assert species["Lost"]["losses"] == 1.0
     assert transfers[("Donor", "Recipient")] == 1.0
+
+
+def test_xml_species_counts_singletons_only_for_one_copy_species():
+    xml = """
+    <recPhylo>
+      <recGeneTree>
+        <phylogeny>
+          <clade>
+            <eventsRec><speciation speciesLocation="Root"/></eventsRec>
+            <clade><eventsRec><leaf speciesLocation="A"/></eventsRec></clade>
+            <clade><eventsRec><leaf speciesLocation="A"/></eventsRec></clade>
+            <clade><eventsRec><leaf speciesLocation="B"/></eventsRec></clade>
+          </clade>
+        </phylogeny>
+      </recGeneTree>
+    </recPhylo>
+    """
+
+    species, _ = _xml_species_and_transfer_counts(xml)
+
+    assert species["A"]["copies"] == 2.0
+    assert species["A"]["singletons"] == 0.0
+    assert species["B"]["copies"] == 1.0
+    assert species["B"]["singletons"] == 1.0
