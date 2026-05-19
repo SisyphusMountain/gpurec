@@ -1,0 +1,79 @@
+paths:
+  species_tree: tests/data/HOGENOM/hogenom/hogenom_S.tree
+  families_file: tests/data/HOGENOM/hogenom/hogenom_families.local.txt
+  preprocess_cache: tests/data/HOGENOM/hogenom/output_gpurec_ccp_reconciliation/preprocess_cache
+  out_dir: tests/data/HOGENOM/hogenom/output_gpurec_wandb_adam_lbfgs
+  timestamped_out_dir: true
+  resume_from: null
+
+runtime:
+  device: cuda
+
+model:
+  mode: specieswise
+  max_families: null
+  family_chunk_size: 0
+  clade_budget: 305000
+  max_wave_size: 8192
+
+solver:
+  max_iters_e: 2000
+  max_iters_pi: 16
+  max_neumann_terms: 64
+  convergence_check_interval: 4
+  e_logsumexp_tol: 1.0e-5
+  pi_max_diff_tol: 1.0e-5
+  gradient_change_tol: 1.0e-4
+  gradient_change_rtol: 1.0e-4
+  iteration_schedule: budget
+  budget_initial_iters: 4
+  budget_increment: 4
+  budget_patience: 2
+  budget_step_interval: 100
+
+optimizer:
+  name: adam-lbfgs
+  adam_warmup_steps: 50
+  steps: 5000
+  lr: 0.01
+  lr_decay_every: 50
+  lr_decay_factor: 0.5
+  lbfgs_lr: 0.1
+  lbfgs_history_size: 20
+  lbfgs_line_search: strong_wolfe
+
+bounds:
+  min_rate: 1.0e-10
+  max_rate: 10000000.0
+
+convergence:
+  grad_inf_tol: 1.0e-3
+  loss_change_tol: 1.0e-3
+  loss_patience: 20
+
+regularization:
+  beta_ps_alpha: 4.0
+  beta_ps_beta: 1.0
+  beta_prior_weight: 0.0
+  branchscale_prior_weight: 100.0
+
+diagnostics:
+  mode: "off"
+
+logging:
+  log_every: 1
+  plot_every: 25
+  checkpoint_every: 1
+
+wandb:
+  project: gpurec-hogenom-ccp
+  entity: null
+  run_name: null
+  mode: online
+
+hydra:
+  job:
+    chdir: false
+  run:
+    dir: .
+  output_subdir: null

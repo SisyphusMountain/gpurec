@@ -262,6 +262,33 @@ def test_workflow_and_backtracking_use_public_model_surface():
     assert offenders == []
 
 
+def test_hogenom_wandb_helpers_use_public_model_surface():
+    root = Path(__file__).resolve().parents[2]
+    paths = [
+        root / "scripts" / "hogenom_ccp_wandb_opt.py",
+        root / "scripts" / "optimize_hogenom_ccp_hydra.py",
+        root / "scripts" / "optimize_hogenom_ccp_wandb.py",
+    ]
+    forbidden = (
+        "model._",
+        'getattr(model, "_',
+        "from gpurec.api.model import _GeneReconFullLossFunction",
+        "_stream_full_batches",
+        "_ensure_batch_static",
+        "_current_batch_index",
+        "_schedule_prefetch",
+    )
+
+    offenders: list[str] = []
+    for path in paths:
+        text = path.read_text(encoding="utf-8")
+        for token in forbidden:
+            if token in text:
+                offenders.append(f"{path.relative_to(root)} contains {token}")
+
+    assert offenders == []
+
+
 def test_xml_species_and_transfer_counts():
     xml = """
     <recPhylo>

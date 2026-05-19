@@ -1213,6 +1213,55 @@ class GeneReconModel(torch.nn.Module):
             return [static for static in self._batch_statics if static is not None]
         return [] if self._static is None else [self._static]
 
+    def materialize_batches(self) -> list[BatchMetadata]:
+        """Build all resident batch static states and return their metadata."""
+        if self._batched_resident:
+            for batch_idx in range(len(self._batch_specs)):
+                self._ensure_batch_static(batch_idx)
+        elif self._static is None:
+            raise RuntimeError("resident static state has not been built")
+        return list(self.batch_metadata)
+
+    def configure_solver_iterations(
+        self,
+        *,
+        fixed_iters_Pi: int | None = None,
+        neumann_terms: int | None = None,
+        pi_max_diff_tol: float | None = None,
+        gradient_change_tol: float | None = None,
+    ) -> None:
+        """Update solver iteration controls on the model and built batches."""
+        if fixed_iters_Pi is not None:
+            fixed_iters_Pi = int(fixed_iters_Pi)
+            if fixed_iters_Pi < 1 or fixed_iters_Pi % 2 != 0:
+                raise ValueError("fixed_iters_Pi must be a positive even integer")
+            self._fixed_iters_Pi = fixed_iters_Pi
+        if neumann_terms is not None:
+            neumann_terms = int(neumann_terms)
+            if neumann_terms < 1:
+                raise ValueError("neumann_terms must be positive")
+            self._neumann_terms = neumann_terms
+        if pi_max_diff_tol is not None:
+            pi_max_diff_tol = float(pi_max_diff_tol)
+            if pi_max_diff_tol < 0.0:
+                raise ValueError("pi_max_diff_tol must be non-negative")
+            self._pi_max_diff_tol = pi_max_diff_tol
+        if gradient_change_tol is not None:
+            gradient_change_tol = float(gradient_change_tol)
+            if gradient_change_tol < 0.0:
+                raise ValueError("gradient_change_tol must be non-negative")
+            self._gradient_change_tol = gradient_change_tol
+
+        for static in self.cached_static_states:
+            if fixed_iters_Pi is not None:
+                static.fixed_iters_Pi = fixed_iters_Pi
+            if neumann_terms is not None:
+                static.neumann_terms = neumann_terms
+            if pi_max_diff_tol is not None:
+                static.pi_max_diff_tol = pi_max_diff_tol
+            if gradient_change_tol is not None:
+                static.gradient_change_tol = gradient_change_tol
+
     def solver_stat_records(self) -> list[dict[str, Any]]:
         """Copies of solver stats from already-built static states."""
         records: list[dict[str, Any]] = []
@@ -1384,6 +1433,14 @@ class GeneReconModel(torch.nn.Module):
             loss, _grad = self._stream_full_batches(self.theta, need_grad=False)
             return loss.to(device=self.theta.device, dtype=self.theta.dtype)
         return _GeneReconFullLossFunction.apply(self.theta, self)
+
+    def full_loss_for_theta(self, theta: torch.Tensor) -> torch.Tensor:
+        """Stream every resident batch using an explicit theta tensor."""
+        if torch.is_grad_enabled() and theta.requires_grad:
+            return _GeneReconFullLossFunction.apply(theta, self)
+        with torch.no_grad():
+            loss, _grad = self._stream_full_batches(theta, need_grad=False)
+        return loss.to(device=theta.device, dtype=theta.dtype)
 
     def nll_per_family(self) -> torch.Tensor:
         """Per-family NLL ``[G]``. Only valid in genewise mode."""

@@ -201,6 +201,16 @@ sequential and clade-first-fit logic and lets the uniform chunked API plan
 \texttt{depth\_first\_fit} chunks with the same scheduling statistics as the
 resident model.
 
+\subsection{HOGENOM W\&B Launcher Curation}
+
+The HOGENOM W\&B optimizer was split into a small compatibility wrapper and a
+dedicated implementation module, with a Hydra launcher and checked-in YAML
+configuration.  The model now exposes public helpers for experiment tooling:
+\texttt{materialize\_batches()}, \texttt{configure\_solver\_iterations()}, and
+\texttt{full\_loss\_for\_theta()}.  The curated W\&B launcher uses those public
+helpers instead of importing private autograd functions or reaching into private
+resident-batch state.
+
 \section{Verification Log}
 
 \begin{center}
@@ -214,12 +224,18 @@ Workflow and origination likelihood units &
 \texttt{pytest -q tests/unit/test\_global\_wave\_scheduler.py tests/unit/test\_workflow.py} &
 Shared batch planner and workflow units &
 \texttt{23 passed after batch-planner cleanup} \\
+\texttt{python -m py\_compile ...HOGENOM W\&B scripts...} &
+Curated experiment launcher syntax &
+\texttt{ok} \\
+\texttt{pytest -q tests/unit/test\_workflow.py} &
+Workflow and public-surface source guards &
+\texttt{14 passed after W\&B launcher cleanup} \\
 \texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q ...CPU fast gate...} &
 CPU-only audit gate &
-\texttt{36 passed after batch-planner cleanup} \\
+\texttt{37 passed after W\&B launcher cleanup} \\
 \texttt{pytest --collect-only -q} &
 Collection after recursion exclusions &
-\texttt{63 tests collected in 0.84s} \\
+\texttt{64 tests collected in 0.85s} \\
 \texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m 'not gpu' ...GPU modules...} &
 GPU marker check &
 \texttt{22 deselected; exit 5 treated as expected} \\
@@ -239,8 +255,8 @@ YAML config UX &
 \section{Next Audit Targets}
 
 \begin{enumerate}[leftmargin=*]
-  \item Curate the remaining HOGENOM/W\&B helper scripts and configs into
-        source-like experiment tooling, or explicitly ignore/drop generated
+  \item Finish curating the remaining HOGENOM helper scripts, analysis docs,
+        and modified notebooks into tracked source or explicitly ignored local
         artifacts.
   \item Keep committing small, verified increments so the branch remains
         reviewable despite the larger audit scope.
