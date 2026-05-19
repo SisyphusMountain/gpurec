@@ -597,11 +597,12 @@ def test_public_model_constructors_reject_nonfinite_theta_init_before_io(
         ("gradient_change_tol", math.inf),
         ("gradient_change_rtol", math.nan),
         ("pruning_threshold", math.inf),
+        ("adaptive_iters", "false"),
     ],
 )
 def test_gene_recon_init_rejects_invalid_solver_controls_before_device(
     field: str,
-    value: float,
+    value: object,
 ):
     dataset = SimpleNamespace(
         genewise=False,
@@ -622,6 +623,7 @@ def test_gene_recon_init_rejects_invalid_solver_controls_before_device(
         ("from_trees", {"max_iters_E": 20.5}, "max_iters_E"),
         ("from_trees", {"fixed_iters_Pi": math.inf}, "fixed_iters_Pi"),
         ("from_trees", {"fixed_iters_Pi": 4.5}, "fixed_iters_Pi"),
+        ("from_trees", {"adaptive_iters": "false"}, "adaptive_iters"),
         (
             "from_alerax_families",
             {"gradient_change_rtol": math.inf},

@@ -1063,6 +1063,15 @@ specieswise vectors when the selected resident batch has the same number of
 families as species, so exported stochastic backtracking payloads select the
 active family row before expanding scalar probabilities across species.
 
+\subsection{Adaptive Iteration Boolean Validation}
+
+The public \texttt{GeneReconModel} API now validates \texttt{adaptive\_iters}
+as an actual boolean before CUDA setup or tree IO.  Factory calls and the direct
+constructor reject values such as \texttt{"false"} with a clear
+\texttt{ValueError}, instead of treating any non-empty object as truthy and
+possibly raising the unrelated odd-\texttt{convergence\_check\_interval}
+message.
+
 \section{Verification Log}
 
 \begin{center}
@@ -2065,6 +2074,18 @@ CPU unit gate after genewise backtracking parameter-layout fix &
 \texttt{293 passed, 28 deselected} \\
 \texttt{python scripts/check\_release\_metadata.py} &
 Release metadata checker after genewise backtracking parameter-layout fix &
+\texttt{expected license blockers} \\
+\texttt{python -m py\_compile gpurec/api/\_validation.py gpurec/api/model.py ...} &
+Adaptive iteration boolean validation syntax &
+\texttt{ok} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q tests/unit/test\_workflow.py -k "..."} &
+Focused public solver-control validation guards &
+\texttt{39 passed, 160 deselected} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
+CPU unit gate after adaptive iteration boolean validation &
+\texttt{295 passed, 28 deselected} \\
+\texttt{python scripts/check\_release\_metadata.py} &
+Release metadata checker after adaptive iteration boolean validation &
 \texttt{expected license blockers} \\
 \bottomrule
 \end{tabular}

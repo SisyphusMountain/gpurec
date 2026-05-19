@@ -60,6 +60,7 @@ from .autograd import (
     _record_backward_solver_stats,
 )
 from ._validation import (
+    bool_value,
     nonnegative_float,
     positive_float,
     positive_int,
@@ -233,7 +234,12 @@ def _normalize_gene_solver_kwargs(kwargs: dict[str, Any]) -> dict[str, Any]:
     ):
         if name in normalized:
             normalized[name] = nonnegative_float(name, normalized[name])
-    adaptive_iters = bool(normalized.get("adaptive_iters", False))
+    if "adaptive_iters" in normalized:
+        normalized["adaptive_iters"] = bool_value(
+            "adaptive_iters",
+            normalized["adaptive_iters"],
+        )
+    adaptive_iters = normalized.get("adaptive_iters", False)
     convergence_check_interval = int(
         normalized.get("convergence_check_interval", 4)
     )
@@ -822,6 +828,7 @@ class GeneReconModel(torch.nn.Module):
             "convergence_check_interval",
             convergence_check_interval,
         )
+        adaptive_iters = bool_value("adaptive_iters", adaptive_iters)
         if adaptive_iters and convergence_check_interval % 2 != 0:
             raise ValueError(
                 "adaptive_iters requires an even convergence_check_interval"
@@ -887,7 +894,7 @@ class GeneReconModel(torch.nn.Module):
         self._tol_E = tol_E
         self._fixed_iters_Pi = fixed_iters_Pi
         self._neumann_terms = neumann_terms
-        self._adaptive_iters = bool(adaptive_iters)
+        self._adaptive_iters = adaptive_iters
         self._convergence_check_interval = convergence_check_interval
         self._e_logsumexp_tol = float(e_logsumexp_tol)
         self._pi_max_diff_tol = float(pi_max_diff_tol)
