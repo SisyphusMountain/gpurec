@@ -20,6 +20,13 @@ gpurec = "gpurec.cli:main"
 
 [project.optional-dependencies]
 triton = ["triton>=2.1"]
+hogenom = [
+    "hydra-core",
+    "matplotlib",
+    "omegaconf",
+    "pandas",
+    "wandb",
+]
 dev = ["pytest", "ipython"]
 
 [tool.setuptools.packages.find]

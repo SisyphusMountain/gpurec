@@ -31,6 +31,12 @@ Removed from this branch:
 pip install -e ".[triton,dev]"
 ```
 
+For the checkout-local HOGENOM experiment scripts:
+
+```bash
+pip install -e ".[hogenom,dev]"
+```
+
 ## Basic Optimization
 
 ```python
@@ -120,10 +126,9 @@ for the bundled HOGENOM benchmark layout.  Their default paths point under
 | Checkpoint rate export | `python scripts/export_hogenom_rates_from_checkpoint.py` | Exports D/T/L rates from a HOGENOM optimization checkpoint. |
 | One-pass profiling | `python scripts/profile_hogenom_ccp_pass.py` | Profiles full, streamed, active-batch, or largest-batch forward/backward passes. |
 
-Optional script dependencies are intentionally separate from the core package:
-use `wandb` for online W&B logging, `hydra-core` and `omegaconf` for the Hydra
-launcher, and `matplotlib`/`pandas` for plotting and report helpers.  The R
-plotting helper also needs its CRAN/Bioconductor plotting packages.
+Optional script dependencies are intentionally separate from the core package
+and are grouped under the `hogenom` extra.  The R plotting helper also needs
+its CRAN/Bioconductor plotting packages.
 
 Minimal HOGENOM smoke when CUDA memory allows:
 
