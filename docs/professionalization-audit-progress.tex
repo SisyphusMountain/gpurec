@@ -1150,6 +1150,15 @@ factories and the direct constructor accept only \texttt{torch.float32} and
 strings, integer dtypes, and unsupported floating dtypes with a clear
 parameter-specific \texttt{ValueError}.
 
+\subsection{Runtime Ninja Dependency}
+
+The core package metadata now declares \texttt{ninja>=1.11} as a runtime
+dependency because CPU preprocessing builds the C++ extension through
+\texttt{torch.utils.cpp\_extension.load()}, which requires the Ninja executable.
+A release-metadata unit guard parses \texttt{pyproject.toml} and asserts that
+the core dependency list includes \texttt{ninja}, preventing fresh installs from
+silently losing the build backend required before compiler/OpenMP checks begin.
+
 \section{Verification Log}
 
 \begin{center}
@@ -2278,6 +2287,21 @@ CPU unit gate after \texttt{GeneReconModel} dtype validation &
 \texttt{332 passed, 28 deselected} \\
 \texttt{python scripts/check\_release\_metadata.py} &
 Release metadata checker after \texttt{GeneReconModel} dtype validation &
+\texttt{expected license blockers} \\
+\texttt{python -m py\_compile tests/unit/test\_release\_metadata.py} &
+Runtime dependency metadata guard syntax &
+\texttt{ok} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q tests/unit/test\_release\_metadata.py -k runtime\_dependencies} &
+Focused Ninja runtime dependency guard &
+\texttt{1 passed, 10 deselected} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q tests/unit/test\_release\_metadata.py} &
+Release metadata unit guards after Ninja dependency &
+\texttt{11 passed} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
+CPU unit gate after Ninja runtime dependency &
+\texttt{333 passed, 28 deselected} \\
+\texttt{python scripts/check\_release\_metadata.py} &
+Release metadata checker after Ninja runtime dependency &
 \texttt{expected license blockers} \\
 \bottomrule
 \end{tabular}

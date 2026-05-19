@@ -151,6 +151,28 @@ def test_cpu_ci_matrix_covers_declared_python_versions():
         assert f"Programming Language :: Python :: {version}" in pyproject
 
 
+def test_runtime_dependencies_include_cpp_extension_build_backend():
+    pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    match = re.search(
+        r"^dependencies\s*=\s*\[(?P<block>.*?)^\]",
+        pyproject,
+        flags=re.M | re.S,
+    )
+
+    assert match is not None
+    dependencies = {
+        line.strip().rstrip(",").strip('"').split(";", 1)[0]
+        for line in match.group("block").splitlines()
+        if line.strip().startswith('"')
+    }
+    dependency_names = {
+        re.split(r"[\[<>=!~ ]", dependency, maxsplit=1)[0].lower().replace("_", "-")
+        for dependency in dependencies
+    }
+
+    assert "ninja" in dependency_names
+
+
 def test_rust_backtracking_uses_pinned_git_dependency():
     manifest = (ROOT / "crates" / "gpurec-backtrack" / "Cargo.toml").read_text(
         encoding="utf-8"

@@ -21,6 +21,7 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Bio-Informatics",
 ]
 dependencies = [
+    "ninja>=1.11",
     "torch>=2.0",
     "triton>=2.1",
 ]
