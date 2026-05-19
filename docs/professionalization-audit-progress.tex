@@ -825,6 +825,16 @@ explicitly calls out stale \texttt{build/}, \texttt{dist/}, and
 checkout backtracking was updated to the pinned git dependency, and the README
 labels the HOGENOM W\&B launcher as a legacy checkout-local wrapper.
 
+\subsection{Backtracking Subprocess Error Context}
+
+The Python backtracking bridge now captures subprocess stdout and stderr,
+checks the return code explicitly, and raises a \texttt{RuntimeError} with the
+command, exit code, and captured process output.  Successful Rust invocations
+must also produce the expected single-sample XML file or every requested
+multi-sample XML file; missing outputs are reported before the temporary
+directory disappears.  Focused fake-binary regressions cover nonzero exits,
+stderr/stdout propagation, and missing single or batched output files.
+
 \section{Verification Log}
 
 \begin{center}
@@ -1480,6 +1490,15 @@ Marker-selected CPU integration gate &
 \texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
 CPU unit gate after CI and release-doc alignment &
 \texttt{199 passed, 28 deselected} \\
+\texttt{python -m py\_compile gpurec/backtracking.py tests/unit/test\_workflow.py} &
+Backtracking subprocess error-context syntax &
+\texttt{ok} \\
+\texttt{pytest -q tests/unit/test\_workflow.py::test\_backtracking\_... ...} &
+Focused backtracking subprocess and missing-output guards &
+\texttt{5 passed} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
+CPU unit gate after backtracking error context &
+\texttt{201 passed, 28 deselected} \\
 \bottomrule
 \end{tabular}
 \end{center}
@@ -1493,10 +1512,10 @@ CPU unit gate after CI and release-doc alignment &
         document a Rust-toolchain requirement for source-checkout sampling.
   \item Add an installed-artifact sampling smoke once the backtracking binary
         distribution model is settled.
-  \item Normalize backtracking subprocess failures into CLI-friendly workflow
-        errors with captured stderr and missing-output context.
   \item Replace file-name-based GPU marker inference with explicit module-level
         GPU intent plus a meta-test for marker coverage.
+  \item Validate AleRax family selection before CUDA checks in public
+        constructors so invalid selection errors are not masked on CPU hosts.
   \item Keep committing small, verified increments so the branch remains
         reviewable despite the larger audit scope.
 \end{enumerate}

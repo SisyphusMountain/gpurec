@@ -1243,6 +1243,78 @@ else:
     ]
 
 
+def test_backtracking_runner_reports_subprocess_failure_with_stderr(
+    tmp_path: Path,
+    monkeypatch,
+):
+    fake_backtracker = tmp_path / "fail_backtracker.py"
+    fake_backtracker.write_text(
+        """import sys
+sys.stdout.write("rust stdout\\n")
+sys.stderr.write("rust stderr\\n")
+sys.exit(7)
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        backtracking,
+        "_backtrack_command",
+        lambda **_: [sys.executable, str(fake_backtracker)],
+    )
+
+    with pytest.raises(RuntimeError, match="exit code 7") as exc_info:
+        backtracking._run_backtracking_payload(
+            {"value": 1},
+            cargo_manifest=tmp_path / "missing" / "Cargo.toml",
+            backtrack_binary=None,
+            build_args=lambda *_: [],
+            read_output=lambda _: None,
+        )
+
+    message = str(exc_info.value)
+    assert "gpurec backtracking command failed" in message
+    assert "rust stderr" in message
+    assert "rust stdout" in message
+    assert "Traceback" not in message
+
+
+def test_backtracking_runner_reports_missing_expected_outputs(
+    tmp_path: Path,
+    monkeypatch,
+):
+    fake_backtracker = tmp_path / "partial_backtracker.py"
+    fake_backtracker.write_text(
+        """import pathlib
+import sys
+
+args = sys.argv[1:]
+if args and args[0] == "--samples":
+    output_dir = pathlib.Path(args[5])
+    output_dir.mkdir()
+    (output_dir / "sample_0.xml").write_text("<sample index='0'/>", encoding="utf-8")
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        backtracking,
+        "_backtrack_command",
+        lambda **_: [sys.executable, str(fake_backtracker)],
+    )
+    monkeypatch.setattr(
+        backtracking,
+        "export_backtracking_input",
+        lambda *_, **__: {"family_index": 0},
+    )
+
+    with pytest.raises(RuntimeError, match="single-sample RecPhyloXML output") as single:
+        sample_recphyloxml(object())
+    assert "sample.xml" in str(single.value)
+
+    with pytest.raises(RuntimeError, match="1 of 2 expected RecPhyloXML outputs") as multi:
+        sample_recphyloxmls(object(), num_samples=2)
+    assert "sample_1.xml" in str(multi.value)
+
+
 def test_recphyloxml_event_counts_uses_shared_event_schema():
     xml = """
     <recPhylo>

@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import shlex
 import subprocess
 import tempfile
 import xml.etree.ElementTree as ET
@@ -163,12 +164,36 @@ def _run_backtracking_payload(
             cargo_manifest=cargo_manifest,
             backtrack_binary=backtrack_binary,
         )
-        subprocess.run(
-            command + build_args(input_path, tmp_path),
-            check=True,
+        full_command = command + build_args(input_path, tmp_path)
+        result = subprocess.run(
+            full_command,
+            check=False,
+            capture_output=True,
             cwd=str(_REPO_ROOT),
+            text=True,
         )
+        if result.returncode != 0:
+            command_text = " ".join(shlex.quote(part) for part in full_command)
+            details = [
+                "gpurec backtracking command failed",
+                f"exit code {result.returncode}",
+                f"command: {command_text}",
+            ]
+            if result.stderr:
+                details.append(f"stderr: {result.stderr.strip()}")
+            if result.stdout:
+                details.append(f"stdout: {result.stdout.strip()}")
+            raise RuntimeError("; ".join(details))
         return read_output(tmp_path)
+
+
+def _read_required_output(path: Path, *, description: str) -> str:
+    if not path.exists():
+        raise RuntimeError(
+            "gpurec backtracking command succeeded but did not write "
+            f"{description} at {path}"
+        )
+    return path.read_text(encoding="utf-8")
 
 
 def export_backtracking_input(
@@ -290,7 +315,10 @@ def sample_recphyloxml(
         return [str(input_path), str(tmp_path / "sample.xml")]
 
     def read_output(tmp_path: Path) -> str:
-        return (tmp_path / "sample.xml").read_text(encoding="utf-8")
+        return _read_required_output(
+            tmp_path / "sample.xml",
+            description="single-sample RecPhyloXML output",
+        )
 
     return _run_backtracking_payload(
         payload,
@@ -335,6 +363,23 @@ def sample_recphyloxmls(
 
     def read_output(tmp_path: Path) -> list[str]:
         output_dir = tmp_path / "samples"
+        if not output_dir.is_dir():
+            raise RuntimeError(
+                "gpurec backtracking command succeeded but did not create "
+                f"multi-sample output directory {output_dir}"
+            )
+        missing = [
+            f"sample_{sample_idx}.xml"
+            for sample_idx in range(num_samples)
+            if not (output_dir / f"sample_{sample_idx}.xml").exists()
+        ]
+        if missing:
+            joined = ", ".join(missing)
+            raise RuntimeError(
+                "gpurec backtracking command succeeded but did not write "
+                f"{len(missing)} of {num_samples} expected RecPhyloXML outputs: "
+                f"{joined}"
+            )
         return [
             (output_dir / f"sample_{sample_idx}.xml").read_text(encoding="utf-8")
             for sample_idx in range(num_samples)
