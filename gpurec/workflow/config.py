@@ -237,7 +237,11 @@ class SamplingConfig:
             self.backtrack_binary = _resolve_path(self.backtrack_binary)
         if self.samples < 1:
             raise ValueError("samples must be positive")
+        if self.seed < 0:
+            raise ValueError("seed must be non-negative")
         if self.family_start < 0:
             raise ValueError("family_start must be non-negative")
         if self.max_families is not None and self.max_families < 1:
             raise ValueError("max_families must be positive when provided")
+        if self.max_events is not None and self.max_events < 1:
+            raise ValueError("max_events must be positive when provided")

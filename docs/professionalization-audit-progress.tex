@@ -381,6 +381,14 @@ separates current operating notes, validation notes, and historical performance
 or research logs, and the main README links to that map so users do not have to
 infer which notes are current guidance.
 
+\subsection{Sampling Input Validation}
+
+\texttt{SamplingConfig} now validates non-negative seeds and positive
+\texttt{max\_events} values.  The lower-level public backtracking helpers apply
+the same checks before touching a model or invoking the Rust sampler, so invalid
+Python inputs fail with clear \texttt{ValueError} messages instead of reaching
+unsigned Rust fields or subprocess execution.
+
 \section{Verification Log}
 
 \begin{center}
@@ -520,6 +528,15 @@ C++ preprocessing comment/name hygiene &
 \texttt{pdflatex -interaction=nonstopmode -halt-on-error ...professionalization...} &
 Documentation map audit-log build &
 \texttt{ok after docs index update} \\
+\texttt{python -m py\_compile gpurec/backtracking.py gpurec/workflow/config.py ...} &
+Sampling validation syntax &
+\texttt{ok} \\
+\texttt{pytest -q tests/unit/test\_workflow.py} &
+Workflow and backtracking validation regressions &
+\texttt{26 passed after sampling validation cleanup} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
+CPU unit gate after sampling validation cleanup &
+\texttt{49 passed, 27 deselected} \\
 \bottomrule
 \end{tabular}
 \end{center}

@@ -22,6 +22,17 @@ _BACKTRACK_BINARY_ENV = "GPUREC_BACKTRACK_BIN"
 _EVENT_KEYS = ("S", "SL", "D", "DL", "T", "TL", "L", "Leaf")
 
 
+def _validate_backtracking_limits(
+    *,
+    seed: int | None,
+    max_events: int | None,
+) -> None:
+    if seed is not None and seed < 0:
+        raise ValueError("seed must be non-negative")
+    if max_events is not None and max_events < 1:
+        raise ValueError("max_events must be positive when provided")
+
+
 def _tensor_list(value: Any, *, dtype: torch.dtype | None = None) -> list:
     tensor = torch.as_tensor(value)
     if dtype is not None:
@@ -129,6 +140,7 @@ def export_backtracking_input(
     for the selected family.
     """
 
+    _validate_backtracking_limits(seed=seed, max_events=max_events)
     family = model.family_input(family_index)
     offset, parameter_family_index = _activate_family_batch(model, family_index)
     state = _evaluate_backtracking_state(model)

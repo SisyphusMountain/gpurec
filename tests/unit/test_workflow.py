@@ -7,7 +7,13 @@ from types import SimpleNamespace
 import pytest
 import torch
 
-from gpurec.backtracking import _activate_family_batch, _backtrack_command
+from gpurec.backtracking import (
+    _activate_family_batch,
+    _backtrack_command,
+    export_backtracking_input,
+    sample_recphyloxml,
+    sample_recphyloxmls,
+)
 from gpurec.cli import _run_config_from_args, build_parser, main
 from gpurec.api.model import GeneReconModel
 from gpurec.workflow.checkpoint import load_checkpoint, restore_model_theta, save_checkpoint
@@ -288,6 +294,24 @@ def test_sampling_config_validates_selection(tmp_path: Path):
     assert config.samples == 2
     assert config.family_start == 1
     assert config.max_families == 3
+
+
+def test_sampling_config_rejects_invalid_seed_and_event_limits(tmp_path: Path):
+    checkpoint = tmp_path / "checkpoints" / "best.pt"
+    with pytest.raises(ValueError, match="seed"):
+        SamplingConfig(checkpoint=checkpoint, seed=-1)
+    with pytest.raises(ValueError, match="max_events"):
+        SamplingConfig(checkpoint=checkpoint, max_events=0)
+
+
+def test_public_backtracking_rejects_invalid_seed_and_event_limits():
+    model = object()
+    with pytest.raises(ValueError, match="seed"):
+        export_backtracking_input(model, seed=-1)  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="max_events"):
+        sample_recphyloxml(model, max_events=0)  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="seed"):
+        sample_recphyloxmls(model, num_samples=1, seed=-1)  # type: ignore[arg-type]
 
 
 class _DummyModel:
