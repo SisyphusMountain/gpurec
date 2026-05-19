@@ -228,6 +228,14 @@ R tree-rate plotting utility.  The helper scripts that select resident batches
 now use \texttt{select\_batch()} instead of private batch state, and the
 integration resident-batch test was adjusted to use public family names.
 
+\subsection{Notebook Cleanup}
+
+The two remaining modified notebooks were stripped of execution counts,
+outputs, and local-path output text before being kept.  Their retained changes
+are source-cell edits: the Adam oscillation notebook records a deliberately
+aggressive learning-rate/bounds experiment, and the reconciliation notebook now
+uses memory-safe resident batches rather than rebuilding one model per chunk.
+
 \section{Verification Log}
 
 \begin{center}
@@ -250,6 +258,9 @@ Promoted audit-note hygiene &
 \texttt{pytest -q tests/unit/test\_workflow.py} &
 Workflow and public-surface source guards &
 \texttt{14 passed after HOGENOM helper cleanup} \\
+\texttt{notebook JSON inspection} &
+Notebook execution/output stripping &
+\texttt{0 outputs, 0 execution counts} \\
 \texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q ...CPU fast gate...} &
 CPU-only audit gate &
 \texttt{37 passed after HOGENOM helper cleanup} \\
@@ -275,8 +286,8 @@ YAML config UX &
 \section{Next Audit Targets}
 
 \begin{enumerate}[leftmargin=*]
-  \item Decide whether the remaining modified notebooks should be stripped and
-        committed or kept as local artifacts.
+  \item Review the larger promoted HOGENOM helper scripts for consolidation
+        opportunities once the experiment interfaces settle.
   \item Keep committing small, verified increments so the branch remains
         reviewable despite the larger audit scope.
 \end{enumerate}
