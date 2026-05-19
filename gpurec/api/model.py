@@ -185,8 +185,20 @@ def _normalize_prefetch_batches(value: int | str | None, *, lazy: bool) -> int |
             return "all"
         if text in ("0", "none", "null", "false"):
             return 0
-        value = int(text)
-    count = int(value)
+        try:
+            value = int(text)
+        except ValueError as exc:
+            raise ValueError("prefetch_batches must be non-negative or 'all'") from exc
+    if isinstance(value, bool):
+        raise ValueError("prefetch_batches must be an integer or 'all'")
+    if isinstance(value, int):
+        count = int(value)
+    elif isinstance(value, float):
+        if not math.isfinite(value) or not value.is_integer():
+            raise ValueError("prefetch_batches must be an integer or 'all'")
+        count = int(value)
+    else:
+        raise ValueError("prefetch_batches must be an integer or 'all'")
     if count < 0:
         raise ValueError("prefetch_batches must be non-negative or 'all'")
     return count
@@ -238,6 +250,29 @@ def _normalize_gene_solver_kwargs(kwargs: dict[str, Any]) -> dict[str, Any]:
         normalized["adaptive_iters"] = bool_value(
             "adaptive_iters",
             normalized["adaptive_iters"],
+        )
+    if "family_chunk_size" in normalized:
+        normalized["family_chunk_size"] = _normalize_family_chunk_size(
+            normalized["family_chunk_size"]
+        )
+    if "clade_budget" in normalized:
+        normalized["clade_budget"] = _normalize_clade_budget(
+            normalized["clade_budget"]
+        )
+    if "batch_packing" in normalized:
+        normalized["batch_packing"] = _normalize_batch_packing(
+            normalized["batch_packing"]
+        )
+    if "lazy_preprocess" in normalized:
+        normalized["lazy_preprocess"] = bool_value(
+            "lazy_preprocess",
+            normalized["lazy_preprocess"],
+        )
+    lazy_preprocess = normalized.get("lazy_preprocess", False)
+    if "prefetch_batches" in normalized:
+        normalized["prefetch_batches"] = _normalize_prefetch_batches(
+            normalized["prefetch_batches"],
+            lazy=lazy_preprocess,
         )
     adaptive_iters = normalized.get("adaptive_iters", False)
     convergence_check_interval = int(
@@ -846,6 +881,15 @@ class GeneReconModel(torch.nn.Module):
             gradient_change_rtol,
         )
         pruning_threshold = nonnegative_float("pruning_threshold", pruning_threshold)
+        family_chunk_requested = family_chunk_size is not None
+        family_chunk_size = _normalize_family_chunk_size(family_chunk_size)
+        clade_budget = _normalize_clade_budget(clade_budget)
+        batch_packing = _normalize_batch_packing(batch_packing)
+        lazy_preprocess = bool_value("lazy_preprocess", lazy_preprocess)
+        prefetch_batches = _normalize_prefetch_batches(
+            prefetch_batches,
+            lazy=lazy_preprocess,
+        )
 
         # Sanity check: dataset flags must be consistent with mode
         ds_g, ds_sw = (dataset.genewise, dataset.specieswise)
@@ -871,17 +915,14 @@ class GeneReconModel(torch.nn.Module):
             family_count=len(dataset.families) if origination_probs is not None else None,
         )
         self.register_buffer("origination_probs", prepared_origination_probs)
-        self.family_chunk_size = _normalize_family_chunk_size(family_chunk_size)
-        self.clade_budget = _normalize_clade_budget(clade_budget)
-        self.batch_packing = _normalize_batch_packing(batch_packing)
-        self.lazy_preprocess = bool(lazy_preprocess)
-        self.prefetch_batches = _normalize_prefetch_batches(
-            prefetch_batches,
-            lazy=self.lazy_preprocess,
-        )
+        self.family_chunk_size = family_chunk_size
+        self.clade_budget = clade_budget
+        self.batch_packing = batch_packing
+        self.lazy_preprocess = lazy_preprocess
+        self.prefetch_batches = prefetch_batches
         self._batched_resident = bool(
             self.lazy_preprocess
-            or family_chunk_size is not None
+            or family_chunk_requested
             or self.clade_budget is not None
         )
 

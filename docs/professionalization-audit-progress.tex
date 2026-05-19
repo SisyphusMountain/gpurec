@@ -1110,6 +1110,18 @@ negative clade IDs, or IDs greater than or equal to \texttt{C}, fail during
 safe cache loading with a field-specific \texttt{RuntimeError} instead of
 surviving until batching reindexes tensors.
 
+\subsection{Resident-Batch Control Validation}
+
+\texttt{GeneReconModel} now validates resident-batch controls before CUDA
+device checks, tree parsing, or dataset preprocessing.  Direct construction and
+the public tree/AleRax factories reject non-integral
+\texttt{family\_chunk\_size}, invalid \texttt{clade\_budget} values,
+non-boolean \texttt{lazy\_preprocess}, and boolean, fractional, negative, or
+unparseable \texttt{prefetch\_batches} values with parameter-specific
+\texttt{ValueError}s.  The constructor preserves the previous meaning of
+\texttt{family\_chunk\_size=None}: only an explicitly supplied chunk-size
+control requests resident batching.
+
 \section{Verification Log}
 
 \begin{center}
@@ -2181,6 +2193,18 @@ CPU unit gate after split-clade cache validation &
 \texttt{301 passed, 28 deselected} \\
 \texttt{python scripts/check\_release\_metadata.py} &
 Release metadata checker after split-clade cache validation &
+\texttt{expected license blockers} \\
+\texttt{python -m py\_compile gpurec/api/model.py tests/unit/test\_workflow.py} &
+Resident-batch control validation syntax &
+\texttt{ok} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q tests/unit/test\_workflow.py -k "..."} &
+Focused resident-batch constructor validation &
+\texttt{43 passed, 169 deselected} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
+CPU unit gate after resident-batch control validation &
+\texttt{314 passed, 28 deselected} \\
+\texttt{python scripts/check\_release\_metadata.py} &
+Release metadata checker after resident-batch control validation &
 \texttt{expected license blockers} \\
 \bottomrule
 \end{tabular}
