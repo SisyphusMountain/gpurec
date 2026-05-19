@@ -1318,6 +1318,22 @@ def test_sampling_runner_writes_outputs_and_aggregates(tmp_path: Path, monkeypat
         "sample_recphyloxmls",
         fake_sample_recphyloxmls,
     )
+    recon_dir = config.out_dir / "reconciliations"
+    all_dir = recon_dir / "all"
+    all_dir.mkdir(parents=True)
+    (all_dir / "000001_old_sample_99.xml").write_text("stale", encoding="utf-8")
+    (all_dir / "000001_old_eventCounts_99.txt").write_text(
+        "stale",
+        encoding="utf-8",
+    )
+    (all_dir / "manual.keep").write_text("keep", encoding="utf-8")
+    for stale_name in (
+        "event_counts.tsv",
+        "summary.json",
+        "totalSpeciesEventCounts.txt",
+        "totalTransfers.txt",
+    ):
+        (recon_dir / stale_name).write_text("stale", encoding="utf-8")
 
     result = runner.run()
 
@@ -1343,14 +1359,19 @@ def test_sampling_runner_writes_outputs_and_aggregates(tmp_path: Path, monkeypat
         },
     ]
 
-    recon_dir = config.out_dir / "reconciliations"
-    all_dir = recon_dir / "all"
     assert sorted(path.name for path in all_dir.glob("*.xml")) == [
         "000001_fam_a_sample_0.xml",
         "000001_fam_a_sample_1.xml",
         "000002_fam2_sample_0.xml",
         "000002_fam2_sample_1.xml",
     ]
+    assert sorted(path.name for path in all_dir.glob("*_eventCounts_*.txt")) == [
+        "000001_fam_a_eventCounts_0.txt",
+        "000001_fam_a_eventCounts_1.txt",
+        "000002_fam2_eventCounts_0.txt",
+        "000002_fam2_eventCounts_1.txt",
+    ]
+    assert (all_dir / "manual.keep").read_text(encoding="utf-8") == "keep"
     for path in all_dir.iterdir():
         assert path.resolve().is_relative_to(all_dir.resolve())
     assert (

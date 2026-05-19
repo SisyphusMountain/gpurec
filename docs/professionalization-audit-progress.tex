@@ -713,6 +713,15 @@ model's cached preprocessing state.  The regression mutates tensors, nested
 helper containers, gene-tree paths, leaf-species maps, and clade labels returned
 from \texttt{FamilyInput}; the model-side dataset records remain unchanged.
 
+\subsection{Sampling Rerun Hygiene}
+
+Sampling runs now clear prior gpurec-generated reconciliation artifacts before
+writing a new result set.  The cleanup is scoped to sample XML files,
+per-sample event-count files, and aggregate report files under the sampling
+output directory, leaving unrelated user files in \texttt{reconciliations/all}
+untouched.  The workflow regression seeds stale generated artifacts before a
+rerun and verifies that the final directory contains only current samples.
+
 \section{Verification Log}
 
 \begin{center}
@@ -1223,6 +1232,18 @@ Focused FamilyInput mutation regression &
 \texttt{1 passed} \\
 \texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
 CPU unit gate after FamilyInput copy boundary &
+\texttt{155 passed, 27 deselected} \\
+\texttt{python -m py\_compile gpurec/workflow/sampling.py tests/unit/test\_workflow.py} &
+Sampling rerun cleanup syntax &
+\texttt{ok} \\
+\texttt{pytest -q tests/unit/test\_workflow.py::test\_sampling\_runner\_writes\_outputs\_and\_aggregates} &
+Focused stale sampling-output regression &
+\texttt{1 passed} \\
+\texttt{pytest -q tests/unit/test\_workflow.py} &
+Workflow suite after sampling cleanup &
+\texttt{115 passed} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
+CPU unit gate after sampling cleanup &
 \texttt{155 passed, 27 deselected} \\
 \bottomrule
 \end{tabular}

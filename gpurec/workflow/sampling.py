@@ -33,6 +33,16 @@ SPECIES_COLUMNS = (
 )
 
 _UNSAFE_FILENAME_STEM = re.compile(r"[^A-Za-z0-9._-]+")
+_SAMPLING_AGGREGATE_FILES = (
+    "event_counts.tsv",
+    "summary.json",
+    "totalSpeciesEventCounts.txt",
+    "totalTransfers.txt",
+)
+_SAMPLING_ALL_PATTERNS = (
+    "*_eventCounts_*.txt",
+    "*_sample_*.xml",
+)
 
 
 @dataclass
@@ -195,6 +205,21 @@ def _write_event_counts_table(path: Path, rows: list[dict[str, Any]]) -> None:
             )
 
 
+def _clear_sampling_outputs(out_dir: Path) -> None:
+    recon_dir = out_dir / "reconciliations"
+    all_dir = recon_dir / "all"
+    if all_dir.exists():
+        for pattern in _SAMPLING_ALL_PATTERNS:
+            for path in all_dir.glob(pattern):
+                if path.is_file():
+                    path.unlink()
+    all_dir.mkdir(parents=True, exist_ok=True)
+    for name in _SAMPLING_AGGREGATE_FILES:
+        path = recon_dir / name
+        if path.is_file():
+            path.unlink()
+
+
 class SamplingRunner:
     def __init__(self, config: SamplingConfig):
         self.config = config
@@ -214,7 +239,7 @@ class SamplingRunner:
         run_config, model = self._load_model()
         out_dir = self.config.out_dir or run_config.out_dir
         all_dir = out_dir / "reconciliations" / "all"
-        all_dir.mkdir(parents=True, exist_ok=True)
+        _clear_sampling_outputs(out_dir)
 
         family_names = model.family_names
         start = self.config.family_start
