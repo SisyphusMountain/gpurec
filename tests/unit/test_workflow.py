@@ -2099,6 +2099,17 @@ def test_hogenom_scripts_use_public_model_surface():
     assert offenders == []
 
 
+def test_python_scripts_do_not_use_runtime_asserts():
+    root = Path(__file__).resolve().parents[2]
+    offenders = [
+        str(path.relative_to(root))
+        for path in sorted((root / "scripts").glob("*.py"))
+        if "assert " in path.read_text(encoding="utf-8")
+    ]
+
+    assert offenders == []
+
+
 def test_hogenom_scripts_are_marked_as_legacy_experiment_surface():
     root = Path(__file__).resolve().parents[2]
     scripts_readme = (root / "scripts" / "README.md").read_text(encoding="utf-8")

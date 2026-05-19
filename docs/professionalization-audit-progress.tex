@@ -872,6 +872,14 @@ optimized-Python source guard now covers both \texttt{gpurec/core/batching.py}
 and \texttt{gpurec/core/forward.py}, so core validation failures keep their
 runtime checks when Python is launched with \texttt{-O}.
 
+\subsection{Script Runtime Invariants}
+
+The checkout-local HOGENOM profiling script no longer relies on a production
+\texttt{assert} to ensure that active-batch profiling has selected a resident
+batch.  The invariant now raises an explicit \texttt{RuntimeError}, and a
+source guard covers all Python scripts under \texttt{scripts/} so optimized
+interpreters cannot silently remove retained script checks.
+
 \section{Verification Log}
 
 \begin{center}
@@ -1584,6 +1592,18 @@ Core assert-source scan &
 \texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
 CPU unit gate after core runtime invariant cleanup &
 \texttt{220 passed, 28 deselected} \\
+\texttt{python -m py\_compile scripts/profile\_hogenom\_ccp\_pass.py tests/unit/test\_workflow.py} &
+Script runtime invariant syntax &
+\texttt{ok} \\
+\texttt{pytest -q tests/unit/test\_workflow.py::test\_python\_scripts\_... ...} &
+Focused script assert and public-surface guards &
+\texttt{2 passed} \\
+\texttt{rg -n "assert " scripts -g '*.py'} &
+Python script assert-source scan &
+\texttt{no matches} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
+CPU unit gate after script runtime invariant cleanup &
+\texttt{221 passed, 28 deselected} \\
 \bottomrule
 \end{tabular}
 \end{center}

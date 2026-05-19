@@ -288,7 +288,10 @@ def run_pass(model, mode: str, batch_index: int | None) -> dict[str, float | int
         return result
 
     if mode != "full":
-        assert batch_index is not None
+        if batch_index is None:
+            raise RuntimeError(
+                f"internal error: mode={mode!r} requires a selected resident batch"
+            )
         activate_batch(model, batch_index)
 
     if torch.cuda.is_available():
