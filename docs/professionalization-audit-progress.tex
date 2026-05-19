@@ -985,6 +985,13 @@ The release metadata guard asserts that these supported versions remain
 documented together, avoiding accidental advertisement of untested future
 Python versions.
 
+\subsection{Direct RunConfig Float Normalization}
+
+\texttt{RunConfig} now normalizes direct Python API float controls the same way
+integer controls are normalized.  Numeric strings and integral values are
+stored as floats, while booleans are rejected before they can masquerade as
+rates, tolerances, or optimizer learning rates in downstream workflow code.
+
 \section{Verification Log}
 
 \begin{center}
@@ -1867,6 +1874,18 @@ CPU unit gate after Python range cap &
 \texttt{251 passed, 28 deselected} \\
 \texttt{python scripts/check\_release\_metadata.py} &
 Release metadata checker after Python range cap &
+\texttt{expected license blockers} \\
+\texttt{python -m py\_compile gpurec/workflow/config.py tests/unit/test\_workflow.py} &
+Direct \texttt{RunConfig} float-normalization syntax &
+\texttt{ok} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q tests/unit/test\_workflow.py -k "..."} &
+Focused workflow config float-normalization guards &
+\texttt{26 passed, 148 deselected} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
+CPU unit gate after direct \texttt{RunConfig} float normalization &
+\texttt{256 passed, 28 deselected} \\
+\texttt{python scripts/check\_release\_metadata.py} &
+Release metadata checker after direct \texttt{RunConfig} float normalization &
 \texttt{expected license blockers} \\
 \bottomrule
 \end{tabular}

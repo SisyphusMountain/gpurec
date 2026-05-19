@@ -285,6 +285,37 @@ def test_run_config_normalizes_batch_controls(tmp_path: Path):
     assert config.max_wave_size == 32
 
 
+def test_run_config_normalizes_direct_float_controls(tmp_path: Path):
+    config = RunConfig(
+        species_tree=tmp_path / "sp.nwk",
+        families_file=tmp_path / "families.txt",
+        out_dir=tmp_path / "out",
+        device="cpu",
+        theta_init_d=1,
+        theta_init_l="0.2",
+        theta_init_t="3e-1",
+        min_rate="1e-8",
+        max_rate=10,
+        lr="0.25",
+    )
+
+    assert config.theta_init_rates == (1.0, 0.2, 0.3)
+    assert config.min_rate == 1e-8
+    assert config.max_rate == 10.0
+    assert config.lr == 0.25
+    assert all(
+        isinstance(value, float)
+        for value in (
+            config.theta_init_d,
+            config.theta_init_l,
+            config.theta_init_t,
+            config.min_rate,
+            config.max_rate,
+            config.lr,
+        )
+    )
+
+
 def test_run_config_defaults_to_cuda_for_production_workflow(tmp_path: Path):
     config = RunConfig(
         species_tree=tmp_path / "sp.nwk",
@@ -348,6 +379,30 @@ def test_run_config_rejects_nonfinite_float_controls(
     tmp_path: Path,
     field: str,
     value: float,
+):
+    with pytest.raises(ValueError, match=field):
+        RunConfig(
+            species_tree=tmp_path / "sp.nwk",
+            families_file=tmp_path / "families.txt",
+            out_dir=tmp_path / "out",
+            device="cpu",
+            **{field: value},
+        )
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("tol_e", True),
+        ("theta_init_d", False),
+        ("lr", True),
+        ("min_rate", True),
+    ],
+)
+def test_run_config_rejects_boolean_float_controls(
+    tmp_path: Path,
+    field: str,
+    value: bool,
 ):
     with pytest.raises(ValueError, match=field):
         RunConfig(

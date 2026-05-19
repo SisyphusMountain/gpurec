@@ -74,8 +74,18 @@ def _normalize_optional_positive_int(
     return number
 
 
-def _finite_float(name: str, value: float) -> float:
-    number = float(value)
+def _normalize_finite_float(name: str, value: float | int | str) -> float:
+    if isinstance(value, bool):
+        raise ValueError(f"{name} must be a number")
+    if isinstance(value, str):
+        try:
+            number = float(value.strip())
+        except ValueError as exc:
+            raise ValueError(f"{name} must be a number") from exc
+    elif isinstance(value, Real):
+        number = float(value)
+    else:
+        raise ValueError(f"{name} must be a number")
     if not math.isfinite(number):
         raise ValueError(f"{name} must be finite")
     return number
@@ -309,6 +319,8 @@ class RunConfig:
             self.checkpoint_every,
         )
         self.log_every = _normalize_positive_int("log_every", self.log_every)
+        for name in _JSON_FLOAT_FIELDS:
+            setattr(self, name, _normalize_finite_float(name, getattr(self, name)))
         if not self.device:
             self.device = _default_device()
         self.validate()
@@ -345,15 +357,15 @@ class RunConfig:
             "loss_change_tol",
             "best_likelihood_min_delta",
         ):
-            if _finite_float(name, getattr(self, name)) < 0.0:
+            if _normalize_finite_float(name, getattr(self, name)) < 0.0:
                 raise ValueError(f"{name} must be non-negative")
-        min_rate = _finite_float("min_rate", self.min_rate)
-        max_rate = _finite_float("max_rate", self.max_rate)
+        min_rate = _normalize_finite_float("min_rate", self.min_rate)
+        max_rate = _normalize_finite_float("max_rate", self.max_rate)
         if min_rate <= 0.0 or max_rate <= min_rate:
             raise ValueError("rate bounds must satisfy 0 < min_rate < max_rate")
-        theta_init_d = _finite_float("theta_init_d", self.theta_init_d)
-        theta_init_l = _finite_float("theta_init_l", self.theta_init_l)
-        theta_init_t = _finite_float("theta_init_t", self.theta_init_t)
+        theta_init_d = _normalize_finite_float("theta_init_d", self.theta_init_d)
+        theta_init_l = _normalize_finite_float("theta_init_l", self.theta_init_l)
+        theta_init_t = _normalize_finite_float("theta_init_t", self.theta_init_t)
         if (
             theta_init_d <= 0.0
             or theta_init_l <= 0.0
@@ -364,8 +376,8 @@ class RunConfig:
             raise ValueError("optimizer must be adam, adagrad, lbfgs, or adam-lbfgs")
         if self.steps < 1:
             raise ValueError("steps must be positive")
-        lr = _finite_float("lr", self.lr)
-        lbfgs_lr = _finite_float("lbfgs_lr", self.lbfgs_lr)
+        lr = _normalize_finite_float("lr", self.lr)
+        lbfgs_lr = _normalize_finite_float("lbfgs_lr", self.lbfgs_lr)
         if lr <= 0.0 or lbfgs_lr <= 0.0:
             raise ValueError("optimizer learning rates must be positive")
         if self.adam_warmup_steps < 0:
