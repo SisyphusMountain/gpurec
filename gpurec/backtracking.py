@@ -76,11 +76,19 @@ def _activate_family_batch(model: GeneReconModel, family_index: int) -> tuple[in
     return active.clade_offset, active.local_family_index
 
 
-def _species_vector(param: torch.Tensor, *, family_index: int, S: int) -> torch.Tensor:
+def _species_vector(
+    param: torch.Tensor,
+    *,
+    family_index: int,
+    S: int,
+    familywise_1d: bool = False,
+) -> torch.Tensor:
     param = torch.as_tensor(param).detach()
     if param.ndim == 0:
         return param.reshape(1).expand(S)
     if param.ndim == 1:
+        if familywise_1d:
+            return param[family_index].reshape(1).expand(S)
         if int(param.shape[0]) == S:
             return param
         return param[family_index].reshape(1).expand(S)
@@ -216,6 +224,7 @@ def export_backtracking_input(
     C = family.clade_count
     S = model.n_species
     ccp = family.ccp_helpers
+    familywise_parameters = getattr(model, "mode", None) == "genewise"
 
     pi = state.pi[offset : offset + C].detach().to(dtype=torch.float64).cpu().contiguous()
     e = _species_vector(
@@ -227,16 +236,19 @@ def export_backtracking_input(
         state.log_p_s,
         family_index=parameter_family_index,
         S=S,
+        familywise_1d=familywise_parameters,
     ).to(dtype=torch.float64)
     log_p_d = _species_vector(
         state.log_p_d,
         family_index=parameter_family_index,
         S=S,
+        familywise_1d=familywise_parameters,
     ).to(dtype=torch.float64)
     max_transfer = _species_vector(
         state.max_transfer,
         family_index=parameter_family_index,
         S=S,
+        familywise_1d=familywise_parameters,
     ).to(dtype=torch.float64)
 
     N = int(ccp["N_splits"])

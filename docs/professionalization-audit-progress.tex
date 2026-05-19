@@ -1054,6 +1054,15 @@ non-integral numeric values for wave rows, species counts, dense-state counts,
 \texttt{family\_chunk\_size}, and auto-policy candidate lists now raise
 \texttt{ValueError}s instead of being silently coerced by \texttt{int(...)}.
 
+\subsection{Genewise Backtracking Parameter Layout}
+
+Backtracking export now carries an explicit genewise layout hint when converting
+one-dimensional solved probability tensors to species vectors.  This prevents
+\texttt{[G]} genewise parameters from being mistaken for \texttt{[S]}
+specieswise vectors when the selected resident batch has the same number of
+families as species, so exported stochastic backtracking payloads select the
+active family row before expanding scalar probabilities across species.
+
 \section{Verification Log}
 
 \begin{center}
@@ -2044,6 +2053,18 @@ CPU unit gate after memory-policy dimension validation &
 \texttt{292 passed, 28 deselected} \\
 \texttt{python scripts/check\_release\_metadata.py} &
 Release metadata checker after memory-policy dimension validation &
+\texttt{expected license blockers} \\
+\texttt{python -m py\_compile gpurec/backtracking.py tests/unit/test\_workflow.py} &
+Genewise backtracking parameter-layout syntax &
+\texttt{ok} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q tests/unit/test\_workflow.py -k "..."} &
+Focused backtracking export and public-surface guards &
+\texttt{4 passed, 193 deselected} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
+CPU unit gate after genewise backtracking parameter-layout fix &
+\texttt{293 passed, 28 deselected} \\
+\texttt{python scripts/check\_release\_metadata.py} &
+Release metadata checker after genewise backtracking parameter-layout fix &
 \texttt{expected license blockers} \\
 \bottomrule
 \end{tabular}

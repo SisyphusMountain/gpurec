@@ -1473,6 +1473,61 @@ def test_export_backtracking_input_rejects_nonfinite_payload_tensors(
         export_backtracking_input(model, family_index=0)  # type: ignore[arg-type]
 
 
+def test_export_backtracking_input_uses_genewise_parameter_row_when_families_equal_species(
+    tmp_path: Path,
+    monkeypatch,
+):
+    species_tree = tmp_path / "sp.nwk"
+    species_tree.write_text("(s0,s1);", encoding="utf-8")
+    family = FamilyInput(
+        index=1,
+        name="fam1",
+        gene_tree_paths=["g1.nwk"],
+        leaf_species_map={},
+        clade_count=2,
+        split_count=0,
+        root_clade_id=0,
+        ccp_helpers={
+            "N_splits": 0,
+            "split_parents_sorted": torch.empty(0, dtype=torch.long),
+            "split_leftrights_sorted": torch.empty(0, dtype=torch.long),
+            "log_split_probs_sorted": torch.empty(0, dtype=torch.float64),
+        },
+        leaf_row_index=torch.tensor([0, 1], dtype=torch.long),
+        leaf_col_index=torch.tensor([0, 1], dtype=torch.long),
+        clade_leaf_labels=["a", "b"],
+    )
+    model = SimpleNamespace(
+        mode="genewise",
+        n_species=2,
+        species_names=["s0", "s1"],
+        species_tree_path=species_tree,
+    )
+    model.family_input = lambda family_index: family
+    model.activate_family = lambda family_index: SimpleNamespace(
+        clade_offset=0,
+        local_family_index=1,
+    )
+    state = ReconciliationState(
+        e=torch.tensor([[-1.0, -1.1], [-2.0, -2.1]], dtype=torch.float64),
+        pi=torch.zeros((2, 2), dtype=torch.float64),
+        log_p_s=torch.tensor([-10.0, -20.0], dtype=torch.float64),
+        log_p_d=torch.tensor([-30.0, -40.0], dtype=torch.float64),
+        log_p_l=torch.tensor([-50.0, -60.0], dtype=torch.float64),
+        max_transfer=torch.tensor([-70.0, -80.0], dtype=torch.float64),
+        origination_probs=None,
+    )
+
+    monkeypatch.setattr(backtracking, "_evaluate_backtracking_state", lambda _: state)
+
+    payload = export_backtracking_input(model, family_index=1)  # type: ignore[arg-type]
+
+    assert payload["e"] == [-2.0, -2.1]
+    assert payload["log_p_s"] == [-20.0, -20.0]
+    assert payload["log_p_d"] == [-40.0, -40.0]
+    assert payload["max_transfer"] == [-80.0, -80.0]
+
+
 def test_backtracking_payload_writer_rejects_nonfinite_json_before_subprocess(
     tmp_path: Path,
     monkeypatch,
