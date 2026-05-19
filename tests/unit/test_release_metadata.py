@@ -69,3 +69,19 @@ Documentation = "https://example.invalid/docs"
     assert result.returncode == 0
     assert "release metadata check passed" in result.stdout
     assert result.stderr == ""
+
+
+def test_cpu_ci_builds_and_smokes_release_artifacts():
+    workflow = (ROOT / ".github" / "workflows" / "cpu-unit.yml").read_text(
+        encoding="utf-8"
+    )
+
+    assert "\n  package:\n" in workflow
+    for required in (
+        'python -m pip install -e ".[release]"',
+        "python -m build",
+        "python -m twine check dist/*",
+        "python -m pip install --no-deps dist/*.whl",
+        "python -m gpurec.cli --help",
+    ):
+        assert required in workflow

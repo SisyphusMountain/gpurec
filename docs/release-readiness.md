@@ -16,6 +16,11 @@ yet encoded as automated build steps.
 
 ## Maintainer Build Path
 
+The CPU GitHub Actions workflow includes a packaging job that installs
+`.[release]`, builds source and wheel artifacts, runs `twine check`, installs
+the built wheel with existing runtime dependencies, and smokes
+`python -m gpurec.cli --help`.
+
 Install release tooling from the dedicated extra:
 
 ```bash

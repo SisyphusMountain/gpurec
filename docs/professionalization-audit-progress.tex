@@ -751,6 +751,16 @@ classifiers, or URLs.  The release-readiness guide documents that the check must
 fail until a license file, license metadata, and matching license classifier are
 chosen by the project owner.
 
+\subsection{Packaging CI Gate}
+
+The CPU GitHub Actions workflow now includes a packaging job in addition to the
+editable-install unit gate.  The job installs the release extra, builds source
+and wheel artifacts, runs \texttt{twine check}, installs the built wheel without
+re-resolving already-installed runtime dependencies, and smokes
+\texttt{python -m gpurec.cli --help}.  A source-level unit guard checks that the
+workflow continues to contain the build, metadata-check, wheel-install, and CLI
+smoke commands.
+
 \section{Verification Log}
 
 \begin{center}
@@ -1316,6 +1326,15 @@ Local artifact build attempt &
 \texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
 CPU unit gate after release metadata checker &
 \texttt{164 passed, 27 deselected} \\
+\texttt{python -m py\_compile tests/unit/test\_release\_metadata.py} &
+Packaging CI guard syntax &
+\texttt{ok} \\
+\texttt{pytest -q tests/unit/test\_release\_metadata.py} &
+Release metadata and packaging workflow source guards &
+\texttt{3 passed} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
+CPU unit gate after packaging CI guard &
+\texttt{165 passed, 27 deselected} \\
 \bottomrule
 \end{tabular}
 \end{center}
@@ -1323,13 +1342,12 @@ CPU unit gate after release metadata checker &
 \section{Next Audit Targets}
 
 \begin{enumerate}[leftmargin=*]
-  \item Add a CPU packaging CI job that installs release tooling, builds
-        artifacts, runs \texttt{twine check}, installs the wheel in a fresh
-        environment, and verifies \texttt{python -m gpurec.cli --help}.
   \item Choose and add a redistributable license, then update
         \texttt{pyproject.toml} license metadata and license classifier.
   \item Resolve the Rust backtracking clean-checkout story: vendor/publish
         \texttt{rustree} or treat the sampler as a separately installed binary.
+  \item Add Python-version CI coverage or narrow the declared Python support
+        claim to the versions that are actually tested.
   \item Add a checked minimal JSON workflow config example for onboarding.
   \item Review whether cache refresh guidance should be promoted into the README
         once cache validation and release documentation settle.
