@@ -262,10 +262,11 @@ def test_workflow_and_backtracking_use_public_model_surface():
     assert offenders == []
 
 
-def test_hogenom_wandb_helpers_use_public_model_surface():
+def test_hogenom_scripts_use_public_model_surface():
     root = Path(__file__).resolve().parents[2]
     paths = [
         root / "scripts" / "export_hogenom_rates_from_checkpoint.py",
+        root / "scripts" / "fast_optimize_hogenom_ccp.py",
         root / "scripts" / "hogenom_ccp_wandb_opt.py",
         root / "scripts" / "hogenom_opt_helpers.py",
         root / "scripts" / "make_hogenom_branchscale_penalty_report.py",
@@ -274,15 +275,19 @@ def test_hogenom_wandb_helpers_use_public_model_surface():
         root / "scripts" / "optimize_hogenom_ccp_specieswise_uniform.py",
         root / "scripts" / "optimize_hogenom_ccp_wandb.py",
         root / "scripts" / "optimize_hogenom_penalty316_kkt.py",
+        root / "scripts" / "profile_hogenom_ccp_pass.py",
     ]
     forbidden = (
         "model._",
         'getattr(model, "_',
+        "from gpurec.api.model import _",
         "from gpurec.api.model import _GeneReconFullLossFunction",
         "_stream_full_batches",
         "_ensure_batch_static",
         "_current_batch_index",
         "_schedule_prefetch",
+        "_theta_for_batch_index",
+        "_evaluate_static_state",
     )
 
     offenders: list[str] = []

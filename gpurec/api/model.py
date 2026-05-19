@@ -1453,31 +1453,80 @@ class GeneReconModel(torch.nn.Module):
         return self.forward(reduce="per_family")
 
     @torch.no_grad()
-    def full_nll_per_family(self) -> torch.Tensor:
-        """Per-family NLL for every family, streaming resident batches if needed."""
+    def full_genewise_nll_and_grad(
+        self,
+        *,
+        need_grad: bool,
+    ) -> tuple[torch.Tensor, torch.Tensor | None]:
+        """Stream genewise per-family NLLs and optional independent gradients.
+
+        This is the model-owned public surface for row-wise optimizers that need
+        one loss and one gradient vector per gene family.
+        """
         if self._mode != "genewise":
-            raise ValueError("full_nll_per_family() is only valid in genewise mode")
+            raise ValueError(
+                "full_genewise_nll_and_grad() is only valid in genewise mode"
+            )
+
         values = torch.empty(
             (self.n_families,),
             device=self.theta.device,
             dtype=self.theta.dtype,
         )
+        grad_total = torch.zeros_like(self.theta) if need_grad else None
+
+        if not self._batched_resident:
+            loss, grad = _evaluate_static_state(
+                self._active_static(),
+                self.theta,
+                need_grad=need_grad,
+                per_family=True,
+            )
+            values.copy_(loss.to(device=values.device, dtype=values.dtype).reshape(-1))
+            if need_grad:
+                if grad is None or grad_total is None:
+                    raise RuntimeError("internal error: missing genewise gradient")
+                grad_total.copy_(grad.to(device=grad_total.device, dtype=grad_total.dtype))
+            return values, grad_total
+
         previous_batch = self.current_batch_index
         try:
-            if len(self.batch_metadata) > 1:
-                for batch_idx, metadata in enumerate(self.batch_metadata):
-                    self.select_batch(batch_idx)
-                    batch_values = self.forward(reduce="per_family").detach()
-                    idx = torch.as_tensor(
-                        metadata.family_indices,
-                        dtype=torch.long,
-                        device=values.device,
+            for batch_idx, metadata in enumerate(self.batch_metadata):
+                self.select_batch(batch_idx)
+                static = self._active_static()
+                theta_batch = self._active_theta()
+                batch_values, batch_grad = _evaluate_static_state(
+                    static,
+                    theta_batch,
+                    need_grad=need_grad,
+                    per_family=True,
+                )
+                idx = torch.as_tensor(
+                    metadata.family_indices,
+                    dtype=torch.long,
+                    device=values.device,
+                )
+                values.index_copy_(
+                    0,
+                    idx,
+                    batch_values.to(device=values.device, dtype=values.dtype).reshape(-1),
+                )
+                if need_grad:
+                    if batch_grad is None or grad_total is None:
+                        raise RuntimeError("internal error: missing genewise batch gradient")
+                    grad_total.index_copy_(
+                        0,
+                        idx.to(device=grad_total.device),
+                        batch_grad.to(device=grad_total.device, dtype=grad_total.dtype),
                     )
-                    values.index_copy_(0, idx, batch_values.to(values.device, values.dtype))
-            else:
-                values.copy_(self.forward(reduce="per_family").detach())
         finally:
             self.select_batch(previous_batch)
+        return values, grad_total
+
+    @torch.no_grad()
+    def full_nll_per_family(self) -> torch.Tensor:
+        """Per-family NLL for every family, streaming resident batches if needed."""
+        values, _grad = self.full_genewise_nll_and_grad(need_grad=False)
         return values
 
     @torch.no_grad()

@@ -17,7 +17,6 @@ if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
 
 from gpurec import GeneReconModel  # noqa: E402
-from gpurec.api.model import _evaluate_static_state  # noqa: E402
 from gpurec.core.preprocess_cpp import _load_extension  # noqa: E402
 from gpurec.optimization import BatchedLBFGS  # noqa: E402
 
@@ -205,30 +204,20 @@ def _add_iteration_distribution(
 
 
 def solver_iteration_metrics(model: GeneReconModel) -> dict[str, float]:
-    if getattr(model, "_batched_resident", False):
-        statics = [
-            static
-            for static in getattr(model, "_batch_statics", [])
-            if static is not None and static.last_solver_stats is not None
-        ]
-    else:
-        static = model.static
-        statics = [static] if static.last_solver_stats is not None else []
-    if not statics:
+    records = model.solver_stat_records()
+    if not records:
         return {}
 
-    e_iters = [int(static.last_solver_stats["E_iterations"]) for static in statics]
+    e_iters = [int(stats["E_iterations"]) for stats in records]
     pi_iters: list[int] = []
-    for static in statics:
-        wave_iterations = static.last_solver_stats.get("Pi_wave_iterations")
+    for stats in records:
+        wave_iterations = stats.get("Pi_wave_iterations")
         if wave_iterations:
             pi_iters.extend(int(value) for value in wave_iterations)
         else:
-            pi_iters.append(int(static.last_solver_stats["Pi_max_iterations"]))
-    pi_converged = sum(
-        float(static.last_solver_stats["Pi_converged_waves"]) for static in statics
-    )
-    pi_waves = sum(float(static.last_solver_stats["Pi_wave_count"]) for static in statics)
+            pi_iters.append(int(stats["Pi_max_iterations"]))
+    pi_converged = sum(float(stats["Pi_converged_waves"]) for stats in records)
+    pi_waves = sum(float(stats["Pi_wave_count"]) for stats in records)
     metrics: dict[str, float] = {
         "solver_Pi_converged_waves": pi_converged,
         "solver_Pi_wave_count": pi_waves,
@@ -236,15 +225,15 @@ def solver_iteration_metrics(model: GeneReconModel) -> dict[str, float]:
     _add_iteration_distribution(metrics, "solver_E_iterations", e_iters)
     _add_iteration_distribution(metrics, "solver_Pi_iterations", pi_iters)
     neumann_terms = [
-        int(static.last_solver_stats["Neumann_terms"])
-        for static in statics
-        if "Neumann_terms" in static.last_solver_stats
+        int(stats["Neumann_terms"])
+        for stats in records
+        if "Neumann_terms" in stats
     ]
     _add_iteration_distribution(metrics, "solver_Neumann_terms", neumann_terms)
     e_adjoint_iters = [
-        int(static.last_solver_stats["E_adjoint_iterations"])
-        for static in statics
-        if "E_adjoint_iterations" in static.last_solver_stats
+        int(stats["E_adjoint_iterations"])
+        for stats in records
+        if "E_adjoint_iterations" in stats
     ]
     _add_iteration_distribution(
         metrics,
@@ -634,15 +623,6 @@ def lbfgs_step(
     return final_metrics, theta_step, closure_evals
 
 
-def activate_batch(model: GeneReconModel, batch_idx: int):
-    if model.current_batch_index != batch_idx:
-        model.clear()
-        model._current_batch_index = batch_idx
-    static = model._ensure_batch_static(batch_idx)
-    model._schedule_prefetch()
-    return static
-
-
 def genewise_data_loss_vector(
     model: GeneReconModel,
     *,
@@ -651,37 +631,7 @@ def genewise_data_loss_vector(
     if model.theta.ndim != 2 or model.theta.shape[1] != 3:
         raise ValueError("batched BFGS expects genewise theta with shape [G, 3]")
 
-    data_loss = model.theta.new_zeros((model.theta.shape[0],))
-    data_grad = torch.zeros_like(model.theta) if need_grad else None
-    for batch_idx, meta in enumerate(model.batch_metadata):
-        static = activate_batch(model, batch_idx)
-        theta_batch = model._theta_for_batch_index(batch_idx, model.theta)
-        loss_i, grad_i = _evaluate_static_state(
-            static,
-            theta_batch,
-            need_grad=need_grad,
-            per_family=True,
-        )
-        idx = torch.as_tensor(
-            meta.family_indices,
-            dtype=torch.long,
-            device=model.theta.device,
-        )
-        data_loss = data_loss.index_copy(
-            0,
-            idx,
-            loss_i.to(device=data_loss.device, dtype=data_loss.dtype).reshape(-1),
-        )
-        if need_grad:
-            if grad_i is None or data_grad is None:
-                raise RuntimeError("internal error: missing genewise batch gradient")
-            data_grad.index_copy_(
-                0,
-                idx,
-                grad_i.to(device=data_grad.device, dtype=data_grad.dtype),
-            )
-    model.clear()
-    return data_loss, data_grad
+    return model.full_genewise_nll_and_grad(need_grad=need_grad)
 
 
 def genewise_objective_vector(
@@ -809,9 +759,8 @@ def build_model(args: argparse.Namespace, origination_probs: torch.Tensor) -> Ge
 
 
 def prepare_all_batches(model: GeneReconModel) -> None:
-    for idx in range(len(model.batch_metadata)):
-        model._ensure_batch_static(idx)
-    model._current_batch_index = 0
+    model.materialize_batches()
+    model.select_batch(0)
     model.clear()
 
 

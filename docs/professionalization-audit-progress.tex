@@ -236,6 +236,24 @@ are source-cell edits: the Adam oscillation notebook records a deliberately
 aggressive learning-rate/bounds experiment, and the reconciliation notebook now
 uses memory-safe resident batches rather than rebuilding one model per chunk.
 
+\subsection{Legacy HOGENOM Optimizer Public Surface}
+
+The older fast HOGENOM optimizer and profiling harness were audited against
+the newer model public API.  Their remaining direct access to resident-batch
+internals was replaced with \texttt{select\_batch()},
+\texttt{materialize\_batches()}, \texttt{solver\_stat\_records()}, and a new
+model-owned \texttt{full\_genewise\_nll\_and\_grad()} helper for row-wise
+optimizers.  The workflow source guard now covers these legacy scripts so
+future private model imports or \texttt{model.\_} calls fail in unit tests.
+
+\subsection{Fresh Subagent Follow-up Findings}
+
+The latest audit slice found three high-value follow-ups that remain open:
+make the promoted HOGENOM workflows discoverable from \texttt{README.md} and
+packaging metadata, auto-apply the registered \texttt{unit} and
+\texttt{integration} pytest markers by test path, and either restore or rename
+the currently hollow specieswise-uniform GPU parity test.
+
 \section{Verification Log}
 
 \begin{center}
@@ -249,24 +267,27 @@ Workflow and origination likelihood units &
 \texttt{pytest -q tests/unit/test\_global\_wave\_scheduler.py tests/unit/test\_workflow.py} &
 Shared batch planner and workflow units &
 \texttt{23 passed after batch-planner cleanup} \\
-\texttt{python -m py\_compile ...HOGENOM scripts...} &
-Curated experiment-helper syntax &
+\texttt{python -m py\_compile gpurec/api/model.py ...legacy HOGENOM scripts...} &
+Model and legacy experiment-helper syntax &
 \texttt{ok} \\
+\texttt{rg -n "model\textbackslash{}.\_...\textbar{}\_evaluate\_static\_state" scripts/...} &
+Legacy HOGENOM private model access guard &
+\texttt{no matches} \\
 \texttt{rg -n "/home/\textbar secret\textbar token\textbar api key" docs/...} &
 Promoted audit-note hygiene &
 \texttt{no matches} \\
 \texttt{pytest -q tests/unit/test\_workflow.py} &
 Workflow and public-surface source guards &
-\texttt{14 passed after HOGENOM helper cleanup} \\
+\texttt{14 passed after legacy optimizer guard} \\
 \texttt{notebook JSON inspection} &
 Notebook execution/output stripping &
 \texttt{0 outputs, 0 execution counts} \\
 \texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q ...CPU fast gate...} &
 CPU-only audit gate &
-\texttt{37 passed after HOGENOM helper cleanup} \\
+\texttt{37 passed after legacy optimizer cleanup} \\
 \texttt{pytest --collect-only -q} &
 Collection after recursion exclusions &
-\texttt{64 tests collected in 0.85s} \\
+\texttt{64 tests collected in 0.80s} \\
 \texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m 'not gpu' ...GPU modules...} &
 GPU marker check &
 \texttt{22 deselected; exit 5 treated as expected} \\
@@ -288,6 +309,14 @@ YAML config UX &
 \begin{enumerate}[leftmargin=*]
   \item Review the larger promoted HOGENOM helper scripts for consolidation
         opportunities once the experiment interfaces settle.
+  \item Add a README HOGENOM workflow matrix explaining the installed CLI,
+        curated W\&B launcher, Hydra launcher, checkpoint export, and profiling
+        harness.
+  \item Auto-mark unit and integration tests by directory so
+        \texttt{pytest -m "unit and not gpu"} becomes a useful CPU gate.
+  \item Fix the no-op optimized/reference toggles in the specieswise-uniform
+        GPU parity test or retitle it as a smoke test with a separate parity
+        check.
   \item Keep committing small, verified increments so the branch remains
         reviewable despite the larger audit scope.
 \end{enumerate}

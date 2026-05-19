@@ -235,10 +235,7 @@ def build_model(
 
 
 def activate_batch(model, batch_index: int) -> None:
-    model.clear()
-    model._current_batch_index = batch_index
-    model._ensure_batch_static(batch_index)
-    model._schedule_prefetch()
+    model.select_batch(batch_index)
 
 
 def choose_batch_index(model, mode: str, batch_index: int) -> int:
