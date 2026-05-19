@@ -4,6 +4,7 @@ import torch
 from gpurec.core.memory_policy import (
     choose_uniform_pipeline_policy,
     estimate_chunk_payload_bytes,
+    proposal0_memory_gate,
     proposal0_wave_scratch_bytes,
     uniform_training_dense_state_bytes,
     uniform_training_payload_bytes,
@@ -99,3 +100,58 @@ def test_policy_budget_uses_packed_clade_first_fit_plan(monkeypatch):
             clade_budget=200,
             batch_packing="clade_first_fit",
         )
+
+
+@pytest.mark.parametrize(
+    "call, match",
+    [
+        (
+            lambda: proposal0_wave_scratch_bytes(-1, 3, torch.float32),
+            "W",
+        ),
+        (
+            lambda: uniform_training_dense_state_bytes(3, 0, torch.float32),
+            "S",
+        ),
+        (
+            lambda: uniform_training_payload_bytes(
+                3,
+                2,
+                torch.float32,
+                max_wave_rows=0,
+            ),
+            "max_wave_rows",
+        ),
+        (
+            lambda: estimate_chunk_payload_bytes(
+                [1],
+                2,
+                torch.float32,
+                family_chunk_size=1,
+                max_wave_size=0,
+            ),
+            "max_wave_size",
+        ),
+        (
+            lambda: proposal0_memory_gate(
+                1,
+                2,
+                torch.float32,
+                already_live_bytes=-1,
+            ),
+            "already_live_bytes",
+        ),
+        (
+            lambda: choose_uniform_pipeline_policy(
+                [1],
+                2,
+                torch.float32,
+                family_chunk_candidates=(-1,),
+            ),
+            "family_chunk_candidates",
+        ),
+    ],
+)
+def test_memory_policy_rejects_invalid_dimensions(call, match):
+    with pytest.raises(ValueError, match=match):
+        call()

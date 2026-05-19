@@ -13,6 +13,20 @@ from .batch_planning import plan_family_batches
 GIB = 1024 ** 3
 
 
+def _positive_int(name: str, value: int) -> int:
+    number = int(value)
+    if number <= 0:
+        raise ValueError(f"{name} must be positive")
+    return number
+
+
+def _nonnegative_int(name: str, value: int) -> int:
+    number = int(value)
+    if number < 0:
+        raise ValueError(f"{name} must be non-negative")
+    return number
+
+
 def dtype_nbytes(dtype: torch.dtype) -> int:
     return torch.empty((), dtype=dtype).element_size()
 
@@ -56,7 +70,10 @@ def proposal0_wave_scratch_bytes(
     scratch_tensors: int = 10,
 ) -> int:
     """Exact payload bytes for Proposal 0's current `[W, S]` scratch set."""
-    return int(scratch_tensors) * int(W) * int(S) * dtype_nbytes(dtype)
+    rows = _nonnegative_int("W", W)
+    species = _positive_int("S", S)
+    tensors = _nonnegative_int("scratch_tensors", scratch_tensors)
+    return tensors * rows * species * dtype_nbytes(dtype)
 
 
 def uniform_training_dense_state_bytes(
@@ -71,7 +88,10 @@ def uniform_training_dense_state_bytes(
     The current uniform training path keeps `Pi`, `Pibar`, and accumulated RHS
     state live for a chunk, hence the default factor of 3.
     """
-    return int(dense_state_tensors) * int(C) * int(S) * dtype_nbytes(dtype)
+    clades = _nonnegative_int("C", C)
+    species = _positive_int("S", S)
+    tensors = _nonnegative_int("dense_state_tensors", dense_state_tensors)
+    return tensors * clades * species * dtype_nbytes(dtype)
 
 
 def uniform_training_payload_bytes(
@@ -82,13 +102,15 @@ def uniform_training_payload_bytes(
     max_wave_rows: int,
     dense_state_tensors: int = 3,
 ) -> int:
+    clades = _nonnegative_int("C", C)
+    max_wave_rows = _positive_int("max_wave_rows", max_wave_rows)
     dense = uniform_training_dense_state_bytes(
-        C, S, dtype, dense_state_tensors=dense_state_tensors
+        clades, S, dtype, dense_state_tensors=dense_state_tensors
     )
     wave = proposal0_wave_scratch_bytes(max_wave_rows, S, dtype)
     # Row maxima, root outputs, E/theta adjoints, active masks, and compact
     # topology arrays are small relative to dense `[C, S]` state but not zero.
-    small_state = int(C) * dtype_nbytes(dtype) * 8
+    small_state = clades * dtype_nbytes(dtype) * 8
     return dense + wave + small_state
 
 
@@ -105,6 +127,8 @@ def estimate_chunk_payload_bytes(
     nonleaf_counts: Sequence[int] | None = None,
     schedule_depths: Sequence[int] | None = None,
 ) -> int:
+    species = _positive_int("S", S)
+    max_wave = _positive_int("max_wave_size", max_wave_size)
     plans = plan_family_batches(
         clade_counts=clade_counts,
         family_chunk_size=int(family_chunk_size),
@@ -113,13 +137,13 @@ def estimate_chunk_payload_bytes(
         leaf_counts=leaf_counts,
         nonleaf_counts=nonleaf_counts,
         schedule_depths=schedule_depths,
-        max_wave_size=int(max_wave_size),
+        max_wave_size=max_wave,
     )
     chunk_clades = max((int(plan.clades) for plan in plans), default=0)
-    max_wave_rows = min(int(max_wave_size), max(1, int(chunk_clades)))
+    max_wave_rows = min(max_wave, max(1, int(chunk_clades)))
     return uniform_training_payload_bytes(
         chunk_clades,
-        S,
+        species,
         dtype,
         max_wave_rows=max_wave_rows,
     )
@@ -153,15 +177,23 @@ def choose_uniform_pipeline_policy(
     Candidate order encodes profiling knowledge; the memory formula decides
     whether a candidate is feasible on the current GPU and workload.
     """
+    chunk_candidates = [
+        _nonnegative_int("family_chunk_candidates entries", candidate)
+        for candidate in family_chunk_candidates
+    ]
+    wave_candidates = [
+        _positive_int("max_wave_candidates entries", candidate)
+        for candidate in max_wave_candidates
+    ]
     budget = cuda_memory_budget_bytes(device)
-    for chunk_size in family_chunk_candidates:
-        for max_wave in max_wave_candidates:
+    for chunk_size in chunk_candidates:
+        for max_wave in wave_candidates:
             est = estimate_chunk_payload_bytes(
                 clade_counts,
                 S,
                 dtype,
-                family_chunk_size=int(chunk_size),
-                max_wave_size=int(max_wave),
+                family_chunk_size=chunk_size,
+                max_wave_size=max_wave,
                 clade_budget=clade_budget,
                 batch_packing=batch_packing,
                 leaf_counts=leaf_counts,
@@ -191,7 +223,10 @@ def proposal0_memory_gate(
     device: torch.device | int | None = None,
     already_live_bytes: int = 0,
 ) -> tuple[bool, int, int | None]:
-    required = int(already_live_bytes) + proposal0_wave_scratch_bytes(W, S, dtype)
+    required = _nonnegative_int(
+        "already_live_bytes",
+        already_live_bytes,
+    ) + proposal0_wave_scratch_bytes(W, S, dtype)
     budget = cuda_memory_budget_bytes(device)
     if budget is None:
         return True, required, budget

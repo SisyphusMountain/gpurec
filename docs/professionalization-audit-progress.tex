@@ -571,6 +571,15 @@ such as \texttt{clade\_first\_fit} and \texttt{depth\_first\_fit} therefore use
 the planned maximum chunk size, instead of a contiguous-window approximation
 that could under-estimate memory for reordered batches.
 
+\subsection{Memory Policy Input Validation}
+
+The uniform memory-policy helpers now reject invalid dimensions before returning
+payload estimates.  Scratch rows, clade counts, live-byte offsets, wave sizes,
+species counts, and candidate policy values are checked at the helper boundary,
+and policy candidate validation now happens before probing CUDA memory.
+This keeps CPU-only or memory-constrained validation paths from touching CUDA
+when user-supplied policy candidates are already invalid.
+
 \section{Verification Log}
 
 \begin{center}
@@ -911,6 +920,15 @@ Packed memory-policy regressions &
 \texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
 CPU unit gate after packed memory-policy cleanup &
 \texttt{85 passed, 27 deselected} \\
+\texttt{python -m py\_compile gpurec/core/memory\_policy.py tests/unit/test\_memory\_policy.py} &
+Memory-policy validation syntax &
+\texttt{ok} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q tests/unit/test\_memory\_policy.py} &
+Memory-policy validation regressions &
+\texttt{10 passed after validation cleanup} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
+CPU unit gate after memory-policy validation cleanup &
+\texttt{91 passed, 27 deselected} \\
 \bottomrule
 \end{tabular}
 \end{center}
