@@ -31,7 +31,7 @@ from gpurec.cli import (
     build_parser,
     main,
 )
-from gpurec.core.batch_planning import normalize_family_chunk_size
+from gpurec.core.batch_planning import normalize_clade_budget, normalize_family_chunk_size
 from gpurec.api import (
     ActiveFamilyBatch,
     BatchMetadata,
@@ -39,7 +39,7 @@ from gpurec.api import (
     ReconciliationState,
 )
 from gpurec.api.model import GeneReconModel
-from gpurec.api.uniform_chunked import UniformChunkedReconModel
+from gpurec.api.uniform_chunked import UniformChunkedReconModel, _as_auto_int
 from gpurec.workflow.checkpoint import (
     CHECKPOINT_VERSION,
     load_checkpoint,
@@ -450,9 +450,51 @@ def test_family_chunk_size_normalization_is_shared():
     for value in (None, "", "0", "all", "none", "null", 0):
         assert normalize_family_chunk_size(value) == 0
     assert normalize_family_chunk_size("12") == 12
+    assert normalize_family_chunk_size(12.0) == 12
     assert normalize_family_chunk_size("auto", allow_auto=True) == "auto"
-    with pytest.raises(ValueError, match="auto"):
-        normalize_family_chunk_size("auto")
+    for value in ("auto", True, 1.5, math.inf):
+        with pytest.raises(ValueError, match="family"):
+            normalize_family_chunk_size(value)
+
+
+@pytest.mark.parametrize("value", [True, False, 1.5])
+def test_uniform_auto_int_rejects_bool_and_nonintegral_float(value: object):
+    with pytest.raises(ValueError, match="family_chunk_size"):
+        _as_auto_int("family_chunk_size", value)
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "message"),
+    [
+        ({"family_chunk_size": True}, "family_chunk_size"),
+        ({"max_wave_size": 2.5}, "max_wave_size"),
+    ],
+)
+def test_uniform_chunked_rejects_bad_chunk_controls_before_device_or_io(
+    tmp_path: Path,
+    kwargs: dict[str, object],
+    message: str,
+):
+    with pytest.raises(ValueError, match=message) as exc_info:
+        UniformChunkedReconModel.from_trees(
+            tmp_path / "missing_species.nwk",
+            [tmp_path / "missing_gene.nwk"],
+            device="cpu",
+            **kwargs,
+        )
+
+    assert "CUDA" not in str(exc_info.value)
+
+
+@pytest.mark.parametrize("value", ["12", 12, 12.0])
+def test_clade_budget_normalization_accepts_integral_values(value: object):
+    assert normalize_clade_budget(value) == 12
+
+
+@pytest.mark.parametrize("value", [True, 1.5, math.inf, 0, -1])
+def test_clade_budget_normalization_rejects_bad_values(value: object):
+    with pytest.raises(ValueError, match="clade_budget"):
+        normalize_clade_budget(value)
 
 
 def test_run_config_requires_budget_for_nonsequential_packing(tmp_path: Path):

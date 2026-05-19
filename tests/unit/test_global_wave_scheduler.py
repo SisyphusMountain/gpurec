@@ -313,6 +313,47 @@ def test_plan_family_batches_rejects_out_of_range_indices(indices):
         )
 
 
+@pytest.mark.parametrize("indices", [[True], [1.5]])
+def test_plan_family_batches_rejects_nonintegral_indices(indices):
+    with pytest.raises(ValueError, match="family index"):
+        plan_family_batches(
+            indices=indices,
+            clade_counts=[5, 7],
+            family_chunk_size=0,
+            clade_budget=None,
+        )
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "message"),
+    [
+        ({"total": True}, "total"),
+        ({"family_chunk_size": True}, "family_chunk_size"),
+        ({"family_chunk_size": 1.5}, "family_chunk_size"),
+        (
+            {
+                "batch_packing": "depth_first_fit",
+                "clade_budget": 12,
+                "leaf_counts": [1, 1],
+                "nonleaf_counts": [4, 6],
+                "schedule_depths": [2, 3],
+                "max_wave_size": 2.5,
+            },
+            "max_wave_size",
+        ),
+    ],
+)
+def test_plan_family_batches_rejects_nonintegral_controls(kwargs, message):
+    arguments = {
+        "clade_counts": [5, 7],
+        "family_chunk_size": 0,
+        "clade_budget": None,
+    }
+    arguments.update(kwargs)
+    with pytest.raises(ValueError, match=message):
+        plan_family_batches(**arguments)
+
+
 def test_depth_first_fit_groups_deep_families_under_clade_budget():
     chunks = [
         plan.indices

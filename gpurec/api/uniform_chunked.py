@@ -12,6 +12,7 @@ from __future__ import annotations
 import math
 import os
 from dataclasses import dataclass
+from numbers import Integral, Real
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -99,7 +100,7 @@ def _set_default_flags() -> None:
         os.environ.setdefault(key, value)
 
 
-def _as_auto_int(value: int | str | None) -> int | str | None:
+def _as_auto_int(name: str, value: int | float | str | None) -> int | str | None:
     if value is None:
         return None
     if isinstance(value, str):
@@ -108,8 +109,20 @@ def _as_auto_int(value: int | str | None) -> int | str | None:
             return "auto"
         if text in ("0", "none", "null"):
             return None
-        return int(text)
-    return int(value)
+        try:
+            return int(text)
+        except ValueError as exc:
+            raise ValueError(f"{name} must be an integer, 'auto', or none") from exc
+    if isinstance(value, bool):
+        raise ValueError(f"{name} must be an integer, 'auto', or none")
+    if isinstance(value, Integral):
+        return int(value)
+    if isinstance(value, Real):
+        number = float(value)
+        if not math.isfinite(number) or not number.is_integer():
+            raise ValueError(f"{name} must be an integer, 'auto', or none")
+        return int(number)
+    raise ValueError(f"{name} must be an integer, 'auto', or none")
 
 
 def _normalize_uniform_solver_kwargs(kwargs: dict[str, Any]) -> dict[str, Any]:
@@ -677,6 +690,9 @@ class UniformChunkedReconModel(torch.nn.Module):
         neumann_terms = positive_int("neumann_terms", neumann_terms)
         tol_E = nonnegative_float("tol_E", tol_E)
         pruning_threshold = nonnegative_float("pruning_threshold", pruning_threshold)
+        chunk_value = _as_auto_int("family_chunk_size", family_chunk_size)
+        wave_value = _as_auto_int("max_wave_size", max_wave_size)
+        normalized_packing = normalize_batch_packing(batch_packing)
 
         device = require_cuda_device(device, owner="UniformChunkedReconModel")
         theta_init = theta_init.to(device=device)
@@ -712,7 +728,6 @@ class UniformChunkedReconModel(torch.nn.Module):
 
         clade_counts = [int(f["C"]) for f in dataset.families]
         split_counts = [int(f["N_splits"]) for f in dataset.families]
-        normalized_packing = normalize_batch_packing(batch_packing)
         leaf_counts: list[int] | None = None
         nonleaf_counts: list[int] | None = None
         schedule_depths: list[int] | None = None
@@ -724,8 +739,6 @@ class UniformChunkedReconModel(torch.nn.Module):
             leaf_counts = [int(summary["leaf_count"]) for summary in summaries]
             nonleaf_counts = [int(summary["nonleaf_count"]) for summary in summaries]
             schedule_depths = [int(summary["max_level"]) for summary in summaries]
-        chunk_value = _as_auto_int(family_chunk_size)
-        wave_value = _as_auto_int(max_wave_size)
         memory_policy: UniformPipelinePolicy | None = None
         if chunk_value == "auto" or wave_value == "auto":
             chunk_candidates = (

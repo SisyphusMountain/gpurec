@@ -1018,6 +1018,16 @@ inside both the source archive and the built wheel.  This closes the gap where
 \texttt{gpurec/core/cpp/*.cpp} and \texttt{*.hpp} files needed by runtime
 extension compilation.
 
+\subsection{Batch-Control Integer Normalization}
+
+Shared batch-planning controls now reject booleans and non-integral floats
+before converting to integers.  This covers \texttt{family\_chunk\_size},
+\texttt{clade\_budget}, selected family indices, \texttt{total}, and
+\texttt{max\_wave\_size}; the chunked uniform API performs the same validation
+before CUDA setup or filesystem IO, so invalid public constructor arguments
+produce immediate \texttt{ValueError}s instead of silently changing batch
+packing behavior.
+
 \section{Verification Log}
 
 \begin{center}
@@ -1957,6 +1967,21 @@ CPU unit gate after wheel package-data guard &
 \texttt{263 passed, 28 deselected} \\
 \texttt{python scripts/check\_release\_metadata.py} &
 Release metadata checker after wheel package-data guard &
+\texttt{expected license blockers} \\
+\texttt{python -m py\_compile gpurec/core/batch\_planning.py gpurec/api/uniform\_chunked.py ...} &
+Batch-control integer normalization syntax &
+\texttt{ok} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q tests/unit/test\_workflow.py -k "..."} &
+Focused workflow and uniform chunk-control guards &
+\texttt{15 passed, 177 deselected} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q tests/unit/test\_global\_wave\_scheduler.py -k "..."} &
+Focused batch planner control guards &
+\texttt{10 passed, 12 deselected} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
+CPU unit gate after batch-control integer normalization &
+\texttt{282 passed, 28 deselected} \\
+\texttt{python scripts/check\_release\_metadata.py} &
+Release metadata checker after batch-control integer normalization &
 \texttt{expected license blockers} \\
 \bottomrule
 \end{tabular}
