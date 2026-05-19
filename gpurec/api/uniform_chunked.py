@@ -102,6 +102,13 @@ def _as_auto_int(value: int | str | None) -> int | str | None:
     return int(value)
 
 
+def _validate_family_selection(start: int, max_families: int | None) -> None:
+    if start < 0:
+        raise ValueError("start must be non-negative")
+    if max_families is not None and int(max_families) <= 0:
+        raise ValueError("max_families must be positive when provided")
+
+
 def _selected_gene_paths(
     folder: Path,
     *,
@@ -109,6 +116,7 @@ def _selected_gene_paths(
     start: int,
     max_families: int | None,
 ) -> list[str]:
+    _validate_family_selection(start, max_families)
     paths = sorted(folder.glob(gene_glob))
     if not paths and gene_glob == "g_*.nwk":
         single = folder / "g.nwk"
@@ -116,8 +124,6 @@ def _selected_gene_paths(
             paths = [single]
     if not paths:
         raise FileNotFoundError(f"no gene trees matching {gene_glob!r} in {folder}")
-    if start < 0:
-        raise ValueError("start must be non-negative")
     stop = None if max_families is None else start + int(max_families)
     selected = paths[start:stop]
     if not selected:
@@ -803,6 +809,7 @@ class UniformChunkedReconModel(torch.nn.Module):
         **kwargs: Any,
     ) -> "UniformChunkedReconModel":
         """Build a model from a folder containing ``sp.nwk`` and gene trees."""
+        _validate_family_selection(start, max_families)
         root = Path(folder)
         species_tree = root / species_tree_name
         if not species_tree.exists():

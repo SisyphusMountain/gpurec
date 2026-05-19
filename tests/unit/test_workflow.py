@@ -223,6 +223,22 @@ def test_uniform_chunked_alerax_constructor_validates_mode_before_io(tmp_path: P
         )
 
 
+@pytest.mark.parametrize(
+    ("kwargs", "message"),
+    [
+        ({"start": -1}, "start"),
+        ({"max_families": 0}, "max_families"),
+    ],
+)
+def test_uniform_chunked_from_folder_validates_selection_before_io(
+    tmp_path: Path,
+    kwargs: dict[str, int],
+    message: str,
+):
+    with pytest.raises(ValueError, match=message):
+        UniformChunkedReconModel.from_folder(tmp_path / "missing_folder", **kwargs)
+
+
 def test_uniform_chunked_constructors_reject_bad_theta_init_before_io(tmp_path: Path):
     with pytest.raises(ValueError, match="theta_init_rates"):
         UniformChunkedReconModel.from_trees(
