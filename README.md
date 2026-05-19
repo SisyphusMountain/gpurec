@@ -8,6 +8,10 @@ Retained runtime surface:
 - `GeneReconModel` for `mode="global"`, `mode="specieswise"`, and
   `mode="genewise"`.
 - `UniformChunkedReconModel` for large global/uniform datasets.
+- `gpurec.workflow` production runners for AleRax-style family inputs,
+  checkpointed optimization, convergence diagnostics, and stochastic
+  backtracking.
+- `gpurec` CLI entry point with `optimize`, `sample`, and `run` commands.
 - Standard PyTorch optimizers over `model.theta`, including `torch.optim.Adam`.
 - `gpurec.optimization.BatchedLBFGS` for row-wise genewise polishing.
 - The optimized uniform CUDA forward/backward kernels used by the 1000-tree
@@ -16,7 +20,6 @@ Retained runtime surface:
 Removed from this branch:
 
 - Legacy full-matrix Pi fixed-point baselines.
-- CLI and AleRax sampling glue.
 - Old optimizer facades (`optimize_theta_wave`, `optimize_theta_genewise`,
   global L-BFGS wrappers).
 - Failed/prototype forward kernel variants and proposal benchmark scripts.
@@ -60,6 +63,46 @@ from gpurec.optimization import BatchedLBFGS
 
 opt = BatchedLBFGS([model.theta], lr=1.0)
 ```
+
+## Production AleRax-Style Workflow
+
+The production workflow accepts an AleRax `[FAMILIES]` file and a species tree.
+It defaults to genewise D/T/L parameters, writes resumable checkpoints, logs
+optimization diagnostics, and can sample RecPhyloXML reconciliation scenarios.
+The retained lean likelihood path currently requires CUDA.
+The `--config` option accepts a flat JSON `RunConfig`; Hydra-style YAML
+configs should be converted to JSON or passed as explicit CLI flags.
+
+```bash
+gpurec optimize \
+  --species-tree S.tree \
+  --families-file families.txt \
+  --out-dir output_gpurec \
+  --mode genewise \
+  --device cuda
+```
+
+Main outputs include:
+
+- `checkpoints/latest.pt` and `checkpoints/best.pt`
+- `optimization_history.csv` and `history.jsonl`
+- `rates_final.tsv`, `theta_final.pt`, `summary.json`
+- `per_fam_likelihoods.tsv` for genewise runs
+
+To sample scenarios from the best checkpoint:
+
+```bash
+gpurec sample \
+  --checkpoint output_gpurec/checkpoints/best.pt \
+  --samples 100
+```
+
+Sampling writes RecPhyloXML files and AleRax-style summaries under
+`output_gpurec/reconciliations/`, including per-sample event counts,
+`totalSpeciesEventCounts.txt`, and `totalTransfers.txt`.
+Sampling uses the Rust backtracking binary.  In an editable/source checkout it
+can fall back to `cargo run`; installed environments should provide a compiled
+binary through `GPUREC_BACKTRACK_BIN` or `--backtrack-binary`.
 
 ## Performance Check
 

@@ -804,6 +804,29 @@ class UniformChunkedReconModel(torch.nn.Module):
         self.species_tree = str(species_tree)
 
     @classmethod
+    def from_trees(
+        cls,
+        species_tree: str | os.PathLike[str],
+        gene_trees: Sequence[str | os.PathLike[str] | Sequence[str | os.PathLike[str]]],
+        *,
+        mode: str = "global",
+        **kwargs: Any,
+    ) -> "UniformChunkedReconModel":
+        """Build the chunked global/uniform model from explicit tree paths.
+
+        This mirrors :meth:`gpurec.GeneReconModel.from_trees` for constructor
+        homogeneity.  The chunked implementation is intentionally global-only;
+        use :class:`gpurec.GeneReconModel` for specieswise or genewise rates.
+        """
+        normalized = str(mode).strip().lower()
+        if normalized not in {"global", "uniform"}:
+            raise ValueError(
+                "UniformChunkedReconModel.from_trees only supports mode='global' "
+                f"or mode='uniform', got {mode!r}"
+            )
+        return cls(species_tree=species_tree, gene_trees=gene_trees, **kwargs)
+
+    @classmethod
     def from_folder(
         cls,
         folder: str | os.PathLike[str],

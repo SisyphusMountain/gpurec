@@ -14,12 +14,18 @@ prof_logs/
 nsys_reports/
 .pytest_cache/
 .tmp/
+.preprocess_cache/
+latest_run.txt
+test_script.py
+*.log
 
 # Data & output
 extra/
 scenarios/
 output_test/
+output_*/
 tests/data/**/output/
+wandb/
 
 # Notebooks (large, tracked separately)
 *.ipynb
@@ -40,6 +46,12 @@ crates/*/target/
 tests/integration/*.csv
 tests/profiling/*.png
 tests/profiling/*.json
+profiling/*/artifacts/
+profiling/ancestor_batching/
+profiling/bf16_backward_nsys/
+profiling/bf16_handoff_prod/
+profiling/hogenom_ccp/
+profiling/specieswise_worker3/
 
 # Test data (generated, too large for git)
 tests/data/test_trees_20/
@@ -47,9 +59,21 @@ tests/data/test_trees_100/
 tests/data/test_trees_1000/
 tests/data/test_trees_10000/
 tests/data/test_trees_dtl01/
+tests/data/HOGENOM/
+tests/data/davin/
+tests/data/hogenom_bench/
+tests/data.tar.gz
 
 # Vendored library (separate repo)
 logmatmul/
+rustree/
+AleRax.zip
+AleRax_fixed/
+AleRax_oliver/
+Alerax_new_oliver/
+DTLsim/
+oliver_code/
+rustree.broken-*/
 
 # Generated graphs / session artifacts
 callgraph*
@@ -58,3 +82,4 @@ callgraph*
 
 # Other
 torch/
+uv.lock

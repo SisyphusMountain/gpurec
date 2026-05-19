@@ -1,0 +1,210 @@
+\documentclass[11pt]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{booktabs}
+\usepackage{enumitem}
+\usepackage{hyperref}
+
+\title{gpurec Professionalization Audit Progress}
+\author{Codex audit log}
+\date{2026-05-19}
+
+\begin{document}
+\maketitle
+
+\section{Objective}
+
+This document records the ongoing audit and hardening work for the
+\texttt{gpurec} codebase.  The target is a professional-grade package with
+clear module boundaries, reusable implementation pieces, consistent public
+APIs, useful documentation, lightweight correctness gates, and regular
+commits.  GPU-heavy validation is intentionally limited to small-tree smoke
+checks during this phase because GPU memory is constrained by concurrent work.
+
+\section{Current Baseline}
+
+The audit resumed on branch \texttt{lean-fast-path}.  The worktree contained
+tracked edits in the README, package exports, backtracking, packaging metadata,
+notebooks, a HOGENOM optimization script, and one integration test.  It also
+contained many untracked experiment artifacts, local datasets, AleRax checkouts,
+workflow modules, CLI files, and generated outputs.  Changes in this audit are
+therefore staged selectively; unrelated artifacts are not reverted.
+
+\section{Subagent Audit Snapshot}
+
+Three focused subagent audits were launched:
+
+\begin{enumerate}[leftmargin=*]
+  \item Core/API structure: modularity, reuse, import boundaries, and naming.
+  \item Packaging/CLI/workflow: installability, entry points, and ease of use.
+  \item Tests/documentation: lightweight correctness gates and documentation
+        gaps.
+\end{enumerate}
+
+The first completed audit identified these high-priority findings:
+
+\begin{itemize}[leftmargin=*]
+  \item The top-level \texttt{gpurec} import exports \texttt{gpurec.workflow},
+        while \texttt{gpurec/workflow/} and \texttt{gpurec/cli.py} were
+        untracked.  Either those files must be committed deliberately or the
+        top-level exports must be removed.
+  \item \texttt{GeneReconModel} and \texttt{UniformChunkedReconModel} expose
+        similar concepts with different constructor and evaluation shapes.
+        Low-risk compatibility aliases would improve API homogeneity.
+  \item Batch planning is duplicated between the general model and the uniform
+        chunked model; the implementations have already drifted in supported
+        packing strategies.
+  \item Workflow and backtracking code cross module boundaries through private
+        model state.  Public read-only accessors and batch-selection helpers
+        would reduce coupling.
+  \item \texttt{compute\_log\_likelihood} returns a negative log likelihood.
+        The naming and docstring should be corrected, ideally with a
+        \texttt{compute\_nll} alias and deprecation path.
+\end{itemize}
+
+The tests/documentation audit added these gate findings:
+
+\begin{itemize}[leftmargin=*]
+  \item Bare \texttt{pytest} was unsafe in this checkout because large local
+        data directories lived under \texttt{tests/}.
+  \item The \texttt{gpu} marker did not cover tests that skip from CUDA-aware
+        fixtures rather than module-level \texttt{skipif} markers.
+  \item \texttt{tests/README.md} was stale and did not document the CPU-fast
+        audit gate.
+  \item Some heavyweight CUDA checks were unmarked as \texttt{slow}.
+\end{itemize}
+
+The packaging/workflow audit added these findings:
+
+\begin{itemize}[leftmargin=*]
+  \item The sampling CLI relies on a Rust backtracker that is available in a
+        source checkout but not guaranteed in a wheel install.
+  \item Workflow rate outputs reported \texttt{pS} as
+        \texttt{1 - (D+T+L)} even though the model normalizes rates through
+        \texttt{log2\_softmax([0, theta\_D, theta\_L, theta\_T])}; the correct
+        survival probability is \texttt{1 / (1 + D + L + T)}.
+  \item \texttt{gpurec --config} accepted only JSON but failed with a raw JSON
+        traceback when pointed at the visible Hydra YAML config.
+  \item Checkpoints serialized paths exactly as supplied, which made sampling
+        sensitive to the launch directory.
+  \item Triton was listed as optional even though retained kernel modules import
+        it eagerly.
+\end{itemize}
+
+\section{Implemented Increments}
+
+\subsection{Workflow Configuration Hygiene}
+
+The workflow configuration now normalizes and validates batch-related controls
+before they are passed into \texttt{GeneReconModel}.  This makes CLI/config-file
+behavior match the model's accepted vocabulary more closely and prevents
+ambiguous production runs:
+
+\begin{itemize}[leftmargin=*]
+  \item \texttt{family\_chunk\_size} accepts integer-like values and common
+        all-resident aliases, but rejects unsupported \texttt{auto}.
+  \item \texttt{batch\_packing} aliases are normalized to
+        \texttt{sequential}, \texttt{clade\_first\_fit}, or
+        \texttt{depth\_first\_fit}.
+  \item non-sequential packing now requires an explicit positive
+        \texttt{clade\_budget}.
+  \item \texttt{clade\_budget} and \texttt{max\_wave\_size} are normalized as
+        positive optional integers.
+\end{itemize}
+
+\subsection{CLI Coverage}
+
+The CLI now forwards \texttt{--refresh-preprocess-cache} through to
+\texttt{RunConfig}.  Unit tests cover config round-tripping, batch-control
+normalization, rejection of unsupported auto chunking, clade-budget validation,
+checkpoint restore, resident-batch offset activation, XML event summaries, and
+the new CLI flag.
+
+\subsection{Repository Hygiene}
+
+\texttt{.gitignore} now filters generated preprocessing caches, run logs,
+wandb output, AleRax/local experiment directories, large local test datasets,
+and generated profiling artifacts.  This keeps future status checks focused on
+source, tests, and intentional documentation.
+
+\subsection{Testing Configuration}
+
+\texttt{pytest.ini} now excludes large data and generated-output directories
+from recursive collection.  The duplicated pytest configuration in
+\texttt{pyproject.toml} was removed so pytest no longer warns that it is being
+ignored.  \texttt{tests/conftest.py} now auto-marks known CUDA-heavy modules as
+\texttt{gpu} and selected expensive checks as \texttt{slow}.  The test README
+documents the CPU-fast gate, small CUDA smoke checks, and the preferred
+prebuilt-binary backtracking smoke.
+
+\subsection{Workflow Output Correctness}
+
+\texttt{rates\_final.tsv} and parameter diagnostics now compute \texttt{pS} as
+\texttt{1 / (1 + D + L + T)}.  A unit test checks both diagnostics and the TSV
+writer against this formula.
+
+\subsection{CLI and Packaging Polish}
+
+The CLI now rejects Hydra/YAML configs with a concise argparse error and asks
+users to convert them to JSON or pass explicit flags.  JSON config parse errors
+are also reported without a traceback.  \texttt{RunConfig} and \texttt{SamplingConfig} resolve
+paths at construction time, so checkpoint payloads use absolute paths.  The
+backtracking bridge now raises a clear error when neither
+\texttt{GPUREC\_BACKTRACK\_BIN} nor the source-tree Cargo manifest is available.
+Triton was moved into the required package dependencies because retained kernel
+modules import it eagerly.
+
+\subsection{API Homogeneity}
+
+\texttt{UniformChunkedReconModel.from\_trees(...)} was added as a constructor
+alias matching \texttt{GeneReconModel.from\_trees(...)}.  It explicitly accepts
+only \texttt{global}/\texttt{uniform} mode because the chunked implementation is
+global-only.
+
+\section{Verification Log}
+
+\begin{center}
+\begin{tabular}{lll}
+\toprule
+Command & Scope & Result \\
+\midrule
+\texttt{pytest -q tests/unit/test\_workflow.py tests/unit/test\_origination\_probs.py} &
+Workflow and origination likelihood units &
+\texttt{15 passed} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q ...CPU fast gate...} &
+CPU-only audit gate &
+\texttt{32 passed} \\
+\texttt{pytest --collect-only -q} &
+Collection after recursion exclusions &
+\texttt{58 tests collected in 1.08s} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m 'not gpu' ...GPU modules...} &
+GPU marker check &
+\texttt{22 deselected; exit 5 treated as expected} \\
+\texttt{python -c "import gpurec"} &
+Top-level import smoke &
+\texttt{ok} \\
+\texttt{python -m gpurec.cli --help} &
+CLI parser smoke &
+\texttt{ok} \\
+\texttt{python -m gpurec.cli optimize --config configs/hogenom\_ccp\_wandb.yaml} &
+YAML config UX &
+\texttt{argparse error, no traceback} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\section{Next Audit Targets}
+
+\begin{enumerate}[leftmargin=*]
+  \item Add a low-risk \texttt{UniformChunkedReconModel.from\_trees} alias and
+        constructor smoke coverage.
+  \item Move batch-planning logic toward one shared implementation used by both
+        high-level model APIs.
+  \item Add public model accessors or context managers for backtracking and
+        workflow code currently using private attributes.
+  \item Rename or alias \texttt{compute\_log\_likelihood} to reflect its NLL
+        contract without breaking existing callers.
+  \item Keep committing small, verified increments so the branch remains
+        reviewable despite the larger audit scope.
+\end{enumerate}
+
+\end{document}

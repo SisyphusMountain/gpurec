@@ -18,6 +18,14 @@ from gpurec.backtracking import (
     sample_recphyloxml,
     sample_recphyloxmls,
 )
+from gpurec.workflow import (
+    OptimizationRunner,
+    RunConfig,
+    SamplingConfig,
+    SamplingRunner,
+    optimize,
+    sample,
+)
 
 __all__ = [
     "GeneReconModel",
@@ -26,4 +34,10 @@ __all__ = [
     "recphyloxml_event_counts",
     "sample_recphyloxml",
     "sample_recphyloxmls",
+    "RunConfig",
+    "SamplingConfig",
+    "OptimizationRunner",
+    "SamplingRunner",
+    "optimize",
+    "sample",
 ]

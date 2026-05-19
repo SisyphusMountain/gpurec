@@ -42,6 +42,32 @@ def _family_offsets(dataset: GeneDataset) -> list[int]:
     return offsets
 
 
+def _activate_family_batch(model: GeneReconModel, family_index: int) -> tuple[int, int]:
+    """Select the resident batch containing ``family_index``.
+
+    ``GeneReconModel`` can stream memory-safe resident batches.  In that mode
+    the active Pi matrix is batch-local, so backtracking must both activate the
+    family batch and slice Pi with the family offset inside that batch.
+    """
+
+    if not getattr(model, "_batched_resident", False):
+        return _family_offsets(model._dataset)[family_index], family_index
+
+    for batch_idx, metadata in enumerate(model.batch_metadata):
+        family_indices = list(metadata.family_indices)
+        if family_index not in family_indices:
+            continue
+        model._current_batch_index = batch_idx
+        model._ensure_batch_static(batch_idx)
+        offset = 0
+        for local_idx, idx in enumerate(family_indices):
+            if int(idx) == int(family_index):
+                return offset, local_idx
+            offset += int(model._dataset.families[int(idx)]["C"])
+        break
+    raise IndexError(f"family_index {family_index} is not present in any resident batch")
+
+
 def _species_vector(param: torch.Tensor, *, family_index: int, S: int) -> torch.Tensor:
     param = torch.as_tensor(param).detach()
     if param.ndim == 0:
@@ -89,6 +115,12 @@ def _backtrack_command(
         return [str(Path(backtrack_binary))]
 
     manifest = Path(cargo_manifest)
+    if not manifest.exists():
+        raise RuntimeError(
+            "gpurec stochastic backtracking needs a Rust backtracking binary. "
+            f"Set {_BACKTRACK_BINARY_ENV} or pass backtrack_binary; default "
+            f"source manifest not found at {manifest}"
+        )
     return ["cargo", "run", "--quiet", "--manifest-path", str(manifest), "--"]
 
 
@@ -177,9 +209,8 @@ def export_backtracking_input(
     if family_index < 0 or family_index >= len(dataset.families):
         raise IndexError(f"family_index {family_index} outside 0..{len(dataset.families)}")
 
+    offset, parameter_family_index = _activate_family_batch(model, family_index)
     state = _evaluate_backtracking_state(model)
-    offsets = _family_offsets(dataset)
-    offset = offsets[family_index]
     family = dataset.families[family_index]
     C = int(family["C"])
     S = int(dataset.S)
@@ -188,12 +219,26 @@ def export_backtracking_input(
     detail_ccp = details["ccp"]
 
     pi = state["Pi"][offset : offset + C].detach().to(dtype=torch.float64).cpu().contiguous()
-    e = _species_vector(state["E"], family_index=family_index, S=S).to(dtype=torch.float64)
-    log_p_s = _species_vector(state["log_pS"], family_index=family_index, S=S).to(dtype=torch.float64)
-    log_p_d = _species_vector(state["log_pD"], family_index=family_index, S=S).to(dtype=torch.float64)
-    max_transfer = _species_vector(state["max_transfer"], family_index=family_index, S=S).to(
-        dtype=torch.float64
-    )
+    e = _species_vector(
+        state["E"],
+        family_index=parameter_family_index,
+        S=S,
+    ).to(dtype=torch.float64)
+    log_p_s = _species_vector(
+        state["log_pS"],
+        family_index=parameter_family_index,
+        S=S,
+    ).to(dtype=torch.float64)
+    log_p_d = _species_vector(
+        state["log_pD"],
+        family_index=parameter_family_index,
+        S=S,
+    ).to(dtype=torch.float64)
+    max_transfer = _species_vector(
+        state["max_transfer"],
+        family_index=parameter_family_index,
+        S=S,
+    ).to(dtype=torch.float64)
 
     N = int(ccp["N_splits"])
     parents = torch.as_tensor(ccp["split_parents_sorted"], dtype=torch.long).cpu()
@@ -225,7 +270,7 @@ def export_backtracking_input(
     species_newick = Path(dataset.species_tree_path).read_text()
     origination_probs = _family_origination_probs(
         state["origination_probs"],
-        family_index=family_index,
+        family_index=parameter_family_index,
         S=S,
     )
 

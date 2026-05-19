@@ -1,0 +1,1 @@
+recursive-include gpurec/core/cpp *.cpp *.hpp
