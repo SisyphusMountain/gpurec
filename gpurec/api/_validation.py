@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import os
 from numbers import Integral, Real
 from typing import Any, Optional, Sequence
 
@@ -14,6 +15,17 @@ def require_cuda_device(device: Any, *, owner: str) -> torch.device:
     if not torch.cuda.is_available():
         raise RuntimeError("CUDA was requested but is not available")
     return resolved
+
+
+def require_default_objective(owner: str) -> None:
+    value = os.environ.get("GPUREC_ALERAX_COMPAT", "0")
+    if value != "0":
+        raise RuntimeError(
+            f"{owner} does not support GPUREC_ALERAX_COMPAT={value!r}; "
+            "unset GPUREC_ALERAX_COMPAT or set it to '0'. The AleRax "
+            "fixed-pass compatibility objective is not implemented for "
+            "differentiable GPUREC model optimization."
+        )
 
 
 def finite_float(name: str, value: float) -> float:

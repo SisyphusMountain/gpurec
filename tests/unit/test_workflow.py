@@ -608,6 +608,52 @@ def test_alerax_constructors_validate_selection_before_device_or_io(
     assert "CUDA" not in str(exc_info.value)
 
 
+def test_models_reject_alerax_compat_env_before_device_or_io(
+    tmp_path: Path,
+    monkeypatch,
+):
+    monkeypatch.setenv("GPUREC_ALERAX_COMPAT", "1")
+    dataset = SimpleNamespace(
+        genewise=False,
+        specieswise=False,
+        device=torch.device("cpu"),
+    )
+    calls = [
+        lambda: GeneReconModel(dataset=dataset, mode="global"),
+        lambda: GeneReconModel.from_trees(
+            tmp_path / "missing_species.nwk",
+            [tmp_path / "missing_gene.nwk"],
+            device="cpu",
+        ),
+        lambda: GeneReconModel.from_alerax_families(
+            tmp_path / "missing_species.nwk",
+            tmp_path / "missing_families.txt",
+            device="cpu",
+        ),
+        lambda: UniformChunkedReconModel.from_trees(
+            tmp_path / "missing_species.nwk",
+            [tmp_path / "missing_gene.nwk"],
+            device="cpu",
+        ),
+        lambda: UniformChunkedReconModel.from_folder(
+            tmp_path / "missing_folder",
+            device="cpu",
+        ),
+        lambda: UniformChunkedReconModel.from_alerax_families(
+            tmp_path / "missing_species.nwk",
+            tmp_path / "missing_families.txt",
+            device="cpu",
+        ),
+    ]
+
+    for make_model in calls:
+        with pytest.raises(RuntimeError, match="GPUREC_ALERAX_COMPAT") as exc_info:
+            make_model()
+        message = str(exc_info.value)
+        assert "unset GPUREC_ALERAX_COMPAT" in message
+        assert "CUDA" not in message
+
+
 def test_uniform_chunked_alerax_constructor_validates_mode_before_io(tmp_path: Path):
     with pytest.raises(ValueError, match="from_alerax_families"):
         UniformChunkedReconModel.from_alerax_families(

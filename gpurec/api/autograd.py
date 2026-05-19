@@ -14,7 +14,6 @@ keeps the NLL convention and returns NLL from ``forward()``, so users write
 from __future__ import annotations
 
 from dataclasses import dataclass
-import os
 from typing import Any, Optional
 
 import torch
@@ -26,6 +25,7 @@ from gpurec.core.extract_parameters import extract_parameters_uniform
 from gpurec.optimization.implicit_grad import (
     implicit_grad_loglik_vjp_wave,
 )
+from ._validation import require_default_objective
 
 
 @dataclass
@@ -115,14 +115,7 @@ class _GeneReconFunction(torch.autograd.Function):
 
     @staticmethod
     def forward(ctx, theta: torch.Tensor, static: ReconStaticState, reduce: str):
-        if os.environ.get("GPUREC_ALERAX_COMPAT", "0") != "0":
-            raise NotImplementedError(
-                "GPUREC_ALERAX_COMPAT changes the forward objective to "
-                "AleRax's fixed four-pass evaluator. The current custom "
-                "backward differentiates GPUREC's converged fixed-point "
-                "objective, so gradient-based optimization is disabled in "
-                "this mode."
-            )
+        require_default_objective("GeneReconModel")
         if reduce not in ("sum", "per_family"):
             raise ValueError(f"reduce must be 'sum' or 'per_family', got {reduce!r}")
         if reduce == "per_family" and not static.genewise:

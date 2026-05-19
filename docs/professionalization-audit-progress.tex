@@ -854,6 +854,16 @@ known slow-test marker.  A source-level guard checks that CUDA-gated test
 modules keep module-level GPU intent, and \texttt{tests/README.md} documents
 the explicit-marker policy.
 
+\subsection{AleRax Compatibility Flag Guard}
+
+\texttt{GPUREC\_ALERAX\_COMPAT} is now rejected by a shared public-API guard
+before model constructors perform CUDA checks or input-file parsing.  Direct
+resident construction, resident factories, and uniform/chunked factories all
+raise a clear \texttt{RuntimeError} that names the unsupported environment
+variable and tells users to unset it or set it to \texttt{0}.  Forward/autograd
+paths retain the same guard so late environment changes fail with the same
+message instead of a delayed \texttt{NotImplementedError}.
+
 \section{Verification Log}
 
 \begin{center}
@@ -1545,6 +1555,15 @@ Non-GPU integration selector after explicit GPU markers &
 \texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
 CPU unit gate after explicit GPU marker policy &
 \texttt{219 passed, 28 deselected} \\
+\texttt{python -m py\_compile gpurec/api/\_validation.py gpurec/api/model.py ...} &
+AleRax compatibility guard syntax &
+\texttt{ok} \\
+\texttt{pytest -q tests/unit/test\_workflow.py::test\_models\_reject\_... ...} &
+Focused compatibility flag and device precedence guards &
+\texttt{3 passed} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
+CPU unit gate after compatibility flag guard &
+\texttt{220 passed, 28 deselected} \\
 \bottomrule
 \end{tabular}
 \end{center}

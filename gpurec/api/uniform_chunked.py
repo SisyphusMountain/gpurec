@@ -45,6 +45,7 @@ from ._validation import (
     nonnegative_float,
     positive_int,
     require_cuda_device,
+    require_default_objective,
     theta_init_base_from_rates,
 )
 
@@ -594,14 +595,7 @@ def _evaluate_chunked_uniform(
 class _UniformChunkedFunction(torch.autograd.Function):
     @staticmethod
     def forward(ctx, theta: torch.Tensor, state: UniformChunkedState):
-        if os.environ.get("GPUREC_ALERAX_COMPAT", "0") != "0":
-            raise NotImplementedError(
-                "GPUREC_ALERAX_COMPAT changes the forward objective to "
-                "AleRax's fixed-pass evaluator. UniformChunkedReconModel's "
-                "custom backward differentiates GPUREC's default fixed-point "
-                "objective, so gradient-based optimization is disabled in "
-                "this mode."
-            )
+        require_default_objective("UniformChunkedReconModel")
         with torch.no_grad():
             loss, grad_theta, stats = _evaluate_chunked_uniform(
                 state,
@@ -662,6 +656,7 @@ class UniformChunkedReconModel(torch.nn.Module):
         origination_probs: torch.Tensor | Sequence[float] | None = None,
     ) -> None:
         super().__init__()
+        require_default_objective("UniformChunkedReconModel")
         if set_optimized_env:
             _set_default_flags()
         if dtype not in (torch.float32, torch.float64, torch.bfloat16):
@@ -841,6 +836,7 @@ class UniformChunkedReconModel(torch.nn.Module):
                 "UniformChunkedReconModel.from_trees only supports mode='global' "
                 f"or mode='uniform', got {mode!r}"
             )
+        require_default_objective("UniformChunkedReconModel")
         return cls(species_tree=species_tree, gene_trees=gene_trees, **kwargs)
 
     @classmethod
@@ -855,6 +851,7 @@ class UniformChunkedReconModel(torch.nn.Module):
         **kwargs: Any,
     ) -> "UniformChunkedReconModel":
         """Build a model from a folder containing ``sp.nwk`` and gene trees."""
+        require_default_objective("UniformChunkedReconModel")
         start, max_families = normalize_family_selection(start, max_families)
         root = Path(folder)
         species_tree = root / species_tree_name
@@ -886,6 +883,7 @@ class UniformChunkedReconModel(torch.nn.Module):
                 "UniformChunkedReconModel.from_alerax_families only supports "
                 f"mode='global' or mode='uniform', got {mode!r}"
             )
+        require_default_objective("UniformChunkedReconModel")
         start, max_families = normalize_family_selection(start, max_families)
         kwargs = _normalize_uniform_solver_kwargs(kwargs)
         theta_init_base_from_rates(

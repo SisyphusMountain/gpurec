@@ -64,6 +64,7 @@ from ._validation import (
     positive_float,
     positive_int,
     require_cuda_device,
+    require_default_objective,
     theta_init_base_from_rates,
 )
 
@@ -630,14 +631,7 @@ def _evaluate_static_state(
     need_grad: bool,
     per_family: bool = False,
 ) -> tuple[torch.Tensor, torch.Tensor | None]:
-    if os.environ.get("GPUREC_ALERAX_COMPAT", "0") != "0":
-        raise NotImplementedError(
-            "GPUREC_ALERAX_COMPAT changes the forward objective to "
-            "AleRax's fixed four-pass evaluator. The current custom "
-            "backward differentiates GPUREC's converged fixed-point "
-            "objective, so gradient-based optimization is disabled in "
-            "this mode."
-        )
+    require_default_objective("GeneReconModel")
     if need_grad and per_family and not static.genewise:
         raise ValueError("per-family gradients are only independent in genewise mode")
 
@@ -815,6 +809,7 @@ class GeneReconModel(torch.nn.Module):
         origination_probs: torch.Tensor | Sequence[float] | None = None,
     ):
         super().__init__()
+        require_default_objective("GeneReconModel")
         # Validate mode early
         _mode_to_flags(mode)
         if fixed_iters_E is not None:
@@ -1010,6 +1005,7 @@ class GeneReconModel(torch.nn.Module):
             Ignore existing preprocessing cache entries and overwrite them.
         """
         genewise, specieswise = _mode_to_flags(mode)
+        require_default_objective("GeneReconModel")
         solver_kwargs = _normalize_gene_solver_kwargs(solver_kwargs)
         theta_base = theta_init_base_from_rates(
             theta_init_rates,
@@ -1064,6 +1060,7 @@ class GeneReconModel(torch.nn.Module):
     ) -> "GeneReconModel":
         """Build from an AleRax ``[FAMILIES]`` file with CCP/tree samples."""
         genewise, specieswise = _mode_to_flags(mode)
+        require_default_objective("GeneReconModel")
         start, max_families = normalize_family_selection(start, max_families)
         solver_kwargs = _normalize_gene_solver_kwargs(solver_kwargs)
         theta_base = theta_init_base_from_rates(
