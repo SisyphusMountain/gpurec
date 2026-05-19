@@ -11,7 +11,14 @@ Lower-level access:
   from gpurec.core.forward import Pi_wave_forward
 """
 
-from gpurec.api import GeneReconModel, UniformChunkedReconModel
+from gpurec.api import (
+    ActiveFamilyBatch,
+    BatchMetadata,
+    FamilyInput,
+    GeneReconModel,
+    ReconciliationState,
+    UniformChunkedReconModel,
+)
 from gpurec.backtracking import (
     EVENT_KEYS,
     export_backtracking_input,
@@ -31,6 +38,10 @@ from gpurec.workflow import (
 __all__ = [
     "GeneReconModel",
     "UniformChunkedReconModel",
+    "ActiveFamilyBatch",
+    "BatchMetadata",
+    "FamilyInput",
+    "ReconciliationState",
     "EVENT_KEYS",
     "export_backtracking_input",
     "recphyloxml_event_counts",

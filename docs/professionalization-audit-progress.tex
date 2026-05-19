@@ -469,6 +469,13 @@ configuration, missing checkpoints, and workflow/runtime sampling errors are
 converted into concise CLI errors.  The \texttt{run} command also no longer
 keeps a dead checkpoint override branch after rejecting \texttt{--checkpoint}.
 
+\subsection{Public API Homogeneity}
+
+The top-level \texttt{gpurec} package now re-exports the public metadata types
+returned by model helper methods.  The chunked AleRax constructor now accepts
+the same \texttt{mode="global"/"uniform"} shape as the chunked tree
+constructor and rejects unsupported modes before file IO.
+
 \section{Verification Log}
 
 \begin{center}
@@ -692,6 +699,15 @@ Workflow and sampling CLI error regressions &
 \texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
 CPU unit gate after sampling CLI cleanup &
 \texttt{59 passed, 27 deselected} \\
+\texttt{python -m py\_compile gpurec/\_\_init\_\_.py gpurec/api/uniform\_chunked.py tests/unit/test\_workflow.py} &
+Public API homogeneity syntax &
+\texttt{ok} \\
+\texttt{pytest -q tests/unit/test\_workflow.py} &
+Workflow public API homogeneity regressions &
+\texttt{38 passed after API homogeneity cleanup} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
+CPU unit gate after API homogeneity cleanup &
+\texttt{61 passed, 27 deselected} \\
 \bottomrule
 \end{tabular}
 \end{center}

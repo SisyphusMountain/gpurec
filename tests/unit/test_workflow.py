@@ -8,6 +8,7 @@ from types import SimpleNamespace
 import pytest
 import torch
 
+import gpurec
 import gpurec.backtracking as backtracking
 import gpurec.workflow.model_factory as workflow_model_factory
 import gpurec.workflow.sampling as sampling_workflow
@@ -21,7 +22,14 @@ from gpurec.backtracking import (
     sample_recphyloxmls,
 )
 from gpurec.cli import _run_config_from_args, build_parser, main
+from gpurec.api import (
+    ActiveFamilyBatch,
+    BatchMetadata,
+    FamilyInput,
+    ReconciliationState,
+)
 from gpurec.api.model import GeneReconModel
+from gpurec.api.uniform_chunked import UniformChunkedReconModel
 from gpurec.workflow.checkpoint import load_checkpoint, restore_model_theta, save_checkpoint
 from gpurec.workflow.config import RunConfig, SamplingConfig
 from gpurec.workflow.diagnostics import parameter_stats
@@ -51,6 +59,20 @@ def test_run_config_json_roundtrip(tmp_path: Path):
     assert loaded.species_tree.is_absolute()
     assert loaded.families_file.is_absolute()
     assert loaded.out_dir.is_absolute()
+
+
+def test_top_level_exports_api_metadata_types():
+    assert gpurec.ActiveFamilyBatch is ActiveFamilyBatch
+    assert gpurec.BatchMetadata is BatchMetadata
+    assert gpurec.FamilyInput is FamilyInput
+    assert gpurec.ReconciliationState is ReconciliationState
+    for name in (
+        "ActiveFamilyBatch",
+        "BatchMetadata",
+        "FamilyInput",
+        "ReconciliationState",
+    ):
+        assert name in gpurec.__all__
 
 
 def test_run_config_normalizes_batch_controls(tmp_path: Path):
@@ -140,6 +162,15 @@ def test_gene_recon_constructors_reject_bad_theta_init_before_io(tmp_path: Path)
             tmp_path / "missing_families.txt",
             device="cpu",
             theta_init_rates=(0.1, -0.1, 0.1),
+        )
+
+
+def test_uniform_chunked_alerax_constructor_validates_mode_before_io(tmp_path: Path):
+    with pytest.raises(ValueError, match="from_alerax_families"):
+        UniformChunkedReconModel.from_alerax_families(
+            tmp_path / "missing_species.nwk",
+            tmp_path / "missing_families.txt",
+            mode="genewise",
         )
 
 

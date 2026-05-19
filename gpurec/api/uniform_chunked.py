@@ -816,11 +816,18 @@ class UniformChunkedReconModel(torch.nn.Module):
         species_tree: str | os.PathLike[str],
         families_file: str | os.PathLike[str],
         *,
+        mode: str = "global",
         start: int = 0,
         max_families: int | None = None,
         **kwargs: Any,
     ) -> "UniformChunkedReconModel":
         """Build the uniform model from an AleRax family/CCP list."""
+        normalized = str(mode).strip().lower()
+        if normalized not in {"global", "uniform"}:
+            raise ValueError(
+                "UniformChunkedReconModel.from_alerax_families only supports "
+                f"mode='global' or mode='uniform', got {mode!r}"
+            )
         family_names, tree_paths, leaf_maps = parse_alerax_family_file(
             families_file,
             start=start,
