@@ -11,7 +11,7 @@ from gpurec.core.batch_planning import normalize_batch_packing as _normalize_bat
 
 
 def _default_device() -> str:
-    return "cuda" if torch.cuda.is_available() else "cpu"
+    return "cuda"
 
 
 def dtype_from_name(name: str) -> torch.dtype:

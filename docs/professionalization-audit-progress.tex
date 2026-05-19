@@ -337,6 +337,13 @@ which the workflow could not execute.  The parser now accepts the workflow's
 all-resident aliases and rejects \texttt{auto} before constructing
 \texttt{RunConfig}, keeping CLI syntax aligned with production behavior.
 
+\subsection{Workflow Device Default}
+
+\texttt{RunConfig} now defaults missing devices to \texttt{cuda}.  The retained
+production optimizer and sampler are CUDA-only, so an omitted device should
+reach the existing CUDA-availability check instead of silently normalizing to an
+unsupported CPU workflow on non-GPU hosts.
+
 \section{Verification Log}
 
 \begin{center}
@@ -437,6 +444,15 @@ Workflow and CLI batch-control regressions &
 \texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
 CPU unit gate after CLI parser cleanup &
 \texttt{42 passed, 27 deselected} \\
+\texttt{pytest -q tests/unit/test\_workflow.py} &
+Workflow default-device regression &
+\texttt{20 passed after CUDA default cleanup} \\
+\texttt{python -c "from gpurec.workflow.config import RunConfig; ..."} &
+RunConfig default-device smoke &
+\texttt{default device is cuda} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
+CPU unit gate after device-default cleanup &
+\texttt{43 passed, 27 deselected} \\
 \bottomrule
 \end{tabular}
 \end{center}

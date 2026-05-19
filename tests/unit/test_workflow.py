@@ -58,6 +58,16 @@ def test_run_config_normalizes_batch_controls(tmp_path: Path):
     assert config.max_wave_size == 32
 
 
+def test_run_config_defaults_to_cuda_for_production_workflow(tmp_path: Path):
+    config = RunConfig(
+        species_tree=tmp_path / "sp.nwk",
+        families_file=tmp_path / "families.txt",
+        out_dir=tmp_path / "out",
+    )
+
+    assert config.device == "cuda"
+
+
 def test_run_config_rejects_unsupported_auto_chunking(tmp_path: Path):
     with pytest.raises(ValueError, match="auto"):
         RunConfig(
