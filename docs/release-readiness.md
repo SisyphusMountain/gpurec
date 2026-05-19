@@ -6,7 +6,8 @@ yet encoded as automated build steps.
 ## Required Before Redistribution
 
 - Choose and add a project license.  After a `LICENSE` file exists, add matching
-  `pyproject.toml` license metadata, classifiers, and project URLs.
+  `pyproject.toml` license metadata and a license classifier.  Project URLs and
+  non-license classifiers are already present.
 - Decide the Rust backtracking release model.  The Python package currently
   expects a compiled sampler via `GPUREC_BACKTRACK_BIN` or `--backtrack-binary`;
   the source-tree `cargo run` fallback depends on a local `rustree/` checkout.
@@ -20,6 +21,17 @@ Install release tooling from the dedicated extra:
 ```bash
 python -m pip install -e ".[release]"
 ```
+
+Check metadata before building public artifacts:
+
+```bash
+python scripts/check_release_metadata.py
+```
+
+This check is currently expected to fail on the unresolved license blockers
+listed above.  Do not bypass it for redistribution; choose a license, add the
+top-level `LICENSE` file, and add matching `pyproject.toml` license metadata and
+classifier first.
 
 Build and inspect distribution artifacts from a clean checkout:
 
@@ -63,7 +75,8 @@ running memory-heavy HOGENOM or 1000-tree benchmark checks.
 ## Artifact Loading
 
 Checkpoints and preprocessing caches are loaded through PyTorch's
-`weights_only=True` path and checked for expected dictionary keys.  Regenerate
-legacy preprocessing caches if safe loading rejects them.  Treat old pickle-only
-checkpoints as trusted migration inputs rather than loading them through normal
-CLI workflows.
+`weights_only=True` path.  Preprocessing caches are also checked for nested
+species and family payload structure.  Regenerate legacy preprocessing caches if
+safe loading or cache validation rejects them.  Treat old pickle-only checkpoints
+as trusted migration inputs rather than loading them through normal CLI
+workflows.

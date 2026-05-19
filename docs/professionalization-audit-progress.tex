@@ -741,6 +741,16 @@ split-helper tensor lengths, root clade bounds, clade labels, and leaf mapping
 tensors.  Malformed caches now fail with cache-specific refresh guidance before
 model construction reaches lower-level tensor or CUDA code.
 
+\subsection{Release Metadata Gate}
+
+The package metadata now declares maintainership, conservative PyPI classifiers,
+and project URLs for the repository, issue tracker, and README.  A new release
+metadata checker makes readiness machine-checkable: the current tree now reports
+only the unresolved license blockers rather than also missing authors,
+classifiers, or URLs.  The release-readiness guide documents that the check must
+fail until a license file, license metadata, and matching license classifier are
+chosen by the project owner.
+
 \section{Verification Log}
 
 \begin{center}
@@ -1291,6 +1301,21 @@ Valid generated preprocess caches under new validators &
 \texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
 CPU unit gate after nested cache validation &
 \texttt{162 passed, 27 deselected} \\
+\texttt{python -m py\_compile scripts/check\_release\_metadata.py tests/unit/test\_release\_metadata.py} &
+Release metadata checker syntax &
+\texttt{ok} \\
+\texttt{python scripts/check\_release\_metadata.py} &
+Release metadata checker current blockers &
+\texttt{license blockers only} \\
+\texttt{pytest -q tests/unit/test\_release\_metadata.py} &
+Release metadata checker regressions &
+\texttt{2 passed} \\
+\texttt{python -m build --sdist --wheel --outdir /tmp/gpurec-dist-releasecheck} &
+Local artifact build attempt &
+\texttt{blocked: build package not installed / local build dir shadow} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
+CPU unit gate after release metadata checker &
+\texttt{164 passed, 27 deselected} \\
 \bottomrule
 \end{tabular}
 \end{center}
@@ -1298,8 +1323,14 @@ CPU unit gate after nested cache validation &
 \section{Next Audit Targets}
 
 \begin{enumerate}[leftmargin=*]
-  \item Finish release metadata work: license, classifiers, project URLs, and
-        artifact checks before any redistribution.
+  \item Add a CPU packaging CI job that installs release tooling, builds
+        artifacts, runs \texttt{twine check}, installs the wheel in a fresh
+        environment, and verifies \texttt{python -m gpurec.cli --help}.
+  \item Choose and add a redistributable license, then update
+        \texttt{pyproject.toml} license metadata and license classifier.
+  \item Resolve the Rust backtracking clean-checkout story: vendor/publish
+        \texttt{rustree} or treat the sampler as a separately installed binary.
+  \item Add a checked minimal JSON workflow config example for onboarding.
   \item Review whether cache refresh guidance should be promoted into the README
         once cache validation and release documentation settle.
   \item Keep committing small, verified increments so the branch remains
