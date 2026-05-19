@@ -174,8 +174,14 @@ def _add_run_config_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--resume-from", type=Path)
 
 
-def _add_sampling_args(parser: argparse.ArgumentParser, *, checkpoint_required: bool) -> None:
-    parser.add_argument("--checkpoint", type=Path, required=checkpoint_required)
+def _add_sampling_args(
+    parser: argparse.ArgumentParser,
+    *,
+    checkpoint_required: bool,
+    include_checkpoint: bool = True,
+) -> None:
+    if include_checkpoint:
+        parser.add_argument("--checkpoint", type=Path, required=checkpoint_required)
     parser.add_argument("--sample-out-dir", "--sampling-out-dir", dest="sample_out_dir", type=Path)
     parser.add_argument("--samples", type=int, default=100)
     parser.add_argument("--seed", type=int, default=0)
@@ -197,7 +203,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     run_parser = sub.add_parser("run", help="Optimize, then sample from the best checkpoint.")
     _add_run_config_args(run_parser)
-    _add_sampling_args(run_parser, checkpoint_required=False)
+    _add_sampling_args(run_parser, checkpoint_required=False, include_checkpoint=False)
+    run_parser.add_argument("--checkpoint", type=Path, help=argparse.SUPPRESS)
     return parser
 
 
@@ -237,6 +244,12 @@ def main(argv: list[str] | None = None) -> None:
         )
         return
     if args.command == "run":
+        if args.checkpoint is not None:
+            parser.error(
+                "gpurec run samples from the checkpoint produced by this optimization; "
+                "use gpurec sample --checkpoint to sample an existing checkpoint, or "
+                "--resume-from to resume optimization"
+            )
         try:
             run_config = _run_config_from_args(args)
         except ValueError as exc:

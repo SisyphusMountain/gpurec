@@ -209,6 +209,27 @@ def test_cli_reports_missing_required_options_without_traceback(capsys):
     assert "Traceback" not in captured.err
 
 
+def test_cli_run_rejects_checkpoint_argument_without_traceback(capsys):
+    with pytest.raises(SystemExit) as exc_info:
+        main(["run", "--checkpoint", "existing.pt"])
+
+    captured = capsys.readouterr()
+    assert exc_info.value.code == 2
+    assert "gpurec sample --checkpoint" in captured.err
+    assert "--resume-from" in captured.err
+    assert "Traceback" not in captured.err
+
+
+def test_cli_run_help_omits_checkpoint_argument(capsys):
+    with pytest.raises(SystemExit) as exc_info:
+        build_parser().parse_args(["run", "--help"])
+
+    captured = capsys.readouterr()
+    assert exc_info.value.code == 0
+    assert "--checkpoint CHECKPOINT" not in captured.out
+    assert "--resume-from" in captured.out
+
+
 def test_workflow_rate_outputs_use_normalized_survival_probability(tmp_path: Path):
     theta = torch.log2(torch.tensor([[2.0, 3.0, 5.0]], dtype=torch.float64))
     expected_ps = 1.0 / (1.0 + 2.0 + 3.0 + 5.0)

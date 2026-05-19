@@ -344,6 +344,14 @@ production optimizer and sampler are CUDA-only, so an omitted device should
 reach the existing CUDA-availability check instead of silently normalizing to an
 unsupported CPU workflow on non-GPU hosts.
 
+\subsection{Run Checkpoint Semantics}
+
+\texttt{gpurec run} no longer advertises or accepts \texttt{--checkpoint} as a
+sampling override.  The command now samples from the checkpoint produced by its
+own optimization, while existing \texttt{run --checkpoint} invocations fail
+early with guidance to use the sample subcommand for existing checkpoints or
+\texttt{--resume-from}.
+
 \section{Verification Log}
 
 \begin{center}
@@ -453,6 +461,18 @@ RunConfig default-device smoke &
 \texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
 CPU unit gate after device-default cleanup &
 \texttt{43 passed, 27 deselected} \\
+\texttt{python -m gpurec.cli run --checkpoint existing.pt} &
+Run checkpoint semantics &
+\texttt{argparse error, no traceback} \\
+\texttt{python -m gpurec.cli run --help} &
+Run help checkpoint visibility &
+\texttt{no sampling checkpoint option shown} \\
+\texttt{pytest -q tests/unit/test\_workflow.py} &
+Workflow and run-checkpoint regressions &
+\texttt{22 passed after run CLI cleanup} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
+CPU unit gate after run CLI cleanup &
+\texttt{45 passed, 27 deselected} \\
 \bottomrule
 \end{tabular}
 \end{center}
