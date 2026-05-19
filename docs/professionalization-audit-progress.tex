@@ -624,6 +624,15 @@ runner loop without CUDA or tree preprocessing and checks history JSONL,
 summary JSON, best/latest checkpoints, final rates, per-family likelihoods,
 theta output, optimizer status, and model cleanup.
 
+\subsection{Optimizer Checkpoint Consistency}
+
+Adam and Adagrad workflow rows now describe the model state that is actually
+saved in checkpoints.  After an ordinary optimizer step and clamp, the runner
+performs one current-theta evaluation before recording history rows or writing
+best/latest checkpoints.  The CPU fake-model regression now checks every saved
+checkpoint row against the saved theta-derived loss, preventing pre-step metrics
+from being paired with post-step weights.
+
 \section{Verification Log}
 
 \begin{center}
@@ -1017,6 +1026,18 @@ Workflow suite after optimization runner coverage &
 \texttt{69 passed} \\
 \texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
 CPU unit gate after optimization runner coverage &
+\texttt{102 passed, 27 deselected} \\
+\texttt{python -m py\_compile gpurec/workflow/optimize.py tests/unit/test\_workflow.py} &
+Optimizer checkpoint consistency syntax &
+\texttt{ok} \\
+\texttt{pytest -q tests/unit/test\_workflow.py::test\_optimization\_runner\_run\_writes\_outputs\_with\_fake\_model} &
+Focused checkpoint consistency regression &
+\texttt{1 passed} \\
+\texttt{pytest -q tests/unit/test\_workflow.py} &
+Workflow suite after checkpoint consistency fix &
+\texttt{69 passed} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
+CPU unit gate after checkpoint consistency fix &
 \texttt{102 passed, 27 deselected} \\
 \bottomrule
 \end{tabular}

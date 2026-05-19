@@ -273,6 +273,36 @@ class OptimizationRunner:
                         }
                         break
                     theta_step = 0.0
+                    skip_step_for_gradient = (
+                        float(metrics.get("grad/inf", math.inf)) <= config.grad_inf_tol
+                    )
+                    if skip_step_for_gradient:
+                        stop_after_row = True
+                    else:
+                        optimizer.step()
+                        with torch.no_grad():
+                            model.clamp_theta_(config.min_rate, config.max_rate)
+                        theta_step = float(
+                            (model.theta.detach() - theta_before).abs().amax().cpu()
+                        )
+                        model.clear()
+                        # Ordinary optimizers evaluate gradients before the
+                        # parameter update.  Record one current-theta
+                        # evaluation so rows and checkpoints describe the
+                        # weights that are actually being saved.
+                        model.theta.grad = None
+                        loss, metrics = self._evaluate_and_backward(model)
+                        closure_evals += 1
+                        if (
+                            not torch.isfinite(loss).item()
+                            or not _is_finite_tensor(model.theta.grad)
+                        ):
+                            status = {
+                                "status": "failed",
+                                "reason": "nonfinite_objective_or_gradient",
+                            }
+                            break
+                    model.clear()
 
                 objective = float(metrics["likelihood/data_nll_bits"])
                 delta = None if previous_objective is None else previous_objective - objective
@@ -289,33 +319,9 @@ class OptimizationRunner:
                 if improved:
                     best_nll = objective
                     best_step = step
-                    save_best_after_row = phase == "lbfgs"
+                    save_best_after_row = True
 
                 if phase != "lbfgs":
-                    checkpoint_status = {
-                        "status": "running",
-                        "reason": "running",
-                        **resume_info,
-                        "best_nll_bits": best_nll,
-                        "best_step": best_step,
-                        "previous_objective": previous_objective,
-                        "stable_loss_steps": stable_loss_steps,
-                    }
-                    if improved:
-                        self._save_status(
-                            config.out_dir / "checkpoints" / "best.pt",
-                            model=model,
-                            optimizer=optimizer,
-                            step=step,
-                            status=checkpoint_status,
-                            row={
-                                "step": step,
-                                "optimizer/phase": phase,
-                                "theta_step_inf": 0.0,
-                                "delta_likelihood_bits": delta,
-                                **metrics,
-                            },
-                        )
                     row_grad = float(metrics.get("grad/inf", math.inf))
                     if row_grad <= config.grad_inf_tol:
                         status = {
@@ -333,14 +339,6 @@ class OptimizationRunner:
                     ):
                         status = {"status": "stalled", "reason": "best_likelihood_patience"}
                         stop_after_row = True
-                    if not stop_after_row:
-                        optimizer.step()
-                        with torch.no_grad():
-                            model.clamp_theta_(config.min_rate, config.max_rate)
-                        theta_step = float(
-                            (model.theta.detach() - theta_before).abs().amax().cpu()
-                        )
-                    model.clear()
 
                 row = {
                     "step": step,

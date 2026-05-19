@@ -1135,9 +1135,32 @@ def test_optimization_runner_run_writes_outputs_with_fake_model(tmp_path: Path):
             self.closed = True
 
     class FakeRunner(OptimizationRunner):
+        def __init__(self, config):
+            super().__init__(config)
+            self.saved_checkpoint_losses = []
+
         def build_model(self):
             self.fake_model = FakeOptimizationModel()
             return self.fake_model
+
+        def _save_status(self, path, *, model, optimizer, step, status, row):
+            super()._save_status(
+                path,
+                model=model,
+                optimizer=optimizer,
+                step=step,
+                status=status,
+                row=row,
+            )
+            if row is not None and "likelihood/data_nll_bits" in row:
+                expected_loss = float((model.theta.detach().square().sum() + 5.0).cpu())
+                self.saved_checkpoint_losses.append(
+                    (
+                        Path(path).name,
+                        expected_loss,
+                        float(row["likelihood/data_nll_bits"]),
+                    )
+                )
 
     config = RunConfig(
         species_tree=tmp_path / "sp.nwk",
@@ -1161,10 +1184,13 @@ def test_optimization_runner_run_writes_outputs_with_fake_model(tmp_path: Path):
     assert result.status == "not_converged"
     assert result.reason == "max_steps"
     assert result.steps_completed == 1
-    assert result.best_step == 1
+    assert result.best_step == 0
     assert result.out_dir == config.out_dir
     assert runner.fake_model.closed
     assert runner.fake_model.clears >= 1
+    assert runner.saved_checkpoint_losses
+    for checkpoint_name, expected_loss, row_loss in runner.saved_checkpoint_losses:
+        assert row_loss == pytest.approx(expected_loss), checkpoint_name
 
     history_rows = [
         json.loads(line)
@@ -1172,7 +1198,7 @@ def test_optimization_runner_run_writes_outputs_with_fake_model(tmp_path: Path):
     ]
     assert [row["optimizer/phase"] for row in history_rows] == ["adam", "final_eval"]
     assert history_rows[-1]["step"] == 1
-    assert history_rows[-1]["best_step"] == 1
+    assert history_rows[-1]["best_step"] == 0
 
     summary = json.loads((config.out_dir / "summary.json").read_text(encoding="utf-8"))
     assert summary["status"] == "not_converged"
@@ -1184,7 +1210,7 @@ def test_optimization_runner_run_writes_outputs_with_fake_model(tmp_path: Path):
     latest = load_checkpoint(config.out_dir / "checkpoints" / "latest.pt")
     best = load_checkpoint(config.out_dir / "checkpoints" / "best.pt")
     assert latest["status"]["status"] == "not_converged"
-    assert best["status"]["best_step"] == 1
+    assert best["status"]["best_step"] == 0
     assert latest["last_row"]["optimizer/phase"] == "final_eval"
     assert latest["family_names"] == ["fam0", "fam1"]
 
