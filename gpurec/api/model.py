@@ -82,6 +82,14 @@ def _mode_to_flags(mode: str) -> tuple[bool, bool]:
     return _MODE_MAP[mode]
 
 
+def _validate_gene_dtype(dtype: Any) -> torch.dtype:
+    if dtype not in (torch.float32, torch.float64):
+        raise ValueError(
+            f"dtype must be torch.float32 or torch.float64, got {dtype!r}"
+        )
+    return dtype
+
+
 def _default_theta_init(dataset: GeneDataset, mode: str) -> torch.Tensor:
     base = math.log2(1e-10)
     genewise, specieswise = _mode_to_flags(mode)
@@ -896,6 +904,7 @@ class GeneReconModel(torch.nn.Module):
             prefetch_batches,
             lazy=lazy_preprocess,
         )
+        _validate_gene_dtype(dataset.dtype)
 
         # Sanity check: dataset flags must be consistent with mode
         ds_g, ds_sw = (dataset.genewise, dataset.specieswise)
@@ -1065,6 +1074,7 @@ class GeneReconModel(torch.nn.Module):
             "refresh_preprocess_cache",
             refresh_preprocess_cache,
         )
+        dtype = _validate_gene_dtype(dtype)
         solver_kwargs = _normalize_gene_solver_kwargs(solver_kwargs)
         theta_base = theta_init_base_from_rates(
             theta_init_rates,
@@ -1124,6 +1134,7 @@ class GeneReconModel(torch.nn.Module):
             "refresh_preprocess_cache",
             refresh_preprocess_cache,
         )
+        dtype = _validate_gene_dtype(dtype)
         start, max_families = normalize_family_selection(start, max_families)
         solver_kwargs = _normalize_gene_solver_kwargs(solver_kwargs)
         theta_base = theta_init_base_from_rates(

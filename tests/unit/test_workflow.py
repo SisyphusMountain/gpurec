@@ -575,6 +575,47 @@ def test_public_model_constructors_reject_nonfinite_theta_init_before_io(
         )
 
 
+@pytest.mark.parametrize("dtype", [torch.int64, torch.float16, "float32"])
+def test_gene_recon_init_rejects_invalid_dtype_before_device(dtype: object):
+    dataset = SimpleNamespace(
+        genewise=False,
+        specieswise=False,
+        device=torch.device("cpu"),
+        dtype=dtype,
+    )
+
+    with pytest.raises(ValueError, match="dtype"):
+        GeneReconModel(dataset=dataset, mode="global")
+
+
+@pytest.mark.parametrize("dtype", [torch.int64, torch.float16, "float32"])
+@pytest.mark.parametrize("factory", ["from_trees", "from_alerax_families"])
+def test_gene_recon_factories_reject_invalid_dtype_before_device_or_io(
+    tmp_path: Path,
+    factory: str,
+    dtype: object,
+):
+    with pytest.raises(ValueError, match="dtype") as exc_info:
+        if factory == "from_trees":
+            GeneReconModel.from_trees(
+                tmp_path / "missing_species.nwk",
+                [tmp_path / "missing_gene.nwk"],
+                device="cpu",
+                dtype=dtype,
+                theta_init_rates=(0.1, 0.1, 0.1),
+            )
+        else:
+            GeneReconModel.from_alerax_families(
+                tmp_path / "missing_species.nwk",
+                tmp_path / "missing_families.txt",
+                device="cpu",
+                dtype=dtype,
+                theta_init_rates=(0.1, 0.1, 0.1),
+            )
+
+    assert "CUDA" not in str(exc_info.value)
+
+
 @pytest.mark.parametrize(
     ("field", "value"),
     [

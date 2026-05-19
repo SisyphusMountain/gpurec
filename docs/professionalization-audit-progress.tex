@@ -1141,6 +1141,15 @@ inside \texttt{[0, 2S)} to account for the second-child parent encoding.
 Corrupt species cache files therefore fail during safe cache loading instead
 of later raising raw tensor indexing errors in species-tree helper code.
 
+\subsection{GeneReconModel Dtype Validation}
+
+\texttt{GeneReconModel} now validates its floating-point dtype contract before
+theta initialization, CUDA checks, or file IO.  The public tree and AleRax
+factories and the direct constructor accept only \texttt{torch.float32} and
+\texttt{torch.float64}, matching the retained CUDA backward path, and reject
+strings, integer dtypes, and unsupported floating dtypes with a clear
+parameter-specific \texttt{ValueError}.
+
 \section{Verification Log}
 
 \begin{center}
@@ -2254,6 +2263,21 @@ CPU unit gate after species cache topology validation &
 \texttt{323 passed, 28 deselected} \\
 \texttt{python scripts/check\_release\_metadata.py} &
 Release metadata checker after species cache topology validation &
+\texttt{expected license blockers} \\
+\texttt{python -m py\_compile gpurec/api/model.py tests/unit/test\_workflow.py} &
+\texttt{GeneReconModel} dtype validation syntax &
+\texttt{ok} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q tests/unit/test\_workflow.py -k invalid\_dtype} &
+Focused \texttt{GeneReconModel} dtype validation &
+\texttt{9 passed, 216 deselected} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q tests/unit/test\_workflow.py -k "..."} &
+Constructor validation ordering regressions &
+\texttt{56 passed, 169 deselected} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
+CPU unit gate after \texttt{GeneReconModel} dtype validation &
+\texttt{332 passed, 28 deselected} \\
+\texttt{python scripts/check\_release\_metadata.py} &
+Release metadata checker after \texttt{GeneReconModel} dtype validation &
 \texttt{expected license blockers} \\
 \bottomrule
 \end{tabular}
