@@ -22,7 +22,12 @@ from gpurec.backtracking import (
     sample_recphyloxml,
     sample_recphyloxmls,
 )
-from gpurec.cli import _run_config_from_args, build_parser, main
+from gpurec.cli import (
+    _run_config_from_args,
+    _sampling_config_from_args,
+    build_parser,
+    main,
+)
 from gpurec.core.batch_planning import normalize_family_chunk_size
 from gpurec.api import (
     ActiveFamilyBatch,
@@ -66,6 +71,29 @@ def test_run_config_json_roundtrip(tmp_path: Path):
     assert loaded.species_tree.is_absolute()
     assert loaded.families_file.is_absolute()
     assert loaded.out_dir.is_absolute()
+
+
+def test_sampling_config_from_cli_args_maps_shared_fields(tmp_path: Path):
+    args = SimpleNamespace(
+        sample_out_dir=tmp_path / "samples",
+        samples=3,
+        seed=17,
+        family_start=2,
+        sample_max_families=4,
+        max_events=1000,
+        backtrack_binary=tmp_path / "gpurec-backtrack",
+    )
+
+    config = _sampling_config_from_args(args, tmp_path / "best.pt")
+
+    assert config.checkpoint == (tmp_path / "best.pt").resolve()
+    assert config.out_dir == (tmp_path / "samples").resolve()
+    assert config.samples == 3
+    assert config.seed == 17
+    assert config.family_start == 2
+    assert config.max_families == 4
+    assert config.max_events == 1000
+    assert config.backtrack_binary == (tmp_path / "gpurec-backtrack").resolve()
 
 
 def test_top_level_exports_api_metadata_types():

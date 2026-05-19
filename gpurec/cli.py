@@ -106,6 +106,22 @@ def _run_config_from_args(args: argparse.Namespace) -> RunConfig:
     return RunConfig.from_dict(data)
 
 
+def _sampling_config_from_args(
+    args: argparse.Namespace,
+    checkpoint: Path,
+) -> SamplingConfig:
+    return SamplingConfig(
+        checkpoint=checkpoint,
+        out_dir=args.sample_out_dir,
+        samples=args.samples,
+        seed=args.seed,
+        family_start=args.family_start,
+        max_families=args.sample_max_families,
+        max_events=args.max_events,
+        backtrack_binary=args.backtrack_binary,
+    )
+
+
 def _add_run_config_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--config",
@@ -398,16 +414,7 @@ def main(argv: list[str] | None = None) -> None:
         return
     if args.command == "sample":
         try:
-            sampling_config = SamplingConfig(
-                checkpoint=args.checkpoint,
-                out_dir=args.sample_out_dir,
-                samples=args.samples,
-                seed=args.seed,
-                family_start=args.family_start,
-                max_families=args.sample_max_families,
-                max_events=args.max_events,
-                backtrack_binary=args.backtrack_binary,
-            )
+            sampling_config = _sampling_config_from_args(args, args.checkpoint)
             result = sample(sampling_config)
         except _EXPECTED_WORKFLOW_ERRORS as exc:
             parser.error(str(exc))
@@ -434,16 +441,7 @@ def main(argv: list[str] | None = None) -> None:
         if not checkpoint.exists():
             checkpoint = run_config.out_dir / "checkpoints" / "latest.pt"
         try:
-            sampling_config = SamplingConfig(
-                checkpoint=checkpoint,
-                out_dir=args.sample_out_dir,
-                samples=args.samples,
-                seed=args.seed,
-                family_start=args.family_start,
-                max_families=args.sample_max_families,
-                max_events=args.max_events,
-                backtrack_binary=args.backtrack_binary,
-            )
+            sampling_config = _sampling_config_from_args(args, checkpoint)
             sampling_result = sample(sampling_config)
         except _EXPECTED_WORKFLOW_ERRORS as exc:
             parser.error(str(exc))

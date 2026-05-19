@@ -599,6 +599,15 @@ theta-initialization rates, and optimizer learning rates are checked with
 as \texttt{NaN} and \texttt{Infinity} cannot propagate into optimizer state,
 checkpoint metadata, or stopping diagnostics.
 
+\subsection{Shared Sampling CLI Mapping}
+
+\texttt{gpurec sample} and \texttt{gpurec run} now build
+\texttt{SamplingConfig} through a shared CLI helper.  This removes duplicated
+sampling-option wiring between the direct sampling command and the
+optimize-then-sample command, and a unit test pins the mapping for output
+directory, sample count, seed, family selection, event limit, and backtracking
+binary options.
+
 \section{Verification Log}
 
 \begin{center}
@@ -966,6 +975,15 @@ Workflow numeric finiteness regressions &
 \texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
 CPU unit gate after non-finite validation cleanup &
 \texttt{100 passed, 27 deselected} \\
+\texttt{python -m py\_compile gpurec/cli.py tests/unit/test\_workflow.py} &
+Shared sampling CLI mapping syntax &
+\texttt{ok} \\
+\texttt{pytest -q tests/unit/test\_workflow.py} &
+Shared sampling CLI mapping regressions &
+\texttt{68 passed after sampling CLI mapping cleanup} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
+CPU unit gate after sampling CLI mapping cleanup &
+\texttt{101 passed, 27 deselected} \\
 \bottomrule
 \end{tabular}
 \end{center}
