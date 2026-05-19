@@ -4,7 +4,7 @@ import os
 import pickle
 from numbers import Integral, Real
 from pathlib import Path
-from typing import Any, Callable, Sequence
+from typing import Any, Callable, Iterable, Sequence
 
 import torch
 from .preprocess_cpp import _load_extension as _load_species_gene_ext
@@ -155,19 +155,41 @@ def parse_alerax_family_file(
     return names, tree_paths, leaf_maps
 
 
-def _normalize_family_tree_paths(
-    gene_tree_paths: Sequence[str | os.PathLike | Sequence[str | os.PathLike]],
+def normalize_family_tree_paths(
+    gene_tree_paths: Iterable[str | os.PathLike | Iterable[str | os.PathLike]],
 ) -> list[list[str]]:
+    if isinstance(gene_tree_paths, (str, os.PathLike)):
+        raise ValueError(
+            "gene_trees must be a non-empty sequence of paths, not a single path"
+        )
     normalized: list[list[str]] = []
-    for entry in gene_tree_paths:
+    try:
+        entries = iter(gene_tree_paths)
+    except TypeError as exc:
+        raise ValueError("gene_trees must be a non-empty sequence of paths") from exc
+    for entry in entries:
         if isinstance(entry, (str, os.PathLike)):
             paths = [str(entry)]
         else:
-            paths = [str(path) for path in entry]
+            try:
+                paths = [str(path) for path in entry]
+            except TypeError as exc:
+                raise ValueError(
+                    "each gene_trees entry must be a path or a non-empty "
+                    "sequence of paths"
+                ) from exc
         if not paths:
-            raise ValueError("each family must have at least one tree path")
+            raise ValueError("each family must have at least one gene_trees path")
         normalized.append(paths)
+    if not normalized:
+        raise ValueError("gene_trees must not be empty")
     return normalized
+
+
+def _normalize_family_tree_paths(
+    gene_tree_paths: Iterable[str | os.PathLike | Iterable[str | os.PathLike]],
+) -> list[list[str]]:
+    return normalize_family_tree_paths(gene_tree_paths)
 
 
 def _bool_control(name: str, value: bool) -> bool:
@@ -518,9 +540,8 @@ class GeneDataset:
         self.specieswise = specieswise
         self.device = device
         self.dtype = dtype
+        family_tree_paths = normalize_family_tree_paths(gene_tree_paths)
         ext = _load_species_gene_ext()
-
-        family_tree_paths = _normalize_family_tree_paths(gene_tree_paths)
         if family_names is None:
             family_names = [f"family_{i:06d}" for i in range(len(family_tree_paths))]
         else:

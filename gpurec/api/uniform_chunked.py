@@ -38,6 +38,7 @@ from gpurec.core.memory_policy import UniformPipelinePolicy, choose_uniform_pipe
 from gpurec.core.model import (
     GeneDataset,
     normalize_family_selection,
+    normalize_family_tree_paths,
     parse_alerax_family_file,
 )
 from gpurec.optimization.implicit_grad import _e_adjoint_and_theta_vjp
@@ -709,15 +710,12 @@ class UniformChunkedReconModel(torch.nn.Module):
         chunk_value = _as_auto_int("family_chunk_size", family_chunk_size)
         wave_value = _as_auto_int("max_wave_size", max_wave_size)
         normalized_packing = normalize_batch_packing(batch_packing)
+        gene_paths = normalize_family_tree_paths(gene_trees)
 
         if set_optimized_env:
             _set_default_flags()
         device = require_cuda_device(device, owner="UniformChunkedReconModel")
         theta_init = theta_init.to(device=device)
-
-        gene_paths = list(gene_trees)
-        if not gene_paths:
-            raise ValueError("gene_trees must not be empty")
 
         dataset = GeneDataset(
             species_tree_path=str(species_tree),

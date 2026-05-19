@@ -1180,6 +1180,16 @@ integer theta payloads now fail at the checkpoint boundary with
 \texttt{RuntimeError}s instead of surfacing later as nonfinite objectives,
 gradients, or backtracking payloads.
 
+\subsection{Gene Tree Sequence Validation}
+
+Explicit tree constructors now validate \texttt{gene\_trees} as a non-empty
+sequence of family path entries before CUDA setup or preprocessing extension
+loading.  Bare strings and single \texttt{Path} objects are rejected as a
+single-path API mistake instead of being interpreted as iterables of
+characters or path components.  The shared core normalizer enforces the same
+contract for lower-level \texttt{GeneDataset} callers before the C++ extension
+is loaded.
+
 \section{Verification Log}
 
 \begin{center}
@@ -2350,6 +2360,18 @@ CPU unit gate after checkpoint theta validation &
 \texttt{356 passed, 28 deselected} \\
 \texttt{python scripts/check\_release\_metadata.py} &
 Release metadata checker after checkpoint theta validation &
+\texttt{expected license blockers} \\
+\texttt{python -m py\_compile gpurec/core/model.py gpurec/api/model.py ...} &
+Gene tree sequence validation syntax &
+\texttt{ok} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q tests/unit/test\_workflow.py -k "..."} &
+Focused gene tree sequence validation &
+\texttt{10 passed, 248 deselected} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
+CPU unit gate after gene tree sequence validation &
+\texttt{366 passed, 28 deselected} \\
+\texttt{python scripts/check\_release\_metadata.py} &
+Release metadata checker after gene tree sequence validation &
 \texttt{expected license blockers} \\
 \bottomrule
 \end{tabular}

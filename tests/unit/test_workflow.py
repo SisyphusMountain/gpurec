@@ -33,6 +33,7 @@ from gpurec.cli import (
     main,
 )
 from gpurec.core.batch_planning import normalize_clade_budget, normalize_family_chunk_size
+from gpurec.core.model import GeneDataset
 from gpurec.api import (
     ActiveFamilyBatch,
     BatchMetadata,
@@ -574,6 +575,75 @@ def test_public_model_constructors_reject_nonfinite_theta_init_before_io(
             device="cpu",
             theta_init_rates=rates,
         )
+
+
+@pytest.mark.parametrize("case", ["string", "path", "empty"])
+@pytest.mark.parametrize(
+    "factory",
+    ["gene_from_trees", "uniform_from_trees", "uniform_direct"],
+)
+def test_public_tree_constructors_reject_invalid_gene_trees_before_device(
+    tmp_path: Path,
+    monkeypatch,
+    factory: str,
+    case: str,
+):
+    if case == "string":
+        gene_trees: object = "g.nwk"
+    elif case == "path":
+        gene_trees = tmp_path / "missing_gene.nwk"
+    else:
+        gene_trees = []
+
+    monkeypatch.delenv("GPUREC_SELF_LOOP_2D_BLOCK_W", raising=False)
+
+    with pytest.raises(ValueError, match="gene_trees") as exc_info:
+        if factory == "gene_from_trees":
+            GeneReconModel.from_trees(
+                tmp_path / "missing_species.nwk",
+                gene_trees,  # type: ignore[arg-type]
+                device="cpu",
+            )
+        elif factory == "uniform_from_trees":
+            UniformChunkedReconModel.from_trees(
+                tmp_path / "missing_species.nwk",
+                gene_trees,  # type: ignore[arg-type]
+                device="cpu",
+            )
+        else:
+            UniformChunkedReconModel(
+                species_tree=tmp_path / "missing_species.nwk",
+                gene_trees=gene_trees,  # type: ignore[arg-type]
+                device="cpu",
+            )
+
+    assert "CUDA" not in str(exc_info.value)
+    assert "missing" not in str(exc_info.value)
+    assert "GPUREC_SELF_LOOP_2D_BLOCK_W" not in os.environ
+
+
+def test_gene_dataset_rejects_single_gene_tree_path_before_extension(
+    tmp_path: Path,
+    monkeypatch,
+):
+    calls: list[bool] = []
+
+    def fake_load_extension():
+        calls.append(True)
+        raise AssertionError("_load_species_gene_ext should not run")
+
+    monkeypatch.setattr("gpurec.core.model._load_species_gene_ext", fake_load_extension)
+
+    with pytest.raises(ValueError, match="gene_trees"):
+        GeneDataset(
+            species_tree_path=tmp_path / "missing_species.nwk",
+            gene_tree_paths="g.nwk",
+            genewise=False,
+            specieswise=False,
+            device=torch.device("cpu"),
+        )
+
+    assert calls == []
 
 
 @pytest.mark.parametrize("dtype", [torch.int64, torch.float16, "float32"])

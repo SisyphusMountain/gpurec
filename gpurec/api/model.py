@@ -42,6 +42,7 @@ from gpurec.core.batch_planning import (
 from gpurec.core.model import (
     GeneDataset,
     normalize_family_selection,
+    normalize_family_tree_paths,
     parse_alerax_family_file,
 )
 from gpurec.core.forward import Pi_wave_forward
@@ -1033,8 +1034,10 @@ class GeneReconModel(torch.nn.Module):
     @classmethod
     def from_trees(
         cls,
-        species_tree: str,
-        gene_trees: list[str],
+        species_tree: str | os.PathLike[str],
+        gene_trees: Sequence[
+            str | os.PathLike[str] | Sequence[str | os.PathLike[str]]
+        ],
         *,
         mode: str = "global",
         device: Any = "cuda",
@@ -1081,12 +1084,13 @@ class GeneReconModel(torch.nn.Module):
             dtype=dtype,
             device=torch.device("cpu"),
         )
+        gene_tree_paths = normalize_family_tree_paths(gene_trees)
         device = require_cuda_device(device, owner="GeneReconModel")
         if theta_base is not None:
             theta_base = theta_base.to(device=device)
         ds = GeneDataset(
             species_tree_path=species_tree,
-            gene_tree_paths=gene_trees,
+            gene_tree_paths=gene_tree_paths,
             genewise=genewise,
             specieswise=specieswise,
             dtype=dtype,
@@ -1100,7 +1104,7 @@ class GeneReconModel(torch.nn.Module):
                 theta_init = theta_base.unsqueeze(0).expand(int(ds.S), -1).clone()
             elif mode == "genewise":
                 theta_init = (
-                    theta_base.unsqueeze(0).expand(len(gene_trees), -1).clone()
+                    theta_base.unsqueeze(0).expand(len(gene_tree_paths), -1).clone()
                 )
             else:
                 theta_init = theta_base
