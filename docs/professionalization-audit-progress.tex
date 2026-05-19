@@ -1268,6 +1268,16 @@ while requiring the module to resolve from an installed
 guard checks the temp-directory handoff and import-path assertions so the smoke
 continues to verify the built artifact instead of the checkout tree.
 
+\subsection{Scoped Release Cleanup Guidance}
+
+\texttt{docs/release-readiness.md} no longer recommends a bare ignored-file
+cleanup before packaging.  The preview and removal commands now scope
+\texttt{git clean -Xd} to \texttt{build}, \texttt{dist}, and
+\texttt{*.egg-info} pathspecs, preserving ignored HOGENOM datasets, local tool
+checkouts, W\&B runs, and caches that may live beside the source tree.  A
+release-metadata guard rejects exact bare cleanup commands and requires the
+scoped preview and removal commands to stay in the guide.
+
 \section{Verification Log}
 
 \begin{center}
@@ -2549,6 +2559,18 @@ CPU unit gate after installed wheel smoke isolation &
 \texttt{381 passed, 28 deselected} \\
 \texttt{python scripts/check\_release\_metadata.py} &
 Release metadata checker after installed wheel smoke isolation &
+\texttt{expected license blockers} \\
+\texttt{python -m py\_compile tests/unit/test\_release\_metadata.py} &
+Scoped release cleanup guard syntax &
+\texttt{ok} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q tests/unit/test\_release\_metadata.py -k "..."} &
+Focused release cleanup documentation guard &
+\texttt{3 passed, 11 deselected} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
+CPU unit gate after scoped release cleanup guidance &
+\texttt{382 passed, 28 deselected} \\
+\texttt{python scripts/check\_release\_metadata.py} &
+Release metadata checker after scoped release cleanup guidance &
 \texttt{expected license blockers} \\
 \bottomrule
 \end{tabular}

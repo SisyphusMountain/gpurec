@@ -42,18 +42,18 @@ classifier first.
 
 Build and inspect distribution artifacts from a clean checkout:
 
-Before invoking the build module, preview ignored checkout artifacts and remove
-stale `build/`, `dist/`, or `*.egg-info/` directories that could shadow release
-tooling or contaminate the artifact set:
+Before invoking the build module, preview ignored packaging artifacts and remove
+only stale `build/`, `dist/`, or `*.egg-info/` directories that could shadow
+release tooling or contaminate the artifact set:
 
 ```bash
-git clean -Xdn
+git clean -Xdn -- build dist '*.egg-info'
 ```
 
-Only after confirming the preview, remove ignored artifacts:
+Only after confirming the preview, remove those scoped ignored artifacts:
 
 ```bash
-git clean -Xdf
+git clean -Xdf -- build dist '*.egg-info'
 ```
 
 The repository intentionally ignores local caches, HOGENOM datasets, W&B runs,

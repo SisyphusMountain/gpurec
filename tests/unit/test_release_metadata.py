@@ -292,9 +292,21 @@ def test_tests_readme_backtracking_binary_smoke_is_reproducible():
 
 def test_release_readiness_orders_clean_checkout_before_build():
     guide = (ROOT / "docs" / "release-readiness.md").read_text(encoding="utf-8")
+    preview_command = "git clean -Xdn -- build dist '*.egg-info'"
+    clean_command = "git clean -Xdf -- build dist '*.egg-info'"
 
-    assert guide.index("git clean -Xdn") < guide.index("python -m build")
+    assert guide.index(preview_command) < guide.index(clean_command)
+    assert guide.index(clean_command) < guide.index("python -m build")
     assert "stale `build/`, `dist/`, or `*.egg-info/`" in guide
     assert "gpurec --help" in guide
     assert "python -m gpurec.cli --help" in guide
     assert 'pytest -q -m "integration and not gpu"' in guide
+
+
+def test_release_readiness_scopes_ignored_clean_commands():
+    guide = (ROOT / "docs" / "release-readiness.md").read_text(encoding="utf-8")
+
+    assert re.search(r"(?m)^git clean -Xdn$", guide) is None
+    assert re.search(r"(?m)^git clean -Xdf$", guide) is None
+    assert "git clean -Xdn -- build dist '*.egg-info'" in guide
+    assert "git clean -Xdf -- build dist '*.egg-info'" in guide
