@@ -125,6 +125,8 @@ def test_cpu_ci_runs_rust_backtracking_gate():
 
     assert "\n  rust-backtrack:\n" in workflow
     assert "rustup default stable" in workflow
+    assert "actions/setup-python@v5" in workflow
+    assert "python -m pip install pytest" in workflow
     assert (
         "cargo test --locked --manifest-path crates/gpurec-backtrack/Cargo.toml"
         in workflow
@@ -133,3 +135,6 @@ def test_cpu_ci_runs_rust_backtracking_gate():
         "cargo run --locked --quiet --manifest-path "
         "crates/gpurec-backtrack/Cargo.toml -- --help"
     ) in workflow
+    assert (
+        "pytest -q tests/integration/test_rust_backtracking_fixture.py" in workflow
+    )

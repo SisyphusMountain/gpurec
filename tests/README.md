@@ -40,6 +40,7 @@ Rust backtracking checks are CPU-safe:
 ```bash
 cargo test --locked --manifest-path crates/gpurec-backtrack/Cargo.toml
 cargo run --locked --quiet --manifest-path crates/gpurec-backtrack/Cargo.toml -- --help
+pytest -q tests/integration/test_rust_backtracking_fixture.py
 ```
 
 Backtracking smoke should prefer a prebuilt Rust binary to avoid `cargo run`

@@ -786,6 +786,15 @@ CLI help smoke.  The remaining release decision is whether public artifacts
 should ship a prebuilt sampler or document the Rust toolchain requirement for
 source-checkout sampling.
 
+\subsection{Rust Backtracking JSON Fixture}
+
+A new CPU integration fixture under \texttt{tests/fixtures/backtracking/}
+contains a minimal forced-speciation backtracking payload independent of
+\texttt{GeneReconModel}.  The Rust CI job now runs a Python test that invokes
+the real \texttt{gpurec-backtrack} CLI with that JSON, writes RecPhyloXML to a
+temporary file, parses it with the standard XML parser, and checks the expected
+root speciation plus A/B leaf events.
+
 \section{Verification Log}
 
 \begin{center}
@@ -1399,6 +1408,18 @@ Rust backtracking CLI smoke &
 \texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
 CPU unit gate after Rust clean-checkout path &
 \texttt{170 passed, 27 deselected} \\
+\texttt{python -m py\_compile tests/integration/test\_rust\_backtracking\_fixture.py ...} &
+Rust JSON fixture and workflow guard syntax &
+\texttt{ok} \\
+\texttt{pytest -q tests/integration/test\_rust\_backtracking\_fixture.py} &
+Real Rust CLI JSON-to-RecPhyloXML fixture &
+\texttt{1 passed} \\
+\texttt{pytest -q tests/unit/test\_release\_metadata.py} &
+Release metadata, workflow, and Rust CI guards &
+\texttt{6 passed} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
+CPU unit selector after Rust JSON fixture &
+\texttt{170 passed, 28 deselected} \\
 \bottomrule
 \end{tabular}
 \end{center}
@@ -1410,8 +1431,8 @@ CPU unit gate after Rust clean-checkout path &
         \texttt{pyproject.toml} license metadata and license classifier.
   \item Decide whether releases should ship a prebuilt backtracking binary or
         document a Rust-toolchain requirement for source-checkout sampling.
-  \item Add a CPU Python-to-real-Rust backtracking fixture that exercises the
-        JSON payload contract and parses the emitted RecPhyloXML.
+  \item Add an installed-artifact sampling smoke once the backtracking binary
+        distribution model is settled.
   \item Review whether cache refresh guidance should be promoted into the README
         once cache validation and release documentation settle.
   \item Keep committing small, verified increments so the branch remains
