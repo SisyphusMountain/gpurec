@@ -147,7 +147,17 @@ def _backtrack_command(
     if backtrack_binary is None:
         backtrack_binary = os.environ.get(_BACKTRACK_BINARY_ENV)
     if backtrack_binary is not None:
-        return [str(Path(backtrack_binary))]
+        text = os.fspath(backtrack_binary)
+        path = Path(text).expanduser()
+        has_separator = any(sep and sep in text for sep in (os.sep, os.altsep))
+        if (
+            not isinstance(backtrack_binary, str)
+            or path.is_absolute()
+            or path.parent != Path(".")
+            or has_separator
+        ):
+            return [str(path.resolve())]
+        return [text]
 
     manifest = Path(cargo_manifest)
     if not manifest.exists():

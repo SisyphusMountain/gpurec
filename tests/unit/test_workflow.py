@@ -1787,6 +1787,42 @@ def test_backtracking_payload_writer_rejects_nonfinite_json_before_subprocess(
     assert calls == []
 
 
+def test_backtracking_env_binary_relative_path_uses_caller_cwd(
+    tmp_path: Path,
+    monkeypatch,
+):
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    fake_backtracker = bin_dir / "fake-backtrack"
+    fake_backtracker.write_text(
+        """#!/usr/bin/env python3
+import pathlib
+import sys
+
+pathlib.Path(sys.argv[2]).write_text("ok", encoding="utf-8")
+""",
+        encoding="utf-8",
+    )
+    fake_backtracker.chmod(0o755)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("GPUREC_BACKTRACK_BIN", "bin/fake-backtrack")
+
+    result = backtracking._run_backtracking_payload(
+        {"value": 1},
+        cargo_manifest=tmp_path / "missing" / "Cargo.toml",
+        backtrack_binary=None,
+        build_args=lambda input_path, output_dir: [
+            str(input_path),
+            str(output_dir / "done.txt"),
+        ],
+        read_output=lambda output_dir: (output_dir / "done.txt").read_text(
+            encoding="utf-8"
+        ),
+    )
+
+    assert result == "ok"
+
+
 def test_backtracking_sampler_helpers_share_subprocess_io(tmp_path: Path, monkeypatch):
     fake_backtracker = tmp_path / "fake_backtracker.py"
     fake_backtracker.write_text(

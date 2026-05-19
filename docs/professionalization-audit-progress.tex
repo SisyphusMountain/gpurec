@@ -1190,6 +1190,15 @@ characters or path components.  The shared core normalizer enforces the same
 contract for lower-level \texttt{GeneDataset} callers before the C++ extension
 is loaded.
 
+\subsection{Backtracking Environment Binary Paths}
+
+\texttt{GPUREC\_BACKTRACK\_BIN} now resolves path-like values against the
+caller's current working directory before the Rust subprocess switches to the
+repository root.  Relative paths such as \texttt{bin/gpurec-backtrack},
+explicit \texttt{./...} paths, absolute paths, and \texttt{Path} objects are
+therefore stable across the subprocess \texttt{cwd}; bare command names remain
+unresolved so they can still be found through \texttt{PATH}.
+
 \section{Verification Log}
 
 \begin{center}
@@ -2372,6 +2381,18 @@ CPU unit gate after gene tree sequence validation &
 \texttt{366 passed, 28 deselected} \\
 \texttt{python scripts/check\_release\_metadata.py} &
 Release metadata checker after gene tree sequence validation &
+\texttt{expected license blockers} \\
+\texttt{python -m py\_compile gpurec/backtracking.py tests/unit/test\_workflow.py} &
+Backtracking env binary path syntax &
+\texttt{ok} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q tests/unit/test\_workflow.py -k "..."} &
+Focused backtracking command resolution &
+\texttt{3 passed, 256 deselected} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
+CPU unit gate after backtracking env path resolution &
+\texttt{367 passed, 28 deselected} \\
+\texttt{python scripts/check\_release\_metadata.py} &
+Release metadata checker after backtracking env path resolution &
 \texttt{expected license blockers} \\
 \bottomrule
 \end{tabular}
