@@ -16,7 +16,6 @@ if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
 
 from gpurec import GeneReconModel  # noqa: E402
-from gpurec.core.preprocess_cpp import _load_extension  # noqa: E402
 
 
 HOGENOM_DIR = REPO / "tests" / "data" / "HOGENOM" / "hogenom"
@@ -186,28 +185,8 @@ def dataset_config(args: argparse.Namespace) -> DatasetConfig:
     )
 
 
-def load_species_names(species_tree: Path) -> list[str]:
-    ext = _load_extension()
-    raw = ext.preprocess_multiple_families(
-        str(species_tree),
-        {},
-        include_species_matrices=False,
-    )
-    return [str(x) for x in raw["species"]["names"]]
-
-
-def uniform_origination_probs(
-    n_species: int,
-    *,
-    device: str,
-    dtype: torch.dtype,
-) -> torch.Tensor:
-    return torch.full((n_species,), 1.0 / n_species, device=device, dtype=dtype)
-
-
 def build_model(
     config: DatasetConfig,
-    origination_probs: torch.Tensor,
 ) -> GeneReconModel:
     return GeneReconModel.from_alerax_families(
         str(config.species_tree),
@@ -230,7 +209,6 @@ def build_model(
         max_dts_partial_rows=config.max_dts_partial_rows,
         lazy_preprocess=True,
         prefetch_batches="all",
-        origination_probs=origination_probs,
     )
 
 
@@ -397,13 +375,7 @@ def main() -> None:
     )
 
     with nvtx_range("gpurec_profile.build_model"):
-        species_names = load_species_names(config.species_tree)
-        origination_probs = uniform_origination_probs(
-            len(species_names),
-            device=config.device,
-            dtype=config.dtype,
-        )
-        model = build_model(config, origination_probs)
+        model = build_model(config)
 
     batch_index: int | None = None
     if args.mode not in ("full", "stream-batches"):

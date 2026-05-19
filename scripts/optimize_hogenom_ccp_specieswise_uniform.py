@@ -17,7 +17,6 @@ from hogenom_opt_helpers import (
     RegularizationConfig,
     build_model,
     evaluate_full,
-    load_species_names,
     run_training,
     uniform_origination_probs,
     write_outputs,
@@ -174,15 +173,14 @@ def main(argv: list[str] | None = None) -> None:
     if not data.families_file.exists():
         raise FileNotFoundError(data.families_file)
 
-    species_names = load_species_names(data.species_tree)
-    origination_probs, origination_probs_cpu = uniform_origination_probs(
-        len(species_names),
+    build_t0 = time.perf_counter()
+    model = build_model(data)
+    species_names = model.species_names
+    _, origination_probs_cpu = uniform_origination_probs(
+        model.n_species,
         device=data.device,
         dtype=data.dtype,
     )
-
-    build_t0 = time.perf_counter()
-    model = build_model(data, origination_probs)
     print(f"build_s={time.perf_counter() - build_t0:.3f}", flush=True)
     print("families", sum(meta.family_count for meta in model.batch_metadata), flush=True)
     print("species", model.n_species, flush=True)

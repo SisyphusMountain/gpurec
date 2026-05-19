@@ -12,7 +12,6 @@ import pandas as pd
 import torch
 
 from gpurec import GeneReconModel
-from gpurec.core.preprocess_cpp import _load_extension
 
 
 LN2 = math.log(2.0)
@@ -54,16 +53,6 @@ def synchronize() -> None:
         torch.cuda.synchronize()
 
 
-def load_species_names(species_tree: Path) -> list[str]:
-    ext = _load_extension()
-    raw = ext.preprocess_multiple_families(
-        str(species_tree),
-        {},
-        include_species_matrices=False,
-    )
-    return [str(x) for x in raw["species"]["names"]]
-
-
 def uniform_origination_probs(
     n_species: int,
     *,
@@ -76,7 +65,6 @@ def uniform_origination_probs(
 
 def build_model(
     config: DatasetConfig,
-    origination_probs: torch.Tensor,
 ) -> GeneReconModel:
     return GeneReconModel.from_alerax_families(
         str(config.species_tree),
@@ -95,7 +83,6 @@ def build_model(
         family_chunk_size=config.family_chunk_size,
         lazy_preprocess=True,
         prefetch_batches="all",
-        origination_probs=origination_probs,
     )
 
 

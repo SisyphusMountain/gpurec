@@ -16,7 +16,6 @@ if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
 
 from gpurec import GeneReconModel
-from gpurec.core.preprocess_cpp import _load_extension
 
 
 HOGENOM_DIR = REPO / "tests" / "data" / "HOGENOM" / "hogenom"
@@ -347,16 +346,6 @@ def lbfgs_line_search_fn(args: argparse.Namespace) -> str | None:
 def synchronize() -> None:
     if torch.cuda.is_available():
         torch.cuda.synchronize()
-
-
-def load_species_names(species_tree: Path) -> list[str]:
-    ext = _load_extension()
-    raw = ext.preprocess_multiple_families(
-        str(species_tree),
-        {},
-        include_species_matrices=False,
-    )
-    return [str(x) for x in raw["species"]["names"]]
 
 
 def make_uniform_origination_probs(n_species: int) -> tuple[torch.Tensor, torch.Tensor]:
@@ -856,11 +845,6 @@ def main(argv: list[str] | None = None) -> None:
     print("regularization", regularization_config(args), flush=True)
     print("optimization", optimization_config(args), flush=True)
 
-    species_names = load_species_names(SPECIES_TREE)
-    origination_probs, origination_probs_cpu = make_uniform_origination_probs(
-        len(species_names)
-    )
-
     build_t0 = time.perf_counter()
     model = GeneReconModel.from_alerax_families(
         str(SPECIES_TREE),
@@ -879,8 +863,9 @@ def main(argv: list[str] | None = None) -> None:
         family_chunk_size=FAMILY_CHUNK_SIZE,
         lazy_preprocess=LAZY_PREPROCESS,
         prefetch_batches=PREFETCH_BATCHES,
-        origination_probs=origination_probs,
     )
+    species_names = model.species_names
+    _, origination_probs_cpu = make_uniform_origination_probs(model.n_species)
     synchronize()
 
     print(f"build_s={time.perf_counter() - build_t0:.3f}", flush=True)

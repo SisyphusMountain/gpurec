@@ -290,6 +290,16 @@ root-row output mode, and the saved Pi/Pibar tensors must be present without
 NaNs.  This avoids claiming optimized/reference parity where no separate
 reference path is selected.
 
+\subsection{HOGENOM Species-Name Public Surface}
+
+The HOGENOM optimization and profiling scripts no longer call the private C++
+preprocess extension just to recover species names.  They now build the model
+with its default uniform origination distribution, then read
+\texttt{model.species\_names} and \texttt{model.n\_species} through the public
+API for output labels and exported uniform origination tables.  The workflow
+source guard now blocks this private extension import from returning to the
+curated HOGENOM scripts.
+
 \section{Verification Log}
 
 \begin{center}
@@ -339,6 +349,15 @@ Packaging metadata parse and HOGENOM extra check &
 \texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q tests/unit/test\_specieswise\_uniform.py} &
 GPU specieswise test collection under CPU-only gate &
 \texttt{5 skipped} \\
+\texttt{python -m py\_compile ...HOGENOM scripts... tests/unit/test\_workflow.py} &
+HOGENOM script syntax after species-name cleanup &
+\texttt{ok} \\
+\texttt{rg -n "\_load\_extension\textbar{}load\_species\_names" scripts/...} &
+Private species-name loader guard &
+\texttt{no matches in curated HOGENOM scripts} \\
+\texttt{pytest -q tests/unit/test\_workflow.py} &
+Workflow and HOGENOM public-surface guards &
+\texttt{14 passed after species-name cleanup} \\
 \texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m 'not gpu' ...GPU modules...} &
 GPU marker check &
 \texttt{22 deselected; exit 5 treated as expected} \\

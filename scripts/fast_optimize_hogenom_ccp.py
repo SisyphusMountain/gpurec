@@ -17,7 +17,6 @@ if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
 
 from gpurec import GeneReconModel  # noqa: E402
-from gpurec.core.preprocess_cpp import _load_extension  # noqa: E402
 from gpurec.optimization import BatchedLBFGS  # noqa: E402
 
 
@@ -40,20 +39,6 @@ RATE_QUANTILES = (0.0, 0.05, 0.5, 0.95, 1.0)
 def synchronize() -> None:
     if torch.cuda.is_available():
         torch.cuda.synchronize()
-
-
-def load_species_names(species_tree: Path) -> list[str]:
-    ext = _load_extension()
-    raw = ext.preprocess_multiple_families(
-        str(species_tree),
-        {},
-        include_species_matrices=False,
-    )
-    return [str(x) for x in raw["species"]["names"]]
-
-
-def uniform_origination(n_species: int, *, device: str, dtype: torch.dtype) -> torch.Tensor:
-    return torch.full((n_species,), 1.0 / n_species, device=device, dtype=dtype)
 
 
 def theta_logits(theta: torch.Tensor) -> torch.Tensor:
@@ -727,7 +712,7 @@ def batched_bfgs_step(
     return metrics, theta_step, grad_evals + loss_evals
 
 
-def build_model(args: argparse.Namespace, origination_probs: torch.Tensor) -> GeneReconModel:
+def build_model(args: argparse.Namespace) -> GeneReconModel:
     return GeneReconModel.from_alerax_families(
         str(args.species_tree),
         args.families_file,
@@ -754,7 +739,6 @@ def build_model(args: argparse.Namespace, origination_probs: torch.Tensor) -> Ge
         max_wave_size=args.max_wave_size,
         lazy_preprocess=True,
         prefetch_batches="all",
-        origination_probs=origination_probs,
     )
 
 
@@ -1106,15 +1090,9 @@ def main(argv: list[str] | None = None) -> None:
             flush=True,
         )
 
-    species_names = load_species_names(args.species_tree)
-    origination_probs = uniform_origination(
-        len(species_names),
-        device=args.device,
-        dtype=torch.float32,
-    )
-
     build_start = time.perf_counter()
-    model = build_model(args, origination_probs)
+    model = build_model(args)
+    species_names = model.species_names
     if args.prepare_all_batches:
         prepare_all_batches(model)
     synchronize()

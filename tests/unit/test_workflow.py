@@ -288,6 +288,7 @@ def test_hogenom_scripts_use_public_model_surface():
         "_schedule_prefetch",
         "_theta_for_batch_index",
         "_evaluate_static_state",
+        "from gpurec.core.preprocess_cpp import _load_extension",
     )
 
     offenders: list[str] = []
