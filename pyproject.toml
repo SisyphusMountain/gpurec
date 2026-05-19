@@ -11,18 +11,16 @@ requires-python = ">=3.10"
 dependencies = [
     "torch>=2.0",
     "triton>=2.1",
-    "numpy",
-    "more-itertools",
 ]
 
 [project.scripts]
 gpurec = "gpurec.cli:main"
 
 [project.optional-dependencies]
-triton = ["triton>=2.1"]
 hogenom = [
     "hydra-core",
     "matplotlib",
+    "numpy",
     "omegaconf",
     "pandas",
     "wandb",

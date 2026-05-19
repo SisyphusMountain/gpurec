@@ -269,8 +269,9 @@ command that disables W\&B logging.
 \texttt{pyproject.toml} now exposes a \texttt{hogenom} extra for checkout-local
 experiment scripts.  It groups the optional Python dependencies those scripts
 import directly: \texttt{wandb}, \texttt{hydra-core}, \texttt{omegaconf},
-\texttt{pandas}, and \texttt{matplotlib}.  The README installation section now
-shows \texttt{pip install -e ".[hogenom,dev]"} for users running those scripts.
+\texttt{pandas}, \texttt{matplotlib}, and \texttt{numpy}.  The README
+installation section now shows \texttt{pip install -e ".[hogenom,dev]"} for
+users running those scripts.
 
 \subsection{Pytest Marker Hygiene}
 
@@ -388,6 +389,17 @@ infer which notes are current guidance.
 the same checks before touching a model or invoking the Rust sampler, so invalid
 Python inputs fail with clear \texttt{ValueError} messages instead of reaching
 unsigned Rust fields or subprocess execution.
+
+\subsection{Install Metadata Hygiene}
+
+The redundant \texttt{triton} extra was removed because Triton is imported
+unconditionally by the retained CUDA kernels and remains a core dependency.
+\texttt{numpy} moved from core dependencies into the \texttt{hogenom} extra,
+where the checkout-local scripts that import it already live, and the unused
+\texttt{more-itertools} dependency was removed.  The README now documents the
+runtime C++/OpenMP extension-build requirement and clarifies that the Rust
+\texttt{cargo run} backtracking fallback needs a local \texttt{rustree/}
+checkout unless a prebuilt binary is supplied.
 
 \section{Verification Log}
 
@@ -537,6 +549,12 @@ Workflow and backtracking validation regressions &
 \texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
 CPU unit gate after sampling validation cleanup &
 \texttt{49 passed, 27 deselected} \\
+\texttt{python -c "import tomli; ... pyproject.toml ..."} &
+Install metadata dependency shape &
+\texttt{triton core, numpy hogenom, no redundant extra} \\
+\texttt{python -c "import gpurec"} / \texttt{python -m gpurec.cli --help} &
+Package import and CLI smoke after metadata cleanup &
+\texttt{ok} \\
 \bottomrule
 \end{tabular}
 \end{center}

@@ -28,8 +28,14 @@ Removed from this branch:
 ## Installation
 
 ```bash
-pip install -e ".[triton,dev]"
+pip install -e ".[dev]"
 ```
+
+The lean CUDA kernels import Triton directly, so Triton is a core dependency
+rather than an optional extra.  The preprocessing extension is compiled at
+runtime through PyTorch's C++ extension loader; source checkouts therefore need
+a working C++ compiler, OpenMP support, and the normal PyTorch extension build
+tooling available in the Python environment.
 
 For the checkout-local HOGENOM experiment scripts:
 
@@ -106,9 +112,11 @@ gpurec sample \
 Sampling writes RecPhyloXML files and AleRax-style summaries under
 `output_gpurec/reconciliations/`, including per-sample event counts,
 `totalSpeciesEventCounts.txt`, and `totalTransfers.txt`.
-Sampling uses the Rust backtracking binary.  In an editable/source checkout it
-can fall back to `cargo run`; installed environments should provide a compiled
-binary through `GPUREC_BACKTRACK_BIN` or `--backtrack-binary`.
+Sampling uses the Rust backtracking binary.  Installed environments should
+provide a compiled binary through `GPUREC_BACKTRACK_BIN` or
+`--backtrack-binary`.  The source-checkout `cargo run` fallback also requires a
+Rust toolchain and the local `rustree/` checkout expected by
+`crates/gpurec-backtrack/Cargo.toml`; otherwise use a prebuilt binary.
 
 ## HOGENOM Workflows
 
