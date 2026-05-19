@@ -695,6 +695,16 @@ with field-specific, no-traceback errors.  \texttt{gpurec run} refuses to sample
 when optimization returns failed, and resume now loads a checkpoint once so
 \texttt{theta}/status and optimizer state cannot come from different reads.
 
+\subsection{Batching Contract Validation}
+
+Core batching no longer relies on Python \texttt{assert} statements for malformed
+CCP helper detection.  Gene-family collation now validates split helper lengths
+and split-block coverage before slicing tensors, while wave layout construction
+validates helper lengths and exact clade coverage, including duplicate and
+out-of-range clade IDs.  A subprocess regression exercises the malformed
+collation path under \texttt{python -O} so optimized interpreters cannot bypass
+these checks.
+
 \section{Verification Log}
 
 \begin{center}
@@ -1185,6 +1195,18 @@ Workflow suite after JSON/resume guards &
 \texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
 CPU unit gate after JSON/resume guards &
 \texttt{151 passed, 27 deselected} \\
+\texttt{python -m py\_compile gpurec/core/batching.py tests/unit/test\_global\_wave\_scheduler.py} &
+Core batching validation syntax &
+\texttt{ok} \\
+\texttt{rg -n "assert " gpurec/core/batching.py} &
+Core batching runtime-assert guard &
+\texttt{no matches} \\
+\texttt{pytest -q tests/unit/test\_global\_wave\_scheduler.py} &
+Focused batching validation and scheduler regressions &
+\texttt{13 passed} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
+CPU unit gate after batching validation &
+\texttt{154 passed, 27 deselected} \\
 \bottomrule
 \end{tabular}
 \end{center}

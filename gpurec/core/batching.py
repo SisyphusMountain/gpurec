@@ -57,7 +57,7 @@ def collate_gene_families(
 
     family_meta: List[Dict[str, int]] = []
 
-    for item in batch:
+    for family_index, item in enumerate(batch):
         ccp = item["ccp"]
         root_i: int = int(item["root_clade_id"])
 
@@ -66,13 +66,30 @@ def collate_gene_families(
         N_i = int(ccp["N_splits"])
         num_eq1_i = int(ccp["num_segs_eq1"])
         end_rows_ge2_i = int(ccp["end_rows_ge2"])
+        _validate_split_block_lengths(
+            family_index=family_index,
+            n_splits=N_i,
+            num_eq1=num_eq1_i,
+            end_rows_ge2=end_rows_ge2_i,
+        )
 
         # Pull split arrays
         leftrights_i = ccp["split_leftrights_sorted"].to(torch.long).cpu()  # [2*N_i]
         logp_i = ccp["log_split_probs_sorted"].to(dtype).cpu()              # [N_i]
+        _require_numel(
+            "split_leftrights_sorted",
+            leftrights_i,
+            2 * N_i,
+            family_index=family_index,
+        )
+        _require_numel(
+            "log_split_probs_sorted",
+            logp_i,
+            N_i,
+            family_index=family_index,
+        )
 
         # Split left/right halves so we can cut the ge2 vs eq1 ranges cleanly
-        assert leftrights_i.numel() == 2 * N_i
         lefts_i = leftrights_i[:N_i]
         rights_i = leftrights_i[N_i:]
 
@@ -83,6 +100,12 @@ def collate_gene_families(
         if "split_parents_sorted" not in ccp:
             raise RuntimeError("preprocessed CCP helpers must include split_parents_sorted")
         sp_sorted_i = ccp["split_parents_sorted"].to(torch.long).cpu()
+        _require_numel(
+            "split_parents_sorted",
+            sp_sorted_i,
+            N_i,
+            family_index=family_index,
+        )
 
         # (>=2) rows for this family
         if end_rows_ge2_i > 0:
@@ -162,10 +185,9 @@ def collate_gene_families(
         eq1_sp = torch.empty((0,), dtype=torch.long)
     split_parents_sorted_batch = torch.cat([ge2_sp, eq1_sp], dim=0)
 
-    # Sanity checks
-    assert split_leftrights_sorted_batch.numel() == 2 * total_N
-    assert log_split_probs_sorted_batch.numel() == total_N
-    assert split_parents_sorted_batch.numel() == total_N
+    _require_numel("split_leftrights_sorted", split_leftrights_sorted_batch, 2 * total_N)
+    _require_numel("log_split_probs_sorted", log_split_probs_sorted_batch, total_N)
+    _require_numel("split_parents_sorted", split_parents_sorted_batch, total_N)
 
     leaf_row_index = torch.cat(leaf_row_parts, 0).to(device)
     leaf_col_index = torch.cat(leaf_col_parts, 0).to(device)
@@ -245,6 +267,65 @@ def _cpu_long_list(value: Any) -> List[int]:
     if torch.is_tensor(value):
         return [int(x) for x in value.detach().cpu().tolist()]
     return [int(x) for x in value]
+
+
+def _numel(value: Any) -> int:
+    if torch.is_tensor(value):
+        return int(value.numel())
+    try:
+        return len(value)
+    except TypeError as exc:
+        raise ValueError("CCP helper values must be tensors or sized sequences") from exc
+
+
+def _require_numel(
+    name: str,
+    value: Any,
+    expected: int,
+    *,
+    family_index: int | None = None,
+) -> None:
+    actual = _numel(value)
+    if actual == expected:
+        return
+    prefix = "" if family_index is None else f"family {family_index} "
+    raise ValueError(f"{prefix}{name} has length {actual} but expected {expected}")
+
+
+def _validate_split_block_lengths(
+    *,
+    family_index: int,
+    n_splits: int,
+    num_eq1: int,
+    end_rows_ge2: int,
+) -> None:
+    if n_splits < 0:
+        raise ValueError(f"family {family_index} N_splits must be non-negative")
+    if num_eq1 < 0:
+        raise ValueError(f"family {family_index} num_segs_eq1 must be non-negative")
+    if end_rows_ge2 < 0:
+        raise ValueError(f"family {family_index} end_rows_ge2 must be non-negative")
+    if end_rows_ge2 + num_eq1 != n_splits:
+        raise ValueError(
+            f"family {family_index} split block lengths cover "
+            f"{end_rows_ge2 + num_eq1} rows but N_splits={n_splits}"
+        )
+
+
+def _validate_wave_clade_coverage(all_clades: Sequence[int], C: int) -> None:
+    if len(all_clades) != C:
+        raise ValueError(f"Wave layout covers {len(all_clades)} clades but C={C}")
+    seen: set[int] = set()
+    for position, clade in enumerate(all_clades):
+        clade_id = int(clade)
+        if clade_id < 0 or clade_id >= C:
+            raise ValueError(
+                f"Wave layout contains clade {clade_id} at position {position}, "
+                f"outside valid range [0, {C})"
+            )
+        if clade_id in seen:
+            raise ValueError(f"Wave layout contains duplicate clade {clade_id}")
+        seen.add(clade_id)
 
 
 def _ccp_split_counts(ccp: Dict[str, Any], C: int, parents: Sequence[int]) -> List[int]:
@@ -1089,6 +1170,23 @@ def build_wave_layout(
     N_splits = int(ccp_helpers['N_splits'])
     if C > torch.iinfo(torch.int32).max:
         raise ValueError(f"wave split metadata requires int32 clade ids, got C={C}")
+    _require_numel(
+        "split_leftrights_sorted",
+        ccp_helpers['split_leftrights_sorted'],
+        2 * N_splits,
+    )
+    _require_numel(
+        "log_split_probs_sorted",
+        ccp_helpers['log_split_probs_sorted'],
+        N_splits,
+    )
+    if 'split_parents_sorted' not in ccp_helpers:
+        raise RuntimeError("preprocessed CCP helpers must include split_parents_sorted")
+    _require_numel(
+        "split_parents_sorted",
+        ccp_helpers['split_parents_sorted'],
+        N_splits,
+    )
 
     # --- 2a. Build permutation ---
     all_clades: List[int] = []
@@ -1097,9 +1195,7 @@ def build_wave_layout(
         all_clades.extend(wave_ids)
         wave_starts_list.append(len(all_clades))
 
-    assert len(all_clades) == C, (
-        f"Wave layout covers {len(all_clades)} clades but C={C}"
-    )
+    _validate_wave_clade_coverage(all_clades, C)
 
     inv_perm = torch.tensor(all_clades, dtype=torch.long, device=device)
     perm = torch.empty(C, dtype=torch.long, device=device)
@@ -1112,8 +1208,6 @@ def build_wave_layout(
     lefts_new = perm[lefts_orig]
     rights_new = perm[rights_orig]
 
-    if 'split_parents_sorted' not in ccp_helpers:
-        raise RuntimeError("preprocessed CCP helpers must include split_parents_sorted")
     split_parents = ccp_helpers['split_parents_sorted']
     sp_new = perm[split_parents.to(device=device, dtype=torch.long)]
 

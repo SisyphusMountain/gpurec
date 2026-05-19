@@ -1,3 +1,9 @@
+from pathlib import Path
+import subprocess
+import sys
+import textwrap
+
+import pytest
 import torch
 
 from gpurec.api.uniform_chunked import _make_chunks
@@ -6,6 +12,7 @@ from gpurec.core.batch_planning import plan_family_batches
 from gpurec.core.batching import (
     _family_schedule_data,
     _schedule_deadline_nonleaf_waves,
+    build_wave_layout,
     schedule_global_phased_waves,
 )
 
@@ -22,6 +29,75 @@ def _ccp(C, parents, lefts, rights, root):
         "split_leftrights_sorted": torch.tensor(lefts + rights, dtype=torch.long),
         "root_clade_id": root,
     }
+
+
+def test_core_batching_contracts_do_not_use_runtime_asserts():
+    source = Path("gpurec/core/batching.py").read_text(encoding="utf-8")
+
+    assert "assert " not in source
+
+
+def test_collate_gene_families_validates_split_lengths_under_optimized_python():
+    code = textwrap.dedent(
+        """
+        import torch
+        from gpurec.core.batching import collate_gene_families
+
+        item = {
+            "ccp": {
+                "C": 3,
+                "N_splits": 1,
+                "num_segs_eq1": 1,
+                "end_rows_ge2": 0,
+                "split_leftrights_sorted": torch.tensor([1], dtype=torch.long),
+                "log_split_probs_sorted": torch.zeros(1),
+                "split_parents_sorted": torch.tensor([0], dtype=torch.long),
+            },
+            "leaf_row_index": torch.tensor([1, 2], dtype=torch.long),
+            "leaf_col_index": torch.tensor([0, 1], dtype=torch.long),
+            "root_clade_id": 0,
+        }
+
+        try:
+            collate_gene_families([item])
+        except ValueError as exc:
+            if "split_leftrights_sorted" not in str(exc):
+                raise
+        else:
+            raise SystemExit("expected explicit ValueError")
+        """
+    )
+
+    result = subprocess.run(
+        [sys.executable, "-O", "-c", code],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr + result.stdout
+
+
+def test_build_wave_layout_rejects_duplicate_clade_coverage():
+    ccp = {
+        "C": 2,
+        "N_splits": 0,
+        "split_parents_sorted": torch.empty(0, dtype=torch.long),
+        "split_leftrights_sorted": torch.empty(0, dtype=torch.long),
+        "log_split_probs_sorted": torch.empty(0, dtype=torch.float32),
+    }
+
+    with pytest.raises(ValueError, match="duplicate clade 0"):
+        build_wave_layout(
+            [[0, 0]],
+            [1],
+            ccp,
+            torch.empty(0, dtype=torch.long),
+            torch.empty(0, dtype=torch.long),
+            torch.tensor([0], dtype=torch.long),
+            device="cpu",
+            dtype=torch.float32,
+        )
 
 
 def _assert_topological(waves, offsets, items):
