@@ -118,60 +118,185 @@ def _run_config_from_args(args: argparse.Namespace) -> RunConfig:
 
 
 def _add_run_config_args(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--config", type=Path)
-    parser.add_argument("--species-tree", type=Path)
-    parser.add_argument("--families-file", type=Path)
-    parser.add_argument("--out-dir", type=Path)
-    parser.add_argument("--mode", choices=("genewise", "global", "specieswise"))
-    parser.add_argument("--device")
-    parser.add_argument("--dtype", choices=("float32", "float64"))
-    parser.add_argument("--start", type=int)
-    parser.add_argument("--max-families", type=int)
-    parser.add_argument("--preprocess-cache", type=Path)
+    parser.add_argument(
+        "--config",
+        type=Path,
+        help="Flat JSON RunConfig file; explicit CLI flags override matching fields.",
+    )
+    parser.add_argument(
+        "--species-tree",
+        type=Path,
+        help="Species tree Newick path. Required unless supplied by --config.",
+    )
+    parser.add_argument(
+        "--families-file",
+        type=Path,
+        help="AleRax-style family list. Required unless supplied by --config.",
+    )
+    parser.add_argument(
+        "--out-dir",
+        type=Path,
+        help=(
+            "Output directory for checkpoints, logs, and rates. Required "
+            "unless supplied by --config."
+        ),
+    )
+    parser.add_argument(
+        "--mode",
+        choices=("genewise", "global", "specieswise"),
+        help="Parameter sharing mode. Workflow default: genewise.",
+    )
+    parser.add_argument(
+        "--device",
+        help="Torch device for production optimization. Workflow default: cuda.",
+    )
+    parser.add_argument(
+        "--dtype",
+        choices=("float32", "float64"),
+        help="Floating-point dtype. Workflow default: float32.",
+    )
+    parser.add_argument("--start", type=int, help="First family index to load.")
+    parser.add_argument(
+        "--max-families",
+        type=int,
+        help="Maximum number of families to load.",
+    )
+    parser.add_argument(
+        "--preprocess-cache",
+        type=Path,
+        help="Directory for reusable preprocessing cache files.",
+    )
     parser.add_argument(
         "--refresh-preprocess-cache",
         action=argparse.BooleanOptionalAction,
         default=None,
+        help="Regenerate preprocessing cache entries before optimization.",
     )
-    parser.add_argument("--family-chunk-size", type=_chunk_size)
-    parser.add_argument("--clade-budget", type=int)
+    parser.add_argument(
+        "--family-chunk-size",
+        type=_chunk_size,
+        help="Families per resident batch; use 0/all/none for one resident batch.",
+    )
+    parser.add_argument(
+        "--clade-budget",
+        type=int,
+        help="Clade budget for non-sequential resident-batch packing.",
+    )
     parser.add_argument(
         "--batch-packing",
         choices=("sequential", "clade_first_fit", "depth_first_fit"),
+        help="Resident-batch packing policy. Workflow default: depth_first_fit.",
     )
-    parser.add_argument("--max-wave-size", type=int)
-    parser.add_argument("--fixed-iters-e", type=int)
-    parser.add_argument("--max-iters-e", type=int)
-    parser.add_argument("--tol-e", type=float)
-    parser.add_argument("--fixed-iters-pi", type=int)
-    parser.add_argument("--neumann-terms", type=int)
-    parser.add_argument("--adaptive-iters", action=argparse.BooleanOptionalAction, default=None)
-    parser.add_argument("--convergence-check-interval", type=int)
-    parser.add_argument("--e-logsumexp-tol", type=float)
-    parser.add_argument("--pi-max-diff-tol", type=float)
-    parser.add_argument("--gradient-change-tol", type=float)
-    parser.add_argument("--gradient-change-rtol", type=float)
-    parser.add_argument("--theta-init-d", type=float)
-    parser.add_argument("--theta-init-l", type=float)
-    parser.add_argument("--theta-init-t", type=float)
-    parser.add_argument("--min-rate", type=float)
-    parser.add_argument("--max-rate", type=float)
-    parser.add_argument("--optimizer", choices=("adam", "adagrad", "lbfgs", "adam-lbfgs"))
-    parser.add_argument("--steps", type=int)
-    parser.add_argument("--lr", type=float)
-    parser.add_argument("--adam-warmup-steps", type=int)
-    parser.add_argument("--lbfgs-lr", type=float)
-    parser.add_argument("--lbfgs-history-size", type=int)
-    parser.add_argument("--lbfgs-max-iter", type=int)
-    parser.add_argument("--lbfgs-line-search", choices=("none", "strong_wolfe"))
-    parser.add_argument("--grad-inf-tol", type=float)
-    parser.add_argument("--loss-change-tol", type=float)
-    parser.add_argument("--loss-patience", type=int)
-    parser.add_argument("--best-likelihood-patience", type=int)
-    parser.add_argument("--best-likelihood-min-delta", type=float)
-    parser.add_argument("--checkpoint-every", type=int)
-    parser.add_argument("--log-every", type=int)
-    parser.add_argument("--resume-from", type=Path)
+    parser.add_argument(
+        "--max-wave-size",
+        type=int,
+        help="Maximum clades scheduled into one resident wave.",
+    )
+    parser.add_argument("--fixed-iters-e", type=int, help="Fixed E iterations per solve.")
+    parser.add_argument("--max-iters-e", type=int, help="Maximum adaptive E iterations.")
+    parser.add_argument("--tol-e", type=float, help="E fixed-point convergence tolerance.")
+    parser.add_argument("--fixed-iters-pi", type=int, help="Fixed Pi iterations per solve.")
+    parser.add_argument(
+        "--neumann-terms",
+        type=int,
+        help="Terms for implicit-gradient Neumann series.",
+    )
+    parser.add_argument(
+        "--adaptive-iters",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Enable adaptive E/Pi solver iteration stopping.",
+    )
+    parser.add_argument(
+        "--convergence-check-interval",
+        type=int,
+        help="Iteration interval for adaptive solver convergence checks.",
+    )
+    parser.add_argument(
+        "--e-logsumexp-tol",
+        type=float,
+        help="E logsumexp convergence tolerance.",
+    )
+    parser.add_argument(
+        "--pi-max-diff-tol",
+        type=float,
+        help="Pi max-difference convergence tolerance.",
+    )
+    parser.add_argument(
+        "--gradient-change-tol",
+        type=float,
+        help="Absolute gradient-change tolerance.",
+    )
+    parser.add_argument(
+        "--gradient-change-rtol",
+        type=float,
+        help="Relative gradient-change tolerance.",
+    )
+    parser.add_argument("--theta-init-d", type=float, help="Initial duplication rate.")
+    parser.add_argument("--theta-init-l", type=float, help="Initial loss rate.")
+    parser.add_argument("--theta-init-t", type=float, help="Initial transfer rate.")
+    parser.add_argument("--min-rate", type=float, help="Minimum allowed D/L/T rate.")
+    parser.add_argument("--max-rate", type=float, help="Maximum allowed D/L/T rate.")
+    parser.add_argument(
+        "--optimizer",
+        choices=("adam", "adagrad", "lbfgs", "adam-lbfgs"),
+        help="Optimizer schedule. Workflow default: adam.",
+    )
+    parser.add_argument("--steps", type=int, help="Maximum optimization steps.")
+    parser.add_argument("--lr", type=float, help="Adam/Adagrad learning rate.")
+    parser.add_argument(
+        "--adam-warmup-steps",
+        type=int,
+        help="Adam steps before LBFGS in adam-lbfgs mode.",
+    )
+    parser.add_argument("--lbfgs-lr", type=float, help="LBFGS learning rate.")
+    parser.add_argument("--lbfgs-history-size", type=int, help="LBFGS history size.")
+    parser.add_argument("--lbfgs-max-iter", type=int, help="LBFGS inner iterations per step.")
+    parser.add_argument(
+        "--lbfgs-line-search",
+        choices=("none", "strong_wolfe"),
+        help="LBFGS line-search mode.",
+    )
+    parser.add_argument(
+        "--grad-inf-tol",
+        type=float,
+        help="Stop when gradient infinity norm is below this value.",
+    )
+    parser.add_argument(
+        "--loss-change-tol",
+        type=float,
+        help="Loss-change stopping tolerance.",
+    )
+    parser.add_argument(
+        "--loss-patience",
+        type=int,
+        help="Consecutive small-loss-change steps before stopping.",
+    )
+    parser.add_argument(
+        "--best-likelihood-patience",
+        type=int,
+        help="Steps without best-likelihood improvement before stopping.",
+    )
+    parser.add_argument(
+        "--best-likelihood-min-delta",
+        type=float,
+        help="Minimum best-likelihood improvement to reset patience.",
+    )
+    parser.add_argument(
+        "--checkpoint-every",
+        type=int,
+        help="Checkpoint interval in optimization steps; 0 disables periodic checkpoints.",
+    )
+    parser.add_argument(
+        "--log-every",
+        type=int,
+        help="History logging interval in optimization steps.",
+    )
+    parser.add_argument(
+        "--resume-from",
+        type=Path,
+        help="Resume optimization state from an existing checkpoint.",
+    )
 
 
 def _add_sampling_args(
@@ -181,27 +306,82 @@ def _add_sampling_args(
     include_checkpoint: bool = True,
 ) -> None:
     if include_checkpoint:
-        parser.add_argument("--checkpoint", type=Path, required=checkpoint_required)
-    parser.add_argument("--sample-out-dir", "--sampling-out-dir", dest="sample_out_dir", type=Path)
-    parser.add_argument("--samples", type=int, default=100)
-    parser.add_argument("--seed", type=int, default=0)
-    parser.add_argument("--family-start", type=int, default=0)
-    parser.add_argument("--sample-max-families", dest="sample_max_families", type=int)
-    parser.add_argument("--max-events", type=int, default=100_000)
-    parser.add_argument("--backtrack-binary", type=Path)
+        parser.add_argument(
+            "--checkpoint",
+            type=Path,
+            required=checkpoint_required,
+            help="Optimization checkpoint to sample.",
+        )
+    parser.add_argument(
+        "--sample-out-dir",
+        "--sampling-out-dir",
+        dest="sample_out_dir",
+        type=Path,
+        help="Sampling output directory. Defaults under the checkpoint run directory.",
+    )
+    parser.add_argument(
+        "--samples",
+        type=int,
+        default=100,
+        help="Samples per selected family.",
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=0,
+        help="Random seed for backtracking samples.",
+    )
+    parser.add_argument(
+        "--family-start",
+        type=int,
+        default=0,
+        help="First family index to sample.",
+    )
+    parser.add_argument(
+        "--sample-max-families",
+        dest="sample_max_families",
+        type=int,
+        help="Maximum number of families to sample.",
+    )
+    parser.add_argument(
+        "--max-events",
+        type=int,
+        default=100_000,
+        help="Maximum events per sampled reconciliation.",
+    )
+    parser.add_argument(
+        "--backtrack-binary",
+        type=Path,
+        help="Rust backtracking binary; otherwise GPUREC_BACKTRACK_BIN or cargo fallback is used.",
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="gpurec")
+    parser = argparse.ArgumentParser(
+        prog="gpurec",
+        description="Optimize D/T/L reconciliation likelihoods and sample RecPhyloXML scenarios.",
+    )
     sub = parser.add_subparsers(dest="command", required=True)
 
-    optimize_parser = sub.add_parser("optimize", help="Optimize D/T/L likelihood parameters.")
+    optimize_parser = sub.add_parser(
+        "optimize",
+        help="Optimize D/T/L likelihood parameters.",
+        description="Optimize D/T/L likelihood parameters from AleRax-style family inputs.",
+    )
     _add_run_config_args(optimize_parser)
 
-    sample_parser = sub.add_parser("sample", help="Sample RecPhyloXML scenarios from a checkpoint.")
+    sample_parser = sub.add_parser(
+        "sample",
+        help="Sample RecPhyloXML scenarios from a checkpoint.",
+        description="Sample RecPhyloXML scenarios from a gpurec optimization checkpoint.",
+    )
     _add_sampling_args(sample_parser, checkpoint_required=True)
 
-    run_parser = sub.add_parser("run", help="Optimize, then sample from the best checkpoint.")
+    run_parser = sub.add_parser(
+        "run",
+        help="Optimize, then sample from the best checkpoint.",
+        description="Run optimization, then sample from the best or latest checkpoint it produced.",
+    )
     _add_run_config_args(run_parser)
     _add_sampling_args(run_parser, checkpoint_required=False, include_checkpoint=False)
     run_parser.add_argument("--checkpoint", type=Path, help=argparse.SUPPRESS)

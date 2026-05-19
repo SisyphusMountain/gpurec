@@ -359,6 +359,14 @@ which accept explicit dataset path overrides, from the one-pass profiling
 harness, which is tied to the bundled HOGENOM layout and exposes profiling and
 batch-control flags.
 
+\subsection{CLI Help Surface}
+
+The production CLI now has descriptions for the main workflow, subcommands,
+config/path inputs, batch controls, optimizer controls, and sampling/backtracking
+flags.  The help text calls out when path inputs are required unless supplied by
+\texttt{--config}, and documents the CUDA workflow default without changing
+config-file merge semantics.
+
 \section{Verification Log}
 
 \begin{center}
@@ -483,6 +491,15 @@ CPU unit gate after run CLI cleanup &
 \texttt{python scripts/profile\_hogenom\_ccp\_pass.py --help} &
 Profiler path-scope documentation check &
 \texttt{help shows profiling controls, not dataset path overrides} \\
+\texttt{python -m gpurec.cli optimize --help} / \texttt{sample --help} &
+CLI help surface smoke &
+\texttt{config, path, CUDA, and backtracking help present} \\
+\texttt{pytest -q tests/unit/test\_workflow.py} &
+Workflow and CLI help regressions &
+\texttt{24 passed after help cleanup} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
+CPU unit gate after CLI help cleanup &
+\texttt{47 passed, 27 deselected} \\
 \bottomrule
 \end{tabular}
 \end{center}

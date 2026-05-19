@@ -230,6 +230,30 @@ def test_cli_run_help_omits_checkpoint_argument(capsys):
     assert "--resume-from" in captured.out
 
 
+def test_cli_optimize_help_describes_config_and_path_inputs(capsys):
+    with pytest.raises(SystemExit) as exc_info:
+        build_parser().parse_args(["optimize", "--help"])
+
+    captured = capsys.readouterr()
+    assert exc_info.value.code == 0
+    assert "Flat JSON RunConfig" in captured.out
+    assert "Required unless supplied by --config" in captured.out
+    assert "Workflow" in captured.out
+    assert "default: cuda" in captured.out
+    assert "0/all/none" in captured.out
+
+
+def test_cli_sample_help_describes_checkpoint_and_backtracking(capsys):
+    with pytest.raises(SystemExit) as exc_info:
+        build_parser().parse_args(["sample", "--help"])
+
+    captured = capsys.readouterr()
+    assert exc_info.value.code == 0
+    assert "Optimization checkpoint to sample" in captured.out
+    assert "GPUREC_BACKTRACK_BIN" in captured.out
+    assert "Samples per selected family" in captured.out
+
+
 def test_workflow_rate_outputs_use_normalized_survival_probability(tmp_path: Path):
     theta = torch.log2(torch.tensor([[2.0, 3.0, 5.0]], dtype=torch.float64))
     expected_ps = 1.0 / (1.0 + 2.0 + 3.0 + 5.0)
