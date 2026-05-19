@@ -2202,6 +2202,37 @@ def test_checkpoint_load_rejects_unsupported_version(tmp_path: Path, version):
         load_checkpoint(path)
 
 
+@pytest.mark.parametrize(
+    ("theta", "message"),
+    [
+        (torch.tensor([float("nan")]), "nonfinite theta"),
+        (torch.tensor([float("inf")]), "nonfinite theta"),
+        (torch.tensor([1], dtype=torch.int64), "theta tensor dtype"),
+    ],
+)
+def test_checkpoint_load_rejects_invalid_theta_values(
+    tmp_path: Path,
+    theta: torch.Tensor,
+    message: str,
+):
+    path = tmp_path / "invalid_theta.pt"
+    torch.save(
+        {
+            "version": CHECKPOINT_VERSION,
+            "config": {
+                "species_tree": str(tmp_path / "sp.nwk"),
+                "families_file": str(tmp_path / "families.txt"),
+                "out_dir": str(tmp_path / "out"),
+            },
+            "theta": theta,
+        },
+        path,
+    )
+
+    with pytest.raises(RuntimeError, match=message):
+        load_checkpoint(path)
+
+
 def test_optimization_runner_run_writes_outputs_with_fake_model(tmp_path: Path):
     class FakeOptimizationModel:
         def __init__(self):

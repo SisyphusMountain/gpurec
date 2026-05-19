@@ -1171,6 +1171,15 @@ truthy strings such as \texttt{"false"} with parameter-specific
 \texttt{ValueError}s.  Invalid \texttt{set\_optimized\_env} values also fail
 before optimized environment defaults are installed.
 
+\subsection{Checkpoint Theta Finiteness}
+
+Checkpoint loading now validates that \texttt{theta} is a floating-point tensor
+with only finite values before resume code can restore it into model state.
+Corrupt or failed-run checkpoints containing \texttt{NaN}, \texttt{Inf}, or
+integer theta payloads now fail at the checkpoint boundary with
+\texttt{RuntimeError}s instead of surfacing later as nonfinite objectives,
+gradients, or backtracking payloads.
+
 \section{Verification Log}
 
 \begin{center}
@@ -2329,6 +2338,18 @@ CPU unit gate after uniform chunked boolean validation &
 \texttt{353 passed, 28 deselected} \\
 \texttt{python scripts/check\_release\_metadata.py} &
 Release metadata checker after uniform chunked boolean validation &
+\texttt{expected license blockers} \\
+\texttt{python -m py\_compile gpurec/workflow/checkpoint.py tests/unit/test\_workflow.py} &
+Checkpoint theta validation syntax &
+\texttt{ok} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q tests/unit/test\_workflow.py -k "..."} &
+Focused checkpoint loading validation &
+\texttt{7 passed, 241 deselected} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
+CPU unit gate after checkpoint theta validation &
+\texttt{356 passed, 28 deselected} \\
+\texttt{python scripts/check\_release\_metadata.py} &
+Release metadata checker after checkpoint theta validation &
 \texttt{expected license blockers} \\
 \bottomrule
 \end{tabular}

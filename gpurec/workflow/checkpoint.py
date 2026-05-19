@@ -82,8 +82,13 @@ def _validate_checkpoint_payload(payload: Any, path: Path) -> dict[str, Any]:
         )
     if not isinstance(payload["config"], dict):
         raise RuntimeError(f"checkpoint {path} has invalid config metadata")
-    if not torch.is_tensor(payload["theta"]):
+    theta = payload["theta"]
+    if not torch.is_tensor(theta):
         raise RuntimeError(f"checkpoint {path} has invalid theta tensor")
+    if not torch.is_floating_point(theta):
+        raise RuntimeError(f"checkpoint {path} has invalid theta tensor dtype")
+    if not bool(torch.isfinite(theta).all().item()):
+        raise RuntimeError(f"checkpoint {path} has nonfinite theta tensor")
     optimizer_state = payload.get("optimizer_state")
     if optimizer_state is not None and not isinstance(optimizer_state, dict):
         raise RuntimeError(f"checkpoint {path} has invalid optimizer state")
