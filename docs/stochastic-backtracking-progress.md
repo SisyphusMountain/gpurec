@@ -2,8 +2,9 @@
 
 ## Implemented
 
-- Added `crates/gpurec-backtrack`, a Rust sampler that depends on the local
-  `rustree` checkout and writes `RecTree::to_xml()` RecPhyloXML.
+- Added `crates/gpurec-backtrack`, a Rust sampler that depends on the pinned
+  `rustree` git dependency declared in `Cargo.toml` and writes
+  `RecTree::to_xml()` RecPhyloXML.
 - Added `gpurec.backtracking.export_backtracking_input()` to export one
   family from a `GeneReconModel` as base-2 log probabilities, CCP splits,
   species topology, leaf mappings, and root origination probabilities.
@@ -27,14 +28,13 @@
 Commands run:
 
 ```bash
-cargo test --manifest-path crates/gpurec-backtrack/Cargo.toml
-cargo build --release --manifest-path crates/gpurec-backtrack/Cargo.toml
-pytest -q tests/integration/test_stochastic_backtracking.py
-GPUREC_BACKTRACK_BIN=crates/gpurec-backtrack/target/release/gpurec-backtrack \
-  pytest -q tests/integration/test_stochastic_backtracking.py
+cargo test --locked --manifest-path crates/gpurec-backtrack/Cargo.toml
+cargo build --locked --release --manifest-path crates/gpurec-backtrack/Cargo.toml
+cargo run --locked --quiet --manifest-path crates/gpurec-backtrack/Cargo.toml -- --help
+pytest -q tests/integration/test_rust_backtracking_fixture.py
 ```
 
-Both pass locally.
+These pass locally.
 
 ## AleRax Comparison
 

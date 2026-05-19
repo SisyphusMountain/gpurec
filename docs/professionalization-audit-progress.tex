@@ -1199,6 +1199,16 @@ explicit \texttt{./...} paths, absolute paths, and \texttt{Path} objects are
 therefore stable across the subprocess \texttt{cwd}; bare command names remain
 unresolved so they can still be found through \texttt{PATH}.
 
+\subsection{Backtracking Progress Note Currency}
+
+\texttt{docs/stochastic-backtracking-progress.md} now matches the current Rust
+backtracking dependency and verification path.  It documents the pinned
+\texttt{rustree} git dependency instead of an old local checkout requirement,
+uses locked Cargo commands, and points to the current
+\texttt{tests/integration/test\_rust\_backtracking\_fixture.py} smoke.  A
+release-metadata unit guard keeps the archived progress note aligned with the
+current Rust CI commands.
+
 \section{Verification Log}
 
 \begin{center}
@@ -2393,6 +2403,18 @@ CPU unit gate after backtracking env path resolution &
 \texttt{367 passed, 28 deselected} \\
 \texttt{python scripts/check\_release\_metadata.py} &
 Release metadata checker after backtracking env path resolution &
+\texttt{expected license blockers} \\
+\texttt{python -m py\_compile tests/unit/test\_release\_metadata.py} &
+Backtracking progress note guard syntax &
+\texttt{ok} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q tests/unit/test\_release\_metadata.py -k "..."} &
+Focused Rust backtracking documentation guards &
+\texttt{3 passed, 9 deselected} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
+CPU unit gate after backtracking note refresh &
+\texttt{368 passed, 28 deselected} \\
+\texttt{python scripts/check\_release\_metadata.py} &
+Release metadata checker after backtracking note refresh &
 \texttt{expected license blockers} \\
 \bottomrule
 \end{tabular}

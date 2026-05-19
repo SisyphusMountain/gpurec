@@ -211,6 +211,26 @@ def test_cpu_ci_runs_rust_backtracking_gate():
     assert 'pytest -q -m "integration and not gpu"' not in workflow
 
 
+def test_stochastic_backtracking_notes_use_current_rust_commands():
+    notes = (ROOT / "docs" / "stochastic-backtracking-progress.md").read_text(
+        encoding="utf-8"
+    )
+
+    assert "pinned\n  `rustree` git dependency" in notes
+    assert "local\n  `rustree` checkout" not in notes
+    assert "cargo test --locked --manifest-path crates/gpurec-backtrack/Cargo.toml" in notes
+    assert (
+        "cargo build --locked --release --manifest-path "
+        "crates/gpurec-backtrack/Cargo.toml"
+    ) in notes
+    assert (
+        "cargo run --locked --quiet --manifest-path "
+        "crates/gpurec-backtrack/Cargo.toml -- --help"
+    ) in notes
+    assert "tests/integration/test_rust_backtracking_fixture.py" in notes
+    assert "tests/integration/test_stochastic_backtracking.py" not in notes
+
+
 def test_tests_readme_explicit_cpu_unit_paths_match_marker_gate():
     readme = (ROOT / "tests" / "README.md").read_text(encoding="utf-8")
     match = re.search(
