@@ -82,10 +82,15 @@ _MODE_MAP: dict[str, tuple[bool, bool]] = {
 }
 
 
-def _mode_to_flags(mode: str) -> tuple[bool, bool]:
-    if mode not in _MODE_MAP:
+def _normalize_mode(mode: str) -> str:
+    normalized = str(mode).strip().lower()
+    if normalized not in _MODE_MAP:
         raise ValueError(f"Unknown mode {mode!r}. Valid: {sorted(_MODE_MAP)}")
-    return _MODE_MAP[mode]
+    return normalized
+
+
+def _mode_to_flags(mode: str) -> tuple[bool, bool]:
+    return _MODE_MAP[_normalize_mode(mode)]
 
 
 def _validate_gene_dtype(dtype: Any) -> torch.dtype:
@@ -792,6 +797,7 @@ class GeneReconModel(torch.nn.Module):
         super().__init__()
         require_default_objective("GeneReconModel")
         # Validate mode early
+        mode = _normalize_mode(mode)
         _mode_to_flags(mode)
         if fixed_iters_E is not None:
             fixed_iters_E = positive_int("fixed_iters_E", fixed_iters_E)
@@ -1004,6 +1010,7 @@ class GeneReconModel(torch.nn.Module):
         refresh_preprocess_cache : bool
             Ignore existing preprocessing cache entries and overwrite them.
         """
+        mode = _normalize_mode(mode)
         genewise, specieswise = _mode_to_flags(mode)
         require_default_objective("GeneReconModel")
         refresh_preprocess_cache = bool_value(
@@ -1065,6 +1072,7 @@ class GeneReconModel(torch.nn.Module):
         **solver_kwargs,
     ) -> "GeneReconModel":
         """Build from an AleRax ``[FAMILIES]`` file with CCP/tree samples."""
+        mode = _normalize_mode(mode)
         genewise, specieswise = _mode_to_flags(mode)
         require_default_objective("GeneReconModel")
         refresh_preprocess_cache = bool_value(

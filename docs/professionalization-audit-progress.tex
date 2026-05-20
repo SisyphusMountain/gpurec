@@ -2493,6 +2493,21 @@ A new wildcard import guard pins
 submodule surface aligned with \texttt{gpurec.api} and the top-level
 \texttt{gpurec} exports.
 
+\subsection{Resident Model Mode Normalization}
+
+\texttt{GeneReconModel} now normalizes public mode strings the same way the
+uniform chunked API already does: surrounding whitespace and case differences
+are accepted before mapping \texttt{global}, \texttt{specieswise}, or
+\texttt{genewise} to parameter-sharing flags.  The normalized mode is used for
+dataset construction, theta initialization, and the stored \texttt{model.mode}
+property, so integral public behavior no longer depends on exact lowercase
+spelling.
+
+A focused constructor regression monkeypatches the heavy dataset build and
+checks that \texttt{" SpeciesWise "} and \texttt{" GeneWise "} produce the
+correct dataset flags and theta-initialization shapes before CUDA or filesystem
+work begins.
+
 \section{Verification Log}
 
 \begin{center}
@@ -5571,6 +5586,21 @@ CPU unit gate after uniform chunk internals boundary &
 \texttt{789 passed, 6 deselected} \\
 \texttt{python scripts/check\_release\_metadata.py} &
 Release metadata checker after uniform chunk internals boundary &
+\texttt{expected license blockers} \\
+\texttt{python -m py\_compile gpurec/api/model.py tests/unit/test\_workflow.py} &
+Resident model mode normalization syntax &
+\texttt{ok} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' python -m pytest selected resident mode normalization guards -q} &
+Focused resident and uniform mode validation guards &
+\texttt{10 passed} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' python -m pytest tests/unit/test\_workflow.py -q} &
+Workflow suite after resident mode normalization &
+\texttt{420 passed} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' python -m pytest tests/unit -q -m "unit and not gpu"} &
+CPU unit gate after resident mode normalization &
+\texttt{792 passed, 6 deselected} \\
+\texttt{python scripts/check\_release\_metadata.py} &
+Release metadata checker after resident mode normalization &
 \texttt{expected license blockers} \\
 \bottomrule
 \end{tabular}

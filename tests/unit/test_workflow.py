@@ -1404,6 +1404,77 @@ def test_gene_recon_factories_reject_invalid_dtype_before_device_or_io(
     assert "CUDA" not in str(exc_info.value)
 
 
+@pytest.mark.parametrize(
+    ("mode", "expected_flags", "expected_theta_shape"),
+    [
+        (" Global ", (False, False), (3,)),
+        (" SpeciesWise ", (False, True), (2, 3)),
+        (" GeneWise ", (True, False), (2, 3)),
+    ],
+)
+def test_gene_recon_from_trees_normalizes_mode_like_uniform_api(
+    tmp_path: Path,
+    monkeypatch,
+    mode: str,
+    expected_flags: tuple[bool, bool],
+    expected_theta_shape: tuple[int, ...],
+):
+    calls: dict[str, object] = {}
+
+    class FakeDataset:
+        S = 2
+
+        def __init__(
+            self,
+            *,
+            genewise: bool,
+            specieswise: bool,
+            dtype: torch.dtype,
+            device: torch.device,
+            **_kwargs: object,
+        ) -> None:
+            calls["dataset_flags"] = (genewise, specieswise)
+            self.genewise = genewise
+            self.specieswise = specieswise
+            self.dtype = dtype
+            self.device = device
+            self.families = [object(), object()]
+
+    def fake_init(
+        self: GeneReconModel,
+        *,
+        dataset: FakeDataset,
+        mode: str,
+        theta_init: torch.Tensor | None = None,
+        **_kwargs: object,
+    ) -> None:
+        calls["init_mode"] = mode
+        calls["theta_shape"] = None if theta_init is None else tuple(theta_init.shape)
+        calls["theta_dtype"] = None if theta_init is None else theta_init.dtype
+
+    monkeypatch.setattr(api_model, "GeneDataset", FakeDataset)
+    monkeypatch.setattr(
+        api_model,
+        "require_cuda_device",
+        lambda device, *, owner: torch.device("cpu"),
+    )
+    monkeypatch.setattr(api_model.GeneReconModel, "__init__", fake_init)
+
+    GeneReconModel.from_trees(
+        tmp_path / "sp.nwk",
+        [tmp_path / "g0.nwk", tmp_path / "g1.nwk"],
+        mode=mode,
+        device="cpu",
+        dtype=torch.float64,
+        theta_init_rates=(0.1, 0.2, 0.3),
+    )
+
+    assert calls["dataset_flags"] == expected_flags
+    assert calls["init_mode"] == mode.strip().lower()
+    assert calls["theta_shape"] == expected_theta_shape
+    assert calls["theta_dtype"] is torch.float64
+
+
 @pytest.mark.parametrize("dtype", [torch.int64, torch.float16, "float32"])
 @pytest.mark.parametrize("factory", ["from_trees", "from_folder", "from_alerax_families"])
 def test_uniform_chunked_factories_reject_invalid_dtype_before_device_or_io(
