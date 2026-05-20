@@ -2079,6 +2079,17 @@ version, so malformed payloads such as \texttt{"1"}, \texttt{True}, or
 \texttt{1.0} fail at the checkpoint boundary instead of being coerced to a
 valid version.
 
+\subsection{Workflow Batch-Packing Null Guard}
+
+\texttt{RunConfig} now rejects an explicit \texttt{batch\_packing=null} value
+from JSON-style configuration.  Omitting the field still preserves the
+workflow default, \texttt{depth\_first\_fit}, while an explicit null no longer
+passes through the lower-level model helper that treats \texttt{None} as the
+sequential model default.
+
+This keeps production workflow configs from silently switching resident-batch
+planning policies when users include a JSON key with a null value.
+
 \section{Verification Log}
 
 \begin{center}
@@ -4725,6 +4736,24 @@ Release metadata checker after checkpoint cadence/version strictness &
 \texttt{expected license blockers} \\
 \texttt{pdflatex -interaction=nonstopmode -halt-on-error ...professionalization...} &
 Audit log build after checkpoint cadence/version strictness &
+\texttt{ok with known overfull table warnings} \\
+\texttt{python -m py\_compile gpurec/workflow/config.py tests/unit/test\_workflow.py} &
+Workflow batch-packing null guard syntax &
+\texttt{ok} \\
+\texttt{python -m pytest tests/unit/test\_workflow.py::test\_run\_config\_from\_dict\_preserves\_batch\_packing\_default tests/unit/test\_workflow.py::test\_run\_config\_rejects\_null\_batch\_packing tests/unit/test\_workflow.py::test\_run\_config\_normalizes\_batch\_controls -q} &
+Focused workflow batch-packing null guard &
+\texttt{3 passed} \\
+\texttt{python -m pytest tests/unit/test\_workflow.py -q} &
+Workflow suite after batch-packing null guard &
+\texttt{372 passed} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' python -m pytest tests/unit -q -m "unit and not gpu"} &
+CPU unit gate after batch-packing null guard &
+\texttt{702 passed, 6 deselected} \\
+\texttt{python scripts/check\_release\_metadata.py} &
+Release metadata checker after batch-packing null guard &
+\texttt{expected license blockers} \\
+\texttt{pdflatex -interaction=nonstopmode -halt-on-error ...professionalization...} &
+Audit log build after batch-packing null guard &
 \texttt{ok with known overfull table warnings} \\
 \bottomrule
 \end{tabular}

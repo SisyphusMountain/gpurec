@@ -624,6 +624,32 @@ def test_run_config_normalizes_batch_controls(tmp_path: Path):
     assert config.max_wave_size == 32
 
 
+def test_run_config_from_dict_preserves_batch_packing_default(tmp_path: Path):
+    config = RunConfig.from_dict(
+        {
+            "species_tree": tmp_path / "sp.nwk",
+            "families_file": tmp_path / "families.txt",
+            "out_dir": tmp_path / "out",
+            "device": "cpu",
+        }
+    )
+
+    assert config.batch_packing == "depth_first_fit"
+
+
+def test_run_config_rejects_null_batch_packing(tmp_path: Path):
+    with pytest.raises(ValueError, match="batch_packing"):
+        RunConfig.from_dict(
+            {
+                "species_tree": tmp_path / "sp.nwk",
+                "families_file": tmp_path / "families.txt",
+                "out_dir": tmp_path / "out",
+                "device": "cpu",
+                "batch_packing": None,
+            }
+        )
+
+
 def test_run_config_normalizes_direct_float_controls(tmp_path: Path):
     config = RunConfig(
         species_tree=tmp_path / "sp.nwk",

@@ -160,6 +160,12 @@ def _normalize_device(value: str | None) -> str:
     return value
 
 
+def _normalize_workflow_batch_packing(value: str | None) -> str:
+    if value is None:
+        raise ValueError("batch_packing must be provided as a string")
+    return _normalize_batch_packing(value)
+
+
 def _resolve_run_config_path_fields(
     data: dict[str, Any],
     *,
@@ -362,7 +368,7 @@ class RunConfig:
             "max_wave_size",
             self.max_wave_size,
         )
-        self.batch_packing = _normalize_batch_packing(self.batch_packing)
+        self.batch_packing = _normalize_workflow_batch_packing(self.batch_packing)
         if self.fixed_iters_e is not None:
             self.fixed_iters_e = _normalize_positive_int(
                 "fixed_iters_e",
