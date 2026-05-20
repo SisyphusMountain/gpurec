@@ -987,6 +987,9 @@ def test_cli_run_help_omits_checkpoint_argument(capsys):
 
     captured = capsys.readouterr()
     assert exc_info.value.code == 0
+    assert "Run optimization, then sample" in captured.out
+    assert "Samples per selected family" in captured.out
+    assert "--sample-out-dir" in captured.out
     assert "--checkpoint CHECKPOINT" not in captured.out
     assert "--resume-from" in captured.out
     assert "--backtrack-binary" in captured.out

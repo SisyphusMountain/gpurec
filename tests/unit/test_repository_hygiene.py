@@ -288,6 +288,22 @@ def test_project_readme_documents_sampling_output_layout():
     assert "use a separate `--sample-out-dir` to keep multiple windows" in project_readme
 
 
+def test_project_readme_documents_gpurec_run_end_to_end_workflow():
+    root = Path(__file__).resolve().parents[2]
+    project_readme = (root / "README.md").read_text(encoding="utf-8")
+    normalized = " ".join(project_readme.split())
+
+    assert "To optimize and sample in one supported CLI workflow" in normalized
+    assert "gpurec run \\" in project_readme
+    assert "--config run.json" in project_readme
+    assert "--samples 100" in project_readme
+    assert "`gpurec run` does not accept `--checkpoint`" in project_readme
+    assert "reported by the optimizer" in normalized
+    assert "falling back to `checkpoints/best.pt` or `checkpoints/latest.pt`" in normalized
+    assert "exits without sampling if optimization fails" in normalized
+    assert "Use `gpurec sample --checkpoint ...` to sample an existing run" in project_readme
+
+
 def test_project_readme_top_level_import_examples_match_public_exports():
     root = Path(__file__).resolve().parents[2]
     project_readme = (root / "README.md").read_text(encoding="utf-8")

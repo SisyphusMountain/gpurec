@@ -211,6 +211,23 @@ Successful sampling reruns replace prior gpurec-generated reconciliation
 artifacts in the target output directory, including generated files outside a
 requested window; use a separate `--sample-out-dir` to keep multiple windows.
 
+To optimize and sample in one supported CLI workflow, run `gpurec run` with the
+same optimization config plus sampling options:
+
+```bash
+gpurec run \
+  --config run.json \
+  --samples 100 \
+  --sample-out-dir output_gpurec
+```
+
+Sampling flags such as `--samples`, `--family-start`, `--sample-max-families`,
+`--max-events`, and `--backtrack-binary` are accepted on `gpurec run`.
+`gpurec run` does not accept `--checkpoint`; it samples from the checkpoint
+reported by the optimizer, falling back to `checkpoints/best.pt` or
+`checkpoints/latest.pt` when needed, and exits without sampling if optimization
+fails.  Use `gpurec sample --checkpoint ...` to sample an existing run.
+
 ### Sampling Binary Setup
 
 `gpurec sample` and the sampling phase of `gpurec run` use the Rust

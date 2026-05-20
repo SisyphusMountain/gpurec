@@ -2439,6 +2439,21 @@ model close can indicate leaked executor or prefetch state.  Optimization now
 uses the same close-failure chaining instead of silently suppressing close
 errors during failure cleanup.
 
+\subsection{First-Class \texttt{gpurec run} Documentation}
+
+The production workflow documentation now shows \texttt{gpurec run} as the
+supported one-command optimize-then-sample path, not only as a CLI name in the
+runtime surface.  The README example uses the same flat JSON optimization
+configuration plus sampling flags, and it documents that \texttt{gpurec run}
+does not accept \texttt{--checkpoint}: it samples from the checkpoint reported
+by optimization, falls back to \texttt{checkpoints/best.pt} or
+\texttt{checkpoints/latest.pt} when needed, and exits without sampling if
+optimization fails.
+
+Repository hygiene tests now pin that README coverage, while the CLI help guard
+checks that \texttt{gpurec run --help} advertises both the end-to-end workflow
+and sampling controls while keeping \texttt{--checkpoint} hidden.
+
 \section{Verification Log}
 
 \begin{center}
@@ -5457,6 +5472,21 @@ CPU unit gate after shared workflow cleanup helper &
 \texttt{783 passed, 6 deselected} \\
 \texttt{python scripts/check\_release\_metadata.py} &
 Release metadata checker after shared workflow cleanup helper &
+\texttt{expected license blockers} \\
+\texttt{python -m py\_compile tests/unit/test\_repository\_hygiene.py tests/unit/test\_cli\_workflow.py} &
+\texttt{gpurec run} documentation guard syntax &
+\texttt{ok} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' python -m pytest selected gpurec run docs/help guards -q} &
+Focused \texttt{gpurec run} README and help guards &
+\texttt{2 passed} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' python -m pytest tests/unit/test\_cli\_workflow.py tests/unit/test\_repository\_hygiene.py tests/unit/test\_release\_metadata.py -q} &
+Touched CLI, hygiene, and release-doc suites after \texttt{gpurec run} docs &
+\texttt{119 passed} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' python -m pytest tests/unit -q -m "unit and not gpu"} &
+CPU unit gate after first-class \texttt{gpurec run} docs &
+\texttt{784 passed, 6 deselected} \\
+\texttt{python scripts/check\_release\_metadata.py} &
+Release metadata checker after first-class \texttt{gpurec run} docs &
 \texttt{expected license blockers} \\
 \bottomrule
 \end{tabular}
