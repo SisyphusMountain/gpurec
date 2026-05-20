@@ -2132,6 +2132,72 @@ def test_public_backtracking_rejects_invalid_seed_and_event_limits():
         sample_recphyloxmls(model, num_samples=1.5)  # type: ignore[arg-type]
 
 
+def test_public_backtracking_accepts_integral_real_limits(
+    tmp_path: Path,
+    monkeypatch,
+):
+    species_tree = tmp_path / "sp.nwk"
+    species_tree.write_text("(s0,s1);", encoding="utf-8")
+    family = FamilyInput(
+        index=1,
+        name="fam1",
+        gene_tree_paths=["g1.nwk"],
+        leaf_species_map={},
+        clade_count=2,
+        split_count=0,
+        root_clade_id=0,
+        ccp_helpers={
+            "N_splits": 0,
+            "split_parents_sorted": torch.empty(0, dtype=torch.long),
+            "split_leftrights_sorted": torch.empty(0, dtype=torch.long),
+            "log_split_probs_sorted": torch.empty(0, dtype=torch.float64),
+        },
+        leaf_row_index=torch.tensor([0, 1], dtype=torch.long),
+        leaf_col_index=torch.tensor([0, 1], dtype=torch.long),
+        clade_leaf_labels=["a", "b"],
+    )
+    calls: list[tuple[str, int]] = []
+    model = SimpleNamespace(
+        mode="genewise",
+        n_species=2,
+        species_names=["s0", "s1"],
+        species_tree_path=species_tree,
+    )
+
+    def family_input(family_index: int) -> FamilyInput:
+        calls.append(("family_input", family_index))
+        return family
+
+    def activate_family(family_index: int) -> SimpleNamespace:
+        calls.append(("activate_family", family_index))
+        return SimpleNamespace(clade_offset=0, local_family_index=1)
+
+    model.family_input = family_input
+    model.activate_family = activate_family
+    state = ReconciliationState(
+        e=torch.zeros((2, 2), dtype=torch.float64),
+        pi=torch.zeros((2, 2), dtype=torch.float64),
+        log_p_s=torch.zeros(2, dtype=torch.float64),
+        log_p_d=torch.zeros(2, dtype=torch.float64),
+        log_p_l=torch.zeros(2, dtype=torch.float64),
+        max_transfer=torch.zeros(2, dtype=torch.float64),
+        origination_probs=None,
+    )
+
+    monkeypatch.setattr(backtracking, "_evaluate_backtracking_state", lambda _: state)
+
+    payload = export_backtracking_input(
+        model,
+        family_index=1.0,  # type: ignore[arg-type]
+        seed=7.0,  # type: ignore[arg-type]
+        max_events=9.0,  # type: ignore[arg-type]
+    )
+
+    assert calls == [("family_input", 1), ("activate_family", 1)]
+    assert payload["seed"] == 7
+    assert payload["max_events"] == 9
+
+
 def test_export_backtracking_input_rejects_nonfinite_payload_tensors(
     tmp_path: Path,
     monkeypatch,
@@ -2526,8 +2592,8 @@ else:
     batch_xmls = sample_recphyloxmls(
         object(),
         family_index=4,
-        num_samples=2,
-        seed=11,
+        num_samples=2.0,  # type: ignore[arg-type]
+        seed=11.0,  # type: ignore[arg-type]
         max_events=13,
         backtrack_binary=fake_backtracker,
     )

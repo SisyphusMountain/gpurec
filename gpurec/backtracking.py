@@ -11,13 +11,12 @@ import subprocess
 import tempfile
 from collections.abc import Callable
 from dataclasses import dataclass
-from numbers import Integral
+from numbers import Integral, Real
 from pathlib import Path
 from typing import Any
 
 import torch
 
-from gpurec.api._validation import integer_value
 from gpurec.api.model import FamilyInput, GeneReconModel, ReconciliationState
 from gpurec.recphyloxml import (
     EVENT_KEYS,
@@ -58,18 +57,24 @@ class _BacktrackInvocation:
     cwd: str | None
 
 
-def _optional_int_limit(
+def _integer_limit(
     name: str,
-    value: int | None,
+    value: object,
     *,
     minimum: int,
     maximum: int | None = None,
-) -> int | None:
-    if value is None:
-        return None
-    if isinstance(value, bool) or not isinstance(value, Integral):
+) -> int:
+    if isinstance(value, bool):
         raise ValueError(f"{name} must be an integer")
-    number = int(value)
+    if isinstance(value, Integral):
+        number = int(value)
+    elif isinstance(value, Real):
+        value_float = float(value)
+        if not math.isfinite(value_float) or not value_float.is_integer():
+            raise ValueError(f"{name} must be an integer")
+        number = int(value_float)
+    else:
+        raise ValueError(f"{name} must be an integer")
     if number < minimum:
         if minimum == 0:
             raise ValueError(f"{name} must be non-negative")
@@ -77,6 +82,18 @@ def _optional_int_limit(
     if maximum is not None and number > maximum:
         raise ValueError(f"{name} must be <= {maximum}")
     return number
+
+
+def _optional_int_limit(
+    name: str,
+    value: object | None,
+    *,
+    minimum: int,
+    maximum: int | None = None,
+) -> int | None:
+    if value is None:
+        return None
+    return _integer_limit(name, value, minimum=minimum, maximum=maximum)
 
 
 def _validate_backtracking_limits(
@@ -389,7 +406,7 @@ def export_backtracking_input(
     """
 
     seed, max_events = _validate_backtracking_limits(seed=seed, max_events=max_events)
-    family_index = integer_value("family_index", family_index)
+    family_index = _integer_limit("family_index", family_index, minimum=0)
     family = model.family_input(family_index)
     offset, parameter_family_index = _activate_family_batch(model, family_index)
     state = _evaluate_backtracking_state(model)

@@ -2466,6 +2466,19 @@ The focused family-layout tests now cover boolean and nonintegral rejection,
 negative and too-large ranges, duplicate selections, caller ordering, and the
 resulting batched wave layout invariants.
 
+\subsection{Local Backtracking Integer Validation}
+
+Backtracking export no longer imports the private
+\texttt{gpurec.api.\_validation.integer\_value()} helper just to normalize
+\texttt{family\_index}.  The bridge now owns one local integer-limit validator
+for \texttt{family\_index}, \texttt{seed}, \texttt{max\_events}, and
+\texttt{num\_samples}, so public sampler limits share the same treatment of
+booleans, integral real values, non-finite floats, and range bounds.
+
+The public-path coverage now checks that integral real values normalize before
+model family activation and sampler command construction, while the existing
+API validation tests keep documenting the broader scalar helper's behavior.
+
 \section{Verification Log}
 
 \begin{center}
@@ -5514,6 +5527,21 @@ CPU unit gate after family layout index validation &
 \texttt{787 passed, 6 deselected} \\
 \texttt{python scripts/check\_release\_metadata.py} &
 Release metadata checker after family layout index validation &
+\texttt{expected license blockers} \\
+\texttt{python -m py\_compile gpurec/backtracking.py tests/unit/test\_workflow.py tests/unit/test\_repository\_hygiene.py} &
+Backtracking integer validation syntax &
+\texttt{ok} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' python -m pytest selected backtracking integer validation guards -q} &
+Focused public backtracking integer normalization guards &
+\texttt{6 passed} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' python -m pytest tests/unit/test\_workflow.py tests/unit/test\_validation.py tests/unit/test\_repository\_hygiene.py -q} &
+Touched workflow, validation, and hygiene suites after local integer validation &
+\texttt{463 passed} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' python -m pytest tests/unit -q -m "unit and not gpu"} &
+CPU unit gate after local backtracking integer validation &
+\texttt{788 passed, 6 deselected} \\
+\texttt{python scripts/check\_release\_metadata.py} &
+Release metadata checker after local backtracking integer validation &
 \texttt{expected license blockers} \\
 \bottomrule
 \end{tabular}
