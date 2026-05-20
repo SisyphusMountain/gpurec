@@ -16,6 +16,8 @@ from gpurec.core.batching import (
     schedule_global_phased_waves,
 )
 
+ROOT = Path(__file__).resolve().parents[2]
+
 
 def _ccp(C, parents, lefts, rights, root):
     counts = [0] * C
@@ -31,10 +33,11 @@ def _ccp(C, parents, lefts, rights, root):
     }
 
 
-def test_core_runtime_contracts_do_not_use_asserts():
+def test_core_runtime_contracts_do_not_use_asserts(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
     sources = [
-        Path("gpurec/core/batching.py"),
-        Path("gpurec/core/forward.py"),
+        ROOT / "gpurec/core/batching.py",
+        ROOT / "gpurec/core/forward.py",
     ]
 
     offenders = [

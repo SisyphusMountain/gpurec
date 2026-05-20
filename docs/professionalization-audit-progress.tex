@@ -1585,6 +1585,14 @@ automatic Cargo fallback is documented as source-checkout only.  The
 release-readiness note records the same unresolved binary-distribution blocker
 so release docs and README do not drift.
 
+\subsection{Global Scheduler Test Path Hygiene}
+
+The global wave scheduler source-guard test no longer assumes pytest is invoked
+from the repository root.  It resolves checked source files from
+\texttt{\_\_file\_\_} and deliberately changes the current working directory
+before reading them, so future scheduler tests that inspect repository files
+cannot silently depend on launch location.
+
 \section{Verification Log}
 
 \begin{center}
@@ -3349,6 +3357,21 @@ Release metadata checker after README distribution-scope clarifications &
 \texttt{expected license blockers} \\
 \texttt{pdflatex -interaction=nonstopmode -halt-on-error ...professionalization...} &
 Audit log build after README distribution-scope clarifications &
+\texttt{ok with known overfull table warnings} \\
+\texttt{python -m py\_compile tests/unit/test\_global\_wave\_scheduler.py} &
+Global scheduler test path-hygiene syntax &
+\texttt{ok} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q tests/unit/test\_global\_wave\_scheduler.py} &
+Focused global scheduler unit tests after path-hygiene fix &
+\texttt{22 passed} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
+CPU unit gate after global scheduler path-hygiene fix &
+\texttt{422 passed, 28 deselected} \\
+\texttt{python scripts/check\_release\_metadata.py} &
+Release metadata checker after global scheduler path-hygiene fix &
+\texttt{expected license blockers} \\
+\texttt{pdflatex -interaction=nonstopmode -halt-on-error ...professionalization...} &
+Audit log build after global scheduler path-hygiene fix &
 \texttt{ok with known overfull table warnings} \\
 \bottomrule
 \end{tabular}
