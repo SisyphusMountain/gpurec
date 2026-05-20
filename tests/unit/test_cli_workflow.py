@@ -219,6 +219,37 @@ def test_cli_config_paths_are_config_relative_before_flag_overrides(
     assert config.out_dir == (config_dir / "runs" / "main").resolve()
 
 
+def test_cli_config_path_expands_user_before_validation(
+    tmp_path: Path,
+    monkeypatch,
+):
+    home = tmp_path / "home"
+    config_dir = home / "configs"
+    input_dir = config_dir / "inputs"
+    input_dir.mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(home))
+    (input_dir / "sp.nwk").write_text("(a,b);", encoding="utf-8")
+    (input_dir / "families.txt").write_text("[FAMILIES]\n", encoding="utf-8")
+    (config_dir / "run.json").write_text(
+        json.dumps(
+            {
+                "species_tree": "inputs/sp.nwk",
+                "families_file": "inputs/families.txt",
+                "out_dir": "runs/main",
+                "device": "cpu",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    args = build_parser().parse_args(["optimize", "--config", "~/configs/run.json"])
+    config = _run_config_from_args(args)
+
+    assert config.species_tree == (input_dir / "sp.nwk").resolve()
+    assert config.families_file == (input_dir / "families.txt").resolve()
+    assert config.out_dir == (config_dir / "runs" / "main").resolve()
+
+
 def _minimal_workflow_cli_args(command: str, tmp_path: Path) -> list[str]:
     write_tiny_alerax_inputs(tmp_path)
     return [

@@ -145,7 +145,7 @@ def _reject_json_constant(constant: str) -> None:
 
 
 def load_json_object(path: str | Path, *, description: str = "config") -> dict[str, Any]:
-    path = Path(path)
+    path = Path(path).expanduser().resolve()
     try:
         text = path.read_text(encoding="utf-8")
     except OSError as exc:
@@ -163,11 +163,11 @@ def load_json_object(path: str | Path, *, description: str = "config") -> dict[s
 
 
 def load_run_config_data(path: str | Path) -> dict[str, Any]:
-    path = Path(path)
+    path = Path(path).expanduser().resolve()
     data = load_json_object(path)
     return _resolve_run_config_path_fields(
         data,
-        base_dir=path.expanduser().resolve().parent,
+        base_dir=path.parent,
     )
 
 
@@ -469,7 +469,9 @@ class RunConfig:
         return cls.from_dict(load_run_config_data(path))
 
     def write_json(self, path: str | Path) -> None:
-        Path(path).write_text(
+        output_path = Path(path).expanduser()
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text(
             json.dumps(
                 self.to_dict(),
                 allow_nan=False,

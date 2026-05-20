@@ -1787,6 +1787,17 @@ suite includes a workflow-text guard that verifies both top-level blocks appear
 before \texttt{jobs:}, preserving the existing unit, Rust backtracking, and
 package jobs while avoiding unnecessary CI work on stale pushes.
 
+\subsection{Workflow Config Path Handling}
+
+Flat JSON workflow config files are now normalized before reading, so
+home-directory config paths work through both \texttt{RunConfig.from\_json()}
+and \texttt{gpurec optimize --config}.  Relative path fields still resolve
+from the expanded config file directory, keeping portable checked-in configs
+usable outside the caller's working directory.  \texttt{RunConfig.write\_json()}
+also creates missing parent directories and expands home-directory output
+paths, making round-tripped workflow configs safer to write into external run
+directories.
+
 \section{Verification Log}
 
 \begin{center}
@@ -3914,6 +3925,30 @@ Release metadata checker after CPU CI hardening &
 \texttt{expected license blockers} \\
 \texttt{pdflatex -interaction=nonstopmode -halt-on-error ...professionalization...} &
 Audit log build after CPU CI hardening &
+\texttt{ok with known overfull table warnings} \\
+\texttt{python -m py\_compile gpurec/workflow/config.py tests/unit/test\_workflow.py tests/unit/test\_cli\_workflow.py} &
+Workflow config path-handling syntax &
+\texttt{ok} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q tests/unit/test\_workflow.py -k "run\_config"} &
+Focused \texttt{RunConfig} path-handling coverage &
+\texttt{52 passed, 200 deselected} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q tests/unit/test\_cli\_workflow.py -k "...config\_path..."} &
+Focused CLI config-path coverage &
+\texttt{2 passed, 51 deselected} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q tests/unit/test\_workflow.py} &
+Workflow units after config path handling &
+\texttt{252 passed} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q tests/unit/test\_cli\_workflow.py} &
+CLI workflow units after config path handling &
+\texttt{53 passed} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
+CPU unit gate after config path handling &
+\texttt{506 passed, 28 deselected} \\
+\texttt{python scripts/check\_release\_metadata.py} &
+Release metadata checker after config path handling &
+\texttt{expected license blockers} \\
+\texttt{pdflatex -interaction=nonstopmode -halt-on-error ...professionalization...} &
+Audit log build after config path handling &
 \texttt{ok with known overfull table warnings} \\
 \bottomrule
 \end{tabular}

@@ -107,6 +107,60 @@ def test_run_config_from_json_resolves_relative_paths_from_config_file(
     ).resolve()
 
 
+def test_run_config_from_json_expands_user_config_path(
+    tmp_path: Path,
+    monkeypatch,
+):
+    home = tmp_path / "home"
+    config_dir = home / "configs"
+    config_dir.mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(home))
+    (config_dir / "run.json").write_text(
+        json.dumps(
+            {
+                "species_tree": "inputs/sp.nwk",
+                "families_file": "inputs/families.txt",
+                "out_dir": "runs/main",
+                "device": "cpu",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    config = RunConfig.from_json("~/configs/run.json")
+
+    assert config.species_tree == (config_dir / "inputs" / "sp.nwk").resolve()
+    assert config.families_file == (
+        config_dir / "inputs" / "families.txt"
+    ).resolve()
+    assert config.out_dir == (config_dir / "runs" / "main").resolve()
+
+
+def test_run_config_write_json_creates_parent_directories_and_expands_user(
+    tmp_path: Path,
+    monkeypatch,
+):
+    home = tmp_path / "home"
+    monkeypatch.setenv("HOME", str(home))
+    config = RunConfig(
+        species_tree=tmp_path / "sp.nwk",
+        families_file=tmp_path / "families.txt",
+        out_dir=tmp_path / "out",
+        mode="genewise",
+        steps=3,
+        family_chunk_size=2,
+        clade_budget=None,
+        batch_packing="sequential",
+        device="cpu",
+    )
+
+    config.write_json("~/configs/nested/run.json")
+
+    output_path = home / "configs" / "nested" / "run.json"
+    assert output_path.is_file()
+    assert RunConfig.from_json(output_path).to_dict() == config.to_dict()
+
+
 def test_run_config_from_json_rejects_nonstandard_numeric_constants(tmp_path: Path):
     path = tmp_path / "config.json"
     path.write_text(
