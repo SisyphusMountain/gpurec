@@ -2454,6 +2454,18 @@ Repository hygiene tests now pin that README coverage, while the CLI help guard
 checks that \texttt{gpurec run --help} advertises both the end-to-end workflow
 and sampling controls while keeping \texttt{--checkpoint} hidden.
 
+\subsection{Validated Family Layout Indices}
+
+\texttt{family\_wave\_inputs()} now validates requested family indices before
+reading \texttt{dataset.families}.  Negative indices no longer silently select
+from the end of the Python list, out-of-range indices get a contextual
+\texttt{IndexError}, and duplicate family indices are rejected before a wave
+layout can double-count one family in a resident batch or uniform chunk.
+
+The focused family-layout tests now cover boolean and nonintegral rejection,
+negative and too-large ranges, duplicate selections, caller ordering, and the
+resulting batched wave layout invariants.
+
 \section{Verification Log}
 
 \begin{center}
@@ -5487,6 +5499,21 @@ CPU unit gate after first-class \texttt{gpurec run} docs &
 \texttt{784 passed, 6 deselected} \\
 \texttt{python scripts/check\_release\_metadata.py} &
 Release metadata checker after first-class \texttt{gpurec run} docs &
+\texttt{expected license blockers} \\
+\texttt{python -m py\_compile gpurec/api/\_family\_layout.py tests/unit/test\_family\_layout.py} &
+Family layout index validation syntax &
+\texttt{ok} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' python -m pytest tests/unit/test\_family\_layout.py -q} &
+Focused family layout index validation guards &
+\texttt{10 passed} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' python -m pytest tests/unit/test\_family\_layout.py tests/unit/test\_workflow.py -q} &
+Family layout plus workflow suite after index validation &
+\texttt{425 passed} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' python -m pytest tests/unit -q -m "unit and not gpu"} &
+CPU unit gate after family layout index validation &
+\texttt{787 passed, 6 deselected} \\
+\texttt{python scripts/check\_release\_metadata.py} &
+Release metadata checker after family layout index validation &
 \texttt{expected license blockers} \\
 \bottomrule
 \end{tabular}

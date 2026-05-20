@@ -49,14 +49,32 @@ def origination_probs_for_family_indices(
     return origination_probs.index_select(0, idx)
 
 
-def family_wave_inputs(
+def _validated_family_indices(
     dataset: GeneDataset,
     family_indices: Sequence[int],
-) -> FamilyWaveInputs:
+) -> list[int]:
     indices = [
         integer_value("family_indices entries", index)
         for index in family_indices
     ]
+    n_families = len(dataset.families)
+    seen: set[int] = set()
+    for family_idx in indices:
+        if family_idx < 0 or family_idx >= n_families:
+            raise IndexError(
+                f"family index {family_idx} out of range for {n_families} families"
+            )
+        if family_idx in seen:
+            raise ValueError(f"duplicate family index {family_idx}")
+        seen.add(family_idx)
+    return indices
+
+
+def family_wave_inputs(
+    dataset: GeneDataset,
+    family_indices: Sequence[int],
+) -> FamilyWaveInputs:
+    indices = _validated_family_indices(dataset, family_indices)
     items: list[dict[str, Any]] = []
     family_clade_counts: list[int] = []
     family_clade_offsets: list[int] = []

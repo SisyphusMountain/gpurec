@@ -95,6 +95,17 @@ def test_family_wave_inputs_rejects_bool_and_nonintegral_indices(
         family_wave_inputs(_dataset(), [family_index])  # type: ignore[list-item]
 
 
+@pytest.mark.parametrize("family_index", [-1, 2])
+def test_family_wave_inputs_rejects_out_of_range_indices(family_index: int):
+    with pytest.raises(IndexError, match="family index"):
+        family_wave_inputs(_dataset(), [family_index])
+
+
+def test_family_wave_inputs_rejects_duplicate_indices():
+    with pytest.raises(ValueError, match="duplicate family index 0"):
+        family_wave_inputs(_dataset(), [0, 0])
+
+
 def test_build_family_wave_layout_matches_inputs_and_wave_order():
     inputs = family_wave_inputs(_dataset(), [1, 0])
     layout = build_family_wave_layout(
