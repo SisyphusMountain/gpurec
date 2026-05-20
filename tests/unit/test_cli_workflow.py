@@ -126,6 +126,57 @@ def test_cli_accepts_family_chunk_all_alias(tmp_path: Path):
     assert config.family_chunk_size == 0
 
 
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("fp32", "float32"),
+        ("single", "float32"),
+        ("torch.float64", "float64"),
+        ("double", "float64"),
+    ],
+)
+def test_cli_normalizes_dtype_aliases(
+    tmp_path: Path,
+    value: str,
+    expected: str,
+):
+    args = build_parser().parse_args(
+        _minimal_workflow_cli_args("optimize", tmp_path) + ["--dtype", value]
+    )
+
+    config = _run_config_from_args(args)
+
+    assert config.dtype == expected
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("contiguous", "sequential"),
+        ("input-order", "sequential"),
+        ("first-fit-decreasing", "clade_first_fit"),
+        ("ffd", "clade_first_fit"),
+        ("clade-ffd", "clade_first_fit"),
+        ("depth-ffd", "depth_first_fit"),
+        ("critical-path-first-fit", "depth_first_fit"),
+        ("wave-first-fit", "depth_first_fit"),
+    ],
+)
+def test_cli_normalizes_batch_packing_aliases(
+    tmp_path: Path,
+    value: str,
+    expected: str,
+):
+    args = build_parser().parse_args(
+        _minimal_workflow_cli_args("optimize", tmp_path)
+        + ["--batch-packing", value, "--clade-budget", "123"]
+    )
+
+    config = _run_config_from_args(args)
+
+    assert config.batch_packing == expected
+
+
 def test_cli_config_paths_are_config_relative_before_flag_overrides(
     tmp_path: Path,
     monkeypatch,

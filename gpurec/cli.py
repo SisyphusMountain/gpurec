@@ -4,7 +4,10 @@ import argparse
 from pathlib import Path
 from typing import Any
 
-from gpurec.core.batch_planning import normalize_family_chunk_size
+from gpurec.core.batch_planning import (
+    normalize_batch_packing,
+    normalize_family_chunk_size,
+)
 
 
 _EXPECTED_WORKFLOW_ERRORS = (ValueError, OSError, RuntimeError)
@@ -41,6 +44,22 @@ def sample(config: Any) -> Any:
 def _chunk_size(value: str) -> int:
     try:
         return int(normalize_family_chunk_size(value))
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from exc
+
+
+def _dtype_name(value: str) -> str:
+    from gpurec.workflow.config import dtype_from_name
+
+    try:
+        return str(dtype_from_name(value)).removeprefix("torch.")
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from exc
+
+
+def _batch_packing(value: str) -> str:
+    try:
+        return normalize_batch_packing(value)
     except ValueError as exc:
         raise argparse.ArgumentTypeError(str(exc)) from exc
 
@@ -211,7 +230,8 @@ def _add_run_config_args(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument(
         "--dtype",
-        choices=("float32", "float64"),
+        type=_dtype_name,
+        metavar="{float32,float64}",
         help="Floating-point dtype. Workflow default: float32.",
     )
     parser.add_argument("--start", type=int, help="First family index to load.")
@@ -243,7 +263,8 @@ def _add_run_config_args(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument(
         "--batch-packing",
-        choices=("sequential", "clade_first_fit", "depth_first_fit"),
+        type=_batch_packing,
+        metavar="{sequential,clade_first_fit,depth_first_fit}",
         help="Resident-batch packing policy. Workflow default: depth_first_fit.",
     )
     parser.add_argument(
