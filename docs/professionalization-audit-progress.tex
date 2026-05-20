@@ -1994,6 +1994,24 @@ and leaf row and column metadata must have matching lengths.  CPU-only tests
 cover these invalid-value cases and the existing \texttt{max\_root\_wave\_size}
 root-wave splitting behavior.
 
+\subsection{Backtracking Binary Preflight and Wheel Guards}
+
+The installed CLI now has a \texttt{gpurec backtrack-check} command that
+validates the Rust backtracking binary resolution path without loading a
+checkpoint.  It shares the same \texttt{--backtrack-binary} option text used by
+\texttt{gpurec sample} and \texttt{gpurec run}, and the missing-binary
+diagnostics now mention both the Python \texttt{backtrack\_binary} argument and
+the CLI flag.  The README separates wheel-only binary setup from source-checkout
+Cargo builds, and the release checklist documents the new preflight smoke.
+
+The backtracking subprocess runner now preserves the caller's working directory
+for externally supplied binaries, while keeping the source-root working
+directory for the automatic Cargo fallback.  This avoids surprising installed
+users who provide a binary through \texttt{GPUREC\_BACKTRACK\_BIN} or
+\texttt{--backtrack-binary}.  The package workflow also rejects wheel artifacts
+that contain a \texttt{gpurec-backtrack} executable name anywhere in the wheel,
+not only the \texttt{crates/gpurec-backtrack} source directory.
+
 \section{Verification Log}
 
 \begin{center}
@@ -4382,6 +4400,24 @@ Release metadata checker after core scheduling validation &
 \texttt{expected license blockers} \\
 \texttt{pdflatex -interaction=nonstopmode -halt-on-error ...professionalization...} &
 Audit log build after core scheduling validation &
+\texttt{ok with known overfull table warnings} \\
+\texttt{python -m py\_compile gpurec/cli.py gpurec/backtracking.py tests/unit/test\_cli\_workflow.py tests/unit/test\_workflow.py tests/unit/test\_release\_metadata.py} &
+Backtracking preflight syntax &
+\texttt{ok} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q tests/unit/test\_cli\_workflow.py tests/unit/test\_workflow.py tests/unit/test\_release\_metadata.py} &
+Focused CLI, backtracking, and release guard coverage &
+\texttt{423 passed} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' python -m gpurec.cli backtrack-check --help} &
+Backtracking preflight help smoke &
+\texttt{ok} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
+CPU unit gate after backtracking preflight guards &
+\texttt{637 passed, 28 deselected} \\
+\texttt{python scripts/check\_release\_metadata.py} &
+Release metadata checker after backtracking preflight guards &
+\texttt{expected license blockers} \\
+\texttt{pdflatex -interaction=nonstopmode -halt-on-error ...professionalization...} &
+Audit log build after backtracking preflight guards &
 \texttt{ok with known overfull table warnings} \\
 \bottomrule
 \end{tabular}

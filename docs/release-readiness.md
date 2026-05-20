@@ -28,8 +28,9 @@ smokes that crate from the unpacked source archive, and smokes both
 `gpurec --help` and `python -m gpurec.cli --help`.  The same package job keeps
 examples out of wheels while requiring them in the source archive, verifies the
 minimal example config points to source-archive files, and checks installed
-`gpurec sample --help` and `gpurec run --help` for external backtracking binary
-guidance.
+`gpurec sample --help`, `gpurec run --help`, and `gpurec backtrack-check`
+for external backtracking binary guidance and the installed missing-binary
+diagnostic.
 
 Install release tooling from the dedicated extra:
 
@@ -87,6 +88,7 @@ Run these CPU-safe gates before release packaging:
 ```bash
 CUDA_VISIBLE_DEVICES='' gpurec --help
 CUDA_VISIBLE_DEVICES='' python -m gpurec.cli --help
+CUDA_VISIBLE_DEVICES='' gpurec backtrack-check --help
 CUDA_VISIBLE_DEVICES='' pytest -q -m "unit and not gpu"
 cargo test --locked --manifest-path crates/gpurec-backtrack/Cargo.toml
 cargo run --locked --quiet --manifest-path crates/gpurec-backtrack/Cargo.toml -- --help

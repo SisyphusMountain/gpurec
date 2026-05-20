@@ -190,6 +190,12 @@ def _sampling_config_from_args(
     )
 
 
+def _ensure_backtracking_available(backtrack_binary: Path | None) -> None:
+    from gpurec.backtracking import ensure_backtracking_available
+
+    ensure_backtracking_available(backtrack_binary)
+
+
 def _validate_run_sampling_args(args: argparse.Namespace, run_config: RunConfig) -> None:
     _sampling_config_from_args(
         args,
@@ -384,6 +390,18 @@ def _add_run_config_args(parser: argparse.ArgumentParser) -> None:
     )
 
 
+def _add_backtrack_binary_arg(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--backtrack-binary",
+        type=Path,
+        help=(
+            "Rust backtracking binary. Installed sampling requires this or "
+            "GPUREC_BACKTRACK_BIN; source trees can fall back to cargo when "
+            "a Rust toolchain is present."
+        ),
+    )
+
+
 def _add_sampling_args(
     parser: argparse.ArgumentParser,
     *,
@@ -438,15 +456,7 @@ def _add_sampling_args(
         default=100_000,
         help="Maximum events per sampled reconciliation.",
     )
-    parser.add_argument(
-        "--backtrack-binary",
-        type=Path,
-        help=(
-            "Rust backtracking binary. Installed sampling requires this or "
-            "GPUREC_BACKTRACK_BIN; source trees can fall back to cargo when "
-            "a Rust toolchain is present."
-        ),
-    )
+    _add_backtrack_binary_arg(parser)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -478,6 +488,16 @@ def build_parser() -> argparse.ArgumentParser:
     _add_run_config_args(run_parser)
     _add_sampling_args(run_parser, checkpoint_required=False, include_checkpoint=False)
     run_parser.add_argument("--checkpoint", type=Path, help=argparse.SUPPRESS)
+
+    backtrack_check_parser = sub.add_parser(
+        "backtrack-check",
+        help="Check Rust backtracking command availability.",
+        description=(
+            "Validate the Rust backtracking binary or source-tree cargo fallback "
+            "without loading a checkpoint."
+        ),
+    )
+    _add_backtrack_binary_arg(backtrack_check_parser)
     return parser
 
 
@@ -517,6 +537,13 @@ def main(argv: list[str] | None = None) -> None:
             f"out_dir={result.out_dir}",
             flush=True,
         )
+        return
+    if args.command == "backtrack-check":
+        try:
+            _ensure_backtracking_available(args.backtrack_binary)
+        except _EXPECTED_WORKFLOW_ERRORS as exc:
+            _exit_runtime_error(parser, str(exc))
+        print("backtracking_available=true", flush=True)
         return
     if args.command == "run":
         if args.checkpoint is not None:

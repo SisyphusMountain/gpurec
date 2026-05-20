@@ -182,16 +182,29 @@ pathological samples.
 `gpurec sample` and the sampling phase of `gpurec run` use the Rust
 backtracking binary.  Wheels currently do not ship that binary or the Rust
 crate sources, so installed environments should provide a compiled binary
-through `GPUREC_BACKTRACK_BIN` or `--backtrack-binary`:
+through `GPUREC_BACKTRACK_BIN` or `--backtrack-binary`.  In a wheel-only
+install, point gpurec at a prebuilt binary produced by your deployment or build
+process:
+
+```bash
+export GPUREC_BACKTRACK_BIN="/opt/gpurec/bin/gpurec-backtrack"
+gpurec backtrack-check
+gpurec sample --checkpoint output_gpurec/checkpoints/best.pt --samples 100
+```
+
+For a source checkout or unpacked source archive, build that binary with Cargo:
 
 ```bash
 cargo build --locked --release --manifest-path crates/gpurec-backtrack/Cargo.toml
 export GPUREC_BACKTRACK_BIN="$PWD/crates/gpurec-backtrack/target/release/gpurec-backtrack"
+gpurec backtrack-check
 gpurec sample --checkpoint output_gpurec/checkpoints/best.pt --samples 100
 ```
 
 The same `GPUREC_BACKTRACK_BIN` environment variable or `--backtrack-binary`
 flag applies to `gpurec run` when it samples after optimization.
+Use `gpurec backtrack-check` to validate the binary or source-tree Cargo
+fallback without loading a checkpoint.
 
 The automatic `cargo run` fallback works from a source checkout or unpacked
 source archive.  It requires a Rust toolchain and fetches the pinned `rustree`
@@ -213,6 +226,7 @@ of dataset path overrides.
 | Task | Command | Notes |
 | --- | --- | --- |
 | General installed workflow | `gpurec optimize`, `gpurec sample`, `gpurec run` | Uses flat JSON for `--config`; Hydra YAML is not accepted by the main CLI. |
+| Sampling binary preflight | `gpurec backtrack-check` | Validates `GPUREC_BACKTRACK_BIN`, `--backtrack-binary`, or the source-tree Cargo fallback without loading a checkpoint. |
 | Legacy HOGENOM W&B wrapper | `python scripts/optimize_hogenom_ccp_wandb.py` | Checkout-local compatibility wrapper with argparse flags, checkpoints, plots, and optional W&B logging. |
 | Hydra HOGENOM run | `python scripts/optimize_hogenom_ccp_hydra.py` | Uses `configs/hogenom_ccp_wandb.yaml` and Hydra override syntax. |
 | Checkpoint rate export | `python scripts/export_hogenom_rates_from_checkpoint.py` | Exports D/T/L rates from a HOGENOM optimization checkpoint. |

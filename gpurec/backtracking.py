@@ -10,6 +10,7 @@ import shutil
 import subprocess
 import tempfile
 from collections.abc import Callable
+from dataclasses import dataclass
 from numbers import Integral
 from pathlib import Path
 from typing import Any
@@ -29,7 +30,17 @@ from gpurec.recphyloxml import (
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 _BACKTRACK_MANIFEST = _REPO_ROOT / "crates" / "gpurec-backtrack" / "Cargo.toml"
 _BACKTRACK_BINARY_ENV = "GPUREC_BACKTRACK_BIN"
+_BACKTRACK_BINARY_GUIDANCE = (
+    f"Set {_BACKTRACK_BINARY_ENV}, pass backtrack_binary in Python, or use "
+    "--backtrack-binary in the CLI"
+)
 _UINT64_MAX = (1 << 64) - 1
+
+
+@dataclass(frozen=True)
+class _BacktrackInvocation:
+    command: list[str]
+    cwd: str | None
 
 
 def _optional_int_limit(
@@ -154,7 +165,7 @@ def _backtrack_command(
     cargo_manifest: str | Path,
     backtrack_binary: str | Path | None,
 ) -> list[str]:
-    source = "backtrack_binary"
+    source = "backtrack_binary/--backtrack-binary"
     if backtrack_binary is None:
         backtrack_binary = os.environ.get(_BACKTRACK_BINARY_ENV)
         source = _BACKTRACK_BINARY_ENV
@@ -191,14 +202,13 @@ def _backtrack_command(
     if not manifest.exists():
         raise RuntimeError(
             "gpurec stochastic backtracking needs a Rust backtracking binary. "
-            f"Set {_BACKTRACK_BINARY_ENV} or pass backtrack_binary; default "
-            f"source manifest not found at {manifest}"
+            f"{_BACKTRACK_BINARY_GUIDANCE}; default source manifest not found "
+            f"at {manifest}"
         )
     if shutil.which("cargo") is None:
         raise RuntimeError(
             "gpurec stochastic backtracking fallback requires cargo on PATH. "
-            f"Install Rust/Cargo, set {_BACKTRACK_BINARY_ENV}, or pass "
-            "backtrack_binary."
+            f"Install Rust/Cargo, or {_BACKTRACK_BINARY_GUIDANCE}."
         )
     return [
         "cargo",
@@ -209,6 +219,29 @@ def _backtrack_command(
         str(manifest),
         "--",
     ]
+
+
+def _is_cargo_fallback_command(command: list[str]) -> bool:
+    return (
+        len(command) >= 7
+        and command[0] == "cargo"
+        and command[1] == "run"
+        and "--manifest-path" in command
+        and command[-1] == "--"
+    )
+
+
+def _backtrack_invocation(
+    *,
+    cargo_manifest: str | Path,
+    backtrack_binary: str | Path | None,
+) -> _BacktrackInvocation:
+    command = _backtrack_command(
+        cargo_manifest=cargo_manifest,
+        backtrack_binary=backtrack_binary,
+    )
+    cwd = str(_REPO_ROOT) if _is_cargo_fallback_command(command) else None
+    return _BacktrackInvocation(command=command, cwd=cwd)
 
 
 def ensure_backtracking_available(
@@ -244,16 +277,16 @@ def _run_backtracking_payload(
             json.dumps(payload, allow_nan=False),
             encoding="utf-8",
         )
-        command = _backtrack_command(
+        invocation = _backtrack_invocation(
             cargo_manifest=cargo_manifest,
             backtrack_binary=backtrack_binary,
         )
-        full_command = command + build_args(input_path, tmp_path)
+        full_command = invocation.command + build_args(input_path, tmp_path)
         result = subprocess.run(
             full_command,
             check=False,
             capture_output=True,
-            cwd=str(_REPO_ROOT),
+            cwd=invocation.cwd,
             text=True,
         )
         if result.returncode != 0:
@@ -355,7 +388,7 @@ def export_backtracking_input(
         labels = [""] * C
 
     species_names = model.species_names
-    species_newick = model.species_tree_path.read_text()
+    species_newick = model.species_tree_path.read_text(encoding="utf-8")
     origination_probs = _family_origination_probs(
         state.origination_probs,
         family_index=parameter_family_index,

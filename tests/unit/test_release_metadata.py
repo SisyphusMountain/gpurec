@@ -237,6 +237,9 @@ def test_cpu_ci_builds_and_smokes_release_artifacts():
         "forbidden_sdist_prefixes",
         "crates/gpurec-backtrack/target/",
         "forbidden_wheel_prefixes",
+        "forbidden_wheel_names",
+        "gpurec-backtrack.exe",
+        "wheel includes Rust backtracking binaries",
         "gpurec/core/cpp/preprocess.cpp",
         "examples/",
         "json.load",
@@ -261,10 +264,14 @@ def test_cpu_ci_builds_and_smokes_release_artifacts():
         "python -m gpurec.cli --help",
         "gpurec sample --help",
         "gpurec run --help",
+        "gpurec backtrack-check --help",
         "--backtrack-binary",
         "GPUREC_BACKTRACK_BIN",
         "checkpoints/best.pt",
         "checkpoints/latest.pt",
+        "backtrack-check.txt",
+        "unset GPUREC_BACKTRACK_BIN",
+        'test "$status" -eq 1',
         "import gpurec",
         'Path(os.environ["GITHUB_WORKSPACE"]).resolve()',
         "package_path.is_relative_to(workspace)",
@@ -540,16 +547,21 @@ def test_readme_documents_installed_sampling_binary_setup():
         assert "prebuilt binary" in normalized
     assert "### Sampling Binary Setup" in readme
     assert "`gpurec sample` and the sampling phase of `gpurec run`" in readme
+    assert "In a wheel-only\ninstall" in readme
+    assert "For a source checkout or unpacked source archive" in readme
     assert (
         "cargo build --locked --release --manifest-path "
         "crates/gpurec-backtrack/Cargo.toml"
     ) in readme
     assert "GPUREC_BACKTRACK_BIN" in readme
     assert "--backtrack-binary" in readme
+    assert "gpurec backtrack-check" in readme
     assert "The same `GPUREC_BACKTRACK_BIN` environment variable" in readme
     assert "fallback works from a source checkout or unpacked\nsource archive" in readme
     assert "unpacked-source-archive `cargo run` fallback" in normalized_guide
     assert (
-        "installed `gpurec sample --help` and `gpurec run --help`"
+        "installed `gpurec sample --help`, `gpurec run --help`, and "
+        "`gpurec backtrack-check`"
         in normalized_guide
     )
+    assert "gpurec backtrack-check --help" in guide

@@ -55,6 +55,7 @@ def test_run_config_cli_surface_matches_dataclass_fields():
         "backtrack_binary",
         "checkpoint",
     }
+    assert _parser_action_dests("backtrack-check") == {"backtrack_binary"}
 
 
 def test_build_alerax_workflow_model_forwards_run_config(tmp_path: Path, monkeypatch):
@@ -924,6 +925,51 @@ def test_cli_run_help_omits_checkpoint_argument(capsys):
     assert exc_info.value.code == 0
     assert "--checkpoint CHECKPOINT" not in captured.out
     assert "--resume-from" in captured.out
+    assert "--backtrack-binary" in captured.out
+    assert "GPUREC_BACKTRACK_BIN" in captured.out
+
+
+def test_cli_backtrack_check_delegates_binary_preflight(
+    tmp_path: Path,
+    capsys,
+    monkeypatch,
+):
+    calls: list[Path | None] = []
+    binary = tmp_path / "gpurec-backtrack"
+
+    monkeypatch.setattr(
+        "gpurec.cli._ensure_backtracking_available",
+        lambda backtrack_binary: calls.append(backtrack_binary),
+    )
+
+    main(["backtrack-check", "--backtrack-binary", str(binary)])
+
+    captured = capsys.readouterr()
+    assert captured.out == "backtracking_available=true\n"
+    assert captured.err == ""
+    assert calls == [binary]
+
+
+def test_cli_backtrack_check_reports_missing_binary_without_traceback(
+    capsys,
+    monkeypatch,
+):
+    def fail_preflight(backtrack_binary: Path | None) -> None:
+        assert backtrack_binary is None
+        raise RuntimeError(
+            "set GPUREC_BACKTRACK_BIN or pass --backtrack-binary"
+        )
+
+    monkeypatch.setattr("gpurec.cli._ensure_backtracking_available", fail_preflight)
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(["backtrack-check"])
+
+    captured = capsys.readouterr()
+    assert exc_info.value.code == 1
+    assert "GPUREC_BACKTRACK_BIN" in captured.err
+    assert "--backtrack-binary" in captured.err
+    assert "Traceback" not in captured.err
 
 
 def test_cli_optimize_help_describes_config_and_path_inputs(capsys):

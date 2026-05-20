@@ -1835,10 +1835,11 @@ def test_backtracking_env_binary_relative_path_uses_caller_cwd(
     fake_backtracker = bin_dir / "fake-backtrack"
     fake_backtracker.write_text(
         """#!/usr/bin/env python3
+import os
 import pathlib
 import sys
 
-pathlib.Path(sys.argv[2]).write_text("ok", encoding="utf-8")
+pathlib.Path(sys.argv[2]).write_text(os.getcwd(), encoding="utf-8")
 """,
         encoding="utf-8",
     )
@@ -1859,7 +1860,43 @@ pathlib.Path(sys.argv[2]).write_text("ok", encoding="utf-8")
         ),
     )
 
+    assert result == str(tmp_path)
+
+
+def test_backtracking_cargo_fallback_runs_from_source_root(
+    tmp_path: Path,
+    monkeypatch,
+):
+    captured: dict[str, object] = {}
+    cargo_command = [
+        "cargo",
+        "run",
+        "--locked",
+        "--quiet",
+        "--manifest-path",
+        str(tmp_path / "Cargo.toml"),
+        "--",
+    ]
+
+    def fake_run(command: list[str], **kwargs: object) -> SimpleNamespace:
+        captured["command"] = command
+        captured["cwd"] = kwargs["cwd"]
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(backtracking, "_backtrack_command", lambda **_: cargo_command)
+    monkeypatch.setattr(backtracking.subprocess, "run", fake_run)
+
+    result = backtracking._run_backtracking_payload(
+        {"value": 1},
+        cargo_manifest=tmp_path / "Cargo.toml",
+        backtrack_binary=None,
+        build_args=lambda *_: [],
+        read_output=lambda _: "ok",
+    )
+
     assert result == "ok"
+    assert captured["command"] == cargo_command
+    assert captured["cwd"] == str(backtracking._REPO_ROOT)
 
 
 def test_backtracking_command_rejects_invalid_binary_before_subprocess(
@@ -1886,6 +1923,7 @@ def test_backtracking_command_rejects_invalid_binary_before_subprocess(
             read_output=lambda _: None,
         )
     assert "backtrack_binary" in str(missing_exc.value)
+    assert "--backtrack-binary" in str(missing_exc.value)
     assert str(missing) in str(missing_exc.value)
 
     not_executable = tmp_path / "not-executable"
@@ -1896,6 +1934,7 @@ def test_backtracking_command_rejects_invalid_binary_before_subprocess(
             backtrack_binary=not_executable,
         )
     assert "backtrack_binary" in str(executable_exc.value)
+    assert "--backtrack-binary" in str(executable_exc.value)
     assert str(not_executable) in str(executable_exc.value)
 
     assert calls == []
@@ -3410,11 +3449,13 @@ def test_activate_family_batch_returns_batch_local_offset():
 def test_backtracking_command_reports_missing_source_manifest(tmp_path: Path, monkeypatch):
     monkeypatch.delenv("GPUREC_BACKTRACK_BIN", raising=False)
 
-    with pytest.raises(RuntimeError, match="GPUREC_BACKTRACK_BIN"):
+    with pytest.raises(RuntimeError, match="GPUREC_BACKTRACK_BIN") as exc_info:
         _backtrack_command(
             cargo_manifest=tmp_path / "missing" / "Cargo.toml",
             backtrack_binary=None,
         )
+
+    assert "--backtrack-binary" in str(exc_info.value)
 
 
 def test_backtracking_command_uses_locked_cargo_fallback(tmp_path: Path, monkeypatch):
@@ -3449,6 +3490,7 @@ def test_backtracking_command_rejects_missing_cargo_fallback(
     message = str(exc_info.value)
     assert "GPUREC_BACKTRACK_BIN" in message
     assert "backtrack_binary" in message
+    assert "--backtrack-binary" in message
 
 
 def test_xml_species_and_transfer_counts():

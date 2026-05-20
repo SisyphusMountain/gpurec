@@ -125,6 +125,10 @@ jobs:
               "crates/gpurec-backtrack/",
               "examples/",
           ]
+          forbidden_wheel_names = {
+              "gpurec-backtrack",
+              "gpurec-backtrack.exe",
+          }
 
           sdists = list(Path("dist").glob("*.tar.gz"))
           if len(sdists) != 1:
@@ -193,6 +197,16 @@ jobs:
           ]
           if forbidden:
               raise SystemExit(f"wheel includes forbidden paths: {forbidden}")
+          forbidden_binaries = [
+              name
+              for name in names
+              if Path(name).name in forbidden_wheel_names
+          ]
+          if forbidden_binaries:
+              raise SystemExit(
+                  "wheel includes Rust backtracking binaries: "
+                  f"{forbidden_binaries}"
+              )
           PY
 
       - name: Smoke Rust crate from source archive
@@ -230,6 +244,17 @@ jobs:
           gpurec run --help | tee run-help.txt
           grep -q -- "--backtrack-binary" run-help.txt
           grep -q -- "GPUREC_BACKTRACK_BIN" run-help.txt
+          gpurec backtrack-check --help | tee backtrack-check-help.txt
+          grep -q -- "--backtrack-binary" backtrack-check-help.txt
+          grep -q -- "GPUREC_BACKTRACK_BIN" backtrack-check-help.txt
+          unset GPUREC_BACKTRACK_BIN
+          set +e
+          gpurec backtrack-check > backtrack-check.txt 2>&1
+          status=$?
+          set -e
+          test "$status" -eq 1
+          grep -q -- "--backtrack-binary" backtrack-check.txt
+          grep -q -- "GPUREC_BACKTRACK_BIN" backtrack-check.txt
           python - <<'PY'
           import os
           from pathlib import Path
