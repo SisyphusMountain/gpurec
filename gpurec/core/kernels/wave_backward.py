@@ -6,6 +6,7 @@ import torch
 import triton
 import triton.language as tl
 
+from gpurec.core._helpers import _env_flag_enabled, _env_mode_enabled_required
 from gpurec.core.memory_policy import proposal0_memory_gate
 
 _cuda_pibar_from_ud_fallback_warned = False
@@ -14,6 +15,15 @@ _SUPPORTED_FLOAT_DTYPES = (torch.float32, torch.float64, torch.bfloat16)
 
 def _tl_float_dtype(dtype):
     return tl.float64 if dtype == torch.float64 else tl.float32
+
+
+def _cuda_pibar_from_ud_options():
+    mode, enabled, required = _env_mode_enabled_required(
+        "GPUREC_CUDA_PIBAR_FROM_UD",
+        "auto",
+    )
+    strict_required = _env_flag_enabled("GPUREC_CUDA_PIBAR_FROM_UD_STRICT", "0")
+    return mode, enabled, enabled and (required or strict_required)
 
 
 def _device_scalar_param(param, *, device, dtype):
@@ -1892,22 +1902,11 @@ def uniform_cross_pibar_vjp_tree_from_ud_fused(
             **launch_options,
         )
 
-    cuda_pibar_from_ud_mode = os.environ.get(
-        "GPUREC_CUDA_PIBAR_FROM_UD",
-        "auto",
-    ).strip().lower()
-    cuda_pibar_from_ud_enabled = cuda_pibar_from_ud_mode not in (
-        "",
-        "0",
-        "false",
-        "no",
-        "off",
-    )
-    cuda_pibar_from_ud_required = (
-        cuda_pibar_from_ud_mode
-        in ("1", "true", "yes", "on", "force", "required")
-        or os.environ.get("GPUREC_CUDA_PIBAR_FROM_UD_STRICT", "0") != "0"
-    )
+    (
+        cuda_pibar_from_ud_mode,
+        cuda_pibar_from_ud_enabled,
+        cuda_pibar_from_ud_required,
+    ) = _cuda_pibar_from_ud_options()
     if (
         cuda_pibar_from_ud_enabled
         and Pi_star.dtype == torch.float32

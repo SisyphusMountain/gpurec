@@ -4561,6 +4561,21 @@ Release metadata checker after backtracking preflight hardening &
 \texttt{pdflatex -interaction=nonstopmode -halt-on-error ...professionalization...} &
 Audit log build after backtracking preflight hardening &
 \texttt{ok with known overfull table warnings} \\
+\texttt{python -m py\_compile gpurec/core/kernels/wave\_backward.py tests/unit/test\_core\_helpers.py} &
+CUDA Pibar strict-mode parser syntax &
+\texttt{ok} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q tests/unit/test\_core\_helpers.py} &
+Focused CUDA Pibar strict-mode parser coverage &
+\texttt{42 passed} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
+CPU unit gate after CUDA Pibar strict-mode parser hardening &
+\texttt{667 passed, 28 deselected} \\
+\texttt{python scripts/check\_release\_metadata.py} &
+Release metadata checker after CUDA Pibar strict-mode parser hardening &
+\texttt{expected license blockers} \\
+\texttt{pdflatex -interaction=nonstopmode -halt-on-error ...professionalization...} &
+Audit log build after CUDA Pibar strict-mode parser hardening &
+\texttt{ok with known overfull table warnings} \\
 \bottomrule
 \end{tabular}
 \end{center}
