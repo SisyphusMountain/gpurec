@@ -31,6 +31,7 @@ CUDA_VISIBLE_DEVICES='' pytest -q \
   tests/unit/test_examples.py \
   tests/unit/test_release_metadata.py \
   tests/unit/test_repository_hygiene.py \
+  tests/unit/test_scheduling.py \
   tests/unit/test_terms.py \
   tests/unit/test_validation.py \
   tests/unit/test_workflow.py
