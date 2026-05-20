@@ -1807,6 +1807,16 @@ preflight reuses the existing \texttt{GPUREC\_BACKTRACK\_BIN},
 sampling still reports the same actionable binary/setup errors but does so
 before any CUDA-facing or checkpoint-model work can start.
 
+\subsection{Positive-Even Solver Iteration Validation}
+
+The direct Python API now validates \texttt{fixed\_iters\_Pi} through a shared
+\texttt{positive\_even\_int()} helper in \texttt{gpurec.api.\_validation}.
+\texttt{GeneReconModel}, \texttt{UniformChunkedReconModel}, and their factory
+keyword preflight paths use the same helper instead of repeating
+positive-integer-plus-evenness checks.  This keeps direct constructor,
+factory, and runtime solver-control errors homogeneous without changing the
+CUDA execution paths.
+
 \section{Verification Log}
 
 \begin{center}
@@ -3976,6 +3986,24 @@ Release metadata checker after sampling backtracking preflight &
 \texttt{expected license blockers} \\
 \texttt{pdflatex -interaction=nonstopmode -halt-on-error ...professionalization...} &
 Audit log build after sampling backtracking preflight &
+\texttt{ok with known overfull table warnings} \\
+\texttt{python -m py\_compile gpurec/api/\_validation.py gpurec/api/model.py gpurec/api/uniform\_chunked.py tests/unit/test\_validation.py tests/unit/test\_workflow.py} &
+Positive-even iteration helper syntax &
+\texttt{ok} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q tests/unit/test\_validation.py tests/unit/test\_workflow.py -k "..."} &
+Focused positive-even iteration validation coverage &
+\texttt{15 passed, 249 deselected} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q tests/unit/test\_validation.py tests/unit/test\_workflow.py} &
+Validation and workflow units after positive-even helper extraction &
+\texttt{264 passed} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
+CPU unit gate after positive-even helper extraction &
+\texttt{514 passed, 28 deselected} \\
+\texttt{python scripts/check\_release\_metadata.py} &
+Release metadata checker after positive-even helper extraction &
+\texttt{expected license blockers} \\
+\texttt{pdflatex -interaction=nonstopmode -halt-on-error ...professionalization...} &
+Audit log build after positive-even helper extraction &
 \texttt{ok with known overfull table warnings} \\
 \bottomrule
 \end{tabular}

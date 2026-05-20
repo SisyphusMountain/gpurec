@@ -82,6 +82,13 @@ def positive_int(name: str, value: int) -> int:
     return number
 
 
+def positive_even_int(name: str, value: int) -> int:
+    number = positive_int(name, value)
+    if number % 2 != 0:
+        raise ValueError(f"{name} must be a positive even integer")
+    return number
+
+
 def theta_init_base_from_rates(
     theta_init_rates: Optional[Sequence[float]],
     *,

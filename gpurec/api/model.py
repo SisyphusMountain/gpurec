@@ -65,6 +65,7 @@ from ._family_layout import (
 from ._validation import (
     bool_value,
     nonnegative_float,
+    positive_even_int,
     positive_float,
     positive_int,
     require_cuda_device,
@@ -222,13 +223,10 @@ def _normalize_gene_solver_kwargs(kwargs: dict[str, Any]) -> dict[str, Any]:
             normalized["fixed_iters_E"],
         )
     if "fixed_iters_Pi" in normalized:
-        fixed_iters_Pi = positive_int(
+        normalized["fixed_iters_Pi"] = positive_even_int(
             "fixed_iters_Pi",
             normalized["fixed_iters_Pi"],
         )
-        if fixed_iters_Pi % 2 != 0:
-            raise ValueError("fixed_iters_Pi must be a positive even integer")
-        normalized["fixed_iters_Pi"] = fixed_iters_Pi
     if "neumann_terms" in normalized:
         normalized["neumann_terms"] = positive_int(
             "neumann_terms",
@@ -792,9 +790,7 @@ class GeneReconModel(torch.nn.Module):
         _mode_to_flags(mode)
         if fixed_iters_E is not None:
             fixed_iters_E = positive_int("fixed_iters_E", fixed_iters_E)
-        fixed_iters_Pi = positive_int("fixed_iters_Pi", fixed_iters_Pi)
-        if fixed_iters_Pi % 2 != 0:
-            raise ValueError("fixed_iters_Pi must be a positive even integer")
+        fixed_iters_Pi = positive_even_int("fixed_iters_Pi", fixed_iters_Pi)
         neumann_terms = positive_int("neumann_terms", neumann_terms)
         convergence_check_interval = positive_int(
             "convergence_check_interval",
@@ -1315,9 +1311,7 @@ class GeneReconModel(torch.nn.Module):
     ) -> None:
         """Update solver iteration controls on the model and built batches."""
         if fixed_iters_Pi is not None:
-            fixed_iters_Pi = positive_int("fixed_iters_Pi", fixed_iters_Pi)
-            if fixed_iters_Pi % 2 != 0:
-                raise ValueError("fixed_iters_Pi must be a positive even integer")
+            fixed_iters_Pi = positive_even_int("fixed_iters_Pi", fixed_iters_Pi)
             self._fixed_iters_Pi = fixed_iters_Pi
         if neumann_terms is not None:
             neumann_terms = positive_int("neumann_terms", neumann_terms)

@@ -46,6 +46,7 @@ from ._family_layout import (
 from ._validation import (
     bool_value,
     nonnegative_float,
+    positive_even_int,
     positive_int,
     require_cuda_device,
     require_default_objective,
@@ -138,13 +139,10 @@ def _normalize_uniform_solver_kwargs(kwargs: dict[str, Any]) -> dict[str, Any]:
             normalized["fixed_iters_E"],
         )
     if "fixed_iters_Pi" in normalized:
-        fixed_iters_Pi = positive_int(
+        normalized["fixed_iters_Pi"] = positive_even_int(
             "fixed_iters_Pi",
             normalized["fixed_iters_Pi"],
         )
-        if fixed_iters_Pi % 2 != 0:
-            raise ValueError("fixed_iters_Pi must be a positive even integer")
-        normalized["fixed_iters_Pi"] = fixed_iters_Pi
     if "max_iters_E" in normalized:
         normalized["max_iters_E"] = positive_int(
             "max_iters_E",
@@ -662,9 +660,7 @@ class UniformChunkedReconModel(torch.nn.Module):
             raise ValueError("theta_init_rates must be provided")
         if fixed_iters_E is not None:
             fixed_iters_E = positive_int("fixed_iters_E", fixed_iters_E)
-        fixed_iters_Pi = positive_int("fixed_iters_Pi", fixed_iters_Pi)
-        if fixed_iters_Pi % 2 != 0:
-            raise ValueError("fixed_iters_Pi must be a positive even integer")
+        fixed_iters_Pi = positive_even_int("fixed_iters_Pi", fixed_iters_Pi)
         max_iters_E = positive_int("max_iters_E", max_iters_E)
         neumann_terms = positive_int("neumann_terms", neumann_terms)
         tol_E = nonnegative_float("tol_E", tol_E)
