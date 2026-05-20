@@ -1758,6 +1758,16 @@ for disabled tokens such as \texttt{0}, \texttt{false}, \texttt{no}, and
 keeps performance-path flags homogeneous while remaining CPU-testable through
 pure helper tests.
 
+\subsection{CLI Resume Checkpoint Preflight}
+
+\texttt{gpurec optimize} and \texttt{gpurec run} now validate
+\texttt{--resume-from} in the same CLI preflight as \texttt{--species-tree}
+and \texttt{--families-file}.  Missing resume checkpoints therefore fail with
+an argparse error before workflow execution, model construction, or CUDA device
+checks.  The focused CLI regressions cover both commands and assert that the
+error names \texttt{--resume-from}, includes the missing path, and does not
+emit CUDA noise or a traceback.
+
 \section{Verification Log}
 
 \begin{center}
@@ -3834,6 +3844,24 @@ Release metadata checker after shared environment helpers &
 \texttt{expected license blockers} \\
 \texttt{pdflatex -interaction=nonstopmode -halt-on-error ...professionalization...} &
 Audit log build after shared environment helpers &
+\texttt{ok with known overfull table warnings} \\
+\texttt{python -m py\_compile gpurec/cli.py tests/unit/test\_cli\_workflow.py tests/unit/test\_workflow.py} &
+CLI resume checkpoint preflight syntax &
+\texttt{ok} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q tests/unit/test\_cli\_workflow.py} &
+CLI workflow regressions after resume checkpoint preflight &
+\texttt{52 passed} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q tests/unit/test\_workflow.py} &
+Workflow units after resume checkpoint preflight &
+\texttt{250 passed} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
+CPU unit gate after resume checkpoint preflight &
+\texttt{499 passed, 28 deselected} \\
+\texttt{python scripts/check\_release\_metadata.py} &
+Release metadata checker after resume checkpoint preflight &
+\texttt{expected license blockers} \\
+\texttt{pdflatex -interaction=nonstopmode -halt-on-error ...professionalization...} &
+Audit log build after resume checkpoint preflight &
 \texttt{ok with known overfull table warnings} \\
 \bottomrule
 \end{tabular}

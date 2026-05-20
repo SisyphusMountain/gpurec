@@ -91,6 +91,11 @@ def _validate_run_config_input_paths(config: RunConfig) -> None:
     ):
         if not path.is_file():
             raise ValueError(f"{option} path does not exist or is not a file: {path}")
+    if config.resume_from is not None and not config.resume_from.is_file():
+        raise ValueError(
+            "--resume-from path does not exist or is not a file: "
+            f"{config.resume_from}"
+        )
 
 
 def _validate_sampling_checkpoint_path(checkpoint: Path) -> None:

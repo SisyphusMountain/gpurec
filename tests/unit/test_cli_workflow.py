@@ -477,6 +477,34 @@ def test_cli_rejects_missing_input_paths_before_workflow(
     assert "Traceback" not in captured.err
 
 
+@pytest.mark.parametrize("command", ["optimize", "run"])
+def test_cli_rejects_missing_resume_checkpoint_before_workflow(
+    tmp_path: Path,
+    capsys,
+    monkeypatch,
+    command: str,
+):
+    missing_resume = tmp_path / "missing-resume.pt"
+
+    def unexpected_optimize(config):
+        raise AssertionError("optimize should not be called")
+
+    monkeypatch.setattr("gpurec.cli.optimize", unexpected_optimize)
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(
+            _minimal_workflow_cli_args(command, tmp_path)
+            + ["--resume-from", str(missing_resume)]
+        )
+
+    captured = capsys.readouterr()
+    assert exc_info.value.code == 2
+    assert "--resume-from" in captured.err
+    assert str(missing_resume) in captured.err
+    assert "CUDA" not in captured.err
+    assert "Traceback" not in captured.err
+
+
 def test_cli_sample_rejects_invalid_seed_without_traceback(tmp_path: Path, capsys):
     with pytest.raises(SystemExit) as exc_info:
         main(["sample", "--checkpoint", str(tmp_path / "best.pt"), "--seed", "-1"])
