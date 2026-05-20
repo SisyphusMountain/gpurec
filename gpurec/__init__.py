@@ -12,6 +12,20 @@ Lower-level access:
 """
 
 from importlib import import_module
+from importlib.metadata import PackageNotFoundError, version
+
+
+_SOURCE_VERSION = "0.1.0"
+
+
+def _distribution_version() -> str:
+    try:
+        return version(__name__)
+    except PackageNotFoundError:
+        return _SOURCE_VERSION
+
+
+__version__ = _distribution_version()
 
 _LAZY_EXPORTS = {
     "GeneReconModel": "gpurec.api",

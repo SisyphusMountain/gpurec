@@ -9,6 +9,8 @@ from pathlib import Path
 
 import pytest
 
+import gpurec
+
 
 ROOT = Path(__file__).resolve().parents[2]
 CHECK_SCRIPT = ROOT / "scripts" / "check_release_metadata.py"
@@ -84,6 +86,14 @@ def test_release_metadata_check_reports_only_current_license_blockers():
     assert "project.urls" not in result.stdout
     assert "readme" not in result.stdout.lower()
     assert "Traceback" not in result.stderr
+
+
+def test_top_level_package_version_matches_project_metadata():
+    pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    match = re.search(r'^version\s*=\s*"([^"]+)"', pyproject, flags=re.M)
+
+    assert match is not None
+    assert gpurec.__version__ == match.group(1)
 
 
 def test_release_metadata_check_accepts_complete_metadata_fixture(tmp_path: Path):

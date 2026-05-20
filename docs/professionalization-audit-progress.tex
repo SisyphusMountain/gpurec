@@ -2341,6 +2341,19 @@ reading resume fields such as \texttt{best\_nll\_bits},
 \texttt{stable\_loss\_steps}.  Focused CPU tests cover helper defaults,
 invalid status values, resume defaults, and invalid resume metadata.
 
+\subsection{Top-Level Version Metadata}
+
+The top-level \texttt{gpurec} package now exposes \texttt{\_\_version\_\_} for
+callers, notebooks, and release smoke checks that need to report the package
+version without importing heavier API, workflow, backtracking, or CUDA modules.
+The value comes from installed distribution metadata when available and falls
+back to the source-tree project version in checkout-only usage.
+
+A release-metadata unit guard keeps \texttt{gpurec.\_\_version\_\_} aligned with
+\texttt{pyproject.toml}.  The existing subprocess import-footprint guard still
+passes, so the version attribute does not weaken the lazy top-level import
+boundary.
+
 \section{Verification Log}
 
 \begin{center}
@@ -5254,6 +5267,21 @@ CPU unit gate after shared checkpoint status helper &
 \texttt{769 passed, 6 deselected} \\
 \texttt{python scripts/check\_release\_metadata.py} &
 Release metadata checker after shared checkpoint status helper &
+\texttt{expected license blockers} \\
+\texttt{python -m py\_compile gpurec/\_\_init\_\_.py tests/unit/test\_release\_metadata.py} &
+Top-level version metadata syntax &
+\texttt{ok} \\
+\texttt{python -m pytest selected version metadata and import-footprint guards -q} &
+Focused top-level version metadata guards &
+\texttt{2 passed} \\
+\texttt{python -m pytest tests/unit/test\_release\_metadata.py selected import guard -q} &
+Release metadata suite plus top-level import guard &
+\texttt{36 passed} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' python -m pytest tests/unit -q -m "unit and not gpu"} &
+CPU unit gate after top-level version metadata &
+\texttt{770 passed, 6 deselected} \\
+\texttt{python scripts/check\_release\_metadata.py} &
+Release metadata checker after top-level version metadata &
 \texttt{expected license blockers} \\
 \bottomrule
 \end{tabular}
