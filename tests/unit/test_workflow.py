@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import csv
 import importlib
 import json
 import math
@@ -2355,6 +2356,19 @@ def test_recphyloxml_event_counts_uses_shared_event_schema():
         "L": 3,
         "Leaf": 1,
     }
+
+
+def test_event_counts_table_quotes_tabbed_family_names(tmp_path: Path):
+    path = tmp_path / "event_counts.tsv"
+    row = {"family": "fam\tbad", "sample": 0, **{key: 0 for key in EVENT_KEYS}}
+    sampling_workflow._write_event_counts_table(path, [row])
+
+    with path.open(newline="", encoding="utf-8") as handle:
+        rows = list(csv.reader(handle, delimiter="\t"))
+
+    assert rows[0] == ["family", "sample", *EVENT_KEYS]
+    assert rows[1] == ["fam\tbad", "0", *["0" for _ in EVENT_KEYS]]
+    assert len(rows[1]) == 2 + len(EVENT_KEYS)
 
 
 def test_sampling_runner_writes_outputs_and_aggregates(tmp_path: Path, monkeypatch):

@@ -1456,6 +1456,17 @@ Overflowing derived ranges now fail with a gpurec \texttt{ValueError}, close
 the loaded model, preserve existing reconciliation outputs, and never invoke
 the Rust sampler.
 
+\subsection{Sampling Event-Counts TSV Escaping}
+
+\texttt{event\_counts.tsv} is now written through Python's
+\texttt{csv.writer} with a tab delimiter instead of manual string
+concatenation.  Family names containing tabs or other TSV-significant
+characters are quoted correctly, so the table keeps the documented
+\texttt{family}, \texttt{sample}, and event-count columns without shifting
+downstream fields.  The regression parses the generated file with
+\texttt{csv.reader} and verifies a tabbed family label remains one logical
+field with the expected column count.
+
 \section{Verification Log}
 
 \begin{center}
@@ -3007,6 +3018,21 @@ Release metadata checker after sampling seed \texttt{u64} bounds &
 \texttt{expected license blockers} \\
 \texttt{pdflatex -interaction=nonstopmode -halt-on-error ...professionalization...} &
 Audit log build after sampling seed \texttt{u64} bounds &
+\texttt{ok with known overfull table warnings} \\
+\texttt{python -m py\_compile gpurec/workflow/sampling.py tests/unit/test\_workflow.py} &
+Sampling event-count TSV escaping syntax &
+\texttt{ok} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q tests/unit/test\_workflow.py -k "..."} &
+Focused sampling TSV escaping guards &
+\texttt{2 passed, 293 deselected} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
+CPU unit gate after sampling TSV escaping &
+\texttt{413 passed, 28 deselected} \\
+\texttt{python scripts/check\_release\_metadata.py} &
+Release metadata checker after sampling TSV escaping &
+\texttt{expected license blockers} \\
+\texttt{pdflatex -interaction=nonstopmode -halt-on-error ...professionalization...} &
+Audit log build after sampling TSV escaping &
 \texttt{ok with known overfull table warnings} \\
 \bottomrule
 \end{tabular}

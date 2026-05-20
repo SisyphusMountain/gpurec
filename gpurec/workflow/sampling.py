@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import csv
 import json
 import re
 import xml.etree.ElementTree as ET
@@ -202,12 +203,12 @@ def _write_total_transfers(
 def _write_event_counts_table(path: Path, rows: list[dict[str, Any]]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8") as handle:
-        handle.write("family\tsample\t" + "\t".join(EVENT_KEYS) + "\n")
+        writer = csv.writer(handle, delimiter="\t", lineterminator="\n")
+        writer.writerow(["family", "sample", *EVENT_KEYS])
         for row in rows:
-            handle.write(
-                f"{row['family']}\t{row['sample']}\t"
-                + "\t".join(str(int(row.get(key, 0))) for key in EVENT_KEYS)
-                + "\n"
+            writer.writerow(
+                [row["family"], row["sample"]]
+                + [int(row.get(key, 0)) for key in EVENT_KEYS]
             )
 
 
