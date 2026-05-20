@@ -17,6 +17,7 @@ import torch
 import gpurec
 import gpurec.backtracking as backtracking
 import gpurec.api.model as api_model
+import gpurec.api.uniform_chunked as uniform_chunked_api
 import gpurec.workflow as workflow
 import gpurec.workflow.sampling as sampling_workflow
 from gpurec.backtracking import (
@@ -41,9 +42,9 @@ from gpurec.api import (
 )
 from gpurec.api.model import GeneReconModel
 from gpurec.api.uniform_chunked import (
-    UniformBuiltChunk,
-    UniformChunkSpec,
     UniformChunkedReconModel,
+    _UniformBuiltChunk,
+    _UniformChunkSpec,
     _as_auto_int,
     _auto_positive_int,
     _selected_chunks,
@@ -396,6 +397,16 @@ def test_workflow_wildcard_import_matches_public_all():
     )
 
 
+def test_uniform_chunked_wildcard_import_exposes_public_surface_only():
+    assert uniform_chunked_api.__all__ == [
+        "UniformChunkMetadata",
+        "UniformChunkedReconModel",
+    ]
+    assert _wildcard_export_names("from gpurec.api.uniform_chunked import *") == set(
+        uniform_chunked_api.__all__
+    )
+
+
 def test_import_gpurec_does_not_eagerly_import_workflow_or_backtracking():
     code = "\n".join(
         (
@@ -530,16 +541,16 @@ def test_top_level_workflow_export_survives_child_module_import_order():
 
 def test_uniform_chunked_public_chunk_metadata_accessors():
     chunks = [
-        UniformBuiltChunk(
-            spec=UniformChunkSpec(indices=[0, 2], clades=7, splits=11),
+        _UniformBuiltChunk(
+            spec=_UniformChunkSpec(indices=[0, 2], clades=7, splits=11),
             wave_layout={},
             waves=3,
             max_wave=5,
             split_rows=13,
             max_wave_split_rows=8,
         ),
-        UniformBuiltChunk(
-            spec=UniformChunkSpec(indices=[1], clades=4, splits=6),
+        _UniformBuiltChunk(
+            spec=_UniformChunkSpec(indices=[1], clades=4, splits=6),
             wave_layout={},
             waves=2,
             max_wave=4,

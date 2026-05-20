@@ -2479,6 +2479,20 @@ The public-path coverage now checks that integral real values normalize before
 model family activation and sampler command construction, while the existing
 API validation tests keep documenting the broader scalar helper's behavior.
 
+\subsection{Uniform Chunk Internals Boundary}
+
+The uniform chunked submodule no longer advertises operational resident-chunk
+records as public wildcard exports.  The built-chunk and chunk-spec dataclasses
+are now private implementation details, while \texttt{UniformChunkMetadata}
+remains the supported public inspection surface for family membership, chunk
+sizes, wave counts, and split-row dimensions.
+
+A new wildcard import guard pins
+\texttt{gpurec.api.uniform\_chunked.\_\_all\_\_} to
+\texttt{UniformChunkMetadata} and \texttt{UniformChunkedReconModel}, keeping the
+submodule surface aligned with \texttt{gpurec.api} and the top-level
+\texttt{gpurec} exports.
+
 \section{Verification Log}
 
 \begin{center}
@@ -5542,6 +5556,21 @@ CPU unit gate after local backtracking integer validation &
 \texttt{788 passed, 6 deselected} \\
 \texttt{python scripts/check\_release\_metadata.py} &
 Release metadata checker after local backtracking integer validation &
+\texttt{expected license blockers} \\
+\texttt{python -m py\_compile gpurec/api/uniform\_chunked.py tests/unit/test\_workflow.py tests/unit/test\_repository\_hygiene.py} &
+Uniform chunk internals boundary syntax &
+\texttt{ok} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' python -m pytest selected uniform chunk export-surface guards -q} &
+Focused uniform chunked wildcard and metadata surface guards &
+\texttt{5 passed} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' python -m pytest tests/unit/test\_workflow.py -q} &
+Workflow suite after uniform chunk internals boundary &
+\texttt{417 passed} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' python -m pytest tests/unit -q -m "unit and not gpu"} &
+CPU unit gate after uniform chunk internals boundary &
+\texttt{789 passed, 6 deselected} \\
+\texttt{python scripts/check\_release\_metadata.py} &
+Release metadata checker after uniform chunk internals boundary &
 \texttt{expected license blockers} \\
 \bottomrule
 \end{tabular}

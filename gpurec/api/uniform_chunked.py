@@ -68,15 +68,15 @@ UNIFORM_OPTIMIZED_DEFAULT_FLAGS = {
 
 
 @dataclass(frozen=True)
-class UniformChunkSpec:
+class _UniformChunkSpec:
     indices: list[int]
     clades: int
     splits: int
 
 
 @dataclass(frozen=True)
-class UniformBuiltChunk:
-    spec: UniformChunkSpec
+class _UniformBuiltChunk:
+    spec: _UniformChunkSpec
     wave_layout: dict[str, Any]
     waves: int
     max_wave: int
@@ -107,7 +107,7 @@ class UniformChunkedState:
     species_helpers: dict[str, Any]
     ancestors_T: torch.Tensor | None
     unnorm_row_max: torch.Tensor
-    built_chunks: list[UniformBuiltChunk]
+    built_chunks: list[_UniformBuiltChunk]
     device: torch.device
     dtype: torch.dtype
     origination_probs: torch.Tensor | None = None
@@ -319,7 +319,7 @@ def _make_chunks(
     nonleaf_counts: Sequence[int] | None = None,
     schedule_depths: Sequence[int] | None = None,
     max_wave_size: int | None = None,
-) -> list[UniformChunkSpec]:
+) -> list[_UniformChunkSpec]:
     plans = plan_family_batches(
         indices=indices,
         clade_counts=clade_counts,
@@ -333,20 +333,20 @@ def _make_chunks(
         max_wave_size=max_wave_size,
     )
     return [
-        UniformChunkSpec(plan.indices, plan.clades, plan.splits)
+        _UniformChunkSpec(plan.indices, plan.clades, plan.splits)
         for plan in plans
     ]
 
 
 def _build_chunk(
     dataset: GeneDataset,
-    spec: UniformChunkSpec,
+    spec: _UniformChunkSpec,
     *,
     device: torch.device,
     dtype: torch.dtype,
     max_wave_size: int | None,
     max_root_wave_size: int | None,
-) -> UniformBuiltChunk:
+) -> _UniformBuiltChunk:
     family_layout = build_family_wave_layout(
         family_wave_inputs(dataset, spec.indices),
         device=device,
@@ -366,7 +366,7 @@ def _build_chunk(
         ),
         default=0,
     )
-    return UniformBuiltChunk(
+    return _UniformBuiltChunk(
         spec=spec,
         wave_layout=wave_layout,
         waves=len(metas),
@@ -435,7 +435,7 @@ def _root_count_tensor(
 def _selected_chunks(
     state: UniformChunkedState,
     chunk_indices: Sequence[int] | torch.Tensor | None,
-) -> list[tuple[int, UniformBuiltChunk]]:
+) -> list[tuple[int, _UniformBuiltChunk]]:
     if chunk_indices is None:
         return list(enumerate(state.built_chunks))
     if torch.is_tensor(chunk_indices):
@@ -452,7 +452,7 @@ def _selected_chunks(
     if not indices:
         raise ValueError("chunk_indices must not be empty")
     n_chunks = len(state.built_chunks)
-    selected: list[tuple[int, UniformBuiltChunk]] = []
+    selected: list[tuple[int, _UniformBuiltChunk]] = []
     seen: set[int] = set()
     for idx in indices:
         if idx < 0 or idx >= n_chunks:
@@ -1179,8 +1179,6 @@ class UniformChunkedReconModel(torch.nn.Module):
 
 
 __all__ = [
-    "UniformBuiltChunk",
     "UniformChunkMetadata",
-    "UniformChunkSpec",
     "UniformChunkedReconModel",
 ]
