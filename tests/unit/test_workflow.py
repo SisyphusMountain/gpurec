@@ -16,6 +16,7 @@ import torch
 import gpurec
 import gpurec.backtracking as backtracking
 import gpurec.api.model as api_model
+import gpurec.workflow as workflow
 import gpurec.workflow.sampling as sampling_workflow
 from gpurec.backtracking import (
     EVENT_KEYS,
@@ -298,6 +299,13 @@ def test_top_level_exports_api_metadata_types():
         "UniformChunkMetadata",
     ):
         assert name in gpurec.__all__
+
+
+def test_top_level_exports_workflow_surface():
+    for name in workflow.__all__:
+        assert name in gpurec.__all__
+        assert gpurec._LAZY_EXPORTS[name] == "gpurec.workflow"
+        assert getattr(gpurec, name) is getattr(workflow, name)
 
 
 def test_uniform_chunked_public_chunk_metadata_accessors():

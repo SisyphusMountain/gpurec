@@ -12,6 +12,54 @@ from gpurec.core.batch_planning import (
 
 _EXPECTED_WORKFLOW_ERRORS = (ValueError, OSError, RuntimeError)
 _RAW_THETA_CHECKPOINT_ERROR = "must contain a dictionary payload"
+_RUN_CONFIG_CLI_OVERRIDE_FIELDS = (
+    "species_tree",
+    "families_file",
+    "out_dir",
+    "mode",
+    "device",
+    "dtype",
+    "start",
+    "max_families",
+    "preprocess_cache",
+    "refresh_preprocess_cache",
+    "family_chunk_size",
+    "clade_budget",
+    "batch_packing",
+    "max_wave_size",
+    "fixed_iters_e",
+    "max_iters_e",
+    "tol_e",
+    "fixed_iters_pi",
+    "neumann_terms",
+    "adaptive_iters",
+    "convergence_check_interval",
+    "e_logsumexp_tol",
+    "pi_max_diff_tol",
+    "gradient_change_tol",
+    "gradient_change_rtol",
+    "theta_init_d",
+    "theta_init_l",
+    "theta_init_t",
+    "min_rate",
+    "max_rate",
+    "optimizer",
+    "steps",
+    "lr",
+    "adam_warmup_steps",
+    "lbfgs_lr",
+    "lbfgs_history_size",
+    "lbfgs_max_iter",
+    "lbfgs_line_search",
+    "grad_inf_tol",
+    "loss_change_tol",
+    "loss_patience",
+    "best_likelihood_patience",
+    "best_likelihood_min_delta",
+    "checkpoint_every",
+    "log_every",
+    "resume_from",
+)
 
 
 def _sampling_error_message(exc: BaseException) -> str:
@@ -110,56 +158,8 @@ def _run_config_from_args(args: argparse.Namespace) -> RunConfig:
     data = _config_data(args.config)
     from gpurec.workflow.config import RunConfig
 
-    for name in (
-        "species_tree",
-        "families_file",
-        "out_dir",
-        "mode",
-        "device",
-        "dtype",
-        "start",
-        "max_families",
-        "preprocess_cache",
-        "refresh_preprocess_cache",
-        "family_chunk_size",
-        "clade_budget",
-        "batch_packing",
-        "max_wave_size",
-        "fixed_iters_e",
-        "max_iters_e",
-        "tol_e",
-        "fixed_iters_pi",
-        "neumann_terms",
-        "convergence_check_interval",
-        "e_logsumexp_tol",
-        "pi_max_diff_tol",
-        "gradient_change_tol",
-        "gradient_change_rtol",
-        "theta_init_d",
-        "theta_init_l",
-        "theta_init_t",
-        "min_rate",
-        "max_rate",
-        "optimizer",
-        "steps",
-        "lr",
-        "adam_warmup_steps",
-        "lbfgs_lr",
-        "lbfgs_history_size",
-        "lbfgs_max_iter",
-        "lbfgs_line_search",
-        "grad_inf_tol",
-        "loss_change_tol",
-        "loss_patience",
-        "best_likelihood_patience",
-        "best_likelihood_min_delta",
-        "checkpoint_every",
-        "log_every",
-        "resume_from",
-    ):
+    for name in _RUN_CONFIG_CLI_OVERRIDE_FIELDS:
         _set_if_present(data, args, name)
-    if args.adaptive_iters is not None:
-        data["adaptive_iters"] = args.adaptive_iters
     missing = [
         name
         for name in ("species_tree", "families_file", "out_dir")

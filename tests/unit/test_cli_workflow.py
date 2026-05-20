@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import argparse
 import json
 import math
 import os
 import subprocess
 import sys
+from dataclasses import fields
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -12,10 +14,47 @@ import pytest
 import torch
 
 import gpurec.workflow.model_factory as workflow_model_factory
-from gpurec.cli import _run_config_from_args, build_parser, main
+from gpurec.cli import (
+    _RUN_CONFIG_CLI_OVERRIDE_FIELDS,
+    _run_config_from_args,
+    build_parser,
+    main,
+)
 from gpurec.workflow.config import RunConfig
 from gpurec.workflow.model_factory import build_alerax_workflow_model
 from tests.unit.alerax_helpers import write_tiny_alerax_inputs
+
+
+def _parser_action_dests(command: str) -> set[str]:
+    parser = build_parser()
+    subparsers = next(
+        action
+        for action in parser._actions
+        if isinstance(action, argparse._SubParsersAction)
+    )
+    return {
+        action.dest
+        for action in subparsers.choices[command]._actions
+        if action.dest not in (argparse.SUPPRESS, "help")
+    }
+
+
+def test_run_config_cli_surface_matches_dataclass_fields():
+    run_config_fields = {field.name for field in fields(RunConfig)}
+    expected_parser_dests = run_config_fields | {"config"}
+
+    assert set(_RUN_CONFIG_CLI_OVERRIDE_FIELDS) == run_config_fields
+    assert _parser_action_dests("optimize") == expected_parser_dests
+    assert _parser_action_dests("run") == expected_parser_dests | {
+        "sample_out_dir",
+        "samples",
+        "seed",
+        "family_start",
+        "sample_max_families",
+        "max_events",
+        "backtrack_binary",
+        "checkpoint",
+    }
 
 
 def test_build_alerax_workflow_model_forwards_run_config(tmp_path: Path, monkeypatch):
