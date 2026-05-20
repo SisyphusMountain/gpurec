@@ -1620,6 +1620,17 @@ collection hook applies it to \texttt{tests/kernels} alongside the existing
 and a repository hygiene guard checks that the marker registry, collection hook,
 and documentation stay aligned.
 
+\subsection{Optimization Stopping Helper}
+
+\texttt{OptimizationRunner.run()} now uses one private helper for per-step
+stopping decisions.  Gradient tolerance, loss-change patience, and
+best-likelihood patience previously appeared once inside the ordinary
+Adam/Adagrad path and again after the LBFGS path; the shared helper preserves
+the same priority order while keeping checkpoint, row-recording, and logging
+logic independent of optimizer phase.  A new focused optimization workflow test
+module covers the helper's ordering and no-stop cases without constructing a
+CUDA model.
+
 \section{Verification Log}
 
 \begin{center}
@@ -3447,6 +3458,24 @@ Release metadata checker after pytest marker taxonomy cleanup &
 \texttt{expected license blockers} \\
 \texttt{pdflatex -interaction=nonstopmode -halt-on-error ...professionalization...} &
 Audit log build after pytest marker taxonomy cleanup &
+\texttt{ok with known overfull table warnings} \\
+\texttt{python -m py\_compile gpurec/workflow/optimize.py tests/unit/test\_optimization\_workflow.py} &
+Optimization stopping-helper syntax &
+\texttt{ok} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q tests/unit/test\_optimization\_workflow.py tests/unit/test\_workflow.py -k "..."} &
+Optimization stopping helper and runner regressions &
+\texttt{17 passed, 241 deselected} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q tests/unit/test\_release\_metadata.py -k "..."} &
+Explicit CPU unit path guard after optimization test split &
+\texttt{1 passed, 17 deselected} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
+CPU unit gate after optimization stopping-helper extraction &
+\texttt{439 passed, 28 deselected} \\
+\texttt{python scripts/check\_release\_metadata.py} &
+Release metadata checker after optimization stopping-helper extraction &
+\texttt{expected license blockers} \\
+\texttt{pdflatex -interaction=nonstopmode -halt-on-error ...professionalization...} &
+Audit log build after optimization stopping-helper extraction &
 \texttt{ok with known overfull table warnings} \\
 \bottomrule
 \end{tabular}

@@ -161,6 +161,27 @@ def _write_per_family_likelihoods(path: Path, model: GeneReconModel) -> None:
             handle.write(f"{family}\t{nll:.12g}\t{-nll:.12g}\n")
 
 
+def _step_stopping_status(
+    config: RunConfig,
+    *,
+    step: int,
+    grad_inf: float,
+    stable_loss_steps: int,
+    best_step: int | None,
+) -> dict[str, str] | None:
+    if grad_inf <= config.grad_inf_tol:
+        return {"status": "converged", "reason": "gradient_tolerance"}
+    if config.loss_patience and stable_loss_steps >= config.loss_patience:
+        return {"status": "stalled", "reason": "loss_change_patience"}
+    if (
+        config.best_likelihood_patience
+        and best_step is not None
+        and step - int(best_step) >= config.best_likelihood_patience
+    ):
+        return {"status": "stalled", "reason": "best_likelihood_patience"}
+    return None
+
+
 class OptimizationRunner:
     def __init__(self, config: RunConfig):
         self.config = config
@@ -394,7 +415,6 @@ class OptimizationRunner:
                     closure_evals += 1
                     return loss_i
 
-                stop_after_row = False
                 save_best_after_row = False
                 if phase == "lbfgs":
                     try:
@@ -425,9 +445,7 @@ class OptimizationRunner:
                     skip_step_for_gradient = (
                         float(metrics.get("grad/inf", math.inf)) <= config.grad_inf_tol
                     )
-                    if skip_step_for_gradient:
-                        stop_after_row = True
-                    else:
+                    if not skip_step_for_gradient:
                         optimizer.step()
                         with torch.no_grad():
                             model.clamp_theta_(config.min_rate, config.max_rate)
@@ -469,25 +487,6 @@ class OptimizationRunner:
                     best_nll = objective
                     best_step = step
                     save_best_after_row = True
-
-                if phase != "lbfgs":
-                    row_grad = float(metrics.get("grad/inf", math.inf))
-                    if row_grad <= config.grad_inf_tol:
-                        status = {
-                            "status": "converged",
-                            "reason": "gradient_tolerance",
-                        }
-                        stop_after_row = True
-                    if config.loss_patience and stable_loss_steps >= config.loss_patience:
-                        status = {"status": "stalled", "reason": "loss_change_patience"}
-                        stop_after_row = True
-                    if (
-                        config.best_likelihood_patience
-                        and best_step is not None
-                        and step - int(best_step) >= config.best_likelihood_patience
-                    ):
-                        status = {"status": "stalled", "reason": "best_likelihood_patience"}
-                        stop_after_row = True
 
                 row = {
                     "step": step,
@@ -547,21 +546,15 @@ class OptimizationRunner:
                         flush=True,
                     )
 
-                if stop_after_row:
-                    break
-                if phase == "lbfgs" and row.get("grad/inf", math.inf) <= config.grad_inf_tol:
-                    status = {"status": "converged", "reason": "gradient_tolerance"}
-                    break
-                if phase == "lbfgs" and config.loss_patience and stable_loss_steps >= config.loss_patience:
-                    status = {"status": "stalled", "reason": "loss_change_patience"}
-                    break
-                if (
-                    phase == "lbfgs"
-                    and config.best_likelihood_patience
-                    and best_step is not None
-                    and step - int(best_step) >= config.best_likelihood_patience
-                ):
-                    status = {"status": "stalled", "reason": "best_likelihood_patience"}
+                step_status = _step_stopping_status(
+                    config,
+                    step=step,
+                    grad_inf=float(row.get("grad/inf", math.inf)),
+                    stable_loss_steps=stable_loss_steps,
+                    best_step=best_step,
+                )
+                if step_status is not None:
+                    status = step_status
                     break
             else:
                 status = {"status": "not_converged", "reason": "max_steps"}
