@@ -72,6 +72,16 @@ def checkpoint_string_list(path: Path, key: str, value: Any) -> list[str]:
     return list(value)
 
 
+def checkpoint_progress(path: Path, payload: dict[str, Any]) -> tuple[int, int]:
+    step = int(checkpoint_nonnegative_int(path, "step", payload.get("step", MISSING)))
+    next_step = int(
+        checkpoint_nonnegative_int(path, "next_step", payload.get("next_step", MISSING))
+    )
+    if next_step not in {step, step + 1}:
+        raise RuntimeError(f"checkpoint {path} has inconsistent progress metadata")
+    return step, next_step
+
+
 def model_family_names(model: Any) -> list[str]:
     if hasattr(model, "family_names"):
         return list(model.family_names)

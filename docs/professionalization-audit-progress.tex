@@ -2310,6 +2310,22 @@ directory creation, and the existing staged summary-output paths.  Additional
 guards pin the lightweight import footprint and copy semantics of the shared
 workflow metadata helpers.
 
+\subsection{Shared Checkpoint Progress Parser}
+
+Checkpoint loading and optimization resume parsing now share
+\texttt{checkpoint\_progress()} from \texttt{gpurec.workflow.\_metadata}.  The
+helper owns non-negative integer parsing for \texttt{step} and
+\texttt{next\_step}, accepts integer-valued floats consistently with the other
+metadata validators, and preserves the existing inconsistent-progress error
+when \texttt{next\_step} is neither \texttt{step} nor \texttt{step + 1}.
+
+The callers still own their schema boundaries: \texttt{checkpoint.py} checks the
+required key set before calling the shared helper, while \texttt{optimize.py}
+uses the returned \texttt{next\_step} to construct resume state and compare it
+with the configured optimization step limit.  CPU tests cover direct helper
+normalization, resume payload parsing, and checkpoint load rejection for invalid
+progress metadata.
+
 \section{Verification Log}
 
 \begin{center}
@@ -5194,6 +5210,21 @@ CPU unit gate after strict JSON writer extraction &
 \texttt{python scripts/check\_release\_metadata.py} &
 Release metadata checker after strict JSON writer extraction &
 \texttt{expected license blockers} \\
+\texttt{python -m py\_compile gpurec/workflow/\_metadata.py gpurec/workflow/checkpoint.py gpurec/workflow/optimize.py tests/unit/test\_workflow.py tests/unit/test\_optimization\_workflow.py} &
+Shared checkpoint progress parser syntax &
+\texttt{ok} \\
+\texttt{python -m pytest selected checkpoint progress parser and resume guards -q} &
+Focused checkpoint progress parser guards &
+\texttt{18 passed} \\
+\texttt{python -m pytest tests/unit/test\_optimization\_workflow.py tests/unit/test\_workflow.py -q} &
+Touched optimization workflow and workflow suites after progress parser extraction &
+\texttt{436 passed} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' python -m pytest tests/unit -q -m "unit and not gpu"} &
+CPU unit gate after shared checkpoint progress parser &
+\texttt{768 passed, 6 deselected} \\
+\texttt{python scripts/check\_release\_metadata.py} &
+Release metadata checker after shared checkpoint progress parser &
+\texttt{expected license blockers} \\
 \bottomrule
 \end{tabular}
 \end{center}
@@ -5207,9 +5238,9 @@ Release metadata checker after strict JSON writer extraction &
         document a Rust-toolchain requirement for source-tree sampling.
   \item Add an installed-artifact sampling smoke once the backtracking binary
         distribution model is settled.
-  \item Consider sharing the remaining checkpoint progress parser between
-        checkpoint loading and optimization resume if it can preserve the
-        current error contracts cleanly.
+  \item Re-scan workflow internals for the next low-risk reuse or boundary
+        improvement now that artifact publication, metadata validation, and
+        summary JSON handling have shared helpers.
   \item Continue auditing public API consistency, documentation coverage, and
         CPU-safe regression tests for user-facing workflows.
   \item Keep committing small, verified increments so the branch remains

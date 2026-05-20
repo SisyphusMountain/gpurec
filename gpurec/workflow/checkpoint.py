@@ -8,7 +8,7 @@ from typing import Any
 import torch
 
 from ._metadata import (
-    checkpoint_nonnegative_int,
+    checkpoint_progress,
     checkpoint_string_list,
     model_family_names,
     model_species_names,
@@ -164,10 +164,7 @@ def _validate_checkpoint_payload(payload: Any, path: Path) -> dict[str, Any]:
             f"{', '.join(missing_identity)}"
         )
     _require_config_identity_fields(path, payload["config"])
-    step = checkpoint_nonnegative_int(path, "step", payload["step"])
-    next_step = checkpoint_nonnegative_int(path, "next_step", payload["next_step"])
-    if next_step not in {step, step + 1}:
-        raise RuntimeError(f"checkpoint {path} has inconsistent progress metadata")
+    checkpoint_progress(path, payload)
     theta = payload["theta"]
     if not torch.is_tensor(theta):
         raise RuntimeError(f"checkpoint {path} has invalid theta tensor")

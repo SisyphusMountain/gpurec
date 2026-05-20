@@ -21,6 +21,7 @@ from ._metadata import (
     MISSING,
     checkpoint_finite_float,
     checkpoint_nonnegative_int,
+    checkpoint_progress,
     model_family_names,
 )
 from .checkpoint import (
@@ -80,22 +81,7 @@ def _is_finite_tensor(tensor: torch.Tensor | None) -> bool:
 
 
 def _resume_state_from_payload(path: Path, payload: dict[str, Any]) -> _ResumeState:
-    checkpoint_step = int(
-        checkpoint_nonnegative_int(
-            path,
-            "step",
-            payload.get("step", MISSING),
-        )
-    )
-    start_step = int(
-        checkpoint_nonnegative_int(
-            path,
-            "next_step",
-            payload.get("next_step", MISSING),
-        )
-    )
-    if start_step not in {checkpoint_step, checkpoint_step + 1}:
-        raise RuntimeError(f"checkpoint {path} has inconsistent progress metadata")
+    _, start_step = checkpoint_progress(path, payload)
     ckpt_status = payload.get("status")
     if ckpt_status is None:
         ckpt_status = {}

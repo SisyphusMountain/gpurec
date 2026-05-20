@@ -54,7 +54,11 @@ from gpurec.workflow.checkpoint import (
     restore_model_theta,
     save_checkpoint,
 )
-from gpurec.workflow._metadata import model_family_names, model_species_names
+from gpurec.workflow._metadata import (
+    checkpoint_progress,
+    model_family_names,
+    model_species_names,
+)
 from gpurec.workflow.config import RunConfig, SamplingConfig
 from gpurec.workflow.diagnostics import (
     append_jsonl,
@@ -2001,6 +2005,17 @@ def test_workflow_metadata_model_name_helpers_return_copies_and_fallbacks():
 
     assert model.family_names == ["family_a"]
     assert model.species_names == ["species_a"]
+
+
+def test_workflow_metadata_checkpoint_progress_normalizes_and_validates(
+    tmp_path: Path,
+):
+    path = tmp_path / "checkpoint.pt"
+
+    assert checkpoint_progress(path, {"step": 2.0, "next_step": 3}) == (2, 3)
+
+    with pytest.raises(RuntimeError, match="inconsistent progress metadata"):
+        checkpoint_progress(path, {"step": 2, "next_step": 4})
 
 
 def test_sampling_config_validates_selection(tmp_path: Path):
