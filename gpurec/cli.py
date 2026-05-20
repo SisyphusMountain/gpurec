@@ -243,7 +243,10 @@ def _add_run_config_args(parser: argparse.ArgumentParser) -> None:
         "--dtype",
         type=_dtype_name,
         metavar="{float32,float64}",
-        help="Floating-point dtype. Workflow default: float32.",
+        help=(
+            "Floating-point dtype; aliases include fp32/single and "
+            "fp64/double. Workflow default: float32."
+        ),
     )
     parser.add_argument("--start", type=int, help="First family index to load.")
     parser.add_argument(
@@ -265,7 +268,10 @@ def _add_run_config_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--family-chunk-size",
         type=_chunk_size,
-        help="Families per resident batch; use 0/all/none for one resident batch.",
+        help=(
+            "Families per resident batch; use 0/all/none/null for one "
+            "resident batch."
+        ),
     )
     parser.add_argument(
         "--clade-budget",
@@ -276,7 +282,11 @@ def _add_run_config_args(parser: argparse.ArgumentParser) -> None:
         "--batch-packing",
         type=_batch_packing,
         metavar="{sequential,clade_first_fit,depth_first_fit}",
-        help="Resident-batch packing policy. Workflow default: depth_first_fit.",
+        help=(
+            "Resident-batch packing policy; aliases include "
+            "contiguous/input_order, ffd/clade_ffd, and "
+            "depth_ffd/wave_first_fit. Workflow default: depth_first_fit."
+        ),
     )
     parser.add_argument(
         "--max-wave-size",

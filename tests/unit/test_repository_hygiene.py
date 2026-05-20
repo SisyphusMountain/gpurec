@@ -245,6 +245,27 @@ def test_project_readme_documents_preprocess_cache_refresh_guidance():
     assert "original tree inputs" in normalized
 
 
+def test_project_readme_documents_workflow_config_aliases():
+    root = Path(__file__).resolve().parents[2]
+    project_readme = (root / "README.md").read_text(encoding="utf-8")
+
+    for token in (
+        "`dtype`",
+        "`fp32`",
+        "`single`",
+        "`torch.float64`",
+        "`family_chunk_size`",
+        "JSON `null`",
+        "`batch_packing`",
+        "`clade_first_fit`",
+        "`depth_first_fit`",
+        "`first_fit_decreasing`",
+        "`wave_first_fit`",
+        "`clade_budget`",
+    ):
+        assert token in project_readme
+
+
 def test_project_readme_documents_sampling_output_layout():
     root = Path(__file__).resolve().parents[2]
     project_readme = (root / "README.md").read_text(encoding="utf-8")

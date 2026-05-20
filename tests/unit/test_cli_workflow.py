@@ -1005,7 +1005,12 @@ def test_cli_optimize_help_describes_config_and_path_inputs(capsys):
     assert "Required unless supplied by --config" in captured.out
     assert "Workflow" in captured.out
     assert "default: cuda" in captured.out
-    assert "0/all/none" in captured.out
+    assert "fp32/single" in captured.out
+    assert "fp64/double" in captured.out
+    assert "0/all/none/null" in captured.out
+    assert "contiguous/input_order" in captured.out
+    assert "ffd/clade_ffd" in captured.out
+    assert "depth_ffd/wave_first_fit" in captured.out
 
 
 def test_cli_sample_help_describes_checkpoint_and_backtracking(capsys):

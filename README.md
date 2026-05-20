@@ -149,6 +149,16 @@ data; copy or adapt a flat JSON config alongside your own tree files instead:
 }
 ```
 
+Workflow config aliases are shared between JSON configs and CLI flags.  `dtype`
+accepts `float32`/`float64` plus aliases such as `fp32`, `single`, `fp64`,
+`double`, `torch.float32`, and `torch.float64`.  `family_chunk_size` accepts a
+non-negative integer, with `0`, `all`, `none`, or JSON `null` meaning one
+resident batch.  `batch_packing` accepts `sequential`, `clade_first_fit`, and
+`depth_first_fit`; aliases include `contiguous`/`input_order`,
+`first_fit_decreasing`/`ffd`/`clade_ffd`, and
+`depth_ffd`/`critical_path_first_fit`/`wave_first_fit`, with hyphenated forms
+accepted by the CLI.  Non-sequential packing requires `clade_budget`.
+
 ```bash
 gpurec optimize \
   --species-tree S.tree \
