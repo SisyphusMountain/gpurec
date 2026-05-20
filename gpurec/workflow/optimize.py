@@ -4,7 +4,6 @@ import math
 import time
 from contextlib import suppress
 from dataclasses import dataclass
-from numbers import Integral, Real
 from pathlib import Path
 from typing import Any
 
@@ -17,6 +16,12 @@ from ._artifact_publish import (
     cleanup_artifact_temp_dir,
     create_artifact_temp_dir,
     publish_staged_artifacts,
+)
+from ._metadata import (
+    MISSING,
+    checkpoint_finite_float,
+    checkpoint_nonnegative_int,
+    model_family_names,
 )
 from .checkpoint import (
     load_checkpoint,
@@ -59,7 +64,6 @@ class _ResumeState:
     stable_loss_steps: int = 0
 
 
-_MISSING = object()
 _FINAL_ARTIFACT_FILES = (
     "history.jsonl",
     "rates_final.tsv",
@@ -74,77 +78,19 @@ def _is_finite_tensor(tensor: torch.Tensor | None) -> bool:
     return tensor is not None and bool(torch.isfinite(tensor).all().item())
 
 
-def _invalid_resume_field(path: Path, key: str) -> RuntimeError:
-    return RuntimeError(f"checkpoint {path} has invalid {key}")
-
-
-def _resume_int(
-    path: Path,
-    key: str,
-    value: Any,
-    *,
-    default: int | object = _MISSING,
-    allow_none: bool = False,
-    nonnegative: bool = False,
-) -> int | None:
-    if value is _MISSING:
-        if default is not _MISSING:
-            return int(default)
-        raise _invalid_resume_field(path, key)
-    if value is None:
-        if allow_none:
-            return None
-        raise _invalid_resume_field(path, key)
-    if isinstance(value, bool):
-        raise _invalid_resume_field(path, key)
-    if isinstance(value, Integral):
-        number = int(value)
-    elif isinstance(value, Real):
-        raw = float(value)
-        if not math.isfinite(raw) or not raw.is_integer():
-            raise _invalid_resume_field(path, key)
-        number = int(raw)
-    else:
-        raise _invalid_resume_field(path, key)
-    if nonnegative and number < 0:
-        raise _invalid_resume_field(path, key)
-    return number
-
-
-def _resume_float(
-    path: Path,
-    key: str,
-    value: Any,
-    *,
-    allow_none: bool = False,
-) -> float | None:
-    if value is None:
-        if allow_none:
-            return None
-        raise _invalid_resume_field(path, key)
-    if isinstance(value, bool) or not isinstance(value, Real):
-        raise _invalid_resume_field(path, key)
-    number = float(value)
-    if not math.isfinite(number):
-        raise _invalid_resume_field(path, key)
-    return number
-
-
 def _resume_state_from_payload(path: Path, payload: dict[str, Any]) -> _ResumeState:
     checkpoint_step = int(
-        _resume_int(
+        checkpoint_nonnegative_int(
             path,
             "step",
-            payload.get("step", _MISSING),
-            nonnegative=True,
+            payload.get("step", MISSING),
         )
     )
     start_step = int(
-        _resume_int(
+        checkpoint_nonnegative_int(
             path,
             "next_step",
-            payload.get("next_step", _MISSING),
-            nonnegative=True,
+            payload.get("next_step", MISSING),
         )
     )
     if start_step not in {checkpoint_step, checkpoint_step + 1}:
@@ -157,32 +103,30 @@ def _resume_state_from_payload(path: Path, payload: dict[str, Any]) -> _ResumeSt
 
     return _ResumeState(
         start_step=start_step,
-        best_nll=_resume_float(
+        best_nll=checkpoint_finite_float(
             path,
             "status.best_nll_bits",
             ckpt_status.get("best_nll_bits"),
             allow_none=True,
         ),
-        best_step=_resume_int(
+        best_step=checkpoint_nonnegative_int(
             path,
             "status.best_step",
             ckpt_status.get("best_step"),
             allow_none=True,
-            nonnegative=True,
         ),
-        previous_objective=_resume_float(
+        previous_objective=checkpoint_finite_float(
             path,
             "status.previous_objective",
             ckpt_status.get("previous_objective"),
             allow_none=True,
         ),
         stable_loss_steps=int(
-            _resume_int(
+            checkpoint_nonnegative_int(
                 path,
                 "status.stable_loss_steps",
-                ckpt_status.get("stable_loss_steps", _MISSING),
+                ckpt_status.get("stable_loss_steps", MISSING),
                 default=0,
-                nonnegative=True,
             )
         ),
     )
@@ -201,14 +145,10 @@ def _validate_resume_progress(
         )
 
 
-def _family_names(model: GeneReconModel) -> list[str]:
-    return model.family_names
-
-
 def _parameter_labels(model: GeneReconModel, mode: str) -> list[str]:
     theta_rows = int(model.theta.detach().reshape(-1, 3).shape[0])
     if mode == "genewise":
-        return _family_names(model)
+        return model_family_names(model)
     if mode == "specieswise":
         return model.species_names[:theta_rows]
     return ["global"]
@@ -245,7 +185,7 @@ def _write_rate_table(path: Path, model: GeneReconModel, mode: str) -> None:
 @torch.no_grad()
 def _per_family_nll(model: GeneReconModel) -> list[tuple[str, float]]:
     values = model.full_nll_per_family().detach().cpu().reshape(-1).tolist()
-    return list(zip(_family_names(model), values))
+    return list(zip(model_family_names(model), values))
 
 
 def _write_per_family_likelihoods(path: Path, model: GeneReconModel) -> None:

@@ -1,12 +1,18 @@
 from __future__ import annotations
 
 import pickle
-from numbers import Integral, Real
+from numbers import Integral
 from pathlib import Path
 from typing import Any
 
 import torch
 
+from ._metadata import (
+    checkpoint_nonnegative_int,
+    checkpoint_string_list,
+    model_family_names,
+    model_species_names,
+)
 from .config import RunConfig
 
 
@@ -20,18 +26,6 @@ _CHECKPOINT_CONFIG_IDENTITY_KEYS = (
     "start",
     "max_families",
 )
-
-
-def _family_names(model: Any) -> list[str]:
-    if hasattr(model, "family_names"):
-        return list(model.family_names)
-    return []
-
-
-def _species_names(model: Any) -> list[str]:
-    if hasattr(model, "species_names"):
-        return list(model.species_names)
-    return []
 
 
 def _normalize_checkpoint_identity_value(key: str, value: Any) -> Any:
@@ -71,25 +65,25 @@ def validate_checkpoint_model_compatibility(
                 f"config.{key} differs"
             )
 
-    checkpoint_family_names = _checkpoint_string_list(
+    checkpoint_family_names = checkpoint_string_list(
         checkpoint_path,
         "family_names",
         payload.get("family_names"),
     )
-    model_family_names = _family_names(model)
-    if checkpoint_family_names != model_family_names:
+    current_family_names = model_family_names(model)
+    if checkpoint_family_names != current_family_names:
         raise RuntimeError(
             f"checkpoint {checkpoint_path} is incompatible with current run: "
             "family_names differ"
         )
 
-    checkpoint_species_names = _checkpoint_string_list(
+    checkpoint_species_names = checkpoint_string_list(
         checkpoint_path,
         "species_names",
         payload.get("species_names"),
     )
-    model_species_names = _species_names(model)
-    if checkpoint_species_names != model_species_names:
+    current_species_names = model_species_names(model)
+    if checkpoint_species_names != current_species_names:
         raise RuntimeError(
             f"checkpoint {checkpoint_path} is incompatible with current run: "
             "species_names differ"
@@ -120,8 +114,8 @@ def save_checkpoint(
         "optimizer_phase": optimizer_phase,
         "status": status,
         "last_row": row,
-        "family_names": _family_names(model),
-        "species_names": _species_names(model),
+        "family_names": model_family_names(model),
+        "species_names": model_species_names(model),
     }
     tmp = path.with_name(path.name + ".tmp")
     torch.save(payload, tmp)
@@ -170,8 +164,8 @@ def _validate_checkpoint_payload(payload: Any, path: Path) -> dict[str, Any]:
             f"{', '.join(missing_identity)}"
         )
     _require_config_identity_fields(path, payload["config"])
-    step = _checkpoint_int(path, "step", payload["step"])
-    next_step = _checkpoint_int(path, "next_step", payload["next_step"])
+    step = checkpoint_nonnegative_int(path, "step", payload["step"])
+    next_step = checkpoint_nonnegative_int(path, "next_step", payload["next_step"])
     if next_step not in {step, step + 1}:
         raise RuntimeError(f"checkpoint {path} has inconsistent progress metadata")
     theta = payload["theta"]
@@ -190,8 +184,8 @@ def _validate_checkpoint_payload(payload: Any, path: Path) -> dict[str, Any]:
     status = payload.get("status")
     if status is not None and not isinstance(status, dict):
         raise RuntimeError(f"checkpoint {path} has invalid status metadata")
-    _checkpoint_string_list(path, "family_names", payload["family_names"])
-    _checkpoint_string_list(path, "species_names", payload["species_names"])
+    checkpoint_string_list(path, "family_names", payload["family_names"])
+    checkpoint_string_list(path, "species_names", payload["species_names"])
     return payload
 
 
@@ -204,12 +198,6 @@ def _require_config_identity_fields(path: Path, config: dict[str, Any]) -> None:
         )
 
 
-def _checkpoint_string_list(path: Path, key: str, value: Any) -> list[str]:
-    if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
-        raise RuntimeError(f"checkpoint {path} has invalid {key} metadata")
-    return list(value)
-
-
 def _checkpoint_version(path: Path, value: Any) -> int:
     if isinstance(value, bool) or not isinstance(value, Integral):
         raise RuntimeError(
@@ -217,24 +205,6 @@ def _checkpoint_version(path: Path, value: Any) -> int:
             f"expected {CHECKPOINT_VERSION}"
         )
     return int(value)
-
-
-def _checkpoint_int(path: Path, key: str, value: Any) -> int:
-    if isinstance(value, bool):
-        raise RuntimeError(f"checkpoint {path} has invalid {key}")
-    if isinstance(value, Integral):
-        number = int(value)
-    elif isinstance(value, Real):
-        raw = float(value)
-        if not raw.is_integer():
-            raise RuntimeError(f"checkpoint {path} has invalid {key}")
-        number = int(raw)
-    else:
-        raise RuntimeError(f"checkpoint {path} has invalid {key}")
-    if number < 0:
-        raise RuntimeError(f"checkpoint {path} has invalid {key}")
-    return number
-
 
 def load_checkpoint(path: str | Path, *, map_location: str | torch.device = "cpu") -> dict[str, Any]:
     path = Path(path)

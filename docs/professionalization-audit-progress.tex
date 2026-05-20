@@ -2279,6 +2279,22 @@ The package and release-readiness installed-wheel smokes now also validate
 public export discoverability through \texttt{dir()} and wildcard imports for
 \texttt{gpurec.workflow}.
 
+\subsection{Shared Workflow Checkpoint Metadata Helpers}
+
+Checkpoint loading and optimization resume parsing now share private workflow
+metadata validators.  The new helper module centralizes non-negative integer
+metadata parsing, finite floating-point metadata parsing, checkpoint string-list
+identity validation, and model family/species name extraction.  This removes the
+parallel \texttt{\_checkpoint\_int}/\texttt{\_resume\_int} implementations while
+keeping the serialized checkpoint payload and existing error contracts intact.
+
+The refactor intentionally leaves schema-specific validation in place:
+\texttt{checkpoint.py} still owns payload keys, versions, tensor checks, and
+config identity checks, while \texttt{optimize.py} still owns resume-state
+construction and configured-step limits.  New CPU cases cover boolean,
+fractional, non-finite, and missing progress/status metadata so future changes
+cannot weaken scalar validation.
+
 \section{Verification Log}
 
 \begin{center}
@@ -5130,6 +5146,24 @@ Release metadata checker after lazy workflow exports &
 \texttt{pdflatex -interaction=nonstopmode -halt-on-error ...professionalization...} &
 Audit log build after lazy workflow exports &
 \texttt{ok with known overfull table warnings} \\
+\texttt{python -m py\_compile gpurec/workflow/\_metadata.py gpurec/workflow/checkpoint.py gpurec/workflow/optimize.py tests/unit/test\_workflow.py tests/unit/test\_optimization\_workflow.py} &
+Shared checkpoint metadata helper syntax &
+\texttt{ok} \\
+\texttt{python -m pytest selected checkpoint/resume metadata guards -q} &
+Focused checkpoint and resume metadata validation guards &
+\texttt{50 passed, 382 deselected} \\
+\texttt{python -m pytest tests/unit/test\_optimization\_workflow.py tests/unit/test\_workflow.py -q} &
+Touched optimization workflow and workflow suites &
+\texttt{432 passed} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' python -m pytest tests/unit -q -m "unit and not gpu"} &
+CPU unit gate after shared checkpoint metadata helpers &
+\texttt{764 passed, 6 deselected} \\
+\texttt{python scripts/check\_release\_metadata.py} &
+Release metadata checker after shared checkpoint metadata helpers &
+\texttt{expected license blockers} \\
+\texttt{pdflatex -interaction=nonstopmode -halt-on-error ...professionalization...} &
+Audit log build after shared checkpoint metadata helpers &
+\texttt{ok with known overfull table warnings} \\
 \bottomrule
 \end{tabular}
 \end{center}
@@ -5143,8 +5177,8 @@ Audit log build after lazy workflow exports &
         document a Rust-toolchain requirement for source-tree sampling.
   \item Add an installed-artifact sampling smoke once the backtracking binary
         distribution model is settled.
-  \item Factor duplicate checkpoint/resume metadata validation into shared
-        workflow helpers without changing the public checkpoint format.
+  \item Audit remaining workflow internals for small opportunities to share
+        validation and artifact-handling helpers.
   \item Continue auditing public API consistency, documentation coverage, and
         CPU-safe regression tests for user-facing workflows.
   \item Keep committing small, verified increments so the branch remains

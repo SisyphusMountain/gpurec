@@ -3511,8 +3511,15 @@ def test_checkpoint_load_rejects_invalid_theta_values(
         ({"step": 0}, "missing key"),
         ({"step": 5, "next_step": 0}, "inconsistent progress metadata"),
         ({"step": 0, "next_step": 2}, "inconsistent progress metadata"),
+        ({"step": True, "next_step": 1}, "invalid step"),
         ({"step": -1, "next_step": 0}, "invalid step"),
+        ({"step": 1.5, "next_step": 2}, "invalid step"),
+        ({"step": math.nan, "next_step": 1}, "invalid step"),
+        ({"step": math.inf, "next_step": 1}, "invalid step"),
         ({"step": 0, "next_step": True}, "invalid next_step"),
+        ({"step": 0, "next_step": 1.5}, "invalid next_step"),
+        ({"step": 0, "next_step": math.nan}, "invalid next_step"),
+        ({"step": 0, "next_step": math.inf}, "invalid next_step"),
     ],
 )
 def test_checkpoint_load_rejects_invalid_progress_metadata(

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from pathlib import Path
 
 import pytest
@@ -124,12 +125,50 @@ def test_resume_state_from_payload_normalizes_checkpoint_metadata(tmp_path: Path
     )
 
 
+@pytest.mark.parametrize("status", [None, {}])
+def test_resume_state_from_payload_defaults_optional_status_metadata(
+    tmp_path: Path,
+    status: dict[str, object] | None,
+):
+    payload: dict[str, object] = {"step": 0, "next_step": 1}
+    if status is not None:
+        payload["status"] = status
+
+    state = _resume_state_from_payload(tmp_path / "resume.pt", payload)
+
+    assert state == _ResumeState(start_step=1)
+
+
 @pytest.mark.parametrize(
     ("payload_update", "message"),
     [
+        ({"step": True}, r"invalid step"),
+        ({"step": -1}, r"invalid step"),
+        ({"step": 1.5}, r"invalid step"),
+        ({"step": math.nan}, r"invalid step"),
+        ({"step": math.inf}, r"invalid step"),
         ({"next_step": True}, r"invalid next_step"),
         ({"next_step": -1}, r"invalid next_step"),
+        ({"next_step": math.nan}, r"invalid next_step"),
         ({"status": "not-a-dict"}, r"invalid status metadata"),
+        (
+            {
+                "status": {
+                    "best_nll_bits": True,
+                    "stable_loss_steps": 0,
+                },
+            },
+            r"invalid status\.best_nll_bits",
+        ),
+        (
+            {
+                "status": {
+                    "best_nll_bits": math.nan,
+                    "stable_loss_steps": 0,
+                },
+            },
+            r"invalid status\.best_nll_bits",
+        ),
         (
             {
                 "status": {
@@ -142,11 +181,29 @@ def test_resume_state_from_payload_normalizes_checkpoint_metadata(tmp_path: Path
         (
             {
                 "status": {
+                    "previous_objective": math.inf,
+                    "stable_loss_steps": 0,
+                },
+            },
+            r"invalid status\.previous_objective",
+        ),
+        (
+            {
+                "status": {
                     "previous_objective": "not-a-number",
                     "stable_loss_steps": 0,
                 },
             },
             r"invalid status\.previous_objective",
+        ),
+        (
+            {
+                "status": {
+                    "best_step": True,
+                    "stable_loss_steps": 0,
+                },
+            },
+            r"invalid status\.best_step",
         ),
         (
             {
@@ -161,6 +218,14 @@ def test_resume_state_from_payload_normalizes_checkpoint_metadata(tmp_path: Path
             {
                 "status": {
                     "stable_loss_steps": -1,
+                },
+            },
+            r"invalid status\.stable_loss_steps",
+        ),
+        (
+            {
+                "status": {
+                    "stable_loss_steps": math.inf,
                 },
             },
             r"invalid status\.stable_loss_steps",
