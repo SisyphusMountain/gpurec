@@ -49,10 +49,10 @@ def _chunk_size(value: str) -> int:
 
 
 def _dtype_name(value: str) -> str:
-    from gpurec.workflow.config import dtype_from_name
+    from gpurec.workflow.config import dtype_name_from_name
 
     try:
-        return str(dtype_from_name(value)).removeprefix("torch.")
+        return dtype_name_from_name(value)
     except ValueError as exc:
         raise argparse.ArgumentTypeError(str(exc)) from exc
 

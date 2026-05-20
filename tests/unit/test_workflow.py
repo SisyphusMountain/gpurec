@@ -161,6 +161,48 @@ def test_run_config_write_json_creates_parent_directories_and_expands_user(
     assert RunConfig.from_json(output_path).to_dict() == config.to_dict()
 
 
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("torch.float64", "float64"),
+        ("double", "float64"),
+        ("fp32", "float32"),
+        ("single", "float32"),
+    ],
+)
+def test_run_config_normalizes_dtype_aliases(
+    tmp_path: Path,
+    value: str,
+    expected: str,
+):
+    config = RunConfig(
+        species_tree=tmp_path / "sp.nwk",
+        families_file=tmp_path / "families.txt",
+        out_dir=tmp_path / "out",
+        device="cpu",
+        dtype=value,
+    )
+
+    assert config.dtype == expected
+
+
+def test_run_config_write_json_persists_canonical_dtype(tmp_path: Path):
+    config = RunConfig(
+        species_tree=tmp_path / "sp.nwk",
+        families_file=tmp_path / "families.txt",
+        out_dir=tmp_path / "out",
+        device="cpu",
+        dtype="torch.float64",
+    )
+    path = tmp_path / "config.json"
+
+    config.write_json(path)
+
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    assert payload["dtype"] == "float64"
+    assert RunConfig.from_json(path).dtype == "float64"
+
+
 def test_run_config_from_json_rejects_nonstandard_numeric_constants(tmp_path: Path):
     path = tmp_path / "config.json"
     path.write_text(
@@ -2219,6 +2261,7 @@ def test_checkpoint_roundtrip_restores_theta_and_status(tmp_path: Path):
         families_file=tmp_path / "families.txt",
         out_dir=tmp_path / "out",
         device="cpu",
+        dtype="torch.float64",
     )
     model = _DummyModel()
     with torch.no_grad():
@@ -2247,6 +2290,8 @@ def test_checkpoint_roundtrip_restores_theta_and_status(tmp_path: Path):
 
     assert int(payload["step"]) == 4
     assert int(payload["next_step"]) == 5
+    assert payload["config"]["dtype"] == "float64"
+    assert RunConfig.from_dict(payload["config"]).dtype == "float64"
     assert payload["optimizer_phase"] == "adam"
     assert payload["status"]["best_nll_bits"] == 12.0
     assert isinstance(payload["optimizer_state"], dict)

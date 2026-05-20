@@ -31,6 +31,10 @@ def dtype_from_name(name: str) -> torch.dtype:
     raise ValueError(f"unsupported dtype {name!r}; expected float32 or float64")
 
 
+def dtype_name_from_name(name: str) -> str:
+    return str(dtype_from_name(name)).removeprefix("torch.")
+
+
 def _normalize_int(name: str, value: int | float | str) -> int:
     if isinstance(value, bool):
         raise ValueError(f"{name} must be an integer")
@@ -374,6 +378,7 @@ class RunConfig:
             setattr(self, name, _normalize_finite_float(name, getattr(self, name)))
         if not self.device:
             self.device = _default_device()
+        self.dtype = dtype_name_from_name(self.dtype)
         self.validate()
 
     def validate(self) -> None:
