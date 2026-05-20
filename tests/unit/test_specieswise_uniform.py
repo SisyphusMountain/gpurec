@@ -185,6 +185,7 @@ def _make_model(
     mode: str,
     dtype: torch.dtype,
     device: torch.device,
+    preprocess_cache_dir: Path,
     use_pruning: bool = False,
 ) -> GeneReconModel:
     return GeneReconModel.from_trees(
@@ -199,7 +200,7 @@ def _make_model(
         tol_E=TOL,
         neumann_terms=2,
         use_pruning=use_pruning,
-        preprocess_cache_dir="/tmp/gpurec_preprocess_cache",
+        preprocess_cache_dir=preprocess_cache_dir,
     )
 
 
@@ -272,12 +273,19 @@ def _loss_and_grad(
     return loss.detach().clone(), model.theta.grad.detach().clone()
 
 
-def test_specieswise_uniform_forward_root_rows_match_saved_state(data_dir_100):
+def test_specieswise_uniform_forward_root_rows_match_saved_state(data_dir_100, tmp_path):
     """Full saved-state likelihood agrees with the root-row output mode."""
     device = torch.device("cuda")
     dtype = torch.float32
     genes = _genes(data_dir_100, 3)
-    model = _make_model(data_dir_100, genes, mode="specieswise", dtype=dtype, device=device)
+    model = _make_model(
+        data_dir_100,
+        genes,
+        mode="specieswise",
+        dtype=dtype,
+        device=device,
+        preprocess_cache_dir=tmp_path / "preprocess",
+    )
     with torch.no_grad():
         model.theta.copy_(_specieswise_theta(model.n_species, dtype=dtype, device=device))
 
@@ -296,7 +304,7 @@ def test_specieswise_uniform_forward_root_rows_match_saved_state(data_dir_100):
     assert not torch.isnan(full_out["Pibar_wave_ordered"]).any()
 
 
-def test_gpu_logsumexp_traces_match_final_values(data_dir_100):
+def test_gpu_logsumexp_traces_match_final_values(data_dir_100, tmp_path):
     """Opt-in convergence traces stay on GPU and match final E/root rows."""
     device = torch.device("cuda")
     dtype = torch.float32
@@ -312,7 +320,7 @@ def test_gpu_logsumexp_traces_match_final_values(data_dir_100):
         fixed_iters_Pi=4,
         neumann_terms=2,
         use_pruning=False,
-        preprocess_cache_dir="/tmp/gpurec_preprocess_cache",
+        preprocess_cache_dir=tmp_path / "preprocess",
     )
     static = model.static
     log_pS, log_pD, log_pL, max_transfer_vec = _extract_parameters(
@@ -372,12 +380,19 @@ def test_gpu_logsumexp_traces_match_final_values(data_dir_100):
     )
 
 
-def test_specieswise_uniform_backward_fast_path_runs(data_dir_1000):
+def test_specieswise_uniform_backward_fast_path_runs(data_dir_1000, tmp_path):
     """Specieswise uniform backward runs through the retained fast path."""
     device = torch.device("cuda")
     dtype = torch.float32
     genes = _genes(data_dir_1000, 2)
-    model = _make_model(data_dir_1000, genes, mode="specieswise", dtype=dtype, device=device)
+    model = _make_model(
+        data_dir_1000,
+        genes,
+        mode="specieswise",
+        dtype=dtype,
+        device=device,
+        preprocess_cache_dir=tmp_path / "preprocess",
+    )
     theta = _specieswise_theta(model.n_species, dtype=dtype, device=device)
     with torch.no_grad():
         model.theta.copy_(theta)
@@ -391,13 +406,28 @@ def test_specieswise_uniform_backward_fast_path_runs(data_dir_1000):
 
 def test_constant_specieswise_matches_global_loss_and_gradient_semantics(
     data_dir_1000,
+    tmp_path,
 ):
     """Constant specieswise rates have global-mode loss and summed gradients."""
     device = torch.device("cuda")
     dtype = torch.float32
     genes = _genes(data_dir_1000, 2)
-    global_model = _make_model(data_dir_1000, genes, mode="global", dtype=dtype, device=device)
-    species_model = _make_model(data_dir_1000, genes, mode="specieswise", dtype=dtype, device=device)
+    global_model = _make_model(
+        data_dir_1000,
+        genes,
+        mode="global",
+        dtype=dtype,
+        device=device,
+        preprocess_cache_dir=tmp_path / "global-preprocess",
+    )
+    species_model = _make_model(
+        data_dir_1000,
+        genes,
+        mode="specieswise",
+        dtype=dtype,
+        device=device,
+        preprocess_cache_dir=tmp_path / "species-preprocess",
+    )
     theta_global, theta_species = _constant_specieswise_theta(
         species_model.n_species, dtype=dtype, device=device
     )

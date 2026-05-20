@@ -3872,6 +3872,18 @@ def test_gpu_tests_use_explicit_module_level_markers():
     assert offenders == []
 
 
+def test_tests_use_pytest_managed_temporary_paths():
+    root = Path(__file__).resolve().parents[2]
+    forbidden = "/" + "tmp/"
+    offenders = [
+        str(path.relative_to(root))
+        for path in sorted((root / "tests").rglob("*.py"))
+        if forbidden in path.read_text(encoding="utf-8")
+    ]
+
+    assert offenders == []
+
+
 def test_project_readme_documents_preprocess_cache_refresh_guidance():
     root = Path(__file__).resolve().parents[2]
     project_readme = (root / "README.md").read_text(encoding="utf-8")
