@@ -2133,6 +2133,24 @@ A fake-model regression forces \texttt{full\_loss()} to raise and
 \texttt{close()} to raise during cleanup, then verifies that the original
 optimization error is the one reported and that cleanup was still attempted.
 
+\subsection{Optimization Final Artifact Staging}
+
+\texttt{OptimizationRunner.run()} now writes final flat artifacts into a hidden
+temporary directory before publishing them into \texttt{out\_dir}.  The staged
+set includes \texttt{history.jsonl} with the final-evaluation row,
+\texttt{rates\_final.tsv}, optional \texttt{per\_fam\_likelihoods.tsv},
+\texttt{theta\_final.pt}, \texttt{optimization\_history.csv}, and
+\texttt{summary.json}.  \texttt{summary.json} is published last so consumers can
+continue to treat it as the final report marker.
+
+Before publishing, the runner backs up existing final artifacts.  If any staged
+file cannot be produced or replacing a final artifact fails, old final artifacts
+are preserved and private staging/backup directories are removed.  The final
+\texttt{history.jsonl} row is deferred into the same publish path, so a failed
+final report no longer advertises a completed \texttt{final\_eval}.  A CPU
+regression injects a staged rate-table failure and verifies stale final
+artifacts remain untouched.
+
 \section{Verification Log}
 
 \begin{center}
@@ -4873,6 +4891,24 @@ Release metadata checker after sampling staging &
 \texttt{pdflatex -interaction=nonstopmode -halt-on-error ...professionalization...} &
 Audit log build after sampling staging &
 \texttt{ok with known overfull table warnings} \\
+\texttt{python -m py\_compile gpurec/workflow/optimize.py tests/unit/test\_workflow.py} &
+Optimization final artifact staging syntax &
+\texttt{ok} \\
+\texttt{python -m pytest selected OptimizationRunner final-artifact tests -q} &
+Focused optimization final artifact staging guards &
+\texttt{3 passed} \\
+\texttt{python -m pytest tests/unit/test\_workflow.py -q} &
+Workflow suite after optimization final artifact staging &
+\texttt{374 passed} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' python -m pytest tests/unit -q -m "unit and not gpu"} &
+CPU unit gate after optimization final artifact staging &
+\texttt{705 passed, 6 deselected} \\
+\texttt{python scripts/check\_release\_metadata.py} &
+Release metadata checker after optimization final artifact staging &
+\texttt{expected license blockers} \\
+\texttt{pdflatex -interaction=nonstopmode -halt-on-error ...professionalization...} &
+Audit log build after optimization final artifact staging &
+\texttt{ok with known overfull table warnings} \\
 \bottomrule
 \end{tabular}
 \end{center}
@@ -4889,8 +4925,6 @@ Audit log build after sampling staging &
   \item Decide whether successful windowed sampling reruns should replace only
         the selected family window or keep the current whole-output publish
         contract.
-  \item Stage and publish optimization final artifacts as one coherent final
-        report set, with \texttt{summary.json} left as the completion marker.
   \item Continue auditing public API consistency, documentation coverage, and
         CPU-safe regression tests for user-facing workflows.
   \item Keep committing small, verified increments so the branch remains

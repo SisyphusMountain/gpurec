@@ -58,6 +58,8 @@ from gpurec.workflow.diagnostics import parameter_stats
 from gpurec.workflow.optimize import OptimizationRunner, _write_rate_table
 from gpurec.workflow.sampling import SamplingRunner, _xml_species_and_transfer_counts
 
+optimize_workflow = importlib.import_module("gpurec.workflow.optimize")
+
 
 def test_run_config_json_roundtrip(tmp_path: Path):
     config = RunConfig(
@@ -3346,6 +3348,95 @@ def test_optimization_runner_run_writes_outputs_with_fake_model(tmp_path: Path):
     )
     assert "fam0" in per_family
     assert "fam1" in per_family
+
+
+def test_optimization_runner_preserves_final_artifacts_when_staging_fails(
+    tmp_path: Path,
+    monkeypatch,
+):
+    class FakeFinalArtifactModel:
+        def __init__(self):
+            self.theta = torch.nn.Parameter(
+                torch.tensor([[0.25, -0.15, 0.05]], dtype=torch.float32)
+            )
+            self.family_names = ["fam0"]
+            self.species_names = ["sp0", "sp1"]
+            self.n_families = 1
+            self.n_species = 2
+            self.batch_metadata = [SimpleNamespace(batch_index=0)]
+            self.closed = False
+
+        def full_loss(self):
+            return self.theta.square().sum() + 3.0
+
+        def full_nll_per_family(self):
+            return self.theta.detach().square().sum().reshape(1) + 2.0
+
+        def clamp_theta_(self, min_rate, max_rate):
+            with torch.no_grad():
+                self.theta.clamp_(min=-4.0, max=4.0)
+
+        def solver_stat_records(self):
+            return []
+
+        def clear(self):
+            return None
+
+        def close(self):
+            self.closed = True
+
+    class FakeFinalArtifactRunner(OptimizationRunner):
+        def build_model(self):
+            self.fake_model = FakeFinalArtifactModel()
+            return self.fake_model
+
+    config = RunConfig(
+        species_tree=tmp_path / "sp.nwk",
+        families_file=tmp_path / "families.txt",
+        out_dir=tmp_path / "out",
+        mode="genewise",
+        device="cpu",
+        optimizer="adam",
+        steps=1,
+        lr=0.05,
+        checkpoint_every=0,
+        log_every=10,
+        grad_inf_tol=0.0,
+        loss_patience=0,
+        best_likelihood_patience=0,
+    )
+    config.out_dir.mkdir(parents=True)
+    stale_text_artifacts = {
+        "rates_final.tsv": "stale rates",
+        "per_fam_likelihoods.tsv": "stale likelihoods",
+        "optimization_history.csv": "stale csv",
+        "summary.json": "stale summary",
+    }
+    for name, contents in stale_text_artifacts.items():
+        (config.out_dir / name).write_text(contents, encoding="utf-8")
+    theta_path = config.out_dir / "theta_final.pt"
+    theta_path.write_bytes(b"stale theta")
+
+    def fail_write_rate_table(path: Path, *_args: object, **_kwargs: object) -> None:
+        assert path.parent.name.startswith(".gpurec-optimization-stage-")
+        raise OSError("rate table full")
+
+    monkeypatch.setattr(optimize_workflow, "_write_rate_table", fail_write_rate_table)
+    runner = FakeFinalArtifactRunner(config)
+
+    with pytest.raises(OSError, match="rate table full"):
+        runner.run()
+
+    assert runner.fake_model.closed
+    for name, contents in stale_text_artifacts.items():
+        assert (config.out_dir / name).read_text(encoding="utf-8") == contents
+    assert theta_path.read_bytes() == b"stale theta"
+    history_rows = [
+        json.loads(line)
+        for line in (config.out_dir / "history.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    assert [row["optimizer/phase"] for row in history_rows] == ["adam"]
+    assert list(config.out_dir.glob(".gpurec-optimization-*")) == []
 
 
 def test_optimization_runner_preserves_primary_error_when_close_fails(

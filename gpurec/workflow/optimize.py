@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import math
+import shutil
+import tempfile
 import time
 from contextlib import suppress
 from dataclasses import dataclass
@@ -54,6 +56,14 @@ class _ResumeState:
 
 
 _MISSING = object()
+_FINAL_ARTIFACT_FILES = (
+    "history.jsonl",
+    "rates_final.tsv",
+    "per_fam_likelihoods.tsv",
+    "theta_final.pt",
+    "optimization_history.csv",
+    "summary.json",
+)
 
 
 def _is_finite_tensor(tensor: torch.Tensor | None) -> bool:
@@ -240,6 +250,190 @@ def _write_per_family_likelihoods(path: Path, model: GeneReconModel) -> None:
         handle.write("family\tnll_bits\tlog_likelihood_bits\n")
         for family, nll in _per_family_nll(model):
             handle.write(f"{family}\t{nll:.12g}\t{-nll:.12g}\n")
+
+
+def _write_history_jsonl_with_final_row(
+    path: Path,
+    current_history_path: Path,
+    final_row: dict[str, Any],
+) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8") as out_handle:
+        if current_history_path.is_file():
+            existing = current_history_path.read_text(encoding="utf-8")
+            out_handle.write(existing)
+            if existing and not existing.endswith("\n"):
+                out_handle.write("\n")
+        out_handle.write(json.dumps(final_row, sort_keys=True) + "\n")
+
+
+def _final_artifact_paths(out_dir: Path) -> list[Path]:
+    return [
+        path
+        for name in _FINAL_ARTIFACT_FILES
+        if (path := out_dir / name).is_file()
+    ]
+
+
+def _clear_final_artifacts(out_dir: Path) -> None:
+    for path in _final_artifact_paths(out_dir):
+        path.unlink()
+
+
+def _create_final_artifact_temp_dir(out_dir: Path, *, prefix: str) -> Path:
+    out_dir.mkdir(parents=True, exist_ok=True)
+    return Path(tempfile.mkdtemp(prefix=prefix, dir=out_dir))
+
+
+def _cleanup_final_artifact_temp_dir(path: Path | None) -> OSError | None:
+    if path is None:
+        return None
+    try:
+        shutil.rmtree(path)
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        return exc
+    return None
+
+
+def _move_final_artifacts_to_backup(
+    out_dir: Path,
+    backup_dir: Path,
+) -> list[tuple[Path, Path]]:
+    moved: list[tuple[Path, Path]] = []
+    try:
+        for final_path in _final_artifact_paths(out_dir):
+            backup_path = backup_dir / final_path.name
+            backup_path.parent.mkdir(parents=True, exist_ok=True)
+            final_path.replace(backup_path)
+            moved.append((backup_path, final_path))
+    except BaseException as exc:
+        restore_error: BaseException | None = None
+        for backup_path, final_path in reversed(moved):
+            try:
+                if backup_path.is_file():
+                    final_path.parent.mkdir(parents=True, exist_ok=True)
+                    backup_path.replace(final_path)
+            except BaseException as rollback_error:
+                if restore_error is None:
+                    restore_error = rollback_error
+        if restore_error is not None:
+            raise exc from restore_error
+        raise
+    return moved
+
+
+def _restore_final_artifact_backup(moved: list[tuple[Path, Path]]) -> None:
+    for backup_path, final_path in reversed(moved):
+        if backup_path.is_file():
+            final_path.parent.mkdir(parents=True, exist_ok=True)
+            backup_path.replace(final_path)
+
+
+def _publish_final_artifacts(
+    out_dir: Path,
+    staged_outputs: list[tuple[Path, Path]],
+) -> None:
+    backup_dir = _create_final_artifact_temp_dir(
+        out_dir,
+        prefix=".gpurec-optimization-backup-",
+    )
+    try:
+        moved = _move_final_artifacts_to_backup(out_dir, backup_dir)
+    except BaseException:
+        shutil.rmtree(backup_dir, ignore_errors=True)
+        raise
+
+    try:
+        for staged_path, final_path in staged_outputs:
+            final_path.parent.mkdir(parents=True, exist_ok=True)
+            staged_path.replace(final_path)
+    except BaseException as exc:
+        cleanup_error: BaseException | None = None
+        try:
+            _clear_final_artifacts(out_dir)
+        except BaseException as clear_error:
+            cleanup_error = clear_error
+        try:
+            _restore_final_artifact_backup(moved)
+        except BaseException as restore_error:
+            if cleanup_error is None:
+                cleanup_error = restore_error
+        shutil.rmtree(backup_dir, ignore_errors=True)
+        if cleanup_error is not None:
+            raise exc from cleanup_error
+        raise
+    shutil.rmtree(backup_dir, ignore_errors=True)
+
+
+def _write_final_artifacts(
+    config: RunConfig,
+    *,
+    model: GeneReconModel,
+    history: list[dict[str, Any]],
+    final_row: dict[str, Any],
+    summary: dict[str, Any],
+    history_jsonl: Path,
+) -> None:
+    stage_dir: Path | None = None
+    try:
+        stage_dir = _create_final_artifact_temp_dir(
+            config.out_dir,
+            prefix=".gpurec-optimization-stage-",
+        )
+        staged_outputs: list[tuple[Path, Path]] = []
+
+        history_stage_path = stage_dir / "history.jsonl"
+        _write_history_jsonl_with_final_row(
+            history_stage_path,
+            history_jsonl,
+            final_row,
+        )
+        history_jsonl_output = (history_stage_path, history_jsonl)
+
+        rates_stage_path = stage_dir / "rates_final.tsv"
+        _write_rate_table(rates_stage_path, model, config.mode)
+        staged_outputs.append((rates_stage_path, config.out_dir / "rates_final.tsv"))
+
+        if config.mode == "genewise":
+            per_family_stage_path = stage_dir / "per_fam_likelihoods.tsv"
+            _write_per_family_likelihoods(per_family_stage_path, model)
+            staged_outputs.append(
+                (
+                    per_family_stage_path,
+                    config.out_dir / "per_fam_likelihoods.tsv",
+                )
+            )
+
+        theta_stage_path = stage_dir / "theta_final.pt"
+        torch.save(model.theta.detach().cpu(), theta_stage_path)
+        staged_outputs.append((theta_stage_path, config.out_dir / "theta_final.pt"))
+
+        history_csv_stage_path = stage_dir / "optimization_history.csv"
+        write_csv(history_csv_stage_path, history)
+        staged_outputs.append(
+            (history_csv_stage_path, config.out_dir / "optimization_history.csv")
+        )
+
+        summary_stage_path = stage_dir / "summary.json"
+        summary_stage_path.write_text(
+            json.dumps(summary, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        staged_outputs.append(history_jsonl_output)
+        staged_outputs.append((summary_stage_path, config.out_dir / "summary.json"))
+
+        _publish_final_artifacts(config.out_dir, staged_outputs)
+    except BaseException as exc:
+        cleanup_error = _cleanup_final_artifact_temp_dir(stage_dir)
+        if cleanup_error is not None:
+            raise exc from cleanup_error
+        raise
+    else:
+        cleanup_error = _cleanup_final_artifact_temp_dir(stage_dir)
+        if cleanup_error is not None:
+            raise cleanup_error
 
 
 def _step_stopping_status(
@@ -634,7 +828,7 @@ class OptimizationRunner:
                 "step_s": 0.0,
                 **final_metrics,
             }
-            self._record(final_row)
+            self.history.append(final_row)
 
             final_status = {
                 **status,
@@ -669,14 +863,6 @@ class OptimizationRunner:
             )
             if sampling_checkpoint is None:
                 sampling_checkpoint = latest_checkpoint
-            _write_rate_table(config.out_dir / "rates_final.tsv", model, config.mode)
-            if config.mode == "genewise":
-                _write_per_family_likelihoods(
-                    config.out_dir / "per_fam_likelihoods.tsv",
-                    model,
-                )
-            torch.save(model.theta.detach().cpu(), config.out_dir / "theta_final.pt")
-            write_csv(config.out_dir / "optimization_history.csv", self.history)
             summary = {
                 **final_status,
                 "families": model.n_families,
@@ -685,9 +871,13 @@ class OptimizationRunner:
                 "final_nll_bits": float(final_loss.detach().cpu()),
                 "final_grad_inf": float(final_row.get("grad/inf", math.inf)),
             }
-            (config.out_dir / "summary.json").write_text(
-                json.dumps(summary, indent=2, sort_keys=True) + "\n",
-                encoding="utf-8",
+            _write_final_artifacts(
+                config,
+                model=model,
+                history=self.history,
+                final_row=final_row,
+                summary=summary,
+                history_jsonl=self.history_jsonl,
             )
             result = OptimizationResult(
                 out_dir=config.out_dir,
