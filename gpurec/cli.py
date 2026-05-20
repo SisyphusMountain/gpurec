@@ -434,8 +434,8 @@ def _add_sampling_args(
         type=Path,
         help=(
             "Rust backtracking binary. Installed sampling requires this or "
-            "GPUREC_BACKTRACK_BIN; source checkouts can fall back to cargo "
-            "when a Rust toolchain is present."
+            "GPUREC_BACKTRACK_BIN; source trees can fall back to cargo when "
+            "a Rust toolchain is present."
         ),
     )
 

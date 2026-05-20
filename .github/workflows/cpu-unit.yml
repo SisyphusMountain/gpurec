@@ -64,6 +64,9 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
+      - name: Set up Rust
+        run: rustup default stable
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
@@ -102,20 +105,41 @@ jobs:
               "examples/tiny/gene.map",
               "examples/tiny/gene.nwk",
               "examples/tiny/species.nwk",
+              "crates/gpurec-backtrack/Cargo.toml",
+              "crates/gpurec-backtrack/Cargo.lock",
+              "crates/gpurec-backtrack/src/lib.rs",
+              "crates/gpurec-backtrack/src/main.rs",
+          ]
+          forbidden_sdist_prefixes = [
+              "crates/gpurec-backtrack/target/",
+          ]
+          forbidden_wheel_prefixes = [
+              "crates/gpurec-backtrack/",
           ]
 
           sdists = list(Path("dist").glob("*.tar.gz"))
           if len(sdists) != 1:
               raise SystemExit(f"expected one source archive, found {sdists}")
           with tarfile.open(sdists[0]) as archive:
-              names = set(archive.getnames())
+              names = {
+                  name.split("/", 1)[1]
+                  for name in archive.getnames()
+                  if "/" in name
+              }
           missing = [
               path
               for path in required_sdist
-              if not any(name.endswith("/" + path) for name in names)
+              if path not in names
           ]
           if missing:
               raise SystemExit(f"sdist missing required source files: {missing}")
+          forbidden = [
+              prefix
+              for prefix in forbidden_sdist_prefixes
+              if any(name.startswith(prefix) for name in names)
+          ]
+          if forbidden:
+              raise SystemExit(f"sdist includes forbidden paths: {forbidden}")
 
           wheels = list(Path("dist").glob("*.whl"))
           if len(wheels) != 1:
@@ -125,7 +149,33 @@ jobs:
           missing = [path for path in required_wheel if path not in names]
           if missing:
               raise SystemExit(f"wheel missing required package data: {missing}")
+          forbidden = [
+              prefix
+              for prefix in forbidden_wheel_prefixes
+              if any(name.startswith(prefix) for name in names)
+          ]
+          if forbidden:
+              raise SystemExit(f"wheel includes forbidden paths: {forbidden}")
           PY
+
+      - name: Smoke Rust crate from source archive
+        run: |
+          sdist_unpack_dir=$(mktemp -d)
+          export SDIST_UNPACK_DIR="$sdist_unpack_dir"
+          python - <<'PY'
+          from pathlib import Path
+          import os
+          import tarfile
+
+          sdist = next(Path("dist").glob("*.tar.gz"))
+          unpack_dir = Path(os.environ["SDIST_UNPACK_DIR"])
+          with tarfile.open(sdist) as archive:
+              archive.extractall(unpack_dir)
+          print(next(unpack_dir.iterdir()))
+          PY
+          root=$(find "$sdist_unpack_dir" -mindepth 1 -maxdepth 1 -type d -print -quit)
+          cargo test --locked --manifest-path "$root/crates/gpurec-backtrack/Cargo.toml"
+          cargo run --locked --quiet --manifest-path "$root/crates/gpurec-backtrack/Cargo.toml" -- --help
 
       - name: Install built wheel and smoke CLI
         run: |

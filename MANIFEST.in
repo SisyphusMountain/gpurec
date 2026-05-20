@@ -1,2 +1,6 @@
 recursive-include gpurec/core/cpp *.cpp *.hpp
 recursive-include examples *.json *.map *.nwk *.txt
+include crates/gpurec-backtrack/Cargo.toml
+include crates/gpurec-backtrack/Cargo.lock
+recursive-include crates/gpurec-backtrack/src *.rs
+prune crates/gpurec-backtrack/target

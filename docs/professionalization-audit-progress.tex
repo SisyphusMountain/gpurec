@@ -1581,9 +1581,23 @@ configuration that users can copy beside their own input files.  The sampling
 section now has an explicit binary-setup recipe for installed environments:
 wheels currently require a prebuilt Rust backtracking binary supplied through
 \texttt{GPUREC\_BACKTRACK\_BIN} or \texttt{--backtrack-binary}, while the
-automatic Cargo fallback is documented as source-checkout only.  The
+automatic Cargo fallback is documented as source-tree only.  The
 release-readiness note records the same unresolved binary-distribution blocker
 so release docs and README do not drift.
+
+\subsection{Rust Backtracking Source Archive}
+
+\texttt{MANIFEST.in} now includes the Rust backtracking crate's
+\texttt{Cargo.toml}, \texttt{Cargo.lock}, and \texttt{src/*.rs} files in source
+archives while pruning \texttt{crates/gpurec-backtrack/target}.  The package
+CI artifact inspection checks those sdist entries, rejects leaked Rust build
+outputs, and rejects any Rust crate copy in wheels.  The same job now unpacks
+the built source archive and runs the locked Rust crate tests plus the
+\texttt{--help} smoke from that unpacked tree.  README, release-readiness, and
+CLI wording now describe the Cargo fallback as a source-tree path covering a
+checkout or unpacked source archive, while installed wheels remain on the
+prebuilt-binary path through \texttt{GPUREC\_BACKTRACK\_BIN} or
+\texttt{--backtrack-binary}.
 
 \subsection{Global Scheduler Test Path Hygiene}
 
@@ -3477,6 +3491,30 @@ Release metadata checker after optimization stopping-helper extraction &
 \texttt{pdflatex -interaction=nonstopmode -halt-on-error ...professionalization...} &
 Audit log build after optimization stopping-helper extraction &
 \texttt{ok with known overfull table warnings} \\
+\texttt{python -m py\_compile gpurec/cli.py tests/unit/test\_release\_metadata.py} &
+Rust source-archive packaging guard syntax &
+\texttt{ok} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q tests/unit/test\_release\_metadata.py -k "..."} &
+Focused Rust source-archive release guards &
+\texttt{10 passed, 9 deselected} \\
+\texttt{python -m build --sdist --wheel --outdir /tmp/gpurec-rust-sdist-check} &
+Local source and wheel artifact build after Rust sdist include &
+\texttt{built sdist and wheel} \\
+\texttt{python -m twine check /tmp/gpurec-rust-sdist-check/*} &
+Artifact metadata check after Rust sdist include &
+\texttt{passed} \\
+\texttt{artifact inspection plus cargo test/run from unpacked sdist} &
+Rust source-archive content and smoke checks &
+\texttt{sdist crate present; target pruned; wheel crate absent; 4 Rust tests passed} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
+CPU unit gate after Rust source-archive packaging &
+\texttt{440 passed, 28 deselected} \\
+\texttt{python scripts/check\_release\_metadata.py} &
+Release metadata checker after Rust source-archive packaging &
+\texttt{expected license blockers} \\
+\texttt{pdflatex -interaction=nonstopmode -halt-on-error ...professionalization...} &
+Audit log build after Rust source-archive packaging &
+\texttt{ok with known overfull table warnings} \\
 \bottomrule
 \end{tabular}
 \end{center}
@@ -3487,7 +3525,7 @@ Audit log build after optimization stopping-helper extraction &
   \item Choose and add a redistributable license, then update
         \texttt{pyproject.toml} license metadata and license classifier.
   \item Decide whether releases should ship a prebuilt backtracking binary or
-        document a Rust-toolchain requirement for source-checkout sampling.
+        document a Rust-toolchain requirement for source-tree sampling.
   \item Add an installed-artifact sampling smoke once the backtracking binary
         distribution model is settled.
   \item Keep committing small, verified increments so the branch remains

@@ -107,10 +107,26 @@ def test_cpu_ci_builds_and_smokes_release_artifacts():
         "examples/tiny/gene.map",
         "examples/tiny/gene.nwk",
         "examples/tiny/species.nwk",
+        "crates/gpurec-backtrack/Cargo.toml",
+        "crates/gpurec-backtrack/Cargo.lock",
+        "crates/gpurec-backtrack/src/lib.rs",
+        "crates/gpurec-backtrack/src/main.rs",
+        "forbidden_sdist_prefixes",
+        "crates/gpurec-backtrack/target/",
+        "forbidden_wheel_prefixes",
         "gpurec/core/cpp/preprocess.cpp",
         "gpurec/core/cpp/clade_utils.hpp",
         "sdist missing required source files",
+        "sdist includes forbidden paths",
         "wheel missing required package data",
+        "wheel includes forbidden paths",
+        "Smoke Rust crate from source archive",
+        "SDIST_UNPACK_DIR",
+        'cargo test --locked --manifest-path "$root/crates/gpurec-backtrack/Cargo.toml"',
+        (
+            'cargo run --locked --quiet --manifest-path "$root/crates/gpurec-backtrack/'
+            'Cargo.toml" -- --help'
+        ),
         "python -m pip install --no-deps dist/*.whl",
         "smoke_dir=$(mktemp -d)",
         'cd "$smoke_dir"',
@@ -137,6 +153,15 @@ def test_manifest_includes_documented_examples_in_source_archive():
     assert "recursive-include examples" in manifest
     for pattern in ("*.json", "*.map", "*.nwk", "*.txt"):
         assert pattern in manifest
+
+
+def test_manifest_includes_rust_backtracking_crate_in_source_archive_only():
+    manifest = (ROOT / "MANIFEST.in").read_text(encoding="utf-8")
+
+    assert "include crates/gpurec-backtrack/Cargo.toml" in manifest
+    assert "include crates/gpurec-backtrack/Cargo.lock" in manifest
+    assert "recursive-include crates/gpurec-backtrack/src *.rs" in manifest
+    assert "prune crates/gpurec-backtrack/target" in manifest
 
 
 @pytest.mark.parametrize(
@@ -367,4 +392,5 @@ def test_readme_documents_installed_sampling_binary_setup():
     ) in readme
     assert "GPUREC_BACKTRACK_BIN" in readme
     assert "--backtrack-binary" in readme
-    assert "cargo run` fallback is source-checkout only" in readme
+    assert "fallback works from a source checkout or unpacked\nsource archive" in readme
+    assert "unpacked-source-archive `cargo run`\n  fallback" in guide

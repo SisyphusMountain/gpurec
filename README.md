@@ -166,9 +166,10 @@ export GPUREC_BACKTRACK_BIN="$PWD/crates/gpurec-backtrack/target/release/gpurec-
 gpurec sample --checkpoint output_gpurec/checkpoints/best.pt --samples 100
 ```
 
-The automatic `cargo run` fallback is source-checkout only.  It requires a Rust
-toolchain and fetches the pinned `rustree` git dependency declared by
-`crates/gpurec-backtrack/Cargo.toml`; otherwise use a prebuilt binary.
+The automatic `cargo run` fallback works from a source checkout or unpacked
+source archive.  It requires a Rust toolchain and fetches the pinned `rustree`
+git dependency declared by `crates/gpurec-backtrack/Cargo.toml`; otherwise use a
+prebuilt binary.
 
 ## HOGENOM Workflows
 
