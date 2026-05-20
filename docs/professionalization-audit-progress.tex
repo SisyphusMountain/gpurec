@@ -277,10 +277,10 @@ users running those scripts.
 
 The registered \texttt{unit} and \texttt{integration} markers now correspond
 to the repository layout.  \texttt{tests/conftest.py} auto-applies them for
-files under \texttt{tests/unit} and \texttt{tests/integration}, while keeping
-the existing \texttt{gpu} and \texttt{slow} marker rules.  \texttt{tests/README.md}
-now documents \texttt{pytest -m "unit and not gpu"} as the concise CPU unit
-gate.
+files under \texttt{tests/unit}, \texttt{tests/integration}, and
+\texttt{tests/kernels}, while keeping the existing \texttt{gpu} and
+\texttt{slow} marker rules.  \texttt{tests/README.md} now documents
+\texttt{pytest -m "unit and not gpu"} as the concise CPU unit gate.
 
 \subsection{Specieswise GPU Test Hygiene}
 
@@ -1520,6 +1520,16 @@ superseded and asks maintainers to revalidate each item against the current
 source tree before using it as active work.  \texttt{docs/release-readiness.md}
 also now distinguishes remaining manual release blockers from packaging checks
 that are already covered by CI.
+
+\subsection{Kernel Test Marker Classification}
+
+\texttt{tests/kernels} now participates in the coarse marker taxonomy as
+integration-level coverage.  The collection hook applies
+\texttt{pytest.mark.integration} to kernel tests in addition to
+\texttt{tests/integration}, so \texttt{-m "not unit and not integration"} no
+longer exposes an unclassified test bucket.  The tests README documents the
+mapping, and the source guard checks that the kernel directory remains part of
+the collection policy.
 
 \section{Verification Log}
 
@@ -3171,6 +3181,27 @@ Release metadata checker after documentation refresh &
 \texttt{expected license blockers} \\
 \texttt{pdflatex -interaction=nonstopmode -halt-on-error ...professionalization...} &
 Audit log build after documentation refresh &
+\texttt{ok with known overfull table warnings} \\
+\texttt{python -m py\_compile tests/conftest.py tests/unit/test\_workflow.py} &
+Kernel marker taxonomy syntax &
+\texttt{ok} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest --collect-only -q -m "not unit and not integration"} &
+Unclassified test bucket check &
+\texttt{0 selected, 446 deselected} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest --collect-only -q -m "integration and gpu"} &
+Integration GPU collection with kernels &
+\texttt{21 selected, 425 deselected} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q tests/unit/test\_workflow.py -k "..."} &
+Focused marker policy source guard &
+\texttt{1 passed, 299 deselected} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
+CPU unit gate after kernel marker classification &
+\texttt{418 passed, 28 deselected} \\
+\texttt{python scripts/check\_release\_metadata.py} &
+Release metadata checker after kernel marker classification &
+\texttt{expected license blockers} \\
+\texttt{pdflatex -interaction=nonstopmode -halt-on-error ...professionalization...} &
+Audit log build after kernel marker classification &
 \texttt{ok with known overfull table warnings} \\
 \bottomrule
 \end{tabular}

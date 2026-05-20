@@ -56,8 +56,9 @@ GPUREC_BACKTRACK_BIN=crates/gpurec-backtrack/target/release/gpurec-backtrack \
 ```
 
 `pytest.ini` declares the coarse test markers; `tests/conftest.py` auto-applies
-`unit` and `integration` by directory and excludes large data/output directories
-from recursive collection.  GPU-only modules declare
+`unit` to `tests/unit`, `integration` to `tests/integration` and
+`tests/kernels`, and excludes large data/output directories from recursive
+collection.  GPU-only modules declare
 `pytestmark = pytest.mark.gpu` at module scope, and expensive checks use local
 `@pytest.mark.slow` decorators, so test intent stays beside the test instead of
 a filename or nodeid list in conftest.

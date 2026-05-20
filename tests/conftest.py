@@ -23,5 +23,5 @@ def pytest_collection_modifyitems(config, items):
             test_section = ""
         if test_section == "unit":
             item.add_marker(unit_marker)
-        elif test_section == "integration":
+        elif test_section in {"integration", "kernels"}:
             item.add_marker(integration_marker)
