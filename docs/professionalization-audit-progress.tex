@@ -6,7 +6,7 @@
 
 \title{gpurec Professionalization Audit Progress}
 \author{Codex audit log}
-\date{2026-05-19}
+\date{2026-05-20}
 
 \begin{document}
 \maketitle
@@ -2064,6 +2064,20 @@ This prevents downstream glob-based consumers from mistaking a failed partial
 sampling run for a complete output set.  A CPU unit test covers the case where
 the first family writes XML/count files and the second family raises from the
 backtracking bridge.
+
+\subsection{Checkpoint Cadence and Version Strictness}
+
+Periodic \texttt{latest.pt} checkpoints now follow completed-step cadence:
+\texttt{checkpoint\_every=2} writes after completed optimizer steps two, four,
+and so on, rather than immediately after the first zero-indexed loop
+iteration.  The final checkpoint still records its separate final-evaluation
+row and resume cursor.
+
+Checkpoint schema-version validation is now type-strict.  The loader accepts
+only integral, non-boolean version values matching the supported schema
+version, so malformed payloads such as \texttt{"1"}, \texttt{True}, or
+\texttt{1.0} fail at the checkpoint boundary instead of being coerced to a
+valid version.
 
 \section{Verification Log}
 
@@ -4693,6 +4707,24 @@ Release metadata checker after sampling failure cleanup &
 \texttt{expected license blockers} \\
 \texttt{pdflatex -interaction=nonstopmode -halt-on-error ...professionalization...} &
 Audit log build after sampling failure cleanup &
+\texttt{ok with known overfull table warnings} \\
+\texttt{python -m py\_compile gpurec/workflow/checkpoint.py gpurec/workflow/optimize.py tests/unit/test\_workflow.py} &
+Checkpoint cadence/version syntax &
+\texttt{ok} \\
+\texttt{python -m pytest tests/unit/test\_workflow.py::test\_optimization\_runner\_periodic\_latest\_uses\_completed\_step\_cadence tests/unit/test\_workflow.py::test\_checkpoint\_load\_rejects\_unsupported\_version -q} &
+Focused checkpoint cadence/version guards &
+\texttt{7 passed} \\
+\texttt{python -m pytest tests/unit/test\_workflow.py -q} &
+Workflow suite after checkpoint cadence/version strictness &
+\texttt{370 passed} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' python -m pytest tests/unit -q -m "unit and not gpu"} &
+CPU unit gate after checkpoint cadence/version strictness &
+\texttt{700 passed, 6 deselected} \\
+\texttt{python scripts/check\_release\_metadata.py} &
+Release metadata checker after checkpoint cadence/version strictness &
+\texttt{expected license blockers} \\
+\texttt{pdflatex -interaction=nonstopmode -halt-on-error ...professionalization...} &
+Audit log build after checkpoint cadence/version strictness &
 \texttt{ok with known overfull table warnings} \\
 \bottomrule
 \end{tabular}

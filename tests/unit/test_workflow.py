@@ -3064,7 +3064,10 @@ def test_checkpoint_load_uses_weights_only(tmp_path: Path, monkeypatch):
     ]
 
 
-@pytest.mark.parametrize("version", [CHECKPOINT_VERSION + 1, "next"])
+@pytest.mark.parametrize(
+    "version",
+    [CHECKPOINT_VERSION + 1, "next", "1", True, 1.0, 1.5],
+)
 def test_checkpoint_load_rejects_unsupported_version(tmp_path: Path, version):
     path = tmp_path / "future.pt"
     torch.save(
@@ -3313,6 +3316,107 @@ def test_optimization_runner_run_writes_outputs_with_fake_model(tmp_path: Path):
     )
     assert "fam0" in per_family
     assert "fam1" in per_family
+
+
+def test_optimization_runner_periodic_latest_uses_completed_step_cadence(
+    tmp_path: Path,
+):
+    class FakeCadenceModel:
+        def __init__(self):
+            self.theta = torch.nn.Parameter(
+                torch.tensor([0.25, -0.15, 0.05], dtype=torch.float32)
+            )
+            self.family_names = ["fam0"]
+            self.species_names = ["sp0", "sp1"]
+            self.n_families = 1
+            self.n_species = 2
+            self.batch_metadata = [SimpleNamespace(batch_index=0)]
+            self.closed = False
+
+        def full_loss(self):
+            return self.theta.square().sum() + 3.0
+
+        def full_nll_per_family(self):
+            return self.theta.detach().square().sum().reshape(1) + 2.0
+
+        def clamp_theta_(self, min_rate, max_rate):
+            with torch.no_grad():
+                self.theta.clamp_(min=-4.0, max=4.0)
+
+        def solver_stat_records(self):
+            return []
+
+        def clear(self):
+            return None
+
+        def close(self):
+            self.closed = True
+
+    class FakeCadenceRunner(OptimizationRunner):
+        def __init__(self, config):
+            super().__init__(config)
+            self.saves: list[tuple[str, int, str | None]] = []
+
+        def build_model(self):
+            self.fake_model = FakeCadenceModel()
+            return self.fake_model
+
+        def _save_status(
+            self,
+            path,
+            *,
+            model,
+            optimizer,
+            step,
+            status,
+            row,
+            next_step=None,
+            optimizer_phase=None,
+        ):
+            self.saves.append(
+                (
+                    Path(path).name,
+                    int(step),
+                    None if row is None else str(row.get("optimizer/phase")),
+                )
+            )
+            super()._save_status(
+                path,
+                model=model,
+                optimizer=optimizer,
+                step=step,
+                next_step=next_step,
+                status=status,
+                row=row,
+                optimizer_phase=optimizer_phase,
+            )
+
+    config = RunConfig(
+        species_tree=tmp_path / "sp.nwk",
+        families_file=tmp_path / "families.txt",
+        out_dir=tmp_path / "out",
+        mode="global",
+        device="cpu",
+        optimizer="adam",
+        steps=3,
+        lr=0.05,
+        checkpoint_every=2,
+        log_every=10,
+        grad_inf_tol=0.0,
+        loss_patience=0,
+        best_likelihood_patience=0,
+    )
+    runner = FakeCadenceRunner(config)
+
+    runner.run()
+
+    periodic_latest_saves = [
+        (name, step, phase)
+        for name, step, phase in runner.saves
+        if name == "latest.pt" and phase != "final_eval"
+    ]
+    assert periodic_latest_saves == [("latest.pt", 1, "adam")]
+    assert runner.fake_model.closed
 
 
 def test_optimization_runner_final_latest_resumes_at_next_optimizer_step(tmp_path: Path):

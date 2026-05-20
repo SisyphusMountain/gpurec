@@ -138,13 +138,7 @@ def _validate_checkpoint_payload(payload: Any, path: Path) -> dict[str, Any]:
     missing = sorted(_REQUIRED_CHECKPOINT_KEYS - set(payload))
     if missing:
         raise RuntimeError(f"checkpoint {path} is missing key(s): {', '.join(missing)}")
-    try:
-        checkpoint_version = int(payload["version"])
-    except (TypeError, ValueError) as exc:
-        raise RuntimeError(
-            f"checkpoint {path} has unsupported version {payload['version']!r}; "
-            f"expected {CHECKPOINT_VERSION}"
-        ) from exc
+    checkpoint_version = _checkpoint_version(path, payload["version"])
     if checkpoint_version != CHECKPOINT_VERSION:
         raise RuntimeError(
             f"checkpoint {path} has unsupported version {payload['version']!r}; "
@@ -179,6 +173,15 @@ def _validate_checkpoint_payload(payload: Any, path: Path) -> dict[str, Any]:
     if species_names is not None and not isinstance(species_names, list):
         raise RuntimeError(f"checkpoint {path} has invalid species metadata")
     return payload
+
+
+def _checkpoint_version(path: Path, value: Any) -> int:
+    if isinstance(value, bool) or not isinstance(value, Integral):
+        raise RuntimeError(
+            f"checkpoint {path} has unsupported version {value!r}; "
+            f"expected {CHECKPOINT_VERSION}"
+        )
+    return int(value)
 
 
 def _checkpoint_int(path: Path, key: str, value: Any) -> int:

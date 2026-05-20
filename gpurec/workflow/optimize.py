@@ -574,7 +574,7 @@ class OptimizationRunner:
                         optimizer_phase=phase,
                     )
                     sampling_checkpoint = best_checkpoint
-                if config.checkpoint_every and step % config.checkpoint_every == 0:
+                if config.checkpoint_every and (step + 1) % config.checkpoint_every == 0:
                     self._save_status(
                         latest_checkpoint,
                         model=model,
