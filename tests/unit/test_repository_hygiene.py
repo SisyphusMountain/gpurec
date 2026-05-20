@@ -1,6 +1,18 @@
 """Repository-level source and documentation hygiene checks."""
 
+import subprocess
 from pathlib import Path
+
+
+def _tracked_files(root: Path, *patterns: str) -> list[Path]:
+    result = subprocess.run(
+        ["git", "ls-files", *patterns],
+        cwd=root,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return [root / line for line in result.stdout.splitlines() if line]
 
 
 def test_workflow_and_backtracking_use_public_model_surface():
@@ -135,8 +147,19 @@ def test_tests_use_pytest_managed_temporary_paths():
     forbidden = "/" + "tmp/"
     offenders = [
         str(path.relative_to(root))
-        for path in sorted((root / "tests").rglob("*.py"))
+        for path in _tracked_files(root, "tests/**/*.py")
         if forbidden in path.read_text(encoding="utf-8")
+    ]
+
+    assert offenders == []
+
+
+def test_no_tracked_root_test_modules_bypass_pytest_collection():
+    root = Path(__file__).resolve().parents[2]
+    offenders = [
+        path.relative_to(root).as_posix()
+        for path in _tracked_files(root, "test_*.py")
+        if path.parent == root
     ]
 
     assert offenders == []
