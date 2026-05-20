@@ -56,6 +56,7 @@ from gpurec.workflow.checkpoint import (
 )
 from gpurec.workflow._metadata import (
     checkpoint_progress,
+    checkpoint_status_dict,
     model_family_names,
     model_species_names,
 )
@@ -2016,6 +2017,21 @@ def test_workflow_metadata_checkpoint_progress_normalizes_and_validates(
 
     with pytest.raises(RuntimeError, match="inconsistent progress metadata"):
         checkpoint_progress(path, {"step": 2, "next_step": 4})
+
+
+def test_workflow_metadata_checkpoint_status_defaults_and_validates(
+    tmp_path: Path,
+):
+    path = tmp_path / "checkpoint.pt"
+
+    assert checkpoint_status_dict(path, {}) == {}
+    assert checkpoint_status_dict(path, {"status": None}) == {}
+    assert checkpoint_status_dict(path, {"status": {"best_step": 2}}) == {
+        "best_step": 2
+    }
+
+    with pytest.raises(RuntimeError, match="invalid status metadata"):
+        checkpoint_status_dict(path, {"status": "not-a-dict"})
 
 
 def test_sampling_config_validates_selection(tmp_path: Path):

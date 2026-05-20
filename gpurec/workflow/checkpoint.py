@@ -9,6 +9,7 @@ import torch
 
 from ._metadata import (
     checkpoint_progress,
+    checkpoint_status_dict,
     checkpoint_string_list,
     model_family_names,
     model_species_names,
@@ -178,9 +179,7 @@ def _validate_checkpoint_payload(payload: Any, path: Path) -> dict[str, Any]:
     optimizer_phase = payload.get("optimizer_phase")
     if optimizer_phase is not None and not isinstance(optimizer_phase, str):
         raise RuntimeError(f"checkpoint {path} has invalid optimizer phase")
-    status = payload.get("status")
-    if status is not None and not isinstance(status, dict):
-        raise RuntimeError(f"checkpoint {path} has invalid status metadata")
+    checkpoint_status_dict(path, payload)
     checkpoint_string_list(path, "family_names", payload["family_names"])
     checkpoint_string_list(path, "species_names", payload["species_names"])
     return payload

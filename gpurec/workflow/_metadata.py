@@ -82,6 +82,15 @@ def checkpoint_progress(path: Path, payload: dict[str, Any]) -> tuple[int, int]:
     return step, next_step
 
 
+def checkpoint_status_dict(path: Path, payload: dict[str, Any]) -> dict[str, Any]:
+    status = payload.get("status")
+    if status is None:
+        return {}
+    if not isinstance(status, dict):
+        raise RuntimeError(f"checkpoint {path} has invalid status metadata")
+    return status
+
+
 def model_family_names(model: Any) -> list[str]:
     if hasattr(model, "family_names"):
         return list(model.family_names)

@@ -22,6 +22,7 @@ from ._metadata import (
     checkpoint_finite_float,
     checkpoint_nonnegative_int,
     checkpoint_progress,
+    checkpoint_status_dict,
     model_family_names,
 )
 from .checkpoint import (
@@ -82,11 +83,7 @@ def _is_finite_tensor(tensor: torch.Tensor | None) -> bool:
 
 def _resume_state_from_payload(path: Path, payload: dict[str, Any]) -> _ResumeState:
     _, start_step = checkpoint_progress(path, payload)
-    ckpt_status = payload.get("status")
-    if ckpt_status is None:
-        ckpt_status = {}
-    elif not isinstance(ckpt_status, dict):
-        raise RuntimeError(f"checkpoint {path} has invalid status metadata")
+    ckpt_status = checkpoint_status_dict(path, payload)
 
     return _ResumeState(
         start_step=start_step,

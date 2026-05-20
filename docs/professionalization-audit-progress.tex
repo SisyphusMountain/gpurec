@@ -2326,6 +2326,21 @@ with the configured optimization step limit.  CPU tests cover direct helper
 normalization, resume payload parsing, and checkpoint load rejection for invalid
 progress metadata.
 
+\subsection{Shared Checkpoint Status Metadata Helper}
+
+Checkpoint loading and optimization resume parsing now also share
+\texttt{checkpoint\_status\_dict()} from \texttt{gpurec.workflow.\_metadata}.
+The helper preserves the existing contract: missing or \texttt{None} status
+metadata is treated as an empty dictionary for resume defaults, while non-dict
+status payloads raise the established invalid-status error.
+
+\texttt{checkpoint.py} uses the helper as an optional-metadata validator during
+load, and \texttt{optimize.py} uses the same normalized dictionary before
+reading resume fields such as \texttt{best\_nll\_bits},
+\texttt{best\_step}, \texttt{previous\_objective}, and
+\texttt{stable\_loss\_steps}.  Focused CPU tests cover helper defaults,
+invalid status values, resume defaults, and invalid resume metadata.
+
 \section{Verification Log}
 
 \begin{center}
@@ -5224,6 +5239,21 @@ CPU unit gate after shared checkpoint progress parser &
 \texttt{768 passed, 6 deselected} \\
 \texttt{python scripts/check\_release\_metadata.py} &
 Release metadata checker after shared checkpoint progress parser &
+\texttt{expected license blockers} \\
+\texttt{python -m py\_compile gpurec/workflow/\_metadata.py gpurec/workflow/checkpoint.py gpurec/workflow/optimize.py tests/unit/test\_workflow.py tests/unit/test\_optimization\_workflow.py} &
+Shared checkpoint status helper syntax &
+\texttt{ok} \\
+\texttt{python -m pytest selected checkpoint status/progress and resume metadata guards -q} &
+Focused checkpoint status helper guards &
+\texttt{22 passed} \\
+\texttt{python -m pytest tests/unit/test\_optimization\_workflow.py tests/unit/test\_workflow.py -q} &
+Touched optimization workflow and workflow suites after status helper extraction &
+\texttt{437 passed} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' python -m pytest tests/unit -q -m "unit and not gpu"} &
+CPU unit gate after shared checkpoint status helper &
+\texttt{769 passed, 6 deselected} \\
+\texttt{python scripts/check\_release\_metadata.py} &
+Release metadata checker after shared checkpoint status helper &
 \texttt{expected license blockers} \\
 \bottomrule
 \end{tabular}
