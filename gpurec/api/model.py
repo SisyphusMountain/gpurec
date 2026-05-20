@@ -1459,11 +1459,22 @@ class GeneReconModel(torch.nn.Module):
 
     def close(self) -> None:
         """Stop background batch preprocessing and drop pending futures."""
-        with self._batch_lock:
+        executor = getattr(self, "_prefetch_executor", None)
+        batch_futures = getattr(self, "_batch_futures", None)
+        batch_lock = getattr(self, "_batch_lock", None)
+        if batch_lock is None:
             self._prefetch_closed = True
-            executor = self._prefetch_executor
             self._prefetch_executor = None
-            self._batch_futures.clear()
+            if batch_futures is not None:
+                batch_futures.clear()
+        else:
+            with batch_lock:
+                self._prefetch_closed = True
+                executor = getattr(self, "_prefetch_executor", None)
+                self._prefetch_executor = None
+                batch_futures = getattr(self, "_batch_futures", None)
+                if batch_futures is not None:
+                    batch_futures.clear()
         if executor is not None:
             executor.shutdown(wait=False, cancel_futures=True)
 

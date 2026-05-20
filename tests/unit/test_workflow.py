@@ -441,6 +441,39 @@ def test_close_prevents_later_prefetch_restart(monkeypatch):
     assert model._batch_futures == {}
 
 
+def test_close_tolerates_partially_initialized_model():
+    model = GeneReconModel.__new__(GeneReconModel)
+
+    model.close()
+
+    assert model._prefetch_closed is True
+    assert model._prefetch_executor is None
+
+
+def test_close_shuts_down_executor_without_batch_lock():
+    class FakeExecutor:
+        def __init__(self):
+            self.shutdown_kwargs: dict[str, bool] | None = None
+
+        def shutdown(self, *, wait: bool, cancel_futures: bool) -> None:
+            self.shutdown_kwargs = {
+                "wait": wait,
+                "cancel_futures": cancel_futures,
+            }
+
+    executor = FakeExecutor()
+    model = GeneReconModel.__new__(GeneReconModel)
+    model._prefetch_executor = executor
+    model._batch_futures = {1: object()}
+
+    model.close()
+
+    assert executor.shutdown_kwargs == {"wait": False, "cancel_futures": True}
+    assert model._prefetch_closed is True
+    assert model._prefetch_executor is None
+    assert model._batch_futures == {}
+
+
 def test_family_input_returns_defensive_copies():
     ccp_helpers = {
         "split_counts": torch.tensor([0, 1], dtype=torch.long),
