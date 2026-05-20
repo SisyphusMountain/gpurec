@@ -2117,6 +2117,19 @@ The CLI workflow tests now assert subcommand-specific usage for optimize,
 sample, and run validation errors while continuing to require traceback-free
 diagnostics.
 
+\subsection{Optimization Cleanup Error Preservation}
+
+\texttt{OptimizationRunner.run()} now preserves the primary optimization
+failure if \texttt{model.close()} also raises during exception unwinding.
+Cleanup errors are suppressed only on an already-failing path; a close failure
+after a successful optimization still propagates.  This keeps the actionable
+objective, checkpoint, resume, or validation error visible instead of replacing
+it with a secondary cleanup failure.
+
+A fake-model regression forces \texttt{full\_loss()} to raise and
+\texttt{close()} to raise during cleanup, then verifies that the original
+optimization error is the one reported and that cleanup was still attempted.
+
 \section{Verification Log}
 
 \begin{center}
@@ -4820,6 +4833,24 @@ Release metadata checker after CLI subcommand usage fix &
 \texttt{expected license blockers} \\
 \texttt{pdflatex -interaction=nonstopmode -halt-on-error ...professionalization...} &
 Audit log build after CLI subcommand usage fix &
+\texttt{ok with known overfull table warnings} \\
+\texttt{python -m py\_compile gpurec/workflow/optimize.py tests/unit/test\_workflow.py} &
+Optimization cleanup error-preservation syntax &
+\texttt{ok} \\
+\texttt{python -m pytest tests/unit/test\_workflow.py::test\_optimization\_runner\_preserves\_primary\_error\_when\_close\_fails tests/unit/test\_workflow.py::test\_optimization\_runner\_run\_writes\_outputs\_with\_fake\_model -q} &
+Focused optimization cleanup error-preservation guards &
+\texttt{2 passed} \\
+\texttt{python -m pytest tests/unit/test\_workflow.py -q} &
+Workflow suite after optimization cleanup error preservation &
+\texttt{373 passed} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' python -m pytest tests/unit -q -m "unit and not gpu"} &
+CPU unit gate after optimization cleanup error preservation &
+\texttt{704 passed, 6 deselected} \\
+\texttt{python scripts/check\_release\_metadata.py} &
+Release metadata checker after optimization cleanup error preservation &
+\texttt{expected license blockers} \\
+\texttt{pdflatex -interaction=nonstopmode -halt-on-error ...professionalization...} &
+Audit log build after optimization cleanup error preservation &
 \texttt{ok with known overfull table warnings} \\
 \bottomrule
 \end{tabular}

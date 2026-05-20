@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import math
 import time
+from contextlib import suppress
 from dataclasses import dataclass
 from numbers import Integral, Real
 from pathlib import Path
@@ -688,7 +689,7 @@ class OptimizationRunner:
                 json.dumps(summary, indent=2, sort_keys=True) + "\n",
                 encoding="utf-8",
             )
-            return OptimizationResult(
+            result = OptimizationResult(
                 out_dir=config.out_dir,
                 status=str(status["status"]),
                 reason=str(status["reason"]),
@@ -699,8 +700,13 @@ class OptimizationRunner:
                 steps_completed=int(final_row["step"]),
                 sampling_checkpoint=sampling_checkpoint,
             )
-        finally:
+        except BaseException:
+            with suppress(Exception):
+                model.close()
+            raise
+        else:
             model.close()
+            return result
 
 
 def optimize(config: RunConfig) -> OptimizationResult:

@@ -3344,6 +3344,51 @@ def test_optimization_runner_run_writes_outputs_with_fake_model(tmp_path: Path):
     assert "fam1" in per_family
 
 
+def test_optimization_runner_preserves_primary_error_when_close_fails(
+    tmp_path: Path,
+):
+    class FakeFailingCloseModel:
+        def __init__(self):
+            self.theta = torch.nn.Parameter(
+                torch.tensor([0.25, -0.15, 0.05], dtype=torch.float32)
+            )
+            self.close_calls = 0
+
+        def full_loss(self):
+            raise RuntimeError("primary optimization failure")
+
+        def clamp_theta_(self, min_rate, max_rate):
+            return None
+
+        def close(self):
+            self.close_calls += 1
+            raise RuntimeError("close failure")
+
+    class FakeFailingCloseRunner(OptimizationRunner):
+        def build_model(self):
+            self.fake_model = FakeFailingCloseModel()
+            return self.fake_model
+
+    config = RunConfig(
+        species_tree=tmp_path / "sp.nwk",
+        families_file=tmp_path / "families.txt",
+        out_dir=tmp_path / "out",
+        mode="global",
+        device="cpu",
+        optimizer="adam",
+        steps=1,
+        lr=0.05,
+        checkpoint_every=0,
+        log_every=10,
+    )
+    runner = FakeFailingCloseRunner(config)
+
+    with pytest.raises(RuntimeError, match="primary optimization failure"):
+        runner.run()
+
+    assert runner.fake_model.close_calls == 1
+
+
 def test_optimization_runner_periodic_latest_uses_completed_step_cadence(
     tmp_path: Path,
 ):
