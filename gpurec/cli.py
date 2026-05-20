@@ -22,6 +22,10 @@ def _sampling_error_message(exc: BaseException) -> str:
     return message
 
 
+def _exit_runtime_error(parser: argparse.ArgumentParser, message: str) -> None:
+    parser.exit(status=1, message=f"error: {message}\n")
+
+
 def optimize(config: Any) -> Any:
     from gpurec.workflow.optimize import optimize as _optimize
 
@@ -435,9 +439,12 @@ def main(argv: list[str] | None = None) -> None:
     if args.command == "optimize":
         try:
             config = _run_config_from_args(args)
-            result = optimize(config)
         except _EXPECTED_WORKFLOW_ERRORS as exc:
             parser.error(str(exc))
+        try:
+            result = optimize(config)
+        except _EXPECTED_WORKFLOW_ERRORS as exc:
+            _exit_runtime_error(parser, str(exc))
         print(
             f"status={result.status} reason={result.reason} "
             f"final_nll_bits={result.final_nll_bits:.6f} out_dir={result.out_dir}",
@@ -468,9 +475,12 @@ def main(argv: list[str] | None = None) -> None:
             )
         try:
             run_config = _run_config_from_args(args)
-            opt_result = optimize(run_config)
         except _EXPECTED_WORKFLOW_ERRORS as exc:
             parser.error(str(exc))
+        try:
+            opt_result = optimize(run_config)
+        except _EXPECTED_WORKFLOW_ERRORS as exc:
+            _exit_runtime_error(parser, str(exc))
         if opt_result.status == "failed":
             parser.exit(
                 status=1,

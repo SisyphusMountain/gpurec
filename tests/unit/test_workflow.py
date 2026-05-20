@@ -1560,8 +1560,9 @@ def test_cli_optimize_reports_workflow_errors_without_traceback(
         main(_minimal_workflow_cli_args("optimize", tmp_path))
 
     captured = capsys.readouterr()
-    assert exc_info.value.code == 2
+    assert exc_info.value.code == 1
     assert "workflow failed" in captured.err
+    assert "usage:" not in captured.err
     assert "Traceback" not in captured.err
 
 
@@ -1604,8 +1605,9 @@ def test_cli_run_reports_optimize_errors_without_traceback(
         main(_minimal_workflow_cli_args("run", tmp_path))
 
     captured = capsys.readouterr()
-    assert exc_info.value.code == 2
+    assert exc_info.value.code == 1
     assert "workflow failed" in captured.err
+    assert "usage:" not in captured.err
     assert "Traceback" not in captured.err
 
 
