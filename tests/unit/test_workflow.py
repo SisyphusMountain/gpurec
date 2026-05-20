@@ -2464,6 +2464,112 @@ def test_sampling_runner_rejects_checkpoint_family_order_mismatch(
     assert model.closed
 
 
+def test_sampling_runner_preserves_load_error_when_close_fails(
+    tmp_path: Path,
+    monkeypatch,
+):
+    class FakeModel:
+        def __init__(self):
+            self.close_calls = 0
+
+        def close(self):
+            self.close_calls += 1
+            raise RuntimeError("close failed")
+
+    model = FakeModel()
+    run_config = RunConfig(
+        species_tree=tmp_path / "sp.nwk",
+        families_file=tmp_path / "families.txt",
+        out_dir=tmp_path / "run_out",
+        device="cpu",
+    )
+    config = SamplingConfig(checkpoint=tmp_path / "checkpoints" / "best.pt")
+
+    monkeypatch.setattr(
+        sampling_workflow,
+        "load_checkpoint",
+        lambda path, *, map_location: {"config": run_config.to_dict()},
+    )
+    monkeypatch.setattr(
+        sampling_workflow,
+        "build_alerax_workflow_model",
+        lambda *_args, **_kwargs: model,
+    )
+
+    def fail_validation(**_kwargs):
+        raise RuntimeError("family_names differ")
+
+    monkeypatch.setattr(
+        sampling_workflow,
+        "validate_checkpoint_model_compatibility",
+        fail_validation,
+    )
+    monkeypatch.setattr(
+        sampling_workflow,
+        "restore_model_theta",
+        lambda *_args, **_kwargs: pytest.fail("restore should not run"),
+    )
+
+    runner = SamplingRunner(config)
+    with pytest.raises(RuntimeError, match="family_names differ") as excinfo:
+        runner._load_model()
+
+    assert model.close_calls == 1
+    assert isinstance(excinfo.value.__cause__, RuntimeError)
+    assert str(excinfo.value.__cause__) == "close failed"
+
+
+def test_sampling_runner_preserves_sampling_error_when_close_fails(
+    tmp_path: Path,
+    monkeypatch,
+):
+    class FakeModel:
+        family_names = ["fam0"]
+
+        def __init__(self):
+            self.close_calls = 0
+
+        def close(self):
+            self.close_calls += 1
+            raise RuntimeError("close failed")
+
+    model = FakeModel()
+    run_config = RunConfig(
+        species_tree=tmp_path / "sp.nwk",
+        families_file=tmp_path / "families.txt",
+        out_dir=tmp_path / "run_out",
+        device="cpu",
+    )
+    config = SamplingConfig(
+        checkpoint=tmp_path / "checkpoints" / "best.pt",
+        out_dir=tmp_path / "sample_out",
+    )
+
+    runner = SamplingRunner(config)
+    monkeypatch.setattr(
+        sampling_workflow,
+        "ensure_backtracking_available",
+        lambda backtrack_binary: None,
+    )
+    monkeypatch.setattr(runner, "_load_model", lambda: (run_config, model))
+
+    def fail_sample_recphyloxmls(*_args: object, **_kwargs: object) -> list[str]:
+        raise RuntimeError("backtrack failed")
+
+    monkeypatch.setattr(
+        sampling_workflow,
+        "sample_recphyloxmls",
+        fail_sample_recphyloxmls,
+    )
+
+    with pytest.raises(RuntimeError, match="backtrack failed") as excinfo:
+        runner.run()
+
+    assert model.close_calls == 1
+    assert isinstance(excinfo.value.__cause__, RuntimeError)
+    assert str(excinfo.value.__cause__) == "close failed"
+
+
 def test_sampling_runner_closes_model_on_empty_family_selection(
     tmp_path: Path,
     monkeypatch,

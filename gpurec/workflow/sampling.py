@@ -222,6 +222,13 @@ def _validate_sampling_seed_range(
         )
 
 
+def _close_model_after_error(model: Any, primary_error: BaseException) -> None:
+    try:
+        model.close()
+    except Exception as close_error:
+        raise primary_error from close_error
+
+
 class SamplingRunner:
     def __init__(self, config: SamplingConfig):
         self.config = config
@@ -242,8 +249,8 @@ class SamplingRunner:
                 payload=payload,
             )
             restore_model_theta(model, payload)
-        except Exception:
-            model.close()
+        except BaseException as exc:
+            _close_model_after_error(model, exc)
             raise
         return run_config, model
 
@@ -330,14 +337,18 @@ class SamplingRunner:
                 json.dumps(summary, indent=2, sort_keys=True) + "\n",
                 encoding="utf-8",
             )
-            return SamplingResult(
+            result = SamplingResult(
                 out_dir=out_dir,
                 families_sampled=stop - start,
                 samples_per_family=self.config.samples,
                 xml_files=xml_count,
             )
-        finally:
+        except BaseException as exc:
+            _close_model_after_error(model, exc)
+            raise
+        else:
             model.close()
+            return result
 
 
 def sample(config: SamplingConfig) -> SamplingResult:
