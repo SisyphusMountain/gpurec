@@ -38,6 +38,20 @@ def json_dumps_strict(value: Any, **kwargs: Any) -> str:
     return json.dumps(_json_safe(value), allow_nan=False, **kwargs)
 
 
+def write_json_strict(
+    path: Path,
+    value: Any,
+    *,
+    indent: int | None = 2,
+    sort_keys: bool = True,
+) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json_dumps_strict(value, indent=indent, sort_keys=sort_keys) + "\n",
+        encoding="utf-8",
+    )
+
+
 def tensor_stats(prefix: str, tensor: torch.Tensor | None) -> dict[str, float]:
     if tensor is None:
         return {}

@@ -2295,6 +2295,21 @@ construction and configured-step limits.  New CPU cases cover boolean,
 fractional, non-finite, and missing progress/status metadata so future changes
 cannot weaken scalar validation.
 
+\subsection{Strict Workflow JSON File Writer}
+
+Workflow summary outputs now use a shared strict JSON file writer in
+\texttt{gpurec.workflow.diagnostics}.  The helper creates parent directories,
+uses the existing finite-JSON normalization, applies stable indentation and key
+ordering by default, and appends the trailing newline expected by checked-in
+workflow artifacts.
+
+Both optimization and sampling summary publication now call that helper instead
+of duplicating \texttt{write\_text(json\_dumps\_strict(...))}.  Focused CPU
+tests cover non-finite value normalization, sorted summary keys, parent
+directory creation, and the existing staged summary-output paths.  Additional
+guards pin the lightweight import footprint and copy semantics of the shared
+workflow metadata helpers.
+
 \section{Verification Log}
 
 \begin{center}
@@ -5164,6 +5179,21 @@ Release metadata checker after shared checkpoint metadata helpers &
 \texttt{pdflatex -interaction=nonstopmode -halt-on-error ...professionalization...} &
 Audit log build after shared checkpoint metadata helpers &
 \texttt{ok with known overfull table warnings} \\
+\texttt{python -m py\_compile gpurec/workflow/diagnostics.py gpurec/workflow/optimize.py gpurec/workflow/sampling.py tests/unit/test\_workflow.py} &
+Strict workflow JSON writer syntax &
+\texttt{ok} \\
+\texttt{python -m pytest selected strict JSON writer, metadata helper, sampling summary, and optimization summary guards -q} &
+Focused strict JSON writer and metadata helper guards &
+\texttt{5 passed} \\
+\texttt{python -m pytest tests/unit/test\_workflow.py -q} &
+Workflow suite after strict JSON writer extraction &
+\texttt{407 passed} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' python -m pytest tests/unit -q -m "unit and not gpu"} &
+CPU unit gate after strict JSON writer extraction &
+\texttt{767 passed, 6 deselected} \\
+\texttt{python scripts/check\_release\_metadata.py} &
+Release metadata checker after strict JSON writer extraction &
+\texttt{expected license blockers} \\
 \bottomrule
 \end{tabular}
 \end{center}
@@ -5177,8 +5207,9 @@ Audit log build after shared checkpoint metadata helpers &
         document a Rust-toolchain requirement for source-tree sampling.
   \item Add an installed-artifact sampling smoke once the backtracking binary
         distribution model is settled.
-  \item Audit remaining workflow internals for small opportunities to share
-        validation and artifact-handling helpers.
+  \item Consider sharing the remaining checkpoint progress parser between
+        checkpoint loading and optimization resume if it can preserve the
+        current error contracts cleanly.
   \item Continue auditing public API consistency, documentation coverage, and
         CPU-safe regression tests for user-facing workflows.
   \item Keep committing small, verified increments so the branch remains

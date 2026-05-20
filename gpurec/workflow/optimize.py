@@ -38,6 +38,7 @@ from .diagnostics import (
     solver_stats,
     tensor_stats,
     write_csv,
+    write_json_strict,
 )
 from .model_factory import build_alerax_workflow_model
 
@@ -287,10 +288,7 @@ def _write_final_artifacts(
         )
 
         summary_stage_path = stage_dir / "summary.json"
-        summary_stage_path.write_text(
-            json_dumps_strict(summary, indent=2, sort_keys=True) + "\n",
-            encoding="utf-8",
-        )
+        write_json_strict(summary_stage_path, summary)
         staged_outputs.append(history_jsonl_output)
         staged_outputs.append((summary_stage_path, config.out_dir / "summary.json"))
 

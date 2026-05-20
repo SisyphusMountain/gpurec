@@ -33,7 +33,7 @@ from .checkpoint import (
     validate_checkpoint_model_compatibility,
 )
 from .config import RunConfig, SamplingConfig, _UINT64_MAX
-from .diagnostics import json_dumps_strict
+from .diagnostics import write_json_strict
 from .model_factory import build_alerax_workflow_model
 
 
@@ -386,10 +386,7 @@ class SamplingRunner:
             summary_path = recon_dir / "summary.json"
             staged_summary_path = stage_dir / "summary.json"
             staged_outputs.append((staged_summary_path, summary_path))
-            staged_summary_path.write_text(
-                json_dumps_strict(summary, indent=2, sort_keys=True) + "\n",
-                encoding="utf-8",
-            )
+            write_json_strict(staged_summary_path, summary)
             _publish_sampling_outputs(out_dir, staged_outputs)
             cleanup_error = cleanup_artifact_temp_dir(stage_dir)
             stage_dir = None

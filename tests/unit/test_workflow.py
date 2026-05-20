@@ -54,12 +54,14 @@ from gpurec.workflow.checkpoint import (
     restore_model_theta,
     save_checkpoint,
 )
+from gpurec.workflow._metadata import model_family_names, model_species_names
 from gpurec.workflow.config import RunConfig, SamplingConfig
 from gpurec.workflow.diagnostics import (
     append_jsonl,
     parameter_stats,
     safe_float,
     tensor_stats,
+    write_json_strict,
 )
 from gpurec.workflow.optimize import OptimizationRunner, _write_rate_table
 from gpurec.workflow.sampling import SamplingRunner, _xml_species_and_transfer_counts
@@ -456,6 +458,25 @@ def test_workflow_config_submodule_import_does_not_import_optimizer_or_sampling(
             "assert 'gpurec.workflow.sampling' not in sys.modules",
             "assert 'gpurec.backtracking' not in sys.modules",
             "assert 'gpurec.api' not in sys.modules",
+        )
+    )
+    result = _run_python_snippet(code)
+
+    assert result.returncode == 0
+    assert result.stdout == ""
+    assert result.stderr == ""
+
+
+def test_workflow_metadata_helper_import_does_not_import_heavy_modules():
+    code = "\n".join(
+        (
+            "import sys",
+            "import gpurec.workflow._metadata",
+            "assert 'gpurec.api' not in sys.modules",
+            "assert 'gpurec.backtracking' not in sys.modules",
+            "assert 'gpurec.workflow.optimize' not in sys.modules",
+            "assert 'gpurec.workflow.sampling' not in sys.modules",
+            "assert 'torch' not in sys.modules",
         )
     )
     result = _run_python_snippet(code)
@@ -1950,11 +1971,36 @@ def test_workflow_jsonl_diagnostics_sanitize_nonfinite_values(tmp_path: Path):
     assert payload["stats"]["x/max"] is None
 
 
+def test_workflow_json_diagnostics_write_strict_file(tmp_path: Path):
+    path = tmp_path / "nested" / "summary.json"
+
+    write_json_strict(path, {"z": math.inf, "a": [1.0, math.nan]})
+
+    text = path.read_text(encoding="utf-8")
+    assert text.endswith("\n")
+    assert text.index('"a"') < text.index('"z"')
+    assert json.loads(text) == {"a": [1.0, None], "z": None}
+
+
 def test_safe_float_returns_none_for_nonfinite_or_non_numeric_values():
     assert safe_float(1.5) == pytest.approx(1.5)
     assert safe_float(math.inf) is None
     assert safe_float(math.nan) is None
     assert safe_float("not-a-number") is None
+
+
+def test_workflow_metadata_model_name_helpers_return_copies_and_fallbacks():
+    assert model_family_names(SimpleNamespace()) == []
+    assert model_species_names(SimpleNamespace()) == []
+
+    model = SimpleNamespace(family_names=["family_a"], species_names=["species_a"])
+    family_names = model_family_names(model)
+    species_names = model_species_names(model)
+    family_names.append("mutated_family")
+    species_names.append("mutated_species")
+
+    assert model.family_names == ["family_a"]
+    assert model.species_names == ["species_a"]
 
 
 def test_sampling_config_validates_selection(tmp_path: Path):
