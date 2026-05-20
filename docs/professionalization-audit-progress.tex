@@ -2410,6 +2410,20 @@ A release-metadata unit guard now checks the README text against the
 \texttt{pyproject.toml}, alongside the existing CI matrix guard for 3.10, 3.11,
 and 3.12.
 
+\subsection{Derived CLI RunConfig Override Fields}
+
+The CLI no longer keeps a second hand-maintained copy of the
+\texttt{RunConfig} field list for config-file override merging.  The private
+override field surface is now derived from \texttt{dataclasses.fields(RunConfig)}
+when an optimize or run command actually needs it, so adding or removing a
+workflow config field cannot silently leave the config-file override path behind.
+
+The derivation remains lazy: \texttt{gpurec.cli} still avoids importing
+\texttt{gpurec.workflow} while rendering help or rejecting Hydra-style YAML
+before workflow configuration parsing.  The existing CLI surface guard now
+checks the derived private field surface against the dataclass fields and the
+parser destinations.
+
 \section{Verification Log}
 
 \begin{center}
@@ -5398,6 +5412,21 @@ CPU unit gate after README Python support documentation &
 \texttt{781 passed, 6 deselected} \\
 \texttt{python scripts/check\_release\_metadata.py} &
 Release metadata checker after README Python support documentation &
+\texttt{expected license blockers} \\
+\texttt{python -m py\_compile gpurec/cli.py tests/unit/test\_cli\_workflow.py} &
+Derived CLI RunConfig field surface syntax &
+\texttt{ok} \\
+\texttt{python -m pytest selected CLI field-surface and lazy-import guards -q} &
+Focused derived CLI RunConfig field surface guards &
+\texttt{4 passed} \\
+\texttt{python -m pytest tests/unit/test\_cli\_workflow.py selected CLI help smoke -q} &
+CLI workflow suite plus quiet help smoke after derived fields &
+\texttt{63 passed} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' python -m pytest tests/unit -q -m "unit and not gpu"} &
+CPU unit gate after derived CLI RunConfig field surface &
+\texttt{781 passed, 6 deselected} \\
+\texttt{python scripts/check\_release\_metadata.py} &
+Release metadata checker after derived CLI RunConfig field surface &
 \texttt{expected license blockers} \\
 \bottomrule
 \end{tabular}

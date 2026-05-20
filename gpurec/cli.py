@@ -12,54 +12,20 @@ from gpurec.core.batch_planning import (
 
 _EXPECTED_WORKFLOW_ERRORS = (ValueError, OSError, RuntimeError)
 _RAW_THETA_CHECKPOINT_ERROR = "must contain a dictionary payload"
-_RUN_CONFIG_CLI_OVERRIDE_FIELDS = (
-    "species_tree",
-    "families_file",
-    "out_dir",
-    "mode",
-    "device",
-    "dtype",
-    "start",
-    "max_families",
-    "preprocess_cache",
-    "refresh_preprocess_cache",
-    "family_chunk_size",
-    "clade_budget",
-    "batch_packing",
-    "max_wave_size",
-    "fixed_iters_e",
-    "max_iters_e",
-    "tol_e",
-    "fixed_iters_pi",
-    "neumann_terms",
-    "adaptive_iters",
-    "convergence_check_interval",
-    "e_logsumexp_tol",
-    "pi_max_diff_tol",
-    "gradient_change_tol",
-    "gradient_change_rtol",
-    "theta_init_d",
-    "theta_init_l",
-    "theta_init_t",
-    "min_rate",
-    "max_rate",
-    "optimizer",
-    "steps",
-    "lr",
-    "adam_warmup_steps",
-    "lbfgs_lr",
-    "lbfgs_history_size",
-    "lbfgs_max_iter",
-    "lbfgs_line_search",
-    "grad_inf_tol",
-    "loss_change_tol",
-    "loss_patience",
-    "best_likelihood_patience",
-    "best_likelihood_min_delta",
-    "checkpoint_every",
-    "log_every",
-    "resume_from",
-)
+
+
+def _run_config_cli_override_fields() -> tuple[str, ...]:
+    from dataclasses import fields
+
+    from gpurec.workflow.config import RunConfig
+
+    return tuple(field.name for field in fields(RunConfig))
+
+
+def __getattr__(name: str) -> Any:
+    if name == "_RUN_CONFIG_CLI_OVERRIDE_FIELDS":
+        return _run_config_cli_override_fields()
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 def _sampling_error_message(exc: BaseException) -> str:
@@ -158,7 +124,7 @@ def _run_config_from_args(args: argparse.Namespace) -> RunConfig:
     data = _config_data(args.config)
     from gpurec.workflow.config import RunConfig
 
-    for name in _RUN_CONFIG_CLI_OVERRIDE_FIELDS:
+    for name in _run_config_cli_override_fields():
         _set_if_present(data, args, name)
     missing = [
         name
