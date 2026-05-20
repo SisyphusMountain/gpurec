@@ -49,6 +49,7 @@ from ._family_layout import (
 )
 from ._validation import (
     bool_value,
+    integer_value,
     nonnegative_int,
     nonnegative_float,
     optional_positive_int,
@@ -416,9 +417,16 @@ def _selected_chunks(
     if chunk_indices is None:
         return list(enumerate(state.built_chunks))
     if torch.is_tensor(chunk_indices):
-        indices = [int(x) for x in chunk_indices.detach().cpu().reshape(-1).tolist()]
+        values = chunk_indices.detach().cpu().reshape(-1).tolist()
     else:
-        indices = [int(x) for x in chunk_indices]
+        try:
+            values = list(chunk_indices)
+        except TypeError as exc:
+            raise ValueError("chunk_indices must be a sequence of integers") from exc
+    indices = [
+        integer_value("chunk_indices entries", value)
+        for value in values
+    ]
     if not indices:
         raise ValueError("chunk_indices must not be empty")
     n_chunks = len(state.built_chunks)

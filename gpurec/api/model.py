@@ -64,6 +64,7 @@ from ._family_layout import (
 )
 from ._validation import (
     bool_value,
+    integer_value,
     nonnegative_float,
     optional_positive_int,
     positive_even_int,
@@ -1359,7 +1360,7 @@ class GeneReconModel(torch.nn.Module):
         return records
 
     def family_input(self, family_index: int) -> FamilyInput:
-        family_index = int(family_index)
+        family_index = integer_value("family_index", family_index)
         if family_index < 0 or family_index >= self.n_families:
             raise IndexError(
                 f"family_index {family_index} outside 0..{self.n_families}"
@@ -1390,7 +1391,7 @@ class GeneReconModel(torch.nn.Module):
         In non-batched mode only batch ``0`` exists.  Selecting a new batch
         clears warm runtime state from the previous active batch.
         """
-        batch_index = int(batch_index)
+        batch_index = integer_value("batch_index", batch_index)
         if batch_index < 0 or batch_index >= len(self.batch_metadata):
             raise IndexError(
                 f"batch index {batch_index} out of range for {len(self.batch_metadata)} batches"
@@ -1408,7 +1409,7 @@ class GeneReconModel(torch.nn.Module):
         Returns the family offset inside the active Pi matrix plus the local
         family index used by batch-local parameter tensors.
         """
-        family_index = int(family_index)
+        family_index = integer_value("family_index", family_index)
         if family_index < 0 or family_index >= self.n_families:
             raise IndexError(
                 f"family_index {family_index} outside 0..{self.n_families}"

@@ -8,6 +8,7 @@ import torch
 
 import gpurec.workflow.model_factory as workflow_model_factory
 from gpurec.api._validation import (
+    integer_value,
     nonnegative_int,
     positive_even_int,
     require_cuda_device,
@@ -46,6 +47,17 @@ def test_positive_even_int_accepts_positive_even_integer() -> None:
 def test_positive_even_int_rejects_invalid_values(value: object) -> None:
     with pytest.raises(ValueError, match="fixed_iters_Pi"):
         positive_even_int("fixed_iters_Pi", value)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("value", [0, -3, 4.0])
+def test_integer_value_accepts_integral_values(value: object) -> None:
+    assert integer_value("family_index", value) == int(value)
+
+
+@pytest.mark.parametrize("value", [1.5, math.inf, math.nan, True])
+def test_integer_value_rejects_non_integral_values(value: object) -> None:
+    with pytest.raises(ValueError, match="family_index"):
+        integer_value("family_index", value)  # type: ignore[arg-type]
 
 
 @pytest.mark.parametrize("value", [0, 3, 4.0])

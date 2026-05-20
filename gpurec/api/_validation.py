@@ -65,35 +65,28 @@ def bool_value(name: str, value: bool) -> bool:
     return value
 
 
-def positive_int(name: str, value: int) -> int:
+def integer_value(name: str, value: int) -> int:
     if isinstance(value, bool):
         raise ValueError(f"{name} must be an integer")
     if isinstance(value, Integral):
-        number = int(value)
+        return int(value)
     elif isinstance(value, Real):
         number_float = finite_float(name, float(value))
         if not number_float.is_integer():
             raise ValueError(f"{name} must be an integer")
-        number = int(number_float)
-    else:
-        raise ValueError(f"{name} must be an integer")
+        return int(number_float)
+    raise ValueError(f"{name} must be an integer")
+
+
+def positive_int(name: str, value: int) -> int:
+    number = integer_value(name, value)
     if number < 1:
         raise ValueError(f"{name} must be positive")
     return number
 
 
 def nonnegative_int(name: str, value: int) -> int:
-    if isinstance(value, bool):
-        raise ValueError(f"{name} must be an integer")
-    if isinstance(value, Integral):
-        number = int(value)
-    elif isinstance(value, Real):
-        number_float = finite_float(name, float(value))
-        if not number_float.is_integer():
-            raise ValueError(f"{name} must be an integer")
-        number = int(number_float)
-    else:
-        raise ValueError(f"{name} must be an integer")
+    number = integer_value(name, value)
     if number < 0:
         raise ValueError(f"{name} must be non-negative")
     return number

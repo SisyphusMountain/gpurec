@@ -16,6 +16,7 @@ from typing import Any
 
 import torch
 
+from gpurec.api._validation import integer_value
 from gpurec.api.model import FamilyInput, GeneReconModel, ReconciliationState
 from gpurec.recphyloxml import (
     EVENT_KEYS,
@@ -293,6 +294,7 @@ def export_backtracking_input(
     """
 
     seed, max_events = _validate_backtracking_limits(seed=seed, max_events=max_events)
+    family_index = integer_value("family_index", family_index)
     family = model.family_input(family_index)
     offset, parameter_family_index = _activate_family_batch(model, family_index)
     state = _evaluate_backtracking_state(model)

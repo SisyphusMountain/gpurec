@@ -119,12 +119,16 @@ def _selected_indices(
 
 def _validate_selected_indices(selected: Sequence[int], clade_counts: Sequence[int]) -> None:
     limit = len(clade_counts)
+    seen: set[int] = set()
     for position, idx in enumerate(selected):
         if idx < 0 or idx >= limit:
             raise ValueError(
                 f"family index {idx} at selected position {position} is outside "
                 f"valid range [0, {limit})"
             )
+        if idx in seen:
+            raise ValueError(f"duplicate family index {idx} at selected position {position}")
+        seen.add(idx)
 
 
 def _require_indexed_stats(

@@ -370,6 +370,16 @@ def test_plan_family_batches_rejects_nonintegral_indices(indices):
         )
 
 
+def test_plan_family_batches_rejects_duplicate_indices():
+    with pytest.raises(ValueError, match="duplicate family index"):
+        plan_family_batches(
+            indices=[0, 0],
+            clade_counts=[5, 7],
+            family_chunk_size=0,
+            clade_budget=None,
+        )
+
+
 @pytest.mark.parametrize(
     ("kwargs", "message"),
     [

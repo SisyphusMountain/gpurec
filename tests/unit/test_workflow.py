@@ -40,6 +40,7 @@ from gpurec.api.uniform_chunked import (
     UniformChunkedReconModel,
     _as_auto_int,
     _auto_positive_int,
+    _selected_chunks,
 )
 from gpurec.workflow.checkpoint import (
     CHECKPOINT_VERSION,
@@ -398,6 +399,69 @@ def test_family_input_returns_defensive_copies():
     assert family_record["clade_leaf_labels"] == ["gene_a", ""]
 
 
+def _public_selector_model() -> GeneReconModel:
+    model = object.__new__(GeneReconModel)
+    object.__setattr__(
+        model,
+        "_dataset",
+        SimpleNamespace(
+            families=[
+                {
+                    "C": 1,
+                    "N_splits": 0,
+                    "root_clade_id": 0,
+                    "ccp_helpers": {},
+                    "leaf_row_index": torch.empty(0, dtype=torch.long),
+                    "leaf_col_index": torch.empty(0, dtype=torch.long),
+                }
+            ],
+            family_names=["fam0"],
+            gene_tree_paths=[["g0.nwk"]],
+            leaf_species_maps=[{}],
+        ),
+    )
+    model.batch_metadata = [SimpleNamespace(family_indices=[0])]
+    model._current_batch_index = 0
+    return model
+
+
+@pytest.mark.parametrize(
+    ("method", "field"),
+    [
+        ("family_input", "family_index"),
+        ("activate_family", "family_index"),
+        ("select_batch", "batch_index"),
+    ],
+)
+@pytest.mark.parametrize("value", [True, 1.5, math.inf, math.nan])
+def test_public_selectors_reject_nonintegral_indices(
+    method: str,
+    field: str,
+    value: object,
+):
+    model = _public_selector_model()
+
+    with pytest.raises(ValueError, match=field):
+        getattr(GeneReconModel, method)(model, value)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("method", ["family_input", "activate_family"])
+@pytest.mark.parametrize("value", [-1, 1])
+def test_family_selectors_reject_out_of_range_indices(method: str, value: int):
+    model = _public_selector_model()
+
+    with pytest.raises(IndexError, match="family_index"):
+        getattr(GeneReconModel, method)(model, value)
+
+
+@pytest.mark.parametrize("value", [-1, 1])
+def test_select_batch_rejects_out_of_range_indices(value: int):
+    model = _public_selector_model()
+
+    with pytest.raises(IndexError, match="batch index"):
+        GeneReconModel.select_batch(model, value)
+
+
 def test_run_config_normalizes_batch_controls(tmp_path: Path):
     config = RunConfig(
         species_tree=tmp_path / "sp.nwk",
@@ -671,6 +735,56 @@ def test_uniform_chunked_rejects_bad_chunk_controls_before_device_or_io(
 
     assert "CUDA" not in str(exc_info.value)
     assert "missing" not in str(exc_info.value)
+
+
+def _uniform_chunk_state(count: int = 2) -> SimpleNamespace:
+    return SimpleNamespace(
+        built_chunks=[
+            SimpleNamespace(spec=SimpleNamespace(indices=[idx]))
+            for idx in range(count)
+        ],
+        dataset=SimpleNamespace(families=[{} for _ in range(count)]),
+        origination_probs=None,
+    )
+
+
+@pytest.mark.parametrize(
+    "chunk_indices",
+    [
+        [True],
+        [0.5],
+        [math.inf],
+        [math.nan],
+        torch.tensor([True]),
+        torch.tensor([0.5]),
+    ],
+)
+def test_uniform_chunk_selector_rejects_nonintegral_indices(chunk_indices: object):
+    with pytest.raises(ValueError, match="chunk_indices"):
+        _selected_chunks(_uniform_chunk_state(), chunk_indices)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    ("chunk_indices", "message"),
+    [
+        ([], "must not be empty"),
+        ([0, 0], "duplicate chunk index"),
+        ([-1], "out of range"),
+        ([2], "out of range"),
+    ],
+)
+def test_uniform_chunk_selector_rejects_invalid_index_sets(
+    chunk_indices: object,
+    message: str,
+):
+    with pytest.raises((IndexError, ValueError), match=message):
+        _selected_chunks(_uniform_chunk_state(), chunk_indices)  # type: ignore[arg-type]
+
+
+def test_uniform_chunk_selector_accepts_integral_float_indices():
+    selected = _selected_chunks(_uniform_chunk_state(), [1.0])
+
+    assert [idx for idx, _chunk in selected] == [1]
 
 
 @pytest.mark.parametrize("value", ["12", 12, 12.0])
@@ -1479,6 +1593,12 @@ def test_sampling_config_rejects_nonintegral_limits(
 
 def test_public_backtracking_rejects_invalid_seed_and_event_limits():
     model = object()
+    with pytest.raises(ValueError, match="family_index"):
+        export_backtracking_input(model, family_index=True)  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="family_index"):
+        sample_recphyloxml(model, family_index=1.5)  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="family_index"):
+        sample_recphyloxmls(model, family_index=math.inf, num_samples=1)  # type: ignore[arg-type]
     with pytest.raises(ValueError, match="seed"):
         export_backtracking_input(model, seed=-1)  # type: ignore[arg-type]
     with pytest.raises(ValueError, match="seed"):
