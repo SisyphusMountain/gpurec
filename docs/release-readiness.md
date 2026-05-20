@@ -153,7 +153,7 @@ CUDA_VISIBLE_DEVICES='' gpurec backtrack-check --help
 CUDA_VISIBLE_DEVICES='' pytest -q -m "unit and not gpu"
 cargo test --locked --manifest-path crates/gpurec-backtrack/Cargo.toml
 cargo run --locked --quiet --manifest-path crates/gpurec-backtrack/Cargo.toml -- --help
-pytest -q -m "integration and not gpu"
+pytest -q tests/integration/test_rust_backtracking_fixture.py
 ```
 
 GPU validation should use a small species tree and a small family subset before

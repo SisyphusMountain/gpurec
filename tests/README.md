@@ -12,7 +12,7 @@ CUDA_VISIBLE_DEVICES='' pytest -q -m "unit and not gpu"
 The GitHub Actions workflow in `.github/workflows/cpu-unit.yml` runs this same
 gate on Python 3.10, 3.11, and 3.12 for pushes and pull requests.  It also
 builds/checks distribution artifacts in a CPU packaging job and runs the
-Rust backtracking plus non-GPU integration gate.
+Rust backtracking crate plus JSON fixture gate.
 
 The explicit equivalent is useful when bisecting a specific audit surface:
 
@@ -55,7 +55,7 @@ Rust backtracking checks are CPU-safe:
 ```bash
 cargo test --locked --manifest-path crates/gpurec-backtrack/Cargo.toml
 cargo run --locked --quiet --manifest-path crates/gpurec-backtrack/Cargo.toml -- --help
-pytest -q -m "integration and not gpu"
+pytest -q tests/integration/test_rust_backtracking_fixture.py
 ```
 
 Backtracking fixture smokes should use the CPU-only JSON fixture when the goal
@@ -63,6 +63,13 @@ is to validate the Rust binary without constructing a CUDA model:
 
 ```bash
 pytest -q tests/integration/test_rust_backtracking_fixture.py::test_rust_backtracking_cli_reads_json_fixture_and_writes_recphyloxml
+```
+
+After installing the normal Python test dependencies, the broader non-GPU
+integration marker can be collected with:
+
+```bash
+pytest -q -m "integration and not gpu"
 ```
 
 `pytest.ini` declares the coarse test markers; `tests/conftest.py` auto-applies

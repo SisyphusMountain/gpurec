@@ -2535,6 +2535,19 @@ A repository hygiene guard now checks that
 \texttt{gpurec/workflow/sampling.py} does not regress to the private
 \texttt{\_UINT64\_MAX} import while still using the shared public limit.
 
+\subsection{Rust Backtracking CI Collection Scope}
+
+The \texttt{rust-backtrack} GitHub Actions job now runs the targeted
+\texttt{tests/integration/test\_rust\_backtracking\_fixture.py} smoke after
+installing only \texttt{pytest}.  This keeps the minimal Rust-binary job from
+collecting unrelated integration modules that import runtime packages such as
+\texttt{torch} during collection.
+
+\texttt{tests/README.md} and the release-readiness checklist now document the
+same targeted fixture for Rust backtracking CI and release checks.  The broader
+\texttt{-m "integration and not gpu"} marker remains documented separately for
+fully installed Python test environments.
+
 \section{Verification Log}
 
 \begin{center}
@@ -5658,6 +5671,30 @@ CPU unit gate after sampling \texttt{u64} boundary cleanup &
 \texttt{794 passed, 6 deselected} \\
 \texttt{python scripts/check\_release\_metadata.py} &
 Release metadata checker after sampling \texttt{u64} boundary cleanup &
+\texttt{expected license blockers} \\
+\texttt{python -m py\_compile tests/unit/test\_release\_metadata.py} &
+Rust backtracking CI collection-scope guard syntax &
+\texttt{ok} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' python -m pytest selected rust-backtrack CI docs guards -q} &
+Focused workflow, tests README, and release-readiness guards &
+\texttt{3 passed} \\
+\texttt{pytest -q tests/integration/test\_rust\_backtracking\_fixture.py} &
+Targeted Rust backtracking fixture used by CI &
+\texttt{1 passed} \\
+\texttt{cargo test --locked --manifest-path crates/gpurec-backtrack/Cargo.toml} &
+Rust backtracking crate tests after CI gate narrowing &
+\texttt{13 passed} \\
+\texttt{cargo run --locked --quiet --manifest-path crates/gpurec-backtrack/Cargo.toml -- --help} &
+Rust backtracking CLI help smoke after CI gate narrowing &
+\texttt{ok} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' python -m pytest tests/unit/test\_release\_metadata.py -q} &
+Release metadata guard suite after CI gate narrowing &
+\texttt{40 passed} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' python -m pytest tests/unit -q -m "unit and not gpu"} &
+CPU unit gate after rust-backtrack CI gate narrowing &
+\texttt{794 passed, 6 deselected} \\
+\texttt{python scripts/check\_release\_metadata.py} &
+Release metadata checker after rust-backtrack CI gate narrowing &
 \texttt{expected license blockers} \\
 \bottomrule
 \end{tabular}
