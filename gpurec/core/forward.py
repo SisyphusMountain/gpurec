@@ -1,7 +1,5 @@
 """Forward pass: Pi_wave_forward and helpers."""
 
-import os
-
 import torch
 
 from .kernels.wave_step import (
@@ -9,7 +7,7 @@ from .kernels.wave_step import (
     wave_pibar_uniform_parent_fused,
 )
 from .kernels.dts_fused import dts_fused_parent_reduced
-from ._helpers import _nvtx_range
+from ._helpers import _env_flag_enabled, _nvtx_range
 from .extract_parameters import as_family_param, as_family_species
 from .log2_utils import logsumexp2
 from .species import species_wave_topology
@@ -253,13 +251,10 @@ def Pi_wave_forward(
                 roots_in_wave += 1
         return roots_in_wave == W
 
-    fuse_final_pibar = (
-        os.environ.get("GPUREC_FUSE_FINAL_PIBAR", "1").strip().lower()
-        not in ("", "0", "false", "no", "off")
-    )
-    specialize_nonleaf_leaf_term = (
-        os.environ.get("GPUREC_SPECIALIZE_NONLEAF_LEAF_TERM", "1").strip().lower()
-        not in ("", "0", "false", "no", "off")
+    fuse_final_pibar = _env_flag_enabled("GPUREC_FUSE_FINAL_PIBAR", "1")
+    specialize_nonleaf_leaf_term = _env_flag_enabled(
+        "GPUREC_SPECIALIZE_NONLEAF_LEAF_TERM",
+        "1",
     )
 
     def _progress(event: str, wave_index: int | None = None,

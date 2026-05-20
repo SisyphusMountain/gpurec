@@ -1747,6 +1747,17 @@ the same helper so resident and chunked evaluation setup preserve identical
 \texttt{None}, shared \texttt{[S]}, and family-specific \texttt{[F,S]}
 semantics without duplicate tensor-indexing code.
 
+\subsection{Shared Environment Flag Parsing}
+
+CUDA-path runtime toggles now use shared parsing helpers in
+\texttt{gpurec.core.\_helpers}.  \texttt{Pi\_wave\_forward()} and
+\texttt{Pi\_wave\_backward()} no longer duplicate their environment truth table
+for disabled tokens such as \texttt{0}, \texttt{false}, \texttt{no}, and
+\texttt{off}.  The backward self-loop mode toggles also share the exact
+\texttt{auto}/required parsing used by the existing CUDA fallback logic.  This
+keeps performance-path flags homogeneous while remaining CPU-testable through
+pure helper tests.
+
 \section{Verification Log}
 
 \begin{center}
@@ -3802,6 +3813,27 @@ Release metadata checker after shared family layout helpers &
 \texttt{expected license blockers} \\
 \texttt{pdflatex -interaction=nonstopmode -halt-on-error ...professionalization...} &
 Audit log build after shared family layout helpers &
+\texttt{ok with known overfull table warnings} \\
+\texttt{python -m py\_compile gpurec/core/\_helpers.py gpurec/core/forward.py gpurec/core/backward.py tests/unit/test\_core\_helpers.py tests/unit/test\_release\_metadata.py tests/unit/test\_repository\_hygiene.py} &
+Shared environment helper syntax &
+\texttt{ok} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q tests/unit/test\_core\_helpers.py} &
+Focused environment flag helper coverage &
+\texttt{22 passed} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q tests/unit/test\_release\_metadata.py -k "..."} &
+Explicit CPU unit path guard after helper test module &
+\texttt{1 passed, 18 deselected} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q tests/unit/test\_repository\_hygiene.py} &
+Repository hygiene after shared environment helpers &
+\texttt{12 passed} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
+CPU unit gate after shared environment helpers &
+\texttt{497 passed, 28 deselected} \\
+\texttt{python scripts/check\_release\_metadata.py} &
+Release metadata checker after shared environment helpers &
+\texttt{expected license blockers} \\
+\texttt{pdflatex -interaction=nonstopmode -halt-on-error ...professionalization...} &
+Audit log build after shared environment helpers &
 \texttt{ok with known overfull table warnings} \\
 \bottomrule
 \end{tabular}

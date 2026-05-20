@@ -6,7 +6,11 @@ import torch
 
 from .log2_utils import logsumexp2
 from .likelihood import prepare_origination_probs
-from ._helpers import _safe_exp2_ratio  # noqa: F401
+from ._helpers import (  # noqa: F401
+    _env_flag_enabled,
+    _env_mode_enabled_required,
+    _safe_exp2_ratio,
+)
 from .memory_policy import proposal0_memory_gate
 from .extract_parameters import as_family_param, as_family_species
 from .species import species_wave_topology
@@ -288,51 +292,34 @@ def Pi_wave_backward(
             rhs, active_mask_threshold, use_pruning=use_pruning
         )
 
-    no_cpu_pruning = (
-        os.environ.get("GPUREC_BACKWARD_NO_CPU_PRUNING", "1").strip().lower()
-        not in ("", "0", "false", "no", "off")
+    no_cpu_pruning = _env_flag_enabled("GPUREC_BACKWARD_NO_CPU_PRUNING", "1")
+    skip_inactive_pibar_zero = _env_flag_enabled(
+        "GPUREC_DTS_SKIP_INACTIVE_PIBAR_ZERO",
+        "1",
     )
-    skip_inactive_pibar_zero = (
-        os.environ.get("GPUREC_DTS_SKIP_INACTIVE_PIBAR_ZERO", "1").strip().lower()
-        not in ("", "0", "false", "no", "off")
+    specialize_nonleaf_leaf_term = _env_flag_enabled(
+        "GPUREC_SPECIALIZE_NONLEAF_LEAF_TERM",
+        "1",
     )
-    specialize_nonleaf_leaf_term = (
-        os.environ.get("GPUREC_SPECIALIZE_NONLEAF_LEAF_TERM", "1").strip().lower()
-        not in ("", "0", "false", "no", "off")
-    )
-    cuda_self_loop_nosplit_mode = os.environ.get(
+    (
+        _cuda_self_loop_nosplit_mode,
+        cuda_self_loop_nosplit_enabled,
+        cuda_self_loop_nosplit_required,
+    ) = _env_mode_enabled_required(
         "GPUREC_CUDA_SELF_LOOP_NOSPLIT",
         "auto",
-    ).strip().lower()
-    cuda_self_loop_nosplit_enabled = (
-        cuda_self_loop_nosplit_mode not in ("", "0", "false", "no", "off")
-    )
-    cuda_self_loop_nosplit_required = cuda_self_loop_nosplit_mode in (
-        "1",
-        "true",
-        "yes",
-        "on",
-        "force",
-        "required",
     )
     cuda_self_loop_nosplit_correction = os.environ.get(
         "GPUREC_CUDA_SELF_LOOP_NOSPLIT_CORRECTION",
         "tree",
     )
-    cuda_self_loop_split_mode = os.environ.get(
+    (
+        _cuda_self_loop_split_mode,
+        cuda_self_loop_split_enabled,
+        cuda_self_loop_split_required,
+    ) = _env_mode_enabled_required(
         "GPUREC_CUDA_SELF_LOOP_SPLIT",
         "auto",
-    ).strip().lower()
-    cuda_self_loop_split_enabled = (
-        cuda_self_loop_split_mode not in ("", "0", "false", "no", "off")
-    )
-    cuda_self_loop_split_required = cuda_self_loop_split_mode in (
-        "1",
-        "true",
-        "yes",
-        "on",
-        "force",
-        "required",
     )
 
     for k in range(K - 1, -1, -1):
