@@ -27,12 +27,7 @@ from typing import Any, Optional, Sequence
 
 import torch
 
-from gpurec.core.batching import (
-    build_wave_layout,
-    collate_gene_families,
-    family_schedule_summary,
-    schedule_global_phased_waves,
-)
+from gpurec.core.batching import family_schedule_summary
 from gpurec.core.batch_planning import (
     normalize_batch_packing,
     normalize_clade_budget,
@@ -59,6 +54,13 @@ from .autograd import (
     _GeneReconFunction,
     _extract_parameters,
     _record_backward_solver_stats,
+)
+from ._family_layout import (
+    FamilyWaveInputs,
+    build_family_wave_layout,
+    family_wave_inputs,
+    origination_probs_for_family_indices,
+    schedule_family_waves,
 )
 from ._validation import (
     bool_value,
@@ -165,11 +167,9 @@ class ReconciliationState:
 class _ResidentBatchSpec:
     index: int
     family_indices: list[int]
-    items: tuple[dict[str, Any], ...]
+    layout_inputs: FamilyWaveInputs
     waves: list[list[int]]
     phases: list[int]
-    family_clade_counts: list[int]
-    family_clade_offsets: list[int]
     metadata: BatchMetadata
 
 
@@ -353,20 +353,6 @@ def _family_index_chunks(
     ]
 
 
-def _origination_probs_for_family_indices(
-    origination_probs: torch.Tensor | None,
-    family_indices: Sequence[int],
-) -> torch.Tensor | None:
-    if origination_probs is None or origination_probs.ndim == 1:
-        return origination_probs
-    idx = torch.as_tensor(
-        family_indices,
-        dtype=torch.long,
-        device=origination_probs.device,
-    )
-    return origination_probs.index_select(0, idx)
-
-
 def _public_family_value(value: Any) -> Any:
     if torch.is_tensor(value):
         return value.detach().clone()
@@ -415,33 +401,9 @@ def _build_batch_specs(
     )
     specs: list[_ResidentBatchSpec] = []
     for batch_index, family_indices in enumerate(chunks):
-        items: list[dict[str, Any]] = []
-        family_clade_counts: list[int] = []
-        family_clade_offsets: list[int] = []
-        root_clade_rows: list[int] = []
-        clade_offset = 0
-        split_count = 0
-
-        for family_idx in family_indices:
-            fam = dataset.families[family_idx]
-            items.append(
-                {
-                    "ccp": fam["ccp_helpers"],
-                    "leaf_row_index": fam["leaf_row_index"],
-                    "leaf_col_index": fam["leaf_col_index"],
-                    "root_clade_id": int(fam["root_clade_id"]),
-                }
-            )
-            C_i = int(fam["C"])
-            family_clade_counts.append(C_i)
-            family_clade_offsets.append(clade_offset)
-            root_clade_rows.append(int(fam["root_clade_id"]) + clade_offset)
-            clade_offset += C_i
-            split_count += int(fam["N_splits"])
-
-        cross_waves, cross_phases = schedule_global_phased_waves(
-            items,
-            family_clade_offsets,
+        layout_inputs = family_wave_inputs(dataset, family_indices)
+        cross_waves, cross_phases = schedule_family_waves(
+            layout_inputs,
             max_wave_size=max_wave_size,
             max_root_wave_size=max_root_wave_size,
             max_dts_partial_rows=max_dts_partial_rows,
@@ -453,11 +415,11 @@ def _build_batch_specs(
             family_names=[dataset.family_names[i] for i in family_indices],
             gene_tree_paths=[list(dataset.gene_tree_paths[i]) for i in family_indices],
             family_count=len(family_indices),
-            clade_count=sum(family_clade_counts),
-            split_count=split_count,
+            clade_count=layout_inputs.clade_count,
+            split_count=layout_inputs.split_count,
             wave_count=len(cross_waves),
             max_wave_size=max((len(w) for w in cross_waves), default=0),
-            root_clade_rows=root_clade_rows,
+            root_clade_rows=layout_inputs.root_clade_rows,
             parameter_mapping=_parameter_mapping(
                 mode=mode,
                 dataset=dataset,
@@ -468,11 +430,9 @@ def _build_batch_specs(
             _ResidentBatchSpec(
                 index=batch_index,
                 family_indices=[int(i) for i in family_indices],
-                items=tuple(items),
+                layout_inputs=layout_inputs,
                 waves=cross_waves,
                 phases=cross_phases,
-                family_clade_counts=family_clade_counts,
-                family_clade_offsets=family_clade_offsets,
                 metadata=metadata,
             )
         )
@@ -512,41 +472,15 @@ def _build_static_state(
     dtype = dataset.dtype
 
     # 1. Cross-family wave layout
-    items = [
-        {
-            "ccp": fam["ccp_helpers"],
-            "leaf_row_index": fam["leaf_row_index"],
-            "leaf_col_index": fam["leaf_col_index"],
-            "root_clade_id": int(fam["root_clade_id"]),
-        }
-        for fam in dataset.families
-    ]
-    batched = collate_gene_families(items, dtype=dtype, device=device)
-
-    offsets = [m["clade_offset"] for m in batched["family_meta"]]
-    cross_waves, cross_phases = schedule_global_phased_waves(
-        items,
-        offsets,
+    family_layout = build_family_wave_layout(
+        family_wave_inputs(dataset, range(len(dataset.families))),
+        device=device,
+        dtype=dtype,
         max_wave_size=max_wave_size,
         max_root_wave_size=max_root_wave_size,
         max_dts_partial_rows=max_dts_partial_rows,
     )
-
-    family_clade_counts = [m["C"] for m in batched["family_meta"]]
-    family_clade_offsets = [m["clade_offset"] for m in batched["family_meta"]]
-
-    wave_layout = build_wave_layout(
-        waves=cross_waves,
-        phases=cross_phases,
-        ccp_helpers=batched["ccp"],
-        leaf_row_index=batched["leaf_row_index"],
-        leaf_col_index=batched["leaf_col_index"],
-        root_clade_ids=batched["root_clade_ids"],
-        device=device,
-        dtype=dtype,
-        family_clade_counts=family_clade_counts,
-        family_clade_offsets=family_clade_offsets,
-    )
+    wave_layout = family_layout.wave_layout
 
     # 2. Species helpers on device.
     species_helpers, ancestors_T = dataset._species_helpers_for_mode(
@@ -606,19 +540,14 @@ def _build_batch_static_state(
 ) -> ReconStaticState:
     device = dataset.device
     dtype = dataset.dtype
-    batched = collate_gene_families(list(spec.items), dtype=dtype, device=device)
-    wave_layout = build_wave_layout(
-        waves=spec.waves,
-        phases=spec.phases,
-        ccp_helpers=batched["ccp"],
-        leaf_row_index=batched["leaf_row_index"],
-        leaf_col_index=batched["leaf_col_index"],
-        root_clade_ids=batched["root_clade_ids"],
+    family_layout = build_family_wave_layout(
+        spec.layout_inputs,
         device=device,
         dtype=dtype,
-        family_clade_counts=spec.family_clade_counts,
-        family_clade_offsets=spec.family_clade_offsets,
+        waves=spec.waves,
+        phases=spec.phases,
     )
+    wave_layout = family_layout.wave_layout
     return ReconStaticState(
         device=device,
         dtype=dtype,
@@ -652,13 +581,7 @@ def _metadata_for_full_static(
     mode: str,
     static: ReconStaticState,
 ) -> BatchMetadata:
-    root_rows: list[int] = []
-    offset = 0
-    split_count = 0
-    for fam in dataset.families:
-        root_rows.append(int(fam["root_clade_id"]) + offset)
-        offset += int(fam["C"])
-        split_count += int(fam["N_splits"])
+    layout_inputs = family_wave_inputs(dataset, range(len(dataset.families)))
     wave_metas = static.wave_layout["wave_metas"]
     return BatchMetadata(
         batch_index=0,
@@ -667,10 +590,10 @@ def _metadata_for_full_static(
         gene_tree_paths=[list(paths) for paths in dataset.gene_tree_paths],
         family_count=len(dataset.families),
         clade_count=int(static.wave_layout["C"]),
-        split_count=split_count,
+        split_count=layout_inputs.split_count,
         wave_count=len(wave_metas),
         max_wave_size=max((int(meta["W"]) for meta in wave_metas), default=0),
-        root_clade_rows=root_rows,
+        root_clade_rows=layout_inputs.root_clade_rows,
         parameter_mapping=_parameter_mapping(
             mode=mode,
             dataset=dataset,
@@ -1204,7 +1127,7 @@ class GeneReconModel(torch.nn.Module):
             gradient_change_rtol=self._gradient_change_rtol,
             use_pruning=self._use_pruning,
             pruning_threshold=self._pruning_threshold,
-            origination_probs=_origination_probs_for_family_indices(
+            origination_probs=origination_probs_for_family_indices(
                 self.origination_probs,
                 self._batch_specs[batch_idx].family_indices,
             ),

@@ -1734,6 +1734,19 @@ AleRax-style event count files and sampling summary outputs.  The new
 multiple \texttt{recGeneTree} blocks, and the shared traversal path used by
 both backtracking and sampling aggregation.
 
+\subsection{Shared Family Layout Helpers}
+
+Resident and chunked-uniform model setup now share the CPU-side family layout
+plumbing in \texttt{gpurec.api.\_family\_layout}.  The helper builds
+family-indexed CCP items, local clade offsets, root rows, scheduled waves, and
+wave-layout tensors for the caller's family order.  \texttt{GeneReconModel}
+uses it for full-resident and resident-batch static states, while
+\texttt{UniformChunkedReconModel} uses the same helper for chunk layout
+construction.  Family-specific origination-probability slicing also moved to
+the same helper so resident and chunked evaluation setup preserve identical
+\texttt{None}, shared \texttt{[S]}, and family-specific \texttt{[F,S]}
+semantics without duplicate tensor-indexing code.
+
 \section{Verification Log}
 
 \begin{center}
@@ -3768,6 +3781,27 @@ Release metadata checker after shared RecPhyloXML traversal &
 \texttt{expected license blockers} \\
 \texttt{pdflatex -interaction=nonstopmode -halt-on-error ...professionalization...} &
 Audit log build after shared RecPhyloXML traversal &
+\texttt{ok with known overfull table warnings} \\
+\texttt{python -m py\_compile gpurec/api/\_family\_layout.py gpurec/api/model.py gpurec/api/uniform\_chunked.py gpurec/core/likelihood.py tests/unit/test\_family\_layout.py tests/unit/test\_origination\_probs.py tests/unit/test\_release\_metadata.py} &
+Shared family layout helper syntax &
+\texttt{ok} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q tests/unit/test\_family\_layout.py tests/unit/test\_origination\_probs.py} &
+Focused family-layout and origination helper coverage &
+\texttt{9 passed} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q tests/unit/test\_release\_metadata.py -k "..."} &
+Explicit CPU unit path guard after family-layout helper module &
+\texttt{1 passed, 18 deselected} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q tests/unit/test\_family\_layout.py tests/unit/test\_origination\_probs.py tests/unit/test\_global\_wave\_scheduler.py tests/unit/test\_workflow.py} &
+Affected layout, origination, scheduler, and workflow unit files &
+\texttt{286 passed} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
+CPU unit gate after shared family layout helpers &
+\texttt{475 passed, 28 deselected} \\
+\texttt{python scripts/check\_release\_metadata.py} &
+Release metadata checker after shared family layout helpers &
+\texttt{expected license blockers} \\
+\texttt{pdflatex -interaction=nonstopmode -halt-on-error ...professionalization...} &
+Audit log build after shared family layout helpers &
 \texttt{ok with known overfull table warnings} \\
 \bottomrule
 \end{tabular}

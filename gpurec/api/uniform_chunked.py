@@ -19,12 +19,7 @@ from typing import Any, Sequence
 import torch
 
 from gpurec.core.backward import Pi_wave_backward
-from gpurec.core.batching import (
-    build_wave_layout,
-    collate_gene_families,
-    family_schedule_summary,
-    schedule_global_phased_waves,
-)
+from gpurec.core.batching import family_schedule_summary
 from gpurec.core.batch_planning import normalize_batch_packing, plan_family_batches
 from gpurec.core.extract_parameters import extract_parameters_uniform
 from gpurec.core.forward import Pi_wave_forward
@@ -43,6 +38,11 @@ from gpurec.core.model import (
 )
 from gpurec.optimization.implicit_grad import _e_adjoint_and_theta_vjp
 
+from ._family_layout import (
+    build_family_wave_layout,
+    family_wave_inputs,
+    origination_probs_for_family_indices,
+)
 from ._validation import (
     bool_value,
     nonnegative_float,
@@ -245,41 +245,14 @@ def _build_chunk(
     max_wave_size: int | None,
     max_root_wave_size: int | None,
 ) -> UniformBuiltChunk:
-    items = []
-    for idx in spec.indices:
-        fam = dataset.families[idx]
-        items.append(
-            {
-                "ccp": fam["ccp_helpers"],
-                "leaf_row_index": fam["leaf_row_index"],
-                "leaf_col_index": fam["leaf_col_index"],
-                "root_clade_id": int(fam["root_clade_id"]),
-            }
-        )
-
-    batched = collate_gene_families(items, dtype=dtype, device=device)
-    offsets = [m["clade_offset"] for m in batched["family_meta"]]
-    cross_waves, cross_phases = schedule_global_phased_waves(
-        items,
-        offsets,
+    family_layout = build_family_wave_layout(
+        family_wave_inputs(dataset, spec.indices),
+        device=device,
+        dtype=dtype,
         max_wave_size=max_wave_size,
         max_root_wave_size=max_root_wave_size,
     )
-
-    family_clade_counts = [m["C"] for m in batched["family_meta"]]
-    family_clade_offsets = [m["clade_offset"] for m in batched["family_meta"]]
-    wave_layout = build_wave_layout(
-        waves=cross_waves,
-        phases=cross_phases,
-        ccp_helpers=batched["ccp"],
-        leaf_row_index=batched["leaf_row_index"],
-        leaf_col_index=batched["leaf_col_index"],
-        root_clade_ids=batched["root_clade_ids"],
-        device=device,
-        dtype=dtype,
-        family_clade_counts=family_clade_counts,
-        family_clade_offsets=family_clade_offsets,
-    )
+    wave_layout = family_layout.wave_layout
 
     metas = wave_layout["wave_metas"]
     max_wave = max((int(m["W"]) for m in metas), default=0)
@@ -382,16 +355,6 @@ def _selected_chunks(
     return selected
 
 
-def _origination_probs_for_indices(
-    origination_probs: torch.Tensor | None,
-    indices: Sequence[int],
-) -> torch.Tensor | None:
-    if origination_probs is None or origination_probs.ndim == 1:
-        return origination_probs
-    idx = torch.as_tensor(indices, dtype=torch.long, device=origination_probs.device)
-    return origination_probs.index_select(0, idx)
-
-
 def _evaluate_chunked_uniform(
     state: UniformChunkedState,
     theta: torch.Tensor,
@@ -409,7 +372,7 @@ def _evaluate_chunked_uniform(
         for _chunk_idx, chunk in selected_chunks
         for family_idx in chunk.spec.indices
     ]
-    selected_origination_probs = _origination_probs_for_indices(
+    selected_origination_probs = origination_probs_for_family_indices(
         state.origination_probs,
         selected_family_indices,
     )
@@ -456,7 +419,7 @@ def _evaluate_chunked_uniform(
     chunk_stats: list[dict[str, Any]] = []
 
     for chunk_idx, built in selected_chunks:
-        chunk_origination_probs = _origination_probs_for_indices(
+        chunk_origination_probs = origination_probs_for_family_indices(
             state.origination_probs,
             built.spec.indices,
         )
