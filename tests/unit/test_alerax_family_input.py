@@ -11,6 +11,7 @@ from gpurec.core.model import (
     parse_alerax_family_file,
     parse_alerax_mapping_file,
 )
+from tests.unit.alerax_helpers import write_tiny_alerax_inputs
 
 
 def _write(path, text: str):
@@ -259,23 +260,16 @@ def test_alerax_family_file_rejects_malformed_family_entries(
     bad_line: str,
     message: str,
 ):
-    _write(tmp_path / "fam.nwk", "(a:1,b:1);\n")
-    _write(tmp_path / "fam.map", "A:a\nB:b\n")
-    families = _write(
-        tmp_path / "families.txt",
-        "\n".join(
-            [
-                "[FAMILIES]",
-                "- fam0",
-                "starting_gene_tree = fam.nwk",
-                bad_line,
-                "",
-            ]
-        ),
+    inputs = write_tiny_alerax_inputs(
+        tmp_path,
+        family_name="fam0",
+        gene_tree_name="fam.nwk",
+        mapping_name="fam.map",
+        family_lines=("starting_gene_tree = fam.nwk", bad_line),
     )
 
     with pytest.raises(ValueError, match=message):
-        parse_alerax_family_file(families)
+        parse_alerax_family_file(inputs.families_file)
 
 
 def test_alerax_family_file_rejects_duplicate_family_names(tmp_path):

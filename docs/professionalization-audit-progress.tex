@@ -1593,6 +1593,14 @@ from the repository root.  It resolves checked source files from
 before reading them, so future scheduler tests that inspect repository files
 cannot silently depend on launch location.
 
+\subsection{Shared Tiny AleRax Test Inputs}
+
+The tiny one-family AleRax fixture used by command-line workflow tests now
+lives in a shared unit-test helper.  The CLI workflow tests and AleRax family
+parser tests both use that helper for their minimal \texttt{species},
+\texttt{families}, gene-tree, and mapping files, reducing duplicated fixture
+text while keeping each test's behavior-specific assertions local.
+
 \section{Verification Log}
 
 \begin{center}
@@ -3372,6 +3380,21 @@ Release metadata checker after global scheduler path-hygiene fix &
 \texttt{expected license blockers} \\
 \texttt{pdflatex -interaction=nonstopmode -halt-on-error ...professionalization...} &
 Audit log build after global scheduler path-hygiene fix &
+\texttt{ok with known overfull table warnings} \\
+\texttt{python -m py\_compile tests/unit/alerax\_helpers.py tests/unit/test\_cli\_workflow.py tests/unit/test\_alerax\_family\_input.py} &
+Shared tiny AleRax fixture syntax &
+\texttt{ok} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q tests/unit/test\_cli\_workflow.py tests/unit/test\_alerax\_family\_input.py} &
+CLI workflow and AleRax parser tests after fixture sharing &
+\texttt{66 passed} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
+CPU unit gate after tiny AleRax fixture sharing &
+\texttt{422 passed, 28 deselected} \\
+\texttt{python scripts/check\_release\_metadata.py} &
+Release metadata checker after tiny AleRax fixture sharing &
+\texttt{expected license blockers} \\
+\texttt{pdflatex -interaction=nonstopmode -halt-on-error ...professionalization...} &
+Audit log build after tiny AleRax fixture sharing &
 \texttt{ok with known overfull table warnings} \\
 \bottomrule
 \end{tabular}

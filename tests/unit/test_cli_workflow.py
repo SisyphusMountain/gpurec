@@ -15,6 +15,7 @@ import gpurec.workflow.model_factory as workflow_model_factory
 from gpurec.cli import _run_config_from_args, build_parser, main
 from gpurec.workflow.config import RunConfig
 from gpurec.workflow.model_factory import build_alerax_workflow_model
+from tests.unit.alerax_helpers import write_tiny_alerax_inputs
 
 
 def test_build_alerax_workflow_model_forwards_run_config(tmp_path: Path, monkeypatch):
@@ -80,26 +81,8 @@ def test_build_alerax_workflow_model_forwards_run_config(tmp_path: Path, monkeyp
     assert kwargs["prefetch_batches"] == 0
 
 
-def _write_minimal_alerax_inputs(tmp_path: Path) -> None:
-    (tmp_path / "sp.nwk").write_text("(A:1,B:1)Root;\n", encoding="utf-8")
-    (tmp_path / "gene.nwk").write_text("(a:1,b:1);\n", encoding="utf-8")
-    (tmp_path / "gene.map").write_text("A:a\nB:b\n", encoding="utf-8")
-    (tmp_path / "families.txt").write_text(
-        "\n".join(
-            [
-                "[FAMILIES]",
-                "- tiny_family",
-                "starting_gene_tree = gene.nwk",
-                "mapping = gene.map",
-                "",
-            ]
-        ),
-        encoding="utf-8",
-    )
-
-
 def test_cli_forwards_refresh_preprocess_cache(tmp_path: Path):
-    _write_minimal_alerax_inputs(tmp_path)
+    write_tiny_alerax_inputs(tmp_path)
     args = build_parser().parse_args(
         [
             "optimize",
@@ -121,7 +104,7 @@ def test_cli_forwards_refresh_preprocess_cache(tmp_path: Path):
 
 
 def test_cli_accepts_family_chunk_all_alias(tmp_path: Path):
-    _write_minimal_alerax_inputs(tmp_path)
+    write_tiny_alerax_inputs(tmp_path)
     args = build_parser().parse_args(
         [
             "optimize",
@@ -186,7 +169,7 @@ def test_cli_config_paths_are_config_relative_before_flag_overrides(
 
 
 def _minimal_workflow_cli_args(command: str, tmp_path: Path) -> list[str]:
-    _write_minimal_alerax_inputs(tmp_path)
+    write_tiny_alerax_inputs(tmp_path)
     return [
         command,
         "--species-tree",
