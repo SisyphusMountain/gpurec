@@ -482,6 +482,7 @@ def build_parser() -> argparse.ArgumentParser:
         description="Optimize D/T/L likelihood parameters from AleRax-style family inputs.",
     )
     _add_run_config_args(optimize_parser)
+    optimize_parser.set_defaults(_command_parser=optimize_parser)
 
     sample_parser = sub.add_parser(
         "sample",
@@ -489,6 +490,7 @@ def build_parser() -> argparse.ArgumentParser:
         description="Sample RecPhyloXML scenarios from a gpurec optimization checkpoint.",
     )
     _add_sampling_args(sample_parser, checkpoint_required=True)
+    sample_parser.set_defaults(_command_parser=sample_parser)
 
     run_parser = sub.add_parser(
         "run",
@@ -498,6 +500,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_run_config_args(run_parser)
     _add_sampling_args(run_parser, checkpoint_required=False, include_checkpoint=False)
     run_parser.add_argument("--checkpoint", type=Path, help=argparse.SUPPRESS)
+    run_parser.set_defaults(_command_parser=run_parser)
 
     backtrack_check_parser = sub.add_parser(
         "backtrack-check",
@@ -508,39 +511,41 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     _add_backtrack_binary_arg(backtrack_check_parser)
+    backtrack_check_parser.set_defaults(_command_parser=backtrack_check_parser)
     return parser
 
 
 def main(argv: list[str] | None = None) -> None:
     parser = build_parser()
     args = parser.parse_args(argv)
+    command_parser = getattr(args, "_command_parser", parser)
     if args.command == "optimize":
         try:
             config = _run_config_from_args(args)
         except _EXPECTED_WORKFLOW_ERRORS as exc:
-            parser.error(str(exc))
+            command_parser.error(str(exc))
         try:
             result = optimize(config)
         except _EXPECTED_WORKFLOW_ERRORS as exc:
-            _exit_runtime_error(parser, str(exc))
+            _exit_runtime_error(command_parser, str(exc))
         print(
             f"status={result.status} reason={result.reason} "
             f"final_nll_bits={result.final_nll_bits:.6f} out_dir={result.out_dir}",
             flush=True,
         )
         if result.status == "failed":
-            parser.exit(status=1)
+            command_parser.exit(status=1)
         return
     if args.command == "sample":
         try:
             sampling_config = _sampling_config_from_args(args, args.checkpoint)
             _validate_sampling_checkpoint_path(sampling_config.checkpoint)
         except _EXPECTED_WORKFLOW_ERRORS as exc:
-            parser.error(_sampling_error_message(exc))
+            command_parser.error(_sampling_error_message(exc))
         try:
             result = sample(sampling_config)
         except _EXPECTED_WORKFLOW_ERRORS as exc:
-            _exit_runtime_error(parser, _sampling_error_message(exc))
+            _exit_runtime_error(command_parser, _sampling_error_message(exc))
         print(
             f"sampled families={result.families_sampled} "
             f"samples={result.samples_per_family} xml={result.xml_files} "
@@ -552,12 +557,12 @@ def main(argv: list[str] | None = None) -> None:
         try:
             _ensure_backtracking_available(args.backtrack_binary)
         except _EXPECTED_WORKFLOW_ERRORS as exc:
-            _exit_runtime_error(parser, str(exc))
+            _exit_runtime_error(command_parser, str(exc))
         print("backtracking_available=true", flush=True)
         return
     if args.command == "run":
         if args.checkpoint is not None:
-            parser.error(
+            command_parser.error(
                 "gpurec run samples from the checkpoint produced by this optimization; "
                 "use gpurec sample --checkpoint to sample an existing checkpoint, or "
                 "--resume-from to resume optimization"
@@ -566,13 +571,13 @@ def main(argv: list[str] | None = None) -> None:
             run_config = _run_config_from_args(args)
             _validate_run_sampling_args(args, run_config)
         except _EXPECTED_WORKFLOW_ERRORS as exc:
-            parser.error(str(exc))
+            command_parser.error(str(exc))
         try:
             opt_result = optimize(run_config)
         except _EXPECTED_WORKFLOW_ERRORS as exc:
-            _exit_runtime_error(parser, str(exc))
+            _exit_runtime_error(command_parser, str(exc))
         if opt_result.status == "failed":
-            parser.exit(
+            command_parser.exit(
                 status=1,
                 message=(
                     "optimization failed; refusing to sample from a failed run "
@@ -589,18 +594,18 @@ def main(argv: list[str] | None = None) -> None:
             checkpoint = Path(checkpoint)
         if not checkpoint.is_file():
             _exit_runtime_error(
-                parser,
+                command_parser,
                 "optimization completed but no sampling checkpoint was found "
                 f"at {checkpoint}",
             )
         try:
             sampling_config = _sampling_config_from_args(args, checkpoint)
         except _EXPECTED_WORKFLOW_ERRORS as exc:
-            parser.error(_sampling_error_message(exc))
+            command_parser.error(_sampling_error_message(exc))
         try:
             sampling_result = sample(sampling_config)
         except _EXPECTED_WORKFLOW_ERRORS as exc:
-            _exit_runtime_error(parser, _sampling_error_message(exc))
+            _exit_runtime_error(command_parser, _sampling_error_message(exc))
         print(
             f"status={opt_result.status} reason={opt_result.reason} "
             f"sampled_families={sampling_result.families_sampled} "

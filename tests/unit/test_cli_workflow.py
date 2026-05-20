@@ -305,6 +305,11 @@ def _minimal_workflow_cli_args(command: str, tmp_path: Path) -> list[str]:
     ]
 
 
+def _assert_subcommand_usage(stderr: str, command: str) -> None:
+    assert f"usage: gpurec {command}" in stderr
+    assert "usage: gpurec [-h]" not in stderr
+
+
 def test_cli_rejects_auto_family_chunk_size_at_parse(capsys):
     with pytest.raises(SystemExit) as exc_info:
         build_parser().parse_args(["optimize", "--family-chunk-size", "auto"])
@@ -325,6 +330,7 @@ def test_cli_rejects_hydra_yaml_config_without_traceback(tmp_path: Path, capsys)
     captured = capsys.readouterr()
     assert exc_info.value.code == 2
     assert "flat JSON RunConfig" in captured.err
+    _assert_subcommand_usage(captured.err, "optimize")
     assert "Traceback" not in captured.err
 
 
@@ -510,6 +516,7 @@ def test_cli_reports_missing_required_options_without_traceback(capsys):
     assert exc_info.value.code == 2
     assert "missing required optimize option" in captured.err
     assert "species_tree" in captured.err
+    _assert_subcommand_usage(captured.err, "optimize")
     assert "Traceback" not in captured.err
 
 
@@ -604,6 +611,7 @@ def test_cli_sample_rejects_invalid_seed_without_traceback(tmp_path: Path, capsy
     captured = capsys.readouterr()
     assert exc_info.value.code == 2
     assert "seed must be non-negative" in captured.err
+    _assert_subcommand_usage(captured.err, "sample")
     assert "Traceback" not in captured.err
 
 
@@ -935,6 +943,7 @@ def test_cli_run_rejects_checkpoint_argument_without_traceback(capsys):
     assert exc_info.value.code == 2
     assert "gpurec sample --checkpoint" in captured.err
     assert "--resume-from" in captured.err
+    _assert_subcommand_usage(captured.err, "run")
     assert "Traceback" not in captured.err
 
 
