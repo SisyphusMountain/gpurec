@@ -1748,6 +1748,47 @@ def test_cli_run_reports_sampling_errors_without_usage(
     assert "Traceback" not in captured.err
 
 
+def test_cli_run_samples_reported_checkpoint_instead_of_stale_best(
+    tmp_path: Path,
+    capsys,
+    monkeypatch,
+):
+    checkpoint_dir = tmp_path / "out" / "checkpoints"
+    checkpoint_dir.mkdir(parents=True)
+    stale_best = checkpoint_dir / "best.pt"
+    current_latest = checkpoint_dir / "latest.pt"
+    stale_best.write_bytes(b"stale")
+    current_latest.write_bytes(b"current")
+    sampled: dict[str, Path] = {}
+
+    def successful_optimize(config):
+        return SimpleNamespace(
+            out_dir=config.out_dir,
+            sampling_checkpoint=current_latest,
+            status="success",
+            reason="completed",
+            final_nll_bits=12.0,
+        )
+
+    def capture_sample(config):
+        sampled["checkpoint"] = config.checkpoint
+        return SimpleNamespace(
+            families_sampled=1,
+            samples_per_family=1,
+            xml_files=1,
+            out_dir=config.out_dir,
+        )
+
+    monkeypatch.setattr("gpurec.cli.optimize", successful_optimize)
+    monkeypatch.setattr("gpurec.cli.sample", capture_sample)
+
+    main(_minimal_workflow_cli_args("run", tmp_path))
+
+    captured = capsys.readouterr()
+    assert "sampled_families=1" in captured.out
+    assert sampled["checkpoint"] == current_latest.resolve()
+
+
 def test_cli_run_rejects_sampling_options_before_optimization(
     tmp_path: Path,
     capsys,
@@ -2974,6 +3015,7 @@ def test_optimization_runner_run_writes_outputs_with_fake_model(tmp_path: Path):
     assert result.steps_completed == 1
     assert result.best_step == 0
     assert result.out_dir == config.out_dir
+    assert result.sampling_checkpoint == config.out_dir / "checkpoints" / "best.pt"
     assert runner.fake_model.closed
     assert runner.fake_model.clears >= 1
     assert runner.saved_checkpoint_losses
@@ -3103,6 +3145,97 @@ def test_optimization_runner_final_latest_resumes_at_next_optimizer_step(tmp_pat
         resumed_config.out_dir / "checkpoints" / "latest.pt"
     )
     assert int(resumed_latest["next_step"]) == 2
+
+
+def test_optimization_runner_reports_latest_when_no_best_written_this_run(
+    tmp_path: Path,
+):
+    class FakeResumeModel:
+        def __init__(self):
+            self.theta = torch.nn.Parameter(
+                torch.tensor([0.25, -0.15, 0.05], dtype=torch.float32)
+            )
+            self.family_names = ["fam0"]
+            self.species_names = ["sp0", "sp1"]
+            self.n_families = 1
+            self.n_species = 2
+            self.batch_metadata = [SimpleNamespace(batch_index=0)]
+            self.closed = False
+
+        def full_loss(self):
+            return self.theta.square().sum() + 3.0
+
+        def clamp_theta_(self, min_rate, max_rate):
+            with torch.no_grad():
+                self.theta.clamp_(min=-4.0, max=4.0)
+
+        def solver_stat_records(self):
+            return []
+
+        def clear(self):
+            return None
+
+        def close(self):
+            self.closed = True
+
+    class FakeResumeRunner(OptimizationRunner):
+        def build_model(self):
+            self.fake_model = FakeResumeModel()
+            return self.fake_model
+
+    species_tree = tmp_path / "sp.nwk"
+    families_file = tmp_path / "families.txt"
+    checkpoint_config = RunConfig(
+        species_tree=species_tree,
+        families_file=families_file,
+        out_dir=tmp_path / "checkpoint-source",
+        mode="global",
+        device="cpu",
+        optimizer="adam",
+        steps=1,
+        checkpoint_every=0,
+    )
+    resume_checkpoint = tmp_path / "resume.pt"
+    save_checkpoint(
+        resume_checkpoint,
+        config=checkpoint_config,
+        model=FakeResumeModel(),
+        optimizer=None,
+        step=0,
+        next_step=1,
+        status={
+            "best_nll_bits": 0.0,
+            "best_step": 0,
+            "previous_objective": 0.0,
+            "stable_loss_steps": 0,
+        },
+    )
+
+    out_dir = tmp_path / "resumed"
+    stale_best = out_dir / "checkpoints" / "best.pt"
+    stale_best.parent.mkdir(parents=True)
+    stale_best.write_bytes(b"stale best from previous invocation")
+    config = RunConfig(
+        species_tree=species_tree,
+        families_file=families_file,
+        out_dir=out_dir,
+        mode="global",
+        device="cpu",
+        optimizer="adam",
+        steps=1,
+        resume_from=resume_checkpoint,
+        checkpoint_every=0,
+        log_every=10,
+        grad_inf_tol=0.0,
+    )
+    runner = FakeResumeRunner(config)
+
+    result = runner.run()
+
+    latest = out_dir / "checkpoints" / "latest.pt"
+    assert result.sampling_checkpoint == latest
+    assert latest.is_file()
+    assert stale_best.read_bytes() == b"stale best from previous invocation"
 
 
 def test_optimization_runner_reports_discarded_resume_optimizer_state(tmp_path: Path):

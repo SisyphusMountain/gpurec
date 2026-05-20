@@ -510,14 +510,18 @@ def main(argv: list[str] | None = None) -> None:
                     "\n"
                 ),
             )
-        checkpoint = run_config.out_dir / "checkpoints" / "best.pt"
-        if not checkpoint.exists():
-            checkpoint = run_config.out_dir / "checkpoints" / "latest.pt"
+        checkpoint = getattr(opt_result, "sampling_checkpoint", None)
+        if checkpoint is None:
+            checkpoint = run_config.out_dir / "checkpoints" / "best.pt"
+            if not checkpoint.exists():
+                checkpoint = run_config.out_dir / "checkpoints" / "latest.pt"
+        else:
+            checkpoint = Path(checkpoint)
         if not checkpoint.is_file():
             _exit_runtime_error(
                 parser,
-                "optimization completed but no best.pt or latest.pt checkpoint "
-                f"was found under {run_config.out_dir / 'checkpoints'}",
+                "optimization completed but no sampling checkpoint was found "
+                f"at {checkpoint}",
             )
         try:
             sampling_config = _sampling_config_from_args(args, checkpoint)

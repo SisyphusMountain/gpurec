@@ -40,6 +40,7 @@ class OptimizationResult:
     best_nll_bits: float | None
     best_step: int | None
     steps_completed: int
+    sampling_checkpoint: Path | None = None
 
 
 _MISSING = object()
@@ -290,6 +291,9 @@ class OptimizationRunner:
         final_row: dict[str, Any] = {}
         resume_info: dict[str, Any] = {}
         resume_payload: dict[str, Any] | None = None
+        best_checkpoint = config.out_dir / "checkpoints" / "best.pt"
+        latest_checkpoint = config.out_dir / "checkpoints" / "latest.pt"
+        sampling_checkpoint: Path | None = None
 
         try:
             if config.resume_from is not None:
@@ -512,7 +516,7 @@ class OptimizationRunner:
                 }
                 if save_best_after_row:
                     self._save_status(
-                        config.out_dir / "checkpoints" / "best.pt",
+                        best_checkpoint,
                         model=model,
                         optimizer=optimizer,
                         step=step,
@@ -520,9 +524,10 @@ class OptimizationRunner:
                         row=row,
                         optimizer_phase=phase,
                     )
+                    sampling_checkpoint = best_checkpoint
                 if config.checkpoint_every and step % config.checkpoint_every == 0:
                     self._save_status(
-                        config.out_dir / "checkpoints" / "latest.pt",
+                        latest_checkpoint,
                         model=model,
                         optimizer=optimizer,
                         step=step,
@@ -598,7 +603,7 @@ class OptimizationRunner:
             }
             if final_improved:
                 self._save_status(
-                    config.out_dir / "checkpoints" / "best.pt",
+                    best_checkpoint,
                     model=model,
                     optimizer=optimizer,
                     step=int(final_row["step"]),
@@ -607,8 +612,9 @@ class OptimizationRunner:
                     row=final_row,
                     optimizer_phase=current_phase,
                 )
+                sampling_checkpoint = best_checkpoint
             self._save_status(
-                config.out_dir / "checkpoints" / "latest.pt",
+                latest_checkpoint,
                 model=model,
                 optimizer=optimizer,
                 step=int(final_row["step"]),
@@ -617,6 +623,8 @@ class OptimizationRunner:
                 row=final_row,
                 optimizer_phase=current_phase,
             )
+            if sampling_checkpoint is None:
+                sampling_checkpoint = latest_checkpoint
             _write_rate_table(config.out_dir / "rates_final.tsv", model, config.mode)
             if config.mode == "genewise":
                 _write_per_family_likelihoods(
@@ -646,6 +654,7 @@ class OptimizationRunner:
                 best_nll_bits=None if best_nll is None else float(best_nll),
                 best_step=None if best_step is None else int(best_step),
                 steps_completed=int(final_row["step"]),
+                sampling_checkpoint=sampling_checkpoint,
             )
         finally:
             model.close()

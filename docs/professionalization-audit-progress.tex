@@ -1467,6 +1467,18 @@ downstream fields.  The regression parses the generated file with
 \texttt{csv.reader} and verifies a tabbed family label remains one logical
 field with the expected column count.
 
+\subsection{\texttt{gpurec run} Sampling Checkpoint Provenance}
+
+\texttt{gpurec run} now samples from the checkpoint reported by the optimizer
+result instead of re-discovering \texttt{best.pt} by filename after
+optimization.  \texttt{OptimizationResult} records the checkpoint actually
+selected for downstream sampling: a \texttt{best.pt} written during the current
+optimization when the run improved, otherwise the fresh \texttt{latest.pt}
+written at completion.  This prevents a stale \texttt{best.pt} already present
+in the output directory from being sampled after a resumed or non-improving
+run.  Regression tests cover both the CLI handoff and the optimizer case where
+no new best checkpoint is written.
+
 \section{Verification Log}
 
 \begin{center}
@@ -3033,6 +3045,21 @@ Release metadata checker after sampling TSV escaping &
 \texttt{expected license blockers} \\
 \texttt{pdflatex -interaction=nonstopmode -halt-on-error ...professionalization...} &
 Audit log build after sampling TSV escaping &
+\texttt{ok with known overfull table warnings} \\
+\texttt{python -m py\_compile gpurec/workflow/optimize.py gpurec/cli.py ...} &
+\texttt{gpurec run} checkpoint-provenance syntax &
+\texttt{ok} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q tests/unit/test\_workflow.py -k "..."} &
+Focused \texttt{gpurec run} checkpoint-provenance guards &
+\texttt{3 passed, 294 deselected} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
+CPU unit gate after \texttt{gpurec run} checkpoint provenance &
+\texttt{415 passed, 28 deselected} \\
+\texttt{python scripts/check\_release\_metadata.py} &
+Release metadata checker after \texttt{gpurec run} checkpoint provenance &
+\texttt{expected license blockers} \\
+\texttt{pdflatex -interaction=nonstopmode -halt-on-error ...professionalization...} &
+Audit log build after \texttt{gpurec run} checkpoint provenance &
 \texttt{ok with known overfull table warnings} \\
 \bottomrule
 \end{tabular}
