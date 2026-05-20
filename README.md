@@ -83,6 +83,24 @@ from gpurec.optimization import BatchedLBFGS
 opt = BatchedLBFGS([model.theta], lr=1.0)
 ```
 
+## Python Workflow API
+
+The CLI is the supported entry point for production runs, and the same workflow
+objects are also available as top-level Python shortcuts:
+
+```python
+from gpurec import RunConfig, SamplingConfig, optimize, sample
+
+run = RunConfig.from_json("run.json")
+result = optimize(run)
+
+sampling = SamplingConfig(checkpoint=result.sampling_checkpoint, samples=100)
+sample_result = sample(sampling)
+```
+
+For direct imports from the workflow package, `gpurec.workflow` exports the same
+configs, runners, result dataclasses, and `optimize`/`sample` functions.
+
 ## Production AleRax-Style Workflow
 
 The production workflow accepts an AleRax `[FAMILIES]` file and a species tree.

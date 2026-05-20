@@ -46,6 +46,34 @@ def _readme_metadata_issues(project: dict[str, Any], root: Path) -> list[str]:
     return ["pyproject.toml [project] readme must be a file path or table"]
 
 
+def _license_metadata_issues(project: dict[str, Any], root: Path) -> list[str]:
+    license_metadata = project.get("license")
+    if not license_metadata:
+        return ["pyproject.toml [project] must declare license metadata"]
+    if isinstance(license_metadata, str):
+        if license_metadata.strip():
+            return []
+        return ["pyproject.toml [project] license must be nonempty"]
+    if isinstance(license_metadata, dict):
+        if "file" in license_metadata:
+            license_file = license_metadata["file"]
+            if not isinstance(license_file, str) or not license_file:
+                return ["pyproject.toml [project] license.file must be a path string"]
+            if not (root / license_file).is_file():
+                return [f"declared license file does not exist: {license_file}"]
+            return []
+        if "text" in license_metadata:
+            if (
+                not isinstance(license_metadata["text"], str)
+                or not license_metadata["text"].strip()
+            ):
+                return ["pyproject.toml [project] license.text must be nonempty"]
+            return []
+    return [
+        "pyproject.toml [project] license must be a string, file table, or text table"
+    ]
+
+
 def _load_toml(path: Path) -> dict[str, Any]:
     text = path.read_text(encoding="utf-8")
     try:
@@ -141,12 +169,10 @@ def release_metadata_issues(root: Path) -> list[str]:
 
     license_files = [project_root / "LICENSE", project_root / "LICENSE.txt"]
     has_license_file = any(path.exists() for path in license_files)
-    has_license_metadata = bool(project.get("license"))
     license_classifier = any(str(item).startswith("License ::") for item in classifiers)
     if not has_license_file:
         issues.append("missing top-level LICENSE file")
-    if not has_license_metadata:
-        issues.append("pyproject.toml [project] must declare license metadata")
+    issues.extend(_license_metadata_issues(project, project_root))
     if not license_classifier:
         issues.append("pyproject.toml [project] must include a license classifier")
 

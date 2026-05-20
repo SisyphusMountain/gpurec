@@ -29,6 +29,7 @@ def _write_complete_release_metadata_fixture(
     root: Path,
     *,
     readme_line: str = 'readme = "README.md"',
+    license_line: str = 'license = { file = "LICENSE" }',
     create_readme: bool = True,
 ) -> None:
     (root / "LICENSE").write_text("fixture license\n", encoding="utf-8")
@@ -42,7 +43,7 @@ name = "fixture"
 version = "0.0.0"
 description = "fixture"
 {readme_block}requires-python = ">=3.10,<3.13"
-license = {{ file = "LICENSE" }}
+{license_line}
 authors = [{{ name = "Fixture Maintainer" }}]
 classifiers = [
     "Development Status :: 3 - Alpha",
@@ -133,6 +134,62 @@ def test_release_metadata_check_requires_declared_readme_file(tmp_path: Path):
     assert result.returncode == 1
     assert "declared readme file does not exist: MISSING.md" in result.stdout
     assert "license" not in result.stdout
+    assert result.stderr == ""
+
+
+def test_release_metadata_check_requires_declared_license_file(tmp_path: Path):
+    _write_complete_release_metadata_fixture(
+        tmp_path,
+        license_line='license = { file = "MISSING-LICENSE" }',
+    )
+
+    result = subprocess.run(
+        [sys.executable, str(CHECK_SCRIPT), "--root", str(tmp_path)],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 1
+    assert "declared license file does not exist: MISSING-LICENSE" in result.stdout
+    assert "missing top-level LICENSE file" not in result.stdout
+    assert result.stderr == ""
+
+
+def test_release_metadata_check_accepts_license_text_fixture(tmp_path: Path):
+    _write_complete_release_metadata_fixture(
+        tmp_path,
+        license_line='license = { text = "fixture license text" }',
+    )
+
+    result = subprocess.run(
+        [sys.executable, str(CHECK_SCRIPT), "--root", str(tmp_path)],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0
+    assert "release metadata check passed" in result.stdout
+    assert result.stderr == ""
+
+
+def test_release_metadata_check_rejects_empty_license_text(tmp_path: Path):
+    _write_complete_release_metadata_fixture(
+        tmp_path,
+        license_line='license = { text = "" }',
+    )
+
+    result = subprocess.run(
+        [sys.executable, str(CHECK_SCRIPT), "--root", str(tmp_path)],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 1
+    assert "license.text must be nonempty" in result.stdout
+    assert "missing top-level LICENSE file" not in result.stdout
     assert result.stderr == ""
 
 
