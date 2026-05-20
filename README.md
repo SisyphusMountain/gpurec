@@ -146,13 +146,17 @@ To sample scenarios from the best checkpoint:
 ```bash
 gpurec sample \
   --checkpoint output_gpurec/checkpoints/best.pt \
-  --samples 100
+  --samples 100 \
+  --sample-out-dir output_gpurec
 ```
 
 Sampling writes per-sample RecPhyloXML files and event-count files under
 `output_gpurec/reconciliations/all/`.  Aggregate summaries live under
 `output_gpurec/reconciliations/`, including `event_counts.tsv`,
 `totalSpeciesEventCounts.txt`, and `totalTransfers.txt`.
+Use `--family-start` and `--sample-max-families` to sample a family window,
+`--seed` for reproducible stochastic backtracking, and `--max-events` to cap
+pathological samples.
 
 ### Sampling Binary Setup
 

@@ -616,6 +616,66 @@ def test_cli_sample_reports_workflow_errors_without_usage(
     assert "Traceback" not in captured.err
 
 
+@pytest.mark.parametrize("out_flag", ["--sample-out-dir", "--sampling-out-dir"])
+def test_cli_sample_forwards_sampling_options(
+    tmp_path: Path,
+    capsys,
+    monkeypatch,
+    out_flag: str,
+):
+    checkpoint = tmp_path / "best.pt"
+    checkpoint.write_bytes(b"not used")
+    sample_out_dir = tmp_path / "samples"
+    backtrack_binary = tmp_path / "gpurec-backtrack"
+    captured_config = {}
+
+    def capture_sample(config):
+        captured_config["config"] = config
+        return SimpleNamespace(
+            families_sampled=4,
+            samples_per_family=config.samples,
+            xml_files=12,
+            out_dir=config.out_dir,
+        )
+
+    monkeypatch.setattr("gpurec.cli.sample", capture_sample)
+
+    main(
+        [
+            "sample",
+            "--checkpoint",
+            str(checkpoint),
+            out_flag,
+            str(sample_out_dir),
+            "--samples",
+            "3",
+            "--seed",
+            "17",
+            "--family-start",
+            "2",
+            "--sample-max-families",
+            "4",
+            "--max-events",
+            "1000",
+            "--backtrack-binary",
+            str(backtrack_binary),
+        ]
+    )
+
+    output = capsys.readouterr()
+    config = captured_config["config"]
+    assert config.checkpoint == checkpoint.resolve()
+    assert config.out_dir == sample_out_dir.resolve()
+    assert config.samples == 3
+    assert config.seed == 17
+    assert config.family_start == 2
+    assert config.max_families == 4
+    assert config.max_events == 1000
+    assert config.backtrack_binary == backtrack_binary.resolve()
+    assert "sampled families=4 samples=3 xml=12" in output.out
+    assert "Traceback" not in output.err
+
+
 def test_cli_optimize_reports_workflow_errors_without_traceback(
     tmp_path: Path,
     capsys,

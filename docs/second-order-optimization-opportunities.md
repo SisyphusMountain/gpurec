@@ -10,16 +10,15 @@ in practice.
 
 Related files:
 
-- `gpurec/optimization/global_optimizer.py`
+- `gpurec/workflow/optimize.py`
 - `gpurec/api/model.py`
 - `gpurec/api/autograd.py`
 - `gpurec/api/uniform_chunked.py`
 - `gpurec/optimization/implicit_grad.py`
 - `gpurec/optimization/batched_lbfgs.py`
 - `profiling/bench_global_parameter_optimization.py`
-- `docs/global-parameter-optimization-plan.md`
-- `docs/global-bf16-start-optimization.md`
-- `docs/uniform-forward-backward-full-pipeline-profile.md`
+- `docs/lean-fast-path.md`
+- `docs/hogenom-ccp-performance-log.md`
 
 ## Executive Summary
 
@@ -29,14 +28,16 @@ but moves line-search probes to the existing no-grad likelihood path.
 
 Current PyTorch `LBFGS` uses a closure that runs full forward plus backward for
 every strong-Wolfe line-search evaluation. In the uniform global path, a
-loss-only probe can use `GeneReconModel._forward_inference()` or
-`UniformChunkedReconModel.nll()`, which avoids saving full backward state and
-uses root-row-only forward. On the measured 100-family fp32 polish phase, the
-recorded totals were about `0.090 s` forward and `0.889 s` backward over 7
-evaluations; the loss-only part is roughly an order of magnitude cheaper than
-the gradient part. On the full 1000-family chunked pipeline, loss-only forward is
-still about `2.34 s`, but a gradient evaluation is about `8.68 s`, so loss-only
-probes are still only about `27%` of a full gradient evaluation.
+loss-only probe can use the resident `GeneReconModel` no-grad forward path
+(`model()` under `torch.no_grad()` or `full_loss_for_theta(theta)` when an
+explicit trial tensor is needed) or `UniformChunkedReconModel.nll()`. These
+paths avoid saving full backward state and use the root-row-only likelihood
+where possible. On the measured 100-family fp32 polish phase, the recorded
+totals were about `0.090 s` forward and `0.889 s` backward over 7 evaluations;
+the loss-only part is roughly an order of magnitude cheaper than the gradient
+part. On the full 1000-family chunked pipeline, loss-only forward is still about
+`2.34 s`, but a gradient evaluation is about `8.68 s`, so loss-only probes are
+still only about `27%` of a full gradient evaluation.
 
 Recommended implementation order:
 
@@ -61,14 +62,15 @@ during line search and stopping earlier when the NLL/rates have already landed.
 
 ## Current Optimizer Shape
 
-The production global helper is `optimize_global_rates_lbfgs`. Its closure:
+The production workflow optimizer loop in `gpurec/workflow/optimize.py` builds
+standard PyTorch `Adam`, `Adagrad`, or `LBFGS` optimizers over
+`GeneReconModel.theta`. Its closure:
 
 - clamps `model.theta`;
 - runs `loss = model()`;
 - runs `loss.backward()`;
-- records timing and gradient history.
+- records closure counts, diagnostics, and gradient history.
 
-The relevant block is in `gpurec/optimization/global_optimizer.py:207`.
 Every PyTorch `LBFGS` closure call is therefore a full gradient evaluation. That
 is appropriate for strong Wolfe because the curvature condition needs the trial
 gradient, but it is expensive for backtracking steps whose only job is to reject
@@ -76,16 +78,18 @@ a bad step length.
 
 The no-grad inference path already exists:
 
-- `gpurec/api/model.py:360` uses `_forward_inference`;
-- it calls `Pi_wave_forward(..., need_pibar=False, return_root_rows=True)`;
-- it evaluates the root likelihood through `compute_log_likelihood_root_rows`;
-- it does not save full `Pi/Pibar` state for backward.
+- `GeneReconModel.forward()` switches to `_evaluate_static_state(...,
+  need_grad=False)` when gradients are disabled or the active theta tensor does
+  not require gradients;
+- `GeneReconModel.full_loss_for_theta(theta)` streams all resident batches with
+  `need_grad=False` for explicit trial tensors;
+- both resident paths avoid saving `Pi/Pibar` state for backward.
 
 The chunked global model also has a no-grad loss path:
 
-- `gpurec/api/uniform_chunked.py:844` calls `_evaluate_chunked_uniform(...,
+- `UniformChunkedReconModel.nll()` calls `_evaluate_chunked_uniform(...,
   need_grad=False)`;
-- `gpurec/api/uniform_chunked.py:627` computes the gradient during forward when
+- the differentiable chunked forward computes the gradient during forward when
   grad is needed, then `backward()` only returns the cached gradient.
 
 The genewise optimizer already has the useful pattern. `BatchedLBFGS` accepts a
@@ -134,7 +138,7 @@ Recorded timings from existing docs/logs:
 |---|---:|---:|---:|---|
 | `test_trees_100`, fp32 helper | PyTorch LBFGS | about `0.013 s` per eval in one polish phase | about `0.140 s` per eval | From fixed-one bf16 handoff fp32 phase: `0.089793 s` forward, `0.889257 s` backward over 7 evals. |
 | first 100 of `test_trees_1000`, fp32 helper | PyTorch LBFGS | about `0.236 s` per eval | about `0.881 s` per eval | From fp32 phase totals: `3.061723 s` forward, `8.380231 s` backward over 13 evals. |
-| full 1000-family chunked pipeline | chunked forward/backward | `2.344 s` | `8.685 s` | From `docs/uniform-forward-backward-full-pipeline-profile.md`: forward `2343.716 ms`, backward `6341.228 ms`. |
+| full 1000-family chunked pipeline | chunked forward/backward | `2.344 s` | `8.685 s` | Historical chunked full-pipeline profiling notes: forward `2343.716 ms`, backward `6341.228 ms`. |
 
 Approximate second-order costs for three global parameters:
 
@@ -170,12 +174,15 @@ def objective_and_grad(theta):
 
 @torch.no_grad()
 def objective_only(theta):
-    old_warm = model.static.warm_E
+    saved_warm_state = snapshot_warm_state(model)
     try:
         set_theta(theta)
-        return float(model.nll())
+        if isinstance(model, UniformChunkedReconModel):
+            chunked = model
+            return float(chunked.nll())
+        return float(model.full_loss_for_theta(theta))
     finally:
-        model.static.warm_E = old_warm
+        restore_warm_state(model, saved_warm_state)
 ```
 
 For a 3D global problem, use dense BFGS rather than limited-memory storage:
@@ -496,7 +503,8 @@ Promotion criteria:
 
 Warm starts:
 
-- `model.nll()` and `_forward_inference()` mutate `static.warm_E`.
+- `UniformChunkedReconModel.nll()` and resident no-grad probes such as
+  `GeneReconModel.full_loss_for_theta(theta)` can mutate warm `E` state.
 - Finite differences need symmetric, deterministic probes. Save and restore
   `warm_E` for every probe, or set it to `None` for every probe in the Hessian
   builder.

@@ -1895,6 +1895,25 @@ readiness notes now state that \texttt{gpurec run}'s sampling phase follows
 the same \texttt{GPUREC\_BACKTRACK\_BIN} and \texttt{--backtrack-binary}
 contract as \texttt{gpurec sample}.
 
+\subsection{Sampling CLI Coverage and Loss-API Documentation}
+
+The successful \texttt{gpurec sample} CLI path now has a CPU unit regression
+that invokes \texttt{main()} with a dummy checkpoint and verifies every
+user-facing sampling option forwarded into \texttt{SamplingConfig}, including
+the \texttt{--sample-out-dir}/\texttt{--sampling-out-dir} aliases,
+\texttt{--samples}, \texttt{--seed}, \texttt{--family-start},
+\texttt{--sample-max-families}, \texttt{--max-events}, and
+\texttt{--backtrack-binary}.  The README sampling example now shows an
+explicit output directory and documents the family-window, seed, and event-cap
+controls alongside the output layout.  The second-order optimization note was
+updated away from stale private or removed symbols such as
+\texttt{GeneReconModel.\_forward\_inference()}, generic
+\texttt{model.nll()}, and the removed \texttt{global\_optimizer.py} helper.
+It now names the current public no-grad loss probes:
+\texttt{GeneReconModel.full\_loss\_for\_theta(theta)} for resident models and
+\texttt{UniformChunkedReconModel.nll()} for chunked global models.  Repository
+hygiene tests now guard those documentation contracts.
+
 \section{Verification Log}
 
 \begin{center}
@@ -4199,6 +4218,24 @@ Release metadata checker after installed sampling docs &
 \texttt{expected license blockers} \\
 \texttt{pdflatex -interaction=nonstopmode -halt-on-error ...professionalization...} &
 Audit log build after installed sampling docs &
+\texttt{ok with known overfull table warnings} \\
+\texttt{python -m py\_compile tests/unit/test\_cli\_workflow.py tests/unit/test\_repository\_hygiene.py} &
+Sampling CLI and loss-doc guard syntax &
+\texttt{ok} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q tests/unit/test\_cli\_workflow.py tests/unit/test\_repository\_hygiene.py -k "..."} &
+Focused sampling CLI and loss-doc regressions &
+\texttt{4 passed, 64 deselected} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q tests/unit/test\_cli\_workflow.py tests/unit/test\_repository\_hygiene.py} &
+CLI and repository hygiene suites after sampling-doc cleanup &
+\texttt{68 passed} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
+CPU unit gate after sampling-doc cleanup &
+\texttt{614 passed, 28 deselected} \\
+\texttt{python scripts/check\_release\_metadata.py} &
+Release metadata checker after sampling-doc cleanup &
+\texttt{expected license blockers} \\
+\texttt{pdflatex -interaction=nonstopmode -halt-on-error ...professionalization...} &
+Audit log build after sampling-doc cleanup &
 \texttt{ok with known overfull table warnings} \\
 \bottomrule
 \end{tabular}

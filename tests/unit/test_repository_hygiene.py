@@ -249,7 +249,25 @@ def test_project_readme_documents_sampling_output_layout():
     root = Path(__file__).resolve().parents[2]
     project_readme = (root / "README.md").read_text(encoding="utf-8")
 
+    assert "--sample-out-dir output_gpurec" in project_readme
+    assert "--family-start" in project_readme
+    assert "--sample-max-families" in project_readme
+    assert "--seed" in project_readme
+    assert "--max-events" in project_readme
     assert "output_gpurec/reconciliations/all/" in project_readme
     assert "event_counts.tsv" in project_readme
     assert "totalSpeciesEventCounts.txt" in project_readme
     assert "totalTransfers.txt" in project_readme
+
+
+def test_second_order_docs_reference_current_public_loss_apis():
+    root = Path(__file__).resolve().parents[2]
+    note = (
+        root / "docs" / "second-order-optimization-opportunities.md"
+    ).read_text(encoding="utf-8")
+
+    assert "_forward_inference" not in note
+    assert "GeneReconModel._" not in note
+    assert "model.nll()" not in note
+    assert "GeneReconModel.full_loss_for_theta(theta)" in note
+    assert "UniformChunkedReconModel.nll()" in note
