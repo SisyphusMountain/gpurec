@@ -91,6 +91,12 @@ def _normalize_finite_float(name: str, value: float | int | str) -> float:
     return number
 
 
+def _normalize_bool(name: str, value: bool) -> bool:
+    if not isinstance(value, bool):
+        raise ValueError(f"{name} must be true or false")
+    return value
+
+
 def _jsonable(value: Any) -> Any:
     if isinstance(value, Path):
         return str(value)
@@ -260,6 +266,8 @@ class RunConfig:
             self.preprocess_cache = _resolve_path(self.preprocess_cache)
         if self.resume_from is not None:
             self.resume_from = _resolve_path(self.resume_from)
+        for name in _JSON_BOOL_FIELDS:
+            setattr(self, name, _normalize_bool(name, getattr(self, name)))
         self.start = _normalize_nonnegative_int("start", self.start)
         self.max_families = _normalize_optional_positive_int(
             "max_families",

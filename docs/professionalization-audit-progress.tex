@@ -1412,6 +1412,16 @@ artifacts.  The CLI regression creates an empty \texttt{.pt} file and verifies
 traceback while still showing the checkpoint path and recovery-oriented loader
 message.
 
+\subsection{RunConfig Direct Boolean Normalization}
+
+\texttt{RunConfig(...)} now applies the same boolean type contract as JSON
+configuration loading.  Direct construction rejects non-\texttt{bool} values
+for \texttt{refresh\_preprocess\_cache} and \texttt{adaptive\_iters} instead
+of preserving truthy strings such as \texttt{"false"}.  This keeps programmatic
+callers, CLI JSON input, and checkpoint-loaded configs aligned on a single
+\texttt{true}/\texttt{false} validation rule before downstream workflow logic
+observes those controls.
+
 \section{Verification Log}
 
 \begin{center}
@@ -2903,6 +2913,21 @@ Release metadata checker after empty checkpoint error wrapping &
 \texttt{expected license blockers} \\
 \texttt{pdflatex -interaction=nonstopmode -halt-on-error ...professionalization...} &
 Audit log build after empty checkpoint error wrapping &
+\texttt{ok with known overfull table warnings} \\
+\texttt{python -m py\_compile gpurec/workflow/config.py tests/unit/test\_workflow.py} &
+RunConfig direct boolean normalization syntax &
+\texttt{ok} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q tests/unit/test\_workflow.py -k "..."} &
+Focused RunConfig boolean normalization guards &
+\texttt{4 passed, 287 deselected} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
+CPU unit gate after RunConfig boolean normalization &
+\texttt{409 passed, 28 deselected} \\
+\texttt{python scripts/check\_release\_metadata.py} &
+Release metadata checker after RunConfig boolean normalization &
+\texttt{expected license blockers} \\
+\texttt{pdflatex -interaction=nonstopmode -halt-on-error ...professionalization...} &
+Audit log build after RunConfig boolean normalization &
 \texttt{ok with known overfull table warnings} \\
 \bottomrule
 \end{tabular}

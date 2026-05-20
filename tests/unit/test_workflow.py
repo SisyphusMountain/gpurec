@@ -419,6 +419,30 @@ def test_run_config_rejects_boolean_float_controls(
 @pytest.mark.parametrize(
     ("field", "value"),
     [
+        ("refresh_preprocess_cache", "false"),
+        ("refresh_preprocess_cache", 1),
+        ("adaptive_iters", "false"),
+        ("adaptive_iters", 0),
+    ],
+)
+def test_run_config_rejects_nonbool_boolean_controls(
+    tmp_path: Path,
+    field: str,
+    value: object,
+):
+    with pytest.raises(ValueError, match=f"{field} must be true or false"):
+        RunConfig(
+            species_tree=tmp_path / "sp.nwk",
+            families_file=tmp_path / "families.txt",
+            out_dir=tmp_path / "out",
+            device="cpu",
+            **{field: value},
+        )
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
         ("start", 0.5),
         ("max_families", 1.5),
         ("fixed_iters_e", 1.5),
