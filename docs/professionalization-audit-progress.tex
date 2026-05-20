@@ -2522,6 +2522,19 @@ The new CLI regression monkeypatches the preflight to fail, asserts that
 \texttt{gpurec backtrack-check}: runtime exit status, no command usage text,
 and no Python traceback.
 
+\subsection{Sampling \texttt{u64} Constant Boundary}
+
+Sampling workflow code no longer imports a private
+\texttt{gpurec.workflow.config} constant to validate per-family seed ranges.
+The configuration module now exposes the shared \texttt{UINT64\_MAX} limit
+under a public name, and \texttt{SamplingConfig} plus
+\texttt{SamplingRunner} use that same boundary for constructor validation and
+pre-output sampling-window overflow checks.
+
+A repository hygiene guard now checks that
+\texttt{gpurec/workflow/sampling.py} does not regress to the private
+\texttt{\_UINT64\_MAX} import while still using the shared public limit.
+
 \section{Verification Log}
 
 \begin{center}
@@ -5630,6 +5643,21 @@ CPU unit gate after \texttt{gpurec run} backtracking preflight &
 \texttt{793 passed, 6 deselected} \\
 \texttt{python scripts/check\_release\_metadata.py} &
 Release metadata checker after \texttt{gpurec run} backtracking preflight &
+\texttt{expected license blockers} \\
+\texttt{python -m py\_compile gpurec/workflow/config.py gpurec/workflow/sampling.py tests/unit/test\_repository\_hygiene.py} &
+Sampling \texttt{u64} constant boundary syntax &
+\texttt{ok} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' python -m pytest selected sampling u64 boundary guards -q} &
+Focused config, sampling-runner, and source-boundary guards &
+\texttt{3 passed} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' python -m pytest tests/unit/test\_repository\_hygiene.py tests/unit/test\_workflow.py -q} &
+Workflow and hygiene suites after sampling \texttt{u64} boundary cleanup &
+\texttt{439 passed} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' python -m pytest tests/unit -q -m "unit and not gpu"} &
+CPU unit gate after sampling \texttt{u64} boundary cleanup &
+\texttt{794 passed, 6 deselected} \\
+\texttt{python scripts/check\_release\_metadata.py} &
+Release metadata checker after sampling \texttt{u64} boundary cleanup &
 \texttt{expected license blockers} \\
 \bottomrule
 \end{tabular}

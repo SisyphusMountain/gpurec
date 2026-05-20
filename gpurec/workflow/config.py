@@ -19,7 +19,7 @@ def _default_device() -> str:
     return "cuda"
 
 
-_UINT64_MAX = (1 << 64) - 1
+UINT64_MAX = (1 << 64) - 1
 
 
 def dtype_from_name(name: str) -> torch.dtype:
@@ -78,8 +78,8 @@ def _normalize_nonnegative_int(name: str, value: int | float | str) -> int:
 
 def _normalize_uint64(name: str, value: int | float | str) -> int:
     number = _normalize_nonnegative_int(name, value)
-    if number > _UINT64_MAX:
-        raise ValueError(f"{name} must be <= {_UINT64_MAX}")
+    if number > UINT64_MAX:
+        raise ValueError(f"{name} must be <= {UINT64_MAX}")
     return number
 
 

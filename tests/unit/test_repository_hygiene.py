@@ -50,6 +50,16 @@ def test_workflow_and_backtracking_use_public_model_surface():
     assert offenders == []
 
 
+def test_workflow_sampling_uses_public_config_constants():
+    root = Path(__file__).resolve().parents[2]
+    sampling_text = (root / "gpurec" / "workflow" / "sampling.py").read_text(
+        encoding="utf-8"
+    )
+
+    assert "_UINT64_MAX" not in sampling_text
+    assert "UINT64_MAX" in sampling_text
+
+
 def test_hogenom_scripts_use_public_model_surface():
     root = Path(__file__).resolve().parents[2]
     paths = [

@@ -36,7 +36,7 @@ from .checkpoint import (
     restore_model_theta,
     validate_checkpoint_model_compatibility,
 )
-from .config import RunConfig, SamplingConfig, _UINT64_MAX
+from .config import RunConfig, SamplingConfig, UINT64_MAX
 from .diagnostics import write_json_strict
 from .model_factory import build_alerax_workflow_model
 
@@ -245,7 +245,7 @@ def _validate_sampling_seed_range(
 ) -> None:
     last_family_index = stop - 1
     max_seed = config.seed + last_family_index * config.samples + config.samples - 1
-    if max_seed > _UINT64_MAX:
+    if max_seed > UINT64_MAX:
         raise ValueError(
             "sampling seed range exceeds u64 maximum: "
             f"seed={config.seed}, last_family_index={last_family_index}, "
