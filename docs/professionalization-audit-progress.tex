@@ -1432,6 +1432,19 @@ CUDA/Triton-dependent modules reachable from it.  The regression runs the CLI
 in a fresh Python subprocess, catches the expected \texttt{SystemExit}, and
 asserts no \texttt{gpurec.workflow} module was imported on that failure path.
 
+\subsection{Cargo Fallback Preflight}
+
+The stochastic backtracking bridge now validates the implicit Cargo fallback
+before building a subprocess command.  If no explicit
+\texttt{backtrack\_binary} or \texttt{GPUREC\_BACKTRACK\_BIN} value is
+configured, the source-manifest fallback still uses
+\texttt{cargo run --locked --quiet}, but it first checks that
+\texttt{cargo} is discoverable on \texttt{PATH}.  Missing Cargo now raises a
+gpurec \texttt{RuntimeError} that points users either to Rust/Cargo
+installation or to the explicit binary configuration path, and the fallback
+unit tests monkeypatch \texttt{shutil.which} so they are independent of the
+local developer machine.
+
 \section{Verification Log}
 
 \begin{center}
@@ -2953,6 +2966,21 @@ Release metadata checker after YAML config CLI preflight &
 \texttt{expected license blockers} \\
 \texttt{pdflatex -interaction=nonstopmode -halt-on-error ...professionalization...} &
 Audit log build after YAML config CLI preflight &
+\texttt{ok with known overfull table warnings} \\
+\texttt{python -m py\_compile gpurec/backtracking.py tests/unit/test\_workflow.py} &
+Cargo fallback preflight syntax &
+\texttt{ok} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q tests/unit/test\_workflow.py -k "..."} &
+Focused Cargo fallback preflight guards &
+\texttt{3 passed, 290 deselected} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
+CPU unit gate after Cargo fallback preflight &
+\texttt{411 passed, 28 deselected} \\
+\texttt{python scripts/check\_release\_metadata.py} &
+Release metadata checker after Cargo fallback preflight &
+\texttt{expected license blockers} \\
+\texttt{pdflatex -interaction=nonstopmode -halt-on-error ...professionalization...} &
+Audit log build after Cargo fallback preflight &
 \texttt{ok with known overfull table warnings} \\
 \bottomrule
 \end{tabular}

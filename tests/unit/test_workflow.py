@@ -3427,6 +3427,7 @@ def test_backtracking_command_reports_missing_source_manifest(tmp_path: Path, mo
 
 def test_backtracking_command_uses_locked_cargo_fallback(tmp_path: Path, monkeypatch):
     monkeypatch.delenv("GPUREC_BACKTRACK_BIN", raising=False)
+    monkeypatch.setattr(backtracking.shutil, "which", lambda command: "/usr/bin/cargo")
     manifest = tmp_path / "Cargo.toml"
     manifest.write_text("[package]\nname = \"fixture\"\n", encoding="utf-8")
 
@@ -3439,6 +3440,23 @@ def test_backtracking_command_uses_locked_cargo_fallback(tmp_path: Path, monkeyp
         str(manifest),
         "--",
     ]
+
+
+def test_backtracking_command_rejects_missing_cargo_fallback(
+    tmp_path: Path,
+    monkeypatch,
+):
+    monkeypatch.delenv("GPUREC_BACKTRACK_BIN", raising=False)
+    monkeypatch.setattr(backtracking.shutil, "which", lambda command: None)
+    manifest = tmp_path / "Cargo.toml"
+    manifest.write_text("[package]\nname = \"fixture\"\n", encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match="requires cargo on PATH") as exc_info:
+        _backtrack_command(cargo_manifest=manifest, backtrack_binary=None)
+
+    message = str(exc_info.value)
+    assert "GPUREC_BACKTRACK_BIN" in message
+    assert "backtrack_binary" in message
 
 
 def test_workflow_and_backtracking_use_public_model_surface():

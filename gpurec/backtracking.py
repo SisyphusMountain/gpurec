@@ -185,6 +185,12 @@ def _backtrack_command(
             f"Set {_BACKTRACK_BINARY_ENV} or pass backtrack_binary; default "
             f"source manifest not found at {manifest}"
         )
+    if shutil.which("cargo") is None:
+        raise RuntimeError(
+            "gpurec stochastic backtracking fallback requires cargo on PATH. "
+            f"Install Rust/Cargo, set {_BACKTRACK_BINARY_ENV}, or pass "
+            "backtrack_binary."
+        )
     return [
         "cargo",
         "run",
