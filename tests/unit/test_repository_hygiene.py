@@ -171,6 +171,39 @@ def test_tests_use_pytest_managed_temporary_paths():
     assert offenders == []
 
 
+def test_generated_artifact_roots_stay_ignored_and_untracked():
+    root = Path(__file__).resolve().parents[2]
+    gitignore = (root / ".gitignore").read_text(encoding="utf-8")
+
+    expected_ignored_patterns = (
+        ".preprocess_cache/",
+        "build/",
+        "dist/",
+        "*.egg-info/",
+        "output_*/",
+        "wandb/",
+        "crates/*/target/",
+    )
+    for pattern in expected_ignored_patterns:
+        assert pattern in gitignore
+
+    tracked_artifacts = [
+        path.relative_to(root).as_posix()
+        for path in _tracked_files(
+            root,
+            ".preprocess_cache",
+            "build",
+            "dist",
+            "*.egg-info",
+            "output_*",
+            "wandb",
+            "crates/*/target",
+        )
+    ]
+
+    assert tracked_artifacts == []
+
+
 def test_no_tracked_root_test_modules_bypass_pytest_collection():
     root = Path(__file__).resolve().parents[2]
     offenders = [
