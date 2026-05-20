@@ -9,11 +9,21 @@ import torch
 
 
 def require_cuda_device(device: Any, *, owner: str) -> torch.device:
-    resolved = torch.device(device)
+    try:
+        resolved = torch.device(device)
+    except (RuntimeError, TypeError) as exc:
+        raise ValueError(f"{owner} received invalid CUDA device {device!r}") from exc
     if resolved.type != "cuda":
         raise ValueError(f"{owner} currently requires a CUDA device")
     if not torch.cuda.is_available():
         raise RuntimeError("CUDA was requested but is not available")
+    if resolved.index is not None:
+        device_count = torch.cuda.device_count()
+        if resolved.index >= device_count:
+            raise ValueError(
+                f"{owner} requested CUDA device {resolved}, but only "
+                f"{device_count} CUDA device(s) are available"
+            )
     return resolved
 
 

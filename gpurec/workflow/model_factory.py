@@ -2,9 +2,8 @@ from __future__ import annotations
 
 from typing import Literal
 
-import torch
-
 from gpurec.api.model import GeneReconModel
+from gpurec.api._validation import require_cuda_device
 
 from .config import RunConfig
 
@@ -15,10 +14,7 @@ def build_alerax_workflow_model(
     refresh_preprocess_cache: bool | None = None,
     prefetch_batches: Literal["all"] | int = "all",
 ) -> GeneReconModel:
-    if not str(config.device).startswith("cuda"):
-        raise RuntimeError("gpurec production workflow currently requires CUDA")
-    if not torch.cuda.is_available():
-        raise RuntimeError("CUDA was requested but is not available")
+    require_cuda_device(config.device, owner="gpurec production workflow")
     if refresh_preprocess_cache is None:
         refresh_preprocess_cache = config.refresh_preprocess_cache
     return GeneReconModel.from_alerax_families(

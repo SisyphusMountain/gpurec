@@ -1189,7 +1189,7 @@ def test_build_alerax_workflow_model_forwards_run_config(tmp_path: Path, monkeyp
         call["kwargs"] = kwargs
         return sentinel
 
-    monkeypatch.setattr(workflow_model_factory.torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
     monkeypatch.setattr(
         workflow_model_factory.GeneReconModel,
         "from_alerax_families",

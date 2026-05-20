@@ -1387,6 +1387,20 @@ regression test seeds those stale outputs and verifies they are preserved on
 the empty-selection path while the successful sampling test still covers normal
 cleanup before writing a fresh result set.
 
+\subsection{CUDA Device Index Validation}
+
+CUDA device validation is now centralized in
+\texttt{gpurec.api.\_validation.require\_cuda\_device}.  The helper wraps
+malformed device specifications in gpurec-owned \texttt{ValueError}s and
+rejects explicit CUDA indices greater than or equal to
+\texttt{torch.cuda.device\_count()} before model construction begins.  The
+workflow model factory now uses the same helper instead of a string-prefix
+check, so \texttt{cuda:99} fails with a clear configuration error instead of
+reaching a later CUDA allocation path.  A new CPU-only validation test module
+monkeypatches CUDA availability and device count, and the explicit test-command
+documentation was updated so the docs guard continues to match the marker
+gate.
+
 \section{Verification Log}
 
 \begin{center}
@@ -2848,6 +2862,21 @@ Release metadata checker after sampling empty-selection preservation &
 \texttt{expected license blockers} \\
 \texttt{pdflatex -interaction=nonstopmode -halt-on-error ...professionalization...} &
 Audit log build after sampling empty-selection preservation &
+\texttt{ok with known overfull table warnings} \\
+\texttt{python -m py\_compile gpurec/api/\_validation.py gpurec/workflow/model\_factory.py ...} &
+CUDA device validation syntax &
+\texttt{ok} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q tests/unit/test\_validation.py tests/unit/test\_workflow.py -k "..."} &
+Focused CUDA device validation guards &
+\texttt{5 passed, 285 deselected} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
+CPU unit gate after CUDA device validation &
+\texttt{404 passed, 28 deselected} \\
+\texttt{python scripts/check\_release\_metadata.py} &
+Release metadata checker after CUDA device validation &
+\texttt{expected license blockers} \\
+\texttt{pdflatex -interaction=nonstopmode -halt-on-error ...professionalization...} &
+Audit log build after CUDA device validation &
 \texttt{ok with known overfull table warnings} \\
 \bottomrule
 \end{tabular}
