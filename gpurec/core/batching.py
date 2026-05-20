@@ -348,6 +348,16 @@ def _ccp_split_counts(ccp: Dict[str, Any], C: int, parents: Sequence[int]) -> Li
     return derived
 
 
+def _validate_split_child_id(name: str, value: int, *, row: int, C: int) -> int:
+    child_id = int(value)
+    if child_id < 0 or child_id >= C:
+        raise ValueError(
+            f"{name} contains child {child_id} at row {row}, "
+            f"outside valid range [0, {C})"
+        )
+    return child_id
+
+
 def _family_schedule_data(ccp: Dict[str, Any]) -> Dict[str, Any]:
     """Build the dependency data needed for cross-family wave scheduling."""
     C = int(ccp["C"])
@@ -368,9 +378,22 @@ def _family_schedule_data(ccp: Dict[str, Any]) -> Dict[str, Any]:
     parents_of: List[List[int]] = [[] for _ in range(C)]
     remaining = [0] * C
     child_sets: List[set[int]] = [set() for _ in range(C)]
-    for p, l, r in zip(parents, lefts, rights):
+    for row, (p, l, r) in enumerate(zip(parents, lefts, rights)):
         p = int(p)
-        for child in (int(l), int(r)):
+        for child in (
+            _validate_split_child_id(
+                "split_leftrights_sorted",
+                int(l),
+                row=row,
+                C=C,
+            ),
+            _validate_split_child_id(
+                "split_leftrights_sorted",
+                int(r),
+                row=N + row,
+                C=C,
+            ),
+        ):
             if child not in child_sets[p]:
                 child_sets[p].add(child)
                 children[p].append(child)
@@ -1176,6 +1199,11 @@ def build_wave_layout(
     """
     C = int(ccp_helpers['C'])
     N_splits = int(ccp_helpers['N_splits'])
+    if len(phases) != len(waves):
+        raise ValueError(
+            "waves and phases must have matching lengths, "
+            f"got {len(waves)} and {len(phases)}"
+        )
     if C > torch.iinfo(torch.int32).max:
         raise ValueError(f"wave split metadata requires int32 clade ids, got C={C}")
     _require_numel(

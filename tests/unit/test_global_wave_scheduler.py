@@ -112,6 +112,32 @@ def test_build_wave_layout_rejects_duplicate_clade_coverage():
         )
 
 
+@pytest.mark.parametrize("phases", [[], [1, 2]])
+def test_build_wave_layout_rejects_phase_count_mismatch(phases):
+    ccp = {
+        "C": 1,
+        "N_splits": 0,
+        "split_parents_sorted": torch.empty(0, dtype=torch.long),
+        "split_leftrights_sorted": torch.empty(0, dtype=torch.long),
+        "log_split_probs_sorted": torch.empty(0, dtype=torch.float32),
+    }
+
+    with pytest.raises(
+        ValueError,
+        match="waves and phases must have matching lengths",
+    ):
+        build_wave_layout(
+            [[0]],
+            phases,
+            ccp,
+            torch.empty(0, dtype=torch.long),
+            torch.empty(0, dtype=torch.long),
+            torch.tensor([0], dtype=torch.long),
+            device="cpu",
+            dtype=torch.float32,
+        )
+
+
 def _assert_topological(waves, offsets, items):
     wave_of = {clade: wave_idx for wave_idx, wave in enumerate(waves) for clade in wave}
     for offset, item in zip(offsets, items):
@@ -170,6 +196,17 @@ def test_global_scheduler_rejects_split_counts_that_disagree_with_parents():
     with pytest.raises(
         ValueError,
         match="split_counts does not match split_parents_sorted",
+    ):
+        schedule_global_phased_waves([{"ccp": ccp}], [0], max_wave_size=2)
+
+
+@pytest.mark.parametrize("child_id", [-1, 3])
+def test_global_scheduler_rejects_invalid_child_clade_ids(child_id):
+    ccp = _ccp(3, [0], [child_id], [2], root=0)
+
+    with pytest.raises(
+        ValueError,
+        match="split_leftrights_sorted contains child .* outside valid range",
     ):
         schedule_global_phased_waves([{"ccp": ccp}], [0], max_wave_size=2)
 

@@ -1690,6 +1690,17 @@ logic independent of optimizer phase.  A new focused optimization workflow test
 module covers the helper's ordering and no-stop cases without constructing a
 CUDA model.
 
+\subsection{Batching Scheduler Invariant Guards}
+
+The global batching scheduler now rejects malformed CCP split child IDs before
+constructing dependency adjacency lists.  \texttt{\_family\_schedule\_data()}
+validates both child columns in \texttt{split\_leftrights\_sorted}, including
+negative and out-of-range clade IDs, so bad metadata reports an explicit
+\texttt{ValueError} instead of relying on negative indexing or an opaque
+\texttt{IndexError}.  \texttt{build\_wave\_layout()} now also checks that
+\texttt{waves} and \texttt{phases} have matching lengths before building the
+layout tensors, preventing silent phase drops and late list-index failures.
+
 \section{Verification Log}
 
 \begin{center}
@@ -3646,6 +3657,24 @@ Release metadata checker after generated artifact tracking guard &
 \texttt{expected license blockers} \\
 \texttt{pdflatex -interaction=nonstopmode -halt-on-error ...professionalization...} &
 Audit log build after generated artifact tracking guard &
+\texttt{ok with known overfull table warnings} \\
+\texttt{python -m py\_compile gpurec/core/batching.py tests/unit/test\_global\_wave\_scheduler.py} &
+Batching scheduler invariant syntax &
+\texttt{ok} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q tests/unit/test\_global\_wave\_scheduler.py -k "..."} &
+Focused batching scheduler invariant guards &
+\texttt{4 passed, 22 deselected} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q tests/unit/test\_global\_wave\_scheduler.py} &
+Global scheduler unit file after invariant guards &
+\texttt{26 passed} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
+CPU unit gate after batching scheduler invariant guards &
+\texttt{462 passed, 28 deselected} \\
+\texttt{python scripts/check\_release\_metadata.py} &
+Release metadata checker after batching scheduler invariant guards &
+\texttt{expected license blockers} \\
+\texttt{pdflatex -interaction=nonstopmode -halt-on-error ...professionalization...} &
+Audit log build after batching scheduler invariant guards &
 \texttt{ok with known overfull table warnings} \\
 \bottomrule
 \end{tabular}
