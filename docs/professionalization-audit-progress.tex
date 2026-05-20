@@ -2369,6 +2369,20 @@ empty, non-URL, and non-HTTP(S) repository URLs, while the complete fixture stil
 passes.  The current checkout continues to report only the expected license
 blockers.
 
+\subsection{Checkpoint Load Filesystem Error Context}
+
+Checkpoint loading now wraps filesystem-level \texttt{OSError} failures from
+\texttt{torch.load()} in the same contextual \texttt{RuntimeError} used for
+unsafe or malformed checkpoint payloads.  Direct \texttt{load\_checkpoint()}
+callers, \texttt{SamplingRunner}, and optimization resume paths therefore keep
+the artifact path and remediation hint instead of leaking a raw
+\texttt{FileNotFoundError} or permission error.
+
+A focused workflow regression loads a missing checkpoint through the direct API
+and checks that the public error remains contextual while preserving the original
+\texttt{FileNotFoundError} as the exception cause.  Existing CLI smoke tests
+continue to cover missing and empty checkpoint reporting without tracebacks.
+
 \section{Verification Log}
 
 \begin{center}
@@ -5313,6 +5327,21 @@ Release metadata checker after URL validation hardening &
 \texttt{CUDA\_VISIBLE\_DEVICES='' python -m pytest tests/unit -q -m "unit and not gpu"} &
 CPU unit gate after release URL metadata validation &
 \texttt{774 passed, 6 deselected} \\
+\texttt{python -m py\_compile gpurec/workflow/checkpoint.py tests/unit/test\_workflow.py} &
+Checkpoint load OSError context syntax &
+\texttt{ok} \\
+\texttt{python -m pytest selected checkpoint load and CLI checkpoint guards -q} &
+Focused checkpoint load filesystem error guards &
+\texttt{4 passed} \\
+\texttt{python -m pytest tests/unit/test\_workflow.py tests/unit/test\_cli\_workflow.py -q} &
+Touched workflow and CLI suites after checkpoint load error wrapping &
+\texttt{471 passed} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' python -m pytest tests/unit -q -m "unit and not gpu"} &
+CPU unit gate after checkpoint load error wrapping &
+\texttt{775 passed, 6 deselected} \\
+\texttt{python scripts/check\_release\_metadata.py} &
+Release metadata checker after checkpoint load error wrapping &
+\texttt{expected license blockers} \\
 \bottomrule
 \end{tabular}
 \end{center}

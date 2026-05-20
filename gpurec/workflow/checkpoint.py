@@ -133,6 +133,7 @@ def _safe_torch_load(
         return torch.load(path, map_location=map_location, weights_only=True)
     except (
         EOFError,
+        OSError,
         pickle.UnpicklingError,
         RuntimeError,
         TypeError,
@@ -202,7 +203,12 @@ def _checkpoint_version(path: Path, value: Any) -> int:
         )
     return int(value)
 
-def load_checkpoint(path: str | Path, *, map_location: str | torch.device = "cpu") -> dict[str, Any]:
+
+def load_checkpoint(
+    path: str | Path,
+    *,
+    map_location: str | torch.device = "cpu",
+) -> dict[str, Any]:
     path = Path(path)
     payload = _safe_torch_load(path, map_location=map_location, artifact="checkpoint")
     return _validate_checkpoint_payload(payload, path)

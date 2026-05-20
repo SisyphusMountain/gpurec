@@ -3518,6 +3518,17 @@ def test_checkpoint_load_uses_weights_only(tmp_path: Path, monkeypatch):
     ]
 
 
+def test_checkpoint_load_wraps_os_errors_with_context(tmp_path: Path):
+    checkpoint = tmp_path / "missing.pt"
+
+    with pytest.raises(RuntimeError) as exc_info:
+        load_checkpoint(checkpoint)
+
+    assert "could not safely load checkpoint" in str(exc_info.value)
+    assert str(checkpoint) in str(exc_info.value)
+    assert isinstance(exc_info.value.__cause__, FileNotFoundError)
+
+
 @pytest.mark.parametrize(
     "version",
     [CHECKPOINT_VERSION + 1, "next", "1", True, 1.0, 1.5],
