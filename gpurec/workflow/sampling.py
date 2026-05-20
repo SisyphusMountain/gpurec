@@ -3,8 +3,6 @@ from __future__ import annotations
 import csv
 import json
 import re
-import shutil
-import tempfile
 from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
@@ -24,6 +22,12 @@ from gpurec.recphyloxml import (
     local_name,
 )
 
+from ._artifact_publish import (
+    StagedArtifact,
+    cleanup_artifact_temp_dir,
+    create_artifact_temp_dir,
+    publish_staged_artifacts,
+)
 from .checkpoint import (
     load_checkpoint,
     restore_model_theta,
@@ -215,95 +219,18 @@ def _clear_sampling_outputs(out_dir: Path) -> None:
     (out_dir / "reconciliations" / "all").mkdir(parents=True, exist_ok=True)
 
 
-def _create_sampling_temp_dir(recon_dir: Path, *, prefix: str) -> Path:
-    recon_dir.mkdir(parents=True, exist_ok=True)
-    return Path(tempfile.mkdtemp(prefix=prefix, dir=recon_dir))
-
-
-def _cleanup_sampling_temp_dir(path: Path | None) -> OSError | None:
-    if path is None:
-        return None
-    try:
-        shutil.rmtree(path)
-    except FileNotFoundError:
-        return None
-    except OSError as exc:
-        return exc
-    return None
-
-
-def _move_sampling_outputs_to_backup(
-    out_dir: Path,
-    backup_dir: Path,
-) -> list[tuple[Path, Path]]:
-    recon_dir = out_dir / "reconciliations"
-    moved: list[tuple[Path, Path]] = []
-    try:
-        for final_path in _generated_sampling_outputs(out_dir):
-            backup_path = backup_dir / final_path.relative_to(recon_dir)
-            backup_path.parent.mkdir(parents=True, exist_ok=True)
-            final_path.replace(backup_path)
-            moved.append((backup_path, final_path))
-    except BaseException as exc:
-        restore_error: BaseException | None = None
-        for backup_path, final_path in reversed(moved):
-            try:
-                if backup_path.is_file():
-                    final_path.parent.mkdir(parents=True, exist_ok=True)
-                    backup_path.replace(final_path)
-            except BaseException as rollback_error:
-                if restore_error is None:
-                    restore_error = rollback_error
-        if restore_error is not None:
-            raise exc from restore_error
-        raise
-    return moved
-
-
-def _restore_sampling_backup(moved: list[tuple[Path, Path]]) -> None:
-    for backup_path, final_path in reversed(moved):
-        if backup_path.is_file():
-            final_path.parent.mkdir(parents=True, exist_ok=True)
-            backup_path.replace(final_path)
-
-
 def _publish_sampling_outputs(
     out_dir: Path,
-    staged_outputs: list[tuple[Path, Path]],
+    staged_outputs: list[StagedArtifact],
 ) -> None:
     recon_dir = out_dir / "reconciliations"
-    all_dir = recon_dir / "all"
-    backup_dir = _create_sampling_temp_dir(
-        recon_dir,
-        prefix=".gpurec-sampling-backup-",
+    publish_staged_artifacts(
+        base_dir=recon_dir,
+        staged_outputs=staged_outputs,
+        current_paths=_generated_sampling_outputs(out_dir),
+        backup_prefix=".gpurec-sampling-backup-",
+        clear_current=lambda: _clear_sampling_outputs(out_dir),
     )
-    try:
-        moved = _move_sampling_outputs_to_backup(out_dir, backup_dir)
-    except BaseException:
-        shutil.rmtree(backup_dir, ignore_errors=True)
-        raise
-
-    try:
-        all_dir.mkdir(parents=True, exist_ok=True)
-        for staged_path, final_path in staged_outputs:
-            final_path.parent.mkdir(parents=True, exist_ok=True)
-            staged_path.replace(final_path)
-    except BaseException as exc:
-        cleanup_error: BaseException | None = None
-        try:
-            _clear_sampling_outputs(out_dir)
-        except BaseException as clear_error:
-            cleanup_error = clear_error
-        try:
-            _restore_sampling_backup(moved)
-        except BaseException as restore_error:
-            if cleanup_error is None:
-                cleanup_error = restore_error
-        shutil.rmtree(backup_dir, ignore_errors=True)
-        if cleanup_error is not None:
-            raise exc from cleanup_error
-        raise
-    shutil.rmtree(backup_dir, ignore_errors=True)
 
 
 def _validate_sampling_seed_range(
@@ -375,13 +302,13 @@ class SamplingRunner:
                 )
             _validate_sampling_seed_range(self.config, start=start, stop=stop)
 
-            stage_dir = _create_sampling_temp_dir(
+            stage_dir = create_artifact_temp_dir(
                 recon_dir,
                 prefix=".gpurec-sampling-stage-",
             )
             stage_all_dir = stage_dir / "all"
             stage_all_dir.mkdir(parents=True, exist_ok=True)
-            staged_outputs: list[tuple[Path, Path]] = []
+            staged_outputs: list[StagedArtifact] = []
 
             species_totals: dict[str, dict[str, float]] = defaultdict(
                 lambda: {column: 0.0 for column in SPECIES_COLUMNS}
@@ -449,6 +376,8 @@ class SamplingRunner:
             )
             summary = {
                 "families_sampled": stop - start,
+                "family_start": start,
+                "family_stop": stop,
                 "samples_per_family": self.config.samples,
                 "xml_files": xml_count,
                 "checkpoint": str(self.config.checkpoint),
@@ -462,7 +391,7 @@ class SamplingRunner:
                 encoding="utf-8",
             )
             _publish_sampling_outputs(out_dir, staged_outputs)
-            cleanup_error = _cleanup_sampling_temp_dir(stage_dir)
+            cleanup_error = cleanup_artifact_temp_dir(stage_dir)
             stage_dir = None
             if cleanup_error is not None:
                 raise cleanup_error
@@ -473,7 +402,7 @@ class SamplingRunner:
                 xml_files=xml_count,
             )
         except BaseException as exc:
-            cleanup_error = _cleanup_sampling_temp_dir(stage_dir)
+            cleanup_error = cleanup_artifact_temp_dir(stage_dir)
             try:
                 model.close()
             except Exception as close_error:

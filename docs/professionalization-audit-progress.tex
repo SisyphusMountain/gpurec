@@ -2151,6 +2151,36 @@ final report no longer advertises a completed \texttt{final\_eval}.  A CPU
 regression injects a staged rate-table failure and verifies stale final
 artifacts remain untouched.
 
+\subsection{Shared Workflow Artifact Publication}
+
+The sampling and optimization workflows now share their staged artifact
+publication mechanics through a private workflow helper module.  Artifact
+discovery stays local to each runner, but temporary directory creation,
+backup/restore, staged \texttt{Path.replace()} publication, partial-output
+cleanup, and primary-error preservation now live in one implementation.  This
+removes the duplicated rollback code that had grown independently in
+\texttt{sampling.py} and \texttt{optimize.py}.
+
+A dedicated CPU unit module covers the shared helper directly, including nested
+artifact paths, successful replacement of managed outputs, preservation of
+unmanaged files, temporary-directory cleanup, and restoration of old outputs
+after a mid-publish failure.
+
+\subsection{Sampling Window Rerun Contract}
+
+Successful sampling reruns now explicitly document and test the existing
+whole-output ownership contract.  A sampling invocation may select a family
+window with \texttt{family\_start}/\texttt{max\_families}, but a successful
+publish still replaces the full gpurec-generated reconciliation output set in
+the target directory so downstream consumers do not mix fresh window outputs
+with stale outputs from an older run.  Manual files under
+\texttt{reconciliations/all/} remain untouched.
+
+\texttt{summary.json} now records the exclusive sampled family window as
+\texttt{family\_start} and \texttt{family\_stop}.  The README tells users to use
+a separate \texttt{--sample-out-dir} when they need to keep multiple sampled
+windows.
+
 \section{Verification Log}
 
 \begin{center}
@@ -4909,6 +4939,27 @@ Release metadata checker after optimization final artifact staging &
 \texttt{pdflatex -interaction=nonstopmode -halt-on-error ...professionalization...} &
 Audit log build after optimization final artifact staging &
 \texttt{ok with known overfull table warnings} \\
+\texttt{python -m py\_compile gpurec/workflow/\_artifact\_publish.py gpurec/workflow/sampling.py gpurec/workflow/optimize.py tests/unit/test\_workflow.py tests/unit/test\_workflow\_artifacts.py tests/unit/test\_repository\_hygiene.py} &
+Shared artifact publisher and sampling-window syntax &
+\texttt{ok} \\
+\texttt{python -m pytest selected artifact-publisher, SamplingRunner, OptimizationRunner, and README guards -q} &
+Focused shared publication and sampling-window guards &
+\texttt{9 passed} \\
+\texttt{python -m pytest tests/unit/test\_workflow.py tests/unit/test\_workflow\_artifacts.py -q} &
+Workflow and artifact publisher suites after extraction &
+\texttt{378 passed} \\
+\texttt{python -m pytest tests/unit/test\_repository\_hygiene.py -q} &
+Repository hygiene suite after sampling-window documentation &
+\texttt{15 passed} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' python -m pytest tests/unit -q -m "unit and not gpu"} &
+CPU unit gate after shared artifact publisher extraction &
+\texttt{709 passed, 6 deselected} \\
+\texttt{python scripts/check\_release\_metadata.py} &
+Release metadata checker after shared artifact publisher extraction &
+\texttt{expected license blockers} \\
+\texttt{pdflatex -interaction=nonstopmode -halt-on-error ...professionalization...} &
+Audit log build after shared artifact publisher extraction &
+\texttt{ok with known overfull table warnings} \\
 \bottomrule
 \end{tabular}
 \end{center}
@@ -4922,9 +4973,6 @@ Audit log build after optimization final artifact staging &
         document a Rust-toolchain requirement for source-tree sampling.
   \item Add an installed-artifact sampling smoke once the backtracking binary
         distribution model is settled.
-  \item Decide whether successful windowed sampling reruns should replace only
-        the selected family window or keep the current whole-output publish
-        contract.
   \item Continue auditing public API consistency, documentation coverage, and
         CPU-safe regression tests for user-facing workflows.
   \item Keep committing small, verified increments so the branch remains

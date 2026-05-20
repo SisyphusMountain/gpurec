@@ -203,6 +203,9 @@ Sampling writes per-sample RecPhyloXML files and event-count files under
 Use `--family-start` and `--sample-max-families` to sample a family window,
 `--seed` for reproducible stochastic backtracking, and `--max-events` to cap
 pathological samples.
+Successful sampling reruns replace prior gpurec-generated reconciliation
+artifacts in the target output directory, including generated files outside a
+requested window; use a separate `--sample-out-dir` to keep multiple windows.
 
 ### Sampling Binary Setup
 

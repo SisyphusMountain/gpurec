@@ -2611,10 +2611,112 @@ def test_sampling_runner_writes_outputs_and_aggregates(tmp_path: Path, monkeypat
     assert json.loads((recon_dir / "summary.json").read_text(encoding="utf-8")) == {
         "checkpoint": str(config.checkpoint),
         "families_sampled": 2,
+        "family_start": 1,
+        "family_stop": 3,
         "out_dir": str(config.out_dir),
         "samples_per_family": 2,
         "xml_files": 4,
     }
+
+
+def test_sampling_runner_windowed_success_replaces_generated_output_set(
+    tmp_path: Path,
+    monkeypatch,
+):
+    xml = """
+    <recPhylo>
+      <recGeneTree>
+        <phylogeny>
+          <clade>
+            <eventsRec><speciation speciesLocation="A"/></eventsRec>
+            <clade><eventsRec><leaf speciesLocation="A"/></eventsRec></clade>
+          </clade>
+        </phylogeny>
+      </recGeneTree>
+    </recPhylo>
+    """
+
+    class FakeModel:
+        family_names = ["fam0", "fam1", "fam2"]
+
+        def __init__(self):
+            self.closed = False
+
+        def close(self):
+            self.closed = True
+
+    model = FakeModel()
+    run_config = RunConfig(
+        species_tree=tmp_path / "sp.nwk",
+        families_file=tmp_path / "families.txt",
+        out_dir=tmp_path / "run_out",
+        device="cpu",
+    )
+    config = SamplingConfig(
+        checkpoint=tmp_path / "checkpoints" / "best.pt",
+        out_dir=tmp_path / "sample_out",
+        samples=1,
+        family_start=1,
+        max_families=1,
+    )
+    recon_dir = config.out_dir / "reconciliations"
+    all_dir = recon_dir / "all"
+    all_dir.mkdir(parents=True)
+    previous_sample = all_dir / "000000_previous_sample_0.xml"
+    previous_counts = all_dir / "000000_previous_eventCounts_0.txt"
+    manual_file = all_dir / "manual.keep"
+    previous_sample.write_text("previous sample", encoding="utf-8")
+    previous_counts.write_text("previous counts", encoding="utf-8")
+    manual_file.write_text("manual", encoding="utf-8")
+    (recon_dir / "summary.json").write_text("previous summary", encoding="utf-8")
+
+    sampled_families: list[int] = []
+
+    def fake_sample_recphyloxmls(
+        model_arg: object,
+        *,
+        family_index: int,
+        num_samples: int,
+        seed: int,
+        max_events: int | None,
+        backtrack_binary: Path | None,
+    ) -> list[str]:
+        assert model_arg is model
+        sampled_families.append(family_index)
+        return [xml]
+
+    runner = SamplingRunner(config)
+    monkeypatch.setattr(
+        sampling_workflow,
+        "ensure_backtracking_available",
+        lambda backtrack_binary: None,
+    )
+    monkeypatch.setattr(runner, "_load_model", lambda: (run_config, model))
+    monkeypatch.setattr(
+        sampling_workflow,
+        "sample_recphyloxmls",
+        fake_sample_recphyloxmls,
+    )
+
+    runner.run()
+
+    assert sampled_families == [1]
+    assert model.closed
+    assert not previous_sample.exists()
+    assert not previous_counts.exists()
+    assert manual_file.read_text(encoding="utf-8") == "manual"
+    assert sorted(path.name for path in all_dir.glob("*_sample_*.xml")) == [
+        "000001_fam1_sample_0.xml"
+    ]
+    assert sorted(path.name for path in all_dir.glob("*_eventCounts_*.txt")) == [
+        "000001_fam1_eventCounts_0.txt"
+    ]
+    event_rows = (recon_dir / "event_counts.tsv").read_text(encoding="utf-8").splitlines()
+    assert event_rows[1].startswith("fam1\t0\t")
+    summary = json.loads((recon_dir / "summary.json").read_text(encoding="utf-8"))
+    assert summary["families_sampled"] == 1
+    assert summary["family_start"] == 1
+    assert summary["family_stop"] == 2
 
 
 def test_sampling_runner_rejects_checkpoint_family_order_mismatch(

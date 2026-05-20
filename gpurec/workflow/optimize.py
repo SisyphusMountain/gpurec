@@ -2,8 +2,6 @@ from __future__ import annotations
 
 import json
 import math
-import shutil
-import tempfile
 import time
 from contextlib import suppress
 from dataclasses import dataclass
@@ -15,6 +13,12 @@ import torch
 
 from gpurec.api.model import GeneReconModel
 
+from ._artifact_publish import (
+    StagedArtifact,
+    cleanup_artifact_temp_dir,
+    create_artifact_temp_dir,
+    publish_staged_artifacts,
+)
 from .checkpoint import (
     load_checkpoint,
     restore_model_theta,
@@ -280,91 +284,17 @@ def _clear_final_artifacts(out_dir: Path) -> None:
         path.unlink()
 
 
-def _create_final_artifact_temp_dir(out_dir: Path, *, prefix: str) -> Path:
-    out_dir.mkdir(parents=True, exist_ok=True)
-    return Path(tempfile.mkdtemp(prefix=prefix, dir=out_dir))
-
-
-def _cleanup_final_artifact_temp_dir(path: Path | None) -> OSError | None:
-    if path is None:
-        return None
-    try:
-        shutil.rmtree(path)
-    except FileNotFoundError:
-        return None
-    except OSError as exc:
-        return exc
-    return None
-
-
-def _move_final_artifacts_to_backup(
-    out_dir: Path,
-    backup_dir: Path,
-) -> list[tuple[Path, Path]]:
-    moved: list[tuple[Path, Path]] = []
-    try:
-        for final_path in _final_artifact_paths(out_dir):
-            backup_path = backup_dir / final_path.name
-            backup_path.parent.mkdir(parents=True, exist_ok=True)
-            final_path.replace(backup_path)
-            moved.append((backup_path, final_path))
-    except BaseException as exc:
-        restore_error: BaseException | None = None
-        for backup_path, final_path in reversed(moved):
-            try:
-                if backup_path.is_file():
-                    final_path.parent.mkdir(parents=True, exist_ok=True)
-                    backup_path.replace(final_path)
-            except BaseException as rollback_error:
-                if restore_error is None:
-                    restore_error = rollback_error
-        if restore_error is not None:
-            raise exc from restore_error
-        raise
-    return moved
-
-
-def _restore_final_artifact_backup(moved: list[tuple[Path, Path]]) -> None:
-    for backup_path, final_path in reversed(moved):
-        if backup_path.is_file():
-            final_path.parent.mkdir(parents=True, exist_ok=True)
-            backup_path.replace(final_path)
-
-
 def _publish_final_artifacts(
     out_dir: Path,
-    staged_outputs: list[tuple[Path, Path]],
+    staged_outputs: list[StagedArtifact],
 ) -> None:
-    backup_dir = _create_final_artifact_temp_dir(
-        out_dir,
-        prefix=".gpurec-optimization-backup-",
+    publish_staged_artifacts(
+        base_dir=out_dir,
+        staged_outputs=staged_outputs,
+        current_paths=_final_artifact_paths(out_dir),
+        backup_prefix=".gpurec-optimization-backup-",
+        clear_current=lambda: _clear_final_artifacts(out_dir),
     )
-    try:
-        moved = _move_final_artifacts_to_backup(out_dir, backup_dir)
-    except BaseException:
-        shutil.rmtree(backup_dir, ignore_errors=True)
-        raise
-
-    try:
-        for staged_path, final_path in staged_outputs:
-            final_path.parent.mkdir(parents=True, exist_ok=True)
-            staged_path.replace(final_path)
-    except BaseException as exc:
-        cleanup_error: BaseException | None = None
-        try:
-            _clear_final_artifacts(out_dir)
-        except BaseException as clear_error:
-            cleanup_error = clear_error
-        try:
-            _restore_final_artifact_backup(moved)
-        except BaseException as restore_error:
-            if cleanup_error is None:
-                cleanup_error = restore_error
-        shutil.rmtree(backup_dir, ignore_errors=True)
-        if cleanup_error is not None:
-            raise exc from cleanup_error
-        raise
-    shutil.rmtree(backup_dir, ignore_errors=True)
 
 
 def _write_final_artifacts(
@@ -378,11 +308,11 @@ def _write_final_artifacts(
 ) -> None:
     stage_dir: Path | None = None
     try:
-        stage_dir = _create_final_artifact_temp_dir(
+        stage_dir = create_artifact_temp_dir(
             config.out_dir,
             prefix=".gpurec-optimization-stage-",
         )
-        staged_outputs: list[tuple[Path, Path]] = []
+        staged_outputs: list[StagedArtifact] = []
 
         history_stage_path = stage_dir / "history.jsonl"
         _write_history_jsonl_with_final_row(
@@ -426,12 +356,12 @@ def _write_final_artifacts(
 
         _publish_final_artifacts(config.out_dir, staged_outputs)
     except BaseException as exc:
-        cleanup_error = _cleanup_final_artifact_temp_dir(stage_dir)
+        cleanup_error = cleanup_artifact_temp_dir(stage_dir)
         if cleanup_error is not None:
             raise exc from cleanup_error
         raise
     else:
-        cleanup_error = _cleanup_final_artifact_temp_dir(stage_dir)
+        cleanup_error = cleanup_artifact_temp_dir(stage_dir)
         if cleanup_error is not None:
             raise cleanup_error
 

@@ -279,6 +279,8 @@ def test_project_readme_documents_sampling_output_layout():
     assert "event_counts.tsv" in project_readme
     assert "totalSpeciesEventCounts.txt" in project_readme
     assert "totalTransfers.txt" in project_readme
+    assert "Successful sampling reruns replace prior gpurec-generated" in project_readme
+    assert "use a separate `--sample-out-dir` to keep multiple windows" in project_readme
 
 
 def test_project_readme_documents_top_level_backtracking_helpers():
