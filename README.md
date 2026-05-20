@@ -93,11 +93,24 @@ configs should be converted to JSON or passed as explicit CLI flags.  Relative
 paths in JSON configs are resolved from the config file's directory; relative
 paths passed as explicit CLI flags are resolved from the current working
 directory.
-A checked minimal JSON config and tiny AleRax-style fixture live under
-`examples/`.  Inspect or adapt:
+For a source checkout or source archive, a checked minimal JSON config and tiny
+AleRax-style fixture live under `examples/`.  Inspect or adapt:
 
 ```bash
 gpurec optimize --config examples/minimal-run-config.json
+```
+
+Installed wheels do not install the `examples/` directory as runtime package
+data; copy or adapt a flat JSON config alongside your own tree files instead:
+
+```json
+{
+  "species_tree": "S.tree",
+  "families_file": "families.txt",
+  "out_dir": "output_gpurec",
+  "mode": "genewise",
+  "device": "cuda"
+}
 ```
 
 ```bash
@@ -140,9 +153,20 @@ Sampling writes per-sample RecPhyloXML files and event-count files under
 `output_gpurec/reconciliations/all/`.  Aggregate summaries live under
 `output_gpurec/reconciliations/`, including `event_counts.tsv`,
 `totalSpeciesEventCounts.txt`, and `totalTransfers.txt`.
-Sampling uses the Rust backtracking binary.  Installed environments should
-provide a compiled binary through `GPUREC_BACKTRACK_BIN` or
-`--backtrack-binary`.  The source-checkout `cargo run` fallback requires a Rust
+
+### Sampling Binary Setup
+
+Sampling uses the Rust backtracking binary.  Wheels currently do not ship that
+binary or the Rust crate sources, so installed environments should provide a
+compiled binary through `GPUREC_BACKTRACK_BIN` or `--backtrack-binary`:
+
+```bash
+cargo build --locked --release --manifest-path crates/gpurec-backtrack/Cargo.toml
+export GPUREC_BACKTRACK_BIN="$PWD/crates/gpurec-backtrack/target/release/gpurec-backtrack"
+gpurec sample --checkpoint output_gpurec/checkpoints/best.pt --samples 100
+```
+
+The automatic `cargo run` fallback is source-checkout only.  It requires a Rust
 toolchain and fetches the pinned `rustree` git dependency declared by
 `crates/gpurec-backtrack/Cargo.toml`; otherwise use a prebuilt binary.
 

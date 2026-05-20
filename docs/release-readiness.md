@@ -11,7 +11,9 @@ and the packaging assumptions covered by current automated build steps.
 - Decide the Rust backtracking binary distribution model.  The Python package
   supports a compiled sampler via `GPUREC_BACKTRACK_BIN` or
   `--backtrack-binary`; the source-tree `cargo run` fallback uses a locked
-  Cargo build and the pinned `rustree` git dependency.
+  Cargo build and the pinned `rustree` git dependency.  Wheels currently do not
+  ship the Rust binary or crate sources, so installed sampling requires an
+  external prebuilt binary until that distribution model changes.
 - Build source and wheel artifacts from a clean checkout and install them in a
   fresh environment with a PyTorch build that matches the target CUDA runtime.
 

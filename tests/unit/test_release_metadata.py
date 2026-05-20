@@ -340,3 +340,31 @@ def test_final_theta_artifact_is_documented_as_export_only():
         assert "species ordering" in text
         assert "checkpoints/best.pt" in text
         assert "checkpoints/latest.pt" in text
+
+
+def test_readme_scopes_example_config_to_source_artifacts():
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+
+    assert "For a source checkout or source archive" in readme
+    assert "examples/minimal-run-config.json" in readme
+    assert "Installed wheels do not install the `examples/` directory" in readme
+    assert '"species_tree": "S.tree"' in readme
+    assert '"families_file": "families.txt"' in readme
+
+
+def test_readme_documents_installed_sampling_binary_setup():
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    guide = (ROOT / "docs" / "release-readiness.md").read_text(encoding="utf-8")
+
+    for text in (readme, guide):
+        normalized = " ".join(text.split())
+        assert "Wheels currently do not ship" in normalized
+        assert "prebuilt binary" in normalized
+    assert "### Sampling Binary Setup" in readme
+    assert (
+        "cargo build --locked --release --manifest-path "
+        "crates/gpurec-backtrack/Cargo.toml"
+    ) in readme
+    assert "GPUREC_BACKTRACK_BIN" in readme
+    assert "--backtrack-binary" in readme
+    assert "cargo run` fallback is source-checkout only" in readme
