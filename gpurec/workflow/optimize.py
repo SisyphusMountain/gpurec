@@ -43,6 +43,15 @@ class OptimizationResult:
     sampling_checkpoint: Path | None = None
 
 
+@dataclass(frozen=True)
+class _ResumeState:
+    start_step: int = 0
+    best_nll: float | None = None
+    best_step: int | None = None
+    previous_objective: float | None = None
+    stable_loss_steps: int = 0
+
+
 _MISSING = object()
 
 
@@ -104,6 +113,55 @@ def _resume_float(
     if not math.isfinite(number):
         raise _invalid_resume_field(path, key)
     return number
+
+
+def _resume_state_from_payload(path: Path, payload: dict[str, Any]) -> _ResumeState:
+    start_step = int(
+        _resume_int(
+            path,
+            "next_step",
+            payload.get("next_step", _MISSING),
+            default=0,
+            nonnegative=True,
+        )
+    )
+    ckpt_status = payload.get("status")
+    if ckpt_status is None:
+        ckpt_status = {}
+    elif not isinstance(ckpt_status, dict):
+        raise RuntimeError(f"checkpoint {path} has invalid status metadata")
+
+    return _ResumeState(
+        start_step=start_step,
+        best_nll=_resume_float(
+            path,
+            "status.best_nll_bits",
+            ckpt_status.get("best_nll_bits"),
+            allow_none=True,
+        ),
+        best_step=_resume_int(
+            path,
+            "status.best_step",
+            ckpt_status.get("best_step"),
+            allow_none=True,
+            nonnegative=True,
+        ),
+        previous_objective=_resume_float(
+            path,
+            "status.previous_objective",
+            ckpt_status.get("previous_objective"),
+            allow_none=True,
+        ),
+        stable_loss_steps=int(
+            _resume_int(
+                path,
+                "status.stable_loss_steps",
+                ckpt_status.get("stable_loss_steps", _MISSING),
+                default=0,
+                nonnegative=True,
+            )
+        ),
+    )
 
 
 def _family_names(model: GeneReconModel) -> list[str]:
@@ -328,51 +386,16 @@ class OptimizationRunner:
                     model=model,
                     payload=resume_payload,
                 )
+                resume_state = _resume_state_from_payload(
+                    config.resume_from,
+                    resume_payload,
+                )
                 restore_model_theta(model, resume_payload)
-                start_step = int(
-                    _resume_int(
-                        config.resume_from,
-                        "next_step",
-                        resume_payload.get("next_step", _MISSING),
-                        default=0,
-                        nonnegative=True,
-                    )
-                )
-                ckpt_status = resume_payload.get("status")
-                if ckpt_status is None:
-                    ckpt_status = {}
-                elif not isinstance(ckpt_status, dict):
-                    raise RuntimeError(
-                        f"checkpoint {config.resume_from} has invalid status metadata"
-                    )
-                best_nll = _resume_float(
-                    config.resume_from,
-                    "status.best_nll_bits",
-                    ckpt_status.get("best_nll_bits"),
-                    allow_none=True,
-                )
-                best_step = _resume_int(
-                    config.resume_from,
-                    "status.best_step",
-                    ckpt_status.get("best_step"),
-                    allow_none=True,
-                    nonnegative=True,
-                )
-                previous_objective = _resume_float(
-                    config.resume_from,
-                    "status.previous_objective",
-                    ckpt_status.get("previous_objective"),
-                    allow_none=True,
-                )
-                stable_loss_steps = int(
-                    _resume_int(
-                        config.resume_from,
-                        "status.stable_loss_steps",
-                        ckpt_status.get("stable_loss_steps", _MISSING),
-                        default=0,
-                        nonnegative=True,
-                    )
-                )
+                start_step = resume_state.start_step
+                best_nll = resume_state.best_nll
+                best_step = resume_state.best_step
+                previous_objective = resume_state.previous_objective
+                stable_loss_steps = resume_state.stable_loss_steps
 
             current_phase = self._phase_for_step(start_step)
             optimizer = self._make_optimizer(model, current_phase)

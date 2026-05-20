@@ -5,7 +5,11 @@ from pathlib import Path
 import pytest
 
 from gpurec.workflow.config import RunConfig
-from gpurec.workflow.optimize import _step_stopping_status
+from gpurec.workflow.optimize import (
+    _ResumeState,
+    _resume_state_from_payload,
+    _step_stopping_status,
+)
 
 
 def _run_config(tmp_path: Path, **overrides: object) -> RunConfig:
@@ -77,3 +81,91 @@ def test_step_stopping_status_matches_optimizer_loop_order(
     )
 
     assert status == expected
+
+
+def test_resume_state_from_payload_uses_safe_defaults(tmp_path: Path):
+    assert _resume_state_from_payload(tmp_path / "resume.pt", {}) == _ResumeState()
+
+
+def test_resume_state_from_payload_normalizes_checkpoint_metadata(tmp_path: Path):
+    state = _resume_state_from_payload(
+        tmp_path / "resume.pt",
+        {
+            "next_step": 3.0,
+            "status": {
+                "best_nll_bits": 12,
+                "best_step": 2.0,
+                "previous_objective": 13.5,
+                "stable_loss_steps": 4.0,
+            },
+        },
+    )
+
+    assert state == _ResumeState(
+        start_step=3,
+        best_nll=12.0,
+        best_step=2,
+        previous_objective=13.5,
+        stable_loss_steps=4,
+    )
+
+
+@pytest.mark.parametrize(
+    ("payload_update", "message"),
+    [
+        ({"next_step": True}, r"invalid next_step"),
+        ({"next_step": -1}, r"invalid next_step"),
+        ({"status": "not-a-dict"}, r"invalid status metadata"),
+        (
+            {
+                "status": {
+                    "best_nll_bits": "not-a-number",
+                    "stable_loss_steps": 0,
+                },
+            },
+            r"invalid status\.best_nll_bits",
+        ),
+        (
+            {
+                "status": {
+                    "previous_objective": "not-a-number",
+                    "stable_loss_steps": 0,
+                },
+            },
+            r"invalid status\.previous_objective",
+        ),
+        (
+            {
+                "status": {
+                    "best_step": 1.5,
+                    "stable_loss_steps": 0,
+                },
+            },
+            r"invalid status\.best_step",
+        ),
+        (
+            {
+                "status": {
+                    "stable_loss_steps": -1,
+                },
+            },
+            r"invalid status\.stable_loss_steps",
+        ),
+    ],
+)
+def test_resume_state_from_payload_rejects_invalid_metadata(
+    tmp_path: Path,
+    payload_update: dict[str, object],
+    message: str,
+):
+    payload = {
+        "next_step": 1,
+        "status": {
+            "previous_objective": 1.5,
+            "stable_loss_steps": 0,
+        },
+    }
+    payload.update(payload_update)
+
+    with pytest.raises(RuntimeError, match=message):
+        _resume_state_from_payload(tmp_path / "resume.pt", payload)

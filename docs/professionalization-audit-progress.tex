@@ -1690,6 +1690,19 @@ logic independent of optimizer phase.  A new focused optimization workflow test
 module covers the helper's ordering and no-stop cases without constructing a
 CUDA model.
 
+\subsection{Optimization Resume State Helper}
+
+\texttt{OptimizationRunner.run()} now delegates checkpoint resume metadata
+parsing to a small \texttt{\_ResumeState} dataclass and
+\texttt{\_resume\_state\_from\_payload()} helper.  The runner still owns model
+compatibility checks, theta restoration, optimizer construction, and optimizer
+state restoration, but the scalar resume fields now have one focused validation
+path for \texttt{next\_step}, best likelihood metadata, previous objective, and
+stable-loss patience.  The invalid metadata cases moved from the large workflow
+test module into \texttt{tests/unit/test\_optimization\_workflow.py}, where the
+helper can be exercised directly without constructing a fake optimization
+runner.
+
 \subsection{Batching Scheduler Invariant Guards}
 
 The global batching scheduler now rejects malformed CCP split child IDs before
@@ -3701,6 +3714,27 @@ Release metadata checker after empty collate guard &
 \texttt{expected license blockers} \\
 \texttt{pdflatex -interaction=nonstopmode -halt-on-error ...professionalization...} &
 Audit log build after empty collate guard &
+\texttt{ok with known overfull table warnings} \\
+\texttt{python -m py\_compile gpurec/workflow/optimize.py tests/unit/test\_optimization\_workflow.py tests/unit/test\_workflow.py} &
+Optimization resume-state helper syntax &
+\texttt{ok} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q tests/unit/test\_optimization\_workflow.py} &
+Focused optimization workflow helper coverage &
+\texttt{13 passed} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q tests/unit/test\_optimization\_workflow.py tests/unit/test\_workflow.py -k "..."} &
+Resume-state and resume-runner regressions &
+\texttt{14 passed, 249 deselected} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q tests/unit/test\_optimization\_workflow.py tests/unit/test\_workflow.py} &
+Affected optimization and workflow unit files &
+\texttt{263 passed} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
+CPU unit gate after optimization resume-state helper &
+\texttt{468 passed, 28 deselected} \\
+\texttt{python scripts/check\_release\_metadata.py} &
+Release metadata checker after optimization resume-state helper &
+\texttt{expected license blockers} \\
+\texttt{pdflatex -interaction=nonstopmode -halt-on-error ...professionalization...} &
+Audit log build after optimization resume-state helper &
 \texttt{ok with known overfull table warnings} \\
 \bottomrule
 \end{tabular}
