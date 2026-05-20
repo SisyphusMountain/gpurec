@@ -1531,6 +1531,16 @@ longer exposes an unclassified test bucket.  The tests README documents the
 mapping, and the source guard checks that the kernel directory remains part of
 the collection policy.
 
+\subsection{Shared GPU Tree Data Fixtures}
+
+The unit GPU tests now use the shared \texttt{tests/conftest.py} fixtures for
+the AleRax \texttt{test\_trees\_100} and \texttt{test\_trees\_1000} data
+directories instead of redefining those directory probes in individual modules.
+\texttt{tests/unit/test\_adaptive\_iterations.py} also now reports the correct
+\texttt{test\_trees\_1000} context when its one-gene fixture is unavailable.
+A source guard prevents unit test modules from reintroducing literal dataset
+directory setup outside the central fixtures.
+
 \section{Verification Log}
 
 \begin{center}
@@ -3202,6 +3212,24 @@ Release metadata checker after kernel marker classification &
 \texttt{expected license blockers} \\
 \texttt{pdflatex -interaction=nonstopmode -halt-on-error ...professionalization...} &
 Audit log build after kernel marker classification &
+\texttt{ok with known overfull table warnings} \\
+\texttt{python -m py\_compile tests/conftest.py tests/unit/test\_adaptive\_iterations.py tests/unit/test\_specieswise\_uniform.py tests/unit/test\_workflow.py} &
+Shared GPU fixture syntax &
+\texttt{ok} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q tests/unit/test\_workflow.py -k "..."} &
+GPU fixture centralization source guard &
+\texttt{1 passed, 300 deselected} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest --collect-only -q tests/unit/test\_adaptive\_iterations.py tests/unit/test\_specieswise\_uniform.py} &
+GPU test module collection after shared fixtures &
+\texttt{6 tests collected} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
+CPU unit gate after shared GPU fixtures &
+\texttt{419 passed, 28 deselected} \\
+\texttt{python scripts/check\_release\_metadata.py} &
+Release metadata checker after shared GPU fixtures &
+\texttt{expected license blockers} \\
+\texttt{pdflatex -interaction=nonstopmode -halt-on-error ...professionalization...} &
+Audit log build after shared GPU fixtures &
 \texttt{ok with known overfull table warnings} \\
 \bottomrule
 \end{tabular}

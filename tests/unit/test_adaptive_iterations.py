@@ -6,9 +6,6 @@ import torch
 from gpurec import GeneReconModel
 
 
-_ROOT = Path(__file__).resolve().parent.parent
-
-
 pytestmark = [
     pytest.mark.gpu,
     pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required"),
@@ -16,16 +13,11 @@ pytestmark = [
 
 
 @pytest.fixture(scope="module")
-def one_gene_tree():
-    if not torch.cuda.is_available():
-        pytest.skip("CUDA required")
-    data_dir = _ROOT / "data" / "test_trees_1000"
-    if not data_dir.exists():
-        pytest.skip("test_trees_1000 not found")
-    genes = sorted(data_dir.glob("g_*.nwk"))[:1]
+def one_gene_tree(data_dir_1000: Path):
+    genes = sorted(data_dir_1000.glob("g_*.nwk"))[:1]
     if not genes:
-        pytest.skip("test_trees_100 gene trees not present")
-    return str(data_dir / "sp.nwk"), [str(genes[0])]
+        pytest.skip(f"need 1 gene tree in {data_dir_1000}")
+    return str(data_dir_1000 / "sp.nwk"), [str(genes[0])]
 
 
 def test_adaptive_iterations_match_fixed_when_tolerances_force_max(one_gene_tree, tmp_path):

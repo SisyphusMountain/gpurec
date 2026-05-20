@@ -6,10 +6,29 @@ import pytest
 DATA_DIR = Path(__file__).parent / "data"
 
 
+def _tree_data_dir(name: str) -> Path:
+    path = DATA_DIR / name
+    if not path.exists():
+        pytest.skip(f"{name} not found")
+    return path
+
+
 @pytest.fixture
 def data_dir():
     """Path to the shared test data directory."""
     return DATA_DIR
+
+
+@pytest.fixture(scope="module")
+def data_dir_100():
+    """Path to the 100-family AleRax test tree fixture."""
+    return _tree_data_dir("test_trees_100")
+
+
+@pytest.fixture(scope="module")
+def data_dir_1000():
+    """Path to the 1000-family AleRax test tree fixture."""
+    return _tree_data_dir("test_trees_1000")
 
 
 def pytest_collection_modifyitems(config, items):

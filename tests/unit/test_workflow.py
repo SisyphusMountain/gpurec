@@ -3885,6 +3885,25 @@ def test_tests_use_pytest_managed_temporary_paths():
     assert offenders == []
 
 
+def test_unit_gpu_tree_data_fixtures_are_centralized():
+    root = Path(__file__).resolve().parents[2]
+    conftest = (root / "tests" / "conftest.py").read_text(encoding="utf-8")
+    assert "def data_dir_100" in conftest
+    assert "def data_dir_1000" in conftest
+
+    dataset_names = ("test_trees_100", "test_trees_1000")
+    offenders: list[str] = []
+    this_file = Path(__file__).resolve()
+    for path in sorted((root / "tests" / "unit").glob("test_*.py")):
+        if path == this_file:
+            continue
+        text = path.read_text(encoding="utf-8")
+        if any(name in text for name in dataset_names):
+            offenders.append(str(path.relative_to(root)))
+
+    assert offenders == []
+
+
 def test_project_readme_documents_preprocess_cache_refresh_guidance():
     root = Path(__file__).resolve().parents[2]
     project_readme = (root / "README.md").read_text(encoding="utf-8")

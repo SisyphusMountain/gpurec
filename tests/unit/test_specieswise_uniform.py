@@ -20,7 +20,6 @@ from gpurec.core.log2_utils import logsumexp2
 from gpurec.core.species import species_wave_topology
 
 
-_ROOT = Path(__file__).resolve().parent.parent
 TOL = 1e-3
 
 
@@ -28,22 +27,6 @@ pytestmark = [
     pytest.mark.gpu,
     pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required"),
 ]
-
-
-@pytest.fixture(scope="module")
-def data_dir_100():
-    d = _ROOT / "data" / "test_trees_100"
-    if not d.exists():
-        pytest.skip("test_trees_100 not found")
-    return d
-
-
-@pytest.fixture(scope="module")
-def data_dir_1000():
-    d = _ROOT / "data" / "test_trees_1000"
-    if not d.exists():
-        pytest.skip("test_trees_1000 not found")
-    return d
 
 
 def _genes(data_dir: Path, n: int) -> list[str]:
