@@ -206,6 +206,18 @@ def _clear_sampling_outputs(out_dir: Path) -> None:
             path.unlink()
 
 
+def _cleanup_generated_sampling_outputs(paths: list[Path]) -> OSError | None:
+    cleanup_error: OSError | None = None
+    for path in reversed(paths):
+        try:
+            if path.is_file():
+                path.unlink()
+        except OSError as exc:
+            if cleanup_error is None:
+                cleanup_error = exc
+    return cleanup_error
+
+
 def _validate_sampling_seed_range(
     config: SamplingConfig,
     *,
@@ -257,6 +269,7 @@ class SamplingRunner:
     def run(self) -> SamplingResult:
         ensure_backtracking_available(self.config.backtrack_binary)
         run_config, model = self._load_model()
+        generated_paths: list[Path] = []
         try:
             out_dir = self.config.out_dir or run_config.out_dir
             all_dir = out_dir / "reconciliations" / "all"
@@ -294,14 +307,16 @@ class SamplingRunner:
                 )
                 for sample_index, xml in enumerate(xmls):
                     xml_path = all_dir / f"{family_file_stem}_sample_{sample_index}.xml"
+                    generated_paths.append(xml_path)
                     xml_path.write_text(xml, encoding="utf-8")
                     xml_count += 1
 
                     event_counts = recphyloxml_event_counts(xml)
-                    _write_event_counts(
-                        all_dir / f"{family_file_stem}_eventCounts_{sample_index}.txt",
-                        event_counts,
+                    event_counts_path = (
+                        all_dir / f"{family_file_stem}_eventCounts_{sample_index}.txt"
                     )
+                    generated_paths.append(event_counts_path)
+                    _write_event_counts(event_counts_path, event_counts)
                     event_rows.append(
                         {"family": family, "sample": sample_index, **event_counts}
                     )
@@ -315,14 +330,20 @@ class SamplingRunner:
                         transfer_totals[pair] += value
 
             recon_dir = out_dir / "reconciliations"
-            _write_event_counts_table(recon_dir / "event_counts.tsv", event_rows)
+            event_counts_table = recon_dir / "event_counts.tsv"
+            generated_paths.append(event_counts_table)
+            _write_event_counts_table(event_counts_table, event_rows)
+            total_species_path = recon_dir / "totalSpeciesEventCounts.txt"
+            generated_paths.append(total_species_path)
             _write_total_species_counts(
-                recon_dir / "totalSpeciesEventCounts.txt",
+                total_species_path,
                 dict(species_totals),
                 divisor=self.config.samples,
             )
+            total_transfers_path = recon_dir / "totalTransfers.txt"
+            generated_paths.append(total_transfers_path)
             _write_total_transfers(
-                recon_dir / "totalTransfers.txt",
+                total_transfers_path,
                 dict(transfer_totals),
                 divisor=self.config.samples,
             )
@@ -333,7 +354,9 @@ class SamplingRunner:
                 "checkpoint": str(self.config.checkpoint),
                 "out_dir": str(out_dir),
             }
-            (recon_dir / "summary.json").write_text(
+            summary_path = recon_dir / "summary.json"
+            generated_paths.append(summary_path)
+            summary_path.write_text(
                 json.dumps(summary, indent=2, sort_keys=True) + "\n",
                 encoding="utf-8",
             )
@@ -344,7 +367,13 @@ class SamplingRunner:
                 xml_files=xml_count,
             )
         except BaseException as exc:
-            _close_model_after_error(model, exc)
+            cleanup_error = _cleanup_generated_sampling_outputs(generated_paths)
+            try:
+                model.close()
+            except Exception as close_error:
+                raise exc from close_error
+            if cleanup_error is not None:
+                raise exc from cleanup_error
             raise
         else:
             model.close()

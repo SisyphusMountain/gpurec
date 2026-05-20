@@ -2744,6 +2744,103 @@ def test_sampling_runner_preserves_sampling_error_when_close_fails(
     assert str(excinfo.value.__cause__) == "close failed"
 
 
+def test_sampling_runner_removes_generated_outputs_after_sampling_error(
+    tmp_path: Path,
+    monkeypatch,
+):
+    xml = """
+    <recPhylo>
+      <recGeneTree>
+        <phylogeny>
+          <clade>
+            <eventsRec><speciation speciesLocation="A"/></eventsRec>
+            <clade><eventsRec><leaf speciesLocation="A"/></eventsRec></clade>
+          </clade>
+        </phylogeny>
+      </recGeneTree>
+    </recPhylo>
+    """
+
+    class FakeModel:
+        family_names = ["fam0", "fam1"]
+
+        def __init__(self):
+            self.closed = False
+
+        def close(self):
+            self.closed = True
+
+    model = FakeModel()
+    run_config = RunConfig(
+        species_tree=tmp_path / "sp.nwk",
+        families_file=tmp_path / "families.txt",
+        out_dir=tmp_path / "run_out",
+        device="cpu",
+    )
+    config = SamplingConfig(
+        checkpoint=tmp_path / "checkpoints" / "best.pt",
+        out_dir=tmp_path / "sample_out",
+        samples=1,
+    )
+    recon_dir = config.out_dir / "reconciliations"
+    all_dir = recon_dir / "all"
+    all_dir.mkdir(parents=True)
+    manual_file = all_dir / "manual.keep"
+    stale_sample = all_dir / "000000_stale_sample_0.xml"
+    stale_summary = recon_dir / "summary.json"
+    manual_file.write_text("keep", encoding="utf-8")
+    stale_sample.write_text("stale", encoding="utf-8")
+    stale_summary.write_text("stale", encoding="utf-8")
+
+    calls: list[int] = []
+
+    def fake_sample_recphyloxmls(
+        model_arg: object,
+        *,
+        family_index: int,
+        num_samples: int,
+        seed: int,
+        max_events: int | None,
+        backtrack_binary: Path | None,
+    ) -> list[str]:
+        assert model_arg is model
+        calls.append(family_index)
+        if family_index == 0:
+            return [xml]
+        raise RuntimeError("backtrack failed on fam1")
+
+    runner = SamplingRunner(config)
+    monkeypatch.setattr(
+        sampling_workflow,
+        "ensure_backtracking_available",
+        lambda backtrack_binary: None,
+    )
+    monkeypatch.setattr(runner, "_load_model", lambda: (run_config, model))
+    monkeypatch.setattr(
+        sampling_workflow,
+        "sample_recphyloxmls",
+        fake_sample_recphyloxmls,
+    )
+
+    with pytest.raises(RuntimeError, match="backtrack failed on fam1"):
+        runner.run()
+
+    assert calls == [0, 1]
+    assert model.closed
+    assert manual_file.read_text(encoding="utf-8") == "keep"
+    assert not stale_sample.exists()
+    assert not stale_summary.exists()
+    assert list(all_dir.glob("*_sample_*.xml")) == []
+    assert list(all_dir.glob("*_eventCounts_*.txt")) == []
+    for name in (
+        "event_counts.tsv",
+        "summary.json",
+        "totalSpeciesEventCounts.txt",
+        "totalTransfers.txt",
+    ):
+        assert not (recon_dir / name).exists()
+
+
 def test_sampling_runner_closes_model_on_empty_family_selection(
     tmp_path: Path,
     monkeypatch,
