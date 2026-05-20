@@ -1278,6 +1278,17 @@ checkouts, W\&B runs, and caches that may live beside the source tree.  A
 release-metadata guard rejects exact bare cleanup commands and requires the
 scoped preview and removal commands to stay in the guide.
 
+\subsection{Final Checkpoint Resume Step}
+
+Final optimization checkpoints now keep the diagnostic row step separate from
+the optimizer resume cursor.  \texttt{save\_checkpoint} accepts an explicit
+\texttt{next\_step} override; ordinary loop checkpoints still default to
+\texttt{step + 1}, while final \texttt{best.pt} and \texttt{latest.pt} saves
+record \texttt{next\_step=final\_step}.  A fake-runner regression runs
+\texttt{steps=1}, asserts final \texttt{latest.pt} records \texttt{step=1} and
+\texttt{next\_step=1}, then resumes with \texttt{steps=2} and verifies optimizer
+step 1 is recorded before \texttt{final\_eval} step 2.
+
 \section{Verification Log}
 
 \begin{center}
@@ -2572,6 +2583,21 @@ CPU unit gate after scoped release cleanup guidance &
 \texttt{python scripts/check\_release\_metadata.py} &
 Release metadata checker after scoped release cleanup guidance &
 \texttt{expected license blockers} \\
+\texttt{python -m py\_compile gpurec/workflow/checkpoint.py gpurec/workflow/optimize.py tests/unit/test\_workflow.py} &
+Final checkpoint resume-step syntax &
+\texttt{ok} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q tests/unit/test\_workflow.py -k "..."} &
+Focused final-checkpoint resume regression &
+\texttt{3 passed, 269 deselected} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
+CPU unit gate after final checkpoint resume fix &
+\texttt{383 passed, 28 deselected} \\
+\texttt{python scripts/check\_release\_metadata.py} &
+Release metadata checker after final checkpoint resume fix &
+\texttt{expected license blockers} \\
+\texttt{pdflatex -interaction=nonstopmode -halt-on-error ...professionalization...} &
+Audit log build after final checkpoint resume fix &
+\texttt{ok with known overfull table warnings} \\
 \bottomrule
 \end{tabular}
 \end{center}

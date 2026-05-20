@@ -28,6 +28,7 @@ def save_checkpoint(
     step: int,
     status: dict[str, Any],
     row: dict[str, Any] | None = None,
+    next_step: int | None = None,
     optimizer_phase: str | None = None,
 ) -> None:
     path = Path(path)
@@ -35,7 +36,7 @@ def save_checkpoint(
     payload = {
         "version": CHECKPOINT_VERSION,
         "step": int(step),
-        "next_step": int(step) + 1,
+        "next_step": int(step) + 1 if next_step is None else int(next_step),
         "config": config.to_dict(),
         "theta": model.theta.detach().cpu(),
         "optimizer_state": None if optimizer is None else optimizer.state_dict(),

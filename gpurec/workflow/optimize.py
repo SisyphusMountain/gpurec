@@ -294,6 +294,7 @@ class OptimizationRunner:
         step: int,
         status: dict[str, Any],
         row: dict[str, Any] | None,
+        next_step: int | None = None,
         optimizer_phase: str | None = None,
     ) -> None:
         save_checkpoint(
@@ -303,6 +304,7 @@ class OptimizationRunner:
             optimizer=optimizer,
             optimizer_phase=optimizer_phase,
             step=step,
+            next_step=next_step,
             status=status,
             row=row,
         )
@@ -638,6 +640,7 @@ class OptimizationRunner:
                     model=model,
                     optimizer=optimizer,
                     step=int(final_row["step"]),
+                    next_step=final_step,
                     status=final_status,
                     row=final_row,
                     optimizer_phase=current_phase,
@@ -647,6 +650,7 @@ class OptimizationRunner:
                 model=model,
                 optimizer=optimizer,
                 step=int(final_row["step"]),
+                next_step=final_step,
                 status=final_status,
                 row=final_row,
                 optimizer_phase=current_phase,

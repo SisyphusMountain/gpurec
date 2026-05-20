@@ -2281,12 +2281,26 @@ def test_checkpoint_roundtrip_restores_theta_and_status(tmp_path: Path):
     restore_model_theta(model, payload)
 
     assert int(payload["step"]) == 4
+    assert int(payload["next_step"]) == 5
     assert payload["optimizer_phase"] == "adam"
     assert payload["status"]["best_nll_bits"] == 12.0
     assert isinstance(payload["optimizer_state"], dict)
     assert payload["optimizer_state"]["state"]
     assert torch.equal(model.theta, expected_theta)
     assert model.cleared
+
+    final_path = tmp_path / "final.pt"
+    save_checkpoint(
+        final_path,
+        config=config,
+        model=model,
+        optimizer=optimizer,
+        optimizer_phase="adam",
+        step=4,
+        next_step=4,
+        status={"status": "not_converged"},
+    )
+    assert int(load_checkpoint(final_path)["next_step"]) == 4
 
 
 def test_checkpoint_load_uses_weights_only(tmp_path: Path, monkeypatch):
@@ -2445,6 +2459,7 @@ def test_optimization_runner_run_writes_outputs_with_fake_model(tmp_path: Path):
             step,
             status,
             row,
+            next_step=None,
             optimizer_phase=None,
         ):
             super()._save_status(
@@ -2452,6 +2467,7 @@ def test_optimization_runner_run_writes_outputs_with_fake_model(tmp_path: Path):
                 model=model,
                 optimizer=optimizer,
                 step=step,
+                next_step=next_step,
                 status=status,
                 row=row,
                 optimizer_phase=optimizer_phase,
@@ -2526,6 +2542,99 @@ def test_optimization_runner_run_writes_outputs_with_fake_model(tmp_path: Path):
     )
     assert "fam0" in per_family
     assert "fam1" in per_family
+
+
+def test_optimization_runner_final_latest_resumes_at_next_optimizer_step(tmp_path: Path):
+    class FakeResumeModel:
+        def __init__(self):
+            self.theta = torch.nn.Parameter(
+                torch.tensor([0.25, -0.15, 0.05], dtype=torch.float32)
+            )
+            self.family_names = ["fam0"]
+            self.n_families = 1
+            self.n_species = 2
+            self.batch_metadata = [SimpleNamespace(batch_index=0)]
+            self.closed = False
+
+        def full_loss(self):
+            return self.theta.square().sum() + 3.0
+
+        def clamp_theta_(self, min_rate, max_rate):
+            with torch.no_grad():
+                self.theta.clamp_(min=-4.0, max=4.0)
+
+        def solver_stat_records(self):
+            return []
+
+        def clear(self):
+            return None
+
+        def close(self):
+            self.closed = True
+
+    class FakeResumeRunner(OptimizationRunner):
+        def build_model(self):
+            self.fake_model = FakeResumeModel()
+            return self.fake_model
+
+    species_tree = tmp_path / "sp.nwk"
+    families_file = tmp_path / "families.txt"
+    first_config = RunConfig(
+        species_tree=species_tree,
+        families_file=families_file,
+        out_dir=tmp_path / "first",
+        mode="global",
+        device="cpu",
+        optimizer="adam",
+        steps=1,
+        lr=0.05,
+        checkpoint_every=0,
+        log_every=10,
+        grad_inf_tol=0.0,
+    )
+
+    first_runner = FakeResumeRunner(first_config)
+    first_runner.run()
+    first_latest_path = first_config.out_dir / "checkpoints" / "latest.pt"
+    first_latest = load_checkpoint(first_latest_path)
+
+    assert first_latest["last_row"]["optimizer/phase"] == "final_eval"
+    assert int(first_latest["step"]) == 1
+    assert int(first_latest["next_step"]) == 1
+
+    resumed_config = RunConfig(
+        species_tree=species_tree,
+        families_file=families_file,
+        out_dir=tmp_path / "resumed",
+        mode="global",
+        device="cpu",
+        optimizer="adam",
+        steps=2,
+        lr=0.05,
+        resume_from=first_latest_path,
+        checkpoint_every=0,
+        log_every=10,
+        grad_inf_tol=0.0,
+    )
+    resumed_runner = FakeResumeRunner(resumed_config)
+
+    resumed_result = resumed_runner.run()
+
+    assert resumed_result.steps_completed == 2
+    history_rows = [
+        json.loads(line)
+        for line in (resumed_config.out_dir / "history.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+    ]
+    assert [(row["optimizer/phase"], row["step"]) for row in history_rows] == [
+        ("adam", 1),
+        ("final_eval", 2),
+    ]
+    resumed_latest = load_checkpoint(
+        resumed_config.out_dir / "checkpoints" / "latest.pt"
+    )
+    assert int(resumed_latest["next_step"]) == 2
 
 
 def test_optimization_runner_reports_discarded_resume_optimizer_state(tmp_path: Path):
