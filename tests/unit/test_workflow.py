@@ -1576,6 +1576,30 @@ def test_backtracking_command_rejects_missing_env_command(monkeypatch, tmp_path:
     assert "gpurec-backtrack-definitely-missing" in message
 
 
+def test_ensure_backtracking_available_delegates_command_resolution(
+    tmp_path: Path,
+    monkeypatch,
+):
+    calls: list[tuple[Path, Path]] = []
+    manifest = tmp_path / "Cargo.toml"
+    binary = tmp_path / "gpurec-backtrack"
+
+    def fake_backtrack_command(
+        *,
+        cargo_manifest: str | Path,
+        backtrack_binary: str | Path | None,
+    ) -> list[str]:
+        assert backtrack_binary is not None
+        calls.append((Path(cargo_manifest), Path(backtrack_binary)))
+        return [str(binary)]
+
+    monkeypatch.setattr(backtracking, "_backtrack_command", fake_backtrack_command)
+
+    backtracking.ensure_backtracking_available(binary, cargo_manifest=manifest)
+
+    assert calls == [(manifest, binary)]
+
+
 def test_backtracking_sampler_helpers_share_subprocess_io(tmp_path: Path, monkeypatch):
     fake_backtracker = tmp_path / "fake_backtracker.py"
     fake_backtracker.write_text(
@@ -1794,6 +1818,38 @@ def test_event_counts_table_quotes_tabbed_family_names(tmp_path: Path):
     assert len(rows[1]) == 2 + len(EVENT_KEYS)
 
 
+def test_sampling_runner_preflights_backtracking_before_loading_model(
+    tmp_path: Path,
+    monkeypatch,
+):
+    config = SamplingConfig(
+        checkpoint=tmp_path / "checkpoints" / "best.pt",
+        backtrack_binary=tmp_path / "missing-backtrack",
+    )
+    runner = SamplingRunner(config)
+    load_calls: list[str] = []
+
+    def fail_preflight(backtrack_binary: Path | None) -> None:
+        assert backtrack_binary == config.backtrack_binary
+        raise RuntimeError("missing backtracking binary")
+
+    def unexpected_load_model() -> tuple[RunConfig, object]:
+        load_calls.append("load_model")
+        raise AssertionError("model loading should not run before preflight")
+
+    monkeypatch.setattr(
+        sampling_workflow,
+        "ensure_backtracking_available",
+        fail_preflight,
+    )
+    monkeypatch.setattr(runner, "_load_model", unexpected_load_model)
+
+    with pytest.raises(RuntimeError, match="missing backtracking binary"):
+        runner.run()
+
+    assert load_calls == []
+
+
 def test_sampling_runner_writes_outputs_and_aggregates(tmp_path: Path, monkeypatch):
     xml = """
     <recPhylo>
@@ -1865,6 +1921,12 @@ def test_sampling_runner_writes_outputs_and_aggregates(tmp_path: Path, monkeypat
         return [xml for _ in range(num_samples)]
 
     runner = SamplingRunner(config)
+    preflight_calls: list[Path | None] = []
+    monkeypatch.setattr(
+        sampling_workflow,
+        "ensure_backtracking_available",
+        lambda backtrack_binary: preflight_calls.append(backtrack_binary),
+    )
     monkeypatch.setattr(runner, "_load_model", lambda: (run_config, model))
     monkeypatch.setattr(
         sampling_workflow,
@@ -1895,6 +1957,7 @@ def test_sampling_runner_writes_outputs_and_aggregates(tmp_path: Path, monkeypat
     assert result.samples_per_family == 2
     assert result.xml_files == 4
     assert model.closed
+    assert preflight_calls == [config.backtrack_binary]
     assert calls == [
         {
             "family_index": 1,
@@ -2052,6 +2115,11 @@ def test_sampling_runner_closes_model_on_empty_family_selection(
     aggregate_path.write_text("previous summary", encoding="utf-8")
 
     runner = SamplingRunner(config)
+    monkeypatch.setattr(
+        sampling_workflow,
+        "ensure_backtracking_available",
+        lambda backtrack_binary: None,
+    )
     monkeypatch.setattr(runner, "_load_model", lambda: (run_config, model))
 
     with pytest.raises(ValueError, match="empty sampling family selection"):
@@ -2099,6 +2167,11 @@ def test_sampling_runner_rejects_seed_range_overflow_before_outputs(
     aggregate_path.write_text("previous summary", encoding="utf-8")
 
     runner = SamplingRunner(config)
+    monkeypatch.setattr(
+        sampling_workflow,
+        "ensure_backtracking_available",
+        lambda backtrack_binary: None,
+    )
     monkeypatch.setattr(runner, "_load_model", lambda: (run_config, model))
 
     def unexpected_sample_recphyloxmls(*_args: object, **_kwargs: object) -> list[str]:

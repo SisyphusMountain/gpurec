@@ -1798,6 +1798,15 @@ also creates missing parent directories and expands home-directory output
 paths, making round-tripped workflow configs safer to write into external run
 directories.
 
+\subsection{Sampling Backtracking Preflight}
+
+\texttt{SamplingRunner.run()} now validates Rust backtracking command
+availability before loading checkpoints or constructing a workflow model.  The
+preflight reuses the existing \texttt{GPUREC\_BACKTRACK\_BIN},
+\texttt{--backtrack-binary}, and locked Cargo fallback resolver, so installed
+sampling still reports the same actionable binary/setup errors but does so
+before any CUDA-facing or checkpoint-model work can start.
+
 \section{Verification Log}
 
 \begin{center}
@@ -3949,6 +3958,24 @@ Release metadata checker after config path handling &
 \texttt{expected license blockers} \\
 \texttt{pdflatex -interaction=nonstopmode -halt-on-error ...professionalization...} &
 Audit log build after config path handling &
+\texttt{ok with known overfull table warnings} \\
+\texttt{python -m py\_compile gpurec/backtracking.py gpurec/workflow/sampling.py tests/unit/test\_workflow.py} &
+Sampling backtracking preflight syntax &
+\texttt{ok} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q tests/unit/test\_workflow.py -k "..."} &
+Focused sampling preflight and command-resolution coverage &
+\texttt{11 passed, 243 deselected} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q tests/unit/test\_workflow.py} &
+Workflow units after sampling backtracking preflight &
+\texttt{254 passed} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
+CPU unit gate after sampling backtracking preflight &
+\texttt{508 passed, 28 deselected} \\
+\texttt{python scripts/check\_release\_metadata.py} &
+Release metadata checker after sampling backtracking preflight &
+\texttt{expected license blockers} \\
+\texttt{pdflatex -interaction=nonstopmode -halt-on-error ...professionalization...} &
+Audit log build after sampling backtracking preflight &
 \texttt{ok with known overfull table warnings} \\
 \bottomrule
 \end{tabular}

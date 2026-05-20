@@ -210,6 +210,19 @@ def _backtrack_command(
     ]
 
 
+def ensure_backtracking_available(
+    backtrack_binary: str | Path | None = None,
+    *,
+    cargo_manifest: str | Path = _BACKTRACK_MANIFEST,
+) -> None:
+    """Validate that the Rust backtracking command can be resolved."""
+
+    _backtrack_command(
+        cargo_manifest=cargo_manifest,
+        backtrack_binary=backtrack_binary,
+    )
+
+
 def _evaluate_backtracking_state(model: GeneReconModel) -> ReconciliationState:
     return model.reconciliation_state(original_order=True)
 

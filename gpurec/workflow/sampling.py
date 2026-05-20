@@ -9,7 +9,11 @@ from pathlib import Path
 from typing import Any
 
 from gpurec.api.model import GeneReconModel
-from gpurec.backtracking import recphyloxml_event_counts, sample_recphyloxmls
+from gpurec.backtracking import (
+    ensure_backtracking_available,
+    recphyloxml_event_counts,
+    sample_recphyloxmls,
+)
 from gpurec.recphyloxml import (
     EVENT_KEYS,
     direct_children,
@@ -244,6 +248,7 @@ class SamplingRunner:
         return run_config, model
 
     def run(self) -> SamplingResult:
+        ensure_backtracking_available(self.config.backtrack_binary)
         run_config, model = self._load_model()
         try:
             out_dir = self.config.out_dir or run_config.out_dir
