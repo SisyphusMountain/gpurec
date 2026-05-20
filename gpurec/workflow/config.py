@@ -123,6 +123,23 @@ def _resolve_path(value: str | Path) -> Path:
     return Path(value).expanduser().resolve()
 
 
+def _resolve_run_config_path_fields(
+    data: dict[str, Any],
+    *,
+    base_dir: Path,
+) -> dict[str, Any]:
+    resolved = dict(data)
+    for name in _RUN_CONFIG_PATH_FIELDS:
+        value = resolved.get(name)
+        if value is None or not isinstance(value, (str, Path)):
+            continue
+        path = Path(value).expanduser()
+        if not path.is_absolute():
+            path = base_dir / path
+        resolved[name] = path.resolve()
+    return resolved
+
+
 def _reject_json_constant(constant: str) -> None:
     raise ValueError(f"invalid JSON numeric constant {constant}")
 
@@ -143,6 +160,15 @@ def load_json_object(path: str | Path, *, description: str = "config") -> dict[s
     if not isinstance(data, dict):
         raise ValueError(f"{description} {path} must contain a JSON object")
     return data
+
+
+def load_run_config_data(path: str | Path) -> dict[str, Any]:
+    path = Path(path)
+    data = load_json_object(path)
+    return _resolve_run_config_path_fields(
+        data,
+        base_dir=path.expanduser().resolve().parent,
+    )
 
 
 _JSON_INT_FIELDS = {
@@ -440,7 +466,7 @@ class RunConfig:
 
     @classmethod
     def from_json(cls, path: str | Path) -> "RunConfig":
-        return cls.from_dict(load_json_object(path))
+        return cls.from_dict(load_run_config_data(path))
 
     def write_json(self, path: str | Path) -> None:
         Path(path).write_text(

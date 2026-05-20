@@ -1479,6 +1479,18 @@ in the output directory from being sampled after a resumed or non-improving
 run.  Regression tests cover both the CLI handoff and the optimizer case where
 no new best checkpoint is written.
 
+\subsection{Config-Relative JSON Workflow Paths}
+
+Flat JSON \texttt{RunConfig} files now resolve path fields relative to the JSON
+file's directory before dataclass normalization.  This applies to
+\texttt{species\_tree}, \texttt{families\_file}, \texttt{out\_dir},
+\texttt{preprocess\_cache}, and \texttt{resume\_from}, making packaged example
+configs portable when invoked outside the repository root.  Explicit CLI path
+flags still override config values after that rebasing step and remain relative
+to the caller's current working directory.  The minimal example config now uses
+paths relative to \texttt{examples/minimal-run-config.json}, and the README/CLI
+help describe the distinction.
+
 \section{Verification Log}
 
 \begin{center}
@@ -3060,6 +3072,21 @@ Release metadata checker after \texttt{gpurec run} checkpoint provenance &
 \texttt{expected license blockers} \\
 \texttt{pdflatex -interaction=nonstopmode -halt-on-error ...professionalization...} &
 Audit log build after \texttt{gpurec run} checkpoint provenance &
+\texttt{ok with known overfull table warnings} \\
+\texttt{python -m py\_compile gpurec/workflow/config.py gpurec/cli.py ...} &
+Config-relative JSON path syntax &
+\texttt{ok} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q tests/unit/test\_workflow.py tests/unit/test\_examples.py -k "..."} &
+Focused config-relative path guards &
+\texttt{5 passed, 296 deselected} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
+CPU unit gate after config-relative JSON paths &
+\texttt{417 passed, 28 deselected} \\
+\texttt{python scripts/check\_release\_metadata.py} &
+Release metadata checker after config-relative JSON paths &
+\texttt{expected license blockers} \\
+\texttt{pdflatex -interaction=nonstopmode -halt-on-error ...professionalization...} &
+Audit log build after config-relative JSON paths &
 \texttt{ok with known overfull table warnings} \\
 \bottomrule
 \end{tabular}

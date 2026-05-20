@@ -54,9 +54,9 @@ def _config_data(path: Path | None) -> dict[str, Any]:
             "Hydra-style YAML configs must be converted to JSON or passed as "
             "explicit CLI flags"
         )
-    from gpurec.workflow.config import load_json_object
+    from gpurec.workflow.config import load_run_config_data
 
-    return load_json_object(path)
+    return load_run_config_data(path)
 
 
 def _set_if_present(data: dict[str, Any], args: argparse.Namespace, name: str) -> None:
@@ -177,7 +177,10 @@ def _add_run_config_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--config",
         type=Path,
-        help="Flat JSON RunConfig file; explicit CLI flags override matching fields.",
+        help=(
+            "Flat JSON RunConfig file; relative config paths resolve from the "
+            "config file, and explicit CLI flags override matching fields."
+        ),
     )
     parser.add_argument(
         "--species-tree",

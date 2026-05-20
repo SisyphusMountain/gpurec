@@ -89,9 +89,12 @@ It defaults to genewise D/T/L parameters, writes resumable checkpoints, logs
 optimization diagnostics, and can sample RecPhyloXML reconciliation scenarios.
 The optimized likelihood path currently requires CUDA.
 The `--config` option accepts a flat JSON `RunConfig`; Hydra-style YAML
-configs should be converted to JSON or passed as explicit CLI flags.
+configs should be converted to JSON or passed as explicit CLI flags.  Relative
+paths in JSON configs are resolved from the config file's directory; relative
+paths passed as explicit CLI flags are resolved from the current working
+directory.
 A checked minimal JSON config and tiny AleRax-style fixture live under
-`examples/`.  From the repository root, inspect or adapt:
+`examples/`.  Inspect or adapt:
 
 ```bash
 gpurec optimize --config examples/minimal-run-config.json

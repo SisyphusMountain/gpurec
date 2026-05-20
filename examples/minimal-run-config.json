@@ -1,11 +1,11 @@
 {
-  "species_tree": "examples/tiny/species.nwk",
-  "families_file": "examples/tiny/families.txt",
-  "out_dir": "examples/output/minimal-run",
+  "species_tree": "tiny/species.nwk",
+  "families_file": "tiny/families.txt",
+  "out_dir": "output/minimal-run",
   "mode": "genewise",
   "device": "cuda",
   "max_families": 1,
-  "preprocess_cache": "examples/output/preprocess-cache",
+  "preprocess_cache": "output/preprocess-cache",
   "steps": 10,
   "log_every": 1,
   "checkpoint_every": 1

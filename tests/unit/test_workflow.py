@@ -80,6 +80,41 @@ def test_run_config_json_roundtrip(tmp_path: Path):
     assert loaded.out_dir.is_absolute()
 
 
+def test_run_config_from_json_resolves_relative_paths_from_config_file(
+    tmp_path: Path,
+):
+    config_dir = tmp_path / "configs"
+    config_dir.mkdir()
+    path = config_dir / "config.json"
+    path.write_text(
+        json.dumps(
+            {
+                "species_tree": "inputs/sp.nwk",
+                "families_file": "inputs/families.txt",
+                "out_dir": "runs/main",
+                "preprocess_cache": "cache/preprocess",
+                "resume_from": "checkpoints/latest.pt",
+                "device": "cpu",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    config = RunConfig.from_json(path)
+
+    assert config.species_tree == (config_dir / "inputs" / "sp.nwk").resolve()
+    assert config.families_file == (
+        config_dir / "inputs" / "families.txt"
+    ).resolve()
+    assert config.out_dir == (config_dir / "runs" / "main").resolve()
+    assert config.preprocess_cache == (
+        config_dir / "cache" / "preprocess"
+    ).resolve()
+    assert config.resume_from == (
+        config_dir / "checkpoints" / "latest.pt"
+    ).resolve()
+
+
 def test_run_config_from_json_rejects_nonstandard_numeric_constants(tmp_path: Path):
     path = tmp_path / "config.json"
     path.write_text(
@@ -1313,6 +1348,48 @@ def test_cli_accepts_family_chunk_all_alias(tmp_path: Path):
     assert config.family_chunk_size == 0
 
 
+def test_cli_config_paths_are_config_relative_before_flag_overrides(
+    tmp_path: Path,
+    monkeypatch,
+):
+    config_dir = tmp_path / "configs"
+    input_dir = config_dir / "inputs"
+    input_dir.mkdir(parents=True)
+    (input_dir / "sp.nwk").write_text("(a,b);", encoding="utf-8")
+    (input_dir / "families.txt").write_text("[FAMILIES]\n", encoding="utf-8")
+    override_dir = tmp_path / "override"
+    override_dir.mkdir()
+    (override_dir / "sp.nwk").write_text("(x,y);", encoding="utf-8")
+    config_path = config_dir / "config.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "species_tree": "inputs/sp.nwk",
+                "families_file": "inputs/families.txt",
+                "out_dir": "runs/main",
+                "device": "cpu",
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(tmp_path)
+    args = build_parser().parse_args(
+        [
+            "optimize",
+            "--config",
+            str(config_path),
+            "--species-tree",
+            "override/sp.nwk",
+        ]
+    )
+
+    config = _run_config_from_args(args)
+
+    assert config.species_tree == (tmp_path / "override" / "sp.nwk").resolve()
+    assert config.families_file == (input_dir / "families.txt").resolve()
+    assert config.out_dir == (config_dir / "runs" / "main").resolve()
+
+
 def _minimal_workflow_cli_args(command: str, tmp_path: Path) -> list[str]:
     _write_minimal_alerax_inputs(tmp_path)
     return [
@@ -1869,6 +1946,8 @@ def test_cli_optimize_help_describes_config_and_path_inputs(capsys):
     captured = capsys.readouterr()
     assert exc_info.value.code == 0
     assert "Flat JSON RunConfig" in captured.out
+    assert "relative config paths" in captured.out
+    assert "resolve from the config file" in captured.out
     assert "Required unless supplied by --config" in captured.out
     assert "Workflow" in captured.out
     assert "default: cuda" in captured.out
