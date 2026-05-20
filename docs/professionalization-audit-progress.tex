@@ -2397,6 +2397,19 @@ covers non-finite \texttt{min\_rate}, non-finite \texttt{max\_rate}, and
 non-positive \texttt{min\_rate} values on the shared CPU-only direct-call
 surface.
 
+\subsection{README Python Support Range}
+
+The README installation section now states the supported Python range as Python
+3.10--3.12 and ties it directly to the declared
+\texttt{requires-python = ">=3.10,<3.13"} project metadata.  This makes the
+runtime floor and ceiling visible before users install CUDA, PyTorch, Triton, or
+the source-built preprocessing extension.
+
+A release-metadata unit guard now checks the README text against the
+\texttt{requires-python} declaration and the Python version classifiers in
+\texttt{pyproject.toml}, alongside the existing CI matrix guard for 3.10, 3.11,
+and 3.12.
+
 \section{Verification Log}
 
 \begin{center}
@@ -5370,6 +5383,21 @@ CPU unit gate after uniform clamp validation reuse &
 \texttt{780 passed, 6 deselected} \\
 \texttt{python scripts/check\_release\_metadata.py} &
 Release metadata checker after uniform clamp validation reuse &
+\texttt{expected license blockers} \\
+\texttt{python -m py\_compile tests/unit/test\_release\_metadata.py} &
+README Python support metadata guard syntax &
+\texttt{ok} \\
+\texttt{python -m pytest selected README Python support and CI matrix guards -q} &
+Focused README Python support metadata guard &
+\texttt{2 passed} \\
+\texttt{python -m pytest tests/unit/test\_release\_metadata.py -q} &
+Release metadata suite after README Python support documentation &
+\texttt{40 passed} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' python -m pytest tests/unit -q -m "unit and not gpu"} &
+CPU unit gate after README Python support documentation &
+\texttt{781 passed, 6 deselected} \\
+\texttt{python scripts/check\_release\_metadata.py} &
+Release metadata checker after README Python support documentation &
 \texttt{expected license blockers} \\
 \bottomrule
 \end{tabular}

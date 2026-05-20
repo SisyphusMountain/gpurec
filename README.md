@@ -26,6 +26,9 @@ supported runtime surface.
 
 ## Installation
 
+Supported Python versions are Python 3.10-3.12, matching
+`requires-python = ">=3.10,<3.13"` in the project metadata.
+
 For a source checkout:
 
 ```bash

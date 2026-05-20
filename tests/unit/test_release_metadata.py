@@ -553,6 +553,24 @@ def test_cpu_ci_matrix_covers_declared_python_versions():
         assert f"Programming Language :: Python :: {version}" in pyproject
 
 
+def test_readme_install_docs_match_declared_python_range():
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    requires_python = re.search(
+        r'^requires-python\s*=\s*"([^"]+)"',
+        pyproject,
+        flags=re.M,
+    )
+    supported_versions = tuple(
+        re.findall(r"Programming Language :: Python :: (\d+\.\d+)", pyproject)
+    )
+
+    assert requires_python is not None
+    assert supported_versions == ("3.10", "3.11", "3.12")
+    assert f'`requires-python = "{requires_python.group(1)}"`' in readme
+    assert f"Python {supported_versions[0]}-{supported_versions[-1]}" in readme
+
+
 def test_runtime_dependencies_include_cpp_extension_build_backend():
     pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
     match = re.search(
