@@ -23,6 +23,29 @@ REQUIRED_CLASSIFIERS = {
 REQUIRED_URLS = {"Repository", "Issues", "Documentation"}
 
 
+def _readme_metadata_issues(project: dict[str, Any], root: Path) -> list[str]:
+    readme = project.get("readme")
+    if not readme:
+        return ["pyproject.toml [project] must declare readme metadata"]
+    if isinstance(readme, str):
+        if not (root / readme).is_file():
+            return [f"declared readme file does not exist: {readme}"]
+        return []
+    if isinstance(readme, dict):
+        if "file" in readme:
+            readme_file = readme["file"]
+            if not isinstance(readme_file, str) or not readme_file:
+                return ["pyproject.toml [project] readme.file must be a path string"]
+            if not (root / readme_file).is_file():
+                return [f"declared readme file does not exist: {readme_file}"]
+            return []
+        if "text" in readme:
+            if not isinstance(readme["text"], str) or not readme["text"].strip():
+                return ["pyproject.toml [project] readme.text must be nonempty"]
+            return []
+    return ["pyproject.toml [project] readme must be a file path or table"]
+
+
 def _load_toml(path: Path) -> dict[str, Any]:
     text = path.read_text(encoding="utf-8")
     try:
@@ -99,6 +122,7 @@ def release_metadata_issues(root: Path) -> list[str]:
     issues: list[str] = []
     if not project.get("authors"):
         issues.append("pyproject.toml [project] must declare authors")
+    issues.extend(_readme_metadata_issues(project, project_root))
 
     classifiers = set(project.get("classifiers") or [])
     missing_classifiers = sorted(REQUIRED_CLASSIFIERS - classifiers)

@@ -1768,6 +1768,16 @@ checks.  The focused CLI regressions cover both commands and assert that the
 error names \texttt{--resume-from}, includes the missing path, and does not
 emit CUDA noise or a traceback.
 
+\subsection{Release README Metadata Guard}
+
+The release metadata checker now validates that \texttt{pyproject.toml}
+declares readable project README metadata.  It accepts both the current
+\texttt{readme = "README.md"} form and the table form with
+\texttt{readme.file}, while reporting missing README metadata or a missing
+declared README file as release blockers.  The current project still reports
+only the pre-existing license blockers, so this guard tightens packaging
+hygiene without changing the outstanding licensing decision.
+
 \section{Verification Log}
 
 \begin{center}
@@ -3862,6 +3872,21 @@ Release metadata checker after resume checkpoint preflight &
 \texttt{expected license blockers} \\
 \texttt{pdflatex -interaction=nonstopmode -halt-on-error ...professionalization...} &
 Audit log build after resume checkpoint preflight &
+\texttt{ok with known overfull table warnings} \\
+\texttt{python -m py\_compile scripts/check\_release\_metadata.py tests/unit/test\_release\_metadata.py} &
+Release README metadata guard syntax &
+\texttt{ok} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q tests/unit/test\_release\_metadata.py} &
+Release metadata checker regressions after README guard &
+\texttt{22 passed} \\
+\texttt{python scripts/check\_release\_metadata.py} &
+Release metadata checker after README metadata guard &
+\texttt{expected license blockers} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
+CPU unit gate after README metadata guard &
+\texttt{502 passed, 28 deselected} \\
+\texttt{pdflatex -interaction=nonstopmode -halt-on-error ...professionalization...} &
+Audit log build after README metadata guard &
 \texttt{ok with known overfull table warnings} \\
 \bottomrule
 \end{tabular}

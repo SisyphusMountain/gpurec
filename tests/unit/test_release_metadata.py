@@ -25,37 +25,25 @@ def _has_module_level_gpu_marker(text: str) -> bool:
     )
 
 
-def test_release_metadata_check_reports_only_current_license_blockers():
-    result = subprocess.run(
-        [sys.executable, str(CHECK_SCRIPT), "--root", str(ROOT)],
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-
-    assert result.returncode == 1
-    assert "missing top-level LICENSE file" in result.stdout
-    assert "license metadata" in result.stdout
-    assert "license classifier" in result.stdout
-    assert "authors" not in result.stdout
-    assert "classifier(s)" not in result.stdout
-    assert "project.urls" not in result.stdout
-    assert "Traceback" not in result.stderr
-
-
-def test_release_metadata_check_accepts_complete_metadata_fixture(tmp_path: Path):
-    (tmp_path / "LICENSE").write_text("fixture license\n", encoding="utf-8")
-    (tmp_path / "README.md").write_text("# fixture\n", encoding="utf-8")
-    (tmp_path / "pyproject.toml").write_text(
-        """
+def _write_complete_release_metadata_fixture(
+    root: Path,
+    *,
+    readme_line: str = 'readme = "README.md"',
+    create_readme: bool = True,
+) -> None:
+    (root / "LICENSE").write_text("fixture license\n", encoding="utf-8")
+    if create_readme:
+        (root / "README.md").write_text("# fixture\n", encoding="utf-8")
+    readme_block = f"{readme_line}\n" if readme_line else ""
+    (root / "pyproject.toml").write_text(
+        f"""
 [project]
 name = "fixture"
 version = "0.0.0"
 description = "fixture"
-readme = "README.md"
-requires-python = ">=3.10,<3.13"
-license = { file = "LICENSE" }
-authors = [{ name = "Fixture Maintainer" }]
+{readme_block}requires-python = ">=3.10,<3.13"
+license = {{ file = "LICENSE" }}
+authors = [{{ name = "Fixture Maintainer" }}]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Environment :: Console",
@@ -75,6 +63,83 @@ Issues = "https://example.invalid/issues"
 Documentation = "https://example.invalid/docs"
 """.lstrip(),
         encoding="utf-8",
+    )
+
+
+def test_release_metadata_check_reports_only_current_license_blockers():
+    result = subprocess.run(
+        [sys.executable, str(CHECK_SCRIPT), "--root", str(ROOT)],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 1
+    assert "missing top-level LICENSE file" in result.stdout
+    assert "license metadata" in result.stdout
+    assert "license classifier" in result.stdout
+    assert "authors" not in result.stdout
+    assert "classifier(s)" not in result.stdout
+    assert "project.urls" not in result.stdout
+    assert "readme" not in result.stdout.lower()
+    assert "Traceback" not in result.stderr
+
+
+def test_release_metadata_check_accepts_complete_metadata_fixture(tmp_path: Path):
+    _write_complete_release_metadata_fixture(tmp_path)
+
+    result = subprocess.run(
+        [sys.executable, str(CHECK_SCRIPT), "--root", str(tmp_path)],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0
+    assert "release metadata check passed" in result.stdout
+    assert result.stderr == ""
+
+
+def test_release_metadata_check_requires_readme_metadata(tmp_path: Path):
+    _write_complete_release_metadata_fixture(tmp_path, readme_line="")
+
+    result = subprocess.run(
+        [sys.executable, str(CHECK_SCRIPT), "--root", str(tmp_path)],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 1
+    assert "must declare readme metadata" in result.stdout
+    assert "license" not in result.stdout
+    assert result.stderr == ""
+
+
+def test_release_metadata_check_requires_declared_readme_file(tmp_path: Path):
+    _write_complete_release_metadata_fixture(
+        tmp_path,
+        readme_line='readme = "MISSING.md"',
+        create_readme=False,
+    )
+
+    result = subprocess.run(
+        [sys.executable, str(CHECK_SCRIPT), "--root", str(tmp_path)],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 1
+    assert "declared readme file does not exist: MISSING.md" in result.stdout
+    assert "license" not in result.stdout
+    assert result.stderr == ""
+
+
+def test_release_metadata_check_accepts_readme_table_fixture(tmp_path: Path):
+    _write_complete_release_metadata_fixture(
+        tmp_path,
+        readme_line='readme = { file = "README.md" }',
     )
 
     result = subprocess.run(
