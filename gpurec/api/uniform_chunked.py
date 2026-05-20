@@ -54,6 +54,7 @@ from ._validation import (
     nonnegative_float,
     optional_positive_int,
     positive_even_int,
+    positive_float,
     positive_int,
     require_cuda_device,
     require_default_objective,
@@ -1160,9 +1161,14 @@ class UniformChunkedReconModel(torch.nn.Module):
             stats,
         )
 
-    def clamp_theta_(self, min_rate: float = 1e-10, max_rate: float | None = None) -> None:
-        if min_rate <= 0:
-            raise ValueError("min_rate must be strictly positive")
+    def clamp_theta_(
+        self,
+        min_rate: float = 1e-10,
+        max_rate: float | None = None,
+    ) -> None:
+        min_rate = positive_float("min_rate", min_rate)
+        if max_rate is not None:
+            max_rate = positive_float("max_rate", max_rate)
         if max_rate is not None and max_rate < min_rate:
             raise ValueError("max_rate must be greater than or equal to min_rate")
         with torch.no_grad():

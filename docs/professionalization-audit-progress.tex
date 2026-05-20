@@ -2383,6 +2383,20 @@ and checks that the public error remains contextual while preserving the origina
 \texttt{FileNotFoundError} as the exception cause.  Existing CLI smoke tests
 continue to cover missing and empty checkpoint reporting without tracebacks.
 
+\subsection{Uniform Clamp Rate Validation}
+
+\texttt{UniformChunkedReconModel.clamp\_theta\_()} now reuses the same
+\texttt{positive\_float()} validator as \texttt{GeneReconModel.clamp\_theta\_()}
+for \texttt{min\_rate} and \texttt{max\_rate}.  The uniform path therefore
+rejects non-finite, zero, and negative clamp bounds before computing
+\texttt{log2()} or mutating \texttt{theta}, matching the resident model's public
+API contract.
+
+The existing clamp-rate regression now parameterizes both model classes and
+covers non-finite \texttt{min\_rate}, non-finite \texttt{max\_rate}, and
+non-positive \texttt{min\_rate} values on the shared CPU-only direct-call
+surface.
+
 \section{Verification Log}
 
 \begin{center}
@@ -5341,6 +5355,21 @@ CPU unit gate after checkpoint load error wrapping &
 \texttt{775 passed, 6 deselected} \\
 \texttt{python scripts/check\_release\_metadata.py} &
 Release metadata checker after checkpoint load error wrapping &
+\texttt{expected license blockers} \\
+\texttt{python -m py\_compile gpurec/api/uniform\_chunked.py tests/unit/test\_workflow.py} &
+Uniform clamp validation syntax &
+\texttt{ok} \\
+\texttt{python -m pytest selected recon clamp invalid-rate guards -q} &
+Focused resident and uniform clamp guards &
+\texttt{8 passed} \\
+\texttt{python -m pytest tests/unit/test\_workflow.py -q} &
+Workflow suite after uniform clamp validation reuse &
+\texttt{415 passed} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' python -m pytest tests/unit -q -m "unit and not gpu"} &
+CPU unit gate after uniform clamp validation reuse &
+\texttt{780 passed, 6 deselected} \\
+\texttt{python scripts/check\_release\_metadata.py} &
+Release metadata checker after uniform clamp validation reuse &
 \texttt{expected license blockers} \\
 \bottomrule
 \end{tabular}

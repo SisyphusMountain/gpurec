@@ -1760,16 +1760,19 @@ def test_gene_recon_configure_solver_iterations_rejects_nonfinite_tolerances(
         ({"min_rate": math.nan}, "min_rate"),
         ({"max_rate": math.inf}, "max_rate"),
         ({"min_rate": 0.0}, "min_rate"),
+        ({"min_rate": -1.0}, "min_rate"),
     ],
 )
-def test_gene_recon_clamp_theta_rejects_invalid_rates(
+@pytest.mark.parametrize("model_type", [GeneReconModel, UniformChunkedReconModel])
+def test_recon_model_clamp_theta_rejects_invalid_rates(
+    model_type: type[GeneReconModel] | type[UniformChunkedReconModel],
     kwargs: dict[str, float],
     message: str,
 ):
     model = SimpleNamespace(theta=torch.nn.Parameter(torch.zeros(3)))
 
     with pytest.raises(ValueError, match=message):
-        GeneReconModel.clamp_theta_(model, **kwargs)
+        model_type.clamp_theta_(model, **kwargs)
 
 
 def test_gene_recon_constructors_reject_cpu_device_before_io(tmp_path: Path):
