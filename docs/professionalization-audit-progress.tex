@@ -2354,6 +2354,21 @@ A release-metadata unit guard keeps \texttt{gpurec.\_\_version\_\_} aligned with
 passes, so the version attribute does not weaken the lazy top-level import
 boundary.
 
+\subsection{Release URL Metadata Validation}
+
+The release metadata checker now validates the values in
+\texttt{[project.urls]}, not only the presence of the required keys.  The
+required \texttt{Repository}, \texttt{Issues}, and \texttt{Documentation} entries
+must now be declared in a URL table as nonempty \texttt{http://} or
+\texttt{https://} URL strings.  This keeps malformed placeholder values from
+passing the packaging gate while remaining independent of the unresolved license
+decision.
+
+Fixture-based release metadata tests cover a non-table URL declaration plus
+empty, non-URL, and non-HTTP(S) repository URLs, while the complete fixture still
+passes.  The current checkout continues to report only the expected license
+blockers.
+
 \section{Verification Log}
 
 \begin{center}
@@ -5283,6 +5298,21 @@ CPU unit gate after top-level version metadata &
 \texttt{python scripts/check\_release\_metadata.py} &
 Release metadata checker after top-level version metadata &
 \texttt{expected license blockers} \\
+\texttt{python -m py\_compile scripts/check\_release\_metadata.py tests/unit/test\_release\_metadata.py} &
+Release URL metadata validation syntax &
+\texttt{ok} \\
+\texttt{python -m pytest selected release URL metadata guards -q} &
+Focused release URL metadata guards &
+\texttt{6 passed} \\
+\texttt{python -m pytest tests/unit/test\_release\_metadata.py -q} &
+Release metadata suite after URL validation hardening &
+\texttt{39 passed} \\
+\texttt{python scripts/check\_release\_metadata.py} &
+Release metadata checker after URL validation hardening &
+\texttt{expected license blockers} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' python -m pytest tests/unit -q -m "unit and not gpu"} &
+CPU unit gate after release URL metadata validation &
+\texttt{774 passed, 6 deselected} \\
 \bottomrule
 \end{tabular}
 \end{center}

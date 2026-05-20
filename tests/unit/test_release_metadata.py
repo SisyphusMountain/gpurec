@@ -33,11 +33,19 @@ def _write_complete_release_metadata_fixture(
     readme_line: str = 'readme = "README.md"',
     license_line: str = 'license = { file = "LICENSE" }',
     create_readme: bool = True,
+    urls_block: str | None = None,
 ) -> None:
     (root / "LICENSE").write_text("fixture license\n", encoding="utf-8")
     if create_readme:
         (root / "README.md").write_text("# fixture\n", encoding="utf-8")
     readme_block = f"{readme_line}\n" if readme_line else ""
+    if urls_block is None:
+        urls_block = """
+[project.urls]
+Repository = "https://example.invalid/repo"
+Issues = "https://example.invalid/issues"
+Documentation = "https://example.invalid/docs"
+""".lstrip()
     (root / "pyproject.toml").write_text(
         f"""
 [project]
@@ -60,10 +68,7 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Bio-Informatics",
 ]
 
-[project.urls]
-Repository = "https://example.invalid/repo"
-Issues = "https://example.invalid/issues"
-Documentation = "https://example.invalid/docs"
+{urls_block}
 """.lstrip(),
         encoding="utf-8",
     )
@@ -143,6 +148,64 @@ def test_release_metadata_check_requires_declared_readme_file(tmp_path: Path):
 
     assert result.returncode == 1
     assert "declared readme file does not exist: MISSING.md" in result.stdout
+    assert "license" not in result.stdout
+    assert result.stderr == ""
+
+
+@pytest.mark.parametrize(
+    ("repository_line", "message"),
+    [
+        ('Repository = ""', "Repository must be an http(s) URL"),
+        ('Repository = "not-a-url"', "Repository must be an http(s) URL"),
+        (
+            'Repository = "ftp://example.invalid/repo"',
+            "Repository must be an http(s) URL",
+        ),
+    ],
+)
+def test_release_metadata_check_requires_usable_project_url_values(
+    tmp_path: Path,
+    repository_line: str,
+    message: str,
+):
+    _write_complete_release_metadata_fixture(
+        tmp_path,
+        urls_block=f"""
+[project.urls]
+{repository_line}
+Issues = "https://example.invalid/issues"
+Documentation = "https://example.invalid/docs"
+""".lstrip(),
+    )
+
+    result = subprocess.run(
+        [sys.executable, str(CHECK_SCRIPT), "--root", str(tmp_path)],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 1
+    assert message in result.stdout
+    assert "license" not in result.stdout
+    assert result.stderr == ""
+
+
+def test_release_metadata_check_requires_project_urls_table(tmp_path: Path):
+    _write_complete_release_metadata_fixture(
+        tmp_path,
+        urls_block='urls = "https://example.invalid/repo"',
+    )
+
+    result = subprocess.run(
+        [sys.executable, str(CHECK_SCRIPT), "--root", str(tmp_path)],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 1
+    assert "[project.urls] must be a table" in result.stdout
     assert "license" not in result.stdout
     assert result.stderr == ""
 

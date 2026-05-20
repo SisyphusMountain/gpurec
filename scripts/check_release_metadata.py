@@ -21,6 +21,7 @@ REQUIRED_CLASSIFIERS = {
     "Topic :: Scientific/Engineering :: Bio-Informatics",
 }
 REQUIRED_URLS = {"Repository", "Issues", "Documentation"}
+_URL_PATTERN = re.compile(r"^https?://\S+$")
 
 
 def _readme_metadata_issues(project: dict[str, Any], root: Path) -> list[str]:
@@ -72,6 +73,25 @@ def _license_metadata_issues(project: dict[str, Any], root: Path) -> list[str]:
     return [
         "pyproject.toml [project] license must be a string, file table, or text table"
     ]
+
+
+def _url_metadata_issues(project: dict[str, Any]) -> list[str]:
+    urls = project.get("urls") or {}
+    if not isinstance(urls, dict):
+        return ["pyproject.toml [project.urls] must be a table"]
+    missing_urls = sorted(REQUIRED_URLS - set(urls))
+    issues: list[str] = []
+    if missing_urls:
+        issues.append(
+            "pyproject.toml [project.urls] is missing: " + ", ".join(missing_urls)
+        )
+    for key in sorted(REQUIRED_URLS & set(urls)):
+        value = urls[key]
+        if not isinstance(value, str) or not _URL_PATTERN.match(value):
+            issues.append(
+                f"pyproject.toml [project.urls] {key} must be an http(s) URL"
+            )
+    return issues
 
 
 def _load_toml(path: Path) -> dict[str, Any]:
@@ -160,12 +180,7 @@ def release_metadata_issues(root: Path) -> list[str]:
             + ", ".join(missing_classifiers)
         )
 
-    urls = project.get("urls") or {}
-    missing_urls = sorted(REQUIRED_URLS - set(urls))
-    if missing_urls:
-        issues.append(
-            "pyproject.toml [project.urls] is missing: " + ", ".join(missing_urls)
-        )
+    issues.extend(_url_metadata_issues(project))
 
     license_files = [project_root / "LICENSE", project_root / "LICENSE.txt"]
     has_license_file = any(path.is_file() for path in license_files)
