@@ -2561,6 +2561,18 @@ job runs on Python 3.10 and 3.12, and the release metadata guard checks the
 package job's own matrix block so it cannot be satisfied by the separate unit
 test matrix.
 
+\subsection{\texttt{BatchMetadata} Container Immutability}
+
+\texttt{BatchMetadata} now matches its frozen dataclass contract more closely:
+public sequence fields are normalized to tuples, and nested
+\texttt{parameter\_mapping} containers are recursively exposed through
+read-only mappings and tuples.  Mutating the constructor input lists or dicts
+after construction no longer changes the stored metadata.
+
+A focused public-API regression builds metadata from mutable inputs, mutates
+those inputs, and checks that both direct tuple mutation and mapping assignment
+fail through the public object.
+
 \section{Verification Log}
 
 \begin{center}
@@ -5723,6 +5735,24 @@ CPU unit gate after package matrix expansion &
 \texttt{794 passed, 6 deselected} \\
 \texttt{python scripts/check\_release\_metadata.py} &
 Release metadata checker after package matrix expansion &
+\texttt{expected license blockers} \\
+\texttt{python -m py\_compile gpurec/api/model.py tests/unit/test\_workflow.py tests/integration/test\_gene\_recon\_model.py} &
+\texttt{BatchMetadata} container immutability syntax &
+\texttt{ok} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' python -m pytest tests/integration/test\_gene\_recon\_model.py -q -k 'batch'} &
+\texttt{BatchMetadata} integration assertion compatibility without GPU &
+\texttt{4 skipped, 5 deselected} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' python -m pytest tests/unit/test\_workflow.py::test\_batch\_metadata\_freezes\_public\_container\_fields -q} &
+Focused \texttt{BatchMetadata} immutability regression &
+\texttt{1 passed} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' python -m pytest tests/unit/test\_workflow.py -q} &
+Workflow suite after \texttt{BatchMetadata} immutability cleanup &
+\texttt{421 passed} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' python -m pytest tests/unit -q -m "unit and not gpu"} &
+CPU unit gate after \texttt{BatchMetadata} immutability cleanup &
+\texttt{795 passed, 6 deselected} \\
+\texttt{python scripts/check\_release\_metadata.py} &
+Release metadata checker after \texttt{BatchMetadata} immutability cleanup &
 \texttt{expected license blockers} \\
 \bottomrule
 \end{tabular}

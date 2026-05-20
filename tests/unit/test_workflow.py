@@ -356,6 +356,52 @@ def test_top_level_exports_api_metadata_types():
         assert name in gpurec.__all__
 
 
+def test_batch_metadata_freezes_public_container_fields():
+    family_indices = [0, 1]
+    family_names = ["family_0", "family_1"]
+    gene_tree_paths = [["g0.nwk"], ["g1a.nwk", "g1b.nwk"]]
+    root_clade_rows = [3, 8]
+    parameter_mapping = {
+        "mode": "genewise",
+        "theta_shape": [2, 3],
+        "nested": {"batch_theta_rows": [0, 1]},
+    }
+
+    metadata = BatchMetadata(
+        batch_index=0,
+        family_indices=family_indices,
+        family_names=family_names,
+        gene_tree_paths=gene_tree_paths,
+        family_count=2,
+        clade_count=9,
+        split_count=12,
+        wave_count=4,
+        max_wave_size=5,
+        root_clade_rows=root_clade_rows,
+        parameter_mapping=parameter_mapping,
+    )
+    family_indices.append(2)
+    family_names[0] = "mutated"
+    gene_tree_paths[0].append("mutated.nwk")
+    root_clade_rows.append(13)
+    parameter_mapping["theta_shape"].append(4)
+    parameter_mapping["nested"]["batch_theta_rows"].append(2)
+
+    assert metadata.family_indices == (0, 1)
+    assert metadata.family_names == ("family_0", "family_1")
+    assert metadata.gene_tree_paths == (("g0.nwk",), ("g1a.nwk", "g1b.nwk"))
+    assert metadata.root_clade_rows == (3, 8)
+    assert metadata.parameter_mapping["theta_shape"] == (2, 3)
+    assert metadata.parameter_mapping["nested"]["batch_theta_rows"] == (0, 1)
+
+    with pytest.raises(AttributeError):
+        metadata.family_indices.append(3)  # type: ignore[attr-defined]
+    with pytest.raises(TypeError):
+        metadata.parameter_mapping["mode"] = "global"  # type: ignore[index]
+    with pytest.raises(AttributeError):
+        metadata.parameter_mapping["theta_shape"].append(4)  # type: ignore[attr-defined]
+
+
 def test_top_level_exports_backtracking_surface():
     public_names = {
         "EVENT_KEYS",

@@ -187,12 +187,12 @@ def test_memory_safe_resident_batches_match_resident_and_slice(tmp_path, two_tre
     )
 
     assert len(batched.batch_metadata) == 2
-    assert batched.current_batch_metadata.family_indices == [0]
-    assert batched.current_batch_metadata.family_names == [
-        batched.family_names[0]
-    ]
+    assert batched.current_batch_metadata.family_indices == (0,)
+    assert batched.current_batch_metadata.family_names == (
+        batched.family_names[0],
+    )
     if mode == "genewise":
-        assert batched.current_batch_metadata.parameter_mapping["batch_theta_rows"] == [0]
+        assert batched.current_batch_metadata.parameter_mapping["batch_theta_rows"] == (0,)
 
     active_loss = batched()
     sliced_loss = sliced()
@@ -237,4 +237,4 @@ def test_memory_safe_resident_batches_match_resident_and_slice(tmp_path, two_tre
     )
 
     next_meta = batched.next()
-    assert next_meta.family_indices == [1]
+    assert next_meta.family_indices == (1,)

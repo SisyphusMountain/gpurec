@@ -17,12 +17,14 @@ and exposes ``theta`` as an ``nn.Parameter`` so notebook users can use any
 """
 from __future__ import annotations
 
+from collections.abc import Mapping
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
 import math
 import os
 from pathlib import Path
 from threading import Lock
+from types import MappingProxyType
 from typing import Any, Optional, Sequence
 
 import torch
@@ -118,16 +120,46 @@ class BatchMetadata:
     """Public metadata for one resident batch."""
 
     batch_index: int
-    family_indices: list[int]
-    family_names: list[str]
-    gene_tree_paths: list[list[str]]
+    family_indices: tuple[int, ...]
+    family_names: tuple[str, ...]
+    gene_tree_paths: tuple[tuple[str, ...], ...]
     family_count: int
     clade_count: int
     split_count: int
     wave_count: int
     max_wave_size: int
-    root_clade_rows: list[int]
-    parameter_mapping: dict[str, Any]
+    root_clade_rows: tuple[int, ...]
+    parameter_mapping: Mapping[str, Any]
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "family_indices",
+            tuple(int(index) for index in self.family_indices),
+        )
+        object.__setattr__(
+            self,
+            "family_names",
+            tuple(str(name) for name in self.family_names),
+        )
+        object.__setattr__(
+            self,
+            "gene_tree_paths",
+            tuple(
+                tuple(str(path) for path in paths)
+                for paths in self.gene_tree_paths
+            ),
+        )
+        object.__setattr__(
+            self,
+            "root_clade_rows",
+            tuple(int(row) for row in self.root_clade_rows),
+        )
+        object.__setattr__(
+            self,
+            "parameter_mapping",
+            _immutable_public_value(self.parameter_mapping),
+        )
 
 
 @dataclass(frozen=True)
@@ -370,6 +402,19 @@ def _public_family_value(value: Any) -> Any:
         return [_public_family_value(item) for item in value]
     if isinstance(value, tuple):
         return tuple(_public_family_value(item) for item in value)
+    return value
+
+
+def _immutable_public_value(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return MappingProxyType(
+            {
+                key: _immutable_public_value(item)
+                for key, item in value.items()
+            }
+        )
+    if isinstance(value, (list, tuple)):
+        return tuple(_immutable_public_value(item) for item in value)
     return value
 
 
