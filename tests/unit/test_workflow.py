@@ -2984,6 +2984,65 @@ def test_optimization_runner_resume_rejects_incompatible_checkpoint_identity(
     assert runner.fake_model.closed
 
 
+def test_optimization_runner_resume_rejects_checkpoint_beyond_configured_steps(
+    tmp_path: Path,
+    monkeypatch,
+):
+    class FakeResumeModel:
+        def __init__(self):
+            self.theta = torch.nn.Parameter(torch.zeros(3, dtype=torch.float32))
+            self.family_names = ["fam0"]
+            self.species_names = ["sp0", "sp1"]
+            self.closed = False
+
+        def clear(self):
+            raise AssertionError("theta should not be restored from invalid resume")
+
+        def close(self):
+            self.closed = True
+
+    class FakeResumeRunner(OptimizationRunner):
+        def build_model(self):
+            self.fake_model = FakeResumeModel()
+            return self.fake_model
+
+    config = RunConfig(
+        species_tree=tmp_path / "sp.nwk",
+        families_file=tmp_path / "families.txt",
+        out_dir=tmp_path / "out",
+        mode="global",
+        device="cpu",
+        optimizer="adam",
+        steps=2,
+        resume_from=tmp_path / "resume.pt",
+        checkpoint_every=0,
+        log_every=10,
+    )
+
+    def fake_load_checkpoint(path, *, map_location):
+        return {
+            "theta": torch.zeros(3, dtype=torch.float32),
+            "optimizer_state": None,
+            "next_step": 5,
+            "config": config.to_dict(),
+            "family_names": ["fam0"],
+            "species_names": ["sp0", "sp1"],
+            "status": {
+                "previous_objective": 1.5,
+                "stable_loss_steps": 0,
+            },
+        }
+
+    workflow_optimize_module = importlib.import_module("gpurec.workflow.optimize")
+    monkeypatch.setattr(workflow_optimize_module, "load_checkpoint", fake_load_checkpoint)
+    runner = FakeResumeRunner(config)
+
+    with pytest.raises(RuntimeError, match=r"next_step 5.*configured steps 2"):
+        runner.run()
+
+    assert runner.fake_model.closed
+
+
 def test_activate_family_batch_returns_batch_local_offset():
     model = SimpleNamespace()
     model._batched_resident = True

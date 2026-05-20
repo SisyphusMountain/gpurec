@@ -164,6 +164,19 @@ def _resume_state_from_payload(path: Path, payload: dict[str, Any]) -> _ResumeSt
     )
 
 
+def _validate_resume_progress(
+    path: Path,
+    state: _ResumeState,
+    *,
+    configured_steps: int,
+) -> None:
+    if state.start_step > configured_steps:
+        raise RuntimeError(
+            f"checkpoint {path} has next_step {state.start_step}, which exceeds "
+            f"configured steps {configured_steps}"
+        )
+
+
 def _family_names(model: GeneReconModel) -> list[str]:
     return model.family_names
 
@@ -389,6 +402,11 @@ class OptimizationRunner:
                 resume_state = _resume_state_from_payload(
                     config.resume_from,
                     resume_payload,
+                )
+                _validate_resume_progress(
+                    config.resume_from,
+                    resume_state,
+                    configured_steps=config.steps,
                 )
                 restore_model_theta(model, resume_payload)
                 start_step = resume_state.start_step
