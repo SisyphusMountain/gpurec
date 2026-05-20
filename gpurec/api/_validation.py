@@ -82,11 +82,34 @@ def positive_int(name: str, value: int) -> int:
     return number
 
 
+def nonnegative_int(name: str, value: int) -> int:
+    if isinstance(value, bool):
+        raise ValueError(f"{name} must be an integer")
+    if isinstance(value, Integral):
+        number = int(value)
+    elif isinstance(value, Real):
+        number_float = finite_float(name, float(value))
+        if not number_float.is_integer():
+            raise ValueError(f"{name} must be an integer")
+        number = int(number_float)
+    else:
+        raise ValueError(f"{name} must be an integer")
+    if number < 0:
+        raise ValueError(f"{name} must be non-negative")
+    return number
+
+
 def positive_even_int(name: str, value: int) -> int:
     number = positive_int(name, value)
     if number % 2 != 0:
         raise ValueError(f"{name} must be a positive even integer")
     return number
+
+
+def optional_positive_int(name: str, value: int | None) -> int | None:
+    if value is None:
+        return None
+    return positive_int(name, value)
 
 
 def theta_init_base_from_rates(

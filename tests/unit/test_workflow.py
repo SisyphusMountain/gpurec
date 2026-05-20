@@ -36,7 +36,11 @@ from gpurec.api import (
     ReconciliationState,
 )
 from gpurec.api.model import GeneReconModel
-from gpurec.api.uniform_chunked import UniformChunkedReconModel, _as_auto_int
+from gpurec.api.uniform_chunked import (
+    UniformChunkedReconModel,
+    _as_auto_int,
+    _auto_positive_int,
+)
 from gpurec.workflow.checkpoint import (
     CHECKPOINT_VERSION,
     load_checkpoint,
@@ -625,11 +629,31 @@ def test_uniform_auto_int_rejects_bool_and_nonintegral_float(value: object):
         _as_auto_int("family_chunk_size", value)
 
 
+@pytest.mark.parametrize("value", [None, "0", "none", "null"])
+def test_uniform_auto_positive_int_preserves_unbounded_aliases(value: object):
+    assert _auto_positive_int("max_wave_size", value) is None
+
+
 @pytest.mark.parametrize(
     ("kwargs", "message"),
     [
         ({"family_chunk_size": True}, "family_chunk_size"),
+        ({"family_chunk_size": -1}, "family_chunk_size"),
+        ({"max_wave_size": 0}, "max_wave_size"),
+        ({"max_wave_size": -1}, "max_wave_size"),
         ({"max_wave_size": 2.5}, "max_wave_size"),
+        ({"max_root_wave_size": 0}, "max_root_wave_size"),
+        ({"max_root_wave_size": 1.5}, "max_root_wave_size"),
+        ({"max_root_wave_size": True}, "max_root_wave_size"),
+        ({"clade_budget": True}, "clade_budget"),
+        ({"clade_budget": 0}, "clade_budget"),
+        ({"batch_packing": "unknown"}, "batch_packing"),
+        ({"family_chunk_candidates": None}, "family_chunk_candidates"),
+        ({"family_chunk_candidates": [-1]}, "family_chunk_candidates"),
+        ({"family_chunk_candidates": [1.5]}, "family_chunk_candidates"),
+        ({"max_wave_candidates": None}, "max_wave_candidates"),
+        ({"max_wave_candidates": [0]}, "max_wave_candidates"),
+        ({"max_wave_candidates": [1.5]}, "max_wave_candidates"),
     ],
 )
 def test_uniform_chunked_rejects_bad_chunk_controls_before_device_or_io(
@@ -646,6 +670,7 @@ def test_uniform_chunked_rejects_bad_chunk_controls_before_device_or_io(
         )
 
     assert "CUDA" not in str(exc_info.value)
+    assert "missing" not in str(exc_info.value)
 
 
 @pytest.mark.parametrize("value", ["12", 12, 12.0])
@@ -910,6 +935,16 @@ def test_uniform_chunked_factories_reject_invalid_dtype_before_device_or_io(
         ("use_pruning", "false"),
         ("family_chunk_size", True),
         ("family_chunk_size", 1.5),
+        ("max_wave_size", 0),
+        ("max_wave_size", -1),
+        ("max_wave_size", 1.5),
+        ("max_wave_size", True),
+        ("max_root_wave_size", 0),
+        ("max_root_wave_size", 1.5),
+        ("max_root_wave_size", True),
+        ("max_dts_partial_rows", 0),
+        ("max_dts_partial_rows", 1.5),
+        ("max_dts_partial_rows", True),
         ("clade_budget", True),
         ("clade_budget", 0),
         ("lazy_preprocess", "false"),
@@ -949,6 +984,10 @@ def test_gene_recon_init_rejects_invalid_solver_controls_before_device(
             "refresh_preprocess_cache",
         ),
         ("from_trees", {"family_chunk_size": True}, "family_chunk_size"),
+        ("from_trees", {"max_wave_size": 0}, "max_wave_size"),
+        ("from_trees", {"max_wave_size": 1.5}, "max_wave_size"),
+        ("from_trees", {"max_root_wave_size": 0}, "max_root_wave_size"),
+        ("from_trees", {"max_dts_partial_rows": 0}, "max_dts_partial_rows"),
         ("from_trees", {"clade_budget": True}, "clade_budget"),
         ("from_trees", {"lazy_preprocess": "false"}, "lazy_preprocess"),
         (
@@ -960,6 +999,21 @@ def test_gene_recon_init_rejects_invalid_solver_controls_before_device(
             "from_alerax_families",
             {"neumann_terms": True},
             "neumann_terms",
+        ),
+        (
+            "from_alerax_families",
+            {"max_wave_size": -1},
+            "max_wave_size",
+        ),
+        (
+            "from_alerax_families",
+            {"max_root_wave_size": True},
+            "max_root_wave_size",
+        ),
+        (
+            "from_alerax_families",
+            {"max_dts_partial_rows": 1.5},
+            "max_dts_partial_rows",
         ),
         (
             "from_alerax_families",
@@ -989,7 +1043,7 @@ def test_gene_recon_factories_reject_invalid_solver_controls_before_device_or_io
     kwargs: dict[str, object],
     message: str,
 ):
-    with pytest.raises(ValueError, match=message):
+    with pytest.raises(ValueError, match=message) as exc_info:
         if factory == "from_trees":
             GeneReconModel.from_trees(
                 tmp_path / "missing_species.nwk",
@@ -1005,6 +1059,9 @@ def test_gene_recon_factories_reject_invalid_solver_controls_before_device_or_io
                 **kwargs,
             )
 
+    assert "CUDA" not in str(exc_info.value)
+    assert "missing" not in str(exc_info.value)
+
 
 @pytest.mark.parametrize(
     ("factory", "kwargs", "message"),
@@ -1015,6 +1072,18 @@ def test_gene_recon_factories_reject_invalid_solver_controls_before_device_or_io
         ("from_trees", {"max_iters_E": 20.5}, "max_iters_E"),
         ("from_trees", {"fixed_iters_Pi": math.nan}, "fixed_iters_Pi"),
         ("from_trees", {"fixed_iters_Pi": 4.5}, "fixed_iters_Pi"),
+        ("from_trees", {"family_chunk_size": -1}, "family_chunk_size"),
+        ("from_trees", {"max_wave_size": 0}, "max_wave_size"),
+        ("from_trees", {"max_root_wave_size": True}, "max_root_wave_size"),
+        ("from_trees", {"clade_budget": 0}, "clade_budget"),
+        ("from_trees", {"batch_packing": "unknown"}, "batch_packing"),
+        (
+            "from_trees",
+            {"family_chunk_candidates": [1.5]},
+            "family_chunk_candidates",
+        ),
+        ("from_trees", {"max_wave_candidates": [0]}, "max_wave_candidates"),
+        ("from_folder", {"max_wave_size": -1}, "max_wave_size"),
         (
             "from_alerax_families",
             {"pruning_threshold": math.inf},
@@ -1022,6 +1091,16 @@ def test_gene_recon_factories_reject_invalid_solver_controls_before_device_or_io
         ),
         ("from_alerax_families", {"neumann_terms": 0}, "neumann_terms"),
         ("from_alerax_families", {"neumann_terms": True}, "neumann_terms"),
+        (
+            "from_alerax_families",
+            {"family_chunk_candidates": [-1]},
+            "family_chunk_candidates",
+        ),
+        (
+            "from_alerax_families",
+            {"max_wave_candidates": [1.5]},
+            "max_wave_candidates",
+        ),
     ],
 )
 def test_uniform_chunked_factories_reject_invalid_solver_controls_before_device_or_io(
@@ -1030,11 +1109,17 @@ def test_uniform_chunked_factories_reject_invalid_solver_controls_before_device_
     kwargs: dict[str, object],
     message: str,
 ):
-    with pytest.raises(ValueError, match=message):
+    with pytest.raises(ValueError, match=message) as exc_info:
         if factory == "from_trees":
             UniformChunkedReconModel.from_trees(
                 tmp_path / "missing_species.nwk",
                 [tmp_path / "missing_gene.nwk"],
+                device="cpu",
+                **kwargs,
+            )
+        elif factory == "from_folder":
+            UniformChunkedReconModel.from_folder(
+                tmp_path / "missing_folder",
                 device="cpu",
                 **kwargs,
             )
@@ -1045,6 +1130,9 @@ def test_uniform_chunked_factories_reject_invalid_solver_controls_before_device_
                 device="cpu",
                 **kwargs,
             )
+
+    assert "CUDA" not in str(exc_info.value)
+    assert "missing" not in str(exc_info.value)
 
 
 @pytest.mark.parametrize(

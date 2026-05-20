@@ -7,7 +7,11 @@ import pytest
 import torch
 
 import gpurec.workflow.model_factory as workflow_model_factory
-from gpurec.api._validation import positive_even_int, require_cuda_device
+from gpurec.api._validation import (
+    nonnegative_int,
+    positive_even_int,
+    require_cuda_device,
+)
 from gpurec.workflow.config import RunConfig
 from gpurec.workflow.model_factory import build_alerax_workflow_model
 
@@ -42,6 +46,17 @@ def test_positive_even_int_accepts_positive_even_integer() -> None:
 def test_positive_even_int_rejects_invalid_values(value: object) -> None:
     with pytest.raises(ValueError, match="fixed_iters_Pi"):
         positive_even_int("fixed_iters_Pi", value)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("value", [0, 3, 4.0])
+def test_nonnegative_int_accepts_nonnegative_integral_values(value: object) -> None:
+    assert nonnegative_int("family_chunk_candidates entries", value) == int(value)
+
+
+@pytest.mark.parametrize("value", [-1, 1.5, math.inf, True])
+def test_nonnegative_int_rejects_invalid_values(value: object) -> None:
+    with pytest.raises(ValueError, match="family_chunk_candidates entries"):
+        nonnegative_int("family_chunk_candidates entries", value)  # type: ignore[arg-type]
 
 
 def test_build_alerax_workflow_model_rejects_unavailable_cuda_index(

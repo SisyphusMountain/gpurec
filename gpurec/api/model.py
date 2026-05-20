@@ -65,6 +65,7 @@ from ._family_layout import (
 from ._validation import (
     bool_value,
     nonnegative_float,
+    optional_positive_int,
     positive_even_int,
     positive_float,
     positive_int,
@@ -271,6 +272,9 @@ def _normalize_gene_solver_kwargs(kwargs: dict[str, Any]) -> dict[str, Any]:
         normalized["clade_budget"] = _normalize_clade_budget(
             normalized["clade_budget"]
         )
+    for name in ("max_wave_size", "max_root_wave_size", "max_dts_partial_rows"):
+        if name in normalized:
+            normalized[name] = optional_positive_int(name, normalized[name])
     if "batch_packing" in normalized:
         normalized["batch_packing"] = _normalize_batch_packing(
             normalized["batch_packing"]
@@ -818,6 +822,15 @@ class GeneReconModel(torch.nn.Module):
         family_chunk_requested = family_chunk_size is not None
         family_chunk_size = _normalize_family_chunk_size(family_chunk_size)
         clade_budget = _normalize_clade_budget(clade_budget)
+        max_wave_size = optional_positive_int("max_wave_size", max_wave_size)
+        max_root_wave_size = optional_positive_int(
+            "max_root_wave_size",
+            max_root_wave_size,
+        )
+        max_dts_partial_rows = optional_positive_int(
+            "max_dts_partial_rows",
+            max_dts_partial_rows,
+        )
         batch_packing = _normalize_batch_packing(batch_packing)
         lazy_preprocess = bool_value("lazy_preprocess", lazy_preprocess)
         prefetch_batches = _normalize_prefetch_batches(

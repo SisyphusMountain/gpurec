@@ -20,7 +20,11 @@ import torch
 
 from gpurec.core.backward import Pi_wave_backward
 from gpurec.core.batching import family_schedule_summary
-from gpurec.core.batch_planning import normalize_batch_packing, plan_family_batches
+from gpurec.core.batch_planning import (
+    normalize_batch_packing,
+    normalize_clade_budget,
+    plan_family_batches,
+)
 from gpurec.core.extract_parameters import extract_parameters_uniform
 from gpurec.core.forward import Pi_wave_forward
 from gpurec.core.likelihood import (
@@ -45,7 +49,9 @@ from ._family_layout import (
 )
 from ._validation import (
     bool_value,
+    nonnegative_int,
     nonnegative_float,
+    optional_positive_int,
     positive_even_int,
     positive_int,
     require_cuda_device,
@@ -128,6 +134,48 @@ def _as_auto_int(name: str, value: int | float | str | None) -> int | str | None
     raise ValueError(f"{name} must be an integer, 'auto', or none")
 
 
+def _auto_nonnegative_int(
+    name: str,
+    value: int | float | str | None,
+) -> int | str | None:
+    normalized = _as_auto_int(name, value)
+    if isinstance(normalized, int) and normalized < 0:
+        raise ValueError(f"{name} must be non-negative")
+    return normalized
+
+
+def _auto_positive_int(
+    name: str,
+    value: int | float | str | None,
+) -> int | str | None:
+    normalized = _as_auto_int(name, value)
+    if isinstance(normalized, int) and normalized <= 0:
+        raise ValueError(f"{name} must be positive")
+    return normalized
+
+
+def _normalize_nonnegative_int_sequence(
+    name: str,
+    values: Sequence[int],
+) -> tuple[int, ...]:
+    try:
+        return tuple(
+            nonnegative_int(f"{name} entries", value) for value in values
+        )
+    except TypeError as exc:
+        raise ValueError(f"{name} must be a sequence of integers") from exc
+
+
+def _normalize_positive_int_sequence(
+    name: str,
+    values: Sequence[int],
+) -> tuple[int, ...]:
+    try:
+        return tuple(positive_int(f"{name} entries", value) for value in values)
+    except TypeError as exc:
+        raise ValueError(f"{name} must be a sequence of integers") from exc
+
+
 def _normalize_uniform_solver_kwargs(kwargs: dict[str, Any]) -> dict[str, Any]:
     """Validate public solver kwargs before CUDA setup or AleRax parsing."""
     normalized = dict(kwargs)
@@ -169,6 +217,39 @@ def _normalize_uniform_solver_kwargs(kwargs: dict[str, Any]) -> dict[str, Any]:
     ):
         if name in normalized:
             normalized[name] = bool_value(name, normalized[name])
+    if "family_chunk_size" in normalized:
+        normalized["family_chunk_size"] = _auto_nonnegative_int(
+            "family_chunk_size",
+            normalized["family_chunk_size"],
+        )
+    if "max_wave_size" in normalized:
+        normalized["max_wave_size"] = _auto_positive_int(
+            "max_wave_size",
+            normalized["max_wave_size"],
+        )
+    if "max_root_wave_size" in normalized:
+        normalized["max_root_wave_size"] = optional_positive_int(
+            "max_root_wave_size",
+            normalized["max_root_wave_size"],
+        )
+    if "clade_budget" in normalized:
+        normalized["clade_budget"] = normalize_clade_budget(
+            normalized["clade_budget"]
+        )
+    if "batch_packing" in normalized:
+        normalized["batch_packing"] = normalize_batch_packing(
+            normalized["batch_packing"]
+        )
+    if "family_chunk_candidates" in normalized:
+        normalized["family_chunk_candidates"] = _normalize_nonnegative_int_sequence(
+            "family_chunk_candidates",
+            normalized["family_chunk_candidates"],
+        )
+    if "max_wave_candidates" in normalized:
+        normalized["max_wave_candidates"] = _normalize_positive_int_sequence(
+            "max_wave_candidates",
+            normalized["max_wave_candidates"],
+        )
     return normalized
 
 
@@ -673,9 +754,22 @@ class UniformChunkedReconModel(torch.nn.Module):
         warm_start_E = bool_value("warm_start_E", warm_start_E)
         profile = bool_value("profile", profile)
         set_optimized_env = bool_value("set_optimized_env", set_optimized_env)
-        chunk_value = _as_auto_int("family_chunk_size", family_chunk_size)
-        wave_value = _as_auto_int("max_wave_size", max_wave_size)
+        chunk_value = _auto_nonnegative_int("family_chunk_size", family_chunk_size)
+        wave_value = _auto_positive_int("max_wave_size", max_wave_size)
+        max_root_wave_size = optional_positive_int(
+            "max_root_wave_size",
+            max_root_wave_size,
+        )
+        clade_budget = normalize_clade_budget(clade_budget)
         normalized_packing = normalize_batch_packing(batch_packing)
+        family_chunk_candidates = _normalize_nonnegative_int_sequence(
+            "family_chunk_candidates",
+            family_chunk_candidates,
+        )
+        max_wave_candidates = _normalize_positive_int_sequence(
+            "max_wave_candidates",
+            max_wave_candidates,
+        )
         gene_paths = normalize_family_tree_paths(gene_trees)
 
         if set_optimized_env:

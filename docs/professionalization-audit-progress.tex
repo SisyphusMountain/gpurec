@@ -1849,6 +1849,21 @@ metadata stores the canonical dtype and still rehydrates through
 checkpoint metadata consistent without changing the runtime
 \texttt{torch.dtype} used for model construction.
 
+\subsection{Public Chunk and Wave Control Preflight}
+
+The resident \texttt{GeneReconModel} API now validates optional wave-cap
+controls, including \texttt{max\_wave\_size},
+\texttt{max\_root\_wave\_size}, and \texttt{max\_dts\_partial\_rows}, at the
+factory and direct-constructor boundary before CUDA setup or tree-file I/O.
+The uniform chunked API now performs the same early rejection for
+\texttt{family\_chunk\_size}, \texttt{max\_wave\_size},
+\texttt{max\_root\_wave\_size}, \texttt{clade\_budget},
+\texttt{batch\_packing}, and automatic policy candidate lists.  Numeric
+nonpositive wave caps and invalid candidate entries now raise
+\texttt{ValueError} from public validation code, while the established
+uniform unbounded aliases \texttt{max\_wave\_size=None}, \texttt{"0"},
+\texttt{"none"}, and \texttt{"null"} remain accepted.
+
 \section{Verification Log}
 
 \begin{center}
@@ -4091,6 +4106,24 @@ Release metadata checker after workflow dtype canonicalization &
 \texttt{pdflatex -interaction=nonstopmode -halt-on-error ...professionalization...} &
 Audit log build after workflow dtype canonicalization &
 \texttt{ok with known overfull table warnings} \\
+\texttt{python -m py\_compile gpurec/api/\_validation.py gpurec/api/model.py gpurec/api/uniform\_chunked.py ...} &
+Public chunk and wave preflight syntax &
+\texttt{ok} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q tests/unit/test\_validation.py tests/unit/test\_workflow.py -k "..."} &
+Focused public chunk and wave preflight coverage &
+\texttt{111 passed, 213 deselected} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q tests/unit/test\_validation.py tests/unit/test\_workflow.py} &
+Validation and workflow units after public chunk and wave preflight &
+\texttt{324 passed} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
+CPU unit gate after public chunk and wave preflight &
+\texttt{574 passed, 28 deselected} \\
+\texttt{python scripts/check\_release\_metadata.py} &
+Release metadata checker after public chunk and wave preflight &
+\texttt{expected license blockers} \\
+\texttt{pdflatex -interaction=nonstopmode -halt-on-error ...professionalization...} &
+Audit log build after public chunk and wave preflight &
+\texttt{ok with known overfull table warnings} \\
 \bottomrule
 \end{tabular}
 \end{center}
@@ -4104,8 +4137,8 @@ Audit log build after workflow dtype canonicalization &
         document a Rust-toolchain requirement for source-tree sampling.
   \item Add an installed-artifact sampling smoke once the backtracking binary
         distribution model is settled.
-  \item Add earlier public API validation for chunk, wave-cap, and index
-        controls so invalid values fail before CUDA setup or tree-file I/O.
+  \item Add homogeneous public index validation for family, chunk, and batch
+        selectors so booleans and nonintegral floats do not silently coerce.
   \item Keep committing small, verified increments so the branch remains
         reviewable despite the larger audit scope.
 \end{enumerate}
