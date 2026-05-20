@@ -102,6 +102,22 @@ sample_result = sample(sampling)
 For direct imports from the workflow package, `gpurec.workflow` exports the same
 configs, runners, result dataclasses, and `optimize`/`sample` functions.
 
+Top-level backtracking helpers are also available for lower-level sampling and
+validation workflows:
+
+```python
+from gpurec import (
+    ensure_backtracking_available,
+    export_backtracking_input,
+    recphyloxml_event_counts,
+    sample_recphyloxml,
+    sample_recphyloxmls,
+)
+```
+
+These helpers use the same Rust backtracking binary configuration documented
+below for `gpurec sample` and `gpurec run`.
+
 ## Production AleRax-Style Workflow
 
 The production workflow accepts an AleRax `[FAMILIES]` file and a species tree.

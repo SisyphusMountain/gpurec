@@ -88,6 +88,11 @@ Run these CPU-safe gates before release packaging:
 ```bash
 CUDA_VISIBLE_DEVICES='' gpurec --help
 CUDA_VISIBLE_DEVICES='' python -m gpurec.cli --help
+CUDA_VISIBLE_DEVICES='' python - <<'PY'
+import gpurec
+for name in gpurec.__all__:
+    getattr(gpurec, name)
+PY
 CUDA_VISIBLE_DEVICES='' gpurec backtrack-check --help
 CUDA_VISIBLE_DEVICES='' pytest -q -m "unit and not gpu"
 cargo test --locked --manifest-path crates/gpurec-backtrack/Cargo.toml

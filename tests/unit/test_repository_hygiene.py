@@ -260,6 +260,20 @@ def test_project_readme_documents_sampling_output_layout():
     assert "totalTransfers.txt" in project_readme
 
 
+def test_project_readme_documents_top_level_backtracking_helpers():
+    root = Path(__file__).resolve().parents[2]
+    project_readme = (root / "README.md").read_text(encoding="utf-8")
+
+    for name in (
+        "ensure_backtracking_available",
+        "export_backtracking_input",
+        "recphyloxml_event_counts",
+        "sample_recphyloxml",
+        "sample_recphyloxmls",
+    ):
+        assert name in project_readme
+
+
 def test_second_order_docs_reference_current_public_loss_apis():
     root = Path(__file__).resolve().parents[2]
     note = (

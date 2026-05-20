@@ -498,6 +498,13 @@ def test_release_readiness_orders_clean_checkout_before_build():
     assert 'pytest -q -m "integration and not gpu"' in guide
 
 
+def test_release_readiness_smokes_top_level_exports():
+    guide = (ROOT / "docs" / "release-readiness.md").read_text(encoding="utf-8")
+
+    assert "for name in gpurec.__all__" in guide
+    assert "getattr(gpurec, name)" in guide
+
+
 def test_release_readiness_scopes_ignored_clean_commands():
     guide = (ROOT / "docs" / "release-readiness.md").read_text(encoding="utf-8")
 

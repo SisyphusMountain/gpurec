@@ -302,10 +302,18 @@ def test_top_level_exports_api_metadata_types():
         assert name in gpurec.__all__
 
 
-def test_top_level_exports_backtracking_preflight():
-    assert gpurec.ensure_backtracking_available is ensure_backtracking_available
-    assert gpurec._LAZY_EXPORTS["ensure_backtracking_available"] == "gpurec.backtracking"
-    assert "ensure_backtracking_available" in gpurec.__all__
+def test_top_level_exports_backtracking_surface():
+    for name in (
+        "EVENT_KEYS",
+        "ensure_backtracking_available",
+        "export_backtracking_input",
+        "recphyloxml_event_counts",
+        "sample_recphyloxml",
+        "sample_recphyloxmls",
+    ):
+        assert name in gpurec.__all__
+        assert gpurec._LAZY_EXPORTS[name] == "gpurec.backtracking"
+        assert getattr(gpurec, name) is getattr(backtracking, name)
 
 
 def test_top_level_exports_workflow_surface():
