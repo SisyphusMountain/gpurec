@@ -1722,6 +1722,18 @@ the tensor assembly phase and failed through \texttt{torch.cat([])}, which made
 the public contract depend on an incidental PyTorch error instead of a
 domain-specific message.
 
+\subsection{Shared RecPhyloXML Traversal}
+
+RecPhyloXML namespace handling, root-clade discovery, direct child traversal,
+and \texttt{eventsRec} extraction now live in
+\texttt{gpurec.recphyloxml}.  \texttt{recphyloxml\_event\_counts()} and the
+sampling workflow's species/transfer aggregate builder both use those helpers,
+so future changes to XML traversal cannot drift independently across the
+AleRax-style event count files and sampling summary outputs.  The new
+\texttt{tests/unit/test\_recphyloxml.py} module covers namespaced documents,
+multiple \texttt{recGeneTree} blocks, and the shared traversal path used by
+both backtracking and sampling aggregation.
+
 \section{Verification Log}
 
 \begin{center}
@@ -3735,6 +3747,27 @@ Release metadata checker after optimization resume-state helper &
 \texttt{expected license blockers} \\
 \texttt{pdflatex -interaction=nonstopmode -halt-on-error ...professionalization...} &
 Audit log build after optimization resume-state helper &
+\texttt{ok with known overfull table warnings} \\
+\texttt{python -m py\_compile gpurec/recphyloxml.py gpurec/backtracking.py gpurec/workflow/sampling.py tests/unit/test\_recphyloxml.py tests/unit/test\_workflow.py tests/unit/test\_release\_metadata.py} &
+Shared RecPhyloXML traversal syntax &
+\texttt{ok} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q tests/unit/test\_recphyloxml.py tests/unit/test\_workflow.py -k "..."} &
+Focused RecPhyloXML traversal and aggregate coverage &
+\texttt{5 passed, 247 deselected} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q tests/unit/test\_release\_metadata.py -k "..."} &
+Explicit CPU unit path guard after RecPhyloXML test module &
+\texttt{1 passed, 18 deselected} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q tests/unit/test\_recphyloxml.py tests/unit/test\_workflow.py} &
+RecPhyloXML and workflow unit files after traversal sharing &
+\texttt{252 passed} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
+CPU unit gate after shared RecPhyloXML traversal &
+\texttt{470 passed, 28 deselected} \\
+\texttt{python scripts/check\_release\_metadata.py} &
+Release metadata checker after shared RecPhyloXML traversal &
+\texttt{expected license blockers} \\
+\texttt{pdflatex -interaction=nonstopmode -halt-on-error ...professionalization...} &
+Audit log build after shared RecPhyloXML traversal &
 \texttt{ok with known overfull table warnings} \\
 \bottomrule
 \end{tabular}

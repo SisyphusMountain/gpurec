@@ -9,7 +9,6 @@ import shlex
 import shutil
 import subprocess
 import tempfile
-import xml.etree.ElementTree as ET
 from collections.abc import Callable
 from numbers import Integral
 from pathlib import Path
@@ -18,13 +17,18 @@ from typing import Any
 import torch
 
 from gpurec.api.model import FamilyInput, GeneReconModel, ReconciliationState
+from gpurec.recphyloxml import (
+    EVENT_KEYS,
+    direct_children,
+    iter_rec_gene_tree_clades,
+    primary_event_name,
+)
 
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 _BACKTRACK_MANIFEST = _REPO_ROOT / "crates" / "gpurec-backtrack" / "Cargo.toml"
 _BACKTRACK_BINARY_ENV = "GPUREC_BACKTRACK_BIN"
 _UINT64_MAX = (1 << 64) - 1
-EVENT_KEYS = ("S", "SL", "D", "DL", "T", "TL", "L", "Leaf")
 
 
 def _optional_int_limit(
@@ -483,29 +487,12 @@ def recphyloxml_event_counts(xml: str, *, alerax_style: bool = True) -> dict[str
     ``*_eventCounts_*.txt`` convention more closely than raw XML tag counts.
     """
 
-    root = ET.fromstring(xml)
     counts = {key: 0 for key in EVENT_KEYS}
 
-    def local_name(tag: str) -> str:
-        return tag.rsplit("}", 1)[-1]
-
-    def direct_children(clade) -> list:
-        return [child for child in clade if local_name(child.tag) == "clade"]
-
-    def event_name(clade) -> str | None:
-        events = next((child for child in clade if local_name(child.tag) == "eventsRec"), None)
-        if events is None:
-            return None
-        for event in events:
-            name = local_name(event.tag)
-            if name in {"speciation", "duplication", "branchingOut", "loss", "leaf"}:
-                return name
-        return None
-
     def visit(clade, *, suppress_loss: bool = False) -> None:
-        event = event_name(clade)
-        children = direct_children(clade)
-        child_events = [event_name(child) for child in children]
+        event = primary_event_name(clade)
+        children = direct_children(clade, "clade")
+        child_events = [primary_event_name(child) for child in children]
         has_loss_child = "loss" in child_events
 
         loss_children_are_composite = False
@@ -536,19 +523,12 @@ def recphyloxml_event_counts(xml: str, *, alerax_style: bool = True) -> dict[str
         for child in children:
             visit(
                 child,
-                suppress_loss=loss_children_are_composite and event_name(child) == "loss",
+                suppress_loss=(
+                    loss_children_are_composite
+                    and primary_event_name(child) == "loss"
+                ),
             )
 
-    for rec_gene_tree in root.iter():
-        if local_name(rec_gene_tree.tag) != "recGeneTree":
-            continue
-        phylogeny = next(
-            (child for child in rec_gene_tree if local_name(child.tag) == "phylogeny"),
-            None,
-        )
-        if phylogeny is None:
-            continue
-        clade = next((child for child in phylogeny if local_name(child.tag) == "clade"), None)
-        if clade is not None:
-            visit(clade)
+    for clade in iter_rec_gene_tree_clades(xml):
+        visit(clade)
     return counts

@@ -3,17 +3,19 @@ from __future__ import annotations
 import csv
 import json
 import re
-import xml.etree.ElementTree as ET
 from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from gpurec.api.model import GeneReconModel
-from gpurec.backtracking import (
+from gpurec.backtracking import recphyloxml_event_counts, sample_recphyloxmls
+from gpurec.recphyloxml import (
     EVENT_KEYS,
-    recphyloxml_event_counts,
-    sample_recphyloxmls,
+    direct_children,
+    events_for_clade,
+    iter_rec_gene_tree_clades,
+    local_name,
 )
 
 from .checkpoint import (
@@ -58,21 +60,6 @@ class SamplingResult:
     xml_files: int
 
 
-def _local_name(tag: str) -> str:
-    return tag.rsplit("}", 1)[-1]
-
-
-def _direct_children(element: ET.Element, name: str) -> list[ET.Element]:
-    return [child for child in element if _local_name(child.tag) == name]
-
-
-def _events_for_clade(clade: ET.Element) -> list[ET.Element]:
-    for child in clade:
-        if _local_name(child.tag) == "eventsRec":
-            return list(child)
-    return []
-
-
 def _family_file_stem(family_index: int, family_name: str) -> str:
     safe_name = _UNSAFE_FILENAME_STEM.sub("_", str(family_name)).strip("._-")
     if not safe_name:
@@ -83,7 +70,6 @@ def _family_file_stem(family_index: int, family_name: str) -> str:
 def _xml_species_and_transfer_counts(
     xml: str,
 ) -> tuple[dict[str, dict[str, float]], dict[tuple[str, str], float]]:
-    root = ET.fromstring(xml)
     species_counts: dict[str, dict[str, float]] = defaultdict(
         lambda: {column: 0.0 for column in SPECIES_COLUMNS}
     )
@@ -93,14 +79,14 @@ def _xml_species_and_transfer_counts(
     def species_row(species: str) -> dict[str, float]:
         return species_counts[str(species)]
 
-    def visit(clade: ET.Element, active_donor: str | None = None) -> None:
+    def visit(clade: Any, active_donor: str | None = None) -> None:
         nonlocal saw_origin
-        events = _events_for_clade(clade)
+        events = events_for_clade(clade)
         donor = active_donor
         branch_donor: str | None = None
         destination: str | None = None
         for event in events:
-            name = _local_name(event.tag)
+            name = local_name(event.tag)
             if name == "speciation":
                 species = event.attrib.get("speciesLocation")
                 if species:
@@ -138,22 +124,11 @@ def _xml_species_and_transfer_counts(
         if donor and destination:
             transfers[(donor, destination)] += 1.0
         child_donor = branch_donor or active_donor
-        for child in _direct_children(clade, "clade"):
+        for child in direct_children(clade, "clade"):
             visit(child, child_donor)
 
-    for rec_gene_tree in root.iter():
-        if _local_name(rec_gene_tree.tag) != "recGeneTree":
-            continue
-        first_clade = next(
-            (
-                element
-                for element in rec_gene_tree.iter()
-                if _local_name(element.tag) == "clade"
-            ),
-            None,
-        )
-        if first_clade is not None:
-            visit(first_clade)
+    for clade in iter_rec_gene_tree_clades(xml):
+        visit(clade)
 
     for row in species_counts.values():
         row["singletons"] = 1.0 if row["copies"] == 1.0 else 0.0
