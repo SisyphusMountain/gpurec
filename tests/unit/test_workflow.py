@@ -2479,6 +2479,14 @@ def test_checkpoint_load_rejects_invalid_theta_values(
         load_checkpoint(path)
 
 
+def test_checkpoint_load_rejects_raw_theta_export(tmp_path: Path):
+    path = tmp_path / "theta_final.pt"
+    torch.save(torch.zeros(2, 3), path)
+
+    with pytest.raises(RuntimeError, match="must contain a dictionary payload"):
+        load_checkpoint(path)
+
+
 def test_optimization_runner_run_writes_outputs_with_fake_model(tmp_path: Path):
     class FakeOptimizationModel:
         def __init__(self):

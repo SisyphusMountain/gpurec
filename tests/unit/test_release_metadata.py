@@ -310,3 +310,17 @@ def test_release_readiness_scopes_ignored_clean_commands():
     assert re.search(r"(?m)^git clean -Xdf$", guide) is None
     assert "git clean -Xdn -- build dist '*.egg-info'" in guide
     assert "git clean -Xdf -- build dist '*.egg-info'" in guide
+
+
+def test_final_theta_artifact_is_documented_as_export_only():
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    guide = (ROOT / "docs" / "release-readiness.md").read_text(encoding="utf-8")
+
+    for text in (readme, guide):
+        assert "theta_final.pt" in text
+        assert "raw tensor export" in text
+        assert "does not carry run configuration" in text
+        assert "family ordering" in text
+        assert "species ordering" in text
+        assert "checkpoints/best.pt" in text
+        assert "checkpoints/latest.pt" in text

@@ -114,10 +114,16 @@ to regenerate those entries from the original tree inputs.
 
 Main outputs include:
 
-- `checkpoints/latest.pt` and `checkpoints/best.pt`
+- `checkpoints/latest.pt` and `checkpoints/best.pt`, metadata-bearing
+  checkpoints for resume, sampling, and restore workflows
 - `optimization_history.csv` and `history.jsonl`
 - `rates_final.tsv`, `theta_final.pt`, `summary.json`
 - `per_fam_likelihoods.tsv` for genewise runs
+
+`theta_final.pt` is a raw tensor export for inspection or custom analysis.  It
+does not carry run configuration, family ordering, or species ordering metadata;
+use `checkpoints/best.pt` or `checkpoints/latest.pt` whenever a workflow needs
+to restore parameters into a model or sample reconciliation scenarios.
 
 To sample scenarios from the best checkpoint:
 

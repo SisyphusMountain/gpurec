@@ -91,3 +91,9 @@ species and family payload structure.  Regenerate legacy preprocessing caches if
 safe loading or cache validation rejects them.  Treat old pickle-only checkpoints
 as trusted migration inputs rather than loading them through normal CLI
 workflows.
+
+Optimization directories also include `theta_final.pt` as a raw tensor export
+for inspection and custom analysis.  Do not document it as a resumable or
+sampling checkpoint: it does not carry run configuration, family ordering, or
+species ordering metadata.  Use `checkpoints/best.pt` or
+`checkpoints/latest.pt` for workflows that restore parameters into a model.
