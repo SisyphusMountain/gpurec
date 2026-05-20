@@ -365,6 +365,42 @@ def test_cli_help_smokes_are_quiet_on_cpu(command: tuple[str, ...]):
     assert result.stderr == ""
 
 
+@pytest.mark.parametrize(
+    "code",
+    (
+        "\n".join(
+            (
+                "import gpurec",
+                "for name in gpurec.__all__:",
+                "    getattr(gpurec, name)",
+                "print('exports_ok')",
+            )
+        ),
+        "\n".join(
+            (
+                "import gpurec.workflow",
+                "from gpurec import RunConfig, SamplingConfig",
+                "print(RunConfig.__name__, SamplingConfig.__name__)",
+            )
+        ),
+    ),
+)
+def test_public_import_smokes_are_quiet_on_cpu(code: str):
+    env = os.environ.copy()
+    env["CUDA_VISIBLE_DEVICES"] = ""
+
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        check=False,
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+
+    assert result.returncode == 0
+    assert result.stderr == ""
+
+
 def test_cpu_ci_matrix_covers_declared_python_versions():
     workflow = (ROOT / ".github" / "workflows" / "cpu-unit.yml").read_text(
         encoding="utf-8"

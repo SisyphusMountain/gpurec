@@ -6,8 +6,6 @@ import pathlib
 from functools import lru_cache
 from typing import Any
 
-from torch.utils.cpp_extension import load
-
 
 _CPP_DIR = pathlib.Path(__file__).resolve().parent / "cpp"
 _CPP_SRC = _CPP_DIR / "preprocess.cpp"
@@ -15,6 +13,8 @@ _CPP_SRC = _CPP_DIR / "preprocess.cpp"
 
 @lru_cache(maxsize=1)
 def _load_extension() -> Any:
+    from torch.utils.cpp_extension import load
+
     sources = [
         str(_CPP_SRC),
         str(_CPP_DIR / "tree_utils.cpp"),
