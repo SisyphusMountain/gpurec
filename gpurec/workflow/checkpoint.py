@@ -12,6 +12,14 @@ from .config import RunConfig
 
 CHECKPOINT_VERSION = 1
 _REQUIRED_CHECKPOINT_KEYS = {"version", "config", "theta", "step", "next_step"}
+_REQUIRED_CHECKPOINT_IDENTITY_KEYS = {"family_names", "species_names"}
+_CHECKPOINT_CONFIG_IDENTITY_KEYS = (
+    "species_tree",
+    "families_file",
+    "mode",
+    "start",
+    "max_families",
+)
 
 
 def _family_names(model: Any) -> list[str]:
@@ -41,42 +49,51 @@ def validate_checkpoint_model_compatibility(
 ) -> None:
     checkpoint_path = Path(path)
     checkpoint_config = payload.get("config")
-    if isinstance(checkpoint_config, dict):
-        current_config = config.to_dict()
-        for key in ("species_tree", "families_file", "mode", "start", "max_families"):
-            if key not in checkpoint_config:
-                continue
-            checkpoint_value = _normalize_checkpoint_identity_value(
-                key,
-                checkpoint_config.get(key),
-            )
-            current_value = _normalize_checkpoint_identity_value(
-                key,
-                current_config.get(key),
-            )
-            if checkpoint_value != current_value:
-                raise RuntimeError(
-                    f"checkpoint {checkpoint_path} is incompatible with current run: "
-                    f"config.{key} differs"
-                )
-
-    checkpoint_family_names = payload.get("family_names")
-    if checkpoint_family_names is not None:
-        model_family_names = _family_names(model)
-        if list(checkpoint_family_names) != model_family_names:
+    if not isinstance(checkpoint_config, dict):
+        raise RuntimeError(
+            f"checkpoint {checkpoint_path} is incompatible with current run: "
+            "invalid config metadata"
+        )
+    _require_config_identity_fields(checkpoint_path, checkpoint_config)
+    current_config = config.to_dict()
+    for key in _CHECKPOINT_CONFIG_IDENTITY_KEYS:
+        checkpoint_value = _normalize_checkpoint_identity_value(
+            key,
+            checkpoint_config.get(key),
+        )
+        current_value = _normalize_checkpoint_identity_value(
+            key,
+            current_config.get(key),
+        )
+        if checkpoint_value != current_value:
             raise RuntimeError(
                 f"checkpoint {checkpoint_path} is incompatible with current run: "
-                "family_names differ"
+                f"config.{key} differs"
             )
 
-    checkpoint_species_names = payload.get("species_names")
-    if checkpoint_species_names is not None:
-        model_species_names = _species_names(model)
-        if list(checkpoint_species_names) != model_species_names:
-            raise RuntimeError(
-                f"checkpoint {checkpoint_path} is incompatible with current run: "
-                "species_names differ"
-            )
+    checkpoint_family_names = _checkpoint_string_list(
+        checkpoint_path,
+        "family_names",
+        payload.get("family_names"),
+    )
+    model_family_names = _family_names(model)
+    if checkpoint_family_names != model_family_names:
+        raise RuntimeError(
+            f"checkpoint {checkpoint_path} is incompatible with current run: "
+            "family_names differ"
+        )
+
+    checkpoint_species_names = _checkpoint_string_list(
+        checkpoint_path,
+        "species_names",
+        payload.get("species_names"),
+    )
+    model_species_names = _species_names(model)
+    if checkpoint_species_names != model_species_names:
+        raise RuntimeError(
+            f"checkpoint {checkpoint_path} is incompatible with current run: "
+            "species_names differ"
+        )
 
 
 def save_checkpoint(
@@ -146,6 +163,13 @@ def _validate_checkpoint_payload(payload: Any, path: Path) -> dict[str, Any]:
         )
     if not isinstance(payload["config"], dict):
         raise RuntimeError(f"checkpoint {path} has invalid config metadata")
+    missing_identity = sorted(_REQUIRED_CHECKPOINT_IDENTITY_KEYS - set(payload))
+    if missing_identity:
+        raise RuntimeError(
+            f"checkpoint {path} is missing identity key(s): "
+            f"{', '.join(missing_identity)}"
+        )
+    _require_config_identity_fields(path, payload["config"])
     step = _checkpoint_int(path, "step", payload["step"])
     next_step = _checkpoint_int(path, "next_step", payload["next_step"])
     if next_step not in {step, step + 1}:
@@ -166,13 +190,24 @@ def _validate_checkpoint_payload(payload: Any, path: Path) -> dict[str, Any]:
     status = payload.get("status")
     if status is not None and not isinstance(status, dict):
         raise RuntimeError(f"checkpoint {path} has invalid status metadata")
-    family_names = payload.get("family_names")
-    if family_names is not None and not isinstance(family_names, list):
-        raise RuntimeError(f"checkpoint {path} has invalid family metadata")
-    species_names = payload.get("species_names")
-    if species_names is not None and not isinstance(species_names, list):
-        raise RuntimeError(f"checkpoint {path} has invalid species metadata")
+    _checkpoint_string_list(path, "family_names", payload["family_names"])
+    _checkpoint_string_list(path, "species_names", payload["species_names"])
     return payload
+
+
+def _require_config_identity_fields(path: Path, config: dict[str, Any]) -> None:
+    missing = sorted(key for key in _CHECKPOINT_CONFIG_IDENTITY_KEYS if key not in config)
+    if missing:
+        raise RuntimeError(
+            f"checkpoint {path} config is missing identity field(s): "
+            f"{', '.join(missing)}"
+        )
+
+
+def _checkpoint_string_list(path: Path, key: str, value: Any) -> list[str]:
+    if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+        raise RuntimeError(f"checkpoint {path} has invalid {key} metadata")
+    return list(value)
 
 
 def _checkpoint_version(path: Path, value: Any) -> int:

@@ -2806,6 +2806,53 @@ def test_sampling_runner_rejects_checkpoint_family_order_mismatch(
     assert model.closed
 
 
+def test_sampling_runner_rejects_checkpoint_without_family_identity(
+    tmp_path: Path,
+    monkeypatch,
+):
+    class FakeModel:
+        def __init__(self):
+            self.theta = torch.nn.Parameter(torch.zeros(2, 3, dtype=torch.float32))
+            self.family_names = ["fam_a", "fam_b"]
+            self.species_names = ["sp0", "sp1"]
+            self.closed = False
+
+        def clear(self):
+            raise AssertionError("theta should not be restored from legacy metadata")
+
+        def close(self):
+            self.closed = True
+
+    model = FakeModel()
+    run_config = RunConfig(
+        species_tree=tmp_path / "sp.nwk",
+        families_file=tmp_path / "families.txt",
+        out_dir=tmp_path / "run_out",
+        mode="genewise",
+        device="cpu",
+    )
+    config = SamplingConfig(checkpoint=tmp_path / "checkpoints" / "best.pt")
+
+    def fake_load_checkpoint(path, *, map_location):
+        return {
+            "theta": torch.zeros(2, 3, dtype=torch.float32),
+            "config": run_config.to_dict(),
+        }
+
+    monkeypatch.setattr(sampling_workflow, "load_checkpoint", fake_load_checkpoint)
+    monkeypatch.setattr(
+        sampling_workflow,
+        "build_alerax_workflow_model",
+        lambda *_args, **_kwargs: model,
+    )
+
+    runner = SamplingRunner(config)
+    with pytest.raises(RuntimeError, match="family_names"):
+        runner._load_model()
+
+    assert model.closed
+
+
 def test_sampling_runner_preserves_load_error_when_close_fails(
     tmp_path: Path,
     monkeypatch,
@@ -3215,11 +3262,15 @@ def test_checkpoint_load_uses_weights_only(tmp_path: Path, monkeypatch):
                 "species_tree": str(tmp_path / "sp.nwk"),
                 "families_file": str(tmp_path / "families.txt"),
                 "out_dir": str(tmp_path / "out"),
+                "mode": "genewise",
+                "start": 0,
+                "max_families": None,
             },
             "theta": torch.zeros(3),
             "optimizer_state": None,
             "status": {},
             "family_names": [],
+            "species_names": [],
         }
 
     monkeypatch.setattr("gpurec.workflow.checkpoint.torch.load", fake_load)
@@ -3284,8 +3335,13 @@ def test_checkpoint_load_rejects_invalid_theta_values(
                 "species_tree": str(tmp_path / "sp.nwk"),
                 "families_file": str(tmp_path / "families.txt"),
                 "out_dir": str(tmp_path / "out"),
+                "mode": "genewise",
+                "start": 0,
+                "max_families": None,
             },
             "theta": theta,
+            "family_names": [],
+            "species_names": [],
         },
         path,
     )
@@ -3318,14 +3374,109 @@ def test_checkpoint_load_rejects_invalid_progress_metadata(
                 "species_tree": str(tmp_path / "sp.nwk"),
                 "families_file": str(tmp_path / "families.txt"),
                 "out_dir": str(tmp_path / "out"),
+                "mode": "genewise",
+                "start": 0,
+                "max_families": None,
             },
             "theta": torch.zeros(3),
+            "family_names": [],
+            "species_names": [],
             **progress,
         },
         path,
     )
 
     with pytest.raises(RuntimeError, match=message):
+        load_checkpoint(path)
+
+
+@pytest.mark.parametrize("missing_key", ["family_names", "species_names"])
+def test_checkpoint_load_rejects_missing_identity_metadata(
+    tmp_path: Path,
+    missing_key: str,
+):
+    payload = {
+        "version": CHECKPOINT_VERSION,
+        "step": 0,
+        "next_step": 1,
+        "config": {
+            "species_tree": str(tmp_path / "sp.nwk"),
+            "families_file": str(tmp_path / "families.txt"),
+            "out_dir": str(tmp_path / "out"),
+            "mode": "genewise",
+            "start": 0,
+            "max_families": None,
+        },
+        "theta": torch.zeros(3),
+        "family_names": [],
+        "species_names": [],
+    }
+    payload.pop(missing_key)
+    path = tmp_path / "missing_identity.pt"
+    torch.save(payload, path)
+
+    with pytest.raises(RuntimeError, match=missing_key):
+        load_checkpoint(path)
+
+
+@pytest.mark.parametrize(
+    ("key", "value"),
+    [
+        ("family_names", ["fam0", 1]),
+        ("family_names", "fam0"),
+        ("species_names", ["sp0", None]),
+        ("species_names", ("sp0",)),
+    ],
+)
+def test_checkpoint_load_rejects_invalid_identity_metadata(
+    tmp_path: Path,
+    key: str,
+    value: object,
+):
+    payload = {
+        "version": CHECKPOINT_VERSION,
+        "step": 0,
+        "next_step": 1,
+        "config": {
+            "species_tree": str(tmp_path / "sp.nwk"),
+            "families_file": str(tmp_path / "families.txt"),
+            "out_dir": str(tmp_path / "out"),
+            "mode": "genewise",
+            "start": 0,
+            "max_families": None,
+        },
+        "theta": torch.zeros(3),
+        "family_names": [],
+        "species_names": [],
+        key: value,
+    }
+    path = tmp_path / "invalid_identity.pt"
+    torch.save(payload, path)
+
+    with pytest.raises(RuntimeError, match=key):
+        load_checkpoint(path)
+
+
+def test_checkpoint_load_rejects_missing_config_identity_metadata(tmp_path: Path):
+    path = tmp_path / "missing_config_identity.pt"
+    torch.save(
+        {
+            "version": CHECKPOINT_VERSION,
+            "step": 0,
+            "next_step": 1,
+            "config": {
+                "species_tree": str(tmp_path / "sp.nwk"),
+                "families_file": str(tmp_path / "families.txt"),
+                "out_dir": str(tmp_path / "out"),
+            },
+            "theta": torch.zeros(3),
+            "family_names": [],
+            "species_names": [],
+        },
+        path,
+    )
+
+    with pytest.raises(RuntimeError, match="config.*identity"):
         load_checkpoint(path)
 
 
@@ -4000,6 +4151,9 @@ def test_optimization_runner_resume_loads_checkpoint_once(tmp_path: Path, monkey
             "optimizer_state": None,
             "step": 0,
             "next_step": 1,
+            "config": config.to_dict(),
+            "family_names": [],
+            "species_names": [],
             "status": {
                 "previous_objective": 1.5,
                 "stable_loss_steps": 0,
@@ -4013,7 +4167,7 @@ def test_optimization_runner_resume_loads_checkpoint_once(tmp_path: Path, monkey
         families_file=tmp_path / "families.txt",
         out_dir=tmp_path / "out",
         mode="global",
-        device="cpu",
+        device="cuda",
         optimizer="adam",
         steps=1,
         resume_from=resume_path,
@@ -4080,6 +4234,9 @@ def test_optimization_runner_discards_resume_optimizer_state_on_phase_mismatch(
             "optimizer_phase": "adam",
             "step": 0,
             "next_step": 1,
+            "config": config.to_dict(),
+            "family_names": [],
+            "species_names": [],
             "status": {
                 "previous_objective": 1.5,
                 "stable_loss_steps": 0,
@@ -4187,6 +4344,61 @@ def test_optimization_runner_resume_rejects_incompatible_checkpoint_identity(
     runner = FakeResumeRunner(config)
 
     with pytest.raises(RuntimeError, match=message):
+        runner.run()
+
+    assert runner.fake_model.closed
+
+
+def test_optimization_runner_resume_rejects_legacy_checkpoint_without_identity(
+    tmp_path: Path,
+    monkeypatch,
+):
+    class FakeResumeModel:
+        def __init__(self):
+            self.theta = torch.nn.Parameter(torch.zeros(2, 3, dtype=torch.float32))
+            self.family_names = ["fam0", "fam1"]
+            self.species_names = ["sp0", "sp1"]
+            self.closed = False
+
+        def clear(self):
+            raise AssertionError("theta should not be restored from legacy metadata")
+
+        def close(self):
+            self.closed = True
+
+    class FakeResumeRunner(OptimizationRunner):
+        def build_model(self):
+            self.fake_model = FakeResumeModel()
+            return self.fake_model
+
+    config = RunConfig(
+        species_tree=tmp_path / "sp.nwk",
+        families_file=tmp_path / "families.txt",
+        out_dir=tmp_path / "out",
+        mode="global",
+        device="cpu",
+        optimizer="adam",
+        steps=1,
+        resume_from=tmp_path / "legacy.pt",
+        checkpoint_every=0,
+        log_every=10,
+    )
+
+    def fake_load_checkpoint(path, *, map_location):
+        return {
+            "theta": torch.zeros(2, 3, dtype=torch.float32),
+            "optimizer_state": None,
+            "step": 0,
+            "next_step": 1,
+            "config": {},
+            "status": {},
+        }
+
+    workflow_optimize_module = importlib.import_module("gpurec.workflow.optimize")
+    monkeypatch.setattr(workflow_optimize_module, "load_checkpoint", fake_load_checkpoint)
+    runner = FakeResumeRunner(config)
+
+    with pytest.raises(RuntimeError, match="config.*identity"):
         runner.run()
 
     assert runner.fake_model.closed

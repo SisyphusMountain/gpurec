@@ -525,7 +525,7 @@ class OptimizationRunner:
             if config.resume_from is not None:
                 resume_payload = load_checkpoint(
                     config.resume_from,
-                    map_location=config.device,
+                    map_location="cpu",
                 )
                 validate_checkpoint_model_compatibility(
                     path=config.resume_from,

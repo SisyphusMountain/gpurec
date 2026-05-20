@@ -2219,6 +2219,23 @@ test now also covers the solver tolerances and adaptive-iteration controls that
 \texttt{build\_alerax\_workflow\_model()} passes into the public model
 constructor.
 
+\subsection{Strict Checkpoint Identity Metadata}
+
+Checkpoint loading and resume compatibility now treat v1 identity metadata as
+mandatory instead of optional.  A valid checkpoint must carry
+\texttt{family\_names}, \texttt{species\_names}, and the configuration identity
+fields used for compatibility checks: \texttt{species\_tree},
+\texttt{families\_file}, \texttt{mode}, \texttt{start}, and
+\texttt{max\_families}.  The family and species metadata must be string lists.
+
+\texttt{validate\_checkpoint\_model\_compatibility()} now rejects malformed or
+legacy payloads before \texttt{restore\_model\_theta()} can fall back to
+shape-only compatibility.  Sampling checkpoints without family/species identity
+are rejected before sampling can use model family ordering, and optimization
+resume now loads checkpoints onto CPU for validation before restoring theta to
+the model device.  CPU regressions cover malformed loader payloads, sampling
+legacy metadata, optimization legacy metadata, and CUDA-config resume preflight.
+
 \section{Verification Log}
 
 \begin{center}
@@ -5016,6 +5033,24 @@ Release metadata checker after strict diagnostics and validation hardening &
 \texttt{pdflatex -interaction=nonstopmode -halt-on-error ...professionalization...} &
 Audit log build after strict diagnostics and validation hardening &
 \texttt{ok with known overfull table warnings} \\
+\texttt{python -m py\_compile gpurec/workflow/checkpoint.py gpurec/workflow/optimize.py tests/unit/test\_workflow.py} &
+Strict checkpoint identity syntax &
+\texttt{ok} \\
+\texttt{python -m pytest selected checkpoint load, sampling identity, and optimization resume guards -q} &
+Focused checkpoint identity and CPU resume guards &
+\texttt{25 passed} \\
+\texttt{python -m pytest tests/unit/test\_workflow.py -q} &
+Workflow suite after checkpoint identity hardening &
+\texttt{388 passed} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' python -m pytest tests/unit -q -m "unit and not gpu"} &
+CPU unit gate after checkpoint identity hardening &
+\texttt{730 passed, 6 deselected} \\
+\texttt{python scripts/check\_release\_metadata.py} &
+Release metadata checker after checkpoint identity hardening &
+\texttt{expected license blockers} \\
+\texttt{pdflatex -interaction=nonstopmode -halt-on-error ...professionalization...} &
+Audit log build after checkpoint identity hardening &
+\texttt{ok with known overfull table warnings} \\
 \bottomrule
 \end{tabular}
 \end{center}
@@ -5029,10 +5064,10 @@ Audit log build after strict diagnostics and validation hardening &
         document a Rust-toolchain requirement for source-tree sampling.
   \item Add an installed-artifact sampling smoke once the backtracking binary
         distribution model is settled.
-  \item Tighten checkpoint resume identity validation for malformed or legacy
-        payloads whose family/species metadata is missing.
   \item Consider making \texttt{gpurec.workflow} lazy like the top-level
         package so config-only imports stay light and quiet.
+  \item Strengthen public export and wildcard-import guards for
+        \texttt{gpurec}, \texttt{gpurec.workflow}, and backtracking helpers.
   \item Continue auditing public API consistency, documentation coverage, and
         CPU-safe regression tests for user-facing workflows.
   \item Keep committing small, verified increments so the branch remains
