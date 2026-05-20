@@ -1445,6 +1445,17 @@ installation or to the explicit binary configuration path, and the fallback
 unit tests monkeypatch \texttt{shutil.which} so they are independent of the
 local developer machine.
 
+\subsection{Sampling Seed \texttt{u64} Bounds}
+
+Sampling seed validation now matches the Rust stochastic backtracking contract.
+Public backtracking helpers reject seeds above \texttt{2**64 - 1}, and
+\texttt{SamplingConfig} applies the same bound to configured base seeds.  The
+sampling workflow also validates the largest derived per-family/per-sample seed
+after resolving the selected family range and before clearing prior outputs.
+Overflowing derived ranges now fail with a gpurec \texttt{ValueError}, close
+the loaded model, preserve existing reconciliation outputs, and never invoke
+the Rust sampler.
+
 \section{Verification Log}
 
 \begin{center}
@@ -2981,6 +2992,21 @@ Release metadata checker after Cargo fallback preflight &
 \texttt{expected license blockers} \\
 \texttt{pdflatex -interaction=nonstopmode -halt-on-error ...professionalization...} &
 Audit log build after Cargo fallback preflight &
+\texttt{ok with known overfull table warnings} \\
+\texttt{python -m py\_compile gpurec/backtracking.py gpurec/workflow/config.py gpurec/workflow/sampling.py ...} &
+Sampling seed \texttt{u64} bound syntax &
+\texttt{ok} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q tests/unit/test\_workflow.py -k "..."} &
+Focused sampling seed bound guards &
+\texttt{3 passed, 291 deselected} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
+CPU unit gate after sampling seed \texttt{u64} bounds &
+\texttt{412 passed, 28 deselected} \\
+\texttt{python scripts/check\_release\_metadata.py} &
+Release metadata checker after sampling seed \texttt{u64} bounds &
+\texttt{expected license blockers} \\
+\texttt{pdflatex -interaction=nonstopmode -halt-on-error ...professionalization...} &
+Audit log build after sampling seed \texttt{u64} bounds &
 \texttt{ok with known overfull table warnings} \\
 \bottomrule
 \end{tabular}

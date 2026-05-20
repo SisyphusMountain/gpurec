@@ -20,7 +20,7 @@ from .checkpoint import (
     restore_model_theta,
     validate_checkpoint_model_compatibility,
 )
-from .config import RunConfig, SamplingConfig
+from .config import RunConfig, SamplingConfig, _UINT64_MAX
 from .model_factory import build_alerax_workflow_model
 
 
@@ -226,6 +226,22 @@ def _clear_sampling_outputs(out_dir: Path) -> None:
             path.unlink()
 
 
+def _validate_sampling_seed_range(
+    config: SamplingConfig,
+    *,
+    start: int,
+    stop: int,
+) -> None:
+    last_family_index = stop - 1
+    max_seed = config.seed + last_family_index * config.samples + config.samples - 1
+    if max_seed > _UINT64_MAX:
+        raise ValueError(
+            "sampling seed range exceeds u64 maximum: "
+            f"seed={config.seed}, last_family_index={last_family_index}, "
+            f"samples={config.samples}, max_seed={max_seed}"
+        )
+
+
 class SamplingRunner:
     def __init__(self, config: SamplingConfig):
         self.config = config
@@ -267,6 +283,7 @@ class SamplingRunner:
                     f"empty sampling family selection: start={start}, stop={stop}, "
                     f"available={len(family_names)}"
                 )
+            _validate_sampling_seed_range(self.config, start=start, stop=stop)
             _clear_sampling_outputs(out_dir)
 
             species_totals: dict[str, dict[str, float]] = defaultdict(

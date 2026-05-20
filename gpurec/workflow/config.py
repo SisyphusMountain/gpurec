@@ -19,6 +19,9 @@ def _default_device() -> str:
     return "cuda"
 
 
+_UINT64_MAX = (1 << 64) - 1
+
+
 def dtype_from_name(name: str) -> torch.dtype:
     text = str(name).lower().replace("torch.", "")
     if text in {"float32", "fp32", "single"}:
@@ -59,6 +62,13 @@ def _normalize_nonnegative_int(name: str, value: int | float | str) -> int:
     number = _normalize_int(name, value)
     if number < 0:
         raise ValueError(f"{name} must be non-negative")
+    return number
+
+
+def _normalize_uint64(name: str, value: int | float | str) -> int:
+    number = _normalize_nonnegative_int(name, value)
+    if number > _UINT64_MAX:
+        raise ValueError(f"{name} must be <= {_UINT64_MAX}")
     return number
 
 
@@ -463,7 +473,7 @@ class SamplingConfig:
         if self.backtrack_binary is not None:
             self.backtrack_binary = _resolve_path(self.backtrack_binary)
         self.samples = _normalize_positive_int("samples", self.samples)
-        self.seed = _normalize_nonnegative_int("seed", self.seed)
+        self.seed = _normalize_uint64("seed", self.seed)
         self.family_start = _normalize_nonnegative_int(
             "family_start",
             self.family_start,

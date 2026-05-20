@@ -1884,6 +1884,8 @@ def test_sampling_config_rejects_invalid_seed_and_event_limits(tmp_path: Path):
     checkpoint = tmp_path / "checkpoints" / "best.pt"
     with pytest.raises(ValueError, match="seed"):
         SamplingConfig(checkpoint=checkpoint, seed=-1)
+    with pytest.raises(ValueError, match="seed"):
+        SamplingConfig(checkpoint=checkpoint, seed=1 << 64)
     with pytest.raises(ValueError, match="max_events"):
         SamplingConfig(checkpoint=checkpoint, max_events=0)
 
@@ -1924,6 +1926,10 @@ def test_public_backtracking_rejects_invalid_seed_and_event_limits():
         sample_recphyloxml(model, max_events="10")  # type: ignore[arg-type]
     with pytest.raises(ValueError, match="seed"):
         sample_recphyloxmls(model, num_samples=1, seed=-1)  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="seed"):
+        sample_recphyloxmls(model, num_samples=1, seed=1 << 64)  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="seed range exceeds u64"):
+        sample_recphyloxmls(model, num_samples=2, seed=(1 << 64) - 1)  # type: ignore[arg-type]
     with pytest.raises(ValueError, match="num_samples"):
         sample_recphyloxmls(model, num_samples=True)  # type: ignore[arg-type]
     with pytest.raises(ValueError, match="num_samples"):
@@ -2617,6 +2623,61 @@ def test_sampling_runner_closes_model_on_empty_family_selection(
     assert model.closed
     assert sample_path.read_text(encoding="utf-8") == "previous sample"
     assert event_path.read_text(encoding="utf-8") == "previous counts"
+    assert aggregate_path.read_text(encoding="utf-8") == "previous summary"
+
+
+def test_sampling_runner_rejects_seed_range_overflow_before_outputs(
+    tmp_path: Path,
+    monkeypatch,
+):
+    class FakeModel:
+        family_names = ["fam0", "fam1"]
+
+        def __init__(self):
+            self.closed = False
+
+        def close(self):
+            self.closed = True
+
+    model = FakeModel()
+    run_config = RunConfig(
+        species_tree=tmp_path / "sp.nwk",
+        families_file=tmp_path / "families.txt",
+        out_dir=tmp_path / "run_out",
+        device="cpu",
+    )
+    config = SamplingConfig(
+        checkpoint=tmp_path / "checkpoints" / "best.pt",
+        out_dir=tmp_path / "sample_out",
+        samples=2,
+        seed=(1 << 64) - 2,
+        family_start=1,
+    )
+    recon_dir = config.out_dir / "reconciliations"
+    all_dir = recon_dir / "all"
+    all_dir.mkdir(parents=True)
+    sample_path = all_dir / "000001_previous_sample_0.xml"
+    aggregate_path = recon_dir / "summary.json"
+    sample_path.write_text("previous sample", encoding="utf-8")
+    aggregate_path.write_text("previous summary", encoding="utf-8")
+
+    runner = SamplingRunner(config)
+    monkeypatch.setattr(runner, "_load_model", lambda: (run_config, model))
+
+    def unexpected_sample_recphyloxmls(*_args: object, **_kwargs: object) -> list[str]:
+        raise AssertionError("sampling should not run")
+
+    monkeypatch.setattr(
+        sampling_workflow,
+        "sample_recphyloxmls",
+        unexpected_sample_recphyloxmls,
+    )
+
+    with pytest.raises(ValueError, match="sampling seed range exceeds u64"):
+        runner.run()
+
+    assert model.closed
+    assert sample_path.read_text(encoding="utf-8") == "previous sample"
     assert aggregate_path.read_text(encoding="utf-8") == "previous summary"
 
 

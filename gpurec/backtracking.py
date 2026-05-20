@@ -23,6 +23,7 @@ from gpurec.api.model import FamilyInput, GeneReconModel, ReconciliationState
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 _BACKTRACK_MANIFEST = _REPO_ROOT / "crates" / "gpurec-backtrack" / "Cargo.toml"
 _BACKTRACK_BINARY_ENV = "GPUREC_BACKTRACK_BIN"
+_UINT64_MAX = (1 << 64) - 1
 EVENT_KEYS = ("S", "SL", "D", "DL", "T", "TL", "L", "Leaf")
 
 
@@ -31,6 +32,7 @@ def _optional_int_limit(
     value: int | None,
     *,
     minimum: int,
+    maximum: int | None = None,
 ) -> int | None:
     if value is None:
         return None
@@ -41,6 +43,8 @@ def _optional_int_limit(
         if minimum == 0:
             raise ValueError(f"{name} must be non-negative")
         raise ValueError(f"{name} must be positive")
+    if maximum is not None and number > maximum:
+        raise ValueError(f"{name} must be <= {maximum}")
     return number
 
 
@@ -50,7 +54,7 @@ def _validate_backtracking_limits(
     max_events: int | None,
 ) -> tuple[int | None, int | None]:
     return (
-        _optional_int_limit("seed", seed, minimum=0),
+        _optional_int_limit("seed", seed, minimum=0, maximum=_UINT64_MAX),
         _optional_int_limit("max_events", max_events, minimum=1),
     )
 
@@ -410,10 +414,19 @@ def sample_recphyloxmls(
     num_samples = int(
         _optional_int_limit("num_samples", num_samples, minimum=1)
     )
+    base_seed = _optional_int_limit("seed", seed, minimum=0, maximum=_UINT64_MAX)
+    if base_seed is None:
+        base_seed = 0
+    max_seed = base_seed + num_samples - 1
+    if max_seed > _UINT64_MAX:
+        raise ValueError(
+            "seed range exceeds u64 maximum: "
+            f"seed={base_seed}, num_samples={num_samples}, max_seed={max_seed}"
+        )
     payload = export_backtracking_input(
         model,
         family_index=family_index,
-        seed=seed,
+        seed=base_seed,
         max_events=max_events,
     )
 
@@ -422,7 +435,7 @@ def sample_recphyloxmls(
             "--samples",
             str(num_samples),
             "--seed",
-            str(seed),
+            str(base_seed),
             "--output-dir",
             str(tmp_path / "samples"),
             str(input_path),
