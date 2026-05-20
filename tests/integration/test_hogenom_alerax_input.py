@@ -23,6 +23,7 @@ pytestmark = [
 ]
 
 
+@pytest.mark.slow
 def test_hogenom_alerax_family_file_likelihood_matches_reference(tmp_path):
     """Local AleRax CCP/tree-sample input gives AleRax-compatible likelihood."""
     families = HOGENOM_DIR / "hogenom_families.local.txt"

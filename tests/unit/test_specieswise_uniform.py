@@ -412,6 +412,7 @@ def test_constant_specieswise_matches_global_loss_and_gradient_semantics(
     assert torch.allclose(species_grad.sum(dim=0), global_grad, atol=5e-2, rtol=2e-2)
 
 
+@pytest.mark.slow
 def test_specieswise_uniform_matches_alerax_specieswise_reference(
     data_dir_100,
     tmp_path,

@@ -29,6 +29,7 @@ def _genes(n: int) -> list[str]:
     return [str(p) for p in genes]
 
 
+@pytest.mark.slow
 def test_chunked_uniform_matches_resident_global_model(tmp_path):
     species_tree = str(DATA_DIR / "sp.nwk")
     genes = _genes(4)

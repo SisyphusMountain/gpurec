@@ -849,10 +849,10 @@ hosts see the actionable input error instead of a masked CUDA-device failure.
 GPU test intent now lives in the GPU-only modules themselves via module-level
 \texttt{pytestmark = pytest.mark.gpu}.  The collection hook no longer maintains
 a filename allowlist or infers GPU markers from \texttt{skipif} reason text; it
-only applies directory-level \texttt{unit}/\texttt{integration} markers and the
-known slow-test marker.  A source-level guard checks that CUDA-gated test
-modules keep module-level GPU intent, and \texttt{tests/README.md} documents
-the explicit-marker policy.
+only applies directory-level \texttt{unit}/\texttt{integration} markers.  Slow
+test intent lives on the expensive tests themselves.  A source-level guard
+checks that CUDA-gated test modules keep module-level GPU intent, and
+\texttt{tests/README.md} documents the explicit-marker policy.
 
 \subsection{AleRax Compatibility Flag Guard}
 
@@ -1490,6 +1490,16 @@ flags still override config values after that rebasing step and remain relative
 to the caller's current working directory.  The minimal example config now uses
 paths relative to \texttt{examples/minimal-run-config.json}, and the README/CLI
 help describe the distinction.
+
+\subsection{Local Slow Test Markers}
+
+The test collection hook no longer keeps a \texttt{SLOW\_TEST\_PATTERNS}
+node-id allowlist.  The three known expensive checks now use explicit
+\texttt{@pytest.mark.slow} decorators at the test definition, keeping runtime
+intent local to the test file alongside the existing module-level GPU markers.
+The source guard now rejects reintroducing node-id based marker inference in
+\texttt{tests/conftest.py}, and \texttt{tests/README.md} documents that slow
+intent belongs beside the test.
 
 \section{Verification Log}
 
@@ -3087,6 +3097,24 @@ Release metadata checker after config-relative JSON paths &
 \texttt{expected license blockers} \\
 \texttt{pdflatex -interaction=nonstopmode -halt-on-error ...professionalization...} &
 Audit log build after config-relative JSON paths &
+\texttt{ok with known overfull table warnings} \\
+\texttt{python -m py\_compile tests/conftest.py tests/integration/... tests/unit/...} &
+Explicit slow marker syntax &
+\texttt{ok} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q tests/unit/test\_workflow.py -k "..."} &
+Focused marker-source guard &
+\texttt{1 passed, 298 deselected} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q --collect-only -m "slow"} &
+Slow marker collection check &
+\texttt{3 selected, 442 deselected} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
+CPU unit gate after explicit slow markers &
+\texttt{417 passed, 28 deselected} \\
+\texttt{python scripts/check\_release\_metadata.py} &
+Release metadata checker after explicit slow markers &
+\texttt{expected license blockers} \\
+\texttt{pdflatex -interaction=nonstopmode -halt-on-error ...professionalization...} &
+Audit log build after explicit slow markers &
 \texttt{ok with known overfull table warnings} \\
 \bottomrule
 \end{tabular}

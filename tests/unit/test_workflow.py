@@ -3851,7 +3851,9 @@ def test_gpu_tests_use_explicit_module_level_markers():
     conftest = (root / "tests" / "conftest.py").read_text(encoding="utf-8")
 
     assert "GPU_TEST_FILES" not in conftest
+    assert "SLOW_TEST_PATTERNS" not in conftest
     assert "item.path.name" not in conftest
+    assert "item.nodeid" not in conftest
     offenders: list[str] = []
     this_file = Path(__file__).resolve()
     for path in sorted((root / "tests").rglob("test_*.py")):
