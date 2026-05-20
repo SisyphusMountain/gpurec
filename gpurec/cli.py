@@ -8,6 +8,18 @@ from gpurec.core.batch_planning import normalize_family_chunk_size
 
 
 _EXPECTED_WORKFLOW_ERRORS = (ValueError, OSError, RuntimeError)
+_RAW_THETA_CHECKPOINT_ERROR = "must contain a dictionary payload"
+
+
+def _sampling_error_message(exc: BaseException) -> str:
+    message = str(exc)
+    if _RAW_THETA_CHECKPOINT_ERROR in message:
+        return (
+            f"{message}; --checkpoint must point to an optimization checkpoint "
+            "such as checkpoints/best.pt or checkpoints/latest.pt, not "
+            "theta_final.pt"
+        )
+    return message
 
 
 def optimize(config: Any) -> Any:
@@ -428,7 +440,7 @@ def main(argv: list[str] | None = None) -> None:
             sampling_config = _sampling_config_from_args(args, args.checkpoint)
             result = sample(sampling_config)
         except _EXPECTED_WORKFLOW_ERRORS as exc:
-            parser.error(str(exc))
+            parser.error(_sampling_error_message(exc))
         print(
             f"sampled families={result.families_sampled} "
             f"samples={result.samples_per_family} xml={result.xml_files} "
@@ -464,7 +476,7 @@ def main(argv: list[str] | None = None) -> None:
             sampling_config = _sampling_config_from_args(args, checkpoint)
             sampling_result = sample(sampling_config)
         except _EXPECTED_WORKFLOW_ERRORS as exc:
-            parser.error(str(exc))
+            parser.error(_sampling_error_message(exc))
         print(
             f"status={opt_result.status} reason={opt_result.reason} "
             f"sampled_families={sampling_result.families_sampled} "

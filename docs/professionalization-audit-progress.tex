@@ -1311,6 +1311,15 @@ A regression writes a bare tensor to a \texttt{theta\_final.pt}-style path and
 checks that the normal checkpoint loader rejects it as a non-dictionary
 checkpoint payload.
 
+\subsection{Raw Theta Sampling CLI Hint}
+
+\texttt{gpurec sample --checkpoint theta\_final.pt} now turns the low-level
+non-dictionary checkpoint payload error into an actionable CLI message.  When a
+raw theta export is passed as the sampling checkpoint, the CLI still reports the
+checkpoint loader failure, but now also points users to
+\texttt{checkpoints/best.pt} or \texttt{checkpoints/latest.pt} and explicitly
+identifies \texttt{theta\_final.pt} as the wrong artifact for sampling.
+
 \section{Verification Log}
 
 \begin{center}
@@ -2650,6 +2659,18 @@ Release metadata checker after raw theta artifact contract docs &
 \texttt{pdflatex -interaction=nonstopmode -halt-on-error ...professionalization...} &
 Audit log build after raw theta artifact contract docs &
 \texttt{ok with known overfull table warnings} \\
+\texttt{python -m py\_compile gpurec/cli.py tests/unit/test\_workflow.py} &
+Raw theta sampling CLI hint syntax &
+\texttt{ok} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q tests/unit/test\_workflow.py -k "..."} &
+Focused raw-theta sampling CLI hint regression &
+\texttt{3 passed, 274 deselected} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
+CPU unit gate after raw theta sampling CLI hint &
+\texttt{389 passed, 28 deselected} \\
+\texttt{python scripts/check\_release\_metadata.py} &
+Release metadata checker after raw theta sampling CLI hint &
+\texttt{expected license blockers} \\
 \bottomrule
 \end{tabular}
 \end{center}

@@ -1470,6 +1470,25 @@ def test_cli_sample_reports_missing_checkpoint_without_traceback(tmp_path: Path,
     assert "Traceback" not in captured.err
 
 
+def test_cli_sample_raw_theta_checkpoint_error_suggests_real_checkpoints(
+    tmp_path: Path,
+    capsys,
+):
+    checkpoint = tmp_path / "theta_final.pt"
+    torch.save(torch.zeros(2, 3), checkpoint)
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(["sample", "--checkpoint", str(checkpoint)])
+
+    captured = capsys.readouterr()
+    assert exc_info.value.code == 2
+    assert "must contain a dictionary payload" in captured.err
+    assert "checkpoints/best.pt" in captured.err
+    assert "checkpoints/latest.pt" in captured.err
+    assert "not theta_final.pt" in captured.err
+    assert "Traceback" not in captured.err
+
+
 def test_cli_optimize_reports_workflow_errors_without_traceback(
     tmp_path: Path,
     capsys,
