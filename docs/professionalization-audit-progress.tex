@@ -1366,6 +1366,16 @@ clear gpurec \texttt{RuntimeError}s before a temporary payload is handed to a
 child process, while the existing cargo fallback remains available when no
 binary override is supplied.
 
+\subsection{Run-Mode Sampling Option Preflight}
+
+\texttt{gpurec run} now validates sampling-only options such as
+\texttt{--samples}, \texttt{--seed}, \texttt{--family-start},
+\texttt{--sample-max-families}, and \texttt{--max-events} before launching
+optimization.  This keeps combined optimize-and-sample runs from spending GPU
+or CPU time on optimization only to reject an invalid sampling option after a
+checkpoint is produced.  The regression test monkeypatches optimization to
+prove invalid sampling options exit through argparse before any workflow call.
+
 \section{Verification Log}
 
 \begin{center}
@@ -2797,6 +2807,21 @@ Release metadata checker after sampling runtime-exit semantics &
 \texttt{expected license blockers} \\
 \texttt{pdflatex -interaction=nonstopmode -halt-on-error ...professionalization...} &
 Audit log build after sampling runtime-exit semantics &
+\texttt{ok with known overfull table warnings} \\
+\texttt{python -m py\_compile gpurec/cli.py tests/unit/test\_workflow.py} &
+Run sampling-option preflight syntax &
+\texttt{ok} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q tests/unit/test\_workflow.py -k "..."} &
+Focused run sampling-option preflight guards &
+\texttt{4 passed, 282 deselected} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
+CPU unit gate after run sampling-option preflight &
+\texttt{400 passed, 28 deselected} \\
+\texttt{python scripts/check\_release\_metadata.py} &
+Release metadata checker after run sampling-option preflight &
+\texttt{expected license blockers} \\
+\texttt{pdflatex -interaction=nonstopmode -halt-on-error ...professionalization...} &
+Audit log build after run sampling-option preflight &
 \texttt{ok with known overfull table warnings} \\
 \bottomrule
 \end{tabular}

@@ -166,6 +166,13 @@ def _sampling_config_from_args(
     )
 
 
+def _validate_run_sampling_args(args: argparse.Namespace, run_config: RunConfig) -> None:
+    _sampling_config_from_args(
+        args,
+        run_config.out_dir / "checkpoints" / "sampling-argument-validation.pt",
+    )
+
+
 def _add_run_config_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--config",
@@ -487,6 +494,7 @@ def main(argv: list[str] | None = None) -> None:
             )
         try:
             run_config = _run_config_from_args(args)
+            _validate_run_sampling_args(args, run_config)
         except _EXPECTED_WORKFLOW_ERRORS as exc:
             parser.error(str(exc))
         try:

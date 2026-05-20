@@ -1667,6 +1667,25 @@ def test_cli_run_reports_sampling_errors_without_usage(
     assert "Traceback" not in captured.err
 
 
+def test_cli_run_rejects_sampling_options_before_optimization(
+    tmp_path: Path,
+    capsys,
+    monkeypatch,
+):
+    def unexpected_optimize(config):
+        raise AssertionError("optimize should not be called")
+
+    monkeypatch.setattr("gpurec.cli.optimize", unexpected_optimize)
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(_minimal_workflow_cli_args("run", tmp_path) + ["--samples", "0"])
+
+    captured = capsys.readouterr()
+    assert exc_info.value.code == 2
+    assert "samples must be positive" in captured.err
+    assert "Traceback" not in captured.err
+
+
 def test_cli_run_refuses_sampling_after_failed_optimization(
     tmp_path: Path,
     capsys,
