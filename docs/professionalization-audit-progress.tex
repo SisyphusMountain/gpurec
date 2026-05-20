@@ -1422,6 +1422,16 @@ callers, CLI JSON input, and checkpoint-loaded configs aligned on a single
 \texttt{true}/\texttt{false} validation rule before downstream workflow logic
 observes those controls.
 
+\subsection{YAML Config CLI Import Preflight}
+
+\texttt{gpurec optimize --config ...yaml} now rejects Hydra-style YAML before
+importing \texttt{RunConfig}.  This keeps the installed CLI's documented flat
+JSON validation path lightweight: bad YAML exits through argparse with the
+flat-JSON guidance instead of first importing the workflow package and any
+CUDA/Triton-dependent modules reachable from it.  The regression runs the CLI
+in a fresh Python subprocess, catches the expected \texttt{SystemExit}, and
+asserts no \texttt{gpurec.workflow} module was imported on that failure path.
+
 \section{Verification Log}
 
 \begin{center}
@@ -2928,6 +2938,21 @@ Release metadata checker after RunConfig boolean normalization &
 \texttt{expected license blockers} \\
 \texttt{pdflatex -interaction=nonstopmode -halt-on-error ...professionalization...} &
 Audit log build after RunConfig boolean normalization &
+\texttt{ok with known overfull table warnings} \\
+\texttt{python -m py\_compile gpurec/cli.py tests/unit/test\_workflow.py} &
+YAML config CLI import preflight syntax &
+\texttt{ok} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q tests/unit/test\_workflow.py -k "..."} &
+Focused YAML config CLI preflight guards &
+\texttt{2 passed, 290 deselected} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
+CPU unit gate after YAML config CLI preflight &
+\texttt{410 passed, 28 deselected} \\
+\texttt{python scripts/check\_release\_metadata.py} &
+Release metadata checker after YAML config CLI preflight &
+\texttt{expected license blockers} \\
+\texttt{pdflatex -interaction=nonstopmode -halt-on-error ...professionalization...} &
+Audit log build after YAML config CLI preflight &
 \texttt{ok with known overfull table warnings} \\
 \bottomrule
 \end{tabular}

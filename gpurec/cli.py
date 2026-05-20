@@ -83,9 +83,9 @@ def _validate_sampling_checkpoint_path(checkpoint: Path) -> None:
 
 
 def _run_config_from_args(args: argparse.Namespace) -> RunConfig:
+    data = _config_data(args.config)
     from gpurec.workflow.config import RunConfig
 
-    data = _config_data(args.config)
     for name in (
         "species_tree",
         "families_file",

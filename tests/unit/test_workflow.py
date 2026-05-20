@@ -4,6 +4,7 @@ import importlib
 import json
 import math
 import os
+import subprocess
 import sys
 from pathlib import Path
 from threading import Lock
@@ -1347,6 +1348,46 @@ def test_cli_rejects_hydra_yaml_config_without_traceback(tmp_path: Path, capsys)
     assert exc_info.value.code == 2
     assert "flat JSON RunConfig" in captured.err
     assert "Traceback" not in captured.err
+
+
+def test_cli_rejects_hydra_yaml_config_before_workflow_import(tmp_path: Path):
+    path = tmp_path / "config.yaml"
+    path.write_text("paths:\n  species_tree: sp.nwk\n", encoding="utf-8")
+    code = f"""
+import sys
+from gpurec.cli import main
+
+try:
+    main(["optimize", "--config", {str(path)!r}])
+except SystemExit as exc:
+    print(f"exit={{exc.code}}")
+else:
+    print("exit=0")
+print(
+    "workflow_imported="
+    + str(
+        any(
+            name == "gpurec.workflow" or name.startswith("gpurec.workflow.")
+            for name in sys.modules
+        )
+    )
+)
+"""
+
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        cwd=Path(__file__).resolve().parents[2],
+        env={**os.environ, "CUDA_VISIBLE_DEVICES": ""},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0
+    assert "exit=2" in result.stdout
+    assert "workflow_imported=False" in result.stdout
+    assert "flat JSON RunConfig" in result.stderr
+    assert "Traceback" not in result.stderr
 
 
 def test_cli_reports_missing_json_config_without_traceback(tmp_path: Path, capsys):
