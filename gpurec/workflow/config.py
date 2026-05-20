@@ -134,6 +134,32 @@ def _resolve_path(value: str | Path) -> Path:
     return Path(value).expanduser().resolve()
 
 
+def _normalize_path(name: str, value: str | Path) -> Path:
+    if not isinstance(value, (str, Path)):
+        raise ValueError(f"{name} must be a path string")
+    return _resolve_path(value)
+
+
+def _normalize_optional_path(name: str, value: str | Path | None) -> Path | None:
+    if value is None:
+        return None
+    return _normalize_path(name, value)
+
+
+def _normalize_device(value: str | None) -> str:
+    if value is None or value == "":
+        value = _default_device()
+    if not isinstance(value, str):
+        raise ValueError("device must be a device string")
+    try:
+        torch.device(value)
+    except (RuntimeError, ValueError) as exc:
+        raise ValueError(
+            f"device must be a valid torch device string: {value!r}"
+        ) from exc
+    return value
+
+
 def _resolve_run_config_path_fields(
     data: dict[str, Any],
     *,
@@ -242,6 +268,12 @@ def _validate_json_scalar_types(data: dict[str, Any]) -> None:
             continue
         if not isinstance(data[name], bool):
             raise ValueError(f"{name} must be true or false")
+    if (
+        "device" in data
+        and data["device"] is not None
+        and not isinstance(data["device"], str)
+    ):
+        raise ValueError("device must be a device string")
     for name in _RUN_CONFIG_PATH_FIELDS:
         if name not in data or data[name] is None:
             continue
@@ -306,13 +338,14 @@ class RunConfig:
     resume_from: Path | None = None
 
     def __post_init__(self) -> None:
-        self.species_tree = _resolve_path(self.species_tree)
-        self.families_file = _resolve_path(self.families_file)
-        self.out_dir = _resolve_path(self.out_dir)
-        if self.preprocess_cache is not None:
-            self.preprocess_cache = _resolve_path(self.preprocess_cache)
-        if self.resume_from is not None:
-            self.resume_from = _resolve_path(self.resume_from)
+        self.species_tree = _normalize_path("species_tree", self.species_tree)
+        self.families_file = _normalize_path("families_file", self.families_file)
+        self.out_dir = _normalize_path("out_dir", self.out_dir)
+        self.preprocess_cache = _normalize_optional_path(
+            "preprocess_cache",
+            self.preprocess_cache,
+        )
+        self.resume_from = _normalize_optional_path("resume_from", self.resume_from)
         for name in _JSON_BOOL_FIELDS:
             setattr(self, name, _normalize_bool(name, getattr(self, name)))
         self.start = _normalize_nonnegative_int("start", self.start)
@@ -376,8 +409,7 @@ class RunConfig:
         self.log_every = _normalize_positive_int("log_every", self.log_every)
         for name in _JSON_FLOAT_FIELDS:
             setattr(self, name, _normalize_finite_float(name, getattr(self, name)))
-        if not self.device:
-            self.device = _default_device()
+        self.device = _normalize_device(self.device)
         self.dtype = dtype_name_from_name(self.dtype)
         self.validate()
 
@@ -506,11 +538,12 @@ class SamplingConfig:
     backtrack_binary: Path | None = None
 
     def __post_init__(self) -> None:
-        self.checkpoint = _resolve_path(self.checkpoint)
-        if self.out_dir is not None:
-            self.out_dir = _resolve_path(self.out_dir)
-        if self.backtrack_binary is not None:
-            self.backtrack_binary = _resolve_path(self.backtrack_binary)
+        self.checkpoint = _normalize_path("checkpoint", self.checkpoint)
+        self.out_dir = _normalize_optional_path("out_dir", self.out_dir)
+        self.backtrack_binary = _normalize_optional_path(
+            "backtrack_binary",
+            self.backtrack_binary,
+        )
         self.samples = _normalize_positive_int("samples", self.samples)
         self.seed = _normalize_uint64("seed", self.seed)
         self.family_start = _normalize_nonnegative_int(

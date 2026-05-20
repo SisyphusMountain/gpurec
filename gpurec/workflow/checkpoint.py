@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import pickle
+from numbers import Integral, Real
 from pathlib import Path
 from typing import Any
 
@@ -10,7 +11,7 @@ from .config import RunConfig
 
 
 CHECKPOINT_VERSION = 1
-_REQUIRED_CHECKPOINT_KEYS = {"version", "config", "theta"}
+_REQUIRED_CHECKPOINT_KEYS = {"version", "config", "theta", "step", "next_step"}
 
 
 def _family_names(model: Any) -> list[str]:
@@ -151,6 +152,10 @@ def _validate_checkpoint_payload(payload: Any, path: Path) -> dict[str, Any]:
         )
     if not isinstance(payload["config"], dict):
         raise RuntimeError(f"checkpoint {path} has invalid config metadata")
+    step = _checkpoint_int(path, "step", payload["step"])
+    next_step = _checkpoint_int(path, "next_step", payload["next_step"])
+    if next_step not in {step, step + 1}:
+        raise RuntimeError(f"checkpoint {path} has inconsistent progress metadata")
     theta = payload["theta"]
     if not torch.is_tensor(theta):
         raise RuntimeError(f"checkpoint {path} has invalid theta tensor")
@@ -174,6 +179,23 @@ def _validate_checkpoint_payload(payload: Any, path: Path) -> dict[str, Any]:
     if species_names is not None and not isinstance(species_names, list):
         raise RuntimeError(f"checkpoint {path} has invalid species metadata")
     return payload
+
+
+def _checkpoint_int(path: Path, key: str, value: Any) -> int:
+    if isinstance(value, bool):
+        raise RuntimeError(f"checkpoint {path} has invalid {key}")
+    if isinstance(value, Integral):
+        number = int(value)
+    elif isinstance(value, Real):
+        raw = float(value)
+        if not raw.is_integer():
+            raise RuntimeError(f"checkpoint {path} has invalid {key}")
+        number = int(raw)
+    else:
+        raise RuntimeError(f"checkpoint {path} has invalid {key}")
+    if number < 0:
+        raise RuntimeError(f"checkpoint {path} has invalid {key}")
+    return number
 
 
 def load_checkpoint(path: str | Path, *, map_location: str | torch.device = "cpu") -> dict[str, Any]:

@@ -418,6 +418,7 @@ def test_cli_rejects_nonstandard_json_constants_without_traceback(
         ("fixed_iters_pi", "64", "fixed_iters_pi"),
         ("lr", "0.01", "lr"),
         ("adaptive_iters", "false", "adaptive_iters"),
+        ("device", 42, "device must be a device string"),
         ("species_tree", 42, "species_tree must be a path string"),
     ],
 )
@@ -509,6 +510,26 @@ def test_cli_reports_missing_required_options_without_traceback(capsys):
     assert exc_info.value.code == 2
     assert "missing required optimize option" in captured.err
     assert "species_tree" in captured.err
+    assert "Traceback" not in captured.err
+
+
+def test_cli_rejects_invalid_device_before_workflow(
+    tmp_path: Path,
+    capsys,
+    monkeypatch,
+):
+    def unexpected_optimize(config):
+        raise AssertionError("optimize should not be called")
+
+    monkeypatch.setattr("gpurec.cli.optimize", unexpected_optimize)
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(_minimal_workflow_cli_args("optimize", tmp_path) + ["--device", "cdua"])
+
+    captured = capsys.readouterr()
+    assert exc_info.value.code == 2
+    assert "device must be a valid torch device string" in captured.err
+    assert "cdua" in captured.err
     assert "Traceback" not in captured.err
 
 

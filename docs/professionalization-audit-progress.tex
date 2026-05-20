@@ -2031,6 +2031,26 @@ Python namespace now also exports \texttt{ensure\_backtracking\_available()} so
 Python users have the same preflight affordance as \texttt{gpurec
 backtrack-check}.
 
+\subsection{Config Boundary and Checkpoint Progress Validation}
+
+\texttt{RunConfig} and \texttt{SamplingConfig} now validate path-like public
+constructor fields before handing values to \texttt{pathlib.Path}.  Direct
+Python API calls therefore receive field-specific \texttt{ValueError}
+diagnostics for bad \texttt{species\_tree}, \texttt{families\_file},
+\texttt{out\_dir}, \texttt{preprocess\_cache}, \texttt{resume\_from},
+\texttt{checkpoint}, and \texttt{backtrack\_binary} values instead of raw
+type errors.  \texttt{RunConfig} also validates \texttt{device} as a parseable
+Torch device string, so JSON configs and CLI invocations reject typos such as
+\texttt{cdua} before any workflow or CUDA model construction.
+
+Versioned checkpoints now require nonnegative \texttt{step} and
+\texttt{next\_step} metadata, and the resume helper rejects inconsistent
+progress pairs before restoring \texttt{theta}.  The valid checkpoint cursor
+states are the regular post-step form \texttt{next\_step = step + 1} and the
+final-evaluation form \texttt{next\_step = step}; malformed current-version
+payloads such as \texttt{step=5,next\_step=0} now fail explicitly instead of
+rewinding optimization progress after loading later parameters.
+
 \section{Verification Log}
 
 \begin{center}
@@ -4629,6 +4649,21 @@ CPU unit gate after quiet public import hardening &
 \texttt{672 passed, 28 deselected} \\
 \texttt{pdflatex -interaction=nonstopmode -halt-on-error ...professionalization...} &
 Audit log build after quiet public import hardening &
+\texttt{ok with known overfull table warnings} \\
+\texttt{python -m pytest tests/unit/test\_workflow.py tests/unit/test\_cli\_workflow.py -q} &
+Focused config-boundary and checkpoint-progress regressions &
+\texttt{424 passed} \\
+\texttt{python -m pytest tests/unit/test\_optimization\_workflow.py -q} &
+Resume-state helper contract after strict progress metadata &
+\texttt{15 passed} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' python -m pytest tests/unit -q -m "unit and not gpu"} &
+CPU unit gate after config-boundary and checkpoint-progress validation &
+\texttt{694 passed, 6 deselected} \\
+\texttt{python scripts/check\_release\_metadata.py} &
+Release metadata checker after config-boundary and checkpoint-progress validation &
+\texttt{expected license blockers} \\
+\texttt{pdflatex -interaction=nonstopmode -halt-on-error ...professionalization...} &
+Audit log build after config-boundary and checkpoint-progress validation &
 \texttt{ok with known overfull table warnings} \\
 \bottomrule
 \end{tabular}

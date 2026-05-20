@@ -116,15 +116,24 @@ def _resume_float(
 
 
 def _resume_state_from_payload(path: Path, payload: dict[str, Any]) -> _ResumeState:
+    checkpoint_step = int(
+        _resume_int(
+            path,
+            "step",
+            payload.get("step", _MISSING),
+            nonnegative=True,
+        )
+    )
     start_step = int(
         _resume_int(
             path,
             "next_step",
             payload.get("next_step", _MISSING),
-            default=0,
             nonnegative=True,
         )
     )
+    if start_step not in {checkpoint_step, checkpoint_step + 1}:
+        raise RuntimeError(f"checkpoint {path} has inconsistent progress metadata")
     ckpt_status = payload.get("status")
     if ckpt_status is None:
         ckpt_status = {}

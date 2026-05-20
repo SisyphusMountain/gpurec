@@ -83,14 +83,28 @@ def test_step_stopping_status_matches_optimizer_loop_order(
     assert status == expected
 
 
-def test_resume_state_from_payload_uses_safe_defaults(tmp_path: Path):
-    assert _resume_state_from_payload(tmp_path / "resume.pt", {}) == _ResumeState()
+@pytest.mark.parametrize(
+    ("payload", "message"),
+    [
+        ({}, r"invalid step"),
+        ({"step": 0}, r"invalid next_step"),
+        ({"step": 5, "next_step": 0}, r"inconsistent progress metadata"),
+    ],
+)
+def test_resume_state_from_payload_requires_progress_metadata(
+    tmp_path: Path,
+    payload: dict[str, object],
+    message: str,
+):
+    with pytest.raises(RuntimeError, match=message):
+        _resume_state_from_payload(tmp_path / "resume.pt", payload)
 
 
 def test_resume_state_from_payload_normalizes_checkpoint_metadata(tmp_path: Path):
     state = _resume_state_from_payload(
         tmp_path / "resume.pt",
         {
+            "step": 2,
             "next_step": 3.0,
             "status": {
                 "best_nll_bits": 12,
@@ -159,6 +173,7 @@ def test_resume_state_from_payload_rejects_invalid_metadata(
     message: str,
 ):
     payload = {
+        "step": 0,
         "next_step": 1,
         "status": {
             "previous_objective": 1.5,

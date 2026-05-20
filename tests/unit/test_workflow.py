@@ -262,6 +262,24 @@ def test_run_config_from_json_rejects_bad_required_path(
         RunConfig.from_json(path)
 
 
+def test_run_config_from_json_rejects_bad_device_type(tmp_path: Path):
+    path = tmp_path / "config.json"
+    path.write_text(
+        json.dumps(
+            {
+                "species_tree": str(tmp_path / "sp.nwk"),
+                "families_file": str(tmp_path / "families.txt"),
+                "out_dir": str(tmp_path / "out"),
+                "device": 42,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="device must be a device string"):
+        RunConfig.from_json(path)
+
+
 def test_sampling_config_from_cli_args_maps_shared_fields(tmp_path: Path):
     args = SimpleNamespace(
         sample_out_dir=tmp_path / "samples",
@@ -645,6 +663,54 @@ def test_run_config_defaults_to_cuda_for_production_workflow(tmp_path: Path):
     )
 
     assert config.device == "cuda"
+
+
+@pytest.mark.parametrize(
+    ("field", "message"),
+    [
+        ("species_tree", "species_tree must be a path string"),
+        ("families_file", "families_file must be a path string"),
+        ("out_dir", "out_dir must be a path string"),
+        ("preprocess_cache", "preprocess_cache must be a path string"),
+        ("resume_from", "resume_from must be a path string"),
+    ],
+)
+def test_run_config_rejects_non_path_constructor_fields(
+    tmp_path: Path,
+    field: str,
+    message: str,
+):
+    kwargs = {
+        "species_tree": tmp_path / "sp.nwk",
+        "families_file": tmp_path / "families.txt",
+        "out_dir": tmp_path / "out",
+        "device": "cpu",
+        field: 42,
+    }
+
+    with pytest.raises(ValueError, match=message):
+        RunConfig(**kwargs)
+
+
+@pytest.mark.parametrize(
+    ("device", "message"),
+    [
+        (42, "device must be a device string"),
+        ("cdua", "device must be a valid torch device string"),
+    ],
+)
+def test_run_config_rejects_invalid_device_values(
+    tmp_path: Path,
+    device: object,
+    message: str,
+):
+    with pytest.raises(ValueError, match=message):
+        RunConfig(
+            species_tree=tmp_path / "sp.nwk",
+            families_file=tmp_path / "families.txt",
+            out_dir=tmp_path / "out",
+            device=device,
+        )
 
 
 def test_run_config_rejects_unsupported_auto_chunking(tmp_path: Path):
@@ -1693,6 +1759,25 @@ def test_sampling_config_rejects_invalid_seed_and_event_limits(tmp_path: Path):
         SamplingConfig(checkpoint=checkpoint, seed=1 << 64)
     with pytest.raises(ValueError, match="max_events"):
         SamplingConfig(checkpoint=checkpoint, max_events=0)
+
+
+@pytest.mark.parametrize(
+    ("field", "message"),
+    [
+        ("checkpoint", "checkpoint must be a path string"),
+        ("out_dir", "out_dir must be a path string"),
+        ("backtrack_binary", "backtrack_binary must be a path string"),
+    ],
+)
+def test_sampling_config_rejects_non_path_constructor_fields(
+    tmp_path: Path,
+    field: str,
+    message: str,
+):
+    kwargs = {"checkpoint": tmp_path / "checkpoints" / "best.pt", field: 42}
+
+    with pytest.raises(ValueError, match=message):
+        SamplingConfig(**kwargs)
 
 
 @pytest.mark.parametrize(
@@ -2855,6 +2940,8 @@ def test_checkpoint_load_uses_weights_only(tmp_path: Path, monkeypatch):
         )
         return {
             "version": CHECKPOINT_VERSION,
+            "step": 0,
+            "next_step": 1,
             "config": {
                 "species_tree": str(tmp_path / "sp.nwk"),
                 "families_file": str(tmp_path / "families.txt"),
@@ -2886,6 +2973,8 @@ def test_checkpoint_load_rejects_unsupported_version(tmp_path: Path, version):
     torch.save(
         {
             "version": version,
+            "step": 0,
+            "next_step": 1,
             "config": {
                 "species_tree": str(tmp_path / "sp.nwk"),
                 "families_file": str(tmp_path / "families.txt"),
@@ -2917,12 +3006,49 @@ def test_checkpoint_load_rejects_invalid_theta_values(
     torch.save(
         {
             "version": CHECKPOINT_VERSION,
+            "step": 0,
+            "next_step": 1,
             "config": {
                 "species_tree": str(tmp_path / "sp.nwk"),
                 "families_file": str(tmp_path / "families.txt"),
                 "out_dir": str(tmp_path / "out"),
             },
             "theta": theta,
+        },
+        path,
+    )
+
+    with pytest.raises(RuntimeError, match=message):
+        load_checkpoint(path)
+
+
+@pytest.mark.parametrize(
+    ("progress", "message"),
+    [
+        ({"next_step": 1}, "missing key"),
+        ({"step": 0}, "missing key"),
+        ({"step": 5, "next_step": 0}, "inconsistent progress metadata"),
+        ({"step": 0, "next_step": 2}, "inconsistent progress metadata"),
+        ({"step": -1, "next_step": 0}, "invalid step"),
+        ({"step": 0, "next_step": True}, "invalid next_step"),
+    ],
+)
+def test_checkpoint_load_rejects_invalid_progress_metadata(
+    tmp_path: Path,
+    progress: dict[str, object],
+    message: str,
+):
+    path = tmp_path / "invalid_progress.pt"
+    torch.save(
+        {
+            "version": CHECKPOINT_VERSION,
+            "config": {
+                "species_tree": str(tmp_path / "sp.nwk"),
+                "families_file": str(tmp_path / "families.txt"),
+                "out_dir": str(tmp_path / "out"),
+            },
+            "theta": torch.zeros(3),
+            **progress,
         },
         path,
     )
@@ -3365,6 +3491,7 @@ def test_optimization_runner_resume_loads_checkpoint_once(tmp_path: Path, monkey
         return {
             "theta": torch.tensor([0.25, -0.125, 0.0625], dtype=torch.float32),
             "optimizer_state": None,
+            "step": 0,
             "next_step": 1,
             "status": {
                 "previous_objective": 1.5,
@@ -3444,6 +3571,7 @@ def test_optimization_runner_discards_resume_optimizer_state_on_phase_mismatch(
             "theta": torch.tensor([0.25, -0.125, 0.0625], dtype=torch.float32),
             "optimizer_state": adam_state,
             "optimizer_phase": "adam",
+            "step": 0,
             "next_step": 1,
             "status": {
                 "previous_objective": 1.5,
@@ -3527,6 +3655,7 @@ def test_optimization_runner_resume_rejects_incompatible_checkpoint_identity(
         payload = {
             "theta": torch.zeros(2, 3, dtype=torch.float32),
             "optimizer_state": None,
+            "step": 0,
             "next_step": 1,
             "config": config.to_dict(),
             "family_names": ["fam_b", "fam_a"],
@@ -3595,6 +3724,7 @@ def test_optimization_runner_resume_rejects_checkpoint_beyond_configured_steps(
         return {
             "theta": torch.zeros(3, dtype=torch.float32),
             "optimizer_state": None,
+            "step": 4,
             "next_step": 5,
             "config": config.to_dict(),
             "family_names": ["fam0"],
@@ -3613,6 +3743,67 @@ def test_optimization_runner_resume_rejects_checkpoint_beyond_configured_steps(
         runner.run()
 
     assert runner.fake_model.closed
+
+
+def test_optimization_runner_resume_rejects_inconsistent_progress_before_restore(
+    tmp_path: Path,
+    monkeypatch,
+):
+    class FakeResumeModel:
+        def __init__(self):
+            self.theta = torch.nn.Parameter(torch.zeros(3, dtype=torch.float32))
+            self.family_names = ["fam0"]
+            self.species_names = ["sp0", "sp1"]
+            self.closed = False
+
+        def clear(self):
+            raise AssertionError("theta should not be restored from invalid resume")
+
+        def close(self):
+            self.closed = True
+
+    class FakeResumeRunner(OptimizationRunner):
+        def build_model(self):
+            self.fake_model = FakeResumeModel()
+            return self.fake_model
+
+    config = RunConfig(
+        species_tree=tmp_path / "sp.nwk",
+        families_file=tmp_path / "families.txt",
+        out_dir=tmp_path / "out",
+        mode="global",
+        device="cpu",
+        optimizer="adam",
+        steps=10,
+        resume_from=tmp_path / "resume.pt",
+        checkpoint_every=0,
+        log_every=10,
+    )
+
+    def fake_load_checkpoint(path, *, map_location):
+        return {
+            "theta": torch.ones(3, dtype=torch.float32),
+            "optimizer_state": None,
+            "step": 5,
+            "next_step": 0,
+            "config": config.to_dict(),
+            "family_names": ["fam0"],
+            "species_names": ["sp0", "sp1"],
+            "status": {
+                "previous_objective": 1.5,
+                "stable_loss_steps": 0,
+            },
+        }
+
+    workflow_optimize_module = importlib.import_module("gpurec.workflow.optimize")
+    monkeypatch.setattr(workflow_optimize_module, "load_checkpoint", fake_load_checkpoint)
+    runner = FakeResumeRunner(config)
+
+    with pytest.raises(RuntimeError, match="inconsistent progress metadata"):
+        runner.run()
+
+    assert runner.fake_model.closed
+    assert torch.equal(runner.fake_model.theta.detach(), torch.zeros(3))
 
 
 def test_activate_family_batch_returns_batch_local_offset():
