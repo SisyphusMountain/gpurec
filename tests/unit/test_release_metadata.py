@@ -312,6 +312,9 @@ def test_cpu_ci_builds_and_smokes_release_artifacts():
     )
 
     assert "\n  package:\n" in workflow
+    package_block = workflow.split("\n  package:\n", 1)[1]
+    assert 'python-version: ["3.10", "3.12"]' in package_block
+    assert "python-version: ${{ matrix.python-version }}" in package_block
     for required in (
         'python -m pip install -e ".[release]"',
         "python -m build",
@@ -697,6 +700,7 @@ def test_release_readiness_orders_clean_checkout_before_build():
     preview_command = "git clean -Xdn -- build dist '*.egg-info'"
     clean_command = "git clean -Xdf -- build dist '*.egg-info'"
 
+    assert "Python 3.10 and 3.12" in guide
     assert guide.index(preview_command) < guide.index(clean_command)
     assert guide.index(clean_command) < guide.index("python -m build")
     assert "stale `build/`, `dist/`, or `*.egg-info/`" in guide

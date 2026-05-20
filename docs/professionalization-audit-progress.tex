@@ -2548,6 +2548,19 @@ same targeted fixture for Rust backtracking CI and release checks.  The broader
 \texttt{-m "integration and not gpu"} marker remains documented separately for
 fully installed Python test environments.
 
+\subsection{Package CI Python Support Matrix}
+
+The CPU packaging job now builds, inspects, installs, and smoke-tests release
+artifacts on both Python 3.10 and Python 3.12.  This gives the package smoke
+coverage over the lower and upper bounds of the declared
+\texttt{requires-python = ">=3.10,<3.13"} range instead of relying on Python
+3.10 alone.
+
+Release-readiness documentation and the tests README now state that the package
+job runs on Python 3.10 and 3.12, and the release metadata guard checks the
+package job's own matrix block so it cannot be satisfied by the separate unit
+test matrix.
+
 \section{Verification Log}
 
 \begin{center}
@@ -5695,6 +5708,21 @@ CPU unit gate after rust-backtrack CI gate narrowing &
 \texttt{794 passed, 6 deselected} \\
 \texttt{python scripts/check\_release\_metadata.py} &
 Release metadata checker after rust-backtrack CI gate narrowing &
+\texttt{expected license blockers} \\
+\texttt{python -m py\_compile tests/unit/test\_release\_metadata.py} &
+Package CI Python matrix guard syntax &
+\texttt{ok} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' python -m pytest selected package CI matrix guards -q} &
+Focused package matrix and release-readiness guards &
+\texttt{3 passed} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' python -m pytest tests/unit/test\_release\_metadata.py -q} &
+Release metadata guard suite after package matrix expansion &
+\texttt{40 passed} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' python -m pytest tests/unit -q -m "unit and not gpu"} &
+CPU unit gate after package matrix expansion &
+\texttt{794 passed, 6 deselected} \\
+\texttt{python scripts/check\_release\_metadata.py} &
+Release metadata checker after package matrix expansion &
 \texttt{expected license blockers} \\
 \bottomrule
 \end{tabular}
