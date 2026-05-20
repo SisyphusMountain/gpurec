@@ -176,6 +176,8 @@ def _normalize_nonnegative_int_sequence(
     name: str,
     values: Sequence[int],
 ) -> tuple[int, ...]:
+    if isinstance(values, (str, bytes)):
+        raise ValueError(f"{name} must be a sequence of integers")
     try:
         return tuple(
             nonnegative_int(f"{name} entries", value) for value in values
@@ -188,6 +190,8 @@ def _normalize_positive_int_sequence(
     name: str,
     values: Sequence[int],
 ) -> tuple[int, ...]:
+    if isinstance(values, (str, bytes)):
+        raise ValueError(f"{name} must be a sequence of integers")
     try:
         return tuple(positive_int(f"{name} entries", value) for value in values)
     except TypeError as exc:

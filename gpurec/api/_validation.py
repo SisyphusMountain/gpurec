@@ -105,6 +105,18 @@ def optional_positive_int(name: str, value: int | None) -> int | None:
     return positive_int(name, value)
 
 
+def _contains_bool(value: Any) -> bool:
+    if isinstance(value, bool):
+        return True
+    if torch.is_tensor(value):
+        return value.dtype == torch.bool
+    if isinstance(value, (str, bytes)):
+        return False
+    if isinstance(value, Sequence):
+        return any(_contains_bool(item) for item in value)
+    return False
+
+
 def theta_init_base_from_rates(
     theta_init_rates: Optional[Sequence[float]],
     *,
@@ -113,7 +125,14 @@ def theta_init_base_from_rates(
 ) -> torch.Tensor | None:
     if theta_init_rates is None:
         return None
-    rates = torch.as_tensor(theta_init_rates, dtype=torch.float64, device="cpu")
+    if _contains_bool(theta_init_rates):
+        raise ValueError("theta_init_rates must contain numeric rates, not booleans")
+    try:
+        rates = torch.as_tensor(theta_init_rates, dtype=torch.float64, device="cpu")
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            "theta_init_rates must contain exactly three numeric D/L/T rates"
+        ) from exc
     if rates.numel() != 3:
         raise ValueError("theta_init_rates must contain exactly three D/L/T rates")
     rates = rates.reshape(3)

@@ -20,7 +20,7 @@ from gpurec.cli import (
     build_parser,
     main,
 )
-from gpurec.workflow.config import RunConfig
+from gpurec.workflow.config import RunConfig, SamplingConfig
 from gpurec.workflow.model_factory import build_alerax_workflow_model
 from tests.unit.alerax_helpers import write_tiny_alerax_inputs
 
@@ -58,6 +58,24 @@ def test_run_config_cli_surface_matches_dataclass_fields():
     assert _parser_action_dests("backtrack-check") == {"backtrack_binary"}
 
 
+def test_sampling_config_cli_surface_matches_dataclass_fields():
+    sampling_dest_to_field = {
+        "checkpoint": "checkpoint",
+        "sample_out_dir": "out_dir",
+        "samples": "samples",
+        "seed": "seed",
+        "family_start": "family_start",
+        "sample_max_families": "max_families",
+        "max_events": "max_events",
+        "backtrack_binary": "backtrack_binary",
+    }
+    sampling_config_fields = {field.name for field in fields(SamplingConfig)}
+
+    assert set(sampling_dest_to_field.values()) == sampling_config_fields
+    assert set(sampling_dest_to_field) <= _parser_action_dests("sample")
+    assert set(sampling_dest_to_field) - {"checkpoint"} <= _parser_action_dests("run")
+
+
 def test_build_alerax_workflow_model_forwards_run_config(tmp_path: Path, monkeypatch):
     config = RunConfig(
         species_tree=tmp_path / "sp.nwk",
@@ -75,8 +93,16 @@ def test_build_alerax_workflow_model_forwards_run_config(tmp_path: Path, monkeyp
         batch_packing="sequential",
         max_wave_size=64,
         fixed_iters_e=3,
+        max_iters_e=17,
+        tol_e=1e-7,
         fixed_iters_pi=8,
         neumann_terms=6,
+        adaptive_iters=False,
+        convergence_check_interval=6,
+        e_logsumexp_tol=2e-5,
+        pi_max_diff_tol=3e-5,
+        gradient_change_tol=4e-4,
+        gradient_change_rtol=5e-4,
     )
     sentinel = object()
     call: dict[str, object] = {}
@@ -115,8 +141,16 @@ def test_build_alerax_workflow_model_forwards_run_config(tmp_path: Path, monkeyp
     assert kwargs["batch_packing"] == "sequential"
     assert kwargs["max_wave_size"] == 64
     assert kwargs["fixed_iters_E"] == 3
+    assert kwargs["max_iters_E"] == 17
+    assert kwargs["tol_E"] == pytest.approx(1e-7)
     assert kwargs["fixed_iters_Pi"] == 8
     assert kwargs["neumann_terms"] == 6
+    assert kwargs["adaptive_iters"] is False
+    assert kwargs["convergence_check_interval"] == 6
+    assert kwargs["e_logsumexp_tol"] == pytest.approx(2e-5)
+    assert kwargs["pi_max_diff_tol"] == pytest.approx(3e-5)
+    assert kwargs["gradient_change_tol"] == pytest.approx(4e-4)
+    assert kwargs["gradient_change_rtol"] == pytest.approx(5e-4)
     assert kwargs["lazy_preprocess"] is True
     assert kwargs["prefetch_batches"] == 0
 

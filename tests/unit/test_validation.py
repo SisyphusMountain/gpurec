@@ -12,6 +12,7 @@ from gpurec.api._validation import (
     nonnegative_int,
     positive_even_int,
     require_cuda_device,
+    theta_init_base_from_rates,
 )
 from gpurec.workflow.config import RunConfig
 from gpurec.workflow.model_factory import build_alerax_workflow_model
@@ -69,6 +70,39 @@ def test_nonnegative_int_accepts_nonnegative_integral_values(value: object) -> N
 def test_nonnegative_int_rejects_invalid_values(value: object) -> None:
     with pytest.raises(ValueError, match="family_chunk_candidates entries"):
         nonnegative_int("family_chunk_candidates entries", value)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    "rates",
+    [
+        [True, 0.1, 0.1],
+        torch.tensor([True, True, True]),
+    ],
+)
+def test_theta_init_rates_reject_bool_values(rates: object) -> None:
+    with pytest.raises(ValueError, match="theta_init_rates"):
+        theta_init_base_from_rates(
+            rates,  # type: ignore[arg-type]
+            dtype=torch.float64,
+            device=torch.device("cpu"),
+        )
+
+
+@pytest.mark.parametrize(
+    "rates",
+    [
+        "0.1",
+        object(),
+        [[0.1], [0.1, 0.1]],
+    ],
+)
+def test_theta_init_rates_wraps_non_numeric_conversion_errors(rates: object) -> None:
+    with pytest.raises(ValueError, match="theta_init_rates"):
+        theta_init_base_from_rates(
+            rates,  # type: ignore[arg-type]
+            dtype=torch.float64,
+            device=torch.device("cpu"),
+        )
 
 
 def test_build_alerax_workflow_model_rejects_unavailable_cuda_index(

@@ -2181,6 +2181,44 @@ with stale outputs from an older run.  Manual files under
 a separate \texttt{--sample-out-dir} when they need to keep multiple sampled
 windows.
 
+\subsection{Strict Workflow Diagnostics JSON}
+
+Workflow diagnostics now use a shared strict JSON serializer for JSONL history
+rows and final workflow summaries.  Non-finite floating-point values are
+serialized as JSON \texttt{null} instead of Python-only \texttt{NaN} or
+\texttt{Infinity} tokens, while in-memory optimizer metrics remain numeric for
+runtime decisions.  The same strict serializer is used for
+\texttt{history.jsonl}, optimization \texttt{summary.json}, and sampling
+\texttt{summary.json}; \texttt{safe\_float()} now returns \texttt{None} for
+non-finite and non-numeric values.
+
+Focused CPU tests cover non-finite tensor diagnostics flowing through the JSONL
+writer and parse the result with non-standard JSON constants rejected.
+
+\subsection{Public Validation Homogeneity}
+
+Three public validation gaps from the API audit were closed.  Family wave
+layout construction now normalizes family indices through the shared integer
+validator instead of \texttt{int()}, so booleans and non-integral floats are
+rejected consistently.  \texttt{theta\_init\_rates} now rejects boolean entries
+and wraps tensor-conversion failures as \texttt{ValueError} messages that name
+the offending option.  Uniform chunk candidate lists now reject strings and
+bytes as whole values instead of treating them as character sequences.
+
+The new CPU tests pin each edge case before any CUDA setup or input-file IO.
+
+\subsection{CLI and Workflow Drift Guards}
+
+The CLI/config audit found that the \texttt{RunConfig} parser surface was
+already mechanically guarded, but \texttt{SamplingConfig} lacked the same
+dataclass-to-parser parity check.  A new unit guard maps parser destination
+aliases such as \texttt{sample\_out\_dir} and
+\texttt{sample\_max\_families} back to \texttt{SamplingConfig} fields for both
+\texttt{gpurec sample} and \texttt{gpurec run}.  The model-factory forwarding
+test now also covers the solver tolerances and adaptive-iteration controls that
+\texttt{build\_alerax\_workflow\_model()} passes into the public model
+constructor.
+
 \section{Verification Log}
 
 \begin{center}
@@ -4960,6 +4998,24 @@ Release metadata checker after shared artifact publisher extraction &
 \texttt{pdflatex -interaction=nonstopmode -halt-on-error ...professionalization...} &
 Audit log build after shared artifact publisher extraction &
 \texttt{ok with known overfull table warnings} \\
+\texttt{python -m py\_compile gpurec/workflow/diagnostics.py gpurec/workflow/optimize.py gpurec/workflow/sampling.py gpurec/api/\_validation.py gpurec/api/\_family\_layout.py gpurec/api/uniform\_chunked.py tests/unit/test\_workflow.py tests/unit/test\_family\_layout.py tests/unit/test\_validation.py tests/unit/test\_cli\_workflow.py} &
+Diagnostics JSON, API validation, and CLI guard syntax &
+\texttt{ok} \\
+\texttt{python -m pytest selected diagnostics, validation, uniform controls, and CLI/config guards -q} &
+Focused strict-JSON, validation, and drift guards &
+\texttt{31 passed} \\
+\texttt{python -m pytest tests/unit/test\_workflow.py tests/unit/test\_family\_layout.py tests/unit/test\_validation.py tests/unit/test\_cli\_workflow.py -q} &
+Touched workflow, family layout, validation, and CLI suites &
+\texttt{476 passed} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' python -m pytest tests/unit -q -m "unit and not gpu"} &
+CPU unit gate after strict diagnostics and validation hardening &
+\texttt{721 passed, 6 deselected} \\
+\texttt{python scripts/check\_release\_metadata.py} &
+Release metadata checker after strict diagnostics and validation hardening &
+\texttt{expected license blockers} \\
+\texttt{pdflatex -interaction=nonstopmode -halt-on-error ...professionalization...} &
+Audit log build after strict diagnostics and validation hardening &
+\texttt{ok with known overfull table warnings} \\
 \bottomrule
 \end{tabular}
 \end{center}
@@ -4973,6 +5029,10 @@ Audit log build after shared artifact publisher extraction &
         document a Rust-toolchain requirement for source-tree sampling.
   \item Add an installed-artifact sampling smoke once the backtracking binary
         distribution model is settled.
+  \item Tighten checkpoint resume identity validation for malformed or legacy
+        payloads whose family/species metadata is missing.
+  \item Consider making \texttt{gpurec.workflow} lazy like the top-level
+        package so config-only imports stay light and quiet.
   \item Continue auditing public API consistency, documentation coverage, and
         CPU-safe regression tests for user-facing workflows.
   \item Keep committing small, verified increments so the branch remains

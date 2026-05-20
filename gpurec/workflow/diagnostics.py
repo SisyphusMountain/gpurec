@@ -19,7 +19,23 @@ def safe_float(value: Any) -> float | None:
         out = float(value)
     except (TypeError, ValueError):
         return None
-    return out if math.isfinite(out) else out
+    return out if math.isfinite(out) else None
+
+
+def _json_safe(value: Any) -> Any:
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    if isinstance(value, tuple):
+        return [_json_safe(item) for item in value]
+    if isinstance(value, list):
+        return [_json_safe(item) for item in value]
+    if isinstance(value, dict):
+        return {str(key): _json_safe(item) for key, item in value.items()}
+    return value
+
+
+def json_dumps_strict(value: Any, **kwargs: Any) -> str:
+    return json.dumps(_json_safe(value), allow_nan=False, **kwargs)
 
 
 def tensor_stats(prefix: str, tensor: torch.Tensor | None) -> dict[str, float]:
@@ -102,7 +118,7 @@ def solver_stats(model: Any) -> dict[str, float]:
 def append_jsonl(path: Path, row: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as handle:
-        handle.write(json.dumps(row, sort_keys=True) + "\n")
+        handle.write(json_dumps_strict(row, sort_keys=True) + "\n")
 
 
 def write_csv(path: Path, rows: list[dict[str, Any]]) -> None:

@@ -54,7 +54,12 @@ from gpurec.workflow.checkpoint import (
     save_checkpoint,
 )
 from gpurec.workflow.config import RunConfig, SamplingConfig
-from gpurec.workflow.diagnostics import parameter_stats
+from gpurec.workflow.diagnostics import (
+    append_jsonl,
+    parameter_stats,
+    safe_float,
+    tensor_stats,
+)
 from gpurec.workflow.optimize import OptimizationRunner, _write_rate_table
 from gpurec.workflow.sampling import SamplingRunner, _xml_species_and_transfer_counts
 
@@ -933,9 +938,11 @@ def test_uniform_auto_positive_int_preserves_unbounded_aliases(value: object):
         ({"clade_budget": 0}, "clade_budget"),
         ({"batch_packing": "unknown"}, "batch_packing"),
         ({"family_chunk_candidates": None}, "family_chunk_candidates"),
+        ({"family_chunk_candidates": "25"}, "family_chunk_candidates"),
         ({"family_chunk_candidates": [-1]}, "family_chunk_candidates"),
         ({"family_chunk_candidates": [1.5]}, "family_chunk_candidates"),
         ({"max_wave_candidates": None}, "max_wave_candidates"),
+        ({"max_wave_candidates": "8192"}, "max_wave_candidates"),
         ({"max_wave_candidates": [0]}, "max_wave_candidates"),
         ({"max_wave_candidates": [1.5]}, "max_wave_candidates"),
     ],
@@ -1763,6 +1770,37 @@ def test_workflow_rate_outputs_use_normalized_survival_probability(tmp_path: Pat
     assert float(values["L"]) == pytest.approx(3.0)
     assert float(values["T"]) == pytest.approx(5.0)
     assert float(values["pS"]) == pytest.approx(expected_ps)
+
+
+def test_workflow_jsonl_diagnostics_sanitize_nonfinite_values(tmp_path: Path):
+    path = tmp_path / "history.jsonl"
+    row = {
+        "finite": 1.25,
+        "infinite": math.inf,
+        "nested": {"nan": math.nan},
+        "stats": tensor_stats("x", torch.tensor([float("inf")])),
+    }
+
+    append_jsonl(path, row)
+
+    def reject_json_constant(constant: str) -> None:
+        raise AssertionError(f"non-standard JSON constant {constant}")
+
+    payload = json.loads(
+        path.read_text(encoding="utf-8"),
+        parse_constant=reject_json_constant,
+    )
+    assert payload["finite"] == pytest.approx(1.25)
+    assert payload["infinite"] is None
+    assert payload["nested"]["nan"] is None
+    assert payload["stats"]["x/max"] is None
+
+
+def test_safe_float_returns_none_for_nonfinite_or_non_numeric_values():
+    assert safe_float(1.5) == pytest.approx(1.5)
+    assert safe_float(math.inf) is None
+    assert safe_float(math.nan) is None
+    assert safe_float("not-a-number") is None
 
 
 def test_sampling_config_validates_selection(tmp_path: Path):

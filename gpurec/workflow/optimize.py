@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import math
 import time
 from contextlib import suppress
@@ -28,6 +27,7 @@ from .checkpoint import (
 from .config import RunConfig
 from .diagnostics import (
     append_jsonl,
+    json_dumps_strict,
     parameter_stats,
     rates_and_survival_probability,
     solver_stats,
@@ -268,7 +268,7 @@ def _write_history_jsonl_with_final_row(
             out_handle.write(existing)
             if existing and not existing.endswith("\n"):
                 out_handle.write("\n")
-        out_handle.write(json.dumps(final_row, sort_keys=True) + "\n")
+        out_handle.write(json_dumps_strict(final_row, sort_keys=True) + "\n")
 
 
 def _final_artifact_paths(out_dir: Path) -> list[Path]:
@@ -348,7 +348,7 @@ def _write_final_artifacts(
 
         summary_stage_path = stage_dir / "summary.json"
         summary_stage_path.write_text(
-            json.dumps(summary, indent=2, sort_keys=True) + "\n",
+            json_dumps_strict(summary, indent=2, sort_keys=True) + "\n",
             encoding="utf-8",
         )
         staged_outputs.append(history_jsonl_output)

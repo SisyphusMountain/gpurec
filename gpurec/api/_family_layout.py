@@ -6,6 +6,7 @@ from typing import Any
 
 import torch
 
+from gpurec.api._validation import integer_value
 from gpurec.core.batching import (
     build_wave_layout,
     collate_gene_families,
@@ -52,7 +53,10 @@ def family_wave_inputs(
     dataset: GeneDataset,
     family_indices: Sequence[int],
 ) -> FamilyWaveInputs:
-    indices = [int(index) for index in family_indices]
+    indices = [
+        integer_value("family_indices entries", index)
+        for index in family_indices
+    ]
     items: list[dict[str, Any]] = []
     family_clade_counts: list[int] = []
     family_clade_offsets: list[int] = []

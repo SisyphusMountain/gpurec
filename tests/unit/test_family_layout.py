@@ -87,6 +87,14 @@ def test_family_wave_inputs_uses_caller_family_order_and_local_offsets():
     assert inputs.split_count == 2
 
 
+@pytest.mark.parametrize("family_index", [True, 1.5])
+def test_family_wave_inputs_rejects_bool_and_nonintegral_indices(
+    family_index: object,
+):
+    with pytest.raises(ValueError, match="family_indices entries"):
+        family_wave_inputs(_dataset(), [family_index])  # type: ignore[list-item]
+
+
 def test_build_family_wave_layout_matches_inputs_and_wave_order():
     inputs = family_wave_inputs(_dataset(), [1, 0])
     layout = build_family_wave_layout(
