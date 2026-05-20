@@ -1878,6 +1878,23 @@ selectors before duplicate and out-of-range detection.  Shared family batch
 planning also rejects duplicate explicit family indices, preventing a selected
 family from being scheduled twice in resident or chunked batches.
 
+\subsection{Installed Sampling Documentation Contract}
+
+The package workflow now keeps example fixtures source-archive-only by
+rejecting \texttt{examples/} paths in wheels while still requiring them in the
+sdist.  It also reads \texttt{examples/minimal-run-config.json} from the
+source archive and verifies that the documented \texttt{species\_tree} and
+\texttt{families\_file} targets are present beside it.  The installed-wheel
+smoke now exercises \texttt{gpurec sample --help} and
+\texttt{gpurec run --help}, checking that both commands advertise the external
+backtracking binary controls expected for wheel installs.  Sampling checkpoint
+help now points users to \texttt{checkpoints/best.pt} or
+\texttt{checkpoints/latest.pt} and distinguishes those metadata-bearing files
+from the raw \texttt{theta\_final.pt} tensor export.  The README and release
+readiness notes now state that \texttt{gpurec run}'s sampling phase follows
+the same \texttt{GPUREC\_BACKTRACK\_BIN} and \texttt{--backtrack-binary}
+contract as \texttt{gpurec sample}.
+
 \section{Verification Log}
 
 \begin{center}
@@ -4155,6 +4172,33 @@ Release metadata checker after public selector validation &
 \texttt{expected license blockers} \\
 \texttt{pdflatex -interaction=nonstopmode -halt-on-error ...professionalization...} &
 Audit log build after public selector validation &
+\texttt{ok with known overfull table warnings} \\
+\texttt{python -m py\_compile gpurec/cli.py tests/unit/test\_cli\_workflow.py tests/unit/test\_release\_metadata.py} &
+Installed sampling documentation syntax &
+\texttt{ok} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q tests/unit/test\_cli\_workflow.py tests/unit/test\_release\_metadata.py -k "..."} &
+Focused installed sampling and package-doc guards &
+\texttt{4 passed, 72 deselected} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q tests/unit/test\_cli\_workflow.py tests/unit/test\_release\_metadata.py tests/unit/test\_examples.py} &
+CLI, release metadata, and example suites after installed sampling docs &
+\texttt{78 passed} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
+CPU unit gate after installed sampling docs &
+\texttt{611 passed, 28 deselected} \\
+\texttt{python -m build} &
+Local package build after installed sampling docs &
+\texttt{built sdist and wheel} \\
+\texttt{python -m twine check dist/*} &
+Local artifact metadata check after installed sampling docs &
+\texttt{passed} \\
+\texttt{python - <<'PY' ...artifact package data...} &
+Local source and wheel package-data validation &
+\texttt{passed} \\
+\texttt{python scripts/check\_release\_metadata.py} &
+Release metadata checker after installed sampling docs &
+\texttt{expected license blockers} \\
+\texttt{pdflatex -interaction=nonstopmode -halt-on-error ...professionalization...} &
+Audit log build after installed sampling docs &
 \texttt{ok with known overfull table warnings} \\
 \bottomrule
 \end{tabular}

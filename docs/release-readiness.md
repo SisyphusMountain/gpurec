@@ -9,12 +9,12 @@ and the packaging assumptions covered by current automated build steps.
   `pyproject.toml` license metadata and a license classifier.  Project URLs and
   non-license classifiers are already present.
 - Decide the Rust backtracking binary distribution model.  The Python package
-  supports a compiled sampler via `GPUREC_BACKTRACK_BIN` or
-  `--backtrack-binary`; the source-tree or unpacked-source-archive `cargo run`
-  fallback uses a locked Cargo build and the pinned `rustree` git dependency.
-  Wheels currently do not ship the Rust binary or crate sources, so installed
-  sampling requires an external prebuilt binary until that distribution model
-  changes.
+  supports `gpurec sample` and the sampling phase of `gpurec run` through a
+  compiled sampler selected via `GPUREC_BACKTRACK_BIN` or `--backtrack-binary`;
+  the source-tree or unpacked-source-archive `cargo run` fallback uses a locked
+  Cargo build and the pinned `rustree` git dependency.  Wheels currently do not
+  ship the Rust binary or crate sources, so installed sampling requires an
+  external prebuilt binary until that distribution model changes.
 - Build source and wheel artifacts from a clean checkout and install them in a
   fresh environment with a PyTorch build that matches the target CUDA runtime.
 
@@ -25,7 +25,11 @@ The CPU GitHub Actions workflow includes a packaging job that installs
 the built wheel with existing runtime dependencies, checks the source archive
 for packaged C++ preprocessing sources and Rust backtracking crate sources,
 smokes that crate from the unpacked source archive, and smokes both
-`gpurec --help` and `python -m gpurec.cli --help`.
+`gpurec --help` and `python -m gpurec.cli --help`.  The same package job keeps
+examples out of wheels while requiring them in the source archive, verifies the
+minimal example config points to source-archive files, and checks installed
+`gpurec sample --help` and `gpurec run --help` for external backtracking binary
+guidance.
 
 Install release tooling from the dedicated extra:
 

@@ -156,15 +156,19 @@ Sampling writes per-sample RecPhyloXML files and event-count files under
 
 ### Sampling Binary Setup
 
-Sampling uses the Rust backtracking binary.  Wheels currently do not ship that
-binary or the Rust crate sources, so installed environments should provide a
-compiled binary through `GPUREC_BACKTRACK_BIN` or `--backtrack-binary`:
+`gpurec sample` and the sampling phase of `gpurec run` use the Rust
+backtracking binary.  Wheels currently do not ship that binary or the Rust
+crate sources, so installed environments should provide a compiled binary
+through `GPUREC_BACKTRACK_BIN` or `--backtrack-binary`:
 
 ```bash
 cargo build --locked --release --manifest-path crates/gpurec-backtrack/Cargo.toml
 export GPUREC_BACKTRACK_BIN="$PWD/crates/gpurec-backtrack/target/release/gpurec-backtrack"
 gpurec sample --checkpoint output_gpurec/checkpoints/best.pt --samples 100
 ```
+
+The same `GPUREC_BACKTRACK_BIN` environment variable or `--backtrack-binary`
+flag applies to `gpurec run` when it samples after optimization.
 
 The automatic `cargo run` fallback works from a source checkout or unpacked
 source archive.  It requires a Rust toolchain and fetches the pinned `rustree`

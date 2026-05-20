@@ -395,7 +395,11 @@ def _add_sampling_args(
             "--checkpoint",
             type=Path,
             required=checkpoint_required,
-            help="Optimization checkpoint to sample.",
+            help=(
+                "Optimization checkpoint to sample, usually checkpoints/best.pt "
+                "or checkpoints/latest.pt; theta_final.pt is only a raw tensor "
+                "export."
+            ),
         )
     parser.add_argument(
         "--sample-out-dir",

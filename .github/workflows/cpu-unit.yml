@@ -95,6 +95,7 @@ jobs:
       - name: Check artifact package data
         run: |
           python - <<'PY'
+          import json
           from pathlib import Path
           import tarfile
           import zipfile
@@ -122,17 +123,36 @@ jobs:
           ]
           forbidden_wheel_prefixes = [
               "crates/gpurec-backtrack/",
+              "examples/",
           ]
 
           sdists = list(Path("dist").glob("*.tar.gz"))
           if len(sdists) != 1:
               raise SystemExit(f"expected one source archive, found {sdists}")
           with tarfile.open(sdists[0]) as archive:
+              members = archive.getnames()
               names = {
                   name.split("/", 1)[1]
-                  for name in archive.getnames()
+                  for name in members
                   if "/" in name
               }
+              config_member = next(
+                  (
+                      name
+                      for name in members
+                      if name.endswith("/examples/minimal-run-config.json")
+                  ),
+                  None,
+              )
+              if config_member is None:
+                  raise SystemExit(
+                      "sdist missing example config: "
+                      "examples/minimal-run-config.json"
+                  )
+              config_file = archive.extractfile(config_member)
+              if config_file is None:
+                  raise SystemExit(f"could not read sdist member: {config_member}")
+              config = json.load(config_file)
           missing = [
               path
               for path in required_sdist
@@ -140,6 +160,16 @@ jobs:
           ]
           if missing:
               raise SystemExit(f"sdist missing required source files: {missing}")
+          missing_example_targets = [
+              f"examples/{config[field]}"
+              for field in ("species_tree", "families_file")
+              if f"examples/{config[field]}" not in names
+          ]
+          if missing_example_targets:
+              raise SystemExit(
+                  "example config targets missing from sdist: "
+                  f"{missing_example_targets}"
+              )
           forbidden = [
               prefix
               for prefix in forbidden_sdist_prefixes
@@ -192,6 +222,14 @@ jobs:
           cd "$smoke_dir"
           gpurec --help
           python -m gpurec.cli --help
+          gpurec sample --help | tee sample-help.txt
+          grep -q -- "--backtrack-binary" sample-help.txt
+          grep -q -- "GPUREC_BACKTRACK_BIN" sample-help.txt
+          grep -q -- "checkpoints/best.pt" sample-help.txt
+          grep -q -- "checkpoints/latest.pt" sample-help.txt
+          gpurec run --help | tee run-help.txt
+          grep -q -- "--backtrack-binary" run-help.txt
+          grep -q -- "GPUREC_BACKTRACK_BIN" run-help.txt
           python - <<'PY'
           import os
           from pathlib import Path

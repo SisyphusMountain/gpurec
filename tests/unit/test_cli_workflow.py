@@ -849,5 +849,9 @@ def test_cli_sample_help_describes_checkpoint_and_backtracking(capsys):
     captured = capsys.readouterr()
     assert exc_info.value.code == 0
     assert "Optimization checkpoint to sample" in captured.out
+    assert "checkpoints/best.pt" in captured.out
+    assert "checkpoints/latest.pt" in captured.out
+    assert "theta_final.pt" in captured.out
+    assert "--backtrack-binary" in captured.out
     assert "GPUREC_BACKTRACK_BIN" in captured.out
     assert "Samples per selected family" in captured.out

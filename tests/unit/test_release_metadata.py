@@ -164,6 +164,7 @@ def test_cpu_ci_builds_and_smokes_release_artifacts():
         'python -m pip install -e ".[release]"',
         "python -m build",
         "python -m twine check dist/*",
+        "import json",
         "tarfile.open",
         "zipfile.ZipFile",
         "required_sdist = required_wheel +",
@@ -180,6 +181,10 @@ def test_cpu_ci_builds_and_smokes_release_artifacts():
         "crates/gpurec-backtrack/target/",
         "forbidden_wheel_prefixes",
         "gpurec/core/cpp/preprocess.cpp",
+        "examples/",
+        "json.load",
+        'for field in ("species_tree", "families_file")',
+        "example config targets missing from sdist",
         "gpurec/core/cpp/clade_utils.hpp",
         "sdist missing required source files",
         "sdist includes forbidden paths",
@@ -197,6 +202,12 @@ def test_cpu_ci_builds_and_smokes_release_artifacts():
         'cd "$smoke_dir"',
         "gpurec --help",
         "python -m gpurec.cli --help",
+        "gpurec sample --help",
+        "gpurec run --help",
+        "--backtrack-binary",
+        "GPUREC_BACKTRACK_BIN",
+        "checkpoints/best.pt",
+        "checkpoints/latest.pt",
         "import gpurec",
         'Path(os.environ["GITHUB_WORKSPACE"]).resolve()',
         "package_path.is_relative_to(workspace)",
@@ -447,28 +458,41 @@ def test_final_theta_artifact_is_documented_as_export_only():
 
 def test_readme_scopes_example_config_to_source_artifacts():
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    workflow = (ROOT / ".github" / "workflows" / "cpu-unit.yml").read_text(
+        encoding="utf-8"
+    )
 
     assert "For a source checkout or source archive" in readme
     assert "examples/minimal-run-config.json" in readme
     assert "Installed wheels do not install the `examples/` directory" in readme
     assert '"species_tree": "S.tree"' in readme
     assert '"families_file": "families.txt"' in readme
+    assert '"examples/"' in workflow
+    assert "json.load" in workflow
+    assert "example config targets missing from sdist" in workflow
 
 
 def test_readme_documents_installed_sampling_binary_setup():
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
     guide = (ROOT / "docs" / "release-readiness.md").read_text(encoding="utf-8")
+    normalized_guide = " ".join(guide.split())
 
     for text in (readme, guide):
         normalized = " ".join(text.split())
         assert "Wheels currently do not ship" in normalized
         assert "prebuilt binary" in normalized
     assert "### Sampling Binary Setup" in readme
+    assert "`gpurec sample` and the sampling phase of `gpurec run`" in readme
     assert (
         "cargo build --locked --release --manifest-path "
         "crates/gpurec-backtrack/Cargo.toml"
     ) in readme
     assert "GPUREC_BACKTRACK_BIN" in readme
     assert "--backtrack-binary" in readme
+    assert "The same `GPUREC_BACKTRACK_BIN` environment variable" in readme
     assert "fallback works from a source checkout or unpacked\nsource archive" in readme
-    assert "unpacked-source-archive `cargo run`\n  fallback" in guide
+    assert "unpacked-source-archive `cargo run` fallback" in normalized_guide
+    assert (
+        "installed `gpurec sample --help` and `gpurec run --help`"
+        in normalized_guide
+    )
