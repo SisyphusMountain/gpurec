@@ -1914,6 +1914,28 @@ It now names the current public no-grad loss probes:
 \texttt{UniformChunkedReconModel.nll()} for chunked global models.  Repository
 hygiene tests now guard those documentation contracts.
 
+\subsection{Uniform Chunk Metadata Public Surface}
+
+Parallel API/export reviews found that the uniform chunked integration tests
+were still asserting on \texttt{UniformChunkedReconModel.\_state} internals for
+chunk counts, solver iteration settings, dataset family counts, and built
+chunk layout summaries.  The model now exposes a stable public metadata
+surface for those use cases: \texttt{n\_families}, \texttt{family\_count},
+\texttt{chunk\_count}, \texttt{fixed\_iters\_Pi},
+\texttt{fixed\_iters\_E}, and tuple-valued \texttt{chunk\_metadata}.  The new
+\texttt{UniformChunkMetadata} dataclass reports the chunk index, selected
+family indices and names, gene tree paths, family/clade/split counts, wave
+counts, and split-row sizes without exposing the internal resident wave-layout
+dictionary.
+
+\texttt{UniformChunkMetadata} is exported from \texttt{gpurec.api} and the
+top-level \texttt{gpurec} namespace, and the top-level export test now checks
+that \texttt{gpurec.\_\_all\_\_} stays aligned with its lazy-export map.  The
+uniform chunked integration tests now use the public accessors instead of
+reading \texttt{\_state}.  The README runtime-surface summary now calls out
+public chunk metadata as the supported way to inspect resident uniform chunk
+planning.
+
 \section{Verification Log}
 
 \begin{center}
@@ -4236,6 +4258,24 @@ Release metadata checker after sampling-doc cleanup &
 \texttt{expected license blockers} \\
 \texttt{pdflatex -interaction=nonstopmode -halt-on-error ...professionalization...} &
 Audit log build after sampling-doc cleanup &
+\texttt{ok with known overfull table warnings} \\
+\texttt{python -m py\_compile gpurec/api/uniform\_chunked.py gpurec/api/\_\_init\_\_.py gpurec/\_\_init\_\_.py ...} &
+Uniform chunk metadata syntax &
+\texttt{ok} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q tests/unit/test\_workflow.py -k "..."} &
+Focused uniform chunk metadata export/accessor coverage &
+\texttt{2 passed, 335 deselected} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q tests/unit/test\_workflow.py tests/unit/test\_repository\_hygiene.py} &
+Workflow and hygiene suites after chunk metadata surface &
+\texttt{350 passed} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
+CPU unit gate after chunk metadata surface &
+\texttt{615 passed, 28 deselected} \\
+\texttt{python scripts/check\_release\_metadata.py} &
+Release metadata checker after chunk metadata surface &
+\texttt{expected license blockers} \\
+\texttt{pdflatex -interaction=nonstopmode -halt-on-error ...professionalization...} &
+Audit log build after chunk metadata surface &
 \texttt{ok with known overfull table warnings} \\
 \bottomrule
 \end{tabular}

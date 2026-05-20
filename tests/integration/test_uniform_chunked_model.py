@@ -95,8 +95,8 @@ def test_chunked_uniform_from_folder_and_adam_step(tmp_path):
         model.clamp_theta_()
     after = float(model.nll().item())
 
-    assert len(model._state.built_chunks) == 2
-    assert model._state.fixed_iters_E == 4
+    assert model.chunk_count == 2
+    assert model.fixed_iters_E == 4
     assert torch.isfinite(model.theta).all()
     assert after < before
 
@@ -116,7 +116,7 @@ def test_chunked_uniform_chunk_subset_nll_and_gradient(tmp_path):
         use_pruning=False,
     )
 
-    assert len(model._state.built_chunks) == 2
+    assert model.chunk_count == 2
     full_vec = model.nll_per_family()
     chunk0 = model.nll_per_family(chunk_indices=[0])
     chunk1 = model.nll_per_family(chunk_indices=[1])
@@ -164,6 +164,7 @@ def test_chunked_uniform_accepts_hogenom_unrooted_binary_newick(tmp_path):
         fixed_iters_Pi=6,
     )
 
-    assert len(model._state.dataset.families) == 3
-    assert sum(c.spec.clades for c in model._state.built_chunks) > 0
-    assert sum(c.waves for c in model._state.built_chunks) > 0
+    metadata = model.chunk_metadata
+    assert model.n_families == 3
+    assert sum(chunk.clade_count for chunk in metadata) > 0
+    assert sum(chunk.wave_count for chunk in metadata) > 0

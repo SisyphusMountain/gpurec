@@ -16,6 +16,7 @@ from importlib import import_module
 _LAZY_EXPORTS = {
     "GeneReconModel": "gpurec.api",
     "UniformChunkedReconModel": "gpurec.api",
+    "UniformChunkMetadata": "gpurec.api",
     "ActiveFamilyBatch": "gpurec.api",
     "BatchMetadata": "gpurec.api",
     "FamilyInput": "gpurec.api",
@@ -36,6 +37,7 @@ _LAZY_EXPORTS = {
 __all__ = [
     "GeneReconModel",
     "UniformChunkedReconModel",
+    "UniformChunkMetadata",
     "ActiveFamilyBatch",
     "BatchMetadata",
     "FamilyInput",

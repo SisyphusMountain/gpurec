@@ -8,7 +8,8 @@ stochastic RecPhyloXML sampling.
 
 - `GeneReconModel` for `mode="global"`, `mode="specieswise"`, and
   `mode="genewise"`.
-- `UniformChunkedReconModel` for large global/uniform datasets.
+- `UniformChunkedReconModel` for large global/uniform datasets, with public
+  chunk metadata for inspecting resident chunk planning.
 - `gpurec.workflow` production runners for AleRax-style family inputs,
   checkpointed optimization, convergence diagnostics, and stochastic
   backtracking.

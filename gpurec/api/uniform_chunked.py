@@ -83,6 +83,23 @@ class UniformBuiltChunk:
     max_wave_split_rows: int
 
 
+@dataclass(frozen=True)
+class UniformChunkMetadata:
+    """Public metadata for one resident uniform chunk."""
+
+    chunk_index: int
+    family_indices: tuple[int, ...]
+    family_names: tuple[str, ...]
+    gene_tree_paths: tuple[tuple[str, ...], ...]
+    family_count: int
+    clade_count: int
+    split_count: int
+    wave_count: int
+    max_wave_size: int
+    split_rows: int
+    max_wave_split_rows: int
+
+
 @dataclass
 class UniformChunkedState:
     dataset: GeneDataset
@@ -912,6 +929,51 @@ class UniformChunkedReconModel(torch.nn.Module):
         self.family_names = dataset.family_names
         self.species_tree = str(species_tree)
 
+    @property
+    def n_families(self) -> int:
+        return len(self._state.dataset.families)
+
+    @property
+    def family_count(self) -> int:
+        return self.n_families
+
+    @property
+    def chunk_count(self) -> int:
+        return len(self._state.built_chunks)
+
+    @property
+    def fixed_iters_Pi(self) -> int:
+        return self._state.fixed_iters_Pi
+
+    @property
+    def fixed_iters_E(self) -> int | None:
+        return self._state.fixed_iters_E
+
+    @property
+    def chunk_metadata(self) -> tuple[UniformChunkMetadata, ...]:
+        return tuple(
+            UniformChunkMetadata(
+                chunk_index=chunk_idx,
+                family_indices=tuple(built.spec.indices),
+                family_names=tuple(
+                    self.family_names[family_idx]
+                    for family_idx in built.spec.indices
+                ),
+                gene_tree_paths=tuple(
+                    tuple(self.gene_trees[family_idx])
+                    for family_idx in built.spec.indices
+                ),
+                family_count=len(built.spec.indices),
+                clade_count=int(built.spec.clades),
+                split_count=int(built.spec.splits),
+                wave_count=int(built.waves),
+                max_wave_size=int(built.max_wave),
+                split_rows=int(built.split_rows),
+                max_wave_split_rows=int(built.max_wave_split_rows),
+            )
+            for chunk_idx, built in enumerate(self._state.built_chunks)
+        )
+
     @classmethod
     def from_trees(
         cls,
@@ -1106,4 +1168,9 @@ class UniformChunkedReconModel(torch.nn.Module):
             )
 
 
-__all__ = ["UniformChunkedReconModel", "UniformBuiltChunk", "UniformChunkSpec"]
+__all__ = [
+    "UniformBuiltChunk",
+    "UniformChunkMetadata",
+    "UniformChunkSpec",
+    "UniformChunkedReconModel",
+]

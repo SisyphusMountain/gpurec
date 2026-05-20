@@ -10,7 +10,7 @@ from .model import (
     GeneReconModel,
     ReconciliationState,
 )
-from .uniform_chunked import UniformChunkedReconModel
+from .uniform_chunked import UniformChunkMetadata, UniformChunkedReconModel
 
 __all__ = [
     "ActiveFamilyBatch",
@@ -18,5 +18,6 @@ __all__ = [
     "FamilyInput",
     "GeneReconModel",
     "ReconciliationState",
+    "UniformChunkMetadata",
     "UniformChunkedReconModel",
 ]

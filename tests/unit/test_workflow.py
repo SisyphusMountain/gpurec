@@ -34,9 +34,12 @@ from gpurec.api import (
     BatchMetadata,
     FamilyInput,
     ReconciliationState,
+    UniformChunkMetadata,
 )
 from gpurec.api.model import GeneReconModel
 from gpurec.api.uniform_chunked import (
+    UniformBuiltChunk,
+    UniformChunkSpec,
     UniformChunkedReconModel,
     _as_auto_int,
     _auto_positive_int,
@@ -281,17 +284,84 @@ def test_sampling_config_from_cli_args_maps_shared_fields(tmp_path: Path):
 
 
 def test_top_level_exports_api_metadata_types():
+    assert set(gpurec.__all__) == set(gpurec._LAZY_EXPORTS)
     assert gpurec.ActiveFamilyBatch is ActiveFamilyBatch
     assert gpurec.BatchMetadata is BatchMetadata
     assert gpurec.FamilyInput is FamilyInput
     assert gpurec.ReconciliationState is ReconciliationState
+    assert gpurec.UniformChunkMetadata is UniformChunkMetadata
     for name in (
         "ActiveFamilyBatch",
         "BatchMetadata",
         "FamilyInput",
         "ReconciliationState",
+        "UniformChunkMetadata",
     ):
         assert name in gpurec.__all__
+
+
+def test_uniform_chunked_public_chunk_metadata_accessors():
+    chunks = [
+        UniformBuiltChunk(
+            spec=UniformChunkSpec(indices=[0, 2], clades=7, splits=11),
+            wave_layout={},
+            waves=3,
+            max_wave=5,
+            split_rows=13,
+            max_wave_split_rows=8,
+        ),
+        UniformBuiltChunk(
+            spec=UniformChunkSpec(indices=[1], clades=4, splits=6),
+            wave_layout={},
+            waves=2,
+            max_wave=4,
+            split_rows=9,
+            max_wave_split_rows=7,
+        ),
+    ]
+    model = UniformChunkedReconModel.__new__(UniformChunkedReconModel)
+    model._state = SimpleNamespace(
+        built_chunks=chunks,
+        dataset=SimpleNamespace(families=[object(), object(), object()]),
+        fixed_iters_Pi=6,
+        fixed_iters_E=4,
+    )
+    model.family_names = ["family_0", "family_1", "family_2"]
+    model.gene_trees = [["g0.nwk"], ["g1a.nwk", "g1b.nwk"], ["g2.nwk"]]
+
+    assert model.n_families == 3
+    assert model.family_count == 3
+    assert model.chunk_count == 2
+    assert model.fixed_iters_Pi == 6
+    assert model.fixed_iters_E == 4
+    assert model.chunk_metadata == (
+        UniformChunkMetadata(
+            chunk_index=0,
+            family_indices=(0, 2),
+            family_names=("family_0", "family_2"),
+            gene_tree_paths=(("g0.nwk",), ("g2.nwk",)),
+            family_count=2,
+            clade_count=7,
+            split_count=11,
+            wave_count=3,
+            max_wave_size=5,
+            split_rows=13,
+            max_wave_split_rows=8,
+        ),
+        UniformChunkMetadata(
+            chunk_index=1,
+            family_indices=(1,),
+            family_names=("family_1",),
+            gene_tree_paths=(("g1a.nwk", "g1b.nwk"),),
+            family_count=1,
+            clade_count=4,
+            split_count=6,
+            wave_count=2,
+            max_wave_size=4,
+            split_rows=9,
+            max_wave_split_rows=7,
+        ),
+    )
 
 
 def test_close_prevents_later_prefetch_restart(monkeypatch):
