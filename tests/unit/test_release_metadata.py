@@ -211,6 +211,19 @@ def test_cpu_ci_builds_and_smokes_release_artifacts():
     assert workflow.index('cd "$smoke_dir"') < workflow.index("gpurec --help")
 
 
+def test_cpu_ci_workflow_uses_minimal_permissions_and_concurrency():
+    workflow = (ROOT / ".github" / "workflows" / "cpu-unit.yml").read_text(
+        encoding="utf-8"
+    )
+    jobs_index = workflow.index("\njobs:\n")
+    preamble = workflow[:jobs_index]
+
+    assert "\npermissions:\n  contents: read\n" in preamble
+    assert "\nconcurrency:\n" in preamble
+    assert "  group: ${{ github.workflow }}-${{ github.ref }}\n" in preamble
+    assert "  cancel-in-progress: true\n" in preamble
+
+
 def test_manifest_includes_documented_examples_in_source_archive():
     manifest = (ROOT / "MANIFEST.in").read_text(encoding="utf-8")
 
