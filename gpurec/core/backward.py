@@ -16,6 +16,7 @@ from .extract_parameters import as_family_param, as_family_species
 from .species import species_wave_topology
 
 _SUPPORTED_BACKWARD_FLOAT_DTYPES = (torch.float32, torch.float64)
+_OPTIONAL_CUDA_SELF_LOOP_EXCEPTIONS = (ImportError, RuntimeError, ValueError)
 
 
 # ---------------------------------------------------------------------------
@@ -449,7 +450,7 @@ def Pi_wave_backward(
                 )
                 aw0 = aw1 = aw2 = aw345 = aw3 = aw4 = None
                 self_loop_grads_accumulated = True
-            except (ImportError, RuntimeError):
+            except _OPTIONAL_CUDA_SELF_LOOP_EXCEPTIONS:
                 if (
                     (dts_r is None and cuda_self_loop_nosplit_required)
                     or (dts_r is not None and cuda_self_loop_split_required)

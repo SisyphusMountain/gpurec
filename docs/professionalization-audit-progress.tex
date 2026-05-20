@@ -4576,6 +4576,24 @@ Release metadata checker after CUDA Pibar strict-mode parser hardening &
 \texttt{pdflatex -interaction=nonstopmode -halt-on-error ...professionalization...} &
 Audit log build after CUDA Pibar strict-mode parser hardening &
 \texttt{ok with known overfull table warnings} \\
+\texttt{python -m py\_compile gpurec/core/backward.py tests/unit/test\_core\_backward.py} &
+Optional CUDA self-loop fallback syntax &
+\texttt{ok} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q tests/unit/test\_core\_backward.py} &
+Focused optional CUDA self-loop fallback exception coverage &
+\texttt{2 passed} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q tests/unit/test\_release\_metadata.py::test\_tests\_readme\_explicit\_cpu\_unit\_paths\_match\_marker\_gate} &
+Focused CPU unit path documentation guard after adding backward tests &
+\texttt{1 passed} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
+CPU unit gate after optional CUDA self-loop fallback hardening &
+\texttt{669 passed, 28 deselected} \\
+\texttt{python scripts/check\_release\_metadata.py} &
+Release metadata checker after optional CUDA self-loop fallback hardening &
+\texttt{expected license blockers} \\
+\texttt{pdflatex -interaction=nonstopmode -halt-on-error ...professionalization...} &
+Audit log build after optional CUDA self-loop fallback hardening &
+\texttt{ok with known overfull table warnings} \\
 \bottomrule
 \end{tabular}
 \end{center}
