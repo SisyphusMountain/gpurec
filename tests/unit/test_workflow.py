@@ -1527,6 +1527,21 @@ def test_cli_sample_reports_missing_checkpoint_without_traceback(tmp_path: Path,
     assert "Traceback" not in captured.err
 
 
+def test_cli_sample_reports_empty_checkpoint_without_traceback(tmp_path: Path, capsys):
+    checkpoint = tmp_path / "empty.pt"
+    checkpoint.write_bytes(b"")
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(["sample", "--checkpoint", str(checkpoint)])
+
+    captured = capsys.readouterr()
+    assert exc_info.value.code == 1
+    assert "could not safely load checkpoint" in captured.err
+    assert str(checkpoint) in captured.err
+    assert "usage:" not in captured.err
+    assert "Traceback" not in captured.err
+
+
 def test_cli_sample_raw_theta_checkpoint_error_suggests_real_checkpoints(
     tmp_path: Path,
     capsys,

@@ -1401,6 +1401,17 @@ monkeypatches CUDA availability and device count, and the explicit test-command
 documentation was updated so the docs guard continues to match the marker
 gate.
 
+\subsection{Empty Checkpoint Error Wrapping}
+
+\texttt{load\_checkpoint()} now treats \texttt{EOFError} from
+\texttt{torch.load(..., weights\_only=True)} as an unsafe or malformed
+checkpoint load failure.  Empty or truncated checkpoint files therefore produce
+the same gpurec-owned \texttt{RuntimeError} as other invalid serialized
+artifacts.  The CLI regression creates an empty \texttt{.pt} file and verifies
+\texttt{gpurec sample --checkpoint} exits without usage text or a Python
+traceback while still showing the checkpoint path and recovery-oriented loader
+message.
+
 \section{Verification Log}
 
 \begin{center}
@@ -2877,6 +2888,21 @@ Release metadata checker after CUDA device validation &
 \texttt{expected license blockers} \\
 \texttt{pdflatex -interaction=nonstopmode -halt-on-error ...professionalization...} &
 Audit log build after CUDA device validation &
+\texttt{ok with known overfull table warnings} \\
+\texttt{python -m py\_compile gpurec/workflow/checkpoint.py tests/unit/test\_workflow.py} &
+Empty checkpoint error wrapping syntax &
+\texttt{ok} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q tests/unit/test\_workflow.py -k "..."} &
+Focused empty-checkpoint CLI guards &
+\texttt{3 passed, 284 deselected} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
+CPU unit gate after empty checkpoint error wrapping &
+\texttt{405 passed, 28 deselected} \\
+\texttt{python scripts/check\_release\_metadata.py} &
+Release metadata checker after empty checkpoint error wrapping &
+\texttt{expected license blockers} \\
+\texttt{pdflatex -interaction=nonstopmode -halt-on-error ...professionalization...} &
+Audit log build after empty checkpoint error wrapping &
 \texttt{ok with known overfull table warnings} \\
 \bottomrule
 \end{tabular}

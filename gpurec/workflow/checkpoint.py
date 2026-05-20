@@ -118,7 +118,13 @@ def _safe_torch_load(
 ) -> Any:
     try:
         return torch.load(path, map_location=map_location, weights_only=True)
-    except (pickle.UnpicklingError, RuntimeError, TypeError, ValueError) as exc:
+    except (
+        EOFError,
+        pickle.UnpicklingError,
+        RuntimeError,
+        TypeError,
+        ValueError,
+    ) as exc:
         raise RuntimeError(
             f"could not safely load {artifact} {path}; regenerate the artifact "
             "or migrate it from a trusted source before retrying"
