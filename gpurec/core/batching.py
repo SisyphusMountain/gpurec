@@ -31,6 +31,9 @@ def collate_gene_families(
       - 'root_clade_ids': Long[F] (roots offset into concatenated clade axis)
       - 'family_meta': bookkeeping (clade offsets, per-family sizes)
     """
+    if not batch:
+        raise ValueError("batch must contain at least one family")
+
     # ---- running offsets and accumulators ----
     clade_offset = 0
 

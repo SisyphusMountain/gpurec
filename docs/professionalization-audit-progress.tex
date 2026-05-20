@@ -1701,6 +1701,14 @@ negative and out-of-range clade IDs, so bad metadata reports an explicit
 \texttt{waves} and \texttt{phases} have matching lengths before building the
 layout tensors, preventing silent phase drops and late list-index failures.
 
+\subsection{Empty Collate Batch Guard}
+
+\texttt{collate\_gene\_families()} now rejects an empty family batch at the
+entry point with a clear \texttt{ValueError}.  Previously an empty list reached
+the tensor assembly phase and failed through \texttt{torch.cat([])}, which made
+the public contract depend on an incidental PyTorch error instead of a
+domain-specific message.
+
 \section{Verification Log}
 
 \begin{center}
@@ -3675,6 +3683,24 @@ Release metadata checker after batching scheduler invariant guards &
 \texttt{expected license blockers} \\
 \texttt{pdflatex -interaction=nonstopmode -halt-on-error ...professionalization...} &
 Audit log build after batching scheduler invariant guards &
+\texttt{ok with known overfull table warnings} \\
+\texttt{python -m py\_compile gpurec/core/batching.py tests/unit/test\_global\_wave\_scheduler.py} &
+Empty collate guard syntax &
+\texttt{ok} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q tests/unit/test\_global\_wave\_scheduler.py -k "..."} &
+Focused empty collate and optimized-Python guards &
+\texttt{2 passed, 25 deselected} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q tests/unit/test\_global\_wave\_scheduler.py} &
+Global scheduler unit file after empty collate guard &
+\texttt{27 passed} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
+CPU unit gate after empty collate guard &
+\texttt{463 passed, 28 deselected} \\
+\texttt{python scripts/check\_release\_metadata.py} &
+Release metadata checker after empty collate guard &
+\texttt{expected license blockers} \\
+\texttt{pdflatex -interaction=nonstopmode -halt-on-error ...professionalization...} &
+Audit log build after empty collate guard &
 \texttt{ok with known overfull table warnings} \\
 \bottomrule
 \end{tabular}
