@@ -1625,6 +1625,14 @@ normalization layer over C++ phased scheduling metadata.  The new
 tensor-backed wave and phase conversion to plain Python lists and integers, and
 \texttt{max\_wave\_size} chunking with repeated phase labels.
 
+\subsection{Species Helper Unit Coverage}
+
+The CPU species-tree helper layer now has direct coverage for its compact
+metadata conversions.  The new \texttt{tests/unit/test\_species\_helpers.py}
+module checks parent-vector construction with requested dtype, child and parent
+topology tensors, compact internal-node levels, cache reuse, mismatched helper
+length errors, cycle detection, and sparse uniform ancestor matrix construction.
+
 \subsection{Global Scheduler Test Path Hygiene}
 
 The global wave scheduler source-guard test no longer assumes pytest is invoked
@@ -3594,6 +3602,24 @@ Release metadata checker after scheduling helper tests &
 \texttt{expected license blockers} \\
 \texttt{pdflatex -interaction=nonstopmode -halt-on-error ...professionalization...} &
 Audit log build after scheduling helper tests &
+\texttt{ok with known overfull table warnings} \\
+\texttt{python -m py\_compile tests/unit/test\_species\_helpers.py} &
+Species helper test syntax &
+\texttt{ok} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q tests/unit/test\_species\_helpers.py} &
+Focused species helper coverage &
+\texttt{5 passed} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q tests/unit/test\_release\_metadata.py -k "..."} &
+Explicit CPU unit path guard after species helper tests &
+\texttt{1 passed, 18 deselected} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
+CPU unit gate after species helper tests &
+\texttt{457 passed, 28 deselected} \\
+\texttt{python scripts/check\_release\_metadata.py} &
+Release metadata checker after species helper tests &
+\texttt{expected license blockers} \\
+\texttt{pdflatex -interaction=nonstopmode -halt-on-error ...professionalization...} &
+Audit log build after species helper tests &
 \texttt{ok with known overfull table warnings} \\
 \bottomrule
 \end{tabular}
