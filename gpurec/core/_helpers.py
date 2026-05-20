@@ -63,9 +63,28 @@ def _nvtx_range(name: str):
         except Exception:
             range_ctx = None
         if range_ctx is not None:
-            with range_ctx:
-                yield
-            return
+            enter_range = getattr(range_ctx, "__enter__", None)
+            exit_range = getattr(range_ctx, "__exit__", None)
+            if enter_range is not None and exit_range is not None:
+                try:
+                    enter_range()
+                except Exception:
+                    pass
+                else:
+                    try:
+                        yield
+                    except BaseException as exc:
+                        try:
+                            exit_range(type(exc), exc, exc.__traceback__)
+                        except Exception:
+                            pass
+                        raise
+                    else:
+                        try:
+                            exit_range(None, None, None)
+                        except Exception:
+                            pass
+                        return
     pushed = False
     if nvtx is not None and hasattr(nvtx, "range_push"):
         try:
