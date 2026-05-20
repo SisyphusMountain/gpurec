@@ -74,6 +74,14 @@ def _validate_run_config_input_paths(config: RunConfig) -> None:
             raise ValueError(f"{option} path does not exist or is not a file: {path}")
 
 
+def _validate_sampling_checkpoint_path(checkpoint: Path) -> None:
+    path = checkpoint.expanduser().resolve()
+    if not path.is_file():
+        raise ValueError(
+            f"--checkpoint path does not exist or is not a file: {path}"
+        )
+
+
 def _run_config_from_args(args: argparse.Namespace) -> RunConfig:
     from gpurec.workflow.config import RunConfig
 
@@ -456,9 +464,13 @@ def main(argv: list[str] | None = None) -> None:
     if args.command == "sample":
         try:
             sampling_config = _sampling_config_from_args(args, args.checkpoint)
-            result = sample(sampling_config)
+            _validate_sampling_checkpoint_path(sampling_config.checkpoint)
         except _EXPECTED_WORKFLOW_ERRORS as exc:
             parser.error(_sampling_error_message(exc))
+        try:
+            result = sample(sampling_config)
+        except _EXPECTED_WORKFLOW_ERRORS as exc:
+            _exit_runtime_error(parser, _sampling_error_message(exc))
         print(
             f"sampled families={result.families_sampled} "
             f"samples={result.samples_per_family} xml={result.xml_files} "
@@ -493,11 +505,20 @@ def main(argv: list[str] | None = None) -> None:
         checkpoint = run_config.out_dir / "checkpoints" / "best.pt"
         if not checkpoint.exists():
             checkpoint = run_config.out_dir / "checkpoints" / "latest.pt"
+        if not checkpoint.is_file():
+            _exit_runtime_error(
+                parser,
+                "optimization completed but no best.pt or latest.pt checkpoint "
+                f"was found under {run_config.out_dir / 'checkpoints'}",
+            )
         try:
             sampling_config = _sampling_config_from_args(args, checkpoint)
-            sampling_result = sample(sampling_config)
         except _EXPECTED_WORKFLOW_ERRORS as exc:
             parser.error(_sampling_error_message(exc))
+        try:
+            sampling_result = sample(sampling_config)
+        except _EXPECTED_WORKFLOW_ERRORS as exc:
+            _exit_runtime_error(parser, _sampling_error_message(exc))
         print(
             f"status={opt_result.status} reason={opt_result.reason} "
             f"sampled_families={sampling_result.families_sampled} "

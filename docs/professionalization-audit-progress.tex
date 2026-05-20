@@ -1346,13 +1346,14 @@ exit through argparse without CUDA noise, tracebacks, or an optimization call.
 
 \subsection{CLI Runtime Exit Semantics}
 
-\texttt{gpurec optimize} and the optimization phase of \texttt{gpurec run} now
-separate configuration construction errors from workflow runtime exceptions.
-Configuration and input validation still report through argparse with exit code
-2, while exceptions raised by the optimization workflow exit with status 1 and
-an error line that does not include the argparse usage banner.  The CLI
-regression tests cover both direct optimization and combined run mode so
-operational failures are no longer presented as command-line syntax mistakes.
+\texttt{gpurec optimize}, \texttt{gpurec sample}, and both workflow phases of
+\texttt{gpurec run} now separate configuration construction errors from
+workflow runtime exceptions.  Configuration and input validation still report
+through argparse with exit code 2, while exceptions raised by optimization or
+sampling workflows exit with status 1 and an error line that does not include
+the argparse usage banner.  The CLI regression tests cover direct
+optimization, direct sampling, and combined run mode so operational failures
+are no longer presented as command-line syntax mistakes.
 
 \subsection{Backtracking Binary Preflight}
 
@@ -2781,6 +2782,21 @@ Release metadata checker after backtracking binary preflight &
 \texttt{expected license blockers} \\
 \texttt{pdflatex -interaction=nonstopmode -halt-on-error ...professionalization...} &
 Audit log build after backtracking binary preflight &
+\texttt{ok with known overfull table warnings} \\
+\texttt{python -m py\_compile gpurec/cli.py tests/unit/test\_workflow.py} &
+Sampling runtime-exit syntax &
+\texttt{ok} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q tests/unit/test\_workflow.py -k "..."} &
+Focused sampling runtime-exit guards &
+\texttt{6 passed, 279 deselected} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
+CPU unit gate after sampling runtime-exit semantics &
+\texttt{399 passed, 28 deselected} \\
+\texttt{python scripts/check\_release\_metadata.py} &
+Release metadata checker after sampling runtime-exit semantics &
+\texttt{expected license blockers} \\
+\texttt{pdflatex -interaction=nonstopmode -halt-on-error ...professionalization...} &
+Audit log build after sampling runtime-exit semantics &
 \texttt{ok with known overfull table warnings} \\
 \bottomrule
 \end{tabular}

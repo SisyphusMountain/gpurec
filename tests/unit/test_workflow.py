@@ -1538,11 +1538,35 @@ def test_cli_sample_raw_theta_checkpoint_error_suggests_real_checkpoints(
         main(["sample", "--checkpoint", str(checkpoint)])
 
     captured = capsys.readouterr()
-    assert exc_info.value.code == 2
+    assert exc_info.value.code == 1
     assert "must contain a dictionary payload" in captured.err
     assert "checkpoints/best.pt" in captured.err
     assert "checkpoints/latest.pt" in captured.err
     assert "not theta_final.pt" in captured.err
+    assert "usage:" not in captured.err
+    assert "Traceback" not in captured.err
+
+
+def test_cli_sample_reports_workflow_errors_without_usage(
+    tmp_path: Path,
+    capsys,
+    monkeypatch,
+):
+    checkpoint = tmp_path / "best.pt"
+    checkpoint.write_bytes(b"not used")
+
+    def fail_sample(config):
+        raise RuntimeError("sampling failed")
+
+    monkeypatch.setattr("gpurec.cli.sample", fail_sample)
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(["sample", "--checkpoint", str(checkpoint)])
+
+    captured = capsys.readouterr()
+    assert exc_info.value.code == 1
+    assert "sampling failed" in captured.err
+    assert "usage:" not in captured.err
     assert "Traceback" not in captured.err
 
 
@@ -1607,6 +1631,38 @@ def test_cli_run_reports_optimize_errors_without_traceback(
     captured = capsys.readouterr()
     assert exc_info.value.code == 1
     assert "workflow failed" in captured.err
+    assert "usage:" not in captured.err
+    assert "Traceback" not in captured.err
+
+
+def test_cli_run_reports_sampling_errors_without_usage(
+    tmp_path: Path,
+    capsys,
+    monkeypatch,
+):
+    def successful_optimize(config):
+        checkpoint_dir = config.out_dir / "checkpoints"
+        checkpoint_dir.mkdir(parents=True)
+        (checkpoint_dir / "best.pt").write_bytes(b"not used")
+        return SimpleNamespace(
+            out_dir=config.out_dir,
+            status="success",
+            reason="completed",
+            final_nll_bits=12.0,
+        )
+
+    def fail_sample(config):
+        raise RuntimeError("sampling failed")
+
+    monkeypatch.setattr("gpurec.cli.optimize", successful_optimize)
+    monkeypatch.setattr("gpurec.cli.sample", fail_sample)
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(_minimal_workflow_cli_args("run", tmp_path))
+
+    captured = capsys.readouterr()
+    assert exc_info.value.code == 1
+    assert "sampling failed" in captured.err
     assert "usage:" not in captured.err
     assert "Traceback" not in captured.err
 
