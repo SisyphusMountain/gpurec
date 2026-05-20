@@ -1817,6 +1817,16 @@ positive-integer-plus-evenness checks.  This keeps direct constructor,
 factory, and runtime solver-control errors homogeneous without changing the
 CUDA execution paths.
 
+\subsection{Workflow Positive-Even Iteration Validation}
+
+\texttt{RunConfig} now normalizes \texttt{fixed\_iters\_pi} through a dedicated
+\texttt{\_normalize\_positive\_even\_int()} helper instead of performing
+positive-integer normalization in \texttt{\_\_post\_init\_\_()} and a separate
+evenness check in \texttt{validate()}.  The workflow JSON/programmatic config
+layer now mirrors the public model API's positive-even solver iteration
+contract, with direct regression coverage for odd \texttt{fixed\_iters\_pi}
+values before model construction or CUDA setup.
+
 \section{Verification Log}
 
 \begin{center}
@@ -4005,6 +4015,24 @@ Release metadata checker after positive-even helper extraction &
 \texttt{pdflatex -interaction=nonstopmode -halt-on-error ...professionalization...} &
 Audit log build after positive-even helper extraction &
 \texttt{ok with known overfull table warnings} \\
+\texttt{python -m py\_compile gpurec/workflow/config.py tests/unit/test\_workflow.py} &
+Workflow positive-even helper syntax &
+\texttt{ok} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q tests/unit/test\_workflow.py -k "..."} &
+Focused workflow positive-even config coverage &
+\texttt{21 passed, 234 deselected} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q tests/unit/test\_workflow.py} &
+Workflow units after config positive-even helper extraction &
+\texttt{255 passed} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
+CPU unit gate after workflow positive-even helper extraction &
+\texttt{515 passed, 28 deselected} \\
+\texttt{python scripts/check\_release\_metadata.py} &
+Release metadata checker after workflow positive-even helper extraction &
+\texttt{expected license blockers} \\
+\texttt{pdflatex -interaction=nonstopmode -halt-on-error ...professionalization...} &
+Audit log build after workflow positive-even helper extraction &
+\texttt{ok with known overfull table warnings} \\
 \bottomrule
 \end{tabular}
 \end{center}
@@ -4018,6 +4046,14 @@ Audit log build after positive-even helper extraction &
         document a Rust-toolchain requirement for source-tree sampling.
   \item Add an installed-artifact sampling smoke once the backtracking binary
         distribution model is settled.
+  \item Canonicalize \texttt{RunConfig.dtype} aliases so persisted workflow
+        configs and checkpoint metadata do not vary between CLI and JSON input
+        paths.
+  \item Reject resume checkpoints whose stored \texttt{next\_step} exceeds the
+        configured workflow \texttt{steps} value instead of silently producing
+        confusing completion metadata.
+  \item Add earlier public API validation for chunk, wave-cap, and index
+        controls so invalid values fail before CUDA setup or tree-file I/O.
   \item Keep committing small, verified increments so the branch remains
         reviewable despite the larger audit scope.
 \end{enumerate}

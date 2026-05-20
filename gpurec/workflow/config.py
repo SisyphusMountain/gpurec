@@ -58,6 +58,13 @@ def _normalize_positive_int(name: str, value: int | float | str) -> int:
     return number
 
 
+def _normalize_positive_even_int(name: str, value: int | float | str) -> int:
+    number = _normalize_positive_int(name, value)
+    if number % 2 != 0:
+        raise ValueError(f"{name} must be a positive even integer")
+    return number
+
+
 def _normalize_nonnegative_int(name: str, value: int | float | str) -> int:
     number = _normalize_int(name, value)
     if number < 0:
@@ -325,7 +332,7 @@ class RunConfig:
                 self.fixed_iters_e,
             )
         self.max_iters_e = _normalize_positive_int("max_iters_e", self.max_iters_e)
-        self.fixed_iters_pi = _normalize_positive_int(
+        self.fixed_iters_pi = _normalize_positive_even_int(
             "fixed_iters_pi",
             self.fixed_iters_pi,
         )
@@ -383,8 +390,7 @@ class RunConfig:
             raise ValueError("fixed_iters_e must be positive when provided")
         if self.max_iters_e < 1:
             raise ValueError("max_iters_e must be positive")
-        if self.fixed_iters_pi < 1 or self.fixed_iters_pi % 2 != 0:
-            raise ValueError("fixed_iters_pi must be a positive even integer")
+        _normalize_positive_even_int("fixed_iters_pi", self.fixed_iters_pi)
         if self.neumann_terms < 1:
             raise ValueError("neumann_terms must be positive")
         if self.convergence_check_interval < 1:

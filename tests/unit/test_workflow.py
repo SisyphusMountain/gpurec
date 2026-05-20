@@ -555,6 +555,17 @@ def test_run_config_rejects_nonintegral_integer_controls(
         )
 
 
+def test_run_config_rejects_odd_fixed_pi_iterations(tmp_path: Path):
+    with pytest.raises(ValueError, match="fixed_iters_pi"):
+        RunConfig(
+            species_tree=tmp_path / "sp.nwk",
+            families_file=tmp_path / "families.txt",
+            out_dir=tmp_path / "out",
+            device="cpu",
+            fixed_iters_pi=3,
+        )
+
+
 def test_family_chunk_size_normalization_is_shared():
     for value in (None, "", "0", "all", "none", "null", 0):
         assert normalize_family_chunk_size(value) == 0
