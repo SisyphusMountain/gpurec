@@ -73,6 +73,19 @@ def _wildcard_export_names(import_statement: str) -> set[str]:
     return {name for name in namespace if not name.startswith("__")}
 
 
+def _run_python_snippet(code: str) -> subprocess.CompletedProcess[str]:
+    env = os.environ.copy()
+    env["CUDA_VISIBLE_DEVICES"] = ""
+    return subprocess.run(
+        [sys.executable, "-c", code],
+        cwd=Path(__file__).resolve().parents[2],
+        check=False,
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+
+
 def test_run_config_json_roundtrip(tmp_path: Path):
     config = RunConfig(
         species_tree=tmp_path / "sp.nwk",
@@ -385,17 +398,104 @@ def test_import_gpurec_does_not_eagerly_import_workflow_or_backtracking():
             "assert 'gpurec.backtracking' not in sys.modules",
         )
     )
-    env = os.environ.copy()
-    env["CUDA_VISIBLE_DEVICES"] = ""
+    result = _run_python_snippet(code)
 
-    result = subprocess.run(
-        [sys.executable, "-c", code],
-        cwd=Path(__file__).resolve().parents[2],
-        check=False,
-        capture_output=True,
-        text=True,
-        env=env,
+    assert result.returncode == 0
+    assert result.stdout == ""
+    assert result.stderr == ""
+
+
+def test_import_workflow_does_not_eagerly_import_heavy_workflow_modules():
+    code = "\n".join(
+        (
+            "import sys",
+            "import gpurec.workflow",
+            "assert 'gpurec.workflow.config' not in sys.modules",
+            "assert 'gpurec.workflow.optimize' not in sys.modules",
+            "assert 'gpurec.workflow.sampling' not in sys.modules",
+            "assert 'gpurec.backtracking' not in sys.modules",
+            "assert 'gpurec.api' not in sys.modules",
+            "assert 'torch' not in sys.modules",
+        )
     )
+    result = _run_python_snippet(code)
+
+    assert result.returncode == 0
+    assert result.stdout == ""
+    assert result.stderr == ""
+
+
+def test_run_config_workflow_export_does_not_import_optimizer_or_sampling():
+    code = "\n".join(
+        (
+            "import sys",
+            "from gpurec.workflow import RunConfig",
+            "assert RunConfig.__name__ == 'RunConfig'",
+            "assert 'gpurec.workflow.config' in sys.modules",
+            "assert 'gpurec.workflow.optimize' not in sys.modules",
+            "assert 'gpurec.workflow.sampling' not in sys.modules",
+            "assert 'gpurec.backtracking' not in sys.modules",
+            "assert 'gpurec.api' not in sys.modules",
+        )
+    )
+    result = _run_python_snippet(code)
+
+    assert result.returncode == 0
+    assert result.stdout == ""
+    assert result.stderr == ""
+
+
+def test_workflow_config_submodule_import_does_not_import_optimizer_or_sampling():
+    code = "\n".join(
+        (
+            "import sys",
+            "from gpurec.workflow.config import RunConfig",
+            "assert RunConfig.__name__ == 'RunConfig'",
+            "assert 'gpurec.workflow.config' in sys.modules",
+            "assert 'gpurec.workflow.optimize' not in sys.modules",
+            "assert 'gpurec.workflow.sampling' not in sys.modules",
+            "assert 'gpurec.backtracking' not in sys.modules",
+            "assert 'gpurec.api' not in sys.modules",
+        )
+    )
+    result = _run_python_snippet(code)
+
+    assert result.returncode == 0
+    assert result.stdout == ""
+    assert result.stderr == ""
+
+
+def test_workflow_optimize_export_survives_child_module_import_order():
+    code = "\n".join(
+        (
+            "import importlib",
+            "import gpurec.workflow as workflow",
+            "optimize_module = importlib.import_module('gpurec.workflow.optimize')",
+            "from gpurec.workflow import optimize",
+            "assert optimize_module.optimize is optimize",
+            "assert workflow.optimize is optimize",
+            "assert callable(optimize)",
+        )
+    )
+    result = _run_python_snippet(code)
+
+    assert result.returncode == 0
+    assert result.stdout == ""
+    assert result.stderr == ""
+
+
+def test_top_level_workflow_export_survives_child_module_import_order():
+    code = "\n".join(
+        (
+            "import importlib",
+            "import gpurec",
+            "optimize_module = importlib.import_module('gpurec.workflow.optimize')",
+            "from gpurec import optimize",
+            "assert optimize_module.optimize is optimize",
+            "assert callable(optimize)",
+        )
+    )
+    result = _run_python_snippet(code)
 
     assert result.returncode == 0
     assert result.stdout == ""

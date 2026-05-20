@@ -2259,6 +2259,26 @@ than the checkout.  It iterates \texttt{gpurec.\_\_all\_\_} and
 the same objects through the top-level package.  The release-readiness guide now
 documents the same installed-wheel export smoke.
 
+\subsection{Lazy Workflow Public Exports}
+
+\texttt{gpurec.workflow} now mirrors the top-level package's lazy public-export
+pattern.  A plain \texttt{import gpurec.workflow} no longer imports the workflow
+configuration, optimizer, sampling, API, backtracking, or Torch modules.  Access
+to \texttt{RunConfig} still loads the configuration module, but it no longer
+pulls in optimizer, sampling, API, or backtracking modules.
+
+The workflow package has a deliberate module-class guard for Python's
+child-module binding behavior.  Importing \texttt{gpurec.workflow.optimize} can
+bind a child module named \texttt{optimize} onto the parent package, but
+\texttt{from gpurec.workflow import optimize} and
+\texttt{from gpurec import optimize} continue to resolve to the public callable
+regardless of import order.  Subprocess tests pin those collision cases so the
+lazy import path does not become order-dependent.
+
+The package and release-readiness installed-wheel smokes now also validate
+public export discoverability through \texttt{dir()} and wildcard imports for
+\texttt{gpurec.workflow}.
+
 \section{Verification Log}
 
 \begin{center}
@@ -5092,6 +5112,24 @@ Release metadata checker after public export guard hardening &
 \texttt{pdflatex -interaction=nonstopmode -halt-on-error ...professionalization...} &
 Audit log build after public export guard hardening &
 \texttt{ok with known overfull table warnings} \\
+\texttt{python -m py\_compile gpurec/workflow/\_\_init\_\_.py tests/unit/test\_workflow.py tests/unit/test\_release\_metadata.py} &
+Lazy workflow export syntax &
+\texttt{ok} \\
+\texttt{python -m pytest selected lazy workflow import guards -q} &
+Focused lazy import, wildcard, and import-order guards &
+\texttt{15 passed} \\
+\texttt{python -m pytest tests/unit/test\_workflow.py tests/unit/test\_release\_metadata.py tests/unit/test\_examples.py tests/unit/test\_repository\_hygiene.py -q} &
+Touched workflow, release docs, examples, and hygiene suites &
+\texttt{452 passed} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' python -m pytest tests/unit -q -m "unit and not gpu"} &
+CPU unit gate after lazy workflow exports &
+\texttt{744 passed, 6 deselected} \\
+\texttt{python scripts/check\_release\_metadata.py} &
+Release metadata checker after lazy workflow exports &
+\texttt{expected license blockers} \\
+\texttt{pdflatex -interaction=nonstopmode -halt-on-error ...professionalization...} &
+Audit log build after lazy workflow exports &
+\texttt{ok with known overfull table warnings} \\
 \bottomrule
 \end{tabular}
 \end{center}
@@ -5105,8 +5143,8 @@ Audit log build after public export guard hardening &
         document a Rust-toolchain requirement for source-tree sampling.
   \item Add an installed-artifact sampling smoke once the backtracking binary
         distribution model is settled.
-  \item Consider making \texttt{gpurec.workflow} lazy like the top-level
-        package so config-only imports stay light and quiet.
+  \item Factor duplicate checkpoint/resume metadata validation into shared
+        workflow helpers without changing the public checkpoint format.
   \item Continue auditing public API consistency, documentation coverage, and
         CPU-safe regression tests for user-facing workflows.
   \item Keep committing small, verified increments so the branch remains

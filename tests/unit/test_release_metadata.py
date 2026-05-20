@@ -302,8 +302,12 @@ def test_cpu_ci_builds_and_smokes_release_artifacts():
         "imported gpurec from checkout",
         "import gpurec.workflow as workflow",
         "for name in gpurec.__all__:",
+        "top-level exports missing from dir(gpurec)",
         "for name in workflow.__all__:",
         "getattr(workflow, name)",
+        "workflow exports missing from dir(gpurec.workflow)",
+        "exec(\"from gpurec.workflow import *\", namespace)",
+        "workflow wildcard mismatch",
         "workflow export missing from gpurec.__all__",
         "top-level workflow export mismatch",
         "exports_ok",
@@ -425,6 +429,20 @@ def test_cli_help_smokes_are_quiet_on_cpu(command: tuple[str, ...]):
                 )
             ),
             "wildcard_ok",
+        ),
+        (
+            "\n".join(
+                (
+                    "import gpurec.workflow as workflow",
+                    "namespace = {}",
+                    "exec('from gpurec.workflow import *', namespace)",
+                    "exported = {name for name in namespace if not name.startswith('__')}",
+                    "if exported != set(workflow.__all__):",
+                    "    raise SystemExit(f'workflow wildcard mismatch: {sorted(exported ^ set(workflow.__all__))}')",
+                    "print('workflow_wildcard_ok')",
+                )
+            ),
+            "workflow_wildcard_ok",
         ),
     ),
 )
@@ -604,6 +622,8 @@ def test_release_readiness_smokes_top_level_exports():
     assert "getattr(gpurec, name)" in guide
     assert "for name in workflow.__all__" in guide
     assert "getattr(workflow, name)" in guide
+    assert "exec(\"from gpurec.workflow import *\", namespace)" in guide
+    assert "workflow wildcard mismatch" in guide
     assert "top-level workflow export mismatch" in guide
 
 
@@ -624,6 +644,9 @@ def test_release_readiness_documents_installed_wheel_smoke():
         "dist-packages",
         "for name in gpurec.__all__",
         "for name in workflow.__all__",
+        "top-level exports missing from dir(gpurec)",
+        "workflow exports missing from dir(gpurec.workflow)",
+        "workflow wildcard mismatch",
         "exports_ok",
     ):
         assert expected in guide

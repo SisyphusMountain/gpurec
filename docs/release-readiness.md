@@ -106,12 +106,21 @@ if "site-packages" not in package_path.parts and "dist-packages" not in package_
     raise SystemExit(f"gpurec import is not from installed packages: {package_path}")
 for name in gpurec.__all__:
     getattr(gpurec, name)
+if not set(gpurec.__all__) <= set(dir(gpurec)):
+    raise SystemExit("top-level exports missing from dir(gpurec)")
 for name in workflow.__all__:
     workflow_value = getattr(workflow, name)
     if name not in gpurec.__all__:
         raise SystemExit(f"workflow export missing from gpurec.__all__: {name}")
     if getattr(gpurec, name) is not workflow_value:
         raise SystemExit(f"top-level workflow export mismatch: {name}")
+if not set(workflow.__all__) <= set(dir(workflow)):
+    raise SystemExit("workflow exports missing from dir(gpurec.workflow)")
+namespace = {}
+exec("from gpurec.workflow import *", namespace)
+exported = {name for name in namespace if not name.startswith("__")}
+if exported != set(workflow.__all__):
+    raise SystemExit(f"workflow wildcard mismatch: {sorted(exported ^ set(workflow.__all__))}")
 print("exports_ok")
 PY
 ```
@@ -133,6 +142,11 @@ for name in gpurec.__all__:
     getattr(gpurec, name)
 for name in workflow.__all__:
     getattr(workflow, name)
+namespace = {}
+exec("from gpurec.workflow import *", namespace)
+exported = {name for name in namespace if not name.startswith("__")}
+if exported != set(workflow.__all__):
+    raise SystemExit(f"workflow wildcard mismatch: {sorted(exported ^ set(workflow.__all__))}")
 print("exports_ok")
 PY
 CUDA_VISIBLE_DEVICES='' gpurec backtrack-check --help
