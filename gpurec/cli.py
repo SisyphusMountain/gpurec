@@ -539,6 +539,10 @@ def main(argv: list[str] | None = None) -> None:
         except _EXPECTED_WORKFLOW_ERRORS as exc:
             command_parser.error(str(exc))
         try:
+            _ensure_backtracking_available(args.backtrack_binary)
+        except _EXPECTED_WORKFLOW_ERRORS as exc:
+            _exit_runtime_error(command_parser, str(exc))
+        try:
             opt_result = optimize(run_config)
         except _EXPECTED_WORKFLOW_ERRORS as exc:
             _exit_runtime_error(command_parser, str(exc))

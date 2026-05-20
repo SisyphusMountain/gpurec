@@ -2508,6 +2508,20 @@ checks that \texttt{" SpeciesWise "} and \texttt{" GeneWise "} produce the
 correct dataset flags and theta-initialization shapes before CUDA or filesystem
 work begins.
 
+\subsection{\texttt{gpurec run} Backtracking Preflight}
+
+\texttt{gpurec run} now validates Rust backtracking availability after
+constructing the optimization configuration and checking sampling argument
+shape, but before starting optimization.  Missing
+\texttt{GPUREC\_BACKTRACK\_BIN}, invalid \texttt{--backtrack-binary} values, or
+an unavailable source-tree Cargo fallback therefore fail before an expensive
+optimization produces a checkpoint that cannot be sampled.
+
+The new CLI regression monkeypatches the preflight to fail, asserts that
+\texttt{optimize()} is not called, and keeps the error path aligned with
+\texttt{gpurec backtrack-check}: runtime exit status, no command usage text,
+and no Python traceback.
+
 \section{Verification Log}
 
 \begin{center}
@@ -5601,6 +5615,21 @@ CPU unit gate after resident mode normalization &
 \texttt{792 passed, 6 deselected} \\
 \texttt{python scripts/check\_release\_metadata.py} &
 Release metadata checker after resident mode normalization &
+\texttt{expected license blockers} \\
+\texttt{python -m py\_compile gpurec/cli.py tests/unit/test\_cli\_workflow.py} &
+\texttt{gpurec run} backtracking preflight syntax &
+\texttt{ok} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' python -m pytest tests/unit/test\_cli\_workflow.py -q -k 'run and backtrack'} &
+Focused \texttt{gpurec run} backtracking preflight guard &
+\texttt{1 passed, 61 deselected} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' python -m pytest tests/unit/test\_cli\_workflow.py -q} &
+CLI workflow suite after \texttt{gpurec run} backtracking preflight &
+\texttt{62 passed} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' python -m pytest tests/unit -q -m "unit and not gpu"} &
+CPU unit gate after \texttt{gpurec run} backtracking preflight &
+\texttt{793 passed, 6 deselected} \\
+\texttt{python scripts/check\_release\_metadata.py} &
+Release metadata checker after \texttt{gpurec run} backtracking preflight &
 \texttt{expected license blockers} \\
 \bottomrule
 \end{tabular}

@@ -833,6 +833,7 @@ def test_cli_run_reports_optimize_errors_without_traceback(
         raise RuntimeError("workflow failed")
 
     monkeypatch.setattr("gpurec.cli.optimize", fail_optimize)
+    monkeypatch.setattr("gpurec.cli._ensure_backtracking_available", lambda _: None)
 
     with pytest.raises(SystemExit) as exc_info:
         main(_minimal_workflow_cli_args("run", tmp_path))
@@ -865,6 +866,7 @@ def test_cli_run_reports_sampling_errors_without_usage(
 
     monkeypatch.setattr("gpurec.cli.optimize", successful_optimize)
     monkeypatch.setattr("gpurec.cli.sample", fail_sample)
+    monkeypatch.setattr("gpurec.cli._ensure_backtracking_available", lambda _: None)
 
     with pytest.raises(SystemExit) as exc_info:
         main(_minimal_workflow_cli_args("run", tmp_path))
@@ -909,6 +911,7 @@ def test_cli_run_samples_reported_checkpoint_instead_of_stale_best(
 
     monkeypatch.setattr("gpurec.cli.optimize", successful_optimize)
     monkeypatch.setattr("gpurec.cli.sample", capture_sample)
+    monkeypatch.setattr("gpurec.cli._ensure_backtracking_available", lambda _: None)
 
     main(_minimal_workflow_cli_args("run", tmp_path))
 
@@ -936,6 +939,35 @@ def test_cli_run_rejects_sampling_options_before_optimization(
     assert "Traceback" not in captured.err
 
 
+def test_cli_run_preflights_backtracking_before_optimization(
+    tmp_path: Path,
+    capsys,
+    monkeypatch,
+):
+    calls: list[Path | None] = []
+
+    def fail_preflight(backtrack_binary: Path | None) -> None:
+        calls.append(backtrack_binary)
+        raise RuntimeError("set GPUREC_BACKTRACK_BIN or pass --backtrack-binary")
+
+    def unexpected_optimize(config):
+        raise AssertionError("optimize should not be called")
+
+    monkeypatch.setattr("gpurec.cli._ensure_backtracking_available", fail_preflight)
+    monkeypatch.setattr("gpurec.cli.optimize", unexpected_optimize)
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(_minimal_workflow_cli_args("run", tmp_path))
+
+    captured = capsys.readouterr()
+    assert exc_info.value.code == 1
+    assert "GPUREC_BACKTRACK_BIN" in captured.err
+    assert "--backtrack-binary" in captured.err
+    assert "usage:" not in captured.err
+    assert "Traceback" not in captured.err
+    assert calls == [None]
+
+
 def test_cli_run_refuses_sampling_after_failed_optimization(
     tmp_path: Path,
     capsys,
@@ -958,6 +990,7 @@ def test_cli_run_refuses_sampling_after_failed_optimization(
 
     monkeypatch.setattr("gpurec.cli.optimize", failed_optimize)
     monkeypatch.setattr("gpurec.cli.sample", unexpected_sample)
+    monkeypatch.setattr("gpurec.cli._ensure_backtracking_available", lambda _: None)
 
     with pytest.raises(SystemExit) as exc_info:
         main(_minimal_workflow_cli_args("run", tmp_path))
