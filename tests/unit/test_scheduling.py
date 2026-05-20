@@ -19,6 +19,27 @@ def test_compute_clade_waves_requires_cpp_phased_metadata(helpers):
         compute_clade_waves(helpers)
 
 
+def test_compute_clade_waves_rejects_wave_phase_count_mismatch():
+    with pytest.raises(ValueError, match="matching lengths"):
+        compute_clade_waves(
+            {
+                "phased_waves": [[0], [1]],
+                "phased_phases": [1],
+            }
+        )
+
+
+def test_compute_clade_waves_rejects_nonpositive_wave_cap():
+    with pytest.raises(ValueError, match="max_wave_size"):
+        compute_clade_waves(
+            {
+                "phased_waves": [[0]],
+                "phased_phases": [1],
+            },
+            max_wave_size=0,
+        )
+
+
 def test_compute_clade_waves_normalizes_tensor_waves_and_phases():
     helpers = {
         "phased_waves": [torch.tensor([0, 2]), [3]],

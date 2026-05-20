@@ -36,6 +36,13 @@ def compute_clade_waves(
         raise RuntimeError("preprocessed helpers must include C++ phased waves")
     raw_waves = ccp_helpers['phased_waves']
     raw_phases = ccp_helpers['phased_phases']
+    if len(raw_waves) != len(raw_phases):
+        raise ValueError(
+            "phased_waves and phased_phases must have matching lengths, "
+            f"got {len(raw_waves)} and {len(raw_phases)}"
+        )
+    if max_wave_size is not None and max_wave_size <= 0:
+        raise ValueError("max_wave_size must be positive")
     waves = []
     phases = []
     for w, ph in zip(raw_waves, raw_phases):

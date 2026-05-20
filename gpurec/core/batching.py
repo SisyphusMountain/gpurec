@@ -227,6 +227,10 @@ def collate_wave(
     Returns:
         cross_waves: list of lists of globally-offset clade IDs per wave
     """
+    if len(families_waves) != len(families_clade_offsets):
+        raise ValueError(
+            "families_waves and families_clade_offsets must have matching lengths"
+        )
     max_waves = max(len(w) for w in families_waves) if families_waves else 0
     cross_waves: List[List[int]] = [[] for _ in range(max_waves)]
 
@@ -248,6 +252,11 @@ def split_phase_waves(
 
     If ``phase`` is ``None``, split waves from all phases.
     """
+    if len(waves) != len(phases):
+        raise ValueError(
+            "waves and phases must have matching lengths, "
+            f"got {len(waves)} and {len(phases)}"
+        )
     if max_wave_size is None:
         return waves, phases
     if max_wave_size <= 0:
@@ -361,10 +370,28 @@ def _validate_split_child_id(name: str, value: int, *, row: int, C: int) -> int:
     return child_id
 
 
+def _validate_clade_id_values(name: str, value: Any, *, C: int) -> None:
+    ids = _cpu_long_list(value)
+    for position, clade in enumerate(ids):
+        clade_id = int(clade)
+        if clade_id < 0 or clade_id >= C:
+            raise ValueError(
+                f"{name} contains clade {clade_id} at position {position}, "
+                f"outside valid range [0, {C})"
+            )
+
+
 def _family_schedule_data(ccp: Dict[str, Any]) -> Dict[str, Any]:
     """Build the dependency data needed for cross-family wave scheduling."""
     C = int(ccp["C"])
     N = int(ccp["N_splits"])
+    if "root_clade_id" not in ccp:
+        raise ValueError("ccp helpers must include root_clade_id")
+    root_id = int(ccp["root_clade_id"])
+    if root_id < 0 or root_id >= C:
+        raise ValueError(
+            f"root_clade_id {root_id} outside valid range [0, {C})"
+        )
     parents = _cpu_long_list(ccp["split_parents_sorted"])
     leftrights = _cpu_long_list(ccp["split_leftrights_sorted"])
     if len(parents) != N:
@@ -442,7 +469,7 @@ def _family_schedule_data(ccp: Dict[str, Any]) -> Dict[str, Any]:
         "leaf_count": sum(1 for count in split_counts if int(count) == 0),
         "nonleaf_count": sum(1 for count in split_counts if int(count) != 0),
         "max_level": max_level,
-        "root_id": int(ccp.get("root_clade_id", -1)),
+        "root_id": root_id,
     }
 
 
@@ -1226,6 +1253,23 @@ def build_wave_layout(
         ccp_helpers['split_parents_sorted'],
         N_splits,
     )
+    _validate_clade_id_values(
+        "split_leftrights_sorted",
+        ccp_helpers['split_leftrights_sorted'],
+        C=C,
+    )
+    _validate_clade_id_values(
+        "split_parents_sorted",
+        ccp_helpers['split_parents_sorted'],
+        C=C,
+    )
+    _require_numel(
+        "leaf_col_index",
+        leaf_col_index,
+        _numel(leaf_row_index),
+    )
+    _validate_clade_id_values("leaf_row_index", leaf_row_index, C=C)
+    _validate_clade_id_values("root_clade_ids", root_clade_ids, C=C)
 
     # --- 2a. Build permutation ---
     all_clades: List[int] = []

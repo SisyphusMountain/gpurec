@@ -1979,6 +1979,21 @@ with the optimizer monkeypatched, proving the checked example config reaches
 the CLI-to-\texttt{RunConfig} boundary without requiring CUDA or optimizer
 execution.
 
+\subsection{Core Scheduling Input Validation}
+
+The core batching and scheduling helpers now fail fast on inconsistent
+metadata instead of relying on \texttt{zip()} truncation or unchecked tensor
+remaps.  \texttt{compute\_clade\_waves()} and
+\texttt{split\_phase\_waves()} reject mismatched wave and phase counts, while
+\texttt{collate\_wave()} rejects mismatched family wave and offset counts.
+
+The global wave layout path now validates every clade identifier before it is
+used to index the permutation map.  Split child ids, split parent ids, leaf row
+ids, root row ids, and each family \texttt{root\_clade\_id} must be in range,
+and leaf row and column metadata must have matching lengths.  CPU-only tests
+cover these invalid-value cases and the existing \texttt{max\_root\_wave\_size}
+root-wave splitting behavior.
+
 \section{Verification Log}
 
 \begin{center}
@@ -4352,6 +4367,21 @@ Release metadata checker after license metadata validation &
 \texttt{expected license blockers} \\
 \texttt{pdflatex -interaction=nonstopmode -halt-on-error ...professionalization...} &
 Audit log build after release metadata and example smokes &
+\texttt{ok with known overfull table warnings} \\
+\texttt{python -m py\_compile gpurec/core/batching.py gpurec/core/scheduling.py tests/unit/test\_global\_wave\_scheduler.py tests/unit/test\_scheduling.py} &
+Core scheduling validation syntax &
+\texttt{ok} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q tests/unit/test\_global\_wave\_scheduler.py tests/unit/test\_scheduling.py tests/unit/test\_family\_layout.py} &
+Focused core scheduling validation guards &
+\texttt{50 passed} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
+CPU unit gate after core scheduling validation &
+\texttt{634 passed, 28 deselected} \\
+\texttt{python scripts/check\_release\_metadata.py} &
+Release metadata checker after core scheduling validation &
+\texttt{expected license blockers} \\
+\texttt{pdflatex -interaction=nonstopmode -halt-on-error ...professionalization...} &
+Audit log build after core scheduling validation &
 \texttt{ok with known overfull table warnings} \\
 \bottomrule
 \end{tabular}

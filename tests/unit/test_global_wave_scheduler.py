@@ -14,7 +14,9 @@ from gpurec.core.batching import (
     _schedule_deadline_nonleaf_waves,
     build_wave_layout,
     collate_gene_families,
+    collate_wave,
     schedule_global_phased_waves,
+    split_phase_waves,
 )
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -96,6 +98,16 @@ def test_collate_gene_families_rejects_empty_batch():
         collate_gene_families([])
 
 
+def test_collate_wave_rejects_family_offset_count_mismatch():
+    with pytest.raises(ValueError, match="matching lengths"):
+        collate_wave([[[0]], [[1]]], [0])
+
+
+def test_split_phase_waves_rejects_phase_count_mismatch():
+    with pytest.raises(ValueError, match="matching lengths"):
+        split_phase_waves([[0], [1]], [1], phase=None, max_wave_size=2)
+
+
 def test_build_wave_layout_rejects_duplicate_clade_coverage():
     ccp = {
         "C": 2,
@@ -137,6 +149,98 @@ def test_build_wave_layout_rejects_phase_count_mismatch(phases):
             phases,
             ccp,
             torch.empty(0, dtype=torch.long),
+            torch.empty(0, dtype=torch.long),
+            torch.tensor([0], dtype=torch.long),
+            device="cpu",
+            dtype=torch.float32,
+        )
+
+
+def _valid_two_clade_layout_ccp():
+    return {
+        "C": 2,
+        "N_splits": 1,
+        "split_parents_sorted": torch.tensor([0], dtype=torch.long),
+        "split_leftrights_sorted": torch.tensor([1, 1], dtype=torch.long),
+        "log_split_probs_sorted": torch.zeros(1, dtype=torch.float32),
+    }
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        (
+            "split_leftrights_sorted",
+            torch.tensor([1, 2], dtype=torch.long),
+            "split_leftrights_sorted contains clade 2 at position 1",
+        ),
+        (
+            "split_parents_sorted",
+            torch.tensor([-1], dtype=torch.long),
+            "split_parents_sorted contains clade -1 at position 0",
+        ),
+    ],
+)
+def test_build_wave_layout_rejects_invalid_split_clade_ids(field, value, message):
+    ccp = _valid_two_clade_layout_ccp()
+    ccp[field] = value
+
+    with pytest.raises(ValueError, match=message):
+        build_wave_layout(
+            [[1], [0]],
+            [1, 3],
+            ccp,
+            torch.tensor([1], dtype=torch.long),
+            torch.tensor([0], dtype=torch.long),
+            torch.tensor([0], dtype=torch.long),
+            device="cpu",
+            dtype=torch.float32,
+        )
+
+
+@pytest.mark.parametrize(
+    ("leaf_row_index", "root_clade_ids", "message"),
+    [
+        (
+            torch.tensor([-1], dtype=torch.long),
+            torch.tensor([0], dtype=torch.long),
+            "leaf_row_index contains clade -1 at position 0",
+        ),
+        (
+            torch.tensor([1], dtype=torch.long),
+            torch.tensor([2], dtype=torch.long),
+            "root_clade_ids contains clade 2 at position 0",
+        ),
+    ],
+)
+def test_build_wave_layout_rejects_invalid_leaf_or_root_clade_ids(
+    leaf_row_index,
+    root_clade_ids,
+    message,
+):
+    with pytest.raises(ValueError, match=message):
+        build_wave_layout(
+            [[1], [0]],
+            [1, 3],
+            _valid_two_clade_layout_ccp(),
+            leaf_row_index,
+            torch.tensor([0], dtype=torch.long),
+            root_clade_ids,
+            device="cpu",
+            dtype=torch.float32,
+        )
+
+
+def test_build_wave_layout_rejects_leaf_row_col_length_mismatch():
+    with pytest.raises(
+        ValueError,
+        match="leaf_col_index has length 0 but expected 1",
+    ):
+        build_wave_layout(
+            [[1], [0]],
+            [1, 3],
+            _valid_two_clade_layout_ccp(),
+            torch.tensor([1], dtype=torch.long),
             torch.empty(0, dtype=torch.long),
             torch.tensor([0], dtype=torch.long),
             device="cpu",
@@ -206,6 +310,14 @@ def test_global_scheduler_rejects_split_counts_that_disagree_with_parents():
         schedule_global_phased_waves([{"ccp": ccp}], [0], max_wave_size=2)
 
 
+@pytest.mark.parametrize("root_id", [-1, 3])
+def test_global_scheduler_rejects_invalid_root_clade_id(root_id):
+    ccp = _ccp(3, [0], [1], [2], root=root_id)
+
+    with pytest.raises(ValueError, match="root_clade_id"):
+        schedule_global_phased_waves([{"ccp": ccp}], [0], max_wave_size=2)
+
+
 @pytest.mark.parametrize("child_id", [-1, 3])
 def test_global_scheduler_rejects_invalid_child_clade_ids(child_id):
     ccp = _ccp(3, [0], [child_id], [2], root=0)
@@ -215,6 +327,26 @@ def test_global_scheduler_rejects_invalid_child_clade_ids(child_id):
         match="split_leftrights_sorted contains child .* outside valid range",
     ):
         schedule_global_phased_waves([{"ccp": ccp}], [0], max_wave_size=2)
+
+
+def test_global_scheduler_splits_root_waves_by_root_cap():
+    items = [
+        {"ccp": _ccp(2, [0], [1], [1], root=0)},
+        {"ccp": _ccp(2, [0], [1], [1], root=0)},
+        {"ccp": _ccp(2, [0], [1], [1], root=0)},
+    ]
+    offsets = [0, 2, 4]
+
+    waves, phases = schedule_global_phased_waves(
+        items,
+        offsets,
+        max_wave_size=6,
+        max_root_wave_size=1,
+    )
+
+    assert waves == [[1, 3, 5], [0], [2], [4]]
+    assert phases == [1, 3, 3, 3]
+    _assert_topological(waves, offsets, items)
 
 
 def test_global_scheduler_uses_reverse_compaction_when_forward_greedy_wastes_wave():
