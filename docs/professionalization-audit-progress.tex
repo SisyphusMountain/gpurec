@@ -2012,6 +2012,25 @@ users who provide a binary through \texttt{GPUREC\_BACKTRACK\_BIN} or
 that contain a \texttt{gpurec-backtrack} executable name anywhere in the wheel,
 not only the \texttt{crates/gpurec-backtrack} source directory.
 
+\subsection{Rust Backtracking Seed and Limit Contracts}
+
+The Rust backtracking crate now validates the sampling contracts that the
+Python CLI documents.  Library multi-sample replay uses checked seed addition,
+so a request such as base seed \texttt{u64::MAX} with multiple samples returns
+an \texttt{InvalidInput} error instead of panicking in debug builds or wrapping
+in release builds.  The crate also rejects \texttt{max\_events = 0} during
+input preparation and has tests proving that a small positive cap stops
+expansion deterministically.
+
+The Rust CLI parser now rejects unknown dash-prefixed options, reports missing
+option values with the option name, and supports \texttt{--max-events} as a
+direct override for JSON fixtures.  Direct Rust help now advertises that cap,
+and the stochastic backtracking notes record \texttt{--seed} and
+\texttt{--max-events} support alongside multi-sample output.  The top-level
+Python namespace now also exports \texttt{ensure\_backtracking\_available()} so
+Python users have the same preflight affordance as \texttt{gpurec
+backtrack-check}.
+
 \section{Verification Log}
 
 \begin{center}
@@ -4418,6 +4437,30 @@ Release metadata checker after backtracking preflight guards &
 \texttt{expected license blockers} \\
 \texttt{pdflatex -interaction=nonstopmode -halt-on-error ...professionalization...} &
 Audit log build after backtracking preflight guards &
+\texttt{ok with known overfull table warnings} \\
+\texttt{cargo fmt --manifest-path crates/gpurec-backtrack/Cargo.toml --check} &
+Rust backtracking formatting after seed and cap guards &
+\texttt{ok} \\
+\texttt{cargo test --locked --manifest-path crates/gpurec-backtrack/Cargo.toml} &
+Rust backtracking seed, cap, and CLI parser tests &
+\texttt{13 passed} \\
+\texttt{cargo test --locked --release --manifest-path crates/gpurec-backtrack/Cargo.toml} &
+Release-mode Rust backtracking seed overflow guard &
+\texttt{13 passed} \\
+\texttt{cargo run --locked --quiet --manifest-path crates/gpurec-backtrack/Cargo.toml -- --help} &
+Rust backtracking CLI help after \texttt{--max-events} &
+\texttt{ok} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q tests/unit/test\_workflow.py tests/unit/test\_release\_metadata.py tests/unit/test\_repository\_hygiene.py} &
+Python export and documentation guards after Rust contract hardening &
+\texttt{379 passed} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
+CPU unit gate after Rust backtracking contract hardening &
+\texttt{638 passed, 28 deselected} \\
+\texttt{python scripts/check\_release\_metadata.py} &
+Release metadata checker after Rust backtracking contract hardening &
+\texttt{expected license blockers} \\
+\texttt{pdflatex -interaction=nonstopmode -halt-on-error ...professionalization...} &
+Audit log build after Rust backtracking contract hardening &
 \texttt{ok with known overfull table warnings} \\
 \bottomrule
 \end{tabular}

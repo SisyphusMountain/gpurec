@@ -22,6 +22,7 @@ from gpurec.backtracking import (
     EVENT_KEYS,
     _activate_family_batch,
     _backtrack_command,
+    ensure_backtracking_available,
     export_backtracking_input,
     recphyloxml_event_counts,
     sample_recphyloxml,
@@ -299,6 +300,12 @@ def test_top_level_exports_api_metadata_types():
         "UniformChunkMetadata",
     ):
         assert name in gpurec.__all__
+
+
+def test_top_level_exports_backtracking_preflight():
+    assert gpurec.ensure_backtracking_available is ensure_backtracking_available
+    assert gpurec._LAZY_EXPORTS["ensure_backtracking_available"] == "gpurec.backtracking"
+    assert "ensure_backtracking_available" in gpurec.__all__
 
 
 def test_top_level_exports_workflow_surface():

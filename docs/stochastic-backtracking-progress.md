@@ -10,8 +10,9 @@
   species topology, leaf mappings, and root origination probabilities.
 - Added `gpurec.backtracking.sample_recphyloxml()` as a Python bridge that
   runs the Rust sampler and returns one XML document.
-- Added `sample_recphyloxmls()` plus Rust CLI `--samples/--output-dir` support
-  so bulk comparisons reuse one exported state and one Rust process.
+- Added `sample_recphyloxmls()` plus Rust CLI `--samples`, `--output-dir`,
+  `--seed`, and `--max-events` support so bulk comparisons reuse one exported
+  state and one Rust process.
 - Added `GPUREC_BACKTRACK_BIN` / `backtrack_binary` support so Python callers
   can invoke a prebuilt Rust binary instead of paying `cargo run` startup.
 - Added `gpurec.backtracking.recphyloxml_event_counts()` to report

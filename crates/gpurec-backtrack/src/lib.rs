@@ -141,7 +141,15 @@ pub fn sample_recphyloxmls(
     let prepared = PreparedBacktracker::new(input)?;
     let mut out = Vec::with_capacity(num_samples);
     for sample_idx in 0..num_samples {
-        out.push(prepared.sample_to_xml(base_seed + sample_idx as u64)?);
+        let seed_offset = u64::try_from(sample_idx).map_err(|_| {
+            BacktrackError::InvalidInput(format!("sample index {sample_idx} does not fit in u64"))
+        })?;
+        let seed = base_seed.checked_add(seed_offset).ok_or_else(|| {
+            BacktrackError::InvalidInput(format!(
+                "seed range exceeds u64 maximum: base_seed={base_seed} sample_idx={sample_idx}"
+            ))
+        })?;
+        out.push(prepared.sample_to_xml(seed)?);
     }
     Ok(out)
 }
@@ -159,6 +167,11 @@ impl<'a> PreparedBacktracker<'a> {
         validate_len("max_transfer", input.max_transfer.len(), s)?;
         if let Some(probs) = &input.origination_probs {
             validate_len("origination_probs", probs.len(), s)?;
+        }
+        if input.max_events == Some(0) {
+            return Err(BacktrackError::InvalidInput(
+                "max_events must be positive".to_string(),
+            ));
         }
         if input.root_clade >= c {
             return Err(BacktrackError::InvalidInput(format!(
@@ -805,6 +818,30 @@ mod tests {
         }
     }
 
+    fn transfer_input(seed: u64) -> BacktrackInput {
+        let neg = NEG_INF;
+        BacktrackInput {
+            species_newick: "(A:1,B:1)Root:0;".to_string(),
+            species_names_postorder: vec!["A".into(), "B".into(), "Root".into()],
+            root_clade: 0,
+            leaf_species: vec![Some(1)],
+            clade_leaf_labels: vec!["b".into()],
+            splits: Vec::new(),
+            pi: Matrix {
+                rows: 1,
+                cols: 3,
+                data: vec![0.0, 0.0, neg],
+            },
+            e: vec![0.0, neg, neg],
+            log_p_s: vec![0.0, 0.0, neg],
+            log_p_d: vec![neg, neg, neg],
+            max_transfer: vec![0.0, neg, neg],
+            origination_probs: Some(vec![1.0, 0.0, 0.0]),
+            seed: Some(seed),
+            max_events: Some(32),
+        }
+    }
+
     #[test]
     fn samples_forced_speciation_xml() {
         let input = speciation_input();
@@ -829,6 +866,66 @@ mod tests {
                 .count(),
             1
         );
+    }
+
+    #[test]
+    fn seeded_sampling_replays_transfer_xml() {
+        let input = transfer_input(19);
+        let first = sample_recphyloxml(&input).unwrap();
+        let second = sample_recphyloxml(&input).unwrap();
+
+        assert_eq!(first, second);
+        assert!(first.contains("<branchingOut speciesLocation=\"A\"/>"));
+        assert!(first.contains("<transferBack destinationSpecies=\"B\"/>"));
+        assert!(first.contains("<leaf speciesLocation=\"B\"/>"));
+    }
+
+    #[test]
+    fn multi_sample_uses_consecutive_seeds() {
+        let base_seed = 23;
+        let input = transfer_input(base_seed);
+        let batch = sample_recphyloxmls(&input, 3, base_seed).unwrap();
+
+        let expected = (0..3)
+            .map(|idx| {
+                let mut seeded = input.clone();
+                seeded.seed = Some(base_seed + idx as u64);
+                sample_recphyloxml(&seeded).unwrap()
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(batch, expected);
+    }
+
+    #[test]
+    fn multi_sample_rejects_seed_range_overflow() {
+        let input = speciation_input();
+
+        let err = sample_recphyloxmls(&input, 2, u64::MAX)
+            .unwrap_err()
+            .to_string();
+
+        assert!(err.contains("seed range exceeds u64 maximum"));
+    }
+
+    #[test]
+    fn rejects_nonpositive_max_events() {
+        let mut input = speciation_input();
+        input.max_events = Some(0);
+
+        let err = sample_recphyloxml(&input).unwrap_err().to_string();
+
+        assert!(err.contains("max_events must be positive"));
+    }
+
+    #[test]
+    fn max_events_caps_expansion() {
+        let mut input = speciation_input();
+        input.max_events = Some(1);
+
+        let err = sample_recphyloxml(&input).unwrap_err().to_string();
+
+        assert!(err.contains("sample exceeded max_events=1"));
     }
 
     #[test]

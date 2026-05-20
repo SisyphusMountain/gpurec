@@ -13,7 +13,8 @@ stochastic RecPhyloXML sampling.
 - `gpurec.workflow` production runners for AleRax-style family inputs,
   checkpointed optimization, convergence diagnostics, and stochastic
   backtracking.
-- `gpurec` CLI entry point with `optimize`, `sample`, and `run` commands.
+- `gpurec` CLI entry point with `optimize`, `sample`, `run`, and
+  `backtrack-check` commands.
 - Standard PyTorch optimizers over `model.theta`, including `torch.optim.Adam`.
 - `gpurec.optimization.BatchedLBFGS` for row-wise genewise polishing.
 - The optimized uniform CUDA forward/backward kernels used by the 1000-tree

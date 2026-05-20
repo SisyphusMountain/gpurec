@@ -433,6 +433,7 @@ def test_stochastic_backtracking_notes_use_current_rust_commands():
         "cargo run --locked --quiet --manifest-path "
         "crates/gpurec-backtrack/Cargo.toml -- --help"
     ) in notes
+    assert "`--max-events` support" in notes
     assert "tests/integration/test_rust_backtracking_fixture.py" in notes
     assert "tests/integration/test_stochastic_backtracking.py" not in notes
 
@@ -547,6 +548,7 @@ def test_readme_documents_installed_sampling_binary_setup():
         assert "prebuilt binary" in normalized
     assert "### Sampling Binary Setup" in readme
     assert "`gpurec sample` and the sampling phase of `gpurec run`" in readme
+    assert "`optimize`, `sample`, `run`, and\n  `backtrack-check` commands" in readme
     assert "In a wheel-only\ninstall" in readme
     assert "For a source checkout or unpacked source archive" in readme
     assert (
