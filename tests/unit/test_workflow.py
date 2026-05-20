@@ -1938,6 +1938,59 @@ pathlib.Path(sys.argv[2]).write_text("ok", encoding="utf-8")
     assert result == "ok"
 
 
+def test_backtracking_command_rejects_invalid_binary_before_subprocess(
+    tmp_path: Path,
+    monkeypatch,
+):
+    calls: list[object] = []
+
+    def fake_run(*args: object, **kwargs: object) -> None:
+        calls.append((args, kwargs))
+
+    monkeypatch.setattr(backtracking.subprocess, "run", fake_run)
+
+    missing = tmp_path / "missing-backtracker"
+    with pytest.raises(
+        RuntimeError,
+        match="does not exist or is not a file",
+    ) as missing_exc:
+        backtracking._run_backtracking_payload(
+            {"value": 1},
+            cargo_manifest=tmp_path / "missing" / "Cargo.toml",
+            backtrack_binary=missing,
+            build_args=lambda *_: [],
+            read_output=lambda _: None,
+        )
+    assert "backtrack_binary" in str(missing_exc.value)
+    assert str(missing) in str(missing_exc.value)
+
+    not_executable = tmp_path / "not-executable"
+    not_executable.write_text("#!/bin/sh\n", encoding="utf-8")
+    with pytest.raises(RuntimeError, match="is not executable") as executable_exc:
+        _backtrack_command(
+            cargo_manifest=tmp_path / "missing" / "Cargo.toml",
+            backtrack_binary=not_executable,
+        )
+    assert "backtrack_binary" in str(executable_exc.value)
+    assert str(not_executable) in str(executable_exc.value)
+
+    assert calls == []
+
+
+def test_backtracking_command_rejects_missing_env_command(monkeypatch, tmp_path: Path):
+    monkeypatch.setenv("GPUREC_BACKTRACK_BIN", "gpurec-backtrack-definitely-missing")
+
+    with pytest.raises(RuntimeError, match="was not found on PATH") as exc_info:
+        _backtrack_command(
+            cargo_manifest=tmp_path / "missing" / "Cargo.toml",
+            backtrack_binary=None,
+        )
+
+    message = str(exc_info.value)
+    assert "GPUREC_BACKTRACK_BIN" in message
+    assert "gpurec-backtrack-definitely-missing" in message
+
+
 def test_backtracking_sampler_helpers_share_subprocess_io(tmp_path: Path, monkeypatch):
     fake_backtracker = tmp_path / "fake_backtracker.py"
     fake_backtracker.write_text(

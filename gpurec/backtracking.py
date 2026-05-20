@@ -6,6 +6,7 @@ import json
 import math
 import os
 import shlex
+import shutil
 import subprocess
 import tempfile
 import xml.etree.ElementTree as ET
@@ -144,8 +145,10 @@ def _backtrack_command(
     cargo_manifest: str | Path,
     backtrack_binary: str | Path | None,
 ) -> list[str]:
+    source = "backtrack_binary"
     if backtrack_binary is None:
         backtrack_binary = os.environ.get(_BACKTRACK_BINARY_ENV)
+        source = _BACKTRACK_BINARY_ENV
     if backtrack_binary is not None:
         text = os.fspath(backtrack_binary)
         path = Path(text).expanduser()
@@ -156,7 +159,23 @@ def _backtrack_command(
             or path.parent != Path(".")
             or has_separator
         ):
-            return [str(path.resolve())]
+            resolved = path.resolve()
+            if not resolved.is_file():
+                raise RuntimeError(
+                    f"gpurec backtracking binary from {source} does not exist "
+                    f"or is not a file: {resolved}"
+                )
+            if not os.access(resolved, os.X_OK):
+                raise RuntimeError(
+                    f"gpurec backtracking binary from {source} is not executable: "
+                    f"{resolved}"
+                )
+            return [str(resolved)]
+        if shutil.which(text) is None:
+            raise RuntimeError(
+                f"gpurec backtracking binary {text!r} from {source} was not found "
+                "on PATH"
+            )
         return [text]
 
     manifest = Path(cargo_manifest)
