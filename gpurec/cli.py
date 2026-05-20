@@ -61,6 +61,15 @@ def _set_if_present(data: dict[str, Any], args: argparse.Namespace, name: str) -
         data[name] = value
 
 
+def _validate_run_config_input_paths(config: RunConfig) -> None:
+    for option, path in (
+        ("--species-tree", config.species_tree),
+        ("--families-file", config.families_file),
+    ):
+        if not path.is_file():
+            raise ValueError(f"{option} path does not exist or is not a file: {path}")
+
+
 def _run_config_from_args(args: argparse.Namespace) -> RunConfig:
     from gpurec.workflow.config import RunConfig
 
@@ -122,7 +131,9 @@ def _run_config_from_args(args: argparse.Namespace) -> RunConfig:
     ]
     if missing:
         raise ValueError(f"missing required optimize option(s): {', '.join(missing)}")
-    return RunConfig.from_dict(data)
+    config = RunConfig.from_dict(data)
+    _validate_run_config_input_paths(config)
+    return config
 
 
 def _sampling_config_from_args(

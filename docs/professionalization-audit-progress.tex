@@ -1333,6 +1333,17 @@ example's configured output and preprocessing-cache paths are also covered by
 guard keeps the existing native C++ source inclusion explicit so packaging the
 example cannot silently drop extension build inputs from the source archive.
 
+\subsection{CLI Input Path Preflight}
+
+\texttt{gpurec optimize} and \texttt{gpurec run} now validate the species-tree
+and AleRax family-list paths immediately after normalizing \texttt{RunConfig}
+from JSON and CLI flags.  Missing or directory-valued inputs are reported as
+explicit \texttt{--species-tree} or \texttt{--families-file} argument errors
+before optimization setup can reach device probing or model construction.  The
+CLI tests now create tiny AleRax-compatible input fixtures for monkeypatched
+workflow calls, and the new regression cases verify that missing input files
+exit through argparse without CUDA noise, tracebacks, or an optimization call.
+
 \section{Verification Log}
 
 \begin{center}
@@ -2704,6 +2715,21 @@ Release metadata checker after packaged minimal example &
 \texttt{expected license blockers} \\
 \texttt{pdflatex -interaction=nonstopmode -halt-on-error ...professionalization...} &
 Audit log build after packaged minimal example &
+\texttt{ok with known overfull table warnings} \\
+\texttt{python -m py\_compile gpurec/cli.py tests/unit/test\_workflow.py} &
+CLI input preflight syntax &
+\texttt{ok} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q tests/unit/test\_workflow.py -k "..."} &
+Focused CLI input-preflight guards &
+\texttt{10 passed, 271 deselected} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
+CPU unit gate after CLI input preflight &
+\texttt{395 passed, 28 deselected} \\
+\texttt{python scripts/check\_release\_metadata.py} &
+Release metadata checker after CLI input preflight &
+\texttt{expected license blockers} \\
+\texttt{pdflatex -interaction=nonstopmode -halt-on-error ...professionalization...} &
+Audit log build after CLI input preflight &
 \texttt{ok with known overfull table warnings} \\
 \bottomrule
 \end{tabular}

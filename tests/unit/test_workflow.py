@@ -1224,7 +1224,26 @@ def test_build_alerax_workflow_model_forwards_run_config(tmp_path: Path, monkeyp
     assert kwargs["prefetch_batches"] == 0
 
 
+def _write_minimal_alerax_inputs(tmp_path: Path) -> None:
+    (tmp_path / "sp.nwk").write_text("(A:1,B:1)Root;\n", encoding="utf-8")
+    (tmp_path / "gene.nwk").write_text("(a:1,b:1);\n", encoding="utf-8")
+    (tmp_path / "gene.map").write_text("A:a\nB:b\n", encoding="utf-8")
+    (tmp_path / "families.txt").write_text(
+        "\n".join(
+            [
+                "[FAMILIES]",
+                "- tiny_family",
+                "starting_gene_tree = gene.nwk",
+                "mapping = gene.map",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+
 def test_cli_forwards_refresh_preprocess_cache(tmp_path: Path):
+    _write_minimal_alerax_inputs(tmp_path)
     args = build_parser().parse_args(
         [
             "optimize",
@@ -1246,6 +1265,7 @@ def test_cli_forwards_refresh_preprocess_cache(tmp_path: Path):
 
 
 def test_cli_accepts_family_chunk_all_alias(tmp_path: Path):
+    _write_minimal_alerax_inputs(tmp_path)
     args = build_parser().parse_args(
         [
             "optimize",
@@ -1268,6 +1288,7 @@ def test_cli_accepts_family_chunk_all_alias(tmp_path: Path):
 
 
 def _minimal_workflow_cli_args(command: str, tmp_path: Path) -> list[str]:
+    _write_minimal_alerax_inputs(tmp_path)
     return [
         command,
         "--species-tree",
@@ -1445,6 +1466,42 @@ def test_cli_reports_missing_required_options_without_traceback(capsys):
     assert exc_info.value.code == 2
     assert "missing required optimize option" in captured.err
     assert "species_tree" in captured.err
+    assert "Traceback" not in captured.err
+
+
+@pytest.mark.parametrize("command", ["optimize", "run"])
+@pytest.mark.parametrize(
+    ("missing_file", "option"),
+    [
+        ("sp.nwk", "--species-tree"),
+        ("families.txt", "--families-file"),
+    ],
+)
+def test_cli_rejects_missing_input_paths_before_workflow(
+    tmp_path: Path,
+    capsys,
+    monkeypatch,
+    command: str,
+    missing_file: str,
+    option: str,
+):
+    args = _minimal_workflow_cli_args(command, tmp_path)
+    missing_path = tmp_path / missing_file
+    missing_path.unlink()
+
+    def unexpected_optimize(config):
+        raise AssertionError("optimize should not be called")
+
+    monkeypatch.setattr("gpurec.cli.optimize", unexpected_optimize)
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(args)
+
+    captured = capsys.readouterr()
+    assert exc_info.value.code == 2
+    assert option in captured.err
+    assert str(missing_path) in captured.err
+    assert "CUDA" not in captured.err
     assert "Traceback" not in captured.err
 
 
