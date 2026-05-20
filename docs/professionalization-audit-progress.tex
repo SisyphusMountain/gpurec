@@ -1376,6 +1376,17 @@ or CPU time on optimization only to reject an invalid sampling option after a
 checkpoint is produced.  The regression test monkeypatches optimization to
 prove invalid sampling options exit through argparse before any workflow call.
 
+\subsection{Sampling Empty-Selection Output Preservation}
+
+\texttt{SamplingRunner.run()} now validates the requested family range before
+clearing any previous reconciliation outputs.  An empty selection such as a
+\texttt{family\_start} beyond the available family count still closes the model
+and reports a \texttt{ValueError}, but it no longer deletes prior XML files,
+per-sample event-count files, or aggregate summaries before failing.  The
+regression test seeds those stale outputs and verifies they are preserved on
+the empty-selection path while the successful sampling test still covers normal
+cleanup before writing a fresh result set.
+
 \section{Verification Log}
 
 \begin{center}
@@ -2822,6 +2833,21 @@ Release metadata checker after run sampling-option preflight &
 \texttt{expected license blockers} \\
 \texttt{pdflatex -interaction=nonstopmode -halt-on-error ...professionalization...} &
 Audit log build after run sampling-option preflight &
+\texttt{ok with known overfull table warnings} \\
+\texttt{python -m py\_compile gpurec/workflow/sampling.py tests/unit/test\_workflow.py} &
+Sampling empty-selection preservation syntax &
+\texttt{ok} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q tests/unit/test\_workflow.py -k "..."} &
+Focused sampling empty-selection preservation guards &
+\texttt{2 passed, 284 deselected} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
+CPU unit gate after sampling empty-selection preservation &
+\texttt{400 passed, 28 deselected} \\
+\texttt{python scripts/check\_release\_metadata.py} &
+Release metadata checker after sampling empty-selection preservation &
+\texttt{expected license blockers} \\
+\texttt{pdflatex -interaction=nonstopmode -halt-on-error ...professionalization...} &
+Audit log build after sampling empty-selection preservation &
 \texttt{ok with known overfull table warnings} \\
 \bottomrule
 \end{tabular}

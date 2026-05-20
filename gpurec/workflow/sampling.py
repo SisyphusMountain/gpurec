@@ -256,7 +256,6 @@ class SamplingRunner:
         try:
             out_dir = self.config.out_dir or run_config.out_dir
             all_dir = out_dir / "reconciliations" / "all"
-            _clear_sampling_outputs(out_dir)
 
             family_names = model.family_names
             start = self.config.family_start
@@ -268,6 +267,7 @@ class SamplingRunner:
                     f"empty sampling family selection: start={start}, stop={stop}, "
                     f"available={len(family_names)}"
                 )
+            _clear_sampling_outputs(out_dir)
 
             species_totals: dict[str, dict[str, float]] = defaultdict(
                 lambda: {column: 0.0 for column in SPECIES_COLUMNS}

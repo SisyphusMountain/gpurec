@@ -2518,6 +2518,15 @@ def test_sampling_runner_closes_model_on_empty_family_selection(
         out_dir=tmp_path / "sample_out",
         family_start=1,
     )
+    recon_dir = config.out_dir / "reconciliations"
+    all_dir = recon_dir / "all"
+    all_dir.mkdir(parents=True)
+    sample_path = all_dir / "000000_previous_sample_0.xml"
+    event_path = all_dir / "000000_previous_eventCounts_0.txt"
+    aggregate_path = recon_dir / "summary.json"
+    sample_path.write_text("previous sample", encoding="utf-8")
+    event_path.write_text("previous counts", encoding="utf-8")
+    aggregate_path.write_text("previous summary", encoding="utf-8")
 
     runner = SamplingRunner(config)
     monkeypatch.setattr(runner, "_load_model", lambda: (run_config, model))
@@ -2526,6 +2535,9 @@ def test_sampling_runner_closes_model_on_empty_family_selection(
         runner.run()
 
     assert model.closed
+    assert sample_path.read_text(encoding="utf-8") == "previous sample"
+    assert event_path.read_text(encoding="utf-8") == "previous counts"
+    assert aggregate_path.read_text(encoding="utf-8") == "previous summary"
 
 
 class _DummyModel:
