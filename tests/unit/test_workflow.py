@@ -2238,10 +2238,95 @@ def test_sampling_runner_writes_outputs_and_aggregates(tmp_path: Path, monkeypat
     }
 
 
+def test_sampling_runner_rejects_checkpoint_family_order_mismatch(
+    tmp_path: Path,
+    monkeypatch,
+):
+    class FakeModel:
+        def __init__(self):
+            self.theta = torch.nn.Parameter(torch.zeros(2, 3, dtype=torch.float32))
+            self.family_names = ["fam_b", "fam_a"]
+            self.species_names = ["sp0", "sp1"]
+            self.closed = False
+
+        def clear(self):
+            raise AssertionError("theta should not be restored before identity check")
+
+        def close(self):
+            self.closed = True
+
+    model = FakeModel()
+    run_config = RunConfig(
+        species_tree=tmp_path / "sp.nwk",
+        families_file=tmp_path / "families.txt",
+        out_dir=tmp_path / "run_out",
+        mode="genewise",
+        device="cpu",
+    )
+    config = SamplingConfig(checkpoint=tmp_path / "checkpoints" / "best.pt")
+
+    def fake_load_checkpoint(path, *, map_location):
+        return {
+            "theta": torch.zeros(2, 3, dtype=torch.float32),
+            "config": run_config.to_dict(),
+            "family_names": ["fam_a", "fam_b"],
+            "species_names": ["sp0", "sp1"],
+        }
+
+    monkeypatch.setattr(sampling_workflow, "load_checkpoint", fake_load_checkpoint)
+    monkeypatch.setattr(
+        sampling_workflow,
+        "build_alerax_workflow_model",
+        lambda *_args, **_kwargs: model,
+    )
+
+    runner = SamplingRunner(config)
+    with pytest.raises(RuntimeError, match="family_names differ"):
+        runner._load_model()
+
+    assert model.closed
+
+
+def test_sampling_runner_closes_model_on_empty_family_selection(
+    tmp_path: Path,
+    monkeypatch,
+):
+    class FakeModel:
+        family_names = ["fam0"]
+
+        def __init__(self):
+            self.closed = False
+
+        def close(self):
+            self.closed = True
+
+    model = FakeModel()
+    run_config = RunConfig(
+        species_tree=tmp_path / "sp.nwk",
+        families_file=tmp_path / "families.txt",
+        out_dir=tmp_path / "run_out",
+        device="cpu",
+    )
+    config = SamplingConfig(
+        checkpoint=tmp_path / "checkpoints" / "best.pt",
+        out_dir=tmp_path / "sample_out",
+        family_start=1,
+    )
+
+    runner = SamplingRunner(config)
+    monkeypatch.setattr(runner, "_load_model", lambda: (run_config, model))
+
+    with pytest.raises(ValueError, match="empty sampling family selection"):
+        runner.run()
+
+    assert model.closed
+
+
 class _DummyModel:
     def __init__(self):
         self.theta = torch.nn.Parameter(torch.zeros(2, 3))
         self.family_names = ["a", "b"]
+        self.species_names = ["s0", "s1"]
         self.cleared = False
 
     def clear(self):
@@ -2286,6 +2371,8 @@ def test_checkpoint_roundtrip_restores_theta_and_status(tmp_path: Path):
     assert payload["status"]["best_nll_bits"] == 12.0
     assert isinstance(payload["optimizer_state"], dict)
     assert payload["optimizer_state"]["state"]
+    assert payload["family_names"] == ["a", "b"]
+    assert payload["species_names"] == ["s0", "s1"]
     assert torch.equal(model.theta, expected_theta)
     assert model.cleared
 
@@ -2843,6 +2930,7 @@ def test_optimization_runner_discards_resume_optimizer_state_on_phase_mismatch(
     ("payload_update", "message"),
     [
         ({"family_names": ["fam_a", "fam_b"]}, "family_names differ"),
+        ({"species_names": ["sp_a", "sp_b"]}, "species_names differ"),
         ({"config": {"mode": "genewise"}}, r"config\.mode differs"),
     ],
 )
@@ -2856,6 +2944,7 @@ def test_optimization_runner_resume_rejects_incompatible_checkpoint_identity(
         def __init__(self):
             self.theta = torch.nn.Parameter(torch.zeros(2, 3, dtype=torch.float32))
             self.family_names = ["fam_b", "fam_a"]
+            self.species_names = ["sp_b", "sp_a"]
             self.closed = False
 
         def clear(self):
@@ -2889,6 +2978,7 @@ def test_optimization_runner_resume_rejects_incompatible_checkpoint_identity(
             "next_step": 1,
             "config": config.to_dict(),
             "family_names": ["fam_b", "fam_a"],
+            "species_names": ["sp_b", "sp_a"],
             "status": {
                 "previous_objective": 1.5,
                 "stable_loss_steps": 0,
@@ -2900,6 +2990,8 @@ def test_optimization_runner_resume_rejects_incompatible_checkpoint_identity(
             payload["config"] = {**payload["config"], **config_update}
         if "family_names" in payload_update:
             payload["family_names"] = payload_update["family_names"]
+        if "species_names" in payload_update:
+            payload["species_names"] = payload_update["species_names"]
         return payload
 
     workflow_optimize_module = importlib.import_module("gpurec.workflow.optimize")

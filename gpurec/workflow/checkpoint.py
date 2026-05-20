@@ -19,6 +19,65 @@ def _family_names(model: Any) -> list[str]:
     return []
 
 
+def _species_names(model: Any) -> list[str]:
+    if hasattr(model, "species_names"):
+        return list(model.species_names)
+    return []
+
+
+def _normalize_checkpoint_identity_value(key: str, value: Any) -> Any:
+    if key in {"species_tree", "families_file"} and value is not None:
+        return str(Path(value).expanduser().resolve())
+    return value
+
+
+def validate_checkpoint_model_compatibility(
+    *,
+    path: str | Path,
+    config: RunConfig,
+    model: Any,
+    payload: dict[str, Any],
+) -> None:
+    checkpoint_path = Path(path)
+    checkpoint_config = payload.get("config")
+    if isinstance(checkpoint_config, dict):
+        current_config = config.to_dict()
+        for key in ("species_tree", "families_file", "mode", "start", "max_families"):
+            if key not in checkpoint_config:
+                continue
+            checkpoint_value = _normalize_checkpoint_identity_value(
+                key,
+                checkpoint_config.get(key),
+            )
+            current_value = _normalize_checkpoint_identity_value(
+                key,
+                current_config.get(key),
+            )
+            if checkpoint_value != current_value:
+                raise RuntimeError(
+                    f"checkpoint {checkpoint_path} is incompatible with current run: "
+                    f"config.{key} differs"
+                )
+
+    checkpoint_family_names = payload.get("family_names")
+    if checkpoint_family_names is not None:
+        model_family_names = _family_names(model)
+        if list(checkpoint_family_names) != model_family_names:
+            raise RuntimeError(
+                f"checkpoint {checkpoint_path} is incompatible with current run: "
+                "family_names differ"
+            )
+
+    checkpoint_species_names = payload.get("species_names")
+    if checkpoint_species_names is not None:
+        model_species_names = _species_names(model)
+        if list(checkpoint_species_names) != model_species_names:
+            raise RuntimeError(
+                f"checkpoint {checkpoint_path} is incompatible with current run: "
+                "species_names differ"
+            )
+
+
 def save_checkpoint(
     path: str | Path,
     *,
@@ -44,6 +103,7 @@ def save_checkpoint(
         "status": status,
         "last_row": row,
         "family_names": _family_names(model),
+        "species_names": _species_names(model),
     }
     tmp = path.with_name(path.name + ".tmp")
     torch.save(payload, tmp)
@@ -104,6 +164,9 @@ def _validate_checkpoint_payload(payload: Any, path: Path) -> dict[str, Any]:
     family_names = payload.get("family_names")
     if family_names is not None and not isinstance(family_names, list):
         raise RuntimeError(f"checkpoint {path} has invalid family metadata")
+    species_names = payload.get("species_names")
+    if species_names is not None and not isinstance(species_names, list):
+        raise RuntimeError(f"checkpoint {path} has invalid species metadata")
     return payload
 
 

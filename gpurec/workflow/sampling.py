@@ -15,7 +15,11 @@ from gpurec.backtracking import (
     sample_recphyloxmls,
 )
 
-from .checkpoint import load_checkpoint, restore_model_theta
+from .checkpoint import (
+    load_checkpoint,
+    restore_model_theta,
+    validate_checkpoint_model_compatibility,
+)
 from .config import RunConfig, SamplingConfig
 from .model_factory import build_alerax_workflow_model
 
@@ -234,34 +238,44 @@ class SamplingRunner:
             refresh_preprocess_cache=False,
             prefetch_batches=0,
         )
-        restore_model_theta(model, payload)
+        try:
+            validate_checkpoint_model_compatibility(
+                path=self.config.checkpoint,
+                config=run_config,
+                model=model,
+                payload=payload,
+            )
+            restore_model_theta(model, payload)
+        except Exception:
+            model.close()
+            raise
         return run_config, model
 
     def run(self) -> SamplingResult:
         run_config, model = self._load_model()
-        out_dir = self.config.out_dir or run_config.out_dir
-        all_dir = out_dir / "reconciliations" / "all"
-        _clear_sampling_outputs(out_dir)
-
-        family_names = model.family_names
-        start = self.config.family_start
-        stop = len(family_names)
-        if self.config.max_families is not None:
-            stop = min(stop, start + self.config.max_families)
-        if start >= stop:
-            raise ValueError(
-                f"empty sampling family selection: start={start}, stop={stop}, "
-                f"available={len(family_names)}"
-            )
-
-        species_totals: dict[str, dict[str, float]] = defaultdict(
-            lambda: {column: 0.0 for column in SPECIES_COLUMNS}
-        )
-        transfer_totals: dict[tuple[str, str], float] = defaultdict(float)
-        event_rows: list[dict[str, Any]] = []
-        xml_count = 0
-
         try:
+            out_dir = self.config.out_dir or run_config.out_dir
+            all_dir = out_dir / "reconciliations" / "all"
+            _clear_sampling_outputs(out_dir)
+
+            family_names = model.family_names
+            start = self.config.family_start
+            stop = len(family_names)
+            if self.config.max_families is not None:
+                stop = min(stop, start + self.config.max_families)
+            if start >= stop:
+                raise ValueError(
+                    f"empty sampling family selection: start={start}, stop={stop}, "
+                    f"available={len(family_names)}"
+                )
+
+            species_totals: dict[str, dict[str, float]] = defaultdict(
+                lambda: {column: 0.0 for column in SPECIES_COLUMNS}
+            )
+            transfer_totals: dict[tuple[str, str], float] = defaultdict(float)
+            event_rows: list[dict[str, Any]] = []
+            xml_count = 0
+
             for family_index in range(start, stop):
                 family = family_names[family_index]
                 family_file_stem = _family_file_stem(family_index, family)

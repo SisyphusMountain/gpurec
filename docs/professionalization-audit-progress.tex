@@ -1289,6 +1289,16 @@ record \texttt{next\_step=final\_step}.  A fake-runner regression runs
 \texttt{next\_step=1}, then resumes with \texttt{steps=2} and verifies optimizer
 step 1 is recorded before \texttt{final\_eval} step 2.
 
+\subsection{Sampling Checkpoint Identity Metadata}
+
+Checkpoint compatibility validation is now shared by optimization resume and
+sampling restore.  Checkpoints record \texttt{species\_names} alongside
+\texttt{family\_names}, and the shared guard rejects family-order or
+species-order mismatches before theta is copied into a rebuilt model.  Sampling
+also closes the loaded model when checkpoint validation or an empty family
+selection fails, so early error paths no longer leave workflow model resources
+open.
+
 \section{Verification Log}
 
 \begin{center}
@@ -2597,6 +2607,21 @@ Release metadata checker after final checkpoint resume fix &
 \texttt{expected license blockers} \\
 \texttt{pdflatex -interaction=nonstopmode -halt-on-error ...professionalization...} &
 Audit log build after final checkpoint resume fix &
+\texttt{ok with known overfull table warnings} \\
+\texttt{python -m py\_compile gpurec/workflow/checkpoint.py gpurec/workflow/optimize.py gpurec/workflow/sampling.py tests/unit/test\_workflow.py} &
+Sampling checkpoint identity syntax &
+\texttt{ok} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q tests/unit/test\_workflow.py -k "..."} &
+Focused sampling/checkpoint identity regressions &
+\texttt{6 passed, 269 deselected} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
+CPU unit gate after sampling checkpoint identity fix &
+\texttt{386 passed, 28 deselected} \\
+\texttt{python scripts/check\_release\_metadata.py} &
+Release metadata checker after sampling checkpoint identity fix &
+\texttt{expected license blockers} \\
+\texttt{pdflatex -interaction=nonstopmode -halt-on-error ...professionalization...} &
+Audit log build after sampling checkpoint identity fix &
 \texttt{ok with known overfull table warnings} \\
 \bottomrule
 \end{tabular}
