@@ -1511,6 +1511,16 @@ source-level guard rejects future hardcoded \texttt{/tmp/} paths under
 \texttt{tests/*.py}, keeping test caches isolated from other runs and
 developer machines.
 
+\subsection{Historical Backlog Note Labeling}
+
+\texttt{docs/core-simplification-suggestions.md} now explicitly identifies
+itself as a historical cleanup snapshot rather than a current backlog.  The
+status note names the major suggestions that have already landed or been
+superseded and asks maintainers to revalidate each item against the current
+source tree before using it as active work.  \texttt{docs/release-readiness.md}
+also now distinguishes remaining manual release blockers from packaging checks
+that are already covered by CI.
+
 \section{Verification Log}
 
 \begin{center}
@@ -3146,6 +3156,21 @@ Release metadata checker after pytest-managed test caches &
 \texttt{expected license blockers} \\
 \texttt{pdflatex -interaction=nonstopmode -halt-on-error ...professionalization...} &
 Audit log build after pytest-managed test caches &
+\texttt{ok with known overfull table warnings} \\
+\texttt{rg -n "...stale core cleanup symbols..." gpurec/core gpurec/api tests docs/...} &
+Core simplification stale-symbol spot check &
+\texttt{only historical note references} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest --collect-only -q -m "unit and not gpu"} &
+CPU unit marker collection after documentation refresh &
+\texttt{418 selected, 28 deselected} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
+CPU unit gate after documentation refresh &
+\texttt{418 passed, 28 deselected} \\
+\texttt{python scripts/check\_release\_metadata.py} &
+Release metadata checker after documentation refresh &
+\texttt{expected license blockers} \\
+\texttt{pdflatex -interaction=nonstopmode -halt-on-error ...professionalization...} &
+Audit log build after documentation refresh &
 \texttt{ok with known overfull table warnings} \\
 \bottomrule
 \end{tabular}

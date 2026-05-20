@@ -2,6 +2,13 @@
 
 This note lists cleanup opportunities found in `gpurec/core` after the lean fast-path work. The goal is to keep uniform, genewise, and specieswise modes while removing slower fallbacks, duplicated scheduling paths, and debug-only code from the runtime surface.
 
+Status: historical cleanup snapshot. Several items below have since been
+implemented or superseded, including removal of the old segmented logsumexp
+kernel, Python BFS wave scheduling fallback, `collate_wave_cross`, legacy
+split-parent reconstruction, non-parent-reduced DTS path, non-compact Pibar VJP
+path, and `transfer_mat` solver inputs. Revalidate each item against the
+current source tree before treating it as active backlog.
+
 ## Highest Confidence Deletions
 
 ### Remove `scatter_lse.py`

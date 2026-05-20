@@ -1,7 +1,7 @@
 # Release Readiness
 
-This checklist records release blockers and packaging assumptions that are not
-yet encoded as automated build steps.
+This checklist records remaining release blockers, manual release decisions,
+and the packaging assumptions covered by current automated build steps.
 
 ## Required Before Redistribution
 
