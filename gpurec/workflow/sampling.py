@@ -23,9 +23,13 @@ from gpurec.recphyloxml import (
 
 from ._artifact_publish import (
     StagedArtifact,
-    cleanup_artifact_temp_dir,
     create_artifact_temp_dir,
     publish_staged_artifacts,
+)
+from ._cleanup import (
+    cleanup_stage,
+    cleanup_stage_and_close_model_after_error,
+    close_model_after_error,
 )
 from .checkpoint import (
     load_checkpoint,
@@ -249,13 +253,6 @@ def _validate_sampling_seed_range(
         )
 
 
-def _close_model_after_error(model: Any, primary_error: BaseException) -> None:
-    try:
-        model.close()
-    except Exception as close_error:
-        raise primary_error from close_error
-
-
 class SamplingRunner:
     def __init__(self, config: SamplingConfig):
         self.config = config
@@ -277,7 +274,7 @@ class SamplingRunner:
             )
             restore_model_theta(model, payload)
         except BaseException as exc:
-            _close_model_after_error(model, exc)
+            close_model_after_error(model, exc)
             raise
         return run_config, model
 
@@ -388,10 +385,10 @@ class SamplingRunner:
             staged_outputs.append((staged_summary_path, summary_path))
             write_json_strict(staged_summary_path, summary)
             _publish_sampling_outputs(out_dir, staged_outputs)
-            cleanup_error = cleanup_artifact_temp_dir(stage_dir)
-            stage_dir = None
-            if cleanup_error is not None:
-                raise cleanup_error
+            try:
+                cleanup_stage(stage_dir)
+            finally:
+                stage_dir = None
             result = SamplingResult(
                 out_dir=out_dir,
                 families_sampled=stop - start,
@@ -399,13 +396,11 @@ class SamplingRunner:
                 xml_files=xml_count,
             )
         except BaseException as exc:
-            cleanup_error = cleanup_artifact_temp_dir(stage_dir)
-            try:
-                model.close()
-            except Exception as close_error:
-                raise exc from close_error
-            if cleanup_error is not None:
-                raise exc from cleanup_error
+            cleanup_stage_and_close_model_after_error(
+                stage_dir=stage_dir,
+                model=model,
+                primary_error=exc,
+            )
             raise
         else:
             model.close()

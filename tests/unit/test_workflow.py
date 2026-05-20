@@ -4021,10 +4021,12 @@ def test_optimization_runner_preserves_primary_error_when_close_fails(
     )
     runner = FakeFailingCloseRunner(config)
 
-    with pytest.raises(RuntimeError, match="primary optimization failure"):
+    with pytest.raises(RuntimeError, match="primary optimization failure") as excinfo:
         runner.run()
 
     assert runner.fake_model.close_calls == 1
+    assert isinstance(excinfo.value.__cause__, RuntimeError)
+    assert str(excinfo.value.__cause__) == "close failure"
 
 
 def test_optimization_runner_periodic_latest_uses_completed_step_cadence(

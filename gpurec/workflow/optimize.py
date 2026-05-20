@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import math
 import time
-from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -13,10 +12,10 @@ from gpurec.api.model import GeneReconModel
 
 from ._artifact_publish import (
     StagedArtifact,
-    cleanup_artifact_temp_dir,
     create_artifact_temp_dir,
     publish_staged_artifacts,
 )
+from ._cleanup import cleanup_stage, cleanup_stage_after_error, close_model_after_error
 from ._metadata import (
     MISSING,
     checkpoint_finite_float,
@@ -277,14 +276,10 @@ def _write_final_artifacts(
 
         _publish_final_artifacts(config.out_dir, staged_outputs)
     except BaseException as exc:
-        cleanup_error = cleanup_artifact_temp_dir(stage_dir)
-        if cleanup_error is not None:
-            raise exc from cleanup_error
+        cleanup_stage_after_error(stage_dir, exc)
         raise
     else:
-        cleanup_error = cleanup_artifact_temp_dir(stage_dir)
-        if cleanup_error is not None:
-            raise cleanup_error
+        cleanup_stage(stage_dir)
 
 
 def _step_stopping_status(
@@ -741,9 +736,8 @@ class OptimizationRunner:
                 steps_completed=int(final_row["step"]),
                 sampling_checkpoint=sampling_checkpoint,
             )
-        except BaseException:
-            with suppress(Exception):
-                model.close()
+        except BaseException as exc:
+            close_model_after_error(model, exc)
             raise
         else:
             model.close()

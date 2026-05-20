@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 
+import gpurec.workflow._cleanup as workflow_cleanup
 from gpurec.workflow._artifact_publish import (
     cleanup_artifact_temp_dir,
     create_artifact_temp_dir,
@@ -25,6 +26,61 @@ def test_artifact_temp_dir_cleanup_removes_private_tree(tmp_path: Path):
     assert cleanup_artifact_temp_dir(stage_dir) is None
     assert not stage_dir.exists()
     assert cleanup_artifact_temp_dir(None) is None
+
+
+def test_cleanup_stage_after_error_chains_cleanup_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    primary = RuntimeError("primary failure")
+    cleanup_failure = OSError("cleanup failure")
+
+    monkeypatch.setattr(
+        workflow_cleanup,
+        "cleanup_artifact_temp_dir",
+        lambda path: cleanup_failure,
+    )
+
+    with pytest.raises(RuntimeError, match="primary failure") as excinfo:
+        workflow_cleanup.cleanup_stage_after_error(tmp_path, primary)
+
+    assert excinfo.value is primary
+    assert excinfo.value.__cause__ is cleanup_failure
+
+
+def test_cleanup_stage_and_close_model_after_error_prefers_close_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    class FailingCloseModel:
+        def __init__(self):
+            self.close_calls = 0
+
+        def close(self) -> None:
+            self.close_calls += 1
+            raise RuntimeError("close failure")
+
+    primary = RuntimeError("primary failure")
+    cleanup_failure = OSError("cleanup failure")
+    model = FailingCloseModel()
+
+    monkeypatch.setattr(
+        workflow_cleanup,
+        "cleanup_artifact_temp_dir",
+        lambda path: cleanup_failure,
+    )
+
+    with pytest.raises(RuntimeError, match="primary failure") as excinfo:
+        workflow_cleanup.cleanup_stage_and_close_model_after_error(
+            stage_dir=tmp_path,
+            model=model,
+            primary_error=primary,
+        )
+
+    assert model.close_calls == 1
+    assert excinfo.value is primary
+    assert isinstance(excinfo.value.__cause__, RuntimeError)
+    assert str(excinfo.value.__cause__) == "close failure"
 
 
 def test_publish_staged_artifacts_replaces_nested_managed_outputs(

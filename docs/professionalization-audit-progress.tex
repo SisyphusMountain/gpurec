@@ -2424,6 +2424,21 @@ before workflow configuration parsing.  The existing CLI surface guard now
 checks the derived private field surface against the dataclass fields and the
 parser destinations.
 
+\subsection{Shared Workflow Cleanup Helpers}
+
+Optimization and sampling now route artifact-stage cleanup and model-close
+failure handling through \texttt{gpurec.workflow.\_cleanup} instead of carrying
+separate local try/except blocks.  The helper preserves the primary workflow
+exception while chaining cleanup or close failures as the cause, so users still
+see the real optimization or sampling failure first and developers retain the
+cleanup context when resource release also fails.
+
+The sampling runner keeps its existing precedence when both staging cleanup and
+model close fail: the close failure remains the attached cause because a failed
+model close can indicate leaked executor or prefetch state.  Optimization now
+uses the same close-failure chaining instead of silently suppressing close
+errors during failure cleanup.
+
 \section{Verification Log}
 
 \begin{center}
@@ -5427,6 +5442,21 @@ CPU unit gate after derived CLI RunConfig field surface &
 \texttt{781 passed, 6 deselected} \\
 \texttt{python scripts/check\_release\_metadata.py} &
 Release metadata checker after derived CLI RunConfig field surface &
+\texttt{expected license blockers} \\
+\texttt{python -m py\_compile gpurec/workflow/\_cleanup.py gpurec/workflow/optimize.py gpurec/workflow/sampling.py tests/unit/test\_workflow.py tests/unit/test\_workflow\_artifacts.py} &
+Shared workflow cleanup helper syntax &
+\texttt{ok} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' python -m pytest tests/unit/test\_workflow\_artifacts.py selected workflow cleanup error-path tests -q} &
+Focused shared cleanup helper and workflow close paths &
+\texttt{9 passed} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' python -m pytest tests/unit/test\_workflow.py tests/unit/test\_workflow\_artifacts.py -q} &
+Workflow and artifact suites after shared cleanup helper &
+\texttt{420 passed} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' python -m pytest tests/unit -q -m "unit and not gpu"} &
+CPU unit gate after shared workflow cleanup helper &
+\texttt{783 passed, 6 deselected} \\
+\texttt{python scripts/check\_release\_metadata.py} &
+Release metadata checker after shared workflow cleanup helper &
 \texttt{expected license blockers} \\
 \bottomrule
 \end{tabular}
