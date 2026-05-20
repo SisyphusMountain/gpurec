@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import subprocess
 from pathlib import Path
 
 from gpurec.core.model import parse_alerax_family_file
@@ -29,3 +30,18 @@ def test_minimal_run_config_example_loads_and_points_to_tiny_fixture():
         [str((ROOT / "examples" / "tiny" / "gene.nwk").resolve())]
     ]
     assert leaf_maps == [{"a": "A", "b": "B"}]
+
+
+def test_minimal_run_config_outputs_are_gitignored():
+    config = RunConfig.from_json(ROOT / "examples" / "minimal-run-config.json")
+    output_paths = [config.out_dir, config.preprocess_cache]
+
+    for output_path in output_paths:
+        assert output_path is not None
+        relative = output_path.relative_to(ROOT).as_posix()
+        result = subprocess.run(
+            ["git", "check-ignore", "--quiet", relative],
+            cwd=ROOT,
+            check=False,
+        )
+        assert result.returncode == 0, relative

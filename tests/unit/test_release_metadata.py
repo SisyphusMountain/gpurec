@@ -101,8 +101,15 @@ def test_cpu_ci_builds_and_smokes_release_artifacts():
         "python -m twine check dist/*",
         "tarfile.open",
         "zipfile.ZipFile",
+        "required_sdist = required_wheel +",
+        "examples/minimal-run-config.json",
+        "examples/tiny/families.txt",
+        "examples/tiny/gene.map",
+        "examples/tiny/gene.nwk",
+        "examples/tiny/species.nwk",
         "gpurec/core/cpp/preprocess.cpp",
         "gpurec/core/cpp/clade_utils.hpp",
+        "sdist missing required source files",
         "wheel missing required package data",
         "python -m pip install --no-deps dist/*.whl",
         "smoke_dir=$(mktemp -d)",
@@ -121,6 +128,15 @@ def test_cpu_ci_builds_and_smokes_release_artifacts():
         'cd "$smoke_dir"'
     )
     assert workflow.index('cd "$smoke_dir"') < workflow.index("gpurec --help")
+
+
+def test_manifest_includes_documented_examples_in_source_archive():
+    manifest = (ROOT / "MANIFEST.in").read_text(encoding="utf-8")
+
+    assert "recursive-include gpurec/core/cpp *.cpp *.hpp" in manifest
+    assert "recursive-include examples" in manifest
+    for pattern in ("*.json", "*.map", "*.nwk", "*.txt"):
+        assert pattern in manifest
 
 
 @pytest.mark.parametrize(

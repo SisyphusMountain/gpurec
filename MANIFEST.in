@@ -1,1 +1,2 @@
 recursive-include gpurec/core/cpp *.cpp *.hpp
+recursive-include examples *.json *.map *.nwk *.txt

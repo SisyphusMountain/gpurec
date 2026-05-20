@@ -89,12 +89,19 @@ jobs:
           import tarfile
           import zipfile
 
-          required = [
+          required_wheel = [
               "gpurec/core/cpp/preprocess.cpp",
               "gpurec/core/cpp/clade_utils.cpp",
               "gpurec/core/cpp/clade_utils.hpp",
               "gpurec/core/cpp/tree_utils.cpp",
               "gpurec/core/cpp/tree_utils.hpp",
+          ]
+          required_sdist = required_wheel + [
+              "examples/minimal-run-config.json",
+              "examples/tiny/families.txt",
+              "examples/tiny/gene.map",
+              "examples/tiny/gene.nwk",
+              "examples/tiny/species.nwk",
           ]
 
           sdists = list(Path("dist").glob("*.tar.gz"))
@@ -104,18 +111,18 @@ jobs:
               names = set(archive.getnames())
           missing = [
               path
-              for path in required
+              for path in required_sdist
               if not any(name.endswith("/" + path) for name in names)
           ]
           if missing:
-              raise SystemExit(f"sdist missing required package data: {missing}")
+              raise SystemExit(f"sdist missing required source files: {missing}")
 
           wheels = list(Path("dist").glob("*.whl"))
           if len(wheels) != 1:
               raise SystemExit(f"expected one wheel, found {wheels}")
           with zipfile.ZipFile(wheels[0]) as archive:
               names = set(archive.namelist())
-          missing = [path for path in required if path not in names]
+          missing = [path for path in required_wheel if path not in names]
           if missing:
               raise SystemExit(f"wheel missing required package data: {missing}")
           PY

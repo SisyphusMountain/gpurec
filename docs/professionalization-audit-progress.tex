@@ -1320,6 +1320,19 @@ checkpoint loader failure, but now also points users to
 \texttt{checkpoints/best.pt} or \texttt{checkpoints/latest.pt} and explicitly
 identifies \texttt{theta\_final.pt} as the wrong artifact for sampling.
 
+\subsection{Packaged Minimal Example}
+
+The checked minimal workflow example is now included in source distributions
+instead of being advertised only by a README that ships without the referenced
+files.  \texttt{MANIFEST.in} includes the minimal JSON config and tiny species,
+family, gene-tree, and mapping files, and the package CI source-archive check
+now verifies those documented examples separately from wheel package data.  The
+example's configured output and preprocessing-cache paths are also covered by
+\texttt{examples/output/} in \texttt{.gitignore}, with a unit guard that runs
+\texttt{git check-ignore} against both configured paths.  The same manifest
+guard keeps the existing native C++ source inclusion explicit so packaging the
+example cannot silently drop extension build inputs from the source archive.
+
 \section{Verification Log}
 
 \begin{center}
@@ -2671,6 +2684,27 @@ CPU unit gate after raw theta sampling CLI hint &
 \texttt{python scripts/check\_release\_metadata.py} &
 Release metadata checker after raw theta sampling CLI hint &
 \texttt{expected license blockers} \\
+\texttt{python -m py\_compile tests/unit/test\_examples.py tests/unit/test\_release\_metadata.py} &
+Packaged minimal example syntax &
+\texttt{ok} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q tests/unit/test\_examples.py tests/unit/test\_release\_metadata.py -k "..."} &
+Focused minimal-example packaging guards &
+\texttt{4 passed, 14 deselected} \\
+\texttt{git check-ignore -v examples/output/minimal-run examples/output/preprocess-cache} &
+Minimal example output ignore guard &
+\texttt{ok} \\
+\texttt{python -m build --sdist --outdir ...} &
+Source archive documented examples and C++ sources &
+\texttt{sdist required files present} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
+CPU unit gate after packaged minimal example &
+\texttt{391 passed, 28 deselected} \\
+\texttt{python scripts/check\_release\_metadata.py} &
+Release metadata checker after packaged minimal example &
+\texttt{expected license blockers} \\
+\texttt{pdflatex -interaction=nonstopmode -halt-on-error ...professionalization...} &
+Audit log build after packaged minimal example &
+\texttt{ok with known overfull table warnings} \\
 \bottomrule
 \end{tabular}
 \end{center}

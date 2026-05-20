@@ -24,6 +24,7 @@ extra/
 scenarios/
 output_test/
 output_*/
+examples/output/
 tests/data/**/output/
 wandb/
 
