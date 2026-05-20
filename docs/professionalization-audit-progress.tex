@@ -4594,6 +4594,24 @@ Release metadata checker after optional CUDA self-loop fallback hardening &
 \texttt{pdflatex -interaction=nonstopmode -halt-on-error ...professionalization...} &
 Audit log build after optional CUDA self-loop fallback hardening &
 \texttt{ok with known overfull table warnings} \\
+\texttt{python -m py\_compile scripts/check\_release\_metadata.py tests/unit/test\_release\_metadata.py} &
+Release metadata license-file guard syntax &
+\texttt{ok} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q tests/unit/test\_release\_metadata.py::test\_release\_metadata\_check\_rejects\_license\_directory} &
+Focused top-level license directory rejection guard &
+\texttt{1 passed} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q tests/unit/test\_release\_metadata.py} &
+Release metadata suite after license-file guard hardening &
+\texttt{29 passed} \\
+\texttt{python scripts/check\_release\_metadata.py} &
+Release metadata checker after license-file guard hardening &
+\texttt{expected license blockers} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
+CPU unit gate after license-file guard hardening &
+\texttt{670 passed, 28 deselected} \\
+\texttt{pdflatex -interaction=nonstopmode -halt-on-error ...professionalization...} &
+Audit log build after license-file guard hardening &
+\texttt{ok with known overfull table warnings} \\
 \bottomrule
 \end{tabular}
 \end{center}

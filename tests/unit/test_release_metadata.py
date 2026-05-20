@@ -193,6 +193,28 @@ def test_release_metadata_check_rejects_empty_license_text(tmp_path: Path):
     assert result.stderr == ""
 
 
+def test_release_metadata_check_rejects_license_directory(tmp_path: Path):
+    _write_complete_release_metadata_fixture(
+        tmp_path,
+        license_line='license = { text = "fixture license text" }',
+    )
+    (tmp_path / "LICENSE").unlink()
+    (tmp_path / "LICENSE").mkdir()
+
+    result = subprocess.run(
+        [sys.executable, str(CHECK_SCRIPT), "--root", str(tmp_path)],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 1
+    assert "missing top-level LICENSE file" in result.stdout
+    assert "license metadata" not in result.stdout
+    assert "license classifier" not in result.stdout
+    assert result.stderr == ""
+
+
 def test_release_metadata_check_accepts_readme_table_fixture(tmp_path: Path):
     _write_complete_release_metadata_fixture(
         tmp_path,

@@ -168,7 +168,7 @@ def release_metadata_issues(root: Path) -> list[str]:
         )
 
     license_files = [project_root / "LICENSE", project_root / "LICENSE.txt"]
-    has_license_file = any(path.exists() for path in license_files)
+    has_license_file = any(path.is_file() for path in license_files)
     license_classifier = any(str(item).startswith("License ::") for item in classifiers)
     if not has_license_file:
         issues.append("missing top-level LICENSE file")
