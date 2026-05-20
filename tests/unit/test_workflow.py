@@ -2002,28 +2002,76 @@ def test_backtracking_command_rejects_missing_env_command(monkeypatch, tmp_path:
     assert "gpurec-backtrack-definitely-missing" in message
 
 
-def test_ensure_backtracking_available_delegates_command_resolution(
+def test_ensure_backtracking_available_validates_help(
     tmp_path: Path,
     monkeypatch,
 ):
-    calls: list[tuple[Path, Path]] = []
+    calls: list[tuple[list[str], dict[str, object]]] = []
     manifest = tmp_path / "Cargo.toml"
     binary = tmp_path / "gpurec-backtrack"
+    binary.write_text("#!/bin/sh\n", encoding="utf-8")
+    binary.chmod(0o755)
 
-    def fake_backtrack_command(
-        *,
-        cargo_manifest: str | Path,
-        backtrack_binary: str | Path | None,
-    ) -> list[str]:
-        assert backtrack_binary is not None
-        calls.append((Path(cargo_manifest), Path(backtrack_binary)))
-        return [str(binary)]
+    def fake_run(command: list[str], **kwargs: object) -> SimpleNamespace:
+        calls.append((command, kwargs))
+        return SimpleNamespace(
+            returncode=0,
+            stdout=(
+                "usage: gpurec-backtrack [--samples N] "
+                "[input.json] [output.xml]\n"
+            ),
+            stderr="",
+        )
 
-    monkeypatch.setattr(backtracking, "_backtrack_command", fake_backtrack_command)
+    monkeypatch.setattr(backtracking.subprocess, "run", fake_run)
 
     backtracking.ensure_backtracking_available(binary, cargo_manifest=manifest)
 
-    assert calls == [(manifest, binary)]
+    assert len(calls) == 1
+    assert calls[0][0] == [str(binary.resolve()), "--help"]
+    assert calls[0][1]["capture_output"] is True
+    assert calls[0][1]["check"] is False
+    assert calls[0][1]["cwd"] is None
+    assert calls[0][1]["text"] is True
+    assert calls[0][1]["timeout"] == backtracking._BACKTRACK_HELP_TIMEOUT_SECONDS
+
+
+def test_ensure_backtracking_available_rejects_unrelated_executable(
+    tmp_path: Path,
+    monkeypatch,
+):
+    binary = tmp_path / "not-backtracking"
+    binary.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    binary.chmod(0o755)
+
+    def fake_run(command: list[str], **kwargs: object) -> SimpleNamespace:
+        assert command == [str(binary.resolve()), "--help"]
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(backtracking.subprocess, "run", fake_run)
+
+    with pytest.raises(RuntimeError, match="expected gpurec-backtrack help"):
+        backtracking.ensure_backtracking_available(binary)
+
+
+def test_ensure_backtracking_available_reports_help_failure(
+    tmp_path: Path,
+    monkeypatch,
+):
+    binary = tmp_path / "gpurec-backtrack"
+    binary.write_text("#!/bin/sh\nexit 2\n", encoding="utf-8")
+    binary.chmod(0o755)
+
+    def fake_run(command: list[str], **kwargs: object) -> SimpleNamespace:
+        assert command == [str(binary.resolve()), "--help"]
+        return SimpleNamespace(returncode=2, stdout="", stderr="bad flag\n")
+
+    monkeypatch.setattr(backtracking.subprocess, "run", fake_run)
+
+    with pytest.raises(RuntimeError, match="validating --help") as exc_info:
+        backtracking.ensure_backtracking_available(binary)
+
+    assert "bad flag" in str(exc_info.value)
 
 
 def test_backtracking_sampler_helpers_share_subprocess_io(tmp_path: Path, monkeypatch):

@@ -494,7 +494,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Check Rust backtracking command availability.",
         description=(
             "Validate the Rust backtracking binary or source-tree cargo fallback "
-            "without loading a checkpoint."
+            "by running --help without loading a checkpoint."
         ),
     )
     _add_backtrack_binary_arg(backtrack_check_parser)

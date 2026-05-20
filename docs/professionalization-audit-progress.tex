@@ -4534,6 +4534,33 @@ Release metadata checker after optional NVTX range hardening &
 \texttt{pdflatex -interaction=nonstopmode -halt-on-error ...professionalization...} &
 Audit log build after optional NVTX range hardening &
 \texttt{ok with known overfull table warnings} \\
+\texttt{python -m py\_compile gpurec/backtracking.py gpurec/cli.py tests/unit/test\_workflow.py tests/unit/test\_release\_metadata.py} &
+Backtracking binary identity preflight syntax &
+\texttt{ok} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q tests/unit/test\_workflow.py -k "ensure\_backtracking\_available"} &
+Focused backtracking \texttt{--help} identity preflight guards &
+\texttt{3 passed, 343 deselected} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q tests/unit/test\_release\_metadata.py::...} &
+Focused release and CPU fixture documentation guards &
+\texttt{3 passed} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' python -m gpurec.cli backtrack-check} &
+Source-tree cargo fallback backtracking preflight smoke &
+\texttt{ok} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' python -m gpurec.cli backtrack-check --backtrack-binary /bin/true} &
+Non-backtracking executable rejection smoke &
+\texttt{expected failure} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q tests/unit/test\_workflow.py tests/unit/test\_cli\_workflow.py tests/unit/test\_release\_metadata.py} &
+Workflow, CLI, and release suites after backtracking preflight hardening &
+\texttt{432 passed} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
+CPU unit gate after backtracking preflight hardening &
+\texttt{654 passed, 28 deselected} \\
+\texttt{python scripts/check\_release\_metadata.py} &
+Release metadata checker after backtracking preflight hardening &
+\texttt{expected license blockers} \\
+\texttt{pdflatex -interaction=nonstopmode -halt-on-error ...professionalization...} &
+Audit log build after backtracking preflight hardening &
+\texttt{ok with known overfull table warnings} \\
 \bottomrule
 \end{tabular}
 \end{center}

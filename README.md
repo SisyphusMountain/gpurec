@@ -221,7 +221,7 @@ gpurec sample --checkpoint output_gpurec/checkpoints/best.pt --samples 100
 The same `GPUREC_BACKTRACK_BIN` environment variable or `--backtrack-binary`
 flag applies to `gpurec run` when it samples after optimization.
 Use `gpurec backtrack-check` to validate the binary or source-tree Cargo
-fallback without loading a checkpoint.
+fallback by running its `--help` path without loading a checkpoint.
 
 The automatic `cargo run` fallback works from a source checkout or unpacked
 source archive.  It requires a Rust toolchain and fetches the pinned `rustree`

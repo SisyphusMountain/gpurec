@@ -56,13 +56,11 @@ cargo run --locked --quiet --manifest-path crates/gpurec-backtrack/Cargo.toml --
 pytest -q -m "integration and not gpu"
 ```
 
-Backtracking smoke should prefer a prebuilt Rust binary to avoid `cargo run`
-startup during Python tests:
+Backtracking fixture smokes should use the CPU-only JSON fixture when the goal
+is to validate the Rust binary without constructing a CUDA model:
 
 ```bash
-cargo build --locked --release --manifest-path crates/gpurec-backtrack/Cargo.toml
-GPUREC_BACKTRACK_BIN=crates/gpurec-backtrack/target/release/gpurec-backtrack \
-  pytest -q tests/integration/test_stochastic_backtracking.py::test_rust_stochastic_backtracking_exports_recphyloxml
+pytest -q tests/integration/test_rust_backtracking_fixture.py::test_rust_backtracking_cli_reads_json_fixture_and_writes_recphyloxml
 ```
 
 `pytest.ini` declares the coarse test markers; `tests/conftest.py` auto-applies

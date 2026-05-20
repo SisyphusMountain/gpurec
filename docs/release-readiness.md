@@ -78,6 +78,34 @@ python -m build
 python -m twine check dist/*
 ```
 
+Smoke the installed wheel from outside the checkout so the import and command
+tests cannot accidentally use editable source files:
+
+```bash
+repo_root=$(git rev-parse --show-toplevel)
+python -m pip uninstall -y gpurec
+python -m pip install --no-deps dist/*.whl
+smoke_dir=$(mktemp -d)
+cd "$smoke_dir"
+gpurec --help
+python -m gpurec.cli --help
+gpurec sample --help
+gpurec run --help
+gpurec backtrack-check --help
+GPUREC_REPO_ROOT="$repo_root" python - <<'PY'
+import os
+from pathlib import Path
+import gpurec
+
+package_path = Path(gpurec.__file__).resolve()
+repo_root = Path(os.environ["GPUREC_REPO_ROOT"]).resolve()
+if package_path.is_relative_to(repo_root):
+    raise SystemExit(f"imported gpurec from checkout: {package_path}")
+if "site-packages" not in package_path.parts and "dist-packages" not in package_path.parts:
+    raise SystemExit(f"gpurec import is not from installed packages: {package_path}")
+PY
+```
+
 Do not publish artifacts until the license and binary distribution expectation
 for sampling above are resolved.
 

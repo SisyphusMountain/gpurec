@@ -34,6 +34,12 @@ _BACKTRACK_BINARY_GUIDANCE = (
     f"Set {_BACKTRACK_BINARY_ENV}, pass backtrack_binary in Python, or use "
     "--backtrack-binary in the CLI"
 )
+_BACKTRACK_HELP_TIMEOUT_SECONDS = 30
+_BACKTRACK_HELP_MARKERS = (
+    "usage: gpurec-backtrack",
+    "--samples",
+    "input.json",
+)
 _UINT64_MAX = (1 << 64) - 1
 
 
@@ -231,6 +237,10 @@ def _is_cargo_fallback_command(command: list[str]) -> bool:
     )
 
 
+def _command_text(command: list[str]) -> str:
+    return " ".join(shlex.quote(part) for part in command)
+
+
 def _backtrack_invocation(
     *,
     cargo_manifest: str | Path,
@@ -244,17 +254,61 @@ def _backtrack_invocation(
     return _BacktrackInvocation(command=command, cwd=cwd)
 
 
+def _validate_backtracking_help(invocation: _BacktrackInvocation) -> None:
+    command = invocation.command + ["--help"]
+    try:
+        result = subprocess.run(
+            command,
+            check=False,
+            capture_output=True,
+            cwd=invocation.cwd,
+            text=True,
+            timeout=_BACKTRACK_HELP_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(
+            "gpurec backtracking command timed out while validating --help: "
+            f"{_command_text(command)}"
+        ) from exc
+    except OSError as exc:
+        raise RuntimeError(
+            "gpurec backtracking command could not be executed while validating "
+            f"--help: {_command_text(command)}"
+        ) from exc
+
+    output = "\n".join(part for part in (result.stdout, result.stderr) if part)
+    if result.returncode != 0:
+        details = [
+            "gpurec backtracking command failed while validating --help",
+            f"exit code {result.returncode}",
+            f"command: {_command_text(command)}",
+        ]
+        if result.stderr:
+            details.append(f"stderr: {result.stderr.strip()}")
+        if result.stdout:
+            details.append(f"stdout: {result.stdout.strip()}")
+        raise RuntimeError("; ".join(details))
+
+    missing = [marker for marker in _BACKTRACK_HELP_MARKERS if marker not in output]
+    if missing:
+        raise RuntimeError(
+            "gpurec backtracking command did not report the expected "
+            f"gpurec-backtrack help text: {_command_text(command)}"
+        )
+
+
 def ensure_backtracking_available(
     backtrack_binary: str | Path | None = None,
     *,
     cargo_manifest: str | Path = _BACKTRACK_MANIFEST,
 ) -> None:
-    """Validate that the Rust backtracking command can be resolved."""
+    """Validate that the Rust backtracking command resolves and runs."""
 
-    _backtrack_command(
+    invocation = _backtrack_invocation(
         cargo_manifest=cargo_manifest,
         backtrack_binary=backtrack_binary,
     )
+    _validate_backtracking_help(invocation)
 
 
 def _evaluate_backtracking_state(model: GeneReconModel) -> ReconciliationState:
@@ -290,11 +344,10 @@ def _run_backtracking_payload(
             text=True,
         )
         if result.returncode != 0:
-            command_text = " ".join(shlex.quote(part) for part in full_command)
             details = [
                 "gpurec backtracking command failed",
                 f"exit code {result.returncode}",
-                f"command: {command_text}",
+                f"command: {_command_text(full_command)}",
             ]
             if result.stderr:
                 details.append(f"stderr: {result.stderr.strip()}")

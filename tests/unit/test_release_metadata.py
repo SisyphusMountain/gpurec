@@ -464,7 +464,7 @@ def test_tests_readme_explicit_cpu_unit_paths_match_marker_gate():
 def test_tests_readme_backtracking_binary_smoke_is_reproducible():
     readme = (ROOT / "tests" / "README.md").read_text(encoding="utf-8")
     match = re.search(
-        r"Backtracking smoke should prefer.*?```bash\n(?P<block>.*?)```",
+        r"Backtracking fixture smokes should use.*?```bash\n(?P<block>.*?)```",
         readme,
         flags=re.S,
     )
@@ -472,17 +472,10 @@ def test_tests_readme_backtracking_binary_smoke_is_reproducible():
     assert match is not None
     block = match.group("block")
     assert (
-        "cargo build --locked --release --manifest-path "
-        "crates/gpurec-backtrack/Cargo.toml"
+        "tests/integration/test_rust_backtracking_fixture.py::"
+        "test_rust_backtracking_cli_reads_json_fixture_and_writes_recphyloxml"
     ) in block
-    assert (
-        "GPUREC_BACKTRACK_BIN=crates/gpurec-backtrack/target/release/"
-        "gpurec-backtrack"
-    ) in block
-    assert (
-        "tests/integration/test_stochastic_backtracking.py::"
-        "test_rust_stochastic_backtracking_exports_recphyloxml"
-    ) in block
+    assert "test_stochastic_backtracking.py" not in block
 
 
 def test_release_readiness_orders_clean_checkout_before_build():
@@ -503,6 +496,25 @@ def test_release_readiness_smokes_top_level_exports():
 
     assert "for name in gpurec.__all__" in guide
     assert "getattr(gpurec, name)" in guide
+
+
+def test_release_readiness_documents_installed_wheel_smoke():
+    guide = (ROOT / "docs" / "release-readiness.md").read_text(encoding="utf-8")
+
+    for expected in (
+        "python -m pip install --no-deps dist/*.whl",
+        "smoke_dir=$(mktemp -d)",
+        'cd "$smoke_dir"',
+        "gpurec sample --help",
+        "gpurec run --help",
+        "gpurec backtrack-check --help",
+        "package_path = Path(gpurec.__file__).resolve()",
+        "package_path.is_relative_to(repo_root)",
+        "imported gpurec from checkout",
+        "site-packages",
+        "dist-packages",
+    ):
+        assert expected in guide
 
 
 def test_release_readiness_scopes_ignored_clean_commands():
