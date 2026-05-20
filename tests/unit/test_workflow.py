@@ -2770,7 +2770,7 @@ def test_sampling_runner_preserves_sampling_error_when_close_fails(
     assert str(excinfo.value.__cause__) == "close failed"
 
 
-def test_sampling_runner_removes_generated_outputs_after_sampling_error(
+def test_sampling_runner_preserves_previous_outputs_after_sampling_error(
     tmp_path: Path,
     monkeypatch,
 ):
@@ -2813,10 +2813,18 @@ def test_sampling_runner_removes_generated_outputs_after_sampling_error(
     all_dir.mkdir(parents=True)
     manual_file = all_dir / "manual.keep"
     stale_sample = all_dir / "000000_stale_sample_0.xml"
-    stale_summary = recon_dir / "summary.json"
+    stale_event_counts = all_dir / "000000_stale_eventCounts_0.txt"
+    stale_aggregates = [
+        recon_dir / "event_counts.tsv",
+        recon_dir / "summary.json",
+        recon_dir / "totalSpeciesEventCounts.txt",
+        recon_dir / "totalTransfers.txt",
+    ]
     manual_file.write_text("keep", encoding="utf-8")
     stale_sample.write_text("stale", encoding="utf-8")
-    stale_summary.write_text("stale", encoding="utf-8")
+    stale_event_counts.write_text("stale counts", encoding="utf-8")
+    for stale_aggregate in stale_aggregates:
+        stale_aggregate.write_text("stale aggregate", encoding="utf-8")
 
     calls: list[int] = []
 
@@ -2854,17 +2862,13 @@ def test_sampling_runner_removes_generated_outputs_after_sampling_error(
     assert calls == [0, 1]
     assert model.closed
     assert manual_file.read_text(encoding="utf-8") == "keep"
-    assert not stale_sample.exists()
-    assert not stale_summary.exists()
-    assert list(all_dir.glob("*_sample_*.xml")) == []
-    assert list(all_dir.glob("*_eventCounts_*.txt")) == []
-    for name in (
-        "event_counts.tsv",
-        "summary.json",
-        "totalSpeciesEventCounts.txt",
-        "totalTransfers.txt",
-    ):
-        assert not (recon_dir / name).exists()
+    assert stale_sample.read_text(encoding="utf-8") == "stale"
+    assert stale_event_counts.read_text(encoding="utf-8") == "stale counts"
+    for stale_aggregate in stale_aggregates:
+        assert stale_aggregate.read_text(encoding="utf-8") == "stale aggregate"
+    assert not (all_dir / "000000_fam0_sample_0.xml").exists()
+    assert not (all_dir / "000000_fam0_eventCounts_0.txt").exists()
+    assert list(recon_dir.glob(".gpurec-sampling-*")) == []
 
 
 def test_sampling_runner_closes_model_on_empty_family_selection(

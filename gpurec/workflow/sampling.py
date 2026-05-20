@@ -3,6 +3,8 @@ from __future__ import annotations
 import csv
 import json
 import re
+import shutil
+import tempfile
 from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
@@ -191,31 +193,117 @@ def _write_event_counts_table(path: Path, rows: list[dict[str, Any]]) -> None:
             )
 
 
-def _clear_sampling_outputs(out_dir: Path) -> None:
+def _generated_sampling_outputs(out_dir: Path) -> list[Path]:
     recon_dir = out_dir / "reconciliations"
     all_dir = recon_dir / "all"
+    paths: list[Path] = []
     if all_dir.exists():
         for pattern in _SAMPLING_ALL_PATTERNS:
-            for path in all_dir.glob(pattern):
-                if path.is_file():
-                    path.unlink()
-    all_dir.mkdir(parents=True, exist_ok=True)
+            paths.extend(
+                sorted(path for path in all_dir.glob(pattern) if path.is_file())
+            )
     for name in _SAMPLING_AGGREGATE_FILES:
         path = recon_dir / name
         if path.is_file():
-            path.unlink()
+            paths.append(path)
+    return paths
 
 
-def _cleanup_generated_sampling_outputs(paths: list[Path]) -> OSError | None:
-    cleanup_error: OSError | None = None
-    for path in reversed(paths):
+def _clear_sampling_outputs(out_dir: Path) -> None:
+    for path in _generated_sampling_outputs(out_dir):
+        path.unlink()
+    (out_dir / "reconciliations" / "all").mkdir(parents=True, exist_ok=True)
+
+
+def _create_sampling_temp_dir(recon_dir: Path, *, prefix: str) -> Path:
+    recon_dir.mkdir(parents=True, exist_ok=True)
+    return Path(tempfile.mkdtemp(prefix=prefix, dir=recon_dir))
+
+
+def _cleanup_sampling_temp_dir(path: Path | None) -> OSError | None:
+    if path is None:
+        return None
+    try:
+        shutil.rmtree(path)
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        return exc
+    return None
+
+
+def _move_sampling_outputs_to_backup(
+    out_dir: Path,
+    backup_dir: Path,
+) -> list[tuple[Path, Path]]:
+    recon_dir = out_dir / "reconciliations"
+    moved: list[tuple[Path, Path]] = []
+    try:
+        for final_path in _generated_sampling_outputs(out_dir):
+            backup_path = backup_dir / final_path.relative_to(recon_dir)
+            backup_path.parent.mkdir(parents=True, exist_ok=True)
+            final_path.replace(backup_path)
+            moved.append((backup_path, final_path))
+    except BaseException as exc:
+        restore_error: BaseException | None = None
+        for backup_path, final_path in reversed(moved):
+            try:
+                if backup_path.is_file():
+                    final_path.parent.mkdir(parents=True, exist_ok=True)
+                    backup_path.replace(final_path)
+            except BaseException as rollback_error:
+                if restore_error is None:
+                    restore_error = rollback_error
+        if restore_error is not None:
+            raise exc from restore_error
+        raise
+    return moved
+
+
+def _restore_sampling_backup(moved: list[tuple[Path, Path]]) -> None:
+    for backup_path, final_path in reversed(moved):
+        if backup_path.is_file():
+            final_path.parent.mkdir(parents=True, exist_ok=True)
+            backup_path.replace(final_path)
+
+
+def _publish_sampling_outputs(
+    out_dir: Path,
+    staged_outputs: list[tuple[Path, Path]],
+) -> None:
+    recon_dir = out_dir / "reconciliations"
+    all_dir = recon_dir / "all"
+    backup_dir = _create_sampling_temp_dir(
+        recon_dir,
+        prefix=".gpurec-sampling-backup-",
+    )
+    try:
+        moved = _move_sampling_outputs_to_backup(out_dir, backup_dir)
+    except BaseException:
+        shutil.rmtree(backup_dir, ignore_errors=True)
+        raise
+
+    try:
+        all_dir.mkdir(parents=True, exist_ok=True)
+        for staged_path, final_path in staged_outputs:
+            final_path.parent.mkdir(parents=True, exist_ok=True)
+            staged_path.replace(final_path)
+    except BaseException as exc:
+        cleanup_error: BaseException | None = None
         try:
-            if path.is_file():
-                path.unlink()
-        except OSError as exc:
+            _clear_sampling_outputs(out_dir)
+        except BaseException as clear_error:
+            cleanup_error = clear_error
+        try:
+            _restore_sampling_backup(moved)
+        except BaseException as restore_error:
             if cleanup_error is None:
-                cleanup_error = exc
-    return cleanup_error
+                cleanup_error = restore_error
+        shutil.rmtree(backup_dir, ignore_errors=True)
+        if cleanup_error is not None:
+            raise exc from cleanup_error
+        raise
+    shutil.rmtree(backup_dir, ignore_errors=True)
 
 
 def _validate_sampling_seed_range(
@@ -269,10 +357,11 @@ class SamplingRunner:
     def run(self) -> SamplingResult:
         ensure_backtracking_available(self.config.backtrack_binary)
         run_config, model = self._load_model()
-        generated_paths: list[Path] = []
+        stage_dir: Path | None = None
         try:
             out_dir = self.config.out_dir or run_config.out_dir
-            all_dir = out_dir / "reconciliations" / "all"
+            recon_dir = out_dir / "reconciliations"
+            all_dir = recon_dir / "all"
 
             family_names = model.family_names
             start = self.config.family_start
@@ -285,7 +374,14 @@ class SamplingRunner:
                     f"available={len(family_names)}"
                 )
             _validate_sampling_seed_range(self.config, start=start, stop=stop)
-            _clear_sampling_outputs(out_dir)
+
+            stage_dir = _create_sampling_temp_dir(
+                recon_dir,
+                prefix=".gpurec-sampling-stage-",
+            )
+            stage_all_dir = stage_dir / "all"
+            stage_all_dir.mkdir(parents=True, exist_ok=True)
+            staged_outputs: list[tuple[Path, Path]] = []
 
             species_totals: dict[str, dict[str, float]] = defaultdict(
                 lambda: {column: 0.0 for column in SPECIES_COLUMNS}
@@ -307,16 +403,18 @@ class SamplingRunner:
                 )
                 for sample_index, xml in enumerate(xmls):
                     xml_path = all_dir / f"{family_file_stem}_sample_{sample_index}.xml"
-                    generated_paths.append(xml_path)
-                    xml_path.write_text(xml, encoding="utf-8")
+                    staged_xml_path = stage_all_dir / xml_path.name
+                    staged_outputs.append((staged_xml_path, xml_path))
+                    staged_xml_path.write_text(xml, encoding="utf-8")
                     xml_count += 1
 
                     event_counts = recphyloxml_event_counts(xml)
                     event_counts_path = (
                         all_dir / f"{family_file_stem}_eventCounts_{sample_index}.txt"
                     )
-                    generated_paths.append(event_counts_path)
-                    _write_event_counts(event_counts_path, event_counts)
+                    staged_event_counts_path = stage_all_dir / event_counts_path.name
+                    staged_outputs.append((staged_event_counts_path, event_counts_path))
+                    _write_event_counts(staged_event_counts_path, event_counts)
                     event_rows.append(
                         {"family": family, "sample": sample_index, **event_counts}
                     )
@@ -329,21 +427,23 @@ class SamplingRunner:
                     for pair, value in transfers.items():
                         transfer_totals[pair] += value
 
-            recon_dir = out_dir / "reconciliations"
             event_counts_table = recon_dir / "event_counts.tsv"
-            generated_paths.append(event_counts_table)
-            _write_event_counts_table(event_counts_table, event_rows)
+            staged_event_counts_table = stage_dir / "event_counts.tsv"
+            staged_outputs.append((staged_event_counts_table, event_counts_table))
+            _write_event_counts_table(staged_event_counts_table, event_rows)
             total_species_path = recon_dir / "totalSpeciesEventCounts.txt"
-            generated_paths.append(total_species_path)
+            staged_total_species_path = stage_dir / "totalSpeciesEventCounts.txt"
+            staged_outputs.append((staged_total_species_path, total_species_path))
             _write_total_species_counts(
-                total_species_path,
+                staged_total_species_path,
                 dict(species_totals),
                 divisor=self.config.samples,
             )
             total_transfers_path = recon_dir / "totalTransfers.txt"
-            generated_paths.append(total_transfers_path)
+            staged_total_transfers_path = stage_dir / "totalTransfers.txt"
+            staged_outputs.append((staged_total_transfers_path, total_transfers_path))
             _write_total_transfers(
-                total_transfers_path,
+                staged_total_transfers_path,
                 dict(transfer_totals),
                 divisor=self.config.samples,
             )
@@ -355,11 +455,17 @@ class SamplingRunner:
                 "out_dir": str(out_dir),
             }
             summary_path = recon_dir / "summary.json"
-            generated_paths.append(summary_path)
-            summary_path.write_text(
+            staged_summary_path = stage_dir / "summary.json"
+            staged_outputs.append((staged_summary_path, summary_path))
+            staged_summary_path.write_text(
                 json.dumps(summary, indent=2, sort_keys=True) + "\n",
                 encoding="utf-8",
             )
+            _publish_sampling_outputs(out_dir, staged_outputs)
+            cleanup_error = _cleanup_sampling_temp_dir(stage_dir)
+            stage_dir = None
+            if cleanup_error is not None:
+                raise cleanup_error
             result = SamplingResult(
                 out_dir=out_dir,
                 families_sampled=stop - start,
@@ -367,7 +473,7 @@ class SamplingRunner:
                 xml_files=xml_count,
             )
         except BaseException as exc:
-            cleanup_error = _cleanup_generated_sampling_outputs(generated_paths)
+            cleanup_error = _cleanup_sampling_temp_dir(stage_dir)
             try:
                 model.close()
             except Exception as close_error:
