@@ -300,6 +300,13 @@ def test_cpu_ci_builds_and_smokes_release_artifacts():
         '"site-packages" not in package_path.parts',
         '"dist-packages" not in package_path.parts',
         "imported gpurec from checkout",
+        "import gpurec.workflow as workflow",
+        "for name in gpurec.__all__:",
+        "for name in workflow.__all__:",
+        "getattr(workflow, name)",
+        "workflow export missing from gpurec.__all__",
+        "top-level workflow export mismatch",
+        "exports_ok",
     ):
         assert required in workflow
     assert workflow.index("python -m pip install --no-deps dist/*.whl") < workflow.index(
@@ -366,26 +373,65 @@ def test_cli_help_smokes_are_quiet_on_cpu(command: tuple[str, ...]):
 
 
 @pytest.mark.parametrize(
-    "code",
+    ("code", "expected_stdout"),
     (
-        "\n".join(
-            (
-                "import gpurec",
-                "for name in gpurec.__all__:",
-                "    getattr(gpurec, name)",
-                "print('exports_ok')",
-            )
+        (
+            "\n".join(
+                (
+                    "import gpurec",
+                    "for name in gpurec.__all__:",
+                    "    getattr(gpurec, name)",
+                    "print('exports_ok')",
+                )
+            ),
+            "exports_ok",
         ),
-        "\n".join(
-            (
-                "import gpurec.workflow",
-                "from gpurec import RunConfig, SamplingConfig",
-                "print(RunConfig.__name__, SamplingConfig.__name__)",
-            )
+        (
+            "\n".join(
+                (
+                    "import gpurec.workflow as workflow",
+                    "for name in workflow.__all__:",
+                    "    getattr(workflow, name)",
+                    "print('workflow_exports_ok')",
+                )
+            ),
+            "workflow_exports_ok",
+        ),
+        (
+            "\n".join(
+                (
+                    "import gpurec",
+                    "import gpurec.workflow as workflow",
+                    "for name in workflow.__all__:",
+                    "    if name not in gpurec.__all__:",
+                    "        raise SystemExit(f'workflow export missing from gpurec.__all__: {name}')",
+                    "    if getattr(gpurec, name) is not getattr(workflow, name):",
+                    "        raise SystemExit(f'top-level workflow export mismatch: {name}')",
+                    "print('workflow_identity_ok')",
+                )
+            ),
+            "workflow_identity_ok",
+        ),
+        (
+            "\n".join(
+                (
+                    "import gpurec",
+                    "namespace = {}",
+                    "exec('from gpurec import *', namespace)",
+                    "exported = {name for name in namespace if not name.startswith('__')}",
+                    "if exported != set(gpurec.__all__):",
+                    "    raise SystemExit(f'wildcard mismatch: {sorted(exported ^ set(gpurec.__all__))}')",
+                    "print('wildcard_ok')",
+                )
+            ),
+            "wildcard_ok",
         ),
     ),
 )
-def test_public_import_smokes_are_quiet_on_cpu(code: str):
+def test_public_import_smokes_are_quiet_on_cpu(
+    code: str,
+    expected_stdout: str,
+):
     env = os.environ.copy()
     env["CUDA_VISIBLE_DEVICES"] = ""
 
@@ -398,6 +444,7 @@ def test_public_import_smokes_are_quiet_on_cpu(code: str):
     )
 
     assert result.returncode == 0
+    assert result.stdout.strip() == expected_stdout
     assert result.stderr == ""
 
 
@@ -552,8 +599,12 @@ def test_release_readiness_orders_clean_checkout_before_build():
 def test_release_readiness_smokes_top_level_exports():
     guide = (ROOT / "docs" / "release-readiness.md").read_text(encoding="utf-8")
 
+    assert "import gpurec.workflow as workflow" in guide
     assert "for name in gpurec.__all__" in guide
     assert "getattr(gpurec, name)" in guide
+    assert "for name in workflow.__all__" in guide
+    assert "getattr(workflow, name)" in guide
+    assert "top-level workflow export mismatch" in guide
 
 
 def test_release_readiness_documents_installed_wheel_smoke():
@@ -571,6 +622,9 @@ def test_release_readiness_documents_installed_wheel_smoke():
         "imported gpurec from checkout",
         "site-packages",
         "dist-packages",
+        "for name in gpurec.__all__",
+        "for name in workflow.__all__",
+        "exports_ok",
     ):
         assert expected in guide
 

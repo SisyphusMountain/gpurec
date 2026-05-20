@@ -26,6 +26,15 @@ from gpurec.recphyloxml import (
     primary_event_name,
 )
 
+__all__ = [
+    "EVENT_KEYS",
+    "ensure_backtracking_available",
+    "export_backtracking_input",
+    "recphyloxml_event_counts",
+    "sample_recphyloxml",
+    "sample_recphyloxmls",
+]
+
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 _BACKTRACK_MANIFEST = _REPO_ROOT / "crates" / "gpurec-backtrack" / "Cargo.toml"

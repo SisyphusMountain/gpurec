@@ -78,8 +78,8 @@ python -m build
 python -m twine check dist/*
 ```
 
-Smoke the installed wheel from outside the checkout so the import and command
-tests cannot accidentally use editable source files:
+Smoke the installed wheel from outside the checkout so the import, public-export,
+and command tests cannot accidentally use editable source files:
 
 ```bash
 repo_root=$(git rev-parse --show-toplevel)
@@ -96,6 +96,7 @@ GPUREC_REPO_ROOT="$repo_root" python - <<'PY'
 import os
 from pathlib import Path
 import gpurec
+import gpurec.workflow as workflow
 
 package_path = Path(gpurec.__file__).resolve()
 repo_root = Path(os.environ["GPUREC_REPO_ROOT"]).resolve()
@@ -103,6 +104,15 @@ if package_path.is_relative_to(repo_root):
     raise SystemExit(f"imported gpurec from checkout: {package_path}")
 if "site-packages" not in package_path.parts and "dist-packages" not in package_path.parts:
     raise SystemExit(f"gpurec import is not from installed packages: {package_path}")
+for name in gpurec.__all__:
+    getattr(gpurec, name)
+for name in workflow.__all__:
+    workflow_value = getattr(workflow, name)
+    if name not in gpurec.__all__:
+        raise SystemExit(f"workflow export missing from gpurec.__all__: {name}")
+    if getattr(gpurec, name) is not workflow_value:
+        raise SystemExit(f"top-level workflow export mismatch: {name}")
+print("exports_ok")
 PY
 ```
 
@@ -118,8 +128,12 @@ CUDA_VISIBLE_DEVICES='' gpurec --help
 CUDA_VISIBLE_DEVICES='' python -m gpurec.cli --help
 CUDA_VISIBLE_DEVICES='' python - <<'PY'
 import gpurec
+import gpurec.workflow as workflow
 for name in gpurec.__all__:
     getattr(gpurec, name)
+for name in workflow.__all__:
+    getattr(workflow, name)
+print("exports_ok")
 PY
 CUDA_VISIBLE_DEVICES='' gpurec backtrack-check --help
 CUDA_VISIBLE_DEVICES='' pytest -q -m "unit and not gpu"

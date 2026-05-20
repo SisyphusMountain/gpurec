@@ -259,6 +259,7 @@ jobs:
           import os
           from pathlib import Path
           import gpurec
+          import gpurec.workflow as workflow
 
           package_path = Path(gpurec.__file__).resolve()
           workspace = Path(os.environ["GITHUB_WORKSPACE"]).resolve()
@@ -271,4 +272,15 @@ jobs:
               raise SystemExit(
                   f"gpurec import is not from installed packages: {package_path}"
               )
+          for name in gpurec.__all__:
+              getattr(gpurec, name)
+          for name in workflow.__all__:
+              workflow_value = getattr(workflow, name)
+              if name not in gpurec.__all__:
+                  raise SystemExit(
+                      f"workflow export missing from gpurec.__all__: {name}"
+                  )
+              if getattr(gpurec, name) is not workflow_value:
+                  raise SystemExit(f"top-level workflow export mismatch: {name}")
+          print("exports_ok")
           PY

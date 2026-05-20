@@ -1,7 +1,12 @@
 """Repository-level source and documentation hygiene checks."""
 
+import ast
+import re
 import subprocess
 from pathlib import Path
+
+import gpurec
+import gpurec.workflow as workflow
 
 
 def _tracked_files(root: Path, *patterns: str) -> list[Path]:
@@ -283,17 +288,44 @@ def test_project_readme_documents_sampling_output_layout():
     assert "use a separate `--sample-out-dir` to keep multiple windows" in project_readme
 
 
-def test_project_readme_documents_top_level_backtracking_helpers():
+def test_project_readme_top_level_import_examples_match_public_exports():
+    root = Path(__file__).resolve().parents[2]
+    project_readme = (root / "README.md").read_text(encoding="utf-8")
+    imported_names: list[str] = []
+
+    for block in re.findall(r"```python\n(.*?)```", project_readme, flags=re.S):
+        tree = ast.parse(block)
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, ast.ImportFrom)
+                and node.level == 0
+                and node.module == "gpurec"
+            ):
+                imported_names.extend(
+                    alias.name for alias in node.names if alias.name != "*"
+                )
+
+    assert imported_names
+    assert sorted({name for name in imported_names if name not in gpurec.__all__}) == []
+
+
+def test_project_readme_documents_top_level_workflow_exports():
     root = Path(__file__).resolve().parents[2]
     project_readme = (root / "README.md").read_text(encoding="utf-8")
 
-    for name in (
-        "ensure_backtracking_available",
-        "export_backtracking_input",
-        "recphyloxml_event_counts",
-        "sample_recphyloxml",
-        "sample_recphyloxmls",
-    ):
+    assert sorted(name for name in workflow.__all__ if name not in project_readme) == []
+
+
+def test_project_readme_documents_top_level_backtracking_helpers():
+    root = Path(__file__).resolve().parents[2]
+    project_readme = (root / "README.md").read_text(encoding="utf-8")
+    public_helpers = sorted(
+        name
+        for name, module_name in gpurec._LAZY_EXPORTS.items()
+        if module_name == "gpurec.backtracking" and name != "EVENT_KEYS"
+    )
+
+    for name in public_helpers:
         assert name in project_readme
 
 

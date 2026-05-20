@@ -5,6 +5,7 @@ import importlib
 import json
 import math
 import os
+import subprocess
 import sys
 from pathlib import Path
 from threading import Lock
@@ -64,6 +65,12 @@ from gpurec.workflow.optimize import OptimizationRunner, _write_rate_table
 from gpurec.workflow.sampling import SamplingRunner, _xml_species_and_transfer_counts
 
 optimize_workflow = importlib.import_module("gpurec.workflow.optimize")
+
+
+def _wildcard_export_names(import_statement: str) -> set[str]:
+    namespace: dict[str, object] = {}
+    exec(import_statement, namespace)
+    return {name for name in namespace if not name.startswith("__")}
 
 
 def test_run_config_json_roundtrip(tmp_path: Path):
@@ -311,7 +318,8 @@ def test_sampling_config_from_cli_args_maps_shared_fields(tmp_path: Path):
 
 
 def test_top_level_exports_api_metadata_types():
-    assert set(gpurec.__all__) == set(gpurec._LAZY_EXPORTS)
+    assert gpurec.__all__ == list(gpurec._LAZY_EXPORTS)
+    assert set(gpurec.__all__) <= set(dir(gpurec))
     assert gpurec.ActiveFamilyBatch is ActiveFamilyBatch
     assert gpurec.BatchMetadata is BatchMetadata
     assert gpurec.FamilyInput is FamilyInput
@@ -328,24 +336,70 @@ def test_top_level_exports_api_metadata_types():
 
 
 def test_top_level_exports_backtracking_surface():
-    for name in (
+    public_names = {
         "EVENT_KEYS",
         "ensure_backtracking_available",
         "export_backtracking_input",
         "recphyloxml_event_counts",
         "sample_recphyloxml",
         "sample_recphyloxmls",
-    ):
+    }
+
+    assert set(backtracking.__all__) == public_names
+    for name in backtracking.__all__:
         assert name in gpurec.__all__
         assert gpurec._LAZY_EXPORTS[name] == "gpurec.backtracking"
         assert getattr(gpurec, name) is getattr(backtracking, name)
 
 
 def test_top_level_exports_workflow_surface():
+    assert set(workflow.__all__) <= set(dir(workflow))
     for name in workflow.__all__:
         assert name in gpurec.__all__
         assert gpurec._LAZY_EXPORTS[name] == "gpurec.workflow"
         assert getattr(gpurec, name) is getattr(workflow, name)
+
+
+def test_top_level_wildcard_import_matches_public_all():
+    assert _wildcard_export_names("from gpurec import *") == set(gpurec.__all__)
+
+
+def test_backtracking_wildcard_import_matches_public_all():
+    assert _wildcard_export_names("from gpurec.backtracking import *") == set(
+        backtracking.__all__
+    )
+
+
+def test_workflow_wildcard_import_matches_public_all():
+    assert _wildcard_export_names("from gpurec.workflow import *") == set(
+        workflow.__all__
+    )
+
+
+def test_import_gpurec_does_not_eagerly_import_workflow_or_backtracking():
+    code = "\n".join(
+        (
+            "import sys",
+            "import gpurec",
+            "assert 'gpurec.workflow' not in sys.modules",
+            "assert 'gpurec.backtracking' not in sys.modules",
+        )
+    )
+    env = os.environ.copy()
+    env["CUDA_VISIBLE_DEVICES"] = ""
+
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        cwd=Path(__file__).resolve().parents[2],
+        check=False,
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+
+    assert result.returncode == 0
+    assert result.stdout == ""
+    assert result.stderr == ""
 
 
 def test_uniform_chunked_public_chunk_metadata_accessors():

@@ -100,7 +100,8 @@ sample_result = sample(sampling)
 ```
 
 For direct imports from the workflow package, `gpurec.workflow` exports the same
-configs, runners, result dataclasses, and `optimize`/`sample` functions.
+`RunConfig`, `SamplingConfig`, `OptimizationRunner`, `SamplingRunner`,
+`OptimizationResult`, `SamplingResult`, and `optimize`/`sample` functions.
 
 Top-level backtracking helpers are also available for lower-level sampling and
 validation workflows:

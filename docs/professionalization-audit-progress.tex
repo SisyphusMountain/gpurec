@@ -2236,6 +2236,29 @@ resume now loads checkpoints onto CPU for validation before restoring theta to
 the model device.  CPU regressions cover malformed loader payloads, sampling
 legacy metadata, optimization legacy metadata, and CUDA-config resume preflight.
 
+\subsection{Public Export Surface Guards}
+
+The top-level package now derives \texttt{\_\_all\_\_} directly from the lazy
+export map, removing the duplicate public-export list.  The
+\texttt{gpurec.backtracking} module now declares its own
+\texttt{\_\_all\_\_}, so wildcard imports expose only the public event metadata
+and sampling helper surface instead of imported dependencies and private bridge
+helpers.
+
+CPU tests now pin wildcard-import behavior for \texttt{gpurec},
+\texttt{gpurec.workflow}, and \texttt{gpurec.backtracking}.  A subprocess guard
+also verifies that plain \texttt{import gpurec} still avoids eagerly importing
+the workflow and backtracking modules.  README hygiene tests parse fenced Python
+examples and derive workflow/backtracking documentation checks from the public
+export surfaces.
+
+The installed-wheel smoke in the CPU package workflow now validates public
+exports after proving the import came from site-packages or dist-packages rather
+than the checkout.  It iterates \texttt{gpurec.\_\_all\_\_} and
+\texttt{gpurec.workflow.\_\_all\_\_}, and checks that workflow exports resolve to
+the same objects through the top-level package.  The release-readiness guide now
+documents the same installed-wheel export smoke.
+
 \section{Verification Log}
 
 \begin{center}
@@ -5051,6 +5074,24 @@ Release metadata checker after checkpoint identity hardening &
 \texttt{pdflatex -interaction=nonstopmode -halt-on-error ...professionalization...} &
 Audit log build after checkpoint identity hardening &
 \texttt{ok with known overfull table warnings} \\
+\texttt{python -m py\_compile public export guard files} &
+Public export and documentation guard syntax &
+\texttt{ok} \\
+\texttt{python -m pytest selected public export guards -q} &
+Focused wildcard, README, and release-smoke guards &
+\texttt{17 passed} \\
+\texttt{python -m pytest tests/unit/test\_workflow.py tests/unit/test\_release\_metadata.py tests/unit/test\_repository\_hygiene.py -q} &
+Touched workflow, release metadata, and hygiene suites &
+\texttt{442 passed} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' python -m pytest tests/unit -q -m "unit and not gpu"} &
+CPU unit gate after public export guard hardening &
+\texttt{738 passed, 6 deselected} \\
+\texttt{python scripts/check\_release\_metadata.py} &
+Release metadata checker after public export guard hardening &
+\texttt{expected license blockers} \\
+\texttt{pdflatex -interaction=nonstopmode -halt-on-error ...professionalization...} &
+Audit log build after public export guard hardening &
+\texttt{ok with known overfull table warnings} \\
 \bottomrule
 \end{tabular}
 \end{center}
@@ -5066,8 +5107,6 @@ Audit log build after checkpoint identity hardening &
         distribution model is settled.
   \item Consider making \texttt{gpurec.workflow} lazy like the top-level
         package so config-only imports stay light and quiet.
-  \item Strengthen public export and wildcard-import guards for
-        \texttt{gpurec}, \texttt{gpurec.workflow}, and backtracking helpers.
   \item Continue auditing public API consistency, documentation coverage, and
         CPU-safe regression tests for user-facing workflows.
   \item Keep committing small, verified increments so the branch remains
