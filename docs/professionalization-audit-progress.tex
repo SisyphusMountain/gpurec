@@ -1611,6 +1611,15 @@ parser normalizes dtype aliases such as \texttt{fp32}, \texttt{single},
 \texttt{input-order}, \texttt{ffd}, \texttt{clade-ffd}, and
 \texttt{critical-path-first-fit} to the canonical workflow packing names.
 
+\subsection{Pytest Marker Taxonomy Cleanup}
+
+\texttt{pytest.ini} no longer registers unused \texttt{gradient} or
+\texttt{autograd} markers.  It now registers a \texttt{kernel} marker, and the
+collection hook applies it to \texttt{tests/kernels} alongside the existing
+\texttt{integration} marker.  The tests README documents that layout mapping,
+and a repository hygiene guard checks that the marker registry, collection hook,
+and documentation stay aligned.
+
 \section{Verification Log}
 
 \begin{center}
@@ -3420,6 +3429,24 @@ Release metadata checker after CLI alias normalization &
 \texttt{expected license blockers} \\
 \texttt{pdflatex -interaction=nonstopmode -halt-on-error ...professionalization...} &
 Audit log build after CLI alias normalization &
+\texttt{ok with known overfull table warnings} \\
+\texttt{python -m py\_compile tests/conftest.py tests/unit/test\_repository\_hygiene.py} &
+Pytest marker taxonomy syntax &
+\texttt{ok} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q tests/unit/test\_repository\_hygiene.py} &
+Repository hygiene marker taxonomy guard &
+\texttt{11 passed} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest --collect-only -q tests/kernels} &
+Kernel marker collection smoke &
+\texttt{5 tests collected} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
+CPU unit gate after pytest marker taxonomy cleanup &
+\texttt{435 passed, 28 deselected} \\
+\texttt{python scripts/check\_release\_metadata.py} &
+Release metadata checker after pytest marker taxonomy cleanup &
+\texttt{expected license blockers} \\
+\texttt{pdflatex -interaction=nonstopmode -halt-on-error ...professionalization...} &
+Audit log build after pytest marker taxonomy cleanup &
 \texttt{ok with known overfull table warnings} \\
 \bottomrule
 \end{tabular}

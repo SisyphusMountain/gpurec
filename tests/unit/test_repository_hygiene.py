@@ -142,6 +142,23 @@ def test_gpu_tests_use_explicit_module_level_markers():
     assert offenders == []
 
 
+def test_pytest_marker_taxonomy_matches_current_layout():
+    root = Path(__file__).resolve().parents[2]
+    pytest_ini = (root / "pytest.ini").read_text(encoding="utf-8")
+    conftest = (root / "tests" / "conftest.py").read_text(encoding="utf-8")
+    tests_readme = (root / "tests" / "README.md").read_text(encoding="utf-8")
+
+    for marker in ("unit", "integration", "kernel", "gpu", "slow"):
+        assert f"    {marker}:" in pytest_ini
+    assert "gradient:" not in pytest_ini
+    assert "autograd:" not in pytest_ini
+
+    assert "kernel_marker = pytest.mark.kernel" in conftest
+    assert 'test_section == "kernels"' in conftest
+    assert "item.add_marker(kernel_marker)" in conftest
+    assert "both\n`integration` and `kernel` to `tests/kernels`" in tests_readme
+
+
 def test_tests_use_pytest_managed_temporary_paths():
     root = Path(__file__).resolve().parents[2]
     forbidden = "/" + "tmp/"

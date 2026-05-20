@@ -35,6 +35,7 @@ def pytest_collection_modifyitems(config, items):
     """Auto-apply directory-level markers."""
     unit_marker = pytest.mark.unit
     integration_marker = pytest.mark.integration
+    kernel_marker = pytest.mark.kernel
     for item in items:
         try:
             test_section = item.path.relative_to(DATA_DIR.parent).parts[0]
@@ -42,5 +43,8 @@ def pytest_collection_modifyitems(config, items):
             test_section = ""
         if test_section == "unit":
             item.add_marker(unit_marker)
-        elif test_section in {"integration", "kernels"}:
+        elif test_section == "integration":
             item.add_marker(integration_marker)
+        elif test_section == "kernels":
+            item.add_marker(integration_marker)
+            item.add_marker(kernel_marker)
