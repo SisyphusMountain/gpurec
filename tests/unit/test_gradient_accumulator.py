@@ -7,7 +7,10 @@ import torch
 
 from gpurec.api import model as api_model
 from gpurec.api.model import GeneReconModel
-from gpurec.core.gradient_accumulator import GradientAccumulator
+from gpurec.core.gradient_accumulator import (
+    GradientAccumulator,
+    StructuredGradientAccumulator,
+)
 from gpurec.core.parameter_layout import ParameterLayout
 
 
@@ -175,6 +178,62 @@ def test_accumulator_rejects_out_of_range_family_index() -> None:
 
     with pytest.raises(IndexError, match="out of range"):
         accumulator.add(torch.zeros(1, 3), family_indices=[4])
+
+
+def test_structured_accumulator_sums_fixed_schema_gradients() -> None:
+    accumulator = StructuredGradientAccumulator(
+        tensor_keys=("grad_E", "grad_log_pD"),
+        counter_keys=("n_waves_total", "n_waves_skipped"),
+    )
+    first_grad_e = torch.tensor([1.0, 2.0], dtype=torch.float32)
+    first = {
+        "grad_E": first_grad_e,
+        "grad_log_pD": torch.tensor([0.5, 1.5], dtype=torch.float32),
+        "n_waves_total": 3,
+        "n_waves_skipped": 1,
+    }
+    second = {
+        "grad_E": torch.tensor([4.0, 8.0], dtype=torch.float32),
+        "grad_log_pD": torch.tensor([2.5, 3.5], dtype=torch.float32),
+        "n_waves_total": 5,
+        "n_waves_skipped": 0,
+    }
+
+    accumulator.add(first)
+    first_grad_e.zero_()
+    accumulator.add(second)
+    result = accumulator.result()
+
+    torch.testing.assert_close(
+        result["grad_E"],
+        torch.tensor([5.0, 10.0], dtype=torch.float32),
+    )
+    torch.testing.assert_close(
+        result["grad_log_pD"],
+        torch.tensor([3.0, 5.0], dtype=torch.float32),
+    )
+    assert result["grad_E"].requires_grad is False
+    assert result["n_waves_total"] == 8
+    assert result["n_waves_skipped"] == 1
+
+
+def test_structured_accumulator_requires_matching_tensor_shape_and_dtype() -> None:
+    accumulator = StructuredGradientAccumulator(tensor_keys=("grad_E",))
+    accumulator.add({"grad_E": torch.zeros(2, dtype=torch.float32)})
+
+    with pytest.raises(ValueError, match=r"field 'grad_E' shape"):
+        accumulator.add({"grad_E": torch.zeros(3, dtype=torch.float32)})
+    with pytest.raises(ValueError, match=r"field 'grad_E' dtype"):
+        accumulator.add({"grad_E": torch.zeros(2, dtype=torch.float64)})
+
+
+def test_structured_accumulator_requires_declared_tensor_fields() -> None:
+    accumulator = StructuredGradientAccumulator(tensor_keys=("grad_E",))
+
+    with pytest.raises(KeyError, match="missing tensor field 'grad_E'"):
+        accumulator.add({})
+    with pytest.raises(TypeError, match="field 'grad_E' must be a torch.Tensor"):
+        accumulator.add({"grad_E": 1.0})
 
 
 def test_stream_full_batches_uses_accumulator_for_genewise_batches(

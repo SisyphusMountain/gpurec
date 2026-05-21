@@ -1,13 +1,13 @@
-"""Internal theta-gradient accumulation helpers.
+"""Internal gradient accumulation helpers.
 
-This module owns model-boundary accumulation for public theta-shaped
-gradients.  Kernel-local adjoint scatter/add paths stay in their CUDA-facing
-modules.
+This module owns model-boundary accumulation for public theta-shaped gradients
+and same-shape structured reductions of already-computed gradient dictionaries.
+Kernel-local adjoint scatter/add paths stay in their CUDA-facing modules.
 """
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from numbers import Integral
 from typing import Any
 
@@ -112,6 +112,128 @@ class GradientAccumulator:
         return self
 
 
+class StructuredGradientAccumulator:
+    """Accumulate fixed-schema gradient dictionaries.
+
+    Tensor fields are detached and cloned on first use, then later
+    contributions must match the original tensor shape, dtype, and device
+    exactly.  Counter fields are summed as Python integers.  This helper is for
+    reductions of already-computed gradient tensors; it does not own any
+    kernel-local scatter semantics.
+    """
+
+    def __init__(
+        self,
+        *,
+        tensor_keys: Sequence[str],
+        counter_keys: Sequence[str] = (),
+    ) -> None:
+        self.tensor_keys = _normalize_keys(
+            "tensor_keys",
+            tensor_keys,
+            allow_empty=False,
+        )
+        self.counter_keys = _normalize_keys(
+            "counter_keys",
+            counter_keys,
+            allow_empty=True,
+        )
+        self._gradient: dict[str, Any] | None = None
+
+    @property
+    def is_empty(self) -> bool:
+        return self._gradient is None
+
+    def add(
+        self,
+        contribution: Mapping[str, Any],
+    ) -> "StructuredGradientAccumulator":
+        if not isinstance(contribution, Mapping):
+            raise TypeError("structured gradient contribution must be a mapping")
+
+        if self._gradient is None:
+            self._gradient = {
+                key: _require_tensor_field(contribution, key).detach().clone()
+                for key in self.tensor_keys
+            }
+            for key in self.counter_keys:
+                self._gradient[key] = int(contribution.get(key, 0))
+            return self
+
+        for key in self.tensor_keys:
+            value = _require_tensor_field(contribution, key)
+            target = self._gradient[key]
+            _validate_matching_tensor_field(key, value, target)
+            target.add_(value)
+        for key in self.counter_keys:
+            self._gradient[key] = int(self._gradient.get(key, 0)) + int(
+                contribution.get(key, 0)
+            )
+        return self
+
+    def result(self) -> dict[str, Any]:
+        if self._gradient is None:
+            raise RuntimeError("structured gradient accumulator is empty")
+        return self._gradient
+
+
+def _normalize_keys(
+    name: str,
+    keys: Sequence[str],
+    *,
+    allow_empty: bool,
+) -> tuple[str, ...]:
+    if isinstance(keys, (str, bytes)):
+        raise ValueError(f"{name} must be a sequence of strings")
+    values = tuple(keys)
+    if not values and not allow_empty:
+        raise ValueError(f"{name} must not be empty")
+    seen: set[str] = set()
+    for key in values:
+        if not isinstance(key, str) or not key:
+            raise ValueError(f"{name} entries must be non-empty strings")
+        if key in seen:
+            raise ValueError(f"{name} contains duplicate key {key!r}")
+        seen.add(key)
+    return values
+
+
+def _require_tensor_field(
+    contribution: Mapping[str, Any],
+    key: str,
+) -> torch.Tensor:
+    if key not in contribution:
+        raise KeyError(f"gradient contribution missing tensor field {key!r}")
+    value = contribution[key]
+    if not torch.is_tensor(value):
+        raise TypeError(f"gradient contribution field {key!r} must be a torch.Tensor")
+    return value
+
+
+def _validate_matching_tensor_field(
+    key: str,
+    value: torch.Tensor,
+    target: torch.Tensor,
+) -> None:
+    value_shape = tuple(int(dim) for dim in value.shape)
+    target_shape = tuple(int(dim) for dim in target.shape)
+    if value_shape != target_shape:
+        raise ValueError(
+            f"gradient contribution field {key!r} shape must be "
+            f"{target_shape}, got {value_shape}"
+        )
+    if value.dtype != target.dtype:
+        raise ValueError(
+            f"gradient contribution field {key!r} dtype must be "
+            f"{target.dtype}, got {value.dtype}"
+        )
+    if value.device != target.device:
+        raise ValueError(
+            f"gradient contribution field {key!r} device must be "
+            f"{target.device}, got {value.device}"
+        )
+
+
 def _family_indices_for_contribution(
     layout: ParameterLayout,
     family_indices: Sequence[int] | torch.Tensor | None,
@@ -167,4 +289,4 @@ def _validate_contribution_shape(
         )
 
 
-__all__ = ["GradientAccumulator"]
+__all__ = ["GradientAccumulator", "StructuredGradientAccumulator"]

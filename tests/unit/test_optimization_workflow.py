@@ -144,6 +144,60 @@ def test_uniform_chunked_read_only_result_allows_bf16_boundary(monkeypatch):
     assert calls == [{"state": state, "chunk_indices": selected}]
 
 
+def _pi_backward_contribution(
+    value: float,
+    *,
+    shape: tuple[int, ...] = (3,),
+    dtype: torch.dtype = torch.float32,
+) -> dict[str, object]:
+    contribution: dict[str, object] = {
+        key: torch.full(shape, value, dtype=dtype)
+        for key in uniform_chunked_module._PI_BACKWARD_TENSOR_KEYS
+    }
+    contribution.update(
+        {
+            "n_waves_total": 3,
+            "n_waves_skipped": 1,
+            "n_waves_processed": 2,
+            "n_clades_total": 5,
+            "n_clades_skipped": 2,
+            "n_clades_active": 3,
+        }
+    )
+    return contribution
+
+
+def test_uniform_chunked_pi_backward_accumulator_has_explicit_schema() -> None:
+    accumulator = uniform_chunked_module._new_pi_backward_accumulator()
+    accumulator.add(_pi_backward_contribution(1.0))
+    accumulator.add(_pi_backward_contribution(2.0))
+
+    result = accumulator.result()
+
+    assert set(result) == set(uniform_chunked_module._PI_BACKWARD_TENSOR_KEYS) | set(
+        uniform_chunked_module._PI_BACKWARD_COUNTER_KEYS
+    )
+    for key in uniform_chunked_module._PI_BACKWARD_TENSOR_KEYS:
+        torch.testing.assert_close(
+            result[key],
+            torch.full((3,), 3.0, dtype=torch.float32),
+        )
+    assert result["n_waves_total"] == 6
+    assert result["n_waves_skipped"] == 2
+    assert result["n_waves_processed"] == 4
+    assert result["n_clades_total"] == 10
+    assert result["n_clades_skipped"] == 4
+    assert result["n_clades_active"] == 6
+
+
+def test_uniform_chunked_pi_backward_accumulator_rejects_shape_drift() -> None:
+    accumulator = uniform_chunked_module._new_pi_backward_accumulator()
+    accumulator.add(_pi_backward_contribution(1.0))
+
+    with pytest.raises(ValueError, match=r"field 'grad_E' shape"):
+        accumulator.add(_pi_backward_contribution(2.0, shape=(2, 3)))
+
+
 def _run_config(tmp_path: Path, **overrides: object) -> RunConfig:
     values = {
         "species_tree": tmp_path / "sp.nwk",

@@ -26,6 +26,7 @@ from gpurec.core.batch_planning import (
 )
 from gpurec.core.extract_parameters import extract_parameters_uniform
 from gpurec.core.forward import Pi_wave_forward
+from gpurec.core.gradient_accumulator import StructuredGradientAccumulator
 from gpurec.core.likelihood import (
     E_fixed_point,
     compute_nll,
@@ -68,6 +69,24 @@ from ._validation import (
 UNIFORM_OPTIMIZED_DEFAULT_FLAGS = {
     "GPUREC_SELF_LOOP_2D_BLOCK_W": "1",
 }
+
+_PI_BACKWARD_TENSOR_KEYS = (
+    "grad_E",
+    "grad_Ebar",
+    "grad_E_s1",
+    "grad_E_s2",
+    "grad_log_pD",
+    "grad_log_pS",
+    "grad_max_transfer_mat",
+)
+_PI_BACKWARD_COUNTER_KEYS = (
+    "n_waves_total",
+    "n_waves_skipped",
+    "n_waves_processed",
+    "n_clades_total",
+    "n_clades_skipped",
+    "n_clades_active",
+)
 
 
 @dataclass(frozen=True)
@@ -323,37 +342,11 @@ def _build_chunk(
     )
 
 
-def _accumulate_pi_backward(
-    acc: dict[str, Any] | None,
-    pi_bwd: dict[str, Any],
-) -> dict[str, Any]:
-    tensor_keys = (
-        "grad_E",
-        "grad_Ebar",
-        "grad_E_s1",
-        "grad_E_s2",
-        "grad_log_pD",
-        "grad_log_pS",
-        "grad_max_transfer_mat",
+def _new_pi_backward_accumulator() -> StructuredGradientAccumulator:
+    return StructuredGradientAccumulator(
+        tensor_keys=_PI_BACKWARD_TENSOR_KEYS,
+        counter_keys=_PI_BACKWARD_COUNTER_KEYS,
     )
-    scalar_keys = (
-        "n_waves_total",
-        "n_waves_skipped",
-        "n_waves_processed",
-        "n_clades_total",
-        "n_clades_skipped",
-        "n_clades_active",
-    )
-    if acc is None:
-        acc = {key: pi_bwd[key].detach().clone() for key in tensor_keys}
-        for key in scalar_keys:
-            acc[key] = int(pi_bwd.get(key, 0))
-        return acc
-    for key in tensor_keys:
-        acc[key].add_(pi_bwd[key])
-    for key in scalar_keys:
-        acc[key] = int(acc.get(key, 0)) + int(pi_bwd.get(key, 0))
-    return acc
 
 
 def _time_cuda_ms(enabled: bool, fn):
@@ -488,7 +481,7 @@ def _evaluate_chunked_uniform_result(
 
     total_loss = torch.zeros((), device=state.device, dtype=state.dtype)
     per_family_parts: list[torch.Tensor] = []
-    pi_bwd_acc: dict[str, Any] | None = None
+    pi_bwd_accumulator = _new_pi_backward_accumulator() if need_grad else None
     forward_ms = float(e_ms)
     pi_forward_ms = 0.0
     backward_ms = 0.0
@@ -572,7 +565,9 @@ def _evaluate_chunked_uniform_result(
             bwd_ms, pi_bwd = _time_cuda_ms(profile, run_backward)
             pi_backward_ms += bwd_ms
             backward_ms += bwd_ms
-            pi_bwd_acc = _accumulate_pi_backward(pi_bwd_acc, pi_bwd)
+            if pi_bwd_accumulator is None:
+                raise RuntimeError("internal error: missing Pi backward accumulator")
+            pi_bwd_accumulator.add(pi_bwd)
             del pi_bwd
 
         chunk_stats.append(
@@ -597,8 +592,9 @@ def _evaluate_chunked_uniform_result(
     e_adjoint_ms = 0.0
     e_adjoint_stats: dict[str, Any] = {}
     if need_grad:
-        if pi_bwd_acc is None:
+        if pi_bwd_accumulator is None or pi_bwd_accumulator.is_empty:
             raise RuntimeError("internal error: no Pi backward result was accumulated")
+        pi_bwd_acc = pi_bwd_accumulator.result()
 
         def run_e_adjoint():
             return _e_adjoint_and_theta_vjp(
