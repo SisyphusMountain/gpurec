@@ -1,9 +1,9 @@
-"""
-Test package for GPU-accelerated phylogenetic reconciliation.
+"""Test package for gpurec.
 
-This package contains tests organized by feature:
-- integration/: End-to-end tests comparing with reference implementations
-- gradients/: Gradient correctness tests for differentiable functions  
-- unit/: Unit tests for individual components
-- performance/: Performance benchmarks and scaling tests
+The package namespace is kept for helper imports such as
+``tests.unit.alerax_helpers``. Current test groups are:
+
+- unit/: CPU-friendly unit and workflow contract tests
+- integration/: reference and end-to-end checks
+- kernels/: CUDA kernel contract tests
 """

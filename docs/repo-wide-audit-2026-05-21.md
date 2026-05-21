@@ -99,7 +99,10 @@ evidence is thin.
    Cross-family variants have the same pattern at
    `gpurec/core/cpp/preprocess.cpp:2401` and
    `gpurec/core/cpp/preprocess.cpp:2622`.  Python wrapper tests cover invalid
-   values, but the pybind exports do not.
+   values, but the pybind exports do not.  The direct pybind wave-stat entry
+   points should reject `max_wave_size <= 0` before parsing input files, and a
+   source-level hygiene guard should keep every exported `max_wave_size`
+   scheduler wired to the shared validator.
 
 8. The opt-in CUDA Pibar VJP path can mask failures in default `auto` mode.
    `gpurec/core/kernels/wave_backward.py:1910` enables the CUDA prototype for
@@ -117,7 +120,9 @@ evidence is thin.
 10. `preprocess.cpp` relies on transitive includes.  The include block lacks
     `<set>` and `<chrono>` near `gpurec/core/cpp/preprocess.cpp:6`, but the file
     uses `std::set` at `gpurec/core/cpp/preprocess.cpp:2462` and `std::chrono`
-    at `gpurec/core/cpp/preprocess.cpp:2720`.
+    at `gpurec/core/cpp/preprocess.cpp:2720`.  The cleanup should add the
+    direct standard-library includes and a source hygiene guard so future
+    edits do not reintroduce transitive include reliance.
 
 11. `GPUREC_LEAF_HIT_ONLY_LOGP` appears stale.  It is read at
     `gpurec/core/kernels/wave_backward.py:984` and passed into kernels, but the
@@ -141,7 +146,11 @@ evidence is thin.
     `func_evals < max_eval` at `gpurec/optimization/batched_lbfgs.py:295`, but
     `step()` performs an unconditional final gradient evaluation after the line
     search at `gpurec/optimization/batched_lbfgs.py:374`.  Existing LBFGS tests
-    do not cover `max_eval`.
+    do not cover `max_eval`.  The next guard should assert both the optimizer's
+    `state["func_evals"]` counter and the observed closure-call count stay
+    within a tight `max_eval` budget.  The runtime fix should skip curvature
+    history updates when the budget is exhausted before the post-line-search
+    gradient refresh, because no valid `y_k` pair exists for the accepted step.
 
 15. `GeneReconModel.configure_solver_iterations()` is unclear with active lazy
     prefetch.  Pending `_batch_futures` may already exist when solver fields
@@ -152,7 +161,11 @@ evidence is thin.
 16. Backtracking sampling can hang indefinitely if the external Rust binary
     stalls.  Help validation has a timeout, but actual sampling uses
     `subprocess.run()` without one at `gpurec/backtracking.py:283`,
-    `gpurec/backtracking.py:365`, and `gpurec/backtracking.py:497`.
+    `gpurec/backtracking.py:365`, and `gpurec/backtracking.py:497`.  The
+    shared sampling subprocess helper should pass a finite timeout and convert
+    `subprocess.TimeoutExpired` into the same no-traceback `RuntimeError` style
+    used for nonzero sampler exits, including the command text and timeout
+    value.
 
 17. Sampling aggregate output formats are underdocumented.  The workflow writes
     comma-space-separated `totalSpeciesEventCounts.txt`, whitespace-separated
@@ -237,11 +250,16 @@ evidence is thin.
 
 31. `pytest.ini` globally ignores all `DeprecationWarning` and
     `PendingDeprecationWarning`.  Scoping suppression to known external noise
-    would make project-owned deprecations visible.
+    would make project-owned deprecations visible.  A CPU unit run with
+    `-W default` did not surface known warning noise, so the low-risk cleanup is
+    to remove the blanket ignores and add a repository hygiene guard that only
+    permits targeted warning filters.
 
 32. `tests/__init__.py` is stale or unnecessary.  It describes `gradients` and
     `performance` suites, while the current marker taxonomy is `unit`,
-    `integration`, `kernel`, `gpu`, and `slow`.
+    `integration`, `kernel`, `gpu`, and `slow`.  The file still helps direct
+    imports such as `tests.unit.alerax_helpers`, so the low-risk cleanup is to
+    simplify the package docstring rather than delete it.
 
 33. CLI help smoke tests are sensitive to stale installed console scripts.  In
     this checkout, `which gpurec` resolved to `/home/enzo/miniforge3/bin/gpurec`,
@@ -317,10 +335,42 @@ staleness found above:
   AleRax parser's no-duplicate-name contract.
 - `tests/unit/test_workflow.py` now covers the duplicate direct `family_names`
   validation and proves it runs before extension loading.
+- `gpurec/optimization/batched_lbfgs.py` now treats the post-line-search
+  gradient refresh as a budgeted evaluation.  If the Armijo probes consume the
+  final allowed `max_eval`, `step()` returns the accepted probed loss without
+  issuing one more gradient closure and skips curvature-history updates for
+  that step because no fresh gradient pair exists.
+- `tests/unit/test_batched_lbfgs.py` now covers the tight-budget case by
+  checking both `state["func_evals"]` and actual gradient/loss closure call
+  counts.
+- `gpurec/backtracking.py` now applies a finite one-hour timeout to the shared
+  Rust sampler subprocess invocation and converts `subprocess.TimeoutExpired`
+  into the same no-traceback `RuntimeError` style used for nonzero sampler
+  exits, including the command text.
+- `tests/unit/test_workflow.py` now covers the timeout path by asserting that
+  the shared runner passes `_BACKTRACK_RUN_TIMEOUT_SECONDS` into
+  `subprocess.run()`.
+- `gpurec/core/cpp/preprocess.cpp` now validates `max_wave_size > 0` at the
+  direct pybind scheduler diagnostics before parsing input files.
+- `tests/unit/test_repository_hygiene.py` now pins that all exported C++
+  scheduler diagnostics accepting `max_wave_size` call the shared validator.
+- `gpurec/core/cpp/preprocess.cpp` now includes `<chrono>` and `<set>`
+  directly instead of relying on transitive standard-library includes.
+- `tests/__init__.py` now accurately describes the current test package layout
+  and documents why the package namespace is retained for helper imports such
+  as `tests.unit.alerax_helpers`.
+- `tests/unit/test_repository_hygiene.py` now guards both the direct C++
+  standard includes and the current `tests/__init__.py` package docstring.
+- `pytest.ini` no longer globally ignores all `DeprecationWarning` and
+  `PendingDeprecationWarning`; targeted filters can still be added later for
+  specific dependency noise.
+- `tests/unit/test_repository_hygiene.py` now rejects future blanket
+  deprecation-warning ignores in `pytest.ini`.
 
 ## Verification Run This Round
 
-- `pytest --collect-only -q`: 823 tests collected.
+- `pytest --collect-only -q`: 823 tests collected during the initial
+  tracked-file audit inventory.
 - Stale-reference grep over tracked docs/profiling/scripts/config files for
   `forward-backward-full-pipeline-plan`,
   `bench_global_parameter_optimization`, and `test_gene_recon_model.py:293`:
@@ -352,6 +402,74 @@ staleness found above:
   2 passed.
 - `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_workflow.py -q -k 'gene_dataset_rejects_single_gene_tree_path_before_extension or gene_dataset_rejects_duplicate_family_names_before_extension'`:
   2 passed, 420 deselected.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_batched_lbfgs.py::test_batched_lbfgs_respects_max_eval_after_line_search -q`:
+  failed before the optimizer change with `state["func_evals"] == 3` for
+  `max_eval=2`, then passed after the fix.
+- `python -m py_compile gpurec/optimization/batched_lbfgs.py tests/unit/test_batched_lbfgs.py`:
+  passed.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_batched_lbfgs.py -q`:
+  6 passed.
+- `python -m pytest --collect-only -q`: 829 tests collected after the latest
+  regression guards.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit -q -m "unit and not gpu"`:
+  800 passed, 1 skipped, 6 deselected after the LBFGS `max_eval` guard.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_workflow.py::test_backtracking_runner_reports_subprocess_timeout -q`:
+  failed before the timeout fix because `subprocess.TimeoutExpired` propagated
+  directly and the sampler call had no `timeout`, then passed after the fix.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_workflow.py::test_backtracking_runner_reports_subprocess_timeout tests/unit/test_workflow.py::test_backtracking_runner_reports_subprocess_failure_with_stderr tests/unit/test_workflow.py::test_backtracking_sampler_helpers_share_subprocess_io tests/unit/test_workflow.py::test_backtracking_runner_reports_missing_expected_outputs -q`:
+  4 passed.
+- `python -m py_compile gpurec/backtracking.py tests/unit/test_workflow.py`:
+  passed.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_workflow.py -q`:
+  423 passed.
+- `python -m pytest --collect-only -q`: 830 tests collected after the sampling
+  timeout guard.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit -q -m "unit and not gpu"`:
+  801 passed, 1 skipped, 6 deselected after the sampling timeout guard.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_repository_hygiene.py::test_cpp_wave_stat_exports_validate_positive_max_wave_size -q`:
+  failed before the C++ guard because the shared validator did not exist, then
+  passed after the guard.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_repository_hygiene.py -q`:
+  20 passed.
+- C++ extension build/load probe:
+  `python - <<'PY' ... _load_extension() ... PY` printed `preprocess_cpp`.
+- Direct pybind probe over `compute_phased_waves`, `compute_wave_stats`,
+  `compute_packet_wave_stats`, `compute_phased_wave_stats`,
+  `compute_phased_cross_family_wave_stats`, and `compute_cross_family_wave_stats`
+  with `max_wave_size=0`: each raised `ValueError: max_wave_size must be
+  positive` before parsing the intentionally missing input file.
+- `python -m pytest --collect-only -q`: 831 tests collected after the direct C++
+  `max_wave_size` guard.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit -q -m "unit and not gpu"`:
+  802 passed, 1 skipped, 6 deselected after the direct C++ `max_wave_size`
+  guard.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_repository_hygiene.py::test_preprocess_cpp_declares_direct_standard_includes tests/unit/test_repository_hygiene.py::test_tests_package_docstring_matches_current_layout -q`:
+  failed before the hygiene cleanup because `<chrono>` was missing and
+  `tests/__init__.py` still mentioned stale `gradients/` and `performance/`
+  directories, then passed after the cleanup.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_repository_hygiene.py -q`:
+  22 passed.
+- C++ extension build/load probe after the include cleanup:
+  `python - <<'PY' ... _load_extension() ... PY` printed `preprocess_cpp`.
+- `python -m pytest --collect-only -q`: 833 tests collected after the C++
+  include and test-package docstring hygiene guards.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit -q -m "unit and not gpu"`:
+  804 passed, 1 skipped, 6 deselected after the C++ include and
+  test-package docstring hygiene guards.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit -q -m "unit and not gpu" -W default`:
+  804 passed, 1 skipped, 6 deselected and surfaced no warning noise before the
+  warning-filter cleanup.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_repository_hygiene.py::test_pytest_warning_filters_are_not_blanket_ignores -q`:
+  failed before the cleanup because `pytest.ini` still contained blanket
+  deprecation-warning ignores, then passed after the cleanup.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_repository_hygiene.py -q`:
+  23 passed.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit -q -m "unit and not gpu"`:
+  805 passed, 1 skipped, 6 deselected under the actual config after removing
+  blanket warning filters.
+- `python -m pytest --collect-only -q`: 834 tests collected after the
+  warning-filter hygiene guard.
+- `git diff --check`: passed.
 - `python scripts/check_release_metadata.py`: failed with the known release
   blockers: missing top-level `LICENSE`, missing `pyproject.toml` license
   metadata, and missing license classifier.
@@ -366,11 +484,11 @@ staleness found above:
 
 1. Continue turning documented findings into focused guards before runtime
    redesigns.  Contract coverage now exists for duplicate direct
-   `family_names`, oversized `clade_budget`, and `ancestors_T=None`; remaining
-   high-value guards include LBFGS `max_eval`, C++ `max_wave_size`, and
-   sampling timeout behavior.
+   `family_names`, oversized `clade_budget`, `ancestors_T=None`, and LBFGS
+   `max_eval` evaluation accounting, sampling subprocess timeout behavior, and
+   direct C++ `max_wave_size` validation.
 2. Fix remaining documentation-only staleness as it is found in touched areas.
-3. Make low-risk hygiene changes with tests: C++ includes, stale
-   `tests/__init__.py`, slow markers, scoped warning filters.
+3. Make low-risk hygiene changes with tests: slow markers and any future
+   warning filters only if scoped to a specific dependency warning.
 4. Only then consider behavior changes for backward small-`S`, DTS parameter
    shape semantics, CUDA Pibar fallback policy, and sampling aggregate formats.

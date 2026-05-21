@@ -5825,6 +5825,13 @@ order: first fix documentation-only staleness, then add contract tests that pin
 current behavior, then make low-risk hygiene edits, and only after that change
 runtime semantics.
 
+The \texttt{BatchedLBFGS.max\_eval} follow-up is specifically constrained to
+respect the configured evaluation budget in both the persisted
+\texttt{func\_evals} counter and the actual closure invocations.  If the line
+search consumes the final allowed evaluation, the optimizer must not fabricate a
+curvature pair for the accepted step; history updates require a fresh gradient
+computed inside the budget.
+
 Verification during this round collected 823 tests.  The release metadata
 checker still failed only on the known license blockers.  The repository
 hygiene suite passed, and \texttt{python -m gpurec.cli --help} passed.  A
@@ -5877,6 +5884,69 @@ no-duplicate-name contract.  The focused validation test reported
 \texttt{1 passed}; the paired pre-extension validation slice reported
 \texttt{2 passed}.  The CPU unit gate after this direct-constructor guard
 reported \texttt{799 passed, 1 skipped, 6 deselected}.
+
+\texttt{BatchedLBFGS} now respects tight \texttt{max\_eval} budgets across both
+the persisted \texttt{func\_evals} counter and actual closure invocations.  The
+regression first failed with \texttt{func\_evals == 3} for
+\texttt{max\_eval=2}; after the fix, the post-line-search gradient refresh is
+performed only when budget remains, and curvature history is skipped when no
+fresh gradient pair exists.  The focused regression passed, and the full
+\texttt{tests/unit/test\_batched\_lbfgs.py} module reported \texttt{6 passed}.
+
+The shared backtracking sampler subprocess helper now uses a finite one-hour
+timeout.  \texttt{subprocess.TimeoutExpired} is converted to the same
+no-traceback \texttt{RuntimeError} style already used for nonzero sampler
+exits, including the command text and timeout value.  The regression first
+failed because \texttt{TimeoutExpired} propagated directly and the sampler call
+had no \texttt{timeout}; after the fix, the focused timeout test passed, the
+neighboring subprocess-runner slice reported \texttt{4 passed}, and the full
+\texttt{tests/unit/test\_workflow.py} module reported \texttt{423 passed}.
+
+The direct C++ \texttt{max\_wave\_size} follow-up is now complete for the
+pybind-exposed scheduler diagnostics.  Each exported scheduler that accepts a
+wave cap rejects \texttt{max\_wave\_size <= 0} before parsing input files, and
+the repository hygiene guard verifies that the exported entry points share the
+same validator.  The guard first failed because the shared validator did not
+exist; after the fix, the focused hygiene test passed, the full repository
+hygiene suite reported \texttt{20 passed}, the C++ extension build/load probe
+printed \texttt{preprocess\_cpp}, and direct pybind probes over all six exported
+wave-cap diagnostics raised \texttt{ValueError: max\_wave\_size must be
+positive}.
+
+The current full collection reports \texttt{831 tests collected}, and the
+CPU-only unit gate reports \texttt{802 passed, 1 skipped, 6 deselected}.
+
+The include and test-package hygiene cleanup is now complete.  The new
+repository hygiene guards first failed because \texttt{preprocess.cpp} lacked a
+direct \texttt{<chrono>} include and \texttt{tests/\_\_init\_\_.py} still
+mentioned stale \texttt{gradients/} and \texttt{performance/} directories.
+After the cleanup, \texttt{preprocess.cpp} includes \texttt{<chrono>} and
+\texttt{<set>} directly, and \texttt{tests/\_\_init\_\_.py} documents the
+current \texttt{unit/}, \texttt{integration/}, and \texttt{kernels/} layout plus
+the retained \texttt{tests.unit.alerax\_helpers} import namespace.  The focused
+hygiene tests passed, the full repository hygiene suite reported
+\texttt{22 passed}, and the C++ extension build/load probe printed
+\texttt{preprocess\_cpp}.
+
+The current full collection reports \texttt{833 tests collected}, and the
+CPU-only unit gate reports \texttt{804 passed, 1 skipped, 6 deselected}.
+
+The warning-filter cleanup is constrained to pytest configuration.  A CPU-only
+unit run with \texttt{-W default} did not surface known warning noise, so the
+blanket \texttt{DeprecationWarning} and \texttt{PendingDeprecationWarning}
+ignores can be removed rather than replaced with scoped filters.  A repository
+hygiene guard should reject future broad warning ignores while still allowing
+targeted filters if a dependency later needs one.
+
+The warning-filter cleanup is now complete.  \texttt{pytest.ini} no longer
+globally ignores all deprecation warnings, and the repository hygiene suite now
+guards against reintroducing blanket deprecation-warning ignores.  The guard
+first failed on the existing \texttt{ignore::PendingDeprecationWarning} entry,
+then passed after the filter block was removed.  The full repository hygiene
+suite reported \texttt{23 passed}, and the CPU-only unit gate under the actual
+configuration reported \texttt{805 passed, 1 skipped, 6 deselected}.
+
+The current full collection reports \texttt{834 tests collected}.
 
 \section{Next Audit Targets}
 

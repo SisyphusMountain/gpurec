@@ -83,6 +83,44 @@ def test_batched_lbfgs_uses_rowwise_line_search_not_global_loss():
     assert abs(float(theta.detach()[1, 0]) + 1.0) < 1e-6
 
 
+def test_batched_lbfgs_respects_max_eval_after_line_search():
+    theta = torch.nn.Parameter(torch.tensor([[2.0]], dtype=torch.float64))
+    opt = BatchedLBFGS(
+        [theta],
+        lr=1.0,
+        max_iter=5,
+        max_eval=2,
+        history_size=3,
+        tolerance_grad=1e-12,
+        tolerance_change=1e-14,
+    )
+    calls = {"grad": 0, "loss": 0}
+
+    def loss_vec() -> torch.Tensor:
+        return (theta ** 2).sum(dim=1)
+
+    def closure() -> torch.Tensor:
+        calls["grad"] += 1
+        opt.zero_grad(set_to_none=True)
+        loss = loss_vec()
+        loss.sum().backward()
+        return loss
+
+    def loss_closure() -> torch.Tensor:
+        calls["loss"] += 1
+        return loss_vec()
+
+    final = opt.step(closure, loss_closure=loss_closure)
+    state = opt.state[theta]
+
+    assert state["func_evals"] == 2
+    assert calls == {"grad": 1, "loss": 1}
+    torch.testing.assert_close(final, torch.tensor([1.0], dtype=torch.float64))
+    assert torch.equal(theta.detach(), torch.tensor([[1.0]], dtype=torch.float64))
+    assert state["old_dirs"] == []
+    assert state["old_stps"] == []
+
+
 def test_batched_lbfgs_projects_to_lower_bound():
     theta = torch.nn.Parameter(torch.tensor([[0.0], [0.0]], dtype=torch.float64))
     target = torch.tensor([[-10.0], [2.0]], dtype=torch.float64)

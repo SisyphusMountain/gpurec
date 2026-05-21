@@ -366,3 +366,66 @@ def test_second_order_docs_reference_current_public_loss_apis():
     assert "model.nll()" not in note
     assert "GeneReconModel.full_loss_for_theta(theta)" in note
     assert "UniformChunkedReconModel.nll()" in note
+
+
+def test_cpp_wave_stat_exports_validate_positive_max_wave_size():
+    root = Path(__file__).resolve().parents[2]
+    source = (
+        root / "gpurec" / "core" / "cpp" / "preprocess.cpp"
+    ).read_text(encoding="utf-8")
+    exported_functions = [
+        "compute_phased_waves",
+        "compute_wave_stats",
+        "compute_packet_wave_stats",
+        "compute_phased_wave_stats",
+        "compute_phased_cross_family_wave_stats",
+        "compute_cross_family_wave_stats",
+    ]
+
+    assert "void require_positive_max_wave_size" in source
+    for name in exported_functions:
+        pattern = (
+            rf"{name}\([^)]*max_wave_size\)\s*\{{\s*"
+            r"require_positive_max_wave_size\("
+            r'"max_wave_size", max_wave_size\);'
+        )
+        assert re.search(pattern, source, flags=re.S), name
+
+
+def test_preprocess_cpp_declares_direct_standard_includes():
+    root = Path(__file__).resolve().parents[2]
+    source = (
+        root / "gpurec" / "core" / "cpp" / "preprocess.cpp"
+    ).read_text(encoding="utf-8")
+
+    required_includes = {
+        "std::chrono": "#include <chrono>",
+        "std::set": "#include <set>",
+    }
+    for symbol, include in required_includes.items():
+        if symbol in source:
+            assert include in source, f"{symbol} requires direct {include}"
+
+
+def test_tests_package_docstring_matches_current_layout():
+    root = Path(__file__).resolve().parents[2]
+    doc = (root / "tests" / "__init__.py").read_text(encoding="utf-8")
+
+    assert "gradients/" not in doc
+    assert "performance/" not in doc
+    assert "unit/" in doc
+    assert "integration/" in doc
+    assert "kernels/" in doc
+    assert "tests.unit.alerax_helpers" in doc
+
+
+def test_pytest_warning_filters_are_not_blanket_ignores():
+    root = Path(__file__).resolve().parents[2]
+    config = (root / "pytest.ini").read_text(encoding="utf-8")
+    broad_ignores = {
+        "ignore::DeprecationWarning",
+        "ignore::PendingDeprecationWarning",
+    }
+
+    for broad_ignore in broad_ignores:
+        assert broad_ignore not in config

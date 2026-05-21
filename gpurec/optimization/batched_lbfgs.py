@@ -371,24 +371,31 @@ class BatchedLBFGS(Optimizer):
             accepted_flat = torch.where(active[:, None] & accepted[:, None], accepted_flat, start_flat)
             final_alpha = torch.where(active & accepted, alpha, final_alpha)
             self._set_flat_param(accepted_flat)
-            loss, flat_grad = self._evaluate_with_grad(closure)
-            func_evals += 1
-            state["func_evals"] += 1
             accepted_loss = torch.where(accepted, accepted_loss, start_loss)
-            loss = torch.where(active, loss, accepted_loss)
+
+            refreshed_grad = func_evals < max_eval
+            if refreshed_grad:
+                loss, flat_grad = self._evaluate_with_grad(closure)
+                func_evals += 1
+                state["func_evals"] += 1
+                loss = torch.where(active, loss, accepted_loss)
+            else:
+                loss = torch.where(active, accepted_loss, start_loss)
+                flat_grad = start_grad
 
             accepted_total = accepted_total | accepted
             new_flat = self._flat_param().clone()
             s_k = new_flat - start_flat
-            y_k = flat_grad - start_grad
-            self._append_history(
-                state,
-                s_k,
-                y_k,
-                active & accepted,
-                history_size,
-                tolerance_change,
-            )
+            if refreshed_grad:
+                y_k = flat_grad - start_grad
+                self._append_history(
+                    state,
+                    s_k,
+                    y_k,
+                    active & accepted,
+                    history_size,
+                    tolerance_change,
+                )
 
             flat_param = new_flat
 

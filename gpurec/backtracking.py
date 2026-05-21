@@ -43,6 +43,7 @@ _BACKTRACK_BINARY_GUIDANCE = (
     "--backtrack-binary in the CLI"
 )
 _BACKTRACK_HELP_TIMEOUT_SECONDS = 30
+_BACKTRACK_RUN_TIMEOUT_SECONDS = 3600
 _BACKTRACK_HELP_MARKERS = (
     "usage: gpurec-backtrack",
     "--samples",
@@ -362,13 +363,21 @@ def _run_backtracking_payload(
             backtrack_binary=backtrack_binary,
         )
         full_command = invocation.command + build_args(input_path, tmp_path)
-        result = subprocess.run(
-            full_command,
-            check=False,
-            capture_output=True,
-            cwd=invocation.cwd,
-            text=True,
-        )
+        try:
+            result = subprocess.run(
+                full_command,
+                check=False,
+                capture_output=True,
+                cwd=invocation.cwd,
+                text=True,
+                timeout=_BACKTRACK_RUN_TIMEOUT_SECONDS,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise RuntimeError(
+                "gpurec backtracking command timed out after "
+                f"{_BACKTRACK_RUN_TIMEOUT_SECONDS} seconds; "
+                f"command: {_command_text(full_command)}"
+            ) from exc
         if result.returncode != 0:
             details = [
                 "gpurec backtracking command failed",

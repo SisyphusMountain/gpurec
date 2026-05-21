@@ -4,11 +4,13 @@
 #include <torch/extension.h>
 
 #include <algorithm>
-#include <cstdint>
+#include <chrono>
 #include <cmath>
+#include <cstdint>
 #include <fstream>
 #include <limits>
 #include <numeric>
+#include <set>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -37,6 +39,12 @@ constexpr size_t BITS_PER_WORD = 64;
 
 inline size_t bitvec_num_words(int num_leaves) {
   return (static_cast<size_t>(num_leaves) + BITS_PER_WORD - 1) / BITS_PER_WORD;
+}
+
+void require_positive_max_wave_size(const char *name, int value) {
+  if (value <= 0) {
+    throw std::invalid_argument(std::string(name) + " must be positive");
+  }
 }
 
 // Fallback for legacy inputs without an explicit leaf->species map: assume the
@@ -1202,6 +1210,8 @@ py::dict compute_phased_waves(
     const std::vector<std::string> &gene_tree_paths,
     int max_wave_size) {
 
+  require_positive_max_wave_size("max_wave_size", max_wave_size);
+
   std::vector<std::string> leaf_names;
   std::unordered_map<std::string, int> leaf_to_index;
   CladeData clade_data = amalgamate_clades_and_splits(
@@ -1673,6 +1683,8 @@ py::list compute_wave_stats(
     const std::map<std::string, std::vector<std::string>> &families,
     int max_wave_size) {
 
+  require_positive_max_wave_size("max_wave_size", max_wave_size);
+
   struct FamilyEntry { std::string name; std::vector<std::string> paths; };
   std::vector<FamilyEntry> fam_vec;
   fam_vec.reserve(families.size());
@@ -1867,6 +1879,8 @@ py::list compute_wave_stats(
 py::list compute_packet_wave_stats(
     const std::map<std::string, std::vector<std::string>> &families,
     int max_wave_size) {
+
+  require_positive_max_wave_size("max_wave_size", max_wave_size);
 
   struct FamilyEntry { std::string name; std::vector<std::string> paths; };
   std::vector<FamilyEntry> fam_vec;
@@ -2122,6 +2136,8 @@ py::list compute_phased_wave_stats(
     const std::map<std::string, std::vector<std::string>> &families,
     int max_wave_size) {
 
+  require_positive_max_wave_size("max_wave_size", max_wave_size);
+
   struct FamilyEntry { std::string name; std::vector<std::string> paths; };
   std::vector<FamilyEntry> fam_vec;
   fam_vec.reserve(families.size());
@@ -2350,6 +2366,8 @@ py::list compute_phased_cross_family_wave_stats(
     const std::map<std::string, std::vector<std::string>> &families,
     int max_wave_size) {
 
+  require_positive_max_wave_size("max_wave_size", max_wave_size);
+
   struct FamilyEntry { std::string name; std::vector<std::string> paths; };
   std::vector<FamilyEntry> fam_vec;
   fam_vec.reserve(families.size());
@@ -2535,6 +2553,8 @@ py::list compute_phased_cross_family_wave_stats(
 py::list compute_cross_family_wave_stats(
     const std::map<std::string, std::vector<std::string>> &families,
     int max_wave_size) {
+
+  require_positive_max_wave_size("max_wave_size", max_wave_size);
 
   struct FamilyEntry { std::string name; std::vector<std::string> paths; };
   std::vector<FamilyEntry> fam_vec;

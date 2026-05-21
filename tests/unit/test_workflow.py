@@ -2809,6 +2809,36 @@ sys.exit(7)
     assert "Traceback" not in message
 
 
+def test_backtracking_runner_reports_subprocess_timeout(
+    tmp_path: Path,
+    monkeypatch,
+):
+    calls: list[tuple[list[str], dict[str, object]]] = []
+    command = ["gpurec-backtrack"]
+
+    def fake_run(run_command: list[str], **kwargs: object) -> SimpleNamespace:
+        calls.append((run_command, kwargs))
+        raise subprocess.TimeoutExpired(run_command, timeout=kwargs.get("timeout"))
+
+    monkeypatch.setattr(backtracking, "_backtrack_command", lambda **_: command)
+    monkeypatch.setattr(backtracking.subprocess, "run", fake_run)
+
+    with pytest.raises(RuntimeError, match="timed out") as exc_info:
+        backtracking._run_backtracking_payload(
+            {"value": 1},
+            cargo_manifest=tmp_path / "missing" / "Cargo.toml",
+            backtrack_binary=None,
+            build_args=lambda *_: ["input.json", "sample.xml"],
+            read_output=lambda _: None,
+        )
+
+    message = str(exc_info.value)
+    assert "gpurec backtracking command timed out" in message
+    assert "gpurec-backtrack input.json sample.xml" in message
+    assert "Traceback" not in message
+    assert calls[0][1]["timeout"] == backtracking._BACKTRACK_RUN_TIMEOUT_SECONDS
+
+
 def test_backtracking_runner_reports_missing_expected_outputs(
     tmp_path: Path,
     monkeypatch,
