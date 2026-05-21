@@ -24,6 +24,7 @@ CUDA_VISIBLE_DEVICES='' pytest -q \
   tests/unit/test_implicit_grad_solver.py \
   tests/unit/test_legacy_scripts.py \
   tests/unit/test_log2_utils.py \
+  tests/unit/test_model_no_grad_evaluator.py \
   tests/unit/test_origination_probs.py \
   tests/unit/test_optimization_workflow.py \
   tests/unit/test_alerax_family_input.py \
