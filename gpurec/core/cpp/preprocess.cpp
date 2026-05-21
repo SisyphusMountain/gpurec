@@ -2707,6 +2707,20 @@ py::list compute_cross_family_wave_stats(
 
 } // namespace
 
+// Pybind surface manifest:
+//
+// - Production-owned export:
+//   preprocess_multiple_families
+// - Legacy compatibility export retained while deprecation/removal is evaluated:
+//   preprocess
+// - Direct diagnostic exports retained only with maintained profiling or diagnostic ownership:
+//   compute_phased_waves, compute_wave_stats, compute_packet_wave_stats,
+//   compute_phased_wave_stats, compute_phased_cross_family_wave_stats,
+//   compute_cross_family_wave_stats
+//
+// Repository hygiene tests intentionally parse this module's m.def names. Add,
+// remove, or reclassify exports only with matching docs/tests so the C++
+// extension does not grow accidental public surface.
 PYBIND11_MODULE(preprocess_cpp, m) {
   m.def("preprocess", &preprocess,
         py::arg("species_path"),
@@ -2725,16 +2739,19 @@ PYBIND11_MODULE(preprocess_cpp, m) {
         py::arg("leaf_species_maps") = std::map<std::string, std::map<std::string, std::string>>{},
         py::arg("include_details") = false,
         py::arg("include_species_matrices") = true,
-        "Preprocess multiple gene families with one shared rooted binary "
-        "species Newick tree. Gene files use the retained simple-Newick subset "
-        "and may contain multiple semicolon-delimited records; the final record "
-        "may omit its terminal semicolon. Defaults to light output; pass "
-        "include_details=True for full debug fields.");
+        "Production preprocessing export for multiple gene families with one "
+        "shared rooted binary species Newick tree. GeneDataset calls this with "
+        "include_details=True for family CCP payloads; the default "
+        "include_details=False path is retained for the species-only "
+        "empty-family cache fill. Gene files use the retained simple-Newick "
+        "subset and may contain multiple semicolon-delimited records; the final "
+        "record may omit its terminal semicolon.");
   m.def("compute_phased_waves", &compute_phased_waves,
         "Direct diagnostic export for the three-phase scheduler returning "
         "actual wave assignments for one family. The underlying implementation "
         "is production-internal to preprocessing; the direct pybind is not a "
-        "supported workflow API.");
+        "supported workflow API. Production callers consume scheduler metadata "
+        "from preprocess_multiple_families instead.");
   m.def("compute_wave_stats", &compute_wave_stats,
         "Direct diagnostic export that computes wave scheduling stats for gene "
         "families without a species tree. "

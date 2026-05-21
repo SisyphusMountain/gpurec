@@ -144,6 +144,19 @@ Open surfaces:
 - `preprocess_multiple_families(..., include_details=False)`;
 - wave-stat diagnostic pybind exports.
 
+Pybind export manifest:
+
+| Export | Classification | Replacement / deletion gate |
+| --- | --- | --- |
+| `preprocess_multiple_families` | Production-owned preprocessing entry point. | Keep while `GeneDataset` uses C++ preprocessing. Non-empty families require `include_details=True`; the species-only empty-family cache fill still owns `include_details=False`. |
+| `preprocess` | Legacy compatibility export. | Delete only after deprecation/replacement evidence confirms no maintained low-level caller depends on the single-family direct pybind. Replacement is `preprocess_multiple_families(..., include_details=True)` for detailed family payloads. |
+| `compute_phased_waves` | Direct scheduler diagnostic export. | Do not delete the underlying implementation while preprocessing emits `phased_waves` / `phased_phases`; hide or delete only the pybind after diagnostic ownership is replaced by preprocessing output or a maintained profiling command. |
+| `compute_wave_stats` | Direct wave-stat diagnostic export. | Keep only with a maintained profiling or diagnostic command. |
+| `compute_packet_wave_stats` | Direct wave-stat diagnostic export. | Keep only with a maintained profiling or diagnostic command. |
+| `compute_phased_wave_stats` | Direct wave-stat diagnostic export. | Keep only with a maintained profiling or diagnostic command. |
+| `compute_phased_cross_family_wave_stats` | Direct wave-stat diagnostic export. | Keep only with a maintained profiling or diagnostic command. |
+| `compute_cross_family_wave_stats` | Direct wave-stat diagnostic export. | Keep only with a maintained profiling or diagnostic command. |
+
 Plan:
 
 - Search installed/user docs for each export before deletion.

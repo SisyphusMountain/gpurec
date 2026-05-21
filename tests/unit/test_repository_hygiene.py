@@ -2705,6 +2705,54 @@ def test_runtime_surface_plan_documents_scheduler_and_pybind_ownership():
         assert token in preprocess_source
 
 
+def test_preprocess_cpp_pybind_exports_match_classified_manifest():
+    root = Path(__file__).resolve().parents[2]
+    pruning_plan = (
+        root / "docs" / "runtime-surface-pruning-plan-2026-05-21.md"
+    ).read_text(encoding="utf-8")
+    source = (
+        root / "gpurec" / "core" / "cpp" / "preprocess.cpp"
+    ).read_text(encoding="utf-8")
+
+    production_exports = {"preprocess_multiple_families"}
+    legacy_exports = {"preprocess"}
+    diagnostic_exports = {
+        "compute_phased_waves",
+        "compute_wave_stats",
+        "compute_packet_wave_stats",
+        "compute_phased_wave_stats",
+        "compute_phased_cross_family_wave_stats",
+        "compute_cross_family_wave_stats",
+    }
+    classified_exports = production_exports | legacy_exports | diagnostic_exports
+    actual_exports = set(re.findall(r'm\.def\("([^"]+)"', source))
+
+    assert actual_exports == classified_exports
+
+    for export in production_exports:
+        assert f"`{export}`" in pruning_plan
+    for export in legacy_exports:
+        assert f"`{export}`" in pruning_plan
+        assert "legacy/deprecated before removal" in pruning_plan
+    for export in diagnostic_exports:
+        assert f"`{export}`" in pruning_plan
+        assert "maintained profiling or diagnostic command" in pruning_plan
+
+    for token in (
+        "Pybind surface manifest",
+        "Production-owned export",
+        "Legacy compatibility export retained while deprecation/removal is evaluated",
+        "Direct diagnostic exports retained only with maintained profiling",
+        "does not grow accidental public surface",
+        "Production preprocessing export",
+        "GeneDataset calls this with",
+        "include_details=True for family CCP payloads",
+        "species-only empty-family cache fill",
+        "Production callers consume scheduler metadata from preprocess_multiple_families",
+    ):
+        assert token in " ".join(source.replace('"', "").split())
+
+
 def test_test_only_scheduler_helpers_stay_out_of_runtime_source():
     root = Path(__file__).resolve().parents[2]
     helper_names = (
