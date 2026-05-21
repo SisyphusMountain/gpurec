@@ -25,6 +25,10 @@ from ._helpers import (  # noqa: F401
 from .memory_policy import proposal0_memory_gate
 from .extract_parameters import as_family_param, as_family_species
 from .species import species_wave_topology
+from .backward_pruning_policy import (
+    backward_pruning_policy,
+    inactive_wave_accounting,
+)
 
 _SUPPORTED_BACKWARD_FLOAT_DTYPES = (torch.float32, torch.float64)
 _OPTIONAL_CUDA_SELF_LOOP_EXCEPTIONS = (ImportError, RuntimeError, ValueError)
@@ -446,18 +450,19 @@ def Pi_wave_backward(
     if not has_forward_pibar_row_max:
         raise RuntimeError("Pi_wave_backward fused path requires uniform_pibar_row_max from forward")
     forward_pibar_row_max = uniform_pibar_row_max.to(device=device, dtype=dtype).contiguous()
-    active_mask_threshold = pruning_threshold if use_pruning else 0.0
+    pruning_policy = backward_pruning_policy(
+        use_pruning=use_pruning,
+        pruning_threshold=pruning_threshold,
+    )
+    active_mask_threshold = pruning_policy.active_mask_threshold
 
     def _compute_active_mask(rhs):
         return active_mask_from_rhs_absmax_fused(
             rhs, active_mask_threshold, use_pruning=use_pruning
         )
 
-    no_cpu_pruning = _env_flag_enabled("GPUREC_BACKWARD_NO_CPU_PRUNING", "1")
-    skip_inactive_pibar_zero = _env_flag_enabled(
-        "GPUREC_DTS_SKIP_INACTIVE_PIBAR_ZERO",
-        "1",
-    )
+    no_cpu_pruning = pruning_policy.no_cpu_pruning
+    skip_inactive_pibar_zero = pruning_policy.skip_inactive_pibar_zero
     specialize_nonleaf_leaf_term = _env_flag_enabled(
         "GPUREC_SPECIALIZE_NONLEAF_LEAF_TERM",
         "1",
@@ -487,13 +492,16 @@ def Pi_wave_backward(
             )
         else:
             active_mask = _compute_active_mask(rhs_k).contiguous()
-            wave_active = bool(active_mask.any())
-            if not wave_active:
-                n_waves_skipped += 1
-                n_clades_skipped += W
+            active_count = int(active_mask.sum().item())
+            process_wave, wave_skip, clade_skip = inactive_wave_accounting(
+                active_count,
+                W,
+                cpu_wave_skip_enabled=True,
+            )
+            n_waves_skipped += wave_skip
+            n_clades_skipped += clade_skip
+            if not process_wave:
                 continue
-
-            n_clades_skipped += W - int(active_mask.sum().item())
 
         leaf_wt = None
         wave_has_leaf_term = (
