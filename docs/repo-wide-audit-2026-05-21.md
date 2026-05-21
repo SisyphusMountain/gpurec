@@ -673,8 +673,13 @@ not edit files.  New or still-open findings from that refresh are:
   status remain spread across runtime modules.  Publish the supported kernel
   environment surface and classify retained paths before changing logic.
 - The C++ Newick parser accepts a narrow unquoted-label dialect and splits
-  multi-tree input on semicolons.  Define the supported Newick subset before
-  adding parser compatibility tests or replacing the parser.
+  multi-tree gene input on semicolons.  That supported subset is now documented
+  in the README, public model/dataset docstrings, and pybind docstrings before
+  any parser replacement work.  CPU preprocessing regressions now pin accepted
+  simple-Newick inputs, semicolon-optional final records, multi-record gene
+  files, gene multifurcation binarization, and rejections for multiple species
+  trees, non-binary species trees, unary gene nodes, and unsupported metadata
+  after branch lengths.
 - Scheduler surface area remains high.  Python helpers such as `collate_wave`,
   `split_phase_waves`, and `compute_clade_waves` appear used only by tests/docs,
   while the global scheduler combines several heuristics whose objective,
@@ -700,11 +705,13 @@ not edit files.  New or still-open findings from that refresh are:
   migration or deletion; for the fixed local profiler, add a help/argument smoke
   or an explicit fixed-profiler contract.
 - Test and CI coverage gaps remain visible.  CPU CI does not enforce CUDA or
-  kernel tests; the stochastic backtracking fixture asserts magic matrix sizes
-  without local schema notes; the Rust JSON integration smoke exercises only a
-  trivial speciation path; workflow tests are large and private-API-heavy.
-  Test subprocess calls now have explicit timeouts guarded by repository
-  hygiene.  Document fixture contracts next, then continue simplifying tests.
+  kernel tests, the Rust JSON integration smoke intentionally exercises only a
+  trivial speciation path, and workflow tests are large and private-API-heavy.
+  The stochastic backtracking and Rust JSON fixture contracts are now
+  documented beside the checked fixtures and guarded by repository hygiene.
+  Test subprocess calls also have explicit timeouts guarded by repository
+  hygiene.  Continue simplifying tests and prefer structured workflow/CI
+  assertions over wording snapshots.
 
 ## Verification Run This Round
 
@@ -1082,6 +1089,42 @@ not edit files.  New or still-open findings from that refresh are:
   14 passed, 420 deselected after adding subprocess timeouts.
 - `CUDA_VISIBLE_DEVICES='' python -m pytest tests/integration/test_rust_backtracking_fixture.py -q`:
   1 passed after adding the Cargo subprocess timeout.
+- `python -m py_compile gpurec/api/model.py gpurec/api/uniform_chunked.py gpurec/core/model.py tests/unit/test_repository_hygiene.py`:
+  passed after documenting the supported simple-Newick input subset.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_repository_hygiene.py::test_newick_input_subset_is_documented_on_public_surfaces -q`:
+  1 passed after adding the public Newick-subset documentation guard.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_repository_hygiene.py -q`:
+  41 passed after adding the Newick-subset documentation guard.
+- `python -m pytest --collect-only -q`: 865 tests collected after adding the
+  Newick-subset documentation guard.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_alerax_family_input.py::test_gene_dataset_accepts_documented_simple_newick_subset tests/unit/test_alerax_family_input.py::test_gene_dataset_rejects_unsupported_newick_dialect_cases -q`:
+  first failed because the documented whitespace contract was too broad for
+  branch lengths with whitespace after `:`, then 5 passed after the public
+  contract and fixture were tightened to the actual parser behavior.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_alerax_family_input.py -q`:
+  34 passed after adding Newick parser compatibility regressions.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_repository_hygiene.py -q`:
+  41 passed after tightening the Newick documentation guard.
+- `python -m pytest --collect-only -q`: 870 tests collected after adding the
+  Newick parser compatibility regressions.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit -q -m "unit and not gpu"`:
+  841 passed, 1 skipped, 6 deselected after adding the Newick parser
+  compatibility regressions.
+- `python -m py_compile tests/unit/test_repository_hygiene.py tests/integration/test_rust_backtracking_fixture.py tests/integration/test_stochastic_backtracking.py`:
+  passed after adding fixture-contract documentation and guards.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_repository_hygiene.py::test_checked_fixture_contracts_are_documented -q`:
+  1 passed after adding checked-fixture documentation guards.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/integration/test_rust_backtracking_fixture.py -q`:
+  2 passed after adding the Rust JSON fixture contract assertion.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/integration/test_stochastic_backtracking.py --collect-only -q`:
+  2 collected after naming the `test_trees_3` expected shape constants.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_repository_hygiene.py -q`:
+  42 passed after adding fixture-contract documentation guards.
+- `python -m pytest --collect-only -q`: 872 tests collected after adding the
+  fixture-contract documentation guards.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit -q -m "unit and not gpu"`:
+  842 passed, 1 skipped, 6 deselected after adding the fixture-contract
+  documentation guards.
 
 ## Recommended Next Order
 
@@ -1089,11 +1132,11 @@ not edit files.  New or still-open findings from that refresh are:
    redesigns.  Contract coverage now exists for duplicate direct
    `family_names`, oversized `clade_budget`, `ancestors_T=None`, and LBFGS
    `max_eval` evaluation accounting, sampling subprocess timeout behavior, and
-   direct C++ `max_wave_size` validation, plus public workflow optimizer modes.
+   direct C++ `max_wave_size` validation, plus public workflow optimizer modes
+   and Newick parser compatibility, plus checked fixture contracts.
 2. Fix remaining documentation-only staleness as it is found in touched areas.
 3. Prefer validation/test fixes that do not need policy choices; the next small
-   candidates are fixture-contract documentation and structured workflow/CI
-   test assertions.
+   candidates are structured workflow/CI test assertions.
 4. Make low-risk hygiene changes with tests: slow markers and any future
    warning filters only if scoped to a specific dependency warning.
 5. Only then consider behavior changes for backward small-`S`, bf16 dtype

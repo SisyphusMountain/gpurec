@@ -17,6 +17,9 @@ from gpurec import (
 
 DATA_DIR = Path(__file__).resolve().parents[1] / "data" / "test_trees_3"
 DATA_DIR_100 = Path(__file__).resolve().parents[1] / "data" / "test_trees_100"
+TEST_TREES_3_EXPECTED_CLADES = 35
+TEST_TREES_3_EXPECTED_SPECIES = 15
+TEST_TREES_3_EXPECTED_LEAVES = 10
 
 
 pytestmark = [
@@ -38,8 +41,8 @@ def test_rust_stochastic_backtracking_exports_recphyloxml():
     )
 
     payload = export_backtracking_input(model, family_index=0, seed=7, max_events=10_000)
-    assert payload["pi"]["rows"] == 35
-    assert payload["pi"]["cols"] == 15
+    assert payload["pi"]["rows"] == TEST_TREES_3_EXPECTED_CLADES
+    assert payload["pi"]["cols"] == TEST_TREES_3_EXPECTED_SPECIES
     assert payload["root_clade"] < payload["pi"]["rows"]
 
     xml = sample_recphyloxml(model, family_index=0, seed=7, max_events=10_000)
@@ -47,7 +50,7 @@ def test_rust_stochastic_backtracking_exports_recphyloxml():
     assert root.tag.endswith("recPhylo")
     assert xml.count("<recGeneTree>") == 1
     counts = recphyloxml_event_counts(xml)
-    assert counts["Leaf"] == 10
+    assert counts["Leaf"] == TEST_TREES_3_EXPECTED_LEAVES
     assert sum(counts[k] for k in ("S", "SL", "D", "DL", "T", "TL")) > 0
 
 

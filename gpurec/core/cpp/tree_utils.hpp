@@ -42,7 +42,11 @@ private:
   size_t pos_;
 };
 
-// Parse a Newick file into a TreeNode structure (owned by unique_ptr)
+// Parse the retained simple-Newick subset: unquoted labels, optional numeric
+// branch lengths, optional internal labels, no comments/metadata grammar.
+// parse_newick_file expects one tree with optional terminal semicolon;
+// parse_newick_trees_file accepts multiple semicolon-delimited records for
+// gene-family CCP amalgamation and allows the final record to omit semicolon.
 std::unique_ptr<TreeNode> parse_newick_file(const std::string &path);
 std::vector<std::unique_ptr<TreeNode>> parse_newick_trees_file(const std::string &path);
 

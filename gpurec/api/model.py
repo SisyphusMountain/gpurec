@@ -1063,9 +1063,15 @@ class GeneReconModel(torch.nn.Module):
         Parameters
         ----------
         species_tree : str
-            Path to the species tree (Newick).
+            Path to one rooted binary species tree in the supported simple
+            Newick subset.
         gene_trees : list[str]
-            Paths to gene trees (Newick).
+            Paths to gene trees in the supported simple Newick subset.  Each
+            file may contain one or more semicolon-delimited records, and the
+            final record may omit its terminal semicolon.  Records supplied for
+            one family are amalgamated into that family's CCP.
+            Branch lengths are ignored, and gene multifurcations are
+            right-binarized by preprocessing.
             Leaf labels use the legacy species-prefix fallback: ``Species_gene``
             maps to species ``Species``, and labels without ``_`` map to the
             full label.  Use ``from_alerax_families()`` or lower-level dataset
@@ -1148,7 +1154,11 @@ class GeneReconModel(torch.nn.Module):
         refresh_preprocess_cache: bool = False,
         **solver_kwargs,
     ) -> "GeneReconModel":
-        """Build from an AleRax ``[FAMILIES]`` file with CCP/tree samples."""
+        """Build from an AleRax ``[FAMILIES]`` file with CCP/tree samples.
+
+        Referenced species and gene tree files use the same supported simple
+        Newick subset as :meth:`from_trees`.
+        """
         mode = _normalize_mode(mode)
         genewise, specieswise = _mode_to_flags(mode)
         require_default_objective("GeneReconModel")

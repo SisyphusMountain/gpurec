@@ -86,6 +86,18 @@ entries, `UniformChunkedReconModel(..., leaf_species_maps=...)`, or
 `GeneDataset(..., leaf_species_maps=...)` when gene labels do not follow that
 prefix convention.
 
+The retained C++ preprocessing parser supports a deliberately small Newick
+subset: nested trees with unquoted labels, optional internal labels, optional
+numeric branch lengths, and ordinary whitespace.  Branch lengths are ignored.
+When a branch length is present, the numeric text must immediately follow `:`.
+The final semicolon is optional for a single tree or final gene-tree record.
+Labels cannot rely on quotes, escaping, comments, NHX or BEAST-style metadata,
+or embedded `:`, `,`, `(`, `)`, or `;` delimiters.  A species-tree file must
+contain exactly one rooted binary tree.  Each gene-tree file may contain one or
+more semicolon-delimited records; all records supplied for one family are
+amalgamated into that family's CCP.  Gene multifurcations are right-binarized,
+while unary gene nodes and non-binary species nodes are rejected.
+
 `model.nll_per_family()` and `model.full_nll_per_family()` are genewise-only:
 they return one independent NLL per family and are the public surface for
 row-wise optimizers.  In `global` or `specieswise` mode, use

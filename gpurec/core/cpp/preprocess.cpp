@@ -2712,14 +2712,21 @@ PYBIND11_MODULE(preprocess_cpp, m) {
         py::arg("species_path"),
         py::arg("gene_paths"),
         py::arg("include_species_matrices") = true,
-        "Preprocess species and gene trees");
+        "Preprocess one rooted binary species Newick tree and one family of "
+        "simple-Newick gene-tree files. Each gene file may contain multiple "
+        "semicolon-delimited records for CCP amalgamation; the final record "
+        "may omit its terminal semicolon.");
   m.def("preprocess_multiple_families", &preprocess_multiple_families,
         py::arg("species_path"),
         py::arg("families"),
         py::arg("leaf_species_maps") = std::map<std::string, std::map<std::string, std::string>>{},
         py::arg("include_details") = false,
         py::arg("include_species_matrices") = true,
-        "Preprocess multiple gene families with shared species tree. Defaults to light output; pass include_details=True for full debug fields.");
+        "Preprocess multiple gene families with one shared rooted binary "
+        "species Newick tree. Gene files use the retained simple-Newick subset "
+        "and may contain multiple semicolon-delimited records; the final record "
+        "may omit its terminal semicolon. Defaults to light output; pass "
+        "include_details=True for full debug fields.");
   m.def("compute_phased_waves", &compute_phased_waves,
         "Three-phase scheduler returning actual wave assignments (single family)");
   m.def("compute_wave_stats", &compute_wave_stats,

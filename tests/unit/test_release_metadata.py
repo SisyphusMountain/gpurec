@@ -5,9 +5,11 @@ import re
 import shutil
 import subprocess
 import sys
+import tomllib
 from pathlib import Path
 
 import pytest
+import yaml
 
 import gpurec
 
@@ -15,6 +17,30 @@ import gpurec
 ROOT = Path(__file__).resolve().parents[2]
 CHECK_SCRIPT = ROOT / "scripts" / "check_release_metadata.py"
 SUBPROCESS_TIMEOUT = 60
+
+
+def _load_cpu_ci_workflow() -> dict:
+    text = (ROOT / ".github" / "workflows" / "cpu-unit.yml").read_text(
+        encoding="utf-8"
+    )
+    loaded = yaml.safe_load(text)
+    if not isinstance(loaded, dict):
+        raise AssertionError("CPU CI workflow must parse as a YAML mapping")
+    return loaded
+
+
+def _workflow_step(job: dict, name: str) -> dict:
+    for step in job.get("steps", []):
+        if step.get("name") == name:
+            return step
+    raise AssertionError(f"workflow job is missing step {name!r}")
+
+
+def _step_run(job: dict, name: str) -> str:
+    step = _workflow_step(job, name)
+    run = step.get("run")
+    assert isinstance(run, str), f"workflow step {name!r} must have run script"
+    return run
 
 
 def _has_module_level_gpu_marker(text: str) -> bool:

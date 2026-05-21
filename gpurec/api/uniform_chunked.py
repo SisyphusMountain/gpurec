@@ -725,6 +725,11 @@ class UniformChunkedReconModel(torch.nn.Module):
     in bits.  The forward call computes both the objective and the analytical
     gradient internally; the subsequent ``loss.backward()`` call simply returns
     that cached gradient to PyTorch.
+
+    Tree inputs use the retained preprocessing parser's simple Newick subset:
+    one rooted binary species tree, unquoted labels, ignored numeric branch
+    lengths, and gene-tree files that may contain multiple semicolon-delimited
+    records for CCP amalgamation.
     """
 
     def __init__(
@@ -992,6 +997,8 @@ class UniformChunkedReconModel(torch.nn.Module):
         This mirrors :meth:`gpurec.GeneReconModel.from_trees` for constructor
         homogeneity.  The chunked implementation is intentionally global-only;
         use :class:`gpurec.GeneReconModel` for specieswise or genewise rates.
+        Tree files use the supported simple Newick subset documented by
+        :meth:`gpurec.GeneReconModel.from_trees`.
         """
         normalized = str(mode).strip().lower()
         if normalized not in {"global", "uniform"}:
@@ -1014,7 +1021,11 @@ class UniformChunkedReconModel(torch.nn.Module):
         max_families: int | None = None,
         **kwargs: Any,
     ) -> "UniformChunkedReconModel":
-        """Build a model from a folder containing ``sp.nwk`` and gene trees."""
+        """Build a model from a folder containing ``sp.nwk`` and gene trees.
+
+        The folder contents use the supported simple Newick subset documented
+        by :meth:`gpurec.GeneReconModel.from_trees`.
+        """
         require_default_objective("UniformChunkedReconModel")
         start, max_families = normalize_family_selection(start, max_families)
         kwargs = _normalize_uniform_solver_kwargs(kwargs)
@@ -1041,7 +1052,11 @@ class UniformChunkedReconModel(torch.nn.Module):
         max_families: int | None = None,
         **kwargs: Any,
     ) -> "UniformChunkedReconModel":
-        """Build the uniform model from an AleRax family/CCP list."""
+        """Build the uniform model from an AleRax family/CCP list.
+
+        Referenced tree files use the supported simple Newick subset documented
+        by :meth:`gpurec.GeneReconModel.from_trees`.
+        """
         normalized = str(mode).strip().lower()
         if normalized not in {"global", "uniform"}:
             raise ValueError(

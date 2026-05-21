@@ -369,6 +369,82 @@ def test_alerax_mapping_file_rejects_duplicate_gene_assignments(tmp_path):
         parse_alerax_mapping_file(mapping)
 
 
+def test_gene_dataset_accepts_documented_simple_newick_subset(tmp_path):
+    species_tree = _write(
+        tmp_path / "sp.nwk",
+        " ( ( A :1e-3 , B :+2.0E-1 ) AB :-0.0 , C :.5 ) Root \n",
+    )
+    gene_tree = _write(
+        tmp_path / "gene.nwk",
+        " ( a :1e-2 , b :+3.0E+1 , c :-0.0 ) GeneRoot \n",
+    )
+
+    dataset = GeneDataset(
+        species_tree,
+        [[str(gene_tree)]],
+        genewise=False,
+        specieswise=False,
+        dtype=torch.float64,
+        device="cpu",
+        family_names=["fam0"],
+        leaf_species_maps=[{"a": "A", "b": "B", "c": "C"}],
+    )
+
+    family = dataset.families[0]
+    labels = sorted(label for label in family["clade_leaf_labels"] if label)
+    assert labels == ["a", "b", "c"]
+    assert dataset.S == 5
+    assert int(family["N_splits"]) > 0
+    assert set(map(int, family["leaf_col_index"].tolist())) == {0, 1, 3}
+
+
+@pytest.mark.parametrize(
+    ("species_newick", "gene_newick", "message"),
+    [
+        (
+            "(A:1,B:1)Root;(A:1,B:1)Other;",
+            "(a:1,b:1)Gene;",
+            "Unexpected trailing characters",
+        ),
+        (
+            "(A:1,B:1,C:1)Root;",
+            "(a:1,b:1)Gene;",
+            "Species tree must be strictly binary",
+        ),
+        (
+            "(A:1,B:1)Root;",
+            "((a:1)Unary:1,b:1)Gene;",
+            "Unary node in gene tree",
+        ),
+        (
+            "(A:1[&rate=1],B:1)Root;",
+            "(a:1,b:1)Gene;",
+            "Expected ',' or '\\)'",
+        ),
+    ],
+)
+def test_gene_dataset_rejects_unsupported_newick_dialect_cases(
+    tmp_path,
+    species_newick: str,
+    gene_newick: str,
+    message: str,
+):
+    species_tree = _write(tmp_path / "sp.nwk", species_newick)
+    gene_tree = _write(tmp_path / "gene.nwk", gene_newick)
+
+    with pytest.raises(RuntimeError, match=message):
+        GeneDataset(
+            species_tree,
+            [[str(gene_tree)]],
+            genewise=False,
+            specieswise=False,
+            dtype=torch.float64,
+            device="cpu",
+            family_names=["fam0"],
+            leaf_species_maps=[{"a": "A", "b": "B"}],
+        )
+
+
 def test_alerax_family_file_multi_tree_ccp_matches_split_files(tmp_path):
     species_tree = _write(tmp_path / "sp.nwk", "((A:1,B:1)AB:1,C:1)root;\n")
     tree_a = _write(tmp_path / "a.nwk", "((a1:1,b1:1):1,c1:1);\n")

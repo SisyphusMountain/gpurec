@@ -65,6 +65,14 @@ is to validate the Rust binary without constructing a CUDA model:
 pytest -q tests/integration/test_rust_backtracking_fixture.py::test_rust_backtracking_cli_reads_json_fixture_and_writes_recphyloxml
 ```
 
+The checked fixture contracts live beside the fixtures:
+
+- `tests/fixtures/backtracking/README.md` documents the CPU-only Rust JSON
+  fixture and the RecPhyloXML output shape expected from the CLI smoke.
+- `tests/data/test_trees_3/README.md` documents the smallest CUDA
+  stochastic-backtracking fixture, including the expected 35 x 15 exported
+  `pi` shape and one-tree sampling smoke.
+
 After installing the normal Python test dependencies, the broader non-GPU
 integration marker can be collected with:
 

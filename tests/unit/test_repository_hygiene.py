@@ -1,6 +1,7 @@
 """Repository-level source and documentation hygiene checks."""
 
 import ast
+import json
 import re
 import subprocess
 import tomllib
@@ -172,6 +173,72 @@ def test_tests_subprocess_calls_have_explicit_timeouts():
             offenders.append(f"{path.relative_to(root)}:{node.lineno}")
 
     assert offenders == []
+
+
+def test_checked_fixture_contracts_are_documented():
+    root = Path(__file__).resolve().parents[2]
+    tests_readme = (root / "tests" / "README.md").read_text(encoding="utf-8")
+    normalized_tests_readme = " ".join(tests_readme.split())
+    stochastic_readme = (
+        root / "tests" / "data" / "test_trees_3" / "README.md"
+    ).read_text(encoding="utf-8")
+    normalized_stochastic_readme = " ".join(stochastic_readme.split())
+    rust_readme = (
+        root / "tests" / "fixtures" / "backtracking" / "README.md"
+    ).read_text(encoding="utf-8")
+    normalized_rust_readme = " ".join(rust_readme.split())
+    stochastic_test = (
+        root / "tests" / "integration" / "test_stochastic_backtracking.py"
+    ).read_text(encoding="utf-8")
+    rust_fixture = json.loads(
+        (
+            root / "tests" / "fixtures" / "backtracking" / "speciation.json"
+        ).read_text(encoding="utf-8")
+    )
+
+    for token in (
+        "tests/fixtures/backtracking/README.md",
+        "tests/data/test_trees_3/README.md",
+        "35 x 15",
+        "CPU-only Rust JSON fixture",
+    ):
+        assert token in normalized_tests_readme
+
+    for token in (
+        "smallest checked CUDA stochastic-backtracking fixture",
+        "`sp.nwk`: one rooted binary species tree with 15 postorder species nodes",
+        "`g.nwk`: one rooted binary gene tree",
+        "`pi` payload with 35 clade rows and 15 species columns",
+        "The Rust sampler should emit one `recGeneTree`",
+        "10 leaf events",
+        "CPU-only Rust CLI checks should use `tests/fixtures/backtracking/speciation.json`",
+    ):
+        assert token in normalized_stochastic_readme
+
+    for token in (
+        "`speciation.json` is a hand-authored CPU-only smoke fixture",
+        "Species order: postorder `A`, `B`, `Root`",
+        "Split set: one deterministic split",
+        "row-major `3 x 3` base-2 log matrix",
+        "impossible states use the `-1.0e300` sentinel",
+        "all mass on the root species",
+        "visible speciation at `Root`",
+    ):
+        assert token in normalized_rust_readme
+
+    for token in (
+        "TEST_TREES_3_EXPECTED_CLADES = 35",
+        "TEST_TREES_3_EXPECTED_SPECIES = 15",
+        "TEST_TREES_3_EXPECTED_LEAVES = 10",
+    ):
+        assert token in stochastic_test
+
+    assert rust_fixture["species_names_postorder"] == ["A", "B", "Root"]
+    assert rust_fixture["root_clade"] == 2
+    assert rust_fixture["leaf_species"] == [0, 1, None]
+    assert rust_fixture["pi"]["rows"] == 3
+    assert rust_fixture["pi"]["cols"] == 3
+    assert rust_fixture["origination_probs"] == [0.0, 0.0, 1.0]
 
 
 def test_hogenom_scripts_are_marked_as_legacy_experiment_surface():
@@ -500,6 +567,96 @@ def test_project_readme_documents_leaf_species_mapping_contract():
         "`GeneDataset(..., leaf_species_maps=...)`",
     ):
         assert token in normalized
+
+
+def test_newick_input_subset_is_documented_on_public_surfaces():
+    root = Path(__file__).resolve().parents[2]
+    project_readme = (root / "README.md").read_text(encoding="utf-8")
+    normalized_readme = " ".join(project_readme.split())
+
+    for token in (
+        "retained C++ preprocessing parser supports a deliberately small Newick subset",
+        "unquoted labels",
+        "optional internal labels",
+        "optional numeric branch lengths",
+        "Branch lengths are ignored",
+        "numeric text must immediately follow `:`",
+        "final semicolon is optional",
+        "quotes, escaping, comments, NHX or BEAST-style metadata",
+        "embedded `:`, `,`, `(`, `)`, or `;` delimiters",
+        "species-tree file must contain exactly one rooted binary tree",
+        "gene-tree file may contain one or more semicolon-delimited records",
+        "Gene multifurcations are right-binarized",
+        "unary gene nodes and non-binary species nodes are rejected",
+    ):
+        assert token in normalized_readme
+
+    api_model = ast.parse(
+        (root / "gpurec" / "api" / "model.py").read_text(encoding="utf-8")
+    )
+    gene_model = next(
+        node
+        for node in api_model.body
+        if isinstance(node, ast.ClassDef) and node.name == "GeneReconModel"
+    )
+    from_trees = next(
+        node
+        for node in gene_model.body
+        if isinstance(node, ast.FunctionDef) and node.name == "from_trees"
+    )
+    from_alerax = next(
+        node
+        for node in gene_model.body
+        if isinstance(node, ast.FunctionDef) and node.name == "from_alerax_families"
+    )
+    model_docs = " ".join(
+        (
+            f"{ast.get_docstring(from_trees) or ''} "
+            f"{ast.get_docstring(from_alerax) or ''}"
+        ).split()
+    )
+    for token in (
+        "supported simple Newick subset",
+        "semicolon-delimited records",
+        "final record may omit its terminal semicolon",
+        "Branch lengths are ignored",
+        "right-binarized",
+    ):
+        assert token in model_docs
+
+    core_model = ast.parse(
+        (root / "gpurec" / "core" / "model.py").read_text(encoding="utf-8")
+    )
+    gene_dataset = next(
+        node
+        for node in core_model.body
+        if isinstance(node, ast.ClassDef) and node.name == "GeneDataset"
+    )
+    gene_dataset_doc = " ".join((ast.get_docstring(gene_dataset) or "").split())
+    assert "supported simple Newick subset" in gene_dataset_doc
+
+    uniform_module = ast.parse(
+        (root / "gpurec" / "api" / "uniform_chunked.py").read_text(
+            encoding="utf-8"
+        )
+    )
+    uniform_class = next(
+        node
+        for node in uniform_module.body
+        if isinstance(node, ast.ClassDef) and node.name == "UniformChunkedReconModel"
+    )
+    uniform_doc = " ".join((ast.get_docstring(uniform_class) or "").split())
+    assert "simple Newick subset" in uniform_doc
+
+    preprocess_cpp = (
+        root / "gpurec" / "core" / "cpp" / "preprocess.cpp"
+    ).read_text(encoding="utf-8")
+    for token in (
+        "rooted binary species Newick tree",
+        "simple-Newick gene-tree files",
+        "multiple semicolon-delimited records",
+    ):
+        assert token in preprocess_cpp
 
 
 def test_solver_reconfiguration_docs_cover_lazy_prefetch_contract():

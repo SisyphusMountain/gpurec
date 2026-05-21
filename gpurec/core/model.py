@@ -158,6 +158,13 @@ def parse_alerax_family_file(
 def normalize_family_tree_paths(
     gene_tree_paths: Iterable[str | os.PathLike | Iterable[str | os.PathLike]],
 ) -> list[list[str]]:
+    """Normalize public gene-tree inputs into one path list per family.
+
+    Each path is later parsed by the retained C++ simple-Newick reader.  A file
+    may contain one or more semicolon-delimited gene-tree records, with an
+    optional terminal semicolon on the final record; every record from every
+    path in one family is amalgamated into that family's CCP.
+    """
     if isinstance(gene_tree_paths, (str, os.PathLike)):
         raise ValueError(
             "gene_trees must be a non-empty sequence of paths, not a single path"
@@ -519,6 +526,14 @@ def _validate_family_preprocess_cache(
 
 
 class GeneDataset:
+    """Preprocessed reconciliation dataset backed by the retained C++ parser.
+
+    The species path must contain one rooted binary tree in the supported simple
+    Newick subset.  Gene-tree files may contain one or more semicolon-delimited
+    records, with an optional terminal semicolon on the final record; records
+    listed for one family are pooled into that family's CCP.
+    """
+
     @staticmethod
     def _drop_unused_family_details(raw: dict[str, Any]) -> dict[str, Any]:
         ccp = raw.get("ccp")

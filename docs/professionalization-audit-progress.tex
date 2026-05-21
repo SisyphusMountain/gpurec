@@ -6298,13 +6298,63 @@ consolidated findings are recorded in
 \texttt{docs/repo-wide-audit-2026-05-21.md}.  The most actionable new open
 items are a bf16 support-policy mismatch between direct APIs and workflow docs;
 implicit-gradient solver-failure policy; inconsistent native CUDA loader and
-shared-memory preflight behavior; undocumented C++ Newick dialect assumptions;
-remaining scheduler/helper diagnostic ownership decisions; RecPhyloXML
+shared-memory preflight behavior; remaining scheduler/helper diagnostic
+ownership decisions; RecPhyloXML
 multi-tree assumptions; test fixture documentation and simplification; and the
 ongoing release license blocker.  Documentation-first targets from that pass
-are bf16 support policy, kernel/prototype environment policy, supported Newick
-subset, scheduler diagnostic ownership, fixture contracts, and legacy
-script/notebook retention decisions.
+are bf16 support policy, kernel/prototype environment policy, scheduler
+diagnostic ownership, fixture contracts, and legacy script/notebook retention
+decisions.
+
+The supported simple-Newick input subset is now documented before any parser
+behavior changes.  \texttt{README.md}, \texttt{GeneReconModel} construction
+docstrings, \texttt{UniformChunkedReconModel} docstrings, \texttt{GeneDataset},
+and the preprocessing pybind docstrings now state that the retained parser
+accepts unquoted labels, optional internal labels, numeric branch lengths that
+are ignored, one rooted binary species tree, and semicolon-delimited multi-tree
+gene files that are amalgamated per family.  They also record the unsupported
+surface: quoted or escaped labels, comments, NHX/BEAST-style metadata, embedded
+delimiter characters, unary gene nodes, and non-binary species nodes.  A
+repository hygiene guard now keeps that public contract visible.  Verification
+reports \texttt{py\_compile} passing for the touched Python modules, the
+focused Newick documentation guard reporting \texttt{1 passed}, the full
+repository hygiene module reporting \texttt{41 passed}, and full collection
+reporting \texttt{865 tests collected}.
+
+The Newick parser contract is now also pinned with CPU preprocessing
+regressions.  The acceptance case covers unquoted labels, internal labels,
+ignored numeric branch lengths, optional terminal semicolon on a final record,
+and deterministic right-binarization of a multifurcating gene tree.  Rejection
+cases cover multiple species trees in one species file, non-binary species
+trees, unary gene nodes, and unsupported branch-length metadata/comment syntax.
+The first focused run failed because the public documentation overclaimed
+whitespace support after a branch-length colon; the README and fixture now state
+the actual parser requirement that the numeric branch length immediately follow
+\texttt{:}.  The focused parser selector reports \texttt{5 passed}, the full
+AleRax/preprocessing input module reports \texttt{34 passed}, repository
+hygiene remains \texttt{41 passed}, and full collection reports
+\texttt{870 tests collected}.  The CPU-only unit gate reports
+\texttt{841 passed, 1 skipped, 6 deselected}.
+
+Fixture contracts for the smallest stochastic backtracking inputs are now
+checked in and guarded.  \texttt{tests/data/test\_trees\_3/README.md}
+documents the CUDA-only single-family fixture, including the expected
+\texttt{35 x 15} exported \texttt{pi} shape, one \texttt{recGeneTree}, and
+10-leaf sampling smoke.  The stochastic backtracking integration test now uses
+named constants for those expectations instead of bare magic values.
+\texttt{tests/fixtures/backtracking/README.md} documents the hand-authored
+CPU-only Rust JSON fixture: three postorder species, three clades, one
+deterministic root split, row-major \texttt{3 x 3} base-2 log matrix, and root
+origination mass.  The Rust fixture integration test now asserts that JSON
+shape before invoking the CLI.  A repository hygiene guard keeps both fixture
+contracts linked from \texttt{tests/README.md} and tied to the checked JSON and
+test constants.  Verification reports \texttt{py\_compile} passing for the
+touched tests, the focused fixture-contract guard reporting \texttt{1 passed},
+the Rust JSON integration fixture reporting \texttt{2 passed}, stochastic
+backtracking collection reporting \texttt{2 collected}, repository hygiene
+reporting \texttt{42 passed}, full collection reporting
+\texttt{872 tests collected}, and the CPU-only unit gate reporting
+\texttt{842 passed, 1 skipped, 6 deselected}.
 
 The cached \texttt{leaf\_col\_index} upper-bound validation gap from that
 refresh is now closed.  Family preprocess cache validation accepts only species
