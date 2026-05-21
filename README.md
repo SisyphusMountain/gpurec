@@ -167,6 +167,16 @@ resident batch.  `batch_packing` accepts `sequential`, `clade_first_fit`, and
 `depth_ffd`/`critical_path_first_fit`/`wave_first_fit`, with hyphenated forms
 accepted by the CLI.  Non-sequential packing requires `clade_budget`.
 
+Optimizer modes are selected with `optimizer` in JSON or `--optimizer` on the
+CLI:
+
+| Mode | Behavior | Notes |
+| --- | --- | --- |
+| `adam` | Default Adam optimizer for all configured steps. | Uses `lr` and ordinary PyTorch Adam state. |
+| `adagrad` | Adagrad optimizer for all configured steps. | Uses `lr`; retained for long-running comparison runs. |
+| `lbfgs` | PyTorch LBFGS for all configured steps. | Uses `lbfgs_lr`, `lbfgs_history_size`, `lbfgs_max_iter`, and `lbfgs_line_search`.  `lbfgs_line_search` is `none` or `strong_wolfe`; LBFGS runtime errors stop the run with a failed status. |
+| `adam-lbfgs` | Adam warmup, then LBFGS polishing. | `adam_warmup_steps` controls the phase switch; incompatible resumed optimizer state is discarded when the checkpoint phase differs from the current phase. |
+
 ```bash
 gpurec optimize \
   --species-tree S.tree \
@@ -319,6 +329,7 @@ of dataset path overrides.
 | Hydra HOGENOM run | `python scripts/optimize_hogenom_ccp_hydra.py` | Uses `configs/hogenom_ccp_wandb.yaml`, a checkout-local full experiment config, and Hydra override syntax. |
 | Checkpoint rate export | `python scripts/export_hogenom_rates_from_checkpoint.py` | Exports D/T/L rates from a HOGENOM optimization checkpoint. |
 | One-pass profiling | `python scripts/profile_hogenom_ccp_pass.py` | Profiles full, streamed, active-batch, or largest-batch forward/backward passes on the local HOGENOM layout. |
+| Historical notebooks | `notebooks/` | Checkout-local HOGENOM analyses; see `notebooks/README.md` before using or migrating them. |
 
 Optional script dependencies are intentionally separate from the core package
 and are grouped under the `hogenom` extra.  The R plotting helper also needs

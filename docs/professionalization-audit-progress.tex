@@ -6029,6 +6029,138 @@ returns \texttt{False}.  The checkpoint-focused workflow slice reports
 full collection remains \texttt{838 tests collected}, and the CPU-only unit
 gate remains \texttt{809 passed, 1 skipped, 6 deselected}.
 
+The next public API coverage gap is
+\texttt{GeneReconModel.materialize\_batches()} and
+\texttt{GeneReconModel.full\_loss\_for\_theta(theta)}.  These helpers are part
+of the documented resident-batch and explicit-theta optimization surface, but
+their exact contracts are only indirectly exercised by CUDA integration tests.
+Before touching runtime behavior, add CPU-safe guards that
+\texttt{materialize\_batches()} builds every resident batch and returns a copy of
+batch metadata, and that \texttt{full\_loss\_for\_theta(theta)} selects the
+\texttt{need\_grad=True} streaming path for differentiable explicit-theta probes
+and the \texttt{need\_grad=False} path for no-grad probes.
+
+Those public API guards are now in place in
+\texttt{tests/unit/test\_workflow.py}.  The focused selector reports
+\texttt{3 passed, 423 deselected}, the full workflow module reports
+\texttt{426 passed}, and a direct \texttt{py\_compile} pass succeeds for the
+edited test module.
+
+The Rust crate audit read all tracked files under
+\texttt{crates/gpurec-backtrack}.  It found that
+\texttt{Matrix::validate()} computes \texttt{rows * cols} directly, so extreme
+payload dimensions can panic in debug builds before the sampler returns
+\texttt{InvalidInput}.  It also found missing public schema documentation for
+row-major matrices, base-2 log units, the \texttt{-1e300} sentinel, postorder
+species indexing, leaf/split bounds, and origination probability semantics.
+Before sampler behavior changes, document that schema and add a regression that
+matrix shape overflow is rejected normally.  Remaining Rust follow-ups are to
+tighten Rust-side numeric validation to match the Python bridge, test more
+sampler branches, reject the single-sample \texttt{--output-dir} plus output
+file combination, consider replacing \texttt{WorkItem.clade: Option<usize>}
+with a plain \texttt{usize}, and verify whether the direct
+\texttt{quick-xml} dev-dependency is still needed.
+
+The workflow/CLI/optimizer audit read all tracked files in its scope and ran a
+focused unit slice reporting \texttt{557 passed}.  Its highest-priority
+documentation gaps are optimizer modes and resume semantics: the CLI exposes
+\texttt{adagrad}, \texttt{lbfgs}, and \texttt{adam-lbfgs}, but README-level docs
+still mainly describe Adam, and completed-checkpoint resume status is not
+specified.  It also flagged adjoint solver failure diagnostics, the apparently
+test-only \texttt{safe\_float()} helper, and the lack of a maintained
+\texttt{RunConfig}/CLI option reference.  These should be documented before any
+optimizer, resume, or validation behavior changes.
+
+The tests audit read every tracked file under \texttt{tests/**} plus
+\texttt{pytest.ini}.  It found one actionable overbroad skip in
+\texttt{tests/integration/test\_uniform\_chunked\_model.py}: the whole module
+requires \texttt{test\_trees\_1000}, even though the HOGENOM unrooted-Newick
+test only needs \texttt{hogenom\_bench}.  It also flagged smoke-heavy GPU
+assertions, missing loose-tolerance adaptive-iteration coverage, intentionally
+private guardrail tests that need a policy in \texttt{tests/README.md}, brittle
+wording snapshots, and duplicated import/export coverage.
+
+The docs/scripts audit read the docs, scripts, profiling, examples, configs,
+notebooks, README, manifest, and pyproject surfaces.  It confirmed the known
+license metadata blocker and added that the tracked notebooks need explicit
+checkout-local HOGENOM ownership docs, the large HOGENOM launchers and stale
+report scripts need a keep/delete/migrate matrix, the retained benchmark should
+be documented as an internal private-API benchmark, historical docs need a
+stale-reference convention, and the W\&B config needs a smoke/offline override
+snippet before it is treated as a reusable example.
+
+The Rust matrix overflow fix is now implemented after that documentation pass:
+public schema comments cover row-major matrices, base-2 log values, the
+\texttt{-1e300} sentinel, postorder species indexing, and origination weight
+semantics; \texttt{Matrix::validate()} now uses checked multiplication; the
+focused overflow regression passes; and
+\texttt{cargo test --locked --manifest-path crates/gpurec-backtrack/Cargo.toml}
+reports \texttt{10} library tests and \texttt{4} CLI tests passing.
+
+The core/API audit read every tracked file in its slice.  Its remaining
+highest-risk contracts are the direct \texttt{Pi\_wave\_backward} runtime limits,
+experimental native CUDA fallback policy, DTS parameter shape precedence when
+\texttt{G == S}, genewise-only \texttt{full\_nll\_per\_family()}, lazy resident
+prefetch reconfiguration, unowned scheduler/C++ diagnostic exports, and the
+legacy C++ leaf-to-species prefix fallback.  These are now documented as
+contract gaps before any logic changes.
+
+The tests documentation and integration skip cleanup are also complete.
+\texttt{tests/README.md} now states when private-helper guardrail tests are
+acceptable, what smoke tests should prove, and how Rust/cargo checks fit into
+the CPU-safe test policy.  The HOGENOM unrooted-Newick integration test no
+longer inherits an unrelated \texttt{test\_trees\_1000} module-level skip.
+\texttt{py\_compile} passed for the edited Python test modules, and
+\texttt{pytest --collect-only} reports \texttt{4} tests collected for
+\texttt{tests/integration/test\_uniform\_chunked\_model.py}.
+
+The broad verification gate for this continuation reports
+\texttt{841 tests collected} and
+\texttt{812 passed, 1 skipped, 6 deselected} for
+\texttt{CUDA\_VISIBLE\_DEVICES='' python -m pytest tests/unit -q -m "unit and not gpu"}.
+
+Notebook and script ownership documentation is now explicit.  A new
+\texttt{notebooks/README.md} marks both tracked notebooks as checkout-local
+HOGENOM analysis artifacts, not portable examples, and the docs index plus main
+README point readers there.  \texttt{scripts/README.md} now includes an
+ownership matrix for every tracked script, with keep/migrate/delete guidance for
+legacy HOGENOM launchers, one-off report builders, validation helpers,
+profiling utilities, plotting, and release metadata checks.  Repository hygiene
+guards now verify that tracked notebooks are listed in the notebook ownership
+note and tracked scripts appear in the ownership matrix.  The focused hygiene
+selector reports \texttt{3 passed, 25 deselected}, and
+\texttt{py\_compile} passes for the edited hygiene test module.  The full
+repository hygiene module now reports \texttt{28 passed}, full collection
+reports \texttt{843 tests collected}, and the CPU-only unit gate reports
+\texttt{814 passed, 1 skipped, 6 deselected}.
+
+The optimizer-mode documentation gap is now partially closed in the main
+README.  The production workflow section lists \texttt{adam},
+\texttt{adagrad}, \texttt{lbfgs}, and \texttt{adam-lbfgs}, including the LBFGS
+line-search options, LBFGS runtime-failure status, Adam warmup switch, and
+phase-mismatch resume-state behavior.  A repository hygiene guard now checks
+that those public modes stay documented.  The Rust backtracking CLI parsing gap
+is also fixed: \texttt{--output-dir DIR input.json output.xml} is rejected in
+single-sample directory mode instead of silently ignoring the output file.  The
+focused Rust parser regression passes, and the focused README guard reports
+\texttt{3 passed, 26 deselected}.  Full crate verification reports
+\texttt{10} library tests and \texttt{5} CLI tests passing, and the full
+repository hygiene module reports \texttt{29 passed}.  Full collection reports
+\texttt{844 tests collected}, and the CPU-only unit gate reports
+\texttt{815 passed, 1 skipped, 6 deselected}.
+
+The workflow audit's deletion candidate
+\texttt{gpurec.workflow.diagnostics.safe\_float()} has been rechecked against
+the current tree.  Search finds only its definition, direct import in
+\texttt{tests/unit/test\_workflow.py}, its dedicated unit test, and the audit
+note.  Since no production code or user docs rely on it, the helper should be
+removed instead of promoted as public workflow API.
+After removal, \texttt{rg} finds \texttt{safe\_float} only in audit
+documentation.  \texttt{py\_compile} passes for
+\texttt{gpurec/workflow/diagnostics.py} and
+\texttt{tests/unit/test\_workflow.py}, and the focused workflow selector reports
+\texttt{3 passed, 422 deselected}.
+
 \section{Next Audit Targets}
 
 \begin{enumerate}[leftmargin=*]

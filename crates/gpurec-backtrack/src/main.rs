@@ -129,9 +129,9 @@ where
             "too many positional arguments".to_string(),
         ));
     }
-    if parsed.samples > 1 && parsed.positionals.len() == 2 {
+    if parsed.output_dir.is_some() && parsed.positionals.len() == 2 {
         return Err(CliError::Message(
-            "multi-sample mode writes to --output-dir, not a single output file".to_string(),
+            "--output-dir writes samples to a directory, not a single output file".to_string(),
         ));
     }
 
@@ -230,6 +230,26 @@ mod tests {
         assert_eq!(
             err,
             CliError::Message("--max-events must be positive".to_string())
+        );
+    }
+
+    #[test]
+    fn rejects_output_file_when_output_dir_is_set() {
+        let err = parse(&[
+            "--samples",
+            "1",
+            "--output-dir",
+            "out",
+            "input.json",
+            "ignored.xml",
+        ])
+        .unwrap_err();
+
+        assert_eq!(
+            err,
+            CliError::Message(
+                "--output-dir writes samples to a directory, not a single output file".to_string()
+            )
         );
     }
 }

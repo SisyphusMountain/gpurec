@@ -14,6 +14,9 @@ file as the map for deeper context.
   cleanup and verification work.
 - `release-readiness.md`: release blockers, clean-checkout hygiene, and
   packaging verification gates.
+- `../notebooks/README.md`: ownership note for tracked notebooks.  The
+  notebooks themselves are checkout-local HOGENOM analysis artifacts, not
+  portable examples.
 
 ## Validation Notes
 

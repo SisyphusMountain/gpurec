@@ -190,41 +190,56 @@ evidence is thin.
     (`save_checkpoint`, `load_checkpoint`, and `restore_model_theta`) intact and
     reduces an otherwise unsupported module-level API.
 
+20. `GeneReconModel.materialize_batches()` and
+    `GeneReconModel.full_loss_for_theta(theta)` are public API helpers whose
+    contracts are only indirectly exercised by CUDA integration coverage.
+    `materialize_batches()` should build every resident batch and return a copy
+    of batch metadata; `full_loss_for_theta(theta)` should stream all resident
+    batches with `need_grad=True` for differentiable explicit-theta probes and
+    with `need_grad=False` for no-grad probes.  Both contracts can be pinned
+    with CPU-safe monkeypatched model instances before any runtime behavior
+    change.
+
 ### Scripts, Rust, Profiling, And Examples
 
-20. Legacy HOGENOM launchers have inconsistent path override support.
+21. Legacy HOGENOM launchers have inconsistent path override support.
     `scripts/README.md` labels them legacy checkout-local scripts, while
     `scripts/optimize_hogenom_ccp_global_uniform.py:21` and
     `scripts/optimize_hogenom_ccp_specieswise_uniform.py:26` hard-code local
     data paths and expose mostly optimizer/regularization flags.  Document
     which launchers are fixed-dataset before shared optimizer changes.
 
-21. `profiling/bench_uniform_forward_backward_pipeline.py` references missing
+22. `profiling/bench_uniform_forward_backward_pipeline.py` references missing
     `docs/forward-backward-full-pipeline-plan.md` at lines 4-5.  The benchmark
     contract is stale until the reference is restored or removed.
 
-22. `scripts/make_hogenom_branchscale_penalty_report.py` appears stale relative
+23. `scripts/make_hogenom_branchscale_penalty_report.py` appears stale relative
     to current run-directory naming.  It only loads `penalty_*` directories at
     lines 103-110, while newer launchers create timestamped names, and the
     report text hard-codes a date and "1325 branch multipliers".
 
-23. `configs/hogenom_ccp_wandb.yaml` is not a portable smoke config.  It assumes
+24. `configs/hogenom_ccp_wandb.yaml` is not a portable smoke config.  It assumes
     local HOGENOM data paths, CUDA, per-step checkpointing, and online W&B.  It
     should be documented as a full local experiment config rather than a general
     example.
 
-24. `examples/minimal-run-config.json` defaults to `"device": "cuda"` even
+25. `examples/minimal-run-config.json` defaults to `"device": "cuda"` even
     though the tiny fixtures are otherwise portable.  This is a documentation
     and reproducibility footgun for CPU-only users.
 
-25. Rust backtracking input validation is shape-focused but numeric contracts
-    are not fully documented.  Matrix validation checks only
-    `rows * cols == data.len()` in `crates/gpurec-backtrack/src/lib.rs:31`, and
-    origination probabilities are log-converted only if positive around line
-    274 while non-finite values are filtered later around line 750.  Add schema
-    docs and tests before changing sampler behavior.
+26. Rust backtracking input validation is shape-focused but numeric contracts
+    are not fully documented.  Matrix validation currently computes
+    `rows * cols` directly in `crates/gpurec-backtrack/src/lib.rs:32`, which can
+    panic on overflow in debug builds instead of returning `InvalidInput`.
+    Public Rust payload types also lack schema docs for row-major matrices,
+    base-2 log units, the `-1e300` sentinel, postorder species indexing,
+    leaf/split bounds, and origination probability semantics.  Rust validation
+    is thinner than the Python bridge for leaf species indices and finite/range
+    contracts, while origination probabilities are log-converted only if
+    positive around line 274.  Add schema docs and targeted tests before
+    changing sampler behavior.
 
-26. Some profiling/evaluation scripts encode brittle external file-format
+27. Some profiling/evaluation scripts encode brittle external file-format
     assumptions.  `profiling/evaluate_hogenom_alerax_rates.py:29` reads only
     the second line of each `*_rates.txt` and treats the first three columns as
     D/L/T; defaults around line 147 hard-code the HOGENOM root, CUDA device, and
@@ -232,25 +247,32 @@ evidence is thin.
     script module/help text state that it is a checkout-local HOGENOM AleRax
     validation utility, not a general rate-file parser.
 
+28. The Rust backtracking CLI accepts an ignored positional output file when
+    `--samples 1 --output-dir DIR input.json output.xml` is passed.  Directory
+    mode is selected by `output_dir.is_some()` in
+    `crates/gpurec-backtrack/src/main.rs:37`, but the parse-time rejection of a
+    second positional output path only triggers when `samples > 1` around line
+    132.  Document or reject that combination before users rely on it.
+
 ### Tests, Docs, And Packaging
 
-27. Release metadata still has an expected blocker.  `pyproject.toml` lacks a
+29. Release metadata still has an expected blocker.  `pyproject.toml` lacks a
     license key and license classifier, while `docs/release-readiness.md`
     requires adding both and a top-level license file.  The test suite currently
     treats this as an expected release metadata blocker.
 
-28. The docs index presented historical cleanup notes as current.  This audit
+30. The docs index presented historical cleanup notes as current.  This audit
     moved `core-simplification-suggestions.md` out of "Current Operating Notes"
     because the file itself says it is a historical snapshot and includes
     already-implemented items such as removing `scatter_lse.py`.
 
-29. Performance docs contain broken references.  Examples include missing docs
+31. Performance docs contain broken references.  Examples include missing docs
     and benchmark scripts in `docs/lean-performance-path-regression.md`, and
     `docs/second-order-optimization-opportunities.md` references
     `profiling/bench_global_parameter_optimization.py` plus a line number that
     no longer exists in `tests/integration/test_gene_recon_model.py`.
 
-30. Some GPU/data-heavy tests are classified as unit tests.  `tests/conftest.py`
+32. Some GPU/data-heavy tests are classified as unit tests.  `tests/conftest.py`
     auto-marks everything under `tests/unit` as `unit`, but
     `tests/unit/test_adaptive_iterations.py` requires CUDA and `test_trees_1000`
     and some `test_specieswise_uniform.py` CUDA checks lack local `slow`
@@ -259,35 +281,125 @@ evidence is thin.
     test that directly or indirectly depends on the 1000-family CUDA fixture to
     carry a local `@pytest.mark.slow` marker.
 
-31. `tests/unit/test_release_metadata.py` mirrors docs and GitHub Actions YAML
+33. `tests/unit/test_release_metadata.py` mirrors docs and GitHub Actions YAML
     with many exact substring assertions.  These guards catch release drift, but
     they are brittle during harmless wording or workflow layout changes.
 
-32. `tests/unit/test_workflow.py` is an oversized mixed-surface test module at
+34. `tests/unit/test_workflow.py` is an oversized mixed-surface test module at
     5,123 lines.  It covers exports, config, checkpointing, optimization,
     backtracking commands, sampling, and more.  Splitting it by behavior would
     improve ownership and reduce stale-test risk.
 
-33. `pytest.ini` globally ignores all `DeprecationWarning` and
+35. `pytest.ini` globally ignores all `DeprecationWarning` and
     `PendingDeprecationWarning`.  Scoping suppression to known external noise
     would make project-owned deprecations visible.  A CPU unit run with
     `-W default` did not surface known warning noise, so the low-risk cleanup is
     to remove the blanket ignores and add a repository hygiene guard that only
     permits targeted warning filters.
 
-34. `tests/__init__.py` is stale or unnecessary.  It describes `gradients` and
+36. `tests/__init__.py` is stale or unnecessary.  It describes `gradients` and
     `performance` suites, while the current marker taxonomy is `unit`,
     `integration`, `kernel`, `gpu`, and `slow`.  The file still helps direct
     imports such as `tests.unit.alerax_helpers`, so the low-risk cleanup is to
     simplify the package docstring rather than delete it.
 
-35. CLI help smoke tests are sensitive to stale installed console scripts.  In
+37. CLI help smoke tests are sensitive to stale installed console scripts.  In
     this checkout, `which gpurec` resolved to `/home/enzo/miniforge3/bin/gpurec`,
     whose entry point imports `gpurec.cli.reconcile`.  The repo-local
     `python -m gpurec.cli --help` command passed, but
     `tests/unit/test_release_metadata.py::test_cli_help_smokes_are_quiet_on_cpu`
     failed through the stale PATH executable.  This is an environment/setup
     fragility to document or guard in release checks.
+
+### Subagent Refresh Findings
+
+- Workflow optimizer modes are public but underdocumented and under-tested.
+  `RunConfig` and the CLI expose `adagrad`, `lbfgs`, and `adam-lbfgs`, while
+  README guidance still mostly describes Adam.  Before changing optimizer logic
+  or deleting modes, add an optimizer-mode reference covering stopping and LBFGS
+  failure semantics, then add fake-model tests for Adagrad, active LBFGS, and
+  LBFGS runtime failure paths.
+- E-adjoint solver failures can disappear into partial diagnostics.  The
+  implicit-gradient solver can return `success=False`, while workflow
+  diagnostics currently aggregate only iteration/convergence summaries.  Decide
+  whether failed adjoint solves fail optimization, warn, or only appear in
+  history, then surface `E_adjoint_success` and `E_adjoint_rel_res` before
+  relying on the diagnostics for production monitoring.
+- `gpurec.workflow.diagnostics.safe_float()` appears unused outside its direct
+  unit test.  If it is not intended as public workflow API, delete the helper
+  and test; if it is intended public surface, document and export it first.
+- Completed-resume status is not documented or asserted.  Metadata validation
+  permits `step == next_step`, and resuming at `config.steps` falls through the
+  optimization loop status path.  Document the expected completed-checkpoint
+  status before changing resume behavior.
+- RunConfig and CLI reference docs lag the current option surface.  Add a
+  maintained or generated option table before changing defaults or validation
+  rules, so constraints such as even `fixed_iters_pi`, optimizer modes, and
+  checkpoint cadence are not only captured in tests.
+- The tests audit found one overbroad integration-test skip: the
+  `test_uniform_chunked_model.py` module skips entirely when `test_trees_1000`
+  is absent, even though its HOGENOM unrooted-Newick test only needs
+  `hogenom_bench`.  Move the large-fixture skip to the tests that actually use
+  `test_trees_1000`, or split the HOGENOM case into its own module.
+- Several GPU tests are still smoke-heavy: Adam/LBFGS integration checks mostly
+  assert that theta changed, the HOGENOM unrooted parsing check asserts
+  metadata only, and the specieswise backward check asserts finite values.
+  Prefer before/after NLL decrease or reference-close assertions when local
+  data makes that practical.
+- Adaptive iteration coverage only proves the forced-max path.  Add a slow GPU
+  case with loose tolerances that asserts solver iterations stop before the
+  configured maximum.
+- Some useful tests intentionally construct private or partially initialized
+  objects.  `tests/README.md` should document when that is acceptable as a
+  guardrail, what a smoke test must prove, and how Rust/cargo checks fit into
+  the test-authoring rules.
+- Release/docs hygiene tests contain brittle wording snapshots and duplicated
+  export/import checks.  Consolidate to one public import behavior test plus
+  one README/public-doc coverage test where possible, and prefer parsing
+  structured files over long substring lists.
+- The docs/scripts audit confirmed the known release metadata blocker, and
+  added that tracked notebooks are undocumented checkout-local HOGENOM analysis
+  artifacts with hard-coded CUDA/data assumptions.  Add a `notebooks/README.md`
+  or docs-index section before deciding whether to keep, archive, or delete
+  them.
+- The HOGENOM script/profiling surface needs an ownership matrix.  Document
+  which legacy launchers are fixed-dataset, which one-off report tools are
+  stale, and which benchmarks depend on private internals before deleting or
+  migrating scripts.
+- Historical docs still contain intentionally stale or broken references.  Add
+  an explicit historical/not-reproducible convention plus a docs link-check
+  allowlist so current docs can be checked without flagging archived notes.
+- `configs/hogenom_ccp_wandb.yaml` is checkout-local and online-W&B-oriented.
+  Add a smoke/offline override snippet before changing defaults or presenting it
+  as a reusable config.
+- The core/API audit reinforced that `Pi_wave_backward` has hard runtime
+  contracts that are not direct public docs: CUDA-only execution,
+  `float32`/`float64`, `S > 256`, required `leaf_species_index`, scratch budget,
+  and `uniform_pibar_row_max`.  Document these before changing backward fallback
+  behavior.
+- Native CUDA prototype paths remain experimental and thinly tested.  The
+  `GPUREC_CUDA_SELF_LOOP_*` and `GPUREC_CUDA_PIBAR_FROM_UD` routes should have a
+  documented support/fallback policy before adding parity tests or removing
+  broad auto-mode fallbacks.
+- DTS parameter shape precedence is ambiguous when `G == S`: forward and
+  backward paths can interpret a 1-D tensor differently.  Document the intended
+  precedence in public parameter/API docs before changing either implementation.
+- `GPUREC_LEAF_HIT_ONLY_LOGP` remains a deletion candidate.  Before deleting,
+  document the compatibility/removal plan in the env-var table and add a guard
+  showing env `0` and `1` produce identical behavior.
+- `GeneReconModel.full_nll_per_family()` delegates to genewise-only logic but is
+  documented generically.  Document it as genewise-only first, then add explicit
+  mode-error tests or implement shared/specieswise per-family values.
+- Lazy resident prefetch plus `configure_solver_iterations()` still has unclear
+  semantics for pending futures.  Document whether reconfiguration should
+  cancel/rebuild pending batches, update them when they resolve, or reject while
+  futures are pending.
+- Scheduler and diagnostic exports such as `collate_wave`, `split_phase_waves`,
+  C++ wave-stat exports, and `bench_parse` look unowned or test-only.  Decide
+  whether they are supported diagnostics; otherwise delete or guard them.
+- The legacy leaf-to-species fallback assumes the species name is the prefix
+  before `_` when no explicit map is supplied.  Document this input contract
+  before requiring explicit maps or changing fallback behavior.
 
 ## Adequately Covered Or Lower-Risk Areas
 
@@ -419,6 +531,42 @@ staleness found above:
   `UniformChunkedReconModel.loss_and_grad(reduction="full_sum_estimate")` with a
   CPU-safe monkeypatched evaluator, asserting that both returned loss and
   gradient are scaled by `total_families / selected_families`.
+- `tests/unit/test_workflow.py` now needs CPU-safe public API guards for
+  `GeneReconModel.materialize_batches()` and
+  `GeneReconModel.full_loss_for_theta(theta)` before any runtime change touches
+  resident batch materialization or explicit-theta full-loss streaming.
+- `tests/unit/test_workflow.py` now covers those public API contracts with
+  CPU-safe monkeypatched model instances: resident batch materialization must
+  build every batch and return a metadata-list copy, and explicit-theta
+  full-loss streaming must use `need_grad=True` for differentiable probes and
+  `need_grad=False` for no-grad probes.
+- `crates/gpurec-backtrack/src/lib.rs` now documents the public Rust
+  backtracking schema and rejects `Matrix` shape products that overflow `usize`
+  with `InvalidInput` instead of a debug-build panic.
+- `tests/README.md` now documents when private-helper guardrail tests are
+  acceptable, what smoke tests should prove, and how Rust/cargo checks fit into
+  CPU-safe test authoring.
+- `tests/integration/test_uniform_chunked_model.py` no longer skips the HOGENOM
+  unrooted-Newick test just because the unrelated `test_trees_1000` fixture is
+  absent.
+- `notebooks/README.md` now documents both tracked notebooks as checkout-local
+  HOGENOM analysis artifacts rather than portable examples, and `docs/README.md`
+  plus the main README point to that ownership note.
+- `scripts/README.md` now has an ownership matrix for tracked scripts,
+  including keep/migrate/delete guidance for legacy HOGENOM launchers,
+  one-off report tools, profiling helpers, validation utilities, plotting, and
+  release metadata checks.
+- `tests/unit/test_repository_hygiene.py` now guards that tracked notebooks are
+  documented as checkout-local artifacts and that every tracked script appears
+  in the script ownership matrix.
+- `README.md` now documents the public workflow optimizer modes (`adam`,
+  `adagrad`, `lbfgs`, and `adam-lbfgs`), including LBFGS line-search/failure
+  semantics and Adam-to-LBFGS resume-state phase behavior.
+- The Rust backtracking CLI now rejects `--output-dir DIR input.json output.xml`
+  for single-sample runs as well as multi-sample runs, so the extra positional
+  output path is not silently ignored in directory mode.
+- `gpurec.workflow.diagnostics.safe_float()` was confirmed unused outside its
+  direct unit test and removed rather than promoted as public workflow API.
 
 ## Verification Run This Round
 
@@ -565,6 +713,62 @@ staleness found above:
   helper.
 - `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit -q -m "unit and not gpu"`:
   809 passed, 1 skipped, 6 deselected after removing the helper.
+- `python -m py_compile tests/unit/test_workflow.py`: passed after adding the
+  public API guards for batch materialization and explicit-theta full-loss
+  streaming.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_workflow.py -q -k 'materialize_batches or full_loss_for_theta'`:
+  3 passed, 423 deselected after adding those guards.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_workflow.py -q`:
+  426 passed after adding those guards.
+- `cargo test --locked --manifest-path crates/gpurec-backtrack/Cargo.toml rejects_matrix_shape_overflow_without_panicking`:
+  1 passed after adding the Rust matrix-overflow validation regression.
+- `cargo test --locked --manifest-path crates/gpurec-backtrack/Cargo.toml`:
+  10 library tests and 4 CLI tests passed after documenting the Rust schema and
+  making matrix shape validation overflow-safe.
+- `python -m py_compile tests/unit/test_workflow.py tests/integration/test_uniform_chunked_model.py`:
+  passed after adding the public API guards and narrowing the integration-test
+  fixture skip.
+- `python -m pytest --collect-only -q tests/integration/test_uniform_chunked_model.py`:
+  4 tests collected after narrowing the `test_trees_1000` skip.
+- `cargo fmt --manifest-path crates/gpurec-backtrack/Cargo.toml --check`:
+  passed after the Rust schema and validation changes.
+- `python -m pytest --collect-only -q`: 841 tests collected after this audit
+  pass.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit -q -m "unit and not gpu"`:
+  812 passed, 1 skipped, 6 deselected after this audit pass.
+- `python -m py_compile tests/unit/test_repository_hygiene.py`: passed after
+  adding notebook and script ownership guards.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_repository_hygiene.py -q -k 'notebook or ownership or hogenom_alerax_rate_evaluator'`:
+  3 passed, 25 deselected after adding those guards.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_repository_hygiene.py -q`:
+  28 passed after adding notebook and script ownership guards.
+- `python -m pytest --collect-only -q`: 843 tests collected after adding the
+  ownership guards.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit -q -m "unit and not gpu"`:
+  814 passed, 1 skipped, 6 deselected after adding the ownership guards.
+- `python -m py_compile tests/unit/test_repository_hygiene.py`: passed after
+  adding the optimizer-mode README guard.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_repository_hygiene.py -q -k 'optimizer_modes or ownership or notebook'`:
+  3 passed, 26 deselected after adding the optimizer-mode guard.
+- `cargo test --locked --manifest-path crates/gpurec-backtrack/Cargo.toml rejects_output_file_when_output_dir_is_set`:
+  1 passed after fixing Rust CLI directory-mode parsing.
+- `cargo fmt --manifest-path crates/gpurec-backtrack/Cargo.toml --check`:
+  passed after the Rust CLI parsing change.
+- `cargo test --locked --manifest-path crates/gpurec-backtrack/Cargo.toml`:
+  10 library tests and 5 CLI tests passed after the Rust CLI parsing change.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_repository_hygiene.py -q`:
+  29 passed after adding the optimizer-mode README guard.
+- `python -m pytest --collect-only -q`: 844 tests collected after the
+  optimizer-mode and Rust CLI parsing guards.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit -q -m "unit and not gpu"`:
+  815 passed, 1 skipped, 6 deselected after the optimizer-mode and Rust CLI
+  parsing guards.
+- `rg -n "\bsafe_float\b" gpurec tests docs README.md -S`: after removal, only
+  audit documentation mentions remain.
+- `python -m py_compile gpurec/workflow/diagnostics.py tests/unit/test_workflow.py`:
+  passed after removing `safe_float()`.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_workflow.py -q -k 'diagnostics or metadata_model_name'`:
+  3 passed, 422 deselected after removing `safe_float()`.
 - `git diff --check`: passed.
 - `python scripts/check_release_metadata.py`: failed with the known release
   blockers: missing top-level `LICENSE`, missing `pyproject.toml` license

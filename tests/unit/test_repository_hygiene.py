@@ -393,6 +393,24 @@ def test_project_readme_documents_gpurec_run_end_to_end_workflow():
     assert "Use `gpurec sample --checkpoint ...` to sample an existing run" in project_readme
 
 
+def test_project_readme_documents_workflow_optimizer_modes():
+    root = Path(__file__).resolve().parents[2]
+    project_readme = (root / "README.md").read_text(encoding="utf-8")
+    normalized = " ".join(project_readme.split())
+
+    for token in (
+        "| `adam` |",
+        "| `adagrad` |",
+        "| `lbfgs` |",
+        "| `adam-lbfgs` |",
+        "`lbfgs_line_search` is `none` or `strong_wolfe`",
+        "LBFGS runtime errors stop the run with a failed status",
+        "`adam_warmup_steps` controls the phase switch",
+        "incompatible resumed optimizer state is discarded",
+    ):
+        assert token in normalized
+
+
 def test_project_readme_top_level_import_examples_match_public_exports():
     root = Path(__file__).resolve().parents[2]
     project_readme = (root / "README.md").read_text(encoding="utf-8")
@@ -480,6 +498,47 @@ def test_hogenom_alerax_rate_evaluator_documents_local_file_contract():
         "D/L/T rates in the first three columns of its second line",
     ):
         assert token in script
+
+
+def test_tracked_notebooks_are_documented_as_checkout_local_artifacts():
+    root = Path(__file__).resolve().parents[2]
+    note = (root / "notebooks" / "README.md").read_text(encoding="utf-8")
+    notebooks = [
+        path.name
+        for path in _tracked_files(root, "notebooks/*.ipynb")
+    ]
+
+    assert notebooks
+    for token in (
+        "checkout-local HOGENOM analysis artifacts",
+        "not portable examples",
+        "CUDA",
+        "reconcile_hogenom_ccp_gpurec.ipynb",
+        "optimize_hogenom_ccp_adam_oscillation.ipynb",
+    ):
+        assert token in note
+    assert [name for name in notebooks if name not in note] == []
+
+
+def test_scripts_readme_lists_tracked_scripts_in_ownership_matrix():
+    root = Path(__file__).resolve().parents[2]
+    note = (root / "scripts" / "README.md").read_text(encoding="utf-8")
+    script_names = [
+        path.name
+        for path in _tracked_files(root, "scripts/*")
+        if path.suffix in {".py", ".R"}
+    ]
+
+    assert script_names
+    for token in (
+        "Ownership Matrix",
+        "Candidate for deletion or migration",
+        "checkout-local",
+        "not as a portable benchmark",
+        "check_release_metadata.py",
+    ):
+        assert token in note
+    assert [name for name in script_names if name not in note] == []
 
 
 def test_cpp_wave_stat_exports_validate_positive_max_wave_size():

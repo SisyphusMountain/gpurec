@@ -16,13 +16,16 @@ from gpurec import GeneReconModel, UniformChunkedReconModel
 pytestmark = [
     pytest.mark.gpu,
     pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required"),
-    pytest.mark.skipif(not DATA_DIR.exists(), reason=f"dataset not present: {DATA_DIR}"),
 ]
 
 
-def _genes(n: int) -> list[str]:
+def _require_data_dir() -> None:
     if not DATA_DIR.exists():
         pytest.skip(f"dataset not present: {DATA_DIR}")
+
+
+def _genes(n: int) -> list[str]:
+    _require_data_dir()
     genes = sorted(DATA_DIR.glob("g_*.nwk"))[:n]
     if len(genes) < n:
         pytest.skip(f"need {n} gene trees in {DATA_DIR}")
@@ -31,6 +34,7 @@ def _genes(n: int) -> list[str]:
 
 @pytest.mark.slow
 def test_chunked_uniform_matches_resident_global_model(tmp_path):
+    _require_data_dir()
     species_tree = str(DATA_DIR / "sp.nwk")
     genes = _genes(4)
     kwargs = dict(
@@ -73,6 +77,7 @@ def test_chunked_uniform_matches_resident_global_model(tmp_path):
 
 
 def test_chunked_uniform_from_folder_and_adam_step(tmp_path):
+    _require_data_dir()
     model = UniformChunkedReconModel.from_folder(
         DATA_DIR,
         max_families=3,
@@ -102,6 +107,7 @@ def test_chunked_uniform_from_folder_and_adam_step(tmp_path):
 
 
 def test_chunked_uniform_chunk_subset_nll_and_gradient(tmp_path):
+    _require_data_dir()
     model = UniformChunkedReconModel.from_folder(
         DATA_DIR,
         max_families=4,

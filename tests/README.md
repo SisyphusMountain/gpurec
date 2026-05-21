@@ -84,3 +84,21 @@ single module or contract but require CUDA fixtures; use `-m "unit and not gpu"`
 for CPU-only unit gates.
 Use explicit test paths for targeted audit gates when a local checkout contains
 large generated datasets.
+
+## Adding Tests
+
+Prefer public behavior assertions when a public API can exercise the contract.
+Private helpers and partially initialized objects are acceptable for narrow
+guardrail tests when full construction would require CUDA, external HOGENOM
+data, or expensive preprocessing; keep those tests focused on one documented
+contract and add the contract to the audit notes first.
+
+Smoke tests should prove more than importability.  For optimization paths, use
+loss decrease, reference-close values, or explicit failure/status assertions
+when practical.  For docs and release hygiene, prefer parsing structured files
+over long wording snapshots.
+
+Rust checks belong in the CPU-safe gate when they validate the packaged
+backtracking contract.  Use `cargo test --locked` for crate behavior and the
+JSON fixture integration test when the goal is to validate the Python/Rust
+boundary without constructing a CUDA model.

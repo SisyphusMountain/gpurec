@@ -65,7 +65,6 @@ from gpurec.workflow.config import RunConfig, SamplingConfig
 from gpurec.workflow.diagnostics import (
     append_jsonl,
     parameter_stats,
-    safe_float,
     tensor_stats,
     write_json_strict,
 )
@@ -860,6 +859,77 @@ def test_select_batch_rejects_out_of_range_indices(value: int):
 
     with pytest.raises(IndexError, match="batch index"):
         GeneReconModel.select_batch(model, value)
+
+
+def test_materialize_batches_builds_each_resident_batch_and_returns_metadata_copy():
+    model = object.__new__(GeneReconModel)
+    metadata = [SimpleNamespace(batch_index=0), SimpleNamespace(batch_index=1)]
+    calls: list[int] = []
+
+    object.__setattr__(model, "_batched_resident", True)
+    object.__setattr__(model, "_batch_specs", [object(), object()])
+    object.__setattr__(model, "batch_metadata", metadata)
+
+    def fake_ensure_batch_static(batch_index: int) -> object:
+        calls.append(batch_index)
+        return object()
+
+    object.__setattr__(model, "_ensure_batch_static", fake_ensure_batch_static)
+
+    result = GeneReconModel.materialize_batches(model)
+
+    assert calls == [0, 1]
+    assert result == metadata
+    assert result is not metadata
+
+
+def test_materialize_batches_rejects_unbuilt_nonbatched_state():
+    model = object.__new__(GeneReconModel)
+    object.__setattr__(model, "_batched_resident", False)
+    object.__setattr__(model, "_static", None)
+
+    with pytest.raises(RuntimeError, match="resident static state"):
+        GeneReconModel.materialize_batches(model)
+
+
+def test_full_loss_for_theta_uses_streaming_contract_for_explicit_theta():
+    model = object.__new__(GeneReconModel)
+    calls: list[dict[str, object]] = []
+
+    def fake_stream_full_batches(
+        theta: torch.Tensor,
+        *,
+        need_grad: bool,
+    ) -> tuple[torch.Tensor, torch.Tensor | None]:
+        calls.append({"theta": theta, "need_grad": need_grad})
+        loss = torch.tensor(7.0, dtype=torch.float32)
+        grad = torch.tensor([0.5, -1.5], dtype=torch.float32) if need_grad else None
+        return loss, grad
+
+    object.__setattr__(model, "_stream_full_batches", fake_stream_full_batches)
+
+    theta = torch.tensor([1.0, 2.0], dtype=torch.float64, requires_grad=True)
+    loss = GeneReconModel.full_loss_for_theta(model, theta)
+    loss.backward()
+
+    assert calls[0]["theta"] is theta
+    assert calls[0]["need_grad"] is True
+    torch.testing.assert_close(loss, torch.tensor(7.0, dtype=torch.float64))
+    torch.testing.assert_close(
+        theta.grad,
+        torch.tensor([0.5, -1.5], dtype=torch.float64),
+    )
+
+    probe = theta.detach().clone()
+    with torch.no_grad():
+        no_grad_loss = GeneReconModel.full_loss_for_theta(model, probe)
+
+    assert calls[1]["theta"] is probe
+    assert calls[1]["need_grad"] is False
+    torch.testing.assert_close(
+        no_grad_loss,
+        torch.tensor(7.0, dtype=torch.float64),
+    )
 
 
 def test_run_config_normalizes_batch_controls(tmp_path: Path):
@@ -2153,13 +2223,6 @@ def test_workflow_json_diagnostics_write_strict_file(tmp_path: Path):
     assert text.endswith("\n")
     assert text.index('"a"') < text.index('"z"')
     assert json.loads(text) == {"a": [1.0, None], "z": None}
-
-
-def test_safe_float_returns_none_for_nonfinite_or_non_numeric_values():
-    assert safe_float(1.5) == pytest.approx(1.5)
-    assert safe_float(math.inf) is None
-    assert safe_float(math.nan) is None
-    assert safe_float("not-a-number") is None
 
 
 def test_workflow_metadata_model_name_helpers_return_copies_and_fallbacks():

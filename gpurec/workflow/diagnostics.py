@@ -12,16 +12,6 @@ import torch
 RATE_COLUMNS = (("D", 0), ("L", 1), ("T", 2))
 
 
-def safe_float(value: Any) -> float | None:
-    if value is None:
-        return None
-    try:
-        out = float(value)
-    except (TypeError, ValueError):
-        return None
-    return out if math.isfinite(out) else None
-
-
 def _json_safe(value: Any) -> Any:
     if isinstance(value, float):
         return value if math.isfinite(value) else None

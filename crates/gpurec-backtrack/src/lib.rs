@@ -1,3 +1,10 @@
+//! Sampling utilities for GPUREC backtracking payloads.
+//!
+//! The JSON schema mirrors the Python exporter. Probability-like tensors are
+//! base-2 log values, with `-1e300` used as the practical negative-infinity
+//! sentinel. Species indices use the postorder order supplied by
+//! `species_names_postorder`.
+
 use rand::distributions::Uniform;
 use rand::prelude::*;
 use rustree::{parse_newick, Event, FlatNode, FlatTree, RecTree};
@@ -16,10 +23,18 @@ pub enum BacktrackError {
     Rustree(#[from] rustree::RustreeError),
 }
 
+/// Row-major matrix used by the JSON backtracking schema.
+///
+/// `data[row * cols + col]` must exist for every `row < rows` and `col < cols`.
+/// Matrix entries are base-2 log values unless a specific field documents a
+/// different unit.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Matrix {
+    /// Number of rows.
     pub rows: usize,
+    /// Number of columns.
     pub cols: usize,
+    /// Row-major matrix values with length exactly `rows * cols`.
     pub data: Vec<f64>,
 }
 
@@ -29,7 +44,13 @@ impl Matrix {
     }
 
     fn validate(&self, name: &str) -> Result<(), BacktrackError> {
-        if self.rows * self.cols != self.data.len() {
+        let expected = self.rows.checked_mul(self.cols).ok_or_else(|| {
+            BacktrackError::InvalidInput(format!(
+                "{name} shape is {}x{} but rows*cols overflows usize",
+                self.rows, self.cols
+            ))
+        })?;
+        if expected != self.data.len() {
             return Err(BacktrackError::InvalidInput(format!(
                 "{name} shape is {}x{} but has {} values",
                 self.rows,
@@ -41,6 +62,10 @@ impl Matrix {
     }
 }
 
+/// One possible binary split for a reconciliation clade.
+///
+/// `parent`, `left`, and `right` are clade indices into the payload arrays.
+/// `log_prob` is the base-2 log conditional split probability.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct SplitInput {
     pub parent: usize,
@@ -49,21 +74,43 @@ pub struct SplitInput {
     pub log_prob: f64,
 }
 
+/// Complete JSON payload consumed by the Rust backtracking sampler.
+///
+/// Clade-indexed arrays use the Python exporter clade order. Species-indexed
+/// arrays use `species_names_postorder`, matching the postorder indexing of the
+/// exported species tree. `pi`, `e`, `log_p_s`, `log_p_d`, and `max_transfer`
+/// are base-2 log values. `origination_probs`, when present, are ordinary
+/// nonnegative weights over species; nonpositive weights are treated as
+/// impossible origination species during sampling.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct BacktrackInput {
+    /// Species tree in Newick format.
     pub species_newick: String,
+    /// Species names in GPUREC postorder index order.
     pub species_names_postorder: Vec<String>,
+    /// Root clade index for the gene-family reconciliation.
     pub root_clade: usize,
+    /// Optional species index for each leaf clade.
     pub leaf_species: Vec<Option<usize>>,
+    /// Leaf label for each clade, empty for internal clades.
     pub clade_leaf_labels: Vec<String>,
+    /// Candidate binary splits for internal clades.
     pub splits: Vec<SplitInput>,
+    /// Clade-by-species Pi matrix in base-2 log space.
     pub pi: Matrix,
+    /// Species extinction/survival fixed-point values in base-2 log space.
     pub e: Vec<f64>,
+    /// Speciation probabilities by species in base-2 log space.
     pub log_p_s: Vec<f64>,
+    /// Duplication probabilities by species in base-2 log space.
     pub log_p_d: Vec<f64>,
+    /// Maximum transfer probabilities by donor species in base-2 log space.
     pub max_transfer: Vec<f64>,
+    /// Optional nonnegative origination weights by species.
     pub origination_probs: Option<Vec<f64>>,
+    /// Optional deterministic random seed.
     pub seed: Option<u64>,
+    /// Optional cap on sampled event expansions.
     pub max_events: Option<usize>,
 }
 
@@ -123,11 +170,16 @@ struct Sampler<'a> {
     sampled_terms: usize,
 }
 
+/// Sample one reconciliation as RecPhyloXML.
 pub fn sample_recphyloxml(input: &BacktrackInput) -> Result<String, BacktrackError> {
     let prepared = PreparedBacktracker::new(input)?;
     prepared.sample_to_xml(input.seed.unwrap_or(0))
 }
 
+/// Sample multiple reconciliations with consecutive seeds.
+///
+/// `num_samples` must be positive. The first sample uses `base_seed`, and each
+/// subsequent sample increments that seed by one.
 pub fn sample_recphyloxmls(
     input: &BacktrackInput,
     num_samples: usize,
@@ -970,5 +1022,19 @@ mod tests {
         input.pi.data.pop();
         let err = sample_recphyloxml(&input).unwrap_err().to_string();
         assert!(err.contains("pi shape"));
+    }
+
+    #[test]
+    fn rejects_matrix_shape_overflow_without_panicking() {
+        let matrix = Matrix {
+            rows: usize::MAX,
+            cols: 2,
+            data: Vec::new(),
+        };
+
+        let err = matrix.validate("pi").unwrap_err().to_string();
+
+        assert!(err.contains("pi shape"));
+        assert!(err.contains("overflows usize"));
     }
 }
