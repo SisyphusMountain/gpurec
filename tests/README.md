@@ -32,6 +32,7 @@ CUDA_VISIBLE_DEVICES='' pytest -q \
   tests/unit/test_core_backward.py \
   tests/unit/test_forward_output_intent.py \
   tests/unit/test_core_helpers.py \
+  tests/unit/test_dts_layout_contract.py \
   tests/unit/test_examples.py \
   tests/unit/test_extract_parameters.py \
   tests/unit/test_family_layout.py \
