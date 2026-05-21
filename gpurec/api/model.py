@@ -46,7 +46,6 @@ from gpurec.core.forward import Pi_wave_forward
 from gpurec.core.likelihood import (
     E_fixed_point,
     compute_nll,
-    compute_nll_root_rows,
     prepare_origination_probs,
 )
 from gpurec.optimization.implicit_grad import implicit_grad_loglik_vjp_wave
@@ -64,6 +63,7 @@ from ._family_layout import (
     origination_probs_for_family_indices,
     schedule_family_waves,
 )
+from ._uniform_evaluator import evaluate_resident_no_grad
 from ._validation import (
     bool_value,
     integer_value,
@@ -690,6 +690,9 @@ def _evaluate_static_state(
     need_grad: bool,
     per_family: bool = False,
 ) -> tuple[torch.Tensor, torch.Tensor | None]:
+    if not need_grad:
+        return evaluate_resident_no_grad(static, theta, per_family=per_family), None
+
     require_default_objective("GeneReconModel")
     if need_grad and per_family and not static.genewise:
         raise ValueError("per-family gradients are only independent in genewise mode")
@@ -802,16 +805,6 @@ def _evaluate_static_state(
         _record_backward_solver_stats(static, _stats)
         static.warm_E = None
         return (loss_vec.detach() if per_family else loss_vec.sum().detach()), grad_theta.detach()
-
-    loss_vec = compute_nll_root_rows(
-        pi_out["Pi_root_rows"],
-        E_out["E"],
-        static.origination_probs,
-        origination_probs_prepared=True,
-    )
-    static.warm_E = None
-    return (loss_vec.detach() if per_family else loss_vec.sum().detach()), None
-
 
 class _GeneReconFullLossFunction(torch.autograd.Function):
     @staticmethod
@@ -1627,29 +1620,26 @@ class GeneReconModel(torch.nn.Module):
                     "reduce='per_family' is only differentiable in genewise mode."
                 )
             return self._forward_per_family_inference()
-        static = self._active_static()
         theta = self._active_theta()
         if not torch.is_grad_enabled() or not theta.requires_grad:
-            out, _grad = _evaluate_static_state(
-                static,
-                theta,
-                need_grad=False,
-                per_family=(reduce == "per_family"),
-            )
-            return out.to(device=theta.device, dtype=theta.dtype)
+            return self._forward_no_grad(per_family=(reduce == "per_family"))
+        static = self._active_static()
         return _GeneReconFunction.apply(theta, static, reduce)
+
+    @torch.no_grad()
+    def _forward_no_grad(self, *, per_family: bool) -> torch.Tensor:
+        theta = self._active_theta()
+        out = evaluate_resident_no_grad(
+            self._active_static(),
+            theta,
+            per_family=per_family,
+        )
+        return out.to(device=theta.device, dtype=theta.dtype)
 
     @torch.no_grad()
     def _forward_per_family_inference(self) -> torch.Tensor:
         """Per-family diagnostic NLL for shared-theta modes."""
-        theta = self._active_theta()
-        out, _grad = _evaluate_static_state(
-            self._active_static(),
-            theta,
-            need_grad=False,
-            per_family=True,
-        )
-        return out.to(device=theta.device, dtype=theta.dtype)
+        return self._forward_no_grad(per_family=True)
 
     def full_loss(self) -> torch.Tensor:
         """Stream every resident batch and return the exact full NLL."""
