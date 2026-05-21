@@ -36,6 +36,7 @@ CUDA_VISIBLE_DEVICES='' pytest -q \
   tests/unit/test_examples.py \
   tests/unit/test_extract_parameters.py \
   tests/unit/test_family_layout.py \
+  tests/unit/test_gradient_accumulator.py \
   tests/unit/test_origination_prior.py \
   tests/unit/test_parameter_layout.py \
   tests/unit/test_recphyloxml.py \
