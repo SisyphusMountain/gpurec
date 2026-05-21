@@ -754,6 +754,73 @@ Verification:
 - No valid 1000-family timed benchmark exists yet.  The current blocker is
   setup memory/disk capacity, so benchmark-sensitive deletions remain blocked.
 
+### `5f6502f` - Share workflow scalar validation helpers
+
+Proposal coverage:
+
+- `VALID-01`: moved the shared finite-float and boolean validation helpers to
+  a package-internal module that can be used by both direct API validation and
+  workflow configuration without importing the public `gpurec.api` package.
+- Routed workflow `RunConfig`/`SamplingConfig` scalar bool and finite-float
+  normalization through the shared helpers.  String-compatible workflow integer
+  parsing remains local because workflow JSON/CLI compatibility still depends
+  on it.
+- No runtime evaluator or kernel behavior changed.
+
+Verification:
+
+- `python -m py_compile gpurec/_validation.py gpurec/api/_validation.py gpurec/workflow/config.py tests/unit/test_validation.py tests/unit/test_workflow.py`: passed.
+- `PYTHONDONTWRITEBYTECODE=1 python -m pytest -q -p no:cacheprovider tests/unit/test_validation.py tests/unit/test_workflow.py::test_run_config_normalizes_direct_float_controls tests/unit/test_workflow.py::test_run_config_rejects_nonfinite_float_controls tests/unit/test_workflow.py::test_run_config_rejects_boolean_float_controls tests/unit/test_workflow.py::test_run_config_rejects_nonbool_boolean_controls tests/unit/test_workflow.py::test_sampling_config_rejects_nonintegral_limits`: 105 passed.
+- `git diff --check -- gpurec/_validation.py gpurec/api/_validation.py gpurec/workflow/config.py`: passed.
+
+### `d12765b` - Add windowed benchmark preflight diagnostic
+
+Proposal coverage:
+
+- `BWD-01`, `BWD-02`, and `SCHED-01`: added `--preflight-window-size`
+  / `PREFLIGHT_WINDOW_SIZE` for setup-only diagnostics that validate a large
+  selected family range in sequential windows, then discard each window before
+  moving to the next one.
+- The output and JSONL progress explicitly mark `performance_evidence 0`.
+  This is not a timed runtime benchmark and must not be used to justify
+  deleting backends, pruning modes, or scheduler alternatives.
+- This directly addresses the current 1000-family setup blocker by separating
+  "can every family window preprocess/build" from "can the whole 1000-family
+  resident setup fit in host RAM at once."
+
+Verification:
+
+- `python -m py_compile profiling/bench_uniform_forward_backward_pipeline.py tests/unit/test_bench_uniform_forward_backward_pipeline.py`: passed in the worker.
+- `pytest -q tests/unit/test_bench_uniform_forward_backward_pipeline.py`: 13 passed in the worker.
+- `git diff --check`: passed in the worker.
+- Small real diagnostic run in the worker:
+  `--fams 4 --preflight-window-size 2 --no-preprocess-cache --progress-jsonl --no-strict-optimized-kernels` completed 2 windows.
+- Strict small run in the worker:
+  `--fams 2 --preflight-window-size 2 --no-preprocess-cache` completed with
+  `strict_optimized_verdict pass`.
+
+### `8159220` - Thread prepared origination prior into evaluators
+
+Proposal coverage:
+
+- `ORIG-01`: threaded `PreparedOriginationPrior` from model construction into
+  `ReconStaticState`, resident no-grad evaluation, resident gradient forward,
+  implicit gradient calls, export `ReconciliationState`, and chunked evaluator
+  family selection.
+- Kept the legacy prepared tensor field available (`origination_probs`) so
+  existing likelihood helpers still receive the same prepared `[S]` or
+  `[families, S]` tensor boundary.
+- Removed direct family-index tensor selection in model/chunked evaluator
+  setup where the prepared prior object can own family subset selection.
+- Benchmark-sensitive kernels and likelihood math are unchanged.
+
+Verification:
+
+- `python -m py_compile ...`: passed in the worker.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest ... tests/unit/test_origination_prior.py tests/unit/test_origination_probs.py tests/unit/test_model_no_grad_evaluator.py tests/unit/test_optimization_workflow.py`: 65 passed in the worker.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest --collect-only tests/integration/test_gene_recon_model.py tests/integration/test_uniform_chunked_model.py`: 16 tests collected in the worker.
+- CUDA runtime integration was not executed for this patch.
+
 ### Current combined gates after no-cache setup and diagnosis work
 
 Verification:
@@ -781,11 +848,11 @@ Verification:
    gradient evaluation, and chunked read-only paths now share explicit
    evaluator boundaries.  `UniformChunkedReconModel` still owns separate
    chunk setup/stats and per-chunk forward/backward orchestration.
-2. `ORIG-01`: the public model constructors now prepare and retain
-   `PreparedOriginationPrior` objects while preserving the existing
-   `origination_probs` tensor boundary.  The remaining step is to thread that
-   prepared object deeper into resident evaluator/static-state boundaries
-   without breaking the current prepared-tensor trust boundary.
+2. `ORIG-01`: prepared-prior objects now reach model, static-state, resident
+   evaluator, implicit-gradient, export-state, and chunked family-selection
+   boundaries while preserving the existing prepared tensor likelihood API.
+   Any further ORIG work should target the lower-level likelihood boundary only
+   with parity tests, not public behavior.
 3. `PI-01`, `MODE-02`, `BWD-03`, and `DTS-01`: continue from the explicit
    contracts now in place.  Pi output intent, DTS layout parsing,
    backward auto-wrap characterization, and model-boundary gradient
@@ -798,10 +865,16 @@ Verification:
    setup memory/disk blocker, likely by avoiding all-family resident
    materialization for preflight or by using a larger cache/storage target,
    before treating sparse/dense runtime benchmark results as authoritative.
+   Windowed preflight can now diagnose setup coverage across large family
+   ranges, but it is explicitly not performance evidence.
 5. `CPP-01`, `CPP-02`, `SCRIPT-01`, and `TEST-01`: continue pruning and
    splitting only after each surface has an owner, deprecation path, or
    replacement behavior test.  The first ownership guards are now executable;
    actual deletion remains separate work.
+6. `VALID-01`: scalar bool/finite-float validation is shared between direct
+   API and workflow config.  Keep workflow-specific integer/string parsing
+   local until CLI and JSON compatibility can be retired or mapped to a
+   request object.
 
 ## Recent Subagent Assignments
 
@@ -860,6 +933,16 @@ Verification:
 - 1000-family benchmark diagnosis worker:
   `profiling/bench_uniform_forward_backward_pipeline.py` and benchmark
   progress tests, integrated in `b2c4709`.
+- Workflow scalar validation cleanup:
+  `gpurec/_validation.py`, `gpurec/api/_validation.py`, and
+  `gpurec/workflow/config.py`, integrated in `5f6502f`.
+- Windowed benchmark preflight diagnostic:
+  `profiling/bench_uniform_forward_backward_pipeline.py` and benchmark tests,
+  integrated in `d12765b`.
+- Prepared origination-prior evaluator threading:
+  `gpurec/api/autograd.py`, `gpurec/api/_uniform_evaluator.py`,
+  `gpurec/api/model.py`, `gpurec/api/uniform_chunked.py`, and origination
+  prior tests, integrated in `8159220`.
 
 Future parallel workers should continue to use separate git worktrees for
 larger runtime changes.
