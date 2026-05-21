@@ -14,6 +14,8 @@ import argparse
 import gc
 import json
 import os
+import resource
+import shutil
 import statistics
 import sys
 import time
@@ -137,6 +139,12 @@ def _parse_args() -> argparse.Namespace:
         help="Disable preprocess cache reads and writes for setup.",
     )
     parser.add_argument("--dtype", type=_parse_dtype, default=_parse_dtype(os.getenv("DTYPE", "float32")))
+    parser.add_argument(
+        "--uncached-preprocess-batch-size",
+        type=int,
+        default=int(os.getenv("UNCACHED_PREPROCESS_BATCH_SIZE", "16")),
+        help="Private benchmark diagnostic: batch size for no-cache family preprocessing.",
+    )
     parser.add_argument("--profile-cuda-api", action="store_true", default=os.getenv("PROFILE_CUDA_API", "0") != "0")
     parser.add_argument("--theta-rate", type=float, default=float(os.getenv("THETA_RATE", "0.05")))
     parser.add_argument("--max-iters-E", type=int, default=int(os.getenv("MAX_ITERS_E", "2000")))
@@ -197,6 +205,8 @@ def _parse_args() -> argparse.Namespace:
         raise ValueError("--reps must be positive")
     if args.warmups < 0:
         raise ValueError("--warmups must be non-negative")
+    if args.uncached_preprocess_batch_size <= 0:
+        raise ValueError("--uncached-preprocess-batch-size must be positive")
     return args
 
 
@@ -214,6 +224,75 @@ def _progress_enabled(args: argparse.Namespace) -> bool:
     return bool(getattr(args, "progress_jsonl", False))
 
 
+def _current_rss_mib() -> float | None:
+    try:
+        with open("/proc/self/status", "r", encoding="utf-8") as fh:
+            for line in fh:
+                if line.startswith("VmRSS:"):
+                    return round(int(line.split()[1]) / 1024.0, 3)
+    except OSError:
+        return None
+    return None
+
+
+def _peak_rss_mib() -> float | None:
+    try:
+        value = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+    except (OSError, ValueError):
+        return None
+    if sys.platform == "darwin":
+        value /= 1024
+    return round(float(value) / 1024.0, 3)
+
+
+def _cuda_memory_fields() -> dict[str, float | None]:
+    if not torch.cuda.is_available():
+        return {
+            "cuda_allocated_gib": None,
+            "cuda_reserved_gib": None,
+            "cuda_driver_free_gib": None,
+            "cuda_driver_total_gib": None,
+        }
+    fields: dict[str, float | None] = {
+        "cuda_allocated_gib": None,
+        "cuda_reserved_gib": None,
+        "cuda_driver_free_gib": None,
+        "cuda_driver_total_gib": None,
+    }
+    try:
+        fields["cuda_allocated_gib"] = round(
+            torch.cuda.memory_allocated() / (1024 ** 3),
+            6,
+        )
+        fields["cuda_reserved_gib"] = round(
+            torch.cuda.memory_reserved() / (1024 ** 3),
+            6,
+        )
+    except (RuntimeError, TypeError):
+        return fields
+    try:
+        free_bytes, total_bytes = torch.cuda.mem_get_info()
+    except RuntimeError:
+        return fields
+    fields["cuda_driver_free_gib"] = round(free_bytes / (1024 ** 3), 6)
+    fields["cuda_driver_total_gib"] = round(total_bytes / (1024 ** 3), 6)
+    return fields
+
+
+def _progress_resource_fields() -> dict[str, float | None]:
+    try:
+        disk = shutil.disk_usage(REPO_ROOT)
+        disk_free_gib = round(disk.free / (1024 ** 3), 6)
+    except OSError:
+        disk_free_gib = None
+    return {
+        "rss_mib": _current_rss_mib(),
+        "rss_peak_mib": _peak_rss_mib(),
+        "disk_free_gib": disk_free_gib,
+        **_cuda_memory_fields(),
+    }
+
+
 def _emit_progress(args: argparse.Namespace, event: str, **fields: Any) -> None:
     if not _progress_enabled(args):
         return
@@ -221,6 +300,7 @@ def _emit_progress(args: argparse.Namespace, event: str, **fields: Any) -> None:
         "record": "bench_uniform_forward_backward_pipeline",
         "event": event,
         "time_s": round(time.time(), 6),
+        **_progress_resource_fields(),
         **fields,
     }
     print(json.dumps(payload, sort_keys=True), flush=True)
@@ -474,7 +554,9 @@ def _make_static_inputs(args: argparse.Namespace) -> StaticInputs:
         dtype=dtype,
         device=device,
         preprocess_cache_dir=args.cache_dir,
+        family_names=[Path(gene).stem for gene in genes],
         _preprocess_progress=_make_dataset_progress_hook(args),
+        _uncached_preprocess_batch_size=args.uncached_preprocess_batch_size,
     )
     preprocess_s = time.perf_counter() - t0
     if _progress_enabled(args):

@@ -40,6 +40,9 @@ def test_progress_jsonl_emits_parseable_flushed_record(capsys: pytest.CaptureFix
     assert payload["families"] == 1000
     assert payload["max_wave"] == 8192
     assert isinstance(payload["time_s"], float)
+    assert "rss_mib" in payload
+    assert "disk_free_gib" in payload
+    assert "cuda_allocated_gib" in payload
 
 
 def test_progress_jsonl_is_quiet_when_not_requested(capsys: pytest.CaptureFixture[str]):
@@ -98,9 +101,11 @@ def test_make_static_inputs_progress_reports_setup_sizes(
             {"C": 13, "N_splits": 19},
         ]
         unnorm_row_max = FakeTensor()
+        seen_kwargs = {}
 
-        def __init__(self, **_kwargs):
-            pass
+        def __init__(self, **kwargs):
+            self.seen_kwargs = dict(kwargs)
+            FakeDataset.seen_kwargs = self.seen_kwargs
 
         def _species_helpers_for_mode(self, **_kwargs):
             return {}, None
@@ -139,6 +144,7 @@ def test_make_static_inputs_progress_reports_setup_sizes(
         fams=2,
         dtype=bench.torch.float32,
         cache_dir=str(tmp_path / "cache"),
+        uncached_preprocess_batch_size=7,
         theta_rate=0.05,
         family_chunk_size="auto",
         max_wave_size="auto",
@@ -168,6 +174,8 @@ def test_make_static_inputs_progress_reports_setup_sizes(
     assert events[5]["max_wave_split_rows"] == 19
     assert events[6]["total_splits"] == 36
     assert static.built_chunks == [built]
+    assert FakeDataset.seen_kwargs["family_names"] == ["g0", "g1"]
+    assert FakeDataset.seen_kwargs["_uncached_preprocess_batch_size"] == 7
 
 
 def test_setup_only_alias_maps_to_preflight_flag(monkeypatch: pytest.MonkeyPatch):
@@ -216,3 +224,38 @@ def test_no_preprocess_cache_overrides_cache_dir(
 
     assert args.cache_dir is None
     assert args.no_preprocess_cache is True
+
+
+def test_uncached_preprocess_batch_size_arg(monkeypatch: pytest.MonkeyPatch):
+    bench = _load_bench_module()
+    monkeypatch.setattr(
+        bench.sys,
+        "argv",
+        [
+            "bench_uniform_forward_backward_pipeline.py",
+            "--uncached-preprocess-batch-size",
+            "3",
+        ],
+    )
+
+    args = bench._parse_args()
+
+    assert args.uncached_preprocess_batch_size == 3
+
+
+def test_uncached_preprocess_batch_size_rejects_nonpositive(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    bench = _load_bench_module()
+    monkeypatch.setattr(
+        bench.sys,
+        "argv",
+        [
+            "bench_uniform_forward_backward_pipeline.py",
+            "--uncached-preprocess-batch-size",
+            "0",
+        ],
+    )
+
+    with pytest.raises(ValueError, match="uncached-preprocess-batch-size"):
+        bench._parse_args()
