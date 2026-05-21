@@ -1,6 +1,10 @@
+from types import SimpleNamespace
+
 import pytest
 import torch
 
+import gpurec.api.model as api_model
+import gpurec.api.uniform_chunked as uniform_chunked_api
 from gpurec.core.origination import (
     OriginationPrior,
     PreparedOriginationPrior,
@@ -153,3 +157,118 @@ def test_prepared_origination_prior_rejects_incompatible_reprepare_shape():
             device=_cpu(),
             dtype=torch.float64,
         )
+
+
+def test_gene_recon_model_threads_prepared_origination_prior(monkeypatch):
+    dataset = SimpleNamespace(
+        dtype=torch.float64,
+        genewise=False,
+        specieswise=False,
+        device=_cpu(),
+        S=3,
+        families=[object(), object()],
+    )
+    static = SimpleNamespace()
+    build_calls: list[torch.Tensor | None] = []
+
+    def fake_build_static_state(_dataset, **kwargs):
+        build_calls.append(kwargs["origination_probs"])
+        return static
+
+    monkeypatch.setattr(
+        api_model,
+        "require_cuda_device",
+        lambda device, *, owner: torch.device(device),
+    )
+    monkeypatch.setattr(api_model, "_build_static_state", fake_build_static_state)
+    monkeypatch.setattr(
+        api_model,
+        "_metadata_for_full_static",
+        lambda *_args, **_kwargs: SimpleNamespace(),
+    )
+
+    model = api_model.GeneReconModel(
+        dataset=dataset,
+        mode="global",
+        origination_probs=OriginationPrior(
+            [
+                [1.0, 2.0, 1.0],
+                [2.0, 1.0, 1.0],
+            ]
+        ),
+    )
+
+    expected = torch.tensor(
+        [
+            [0.25, 0.5, 0.25],
+            [0.5, 0.25, 0.25],
+        ],
+        dtype=torch.float64,
+    )
+    assert isinstance(model._origination_prior, PreparedOriginationPrior)
+    assert model._origination_prior.is_family_specific
+    torch.testing.assert_close(model.origination_probs, expected)
+    assert model._origination_prior.probs is model.origination_probs
+    assert build_calls == [model.origination_probs]
+
+
+def test_uniform_chunked_model_threads_prepared_origination_prior(
+    monkeypatch,
+    tmp_path,
+):
+    class FakeDataset:
+        def __init__(self, **kwargs):
+            self.dtype = kwargs["dtype"]
+            self.device = kwargs["device"]
+            self.S = 3
+            self.families = [
+                {"C": 2, "N_splits": 1},
+                {"C": 3, "N_splits": 2},
+            ]
+            self.gene_tree_paths = [("g0.nwk",), ("g1.nwk",)]
+            self.family_names = ("fam0", "fam1")
+            self.unnorm_row_max = torch.zeros(3, dtype=self.dtype)
+
+        def _species_helpers_for_mode(self, *, device, dtype):
+            return {}, None
+
+    spec = uniform_chunked_api._UniformChunkSpec(indices=[0, 1], clades=5, splits=3)
+    built = uniform_chunked_api._UniformBuiltChunk(
+        spec=spec,
+        wave_layout={},
+        waves=1,
+        max_wave=5,
+        split_rows=3,
+        max_wave_split_rows=3,
+    )
+
+    monkeypatch.setattr(
+        uniform_chunked_api,
+        "require_cuda_device",
+        lambda device, *, owner: torch.device("cpu"),
+    )
+    monkeypatch.setattr(uniform_chunked_api, "GeneDataset", FakeDataset)
+    monkeypatch.setattr(uniform_chunked_api, "_make_chunks", lambda *_args, **_kwargs: [spec])
+    monkeypatch.setattr(uniform_chunked_api, "_build_chunk", lambda *_args, **_kwargs: built)
+
+    model = uniform_chunked_api.UniformChunkedReconModel(
+        species_tree=tmp_path / "species.nwk",
+        gene_trees=[tmp_path / "g0.nwk", tmp_path / "g1.nwk"],
+        device="cpu",
+        dtype=torch.float64,
+        family_chunk_size=2,
+        max_wave_size=8,
+        set_optimized_env=False,
+        origination_probs=OriginationPrior(
+            [
+                [1.0, 2.0, 1.0],
+                [2.0, 1.0, 1.0],
+            ]
+        ),
+    )
+
+    assert isinstance(model._origination_prior, PreparedOriginationPrior)
+    assert model._origination_prior.is_family_specific
+    assert model._origination_prior.probs is model.origination_probs
+    assert model._state.origination_prior is model._origination_prior
+    assert model._state.origination_probs is model.origination_probs

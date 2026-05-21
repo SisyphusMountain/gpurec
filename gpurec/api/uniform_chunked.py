@@ -31,7 +31,6 @@ from gpurec.core.likelihood import (
     E_fixed_point,
     compute_nll,
     compute_nll_root_rows,
-    prepare_origination_probs,
 )
 from gpurec.core.memory_policy import UniformPipelinePolicy, choose_uniform_pipeline_policy
 from gpurec.core.model import (
@@ -39,6 +38,11 @@ from gpurec.core.model import (
     normalize_family_selection,
     normalize_family_tree_paths,
     parse_alerax_family_file,
+)
+from gpurec.core.origination import (
+    OriginationPrior,
+    PreparedOriginationPrior,
+    prepare_origination_prior,
 )
 from gpurec.optimization.implicit_grad import _e_adjoint_and_theta_vjp
 
@@ -132,6 +136,7 @@ class _UniformChunkedState:
     built_chunks: list[_UniformBuiltChunk]
     device: torch.device
     dtype: torch.dtype
+    origination_prior: PreparedOriginationPrior
     origination_probs: torch.Tensor | None = None
     fixed_iters_Pi: int = 6
     fixed_iters_E: int | None = None
@@ -789,7 +794,13 @@ class UniformChunkedReconModel(torch.nn.Module):
         warm_start_E: bool = True,
         profile: bool = False,
         set_optimized_env: bool = True,
-        origination_probs: torch.Tensor | Sequence[float] | None = None,
+        origination_probs: (
+            torch.Tensor
+            | Sequence[float]
+            | OriginationPrior
+            | PreparedOriginationPrior
+            | None
+        ) = None,
     ) -> None:
         super().__init__()
         require_default_objective("UniformChunkedReconModel")
@@ -856,7 +867,7 @@ class UniformChunkedReconModel(torch.nn.Module):
             dtype=dtype,
         )
         unnorm_row_max = dataset.unnorm_row_max.to(device=device, dtype=dtype)
-        prepared_origination_probs = prepare_origination_probs(
+        prepared_origination_prior = prepare_origination_prior(
             origination_probs,
             S=int(dataset.S),
             device=device,
@@ -936,7 +947,8 @@ class UniformChunkedReconModel(torch.nn.Module):
             torch.cuda.synchronize(device)
 
         self.theta = torch.nn.Parameter(theta_init)
-        self.register_buffer("origination_probs", prepared_origination_probs)
+        self._origination_prior = prepared_origination_prior
+        self.register_buffer("origination_probs", self._origination_prior.probs)
         self._state = _UniformChunkedState(
             dataset=dataset,
             species_helpers=species_helpers,
@@ -945,6 +957,7 @@ class UniformChunkedReconModel(torch.nn.Module):
             built_chunks=built_chunks,
             device=device,
             dtype=dtype,
+            origination_prior=self._origination_prior,
             origination_probs=self.origination_probs,
             fixed_iters_Pi=fixed_iters_Pi,
             fixed_iters_E=fixed_iters_E,

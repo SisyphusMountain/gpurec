@@ -43,8 +43,12 @@ from gpurec.core.model import (
     normalize_family_tree_paths,
     parse_alerax_family_file,
 )
+from gpurec.core.origination import (
+    OriginationPrior,
+    PreparedOriginationPrior,
+    prepare_origination_prior,
+)
 from gpurec.core.parameter_layout import ParameterLayout
-from gpurec.core.likelihood import prepare_origination_probs
 
 from .autograd import (
     ReconStaticState,
@@ -771,7 +775,13 @@ class GeneReconModel(torch.nn.Module):
         batch_packing: str | None = None,
         lazy_preprocess: bool = False,
         prefetch_batches: int | str | None = None,
-        origination_probs: torch.Tensor | Sequence[float] | None = None,
+        origination_probs: (
+            torch.Tensor
+            | Sequence[float]
+            | OriginationPrior
+            | PreparedOriginationPrior
+            | None
+        ) = None,
     ):
         super().__init__()
         require_default_objective("GeneReconModel")
@@ -849,14 +859,14 @@ class GeneReconModel(torch.nn.Module):
 
         self._mode = mode
         self._dataset = dataset
-        prepared_origination_probs = prepare_origination_probs(
+        self._origination_prior = prepare_origination_prior(
             origination_probs,
             S=int(dataset.S),
             device=dataset.device,
             dtype=dataset.dtype,
             family_count=len(dataset.families) if origination_probs is not None else None,
         )
-        self.register_buffer("origination_probs", prepared_origination_probs)
+        self.register_buffer("origination_probs", self._origination_prior.probs)
         self.family_chunk_size = family_chunk_size
         self.clade_budget = clade_budget
         self.batch_packing = batch_packing
