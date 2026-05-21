@@ -458,6 +458,93 @@ def test_missing_family_preprocessing_is_batched_and_cached_incrementally(tmp_pa
     assert events[-1] == ("cache_done", {"hits": 0, "misses": 5})
 
 
+def test_uncached_family_preprocessing_is_batched_without_cache_writes(tmp_path):
+    species_tree = _write(tmp_path / "species.nwk", "(A:1,B:1)Root;\n")
+    gene_trees = [
+        _write(tmp_path / f"gene{i}.nwk", f"(a:1,b:{i + 1});\n")
+        for i in range(5)
+    ]
+    family_names = [f"fam{i}" for i in range(5)]
+    leaf_maps = [{}, {"a": "A"}, {}, {"b": "B"}, {}]
+    cache_dir = tmp_path / "cache"
+    events: list[tuple[str, dict[str, object]]] = []
+
+    def progress(event: str, **fields: object) -> None:
+        events.append((event, fields))
+
+    ext = _BatchRecordingPreprocessExt(_valid_species_cache_payload())
+    species_helpers, raw_by_family = GeneDataset._preprocess_without_cache(
+        ext,
+        species_tree,
+        [[str(path)] for path in gene_trees],
+        family_names,
+        leaf_maps,
+        progress=progress,
+        _batch_size=2,
+    )
+
+    assert species_helpers["S"] == 3
+    assert list(raw_by_family) == family_names
+    assert [call["names"] for call in ext.calls] == [
+        ["fam0", "fam1"],
+        ["fam2", "fam3"],
+        ["fam4"],
+    ]
+    assert ext.calls[0]["leaf_species_maps"] == {"fam1": {"a": "A"}}
+    assert ext.calls[1]["leaf_species_maps"] == {"fam3": {"b": "B"}}
+    assert ext.calls[2]["leaf_species_maps"] == {}
+
+    batch_starts = [
+        fields
+        for event, fields in events
+        if event == "uncached_preprocess_batch_start"
+    ]
+    batch_dones = [
+        fields
+        for event, fields in events
+        if event == "uncached_preprocess_batch_done"
+    ]
+    assert events[0] == (
+        "uncached_preprocess_start",
+        {
+            "families": 5,
+            "families_with_leaf_maps": 2,
+            "batch_size": 2,
+            "batches": 3,
+        },
+    )
+    assert batch_starts == [
+        {
+            "batch_idx": 0,
+            "batches": 3,
+            "families": 2,
+            "families_with_leaf_maps": 1,
+            "first_family": "fam0",
+            "last_family": "fam1",
+        },
+        {
+            "batch_idx": 1,
+            "batches": 3,
+            "families": 2,
+            "families_with_leaf_maps": 1,
+            "first_family": "fam2",
+            "last_family": "fam3",
+        },
+        {
+            "batch_idx": 2,
+            "batches": 3,
+            "families": 1,
+            "families_with_leaf_maps": 0,
+            "first_family": "fam4",
+            "last_family": "fam4",
+        },
+    ]
+    assert [fields["families"] for fields in batch_dones] == [2, 2, 1]
+    assert [fields["total_built"] for fields in batch_dones] == [2, 4, 5]
+    assert events[-1] == ("uncached_preprocess_done", {"families": 5, "batches": 3})
+    assert not cache_dir.exists()
+
+
 def test_all_cached_family_preprocessing_uses_no_batches(tmp_path):
     species_tree = _write(tmp_path / "species.nwk", "(A:1,B:1)Root;\n")
     gene_trees = [

@@ -100,6 +100,21 @@ def _parse_dtype(value: str) -> torch.dtype:
     raise argparse.ArgumentTypeError("dtype must be float32/fp32 or float64/fp64")
 
 
+def _normalize_preprocess_cache_dir(
+    cache_dir: str | os.PathLike | None,
+    *,
+    disable_cache: bool = False,
+) -> str | None:
+    if disable_cache:
+        return None
+    if cache_dir is None:
+        return None
+    value = os.fspath(cache_dir)
+    if value.strip().lower() in {"none", "null", "off", "disabled"}:
+        return None
+    return value
+
+
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--dataset", default=os.getenv("DATASET", "tests/data/test_trees_1000"))
@@ -110,7 +125,17 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--fixed-iters", default=os.getenv("FIXED_ITERS_PI", "6"))
     parser.add_argument("--reps", type=int, default=int(os.getenv("REPS", "3")))
     parser.add_argument("--warmups", type=int, default=int(os.getenv("WARMUPS", "1")))
-    parser.add_argument("--cache-dir", default=os.getenv("PREPROCESS_CACHE_DIR", "/tmp/gpurec_preprocess_cache"))
+    parser.add_argument(
+        "--cache-dir",
+        default=os.getenv("PREPROCESS_CACHE_DIR", "/tmp/gpurec_preprocess_cache"),
+        help="Directory for preprocess caches. Use 'none' to disable cache writes.",
+    )
+    parser.add_argument(
+        "--no-preprocess-cache",
+        action="store_true",
+        default=os.getenv("NO_PREPROCESS_CACHE", "0") != "0",
+        help="Disable preprocess cache reads and writes for setup.",
+    )
     parser.add_argument("--dtype", type=_parse_dtype, default=_parse_dtype(os.getenv("DTYPE", "float32")))
     parser.add_argument("--profile-cuda-api", action="store_true", default=os.getenv("PROFILE_CUDA_API", "0") != "0")
     parser.add_argument("--theta-rate", type=float, default=float(os.getenv("THETA_RATE", "0.05")))
@@ -162,6 +187,10 @@ def _parse_args() -> argparse.Namespace:
     args.family_chunk_size = _parse_auto_int(args.family_chunk_size)
     args.max_wave_size = _parse_auto_optional_int(args.max_wave_size)
     args.fixed_iters = _parse_optional_int(args.fixed_iters)
+    args.cache_dir = _normalize_preprocess_cache_dir(
+        args.cache_dir,
+        disable_cache=args.no_preprocess_cache,
+    )
     if isinstance(args.family_chunk_size, int) and args.family_chunk_size < 0:
         raise ValueError("--family-chunk-size must be non-negative")
     if args.reps <= 0:

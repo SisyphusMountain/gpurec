@@ -181,3 +181,35 @@ def test_setup_only_alias_maps_to_preflight_flag(monkeypatch: pytest.MonkeyPatch
     args = bench._parse_args()
 
     assert args.preflight_only is True
+
+
+def test_cache_dir_none_disables_preprocess_cache(monkeypatch: pytest.MonkeyPatch):
+    bench = _load_bench_module()
+    monkeypatch.setattr(
+        bench.sys,
+        "argv",
+        ["bench_uniform_forward_backward_pipeline.py", "--cache-dir", "none"],
+    )
+
+    args = bench._parse_args()
+
+    assert args.cache_dir is None
+
+
+def test_no_preprocess_cache_overrides_cache_dir(monkeypatch: pytest.MonkeyPatch):
+    bench = _load_bench_module()
+    monkeypatch.setattr(
+        bench.sys,
+        "argv",
+        [
+            "bench_uniform_forward_backward_pipeline.py",
+            "--cache-dir",
+            "/tmp/should-not-be-used",
+            "--no-preprocess-cache",
+        ],
+    )
+
+    args = bench._parse_args()
+
+    assert args.cache_dir is None
+    assert args.no_preprocess_cache is True

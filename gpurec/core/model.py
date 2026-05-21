@@ -12,6 +12,7 @@ from .species import uniform_ancestors_t_from_topology
 
 
 _DEFAULT_PREPROCESS_CACHE_MISSING_BATCH_SIZE = 64
+_DEFAULT_PREPROCESS_UNCACHED_BATCH_SIZE = 16
 
 
 def _resolve_family_path(text: str, base_dir: Path) -> str:
@@ -539,6 +540,27 @@ class GeneDataset:
             ccp.pop("clade_is_leaf", None)
         return raw
 
+    @staticmethod
+    def _family_from_raw(raw: dict[str, Any]) -> dict[str, Any]:
+        _INV_LN2 = 1.0 / math.log(2.0)
+        ccp = raw['ccp']
+        clade_leaf_labels = list(ccp.pop('clade_leaf_labels', []))
+        # Convert log_split_probs from ln (C++ output) to log2.
+        ccp['log_split_probs_sorted'] = ccp['log_split_probs_sorted'] * _INV_LN2
+        C = int(ccp['C'])
+        if len(clade_leaf_labels) != C:
+            clade_leaf_labels = [""] * C
+        return {
+            'ccp_helpers': ccp,
+            'root_clade_id': int(ccp['root_clade_id']),
+            'leaf_row_index': raw['leaf_row_index'],
+            'leaf_col_index': raw['leaf_col_index'],
+            'C': C,
+            'N_splits': int(ccp['N_splits']),
+            'log_split_probs': ccp['log_split_probs_sorted'],
+            'clade_leaf_labels': clade_leaf_labels,
+        }
+
     def __init__(
         self,
         species_tree_path,
@@ -552,6 +574,7 @@ class GeneDataset:
         family_names: Sequence[str] | None = None,
         leaf_species_maps: Sequence[dict[str, str]] | None = None,
         _preprocess_progress: Callable[..., None] | None = None,
+        _uncached_preprocess_batch_size: int = _DEFAULT_PREPROCESS_UNCACHED_BATCH_SIZE,
     ):
         if device is None:
             device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -604,64 +627,30 @@ class GeneDataset:
                 refresh=refresh_preprocess_cache,
                 progress=preprocess_progress,
             )
+            families = None
         else:
-            families_input = {
-                name: paths
-                for name, paths in zip(family_names, family_tree_paths)
-            }
-            leaf_species_input = {
-                name: mapping
-                for name, mapping in zip(family_names, leaf_species_maps)
-                if mapping
-            }
-            preprocess_progress(
-                "uncached_preprocess_start",
-                families=len(families_input),
-                families_with_leaf_maps=len(leaf_species_input),
+            self.species_helpers, families = self._preprocess_without_cache(
+                ext,
+                species_tree_path,
+                family_tree_paths,
+                family_names,
+                leaf_species_maps,
+                progress=preprocess_progress,
+                _batch_size=_uncached_preprocess_batch_size,
+                _materialize_families=True,
             )
-            raw_all = ext.preprocess_multiple_families(
-                str(species_tree_path),
-                families_input,
-                leaf_species_maps=leaf_species_input,
-                include_details=True,
-                include_species_matrices=False,
-            )
-            preprocess_progress(
-                "uncached_preprocess_done",
-                families=len(raw_all["families"]),
-            )
-            raw_by_family = {
-                name: self._drop_unused_family_details(raw)
-                for name, raw in raw_all['families'].items()
-            }
-            self.species_helpers = raw_all['species']
+
         if "Recipients_mat" in self.species_helpers:
             self.unnorm_row_max = torch.log2(self.species_helpers["Recipients_mat"]).max(dim=-1).values
         else:
             self.unnorm_row_max = self.species_helpers["unnorm_row_max"]
         self.S = int(self.species_helpers['S'])
 
-        _INV_LN2 = 1.0 / math.log(2.0)
-        families = []
-        for family_name in family_names:
-            raw = raw_by_family[family_name]
-            ccp = raw['ccp']
-            clade_leaf_labels = list(ccp.pop('clade_leaf_labels', []))
-            # Convert log_split_probs from ln (C++ output) to log2
-            ccp['log_split_probs_sorted'] = ccp['log_split_probs_sorted'] * _INV_LN2
-            C = int(ccp['C'])
-            if len(clade_leaf_labels) != C:
-                clade_leaf_labels = [""] * C
-            families.append({
-                'ccp_helpers': ccp,
-                'root_clade_id': int(ccp['root_clade_id']),
-                'leaf_row_index': raw['leaf_row_index'],
-                'leaf_col_index': raw['leaf_col_index'],
-                'C': C,
-                'N_splits': int(ccp['N_splits']),
-                'log_split_probs': ccp['log_split_probs_sorted'],
-                'clade_leaf_labels': clade_leaf_labels,
-            })
+        if families is None:
+            families = [
+                self._family_from_raw(raw_by_family[family_name])
+                for family_name in family_names
+            ]
         # stored on CPU. Only move when computing likelihood and optimizing.
         self.families = families
         self.family_names = list(family_names)
@@ -670,6 +659,117 @@ class GeneDataset:
         self.species_tree_path = species_tree_path
 
         self.num_families = len(families)
+
+    @classmethod
+    def _preprocess_without_cache(
+        cls,
+        ext,
+        species_tree_path,
+        gene_tree_paths,
+        family_names,
+        leaf_species_maps,
+        *,
+        progress: Callable[..., None] | None = None,
+        _batch_size: int = _DEFAULT_PREPROCESS_UNCACHED_BATCH_SIZE,
+        _materialize_families: bool = False,
+    ):
+        progress = progress or (lambda *_args, **_kwargs: None)
+        if (
+            isinstance(_batch_size, bool)
+            or not isinstance(_batch_size, Integral)
+            or int(_batch_size) <= 0
+        ):
+            raise ValueError("_batch_size must be a positive integer")
+        batch_size = int(_batch_size)
+        families_input = {
+            name: paths
+            for name, paths in zip(family_names, gene_tree_paths)
+        }
+        leaf_species_input = {
+            name: mapping
+            for name, mapping in zip(family_names, leaf_species_maps)
+            if mapping
+        }
+        family_items = list(families_input.items())
+        batches = math.ceil(len(family_items) / batch_size) if family_items else 0
+        progress(
+            "uncached_preprocess_start",
+            families=len(families_input),
+            families_with_leaf_maps=len(leaf_species_input),
+            batch_size=batch_size,
+            batches=batches,
+        )
+
+        if not family_items:
+            raw_all = ext.preprocess_multiple_families(
+                str(species_tree_path),
+                {},
+                include_details=True,
+                include_species_matrices=False,
+            )
+            progress("uncached_preprocess_done", families=0, batches=0)
+            return raw_all["species"], [] if _materialize_families else {}
+
+        species_helpers = None
+        families = []
+        raw_by_family = {}
+        built_families = 0
+        for batch_idx, start in enumerate(range(0, len(family_items), batch_size)):
+            batch_items = family_items[start:start + batch_size]
+            batch_input = dict(batch_items)
+            batch_maps = {
+                name: leaf_species_input[name]
+                for name, _paths in batch_items
+                if name in leaf_species_input
+            }
+            batch_names = list(batch_input)
+            progress(
+                "uncached_preprocess_batch_start",
+                batch_idx=batch_idx,
+                batches=batches,
+                families=len(batch_input),
+                families_with_leaf_maps=len(batch_maps),
+                first_family=batch_names[0],
+                last_family=batch_names[-1],
+            )
+            raw_all = ext.preprocess_multiple_families(
+                str(species_tree_path),
+                batch_input,
+                leaf_species_maps=batch_maps,
+                include_details=True,
+                include_species_matrices=False,
+            )
+            raw_families = raw_all["families"]
+            missing_outputs = set(batch_input) - set(raw_families)
+            if missing_outputs:
+                raise RuntimeError(
+                    "preprocess_multiple_families did not return family result(s): "
+                    + ", ".join(sorted(missing_outputs))
+                )
+            if species_helpers is None:
+                species_helpers = raw_all["species"]
+            for name in batch_input:
+                raw = raw_families[name]
+                raw_by_family[name] = cls._drop_unused_family_details(raw)
+                if _materialize_families:
+                    families.append(cls._family_from_raw(raw_by_family.pop(name)))
+                built_families += 1
+            progress(
+                "uncached_preprocess_batch_done",
+                batch_idx=batch_idx,
+                batches=batches,
+                families=len(raw_families),
+                total_built=built_families,
+            )
+
+        progress(
+            "uncached_preprocess_done",
+            families=built_families,
+            batches=batches,
+        )
+        if _materialize_families:
+            return species_helpers, families
+        return species_helpers, raw_by_family
 
     @staticmethod
     def _hash_file(path: str | os.PathLike) -> str:
