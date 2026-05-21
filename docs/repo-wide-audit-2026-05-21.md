@@ -1910,6 +1910,10 @@ not edit files.  New or still-open findings from that refresh are:
   5 tests collected after moving the CUDA-marked helper module to the NLL names.
 - `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_repository_hygiene.py -q`:
   78 passed after the package-doc and alias-deprecation guards.
+- LIK-02 advanced past the deprecation pass: the misleading low-level
+  likelihood aliases were removed from `gpurec.core.likelihood`, ordinary tests
+  no longer import them, and repository hygiene now guards that tracked runtime,
+  test, script, and profiling Python surfaces stay on `compute_nll*`.
 - Fresh native/C++/kernel subagent audit findings were recorded from a
   read-only pass.  The highest-risk unresolved surfaces are production-auto
   native CUDA prototype routing with broad fallback, unowned direct pybind

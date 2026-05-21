@@ -227,8 +227,9 @@ Current branch surface:
 
 - `E_fixed_point()` infers row count from several parameter shapes.
 - `compute_nll()` and `compute_nll_root_rows()` duplicate root likelihood logic.
-- `compute_log_likelihood()` and `compute_log_likelihood_root_rows()` are
-  compatibility aliases that return NLL despite their names.
+- The former `compute_log_likelihood()` and
+  `compute_log_likelihood_root_rows()` compatibility aliases returned NLL
+  despite their names and have been removed.
 - `prepare_origination_probs()` is called from several layers with an
   `assume_prepared` trust boundary.
 
@@ -238,8 +239,8 @@ Plan:
 - Normalize origination probabilities once into an `OriginationPrior` object.
 - Standardize on root-row likelihood internally.  Full-Pi callers should gather
   root rows before calling the likelihood helper.
-- Deprecate the misleading `compute_log_likelihood*` aliases, then remove them
-  after profiling/tests use `compute_nll*`.
+- Keep profiling/tests on `compute_nll*` and prevent reintroduction of the
+  removed misleading likelihood aliases.
 - Make E warm-start policy explicit in the evaluator: disabled, active-batch,
   or streaming global.  Avoid current differences where some no-grad paths pass
   `warm_start_E=None` while autograd/chunked paths can use `warm_E`.
@@ -247,7 +248,7 @@ Plan:
 Expected simplification:
 
 - Removes shape inference from the fixed-point solver.
-- Removes duplicated likelihood functions and alias tests.
+- Removes duplicated likelihood functions and removed-alias tests.
 - Makes loss-only line-search probes easier to reason about.
 
 Risk:
@@ -361,7 +362,7 @@ Risk:
 Deletion candidates should not be removed all at once.  They need the parity
 and benchmark gates in this plan.
 
-- Misleading compatibility aliases:
+- Removed misleading compatibility aliases:
   `compute_log_likelihood()` and `compute_log_likelihood_root_rows()`.
 - Production env selectors after defaults are chosen:
   `GPUREC_FUSE_FINAL_PIBAR`,

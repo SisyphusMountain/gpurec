@@ -1439,30 +1439,45 @@ def test_project_readme_documents_genewise_per_family_api_contract():
         assert token in normalized
 
 
-def test_legacy_likelihood_aliases_warn_and_have_single_test_owner():
+def test_removed_likelihood_aliases_stay_out_of_runtime_surface():
     root = Path(__file__).resolve().parents[2]
     legacy_full = "compute_log_" + "likelihood"
     legacy_root_rows = f"{legacy_full}_root_rows"
     likelihood_source = (
         root / "gpurec" / "core" / "likelihood.py"
     ).read_text(encoding="utf-8")
+    runtime_plan = " ".join(
+        (
+            root / "docs" / "runtime-surface-pruning-plan-2026-05-21.md"
+        ).read_text(encoding="utf-8").split()
+    )
+    simplification_index = " ".join(
+        (
+            root / "docs" / "simplification-opportunity-index-2026-05-21.md"
+        ).read_text(encoding="utf-8").split()
+    )
+
+    assert "def compute_nll" in likelihood_source
+    assert "def compute_nll_root_rows" in likelihood_source
+    assert f"def {legacy_full}" not in likelihood_source
+    assert f"def {legacy_root_rows}" not in likelihood_source
 
     for token in (
-        f"def {legacy_full}",
-        f"def {legacy_root_rows}",
-        "Deprecated compatibility alias",
-        "warnings.warn(",
-        "DeprecationWarning",
-        "use `compute_nll()` instead",
-        "use `compute_nll_root_rows()` instead",
+        f"`{legacy_full}()`",
+        f"`{legacy_root_rows}()`",
+        "aliases have been removed",
+        "`compute_nll()` and `compute_nll_root_rows()`",
+        "prevents tracked Python surfaces from reintroducing the removed aliases",
     ):
-        assert token in likelihood_source
+        assert token in runtime_plan
 
-    allowed_paths = {
-        "gpurec/core/likelihood.py",
-        "tests/unit/test_origination_probs.py",
-        "tests/unit/test_repository_hygiene.py",
-    }
+    for token in (
+        "LIK-02 - Remove Or Deprecate Misleading Log-Likelihood Aliases",
+        "Remove the misleading aliases after public usage is checked",
+        "Repository hygiene coverage proving tracked Python surfaces use `compute_nll*`",
+    ):
+        assert token in simplification_index
+
     offenders = [
         path.relative_to(root).as_posix()
         for path in _tracked_files(
@@ -1472,8 +1487,7 @@ def test_legacy_likelihood_aliases_warn_and_have_single_test_owner():
             "scripts/**/*.py",
             "profiling/**/*.py",
         )
-        if path.relative_to(root).as_posix() not in allowed_paths
-        and (
+        if (
             legacy_full in path.read_text(encoding="utf-8")
             or legacy_root_rows in path.read_text(encoding="utf-8")
         )
@@ -2411,7 +2425,7 @@ def test_documented_uniform_pipeline_benchmark_help_imports_current_api():
     assert "_UniformBuiltChunk as BuiltChunk" in source
     assert "_UniformChunkSpec as ChunkSpec" in source
     assert "compute_nll" in source
-    assert "compute_log_likelihood" not in source
+    assert ("compute_log_" + "likelihood") not in source
 
 
 def test_profiling_readme_documents_entrypoints_and_artifact_policy():

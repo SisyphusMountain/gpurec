@@ -12,8 +12,8 @@ benchmark gates tied to specific proposal IDs.
 Proposal coverage:
 
 - `API-01`: clarified high-level API and unstable `gpurec.core` boundary.
-- `LIK-02`: added deprecation warnings for misleading likelihood aliases and
-  moved ordinary test usage to `compute_nll*`.
+- `LIK-02`: removed the deprecated misleading likelihood aliases after tracked
+  runtime, profiling, and ordinary test usage had moved to `compute_nll*`.
 - `CPP-01`: documented the legacy direct `preprocess` pybind as compatibility
   surface.
 - `CPP-02`: documented direct C++ scheduler/stat exports as diagnostic surface.

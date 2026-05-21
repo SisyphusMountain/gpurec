@@ -209,13 +209,12 @@ Then:
 After internal migration:
 
 - keep `compute_nll()` as a thin root-gather adapter if it is useful;
-- deprecate `compute_log_likelihood()` and
-  `compute_log_likelihood_root_rows()` because they return NLL.
+- keep the removed `compute_log_likelihood*` aliases out of runtime code.
 
 Gates:
 
 - Existing origination probability tests.
-- Benchmark script updated from `compute_log_likelihood` to `compute_nll`.
+- Benchmark script uses `compute_nll` rather than the removed likelihood alias.
 
 ### Step 5: Build The Shared Evaluator
 

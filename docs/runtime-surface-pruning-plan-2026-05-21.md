@@ -40,19 +40,22 @@ Plan:
 - Keep tests importing internals as white-box tests, not as evidence of public
   support.
 
-### Compatibility Aliases
+### Removed Compatibility Aliases
 
 Addressed after the public-API documentation follow-up audit.
-`compute_log_likelihood()` and `compute_log_likelihood_root_rows()` return NLL.
-They now emit `DeprecationWarning`s that point callers to `compute_nll()` and
-`compute_nll_root_rows()`.  Ordinary tracked tests use the NLL names; the old
-names are exercised only by the explicit compatibility test.
+The former low-level likelihood aliases `compute_log_likelihood()` and
+`compute_log_likelihood_root_rows()` returned NLL despite their names.  Tracked
+runtime, profiling, and ordinary test usage now uses `compute_nll()` and
+`compute_nll_root_rows()`, and the aliases have been removed from
+`gpurec.core.likelihood`.
 
 Plan:
 
 - Keep internal/profiling usage on `compute_nll()` or the root-row helper.
-- Warn on alias use for one release if external compatibility matters.
-- Delete aliases after public docs and tests stop naming them.
+- Keep repository hygiene coverage that prevents tracked Python surfaces from
+  reintroducing the removed aliases.
+- If external compatibility matters again, add a new explicitly owned
+  compatibility shim instead of restoring the misleading names silently.
 
 ### Uniform Chunked API
 
@@ -356,7 +359,7 @@ Plan:
 ## Suggested Pruning Order
 
 1. Mark internal/diagnostic/deprecated surfaces in docs.
-2. Move tests off misleading likelihood aliases and scheduler helpers.
+2. Keep tests off removed likelihood aliases and scheduler helpers.
 3. Add shared validation and layout abstractions.
 4. Migrate `UniformChunkedReconModel` internals to shared evaluator.
 5. Remove production env toggles whose defaults are retained.

@@ -4,8 +4,6 @@ import torch
 from gpurec.core.likelihood import (
     E_fixed_point,
     E_step,
-    compute_log_likelihood,
-    compute_log_likelihood_root_rows,
     compute_nll,
     compute_nll_root_rows,
     prepare_origination_probs,
@@ -222,31 +220,3 @@ def test_prepared_origination_probs_are_internal_trust_boundary(
     )
 
     torch.testing.assert_close(prepared, weights.to(dtype=torch.float64), equal_nan=True)
-
-
-def test_legacy_log_likelihood_names_alias_nll_helpers():
-    dtype = torch.float64
-    Pi = torch.tensor([[-3.0, -2.0], [-4.0, -1.0]], dtype=dtype)
-    roots = torch.tensor([1], dtype=torch.long)
-    E = torch.tensor([-4.0, -3.0], dtype=dtype)
-
-    with pytest.warns(DeprecationWarning, match="use `compute_nll\\(\\)`"):
-        legacy_full = compute_log_likelihood(Pi, E, roots)
-    with pytest.warns(
-        DeprecationWarning,
-        match="use `compute_nll_root_rows\\(\\)`",
-    ):
-        legacy_root_rows = compute_log_likelihood_root_rows(Pi[roots], E)
-
-    torch.testing.assert_close(
-        legacy_full,
-        compute_nll(Pi, E, roots),
-        rtol=0.0,
-        atol=0.0,
-    )
-    torch.testing.assert_close(
-        legacy_root_rows,
-        compute_nll_root_rows(Pi[roots], E),
-        rtol=0.0,
-        atol=0.0,
-    )

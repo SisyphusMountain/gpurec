@@ -162,7 +162,7 @@ Gate:
 
 ### LIK-02 - Remove Or Deprecate Misleading Log-Likelihood Aliases
 
-Current alternatives:
+Historical alternatives:
 
 - `compute_log_likelihood()` and `compute_log_likelihood_root_rows()` are
   compatibility aliases that return negative log-likelihood values.
@@ -170,7 +170,9 @@ Current alternatives:
 Simplification:
 
 - Keep `compute_nll*` internally.
-- Deprecate or remove the misleading aliases once public usage is checked.
+- Remove the misleading aliases after public usage is checked.
+- Keep a source guard that prevents tracked runtime, tests, scripts, and
+  profiling code from reintroducing them.
 
 Keep:
 
@@ -178,8 +180,8 @@ Keep:
 
 Gate:
 
-- Search results showing no supported public caller depends on the aliases, or
-  a documented deprecation path if callers exist.
+- Search results showing no supported public caller depends on the aliases.
+- Repository hygiene coverage proving tracked Python surfaces use `compute_nll*`.
 
 ### ORIG-01 - Normalize Origination Probability Handling Once
 
