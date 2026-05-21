@@ -1053,6 +1053,93 @@ def _simple_leaf_first_wave_lower_bound(
     return leaf_waves + _nonleaf_wave_lower_bound(families, wave_cap=wave_cap)
 
 
+def _select_nonleaf_schedule_candidate(
+    families: Sequence[Dict[str, Any]],
+    *,
+    wave_cap: int,
+    root_cap: int | None,
+    max_dts_partial_rows: int | None,
+    dts_partial_tile_splits: int,
+) -> Tuple[str, List[List[Tuple[int, int]]]]:
+    """Return the winning non-leaf scheduler policy and its local batches."""
+    forward_batches = _schedule_forward_nonleaf_waves(
+        families,
+        wave_cap=wave_cap,
+        root_cap=root_cap,
+        max_dts_partial_rows=max_dts_partial_rows,
+        dts_partial_tile_splits=dts_partial_tile_splits,
+    )
+    best_name = "forward"
+    best_batches = forward_batches
+    best_nonleaf_count = _materialized_nonleaf_wave_count(
+        best_batches,
+        families,
+        root_cap=root_cap,
+    )
+
+    nonleaf_lower_bound = _nonleaf_wave_lower_bound(
+        families,
+        wave_cap=wave_cap,
+    )
+    if best_nonleaf_count <= nonleaf_lower_bound:
+        return best_name, best_batches
+
+    for target_waves in range(nonleaf_lower_bound, best_nonleaf_count):
+        candidate_batches = _schedule_deadline_nonleaf_waves(
+            families,
+            wave_cap=wave_cap,
+            target_waves=target_waves,
+            max_dts_partial_rows=max_dts_partial_rows,
+            dts_partial_tile_splits=dts_partial_tile_splits,
+        )
+        if candidate_batches is None:
+            continue
+        candidate_count = _materialized_nonleaf_wave_count(
+            candidate_batches,
+            families,
+            root_cap=root_cap,
+        )
+        if candidate_count < best_nonleaf_count:
+            best_name = "deadline"
+            best_batches = candidate_batches
+            best_nonleaf_count = candidate_count
+            if best_nonleaf_count <= nonleaf_lower_bound:
+                return best_name, best_batches
+
+    for candidate_name, candidate_batches in (
+        (
+            "reverse_compacted",
+            _schedule_reverse_compacted_nonleaf_waves(
+                families,
+                wave_cap=wave_cap,
+                root_cap=root_cap,
+                max_dts_partial_rows=max_dts_partial_rows,
+                dts_partial_tile_splits=dts_partial_tile_splits,
+            ),
+        ),
+        (
+            "coffman_graham",
+            _schedule_coffman_graham_nonleaf_waves(
+                families,
+                wave_cap=wave_cap,
+                max_dts_partial_rows=max_dts_partial_rows,
+                dts_partial_tile_splits=dts_partial_tile_splits,
+            ),
+        ),
+    ):
+        candidate_count = _materialized_nonleaf_wave_count(
+            candidate_batches,
+            families,
+            root_cap=root_cap,
+        )
+        if candidate_count < best_nonleaf_count:
+            best_name = candidate_name
+            best_batches = candidate_batches
+            best_nonleaf_count = candidate_count
+
+    return best_name, best_batches
+
+
 def schedule_global_phased_waves(
     items: Sequence[Dict[str, Any]],
     family_clade_offsets: Sequence[int],
@@ -1106,69 +1193,13 @@ def schedule_global_phased_waves(
     waves.extend(leaf_waves)
     phases.extend([1] * len(leaf_waves))
 
-    forward_batches = _schedule_forward_nonleaf_waves(
+    _best_name, best_batches = _select_nonleaf_schedule_candidate(
         families,
         wave_cap=wave_cap,
         root_cap=root_cap,
         max_dts_partial_rows=max_dts_partial_rows,
         dts_partial_tile_splits=dts_partial_tile_splits,
     )
-    best_batches = forward_batches
-    best_nonleaf_count = _materialized_nonleaf_wave_count(
-        best_batches,
-        families,
-        root_cap=root_cap,
-    )
-
-    lower_bound = _simple_leaf_first_wave_lower_bound(families, wave_cap=wave_cap)
-    if len(leaf_waves) + best_nonleaf_count > lower_bound:
-        nonleaf_lower_bound = _nonleaf_wave_lower_bound(
-            families,
-            wave_cap=wave_cap,
-        )
-        for target_waves in range(nonleaf_lower_bound, best_nonleaf_count):
-            candidate_batches = _schedule_deadline_nonleaf_waves(
-                families,
-                wave_cap=wave_cap,
-                target_waves=target_waves,
-                max_dts_partial_rows=max_dts_partial_rows,
-                dts_partial_tile_splits=dts_partial_tile_splits,
-            )
-            if candidate_batches is None:
-                continue
-            candidate_count = _materialized_nonleaf_wave_count(
-                candidate_batches,
-                families,
-                root_cap=root_cap,
-            )
-            if candidate_count < best_nonleaf_count:
-                best_batches = candidate_batches
-                best_nonleaf_count = candidate_count
-                if len(leaf_waves) + best_nonleaf_count <= lower_bound:
-                    break
-        for candidate_batches in (
-            _schedule_reverse_compacted_nonleaf_waves(
-                families,
-                wave_cap=wave_cap,
-                root_cap=root_cap,
-                max_dts_partial_rows=max_dts_partial_rows,
-                dts_partial_tile_splits=dts_partial_tile_splits,
-            ),
-            _schedule_coffman_graham_nonleaf_waves(
-                families,
-                wave_cap=wave_cap,
-                max_dts_partial_rows=max_dts_partial_rows,
-                dts_partial_tile_splits=dts_partial_tile_splits,
-            ),
-        ):
-            candidate_count = _materialized_nonleaf_wave_count(
-                candidate_batches,
-                families,
-                root_cap=root_cap,
-            )
-            if candidate_count < best_nonleaf_count:
-                best_batches = candidate_batches
-                best_nonleaf_count = candidate_count
 
     nonleaf_waves, nonleaf_phases = _materialize_nonleaf_waves(
         best_batches,
