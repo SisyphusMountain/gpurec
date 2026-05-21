@@ -134,6 +134,38 @@ class _FakePreprocessExt:
         }
 
 
+class _BatchRecordingPreprocessExt:
+    def __init__(self, species_payload):
+        self.species_payload = species_payload
+        self.calls: list[dict[str, object]] = []
+
+    def preprocess_multiple_families(
+        self,
+        species_tree,
+        gene_tree_paths,
+        *,
+        leaf_species_maps=None,
+        include_details=False,
+        include_species_matrices=False,
+    ):
+        del species_tree, include_details, include_species_matrices
+        leaf_species_maps = leaf_species_maps or {}
+        names = list(gene_tree_paths)
+        self.calls.append(
+            {
+                "names": names,
+                "leaf_species_maps": dict(leaf_species_maps),
+            }
+        )
+        return {
+            "species": self.species_payload,
+            "families": {
+                name: _valid_family_cache_payload()
+                for name in names
+            },
+        }
+
+
 class _NoPreprocessExt:
     def preprocess_multiple_families(self, *args, **kwargs):
         raise AssertionError("cache hit should not invoke preprocessing")
@@ -338,6 +370,133 @@ def test_preprocess_cache_progress_reports_miss_build_and_hit_load(tmp_path):
     assert "family_cache_hit" in second_pass
     assert "missing_families_preprocess_start" not in second_pass
     assert second_pass[-1] == "cache_done"
+
+
+def test_missing_family_preprocessing_is_batched_and_cached_incrementally(tmp_path):
+    species_tree = _write(tmp_path / "species.nwk", "(A:1,B:1)Root;\n")
+    gene_trees = [
+        _write(tmp_path / f"gene{i}.nwk", f"(a:1,b:{i + 1});\n")
+        for i in range(5)
+    ]
+    family_names = [f"fam{i}" for i in range(5)]
+    leaf_maps = [{}, {"a": "A"}, {}, {"b": "B"}, {}]
+    cache_dir = tmp_path / "cache"
+    events: list[tuple[str, dict[str, object]]] = []
+
+    def progress(event: str, **fields: object) -> None:
+        events.append((event, fields))
+
+    ext = _BatchRecordingPreprocessExt(_valid_species_cache_payload())
+    species_helpers, raw_by_family = GeneDataset._preprocess_with_cache(
+        ext,
+        species_tree,
+        [[str(path)] for path in gene_trees],
+        family_names,
+        leaf_maps,
+        preprocess_cache_dir=cache_dir,
+        refresh=False,
+        progress=progress,
+        _missing_family_batch_size=2,
+    )
+
+    assert species_helpers["S"] == 3
+    assert list(raw_by_family) == family_names
+    assert [call["names"] for call in ext.calls] == [
+        ["fam0", "fam1"],
+        ["fam2", "fam3"],
+        ["fam4"],
+    ]
+    assert ext.calls[0]["leaf_species_maps"] == {"fam1": {"a": "A"}}
+    assert ext.calls[1]["leaf_species_maps"] == {"fam3": {"b": "B"}}
+    assert ext.calls[2]["leaf_species_maps"] == {}
+
+    batch_starts = [
+        fields
+        for event, fields in events
+        if event == "missing_families_preprocess_batch_start"
+    ]
+    batch_dones = [
+        fields
+        for event, fields in events
+        if event == "missing_families_preprocess_batch_done"
+    ]
+    batch_cached = [
+        fields
+        for event, fields in events
+        if event == "missing_families_preprocess_batch_cached"
+    ]
+    assert batch_starts == [
+        {
+            "batch_idx": 0,
+            "batches": 3,
+            "families": 2,
+            "families_with_leaf_maps": 1,
+            "first_family": "fam0",
+            "last_family": "fam1",
+        },
+        {
+            "batch_idx": 1,
+            "batches": 3,
+            "families": 2,
+            "families_with_leaf_maps": 1,
+            "first_family": "fam2",
+            "last_family": "fam3",
+        },
+        {
+            "batch_idx": 2,
+            "batches": 3,
+            "families": 1,
+            "families_with_leaf_maps": 0,
+            "first_family": "fam4",
+            "last_family": "fam4",
+        },
+    ]
+    assert [fields["families"] for fields in batch_dones] == [2, 2, 1]
+    assert [fields["total_built"] for fields in batch_cached] == [2, 4, 5]
+    assert len(list(cache_dir.glob("family-*.pt"))) == 5
+    assert len(list(cache_dir.glob("species-*.pt"))) == 1
+    assert events[-1] == ("cache_done", {"hits": 0, "misses": 5})
+
+
+def test_all_cached_family_preprocessing_uses_no_batches(tmp_path):
+    species_tree = _write(tmp_path / "species.nwk", "(A:1,B:1)Root;\n")
+    gene_trees = [
+        _write(tmp_path / f"gene{i}.nwk", f"(a:1,b:{i + 1});\n")
+        for i in range(3)
+    ]
+    family_names = [f"fam{i}" for i in range(3)]
+    cache_dir = tmp_path / "cache"
+
+    ext = _BatchRecordingPreprocessExt(_valid_species_cache_payload())
+    GeneDataset._preprocess_with_cache(
+        ext,
+        species_tree,
+        [[str(path)] for path in gene_trees],
+        family_names,
+        [{} for _ in family_names],
+        preprocess_cache_dir=cache_dir,
+        refresh=False,
+        _missing_family_batch_size=2,
+    )
+    assert len(ext.calls) == 2
+
+    events: list[str] = []
+    GeneDataset._preprocess_with_cache(
+        _NoPreprocessExt(),
+        species_tree,
+        [[str(path)] for path in gene_trees],
+        family_names,
+        [{} for _ in family_names],
+        preprocess_cache_dir=cache_dir,
+        refresh=False,
+        progress=lambda event, **_fields: events.append(event),
+        _missing_family_batch_size=2,
+    )
+
+    assert "family_cache_hit" in events
+    assert "missing_families_preprocess_start" not in events
+    assert "missing_families_preprocess_batch_start" not in events
+    assert events[-1] == "cache_done"
 
 
 @pytest.mark.parametrize(

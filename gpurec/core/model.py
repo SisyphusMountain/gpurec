@@ -11,6 +11,9 @@ from .preprocess_cpp import _load_extension as _load_species_gene_ext
 from .species import uniform_ancestors_t_from_topology
 
 
+_DEFAULT_PREPROCESS_CACHE_MISSING_BATCH_SIZE = 64
+
+
 def _resolve_family_path(text: str, base_dir: Path) -> str:
     value = text.strip().strip('"').strip("'")
     path = Path(value)
@@ -688,8 +691,16 @@ class GeneDataset:
         preprocess_cache_dir: str | os.PathLike,
         refresh: bool,
         progress: Callable[..., None] | None = None,
+        _missing_family_batch_size: int = _DEFAULT_PREPROCESS_CACHE_MISSING_BATCH_SIZE,
     ):
         progress = progress or (lambda *_args, **_kwargs: None)
+        if (
+            isinstance(_missing_family_batch_size, bool)
+            or not isinstance(_missing_family_batch_size, Integral)
+            or int(_missing_family_batch_size) <= 0
+        ):
+            raise ValueError("_missing_family_batch_size must be a positive integer")
+        missing_family_batch_size = int(_missing_family_batch_size)
         cache_dir = Path(preprocess_cache_dir)
         cache_dir.mkdir(parents=True, exist_ok=True)
 
@@ -798,49 +809,97 @@ class GeneDataset:
         )
 
         if missing:
+            missing_items = list(missing.items())
+            batches = math.ceil(len(missing_items) / missing_family_batch_size)
             progress(
                 "missing_families_preprocess_start",
                 families=len(missing),
                 families_with_leaf_maps=len(missing_maps),
+                batch_size=missing_family_batch_size,
+                batches=batches,
             )
-            raw_all = ext.preprocess_multiple_families(
-                str(species_tree_path),
-                missing,
-                leaf_species_maps=missing_maps,
-                include_details=True,
-                include_species_matrices=False,
-            )
+
+            built_families = 0
+            for batch_idx, start in enumerate(
+                range(0, len(missing_items), missing_family_batch_size)
+            ):
+                batch_items = missing_items[start:start + missing_family_batch_size]
+                batch_missing = dict(batch_items)
+                batch_missing_maps = {
+                    name: missing_maps[name]
+                    for name, _paths in batch_items
+                    if name in missing_maps
+                }
+                batch_names = list(batch_missing)
+                progress(
+                    "missing_families_preprocess_batch_start",
+                    batch_idx=batch_idx,
+                    batches=batches,
+                    families=len(batch_missing),
+                    families_with_leaf_maps=len(batch_missing_maps),
+                    first_family=batch_names[0],
+                    last_family=batch_names[-1],
+                )
+                raw_all = ext.preprocess_multiple_families(
+                    str(species_tree_path),
+                    batch_missing,
+                    leaf_species_maps=batch_missing_maps,
+                    include_details=True,
+                    include_species_matrices=False,
+                )
+                raw_families = raw_all["families"]
+                missing_outputs = set(batch_missing) - set(raw_families)
+                if missing_outputs:
+                    raise RuntimeError(
+                        "preprocess_multiple_families did not return family result(s): "
+                        + ", ".join(sorted(missing_outputs))
+                    )
+                progress(
+                    "missing_families_preprocess_batch_done",
+                    batch_idx=batch_idx,
+                    batches=batches,
+                    families=len(raw_families),
+                )
+                if species_helpers is None:
+                    species_helpers = raw_all["species"]
+                    progress("species_cache_save_start", cache_path=str(species_cache))
+                    torch.save(species_helpers, species_cache)
+                    progress("species_cache_save_done", cache_path=str(species_cache))
+
+                species_count = int(species_helpers["S"])
+                for name, raw in raw_families.items():
+                    raw = cls._drop_unused_family_details(raw)
+                    _validate_family_preprocess_cache(
+                        raw,
+                        family_cache_paths[name],
+                        f"family {name!r}",
+                        species_count=species_count,
+                    )
+                    raw_by_family[name] = raw
+                    progress(
+                        "family_cache_save_start",
+                        family=name,
+                        cache_path=str(family_cache_paths[name]),
+                    )
+                    torch.save(raw, family_cache_paths[name])
+                    progress(
+                        "family_cache_save_done",
+                        family=name,
+                        cache_path=str(family_cache_paths[name]),
+                    )
+                    built_families += 1
+                progress(
+                    "missing_families_preprocess_batch_cached",
+                    batch_idx=batch_idx,
+                    batches=batches,
+                    families=len(raw_families),
+                    total_built=built_families,
+                )
             progress(
                 "missing_families_preprocess_done",
-                families=len(raw_all["families"]),
+                families=built_families,
+                batches=batches,
             )
-            if species_helpers is None:
-                species_helpers = raw_all["species"]
-                progress("species_cache_save_start", cache_path=str(species_cache))
-                torch.save(species_helpers, species_cache)
-                progress("species_cache_save_done", cache_path=str(species_cache))
-
-            species_count = int(species_helpers["S"])
-            for name, raw in raw_all["families"].items():
-                raw = cls._drop_unused_family_details(raw)
-                _validate_family_preprocess_cache(
-                    raw,
-                    family_cache_paths[name],
-                    f"family {name!r}",
-                    species_count=species_count,
-                )
-                raw_by_family[name] = raw
-                progress(
-                    "family_cache_save_start",
-                    family=name,
-                    cache_path=str(family_cache_paths[name]),
-                )
-                torch.save(raw, family_cache_paths[name])
-                progress(
-                    "family_cache_save_done",
-                    family=name,
-                    cache_path=str(family_cache_paths[name]),
-                )
 
         if species_helpers is None:
             progress("species_only_preprocess_start")
