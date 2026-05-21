@@ -5,6 +5,17 @@ submodule remains supported for advanced tooling that needs to inspect or
 restore workflow checkpoints directly, but the payload schema is versioned and
 callers should prefer ``optimize()``, ``sample()``, or ``RunConfig``/
 ``SamplingConfig`` unless they specifically need checkpoint metadata.
+
+Version-1 checkpoints carry identity metadata for safe restore:
+``family_names``, ``species_names``, and config identity fields
+``species_tree``, ``families_file``, ``mode``, ``start``, and
+``max_families``.  ``load_checkpoint()`` requires those fields to exist and
+validates the name-list metadata; ``validate_checkpoint_model_compatibility()``
+compares them with the active ``RunConfig`` and rebuilt model before
+``restore_model_theta()`` copies parameters, normalizing only path identity
+fields during comparison.  The loader does not reconstruct a full ``RunConfig``;
+callers that need complete config validation should pass ``payload["config"]``
+through ``RunConfig.from_dict(...)``.
 """
 
 from __future__ import annotations

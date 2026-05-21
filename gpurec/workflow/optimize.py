@@ -521,8 +521,18 @@ class OptimizationRunner:
                     # one current-theta evaluation so checkpoints and diagnostics
                     # refer to the saved parameters.
                     model.theta.grad = None
-                    _loss_current, metrics = self._evaluate_and_backward(model)
+                    loss_current, metrics = self._evaluate_and_backward(model)
                     closure_evals += 1
+                    if (
+                        not torch.isfinite(loss_current).item()
+                        or not _is_finite_tensor(model.theta.grad)
+                    ):
+                        status = {
+                            "status": "failed",
+                            "reason": "nonfinite_objective_or_gradient",
+                        }
+                        model.clear()
+                        break
                     model.clear()
                 else:
                     loss = closure()

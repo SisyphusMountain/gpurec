@@ -1,3 +1,14 @@
+"""Checkout-local global-uniform HOGENOM optimizer reproducer.
+
+This fixed-dataset launcher hard-codes the local HOGENOM CCP input layout,
+optimizes one shared/global D/T/L theta row with uniform origination, and can run
+optional active-batch/full-Adagrad warmup before Torch LBFGS.  It retains
+historical regularizer experiments (square, l1, huber, elastic-net, gaussian,
+and beta-pS) and writes CSV/JSON outputs under
+``output_gpurec_global_uniform_opt_max100``.  Migrate the unique optimizer or
+reporting behavior into the supported workflow/CLI before deleting the script.
+"""
+
 from __future__ import annotations
 
 import argparse
@@ -100,7 +111,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         description=(
             "Optimize one shared/global D/T/L rate vector on the HOGENOM CCP dataset with "
             "uniform origination probabilities."
-        )
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "Checkout-local contract: hard-coded HOGENOM inputs, one global "
+            "D/T/L theta row, uniform origination, optional mini-batch/full "
+            "Adagrad warmup plus LBFGS, and CSV/JSON outputs under "
+            "output_gpurec_global_uniform_opt_max100. Migrate this behavior to "
+            "gpurec.workflow before deleting the script."
+        ),
     )
     parser.add_argument(
         "--regularization",

@@ -104,13 +104,16 @@ design:
 
 - `_GeneReconFunction.backward` is decorated with
   `@torch.autograd.function.once_differentiable`
-  (`gpurec/api/autograd.py:280`).
+  in `gpurec/api/autograd.py`.
 - `implicit_grad_loglik_vjp_wave` is decorated with `@torch.no_grad()`
-  (`gpurec/optimization/implicit_grad.py:20`).
+  in `gpurec/optimization/implicit_grad.py`.
 - `Pi_wave_backward` is also `@torch.no_grad()` in `gpurec/core/backward.py`.
 - `UniformChunkedReconModel` computes `(loss, grad)` inside a no-grad custom
   forward and its custom backward simply returns the cached gradient
-  (`gpurec/api/uniform_chunked.py:627` and `gpurec/api/uniform_chunked.py:640`).
+  in `gpurec/api/uniform_chunked.py`.
+
+This planning note intentionally names source files but avoids exact source line
+numbers because the optimization internals move frequently during the audit.
 
 As a result, `torch.autograd.functional.hessian`, `torch.func.hessian`,
 `loss.backward(create_graph=True)`, and double backward through `model()` are not

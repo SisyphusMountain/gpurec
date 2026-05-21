@@ -1,3 +1,13 @@
+"""Checkout-local HOGENOM CCP CUDA/Nsight profiling harness.
+
+This script profiles one specieswise forward/backward surface over the local
+HOGENOM CCP data.  It hard-codes input paths, requires CUDA for real runs, emits
+JSON lines for config/model/warmup/measured/summary events, and wraps measured
+passes with CUDA profiler API calls plus NVTX ranges.  Keep it only while it
+answers scheduler or memory questions not owned by the maintained profiling
+benchmark.
+"""
+
 from __future__ import annotations
 
 import argparse
@@ -103,7 +113,15 @@ def cuda_profiler_stop(enabled: bool) -> None:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Profile one HOGENOM CCP forward/backward pass."
+        description="Profile one HOGENOM CCP forward/backward pass.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "Checkout-local contract: hard-coded HOGENOM inputs, CUDA/Nsight "
+            "profiling, JSONL events for config/model/warmup/measured/summary, "
+            "and CUDA profiler/NVTX ranges. Prefer the maintained profiling "
+            "benchmark unless this script owns a specific scheduler or memory "
+            "question."
+        ),
     )
     parser.add_argument("--chunk-size", type=int, default=25)
     parser.add_argument(

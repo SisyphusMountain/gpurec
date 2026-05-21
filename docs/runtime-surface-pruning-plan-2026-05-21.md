@@ -63,6 +63,20 @@ Plan:
 - Remove duplicated validation helpers from `uniform_chunked.py` once they are
   shared through `gpurec/api/_validation.py` or the evaluator.
 
+### Core/API Refresh Findings
+
+Current unresolved findings from the follow-up core/API audit:
+
+| Surface | Current owner / risk | Guard before behavior change |
+| --- | --- | --- |
+| `finite_float()`, `positive_float()`, and `nonnegative_float()` in `gpurec/api/_validation.py` | Direct API float controls currently accept `True` as `1.0`, while integer controls and `theta_init_rates` reject bools. | Decide whether bools are invalid numeric controls; add direct-API tests for bool values in controls such as `tol_E`, `pi_max_diff_tol`, and `min_rate` before changing validation. |
+| `as_family_param()`, `as_family_species()`, and `extract_parameters_uniform()` in `gpurec/core/extract_parameters.py` | Production-owned by forward/backward/autograd/implicit-gradient paths, but lightly documented and not directly table-tested. | Add CPU table tests for global, specieswise, genewise, `family_rows`, and `G == S` ambiguity before refactoring parameter-shape policy; add a contract docstring for `as_family_species()`. |
+| `_normalize_family_tree_paths()` in `gpurec/core/model.py` | One-line private compatibility alias for `normalize_family_tree_paths()` with no in-repo callers found. | Add a source hygiene guard proving no tracked callers remain, then delete or explicitly document as a private compatibility shim if external use matters. |
+| `normalize_family_chunk_size()` in `gpurec/core/batch_planning.py` | Shared by API, workflow, CLI, and tests but omitted from `__all__`, leaving export intent unclear. | Decide public versus internal status; if public, add to `__all__` and guard wildcard exports, otherwise migrate callers behind a supported validation API before renaming. |
+| `UniformChunkedState` in `gpurec/api/uniform_chunked.py` | Public-looking state container used only by chunked autograd/evaluator internals, not exported or documented. | Rename to `_UniformChunkedState` with a source guard, or document it as an internal state container and keep it out of public exports. |
+| `UniformChunkedReconModel.nll_per_family()` | Public method with integration coverage but no docstring/direct unit guard; README genewise-only wording can be misread as applying to chunked global models. | Add a direct unit test for `chunk_indices` and per-family semantics, and document it as a global/uniform chunked diagnostic before changing behavior. |
+| `implicit_grad_loglik_vjp_wave()` in `gpurec/optimization/implicit_grad.py` | Public-looking low-level name used by API/autograd but not exported from `gpurec.optimization`; direct tests cover only `_bicgstab()`. | Classify as internal bridge or supported low-level API. If retained as public, add a tiny fake-system test for stats and convergence scheduling before changing the signature. |
+
 ## Scheduler Surface
 
 Current scheduler surfaces:
@@ -74,13 +88,25 @@ Current scheduler surfaces:
   test/doc-only in current source;
 - C++ extension exports multiple wave-stat diagnostic functions.
 
+Ownership table from the current read-only audit:
+
+| Surface | Current owner / callers | Tests / docs | Deletion risk |
+| --- | --- | --- | --- |
+| `preprocess_multiple_families` pybind | Production-owned. `GeneDataset` calls it for normal preprocessing, family cache misses, and species-only empty-family cache fill in `gpurec/core/model.py`. | Fake/cache tests in `tests/unit/test_alerax_family_input.py`, real parser coverage through `GeneDataset`, and integration construction in `tests/integration/test_gene_recon_model.py`. | High. Keep. Non-empty family preprocessing needs `include_details=True`; the empty-family species-only cache path currently uses the default `include_details=False`. |
+| Legacy `preprocess` pybind | No in-repo production caller found; exported from `gpurec/core/cpp/preprocess.cpp`. | Existing pruning docs flag it as legacy/open surface. | Medium external/API risk, low in-repo runtime risk. Document as legacy/deprecated before removal. |
+| `compute_phased_waves` pybind | No direct production caller found, but the underlying implementation is production-used to populate `phased_waves`/`phased_phases` during preprocessing. | Source-level hygiene guards it with the other max-wave exports. | Do not remove the implementation. Deprecate the direct export only after diagnostic ownership is documented. |
+| Wave-stat pybinds: `compute_wave_stats`, `compute_packet_wave_stats`, `compute_phased_wave_stats`, `compute_phased_cross_family_wave_stats`, `compute_cross_family_wave_stats` | No production caller found. | Hygiene checks positive `max_wave_size`; audit docs describe them as broad diagnostic ABI. | Low runtime risk, medium diagnostic/API risk. Keep only with a maintained profiling or diagnostic command. |
+| `bench_parse` | Not currently exported. | Removal is guarded in repository hygiene and audit docs. | Already retired; keep the guard. |
+| `compute_clade_waves` Python helper | No production caller found; adapts required C++ `phased_waves`/`phased_phases`. | Unit-only in `tests/unit/test_scheduling.py`; current docs call it test/doc-only. | Low runtime risk. Move to a test fixture or keep as a documented compatibility adapter. |
+| `collate_wave`, `split_phase_waves` | No production caller found. | Unit-only in `tests/unit/test_global_wave_scheduler.py`; current docs list them as deletion candidates. | Low runtime risk. Migrate tests or docs before deleting from `gpurec.core`. |
+| Runtime Python scheduler/layout path | Production-owned through `gpurec/api/_family_layout.py`, `schedule_global_phased_waves()`, and `build_wave_layout()`. | Covered by global scheduler and family-layout tests. | High. Can be hidden behind private wrappers, but not deleted without replacement and benchmarks. |
+| `family_schedule_summary` | Production-owned for depth-first batch packing in `GeneReconModel` and `UniformChunkedReconModel`. | Indirectly covered through planning/layout tests. | High while depth-first packing remains supported. |
+
 Plan:
 
-1. Add a scheduler ownership table:
-   - product runtime;
-   - benchmark diagnostic;
-   - test-only helper;
-   - delete.
+1. Keep the ownership table current when scheduler or pybind exports move
+   between product runtime, benchmark diagnostic, test-only helper, and delete
+   buckets.
 2. Benchmark the current multi-candidate scheduler against one candidate policy.
 3. Keep the chosen runtime scheduler private to the layout builder.
 4. Move test-only scheduler helpers into `tests/` fixtures or delete them.
@@ -100,6 +126,9 @@ Current runtime calls:
 
 - `GeneDataset` uses `preprocess_multiple_families(..., include_details=True,
   include_species_matrices=False)`.
+- The species-only empty-family cache path uses
+  `preprocess_multiple_families(..., include_details=False)` to materialize
+  species topology data without family details.
 - Cache loading expects detailed CCP helpers and leaf mapping tensors.
 
 Open surfaces:
@@ -199,6 +228,29 @@ Current scripts include maintained workflow helpers, profiling utilities,
 legacy HOGENOM launchers, report generators, and export tools.  The docs now
 have an ownership matrix, but deletion has not happened.
 
+Ignored/local workspace inventory:
+
+| Surface | Purpose | Inputs | Outputs | Current reproducibility | Decision |
+| --- | --- | --- | --- | --- | --- |
+| `notebooks/evaluate_gpurec_at_alerax_params.ipynb` | Evaluate gpurec likelihoods at AleRax global-rate parameters. | Ignored `tests/data/hogenom_bench`, AleRax `output_global/model_rates.csv`, AleRax per-family likelihood text, CUDA. | `tests/data/hogenom_bench/gpurec/nll_at_alerax_params_*.csv`. | Checkout-local only; depends on ignored data and notebook state. | Archive/delete or migrate into a tested rate-evaluation script. |
+| `notebooks/hogenom_adam_bfgs_schedule.ipynb` | Historical scheduled Adam/BFGS optimizer experiment. | Ignored `tests/data/hogenom_bench`, CUDA, historical `gpurec.optimization.optimize_scheduled` import. | `tests/data/hogenom_bench/gpurec/scheduled_adam_bfgs_notebook/` CSV outputs. | Not currently reproducible from tracked source because the optimizer helper is not part of the retained API. | Archive/delete or rewrite against supported workflow optimizers before keeping. |
+| `notebooks/optimize_hogenom_ccp_specieswise_origination.ipynb` | One-off specieswise optimization with custom origination distribution. | Local HOGENOM data, CUDA, fixed notebook constants. | `output_gpurec_specieswise_origination_opt` CSV, JSON, and PNG artifacts. | Checkout-local and stale; the notebook contains captured runtime error output. | Migrate unique origination behavior into `gpurec.workflow`/CLI or archive/delete. |
+| `notebooks/pi_iteration_bound_diagnostic.ipynb` | Pi fixed-point iteration bound diagnostic. | Ignored `tests/data/hogenom_bench`, CUDA/float64, local `pi_iteration_bound_diagnostic_impl` source. | `tests/data/hogenom_bench/diagnostics/pi_iteration_bound_diagnostic/` CSV and plot files. | Not reproducible from tracked source because the helper source is absent. | Restore helper source and tests before keeping, otherwise archive/delete. |
+| `profiling/ancestor_batching/` | Historical ancestor batching timing, Nsight, and NCU artifact trees. | Local profiling harnesses, HOGENOM benchmark data, Nsight tools. | `artifacts/*` timing JSONL, CSV summaries, `.nsys-rep`, `.ncu-rep`, and SQLite files. | Historical/non-reproducible; some generated commands reference missing local harnesses. | Keep summarized findings in docs, then externalize or delete bulky artifact trees. |
+| `profiling/bf16_backward_nsys/` and `profiling/bf16_handoff_prod/` | bf16 backward/handoff experiment reports and logs. | Local CUDA runs and HOGENOM/test-tree fixtures. | Nsight/NCU reports, SQLite files, CSV summaries, and `.log` files. | Checkout-local experiment artifacts; bf16 is now documented as direct-API-only and not a release-smoke dtype. | Keep only summarized conclusions; archive/delete raw artifacts. |
+| `profiling/hogenom_ccp/` | Local HOGENOM CCP performance sweeps. | Local HOGENOM data, CUDA/Nsight, profiling scripts and environment toggles. | JSONL sweeps, `.nsys-rep`, `.ncu-rep`, SQLite, and CSV summaries. | Checkout-local and too broad for release verification. | Migrate one maintained benchmark path; archive/delete ad hoc raw sweeps after summaries are preserved. |
+| `profiling/specieswise_worker3/` | Local specieswise worker profiling scratch space. | Local CUDA/HOGENOM profiling runs. | `artifacts/` and `artifacts_smoke/` reports. | No tracked owner beyond ignored workspace state. | Document any retained conclusion, then archive/delete. |
+
+Ignored test-data and cache inventory:
+
+| Surface | Purpose | Inputs | Outputs | Current reproducibility | Decision |
+| --- | --- | --- | --- | --- | --- |
+| `tests/data/test_trees_20/`, `tests/data/test_trees_100/`, `tests/data/test_trees_1000/`, `tests/data/test_trees_10000/` | Generated tree-scale fixtures for optional large-family and CUDA/profiling checks. | Local generated Newick/family files; no tracked generator contract in this repo. | Local `families.txt`, `sp.nwk`, `g_*.nwk`, and generated output subtrees. | Optional and checkout-local; tests that need them must skip or use explicit paths. | Keep out of required CPU gates; add a small tracked fixture or documented generator before relying on any of them. |
+| `tests/data/test_trees_dtl01/` | Local DTL experiment fixture with prior output. | Local species/gene trees and generated output. | `output/` likelihood artifacts. | Scratch/local fixture, not a distributed contract. | Migrate the useful DTL expectation into a tracked fixture before CI, otherwise treat as deletable scratch. |
+| `tests/data/HOGENOM/`, `tests/data/hogenom_bench/`, `tests/data/davin/` | External biological datasets used by HOGENOM notebooks, scripts, profiling, and local validation. | Local HOGENOM/AleRax/Davin files outside package distribution. | Local rate tables, benchmark outputs, and profiler inputs. | Checkout-local only; package and release checks must not require these roots. | Archive/delete local copies or migrate unique behavior into tracked fixtures/workflows before promotion. |
+| `tests/data.tar.gz` | Local archive/transfer bundle for generated data. | Previous local dataset snapshot. | Compressed generated fixture bundle. | Not a source of truth and intentionally ignored. | Replace with a documented source/generator before any required workflow depends on it. |
+| `.preprocess_cache/` and `tests/data/**/output/` | Runtime-generated cache and local test outputs. | Prior preprocessing or local runs. | Torch cache files, per-family likelihoods, XML, CSV, and other generated artifacts. | Regenerable byproducts. | Delete/regenerate as needed; never promote as expected fixtures. |
+
 Plan:
 
 - Keep:
@@ -213,6 +265,20 @@ Plan:
   - one-off profiling scripts superseded by the maintained benchmark.
 - Update tests to assert only maintained scripts are in the product/benchmark
   matrix.
+
+### Workflow/Backtracking Refresh Findings
+
+Current findings from the follow-up workflow/backtracking audit:
+
+| Surface | Current owner / risk | Guard before behavior change |
+| --- | --- | --- |
+| Rust sampler help preflight in `gpurec/backtracking.py` | Addressed after the refresh audit. `_BACKTRACK_HELP_MARKERS` now requires the wrapper-supported `--samples`, `--seed`, `--output-dir`, and `--max-events` flags instead of accepting stale short help. | Keep the negative stale-help regression so old Rust binaries fail preflight before sampling. |
+| LBFGS post-step evaluation in `gpurec/workflow/optimize.py` | Addressed after the refresh audit. The LBFGS branch evaluates the current theta after `optimizer.step(closure)` and now repeats the finite loss/gradient guard used by Adam/Adagrad. | Keep the fake LBFGS regression that returns a finite closure followed by a nonfinite current-theta evaluation and expects failed `nonfinite_objective_or_gradient` status with no LBFGS row recorded. |
+| Local model construction in `profiling/evaluate_hogenom_alerax_rates.py` and `scripts/compare_backtracking_alerax_events.py` | Per-chunk/per-family `GeneReconModel` instances are not closed on success or exceptions. | Wrap model use in `try/finally: model.close()` and add fake-model tests covering success and exception paths. |
+| Resume optimizer-state restore in `gpurec/workflow/optimize.py` | Discard behavior catches only `ValueError` from `optimizer.load_state_dict`, while malformed/backend-incompatible states may raise `RuntimeError` or `TypeError`. | Either document the narrow `ValueError` boundary or add tests and catch broader optimizer-load failures as discarded resume state. |
+| Dynamic CLI compatibility attribute `_RUN_CONFIG_CLI_OVERRIDE_FIELDS` in `gpurec/cli.py` | Exposed through module `__getattr__`; observed in-repo usage is test-only. | Move tests to `_run_config_cli_override_fields()` or parser destinations, then remove the dynamic attribute unless it is an intentional public compatibility promise. |
+| Rust sampler term variants in `crates/gpurec-backtrack/src/lib.rs` | Branches such as `HiddenTransferLossDonor`, hidden speciation, split transfer, and swapped split speciation mutate event labels and queued work differently but lack direct branch tests. | Add `Sampler::apply_term` unit tests asserting emitted event shape and queued `WorkItem` species/clade for each variant. |
+| Python 3.10 TOML fallback in `scripts/check_release_metadata.py` | `_parse_minimal_pyproject()` is used only when `tomllib` is unavailable, so host-interpreter tests do not exercise it. | Add direct fixture tests for `_parse_minimal_pyproject()`, or add `tomli` for Python 3.10 and delete the fallback. |
 
 ## Test Surface Cleanup
 

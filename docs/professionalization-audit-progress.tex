@@ -6402,9 +6402,10 @@ guard reports \texttt{1 passed}.  The full repository hygiene module reports
 \texttt{59 passed}, and full collection reports \texttt{899 tests collected}.
 
 A follow-up read-only subagent refresh added the next documented deletion and
-guard candidates.  Workflow checkpoint compatibility needs broader typed
-identity guards; C++ pybind scheduler diagnostics and
-\texttt{gpurec.core.scheduling} need an ownership table before deletion.
+guard candidates.  Workflow checkpoint compatibility needs an explicit
+identity-validation boundary before stricter runtime checks; C++ pybind
+scheduler diagnostics and \texttt{gpurec.core.scheduling} need an ownership
+table before deletion.
 
 The workflow checkpoint submodule support boundary is now explicit before any
 helper rename or export cleanup.  README and
@@ -6418,6 +6419,38 @@ needs the versioned checkpoint payload.  The hygiene guard keeps those helpers
 out of the lazy top-level exports unless they are intentionally promoted.  The
 touched checkpoint/hygiene modules compile, and the focused support-boundary
 guard reports \texttt{1 passed}.
+
+The v1 checkpoint identity boundary is now documented according to the current
+runtime before any stricter resume-validation change.  README and
+\texttt{gpurec/workflow/checkpoint.py} state that workflow checkpoints carry
+\texttt{family\_names}, \texttt{species\_names}, and config identity fields
+\texttt{species\_tree}, \texttt{families\_file}, \texttt{mode},
+\texttt{start}, and \texttt{max\_families}.  \texttt{load\_checkpoint()} requires
+those fields to exist and validates name-list metadata, while
+\texttt{validate\_checkpoint\_model\_compatibility()} compares them against the
+active \texttt{RunConfig} and rebuilt model before
+\texttt{restore\_model\_theta()} copies parameters, normalizing only path
+identity fields.  The loader still does not reconstruct a full
+\texttt{RunConfig}; callers that need complete config type and range validation
+should pass \texttt{payload["config"]} through
+\texttt{RunConfig.from\_dict(...)}.  The touched checkpoint and hygiene modules
+compile, the focused checkpoint identity documentation guard reports
+\texttt{1 passed}, the full repository hygiene module reports \texttt{63
+passed}, and full collection reports \texttt{903 tests collected}.
+
+The scheduler and C++ extension pruning plan now has the ownership table needed
+before deleting or hiding diagnostic surfaces.  \texttt{docs/runtime-surface-pruning-plan-2026-05-21.md}
+classifies \texttt{preprocess\_multiple\_families}, the runtime scheduler/layout
+path, and \texttt{family\_schedule\_summary} as production-owned; the legacy
+\texttt{preprocess} pybind, direct wave-stat pybinds, and
+\texttt{compute\_clade\_waves}/\texttt{collate\_wave}/\texttt{split\_phase\_waves}
+as legacy, diagnostic, or test-only candidates; and \texttt{bench\_parse} as
+already retired.  The same plan now records the current
+\texttt{include\_details=False} species-only empty-family cache path separately
+from detailed family preprocessing.  The hygiene guard for the ownership table
+compiles and reports \texttt{1 passed}; the full repository hygiene module
+reports \texttt{64 passed}, and full collection reports \texttt{904 tests
+collected}.
 
 The documented uniform forward/backward profiling benchmark is importable again
 from a clean help path.  The benchmark now aliases the current underscored
@@ -6684,6 +6717,105 @@ focused mode/fallback selectors report \texttt{22 passed, 21 deselected} and
 \texttt{2 passed}; the full core helper/backward slice reports
 \texttt{45 passed}; repository hygiene reports \texttt{48 passed}; and full
 collection reports \texttt{886 tests collected}.
+
+The ignored local notebook and profiling workspace is now inventoried before any
+cleanup.  \texttt{notebooks/README.md} names the ignored local notebooks
+\texttt{evaluate\_gpurec\_at\_alerax\_params.ipynb},
+\texttt{hogenom\_adam\_bfgs\_schedule.ipynb},
+\texttt{optimize\_hogenom\_ccp\_specieswise\_origination.ipynb}, and
+\texttt{pi\_iteration\_bound\_diagnostic.ipynb}; the runtime-surface pruning
+plan records their inputs, outputs, reproducibility state, and archive/delete or
+migrate decisions alongside ignored profiling roots such as
+\texttt{profiling/ancestor\_batching/}, \texttt{profiling/bf16\_backward\_nsys/},
+\texttt{profiling/bf16\_handoff\_prod/}, \texttt{profiling/hogenom\_ccp/}, and
+\texttt{profiling/specieswise\_worker3/}.
+
+The remaining fixed-dataset HOGENOM launcher contracts are also documented
+before any migration or deletion.  The global-uniform launcher now states that it
+hard-codes the local HOGENOM layout, optimizes one shared D/T/L theta row with
+uniform origination, retains historical regularizer experiments and optional
+Adagrad/LBFGS phases, and writes the global history/rate/origination/config CSV
+and JSON files under \texttt{output\_gpurec\_global\_uniform\_opt\_max100}.  The
+specieswise-uniform launcher documents its one-row-per-species uniform
+origination contract, helper-owned optimizer schedules, and output file set
+under \texttt{output\_gpurec\_specieswise\_uniform\_opt\_max100}.  The local
+HOGENOM profiler now documents its CUDA/Nsight-only scope, JSONL
+\texttt{config}/\texttt{model}/\texttt{warmup}/\texttt{measured}/\texttt{summary}
+events, and CUDA profiler/NVTX ownership.  Repository hygiene now guards both
+the ignored-workspace inventory and the three script/help contracts; the touched
+scripts and hygiene module compile, and the focused guards report
+\texttt{2 passed}.  The full repository hygiene module reports \texttt{66
+passed}, and full collection reports \texttt{906 tests collected}.
+
+Checkpoint identity regression coverage now matches the documented v1 resume
+boundary.  The optimization-resume incompatibility test covers
+\texttt{family\_names}, \texttt{species\_names}, and every config identity key
+listed in the checkpoint contract: \texttt{species\_tree},
+\texttt{families\_file}, \texttt{mode}, \texttt{start}, and
+\texttt{max\_families}.  Each case still fails before
+\texttt{restore\_model\_theta()} can copy checkpoint parameters into the rebuilt
+model.  \texttt{tests/unit/test\_workflow.py} compiles, and the focused
+resume-identity selector reports \texttt{7 passed}.  Repository hygiene reports
+\texttt{66 passed}, and full collection reports \texttt{910 tests collected}.
+
+Ignored local test-data roots are now documented before any audit or test starts
+depending on them.  \texttt{tests/README.md} and the runtime-surface pruning plan
+classify generated \texttt{test\_trees\_*} datasets, local DTL fixtures,
+external HOGENOM/Davin roots, \texttt{tests/data.tar.gz},
+\texttt{.preprocess\_cache/}, and \texttt{tests/data/**/output/} as
+non-distributed local state.  Required tests should use tracked fixtures or a
+documented generator rather than those ignored paths.  The hygiene guard checks
+\texttt{.gitignore}, \texttt{tests/README.md}, and the pruning plan for this
+inventory; the touched hygiene module compiles, and the focused selector reports
+\texttt{1 passed}.  The full repository hygiene module reports \texttt{67
+passed}, and full collection reports \texttt{911 tests collected}.
+
+The docs/metadata explorer found three low-risk documentation drifts, all fixed
+before any behavior change.  The repo-wide audit headline metrics are now
+explicitly labeled as the initial read-only snapshot rather than live counts; the
+release-readiness GPU validation note now requires a small family subset on a
+species tree large enough for the current backward kernels
+(\texttt{S > 256}); and the second-order planning note no longer pins exact
+source line numbers for moving optimization internals.  The focused hygiene
+selector covering those three contracts reports \texttt{3 passed}.
+
+The core/API and workflow/backtracking explorers returned unresolved surfaces
+that are now documented as decision tables before any logic changes.  The
+runtime-surface pruning plan records bool handling in direct API float
+validators, direct shape coverage for \texttt{gpurec/core/extract\_parameters.py},
+the unused \texttt{\_normalize\_family\_tree\_paths()} alias,
+\texttt{normalize\_family\_chunk\_size()} export status, internal ownership for
+\texttt{UniformChunkedState}, chunked \texttt{nll\_per\_family()} diagnostics,
+and whether \texttt{implicit\_grad\_loglik\_vjp\_wave()} is internal or supported
+low-level API.  It also records stale Rust sampler help markers, LBFGS post-step
+nonfinite checks, local script model closure, optimizer-state discard exception
+scope, dynamic CLI compatibility attributes, branch-level Rust sampler term
+coverage, and the Python 3.10 TOML parser fallback.  The hygiene guard for these
+refresh findings reports \texttt{1 passed}.  The full repository hygiene module
+now reports \texttt{70 passed}, full collection reports \texttt{914 tests
+collected}, and \texttt{git diff --check} passes.
+
+The first workflow/backtracking refresh finding has moved from documentation to a
+guarded behavior change.  \texttt{gpurec.backtracking} now requires Rust sampler
+\texttt{--help} text to include \texttt{--samples}, \texttt{--seed},
+\texttt{--output-dir}, \texttt{--max-events}, and \texttt{input.json}; stale
+short help now fails preflight with the missing markers named.  The touched
+backtracking and workflow-test modules compile, and the focused
+\texttt{ensure\_backtracking\_available} selector reports \texttt{4 passed}.
+The actual Rust \texttt{--help} command prints the required options, and the
+broader backtracking-command selector reports \texttt{9 passed, 433 deselected}.
+Repository hygiene still reports \texttt{70 passed}, full collection reports
+\texttt{915 tests collected}, and \texttt{git diff --check} passes.
+
+The second workflow refresh finding is now guarded and fixed.  The LBFGS branch
+still records a current-theta evaluation after \texttt{optimizer.step(closure)}
+so diagnostics and checkpoints describe saved parameters, but that evaluation now
+uses the same finite objective/gradient guard as the Adam and Adagrad post-update
+path.  A fake LBFGS regression returns a finite closure followed by a nonfinite
+current-theta evaluation and verifies failed
+\texttt{nonfinite\_objective\_or\_gradient} status with no LBFGS optimizer row
+recorded.  The touched optimizer and workflow-test modules compile, and the
+focused selector reports \texttt{1 passed}.
 
 \section{Next Audit Targets}
 

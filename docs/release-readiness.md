@@ -156,8 +156,10 @@ cargo run --locked --quiet --manifest-path crates/gpurec-backtrack/Cargo.toml --
 pytest -q tests/integration/test_rust_backtracking_fixture.py
 ```
 
-GPU validation should use a small species tree and a small family subset before
-running memory-heavy HOGENOM or 1000-tree benchmark checks.
+GPU validation should start with a deliberately small family subset on a species
+tree large enough for the current backward kernels (`S > 256`).  The tiny source
+example is only a config/parser fixture, not an end-to-end optimizer smoke.  Run
+memory-heavy HOGENOM or 1000-tree benchmark checks after that.
 
 ## Artifact Loading
 

@@ -47,6 +47,9 @@ _BACKTRACK_RUN_TIMEOUT_SECONDS = 3600
 _BACKTRACK_HELP_MARKERS = (
     "usage: gpurec-backtrack",
     "--samples",
+    "--output-dir",
+    "--seed",
+    "--max-events",
     "input.json",
 )
 _UINT64_MAX = (1 << 64) - 1
@@ -318,9 +321,11 @@ def _validate_backtracking_help(invocation: _BacktrackInvocation) -> None:
 
     missing = [marker for marker in _BACKTRACK_HELP_MARKERS if marker not in output]
     if missing:
+        missing_text = ", ".join(missing)
         raise RuntimeError(
             "gpurec backtracking command did not report the expected "
-            f"gpurec-backtrack help text: {_command_text(command)}"
+            "gpurec-backtrack help text "
+            f"(missing: {missing_text}): {_command_text(command)}"
         )
 
 

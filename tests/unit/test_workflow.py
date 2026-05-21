@@ -2782,7 +2782,8 @@ def test_ensure_backtracking_available_validates_help(
         return SimpleNamespace(
             returncode=0,
             stdout=(
-                "usage: gpurec-backtrack [--samples N] "
+                "usage: gpurec-backtrack "
+                "[--samples N --output-dir DIR --seed SEED --max-events N] "
                 "[input.json] [output.xml]\n"
             ),
             stderr="",
@@ -2799,6 +2800,30 @@ def test_ensure_backtracking_available_validates_help(
     assert calls[0][1]["cwd"] is None
     assert calls[0][1]["text"] is True
     assert calls[0][1]["timeout"] == backtracking._BACKTRACK_HELP_TIMEOUT_SECONDS
+
+
+def test_ensure_backtracking_available_rejects_stale_help_missing_wrapper_flags(
+    tmp_path: Path,
+    monkeypatch,
+):
+    binary = tmp_path / "gpurec-backtrack"
+    binary.write_text("#!/bin/sh\n", encoding="utf-8")
+    binary.chmod(0o755)
+
+    def fake_run(command: list[str], **kwargs: object) -> SimpleNamespace:
+        assert command == [str(binary.resolve()), "--help"]
+        return SimpleNamespace(
+            returncode=0,
+            stdout="usage: gpurec-backtrack [--samples N] [input.json]\n",
+            stderr="",
+        )
+
+    monkeypatch.setattr(backtracking.subprocess, "run", fake_run)
+
+    with pytest.raises(RuntimeError, match="missing: .*--seed.*--max-events") as exc_info:
+        backtracking.ensure_backtracking_available(binary)
+
+    assert "--output-dir" in str(exc_info.value)
 
 
 def test_ensure_backtracking_available_rejects_unrelated_executable(
@@ -4323,6 +4348,52 @@ def test_optimization_runner_lbfgs_runtime_error_is_failed_status(
     assert runner.fake_model.closed
 
 
+def test_optimization_runner_lbfgs_rejects_nonfinite_post_step_evaluation(
+    tmp_path: Path,
+    monkeypatch,
+):
+    class FakePostStepNonfiniteModel(_WorkflowOptimizerModeModel):
+        def __init__(self):
+            super().__init__()
+            self.loss_calls = 0
+
+        def full_loss(self):
+            self.loss_calls += 1
+            if self.loss_calls == 2:
+                return self.theta.sum() * torch.tensor(float("nan"))
+            return super().full_loss()
+
+    class FakePostStepNonfiniteRunner(OptimizationRunner):
+        def build_model(self):
+            self.fake_model = FakePostStepNonfiniteModel()
+            return self.fake_model
+
+    def finite_closure_then_move_theta(self, closure=None):
+        loss = closure()
+        with torch.no_grad():
+            for group in self.param_groups:
+                for parameter in group["params"]:
+                    parameter.add_(0.125)
+        return loss
+
+    monkeypatch.setattr(torch.optim.LBFGS, "step", finite_closure_then_move_theta)
+    config = _optimizer_mode_config(tmp_path, optimizer="lbfgs")
+    runner = FakePostStepNonfiniteRunner(config)
+
+    result = runner.run()
+
+    assert result.status == "failed"
+    assert result.reason == "nonfinite_objective_or_gradient"
+    assert runner.fake_model.loss_calls == 3
+    history_rows = _optimizer_mode_history_rows(config.out_dir)
+    assert [row["optimizer/phase"] for row in history_rows] == ["final_eval"]
+    latest = load_checkpoint(config.out_dir / "checkpoints" / "latest.pt")
+    assert latest["status"]["status"] == "failed"
+    assert latest["status"]["reason"] == "nonfinite_objective_or_gradient"
+    assert latest["last_row"]["optimizer/phase"] == "final_eval"
+    assert runner.fake_model.closed
+
+
 def test_optimization_runner_run_writes_outputs_with_fake_model(tmp_path: Path):
     class FakeOptimizationModel:
         def __init__(self):
@@ -5173,17 +5244,21 @@ def test_optimization_runner_discards_resume_optimizer_state_on_phase_mismatch(
 
 
 @pytest.mark.parametrize(
-    ("payload_update", "message"),
+    ("identity_case", "message"),
     [
-        ({"family_names": ["fam_a", "fam_b"]}, "family_names differ"),
-        ({"species_names": ["sp_a", "sp_b"]}, "species_names differ"),
-        ({"config": {"mode": "genewise"}}, r"config\.mode differs"),
+        ("family_names", "family_names differ"),
+        ("species_names", "species_names differ"),
+        ("species_tree", r"config\.species_tree differs"),
+        ("families_file", r"config\.families_file differs"),
+        ("mode", r"config\.mode differs"),
+        ("start", r"config\.start differs"),
+        ("max_families", r"config\.max_families differs"),
     ],
 )
 def test_optimization_runner_resume_rejects_incompatible_checkpoint_identity(
     tmp_path: Path,
     monkeypatch,
-    payload_update: dict[str, object],
+    identity_case: str,
     message: str,
 ):
     class FakeResumeModel:
@@ -5231,14 +5306,22 @@ def test_optimization_runner_resume_rejects_incompatible_checkpoint_identity(
                 "stable_loss_steps": 0,
             },
         }
-        if "config" in payload_update:
-            config_update = payload_update["config"]
-            assert isinstance(config_update, dict)
-            payload["config"] = {**payload["config"], **config_update}
-        if "family_names" in payload_update:
-            payload["family_names"] = payload_update["family_names"]
-        if "species_names" in payload_update:
-            payload["species_names"] = payload_update["species_names"]
+        if identity_case == "family_names":
+            payload["family_names"] = ["fam_a", "fam_b"]
+        elif identity_case == "species_names":
+            payload["species_names"] = ["sp_a", "sp_b"]
+        else:
+            config_updates = {
+                "species_tree": tmp_path / "other_sp.nwk",
+                "families_file": tmp_path / "other_families.txt",
+                "mode": "genewise",
+                "start": 1,
+                "max_families": 1,
+            }
+            payload["config"] = {
+                **payload["config"],
+                identity_case: config_updates[identity_case],
+            }
         return payload
 
     workflow_optimize_module = importlib.import_module("gpurec.workflow.optimize")

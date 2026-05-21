@@ -6,10 +6,14 @@ logic was changed before recording the findings.
 
 ## Scope And Evidence
 
-- Tracked scope: `git ls-files | wc -l` reported 134 files.
-- Source-like size: `git ls-files '*.py' '*.cpp' '*.hpp' '*.rs' '*.R' | xargs wc -l`
+The bullets below are the initial read-only audit snapshot, not live repository
+metrics.  Later verification entries record current collection counts as files,
+docs, and guards are added during the audit.
+
+- Initial tracked scope snapshot: `git ls-files | wc -l` reported 134 files.
+- Initial source-like size snapshot: `git ls-files '*.py' '*.cpp' '*.hpp' '*.rs' '*.R' | xargs wc -l`
   reported 43,009 lines.
-- Test inventory: `pytest --collect-only -q` collected 823 tests.
+- Initial test inventory snapshot: `pytest --collect-only -q` collected 823 tests.
 - Coverage tooling: importing `coverage` failed with
   `ModuleNotFoundError: No module named 'coverage'`, so this pass used static
   evidence, test references, and subagent review instead of a line coverage
@@ -420,20 +424,28 @@ evidence is thin.
   but it does not cancel or rewrite pending background prefetch work.  Future
   runtime changes should update that documented contract first.
 - Scheduler and diagnostic exports such as `collate_wave`, `split_phase_waves`,
-  and C++ wave-stat exports look unowned or test-only.  Decide whether they are
-  supported diagnostics; otherwise delete or guard them.  `bench_parse` is no
-  longer retained as public surface.
+  `compute_clade_waves`, and C++ wave-stat exports now have an ownership table
+  in `docs/runtime-surface-pruning-plan-2026-05-21.md`.  Production-owned paths
+  (`preprocess_multiple_families`, runtime scheduler/layout helpers, and
+  `family_schedule_summary`) should be kept or hidden only behind replacements;
+  test-only and diagnostic exports still need migration/deprecation decisions.
+  `bench_parse` is no longer retained as public surface.
 - The legacy leaf-to-species fallback is now documented in public user-facing
   docs: direct `from_trees` inputs map `Species_gene` to species `Species` and
   labels without `_` to the full label, while AleRax `mapping` entries and
   explicit `leaf_species_maps` should be used when labels do not follow that
   convention.
-- The refreshed workflow audit found that checkpoint compatibility validates a
-  narrow identity slice and does not fully type-check every identity value
-  before resume comparison.  Add parametrized compatibility guards for
-  `species_tree`, `families_file`, `mode`, `start`, and `max_families`, then
-  decide whether resume should call the full `RunConfig.from_dict()` validation
-  path.
+- The refreshed workflow audit found that checkpoint compatibility validates the
+  v1 identity slice but intentionally does not reconstruct a full `RunConfig`
+  before comparison.  The current documented boundary is: `load_checkpoint()`
+  requires `family_names`, `species_names`, and config identity keys
+  `species_tree`, `families_file`, `mode`, `start`, and `max_families`, while
+  `validate_checkpoint_model_compatibility()` compares those values with the
+  active `RunConfig` and rebuilt model before theta restore, normalizing only
+  path fields.  A future behavior change should decide whether resume should
+  call the full `RunConfig.from_dict()` validation path before comparison.  The
+  focused optimization-resume incompatibility regression now covers every
+  documented config identity key, not only `mode`.
 - The workflow checkpoint submodule support boundary is now explicit below the
   lazy `gpurec.workflow` exports.  Top-level workflow exports remain the stable
   shortcut surface; `gpurec.workflow.checkpoint` now declares
@@ -459,6 +471,29 @@ evidence is thin.
   accepts fp32/fp64/bf16 CUDA tensors for standalone row-mask experiments, while
   the public retained `Pi_wave_backward` path still supports only fp32/fp64 and
   rejects bf16 before this helper is reached.
+- The follow-up core/API explorer added a guarded decision table to
+  `docs/runtime-surface-pruning-plan-2026-05-21.md` before any behavior change.
+  Unresolved surfaces include bool acceptance in direct API float validators,
+  direct shape tests for `gpurec/core/extract_parameters.py`, the unused
+  `_normalize_family_tree_paths()` compatibility alias, unclear export status for
+  `normalize_family_chunk_size()`, internal ownership of `UniformChunkedState`,
+  chunked `nll_per_family()` diagnostics, and classification of
+  `implicit_grad_loglik_vjp_wave()` as internal bridge versus low-level API.
+- The follow-up workflow/backtracking explorer added a guarded decision table to
+  the same pruning plan.  Remaining unresolved surfaces include local scripts
+  that should close per-family/per-chunk models, narrow optimizer-state discard
+  errors, test-only dynamic CLI compatibility attributes, branch-level Rust
+  sampler term coverage, and the Python 3.10 `_parse_minimal_pyproject()`
+  fallback.
+- The stale Rust sampler help-marker finding is now fixed.  The Python
+  backtracking preflight requires help text for `--samples`, `--seed`,
+  `--output-dir`, `--max-events`, and `input.json`, and the missing-marker error
+  names the stale flags before a sampler is accepted.
+- The LBFGS post-step nonfinite finding is now fixed.  After LBFGS line search,
+  optimization resume/runner diagnostics still evaluate the saved current theta,
+  but that evaluation now repeats the same finite loss/gradient guard used after
+  Adam/Adagrad updates and fails with `nonfinite_objective_or_gradient` before an
+  optimizer-step row or checkpoint can be recorded.
 
 ## Adequately Covered Or Lower-Risk Areas
 
@@ -796,11 +831,18 @@ not edit files.  New or still-open findings from that refresh are:
   checker and tests intentionally require top-level license metadata; a human
   license choice is needed before adding `LICENSE`, `pyproject.toml` metadata,
   and classifiers.
-- Legacy HOGENOM scripts and notebooks are documented as checkout-local, but
-  several large launchers still duplicate workflow logic and optimizer
-  schedules outside the supported CLI.  Record behavior worth preserving before
-  migration or deletion; for the fixed local profiler, add a help/argument smoke
-  or an explicit fixed-profiler contract.
+- Legacy HOGENOM scripts and notebooks are documented as checkout-local.  The
+  ignored local notebook/profiling workspace now has a keep/delete/migrate
+  inventory, and the fixed global-uniform, specieswise-uniform, and HOGENOM
+  profiler scripts now document their unique behavior and output contracts.
+  Several launchers still duplicate workflow logic outside the supported CLI;
+  migrate behavior worth keeping into `gpurec.workflow` before deletion.
+- Ignored test-data roots are now inventoried before relying on local-only files
+  during the repo-wide audit.  `tests/README.md` and the runtime-surface pruning
+  plan identify generated `test_trees_*` datasets, external HOGENOM/Davin
+  roots, `tests/data.tar.gz`, `.preprocess_cache/`, and `tests/data/**/output/`
+  as non-distributed local state.  Required tests should use tracked fixtures or
+  a documented generator instead of depending on those ignored paths.
 - Test and CI coverage gaps remain visible.  CPU CI does not enforce CUDA or
   kernel tests, the Rust JSON integration smoke intentionally exercises only a
   trivial speciation path, and workflow tests are large and private-API-heavy.
@@ -1433,6 +1475,92 @@ not edit files.  New or still-open findings from that refresh are:
 - `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_repository_hygiene.py::test_active_mask_bfloat16_boundary_is_documented_as_private_helper -q`:
   1 passed after guarding the private helper docstring and the retained
   fp32/fp64 Pi backward dtype gate.
+- `python -m py_compile gpurec/workflow/checkpoint.py tests/unit/test_repository_hygiene.py`:
+  passed after documenting the current v1 checkpoint identity boundary.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_repository_hygiene.py::test_checkpoint_identity_boundary_is_documented_before_stricter_validation -q`:
+  1 passed after guarding README and module-docstring wording for the current
+  checkpoint identity comparison boundary.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_repository_hygiene.py -q`:
+  63 passed after adding the checkpoint identity boundary documentation guard.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest --collect-only -q`: 903 tests
+  collected after adding the checkpoint identity boundary documentation guard.
+- `python -m py_compile tests/unit/test_repository_hygiene.py`: passed after
+  adding the runtime-surface ownership-table guard.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_repository_hygiene.py::test_runtime_surface_plan_documents_scheduler_and_pybind_ownership -q`:
+  1 passed after guarding the scheduler/C++ pybind ownership table.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_repository_hygiene.py -q`:
+  64 passed after adding the runtime-surface ownership-table guard.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest --collect-only -q`: 904 tests
+  collected after adding the runtime-surface ownership-table guard.
+- `python -m py_compile scripts/optimize_hogenom_ccp_global_uniform.py scripts/optimize_hogenom_ccp_specieswise_uniform.py scripts/profile_hogenom_ccp_pass.py tests/unit/test_repository_hygiene.py`:
+  passed after documenting ignored workspace and fixed-dataset launcher
+  contracts.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_repository_hygiene.py::test_ignored_local_workspace_inventory_documents_notebooks_and_profiles tests/unit/test_repository_hygiene.py::test_fixed_dataset_hogenom_launchers_document_unique_contracts -q`:
+  2 passed after guarding ignored local notebook/profiling inventory and the
+  global-uniform/specieswise-uniform/profiler help contracts.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_repository_hygiene.py -q`:
+  66 passed after adding the ignored-workspace and fixed-launcher guards.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest --collect-only -q`: 906 tests
+  collected after adding the ignored-workspace and fixed-launcher guards.
+- `python -m py_compile tests/unit/test_workflow.py`: passed after extending
+  optimization-resume checkpoint identity mismatch coverage across all documented
+  config identity fields.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_workflow.py::test_optimization_runner_resume_rejects_incompatible_checkpoint_identity -q`:
+  7 passed after covering `species_tree`, `families_file`, `mode`, `start`, and
+  `max_families` mismatches plus family/species name mismatches before theta
+  restore.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_repository_hygiene.py -q`:
+  66 passed after the checkpoint identity coverage documentation update.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest --collect-only -q`: 910 tests
+  collected after expanding the parametrized checkpoint identity regression.
+- `python -m py_compile tests/unit/test_repository_hygiene.py`: passed after
+  documenting ignored local test-data/cache ownership.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_repository_hygiene.py::test_ignored_local_test_data_inventory_is_documented -q`:
+  1 passed after guarding `.gitignore`, `tests/README.md`, and the runtime
+  pruning plan for ignored test data, caches, and generated output roots.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_repository_hygiene.py -q`:
+  67 passed after adding the ignored local test-data inventory guard.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest --collect-only -q`: 911 tests
+  collected after adding the ignored local test-data inventory guard.
+- `python -m py_compile tests/unit/test_repository_hygiene.py`: passed after
+  correcting documentation-only drift reported by the docs/metadata explorer.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_repository_hygiene.py::test_repo_audit_headline_metrics_are_marked_as_initial_snapshot tests/unit/test_repository_hygiene.py::test_release_readiness_gpu_smoke_matches_small_species_limitation tests/unit/test_repository_hygiene.py::test_second_order_docs_reference_current_public_loss_apis -q`:
+  3 passed after marking headline audit metrics as an initial snapshot, aligning
+  release GPU-smoke wording with the `S > 256` backward limitation, and removing
+  stale exact line references from the second-order planning note.
+- `python -m py_compile tests/unit/test_repository_hygiene.py`: passed after
+  recording core/API and workflow/backtracking refresh findings.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_repository_hygiene.py::test_runtime_surface_plan_records_refresh_findings_before_behavior_changes -q`:
+  1 passed after guarding the new runtime-surface decision tables for direct API
+  validation, parameter-shape helpers, chunked diagnostics, sampler preflight,
+  LBFGS nonfinite handling, local script closure, CLI compatibility, Rust term
+  variants, and release TOML parsing fallback.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_repository_hygiene.py -q`:
+  70 passed after recording the docs/metadata, core/API, and
+  workflow/backtracking refresh findings.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest --collect-only -q`: 914 tests
+  collected after adding the refresh-finding hygiene guards.
+- `git diff --check`: passed after the refresh-finding documentation and guards.
+- `python -m py_compile gpurec/backtracking.py tests/unit/test_workflow.py`:
+  passed after tightening Rust sampler help preflight markers.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_workflow.py::test_ensure_backtracking_available_validates_help tests/unit/test_workflow.py::test_ensure_backtracking_available_rejects_stale_help_missing_wrapper_flags tests/unit/test_workflow.py::test_ensure_backtracking_available_rejects_unrelated_executable tests/unit/test_workflow.py::test_ensure_backtracking_available_reports_help_failure -q`:
+  4 passed after requiring sampler help for `--seed`, `--output-dir`, and
+  `--max-events` and adding a negative stale-help regression.
+- `cargo run --locked --quiet --manifest-path crates/gpurec-backtrack/Cargo.toml -- --help`:
+  passed and printed the current Rust help with `--samples`, `--output-dir`,
+  `--seed`, and `--max-events`.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_workflow.py -q -k 'ensure_backtracking_available or backtracking_command'`:
+  9 passed, 433 deselected after tightening the sampler preflight.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_repository_hygiene.py -q`:
+  70 passed after marking the Rust sampler help-marker finding as fixed.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest --collect-only -q`: 915 tests
+  collected after adding the stale-help regression.
+- `git diff --check`: passed after the sampler preflight change and audit-doc
+  updates.
+- `python -m py_compile gpurec/workflow/optimize.py tests/unit/test_workflow.py`:
+  passed after adding the LBFGS post-step nonfinite guard.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_workflow.py::test_optimization_runner_lbfgs_rejects_nonfinite_post_step_evaluation -q`:
+  1 passed after guarding the finite-closure/nonfinite-current-theta LBFGS path.
 
 ## Recommended Next Order
 

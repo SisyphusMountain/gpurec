@@ -292,6 +292,17 @@ helpers are not top-level `gpurec.workflow` shortcuts; prefer `optimize`,
 `sample`, `RunConfig`, and `SamplingConfig` unless code specifically needs the
 versioned checkpoint payload.
 
+Version-1 workflow checkpoints carry identity metadata for safe restore:
+`family_names`, `species_names`, and config identity fields `species_tree`,
+`families_file`, `mode`, `start`, and `max_families`.  `load_checkpoint()`
+requires those fields to be present and validates the name-list metadata;
+`validate_checkpoint_model_compatibility()` compares them with the active
+`RunConfig` and rebuilt model before `restore_model_theta()` copies parameters.
+Path identity fields are normalized during comparison.  The checkpoint loader
+does not reconstruct a full `RunConfig`; tooling that needs complete config type
+and range validation should pass `load_checkpoint(path)["config"]` through
+`RunConfig.from_dict(...)`.
+
 Resume starts from the checkpoint `next_step`.  If `next_step` already equals
 the configured `steps`, `gpurec optimize --resume-from ...` performs only the
 final evaluation/artifact refresh, writes a fresh `latest.pt`, and returns the

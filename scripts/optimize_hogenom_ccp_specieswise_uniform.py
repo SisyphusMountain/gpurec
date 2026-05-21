@@ -1,3 +1,13 @@
+"""Checkout-local specieswise-uniform HOGENOM optimizer reproducer.
+
+This fixed-dataset launcher hard-codes the local HOGENOM CCP input layout,
+optimizes one D/T/L theta row per species with uniform origination, and delegates
+legacy optimizer schedules and output writing to ``hogenom_opt_helpers``.  It is
+kept only while the specieswise uniform experiment surface is still being
+compared with the supported workflow/CLI; migrate helper behavior and output
+contracts before deleting it.
+"""
+
 from __future__ import annotations
 
 import argparse
@@ -90,7 +100,15 @@ def default_lr(optimizer: str) -> str:
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Optimize specieswise rates on HOGENOM CCP with uniform origination."
+        description="Optimize specieswise rates on HOGENOM CCP with uniform origination.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "Checkout-local contract: hard-coded HOGENOM inputs, one D/T/L "
+            "theta row per species, uniform origination, helper-owned optimizer "
+            "schedules, and CSV/JSON outputs under "
+            "output_gpurec_specieswise_uniform_opt_max100. Migrate this "
+            "behavior to gpurec.workflow before deleting the script."
+        ),
     )
     parser.add_argument("--optimizer", choices=OPTIMIZERS, default="lbfgs")
     parser.add_argument("--regularization", choices=REGULARIZERS, default="none")

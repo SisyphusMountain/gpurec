@@ -313,6 +313,24 @@ def test_docs_map_distinguishes_cuda_smoke_from_checkout_local_config():
         assert token in docs_readme
 
 
+def test_release_readiness_gpu_smoke_matches_small_species_limitation():
+    root = Path(__file__).resolve().parents[2]
+    release_readiness = (root / "docs" / "release-readiness.md").read_text(
+        encoding="utf-8"
+    )
+
+    for token in (
+        "small family subset",
+        "S > 256",
+        "tiny source",
+        "config/parser fixture",
+        "not an end-to-end optimizer smoke",
+        "HOGENOM or 1000-tree benchmark checks",
+    ):
+        assert token in release_readiness
+    assert "small species tree" not in release_readiness
+
+
 def test_gpu_tests_use_explicit_module_level_markers():
     root = Path(__file__).resolve().parents[2]
     conftest = (root / "tests" / "conftest.py").read_text(encoding="utf-8")
@@ -1103,6 +1121,69 @@ def test_project_readme_documents_checkpoint_config_metadata_surface():
         assert hasattr(workflow_checkpoint, name)
 
 
+def test_checkpoint_identity_boundary_is_documented_before_stricter_validation():
+    root = Path(__file__).resolve().parents[2]
+    project_readme = (root / "README.md").read_text(encoding="utf-8")
+    checkpoint_source = (root / "gpurec" / "workflow" / "checkpoint.py").read_text(
+        encoding="utf-8"
+    )
+    checkpoint_module = ast.parse(checkpoint_source)
+    module_docstring = " ".join((ast.get_docstring(checkpoint_module) or "").split())
+    normalized_readme = " ".join(project_readme.split())
+    config_identity_keys = {
+        "species_tree",
+        "families_file",
+        "mode",
+        "start",
+        "max_families",
+    }
+
+    assert (
+        set(getattr(workflow_checkpoint, "_CHECKPOINT_CONFIG_IDENTITY_KEYS"))
+        == config_identity_keys
+    )
+    for token in (
+        "Version-1 workflow checkpoints carry identity metadata for safe restore",
+        "`family_names`",
+        "`species_names`",
+        "`species_tree`",
+        "`families_file`",
+        "`mode`",
+        "`start`",
+        "`max_families`",
+        "`load_checkpoint()` requires those fields to be present",
+        "`validate_checkpoint_model_compatibility()` compares them with the active `RunConfig`",
+        "before `restore_model_theta()` copies parameters",
+        "Path identity fields are normalized during comparison",
+        "does not reconstruct a full `RunConfig`",
+        "`RunConfig.from_dict(...)`",
+    ):
+        assert token in normalized_readme
+
+    for token in (
+        "Version-1 checkpoints carry identity metadata for safe restore",
+        "``family_names``",
+        "``species_names``",
+        "``species_tree``",
+        "``families_file``",
+        "``mode``",
+        "``start``",
+        "``max_families``",
+        "``load_checkpoint()`` requires those fields to exist",
+        "``validate_checkpoint_model_compatibility()`` compares them",
+        "before ``restore_model_theta()`` copies parameters",
+        "normalizing only path identity fields during comparison",
+        "does not reconstruct a full ``RunConfig``",
+        "``RunConfig.from_dict(...)``",
+    ):
+        assert token in module_docstring
+
+    assert "_require_config_identity_fields(path, payload[\"config\"])" in checkpoint_source
+    assert "checkpoint_string_list(path, \"family_names\"" in checkpoint_source
+    assert "checkpoint_string_list(path, \"species_names\"" in checkpoint_source
+    assert "_normalize_checkpoint_identity_value(" in checkpoint_source
+
+
 def test_newick_input_subset_is_documented_on_public_surfaces():
     root = Path(__file__).resolve().parents[2]
     project_readme = (root / "README.md").read_text(encoding="utf-8")
@@ -1491,6 +1572,15 @@ def test_second_order_docs_reference_current_public_loss_apis():
     assert "model.nll()" not in note
     assert "GeneReconModel.full_loss_for_theta(theta)" in note
     assert "UniformChunkedReconModel.nll()" in note
+    for stale_line_reference in (
+        "gpurec/api/autograd.py:280",
+        "gpurec/optimization/implicit_grad.py:20",
+        "gpurec/api/uniform_chunked.py:627",
+        "gpurec/api/uniform_chunked.py:640",
+    ):
+        assert stale_line_reference not in note
+    assert "exact source line" in note
+    assert "numbers because the optimization internals move frequently" in note
 
 
 def test_hogenom_alerax_rate_evaluator_documents_local_file_contract():
@@ -1556,6 +1646,85 @@ def test_tracked_notebooks_are_documented_as_checkout_local_artifacts():
     assert [name for name in notebooks if name not in note] == []
 
 
+def test_ignored_local_workspace_inventory_documents_notebooks_and_profiles():
+    root = Path(__file__).resolve().parents[2]
+    gitignore = (root / ".gitignore").read_text(encoding="utf-8")
+    notebooks_readme = (root / "notebooks" / "README.md").read_text(encoding="utf-8")
+    pruning_plan = (
+        root / "docs" / "runtime-surface-pruning-plan-2026-05-21.md"
+    ).read_text(encoding="utf-8")
+    combined_docs = notebooks_readme + "\n" + pruning_plan
+
+    for token in (
+        "*.ipynb",
+        "profiling/ancestor_batching/",
+        "profiling/bf16_backward_nsys/",
+        "profiling/bf16_handoff_prod/",
+        "profiling/hogenom_ccp/",
+        "profiling/specieswise_worker3/",
+    ):
+        assert token in gitignore
+
+    for token in (
+        "Ignored/local workspace inventory",
+        "Ignored Local Notebooks",
+        "evaluate_gpurec_at_alerax_params.ipynb",
+        "hogenom_adam_bfgs_schedule.ipynb",
+        "optimize_hogenom_ccp_specieswise_origination.ipynb",
+        "pi_iteration_bound_diagnostic.ipynb",
+        "gpurec.optimization.optimize_scheduled",
+        "pi_iteration_bound_diagnostic_impl",
+        "profiling/ancestor_batching/",
+        "missing local harnesses",
+        "profiling/bf16_backward_nsys/",
+        "profiling/bf16_handoff_prod/",
+        "bf16 is now documented as direct-API-only",
+        "profiling/hogenom_ccp/",
+        "profiling/specieswise_worker3/",
+        "archive/delete",
+    ):
+        assert token in combined_docs
+
+
+def test_ignored_local_test_data_inventory_is_documented():
+    root = Path(__file__).resolve().parents[2]
+    gitignore = (root / ".gitignore").read_text(encoding="utf-8")
+    tests_readme = (root / "tests" / "README.md").read_text(encoding="utf-8")
+    pruning_plan = (
+        root / "docs" / "runtime-surface-pruning-plan-2026-05-21.md"
+    ).read_text(encoding="utf-8")
+    combined_docs = tests_readme + "\n" + pruning_plan
+
+    ignored_data_patterns = (
+        "tests/data/test_trees_20/",
+        "tests/data/test_trees_100/",
+        "tests/data/test_trees_1000/",
+        "tests/data/test_trees_10000/",
+        "tests/data/test_trees_dtl01/",
+        "tests/data/HOGENOM/",
+        "tests/data/davin/",
+        "tests/data/hogenom_bench/",
+        "tests/data.tar.gz",
+        ".preprocess_cache/",
+        "tests/data/**/output/",
+    )
+    for token in ignored_data_patterns:
+        assert token in gitignore
+        assert token in combined_docs
+
+    for token in (
+        "Ignored local test data roots",
+        "distributable fixture",
+        "Ignored test-data and cache inventory",
+        "Generated tree-scale fixtures",
+        "External or checkout-local biological datasets",
+        "Do not treat as source of truth",
+        "Delete/regenerate as needed",
+        "before any required workflow depends on it",
+    ):
+        assert token in combined_docs
+
+
 def test_scripts_readme_lists_tracked_scripts_in_ownership_matrix():
     root = Path(__file__).resolve().parents[2]
     note = (root / "scripts" / "README.md").read_text(encoding="utf-8")
@@ -1575,6 +1744,57 @@ def test_scripts_readme_lists_tracked_scripts_in_ownership_matrix():
     ):
         assert token in note
     assert [name for name in script_names if name not in note] == []
+
+
+def test_fixed_dataset_hogenom_launchers_document_unique_contracts():
+    root = Path(__file__).resolve().parents[2]
+    scripts_readme = (root / "scripts" / "README.md").read_text(encoding="utf-8")
+    script_paths = [
+        root / "scripts" / "optimize_hogenom_ccp_global_uniform.py",
+        root / "scripts" / "optimize_hogenom_ccp_specieswise_uniform.py",
+        root / "scripts" / "profile_hogenom_ccp_pass.py",
+    ]
+    sources = "\n".join(path.read_text(encoding="utf-8") for path in script_paths)
+
+    for token in (
+        "Checkout-local HOGENOM run with one shared D/T/L theta row",
+        "`global_optimization_history.csv`",
+        "`global_rate_distribution_history.csv`",
+        "`optimized_global_rates.csv`",
+        "`uniform_origination_distribution.csv`",
+        "square/l1/huber/elastic-net/gaussian/beta-pS regularizers",
+        "Checkout-local HOGENOM run with one D/T/L theta row per species",
+        "`specieswise_optimization_history.csv`",
+        "`specieswise_parameter_history.csv`",
+        "`optimized_specieswise_rates.csv`",
+        "helper-owned optimizer schedules",
+        "HOGENOM-only CUDA/Nsight harness",
+        "`config`, `model`, `warmup`, `measured`, and `summary` events",
+        "CUDA profiler API calls and NVTX ranges",
+    ):
+        assert token in scripts_readme
+
+    for token in (
+        "Checkout-local global-uniform HOGENOM optimizer reproducer",
+        "output_gpurec_global_uniform_opt_max100",
+        "Checkout-local specieswise-uniform HOGENOM optimizer reproducer",
+        "output_gpurec_specieswise_uniform_opt_max100",
+        "Checkout-local HOGENOM CCP CUDA/Nsight profiling harness",
+        "config/model/warmup/measured/summary events",
+        "argparse.RawDescriptionHelpFormatter",
+    ):
+        assert token in sources
+
+    for script in script_paths:
+        result = subprocess.run(
+            [sys.executable, str(script.relative_to(root)), "--help"],
+            cwd=root,
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=SUBPROCESS_TIMEOUT,
+        )
+        assert "Checkout-local contract:" in result.stdout
 
 
 def test_branchscale_penalty_report_documents_legacy_layout_and_staleness():
@@ -1728,6 +1948,112 @@ def test_cpp_wave_stat_exports_validate_positive_max_wave_size():
         assert re.search(pattern, source, flags=re.S), name
 
 
+def test_runtime_surface_plan_documents_scheduler_and_pybind_ownership():
+    root = Path(__file__).resolve().parents[2]
+    pruning_plan = (
+        root / "docs" / "runtime-surface-pruning-plan-2026-05-21.md"
+    ).read_text(encoding="utf-8")
+    normalized_plan = " ".join(pruning_plan.split())
+    preprocess_source = (
+        root / "gpurec" / "core" / "cpp" / "preprocess.cpp"
+    ).read_text(encoding="utf-8")
+
+    for token in (
+        "Ownership table from the current read-only audit",
+        "`preprocess_multiple_families` pybind",
+        "Production-owned",
+        "`include_details=True`",
+        "`include_details=False`",
+        "species-only empty-family cache path",
+        "Legacy `preprocess` pybind",
+        "Document as legacy/deprecated before removal",
+        "`compute_phased_waves` pybind",
+        "Do not remove the implementation",
+        "`compute_wave_stats`",
+        "`compute_packet_wave_stats`",
+        "`compute_phased_wave_stats`",
+        "`compute_phased_cross_family_wave_stats`",
+        "`compute_cross_family_wave_stats`",
+        "Keep only with a maintained profiling or diagnostic command",
+        "`bench_parse`",
+        "Already retired",
+        "`compute_clade_waves` Python helper",
+        "Move to a test fixture",
+        "`collate_wave`, `split_phase_waves`",
+        "Migrate tests or docs before deleting from `gpurec.core`",
+        "Runtime Python scheduler/layout path",
+        "`family_schedule_summary`",
+    ):
+        assert token in normalized_plan
+
+    for exported in (
+        'm.def("preprocess"',
+        'm.def("preprocess_multiple_families"',
+        'm.def("compute_phased_waves"',
+        'm.def("compute_wave_stats"',
+        'm.def("compute_packet_wave_stats"',
+        'm.def("compute_phased_wave_stats"',
+        'm.def("compute_phased_cross_family_wave_stats"',
+        'm.def("compute_cross_family_wave_stats"',
+    ):
+        assert exported in preprocess_source
+
+
+def test_runtime_surface_plan_records_refresh_findings_before_behavior_changes():
+    root = Path(__file__).resolve().parents[2]
+    pruning_plan = (
+        root / "docs" / "runtime-surface-pruning-plan-2026-05-21.md"
+    ).read_text(encoding="utf-8")
+    audit = (
+        root / "docs" / "repo-wide-audit-2026-05-21.md"
+    ).read_text(encoding="utf-8")
+    normalized_plan = " ".join(pruning_plan.split())
+    normalized_audit = " ".join(audit.split())
+
+    for token in (
+        "Core/API Refresh Findings",
+        "`finite_float()`, `positive_float()`, and `nonnegative_float()`",
+        "accept `True` as `1.0`",
+        "`tol_E`, `pi_max_diff_tol`, and `min_rate`",
+        "`as_family_param()`, `as_family_species()`, and `extract_parameters_uniform()`",
+        "`G == S` ambiguity",
+        "`_normalize_family_tree_paths()`",
+        "no tracked callers remain",
+        "`normalize_family_chunk_size()`",
+        "omitted from `__all__`",
+        "`UniformChunkedState`",
+        "keep it out of public exports",
+        "`UniformChunkedReconModel.nll_per_family()`",
+        "global/uniform chunked diagnostic",
+        "`implicit_grad_loglik_vjp_wave()`",
+        "internal bridge or supported low-level API",
+        "Workflow/Backtracking Refresh Findings",
+        "`_BACKTRACK_HELP_MARKERS`",
+        "`--seed`, `--output-dir`, and `--max-events`",
+        "LBFGS branch evaluates the current theta",
+        "`nonfinite_objective_or_gradient`",
+        "`profiling/evaluate_hogenom_alerax_rates.py`",
+        "`scripts/compare_backtracking_alerax_events.py`",
+        "`optimizer.load_state_dict`",
+        "`RuntimeError` or `TypeError`",
+        "`_RUN_CONFIG_CLI_OVERRIDE_FIELDS`",
+        "`HiddenTransferLossDonor`",
+        "`Sampler::apply_term`",
+        "`_parse_minimal_pyproject()`",
+    ):
+        assert token in normalized_plan
+
+    for token in (
+        "follow-up core/API explorer",
+        "bool acceptance in direct API float validators",
+        "unclear export status for `normalize_family_chunk_size()`",
+        "follow-up workflow/backtracking explorer",
+        "stale Rust sampler help-marker finding is now fixed",
+        "Python 3.10 `_parse_minimal_pyproject()` fallback",
+    ):
+        assert token in normalized_audit
+
+
 def test_preprocess_cpp_declares_direct_standard_includes():
     root = Path(__file__).resolve().parents[2]
     source = (
@@ -1752,6 +2078,23 @@ def test_preprocess_cpp_does_not_export_unowned_bench_parse():
     assert "bench_parse" not in source
     assert "std::chrono" not in source
     assert "#include <chrono>" not in source
+
+
+def test_repo_audit_headline_metrics_are_marked_as_initial_snapshot():
+    root = Path(__file__).resolve().parents[2]
+    audit = (
+        root / "docs" / "repo-wide-audit-2026-05-21.md"
+    ).read_text(encoding="utf-8")
+
+    for token in (
+        "initial read-only audit snapshot",
+        "live repository",
+        "Later verification entries record current collection counts",
+        "Initial tracked scope snapshot",
+        "Initial source-like size snapshot",
+        "Initial test inventory snapshot",
+    ):
+        assert token in audit
 
 
 def test_pi_wave_backward_signature_omits_unused_ancestors_t():
