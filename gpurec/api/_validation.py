@@ -119,6 +119,75 @@ def optional_positive_int(name: str, value: int | None) -> int | None:
     return positive_int(name, value)
 
 
+def auto_int(name: str, value: int | float | str | None) -> int | str | None:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        text = value.strip().lower()
+        if text in ("", "auto", "default"):
+            return "auto"
+        if text in ("0", "none", "null"):
+            return None
+        try:
+            return int(text)
+        except ValueError as exc:
+            raise ValueError(f"{name} must be an integer, 'auto', or none") from exc
+    if isinstance(value, bool):
+        raise ValueError(f"{name} must be an integer, 'auto', or none")
+    if isinstance(value, Integral):
+        return int(value)
+    if isinstance(value, Real):
+        number = float(value)
+        if not math.isfinite(number) or not number.is_integer():
+            raise ValueError(f"{name} must be an integer, 'auto', or none")
+        return int(number)
+    raise ValueError(f"{name} must be an integer, 'auto', or none")
+
+
+def auto_nonnegative_int(
+    name: str,
+    value: int | float | str | None,
+) -> int | str | None:
+    normalized = auto_int(name, value)
+    if isinstance(normalized, int) and normalized < 0:
+        raise ValueError(f"{name} must be non-negative")
+    return normalized
+
+
+def auto_positive_int(
+    name: str,
+    value: int | float | str | None,
+) -> int | str | None:
+    normalized = auto_int(name, value)
+    if isinstance(normalized, int) and normalized <= 0:
+        raise ValueError(f"{name} must be positive")
+    return normalized
+
+
+def nonnegative_int_sequence(
+    name: str,
+    values: Sequence[int],
+) -> tuple[int, ...]:
+    if isinstance(values, (str, bytes)):
+        raise ValueError(f"{name} must be a sequence of integers")
+    try:
+        return tuple(nonnegative_int(f"{name} entries", value) for value in values)
+    except TypeError as exc:
+        raise ValueError(f"{name} must be a sequence of integers") from exc
+
+
+def positive_int_sequence(
+    name: str,
+    values: Sequence[int],
+) -> tuple[int, ...]:
+    if isinstance(values, (str, bytes)):
+        raise ValueError(f"{name} must be a sequence of integers")
+    try:
+        return tuple(positive_int(f"{name} entries", value) for value in values)
+    except TypeError as exc:
+        raise ValueError(f"{name} must be a sequence of integers") from exc
+
+
 def _contains_bool(value: Any) -> bool:
     if isinstance(value, bool):
         return True

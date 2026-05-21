@@ -12,7 +12,6 @@ from __future__ import annotations
 import math
 import os
 from dataclasses import dataclass
-from numbers import Integral, Real
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -48,14 +47,18 @@ from ._family_layout import (
     origination_probs_for_family_indices,
 )
 from ._validation import (
+    auto_int as _as_auto_int,
+    auto_nonnegative_int as _auto_nonnegative_int,
+    auto_positive_int as _auto_positive_int,
     bool_value,
     integer_value,
-    nonnegative_int,
     nonnegative_float,
+    nonnegative_int_sequence as _normalize_nonnegative_int_sequence,
     optional_positive_int,
     positive_even_int,
     positive_float,
     positive_int,
+    positive_int_sequence as _normalize_positive_int_sequence,
     require_cuda_device,
     require_default_objective,
     theta_init_base_from_rates,
@@ -126,77 +129,6 @@ class _UniformChunkedState:
 def _set_default_flags() -> None:
     for key, value in UNIFORM_OPTIMIZED_DEFAULT_FLAGS.items():
         os.environ.setdefault(key, value)
-
-
-def _as_auto_int(name: str, value: int | float | str | None) -> int | str | None:
-    if value is None:
-        return None
-    if isinstance(value, str):
-        text = value.strip().lower()
-        if text in ("", "auto", "default"):
-            return "auto"
-        if text in ("0", "none", "null"):
-            return None
-        try:
-            return int(text)
-        except ValueError as exc:
-            raise ValueError(f"{name} must be an integer, 'auto', or none") from exc
-    if isinstance(value, bool):
-        raise ValueError(f"{name} must be an integer, 'auto', or none")
-    if isinstance(value, Integral):
-        return int(value)
-    if isinstance(value, Real):
-        number = float(value)
-        if not math.isfinite(number) or not number.is_integer():
-            raise ValueError(f"{name} must be an integer, 'auto', or none")
-        return int(number)
-    raise ValueError(f"{name} must be an integer, 'auto', or none")
-
-
-def _auto_nonnegative_int(
-    name: str,
-    value: int | float | str | None,
-) -> int | str | None:
-    normalized = _as_auto_int(name, value)
-    if isinstance(normalized, int) and normalized < 0:
-        raise ValueError(f"{name} must be non-negative")
-    return normalized
-
-
-def _auto_positive_int(
-    name: str,
-    value: int | float | str | None,
-) -> int | str | None:
-    normalized = _as_auto_int(name, value)
-    if isinstance(normalized, int) and normalized <= 0:
-        raise ValueError(f"{name} must be positive")
-    return normalized
-
-
-def _normalize_nonnegative_int_sequence(
-    name: str,
-    values: Sequence[int],
-) -> tuple[int, ...]:
-    if isinstance(values, (str, bytes)):
-        raise ValueError(f"{name} must be a sequence of integers")
-    try:
-        return tuple(
-            nonnegative_int(f"{name} entries", value) for value in values
-        )
-    except TypeError as exc:
-        raise ValueError(f"{name} must be a sequence of integers") from exc
-
-
-def _normalize_positive_int_sequence(
-    name: str,
-    values: Sequence[int],
-) -> tuple[int, ...]:
-    if isinstance(values, (str, bytes)):
-        raise ValueError(f"{name} must be a sequence of integers")
-    try:
-        return tuple(positive_int(f"{name} entries", value) for value in values)
-    except TypeError as exc:
-        raise ValueError(f"{name} must be a sequence of integers") from exc
 
 
 def _normalize_uniform_solver_kwargs(kwargs: dict[str, Any]) -> dict[str, Any]:

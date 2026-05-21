@@ -10,12 +10,17 @@ import torch
 import gpurec.workflow.model_factory as workflow_model_factory
 from gpurec.api import GeneReconModel
 from gpurec.api._validation import (
+    auto_int,
+    auto_nonnegative_int,
+    auto_positive_int,
     finite_float,
     integer_value,
     nonnegative_float,
     nonnegative_int,
+    nonnegative_int_sequence,
     positive_float,
     positive_even_int,
+    positive_int_sequence,
     require_cuda_device,
     theta_init_base_from_rates,
 )
@@ -193,6 +198,92 @@ def test_nonnegative_int_accepts_nonnegative_integral_values(value: object) -> N
 def test_nonnegative_int_rejects_invalid_values(value: object) -> None:
     with pytest.raises(ValueError, match="family_chunk_candidates entries"):
         nonnegative_int("family_chunk_candidates entries", value)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        (None, None),
+        ("", "auto"),
+        ("auto", "auto"),
+        (" default ", "auto"),
+        ("0", None),
+        ("none", None),
+        ("null", None),
+        ("7", 7),
+        (5, 5),
+        (5.0, 5),
+    ],
+)
+def test_auto_int_normalizes_aliases_and_integral_values(
+    value: object,
+    expected: int | str | None,
+) -> None:
+    assert auto_int("family_chunk_size", value) == expected  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("value", [True, False, 1.5, math.inf, "many", object()])
+def test_auto_int_rejects_bool_and_non_integral_values(value: object) -> None:
+    with pytest.raises(ValueError, match="family_chunk_size"):
+        auto_int("family_chunk_size", value)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("value", [None, "0", "none", "null"])
+def test_auto_positive_int_preserves_unbounded_aliases(value: object) -> None:
+    assert auto_positive_int("max_wave_size", value) is None  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    ("validator", "name", "value", "message"),
+    [
+        (auto_nonnegative_int, "family_chunk_size", -1, "non-negative"),
+        (auto_positive_int, "max_wave_size", 0, "positive"),
+        (auto_positive_int, "max_wave_size", -1, "positive"),
+    ],
+)
+def test_auto_int_bound_validators_reject_out_of_range_values(
+    validator,
+    name: str,
+    value: object,
+    message: str,
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        validator(name, value)  # type: ignore[arg-type]
+
+
+def test_integer_sequence_validators_normalize_entries() -> None:
+    assert nonnegative_int_sequence("family_chunk_candidates", [0, 3, 4.0]) == (
+        0,
+        3,
+        4,
+    )
+    assert positive_int_sequence("max_wave_candidates", [1, 3, 4.0]) == (
+        1,
+        3,
+        4,
+    )
+
+
+@pytest.mark.parametrize(
+    ("validator", "name", "values"),
+    [
+        (nonnegative_int_sequence, "family_chunk_candidates", "25"),
+        (nonnegative_int_sequence, "family_chunk_candidates", None),
+        (nonnegative_int_sequence, "family_chunk_candidates", [-1]),
+        (nonnegative_int_sequence, "family_chunk_candidates", [True]),
+        (positive_int_sequence, "max_wave_candidates", "8192"),
+        (positive_int_sequence, "max_wave_candidates", None),
+        (positive_int_sequence, "max_wave_candidates", [0]),
+        (positive_int_sequence, "max_wave_candidates", [1.5]),
+    ],
+)
+def test_integer_sequence_validators_reject_invalid_sequences(
+    validator,
+    name: str,
+    values: object,
+) -> None:
+    with pytest.raises(ValueError, match=name):
+        validator(name, values)  # type: ignore[arg-type]
 
 
 @pytest.mark.parametrize(
