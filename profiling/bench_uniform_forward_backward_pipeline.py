@@ -170,6 +170,17 @@ def _parse_args() -> argparse.Namespace:
         help="Build static inputs, print setup/status information, then exit before benchmark passes.",
     )
     parser.add_argument(
+        "--preflight-window-size",
+        type=int,
+        default=int(os.getenv("PREFLIGHT_WINDOW_SIZE", "0")),
+        help=(
+            "Diagnostic setup-only mode: validate the requested family range in "
+            "sequential windows of this size and discard each window before "
+            "continuing. This does not run warmups/reps and is not a performance "
+            "benchmark. Use 0 to disable."
+        ),
+    )
+    parser.add_argument(
         "--strict-optimized-kernels",
         action=argparse.BooleanOptionalAction,
         default=os.getenv("STRICT_OPTIMIZED_KERNELS", "1") != "0",
@@ -207,6 +218,8 @@ def _parse_args() -> argparse.Namespace:
         raise ValueError("--warmups must be non-negative")
     if args.uncached_preprocess_batch_size <= 0:
         raise ValueError("--uncached-preprocess-batch-size must be positive")
+    if args.preflight_window_size < 0:
+        raise ValueError("--preflight-window-size must be non-negative")
     return args
 
 
@@ -1234,6 +1247,136 @@ def _print_active_path_flags(
     )
 
 
+def _print_env_flags() -> None:
+    print("env_flags")
+    for key in sorted(k for k in os.environ if k.startswith("GPUREC_")):
+        print(key, os.environ[key])
+
+
+def _clone_args_for_preflight_window(
+    args: argparse.Namespace,
+    *,
+    start: int,
+    fams: int,
+) -> argparse.Namespace:
+    window_args = argparse.Namespace(**vars(args))
+    window_args.start = start
+    window_args.fams = fams
+    window_args.memory_policy = None
+    return window_args
+
+
+def _run_static_preflight(
+    args: argparse.Namespace,
+    *,
+    print_env: bool = False,
+) -> StaticInputs:
+    static = _make_static_inputs(args)
+    _print_policy(static, args)
+    if print_env:
+        _print_env_flags()
+    status = _optimized_feature_status(args, static)
+    if _progress_enabled(args):
+        _emit_progress(args, "optimized_status", **status)
+    _print_active_path_flags(static, args, status)
+    _validate_optimized_feature_status(args, status)
+    if _progress_enabled(args):
+        _emit_progress(args, "preflight_done", **_static_progress_summary(static, args))
+    return static
+
+
+def _run_windowed_preflight(args: argparse.Namespace) -> None:
+    window_size = int(args.preflight_window_size)
+    if window_size <= 0:
+        raise ValueError("preflight_window_size must be positive")
+
+    selected = _selected_gene_paths(
+        Path(args.dataset),
+        gene_glob="g_*.nwk",
+        start=args.start,
+        max_families=args.fams,
+    )
+    selected_total = len(selected)
+    windows = (selected_total + window_size - 1) // window_size
+    print(
+        "windowed_preflight",
+        "dataset", args.dataset,
+        "family_range", f"{args.start}:{args.start + args.fams}",
+        "selected_families", selected_total,
+        "window_size", window_size,
+        "windows", windows,
+        "performance_evidence", 0,
+    )
+    if _progress_enabled(args):
+        _emit_progress(
+            args,
+            "windowed_preflight_start",
+            dataset=str(args.dataset),
+            family_start=int(args.start),
+            requested_families=int(args.fams),
+            selected_families=selected_total,
+            window_size=window_size,
+            windows=windows,
+            performance_evidence=0,
+        )
+
+    for window_idx, offset in enumerate(range(0, selected_total, window_size)):
+        window_start = int(args.start + offset)
+        window_fams = int(min(window_size, selected_total - offset))
+        window_stop = window_start + window_fams
+        window_args = _clone_args_for_preflight_window(
+            args,
+            start=window_start,
+            fams=window_fams,
+        )
+        print(
+            "preflight_window",
+            "idx", window_idx,
+            "family_range", f"{window_start}:{window_stop}",
+            "families", window_fams,
+        )
+        if _progress_enabled(args):
+            _emit_progress(
+                args,
+                "preflight_window_start",
+                idx=window_idx,
+                family_start=window_start,
+                family_stop=window_stop,
+                families=window_fams,
+            )
+        static: StaticInputs | None = None
+        try:
+            static = _run_static_preflight(window_args)
+            if _progress_enabled(args):
+                _emit_progress(
+                    args,
+                    "preflight_window_done",
+                    idx=window_idx,
+                    **_static_progress_summary(static, window_args),
+                )
+        finally:
+            del static
+            gc.collect()
+            torch.cuda.empty_cache()
+
+    if _progress_enabled(args):
+        _emit_progress(
+            args,
+            "windowed_preflight_done",
+            dataset=str(args.dataset),
+            selected_families=selected_total,
+            window_size=window_size,
+            windows=windows,
+            performance_evidence=0,
+        )
+    print(
+        "windowed_preflight_done",
+        "selected_families", selected_total,
+        "windows", windows,
+        "performance_evidence", 0,
+    )
+
+
 def _print_rep(rep: int, result: dict[str, Any]) -> None:
     print(
         "pipeline_rep",
@@ -1300,19 +1443,12 @@ def main() -> None:
     torch.cuda.empty_cache()
     gc.collect()
 
-    static = _make_static_inputs(args)
-    _print_policy(static, args)
-    print("env_flags")
-    for key in sorted(k for k in os.environ if k.startswith("GPUREC_")):
-        print(key, os.environ[key])
+    if args.preflight_window_size > 0:
+        _print_env_flags()
+        _run_windowed_preflight(args)
+        return
 
-    status = _optimized_feature_status(args, static)
-    if _progress_enabled(args):
-        _emit_progress(args, "optimized_status", **status)
-    _print_active_path_flags(static, args, status)
-    _validate_optimized_feature_status(args, status)
-    if _progress_enabled(args):
-        _emit_progress(args, "preflight_done", **_static_progress_summary(static, args))
+    static = _run_static_preflight(args, print_env=True)
 
     if args.preflight_only or args.stats_only:
         return

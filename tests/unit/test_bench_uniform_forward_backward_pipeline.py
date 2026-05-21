@@ -191,6 +191,105 @@ def test_setup_only_alias_maps_to_preflight_flag(monkeypatch: pytest.MonkeyPatch
     assert args.preflight_only is True
 
 
+def test_preflight_window_size_arg(monkeypatch: pytest.MonkeyPatch):
+    bench = _load_bench_module()
+    monkeypatch.setattr(
+        bench.sys,
+        "argv",
+        [
+            "bench_uniform_forward_backward_pipeline.py",
+            "--preflight-window-size",
+            "128",
+        ],
+    )
+
+    args = bench._parse_args()
+
+    assert args.preflight_window_size == 128
+
+
+def test_preflight_window_size_rejects_negative(monkeypatch: pytest.MonkeyPatch):
+    bench = _load_bench_module()
+    monkeypatch.setattr(
+        bench.sys,
+        "argv",
+        [
+            "bench_uniform_forward_backward_pipeline.py",
+            "--preflight-window-size",
+            "-1",
+        ],
+    )
+
+    with pytest.raises(ValueError, match="preflight-window-size"):
+        bench._parse_args()
+
+
+def test_windowed_preflight_runs_sequential_setup_windows_and_reports_progress(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+):
+    bench = _load_bench_module()
+    calls = []
+
+    def fake_run_static_preflight(window_args):
+        calls.append((window_args.start, window_args.fams))
+        window_args.family_chunk_size = 99
+        window_args.max_wave_size = 88
+        return object()
+
+    monkeypatch.setattr(
+        bench,
+        "_selected_gene_paths",
+        lambda *_args, **_kwargs: [f"g_{idx}.nwk" for idx in range(5)],
+    )
+    monkeypatch.setattr(bench, "_run_static_preflight", fake_run_static_preflight)
+    monkeypatch.setattr(
+        bench,
+        "_static_progress_summary",
+        lambda _static, window_args: {
+            "family_start": window_args.start,
+            "families": window_args.fams,
+        },
+    )
+    monkeypatch.setattr(bench.torch.cuda, "empty_cache", lambda: None)
+
+    args = argparse.Namespace(
+        dataset="fake_dataset",
+        start=10,
+        fams=5,
+        preflight_window_size=2,
+        progress_jsonl=True,
+        family_chunk_size="auto",
+        max_wave_size="auto",
+    )
+
+    bench._run_windowed_preflight(args)
+
+    assert calls == [(10, 2), (12, 2), (14, 1)]
+    assert args.family_chunk_size == "auto"
+    assert args.max_wave_size == "auto"
+    output_lines = capsys.readouterr().out.splitlines()
+    assert any(
+        "windowed_preflight" in line and "performance_evidence 0" in line
+        for line in output_lines
+    )
+    events = [
+        json.loads(line)["event"]
+        for line in output_lines
+        if line.startswith("{")
+    ]
+    assert events == [
+        "windowed_preflight_start",
+        "preflight_window_start",
+        "preflight_window_done",
+        "preflight_window_start",
+        "preflight_window_done",
+        "preflight_window_start",
+        "preflight_window_done",
+        "windowed_preflight_done",
+    ]
+
+
 def test_cache_dir_none_disables_preprocess_cache(monkeypatch: pytest.MonkeyPatch):
     bench = _load_bench_module()
     monkeypatch.setattr(
