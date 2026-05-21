@@ -44,16 +44,13 @@ from gpurec.core.model import (
     parse_alerax_family_file,
 )
 from gpurec.core.parameter_layout import ParameterLayout
-from gpurec.core.likelihood import (
-    compute_nll,
-    prepare_origination_probs,
-)
-from gpurec.optimization.implicit_grad import implicit_grad_loglik_vjp_wave
+from gpurec.core.likelihood import prepare_origination_probs
 
 from .autograd import (
     ReconStaticState,
     _GeneReconFunction,
-    _record_backward_solver_stats,
+    compute_resident_implicit_gradient,
+    evaluate_resident_gradient_forward,
 )
 from ._family_layout import (
     FamilyWaveInputs,
@@ -63,7 +60,6 @@ from ._family_layout import (
     schedule_family_waves,
 )
 from ._uniform_evaluator import (
-    _record_forward_solver_stats,
     evaluate_resident_no_grad,
     solve_resident_e_pi,
 )
@@ -699,68 +695,29 @@ def _evaluate_static_state(
     if need_grad and per_family and not static.genewise:
         raise ValueError("per-family gradients are only independent in genewise mode")
 
-    solve = solve_resident_e_pi(
+    gradient_forward = evaluate_resident_gradient_forward(static, theta)
+    solve = gradient_forward.solve
+    grad_theta = compute_resident_implicit_gradient(
         static,
-        theta,
-        return_original=False,
-        return_root_rows=False,
+        theta=solve.theta,
+        pi_wave_ordered=solve.pi_out["Pi_wave_ordered"],
+        pibar_wave_ordered=solve.pi_out["Pibar_wave_ordered"],
+        e=solve.e_out["E"],
+        ebar=solve.e_out["E_bar"],
+        e_s1=solve.e_out["E_s1"],
+        e_s2=solve.e_out["E_s2"],
+        log_p_s=solve.log_p_s,
+        log_p_d=solve.log_p_d,
+        log_p_l=solve.log_p_l,
+        max_transfer=solve.max_transfer,
+        uniform_pibar_row_max=solve.pi_out.get("uniform_pibar_row_max"),
     )
-    E_out = solve.e_out
-    pi_out = solve.pi_out
-    log_pS = solve.log_p_s
-    log_pD = solve.log_p_d
-    log_pL = solve.log_p_l
-    max_transfer_vec = solve.max_transfer
-    theta_eval = solve.theta
-    _record_forward_solver_stats(static, E_out, pi_out)
-    if need_grad:
-        loss_vec = compute_nll(
-            pi_out["Pi_wave_ordered"],
-            E_out["E"],
-            static.wave_layout["root_clade_ids"],
-            static.origination_probs,
-            origination_probs_prepared=True,
-        )
-        grad_theta, _stats = implicit_grad_loglik_vjp_wave(
-            static.wave_layout,
-            static.species_helpers,
-            Pi_star_wave=pi_out["Pi_wave_ordered"],
-            Pibar_star_wave=pi_out["Pibar_wave_ordered"],
-            E_star=E_out["E"],
-            Ebar=E_out["E_bar"],
-            E_s1=E_out["E_s1"],
-            E_s2=E_out["E_s2"],
-            log_pS=log_pS,
-            log_pD=log_pD,
-            log_pL=log_pL,
-            max_transfer_mat=max_transfer_vec,
-            root_clade_ids_perm=static.wave_layout["root_clade_ids"],
-            theta=theta_eval,
-            unnorm_row_max=static.unnorm_row_max,
-            specieswise=static.specieswise,
-            device=static.device,
-            dtype=static.dtype,
-            neumann_terms=static.neumann_terms,
-            use_pruning=static.use_pruning,
-            pruning_threshold=static.pruning_threshold,
-            ancestors_T=static.ancestors_T,
-            family_idx=(
-                static.wave_layout["family_idx"] if static.genewise else None
-            ),
-            uniform_pibar_row_max=pi_out.get("uniform_pibar_row_max"),
-            origination_probs=static.origination_probs,
-            origination_probs_prepared=True,
-            genewise=static.genewise,
-            gradient_convergence_tol=(
-                static.gradient_change_tol if static.adaptive_iters else -1.0
-            ),
-            gradient_convergence_rtol=static.gradient_change_rtol,
-            gradient_convergence_check_interval=static.convergence_check_interval,
-        )
-        _record_backward_solver_stats(static, _stats)
-        static.warm_E = None
-        return (loss_vec.detach() if per_family else loss_vec.sum().detach()), grad_theta.detach()
-    raise RuntimeError("internal error: unreachable no-grad resident evaluation path")
+    static.warm_E = None
+    loss_vec = gradient_forward.loss_vec
+    return (
+        loss_vec.detach() if per_family else loss_vec.sum().detach()
+    ), grad_theta.detach()
+
 
 class _GeneReconFullLossFunction(torch.autograd.Function):
     @staticmethod

@@ -182,6 +182,132 @@ def test_evaluate_static_state_no_grad_delegates_to_resident_evaluator(monkeypat
     assert calls[0]["per_family"] is True
 
 
+def test_evaluate_static_state_grad_uses_resident_gradient_boundary(monkeypatch):
+    theta = torch.tensor([[1.0, 2.0, 3.0], [1.5, 2.5, 3.5]], dtype=torch.float64)
+    static = SimpleNamespace(
+        genewise=True,
+    )
+    e = torch.ones((2, 2), dtype=theta.dtype)
+    e_out = {
+        "E": e,
+        "E_s1": e + 1.0,
+        "E_s2": e + 2.0,
+        "E_bar": e + 3.0,
+    }
+    pi_out = {
+        "Pi_wave_ordered": torch.ones((2, 2), dtype=theta.dtype),
+        "Pibar_wave_ordered": torch.ones((2, 2), dtype=theta.dtype) * 2.0,
+        "uniform_pibar_row_max": torch.arange(2, dtype=theta.dtype),
+    }
+    theta_eval = theta.detach().clone()
+    solve = api_autograd.ResidentSolveResult(
+        theta=theta_eval,
+        e_out=e_out,
+        pi_out=pi_out,
+        log_p_s=torch.full((2,), 0.1, dtype=theta.dtype),
+        log_p_d=torch.full((2,), 0.2, dtype=theta.dtype),
+        log_p_l=torch.full((2,), 0.3, dtype=theta.dtype),
+        max_transfer=torch.full((2,), 0.4, dtype=theta.dtype),
+    )
+    loss_vec = torch.tensor([1.25, 2.5], dtype=theta.dtype)
+    expected_grad = torch.arange(theta.numel(), dtype=theta.dtype).reshape_as(theta)
+    forward_calls: list[dict[str, object]] = []
+    grad_calls: list[dict[str, object]] = []
+
+    def fake_evaluate_resident_gradient_forward(
+        static_arg,
+        theta_arg,
+        *,
+        warm_start_E=None,
+    ):
+        forward_calls.append(
+            {
+                "static": static_arg,
+                "theta": theta_arg,
+                "warm_start_E": warm_start_E,
+            }
+        )
+        return api_autograd.ResidentGradientForwardResult(
+            solve=solve,
+            loss_vec=loss_vec,
+        )
+
+    def fake_compute_resident_implicit_gradient(
+        static_arg,
+        *,
+        theta,
+        pi_wave_ordered,
+        pibar_wave_ordered,
+        e,
+        ebar,
+        e_s1,
+        e_s2,
+        log_p_s,
+        log_p_d,
+        log_p_l,
+        max_transfer,
+        uniform_pibar_row_max,
+    ):
+        grad_calls.append(
+            {
+                "static": static_arg,
+                "theta": theta,
+                "pi_wave_ordered": pi_wave_ordered,
+                "pibar_wave_ordered": pibar_wave_ordered,
+                "e": e,
+                "ebar": ebar,
+                "e_s1": e_s1,
+                "e_s2": e_s2,
+                "log_p_s": log_p_s,
+                "log_p_d": log_p_d,
+                "log_p_l": log_p_l,
+                "max_transfer": max_transfer,
+                "uniform_pibar_row_max": uniform_pibar_row_max,
+            }
+        )
+        return expected_grad
+
+    monkeypatch.setattr(
+        api_model,
+        "evaluate_resident_gradient_forward",
+        fake_evaluate_resident_gradient_forward,
+    )
+    monkeypatch.setattr(
+        api_model,
+        "compute_resident_implicit_gradient",
+        fake_compute_resident_implicit_gradient,
+    )
+
+    loss, grad = api_model._evaluate_static_state(
+        static,
+        theta,
+        need_grad=True,
+        per_family=True,
+    )
+
+    torch.testing.assert_close(loss, loss_vec)
+    assert loss.requires_grad is False
+    torch.testing.assert_close(grad, expected_grad)
+    assert grad.requires_grad is False
+    assert forward_calls == [
+        {"static": static, "theta": theta, "warm_start_E": None}
+    ]
+    assert len(grad_calls) == 1
+    assert grad_calls[0]["static"] is static
+    assert grad_calls[0]["theta"] is theta_eval
+    assert grad_calls[0]["pi_wave_ordered"] is pi_out["Pi_wave_ordered"]
+    assert grad_calls[0]["pibar_wave_ordered"] is pi_out["Pibar_wave_ordered"]
+    assert grad_calls[0]["e"] is e_out["E"]
+    assert grad_calls[0]["ebar"] is e_out["E_bar"]
+    assert grad_calls[0]["e_s1"] is e_out["E_s1"]
+    assert grad_calls[0]["e_s2"] is e_out["E_s2"]
+    assert grad_calls[0]["log_p_s"] is solve.log_p_s
+    assert grad_calls[0]["log_p_d"] is solve.log_p_d
+    assert grad_calls[0]["log_p_l"] is solve.log_p_l
+    assert grad_calls[0]["max_transfer"] is solve.max_transfer
+    assert grad_calls[0]["uniform_pibar_row_max"] is pi_out["uniform_pibar_row_max"]
+
+
 def test_autograd_forward_uses_resident_solve_boundary(monkeypatch):
     theta = torch.tensor([1.0, 2.0, 3.0], dtype=torch.float64, requires_grad=True)
     warm_E = torch.full((2, 2), 0.25, dtype=torch.float64)

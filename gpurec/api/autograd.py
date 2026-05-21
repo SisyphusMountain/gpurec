@@ -82,6 +82,12 @@ class ResidentSolveResult:
     max_transfer: torch.Tensor
 
 
+@dataclass(frozen=True)
+class ResidentGradientForwardResult:
+    solve: ResidentSolveResult
+    loss_vec: torch.Tensor
+
+
 def _extract_parameters(theta: torch.Tensor, static: ReconStaticState):
     """Extract parameters for the retained uniform-transfer path."""
     return (
@@ -211,6 +217,92 @@ def solve_resident_e_pi(
     )
 
 
+def evaluate_resident_gradient_forward(
+    static: ReconStaticState,
+    theta: torch.Tensor,
+    *,
+    warm_start_E: torch.Tensor | None = None,
+) -> ResidentGradientForwardResult:
+    """Return the shared resident forward solve used by gradient paths."""
+    require_default_objective("GeneReconModel")
+    with _nvtx_range("resident E/Pi solve"):
+        solve = solve_resident_e_pi(
+            static,
+            theta,
+            return_original=False,
+            return_root_rows=False,
+            warm_start_E=warm_start_E,
+        )
+        _record_forward_solver_stats(static, solve.e_out, solve.pi_out)
+
+    with _nvtx_range("resident root likelihood"):
+        loss_vec = compute_nll(
+            solve.pi_out["Pi_wave_ordered"],
+            solve.e_out["E"],
+            static.wave_layout["root_clade_ids"],
+            static.origination_probs,
+            origination_probs_prepared=True,
+        )
+    return ResidentGradientForwardResult(solve=solve, loss_vec=loss_vec)
+
+
+def compute_resident_implicit_gradient(
+    static: ReconStaticState,
+    *,
+    theta: torch.Tensor,
+    pi_wave_ordered: torch.Tensor,
+    pibar_wave_ordered: torch.Tensor,
+    e: torch.Tensor,
+    ebar: torch.Tensor,
+    e_s1: torch.Tensor,
+    e_s2: torch.Tensor,
+    log_p_s: torch.Tensor,
+    log_p_d: torch.Tensor,
+    log_p_l: torch.Tensor,
+    max_transfer: torch.Tensor,
+    uniform_pibar_row_max: torch.Tensor | None,
+) -> torch.Tensor:
+    """Compute and record the resident implicit gradient for a forward solve."""
+    if uniform_pibar_row_max is not None and uniform_pibar_row_max.numel() == 0:
+        uniform_pibar_row_max = None
+    grad_theta, stats = implicit_grad_loglik_vjp_wave(
+        static.wave_layout,
+        static.species_helpers,
+        Pi_star_wave=pi_wave_ordered,
+        Pibar_star_wave=pibar_wave_ordered,
+        E_star=e,
+        Ebar=ebar,
+        E_s1=e_s1,
+        E_s2=e_s2,
+        log_pS=log_p_s,
+        log_pD=log_p_d,
+        log_pL=log_p_l,
+        max_transfer_mat=max_transfer,
+        root_clade_ids_perm=static.wave_layout["root_clade_ids"],
+        theta=theta,
+        unnorm_row_max=static.unnorm_row_max,
+        specieswise=static.specieswise,
+        device=static.device,
+        dtype=static.dtype,
+        neumann_terms=static.neumann_terms,
+        use_pruning=static.use_pruning,
+        pruning_threshold=static.pruning_threshold,
+        ancestors_T=static.ancestors_T,
+        family_idx=static.wave_layout["family_idx"] if static.genewise else None,
+        uniform_pibar_row_max=uniform_pibar_row_max,
+        origination_probs=static.origination_probs,
+        origination_probs_prepared=True,
+        genewise=static.genewise,
+        gradient_convergence_tol=(
+            static.gradient_change_tol if static.adaptive_iters else -1.0
+        ),
+        gradient_convergence_rtol=static.gradient_change_rtol,
+        gradient_convergence_check_interval=static.convergence_check_interval,
+    )
+    _record_backward_solver_stats(static, stats)
+    return grad_theta
+
+
 class _GeneReconFunction(torch.autograd.Function):
     """``forward`` runs the existing E + Pi pipeline; ``backward`` calls the
     existing implicit gradient. Inputs other than ``theta`` are treated as
@@ -228,16 +320,15 @@ class _GeneReconFunction(torch.autograd.Function):
 
         with torch.no_grad():
             # 1. Resident E/Pi solve with the autograd warm-start policy.
-            with _nvtx_range("forward resident E/Pi solve"):
-                solve = solve_resident_e_pi(
+            with _nvtx_range("forward resident gradient evaluation"):
+                gradient_forward = evaluate_resident_gradient_forward(
                     static,
                     theta,
-                    return_original=False,
-                    return_root_rows=False,
                     warm_start_E=(
                         None if static.fixed_iters_E is not None else static.warm_E
                     ),
                 )
+                solve = gradient_forward.solve
                 E_out = solve.e_out
                 Pi_out = solve.pi_out
                 E = E_out["E"]
@@ -248,17 +339,7 @@ class _GeneReconFunction(torch.autograd.Function):
                 log_pD = solve.log_p_d
                 log_pL = solve.log_p_l
                 max_transfer_vec = solve.max_transfer
-                _record_forward_solver_stats(static, E_out, Pi_out)
-
-            # 2. NLL: nll_vec is per-family.
-            with _nvtx_range("forward root likelihood"):
-                nll_vec = compute_nll(
-                    Pi_out["Pi_wave_ordered"],
-                    E,
-                    static.wave_layout["root_clade_ids"],
-                    static.origination_probs,
-                    origination_probs_prepared=True,
-                )
+                nll_vec = gradient_forward.loss_vec
 
         # 5. Save state for backward.
         with _nvtx_range("forward save outputs"):
@@ -312,91 +393,21 @@ class _GeneReconFunction(torch.autograd.Function):
             uniform_pibar_row_max,
         ) = ctx.saved_tensors
         static: ReconStaticState = ctx.static
-
-        wave_layout = static.wave_layout
-
-        if static.genewise:
-            # Cross-family batched genewise path. This is the retained
-            # per-family gradient path used by PyTorch optimizers and
-            # BatchedLBFGS.
-            grad_theta, _stats = implicit_grad_loglik_vjp_wave(
-                wave_layout,
-                static.species_helpers,
-                Pi_star_wave=Pi_star_wave,
-                Pibar_star_wave=Pibar_star_wave,
-                E_star=E_star,
-                Ebar=Ebar,
-                E_s1=E_s1,
-                E_s2=E_s2,
-                log_pS=log_pS,
-                log_pD=log_pD,
-                log_pL=log_pL,
-                max_transfer_mat=max_transfer_vec,
-                root_clade_ids_perm=wave_layout["root_clade_ids"],
-                theta=theta,
-                unnorm_row_max=static.unnorm_row_max,
-                specieswise=static.specieswise,
-                device=static.device,
-                dtype=static.dtype,
-                neumann_terms=static.neumann_terms,
-                use_pruning=static.use_pruning,
-                pruning_threshold=static.pruning_threshold,
-                ancestors_T=static.ancestors_T,
-                uniform_pibar_row_max=(
-                    uniform_pibar_row_max
-                    if uniform_pibar_row_max.numel() > 0
-                    else None
-                ),
-                origination_probs=static.origination_probs,
-                origination_probs_prepared=True,
-                genewise=True,
-                family_idx=wave_layout["family_idx"],
-                gradient_convergence_tol=(
-                    static.gradient_change_tol if static.adaptive_iters else -1.0
-                ),
-                gradient_convergence_rtol=static.gradient_change_rtol,
-                gradient_convergence_check_interval=static.convergence_check_interval,
-            )
-        else:
-            # Shared theta path: delegate to the public wrapper.
-            grad_theta, _stats = implicit_grad_loglik_vjp_wave(
-                wave_layout,
-                static.species_helpers,
-                Pi_star_wave=Pi_star_wave,
-                Pibar_star_wave=Pibar_star_wave,
-                E_star=E_star,
-                E_s1=E_s1,
-                E_s2=E_s2,
-                Ebar=Ebar,
-                log_pS=log_pS,
-                log_pD=log_pD,
-                log_pL=log_pL,
-                max_transfer_mat=max_transfer_vec,
-                root_clade_ids_perm=wave_layout["root_clade_ids"],
-                theta=theta,
-                unnorm_row_max=static.unnorm_row_max,
-                specieswise=static.specieswise,
-                device=static.device,
-                dtype=static.dtype,
-                neumann_terms=static.neumann_terms,
-                use_pruning=static.use_pruning,
-                pruning_threshold=static.pruning_threshold,
-                ancestors_T=static.ancestors_T,
-                uniform_pibar_row_max=(
-                    uniform_pibar_row_max
-                    if uniform_pibar_row_max.numel() > 0
-                    else None
-                ),
-                origination_probs=static.origination_probs,
-                origination_probs_prepared=True,
-                gradient_convergence_tol=(
-                    static.gradient_change_tol if static.adaptive_iters else -1.0
-                ),
-                gradient_convergence_rtol=static.gradient_change_rtol,
-                gradient_convergence_check_interval=static.convergence_check_interval,
-            )
-
-        _record_backward_solver_stats(static, _stats)
+        grad_theta = compute_resident_implicit_gradient(
+            static,
+            theta=theta,
+            pi_wave_ordered=Pi_star_wave,
+            pibar_wave_ordered=Pibar_star_wave,
+            e=E_star,
+            ebar=Ebar,
+            e_s1=E_s1,
+            e_s2=E_s2,
+            log_p_s=log_pS,
+            log_p_d=log_pD,
+            log_p_l=log_pL,
+            max_transfer=max_transfer_vec,
+            uniform_pibar_row_max=uniform_pibar_row_max,
+        )
 
         # grad_theta is d(NLL_total)/d(theta). The forward returned NLL_total
         # (or NLL_per_family). No sign flip required.
