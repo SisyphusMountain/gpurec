@@ -541,13 +541,17 @@ class GeneDataset:
         self.device = device
         self.dtype = dtype
         family_tree_paths = normalize_family_tree_paths(gene_tree_paths)
-        ext = _load_species_gene_ext()
         if family_names is None:
             family_names = [f"family_{i:06d}" for i in range(len(family_tree_paths))]
         else:
             family_names = [str(name) for name in family_names]
         if len(family_names) != len(family_tree_paths):
             raise ValueError("family_names must match gene_tree_paths length")
+        seen_family_names: set[str] = set()
+        for name in family_names:
+            if name in seen_family_names:
+                raise ValueError(f"duplicate family name {name!r} in family_names")
+            seen_family_names.add(name)
         if leaf_species_maps is None:
             leaf_species_maps = [{} for _ in family_tree_paths]
         else:
@@ -555,6 +559,7 @@ class GeneDataset:
         if len(leaf_species_maps) != len(family_tree_paths):
             raise ValueError("leaf_species_maps must match gene_tree_paths length")
 
+        ext = _load_species_gene_ext()
         if preprocess_cache_dir is not None:
             self.species_helpers, raw_by_family = self._preprocess_with_cache(
                 ext,

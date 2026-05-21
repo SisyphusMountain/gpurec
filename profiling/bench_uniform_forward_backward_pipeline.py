@@ -1,12 +1,11 @@
 #!/usr/bin/env python3
 """Chunked global/uniform forward+backward pipeline benchmark.
 
-This harness targets the training path from
-``docs/forward-backward-full-pipeline-plan.md`` without moving any production
-interfaces.  It solves the shared global E fixed point once per pass, runs full
-saved-state uniform forward over each resident family chunk, immediately runs
-``Pi_wave_backward`` for that chunk, then applies the E adjoint/theta VJP once
-from the accumulated chunk adjoints.
+This harness targets the current chunked global/uniform training path without
+moving any production interfaces.  It solves the shared global E fixed point
+once per pass, runs full saved-state uniform forward over each resident family
+chunk, immediately runs ``Pi_wave_backward`` for that chunk, then applies the E
+adjoint/theta VJP once from the accumulated chunk adjoints.
 """
 
 from __future__ import annotations

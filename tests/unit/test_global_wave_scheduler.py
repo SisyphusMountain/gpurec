@@ -480,6 +480,35 @@ def test_model_family_index_chunks_delegates_to_shared_planner():
     assert chunks == [[0, 4], [1, 3], [2]]
 
 
+@pytest.mark.parametrize("batch_packing", ["clade_first_fit", "depth_first_fit"])
+def test_plan_family_batches_treats_clade_budget_as_soft_packing_target(
+    batch_packing,
+):
+    kwargs = {
+        "clade_counts": [20, 6, 5],
+        "family_chunk_size": 0,
+        "clade_budget": 12,
+        "batch_packing": batch_packing,
+    }
+    if batch_packing == "depth_first_fit":
+        kwargs.update(
+            {
+                "leaf_counts": [10, 3, 2],
+                "nonleaf_counts": [10, 3, 3],
+                "schedule_depths": [4, 2, 2],
+                "max_wave_size": 4,
+            }
+        )
+
+    plans = plan_family_batches(**kwargs)
+
+    assert plans[0].indices == [0]
+    assert plans[0].clades == 20
+    assert plans[0].clades > 12
+    assert [plan.indices for plan in plans[1:]] == [[1, 2]]
+    assert plans[1].clades <= 12
+
+
 @pytest.mark.parametrize("indices", [[-1], [2]])
 def test_plan_family_batches_rejects_out_of_range_indices(indices):
     with pytest.raises(ValueError, match="family index"):

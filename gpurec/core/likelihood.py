@@ -21,6 +21,13 @@ def _uniform_ancestor_sum(expE_2d, ancestors_T):
     """Compute the retained uniform ancestor sum."""
     return (expE_2d @ ancestors_T).contiguous()
 
+
+def _require_ancestors_T(ancestors_T):
+    if ancestors_T is None:
+        raise ValueError("ancestors_T is required for uniform-transfer E solves")
+    return ancestors_T
+
+
 def E_step(
     E,
     sp_P_idx,
@@ -33,8 +40,11 @@ def E_step(
 ):
     """One uniform-transfer extinction fixed-point step.
 
-    ``E`` can have shape ``[S]`` or ``[N_genes, S]``.
+    ``E`` can have shape ``[S]`` or ``[N_genes, S]``.  ``ancestors_T`` is the
+    transposed species-ancestor matrix used by the retained uniform-transfer
+    implementation and must be supplied by callers.
     """
+    ancestors_T = _require_ancestors_T(ancestors_T)
     E_stack = torch.empty((4, *E.shape), dtype=E.dtype, device=E.device)
     # S
     E_s12 = gather_E_children(E, sp_P_idx, sp_child12_idx)
@@ -107,6 +117,7 @@ def E_fixed_point(species_helpers,
                           trace_logsumexp: bool = False,
                           check_interval: int = 1,
                           convergence_metric: str = "max_diff"):
+    ancestors_T = _require_ancestors_T(ancestors_T)
 
     S = species_helpers['S']
 

@@ -1,6 +1,9 @@
+import pytest
 import torch
 
 from gpurec.core.likelihood import (
+    E_fixed_point,
+    E_step,
     compute_log_likelihood,
     compute_log_likelihood_root_rows,
     compute_nll,
@@ -13,6 +16,47 @@ def _manual_weighted_nll(root_rows, E, weights):
     numerator = torch.log2((weights * torch.exp2(root_rows)).sum(dim=-1))
     denominator = torch.log2((weights * (1.0 - torch.exp2(E))).sum(dim=-1))
     return -(numerator - denominator)
+
+
+def test_e_step_requires_ancestors_t():
+    dtype = torch.float64
+    E = torch.full((3,), -1.0, dtype=dtype)
+
+    with pytest.raises(ValueError, match="ancestors_T"):
+        E_step(
+            E=E,
+            sp_P_idx=torch.tensor([0], dtype=torch.long),
+            sp_child12_idx=torch.tensor([1, 2], dtype=torch.long),
+            log_pS=torch.zeros(3, dtype=dtype),
+            log_pD=torch.zeros(3, dtype=dtype),
+            log_pL=torch.zeros(3, dtype=dtype),
+            max_transfer_mat=torch.zeros(3, dtype=dtype),
+            ancestors_T=None,
+        )
+
+
+def test_e_fixed_point_requires_ancestors_t():
+    dtype = torch.float64
+    species_helpers = {
+        "S": 3,
+        "s_P_indexes": torch.tensor([0], dtype=torch.long),
+        "s_C12_indexes": torch.tensor([1, 2], dtype=torch.long),
+    }
+
+    with pytest.raises(ValueError, match="ancestors_T"):
+        E_fixed_point(
+            species_helpers=species_helpers,
+            log_pS=torch.zeros(3, dtype=dtype),
+            log_pD=torch.zeros(3, dtype=dtype),
+            log_pL=torch.zeros(3, dtype=dtype),
+            max_transfer_mat=torch.zeros(3, dtype=dtype),
+            max_iters=1,
+            tolerance=-1.0,
+            warm_start_E=None,
+            dtype=dtype,
+            device=torch.device("cpu"),
+            ancestors_T=None,
+        )
 
 
 def test_weighted_origination_likelihood_matches_manual_formula():

@@ -16,7 +16,7 @@ Related files:
 - `gpurec/api/uniform_chunked.py`
 - `gpurec/optimization/implicit_grad.py`
 - `gpurec/optimization/batched_lbfgs.py`
-- `profiling/bench_global_parameter_optimization.py`
+- `profiling/bench_uniform_forward_backward_pipeline.py`
 - `docs/lean-fast-path.md`
 - `docs/hogenom-ccp-performance-log.md`
 
@@ -93,9 +93,9 @@ The chunked global model also has a no-grad loss path:
   grad is needed, then `backward()` only returns the cached gradient.
 
 The genewise optimizer already has the useful pattern. `BatchedLBFGS` accepts a
-`loss_closure` and uses it for Armijo probes (`gpurec/optimization/batched_lbfgs.py:651`).
-The integration test at `tests/integration/test_gene_recon_model.py:293` saves
-and restores `warm_E` around the no-grad loss-only probe.
+`loss_closure` and uses it for Armijo probes. Current integration coverage for
+the genewise optimizer lives in `tests/integration/test_gene_recon_model.py`;
+avoid relying on historical line numbers in this note when changing that test.
 
 ## Current Differentiability Limits
 
@@ -438,7 +438,8 @@ optimizer is already fast, this is not a good near-term tradeoff.
 
 ## Practical Benchmark Plan
 
-Add strategies to `profiling/bench_global_parameter_optimization.py`:
+Add a dedicated global-parameter optimizer benchmark harness or extend the
+current profiling utilities with these strategies:
 
 ```text
 bfgs-armijo-loss-only
@@ -460,10 +461,10 @@ Minimum metrics:
 - number of skipped BFGS updates due to poor curvature;
 - whether `warm_E` was saved/restored or disabled for probes.
 
-Initial commands:
+Historical command sketch for the missing global-parameter benchmark harness:
 
 ```bash
-python profiling/bench_global_parameter_optimization.py \
+python path/to/global_parameter_optimization_benchmark.py \
   --dataset tests/data/test_trees_100 \
   --cache-dir /tmp/gpurec_paramopt_second_order \
   --strategies recommended-fp32,bfgs-armijo-loss-only,fd-newton-loss-hessian,fd-newton-gradient-hessian \
@@ -472,7 +473,7 @@ python profiling/bench_global_parameter_optimization.py \
 ```
 
 ```bash
-python profiling/bench_global_parameter_optimization.py \
+python path/to/global_parameter_optimization_benchmark.py \
   --dataset tests/data/test_trees_1000 \
   --max-families 100 \
   --allow-missing-target \

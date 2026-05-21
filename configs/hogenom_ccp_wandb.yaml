@@ -1,3 +1,6 @@
+# Checkout-local full HOGENOM experiment config for the Hydra launcher.
+# This is not a portable smoke example: it assumes the untracked local HOGENOM
+# data layout, CUDA, online W&B by default, and frequent checkpointing.
 paths:
   species_tree: tests/data/HOGENOM/hogenom/hogenom_S.tree
   families_file: tests/data/HOGENOM/hogenom/hogenom_families.local.txt

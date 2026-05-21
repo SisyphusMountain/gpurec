@@ -434,8 +434,16 @@ def test_manifest_includes_rust_backtracking_crate_in_source_archive_only():
     ),
 )
 def test_cli_help_smokes_are_quiet_on_cpu(command: tuple[str, ...]):
-    if command[0] == "gpurec" and shutil.which("gpurec") is None:
-        pytest.skip("gpurec console script is not installed")
+    if command[0] == "gpurec":
+        script = shutil.which("gpurec")
+        if script is None:
+            pytest.skip("gpurec console script is not installed")
+        try:
+            script_text = Path(script).read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            script_text = ""
+        if "gpurec.cli.reconcile" in script_text:
+            pytest.skip("gpurec console script points at stale pre-audit entry point")
     env = os.environ.copy()
     env["CUDA_VISIBLE_DEVICES"] = ""
 

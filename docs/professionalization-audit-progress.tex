@@ -5790,6 +5790,94 @@ Release metadata checker after \texttt{FamilyInput} read-only cleanup &
 \end{tabular}
 \end{center}
 
+\section{Tracked-File Audit Round}
+
+On 2026-05-21, the audit ran a documentation-only tracked-file review before
+making additional logic changes.  The scope was the current
+\texttt{lean-fast-path} worktree: \texttt{git ls-files | wc -l} reported 134
+tracked files, source-like files totalled 43,009 lines, and
+\texttt{pytest --collect-only -q} collected 823 tests.  The local environment
+did not have the \texttt{coverage} package installed, so this round used
+subagent source review, static symbol scans, direct test-reference checks, and
+tracked text searches instead of line coverage.
+
+Five read-only subagents inspected disjoint file groups covering the core
+runtime, kernel/C++ runtime, public API/workflow modules, Rust/scripts/configs
+and examples, and tests/docs/package metadata.  The consolidated record is now
+\texttt{docs/repo-wide-audit-2026-05-21.md}.  It documents current gaps before
+logic changes, including small-species backward semantics, optional
+\texttt{ancestors\_T} parameters that are required in practice, duplicate direct
+\texttt{family\_names}, soft \texttt{clade\_budget} behavior, adaptive trace
+semantics, DTS parameter-shape ambiguity, unvalidated C++ \texttt{max\_wave\_size}
+exports, thin backward-kernel coverage, stale CUDA tuning flags, possible
+unused pybind debug exports, \texttt{BatchedLBFGS.max\_eval}, solver
+reconfiguration during lazy prefetch, missing sampling subprocess timeouts,
+sampling aggregate format ambiguity, fixed-path legacy HOGENOM launchers,
+stale benchmark/report references, Rust backtracking numeric schema gaps,
+release license blockers, brittle release text mirrors, broad warning
+suppression, stale test package docs, and release-test sensitivity to a stale
+installed \texttt{gpurec} console script on \texttt{PATH}.
+
+The docs map now treats \texttt{core-simplification-suggestions.md} as a
+historical snapshot rather than a current operating note because it contains
+already-completed cleanup entries.  The new audit note gives the next change
+order: first fix documentation-only staleness, then add contract tests that pin
+current behavior, then make low-risk hygiene edits, and only after that change
+runtime semantics.
+
+Verification during this round collected 823 tests.  The release metadata
+checker still failed only on the known license blockers.  The repository
+hygiene suite passed, and \texttt{python -m gpurec.cli --help} passed.  A
+combined release-metadata/hygiene run failed one CLI help smoke because
+\texttt{gpurec} on \texttt{PATH} resolved to an older installed script importing
+\texttt{gpurec.cli.reconcile}; the repo-local module path did not show that
+failure.
+
+A follow-up documentation-only cleanup then removed the tracked reference to
+the missing forward/backward pipeline plan, marked historical lean-regression
+benchmark references as provenance rather than a current command set, replaced
+the missing global-parameter benchmark script in the second-order optimization
+note with future-harness wording, documented fixed-dataset HOGENOM launcher
+paths in \texttt{scripts/README.md}, and annotated the Hydra HOGENOM YAML as a
+checkout-local full experiment config.  A tracked grep for the stale reference
+tokens found no remaining matches afterward.  The benchmark harness still
+compiled, and the repository hygiene plus examples suites passed
+\texttt{23 passed}.
+
+The README now documents that \texttt{examples/minimal-run-config.json} is a
+CUDA smoke for the retained optimized path, defines the sampling aggregate text
+formats and sample-count normalization, and labels the Hydra HOGENOM YAML as a
+checkout-local full experiment config.  The tests README now explicitly states
+that some CUDA-contract tests still live under \texttt{tests/unit} and should be
+deselected with \texttt{-m "unit and not gpu"} for CPU-only gates.
+
+The release metadata CLI smoke now skips only the known stale external
+\texttt{gpurec} script that imports \texttt{gpurec.cli.reconcile}, while still
+running the repo-local \texttt{python -m gpurec.cli --help} smoke.  The focused
+release metadata suite reported \texttt{39 passed, 1 skipped}; the hygiene plus
+examples suite reported \texttt{23 passed}.
+
+A contract regression now pins the documented \texttt{clade\_budget} behavior:
+both first-fit planners treat the budget as a packing target, so an individual
+oversized family is allowed in its own batch while smaller packable families
+remain under the target.  The focused test reported \texttt{2 passed}, and the
+full global wave scheduler suite reported \texttt{40 passed}.
+
+The retained uniform-transfer E solver now documents and validates that
+\texttt{ancestors\_T} is required.  This turns the previously indirect
+matrix-multiply failure into a clear \texttt{ValueError}.  Focused coverage for
+\texttt{E\_step} and \texttt{E\_fixed\_point} missing-\texttt{ancestors\_T}
+reported \texttt{6 passed} in \texttt{tests/unit/test\_origination\_probs.py}.
+The CPU unit gate after these contract cleanups reported
+\texttt{798 passed, 1 skipped, 6 deselected}.
+
+\texttt{GeneDataset} now rejects duplicate direct \texttt{family\_names} before
+loading the preprocessing extension, matching the AleRax family parser's
+no-duplicate-name contract.  The focused validation test reported
+\texttt{1 passed}; the paired pre-extension validation slice reported
+\texttt{2 passed}.  The CPU unit gate after this direct-constructor guard
+reported \texttt{799 passed, 1 skipped, 6 deselected}.
+
 \section{Next Audit Targets}
 
 \begin{enumerate}[leftmargin=*]

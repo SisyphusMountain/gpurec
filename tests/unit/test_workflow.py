@@ -1421,6 +1421,31 @@ def test_gene_dataset_rejects_single_gene_tree_path_before_extension(
     assert calls == []
 
 
+def test_gene_dataset_rejects_duplicate_family_names_before_extension(
+    tmp_path: Path,
+    monkeypatch,
+):
+    calls: list[bool] = []
+
+    def fake_load_extension():
+        calls.append(True)
+        raise AssertionError("_load_species_gene_ext should not run")
+
+    monkeypatch.setattr("gpurec.core.model._load_species_gene_ext", fake_load_extension)
+
+    with pytest.raises(ValueError, match="duplicate family name 'fam0'"):
+        GeneDataset(
+            species_tree_path=tmp_path / "missing_species.nwk",
+            gene_tree_paths=[tmp_path / "a.nwk", tmp_path / "b.nwk"],
+            genewise=False,
+            specieswise=False,
+            device=torch.device("cpu"),
+            family_names=["fam0", "fam0"],
+        )
+
+    assert calls == []
+
+
 @pytest.mark.parametrize("dtype", [torch.int64, torch.float16, "float32"])
 def test_gene_recon_init_rejects_invalid_dtype_before_device(dtype: object):
     dataset = SimpleNamespace(

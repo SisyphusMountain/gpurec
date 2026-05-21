@@ -79,5 +79,8 @@ data/output directories from recursive collection.  GPU-only modules declare
 `pytestmark = pytest.mark.gpu` at module scope, and expensive checks use local
 `@pytest.mark.slow` decorators, so test intent stays beside the test instead of
 a filename or nodeid list in conftest.
+Some GPU-marked tests still live under `tests/unit` because they exercise a
+single module or contract but require CUDA fixtures; use `-m "unit and not gpu"`
+for CPU-only unit gates.
 Use explicit test paths for targeted audit gates when a local checkout contains
 large generated datasets.

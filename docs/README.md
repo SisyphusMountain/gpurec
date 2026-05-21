@@ -8,8 +8,8 @@ file as the map for deeper context.
 
 - `lean-fast-path.md`: retained benchmark path and performance command for the
   lean branch.
-- `core-simplification-suggestions.md`: current cleanup backlog for core CUDA
-  and scheduling code.
+- `repo-wide-audit-2026-05-21.md`: tracked-file audit of untested code,
+  unnecessary complexity, documentation gaps, and deletion candidates.
 - `professionalization-audit-progress.tex`: running audit log for repository
   cleanup and verification work.
 - `release-readiness.md`: release blockers, clean-checkout hygiene, and
@@ -29,6 +29,9 @@ file as the map for deeper context.
 - `hogenom-ccp-performance-log.md`: chronological HOGENOM CCP performance log.
 - `lean-performance-path-regression.md`: regression investigation from the lean
   branch transition.
+- `core-simplification-suggestions.md`: historical cleanup snapshot for core
+  CUDA and scheduling code. Revalidate each item before treating it as active
+  backlog.
 - `alerax-scaledvalue-followup-results.md`: AleRax ScaledValue follow-up
   optimization results.
 - `second-order-optimization-opportunities.md`: notes on second-order and

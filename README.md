@@ -140,6 +140,10 @@ AleRax-style fixture live under `examples/`.  Inspect or adapt:
 gpurec optimize --config examples/minimal-run-config.json
 ```
 
+The checked config is a source-tree smoke for the retained optimized path and
+sets `"device": "cuda"`.  The tiny tree files are portable, but the current
+optimized likelihood implementation is not a CPU fallback.
+
 Installed wheels do not install the `examples/` directory as runtime package
 data; copy or adapt a flat JSON config alongside your own tree files instead:
 
@@ -204,6 +208,12 @@ Sampling writes per-sample RecPhyloXML files and event-count files under
 `output_gpurec/reconciliations/all/`.  Aggregate summaries live under
 `output_gpurec/reconciliations/`, including `event_counts.tsv`,
 `totalSpeciesEventCounts.txt`, and `totalTransfers.txt`.
+`event_counts.tsv` is tab-separated.  `totalSpeciesEventCounts.txt` is the
+AleRax-compatible comma-space text format with one species label followed by
+event totals.  `totalTransfers.txt` uses whitespace-separated source species,
+destination species, and average transfer count.  Aggregate values are averaged
+over the requested sample count for each retained family, not over all families
+in the original checkpoint.
 Use `--family-start` and `--sample-max-families` to sample a family window,
 `--seed` for reproducible stochastic backtracking, and `--max-events` to cap
 pathological samples.
@@ -279,7 +289,7 @@ of dataset path overrides.
 | General installed workflow | `gpurec optimize`, `gpurec sample`, `gpurec run` | Uses flat JSON for `--config`; Hydra YAML is not accepted by the main CLI. |
 | Sampling binary preflight | `gpurec backtrack-check` | Validates `GPUREC_BACKTRACK_BIN`, `--backtrack-binary`, or the source-tree Cargo fallback without loading a checkpoint. |
 | Legacy HOGENOM W&B wrapper | `python scripts/optimize_hogenom_ccp_wandb.py` | Checkout-local compatibility wrapper with argparse flags, checkpoints, plots, and optional W&B logging. |
-| Hydra HOGENOM run | `python scripts/optimize_hogenom_ccp_hydra.py` | Uses `configs/hogenom_ccp_wandb.yaml` and Hydra override syntax. |
+| Hydra HOGENOM run | `python scripts/optimize_hogenom_ccp_hydra.py` | Uses `configs/hogenom_ccp_wandb.yaml`, a checkout-local full experiment config, and Hydra override syntax. |
 | Checkpoint rate export | `python scripts/export_hogenom_rates_from_checkpoint.py` | Exports D/T/L rates from a HOGENOM optimization checkpoint. |
 | One-pass profiling | `python scripts/profile_hogenom_ccp_pass.py` | Profiles full, streamed, active-batch, or largest-batch forward/backward passes on the local HOGENOM layout. |
 

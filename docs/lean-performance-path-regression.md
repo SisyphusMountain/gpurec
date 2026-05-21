@@ -87,6 +87,11 @@ Reference documents:
 - `docs/genewise-forward-backward-optimization-proposals.md`
 - `docs/uniform-backward-50tree-wave2-profile.md`
 
+Those reference documents and several benchmark harnesses named below came
+from the historical performance workspace and are not all tracked in the
+current branch. Treat the commands in this section as provenance for the
+recorded numbers, not as a current reproducible command set.
+
 Commands run:
 
 ```bash

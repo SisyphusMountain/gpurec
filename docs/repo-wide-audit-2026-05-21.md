@@ -1,0 +1,376 @@
+# Repo-Wide Audit, 2026-05-21
+
+This note records a read-only audit pass over the tracked repository state on
+branch `lean-fast-path`.  It is intentionally documentation-only: no runtime
+logic was changed before recording the findings.
+
+## Scope And Evidence
+
+- Tracked scope: `git ls-files | wc -l` reported 134 files.
+- Source-like size: `git ls-files '*.py' '*.cpp' '*.hpp' '*.rs' '*.R' | xargs wc -l`
+  reported 43,009 lines.
+- Test inventory: `pytest --collect-only -q` collected 823 tests.
+- Coverage tooling: importing `coverage` failed with
+  `ModuleNotFoundError: No module named 'coverage'`, so this pass used static
+  evidence, test references, and subagent review instead of a line coverage
+  report.
+- Static docstring scan: 510 Python symbols were found under `gpurec/`; 138
+  public classes/functions lacked docstrings.
+
+Five read-only subagents inspected disjoint file groups:
+
+- Core Python runtime: `gpurec/core/*.py` except kernels and C++ sources.
+- Kernel and C++ runtime: `gpurec/core/kernels/*` and `gpurec/core/cpp/*`.
+- Public API, workflow, CLI, optimization, and RecPhyloXML modules.
+- Rust backtracking, configs, examples, notebooks, profiling, and scripts.
+- Tests, documentation, package metadata, workflow YAML, examples metadata, and
+  release hygiene files.
+
+## Static Signals
+
+Largest production symbols by source length:
+
+- `gpurec/api/model.py:832` `GeneReconModel`, 992 lines.
+- `gpurec/core/backward.py:27` `Pi_wave_backward`, 581 lines.
+- `gpurec/api/uniform_chunked.py:721` `UniformChunkedReconModel`, 458 lines.
+- `gpurec/workflow/optimize.py:306` `OptimizationRunner`, 439 lines.
+- `gpurec/core/kernels/wave_backward.py:1033`
+  `_dts_cross_backward_accum_kernel`, 416 lines.
+- `gpurec/optimization/batched_lbfgs.py:25` `BatchedLBFGS`, 384 lines.
+- `gpurec/core/forward.py:53` `Pi_wave_forward`, 345 lines.
+
+Modules with weak direct test references in the static scan include
+`gpurec/core/kernels/dts_fused.py`, `gpurec/core/kernels/pibar_vjp_cuda.py`,
+`gpurec/core/kernels/wave_backward.py`,
+`gpurec/core/kernels/wave_backward_cuda.py`,
+`gpurec/core/extract_parameters.py`, and the profiling scripts.  Some are
+covered indirectly through higher-level GPU tests, but direct branch-level
+evidence is thin.
+
+## Findings
+
+### Runtime Contracts And Algorithm Edges
+
+1. Small-species backward behavior is unclear.  `Pi_wave_backward` rejects
+   non-CUDA, unsupported dtypes, and `S <= 256` at `gpurec/core/backward.py:100`
+   and `gpurec/core/backward.py:104`.  GPU backward coverage uses
+   `test_trees_1000`, while user docs and examples show tiny CUDA configs.
+   Document this as an intentional limitation or add a tested fallback before
+   changing backward logic.
+
+2. `ancestors_T` is optional by signature but required in practice.
+   `E_step(..., ancestors_T=None)` and `E_fixed_point(..., ancestors_T=None)`
+   expose defaults at `gpurec/core/likelihood.py:32` and
+   `gpurec/core/likelihood.py:105`, but `_uniform_ancestor_sum` immediately uses
+   `expE_2d @ ancestors_T` at `gpurec/core/likelihood.py:22`.  Existing tests
+   pass `static.ancestors_T`, so the default path is untested.
+
+3. Direct duplicate `family_names` can collapse preprocessing data.  The direct
+   `GeneDataset` constructor checks only length at `gpurec/core/model.py:545`,
+   then builds dictionaries keyed by family name at `gpurec/core/model.py:569`
+   and cache maps at `gpurec/core/model.py:669`.  AleRax file parsing rejects
+   duplicate names, but the direct constructor path lacks equivalent coverage.
+
+4. `clade_budget` is a packing target, not a hard cap.  In `clade_first_fit`
+   and `depth_first_fit`, a single over-budget family still starts its own
+   chunk at `gpurec/core/batch_planning.py:221` and
+   `gpurec/core/batch_planning.py:287`.  Tests cover under-budget fixtures, but
+   not oversized-family semantics.
+
+5. Adaptive root trace behavior is under-specified.  `Pi_wave_forward`
+   preallocates `root_logsumexp_trace` for all fixed iterations at
+   `gpurec/core/forward.py:223`, can return early at
+   `gpurec/core/forward.py:329`, and returns the full trace at
+   `gpurec/core/forward.py:392`.  Current tests cover fixed-iteration trace
+   behavior, not early convergence.
+
+6. DTS parameter shape semantics are ambiguous when `G == S`.  The forward DTS
+   helper treats a 1-D parameter with `numel() == S` as shared species-indexed
+   at `gpurec/core/kernels/dts_fused.py:18`.  The backward helper prioritizes
+   family layout when `family_idx` exists at
+   `gpurec/core/kernels/wave_backward.py:57`.  Direct callers can therefore get
+   different forward/backward interpretations for `[G]` parameters when the
+   family count equals the species count.
+
+7. Exposed C++ scheduler helpers do not validate `max_wave_size`.  The phased
+   wave implementation advances by `max_wave_size` at
+   `gpurec/core/cpp/preprocess.cpp:1086` and loops while
+   `batch.size() < max_wave_size` at `gpurec/core/cpp/preprocess.cpp:1126`.
+   Cross-family variants have the same pattern at
+   `gpurec/core/cpp/preprocess.cpp:2401` and
+   `gpurec/core/cpp/preprocess.cpp:2622`.  Python wrapper tests cover invalid
+   values, but the pybind exports do not.
+
+8. The opt-in CUDA Pibar VJP path can mask failures in default `auto` mode.
+   `gpurec/core/kernels/wave_backward.py:1910` enables the CUDA prototype for
+   fp32 CUDA tensors, then catches broad `Exception` at
+   `gpurec/core/kernels/wave_backward.py:1935`.  Warnings are limited to
+   non-`auto` modes.  There are env-toggle tests, but no direct test for
+   `uniform_cross_pibar_vjp_tree_from_ud_cuda`.
+
+9. Backward and DTS kernel coverage is thin relative to risk.  Direct kernel
+   tests import forward wave-step functions, but no direct tests were found for
+   `dts_fused_parent_reduced`, `wave_backward_uniform_fused`,
+   `dts_cross_backward_accum_fused`, `wave_backward_uniform_nosplit_cuda`, or
+   the CUDA Pibar prototype.
+
+10. `preprocess.cpp` relies on transitive includes.  The include block lacks
+    `<set>` and `<chrono>` near `gpurec/core/cpp/preprocess.cpp:6`, but the file
+    uses `std::set` at `gpurec/core/cpp/preprocess.cpp:2462` and `std::chrono`
+    at `gpurec/core/cpp/preprocess.cpp:2720`.
+
+11. `GPUREC_LEAF_HIT_ONLY_LOGP` appears stale.  It is read at
+    `gpurec/core/kernels/wave_backward.py:984` and passed into kernels, but the
+    `LEAF_HIT_ONLY_LOGP` constexpr does not appear to be used inside those
+    kernels.  This is a deletion candidate after a focused guard.
+
+12. Several pybind debug or scheduler exports appear unowned by in-repo
+    callers.  `compute_wave_stats`, `compute_packet_wave_stats`,
+    `compute_phased_wave_stats`, cross-family stats, and `bench_parse` are
+    exported around `gpurec/core/cpp/preprocess.cpp:2706`, but search found only
+    definitions.  Either document them as public diagnostics or remove them
+    with input-validation tests for retained exports.
+
+13. `Pi_wave_backward` accepts `ancestors_T` at
+    `gpurec/core/backward.py:41`, but the function does not use it.  This is a
+    possible signature cleanup after call-site compatibility is documented.
+
+### Public API, Workflow, And Optimization
+
+14. `BatchedLBFGS.max_eval` can be exceeded.  The outer loop checks
+    `func_evals < max_eval` at `gpurec/optimization/batched_lbfgs.py:295`, but
+    `step()` performs an unconditional final gradient evaluation after the line
+    search at `gpurec/optimization/batched_lbfgs.py:374`.  Existing LBFGS tests
+    do not cover `max_eval`.
+
+15. `GeneReconModel.configure_solver_iterations()` is unclear with active lazy
+    prefetch.  Pending `_batch_futures` may already exist when solver fields
+    are changed at `gpurec/api/model.py:1256`, `gpurec/api/model.py:1382`, and
+    `gpurec/api/model.py:1398`.  Tests cover invalid inputs and close/restart
+    behavior, not reconfiguration during pending prefetch.
+
+16. Backtracking sampling can hang indefinitely if the external Rust binary
+    stalls.  Help validation has a timeout, but actual sampling uses
+    `subprocess.run()` without one at `gpurec/backtracking.py:283`,
+    `gpurec/backtracking.py:365`, and `gpurec/backtracking.py:497`.
+
+17. Sampling aggregate output formats are underdocumented.  The workflow writes
+    comma-space-separated `totalSpeciesEventCounts.txt`, whitespace-separated
+    `totalTransfers.txt`, and values normalized by sample count rather than by
+    family count at `gpurec/workflow/sampling.py:158`,
+    `gpurec/workflow/sampling.py:177`, and `gpurec/workflow/sampling.py:361`.
+    Tests pin current behavior, but user docs list filenames without defining
+    format and normalization semantics.
+
+### Scripts, Rust, Profiling, And Examples
+
+18. Legacy HOGENOM launchers have inconsistent path override support.
+    `scripts/README.md` labels them legacy checkout-local scripts, while
+    `scripts/optimize_hogenom_ccp_global_uniform.py:21` and
+    `scripts/optimize_hogenom_ccp_specieswise_uniform.py:26` hard-code local
+    data paths and expose mostly optimizer/regularization flags.  Document
+    which launchers are fixed-dataset before shared optimizer changes.
+
+19. `profiling/bench_uniform_forward_backward_pipeline.py` references missing
+    `docs/forward-backward-full-pipeline-plan.md` at lines 4-5.  The benchmark
+    contract is stale until the reference is restored or removed.
+
+20. `scripts/make_hogenom_branchscale_penalty_report.py` appears stale relative
+    to current run-directory naming.  It only loads `penalty_*` directories at
+    lines 103-110, while newer launchers create timestamped names, and the
+    report text hard-codes a date and "1325 branch multipliers".
+
+21. `configs/hogenom_ccp_wandb.yaml` is not a portable smoke config.  It assumes
+    local HOGENOM data paths, CUDA, per-step checkpointing, and online W&B.  It
+    should be documented as a full local experiment config rather than a general
+    example.
+
+22. `examples/minimal-run-config.json` defaults to `"device": "cuda"` even
+    though the tiny fixtures are otherwise portable.  This is a documentation
+    and reproducibility footgun for CPU-only users.
+
+23. Rust backtracking input validation is shape-focused but numeric contracts
+    are not fully documented.  Matrix validation checks only
+    `rows * cols == data.len()` in `crates/gpurec-backtrack/src/lib.rs:31`, and
+    origination probabilities are log-converted only if positive around line
+    274 while non-finite values are filtered later around line 750.  Add schema
+    docs and tests before changing sampler behavior.
+
+24. Some profiling/evaluation scripts encode brittle external file-format
+    assumptions.  `profiling/evaluate_hogenom_alerax_rates.py:29` reads only
+    the second line of each `*_rates.txt` and treats the first three columns as
+    D/L/T; defaults around line 147 hard-code the HOGENOM root, CUDA device, and
+    iteration count.
+
+### Tests, Docs, And Packaging
+
+25. Release metadata still has an expected blocker.  `pyproject.toml` lacks a
+    license key and license classifier, while `docs/release-readiness.md`
+    requires adding both and a top-level license file.  The test suite currently
+    treats this as an expected release metadata blocker.
+
+26. The docs index presented historical cleanup notes as current.  This audit
+    moved `core-simplification-suggestions.md` out of "Current Operating Notes"
+    because the file itself says it is a historical snapshot and includes
+    already-implemented items such as removing `scatter_lse.py`.
+
+27. Performance docs contain broken references.  Examples include missing docs
+    and benchmark scripts in `docs/lean-performance-path-regression.md`, and
+    `docs/second-order-optimization-opportunities.md` references
+    `profiling/bench_global_parameter_optimization.py` plus a line number that
+    no longer exists in `tests/integration/test_gene_recon_model.py`.
+
+28. Some GPU/data-heavy tests are classified as unit tests.  `tests/conftest.py`
+    auto-marks everything under `tests/unit` as `unit`, but
+    `tests/unit/test_adaptive_iterations.py` requires CUDA and `test_trees_1000`
+    and some `test_specieswise_uniform.py` CUDA checks lack local `slow`
+    markers.  This conflicts with `tests/README.md` guidance.
+
+29. `tests/unit/test_release_metadata.py` mirrors docs and GitHub Actions YAML
+    with many exact substring assertions.  These guards catch release drift, but
+    they are brittle during harmless wording or workflow layout changes.
+
+30. `tests/unit/test_workflow.py` is an oversized mixed-surface test module at
+    5,123 lines.  It covers exports, config, checkpointing, optimization,
+    backtracking commands, sampling, and more.  Splitting it by behavior would
+    improve ownership and reduce stale-test risk.
+
+31. `pytest.ini` globally ignores all `DeprecationWarning` and
+    `PendingDeprecationWarning`.  Scoping suppression to known external noise
+    would make project-owned deprecations visible.
+
+32. `tests/__init__.py` is stale or unnecessary.  It describes `gradients` and
+    `performance` suites, while the current marker taxonomy is `unit`,
+    `integration`, `kernel`, `gpu`, and `slow`.
+
+33. CLI help smoke tests are sensitive to stale installed console scripts.  In
+    this checkout, `which gpurec` resolved to `/home/enzo/miniforge3/bin/gpurec`,
+    whose entry point imports `gpurec.cli.reconcile`.  The repo-local
+    `python -m gpurec.cli --help` command passed, but
+    `tests/unit/test_release_metadata.py::test_cli_help_smokes_are_quiet_on_cpu`
+    failed through the stale PATH executable.  This is an environment/setup
+    fragility to document or guard in release checks.
+
+## Adequately Covered Or Lower-Risk Areas
+
+- `gpurec/core/_helpers.py`, `gpurec/core/log2_utils.py`,
+  `gpurec/core/terms.py`, `gpurec/core/scheduling.py`,
+  `gpurec/core/species.py`, and `gpurec/core/memory_policy.py` have focused
+  unit coverage.
+- `gpurec/core/batching.py` and `gpurec/core/batch_planning.py` have strong
+  scheduler and layout coverage, with the oversized-family `clade_budget` edge
+  left open.
+- `gpurec/core/model.py` cache validation and AleRax parsing are well covered,
+  with the direct duplicate-family-name constructor path left open.
+- Workflow checkpointing, CLI parse failures, public export guards, and
+  backtracking command failure paths have broad unit coverage.
+
+## Deletion And Simplification Candidates
+
+- Remove or document unused pybind debug exports in `preprocess.cpp`.
+- Remove stale `GPUREC_LEAF_HIT_ONLY_LOGP` plumbing if a focused guard proves it
+  is inert.
+- Remove unused `ancestors_T` from `Pi_wave_backward` after documenting call-site
+  compatibility.
+- Simplify or delete stale `tests/__init__.py`.
+- Rework `tests/unit/test_workflow.py` into focused modules.
+- Mark historical docs clearly, remove broken links, and either restore or
+  delete stale benchmark plan references.
+
+## Documentation Cleanup Completed
+
+The first follow-up pass stayed documentation-only and addressed the lowest-risk
+staleness found above:
+
+- `docs/README.md` now lists `core-simplification-suggestions.md` as a
+  historical cleanup snapshot rather than a current operating note.
+- `profiling/bench_uniform_forward_backward_pipeline.py` no longer points to the
+  missing `docs/forward-backward-full-pipeline-plan.md`.
+- `docs/lean-performance-path-regression.md` now says its missing reference
+  documents and benchmark commands are historical provenance, not a current
+  reproducible command set.
+- `docs/second-order-optimization-opportunities.md` no longer names a missing
+  tracked benchmark file as an existing related file and no longer relies on a
+  stale integration-test line number.
+- `scripts/README.md` now calls out fixed-dataset HOGENOM reproducers whose
+  paths live in module constants rather than general path flags.
+- `configs/hogenom_ccp_wandb.yaml` now states that it is a checkout-local full
+  HOGENOM experiment config, not a portable smoke example.
+- `README.md` now documents that the checked minimal JSON config is CUDA-only,
+  defines the sampling aggregate file formats and normalization, and identifies
+  the Hydra HOGENOM YAML as a checkout-local full experiment config.
+- `tests/README.md` now makes the `tests/unit` plus `gpu` marker overlap
+  explicit so CPU-only audit gates use `-m "unit and not gpu"`.
+- `tests/unit/test_release_metadata.py` now skips only a known stale external
+  `gpurec` console script that imports `gpurec.cli.reconcile`, while still
+  exercising the repo-local `python -m gpurec.cli --help` path.
+- `tests/unit/test_global_wave_scheduler.py` now pins the documented
+  `clade_budget` behavior for both first-fit planners: the budget is a packing
+  target, so an individual oversized family can occupy its own batch.
+- `gpurec/core/likelihood.py` now documents and validates that `ancestors_T` is
+  required for the retained uniform-transfer E solver, replacing an indirect
+  matrix-multiply failure with a clear `ValueError`.
+- `tests/unit/test_origination_probs.py` now covers both `E_step` and
+  `E_fixed_point` missing-`ancestors_T` errors.
+- `gpurec/core/model.py` now rejects duplicate direct `family_names` before
+  loading the preprocessing extension, so the direct constructor matches the
+  AleRax parser's no-duplicate-name contract.
+- `tests/unit/test_workflow.py` now covers the duplicate direct `family_names`
+  validation and proves it runs before extension loading.
+
+## Verification Run This Round
+
+- `pytest --collect-only -q`: 823 tests collected.
+- Stale-reference grep over tracked docs/profiling/scripts/config files for
+  `forward-backward-full-pipeline-plan`,
+  `bench_global_parameter_optimization`, and `test_gene_recon_model.py:293`:
+  no matches after the documentation cleanup.
+- `python -m py_compile profiling/bench_uniform_forward_backward_pipeline.py`:
+  passed.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_repository_hygiene.py tests/unit/test_examples.py -q`:
+  23 passed.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_release_metadata.py -q`:
+  39 passed, 1 skipped.  The skip is the stale external `gpurec` console script
+  noted above; the repo-local module help smoke passed.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_global_wave_scheduler.py::test_plan_family_batches_treats_clade_budget_as_soft_packing_target -q`:
+  2 passed.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_global_wave_scheduler.py -q`:
+  40 passed.
+- `python -m py_compile gpurec/core/likelihood.py tests/unit/test_origination_probs.py`:
+  passed.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_origination_probs.py -q`:
+  6 passed.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_specieswise_uniform.py -q -k 'origination or E_fixed_point or trace'`:
+  1 skipped, 4 deselected in the CPU-only environment.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit -q -m "unit and not gpu"`:
+  799 passed, 1 skipped, 6 deselected after the duplicate-family-name guard.
+- `python -m py_compile gpurec/core/model.py tests/unit/test_workflow.py`:
+  passed.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_workflow.py::test_gene_dataset_rejects_duplicate_family_names_before_extension -q`:
+  1 passed.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_workflow.py::test_gene_dataset_rejects_single_gene_tree_path_before_extension tests/unit/test_workflow.py::test_gene_dataset_rejects_duplicate_family_names_before_extension -q`:
+  2 passed.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_workflow.py -q -k 'gene_dataset_rejects_single_gene_tree_path_before_extension or gene_dataset_rejects_duplicate_family_names_before_extension'`:
+  2 passed, 420 deselected.
+- `python scripts/check_release_metadata.py`: failed with the known release
+  blockers: missing top-level `LICENSE`, missing `pyproject.toml` license
+  metadata, and missing license classifier.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_release_metadata.py tests/unit/test_repository_hygiene.py -q`:
+  58 passed, 1 skipped.  The skip is the stale external `gpurec` console script
+  noted above.
+- `python -m gpurec.cli --help`: passed.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_repository_hygiene.py -q`:
+  19 passed.
+
+## Recommended Next Order
+
+1. Continue turning documented findings into focused guards before runtime
+   redesigns.  Contract coverage now exists for duplicate direct
+   `family_names`, oversized `clade_budget`, and `ancestors_T=None`; remaining
+   high-value guards include LBFGS `max_eval`, C++ `max_wave_size`, and
+   sampling timeout behavior.
+2. Fix remaining documentation-only staleness as it is found in touched areas.
+3. Make low-risk hygiene changes with tests: C++ includes, stale
+   `tests/__init__.py`, slow markers, scoped warning filters.
+4. Only then consider behavior changes for backward small-`S`, DTS parameter
+   shape semantics, CUDA Pibar fallback policy, and sampling aggregate formats.
