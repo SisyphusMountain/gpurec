@@ -821,6 +821,22 @@ Verification:
 - `CUDA_VISIBLE_DEVICES='' python -m pytest --collect-only tests/integration/test_gene_recon_model.py tests/integration/test_uniform_chunked_model.py`: 16 tests collected in the worker.
 - CUDA runtime integration was not executed for this patch.
 
+### `b0c7b0b` - Make chunked stats rows explicit
+
+Proposal coverage:
+
+- `CHUNK-01`: extracted the chunked evaluator's per-chunk stats row shape into
+  an explicit `_UniformChunkStatsRow` value object plus helper.
+- Kept the public `stats["chunk_rows"]` payload as a list of ordinary dicts,
+  so workflow diagnostics and callers see the same keys and values.
+- No CUDA kernel behavior, gradient math, or timing path changed.
+
+Verification:
+
+- `python -m py_compile gpurec/api/uniform_chunked.py tests/unit/test_optimization_workflow.py`: passed.
+- `PYTHONDONTWRITEBYTECODE=1 python -m pytest -q -p no:cacheprovider tests/unit/test_optimization_workflow.py tests/unit/test_gradient_accumulator.py`: 53 passed.
+- `git diff --check -- gpurec/api/uniform_chunked.py tests/unit/test_optimization_workflow.py`: passed.
+
 ### Current combined gates after no-cache setup and diagnosis work
 
 Verification:
@@ -845,9 +861,10 @@ Verification:
 1. `EVAL-01` and `CHUNK-01`: continue consolidation for autograd and
    gradient-producing paths.  Resident no-grad, export-state, resident
    autograd forward solve, resident implicit-gradient calls, static-state
-   gradient evaluation, and chunked read-only paths now share explicit
-   evaluator boundaries.  `UniformChunkedReconModel` still owns separate
-   chunk setup/stats and per-chunk forward/backward orchestration.
+   gradient evaluation, chunked read-only paths, chunked gradient
+   accumulation, and chunked stats-row shaping now have explicit boundaries.
+   `UniformChunkedReconModel` still owns separate chunk setup and per-chunk
+   forward/backward orchestration.
 2. `ORIG-01`: prepared-prior objects now reach model, static-state, resident
    evaluator, implicit-gradient, export-state, and chunked family-selection
    boundaries while preserving the existing prepared tensor likelihood API.
@@ -943,6 +960,9 @@ Verification:
   `gpurec/api/autograd.py`, `gpurec/api/_uniform_evaluator.py`,
   `gpurec/api/model.py`, `gpurec/api/uniform_chunked.py`, and origination
   prior tests, integrated in `8159220`.
+- Chunked stats-row boundary:
+  `gpurec/api/uniform_chunked.py` and optimization workflow tests, integrated
+  in `b0c7b0b`.
 
 Future parallel workers should continue to use separate git worktrees for
 larger runtime changes.
