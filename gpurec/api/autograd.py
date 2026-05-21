@@ -19,7 +19,10 @@ from typing import Any, Optional
 import torch
 
 from gpurec.core.likelihood import E_fixed_point, compute_nll
-from gpurec.core.forward import Pi_wave_forward
+from gpurec.core.forward import (
+    _PiForwardRequest,
+    pi_training_state_request,
+)
 from gpurec.core._helpers import _nvtx_range
 from gpurec.core.extract_parameters import extract_parameters_uniform
 from gpurec.core.origination import PreparedOriginationPrior
@@ -161,8 +164,7 @@ def solve_resident_e_pi(
     static: ReconStaticState,
     theta: torch.Tensor,
     *,
-    return_original: bool,
-    return_root_rows: bool,
+    pi_request: _PiForwardRequest,
     warm_start_E: torch.Tensor | None = None,
 ) -> ResidentSolveResult:
     """Solve resident E and Pi tensors without owning caller side effects."""
@@ -194,7 +196,7 @@ def solve_resident_e_pi(
         convergence_metric="logsumexp" if static.adaptive_iters else "max_diff",
     )
 
-    pi_out = Pi_wave_forward(
+    pi_out = pi_request.run(
         wave_layout=static.wave_layout,
         species_helpers=static.species_helpers,
         E=e_out["E"],
@@ -207,8 +209,6 @@ def solve_resident_e_pi(
         device=static.device,
         dtype=static.dtype,
         fixed_iters=static.fixed_iters_Pi,
-        return_original=return_original,
-        return_root_rows=return_root_rows,
         family_idx=static.wave_layout.get("family_idx") if static.genewise else None,
         convergence_tolerance=(
             static.pi_max_diff_tol if static.adaptive_iters else -1.0
@@ -238,8 +238,7 @@ def evaluate_resident_gradient_forward(
         solve = solve_resident_e_pi(
             static,
             theta,
-            return_original=False,
-            return_root_rows=False,
+            pi_request=pi_training_state_request(),
             warm_start_E=warm_start_E,
         )
         _record_forward_solver_stats(static, solve.e_out, solve.pi_out)

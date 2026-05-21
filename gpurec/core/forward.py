@@ -67,6 +67,44 @@ def _pi_output_intent(
     )
 
 
+@dataclass(frozen=True)
+class _PiForwardRequest:
+    """Intent-named internal request for invoking ``Pi_wave_forward``."""
+
+    intent: _PiOutputIntent
+
+    def run(self, **forward_kwargs):
+        return Pi_wave_forward(
+            **forward_kwargs,
+            return_original=self.intent.emit_original_pi,
+            return_root_rows=self.intent.emit_root_rows,
+        )
+
+
+def pi_training_state_request() -> _PiForwardRequest:
+    """Return wave-ordered Pi/Pibar state for likelihood plus gradients."""
+    return _PiForwardRequest(
+        _pi_output_intent(return_original=False, return_root_rows=False)
+    )
+
+
+def pi_root_row_loss_request() -> _PiForwardRequest:
+    """Return root rows only for no-gradient loss evaluation."""
+    return _PiForwardRequest(
+        _pi_output_intent(return_original=False, return_root_rows=True)
+    )
+
+
+def pi_export_state_request(*, original_order: bool) -> _PiForwardRequest:
+    """Return export Pi state in the caller-selected clade order."""
+    return _PiForwardRequest(
+        _pi_output_intent(
+            return_original=original_order,
+            return_root_rows=False,
+        )
+    )
+
+
 # ---------------------------------------------------------------------------
 # Cross-clade DTS
 # ---------------------------------------------------------------------------

@@ -49,6 +49,7 @@ from gpurec.core.origination import (
     prepare_origination_prior,
 )
 from gpurec.core.parameter_layout import ParameterLayout
+from gpurec.core.forward import pi_export_state_request
 
 from .autograd import (
     ReconStaticState,
@@ -1721,8 +1722,7 @@ class GeneReconModel(torch.nn.Module):
         solve = solve_resident_e_pi(
             static,
             theta,
-            return_original=original_order,
-            return_root_rows=False,
+            pi_request=pi_export_state_request(original_order=original_order),
         )
         pi = (
             solve.pi_out["Pi"]

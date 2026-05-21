@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import torch
 
+from gpurec.core.forward import pi_root_row_loss_request
 from gpurec.core.likelihood import compute_nll_root_rows
 
 from .autograd import (
@@ -33,8 +34,7 @@ def evaluate_resident_no_grad(
     solve = solve_resident_e_pi(
         static,
         theta,
-        return_original=False,
-        return_root_rows=True,
+        pi_request=pi_root_row_loss_request(),
     )
     _record_forward_solver_stats(static, solve.e_out, solve.pi_out)
 

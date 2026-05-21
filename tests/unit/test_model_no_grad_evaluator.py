@@ -347,16 +347,14 @@ def test_autograd_forward_uses_resident_solve_boundary(monkeypatch):
         static_arg,
         theta_arg,
         *,
-        return_original,
-        return_root_rows,
+        pi_request,
         warm_start_E=None,
     ):
         solve_calls.append(
             {
                 "static": static_arg,
                 "theta": theta_arg,
-                "return_original": return_original,
-                "return_root_rows": return_root_rows,
+                "pi_request": pi_request,
                 "warm_start_E": warm_start_E,
                 "grad_enabled": torch.is_grad_enabled(),
             }
@@ -403,8 +401,10 @@ def test_autograd_forward_uses_resident_solve_boundary(monkeypatch):
     assert len(solve_calls) == 1
     assert solve_calls[0]["static"] is static
     assert solve_calls[0]["theta"] is theta
-    assert solve_calls[0]["return_original"] is False
-    assert solve_calls[0]["return_root_rows"] is False
+    assert (
+        solve_calls[0]["pi_request"].intent.name
+        == "training_or_wave_export_state"
+    )
     assert solve_calls[0]["warm_start_E"] is warm_E
     assert solve_calls[0]["grad_enabled"] is False
     assert len(likelihood_calls) == 1

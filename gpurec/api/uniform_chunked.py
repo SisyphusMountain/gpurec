@@ -25,7 +25,10 @@ from gpurec.core.batch_planning import (
     plan_family_batches,
 )
 from gpurec.core.extract_parameters import extract_parameters_uniform
-from gpurec.core.forward import Pi_wave_forward
+from gpurec.core.forward import (
+    pi_root_row_loss_request,
+    pi_training_state_request,
+)
 from gpurec.core.gradient_accumulator import StructuredGradientAccumulator
 from gpurec.core.likelihood import (
     E_fixed_point,
@@ -548,6 +551,11 @@ def _evaluate_chunked_uniform_result(
     backward_ms = 0.0
     pi_backward_ms = 0.0
     chunk_stats: list[dict[str, Any]] = []
+    pi_request = (
+        pi_training_state_request()
+        if need_grad
+        else pi_root_row_loss_request()
+    )
 
     for chunk_idx, built in selected_chunks:
         chunk_origination_probs = state.origination_prior.select_families(
@@ -555,7 +563,7 @@ def _evaluate_chunked_uniform_result(
         ).probs
 
         def run_forward():
-            pi_out = Pi_wave_forward(
+            pi_out = pi_request.run(
                 wave_layout=built.wave_layout,
                 species_helpers=state.species_helpers,
                 E=e_out["E"],
@@ -568,8 +576,6 @@ def _evaluate_chunked_uniform_result(
                 device=state.device,
                 dtype=state.dtype,
                 fixed_iters=state.fixed_iters_Pi,
-                return_original=False,
-                return_root_rows=not need_grad,
             )
             if need_grad:
                 loss_vec = compute_nll(

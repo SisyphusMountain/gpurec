@@ -2,7 +2,12 @@ from __future__ import annotations
 
 import pytest
 
-from gpurec.core.forward import _pi_output_intent
+from gpurec.core.forward import (
+    _pi_output_intent,
+    pi_export_state_request,
+    pi_root_row_loss_request,
+    pi_training_state_request,
+)
 
 
 @pytest.mark.parametrize(
@@ -74,3 +79,19 @@ def test_pi_output_intent_maps_legacy_booleans_to_internal_contract(
     assert intent.emit_wave_ordered_pi is expected_wave_ordered
     assert intent.retain_saved_state is expected_saved_state
     assert intent.can_skip_final_pibar is (not expected_saved_state)
+
+
+def test_pi_forward_requests_name_internal_output_intent():
+    assert (
+        pi_training_state_request().intent.name
+        == "training_or_wave_export_state"
+    )
+    assert pi_root_row_loss_request().intent.name == "root_row_loss_only"
+    assert (
+        pi_export_state_request(original_order=True).intent.name
+        == "export_original_and_wave_rows"
+    )
+    assert (
+        pi_export_state_request(original_order=False).intent.name
+        == "training_or_wave_export_state"
+    )
