@@ -482,23 +482,113 @@ Verification:
 - `python -m py_compile gpurec/core/batching.py gpurec/api/_family_layout.py tests/unit/test_global_wave_scheduler.py`: passed.
 - `CUDA_VISIBLE_DEVICES='' PYTHONDONTWRITEBYTECODE=1 python -m pytest -q -p no:cacheprovider tests/unit/test_global_wave_scheduler.py tests/unit/test_family_layout.py`: 61 passed.
 
-### Current combined gates after runtime-policy characterization
+### `8bbd428` - Instrument benchmark dataset preprocessing progress
+
+Proposal coverage:
+
+- `BWD-01`, `BWD-02`, and `SCHED-01`: extended the benchmark progress stream
+  into `GeneDataset` preprocessing so failed 1000-family setup runs identify
+  whether the stop happens in species cache/hash handling, family hash/cache
+  scanning, batch C++ preprocessing, cache validation, or later CUDA setup.
+- Added a private no-op `_preprocess_progress` hook to `GeneDataset`; normal
+  API behavior and default benchmark output are unchanged.
+- The latest 1000-family preflight now reaches the missing-family C++
+  preprocessing call with 992 cache-missing families.  It still does not
+  produce a timed benchmark result.
 
 Verification:
 
-- `CUDA_VISIBLE_DEVICES='' PYTHONDONTWRITEBYTECODE=1 python -m pytest -q -p no:cacheprovider tests/unit/test_release_metadata.py::test_tests_readme_explicit_cpu_unit_paths_match_marker_gate tests/unit/test_repository_hygiene.py::test_tests_use_pytest_managed_temporary_paths`: 2 passed after adding the new CPU unit modules to `tests/README.md`.
-- `CUDA_VISIBLE_DEVICES='' PYTHONDONTWRITEBYTECODE=1 python -m pytest -q -p no:cacheprovider -m "unit and not gpu"`: 1070 passed, 1 skipped, 33 deselected.
+- `python -m py_compile profiling/bench_uniform_forward_backward_pipeline.py gpurec/core/model.py tests/unit/test_bench_uniform_forward_backward_pipeline.py tests/unit/test_alerax_family_input.py`: passed.
+- `PYTHONDONTWRITEBYTECODE=1 python -m pytest -q -p no:cacheprovider tests/unit/test_bench_uniform_forward_backward_pipeline.py tests/unit/test_alerax_family_input.py`: 41 passed.
+
+### `da2715a` - Consolidate resident autograd solve path
+
+Proposal coverage:
+
+- `EVAL-01`: moved the resident E/Pi solve result and solve helper into the
+  autograd module and routed `_GeneReconFunction.forward()` through the shared
+  solve boundary.
+- Preserved the existing warm-start behavior and kept the no-grad/root-row
+  evaluator boundary in `_uniform_evaluator.py`.
+- Autograd backward and streaming gradient evaluation remain separate; this
+  commit only removes the duplicated resident forward solve path.
+
+Verification:
+
+- `python -m py_compile gpurec/api/autograd.py gpurec/api/model.py gpurec/api/_uniform_evaluator.py tests/unit/test_model_no_grad_evaluator.py`: passed.
+- `PYTHONDONTWRITEBYTECODE=1 python -m pytest -q -p no:cacheprovider tests/unit/test_model_no_grad_evaluator.py tests/unit/test_workflow.py::test_full_loss_for_theta_uses_streaming_contract_for_explicit_theta`: 6 passed.
+
+### `e6fb2c9` - Guard chunked bf16 gradient path
+
+Proposal coverage:
+
+- `CHUNK-01`: added a shared dtype guard at the chunked result boundary so
+  gradient-producing chunked evaluation rejects `torch.bfloat16` before any
+  chunk work starts.
+- Read-only chunked `bfloat16` evaluation remains allowed.  The guard records
+  the current retained-backward limitation instead of letting a later CUDA path
+  fail less clearly.
+
+Verification:
+
+- `python -m py_compile gpurec/api/uniform_chunked.py tests/unit/test_optimization_workflow.py`: passed.
+- `PYTHONDONTWRITEBYTECODE=1 python -m pytest -q -p no:cacheprovider tests/unit/test_optimization_workflow.py tests/unit/test_workflow.py -k 'uniform_chunked and not constructors and not factories'`: 36 passed, 443 deselected.
+
+### `fb23ab1` - Guard C++ preprocess pybind surface
+
+Proposal coverage:
+
+- `CPP-01` and `CPP-02`: added an exact pybind export manifest for
+  `gpurec/core/cpp/preprocess.cpp`.
+- Classified direct exports as production, compatibility, or diagnostic before
+  deletion.  `preprocess_multiple_families` remains production-owned; legacy
+  `preprocess` and direct stat exports still need deprecation or replacement
+  evidence before removal.
+- No C++ behavior changed.
+
+Verification:
+
+- `python -m py_compile tests/unit/test_repository_hygiene.py`: passed.
+- `CUDA_VISIBLE_DEVICES='' PYTHONDONTWRITEBYTECODE=1 python -m pytest -q -p no:cacheprovider tests/unit/test_repository_hygiene.py::test_preprocess_cpp_pybind_exports_match_classified_manifest tests/unit/test_repository_hygiene.py::test_runtime_surface_plan_documents_scheduler_and_pybind_ownership tests/unit/test_repository_hygiene.py::test_cpp_wave_stat_exports_validate_positive_max_wave_size`: 3 passed.
+- `git diff --check HEAD^ HEAD`: passed.
+
+### `119999e` - Guard script and test surface ownership
+
+Proposal coverage:
+
+- `SCRIPT-01`: added an executable guard requiring every tracked
+  `scripts/*.py` and `scripts/*.R` entry to be listed in `scripts/README.md`
+  with an allowed ownership status.
+- `TEST-01`: documented and guarded legacy-script test ownership, including
+  cleanup expectations and deletion notes for white-box internals.
+- Marked historical AleRax validation docs as using untracked generated
+  fixtures so path-reference hygiene can distinguish archived output from
+  tracked test fixtures.
+
+Verification:
+
+- `python -m py_compile tests/unit/test_repository_hygiene.py tests/unit/test_legacy_scripts.py scripts/check_release_metadata.py scripts/compare_backtracking_alerax_events.py scripts/export_hogenom_rates_from_checkpoint.py profiling/evaluate_hogenom_alerax_rates.py profiling/bench_uniform_forward_backward_pipeline.py`: passed.
+- `PYTHONDONTWRITEBYTECODE=1 python -m pytest -q -p no:cacheprovider tests/unit/test_legacy_scripts.py tests/unit/test_repository_hygiene.py`: 123 passed.
+- `PYTHONDONTWRITEBYTECODE=1 python -m pytest -q -p no:cacheprovider tests/unit/test_release_metadata.py -k 'not tests_readme_explicit_cpu_unit_paths_match_marker_gate'`: 42 passed, 1 skipped, 1 deselected.
+
+### Current combined gates after second-wave execution
+
+Verification:
+
+- `CUDA_VISIBLE_DEVICES='' PYTHONDONTWRITEBYTECODE=1 python -m pytest -q -p no:cacheprovider -m "unit and not gpu" -k 'not tests_readme_explicit_cpu_unit_paths_match_marker_gate'`: 1079 passed, 1 skipped, 36 deselected.  The excluded manifest test is blocked locally by the untracked dated-model test file `tests/unit/test_dated_species.py`, which is not part of this simplification branch.
 - `PYTHONDONTWRITEBYTECODE=1 python -m pytest -q -p no:cacheprovider tests/kernels/test_wave_step_uniform_forward_kernel.py tests/integration/test_gene_recon_model.py tests/integration/test_uniform_chunked_model.py tests/unit/test_specieswise_uniform.py::test_specieswise_uniform_forward_root_rows_match_saved_state tests/unit/test_specieswise_uniform.py::test_constant_specieswise_matches_global_loss_and_gradient_semantics`: 23 passed.
 - `PYTHONDONTWRITEBYTECODE=1 python profiling/bench_uniform_forward_backward_pipeline.py --stats-only --strict-optimized-kernels --fams 1 --family-chunk-size 1 --max-wave-size 8192 --fixed-iters 2 --compare-unchunked-max-fams 0`: `strict_optimized_verdict pass`.
-- `PYTHONDONTWRITEBYTECODE=1 python profiling/bench_uniform_forward_backward_pipeline.py --dataset tests/data/test_trees_1000 --fams 8 --family-chunk-size 2 --max-wave-size 32768 --fixed-iters 6 --reps 3 --warmups 1 --compare-unchunked-max-fams 8 --fail-on-correctness-mismatch --strict-optimized-kernels`: compare verdict pass, finite gradients, `strict_optimized_verdict pass`, `total_median_ms 111.844`, `max_peak_gib 0.445`.
-- 1000-family preflight attempt:
-  `PYTHONDONTWRITEBYTECODE=1 python profiling/bench_uniform_forward_backward_pipeline.py --dataset tests/data/test_trees_1000 --fams 1000 --family-chunk-size auto --max-wave-size auto --fixed-iters 6 --preflight-only --progress-jsonl --strict-optimized-kernels --compare-unchunked-max-fams 0` exited with code `-1`.  The flushed progress stream reached `static_inputs_start` and `gene_selection_done` with 1000 selected families, then exited before `dataset_loaded`; this local failure is therefore still a setup/preprocessing failure, not a timed CUDA benchmark result.
+- `PYTHONDONTWRITEBYTECODE=1 python profiling/bench_uniform_forward_backward_pipeline.py --dataset tests/data/test_trees_1000 --fams 8 --family-chunk-size 2 --max-wave-size 32768 --fixed-iters 6 --reps 3 --warmups 1 --compare-unchunked-max-fams 8 --fail-on-correctness-mismatch --strict-optimized-kernels`: compare verdict pass, finite gradients, `strict_optimized_verdict pass`, `total_median_ms 116.366`, `max_peak_gib 0.445`.
+- 1000-family preflight attempt with dataset progress:
+  `PYTHONDONTWRITEBYTECODE=1 python profiling/bench_uniform_forward_backward_pipeline.py --dataset tests/data/test_trees_1000 --fams 1000 --family-chunk-size auto --max-wave-size auto --fixed-iters 6 --preflight-only --progress-jsonl --strict-optimized-kernels --compare-unchunked-max-fams 0` still exited before `dataset_loaded`.  The flushed progress stream reached `dataset_preprocess_family_cache_scan_done` with 8 cache hits and 992 misses, then `dataset_preprocess_missing_families_preprocess_start` for 992 families.  No `dataset_preprocess_missing_families_preprocess_done` or `dataset_loaded` record was emitted, so the current blocker is the batch C++ preprocessing call for cache-missing families, not Python family hashing/cache scanning and not a timed CUDA benchmark.
 
 ## Active Work Queue
 
 1. `EVAL-01` and `CHUNK-01`: continue consolidation for autograd and
-   gradient-producing paths.  Resident no-grad, export-state, and chunked
-   read-only paths now share explicit evaluator boundaries.
+   gradient-producing paths.  Resident no-grad, export-state, resident
+   autograd forward solve, and chunked read-only paths now share explicit
+   evaluator boundaries.  Autograd backward and `_evaluate_static_state(...,
+   need_grad=True)` still own separate gradient-producing call shapes.
 2. `PI-01`, `MODE-02`, `BWD-03`, and `DTS-01`: continue from the explicit
    contracts now in place.  Pi output intent, DTS layout parsing,
    backward auto-wrap characterization, and model-boundary gradient
@@ -506,12 +596,14 @@ Verification:
    hot CUDA scatter paths still require full gradient/parity gates.
 3. `BWD-01`, `BWD-02`, `ENV-01`, and `SCHED-01`: first characterization and
    ownership guards are in place.  Do not remove self-loop backends,
-   CPU-pruning branches, env toggles, or scheduler alternatives until the
-   1000-family setup/preprocessing failure is resolved and sparse/dense
-   benchmark gates show no regression.
+   CPU-pruning branches, env toggles, or scheduler alternatives while the
+   1000-family preflight still dies inside batch C++ preprocessing for
+   cache-missing families.  Resolve that setup failure before treating any
+   sparse/dense runtime benchmark as authoritative.
 4. `CPP-01`, `CPP-02`, `SCRIPT-01`, and `TEST-01`: continue pruning and
    splitting only after each surface has an owner, deprecation path, or
-   replacement behavior test.
+   replacement behavior test.  The first ownership guards are now executable;
+   actual deletion remains separate work.
 
 ## Recent Subagent Assignments
 
@@ -534,6 +626,22 @@ Verification:
 - Read-only proposal auditor: confirmed the safe integration order and flagged
   backend deletion, CPU-pruning removal, env deletion, and scheduler
   simplification as unsafe without benchmark evidence.
+- Dataset-preprocess progress worker:
+  `gpurec/core/model.py`,
+  `profiling/bench_uniform_forward_backward_pipeline.py`, and benchmark
+  progress tests, integrated in `8bbd428`.
+- Resident autograd solve worker:
+  `gpurec/api/autograd.py`, `gpurec/api/_uniform_evaluator.py`, and resident
+  evaluator tests, integrated in `da2715a`.
+- Chunked gradient boundary worker:
+  `gpurec/api/uniform_chunked.py` and optimization workflow tests, integrated
+  in `e6fb2c9`.
+- C++ pybind surface worker:
+  `gpurec/core/cpp/preprocess.cpp`, runtime-surface docs, and repository
+  hygiene tests, integrated in `fb23ab1`.
+- Script/test surface worker:
+  `tests/unit/test_repository_hygiene.py`, `tests/README.md`, archived AleRax
+  docs, and runtime-surface docs, integrated in `119999e`.
 
 Future parallel workers should continue to use separate git worktrees for
 larger runtime changes.
