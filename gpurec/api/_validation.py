@@ -1,3 +1,10 @@
+"""Internal validation helpers shared by direct API and workflow adapters.
+
+The helpers in this module are support code for ``gpurec.api`` and
+``gpurec.workflow``.  They keep device, numeric-control, integer-control, and
+theta-shape validation consistent, but they are not standalone public API.
+"""
+
 from __future__ import annotations
 
 import math
@@ -158,6 +165,7 @@ def validate_theta_shape(
     species_count: int,
     family_count: int,
 ) -> torch.Tensor:
+    """Validate the raw theta tensor shape for the active sharing mode."""
     if not torch.is_tensor(theta):
         raise ValueError(f"{name} must be a torch.Tensor")
     if mode == "global":

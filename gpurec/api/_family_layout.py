@@ -1,3 +1,11 @@
+"""Internal family-layout support shared by resident and chunked APIs.
+
+This module is not a public import surface.  It centralizes the preprocessing
+payload collation, family-index validation, and wave-layout construction used
+by ``GeneReconModel`` and ``UniformChunkedReconModel`` so both APIs share one
+runtime layout contract.
+"""
+
 from __future__ import annotations
 
 from collections.abc import Sequence
@@ -17,6 +25,8 @@ from gpurec.core.model import GeneDataset
 
 @dataclass(frozen=True)
 class FamilyWaveInputs:
+    """Validated family preprocessing slices before tensor collation."""
+
     family_indices: list[int]
     items: tuple[dict[str, Any], ...]
     family_clade_counts: list[int]
@@ -28,6 +38,8 @@ class FamilyWaveInputs:
 
 @dataclass(frozen=True)
 class FamilyWaveLayout:
+    """Built family layout tensors and scheduler metadata for model internals."""
+
     inputs: FamilyWaveInputs
     batched: dict[str, Any]
     waves: list[list[int]]
@@ -39,6 +51,7 @@ def origination_probs_for_family_indices(
     origination_probs: torch.Tensor | None,
     family_indices: Sequence[int],
 ) -> torch.Tensor | None:
+    """Select family-specific origination rows for a validated family subset."""
     if origination_probs is None or origination_probs.ndim == 1:
         return origination_probs
     idx = torch.as_tensor(
@@ -74,6 +87,7 @@ def family_wave_inputs(
     dataset: GeneDataset,
     family_indices: Sequence[int],
 ) -> FamilyWaveInputs:
+    """Collect validated family preprocessing dictionaries in batch order."""
     indices = _validated_family_indices(dataset, family_indices)
     items: list[dict[str, Any]] = []
     family_clade_counts: list[int] = []
@@ -117,6 +131,7 @@ def schedule_family_waves(
     max_root_wave_size: int | None,
     max_dts_partial_rows: int | None = None,
 ) -> tuple[list[list[int]], list[int]]:
+    """Schedule phased waves for already-collected family input metadata."""
     return schedule_global_phased_waves(
         list(inputs.items),
         inputs.family_clade_offsets,
@@ -137,6 +152,7 @@ def build_family_wave_layout(
     waves: list[list[int]] | None = None,
     phases: list[int] | None = None,
 ) -> FamilyWaveLayout:
+    """Build the collated tensor payload and wave layout for model internals."""
     if (waves is None) != (phases is None):
         raise ValueError("waves and phases must be provided together")
 

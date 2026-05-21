@@ -1880,6 +1880,168 @@ not edit files.  New or still-open findings from that refresh are:
 - `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_validation.py tests/unit/test_workflow.py tests/unit/test_extract_parameters.py tests/unit/test_optimization_workflow.py tests/unit/test_global_wave_scheduler.py tests/unit/test_family_layout.py tests/unit/test_repository_hygiene.py -q`:
   664 passed for the current touched-unit baseline after the scheduler adapter
   deletions.
+- The low-level package-doc finding is now fixed.  `gpurec/__init__.py` no
+  longer advertises direct imports from `gpurec.core.model`,
+  `gpurec.core.likelihood`, or `gpurec.core.forward`; the package docstring
+  points users to the high-level `gpurec.api` and `gpurec.workflow` surfaces,
+  and `docs/README.md` records that `gpurec.core` is an unstable internal
+  namespace except for explicitly documented supported helpers.  Repository
+  hygiene now guards both the package docstring and the developer-doc note.
+- `python -m py_compile gpurec/__init__.py tests/unit/test_repository_hygiene.py`:
+  passed after updating the package-doc guard.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_repository_hygiene.py::test_package_docs_do_not_advertise_core_as_public_surface -q`:
+  1 passed after adding the package-doc/developer-doc stability guard.
+- The likelihood compatibility-alias deprecation pass is now documented before
+  changing behavior.  The retained low-level aliases
+  `compute_log_likelihood()` and `compute_log_likelihood_root_rows()` return
+  NLL, so the cleanup should add `DeprecationWarning`s, move ordinary tests to
+  `compute_nll()` / `compute_nll_root_rows()`, and leave only a direct
+  compatibility test exercising the old names.
+- That deprecation pass is now complete.  Both compatibility aliases warn with
+  `DeprecationWarning`, `tests/unit/test_specieswise_uniform.py` uses the
+  current `compute_nll*` names, and repository hygiene guards that the legacy
+  names remain limited to their implementation and the direct compatibility
+  test.
+- `python -m py_compile gpurec/core/likelihood.py tests/unit/test_origination_probs.py tests/unit/test_specieswise_uniform.py tests/unit/test_repository_hygiene.py`:
+  passed after adding the deprecation warnings and alias-owner guard.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_origination_probs.py tests/unit/test_repository_hygiene.py::test_legacy_likelihood_aliases_warn_and_have_single_test_owner -q`:
+  10 passed after the compatibility alias warning update.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_specieswise_uniform.py --collect-only -q`:
+  5 tests collected after moving the CUDA-marked helper module to the NLL names.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_repository_hygiene.py -q`:
+  78 passed after the package-doc and alias-deprecation guards.
+- Fresh native/C++/kernel subagent audit findings were recorded from a
+  read-only pass.  The highest-risk unresolved surfaces are production-auto
+  native CUDA prototype routing with broad fallback, unowned direct pybind
+  scheduler/stat exports, the legacy `preprocess` pybind, DTS direct-kernel
+  one-dimensional parameter ambiguity, thin direct wrapper characterization for
+  retained backward/native kernels, and broad env-driven launch tuning spread
+  across kernel modules.
+- Fresh workflow/CLI/scripts/profiling subagent audit findings were recorded
+  from a read-only pass.  The largest remaining script surface is the legacy
+  HOGENOM optimizer family; other unresolved surfaces are duplicated validation
+  and normalization, weaker cleanup windows in legacy/profiling paths, an
+  underspecified profiling ownership boundary, source-checkout-only configs
+  that can look like installed workflows, and historical branchscale/KKT report
+  scripts that need migration or archival.
+- The profiling ownership-boundary documentation gap is now fixed.
+  `profiling/README.md` documents the two tracked profiling entrypoints, their
+  source-checkout/CUDA/local-data assumptions, output-contract expectations,
+  ignored artifact policy, and bytecode-only `profiling/proposal2/` /
+  `profiling/proposal8/` scratch directories.  The main README and docs map now
+  point to that note, and repository hygiene guards the entrypoint list and
+  artifact policy.
+- Fresh public-API/docs subagent findings were recorded from a read-only pass.
+  The remaining unresolved blockers are release metadata license fields and the
+  Rust sampling binary distribution decision.  The pass also flagged the
+  `GeneDataset(..., leaf_species_maps=...)` documentation inconsistency created
+  by classifying `gpurec.core` as internal, broad `core.batch_planning.__all__`
+  exports, retained deprecated likelihood aliases, internal-looking API helper
+  modules without clear support notes, duplicated evaluator/gradient logic,
+  high scheduler complexity, public helper/property docstring gaps, stale
+  ignored notebook artifacts, and repository hygiene tests that intentionally
+  preserve some private or deprecated surfaces.
+- The `GeneDataset(..., leaf_species_maps=...)` documentation inconsistency is
+  now fixed as documentation only.  The README and docs map now describe it as
+  a narrow low-level preprocessing/mapping exception while leaving the rest of
+  `gpurec.core` unstable unless explicitly documented; `from_trees()` points
+  users to that narrow exception for labels that cannot use prefix fallback or
+  AleRax `mapping` entries.
+- The whole `gpurec.core.batch_planning.__all__` export set is now documented
+  after the public-API/docs refresh finding.  `FamilyBatchPlan`,
+  `normalize_batch_packing`, `normalize_clade_budget`,
+  `normalize_family_chunk_size`, and `plan_family_batches` are retained as a
+  narrow shared low-level planning boundary for in-repo API, workflow, CLI,
+  memory-policy, and white-box test callers, not as a broad `gpurec.core`
+  stability promise.  The direct wildcard export guard now locks the exact set.
+- `python -m py_compile gpurec/core/batch_planning.py tests/unit/test_core_helpers.py tests/unit/test_repository_hygiene.py`:
+  passed after documenting the shared batch-planning export set.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_core_helpers.py::test_batch_planning_exports_supported_shared_planning_helpers tests/unit/test_repository_hygiene.py::test_runtime_surface_plan_records_refresh_findings_before_behavior_changes -q`:
+  2 passed after tightening the batch-planning export guard and runtime-plan
+  guard.
+- `python scripts/check_release_metadata.py`: still fails on the expected
+  release policy blockers: missing top-level `LICENSE`, missing
+  `[project].license`, and missing license classifier.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_core_helpers.py tests/unit/test_origination_probs.py tests/unit/test_repository_hygiene.py -q`:
+  132 passed for the touched CPU units after the package-doc, alias,
+  profiling, `GeneDataset`, and batch-planning documentation updates.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_specieswise_uniform.py --collect-only -q`:
+  5 tests collected after the CUDA-marked module moved off the deprecated
+  likelihood aliases.
+- `git diff --check`: passed after the current audit slice.
+- The simplification opportunity index is now guarded as the direct deletion
+  and consolidation inventory requested by the audit.  The docs map points to
+  `docs/simplification-opportunity-index-2026-05-21.md`, the refactor plan
+  directs readers to it for the concrete removable/mergeable paths, and
+  repository hygiene checks that the index keeps source-file evidence, retained
+  behavior, and deletion gates for evaluation, mode layout, likelihood alias,
+  C++ diagnostic export, fixed-dataset script, and dead-internal test cleanup
+  candidates.
+- `python -m py_compile tests/unit/test_repository_hygiene.py`: passed after
+  adding the simplification-index guard.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_repository_hygiene.py::test_simplification_opportunity_index_is_mapped_and_gate_oriented -q`:
+  1 passed after guarding the simplification index.
+- The internal `gpurec.api` helper-module documentation gap is now guarded.
+  `gpurec/api/_family_layout.py` documents itself as internal support shared by
+  `GeneReconModel` and `UniformChunkedReconModel`, with docstrings on its
+  public-looking dataclasses and helper functions.  `gpurec/api/_validation.py`
+  documents itself as shared internal validation support rather than standalone
+  public API, and `validate_theta_shape()` now has a mode-shape docstring.
+- `python -m py_compile gpurec/api/_family_layout.py gpurec/api/_validation.py tests/unit/test_repository_hygiene.py`:
+  passed after adding internal helper-module documentation.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_repository_hygiene.py::test_internal_api_helper_modules_document_support_boundary tests/unit/test_family_layout.py tests/unit/test_validation.py -q`:
+  61 passed after guarding the internal API helper module docstrings.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_repository_hygiene.py -q`:
+  81 passed after adding the simplification-index and internal API helper
+  documentation guards.
+- `git diff --check`: passed after the simplification-index and internal helper
+  documentation updates.
+- The config ownership documentation gap is now fixed.  `configs/README.md`
+  distinguishes source-checkout config files from installed package templates,
+  classifies `hogenom_ccp_wandb.yaml` as a checkout-local Hydra/W&B experiment
+  input consumed by `scripts/optimize_hogenom_ccp_hydra.py`, and reiterates
+  that `examples/minimal-run-config.json` is a flat JSON CUDA parser fixture
+  rather than a CPU fallback or end-to-end optimizer smoke.  The README and docs
+  map now point to the config ownership note.
+- `python -m py_compile tests/unit/test_repository_hygiene.py`: passed after
+  adding the config ownership guard.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_repository_hygiene.py::test_docs_map_distinguishes_cuda_smoke_from_checkout_local_config -q`:
+  1 passed after extending the docs-map/config ownership guard.
+- The public property and optimizer-knob documentation gap is now guarded.
+  Public `GeneReconModel` dataset/batch/species properties, public
+  `UniformChunkedReconModel` count/iteration/chunk metadata properties, and
+  `BatchedLBFGS` constructor knobs such as `max_eval`, tolerances, Armijo
+  probe count, sufficient-decrease constant, and shrink factor now have source
+  docstrings checked by repository hygiene.
+- `python -m py_compile gpurec/api/model.py gpurec/api/uniform_chunked.py gpurec/optimization/batched_lbfgs.py tests/unit/test_repository_hygiene.py`:
+  passed after documenting the public properties and LBFGS knobs.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_repository_hygiene.py::test_public_properties_and_batched_lbfgs_knobs_are_documented tests/unit/test_batched_lbfgs.py tests/unit/test_workflow.py -q -k 'materialize_batches or full_loss_for_theta or BatchedLBFGS or batched_lbfgs or public_properties'`:
+  10 passed, 441 deselected after adding the public property and LBFGS knob
+  documentation guard.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_repository_hygiene.py -q`:
+  82 passed after adding the config ownership and public property/LBFGS
+  documentation guards.
+- `git diff --check`: passed after the config ownership and public
+  property/LBFGS documentation updates.
+- The direct C++ pybind ownership wording gap is now guarded.  The
+  `preprocess` binding docstring now labels it a legacy compatibility export
+  retained for historical low-level callers while deprecation/removal is
+  evaluated.  The direct `compute_phased_waves` and wave-stat pybind docstrings
+  now label themselves diagnostic exports and state that maintained profiling
+  or diagnostic ownership is required.
+- `python -m py_compile tests/unit/test_repository_hygiene.py`: passed after
+  adding the direct C++ pybind docstring guard.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_repository_hygiene.py::test_runtime_surface_plan_documents_scheduler_and_pybind_ownership -q`:
+  1 passed after guarding the legacy/diagnostic pybind wording.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_repository_hygiene.py -q`:
+  82 passed after the direct C++ pybind docstring guard.
+- `git diff --check`: passed after the direct C++ pybind documentation update.
+- `python -m py_compile gpurec/__init__.py gpurec/api/model.py gpurec/core/likelihood.py tests/unit/test_origination_probs.py tests/unit/test_specieswise_uniform.py tests/unit/test_repository_hygiene.py`:
+  passed after the profiling ownership and narrow `GeneDataset` documentation
+  updates.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_repository_hygiene.py::test_package_docs_do_not_advertise_core_as_public_surface tests/unit/test_repository_hygiene.py::test_project_readme_documents_leaf_species_mapping_contract tests/unit/test_repository_hygiene.py::test_profiling_readme_documents_entrypoints_and_artifact_policy tests/unit/test_repository_hygiene.py::test_ignored_local_workspace_inventory_documents_notebooks_and_profiles tests/unit/test_repository_hygiene.py::test_legacy_likelihood_aliases_warn_and_have_single_test_owner -q`:
+  5 passed after adding the profiling README guard and documenting the
+  `GeneDataset` mapping exception.
 
 ## Recommended Next Order
 

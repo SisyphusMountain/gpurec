@@ -25,27 +25,32 @@ or deprecated.
 
 ### Low-Level Core Imports
 
-`gpurec/__init__.py` still documents lower-level imports such as
+Addressed after the public-API documentation follow-up audit.
+`gpurec/__init__.py` no longer advertises lower-level imports such as
 `GeneDataset`, `E_fixed_point`, `compute_nll`, and `Pi_wave_forward`.  The
-top-level exported API is already high-level, but this docstring encourages
-direct use of internals that are about to change.
+top-level exported API stays high-level, and the package docstring now points
+users to `gpurec.api` / `gpurec.workflow` while classifying `gpurec.core` as an
+internal implementation namespace.  `docs/README.md` carries the matching
+low-level API stability note for developer-facing documentation.
 
 Plan:
 
-- Change package docs to call `gpurec.core` internal except for explicitly
-  supported helpers.
-- Add a "low-level API is unstable" section to developer docs.
+- Keep `gpurec.core` internal except for explicitly supported helpers.
+- Keep the "low-level API is unstable" section in developer docs.
 - Keep tests importing internals as white-box tests, not as evidence of public
   support.
 
 ### Compatibility Aliases
 
+Addressed after the public-API documentation follow-up audit.
 `compute_log_likelihood()` and `compute_log_likelihood_root_rows()` return NLL.
-They are currently used by tests and the benchmark script.
+They now emit `DeprecationWarning`s that point callers to `compute_nll()` and
+`compute_nll_root_rows()`.  Ordinary tracked tests use the NLL names; the old
+names are exercised only by the explicit compatibility test.
 
 Plan:
 
-- Move internal/profiling usage to `compute_nll()` or the new root-row helper.
+- Keep internal/profiling usage on `compute_nll()` or the root-row helper.
 - Warn on alias use for one release if external compatibility matters.
 - Delete aliases after public docs and tests stop naming them.
 
@@ -72,7 +77,7 @@ Current unresolved findings from the follow-up core/API audit:
 | `finite_float()`, `positive_float()`, and `nonnegative_float()` in `gpurec/api/_validation.py` | Addressed after the core/API follow-up audit. Shared direct-API float validators now reject Python bools and bool tensors before numeric coercion, so controls such as `tol_E`, `pi_max_diff_tol`, and `min_rate` fail before CUDA checks or theta mutation. | Keep direct validation tests for bool values in the shared helpers, `GeneReconModel` constructor float controls, and `GeneReconModel.clamp_theta_()`. |
 | `as_family_param()`, `as_family_species()`, and `extract_parameters_uniform()` in `gpurec/core/extract_parameters.py` | Addressed after the core/API follow-up audit. CPU table tests now cover global, specieswise, and genewise `extract_parameters_uniform()` output shapes/values, plus `as_family_param()` / `as_family_species()` `family_rows` precedence when `G == S`. The `as_family_species()` docstring now documents the broadcast contract and the bare length-`G` ambiguity. | Keep the direct extraction-helper table tests and the docstring guard before refactoring parameter-shape policy. |
 | `_normalize_family_tree_paths()` in `gpurec/core/model.py` | Addressed after the core/API follow-up audit. The one-line private compatibility alias was deleted after a source hygiene guard proved no tracked `gpurec/`, `scripts/`, or `profiling/` callers remain; callers use public `normalize_family_tree_paths()`. | Keep the source hygiene guard proving the private alias is absent from tracked runtime/script/profiling Python sources. |
-| `normalize_family_chunk_size()` in `gpurec/core/batch_planning.py` | Addressed after the core/API follow-up audit. The helper is retained as a supported core helper because API, workflow, CLI, and tests already share it for the same family-batch control semantics; it now appears in `gpurec.core.batch_planning.__all__`. | Keep the batch-planning wildcard export guard so `normalize_family_chunk_size()` remains an explicit supported helper while callers share its semantics. |
+| `gpurec.core.batch_planning.__all__`: `FamilyBatchPlan`, `normalize_batch_packing`, `normalize_clade_budget`, `normalize_family_chunk_size`, and `plan_family_batches` | Addressed after the public-API/docs follow-up audit. The whole exported set is retained as a narrow shared low-level planning boundary because API, workflow, CLI, memory policy, and white-box tests share these helpers for the same family-batch semantics. The module docstring marks this as a support boundary, not a promise that the rest of `gpurec.core` is stable. | Keep the batch-planning wildcard export guard for the exact exported set before changing planning ownership. |
 | `UniformChunkedState` in `gpurec/api/uniform_chunked.py` | Addressed after the core/API follow-up audit. The state container was renamed to `_UniformChunkedState` after documenting that it is owned by chunked autograd/evaluator internals and has no direct tracked runtime callers outside `uniform_chunked.py`. | Keep the source/export guard proving `UniformChunkedState` is absent as a class/name reference and that `_UniformChunkedState` stays out of `gpurec.api.uniform_chunked.__all__`. |
 | `UniformChunkedReconModel.nll_per_family()` | Addressed after the core/API follow-up audit. README and API docstrings now distinguish `GeneReconModel.nll_per_family()` / `full_nll_per_family()` genewise-only independent losses from `UniformChunkedReconModel.nll_per_family(chunk_indices=...)`, a no-grad global/uniform diagnostic returning selected shared-theta family NLLs after chunk filtering. | Keep the direct CPU unit guard that monkeypatches the chunked evaluator and asserts `need_grad=False`, `per_family=True`, exact `chunk_indices`, and disabled grad mode. |
 | `implicit_grad_loglik_vjp_wave()` in `gpurec/optimization/implicit_grad.py` | Addressed after the core/API follow-up audit. The function is documented as an internal bridge between `gpurec.api.model`, `gpurec.api.autograd`, and retained optimization internals, not a supported low-level public API. It remains out of `gpurec.optimization.__all__`, and a source guard limits tracked runtime references to the API/autograd bridge callers plus its definition module. | Keep the doc/export/call-site hygiene guard; do not add external callers without promoting and testing it as public API. |
@@ -98,9 +103,9 @@ Ownership table from the current read-only audit:
 | Surface | Current owner / callers | Tests / docs | Deletion risk |
 | --- | --- | --- | --- |
 | `preprocess_multiple_families` pybind | Production-owned. `GeneDataset` calls it for normal preprocessing, family cache misses, and species-only empty-family cache fill in `gpurec/core/model.py`. | Fake/cache tests in `tests/unit/test_alerax_family_input.py`, real parser coverage through `GeneDataset`, and integration construction in `tests/integration/test_gene_recon_model.py`. | High. Keep. Non-empty family preprocessing needs `include_details=True`; the empty-family species-only cache path currently uses the default `include_details=False`. |
-| Legacy `preprocess` pybind | No in-repo production caller found; exported from `gpurec/core/cpp/preprocess.cpp`. | Existing pruning docs flag it as legacy/open surface. | Medium external/API risk, low in-repo runtime risk. Document as legacy/deprecated before removal. |
-| `compute_phased_waves` pybind | No direct production caller found, but the underlying implementation is production-used to populate `phased_waves`/`phased_phases` during preprocessing. | Source-level hygiene guards it with the other max-wave exports. | Do not remove the implementation. Deprecate the direct export only after diagnostic ownership is documented. |
-| Wave-stat pybinds: `compute_wave_stats`, `compute_packet_wave_stats`, `compute_phased_wave_stats`, `compute_phased_cross_family_wave_stats`, `compute_cross_family_wave_stats` | No production caller found. | Hygiene checks positive `max_wave_size`; audit docs describe them as broad diagnostic ABI. | Low runtime risk, medium diagnostic/API risk. Keep only with a maintained profiling or diagnostic command. |
+| Legacy `preprocess` pybind | No in-repo production caller found; exported from `gpurec/core/cpp/preprocess.cpp`. | Existing pruning docs flag it as legacy/open surface, and the pybind docstring now calls it a legacy compatibility export retained for historical low-level callers while deprecation/removal is evaluated. | Medium external/API risk, low in-repo runtime risk. Document as legacy/deprecated before removal. |
+| `compute_phased_waves` pybind | No direct production caller found, but the underlying implementation is production-used to populate `phased_waves`/`phased_phases` during preprocessing. | Source-level hygiene guards it with the other max-wave exports, and the pybind docstring now calls the direct binding a diagnostic export rather than supported workflow API. | Do not remove the implementation. Deprecate the direct export only after diagnostic ownership is documented. |
+| Wave-stat pybinds: `compute_wave_stats`, `compute_packet_wave_stats`, `compute_phased_wave_stats`, `compute_phased_cross_family_wave_stats`, `compute_cross_family_wave_stats` | No production caller found. | Hygiene checks positive `max_wave_size`; audit docs describe them as broad diagnostic ABI; pybind docstrings now require maintained profiling or diagnostic ownership. | Low runtime risk, medium diagnostic/API risk. Keep only with a maintained profiling or diagnostic command. |
 | `bench_parse` | Not currently exported. | Removal is guarded in repository hygiene and audit docs. | Already retired; keep the guard. |
 | `compute_clade_waves` Python helper | Addressed after the scheduler follow-up audit. The Python adapter and its helper-level unit module were deleted after confirming no tracked production caller imports it and no high-level public export exposes it. The C++ implementation with the same name remains production-internal to preprocessing. | Keep the source guard proving `gpurec/core/scheduling.py` and the Python adapter name do not return to tracked runtime Python. | Low in-repo runtime risk; direct low-level Python imports should use `schedule_global_phased_waves()` or `build_wave_layout()`, while C++ preprocessing still owns phased-wave generation. |
 | `collate_wave`, `split_phase_waves` | Addressed after the scheduler follow-up audit. These helper-level scheduler functions were deleted from `gpurec.core.batching` after confirming no tracked production caller imports them and their only tracked users were direct helper tests. | Keep the source hygiene guard proving these helper names are absent from tracked runtime Python sources. | Low in-repo runtime risk; direct low-level external imports should use `schedule_global_phased_waves()` or `build_wave_layout()`. |
@@ -242,6 +247,7 @@ Ignored/local workspace inventory:
 | `profiling/bf16_backward_nsys/` and `profiling/bf16_handoff_prod/` | bf16 backward/handoff experiment reports and logs. | Local CUDA runs and HOGENOM/test-tree fixtures. | Nsight/NCU reports, SQLite files, CSV summaries, and `.log` files. | Checkout-local experiment artifacts; bf16 is now documented as direct-API-only and not a release-smoke dtype. | Keep only summarized conclusions; archive/delete raw artifacts. |
 | `profiling/hogenom_ccp/` | Local HOGENOM CCP performance sweeps. | Local HOGENOM data, CUDA/Nsight, profiling scripts and environment toggles. | JSONL sweeps, `.nsys-rep`, `.ncu-rep`, SQLite, and CSV summaries. | Checkout-local and too broad for release verification. | Migrate one maintained benchmark path; archive/delete ad hoc raw sweeps after summaries are preserved. |
 | `profiling/specieswise_worker3/` | Local specieswise worker profiling scratch space. | Local CUDA/HOGENOM profiling runs. | `artifacts/` and `artifacts_smoke/` reports. | No tracked owner beyond ignored workspace state. | Document any retained conclusion, then archive/delete. |
+| `profiling/proposal2/` and `profiling/proposal8/` | Local prototype residue. | Historical local Python prototype runs. | Python bytecode cache only in the current checkout. | Not source, fixtures, or retained benchmark results. | Delete locally; restore real source plus tests/docs before treating either as a maintained prototype. |
 
 Ignored test-data and cache inventory:
 

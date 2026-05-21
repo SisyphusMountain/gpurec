@@ -176,14 +176,22 @@ def test_legacy_log_likelihood_names_alias_nll_helpers():
     roots = torch.tensor([1], dtype=torch.long)
     E = torch.tensor([-4.0, -3.0], dtype=dtype)
 
+    with pytest.warns(DeprecationWarning, match="use `compute_nll\\(\\)`"):
+        legacy_full = compute_log_likelihood(Pi, E, roots)
+    with pytest.warns(
+        DeprecationWarning,
+        match="use `compute_nll_root_rows\\(\\)`",
+    ):
+        legacy_root_rows = compute_log_likelihood_root_rows(Pi[roots], E)
+
     torch.testing.assert_close(
-        compute_log_likelihood(Pi, E, roots),
+        legacy_full,
         compute_nll(Pi, E, roots),
         rtol=0.0,
         atol=0.0,
     )
     torch.testing.assert_close(
-        compute_log_likelihood_root_rows(Pi[roots], E),
+        legacy_root_rows,
         compute_nll_root_rows(Pi[roots], E),
         rtol=0.0,
         atol=0.0,

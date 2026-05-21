@@ -7,6 +7,11 @@ logic while preserving the supported computational modes:
 - specieswise rates: one D/T/L vector per species;
 - genewise rates: one D/T/L vector per family.
 
+If the question is "what specific paths can be simplified or removed?", start
+with `simplification-opportunity-index-2026-05-21.md`.  This file is the
+implementation plan behind that index: it explains how to consolidate the
+listed paths without dropping uniform/global, specieswise, or genewise support.
+
 The plan was produced from the dirty worktree on 2026-05-21.  Code was not
 edited for this pass.  Existing uncommitted code changes were present before
 this documentation update, so implementation follow-up should rebase these

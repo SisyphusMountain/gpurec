@@ -83,8 +83,10 @@ For direct `from_trees` inputs, gene-tree leaf labels are mapped to species by
 the legacy prefix fallback: `Species_gene` maps to species `Species`, and a leaf
 without `_` maps to the full leaf label.  Use AleRax family files with `mapping`
 entries, `UniformChunkedReconModel(..., leaf_species_maps=...)`, or
-`GeneDataset(..., leaf_species_maps=...)` when gene labels do not follow that
-prefix convention.
+the narrow low-level `GeneDataset(..., leaf_species_maps=...)` exception when
+gene labels do not follow that prefix convention.  `GeneDataset` is retained
+for this explicit preprocessing/mapping use; the rest of `gpurec.core` should
+be treated as unstable implementation surface unless separately documented.
 
 The retained C++ preprocessing parser supports a deliberately small Newick
 subset: nested trees with unquoted labels, optional internal labels, optional
@@ -456,7 +458,7 @@ of dataset path overrides.
 | General installed workflow | `gpurec optimize`, `gpurec sample`, `gpurec run` | Uses flat JSON for `--config`; Hydra YAML is not accepted by the main CLI. |
 | Sampling binary preflight | `gpurec backtrack-check` | Validates `GPUREC_BACKTRACK_BIN`, `--backtrack-binary`, or the source-tree Cargo fallback without loading a checkpoint. |
 | Legacy HOGENOM W&B wrapper | `python scripts/optimize_hogenom_ccp_wandb.py` | Checkout-local compatibility wrapper with argparse flags, checkpoints, plots, and optional W&B logging. |
-| Hydra HOGENOM run | `python scripts/optimize_hogenom_ccp_hydra.py` | Uses `configs/hogenom_ccp_wandb.yaml`, a checkout-local full experiment config, and Hydra override syntax. |
+| Hydra HOGENOM run | `python scripts/optimize_hogenom_ccp_hydra.py` | Uses `configs/hogenom_ccp_wandb.yaml`, a checkout-local full experiment config, and Hydra override syntax; see `configs/README.md` for config ownership. |
 | Checkpoint rate export | `python scripts/export_hogenom_rates_from_checkpoint.py` | Exports D/T/L rates from a HOGENOM optimization checkpoint. |
 | One-pass profiling | `python scripts/profile_hogenom_ccp_pass.py` | Profiles full, streamed, active-batch, or largest-batch forward/backward passes on the local HOGENOM layout. |
 | Historical notebooks | `notebooks/` | Checkout-local HOGENOM analyses; see `notebooks/README.md` before using or migrating them. |
@@ -478,7 +480,9 @@ python scripts/optimize_hogenom_ccp_wandb.py \
 ## Source-Checkout Performance Check
 
 The full-dataset benchmark harness lives under `profiling/` and is intended
-for source checkouts, not installed wheels:
+for source checkouts, not installed wheels.  See `profiling/README.md` for the
+supported profiling entrypoints, local-data assumptions, and artifact retention
+policy:
 
 ```bash
 python profiling/bench_uniform_forward_backward_pipeline.py \

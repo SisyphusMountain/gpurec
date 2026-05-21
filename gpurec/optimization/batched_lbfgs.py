@@ -34,8 +34,25 @@ class BatchedLBFGS(Optimizer):
         Initial step-size multiplier.
     max_iter:
         Maximum L-BFGS iterations performed by one :meth:`step` call.
+    max_eval:
+        Maximum closure evaluations allowed in one :meth:`step` call.  ``None``
+        uses the internal budget ``max_iter * (max_ls + 1) + 1``.  Tight budgets
+        can stop before a refreshed gradient is available; in that case the
+        accepted probed loss is returned with the current parameter state.
+    tolerance_grad:
+        Stop when every row's flattened gradient infinity norm is at or below
+        this threshold.
+    tolerance_change:
+        Stop when every active row's maximum parameter change is at or below
+        this threshold.
     history_size:
         Number of ``s/y`` curvature pairs retained per row.
+    max_ls:
+        Maximum Armijo backtracking probes per L-BFGS iteration.
+    c1:
+        Armijo sufficient-decrease constant.
+    shrink:
+        Multiplicative step-size shrink factor for failed Armijo probes.
     lower_bound:
         Optional scalar lower bound applied to the parameter values after every
         candidate step. For gpurec rates in log2-space this is

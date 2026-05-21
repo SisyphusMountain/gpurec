@@ -13,8 +13,8 @@ from gpurec.api.autograd import _extract_parameters
 from gpurec.core.forward import Pi_wave_forward
 from gpurec.core.likelihood import (
     E_fixed_point,
-    compute_log_likelihood,
-    compute_log_likelihood_root_rows,
+    compute_nll,
+    compute_nll_root_rows,
 )
 from gpurec.core.log2_utils import logsumexp2
 from gpurec.core.species import species_wave_topology
@@ -234,9 +234,9 @@ def _run_forward(
         family_idx=None,
     )
     if root_rows:
-        nll = compute_log_likelihood_root_rows(pi_out["Pi_root_rows"], E_out["E"]).sum()
+        nll = compute_nll_root_rows(pi_out["Pi_root_rows"], E_out["E"]).sum()
     else:
-        nll = compute_log_likelihood(
+        nll = compute_nll(
             pi_out["Pi_wave_ordered"],
             E_out["E"],
             static.wave_layout["root_clade_ids"],

@@ -14,14 +14,20 @@ from gpurec.core._helpers import (
 )
 
 
-def test_batch_planning_exports_supported_family_chunk_size_helper():
+def test_batch_planning_exports_supported_shared_planning_helpers():
     namespace: dict[str, object] = {}
     exec("from gpurec.core.batch_planning import *", {}, namespace)
 
-    assert "normalize_family_chunk_size" in batch_planning.__all__
-    assert namespace["normalize_family_chunk_size"] is (
-        batch_planning.normalize_family_chunk_size
-    )
+    expected = {
+        "FamilyBatchPlan",
+        "normalize_batch_packing",
+        "normalize_clade_budget",
+        "normalize_family_chunk_size",
+        "plan_family_batches",
+    }
+    assert set(batch_planning.__all__) == expected
+    for name in expected:
+        assert namespace[name] is getattr(batch_planning, name)
 
 
 @pytest.mark.parametrize(

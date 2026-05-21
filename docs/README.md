@@ -8,6 +8,9 @@ file as the map for deeper context.
 
 - `lean-fast-path.md`: retained benchmark path and performance command for the
   lean branch.
+- `simplification-opportunity-index-2026-05-21.md`: direct inventory of
+  removable or mergeable alternative paths, with source-file evidence, retained
+  behavior, and deletion gates.
 - `refactor-simplification-plan-2026-05-21.md`: current simplification backlog
   for reducing duplicated evaluation paths, mode branches, scheduler
   alternatives, env selectors, and compatibility surface while retaining
@@ -28,9 +31,14 @@ file as the map for deeper context.
   not an end-to-end optimizer smoke while Pi backward requires `S > 256`.
 - `../configs/hogenom_ccp_wandb.yaml`: checkout-local HOGENOM Hydra/W&B
   experiment config, not a portable example.
+- `../configs/README.md`: config ownership note separating installed flat JSON
+  workflow configs from checkout-local Hydra/HOGENOM experiment inputs.
 - `../notebooks/README.md`: ownership note for tracked notebooks.  The
   notebooks themselves are checkout-local HOGENOM analysis artifacts, not
   portable examples.
+- `../profiling/README.md`: source-checkout profiling ownership note for
+  supported benchmark entry points, local-data assumptions, and ignored
+  artifact policy.
 
 ## Validation Notes
 
@@ -57,3 +65,15 @@ file as the map for deeper context.
 Historical notes preserve experimental context and may describe paths or
 branch states that are no longer the recommended workflow.  Prefer the main
 README, the CLI help, and the current operating notes for user-facing guidance.
+
+## Low-Level API Stability
+
+The supported package entry points are the high-level classes and workflow
+helpers exported from `gpurec`, `gpurec.api`, and `gpurec.workflow`.
+`gpurec.core` is an implementation namespace for preprocessing, likelihood
+kernels, scheduling, and white-box tests.  Direct imports from `gpurec.core`
+are unstable unless a helper is explicitly documented as supported; tests may
+use internals to guard behavior, but those imports are not public API evidence.
+The current narrow exception is direct `GeneDataset(..., leaf_species_maps=...)`
+construction for custom gene-leaf to species mapping when `from_trees` prefix
+fallback and AleRax `mapping` entries are not sufficient.

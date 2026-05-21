@@ -1,4 +1,9 @@
-"""Shared family batch planning for resident and chunked model APIs."""
+"""Shared family batch planning for resident and chunked model APIs.
+
+This module is a narrow low-level support boundary for in-repo API, workflow,
+CLI, memory-policy, and white-box test callers.  The exported names are shared
+planning helpers, not a promise that the rest of ``gpurec.core`` is stable.
+"""
 from __future__ import annotations
 
 from dataclasses import dataclass

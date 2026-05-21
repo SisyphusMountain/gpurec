@@ -1,14 +1,15 @@
-"""
-GPU-accelerated phylogenetic reconciliation package.
+"""High-level public API for GPU-accelerated phylogenetic reconciliation.
 
 Notebook-friendly API:
   from gpurec import GeneReconModel
   model = GeneReconModel.from_trees("sp.nwk", ["g1.nwk"], mode="global")
 
-Lower-level access:
-  from gpurec.core.model import GeneDataset
-  from gpurec.core.likelihood import E_fixed_point, compute_nll
-  from gpurec.core.forward import Pi_wave_forward
+Workflow API:
+  from gpurec import RunConfig, optimize, sample
+
+Public exports come from ``gpurec.api`` and ``gpurec.workflow``.  The
+``gpurec.core`` namespace is an implementation namespace and is unstable unless
+a helper is explicitly documented as supported.
 """
 
 from importlib import import_module

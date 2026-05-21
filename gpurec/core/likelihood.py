@@ -5,6 +5,7 @@ this module owns E_step, E_fixed_point, and compute_nll.
 """
 import torch
 import math
+import warnings
 
 from .terms import gather_E_children
 from .log2_utils import logsumexp2, _safe_log2_internal as _safe_log2
@@ -372,11 +373,17 @@ def compute_log_likelihood(
     *,
     origination_probs_prepared: bool = False,
 ):
-    """Compatibility alias for :func:`compute_nll`.
+    """Deprecated compatibility alias for :func:`compute_nll`.
 
     The historical name is misleading: this function returns negative
     log-likelihood, not log-likelihood.
     """
+    warnings.warn(
+        "`compute_log_likelihood()` is deprecated because it returns negative "
+        "log-likelihood; use `compute_nll()` instead.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
     return compute_nll(
         Pi,
         E,
@@ -428,11 +435,17 @@ def compute_log_likelihood_root_rows(
     *,
     origination_probs_prepared: bool = False,
 ):
-    """Compatibility alias for :func:`compute_nll_root_rows`.
+    """Deprecated compatibility alias for :func:`compute_nll_root_rows`.
 
     The historical name is misleading: this function returns negative
     log-likelihood, not log-likelihood.
     """
+    warnings.warn(
+        "`compute_log_likelihood_root_rows()` is deprecated because it returns "
+        "negative log-likelihood; use `compute_nll_root_rows()` instead.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
     return compute_nll_root_rows(
         Pi_root_rows,
         E,

@@ -2712,10 +2712,13 @@ PYBIND11_MODULE(preprocess_cpp, m) {
         py::arg("species_path"),
         py::arg("gene_paths"),
         py::arg("include_species_matrices") = true,
-        "Preprocess one rooted binary species Newick tree and one family of "
-        "simple-Newick gene-tree files. Each gene file may contain multiple "
-        "semicolon-delimited records for CCP amalgamation; the final record "
-        "may omit its terminal semicolon.");
+        "Legacy compatibility export for one rooted binary species Newick tree "
+        "and one family of simple-Newick gene-tree files. Production "
+        "Python code uses preprocess_multiple_families(..., "
+        "include_details=True); keep this direct pybind only for historical "
+        "low-level callers while deprecation/removal is evaluated. Each gene "
+        "file may contain multiple semicolon-delimited records for CCP "
+        "amalgamation; the final record may omit its terminal semicolon.");
   m.def("preprocess_multiple_families", &preprocess_multiple_families,
         py::arg("species_path"),
         py::arg("families"),
@@ -2728,16 +2731,29 @@ PYBIND11_MODULE(preprocess_cpp, m) {
         "may omit its terminal semicolon. Defaults to light output; pass "
         "include_details=True for full debug fields.");
   m.def("compute_phased_waves", &compute_phased_waves,
-        "Three-phase scheduler returning actual wave assignments (single family)");
+        "Direct diagnostic export for the three-phase scheduler returning "
+        "actual wave assignments for one family. The underlying implementation "
+        "is production-internal to preprocessing; the direct pybind is not a "
+        "supported workflow API.");
   m.def("compute_wave_stats", &compute_wave_stats,
-        "Compute wave scheduling stats for gene families (no species tree needed)");
+        "Direct diagnostic export that computes wave scheduling stats for gene "
+        "families without a species tree. "
+        "Keep only with maintained profiling or diagnostic ownership.");
   m.def("compute_packet_wave_stats", &compute_packet_wave_stats,
-        "Packet-aware highest-label scheduler (oriented-edge structure)");
+        "Direct diagnostic export for the packet-aware highest-label scheduler "
+        "over oriented-edge structure. "
+        "Keep only with maintained profiling or diagnostic ownership.");
   m.def("compute_phased_wave_stats", &compute_phased_wave_stats,
-        "Three-phase scheduler: leaves / internal (split>=1) / root (per family)");
+        "Direct diagnostic export for per-family three-phase scheduling: "
+        "leaves, internal split>=1 clades, then root. "
+        "Keep only with maintained profiling or diagnostic ownership.");
   m.def("compute_phased_cross_family_wave_stats",
         &compute_phased_cross_family_wave_stats,
-        "Three-phase scheduler with cross-family global batching");
+        "Direct diagnostic export for three-phase scheduling with cross-family "
+        "global batching. "
+        "Keep only with maintained profiling or diagnostic ownership.");
   m.def("compute_cross_family_wave_stats", &compute_cross_family_wave_stats,
-        "Compute wave stats with cross-family batching (global schedule)");
+        "Direct diagnostic export that computes wave stats with cross-family "
+        "batching for a global schedule. "
+        "Keep only with maintained profiling or diagnostic ownership.");
 }

@@ -1085,7 +1085,9 @@ class GeneReconModel(torch.nn.Module):
             maps to species ``Species``, and labels without ``_`` map to the
             full label.  Use ``from_alerax_families()`` or lower-level dataset
             construction with explicit ``leaf_species_maps`` for labels that do
-            not follow this convention.
+            not follow this convention; the README documents this as a narrow
+            low-level ``GeneDataset`` exception rather than a general
+            ``gpurec.core`` stability promise.
         mode : str
             "global" | "specieswise" | "genewise".
         device : str | torch.device
@@ -1377,30 +1379,37 @@ class GeneReconModel(torch.nn.Module):
 
     @property
     def current_batch_metadata(self) -> BatchMetadata:
+        """Metadata for the resident batch currently selected by the model."""
         return self.batch_metadata[self._current_batch_index]
 
     @property
     def current_batch_index(self) -> int:
+        """Index of the resident batch currently selected for evaluation."""
         return self._current_batch_index
 
     @property
     def mode(self) -> str:
+        """Parameter-sharing mode: ``global``, ``specieswise``, or ``genewise``."""
         return self._mode
 
     @property
     def family_names(self) -> list[str]:
+        """Family names in dataset order."""
         return list(self._dataset.family_names)
 
     @property
     def species_tree_path(self) -> Path:
+        """Path to the species tree used to construct the model."""
         return Path(self._dataset.species_tree_path)
 
     @property
     def n_families(self) -> int:
+        """Number of gene families in the model dataset."""
         return len(self._dataset.families)
 
     @property
     def species_names(self) -> list[str]:
+        """Species names in the internal species-index order."""
         return [str(name) for name in self._dataset.species_helpers["names"]]
 
     @property
@@ -1876,6 +1885,7 @@ class GeneReconModel(torch.nn.Module):
 
     @property
     def n_species(self) -> int:
+        """Number of species in the model species tree."""
         return int(self._dataset.S)
 
     @property

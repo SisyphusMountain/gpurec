@@ -965,26 +965,32 @@ class UniformChunkedReconModel(torch.nn.Module):
 
     @property
     def n_families(self) -> int:
+        """Number of gene families available to the chunked model."""
         return len(self._state.dataset.families)
 
     @property
     def family_count(self) -> int:
+        """Alias for :attr:`n_families` used by workflow diagnostics."""
         return self.n_families
 
     @property
     def chunk_count(self) -> int:
+        """Number of built uniform chunks in the resident chunk plan."""
         return len(self._state.built_chunks)
 
     @property
     def fixed_iters_Pi(self) -> int:
+        """Fixed Pi iteration count used by each chunk evaluation."""
         return self._state.fixed_iters_Pi
 
     @property
     def fixed_iters_E(self) -> int | None:
+        """Fixed E iteration count, or ``None`` when adaptive E is active."""
         return self._state.fixed_iters_E
 
     @property
     def chunk_metadata(self) -> tuple[UniformChunkMetadata, ...]:
+        """Immutable per-chunk metadata for diagnostics and audit logs."""
         return tuple(
             UniformChunkMetadata(
                 chunk_index=chunk_idx,

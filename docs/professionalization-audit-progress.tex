@@ -7193,6 +7193,174 @@ The consolidated touched-unit baseline now reports \texttt{664 passed} across
 validation, workflow, extraction, optimization workflow, scheduler,
 family-layout, and repository-hygiene unit modules.
 
+\subsection{Top-Level Low-Level Import Documentation}
+
+The public package documentation cleanup is now documented before changing the
+package docstring.  \texttt{gpurec/\_\_init\_\_.py} still advertised direct
+imports from \texttt{gpurec.core.model}, \texttt{gpurec.core.likelihood}, and
+\texttt{gpurec.core.forward} even though the runtime-surface pruning plan
+classifies \texttt{gpurec.core} as unstable implementation surface except for
+explicitly supported helpers.  The cleanup should keep the high-level
+\texttt{gpurec}, \texttt{gpurec.api}, and \texttt{gpurec.workflow} entry points
+visible, stop presenting core imports as notebook-friendly usage, and add a
+repository hygiene guard so those low-level import snippets do not return.
+
+That cleanup is now complete.  The package docstring now describes the
+high-level public API, shows \texttt{GeneReconModel} plus workflow imports, and
+classifies \texttt{gpurec.core} as an unstable implementation namespace unless a
+helper is explicitly documented as supported.  \texttt{docs/README.md} now has
+a matching low-level API stability section, and repository hygiene checks that
+the package docstring does not advertise the old core import examples.  The
+touched modules compile, and the focused package-doc guard reports
+\texttt{1 passed}.
+
+\subsection{Likelihood Alias Deprecation}
+
+The likelihood compatibility-alias behavior change is now documented before
+editing source.  \texttt{compute\_log\_likelihood()} and
+\texttt{compute\_log\_likelihood\_root\_rows()} are retained compatibility
+names, but both return negative log-likelihood.  The pruning plan already calls
+for a one-release warning path; the next cleanup should emit
+\texttt{DeprecationWarning}s from those aliases, move ordinary tests to
+\texttt{compute\_nll()} and \texttt{compute\_nll\_root\_rows()}, and keep one
+explicit compatibility test for the old names.
+
+That cleanup is now complete.  Both aliases warn with
+\texttt{DeprecationWarning}, the CUDA-marked specieswise helper test imports the
+current \texttt{compute\_nll*} helpers, and repository hygiene guards that the
+legacy names appear only in their implementation and the direct compatibility
+test.  The touched modules compile, the origination-probability plus
+alias-owner selector reports \texttt{10 passed}, the specieswise module
+collection check reports \texttt{5 tests collected}, and the full repository
+hygiene module reports \texttt{78 passed}.
+
+\subsection{Fresh Subagent Findings And Profiling Ownership}
+
+Two read-only subagent refresh passes returned new ranked findings for the
+current worktree.  The native/C++/kernel pass ranked production-auto native
+CUDA prototype routing and unowned direct pybind scheduler/stat exports as the
+highest risks, followed by the legacy \texttt{preprocess} pybind, DTS direct
+kernel shape ambiguity, thin direct characterization for retained backward
+kernel wrappers, and broad env-driven launch tuning.  The workflow/scripts pass
+ranked the legacy HOGENOM optimizer launchers as the largest untested script
+surface, followed by duplicated validation, weaker legacy cleanup windows,
+unclear profiling ownership, source-checkout-only configs that can be mistaken
+for installed workflows, and historical branchscale/KKT scripts that need
+migration or archival.
+
+The profiling ownership boundary documentation gap from that pass is now
+addressed.  \texttt{profiling/README.md} records the two tracked profiling
+entrypoints, their source-checkout/CUDA/local-data assumptions, output-contract
+expectations, ignored artifact policy, and bytecode-only
+\texttt{profiling/proposal2/} / \texttt{profiling/proposal8/} scratch
+directories.  The main README and docs map now point to this note, and
+repository hygiene guards that every tracked profiling Python file is listed in
+the profiling README and that ignored artifact roots stay documented.
+
+The public-API/docs refresh pass then flagged release metadata license blockers
+and the Rust sampling binary distribution decision as unresolved release
+blockers.  It also identified an inconsistency between the new
+\texttt{gpurec.core} internal-stability wording and the README's
+\texttt{GeneDataset(..., leaf\_species\_maps=...)} guidance, broad
+\texttt{core.batch\_planning} exports, retained deprecated likelihood aliases,
+private API helper modules without clear support notes, duplicated evaluator
+and gradient paths, scheduler complexity, public helper/property documentation
+gaps, stale ignored notebook artifacts, and hygiene tests that deliberately
+preserve some private or deprecated surfaces.
+
+The \texttt{GeneDataset(..., leaf\_species\_maps=...)} inconsistency is now
+fixed as documentation only.  The README and docs map describe it as a narrow
+low-level preprocessing/mapping exception for custom gene-leaf to species maps,
+while the rest of \texttt{gpurec.core} remains unstable unless explicitly
+documented.  \texttt{GeneReconModel.from\_trees()} also points users to this
+narrow exception for labels that cannot use prefix fallback or AleRax
+\texttt{mapping} entries.  The touched modules compile, and the focused package
+docs, mapping-contract, profiling README, ignored-workspace inventory, and
+likelihood-alias owner selector reports \texttt{5 passed}.
+
+The broad \texttt{gpurec.core.batch\_planning.\_\_all\_\_} finding is also
+resolved as documentation and guard tightening.  Because API, workflow, CLI,
+memory-policy, and white-box tests already share \texttt{FamilyBatchPlan},
+\texttt{normalize\_batch\_packing()}, \texttt{normalize\_clade\_budget()},
+\texttt{normalize\_family\_chunk\_size()}, and
+\texttt{plan\_family\_batches()}, narrowing the export set would be a behavior
+change.  The runtime-surface plan and module docstring now classify the exact
+exported set as a narrow shared low-level planning boundary, and the wildcard
+export test locks that exact set.
+The touched modules compile, and the focused batch-planning export/runtime-plan
+selector reports \texttt{2 passed}.
+The release metadata checker still fails on the expected policy blockers:
+missing top-level \texttt{LICENSE}, missing \texttt{[project].license}, and
+missing license classifier.  The touched CPU unit selector covering core
+helpers, origination probabilities, and repository hygiene reports
+\texttt{132 passed}; the CUDA-marked specieswise module collection check
+reports \texttt{5 tests collected}; and \texttt{git diff --check} passes for
+the current audit slice.
+
+The simplification opportunity index is now part of the guarded audit
+deliverables.  \texttt{docs/README.md} points to
+\texttt{docs/simplification-opportunity-index-2026-05-21.md} as the direct
+inventory of removable or mergeable paths, and the refactor simplification plan
+points readers to the same index for the concrete "what can be simplified or
+removed" answer.  Repository hygiene now checks that the index keeps
+source-file evidence, retained behavior, and deletion gates for representative
+evaluation, mode-layout, likelihood-alias, C++ diagnostic export,
+fixed-dataset script, and dead-internal test cleanup candidates.
+The repository hygiene module compiles, and the focused simplification-index
+guard reports \texttt{1 passed}.
+
+The private \texttt{gpurec.api} helper-module documentation gap is now
+addressed.  \texttt{gpurec/api/\_family\_layout.py} identifies itself as
+internal support shared by \texttt{GeneReconModel} and
+\texttt{UniformChunkedReconModel}, with docstrings on the public-looking
+dataclasses and layout helpers.  \texttt{gpurec/api/\_validation.py} now
+identifies itself as shared internal validation support, not standalone public
+API, and \texttt{validate\_theta\_shape()} documents the active sharing-mode
+shape boundary.
+The touched modules compile, and the focused internal-helper documentation plus
+family-layout and validation selector reports \texttt{61 passed}.
+The full repository hygiene module now reports \texttt{81 passed}, and
+\texttt{git diff --check} remains clean after the simplification-index and
+internal helper documentation updates.
+
+The config ownership documentation gap is now addressed.  A new
+\texttt{configs/README.md} separates source-checkout config files from
+installed package templates, classifies
+\texttt{configs/hogenom\_ccp\_wandb.yaml} as a checkout-local Hydra/W\&B
+experiment input consumed by the legacy Hydra launcher, and restates that
+\texttt{examples/minimal-run-config.json} is a flat JSON CUDA parser fixture
+rather than a CPU fallback or end-to-end optimizer smoke.  The main README and
+docs map point to the config ownership note, and repository hygiene checks the
+boundary.
+The repository hygiene module compiles, and the focused docs-map/config
+ownership guard reports \texttt{1 passed}.
+
+The public property and optimizer-knob documentation gap is now guarded.
+\texttt{GeneReconModel} public dataset/batch/species properties,
+\texttt{UniformChunkedReconModel} public count/iteration/chunk metadata
+properties, and \texttt{BatchedLBFGS} constructor knobs such as
+\texttt{max\_eval}, tolerances, Armijo probe count, sufficient-decrease
+constant, and shrink factor now have source docstrings checked by repository
+hygiene.
+The touched modules compile, and the focused public-property/LBFGS/workflow
+selector reports \texttt{10 passed, 441 deselected}.
+The full repository hygiene module now reports \texttt{82 passed}, and
+\texttt{git diff --check} remains clean after the config ownership and public
+property/LBFGS documentation updates.
+
+The direct C++ pybind ownership wording gap is now addressed before any export
+removal.  The \texttt{preprocess} binding now labels itself a legacy
+compatibility export retained for historical low-level callers while
+deprecation or removal is evaluated.  The direct
+\texttt{compute\_phased\_waves} and wave-stat pybind docstrings now label
+themselves diagnostic exports and state that maintained profiling or diagnostic
+ownership is required.
+The repository hygiene module compiles, and the focused scheduler/C++ pybind
+ownership guard reports \texttt{1 passed}.
+The full repository hygiene module reports \texttt{82 passed}, and
+\texttt{git diff --check} remains clean after the direct C++ pybind
+documentation update.
+
 \section{Next Audit Targets}
 
 \begin{enumerate}[leftmargin=*]

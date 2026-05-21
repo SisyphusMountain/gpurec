@@ -109,6 +109,114 @@ def test_workflow_and_backtracking_use_public_model_surface():
     assert offenders == []
 
 
+def test_package_docs_do_not_advertise_core_as_public_surface():
+    root = Path(__file__).resolve().parents[2]
+    package_module = ast.parse(
+        (root / "gpurec" / "__init__.py").read_text(encoding="utf-8")
+    )
+    package_doc = " ".join((ast.get_docstring(package_module) or "").split())
+    docs_readme = " ".join(
+        (root / "docs" / "README.md").read_text(encoding="utf-8").split()
+    )
+
+    for token in (
+        "High-level public API",
+        "from gpurec import GeneReconModel",
+        "from gpurec import RunConfig, optimize, sample",
+        "Public exports come from ``gpurec.api`` and ``gpurec.workflow``",
+        "``gpurec.core`` namespace is an implementation namespace",
+        "unstable unless a helper is explicitly documented as supported",
+    ):
+        assert token in package_doc
+
+    for token in (
+        "Low-Level API Stability",
+        "The supported package entry points are the high-level classes and workflow helpers",
+        "`gpurec.core` is an implementation namespace",
+        "Direct imports from `gpurec.core` are unstable",
+        "tests may use internals to guard behavior",
+        "not public API evidence",
+    ):
+        assert token in docs_readme
+
+    for token in (
+        "Lower-level access",
+        "from gpurec.core.model",
+        "from gpurec.core.likelihood",
+        "from gpurec.core.forward",
+        "GeneDataset",
+        "E_fixed_point",
+        "Pi_wave_forward",
+    ):
+        assert token not in package_doc
+
+
+def test_internal_api_helper_modules_document_support_boundary():
+    root = Path(__file__).resolve().parents[2]
+    family_layout_module = ast.parse(
+        (root / "gpurec" / "api" / "_family_layout.py").read_text(
+            encoding="utf-8"
+        )
+    )
+    validation_module = ast.parse(
+        (root / "gpurec" / "api" / "_validation.py").read_text(
+            encoding="utf-8"
+        )
+    )
+    docs_readme = " ".join(
+        (root / "docs" / "README.md").read_text(encoding="utf-8").split()
+    )
+    family_layout_doc = " ".join(
+        (ast.get_docstring(family_layout_module) or "").split()
+    )
+    validation_doc = " ".join(
+        (ast.get_docstring(validation_module) or "").split()
+    )
+    family_layout_docstrings = {
+        node.name: " ".join((ast.get_docstring(node) or "").split())
+        for node in family_layout_module.body
+        if isinstance(node, (ast.ClassDef, ast.FunctionDef))
+    }
+    validation_docstrings = {
+        node.name: " ".join((ast.get_docstring(node) or "").split())
+        for node in validation_module.body
+        if isinstance(node, ast.FunctionDef)
+    }
+
+    for token in (
+        "Internal family-layout support",
+        "not a public import surface",
+        "GeneReconModel",
+        "UniformChunkedReconModel",
+        "one runtime layout contract",
+    ):
+        assert token in family_layout_doc
+    for name, token in (
+        ("FamilyWaveInputs", "Validated family preprocessing slices"),
+        ("FamilyWaveLayout", "Built family layout tensors"),
+        (
+            "origination_probs_for_family_indices",
+            "family-specific origination rows",
+        ),
+        ("family_wave_inputs", "validated family preprocessing dictionaries"),
+        ("schedule_family_waves", "already-collected family input metadata"),
+        ("build_family_wave_layout", "model internals"),
+    ):
+        assert token in family_layout_docstrings[name]
+
+    for token in (
+        "Internal validation helpers",
+        "support code for ``gpurec.api`` and ``gpurec.workflow``",
+        "not standalone public API",
+    ):
+        assert token in validation_doc
+    assert (
+        "active sharing mode"
+        in validation_docstrings["validate_theta_shape"]
+    )
+    assert "Direct imports from `gpurec.core` are unstable" in docs_readme
+
+
 def test_workflow_sampling_uses_public_config_constants():
     root = Path(__file__).resolve().parents[2]
     sampling_text = (root / "gpurec" / "workflow" / "sampling.py").read_text(
@@ -308,6 +416,10 @@ def test_hogenom_scripts_are_marked_as_legacy_experiment_surface():
 def test_docs_map_distinguishes_cuda_smoke_from_checkout_local_config():
     root = Path(__file__).resolve().parents[2]
     docs_readme = (root / "docs" / "README.md").read_text(encoding="utf-8")
+    configs_readme = (root / "configs" / "README.md").read_text(encoding="utf-8")
+    project_readme = (root / "README.md").read_text(encoding="utf-8")
+    normalized_docs_readme = " ".join(docs_readme.split())
+    normalized_configs_readme = " ".join(configs_readme.split())
 
     for token in (
         "../examples/minimal-run-config.json",
@@ -319,8 +431,82 @@ def test_docs_map_distinguishes_cuda_smoke_from_checkout_local_config():
         "../configs/hogenom_ccp_wandb.yaml",
         "checkout-local HOGENOM Hydra/W&B",
         "not a portable example",
+        "../configs/README.md",
+        "config ownership note",
+        "installed flat JSON workflow configs",
+        "checkout-local Hydra/HOGENOM experiment inputs",
+    ):
+        assert token in normalized_docs_readme
+
+    for token in (
+        "Config Ownership",
+        "not installed package templates unless explicitly documented as such",
+        "`hogenom_ccp_wandb.yaml`",
+        "Hydra YAML consumed by `python scripts/optimize_hogenom_ccp_hydra.py`",
+        "not by `gpurec optimize --config`",
+        "Checkout-local only",
+        "untracked `tests/data/HOGENOM/...` inputs",
+        "online W&B defaults",
+        "`examples/minimal-run-config.json`",
+        "source-checkout/source-archive CUDA parser fixture",
+        "not a CPU fallback",
+        "not an end-to-end optimizer smoke",
+        "New tracked configs should state",
+        "which command consumes the file",
+        "parser fixture",
+        "historical experiment input",
+    ):
+        assert token in normalized_configs_readme
+    assert "see `configs/README.md` for config ownership" in project_readme
+
+
+def test_simplification_opportunity_index_is_mapped_and_gate_oriented():
+    root = Path(__file__).resolve().parents[2]
+    docs_readme = " ".join(
+        (root / "docs" / "README.md").read_text(encoding="utf-8").split()
+    )
+    refactor_plan = " ".join(
+        (
+            root / "docs" / "refactor-simplification-plan-2026-05-21.md"
+        ).read_text(encoding="utf-8").split()
+    )
+    index = " ".join(
+        (
+            root / "docs" / "simplification-opportunity-index-2026-05-21.md"
+        ).read_text(encoding="utf-8").split()
+    )
+
+    for token in (
+        "`simplification-opportunity-index-2026-05-21.md`",
+        "direct inventory of removable or mergeable alternative paths",
+        "source-file evidence",
+        "retained behavior",
+        "deletion gates",
     ):
         assert token in docs_readme
+
+    for token in (
+        "what specific paths can be simplified or removed",
+        "`simplification-opportunity-index-2026-05-21.md`",
+        "implementation plan behind that index",
+    ):
+        assert token in refactor_plan
+
+    for token in (
+        "which documents and code paths show concrete opportunities to simplify",
+        "Current alternatives",
+        "Simplification",
+        "Keep",
+        "Gate",
+        "EVAL-01 - Collapse The Four Evaluation Pipelines",
+        "MODE-01 - Replace Shape-Driven Mode Inference With `ParameterLayout`",
+        "LIK-02 - Remove Or Deprecate Misleading Log-Likelihood Aliases",
+        "CPP-02 - Remove Or Rehome C++ Diagnostic Exports",
+        "SCRIPT-01 - Delete Or Reclassify Fixed-Dataset Scripts",
+        "TEST-01 - Stop Preserving Dead Internals Through Tests",
+        "Search confirms diagnostics are not part of supported user workflows",
+    ):
+        assert token in index
 
 
 def test_release_readiness_gpu_smoke_matches_small_species_limitation():
@@ -964,6 +1150,49 @@ def test_project_readme_documents_genewise_per_family_api_contract():
         assert token in normalized
 
 
+def test_legacy_likelihood_aliases_warn_and_have_single_test_owner():
+    root = Path(__file__).resolve().parents[2]
+    legacy_full = "compute_log_" + "likelihood"
+    legacy_root_rows = f"{legacy_full}_root_rows"
+    likelihood_source = (
+        root / "gpurec" / "core" / "likelihood.py"
+    ).read_text(encoding="utf-8")
+
+    for token in (
+        f"def {legacy_full}",
+        f"def {legacy_root_rows}",
+        "Deprecated compatibility alias",
+        "warnings.warn(",
+        "DeprecationWarning",
+        "use `compute_nll()` instead",
+        "use `compute_nll_root_rows()` instead",
+    ):
+        assert token in likelihood_source
+
+    allowed_paths = {
+        "gpurec/core/likelihood.py",
+        "tests/unit/test_origination_probs.py",
+        "tests/unit/test_repository_hygiene.py",
+    }
+    offenders = [
+        path.relative_to(root).as_posix()
+        for path in _tracked_files(
+            root,
+            "gpurec/**/*.py",
+            "tests/**/*.py",
+            "scripts/**/*.py",
+            "profiling/**/*.py",
+        )
+        if path.relative_to(root).as_posix() not in allowed_paths
+        and (
+            legacy_full in path.read_text(encoding="utf-8")
+            or legacy_root_rows in path.read_text(encoding="utf-8")
+        )
+    ]
+
+    assert offenders == []
+
+
 def test_dts_shape_precedence_is_documented_before_runtime_change():
     root = Path(__file__).resolve().parents[2]
     readme = " ".join((root / "README.md").read_text(encoding="utf-8").split())
@@ -1123,6 +1352,79 @@ def test_project_readme_and_model_docstrings_document_full_batch_helpers():
         assert token in docstrings["full_loss_for_theta"]
 
 
+def test_public_properties_and_batched_lbfgs_knobs_are_documented():
+    root = Path(__file__).resolve().parents[2]
+    model_module = ast.parse(
+        (root / "gpurec" / "api" / "model.py").read_text(encoding="utf-8")
+    )
+    uniform_module = ast.parse(
+        (root / "gpurec" / "api" / "uniform_chunked.py").read_text(
+            encoding="utf-8"
+        )
+    )
+    lbfgs_module = ast.parse(
+        (root / "gpurec" / "optimization" / "batched_lbfgs.py").read_text(
+            encoding="utf-8"
+        )
+    )
+
+    def class_docstrings(module: ast.Module, class_name: str) -> dict[str, str]:
+        class_node = next(
+            node
+            for node in module.body
+            if isinstance(node, ast.ClassDef) and node.name == class_name
+        )
+        return {
+            node.name: " ".join((ast.get_docstring(node) or "").split())
+            for node in class_node.body
+            if isinstance(node, ast.FunctionDef)
+        }
+
+    model_docs = class_docstrings(model_module, "GeneReconModel")
+    uniform_docs = class_docstrings(uniform_module, "UniformChunkedReconModel")
+    lbfgs_class = next(
+        node
+        for node in lbfgs_module.body
+        if isinstance(node, ast.ClassDef) and node.name == "BatchedLBFGS"
+    )
+    lbfgs_doc = " ".join((ast.get_docstring(lbfgs_class) or "").split())
+
+    for name, token in (
+        ("current_batch_metadata", "Metadata for the resident batch"),
+        ("current_batch_index", "Index of the resident batch"),
+        ("mode", "Parameter-sharing mode"),
+        ("family_names", "Family names in dataset order"),
+        ("species_tree_path", "Path to the species tree"),
+        ("n_families", "Number of gene families"),
+        ("species_names", "internal species-index order"),
+        ("n_species", "Number of species"),
+    ):
+        assert token in model_docs[name]
+
+    for name, token in (
+        ("n_families", "Number of gene families"),
+        ("family_count", "Alias for"),
+        ("chunk_count", "Number of built uniform chunks"),
+        ("fixed_iters_Pi", "Fixed Pi iteration count"),
+        ("fixed_iters_E", "adaptive E is active"),
+        ("chunk_metadata", "Immutable per-chunk metadata"),
+    ):
+        assert token in uniform_docs[name]
+
+    for token in (
+        "max_eval",
+        "Maximum closure evaluations",
+        "max_iter * (max_ls + 1) + 1",
+        "accepted probed loss",
+        "tolerance_grad",
+        "tolerance_change",
+        "max_ls",
+        "c1",
+        "shrink",
+    ):
+        assert token in lbfgs_doc
+
+
 def test_small_species_backward_limitation_is_documented_publicly():
     root = Path(__file__).resolve().parents[2]
     readme = (root / "README.md").read_text(encoding="utf-8")
@@ -1160,7 +1462,8 @@ def test_project_readme_documents_leaf_species_mapping_contract():
         "leaf without `_` maps to the full leaf label",
         "AleRax family files with `mapping` entries",
         "`UniformChunkedReconModel(..., leaf_species_maps=...)`",
-        "`GeneDataset(..., leaf_species_maps=...)`",
+        "narrow low-level `GeneDataset(..., leaf_species_maps=...)` exception",
+        "the rest of `gpurec.core` should be treated as unstable implementation surface",
     ):
         assert token in normalized
 
@@ -1797,6 +2100,46 @@ def test_documented_uniform_pipeline_benchmark_help_imports_current_api():
     assert "compute_log_likelihood" not in source
 
 
+def test_profiling_readme_documents_entrypoints_and_artifact_policy():
+    root = Path(__file__).resolve().parents[2]
+    profiling_readme = (root / "profiling" / "README.md").read_text(
+        encoding="utf-8"
+    )
+    normalized_profiling_readme = " ".join(profiling_readme.split())
+    docs_map = (root / "docs" / "README.md").read_text(encoding="utf-8")
+    project_readme = (root / "README.md").read_text(encoding="utf-8")
+    tracked_profiling_files = [
+        path.name for path in _tracked_files(root, "profiling/*.py")
+    ]
+
+    for token in (
+        "The tracked profiling directory is source-checkout tooling",
+        "Supported Entrypoints",
+        "bench_uniform_forward_backward_pipeline.py",
+        "Maintained full-pipeline benchmark",
+        "evaluate_hogenom_alerax_rates.py",
+        "Checkout-local HOGENOM/AleRax validation helper",
+        "New tracked profiling entrypoints should have a `--help` smoke",
+        "Artifact Policy",
+        "profiling/ancestor_batching/",
+        "profiling/bf16_backward_nsys/",
+        "profiling/bf16_handoff_prod/",
+        "profiling/hogenom_ccp/",
+        "profiling/specieswise_worker3/",
+        "profiling/proposal2/",
+        "profiling/proposal8/",
+        "Python bytecode cache",
+        "not source, fixtures, or retained benchmark results",
+    ):
+        assert token in normalized_profiling_readme
+    assert [
+        name for name in tracked_profiling_files
+        if name not in normalized_profiling_readme
+    ] == []
+    assert "../profiling/README.md" in docs_map
+    assert "See `profiling/README.md`" in project_readme
+
+
 def test_tracked_notebooks_are_documented_as_checkout_local_artifacts():
     root = Path(__file__).resolve().parents[2]
     note = (root / "notebooks" / "README.md").read_text(encoding="utf-8")
@@ -1824,7 +2167,10 @@ def test_ignored_local_workspace_inventory_documents_notebooks_and_profiles():
     pruning_plan = (
         root / "docs" / "runtime-surface-pruning-plan-2026-05-21.md"
     ).read_text(encoding="utf-8")
-    combined_docs = notebooks_readme + "\n" + pruning_plan
+    profiling_readme = (root / "profiling" / "README.md").read_text(
+        encoding="utf-8"
+    )
+    combined_docs = notebooks_readme + "\n" + pruning_plan + "\n" + profiling_readme
 
     for token in (
         "*.ipynb",
@@ -1852,6 +2198,8 @@ def test_ignored_local_workspace_inventory_documents_notebooks_and_profiles():
         "bf16 is now documented as direct-API-only",
         "profiling/hogenom_ccp/",
         "profiling/specieswise_worker3/",
+        "profiling/proposal2/",
+        "profiling/proposal8/",
         "archive/delete",
     ):
         assert token in combined_docs
@@ -2172,6 +2520,20 @@ def test_runtime_surface_plan_documents_scheduler_and_pybind_ownership():
     ):
         assert exported in preprocess_source
 
+    for token in (
+        "Legacy compatibility export for one rooted binary species Newick",
+        "gene-tree files. Production",
+        "Python code uses preprocess_multiple_families",
+        "direct pybind only for historical",
+        "low-level callers while deprecation/removal is evaluated",
+        "Direct diagnostic export for the three-phase scheduler",
+        "the direct pybind is not a",
+        "supported workflow API",
+        "Keep only with maintained profiling",
+        "or diagnostic ownership",
+    ):
+        assert token in preprocess_source
+
 
 def test_test_only_scheduler_helpers_stay_out_of_runtime_source():
     root = Path(__file__).resolve().parents[2]
@@ -2219,8 +2581,10 @@ def test_runtime_surface_plan_records_refresh_findings_before_behavior_changes()
         "bare length-`G` ambiguity",
         "`_normalize_family_tree_paths()`",
         "private alias is absent from tracked runtime/script/profiling Python sources",
-        "`normalize_family_chunk_size()`",
-        "now appears in `gpurec.core.batch_planning.__all__`",
+        "`gpurec.core.batch_planning.__all__`",
+        "`FamilyBatchPlan`, `normalize_batch_packing`, `normalize_clade_budget`, `normalize_family_chunk_size`, and `plan_family_batches`",
+        "narrow shared low-level planning boundary",
+        "not a promise that the rest of `gpurec.core` is stable",
         "`UniformChunkedState`",
         "`_UniformChunkedState`",
         "absent as a class/name reference",
@@ -2267,6 +2631,7 @@ def test_runtime_surface_plan_records_refresh_findings_before_behavior_changes()
         "direct API float-bool validation finding is now fixed",
         "private `_normalize_family_tree_paths()` compatibility alias is now deleted",
         "`normalize_family_chunk_size()` export-intent finding is now fixed",
+        "whole `gpurec.core.batch_planning.__all__` export set is now documented",
         "`UniformChunkedState` ownership finding is now fixed",
         "explicit theta tensor shape validation finding is now fixed",
         "parameter extraction shape-contract finding is now guarded",
