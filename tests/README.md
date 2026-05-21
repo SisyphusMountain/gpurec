@@ -30,6 +30,7 @@ CUDA_VISIBLE_DEVICES='' pytest -q \
   tests/unit/test_alerax_family_input.py \
   tests/unit/test_cli_workflow.py \
   tests/unit/test_core_backward.py \
+  tests/unit/test_forward_output_intent.py \
   tests/unit/test_core_helpers.py \
   tests/unit/test_examples.py \
   tests/unit/test_extract_parameters.py \
