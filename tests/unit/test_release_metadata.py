@@ -14,6 +14,7 @@ import gpurec
 
 ROOT = Path(__file__).resolve().parents[2]
 CHECK_SCRIPT = ROOT / "scripts" / "check_release_metadata.py"
+SUBPROCESS_TIMEOUT = 60
 
 
 def _has_module_level_gpu_marker(text: str) -> bool:
@@ -80,6 +81,7 @@ def test_release_metadata_check_reports_only_current_license_blockers():
         check=False,
         capture_output=True,
         text=True,
+        timeout=SUBPROCESS_TIMEOUT,
     )
 
     assert result.returncode == 1
@@ -109,6 +111,7 @@ def test_release_metadata_check_accepts_complete_metadata_fixture(tmp_path: Path
         check=False,
         capture_output=True,
         text=True,
+        timeout=SUBPROCESS_TIMEOUT,
     )
 
     assert result.returncode == 0
@@ -124,6 +127,7 @@ def test_release_metadata_check_requires_readme_metadata(tmp_path: Path):
         check=False,
         capture_output=True,
         text=True,
+        timeout=SUBPROCESS_TIMEOUT,
     )
 
     assert result.returncode == 1
@@ -144,6 +148,7 @@ def test_release_metadata_check_requires_declared_readme_file(tmp_path: Path):
         check=False,
         capture_output=True,
         text=True,
+        timeout=SUBPROCESS_TIMEOUT,
     )
 
     assert result.returncode == 1
@@ -183,6 +188,7 @@ Documentation = "https://example.invalid/docs"
         check=False,
         capture_output=True,
         text=True,
+        timeout=SUBPROCESS_TIMEOUT,
     )
 
     assert result.returncode == 1
@@ -202,6 +208,7 @@ def test_release_metadata_check_requires_project_urls_table(tmp_path: Path):
         check=False,
         capture_output=True,
         text=True,
+        timeout=SUBPROCESS_TIMEOUT,
     )
 
     assert result.returncode == 1
@@ -221,6 +228,7 @@ def test_release_metadata_check_requires_declared_license_file(tmp_path: Path):
         check=False,
         capture_output=True,
         text=True,
+        timeout=SUBPROCESS_TIMEOUT,
     )
 
     assert result.returncode == 1
@@ -240,6 +248,7 @@ def test_release_metadata_check_accepts_license_text_fixture(tmp_path: Path):
         check=False,
         capture_output=True,
         text=True,
+        timeout=SUBPROCESS_TIMEOUT,
     )
 
     assert result.returncode == 0
@@ -258,6 +267,7 @@ def test_release_metadata_check_rejects_empty_license_text(tmp_path: Path):
         check=False,
         capture_output=True,
         text=True,
+        timeout=SUBPROCESS_TIMEOUT,
     )
 
     assert result.returncode == 1
@@ -279,6 +289,7 @@ def test_release_metadata_check_rejects_license_directory(tmp_path: Path):
         check=False,
         capture_output=True,
         text=True,
+        timeout=SUBPROCESS_TIMEOUT,
     )
 
     assert result.returncode == 1
@@ -299,6 +310,7 @@ def test_release_metadata_check_accepts_readme_table_fixture(tmp_path: Path):
         check=False,
         capture_output=True,
         text=True,
+        timeout=SUBPROCESS_TIMEOUT,
     )
 
     assert result.returncode == 0
@@ -453,6 +465,7 @@ def test_cli_help_smokes_are_quiet_on_cpu(command: tuple[str, ...]):
         capture_output=True,
         text=True,
         env=env,
+        timeout=SUBPROCESS_TIMEOUT,
     )
 
     assert result.returncode == 0
@@ -543,6 +556,7 @@ def test_public_import_smokes_are_quiet_on_cpu(
         capture_output=True,
         text=True,
         env=env,
+        timeout=SUBPROCESS_TIMEOUT,
     )
 
     assert result.returncode == 0

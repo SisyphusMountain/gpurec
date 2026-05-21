@@ -112,6 +112,33 @@ def _valid_family_cache_payload() -> dict[str, object]:
     }
 
 
+class _FakePreprocessExt:
+    def __init__(self, species_payload, family_payload):
+        self.species_payload = species_payload
+        self.family_payload = family_payload
+        self.calls = 0
+
+    def preprocess_multiple_families(
+        self,
+        species_tree,
+        gene_tree_paths,
+        *,
+        leaf_species_maps=None,
+        include_details=False,
+        include_species_matrices=False,
+    ):
+        self.calls += 1
+        return {
+            "species": self.species_payload,
+            "families": {"fam0": self.family_payload},
+        }
+
+
+class _NoPreprocessExt:
+    def preprocess_multiple_families(self, *args, **kwargs):
+        raise AssertionError("cache hit should not invoke preprocessing")
+
+
 def test_species_preprocess_cache_rejects_missing_nested_helpers(tmp_path):
     path = tmp_path / "species.pt"
     torch.save({"S": 3}, path)
@@ -215,6 +242,45 @@ def test_family_preprocess_cache_rejects_inconsistent_split_lengths(tmp_path):
             label="family 'fam0'",
             required_keys=("ccp", "leaf_row_index", "leaf_col_index"),
             validator=_validate_family_preprocess_cache,
+        )
+
+
+def test_cached_family_preprocess_rejects_leaf_species_indexes_outside_species_range(
+    tmp_path,
+):
+    species_tree = _write(tmp_path / "species.nwk", "(A:1,B:1)Root;\n")
+    gene_tree = _write(tmp_path / "gene.nwk", "(a:1,b:1);\n")
+    cache_dir = tmp_path / "cache"
+
+    ext = _FakePreprocessExt(
+        _valid_species_cache_payload(),
+        _valid_family_cache_payload(),
+    )
+    GeneDataset._preprocess_with_cache(
+        ext,
+        species_tree,
+        [[str(gene_tree)]],
+        ["fam0"],
+        [{}],
+        preprocess_cache_dir=cache_dir,
+        refresh=False,
+    )
+    assert ext.calls == 1
+
+    family_cache = next(cache_dir.glob("family-*.pt"))
+    cached_family = torch.load(family_cache, map_location="cpu", weights_only=True)
+    cached_family["leaf_col_index"] = torch.tensor([1, 3], dtype=torch.long)
+    torch.save(cached_family, family_cache)
+
+    with pytest.raises(RuntimeError, match="leaf_col_index.*outside range \\[0, 3\\)"):
+        GeneDataset._preprocess_with_cache(
+            _NoPreprocessExt(),
+            species_tree,
+            [[str(gene_tree)]],
+            ["fam0"],
+            [{}],
+            preprocess_cache_dir=cache_dir,
+            refresh=False,
         )
 
 

@@ -1408,7 +1408,14 @@ class GeneReconModel(torch.nn.Module):
         pi_max_diff_tol: float | None = None,
         gradient_change_tol: float | None = None,
     ) -> None:
-        """Update solver iteration controls on the model and built batches."""
+        """Update solver iteration controls on the model and built batches.
+
+        The method updates model defaults and resident batch static states that
+        are already built.  It does not cancel or rewrite pending background
+        prefetch work; configure before scheduling lazy prefetch, or materialize
+        resident batches and configure again when all batches should share the
+        new controls.
+        """
         if fixed_iters_Pi is not None:
             fixed_iters_Pi = positive_even_int("fixed_iters_Pi", fixed_iters_Pi)
             self._fixed_iters_Pi = fixed_iters_Pi

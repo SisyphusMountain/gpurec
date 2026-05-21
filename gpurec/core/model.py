@@ -397,6 +397,8 @@ def _validate_family_preprocess_cache(
     payload: dict[str, Any],
     path: Path,
     label: str,
+    *,
+    species_count: int | None = None,
 ) -> None:
     ccp = payload.get("ccp")
     if not isinstance(ccp, dict):
@@ -499,12 +501,21 @@ def _validate_family_preprocess_cache(
                 label,
                 "'leaf_row_index' contains clade rows outside the CCP range",
             )
-    if leaf_cols.numel() > 0 and int(leaf_cols.min().item()) < 0:
-        raise _invalid_preprocess_cache(
-            path,
-            label,
-            "'leaf_col_index' contains negative species indexes",
-        )
+    if leaf_cols.numel() > 0:
+        min_species = int(leaf_cols.min().item())
+        max_species = int(leaf_cols.max().item())
+        if min_species < 0:
+            raise _invalid_preprocess_cache(
+                path,
+                label,
+                "'leaf_col_index' contains negative species indexes",
+            )
+        if species_count is not None and max_species >= species_count:
+            raise _invalid_preprocess_cache(
+                path,
+                label,
+                f"'leaf_col_index' contains species indexes outside range [0, {species_count})",
+            )
 
 
 class GeneDataset:
@@ -713,8 +724,15 @@ class GeneDataset:
                 species_helpers = raw_all["species"]
                 torch.save(species_helpers, species_cache)
 
+            species_count = int(species_helpers["S"])
             for name, raw in raw_all["families"].items():
                 raw = cls._drop_unused_family_details(raw)
+                _validate_family_preprocess_cache(
+                    raw,
+                    family_cache_paths[name],
+                    f"family {name!r}",
+                    species_count=species_count,
+                )
                 raw_by_family[name] = raw
                 torch.save(raw, family_cache_paths[name])
 
@@ -726,6 +744,15 @@ class GeneDataset:
             )
             species_helpers = raw_species["species"]
             torch.save(species_helpers, species_cache)
+
+        species_count = int(species_helpers["S"])
+        for name, raw in raw_by_family.items():
+            _validate_family_preprocess_cache(
+                raw,
+                family_cache_paths[name],
+                f"family {name!r}",
+                species_count=species_count,
+            )
 
         return species_helpers, raw_by_family
     

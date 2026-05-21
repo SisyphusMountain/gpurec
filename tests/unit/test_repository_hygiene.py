@@ -9,6 +9,8 @@ from pathlib import Path
 import gpurec
 import gpurec.workflow as workflow
 
+SUBPROCESS_TIMEOUT = 30
+
 
 def _tracked_files(root: Path, *patterns: str) -> list[Path]:
     result = subprocess.run(
@@ -17,8 +19,19 @@ def _tracked_files(root: Path, *patterns: str) -> list[Path]:
         check=True,
         capture_output=True,
         text=True,
+        timeout=SUBPROCESS_TIMEOUT,
     )
     return [root / line for line in result.stdout.splitlines() if line]
+
+
+def _is_subprocess_run(call: ast.Call) -> bool:
+    func = call.func
+    return (
+        isinstance(func, ast.Attribute)
+        and func.attr == "run"
+        and isinstance(func.value, ast.Name)
+        and func.value.id == "subprocess"
+    )
 
 
 def _decorator_name(decorator: ast.expr) -> str:
@@ -141,6 +154,22 @@ def test_python_scripts_do_not_use_runtime_asserts():
         for path in sorted((root / "scripts").glob("*.py"))
         if "assert " in path.read_text(encoding="utf-8")
     ]
+
+    assert offenders == []
+
+
+def test_tests_subprocess_calls_have_explicit_timeouts():
+    root = Path(__file__).resolve().parents[2]
+    offenders: list[str] = []
+
+    for path in sorted((root / "tests").rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call) or not _is_subprocess_run(node):
+                continue
+            if any(keyword.arg == "timeout" for keyword in node.keywords):
+                continue
+            offenders.append(f"{path.relative_to(root)}:{node.lineno}")
 
     assert offenders == []
 
@@ -471,6 +500,45 @@ def test_project_readme_documents_leaf_species_mapping_contract():
         "`GeneDataset(..., leaf_species_maps=...)`",
     ):
         assert token in normalized
+
+
+def test_solver_reconfiguration_docs_cover_lazy_prefetch_contract():
+    root = Path(__file__).resolve().parents[2]
+    project_readme = (root / "README.md").read_text(encoding="utf-8")
+    normalized_readme = " ".join(project_readme.split())
+    model_module = ast.parse(
+        (root / "gpurec" / "api" / "model.py").read_text(encoding="utf-8")
+    )
+    model_class = next(
+        node
+        for node in model_module.body
+        if isinstance(node, ast.ClassDef) and node.name == "GeneReconModel"
+    )
+    method = next(
+        node
+        for node in model_class.body
+        if isinstance(node, ast.FunctionDef)
+        and node.name == "configure_solver_iterations"
+    )
+    normalized_doc = " ".join((ast.get_docstring(method) or "").split())
+
+    for token in (
+        "lazy preprocessing or resident-batch prefetching",
+        "`model.configure_solver_iterations()` updates the model defaults",
+        "resident batch static states that are already built",
+        "does not cancel or rewrite pending background prefetch work",
+        "`model.materialize_batches()` and configure again",
+    ):
+        assert token in normalized_readme
+
+    for token in (
+        "model defaults and resident batch static states",
+        "already built",
+        "does not cancel or rewrite pending background prefetch work",
+        "configure before scheduling lazy prefetch",
+        "materialize resident batches and configure again",
+    ):
+        assert token in normalized_doc
 
 
 def test_project_readme_top_level_import_examples_match_public_exports():

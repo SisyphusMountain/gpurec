@@ -92,6 +92,13 @@ row-wise optimizers.  In `global` or `specieswise` mode, use
 `model(reduce="per_family")` under `torch.no_grad()` only as a diagnostic
 shared-theta breakdown; independent per-family gradients are not defined there.
 
+With lazy preprocessing or resident-batch prefetching,
+`model.configure_solver_iterations()` updates the model defaults and resident
+batch static states that are already built.  It does not cancel or rewrite
+pending background prefetch work.  Configure solver iteration controls before
+scheduling lazy prefetch, or call `model.materialize_batches()` and configure
+again when all resident batches should share the new controls.
+
 For genewise row-wise polishing:
 
 ```python

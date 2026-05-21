@@ -6278,6 +6278,68 @@ module reports \texttt{35 passed}, full collection reports
 \texttt{858 tests collected}, and the CPU-only unit gate reports
 \texttt{829 passed, 1 skipped, 6 deselected}.
 
+The lazy-prefetch solver reconfiguration contract is now public before any
+runtime behavior change.  \texttt{README.md} and
+\texttt{GeneReconModel.configure\_solver\_iterations()} state that
+reconfiguration updates model defaults and resident batch static states that are
+already built, but does not cancel or rewrite pending background prefetch work.
+Users should configure before scheduling lazy prefetch, or materialize resident
+batches and configure again when all batches should share new controls.  The
+focused repository hygiene guard reports \texttt{1 passed}, and
+\texttt{py\_compile} passes for the touched Python modules.  The full
+repository hygiene module now reports \texttt{39 passed}, full collection
+reports \texttt{862 tests collected}, and the CPU-only unit gate reports
+\texttt{833 passed, 1 skipped, 6 deselected}.
+
+A fresh set of five read-only subagents re-audited the current tracked
+inventory across core Python runtime, public API/workflow/optimization, native
+kernels/C++/Rust, tests/CI, and docs/scripts/notebooks/configuration.  The
+consolidated findings are recorded in
+\texttt{docs/repo-wide-audit-2026-05-21.md}.  The most actionable new open
+items are a bf16 support-policy mismatch between direct APIs and workflow docs;
+implicit-gradient solver-failure policy; inconsistent native CUDA loader and
+shared-memory preflight behavior; undocumented C++ Newick dialect assumptions;
+remaining scheduler/helper diagnostic ownership decisions; RecPhyloXML
+multi-tree assumptions; test fixture documentation and simplification; and the
+ongoing release license blocker.  Documentation-first targets from that pass
+are bf16 support policy, kernel/prototype environment policy, supported Newick
+subset, scheduler diagnostic ownership, fixture contracts, and legacy
+script/notebook retention decisions.
+
+The cached \texttt{leaf\_col\_index} upper-bound validation gap from that
+refresh is now closed.  Family preprocess cache validation accepts only species
+indexes in \texttt{[0, S)} once the species cache is available, so stale or
+malformed cache entries cannot become out-of-range
+\texttt{leaf\_species\_index} values in the forward layout.  A focused
+regression tampers a cached family to contain species index \texttt{S}, confirms
+the cache path rejects it without rerunning preprocessing, and reports
+\texttt{1 passed}.  The neighboring AleRax/cache unit module reports
+\texttt{29 passed}; \texttt{py\_compile} passes for the touched Python modules.
+Full collection reports \texttt{863 tests collected}, and the CPU-only unit
+gate reports \texttt{834 passed, 1 skipped, 6 deselected}.
+
+The Rust sampler payload validation gaps from the refreshed audit are now
+closed.  \texttt{PreparedBacktracker::new()} rejects non-finite base-2 log
+values in matrix and vector payloads, non-finite split log probabilities,
+non-finite or negative origination weights, and \texttt{leaf\_species} indexes
+outside the species dimension before derived sampler weights are computed.  The
+focused Rust selector first failed the new non-finite and out-of-range
+\texttt{leaf\_species} regressions, then reported \texttt{6 passed} after the
+validation change.  \texttt{cargo fmt}, \texttt{cargo check --all-targets}, and
+\texttt{cargo test} pass; the full Rust test run reports \texttt{12} library
+tests, \texttt{5} CLI tests, and \texttt{0} doc tests passing.
+
+The test subprocess timeout cleanup is now complete.  Every
+\texttt{subprocess.run()} call under \texttt{tests/} has an explicit timeout,
+with a longer timeout for Cargo-based Rust integration smoke tests and shorter
+timeouts for Python and Git subprocesses.  A repository hygiene guard scans
+tracked tests with \texttt{ast} and rejects subprocess calls without a
+\texttt{timeout=} keyword.  The focused guard reports \texttt{1 passed}; the
+edited examples/global-scheduler/CLI slice reports \texttt{6 passed}; release
+metadata reports \texttt{39 passed, 1 skipped}; the workflow import/export
+selector reports \texttt{14 passed, 420 deselected}; and the Rust fixture
+integration smoke reports \texttt{1 passed}.
+
 \section{Next Audit Targets}
 
 \begin{enumerate}[leftmargin=*]

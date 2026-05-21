@@ -8,6 +8,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 MANIFEST = ROOT / "crates" / "gpurec-backtrack" / "Cargo.toml"
 FIXTURE = ROOT / "tests" / "fixtures" / "backtracking" / "speciation.json"
+SUBPROCESS_TIMEOUT = 120
 
 
 def test_rust_backtracking_cli_reads_json_fixture_and_writes_recphyloxml(
@@ -31,6 +32,7 @@ def test_rust_backtracking_cli_reads_json_fixture_and_writes_recphyloxml(
         capture_output=True,
         text=True,
         cwd=ROOT,
+        timeout=SUBPROCESS_TIMEOUT,
     )
 
     assert result.returncode == 0, result.stderr

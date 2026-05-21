@@ -24,6 +24,8 @@ from gpurec.workflow.config import RunConfig, SamplingConfig
 from gpurec.workflow.model_factory import build_alerax_workflow_model
 from tests.unit.alerax_helpers import write_tiny_alerax_inputs
 
+SUBPROCESS_TIMEOUT = 30
+
 
 def _parser_action_dests(command: str) -> set[str]:
     parser = build_parser()
@@ -399,6 +401,7 @@ print(
         capture_output=True,
         text=True,
         check=False,
+        timeout=SUBPROCESS_TIMEOUT,
     )
 
     assert result.returncode == 0

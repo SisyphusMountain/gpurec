@@ -73,6 +73,7 @@ from gpurec.workflow.optimize import OptimizationRunner, _write_rate_table
 from gpurec.workflow.sampling import SamplingRunner, _xml_species_and_transfer_counts
 
 optimize_workflow = importlib.import_module("gpurec.workflow.optimize")
+SUBPROCESS_TIMEOUT = 30
 
 
 def _wildcard_export_names(import_statement: str) -> set[str]:
@@ -91,6 +92,7 @@ def _run_python_snippet(code: str) -> subprocess.CompletedProcess[str]:
         capture_output=True,
         text=True,
         env=env,
+        timeout=SUBPROCESS_TIMEOUT,
     )
 
 

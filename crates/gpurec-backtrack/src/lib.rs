@@ -58,6 +58,7 @@ impl Matrix {
                 self.data.len()
             )));
         }
+        validate_finite_values(name, &self.data)?;
         Ok(())
     }
 }
@@ -80,8 +81,8 @@ pub struct SplitInput {
 /// arrays use `species_names_postorder`, matching the postorder indexing of the
 /// exported species tree. `pi`, `e`, `log_p_s`, `log_p_d`, and `max_transfer`
 /// are base-2 log values. `origination_probs`, when present, are ordinary
-/// nonnegative weights over species; nonpositive weights are treated as
-/// impossible origination species during sampling.
+/// nonnegative weights over species; zero weights are treated as impossible
+/// origination species during sampling.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct BacktrackInput {
     /// Species tree in Newick format.
@@ -214,11 +215,21 @@ impl<'a> PreparedBacktracker<'a> {
         validate_len("leaf_species", input.leaf_species.len(), c)?;
         validate_len("clade_leaf_labels", input.clade_leaf_labels.len(), c)?;
         validate_len("e", input.e.len(), s)?;
+        validate_finite_values("e", &input.e)?;
         validate_len("log_p_s", input.log_p_s.len(), s)?;
+        validate_finite_values("log_p_s", &input.log_p_s)?;
         validate_len("log_p_d", input.log_p_d.len(), s)?;
+        validate_finite_values("log_p_d", &input.log_p_d)?;
         validate_len("max_transfer", input.max_transfer.len(), s)?;
+        validate_finite_values("max_transfer", &input.max_transfer)?;
         if let Some(probs) = &input.origination_probs {
             validate_len("origination_probs", probs.len(), s)?;
+            validate_finite_values("origination_probs", probs)?;
+            if let Some((idx, value)) = probs.iter().enumerate().find(|(_, value)| **value < 0.0) {
+                return Err(BacktrackError::InvalidInput(format!(
+                    "origination_probs contains negative value at index {idx}: {value}"
+                )));
+            }
         }
         if input.max_events == Some(0) {
             return Err(BacktrackError::InvalidInput(
@@ -231,6 +242,15 @@ impl<'a> PreparedBacktracker<'a> {
                 input.root_clade
             )));
         }
+        for (idx, leaf_species) in input.leaf_species.iter().enumerate() {
+            if let Some(species) = leaf_species {
+                if *species >= s {
+                    return Err(BacktrackError::InvalidInput(format!(
+                        "leaf_species[{idx}] is out of bounds for {s} species: {species}"
+                    )));
+                }
+            }
+        }
 
         let species =
             parse_species_topology(&input.species_newick, &input.species_names_postorder)?;
@@ -238,6 +258,12 @@ impl<'a> PreparedBacktracker<'a> {
 
         let mut splits_by_parent = vec![Vec::new(); c];
         for (idx, split) in input.splits.iter().enumerate() {
+            if !split.log_prob.is_finite() {
+                return Err(BacktrackError::InvalidInput(format!(
+                    "split {idx} log_prob is non-finite: {}",
+                    split.log_prob
+                )));
+            }
             if split.parent >= c || split.left >= c || split.right >= c {
                 return Err(BacktrackError::InvalidInput(format!(
                     "split {idx} has clade outside 0..{c}: parent={} left={} right={}",
@@ -679,6 +705,19 @@ fn validate_len(name: &str, got: usize, expected: usize) -> Result<(), Backtrack
     }
 }
 
+fn validate_finite_values(name: &str, values: &[f64]) -> Result<(), BacktrackError> {
+    if let Some((idx, value)) = values
+        .iter()
+        .enumerate()
+        .find(|(_, value)| !value.is_finite())
+    {
+        return Err(BacktrackError::InvalidInput(format!(
+            "{name} contains non-finite value at index {idx}: {value}"
+        )));
+    }
+    Ok(())
+}
+
 fn leaf_name(input: &BacktrackInput, clade: usize) -> String {
     let label = &input.clade_leaf_labels[clade];
     if label.is_empty() {
@@ -1020,6 +1059,26 @@ mod tests {
         input.pi.data.pop();
         let err = sample_recphyloxml(&input).unwrap_err().to_string();
         assert!(err.contains("pi shape"));
+    }
+
+    #[test]
+    fn rejects_nonfinite_log_payload_values() {
+        let mut input = speciation_input();
+        input.pi.data[0] = f64::NAN;
+
+        let err = sample_recphyloxml(&input).unwrap_err().to_string();
+
+        assert!(err.contains("pi contains non-finite value at index 0"));
+    }
+
+    #[test]
+    fn rejects_leaf_species_outside_species_range() {
+        let mut input = speciation_input();
+        input.leaf_species[0] = Some(3);
+
+        let err = sample_recphyloxml(&input).unwrap_err().to_string();
+
+        assert!(err.contains("leaf_species[0] is out of bounds for 3 species"));
     }
 
     #[test]

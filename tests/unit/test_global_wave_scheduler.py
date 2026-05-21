@@ -20,6 +20,7 @@ from gpurec.core.batching import (
 )
 
 ROOT = Path(__file__).resolve().parents[2]
+SUBPROCESS_TIMEOUT = 30
 
 
 def _ccp(C, parents, lefts, rights, root):
@@ -88,6 +89,7 @@ def test_collate_gene_families_validates_split_lengths_under_optimized_python():
         check=False,
         capture_output=True,
         text=True,
+        timeout=SUBPROCESS_TIMEOUT,
     )
 
     assert result.returncode == 0, result.stderr + result.stdout

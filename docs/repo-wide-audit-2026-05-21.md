@@ -156,11 +156,12 @@ evidence is thin.
     history updates when the budget is exhausted before the post-line-search
     gradient refresh, because no valid `y_k` pair exists for the accepted step.
 
-15. `GeneReconModel.configure_solver_iterations()` is unclear with active lazy
-    prefetch.  Pending `_batch_futures` may already exist when solver fields
-    are changed at `gpurec/api/model.py:1256`, `gpurec/api/model.py:1382`, and
-    `gpurec/api/model.py:1398`.  Tests cover invalid inputs and close/restart
-    behavior, not reconfiguration during pending prefetch.
+15. `GeneReconModel.configure_solver_iterations()` now documents its active
+    lazy-prefetch contract.  The method updates model defaults and resident
+    batch static states that are already built; pending background prefetch work
+    is not cancelled or rewritten.  The README and method docstring tell users
+    to configure before scheduling lazy prefetch, or to materialize resident
+    batches and configure again when all batches should share new controls.
 
 16. Backtracking sampling can hang indefinitely if the external Rust binary
     stalls.  Help validation has a timeout, but actual sampling uses
@@ -396,10 +397,10 @@ evidence is thin.
 - `GeneReconModel.full_nll_per_family()` delegates to genewise-only logic but is
   documented generically.  Document it as genewise-only first, then add explicit
   mode-error tests or implement shared/specieswise per-family values.
-- Lazy resident prefetch plus `configure_solver_iterations()` still has unclear
-  semantics for pending futures.  Document whether reconfiguration should
-  cancel/rebuild pending batches, update them when they resolve, or reject while
-  futures are pending.
+- Lazy resident prefetch plus `configure_solver_iterations()` now has a public
+  contract: the method updates model defaults and already-built static states,
+  but it does not cancel or rewrite pending background prefetch work.  Future
+  runtime changes should update that documented contract first.
 - Scheduler and diagnostic exports such as `collate_wave`, `split_phase_waves`,
   and C++ wave-stat exports look unowned or test-only.  Decide whether they are
   supported diagnostics; otherwise delete or guard them.  `bench_parse` is no
@@ -607,6 +608,10 @@ staleness found above:
   `GeneReconModel.from_trees()` describe the legacy `Species_gene` prefix
   fallback for direct Newick inputs and point nonconforming labels to AleRax
   family-file `mapping` entries or explicit `leaf_species_maps`.
+- Lazy-prefetch solver reconfiguration is now documented.  `README.md` and
+  `GeneReconModel.configure_solver_iterations()` state that reconfiguration
+  updates model defaults and resident batch static states that are already
+  built, but does not cancel or rewrite pending background prefetch work.
 - The stale `GPUREC_LEAF_HIT_ONLY_LOGP` diagnostic flag is removed from the
   retained wave-backward kernel wrapper and public README environment table.
   `tests/unit/test_repository_hygiene.py` now guards that the retired flag stays
@@ -624,6 +629,82 @@ staleness found above:
   output path is not silently ignored in directory mode.
 - `gpurec.workflow.diagnostics.safe_float()` was confirmed unused outside its
   direct unit test and removed rather than promoted as public workflow API.
+
+## Refreshed Subagent Audit
+
+A current continuation launched five read-only subagents over the tracked file
+inventory again: core Python runtime; public API/workflow/optimization; native
+kernels/C++/Rust; tests/CI; and docs/scripts/notebooks/configuration.  They did
+not edit files.  New or still-open findings from that refresh are:
+
+- Rust sampler payload validation now rejects non-finite base-2 log inputs and
+  out-of-range `leaf_species` entries before sampling.  The Rust preparation
+  path validates matrix payloads, log-probability arrays, transfer arrays,
+  split log probabilities, origination weights, and leaf species indexes before
+  computing derived sampler weights.
+- Cached preprocessing validation now rejects `leaf_col_index` values outside
+  the species range before they can become forward-kernel species indices.  The
+  regression loads a cached family with a species index equal to `S` and
+  verifies that cache validation rejects it without rerunning preprocessing.
+- Direct bfloat16 support is inconsistent.  The direct uniform chunked API
+  accepts `torch.bfloat16`, the workflow/CLI advertise only fp32/fp64, and the
+  E-solver has an apparent bf16 accumulation intent but still passes the
+  original `expE_2d` into the sparse ancestor sum.  Document whether bf16 is an
+  experimental direct-API-only mode, then add or remove support deliberately.
+- Prepared origination probabilities are an internal trust boundary:
+  `assume_prepared=True` skips finite, nonnegative, and positive-mass
+  validation before taking `torch.log2`.  Document that boundary before adding
+  defensive assertions.
+- `BiCGSTAB` failure telemetry is not enforced in the implicit-gradient path:
+  the adjoint vector is consumed even when the solver reports failure, and
+  workflow diagnostics surface the failure only after the gradient has already
+  been used.  Add a solver-failure policy and regression before behavior
+  changes.
+- The native CUDA prototype loaders are inconsistent.  `wave_backward_cuda.py`
+  preloads wheel-provided NVRTC builtins before compilation, while
+  `pibar_vjp_cuda.py` compiles without that preflight.  The CUDA Pibar path also
+  remains silent in `auto` fallback mode, so document and then consolidate the
+  loader/fallback policy before changing runtime behavior.
+- The self-loop CUDA path computes dynamic shared memory and calls
+  `cuFuncSetAttribute` without the explicit max-shared-memory preflight used by
+  the Pibar CUDA prototype.  Add a source guard or CUDA smoke after documenting
+  the expected failure mode.
+- Kernel performance/control environment variables and production-vs-prototype
+  status remain spread across runtime modules.  Publish the supported kernel
+  environment surface and classify retained paths before changing logic.
+- The C++ Newick parser accepts a narrow unquoted-label dialect and splits
+  multi-tree input on semicolons.  Define the supported Newick subset before
+  adding parser compatibility tests or replacing the parser.
+- Scheduler surface area remains high.  Python helpers such as `collate_wave`,
+  `split_phase_waves`, and `compute_clade_waves` appear used only by tests/docs,
+  while the global scheduler combines several heuristics whose objective,
+  ordering stability, and performance intent are not fully documented.  The
+  pybind scheduler/stat exports likewise remain a broad diagnostic ABI surface.
+  Decide which helpers are supported diagnostics before isolating or removing
+  any of them.
+- RecPhyloXML traversal and sampling aggregate semantics still have narrow
+  assumptions.  The XML helper chooses the first descendant `<clade>` under each
+  `recGeneTree`, and sampling origination counting is global across all roots in
+  one document.  Document the supported XML subset and one-tree-per-file
+  assumption, or add regressions before changing the parser/counter.
+- `json_dumps_strict()` is a misleading name for a helper that sanitizes
+  non-finite floats to `None`.  Rename or document this before future callers
+  rely on it as a rejecting serializer.
+- Release metadata is still blocked by the missing license decision.  The
+  checker and tests intentionally require top-level license metadata; a human
+  license choice is needed before adding `LICENSE`, `pyproject.toml` metadata,
+  and classifiers.
+- Legacy HOGENOM scripts and notebooks are documented as checkout-local, but
+  several large launchers still duplicate workflow logic and optimizer
+  schedules outside the supported CLI.  Record behavior worth preserving before
+  migration or deletion; for the fixed local profiler, add a help/argument smoke
+  or an explicit fixed-profiler contract.
+- Test and CI coverage gaps remain visible.  CPU CI does not enforce CUDA or
+  kernel tests; the stochastic backtracking fixture asserts magic matrix sizes
+  without local schema notes; the Rust JSON integration smoke exercises only a
+  trivial speciation path; workflow tests are large and private-API-heavy.
+  Test subprocess calls now have explicit timeouts guarded by repository
+  hygiene.  Document fixture contracts next, then continue simplifying tests.
 
 ## Verification Run This Round
 
@@ -956,6 +1037,51 @@ staleness found above:
   1 passed.
 - `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_repository_hygiene.py -q`:
   38 passed after adding the leaf-species mapping README guard.
+- `python -m py_compile gpurec/api/model.py tests/unit/test_repository_hygiene.py`:
+  passed after documenting the lazy-prefetch solver reconfiguration contract.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_repository_hygiene.py::test_solver_reconfiguration_docs_cover_lazy_prefetch_contract -q`:
+  1 passed.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_repository_hygiene.py -q`:
+  39 passed after adding the lazy-prefetch solver reconfiguration guard.
+- `python -m pytest --collect-only -q`: 862 tests collected after the refreshed
+  subagent audit documentation and solver reconfiguration docs.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit -q -m "unit and not gpu"`:
+  833 passed, 1 skipped, 6 deselected.
+- `python -m py_compile gpurec/core/model.py tests/unit/test_alerax_family_input.py`:
+  passed after adding cached `leaf_col_index` upper-bound validation.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_alerax_family_input.py::test_cached_family_preprocess_rejects_leaf_species_indexes_outside_species_range -q`:
+  1 passed.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_alerax_family_input.py -q`:
+  29 passed after adding the cache validation regression.
+- `python -m pytest --collect-only -q`: 863 tests collected after adding the
+  cached `leaf_col_index` validation regression.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit -q -m "unit and not gpu"`:
+  834 passed, 1 skipped, 6 deselected.
+- Baseline `cd crates/gpurec-backtrack && cargo test --lib rejects_`: first
+  failed the new non-finite log-payload and out-of-range `leaf_species`
+  regressions before Rust validation was added.
+- `cd crates/gpurec-backtrack && cargo test --lib rejects_`: 6 passed after
+  adding Rust payload validation.
+- `cd crates/gpurec-backtrack && cargo fmt`: passed after the Rust payload
+  validation changes.
+- `cd crates/gpurec-backtrack && cargo check --all-targets`: passed after the
+  Rust payload validation changes.
+- `cd crates/gpurec-backtrack && cargo test`: 12 library tests, 5 CLI tests,
+  and 0 doc tests passed after the Rust payload validation changes.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_repository_hygiene.py tests/unit/test_alerax_family_input.py -q`:
+  68 passed after the Rust and cache-validation changes.
+- `python -m py_compile tests/unit/test_repository_hygiene.py tests/unit/test_release_metadata.py tests/unit/test_workflow.py tests/unit/test_global_wave_scheduler.py tests/unit/test_cli_workflow.py tests/unit/test_examples.py tests/integration/test_rust_backtracking_fixture.py`:
+  passed after adding explicit subprocess timeouts to tests.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_repository_hygiene.py::test_tests_subprocess_calls_have_explicit_timeouts -q`:
+  1 passed.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_examples.py tests/unit/test_global_wave_scheduler.py::test_collate_gene_families_validates_split_lengths_under_optimized_python tests/unit/test_cli_workflow.py::test_cli_rejects_hydra_yaml_config_before_workflow_import -q`:
+  6 passed after adding subprocess timeouts.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_release_metadata.py -q`:
+  39 passed, 1 skipped after adding subprocess timeouts.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_workflow.py -q -k 'wildcard or import_smoke or cli or export'`:
+  14 passed, 420 deselected after adding subprocess timeouts.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/integration/test_rust_backtracking_fixture.py -q`:
+  1 passed after adding the Cargo subprocess timeout.
 
 ## Recommended Next Order
 
@@ -965,7 +1091,11 @@ staleness found above:
    `max_eval` evaluation accounting, sampling subprocess timeout behavior, and
    direct C++ `max_wave_size` validation, plus public workflow optimizer modes.
 2. Fix remaining documentation-only staleness as it is found in touched areas.
-3. Make low-risk hygiene changes with tests: slow markers and any future
+3. Prefer validation/test fixes that do not need policy choices; the next small
+   candidates are fixture-contract documentation and structured workflow/CI
+   test assertions.
+4. Make low-risk hygiene changes with tests: slow markers and any future
    warning filters only if scoped to a specific dependency warning.
-4. Only then consider behavior changes for backward small-`S`, DTS parameter
-   shape semantics, CUDA Pibar fallback policy, and sampling aggregate formats.
+5. Only then consider behavior changes for backward small-`S`, bf16 dtype
+   support, DTS parameter shape semantics, CUDA Pibar fallback policy,
+   RecPhyloXML assumptions, and sampling aggregate formats.

@@ -11,6 +11,7 @@ from gpurec.workflow.config import RunConfig
 
 
 ROOT = Path(__file__).resolve().parents[2]
+SUBPROCESS_TIMEOUT = 30
 
 
 def test_top_level_workflow_shortcuts_match_readme_api():
@@ -90,5 +91,6 @@ def test_minimal_run_config_outputs_are_gitignored():
             ["git", "check-ignore", "--quiet", relative],
             cwd=ROOT,
             check=False,
+            timeout=SUBPROCESS_TIMEOUT,
         )
         assert result.returncode == 0, relative
