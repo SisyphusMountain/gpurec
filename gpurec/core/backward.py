@@ -30,6 +30,97 @@ _SUPPORTED_BACKWARD_FLOAT_DTYPES = (torch.float32, torch.float64)
 _OPTIONAL_CUDA_SELF_LOOP_EXCEPTIONS = (ImportError, RuntimeError, ValueError)
 
 
+def _cuda_self_loop_options_from_env():
+    """Return current native CUDA self-loop prototype mode switches.
+
+    ``auto``/``enabled`` are optional and may fall back to the retained Triton
+    self-loop path.  Required/force-style modes stay enabled but re-raise
+    eligible-wave prototype failures.
+    """
+    (
+        nosplit_mode,
+        nosplit_enabled,
+        nosplit_required,
+    ) = _env_mode_enabled_required(
+        "GPUREC_CUDA_SELF_LOOP_NOSPLIT",
+        "auto",
+    )
+    nosplit_correction = os.environ.get(
+        "GPUREC_CUDA_SELF_LOOP_NOSPLIT_CORRECTION",
+        "tree",
+    )
+    (
+        split_mode,
+        split_enabled,
+        split_required,
+    ) = _env_mode_enabled_required(
+        "GPUREC_CUDA_SELF_LOOP_SPLIT",
+        "auto",
+    )
+    return (
+        nosplit_mode,
+        nosplit_enabled,
+        nosplit_required,
+        nosplit_correction,
+        split_mode,
+        split_enabled,
+        split_required,
+    )
+
+
+def _cuda_self_loop_wave_backend(
+    *,
+    dts_r,
+    nosplit_enabled,
+    split_enabled,
+    auto_wrapped,
+    dtype,
+    uniform_leaf_logp,
+    S,
+    compact_level_ptr,
+    compact_level_parents,
+    compact_level_child1,
+    compact_level_child2,
+):
+    """Return ``(wave_enabled, use_cuda_prototype)`` for one self-loop wave."""
+    wave_enabled = (
+        (dts_r is None and nosplit_enabled)
+        or (dts_r is not None and split_enabled)
+    )
+    use_cuda_prototype = (
+        wave_enabled
+        and auto_wrapped
+        and dtype == torch.float32
+        and torch.is_tensor(uniform_leaf_logp)
+        and int(uniform_leaf_logp.numel()) == S
+        and compact_level_ptr is not None
+        and compact_level_parents is not None
+        and compact_level_child1 is not None
+        and compact_level_child2 is not None
+    )
+    return wave_enabled, use_cuda_prototype
+
+
+def _cuda_self_loop_fallback_after_optional_failure(
+    *,
+    dts_r,
+    nosplit_enabled,
+    split_enabled,
+    nosplit_required,
+    split_required,
+):
+    """Return required-state and updated enabled flags after prototype failure."""
+    required = (
+        (dts_r is None and nosplit_required)
+        or (dts_r is not None and split_required)
+    )
+    if required:
+        return True, nosplit_enabled, split_enabled
+    if dts_r is None:
+        return False, False, split_enabled
+    return False, nosplit_enabled, False
+
+
 def _auto_wrap_backward_inputs(
     *,
     C,
@@ -375,22 +466,11 @@ def Pi_wave_backward(
         _cuda_self_loop_nosplit_mode,
         cuda_self_loop_nosplit_enabled,
         cuda_self_loop_nosplit_required,
-    ) = _env_mode_enabled_required(
-        "GPUREC_CUDA_SELF_LOOP_NOSPLIT",
-        "auto",
-    )
-    cuda_self_loop_nosplit_correction = os.environ.get(
-        "GPUREC_CUDA_SELF_LOOP_NOSPLIT_CORRECTION",
-        "tree",
-    )
-    (
+        cuda_self_loop_nosplit_correction,
         _cuda_self_loop_split_mode,
         cuda_self_loop_split_enabled,
         cuda_self_loop_split_required,
-    ) = _env_mode_enabled_required(
-        "GPUREC_CUDA_SELF_LOOP_SPLIT",
-        "auto",
-    )
+    ) = _cuda_self_loop_options_from_env()
 
     for k in range(K - 1, -1, -1):
         meta = wave_metas[k]
@@ -459,20 +539,20 @@ def Pi_wave_backward(
             else:
                 acc.scatter_add_(0, fi_expand, contrib)
 
-        cuda_self_loop_wave_enabled = (
-            (dts_r is None and cuda_self_loop_nosplit_enabled)
-            or (dts_r is not None and cuda_self_loop_split_enabled)
-        )
-        use_cuda_nosplit = (
-            cuda_self_loop_wave_enabled
-            and _auto_wrapped
-            and dtype == torch.float32
-            and torch.is_tensor(uniform_leaf_logp)
-            and int(uniform_leaf_logp.numel()) == S
-            and compact_level_ptr is not None
-            and compact_level_parents is not None
-            and compact_level_child1 is not None
-            and compact_level_child2 is not None
+        cuda_self_loop_wave_enabled, use_cuda_nosplit = (
+            _cuda_self_loop_wave_backend(
+                dts_r=dts_r,
+                nosplit_enabled=cuda_self_loop_nosplit_enabled,
+                split_enabled=cuda_self_loop_split_enabled,
+                auto_wrapped=_auto_wrapped,
+                dtype=dtype,
+                uniform_leaf_logp=uniform_leaf_logp,
+                S=S,
+                compact_level_ptr=compact_level_ptr,
+                compact_level_parents=compact_level_parents,
+                compact_level_child1=compact_level_child1,
+                compact_level_child2=compact_level_child2,
+            )
         )
         self_loop_grads_accumulated = False
         if use_cuda_nosplit:
@@ -520,15 +600,19 @@ def Pi_wave_backward(
                 aw0 = aw1 = aw2 = aw345 = aw3 = aw4 = None
                 self_loop_grads_accumulated = True
             except _OPTIONAL_CUDA_SELF_LOOP_EXCEPTIONS:
-                if (
-                    (dts_r is None and cuda_self_loop_nosplit_required)
-                    or (dts_r is not None and cuda_self_loop_split_required)
-                ):
+                (
+                    cuda_self_loop_failure_required,
+                    cuda_self_loop_nosplit_enabled,
+                    cuda_self_loop_split_enabled,
+                ) = _cuda_self_loop_fallback_after_optional_failure(
+                    dts_r=dts_r,
+                    nosplit_enabled=cuda_self_loop_nosplit_enabled,
+                    split_enabled=cuda_self_loop_split_enabled,
+                    nosplit_required=cuda_self_loop_nosplit_required,
+                    split_required=cuda_self_loop_split_required,
+                )
+                if cuda_self_loop_failure_required:
                     raise
-                if dts_r is None:
-                    cuda_self_loop_nosplit_enabled = False
-                else:
-                    cuda_self_loop_split_enabled = False
                 use_cuda_nosplit = False
                 self_loop_grads_accumulated = False
         if not use_cuda_nosplit:
