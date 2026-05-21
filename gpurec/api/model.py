@@ -36,12 +36,14 @@ from gpurec.core.batch_planning import (
     normalize_family_chunk_size,
     plan_family_batches,
 )
+from gpurec.core.gradient_accumulator import GradientAccumulator
 from gpurec.core.model import (
     GeneDataset,
     normalize_family_selection,
     normalize_family_tree_paths,
     parse_alerax_family_file,
 )
+from gpurec.core.parameter_layout import ParameterLayout
 from gpurec.core.likelihood import (
     compute_nll,
     prepare_origination_probs,
@@ -1299,7 +1301,18 @@ class GeneReconModel(torch.nn.Module):
             return loss, grad
 
         total_loss = torch.zeros((), device=self._dataset.device, dtype=self._dataset.dtype)
-        grad_total = torch.zeros_like(theta.detach()) if need_grad else None
+        grad_accumulator = (
+            GradientAccumulator.zeros_like(
+                ParameterLayout.for_mode(
+                    self._mode,
+                    species_count=int(self._dataset.S),
+                    family_count=len(self._dataset.families),
+                ),
+                theta,
+            )
+            if need_grad
+            else None
+        )
         for batch_idx in range(len(self._batch_specs)):
             static = self._ensure_batch_static(batch_idx)
             theta_batch = self._theta_for_batch_index(batch_idx, theta)
@@ -1310,19 +1323,20 @@ class GeneReconModel(torch.nn.Module):
             )
             total_loss = total_loss + loss_i.to(device=total_loss.device, dtype=total_loss.dtype)
             if need_grad:
-                if grad_i is None or grad_total is None:
+                if grad_i is None or grad_accumulator is None:
                     raise RuntimeError("internal error: missing batch gradient")
-                grad_i = grad_i.to(device=grad_total.device, dtype=grad_total.dtype)
-                if self._mode == "genewise":
-                    idx = torch.as_tensor(
-                        self._batch_specs[batch_idx].family_indices,
-                        dtype=torch.long,
-                        device=grad_total.device,
-                    )
-                    grad_total.index_add_(0, idx, grad_i)
-                else:
-                    grad_total.add_(grad_i)
-        return total_loss.detach(), None if grad_total is None else grad_total.detach()
+                grad_accumulator.add(
+                    grad_i,
+                    family_indices=(
+                        self._batch_specs[batch_idx].family_indices
+                        if self._mode == "genewise"
+                        else None
+                    ),
+                )
+        return (
+            total_loss.detach(),
+            None if grad_accumulator is None else grad_accumulator.result().detach(),
+        )
 
     @property
     def current_batch_metadata(self) -> BatchMetadata:
