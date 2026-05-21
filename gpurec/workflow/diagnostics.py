@@ -25,6 +25,14 @@ def _json_safe(value: Any) -> Any:
 
 
 def json_dumps_strict(value: Any, **kwargs: Any) -> str:
+    """Serialize diagnostics as standards-compliant JSON after sanitization.
+
+    The "strict" part refers to the emitted JSON grammar: Python-only NaN and
+    Infinity tokens are never written.  Non-finite floats are intentionally
+    replaced with JSON null before dumping so diagnostics can be parsed by
+    strict JSON readers while optimization code still keeps numeric values in
+    memory.
+    """
     return json.dumps(_json_safe(value), allow_nan=False, **kwargs)
 
 

@@ -730,6 +730,12 @@ class UniformChunkedReconModel(torch.nn.Module):
     one rooted binary species tree, unquoted labels, ignored numeric branch
     lengths, and gene-tree files that may contain multiple semicolon-delimited
     records for CCP amalgamation.
+
+    ``torch.float32`` and ``torch.float64`` are the supported production dtypes.
+    ``torch.bfloat16`` is accepted only on this direct API as an experimental
+    CUDA memory-saving path for forward/NLL probes; workflow configuration and
+    CLI runs intentionally expose only fp32/fp64, and the retained Pi
+    backward/gradient path does not support bf16.
     """
 
     def __init__(

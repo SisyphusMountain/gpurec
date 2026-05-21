@@ -251,6 +251,13 @@ def prepare_origination_probs(
     ``origination_probs`` may be ``[S]`` for one shared distribution or
     ``[G, S]`` for family-specific distributions.  Rows are normalized so callers
     can pass positive weights without pre-normalizing them.
+
+    ``assume_prepared=True`` is an internal trust boundary for tensors that
+    have already passed this helper during model/static-state construction.  It
+    still enforces shape compatibility after moving to the requested device and
+    dtype, but skips finite, nonnegative, positive-mass, and normalization
+    checks.  Public entry points should keep the default ``False`` unless they
+    are forwarding stored prepared probabilities.
     """
     if origination_probs is None:
         return None

@@ -953,6 +953,25 @@ per-sample RecPhyloXML and event-count files live under
 under \texttt{output\_gpurec/reconciliations/}.  A source guard keeps the
 README tied to the current \texttt{event\_counts.tsv},
 \texttt{totalSpeciesEventCounts.txt}, and \texttt{totalTransfers.txt} outputs.
+That guard now also checks the documented aggregate formats:
+\texttt{event\_counts.tsv} is tab-separated,
+\texttt{totalSpeciesEventCounts.txt} uses the AleRax-compatible comma-space
+text layout, \texttt{totalTransfers.txt} is whitespace-separated
+source/destination/count data, and aggregate values are averaged over the
+requested sample count for each retained family rather than all checkpoint
+families.
+
+The same README sampling section now defines the sampled RecPhyloXML subset
+before any parser behavior change: \texttt{recGeneTree} blocks with
+\texttt{clade} nodes, \texttt{eventsRec} containers, and the event tags
+\texttt{speciation}, \texttt{duplication}, \texttt{branchingOut},
+\texttt{transferBack}, \texttt{loss}, and \texttt{leaf}.  It also distinguishes
+the gpurec-generated one-\texttt{recGeneTree}-per-file expectation from the
+shared event-count traversal's current compatibility with multiple
+\texttt{recGeneTree} blocks.  Repository hygiene reports
+\texttt{43 passed}, and release metadata remains
+\texttt{39 passed, 1 skipped} after this documentation update.  Full
+collection reports \texttt{873 tests collected}.
 
 \subsection{Rate Export Checkpoint Payload Validation}
 
@@ -6389,6 +6408,60 @@ edited examples/global-scheduler/CLI slice reports \texttt{6 passed}; release
 metadata reports \texttt{39 passed, 1 skipped}; the workflow import/export
 selector reports \texttt{14 passed, 420 deselected}; and the Rust fixture
 integration smoke reports \texttt{1 passed}.
+
+The release/CI workflow assertions are now structured around the checked YAML
+contract rather than whole-file text mirrors.  \texttt{tests/unit/test\_release\_metadata.py}
+parses \texttt{.github/workflows/cpu-unit.yml} with PyYAML and asserts the
+package matrix, named package-artifact steps, Rust backtracking job, minimal
+permissions, concurrency, Python-version matrix, and source-archive example
+checks from their jobs and step bodies.  \texttt{pyproject.toml} declares
+\texttt{PyYAML} in the development extra because CPU CI installs
+\texttt{.[dev]} before running these unit checks.  The focused structured
+workflow selector reports \texttt{5 passed}, \texttt{py\_compile} passes for
+the edited module, and the full release metadata module reports
+\texttt{39 passed, 1 skipped}.  Full collection remains
+\texttt{872 tests collected}.
+
+The strict diagnostics JSON helper now documents its sanitizing behavior at the
+definition site.  \texttt{json\_dumps\_strict()} writes standards-compliant JSON
+after converting non-finite floats to JSON \texttt{null}; the name is therefore
+about the emitted JSON grammar, not about rejecting diagnostics that contain
+\texttt{NaN} or \texttt{Infinity}.  A repository hygiene guard pins that
+docstring so future workflow callers do not mistake the helper for a rejecting
+serializer.  \texttt{py\_compile} passes for the edited diagnostics and hygiene
+modules, and the focused diagnostics selector reports \texttt{3 passed}.
+
+The bf16 dtype policy is now explicit before any kernel or optimizer behavior
+change.  The README and \texttt{UniformChunkedReconModel} docstring state that
+\texttt{torch.bfloat16} is an experimental direct-API-only dtype for CUDA
+forward/NLL probes, while workflow configuration and CLI runs intentionally
+support only \texttt{float32} and \texttt{float64}.  The docs also call out that
+the retained Pi backward/gradient path does not support bf16, so bf16 should
+not be used for release smokes, optimizer checkpoints, or Hessian/second-order
+diagnostics.  A repository hygiene guard keeps README, direct API docs, CLI,
+and workflow config aligned, and a workflow unit regression checks that
+\texttt{dtype\_from\_name("bf16")} and \texttt{GeneReconModel} reject bf16
+while \texttt{UniformChunkedReconModel}'s dtype gate accepts it.  The focused
+bf16 selector reports \texttt{4 passed}, and \texttt{py\_compile} passes for
+the touched API and test modules.  The broader repository hygiene suite reports
+\texttt{44 passed}, the workflow dtype selector reports
+\texttt{27 passed, 410 deselected}, and release metadata remains
+\texttt{39 passed, 1 skipped}.  Full collection reports
+\texttt{877 tests collected}.
+
+The prepared-origination-probability fast path is now documented as an internal
+trust boundary.  \texttt{prepare\_origination\_probs()} explains that
+\texttt{assume\_prepared=True} is only for model/static-owned tensors that
+already passed constructor preparation: shape compatibility is still checked
+after device/dtype conversion, but finite, nonnegative, positive-mass, and
+normalization checks are skipped.  A focused regression verifies that default
+preparation rejects zero-mass, negative, and \texttt{NaN} inputs while the
+prepared path returns those tensors unchanged, and a repository hygiene guard
+keeps the trust-boundary docstring in place.  \texttt{py\_compile} passes for
+the touched likelihood and test modules, and the focused selector reports
+\texttt{4 passed}.  The full origination-probability module reports
+\texttt{9 passed}, repository hygiene reports \texttt{45 passed}, and full
+collection reports \texttt{881 tests collected}.
 
 \section{Next Audit Targets}
 

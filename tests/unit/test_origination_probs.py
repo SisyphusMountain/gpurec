@@ -8,6 +8,7 @@ from gpurec.core.likelihood import (
     compute_log_likelihood_root_rows,
     compute_nll,
     compute_nll_root_rows,
+    prepare_origination_probs,
 )
 
 
@@ -136,6 +137,37 @@ def test_uniform_origination_probs_preserve_default_likelihood():
 
     torch.testing.assert_close(weighted, default, rtol=1e-12, atol=1e-12)
     torch.testing.assert_close(root_weighted, default, rtol=1e-12, atol=1e-12)
+
+
+@pytest.mark.parametrize(
+    ("weights", "message"),
+    [
+        (torch.tensor([0.0, 0.0, 0.0]), "positive mass"),
+        (torch.tensor([1.0, -1.0, 2.0]), "non-negative"),
+        (torch.tensor([1.0, float("nan"), 2.0]), "finite"),
+    ],
+)
+def test_prepared_origination_probs_are_internal_trust_boundary(
+    weights: torch.Tensor,
+    message: str,
+):
+    with pytest.raises(ValueError, match=message):
+        prepare_origination_probs(
+            weights,
+            S=3,
+            device=torch.device("cpu"),
+            dtype=torch.float64,
+        )
+
+    prepared = prepare_origination_probs(
+        weights,
+        S=3,
+        device=torch.device("cpu"),
+        dtype=torch.float64,
+        assume_prepared=True,
+    )
+
+    torch.testing.assert_close(prepared, weights.to(dtype=torch.float64), equal_nan=True)
 
 
 def test_legacy_log_likelihood_names_alias_nll_helpers():

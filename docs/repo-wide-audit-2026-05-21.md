@@ -172,13 +172,14 @@ evidence is thin.
     used for nonzero sampler exits, including the command text and timeout
     value.
 
-17. Sampling aggregate output formats are underdocumented.  The workflow writes
-    comma-space-separated `totalSpeciesEventCounts.txt`, whitespace-separated
-    `totalTransfers.txt`, and values normalized by sample count rather than by
-    family count at `gpurec/workflow/sampling.py:158`,
-    `gpurec/workflow/sampling.py:177`, and `gpurec/workflow/sampling.py:361`.
-    Tests pin current behavior, but user docs list filenames without defining
-    format and normalization semantics.
+17. Sampling aggregate output formats are now documented.  The README defines
+    `event_counts.tsv` as tab-separated, `totalSpeciesEventCounts.txt` as the
+    AleRax-compatible comma-space text format, `totalTransfers.txt` as
+    whitespace-separated source species, destination species, and average
+    transfer count, and states that aggregate values are averaged over the
+    requested sample count for each retained family rather than all families in
+    the checkpoint.  A repository hygiene guard keeps those format and
+    normalization details present in user docs.
 
 18. `UniformChunkedReconModel.loss_and_grad(reduction="full_sum_estimate")` is
     a public stochastic-optimizer helper branch without direct coverage.  The
@@ -646,15 +647,22 @@ not edit files.  New or still-open findings from that refresh are:
   the species range before they can become forward-kernel species indices.  The
   regression loads a cached family with a species index equal to `S` and
   verifies that cache validation rejects it without rerunning preprocessing.
-- Direct bfloat16 support is inconsistent.  The direct uniform chunked API
-  accepts `torch.bfloat16`, the workflow/CLI advertise only fp32/fp64, and the
-  E-solver has an apparent bf16 accumulation intent but still passes the
-  original `expE_2d` into the sparse ancestor sum.  Document whether bf16 is an
-  experimental direct-API-only mode, then add or remove support deliberately.
-- Prepared origination probabilities are an internal trust boundary:
-  `assume_prepared=True` skips finite, nonnegative, and positive-mass
-  validation before taking `torch.log2`.  Document that boundary before adding
-  defensive assertions.
+- Direct bfloat16 support is now documented as direct-API experimental only.
+  The direct `UniformChunkedReconModel` constructor accepts `torch.bfloat16`
+  for CUDA memory-constrained forward/NLL probes, but the README and class
+  docstring state that workflow configuration and CLI runs intentionally expose
+  only fp32/fp64, and that the retained Pi backward/gradient path does not
+  support bf16.  bf16 is not for release smokes, optimizer checkpoints, or
+  Hessian/second-order diagnostics.  Repository hygiene and workflow unit guards
+  keep the boundary aligned across README, direct API docs, `GeneReconModel`,
+  `UniformChunkedReconModel`, CLI, and workflow config.
+- Prepared origination probabilities are now documented as an internal trust
+  boundary.  `prepare_origination_probs()` states that `assume_prepared=True`
+  is only for model/static-owned tensors already prepared during construction;
+  it still checks shape after device/dtype conversion, but skips finite,
+  nonnegative, positive-mass, and normalization checks.  A focused regression
+  pins that default preparation rejects invalid inputs while the prepared path
+  returns them unchanged.
 - `BiCGSTAB` failure telemetry is not enforced in the implicit-gradient path:
   the adjoint vector is consumed even when the solver reports failure, and
   workflow diagnostics surface the failure only after the gradient has already
@@ -687,14 +695,20 @@ not edit files.  New or still-open findings from that refresh are:
   pybind scheduler/stat exports likewise remain a broad diagnostic ABI surface.
   Decide which helpers are supported diagnostics before isolating or removing
   any of them.
-- RecPhyloXML traversal and sampling aggregate semantics still have narrow
-  assumptions.  The XML helper chooses the first descendant `<clade>` under each
-  `recGeneTree`, and sampling origination counting is global across all roots in
-  one document.  Document the supported XML subset and one-tree-per-file
-  assumption, or add regressions before changing the parser/counter.
-- `json_dumps_strict()` is a misleading name for a helper that sanitizes
-  non-finite floats to `None`.  Rename or document this before future callers
-  rely on it as a rejecting serializer.
+- RecPhyloXML traversal assumptions are now documented before parser/counter
+  changes.  The README defines the supported sampled XML subset as
+  `recGeneTree` blocks with `clade` nodes, `eventsRec` containers, and
+  `speciation`, `duplication`, `branchingOut`, `transferBack`, `loss`, and
+  `leaf` events.  It also states that gpurec-generated sample XML files are
+  expected to contain one `recGeneTree` per file while the shared event-count
+  traversal can read multiple `recGeneTree` blocks in compatibility inputs.
+  Behavior changes around first-clade selection or global origination counting
+  still need dedicated regressions.
+- `json_dumps_strict()` now documents its sanitizing contract.  The helper name
+  refers to standards-compliant JSON output: non-finite floats are converted to
+  JSON `null` before dumping, rather than being rejected or emitted as
+  Python-only `NaN`/`Infinity` tokens.  A repository hygiene guard keeps that
+  contract visible beside the helper.
 - Release metadata is still blocked by the missing license decision.  The
   checker and tests intentionally require top-level license metadata; a human
   license choice is needed before adding `LICENSE`, `pyproject.toml` metadata,
@@ -710,8 +724,11 @@ not edit files.  New or still-open findings from that refresh are:
   The stochastic backtracking and Rust JSON fixture contracts are now
   documented beside the checked fixtures and guarded by repository hygiene.
   Test subprocess calls also have explicit timeouts guarded by repository
-  hygiene.  Continue simplifying tests and prefer structured workflow/CI
-  assertions over wording snapshots.
+  hygiene.  The release/CI hygiene checks now parse `cpu-unit.yml` with PyYAML
+  and assert package, Rust, matrix, permissions, concurrency, and example-data
+  contracts against named jobs and steps instead of whole-file wording
+  snapshots.  Continue simplifying the remaining wording-heavy tests where a
+  structured source of truth exists.
 
 ## Verification Run This Round
 
@@ -1125,6 +1142,56 @@ not edit files.  New or still-open findings from that refresh are:
 - `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit -q -m "unit and not gpu"`:
   842 passed, 1 skipped, 6 deselected after adding the fixture-contract
   documentation guards.
+- `python -m py_compile tests/unit/test_release_metadata.py`: passed after
+  converting the CPU CI workflow checks to structured YAML/job/step assertions.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_release_metadata.py::test_cpu_ci_builds_and_smokes_release_artifacts tests/unit/test_release_metadata.py::test_cpu_ci_workflow_uses_minimal_permissions_and_concurrency tests/unit/test_release_metadata.py::test_cpu_ci_matrix_covers_declared_python_versions tests/unit/test_release_metadata.py::test_cpu_ci_runs_rust_backtracking_gate tests/unit/test_release_metadata.py::test_readme_scopes_example_config_to_source_artifacts -q`:
+  5 passed after the structured workflow assertion cleanup.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_release_metadata.py -q`:
+  39 passed, 1 skipped after adding the PyYAML-backed workflow parser helper and
+  step-scoped assertions.
+- `python -m pytest --collect-only -q`: 872 tests collected after the
+  structured workflow assertion cleanup.
+- `python -m py_compile gpurec/workflow/diagnostics.py tests/unit/test_repository_hygiene.py`:
+  passed after documenting the strict JSON serializer sanitization contract.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_repository_hygiene.py::test_strict_json_serializer_documents_sanitizing_contract tests/unit/test_workflow.py::test_workflow_jsonl_diagnostics_sanitize_nonfinite_values tests/unit/test_workflow.py::test_workflow_json_diagnostics_write_strict_file -q`:
+  3 passed after adding the `json_dumps_strict()` documentation guard.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_repository_hygiene.py::test_project_readme_documents_sampling_output_layout tests/unit/test_repository_hygiene.py::test_strict_json_serializer_documents_sanitizing_contract -q`:
+  2 passed after extending the README sampling-output guard to cover aggregate
+  file formats, normalization semantics, and the supported sampled
+  RecPhyloXML subset.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_repository_hygiene.py -q`:
+  43 passed after adding the RecPhyloXML subset and strict JSON serializer
+  documentation guards.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_release_metadata.py -q`:
+  39 passed, 1 skipped after the README sampling-output documentation update.
+- `python -m pytest --collect-only -q`: 873 tests collected after adding the
+  RecPhyloXML subset and strict JSON serializer documentation guards.
+- `python -m py_compile gpurec/api/uniform_chunked.py tests/unit/test_repository_hygiene.py tests/unit/test_workflow.py`:
+  passed after documenting bf16 as a direct API-only experimental dtype.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_repository_hygiene.py::test_bfloat16_policy_is_documented_as_direct_api_only tests/unit/test_workflow.py::test_bfloat16_is_direct_uniform_api_only -q`:
+  4 passed after adding the direct-API/workflow dtype boundary guard and direct
+  dtype-gate coverage for workflow config, `GeneReconModel`, and
+  `UniformChunkedReconModel`.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_repository_hygiene.py -q`:
+  44 passed after adding the bf16 policy documentation guard.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_workflow.py -q -k 'dtype or bfloat16'`:
+  27 passed, 410 deselected after adding the bf16 dtype-gate regression.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_release_metadata.py -q`:
+  39 passed, 1 skipped after the bf16 README documentation update.
+- `python -m pytest --collect-only -q`: 877 tests collected after adding the
+  bf16 dtype-policy regression.
+- `python -m py_compile gpurec/core/likelihood.py tests/unit/test_origination_probs.py tests/unit/test_repository_hygiene.py`:
+  passed after documenting the prepared-origination-probability trust boundary.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_origination_probs.py::test_prepared_origination_probs_are_internal_trust_boundary tests/unit/test_repository_hygiene.py::test_prepared_origination_probs_trust_boundary_is_documented -q`:
+  4 passed after adding behavior and docstring guards for
+  `assume_prepared=True`.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_origination_probs.py -q`:
+  9 passed after adding the prepared-origination-probability trust-boundary
+  regression.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_repository_hygiene.py -q`:
+  45 passed after adding the trust-boundary documentation guard.
+- `python -m pytest --collect-only -q`: 881 tests collected after adding the
+  prepared-origination-probability trust-boundary regression.
 
 ## Recommended Next Order
 
@@ -1136,9 +1203,10 @@ not edit files.  New or still-open findings from that refresh are:
    and Newick parser compatibility, plus checked fixture contracts.
 2. Fix remaining documentation-only staleness as it is found in touched areas.
 3. Prefer validation/test fixes that do not need policy choices; the next small
-   candidates are structured workflow/CI test assertions.
+   candidates are remaining wording-heavy release/docs checks with an available
+   structured source of truth.
 4. Make low-risk hygiene changes with tests: slow markers and any future
    warning filters only if scoped to a specific dependency warning.
 5. Only then consider behavior changes for backward small-`S`, bf16 dtype
-   support, DTS parameter shape semantics, CUDA Pibar fallback policy,
-   RecPhyloXML assumptions, and sampling aggregate formats.
+   implementation, DTS parameter shape semantics, CUDA Pibar fallback policy,
+   RecPhyloXML assumptions, and sampling aggregate behavior.

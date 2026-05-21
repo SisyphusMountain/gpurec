@@ -457,9 +457,55 @@ def test_project_readme_documents_workflow_config_aliases():
         assert token in project_readme
 
 
+def test_bfloat16_policy_is_documented_as_direct_api_only():
+    root = Path(__file__).resolve().parents[2]
+    project_readme = (root / "README.md").read_text(encoding="utf-8")
+    normalized = " ".join(project_readme.split())
+    uniform_module = ast.parse(
+        (root / "gpurec" / "api" / "uniform_chunked.py").read_text(
+            encoding="utf-8"
+        )
+    )
+    uniform_class = next(
+        node
+        for node in uniform_module.body
+        if isinstance(node, ast.ClassDef) and node.name == "UniformChunkedReconModel"
+    )
+    uniform_doc = ast.get_docstring(uniform_class) or ""
+    cli_text = (root / "gpurec" / "cli.py").read_text(encoding="utf-8")
+    config_text = (root / "gpurec" / "workflow" / "config.py").read_text(
+        encoding="utf-8"
+    )
+
+    for token in (
+        "workflow CLI intentionally supports only float32 and float64",
+        "direct `UniformChunkedReconModel` constructor also accepts `torch.bfloat16`",
+        "experimental CUDA-only path",
+        "forward/NLL probes",
+        "not a supported workflow configuration dtype",
+        "not supported by the retained Pi backward/gradient path",
+        "release smokes, optimizer checkpoints, or Hessian/second-order diagnostics",
+    ):
+        assert token in normalized
+    for token in (
+        "torch.bfloat16",
+        "experimental",
+        "forward/NLL probes",
+        "workflow configuration",
+        "CLI runs intentionally expose only fp32/fp64",
+        "retained Pi",
+    ):
+        assert token in uniform_doc
+    assert "bfloat16" not in cli_text
+    assert "bf16" not in cli_text
+    assert "bfloat16" not in config_text
+    assert "bf16" not in config_text
+
+
 def test_project_readme_documents_sampling_output_layout():
     root = Path(__file__).resolve().parents[2]
     project_readme = (root / "README.md").read_text(encoding="utf-8")
+    normalized = " ".join(project_readme.split())
 
     assert "--sample-out-dir output_gpurec" in project_readme
     assert "--family-start" in project_readme
@@ -472,6 +518,20 @@ def test_project_readme_documents_sampling_output_layout():
     assert "totalTransfers.txt" in project_readme
     assert "Successful sampling reruns replace prior gpurec-generated" in project_readme
     assert "use a separate `--sample-out-dir` to keep multiple windows" in project_readme
+    for token in (
+        "`event_counts.tsv` is tab-separated",
+        "`totalSpeciesEventCounts.txt` is the AleRax-compatible comma-space text format",
+        "`totalTransfers.txt` uses whitespace-separated source species, destination species, and average transfer count",
+        "Aggregate values are averaged over the requested sample count for each retained family",
+        "not over all families in the original checkpoint",
+        "The sampled RecPhyloXML subset expected by gpurec contains `recGeneTree` blocks",
+        "`eventsRec` event containers",
+        "`branchingOut`",
+        "`transferBack`",
+        "gpurec-generated sample XML files are expected to contain one `recGeneTree` per file",
+        "shared event-count traversal can still read multiple `recGeneTree` blocks",
+    ):
+        assert token in normalized
 
 
 def test_project_readme_documents_gpurec_run_end_to_end_workflow():
@@ -536,6 +596,51 @@ def test_project_readme_documents_e_adjoint_diagnostics():
         "relative-residual and iteration summaries",
     ):
         assert token in normalized
+
+
+def test_strict_json_serializer_documents_sanitizing_contract():
+    root = Path(__file__).resolve().parents[2]
+    module = ast.parse(
+        (root / "gpurec" / "workflow" / "diagnostics.py").read_text(
+            encoding="utf-8"
+        )
+    )
+    function = next(
+        node
+        for node in module.body
+        if isinstance(node, ast.FunctionDef) and node.name == "json_dumps_strict"
+    )
+    docstring = " ".join((ast.get_docstring(function) or "").split())
+
+    for token in (
+        "standards-compliant JSON",
+        "Non-finite floats",
+        "JSON null",
+        "strict JSON readers",
+    ):
+        assert token in docstring
+
+
+def test_prepared_origination_probs_trust_boundary_is_documented():
+    root = Path(__file__).resolve().parents[2]
+    module = ast.parse(
+        (root / "gpurec" / "core" / "likelihood.py").read_text(encoding="utf-8")
+    )
+    function = next(
+        node
+        for node in module.body
+        if isinstance(node, ast.FunctionDef) and node.name == "prepare_origination_probs"
+    )
+    docstring = " ".join((ast.get_docstring(function) or "").split())
+
+    for token in (
+        "assume_prepared=True",
+        "internal trust boundary",
+        "already passed this helper",
+        "skips finite, nonnegative, positive-mass, and normalization checks",
+        "Public entry points should keep the default",
+    ):
+        assert token in docstring
 
 
 def test_project_readme_documents_genewise_per_family_api_contract():

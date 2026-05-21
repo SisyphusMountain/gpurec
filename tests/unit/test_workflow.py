@@ -61,7 +61,7 @@ from gpurec.workflow._metadata import (
     model_family_names,
     model_species_names,
 )
-from gpurec.workflow.config import RunConfig, SamplingConfig
+from gpurec.workflow.config import RunConfig, SamplingConfig, dtype_from_name
 from gpurec.workflow.diagnostics import (
     append_jsonl,
     parameter_stats,
@@ -1666,6 +1666,16 @@ def test_uniform_chunked_factories_reject_invalid_dtype_before_device_or_io(
     message = str(exc_info.value)
     assert "CUDA" not in message
     assert "missing" not in message
+
+
+@pytest.mark.parametrize("name", ["bf16", "bfloat16", "torch.bfloat16"])
+def test_bfloat16_is_direct_uniform_api_only(name: str):
+    with pytest.raises(ValueError, match="float32 or float64"):
+        dtype_from_name(name)
+    with pytest.raises(ValueError, match="dtype"):
+        api_model._validate_gene_dtype(torch.bfloat16)
+
+    assert uniform_chunked_api._validate_uniform_dtype(torch.bfloat16) is torch.bfloat16
 
 
 @pytest.mark.parametrize(

@@ -345,18 +345,25 @@ def test_release_metadata_check_accepts_readme_table_fixture(tmp_path: Path):
 
 
 def test_cpu_ci_builds_and_smokes_release_artifacts():
-    workflow = (ROOT / ".github" / "workflows" / "cpu-unit.yml").read_text(
-        encoding="utf-8"
-    )
+    workflow = _load_cpu_ci_workflow()
+    package = workflow["jobs"]["package"]
 
-    assert "\n  package:\n" in workflow
-    package_block = workflow.split("\n  package:\n", 1)[1]
-    assert 'python-version: ["3.10", "3.12"]' in package_block
-    assert "python-version: ${{ matrix.python-version }}" in package_block
+    assert package["strategy"]["matrix"]["python-version"] == ["3.10", "3.12"]
+    assert _workflow_step(package, "Set up Python")["with"][
+        "python-version"
+    ] == "${{ matrix.python-version }}"
+
+    install = _step_run(package, "Install package, runtime, and release dependencies")
+    assert 'python -m pip install -e ".[release]"' in install
+
+    build = _step_run(package, "Build source and wheel artifacts")
+    assert "rm -rf dist" in build
+    assert "python -m build" in build
+
+    assert _step_run(package, "Check artifact metadata") == "python -m twine check dist/*"
+
+    artifact_check = _step_run(package, "Check artifact package data")
     for required in (
-        'python -m pip install -e ".[release]"',
-        "python -m build",
-        "python -m twine check dist/*",
         "import json",
         "tarfile.open",
         "zipfile.ZipFile",
@@ -386,13 +393,25 @@ def test_cpu_ci_builds_and_smokes_release_artifacts():
         "sdist includes forbidden paths",
         "wheel missing required package data",
         "wheel includes forbidden paths",
-        "Smoke Rust crate from source archive",
+    ):
+        assert required in artifact_check
+
+    assert _workflow_step(package, "Smoke Rust crate from source archive")["name"] == (
+        "Smoke Rust crate from source archive"
+    )
+    rust_smoke = _step_run(package, "Smoke Rust crate from source archive")
+    for required in (
         "SDIST_UNPACK_DIR",
         'cargo test --locked --manifest-path "$root/crates/gpurec-backtrack/Cargo.toml"',
         (
             'cargo run --locked --quiet --manifest-path "$root/crates/gpurec-backtrack/'
             'Cargo.toml" -- --help'
         ),
+    ):
+        assert required in rust_smoke
+
+    wheel_smoke = _step_run(package, "Install built wheel and smoke CLI")
+    for required in (
         "python -m pip install --no-deps dist/*.whl",
         "smoke_dir=$(mktemp -d)",
         'cd "$smoke_dir"',
@@ -426,24 +445,23 @@ def test_cpu_ci_builds_and_smokes_release_artifacts():
         "top-level workflow export mismatch",
         "exports_ok",
     ):
-        assert required in workflow
-    assert workflow.index("python -m pip install --no-deps dist/*.whl") < workflow.index(
+        assert required in wheel_smoke
+    assert wheel_smoke.index(
+        "python -m pip install --no-deps dist/*.whl"
+    ) < wheel_smoke.index(
         'cd "$smoke_dir"'
     )
-    assert workflow.index('cd "$smoke_dir"') < workflow.index("gpurec --help")
+    assert wheel_smoke.index('cd "$smoke_dir"') < wheel_smoke.index("gpurec --help")
 
 
 def test_cpu_ci_workflow_uses_minimal_permissions_and_concurrency():
-    workflow = (ROOT / ".github" / "workflows" / "cpu-unit.yml").read_text(
-        encoding="utf-8"
-    )
-    jobs_index = workflow.index("\njobs:\n")
-    preamble = workflow[:jobs_index]
+    workflow = _load_cpu_ci_workflow()
 
-    assert "\npermissions:\n  contents: read\n" in preamble
-    assert "\nconcurrency:\n" in preamble
-    assert "  group: ${{ github.workflow }}-${{ github.ref }}\n" in preamble
-    assert "  cancel-in-progress: true\n" in preamble
+    assert workflow["permissions"] == {"contents": "read"}
+    assert workflow["concurrency"] == {
+        "group": "${{ github.workflow }}-${{ github.ref }}",
+        "cancel-in-progress": True,
+    }
 
 
 def test_manifest_includes_documented_examples_in_source_archive():
@@ -591,17 +609,19 @@ def test_public_import_smokes_are_quiet_on_cpu(
 
 
 def test_cpu_ci_matrix_covers_declared_python_versions():
-    workflow = (ROOT / ".github" / "workflows" / "cpu-unit.yml").read_text(
-        encoding="utf-8"
-    )
-    pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    workflow = _load_cpu_ci_workflow()
+    pyproject = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     supported_versions = ("3.10", "3.11", "3.12")
+    unit = workflow["jobs"]["unit"]
 
-    assert 'python-version: ["3.10", "3.11", "3.12"]' in workflow
-    assert "python-version: ${{ matrix.python-version }}" in workflow
-    assert 'requires-python = ">=3.10,<3.13"' in pyproject
+    assert unit["strategy"]["matrix"]["python-version"] == list(supported_versions)
+    assert _workflow_step(unit, "Set up Python")["with"][
+        "python-version"
+    ] == "${{ matrix.python-version }}"
+    assert pyproject["project"]["requires-python"] == ">=3.10,<3.13"
+    classifiers = pyproject["project"]["classifiers"]
     for version in supported_versions:
-        assert f"Programming Language :: Python :: {version}" in pyproject
+        assert f"Programming Language :: Python :: {version}" in classifiers
 
 
 def test_readme_install_docs_match_declared_python_range():
@@ -662,24 +682,37 @@ def test_rust_backtracking_uses_pinned_git_dependency():
 
 
 def test_cpu_ci_runs_rust_backtracking_gate():
-    workflow = (ROOT / ".github" / "workflows" / "cpu-unit.yml").read_text(
-        encoding="utf-8"
-    )
+    workflow = _load_cpu_ci_workflow()
+    rust = workflow["jobs"]["rust-backtrack"]
 
-    assert "\n  rust-backtrack:\n" in workflow
-    assert "rustup default stable" in workflow
-    assert "actions/setup-python@v5" in workflow
-    assert "python -m pip install pytest" in workflow
+    assert _step_run(rust, "Set up Rust") == "rustup default stable"
+    assert _workflow_step(rust, "Set up Python")["uses"] == "actions/setup-python@v5"
+    assert _workflow_step(rust, "Set up Python")["with"]["python-version"] == "3.10"
+
+    install = _step_run(rust, "Install Python contract-test dependency")
+    assert "python -m pip install --upgrade pip" in install
+    assert "python -m pip install pytest" in install
     assert (
-        "cargo test --locked --manifest-path crates/gpurec-backtrack/Cargo.toml"
-        in workflow
+        _step_run(rust, "Run Rust backtracking tests")
+        == "cargo test --locked --manifest-path crates/gpurec-backtrack/Cargo.toml"
     )
     assert (
+        _step_run(rust, "Smoke Rust backtracking CLI")
+        ==
         "cargo run --locked --quiet --manifest-path "
         "crates/gpurec-backtrack/Cargo.toml -- --help"
-    ) in workflow
-    assert "pytest -q tests/integration/test_rust_backtracking_fixture.py" in workflow
-    assert 'pytest -q -m "integration and not gpu"' not in workflow
+    )
+    assert (
+        _step_run(rust, "Run Rust backtracking fixture")
+        == "pytest -q tests/integration/test_rust_backtracking_fixture.py"
+    )
+    all_run_scripts = "\n".join(
+        step["run"]
+        for job in workflow["jobs"].values()
+        for step in job.get("steps", [])
+        if isinstance(step.get("run"), str)
+    )
+    assert 'pytest -q -m "integration and not gpu"' not in all_run_scripts
 
 
 def test_stochastic_backtracking_notes_use_current_rust_commands():
@@ -820,8 +853,10 @@ def test_final_theta_artifact_is_documented_as_export_only():
 
 def test_readme_scopes_example_config_to_source_artifacts():
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
-    workflow = (ROOT / ".github" / "workflows" / "cpu-unit.yml").read_text(
-        encoding="utf-8"
+    workflow = _load_cpu_ci_workflow()
+    artifact_check = _step_run(
+        workflow["jobs"]["package"],
+        "Check artifact package data",
     )
 
     assert "For a source checkout or source archive" in readme
@@ -829,9 +864,9 @@ def test_readme_scopes_example_config_to_source_artifacts():
     assert "Installed wheels do not install the `examples/` directory" in readme
     assert '"species_tree": "S.tree"' in readme
     assert '"families_file": "families.txt"' in readme
-    assert '"examples/"' in workflow
-    assert "json.load" in workflow
-    assert "example config targets missing from sdist" in workflow
+    assert '"examples/"' in artifact_check
+    assert "json.load" in artifact_check
+    assert "example config targets missing from sdist" in artifact_check
 
 
 def test_readme_documents_installed_sampling_binary_setup():

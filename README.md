@@ -199,6 +199,13 @@ resident batch.  `batch_packing` accepts `sequential`, `clade_first_fit`, and
 `depth_ffd`/`critical_path_first_fit`/`wave_first_fit`, with hyphenated forms
 accepted by the CLI.  Non-sequential packing requires `clade_budget`.
 
+The workflow CLI intentionally supports only float32 and float64.  The direct
+`UniformChunkedReconModel` constructor also accepts `torch.bfloat16` as an
+experimental CUDA-only path for memory-constrained forward/NLL probes, but
+bf16 is not a supported workflow configuration dtype and is not supported by
+the retained Pi backward/gradient path.  Do not use bf16 for release smokes,
+optimizer checkpoints, or Hessian/second-order diagnostics.
+
 Optimizer modes are selected with `optimizer` in JSON or `--optimizer` on the
 CLI:
 
@@ -269,6 +276,12 @@ event totals.  `totalTransfers.txt` uses whitespace-separated source species,
 destination species, and average transfer count.  Aggregate values are averaged
 over the requested sample count for each retained family, not over all families
 in the original checkpoint.
+The sampled RecPhyloXML subset expected by gpurec contains `recGeneTree` blocks
+with `clade` nodes, `eventsRec` event containers, and the event tags
+`speciation`, `duplication`, `branchingOut`, `transferBack`, `loss`, and
+`leaf`.  gpurec-generated sample XML files are expected to contain one
+`recGeneTree` per file; the shared event-count traversal can still read
+multiple `recGeneTree` blocks in compatibility inputs.
 Use `--family-start` and `--sample-max-families` to sample a family window,
 `--seed` for reproducible stochastic backtracking, and `--max-events` to cap
 pathological samples.
