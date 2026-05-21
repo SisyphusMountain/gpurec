@@ -1,4 +1,10 @@
-"""Fused Triton kernels for the retained wave-backward fast path."""
+"""Fused Triton kernels for the retained wave-backward fast path.
+
+This module also contains private standalone diagnostics/helpers used by that
+path.  In particular, ``active_mask_from_rhs_absmax_fused()`` accepts bf16
+inputs for standalone row-mask experiments, but the retained public
+``Pi_wave_backward`` path rejects bf16 before this helper is reached.
+"""
 
 import os
 
@@ -45,6 +51,12 @@ def _device_scalar_param(param, *, device, dtype):
 
 def _dts_layout_param_args(log_pD, log_pS, *, family_idx, S, device, dtype):
     """Return DTS parameter tensors plus a Triton addressing layout.
+
+    With ``family_idx`` present, retained backward treats a one-dimensional
+    tensor as family scalar rows before considering a shared ``[S]`` species
+    vector.  Direct callers that need forward/backward parity when ``G == S``
+    should use ``[G, 1]`` for family scalar rows or ``[G, S]`` for
+    family/species rows.
 
     Layouts:
       0: shared scalar, tensor [1]
@@ -170,7 +182,13 @@ def _active_mask_from_rhs_absmax_kernel(
 
 
 def active_mask_from_rhs_absmax_fused(rhs, threshold, *, use_pruning=True):
-    """Build the row activity mask for backward pruning in one Triton launch."""
+    """Build the row activity mask for backward pruning in one Triton launch.
+
+    This is a private retained-kernel helper, not a public dtype policy.  The
+    helper accepts fp32/fp64/bf16 CUDA tensors for standalone mask experiments;
+    the public ``Pi_wave_backward`` path still supports only fp32/fp64 and
+    rejects bf16 before calling this helper.
+    """
     if rhs.ndim != 2:
         raise ValueError("rhs must be a 2D tensor")
     if rhs.device.type != "cuda":

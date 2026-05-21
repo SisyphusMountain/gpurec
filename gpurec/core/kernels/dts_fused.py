@@ -12,6 +12,13 @@ def _tl_float_dtype(dtype):
 
 
 def _prepare_param(p, n_splits, S, *, family_indexed=False):
+    """Normalize direct DTS forward parameters and return addressing metadata.
+
+    With family indexing enabled, a 1-D tensor with ``numel() == S`` is treated
+    as a shared species vector.  Public model callers normalize genewise scalar
+    rows to ``[G, 1]`` before this helper.  Direct callers should do the same
+    when ``G == S`` and use ``[G, S]`` for family/species rows.
+    """
     if family_indexed:
         if p.dim() == 0:
             return p.reshape(1), 4, 0, 0

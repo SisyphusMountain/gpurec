@@ -357,7 +357,7 @@ def _add_run_config_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--log-every",
         type=int,
-        help="History logging interval in optimization steps.",
+        help="Console progress print interval in optimization steps; history is recorded every step.",
     )
     parser.add_argument(
         "--resume-from",

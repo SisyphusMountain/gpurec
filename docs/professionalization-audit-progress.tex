@@ -6366,6 +6366,92 @@ selector reports \texttt{3 passed, 434 deselected}, the focused documentation
 guard reports \texttt{1 passed}, repository hygiene reports \texttt{56 passed},
 and full collection reports \texttt{896 tests collected}.
 
+The small-species backward limitation is now documented as retained fast-path
+behavior before any fallback implementation work.  The README and docs map
+state that the checked minimal CUDA config is a source-tree config/parser
+fixture, not a CPU fallback and not an end-to-end optimizer smoke, because the
+retained Pi backward/gradient path currently requires more than 256 postorder
+species nodes.  \texttt{gpurec/core/backward.py} documents the same CUDA,
+\texttt{float32}/\texttt{float64}, and \texttt{S > 256} contract at the source
+boundary.  Focused repository and release guards pin the wording so future
+small-\texttt{S} runtime work starts from an explicit public limitation.
+
+Direct DTS parameter shape precedence is now documented before any runtime
+unification.  Public \texttt{GeneReconModel} paths use unambiguous
+\texttt{global} \texttt{[3]}, \texttt{specieswise} \texttt{[S, 3]}, and
+\texttt{genewise} \texttt{[G, 3]} theta shapes, with genewise scalar event
+vectors normalized to \texttt{[G, 1]} before retained DTS kernels.  README and
+source docstrings now tell direct callers to avoid bare \texttt{[G]} DTS
+vectors when \texttt{G == S}: the direct forward helper treats a
+one-dimensional length-\texttt{S} tensor as shared species-indexed, while the
+retained backward helper with \texttt{family\_idx} treats a one-dimensional
+tensor as family-indexed.  The new hygiene guard pins README plus
+\texttt{Pi\_wave\_forward()}, \texttt{\_prepare\_param()}, and
+\texttt{\_dts\_layout\_param\_args()} docstrings; \texttt{py\_compile} passes
+for the touched source and hygiene modules, and the focused DTS documentation
+selector reports \texttt{1 passed}.  The full repository hygiene module reports
+\texttt{58 passed}, and full collection reports \texttt{898 tests collected}.
+
+The workflow \texttt{log\_every} option is now documented according to the
+actual runner behavior.  The optimizer records history JSONL every step through
+\texttt{self.\_record(row)}; \texttt{config.log\_every} only gates the stdout
+progress print.  README, CLI help, and the \texttt{RunConfig} source comment
+now describe it as console progress throttling rather than history logging.
+The touched CLI/config/hygiene modules compile, and the focused documentation
+guard reports \texttt{1 passed}.  The full repository hygiene module reports
+\texttt{59 passed}, and full collection reports \texttt{899 tests collected}.
+
+A follow-up read-only subagent refresh added the next documented deletion and
+guard candidates.  Workflow checkpoint compatibility needs broader typed
+identity guards; C++ pybind scheduler diagnostics and
+\texttt{gpurec.core.scheduling} need an ownership table before deletion.
+
+The workflow checkpoint submodule support boundary is now explicit before any
+helper rename or export cleanup.  README and
+\texttt{gpurec/workflow/checkpoint.py} state that the stable shortcut surface is
+\texttt{gpurec.workflow}/top-level \texttt{gpurec}, while
+\texttt{gpurec.workflow.checkpoint} supports
+\texttt{CHECKPOINT\_VERSION}, \texttt{save\_checkpoint},
+\texttt{load\_checkpoint}, \texttt{restore\_model\_theta}, and
+\texttt{validate\_checkpoint\_model\_compatibility} for advanced tooling that
+needs the versioned checkpoint payload.  The hygiene guard keeps those helpers
+out of the lazy top-level exports unless they are intentionally promoted.  The
+touched checkpoint/hygiene modules compile, and the focused support-boundary
+guard reports \texttt{1 passed}.
+
+The documented uniform forward/backward profiling benchmark is importable again
+from a clean help path.  The benchmark now aliases the current underscored
+\texttt{\_UniformBuiltChunk} and \texttt{\_UniformChunkSpec} dataclasses it
+already depends on through private helpers, and it calls \texttt{compute\_nll}
+instead of the deprecated \texttt{compute\_log\_likelihood} compatibility alias.
+A CPU-safe repository hygiene smoke runs
+\texttt{python profiling/bench\_uniform\_forward\_backward\_pipeline.py --help}
+and checks the current import/API references.  \texttt{py\_compile}, direct
+\texttt{--help}, and the focused benchmark guard all pass.  The full repository
+hygiene module reports \texttt{60 passed}, and full collection reports
+\texttt{900 tests collected}.
+
+The penalty-316 branchscale KKT script now has a source/help/ownership contract
+before any migration or deletion.  \texttt{scripts/optimize\_hogenom\_penalty316\_kkt.py}
+is documented as a checkout-local reproducer for the original branchscaled
+penalty-316.22776601683796 local-minimum analysis, using the legacy HOGENOM
+W\&B optimizer with W\&B disabled, CUDA branchscaled mode, 100 Adam warmup
+steps, Strong-Wolfe LBFGS, L1 KKT residual checks, timestamped output
+directories, and \texttt{latest\_run.txt}.  The scripts ownership matrix now
+states the same archive/delete-or-migrate criterion and requires a tiny fixture
+guard before changing its loader or output schema.  \texttt{py\_compile},
+direct \texttt{--help}, and the focused KKT script documentation guard all
+pass.  The full repository hygiene module reports \texttt{61 passed}, and full
+collection reports \texttt{901 tests collected}.
+
+The active-mask bf16 boundary is now documented without changing dtype
+behavior.  \texttt{active\_mask\_from\_rhs\_absmax\_fused()} remains a private
+retained-kernel helper that accepts fp32/fp64/bf16 CUDA tensors for standalone
+row-mask experiments, while the public retained \texttt{Pi\_wave\_backward}
+path still supports only fp32/fp64 and rejects bf16 before the helper is
+reached.  The touched wave-backward and hygiene modules compile, and the
+focused private-helper guard reports \texttt{1 passed}.
+
 The genewise-only per-family NLL contract is now explicit before any broader
 shared-theta implementation work.  The README and
 \texttt{GeneReconModel.full\_nll\_per\_family()} docstring state that

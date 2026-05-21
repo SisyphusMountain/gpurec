@@ -340,6 +340,7 @@ class RunConfig:
     best_likelihood_min_delta: float = 0.0
 
     checkpoint_every: int = 1
+    # History rows are recorded every optimizer step; this only gates stdout.
     log_every: int = 1
     resume_from: Path | None = None
 

@@ -4,11 +4,13 @@ import ast
 import json
 import re
 import subprocess
+import sys
 import tomllib
 from pathlib import Path
 
 import gpurec
 import gpurec.workflow as workflow
+import gpurec.workflow.checkpoint as workflow_checkpoint
 
 SUBPROCESS_TIMEOUT = 30
 
@@ -559,6 +561,60 @@ def test_bfloat16_policy_is_documented_as_direct_api_only():
     assert "bf16" not in config_text
 
 
+def test_active_mask_bfloat16_boundary_is_documented_as_private_helper():
+    root = Path(__file__).resolve().parents[2]
+    backward_source = (root / "gpurec" / "core" / "backward.py").read_text(
+        encoding="utf-8"
+    )
+    wave_backward_source = (
+        root / "gpurec" / "core" / "kernels" / "wave_backward.py"
+    ).read_text(encoding="utf-8")
+    module = ast.parse(wave_backward_source)
+    supported_dtype_assignment = next(
+        node
+        for node in module.body
+        if isinstance(node, ast.Assign)
+        and any(
+            isinstance(target, ast.Name) and target.id == "_SUPPORTED_FLOAT_DTYPES"
+            for target in node.targets
+        )
+    )
+    module_docstring = " ".join((ast.get_docstring(module) or "").split())
+    function = next(
+        node
+        for node in module.body
+        if isinstance(node, ast.FunctionDef)
+        and node.name == "active_mask_from_rhs_absmax_fused"
+    )
+    function_docstring = " ".join((ast.get_docstring(function) or "").split())
+
+    for token in (
+        "accepts bf16 inputs for standalone row-mask experiments",
+        "Pi_wave_backward",
+        "rejects bf16 before this helper is reached",
+    ):
+        assert token in module_docstring
+
+    for token in (
+        "private retained-kernel helper",
+        "not a public dtype policy",
+        "fp32/fp64/bf16 CUDA tensors",
+        "standalone mask experiments",
+        "supports only fp32/fp64",
+        "rejects bf16 before calling this helper",
+    ):
+        assert token in function_docstring
+
+    assignment_source = ast.get_source_segment(
+        wave_backward_source,
+        supported_dtype_assignment,
+    )
+    assert assignment_source is not None
+    assert "torch.bfloat16" in assignment_source
+    assert "_SUPPORTED_BACKWARD_FLOAT_DTYPES = (torch.float32, torch.float64)" in backward_source
+    assert "dtype not in _SUPPORTED_BACKWARD_FLOAT_DTYPES" in backward_source
+
+
 def test_uniform_chunked_loss_and_grad_documents_e_adjoint_stats():
     root = Path(__file__).resolve().parents[2]
     project_readme = (root / "README.md").read_text(encoding="utf-8")
@@ -794,6 +850,122 @@ def test_project_readme_documents_genewise_per_family_api_contract():
         assert token in normalized
 
 
+def test_dts_shape_precedence_is_documented_before_runtime_change():
+    root = Path(__file__).resolve().parents[2]
+    readme = " ".join((root / "README.md").read_text(encoding="utf-8").split())
+    forward_module = ast.parse(
+        (root / "gpurec" / "core" / "forward.py").read_text(encoding="utf-8")
+    )
+    dts_module = ast.parse(
+        (root / "gpurec" / "core" / "kernels" / "dts_fused.py").read_text(
+            encoding="utf-8"
+        )
+    )
+    backward_module = ast.parse(
+        (root / "gpurec" / "core" / "kernels" / "wave_backward.py").read_text(
+            encoding="utf-8"
+        )
+    )
+    docstrings = {
+        "Pi_wave_forward": " ".join(
+            (
+                ast.get_docstring(
+                    next(
+                        node
+                        for node in forward_module.body
+                        if isinstance(node, ast.FunctionDef)
+                        and node.name == "Pi_wave_forward"
+                    )
+                )
+                or ""
+            ).split()
+        ),
+        "_prepare_param": " ".join(
+            (
+                ast.get_docstring(
+                    next(
+                        node
+                        for node in dts_module.body
+                        if isinstance(node, ast.FunctionDef)
+                        and node.name == "_prepare_param"
+                    )
+                )
+                or ""
+            ).split()
+        ),
+        "_dts_layout_param_args": " ".join(
+            (
+                ast.get_docstring(
+                    next(
+                        node
+                        for node in backward_module.body
+                        if isinstance(node, ast.FunctionDef)
+                        and node.name == "_dts_layout_param_args"
+                    )
+                )
+                or ""
+            ).split()
+        ),
+    }
+
+    for token in (
+        "avoid bare `[G]` DTS parameter vectors when `G == S`",
+        "`[G, 1]` for family scalar rows",
+        "`[G, S]` for family/species rows",
+        "direct DTS forward helper treats a one-dimensional length-`S` tensor as shared species-indexed",
+        "retained backward helper with `family_idx` treats a one-dimensional tensor as family-indexed",
+    ):
+        assert token in readme
+
+    for token in (
+        "Direct callers should pass [G, 1] or [G, S]",
+        "forward/backward DTS paths cannot disagree",
+    ):
+        assert token in docstrings["Pi_wave_forward"]
+
+    for token in (
+        "1-D tensor with ``numel() == S`` is treated as a shared species vector",
+        "normalize genewise scalar rows to ``[G, 1]``",
+        "when ``G == S``",
+    ):
+        assert token in docstrings["_prepare_param"]
+
+    for token in (
+        "With ``family_idx`` present",
+        "one-dimensional tensor as family scalar rows",
+        "when ``G == S``",
+    ):
+        assert token in docstrings["_dts_layout_param_args"]
+
+
+def test_log_every_docs_distinguish_stdout_from_history():
+    root = Path(__file__).resolve().parents[2]
+    readme = " ".join((root / "README.md").read_text(encoding="utf-8").split())
+    cli_source = (root / "gpurec" / "cli.py").read_text(encoding="utf-8")
+    config_source = (
+        root / "gpurec" / "workflow" / "config.py"
+    ).read_text(encoding="utf-8")
+    optimize_source = (
+        root / "gpurec" / "workflow" / "optimize.py"
+    ).read_text(encoding="utf-8")
+
+    for token in (
+        "History JSONL is recorded for every optimizer step",
+        "`log_every` and `--log-every` only throttle console progress prints",
+    ):
+        assert token in readme
+
+    assert "History logging interval" not in cli_source
+    assert "Console progress print interval in optimization steps" in cli_source
+    assert "history is recorded every step" in cli_source
+    assert "History rows are recorded every optimizer step" in config_source
+    assert "step % config.log_every" in optimize_source
+    assert "self._record(row)" in optimize_source
+    assert optimize_source.index("self._record(row)") < optimize_source.index(
+        "step % config.log_every"
+    )
+
+
 def test_project_readme_and_model_docstrings_document_full_batch_helpers():
     root = Path(__file__).resolve().parents[2]
     project_readme = (root / "README.md").read_text(encoding="utf-8")
@@ -882,6 +1054,20 @@ def test_project_readme_documents_leaf_species_mapping_contract():
 def test_project_readme_documents_checkpoint_config_metadata_surface():
     root = Path(__file__).resolve().parents[2]
     project_readme = (root / "README.md").read_text(encoding="utf-8")
+    normalized = " ".join(project_readme.split())
+    checkpoint_module = ast.parse(
+        (root / "gpurec" / "workflow" / "checkpoint.py").read_text(
+            encoding="utf-8"
+        )
+    )
+    module_docstring = " ".join((ast.get_docstring(checkpoint_module) or "").split())
+    supported_checkpoint_names = {
+        "CHECKPOINT_VERSION",
+        "load_checkpoint",
+        "restore_model_theta",
+        "save_checkpoint",
+        "validate_checkpoint_model_compatibility",
+    }
 
     for token in (
         "`load_checkpoint(path)[\"config\"]`",
@@ -890,6 +1076,31 @@ def test_project_readme_documents_checkpoint_config_metadata_surface():
         "no separate public `load_checkpoint_config`",
     ):
         assert token in project_readme
+
+    for token in (
+        "lower-level `gpurec.workflow.checkpoint` submodule explicitly supports",
+        "`save_checkpoint`",
+        "`load_checkpoint`",
+        "`restore_model_theta`",
+        "`validate_checkpoint_model_compatibility`",
+        "`CHECKPOINT_VERSION`",
+        "not top-level `gpurec.workflow` shortcuts",
+        "versioned checkpoint payload",
+    ):
+        assert token in normalized
+
+    for token in (
+        "explicit lower-level support boundary",
+        "stable shortcut surface is ``gpurec.workflow``/top-level ``gpurec``",
+        "payload schema is versioned",
+    ):
+        assert token in module_docstring
+
+    assert set(workflow_checkpoint.__all__) == supported_checkpoint_names
+    for name in supported_checkpoint_names:
+        assert name not in workflow.__all__
+        assert name not in gpurec.__all__
+        assert hasattr(workflow_checkpoint, name)
 
 
 def test_newick_input_subset_is_documented_on_public_surfaces():
@@ -1299,6 +1510,32 @@ def test_hogenom_alerax_rate_evaluator_documents_local_file_contract():
         assert token in script
 
 
+def test_documented_uniform_pipeline_benchmark_help_imports_current_api():
+    root = Path(__file__).resolve().parents[2]
+    result = subprocess.run(
+        [
+            sys.executable,
+            "profiling/bench_uniform_forward_backward_pipeline.py",
+            "--help",
+        ],
+        cwd=root,
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=SUBPROCESS_TIMEOUT,
+    )
+    source = (
+        root / "profiling" / "bench_uniform_forward_backward_pipeline.py"
+    ).read_text(encoding="utf-8")
+
+    assert "--family-chunk-size" in result.stdout
+    assert "--stats-only" in result.stdout
+    assert "_UniformBuiltChunk as BuiltChunk" in source
+    assert "_UniformChunkSpec as ChunkSpec" in source
+    assert "compute_nll" in source
+    assert "compute_log_likelihood" not in source
+
+
 def test_tracked_notebooks_are_documented_as_checkout_local_artifacts():
     root = Path(__file__).resolve().parents[2]
     note = (root / "notebooks" / "README.md").read_text(encoding="utf-8")
@@ -1368,6 +1605,60 @@ def test_branchscale_penalty_report_documents_legacy_layout_and_staleness():
         "timestamped launcher outputs",
         "Delete or migrate",
         "supported CLI",
+    ):
+        assert token in scripts_readme
+
+
+def test_penalty316_kkt_script_documents_checkout_local_contract():
+    root = Path(__file__).resolve().parents[2]
+    script_path = root / "scripts" / "optimize_hogenom_penalty316_kkt.py"
+    script = script_path.read_text(encoding="utf-8")
+    scripts_readme = (root / "scripts" / "README.md").read_text(encoding="utf-8")
+    help_result = subprocess.run(
+        [sys.executable, str(script_path.relative_to(root)), "--help"],
+        cwd=root,
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=SUBPROCESS_TIMEOUT,
+    )
+
+    for token in (
+        "Checkout-local branchscale penalty/KKT analysis launcher",
+        "legacy HOGENOM W&B optimizer",
+        "branchscale penalty-316.22776601683796",
+        "CUDA optimized likelihood path",
+        "Branchscaled mode with W&B disabled",
+        "100 Adam warmup steps",
+        "Strong-Wolfe LBFGS",
+        "L1 KKT residual",
+        "Timestamped output directories",
+        "latest_run.txt",
+        "Archive or migrate",
+        "tiny fixture guard",
+    ):
+        assert token in script
+
+    for token in (
+        "Checkout-local contract",
+        "default penalty 316.22776601683796",
+        "timestamped run directories",
+        "latest_run.txt",
+        "Archive/delete or migrate",
+        "supported gpurec CLI",
+    ):
+        assert token in help_result.stdout
+
+    for token in (
+        "Checkout-local branchscaled penalty-316.22776601683796 reproducer",
+        "W&B disabled",
+        "100 Adam warmup steps",
+        "Strong-Wolfe LBFGS",
+        "L1 KKT residual checks",
+        "timestamped output directories",
+        "`latest_run.txt`",
+        "supported CLI",
+        "tiny fixture guard",
     ):
         assert token in scripts_readme
 

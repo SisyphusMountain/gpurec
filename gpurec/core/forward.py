@@ -88,7 +88,11 @@ def Pi_wave_forward(
         fixed_iters: fixed self-loop iteration count. Must be even so the
             ping-pong state ends with final Pi rows in ``Pi``.
         family_idx: Long[C] clade→family mapping in wave-ordered space.
-                    When provided, parameters are [G, ...] and indexed per-clade.
+                    Public model callers pass normalized [G, 1] or [G, S]
+                    parameters for genewise mode.  Direct callers should pass
+                    [G, 1] or [G, S] rather than bare [G] when G == S so direct
+                    forward/backward DTS paths cannot disagree on whether a
+                    one-dimensional tensor is species-indexed or family-indexed.
         return_root_rows: if True, gather and return only final root rows as
                           ``Pi_root_rows`` and drop the full wave-ordered Pi
                           reference from the output. This is for inference-only

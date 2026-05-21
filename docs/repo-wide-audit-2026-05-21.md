@@ -84,13 +84,15 @@ evidence is thin.
    `gpurec/core/forward.py:392`.  Current tests cover fixed-iteration trace
    behavior, not early convergence.
 
-6. DTS parameter shape semantics are ambiguous when `G == S`.  The forward DTS
-   helper treats a 1-D parameter with `numel() == S` as shared species-indexed
-   at `gpurec/core/kernels/dts_fused.py:18`.  The backward helper prioritizes
-   family layout when `family_idx` exists at
-   `gpurec/core/kernels/wave_backward.py:57`.  Direct callers can therefore get
-   different forward/backward interpretations for `[G]` parameters when the
-   family count equals the species count.
+6. DTS parameter shape semantics when `G == S` are now documented before any
+   runtime unification.  Public model paths use unambiguous theta shapes and
+   normalize genewise scalar event vectors to `[G, 1]` before the retained DTS
+   kernels.  README and source docstrings state that direct callers should
+   avoid bare `[G]` vectors when `G == S`: the forward DTS helper treats a 1-D
+   parameter with `numel() == S` as shared species-indexed, while the retained
+   backward helper with `family_idx` treats a one-dimensional tensor as
+   family-indexed.  Direct callers needing parity should use `[G, 1]` or
+   `[G, S]` until a runtime shape-policy change is made.
 
 7. Exposed C++ scheduler helpers do not validate `max_wave_size`.  The phased
    wave implementation advances by `max_wave_size` at
@@ -216,7 +218,11 @@ evidence is thin.
 22. `profiling/bench_uniform_forward_backward_pipeline.py` previously
     referenced missing `docs/forward-backward-full-pipeline-plan.md`; the
     reference has been removed, and the retained profiler contract now lives in
-    README/source-checkout benchmark docs.
+    README/source-checkout benchmark docs.  A refreshed stale-import finding is
+    also closed: the benchmark now imports the current underscored chunk
+    dataclasses it already depends on, uses `compute_nll` instead of the
+    deprecated `compute_log_likelihood` alias, and has a CPU-safe `--help`
+    smoke guard.
 
 23. `scripts/make_hogenom_branchscale_penalty_report.py` is now documented as
     a checkout-local one-off report builder for the original branchscale
@@ -319,6 +325,13 @@ evidence is thin.
     failed through the stale PATH executable.  This is an environment/setup
     fragility to document or guard in release checks.
 
+38. `log_every` is now documented as console progress throttling, not history
+    logging.  Source inspection showed the workflow records history rows every
+    optimizer step through `self._record(row)`, while `config.log_every` only
+    gates the stdout progress print.  README, CLI help, and `RunConfig` source
+    comments now state that history JSONL is recorded every step and
+    `--log-every` only controls console progress output.
+
 ### Subagent Refresh Findings
 
 - Workflow optimizer modes are public but underdocumented and under-tested.
@@ -389,9 +402,11 @@ evidence is thin.
   `GPUREC_CUDA_SELF_LOOP_*` and `GPUREC_CUDA_PIBAR_FROM_UD` routes should have a
   documented support/fallback policy before adding parity tests or removing
   broad auto-mode fallbacks.
-- DTS parameter shape precedence is ambiguous when `G == S`: forward and
-  backward paths can interpret a 1-D tensor differently.  Document the intended
-  precedence in public parameter/API docs before changing either implementation.
+- DTS parameter shape precedence is now documented for direct callers before
+  changing either implementation.  Public model paths normalize genewise scalar
+  event vectors to `[G, 1]`; direct DTS callers should avoid bare `[G]` vectors
+  when `G == S` because forward and backward retained helpers still interpret
+  one-dimensional tensors differently.
 - `GPUREC_LEAF_HIT_ONLY_LOGP` is not a supported environment contract and has
   now been removed from the README environment table and retained kernel
   plumbing.  Source inspection showed its `LEAF_HIT_ONLY_LOGP` constexpr was
@@ -413,6 +428,37 @@ evidence is thin.
   labels without `_` to the full label, while AleRax `mapping` entries and
   explicit `leaf_species_maps` should be used when labels do not follow that
   convention.
+- The refreshed workflow audit found that checkpoint compatibility validates a
+  narrow identity slice and does not fully type-check every identity value
+  before resume comparison.  Add parametrized compatibility guards for
+  `species_tree`, `families_file`, `mode`, `start`, and `max_families`, then
+  decide whether resume should call the full `RunConfig.from_dict()` validation
+  path.
+- The workflow checkpoint submodule support boundary is now explicit below the
+  lazy `gpurec.workflow` exports.  Top-level workflow exports remain the stable
+  shortcut surface; `gpurec.workflow.checkpoint` now declares
+  `save_checkpoint`, `load_checkpoint`, `restore_model_theta`,
+  `validate_checkpoint_model_compatibility`, and `CHECKPOINT_VERSION` as
+  supported lower-level helpers for advanced tooling that needs the versioned
+  checkpoint payload directly.  The helpers are intentionally not top-level
+  `gpurec.workflow` or `gpurec` shortcuts.
+- `profiling/bench_uniform_forward_backward_pipeline.py` has been refreshed
+  after the stale benchmark finding: its `--help` path imports successfully,
+  it aliases the current underscored chunk dataclasses used by the retained
+  private benchmark helpers, and it calls `compute_nll` instead of the
+  deprecated `compute_log_likelihood` compatibility alias.
+- `scripts/optimize_hogenom_penalty316_kkt.py` now has the same explicit
+  checkout-local contract as the branchscale report before any loader change or
+  deletion.  Its source, help text, and scripts ownership matrix document the
+  legacy HOGENOM W&B optimizer dependency, CUDA branchscaled mode with W&B
+  disabled, default penalty 316.22776601683796, 100 Adam warmup steps,
+  Strong-Wolfe LBFGS, L1 KKT residual checks, timestamped output directories,
+  `latest_run.txt`, and the archive/delete-or-migrate criterion.
+- `active_mask_from_rhs_absmax_fused()` now documents its bf16 boundary before
+  any dtype cleanup.  The helper remains a private retained-kernel helper that
+  accepts fp32/fp64/bf16 CUDA tensors for standalone row-mask experiments, while
+  the public retained `Pi_wave_backward` path still supports only fp32/fp64 and
+  rejects bf16 before this helper is reached.
 
 ## Adequately Covered Or Lower-Risk Areas
 
@@ -1338,6 +1384,55 @@ not edit files.  New or still-open findings from that refresh are:
   56 passed after adding the public helper documentation guard.
 - `CUDA_VISIBLE_DEVICES='' python -m pytest --collect-only -q`: 896 tests
   collected after adding the public helper documentation guard.
+- `python -m py_compile gpurec/core/forward.py gpurec/core/kernels/dts_fused.py gpurec/core/kernels/wave_backward.py tests/unit/test_repository_hygiene.py`:
+  passed after documenting direct DTS shape precedence.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_repository_hygiene.py::test_dts_shape_precedence_is_documented_before_runtime_change -q`:
+  1 passed after guarding README and source docstrings for the direct DTS
+  `G == S` shape ambiguity.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_repository_hygiene.py -q`:
+  58 passed after adding the direct DTS shape-precedence documentation guard.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest --collect-only -q`: 898 tests
+  collected after adding the direct DTS shape-precedence documentation guard.
+- `python -m py_compile gpurec/cli.py gpurec/workflow/config.py tests/unit/test_repository_hygiene.py`:
+  passed after correcting the `log_every` documentation boundary.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_repository_hygiene.py::test_log_every_docs_distinguish_stdout_from_history -q`:
+  1 passed after guarding that history JSONL is recorded every optimizer step
+  and `--log-every` only throttles console progress prints.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_repository_hygiene.py -q`:
+  59 passed after adding the `log_every` documentation guard.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest --collect-only -q`: 899 tests
+  collected after adding the `log_every` documentation guard.
+- `python -m py_compile gpurec/workflow/checkpoint.py tests/unit/test_repository_hygiene.py`:
+  passed after documenting the checkpoint submodule support boundary.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_repository_hygiene.py::test_project_readme_documents_checkpoint_config_metadata_surface -q`:
+  1 passed after guarding `gpurec.workflow.checkpoint.__all__`, README, and
+  module docstring support-boundary wording.
+- `python -m py_compile profiling/bench_uniform_forward_backward_pipeline.py tests/unit/test_repository_hygiene.py`:
+  passed after refreshing the documented uniform pipeline benchmark imports.
+- `python profiling/bench_uniform_forward_backward_pipeline.py --help`: passed
+  after the benchmark switched to the current chunk dataclass names.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_repository_hygiene.py::test_documented_uniform_pipeline_benchmark_help_imports_current_api -q`:
+  1 passed after adding the CPU-safe benchmark help/import smoke.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_repository_hygiene.py -q`:
+  60 passed after adding checkpoint-boundary and benchmark help guards.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest --collect-only -q`: 900 tests
+  collected after adding the checkpoint-boundary and benchmark help guards.
+- `python -m py_compile scripts/optimize_hogenom_penalty316_kkt.py tests/unit/test_repository_hygiene.py`:
+  passed after documenting the penalty-316 KKT script contract.
+- `python scripts/optimize_hogenom_penalty316_kkt.py --help`: passed and shows
+  the checkout-local branchscaled/KKT contract.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_repository_hygiene.py::test_penalty316_kkt_script_documents_checkout_local_contract -q`:
+  1 passed after guarding source, help, and scripts ownership wording for the
+  penalty-316 KKT analysis script.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_repository_hygiene.py -q`:
+  61 passed after adding the penalty-316 KKT script contract guard.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest --collect-only -q`: 901 tests
+  collected after adding the penalty-316 KKT script contract guard.
+- `python -m py_compile gpurec/core/kernels/wave_backward.py tests/unit/test_repository_hygiene.py`:
+  passed after documenting the active-mask bf16 helper boundary.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_repository_hygiene.py::test_active_mask_bfloat16_boundary_is_documented_as_private_helper -q`:
+  1 passed after guarding the private helper docstring and the retained
+  fp32/fp64 Pi backward dtype gate.
 
 ## Recommended Next Order
 
@@ -1353,6 +1448,9 @@ not edit files.  New or still-open findings from that refresh are:
    structured source of truth.
 4. Make low-risk hygiene changes with tests: slow markers and any future
    warning filters only if scoped to a specific dependency warning.
-5. Only then consider behavior changes for backward small-`S`, bf16 dtype
-   implementation, DTS parameter shape semantics, CUDA Pibar fallback policy,
+5. Add ownership tables before deleting unowned pybind scheduler diagnostics,
+   workflow submodule helpers, profiling benchmarks, or fixed-dataset HOGENOM
+   scripts.
+6. Only then consider behavior changes for backward small-`S`, bf16 dtype
+   implementation, DTS runtime shape unification, CUDA Pibar fallback policy,
    RecPhyloXML assumptions, and sampling aggregate behavior.

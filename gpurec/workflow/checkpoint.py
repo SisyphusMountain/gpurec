@@ -1,3 +1,12 @@
+"""Workflow checkpoint helpers with an explicit lower-level support boundary.
+
+The stable shortcut surface is ``gpurec.workflow``/top-level ``gpurec``.  This
+submodule remains supported for advanced tooling that needs to inspect or
+restore workflow checkpoints directly, but the payload schema is versioned and
+callers should prefer ``optimize()``, ``sample()``, or ``RunConfig``/
+``SamplingConfig`` unless they specifically need checkpoint metadata.
+"""
+
 from __future__ import annotations
 
 import pickle
@@ -16,6 +25,14 @@ from ._metadata import (
 )
 from .config import RunConfig
 
+
+__all__ = [
+    "CHECKPOINT_VERSION",
+    "load_checkpoint",
+    "restore_model_theta",
+    "save_checkpoint",
+    "validate_checkpoint_model_compatibility",
+]
 
 CHECKPOINT_VERSION = 1
 _REQUIRED_CHECKPOINT_KEYS = {"version", "config", "theta", "step", "next_step"}

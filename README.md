@@ -104,6 +104,17 @@ row-wise optimizers.  In `global` or `specieswise` mode, use
 `model(reduce="per_family")` under `torch.no_grad()` only as a diagnostic
 shared-theta breakdown; independent per-family gradients are not defined there.
 
+Parameter sharing uses unambiguous model theta shapes: `global` uses `[3]`,
+`specieswise` uses `[S, 3]`, and `genewise` uses `[G, 3]`.  The model's
+internal normalizers convert genewise scalar event vectors to `[G, 1]` before
+the retained DTS kernels.  Direct callers should avoid bare `[G]` DTS parameter
+vectors when `G == S`: use `[]` for a scalar, `[S]` for a shared species vector
+only on direct forward calls without backward parity requirements, `[G, 1]` for
+family scalar rows, and `[G, S]` for family/species rows.  The retained direct
+DTS forward helper treats a one-dimensional length-`S` tensor as shared
+species-indexed, while the retained backward helper with `family_idx` treats a
+one-dimensional tensor as family-indexed.
+
 `model.materialize_batches()` builds every resident batch static state and
 returns a copy of the batch metadata list, which is useful before diagnostics or
 solver reconfiguration that should touch every batch.  `model.full_loss_for_theta(theta)`
@@ -174,6 +185,8 @@ The production workflow accepts an AleRax `[FAMILIES]` file and a species tree.
 It defaults to genewise D/T/L parameters, writes resumable checkpoints, logs
 optimization diagnostics, and can sample RecPhyloXML reconciliation scenarios.
 The optimized likelihood path currently requires CUDA.
+History JSONL is recorded for every optimizer step; `log_every` and
+`--log-every` only throttle console progress prints.
 The `--config` option accepts a flat JSON `RunConfig`; Hydra-style YAML
 configs should be converted to JSON or passed as explicit CLI flags.  Relative
 paths in JSON configs are resolved from the config file's directory; relative
@@ -271,6 +284,13 @@ Python tooling that needs checkpoint configuration metadata should read
 `load_checkpoint(path)["config"]` from `gpurec.workflow.checkpoint` and pass it
 to `RunConfig.from_dict(...)`; no separate public `load_checkpoint_config`
 helper is supported.
+The lower-level `gpurec.workflow.checkpoint` submodule explicitly supports
+`save_checkpoint`, `load_checkpoint`, `restore_model_theta`,
+`validate_checkpoint_model_compatibility`, and `CHECKPOINT_VERSION` for
+advanced tooling that inspects or restores workflow checkpoints directly.  These
+helpers are not top-level `gpurec.workflow` shortcuts; prefer `optimize`,
+`sample`, `RunConfig`, and `SamplingConfig` unless code specifically needs the
+versioned checkpoint payload.
 
 Resume starts from the checkpoint `next_step`.  If `next_step` already equals
 the configured `steps`, `gpurec optimize --resume-from ...` performs only the

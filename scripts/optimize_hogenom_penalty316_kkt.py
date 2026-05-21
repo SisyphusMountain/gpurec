@@ -1,4 +1,25 @@
 #!/usr/bin/env python3
+"""Checkout-local branchscale penalty/KKT analysis launcher.
+
+This one-off reproducer wraps the legacy HOGENOM W&B optimizer for the original
+branchscale penalty-316.22776601683796 local-minimum analysis.  It intentionally
+targets the checkout-local HOGENOM AleRax layout used by
+``scripts/hogenom_ccp_wandb_opt.py`` rather than a portable dataset interface.
+
+Inputs and assumptions:
+- CUDA optimized likelihood path and local HOGENOM data/cache paths.
+- Branchscaled mode with W&B disabled and a default L1 branchscale penalty of
+  316.22776601683796.
+- 100 Adam warmup steps followed by Strong-Wolfe LBFGS plus L1 KKT residual
+  checks.
+- Timestamped output directories under ``--out-dir`` and a ``latest_run.txt``
+  pointer in the base output directory.
+
+Archive or migrate this script once the supported ``gpurec`` CLI owns
+branchscaled penalty sweeps, KKT residual reporting, and rate/table artifacts.
+Do not change its loader or output schema without adding a tiny fixture guard.
+"""
+
 from __future__ import annotations
 
 import argparse
@@ -120,9 +141,18 @@ def write_row(history_path: Path, row: dict[str, object]) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(
+        formatter_class=argparse.RawDescriptionHelpFormatter,
         description=(
             "Branchscale local-minimum run: 100 Adam steps, then Strong-Wolfe "
             "LBFGS with L1 KKT checks."
+        ),
+        epilog=(
+            "Checkout-local contract: uses the legacy HOGENOM W&B optimizer "
+            "with W&B disabled, CUDA, branchscaled mode, default penalty "
+            "316.22776601683796, timestamped run directories under --out-dir, "
+            "and latest_run.txt in the base output directory. Archive/delete "
+            "or migrate once branchscaled KKT reporting is owned by the "
+            "supported gpurec CLI."
         )
     )
     parser.add_argument(

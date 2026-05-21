@@ -29,14 +29,14 @@ import torch
 from gpurec.core.backward import Pi_wave_backward
 from gpurec.core.extract_parameters import extract_parameters_uniform
 from gpurec.core.forward import Pi_wave_forward
-from gpurec.core.likelihood import E_fixed_point, compute_log_likelihood
+from gpurec.core.likelihood import E_fixed_point, compute_nll
 from gpurec.core.memory_policy import choose_uniform_pipeline_policy
 from gpurec.core.model import GeneDataset
 from gpurec.optimization.implicit_grad import _e_adjoint_and_theta_vjp
 from gpurec.api.uniform_chunked import (
     UNIFORM_OPTIMIZED_DEFAULT_FLAGS as DEFAULT_FLAGS,
-    UniformBuiltChunk as BuiltChunk,
-    UniformChunkSpec as ChunkSpec,
+    _UniformBuiltChunk as BuiltChunk,
+    _UniformChunkSpec as ChunkSpec,
     _build_chunk,
     _make_chunks,
     _selected_gene_paths,
@@ -500,7 +500,7 @@ def _forward_chunk(
         return_original=False,
         return_root_rows=False,
     )
-    loss = compute_log_likelihood(
+    loss = compute_nll(
         pi_out["Pi_wave_ordered"],
         e_out["E"],
         built.wave_layout["root_clade_ids"],
