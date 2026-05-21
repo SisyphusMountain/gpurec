@@ -162,31 +162,29 @@ Verification:
 
 ## Environment Variable Surface
 
-Current package runtime reads these groups:
+Current package runtime reads the following environment variables.  This table
+is an ownership manifest, not a deletion list; pruning should move non-user
+surfaces behind constructor/config objects or benchmark/profiling entry points
+before any flag is removed.
 
-- binary/distribution:
-  `GPUREC_BACKTRACK_BIN`, `GPUREC_ALERAX_COMPAT`;
-- memory policy:
-  `GPUREC_MEMORY_POLICY_FRACTION`, `GPUREC_MEMORY_POLICY_RESERVE_GIB`;
-- forward/backward production toggles:
-  `GPUREC_FUSE_FINAL_PIBAR`, `GPUREC_SPECIALIZE_NONLEAF_LEAF_TERM`,
-  `GPUREC_BACKWARD_NO_CPU_PRUNING`,
-  `GPUREC_DTS_SKIP_INACTIVE_PIBAR_ZERO`;
-- Triton/CUDA tuning:
-  `GPUREC_WAVE_STEP_BLOCK_S`, `GPUREC_WAVE_STEP_NUM_WARPS`,
-  `GPUREC_DTS_PARENT_BLOCK_S`, `GPUREC_DTS_PARENT_TILE_SPLITS`,
-  `GPUREC_DTS_PARENT_NUM_WARPS`, `GPUREC_SELF_LOOP_2D_*`,
-  `GPUREC_DTS_BLOCK_S`, `GPUREC_DTS_NUM_WARPS`,
-  `GPUREC_DTS_GRAD_MT_TILE_SPLITS`,
-  `GPUREC_PIBAR_UD_BLOCK_S`, `GPUREC_PIBAR_UD_NUM_WARPS`;
-- native CUDA prototype selectors/tuning:
-  `GPUREC_CUDA_SELF_LOOP_NOSPLIT`, `GPUREC_CUDA_SELF_LOOP_SPLIT`,
-  `GPUREC_CUDA_SELF_LOOP_NOSPLIT_CORRECTION`,
-  `GPUREC_CUDA_SELF_LOOP_BLOCK`,
-  `GPUREC_CUDA_SELF_LOOP_CHILD_EDGE_WEIGHT`,
-  `GPUREC_CUDA_PIBAR_FROM_UD`, `GPUREC_CUDA_PIBAR_FROM_UD_STRICT`,
-  `GPUREC_CUDA_PIBAR_FROM_UD_BLOCK`,
-  `GPUREC_CUDA_PIBAR_FROM_UD_PAD_SHARED`.
+### Environment Owner Manifest
+
+| Variable(s) | Current ownership | Runtime owner / notes |
+| --- | --- | --- |
+| `GPUREC_BACKTRACK_BIN` | User-facing | Binary/distribution contract for `gpurec sample`, `gpurec run`, and `gpurec backtrack-check`. |
+| `GPUREC_ALERAX_COMPAT` | User-facing compatibility | Compatibility guard read by API validation; supported differentiable optimization accepts only unset or `0`. |
+| `GPUREC_MEMORY_POLICY_FRACTION`, `GPUREC_MEMORY_POLICY_RESERVE_GIB` | User-facing | Memory-budget margins for uniform chunk planning. |
+| `GPUREC_FUSE_FINAL_PIBAR`, `GPUREC_SPECIALIZE_NONLEAF_LEAF_TERM` | Internal production fast path | Forward/backward retained-kernel selectors that should become fixed behavior after benchmark gates. |
+| `GPUREC_BACKWARD_NO_CPU_PRUNING`, `GPUREC_DTS_SKIP_INACTIVE_PIBAR_ZERO` | Internal production/diagnostic | Backward pruning and inactive-output zero-fill controls retained for behavior comparison. |
+| `GPUREC_WAVE_STEP_BLOCK_S`, `GPUREC_WAVE_STEP_NUM_WARPS` | Benchmark/internal tuning | Triton forward wave-step launch tuning. |
+| `GPUREC_DTS_BLOCK_S`, `GPUREC_DTS_NUM_WARPS`, `GPUREC_DTS_GRAD_MT_TILE_SPLITS` | Benchmark/internal tuning | Triton cross-DTS backward launch tuning. |
+| `GPUREC_DTS_PARENT_BLOCK_S`, `GPUREC_DTS_PARENT_NUM_WARPS`, `GPUREC_DTS_PARENT_TILE_SPLITS` | Benchmark/internal tuning | Triton parent-reduced DTS launch tuning. |
+| `GPUREC_PIBAR_UD_BLOCK_S`, `GPUREC_PIBAR_UD_NUM_WARPS` | Benchmark/internal tuning | Triton Pibar-from-`u_d` launch tuning. |
+| `GPUREC_SELF_LOOP_2D_BLOCK_W`, `GPUREC_SELF_LOOP_2D_BLOCK_NODES`, `GPUREC_SELF_LOOP_2D_NUM_WARPS`, `GPUREC_SELF_LOOP_2D_JT_NUM_WARPS`, `GPUREC_SELF_LOOP_2D_SKIP_INACTIVE_SCRATCH_ZERO` | Benchmark/internal tuning | Triton 2D backward self-loop launch tuning and scratch-zero behavior. |
+| `GPUREC_CUDA_SELF_LOOP_NOSPLIT`, `GPUREC_CUDA_SELF_LOOP_SPLIT`, `GPUREC_CUDA_SELF_LOOP_NOSPLIT_CORRECTION` | Prototype/internal | Native CUDA self-loop prototype selectors and correction mode. |
+| `GPUREC_CUDA_SELF_LOOP_BLOCK`, `GPUREC_CUDA_SELF_LOOP_CHILD_EDGE_WEIGHT` | Prototype/internal tuning | Native CUDA self-loop launch tuning. |
+| `GPUREC_CUDA_PIBAR_FROM_UD`, `GPUREC_CUDA_PIBAR_FROM_UD_STRICT` | Prototype/internal | Native CUDA Pibar-from-`u_d` prototype selector and strict-failure mode. |
+| `GPUREC_CUDA_PIBAR_FROM_UD_BLOCK`, `GPUREC_CUDA_PIBAR_FROM_UD_PAD_SHARED` | Prototype/internal tuning | Native CUDA Pibar-from-`u_d` launch tuning. |
 
 Plan:
 

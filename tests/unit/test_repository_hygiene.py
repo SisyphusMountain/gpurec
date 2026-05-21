@@ -35,6 +35,10 @@ def _tracked_files(root: Path, *patterns: str) -> list[Path]:
     ]
 
 
+def _tracked_package_python_files(root: Path) -> list[Path]:
+    return _tracked_files(root, "gpurec/*.py", "gpurec/**/*.py")
+
+
 def _is_subprocess_run(call: ast.Call) -> bool:
     func = call.func
     return (
@@ -1760,7 +1764,7 @@ def test_project_readme_documents_package_environment_flags():
     package_env_flags = sorted(
         {
             match.group(0)
-            for path in _tracked_files(root, "gpurec/**/*.py")
+            for path in _tracked_package_python_files(root)
             for match in env_pattern.finditer(path.read_text(encoding="utf-8"))
         }
     )
@@ -1769,6 +1773,43 @@ def test_project_readme_documents_package_environment_flags():
     undocumented = [name for name in package_env_flags if name not in project_readme]
 
     assert undocumented == []
+
+
+def test_runtime_surface_plan_records_package_environment_owners():
+    root = Path(__file__).resolve().parents[2]
+    pruning_plan = (
+        root / "docs" / "runtime-surface-pruning-plan-2026-05-21.md"
+    ).read_text(encoding="utf-8")
+    env_pattern = re.compile(r"\bGPUREC_[A-Z0-9_]+\b")
+    package_env_flags = sorted(
+        {
+            match.group(0)
+            for path in _tracked_package_python_files(root)
+            for match in env_pattern.finditer(path.read_text(encoding="utf-8"))
+        }
+    )
+    manifest_match = re.search(
+        r"### Environment Owner Manifest\n\n(?P<table>\| Variable\(s\).*?)\n\nPlan:",
+        pruning_plan,
+        flags=re.S,
+    )
+
+    assert manifest_match is not None
+    manifest = manifest_match.group("table")
+    documented = sorted({match.group(0) for match in env_pattern.finditer(manifest)})
+
+    assert package_env_flags
+    assert documented == package_env_flags
+    for owner in (
+        "User-facing",
+        "User-facing compatibility",
+        "Internal production fast path",
+        "Internal production/diagnostic",
+        "Benchmark/internal tuning",
+        "Prototype/internal",
+        "Prototype/internal tuning",
+    ):
+        assert owner in manifest
 
 
 def test_project_readme_documents_cuda_prototype_fallback_policy():
