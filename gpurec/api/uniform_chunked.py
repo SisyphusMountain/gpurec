@@ -464,6 +464,16 @@ def _selected_chunks(
     return selected
 
 
+def _e_adjoint_stats_fields(stats: Any) -> dict[str, Any]:
+    """Return direct ``loss_and_grad()`` telemetry for the E-adjoint solve."""
+    return {
+        "e_adjoint_method": str(getattr(stats, "method", "")),
+        "e_adjoint_iterations": int(getattr(stats, "iters", 0)),
+        "e_adjoint_rel_res": float(getattr(stats, "rel_res", float("nan"))),
+        "e_adjoint_success": bool(getattr(stats, "success", True)),
+    }
+
+
 def _evaluate_chunked_uniform(
     state: UniformChunkedState,
     theta: torch.Tensor,
@@ -627,6 +637,7 @@ def _evaluate_chunked_uniform(
 
     grad_theta: torch.Tensor | None = None
     e_adjoint_ms = 0.0
+    e_adjoint_stats: dict[str, Any] = {}
     if need_grad:
         if pi_bwd_acc is None:
             raise RuntimeError("internal error: no Pi backward result was accumulated")
@@ -655,7 +666,8 @@ def _evaluate_chunked_uniform(
                 origination_probs_prepared=True,
             )
 
-        e_adjoint_ms, (grad_theta, _stats) = _time_cuda_ms(profile, run_e_adjoint)
+        e_adjoint_ms, (grad_theta, e_stats) = _time_cuda_ms(profile, run_e_adjoint)
+        e_adjoint_stats = _e_adjoint_stats_fields(e_stats)
         backward_ms += e_adjoint_ms
 
     if state.device.type == "cuda":
@@ -682,6 +694,7 @@ def _evaluate_chunked_uniform(
         "backward_ms": backward_ms,
         "pi_backward_ms": pi_backward_ms,
         "e_adjoint_ms": e_adjoint_ms,
+        **e_adjoint_stats,
         "total_ms": forward_ms + backward_ms,
         "peak_alloc_gib": peak_alloc_gib,
         "peak_reserved_gib": peak_reserved_gib,
@@ -725,6 +738,9 @@ class UniformChunkedReconModel(torch.nn.Module):
     in bits.  The forward call computes both the objective and the analytical
     gradient internally; the subsequent ``loss.backward()`` call simply returns
     that cached gradient to PyTorch.
+    ``loss_and_grad()`` returns the same direct gradient with a stats dictionary
+    that includes selected chunk/family counts, timing fields, gradient norm,
+    and E-adjoint solve telemetry.
 
     Tree inputs use the retained preprocessing parser's simple Newick subset:
     one rooted binary species tree, unquoted labels, ignored numeric branch
@@ -1137,6 +1153,9 @@ class UniformChunkedReconModel(torch.nn.Module):
 
         This bypasses PyTorch autograd and exposes the custom chunked gradient
         directly, which is useful for stochastic optimizers that sample chunks.
+        The returned stats dictionary includes ``e_adjoint_method``,
+        ``e_adjoint_iterations``, ``e_adjoint_rel_res``, and
+        ``e_adjoint_success`` for the retained E-adjoint solve.
 
         ``reduction`` controls the returned loss and gradient scale:
 

@@ -18,6 +18,12 @@ def _tl_float_dtype(dtype):
 
 
 def _cuda_pibar_from_ud_options():
+    """Return CUDA Pibar prototype mode, enablement, and selected-path strictness.
+
+    ``auto`` is silent best-effort, ``enabled`` is best-effort with the caller's
+    warning-on-fallback path, and ``GPUREC_CUDA_PIBAR_FROM_UD_STRICT`` makes an
+    otherwise best-effort selected Pibar prototype re-raise failures.
+    """
     mode, enabled, required = _env_mode_enabled_required(
         "GPUREC_CUDA_PIBAR_FROM_UD",
         "auto",

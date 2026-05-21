@@ -1,4 +1,10 @@
-"""Backward pass: retained fused CUDA path for Pi adjoints."""
+"""Backward pass: retained fused CUDA path for Pi adjoints.
+
+Native self-loop CUDA prototypes are experimental diagnostics.  ``auto`` and
+``enabled`` modes fall back to the retained Triton self-loop path on optional
+``ImportError``, ``RuntimeError``, or ``ValueError`` failures; required modes
+re-raise failures after the wave is eligible for the prototype.
+"""
 
 import os
 

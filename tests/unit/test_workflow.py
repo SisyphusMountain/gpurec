@@ -4358,6 +4358,9 @@ def test_optimization_runner_run_writes_outputs_with_fake_model(tmp_path: Path):
                     "Pi_converged_waves": 2,
                     "Neumann_terms": 3,
                     "Gradient_converged": True,
+                    "E_adjoint_iterations": 5,
+                    "E_adjoint_rel_res": 0.125,
+                    "E_adjoint_success": False,
                 }
             ]
 
@@ -4446,6 +4449,18 @@ def test_optimization_runner_run_writes_outputs_with_fake_model(tmp_path: Path):
     assert [row["optimizer/phase"] for row in history_rows] == ["adam", "final_eval"]
     assert history_rows[-1]["step"] == 1
     assert history_rows[-1]["best_step"] == 0
+    assert all(
+        row["solver/e_adjoint_failed_batches"] == 1.0
+        for row in history_rows
+    )
+    assert all(
+        row["solver/e_adjoint_success_batches"] == 0.0
+        for row in history_rows
+    )
+    assert all(
+        row["solver/e_adjoint_rel_res_max"] == pytest.approx(0.125)
+        for row in history_rows
+    )
 
     summary = json.loads((config.out_dir / "summary.json").read_text(encoding="utf-8"))
     assert summary["status"] == "not_converged"
@@ -4457,6 +4472,7 @@ def test_optimization_runner_run_writes_outputs_with_fake_model(tmp_path: Path):
     latest = load_checkpoint(config.out_dir / "checkpoints" / "latest.pt")
     best = load_checkpoint(config.out_dir / "checkpoints" / "best.pt")
     assert latest["status"]["status"] == "not_converged"
+    assert latest["last_row"]["solver/e_adjoint_failed_batches"] == 1.0
     assert best["status"]["best_step"] == 0
     assert latest["last_row"]["optimizer/phase"] == "final_eval"
     assert latest["family_names"] == ["fam0", "fam1"]

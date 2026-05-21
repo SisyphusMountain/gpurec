@@ -1,4 +1,10 @@
-"""Runtime CUDA kernels for opt-in wave-backward self-loop paths."""
+"""Runtime CUDA kernels for opt-in wave-backward self-loop paths.
+
+This native prototype preloads wheel-provided NVRTC builtins before runtime
+compilation.  It preflights dynamic shared-memory scratch size before setting
+the CUDA opt-in max dynamic shared-memory attribute; callers own the
+best-effort or required fallback policy.
+"""
 
 from __future__ import annotations
 
@@ -565,6 +571,14 @@ def wave_backward_uniform_nosplit_cuda(
     )
     shared_arrays = 6 if child_edge_weight_mode else 7
     shared_bytes = int(S) * shared_arrays * 4
+    props = torch.cuda.get_device_properties(device_index)
+    max_shared = getattr(
+        props,
+        "shared_memory_per_block_optin",
+        getattr(props, "shared_memory_per_block", 49152),
+    )
+    if shared_bytes > int(max_shared):
+        raise ValueError("CUDA self-loop shared-memory scratch is too large")
 
     correction_mode_value = 0 if str(correction_mode).lower() in ("self", "diagonal", "0") else 1
     event_grad_mode = 1 if accum_param_grads[0].numel() == int(S) else 0

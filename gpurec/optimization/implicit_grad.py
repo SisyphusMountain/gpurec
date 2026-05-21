@@ -54,7 +54,13 @@ def _iteration_schedule(max_terms: int, interval: int) -> list[int]:
 
 @torch.no_grad()
 def _bicgstab(Av, b: torch.Tensor, *, tol: float = 1e-7, maxiter: int = 500):
-    """Solve a nonsymmetric linear system with BiCGSTAB."""
+    """Solve a nonsymmetric linear system with BiCGSTAB.
+
+    Nonconvergence is reported through ``_SolveStats(success=False)`` and the
+    current best iterate is still returned.  Callers choose whether that failed
+    solve is fatal; the E-adjoint gradient path currently treats it as
+    diagnostic telemetry.
+    """
     x = torch.zeros_like(b)
     r = b - Av(x)
     bnorm = max(_as_float(torch.linalg.vector_norm(b)), 1.0)
@@ -236,6 +242,9 @@ def _e_adjoint_and_theta_vjp(
 
     Takes pi_bwd dict (from Pi_wave_backward) and completes the gradient
     computation through E adjoint solve and extract_parameters VJP.
+    BiCGSTAB nonconvergence is diagnostic-only in this retained gradient path:
+    the best returned E-adjoint iterate is consumed and ``_SolveStats.success``
+    is forwarded so workflow history can surface failed batches.
     """
     # --- Step 2: E adjoint ---
     sp_P_idx = species_helpers['s_P_indexes']

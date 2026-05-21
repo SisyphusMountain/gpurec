@@ -1,4 +1,11 @@
-"""Runtime CUDA kernel for experimental uniform-Pibar VJP paths."""
+"""Runtime CUDA kernel for experimental uniform-Pibar VJP paths.
+
+This native prototype currently compiles directly without the self-loop
+loader's wheel NVRTC builtins preload.  The Triton caller owns silent ``auto``
+fallback, warning-on-``enabled`` fallback, and strict selected-path failures.
+The launcher preflights dynamic shared-memory scratch size before setting the
+CUDA opt-in max dynamic shared-memory attribute.
+"""
 
 from __future__ import annotations
 

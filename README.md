@@ -104,6 +104,13 @@ row-wise optimizers.  In `global` or `specieswise` mode, use
 `model(reduce="per_family")` under `torch.no_grad()` only as a diagnostic
 shared-theta breakdown; independent per-family gradients are not defined there.
 
+For large global/uniform datasets, `UniformChunkedReconModel.loss_and_grad()`
+returns `(loss, grad, stats)` for direct stochastic or sampled-chunk optimizers.
+The stats dictionary includes selected chunk/family counts, timing fields,
+`grad_norm`, reduction metadata, and E-adjoint solve telemetry:
+`e_adjoint_method`, `e_adjoint_iterations`, `e_adjoint_rel_res`, and
+`e_adjoint_success`.
+
 With lazy preprocessing or resident-batch prefetching,
 `model.configure_solver_iterations()` updates the model defaults and resident
 batch static states that are already built.  It does not cancel or rewrite
@@ -240,7 +247,8 @@ Main outputs include:
 - `per_fam_likelihoods.tsv` for genewise runs
 
 History rows include aggregate `solver/*` telemetry when the model reports
-solver statistics.  E-adjoint nonconvergence is diagnostic-only: optimization
+solver statistics.  E-adjoint nonconvergence is diagnostic-only: the retained
+BiCGSTAB solve returns its best iterate with `success=False`, optimization
 continues unless the objective or gradient becomes nonfinite, and history rows
 surface `solver/e_adjoint_failed_batches` plus relative-residual and iteration
 summaries for monitoring.
@@ -347,7 +355,24 @@ flags.  The `GPUREC_*` environment variables are retained for binary discovery,
 compatibility guards, memory-policy margins, and kernel diagnostics.
 Boolean flags treat empty, `0`, `false`, `no`, and `off` as false.  CUDA
 prototype mode flags also accept `auto`, with `1`, `true`, `yes`, `on`,
-`force`, or `required` making a path required instead of best-effort.
+`force`, or `required` making a selected prototype path required instead of
+best-effort.  These native CUDA prototype flags are experimental diagnostics:
+`auto` and `enabled` fall back to the retained Triton paths when a selected
+prototype is unavailable, while required modes re-raise failures only after the
+prototype's dtype/device/layout eligibility checks select that path.
+`GPUREC_CUDA_PIBAR_FROM_UD_STRICT=1` makes the Pibar prototype required after
+selection even when `GPUREC_CUDA_PIBAR_FROM_UD=auto`.  Current fallback behavior
+is intentionally documented before consolidation: self-loop prototype fallback
+is silent and catches only optional import/runtime/validation failures, Pibar
+prototype fallback is silent in `auto` but warns once in `enabled`, and the
+self-loop loader preloads wheel NVRTC builtins while the Pibar loader currently
+does not.
+Both native CUDA prototypes compute dynamic shared-memory requirements from the
+requested species count and launch tuning, set
+`CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES`, and pass that same byte count
+to `cuLaunchKernel`.  They preflight the requested scratch size against the
+device shared-memory limit before launch; later attribute or launch failures
+follow the best-effort or required-mode fallback policy above.
 
 | Variable | Scope |
 | --- | --- |

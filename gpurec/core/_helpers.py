@@ -41,7 +41,13 @@ def _env_mode_enabled_required(
     name: str,
     default: str = "auto",
 ) -> tuple[str, bool, bool]:
-    """Return normalized mode plus enabled/required flags for CUDA path toggles."""
+    """Return normalized mode plus enabled/required flags for CUDA path toggles.
+
+    ``auto`` and ``enabled`` are best-effort modes.  ``1``, ``true``, ``yes``,
+    ``on``, ``force``, and ``required`` make a selected prototype path
+    mandatory: call sites still apply their own eligibility checks before
+    attempting that prototype.
+    """
     mode = os.environ.get(name, default).strip().lower()
     return (
         mode,

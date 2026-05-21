@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import torch
@@ -14,6 +15,24 @@ from gpurec.workflow.optimize import (
     _resume_state_from_payload,
     _step_stopping_status,
 )
+
+
+def test_uniform_chunked_e_adjoint_stats_fields_are_public_stats_shape():
+    stats = uniform_chunked_module._e_adjoint_stats_fields(
+        SimpleNamespace(
+            method="BiCGSTAB",
+            iters=7,
+            rel_res=0.125,
+            success=False,
+        )
+    )
+
+    assert stats == {
+        "e_adjoint_method": "BiCGSTAB",
+        "e_adjoint_iterations": 7,
+        "e_adjoint_rel_res": 0.125,
+        "e_adjoint_success": False,
+    }
 
 
 def _run_config(tmp_path: Path, **overrides: object) -> RunConfig:
@@ -63,6 +82,10 @@ def test_uniform_chunked_full_sum_estimate_scales_loss_and_grad(monkeypatch):
                 "selected_families": 2,
                 "total_families": 8,
                 "selected_chunks": [1],
+                "e_adjoint_method": "BiCGSTAB",
+                "e_adjoint_iterations": 5,
+                "e_adjoint_rel_res": 0.25,
+                "e_adjoint_success": False,
             },
         )
 
@@ -95,6 +118,10 @@ def test_uniform_chunked_full_sum_estimate_scales_loss_and_grad(monkeypatch):
     assert stats["scale"] == 4.0
     assert stats["reduced_loss"] == 40.0
     assert stats["reduced_grad_norm"] == pytest.approx(math.sqrt(224.0))
+    assert stats["e_adjoint_method"] == "BiCGSTAB"
+    assert stats["e_adjoint_iterations"] == 5
+    assert stats["e_adjoint_rel_res"] == pytest.approx(0.25)
+    assert stats["e_adjoint_success"] is False
 
 
 @pytest.mark.parametrize(

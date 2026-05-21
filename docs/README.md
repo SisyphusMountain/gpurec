@@ -8,6 +8,15 @@ file as the map for deeper context.
 
 - `lean-fast-path.md`: retained benchmark path and performance command for the
   lean branch.
+- `refactor-simplification-plan-2026-05-21.md`: current simplification backlog
+  for reducing duplicated evaluation paths, mode branches, scheduler
+  alternatives, env selectors, and compatibility surface while retaining
+  global/uniform, specieswise, and genewise modes.
+- `gradient-likelihood-refactor-plan-2026-05-21.md`: focused plan for
+  unifying E/Pi/root-likelihood/gradient computation behind one typed evaluator.
+- `runtime-surface-pruning-plan-2026-05-21.md`: plan for pruning public/internal
+  runtime surface, scheduler helpers, C++ extension exports, env variables,
+  scripts, profiling entry points, and test-only helpers.
 - `repo-wide-audit-2026-05-21.md`: tracked-file audit of untested code,
   unnecessary complexity, documentation gaps, and deletion candidates.
 - `professionalization-audit-progress.tex`: running audit log for repository

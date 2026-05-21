@@ -488,6 +488,13 @@ def test_bfloat16_policy_is_documented_as_direct_api_only():
     ):
         assert token in normalized
     for token in (
+        "Both native CUDA prototypes compute dynamic shared-memory requirements",
+        "`CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES`",
+        "pass that same byte count to `cuLaunchKernel`",
+        "preflight the requested scratch size against the device shared-memory limit",
+    ):
+        assert token in normalized
+    for token in (
         "torch.bfloat16",
         "experimental",
         "forward/NLL probes",
@@ -500,6 +507,53 @@ def test_bfloat16_policy_is_documented_as_direct_api_only():
     assert "bf16" not in cli_text
     assert "bfloat16" not in config_text
     assert "bf16" not in config_text
+
+
+def test_uniform_chunked_loss_and_grad_documents_e_adjoint_stats():
+    root = Path(__file__).resolve().parents[2]
+    project_readme = (root / "README.md").read_text(encoding="utf-8")
+    normalized = " ".join(project_readme.split())
+    uniform_module = ast.parse(
+        (root / "gpurec" / "api" / "uniform_chunked.py").read_text(
+            encoding="utf-8"
+        )
+    )
+    uniform_class = next(
+        node
+        for node in uniform_module.body
+        if isinstance(node, ast.ClassDef) and node.name == "UniformChunkedReconModel"
+    )
+    class_doc = ast.get_docstring(uniform_class) or ""
+    loss_and_grad = next(
+        node
+        for node in uniform_class.body
+        if isinstance(node, ast.FunctionDef) and node.name == "loss_and_grad"
+    )
+    method_doc = ast.get_docstring(loss_and_grad) or ""
+
+    for token in (
+        "`UniformChunkedReconModel.loss_and_grad()` returns `(loss, grad, stats)`",
+        "selected chunk/family counts",
+        "E-adjoint solve telemetry",
+        "`e_adjoint_method`",
+        "`e_adjoint_iterations`",
+        "`e_adjoint_rel_res`",
+        "`e_adjoint_success`",
+    ):
+        assert token in normalized
+    for token in (
+        "stats dictionary",
+        "selected chunk/family counts",
+        "E-adjoint solve telemetry",
+    ):
+        assert token in class_doc
+    for token in (
+        "e_adjoint_method",
+        "e_adjoint_iterations",
+        "e_adjoint_rel_res",
+        "e_adjoint_success",
+    ):
+        assert token in method_doc
 
 
 def test_project_readme_documents_sampling_output_layout():
@@ -591,11 +645,44 @@ def test_project_readme_documents_e_adjoint_diagnostics():
     for token in (
         "History rows include aggregate `solver/*` telemetry",
         "E-adjoint nonconvergence is diagnostic-only",
+        "BiCGSTAB solve returns its best iterate with `success=False`",
         "optimization continues unless the objective or gradient becomes nonfinite",
         "`solver/e_adjoint_failed_batches`",
         "relative-residual and iteration summaries",
     ):
         assert token in normalized
+
+
+def test_implicit_gradient_documents_bicgstab_failure_policy():
+    root = Path(__file__).resolve().parents[2]
+    module = ast.parse(
+        (root / "gpurec" / "optimization" / "implicit_grad.py").read_text(
+            encoding="utf-8"
+        )
+    )
+    functions = {
+        node.name: node for node in module.body if isinstance(node, ast.FunctionDef)
+    }
+
+    bicgstab_doc = " ".join(
+        (ast.get_docstring(functions["_bicgstab"]) or "").split()
+    )
+    e_adjoint_doc = " ".join(
+        (ast.get_docstring(functions["_e_adjoint_and_theta_vjp"]) or "").split()
+    )
+
+    for token in (
+        "Nonconvergence is reported through ``_SolveStats(success=False)``",
+        "current best iterate is still returned",
+        "E-adjoint gradient path currently treats it as diagnostic telemetry",
+    ):
+        assert token in bicgstab_doc
+    for token in (
+        "BiCGSTAB nonconvergence is diagnostic-only",
+        "best returned E-adjoint iterate is consumed",
+        "workflow history can surface failed batches",
+    ):
+        assert token in e_adjoint_doc
 
 
 def test_strict_json_serializer_documents_sanitizing_contract():
@@ -862,6 +949,150 @@ def test_project_readme_documents_package_environment_flags():
     assert undocumented == []
 
 
+def test_project_readme_documents_cuda_prototype_fallback_policy():
+    root = Path(__file__).resolve().parents[2]
+    project_readme = (root / "README.md").read_text(encoding="utf-8")
+    normalized = " ".join(project_readme.split())
+
+    for token in (
+        "native CUDA prototype flags are experimental diagnostics",
+        "`auto` and `enabled` fall back to the retained Triton paths",
+        "required modes re-raise failures only after",
+        "dtype/device/layout eligibility checks select that path",
+        "`GPUREC_CUDA_PIBAR_FROM_UD_STRICT=1`",
+        "self-loop prototype fallback is silent",
+        "Pibar prototype fallback is silent in `auto` but warns once in `enabled`",
+        "self-loop loader preloads wheel NVRTC builtins",
+        "Pibar loader currently does not",
+    ):
+        assert token in normalized
+
+
+def test_cuda_prototype_source_documents_loader_and_fallback_policy():
+    root = Path(__file__).resolve().parents[2]
+    helper_module = ast.parse(
+        (root / "gpurec" / "core" / "_helpers.py").read_text(encoding="utf-8")
+    )
+    wave_backward = ast.parse(
+        (root / "gpurec" / "core" / "kernels" / "wave_backward.py").read_text(
+            encoding="utf-8"
+        )
+    )
+
+    helper_functions = {
+        node.name: node
+        for node in helper_module.body
+        if isinstance(node, ast.FunctionDef)
+    }
+    wave_functions = {
+        node.name: node for node in wave_backward.body if isinstance(node, ast.FunctionDef)
+    }
+
+    helper_doc = " ".join(
+        (
+            ast.get_docstring(helper_functions["_env_mode_enabled_required"])
+            or ""
+        ).split()
+    )
+    pibar_options_doc = " ".join(
+        (
+            ast.get_docstring(wave_functions["_cuda_pibar_from_ud_options"])
+            or ""
+        ).split()
+    )
+    backward_doc = " ".join(
+        (
+            ast.get_docstring(
+                ast.parse(
+                    (root / "gpurec" / "core" / "backward.py").read_text(
+                        encoding="utf-8"
+                    )
+                )
+            )
+            or ""
+        ).split()
+    )
+    self_loop_doc = " ".join(
+        (
+            ast.get_docstring(
+                ast.parse(
+                    (
+                        root
+                        / "gpurec"
+                        / "core"
+                        / "kernels"
+                        / "wave_backward_cuda.py"
+                    ).read_text(encoding="utf-8")
+                )
+            )
+            or ""
+        ).split()
+    )
+    pibar_doc = " ".join(
+        (
+            ast.get_docstring(
+                ast.parse(
+                    (
+                        root
+                        / "gpurec"
+                        / "core"
+                        / "kernels"
+                        / "pibar_vjp_cuda.py"
+                    ).read_text(encoding="utf-8")
+                )
+            )
+            or ""
+        ).split()
+    )
+
+    for token in (
+        "``auto`` and ``enabled`` are best-effort modes",
+        "call sites still apply their own eligibility checks",
+    ):
+        assert token in helper_doc
+    for token in (
+        "``auto`` is silent best-effort",
+        "``enabled`` is best-effort with the caller's warning-on-fallback path",
+        "``GPUREC_CUDA_PIBAR_FROM_UD_STRICT``",
+    ):
+        assert token in pibar_options_doc
+    for token in (
+        "fall back to the retained Triton self-loop path",
+        "``ImportError``, ``RuntimeError``, or ``ValueError``",
+        "required modes re-raise failures after the wave is eligible",
+    ):
+        assert token in backward_doc
+    assert "preloads wheel-provided NVRTC builtins" in self_loop_doc
+    assert "preflights dynamic shared-memory scratch size" in self_loop_doc
+    assert "compiles directly without the self-loop loader's wheel NVRTC builtins preload" in pibar_doc
+    assert "preflights dynamic shared-memory scratch size" in pibar_doc
+
+
+def test_cuda_prototype_launchers_preflight_dynamic_shared_memory():
+    root = Path(__file__).resolve().parents[2]
+
+    for relative_path in (
+        "gpurec/core/kernels/wave_backward_cuda.py",
+        "gpurec/core/kernels/pibar_vjp_cuda.py",
+    ):
+        source = (root / relative_path).read_text(encoding="utf-8")
+        shared_pos = source.index("shared_bytes =")
+        props_pos = source.index("torch.cuda.get_device_properties")
+        optin_pos = source.index("shared_memory_per_block_optin")
+        fallback_pos = source.index(
+            "shared_memory_per_block",
+            optin_pos + len("shared_memory_per_block_optin"),
+        )
+        check_pos = source.index("shared_bytes > int(max_shared)")
+        attr_pos = source.index("CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES")
+        launch_pos = source.index("cuLaunchKernel(")
+
+        assert shared_pos < props_pos < optin_pos
+        assert props_pos < fallback_pos < check_pos < attr_pos < launch_pos
+        assert "shared_bytes," in source[attr_pos:launch_pos]
+        assert "shared_bytes," in source[launch_pos:]
+
+
 def test_retired_leaf_hit_env_flag_stays_out_of_runtime_surface():
     root = Path(__file__).resolve().parents[2]
     retired = "GPUREC_" + "LEAF" + "_HIT_ONLY" + "_LOGP"
@@ -976,6 +1207,47 @@ def test_scripts_readme_lists_tracked_scripts_in_ownership_matrix():
     ):
         assert token in note
     assert [name for name in script_names if name not in note] == []
+
+
+def test_missing_inline_path_references_are_explicitly_historical_or_optional():
+    root = Path(__file__).resolve().parents[2]
+    path_ref_pattern = re.compile(
+        r"`((?:docs|profiling|scripts|tests|gpurec)/"
+        r"[A-Za-z0-9_.\-/]+"
+        r"(?:\.md|\.py|\.ipynb|\.json|\.yaml|\.yml|\.txt|\.R)?)`"
+    )
+    allowed_context_tokens = (
+        "historical",
+        "missing",
+        "not all tracked",
+        "not reproducible",
+        "not distributed",
+        "optional",
+        "skipped-when-missing",
+        "superseded",
+        "untracked",
+        "no longer points",
+        "no longer names",
+    )
+    offenders: list[str] = []
+
+    for path in _tracked_files(root, "README.md", "docs/*.md"):
+        text = path.read_text(encoding="utf-8")
+        for match in path_ref_pattern.finditer(text):
+            reference = match.group(1)
+            if "..." in reference or (root / reference).exists():
+                continue
+            context_start = text.rfind("\n\n", 0, match.start()) + 2
+            context_end = text.find("\n\n", match.end())
+            if context_end == -1:
+                context_end = len(text)
+            context = text[context_start:context_end].lower()
+            file_text = text.lower()
+            if any(token in context or token in file_text for token in allowed_context_tokens):
+                continue
+            offenders.append(f"{path.relative_to(root)}: {reference}")
+
+    assert offenders == []
 
 
 def test_cpp_wave_stat_exports_validate_positive_max_wave_size():

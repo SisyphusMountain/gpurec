@@ -215,9 +215,10 @@ evidence is thin.
     data paths and expose mostly optimizer/regularization flags.  Document
     which launchers are fixed-dataset before shared optimizer changes.
 
-22. `profiling/bench_uniform_forward_backward_pipeline.py` references missing
-    `docs/forward-backward-full-pipeline-plan.md` at lines 4-5.  The benchmark
-    contract is stale until the reference is restored or removed.
+22. `profiling/bench_uniform_forward_backward_pipeline.py` previously
+    referenced missing `docs/forward-backward-full-pipeline-plan.md`; the
+    reference has been removed, and the retained profiler contract now lives in
+    README/source-checkout benchmark docs.
 
 23. `scripts/make_hogenom_branchscale_penalty_report.py` appears stale relative
     to current run-directory naming.  It only loads `penalty_*` directories at
@@ -462,8 +463,12 @@ staleness found above:
 - `profiling/bench_uniform_forward_backward_pipeline.py` no longer points to the
   missing `docs/forward-backward-full-pipeline-plan.md`.
 - `docs/lean-performance-path-regression.md` now says its missing reference
-  documents and benchmark commands are historical provenance, not a current
-  reproducible command set.
+  names and benchmark commands are historical provenance from an original
+  performance workspace, not a current reproducible command set.
+- `tests/unit/test_repository_hygiene.py` now scans README/docs inline path
+  references and requires absent tracked-looking paths to be explicitly marked
+  historical, optional, missing, or otherwise not reproducible from a clean
+  checkout.
 - `docs/second-order-optimization-opportunities.md` no longer names a missing
   tracked benchmark file as an existing related file and no longer relies on a
   stale integration-test line number.
@@ -589,7 +594,11 @@ staleness found above:
   visible telemetry.  The README documents it as diagnostic-only unless the
   objective or gradient becomes nonfinite, and `solver_stats()` now carries
   aggregate E-adjoint iteration, relative-residual, success, and failed-batch
-  fields into history rows.
+  fields into history rows.  The implicit-gradient solver docstrings now state
+  that BiCGSTAB returns the current best iterate with
+  `_SolveStats(success=False)` on nonconvergence, and that the retained
+  E-adjoint gradient path consumes that iterate while forwarding the failure
+  flag as workflow telemetry.
 - The genewise-only per-family NLL contract is now explicit.  The README and
   `GeneReconModel.full_nll_per_family()` docstring state that
   `nll_per_family()` and `full_nll_per_family()` are genewise-only public
@@ -663,20 +672,39 @@ not edit files.  New or still-open findings from that refresh are:
   nonnegative, positive-mass, and normalization checks.  A focused regression
   pins that default preparation rejects invalid inputs while the prepared path
   returns them unchanged.
-- `BiCGSTAB` failure telemetry is not enforced in the implicit-gradient path:
-  the adjoint vector is consumed even when the solver reports failure, and
-  workflow diagnostics surface the failure only after the gradient has already
-  been used.  Add a solver-failure policy and regression before behavior
-  changes.
-- The native CUDA prototype loaders are inconsistent.  `wave_backward_cuda.py`
-  preloads wheel-provided NVRTC builtins before compilation, while
-  `pibar_vjp_cuda.py` compiles without that preflight.  The CUDA Pibar path also
-  remains silent in `auto` fallback mode, so document and then consolidate the
-  loader/fallback policy before changing runtime behavior.
-- The self-loop CUDA path computes dynamic shared memory and calls
-  `cuFuncSetAttribute` without the explicit max-shared-memory preflight used by
-  the Pibar CUDA prototype.  Add a source guard or CUDA smoke after documenting
-  the expected failure mode.
+- `BiCGSTAB` failure telemetry is intentionally diagnostic-only in the retained
+  implicit-gradient path: the current best E-adjoint iterate is consumed even
+  when the solver reports failure, and workflow diagnostics surface the failure
+  after the gradient step.  Treat any fail-fast or retry policy as a future
+  logic change requiring a numerical criterion and regression coverage.
+- Direct uniform-chunk evaluation now exposes E-adjoint solver stats in its
+  public `loss_and_grad()` stats payload.  `_evaluate_chunked_uniform()` keeps
+  loss, gradient, and reduction behavior unchanged, but maps `_SolveStats` from
+  `_e_adjoint_and_theta_vjp()` into `e_adjoint_method`,
+  `e_adjoint_iterations`, `e_adjoint_rel_res`, and `e_adjoint_success` so
+  direct `UniformChunkedReconModel` users have the same nonconvergence
+  visibility that workflow history already surfaces in aggregate form.
+- The native CUDA prototype loader/fallback policy is now documented but still
+  inconsistent.  `wave_backward_cuda.py` preloads wheel-provided NVRTC builtins
+  before compilation, while `pibar_vjp_cuda.py` compiles without that preflight.
+  Self-loop optional fallback is silent and catches only import/runtime/
+  validation failures; Pibar fallback is silent in `auto`, warns once in
+  `enabled`, and catches broader prototype failures.  Treat shared loader
+  preflight, narrower Pibar exceptions, or unified warning behavior as future
+  runtime changes.
+- The native CUDA prototype launchers now share the documented dynamic
+  shared-memory preflight shape.  Both self-loop and Pibar compute
+  `shared_bytes`, check it against the device opt-in shared-memory limit before
+  launch, set `CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES`, and pass the
+  same byte count to `cuLaunchKernel`.  A repository hygiene guard keeps the two
+  launchers aligned until a CUDA smoke can exercise the required-mode paths.
+- Historical benchmark provenance is now separated from current checkout
+  contracts in `docs/lean-performance-path-regression.md`.  The missing
+  genewise/uniform reference docs and benchmark harness names are labeled as
+  untracked historical workspace inputs, and the command block is explicitly
+  not a clean-checkout reproducibility recipe.  A repository hygiene guard now
+  checks README/docs inline path references for the same historical/optional
+  marker when the referenced tracked-looking path is absent.
 - Kernel performance/control environment variables and production-vs-prototype
   status remain spread across runtime modules.  Publish the supported kernel
   environment surface and classify retained paths before changing logic.
@@ -1192,6 +1220,62 @@ not edit files.  New or still-open findings from that refresh are:
   45 passed after adding the trust-boundary documentation guard.
 - `python -m pytest --collect-only -q`: 881 tests collected after adding the
   prepared-origination-probability trust-boundary regression.
+- `python -m py_compile gpurec/optimization/implicit_grad.py gpurec/api/autograd.py tests/unit/test_implicit_grad_solver.py tests/unit/test_repository_hygiene.py tests/unit/test_workflow.py`:
+  passed after documenting the BiCGSTAB/E-adjoint failure contract.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_implicit_grad_solver.py tests/unit/test_workflow.py::test_workflow_solver_stats_surface_e_adjoint_failure_telemetry tests/unit/test_workflow.py::test_optimization_runner_run_writes_outputs_with_fake_model tests/unit/test_repository_hygiene.py::test_project_readme_documents_e_adjoint_diagnostics tests/unit/test_repository_hygiene.py::test_implicit_gradient_documents_bicgstab_failure_policy -q`:
+  6 passed after adding the solver failure-stat regression, implicit-gradient
+  docstring guard, and finite workflow run guard for nonfatal E-adjoint failure
+  telemetry.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_repository_hygiene.py -q`:
+  46 passed after adding the BiCGSTAB/E-adjoint documentation guard.
+- `python -m pytest --collect-only -q`: 883 tests collected after adding the
+  BiCGSTAB nonconvergence and documentation guards.
+- `python -m py_compile gpurec/core/_helpers.py gpurec/core/backward.py gpurec/core/kernels/wave_backward.py gpurec/core/kernels/wave_backward_cuda.py gpurec/core/kernels/pibar_vjp_cuda.py tests/unit/test_core_helpers.py tests/unit/test_repository_hygiene.py`:
+  passed after documenting the native CUDA prototype loader/fallback policy.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_core_helpers.py -k 'cuda_pibar_from_ud or env_mode' -q`:
+  22 passed, 21 deselected after adding the `enabled` best-effort mode guard.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_repository_hygiene.py::test_project_readme_documents_cuda_prototype_fallback_policy tests/unit/test_repository_hygiene.py::test_cuda_prototype_source_documents_loader_and_fallback_policy -q`:
+  2 passed after adding README and source-docstring guards for CUDA prototype
+  fallback behavior.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_core_helpers.py tests/unit/test_core_backward.py -q`:
+  45 passed after documenting selected-path strictness and preserving the
+  optional self-loop exception boundary.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_repository_hygiene.py -q`:
+  48 passed after adding the CUDA prototype policy documentation guards.
+- `python -m pytest --collect-only -q`: 886 tests collected after adding the
+  CUDA prototype policy guards.
+- `python -m py_compile gpurec/api/uniform_chunked.py tests/unit/test_optimization_workflow.py tests/unit/test_repository_hygiene.py`:
+  passed after exposing direct uniform-chunk E-adjoint telemetry.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_optimization_workflow.py::test_uniform_chunked_e_adjoint_stats_fields_are_public_stats_shape tests/unit/test_optimization_workflow.py::test_uniform_chunked_full_sum_estimate_scales_loss_and_grad tests/unit/test_repository_hygiene.py::test_uniform_chunked_loss_and_grad_documents_e_adjoint_stats -q`:
+  3 passed after documenting and guarding the public `loss_and_grad()` stats
+  keys.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_workflow.py::test_workflow_solver_stats_surface_e_adjoint_failure_telemetry tests/unit/test_repository_hygiene.py::test_project_readme_documents_e_adjoint_diagnostics -q`:
+  2 passed after confirming workflow aggregate telemetry remains separate and
+  intact.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_optimization_workflow.py -q`:
+  30 passed after adding direct uniform-chunk telemetry coverage.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_repository_hygiene.py -q`:
+  49 passed after adding the direct uniform-chunk telemetry documentation guard.
+- `python -m pytest --collect-only -q`: 888 tests collected after adding the
+  direct uniform-chunk telemetry guards.
+- `python -m py_compile gpurec/core/kernels/wave_backward_cuda.py gpurec/core/kernels/pibar_vjp_cuda.py tests/unit/test_repository_hygiene.py`:
+  passed after mirroring the Pibar dynamic shared-memory preflight in the
+  self-loop CUDA prototype.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_repository_hygiene.py::test_project_readme_documents_cuda_prototype_fallback_policy tests/unit/test_repository_hygiene.py::test_cuda_prototype_source_documents_loader_and_fallback_policy tests/unit/test_repository_hygiene.py::test_cuda_prototype_launchers_preflight_dynamic_shared_memory -q`:
+  3 passed after adding the source-level launch-contract guard.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_repository_hygiene.py -q`:
+  50 passed after adding the dynamic shared-memory launch guard.
+- `python -m pytest --collect-only -q`: 889 tests collected after adding the
+  dynamic shared-memory launch guard.
+- `python -m py_compile profiling/bench_uniform_forward_backward_pipeline.py tests/unit/test_repository_hygiene.py`:
+  passed after adding the historical inline-path reference guard.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_repository_hygiene.py::test_missing_inline_path_references_are_explicitly_historical_or_optional -q`:
+  1 passed after guarding absent tracked-looking inline path references in
+  README/docs.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_repository_hygiene.py -q`:
+  51 passed after adding the historical inline-path reference guard.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest --collect-only -q`: 890 tests
+  collected after adding the historical inline-path reference guard.
 
 ## Recommended Next Order
 

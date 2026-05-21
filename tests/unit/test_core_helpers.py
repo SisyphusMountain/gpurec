@@ -47,6 +47,7 @@ def test_env_flag_enabled_uses_default_for_unset_values(monkeypatch):
         ("required", True, True),
         ("1", True, True),
         ("yes", True, True),
+        ("enabled", True, False),
     ),
 )
 def test_env_mode_enabled_required_preserves_cuda_toggle_semantics(

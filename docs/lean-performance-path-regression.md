@@ -82,17 +82,21 @@ Environment:
 - note: an existing Jupyter kernel was using about `8.8 GiB` of GPU memory, so
   the chunk-100 genewise run could not be measured cleanly in this session.
 
-Reference documents:
+Historical untracked reference documents from the original performance workspace:
 
 - `docs/genewise-forward-backward-optimization-proposals.md`
 - `docs/uniform-backward-50tree-wave2-profile.md`
 
-Those reference documents and several benchmark harnesses named below came
-from the historical performance workspace and are not all tracked in the
-current branch. Treat the commands in this section as provenance for the
-recorded numbers, not as a current reproducible command set.
+Those reference names and several benchmark harnesses named below came from
+the historical performance workspace and are not all tracked in the current
+branch. Missing historical harness names include
+`profiling/bench_genewise_forward_chunking.py`,
+`profiling/bench_genewise_backward_chunking.py`, and
+`profiling/ancestor_batching/bench_uniform_backward.py`. Treat the commands in
+this section as provenance for the recorded numbers, not as a current
+reproducible command set.
 
-Commands run:
+Historical commands run, not reproducible from a clean checkout:
 
 ```bash
 PREPROCESS_CACHE_DIR=/tmp/gpurec_test_trees_1000_bench \

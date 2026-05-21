@@ -84,7 +84,11 @@ def _extract_parameters(theta: torch.Tensor, static: ReconStaticState):
 
 
 def _record_backward_solver_stats(static: ReconStaticState, stats: Any) -> None:
-    """Attach backward solver telemetry to the last forward solver record."""
+    """Attach backward solver telemetry to the last forward solver record.
+
+    E-adjoint solver failure is recorded as diagnostic telemetry here; this
+    helper does not convert ``success=False`` into a failed optimization step.
+    """
     if static.last_solver_stats is None:
         static.last_solver_stats = {}
     neumann_terms = getattr(stats, "neumann_terms", None)

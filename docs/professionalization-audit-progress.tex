@@ -6239,14 +6239,63 @@ E-adjoint solver nonconvergence now has an explicit workflow contract and
 visible telemetry.  The README documents it as diagnostic-only unless the
 objective or gradient becomes nonfinite.  \texttt{solver\_stats()} now carries
 aggregate E-adjoint iteration, relative-residual, success-batch, and
-failed-batch fields into workflow history rows.  The focused guard failed
-before this diagnostics change because
-\texttt{solver/e\_adjoint\_iterations\_max} was missing, then passed after the
-aggregation change.  \texttt{py\_compile} passes for the touched modules, the
-full workflow module reports \texttt{431 passed}, the full repository hygiene
-module reports \texttt{31 passed}, full collection reports \texttt{851 tests
-collected}, and the CPU-only unit gate reports
-\texttt{822 passed, 1 skipped, 6 deselected}.
+failed-batch fields into workflow history rows.  The implicit-gradient
+docstrings now state that BiCGSTAB returns the current best iterate with
+\texttt{\_SolveStats(success=False)} on nonconvergence, and that the retained
+E-adjoint gradient path consumes that iterate while forwarding the failure flag
+as workflow telemetry.  A finite fake workflow run now records
+\texttt{solver/e\_adjoint\_failed\_batches} while still returning
+\texttt{not\_converged}, proving the current nonfatal contract at the history
+and checkpoint boundary.  The direct \texttt{UniformChunkedReconModel}
+\texttt{loss\_and\_grad()} stats payload now exposes
+\texttt{e\_adjoint\_method}, \texttt{e\_adjoint\_iterations},
+\texttt{e\_adjoint\_rel\_res}, and \texttt{e\_adjoint\_success} from the same
+retained E-adjoint solve, without changing loss, gradient, scaling, or workflow
+behavior.  The focused guard originally failed before this
+diagnostics change because \texttt{solver/e\_adjoint\_iterations\_max} was
+missing, then passed after the aggregation change.  Current verification
+compiles the touched implicit-gradient, telemetry, workflow, and hygiene
+modules; the focused BiCGSTAB/E-adjoint selector reports \texttt{6 passed};
+the full repository hygiene module reports \texttt{46 passed}; and full
+collection reports \texttt{883 tests collected}.
+
+Direct uniform-chunk E-adjoint telemetry is now exposed for sampled-chunk and
+stochastic direct optimizers.  \texttt{\_evaluate\_chunked\_uniform()} maps the
+retained solve stats into \texttt{e\_adjoint\_method},
+\texttt{e\_adjoint\_iterations}, \texttt{e\_adjoint\_rel\_res}, and
+\texttt{e\_adjoint\_success}; \texttt{loss\_and\_grad()} preserves those keys
+while adding reduction metadata.  README and direct API docstrings now define
+the public stats payload before further telemetry changes.  The focused direct
+telemetry selector reports \texttt{3 passed}; the workflow telemetry selector
+still reports \texttt{2 passed}; the full optimization workflow module reports
+\texttt{30 passed}; repository hygiene reports \texttt{49 passed}; and full
+collection reports \texttt{888 tests collected}.
+
+The native CUDA prototype launchers now share the documented dynamic
+shared-memory preflight contract.  Both the self-loop and Pibar launchers
+compute \texttt{shared\_bytes}, check it against the device opt-in shared-memory
+limit, set \texttt{CU\_FUNC\_ATTRIBUTE\_MAX\_DYNAMIC\_SHARED\_SIZE\_BYTES}, and
+pass the same byte count to \texttt{cuLaunchKernel}.  The self-loop path now
+raises a clear \texttt{ValueError} for oversized scratch before reaching the
+driver attribute/launch call, matching the Pibar prototype's preflight shape.
+A repository hygiene guard pins this source-level launch contract until a CUDA
+smoke can exercise required-mode prototype paths directly.  \texttt{py\_compile}
+passes for the touched CUDA prototype and hygiene modules; the focused launch
+contract selector reports \texttt{3 passed}; repository hygiene reports
+\texttt{50 passed}; and full collection reports \texttt{889 tests collected}.
+
+Historical benchmark provenance is now separated from clean-checkout
+reproducibility in \texttt{docs/lean-performance-path-regression.md}.  The
+missing genewise and uniform reference documents, plus the missing benchmark
+harness names, are labeled as untracked historical workspace inputs.  The
+command block is explicitly described as not reproducible from a clean checkout.
+A repository hygiene guard now scans README/docs inline path references under
+\texttt{docs/}, \texttt{profiling/}, \texttt{scripts/}, \texttt{tests/}, and
+\texttt{gpurec/}; absent tracked-looking paths must be marked historical,
+optional, missing, superseded, untracked, or otherwise not reproducible.  The
+touched profiler/hygiene files compile, the focused inline-path guard reports
+\texttt{1 passed}, repository hygiene reports \texttt{51 passed}, and full
+collection reports \texttt{890 tests collected}.
 
 The genewise-only per-family NLL contract is now explicit before any broader
 shared-theta implementation work.  The README and
@@ -6462,6 +6511,24 @@ the touched likelihood and test modules, and the focused selector reports
 \texttt{4 passed}.  The full origination-probability module reports
 \texttt{9 passed}, repository hygiene reports \texttt{45 passed}, and full
 collection reports \texttt{881 tests collected}.
+
+The native CUDA prototype loader/fallback policy is now documented before any
+runtime consolidation.  The README states that CUDA prototype flags are
+experimental diagnostics: \texttt{auto} and \texttt{enabled} are best effort,
+required tokens re-raise failures only after dtype/device/layout eligibility
+selects a prototype, and \texttt{GPUREC\_CUDA\_PIBAR\_FROM\_UD\_STRICT=1}
+makes the selected Pibar path strict even from \texttt{auto}.  Source docstrings
+now pin the current asymmetry: self-loop fallback is silent and catches only
+\texttt{ImportError}, \texttt{RuntimeError}, and \texttt{ValueError};
+Pibar fallback is silent in \texttt{auto}, warns once in \texttt{enabled}, and
+the self-loop loader preloads wheel NVRTC builtins while the Pibar loader
+currently does not.  Consolidating loader preflight, exception breadth, or
+warning behavior remains a documented future runtime change.  Verification
+compiles the touched helper, backward, kernel-loader, and test modules; the
+focused mode/fallback selectors report \texttt{22 passed, 21 deselected} and
+\texttt{2 passed}; the full core helper/backward slice reports
+\texttt{45 passed}; repository hygiene reports \texttt{48 passed}; and full
+collection reports \texttt{886 tests collected}.
 
 \section{Next Audit Targets}
 
