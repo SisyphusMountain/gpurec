@@ -1,5 +1,7 @@
 """Forward pass: Pi_wave_forward and helpers."""
 
+from dataclasses import dataclass
+
 import torch
 
 from .kernels.wave_step import (
@@ -13,6 +15,56 @@ from .log2_utils import logsumexp2
 from .species import species_wave_topology
 
 NEG_INF = float("-inf")
+
+
+@dataclass(frozen=True)
+class _PiOutputIntent:
+    """Resolved private output contract for ``Pi_wave_forward``."""
+
+    name: str
+    emit_original_pi: bool
+    emit_root_rows: bool
+    emit_wave_ordered_pi: bool
+    retain_saved_state: bool
+
+    @property
+    def can_skip_final_pibar(self) -> bool:
+        return not self.retain_saved_state
+
+
+def _pi_output_intent(
+    *,
+    return_original: bool,
+    return_root_rows: bool,
+) -> _PiOutputIntent:
+    """Map legacy output booleans onto an explicit internal output contract."""
+    if return_root_rows:
+        return _PiOutputIntent(
+            name=(
+                "legacy_original_root_rows"
+                if return_original
+                else "root_row_loss_only"
+            ),
+            emit_original_pi=return_original,
+            emit_root_rows=True,
+            emit_wave_ordered_pi=False,
+            retain_saved_state=False,
+        )
+    if return_original:
+        return _PiOutputIntent(
+            name="export_original_and_wave_rows",
+            emit_original_pi=True,
+            emit_root_rows=False,
+            emit_wave_ordered_pi=True,
+            retain_saved_state=True,
+        )
+    return _PiOutputIntent(
+        name="training_or_wave_export_state",
+        emit_original_pi=False,
+        emit_root_rows=False,
+        emit_wave_ordered_pi=True,
+        retain_saved_state=True,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -112,6 +164,10 @@ def Pi_wave_forward(
         dict with 'Pi' (in original clade order when requested),
         'Pi_root_rows' when requested.
     """
+    output_intent = _pi_output_intent(
+        return_original=return_original,
+        return_root_rows=return_root_rows,
+    )
     leaf_row_index = wave_layout['leaf_row_index']
     leaf_species_index = wave_layout.get('leaf_species_index')
     wave_metas = wave_layout['wave_metas']
@@ -165,10 +221,9 @@ def Pi_wave_forward(
         log_pD_family = log_pD
         log_pS_family = log_pS
 
-    return_saved_state = not return_root_rows
     uniform_pibar_row_max = (
         torch.empty((C,), dtype=dtype, device=device)
-        if return_saved_state else None
+        if output_intent.retain_saved_state else None
     )
     max_wave_W = max((int(meta.get('W', 0)) for meta in wave_metas), default=0)
     max_diff_scratch = (
@@ -213,7 +268,7 @@ def Pi_wave_forward(
         wave_consts = (DL_const, SL1_const, SL2_const, Ebar, E, mt_squeezed)
 
     root_clade_ids_for_skip = None
-    if not return_saved_state or trace_root_logsumexp:
+    if output_intent.can_skip_final_pibar or trace_root_logsumexp:
         root_clade_ids_for_skip = wave_layout.get('root_clade_ids_cpu')
         if root_clade_ids_for_skip is None:
             root_clade_ids_for_skip = [
@@ -374,25 +429,27 @@ def Pi_wave_forward(
         _progress("done")
 
     with _nvtx_range("Pi finalize permute"):
-        if return_root_rows:
+        if output_intent.emit_root_rows:
             Pi_root_rows = Pi[wave_layout['root_clade_ids']]
         else:
             Pi_root_rows = None
 
-        if return_original:
+        if output_intent.emit_original_pi:
             perm = wave_layout['perm']
             Pi_orig = Pi[perm]
         else:
             Pi_orig = None
 
-    Pi_wave_ordered = None if return_root_rows else Pi
+    Pi_wave_ordered = Pi if output_intent.emit_wave_ordered_pi else None
 
     return {
         'Pi': Pi_orig,
         'Pi_root_rows': Pi_root_rows,
         'Pi_wave_ordered': Pi_wave_ordered,
-        'Pibar_wave_ordered': Pibar if return_saved_state else None,
-        'uniform_pibar_row_max': uniform_pibar_row_max if return_saved_state else None,
+        'Pibar_wave_ordered': Pibar if output_intent.retain_saved_state else None,
+        'uniform_pibar_row_max': (
+            uniform_pibar_row_max if output_intent.retain_saved_state else None
+        ),
         'root_logsumexp_trace': root_logsumexp_trace,
         'Pi_wave_iterations': pi_wave_iterations,
         'Pi_wave_converged': pi_wave_converged,
