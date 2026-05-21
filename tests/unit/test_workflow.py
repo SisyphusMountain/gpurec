@@ -119,6 +119,16 @@ def test_run_config_json_roundtrip(tmp_path: Path):
     assert loaded.out_dir.is_absolute()
 
 
+def test_workflow_config_import_does_not_load_public_api_package():
+    result = _run_python_snippet(
+        "import sys; import gpurec.workflow.config; "
+        "print('gpurec.api' in sys.modules)"
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "False"
+
+
 def test_run_config_from_json_resolves_relative_paths_from_config_file(
     tmp_path: Path,
 ):
