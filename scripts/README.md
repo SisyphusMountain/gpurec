@@ -4,8 +4,12 @@ The installed `gpurec` CLI is the supported workflow for general optimization,
 checkpointing, and sampling:
 
 ```bash
-gpurec optimize --species-tree S.tree --families-file families.txt --out-dir out
+gpurec optimize --species-tree S.tree --families-file families.txt --out-dir out --device cuda
 ```
+
+The optimized workflow currently requires CUDA.  CPU-only checkouts can still
+run config parsing, help, packaging, and unit-level hygiene checks, but not the
+optimized likelihood workflow.
 
 The scripts in this directory are checkout-local experiment launchers,
 diagnostics, and compatibility helpers.  The large launchers
@@ -32,7 +36,7 @@ HOGENOM experiment needs that behavior.
 | `optimize_hogenom_ccp_specieswise_uniform.py` | Fixed-dataset specieswise-uniform reproducer. | Candidate for deletion or migration after helper reuse and output expectations are documented. |
 | `hogenom_opt_helpers.py` | Shared helper for legacy uniform launchers. | Keep only while the fixed-dataset launchers remain. |
 | `optimize_hogenom_penalty316_kkt.py` | One-off branch-scale penalty/KKT analysis. | Archive or migrate with a tiny fixture test before changing its loader or output schema. |
-| `make_hogenom_branchscale_penalty_report.py` | One-off LaTeX report builder. | Stale relative to newer timestamped run directories; document the expected sweep layout before updating or deleting. |
+| `make_hogenom_branchscale_penalty_report.py` | One-off LaTeX report builder. | Stale relative to newer timestamped run directories. Expected layout: `penalty_*` child directories with `history.jsonl`, `branchscaled_node_rates_final.tsv`, optional `run_config.json`, and `tree_plots/rates_final.png`; timestamped launcher outputs must be copied or symlinked under `penalty_*` names before this historical script discovers them. Delete or migrate once branchscaled reporting is owned by the supported CLI. |
 | `profile_hogenom_ccp_pass.py` | Internal checkout-local profiler. | Keep as a CUDA/HOGENOM profiler, not as a portable benchmark or public API contract. |
 | `compare_backtracking_alerax_events.py` | Checkout-local AleRax comparison helper. | Keep for validation runs that have AleRax output and local HOGENOM data. |
 | `export_hogenom_rates_from_checkpoint.py` | HOGENOM checkpoint rate exporter. | Keep as a utility for local analysis; promote only if rate-export format becomes a supported CLI feature. |

@@ -422,6 +422,11 @@ def test_top_level_exports_backtracking_surface():
 
 
 def test_top_level_exports_workflow_surface():
+    assert "load_checkpoint_config" not in workflow.__all__
+    assert "load_checkpoint_config" not in gpurec.__all__
+    assert not hasattr(workflow, "load_checkpoint_config")
+    assert not hasattr(gpurec, "load_checkpoint_config")
+
     assert set(workflow.__all__) <= set(dir(workflow))
     for name in workflow.__all__:
         assert name in gpurec.__all__

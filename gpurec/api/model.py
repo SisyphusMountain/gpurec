@@ -1402,7 +1402,12 @@ class GeneReconModel(torch.nn.Module):
         return [] if self._static is None else [self._static]
 
     def materialize_batches(self) -> list[BatchMetadata]:
-        """Build all resident batch static states and return their metadata."""
+        """Build all resident batch static states and return metadata copies.
+
+        In resident-batch mode this forces every batch static state to be built
+        before returning.  The returned list is a copy of ``batch_metadata``, so
+        callers can inspect batch ownership without mutating model bookkeeping.
+        """
         if self._batched_resident:
             for batch_idx in range(len(self._batch_specs)):
                 self._ensure_batch_static(batch_idx)
@@ -1638,7 +1643,13 @@ class GeneReconModel(torch.nn.Module):
         return _GeneReconFullLossFunction.apply(self.theta, self)
 
     def full_loss_for_theta(self, theta: torch.Tensor) -> torch.Tensor:
-        """Stream every resident batch using an explicit theta tensor."""
+        """Stream every resident batch using an explicit theta tensor.
+
+        When gradients are enabled and ``theta`` requires gradients, the method
+        uses the gradient-producing full-batch streaming path.  Under
+        ``torch.no_grad()`` or with a non-differentiable tensor, it uses the
+        loss-only streaming path.
+        """
         if torch.is_grad_enabled() and theta.requires_grad:
             return _GeneReconFullLossFunction.apply(theta, self)
         with torch.no_grad():

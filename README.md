@@ -104,6 +104,13 @@ row-wise optimizers.  In `global` or `specieswise` mode, use
 `model(reduce="per_family")` under `torch.no_grad()` only as a diagnostic
 shared-theta breakdown; independent per-family gradients are not defined there.
 
+`model.materialize_batches()` builds every resident batch static state and
+returns a copy of the batch metadata list, which is useful before diagnostics or
+solver reconfiguration that should touch every batch.  `model.full_loss_for_theta(theta)`
+streams all resident batches with an explicit theta tensor; differentiable
+probes use the gradient-producing streaming path, while calls made under
+`torch.no_grad()` use the loss-only streaming path.
+
 For large global/uniform datasets, `UniformChunkedReconModel.loss_and_grad()`
 returns `(loss, grad, stats)` for direct stochastic or sampled-chunk optimizers.
 The stats dictionary includes selected chunk/family counts, timing fields,
@@ -173,15 +180,18 @@ paths in JSON configs are resolved from the config file's directory; relative
 paths passed as explicit CLI flags are resolved from the current working
 directory.
 For a source checkout or source archive, a checked minimal JSON config and tiny
-AleRax-style fixture live under `examples/`.  Inspect or adapt:
+AleRax-style fixture live under `examples/`.  The CLI command shape is:
 
 ```bash
 gpurec optimize --config examples/minimal-run-config.json
 ```
 
-The checked config is a source-tree smoke for the retained optimized path and
-sets `"device": "cuda"`.  The tiny tree files are portable, but the current
-optimized likelihood implementation is not a CPU fallback.
+The checked config is a source-tree config/parser fixture and sets `"device": "cuda"`.
+The tiny tree files are portable, but the current optimized
+likelihood implementation is not a CPU fallback.  The retained Pi
+backward/gradient path currently requires more than 256 postorder species nodes
+(`S > 256`), so this tiny fixture is not an end-to-end optimizer smoke until a
+small-species backward fallback is restored.
 
 Installed wheels do not install the `examples/` directory as runtime package
 data; copy or adapt a flat JSON config alongside your own tree files instead:
@@ -257,6 +267,10 @@ summaries for monitoring.
 does not carry run configuration, family ordering, or species ordering metadata;
 use `checkpoints/best.pt` or `checkpoints/latest.pt` whenever a workflow needs
 to restore parameters into a model or sample reconciliation scenarios.
+Python tooling that needs checkpoint configuration metadata should read
+`load_checkpoint(path)["config"]` from `gpurec.workflow.checkpoint` and pass it
+to `RunConfig.from_dict(...)`; no separate public `load_checkpoint_config`
+helper is supported.
 
 Resume starts from the checkpoint `next_step`.  If `next_step` already equals
 the configured `steps`, `gpurec optimize --resume-from ...` performs only the

@@ -6297,6 +6297,75 @@ touched profiler/hygiene files compile, the focused inline-path guard reports
 \texttt{1 passed}, repository hygiene reports \texttt{51 passed}, and full
 collection reports \texttt{890 tests collected}.
 
+The branchscale penalty report script now documents its legacy input contract
+before any loader rewrite.  \texttt{scripts/make\_hogenom\_branchscale\_penalty\_report.py}
+is explicitly a checkout-local one-off report builder for immediate
+\texttt{penalty\_*} children containing \texttt{history.jsonl},
+\texttt{branchscaled\_node\_rates\_final.tsv}, optional
+\texttt{run\_config.json}, and \texttt{tree\_plots/rates\_final.png}.  The
+source/help text and scripts ownership matrix now state that timestamped
+launcher outputs must be copied or symlinked under \texttt{penalty\_*} names,
+and that the hard-coded May 18, 2026 date plus 1325-branch caption are
+original-report assumptions to migrate or archive/delete with the script.  The
+touched script and hygiene test compile, the focused guard reports
+\texttt{2 passed}, repository hygiene reports \texttt{52 passed}, and full
+collection reports \texttt{891 tests collected}.
+
+The checkout-local configuration docs now make the CUDA boundary explicit
+across the script and documentation maps.  \texttt{scripts/README.md} shows
+\texttt{--device cuda} in the supported CLI example and states that CPU-only
+checkouts can run help, config, packaging, and unit-level hygiene checks but not
+the optimized likelihood workflow.  \texttt{docs/README.md} now points to
+\texttt{../examples/minimal-run-config.json} as a source-checkout/source-archive
+CUDA smoke for the retained optimized path, and to
+\texttt{../configs/hogenom\_ccp\_wandb.yaml} as a checkout-local HOGENOM
+Hydra/W\&B experiment config rather than a portable example.  Release readiness
+also has a guard for the existing license/no-publish blocker wording without
+choosing a license.  The touched hygiene/release tests compile, the focused
+docs guard reports \texttt{4 passed}, repository hygiene reports
+\texttt{53 passed}, release metadata reports \texttt{40 passed, 1 skipped}, and
+full collection reports \texttt{893 tests collected}.
+
+The Rust backtracking schema finding is now reflected as completed in the
+current audit state instead of remaining stale in the initial findings list.
+\texttt{crates/gpurec-backtrack/src/lib.rs} already documents the JSON payload
+schema: row-major matrix layout, base-2 log units, the \texttt{-1e300}
+negative-infinity sentinel, postorder species indexing, clade-indexed
+leaf/split bounds, and natural-space nonnegative origination weights.  A new
+repository hygiene guard pins those source comments together with the
+validation boundary strings for matrix-shape overflow, out-of-range leaf
+species, invalid split clade IDs, and non-finite split probabilities.  The
+touched hygiene file compiles, the focused Rust schema guard reports
+\texttt{1 passed}, repository hygiene reports \texttt{54 passed}, and full
+collection reports \texttt{894 tests collected}.
+
+The unsupported checkpoint-config helper surface is now documented as removed.
+\texttt{README.md} tells Python tooling to read
+\texttt{load\_checkpoint(path)["config"]} from
+\texttt{gpurec.workflow.checkpoint} and reconstruct with
+\texttt{RunConfig.from\_dict(...)}, with no separate public
+\texttt{load\_checkpoint\_config} helper.  The audit finding now reflects that
+the helper is absent from package code rather than describing it as a current
+definition-only deletion candidate.  Workflow export coverage explicitly keeps
+\texttt{load\_checkpoint\_config} out of \texttt{gpurec.workflow.\_\_all\_\_}
+and top-level \texttt{gpurec.\_\_all\_\_}.  The touched hygiene/workflow tests
+compile, the focused checkpoint/Rust selector reports \texttt{3 passed},
+repository hygiene reports \texttt{55 passed}, and full collection reports
+\texttt{895 tests collected}.
+
+The public full-batch helper contracts are now documented beside their existing
+CPU-safe behavior guards.  \texttt{README.md} and
+\texttt{GeneReconModel.materialize\_batches()} state that materialization builds
+every resident batch static state and returns a copy of the batch metadata list.
+\texttt{README.md} and \texttt{GeneReconModel.full\_loss\_for\_theta(theta)}
+state that differentiable explicit-theta probes use the gradient-producing
+streaming path, while \texttt{torch.no\_grad()} calls use the loss-only path.
+The audit finding now records this as covered instead of only indirectly
+tested.  The touched model/hygiene/workflow files compile, the focused workflow
+selector reports \texttt{3 passed, 434 deselected}, the focused documentation
+guard reports \texttt{1 passed}, repository hygiene reports \texttt{56 passed},
+and full collection reports \texttt{896 tests collected}.
+
 The genewise-only per-family NLL contract is now explicit before any broader
 shared-theta implementation work.  The README and
 \texttt{GeneReconModel.full\_nll\_per\_family()} docstring state that

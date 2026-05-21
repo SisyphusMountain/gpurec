@@ -1,5 +1,10 @@
 """Backward pass: retained fused CUDA path for Pi adjoints.
 
+The production Pi backward/gradient path is the retained fused CUDA path for
+``float32``/``float64`` tensors and currently requires ``S > 256`` species
+nodes.  Tiny species trees are useful for parser/config tests but need a
+small-species backward fallback before they can be end-to-end optimizer smokes.
+
 Native self-loop CUDA prototypes are experimental diagnostics.  ``auto`` and
 ``enabled`` modes fall back to the retained Triton self-loop path on optional
 ``ImportError``, ``RuntimeError``, or ``ValueError`` failures; required modes
@@ -53,7 +58,8 @@ def Pi_wave_backward(
 
     Computes dL/dPi via Neumann series per wave (root→leaves), then
     accumulates parameter gradients.  Always operates in batched mode
-    internally; a single gene tree (family_idx=None) is handled as G=1.
+    internally; a single gene tree (family_idx=None) is handled as G=1.  The
+    retained fused path requires CUDA, ``float32``/``float64``, and ``S > 256``.
 
     Args:
         wave_layout: dict from build_wave_layout()

@@ -23,6 +23,11 @@ file as the map for deeper context.
   cleanup and verification work.
 - `release-readiness.md`: release blockers, clean-checkout hygiene, and
   packaging verification gates.
+- `../examples/minimal-run-config.json`: source-checkout/source-archive CUDA
+  config/parser fixture for the retained optimized path, not a CPU fallback and
+  not an end-to-end optimizer smoke while Pi backward requires `S > 256`.
+- `../configs/hogenom_ccp_wandb.yaml`: checkout-local HOGENOM Hydra/W&B
+  experiment config, not a portable example.
 - `../notebooks/README.md`: ownership note for tracked notebooks.  The
   notebooks themselves are checkout-local HOGENOM analysis artifacts, not
   portable examples.

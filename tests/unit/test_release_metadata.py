@@ -790,6 +790,22 @@ def test_release_readiness_orders_clean_checkout_before_build():
     assert "pytest -q tests/integration/test_rust_backtracking_fixture.py" in guide
 
 
+def test_release_readiness_preserves_license_no_publish_blocker():
+    guide = (ROOT / "docs" / "release-readiness.md").read_text(encoding="utf-8")
+
+    for token in (
+        "Required Before Redistribution",
+        "Choose and add a project license",
+        "top-level `LICENSE` file",
+        "matching `pyproject.toml` license metadata",
+        "license classifier",
+        "currently expected to fail",
+        "Do not bypass it for redistribution",
+        "Do not publish artifacts until the license",
+    ):
+        assert token in guide
+
+
 def test_release_readiness_smokes_top_level_exports():
     guide = (ROOT / "docs" / "release-readiness.md").read_text(encoding="utf-8")
 
@@ -861,6 +877,11 @@ def test_readme_scopes_example_config_to_source_artifacts():
 
     assert "For a source checkout or source archive" in readme
     assert "examples/minimal-run-config.json" in readme
+    assert "source-tree config/parser fixture" in readme
+    assert 'sets `"device": "cuda"`' in readme
+    assert "not a CPU fallback" in readme
+    assert "S > 256" in readme
+    assert "not an end-to-end optimizer smoke" in readme
     assert "Installed wheels do not install the `examples/` directory" in readme
     assert '"species_tree": "S.tree"' in readme
     assert '"families_file": "families.txt"' in readme

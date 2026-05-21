@@ -51,12 +51,12 @@ evidence is thin.
 
 ### Runtime Contracts And Algorithm Edges
 
-1. Small-species backward behavior is unclear.  `Pi_wave_backward` rejects
-   non-CUDA, unsupported dtypes, and `S <= 256` at `gpurec/core/backward.py:100`
-   and `gpurec/core/backward.py:104`.  GPU backward coverage uses
-   `test_trees_1000`, while user docs and examples show tiny CUDA configs.
-   Document this as an intentional limitation or add a tested fallback before
-   changing backward logic.
+1. Small-species backward behavior is now documented as an intentional retained
+   fused-path limitation.  `Pi_wave_backward` rejects non-CUDA, unsupported
+   dtypes, and `S <= 256`.  README and the docs map state that the checked tiny
+   CUDA config is a config/parser fixture, not an end-to-end optimizer smoke,
+   because the retained Pi backward/gradient path currently requires `S > 256`
+   until a small-species backward fallback is restored.
 
 2. `ancestors_T` is optional by signature but required in practice.
    `E_step(..., ancestors_T=None)` and `E_fixed_point(..., ancestors_T=None)`
@@ -189,22 +189,20 @@ evidence is thin.
     by monkeypatching the internal chunk evaluator rather than constructing a
     CUDA model.
 
-19. `gpurec.workflow.checkpoint.load_checkpoint_config()` is an unreferenced
-    helper.  It is not exported by `gpurec.workflow`, not exported at the
-    package top level, and `rg "load_checkpoint_config"` finds only the
-    definition.  Removing it leaves the documented checkpoint surface
-    (`save_checkpoint`, `load_checkpoint`, and `restore_model_theta`) intact and
-    reduces an otherwise unsupported module-level API.
+19. `gpurec.workflow.checkpoint.load_checkpoint_config()` has been removed from
+    the package code and is not exported by `gpurec.workflow` or the package top
+    level.  Python tooling that needs checkpoint configuration metadata should
+    use `load_checkpoint(path)["config"]` from `gpurec.workflow.checkpoint` and
+    pass it to `RunConfig.from_dict(...)`; no separate public
+    `load_checkpoint_config` helper is supported.
 
 20. `GeneReconModel.materialize_batches()` and
-    `GeneReconModel.full_loss_for_theta(theta)` are public API helpers whose
-    contracts are only indirectly exercised by CUDA integration coverage.
-    `materialize_batches()` should build every resident batch and return a copy
-    of batch metadata; `full_loss_for_theta(theta)` should stream all resident
-    batches with `need_grad=True` for differentiable explicit-theta probes and
-    with `need_grad=False` for no-grad probes.  Both contracts can be pinned
-    with CPU-safe monkeypatched model instances before any runtime behavior
-    change.
+    `GeneReconModel.full_loss_for_theta(theta)` now have explicit public
+    contracts in README and method docstrings, plus CPU-safe unit guards.
+    `materialize_batches()` builds every resident batch static state and returns
+    a metadata-list copy; `full_loss_for_theta(theta)` streams all resident
+    batches with the gradient-producing path for differentiable explicit-theta
+    probes and with the loss-only path under `torch.no_grad()`.
 
 ### Scripts, Rust, Profiling, And Examples
 
@@ -220,31 +218,34 @@ evidence is thin.
     reference has been removed, and the retained profiler contract now lives in
     README/source-checkout benchmark docs.
 
-23. `scripts/make_hogenom_branchscale_penalty_report.py` appears stale relative
-    to current run-directory naming.  It only loads `penalty_*` directories at
-    lines 103-110, while newer launchers create timestamped names, and the
-    report text hard-codes a date and "1325 branch multipliers".
+23. `scripts/make_hogenom_branchscale_penalty_report.py` is now documented as
+    a checkout-local one-off report builder for the original branchscale
+    penalty sweep.  It intentionally discovers only `penalty_*` child
+    directories, while newer launchers can create timestamped names, and its
+    report text preserves the original hard-coded date and "1325 branch
+    multipliers" caption until the script is either migrated to data-driven
+    supported CLI reporting or archived/deleted.
 
-24. `configs/hogenom_ccp_wandb.yaml` is not a portable smoke config.  It assumes
-    local HOGENOM data paths, CUDA, per-step checkpointing, and online W&B.  It
-    should be documented as a full local experiment config rather than a general
-    example.
+24. `configs/hogenom_ccp_wandb.yaml` is documented as a checkout-local full
+    HOGENOM Hydra/W&B experiment config rather than a portable smoke example.
+    The docs map now points users to it separately from the flat JSON example
+    config.
 
 25. `examples/minimal-run-config.json` defaults to `"device": "cuda"` even
-    though the tiny fixtures are otherwise portable.  This is a documentation
-    and reproducibility footgun for CPU-only users.
+    though the tiny fixtures are otherwise portable.  README and the docs map
+    now state that it is a source-checkout/source-archive CUDA smoke for the
+    retained optimized path, not a CPU fallback.  `scripts/README.md` also
+    makes the supported CLI example explicit about `--device cuda`.
 
-26. Rust backtracking input validation is shape-focused but numeric contracts
-    are not fully documented.  Matrix validation currently computes
-    `rows * cols` directly in `crates/gpurec-backtrack/src/lib.rs:32`, which can
-    panic on overflow in debug builds instead of returning `InvalidInput`.
-    Public Rust payload types also lack schema docs for row-major matrices,
-    base-2 log units, the `-1e300` sentinel, postorder species indexing,
-    leaf/split bounds, and origination probability semantics.  Rust validation
-    is thinner than the Python bridge for leaf species indices and finite/range
-    contracts, while origination probabilities are log-converted only if
-    positive around line 274.  Add schema docs and targeted tests before
-    changing sampler behavior.
+26. Rust backtracking payload schema and validation boundaries are now
+    documented in `crates/gpurec-backtrack/src/lib.rs`.  The source documents
+    row-major matrix layout, base-2 log units, the `-1e300` negative-infinity
+    sentinel, postorder species indexing, clade-indexed leaf/split bounds, and
+    natural-space nonnegative origination weights.  Matrix shape products use
+    checked multiplication and report `InvalidInput` on overflow, and the Rust
+    preparation path rejects non-finite log/weight payloads, out-of-range leaf
+    species, invalid split clade IDs, negative origination weights, and
+    nonpositive `max_events` before sampling.
 
 27. Some profiling/evaluation scripts encode brittle external file-format
     assumptions.  `profiling/evaluate_hogenom_alerax_rates.py:29` reads only
@@ -469,6 +470,18 @@ staleness found above:
   references and requires absent tracked-looking paths to be explicitly marked
   historical, optional, missing, or otherwise not reproducible from a clean
   checkout.
+- `scripts/make_hogenom_branchscale_penalty_report.py` now documents its
+  legacy `penalty_*` sweep layout, timestamped-output mismatch, and hard-coded
+  original-report assumptions before any loader/report rewrite.  `scripts/README.md`
+  records the same expected layout and delete-or-migrate criterion.
+- `scripts/README.md` now shows `--device cuda` in its supported CLI example
+  and states that CPU-only checkouts can run help/config/package/unit hygiene
+  checks but not the optimized likelihood workflow.
+- `docs/README.md` now distinguishes the source-checkout/source-archive CUDA
+  smoke config from the checkout-local HOGENOM Hydra/W&B config, so users do
+  not have to infer portability from README alone.
+- `tests/unit/test_release_metadata.py` now guards the existing
+  release-readiness license/no-publish wording without choosing a license.
 - `docs/second-order-optimization-opportunities.md` no longer names a missing
   tracked benchmark file as an existing related file and no longer relies on a
   stale integration-test line number.
@@ -549,10 +562,6 @@ staleness found above:
   `UniformChunkedReconModel.loss_and_grad(reduction="full_sum_estimate")` with a
   CPU-safe monkeypatched evaluator, asserting that both returned loss and
   gradient are scaled by `total_families / selected_families`.
-- `tests/unit/test_workflow.py` now needs CPU-safe public API guards for
-  `GeneReconModel.materialize_batches()` and
-  `GeneReconModel.full_loss_for_theta(theta)` before any runtime change touches
-  resident batch materialization or explicit-theta full-loss streaming.
 - `tests/unit/test_workflow.py` now covers those public API contracts with
   CPU-safe monkeypatched model instances: resident batch materialization must
   build every batch and return a metadata-list copy, and explicit-theta
@@ -1276,6 +1285,59 @@ not edit files.  New or still-open findings from that refresh are:
   51 passed after adding the historical inline-path reference guard.
 - `CUDA_VISIBLE_DEVICES='' python -m pytest --collect-only -q`: 890 tests
   collected after adding the historical inline-path reference guard.
+- `python -m py_compile scripts/make_hogenom_branchscale_penalty_report.py tests/unit/test_repository_hygiene.py`:
+  passed after documenting the legacy branchscale report layout.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_repository_hygiene.py::test_scripts_readme_lists_tracked_scripts_in_ownership_matrix tests/unit/test_repository_hygiene.py::test_branchscale_penalty_report_documents_legacy_layout_and_staleness -q`:
+  2 passed after guarding the branchscale report source/help and scripts
+  ownership matrix.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_repository_hygiene.py -q`:
+  52 passed after adding the branchscale report documentation guard.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest --collect-only -q`: 891 tests
+  collected after adding the branchscale report documentation guard.
+- `python -m py_compile tests/unit/test_repository_hygiene.py tests/unit/test_release_metadata.py`:
+  passed after adding CUDA config-map and release license-blocker guards.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_repository_hygiene.py::test_hogenom_scripts_are_marked_as_legacy_experiment_surface tests/unit/test_repository_hygiene.py::test_docs_map_distinguishes_cuda_smoke_from_checkout_local_config tests/unit/test_release_metadata.py::test_release_readiness_preserves_license_no_publish_blocker tests/unit/test_release_metadata.py::test_readme_scopes_example_config_to_source_artifacts -q`:
+  4 passed after guarding CUDA-only example/config docs and release no-publish
+  wording.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_repository_hygiene.py -q`:
+  53 passed after adding the docs-map CUDA/config guard.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_release_metadata.py -q`:
+  40 passed, 1 skipped after adding the release-readiness license blocker guard.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest --collect-only -q`: 893 tests
+  collected after adding the CUDA/config and release-readiness guards.
+- `python -m py_compile tests/unit/test_repository_hygiene.py`: passed after
+  adding the Rust backtracking source-schema documentation guard.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_repository_hygiene.py::test_rust_backtracking_source_documents_payload_schema_and_validation -q`:
+  1 passed after guarding the Rust payload schema comments and validation
+  boundaries in `crates/gpurec-backtrack/src/lib.rs`.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_repository_hygiene.py -q`:
+  54 passed after adding the Rust backtracking source-schema documentation
+  guard.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest --collect-only -q`: 894 tests
+  collected after adding the Rust backtracking source-schema documentation
+  guard.
+- `python -m py_compile tests/unit/test_repository_hygiene.py tests/unit/test_workflow.py`:
+  passed after documenting the checkpoint config metadata surface and guarding
+  that `load_checkpoint_config` remains out of public exports.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_repository_hygiene.py::test_rust_backtracking_source_documents_payload_schema_and_validation tests/unit/test_repository_hygiene.py::test_project_readme_documents_checkpoint_config_metadata_surface tests/unit/test_workflow.py::test_top_level_exports_workflow_surface -q`:
+  3 passed after expanding the Rust schema guard and adding checkpoint config
+  surface guards.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_repository_hygiene.py -q`:
+  55 passed after adding the checkpoint config metadata README guard.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest --collect-only -q`: 895 tests
+  collected after adding the checkpoint config metadata and export guards.
+- `python -m py_compile gpurec/api/model.py tests/unit/test_repository_hygiene.py tests/unit/test_workflow.py`:
+  passed after documenting the `materialize_batches()` and
+  `full_loss_for_theta(theta)` public helper contracts.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_workflow.py -q -k 'materialize_batches or full_loss_for_theta'`:
+  3 passed, 434 deselected after confirming batch materialization and
+  explicit-theta full-loss streaming behavior.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_repository_hygiene.py::test_project_readme_and_model_docstrings_document_full_batch_helpers -q`:
+  1 passed after adding README/docstring guards for those public helpers.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_repository_hygiene.py -q`:
+  56 passed after adding the public helper documentation guard.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest --collect-only -q`: 896 tests
+  collected after adding the public helper documentation guard.
 
 ## Recommended Next Order
 

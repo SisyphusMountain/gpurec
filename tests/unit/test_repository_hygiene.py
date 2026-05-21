@@ -241,12 +241,44 @@ def test_checked_fixture_contracts_are_documented():
     assert rust_fixture["origination_probs"] == [0.0, 0.0, 1.0]
 
 
+def test_rust_backtracking_source_documents_payload_schema_and_validation():
+    root = Path(__file__).resolve().parents[2]
+    source = (root / "crates" / "gpurec-backtrack" / "src" / "lib.rs").read_text(
+        encoding="utf-8"
+    )
+
+    for token in (
+        "The JSON schema mirrors the Python exporter",
+        "base-2 log values",
+        "`-1e300` used as the practical negative-infinity",
+        "Species indices use the postorder order",
+        "Row-major matrix used by the JSON backtracking schema",
+        "data[row * cols + col]",
+        "rows*cols overflows usize",
+        "parent`, `left`, and `right` are clade indices",
+        "`log_prob` is the base-2 log conditional split probability",
+        "`origination_probs`, when present, are ordinary",
+        "nonnegative weights over species",
+        "zero weights are treated as impossible",
+        "{name} has length {got}, expected {expected}",
+        "root_clade {} is out of bounds",
+        "leaf_species[{idx}] is out of bounds",
+        "origination_probs contains negative value",
+        "max_events must be positive",
+        "split {idx} has clade outside",
+        "split {idx} log_prob is non-finite",
+    ):
+        assert token in source
+
+
 def test_hogenom_scripts_are_marked_as_legacy_experiment_surface():
     root = Path(__file__).resolve().parents[2]
     scripts_readme = (root / "scripts" / "README.md").read_text(encoding="utf-8")
     project_readme = (root / "README.md").read_text(encoding="utf-8")
 
     assert "gpurec optimize" in scripts_readme
+    assert "--device cuda" in scripts_readme
+    assert "optimized workflow currently requires CUDA" in scripts_readme
     assert "legacy" in scripts_readme
     assert "HOGENOM reproducers" in scripts_readme
     assert "legacy checkout-local experiment launchers" in project_readme
@@ -259,6 +291,24 @@ def test_hogenom_scripts_are_marked_as_legacy_experiment_surface():
         script_text = (root / "scripts" / script_name).read_text(encoding="utf-8")
         assert script_name in scripts_readme
         assert "Legacy checkout-local HOGENOM experiment launcher" in script_text
+
+
+def test_docs_map_distinguishes_cuda_smoke_from_checkout_local_config():
+    root = Path(__file__).resolve().parents[2]
+    docs_readme = (root / "docs" / "README.md").read_text(encoding="utf-8")
+
+    for token in (
+        "../examples/minimal-run-config.json",
+        "source-checkout/source-archive CUDA",
+        "config/parser fixture",
+        "not a CPU fallback",
+        "not an end-to-end optimizer smoke",
+        "S > 256",
+        "../configs/hogenom_ccp_wandb.yaml",
+        "checkout-local HOGENOM Hydra/W&B",
+        "not a portable example",
+    ):
+        assert token in docs_readme
 
 
 def test_gpu_tests_use_explicit_module_level_markers():
@@ -744,6 +794,74 @@ def test_project_readme_documents_genewise_per_family_api_contract():
         assert token in normalized
 
 
+def test_project_readme_and_model_docstrings_document_full_batch_helpers():
+    root = Path(__file__).resolve().parents[2]
+    project_readme = (root / "README.md").read_text(encoding="utf-8")
+    normalized_readme = " ".join(project_readme.split())
+    model_module = ast.parse(
+        (root / "gpurec" / "api" / "model.py").read_text(encoding="utf-8")
+    )
+    model_class = next(
+        node
+        for node in model_module.body
+        if isinstance(node, ast.ClassDef) and node.name == "GeneReconModel"
+    )
+    docstrings = {
+        node.name: " ".join((ast.get_docstring(node) or "").split())
+        for node in model_class.body
+        if isinstance(node, ast.FunctionDef)
+        and node.name in {"materialize_batches", "full_loss_for_theta"}
+    }
+
+    for token in (
+        "`model.materialize_batches()` builds every resident batch static state",
+        "returns a copy of the batch metadata list",
+        "`model.full_loss_for_theta(theta)` streams all resident batches",
+        "differentiable probes use the gradient-producing streaming path",
+        "calls made under `torch.no_grad()` use the loss-only streaming path",
+    ):
+        assert token in normalized_readme
+
+    for token in (
+        "Build all resident batch static states",
+        "returned list is a copy",
+        "without mutating model bookkeeping",
+    ):
+        assert token in docstrings["materialize_batches"]
+
+    for token in (
+        "Stream every resident batch using an explicit theta tensor",
+        "uses the gradient-producing full-batch streaming path",
+        "uses the loss-only streaming path",
+    ):
+        assert token in docstrings["full_loss_for_theta"]
+
+
+def test_small_species_backward_limitation_is_documented_publicly():
+    root = Path(__file__).resolve().parents[2]
+    readme = (root / "README.md").read_text(encoding="utf-8")
+    docs_readme = (root / "docs" / "README.md").read_text(encoding="utf-8")
+    source = (root / "gpurec" / "core" / "backward.py").read_text(
+        encoding="utf-8"
+    )
+
+    for text in (readme, docs_readme):
+        for token in (
+            "not a CPU fallback",
+            "S > 256",
+            "not an end-to-end optimizer smoke",
+        ):
+            assert token in text
+
+    for token in (
+        "currently requires ``S > 256`` species",
+        "small-species backward fallback",
+        "requires CUDA, ``float32``/``float64``, and ``S > 256``",
+        'raise RuntimeError("Pi_wave_backward fused path requires S > 256")',
+    ):
+        assert token in source
+
+
 def test_project_readme_documents_leaf_species_mapping_contract():
     root = Path(__file__).resolve().parents[2]
     project_readme = (root / "README.md").read_text(encoding="utf-8")
@@ -759,6 +877,19 @@ def test_project_readme_documents_leaf_species_mapping_contract():
         "`GeneDataset(..., leaf_species_maps=...)`",
     ):
         assert token in normalized
+
+
+def test_project_readme_documents_checkpoint_config_metadata_surface():
+    root = Path(__file__).resolve().parents[2]
+    project_readme = (root / "README.md").read_text(encoding="utf-8")
+
+    for token in (
+        "`load_checkpoint(path)[\"config\"]`",
+        "`gpurec.workflow.checkpoint`",
+        "`RunConfig.from_dict(...)`",
+        "no separate public `load_checkpoint_config`",
+    ):
+        assert token in project_readme
 
 
 def test_newick_input_subset_is_documented_on_public_surfaces():
@@ -1207,6 +1338,38 @@ def test_scripts_readme_lists_tracked_scripts_in_ownership_matrix():
     ):
         assert token in note
     assert [name for name in script_names if name not in note] == []
+
+
+def test_branchscale_penalty_report_documents_legacy_layout_and_staleness():
+    root = Path(__file__).resolve().parents[2]
+    script = (
+        root / "scripts" / "make_hogenom_branchscale_penalty_report.py"
+    ).read_text(encoding="utf-8")
+    scripts_readme = (root / "scripts" / "README.md").read_text(encoding="utf-8")
+
+    for token in (
+        "Checkout-local branchscale penalty report builder",
+        "penalty_*",
+        "history.jsonl",
+        "branchscaled_node_rates_final.tsv",
+        "tree_plots/rates_final.png",
+        "timestamped",
+        "May 18, 2026",
+        "1325 branch multipliers",
+        "archive/delete",
+    ):
+        assert token in script
+
+    for token in (
+        "Expected layout: `penalty_*` child directories",
+        "`history.jsonl`",
+        "`branchscaled_node_rates_final.tsv`",
+        "`tree_plots/rates_final.png`",
+        "timestamped launcher outputs",
+        "Delete or migrate",
+        "supported CLI",
+    ):
+        assert token in scripts_readme
 
 
 def test_missing_inline_path_references_are_explicitly_historical_or_optional():

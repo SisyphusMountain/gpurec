@@ -1,4 +1,21 @@
 #!/usr/bin/env python3
+"""Checkout-local branchscale penalty report builder.
+
+This is a one-off report renderer for the original HOGENOM branchscale penalty
+sweep, not a general report API.  It discovers only immediate `penalty_*`
+children below `--sweep-dir`.  Each complete child is expected to contain
+`history.jsonl`, `branchscaled_node_rates_final.tsv`, and a
+`tree_plots/rates_final.png` image; `run_config.json` is read when present.
+
+Current HOGENOM launchers can write timestamped child directories, which this
+historical script does not discover unless those runs are copied or symlinked
+under `penalty_*` names.  The rendered report also preserves original-report
+prose, including the May 18, 2026 report date and the "1325 branch multipliers"
+caption.  Reuse for another dataset should first migrate those assumptions into
+data-driven fields, or archive/delete this script once branchscaled reporting is
+owned by the supported CLI.
+"""
+
 from __future__ import annotations
 
 import argparse
@@ -431,7 +448,16 @@ def render_report(sweep_dir: Path, runs: list[RunSummary]) -> str:
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Build the HOGENOM branchscale penalty sweep LaTeX report."
+        description="Build the HOGENOM branchscale penalty sweep LaTeX report.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "Expected legacy layout: --sweep-dir contains penalty_* child "
+            "directories, each with history.jsonl, "
+            "branchscaled_node_rates_final.tsv, and tree_plots/rates_final.png. "
+            "Timestamped HOGENOM launcher outputs must be copied or symlinked "
+            "under penalty_* names before this historical report builder will "
+            "discover them."
+        ),
     )
     parser.add_argument(
         "--sweep-dir",
