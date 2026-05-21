@@ -250,6 +250,46 @@ def test_build_wave_layout_rejects_leaf_row_col_length_mismatch():
         )
 
 
+@pytest.mark.parametrize(
+    ("family_clade_counts", "family_clade_offsets", "message"),
+    [
+        ([2, 2], [0], "must have matching lengths"),
+        ([2, 2], None, "must be provided together"),
+        ([2, -1], [0, 2], r"family_clade_counts\[1\] must be non-negative"),
+        ([2, 2], [0, -1], r"family_clade_offsets\[1\] must be non-negative"),
+        ([2, 2], [0, 3], r"family 1 clade range \[3, 5\) is outside C=4"),
+        ([2, 2], [0, 1], "overlaps clade 1"),
+        ([2, 1], [0, 2], "does not cover clade 3"),
+    ],
+)
+def test_build_wave_layout_rejects_invalid_family_clade_metadata(
+    family_clade_counts,
+    family_clade_offsets,
+    message,
+):
+    ccp = {
+        "C": 4,
+        "N_splits": 0,
+        "split_parents_sorted": torch.empty(0, dtype=torch.long),
+        "split_leftrights_sorted": torch.empty(0, dtype=torch.long),
+        "log_split_probs_sorted": torch.empty(0, dtype=torch.float32),
+    }
+
+    with pytest.raises(ValueError, match=message):
+        build_wave_layout(
+            [[0, 1, 2, 3]],
+            [1],
+            ccp,
+            torch.empty(0, dtype=torch.long),
+            torch.empty(0, dtype=torch.long),
+            torch.tensor([0], dtype=torch.long),
+            device="cpu",
+            dtype=torch.float32,
+            family_clade_counts=family_clade_counts,
+            family_clade_offsets=family_clade_offsets,
+        )
+
+
 def _assert_topological(waves, offsets, items):
     wave_of = {clade: wave_idx for wave_idx, wave in enumerate(waves) for clade in wave}
     for offset, item in zip(offsets, items):

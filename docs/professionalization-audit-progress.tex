@@ -6817,6 +6817,116 @@ current-theta evaluation and verifies failed
 recorded.  The touched optimizer and workflow-test modules compile, and the
 focused selector reports \texttt{1 passed}.
 
+The Python 3.10 TOML fallback finding is now covered without changing release
+metadata behavior.  \texttt{tests/unit/test\_release\_metadata.py} loads
+\texttt{scripts/check\_release\_metadata.py} directly and exercises the private
+\texttt{\_parse\_minimal\_pyproject()} fallback for the release-metadata subset:
+string and table readme/license values, multiline classifier arrays, project
+URLs, ignored unrelated tables, and the current project fields that matter when
+\texttt{tomllib} is unavailable.  The touched release metadata test and checker
+modules compile, and the focused fallback selector reports \texttt{2 passed}.
+
+The tests/Rust/docs explorer found a second Python 3.10 TOML issue before the
+first one was treated as complete.  The release checker itself has a fallback,
+but two TOML-reading unit modules imported \texttt{tomllib} during collection,
+while \texttt{pyproject.toml} advertises Python 3.10 support and the dev extra
+did not install \texttt{tomli}.  The same read-only pass also documented a
+separate Rust CLI coverage gap: the real \texttt{--samples 2 --output-dir}
+path writes \texttt{sample\_0.xml} and \texttt{sample\_1.xml}, but the tracked
+integration fixture currently covers only single-file output.  Both findings
+are now recorded in the pruning plan before any test/dependency changes.
+The Python 3.10 collection issue is now fixed: the TOML-reading unit modules use
+a \texttt{tomllib}/\texttt{tomli} conditional import, the dev extra installs
+\texttt{tomli} only for Python versions older than 3.11, and release metadata
+tests guard that dependency while Python 3.10 remains supported.
+
+The workflow/scripts explorer added two more decision-table rows before any
+optimizer or local-CLI behavior changes.  Step-level nonfinite guards are now
+stronger, but the mandatory final optimization evaluation still needs a direct
+fake-model guard so failed runs cannot append misleading \texttt{final\_eval}
+artifacts from a nonfinite loss.  The same pass found local validation and
+profiling CLIs that parse count controls as raw integers, leaving zero or
+negative values to fail late or produce empty output instead of parser-level
+errors.
+
+The core/API explorer read the current core, kernel, C++, API, and related test
+slice and found three contract gaps now documented in the pruning plan.  Direct
+\texttt{build\_wave\_layout()} callers can provide malformed
+\texttt{family\_clade\_counts}/\texttt{family\_clade\_offsets} and leave
+\texttt{family\_idx} rows uninitialized; explicit \texttt{theta\_init} and
+\texttt{full\_loss\_for\_theta(theta)} tensors need public shape validation
+before parameter extraction; and \texttt{collate\_gene\_families()} still has a
+stale docstring naming removed preprocessing and likelihood surfaces.  The
+docstring issue is now fixed and guarded in source hygiene, so the helper names
+preprocessed CCP payloads and \texttt{build\_wave\_layout()} instead of the
+removed surfaces.
+
+Verification for this slice passed at the touched-file scope.  The edited core,
+release metadata, repository hygiene, and release checker modules compile.  The
+focused selector covering the TOML fallback, Python 3.10 \texttt{tomli}
+dependency, fresh decision-table tokens, and batching docstring reports
+\texttt{5 passed}.  The full release metadata module reports
+\texttt{43 passed, 1 skipped}; the full repository hygiene module reports
+\texttt{71 passed}; full collection reports \texttt{920 tests collected}; and
+\texttt{git diff --check} passes.
+
+The Rust CLI multi-sample output gap is now guarded.  The CPU-only fixture
+integration test invokes the real \texttt{gpurec-backtrack} CLI with
+\texttt{--samples 2 --output-dir <tmpdir>}, checks that
+\texttt{sample\_0.xml} and \texttt{sample\_1.xml} are created, and parses both
+outputs against the same deterministic RecPhyloXML speciation contract as the
+single-output smoke.  The fixture README documents those output names, and a
+hygiene guard keeps that contract visible.  The touched integration and hygiene
+modules compile, the full Rust fixture integration module reports
+\texttt{3 passed}, and the focused fixture-contract hygiene guard reports
+\texttt{1 passed}.
+
+The direct \texttt{build\_wave\_layout()} family metadata gap is now guarded and
+fixed.  Direct callers must provide \texttt{family\_clade\_counts} and
+\texttt{family\_clade\_offsets} together; the metadata must have matching
+lengths, use nonnegative integer ranges, stay within \texttt{C}, avoid overlaps,
+and cover every clade before \texttt{family\_idx} is materialized.  The focused
+layout selector rejects mismatched, missing, negative, out-of-bounds,
+overlapping, and incomplete metadata while preserving the valid API family-layout
+path, and reports \texttt{8 passed}.  The touched core and scheduler-test
+modules compile.
+
+The broader affected-module sweep reports \texttt{57 passed} for the global
+wave scheduler and family-layout modules, and \texttt{117 passed, 1 skipped} for
+the Rust fixture, release metadata, and repository hygiene modules.  Full
+collection now reports \texttt{928 tests collected}, and
+\texttt{git diff --check} remains clean.
+
+The final optimization evaluation nonfinite gap is now guarded and fixed.  The
+mandatory \texttt{final\_eval} repeats the finite loss/gradient guard used by
+optimizer-step evaluations.  If the final evaluation is nonfinite, the run is
+marked \texttt{failed/nonfinite\_objective\_or\_gradient}; the final row records
+explicit \texttt{optimizer/final\_eval\_status} and
+\texttt{optimizer/final\_eval\_reason} fields; and nonfinite final metrics are
+not copied into that row.  The fake-model regression first reproduced the stale
+\texttt{not\_converged} result, then passed after the optimizer change.  The
+touched optimizer and workflow-test modules compile, the focused regression
+reports \texttt{1 passed}, and the surrounding optimization-runner selector
+reports \texttt{23 passed, 421 deselected}.
+
+The broader affected-module verification remains green after the final-eval
+change: the full workflow unit module reports \texttt{444 passed}; repository
+hygiene plus release metadata report \texttt{114 passed, 1 skipped}; and the
+global scheduler, family layout, and Rust fixture modules report
+\texttt{60 passed}.  Full collection now reports \texttt{929 tests collected},
+and \texttt{git diff --check} passes.
+
+The resume optimizer-state exception boundary is now guarded and fixed.  The
+direct fake-optimizer regression first showed that \texttt{RuntimeError} from
+\texttt{optimizer.load\_state\_dict} aborted resume instead of being treated as
+discarded state.  \texttt{OptimizationRunner.\_restore\_optimizer\_state()} now
+handles \texttt{ValueError}, \texttt{RuntimeError}, and \texttt{TypeError} as
+discardable malformed/backend-incompatible optimizer state while preserving the
+original error text in resume diagnostics.  The touched optimizer and workflow
+test modules compile, and the focused selector reports \texttt{1 passed}.
+The full workflow unit module still reports \texttt{444 passed}, and repository
+hygiene reports \texttt{71 passed} after marking this finding fixed.
+
 \section{Next Audit Targets}
 
 \begin{enumerate}[leftmargin=*]

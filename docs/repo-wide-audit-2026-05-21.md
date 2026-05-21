@@ -483,8 +483,7 @@ evidence is thin.
   the same pruning plan.  Remaining unresolved surfaces include local scripts
   that should close per-family/per-chunk models, narrow optimizer-state discard
   errors, test-only dynamic CLI compatibility attributes, branch-level Rust
-  sampler term coverage, and the Python 3.10 `_parse_minimal_pyproject()`
-  fallback.
+  sampler term coverage.
 - The stale Rust sampler help-marker finding is now fixed.  The Python
   backtracking preflight requires help text for `--samples`, `--seed`,
   `--output-dir`, `--max-events`, and `input.json`, and the missing-marker error
@@ -494,6 +493,49 @@ evidence is thin.
   but that evaluation now repeats the same finite loss/gradient guard used after
   Adam/Adagrad updates and fails with `nonfinite_objective_or_gradient` before an
   optimizer-step row or checkpoint can be recorded.
+- The Python 3.10 TOML fallback finding is now guarded.  The private
+  `_parse_minimal_pyproject()` compatibility parser has direct fixture tests for
+  the release-metadata subset needed when `tomllib` is unavailable, including
+  readme/license string-or-table values, multiline classifiers, project URLs,
+  ignored unrelated tables, and the current project fields.
+- The tests/Rust/docs follow-up explorer found a related Python 3.10 collection
+  risk outside the release checker itself.  TOML-reading unit modules imported
+  `tomllib` at module import time even though the advertised CPU matrix includes
+  Python 3.10, where the stdlib module is unavailable unless a `tomli`
+  compatibility dependency is installed.  That test-collection issue is now
+  fixed: TOML-reading unit modules use a `tomllib`/`tomli` conditional import,
+  the Python-version-scoped `tomli` dependency is in the dev extra, and release
+  metadata tests guard the dependency while Python 3.10 remains supported.  The
+  same pass also found an unguarded Rust CLI multi-sample `--output-dir`
+  contract: the library covers multi-sample sequencing and the integration
+  fixture covered only single-file output.  That gap is now guarded: the
+  CPU-only Rust fixture integration test runs the real CLI with
+  `--samples 2 --output-dir <tmpdir>`, checks `sample_0.xml` and
+  `sample_1.xml`, and parses both files against the deterministic RecPhyloXML
+  fixture contract.
+- The workflow/scripts follow-up explorer found two additional unguarded
+  workflow and local-utility surfaces.  The mandatory final optimization
+  evaluation nonfinite gap is now fixed: final evaluation repeats the finite
+  loss/gradient guard, failed final evaluations mark the run as
+  `failed/nonfinite_objective_or_gradient`, and the `final_eval` row records
+  explicit failed final-eval markers instead of copying nonfinite metrics.
+  Resume optimizer-state restore now also discards `ValueError`, `RuntimeError`,
+  and `TypeError` from `optimizer.load_state_dict`, so malformed or
+  backend-incompatible optimizer state is reported in history instead of
+  aborting resume.
+  Local validation/profiling CLIs still accept raw integer count controls, so
+  zero or negative chunk sizes, family counts, sample counts, iteration counts,
+  or wave sizes can fail late or produce no-op output.
+- The core/API follow-up explorer found three current contracts to guard before
+  scheduler or parameter-shape refactors.  The direct `build_wave_layout()`
+  family-index gap is now fixed: family count/offset metadata must be provided
+  together, have matching lengths, stay in bounds, avoid overlaps, and cover
+  every clade before `family_idx` is materialized.  Explicit `theta_init` and
+  `full_loss_for_theta(theta)` tensors still lack public shape validation before
+  parameter extraction.  The stale `collate_gene_families()` docstring found in
+  the same pass is also fixed and guarded so source docs point at preprocessed
+  CCP payloads and `build_wave_layout()` instead of removed
+  `preprocess_gene_with_species` / `likelihood_2.py` surfaces.
 
 ## Adequately Covered Or Lower-Risk Areas
 
@@ -1561,6 +1603,72 @@ not edit files.  New or still-open findings from that refresh are:
   passed after adding the LBFGS post-step nonfinite guard.
 - `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_workflow.py::test_optimization_runner_lbfgs_rejects_nonfinite_post_step_evaluation -q`:
   1 passed after guarding the finite-closure/nonfinite-current-theta LBFGS path.
+- `python -m py_compile gpurec/core/batching.py tests/unit/test_release_metadata.py tests/unit/test_repository_hygiene.py scripts/check_release_metadata.py`:
+  passed after adding Python 3.10 TOML test-import compatibility and updating
+  the stale `collate_gene_families()` docstring.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_release_metadata.py::test_minimal_pyproject_parser_extracts_release_metadata_subset tests/unit/test_release_metadata.py::test_minimal_pyproject_parser_supports_current_project_release_fields tests/unit/test_release_metadata.py::test_dev_extra_installs_tomli_for_python310_toml_tests tests/unit/test_repository_hygiene.py::test_runtime_surface_plan_records_refresh_findings_before_behavior_changes tests/unit/test_repository_hygiene.py::test_collate_gene_families_docstring_uses_current_layout_owner -q`:
+  5 passed after guarding the TOML fallback, Python 3.10 `tomli` dependency,
+  refreshed subagent findings, and current batching docstring.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_release_metadata.py -q`:
+  43 passed, 1 skipped after the Python 3.10 TOML compatibility guard.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_repository_hygiene.py -q`:
+  71 passed after recording the fresh subagent findings and source docstring
+  guard.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest --collect-only -q`: 920 tests
+  collected after adding the release metadata and repository hygiene guards.
+- `git diff --check`: passed after the fresh subagent findings, TOML
+  compatibility, and batching docstring updates.
+- `python -m py_compile tests/integration/test_rust_backtracking_fixture.py tests/unit/test_repository_hygiene.py`:
+  passed after adding the Rust CLI multi-sample output-dir fixture guard.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/integration/test_rust_backtracking_fixture.py -q`:
+  3 passed after running the real Rust CLI for both single-output and
+  `--samples 2 --output-dir` fixture paths.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_repository_hygiene.py::test_checked_fixture_contracts_are_documented -q`:
+  1 passed after documenting the `sample_0.xml` / `sample_1.xml` output-dir
+  contract in the fixture README.
+- `python -m py_compile gpurec/core/batching.py tests/unit/test_global_wave_scheduler.py`:
+  passed after adding family-clade metadata validation to `build_wave_layout()`.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_global_wave_scheduler.py::test_build_wave_layout_rejects_invalid_family_clade_metadata tests/unit/test_family_layout.py::test_build_family_wave_layout_matches_inputs_and_wave_order -q`:
+  8 passed after rejecting mismatched, missing, negative, out-of-bounds,
+  overlapping, and incomplete family metadata while preserving the valid
+  family-layout path.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_global_wave_scheduler.py tests/unit/test_family_layout.py -q`:
+  57 passed after the direct layout metadata guard.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/integration/test_rust_backtracking_fixture.py tests/unit/test_release_metadata.py tests/unit/test_repository_hygiene.py -q`:
+  117 passed, 1 skipped after the Rust fixture, release metadata, and hygiene
+  guard updates.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest --collect-only -q`: 928 tests
+  collected after adding the multi-sample Rust fixture and family metadata
+  validation parameter cases.
+- `git diff --check`: passed after the multi-sample Rust fixture and direct
+  layout metadata guard.
+- `python -m py_compile gpurec/workflow/optimize.py tests/unit/test_workflow.py`:
+  passed after adding the final-evaluation nonfinite guard.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_workflow.py::test_optimization_runner_marks_nonfinite_final_evaluation_failed -q`:
+  1 passed after proving a nonfinite mandatory final evaluation now fails the
+  run, marks the final row, and leaves the summary on the last finite objective.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_workflow.py -q -k 'optimization_runner and (mode or lbfgs or final or artifacts or resume or checkpoint)'`:
+  23 passed, 421 deselected after the final-evaluation failure handling change.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_workflow.py -q`:
+  444 passed after the final-evaluation nonfinite guard.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_repository_hygiene.py tests/unit/test_release_metadata.py -q`:
+  114 passed, 1 skipped after the refreshed audit docs and hygiene guards.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_global_wave_scheduler.py tests/unit/test_family_layout.py tests/integration/test_rust_backtracking_fixture.py -q`:
+  60 passed after the direct layout metadata and Rust multi-sample fixture
+  guards.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest --collect-only -q`: 929 tests
+  collected after adding the final-evaluation nonfinite regression.
+- `git diff --check`: passed after the final-evaluation nonfinite guard and
+  audit-doc updates.
+- `python -m py_compile gpurec/workflow/optimize.py tests/unit/test_workflow.py`:
+  passed after broadening optimizer-state resume discard handling.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_workflow.py::test_optimization_runner_reports_discarded_resume_optimizer_state -q`:
+  1 passed after verifying `ValueError`, `RuntimeError`, and `TypeError` from
+  `optimizer.load_state_dict` are all reported as discarded resume state.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_workflow.py -q`:
+  444 passed after broadening optimizer-state resume discard handling.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_repository_hygiene.py -q`:
+  71 passed after marking the resume optimizer-state finding as fixed.
 
 ## Recommended Next Order
 

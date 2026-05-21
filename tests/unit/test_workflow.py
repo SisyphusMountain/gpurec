@@ -4394,6 +4394,51 @@ def test_optimization_runner_lbfgs_rejects_nonfinite_post_step_evaluation(
     assert runner.fake_model.closed
 
 
+def test_optimization_runner_marks_nonfinite_final_evaluation_failed(tmp_path: Path):
+    class FakeFinalEvalNonfiniteModel(_WorkflowOptimizerModeModel):
+        def __init__(self):
+            super().__init__()
+            self.loss_calls = 0
+
+        def full_loss(self):
+            self.loss_calls += 1
+            if self.loss_calls == 3:
+                return self.theta.sum() * torch.tensor(float("nan"))
+            return super().full_loss()
+
+    class FakeFinalEvalNonfiniteRunner(OptimizationRunner):
+        def build_model(self):
+            self.fake_model = FakeFinalEvalNonfiniteModel()
+            return self.fake_model
+
+    config = _optimizer_mode_config(tmp_path, optimizer="adam")
+    runner = FakeFinalEvalNonfiniteRunner(config)
+
+    result = runner.run()
+
+    assert result.status == "failed"
+    assert result.reason == "nonfinite_objective_or_gradient"
+    assert math.isfinite(result.final_nll_bits)
+    assert runner.fake_model.loss_calls == 3
+    history_rows = _optimizer_mode_history_rows(config.out_dir)
+    assert [row["optimizer/phase"] for row in history_rows] == ["adam", "final_eval"]
+    assert history_rows[-1]["optimizer/final_eval_status"] == "failed"
+    assert (
+        history_rows[-1]["optimizer/final_eval_reason"]
+        == "nonfinite_objective_or_gradient"
+    )
+    assert "likelihood/data_nll_bits" not in history_rows[-1]
+    latest = load_checkpoint(config.out_dir / "checkpoints" / "latest.pt")
+    assert latest["status"]["status"] == "failed"
+    assert latest["status"]["reason"] == "nonfinite_objective_or_gradient"
+    assert latest["last_row"]["optimizer/final_eval_status"] == "failed"
+    summary = json.loads((config.out_dir / "summary.json").read_text(encoding="utf-8"))
+    assert summary["status"] == "failed"
+    assert summary["reason"] == "nonfinite_objective_or_gradient"
+    assert summary["final_nll_bits"] == pytest.approx(result.final_nll_bits)
+    assert runner.fake_model.closed
+
+
 def test_optimization_runner_run_writes_outputs_with_fake_model(tmp_path: Path):
     class FakeOptimizationModel:
         def __init__(self):
@@ -5043,13 +5088,13 @@ def test_optimization_runner_reports_discarded_resume_optimizer_state(tmp_path: 
     runner = OptimizationRunner(config)
 
     class FakeOptimizer:
-        def __init__(self, *, fail: bool = False):
-            self.fail = fail
+        def __init__(self, *, fail_with: type[Exception] | None = None):
+            self.fail_with = fail_with
             self.loaded = None
 
         def load_state_dict(self, state):
-            if self.fail:
-                raise ValueError("incompatible optimizer state")
+            if self.fail_with is not None:
+                raise self.fail_with("incompatible optimizer state")
             self.loaded = state
 
     missing = runner._restore_optimizer_state(FakeOptimizer(), None)
@@ -5076,11 +5121,19 @@ def test_optimization_runner_reports_discarded_resume_optimizer_state(tmp_path: 
     assert mismatch_optimizer.loaded is None
 
     discarded = runner._restore_optimizer_state(
-        FakeOptimizer(fail=True),
+        FakeOptimizer(fail_with=ValueError),
         {"state": ["bad"]},
     )
     assert discarded["resume_optimizer_state"] == "discarded"
     assert "incompatible optimizer state" in discarded["resume_optimizer_error"]
+
+    for error_type in (RuntimeError, TypeError):
+        discarded = runner._restore_optimizer_state(
+            FakeOptimizer(fail_with=error_type),
+            {"state": ["bad"]},
+        )
+        assert discarded["resume_optimizer_state"] == "discarded"
+        assert "incompatible optimizer state" in discarded["resume_optimizer_error"]
 
 
 def test_optimization_runner_resume_loads_checkpoint_once(tmp_path: Path, monkeypatch):

@@ -383,7 +383,7 @@ class OptimizationRunner:
             }
         try:
             optimizer.load_state_dict(state)
-        except ValueError as exc:
+        except (RuntimeError, TypeError, ValueError) as exc:
             return {
                 "resume_optimizer_state": "discarded",
                 "resume_optimizer_error": str(exc),
@@ -663,27 +663,63 @@ class OptimizationRunner:
             model.theta.grad = None
             final_loss, final_metrics = self._evaluate_and_backward(model)
             final_step = max(start_step, min(config.steps, int(final_row.get("step", -1)) + 1))
-            final_objective = float(final_loss.detach().cpu())
-            final_improved = (
-                best_nll is None
-                or final_objective < best_nll - config.best_likelihood_min_delta
+            final_eval_failed = (
+                not torch.isfinite(final_loss).item()
+                or not _is_finite_tensor(model.theta.grad)
             )
-            if final_improved:
-                best_nll = final_objective
-                best_step = final_step
-            final_row = {
-                "step": final_step,
-                "optimizer/phase": "final_eval",
-                "closure_evals": 1,
-                "theta_step_inf": 0.0,
-                "delta_likelihood_bits": None,
-                "stable_loss_steps": stable_loss_steps,
-                "best_nll_bits": best_nll,
-                "best_step": best_step,
-                **resume_info,
-                "step_s": 0.0,
-                **final_metrics,
-            }
+            if final_eval_failed:
+                status = {
+                    "status": "failed",
+                    "reason": "nonfinite_objective_or_gradient",
+                }
+                final_improved = False
+                final_nll_bits = (
+                    math.nan
+                    if previous_objective is None
+                    else float(previous_objective)
+                )
+                final_grad_inf = math.inf
+                final_row = {
+                    "step": final_step,
+                    "optimizer/phase": "final_eval",
+                    "optimizer/final_eval_status": "failed",
+                    "optimizer/final_eval_reason": (
+                        "nonfinite_objective_or_gradient"
+                    ),
+                    "closure_evals": 1,
+                    "theta_step_inf": 0.0,
+                    "delta_likelihood_bits": None,
+                    "stable_loss_steps": stable_loss_steps,
+                    "best_nll_bits": best_nll,
+                    "best_step": best_step,
+                    **resume_info,
+                    "step_s": 0.0,
+                }
+                model.theta.grad = None
+                model.clear()
+            else:
+                final_nll_bits = float(final_loss.detach().cpu())
+                final_grad_inf = float(final_metrics.get("grad/inf", math.inf))
+                final_improved = (
+                    best_nll is None
+                    or final_nll_bits < best_nll - config.best_likelihood_min_delta
+                )
+                if final_improved:
+                    best_nll = final_nll_bits
+                    best_step = final_step
+                final_row = {
+                    "step": final_step,
+                    "optimizer/phase": "final_eval",
+                    "closure_evals": 1,
+                    "theta_step_inf": 0.0,
+                    "delta_likelihood_bits": None,
+                    "stable_loss_steps": stable_loss_steps,
+                    "best_nll_bits": best_nll,
+                    "best_step": best_step,
+                    **resume_info,
+                    "step_s": 0.0,
+                    **final_metrics,
+                }
             self.history.append(final_row)
 
             final_status = {
@@ -692,7 +728,9 @@ class OptimizationRunner:
                 "elapsed_s": time.perf_counter() - started,
                 "best_nll_bits": best_nll,
                 "best_step": best_step,
-                "previous_objective": float(final_loss.detach().cpu()),
+                "previous_objective": (
+                    None if final_eval_failed else final_nll_bits
+                ),
                 "stable_loss_steps": stable_loss_steps,
             }
             if final_improved:
@@ -724,8 +762,8 @@ class OptimizationRunner:
                 "families": model.n_families,
                 "species": int(model.n_species),
                 "batches": len(model.batch_metadata),
-                "final_nll_bits": float(final_loss.detach().cpu()),
-                "final_grad_inf": float(final_row.get("grad/inf", math.inf)),
+                "final_nll_bits": final_nll_bits,
+                "final_grad_inf": final_grad_inf,
             }
             _write_final_artifacts(
                 config,
@@ -739,8 +777,8 @@ class OptimizationRunner:
                 out_dir=config.out_dir,
                 status=str(status["status"]),
                 reason=str(status["reason"]),
-                final_nll_bits=float(final_loss.detach().cpu()),
-                final_grad_inf=float(final_row.get("grad/inf", math.inf)),
+                final_nll_bits=final_nll_bits,
+                final_grad_inf=final_grad_inf,
                 best_nll_bits=None if best_nll is None else float(best_nll),
                 best_step=None if best_step is None else int(best_step),
                 steps_completed=int(final_row["step"]),

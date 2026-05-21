@@ -43,7 +43,7 @@ hogenom = [
     "pandas",
     "wandb",
 ]
-dev = ["pytest", "ipython", "PyYAML"]
+dev = ["pytest", "ipython", "PyYAML", "tomli; python_version < '3.11'"]
 release = ["build", "twine"]
 
 [tool.setuptools.packages.find]

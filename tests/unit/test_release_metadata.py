@@ -1,11 +1,11 @@
 from __future__ import annotations
 
+import importlib.util
 import os
 import re
 import shutil
 import subprocess
 import sys
-import tomllib
 from pathlib import Path
 
 import pytest
@@ -13,10 +13,27 @@ import yaml
 
 import gpurec
 
+try:
+    import tomllib
+except ModuleNotFoundError:  # pragma: no cover - exercised on Python 3.10
+    import tomli as tomllib  # type: ignore[import-not-found,no-redef]
+
 
 ROOT = Path(__file__).resolve().parents[2]
 CHECK_SCRIPT = ROOT / "scripts" / "check_release_metadata.py"
 SUBPROCESS_TIMEOUT = 60
+
+
+def _load_check_release_metadata_module():
+    spec = importlib.util.spec_from_file_location(
+        "check_release_metadata_under_test",
+        CHECK_SCRIPT,
+    )
+    if spec is None or spec.loader is None:
+        raise AssertionError("unable to load release metadata checker")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def _load_cpu_ci_workflow() -> dict:
@@ -344,6 +361,75 @@ def test_release_metadata_check_accepts_readme_table_fixture(tmp_path: Path):
     assert result.stderr == ""
 
 
+def test_minimal_pyproject_parser_extracts_release_metadata_subset():
+    checker = _load_check_release_metadata_module()
+    text = """
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+
+[project]
+name = "fixture"
+readme = { file = "README.md" }
+license = { text = "fixture license text" }
+authors = [{ name = "Fixture Maintainer" }]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "License :: OSI Approved :: MIT License",
+]
+
+[project.urls]
+Repository = "https://example.invalid/repo"
+Issues = "https://example.invalid/issues"
+Documentation = "https://example.invalid/docs"
+
+[project.scripts]
+gpurec = "gpurec.cli:main"
+""".lstrip()
+
+    parsed = checker._parse_minimal_pyproject(text)
+
+    project = parsed["project"]
+    assert project["readme"] == {"file": "README.md"}
+    assert project["license"] == {"text": "fixture license text"}
+    assert project["authors"] == '[{ name = "Fixture Maintainer" }]'
+    assert project["classifiers"] == [
+        "Development Status :: 3 - Alpha",
+        "License :: OSI Approved :: MIT License",
+    ]
+    assert project["urls"] == {
+        "Repository": "https://example.invalid/repo",
+        "Issues": "https://example.invalid/issues",
+        "Documentation": "https://example.invalid/docs",
+    }
+    assert "gpurec" not in project
+
+
+def test_minimal_pyproject_parser_supports_current_project_release_fields():
+    checker = _load_check_release_metadata_module()
+    parsed = checker._parse_minimal_pyproject(
+        (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    )
+
+    project = parsed["project"]
+    assert project["readme"] == "README.md"
+    assert project["authors"] == '[{ name = "SisyphusMountain" }]'
+    assert project["urls"]["Repository"] == "https://github.com/SisyphusMountain/gpurec"
+    assert project["urls"]["Issues"] == (
+        "https://github.com/SisyphusMountain/gpurec/issues"
+    )
+    assert project["urls"]["Documentation"] == (
+        "https://github.com/SisyphusMountain/gpurec#readme"
+    )
+    for required in (
+        "Development Status :: 3 - Alpha",
+        "Programming Language :: Python :: 3.10",
+        "Programming Language :: Python :: 3.11",
+        "Programming Language :: Python :: 3.12",
+    ):
+        assert required in project["classifiers"]
+    assert "license" not in project
+
+
 def test_cpu_ci_builds_and_smokes_release_artifacts():
     workflow = _load_cpu_ci_workflow()
     package = workflow["jobs"]["package"]
@@ -622,6 +708,18 @@ def test_cpu_ci_matrix_covers_declared_python_versions():
     classifiers = pyproject["project"]["classifiers"]
     for version in supported_versions:
         assert f"Programming Language :: Python :: {version}" in classifiers
+
+
+def test_dev_extra_installs_tomli_for_python310_toml_tests():
+    pyproject = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    dev_dependencies = pyproject["project"]["optional-dependencies"]["dev"]
+
+    assert any(
+        dependency.startswith("tomli;")
+        and "python_version" in dependency
+        and "< '3.11'" in dependency
+        for dependency in dev_dependencies
+    )
 
 
 def test_readme_install_docs_match_declared_python_range():

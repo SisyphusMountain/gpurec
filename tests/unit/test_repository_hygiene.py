@@ -5,12 +5,16 @@ import json
 import re
 import subprocess
 import sys
-import tomllib
 from pathlib import Path
 
 import gpurec
 import gpurec.workflow as workflow
 import gpurec.workflow.checkpoint as workflow_checkpoint
+
+try:
+    import tomllib
+except ModuleNotFoundError:  # pragma: no cover - exercised on Python 3.10
+    import tomli as tomllib  # type: ignore[import-not-found,no-redef]
 
 SUBPROCESS_TIMEOUT = 30
 
@@ -225,6 +229,8 @@ def test_checked_fixture_contracts_are_documented():
         "impossible states use the `-1.0e300` sentinel",
         "all mass on the root species",
         "visible speciation at `Root`",
+        "`--samples 2 --output-dir <dir>`",
+        "`sample_0.xml` and `sample_1.xml`",
     ):
         assert token in normalized_rust_readme
 
@@ -2027,19 +2033,31 @@ def test_runtime_surface_plan_records_refresh_findings_before_behavior_changes()
         "global/uniform chunked diagnostic",
         "`implicit_grad_loglik_vjp_wave()`",
         "internal bridge or supported low-level API",
+        "Direct `build_wave_layout()` family-index inputs",
+        "`family_clade_counts` and `family_clade_offsets`",
+        "Explicit theta tensors in `gpurec/api/model.py`",
+        "Extra event columns can alter the softmax denominator",
+        "`collate_gene_families()` docstring",
+        "instead of removed `preprocess_gene_with_species`",
         "Workflow/Backtracking Refresh Findings",
         "`_BACKTRACK_HELP_MARKERS`",
         "`--seed`, `--output-dir`, and `--max-events`",
         "LBFGS branch evaluates the current theta",
         "`nonfinite_objective_or_gradient`",
+        "Final optimization evaluation in `gpurec/workflow/optimize.py`",
+        "mandatory `final_eval`",
         "`profiling/evaluate_hogenom_alerax_rates.py`",
         "`scripts/compare_backtracking_alerax_events.py`",
+        "Local validation/profiling CLI count controls",
+        "parse count controls such as chunk size",
         "`optimizer.load_state_dict`",
-        "`RuntimeError` or `TypeError`",
+        "`ValueError`, `RuntimeError`, and `TypeError`",
         "`_RUN_CONFIG_CLI_OVERRIDE_FIELDS`",
         "`HiddenTransferLossDonor`",
         "`Sampler::apply_term`",
         "`_parse_minimal_pyproject()`",
+        "Python 3.10 unit collection for TOML-reading tests",
+        "Rust backtracking CLI multi-sample output",
     ):
         assert token in normalized_plan
 
@@ -2049,9 +2067,35 @@ def test_runtime_surface_plan_records_refresh_findings_before_behavior_changes()
         "unclear export status for `normalize_family_chunk_size()`",
         "follow-up workflow/backtracking explorer",
         "stale Rust sampler help-marker finding is now fixed",
-        "Python 3.10 `_parse_minimal_pyproject()` fallback",
+        "Python 3.10 TOML fallback finding is now guarded",
+        "tests/Rust/docs follow-up explorer",
+        "TOML-reading unit modules use a `tomllib`/`tomli` conditional import",
+        "workflow/scripts follow-up explorer",
+        "mandatory final optimization evaluation nonfinite gap is now fixed",
+        "Resume optimizer-state restore now also discards",
+        "core/API follow-up explorer",
+        "direct `build_wave_layout()` family-index gap is now fixed",
     ):
         assert token in normalized_audit
+
+
+def test_collate_gene_families_docstring_uses_current_layout_owner():
+    root = Path(__file__).resolve().parents[2]
+    source = (root / "gpurec" / "core" / "batching.py").read_text(
+        encoding="utf-8"
+    )
+    module = ast.parse(source)
+    functions = {
+        node.name: node
+        for node in module.body
+        if isinstance(node, ast.FunctionDef)
+    }
+    docstring = ast.get_docstring(functions["collate_gene_families"]) or ""
+
+    assert "preprocessed gene-family CCP payloads" in docstring
+    assert "build_wave_layout()" in docstring
+    assert "preprocess_gene_with_species" not in docstring
+    assert "likelihood_2.py" not in docstring
 
 
 def test_preprocess_cpp_declares_direct_standard_includes():

@@ -26,3 +26,6 @@ Pinned output contract:
 - The CLI must write RecPhyloXML whose root tag ends with `recPhylo`.
 - The sampled tree must contain a visible speciation at `Root`.
 - The sampled leaves must map to species `A` and `B`.
+- Multi-sample CLI runs with `--samples 2 --output-dir <dir>` must create
+  `sample_0.xml` and `sample_1.xml`, each satisfying the same deterministic
+  RecPhyloXML fixture contract.

@@ -11,8 +11,7 @@ def collate_gene_families(
     device: torch.device | str = "cpu",
 ) -> Dict[str, Any]:
     """
-    Collate multiple gene-family samples (each from `preprocess_gene_with_species`)
-    into a single batched CCP for likelihood_2.py.
+    Collate multiple preprocessed gene-family CCP payloads into one batched layout.
 
     Each item in `batch` must be a dict with keys:
       - 'ccp': dict containing at least
@@ -338,6 +337,74 @@ def _validate_wave_clade_coverage(all_clades: Sequence[int], C: int) -> None:
         if clade_id in seen:
             raise ValueError(f"Wave layout contains duplicate clade {clade_id}")
         seen.add(clade_id)
+
+
+def _family_metadata_index(name: str, family_index: int, value: Any) -> int:
+    if isinstance(value, bool):
+        raise ValueError(f"{name}[{family_index}] must be an integer")
+    try:
+        return value.__index__()
+    except AttributeError as exc:
+        raise ValueError(f"{name}[{family_index}] must be an integer") from exc
+
+
+def _validate_family_clade_metadata(
+    family_clade_counts: Sequence[int] | None,
+    family_clade_offsets: Sequence[int] | None,
+    C: int,
+) -> List[Tuple[int, int]] | None:
+    if family_clade_counts is None and family_clade_offsets is None:
+        return None
+    if family_clade_counts is None or family_clade_offsets is None:
+        raise ValueError(
+            "family_clade_counts and family_clade_offsets must be provided together"
+        )
+    if len(family_clade_counts) != len(family_clade_offsets):
+        raise ValueError(
+            "family_clade_counts and family_clade_offsets must have matching lengths"
+        )
+
+    covered = [False] * C
+    ranges: List[Tuple[int, int]] = []
+    for family_index, (offset_value, count_value) in enumerate(
+        zip(family_clade_offsets, family_clade_counts)
+    ):
+        offset = _family_metadata_index(
+            "family_clade_offsets",
+            family_index,
+            offset_value,
+        )
+        count = _family_metadata_index(
+            "family_clade_counts",
+            family_index,
+            count_value,
+        )
+        if offset < 0:
+            raise ValueError(
+                f"family_clade_offsets[{family_index}] must be non-negative"
+            )
+        if count < 0:
+            raise ValueError(
+                f"family_clade_counts[{family_index}] must be non-negative"
+            )
+        end = offset + count
+        if end > C:
+            raise ValueError(
+                f"family {family_index} clade range [{offset}, {end}) "
+                f"is outside C={C}"
+            )
+        for clade in range(offset, end):
+            if covered[clade]:
+                raise ValueError(
+                    f"family clade metadata overlaps clade {clade}"
+                )
+            covered[clade] = True
+        ranges.append((offset, count))
+
+    for clade, is_covered in enumerate(covered):
+        if not is_covered:
+            raise ValueError(f"family clade metadata does not cover clade {clade}")
+    return ranges
 
 
 def _ccp_split_counts(ccp: Dict[str, Any], C: int, parents: Sequence[int]) -> List[int]:
@@ -1229,6 +1296,11 @@ def build_wave_layout(
     """
     C = int(ccp_helpers['C'])
     N_splits = int(ccp_helpers['N_splits'])
+    family_clade_ranges = _validate_family_clade_metadata(
+        family_clade_counts,
+        family_clade_offsets,
+        C,
+    )
     if len(phases) != len(waves):
         raise ValueError(
             "waves and phases must have matching lengths, "
@@ -1410,9 +1482,9 @@ def build_wave_layout(
     }
 
     # Build clade→family mapping in wave-ordered space
-    if family_clade_counts is not None and family_clade_offsets is not None:
-        family_idx_orig = torch.empty(C, dtype=torch.long, device=device)
-        for g, (offset, c_g) in enumerate(zip(family_clade_offsets, family_clade_counts)):
+    if family_clade_ranges is not None:
+        family_idx_orig = torch.full((C,), -1, dtype=torch.long, device=device)
+        for g, (offset, c_g) in enumerate(family_clade_ranges):
             family_idx_orig[offset:offset + c_g] = g
         # Permute to wave-ordered space: result[new_idx] = family of original clade inv_perm[new_idx]
         result['family_idx'] = family_idx_orig[inv_perm]
