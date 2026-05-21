@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import gc
+import json
 import os
 import statistics
 import sys
@@ -120,6 +121,22 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--pruning-threshold", type=float, default=float(os.getenv("PRUNING_THRESHOLD", "1e-6")))
     parser.add_argument("--stats-only", action="store_true", default=os.getenv("STATS_ONLY", "0") != "0")
     parser.add_argument(
+        "--progress-jsonl",
+        action="store_true",
+        default=os.getenv("PROGRESS_JSONL", "0") != "0",
+        help="Emit flushed JSONL progress records during setup and benchmark execution.",
+    )
+    parser.add_argument(
+        "--preflight-only",
+        "--setup-only",
+        action="store_true",
+        default=(
+            os.getenv("PREFLIGHT_ONLY", "0") != "0"
+            or os.getenv("SETUP_ONLY", "0") != "0"
+        ),
+        help="Build static inputs, print setup/status information, then exit before benchmark passes.",
+    )
+    parser.add_argument(
         "--strict-optimized-kernels",
         action=argparse.BooleanOptionalAction,
         default=os.getenv("STRICT_OPTIMIZED_KERNELS", "1") != "0",
@@ -162,6 +179,69 @@ def _time_cuda_event(fn):
     end.record()
     torch.cuda.synchronize()
     return start.elapsed_time(end), out
+
+
+def _progress_enabled(args: argparse.Namespace) -> bool:
+    return bool(getattr(args, "progress_jsonl", False))
+
+
+def _emit_progress(args: argparse.Namespace, event: str, **fields: Any) -> None:
+    if not _progress_enabled(args):
+        return
+    payload = {
+        "record": "bench_uniform_forward_backward_pipeline",
+        "event": event,
+        "time_s": round(time.time(), 6),
+        **fields,
+    }
+    print(json.dumps(payload, sort_keys=True), flush=True)
+
+
+def _chunk_progress_row(idx: int, built: BuiltChunk) -> dict[str, int]:
+    return {
+        "idx": idx,
+        "family_start": int(built.spec.indices[0]),
+        "family_stop": int(built.spec.indices[-1]) + 1,
+        "families": len(built.spec.indices),
+        "clades": int(built.spec.clades),
+        "splits": int(built.spec.splits),
+        "waves": int(built.waves),
+        "max_wave": int(built.max_wave),
+        "split_rows": int(built.split_rows),
+        "max_wave_split_rows": int(built.max_wave_split_rows),
+    }
+
+
+def _static_progress_summary(
+    static: StaticInputs,
+    args: argparse.Namespace,
+) -> dict[str, Any]:
+    total_clades = sum(int(b.spec.clades) for b in static.built_chunks)
+    total_splits = sum(int(b.spec.splits) for b in static.built_chunks)
+    total_waves = sum(int(b.waves) for b in static.built_chunks)
+    return {
+        "dataset": str(static.root),
+        "family_start": int(args.start),
+        "family_stop": int(args.start + args.fams),
+        "families": len(static.genes),
+        "chunks": len(static.built_chunks),
+        "family_chunk_size": args.family_chunk_size,
+        "max_wave_size": args.max_wave_size if args.max_wave_size is not None else None,
+        "fixed_iters": args.fixed_iters,
+        "dtype": str(static.dtype).replace("torch.", ""),
+        "device": str(static.device),
+        "S": int(static.dataset.S),
+        "total_clades": total_clades,
+        "total_splits": total_splits,
+        "total_waves": total_waves,
+        "max_wave": max((int(b.max_wave) for b in static.built_chunks), default=0),
+        "max_wave_split_rows": max(
+            (int(b.max_wave_split_rows) for b in static.built_chunks),
+            default=0,
+        ),
+        "preprocess_s": round(static.preprocess_s, 6),
+        "layout_s": round(static.layout_s, 6),
+    }
 
 
 def _nvtx_push(name: str, *, enabled: bool) -> None:
@@ -309,7 +389,22 @@ def _validate_optimized_feature_status(
 
 
 def _make_static_inputs(args: argparse.Namespace) -> StaticInputs:
+    if _progress_enabled(args):
+        _emit_progress(
+            args,
+            "static_inputs_start",
+            dataset=str(args.dataset),
+            fams=int(args.fams),
+            start=int(args.start),
+        )
     if not torch.cuda.is_available():
+        if _progress_enabled(args):
+            _emit_progress(
+                args,
+                "static_inputs_failed",
+                stage="cuda_check",
+                reason="cuda_unavailable",
+            )
         raise RuntimeError("CUDA is required for the optimized uniform pipeline harness")
 
     device = torch.device("cuda")
@@ -321,6 +416,15 @@ def _make_static_inputs(args: argparse.Namespace) -> StaticInputs:
         start=args.start,
         max_families=args.fams,
     )
+    if _progress_enabled(args):
+        _emit_progress(
+            args,
+            "gene_selection_done",
+            dataset=str(root),
+            family_start=int(args.start),
+            requested_families=int(args.fams),
+            selected_families=len(genes),
+        )
 
     t0 = time.perf_counter()
     dataset = GeneDataset(
@@ -333,6 +437,16 @@ def _make_static_inputs(args: argparse.Namespace) -> StaticInputs:
         preprocess_cache_dir=args.cache_dir,
     )
     preprocess_s = time.perf_counter() - t0
+    if _progress_enabled(args):
+        _emit_progress(
+            args,
+            "dataset_loaded",
+            families=len(dataset.families),
+            S=int(dataset.S),
+            total_clades=sum(int(f["C"]) for f in dataset.families),
+            total_splits=sum(int(f["N_splits"]) for f in dataset.families),
+            preprocess_s=round(preprocess_s, 6),
+        )
 
     species_helpers, ancestors_T = dataset._species_helpers_for_mode(
         device=device,
@@ -379,10 +493,36 @@ def _make_static_inputs(args: argparse.Namespace) -> StaticInputs:
         family_chunk_size=args.family_chunk_size,
         clade_budget=None,
     )
+    if _progress_enabled(args):
+        _emit_progress(
+            args,
+            "chunk_policy_selected",
+            chunks=len(specs),
+            family_chunk_size=args.family_chunk_size,
+            max_wave_size=args.max_wave_size if args.max_wave_size is not None else None,
+            memory_policy_reason=memory_policy.reason if memory_policy is not None else None,
+            estimated_payload_gib=(
+                round(memory_policy.estimated_payload_bytes / (1024 ** 3), 6)
+                if memory_policy is not None
+                else None
+            ),
+        )
 
     t1 = time.perf_counter()
-    built_chunks = [
-        _build_chunk(
+    built_chunks = []
+    for chunk_idx, spec in enumerate(specs):
+        if _progress_enabled(args):
+            _emit_progress(
+                args,
+                "chunk_build_start",
+                idx=chunk_idx,
+                family_start=int(spec.indices[0]),
+                family_stop=int(spec.indices[-1]) + 1,
+                families=len(spec.indices),
+                clades=int(spec.clades),
+                splits=int(spec.splits),
+            )
+        built = _build_chunk(
             dataset,
             spec,
             device=device,
@@ -390,13 +530,14 @@ def _make_static_inputs(args: argparse.Namespace) -> StaticInputs:
             max_wave_size=args.max_wave_size,
             max_root_wave_size=None,
         )
-        for spec in specs
-    ]
+        built_chunks.append(built)
+        if _progress_enabled(args):
+            _emit_progress(args, "chunk_built", **_chunk_progress_row(chunk_idx, built))
     root_clade_id_lists = _root_clade_id_lists_for_chunks(built_chunks)
     torch.cuda.synchronize()
     layout_s = time.perf_counter() - t1
 
-    return StaticInputs(
+    static = StaticInputs(
         root=root,
         genes=genes,
         dataset=dataset,
@@ -412,6 +553,9 @@ def _make_static_inputs(args: argparse.Namespace) -> StaticInputs:
         preprocess_s=preprocess_s,
         layout_s=layout_s,
     )
+    if _progress_enabled(args):
+        _emit_progress(args, "static_inputs_done", **_static_progress_summary(static, args))
+    return static
 
 
 def _compute_e_and_params(
@@ -1041,16 +1185,32 @@ def main() -> None:
         print(key, os.environ[key])
 
     status = _optimized_feature_status(args, static)
+    if _progress_enabled(args):
+        _emit_progress(args, "optimized_status", **status)
     _print_active_path_flags(static, args, status)
     _validate_optimized_feature_status(args, status)
+    if _progress_enabled(args):
+        _emit_progress(args, "preflight_done", **_static_progress_summary(static, args))
 
-    if args.stats_only:
+    if args.preflight_only or args.stats_only:
         return
 
+    if _progress_enabled(args):
+        _emit_progress(
+            args,
+            "benchmark_start",
+            warmups=int(args.warmups),
+            reps=int(args.reps),
+            compare_unchunked_max_fams=int(args.compare_unchunked_max_fams),
+        )
     _maybe_compare_unchunked(static, args)
 
-    for _ in range(args.warmups):
+    for warmup_idx in range(args.warmups):
+        if _progress_enabled(args):
+            _emit_progress(args, "warmup_start", idx=warmup_idx)
         result = _run_pipeline_pass(static.built_chunks, static, args, timed=False)
+        if _progress_enabled(args):
+            _emit_progress(args, "warmup_done", idx=warmup_idx)
         del result
         if args.empty_cache_between_reps:
             gc.collect()
@@ -1058,6 +1218,8 @@ def main() -> None:
 
     results: list[dict[str, Any]] = []
     for rep in range(args.reps):
+        if _progress_enabled(args):
+            _emit_progress(args, "rep_start", idx=rep)
         if args.profile_cuda_api:
             torch.cuda.cudart().cudaProfilerStart()
         try:
@@ -1066,12 +1228,23 @@ def main() -> None:
             if args.profile_cuda_api:
                 torch.cuda.cudart().cudaProfilerStop()
         _print_rep(rep, result)
+        if _progress_enabled(args):
+            _emit_progress(
+                args,
+                "rep_done",
+                idx=rep,
+                total_ms=round(float(result["total_ms"]), 6),
+                peak_gib=round(float(result["peak_gib"]), 6),
+                grad_finite=int(result["grad_finite"]),
+            )
         results.append(result)
         if args.empty_cache_between_reps:
             gc.collect()
             torch.cuda.empty_cache()
 
     _print_summary(results)
+    if _progress_enabled(args):
+        _emit_progress(args, "benchmark_done", reps=len(results))
 
 
 if __name__ == "__main__":
