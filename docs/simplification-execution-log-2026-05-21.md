@@ -260,13 +260,130 @@ Verification:
   `PYTHONDONTWRITEBYTECODE=1 python profiling/bench_uniform_forward_backward_pipeline.py --dataset tests/data/test_trees_1000 --fams 1000 --family-chunk-size auto --max-wave-size auto --fixed-iters 6 --neumann-terms 3 --warmups 1 --reps 3 --strict-optimized-kernels --compare-unchunked-max-fams 0` exited with code `-1` before emitting benchmark output, so it is not a valid pass/fail performance result for this log entry.
 - `git diff --check`: passed.
 
+### `a13e8fc` - Add Pi forward output intent helper
+
+Proposal coverage:
+
+- `PI-01`: added a private `_PiOutputIntent` contract so
+  `Pi_wave_forward()` resolves legacy `return_original` / `return_root_rows`
+  booleans into explicit output intent before deciding whether to emit root
+  rows, original-order Pi, wave-ordered Pi, saved Pibar, and Pibar row maxima.
+- Preserved the public function signature and returned dictionary keys,
+  including the legacy `return_original=True, return_root_rows=True` case.
+
+Verification:
+
+- `python -m py_compile gpurec/core/forward.py tests/unit/test_forward_output_intent.py`: passed.
+- `PYTHONDONTWRITEBYTECODE=1 python -m pytest -q -p no:cacheprovider tests/unit/test_forward_output_intent.py tests/unit/test_specieswise_uniform.py::test_specieswise_uniform_forward_root_rows_match_saved_state`: 5 passed.
+- Main combined gates are listed under `86430d8`.
+
+### `73cac0f` - Document Pi output intent CPU test
+
+Proposal coverage:
+
+- `TEST-01`: added `tests/unit/test_forward_output_intent.py` to the explicit
+  CPU-unit manifest after introducing the Pi output intent helper.
+
+Verification:
+
+- `CUDA_VISIBLE_DEVICES='' PYTHONDONTWRITEBYTECODE=1 python -m pytest -q -p no:cacheprovider tests/unit/test_repository_hygiene.py`: 83 passed.
+- `git diff --check`: passed.
+- Main combined gates are listed under `86430d8`.
+
+### `d745f2e` - Add DTS layout contract helper
+
+Proposal coverage:
+
+- `DTS-01`: added a private CPU-testable DTS layout contract/parser for
+  forward and backward kernel wrappers.
+- Routed `_prepare_param()`, `_dts_layout_param_args()`, and
+  `_dts_grad_layout()` through the shared contract while preserving existing
+  Triton layout codes, strides, tensor normalization, and kernel launch
+  semantics.
+- Explicitly preserved and documented the current bare 1-D ambiguity:
+  family-indexed forward treats length-`S` vectors as shared species, while
+  retained backward treats 1-D tensors as family scalar rows when
+  `family_idx` is present.
+
+Verification:
+
+- `python -m py_compile gpurec/core/kernels/_dts_layout_contract.py gpurec/core/kernels/dts_fused.py gpurec/core/kernels/wave_backward.py tests/unit/test_dts_layout_contract.py`: passed.
+- `PYTHONDONTWRITEBYTECODE=1 python -m pytest -q -p no:cacheprovider tests/unit/test_dts_layout_contract.py tests/unit/test_repository_hygiene.py::test_dts_shape_precedence_is_documented_before_runtime_change tests/unit/test_parameter_layout.py tests/unit/test_extract_parameters.py`: 26 passed.
+- Main combined gates are listed under `86430d8`.
+
+### `3d6db8a` - Document DTS layout CPU test
+
+Proposal coverage:
+
+- `TEST-01`: added `tests/unit/test_dts_layout_contract.py` to the explicit
+  CPU-unit manifest after introducing the DTS layout contract helper.
+
+Verification:
+
+- `git diff --check`: passed.
+- Main combined gates are listed under `86430d8`.
+
+### `6b59e0b` - Characterize backward auto-wrap layout
+
+Proposal coverage:
+
+- `MODE-02`: extracted current `Pi_wave_backward()` `family_idx=None`
+  auto-wrap behavior into `_auto_wrap_backward_inputs()` without changing
+  gradient math.
+- Added CPU helper-level characterization for shared `G=1` wrapping, explicit
+  family-index preservation, and `G == S` ambiguity before any removal of the
+  local auto-wrap policy.
+- Updated the opportunity index with the characterization gate.
+
+Verification:
+
+- `python -m py_compile gpurec/core/backward.py tests/unit/test_core_backward.py`: passed.
+- `PYTHONDONTWRITEBYTECODE=1 python -m pytest -q -p no:cacheprovider tests/unit/test_core_backward.py tests/unit/test_extract_parameters.py tests/unit/test_parameter_layout.py tests/unit/test_dts_layout_contract.py`: 30 passed.
+- Main combined gates are listed under `86430d8`.
+
+### `e4a5dd6` - Add gradient accumulator helper
+
+Proposal coverage:
+
+- `BWD-03`: added a CPU-testable `GradientAccumulator` over the existing
+  `ParameterLayout` contract for public theta-shaped gradient accumulation.
+- Routed only `GeneReconModel._stream_full_batches()` through the helper,
+  preserving hot CUDA backward scatter code and chunked Pi-backward local
+  accumulation for later dedicated gates.
+
+Verification:
+
+- `python -m py_compile gpurec/core/gradient_accumulator.py gpurec/api/model.py tests/unit/test_gradient_accumulator.py`: passed.
+- `PYTHONDONTWRITEBYTECODE=1 python -m pytest -q -p no:cacheprovider tests/unit/test_gradient_accumulator.py tests/unit/test_parameter_layout.py tests/unit/test_workflow.py::test_full_loss_for_theta_uses_streaming_contract_for_explicit_theta tests/integration/test_gene_recon_model.py::test_memory_safe_resident_batches_match_resident_and_slice`: 29 passed.
+- Main combined gates are listed under `86430d8`.
+
+### `86430d8` - Document gradient accumulator CPU test
+
+Proposal coverage:
+
+- `TEST-01`: added `tests/unit/test_gradient_accumulator.py` to the explicit
+  CPU-unit manifest after introducing the gradient accumulator helper.
+
+Verification:
+
+- `CUDA_VISIBLE_DEVICES='' PYTHONDONTWRITEBYTECODE=1 python -m pytest -q -p no:cacheprovider -m "unit and not gpu"`: 1036 passed, 1 skipped, 33 deselected.
+- `PYTHONDONTWRITEBYTECODE=1 python -m pytest -q -p no:cacheprovider tests/kernels/test_wave_step_uniform_forward_kernel.py tests/integration/test_gene_recon_model.py tests/integration/test_uniform_chunked_model.py tests/unit/test_specieswise_uniform.py::test_specieswise_uniform_forward_root_rows_match_saved_state tests/unit/test_specieswise_uniform.py::test_constant_specieswise_matches_global_loss_and_gradient_semantics`: 23 passed.
+- `PYTHONDONTWRITEBYTECODE=1 python profiling/bench_uniform_forward_backward_pipeline.py --stats-only --strict-optimized-kernels --fams 1 --family-chunk-size 1 --max-wave-size 8192 --fixed-iters 2 --compare-unchunked-max-fams 0`: `strict_optimized_verdict pass`.
+- `PYTHONDONTWRITEBYTECODE=1 python profiling/bench_uniform_forward_backward_pipeline.py --dataset tests/data/test_trees_1000 --fams 8 --family-chunk-size 2 --max-wave-size 32768 --fixed-iters 6 --reps 3 --warmups 1 --compare-unchunked-max-fams 8 --fail-on-correctness-mismatch --strict-optimized-kernels`: compare verdict pass, finite gradients, `strict_optimized_verdict pass`, `total_median_ms 100.248`, `max_peak_gib 0.445`.
+- Full 1000-family benchmark attempt:
+  `PYTHONDONTWRITEBYTECODE=1 python profiling/bench_uniform_forward_backward_pipeline.py --dataset tests/data/test_trees_1000 --fams 1000 --family-chunk-size auto --max-wave-size auto --fixed-iters 6 --warmups 1 --reps 3 --strict-optimized-kernels --compare-unchunked-max-fams 0` exited with code `-1` before emitting benchmark output, so it is not a valid pass/fail performance result for this log entry.
+- `git diff --check`: passed.
+
 ## Active Work Queue
 
 1. `EVAL-01` and `CHUNK-01`: continue consolidation for autograd and
    gradient-producing paths.  Resident no-grad, export-state, and chunked
    read-only paths now share explicit evaluator boundaries.
-2. `PI-01`, `MODE-02`, `BWD-03`, and `DTS-01`: refactor Pi/backward/DTS
-   contracts only after the explicit layout contract exists.
+2. `PI-01`, `MODE-02`, `BWD-03`, and `DTS-01`: continue from the explicit
+   contracts now in place.  Pi output intent, DTS layout parsing,
+   backward auto-wrap characterization, and model-boundary gradient
+   accumulation have first-step guards; removing backward auto-wrap and routing
+   hot CUDA scatter paths still require full gradient/parity gates.
 3. `BWD-01`, `BWD-02`, `ENV-01`, and `SCHED-01`: remove runtime alternatives
    only after benchmark gates show the retained path is not regressed.
 4. `CPP-01`, `CPP-02`, `SCRIPT-01`, and `TEST-01`: continue pruning and
