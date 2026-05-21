@@ -763,6 +763,27 @@ def test_simplification_opportunity_index_is_mapped_and_gate_oriented():
         assert token in index
 
 
+def test_simplification_execution_log_mentions_every_index_proposal():
+    root = Path(__file__).resolve().parents[2]
+    index = (
+        root / "docs" / "simplification-opportunity-index-2026-05-21.md"
+    ).read_text(encoding="utf-8")
+    execution_log = (
+        root / "docs" / "simplification-execution-log-2026-05-21.md"
+    ).read_text(encoding="utf-8")
+
+    proposal_ids = re.findall(r"^### ([A-Z]+-\d+) - ", index, flags=re.M)
+    assert proposal_ids
+
+    missing = [
+        proposal_id
+        for proposal_id in proposal_ids
+        if proposal_id not in execution_log
+    ]
+
+    assert missing == []
+
+
 def test_release_readiness_gpu_smoke_matches_small_species_limitation():
     root = Path(__file__).resolve().parents[2]
     release_readiness = (root / "docs" / "release-readiness.md").read_text(
