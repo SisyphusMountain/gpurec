@@ -92,11 +92,23 @@ def test_resident_evaluation_paths_remain_consistent(trees, mode):
     full_loss = model.full_loss()
     explicit_theta_loss = model.full_loss_for_theta(model.theta.detach())
     state = model.reconciliation_state()
+    state_wave = model.reconciliation_state(original_order=False)
     pi = model.pi_matrix()
     state_loss = _root_row_loss(model, state, state.pi)
     pi_loss = _root_row_loss(model, state, pi)
+    perm = model.cached_static_states[0].wave_layout["perm"]
 
     assert torch.isfinite(forward_loss)
+    for tensor in (
+        state.e,
+        state.pi,
+        state.log_p_s,
+        state.log_p_d,
+        state.log_p_l,
+        state.max_transfer,
+    ):
+        assert tensor.device == model.theta.device
+        assert tensor.dtype == model.theta.dtype
     torch.testing.assert_close(full_loss.detach(), forward_loss.detach(), rtol=1e-5, atol=1e-4)
     torch.testing.assert_close(
         explicit_theta_loss.detach(),
@@ -105,6 +117,12 @@ def test_resident_evaluation_paths_remain_consistent(trees, mode):
         atol=1e-4,
     )
     torch.testing.assert_close(state.pi, pi, rtol=1e-5, atol=1e-4)
+    torch.testing.assert_close(
+        state.pi,
+        state_wave.pi.index_select(0, perm),
+        rtol=1e-5,
+        atol=1e-4,
+    )
     torch.testing.assert_close(state_loss, forward_loss.detach(), rtol=1e-5, atol=1e-4)
     torch.testing.assert_close(pi_loss, forward_loss.detach(), rtol=1e-5, atol=1e-4)
 

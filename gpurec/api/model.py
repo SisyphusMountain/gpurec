@@ -42,9 +42,7 @@ from gpurec.core.model import (
     normalize_family_tree_paths,
     parse_alerax_family_file,
 )
-from gpurec.core.forward import Pi_wave_forward
 from gpurec.core.likelihood import (
-    E_fixed_point,
     compute_nll,
     prepare_origination_probs,
 )
@@ -53,7 +51,6 @@ from gpurec.optimization.implicit_grad import implicit_grad_loglik_vjp_wave
 from .autograd import (
     ReconStaticState,
     _GeneReconFunction,
-    _extract_parameters,
     _record_backward_solver_stats,
 )
 from ._family_layout import (
@@ -63,7 +60,11 @@ from ._family_layout import (
     origination_probs_for_family_indices,
     schedule_family_waves,
 )
-from ._uniform_evaluator import evaluate_resident_no_grad
+from ._uniform_evaluator import (
+    _record_forward_solver_stats,
+    evaluate_resident_no_grad,
+    solve_resident_e_pi,
+)
 from ._validation import (
     bool_value,
     integer_value,
@@ -690,74 +691,26 @@ def _evaluate_static_state(
     need_grad: bool,
     per_family: bool = False,
 ) -> tuple[torch.Tensor, torch.Tensor | None]:
+    require_default_objective("GeneReconModel")
     if not need_grad:
         return evaluate_resident_no_grad(static, theta, per_family=per_family), None
-
-    require_default_objective("GeneReconModel")
     if need_grad and per_family and not static.genewise:
         raise ValueError("per-family gradients are only independent in genewise mode")
 
-    theta_eval = theta.detach().to(device=static.device, dtype=static.dtype)
-    log_pS, log_pD, log_pL, max_transfer_vec = _extract_parameters(theta_eval, static)
-    e_max_iters = (
-        static.fixed_iters_E
-        if static.fixed_iters_E is not None
-        else static.max_iters_E
-    )
-    e_tolerance = (
-        static.e_logsumexp_tol
-        if static.adaptive_iters
-        else (-1.0 if static.fixed_iters_E is not None else static.tol_E)
-    )
-    E_out = E_fixed_point(
-        species_helpers=static.species_helpers,
-        log_pS=log_pS,
-        log_pD=log_pD,
-        log_pL=log_pL,
-        max_transfer_mat=max_transfer_vec,
-        max_iters=e_max_iters,
-        tolerance=e_tolerance,
-        warm_start_E=None,
-        dtype=static.dtype,
-        device=static.device,
-        ancestors_T=static.ancestors_T,
-        check_interval=static.convergence_check_interval,
-        convergence_metric="logsumexp" if static.adaptive_iters else "max_diff",
-    )
-
-    pi_out = Pi_wave_forward(
-        wave_layout=static.wave_layout,
-        species_helpers=static.species_helpers,
-        E=E_out["E"],
-        Ebar=E_out["E_bar"],
-        E_s1=E_out["E_s1"],
-        E_s2=E_out["E_s2"],
-        log_pS=log_pS,
-        log_pD=log_pD,
-        max_transfer_mat=max_transfer_vec,
-        device=static.device,
-        dtype=static.dtype,
-        fixed_iters=static.fixed_iters_Pi,
+    solve = solve_resident_e_pi(
+        static,
+        theta,
         return_original=False,
-        return_root_rows=not need_grad,
-        family_idx=(
-            static.wave_layout.get("family_idx") if static.genewise else None
-        ),
-        convergence_tolerance=(
-            static.pi_max_diff_tol if static.adaptive_iters else -1.0
-        ),
-        convergence_check_interval=static.convergence_check_interval,
+        return_root_rows=False,
     )
-    static.last_solver_stats = {
-        "E_iterations": int(E_out["iterations"]),
-        "E_convergence_delta": E_out.get("E_convergence_delta"),
-        "Pi_max_iterations": int(pi_out.get("Pi_max_iterations", static.fixed_iters_Pi)),
-        "Pi_wave_iterations": [
-            int(value) for value in pi_out.get("Pi_wave_iterations", [])
-        ],
-        "Pi_converged_waves": int(sum(pi_out.get("Pi_wave_converged", []))),
-        "Pi_wave_count": int(len(pi_out.get("Pi_wave_converged", []))),
-    }
+    E_out = solve.e_out
+    pi_out = solve.pi_out
+    log_pS = solve.log_p_s
+    log_pD = solve.log_p_d
+    log_pL = solve.log_p_l
+    max_transfer_vec = solve.max_transfer
+    theta_eval = solve.theta
+    _record_forward_solver_stats(static, E_out, pi_out)
     if need_grad:
         loss_vec = compute_nll(
             pi_out["Pi_wave_ordered"],
@@ -805,6 +758,7 @@ def _evaluate_static_state(
         _record_backward_solver_stats(static, _stats)
         static.warm_E = None
         return (loss_vec.detach() if per_family else loss_vec.sum().detach()), grad_theta.detach()
+    raise RuntimeError("internal error: unreachable no-grad resident evaluation path")
 
 class _GeneReconFullLossFunction(torch.autograd.Function):
     @staticmethod
@@ -1782,65 +1736,24 @@ class GeneReconModel(torch.nn.Module):
         """
         static = self._active_static()
         theta = self._active_theta()
-        log_pS, log_pD, log_pL, max_transfer_vec = (
-            _extract_parameters(theta.detach(), static)
-        )
-        e_max_iters = (
-            static.fixed_iters_E
-            if static.fixed_iters_E is not None
-            else static.max_iters_E
-        )
-        e_tolerance = (
-            static.e_logsumexp_tol
-            if static.adaptive_iters
-            else (-1.0 if static.fixed_iters_E is not None else static.tol_E)
-        )
-        E_out = E_fixed_point(
-            species_helpers=static.species_helpers,
-            log_pS=log_pS,
-            log_pD=log_pD,
-            log_pL=log_pL,
-            max_transfer_mat=max_transfer_vec,
-            max_iters=e_max_iters,
-            tolerance=e_tolerance,
-            warm_start_E=None,
-            dtype=static.dtype,
-            device=static.device,
-            ancestors_T=static.ancestors_T,
-            check_interval=static.convergence_check_interval,
-            convergence_metric="logsumexp" if static.adaptive_iters else "max_diff",
-        )
-        Pi_out = Pi_wave_forward(
-            wave_layout=static.wave_layout,
-            species_helpers=static.species_helpers,
-            E=E_out["E"],
-            Ebar=E_out["E_bar"],
-            E_s1=E_out["E_s1"],
-            E_s2=E_out["E_s2"],
-            log_pS=log_pS,
-            log_pD=log_pD,
-            max_transfer_mat=max_transfer_vec,
-            device=static.device,
-            dtype=static.dtype,
-            fixed_iters=static.fixed_iters_Pi,
+        solve = solve_resident_e_pi(
+            static,
+            theta,
             return_original=original_order,
             return_root_rows=False,
-            family_idx=(
-                static.wave_layout.get("family_idx") if static.genewise else None
-            ),
-            convergence_tolerance=(
-                static.pi_max_diff_tol if static.adaptive_iters else -1.0
-            ),
-            convergence_check_interval=static.convergence_check_interval,
         )
-        pi = Pi_out["Pi"] if original_order else Pi_out["Pi_wave_ordered"]
+        pi = (
+            solve.pi_out["Pi"]
+            if original_order
+            else solve.pi_out["Pi_wave_ordered"]
+        )
         return ReconciliationState(
-            e=E_out["E"],
+            e=solve.e_out["E"],
             pi=pi,
-            log_p_s=log_pS,
-            log_p_d=log_pD,
-            log_p_l=log_pL,
-            max_transfer=max_transfer_vec,
+            log_p_s=solve.log_p_s,
+            log_p_d=solve.log_p_d,
+            log_p_l=solve.log_p_l,
+            max_transfer=solve.max_transfer,
             origination_probs=static.origination_probs,
         )
 
