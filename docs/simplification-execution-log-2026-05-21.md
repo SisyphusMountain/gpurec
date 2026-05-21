@@ -176,10 +176,95 @@ Verification:
 - `python profiling/bench_uniform_forward_backward_pipeline.py --stats-only --strict-optimized-kernels --fams 1 --family-chunk-size 1 --max-wave-size 8192 --fixed-iters 2 --compare-unchunked-max-fams 0`: `strict_optimized_verdict pass`.
 - `git diff --check`: passed.
 
+### `827e792` - Consolidate resident no-grad evaluator path
+
+Proposal coverage:
+
+- `EVAL-01`: added the internal `_uniform_evaluator` resident no-grad boundary
+  and routed `GeneReconModel.forward()` loss-only calls, shared-theta
+  per-family diagnostics, genewise no-grad `nll_per_family()`, and
+  `_evaluate_static_state(..., need_grad=False)` through it.
+- Preserved the existing root-row loss-only path so no-grad evaluation does
+  not retain full Pi/Pibar tensors.
+
+Verification:
+
+- Worker worktree: `python -m py_compile gpurec/api/model.py gpurec/api/_uniform_evaluator.py tests/unit/test_model_no_grad_evaluator.py`: passed.
+- Worker worktree: `python -m pytest tests/unit/test_model_no_grad_evaluator.py -q`: 4 passed.
+- Main combined gates are listed under `50280c5`.
+
+### `8d9004d` - Consolidate export state solve path
+
+Proposal coverage:
+
+- `EVAL-01`: extended the internal resident evaluator boundary with a shared
+  E/Pi solve helper and routed `reconciliation_state()` and `pi_matrix()`
+  through the same solve surface used by resident no-grad evaluation.
+- Preserved export order behavior via `original_order=True/False` and kept
+  caller-owned side effects such as solver-stat recording and warm-cache
+  clearing unchanged.
+
+Verification:
+
+- `python -m py_compile gpurec/api/model.py gpurec/api/_uniform_evaluator.py tests/integration/test_gene_recon_model.py`: passed during conflict resolution.
+- Main combined gates are listed under `50280c5`.
+
+### `7539687` - Add resident evaluator consolidation guards
+
+Proposal coverage:
+
+- `TEST-01`: strengthened resident evaluator characterization to cover
+  scalar `torch.no_grad()` forward, wave-order export, `pi_matrix()` in both
+  row orders, export tensor device/dtype, and post-export backward-gradient
+  stability.
+
+Verification:
+
+- `PYTHONDONTWRITEBYTECODE=1 python -m pytest -q -p no:cacheprovider tests/integration/test_gene_recon_model.py::test_resident_evaluation_paths_remain_consistent tests/integration/test_gene_recon_model.py::test_batched_lbfgs_genewise_runs_one_polish_step tests/integration/test_uniform_chunked_model.py::test_chunked_uniform_chunk_subset_nll_and_gradient`: 5 passed.
+- Main combined gates are listed under `50280c5`.
+
+### `1e2f847` - Consolidate chunked read-only evaluation
+
+Proposal coverage:
+
+- `CHUNK-01`: split the chunked evaluator into a structured result core while
+  preserving the existing tuple-returning `_evaluate_chunked_uniform()` API for
+  autograd and `loss_and_grad()`.
+- Routed `UniformChunkedReconModel.nll()` and `nll_per_family()` through a
+  read-only wrapper that collects per-family output only when requested.
+
+Verification:
+
+- Worker worktree: `python -m py_compile gpurec/api/uniform_chunked.py tests/unit/test_optimization_workflow.py tests/integration/test_uniform_chunked_model.py`: passed.
+- Worker worktree: `python -m pytest tests/unit/test_optimization_workflow.py -q`: 33 passed.
+- Main combined gates are listed under `50280c5`.
+
+### `50280c5` - Document resident evaluator CPU test
+
+Proposal coverage:
+
+- `TEST-01`: added `tests/unit/test_model_no_grad_evaluator.py` to the
+  explicit CPU-unit manifest after introducing the resident evaluator helper.
+
+Verification:
+
+- `python -m py_compile gpurec/api/model.py gpurec/api/_uniform_evaluator.py gpurec/api/uniform_chunked.py tests/unit/test_model_no_grad_evaluator.py tests/unit/test_optimization_workflow.py tests/integration/test_gene_recon_model.py tests/integration/test_uniform_chunked_model.py`: passed.
+- `PYTHONDONTWRITEBYTECODE=1 python -m pytest -q -p no:cacheprovider tests/unit/test_model_no_grad_evaluator.py tests/unit/test_optimization_workflow.py::test_uniform_chunked_read_only_helper_delegates_to_result_core tests/unit/test_optimization_workflow.py::test_uniform_chunked_nll_uses_read_only_chunked_result tests/unit/test_optimization_workflow.py::test_uniform_chunked_nll_per_family_uses_no_grad_chunked_diagnostic tests/unit/test_workflow.py::test_full_loss_for_theta_uses_streaming_contract_for_explicit_theta tests/unit/test_workflow.py::test_full_nll_per_family_delegates_to_genewise_streaming_helper tests/unit/test_workflow.py::test_full_nll_per_family_rejects_shared_theta_modes`: 11 passed.
+- `CUDA_VISIBLE_DEVICES='' PYTHONDONTWRITEBYTECODE=1 python -m pytest -q -p no:cacheprovider tests/unit/test_repository_hygiene.py`: 83 passed.
+- `CUDA_VISIBLE_DEVICES='' PYTHONDONTWRITEBYTECODE=1 python -m pytest -q -p no:cacheprovider -m "unit and not gpu"`: 1013 passed, 1 skipped, 33 deselected.
+- `PYTHONDONTWRITEBYTECODE=1 python -m pytest -q -p no:cacheprovider tests/integration/test_gene_recon_model.py tests/integration/test_uniform_chunked_model.py`: 16 passed.
+- `PYTHONDONTWRITEBYTECODE=1 python profiling/bench_uniform_forward_backward_pipeline.py --stats-only --strict-optimized-kernels --fams 1 --family-chunk-size 1 --max-wave-size 8192 --fixed-iters 2 --compare-unchunked-max-fams 0`: `strict_optimized_verdict pass`.
+- `PYTHONDONTWRITEBYTECODE=1 python profiling/bench_uniform_forward_backward_pipeline.py --fams 4 --family-chunk-size 2 --max-wave-size 8192 --fixed-iters 2 --neumann-terms 2 --reps 1 --warmups 0 --compare-unchunked-max-fams 4 --fail-on-correctness-mismatch`: compare verdict pass, finite gradients, `total_median_ms 52.840`.
+- `PYTHONDONTWRITEBYTECODE=1 python profiling/bench_uniform_forward_backward_pipeline.py --fams 1 --family-chunk-size 1 --max-wave-size 8192 --fixed-iters 2 --reps 1 --warmups 0 --compare-unchunked-max-fams 0`: finite gradients, `total_median_ms 798.486`.
+- Full 1000-family benchmark attempt:
+  `PYTHONDONTWRITEBYTECODE=1 python profiling/bench_uniform_forward_backward_pipeline.py --dataset tests/data/test_trees_1000 --fams 1000 --family-chunk-size auto --max-wave-size auto --fixed-iters 6 --neumann-terms 3 --warmups 1 --reps 3 --strict-optimized-kernels --compare-unchunked-max-fams 0` exited with code `-1` before emitting benchmark output, so it is not a valid pass/fail performance result for this log entry.
+- `git diff --check`: passed.
+
 ## Active Work Queue
 
-1. `EVAL-01` and `CHUNK-01`: consolidate resident, no-grad, export, autograd,
-   and chunked evaluation paths behind one evaluator after the gates above.
+1. `EVAL-01` and `CHUNK-01`: continue consolidation for autograd and
+   gradient-producing paths.  Resident no-grad, export-state, and chunked
+   read-only paths now share explicit evaluator boundaries.
 2. `PI-01`, `MODE-02`, `BWD-03`, and `DTS-01`: refactor Pi/backward/DTS
    contracts only after the explicit layout contract exists.
 3. `BWD-01`, `BWD-02`, `ENV-01`, and `SCHED-01`: remove runtime alternatives
