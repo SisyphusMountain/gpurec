@@ -650,21 +650,62 @@ Verification:
   was absent; the main checkout has the dataset and broader gates are tracked
   below.
 
-### Current combined gates after third-wave execution
+### `1ca011a` - Record third-wave simplification progress
+
+Proposal coverage:
+
+- `TEST-01`: recorded the third-wave runtime and evaluator changes, validation
+  commands, and updated 1000-family blocker status.
+- No runtime behavior changed.
+
+Verification:
+
+- `git diff --check`: passed.
+
+### `17f7d75` - Batch uncached family preprocessing
+
+Proposal coverage:
+
+- `BWD-01`, `BWD-02`, and `SCHED-01`: added an explicit benchmark setup mode
+  that can disable preprocess cache reads/writes while still batching C++
+  preprocessing.  This removes the local `/tmp` cache-capacity dependency from
+  large preflight attempts.
+- Added `--no-preprocess-cache` and `--cache-dir none` to the benchmark.  The
+  default cached behavior is unchanged.
+- Added uncached preprocessing progress events:
+  `uncached_preprocess_start`, `uncached_preprocess_batch_start`,
+  `uncached_preprocess_batch_done`, and `uncached_preprocess_done`.
+- Materializes uncached family payloads per batch so completed raw batch output
+  can be released before the next batch.
+
+Verification:
+
+- `python -m py_compile gpurec/core/model.py profiling/bench_uniform_forward_backward_pipeline.py tests/unit/test_alerax_family_input.py tests/unit/test_bench_uniform_forward_backward_pipeline.py`: passed.
+- `PYTHONDONTWRITEBYTECODE=1 python -m pytest -q -p no:cacheprovider tests/unit/test_alerax_family_input.py tests/unit/test_bench_uniform_forward_backward_pipeline.py`: 46 passed.
+- `git diff --check HEAD^ HEAD`: passed.
+- 1000-family no-cache preflight attempts in the worker did not reach
+  `dataset_loaded`.  With cache disabled, a 64-family uncached batch size
+  completed 704 families before exit `-1`; the 16-family default completed 752
+  families before exit `-1`, with no Python traceback and no `/tmp` cache
+  capacity failure.  The next setup blocker is therefore not cache writes; it
+  is native preprocessing or resident memory scale around the 750-family mark.
+
+### Current combined gates after no-cache setup work
 
 Verification:
 
 - `PYTHONDONTWRITEBYTECODE=1 python -m pytest -q -p no:cacheprovider tests/unit/test_alerax_family_input.py tests/unit/test_bench_uniform_forward_backward_pipeline.py tests/unit/test_gradient_accumulator.py tests/unit/test_optimization_workflow.py tests/unit/test_model_no_grad_evaluator.py tests/unit/test_workflow.py::test_full_loss_for_theta_uses_streaming_contract_for_explicit_theta`: 102 passed.
+- `PYTHONDONTWRITEBYTECODE=1 python -m pytest -q -p no:cacheprovider tests/unit/test_bench_uniform_forward_backward_pipeline.py tests/unit/test_repository_hygiene.py::test_tests_use_pytest_managed_temporary_paths`: 9 passed after replacing a literal `/tmp` path in the benchmark cache-disable test with `tmp_path`.
 - `PYTHONDONTWRITEBYTECODE=1 python -m pytest -q -p no:cacheprovider tests/unit/test_repository_hygiene.py tests/unit/test_release_metadata.py -k 'not tests_readme_explicit_cpu_unit_paths_match_marker_gate'`: 128 passed, 1 skipped, 1 deselected.
-- `CUDA_VISIBLE_DEVICES='' PYTHONDONTWRITEBYTECODE=1 python -m pytest -q -p no:cacheprovider -m "unit and not gpu" -k 'not tests_readme_explicit_cpu_unit_paths_match_marker_gate'`: 1087 passed, 1 skipped, 41 deselected.  The excluded manifest test is blocked locally by the untracked dated-model test file `tests/unit/test_dated_species.py`, which is not part of this simplification branch.
+- `CUDA_VISIBLE_DEVICES='' PYTHONDONTWRITEBYTECODE=1 python -m pytest -q -p no:cacheprovider -m "unit and not gpu" -k 'not tests_readme_explicit_cpu_unit_paths_match_marker_gate'`: 1087 passed, 1 skipped, 41 deselected.  The excluded manifest test is blocked locally by untracked dated-model test files, which are not part of this simplification branch.
 - `PYTHONDONTWRITEBYTECODE=1 python -m pytest -q -p no:cacheprovider tests/kernels/test_wave_step_uniform_forward_kernel.py tests/integration/test_gene_recon_model.py tests/integration/test_uniform_chunked_model.py tests/unit/test_specieswise_uniform.py::test_specieswise_uniform_forward_root_rows_match_saved_state tests/unit/test_specieswise_uniform.py::test_constant_specieswise_matches_global_loss_and_gradient_semantics`: 23 passed.
 - `PYTHONDONTWRITEBYTECODE=1 python profiling/bench_uniform_forward_backward_pipeline.py --stats-only --strict-optimized-kernels --fams 1 --family-chunk-size 1 --max-wave-size 8192 --fixed-iters 2 --compare-unchunked-max-fams 0`: `strict_optimized_verdict pass`.
 - `PYTHONDONTWRITEBYTECODE=1 python profiling/bench_uniform_forward_backward_pipeline.py --dataset tests/data/test_trees_1000 --fams 8 --family-chunk-size 2 --max-wave-size 32768 --fixed-iters 6 --reps 3 --warmups 1 --compare-unchunked-max-fams 8 --fail-on-correctness-mismatch --strict-optimized-kernels`: compare verdict pass, finite gradients, `strict_optimized_verdict pass`, `total_median_ms 102.815`, `max_peak_gib 0.445`.
 - 1000-family preflight status after batching: no valid timed benchmark yet.
-  The original single C++ call failure has been bypassed by missing-family
-  batches, but the local filesystem has only about 15 GiB free and the cache
-  build hit `no space left on device` while saving family caches.  The next
-  benchmark setup gate is cache storage policy/capacity.
+  The original single C++ call failure and `/tmp` cache-write capacity failure
+  have both been bypassed by batching and explicit cache disabling, but
+  no-cache preflight still exits without a Python traceback after completing
+  roughly 752 families.  Do not use this as performance evidence.
 
 ## Active Work Queue
 
@@ -682,9 +723,9 @@ Verification:
 3. `BWD-01`, `BWD-02`, `ENV-01`, and `SCHED-01`: first characterization and
    ownership guards are in place.  Do not remove self-loop backends,
    CPU-pruning branches, env toggles, or scheduler alternatives while the
-   1000-family benchmark still lacks a valid timed run.  Resolve the local
-   cache storage capacity/policy issue before treating sparse/dense runtime
-   benchmark results as authoritative.
+   1000-family benchmark still lacks a valid timed run.  Resolve the
+   no-cache/native setup exit around the 750-family mark before treating
+   sparse/dense runtime benchmark results as authoritative.
 4. `CPP-01`, `CPP-02`, `SCRIPT-01`, and `TEST-01`: continue pruning and
    splitting only after each surface has an owner, deprecation path, or
    replacement behavior test.  The first ownership guards are now executable;
@@ -735,6 +776,10 @@ Verification:
 - Resident gradient evaluator worker:
   `gpurec/api/autograd.py`, `gpurec/api/model.py`, and resident evaluator
   tests, integrated in `d3813d8`.
+- No-cache preprocess batching worker:
+  `gpurec/core/model.py`,
+  `profiling/bench_uniform_forward_backward_pipeline.py`, and benchmark/cache
+  tests, integrated in `17f7d75`.
 
 Future parallel workers should continue to use separate git worktrees for
 larger runtime changes.

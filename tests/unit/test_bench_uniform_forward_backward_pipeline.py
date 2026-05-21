@@ -196,7 +196,10 @@ def test_cache_dir_none_disables_preprocess_cache(monkeypatch: pytest.MonkeyPatc
     assert args.cache_dir is None
 
 
-def test_no_preprocess_cache_overrides_cache_dir(monkeypatch: pytest.MonkeyPatch):
+def test_no_preprocess_cache_overrides_cache_dir(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
     bench = _load_bench_module()
     monkeypatch.setattr(
         bench.sys,
@@ -204,7 +207,7 @@ def test_no_preprocess_cache_overrides_cache_dir(monkeypatch: pytest.MonkeyPatch
         [
             "bench_uniform_forward_backward_pipeline.py",
             "--cache-dir",
-            "/tmp/should-not-be-used",
+            str(tmp_path / "should-not-be-used"),
             "--no-preprocess-cache",
         ],
     )
