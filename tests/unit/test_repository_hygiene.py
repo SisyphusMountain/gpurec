@@ -2942,6 +2942,67 @@ def test_preprocess_cpp_pybind_exports_match_classified_manifest():
         assert token in " ".join(source.replace('"', "").split())
 
 
+def test_cpp_preprocess_legacy_and_diagnostic_exports_have_no_runtime_callers():
+    root = Path(__file__).resolve().parents[2]
+    runtime_files = _tracked_package_python_files(root)
+    legacy_exports = {"preprocess"}
+    diagnostic_exports = {
+        "compute_phased_waves",
+        "compute_wave_stats",
+        "compute_packet_wave_stats",
+        "compute_phased_wave_stats",
+        "compute_phased_cross_family_wave_stats",
+        "compute_cross_family_wave_stats",
+    }
+    blocked_exports = legacy_exports | diagnostic_exports
+    call_offenders: list[str] = []
+    preprocess_family_calls: list[tuple[str, ast.Call]] = []
+
+    for path in runtime_files:
+        relative = path.relative_to(root).as_posix()
+        module = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(module):
+            if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
+                continue
+            if node.func.attr == "preprocess_multiple_families":
+                preprocess_family_calls.append((relative, node))
+            if node.func.attr in blocked_exports:
+                call_offenders.append(f"{relative}:{node.lineno}:{node.func.attr}")
+
+    assert call_offenders == []
+    assert [path for path, _node in preprocess_family_calls] == [
+        "gpurec/core/model.py",
+        "gpurec/core/model.py",
+        "gpurec/core/model.py",
+        "gpurec/core/model.py",
+    ]
+
+    detailed_calls = 0
+    species_only_default_calls = 0
+    for _path, node in preprocess_family_calls:
+        keywords = {keyword.arg: keyword.value for keyword in node.keywords}
+        families_arg = node.args[1] if len(node.args) > 1 else None
+        include_details = keywords.get("include_details")
+
+        if isinstance(include_details, ast.Constant) and include_details.value is True:
+            detailed_calls += 1
+            assert isinstance(
+                keywords.get("include_species_matrices"), ast.Constant
+            )
+            assert keywords["include_species_matrices"].value is False
+            continue
+
+        assert "include_details" not in keywords
+        assert isinstance(families_arg, ast.Dict)
+        assert families_arg.keys == []
+        assert isinstance(keywords.get("include_species_matrices"), ast.Constant)
+        assert keywords["include_species_matrices"].value is False
+        species_only_default_calls += 1
+
+    assert detailed_calls == 3
+    assert species_only_default_calls == 1
+
+
 def test_test_only_scheduler_helpers_stay_out_of_runtime_source():
     root = Path(__file__).resolve().parents[2]
     helper_names = (

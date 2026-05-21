@@ -144,6 +144,19 @@ Open surfaces:
 - `preprocess_multiple_families(..., include_details=False)`;
 - wave-stat diagnostic pybind exports.
 
+CPP-01/CPP-02 refresh: tracked package Python still has exactly one production
+preprocessing route, `GeneDataset` calling
+`preprocess_multiple_families`.  Three call sites request
+`include_details=True` for family CCP payloads, and the only retained
+`include_details=False` path is the species-only empty-family cache fill.  No
+tracked package Python calls the legacy `preprocess()` export or the direct
+wave-stat diagnostic exports.  Deletion remains blocked by exported-ABI
+ownership rather than in-repo runtime use: remove `preprocess()` only after
+deprecation/replacement evidence for low-level callers, and remove diagnostic
+pybinds only after a maintained profiling/diagnostic owner is identified or the
+surface is formally retired.  Until then, the diagnostic exports must stay
+documented as non-product workflow API.
+
 Pybind export manifest:
 
 | Export | Classification | Replacement / deletion gate |
