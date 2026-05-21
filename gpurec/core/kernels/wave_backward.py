@@ -13,6 +13,7 @@ import triton
 import triton.language as tl
 
 from gpurec.core._helpers import _env_flag_enabled, _env_mode_enabled_required
+from gpurec.core.kernels._dts_layout_contract import dts_backward_param_layout
 from gpurec.core.memory_policy import proposal0_memory_gate
 
 _cuda_pibar_from_ud_fallback_warned = False
@@ -70,23 +71,29 @@ def _dts_layout_param_args(log_pD, log_pS, *, family_idx, S, device, dtype):
             return _device_scalar_param(param, device=device, dtype=dtype), 0
         if param.device != device or param.dtype != dtype:
             param = param.to(device=device, dtype=dtype)
-        if param.numel() == 1:
+        try:
+            layout = dts_backward_param_layout(
+                param,
+                S=S,
+                family_indexed=family_idx is not None,
+            )
+        except ValueError as exc:
+            raise ValueError(
+                "DTS parameters must be scalar, [S], [G], [G, 1], or [G, S] "
+                "for the fused DTS backward path"
+            ) from exc
+        layout_code = int(layout.code)
+        if layout_code == 0:
             return param.reshape(1).contiguous(), 0
-        if family_idx is not None and param.ndim == 1:
-            return param.contiguous(), 2
-        if param.ndim == 1 and int(param.shape[0]) == int(S):
+        if layout_code == 1:
             return param.contiguous(), 1
-        if family_idx is not None:
-            if param.ndim == 1:
-                return param.contiguous(), 2
-            if param.ndim == 2 and int(param.shape[1]) == 1:
+        if layout_code == 2:
+            if param.ndim == 2:
                 return param.reshape(int(param.shape[0])).contiguous(), 2
-            if param.ndim == 2 and int(param.shape[1]) == int(S):
-                return param.contiguous(), 3
-        raise ValueError(
-            "DTS parameters must be scalar, [S], [G], or [G, S] for "
-            "the fused DTS backward path"
-        )
+            return param.contiguous(), 2
+        if layout_code == 3:
+            return param.contiguous(), 3
+        raise AssertionError("validated DTS backward layout reached unreachable branch")
 
     pD, layout_D = _normalize(log_pD)
     pS, layout_S = _normalize(log_pS)
@@ -97,20 +104,16 @@ def _dts_layout_param_args(log_pD, log_pS, *, family_idx, S, device, dtype):
 
 def _dts_grad_layout(grad, *, family_idx, S):
     """Return gradient addressing layout matching _dts_layout_param_args."""
-    if grad.numel() == 1:
-        return 0
-    if family_idx is not None and grad.ndim == 1:
-        return 2
-    if grad.ndim == 1 and int(grad.shape[0]) == int(S):
-        return 1
-    if family_idx is not None:
-        if grad.ndim == 1:
-            return 2
-        if grad.ndim == 2 and int(grad.shape[1]) == 1:
-            return 2
-        if grad.ndim == 2 and int(grad.shape[1]) == int(S):
-            return 3
-    raise ValueError("unsupported DTS gradient layout")
+    try:
+        return int(
+            dts_backward_param_layout(
+                grad,
+                S=S,
+                family_indexed=family_idx is not None,
+            ).code
+        )
+    except ValueError as exc:
+        raise ValueError("unsupported DTS gradient layout") from exc
 
 
 def _uniform_backward_const_layout(const_tensor, family_idx, family_indexed):

@@ -6,6 +6,8 @@ import torch
 import triton
 import triton.language as tl
 
+from gpurec.core.kernels._dts_layout_contract import dts_forward_param_layout
+
 
 def _tl_float_dtype(dtype):
     return tl.float64 if dtype == torch.float64 else tl.float32
@@ -19,32 +21,48 @@ def _prepare_param(p, n_splits, S, *, family_indexed=False):
     rows to ``[G, 1]`` before this helper.  Direct callers should do the same
     when ``G == S`` and use ``[G, S]`` for family/species rows.
     """
+    try:
+        layout = dts_forward_param_layout(p, S=S, family_indexed=family_indexed)
+    except ValueError as exc:
+        if family_indexed:
+            raise ValueError(
+                "family-indexed DTS parameters must be [G], [G, 1], or [G, S]; "
+                f"got shape {tuple(p.shape)} with S={S}"
+            ) from exc
+        raise ValueError(
+            "DTS parameters must be scalar, [S], [G], [G, 1], or [G, S]; "
+            f"got shape {tuple(p.shape)} with N={n_splits}, S={S}"
+        ) from exc
+
     if family_indexed:
         if p.dim() == 0:
-            return p.reshape(1), 4, 0, 0
-        if p.dim() == 1:
-            if p.numel() == S:
-                return p, 4, 0, int(p.stride(0))
-            return p, 4, int(p.stride(0)), 0
-        if p.dim() == 2:
-            if p.shape[1] == 1:
-                return p, 4, int(p.stride(0)), 0
-            if p.shape[1] == S:
-                row_stride = 0 if int(p.shape[0]) == 1 else int(p.stride(0))
-                return p, 4, row_stride, int(p.stride(1))
-        raise ValueError(
-            "family-indexed DTS parameters must be [G], [G, 1], or [G, S]; "
-            f"got shape {tuple(p.shape)} with S={S}"
+            return (
+                p.reshape(1),
+                int(layout.mode),
+                int(layout.row_stride),
+                int(layout.species_stride),
+            )
+        return (
+            p,
+            int(layout.mode),
+            int(layout.row_stride),
+            int(layout.species_stride),
         )
     if p.dim() == 0:
-        return p.expand(S).contiguous(), 0, 0, 1
+        return (
+            p.expand(S).contiguous(),
+            int(layout.mode),
+            int(layout.row_stride),
+            int(layout.species_stride),
+        )
     if p.dim() == 1:
-        if p.numel() == S:
-            return p.contiguous(), 0, 0, 1
-    raise ValueError(
-        "DTS parameters must be scalar, [S], [G], [G, 1], or [G, S]; "
-        f"got shape {tuple(p.shape)} with N={n_splits}, S={S}"
-    )
+        return (
+            p.contiguous(),
+            int(layout.mode),
+            int(layout.row_stride),
+            int(layout.species_stride),
+        )
+    raise AssertionError("validated DTS forward layout reached unreachable branch")
 
 
 @triton.jit
