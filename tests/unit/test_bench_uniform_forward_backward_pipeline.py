@@ -54,6 +54,7 @@ def test_progress_jsonl_is_quiet_when_not_requested(capsys: pytest.CaptureFixtur
 def test_make_static_inputs_progress_reports_setup_sizes(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
 ):
     bench = _load_bench_module()
 
@@ -114,7 +115,7 @@ def test_make_static_inputs_progress_reports_setup_sizes(
         start=0,
         fams=2,
         dtype=bench.torch.float32,
-        cache_dir="/tmp/cache",
+        cache_dir=str(tmp_path / "cache"),
         theta_rate=0.05,
         family_chunk_size="auto",
         max_wave_size="auto",
