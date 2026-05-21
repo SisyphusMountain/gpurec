@@ -837,6 +837,60 @@ Verification:
 - `PYTHONDONTWRITEBYTECODE=1 python -m pytest -q -p no:cacheprovider tests/unit/test_optimization_workflow.py tests/unit/test_gradient_accumulator.py`: 53 passed.
 - `git diff --check -- gpurec/api/uniform_chunked.py tests/unit/test_optimization_workflow.py`: passed.
 
+### `96915b4` - Guard backward auto-wrap blocker
+
+Proposal coverage:
+
+- `MODE-02`: added an executable guard documenting that the current
+  `family_idx=None` backward auto-wrap path is not equivalent to an explicit
+  all-zero `family_idx` replacement.
+- Removal remains blocked because `_auto_wrapped` still controls tensor-rank
+  unwrapping, CUDA self-loop routing, DTS family indexing, and final gradient
+  unwrapping.
+- No runtime behavior changed.
+
+Verification:
+
+- `python -m py_compile gpurec/core/backward.py tests/unit/test_core_backward.py tests/unit/test_backward_self_loop_policy.py`: passed in the worker.
+- `pytest -q tests/unit/test_core_backward.py tests/unit/test_backward_self_loop_policy.py`: 27 passed in the worker.
+- `pytest -q tests/unit/test_backward_pruning_policy.py`: 6 passed in the worker.
+- `pytest -q tests/unit/test_specieswise_uniform.py -k backward_fast_path_runs`: 1 passed, 4 deselected in the worker.
+
+### `0183a50` - Name Pi forward output requests
+
+Proposal coverage:
+
+- `PI-01`: added intent-named Pi forward request helpers in
+  `gpurec/core/forward.py` and migrated API call sites away from direct
+  `return_original` / `return_root_rows` boolean pairs.
+- Preserved the public `Pi_wave_forward` signature and output dict keys for
+  compatibility.
+- Did not change kernels, likelihood math, or saved-tensor semantics.
+
+Verification:
+
+- `python -m py_compile` on touched PI/API files: passed in the worker and
+  locally.
+- `PYTHONDONTWRITEBYTECODE=1 python -m pytest -q -p no:cacheprovider tests/unit/test_forward_output_intent.py tests/unit/test_model_no_grad_evaluator.py tests/unit/test_optimization_workflow.py tests/unit/test_core_backward.py tests/unit/test_backward_self_loop_policy.py tests/unit/test_backward_pruning_policy.py tests/unit/test_workflow.py::test_workflow_config_import_does_not_load_public_api_package`: 83 passed locally.
+- `CUDA_VISIBLE_DEVICES='' PYTHONDONTWRITEBYTECODE=1 python -m pytest -q -p no:cacheprovider --collect-only tests/integration`: 40 tests collected locally.  This includes unrelated untracked dated integration tests present in this checkout.
+- Remaining PI-01 blocker: legacy booleans still exist in
+  `Pi_wave_forward`'s public compatibility surface and direct core tests still
+  exercise them.
+
+### `38a4ca2` - Guard workflow config import boundary
+
+Proposal coverage:
+
+- `VALID-01`: added a subprocess test proving `gpurec.workflow.config` can be
+  imported without loading the public `gpurec.api` package.  This guards the
+  shared scalar validation helper split added in `5f6502f`.
+- No runtime behavior changed.
+
+Verification:
+
+- `python -m py_compile tests/unit/test_workflow.py`: passed.
+- `PYTHONDONTWRITEBYTECODE=1 python -m pytest -q -p no:cacheprovider tests/unit/test_workflow.py::test_workflow_config_import_does_not_load_public_api_package tests/unit/test_validation.py tests/unit/test_workflow.py::test_run_config_normalizes_direct_float_controls tests/unit/test_workflow.py::test_run_config_rejects_nonfinite_float_controls tests/unit/test_workflow.py::test_run_config_rejects_boolean_float_controls tests/unit/test_workflow.py::test_run_config_rejects_nonbool_boolean_controls`: 101 passed.
+
 ### Current combined gates after no-cache setup and diagnosis work
 
 Verification:
@@ -871,10 +925,11 @@ Verification:
    Any further ORIG work should target the lower-level likelihood boundary only
    with parity tests, not public behavior.
 3. `PI-01`, `MODE-02`, `BWD-03`, and `DTS-01`: continue from the explicit
-   contracts now in place.  Pi output intent, DTS layout parsing,
-   backward auto-wrap characterization, and model-boundary gradient
-   accumulation now have first-step guards.  Removing backward auto-wrap and
-   routing hot CUDA scatter paths still require full gradient/parity gates.
+   contracts now in place.  Pi output requests are named at API call sites,
+   DTS layout parsing, backward auto-wrap characterization, and
+   model-boundary gradient accumulation now have first-step guards.  Removing
+   backward auto-wrap and routing hot CUDA scatter paths still require full
+   gradient/parity gates.
 4. `BWD-01`, `BWD-02`, `ENV-01`, and `SCHED-01`: first characterization and
    ownership guards are in place.  Do not remove self-loop backends,
    CPU-pruning branches, env toggles, or scheduler alternatives while the
@@ -891,7 +946,8 @@ Verification:
 6. `VALID-01`: scalar bool/finite-float validation is shared between direct
    API and workflow config.  Keep workflow-specific integer/string parsing
    local until CLI and JSON compatibility can be retired or mapped to a
-   request object.
+   request object.  `gpurec.workflow.config` is now guarded against importing
+   the public API package.
 
 ## Recent Subagent Assignments
 
@@ -963,6 +1019,13 @@ Verification:
 - Chunked stats-row boundary:
   `gpurec/api/uniform_chunked.py` and optimization workflow tests, integrated
   in `b0c7b0b`.
+- Backward auto-wrap blocker guard:
+  `tests/unit/test_core_backward.py`, integrated in `96915b4`.
+- Pi forward output request naming:
+  `gpurec/core/forward.py`, API call sites, and Pi/evaluator tests,
+  integrated in `0183a50`.
+- Workflow import-boundary guard:
+  `tests/unit/test_workflow.py`, integrated in `38a4ca2`.
 
 Future parallel workers should continue to use separate git worktrees for
 larger runtime changes.
