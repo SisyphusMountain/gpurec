@@ -18,7 +18,10 @@ The explicit equivalent is useful when bisecting a specific audit surface:
 
 ```bash
 CUDA_VISIBLE_DEVICES='' pytest -q \
+  tests/unit/test_backward_pruning_policy.py \
+  tests/unit/test_backward_self_loop_policy.py \
   tests/unit/test_batched_lbfgs.py \
+  tests/unit/test_bench_uniform_forward_backward_pipeline.py \
   tests/unit/test_memory_policy.py \
   tests/unit/test_global_wave_scheduler.py \
   tests/unit/test_implicit_grad_solver.py \

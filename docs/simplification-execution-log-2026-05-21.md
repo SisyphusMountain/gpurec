@@ -374,6 +374,126 @@ Verification:
   `PYTHONDONTWRITEBYTECODE=1 python profiling/bench_uniform_forward_backward_pipeline.py --dataset tests/data/test_trees_1000 --fams 1000 --family-chunk-size auto --max-wave-size auto --fixed-iters 6 --warmups 1 --reps 3 --strict-optimized-kernels --compare-unchunked-max-fams 0` exited with code `-1` before emitting benchmark output, so it is not a valid pass/fail performance result for this log entry.
 - `git diff --check`: passed.
 
+### `d8b5fb1` - Add uniform benchmark preflight progress
+
+Proposal coverage:
+
+- `BWD-01`, `BWD-02`, and `SCHED-01` all require benchmark evidence before
+  runtime alternatives can be removed.  The 1000-family benchmark had been
+  exiting with code `-1` before any output, so it could not answer those
+  proposals.
+- Added opt-in `--progress-jsonl` records and `--preflight-only` /
+  `--setup-only` mode to the benchmark harness.  Normal benchmark output is
+  unchanged unless progress is requested.
+- Progress records now identify gene selection, dataset construction,
+  chunk-policy selection, per-chunk layout construction, optimized-path status,
+  warmups, and timed reps.
+
+Verification:
+
+- `python -m py_compile profiling/bench_uniform_forward_backward_pipeline.py tests/unit/test_bench_uniform_forward_backward_pipeline.py`: passed.
+- `PYTHONDONTWRITEBYTECODE=1 python -m pytest -q -p no:cacheprovider tests/unit/test_bench_uniform_forward_backward_pipeline.py tests/unit/test_repository_hygiene.py::test_documented_uniform_pipeline_benchmark_help_imports_current_api`: 5 passed.
+- `python profiling/bench_uniform_forward_backward_pipeline.py --help`: passed.
+
+### `7ed00a2` - Strengthen env flag ownership hygiene
+
+Proposal coverage:
+
+- `ENV-01`: strengthened the runtime-surface plan guard so every package-read
+  `GPUREC_*` variable has a manifest owner, and so user-facing flags stay
+  limited to `GPUREC_BACKTRACK_BIN`, `GPUREC_ALERAX_COMPAT`,
+  `GPUREC_MEMORY_POLICY_FRACTION`, and `GPUREC_MEMORY_POLICY_RESERVE_GIB`.
+- No flags were removed or behavior changed; prototype, tuning, and internal
+  production flags remain documented as non-user-facing surfaces until they
+  have typed replacements or benchmark-owned CLI knobs.
+
+Verification:
+
+- `python -m py_compile tests/unit/test_repository_hygiene.py`: passed.
+- `PYTHONDONTWRITEBYTECODE=1 python -m pytest -q -p no:cacheprovider tests/unit/test_repository_hygiene.py -k 'environment or cuda_prototype or retired_leaf_hit'`: 6 passed, 77 deselected.
+- `PYTHONDONTWRITEBYTECODE=1 python -m pytest -q -p no:cacheprovider tests/unit/test_bench_uniform_forward_backward_pipeline.py tests/unit/test_repository_hygiene.py`: 87 passed after the benchmark test was fixed to use a pytest-managed temp path.
+
+### `ee7a328` - Fix benchmark preflight test temp path
+
+Proposal coverage:
+
+- `TEST-01`: repaired the new benchmark preflight unit test so it uses
+  `tmp_path` instead of a hard-coded `/tmp` cache path.
+
+Verification:
+
+- `python -m py_compile tests/unit/test_bench_uniform_forward_backward_pipeline.py tests/unit/test_repository_hygiene.py`: passed.
+- `PYTHONDONTWRITEBYTECODE=1 python -m pytest -q -p no:cacheprovider tests/unit/test_bench_uniform_forward_backward_pipeline.py tests/unit/test_repository_hygiene.py`: 87 passed.
+
+### `e441cbd` - Add backward self-loop policy characterization
+
+Proposal coverage:
+
+- `BWD-01`: extracted CPU-testable private helpers for current native CUDA
+  self-loop option parsing, per-wave eligibility/routing, and optional-failure
+  fallback behavior.
+- Added executable guards for default `auto` modes, required-vs-optional
+  modes, split vs no-split selection, eligibility gates, narrow optional
+  exception handling, and disabling only the failed optional backend.
+- No self-loop backend was deleted.  The retained Triton path and native CUDA
+  prototype paths remain until gradient parity and retained-benchmark evidence
+  justify a production choice.
+
+Verification:
+
+- `python -m py_compile gpurec/core/backward.py tests/unit/test_backward_self_loop_policy.py tests/unit/test_core_backward.py`: passed.
+- `PYTHONDONTWRITEBYTECODE=1 python -m pytest -q -p no:cacheprovider tests/unit/test_backward_self_loop_policy.py tests/unit/test_core_backward.py`: 26 passed.
+
+### `36bd0c0` - Characterize backward pruning policy
+
+Proposal coverage:
+
+- `BWD-02`: added `gpurec/core/backward_pruning_policy.py` to resolve current
+  active-mask pruning flags in one CPU-testable policy object.
+- Routed `Pi_wave_backward()` through that policy without changing the CUDA
+  kernels.  The default still avoids host-side all-inactive wave readbacks
+  while passing device active masks when pruning is enabled.
+- Added guards for default no-CPU-pruning behavior, pruning-disabled exact-zero
+  masks on the CPU-pruning branch, threshold-boundary behavior, inactive-wave
+  accounting counters, and `GPUREC_DTS_SKIP_INACTIVE_PIBAR_ZERO` truth rules.
+- The runtime CPU-pruning branch was not removed because sparse/dense
+  active-mask benchmarks are still needed.
+
+Verification:
+
+- `python -m py_compile gpurec/core/backward.py gpurec/core/backward_pruning_policy.py tests/unit/test_backward_pruning_policy.py tests/unit/test_backward_self_loop_policy.py tests/unit/test_core_backward.py`: passed.
+- `PYTHONDONTWRITEBYTECODE=1 python -m pytest -q -p no:cacheprovider tests/unit/test_backward_pruning_policy.py tests/unit/test_backward_self_loop_policy.py tests/unit/test_core_backward.py`: 32 passed.
+
+### `d92f15d` - Characterize scheduler candidate selection
+
+Proposal coverage:
+
+- `SCHED-01`: extracted the current non-leaf scheduler candidate selection into
+  `_select_nonleaf_schedule_candidate()` so tests can identify which policy wins
+  before any deletion.
+- Added representative guards proving `forward`, `deadline`, and
+  `coffman_graham` can each be the selected policy.  This means the current
+  documents do not justify deleting the alternative schedulers yet.
+- No scheduler candidate was removed; choosing one production scheduler still
+  requires benchmark evidence against the current multi-candidate selector.
+
+Verification:
+
+- `python -m py_compile gpurec/core/batching.py gpurec/api/_family_layout.py tests/unit/test_global_wave_scheduler.py`: passed.
+- `CUDA_VISIBLE_DEVICES='' PYTHONDONTWRITEBYTECODE=1 python -m pytest -q -p no:cacheprovider tests/unit/test_global_wave_scheduler.py tests/unit/test_family_layout.py`: 61 passed.
+
+### Current combined gates after runtime-policy characterization
+
+Verification:
+
+- `CUDA_VISIBLE_DEVICES='' PYTHONDONTWRITEBYTECODE=1 python -m pytest -q -p no:cacheprovider tests/unit/test_release_metadata.py::test_tests_readme_explicit_cpu_unit_paths_match_marker_gate tests/unit/test_repository_hygiene.py::test_tests_use_pytest_managed_temporary_paths`: 2 passed after adding the new CPU unit modules to `tests/README.md`.
+- `CUDA_VISIBLE_DEVICES='' PYTHONDONTWRITEBYTECODE=1 python -m pytest -q -p no:cacheprovider -m "unit and not gpu"`: 1070 passed, 1 skipped, 33 deselected.
+- `PYTHONDONTWRITEBYTECODE=1 python -m pytest -q -p no:cacheprovider tests/kernels/test_wave_step_uniform_forward_kernel.py tests/integration/test_gene_recon_model.py tests/integration/test_uniform_chunked_model.py tests/unit/test_specieswise_uniform.py::test_specieswise_uniform_forward_root_rows_match_saved_state tests/unit/test_specieswise_uniform.py::test_constant_specieswise_matches_global_loss_and_gradient_semantics`: 23 passed.
+- `PYTHONDONTWRITEBYTECODE=1 python profiling/bench_uniform_forward_backward_pipeline.py --stats-only --strict-optimized-kernels --fams 1 --family-chunk-size 1 --max-wave-size 8192 --fixed-iters 2 --compare-unchunked-max-fams 0`: `strict_optimized_verdict pass`.
+- `PYTHONDONTWRITEBYTECODE=1 python profiling/bench_uniform_forward_backward_pipeline.py --dataset tests/data/test_trees_1000 --fams 8 --family-chunk-size 2 --max-wave-size 32768 --fixed-iters 6 --reps 3 --warmups 1 --compare-unchunked-max-fams 8 --fail-on-correctness-mismatch --strict-optimized-kernels`: compare verdict pass, finite gradients, `strict_optimized_verdict pass`, `total_median_ms 111.844`, `max_peak_gib 0.445`.
+- 1000-family preflight attempt:
+  `PYTHONDONTWRITEBYTECODE=1 python profiling/bench_uniform_forward_backward_pipeline.py --dataset tests/data/test_trees_1000 --fams 1000 --family-chunk-size auto --max-wave-size auto --fixed-iters 6 --preflight-only --progress-jsonl --strict-optimized-kernels --compare-unchunked-max-fams 0` exited with code `-1`.  The flushed progress stream reached `static_inputs_start` and `gene_selection_done` with 1000 selected families, then exited before `dataset_loaded`; this local failure is therefore still a setup/preprocessing failure, not a timed CUDA benchmark result.
+
 ## Active Work Queue
 
 1. `EVAL-01` and `CHUNK-01`: continue consolidation for autograd and
@@ -384,21 +504,36 @@ Verification:
    backward auto-wrap characterization, and model-boundary gradient
    accumulation have first-step guards; removing backward auto-wrap and routing
    hot CUDA scatter paths still require full gradient/parity gates.
-3. `BWD-01`, `BWD-02`, `ENV-01`, and `SCHED-01`: remove runtime alternatives
-   only after benchmark gates show the retained path is not regressed.
+3. `BWD-01`, `BWD-02`, `ENV-01`, and `SCHED-01`: first characterization and
+   ownership guards are in place.  Do not remove self-loop backends,
+   CPU-pruning branches, env toggles, or scheduler alternatives until the
+   1000-family setup/preprocessing failure is resolved and sparse/dense
+   benchmark gates show no regression.
 4. `CPP-01`, `CPP-02`, `SCRIPT-01`, and `TEST-01`: continue pruning and
    splitting only after each surface has an owner, deprecation path, or
    replacement behavior test.
 
-## Active Subagent Assignments
+## Recent Subagent Assignments
 
-- Resident characterization worker: `tests/integration/test_gene_recon_model.py`.
-- Chunked characterization worker: `tests/integration/test_uniform_chunked_model.py`.
-- Scheduler/preprocess characterization worker:
-  `tests/unit/test_global_wave_scheduler.py` and
-  `tests/unit/test_alerax_family_input.py`.
-- Benchmark-harness worker: `profiling/bench_uniform_forward_backward_pipeline.py`.
-- Proposal auditor: read-only status matrix and dependency audit.
+- Benchmark preflight worker:
+  `profiling/bench_uniform_forward_backward_pipeline.py` and
+  `tests/unit/test_bench_uniform_forward_backward_pipeline.py`, integrated in
+  `d8b5fb1` and fixed in `ee7a328`.
+- Environment ownership worker:
+  `docs/runtime-surface-pruning-plan-2026-05-21.md` and
+  `tests/unit/test_repository_hygiene.py`, integrated in `7ed00a2`.
+- Self-loop policy worker:
+  `gpurec/core/backward.py` and
+  `tests/unit/test_backward_self_loop_policy.py`, integrated in `e441cbd`.
+- Pruning policy worker:
+  `gpurec/core/backward_pruning_policy.py`, `gpurec/core/backward.py`, and
+  `tests/unit/test_backward_pruning_policy.py`, integrated in `36bd0c0`.
+- Scheduler policy worker:
+  `gpurec/core/batching.py` and `tests/unit/test_global_wave_scheduler.py`,
+  integrated in `d92f15d`.
+- Read-only proposal auditor: confirmed the safe integration order and flagged
+  backend deletion, CPU-pruning removal, env deletion, and scheduler
+  simplification as unsafe without benchmark evidence.
 
-These assignments completed in commit `04d0aab`; future parallel workers should
-use separate git worktrees for larger runtime changes.
+Future parallel workers should continue to use separate git worktrees for
+larger runtime changes.
