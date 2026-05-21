@@ -98,6 +98,23 @@ def solver_stats(model: Any) -> dict[str, float]:
         for row in stats
         if "Gradient_converged" in row
     ]
+    e_adjoint_iterations = [
+        int(row.get("E_adjoint_iterations", 0))
+        for row in stats
+        if "E_adjoint_iterations" in row
+    ]
+    e_adjoint_success = [
+        bool(row.get("E_adjoint_success"))
+        for row in stats
+        if "E_adjoint_success" in row
+    ]
+    e_adjoint_rel_res = []
+    for row in stats:
+        if "E_adjoint_rel_res" not in row:
+            continue
+        value = float(row.get("E_adjoint_rel_res", math.nan))
+        if math.isfinite(value):
+            e_adjoint_rel_res.append(value)
     pi_wave_count = sum(int(row.get("Pi_wave_count", 0)) for row in stats)
     pi_converged = sum(int(row.get("Pi_converged_waves", 0)) for row in stats)
     out = {
@@ -116,6 +133,22 @@ def solver_stats(model: Any) -> dict[str, float]:
         )
     if grad_converged:
         out["solver/gradient_converged_batches"] = float(sum(grad_converged))
+    if e_adjoint_iterations:
+        out["solver/e_adjoint_iterations_max"] = float(max(e_adjoint_iterations))
+        out["solver/e_adjoint_iterations_mean"] = float(
+            sum(e_adjoint_iterations) / len(e_adjoint_iterations)
+        )
+    if e_adjoint_rel_res:
+        out["solver/e_adjoint_rel_res_max"] = float(max(e_adjoint_rel_res))
+        out["solver/e_adjoint_rel_res_mean"] = float(
+            sum(e_adjoint_rel_res) / len(e_adjoint_rel_res)
+        )
+    if e_adjoint_success:
+        success_count = sum(e_adjoint_success)
+        out["solver/e_adjoint_success_batches"] = float(success_count)
+        out["solver/e_adjoint_failed_batches"] = float(
+            len(e_adjoint_success) - success_count
+        )
     return out
 
 

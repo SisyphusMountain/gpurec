@@ -65,6 +65,7 @@ from gpurec.workflow.config import RunConfig, SamplingConfig
 from gpurec.workflow.diagnostics import (
     append_jsonl,
     parameter_stats,
+    solver_stats,
     tensor_stats,
     write_json_strict,
 )
@@ -2168,6 +2169,33 @@ def test_uniform_chunked_constructors_reject_unavailable_cuda_before_io(
         )
 
 
+def test_full_nll_per_family_delegates_to_genewise_streaming_helper():
+    model = object.__new__(GeneReconModel)
+    model._mode = "genewise"
+    expected = torch.tensor([1.0, 2.0], dtype=torch.float64)
+    calls: list[bool] = []
+
+    def full_genewise_nll_and_grad(*, need_grad: bool):
+        calls.append(need_grad)
+        return expected, None
+
+    model.full_genewise_nll_and_grad = full_genewise_nll_and_grad  # type: ignore[method-assign]
+
+    actual = model.full_nll_per_family()
+
+    assert calls == [False]
+    assert actual is expected
+
+
+@pytest.mark.parametrize("mode", ["global", "specieswise"])
+def test_full_nll_per_family_rejects_shared_theta_modes(mode: str):
+    model = object.__new__(GeneReconModel)
+    model._mode = mode
+
+    with pytest.raises(ValueError, match="full_nll_per_family.*genewise mode"):
+        model.full_nll_per_family()
+
+
 def test_workflow_rate_outputs_use_normalized_survival_probability(tmp_path: Path):
     theta = torch.log2(torch.tensor([[2.0, 3.0, 5.0]], dtype=torch.float64))
     expected_ps = 1.0 / (1.0 + 2.0 + 3.0 + 5.0)
@@ -2223,6 +2251,47 @@ def test_workflow_json_diagnostics_write_strict_file(tmp_path: Path):
     assert text.endswith("\n")
     assert text.index('"a"') < text.index('"z"')
     assert json.loads(text) == {"a": [1.0, None], "z": None}
+
+
+def test_workflow_solver_stats_surface_e_adjoint_failure_telemetry():
+    model = SimpleNamespace(
+        solver_stat_records=lambda: [
+            {
+                "E_iterations": 2,
+                "Pi_max_iterations": 6,
+                "Pi_wave_iterations": [1, 2],
+                "Pi_wave_count": 2,
+                "Pi_converged_waves": 2,
+                "Neumann_terms": 4,
+                "Gradient_converged": True,
+                "E_adjoint_iterations": 3,
+                "E_adjoint_rel_res": 0.25,
+                "E_adjoint_success": False,
+            },
+            {
+                "E_iterations": 3,
+                "Pi_max_iterations": 6,
+                "Pi_wave_iterations": [2],
+                "Pi_wave_count": 1,
+                "Pi_converged_waves": 1,
+                "Neumann_terms": 4,
+                "Gradient_converged": True,
+                "E_adjoint_iterations": 1,
+                "E_adjoint_rel_res": 0.05,
+                "E_adjoint_success": True,
+            },
+        ]
+    )
+
+    stats = solver_stats(model)
+
+    assert stats["solver/e_adjoint_iterations_max"] == 3.0
+    assert stats["solver/e_adjoint_iterations_mean"] == pytest.approx(2.0)
+    assert stats["solver/e_adjoint_rel_res_max"] == pytest.approx(0.25)
+    assert stats["solver/e_adjoint_rel_res_mean"] == pytest.approx(0.15)
+    assert stats["solver/e_adjoint_success_batches"] == 1.0
+    assert stats["solver/e_adjoint_failed_batches"] == 1.0
+    assert stats["solver/gradient_converged_batches"] == 2.0
 
 
 def test_workflow_metadata_model_name_helpers_return_copies_and_fallbacks():
@@ -4064,6 +4133,179 @@ def test_checkpoint_load_rejects_raw_theta_export(tmp_path: Path):
         load_checkpoint(path)
 
 
+class _WorkflowOptimizerModeModel:
+    def __init__(self):
+        self.theta = torch.nn.Parameter(
+            torch.tensor([0.50, -0.25, 0.125], dtype=torch.float32)
+        )
+        self.initial_theta = self.theta.detach().clone()
+        self.family_names: list[str] = []
+        self.species_names = ["sp0", "sp1"]
+        self.n_families = 0
+        self.n_species = 2
+        self.batch_metadata: list[SimpleNamespace] = []
+        self.clears = 0
+        self.closed = False
+
+    def full_loss(self):
+        return self.theta.square().sum() + 1.0
+
+    def full_nll_per_family(self):
+        return torch.empty(0, dtype=self.theta.dtype)
+
+    def clamp_theta_(self, min_rate, max_rate):
+        with torch.no_grad():
+            self.theta.clamp_(min=-4.0, max=4.0)
+
+    def solver_stat_records(self):
+        return []
+
+    def clear(self):
+        self.clears += 1
+
+    def close(self):
+        self.closed = True
+
+
+class _WorkflowOptimizerModeRunner(OptimizationRunner):
+    def build_model(self):
+        self.fake_model = _WorkflowOptimizerModeModel()
+        return self.fake_model
+
+
+def _optimizer_mode_config(
+    tmp_path: Path,
+    *,
+    optimizer: str,
+    **overrides: object,
+) -> RunConfig:
+    values = {
+        "species_tree": tmp_path / "sp.nwk",
+        "families_file": tmp_path / "families.txt",
+        "out_dir": tmp_path / f"out-{optimizer}",
+        "mode": "global",
+        "device": "cpu",
+        "optimizer": optimizer,
+        "steps": 1,
+        "lr": 0.2,
+        "lbfgs_lr": 0.25,
+        "lbfgs_max_iter": 1,
+        "checkpoint_every": 1,
+        "log_every": 10,
+        "grad_inf_tol": 0.0,
+        "loss_patience": 0,
+        "best_likelihood_patience": 0,
+    }
+    values.update(overrides)
+    return RunConfig(**values)
+
+
+def _optimizer_mode_history_rows(out_dir: Path):
+    lines = (out_dir / "history.jsonl").read_text(encoding="utf-8").splitlines()
+    return [
+        json.loads(line)
+        for line in lines
+    ]
+
+
+def test_optimization_runner_adagrad_mode_records_public_phase(tmp_path: Path):
+    config = _optimizer_mode_config(tmp_path, optimizer="adagrad")
+    runner = _WorkflowOptimizerModeRunner(config)
+
+    result = runner.run()
+
+    history_rows = _optimizer_mode_history_rows(config.out_dir)
+    assert [row["optimizer/phase"] for row in history_rows] == [
+        "adagrad",
+        "final_eval",
+    ]
+    assert history_rows[0]["closure_evals"] == 2
+    assert history_rows[0]["theta_step_inf"] > 0.0
+    assert torch.linalg.vector_norm(runner.fake_model.theta.detach()) < torch.linalg.vector_norm(
+        runner.fake_model.initial_theta
+    )
+    latest = load_checkpoint(config.out_dir / "checkpoints" / "latest.pt")
+    assert latest["optimizer_phase"] == "adagrad"
+    assert latest["last_row"]["optimizer/phase"] == "final_eval"
+    assert result.status == "not_converged"
+    assert runner.fake_model.closed
+
+
+def test_optimization_runner_lbfgs_mode_records_public_phase(tmp_path: Path):
+    config = _optimizer_mode_config(tmp_path, optimizer="lbfgs")
+    runner = _WorkflowOptimizerModeRunner(config)
+
+    result = runner.run()
+
+    history_rows = _optimizer_mode_history_rows(config.out_dir)
+    assert [row["optimizer/phase"] for row in history_rows] == [
+        "lbfgs",
+        "final_eval",
+    ]
+    assert history_rows[0]["closure_evals"] == 2
+    assert history_rows[0]["theta_step_inf"] > 0.0
+    assert torch.linalg.vector_norm(runner.fake_model.theta.detach()) < torch.linalg.vector_norm(
+        runner.fake_model.initial_theta
+    )
+    latest = load_checkpoint(config.out_dir / "checkpoints" / "latest.pt")
+    assert latest["optimizer_phase"] == "lbfgs"
+    assert latest["last_row"]["optimizer/phase"] == "final_eval"
+    assert result.status == "not_converged"
+    assert runner.fake_model.closed
+
+
+def test_optimization_runner_adam_lbfgs_schedule_runs_active_phases(tmp_path: Path):
+    config = _optimizer_mode_config(
+        tmp_path,
+        optimizer="adam-lbfgs",
+        steps=3,
+        adam_warmup_steps=1,
+    )
+    runner = _WorkflowOptimizerModeRunner(config)
+
+    result = runner.run()
+
+    history_rows = _optimizer_mode_history_rows(config.out_dir)
+    assert [row["optimizer/phase"] for row in history_rows] == [
+        "adam",
+        "lbfgs",
+        "lbfgs",
+        "final_eval",
+    ]
+    assert history_rows[0]["closure_evals"] == 2
+    assert all(row["closure_evals"] >= 2 for row in history_rows[1:3])
+    assert all(row["theta_step_inf"] > 0.0 for row in history_rows[:3])
+    latest = load_checkpoint(config.out_dir / "checkpoints" / "latest.pt")
+    assert latest["optimizer_phase"] == "lbfgs"
+    assert result.steps_completed == 3
+    assert result.status == "not_converged"
+    assert runner.fake_model.closed
+
+
+def test_optimization_runner_lbfgs_runtime_error_is_failed_status(
+    tmp_path: Path,
+    monkeypatch,
+):
+    def raise_lbfgs_runtime_error(self, closure=None):
+        raise RuntimeError("lbfgs failed")
+
+    monkeypatch.setattr(torch.optim.LBFGS, "step", raise_lbfgs_runtime_error)
+    config = _optimizer_mode_config(tmp_path, optimizer="lbfgs")
+    runner = _WorkflowOptimizerModeRunner(config)
+
+    result = runner.run()
+
+    assert result.status == "failed"
+    assert result.reason == "lbfgs_runtime_error"
+    history_rows = _optimizer_mode_history_rows(config.out_dir)
+    assert [row["optimizer/phase"] for row in history_rows] == ["final_eval"]
+    latest = load_checkpoint(config.out_dir / "checkpoints" / "latest.pt")
+    assert latest["status"]["status"] == "failed"
+    assert latest["status"]["reason"] == "lbfgs_runtime_error"
+    assert latest["optimizer_phase"] == "lbfgs"
+    assert runner.fake_model.closed
+
+
 def test_optimization_runner_run_writes_outputs_with_fake_model(tmp_path: Path):
     class FakeOptimizationModel:
         def __init__(self):
@@ -4545,6 +4787,55 @@ def test_optimization_runner_final_latest_resumes_at_next_optimizer_step(tmp_pat
         resumed_config.out_dir / "checkpoints" / "latest.pt"
     )
     assert int(resumed_latest["next_step"]) == 2
+
+
+def test_optimization_runner_completed_resume_only_refreshes_final_artifacts(
+    tmp_path: Path,
+):
+    species_tree = tmp_path / "sp.nwk"
+    families_file = tmp_path / "families.txt"
+    first_config = _optimizer_mode_config(
+        tmp_path,
+        optimizer="adam",
+        species_tree=species_tree,
+        families_file=families_file,
+        out_dir=tmp_path / "completed-source",
+        steps=1,
+    )
+    first_runner = _WorkflowOptimizerModeRunner(first_config)
+    first_runner.run()
+    first_latest_path = first_config.out_dir / "checkpoints" / "latest.pt"
+    first_latest = load_checkpoint(first_latest_path)
+
+    assert int(first_latest["next_step"]) == 1
+    assert first_latest["last_row"]["optimizer/phase"] == "final_eval"
+
+    resumed_config = _optimizer_mode_config(
+        tmp_path,
+        optimizer="adam",
+        species_tree=species_tree,
+        families_file=families_file,
+        out_dir=tmp_path / "completed-resume",
+        steps=1,
+        resume_from=first_latest_path,
+    )
+    resumed_runner = _WorkflowOptimizerModeRunner(resumed_config)
+
+    result = resumed_runner.run()
+
+    assert result.status == "not_converged"
+    assert result.reason == "max_steps"
+    assert result.steps_completed == 1
+    assert resumed_runner.fake_model.closed
+    history_rows = _optimizer_mode_history_rows(resumed_config.out_dir)
+    assert [(row["optimizer/phase"], row["step"]) for row in history_rows] == [
+        ("final_eval", 1),
+    ]
+    latest = load_checkpoint(resumed_config.out_dir / "checkpoints" / "latest.pt")
+    assert latest["status"]["status"] == "not_converged"
+    assert latest["status"]["reason"] == "max_steps"
+    assert latest["last_row"]["optimizer/phase"] == "final_eval"
+    assert int(latest["next_step"]) == 1
 
 
 def test_optimization_runner_reports_latest_when_no_best_written_this_run(

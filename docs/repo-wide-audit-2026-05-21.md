@@ -562,6 +562,27 @@ staleness found above:
 - `README.md` now documents the public workflow optimizer modes (`adam`,
   `adagrad`, `lbfgs`, and `adam-lbfgs`), including LBFGS line-search/failure
   semantics and Adam-to-LBFGS resume-state phase behavior.
+- Public workflow optimizer modes now have CPU-safe fake-model runner guards.
+  `tests/unit/test_workflow.py` exercises Adagrad rows and checkpoint phase
+  metadata, active LBFGS rows and current-theta re-evaluation accounting, the
+  `adam-lbfgs` warmup-to-LBFGS schedule, and the no-escape
+  `lbfgs_runtime_error` failed-result path.
+- Completed-checkpoint resume behavior is now documented and asserted.  The
+  README states that resuming when checkpoint `next_step` already equals
+  configured `steps` performs only final evaluation/artifact refresh and returns
+  the existing `not_converged`/`max_steps` status.  A workflow regression now
+  verifies that no optimizer-step row is emitted in that no-op resume path.
+- E-adjoint solver nonconvergence now has an explicit workflow contract and
+  visible telemetry.  The README documents it as diagnostic-only unless the
+  objective or gradient becomes nonfinite, and `solver_stats()` now carries
+  aggregate E-adjoint iteration, relative-residual, success, and failed-batch
+  fields into history rows.
+- The genewise-only per-family NLL contract is now explicit.  The README and
+  `GeneReconModel.full_nll_per_family()` docstring state that
+  `nll_per_family()` and `full_nll_per_family()` are genewise-only public
+  surfaces for independent per-family losses, while shared-theta modes should
+  use `forward(reduce="per_family")` under `torch.no_grad()` only as a
+  diagnostic breakdown.
 - The Rust backtracking CLI now rejects `--output-dir DIR input.json output.xml`
   for single-sample runs as well as multi-sample runs, so the extra positional
   output path is not silently ignored in directory mode.
@@ -769,6 +790,55 @@ staleness found above:
   passed after removing `safe_float()`.
 - `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_workflow.py -q -k 'diagnostics or metadata_model_name'`:
   3 passed, 422 deselected after removing `safe_float()`.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_workflow.py -q -k 'adagrad_mode or lbfgs_mode or adam_lbfgs_schedule or lbfgs_runtime_error'`:
+  4 passed, 425 deselected after adding the public optimizer-mode behavior
+  guards.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_workflow.py -q`:
+  429 passed after adding the public optimizer-mode behavior guards.
+- `python -m pytest --collect-only -q`: 847 tests collected after adding the
+  public optimizer-mode behavior guards.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit -q -m "unit and not gpu"`:
+  818 passed, 1 skipped, 6 deselected after adding the public optimizer-mode
+  behavior guards.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_workflow.py::test_optimization_runner_completed_resume_only_refreshes_final_artifacts tests/unit/test_repository_hygiene.py::test_project_readme_documents_completed_resume_status -q`:
+  2 passed after documenting and pinning completed-checkpoint resume behavior.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_workflow.py -q`:
+  430 passed after adding the completed-resume regression.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_repository_hygiene.py -q`:
+  30 passed after adding the completed-resume README guard.
+- `python -m pytest --collect-only -q`: 849 tests collected after adding the
+  completed-resume guard.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit -q -m "unit and not gpu"`:
+  820 passed, 1 skipped, 6 deselected after adding the completed-resume guard.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_workflow.py::test_workflow_solver_stats_surface_e_adjoint_failure_telemetry tests/unit/test_repository_hygiene.py::test_project_readme_documents_e_adjoint_diagnostics -q`:
+  failed before the diagnostics change because `solver/e_adjoint_iterations_max`
+  was missing, then passed after surfacing the aggregate E-adjoint telemetry.
+- `python -m py_compile gpurec/workflow/diagnostics.py tests/unit/test_workflow.py tests/unit/test_repository_hygiene.py`:
+  passed after the E-adjoint diagnostics change.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_workflow.py -q`:
+  431 passed after adding E-adjoint workflow diagnostics coverage.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_repository_hygiene.py -q`:
+  31 passed after adding the E-adjoint README guard.
+- `python -m pytest --collect-only -q`: 851 tests collected after adding the
+  E-adjoint diagnostics guard.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit -q -m "unit and not gpu"`:
+  822 passed, 1 skipped, 6 deselected after adding the E-adjoint diagnostics
+  guard.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_workflow.py -q -k 'full_nll_per_family'`:
+  3 passed, 432 deselected after documenting and pinning the genewise-only
+  `full_nll_per_family()` contract.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_repository_hygiene.py::test_project_readme_documents_genewise_per_family_api_contract -q`:
+  1 passed after adding the README guard for the genewise per-family API
+  contract.
+- `python -m py_compile gpurec/api/model.py tests/unit/test_workflow.py tests/unit/test_repository_hygiene.py`:
+  passed after the genewise per-family API documentation and guard changes.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_workflow.py tests/unit/test_repository_hygiene.py -q`:
+  466 passed after the genewise per-family API guard.
+- `python -m pytest --collect-only -q`: 855 tests collected after adding the
+  genewise per-family API guard.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit -q -m "unit and not gpu"`:
+  826 passed, 1 skipped, 6 deselected after adding the genewise per-family API
+  guard.
 - `git diff --check`: passed.
 - `python scripts/check_release_metadata.py`: failed with the known release
   blockers: missing top-level `LICENSE`, missing `pyproject.toml` license
@@ -786,7 +856,7 @@ staleness found above:
    redesigns.  Contract coverage now exists for duplicate direct
    `family_names`, oversized `clade_budget`, `ancestors_T=None`, and LBFGS
    `max_eval` evaluation accounting, sampling subprocess timeout behavior, and
-   direct C++ `max_wave_size` validation.
+   direct C++ `max_wave_size` validation, plus public workflow optimizer modes.
 2. Fix remaining documentation-only staleness as it is found in touched areas.
 3. Make low-risk hygiene changes with tests: slow markers and any future
    warning filters only if scoped to a specific dependency warning.

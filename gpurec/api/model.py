@@ -1706,7 +1706,19 @@ class GeneReconModel(torch.nn.Module):
 
     @torch.no_grad()
     def full_nll_per_family(self) -> torch.Tensor:
-        """Per-family NLL for every family, streaming resident batches if needed."""
+        """Per-family NLL for every family in genewise mode.
+
+        This is the no-gradient companion to ``full_genewise_nll_and_grad()``.
+        In global or specieswise mode, use ``forward(reduce="per_family")``
+        under ``torch.no_grad()`` for diagnostic shared-theta values; those
+        modes do not have independent per-family gradients.
+        """
+        if self._mode != "genewise":
+            raise ValueError(
+                "full_nll_per_family() is only valid in genewise mode; use "
+                "forward(reduce='per_family') under torch.no_grad() for "
+                "shared-theta diagnostic values."
+            )
         values, _grad = self.full_genewise_nll_and_grad(need_grad=False)
         return values
 

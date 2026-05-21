@@ -411,6 +411,50 @@ def test_project_readme_documents_workflow_optimizer_modes():
         assert token in normalized
 
 
+def test_project_readme_documents_completed_resume_status():
+    root = Path(__file__).resolve().parents[2]
+    project_readme = (root / "README.md").read_text(encoding="utf-8")
+    normalized = " ".join(project_readme.split())
+
+    for token in (
+        "Resume starts from the checkpoint `next_step`",
+        "If `next_step` already equals the configured `steps`",
+        "performs only the final evaluation/artifact refresh",
+        "returns the same `not_converged`/`max_steps` status",
+        "Increase `steps` beyond the checkpoint `next_step`",
+    ):
+        assert token in normalized
+
+
+def test_project_readme_documents_e_adjoint_diagnostics():
+    root = Path(__file__).resolve().parents[2]
+    project_readme = (root / "README.md").read_text(encoding="utf-8")
+    normalized = " ".join(project_readme.split())
+
+    for token in (
+        "History rows include aggregate `solver/*` telemetry",
+        "E-adjoint nonconvergence is diagnostic-only",
+        "optimization continues unless the objective or gradient becomes nonfinite",
+        "`solver/e_adjoint_failed_batches`",
+        "relative-residual and iteration summaries",
+    ):
+        assert token in normalized
+
+
+def test_project_readme_documents_genewise_per_family_api_contract():
+    root = Path(__file__).resolve().parents[2]
+    project_readme = (root / "README.md").read_text(encoding="utf-8")
+    normalized = " ".join(project_readme.split())
+
+    for token in (
+        "`model.nll_per_family()` and `model.full_nll_per_family()` are genewise-only",
+        "row-wise optimizers",
+        "`model(reduce=\"per_family\")` under `torch.no_grad()`",
+        "independent per-family gradients are not defined",
+    ):
+        assert token in normalized
+
+
 def test_project_readme_top_level_import_examples_match_public_exports():
     root = Path(__file__).resolve().parents[2]
     project_readme = (root / "README.md").read_text(encoding="utf-8")

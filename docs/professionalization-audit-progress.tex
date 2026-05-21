@@ -6161,6 +6161,58 @@ documentation.  \texttt{py\_compile} passes for
 \texttt{tests/unit/test\_workflow.py}, and the focused workflow selector reports
 \texttt{3 passed, 422 deselected}.
 
+The public workflow optimizer modes now have behavior guards, not just README
+coverage.  \texttt{tests/unit/test\_workflow.py} adds CPU-safe fake-model
+checks for \texttt{adagrad}, active \texttt{lbfgs}, the
+\texttt{adam-lbfgs} warmup-to-LBFGS schedule, and the LBFGS runtime-error path
+that should return a failed optimization result instead of raising through the
+CLI workflow.  The focused selector reports
+\texttt{4 passed, 425 deselected}, and the full workflow unit module reports
+\texttt{429 passed}.  Full collection now reports \texttt{847 tests
+collected}, and the CPU-only unit gate reports
+\texttt{818 passed, 1 skipped, 6 deselected}.
+
+Completed-checkpoint resume behavior is now documented before any status
+redesign.  The README states that a resume whose checkpoint \texttt{next\_step}
+already equals configured \texttt{steps} performs only final
+evaluation/artifact refresh and returns the existing
+\texttt{not\_converged}/\texttt{max\_steps} status.  A workflow regression pins
+that no optimizer-step row is emitted in this no-op resume path, and a
+repository hygiene guard keeps the public README contract present.  The focused
+completed-resume selector reports \texttt{2 passed}; the full workflow module
+reports \texttt{430 passed}; and the full repository hygiene module reports
+\texttt{30 passed}.  Full collection now reports \texttt{849 tests collected},
+and the CPU-only unit gate reports
+\texttt{820 passed, 1 skipped, 6 deselected}.
+
+E-adjoint solver nonconvergence now has an explicit workflow contract and
+visible telemetry.  The README documents it as diagnostic-only unless the
+objective or gradient becomes nonfinite.  \texttt{solver\_stats()} now carries
+aggregate E-adjoint iteration, relative-residual, success-batch, and
+failed-batch fields into workflow history rows.  The focused guard failed
+before this diagnostics change because
+\texttt{solver/e\_adjoint\_iterations\_max} was missing, then passed after the
+aggregation change.  \texttt{py\_compile} passes for the touched modules, the
+full workflow module reports \texttt{431 passed}, the full repository hygiene
+module reports \texttt{31 passed}, full collection reports \texttt{851 tests
+collected}, and the CPU-only unit gate reports
+\texttt{822 passed, 1 skipped, 6 deselected}.
+
+The genewise-only per-family NLL contract is now explicit before any broader
+shared-theta implementation work.  The README and
+\texttt{GeneReconModel.full\_nll\_per\_family()} docstring state that
+\texttt{nll\_per\_family()} and \texttt{full\_nll\_per\_family()} are
+genewise-only public surfaces for independent per-family losses, while global
+and specieswise modes should use \texttt{forward(reduce="per\_family")} under
+\texttt{torch.no\_grad()} only as diagnostic shared-theta breakdowns.  New
+CPU-safe guards verify genewise delegation with \texttt{need\_grad=False},
+shared-mode rejection, and README coverage.  The focused workflow selector
+reports \texttt{3 passed, 432 deselected}; the README guard reports
+\texttt{1 passed}; \texttt{py\_compile} passes for the touched Python modules;
+the combined workflow/hygiene modules report \texttt{466 passed}; full
+collection reports \texttt{855 tests collected}; and the CPU-only unit gate
+reports \texttt{826 passed, 1 skipped, 6 deselected}.
+
 \section{Next Audit Targets}
 
 \begin{enumerate}[leftmargin=*]

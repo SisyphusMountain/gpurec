@@ -79,6 +79,12 @@ for _ in range(20):
     model.clamp_theta_(min_rate=1e-10, max_rate=2.0)
 ```
 
+`model.nll_per_family()` and `model.full_nll_per_family()` are genewise-only:
+they return one independent NLL per family and are the public surface for
+row-wise optimizers.  In `global` or `specieswise` mode, use
+`model(reduce="per_family")` under `torch.no_grad()` only as a diagnostic
+shared-theta breakdown; independent per-family gradients are not defined there.
+
 For genewise row-wise polishing:
 
 ```python
@@ -200,10 +206,23 @@ Main outputs include:
 - `rates_final.tsv`, `theta_final.pt`, `summary.json`
 - `per_fam_likelihoods.tsv` for genewise runs
 
+History rows include aggregate `solver/*` telemetry when the model reports
+solver statistics.  E-adjoint nonconvergence is diagnostic-only: optimization
+continues unless the objective or gradient becomes nonfinite, and history rows
+surface `solver/e_adjoint_failed_batches` plus relative-residual and iteration
+summaries for monitoring.
+
 `theta_final.pt` is a raw tensor export for inspection or custom analysis.  It
 does not carry run configuration, family ordering, or species ordering metadata;
 use `checkpoints/best.pt` or `checkpoints/latest.pt` whenever a workflow needs
 to restore parameters into a model or sample reconciliation scenarios.
+
+Resume starts from the checkpoint `next_step`.  If `next_step` already equals
+the configured `steps`, `gpurec optimize --resume-from ...` performs only the
+final evaluation/artifact refresh, writes a fresh `latest.pt`, and returns the
+same `not_converged`/`max_steps` status used by ordinary max-step exhaustion.
+Increase `steps` beyond the checkpoint `next_step` to run additional optimizer
+steps.
 
 To sample scenarios from the best checkpoint:
 
