@@ -39,6 +39,147 @@ def _tracked_package_python_files(root: Path) -> list[Path]:
     return _tracked_files(root, "gpurec/*.py", "gpurec/**/*.py")
 
 
+_GPUREC_ENV_PATTERN = re.compile(r"\bGPUREC_[A-Z0-9_]+\b")
+_ENV_OWNER_CATEGORIES = frozenset(
+    {
+        "User-facing",
+        "User-facing compatibility",
+        "Internal production fast path",
+        "Internal production/diagnostic",
+        "Benchmark/internal tuning",
+        "Prototype/internal",
+        "Prototype/internal tuning",
+    }
+)
+_USER_FACING_ENV_FLAGS = frozenset(
+    {
+        "GPUREC_BACKTRACK_BIN",
+        "GPUREC_ALERAX_COMPAT",
+        "GPUREC_MEMORY_POLICY_FRACTION",
+        "GPUREC_MEMORY_POLICY_RESERVE_GIB",
+    }
+)
+_USER_FACING_ENV_CATEGORIES = frozenset(
+    {
+        "User-facing",
+        "User-facing compatibility",
+    }
+)
+
+
+def _package_env_flags(root: Path) -> list[str]:
+    return sorted(
+        {
+            match.group(0)
+            for path in _tracked_package_python_files(root)
+            for match in _GPUREC_ENV_PATTERN.finditer(
+                path.read_text(encoding="utf-8")
+            )
+        }
+    )
+
+
+def _runtime_read_env_flags(root: Path) -> list[str]:
+    read_flags: set[str] = set()
+    env_read_helpers = {"_env_flag_enabled", "_env_mode_enabled_required"}
+
+    for path in _tracked_package_python_files(root):
+        module = ast.parse(path.read_text(encoding="utf-8"))
+        constants = {
+            node.targets[0].id: node.value.value
+            for node in module.body
+            if isinstance(node, ast.Assign)
+            and len(node.targets) == 1
+            and isinstance(node.targets[0], ast.Name)
+            and isinstance(node.value, ast.Constant)
+            and isinstance(node.value.value, str)
+            and _GPUREC_ENV_PATTERN.fullmatch(node.value.value)
+        }
+        for function in (
+            node for node in ast.walk(module) if isinstance(node, ast.FunctionDef)
+        ):
+            defaults = function.args.defaults
+            args_with_defaults = function.args.args[-len(defaults) :] if defaults else []
+            for arg, default in zip(args_with_defaults, defaults, strict=True):
+                if (
+                    isinstance(default, ast.Constant)
+                    and isinstance(default.value, str)
+                    and _GPUREC_ENV_PATTERN.fullmatch(default.value)
+                ):
+                    constants[arg.arg] = default.value
+            for arg, default in zip(
+                function.args.kwonlyargs, function.args.kw_defaults, strict=True
+            ):
+                if (
+                    isinstance(default, ast.Constant)
+                    and isinstance(default.value, str)
+                    and _GPUREC_ENV_PATTERN.fullmatch(default.value)
+                ):
+                    constants[arg.arg] = default.value
+
+        for node in ast.walk(module):
+            if not isinstance(node, ast.Call) or not node.args:
+                continue
+            func = node.func
+            is_os_environ_get = (
+                isinstance(func, ast.Attribute)
+                and func.attr in {"get", "setdefault"}
+                and isinstance(func.value, ast.Attribute)
+                and func.value.attr == "environ"
+                and isinstance(func.value.value, ast.Name)
+                and func.value.value.id == "os"
+            )
+            is_os_getenv = (
+                isinstance(func, ast.Attribute)
+                and func.attr == "getenv"
+                and isinstance(func.value, ast.Name)
+                and func.value.id == "os"
+            )
+            is_env_read_helper = (
+                isinstance(func, ast.Name) and func.id in env_read_helpers
+            )
+            if not (is_os_environ_get or is_os_getenv or is_env_read_helper):
+                continue
+
+            key_arg = node.args[0]
+            if (
+                isinstance(key_arg, ast.Constant)
+                and isinstance(key_arg.value, str)
+                and _GPUREC_ENV_PATTERN.fullmatch(key_arg.value)
+            ):
+                read_flags.add(key_arg.value)
+            elif isinstance(key_arg, ast.Name) and key_arg.id in constants:
+                read_flags.add(constants[key_arg.id])
+
+    return sorted(read_flags)
+
+
+def _runtime_environment_owner_manifest(root: Path) -> dict[str, str]:
+    pruning_plan = (
+        root / "docs" / "runtime-surface-pruning-plan-2026-05-21.md"
+    ).read_text(encoding="utf-8")
+    manifest_match = re.search(
+        r"### Environment Owner Manifest\n\n(?P<table>\| Variable\(s\).*?)\n\n"
+        r"User-facing environment flags are limited to",
+        pruning_plan,
+        flags=re.S,
+    )
+    assert manifest_match is not None
+
+    owners: dict[str, str] = {}
+    for line in manifest_match.group("table").splitlines():
+        cells = [cell.strip() for cell in line.strip().strip("|").split("|")]
+        if len(cells) != 3 or cells[0] in {"Variable(s)", "---"}:
+            continue
+        flags_cell, owner, _notes = cells
+        assert owner in _ENV_OWNER_CATEGORIES
+        for flag in _GPUREC_ENV_PATTERN.findall(flags_cell):
+            assert flag not in owners
+            owners[flag] = owner
+
+    return owners
+
+
 def _is_subprocess_run(call: ast.Call) -> bool:
     func = call.func
     return (
@@ -1760,14 +1901,7 @@ def test_project_readme_documents_top_level_backtracking_helpers():
 def test_project_readme_documents_package_environment_flags():
     root = Path(__file__).resolve().parents[2]
     project_readme = (root / "README.md").read_text(encoding="utf-8")
-    env_pattern = re.compile(r"\bGPUREC_[A-Z0-9_]+\b")
-    package_env_flags = sorted(
-        {
-            match.group(0)
-            for path in _tracked_package_python_files(root)
-            for match in env_pattern.finditer(path.read_text(encoding="utf-8"))
-        }
-    )
+    package_env_flags = _package_env_flags(root)
 
     assert package_env_flags
     undocumented = [name for name in package_env_flags if name not in project_readme]
@@ -1780,36 +1914,31 @@ def test_runtime_surface_plan_records_package_environment_owners():
     pruning_plan = (
         root / "docs" / "runtime-surface-pruning-plan-2026-05-21.md"
     ).read_text(encoding="utf-8")
-    env_pattern = re.compile(r"\bGPUREC_[A-Z0-9_]+\b")
-    package_env_flags = sorted(
-        {
-            match.group(0)
-            for path in _tracked_package_python_files(root)
-            for match in env_pattern.finditer(path.read_text(encoding="utf-8"))
-        }
-    )
-    manifest_match = re.search(
-        r"### Environment Owner Manifest\n\n(?P<table>\| Variable\(s\).*?)\n\nPlan:",
-        pruning_plan,
-        flags=re.S,
-    )
-
-    assert manifest_match is not None
-    manifest = manifest_match.group("table")
-    documented = sorted({match.group(0) for match in env_pattern.finditer(manifest)})
+    package_env_flags = _package_env_flags(root)
+    runtime_read_flags = _runtime_read_env_flags(root)
+    owner_by_flag = _runtime_environment_owner_manifest(root)
 
     assert package_env_flags
-    assert documented == package_env_flags
-    for owner in (
-        "User-facing",
-        "User-facing compatibility",
-        "Internal production fast path",
-        "Internal production/diagnostic",
-        "Benchmark/internal tuning",
-        "Prototype/internal",
-        "Prototype/internal tuning",
-    ):
-        assert owner in manifest
+    assert runtime_read_flags
+    assert sorted(owner_by_flag) == package_env_flags
+    assert sorted(set(runtime_read_flags) - set(owner_by_flag)) == []
+    assert sorted(
+        flag
+        for flag, owner in owner_by_flag.items()
+        if owner in _USER_FACING_ENV_CATEGORIES
+    ) == sorted(_USER_FACING_ENV_FLAGS)
+    assert sorted(
+        flag
+        for flag in owner_by_flag
+        if flag.startswith("GPUREC_CUDA_")
+        and owner_by_flag[flag] not in {"Prototype/internal", "Prototype/internal tuning"}
+    ) == []
+    normalized_plan = " ".join(pruning_plan.split())
+    assert (
+        "All other package-read `GPUREC_*` flags are internal production, "
+        "benchmark/internal tuning, or prototype/internal diagnostics"
+    ) in normalized_plan
+    assert "should not be promoted in README wording" in normalized_plan
 
 
 def test_project_readme_documents_cuda_prototype_fallback_policy():

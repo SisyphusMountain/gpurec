@@ -186,6 +186,13 @@ before any flag is removed.
 | `GPUREC_CUDA_PIBAR_FROM_UD`, `GPUREC_CUDA_PIBAR_FROM_UD_STRICT` | Prototype/internal | Native CUDA Pibar-from-`u_d` prototype selector and strict-failure mode. |
 | `GPUREC_CUDA_PIBAR_FROM_UD_BLOCK`, `GPUREC_CUDA_PIBAR_FROM_UD_PAD_SHARED` | Prototype/internal tuning | Native CUDA Pibar-from-`u_d` launch tuning. |
 
+User-facing environment flags are limited to `GPUREC_BACKTRACK_BIN`,
+`GPUREC_ALERAX_COMPAT`, `GPUREC_MEMORY_POLICY_FRACTION`, and
+`GPUREC_MEMORY_POLICY_RESERVE_GIB`.  All other package-read `GPUREC_*` flags
+are internal production, benchmark/internal tuning, or prototype/internal
+diagnostics and should not be promoted in README wording without updating this
+manifest.
+
 Plan:
 
 - Keep binary/distribution and memory-policy env vars.
