@@ -12,8 +12,8 @@ benchmark gates tied to specific proposal IDs.
 Proposal coverage:
 
 - `API-01`: clarified high-level API and unstable `gpurec.core` boundary.
-- `LIK-02`: removed the deprecated misleading likelihood aliases after tracked
-  runtime, profiling, and ordinary test usage had moved to `compute_nll*`.
+- `LIK-02`: added deprecation warnings for misleading likelihood aliases and
+  moved ordinary test usage to `compute_nll*`.
 - `CPP-01`: documented the legacy direct `preprocess` pybind as compatibility
   surface.
 - `CPP-02`: documented direct C++ scheduler/stat exports as diagnostic surface.
@@ -891,6 +891,73 @@ Verification:
 - `python -m py_compile tests/unit/test_workflow.py`: passed.
 - `PYTHONDONTWRITEBYTECODE=1 python -m pytest -q -p no:cacheprovider tests/unit/test_workflow.py::test_workflow_config_import_does_not_load_public_api_package tests/unit/test_validation.py tests/unit/test_workflow.py::test_run_config_normalizes_direct_float_controls tests/unit/test_workflow.py::test_run_config_rejects_nonfinite_float_controls tests/unit/test_workflow.py::test_run_config_rejects_boolean_float_controls tests/unit/test_workflow.py::test_run_config_rejects_nonbool_boolean_controls`: 101 passed.
 
+### `bb35915` - Guard benchmark-blocked proposal status
+
+Proposal coverage:
+
+- `BWD-01`, `BWD-02`, `ENV-01`, and `SCHED-01`: added a docs/hygiene guard
+  stating that windowed preflight is diagnostic only and cannot be used as
+  performance evidence for deleting env flags, scheduler policies, self-loop
+  backends, or active-mask pruning modes.
+- No runtime behavior changed.
+
+Verification:
+
+- `python -m py_compile tests/unit/test_repository_hygiene.py profiling/bench_uniform_forward_backward_pipeline.py tests/unit/test_bench_uniform_forward_backward_pipeline.py`: passed in the worker.
+- `PYTHONDONTWRITEBYTECODE=1 python -m pytest -q -p no:cacheprovider tests/unit/test_repository_hygiene.py::test_blocked_benchmark_proposals_reject_diagnostic_preflight_evidence tests/unit/test_bench_uniform_forward_backward_pipeline.py::test_windowed_preflight_runs_sequential_setup_windows_and_reports_progress`: 2 passed in the worker.
+
+### `0846763` - Guard core API and HOGENOM helper ownership
+
+Proposal coverage:
+
+- `API-01`: added an explicit `gpurec.core` implementation-namespace docstring
+  and hygiene coverage for the public API boundary.
+- `SCRIPT-01` and `TEST-01`: documented fixed-dataset HOGENOM helper
+  ownership and blockers before deleting the checkout-local launchers.
+- No runtime behavior changed.
+
+Verification:
+
+- `python -m py_compile gpurec/core/__init__.py scripts/hogenom_opt_helpers.py tests/unit/test_repository_hygiene.py`: passed in the worker.
+- Focused new hygiene selectors: 2 passed in the worker.
+- `PYTHONDONTWRITEBYTECODE=1 python -m pytest -q -p no:cacheprovider tests/unit/test_legacy_scripts.py tests/unit/test_repository_hygiene.py`: 126 passed in the worker.
+
+### `a445dff` - Guard CPP preprocess surface blockers
+
+Proposal coverage:
+
+- `CPP-01`: added guard coverage showing runtime Python uses
+  `preprocess_multiple_families`; the legacy direct `preprocess()` pybind
+  remains blocked on exported-ABI/deprecation evidence.
+- `CPP-02`: added guard coverage showing package runtime does not call the
+  diagnostic pybind exports, while preserving them until diagnostic/profiling
+  ownership is replaced or retired.
+- No C++ behavior changed.
+
+Verification:
+
+- `python -m py_compile tests/unit/test_repository_hygiene.py`: passed in the worker.
+- Focused C++ surface/hygiene tests: 4 passed in the worker.
+- `git diff --check HEAD^ HEAD`: passed in the worker.
+
+### `08f2198` - Remove misleading likelihood aliases
+
+Proposal coverage:
+
+- `LIK-02`: removed the deprecated `compute_log_likelihood*` aliases after
+  tracked runtime, profiling, script, and ordinary test usage had moved to
+  `compute_nll*`.
+- Updated docs and repository hygiene so tracked runtime/test/script/profiling
+  Python does not reintroduce the removed aliases.
+
+Verification:
+
+- `python -m py_compile gpurec/core/likelihood.py tests/unit/test_origination_probs.py tests/unit/test_repository_hygiene.py`: passed in the worker and locally.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_origination_probs.py tests/unit/test_repository_hygiene.py::test_removed_likelihood_aliases_stay_out_of_runtime_surface -q`: 13 passed in the worker.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_repository_hygiene.py -q`: 89 passed in the worker.
+- `PYTHONDONTWRITEBYTECODE=1 python -m pytest -q -p no:cacheprovider tests/unit/test_origination_probs.py tests/unit/test_repository_hygiene.py tests/unit/test_bench_uniform_forward_backward_pipeline.py::test_windowed_preflight_runs_sequential_setup_windows_and_reports_progress tests/unit/test_legacy_scripts.py`: 139 passed locally.
+- `PYTHONDONTWRITEBYTECODE=1 python -m pytest -q -p no:cacheprovider tests/unit/test_repository_hygiene.py::test_simplification_execution_log_mentions_every_index_proposal tests/unit/test_repository_hygiene.py::test_removed_likelihood_aliases_stay_out_of_runtime_surface tests/unit/test_repository_hygiene.py::test_cpp_preprocess_legacy_and_diagnostic_exports_have_no_runtime_callers tests/unit/test_repository_hygiene.py::test_blocked_benchmark_proposals_reject_diagnostic_preflight_evidence tests/unit/test_repository_hygiene.py::test_package_docs_do_not_advertise_core_as_public_surface tests/unit/test_repository_hygiene.py::test_fixed_dataset_hogenom_launchers_document_unique_contracts`: 6 passed locally.
+
 ### Current combined gates after no-cache setup and diagnosis work
 
 Verification:
@@ -941,13 +1008,17 @@ Verification:
    ranges, but it is explicitly not performance evidence.
 5. `CPP-01`, `CPP-02`, `SCRIPT-01`, and `TEST-01`: continue pruning and
    splitting only after each surface has an owner, deprecation path, or
-   replacement behavior test.  The first ownership guards are now executable;
-   actual deletion remains separate work.
+   replacement behavior test.  C++ legacy/diagnostic exports and fixed-dataset
+   HOGENOM launchers now have executable ownership/blocker guards; actual
+   deletion remains separate work.
 6. `VALID-01`: scalar bool/finite-float validation is shared between direct
    API and workflow config.  Keep workflow-specific integer/string parsing
    local until CLI and JSON compatibility can be retired or mapped to a
    request object.  `gpurec.workflow.config` is now guarded against importing
    the public API package.
+7. `LIK-02`: the misleading `compute_log_likelihood*` aliases are removed and
+   repository hygiene guards prevent reintroduction in tracked runtime,
+   profiling, script, and ordinary test Python.
 
 ## Recent Subagent Assignments
 
@@ -1026,6 +1097,17 @@ Verification:
   integrated in `0183a50`.
 - Workflow import-boundary guard:
   `tests/unit/test_workflow.py`, integrated in `38a4ca2`.
+- Benchmark-blocked proposal guard:
+  `docs/lean-fast-path.md` and repository hygiene tests, integrated in
+  `bb35915`.
+- Core API and HOGENOM helper ownership:
+  `gpurec/core/__init__.py`, `scripts/hogenom_opt_helpers.py`, and repository
+  hygiene tests, integrated in `0846763`.
+- C++ pybind blocker guard:
+  runtime-surface docs and repository hygiene tests, integrated in `a445dff`.
+- Likelihood alias removal:
+  `gpurec/core/likelihood.py`, LIK-02 docs, origination-probability tests, and
+  repository hygiene tests, integrated in `08f2198`.
 
 Future parallel workers should continue to use separate git worktrees for
 larger runtime changes.
