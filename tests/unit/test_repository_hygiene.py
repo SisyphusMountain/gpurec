@@ -2440,6 +2440,44 @@ def test_profiling_readme_documents_entrypoints_and_artifact_policy():
     assert "See `profiling/README.md`" in project_readme
 
 
+def test_blocked_benchmark_proposals_reject_diagnostic_preflight_evidence():
+    root = Path(__file__).resolve().parents[2]
+    lean_fast_path = (root / "docs" / "lean-fast-path.md").read_text(
+        encoding="utf-8"
+    )
+    execution_log = (
+        root / "docs" / "simplification-execution-log-2026-05-21.md"
+    ).read_text(encoding="utf-8")
+    benchmark_source = (
+        root / "profiling" / "bench_uniform_forward_backward_pipeline.py"
+    ).read_text(encoding="utf-8")
+    benchmark_tests = (
+        root / "tests" / "unit" / "test_bench_uniform_forward_backward_pipeline.py"
+    ).read_text(encoding="utf-8")
+    combined_status = " ".join((lean_fast_path + "\n" + execution_log).split())
+
+    for proposal in ("ENV-01", "SCHED-01", "BWD-01", "BWD-02"):
+        assert proposal in combined_status
+    for token in (
+        "no valid current full 1000-family timed run exists",
+        "Windowed preflight is a setup diagnostic only",
+        "`performance_evidence 0`",
+        "must not justify deleting self-loop backends",
+        "active-mask pruning modes",
+        "environment flags",
+        "scheduler policies",
+        "remain blocked until the full benchmark produces timed performance evidence",
+        "Do not remove self-loop backends, CPU-pruning branches, env toggles, "
+        "or scheduler alternatives while the 1000-family benchmark still lacks "
+        "a valid timed run",
+        "Windowed preflight can now diagnose setup coverage across large family "
+        "ranges, but it is explicitly not performance evidence",
+    ):
+        assert token in combined_status
+    assert '"performance_evidence", 0' in benchmark_source
+    assert "performance_evidence 0" in benchmark_tests
+
+
 def test_tracked_notebooks_are_documented_as_checkout_local_artifacts():
     root = Path(__file__).resolve().parents[2]
     note = (root / "notebooks" / "README.md").read_text(encoding="utf-8")

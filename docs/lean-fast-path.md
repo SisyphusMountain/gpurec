@@ -42,6 +42,13 @@ python profiling/bench_uniform_forward_backward_pipeline.py \
   --strict-optimized-kernels
 ```
 
+Current blocker status after the benchmark instrumentation refresh: no valid
+current full 1000-family timed run exists.  Windowed preflight is a setup
+diagnostic only; it reports `performance_evidence 0` and must not justify
+deleting self-loop backends, active-mask pruning modes, environment flags, or
+scheduler policies.  `ENV-01`, `SCHED-01`, `BWD-01`, and `BWD-02` remain
+blocked until the full benchmark produces timed performance evidence.
+
 The branch intentionally removes alternatives that were slower, unvalidated, or
 not part of the measured path. Ordinary PyTorch optimizers are the primary
 optimization interface; `BatchedLBFGS` is retained for row-wise genewise polish.
