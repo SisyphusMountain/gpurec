@@ -164,6 +164,38 @@ class _UniformChunkedReadOnlyEvaluation:
     per_family_nll: torch.Tensor | None = None
 
 
+@dataclass(frozen=True)
+class _UniformChunkStatsRow:
+    idx: int
+    family_start: int
+    family_stop: int
+    families: int
+    clades: int
+    splits: int
+    waves: int
+    max_wave: int
+    split_rows: int
+    max_wave_split_rows: int
+    forward_ms: float
+    pi_backward_ms: float
+
+    def as_public_dict(self) -> dict[str, Any]:
+        return {
+            "idx": self.idx,
+            "family_start": self.family_start,
+            "family_stop": self.family_stop,
+            "families": self.families,
+            "clades": self.clades,
+            "splits": self.splits,
+            "waves": self.waves,
+            "max_wave": self.max_wave,
+            "split_rows": self.split_rows,
+            "max_wave_split_rows": self.max_wave_split_rows,
+            "forward_ms": self.forward_ms,
+            "pi_backward_ms": self.pi_backward_ms,
+        }
+
+
 def _set_default_flags() -> None:
     for key, value in UNIFORM_OPTIMIZED_DEFAULT_FLAGS.items():
         os.environ.setdefault(key, value)
@@ -418,6 +450,31 @@ def _e_adjoint_stats_fields(stats: Any) -> dict[str, Any]:
     }
 
 
+def _chunk_stats_row(
+    *,
+    chunk_idx: int,
+    built: _UniformBuiltChunk,
+    forward_ms: float,
+    pi_backward_ms: float,
+) -> dict[str, Any]:
+    indices = built.spec.indices
+    row = _UniformChunkStatsRow(
+        idx=int(chunk_idx),
+        family_start=int(indices[0]),
+        family_stop=int(indices[-1]) + 1,
+        families=len(indices),
+        clades=int(built.spec.clades),
+        splits=int(built.spec.splits),
+        waves=int(built.waves),
+        max_wave=int(built.max_wave),
+        split_rows=int(built.split_rows),
+        max_wave_split_rows=int(built.max_wave_split_rows),
+        forward_ms=float(forward_ms),
+        pi_backward_ms=float(pi_backward_ms),
+    )
+    return row.as_public_dict()
+
+
 def _require_chunked_gradient_dtype(dtype: torch.dtype) -> None:
     if dtype not in (torch.float32, torch.float64):
         raise RuntimeError(
@@ -574,20 +631,12 @@ def _evaluate_chunked_uniform_result(
             del pi_bwd
 
         chunk_stats.append(
-            {
-                "idx": chunk_idx,
-                "family_start": int(built.spec.indices[0]),
-                "family_stop": int(built.spec.indices[-1]) + 1,
-                "families": len(built.spec.indices),
-                "clades": built.spec.clades,
-                "splits": built.spec.splits,
-                "waves": built.waves,
-                "max_wave": built.max_wave,
-                "split_rows": built.split_rows,
-                "max_wave_split_rows": built.max_wave_split_rows,
-                "forward_ms": fwd_ms,
-                "pi_backward_ms": bwd_ms,
-            }
+            _chunk_stats_row(
+                chunk_idx=chunk_idx,
+                built=built,
+                forward_ms=fwd_ms,
+                pi_backward_ms=bwd_ms,
+            )
         )
         del pi_out, loss_vec
 

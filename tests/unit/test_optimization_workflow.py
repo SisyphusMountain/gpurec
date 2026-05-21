@@ -35,6 +35,43 @@ def test_uniform_chunked_e_adjoint_stats_fields_are_public_stats_shape():
     }
 
 
+def test_uniform_chunked_chunk_stats_row_has_public_stats_shape():
+    built = uniform_chunked_module._UniformBuiltChunk(
+        spec=uniform_chunked_module._UniformChunkSpec(
+            indices=[3, 4, 5],
+            clades=17,
+            splits=19,
+        ),
+        wave_layout={},
+        waves=7,
+        max_wave=11,
+        split_rows=23,
+        max_wave_split_rows=13,
+    )
+
+    row = uniform_chunked_module._chunk_stats_row(
+        chunk_idx=2,
+        built=built,
+        forward_ms=1.25,
+        pi_backward_ms=2.5,
+    )
+
+    assert row == {
+        "idx": 2,
+        "family_start": 3,
+        "family_stop": 6,
+        "families": 3,
+        "clades": 17,
+        "splits": 19,
+        "waves": 7,
+        "max_wave": 11,
+        "split_rows": 23,
+        "max_wave_split_rows": 13,
+        "forward_ms": 1.25,
+        "pi_backward_ms": 2.5,
+    }
+
+
 def test_uniform_chunked_read_only_helper_delegates_to_result_core(monkeypatch):
     state = object()
     theta = torch.tensor([1.0, 2.0, 3.0], dtype=torch.float64)
