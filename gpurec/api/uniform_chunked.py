@@ -126,6 +126,21 @@ class _UniformChunkedState:
     warm_E: torch.Tensor | None = None
 
 
+@dataclass(frozen=True)
+class _UniformChunkedEvaluation:
+    loss: torch.Tensor
+    grad_theta: torch.Tensor | None
+    stats: dict[str, Any]
+    per_family_nll: torch.Tensor | None = None
+
+
+@dataclass(frozen=True)
+class _UniformChunkedReadOnlyEvaluation:
+    loss: torch.Tensor
+    stats: dict[str, Any]
+    per_family_nll: torch.Tensor | None = None
+
+
 def _set_default_flags() -> None:
     for key, value in UNIFORM_OPTIMIZED_DEFAULT_FLAGS.items():
         os.environ.setdefault(key, value)
@@ -406,15 +421,15 @@ def _e_adjoint_stats_fields(stats: Any) -> dict[str, Any]:
     }
 
 
-def _evaluate_chunked_uniform(
+def _evaluate_chunked_uniform_result(
     state: _UniformChunkedState,
     theta: torch.Tensor,
     *,
     need_grad: bool,
-    per_family: bool = False,
+    collect_per_family: bool = False,
     chunk_indices: Sequence[int] | torch.Tensor | None = None,
-) -> tuple[torch.Tensor, torch.Tensor | None, dict[str, Any]]:
-    if per_family and need_grad:
+) -> _UniformChunkedEvaluation:
+    if collect_per_family and need_grad:
         raise ValueError("per-family output is only supported for no-grad evaluation")
 
     selected_chunks = _selected_chunks(state, chunk_indices)
@@ -513,7 +528,7 @@ def _evaluate_chunked_uniform(
         pi_forward_ms += fwd_ms
         forward_ms += fwd_ms
         total_loss = total_loss + loss_vec.sum()
-        if per_family:
+        if collect_per_family:
             per_family_parts.append(loss_vec.detach())
 
         bwd_ms = 0.0
@@ -610,10 +625,10 @@ def _evaluate_chunked_uniform(
         peak_alloc_gib = float("nan")
         peak_reserved_gib = float("nan")
 
-    out_loss = (
+    per_family_nll = (
         torch.cat(per_family_parts, dim=0)
-        if per_family
-        else total_loss.detach()
+        if collect_per_family
+        else None
     )
     stats = {
         "loss": float(total_loss.detach().cpu()),
@@ -637,7 +652,56 @@ def _evaluate_chunked_uniform(
             else None
         ),
     }
-    return out_loss, grad_theta, stats
+    return _UniformChunkedEvaluation(
+        loss=total_loss.detach(),
+        grad_theta=grad_theta,
+        stats=stats,
+        per_family_nll=per_family_nll,
+    )
+
+
+def _evaluate_chunked_uniform(
+    state: _UniformChunkedState,
+    theta: torch.Tensor,
+    *,
+    need_grad: bool,
+    per_family: bool = False,
+    chunk_indices: Sequence[int] | torch.Tensor | None = None,
+) -> tuple[torch.Tensor, torch.Tensor | None, dict[str, Any]]:
+    result = _evaluate_chunked_uniform_result(
+        state,
+        theta,
+        need_grad=need_grad,
+        collect_per_family=per_family,
+        chunk_indices=chunk_indices,
+    )
+    if per_family:
+        if result.per_family_nll is None:
+            raise RuntimeError("internal error: missing chunked per-family NLL")
+        return result.per_family_nll, result.grad_theta, result.stats
+    return result.loss, result.grad_theta, result.stats
+
+
+def _evaluate_chunked_uniform_read_only(
+    state: _UniformChunkedState,
+    theta: torch.Tensor,
+    *,
+    collect_per_family: bool = False,
+    chunk_indices: Sequence[int] | torch.Tensor | None = None,
+) -> _UniformChunkedReadOnlyEvaluation:
+    with torch.no_grad():
+        result = _evaluate_chunked_uniform_result(
+            state,
+            theta,
+            need_grad=False,
+            collect_per_family=collect_per_family,
+            chunk_indices=chunk_indices,
+        )
+    return _UniformChunkedReadOnlyEvaluation(
+        loss=result.loss,
+        stats=result.stats,
+        per_family_nll=result.per_family_nll,
+    )
 
 
 class _UniformChunkedFunction(torch.autograd.Function):
@@ -1061,13 +1125,12 @@ class UniformChunkedReconModel(torch.nn.Module):
         self,
         chunk_indices: Sequence[int] | torch.Tensor | None = None,
     ) -> torch.Tensor:
-        loss, _grad, stats = _evaluate_chunked_uniform(
+        result = _evaluate_chunked_uniform_read_only(
             self._state,
             self.theta,
-            need_grad=False,
             chunk_indices=chunk_indices,
         )
-        return loss
+        return result.loss
 
     @torch.no_grad()
     def nll_per_family(
@@ -1080,14 +1143,15 @@ class UniformChunkedReconModel(torch.nn.Module):
         order.  This is a global/uniform shared-theta diagnostic, not an
         independent per-family gradient surface.
         """
-        loss, _grad, stats = _evaluate_chunked_uniform(
+        result = _evaluate_chunked_uniform_read_only(
             self._state,
             self.theta,
-            need_grad=False,
-            per_family=True,
+            collect_per_family=True,
             chunk_indices=chunk_indices,
         )
-        return loss
+        if result.per_family_nll is None:
+            raise RuntimeError("internal error: missing chunked per-family NLL")
+        return result.per_family_nll
 
     @torch.no_grad()
     def loss_and_grad(

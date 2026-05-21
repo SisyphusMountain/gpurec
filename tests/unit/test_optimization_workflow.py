@@ -35,6 +35,68 @@ def test_uniform_chunked_e_adjoint_stats_fields_are_public_stats_shape():
     }
 
 
+def test_uniform_chunked_read_only_helper_delegates_to_result_core(monkeypatch):
+    state = object()
+    theta = torch.tensor([1.0, 2.0, 3.0], dtype=torch.float64)
+    chunk_indices = [1]
+    expected_loss = torch.tensor(9.0, dtype=torch.float64)
+    expected_per_family = torch.tensor([4.0, 5.0], dtype=torch.float64)
+    expected_stats = {"selected_families": 2}
+    calls: list[dict[str, object]] = []
+
+    def fake_evaluate_chunked_uniform_result(
+        state_arg,
+        theta_arg,
+        *,
+        need_grad,
+        collect_per_family=False,
+        chunk_indices=None,
+    ):
+        calls.append(
+            {
+                "state": state_arg,
+                "theta": theta_arg,
+                "need_grad": need_grad,
+                "collect_per_family": collect_per_family,
+                "chunk_indices": chunk_indices,
+                "grad_enabled": torch.is_grad_enabled(),
+            }
+        )
+        return uniform_chunked_module._UniformChunkedEvaluation(
+            loss=expected_loss,
+            grad_theta=None,
+            stats=expected_stats,
+            per_family_nll=expected_per_family,
+        )
+
+    monkeypatch.setattr(
+        uniform_chunked_module,
+        "_evaluate_chunked_uniform_result",
+        fake_evaluate_chunked_uniform_result,
+    )
+
+    result = uniform_chunked_module._evaluate_chunked_uniform_read_only(
+        state,
+        theta,
+        collect_per_family=True,
+        chunk_indices=chunk_indices,
+    )
+
+    assert result.loss is expected_loss
+    assert result.per_family_nll is expected_per_family
+    assert result.stats is expected_stats
+    assert calls == [
+        {
+            "state": state,
+            "theta": theta,
+            "need_grad": False,
+            "collect_per_family": True,
+            "chunk_indices": chunk_indices,
+            "grad_enabled": False,
+        }
+    ]
+
+
 def _run_config(tmp_path: Path, **overrides: object) -> RunConfig:
     values = {
         "species_tree": tmp_path / "sp.nwk",
@@ -124,6 +186,58 @@ def test_uniform_chunked_full_sum_estimate_scales_loss_and_grad(monkeypatch):
     assert stats["e_adjoint_success"] is False
 
 
+def test_uniform_chunked_nll_uses_read_only_chunked_result(monkeypatch):
+    model = UniformChunkedReconModel.__new__(UniformChunkedReconModel)
+    torch.nn.Module.__init__(model)
+    model.theta = torch.nn.Parameter(
+        torch.tensor([1.0, 2.0, 3.0], dtype=torch.float64)
+    )
+    model._state = object()
+    chunk_indices = [1]
+    expected = torch.tensor(9.0, dtype=torch.float64)
+    calls: list[dict[str, object]] = []
+
+    def fake_evaluate_chunked_uniform_read_only(
+        state,
+        theta,
+        *,
+        collect_per_family=False,
+        chunk_indices=None,
+    ):
+        calls.append(
+            {
+                "state": state,
+                "theta": theta,
+                "collect_per_family": collect_per_family,
+                "chunk_indices": chunk_indices,
+                "grad_enabled": torch.is_grad_enabled(),
+            }
+        )
+        return uniform_chunked_module._UniformChunkedReadOnlyEvaluation(
+            loss=expected,
+            stats={"selected_families": 2},
+        )
+
+    monkeypatch.setattr(
+        uniform_chunked_module,
+        "_evaluate_chunked_uniform_read_only",
+        fake_evaluate_chunked_uniform_read_only,
+    )
+
+    actual = model.nll(chunk_indices=chunk_indices)
+
+    assert actual is expected
+    assert calls == [
+        {
+            "state": model._state,
+            "theta": model.theta,
+            "collect_per_family": False,
+            "chunk_indices": chunk_indices,
+            "grad_enabled": False,
+        }
+    ]
+
+
 def test_uniform_chunked_nll_per_family_uses_no_grad_chunked_diagnostic(
     monkeypatch,
 ):
@@ -137,32 +251,32 @@ def test_uniform_chunked_nll_per_family_uses_no_grad_chunked_diagnostic(
     expected = torch.tensor([4.0, 5.0], dtype=torch.float64)
     calls: list[dict[str, object]] = []
 
-    def fake_evaluate_chunked_uniform(
+    def fake_evaluate_chunked_uniform_read_only(
         state,
         theta,
         *,
-        need_grad,
-        per_family=False,
+        collect_per_family=False,
         chunk_indices=None,
-        **kwargs,
     ):
         calls.append(
             {
                 "state": state,
                 "theta": theta,
-                "need_grad": need_grad,
-                "per_family": per_family,
+                "collect_per_family": collect_per_family,
                 "chunk_indices": chunk_indices,
                 "grad_enabled": torch.is_grad_enabled(),
-                "kwargs": kwargs,
             }
         )
-        return expected, None, {"selected_families": 2}
+        return uniform_chunked_module._UniformChunkedReadOnlyEvaluation(
+            loss=torch.tensor(9.0, dtype=torch.float64),
+            stats={"selected_families": 2},
+            per_family_nll=expected,
+        )
 
     monkeypatch.setattr(
         uniform_chunked_module,
-        "_evaluate_chunked_uniform",
-        fake_evaluate_chunked_uniform,
+        "_evaluate_chunked_uniform_read_only",
+        fake_evaluate_chunked_uniform_read_only,
     )
 
     actual = model.nll_per_family(chunk_indices=chunk_indices)
@@ -172,11 +286,9 @@ def test_uniform_chunked_nll_per_family_uses_no_grad_chunked_diagnostic(
         {
             "state": model._state,
             "theta": model.theta,
-            "need_grad": False,
-            "per_family": True,
+            "collect_per_family": True,
             "chunk_indices": chunk_indices,
             "grad_enabled": False,
-            "kwargs": {},
         }
     ]
 
