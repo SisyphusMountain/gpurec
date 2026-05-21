@@ -690,7 +690,71 @@ Verification:
   capacity failure.  The next setup blocker is therefore not cache writes; it
   is native preprocessing or resident memory scale around the 750-family mark.
 
-### Current combined gates after no-cache setup work
+### `5a7b9de` - Guard simplification proposal execution coverage
+
+Proposal coverage:
+
+- `TEST-01`: added a repository hygiene guard that parses every proposal ID
+  from the simplification opportunity index and fails if the execution log no
+  longer mentions one.  This keeps the docs tied to the actual work queue
+  instead of letting proposal IDs silently fall out of the log.
+- No runtime behavior changed.
+
+Verification:
+
+- `python -m py_compile tests/unit/test_repository_hygiene.py`: passed.
+- `PYTHONDONTWRITEBYTECODE=1 python -m pytest -q -p no:cacheprovider tests/unit/test_repository_hygiene.py::test_simplification_execution_log_mentions_every_index_proposal tests/unit/test_repository_hygiene.py::test_simplification_opportunity_index_is_mapped_and_gate_oriented`: 2 passed.
+
+### `d9fa443` - Thread prepared origination priors through models
+
+Proposal coverage:
+
+- `ORIG-01`: routed `GeneReconModel` and `UniformChunkedReconModel`
+  construction through `prepare_origination_prior` instead of calling the raw
+  probability helper directly.
+- Stored the prepared prior object on both model surfaces while preserving the
+  existing `origination_probs` buffer used by resident likelihood/evaluator
+  paths.
+- Added constructor-level tests that stub CUDA/preprocessing work and assert
+  that family-specific `OriginationPrior` inputs normalize once, stay attached
+  to the model, and flow into the existing static/chunked state boundaries.
+
+Verification:
+
+- `python -m py_compile gpurec/api/model.py gpurec/api/uniform_chunked.py tests/unit/test_origination_prior.py`: passed.
+- `PYTHONDONTWRITEBYTECODE=1 python -m pytest -q -p no:cacheprovider tests/unit/test_origination_prior.py tests/unit/test_origination_probs.py tests/unit/test_model_no_grad_evaluator.py`: 28 passed.
+- `PYTHONDONTWRITEBYTECODE=1 CUDA_VISIBLE_DEVICES='' python -m pytest -q -p no:cacheprovider tests/unit/test_optimization_workflow.py tests/integration/test_gene_recon_model.py tests/integration/test_uniform_chunked_model.py`: 37 passed, 16 skipped.
+- `git diff --check -- gpurec/api/model.py gpurec/api/uniform_chunked.py tests/unit/test_origination_prior.py`: passed.
+
+### `b2c4709` - Instrument 1000-family preflight progress
+
+Proposal coverage:
+
+- `BWD-01`, `BWD-02`, and `SCHED-01`: added benchmark progress telemetry for
+  RSS, peak RSS, disk free space, CUDA allocator state, CUDA driver memory,
+  and selected uncached preprocessing windows.  This makes benchmark setup
+  failures diagnosable before any timed runtime comparison is trusted.
+- Added `--uncached-preprocess-batch-size` so the benchmark driver can vary
+  the uncached preprocessing batch size without changing code.
+- The benchmarker ran no-cache preflight probes on the 1000-family fixture:
+  256 families passed with max RSS about 44 GiB, 512 passed with max RSS about
+  85 GiB, and selected windows around families 704, 736, and 752 passed.  The
+  full-prefix failure is therefore most consistent with host RAM exhaustion
+  from retaining/materializing all preprocessed families, not a single bad
+  family near 752.
+- Cached mode is still blocked locally by cache-write disk pressure; the old
+  progress log ends in `torch.save(...): RuntimeError: basic_ios::clear:
+  iostream error`.
+
+Verification:
+
+- `python -m py_compile profiling/bench_uniform_forward_backward_pipeline.py tests/unit/test_bench_uniform_forward_backward_pipeline.py`: passed.
+- `PYTHONDONTWRITEBYTECODE=1 python -m pytest -q -p no:cacheprovider tests/unit/test_bench_uniform_forward_backward_pipeline.py tests/unit/test_alerax_family_input.py`: 48 passed.
+- Benchmarker worktree validation also passed the same 48-test gate.
+- No valid 1000-family timed benchmark exists yet.  The current blocker is
+  setup memory/disk capacity, so benchmark-sensitive deletions remain blocked.
+
+### Current combined gates after no-cache setup and diagnosis work
 
 Verification:
 
@@ -703,9 +767,11 @@ Verification:
 - `PYTHONDONTWRITEBYTECODE=1 python profiling/bench_uniform_forward_backward_pipeline.py --dataset tests/data/test_trees_1000 --fams 8 --family-chunk-size 2 --max-wave-size 32768 --fixed-iters 6 --reps 3 --warmups 1 --compare-unchunked-max-fams 8 --fail-on-correctness-mismatch --strict-optimized-kernels`: compare verdict pass, finite gradients, `strict_optimized_verdict pass`, `total_median_ms 102.815`, `max_peak_gib 0.445`.
 - 1000-family preflight status after batching: no valid timed benchmark yet.
   The original single C++ call failure and `/tmp` cache-write capacity failure
-  have both been bypassed by batching and explicit cache disabling, but
-  no-cache preflight still exits without a Python traceback after completing
-  roughly 752 families.  Do not use this as performance evidence.
+  have both been bypassed by batching and explicit cache disabling.  The
+  no-cache full-prefix failure is now most likely host RAM pressure:
+  512-family setup already peaks around 85 GiB RSS, selected windows past 752
+  pass, and extrapolating the prefix slope reaches the host memory limit before
+  1000 families.  Do not use this as performance evidence.
 
 ## Active Work Queue
 
@@ -715,18 +781,24 @@ Verification:
    gradient evaluation, and chunked read-only paths now share explicit
    evaluator boundaries.  `UniformChunkedReconModel` still owns separate
    chunk setup/stats and per-chunk forward/backward orchestration.
-2. `PI-01`, `MODE-02`, `BWD-03`, and `DTS-01`: continue from the explicit
+2. `ORIG-01`: the public model constructors now prepare and retain
+   `PreparedOriginationPrior` objects while preserving the existing
+   `origination_probs` tensor boundary.  The remaining step is to thread that
+   prepared object deeper into resident evaluator/static-state boundaries
+   without breaking the current prepared-tensor trust boundary.
+3. `PI-01`, `MODE-02`, `BWD-03`, and `DTS-01`: continue from the explicit
    contracts now in place.  Pi output intent, DTS layout parsing,
    backward auto-wrap characterization, and model-boundary gradient
    accumulation now have first-step guards.  Removing backward auto-wrap and
    routing hot CUDA scatter paths still require full gradient/parity gates.
-3. `BWD-01`, `BWD-02`, `ENV-01`, and `SCHED-01`: first characterization and
+4. `BWD-01`, `BWD-02`, `ENV-01`, and `SCHED-01`: first characterization and
    ownership guards are in place.  Do not remove self-loop backends,
    CPU-pruning branches, env toggles, or scheduler alternatives while the
    1000-family benchmark still lacks a valid timed run.  Resolve the
-   no-cache/native setup exit around the 750-family mark before treating
-   sparse/dense runtime benchmark results as authoritative.
-4. `CPP-01`, `CPP-02`, `SCRIPT-01`, and `TEST-01`: continue pruning and
+   setup memory/disk blocker, likely by avoiding all-family resident
+   materialization for preflight or by using a larger cache/storage target,
+   before treating sparse/dense runtime benchmark results as authoritative.
+5. `CPP-01`, `CPP-02`, `SCRIPT-01`, and `TEST-01`: continue pruning and
    splitting only after each surface has an owner, deprecation path, or
    replacement behavior test.  The first ownership guards are now executable;
    actual deletion remains separate work.
@@ -780,6 +852,14 @@ Verification:
   `gpurec/core/model.py`,
   `profiling/bench_uniform_forward_backward_pipeline.py`, and benchmark/cache
   tests, integrated in `17f7d75`.
+- Proposal coverage guard:
+  `tests/unit/test_repository_hygiene.py`, integrated in `5a7b9de`.
+- Origination-prior threading:
+  `gpurec/api/model.py`, `gpurec/api/uniform_chunked.py`, and origination
+  prior tests, integrated in `d9fa443`.
+- 1000-family benchmark diagnosis worker:
+  `profiling/bench_uniform_forward_backward_pipeline.py` and benchmark
+  progress tests, integrated in `b2c4709`.
 
 Future parallel workers should continue to use separate git worktrees for
 larger runtime changes.
