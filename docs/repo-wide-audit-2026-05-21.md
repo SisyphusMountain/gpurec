@@ -1669,6 +1669,105 @@ not edit files.  New or still-open findings from that refresh are:
   444 passed after broadening optimizer-state resume discard handling.
 - `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_repository_hygiene.py -q`:
   71 passed after marking the resume optimizer-state finding as fixed.
+- The local HOGENOM script model-lifetime finding is now fixed.  The profiling
+  helper closes each chunk-local `GeneReconModel` through
+  `_nll_per_family_with_cleanup()`, while the AleRax backtracking comparison
+  helper closes each family-local model through
+  `_gpurec_event_counts_with_cleanup()`.  Both helpers close on success and
+  after evaluation/sampling exceptions.
+- `python -m py_compile profiling/evaluate_hogenom_alerax_rates.py scripts/compare_backtracking_alerax_events.py tests/unit/test_legacy_scripts.py`:
+  passed after the local model cleanup helpers and fake-model regressions.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_legacy_scripts.py -q`:
+  25 passed at the cleanup-only point after adding success and exception
+  cleanup coverage for both local script paths.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_repository_hygiene.py -q`:
+  71 passed after marking the local model-construction finding as fixed in the
+  pruning plan.
+- The local HOGENOM script count-control finding is now fixed.  The profiling
+  and AleRax backtracking comparison helpers expose `build_parser()` and share
+  `gpurec/_argparse_types.py` validators for positive, non-negative, and
+  positive-even command-line values.
+- `python -m py_compile gpurec/_argparse_types.py profiling/evaluate_hogenom_alerax_rates.py scripts/compare_backtracking_alerax_events.py tests/unit/test_legacy_scripts.py`:
+  passed after adding the shared argparse helpers and parser builders.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_legacy_scripts.py::test_local_script_parsers_reject_invalid_count_controls -q`:
+  12 passed after proving invalid chunk size, family count, sample count,
+  start index, seed, iteration, tolerance, and wave-size controls now fail at
+  the parser boundary.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_legacy_scripts.py -q`:
+  37 passed after combining the local model cleanup and parser validation
+  regressions.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_repository_hygiene.py -q`:
+  71 passed after marking the local count-control finding as fixed in the
+  pruning plan.
+- The dynamic CLI compatibility attribute finding is now fixed.  The CLI
+  surface test now calls `_run_config_cli_override_fields()` directly, continues
+  to compare parser destinations to `RunConfig` fields, and asserts that the old
+  dynamic `_RUN_CONFIG_CLI_OVERRIDE_FIELDS` attribute is absent.  The
+  module-level `gpurec/cli.py` `__getattr__` hook was removed.
+- `python -m py_compile gpurec/cli.py tests/unit/test_cli_workflow.py tests/unit/test_repository_hygiene.py`:
+  passed after removing the dynamic CLI compatibility attribute.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_cli_workflow.py::test_run_config_cli_surface_matches_dataclass_fields tests/unit/test_repository_hygiene.py::test_runtime_surface_plan_records_refresh_findings_before_behavior_changes -q`:
+  2 passed after moving the CLI surface test to the helper and pinning absence
+  of the old dynamic attribute.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_cli_workflow.py -q`:
+  62 passed after removing the CLI module `__getattr__` hook.
+- The Rust sampler term-variant finding is now fixed.  Direct
+  `Sampler::apply_term()` unit tests cover `HiddenTransferLossDonor`, both
+  hidden speciation directions, both split-transfer directions, normal split
+  speciation, and swapped split speciation, with assertions on emitted event
+  shape, species mapping, and queued `WorkItem` clade/species state.
+- `cargo test --locked --manifest-path crates/gpurec-backtrack/Cargo.toml --lib hidden -- --nocapture`:
+  5 passed after adding the hidden-term branch tests.
+- `cargo test --locked --manifest-path crates/gpurec-backtrack/Cargo.toml --lib split -- --nocapture`:
+  4 passed after adding the split-transfer and split-speciation branch tests.
+- `cargo fmt --manifest-path crates/gpurec-backtrack/Cargo.toml --check`:
+  passed after formatting the Rust test additions.
+- `cargo test --locked --manifest-path crates/gpurec-backtrack/Cargo.toml`:
+  19 library tests, 5 CLI tests, and 0 doctests passed after the direct
+  sampler branch coverage.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_repository_hygiene.py -q`:
+  72 passed after adding the Rust source guard for direct sampler branch tests.
+- The direct API float-bool validation finding is now fixed.  Shared
+  `finite_float()`, `nonnegative_float()`, and `positive_float()` reject Python
+  bools and bool tensors before numeric coercion, so `tol_E`,
+  `pi_max_diff_tol`, and `min_rate` cannot treat `True` as `1.0`.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_validation.py::test_float_validators_reject_bool_values tests/unit/test_validation.py::test_gene_recon_model_rejects_bool_float_controls_before_device_check tests/unit/test_validation.py::test_gene_recon_model_clamp_rejects_bool_min_rate_before_mutation -q`:
+  9 passed after first reproducing the bool-coercion gap and adding bool-tensor
+  coverage.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_validation.py -q`:
+  38 passed after the direct API float-bool validation change.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_workflow.py::test_run_config_rejects_boolean_float_controls tests/unit/test_workflow.py::test_uniform_chunked_init_rejects_nonbool_controls_before_side_effects tests/unit/test_workflow.py::test_uniform_chunked_factories_reject_nonbool_controls_before_device_or_io -q`:
+  24 passed for existing workflow and chunked direct-API bool-control guards
+  after the shared validator change.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_repository_hygiene.py -q`:
+  72 passed after marking the direct API float-bool validation finding fixed in
+  the pruning plan.
+- The private `_normalize_family_tree_paths()` compatibility alias is now
+  deleted.  A source hygiene guard first failed only on `gpurec/core/model.py`,
+  then passed after removing the one-line alias while retaining the public
+  `normalize_family_tree_paths()` helper.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_repository_hygiene.py::test_private_family_tree_path_alias_is_not_in_source_surface -q`:
+  1 passed after proving the private alias is absent from tracked runtime,
+  script, and profiling Python sources.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_repository_hygiene.py -q`:
+  73 passed after adding the private family-tree path alias source guard.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_alerax_family_input.py tests/unit/test_validation.py -q`:
+  72 passed after deleting the private alias and keeping the public family-tree
+  path normalization helper unchanged.
+- The `normalize_family_chunk_size()` export-intent finding is now fixed.  The
+  helper is retained as a supported `gpurec.core.batch_planning` helper because
+  API, workflow, CLI, and tests already share it for the same family-batch
+  control semantics; it now appears in `gpurec.core.batch_planning.__all__`.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_core_helpers.py::test_batch_planning_exports_supported_family_chunk_size_helper -q`:
+  first failed on the missing `__all__` entry, then passed after adding the
+  helper to the explicit batch-planning export surface.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_core_helpers.py::test_batch_planning_exports_supported_family_chunk_size_helper tests/unit/test_workflow.py::test_family_chunk_size_normalization_is_shared tests/unit/test_repository_hygiene.py::test_runtime_surface_plan_records_refresh_findings_before_behavior_changes -q`:
+  3 passed after the export-intent update.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_core_helpers.py -q`:
+  44 passed after adding the batch-planning wildcard export guard.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_repository_hygiene.py -q`:
+  73 passed after marking the family chunk-size export-intent finding fixed in
+  the pruning plan.
 
 ## Recommended Next Order
 

@@ -329,5 +329,6 @@ __all__ = [
     "FamilyBatchPlan",
     "normalize_batch_packing",
     "normalize_clade_budget",
+    "normalize_family_chunk_size",
     "plan_family_batches",
 ]

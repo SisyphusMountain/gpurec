@@ -6927,6 +6927,118 @@ test modules compile, and the focused selector reports \texttt{1 passed}.
 The full workflow unit module still reports \texttt{444 passed}, and repository
 hygiene reports \texttt{71 passed} after marking this finding fixed.
 
+\subsection{Local HOGENOM Script Model Cleanup}
+
+The local profiling and AleRax comparison script model-lifetime gap is now
+guarded and fixed.  The HOGENOM rate validation helper evaluates each chunk
+through \texttt{\_nll\_per\_family\_with\_cleanup()}, and the backtracking
+AleRax comparison helper samples through
+\texttt{\_gpurec\_event\_counts\_with\_cleanup()}.  Both paths close the
+locally constructed \texttt{GeneReconModel} after successful work and also close
+it if likelihood evaluation, sampling, or event-count extraction raises.
+
+The fake-model legacy-script regressions cover successful cleanup and exception
+cleanup for both scripts.  The touched profiling script, comparison script, and
+legacy-script test module compile, and the cleanup-only legacy-script unit
+module reported \texttt{25 passed}.  The full repository hygiene module reports
+\texttt{71 passed} after the audit-row update.
+
+\subsection{Local HOGENOM Script Count Validation}
+
+The local profiling and AleRax comparison scripts now reject invalid count
+controls at the parser boundary.  Both checkout-local CLIs use shared
+\texttt{gpurec/\_argparse\_types.py} helpers for positive, non-negative, and
+positive-even values, so chunk size, family count, sample count, start index,
+seed, solver iterations, and wave size fail with direct argparse diagnostics
+instead of reaching file loading, CUDA checks, or lower-level model validation.
+
+The legacy-script parser regression first failed because the scripts had no
+testable parser builders.  Both scripts now expose \texttt{build\_parser()},
+and the focused invalid-control selector reports \texttt{12 passed}.  The full
+legacy-script unit module now reports \texttt{37 passed}, and the full
+repository hygiene module still reports \texttt{71 passed}.
+
+\subsection{CLI Dynamic Attribute Pruning}
+
+The test-only CLI compatibility attribute
+\texttt{\_RUN\_CONFIG\_CLI\_OVERRIDE\_FIELDS} has been removed from
+\texttt{gpurec/cli.py}.  The sole in-repo consumer was the CLI surface test, so
+that test now calls \texttt{\_run\_config\_cli\_override\_fields()} directly,
+continues to compare parser destinations against the \texttt{RunConfig}
+dataclass fields, and asserts that the old dynamic attribute is absent.  This
+removes the module-level \texttt{\_\_getattr\_\_} hook without changing the
+runtime CLI override path.
+
+The touched CLI and test modules compile.  The focused CLI/hygiene selector
+reports \texttt{2 passed}, and the full CLI workflow unit module reports
+\texttt{62 passed}.
+
+\subsection{Rust Sampler Term-Variant Coverage}
+
+The Rust backtracking sampler now has direct branch tests for the
+\texttt{Sampler::apply\_term()} variants that previously relied on indirect
+stochastic coverage.  The new tests cover
+\texttt{HiddenTransferLossDonor}, both hidden speciation directions, both
+split-transfer directions, normal split speciation, and swapped split
+speciation.  They assert the emitted event shape, species node mapping, and
+queued \texttt{WorkItem} clade/species state for each branch.
+
+The focused hidden-term selector reports \texttt{5 passed}; the focused
+split-term selector reports \texttt{4 passed}; and \texttt{cargo fmt --check}
+passes after formatting the crate.  The full Rust backtracking crate reports
+\texttt{19} library tests, \texttt{5} CLI tests, and \texttt{0} doctests
+passed.  The full repository hygiene module reports \texttt{72 passed} after
+adding the Rust source guard for these branch tests.
+
+\subsection{Direct API Float Bool Validation}
+
+The core/API float-control gap is now guarded and fixed.  Shared
+\texttt{finite\_float()}, \texttt{nonnegative\_float()}, and
+\texttt{positive\_float()} reject Python bools and bool tensors before numeric
+coercion, so direct API controls no longer treat \texttt{True} as
+\texttt{1.0}.  The regression covers the shared validators, \texttt{tol\_E}
+and \texttt{pi\_max\_diff\_tol} on \texttt{GeneReconModel} construction before
+device validation, and \texttt{min\_rate} on
+\texttt{GeneReconModel.clamp\_theta\_()} before theta mutation.
+
+The focused validation selector first reproduced six bool-coercion failures,
+then reports \texttt{9 passed} after adding bool-tensor coverage and changing
+the shared validator.  The full validation unit module reports
+\texttt{38 passed}, and the existing workflow bool-control selector reports
+\texttt{24 passed}.  The full repository hygiene module remains at
+\texttt{72 passed} after the pruning-plan update.
+
+\subsection{Private Family-Path Alias Removal}
+
+The private \texttt{\_normalize\_family\_tree\_paths()} compatibility alias in
+\texttt{gpurec/core/model.py} has been removed.  The retained public helper,
+\texttt{normalize\_family\_tree\_paths()}, is still used by the resident model,
+the public API facade, and the uniform chunked model.  A source hygiene guard
+now searches tracked runtime, script, and profiling Python files and keeps the
+private alias out of the source surface.
+
+The hygiene guard first failed only on \texttt{gpurec/core/model.py}, then
+passed after deleting the one-line alias.  The full repository hygiene module
+now reports \texttt{73 passed}; the AleRax family input and validation modules
+report \texttt{72 passed} together.
+
+\subsection{Family Chunk-Size Helper Ownership}
+
+The \texttt{normalize\_family\_chunk\_size()} decision is now documented before
+changing exports.  The helper remains a supported
+\texttt{gpurec.core.batch\_planning} surface because the public model API,
+uniform chunked API, workflow config, CLI, and unit tests already share it for
+the same family-batch control semantics.  The follow-up change should make that
+ownership explicit through \texttt{gpurec.core.batch\_planning.\_\_all\_\_}
+rather than adding another wrapper.
+
+That export-intent cleanup is now complete.  A wildcard-export guard first
+failed because \texttt{normalize\_family\_chunk\_size()} was missing from
+\texttt{\_\_all\_\_}, then passed after adding it.  The focused export,
+normalization, and pruning-plan selector reports \texttt{3 passed}; the full
+core-helper unit module reports \texttt{44 passed}; and the full repository
+hygiene module remains at \texttt{73 passed}.
+
 \section{Next Audit Targets}
 
 \begin{enumerate}[leftmargin=*]

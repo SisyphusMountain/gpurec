@@ -19,6 +19,7 @@ from time import perf_counter
 import torch
 
 from gpurec import GeneReconModel
+from gpurec._argparse_types import positive_even_int_arg, positive_int_arg
 from gpurec.core.model import GeneDataset, parse_alerax_family_file
 
 
@@ -64,6 +65,20 @@ def _write_csv(path: Path, rows: list[dict[str, object]]) -> None:
         writer = csv.DictWriter(fh, fieldnames=fields)
         writer.writeheader()
         writer.writerows(rows)
+
+
+def _nll_per_family_with_cleanup(model) -> list[float]:
+    try:
+        with torch.no_grad():
+            nll_bits = model.nll_per_family().detach().cpu().tolist()
+    except BaseException as exc:
+        try:
+            model.close()
+        except Exception as close_error:
+            raise exc from close_error
+        raise
+    model.close()
+    return nll_bits
 
 
 def _plot_results(rows: list[dict[str, object]], out_dir: Path) -> None:
@@ -151,7 +166,7 @@ def _summarize(rows: list[dict[str, object]], elapsed_s: float, args) -> dict[st
     }
 
 
-def main() -> None:
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
             "Evaluate GPUREC likelihoods with local HOGENOM AleRax checkpoint "
@@ -192,13 +207,33 @@ def main() -> None:
     )
     parser.add_argument("--device", default="cuda", help="Torch device. Defaults to cuda.")
     parser.add_argument("--dtype", choices=("float32", "float64"), default="float64")
-    parser.add_argument("--chunk-size", type=int, default=24)
-    parser.add_argument("--max-families", type=int, default=None)
-    parser.add_argument("--fixed-iters-e", type=int, default=16)
-    parser.add_argument("--fixed-iters-pi", type=int, default=6)
-    parser.add_argument("--max-wave-size", type=int, default=32768)
+    parser.add_argument("--chunk-size", type=positive_int_arg("chunk-size"), default=24)
+    parser.add_argument(
+        "--max-families",
+        type=positive_int_arg("max-families"),
+        default=None,
+    )
+    parser.add_argument(
+        "--fixed-iters-e",
+        type=positive_int_arg("fixed-iters-e"),
+        default=16,
+    )
+    parser.add_argument(
+        "--fixed-iters-pi",
+        type=positive_even_int_arg("fixed-iters-pi"),
+        default=6,
+    )
+    parser.add_argument(
+        "--max-wave-size",
+        type=positive_int_arg("max-wave-size"),
+        default=32768,
+    )
     parser.add_argument("--refresh-preprocess-cache", action="store_true")
-    args = parser.parse_args()
+    return parser
+
+
+def main(argv: list[str] | None = None) -> None:
+    args = build_parser().parse_args(argv)
 
     if args.device == "cuda" and not torch.cuda.is_available():
         raise RuntimeError("CUDA requested but not available")
@@ -263,8 +298,7 @@ def main() -> None:
             fixed_iters_Pi=args.fixed_iters_pi,
             max_wave_size=args.max_wave_size,
         )
-        with torch.no_grad():
-            nll_bits = model.nll_per_family().detach().cpu().tolist()
+        nll_bits = _nll_per_family_with_cleanup(model)
         if device.type == "cuda":
             torch.cuda.synchronize(device)
             torch.cuda.empty_cache()

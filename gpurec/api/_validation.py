@@ -39,7 +39,14 @@ def require_default_objective(owner: str) -> None:
 
 
 def finite_float(name: str, value: float) -> float:
-    number = float(value)
+    if isinstance(value, bool) or (
+        torch.is_tensor(value) and value.dtype == torch.bool
+    ):
+        raise ValueError(f"{name} must be a number, not a boolean")
+    try:
+        number = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{name} must be a number") from exc
     if not math.isfinite(number):
         raise ValueError(f"{name} must be finite")
     return number

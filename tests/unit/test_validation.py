@@ -2,14 +2,19 @@ from __future__ import annotations
 
 import math
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import torch
 
 import gpurec.workflow.model_factory as workflow_model_factory
+from gpurec.api import GeneReconModel
 from gpurec.api._validation import (
+    finite_float,
     integer_value,
+    nonnegative_float,
     nonnegative_int,
+    positive_float,
     positive_even_int,
     require_cuda_device,
     theta_init_base_from_rates,
@@ -38,6 +43,55 @@ def test_require_cuda_device_accepts_available_explicit_index(monkeypatch) -> No
     monkeypatch.setattr(torch.cuda, "device_count", lambda: 1)
 
     assert require_cuda_device("cuda:0", owner="unit test") == torch.device("cuda:0")
+
+
+@pytest.mark.parametrize(
+    ("validator", "name"),
+    [
+        (finite_float, "tol_E"),
+        (nonnegative_float, "pi_max_diff_tol"),
+        (positive_float, "min_rate"),
+    ],
+)
+@pytest.mark.parametrize("value", [True, torch.tensor(True)])
+def test_float_validators_reject_bool_values(
+    validator,
+    name: str,
+    value: object,
+) -> None:
+    with pytest.raises(ValueError, match=name):
+        validator(name, value)
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "message"),
+    [
+        ({"tol_E": True}, "tol_E"),
+        ({"pi_max_diff_tol": True}, "pi_max_diff_tol"),
+    ],
+)
+def test_gene_recon_model_rejects_bool_float_controls_before_device_check(
+    kwargs: dict[str, object],
+    message: str,
+) -> None:
+    dataset = SimpleNamespace(
+        dtype=torch.float64,
+        genewise=False,
+        specieswise=False,
+        device=torch.device("cpu"),
+    )
+
+    with pytest.raises(ValueError, match=message):
+        GeneReconModel(dataset=dataset, mode="global", **kwargs)  # type: ignore[arg-type]
+
+
+def test_gene_recon_model_clamp_rejects_bool_min_rate_before_mutation() -> None:
+    model = SimpleNamespace(theta=torch.nn.Parameter(torch.tensor([0.0])))
+
+    with pytest.raises(ValueError, match="min_rate"):
+        GeneReconModel.clamp_theta_(model, min_rate=True)  # type: ignore[arg-type]
+
+    torch.testing.assert_close(model.theta.detach(), torch.tensor([0.0]))
 
 
 def test_positive_even_int_accepts_positive_even_integer() -> None:

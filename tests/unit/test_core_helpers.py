@@ -4,6 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
+import gpurec.core.batch_planning as batch_planning
 import gpurec.core._helpers as helpers
 from gpurec.core.kernels import wave_backward
 from gpurec.core._helpers import (
@@ -11,6 +12,16 @@ from gpurec.core._helpers import (
     _env_mode_enabled_required,
     _nvtx_range,
 )
+
+
+def test_batch_planning_exports_supported_family_chunk_size_helper():
+    namespace: dict[str, object] = {}
+    exec("from gpurec.core.batch_planning import *", {}, namespace)
+
+    assert "normalize_family_chunk_size" in batch_planning.__all__
+    assert namespace["normalize_family_chunk_size"] is (
+        batch_planning.normalize_family_chunk_size
+    )
 
 
 @pytest.mark.parametrize(

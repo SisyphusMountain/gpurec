@@ -22,12 +22,6 @@ def _run_config_cli_override_fields() -> tuple[str, ...]:
     return tuple(field.name for field in fields(RunConfig))
 
 
-def __getattr__(name: str) -> Any:
-    if name == "_RUN_CONFIG_CLI_OVERRIDE_FIELDS":
-        return _run_config_cli_override_fields()
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-
-
 def _sampling_error_message(exc: BaseException) -> str:
     message = str(exc)
     if _RAW_THETA_CHECKPOINT_ERROR in message:

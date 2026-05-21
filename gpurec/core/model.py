@@ -193,12 +193,6 @@ def normalize_family_tree_paths(
     return normalized
 
 
-def _normalize_family_tree_paths(
-    gene_tree_paths: Iterable[str | os.PathLike | Iterable[str | os.PathLike]],
-) -> list[list[str]]:
-    return normalize_family_tree_paths(gene_tree_paths)
-
-
 def _bool_control(name: str, value: bool) -> bool:
     if not isinstance(value, bool):
         raise ValueError(f"{name} must be true or false")

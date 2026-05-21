@@ -931,6 +931,12 @@ mod tests {
         }
     }
 
+    fn assert_work_item(item: &WorkItem, node_idx: usize, clade: usize, species: usize) {
+        assert_eq!(item.node_idx, node_idx);
+        assert_eq!(item.clade, clade);
+        assert_eq!(item.species, species);
+    }
+
     #[test]
     fn samples_forced_speciation_xml() {
         let input = speciation_input();
@@ -1051,6 +1057,216 @@ mod tests {
         assert_eq!(children[0].node_idx, root);
         assert_eq!(children[0].clade, 2);
         assert_eq!(children[0].species, 2);
+    }
+
+    #[test]
+    fn hidden_transfer_donor_emits_transfer_loss_and_requeues_recipient() {
+        let input = transfer_input(3);
+        let prepared = PreparedBacktracker::new(&input).unwrap();
+        let mut sampler = Sampler::new(&prepared, 3);
+        let root = sampler.add_node("", Event::Speciation, 0, None);
+
+        let children = sampler
+            .apply_term(root, 0, 0, Term::HiddenTransferLossDonor)
+            .unwrap();
+
+        assert_eq!(sampler.nodes.len(), 3);
+        assert_eq!(sampler.event_mapping[root], Event::Transfer);
+        let left = sampler.nodes[root].left_child.unwrap();
+        let right = sampler.nodes[root].right_child.unwrap();
+        assert_ne!(left, right);
+        let loss = (1..sampler.nodes.len())
+            .find(|idx| sampler.event_mapping[*idx] == Event::Loss)
+            .unwrap();
+        let cont = (1..sampler.nodes.len())
+            .find(|idx| sampler.event_mapping[*idx] == Event::Leaf)
+            .unwrap();
+        assert!(left == loss || right == loss);
+        assert!(left == cont || right == cont);
+        assert_eq!(sampler.nodes[loss].name, "loss");
+        assert_eq!(
+            sampler.node_mapping[loss],
+            Some(prepared.species.gp_to_rust[0])
+        );
+        assert_eq!(
+            sampler.node_mapping[cont],
+            Some(prepared.species.gp_to_rust[1])
+        );
+        assert_eq!(children.len(), 1);
+        assert_work_item(&children[0], cont, 0, 1);
+    }
+
+    #[test]
+    fn hidden_speciation_left_emits_loss_on_right_species() {
+        let input = speciation_input();
+        let prepared = PreparedBacktracker::new(&input).unwrap();
+        let mut sampler = Sampler::new(&prepared, 3);
+        let root = sampler.add_node("", Event::Leaf, 2, None);
+
+        let children = sampler
+            .apply_term(root, 2, 2, Term::HiddenSpeciationLeft)
+            .unwrap();
+
+        assert_eq!(sampler.nodes.len(), 3);
+        assert_eq!(sampler.event_mapping[root], Event::Speciation);
+        let cont = sampler.nodes[root].left_child.unwrap();
+        let loss = sampler.nodes[root].right_child.unwrap();
+        assert_eq!(sampler.event_mapping[cont], Event::Leaf);
+        assert_eq!(sampler.event_mapping[loss], Event::Loss);
+        assert_eq!(
+            sampler.node_mapping[cont],
+            Some(prepared.species.gp_to_rust[0])
+        );
+        assert_eq!(
+            sampler.node_mapping[loss],
+            Some(prepared.species.gp_to_rust[1])
+        );
+        assert_eq!(children.len(), 1);
+        assert_work_item(&children[0], cont, 2, 0);
+    }
+
+    #[test]
+    fn hidden_speciation_right_emits_loss_on_left_species() {
+        let input = speciation_input();
+        let prepared = PreparedBacktracker::new(&input).unwrap();
+        let mut sampler = Sampler::new(&prepared, 3);
+        let root = sampler.add_node("", Event::Leaf, 2, None);
+
+        let children = sampler
+            .apply_term(root, 2, 2, Term::HiddenSpeciationRight)
+            .unwrap();
+
+        assert_eq!(sampler.nodes.len(), 3);
+        assert_eq!(sampler.event_mapping[root], Event::Speciation);
+        let cont = sampler.nodes[root].left_child.unwrap();
+        let loss = sampler.nodes[root].right_child.unwrap();
+        assert_eq!(sampler.event_mapping[cont], Event::Leaf);
+        assert_eq!(sampler.event_mapping[loss], Event::Loss);
+        assert_eq!(
+            sampler.node_mapping[cont],
+            Some(prepared.species.gp_to_rust[1])
+        );
+        assert_eq!(
+            sampler.node_mapping[loss],
+            Some(prepared.species.gp_to_rust[0])
+        );
+        assert_eq!(children.len(), 1);
+        assert_work_item(&children[0], cont, 2, 1);
+    }
+
+    #[test]
+    fn split_transfer_right_keeps_left_child_on_donor_branch() {
+        let mut input = speciation_input();
+        input.max_transfer[0] = 0.0;
+        let prepared = PreparedBacktracker::new(&input).unwrap();
+        let mut sampler = Sampler::new(&prepared, 3);
+        let root = sampler.add_node("", Event::Leaf, 0, None);
+
+        let children = sampler
+            .apply_term(root, 2, 0, Term::SplitTransferRight(0))
+            .unwrap();
+
+        assert_eq!(sampler.nodes.len(), 3);
+        assert_eq!(sampler.event_mapping[root], Event::Transfer);
+        let donor_child = sampler.nodes[root].left_child.unwrap();
+        let recipient_child = sampler.nodes[root].right_child.unwrap();
+        assert_eq!(
+            sampler.node_mapping[donor_child],
+            Some(prepared.species.gp_to_rust[0])
+        );
+        assert_eq!(
+            sampler.node_mapping[recipient_child],
+            Some(prepared.species.gp_to_rust[1])
+        );
+        assert_eq!(children.len(), 2);
+        assert_work_item(&children[0], donor_child, 0, 0);
+        assert_work_item(&children[1], recipient_child, 1, 1);
+    }
+
+    #[test]
+    fn split_transfer_left_keeps_right_child_on_donor_branch() {
+        let mut input = speciation_input();
+        input.pi.data[1] = 0.0;
+        input.max_transfer[0] = 0.0;
+        let prepared = PreparedBacktracker::new(&input).unwrap();
+        let mut sampler = Sampler::new(&prepared, 3);
+        let root = sampler.add_node("", Event::Leaf, 0, None);
+
+        let children = sampler
+            .apply_term(root, 2, 0, Term::SplitTransferLeft(0))
+            .unwrap();
+
+        assert_eq!(sampler.nodes.len(), 3);
+        assert_eq!(sampler.event_mapping[root], Event::Transfer);
+        let recipient_child = sampler.nodes[root].left_child.unwrap();
+        let donor_child = sampler.nodes[root].right_child.unwrap();
+        assert_eq!(
+            sampler.node_mapping[recipient_child],
+            Some(prepared.species.gp_to_rust[1])
+        );
+        assert_eq!(
+            sampler.node_mapping[donor_child],
+            Some(prepared.species.gp_to_rust[0])
+        );
+        assert_eq!(children.len(), 2);
+        assert_work_item(&children[0], recipient_child, 0, 1);
+        assert_work_item(&children[1], donor_child, 1, 0);
+    }
+
+    #[test]
+    fn split_speciation_assigns_left_and_right_clades_to_species_children() {
+        let input = speciation_input();
+        let prepared = PreparedBacktracker::new(&input).unwrap();
+        let mut sampler = Sampler::new(&prepared, 3);
+        let root = sampler.add_node("", Event::Leaf, 2, None);
+
+        let children = sampler
+            .apply_term(root, 2, 2, Term::SplitSpeciation(0, false))
+            .unwrap();
+
+        assert_eq!(sampler.nodes.len(), 3);
+        assert_eq!(sampler.event_mapping[root], Event::Speciation);
+        let left = sampler.nodes[root].left_child.unwrap();
+        let right = sampler.nodes[root].right_child.unwrap();
+        assert_eq!(
+            sampler.node_mapping[left],
+            Some(prepared.species.gp_to_rust[0])
+        );
+        assert_eq!(
+            sampler.node_mapping[right],
+            Some(prepared.species.gp_to_rust[1])
+        );
+        assert_eq!(children.len(), 2);
+        assert_work_item(&children[0], left, 0, 0);
+        assert_work_item(&children[1], right, 1, 1);
+    }
+
+    #[test]
+    fn swapped_split_speciation_swaps_clades_not_species_children() {
+        let input = speciation_input();
+        let prepared = PreparedBacktracker::new(&input).unwrap();
+        let mut sampler = Sampler::new(&prepared, 3);
+        let root = sampler.add_node("", Event::Leaf, 2, None);
+
+        let children = sampler
+            .apply_term(root, 2, 2, Term::SplitSpeciation(0, true))
+            .unwrap();
+
+        assert_eq!(sampler.nodes.len(), 3);
+        assert_eq!(sampler.event_mapping[root], Event::Speciation);
+        let left = sampler.nodes[root].left_child.unwrap();
+        let right = sampler.nodes[root].right_child.unwrap();
+        assert_eq!(
+            sampler.node_mapping[left],
+            Some(prepared.species.gp_to_rust[0])
+        );
+        assert_eq!(
+            sampler.node_mapping[right],
+            Some(prepared.species.gp_to_rust[1])
+        );
+        assert_eq!(children.len(), 2);
+        assert_work_item(&children[0], left, 1, 0);
+        assert_work_item(&children[1], right, 0, 1);
     }
 
     #[test]

@@ -13,9 +13,10 @@ from types import SimpleNamespace
 import pytest
 import torch
 
+import gpurec.cli as gpurec_cli
 import gpurec.workflow.model_factory as workflow_model_factory
 from gpurec.cli import (
-    _RUN_CONFIG_CLI_OVERRIDE_FIELDS,
+    _run_config_cli_override_fields,
     _run_config_from_args,
     build_parser,
     main,
@@ -45,7 +46,8 @@ def test_run_config_cli_surface_matches_dataclass_fields():
     run_config_fields = {field.name for field in fields(RunConfig)}
     expected_parser_dests = run_config_fields | {"config"}
 
-    assert set(_RUN_CONFIG_CLI_OVERRIDE_FIELDS) == run_config_fields
+    assert set(_run_config_cli_override_fields()) == run_config_fields
+    assert not hasattr(gpurec_cli, "_RUN_CONFIG_CLI_OVERRIDE_FIELDS")
     assert _parser_action_dests("optimize") == expected_parser_dests
     assert _parser_action_dests("run") == expected_parser_dests | {
         "sample_out_dir",

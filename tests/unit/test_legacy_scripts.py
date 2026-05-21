@@ -5,6 +5,8 @@ from pathlib import Path
 import pytest
 import torch
 
+from profiling import evaluate_hogenom_alerax_rates as evaluate_rates
+from scripts import compare_backtracking_alerax_events as compare_events
 from scripts import export_hogenom_rates_from_checkpoint as export_rates
 from scripts import hogenom_ccp_wandb_opt as hogenom_opt
 from scripts.compare_backtracking_alerax_events import load_rates
@@ -18,6 +20,82 @@ def _rate_output_dir(tmp_path: Path) -> Path:
     output_dir = tmp_path / "output"
     (output_dir / "model_parameters").mkdir(parents=True)
     return output_dir
+
+
+class _FakeNllTensor:
+    def __init__(self, values: list[float]) -> None:
+        self._values = values
+
+    def detach(self):
+        return self
+
+    def cpu(self):
+        return self
+
+    def tolist(self) -> list[float]:
+        return self._values
+
+
+class _FakeNllModel:
+    def __init__(
+        self,
+        values: list[float] | None = None,
+        error: Exception | None = None,
+    ) -> None:
+        self._values = values if values is not None else [1.0]
+        self._error = error
+        self.close_calls = 0
+
+    def nll_per_family(self):
+        if self._error is not None:
+            raise self._error
+        return _FakeNllTensor(self._values)
+
+    def close(self) -> None:
+        self.close_calls += 1
+
+
+class _FakeBacktrackingModel:
+    def __init__(self) -> None:
+        self.close_calls = 0
+
+    def close(self) -> None:
+        self.close_calls += 1
+
+
+def _write_compare_family_inputs(tmp_path: Path) -> tuple[Path, Path]:
+    dataset = tmp_path / "dataset"
+    dataset.mkdir()
+    (dataset / "sp.nwk").write_text("(A,B);\n", encoding="utf-8")
+    (dataset / "g_0001.nwk").write_text("(a,b);\n", encoding="utf-8")
+    output_dir = _rate_output_dir(tmp_path)
+    (output_dir / "model_parameters" / "model_parameters.txt").write_text(
+        "node D L T\n16 0.1 0.2 0.3\n",
+        encoding="utf-8",
+    )
+    alerax_dir = output_dir / "reconciliations" / "all"
+    alerax_dir.mkdir(parents=True)
+    (alerax_dir / "family_0001_eventCounts_0.txt").write_text(
+        "S: 1\n",
+        encoding="utf-8",
+    )
+    return dataset, output_dir
+
+
+def test_evaluate_rates_closes_model_after_successful_family_nll():
+    model = _FakeNllModel(values=[1.25, 2.5])
+
+    assert evaluate_rates._nll_per_family_with_cleanup(model) == [1.25, 2.5]
+    assert model.close_calls == 1
+
+
+def test_evaluate_rates_closes_model_after_family_nll_failure():
+    model = _FakeNllModel(error=RuntimeError("nll failed"))
+
+    with pytest.raises(RuntimeError, match="nll failed"):
+        evaluate_rates._nll_per_family_with_cleanup(model)
+
+    assert model.close_calls == 1
 
 
 def test_compare_backtracking_load_rates_reads_global_model_parameters(
@@ -46,6 +124,165 @@ def test_compare_backtracking_load_rates_prefers_family_specific_rates(
     )
 
     assert load_rates(output_dir, "family_0001") == (0.4, 0.5, 0.6)
+
+
+def test_compare_backtracking_closes_model_after_successful_sampling(
+    tmp_path: Path,
+    monkeypatch,
+):
+    dataset, output_dir = _write_compare_family_inputs(tmp_path)
+    model = _FakeBacktrackingModel()
+
+    class FakeFactory:
+        @staticmethod
+        def from_trees(*args, **kwargs):
+            assert kwargs["theta_init_rates"] == (0.1, 0.2, 0.3)
+            return model
+
+    monkeypatch.setattr(compare_events, "GeneReconModel", FakeFactory)
+    monkeypatch.setattr(
+        compare_events,
+        "sample_recphyloxmls",
+        lambda *args, **kwargs: ["<xml />"],
+    )
+    monkeypatch.setattr(
+        compare_events,
+        "recphyloxml_event_counts",
+        lambda xml: {"S": 2},
+    )
+
+    rows = compare_events.compare_family(
+        dataset=dataset,
+        output_dir=output_dir,
+        family_index=1,
+        samples=3,
+        seed=5,
+        fixed_iters_pi=6,
+        max_iters_e=10,
+        tol_e=1e-6,
+        backtrack_binary=None,
+        families_file=None,
+        species_tree=None,
+        preprocess_cache_dir=None,
+    )
+
+    assert model.close_calls == 1
+    assert ("family_0001", "S", 1, 1, 1, 2, 2, 2, 1) in rows
+
+
+def test_compare_backtracking_closes_model_after_sampling_failure(
+    tmp_path: Path,
+    monkeypatch,
+):
+    dataset, output_dir = _write_compare_family_inputs(tmp_path)
+    model = _FakeBacktrackingModel()
+
+    class FakeFactory:
+        @staticmethod
+        def from_trees(*args, **kwargs):
+            return model
+
+    def fail_sampling(*args, **kwargs):
+        raise RuntimeError("sampling failed")
+
+    monkeypatch.setattr(compare_events, "GeneReconModel", FakeFactory)
+    monkeypatch.setattr(compare_events, "sample_recphyloxmls", fail_sampling)
+
+    with pytest.raises(RuntimeError, match="sampling failed"):
+        compare_events.compare_family(
+            dataset=dataset,
+            output_dir=output_dir,
+            family_index=1,
+            samples=3,
+            seed=5,
+            fixed_iters_pi=6,
+            max_iters_e=10,
+            tol_e=1e-6,
+            backtrack_binary=None,
+            families_file=None,
+            species_tree=None,
+            preprocess_cache_dir=None,
+        )
+
+    assert model.close_calls == 1
+
+
+@pytest.mark.parametrize(
+    ("parser_factory", "args", "message"),
+    [
+        (
+            evaluate_rates.build_parser,
+            ["--chunk-size", "0"],
+            "chunk-size must be positive",
+        ),
+        (
+            evaluate_rates.build_parser,
+            ["--max-families", "-1"],
+            "max-families must be positive",
+        ),
+        (
+            evaluate_rates.build_parser,
+            ["--fixed-iters-e", "0"],
+            "fixed-iters-e must be positive",
+        ),
+        (
+            evaluate_rates.build_parser,
+            ["--fixed-iters-pi", "5"],
+            "fixed-iters-pi must be a positive even integer",
+        ),
+        (
+            evaluate_rates.build_parser,
+            ["--max-wave-size", "0"],
+            "max-wave-size must be positive",
+        ),
+        (
+            compare_events.build_parser,
+            ["--families", "0"],
+            "families must be positive",
+        ),
+        (
+            compare_events.build_parser,
+            ["--start", "-1"],
+            "start must be non-negative",
+        ),
+        (
+            compare_events.build_parser,
+            ["--samples", "0"],
+            "samples must be positive",
+        ),
+        (
+            compare_events.build_parser,
+            ["--seed", "-1"],
+            "seed must be non-negative",
+        ),
+        (
+            compare_events.build_parser,
+            ["--fixed-iters-pi", "5"],
+            "fixed-iters-pi must be a positive even integer",
+        ),
+        (
+            compare_events.build_parser,
+            ["--max-iters-e", "0"],
+            "max-iters-e must be positive",
+        ),
+        (
+            compare_events.build_parser,
+            ["--tol-e", "-0.1"],
+            "tol-e must be non-negative",
+        ),
+    ],
+)
+def test_local_script_parsers_reject_invalid_count_controls(
+    parser_factory,
+    args: list[str],
+    message: str,
+    capsys,
+):
+    with pytest.raises(SystemExit) as exc_info:
+        parser_factory().parse_args(args)
+
+    assert exc_info.value.code == 2
+    assert message in capsys.readouterr().err
 
 
 def test_compare_backtracking_load_rates_reports_missing_global_file(

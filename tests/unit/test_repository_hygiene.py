@@ -1567,6 +1567,48 @@ def test_rust_backtracking_work_items_use_concrete_clade_state():
     assert "clade: usize" in lib_rs
 
 
+def test_rust_backtracking_apply_term_variants_have_direct_unit_tests():
+    root = Path(__file__).resolve().parents[2]
+    lib_rs = (
+        root / "crates" / "gpurec-backtrack" / "src" / "lib.rs"
+    ).read_text(encoding="utf-8")
+
+    for token in (
+        "fn hidden_transfer_donor_emits_transfer_loss_and_requeues_recipient",
+        "fn hidden_speciation_left_emits_loss_on_right_species",
+        "fn hidden_speciation_right_emits_loss_on_left_species",
+        "fn split_transfer_right_keeps_left_child_on_donor_branch",
+        "fn split_transfer_left_keeps_right_child_on_donor_branch",
+        "fn split_speciation_assigns_left_and_right_clades_to_species_children",
+        "fn swapped_split_speciation_swaps_clades_not_species_children",
+        "Term::HiddenTransferLossDonor",
+        "Term::HiddenSpeciationLeft",
+        "Term::HiddenSpeciationRight",
+        "Term::SplitTransferRight",
+        "Term::SplitTransferLeft",
+        "Term::SplitSpeciation(0, true)",
+        "assert_work_item(",
+    ):
+        assert token in lib_rs
+
+
+def test_private_family_tree_path_alias_is_not_in_source_surface():
+    root = Path(__file__).resolve().parents[2]
+    private_alias = "_normalize_" + "family_tree_paths"
+    offenders = [
+        path.relative_to(root).as_posix()
+        for path in _tracked_files(
+            root,
+            "gpurec/**/*.py",
+            "scripts/**/*.py",
+            "profiling/**/*.py",
+        )
+        if private_alias in path.read_text(encoding="utf-8")
+    ]
+
+    assert offenders == []
+
+
 def test_second_order_docs_reference_current_public_loss_apis():
     root = Path(__file__).resolve().parents[2]
     note = (
@@ -2019,14 +2061,14 @@ def test_runtime_surface_plan_records_refresh_findings_before_behavior_changes()
     for token in (
         "Core/API Refresh Findings",
         "`finite_float()`, `positive_float()`, and `nonnegative_float()`",
-        "accept `True` as `1.0`",
+        "reject Python bools and bool tensors",
         "`tol_E`, `pi_max_diff_tol`, and `min_rate`",
         "`as_family_param()`, `as_family_species()`, and `extract_parameters_uniform()`",
         "`G == S` ambiguity",
         "`_normalize_family_tree_paths()`",
-        "no tracked callers remain",
+        "private alias is absent from tracked runtime/script/profiling Python sources",
         "`normalize_family_chunk_size()`",
-        "omitted from `__all__`",
+        "now appears in `gpurec.core.batch_planning.__all__`",
         "`UniformChunkedState`",
         "keep it out of public exports",
         "`UniformChunkedReconModel.nll_per_family()`",
@@ -2049,12 +2091,15 @@ def test_runtime_surface_plan_records_refresh_findings_before_behavior_changes()
         "`profiling/evaluate_hogenom_alerax_rates.py`",
         "`scripts/compare_backtracking_alerax_events.py`",
         "Local validation/profiling CLI count controls",
-        "parse count controls such as chunk size",
+        "`gpurec/_argparse_types.py` helpers",
+        "parser-level positive, non-negative, or positive-even errors",
         "`optimizer.load_state_dict`",
         "`ValueError`, `RuntimeError`, and `TypeError`",
         "`_RUN_CONFIG_CLI_OVERRIDE_FIELDS`",
+        "dynamic `_RUN_CONFIG_CLI_OVERRIDE_FIELDS` attribute is absent",
         "`HiddenTransferLossDonor`",
         "`Sampler::apply_term`",
+        "queued `WorkItem` clade/species state",
         "`_parse_minimal_pyproject()`",
         "Python 3.10 unit collection for TOML-reading tests",
         "Rust backtracking CLI multi-sample output",
@@ -2063,8 +2108,9 @@ def test_runtime_surface_plan_records_refresh_findings_before_behavior_changes()
 
     for token in (
         "follow-up core/API explorer",
-        "bool acceptance in direct API float validators",
-        "unclear export status for `normalize_family_chunk_size()`",
+        "direct API float-bool validation finding is now fixed",
+        "private `_normalize_family_tree_paths()` compatibility alias is now deleted",
+        "`normalize_family_chunk_size()` export-intent finding is now fixed",
         "follow-up workflow/backtracking explorer",
         "stale Rust sampler help-marker finding is now fixed",
         "Python 3.10 TOML fallback finding is now guarded",
@@ -2073,6 +2119,9 @@ def test_runtime_surface_plan_records_refresh_findings_before_behavior_changes()
         "workflow/scripts follow-up explorer",
         "mandatory final optimization evaluation nonfinite gap is now fixed",
         "Resume optimizer-state restore now also discards",
+        "local HOGENOM script count-control finding is now fixed",
+        "dynamic CLI compatibility attribute finding is now fixed",
+        "Rust sampler term-variant finding is now fixed",
         "core/API follow-up explorer",
         "direct `build_wave_layout()` family-index gap is now fixed",
     ):

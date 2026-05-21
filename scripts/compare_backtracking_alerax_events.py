@@ -13,6 +13,12 @@ import torch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from gpurec import GeneReconModel, recphyloxml_event_counts, sample_recphyloxmls
+from gpurec._argparse_types import (
+    nonnegative_float_arg,
+    nonnegative_int_arg,
+    positive_even_int_arg,
+    positive_int_arg,
+)
 from gpurec.backtracking import EVENT_KEYS
 from gpurec.core.model import parse_alerax_family_file
 
@@ -90,6 +96,35 @@ def summarize(counts: list[dict[str, int]]) -> dict[str, tuple[int, float, int]]
     }
 
 
+def _gpurec_event_counts_with_cleanup(
+    model: GeneReconModel,
+    *,
+    samples: int,
+    seed: int,
+    backtrack_binary: Path | None,
+) -> list[dict[str, int]]:
+    try:
+        gpurec_counts = [
+            recphyloxml_event_counts(xml)
+            for xml in sample_recphyloxmls(
+                model,
+                family_index=0,
+                num_samples=samples,
+                seed=seed,
+                max_events=100_000,
+                backtrack_binary=backtrack_binary,
+            )
+        ]
+    except BaseException as exc:
+        try:
+            model.close()
+        except Exception as close_error:
+            raise exc from close_error
+        raise
+    model.close()
+    return gpurec_counts
+
+
 def compare_family(
     *,
     dataset: Path,
@@ -159,17 +194,12 @@ def compare_family(
             max_iters_E=max_iters_e,
             tol_E=tol_e,
         )
-    gpurec_counts = [
-        recphyloxml_event_counts(xml)
-        for xml in sample_recphyloxmls(
-            model,
-            family_index=0,
-            num_samples=samples,
-            seed=seed,
-            max_events=100_000,
-            backtrack_binary=backtrack_binary,
-        )
-    ]
+    gpurec_counts = _gpurec_event_counts_with_cleanup(
+        model,
+        samples=samples,
+        seed=seed,
+        backtrack_binary=backtrack_binary,
+    )
     alerax_summary = summarize(alerax_counts)
     gpurec_summary = summarize(gpurec_counts)
 
@@ -181,22 +211,34 @@ def compare_family(
     return rows
 
 
-def main() -> None:
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dataset", type=Path, default=Path("tests/data/test_trees_100"))
     parser.add_argument("--output-name", default="output_global")
-    parser.add_argument("--families", type=int, default=3)
-    parser.add_argument("--start", type=int, default=0)
-    parser.add_argument("--samples", type=int, default=20)
-    parser.add_argument("--seed", type=int, default=0)
-    parser.add_argument("--fixed-iters-pi", type=int, default=6)
-    parser.add_argument("--max-iters-e", type=int, default=4000)
-    parser.add_argument("--tol-e", type=float, default=1e-10)
+    parser.add_argument("--families", type=positive_int_arg("families"), default=3)
+    parser.add_argument("--start", type=nonnegative_int_arg("start"), default=0)
+    parser.add_argument("--samples", type=positive_int_arg("samples"), default=20)
+    parser.add_argument("--seed", type=nonnegative_int_arg("seed"), default=0)
+    parser.add_argument(
+        "--fixed-iters-pi",
+        type=positive_even_int_arg("fixed-iters-pi"),
+        default=6,
+    )
+    parser.add_argument(
+        "--max-iters-e",
+        type=positive_int_arg("max-iters-e"),
+        default=4000,
+    )
+    parser.add_argument("--tol-e", type=nonnegative_float_arg("tol-e"), default=1e-10)
     parser.add_argument("--backtrack-binary", type=Path)
     parser.add_argument("--families-file", type=Path)
     parser.add_argument("--species-tree", type=Path)
     parser.add_argument("--preprocess-cache-dir", type=Path)
-    args = parser.parse_args()
+    return parser
+
+
+def main(argv: list[str] | None = None) -> None:
+    args = build_parser().parse_args(argv)
 
     if not torch.cuda.is_available():
         raise SystemExit("CUDA is required for gpurec's retained forward path")
