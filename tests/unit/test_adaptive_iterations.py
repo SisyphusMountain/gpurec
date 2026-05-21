@@ -20,7 +20,11 @@ def one_gene_tree(data_dir_1000: Path):
     return str(data_dir_1000 / "sp.nwk"), [str(genes[0])]
 
 
-def test_adaptive_iterations_match_fixed_when_tolerances_force_max(one_gene_tree, tmp_path):
+@pytest.mark.slow
+def test_adaptive_iterations_match_fixed_when_tolerances_force_max(
+    one_gene_tree,
+    tmp_path,
+):
     sp, genes = one_gene_tree
     kwargs = dict(
         species_tree=sp,

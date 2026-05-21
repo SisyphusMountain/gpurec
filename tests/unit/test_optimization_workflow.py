@@ -4,7 +4,10 @@ import math
 from pathlib import Path
 
 import pytest
+import torch
 
+import gpurec.api.uniform_chunked as uniform_chunked_module
+from gpurec import UniformChunkedReconModel
 from gpurec.workflow.config import RunConfig
 from gpurec.workflow.optimize import (
     _ResumeState,
@@ -25,6 +28,73 @@ def _run_config(tmp_path: Path, **overrides: object) -> RunConfig:
     }
     values.update(overrides)
     return RunConfig(**values)
+
+
+def test_uniform_chunked_full_sum_estimate_scales_loss_and_grad(monkeypatch):
+    model = UniformChunkedReconModel.__new__(UniformChunkedReconModel)
+    torch.nn.Module.__init__(model)
+    model.theta = torch.nn.Parameter(
+        torch.tensor([1.0, 2.0, 3.0], dtype=torch.float64)
+    )
+    model._state = object()
+    calls: list[dict[str, object]] = []
+
+    def fake_evaluate_chunked_uniform(
+        state,
+        theta,
+        *,
+        need_grad,
+        chunk_indices=None,
+        **kwargs,
+    ):
+        calls.append(
+            {
+                "state": state,
+                "theta": theta,
+                "need_grad": need_grad,
+                "chunk_indices": chunk_indices,
+                "kwargs": kwargs,
+            }
+        )
+        return (
+            torch.tensor(10.0, dtype=torch.float64),
+            torch.tensor([1.0, -2.0, 3.0], dtype=torch.float64),
+            {
+                "selected_families": 2,
+                "total_families": 8,
+                "selected_chunks": [1],
+            },
+        )
+
+    monkeypatch.setattr(
+        uniform_chunked_module,
+        "_evaluate_chunked_uniform",
+        fake_evaluate_chunked_uniform,
+    )
+
+    loss, grad, stats = model.loss_and_grad(
+        chunk_indices=[1],
+        reduction="full_sum_estimate",
+    )
+
+    assert calls == [
+        {
+            "state": model._state,
+            "theta": model.theta,
+            "need_grad": True,
+            "chunk_indices": [1],
+            "kwargs": {},
+        }
+    ]
+    torch.testing.assert_close(loss, torch.tensor(40.0, dtype=torch.float64))
+    torch.testing.assert_close(
+        grad,
+        torch.tensor([4.0, -8.0, 12.0], dtype=torch.float64),
+    )
+    assert stats["reduction"] == "full_sum_estimate"
+    assert stats["scale"] == 4.0
+    assert stats["reduced_loss"] == 40.0
+    assert stats["reduced_grad_norm"] == pytest.approx(math.sqrt(224.0))
 
 
 @pytest.mark.parametrize(

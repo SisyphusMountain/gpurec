@@ -20,6 +20,40 @@ def _tracked_files(root: Path, *patterns: str) -> list[Path]:
     return [root / line for line in result.stdout.splitlines() if line]
 
 
+def _decorator_name(decorator: ast.expr) -> str:
+    if isinstance(decorator, ast.Call):
+        decorator = decorator.func
+    parts: list[str] = []
+    while isinstance(decorator, ast.Attribute):
+        parts.append(decorator.attr)
+        decorator = decorator.value
+    if isinstance(decorator, ast.Name):
+        parts.append(decorator.id)
+    return ".".join(reversed(parts))
+
+
+def _has_pytest_mark(function: ast.FunctionDef, marker: str) -> bool:
+    return any(
+        _decorator_name(decorator).endswith(f"mark.{marker}")
+        for decorator in function.decorator_list
+    )
+
+
+def _is_pytest_fixture(function: ast.FunctionDef) -> bool:
+    return any(
+        _decorator_name(decorator).endswith("pytest.fixture")
+        or _decorator_name(decorator) == "fixture"
+        for decorator in function.decorator_list
+    )
+
+
+def _function_mentions_name(function: ast.FunctionDef, name: str) -> bool:
+    return any(
+        isinstance(node, ast.Name) and node.id == name
+        for node in ast.walk(function)
+    )
+
+
 def test_workflow_and_backtracking_use_public_model_surface():
     root = Path(__file__).resolve().parents[2]
     paths = [root / "gpurec" / "backtracking.py"]
@@ -153,6 +187,51 @@ def test_gpu_tests_use_explicit_module_level_markers():
             continue
         if "pytestmark" not in text or "pytest.mark.gpu" not in text:
             offenders.append(str(path.relative_to(root)))
+
+    assert offenders == []
+
+
+def test_unit_tests_using_large_cuda_fixture_are_marked_slow():
+    root = Path(__file__).resolve().parents[2]
+    offenders: list[str] = []
+    this_file = Path(__file__).resolve()
+
+    for path in sorted((root / "tests" / "unit").glob("test_*.py")):
+        if path == this_file:
+            continue
+        module = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        functions = [
+            node for node in module.body if isinstance(node, ast.FunctionDef)
+        ]
+        large_fixture_names: set[str] = {"data_dir_1000"}
+
+        changed = True
+        while changed:
+            changed = False
+            for function in functions:
+                if not _is_pytest_fixture(function):
+                    continue
+                arg_names = {arg.arg for arg in function.args.args}
+                if (
+                    arg_names & large_fixture_names
+                    or any(
+                        _function_mentions_name(function, fixture_name)
+                        for fixture_name in large_fixture_names
+                    )
+                ) and function.name not in large_fixture_names:
+                    large_fixture_names.add(function.name)
+                    changed = True
+
+        for function in functions:
+            if not function.name.startswith("test_"):
+                continue
+            arg_names = {arg.arg for arg in function.args.args}
+            uses_large_fixture = bool(arg_names & large_fixture_names) or any(
+                _function_mentions_name(function, fixture_name)
+                for fixture_name in large_fixture_names
+            )
+            if uses_large_fixture and not _has_pytest_mark(function, "slow"):
+                offenders.append(f"{path.relative_to(root)}::{function.name}")
 
     assert offenders == []
 
@@ -355,6 +434,24 @@ def test_project_readme_documents_top_level_backtracking_helpers():
         assert name in project_readme
 
 
+def test_project_readme_documents_package_environment_flags():
+    root = Path(__file__).resolve().parents[2]
+    project_readme = (root / "README.md").read_text(encoding="utf-8")
+    env_pattern = re.compile(r"\bGPUREC_[A-Z0-9_]+\b")
+    package_env_flags = sorted(
+        {
+            match.group(0)
+            for path in _tracked_files(root, "gpurec/**/*.py")
+            for match in env_pattern.finditer(path.read_text(encoding="utf-8"))
+        }
+    )
+
+    assert package_env_flags
+    undocumented = [name for name in package_env_flags if name not in project_readme]
+
+    assert undocumented == []
+
+
 def test_second_order_docs_reference_current_public_loss_apis():
     root = Path(__file__).resolve().parents[2]
     note = (
@@ -366,6 +463,23 @@ def test_second_order_docs_reference_current_public_loss_apis():
     assert "model.nll()" not in note
     assert "GeneReconModel.full_loss_for_theta(theta)" in note
     assert "UniformChunkedReconModel.nll()" in note
+
+
+def test_hogenom_alerax_rate_evaluator_documents_local_file_contract():
+    root = Path(__file__).resolve().parents[2]
+    script = (
+        root / "profiling" / "evaluate_hogenom_alerax_rates.py"
+    ).read_text(encoding="utf-8")
+
+    for token in (
+        "Checkout-local HOGENOM AleRax rate validation helper",
+        "not a general AleRax rate-file parser",
+        "second line",
+        "first three whitespace-separated values",
+        "checkpoint/<family>.txt",
+        "D/L/T rates in the first three columns of its second line",
+    ):
+        assert token in script
 
 
 def test_cpp_wave_stat_exports_validate_positive_max_wave_size():

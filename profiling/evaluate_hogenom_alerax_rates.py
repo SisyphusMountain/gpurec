@@ -1,3 +1,12 @@
+"""Checkout-local HOGENOM AleRax rate validation helper.
+
+This is not a general AleRax rate-file parser.  It expects the local HOGENOM
+layout, one AleRax checkpoint text file per family under
+``output_alerax_corrected/checkpoint/``, and each ``*_rates.txt``/checkpoint
+file to store D/L/T rates as the first three whitespace-separated values on
+the second line.
+"""
+
 from __future__ import annotations
 
 import argparse
@@ -143,16 +152,31 @@ def _summarize(rows: list[dict[str, object]], elapsed_s: float, args) -> dict[st
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(
+        description=(
+            "Evaluate GPUREC likelihoods with local HOGENOM AleRax checkpoint "
+            "rates. This checkout-local utility expects per-family checkpoint "
+            "files whose second line starts with D L T rates."
+        )
+    )
     parser.add_argument(
         "--hogenom-dir",
         type=Path,
         default=Path("tests/data/HOGENOM/hogenom"),
+        help=(
+            "Local HOGENOM root containing hogenom_families.local.txt and "
+            "hogenom_S.tree."
+        ),
     )
     parser.add_argument(
         "--alerax-output",
         type=Path,
         default=Path("tests/data/HOGENOM/hogenom/output_alerax_corrected"),
+        help=(
+            "Local AleRax output directory containing per_fam_likelihoods.txt "
+            "and checkpoint/<family>.txt files. Each checkpoint file must have "
+            "D/L/T rates in the first three columns of its second line."
+        ),
     )
     parser.add_argument(
         "--species-tree",
@@ -164,8 +188,9 @@ def main() -> None:
         "--out-dir",
         type=Path,
         default=Path("tests/data/HOGENOM/hogenom/output_gpurec_alerax_rate_check"),
+        help="Output directory for comparison CSV, plots, and summary JSON.",
     )
-    parser.add_argument("--device", default="cuda")
+    parser.add_argument("--device", default="cuda", help="Torch device. Defaults to cuda.")
     parser.add_argument("--dtype", choices=("float32", "float64"), default="float64")
     parser.add_argument("--chunk-size", type=int, default=24)
     parser.add_argument("--max-families", type=int, default=None)

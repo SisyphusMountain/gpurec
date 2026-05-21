@@ -175,93 +175,113 @@ evidence is thin.
     Tests pin current behavior, but user docs list filenames without defining
     format and normalization semantics.
 
+18. `UniformChunkedReconModel.loss_and_grad(reduction="full_sum_estimate")` is
+    a public stochastic-optimizer helper branch without direct coverage.  The
+    existing integration test covers default, `sum`, and `mean` reductions, but
+    not the `total_families / selected_families` scaling applied to both the
+    returned loss and gradient.  This can be covered with a CPU-safe unit test
+    by monkeypatching the internal chunk evaluator rather than constructing a
+    CUDA model.
+
+19. `gpurec.workflow.checkpoint.load_checkpoint_config()` is an unreferenced
+    helper.  It is not exported by `gpurec.workflow`, not exported at the
+    package top level, and `rg "load_checkpoint_config"` finds only the
+    definition.  Removing it leaves the documented checkpoint surface
+    (`save_checkpoint`, `load_checkpoint`, and `restore_model_theta`) intact and
+    reduces an otherwise unsupported module-level API.
+
 ### Scripts, Rust, Profiling, And Examples
 
-18. Legacy HOGENOM launchers have inconsistent path override support.
+20. Legacy HOGENOM launchers have inconsistent path override support.
     `scripts/README.md` labels them legacy checkout-local scripts, while
     `scripts/optimize_hogenom_ccp_global_uniform.py:21` and
     `scripts/optimize_hogenom_ccp_specieswise_uniform.py:26` hard-code local
     data paths and expose mostly optimizer/regularization flags.  Document
     which launchers are fixed-dataset before shared optimizer changes.
 
-19. `profiling/bench_uniform_forward_backward_pipeline.py` references missing
+21. `profiling/bench_uniform_forward_backward_pipeline.py` references missing
     `docs/forward-backward-full-pipeline-plan.md` at lines 4-5.  The benchmark
     contract is stale until the reference is restored or removed.
 
-20. `scripts/make_hogenom_branchscale_penalty_report.py` appears stale relative
+22. `scripts/make_hogenom_branchscale_penalty_report.py` appears stale relative
     to current run-directory naming.  It only loads `penalty_*` directories at
     lines 103-110, while newer launchers create timestamped names, and the
     report text hard-codes a date and "1325 branch multipliers".
 
-21. `configs/hogenom_ccp_wandb.yaml` is not a portable smoke config.  It assumes
+23. `configs/hogenom_ccp_wandb.yaml` is not a portable smoke config.  It assumes
     local HOGENOM data paths, CUDA, per-step checkpointing, and online W&B.  It
     should be documented as a full local experiment config rather than a general
     example.
 
-22. `examples/minimal-run-config.json` defaults to `"device": "cuda"` even
+24. `examples/minimal-run-config.json` defaults to `"device": "cuda"` even
     though the tiny fixtures are otherwise portable.  This is a documentation
     and reproducibility footgun for CPU-only users.
 
-23. Rust backtracking input validation is shape-focused but numeric contracts
+25. Rust backtracking input validation is shape-focused but numeric contracts
     are not fully documented.  Matrix validation checks only
     `rows * cols == data.len()` in `crates/gpurec-backtrack/src/lib.rs:31`, and
     origination probabilities are log-converted only if positive around line
     274 while non-finite values are filtered later around line 750.  Add schema
     docs and tests before changing sampler behavior.
 
-24. Some profiling/evaluation scripts encode brittle external file-format
+26. Some profiling/evaluation scripts encode brittle external file-format
     assumptions.  `profiling/evaluate_hogenom_alerax_rates.py:29` reads only
     the second line of each `*_rates.txt` and treats the first three columns as
     D/L/T; defaults around line 147 hard-code the HOGENOM root, CUDA device, and
-    iteration count.
+    iteration count.  The next low-risk cleanup is documentation-only: make the
+    script module/help text state that it is a checkout-local HOGENOM AleRax
+    validation utility, not a general rate-file parser.
 
 ### Tests, Docs, And Packaging
 
-25. Release metadata still has an expected blocker.  `pyproject.toml` lacks a
+27. Release metadata still has an expected blocker.  `pyproject.toml` lacks a
     license key and license classifier, while `docs/release-readiness.md`
     requires adding both and a top-level license file.  The test suite currently
     treats this as an expected release metadata blocker.
 
-26. The docs index presented historical cleanup notes as current.  This audit
+28. The docs index presented historical cleanup notes as current.  This audit
     moved `core-simplification-suggestions.md` out of "Current Operating Notes"
     because the file itself says it is a historical snapshot and includes
     already-implemented items such as removing `scatter_lse.py`.
 
-27. Performance docs contain broken references.  Examples include missing docs
+29. Performance docs contain broken references.  Examples include missing docs
     and benchmark scripts in `docs/lean-performance-path-regression.md`, and
     `docs/second-order-optimization-opportunities.md` references
     `profiling/bench_global_parameter_optimization.py` plus a line number that
     no longer exists in `tests/integration/test_gene_recon_model.py`.
 
-28. Some GPU/data-heavy tests are classified as unit tests.  `tests/conftest.py`
+30. Some GPU/data-heavy tests are classified as unit tests.  `tests/conftest.py`
     auto-marks everything under `tests/unit` as `unit`, but
     `tests/unit/test_adaptive_iterations.py` requires CUDA and `test_trees_1000`
     and some `test_specieswise_uniform.py` CUDA checks lack local `slow`
-    markers.  This conflicts with `tests/README.md` guidance.
+    markers.  This conflicts with `tests/README.md` guidance.  The follow-up
+    keeps those tests in `tests/unit` for ownership, but requires every unit
+    test that directly or indirectly depends on the 1000-family CUDA fixture to
+    carry a local `@pytest.mark.slow` marker.
 
-29. `tests/unit/test_release_metadata.py` mirrors docs and GitHub Actions YAML
+31. `tests/unit/test_release_metadata.py` mirrors docs and GitHub Actions YAML
     with many exact substring assertions.  These guards catch release drift, but
     they are brittle during harmless wording or workflow layout changes.
 
-30. `tests/unit/test_workflow.py` is an oversized mixed-surface test module at
+32. `tests/unit/test_workflow.py` is an oversized mixed-surface test module at
     5,123 lines.  It covers exports, config, checkpointing, optimization,
     backtracking commands, sampling, and more.  Splitting it by behavior would
     improve ownership and reduce stale-test risk.
 
-31. `pytest.ini` globally ignores all `DeprecationWarning` and
+33. `pytest.ini` globally ignores all `DeprecationWarning` and
     `PendingDeprecationWarning`.  Scoping suppression to known external noise
     would make project-owned deprecations visible.  A CPU unit run with
     `-W default` did not surface known warning noise, so the low-risk cleanup is
     to remove the blanket ignores and add a repository hygiene guard that only
     permits targeted warning filters.
 
-32. `tests/__init__.py` is stale or unnecessary.  It describes `gradients` and
+34. `tests/__init__.py` is stale or unnecessary.  It describes `gradients` and
     `performance` suites, while the current marker taxonomy is `unit`,
     `integration`, `kernel`, `gpu`, and `slow`.  The file still helps direct
     imports such as `tests.unit.alerax_helpers`, so the low-risk cleanup is to
     simplify the package docstring rather than delete it.
 
-33. CLI help smoke tests are sensitive to stale installed console scripts.  In
+35. CLI help smoke tests are sensitive to stale installed console scripts.  In
     this checkout, `which gpurec` resolved to `/home/enzo/miniforge3/bin/gpurec`,
     whose entry point imports `gpurec.cli.reconcile`.  The repo-local
     `python -m gpurec.cli --help` command passed, but
@@ -286,6 +306,16 @@ evidence is thin.
 ## Deletion And Simplification Candidates
 
 - Remove or document unused pybind debug exports in `preprocess.cpp`.
+- Decide whether the legacy pybind `preprocess()` wrapper should remain.  The
+  current Python runtime routes through `preprocess_multiple_families(...,
+  include_details=True)`, while the legacy wrapper duplicates extraction logic
+  and has no in-repo Python callers.
+- Decide whether `preprocess_multiple_families(..., include_details=False)` is
+  a public C++ extension mode or dead compatibility surface; production Python
+  callers request details.
+- Decide whether `compute_clade_waves`, `collate_wave`, and
+  `split_phase_waves` remain public scheduler helpers or are test-only legacy
+  surface.
 - Remove stale `GPUREC_LEAF_HIT_ONLY_LOGP` plumbing if a focused guard proves it
   is inert.
 - Remove unused `ancestors_T` from `Pi_wave_backward` after documenting call-site
@@ -294,6 +324,9 @@ evidence is thin.
 - Rework `tests/unit/test_workflow.py` into focused modules.
 - Mark historical docs clearly, remove broken links, and either restore or
   delete stale benchmark plan references.
+- Keep the core `GPUREC_*` environment toggles documented in the user-facing
+  README.  They currently control binary discovery, memory policy, retained
+  optimized CUDA/Triton paths, and diagnostic launch tuning.
 
 ## Documentation Cleanup Completed
 
@@ -366,6 +399,26 @@ staleness found above:
   specific dependency noise.
 - `tests/unit/test_repository_hygiene.py` now rejects future blanket
   deprecation-warning ignores in `pytest.ini`.
+- `tests/unit/test_adaptive_iterations.py` and
+  `tests/unit/test_specieswise_uniform.py` now mark 1000-family CUDA unit checks
+  as `slow`, while retaining their `unit` ownership.
+- `tests/unit/test_repository_hygiene.py` now guards direct and
+  fixture-mediated `data_dir_1000` usage in unit tests so expensive CUDA unit
+  checks keep a local `@pytest.mark.slow` marker.
+- `README.md` now documents the package-level `GPUREC_*` environment flags for
+  binary discovery, compatibility guards, memory policy, and kernel diagnostics.
+- `tests/unit/test_repository_hygiene.py` now guards that every `GPUREC_*`
+  environment variable read by tracked package code appears in the README.
+- `profiling/evaluate_hogenom_alerax_rates.py` now documents itself as a
+  checkout-local HOGENOM AleRax validation utility rather than a general
+  rate-file parser, and its help text states the per-family checkpoint file
+  layout and second-line D/L/T rate assumption.
+- `tests/unit/test_repository_hygiene.py` now guards that the HOGENOM AleRax
+  rate-evaluation helper keeps that local file-format contract visible.
+- `tests/unit/test_optimization_workflow.py` now covers
+  `UniformChunkedReconModel.loss_and_grad(reduction="full_sum_estimate")` with a
+  CPU-safe monkeypatched evaluator, asserting that both returned loss and
+  gradient are scaled by `total_families / selected_families`.
 
 ## Verification Run This Round
 
@@ -469,6 +522,49 @@ staleness found above:
   blanket warning filters.
 - `python -m pytest --collect-only -q`: 834 tests collected after the
   warning-filter hygiene guard.
+- `python -m pytest --collect-only -q -m slow`: 6 of 835 tests selected after
+  adding the missing 1000-family CUDA slow markers.
+- `python -m pytest --collect-only -q -m "gpu and not slow"`: 21 of 835 tests
+  selected after moving the expensive unit CUDA checks into the slow set.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_repository_hygiene.py -q`:
+  25 passed after adding the slow-marker and README environment-flag guards.
+- `python -m pytest --collect-only -q`: 836 tests collected after the README
+  environment-flag guard.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit -q -m "unit and not gpu"`:
+  807 passed, 1 skipped, 6 deselected after the README environment-flag guard.
+- `python profiling/evaluate_hogenom_alerax_rates.py --help`: passed and shows
+  the checkout-local HOGENOM checkpoint-rate contract.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_repository_hygiene.py -q`:
+  26 passed after adding the HOGENOM AleRax rate-evaluator documentation guard.
+- `python -m pytest --collect-only -q`: 837 tests collected after the
+  HOGENOM AleRax rate-evaluator documentation guard.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit -q -m "unit and not gpu"`:
+  808 passed, 1 skipped, 6 deselected after the HOGENOM AleRax rate-evaluator
+  documentation guard.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_optimization_workflow.py::test_uniform_chunked_full_sum_estimate_scales_loss_and_grad -q`:
+  1 passed after adding the CPU-safe `full_sum_estimate` scaling guard.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_optimization_workflow.py -q`:
+  29 passed after the `full_sum_estimate` scaling guard.
+- `python -m pytest --collect-only -q`: 838 tests collected after the
+  `full_sum_estimate` scaling guard.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit -q -m "unit and not gpu"`:
+  809 passed, 1 skipped, 6 deselected after the `full_sum_estimate` scaling
+  guard.
+- `python -m py_compile gpurec/workflow/checkpoint.py tests/unit/test_workflow.py`:
+  passed after removing the unused checkpoint config helper.
+- `rg -n "load_checkpoint_config" . -S`: now finds only audit documentation
+  mentions, confirming the unsupported helper is no longer present in package
+  code.
+- Direct import probe: `hasattr(gpurec.workflow.checkpoint, "load_checkpoint_config")`
+  returns `False`.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_workflow.py -q -k 'checkpoint or restore_model_theta or resume'`:
+  50 passed, 373 deselected after removing the helper.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_workflow.py -q`:
+  423 passed after removing the helper.
+- `python -m pytest --collect-only -q`: 838 tests collected after removing the
+  helper.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit -q -m "unit and not gpu"`:
+  809 passed, 1 skipped, 6 deselected after removing the helper.
 - `git diff --check`: passed.
 - `python scripts/check_release_metadata.py`: failed with the known release
   blockers: missing top-level `LICENSE`, missing `pyproject.toml` license

@@ -214,11 +214,6 @@ def load_checkpoint(
     return _validate_checkpoint_payload(payload, path)
 
 
-def load_checkpoint_config(path: str | Path) -> RunConfig:
-    payload = load_checkpoint(path, map_location="cpu")
-    return RunConfig.from_dict(payload["config"])
-
-
 def restore_model_theta(model: Any, payload: dict[str, Any]) -> None:
     theta = payload["theta"].to(device=model.theta.device, dtype=model.theta.dtype)
     if tuple(theta.shape) != tuple(model.theta.shape):

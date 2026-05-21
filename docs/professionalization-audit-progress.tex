@@ -5948,6 +5948,87 @@ configuration reported \texttt{805 passed, 1 skipped, 6 deselected}.
 
 The current full collection reports \texttt{834 tests collected}.
 
+The marker-classification cleanup is now complete.  CUDA unit tests that depend
+on the 1000-family fixture remain under \texttt{tests/unit/} for ownership, but
+now carry local \texttt{@pytest.mark.slow} decorators.  A repository hygiene
+guard detects direct and fixture-mediated \texttt{data\_dir\_1000} usage in unit
+tests and requires those tests to be locally marked as slow.  The slow
+collection now reports \texttt{6/835 tests collected}, \texttt{gpu and not slow}
+reports \texttt{21/835 tests collected}, the full repository hygiene suite
+reports \texttt{24 passed}, and the CPU-only unit gate reports
+\texttt{806 passed, 1 skipped, 6 deselected}.
+
+The current full collection reports \texttt{835 tests collected}.
+
+The core refresh explorer reported no edits and confirmed several deletion
+candidates already visible in the audit backlog: pybind-only scheduler
+diagnostics, the legacy \texttt{preprocess()} wrapper, the
+\texttt{include\_details=False} C++ extension path, and scheduler helpers that
+now appear test-only.  It also surfaced a user-facing documentation gap for the
+\texttt{GPUREC\_*} runtime environment flags.  The README now documents those
+flags by scope, including binary discovery, compatibility guards, memory
+policy, retained CUDA/Triton fast-path selectors, and diagnostic launch tuning.
+A repository hygiene guard scans tracked package code for \texttt{GPUREC\_*}
+variables and requires each to appear in the README.  The focused guard passed,
+the full repository hygiene suite reports \texttt{25 passed}, the full
+collection reports \texttt{836 tests collected}, and the CPU-only unit gate
+reports \texttt{807 passed, 1 skipped, 6 deselected}.
+
+The next profiling-script cleanup is documentation-only.  The
+\texttt{profiling/evaluate\_hogenom\_alerax\_rates.py} helper is a
+checkout-local HOGENOM AleRax validation utility: it reads one AleRax checkpoint
+rate file per family, treats the second line's first three columns as D/L/T,
+and defaults to local HOGENOM paths plus CUDA.  Before any parser or workflow
+logic changes, the script and help text should make those assumptions explicit
+and a source guard should keep the warning visible.
+
+That profiling-script cleanup is now complete.  The script module docstring and
+argparse help now state that it is a checkout-local HOGENOM AleRax validation
+utility, not a general rate-file parser, and they document the per-family
+checkpoint file layout plus the second-line D/L/T rate assumption.  The focused
+source guard passed, \texttt{python profiling/evaluate\_hogenom\_alerax\_rates.py
+--help} passed, the repository hygiene suite reports \texttt{26 passed}, the
+full collection reports \texttt{837 tests collected}, and the CPU-only unit
+gate reports \texttt{808 passed, 1 skipped, 6 deselected}.
+
+The refreshed API/workflow audit found one small public branch still missing a
+direct guard: \texttt{UniformChunkedReconModel.loss\_and\_grad(reduction=
+"full\_sum\_estimate")} scales the selected chunk loss and gradient by
+\texttt{total\_families / selected\_families}.  Existing GPU integration tests
+cover the default, \texttt{sum}, and \texttt{mean} reductions, but not this
+scaling branch.  A CPU-safe unit test can cover the contract by monkeypatching
+the internal chunk evaluator instead of constructing a CUDA model.
+
+The \texttt{full\_sum\_estimate} guard is now in place.  It monkeypatches the
+chunk evaluator, calls \texttt{loss\_and\_grad()} on a lightweight
+\texttt{UniformChunkedReconModel} instance, and asserts that both the loss and
+gradient are multiplied by \texttt{total\_families / selected\_families}.  The
+focused test first exposed a test-harness issue from bypassing
+\texttt{torch.nn.Module.\_\_init\_\_()}, then passed after initializing the
+module before assigning \texttt{theta}.  The full
+\texttt{tests/unit/test\_optimization\_workflow.py} module reports
+\texttt{29 passed}, the full collection reports \texttt{838 tests collected},
+and the CPU-only unit gate reports
+\texttt{809 passed, 1 skipped, 6 deselected}.
+
+The refreshed API/workflow audit also identified
+\texttt{gpurec.workflow.checkpoint.load\_checkpoint\_config()} as unsupported
+surface: it is not exported by \texttt{gpurec.workflow}, not exported at the
+package top level, and search finds only the definition.  The cleanup is to
+remove that helper while keeping the documented checkpoint functions
+\texttt{save\_checkpoint}, \texttt{load\_checkpoint}, and
+\texttt{restore\_model\_theta}.
+
+That helper has been removed.  Search now finds
+\texttt{load\_checkpoint\_config} only in audit documentation, and a direct
+import probe confirms that
+\texttt{hasattr(gpurec.workflow.checkpoint, "load\_checkpoint\_config")}
+returns \texttt{False}.  The checkpoint-focused workflow slice reports
+\texttt{50 passed, 373 deselected}, the full
+\texttt{tests/unit/test\_workflow.py} module reports \texttt{423 passed}, the
+full collection remains \texttt{838 tests collected}, and the CPU-only unit
+gate remains \texttt{809 passed, 1 skipped, 6 deselected}.
+
 \section{Next Audit Targets}
 
 \begin{enumerate}[leftmargin=*]

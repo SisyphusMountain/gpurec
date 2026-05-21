@@ -272,6 +272,33 @@ source archive.  It requires a Rust toolchain and fetches the pinned `rustree`
 git dependency declared by `crates/gpurec-backtrack/Cargo.toml`; otherwise use a
 prebuilt binary.
 
+### Runtime Environment Flags
+
+Most production settings should be expressed through JSON config files or CLI
+flags.  The `GPUREC_*` environment variables are retained for binary discovery,
+compatibility guards, memory-policy margins, and kernel diagnostics.
+Boolean flags treat empty, `0`, `false`, `no`, and `off` as false.  CUDA
+prototype mode flags also accept `auto`, with `1`, `true`, `yes`, `on`,
+`force`, or `required` making a path required instead of best-effort.
+
+| Variable | Scope |
+| --- | --- |
+| `GPUREC_BACKTRACK_BIN` | Path to the Rust backtracking binary used by `gpurec sample`, `gpurec run`, and `gpurec backtrack-check`. |
+| `GPUREC_ALERAX_COMPAT` | Compatibility guard; differentiable model optimization supports only unset or `0`. |
+| `GPUREC_MEMORY_POLICY_FRACTION`, `GPUREC_MEMORY_POLICY_RESERVE_GIB` | GPU memory-budget margins used by uniform chunk planning. |
+| `GPUREC_FUSE_FINAL_PIBAR`, `GPUREC_SPECIALIZE_NONLEAF_LEAF_TERM` | Forward/backward fast-path selectors for retained uniform kernels. |
+| `GPUREC_BACKWARD_NO_CPU_PRUNING`, `GPUREC_DTS_SKIP_INACTIVE_PIBAR_ZERO` | Backward pass pruning and inactive-output zero-fill controls. |
+| `GPUREC_CUDA_SELF_LOOP_NOSPLIT`, `GPUREC_CUDA_SELF_LOOP_SPLIT`, `GPUREC_CUDA_SELF_LOOP_NOSPLIT_CORRECTION` | Native CUDA self-loop prototype selectors and correction mode. |
+| `GPUREC_CUDA_PIBAR_FROM_UD`, `GPUREC_CUDA_PIBAR_FROM_UD_STRICT` | Native CUDA Pibar-from-`u_d` prototype selector and strict-failure mode. |
+| `GPUREC_WAVE_STEP_BLOCK_S`, `GPUREC_WAVE_STEP_NUM_WARPS` | Triton forward wave-step launch tuning. |
+| `GPUREC_DTS_BLOCK_S`, `GPUREC_DTS_NUM_WARPS`, `GPUREC_DTS_GRAD_MT_TILE_SPLITS` | Triton cross-DTS backward launch tuning. |
+| `GPUREC_DTS_PARENT_BLOCK_S`, `GPUREC_DTS_PARENT_NUM_WARPS`, `GPUREC_DTS_PARENT_TILE_SPLITS` | Triton parent-reduced DTS forward launch tuning. |
+| `GPUREC_PIBAR_UD_BLOCK_S`, `GPUREC_PIBAR_UD_NUM_WARPS` | Triton Pibar-from-`u_d` launch tuning. |
+| `GPUREC_SELF_LOOP_2D_BLOCK_W`, `GPUREC_SELF_LOOP_2D_BLOCK_NODES`, `GPUREC_SELF_LOOP_2D_NUM_WARPS`, `GPUREC_SELF_LOOP_2D_JT_NUM_WARPS`, `GPUREC_SELF_LOOP_2D_SKIP_INACTIVE_SCRATCH_ZERO` | Triton 2D backward self-loop launch tuning and scratch-zero behavior. |
+| `GPUREC_CUDA_SELF_LOOP_BLOCK`, `GPUREC_CUDA_SELF_LOOP_CHILD_EDGE_WEIGHT` | Native CUDA self-loop launch tuning. |
+| `GPUREC_CUDA_PIBAR_FROM_UD_BLOCK`, `GPUREC_CUDA_PIBAR_FROM_UD_PAD_SHARED` | Native CUDA Pibar-from-`u_d` launch tuning. |
+| `GPUREC_LEAF_HIT_ONLY_LOGP` | Legacy leaf-term diagnostic plumbing; retained for compatibility, not a supported user-facing contract. |
+
 ## HOGENOM Workflows
 
 The installed `gpurec` CLI is the supported general workflow.  The HOGENOM

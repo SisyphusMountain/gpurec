@@ -363,6 +363,7 @@ def test_gpu_logsumexp_traces_match_final_values(data_dir_100, tmp_path):
     )
 
 
+@pytest.mark.slow
 def test_specieswise_uniform_backward_fast_path_runs(data_dir_1000, tmp_path):
     """Specieswise uniform backward runs through the retained fast path."""
     device = torch.device("cuda")
@@ -387,6 +388,7 @@ def test_specieswise_uniform_backward_fast_path_runs(data_dir_1000, tmp_path):
     assert torch.isfinite(grad).all()
 
 
+@pytest.mark.slow
 def test_constant_specieswise_matches_global_loss_and_gradient_semantics(
     data_dir_1000,
     tmp_path,
