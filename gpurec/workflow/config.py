@@ -9,6 +9,7 @@ from typing import Any
 
 import torch
 
+from gpurec._validation import bool_value, finite_float
 from gpurec.core.batch_planning import (
     normalize_batch_packing as _normalize_batch_packing,
     normalize_family_chunk_size as _normalize_family_chunk_size,
@@ -96,26 +97,11 @@ def _normalize_optional_positive_int(
 
 
 def _normalize_finite_float(name: str, value: float | int | str) -> float:
-    if isinstance(value, bool):
-        raise ValueError(f"{name} must be a number")
-    if isinstance(value, str):
-        try:
-            number = float(value.strip())
-        except ValueError as exc:
-            raise ValueError(f"{name} must be a number") from exc
-    elif isinstance(value, Real):
-        number = float(value)
-    else:
-        raise ValueError(f"{name} must be a number")
-    if not math.isfinite(number):
-        raise ValueError(f"{name} must be finite")
-    return number
+    return finite_float(name, value)
 
 
 def _normalize_bool(name: str, value: bool) -> bool:
-    if not isinstance(value, bool):
-        raise ValueError(f"{name} must be true or false")
-    return value
+    return bool_value(name, value)
 
 
 def _jsonable(value: Any) -> Any:

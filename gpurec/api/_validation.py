@@ -14,6 +14,8 @@ from typing import Any, Optional, Sequence
 
 import torch
 
+from gpurec._validation import bool_value, finite_float
+
 
 def require_cuda_device(device: Any, *, owner: str) -> torch.device:
     try:
@@ -45,20 +47,6 @@ def require_default_objective(owner: str) -> None:
         )
 
 
-def finite_float(name: str, value: float) -> float:
-    if isinstance(value, bool) or (
-        torch.is_tensor(value) and value.dtype == torch.bool
-    ):
-        raise ValueError(f"{name} must be a number, not a boolean")
-    try:
-        number = float(value)
-    except (TypeError, ValueError) as exc:
-        raise ValueError(f"{name} must be a number") from exc
-    if not math.isfinite(number):
-        raise ValueError(f"{name} must be finite")
-    return number
-
-
 def nonnegative_float(name: str, value: float) -> float:
     number = finite_float(name, value)
     if number < 0.0:
@@ -71,12 +59,6 @@ def positive_float(name: str, value: float) -> float:
     if number <= 0.0:
         raise ValueError(f"{name} must be positive")
     return number
-
-
-def bool_value(name: str, value: bool) -> bool:
-    if not isinstance(value, bool):
-        raise ValueError(f"{name} must be true or false")
-    return value
 
 
 def integer_value(name: str, value: int) -> int:
