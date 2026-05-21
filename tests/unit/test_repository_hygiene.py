@@ -28,7 +28,11 @@ def _tracked_files(root: Path, *patterns: str) -> list[Path]:
         text=True,
         timeout=SUBPROCESS_TIMEOUT,
     )
-    return [root / line for line in result.stdout.splitlines() if line]
+    return [
+        path
+        for line in result.stdout.splitlines()
+        if line and (path := root / line).exists()
+    ]
 
 
 def _is_subprocess_run(call: ast.Call) -> bool:
@@ -686,6 +690,51 @@ def test_uniform_chunked_loss_and_grad_documents_e_adjoint_stats():
         assert token in method_doc
 
 
+def test_uniform_chunked_nll_per_family_documents_diagnostic_contract():
+    root = Path(__file__).resolve().parents[2]
+    project_readme = (root / "README.md").read_text(encoding="utf-8")
+    normalized = " ".join(project_readme.split())
+    uniform_module = ast.parse(
+        (root / "gpurec" / "api" / "uniform_chunked.py").read_text(
+            encoding="utf-8"
+        )
+    )
+    uniform_class = next(
+        node
+        for node in uniform_module.body
+        if isinstance(node, ast.ClassDef) and node.name == "UniformChunkedReconModel"
+    )
+    class_doc = " ".join((ast.get_docstring(uniform_class) or "").split())
+    nll_per_family = next(
+        node
+        for node in uniform_class.body
+        if isinstance(node, ast.FunctionDef) and node.name == "nll_per_family"
+    )
+    method_doc = " ".join((ast.get_docstring(nll_per_family) or "").split())
+
+    for token in (
+        "`UniformChunkedReconModel.nll_per_family(chunk_indices=...)`",
+        "no-grad global/uniform diagnostic",
+        "one shared-theta NLL per selected family",
+        "independent per-family gradients",
+    ):
+        assert token in normalized
+    for token in (
+        "no-grad global/uniform diagnostic",
+        "one shared-theta NLL per selected family",
+        "chunk filtering",
+        "does not define independent per-family gradients",
+    ):
+        assert token in class_doc
+    for token in (
+        "no-grad per-family NLL diagnostics",
+        "selected chunk order",
+        "global/uniform shared-theta diagnostic",
+        "not an independent per-family gradient surface",
+    ):
+        assert token in method_doc
+
+
 def test_project_readme_documents_sampling_output_layout():
     root = Path(__file__).resolve().parents[2]
     project_readme = (root / "README.md").read_text(encoding="utf-8")
@@ -785,17 +834,36 @@ def test_project_readme_documents_e_adjoint_diagnostics():
 
 def test_implicit_gradient_documents_bicgstab_failure_policy():
     root = Path(__file__).resolve().parents[2]
+    bridge_name = "implicit_grad_" + "loglik_vjp_wave"
     module = ast.parse(
         (root / "gpurec" / "optimization" / "implicit_grad.py").read_text(
+            encoding="utf-8"
+        )
+    )
+    optimization_init = ast.parse(
+        (root / "gpurec" / "optimization" / "__init__.py").read_text(
             encoding="utf-8"
         )
     )
     functions = {
         node.name: node for node in module.body if isinstance(node, ast.FunctionDef)
     }
+    all_assignment = next(
+        node
+        for node in optimization_init.body
+        if isinstance(node, ast.Assign)
+        and any(
+            isinstance(target, ast.Name) and target.id == "__all__"
+            for target in node.targets
+        )
+    )
+    exported_names = ast.literal_eval(all_assignment.value)
 
     bicgstab_doc = " ".join(
         (ast.get_docstring(functions["_bicgstab"]) or "").split()
+    )
+    bridge_doc = " ".join(
+        (ast.get_docstring(functions[bridge_name]) or "").split()
     )
     e_adjoint_doc = " ".join(
         (ast.get_docstring(functions["_e_adjoint_and_theta_vjp"]) or "").split()
@@ -813,6 +881,27 @@ def test_implicit_gradient_documents_bicgstab_failure_policy():
         "workflow history can surface failed batches",
     ):
         assert token in e_adjoint_doc
+    for token in (
+        "Internal API bridge",
+        "called by ``gpurec.api.model`` and ``gpurec.api.autograd``",
+        "not exported from ``gpurec.optimization.__all__``",
+        "external callers should use ``GeneReconModel`` or ``UniformChunkedReconModel``",
+    ):
+        assert token in bridge_doc
+    assert bridge_name not in exported_names
+
+    allowed_paths = {
+        "gpurec/api/autograd.py",
+        "gpurec/api/model.py",
+        "gpurec/optimization/implicit_grad.py",
+    }
+    offenders = [
+        path.relative_to(root).as_posix()
+        for path in _tracked_files(root, "gpurec/**/*.py")
+        if bridge_name in path.read_text(encoding="utf-8")
+        and path.relative_to(root).as_posix() not in allowed_paths
+    ]
+    assert offenders == []
 
 
 def test_strict_json_serializer_documents_sanitizing_contract():
@@ -866,7 +955,8 @@ def test_project_readme_documents_genewise_per_family_api_contract():
     normalized = " ".join(project_readme.split())
 
     for token in (
-        "`model.nll_per_family()` and `model.full_nll_per_family()` are genewise-only",
+        "`GeneReconModel.nll_per_family()` and `GeneReconModel.full_nll_per_family()`",
+        "are genewise-only",
         "row-wise optimizers",
         "`model(reduce=\"per_family\")` under `torch.no_grad()`",
         "independent per-family gradients are not defined",
@@ -1609,6 +1699,39 @@ def test_private_family_tree_path_alias_is_not_in_source_surface():
     assert offenders == []
 
 
+def test_uniform_chunked_state_container_is_internal():
+    root = Path(__file__).resolve().parents[2]
+    module = ast.parse(
+        (root / "gpurec" / "api" / "uniform_chunked.py").read_text(
+            encoding="utf-8"
+        )
+    )
+    class_names = {
+        node.name for node in module.body if isinstance(node, ast.ClassDef)
+    }
+    name_refs = [
+        node.lineno
+        for node in ast.walk(module)
+        if isinstance(node, ast.Name) and node.id == "UniformChunkedState"
+    ]
+    all_assignment = next(
+        node
+        for node in module.body
+        if isinstance(node, ast.Assign)
+        and any(
+            isinstance(target, ast.Name) and target.id == "__all__"
+            for target in node.targets
+        )
+    )
+    exported_names = ast.literal_eval(all_assignment.value)
+
+    assert "UniformChunkedState" not in class_names
+    assert "_UniformChunkedState" in class_names
+    assert name_refs == []
+    assert "UniformChunkedState" not in exported_names
+    assert "_UniformChunkedState" not in exported_names
+
+
 def test_second_order_docs_reference_current_public_loss_apis():
     root = Path(__file__).resolve().parents[2]
     note = (
@@ -2026,9 +2149,12 @@ def test_runtime_surface_plan_documents_scheduler_and_pybind_ownership():
         "`bench_parse`",
         "Already retired",
         "`compute_clade_waves` Python helper",
-        "Move to a test fixture",
+        "`gpurec/core/scheduling.py`",
+        "do not return to tracked runtime Python",
+        "C++ preprocessing still owns phased-wave generation",
         "`collate_wave`, `split_phase_waves`",
-        "Migrate tests or docs before deleting from `gpurec.core`",
+        "deleted from `gpurec.core.batching`",
+        "absent from tracked runtime Python sources",
         "Runtime Python scheduler/layout path",
         "`family_schedule_summary`",
     ):
@@ -2045,6 +2171,31 @@ def test_runtime_surface_plan_documents_scheduler_and_pybind_ownership():
         'm.def("compute_cross_family_wave_stats"',
     ):
         assert exported in preprocess_source
+
+
+def test_test_only_scheduler_helpers_stay_out_of_runtime_source():
+    root = Path(__file__).resolve().parents[2]
+    helper_names = (
+        "compute_clade_" + "waves",
+        "collate_" + "wave",
+        "split_phase_" + "waves",
+    )
+    batching_module = ast.parse(
+        (root / "gpurec" / "core" / "batching.py").read_text(encoding="utf-8")
+    )
+    function_names = {
+        node.name for node in batching_module.body if isinstance(node, ast.FunctionDef)
+    }
+    scheduling_module = root / "gpurec" / "core" / "scheduling.py"
+    offenders = [
+        path.relative_to(root).as_posix()
+        for path in _tracked_files(root, "gpurec/**/*.py")
+        if any(name in path.read_text(encoding="utf-8") for name in helper_names)
+    ]
+
+    assert function_names.isdisjoint(helper_names)
+    assert not scheduling_module.exists()
+    assert offenders == []
 
 
 def test_runtime_surface_plan_records_refresh_findings_before_behavior_changes():
@@ -2064,21 +2215,26 @@ def test_runtime_surface_plan_records_refresh_findings_before_behavior_changes()
         "reject Python bools and bool tensors",
         "`tol_E`, `pi_max_diff_tol`, and `min_rate`",
         "`as_family_param()`, `as_family_species()`, and `extract_parameters_uniform()`",
-        "`G == S` ambiguity",
+        "`family_rows` precedence when `G == S`",
+        "bare length-`G` ambiguity",
         "`_normalize_family_tree_paths()`",
         "private alias is absent from tracked runtime/script/profiling Python sources",
         "`normalize_family_chunk_size()`",
         "now appears in `gpurec.core.batch_planning.__all__`",
         "`UniformChunkedState`",
-        "keep it out of public exports",
+        "`_UniformChunkedState`",
+        "absent as a class/name reference",
         "`UniformChunkedReconModel.nll_per_family()`",
-        "global/uniform chunked diagnostic",
+        "no-grad global/uniform diagnostic",
+        "exact `chunk_indices`",
         "`implicit_grad_loglik_vjp_wave()`",
-        "internal bridge or supported low-level API",
+        "documented as an internal bridge",
+        "source guard limits tracked runtime references",
         "Direct `build_wave_layout()` family-index inputs",
         "`family_clade_counts` and `family_clade_offsets`",
         "Explicit theta tensors in `gpurec/api/model.py`",
-        "Extra event columns can alter the softmax denominator",
+        "Shared `validate_theta_shape()`",
+        "wrong row counts now fail before CUDA checks",
         "`collate_gene_families()` docstring",
         "instead of removed `preprocess_gene_with_species`",
         "Workflow/Backtracking Refresh Findings",
@@ -2111,6 +2267,13 @@ def test_runtime_surface_plan_records_refresh_findings_before_behavior_changes()
         "direct API float-bool validation finding is now fixed",
         "private `_normalize_family_tree_paths()` compatibility alias is now deleted",
         "`normalize_family_chunk_size()` export-intent finding is now fixed",
+        "`UniformChunkedState` ownership finding is now fixed",
+        "explicit theta tensor shape validation finding is now fixed",
+        "parameter extraction shape-contract finding is now guarded",
+        "`UniformChunkedReconModel.nll_per_family()` diagnostic-contract finding is now guarded",
+        "`implicit_grad_loglik_vjp_wave()` ownership finding is now guarded",
+        "test-only scheduler helper deletion finding is now fixed",
+        "Python `compute_clade_waves()` adapter deletion finding is now fixed",
         "follow-up workflow/backtracking explorer",
         "stale Rust sampler help-marker finding is now fixed",
         "Python 3.10 TOML fallback finding is now guarded",

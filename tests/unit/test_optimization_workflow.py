@@ -124,6 +124,63 @@ def test_uniform_chunked_full_sum_estimate_scales_loss_and_grad(monkeypatch):
     assert stats["e_adjoint_success"] is False
 
 
+def test_uniform_chunked_nll_per_family_uses_no_grad_chunked_diagnostic(
+    monkeypatch,
+):
+    model = UniformChunkedReconModel.__new__(UniformChunkedReconModel)
+    torch.nn.Module.__init__(model)
+    model.theta = torch.nn.Parameter(
+        torch.tensor([1.0, 2.0, 3.0], dtype=torch.float64)
+    )
+    model._state = object()
+    chunk_indices = [1]
+    expected = torch.tensor([4.0, 5.0], dtype=torch.float64)
+    calls: list[dict[str, object]] = []
+
+    def fake_evaluate_chunked_uniform(
+        state,
+        theta,
+        *,
+        need_grad,
+        per_family=False,
+        chunk_indices=None,
+        **kwargs,
+    ):
+        calls.append(
+            {
+                "state": state,
+                "theta": theta,
+                "need_grad": need_grad,
+                "per_family": per_family,
+                "chunk_indices": chunk_indices,
+                "grad_enabled": torch.is_grad_enabled(),
+                "kwargs": kwargs,
+            }
+        )
+        return expected, None, {"selected_families": 2}
+
+    monkeypatch.setattr(
+        uniform_chunked_module,
+        "_evaluate_chunked_uniform",
+        fake_evaluate_chunked_uniform,
+    )
+
+    actual = model.nll_per_family(chunk_indices=chunk_indices)
+
+    assert actual is expected
+    assert calls == [
+        {
+            "state": model._state,
+            "theta": model.theta,
+            "need_grad": False,
+            "per_family": True,
+            "chunk_indices": chunk_indices,
+            "grad_enabled": False,
+            "kwargs": {},
+        }
+    ]
+
+
 @pytest.mark.parametrize(
     ("overrides", "grad_inf", "stable_loss_steps", "best_step", "step", "expected"),
     [

@@ -94,6 +94,75 @@ def test_gene_recon_model_clamp_rejects_bool_min_rate_before_mutation() -> None:
     torch.testing.assert_close(model.theta.detach(), torch.tensor([0.0]))
 
 
+def _fake_dataset_for_mode(
+    mode: str,
+    *,
+    species_count: int = 2,
+    family_count: int = 2,
+) -> SimpleNamespace:
+    return SimpleNamespace(
+        dtype=torch.float64,
+        genewise=mode == "genewise",
+        specieswise=mode == "specieswise",
+        device=torch.device("cpu"),
+        S=species_count,
+        families=[object() for _ in range(family_count)],
+    )
+
+
+@pytest.mark.parametrize(
+    ("mode", "theta_init"),
+    [
+        ("global", torch.zeros(2)),
+        ("global", torch.zeros(4)),
+        ("global", torch.zeros(1, 3)),
+        ("specieswise", torch.zeros(2)),
+        ("specieswise", torch.zeros(2, 4)),
+        ("specieswise", torch.zeros(3, 3)),
+        ("genewise", torch.zeros(3)),
+        ("genewise", torch.zeros(2, 4)),
+        ("genewise", torch.zeros(3, 3)),
+    ],
+)
+def test_gene_recon_model_rejects_invalid_theta_init_shape_before_device_check(
+    mode: str,
+    theta_init: torch.Tensor,
+) -> None:
+    dataset = _fake_dataset_for_mode(mode)
+
+    with pytest.raises(ValueError, match="theta_init.*shape"):
+        GeneReconModel(
+            dataset=dataset,  # type: ignore[arg-type]
+            mode=mode,
+            theta_init=theta_init,
+        )
+
+
+@pytest.mark.parametrize(
+    ("mode", "theta"),
+    [
+        ("global", torch.zeros(4)),
+        ("specieswise", torch.zeros(2, 4)),
+        ("genewise", torch.zeros(3, 3)),
+    ],
+)
+def test_full_loss_for_theta_rejects_invalid_explicit_theta_shape_before_streaming(
+    mode: str,
+    theta: torch.Tensor,
+) -> None:
+    model = object.__new__(GeneReconModel)
+    model._mode = mode
+    model._dataset = _fake_dataset_for_mode(mode)
+
+    def unexpected_stream(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("streaming should not run for invalid theta shape")
+
+    model._stream_full_batches = unexpected_stream  # type: ignore[method-assign]
+
+    with pytest.raises(ValueError, match="theta.*shape"):
+        model.full_loss_for_theta(theta)
+
+
 def test_positive_even_int_accepts_positive_even_integer() -> None:
     assert positive_even_int("fixed_iters_Pi", 6) == 6
 

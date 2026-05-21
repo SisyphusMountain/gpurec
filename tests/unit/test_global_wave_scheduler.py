@@ -14,9 +14,7 @@ from gpurec.core.batching import (
     _schedule_deadline_nonleaf_waves,
     build_wave_layout,
     collate_gene_families,
-    collate_wave,
     schedule_global_phased_waves,
-    split_phase_waves,
 )
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -98,16 +96,6 @@ def test_collate_gene_families_validates_split_lengths_under_optimized_python():
 def test_collate_gene_families_rejects_empty_batch():
     with pytest.raises(ValueError, match="at least one family"):
         collate_gene_families([])
-
-
-def test_collate_wave_rejects_family_offset_count_mismatch():
-    with pytest.raises(ValueError, match="matching lengths"):
-        collate_wave([[[0]], [[1]]], [0])
-
-
-def test_split_phase_waves_rejects_phase_count_mismatch():
-    with pytest.raises(ValueError, match="matching lengths"):
-        split_phase_waves([[0], [1]], [1], phase=None, max_wave_size=2)
 
 
 def test_build_wave_layout_rejects_duplicate_clade_coverage():

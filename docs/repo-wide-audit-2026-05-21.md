@@ -1768,6 +1768,118 @@ not edit files.  New or still-open findings from that refresh are:
 - `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_repository_hygiene.py -q`:
   73 passed after marking the family chunk-size export-intent finding fixed in
   the pruning plan.
+- The `UniformChunkedState` ownership finding is now fixed.  The class was
+  renamed to `_UniformChunkedState` after documenting that the container is
+  owned by `gpurec/api/uniform_chunked.py` autograd/evaluator internals and is
+  not exported from `gpurec.api.uniform_chunked.__all__`.
+- `python -m py_compile gpurec/api/uniform_chunked.py tests/unit/test_repository_hygiene.py`:
+  passed after the internal state rename and hygiene guard addition.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_repository_hygiene.py::test_uniform_chunked_state_container_is_internal -q`:
+  1 passed after adding the AST guard that rejects the public-looking class/name
+  reference and keeps the private state class out of `__all__`.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_workflow.py::test_uniform_chunked_wildcard_import_exposes_public_surface_only -q`:
+  1 passed after confirming the uniform chunked wildcard surface still exposes
+  only `UniformChunkMetadata` and `UniformChunkedReconModel`.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_repository_hygiene.py -q`:
+  74 passed after marking the uniform chunked state ownership finding fixed in
+  the pruning plan.
+- The explicit theta tensor shape validation finding is now fixed.  Shared
+  `validate_theta_shape()` enforces exact public raw-theta shapes for the active
+  parameter-sharing mode: global `[3]`, specieswise `[S, 3]`, and genewise
+  `[G, 3]`.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_validation.py::test_gene_recon_model_rejects_invalid_theta_init_shape_before_device_check tests/unit/test_validation.py::test_full_loss_for_theta_rejects_invalid_explicit_theta_shape_before_streaming -q`:
+  first failed with 12 current-gap failures, then passed after validating
+  `theta_init` before CUDA checks and explicit `theta` before full-batch
+  streaming.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_validation.py -q`:
+  50 passed after adding the raw-theta shape validation regressions.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_workflow.py::test_full_loss_for_theta_uses_streaming_contract_for_explicit_theta -q`:
+  1 passed after updating the existing streaming-contract fixture to use a
+  valid global `[3]` theta tensor.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_repository_hygiene.py -q`:
+  74 passed after marking the explicit theta tensor shape validation finding
+  fixed in the pruning plan.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_workflow.py -q`:
+  444 passed after validating explicit theta shapes on the public
+  `full_loss_for_theta()` path.
+- The parameter extraction shape-contract finding is now guarded.  CPU table
+  tests cover `as_family_param()`, `as_family_species()`, and
+  `extract_parameters_uniform()` for global, specieswise, genewise,
+  `family_rows`, and `G == S` ambiguity semantics, and the
+  `as_family_species()` docstring now describes the broadcast contract.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_extract_parameters.py -q`:
+  first exposed the missing `as_family_species()` contract docstring, then
+  8 passed after adding the docstring and correcting the independent base-2
+  log-softmax test oracle.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_extract_parameters.py tests/unit/test_repository_hygiene.py::test_runtime_surface_plan_records_refresh_findings_before_behavior_changes -q`:
+  9 passed after marking the parameter extraction shape-contract finding
+  guarded in the pruning plan.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_repository_hygiene.py -q`:
+  74 passed after updating the pruning-plan and audit-log source guards for the
+  extraction helper coverage.
+- The `UniformChunkedReconModel.nll_per_family()` diagnostic-contract finding is
+  now guarded.  The README now class-qualifies the genewise-only
+  `GeneReconModel.nll_per_family()` / `full_nll_per_family()` APIs and
+  separately documents `UniformChunkedReconModel.nll_per_family(chunk_indices=...)`
+  as a no-grad global/uniform diagnostic for selected shared-theta family NLLs.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_optimization_workflow.py::test_uniform_chunked_nll_per_family_uses_no_grad_chunked_diagnostic tests/unit/test_repository_hygiene.py::test_uniform_chunked_nll_per_family_documents_diagnostic_contract tests/unit/test_repository_hygiene.py::test_project_readme_documents_genewise_per_family_api_contract -q`:
+  3 passed after adding the direct monkeypatched evaluator guard and README/API
+  docstring source guards.
+- `python -m py_compile gpurec/api/_validation.py gpurec/api/model.py gpurec/api/uniform_chunked.py gpurec/core/extract_parameters.py tests/unit/test_extract_parameters.py tests/unit/test_optimization_workflow.py tests/unit/test_repository_hygiene.py tests/unit/test_validation.py tests/unit/test_workflow.py`:
+  passed after the uniform chunked per-family diagnostic doc/test update.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_optimization_workflow.py -q`:
+  31 passed after adding the direct
+  `UniformChunkedReconModel.nll_per_family()` unit guard.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_repository_hygiene.py -q`:
+  75 passed after adding the class-qualified README and uniform chunked
+  diagnostic documentation guards.
+- The `implicit_grad_loglik_vjp_wave()` ownership finding is now guarded.  The
+  function is documented as an internal bridge between `gpurec.api.model`,
+  `gpurec.api.autograd`, and retained optimization internals; it remains out of
+  `gpurec.optimization.__all__`, and a source guard rejects additional tracked
+  runtime references outside the two API callers and definition module.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_repository_hygiene.py::test_implicit_gradient_documents_bicgstab_failure_policy -q`:
+  1 passed after extending the existing implicit-gradient hygiene guard with the
+  internal bridge ownership/export/call-site checks.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_repository_hygiene.py::test_runtime_surface_plan_records_refresh_findings_before_behavior_changes tests/unit/test_repository_hygiene.py::test_implicit_gradient_documents_bicgstab_failure_policy -q`:
+  2 passed after marking the implicit-gradient bridge ownership finding guarded
+  in the pruning plan.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_repository_hygiene.py -q`:
+  75 passed after the implicit-gradient ownership source/doc/export guard.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_validation.py tests/unit/test_workflow.py tests/unit/test_extract_parameters.py tests/unit/test_optimization_workflow.py tests/unit/test_repository_hygiene.py -q`:
+  608 passed for the current core/API audit slice.
+- The test-only scheduler helper deletion finding is now fixed.
+  `collate_wave()` and `split_phase_waves()` were removed from
+  `gpurec.core.batching` after documenting that they had no tracked production
+  callers and only helper-level tests.  Repository hygiene now guards that those
+  helper names stay out of tracked runtime Python source.
+- `python -m py_compile gpurec/core/batching.py tests/unit/test_global_wave_scheduler.py tests/unit/test_repository_hygiene.py`:
+  passed after removing the test-only scheduler helpers.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_global_wave_scheduler.py tests/unit/test_repository_hygiene.py::test_test_only_scheduler_helpers_stay_out_of_runtime_source tests/unit/test_repository_hygiene.py::test_runtime_surface_plan_documents_scheduler_and_pybind_ownership -q`:
+  47 passed after removing the helper-level tests and adding the runtime-source
+  hygiene guard.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_scheduling.py tests/unit/test_global_wave_scheduler.py tests/unit/test_family_layout.py tests/unit/test_repository_hygiene.py -q`:
+  138 passed after deleting `collate_wave()` and `split_phase_waves()` while
+  retaining the `compute_clade_waves()` adapter and production family-layout
+  scheduler coverage.
+- The Python `compute_clade_waves()` adapter deletion finding is now fixed.
+  `gpurec/core/scheduling.py` and `tests/unit/test_scheduling.py` were removed
+  after documenting that the Python adapter had no tracked production callers
+  and only helper-level tests.  The same-name C++ preprocessing helper remains
+  production-internal, and repository hygiene now guards that the Python adapter
+  does not return to tracked runtime source.
+- `python -m py_compile gpurec/core/batching.py tests/unit/test_global_wave_scheduler.py tests/unit/test_repository_hygiene.py`:
+  passed after deleting the Python `compute_clade_waves()` adapter module and
+  its helper-level unit tests.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_global_wave_scheduler.py tests/unit/test_family_layout.py tests/unit/test_repository_hygiene.py::test_test_only_scheduler_helpers_stay_out_of_runtime_source tests/unit/test_repository_hygiene.py::test_runtime_surface_plan_documents_scheduler_and_pybind_ownership tests/unit/test_repository_hygiene.py::test_runtime_surface_plan_records_refresh_findings_before_behavior_changes -q`:
+  58 passed after updating the scheduler ownership table and source guard for
+  the Python clade-wave adapter deletion.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_global_wave_scheduler.py tests/unit/test_family_layout.py tests/unit/test_repository_hygiene.py -q`:
+  131 passed after deleting the Python clade-wave adapter and its helper-level
+  test module.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_validation.py tests/unit/test_workflow.py tests/unit/test_extract_parameters.py tests/unit/test_optimization_workflow.py tests/unit/test_global_wave_scheduler.py tests/unit/test_family_layout.py tests/unit/test_repository_hygiene.py -q`:
+  664 passed for the current touched-unit baseline after the scheduler adapter
+  deletions.
 
 ## Recommended Next Order
 

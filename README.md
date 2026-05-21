@@ -98,9 +98,9 @@ more semicolon-delimited records; all records supplied for one family are
 amalgamated into that family's CCP.  Gene multifurcations are right-binarized,
 while unary gene nodes and non-binary species nodes are rejected.
 
-`model.nll_per_family()` and `model.full_nll_per_family()` are genewise-only:
-they return one independent NLL per family and are the public surface for
-row-wise optimizers.  In `global` or `specieswise` mode, use
+`GeneReconModel.nll_per_family()` and `GeneReconModel.full_nll_per_family()`
+are genewise-only: they return one independent NLL per family and are the
+public surface for row-wise optimizers.  In `global` or `specieswise` mode, use
 `model(reduce="per_family")` under `torch.no_grad()` only as a diagnostic
 shared-theta breakdown; independent per-family gradients are not defined there.
 
@@ -128,6 +128,9 @@ The stats dictionary includes selected chunk/family counts, timing fields,
 `grad_norm`, reduction metadata, and E-adjoint solve telemetry:
 `e_adjoint_method`, `e_adjoint_iterations`, `e_adjoint_rel_res`, and
 `e_adjoint_success`.
+`UniformChunkedReconModel.nll_per_family(chunk_indices=...)` is a no-grad
+global/uniform diagnostic that returns one shared-theta NLL per selected family
+after chunk filtering; it does not define independent per-family gradients.
 
 With lazy preprocessing or resident-batch prefetching,
 `model.configure_solver_iterations()` updates the model defaults and resident

@@ -75,6 +75,7 @@ from ._validation import (
     require_cuda_device,
     require_default_objective,
     theta_init_base_from_rates,
+    validate_theta_shape,
 )
 
 _MODE_MAP: dict[str, tuple[bool, bool]] = {
@@ -929,6 +930,14 @@ class GeneReconModel(torch.nn.Module):
                 "Construct GeneDataset with matching flags or use "
                 "GeneReconModel.from_trees()."
             )
+        if theta_init is not None:
+            theta_init = validate_theta_shape(
+                "theta_init",
+                theta_init,
+                mode=mode,
+                species_count=int(dataset.S),
+                family_count=len(dataset.families),
+            )
 
         require_cuda_device(dataset.device, owner="GeneReconModel")
 
@@ -1650,6 +1659,13 @@ class GeneReconModel(torch.nn.Module):
         ``torch.no_grad()`` or with a non-differentiable tensor, it uses the
         loss-only streaming path.
         """
+        theta = validate_theta_shape(
+            "theta",
+            theta,
+            mode=self._mode,
+            species_count=int(self._dataset.S),
+            family_count=len(self._dataset.families),
+        )
         if torch.is_grad_enabled() and theta.requires_grad:
             return _GeneReconFullLossFunction.apply(theta, self)
         with torch.no_grad():

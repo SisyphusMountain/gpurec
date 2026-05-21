@@ -7039,6 +7039,160 @@ normalization, and pruning-plan selector reports \texttt{3 passed}; the full
 core-helper unit module reports \texttt{44 passed}; and the full repository
 hygiene module remains at \texttt{73 passed}.
 
+\subsection{Uniform Chunked State Ownership}
+
+The \texttt{UniformChunkedState} decision was documented before changing the
+runtime surface.  The state container is owned by
+\texttt{gpurec/api/uniform\_chunked.py} autograd and evaluator internals, is
+not present in \texttt{gpurec.api.uniform\_chunked.\_\_all\_\_}, and has no
+tracked runtime import sites outside that module.
+
+That cleanup is now complete.  The class has been renamed to
+\texttt{\_UniformChunkedState}, and a repository hygiene guard checks that the
+public-looking \texttt{UniformChunkedState} class/name reference is absent while
+the private state container stays out of
+\texttt{gpurec.api.uniform\_chunked.\_\_all\_\_}.
+
+The focused state-ownership guard reports \texttt{1 passed}; the existing
+uniform chunked wildcard-surface guard reports \texttt{1 passed}; and the full
+repository hygiene module reports \texttt{74 passed} after marking the finding
+fixed in the pruning plan.
+
+\subsection{Explicit Theta Shape Validation}
+
+The explicit-theta decision is now documented before changing behavior.
+Checkout-local raw theta tensors should match the active parameter-sharing mode
+exactly: \texttt{[3]} for global models, \texttt{[S, 3]} for specieswise
+models, and \texttt{[G, 3]} for genewise models.  Short tensors, extra event
+columns, wrong ranks, and wrong mode row counts should fail before CUDA checks,
+theta cloning, or full-batch streaming parameter extraction.
+
+That validation cleanup is now complete.  Shared
+\texttt{validate\_theta\_shape()} enforces the exact raw tensor shape in the
+\texttt{GeneReconModel} constructor for \texttt{theta\_init} and in
+\texttt{full\_loss\_for\_theta()} for explicit \texttt{theta} tensors.  The
+focused invalid-shape selector first reproduced \texttt{12} failures, then
+reports \texttt{12 passed}; the full validation unit module reports
+\texttt{50 passed}; and the existing \texttt{full\_loss\_for\_theta()} streaming
+contract guard reports \texttt{1 passed} after updating its fixture to use a
+valid global theta shape.
+The full repository hygiene module reports \texttt{74 passed}, and the full
+workflow unit module reports \texttt{444 passed} after validating explicit theta
+shapes on the public \texttt{full\_loss\_for\_theta()} path.
+
+\subsection{Parameter Extraction Shape Contract}
+
+The \texttt{gpurec/core/extract\_parameters.py} contract decision is now
+documented before changing tests or docstrings.  The current shape policy is
+retained: \texttt{family\_rows} disambiguates bare one-dimensional tensors, so
+when \texttt{G == S} a length-\texttt{G} vector is treated as family rows before
+the length-\texttt{S} species-row interpretation.  The follow-up guard should
+cover global, specieswise, genewise, \texttt{family\_rows}, and the
+\texttt{G == S} ambiguity before any refactor changes this helper family.
+
+That guard is now in place.  The direct CPU table module covers
+\texttt{as\_family\_param()}, \texttt{as\_family\_species()}, and
+\texttt{extract\_parameters\_uniform()} for global, specieswise, genewise,
+\texttt{family\_rows}, and \texttt{G == S} semantics.  The first focused run
+exposed the missing \texttt{as\_family\_species()} contract docstring; after
+adding it and correcting the independent base-2 log-softmax oracle, the module
+reports \texttt{8 passed}.
+The focused extraction/pruning-plan selector reports \texttt{9 passed}, and the
+full repository hygiene module reports \texttt{74 passed} after updating the
+source guards for this coverage.
+
+\subsection{Uniform Chunked Per-Family Diagnostic}
+
+The \texttt{UniformChunkedReconModel.nll\_per\_family()} decision is now
+documented before changing docstrings or tests.  The method remains a no-grad
+global/uniform diagnostic that returns selected families' NLLs, including
+\texttt{chunk\_indices} filtering.  It is not an independent per-family
+gradient API; that public row-wise optimizer contract remains genewise-only on
+\texttt{GeneReconModel}.
+
+That documentation and guard update is now complete.  The README now qualifies
+\texttt{GeneReconModel.nll\_per\_family()} and
+\texttt{GeneReconModel.full\_nll\_per\_family()} as the genewise-only
+independent-loss APIs, while documenting
+\texttt{UniformChunkedReconModel.nll\_per\_family(chunk\_indices=...)} as a
+no-grad global/uniform diagnostic returning selected shared-theta family NLLs.
+The focused direct unit and doc guard selector reports \texttt{3 passed}.
+The full optimization-workflow module reports \texttt{31 passed}, and the full
+repository hygiene module reports \texttt{75 passed} after adding the direct
+unit guard and source documentation guards.
+
+\subsection{Implicit Gradient Bridge Ownership}
+
+The \texttt{implicit\_grad\_loglik\_vjp\_wave()} ownership decision is now
+documented before changing source guards.  The function is classified as an
+internal bridge between the public API/autograd modules and retained
+optimization internals, not as a supported low-level public API.  Current
+tracked runtime call sites are \texttt{gpurec/api/model.py} and
+\texttt{gpurec/api/autograd.py}, and the function is not exported from
+\texttt{gpurec.optimization.\_\_all\_\_}.
+
+That classification guard is now in place.  The function docstring names the
+API/autograd callers and points external users to \texttt{GeneReconModel} or
+\texttt{UniformChunkedReconModel}; the hygiene guard keeps the name out of
+\texttt{gpurec.optimization.\_\_all\_\_} and rejects additional tracked runtime
+references outside the two API callers and the definition module.  The focused
+hygiene selector reports \texttt{1 passed}.
+The focused pruning-plan plus bridge-guard selector reports \texttt{2 passed},
+and the full repository hygiene module reports \texttt{75 passed} after the
+ownership guard update.
+The consolidated touched-unit baseline now reports \texttt{608 passed} across
+\texttt{test\_validation.py}, \texttt{test\_workflow.py},
+\texttt{test\_extract\_parameters.py}, \texttt{test\_optimization\_workflow.py},
+and \texttt{test\_repository\_hygiene.py}.
+
+\subsection{Test-Only Scheduler Helper Deletion}
+
+The scheduler-helper deletion decision is now documented before changing
+runtime source.  \texttt{collate\_wave()} and \texttt{split\_phase\_waves()}
+have no tracked production callers, are not exposed by the high-level public
+exports, and are only exercised by helper-level unit tests.  The cleanup should
+remove those helpers from \texttt{gpurec.core.batching}, remove the direct
+helper tests, and add a source hygiene guard so tracked runtime Python does not
+grow new references to either name.
+
+That deletion is now complete.  \texttt{collate\_wave()} and
+\texttt{split\_phase\_waves()} were removed from \texttt{gpurec.core.batching},
+the helper-level tests were removed from
+\texttt{tests/unit/test\_global\_wave\_scheduler.py}, and repository hygiene now
+checks that neither helper name appears in tracked runtime Python source.  The
+focused scheduler and hygiene selector reports \texttt{47 passed}.
+The broader scheduler/hygiene selector reports \texttt{138 passed} across
+\texttt{test\_scheduling.py}, \texttt{test\_global\_wave\_scheduler.py},
+\texttt{test\_family\_layout.py}, and
+\texttt{test\_repository\_hygiene.py}.
+
+\subsection{Python Clade-Wave Adapter Deletion}
+
+The \texttt{compute\_clade\_waves()} Python adapter deletion decision is now
+documented before changing runtime source.  The Python helper has no tracked
+production caller, is not exposed by high-level public exports, and only adapts
+already-preprocessed C++ \texttt{phased\_waves} /
+\texttt{phased\_phases} metadata for helper-level tests.  This does not remove
+the C++ implementation with the same name; preprocessing still owns phased-wave
+generation.  The cleanup should delete \texttt{gpurec/core/scheduling.py}, drop
+the helper-level unit module, and add a source guard so the Python adapter does
+not return to tracked runtime source.
+
+That cleanup is now complete.  \texttt{gpurec/core/scheduling.py} and
+\texttt{tests/unit/test\_scheduling.py} were deleted, and
+\texttt{tests/README.md} no longer lists the removed unit module.  The retained
+C++ helper with the same name remains in \texttt{preprocess.cpp}; repository
+hygiene now guards that the Python adapter module and helper name stay out of
+tracked runtime Python source.
+The focused scheduler/family-layout/hygiene selector reports \texttt{58 passed}
+after updating the ownership table and source guard for the Python clade-wave
+adapter deletion.
+The broader scheduler/family-layout/hygiene selector reports \texttt{131 passed}
+after removing the adapter and its helper-level unit module.
+The consolidated touched-unit baseline now reports \texttt{664 passed} across
+validation, workflow, extraction, optimization workflow, scheduler,
+family-layout, and repository-hygiene unit modules.
+
 \section{Next Audit Targets}
 
 \begin{enumerate}[leftmargin=*]

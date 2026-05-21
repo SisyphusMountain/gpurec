@@ -24,10 +24,21 @@ def as_family_param(t, *, S, device, dtype, family_rows=None, name="parameter"):
 
 
 def as_family_species(t, *, S, device, dtype, family_rows=None, name="parameter"):
+    """Return parameter rows broadcast to the species axis as ``[P, S]``.
+
+    ``family_rows`` disambiguates bare one-dimensional tensors before species
+    broadcasting.  When ``G == S``, a bare length-G vector with
+    ``family_rows=G`` is treated as family rows ``[G, 1]`` and expanded to
+    ``[P, S]`` instead of being treated as one species row ``[1, S]``.
+    """
     param = as_family_param(
         t, S=S, device=device, dtype=dtype, family_rows=family_rows, name=name
     )
-    return param.contiguous() if int(param.shape[1]) == int(S) else param.expand(-1, int(S)).contiguous()
+    return (
+        param.contiguous()
+        if int(param.shape[1]) == int(S)
+        else param.expand(-1, int(S)).contiguous()
+    )
 
 
 def extract_parameters_uniform(theta, unnorm_row_max, specieswise, genewise=False):

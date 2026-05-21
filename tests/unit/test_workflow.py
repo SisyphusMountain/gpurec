@@ -902,6 +902,12 @@ def test_materialize_batches_rejects_unbuilt_nonbatched_state():
 
 def test_full_loss_for_theta_uses_streaming_contract_for_explicit_theta():
     model = object.__new__(GeneReconModel)
+    object.__setattr__(model, "_mode", "global")
+    object.__setattr__(
+        model,
+        "_dataset",
+        SimpleNamespace(S=2, families=[object(), object()]),
+    )
     calls: list[dict[str, object]] = []
 
     def fake_stream_full_batches(
@@ -911,12 +917,16 @@ def test_full_loss_for_theta_uses_streaming_contract_for_explicit_theta():
     ) -> tuple[torch.Tensor, torch.Tensor | None]:
         calls.append({"theta": theta, "need_grad": need_grad})
         loss = torch.tensor(7.0, dtype=torch.float32)
-        grad = torch.tensor([0.5, -1.5], dtype=torch.float32) if need_grad else None
+        grad = (
+            torch.tensor([0.5, -1.5, 0.25], dtype=torch.float32)
+            if need_grad
+            else None
+        )
         return loss, grad
 
     object.__setattr__(model, "_stream_full_batches", fake_stream_full_batches)
 
-    theta = torch.tensor([1.0, 2.0], dtype=torch.float64, requires_grad=True)
+    theta = torch.tensor([1.0, 2.0, 3.0], dtype=torch.float64, requires_grad=True)
     loss = GeneReconModel.full_loss_for_theta(model, theta)
     loss.backward()
 
@@ -925,7 +935,7 @@ def test_full_loss_for_theta_uses_streaming_contract_for_explicit_theta():
     torch.testing.assert_close(loss, torch.tensor(7.0, dtype=torch.float64))
     torch.testing.assert_close(
         theta.grad,
-        torch.tensor([0.5, -1.5], dtype=torch.float64),
+        torch.tensor([0.5, -1.5, 0.25], dtype=torch.float64),
     )
 
     probe = theta.detach().clone()

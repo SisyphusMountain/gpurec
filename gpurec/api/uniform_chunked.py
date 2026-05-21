@@ -102,7 +102,7 @@ class UniformChunkMetadata:
 
 
 @dataclass
-class UniformChunkedState:
+class _UniformChunkedState:
     dataset: GeneDataset
     species_helpers: dict[str, Any]
     ancestors_T: torch.Tensor | None
@@ -422,7 +422,7 @@ def _time_cuda_ms(enabled: bool, fn):
 
 
 def _root_count_tensor(
-    state: UniformChunkedState,
+    state: _UniformChunkedState,
     count: int | None = None,
 ) -> torch.Tensor:
     return torch.zeros(
@@ -433,7 +433,7 @@ def _root_count_tensor(
 
 
 def _selected_chunks(
-    state: UniformChunkedState,
+    state: _UniformChunkedState,
     chunk_indices: Sequence[int] | torch.Tensor | None,
 ) -> list[tuple[int, _UniformBuiltChunk]]:
     if chunk_indices is None:
@@ -475,7 +475,7 @@ def _e_adjoint_stats_fields(stats: Any) -> dict[str, Any]:
 
 
 def _evaluate_chunked_uniform(
-    state: UniformChunkedState,
+    state: _UniformChunkedState,
     theta: torch.Tensor,
     *,
     need_grad: bool,
@@ -710,7 +710,7 @@ def _evaluate_chunked_uniform(
 
 class _UniformChunkedFunction(torch.autograd.Function):
     @staticmethod
-    def forward(ctx, theta: torch.Tensor, state: UniformChunkedState):
+    def forward(ctx, theta: torch.Tensor, state: _UniformChunkedState):
         require_default_objective("UniformChunkedReconModel")
         with torch.no_grad():
             loss, grad_theta, stats = _evaluate_chunked_uniform(
@@ -741,6 +741,9 @@ class UniformChunkedReconModel(torch.nn.Module):
     ``loss_and_grad()`` returns the same direct gradient with a stats dictionary
     that includes selected chunk/family counts, timing fields, gradient norm,
     and E-adjoint solve telemetry.
+    ``nll_per_family(chunk_indices=...)`` is a no-grad global/uniform
+    diagnostic that returns one shared-theta NLL per selected family after
+    chunk filtering; it does not define independent per-family gradients.
 
     Tree inputs use the retained preprocessing parser's simple Newick subset:
     one rooted binary species tree, unquoted labels, ignored numeric branch
@@ -931,7 +934,7 @@ class UniformChunkedReconModel(torch.nn.Module):
 
         self.theta = torch.nn.Parameter(theta_init)
         self.register_buffer("origination_probs", prepared_origination_probs)
-        self._state = UniformChunkedState(
+        self._state = _UniformChunkedState(
             dataset=dataset,
             species_helpers=species_helpers,
             ancestors_T=ancestors_T,
@@ -1133,6 +1136,12 @@ class UniformChunkedReconModel(torch.nn.Module):
         self,
         chunk_indices: Sequence[int] | torch.Tensor | None = None,
     ) -> torch.Tensor:
+        """Return no-grad per-family NLL diagnostics for selected chunks.
+
+        The output has one value per selected family in the selected chunk
+        order.  This is a global/uniform shared-theta diagnostic, not an
+        independent per-family gradient surface.
+        """
         loss, _grad, stats = _evaluate_chunked_uniform(
             self._state,
             self.theta,

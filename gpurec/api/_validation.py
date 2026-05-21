@@ -148,3 +148,30 @@ def theta_init_base_from_rates(
     if torch.any(rates <= 0):
         raise ValueError("theta_init_rates must be strictly positive")
     return torch.log2(rates).to(device=device, dtype=dtype)
+
+
+def validate_theta_shape(
+    name: str,
+    theta: torch.Tensor,
+    *,
+    mode: str,
+    species_count: int,
+    family_count: int,
+) -> torch.Tensor:
+    if not torch.is_tensor(theta):
+        raise ValueError(f"{name} must be a torch.Tensor")
+    if mode == "global":
+        expected_shape = (3,)
+    elif mode == "specieswise":
+        expected_shape = (int(species_count), 3)
+    elif mode == "genewise":
+        expected_shape = (int(family_count), 3)
+    else:
+        raise ValueError(f"Unknown mode {mode!r} for {name} shape validation")
+    actual_shape = tuple(int(dim) for dim in theta.shape)
+    if actual_shape != expected_shape:
+        raise ValueError(
+            f"{name} shape for {mode} mode must be {expected_shape}, "
+            f"got {actual_shape}"
+        )
+    return theta

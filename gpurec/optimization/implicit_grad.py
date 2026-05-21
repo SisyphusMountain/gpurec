@@ -153,7 +153,13 @@ def implicit_grad_loglik_vjp_wave(
     gradient_convergence_rtol: float = 0.0,
     gradient_convergence_check_interval: int = 4,
 ):
-    """Compute ∇θ logL using wave-decomposed backward pass + E adjoint.
+    """Internal API bridge for wave-decomposed ∇θ logL computation.
+
+    This function is called by ``gpurec.api.model`` and
+    ``gpurec.api.autograd`` to connect model/autograd state to the retained
+    optimization internals.  It is intentionally not exported from
+    ``gpurec.optimization.__all__``; external callers should use
+    ``GeneReconModel`` or ``UniformChunkedReconModel`` public methods instead.
 
     Steps:
     1. Pi backward: wave-by-wave Neumann series (root→leaves)
