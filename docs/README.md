@@ -11,6 +11,9 @@ file as the map for deeper context.
 - `simplification-opportunity-index-2026-05-21.md`: direct inventory of
   removable or mergeable alternative paths, with source-file evidence, retained
   behavior, and deletion gates.
+- `simplification-execution-log-2026-05-21.md`: commit-by-commit execution log
+  for attempted simplification tasks, including proposal coverage and
+  verification gates.
 - `refactor-simplification-plan-2026-05-21.md`: current simplification backlog
   for reducing duplicated evaluation paths, mode branches, scheduler
   alternatives, env selectors, and compatibility surface while retaining
