@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import torch
 
+import gpurec.api.autograd as api_autograd
 import gpurec.api.model as api_model
 
 
@@ -177,3 +180,120 @@ def test_evaluate_static_state_no_grad_delegates_to_resident_evaluator(monkeypat
     assert calls[0]["static"] is static
     assert calls[0]["theta"] is theta
     assert calls[0]["per_family"] is True
+
+
+def test_autograd_forward_uses_resident_solve_boundary(monkeypatch):
+    theta = torch.tensor([1.0, 2.0, 3.0], dtype=torch.float64, requires_grad=True)
+    warm_E = torch.full((2, 2), 0.25, dtype=torch.float64)
+    static = SimpleNamespace(
+        device=theta.device,
+        dtype=theta.dtype,
+        fixed_iters_E=None,
+        clear_runtime_after_backward=False,
+        genewise=False,
+        warm_E=warm_E,
+        wave_layout={"root_clade_ids": torch.tensor([0, 1])},
+        origination_probs=None,
+        fixed_iters_Pi=2,
+        last_solver_stats=None,
+    )
+    e = torch.ones((2, 2), dtype=theta.dtype)
+    e_out = {
+        "E": e,
+        "E_s1": e + 1.0,
+        "E_s2": e + 2.0,
+        "E_bar": e + 3.0,
+        "iterations": 3,
+        "E_convergence_delta": 0.0,
+    }
+    pi_out = {
+        "Pi_wave_ordered": torch.ones((2, 2), dtype=theta.dtype),
+        "Pibar_wave_ordered": torch.ones((2, 2), dtype=theta.dtype) * 2.0,
+        "uniform_pibar_row_max": torch.arange(2, dtype=theta.dtype),
+        "Pi_max_iterations": 2,
+        "Pi_wave_iterations": [2],
+        "Pi_wave_converged": [True],
+    }
+    solve_calls: list[dict[str, object]] = []
+    likelihood_calls: list[dict[str, object]] = []
+
+    def fake_solve_resident_e_pi(
+        static_arg,
+        theta_arg,
+        *,
+        return_original,
+        return_root_rows,
+        warm_start_E=None,
+    ):
+        solve_calls.append(
+            {
+                "static": static_arg,
+                "theta": theta_arg,
+                "return_original": return_original,
+                "return_root_rows": return_root_rows,
+                "warm_start_E": warm_start_E,
+                "grad_enabled": torch.is_grad_enabled(),
+            }
+        )
+        return api_autograd.ResidentSolveResult(
+            theta=theta_arg.detach(),
+            e_out=e_out,
+            pi_out=pi_out,
+            log_p_s=torch.zeros(2, dtype=theta.dtype),
+            log_p_d=torch.zeros(2, dtype=theta.dtype),
+            log_p_l=torch.zeros(2, dtype=theta.dtype),
+            max_transfer=torch.zeros(2, dtype=theta.dtype),
+        )
+
+    def fake_compute_nll(
+        pi,
+        e_arg,
+        root_clade_ids,
+        origination_probs,
+        *,
+        origination_probs_prepared,
+    ):
+        likelihood_calls.append(
+            {
+                "pi": pi,
+                "e": e_arg,
+                "root_clade_ids": root_clade_ids,
+                "origination_probs": origination_probs,
+                "origination_probs_prepared": origination_probs_prepared,
+            }
+        )
+        return torch.tensor([1.25, 2.5], dtype=theta.dtype)
+
+    monkeypatch.setattr(
+        api_autograd,
+        "solve_resident_e_pi",
+        fake_solve_resident_e_pi,
+    )
+    monkeypatch.setattr(api_autograd, "compute_nll", fake_compute_nll)
+
+    actual = api_autograd._GeneReconFunction.apply(theta, static, "sum")
+
+    torch.testing.assert_close(actual.detach(), torch.tensor(3.75, dtype=theta.dtype))
+    assert len(solve_calls) == 1
+    assert solve_calls[0]["static"] is static
+    assert solve_calls[0]["theta"] is theta
+    assert solve_calls[0]["return_original"] is False
+    assert solve_calls[0]["return_root_rows"] is False
+    assert solve_calls[0]["warm_start_E"] is warm_E
+    assert solve_calls[0]["grad_enabled"] is False
+    assert len(likelihood_calls) == 1
+    assert likelihood_calls[0]["pi"] is pi_out["Pi_wave_ordered"]
+    assert likelihood_calls[0]["e"] is e
+    assert likelihood_calls[0]["root_clade_ids"] is static.wave_layout["root_clade_ids"]
+    assert likelihood_calls[0]["origination_probs"] is None
+    assert likelihood_calls[0]["origination_probs_prepared"] is True
+    assert static.warm_E is not e
+    torch.testing.assert_close(static.warm_E, e)
+    assert static.last_solver_stats == {
+        "E_iterations": 3,
+        "E_convergence_delta": 0.0,
+        "Pi_max_iterations": 2,
+        "Pi_wave_iterations": [2],
+        "Pi_converged_waves": 1,
+        "Pi_wave_count": 1,
+    }

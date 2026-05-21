@@ -71,6 +71,17 @@ class ReconStaticState:
     last_solver_stats: Optional[dict[str, Any]] = None
 
 
+@dataclass(frozen=True)
+class ResidentSolveResult:
+    theta: torch.Tensor
+    e_out: dict[str, Any]
+    pi_out: dict[str, Any]
+    log_p_s: torch.Tensor
+    log_p_d: torch.Tensor
+    log_p_l: torch.Tensor
+    max_transfer: torch.Tensor
+
+
 def _extract_parameters(theta: torch.Tensor, static: ReconStaticState):
     """Extract parameters for the retained uniform-transfer path."""
     return (
@@ -81,6 +92,25 @@ def _extract_parameters(theta: torch.Tensor, static: ReconStaticState):
             genewise=static.genewise,
         )
     )
+
+
+def _record_forward_solver_stats(
+    static: ReconStaticState,
+    e_out: dict[str, Any],
+    pi_out: dict[str, Any],
+) -> None:
+    static.last_solver_stats = {
+        "E_iterations": int(e_out["iterations"]),
+        "E_convergence_delta": e_out.get("E_convergence_delta"),
+        "Pi_max_iterations": int(
+            pi_out.get("Pi_max_iterations", static.fixed_iters_Pi)
+        ),
+        "Pi_wave_iterations": [
+            int(value) for value in pi_out.get("Pi_wave_iterations", [])
+        ],
+        "Pi_converged_waves": int(sum(pi_out.get("Pi_wave_converged", []))),
+        "Pi_wave_count": int(len(pi_out.get("Pi_wave_converged", []))),
+    }
 
 
 def _record_backward_solver_stats(static: ReconStaticState, stats: Any) -> None:
@@ -112,6 +142,75 @@ def _record_backward_solver_stats(static: ReconStaticState, stats: Any) -> None:
             static.last_solver_stats[target] = value
 
 
+def solve_resident_e_pi(
+    static: ReconStaticState,
+    theta: torch.Tensor,
+    *,
+    return_original: bool,
+    return_root_rows: bool,
+    warm_start_E: torch.Tensor | None = None,
+) -> ResidentSolveResult:
+    """Solve resident E and Pi tensors without owning caller side effects."""
+    theta_eval = theta.detach().to(device=static.device, dtype=static.dtype)
+    log_pS, log_pD, log_pL, max_transfer_vec = _extract_parameters(theta_eval, static)
+    e_max_iters = (
+        static.fixed_iters_E
+        if static.fixed_iters_E is not None
+        else static.max_iters_E
+    )
+    e_tolerance = (
+        static.e_logsumexp_tol
+        if static.adaptive_iters
+        else (-1.0 if static.fixed_iters_E is not None else static.tol_E)
+    )
+    e_out = E_fixed_point(
+        species_helpers=static.species_helpers,
+        log_pS=log_pS,
+        log_pD=log_pD,
+        log_pL=log_pL,
+        max_transfer_mat=max_transfer_vec,
+        max_iters=e_max_iters,
+        tolerance=e_tolerance,
+        warm_start_E=warm_start_E,
+        dtype=static.dtype,
+        device=static.device,
+        ancestors_T=static.ancestors_T,
+        check_interval=static.convergence_check_interval,
+        convergence_metric="logsumexp" if static.adaptive_iters else "max_diff",
+    )
+
+    pi_out = Pi_wave_forward(
+        wave_layout=static.wave_layout,
+        species_helpers=static.species_helpers,
+        E=e_out["E"],
+        Ebar=e_out["E_bar"],
+        E_s1=e_out["E_s1"],
+        E_s2=e_out["E_s2"],
+        log_pS=log_pS,
+        log_pD=log_pD,
+        max_transfer_mat=max_transfer_vec,
+        device=static.device,
+        dtype=static.dtype,
+        fixed_iters=static.fixed_iters_Pi,
+        return_original=return_original,
+        return_root_rows=return_root_rows,
+        family_idx=static.wave_layout.get("family_idx") if static.genewise else None,
+        convergence_tolerance=(
+            static.pi_max_diff_tol if static.adaptive_iters else -1.0
+        ),
+        convergence_check_interval=static.convergence_check_interval,
+    )
+    return ResidentSolveResult(
+        theta=theta_eval,
+        e_out=e_out,
+        pi_out=pi_out,
+        log_p_s=log_pS,
+        log_p_d=log_pD,
+        log_p_l=log_pL,
+        max_transfer=max_transfer_vec,
+    )
+
+
 class _GeneReconFunction(torch.autograd.Function):
     """``forward`` runs the existing E + Pi pipeline; ``backward`` calls the
     existing implicit gradient. Inputs other than ``theta`` are treated as
@@ -127,92 +226,31 @@ class _GeneReconFunction(torch.autograd.Function):
                 "reduce='per_family' is only valid in genewise mode."
             )
 
-        device = static.device
-        dtype = static.dtype
-
         with torch.no_grad():
-            # 1. Extract parameters
-            with _nvtx_range("forward extract parameters"):
-                log_pS, log_pD, log_pL, max_transfer_vec = (
-                    _extract_parameters(theta, static)
-                )
-
-            # 2. E fixed-point with warm start
-            with _nvtx_range("forward E fixed point"):
-                e_max_iters = (
-                    static.fixed_iters_E
-                    if static.fixed_iters_E is not None
-                    else static.max_iters_E
-                )
-                e_tolerance = (
-                    static.e_logsumexp_tol
-                    if static.adaptive_iters
-                    else (-1.0 if static.fixed_iters_E is not None else static.tol_E)
-                )
-                E_out = E_fixed_point(
-                    species_helpers=static.species_helpers,
-                    log_pS=log_pS,
-                    log_pD=log_pD,
-                    log_pL=log_pL,
-                    max_transfer_mat=max_transfer_vec,
-                    max_iters=e_max_iters,
-                    tolerance=e_tolerance,
+            # 1. Resident E/Pi solve with the autograd warm-start policy.
+            with _nvtx_range("forward resident E/Pi solve"):
+                solve = solve_resident_e_pi(
+                    static,
+                    theta,
+                    return_original=False,
+                    return_root_rows=False,
                     warm_start_E=(
                         None if static.fixed_iters_E is not None else static.warm_E
                     ),
-                    dtype=dtype,
-                    device=device,
-                    ancestors_T=static.ancestors_T,
-                    check_interval=static.convergence_check_interval,
-                    convergence_metric=(
-                        "logsumexp" if static.adaptive_iters else "max_diff"
-                    ),
                 )
+                E_out = solve.e_out
+                Pi_out = solve.pi_out
                 E = E_out["E"]
                 E_s1 = E_out["E_s1"]
                 E_s2 = E_out["E_s2"]
                 Ebar = E_out["E_bar"]
+                log_pS = solve.log_p_s
+                log_pD = solve.log_p_d
+                log_pL = solve.log_p_l
+                max_transfer_vec = solve.max_transfer
+                _record_forward_solver_stats(static, E_out, Pi_out)
 
-            # 3. Pi wave forward
-            with _nvtx_range("forward Pi waves"):
-                Pi_out = Pi_wave_forward(
-                    wave_layout=static.wave_layout,
-                    species_helpers=static.species_helpers,
-                    E=E,
-                    Ebar=Ebar,
-                    E_s1=E_s1,
-                    E_s2=E_s2,
-                    log_pS=log_pS,
-                    log_pD=log_pD,
-                    max_transfer_mat=max_transfer_vec,
-                    device=device,
-                    dtype=dtype,
-                    fixed_iters=static.fixed_iters_Pi,
-                    return_original=False,
-                    family_idx=(
-                        static.wave_layout.get("family_idx") if static.genewise else None
-                    ),
-                    convergence_tolerance=(
-                        static.pi_max_diff_tol if static.adaptive_iters else -1.0
-                    ),
-                    convergence_check_interval=static.convergence_check_interval,
-                )
-                static.last_solver_stats = {
-                    "E_iterations": int(E_out["iterations"]),
-                    "E_convergence_delta": E_out.get("E_convergence_delta"),
-                    "Pi_max_iterations": int(
-                        Pi_out.get("Pi_max_iterations", static.fixed_iters_Pi)
-                    ),
-                    "Pi_wave_iterations": [
-                        int(value) for value in Pi_out.get("Pi_wave_iterations", [])
-                    ],
-                    "Pi_converged_waves": int(
-                        sum(Pi_out.get("Pi_wave_converged", []))
-                    ),
-                    "Pi_wave_count": int(len(Pi_out.get("Pi_wave_converged", []))),
-                }
-
-            # 4. NLL: nll_vec is per-family.
+            # 2. NLL: nll_vec is per-family.
             with _nvtx_range("forward root likelihood"):
                 nll_vec = compute_nll(
                     Pi_out["Pi_wave_ordered"],
