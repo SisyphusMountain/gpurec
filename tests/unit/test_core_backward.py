@@ -177,3 +177,72 @@ def test_backward_auto_wrap_treats_g_equals_s_vector_as_shared_species_row():
         ),
         species_values.reshape(1, S),
     )
+
+
+def test_backward_auto_wrap_removal_is_blocked_by_explicit_zero_family_shape_drift():
+    """A zero ``family_idx`` is not a drop-in replacement for shared auto-wrap."""
+    C = 4
+    S = 3
+    shared_species = torch.arange(S, dtype=DTYPE)
+    shared_scalar = torch.tensor(-0.25, dtype=DTYPE)
+    family_idx = torch.zeros(C, dtype=torch.long)
+
+    (
+        shared_auto_wrapped,
+        shared_family_idx,
+        shared_E,
+        _shared_Ebar,
+        _shared_E_s1,
+        _shared_E_s2,
+        _shared_log_pS,
+        shared_log_pD,
+        _shared_log_pL,
+        shared_mt,
+    ) = backward._auto_wrap_backward_inputs(
+        C=C,
+        device=DEVICE,
+        family_idx=None,
+        E=shared_species,
+        Ebar=shared_species + 10.0,
+        E_s1=shared_species + 20.0,
+        E_s2=shared_species + 30.0,
+        log_pS=shared_species + 40.0,
+        log_pD=shared_scalar,
+        log_pL=shared_scalar + 1.0,
+        max_transfer_mat=shared_species + 50.0,
+    )
+    (
+        explicit_auto_wrapped,
+        explicit_family_idx,
+        explicit_E,
+        _explicit_Ebar,
+        _explicit_E_s1,
+        _explicit_E_s2,
+        _explicit_log_pS,
+        explicit_log_pD,
+        _explicit_log_pL,
+        explicit_mt,
+    ) = backward._auto_wrap_backward_inputs(
+        C=C,
+        device=DEVICE,
+        family_idx=family_idx,
+        E=shared_species,
+        Ebar=shared_species + 10.0,
+        E_s1=shared_species + 20.0,
+        E_s2=shared_species + 30.0,
+        log_pS=shared_species + 40.0,
+        log_pD=shared_scalar,
+        log_pL=shared_scalar + 1.0,
+        max_transfer_mat=shared_species + 50.0,
+    )
+
+    assert shared_auto_wrapped is True
+    assert explicit_auto_wrapped is False
+    assert shared_family_idx.tolist() == explicit_family_idx.tolist() == [0, 0, 0, 0]
+
+    assert shared_E.shape == (1, S)
+    assert explicit_E.shape == (S,)
+    assert shared_log_pD.shape == (1,)
+    assert explicit_log_pD.shape == ()
+    assert shared_mt.shape == (1, S)
+    assert explicit_mt.shape == (S,)
