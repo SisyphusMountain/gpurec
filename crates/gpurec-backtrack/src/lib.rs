@@ -146,7 +146,7 @@ struct Candidate {
 #[derive(Clone, Debug)]
 struct WorkItem {
     node_idx: usize,
-    clade: Option<usize>,
+    clade: usize,
     species: usize,
 }
 
@@ -283,7 +283,7 @@ impl<'a> Sampler<'a> {
         let root = self.add_node("", Event::Speciation, root_species, None);
         let mut stack = vec![WorkItem {
             node_idx: root,
-            clade: Some(self.prepared.input.root_clade),
+            clade: self.prepared.input.root_clade,
             species: root_species,
         }];
 
@@ -301,10 +301,8 @@ impl<'a> Sampler<'a> {
                     self.prepared.max_events
                 )));
             }
-            if let Some(clade) = item.clade {
-                let children = self.expand_state(item.node_idx, clade, item.species)?;
-                stack.extend(children.into_iter().rev());
-            }
+            let children = self.expand_state(item.node_idx, item.clade, item.species)?;
+            stack.extend(children.into_iter().rev());
         }
 
         Ok(RecTree::new_owned(
@@ -458,7 +456,7 @@ impl<'a> Sampler<'a> {
                 // out of RecPhyloXML, unlike visible speciation/transfer losses.
                 Ok(vec![WorkItem {
                     node_idx,
-                    clade: Some(clade),
+                    clade,
                     species,
                 }])
             }
@@ -468,7 +466,7 @@ impl<'a> Sampler<'a> {
                 // a RecPhyloXML transfer-loss node for it.
                 Ok(vec![WorkItem {
                     node_idx,
-                    clade: Some(clade),
+                    clade,
                     species,
                 }])
             }
@@ -480,7 +478,7 @@ impl<'a> Sampler<'a> {
                 self.set_children_random(node_idx, loss, cont);
                 Ok(vec![WorkItem {
                     node_idx: cont,
-                    clade: Some(clade),
+                    clade,
                     species: recipient,
                 }])
             }
@@ -506,7 +504,7 @@ impl<'a> Sampler<'a> {
                 self.set_children(node_idx, cont, loss);
                 Ok(vec![WorkItem {
                     node_idx: cont,
-                    clade: Some(clade),
+                    clade,
                     species: cont_species,
                 }])
             }
@@ -519,12 +517,12 @@ impl<'a> Sampler<'a> {
                 Ok(vec![
                     WorkItem {
                         node_idx: left,
-                        clade: Some(split.left),
+                        clade: split.left,
                         species,
                     },
                     WorkItem {
                         node_idx: right,
-                        clade: Some(split.right),
+                        clade: split.right,
                         species,
                     },
                 ])
@@ -539,12 +537,12 @@ impl<'a> Sampler<'a> {
                 Ok(vec![
                     WorkItem {
                         node_idx: donor_child,
-                        clade: Some(split.left),
+                        clade: split.left,
                         species,
                     },
                     WorkItem {
                         node_idx: recipient_child,
-                        clade: Some(split.right),
+                        clade: split.right,
                         species: recipient,
                     },
                 ])
@@ -559,12 +557,12 @@ impl<'a> Sampler<'a> {
                 Ok(vec![
                     WorkItem {
                         node_idx: recipient_child,
-                        clade: Some(split.left),
+                        clade: split.left,
                         species: recipient,
                     },
                     WorkItem {
                         node_idx: donor_child,
-                        clade: Some(split.right),
+                        clade: split.right,
                         species,
                     },
                 ])
@@ -589,12 +587,12 @@ impl<'a> Sampler<'a> {
                     Ok(vec![
                         WorkItem {
                             node_idx: left_node,
-                            clade: Some(split.right),
+                            clade: split.right,
                             species: c1,
                         },
                         WorkItem {
                             node_idx: right_node,
-                            clade: Some(split.left),
+                            clade: split.left,
                             species: c2,
                         },
                     ])
@@ -602,12 +600,12 @@ impl<'a> Sampler<'a> {
                     Ok(vec![
                         WorkItem {
                             node_idx: left_node,
-                            clade: Some(split.left),
+                            clade: split.left,
                             species: c1,
                         },
                         WorkItem {
                             node_idx: right_node,
-                            clade: Some(split.right),
+                            clade: split.right,
                             species: c2,
                         },
                     ])
@@ -993,7 +991,7 @@ mod tests {
         assert_eq!(sampler.event_mapping[root], Event::Speciation);
         assert_eq!(children.len(), 1);
         assert_eq!(children[0].node_idx, root);
-        assert_eq!(children[0].clade, Some(2));
+        assert_eq!(children[0].clade, 2);
         assert_eq!(children[0].species, 2);
     }
 
@@ -1012,7 +1010,7 @@ mod tests {
         assert_eq!(sampler.event_mapping[root], Event::Speciation);
         assert_eq!(children.len(), 1);
         assert_eq!(children[0].node_idx, root);
-        assert_eq!(children[0].clade, Some(2));
+        assert_eq!(children[0].clade, 2);
         assert_eq!(children[0].species, 2);
     }
 

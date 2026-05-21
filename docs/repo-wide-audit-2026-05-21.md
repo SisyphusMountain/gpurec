@@ -117,28 +117,32 @@ evidence is thin.
    `dts_cross_backward_accum_fused`, `wave_backward_uniform_nosplit_cuda`, or
    the CUDA Pibar prototype.
 
-10. `preprocess.cpp` relies on transitive includes.  The include block lacks
-    `<set>` and `<chrono>` near `gpurec/core/cpp/preprocess.cpp:6`, but the file
-    uses `std::set` at `gpurec/core/cpp/preprocess.cpp:2462` and `std::chrono`
-    at `gpurec/core/cpp/preprocess.cpp:2720`.  The cleanup should add the
-    direct standard-library includes and a source hygiene guard so future
-    edits do not reintroduce transitive include reliance.
+10. `preprocess.cpp` had relied on transitive includes.  The direct `<set>`
+    include is now present because the retained C++ source uses `std::set`.
+    The former `<chrono>` need was isolated to the unowned `bench_parse`
+    pybind benchmark export, so both the benchmark export and `<chrono>`
+    include have now been removed.
 
-11. `GPUREC_LEAF_HIT_ONLY_LOGP` appears stale.  It is read at
-    `gpurec/core/kernels/wave_backward.py:984` and passed into kernels, but the
-    `LEAF_HIT_ONLY_LOGP` constexpr does not appear to be used inside those
-    kernels.  This is a deletion candidate after a focused guard.
+11. `GPUREC_LEAF_HIT_ONLY_LOGP` was stale.  The flag had been read by the
+    retained wave-backward wrapper and passed into Triton kernels, but the
+    `LEAF_HIT_ONLY_LOGP` constexpr was not read inside those kernels.  The
+    runtime plumbing and README row have now been removed, with a source-level
+    hygiene guard keeping the retired flag out of runtime code and public env
+    docs.
 
 12. Several pybind debug or scheduler exports appear unowned by in-repo
     callers.  `compute_wave_stats`, `compute_packet_wave_stats`,
     `compute_phased_wave_stats`, cross-family stats, and `bench_parse` are
     exported around `gpurec/core/cpp/preprocess.cpp:2706`, but search found only
-    definitions.  Either document them as public diagnostics or remove them
-    with input-validation tests for retained exports.
+    definitions.  Retain the wave-stat exports as diagnostic extension helpers
+    while they have explicit `max_wave_size` validation guards.  `bench_parse`
+    has now been removed because it was an unowned timing-only benchmark lambda
+    and was not used by supported Python workflows or tests.
 
-13. `Pi_wave_backward` accepts `ancestors_T` at
-    `gpurec/core/backward.py:41`, but the function does not use it.  This is a
-    possible signature cleanup after call-site compatibility is documented.
+13. `Pi_wave_backward` no longer accepts unused `ancestors_T`.  The two
+    production call sites pass `ancestors_T` separately to E-adjoint and
+    likelihood code that still needs the sparse ancestor matrix, so narrowing
+    only the Pi-backward signature is call-site compatible.
 
 ### Public API, Workflow, And Optimization
 
@@ -384,9 +388,11 @@ evidence is thin.
 - DTS parameter shape precedence is ambiguous when `G == S`: forward and
   backward paths can interpret a 1-D tensor differently.  Document the intended
   precedence in public parameter/API docs before changing either implementation.
-- `GPUREC_LEAF_HIT_ONLY_LOGP` remains a deletion candidate.  Before deleting,
-  document the compatibility/removal plan in the env-var table and add a guard
-  showing env `0` and `1` produce identical behavior.
+- `GPUREC_LEAF_HIT_ONLY_LOGP` is not a supported environment contract and has
+  now been removed from the README environment table and retained kernel
+  plumbing.  Source inspection showed its `LEAF_HIT_ONLY_LOGP` constexpr was
+  passed through but not read in the Triton kernels, so the CPU-safe audit guard
+  checks runtime source and public docs rather than CUDA behavior.
 - `GeneReconModel.full_nll_per_family()` delegates to genewise-only logic but is
   documented generically.  Document it as genewise-only first, then add explicit
   mode-error tests or implement shared/specieswise per-family values.
@@ -395,11 +401,14 @@ evidence is thin.
   cancel/rebuild pending batches, update them when they resolve, or reject while
   futures are pending.
 - Scheduler and diagnostic exports such as `collate_wave`, `split_phase_waves`,
-  C++ wave-stat exports, and `bench_parse` look unowned or test-only.  Decide
-  whether they are supported diagnostics; otherwise delete or guard them.
-- The legacy leaf-to-species fallback assumes the species name is the prefix
-  before `_` when no explicit map is supplied.  Document this input contract
-  before requiring explicit maps or changing fallback behavior.
+  and C++ wave-stat exports look unowned or test-only.  Decide whether they are
+  supported diagnostics; otherwise delete or guard them.  `bench_parse` is no
+  longer retained as public surface.
+- The legacy leaf-to-species fallback is now documented in public user-facing
+  docs: direct `from_trees` inputs map `Species_gene` to species `Species` and
+  labels without `_` to the full label, while AleRax `mapping` entries and
+  explicit `leaf_species_maps` should be used when labels do not follow that
+  convention.
 
 ## Adequately Covered Or Lower-Risk Areas
 
@@ -428,10 +437,11 @@ evidence is thin.
 - Decide whether `compute_clade_waves`, `collate_wave`, and
   `split_phase_waves` remain public scheduler helpers or are test-only legacy
   surface.
-- Remove stale `GPUREC_LEAF_HIT_ONLY_LOGP` plumbing if a focused guard proves it
-  is inert.
-- Remove unused `ancestors_T` from `Pi_wave_backward` after documenting call-site
-  compatibility.
+- Keep the retired `GPUREC_LEAF_HIT_ONLY_LOGP` guard so dead diagnostic env
+  plumbing does not return to runtime code or public README docs.
+- Keep the `Pi_wave_backward` signature guard so unused `ancestors_T` does not
+  return to the Pi-adjoint path; E-adjoint and likelihood paths retain their own
+  `ancestors_T` arguments.
 - Simplify or delete stale `tests/__init__.py`.
 - Rework `tests/unit/test_workflow.py` into focused modules.
 - Mark historical docs clearly, remove broken links, and either restore or
@@ -499,8 +509,9 @@ staleness found above:
   direct pybind scheduler diagnostics before parsing input files.
 - `tests/unit/test_repository_hygiene.py` now pins that all exported C++
   scheduler diagnostics accepting `max_wave_size` call the shared validator.
-- `gpurec/core/cpp/preprocess.cpp` now includes `<chrono>` and `<set>`
-  directly instead of relying on transitive standard-library includes.
+- `gpurec/core/cpp/preprocess.cpp` now includes `<set>` directly instead of
+  relying on transitive standard-library includes.  The stale `<chrono>` include
+  is gone with the unowned `bench_parse` benchmark helper.
 - `tests/__init__.py` now accurately describes the current test package layout
   and documents why the package namespace is retained for helper imports such
   as `tests.unit.alerax_helpers`.
@@ -583,6 +594,31 @@ staleness found above:
   surfaces for independent per-family losses, while shared-theta modes should
   use `forward(reduce="per_family")` under `torch.no_grad()` only as a
   diagnostic breakdown.
+- `Pi_wave_backward` call-site compatibility is now documented before removing
+  the unused `ancestors_T` argument: the Pi-adjoint path never reads the sparse
+  ancestor matrix, while `_e_adjoint_and_theta_vjp()` and likelihood code still
+  receive `ancestors_T` through their own parameters.
+- `Pi_wave_backward` now omits the unused `ancestors_T` keyword.  The two
+  production call sites in `gpurec/optimization/implicit_grad.py` and
+  `gpurec/api/uniform_chunked.py` no longer pass it to the Pi-adjoint function,
+  while their E-adjoint and likelihood calls still pass `ancestors_T` where it
+  is used.
+- The public leaf-species mapping contract is now documented.  `README.md` and
+  `GeneReconModel.from_trees()` describe the legacy `Species_gene` prefix
+  fallback for direct Newick inputs and point nonconforming labels to AleRax
+  family-file `mapping` entries or explicit `leaf_species_maps`.
+- The stale `GPUREC_LEAF_HIT_ONLY_LOGP` diagnostic flag is removed from the
+  retained wave-backward kernel wrapper and public README environment table.
+  `tests/unit/test_repository_hygiene.py` now guards that the retired flag stays
+  out of runtime source and public environment documentation.
+- A Rust subagent rechecked `crates/gpurec-backtrack`: direct `quick-xml` usage
+  was not found in `src/main.rs` or `src/lib.rs`, and `cargo tree -i quick-xml`
+  showed it remains available transitively through `rustree`.  The unused direct
+  dev-dependency is now removed from `Cargo.toml` and the root package lockfile
+  dependency list.  The same pass found `WorkItem.clade` is still semantically
+  needed but always populated: the root and every `apply_term()` producer
+  enqueue concrete clade IDs, and no `clade: None` producer exists.  The
+  `Option<usize>` wrapper is now removed while retaining the clade value.
 - The Rust backtracking CLI now rejects `--output-dir DIR input.json output.xml`
   for single-sample runs as well as multi-sample runs, so the extra positional
   output path is not silently ignored in directory mode.
@@ -849,6 +885,77 @@ staleness found above:
 - `python -m gpurec.cli --help`: passed.
 - `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_repository_hygiene.py -q`:
   19 passed.
+- `rg -n "GPUREC_LEAF_HIT_ONLY_LOGP|LEAF_HIT_ONLY_LOGP|leaf_hit_only_logp" gpurec README.md tests docs -S`:
+  after removal, only this audit log mentions the retired kernel flag.
+- `python -m py_compile gpurec/core/kernels/wave_backward.py tests/unit/test_repository_hygiene.py`:
+  passed after removing the retired kernel flag plumbing.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_repository_hygiene.py::test_project_readme_documents_package_environment_flags tests/unit/test_repository_hygiene.py::test_retired_leaf_hit_env_flag_stays_out_of_runtime_surface -q`:
+  2 passed.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_repository_hygiene.py -q`:
+  33 passed after adding the retired-env-flag guard.
+- `python -m pytest --collect-only -q`: 856 tests collected after adding the
+  retired-env-flag guard.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit -q -m "unit and not gpu"`:
+  827 passed, 1 skipped, 6 deselected after removing the retired kernel flag
+  plumbing.
+- Baseline `cd crates/gpurec-backtrack && cargo test`: 10 library tests, 5 CLI
+  tests, and 0 doc tests passed before removing the direct `quick-xml`
+  dev-dependency.
+- `cd crates/gpurec-backtrack && cargo tree -i quick-xml`: before removal,
+  `quick-xml` appeared both as a direct dev-dependency and transitively through
+  `rustree`; after removal, only the transitive `rustree` path remains.
+- Focused `WorkItem` simplification checks:
+  `cargo test --lib hidden_`, `cargo test --lib samples_forced_speciation_xml`,
+  and `cargo test --lib seeded_sampling_replays_transfer_xml` passed after
+  replacing `Option<usize>` with `usize`.
+- `cd crates/gpurec-backtrack && cargo fmt`: passed after the Rust edits.
+- `cd crates/gpurec-backtrack && cargo check --all-targets`: passed after the
+  Rust dependency and `WorkItem` simplifications.
+- `cd crates/gpurec-backtrack && cargo test`: 10 library tests, 5 CLI tests, and
+  0 doc tests passed after the Rust dependency and `WorkItem` simplifications.
+- `python -m py_compile tests/unit/test_repository_hygiene.py gpurec/core/kernels/wave_backward.py`:
+  passed after adding the Rust source hygiene guards.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_repository_hygiene.py::test_rust_backtracking_does_not_declare_quick_xml_directly tests/unit/test_repository_hygiene.py::test_rust_backtracking_work_items_use_concrete_clade_state -q`:
+  2 passed.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_repository_hygiene.py -q`:
+  35 passed after adding the Rust dependency and `WorkItem` guards.
+- `python -m pytest --collect-only -q`: 858 tests collected after adding the
+  Rust hygiene guards.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit -q -m "unit and not gpu"`:
+  829 passed, 1 skipped, 6 deselected after the Rust cleanup guards.
+- `rg -n "bench_parse|std::chrono|#include <chrono>" gpurec/core/cpp/preprocess.cpp README.md tests docs -S`:
+  after removal, only audit documentation and the repository hygiene guard
+  mention the retired C++ benchmark export or chrono include.
+- C++ extension build/load probe after removing `bench_parse`: `_load_extension()`
+  printed `preprocess_cpp`, all six retained wave-stat diagnostic exports were
+  present, and `has_bench_parse=False`.
+- `python -m py_compile tests/unit/test_repository_hygiene.py`: passed after
+  adding the C++ export-surface guard.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_repository_hygiene.py::test_preprocess_cpp_declares_direct_standard_includes tests/unit/test_repository_hygiene.py::test_preprocess_cpp_does_not_export_unowned_bench_parse -q`:
+  2 passed.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_repository_hygiene.py -q`:
+  36 passed after removing `bench_parse`.
+- `python -m pytest --collect-only -q`: 859 tests collected after removing
+  `bench_parse`.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit -q -m "unit and not gpu"`:
+  830 passed, 1 skipped, 6 deselected after the C++ benchmark export cleanup.
+- `python -m py_compile gpurec/core/backward.py gpurec/optimization/implicit_grad.py gpurec/api/uniform_chunked.py tests/unit/test_repository_hygiene.py`:
+  passed after removing the unused `Pi_wave_backward` `ancestors_T` argument.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_repository_hygiene.py::test_pi_wave_backward_signature_omits_unused_ancestors_t -q`:
+  1 passed.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_core_backward.py tests/unit/test_implicit_grad_solver.py tests/unit/test_repository_hygiene.py -q`:
+  40 passed after adding the Pi-backward signature guard.
+- `python -m pytest --collect-only -q`: 860 tests collected after adding the
+  Pi-backward signature guard.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit -q -m "unit and not gpu"`:
+  831 passed, 1 skipped, 6 deselected after removing the unused
+  `Pi_wave_backward` `ancestors_T` argument.
+- `python -m py_compile gpurec/api/model.py tests/unit/test_repository_hygiene.py`:
+  passed after documenting the leaf-species mapping contract.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_repository_hygiene.py::test_project_readme_documents_leaf_species_mapping_contract -q`:
+  1 passed.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_repository_hygiene.py -q`:
+  38 passed after adding the leaf-species mapping README guard.
 
 ## Recommended Next Order
 

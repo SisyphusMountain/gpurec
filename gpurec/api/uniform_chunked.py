@@ -596,7 +596,6 @@ def _evaluate_chunked_uniform(
                     neumann_terms=state.neumann_terms,
                     use_pruning=state.use_pruning,
                     pruning_threshold=state.pruning_threshold,
-                    ancestors_T=state.ancestors_T,
                     uniform_pibar_row_max=pi_out.get("uniform_pibar_row_max"),
                     origination_probs=chunk_origination_probs,
                     origination_probs_prepared=True,

@@ -79,6 +79,13 @@ for _ in range(20):
     model.clamp_theta_(min_rate=1e-10, max_rate=2.0)
 ```
 
+For direct `from_trees` inputs, gene-tree leaf labels are mapped to species by
+the legacy prefix fallback: `Species_gene` maps to species `Species`, and a leaf
+without `_` maps to the full leaf label.  Use AleRax family files with `mapping`
+entries, `UniformChunkedReconModel(..., leaf_species_maps=...)`, or
+`GeneDataset(..., leaf_species_maps=...)` when gene labels do not follow that
+prefix convention.
+
 `model.nll_per_family()` and `model.full_nll_per_family()` are genewise-only:
 they return one independent NLL per family and are the public surface for
 row-wise optimizers.  In `global` or `specieswise` mode, use
@@ -326,7 +333,6 @@ prototype mode flags also accept `auto`, with `1`, `true`, `yes`, `on`,
 | `GPUREC_SELF_LOOP_2D_BLOCK_W`, `GPUREC_SELF_LOOP_2D_BLOCK_NODES`, `GPUREC_SELF_LOOP_2D_NUM_WARPS`, `GPUREC_SELF_LOOP_2D_JT_NUM_WARPS`, `GPUREC_SELF_LOOP_2D_SKIP_INACTIVE_SCRATCH_ZERO` | Triton 2D backward self-loop launch tuning and scratch-zero behavior. |
 | `GPUREC_CUDA_SELF_LOOP_BLOCK`, `GPUREC_CUDA_SELF_LOOP_CHILD_EDGE_WEIGHT` | Native CUDA self-loop launch tuning. |
 | `GPUREC_CUDA_PIBAR_FROM_UD_BLOCK`, `GPUREC_CUDA_PIBAR_FROM_UD_PAD_SHARED` | Native CUDA Pibar-from-`u_d` launch tuning. |
-| `GPUREC_LEAF_HIT_ONLY_LOGP` | Legacy leaf-term diagnostic plumbing; retained for compatibility, not a supported user-facing contract. |
 
 ## HOGENOM Workflows
 

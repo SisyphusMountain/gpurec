@@ -155,7 +155,6 @@ dependencies = [
 name = "gpurec-backtrack"
 version = "0.1.0"
 dependencies = [
- "quick-xml",
  "rand",
  "rustree",
  "serde",

@@ -5928,6 +5928,37 @@ hygiene tests passed, the full repository hygiene suite reported
 \texttt{22 passed}, and the C++ extension build/load probe printed
 \texttt{preprocess\_cpp}.
 
+The later C++ export audit found that the only remaining
+\texttt{std::chrono} use was the unowned \texttt{bench\_parse} pybind benchmark
+lambda.  That helper is not used by supported Python workflows or tests, while
+the retained wave-stat exports have explicit \texttt{max\_wave\_size}
+validation guards.  \texttt{bench\_parse} and the now-unneeded
+\texttt{<chrono>} include are removed, keeping \texttt{<set>} as the direct
+standard include required by retained source.  A C++ extension build/load probe
+printed \texttt{preprocess\_cpp}, confirmed all six retained wave-stat
+diagnostic exports are present, and confirmed \texttt{has\_bench\_parse=False}.
+The focused repository hygiene selector reports \texttt{2 passed}, the full
+repository hygiene module reports \texttt{36 passed}, full collection reports
+\texttt{859 tests collected}, and the CPU-only unit gate reports
+\texttt{830 passed, 1 skipped, 6 deselected}.
+
+The \texttt{Pi\_wave\_backward} signature cleanup is now documented before the
+logic change.  Source inspection found two production call sites, in
+\texttt{gpurec/optimization/implicit\_grad.py} and
+\texttt{gpurec/api/uniform\_chunked.py}.  Both pass \texttt{ancestors\_T} to
+the Pi-adjoint function even though that function never reads it; the
+E-adjoint and likelihood paths keep separate \texttt{ancestors\_T} parameters
+where the sparse ancestor matrix is still required.  Removing the argument only
+from \texttt{Pi\_wave\_backward} therefore narrows the Pi-adjoint contract
+without changing E-solver behavior.  The unused keyword is now removed from
+\texttt{Pi\_wave\_backward} and its two production call sites, and a repository
+hygiene guard checks that the signature and call sites stay clean.  The touched
+Python modules pass \texttt{py\_compile}, the focused signature guard reports
+\texttt{1 passed}, and the adjacent backward/implicit-gradient/hygiene slice
+reports \texttt{40 passed}.  Full collection reports \texttt{860 tests
+collected}, and the CPU-only unit gate reports
+\texttt{831 passed, 1 skipped, 6 deselected}.
+
 The current full collection reports \texttt{833 tests collected}, and the
 CPU-only unit gate reports \texttt{804 passed, 1 skipped, 6 deselected}.
 
@@ -6055,11 +6086,11 @@ row-major matrices, base-2 log units, the \texttt{-1e300} sentinel, postorder
 species indexing, leaf/split bounds, and origination probability semantics.
 Before sampler behavior changes, document that schema and add a regression that
 matrix shape overflow is rejected normally.  Remaining Rust follow-ups are to
-tighten Rust-side numeric validation to match the Python bridge, test more
-sampler branches, reject the single-sample \texttt{--output-dir} plus output
-file combination, consider replacing \texttt{WorkItem.clade: Option<usize>}
-with a plain \texttt{usize}, and verify whether the direct
-\texttt{quick-xml} dev-dependency is still needed.
+tighten Rust-side numeric validation to match the Python bridge and test more
+sampler branches.  Later audit passes closed the single-sample
+\texttt{--output-dir} plus output-file parser gap, removed the direct
+\texttt{quick-xml} dev-dependency, and replaced
+\texttt{WorkItem.clade: Option<usize>} with a plain \texttt{usize}.
 
 The workflow/CLI/optimizer audit read all tracked files in its scope and ran a
 focused unit slice reporting \texttt{557 passed}.  Its highest-priority
@@ -6212,6 +6243,40 @@ reports \texttt{3 passed, 432 deselected}; the README guard reports
 the combined workflow/hygiene modules report \texttt{466 passed}; full
 collection reports \texttt{855 tests collected}; and the CPU-only unit gate
 reports \texttt{826 passed, 1 skipped, 6 deselected}.
+
+The stale \texttt{GPUREC\_LEAF\_HIT\_ONLY\_LOGP} diagnostic switch is now
+removed from the retained wave-backward kernel wrapper and the public README
+environment table.  The removal was documented first because source inspection
+showed the flag was not a supported environment contract: it was read by Python
+and passed as a Triton constexpr, but the constexpr was not read inside the
+kernels.  A repository hygiene guard now checks that the retired flag stays out
+of runtime source and public environment documentation.  \texttt{rg} now finds
+the retired token only in audit documentation, \texttt{py\_compile} passes for
+\texttt{gpurec/core/kernels/wave\_backward.py} and the hygiene tests, the
+focused environment-flag guard reports \texttt{2 passed}, the full repository
+hygiene module reports \texttt{33 passed}, and full collection reports
+\texttt{856 tests collected}.  The CPU-only unit gate reports
+\texttt{827 passed, 1 skipped, 6 deselected}.
+
+A Rust subagent rechecked \texttt{crates/gpurec-backtrack} for the next
+deletion candidates.  It found no direct \texttt{quick-xml} usage in
+\texttt{src/main.rs} or \texttt{src/lib.rs}; \texttt{quick-xml} is already
+available transitively through \texttt{rustree}, so the direct dev-dependency is
+now removed from \texttt{Cargo.toml} and the root package lockfile dependency
+list.  \texttt{cargo tree -i quick-xml} now reports only the transitive
+\texttt{rustree} path.  The same audit found \texttt{WorkItem.clade} is still
+semantically needed, but every producer stores a concrete clade and no
+\texttt{None} producer was found, so the \texttt{Option<usize>} wrapper is now
+removed while retaining the clade value.  Focused hidden-requeue, speciation,
+and transfer replay selectors passed after the simplification; full Rust
+verification reports \texttt{cargo check --all-targets} passing and
+\texttt{cargo test} passing with 10 library tests, 5 CLI tests, and 0 doc tests.
+Repository hygiene guards now prevent reintroducing the direct
+\texttt{quick-xml} dependency or optional work-item clade state.  The focused
+Python hygiene selector reports \texttt{2 passed}, the full repository hygiene
+module reports \texttt{35 passed}, full collection reports
+\texttt{858 tests collected}, and the CPU-only unit gate reports
+\texttt{829 passed, 1 skipped, 6 deselected}.
 
 \section{Next Audit Targets}
 

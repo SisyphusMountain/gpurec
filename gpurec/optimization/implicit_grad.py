@@ -171,7 +171,6 @@ def implicit_grad_loglik_vjp_wave(
             neumann_terms=terms,
             use_pruning=use_pruning,
             pruning_threshold=pruning_threshold,
-            ancestors_T=ancestors_T,
             family_idx=family_idx,
             uniform_pibar_row_max=uniform_pibar_row_max,
             origination_probs=origination_probs,

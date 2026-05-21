@@ -3,6 +3,7 @@
 import ast
 import re
 import subprocess
+import tomllib
 from pathlib import Path
 
 import gpurec
@@ -455,6 +456,23 @@ def test_project_readme_documents_genewise_per_family_api_contract():
         assert token in normalized
 
 
+def test_project_readme_documents_leaf_species_mapping_contract():
+    root = Path(__file__).resolve().parents[2]
+    project_readme = (root / "README.md").read_text(encoding="utf-8")
+    normalized = " ".join(project_readme.split())
+
+    for token in (
+        "For direct `from_trees` inputs",
+        "legacy prefix fallback",
+        "`Species_gene` maps to species `Species`",
+        "leaf without `_` maps to the full leaf label",
+        "AleRax family files with `mapping` entries",
+        "`UniformChunkedReconModel(..., leaf_species_maps=...)`",
+        "`GeneDataset(..., leaf_species_maps=...)`",
+    ):
+        assert token in normalized
+
+
 def test_project_readme_top_level_import_examples_match_public_exports():
     root = Path(__file__).resolve().parents[2]
     project_readme = (root / "README.md").read_text(encoding="utf-8")
@@ -512,6 +530,51 @@ def test_project_readme_documents_package_environment_flags():
     undocumented = [name for name in package_env_flags if name not in project_readme]
 
     assert undocumented == []
+
+
+def test_retired_leaf_hit_env_flag_stays_out_of_runtime_surface():
+    root = Path(__file__).resolve().parents[2]
+    retired = "GPUREC_" + "LEAF" + "_HIT_ONLY" + "_LOGP"
+    runtime_paths = [
+        root / "README.md",
+        root / "gpurec" / "core" / "kernels" / "wave_backward.py",
+    ]
+
+    offenders = [
+        str(path.relative_to(root))
+        for path in runtime_paths
+        if retired in path.read_text(encoding="utf-8")
+    ]
+
+    assert offenders == []
+
+
+def test_rust_backtracking_does_not_declare_quick_xml_directly():
+    root = Path(__file__).resolve().parents[2]
+    crate = root / "crates" / "gpurec-backtrack"
+    manifest = tomllib.loads((crate / "Cargo.toml").read_text(encoding="utf-8"))
+    lockfile = tomllib.loads((crate / "Cargo.lock").read_text(encoding="utf-8"))
+
+    assert "quick-xml" not in manifest.get("dependencies", {})
+    assert "quick-xml" not in manifest.get("dev-dependencies", {})
+
+    package_deps = {
+        package["name"]: package.get("dependencies", [])
+        for package in lockfile.get("package", [])
+    }
+    assert "quick-xml" not in package_deps["gpurec-backtrack"]
+
+
+def test_rust_backtracking_work_items_use_concrete_clade_state():
+    root = Path(__file__).resolve().parents[2]
+    lib_rs = (
+        root / "crates" / "gpurec-backtrack" / "src" / "lib.rs"
+    ).read_text(encoding="utf-8")
+
+    assert "clade: Option<usize>" not in lib_rs
+    assert "clade: Some(" not in lib_rs
+    assert "if let Some(clade) = item.clade" not in lib_rs
+    assert "clade: usize" in lib_rs
 
 
 def test_second_order_docs_reference_current_public_loss_apis():
@@ -622,6 +685,47 @@ def test_preprocess_cpp_declares_direct_standard_includes():
     for symbol, include in required_includes.items():
         if symbol in source:
             assert include in source, f"{symbol} requires direct {include}"
+
+
+def test_preprocess_cpp_does_not_export_unowned_bench_parse():
+    root = Path(__file__).resolve().parents[2]
+    source = (
+        root / "gpurec" / "core" / "cpp" / "preprocess.cpp"
+    ).read_text(encoding="utf-8")
+
+    assert "bench_parse" not in source
+    assert "std::chrono" not in source
+    assert "#include <chrono>" not in source
+
+
+def test_pi_wave_backward_signature_omits_unused_ancestors_t():
+    root = Path(__file__).resolve().parents[2]
+    backward_path = root / "gpurec" / "core" / "backward.py"
+    module = ast.parse(backward_path.read_text(encoding="utf-8"))
+    function = next(
+        node
+        for node in module.body
+        if isinstance(node, ast.FunctionDef) and node.name == "Pi_wave_backward"
+    )
+    kwonly_names = {arg.arg for arg in function.args.kwonlyargs}
+    assert "ancestors_T" not in kwonly_names
+    assert "ancestors_T" not in (ast.get_docstring(function) or "")
+
+    for path in (
+        root / "gpurec" / "api" / "uniform_chunked.py",
+        root / "gpurec" / "optimization" / "implicit_grad.py",
+    ):
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        pi_backward_calls = [
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "Pi_wave_backward"
+        ]
+        assert pi_backward_calls
+        for call in pi_backward_calls:
+            assert "ancestors_T" not in {keyword.arg for keyword in call.keywords}
 
 
 def test_tests_package_docstring_matches_current_layout():

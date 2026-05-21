@@ -38,7 +38,6 @@ def Pi_wave_backward(
     neumann_terms=3,
     pruning_threshold=1e-6,
     use_pruning=True,
-    ancestors_T=None,
     family_idx=None,
     uniform_pibar_row_max=None,
     origination_probs=None,
@@ -63,7 +62,6 @@ def Pi_wave_backward(
         neumann_terms: number of Neumann series terms (default 3)
         pruning_threshold: linear-space adjoint magnitude threshold for pruning
         use_pruning: whether to prune waves with negligible adjoint gradient
-        ancestors_T: [S, S] sparse CSR = ancestors.T
         family_idx: Long[C] clade→family mapping. None → auto-wrapped as G=1.
         uniform_pibar_row_max: optional [C] final forward-side row max values
             for uniform Pibar. Used only by opt-in fused cross-Pibar VJP paths.

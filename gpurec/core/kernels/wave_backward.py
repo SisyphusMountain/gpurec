@@ -222,7 +222,6 @@ def _wave_backward_uniform_2d_precompute_kernel(
     MAX_ANCESTOR_DEPTH: tl.constexpr,
     USE_LEAF_INDEX: tl.constexpr,
     HAS_LEAF_TERM: tl.constexpr,
-    LEAF_HIT_ONLY_LOGP: tl.constexpr,
     LEAF_LOGP_MODE: tl.constexpr,
     USE_ACTIVE_MASK: tl.constexpr,
     SKIP_INACTIVE_SCRATCH_ZERO: tl.constexpr,
@@ -528,7 +527,6 @@ def _wave_backward_uniform_param_store_kernel(
     BLOCK_S: tl.constexpr,
     USE_LEAF_INDEX: tl.constexpr,
     HAS_LEAF_TERM: tl.constexpr,
-    LEAF_HIT_ONLY_LOGP: tl.constexpr,
     LEAF_LOGP_MODE: tl.constexpr,
     USE_ACTIVE_MASK: tl.constexpr,
     CONST_LAYOUT: tl.constexpr,
@@ -680,7 +678,6 @@ def _wave_backward_uniform_2d(
     const_layout,
     leaf_logp_mode,
     use_leaf_index,
-    leaf_hit_only_logp,
     compact_level_ptr,
     compact_level_parents,
     compact_level_child1,
@@ -819,7 +816,6 @@ def _wave_backward_uniform_2d(
         max_ancestor_depth,
         USE_LEAF_INDEX=bool(use_leaf_index),
         HAS_LEAF_TERM=bool(has_leaf_term),
-        LEAF_HIT_ONLY_LOGP=bool(leaf_hit_only_logp),
         LEAF_LOGP_MODE=int(leaf_logp_mode),
         USE_ACTIVE_MASK=bool(active_mask is not None),
         SKIP_INACTIVE_SCRATCH_ZERO=bool(skip_inactive_scratch_zero),
@@ -897,7 +893,6 @@ def _wave_backward_uniform_2d(
         block_s,
         USE_LEAF_INDEX=bool(use_leaf_index),
         HAS_LEAF_TERM=bool(has_leaf_term),
-        LEAF_HIT_ONLY_LOGP=bool(leaf_hit_only_logp),
         LEAF_LOGP_MODE=int(leaf_logp_mode),
         USE_ACTIVE_MASK=bool(active_mask is not None),
         CONST_LAYOUT=int(const_layout),
@@ -981,9 +976,6 @@ def wave_backward_uniform_fused(
     if max_ancestor_depth is None:
         raise ValueError("max_ancestor_depth is required for the retained backward fast path")
     max_ancestor_depth = max(1, int(max_ancestor_depth))
-    leaf_hit_only_logp = (
-        os.environ.get("GPUREC_LEAF_HIT_ONLY_LOGP", "0") != "0"
-    )
     if pibar_row_max is None:
         raise ValueError("pibar_row_max is required for the retained backward fast path")
     pibar_row_max = pibar_row_max.to(device=Pi_star.device, dtype=Pi_star.dtype).contiguous()
@@ -1017,7 +1009,6 @@ def wave_backward_uniform_fused(
         const_layout=const_layout,
         leaf_logp_mode=leaf_logp_mode,
         use_leaf_index=use_leaf_index,
-        leaf_hit_only_logp=leaf_hit_only_logp,
         compact_level_ptr=compact_level_ptr,
         compact_level_parents=compact_level_parents,
         compact_level_child1=compact_level_child1,

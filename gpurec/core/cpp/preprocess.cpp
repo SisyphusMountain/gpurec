@@ -4,7 +4,6 @@
 #include <torch/extension.h>
 
 #include <algorithm>
-#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <fstream>
@@ -2734,69 +2733,4 @@ PYBIND11_MODULE(preprocess_cpp, m) {
         "Three-phase scheduler with cross-family global batching");
   m.def("compute_cross_family_wave_stats", &compute_cross_family_wave_stats,
         "Compute wave stats with cross-family batching (global schedule)");
-  m.def("bench_parse", [](
-      const std::map<std::string, std::vector<std::string>> &families,
-      bool include_inclusion) {
-    namespace chr = std::chrono;
-    struct FamilyEntry { std::string name; std::vector<std::string> paths; };
-    std::vector<FamilyEntry> fam_vec;
-    for (const auto &[name, paths] : families) fam_vec.push_back({name, paths});
-    const int n_fam = static_cast<int>(fam_vec.size());
-
-    double t_parse = 0, t_ccp = 0, t_adj = 0, t_waves = 0;
-
-    for (int fi = 0; fi < n_fam; ++fi) {
-      auto t0 = chr::high_resolution_clock::now();
-      std::vector<std::string> leaf_names;
-      std::unordered_map<std::string, int> leaf_to_index;
-      CladeData clade_data = amalgamate_clades_and_splits(
-          fam_vec[fi].paths, leaf_names, leaf_to_index);
-      auto t1 = chr::high_resolution_clock::now();
-
-      CCPArrays ccp = build_ccp_arrays(clade_data, include_inclusion);
-      auto t2 = chr::high_resolution_clock::now();
-
-      const size_t C = clade_data.clades.size();
-      const size_t N = ccp.split_parents_sorted.size();
-      std::vector<std::vector<int64_t>> children_adj(C);
-      std::vector<std::vector<int64_t>> parents_of(C);
-      std::vector<int32_t> remaining(C, 0);
-      {
-        std::vector<std::unordered_set<int64_t>> child_sets(C);
-        for (size_t i = 0; i < N; ++i) {
-          int64_t p = ccp.split_parents_sorted[i];
-          int64_t l = ccp.split_lefts_sorted[i];
-          int64_t r = ccp.split_rights_sorted[i];
-          if (child_sets[p].insert(l).second) {
-            children_adj[p].push_back(l);
-            parents_of[l].push_back(p);
-            remaining[p]++;
-          }
-          if (l != r && child_sets[p].insert(r).second) {
-            children_adj[p].push_back(r);
-            parents_of[r].push_back(p);
-            remaining[p]++;
-          }
-        }
-      }
-      auto t3 = chr::high_resolution_clock::now();
-
-      auto [bfs_level, n_waves] = compute_clade_waves(ccp, C);
-      auto t4 = chr::high_resolution_clock::now();
-
-      t_parse += chr::duration<double>(t1 - t0).count();
-      t_ccp   += chr::duration<double>(t2 - t1).count();
-      t_adj   += chr::duration<double>(t3 - t2).count();
-      t_waves += chr::duration<double>(t4 - t3).count();
-    }
-    fprintf(stderr, "bench_parse (%d families, single-thread, include_inclusion=%s):\n",
-            n_fam, include_inclusion ? "true" : "false");
-    fprintf(stderr, "  amalgamate_clades_and_splits: %.3fs (%.1f ms/fam)\n", t_parse, t_parse*1000/n_fam);
-    fprintf(stderr, "  build_ccp_arrays:             %.3fs (%.1f ms/fam)\n", t_ccp, t_ccp*1000/n_fam);
-    fprintf(stderr, "  build adjacency:              %.3fs (%.1f ms/fam)\n", t_adj, t_adj*1000/n_fam);
-    fprintf(stderr, "  compute_clade_waves:          %.3fs (%.1f ms/fam)\n", t_waves, t_waves*1000/n_fam);
-    fprintf(stderr, "  TOTAL:                        %.3fs (%.1f ms/fam)\n",
-            t_parse+t_ccp+t_adj+t_waves, (t_parse+t_ccp+t_adj+t_waves)*1000/n_fam);
-  }, py::arg("families"), py::arg("include_inclusion") = true,
-     "Benchmark parsing stages");
 }

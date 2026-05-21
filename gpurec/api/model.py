@@ -1066,6 +1066,11 @@ class GeneReconModel(torch.nn.Module):
             Path to the species tree (Newick).
         gene_trees : list[str]
             Paths to gene trees (Newick).
+            Leaf labels use the legacy species-prefix fallback: ``Species_gene``
+            maps to species ``Species``, and labels without ``_`` map to the
+            full label.  Use ``from_alerax_families()`` or lower-level dataset
+            construction with explicit ``leaf_species_maps`` for labels that do
+            not follow this convention.
         mode : str
             "global" | "specieswise" | "genewise".
         device : str | torch.device
