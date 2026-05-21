@@ -49,7 +49,6 @@ from gpurec.optimization.implicit_grad import _e_adjoint_and_theta_vjp
 from ._family_layout import (
     build_family_wave_layout,
     family_wave_inputs,
-    origination_probs_for_family_indices,
 )
 from ._validation import (
     auto_int as _as_auto_int,
@@ -447,10 +446,10 @@ def _evaluate_chunked_uniform_result(
         for _chunk_idx, chunk in selected_chunks
         for family_idx in chunk.spec.indices
     ]
-    selected_origination_probs = origination_probs_for_family_indices(
-        state.origination_probs,
+    selected_origination_prior = state.origination_prior.select_families(
         selected_family_indices,
     )
+    selected_origination_probs = selected_origination_prior.probs
     selected_family_count = sum(len(chunk.spec.indices) for _idx, chunk in selected_chunks)
     theta_eval = theta.detach().to(device=state.device, dtype=state.dtype)
     log_pS, log_pD, log_pL, max_transfer_vec = extract_parameters_uniform(
@@ -494,10 +493,9 @@ def _evaluate_chunked_uniform_result(
     chunk_stats: list[dict[str, Any]] = []
 
     for chunk_idx, built in selected_chunks:
-        chunk_origination_probs = origination_probs_for_family_indices(
-            state.origination_probs,
+        chunk_origination_probs = state.origination_prior.select_families(
             built.spec.indices,
-        )
+        ).probs
 
         def run_forward():
             pi_out = Pi_wave_forward(

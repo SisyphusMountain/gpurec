@@ -60,7 +60,6 @@ from ._family_layout import (
     FamilyWaveInputs,
     build_family_wave_layout,
     family_wave_inputs,
-    origination_probs_for_family_indices,
     schedule_family_waves,
 )
 from ._uniform_evaluator import (
@@ -232,6 +231,7 @@ class ReconciliationState:
     log_p_l: torch.Tensor
     max_transfer: torch.Tensor
     origination_probs: torch.Tensor | None
+    origination_prior: PreparedOriginationPrior | None = None
 
 
 @dataclass(frozen=True)
@@ -539,7 +539,7 @@ def _build_static_state(
     gradient_change_rtol: float,
     use_pruning: bool,
     pruning_threshold: float,
-    origination_probs: torch.Tensor | None,
+    origination_prior: PreparedOriginationPrior,
     max_wave_size: Optional[int] = 8192,
     max_root_wave_size: Optional[int] = None,
     max_dts_partial_rows: Optional[int] = None,
@@ -583,7 +583,8 @@ def _build_static_state(
         ancestors_T=ancestors_T,
         genewise=bool(dataset.genewise),
         specieswise=bool(dataset.specieswise),
-        origination_probs=origination_probs,
+        origination_prior=origination_prior,
+        origination_probs=origination_prior.probs,
         fixed_iters_E=fixed_iters_E,
         max_iters_E=max_iters_E,
         tol_E=tol_E,
@@ -620,7 +621,7 @@ def _build_batch_static_state(
     gradient_change_rtol: float,
     use_pruning: bool,
     pruning_threshold: float,
-    origination_probs: torch.Tensor | None,
+    origination_prior: PreparedOriginationPrior,
 ) -> ReconStaticState:
     device = dataset.device
     dtype = dataset.dtype
@@ -641,7 +642,8 @@ def _build_batch_static_state(
         ancestors_T=ancestors_T,
         genewise=bool(dataset.genewise),
         specieswise=bool(dataset.specieswise),
-        origination_probs=origination_probs,
+        origination_prior=origination_prior,
+        origination_probs=origination_prior.probs,
         fixed_iters_E=fixed_iters_E,
         max_iters_E=max_iters_E,
         tol_E=tol_E,
@@ -958,7 +960,7 @@ class GeneReconModel(torch.nn.Module):
                 max_wave_size=max_wave_size,
                 max_root_wave_size=max_root_wave_size,
                 max_dts_partial_rows=max_dts_partial_rows,
-                origination_probs=self.origination_probs,
+                origination_prior=self._origination_prior,
             )
             self.batch_metadata = [
                 _metadata_for_full_static(dataset, mode=mode, static=self._static)
@@ -1159,8 +1161,7 @@ class GeneReconModel(torch.nn.Module):
             gradient_change_rtol=self._gradient_change_rtol,
             use_pruning=self._use_pruning,
             pruning_threshold=self._pruning_threshold,
-            origination_probs=origination_probs_for_family_indices(
-                self.origination_probs,
+            origination_prior=self._origination_prior.select_families(
                 self._batch_specs[batch_idx].family_indices,
             ),
         )
@@ -1735,6 +1736,7 @@ class GeneReconModel(torch.nn.Module):
             log_p_d=solve.log_p_d,
             log_p_l=solve.log_p_l,
             max_transfer=solve.max_transfer,
+            origination_prior=static.origination_prior,
             origination_probs=static.origination_probs,
         )
 

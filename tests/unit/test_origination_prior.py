@@ -169,10 +169,10 @@ def test_gene_recon_model_threads_prepared_origination_prior(monkeypatch):
         families=[object(), object()],
     )
     static = SimpleNamespace()
-    build_calls: list[torch.Tensor | None] = []
+    build_calls: list[PreparedOriginationPrior] = []
 
     def fake_build_static_state(_dataset, **kwargs):
-        build_calls.append(kwargs["origination_probs"])
+        build_calls.append(kwargs["origination_prior"])
         return static
 
     monkeypatch.setattr(
@@ -209,7 +209,9 @@ def test_gene_recon_model_threads_prepared_origination_prior(monkeypatch):
     assert model._origination_prior.is_family_specific
     torch.testing.assert_close(model.origination_probs, expected)
     assert model._origination_prior.probs is model.origination_probs
-    assert build_calls == [model.origination_probs]
+    assert len(build_calls) == 1
+    assert build_calls[0] is model._origination_prior
+    assert build_calls[0].probs is model.origination_probs
 
 
 def test_uniform_chunked_model_threads_prepared_origination_prior(

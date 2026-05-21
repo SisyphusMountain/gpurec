@@ -13,6 +13,7 @@ from gpurec.core.likelihood import compute_nll_root_rows
 from .autograd import (
     ReconStaticState,
     ResidentSolveResult,
+    _origination_probs_for_static,
     _record_forward_solver_stats,
     solve_resident_e_pi,
 )
@@ -40,7 +41,7 @@ def evaluate_resident_no_grad(
     loss_vec = compute_nll_root_rows(
         solve.pi_out["Pi_root_rows"],
         solve.e_out["E"],
-        static.origination_probs,
+        _origination_probs_for_static(static),
         origination_probs_prepared=True,
     )
     static.warm_E = None

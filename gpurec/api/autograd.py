@@ -22,6 +22,7 @@ from gpurec.core.likelihood import E_fixed_point, compute_nll
 from gpurec.core.forward import Pi_wave_forward
 from gpurec.core._helpers import _nvtx_range
 from gpurec.core.extract_parameters import extract_parameters_uniform
+from gpurec.core.origination import PreparedOriginationPrior
 from gpurec.optimization.implicit_grad import (
     implicit_grad_loglik_vjp_wave,
 )
@@ -48,6 +49,7 @@ class ReconStaticState:
     # Mode flags (mapped from "global" / "specieswise" / "genewise")
     genewise: bool
     specieswise: bool
+    origination_prior: Optional[PreparedOriginationPrior] = None
     origination_probs: Optional[torch.Tensor] = None           # [S] or [G, S]
 
     # Solver knobs
@@ -86,6 +88,13 @@ class ResidentSolveResult:
 class ResidentGradientForwardResult:
     solve: ResidentSolveResult
     loss_vec: torch.Tensor
+
+
+def _origination_probs_for_static(static: ReconStaticState) -> torch.Tensor | None:
+    prior = getattr(static, "origination_prior", None)
+    if prior is None:
+        return static.origination_probs
+    return prior.probs
 
 
 def _extract_parameters(theta: torch.Tensor, static: ReconStaticState):
@@ -240,7 +249,7 @@ def evaluate_resident_gradient_forward(
             solve.pi_out["Pi_wave_ordered"],
             solve.e_out["E"],
             static.wave_layout["root_clade_ids"],
-            static.origination_probs,
+            _origination_probs_for_static(static),
             origination_probs_prepared=True,
         )
     return ResidentGradientForwardResult(solve=solve, loss_vec=loss_vec)
@@ -290,7 +299,7 @@ def compute_resident_implicit_gradient(
         ancestors_T=static.ancestors_T,
         family_idx=static.wave_layout["family_idx"] if static.genewise else None,
         uniform_pibar_row_max=uniform_pibar_row_max,
-        origination_probs=static.origination_probs,
+        origination_probs=_origination_probs_for_static(static),
         origination_probs_prepared=True,
         genewise=static.genewise,
         gradient_convergence_tol=(
