@@ -251,7 +251,10 @@ Possible simplifications:
 
 Current scripts include maintained workflow helpers, profiling utilities,
 legacy HOGENOM launchers, report generators, and export tools.  The docs now
-have an ownership matrix, but deletion has not happened.
+have an ownership matrix, and repository hygiene tests require every tracked
+`scripts/*.py` / `scripts/*.R` entry point to appear in that matrix with an
+allowed status and migration/deletion wording for retained legacy surfaces.
+Deletion has not happened.
 
 Ignored/local workspace inventory:
 
@@ -289,8 +292,9 @@ Plan:
   - fixed-dataset optimizer launchers that duplicate the CLI;
   - stale report generators tied to old run-directory names;
   - one-off profiling scripts superseded by the maintained benchmark.
-- Update tests to assert only maintained scripts are in the product/benchmark
-  matrix.
+- Keep tests asserting only maintained scripts are in the product/benchmark
+  matrix and every retained legacy script has an explicit owner or
+  migration/deletion path.
 
 ### Workflow/Backtracking Refresh Findings
 
@@ -330,6 +334,9 @@ Plan:
 - Replace tests for soon-to-be-deleted helpers with characterization tests at
   the public model/evaluator level.
 - Avoid preserving dead functions just because tests import them.
+- Keep `tests/README.md` and repository hygiene guards aligned so legacy script
+  tests own cleanup/parser/checkpoint contracts, while removed internals get a
+  replacement behavior test or a deliberate deletion note.
 - Keep repository hygiene tests focused on public contracts and source guards
   that matter after pruning.
 

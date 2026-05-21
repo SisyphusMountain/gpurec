@@ -130,3 +130,18 @@ Rust checks belong in the CPU-safe gate when they validate the packaged
 backtracking contract.  Use `cargo test --locked` for crate behavior and the
 JSON fixture integration test when the goal is to validate the Python/Rust
 boundary without constructing a CUDA model.
+
+## Test Surface Ownership
+
+`tests/unit/test_legacy_scripts.py` owns executable guards for checkout-local
+script/profiling helpers that are retained but not promoted as public workflow
+surface.  Those guards should stay focused on contracts that matter before
+migration or deletion: cleanup on success and failure, parser-level validation,
+safe checkpoint loading, and small file-format expectations.  Do not expand it
+into broad end-to-end HOGENOM runs that require local data or CUDA.
+
+White-box tests for internal helpers are allowed only when they guard a
+documented deletion-prone contract.  Before removing one, either move the
+assertion to a public replacement behavior test or leave a deliberate deletion
+note in the relevant audit/runtime-surface document so the test suite does not
+preserve dead internals by accident.

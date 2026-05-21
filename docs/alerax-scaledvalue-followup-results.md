@@ -16,7 +16,8 @@ AleRax/build/bin/alerax \
   --fix-rates --species-tree-search SKIP -g 0
 ```
 
-The family manifest points to `tests/data/test_trees_1000/g_0000.nwk`.
+The historical family manifest points to the untracked generated fixture
+`tests/data/test_trees_1000/g_0000.nwk`.
 All runs below produced the same final likelihood:
 
 ```text

@@ -39,6 +39,19 @@ def _tracked_package_python_files(root: Path) -> list[Path]:
     return _tracked_files(root, "gpurec/*.py", "gpurec/**/*.py")
 
 
+def _markdown_table_rows_by_first_cell(text: str) -> dict[str, list[str]]:
+    rows: dict[str, list[str]] = {}
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped.startswith("| `"):
+            continue
+        cells = [cell.strip() for cell in stripped.strip("|").split("|")]
+        if not cells or not cells[0].startswith("`") or not cells[0].endswith("`"):
+            continue
+        rows[cells[0].strip("`")] = cells[1:]
+    return rows
+
+
 _GPUREC_ENV_PATTERN = re.compile(r"\bGPUREC_[A-Z0-9_]+\b")
 _ENV_OWNER_CATEGORIES = frozenset(
     {
@@ -556,6 +569,102 @@ def test_hogenom_scripts_are_marked_as_legacy_experiment_surface():
         script_text = (root / "scripts" / script_name).read_text(encoding="utf-8")
         assert script_name in scripts_readme
         assert "Legacy checkout-local HOGENOM experiment launcher" in script_text
+
+
+def test_scripts_readme_ownership_matrix_covers_tracked_script_surface():
+    root = Path(__file__).resolve().parents[2]
+    scripts_readme = (root / "scripts" / "README.md").read_text(encoding="utf-8")
+    rows = _markdown_table_rows_by_first_cell(scripts_readme)
+    tracked_scripts = {
+        path.name
+        for path in _tracked_files(root, "scripts/*.py", "scripts/*.R")
+    }
+    allowed_statuses = {
+        "Checkout-local AleRax comparison helper.",
+        "Compatibility wrapper.",
+        "Fixed-dataset global-uniform reproducer.",
+        "Fixed-dataset specieswise-uniform reproducer.",
+        "HOGENOM checkpoint rate exporter.",
+        "Hydra adapter for the legacy W&B optimizer.",
+        "Internal checkout-local profiler.",
+        "Legacy fast HOGENOM launcher.",
+        "Legacy full HOGENOM W&B optimizer.",
+        "One-off branch-scale penalty/KKT analysis.",
+        "One-off LaTeX report builder.",
+        "Optional plotting helper.",
+        "Release metadata gate.",
+        "Shared helper for legacy uniform launchers.",
+    }
+    deprecation_or_migration_candidates = {
+        "fast_optimize_hogenom_ccp.py",
+        "hogenom_ccp_wandb_opt.py",
+        "hogenom_opt_helpers.py",
+        "make_hogenom_branchscale_penalty_report.py",
+        "optimize_hogenom_ccp_global_uniform.py",
+        "optimize_hogenom_ccp_hydra.py",
+        "optimize_hogenom_ccp_specieswise_uniform.py",
+        "optimize_hogenom_penalty316_kkt.py",
+        "profile_hogenom_ccp_pass.py",
+    }
+
+    assert set(rows) == tracked_scripts
+    for name, (status, ownership) in rows.items():
+        assert status in allowed_statuses, name
+        assert ownership, name
+        normalized_ownership = ownership.lower()
+        assert any(
+            token in normalized_ownership
+            for token in (
+                "supported cli",
+                "supported workflow",
+                "`gpurec.workflow`",
+                "release hygiene",
+                "hogenom",
+                "alerax",
+                "plotting",
+                "fixed-dataset",
+                "historical",
+                "legacy",
+            )
+        ), name
+
+    for name in deprecation_or_migration_candidates:
+        ownership = rows[name][1]
+        normalized_ownership = ownership.lower()
+        assert any(
+            token in normalized_ownership
+            for token in (
+                "candidate for deletion or migration",
+                "archive/delete or migrate",
+                "delete or migrate",
+                "keep only as",
+                "keep only until",
+                "keep only while",
+                "migrate once",
+                "migrate reusable behavior",
+                "until its",
+            )
+        ), name
+
+
+def test_tests_readme_documents_white_box_and_legacy_script_test_ownership():
+    root = Path(__file__).resolve().parents[2]
+    tests_readme = " ".join(
+        (root / "tests" / "README.md").read_text(encoding="utf-8").split()
+    )
+
+    for token in (
+        "Test Surface Ownership",
+        "`tests/unit/test_legacy_scripts.py` owns executable guards for",
+        "checkout-local script/profiling helpers",
+        "cleanup on success and failure",
+        "parser-level validation",
+        "safe checkpoint loading",
+        "White-box tests for internal helpers are allowed only when they guard a documented deletion-prone contract",
+        "replacement behavior test",
+        "deliberate deletion note",
+    ):
+        assert token in tests_readme
 
 
 def test_docs_map_distinguishes_cuda_smoke_from_checkout_local_config():
