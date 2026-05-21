@@ -110,6 +110,9 @@ Keep:
 Gate:
 
 - Gradient parity for all three modes against the current implementation.
+- Characterization coverage for the current backward helper semantics:
+  `family_idx=None` creates a zero-indexed `G=1` shared row, while explicit
+  `family_idx` preserves row intent when species and family counts match.
 
 ### PI-01 - Split Pi Outputs By Intent Instead Of Boolean Flags
 

@@ -30,6 +30,55 @@ _SUPPORTED_BACKWARD_FLOAT_DTYPES = (torch.float32, torch.float64)
 _OPTIONAL_CUDA_SELF_LOOP_EXCEPTIONS = (ImportError, RuntimeError, ValueError)
 
 
+def _auto_wrap_backward_inputs(
+    *,
+    C,
+    device,
+    family_idx,
+    E,
+    Ebar,
+    E_s1,
+    E_s2,
+    log_pS,
+    log_pD,
+    log_pL,
+    max_transfer_mat,
+):
+    """Apply the current ``Pi_wave_backward`` shared-input layout policy.
+
+    This records the legacy MODE-02 behavior: ``family_idx=None`` means a
+    single shared family row (``G=1``) and every parameter tensor is unsqueezed
+    once.  Passing an explicit ``family_idx`` preserves the caller's parameter
+    tensor ranks for downstream shape disambiguation.
+    """
+    auto_wrapped = family_idx is None
+    if auto_wrapped:
+        family_idx = torch.zeros(C, dtype=torch.long, device=device)
+        E = E.unsqueeze(0)
+        Ebar = Ebar.unsqueeze(0)
+        E_s1 = E_s1.unsqueeze(0)
+        E_s2 = E_s2.unsqueeze(0)
+        log_pS = log_pS.unsqueeze(0)
+        log_pD = log_pD.unsqueeze(0)
+        log_pL = log_pL.unsqueeze(0)
+        max_transfer_mat = max_transfer_mat.unsqueeze(0)
+    else:
+        family_idx = family_idx.to(device=device, dtype=torch.long).contiguous()
+
+    return (
+        auto_wrapped,
+        family_idx,
+        E,
+        Ebar,
+        E_s1,
+        E_s2,
+        log_pS,
+        log_pD,
+        log_pL,
+        max_transfer_mat,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Pi wave backward
 # ---------------------------------------------------------------------------
@@ -132,20 +181,30 @@ def Pi_wave_backward(
     compact_level_child1 = species_topology["compact_level_child1"]
     compact_level_child2 = species_topology["compact_level_child2"]
 
-    # Auto-wrap single-family inputs into batched format (G=1).
-    _auto_wrapped = family_idx is None
-    if _auto_wrapped:
-        family_idx = torch.zeros(C, dtype=torch.long, device=device)
-        E = E.unsqueeze(0)
-        Ebar = Ebar.unsqueeze(0)
-        E_s1 = E_s1.unsqueeze(0)
-        E_s2 = E_s2.unsqueeze(0)
-        log_pS = log_pS.unsqueeze(0)
-        log_pD = log_pD.unsqueeze(0)
-        log_pL = log_pL.unsqueeze(0)
-        max_transfer_mat = max_transfer_mat.unsqueeze(0)
-    else:
-        family_idx = family_idx.to(device=device, dtype=torch.long).contiguous()
+    (
+        _auto_wrapped,
+        family_idx,
+        E,
+        Ebar,
+        E_s1,
+        E_s2,
+        log_pS,
+        log_pD,
+        log_pL,
+        max_transfer_mat,
+    ) = _auto_wrap_backward_inputs(
+        C=C,
+        device=device,
+        family_idx=family_idx,
+        E=E,
+        Ebar=Ebar,
+        E_s1=E_s1,
+        E_s2=E_s2,
+        log_pS=log_pS,
+        log_pD=log_pD,
+        log_pL=log_pL,
+        max_transfer_mat=max_transfer_mat,
+    )
 
     mt_squeezed = max_transfer_mat.squeeze(-1) if max_transfer_mat.ndim > 2 else max_transfer_mat
 
