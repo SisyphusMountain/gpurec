@@ -4,6 +4,7 @@ import pytest
 import torch
 
 from gpurec import GeneReconModel
+from gpurec.core.likelihood import compute_nll_root_rows
 from gpurec.optimization import BatchedLBFGS
 
 
@@ -27,6 +28,20 @@ def trees():
     if not genes:
         pytest.skip("test_trees_1000 gene trees not present")
     return str(DATA_DIR / "sp.nwk"), [str(genes[0])]
+
+
+def _root_row_loss(model, state, pi):
+    root_rows = torch.as_tensor(
+        model.current_batch_metadata.root_clade_rows,
+        device=pi.device,
+        dtype=torch.long,
+    )
+    return compute_nll_root_rows(
+        pi.index_select(0, root_rows),
+        state.e,
+        state.origination_probs,
+        origination_probs_prepared=True,
+    ).sum()
 
 
 @pytest.mark.parametrize("mode", ["global", "specieswise", "genewise"])
@@ -53,6 +68,45 @@ def test_gene_recon_model_forward_backward_modes(trees, mode):
     assert model.theta.grad is not None
     assert model.theta.grad.shape == model.theta.shape
     assert torch.isfinite(model.theta.grad).all()
+
+
+@pytest.mark.parametrize("mode", ["global", "specieswise", "genewise"])
+def test_resident_evaluation_paths_remain_consistent(trees, mode):
+    sp, genes = trees
+    model = GeneReconModel.from_trees(
+        species_tree=sp,
+        gene_trees=genes,
+        mode=mode,
+        device="cuda",
+        dtype=torch.float32,
+        theta_init_rates=(0.05, 0.05, 0.05),
+        fixed_iters_E=2,
+        fixed_iters_Pi=2,
+        neumann_terms=1,
+    )
+
+    assert len(model.batch_metadata) == 1
+    assert model.current_batch_metadata.family_indices == (0,)
+
+    forward_loss = model()
+    full_loss = model.full_loss()
+    explicit_theta_loss = model.full_loss_for_theta(model.theta.detach())
+    state = model.reconciliation_state()
+    pi = model.pi_matrix()
+    state_loss = _root_row_loss(model, state, state.pi)
+    pi_loss = _root_row_loss(model, state, pi)
+
+    assert torch.isfinite(forward_loss)
+    torch.testing.assert_close(full_loss.detach(), forward_loss.detach(), rtol=1e-5, atol=1e-4)
+    torch.testing.assert_close(
+        explicit_theta_loss.detach(),
+        forward_loss.detach(),
+        rtol=1e-5,
+        atol=1e-4,
+    )
+    torch.testing.assert_close(state.pi, pi, rtol=1e-5, atol=1e-4)
+    torch.testing.assert_close(state_loss, forward_loss.detach(), rtol=1e-5, atol=1e-4)
+    torch.testing.assert_close(pi_loss, forward_loss.detach(), rtol=1e-5, atol=1e-4)
 
 
 def test_pytorch_adam_updates_global_model(trees):

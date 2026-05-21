@@ -537,7 +537,6 @@ def _backward_chunk(
         neumann_terms=args.neumann_terms,
         use_pruning=args.use_pruning,
         pruning_threshold=args.pruning_threshold,
-        ancestors_T=static.ancestors_T,
         uniform_pibar_row_max=pi_out.get("uniform_pibar_row_max"),
     )
 

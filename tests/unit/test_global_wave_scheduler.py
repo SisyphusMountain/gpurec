@@ -340,6 +340,24 @@ def test_global_scheduler_rejects_split_counts_that_disagree_with_parents():
         schedule_global_phased_waves([{"ccp": ccp}], [0], max_wave_size=2)
 
 
+@pytest.mark.parametrize("parent_id", [-1, 3])
+def test_global_scheduler_rejects_invalid_parent_clade_ids(parent_id):
+    ccp = {
+        "C": 3,
+        "N_splits": 1,
+        "split_counts": torch.tensor([1, 0, 0], dtype=torch.long),
+        "split_parents_sorted": torch.tensor([parent_id], dtype=torch.long),
+        "split_leftrights_sorted": torch.tensor([1, 2], dtype=torch.long),
+        "root_clade_id": 0,
+    }
+
+    with pytest.raises(
+        ValueError,
+        match=f"split_parents_sorted contains parent {parent_id}",
+    ):
+        schedule_global_phased_waves([{"ccp": ccp}], [0], max_wave_size=2)
+
+
 @pytest.mark.parametrize("root_id", [-1, 3])
 def test_global_scheduler_rejects_invalid_root_clade_id(root_id):
     ccp = _ccp(3, [0], [1], [2], root=root_id)
@@ -377,6 +395,50 @@ def test_global_scheduler_splits_root_waves_by_root_cap():
     assert waves == [[1, 3, 5], [0], [2], [4]]
     assert phases == [1, 3, 3, 3]
     _assert_topological(waves, offsets, items)
+
+
+def test_global_scheduler_preserves_phase_barriers_and_root_only_cap():
+    items = [
+        {"ccp": _ccp(5, [0, 1, 1], [1, 2, 3], [4, 3, 4], root=0)},
+        {"ccp": _ccp(3, [0], [1], [2], root=0)},
+        {"ccp": _ccp(2, [0], [1], [1], root=0)},
+    ]
+    offsets = [0, 5, 8]
+
+    waves, phases = schedule_global_phased_waves(
+        items,
+        offsets,
+        max_wave_size=3,
+        max_root_wave_size=1,
+    )
+
+    assert waves == [[2, 3, 4], [6, 7, 9], [1, 5, 8], [0]]
+    assert phases == [1, 1, 2, 3]
+    assert phases == sorted(phases)
+    _assert_topological(waves, offsets, items)
+
+    clades = {}
+    for item, offset in zip(items, offsets):
+        ccp = item["ccp"]
+        root_id = int(ccp["root_clade_id"])
+        for local_id, split_count in enumerate(ccp["split_counts"].tolist()):
+            clades[offset + local_id] = {
+                "is_leaf": int(split_count) == 0,
+                "is_root": local_id == root_id,
+            }
+
+    for wave, phase in zip(waves, phases):
+        if phase == 1:
+            assert all(clades[clade]["is_leaf"] for clade in wave)
+        else:
+            assert all(not clades[clade]["is_leaf"] for clade in wave)
+        if phase == 3:
+            assert len(wave) <= 1
+            assert all(clades[clade]["is_root"] for clade in wave)
+
+    assert clades[8]["is_root"]
+    assert 8 in waves[2]
+    assert any(not clades[clade]["is_root"] for clade in waves[2])
 
 
 def test_global_scheduler_uses_reverse_compaction_when_forward_greedy_wastes_wave():

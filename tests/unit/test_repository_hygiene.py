@@ -2734,6 +2734,7 @@ def test_pi_wave_backward_signature_omits_unused_ancestors_t():
     for path in (
         root / "gpurec" / "api" / "uniform_chunked.py",
         root / "gpurec" / "optimization" / "implicit_grad.py",
+        root / "profiling" / "bench_uniform_forward_backward_pipeline.py",
     ):
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         pi_backward_calls = [

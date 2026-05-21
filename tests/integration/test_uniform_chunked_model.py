@@ -110,48 +110,121 @@ def test_chunked_uniform_chunk_subset_nll_and_gradient(tmp_path):
     _require_data_dir()
     model = UniformChunkedReconModel.from_folder(
         DATA_DIR,
-        max_families=4,
+        max_families=5,
         device="cuda",
         dtype=torch.float32,
         theta_init_rates=(0.05, 0.05, 0.05),
         preprocess_cache_dir=str(tmp_path),
         family_chunk_size=2,
         max_wave_size=32768,
+        fixed_iters_E=4,
         fixed_iters_Pi=6,
         neumann_terms=4,
         use_pruning=False,
+        warm_start_E=False,
     )
 
-    assert model.chunk_count == 2
+    assert model.chunk_count == 3
+    all_chunks = list(range(model.chunk_count))
+    selected_chunks = [2, 0]
+
     full_vec = model.nll_per_family()
-    chunk0 = model.nll_per_family(chunk_indices=[0])
-    chunk1 = model.nll_per_family(chunk_indices=[1])
+    explicit_full_vec = model.nll_per_family(chunk_indices=all_chunks)
     torch.testing.assert_close(
-        torch.cat([chunk0, chunk1]),
+        explicit_full_vec,
         full_vec,
         rtol=1e-6,
         atol=1e-4,
     )
+    selected_vec = model.nll_per_family(
+        chunk_indices=torch.tensor(selected_chunks, device=model.theta.device)
+    )
+    expected_selected_vec = torch.cat(
+        [
+            full_vec[list(model.chunk_metadata[idx].family_indices)]
+            for idx in selected_chunks
+        ]
+    )
+    torch.testing.assert_close(
+        selected_vec,
+        expected_selected_vec,
+        rtol=1e-6,
+        atol=1e-4,
+    )
+    selected_nll = model.nll(chunk_indices=selected_chunks)
+    torch.testing.assert_close(selected_nll, selected_vec.sum(), rtol=1e-6, atol=1e-4)
 
     model.zero_grad(set_to_none=True)
     full_loss = model()
     full_loss.backward()
     full_grad = model.theta.grad.detach().clone()
 
-    subset_loss, subset_grad, stats = model.loss_and_grad(chunk_indices=[0, 1])
+    subset_loss, subset_grad, stats = model.loss_and_grad(chunk_indices=all_chunks)
     torch.testing.assert_close(subset_loss, full_loss.detach(), rtol=1e-6, atol=1e-4)
     torch.testing.assert_close(subset_grad, full_grad, rtol=1e-5, atol=1e-4)
-    assert stats["selected_families"] == 4
-    assert stats["selected_chunks"] == [0, 1]
+    assert stats["selected_families"] == model.n_families
+    assert stats["total_families"] == model.n_families
+    assert stats["selected_chunks"] == all_chunks
+    assert stats["reduction"] == "sum"
+    assert stats["scale"] == 1.0
+
+    sum_loss, sum_grad, sum_stats = model.loss_and_grad(
+        chunk_indices=selected_chunks,
+        reduction="sum",
+    )
+    torch.testing.assert_close(sum_loss, selected_nll, rtol=1e-6, atol=1e-4)
+    assert sum_stats["selected_chunks"] == selected_chunks
+    assert sum_stats["selected_families"] == selected_vec.numel()
+    assert sum_stats["total_families"] == model.n_families
+    assert sum_stats["reduction"] == "sum"
+    assert sum_stats["scale"] == 1.0
+    assert [row["idx"] for row in sum_stats["chunk_rows"]] == selected_chunks
+    assert [row["families"] for row in sum_stats["chunk_rows"]] == [
+        model.chunk_metadata[idx].family_count
+        for idx in selected_chunks
+    ]
+    assert sum_stats["reduced_loss"] == pytest.approx(
+        float(sum_loss.detach().cpu()),
+        rel=1e-6,
+        abs=1e-4,
+    )
+    assert sum_stats["reduced_grad_norm"] == pytest.approx(
+        float(torch.linalg.vector_norm(sum_grad).detach().cpu()),
+        rel=1e-6,
+        abs=1e-4,
+    )
 
     mean_loss, mean_grad, mean_stats = model.loss_and_grad(
-        chunk_indices=[0],
+        chunk_indices=selected_chunks,
         reduction="mean",
     )
     selected = mean_stats["selected_families"]
-    sum_loss, sum_grad, _ = model.loss_and_grad(chunk_indices=[0], reduction="sum")
     torch.testing.assert_close(mean_loss * selected, sum_loss, rtol=1e-6, atol=1e-4)
     torch.testing.assert_close(mean_grad * selected, sum_grad, rtol=1e-5, atol=1e-4)
+    assert mean_stats["selected_chunks"] == selected_chunks
+    assert mean_stats["reduction"] == "mean"
+    assert mean_stats["scale"] == pytest.approx(1.0 / selected)
+
+    estimate_loss, estimate_grad, estimate_stats = model.loss_and_grad(
+        chunk_indices=selected_chunks,
+        reduction="full_sum_estimate",
+    )
+    scale = model.n_families / selected
+    torch.testing.assert_close(estimate_loss, sum_loss * scale, rtol=1e-6, atol=1e-4)
+    torch.testing.assert_close(estimate_grad, sum_grad * scale, rtol=1e-5, atol=1e-4)
+    assert estimate_stats["selected_chunks"] == selected_chunks
+    assert estimate_stats["reduction"] == "full_sum_estimate"
+    assert estimate_stats["scale"] == pytest.approx(scale)
+    assert estimate_stats["reduced_loss"] == pytest.approx(
+        float(estimate_loss.detach().cpu()),
+        rel=1e-6,
+        abs=1e-4,
+    )
+    assert estimate_stats["reduced_grad_norm"] == pytest.approx(
+        float(torch.linalg.vector_norm(estimate_grad).detach().cpu()),
+        rel=1e-6,
+        abs=1e-4,
+    )
 
 
 def test_chunked_uniform_accepts_hogenom_unrooted_binary_newick(tmp_path):

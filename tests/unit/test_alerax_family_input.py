@@ -449,10 +449,14 @@ def test_alerax_family_file_multi_tree_ccp_matches_split_files(tmp_path):
     species_tree = _write(tmp_path / "sp.nwk", "((A:1,B:1)AB:1,C:1)root;\n")
     tree_a = _write(tmp_path / "a.nwk", "((a1:1,b1:1):1,c1:1);\n")
     tree_b = _write(tmp_path / "b.nwk", "(a1:1,(b1:1,c1:1):1);\n")
+    tree_dist_text = tree_a.read_text() + tree_b.read_text().strip()
+    assert tree_dist_text.endswith(";")
     tree_dist = _write(
         tmp_path / "fam.trees",
-        tree_a.read_text() + tree_b.read_text(),
+        tree_dist_text[:-1] + "\n",
     )
+    assert tree_dist.read_text().count(";") == 1
+    assert not tree_dist.read_text().rstrip().endswith(";")
     mapping = _write(tmp_path / "fam.map", "A:a1\nB:b1\nC:c1\n")
     families = _write(
         tmp_path / "families.txt",
