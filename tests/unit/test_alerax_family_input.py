@@ -284,6 +284,62 @@ def test_cached_family_preprocess_rejects_leaf_species_indexes_outside_species_r
         )
 
 
+def test_preprocess_cache_progress_reports_miss_build_and_hit_load(tmp_path):
+    species_tree = _write(tmp_path / "species.nwk", "(A:1,B:1)Root;\n")
+    gene_tree = _write(tmp_path / "gene.nwk", "(a:1,b:1);\n")
+    cache_dir = tmp_path / "cache"
+    events: list[tuple[str, dict[str, object]]] = []
+
+    def progress(event: str, **fields: object) -> None:
+        events.append((event, fields))
+
+    ext = _FakePreprocessExt(
+        _valid_species_cache_payload(),
+        _valid_family_cache_payload(),
+    )
+    GeneDataset._preprocess_with_cache(
+        ext,
+        species_tree,
+        [[str(gene_tree)]],
+        ["fam0"],
+        [{}],
+        preprocess_cache_dir=cache_dir,
+        refresh=False,
+        progress=progress,
+    )
+
+    first_pass = [event for event, _fields in events]
+    assert "cache_start" in first_pass
+    assert "species_cache_miss" in first_pass
+    assert "family_cache_miss" in first_pass
+    assert "missing_families_preprocess_start" in first_pass
+    assert "missing_families_preprocess_done" in first_pass
+    assert "species_cache_save_done" in first_pass
+    assert "family_cache_save_done" in first_pass
+    assert first_pass[-1] == "cache_done"
+    assert ext.calls == 1
+
+    events.clear()
+    GeneDataset._preprocess_with_cache(
+        _NoPreprocessExt(),
+        species_tree,
+        [[str(gene_tree)]],
+        ["fam0"],
+        [{}],
+        preprocess_cache_dir=cache_dir,
+        refresh=False,
+        progress=progress,
+    )
+
+    second_pass = [event for event, _fields in events]
+    assert "species_cache_load_start" in second_pass
+    assert "species_cache_load_done" in second_pass
+    assert "family_cache_load_start" in second_pass
+    assert "family_cache_hit" in second_pass
+    assert "missing_families_preprocess_start" not in second_pass
+    assert second_pass[-1] == "cache_done"
+
+
 @pytest.mark.parametrize(
     ("field", "values"),
     [

@@ -197,6 +197,16 @@ def _emit_progress(args: argparse.Namespace, event: str, **fields: Any) -> None:
     print(json.dumps(payload, sort_keys=True), flush=True)
 
 
+def _make_dataset_progress_hook(args: argparse.Namespace):
+    if not _progress_enabled(args):
+        return None
+
+    def progress(event: str, **fields: Any) -> None:
+        _emit_progress(args, f"dataset_preprocess_{event}", **fields)
+
+    return progress
+
+
 def _chunk_progress_row(idx: int, built: BuiltChunk) -> dict[str, int]:
     return {
         "idx": idx,
@@ -435,6 +445,7 @@ def _make_static_inputs(args: argparse.Namespace) -> StaticInputs:
         dtype=dtype,
         device=device,
         preprocess_cache_dir=args.cache_dir,
+        _preprocess_progress=_make_dataset_progress_hook(args),
     )
     preprocess_s = time.perf_counter() - t0
     if _progress_enabled(args):

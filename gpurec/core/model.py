@@ -548,6 +548,7 @@ class GeneDataset:
         refresh_preprocess_cache: bool = False,
         family_names: Sequence[str] | None = None,
         leaf_species_maps: Sequence[dict[str, str]] | None = None,
+        _preprocess_progress: Callable[..., None] | None = None,
     ):
         if device is None:
             device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -580,6 +581,15 @@ class GeneDataset:
             raise ValueError("leaf_species_maps must match gene_tree_paths length")
 
         ext = _load_species_gene_ext()
+        # Private benchmark hook: this intentionally stays out of the documented
+        # dataset API because it observes setup/cache stages without changing
+        # model inputs, outputs, or preprocessing semantics.
+        preprocess_progress = _preprocess_progress or (lambda *_args, **_kwargs: None)
+        preprocess_progress(
+            "init_start",
+            families=len(family_tree_paths),
+            cache_enabled=preprocess_cache_dir is not None,
+        )
         if preprocess_cache_dir is not None:
             self.species_helpers, raw_by_family = self._preprocess_with_cache(
                 ext,
@@ -589,6 +599,7 @@ class GeneDataset:
                 leaf_species_maps,
                 preprocess_cache_dir=preprocess_cache_dir,
                 refresh=refresh_preprocess_cache,
+                progress=preprocess_progress,
             )
         else:
             families_input = {
@@ -600,12 +611,21 @@ class GeneDataset:
                 for name, mapping in zip(family_names, leaf_species_maps)
                 if mapping
             }
+            preprocess_progress(
+                "uncached_preprocess_start",
+                families=len(families_input),
+                families_with_leaf_maps=len(leaf_species_input),
+            )
             raw_all = ext.preprocess_multiple_families(
                 str(species_tree_path),
                 families_input,
                 leaf_species_maps=leaf_species_input,
                 include_details=True,
                 include_species_matrices=False,
+            )
+            preprocess_progress(
+                "uncached_preprocess_done",
+                families=len(raw_all["families"]),
             )
             raw_by_family = {
                 name: self._drop_unused_family_details(raw)
@@ -667,12 +687,22 @@ class GeneDataset:
         *,
         preprocess_cache_dir: str | os.PathLike,
         refresh: bool,
+        progress: Callable[..., None] | None = None,
     ):
+        progress = progress or (lambda *_args, **_kwargs: None)
         cache_dir = Path(preprocess_cache_dir)
         cache_dir.mkdir(parents=True, exist_ok=True)
 
         version = "light-v5:compact-species:alerax-maps:leaf-labels"
+        progress(
+            "cache_start",
+            cache_dir=str(cache_dir),
+            refresh=refresh,
+            families=len(family_names),
+        )
+        progress("species_hash_start")
         species_hash = cls._hash_file(species_tree_path)
+        progress("species_hash_done")
         species_key = hashlib.sha256(
             f"{version}:species:{species_hash}".encode("utf-8")
         ).hexdigest()
@@ -680,18 +710,40 @@ class GeneDataset:
 
         species_helpers = None
         if species_cache.exists() and not refresh:
+            progress("species_cache_load_start", cache_path=str(species_cache))
             species_helpers = _load_preprocess_cache(
                 species_cache,
                 label="species",
                 required_keys=("S",),
                 validator=_validate_species_preprocess_cache,
             )
+            progress(
+                "species_cache_load_done",
+                cache_path=str(species_cache),
+                S=int(species_helpers["S"]),
+            )
+        else:
+            progress(
+                "species_cache_miss",
+                cache_path=str(species_cache),
+                reason="refresh" if refresh else "not_found",
+            )
 
         raw_by_family = {}
         missing = {}
         missing_maps = {}
         family_cache_paths = {}
-        for name, paths, leaf_map in zip(family_names, gene_tree_paths, leaf_species_maps):
+        progress("family_cache_scan_start", families=len(family_names))
+        for idx, (name, paths, leaf_map) in enumerate(
+            zip(family_names, gene_tree_paths, leaf_species_maps)
+        ):
+            progress(
+                "family_hash_start",
+                idx=idx,
+                family=name,
+                paths=len(paths),
+                has_leaf_map=bool(leaf_map),
+            )
             h = hashlib.sha256()
             for path in paths:
                 h.update(cls._hash_file(path).encode("utf-8"))
@@ -708,6 +760,12 @@ class GeneDataset:
             cache_path = cache_dir / f"family-{family_key}.pt"
             family_cache_paths[name] = cache_path
             if cache_path.exists() and not refresh:
+                progress(
+                    "family_cache_load_start",
+                    idx=idx,
+                    family=name,
+                    cache_path=str(cache_path),
+                )
                 raw_by_family[name] = cls._drop_unused_family_details(
                     _load_preprocess_cache(
                         cache_path,
@@ -716,12 +774,35 @@ class GeneDataset:
                         validator=_validate_family_preprocess_cache,
                     )
                 )
+                progress(
+                    "family_cache_hit",
+                    idx=idx,
+                    family=name,
+                    cache_path=str(cache_path),
+                )
             else:
                 missing[name] = paths
                 if leaf_map:
                     missing_maps[name] = leaf_map
+                progress(
+                    "family_cache_miss",
+                    idx=idx,
+                    family=name,
+                    cache_path=str(cache_path),
+                    reason="refresh" if refresh else "not_found",
+                )
+        progress(
+            "family_cache_scan_done",
+            hits=len(raw_by_family),
+            misses=len(missing),
+        )
 
         if missing:
+            progress(
+                "missing_families_preprocess_start",
+                families=len(missing),
+                families_with_leaf_maps=len(missing_maps),
+            )
             raw_all = ext.preprocess_multiple_families(
                 str(species_tree_path),
                 missing,
@@ -729,9 +810,15 @@ class GeneDataset:
                 include_details=True,
                 include_species_matrices=False,
             )
+            progress(
+                "missing_families_preprocess_done",
+                families=len(raw_all["families"]),
+            )
             if species_helpers is None:
                 species_helpers = raw_all["species"]
+                progress("species_cache_save_start", cache_path=str(species_cache))
                 torch.save(species_helpers, species_cache)
+                progress("species_cache_save_done", cache_path=str(species_cache))
 
             species_count = int(species_helpers["S"])
             for name, raw in raw_all["families"].items():
@@ -743,18 +830,33 @@ class GeneDataset:
                     species_count=species_count,
                 )
                 raw_by_family[name] = raw
+                progress(
+                    "family_cache_save_start",
+                    family=name,
+                    cache_path=str(family_cache_paths[name]),
+                )
                 torch.save(raw, family_cache_paths[name])
+                progress(
+                    "family_cache_save_done",
+                    family=name,
+                    cache_path=str(family_cache_paths[name]),
+                )
 
         if species_helpers is None:
+            progress("species_only_preprocess_start")
             raw_species = ext.preprocess_multiple_families(
                 str(species_tree_path),
                 {},
                 include_species_matrices=False,
             )
+            progress("species_only_preprocess_done")
             species_helpers = raw_species["species"]
+            progress("species_cache_save_start", cache_path=str(species_cache))
             torch.save(species_helpers, species_cache)
+            progress("species_cache_save_done", cache_path=str(species_cache))
 
         species_count = int(species_helpers["S"])
+        progress("family_cache_validate_start", families=len(raw_by_family))
         for name, raw in raw_by_family.items():
             _validate_family_preprocess_cache(
                 raw,
@@ -762,6 +864,8 @@ class GeneDataset:
                 f"family {name!r}",
                 species_count=species_count,
             )
+        progress("family_cache_validate_done", families=len(raw_by_family))
+        progress("cache_done", hits=len(raw_by_family) - len(missing), misses=len(missing))
 
         return species_helpers, raw_by_family
     

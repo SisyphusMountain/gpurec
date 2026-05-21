@@ -51,6 +51,29 @@ def test_progress_jsonl_is_quiet_when_not_requested(capsys: pytest.CaptureFixtur
     assert capsys.readouterr().out == ""
 
 
+def test_dataset_progress_hook_prefixes_benchmark_events(
+    capsys: pytest.CaptureFixture[str],
+):
+    bench = _load_bench_module()
+    args = argparse.Namespace(progress_jsonl=True)
+
+    hook = bench._make_dataset_progress_hook(args)
+    assert hook is not None
+    hook("family_cache_miss", idx=3, family="fam3")
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["event"] == "dataset_preprocess_family_cache_miss"
+    assert payload["idx"] == 3
+    assert payload["family"] == "fam3"
+
+
+def test_dataset_progress_hook_is_disabled_without_progress_jsonl():
+    bench = _load_bench_module()
+    args = argparse.Namespace(progress_jsonl=False)
+
+    assert bench._make_dataset_progress_hook(args) is None
+
+
 def test_make_static_inputs_progress_reports_setup_sizes(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
