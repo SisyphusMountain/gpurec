@@ -571,35 +571,120 @@ Verification:
 - `PYTHONDONTWRITEBYTECODE=1 python -m pytest -q -p no:cacheprovider tests/unit/test_legacy_scripts.py tests/unit/test_repository_hygiene.py`: 123 passed.
 - `PYTHONDONTWRITEBYTECODE=1 python -m pytest -q -p no:cacheprovider tests/unit/test_release_metadata.py -k 'not tests_readme_explicit_cpu_unit_paths_match_marker_gate'`: 42 passed, 1 skipped, 1 deselected.
 
-### Current combined gates after second-wave execution
+### `892229f` - Record second-wave simplification progress
+
+Proposal coverage:
+
+- `TEST-01`: recorded the second-wave commits, verification commands, and
+  unresolved benchmark blocker in this execution log so proposal documents and
+  executable work stay connected.
+- No runtime behavior changed.
 
 Verification:
 
-- `CUDA_VISIBLE_DEVICES='' PYTHONDONTWRITEBYTECODE=1 python -m pytest -q -p no:cacheprovider -m "unit and not gpu" -k 'not tests_readme_explicit_cpu_unit_paths_match_marker_gate'`: 1079 passed, 1 skipped, 36 deselected.  The excluded manifest test is blocked locally by the untracked dated-model test file `tests/unit/test_dated_species.py`, which is not part of this simplification branch.
+- `PYTHONDONTWRITEBYTECODE=1 python -m pytest -q -p no:cacheprovider tests/unit/test_repository_hygiene.py tests/unit/test_release_metadata.py -k 'not tests_readme_explicit_cpu_unit_paths_match_marker_gate'`: 128 passed, 1 skipped, 1 deselected.
+- `git diff --check`: passed.
+
+### `9f1fb98` - Batch cached family preprocessing misses
+
+Proposal coverage:
+
+- `BWD-01`, `BWD-02`, and `SCHED-01`: split cache-missing family
+  preprocessing into bounded private batches before the C++ call, with default
+  batch size 64.
+- Added progress events for each missing-family batch start, batch completion,
+  and incremental cache-write completion.
+- Family cache entries are now validated and saved after each batch, so a
+  failed large preflight keeps completed batch work instead of losing the whole
+  missing-family set.
+- Public dataset behavior is unchanged; the batch-size override is private and
+  exists for tests/diagnostics.
+
+Verification:
+
+- `python -m py_compile gpurec/core/model.py profiling/bench_uniform_forward_backward_pipeline.py tests/unit/test_alerax_family_input.py tests/unit/test_bench_uniform_forward_backward_pipeline.py`: passed.
+- `PYTHONDONTWRITEBYTECODE=1 python -m pytest -q -p no:cacheprovider tests/unit/test_alerax_family_input.py tests/unit/test_bench_uniform_forward_backward_pipeline.py`: 43 passed.
+- 96-family preflight:
+  `PYTHONDONTWRITEBYTECODE=1 timeout 240s python profiling/bench_uniform_forward_backward_pipeline.py --dataset tests/data/test_trees_1000 --fams 96 --family-chunk-size auto --max-wave-size auto --fixed-iters 6 --preflight-only --progress-jsonl --strict-optimized-kernels --compare-unchunked-max-fams 0` exited 0.  It emitted batch progress for 88 cache misses across 2 batches, reached `dataset_loaded`, built 4 chunks, and emitted `preflight_done`.
+- 1000-family preflight in the worker confirmed batching got past the original
+  single-call blocker: batch 0 completed and cached, and batch 1 completed C++
+  preprocessing.  The run then failed while saving `family_000102` with an
+  iostream error followed by `no space left on device`; this is now a
+  cache-storage capacity blocker on the local filesystem, not evidence about
+  runtime kernels.
+
+### `68778dd` - Make chunked Pi backward accumulation explicit
+
+Proposal coverage:
+
+- `CHUNK-01` and `BWD-03`: added `StructuredGradientAccumulator` for fixed
+  schema tensor/counter gradient dictionaries.
+- Routed chunked `Pi_wave_backward` result accumulation through that helper
+  with explicit tensor and counter keys, replacing an ad hoc dict merge in the
+  chunked evaluator.
+- Hot CUDA backward scatter behavior is unchanged; this only clarifies the
+  model-boundary accumulation contract for chunked gradient paths.
+
+Verification:
+
+- `python -m py_compile gpurec/core/gradient_accumulator.py gpurec/api/uniform_chunked.py tests/unit/test_gradient_accumulator.py tests/unit/test_optimization_workflow.py`: passed.
+- `PYTHONDONTWRITEBYTECODE=1 python -m pytest -q -p no:cacheprovider tests/unit/test_gradient_accumulator.py tests/unit/test_optimization_workflow.py`: 52 passed.
+
+### `d3813d8` - Consolidate resident gradient evaluator boundary
+
+Proposal coverage:
+
+- `EVAL-01`: added shared resident gradient-forward and implicit-gradient
+  helpers in `autograd.py`.
+- Routed both autograd backward and `_evaluate_static_state(...,
+  need_grad=True)` through the shared helper boundary, removing duplicated
+  implicit-gradient call construction.
+- Resident no-grad, export-state, autograd forward, autograd backward, and
+  static-state gradient paths now use explicit resident evaluator boundaries.
+
+Verification:
+
+- `python -m py_compile gpurec/api/autograd.py gpurec/api/model.py gpurec/api/_uniform_evaluator.py tests/unit/test_model_no_grad_evaluator.py tests/unit/test_workflow.py tests/integration/test_gene_recon_model.py`: passed.
+- `PYTHONDONTWRITEBYTECODE=1 python -m pytest -q -p no:cacheprovider tests/unit/test_model_no_grad_evaluator.py tests/unit/test_workflow.py::test_full_loss_for_theta_uses_streaming_contract_for_explicit_theta`: 7 passed.
+- Integration gradient checks in the worker skipped where `tests/data/test_trees_1000`
+  was absent; the main checkout has the dataset and broader gates are tracked
+  below.
+
+### Current combined gates after third-wave execution
+
+Verification:
+
+- `PYTHONDONTWRITEBYTECODE=1 python -m pytest -q -p no:cacheprovider tests/unit/test_alerax_family_input.py tests/unit/test_bench_uniform_forward_backward_pipeline.py tests/unit/test_gradient_accumulator.py tests/unit/test_optimization_workflow.py tests/unit/test_model_no_grad_evaluator.py tests/unit/test_workflow.py::test_full_loss_for_theta_uses_streaming_contract_for_explicit_theta`: 102 passed.
+- `PYTHONDONTWRITEBYTECODE=1 python -m pytest -q -p no:cacheprovider tests/unit/test_repository_hygiene.py tests/unit/test_release_metadata.py -k 'not tests_readme_explicit_cpu_unit_paths_match_marker_gate'`: 128 passed, 1 skipped, 1 deselected.
+- `CUDA_VISIBLE_DEVICES='' PYTHONDONTWRITEBYTECODE=1 python -m pytest -q -p no:cacheprovider -m "unit and not gpu" -k 'not tests_readme_explicit_cpu_unit_paths_match_marker_gate'`: 1087 passed, 1 skipped, 41 deselected.  The excluded manifest test is blocked locally by the untracked dated-model test file `tests/unit/test_dated_species.py`, which is not part of this simplification branch.
 - `PYTHONDONTWRITEBYTECODE=1 python -m pytest -q -p no:cacheprovider tests/kernels/test_wave_step_uniform_forward_kernel.py tests/integration/test_gene_recon_model.py tests/integration/test_uniform_chunked_model.py tests/unit/test_specieswise_uniform.py::test_specieswise_uniform_forward_root_rows_match_saved_state tests/unit/test_specieswise_uniform.py::test_constant_specieswise_matches_global_loss_and_gradient_semantics`: 23 passed.
 - `PYTHONDONTWRITEBYTECODE=1 python profiling/bench_uniform_forward_backward_pipeline.py --stats-only --strict-optimized-kernels --fams 1 --family-chunk-size 1 --max-wave-size 8192 --fixed-iters 2 --compare-unchunked-max-fams 0`: `strict_optimized_verdict pass`.
-- `PYTHONDONTWRITEBYTECODE=1 python profiling/bench_uniform_forward_backward_pipeline.py --dataset tests/data/test_trees_1000 --fams 8 --family-chunk-size 2 --max-wave-size 32768 --fixed-iters 6 --reps 3 --warmups 1 --compare-unchunked-max-fams 8 --fail-on-correctness-mismatch --strict-optimized-kernels`: compare verdict pass, finite gradients, `strict_optimized_verdict pass`, `total_median_ms 116.366`, `max_peak_gib 0.445`.
-- 1000-family preflight attempt with dataset progress:
-  `PYTHONDONTWRITEBYTECODE=1 python profiling/bench_uniform_forward_backward_pipeline.py --dataset tests/data/test_trees_1000 --fams 1000 --family-chunk-size auto --max-wave-size auto --fixed-iters 6 --preflight-only --progress-jsonl --strict-optimized-kernels --compare-unchunked-max-fams 0` still exited before `dataset_loaded`.  The flushed progress stream reached `dataset_preprocess_family_cache_scan_done` with 8 cache hits and 992 misses, then `dataset_preprocess_missing_families_preprocess_start` for 992 families.  No `dataset_preprocess_missing_families_preprocess_done` or `dataset_loaded` record was emitted, so the current blocker is the batch C++ preprocessing call for cache-missing families, not Python family hashing/cache scanning and not a timed CUDA benchmark.
+- `PYTHONDONTWRITEBYTECODE=1 python profiling/bench_uniform_forward_backward_pipeline.py --dataset tests/data/test_trees_1000 --fams 8 --family-chunk-size 2 --max-wave-size 32768 --fixed-iters 6 --reps 3 --warmups 1 --compare-unchunked-max-fams 8 --fail-on-correctness-mismatch --strict-optimized-kernels`: compare verdict pass, finite gradients, `strict_optimized_verdict pass`, `total_median_ms 102.815`, `max_peak_gib 0.445`.
+- 1000-family preflight status after batching: no valid timed benchmark yet.
+  The original single C++ call failure has been bypassed by missing-family
+  batches, but the local filesystem has only about 15 GiB free and the cache
+  build hit `no space left on device` while saving family caches.  The next
+  benchmark setup gate is cache storage policy/capacity.
 
 ## Active Work Queue
 
 1. `EVAL-01` and `CHUNK-01`: continue consolidation for autograd and
    gradient-producing paths.  Resident no-grad, export-state, resident
-   autograd forward solve, and chunked read-only paths now share explicit
-   evaluator boundaries.  Autograd backward and `_evaluate_static_state(...,
-   need_grad=True)` still own separate gradient-producing call shapes.
+   autograd forward solve, resident implicit-gradient calls, static-state
+   gradient evaluation, and chunked read-only paths now share explicit
+   evaluator boundaries.  `UniformChunkedReconModel` still owns separate
+   chunk setup/stats and per-chunk forward/backward orchestration.
 2. `PI-01`, `MODE-02`, `BWD-03`, and `DTS-01`: continue from the explicit
    contracts now in place.  Pi output intent, DTS layout parsing,
    backward auto-wrap characterization, and model-boundary gradient
-   accumulation have first-step guards; removing backward auto-wrap and routing
-   hot CUDA scatter paths still require full gradient/parity gates.
+   accumulation now have first-step guards.  Removing backward auto-wrap and
+   routing hot CUDA scatter paths still require full gradient/parity gates.
 3. `BWD-01`, `BWD-02`, `ENV-01`, and `SCHED-01`: first characterization and
    ownership guards are in place.  Do not remove self-loop backends,
    CPU-pruning branches, env toggles, or scheduler alternatives while the
-   1000-family preflight still dies inside batch C++ preprocessing for
-   cache-missing families.  Resolve that setup failure before treating any
-   sparse/dense runtime benchmark as authoritative.
+   1000-family benchmark still lacks a valid timed run.  Resolve the local
+   cache storage capacity/policy issue before treating sparse/dense runtime
+   benchmark results as authoritative.
 4. `CPP-01`, `CPP-02`, `SCRIPT-01`, and `TEST-01`: continue pruning and
    splitting only after each surface has an owner, deprecation path, or
    replacement behavior test.  The first ownership guards are now executable;
@@ -642,6 +727,14 @@ Verification:
 - Script/test surface worker:
   `tests/unit/test_repository_hygiene.py`, `tests/README.md`, archived AleRax
   docs, and runtime-surface docs, integrated in `119999e`.
+- Preprocess batching worker:
+  `gpurec/core/model.py` and cache/progress tests, integrated in `9f1fb98`.
+- Chunked accumulator worker:
+  `gpurec/core/gradient_accumulator.py`, `gpurec/api/uniform_chunked.py`, and
+  gradient accumulator tests, integrated in `68778dd`.
+- Resident gradient evaluator worker:
+  `gpurec/api/autograd.py`, `gpurec/api/model.py`, and resident evaluator
+  tests, integrated in `d3813d8`.
 
 Future parallel workers should continue to use separate git worktrees for
 larger runtime changes.
