@@ -272,7 +272,13 @@ def test_package_docs_do_not_advertise_core_as_public_surface():
     package_module = ast.parse(
         (root / "gpurec" / "__init__.py").read_text(encoding="utf-8")
     )
+    core_package_module = ast.parse(
+        (root / "gpurec" / "core" / "__init__.py").read_text(encoding="utf-8")
+    )
     package_doc = " ".join((ast.get_docstring(package_module) or "").split())
+    core_package_doc = " ".join(
+        (ast.get_docstring(core_package_module) or "").split()
+    )
     docs_readme = " ".join(
         (root / "docs" / "README.md").read_text(encoding="utf-8").split()
     )
@@ -296,6 +302,14 @@ def test_package_docs_do_not_advertise_core_as_public_surface():
         "not public API evidence",
     ):
         assert token in docs_readme
+
+    for token in (
+        "Internal implementation namespace",
+        "Public user-facing imports are exported from :mod:`gpurec`, :mod:`gpurec.api`, and :mod:`gpurec.workflow`",
+        "``gpurec.core`` are unstable",
+        "explicitly documented as a supported low-level exception",
+    ):
+        assert token in core_package_doc
 
     for token in (
         "Lower-level access",
@@ -2611,7 +2625,11 @@ def test_fixed_dataset_hogenom_launchers_document_unique_contracts():
         root / "scripts" / "optimize_hogenom_ccp_specieswise_uniform.py",
         root / "scripts" / "profile_hogenom_ccp_pass.py",
     ]
-    sources = "\n".join(path.read_text(encoding="utf-8") for path in script_paths)
+    source_paths = [
+        *script_paths,
+        root / "scripts" / "hogenom_opt_helpers.py",
+    ]
+    sources = "\n".join(path.read_text(encoding="utf-8") for path in source_paths)
 
     for token in (
         "Checkout-local HOGENOM run with one shared D/T/L theta row",
@@ -2636,6 +2654,9 @@ def test_fixed_dataset_hogenom_launchers_document_unique_contracts():
         "output_gpurec_global_uniform_opt_max100",
         "Checkout-local specieswise-uniform HOGENOM optimizer reproducer",
         "output_gpurec_specieswise_uniform_opt_max100",
+        "Shared helpers for checkout-local fixed-dataset HOGENOM launchers",
+        "Migrate reusable optimizer schedules",
+        "schemas into ``gpurec.workflow``",
         "Checkout-local HOGENOM CCP CUDA/Nsight profiling harness",
         "config/model/warmup/measured/summary events",
         "argparse.RawDescriptionHelpFormatter",

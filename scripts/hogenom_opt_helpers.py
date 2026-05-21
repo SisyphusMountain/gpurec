@@ -1,3 +1,10 @@
+"""Shared helpers for checkout-local fixed-dataset HOGENOM launchers.
+
+This module exists only while the legacy specieswise/global uniform experiment
+scripts remain.  Migrate reusable optimizer schedules, regularizers, and output
+schemas into ``gpurec.workflow`` before promoting or deleting those launchers.
+"""
+
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
