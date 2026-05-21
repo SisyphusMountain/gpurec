@@ -19,6 +19,60 @@ def _manual_weighted_nll(root_rows, E, weights):
     return -(numerator - denominator)
 
 
+@pytest.mark.parametrize(
+    "mode",
+    ["shared", "vector", "prepared_vector", "family_specific"],
+)
+def test_root_row_nll_matches_full_pi_for_origination_probability_modes(mode):
+    dtype = torch.float64
+    Pi = torch.tensor(
+        [
+            [-4.0, -2.0, -5.0, -3.5],
+            [-1.5, -3.0, -2.5, -4.0],
+            [-3.0, -1.0, -4.5, -2.0],
+            [-2.0, -2.5, -3.5, -1.75],
+            [-4.25, -2.25, -1.5, -3.25],
+            [-2.75, -3.5, -2.0, -4.5],
+        ],
+        dtype=dtype,
+    )
+    roots = torch.tensor([4, 1, 3], dtype=torch.long)
+    E = torch.tensor(
+        [
+            [-3.0, -2.0, -4.0, -3.5],
+            [-2.5, -2.25, -3.25, -4.0],
+            [-3.75, -2.75, -2.5, -3.0],
+        ],
+        dtype=dtype,
+    )
+
+    kwargs = {}
+    if mode == "vector":
+        kwargs["origination_probs"] = torch.tensor([2.0, 5.0, 1.0, 3.0], dtype=dtype)
+    elif mode == "prepared_vector":
+        kwargs["origination_probs"] = prepare_origination_probs(
+            torch.tensor([2.0, 5.0, 1.0, 3.0], dtype=dtype),
+            S=4,
+            device=torch.device("cpu"),
+            dtype=dtype,
+        )
+        kwargs["origination_probs_prepared"] = True
+    elif mode == "family_specific":
+        kwargs["origination_probs"] = torch.tensor(
+            [
+                [2.0, 5.0, 1.0, 3.0],
+                [1.0, 4.0, 2.0, 6.0],
+                [3.0, 1.0, 7.0, 2.0],
+            ],
+            dtype=dtype,
+        )
+
+    full_pi_nll = compute_nll(Pi, E, roots, **kwargs)
+    root_row_nll = compute_nll_root_rows(Pi[roots], E, **kwargs)
+
+    torch.testing.assert_close(root_row_nll, full_pi_nll, rtol=1e-12, atol=1e-12)
+
+
 def test_e_step_requires_ancestors_t():
     dtype = torch.float64
     E = torch.full((3,), -1.0, dtype=dtype)
