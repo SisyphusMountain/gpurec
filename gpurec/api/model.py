@@ -179,15 +179,42 @@ class FamilyInput:
 
     index: int
     name: str
-    gene_tree_paths: list[str]
-    leaf_species_map: dict[str, str]
+    gene_tree_paths: tuple[str, ...]
+    leaf_species_map: Mapping[str, str]
     clade_count: int
     split_count: int
     root_clade_id: int
-    ccp_helpers: dict[str, Any]
+    ccp_helpers: Mapping[str, Any]
     leaf_row_index: Any
     leaf_col_index: Any
-    clade_leaf_labels: list[str] = field(default_factory=list)
+    clade_leaf_labels: tuple[str, ...] = field(default_factory=tuple)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "gene_tree_paths",
+            tuple(str(path) for path in self.gene_tree_paths),
+        )
+        object.__setattr__(
+            self,
+            "leaf_species_map",
+            _immutable_public_value(
+                {
+                    str(gene): str(species)
+                    for gene, species in self.leaf_species_map.items()
+                }
+            ),
+        )
+        object.__setattr__(
+            self,
+            "ccp_helpers",
+            _immutable_public_value(self.ccp_helpers),
+        )
+        object.__setattr__(
+            self,
+            "clade_leaf_labels",
+            tuple(str(label) for label in self.clade_leaf_labels),
+        )
 
 
 @dataclass(frozen=True)

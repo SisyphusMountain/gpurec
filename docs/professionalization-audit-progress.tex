@@ -2573,6 +2573,20 @@ A focused public-API regression builds metadata from mutable inputs, mutates
 those inputs, and checks that both direct tuple mutation and mapping assignment
 fail through the public object.
 
+\subsection{\texttt{FamilyInput} Read-only Containers}
+
+\texttt{FamilyInput} is part of the top-level notebook API and is documented as
+read-only family metadata.  Its public list and dictionary fields now match that
+contract more closely: gene-tree paths and clade labels are tuples, while leaf
+species maps and nested CCP helper containers are exposed through read-only
+mappings and tuples.
+
+Tensor fields still return defensive tensor copies so backtracking and export
+helpers can safely coerce or mutate local tensor views without mutating the
+resident dataset.  The public API regression now checks both sides of this
+contract: tensors remain isolated copies, and container mutation through the
+public object fails.
+
 \section{Verification Log}
 
 \begin{center}
@@ -5753,6 +5767,24 @@ CPU unit gate after \texttt{BatchMetadata} immutability cleanup &
 \texttt{795 passed, 6 deselected} \\
 \texttt{python scripts/check\_release\_metadata.py} &
 Release metadata checker after \texttt{BatchMetadata} immutability cleanup &
+\texttt{expected license blockers} \\
+\texttt{python -m py\_compile gpurec/api/model.py gpurec/backtracking.py tests/unit/test\_workflow.py} &
+\texttt{FamilyInput} read-only container syntax &
+\texttt{ok} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' python -m pytest tests/unit/test\_workflow.py::test\_family\_input\_returns\_read\_only\_public\_containers\_and\_tensor\_copies -q} &
+Focused \texttt{FamilyInput} container immutability regression &
+\texttt{1 passed} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' python -m pytest tests/unit/test\_workflow.py -q -k 'family\_input or public\_backtracking or stochastic\_backtracking or FamilyInput'} &
+\texttt{FamilyInput} and backtracking call-site slice &
+\texttt{9 passed, 412 deselected} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' python -m pytest tests/unit/test\_workflow.py -q} &
+Workflow suite after \texttt{FamilyInput} read-only cleanup &
+\texttt{421 passed} \\
+\texttt{CUDA\_VISIBLE\_DEVICES='' python -m pytest tests/unit -q -m "unit and not gpu"} &
+CPU unit gate after \texttt{FamilyInput} read-only cleanup &
+\texttt{795 passed, 6 deselected} \\
+\texttt{python scripts/check\_release\_metadata.py} &
+Release metadata checker after \texttt{FamilyInput} read-only cleanup &
 \texttt{expected license blockers} \\
 \bottomrule
 \end{tabular}

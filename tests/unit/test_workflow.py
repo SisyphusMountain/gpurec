@@ -736,7 +736,7 @@ def test_close_shuts_down_executor_without_batch_lock():
     assert model._batch_futures == {}
 
 
-def test_family_input_returns_defensive_copies():
+def test_family_input_returns_read_only_public_containers_and_tensor_copies():
     ccp_helpers = {
         "split_counts": torch.tensor([0, 1], dtype=torch.long),
         "nested": {
@@ -767,12 +767,24 @@ def test_family_input_returns_defensive_copies():
     public_family = GeneReconModel.family_input(model, 0)
     public_family.ccp_helpers["split_counts"][0] = 99
     public_family.ccp_helpers["nested"]["weights"][0] = 42.0
-    public_family.ccp_helpers["nested"]["labels"].append("mutated")
     public_family.leaf_row_index[0] = 99
     public_family.leaf_col_index[0] = 99
-    public_family.gene_tree_paths.append("mutated.nwk")
-    public_family.leaf_species_map["gene_a"] = "Mutated"
-    public_family.clade_leaf_labels.append("mutated")
+
+    assert public_family.gene_tree_paths == ("g0.nwk",)
+    assert dict(public_family.leaf_species_map) == {"gene_a": "SpeciesA"}
+    assert public_family.ccp_helpers["nested"]["labels"] == ("left",)
+    assert public_family.clade_leaf_labels == ("gene_a", "")
+
+    with pytest.raises(AttributeError):
+        public_family.gene_tree_paths.append("mutated.nwk")  # type: ignore[attr-defined]
+    with pytest.raises(TypeError):
+        public_family.leaf_species_map["gene_a"] = "Mutated"  # type: ignore[index]
+    with pytest.raises(AttributeError):
+        public_family.ccp_helpers["nested"]["labels"].append("mutated")  # type: ignore[attr-defined]
+    with pytest.raises(TypeError):
+        public_family.ccp_helpers["nested"] = {}  # type: ignore[index]
+    with pytest.raises(AttributeError):
+        public_family.clade_leaf_labels.append("mutated")  # type: ignore[attr-defined]
 
     torch.testing.assert_close(ccp_helpers["split_counts"], torch.tensor([0, 1]))
     torch.testing.assert_close(
