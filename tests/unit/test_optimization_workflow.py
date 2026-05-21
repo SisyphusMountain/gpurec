@@ -97,6 +97,53 @@ def test_uniform_chunked_read_only_helper_delegates_to_result_core(monkeypatch):
     ]
 
 
+def test_uniform_chunked_gradient_result_rejects_bf16_before_chunk_work():
+    state = SimpleNamespace(dtype=torch.bfloat16)
+    theta = torch.tensor([1.0, 2.0, 3.0], dtype=torch.float32)
+
+    with pytest.raises(
+        RuntimeError,
+        match=r"gradient evaluation requires float32 or float64.*Pi_wave_backward",
+    ):
+        uniform_chunked_module._evaluate_chunked_uniform_result(
+            state,
+            theta,
+            need_grad=True,
+        )
+
+
+def test_uniform_chunked_read_only_result_allows_bf16_boundary(monkeypatch):
+    state = SimpleNamespace(dtype=torch.bfloat16)
+    theta = torch.tensor([1.0, 2.0, 3.0], dtype=torch.float32)
+    selected = object()
+    calls: list[dict[str, object]] = []
+
+    def fake_selected_chunks(state_arg, chunk_indices):
+        calls.append(
+            {
+                "state": state_arg,
+                "chunk_indices": chunk_indices,
+            }
+        )
+        raise RuntimeError("sentinel after dtype boundary")
+
+    monkeypatch.setattr(
+        uniform_chunked_module,
+        "_selected_chunks",
+        fake_selected_chunks,
+    )
+
+    with pytest.raises(RuntimeError, match="sentinel after dtype boundary"):
+        uniform_chunked_module._evaluate_chunked_uniform_result(
+            state,
+            theta,
+            need_grad=False,
+            chunk_indices=selected,
+        )
+
+    assert calls == [{"state": state, "chunk_indices": selected}]
+
+
 def _run_config(tmp_path: Path, **overrides: object) -> RunConfig:
     values = {
         "species_tree": tmp_path / "sp.nwk",

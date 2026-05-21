@@ -421,6 +421,15 @@ def _e_adjoint_stats_fields(stats: Any) -> dict[str, Any]:
     }
 
 
+def _require_chunked_gradient_dtype(dtype: torch.dtype) -> None:
+    if dtype not in (torch.float32, torch.float64):
+        raise RuntimeError(
+            "UniformChunkedReconModel gradient evaluation requires float32 or "
+            "float64; the retained Pi_wave_backward path does not support "
+            f"{dtype}. Use nll() under no_grad for bf16 forward probes."
+        )
+
+
 def _evaluate_chunked_uniform_result(
     state: _UniformChunkedState,
     theta: torch.Tensor,
@@ -431,6 +440,8 @@ def _evaluate_chunked_uniform_result(
 ) -> _UniformChunkedEvaluation:
     if collect_per_family and need_grad:
         raise ValueError("per-family output is only supported for no-grad evaluation")
+    if need_grad:
+        _require_chunked_gradient_dtype(state.dtype)
 
     selected_chunks = _selected_chunks(state, chunk_indices)
     selected_family_indices = [
