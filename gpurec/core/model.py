@@ -538,6 +538,9 @@ class GeneDataset:
         if isinstance(ccp, dict):
             ccp.pop("clade_leaves", None)
             ccp.pop("clade_is_leaf", None)
+            ccp.pop("inclusion_children", None)
+            ccp.pop("inclusion_parents", None)
+            ccp.pop("ubiquitous_clade_id", None)
         return raw
 
     @staticmethod

@@ -2468,7 +2468,7 @@ def test_profiling_readme_documents_entrypoints_and_artifact_policy():
     assert "See `profiling/README.md`" in project_readme
 
 
-def test_blocked_benchmark_proposals_reject_diagnostic_preflight_evidence():
+def test_full_benchmark_status_records_timed_evidence_and_diagnostic_boundary():
     root = Path(__file__).resolve().parents[2]
     lean_fast_path = (root / "docs" / "lean-fast-path.md").read_text(
         encoding="utf-8"
@@ -2482,26 +2482,38 @@ def test_blocked_benchmark_proposals_reject_diagnostic_preflight_evidence():
     benchmark_tests = (
         root / "tests" / "unit" / "test_bench_uniform_forward_backward_pipeline.py"
     ).read_text(encoding="utf-8")
+    lean_fast_path_status = " ".join(lean_fast_path.split())
+    execution_log_status = " ".join(execution_log.split())
     combined_status = " ".join((lean_fast_path + "\n" + execution_log).split())
 
     for proposal in ("ENV-01", "SCHED-01", "BWD-01", "BWD-02"):
         assert proposal in combined_status
     for token in (
-        "no valid current full 1000-family timed run exists",
-        "Windowed preflight is a setup diagnostic only",
+        "valid full 1000-family timed run exists",
+        "Windowed preflight remains a setup diagnostic only",
         "`performance_evidence 0`",
         "must not justify deleting self-loop backends",
         "active-mask pruning modes",
         "environment flags",
         "scheduler policies",
-        "remain blocked until the full benchmark produces timed performance evidence",
+        "After deleting the generated caches and removing inclusion-DAG materialization",
+        "pipeline_policy families 1000 chunks 40 family_chunk_size 25 max_wave_size 8192",
+        "strict_optimized_verdict pass",
+        "pipeline_summary reps 3",
+        "forward_median_ms 2179.338",
+        "backward_median_ms 1637.578",
+        "total_median_ms 3817.207",
+        "grad_finite 1",
+    ):
+        assert token in lean_fast_path_status
+    for token in (
         "Do not remove self-loop backends, CPU-pruning branches, env toggles, "
         "or scheduler alternatives while the 1000-family benchmark still lacks "
         "a valid timed run",
         "Windowed preflight can now diagnose setup coverage across large family "
         "ranges, but it is explicitly not performance evidence",
     ):
-        assert token in combined_status
+        assert token in execution_log_status
     assert '"performance_evidence", 0' in benchmark_source
     assert "performance_evidence 0" in benchmark_tests
 
@@ -3015,6 +3027,29 @@ def test_cpp_preprocess_legacy_and_diagnostic_exports_have_no_runtime_callers():
 
     assert detailed_calls == 3
     assert species_only_default_calls == 1
+
+
+def test_cpp_preprocess_does_not_materialize_inclusion_dag_payloads():
+    root = Path(__file__).resolve().parents[2]
+    cpp_source = (root / "gpurec/core/cpp/preprocess.cpp").read_text(
+        encoding="utf-8"
+    )
+    model_source = (root / "gpurec/core/model.py").read_text(encoding="utf-8")
+
+    for token in (
+        "include_inclusion",
+        "inclusion_children",
+        "inclusion_parents",
+        "ubiquitous_clade_id",
+    ):
+        assert token not in cpp_source
+
+    for token in (
+        'ccp.pop("inclusion_children", None)',
+        'ccp.pop("inclusion_parents", None)',
+        'ccp.pop("ubiquitous_clade_id", None)',
+    ):
+        assert token in model_source
 
 
 def test_test_only_scheduler_helpers_stay_out_of_runtime_source():

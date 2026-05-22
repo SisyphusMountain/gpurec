@@ -808,6 +808,9 @@ def test_alerax_family_file_multi_tree_ccp_matches_split_files(tmp_path):
     assert int(ccp_dist["root_clade_id"]) == int(ccp_split["root_clade_id"])
     assert "clade_leaves" not in ccp_dist
     assert "clade_is_leaf" not in ccp_dist
+    assert "inclusion_children" not in ccp_dist
+    assert "inclusion_parents" not in ccp_dist
+    assert "ubiquitous_clade_id" not in ccp_dist
     assert labels_dist == labels_split
     assert sorted(label for label in labels_dist if label) == ["a1", "b1", "c1"]
     for key in (

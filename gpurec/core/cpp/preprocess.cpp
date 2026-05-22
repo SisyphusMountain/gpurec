@@ -320,12 +320,6 @@ struct CCPArrays {
   int num_segs_eq0;
   int stop_reduce_ptr_idx;
   int end_rows_ge2;
-
-  // Clade inclusion DAG: edge (inclusion_children[i], inclusion_parents[i])
-  // means inclusion_children[i] ⊆ inclusion_parents[i]
-  std::vector<int64_t> inclusion_children;
-  std::vector<int64_t> inclusion_parents;
-  int64_t ubiquitous_clade_id;  // Root of the inclusion DAG (contains all leaves)
 };
 
 // ============================================================================
@@ -445,9 +439,7 @@ CladeData compute_clades_and_splits(
 /**
  * @brief Convert CladeData to sorted CCP arrays for efficient computation
  */
-CCPArrays build_ccp_arrays(
-    const CladeData& clade_data,
-    bool include_inclusion = true) {
+CCPArrays build_ccp_arrays(const CladeData& clade_data) {
   CCPArrays result;
   const size_t C = clade_data.clades.size();
   const size_t N_splits = clade_data.splits.size();
@@ -556,48 +548,6 @@ CCPArrays build_ccp_arrays(
   result.stop_reduce_ptr_idx = result.num_segs_ge2;
   result.end_rows_ge2 = static_cast<int>(result.ptr[result.stop_reduce_ptr_idx]);
   result.ptr_ge2.assign(result.ptr.begin(), result.ptr.begin() + result.stop_reduce_ptr_idx + 1);
-
-  result.ubiquitous_clade_id = -1;
-  if (include_inclusion) {
-    // Compute clade inclusion DAG
-    // Find ubiquitous clade (contains all leaves, has maximum size)
-    int max_size = 0;
-    for (size_t i = 0; i < C; ++i) {
-      const Clade& clade = clade_data.clades.get(i);
-      if (clade.size() > max_size) {
-        max_size = clade.size();
-        result.ubiquitous_clade_id = static_cast<int64_t>(i);
-      }
-    }
-
-    // Compute all inclusion relationships (child ⊆ parent)
-    // For clades A and B: A ⊆ B iff (A.bits & B.bits) == A.bits
-    for (size_t i = 0; i < C; ++i) {
-      const Clade& clade_i = clade_data.clades.get(i);
-      const BitVec& bits_i = clade_i.bits();
-
-      for (size_t j = 0; j < C; ++j) {
-        if (i == j) continue;  // Skip self-loops
-
-        const Clade& clade_j = clade_data.clades.get(j);
-        const BitVec& bits_j = clade_j.bits();
-
-        // Check if clade_i ⊆ clade_j (all bits in i are also in j)
-        bool is_subset = true;
-        for (size_t w = 0; w < bits_i.size(); ++w) {
-          if ((bits_i[w] & bits_j[w]) != bits_i[w]) {
-            is_subset = false;
-            break;
-          }
-        }
-
-        if (is_subset) {
-          result.inclusion_children.push_back(static_cast<int64_t>(i));
-          result.inclusion_parents.push_back(static_cast<int64_t>(j));
-        }
-      }
-    }
-  }
 
   return result;
 }
@@ -1380,7 +1330,7 @@ py::dict preprocess_multiple_families(
     std::unordered_map<std::string, int> leaf_to_index;
 
     CladeData clade_data = amalgamate_clades_and_splits(gene_paths, leaf_names, leaf_to_index);
-    CCPArrays ccp = build_ccp_arrays(clade_data, include_details);
+    CCPArrays ccp = build_ccp_arrays(clade_data);
 
     const size_t C = clade_data.clades.size();
 
@@ -1461,12 +1411,6 @@ py::dict preprocess_multiple_families(
     ccp_dict["C"] = static_cast<int64_t>(C);
     ccp_dict["N_splits"] = static_cast<int64_t>(clade_data.splits.size());
     ccp_dict["root_clade_id"] = clade_data.root_clade_id;
-    if (include_details) {
-      ccp_dict["inclusion_children"] = to_long_tensor(ccp.inclusion_children);
-      ccp_dict["inclusion_parents"] = to_long_tensor(ccp.inclusion_parents);
-      ccp_dict["ubiquitous_clade_id"] = ccp.ubiquitous_clade_id;
-    }
-
     auto [wave_level, n_waves] = compute_clade_waves(ccp, C);
     std::vector<int64_t> wave_level_i64(wave_level.begin(), wave_level.end());
     ccp_dict["clade_wave_level"] = to_long_tensor(wave_level_i64);
@@ -1626,10 +1570,6 @@ py::dict preprocess(const std::string &species_path,
   ccp_dict["C"] = static_cast<int64_t>(C);
   ccp_dict["N_splits"] = static_cast<int64_t>(clade_data.splits.size());
   ccp_dict["root_clade_id"] = clade_data.root_clade_id;
-  ccp_dict["inclusion_children"] = to_long_tensor(ccp.inclusion_children);
-  ccp_dict["inclusion_parents"] = to_long_tensor(ccp.inclusion_parents);
-  ccp_dict["ubiquitous_clade_id"] = ccp.ubiquitous_clade_id;
-
   auto [wave_level, n_waves] = compute_clade_waves(ccp, C);
   std::vector<int64_t> wave_level_i64(wave_level.begin(), wave_level.end());
   ccp_dict["clade_wave_level"] = to_long_tensor(wave_level_i64);
