@@ -220,8 +220,8 @@ def test_uniform_chunked_model_threads_prepared_origination_prior(
 ):
     class FakeDataset:
         def __init__(self, **kwargs):
-            self.dtype = kwargs["dtype"]
-            self.device = kwargs["device"]
+            self.dtype = kwargs.get("dtype", torch.float64)
+            self.device = kwargs.get("device", torch.device("cpu"))
             self.S = 3
             self.families = [
                 {"C": 2, "N_splits": 1},
@@ -233,6 +233,10 @@ def test_uniform_chunked_model_threads_prepared_origination_prior(
 
         def _species_helpers_for_mode(self, *, device, dtype):
             return {}, None
+
+        @classmethod
+        def _from_preprocessed_raw(cls, **_kwargs):
+            return cls()
 
     spec = uniform_chunked_api._UniformChunkSpec(indices=[0, 1], clades=5, splits=3)
     built = uniform_chunked_api._UniformBuiltChunk(
@@ -249,9 +253,43 @@ def test_uniform_chunked_model_threads_prepared_origination_prior(
         "require_cuda_device",
         lambda device, *, owner: torch.device("cpu"),
     )
+    class FakeRustPreprocessed:
+        def to_torch(self):
+            return {}
+
+        def family_basic_counts(self):
+            return {
+                "clade_counts": [2, 3],
+                "split_counts": [1, 2],
+            }
+
+        def build_chunked_layouts(self, **_kwargs):
+            return [
+                {
+                    "indices": spec.indices,
+                    "clades": spec.clades,
+                    "splits": spec.splits,
+                    "wave_layout": built.wave_layout,
+                    "waves": built.waves,
+                    "max_wave": built.max_wave,
+                    "split_rows": built.split_rows,
+                    "max_wave_split_rows": built.max_wave_split_rows,
+                }
+            ]
+
+    class FakeRustExtension:
+        def preprocess_dataset(self, *_args, **_kwargs):
+            return FakeRustPreprocessed()
+
+    import gpurec.core.preprocess_rust as preprocess_rust
+
     monkeypatch.setattr(uniform_chunked_api, "GeneDataset", FakeDataset)
-    monkeypatch.setattr(uniform_chunked_api, "_make_chunks", lambda *_args, **_kwargs: [spec])
-    monkeypatch.setattr(uniform_chunked_api, "_build_chunk", lambda *_args, **_kwargs: built)
+    monkeypatch.setattr(
+        uniform_chunked_api.GeneDataset,
+        "_from_preprocessed_raw",
+        classmethod(lambda cls, **_kwargs: cls()),
+    )
+    monkeypatch.setattr(preprocess_rust, "RustPreprocessExtension", FakeRustExtension)
 
     model = uniform_chunked_api.UniformChunkedReconModel(
         species_tree=tmp_path / "species.nwk",
@@ -260,7 +298,6 @@ def test_uniform_chunked_model_threads_prepared_origination_prior(
         dtype=torch.float64,
         family_chunk_size=2,
         max_wave_size=8,
-        set_optimized_env=False,
         origination_probs=OriginationPrior(
             [
                 [1.0, 2.0, 1.0],

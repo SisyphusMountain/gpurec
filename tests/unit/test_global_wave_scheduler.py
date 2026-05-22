@@ -6,15 +6,13 @@ import textwrap
 import pytest
 import torch
 
-from gpurec.api.uniform_chunked import _make_chunks
 from gpurec.api.model import _family_index_chunks
 from gpurec.core.batch_planning import plan_family_batches
 from gpurec.core.batching import (
-    _family_schedule_data,
-    _schedule_deadline_nonleaf_waves,
-    _select_nonleaf_schedule_candidate,
     build_wave_layout,
     collate_gene_families,
+)
+from gpurec.core.schedule_rust import (
     schedule_global_phased_waves,
 )
 
@@ -290,103 +288,6 @@ def _assert_topological(waves, offsets, items):
             parent_wave = wave_of[offset + parent]
             assert wave_of[offset + left] < parent_wave
             assert wave_of[offset + right] < parent_wave
-
-
-def _winning_nonleaf_policy(
-    items,
-    *,
-    max_wave_size,
-    max_root_wave_size=None,
-    max_dts_partial_rows=None,
-    dts_partial_tile_splits=64,
-):
-    families = [_family_schedule_data(item["ccp"]) for item in items]
-    policy, batches = _select_nonleaf_schedule_candidate(
-        families,
-        wave_cap=max_wave_size,
-        root_cap=max_root_wave_size,
-        max_dts_partial_rows=max_dts_partial_rows,
-        dts_partial_tile_splits=dts_partial_tile_splits,
-    )
-    return policy, batches
-
-
-def _assert_nonleaf_batches_cover_once(families, batches, *, max_wave_size):
-    scheduled = [node for batch in batches for node in batch]
-    expected = [
-        (fi, c)
-        for fi, family in enumerate(families)
-        for c, split_count in enumerate(family["split_counts"])
-        if int(split_count) != 0
-    ]
-
-    assert sorted(scheduled) == sorted(expected)
-    assert all(len(batch) <= max_wave_size for batch in batches)
-
-    wave_of = {
-        (fi, c): wave_idx
-        for wave_idx, batch in enumerate(batches)
-        for fi, c in batch
-    }
-    for fi, family in enumerate(families):
-        for parent, children in enumerate(family["children"]):
-            if int(family["split_counts"][parent]) == 0:
-                continue
-            parent_wave = wave_of[(fi, parent)]
-            for child in children:
-                if int(family["split_counts"][child]) != 0:
-                    assert wave_of[(fi, child)] < parent_wave
-
-
-def test_global_scheduler_candidate_policy_keeps_forward_when_it_is_optimal():
-    items = [
-        {"ccp": _ccp(4, [0, 1], [1, 3], [2, 3], root=0)},
-        {"ccp": _ccp(4, [0, 1], [1, 3], [2, 3], root=0)},
-    ]
-
-    policy, batches = _winning_nonleaf_policy(items, max_wave_size=4)
-
-    assert policy == "forward"
-    assert batches == [[(0, 1), (1, 1)], [(0, 0), (1, 0)]]
-    _assert_nonleaf_batches_cover_once(
-        [_family_schedule_data(item["ccp"]) for item in items],
-        batches,
-        max_wave_size=4,
-    )
-
-
-def test_global_scheduler_candidate_policy_uses_deadline_when_it_wins():
-    parents = [0, 0, 1, 0, 2, 1, 4, 1, 5, 8, 1, 4, 7, 5, 1, 2, 7, 4, 5, 2, 3, 0, 1, 2]
-    lefts = [1, 2, 3, 4, 5, 6, 7, 8, 9, 9, 6, 5, 9, 8, 9, 7, 8, 5, 8, 3, 8, 7, 8, 6]
-    rights = [3, 2, 5, 5, 7, 7, 7, 8, 9, 9, 9, 7, 8, 6, 8, 8, 8, 7, 9, 6, 9, 3, 8, 8]
-    items = [{"ccp": _ccp(10, parents, lefts, rights, root=0)}]
-
-    policy, batches = _winning_nonleaf_policy(items, max_wave_size=2)
-
-    assert policy == "deadline"
-    assert len(batches) == 5
-    _assert_nonleaf_batches_cover_once(
-        [_family_schedule_data(item["ccp"]) for item in items],
-        batches,
-        max_wave_size=2,
-    )
-
-
-def test_global_scheduler_candidate_policy_uses_coffman_graham_when_it_wins():
-    parents = [0, 0, 0, 1, 1, 1, 2, 2, 2, 3, 3, 4, 6]
-    lefts = [7, 3, 3, 6, 7, 7, 6, 6, 4, 5, 5, 7, 7]
-    rights = [7, 6, 3, 4, 5, 6, 3, 4, 4, 5, 7, 7, 7]
-    items = [{"ccp": _ccp(8, parents, lefts, rights, root=0)}]
-
-    policy, batches = _winning_nonleaf_policy(items, max_wave_size=2)
-
-    assert policy == "coffman_graham"
-    assert batches == [[(0, 6), (0, 4)], [(0, 3), (0, 1)], [(0, 2), (0, 0)]]
-    _assert_nonleaf_batches_cover_once(
-        [_family_schedule_data(item["ccp"]) for item in items],
-        batches,
-        max_wave_size=2,
-    )
 
 
 def test_global_scheduler_packs_ready_clades_after_leaf_phase():
@@ -726,33 +627,6 @@ def test_global_scheduler_uses_layered_compaction_when_ready_order_wastes_wave()
     _assert_topological(waves, [0], items)
 
 
-def test_deadline_nonleaf_scheduler_respects_target_horizon():
-    # Leaves 4 and 5 are handled first.  The remaining DAG has two bottom
-    # clades and two top clades, so cap=2 fits exactly two non-leaf waves.
-    item = {"ccp": _ccp(6, [0, 1, 2, 3], [2, 3, 4, 4], [4, 5, 5, 5], root=0)}
-    families = [_family_schedule_data(item["ccp"])]
-
-    candidate = _schedule_deadline_nonleaf_waves(
-        families,
-        wave_cap=2,
-        target_waves=2,
-        max_dts_partial_rows=None,
-        dts_partial_tile_splits=64,
-    )
-
-    assert candidate == [[(0, 2), (0, 3)], [(0, 0), (0, 1)]]
-    assert (
-        _schedule_deadline_nonleaf_waves(
-            families,
-            wave_cap=2,
-            target_waves=1,
-            max_dts_partial_rows=None,
-            dts_partial_tile_splits=64,
-        )
-        is None
-    )
-
-
 def test_global_scheduler_can_cap_dts_partial_rows_per_wave():
     parents = [0, 0, 0]
     lefts = [1, 3, 5]
@@ -970,8 +844,8 @@ def test_plan_family_batches_propagates_rust_unavailable(monkeypatch):
 
 
 def test_uniform_chunk_specs_use_shared_depth_first_fit_planner():
-    specs = _make_chunks(
-        [0, 1, 2, 3, 4],
+    plans = plan_family_batches(
+        indices=[0, 1, 2, 3, 4],
         clade_counts=[6, 6, 6, 6, 6],
         split_counts=[10, 20, 30, 40, 50],
         family_chunk_size=0,
@@ -983,6 +857,6 @@ def test_uniform_chunk_specs_use_shared_depth_first_fit_planner():
         max_wave_size=8,
     )
 
-    assert [spec.indices for spec in specs] == [[0, 1], [2, 3], [4]]
-    assert [spec.clades for spec in specs] == [12, 12, 6]
-    assert [spec.splits for spec in specs] == [30, 70, 50]
+    assert [plan.indices for plan in plans] == [[0, 1], [2, 3], [4]]
+    assert [plan.clades for plan in plans] == [12, 12, 6]
+    assert [plan.splits for plan in plans] == [30, 70, 50]

@@ -262,7 +262,7 @@ gpurec optimize \
 ```
 
 `--preprocess-cpu-cores` sets the worker thread count for CPU preprocessing.
-When it is omitted, preprocessing uses the selected backend's runtime default.
+When it is omitted, Rust preprocessing uses its runtime default.
 
 Main outputs include:
 

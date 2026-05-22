@@ -10,10 +10,7 @@ import torch
 
 from .log2_utils import logsumexp2
 from .likelihood import prepare_origination_probs
-from ._helpers import (  # noqa: F401
-    _env_flag_enabled,
-    _safe_exp2_ratio,
-)
+from ._helpers import _safe_exp2_ratio  # noqa: F401
 from .memory_policy import proposal0_memory_gate
 from .extract_parameters import as_family_param, as_family_species
 from .species import species_wave_topology
@@ -361,10 +358,7 @@ def Pi_wave_backward(
         )
 
     skip_inactive_pibar_zero = pruning_policy.skip_inactive_pibar_zero
-    specialize_nonleaf_leaf_term = _env_flag_enabled(
-        "GPUREC_SPECIALIZE_NONLEAF_LEAF_TERM",
-        "1",
-    )
+    specialize_nonleaf_leaf_term = True
 
     for k in range(K - 1, -1, -1):
         meta = wave_metas[k]

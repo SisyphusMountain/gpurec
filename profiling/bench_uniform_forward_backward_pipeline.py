@@ -35,12 +35,13 @@ from gpurec.core.forward import Pi_wave_forward
 from gpurec.core.likelihood import E_fixed_point, compute_nll
 from gpurec.core.memory_policy import choose_uniform_pipeline_policy
 from gpurec.core.model import GeneDataset
+from gpurec.core.preprocess_rust import RustPreprocessExtension
 from gpurec.optimization.implicit_grad import _e_adjoint_and_theta_vjp
 from gpurec.api.uniform_chunked import (
     _UniformBuiltChunk as BuiltChunk,
-    _UniformChunkSpec as ChunkSpec,
-    _build_chunk,
-    _make_chunks,
+    _built_chunks_from_rust,
+    _dtype_name_for_rust,
+    _normalize_preprocess_inputs,
     _selected_gene_paths,
 )
 
@@ -55,8 +56,8 @@ class StaticInputs:
     unnorm_row_max: torch.Tensor
     theta: torch.Tensor
     built_chunks: list[BuiltChunk]
+    rust_preprocessed: Any
     root_clade_id_lists: list[list[int]]
-    selected_indices: list[int]
     dtype: torch.dtype
     device: torch.device
     preprocess_s: float
@@ -112,12 +113,6 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--reps", type=int, default=3)
     parser.add_argument("--warmups", type=int, default=1)
     parser.add_argument("--dtype", type=_parse_dtype, default=_parse_dtype("float32"))
-    parser.add_argument(
-        "--uncached-preprocess-batch-size",
-        type=int,
-        default=1024,
-        help="Private benchmark diagnostic: batch size for no-cache family preprocessing.",
-    )
     parser.add_argument("--profile-cuda-api", action="store_true", default=False)
     parser.add_argument("--theta-rate", type=float, default=0.05)
     parser.add_argument("--max-iters-E", type=int, default=2000)
@@ -182,8 +177,6 @@ def _parse_args() -> argparse.Namespace:
         raise ValueError("--reps must be positive")
     if args.warmups < 0:
         raise ValueError("--warmups must be non-negative")
-    if args.uncached_preprocess_batch_size <= 0:
-        raise ValueError("--uncached-preprocess-batch-size must be positive")
     if args.preflight_window_size < 0:
         raise ValueError("--preflight-window-size must be non-negative")
     return args
@@ -283,16 +276,6 @@ def _emit_progress(args: argparse.Namespace, event: str, **fields: Any) -> None:
         **fields,
     }
     print(json.dumps(payload, sort_keys=True), flush=True)
-
-
-def _make_dataset_progress_hook(args: argparse.Namespace):
-    if not _progress_enabled(args):
-        return None
-
-    def progress(event: str, **fields: Any) -> None:
-        _emit_progress(args, f"dataset_preprocess_{event}", **fields)
-
-    return progress
 
 
 def _chunk_progress_row(idx: int, built: BuiltChunk) -> dict[str, int]:
@@ -525,16 +508,32 @@ def _make_static_inputs(args: argparse.Namespace) -> StaticInputs:
         )
 
     t0 = time.perf_counter()
-    dataset = GeneDataset(
+    family_tree_paths, family_names, leaf_species_maps = _normalize_preprocess_inputs(
+        genes,
+        [Path(gene).stem for gene in genes],
+        None,
+    )
+    families_input = {
+        name: paths
+        for name, paths in zip(family_names, family_tree_paths)
+    }
+    rust_preprocessed = RustPreprocessExtension().preprocess_dataset(
+        str(root / "sp.nwk"),
+        families_input,
+        leaf_species_maps={},
+        include_species_matrices=False,
+        num_threads=0,
+    )
+    dataset = GeneDataset._from_preprocessed_raw(
+        raw=rust_preprocessed.to_torch(),
         species_tree_path=str(root / "sp.nwk"),
-        gene_tree_paths=genes,
+        gene_tree_paths=family_tree_paths,
         genewise=False,
         specieswise=False,
         dtype=dtype,
         device=device,
-        family_names=[Path(gene).stem for gene in genes],
-        _preprocess_progress=_make_dataset_progress_hook(args),
-        _uncached_preprocess_batch_size=args.uncached_preprocess_batch_size,
+        family_names=family_names,
+        leaf_species_maps=leaf_species_maps,
     )
     preprocess_s = time.perf_counter() - t0
     if _progress_enabled(args):
@@ -557,9 +556,9 @@ def _make_static_inputs(args: argparse.Namespace) -> StaticInputs:
         torch.tensor([args.theta_rate, args.theta_rate, args.theta_rate], device=device, dtype=dtype)
     )
 
-    clade_counts = [int(f["C"]) for f in dataset.families]
-    split_counts = [int(f["N_splits"]) for f in dataset.families]
-    selected_indices = list(range(len(dataset.families)))
+    rust_counts = rust_preprocessed.family_basic_counts()
+    clade_counts = [int(value) for value in rust_counts["clade_counts"]]
+    split_counts = [int(value) for value in rust_counts["split_counts"]]
     memory_policy = None
     if args.family_chunk_size == "auto" or args.max_wave_size == "auto":
         family_candidates = (
@@ -586,18 +585,25 @@ def _make_static_inputs(args: argparse.Namespace) -> StaticInputs:
         if args.max_wave_size == "auto":
             args.max_wave_size = memory_policy.max_wave_size
     args.memory_policy = memory_policy
-    specs = _make_chunks(
-        selected_indices,
-        clade_counts,
-        split_counts,
-        family_chunk_size=args.family_chunk_size,
-        clade_budget=None,
+
+    t1 = time.perf_counter()
+    built_chunks = _built_chunks_from_rust(
+        rust_preprocessed.build_chunked_layouts(
+            family_chunk_size=int(args.family_chunk_size),
+            clade_budget=None,
+            batch_packing="sequential",
+            max_wave_size=args.max_wave_size,
+            max_root_wave_size=None,
+            dtype=_dtype_name_for_rust(dtype),
+        ),
+        device=device,
+        dtype=dtype,
     )
     if _progress_enabled(args):
         _emit_progress(
             args,
             "chunk_policy_selected",
-            chunks=len(specs),
+            chunks=len(built_chunks),
             family_chunk_size=args.family_chunk_size,
             max_wave_size=args.max_wave_size if args.max_wave_size is not None else None,
             memory_policy_reason=memory_policy.reason if memory_policy is not None else None,
@@ -607,30 +613,7 @@ def _make_static_inputs(args: argparse.Namespace) -> StaticInputs:
                 else None
             ),
         )
-
-    t1 = time.perf_counter()
-    built_chunks = []
-    for chunk_idx, spec in enumerate(specs):
-        if _progress_enabled(args):
-            _emit_progress(
-                args,
-                "chunk_build_start",
-                idx=chunk_idx,
-                family_start=int(spec.indices[0]),
-                family_stop=int(spec.indices[-1]) + 1,
-                families=len(spec.indices),
-                clades=int(spec.clades),
-                splits=int(spec.splits),
-            )
-        built = _build_chunk(
-            dataset,
-            spec,
-            device=device,
-            dtype=dtype,
-            max_wave_size=args.max_wave_size,
-            max_root_wave_size=None,
-        )
-        built_chunks.append(built)
+    for chunk_idx, built in enumerate(built_chunks):
         if _progress_enabled(args):
             _emit_progress(args, "chunk_built", **_chunk_progress_row(chunk_idx, built))
     root_clade_id_lists = _root_clade_id_lists_for_chunks(built_chunks)
@@ -646,8 +629,8 @@ def _make_static_inputs(args: argparse.Namespace) -> StaticInputs:
         unnorm_row_max=unnorm_row_max,
         theta=theta,
         built_chunks=built_chunks,
+        rust_preprocessed=rust_preprocessed,
         root_clade_id_lists=root_clade_id_lists,
-        selected_indices=selected_indices,
         dtype=dtype,
         device=device,
         preprocess_s=preprocess_s,
@@ -994,21 +977,18 @@ def _run_pipeline_pass(
 
 
 def _one_chunk_layout(static: StaticInputs, args: argparse.Namespace) -> list[BuiltChunk]:
-    spec = ChunkSpec(
-        indices=list(static.selected_indices),
-        clades=sum(int(f["C"]) for f in static.dataset.families),
-        splits=sum(int(f["N_splits"]) for f in static.dataset.families),
-    )
-    return [
-        _build_chunk(
-            static.dataset,
-            spec,
-            device=static.device,
-            dtype=static.dtype,
+    return _built_chunks_from_rust(
+        static.rust_preprocessed.build_chunked_layouts(
+            family_chunk_size=0,
+            clade_budget=None,
+            batch_packing="sequential",
             max_wave_size=args.max_wave_size,
             max_root_wave_size=None,
-        )
-    ]
+            dtype=_dtype_name_for_rust(static.dtype),
+        ),
+        device=static.device,
+        dtype=static.dtype,
+    )
 
 
 def _maybe_compare_unchunked(

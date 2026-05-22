@@ -104,6 +104,51 @@ def test_chunked_uniform_from_folder_and_adam_step(tmp_path):
     assert after < before
 
 
+def test_chunked_uniform_rust_layout_is_deterministic():
+    _require_data_dir()
+
+    def build() -> UniformChunkedReconModel:
+        return UniformChunkedReconModel.from_folder(
+            DATA_DIR,
+            max_families=4,
+            device="cuda",
+            dtype=torch.float32,
+            theta_init_rates=(0.05, 0.05, 0.05),
+            family_chunk_size=2,
+            max_wave_size=128,
+            fixed_iters_Pi=6,
+        )
+
+    first = build()
+    second = build()
+
+    assert [
+        (
+            chunk.family_indices,
+            chunk.clade_count,
+            chunk.split_count,
+            chunk.wave_count,
+            chunk.max_wave_split_rows,
+        )
+        for chunk in first.chunk_metadata
+    ] == [
+        (
+            chunk.family_indices,
+            chunk.clade_count,
+            chunk.split_count,
+            chunk.wave_count,
+            chunk.max_wave_split_rows,
+        )
+        for chunk in second.chunk_metadata
+    ]
+    torch.testing.assert_close(
+        first.nll_per_family(),
+        second.nll_per_family(),
+        rtol=1e-6,
+        atol=1e-5,
+    )
+
+
 def test_chunked_uniform_chunk_subset_nll_and_gradient(tmp_path):
     _require_data_dir()
     model = UniformChunkedReconModel.from_folder(

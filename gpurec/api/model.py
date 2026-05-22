@@ -26,7 +26,6 @@ from pathlib import Path
 from threading import Lock
 from types import MappingProxyType
 from typing import Any, Optional, Sequence
-import warnings
 
 import torch
 
@@ -87,21 +86,6 @@ _MODE_MAP: dict[str, tuple[bool, bool]] = {
     "specieswise": (False, True),
     "genewise": (True, False),
 }
-
-
-def _warn_ignored_preprocess_cache_kwargs(
-    *,
-    preprocess_cache_dir: str | os.PathLike | None,
-    refresh_preprocess_cache: bool,
-) -> None:
-    if preprocess_cache_dir is None and not refresh_preprocess_cache:
-        return
-    warnings.warn(
-        "preprocess_cache_dir and refresh_preprocess_cache are deprecated and "
-        "ignored; preprocessing is no longer cached.",
-        DeprecationWarning,
-        stacklevel=3,
-    )
 
 
 def _normalize_mode(mode: str) -> str:
@@ -304,6 +288,14 @@ def _normalize_prefetch_batches(value: int | str | None, *, lazy: bool) -> int |
 def _normalize_gene_solver_kwargs(kwargs: dict[str, Any]) -> dict[str, Any]:
     """Validate public solver kwargs before CUDA setup or tree parsing."""
     normalized = dict(kwargs)
+    removed_cache_kwargs = sorted(
+        set(normalized).intersection(
+            {"preprocess_cache_dir", "refresh_preprocess_cache"}
+        )
+    )
+    if removed_cache_kwargs:
+        names = ", ".join(removed_cache_kwargs)
+        raise TypeError(f"preprocess caching has been removed; unsupported: {names}")
     if normalized.get("fixed_iters_E") is not None:
         normalized["fixed_iters_E"] = positive_int(
             "fixed_iters_E",
@@ -998,8 +990,6 @@ class GeneReconModel(torch.nn.Module):
         device: Any = "cuda",
         dtype: torch.dtype = torch.float32,
         theta_init_rates: Optional[tuple[float, float, float]] = None,
-        preprocess_cache_dir: str | os.PathLike | None = None,
-        refresh_preprocess_cache: bool = False,
         preprocess_cpu_cores: int | None = None,
         **solver_kwargs,
     ) -> "GeneReconModel":
@@ -1034,10 +1024,6 @@ class GeneReconModel(torch.nn.Module):
         theta_init_rates : (D, L, T) | None
             Optional natural-space initial rates. If ``None``, the dataset
             default of ``log2(1e-10)`` is used (matching GeneDataset).
-        preprocess_cache_dir : str | os.PathLike | None
-            Deprecated compatibility keyword. Preprocessing is no longer cached.
-        refresh_preprocess_cache : bool
-            Deprecated compatibility keyword. Preprocessing is no longer cached.
         preprocess_cpu_cores : int | None
             Optional worker thread count for CPU preprocessing.
         """
@@ -1049,10 +1035,6 @@ class GeneReconModel(torch.nn.Module):
         preprocess_cpu_cores = optional_positive_int(
             "preprocess_cpu_cores",
             preprocess_cpu_cores,
-        )
-        _warn_ignored_preprocess_cache_kwargs(
-            preprocess_cache_dir=preprocess_cache_dir,
-            refresh_preprocess_cache=refresh_preprocess_cache,
         )
         theta_base = theta_init_base_from_rates(
             theta_init_rates,
@@ -1101,17 +1083,13 @@ class GeneReconModel(torch.nn.Module):
         device: Any = "cuda",
         dtype: torch.dtype = torch.float32,
         theta_init_rates: Optional[tuple[float, float, float]] = None,
-        preprocess_cache_dir: str | os.PathLike | None = None,
-        refresh_preprocess_cache: bool = False,
         preprocess_cpu_cores: int | None = None,
         **solver_kwargs,
     ) -> "GeneReconModel":
         """Build from an AleRax ``[FAMILIES]`` file with CCP/tree samples.
 
         Referenced species and gene tree files use the same supported simple
-        Newick subset as :meth:`from_trees`. ``preprocess_cache_dir`` and
-        ``refresh_preprocess_cache`` are retained as deprecated compatibility
-        keywords; preprocessing is no longer cached. ``preprocess_cpu_cores``
+        Newick subset as :meth:`from_trees`. ``preprocess_cpu_cores``
         optionally fixes the worker thread count for CPU preprocessing.
         """
         mode = _normalize_mode(mode)
@@ -1123,10 +1101,6 @@ class GeneReconModel(torch.nn.Module):
         preprocess_cpu_cores = optional_positive_int(
             "preprocess_cpu_cores",
             preprocess_cpu_cores,
-        )
-        _warn_ignored_preprocess_cache_kwargs(
-            preprocess_cache_dir=preprocess_cache_dir,
-            refresh_preprocess_cache=refresh_preprocess_cache,
         )
         theta_base = theta_init_base_from_rates(
             theta_init_rates,

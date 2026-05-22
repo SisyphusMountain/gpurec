@@ -64,7 +64,7 @@ struct FamilySchedule {
 
 type LocalClade = (usize, usize);
 
-fn default_dts_partial_tile_splits() -> usize {
+pub(crate) fn default_dts_partial_tile_splits() -> usize {
     64
 }
 

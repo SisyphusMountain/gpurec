@@ -124,7 +124,7 @@ def _package_env_flags(root: Path) -> list[str]:
 
 def _runtime_read_env_flags(root: Path) -> list[str]:
     read_flags: set[str] = set()
-    env_read_helpers = {"_env_flag_enabled", "_env_mode_enabled_required"}
+    env_read_helpers: set[str] = set()
 
     for path in _tracked_package_python_files(root):
         module = ast.parse(path.read_text(encoding="utf-8"))
@@ -1015,7 +1015,7 @@ def test_project_readme_documents_preprocess_cpu_core_guidance():
 
     assert "--preprocess-cpu-cores 8" in normalized
     assert "worker thread count for CPU preprocessing" in normalized
-    assert "selected backend's runtime default" in normalized
+    assert "Rust preprocessing uses its runtime default" in normalized
 
 
 def test_project_readme_documents_workflow_config_aliases():
@@ -2344,7 +2344,8 @@ def test_documented_uniform_pipeline_benchmark_help_imports_current_api():
     assert "--family-chunk-size" in result.stdout
     assert "--stats-only" in result.stdout
     assert "_UniformBuiltChunk as BuiltChunk" in source
-    assert "_UniformChunkSpec as ChunkSpec" in source
+    assert "_built_chunks_from_rust" in source
+    assert "RustPreprocessExtension" in source
     assert "compute_nll" in source
     assert ("compute_log_" + "likelihood") not in source
 
@@ -2413,26 +2414,24 @@ def test_full_benchmark_status_records_timed_evidence_and_diagnostic_boundary():
         "valid full 1000-family timed run exists",
         "Windowed preflight remains a setup diagnostic only",
         "`performance_evidence 0`",
-        "must not justify deleting self-loop backends",
-        "active-mask pruning modes",
-        "environment flags",
-        "scheduler policies",
+        "Triton-only for backward kernels",
+        "Rust-only for scheduling/chunk layout",
+        "does not use preprocessing result caches",
         "After deleting the generated caches and removing inclusion-DAG materialization",
         "pipeline_policy families 1000 chunks 40 family_chunk_size 25 max_wave_size 8192",
         "strict_optimized_verdict pass",
         "pipeline_summary reps 3",
-        "forward_median_ms 2179.338",
-        "backward_median_ms 1637.578",
-        "total_median_ms 3817.207",
+        "forward_median_ms 2169.380",
+        "backward_median_ms 3699.282",
+        "total_median_ms 5867.989",
         "grad_finite 1",
     ):
         assert token in lean_fast_path_status
     for token in (
-        "Do not remove self-loop backends, CPU-pruning branches, env toggles, "
-        "or scheduler alternatives while the 1000-family benchmark still lacks "
-        "a valid timed run",
-        "Windowed preflight can now diagnose setup coverage across large family "
-        "ranges, but it is explicitly not performance evidence",
+        "superseded by the follow-up cleanup",
+        "Triton-only for backward kernels",
+        "diagnostic env toggles and scheduler alternatives have been removed",
+        "1000-family benchmark now has a valid timed run",
     ):
         assert token in execution_log_status
     assert '"performance_evidence", 0' in benchmark_source

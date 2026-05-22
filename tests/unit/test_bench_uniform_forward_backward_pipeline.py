@@ -54,29 +54,6 @@ def test_progress_jsonl_is_quiet_when_not_requested(capsys: pytest.CaptureFixtur
     assert capsys.readouterr().out == ""
 
 
-def test_dataset_progress_hook_prefixes_benchmark_events(
-    capsys: pytest.CaptureFixture[str],
-):
-    bench = _load_bench_module()
-    args = argparse.Namespace(progress_jsonl=True)
-
-    hook = bench._make_dataset_progress_hook(args)
-    assert hook is not None
-    hook("batch_start", idx=3, family="fam3")
-
-    payload = json.loads(capsys.readouterr().out)
-    assert payload["event"] == "dataset_preprocess_batch_start"
-    assert payload["idx"] == 3
-    assert payload["family"] == "fam3"
-
-
-def test_dataset_progress_hook_is_disabled_without_progress_jsonl():
-    bench = _load_bench_module()
-    args = argparse.Namespace(progress_jsonl=False)
-
-    assert bench._make_dataset_progress_hook(args) is None
-
-
 def test_make_static_inputs_progress_reports_setup_sizes(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
@@ -103,11 +80,39 @@ def test_make_static_inputs_progress_reports_setup_sizes(
         seen_kwargs = {}
 
         def __init__(self, **kwargs):
-            self.seen_kwargs = dict(kwargs)
-            FakeDataset.seen_kwargs = self.seen_kwargs
+            if kwargs:
+                self.seen_kwargs = dict(kwargs)
+                FakeDataset.seen_kwargs = self.seen_kwargs
 
         def _species_helpers_for_mode(self, **_kwargs):
             return {}, None
+
+        @classmethod
+        def _from_preprocessed_raw(cls, **kwargs):
+            cls.seen_kwargs = dict(kwargs)
+            return cls()
+
+    class FakeRustPreprocessed:
+        build_requests: list[dict[str, object]] = []
+
+        def to_torch(self):
+            return {}
+
+        def family_basic_counts(self):
+            return {
+                "clade_counts": [11, 13],
+                "split_counts": [17, 19],
+            }
+
+        def build_chunked_layouts(self, **kwargs):
+            self.build_requests.append(dict(kwargs))
+            return [{"unit": True}]
+
+    fake_rust_preprocessed = FakeRustPreprocessed()
+
+    class FakeRustExtension:
+        def preprocess_dataset(self, *_args, **_kwargs):
+            return fake_rust_preprocessed
 
     spec = SimpleNamespace(indices=[0, 1], clades=24, splits=36)
     built = SimpleNamespace(
@@ -131,10 +136,10 @@ def test_make_static_inputs_progress_reports_setup_sizes(
     monkeypatch.setattr(bench.torch, "tensor", lambda *_args, **_kwargs: FakeTensor())
     monkeypatch.setattr(bench.torch, "log2", lambda value: value)
     monkeypatch.setattr(bench, "GeneDataset", FakeDataset)
+    monkeypatch.setattr(bench, "RustPreprocessExtension", FakeRustExtension)
     monkeypatch.setattr(bench, "_selected_gene_paths", lambda *_args, **_kwargs: ["g0", "g1"])
     monkeypatch.setattr(bench, "choose_uniform_pipeline_policy", lambda *_args, **_kwargs: policy)
-    monkeypatch.setattr(bench, "_make_chunks", lambda *_args, **_kwargs: [spec])
-    monkeypatch.setattr(bench, "_build_chunk", lambda *_args, **_kwargs: built)
+    monkeypatch.setattr(bench, "_built_chunks_from_rust", lambda *_args, **_kwargs: [built])
 
     args = argparse.Namespace(
         progress_jsonl=True,
@@ -142,7 +147,6 @@ def test_make_static_inputs_progress_reports_setup_sizes(
         start=0,
         fams=2,
         dtype=bench.torch.float32,
-        uncached_preprocess_batch_size=7,
         theta_rate=0.05,
         family_chunk_size="auto",
         max_wave_size="auto",
@@ -160,7 +164,6 @@ def test_make_static_inputs_progress_reports_setup_sizes(
         "gene_selection_done",
         "dataset_loaded",
         "chunk_policy_selected",
-        "chunk_build_start",
         "chunk_built",
         "static_inputs_done",
     ]
@@ -169,11 +172,20 @@ def test_make_static_inputs_progress_reports_setup_sizes(
     assert events[2]["total_clades"] == 24
     assert events[3]["chunks"] == 1
     assert events[3]["family_chunk_size"] == 2
-    assert events[5]["max_wave_split_rows"] == 19
-    assert events[6]["total_splits"] == 36
+    assert events[4]["max_wave_split_rows"] == 19
+    assert events[5]["total_splits"] == 36
     assert static.built_chunks == [built]
     assert FakeDataset.seen_kwargs["family_names"] == ["g0", "g1"]
-    assert FakeDataset.seen_kwargs["_uncached_preprocess_batch_size"] == 7
+    assert fake_rust_preprocessed.build_requests == [
+        {
+            "family_chunk_size": 2,
+            "clade_budget": None,
+            "batch_packing": "sequential",
+            "max_wave_size": 128,
+            "max_root_wave_size": None,
+            "dtype": "float32",
+        }
+    ]
 
 
 def test_setup_only_alias_maps_to_preflight_flag(monkeypatch: pytest.MonkeyPatch):
@@ -286,38 +298,3 @@ def test_windowed_preflight_runs_sequential_setup_windows_and_reports_progress(
         "preflight_window_done",
         "windowed_preflight_done",
     ]
-
-
-def test_uncached_preprocess_batch_size_arg(monkeypatch: pytest.MonkeyPatch):
-    bench = _load_bench_module()
-    monkeypatch.setattr(
-        bench.sys,
-        "argv",
-        [
-            "bench_uniform_forward_backward_pipeline.py",
-            "--uncached-preprocess-batch-size",
-            "3",
-        ],
-    )
-
-    args = bench._parse_args()
-
-    assert args.uncached_preprocess_batch_size == 3
-
-
-def test_uncached_preprocess_batch_size_rejects_nonpositive(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    bench = _load_bench_module()
-    monkeypatch.setattr(
-        bench.sys,
-        "argv",
-        [
-            "bench_uniform_forward_backward_pipeline.py",
-            "--uncached-preprocess-batch-size",
-            "0",
-        ],
-    )
-
-    with pytest.raises(ValueError, match="uncached-preprocess-batch-size"):
-        bench._parse_args()

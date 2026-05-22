@@ -1461,8 +1461,6 @@ def test_public_tree_constructors_reject_invalid_gene_trees_before_device(
     else:
         gene_trees = []
 
-    monkeypatch.delenv("GPUREC_SELF_LOOP_2D_BLOCK_W", raising=False)
-
     with pytest.raises(ValueError, match="gene_trees") as exc_info:
         if factory == "gene_from_trees":
             GeneReconModel.from_trees(
@@ -1485,7 +1483,6 @@ def test_public_tree_constructors_reject_invalid_gene_trees_before_device(
 
     assert "CUDA" not in str(exc_info.value)
     assert "missing" not in str(exc_info.value)
-    assert "GPUREC_SELF_LOOP_2D_BLOCK_W" not in os.environ
 
 
 def test_gene_dataset_rejects_single_gene_tree_path_before_extension(
@@ -1496,9 +1493,9 @@ def test_gene_dataset_rejects_single_gene_tree_path_before_extension(
 
     def fake_load_extension():
         calls.append(True)
-        raise AssertionError("_load_species_gene_ext should not run")
+        raise AssertionError("_load_preprocess_extension should not run")
 
-    monkeypatch.setattr("gpurec.core.model._load_species_gene_ext", fake_load_extension)
+    monkeypatch.setattr("gpurec.core.model._load_preprocess_extension", fake_load_extension)
 
     with pytest.raises(ValueError, match="gene_trees"):
         GeneDataset(
@@ -1520,9 +1517,9 @@ def test_gene_dataset_rejects_duplicate_family_names_before_extension(
 
     def fake_load_extension():
         calls.append(True)
-        raise AssertionError("_load_species_gene_ext should not run")
+        raise AssertionError("_load_preprocess_extension should not run")
 
-    monkeypatch.setattr("gpurec.core.model._load_species_gene_ext", fake_load_extension)
+    monkeypatch.setattr("gpurec.core.model._load_preprocess_extension", fake_load_extension)
 
     with pytest.raises(ValueError, match="duplicate family name 'fam0'"):
         GeneDataset(
@@ -1649,63 +1646,23 @@ def test_gene_recon_from_trees_normalizes_mode_like_uniform_api(
     assert calls["theta_dtype"] is torch.float64
 
 
-def test_public_constructors_warn_and_ignore_deprecated_preprocessing_cache_kwargs(
+@pytest.mark.parametrize(
+    "factory",
+    (
+        GeneReconModel.from_trees,
+        UniformChunkedReconModel.from_trees,
+    ),
+)
+def test_public_constructors_reject_removed_preprocessing_cache_kwargs(
     tmp_path: Path,
-    monkeypatch,
+    factory,
 ):
-    gene_dataset_kwargs: dict[str, object] = {}
-    uniform_kwargs: dict[str, object] = {}
-
-    class FakeDataset:
-        S = 1
-
-        def __init__(self, **kwargs: object) -> None:
-            gene_dataset_kwargs.update(kwargs)
-            self.genewise = False
-            self.specieswise = False
-            self.dtype = kwargs["dtype"]
-            self.device = kwargs["device"]
-            self.families = [object()]
-
-    def fake_gene_init(self: GeneReconModel, **_kwargs: object) -> None:
-        return None
-
-    def fake_uniform_init(self: UniformChunkedReconModel, **kwargs: object) -> None:
-        uniform_kwargs.update(kwargs)
-
-    monkeypatch.setattr(api_model, "GeneDataset", FakeDataset)
-    monkeypatch.setattr(
-        api_model,
-        "require_cuda_device",
-        lambda device, *, owner: torch.device("cpu"),
-    )
-    monkeypatch.setattr(api_model.GeneReconModel, "__init__", fake_gene_init)
-    monkeypatch.setattr(
-        uniform_chunked_api.UniformChunkedReconModel,
-        "__init__",
-        fake_uniform_init,
-    )
-
-    with pytest.warns(DeprecationWarning, match="preprocessing is no longer cached"):
-        GeneReconModel.from_trees(
-            tmp_path / "sp.nwk",
-            [tmp_path / "g.nwk"],
-            device="cpu",
-            preprocess_cache_dir=tmp_path / "cache",
-            refresh_preprocess_cache=True,
-        )
-    with pytest.warns(DeprecationWarning, match="preprocessing is no longer cached"):
-        UniformChunkedReconModel.from_trees(
+    with pytest.raises(TypeError, match="preprocess caching has been removed"):
+        factory(
             tmp_path / "sp.nwk",
             [tmp_path / "g.nwk"],
             preprocess_cache_dir=tmp_path / "cache",
-            refresh_preprocess_cache=True,
         )
-
-    assert "preprocess_cache_dir" not in gene_dataset_kwargs
-    assert "refresh_preprocess_cache" not in gene_dataset_kwargs
-    assert "preprocess_cache_dir" not in uniform_kwargs
-    assert "refresh_preprocess_cache" not in uniform_kwargs
 
 
 @pytest.mark.parametrize("dtype", [torch.int64, torch.float16, "float32"])
@@ -1989,7 +1946,6 @@ def test_uniform_chunked_factories_reject_invalid_solver_controls_before_device_
         ({"use_pruning": "false"}, "use_pruning"),
         ({"warm_start_E": "false"}, "warm_start_E"),
         ({"profile": "false"}, "profile"),
-        ({"set_optimized_env": "false"}, "set_optimized_env"),
     ],
 )
 def test_uniform_chunked_init_rejects_nonbool_controls_before_side_effects(
@@ -1998,8 +1954,6 @@ def test_uniform_chunked_init_rejects_nonbool_controls_before_side_effects(
     kwargs: dict[str, object],
     message: str,
 ):
-    monkeypatch.delenv("GPUREC_SELF_LOOP_2D_BLOCK_W", raising=False)
-
     with pytest.raises(ValueError, match=message) as exc_info:
         UniformChunkedReconModel(
             species_tree=tmp_path / "missing_species.nwk",
@@ -2009,7 +1963,6 @@ def test_uniform_chunked_init_rejects_nonbool_controls_before_side_effects(
         )
 
     assert "CUDA" not in str(exc_info.value)
-    assert "GPUREC_SELF_LOOP_2D_BLOCK_W" not in os.environ
 
 
 @pytest.mark.parametrize(
@@ -2041,7 +1994,6 @@ def test_uniform_chunked_init_rejects_nonbool_controls_before_side_effects(
         ({"use_pruning": "false"}, "use_pruning"),
         ({"warm_start_E": "false"}, "warm_start_E"),
         ({"profile": "false"}, "profile"),
-        ({"set_optimized_env": "false"}, "set_optimized_env"),
     ],
 )
 def test_uniform_chunked_factories_reject_nonbool_controls_before_device_or_io(
@@ -2058,6 +2010,34 @@ def test_uniform_chunked_factories_reject_nonbool_controls_before_device_or_io(
 
     assert "CUDA" not in str(exc_info.value)
     assert "missing" not in str(exc_info.value)
+
+
+@pytest.mark.parametrize(
+    ("factory", "args"),
+    [
+        (
+            UniformChunkedReconModel.from_trees,
+            lambda tmp_path: (
+                tmp_path / "missing_species.nwk",
+                [tmp_path / "missing_gene.nwk"],
+            ),
+        ),
+        (
+            UniformChunkedReconModel.from_alerax_families,
+            lambda tmp_path: (
+                tmp_path / "missing_species.nwk",
+                tmp_path / "missing_families.txt",
+            ),
+        ),
+    ],
+)
+def test_uniform_chunked_factories_reject_removed_optimized_env_toggle(
+    tmp_path: Path,
+    factory,
+    args,
+):
+    with pytest.raises(TypeError, match="optimized environment toggles"):
+        factory(*args(tmp_path), set_optimized_env=False)
 
 
 @pytest.mark.parametrize(

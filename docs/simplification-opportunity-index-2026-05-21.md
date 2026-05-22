@@ -208,16 +208,17 @@ Gate:
 
 ### BWD-01 - Keep One Production Self-Loop Backend
 
-Current alternatives:
+Original alternatives:
 
-- `gpurec/core/backward.py` can route through retained Triton paths and
-  experimental native CUDA self-loop paths controlled by environment flags.
-- Several CUDA self-loop flags select split, no-split, correction, block size,
-  and edge-weight variants.
+- `gpurec/core/backward.py` previously could route through retained Triton
+  paths and experimental native CUDA self-loop paths controlled by environment
+  flags.
+- Several removed CUDA self-loop flags selected split, no-split, correction,
+  block size, and edge-weight variants.
 
 Simplification:
 
-- Benchmark and keep one production self-loop backend.
+- Completed: keep the retained Triton self-loop backend as the production path.
 - Move remaining prototypes to an experimental module, or delete them if they
   are not actively used.
 

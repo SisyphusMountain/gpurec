@@ -2,11 +2,6 @@ from pathlib import Path
 
 import torch
 
-from gpurec.core.batch_planning import _plan_family_batches_python as py_plan_batches
-from gpurec.core.batching import (
-    family_schedule_summary as py_family_schedule_summary,
-    schedule_global_phased_waves as py_schedule,
-)
 from gpurec.core.model import parse_alerax_family_file
 from gpurec.core.preprocess_rust import RustPreprocessExtension
 from gpurec.core.schedule_rust import (
@@ -34,10 +29,6 @@ def _ccp(C, parents, lefts, rights, root):
     }
 
 
-def _assert_scheduler_parity(items, offsets, **kwargs):
-    assert rust_schedule(items, offsets, **kwargs) == py_schedule(items, offsets, **kwargs)
-
-
 def _plain_batch_plans(plans):
     return [
         {
@@ -49,34 +40,34 @@ def _plain_batch_plans(plans):
     ]
 
 
-def _assert_batch_plan_parity(**kwargs):
-    assert _plain_batch_plans(rust_plan_batches(**kwargs)) == _plain_batch_plans(
-        py_plan_batches(**kwargs)
-    )
-
-
-def test_rust_scheduler_matches_python_ready_packing_and_root_caps():
+def test_rust_scheduler_ready_packing_and_root_caps():
     items = [
         {"ccp": _ccp(4, [0, 1], [1, 3], [2, 3], root=0)},
         {"ccp": _ccp(4, [0, 1], [1, 3], [2, 3], root=0)},
     ]
-    _assert_scheduler_parity(items, [0, 4], max_wave_size=4)
-    _assert_scheduler_parity(items, [0, 4], max_wave_size=2)
+    assert rust_schedule(items, [0, 4], max_wave_size=4) == (
+        [[2, 3, 6, 7], [1, 5], [0, 4]],
+        [1, 2, 3],
+    )
+    assert rust_schedule(items, [0, 4], max_wave_size=2) == (
+        [[2, 3], [6, 7], [1, 5], [0, 4]],
+        [1, 1, 2, 3],
+    )
 
     root_items = [
         {"ccp": _ccp(2, [0], [1], [1], root=0)},
         {"ccp": _ccp(2, [0], [1], [1], root=0)},
         {"ccp": _ccp(2, [0], [1], [1], root=0)},
     ]
-    _assert_scheduler_parity(
-        root_items,
-        [0, 2, 4],
-        max_wave_size=6,
-        max_root_wave_size=1,
+    assert rust_schedule(
+        root_items, [0, 2, 4], max_wave_size=6, max_root_wave_size=1
+    ) == (
+        [[1, 3, 5], [0], [2], [4]],
+        [1, 3, 3, 3],
     )
 
 
-def test_rust_scheduler_matches_python_compaction_policies():
+def test_rust_scheduler_compaction_policies():
     deadline_parents = [
         0, 0, 1, 0, 2, 1, 4, 1, 5, 8, 1, 4,
         7, 5, 1, 2, 7, 4, 5, 2, 3, 0, 1, 2,
@@ -89,23 +80,29 @@ def test_rust_scheduler_matches_python_compaction_policies():
         3, 2, 5, 5, 7, 7, 7, 8, 9, 9, 9, 7,
         8, 6, 8, 8, 8, 7, 9, 6, 9, 3, 8, 8,
     ]
-    _assert_scheduler_parity(
+    assert rust_schedule(
         [{"ccp": _ccp(10, deadline_parents, deadline_lefts, deadline_rights, root=0)}],
         [0],
         max_wave_size=2,
+    ) == (
+        [[6, 9], [8], [5, 7], [4, 3], [1, 2], [0]],
+        [1, 2, 2, 2, 2, 3],
     )
 
     layered_parents = [0, 0, 0, 1, 1, 1, 2, 2, 2, 3, 3, 4, 6]
     layered_lefts = [7, 3, 3, 6, 7, 7, 6, 6, 4, 5, 5, 7, 7]
     layered_rights = [7, 6, 3, 4, 5, 6, 3, 4, 4, 5, 7, 7, 7]
-    _assert_scheduler_parity(
+    assert rust_schedule(
         [{"ccp": _ccp(8, layered_parents, layered_lefts, layered_rights, root=0)}],
         [0],
         max_wave_size=2,
+    ) == (
+        [[5, 7], [6, 4], [3, 1], [2, 0]],
+        [1, 2, 2, 2],
     )
 
 
-def test_rust_scheduler_matches_python_dts_partial_cap():
+def test_rust_scheduler_dts_partial_cap():
     parents = [0, 0, 0]
     lefts = [1, 3, 5]
     rights = [2, 4, 5]
@@ -124,16 +121,19 @@ def test_rust_scheduler_matches_python_dts_partial_cap():
             lefts.append(left)
             rights.append(right)
 
-    _assert_scheduler_parity(
+    waves, phases = rust_schedule(
         [{"ccp": _ccp(16, parents, lefts, rights, root=0)}],
         [0],
         max_wave_size=16,
         max_dts_partial_rows=8,
         dts_partial_tile_splits=4,
     )
+    assert len(waves) == 4
+    assert phases == [1, 2, 2, 3]
+    assert waves[1] == [1, 2]
 
 
-def test_rust_family_schedule_summary_matches_python():
+def test_rust_family_schedule_summary_contract():
     ccp = _ccp(
         6,
         [0, 1, 2, 3],
@@ -142,10 +142,15 @@ def test_rust_family_schedule_summary_matches_python():
         root=0,
     )
 
-    assert rust_family_schedule_summary(ccp) == py_family_schedule_summary(ccp)
+    assert rust_family_schedule_summary(ccp) == {
+        "clade_count": 6,
+        "leaf_count": 2,
+        "nonleaf_count": 4,
+        "max_level": 2,
+    }
 
 
-def test_rust_scheduler_matches_python_on_hogenom_bench_fixture():
+def test_rust_scheduler_on_hogenom_bench_fixture():
     names, tree_paths, leaf_maps = parse_alerax_family_file(HOGENOM_BENCH / "families.txt")
     families = {name: paths for name, paths in zip(names, tree_paths)}
     leaf_species_maps = {
@@ -174,7 +179,9 @@ def test_rust_scheduler_matches_python_on_hogenom_bench_fixture():
         offsets.append(offset)
         offset += int(ccp["C"])
 
-    _assert_scheduler_parity(items, offsets, max_wave_size=8192)
+    waves, phases = rust_schedule(items, offsets, max_wave_size=8192)
+    assert len(waves) == len(phases)
+    assert sorted(clade for wave in waves for clade in wave) == list(range(offset))
 
     clade_counts = []
     split_counts = []
@@ -190,28 +197,43 @@ def test_rust_scheduler_matches_python_on_hogenom_bench_fixture():
         nonleaf_counts.append(int(summary["nonleaf_count"]))
         schedule_depths.append(int(summary["max_level"]))
 
-    _assert_batch_plan_parity(
-        clade_counts=clade_counts,
-        split_counts=split_counts,
-        family_chunk_size=128,
-        clade_budget=None,
-        batch_packing="sequential",
+    sequential = _plain_batch_plans(
+        rust_plan_batches(
+            clade_counts=clade_counts,
+            split_counts=split_counts,
+            family_chunk_size=128,
+            clade_budget=None,
+            batch_packing="sequential",
+        )
     )
-    _assert_batch_plan_parity(
-        clade_counts=clade_counts,
-        split_counts=split_counts,
-        family_chunk_size=0,
-        clade_budget=50_000,
-        batch_packing="clade_first_fit",
+    assert [idx for plan in sequential for idx in plan["indices"]] == list(range(len(names)))
+
+    clade_ffd = _plain_batch_plans(
+        rust_plan_batches(
+            clade_counts=clade_counts,
+            split_counts=split_counts,
+            family_chunk_size=0,
+            clade_budget=50_000,
+            batch_packing="clade_first_fit",
+        )
     )
-    _assert_batch_plan_parity(
-        clade_counts=clade_counts,
-        split_counts=split_counts,
-        leaf_counts=leaf_counts,
-        nonleaf_counts=nonleaf_counts,
-        schedule_depths=schedule_depths,
-        family_chunk_size=0,
-        clade_budget=50_000,
-        batch_packing="depth_first_fit",
-        max_wave_size=8192,
+    depth_ffd = _plain_batch_plans(
+        rust_plan_batches(
+            clade_counts=clade_counts,
+            split_counts=split_counts,
+            leaf_counts=leaf_counts,
+            nonleaf_counts=nonleaf_counts,
+            schedule_depths=schedule_depths,
+            family_chunk_size=0,
+            clade_budget=50_000,
+            batch_packing="depth_first_fit",
+            max_wave_size=8192,
+        )
     )
+    for plans in (clade_ffd, depth_ffd):
+        assert sorted(idx for plan in plans for idx in plan["indices"]) == list(
+            range(len(names))
+        )
+        for plan in plans:
+            assert plan["clades"] == sum(clade_counts[idx] for idx in plan["indices"])
+            assert plan["splits"] == sum(split_counts[idx] for idx in plan["indices"])

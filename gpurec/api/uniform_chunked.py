@@ -14,7 +14,6 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Sequence
-import warnings
 
 import torch
 
@@ -22,7 +21,6 @@ from gpurec.core.backward import Pi_wave_backward
 from gpurec.core.batch_planning import (
     normalize_batch_packing,
     normalize_clade_budget,
-    plan_family_batches,
 )
 from gpurec.core.extract_parameters import extract_parameters_uniform
 from gpurec.core.forward import (
@@ -49,11 +47,6 @@ from gpurec.core.origination import (
 )
 from gpurec.optimization.implicit_grad import _e_adjoint_and_theta_vjp
 
-from ._family_layout import (
-    build_family_wave_layout,
-    family_schedule_summary,
-    family_wave_inputs,
-)
 from ._validation import (
     auto_int as _as_auto_int,
     auto_nonnegative_int as _auto_nonnegative_int,
@@ -72,10 +65,6 @@ from ._validation import (
     theta_init_base_from_rates,
 )
 
-
-UNIFORM_OPTIMIZED_DEFAULT_FLAGS = {
-    "GPUREC_SELF_LOOP_2D_BLOCK_W": "1",
-}
 
 _PI_BACKWARD_TENSOR_KEYS = (
     "grad_E",
@@ -200,33 +189,22 @@ class _UniformChunkStatsRow:
         }
 
 
-def _set_default_flags() -> None:
-    for key, value in UNIFORM_OPTIMIZED_DEFAULT_FLAGS.items():
-        os.environ.setdefault(key, value)
-
-
-def _warn_ignored_preprocess_cache_kwargs(
-    *,
-    preprocess_cache_dir: str | os.PathLike | None,
-    refresh_preprocess_cache: bool,
-) -> None:
-    if preprocess_cache_dir is None and not refresh_preprocess_cache:
-        return
-    warnings.warn(
-        "preprocess_cache_dir and refresh_preprocess_cache are deprecated and "
-        "ignored; preprocessing is no longer cached.",
-        DeprecationWarning,
-        stacklevel=3,
-    )
-
-
 def _normalize_uniform_solver_kwargs(kwargs: dict[str, Any]) -> dict[str, Any]:
     """Validate public solver kwargs before CUDA setup or AleRax parsing."""
     normalized = dict(kwargs)
-    _warn_ignored_preprocess_cache_kwargs(
-        preprocess_cache_dir=normalized.pop("preprocess_cache_dir", None),
-        refresh_preprocess_cache=bool(normalized.pop("refresh_preprocess_cache", False)),
+    removed_cache_kwargs = sorted(
+        set(normalized).intersection(
+            {"preprocess_cache_dir", "refresh_preprocess_cache"}
+        )
     )
+    if removed_cache_kwargs:
+        names = ", ".join(removed_cache_kwargs)
+        raise TypeError(f"preprocess caching has been removed; unsupported: {names}")
+    if "set_optimized_env" in normalized:
+        raise TypeError(
+            "optimized environment toggles have been removed; unsupported: "
+            "set_optimized_env"
+        )
     if "dtype" in normalized:
         normalized["dtype"] = _validate_uniform_dtype(normalized["dtype"])
     if normalized.get("fixed_iters_E") is not None:
@@ -260,7 +238,6 @@ def _normalize_uniform_solver_kwargs(kwargs: dict[str, Any]) -> dict[str, Any]:
         "use_pruning",
         "warm_start_E",
         "profile",
-        "set_optimized_env",
     ):
         if name in normalized:
             normalized[name] = bool_value(name, normalized[name])
@@ -336,73 +313,91 @@ def _selected_gene_paths(
     return [str(p) for p in selected]
 
 
-def _make_chunks(
-    indices: Sequence[int],
-    clade_counts: Sequence[int],
-    split_counts: Sequence[int],
-    *,
-    family_chunk_size: int,
-    clade_budget: int | None,
-    batch_packing: str = "sequential",
-    leaf_counts: Sequence[int] | None = None,
-    nonleaf_counts: Sequence[int] | None = None,
-    schedule_depths: Sequence[int] | None = None,
-    max_wave_size: int | None = None,
-) -> list[_UniformChunkSpec]:
-    plans = plan_family_batches(
-        indices=indices,
-        clade_counts=clade_counts,
-        split_counts=split_counts,
-        family_chunk_size=family_chunk_size,
-        clade_budget=clade_budget,
-        batch_packing=batch_packing,
-        leaf_counts=leaf_counts,
-        nonleaf_counts=nonleaf_counts,
-        schedule_depths=schedule_depths,
-        max_wave_size=max_wave_size,
-    )
-    return [
-        _UniformChunkSpec(plan.indices, plan.clades, plan.splits)
-        for plan in plans
-    ]
+def _dtype_name_for_rust(dtype: torch.dtype) -> str:
+    if dtype == torch.float32:
+        return "float32"
+    if dtype == torch.float64:
+        return "float64"
+    raise ValueError(f"unsupported fused Rust layout dtype: {dtype}")
 
 
-def _build_chunk(
-    dataset: GeneDataset,
-    spec: _UniformChunkSpec,
+def _normalize_preprocess_inputs(
+    gene_paths: Sequence[str | os.PathLike[str] | Sequence[str | os.PathLike[str]]],
+    family_names: Sequence[str] | None,
+    leaf_species_maps: Sequence[dict[str, str]] | None,
+) -> tuple[list[list[str]], list[str], list[dict[str, str]]]:
+    family_tree_paths = normalize_family_tree_paths(gene_paths)
+    if family_names is None:
+        names = [f"family_{i:06d}" for i in range(len(family_tree_paths))]
+    else:
+        names = [str(name) for name in family_names]
+    if len(names) != len(family_tree_paths):
+        raise ValueError("family_names must match gene_tree_paths length")
+    seen_family_names: set[str] = set()
+    for name in names:
+        if name in seen_family_names:
+            raise ValueError(f"duplicate family name {name!r} in family_names")
+        seen_family_names.add(name)
+    if leaf_species_maps is None:
+        maps = [{} for _ in family_tree_paths]
+    else:
+        maps = [dict(m) for m in leaf_species_maps]
+    if len(maps) != len(family_tree_paths):
+        raise ValueError("leaf_species_maps must match gene_tree_paths length")
+    return family_tree_paths, names, maps
+
+
+def _move_wave_layout_to_device(
+    value: Any,
     *,
     device: torch.device,
     dtype: torch.dtype,
-    max_wave_size: int | None,
-    max_root_wave_size: int | None,
-) -> _UniformBuiltChunk:
-    family_layout = build_family_wave_layout(
-        family_wave_inputs(dataset, spec.indices),
-        device=device,
-        dtype=dtype,
-        max_wave_size=max_wave_size,
-        max_root_wave_size=max_root_wave_size,
-    )
-    wave_layout = family_layout.wave_layout
+) -> Any:
+    if torch.is_tensor(value):
+        if value.dtype.is_floating_point:
+            return value.to(device=device, dtype=dtype)
+        return value.to(device=device)
+    if isinstance(value, list):
+        return [
+            _move_wave_layout_to_device(item, device=device, dtype=dtype)
+            for item in value
+        ]
+    if isinstance(value, dict):
+        return {
+            key: _move_wave_layout_to_device(item, device=device, dtype=dtype)
+            for key, item in value.items()
+        }
+    return value
 
-    metas = wave_layout["wave_metas"]
-    max_wave = max((int(m["W"]) for m in metas), default=0)
-    split_rows = sum(int(m["sl"].numel()) for m in metas if m.get("has_splits", False))
-    max_wave_split_rows = max(
-        (
-            int(m["sl"].numel()) if m.get("has_splits", False) else 0
-            for m in metas
-        ),
-        default=0,
-    )
-    return _UniformBuiltChunk(
-        spec=spec,
-        wave_layout=wave_layout,
-        waves=len(metas),
-        max_wave=max_wave,
-        split_rows=split_rows,
-        max_wave_split_rows=max_wave_split_rows,
-    )
+
+def _built_chunks_from_rust(
+    chunk_payloads: Sequence[dict[str, Any]],
+    *,
+    device: torch.device,
+    dtype: torch.dtype,
+) -> list[_UniformBuiltChunk]:
+    built_chunks: list[_UniformBuiltChunk] = []
+    for payload in chunk_payloads:
+        spec = _UniformChunkSpec(
+            indices=[int(idx) for idx in payload["indices"]],
+            clades=int(payload["clades"]),
+            splits=int(payload["splits"]),
+        )
+        built_chunks.append(
+            _UniformBuiltChunk(
+                spec=spec,
+                wave_layout=_move_wave_layout_to_device(
+                    payload["wave_layout"],
+                    device=device,
+                    dtype=dtype,
+                ),
+                waves=int(payload["waves"]),
+                max_wave=int(payload["max_wave"]),
+                split_rows=int(payload["split_rows"]),
+                max_wave_split_rows=int(payload["max_wave_split_rows"]),
+            )
+        )
+    return built_chunks
 
 
 def _new_pi_backward_accumulator() -> StructuredGradientAccumulator:
@@ -852,8 +847,6 @@ class UniformChunkedReconModel(torch.nn.Module):
         theta_init_rates: tuple[float, float, float] = (0.05, 0.05, 0.05),
         family_names: Sequence[str] | None = None,
         leaf_species_maps: Sequence[dict[str, str]] | None = None,
-        preprocess_cache_dir: str | os.PathLike[str] | None = None,
-        refresh_preprocess_cache: bool = False,
         preprocess_cpu_cores: int | None = None,
         family_chunk_size: int | str = "auto",
         max_wave_size: int | str | None = "auto",
@@ -871,7 +864,6 @@ class UniformChunkedReconModel(torch.nn.Module):
         pruning_threshold: float = 1e-6,
         warm_start_E: bool = True,
         profile: bool = False,
-        set_optimized_env: bool = True,
         origination_probs: (
             torch.Tensor
             | Sequence[float]
@@ -900,14 +892,9 @@ class UniformChunkedReconModel(torch.nn.Module):
         use_pruning = bool_value("use_pruning", use_pruning)
         warm_start_E = bool_value("warm_start_E", warm_start_E)
         profile = bool_value("profile", profile)
-        set_optimized_env = bool_value("set_optimized_env", set_optimized_env)
         preprocess_cpu_cores = optional_positive_int(
             "preprocess_cpu_cores",
             preprocess_cpu_cores,
-        )
-        _warn_ignored_preprocess_cache_kwargs(
-            preprocess_cache_dir=preprocess_cache_dir,
-            refresh_preprocess_cache=refresh_preprocess_cache,
         )
         chunk_value = _auto_nonnegative_int("family_chunk_size", family_chunk_size)
         wave_value = _auto_positive_int("max_wave_size", max_wave_size)
@@ -927,21 +914,44 @@ class UniformChunkedReconModel(torch.nn.Module):
         )
         gene_paths = normalize_family_tree_paths(gene_trees)
 
-        if set_optimized_env:
-            _set_default_flags()
         device = require_cuda_device(device, owner="UniformChunkedReconModel")
         theta_init = theta_init.to(device=device)
 
-        dataset = GeneDataset(
+        from gpurec.core.preprocess_rust import RustPreprocessExtension
+
+        family_tree_paths, normalized_family_names, normalized_leaf_maps = (
+            _normalize_preprocess_inputs(
+                gene_paths,
+                family_names,
+                leaf_species_maps,
+            )
+        )
+        families_input = {
+            name: paths
+            for name, paths in zip(normalized_family_names, family_tree_paths)
+        }
+        leaf_maps_input = {
+            name: mapping
+            for name, mapping in zip(normalized_family_names, normalized_leaf_maps)
+            if mapping
+        }
+        rust_preprocessed = RustPreprocessExtension().preprocess_dataset(
+            str(species_tree),
+            families_input,
+            leaf_species_maps=leaf_maps_input,
+            include_species_matrices=False,
+            num_threads=0 if preprocess_cpu_cores is None else preprocess_cpu_cores,
+        )
+        dataset = GeneDataset._from_preprocessed_raw(
+            raw=rust_preprocessed.to_torch(),
             species_tree_path=str(species_tree),
-            gene_tree_paths=gene_paths,
+            gene_tree_paths=family_tree_paths,
             genewise=False,
             specieswise=False,
             dtype=dtype,
             device=device,
-            preprocess_cpu_cores=preprocess_cpu_cores,
-            family_names=family_names,
-            leaf_species_maps=leaf_species_maps,
+            family_names=normalized_family_names,
+            leaf_species_maps=normalized_leaf_maps,
         )
         species_helpers, ancestors_T = dataset._species_helpers_for_mode(
             device=device,
@@ -956,19 +966,20 @@ class UniformChunkedReconModel(torch.nn.Module):
             family_count=len(dataset.families) if origination_probs is not None else None,
         )
 
-        clade_counts = [int(f["C"]) for f in dataset.families]
-        split_counts = [int(f["N_splits"]) for f in dataset.families]
+        rust_counts = (
+            rust_preprocessed.family_counts()
+            if normalized_packing == "depth_first_fit"
+            else rust_preprocessed.family_basic_counts()
+        )
+        clade_counts = [int(value) for value in rust_counts["clade_counts"]]
+        split_counts = [int(value) for value in rust_counts["split_counts"]]
         leaf_counts: list[int] | None = None
         nonleaf_counts: list[int] | None = None
         schedule_depths: list[int] | None = None
         if normalized_packing == "depth_first_fit":
-            summaries = [
-                family_schedule_summary(fam["ccp_helpers"])
-                for fam in dataset.families
-            ]
-            leaf_counts = [int(summary["leaf_count"]) for summary in summaries]
-            nonleaf_counts = [int(summary["nonleaf_count"]) for summary in summaries]
-            schedule_depths = [int(summary["max_level"]) for summary in summaries]
+            leaf_counts = [int(value) for value in rust_counts["leaf_counts"]]
+            nonleaf_counts = [int(value) for value in rust_counts["nonleaf_counts"]]
+            schedule_depths = [int(value) for value in rust_counts["schedule_depths"]]
         memory_policy: UniformPipelinePolicy | None = None
         if chunk_value == "auto" or wave_value == "auto":
             chunk_candidates = (
@@ -1001,29 +1012,18 @@ class UniformChunkedReconModel(torch.nn.Module):
 
         family_chunk_n = 0 if chunk_value is None else int(chunk_value)
         max_wave_n = None if wave_value is None else int(wave_value)
-        specs = _make_chunks(
-            list(range(len(dataset.families))),
-            clade_counts,
-            split_counts,
-            family_chunk_size=family_chunk_n,
-            clade_budget=clade_budget,
-            batch_packing=normalized_packing,
-            leaf_counts=leaf_counts,
-            nonleaf_counts=nonleaf_counts,
-            schedule_depths=schedule_depths,
-            max_wave_size=max_wave_n,
-        )
-        built_chunks = [
-            _build_chunk(
-                dataset,
-                spec,
-                device=device,
-                dtype=dtype,
+        built_chunks = _built_chunks_from_rust(
+            rust_preprocessed.build_chunked_layouts(
+                family_chunk_size=family_chunk_n,
+                clade_budget=clade_budget,
+                batch_packing=normalized_packing,
                 max_wave_size=max_wave_n,
                 max_root_wave_size=max_root_wave_size,
-            )
-            for spec in specs
-        ]
+                dtype=_dtype_name_for_rust(dtype),
+            ),
+            device=device,
+            dtype=dtype,
+        )
         if device.type == "cuda":
             torch.cuda.synchronize(device)
 

@@ -5,14 +5,11 @@ from pathlib import Path
 from typing import Any, Callable, Iterable, Sequence
 
 import torch
-from .preprocess_cpp import _load_extension as _load_species_gene_ext
+from .preprocess_rust import RustPreprocessExtension
 from .species import uniform_ancestors_t_from_topology
 
 
 _DEFAULT_PREPROCESS_UNCACHED_BATCH_SIZE = 1024
-_PREPROCESS_BACKEND_ENV = "GPUREC_PREPROCESS_BACKEND"
-
-
 def _resolve_family_path(text: str, base_dir: Path) -> str:
     value = text.strip().strip('"').strip("'")
     path = Path(value)
@@ -215,20 +212,11 @@ def _normalize_preprocess_cpu_cores(value: int | float | None) -> int | None:
 
 
 def _load_preprocess_extension():
-    backend = os.environ.get(_PREPROCESS_BACKEND_ENV, "cpp").strip().lower()
-    if backend in {"", "cpp", "c++"}:
-        return _load_species_gene_ext()
-    if backend == "rust":
-        from .preprocess_rust import RustPreprocessExtension
-
-        return RustPreprocessExtension()
-    raise ValueError(
-        f"{_PREPROCESS_BACKEND_ENV} must be 'cpp' or 'rust', got {backend!r}"
-    )
+    return RustPreprocessExtension()
 
 
 class GeneDataset:
-    """Preprocessed reconciliation dataset backed by the retained C++ parser.
+    """Preprocessed reconciliation dataset backed by the Rust parser.
 
     The species path must contain one rooted binary tree in the supported simple
     Newick subset.  Gene-tree files may contain one or more semicolon-delimited
@@ -467,6 +455,75 @@ class GeneDataset:
         if _materialize_families:
             return species_helpers, families
         return species_helpers, raw_by_family
+
+    @classmethod
+    def _from_preprocessed_raw(
+        cls,
+        *,
+        raw: dict[str, Any],
+        species_tree_path,
+        gene_tree_paths,
+        genewise,
+        specieswise,
+        dtype=torch.float32,
+        device=None,
+        family_names: Sequence[str] | None = None,
+        leaf_species_maps: Sequence[dict[str, str]] | None = None,
+    ) -> "GeneDataset":
+        if device is None:
+            device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        family_tree_paths = normalize_family_tree_paths(gene_tree_paths)
+        if family_names is None:
+            family_names = [f"family_{i:06d}" for i in range(len(family_tree_paths))]
+        else:
+            family_names = [str(name) for name in family_names]
+        if len(family_names) != len(family_tree_paths):
+            raise ValueError("family_names must match gene_tree_paths length")
+        seen_family_names: set[str] = set()
+        for name in family_names:
+            if name in seen_family_names:
+                raise ValueError(f"duplicate family name {name!r} in family_names")
+            seen_family_names.add(name)
+        if leaf_species_maps is None:
+            leaf_species_maps = [{} for _ in family_tree_paths]
+        else:
+            leaf_species_maps = [dict(m) for m in leaf_species_maps]
+        if len(leaf_species_maps) != len(family_tree_paths):
+            raise ValueError("leaf_species_maps must match gene_tree_paths length")
+
+        raw_families = raw["families"]
+        missing = [name for name in family_names if name not in raw_families]
+        if missing:
+            raise RuntimeError(
+                "preprocess_multiple_families did not return family result(s): "
+                + ", ".join(missing)
+            )
+
+        self = cls.__new__(cls)
+        self.genewise = genewise
+        self.specieswise = specieswise
+        self.device = device
+        self.dtype = dtype
+        self.species_helpers = raw["species"]
+        if "Recipients_mat" in self.species_helpers:
+            self.unnorm_row_max = torch.log2(
+                self.species_helpers["Recipients_mat"]
+            ).max(dim=-1).values
+        else:
+            self.unnorm_row_max = self.species_helpers["unnorm_row_max"]
+        self.S = int(self.species_helpers['S'])
+        self.families = [
+            cls._family_from_raw(
+                cls._drop_unused_family_details(raw_families[name])
+            )
+            for name in family_names
+        ]
+        self.family_names = list(family_names)
+        self.gene_tree_paths = family_tree_paths
+        self.leaf_species_maps = [dict(m) for m in leaf_species_maps]
+        self.species_tree_path = species_tree_path
+        self.num_families = len(self.families)
+        return self
     
     @staticmethod
     def _move_tensor(t: torch.Tensor, *, device: torch.device, dtype: torch.dtype) -> torch.Tensor:

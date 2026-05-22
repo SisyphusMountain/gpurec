@@ -219,7 +219,7 @@ def _add_run_config_args(parser: argparse.ArgumentParser) -> None:
         type=int,
         help=(
             "Worker thread count for CPU preprocessing. Workflow default uses "
-            "the preprocessing backend's runtime default."
+            "Rust preprocessing's runtime default."
         ),
     )
     parser.add_argument(

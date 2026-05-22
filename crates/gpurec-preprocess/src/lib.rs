@@ -35,6 +35,8 @@ use pyo3::{
 
 const BITS_PER_WORD: usize = 64;
 const BINARY_MAGIC: &[u8; 8] = b"GPREP001";
+#[cfg(feature = "python-extension")]
+const INV_LN2: f64 = std::f64::consts::LOG2_E;
 static THREAD_POOLS: OnceLock<Mutex<HashMap<usize, Arc<rayon::ThreadPool>>>> = OnceLock::new();
 
 #[derive(Debug, thiserror::Error)]
@@ -63,6 +65,15 @@ pub struct PreprocessRequest {
     pub include_species_matrices: bool,
     #[serde(default)]
     pub num_threads: usize,
+}
+
+#[cfg(feature = "python-extension")]
+#[derive(Clone, Debug, Deserialize)]
+pub struct PreprocessDatasetRequest {
+    #[serde(flatten)]
+    pub preprocess: PreprocessRequest,
+    #[serde(default)]
+    pub family_order: Vec<String>,
 }
 
 fn default_include_species_matrices() -> bool {
@@ -110,6 +121,65 @@ pub struct CcpOutput {
     pub n_splits: i64,
     pub root_clade_id: i64,
     pub clade_leaf_labels: Vec<String>,
+}
+
+#[cfg(feature = "python-extension")]
+#[derive(Clone, Debug, Deserialize)]
+pub struct ChunkedLayoutRequest {
+    pub family_chunk_size: i64,
+    #[serde(default)]
+    pub clade_budget: Option<i64>,
+    #[serde(default = "default_layout_batch_packing")]
+    pub batch_packing: String,
+    #[serde(default)]
+    pub max_wave_size: Option<i64>,
+    #[serde(default)]
+    pub max_root_wave_size: Option<usize>,
+    #[serde(default)]
+    pub max_dts_partial_rows: Option<usize>,
+    #[serde(default = "scheduler::default_dts_partial_tile_splits")]
+    pub dts_partial_tile_splits: usize,
+    #[serde(default = "default_layout_dtype")]
+    pub dtype: String,
+}
+
+#[cfg(feature = "python-extension")]
+fn default_layout_batch_packing() -> String {
+    "sequential".to_string()
+}
+
+#[cfg(feature = "python-extension")]
+fn default_layout_dtype() -> String {
+    "float32".to_string()
+}
+
+#[cfg(feature = "python-extension")]
+#[derive(Clone, Debug)]
+struct CollatedFamilyBatch {
+    c: usize,
+    n_splits: usize,
+    split_leftrights_sorted: Vec<i64>,
+    split_parents_sorted: Vec<i64>,
+    log_split_probs_sorted: Vec<f64>,
+    leaf_row_index: Vec<i64>,
+    leaf_col_index: Vec<i64>,
+    root_clade_ids: Vec<i64>,
+    family_clade_counts: Vec<i64>,
+    family_clade_offsets: Vec<i64>,
+}
+
+#[cfg(feature = "python-extension")]
+#[derive(Clone, Debug)]
+struct FusedChunkOutput {
+    indices: Vec<i64>,
+    clades: i64,
+    splits: i64,
+    wave_layout: WaveLayoutPlan,
+    log_split_probs_sorted: Vec<f64>,
+    waves: i64,
+    max_wave: i64,
+    split_rows: i64,
+    max_wave_split_rows: i64,
 }
 
 pub fn write_binary_output<W: Write>(output: &PreprocessOutput, mut writer: W) -> io::Result<()> {
@@ -300,6 +370,401 @@ pub fn preprocess_request(
 }
 
 #[cfg(feature = "python-extension")]
+fn ordered_family_names(
+    output: &PreprocessOutput,
+    requested_order: &[String],
+) -> Result<Vec<String>, PreprocessError> {
+    let names = if requested_order.is_empty() {
+        output.families.keys().cloned().collect::<Vec<_>>()
+    } else {
+        requested_order.to_vec()
+    };
+    let mut seen = HashSet::with_capacity(names.len());
+    for name in &names {
+        if !seen.insert(name.clone()) {
+            return Err(PreprocessError::InvalidInput(format!(
+                "duplicate family name {name:?} in family_order"
+            )));
+        }
+        if !output.families.contains_key(name) {
+            return Err(PreprocessError::InvalidInput(format!(
+                "family_order references unknown family {name:?}"
+            )));
+        }
+    }
+    Ok(names)
+}
+
+#[cfg(feature = "python-extension")]
+fn schedule_ccp_from_family(family: &FamilyOutput) -> ScheduleCcp {
+    let ccp = &family.ccp;
+    ScheduleCcp {
+        c: ccp.c as usize,
+        n_splits: ccp.n_splits as usize,
+        split_counts: Some(ccp.split_counts.clone()),
+        split_parents_sorted: ccp.split_parents_sorted.clone(),
+        split_leftrights_sorted: ccp.split_leftrights_sorted.clone(),
+        root_clade_id: ccp.root_clade_id,
+    }
+}
+
+#[cfg(feature = "python-extension")]
+fn family_basic_counts(
+    output: &PreprocessOutput,
+    family_order: &[String],
+) -> Result<(Vec<i64>, Vec<i64>), PreprocessError> {
+    let mut clade_counts = Vec::with_capacity(family_order.len());
+    let mut split_counts = Vec::with_capacity(family_order.len());
+    for name in family_order {
+        let family = output
+            .families
+            .get(name)
+            .ok_or_else(|| PreprocessError::InvalidInput(format!("unknown family {name:?}")))?;
+        clade_counts.push(family.ccp.c);
+        split_counts.push(family.ccp.n_splits);
+    }
+    Ok((clade_counts, split_counts))
+}
+
+#[cfg(feature = "python-extension")]
+fn family_counts_and_summaries(
+    output: &PreprocessOutput,
+    family_order: &[String],
+) -> Result<(Vec<i64>, Vec<i64>, Vec<i64>, Vec<i64>, Vec<i64>), PreprocessError> {
+    let (clade_counts, split_counts) = family_basic_counts(output, family_order)?;
+    let mut leaf_counts = Vec::with_capacity(family_order.len());
+    let mut nonleaf_counts = Vec::with_capacity(family_order.len());
+    let mut schedule_depths = Vec::with_capacity(family_order.len());
+    for name in family_order {
+        let family = output
+            .families
+            .get(name)
+            .ok_or_else(|| PreprocessError::InvalidInput(format!("unknown family {name:?}")))?;
+        let summary = family_schedule_summary(&schedule_ccp_from_family(family))?;
+        leaf_counts.push(summary.leaf_count);
+        nonleaf_counts.push(summary.nonleaf_count);
+        schedule_depths.push(summary.max_level);
+    }
+    Ok((
+        clade_counts,
+        split_counts,
+        leaf_counts,
+        nonleaf_counts,
+        schedule_depths,
+    ))
+}
+
+#[cfg(feature = "python-extension")]
+fn collate_family_batch(
+    output: &PreprocessOutput,
+    family_order: &[String],
+    indices: &[i64],
+) -> Result<CollatedFamilyBatch, PreprocessError> {
+    if indices.is_empty() {
+        return Err(PreprocessError::InvalidInput(
+            "chunk must contain at least one family".to_string(),
+        ));
+    }
+
+    let mut clade_offset = 0i64;
+    let mut root_clade_ids = Vec::with_capacity(indices.len());
+    let mut leaf_row_index = Vec::new();
+    let mut leaf_col_index = Vec::new();
+    let mut ge2_left = Vec::new();
+    let mut ge2_right = Vec::new();
+    let mut ge2_logp = Vec::new();
+    let mut ge2_parents = Vec::new();
+    let mut eq1_left = Vec::new();
+    let mut eq1_right = Vec::new();
+    let mut eq1_logp = Vec::new();
+    let mut eq1_parents = Vec::new();
+    let mut family_clade_counts = Vec::with_capacity(indices.len());
+    let mut family_clade_offsets = Vec::with_capacity(indices.len());
+    let mut total_splits = 0usize;
+
+    for index in indices {
+        if *index < 0 || (*index as usize) >= family_order.len() {
+            return Err(PreprocessError::InvalidInput(format!(
+                "family index {index} is outside valid range [0, {})",
+                family_order.len()
+            )));
+        }
+        let name = &family_order[*index as usize];
+        let family = output
+            .families
+            .get(name)
+            .ok_or_else(|| PreprocessError::InvalidInput(format!("unknown family {name:?}")))?;
+        let ccp = &family.ccp;
+        let c = ccp.c;
+        let n_splits = ccp.n_splits as usize;
+        let end_rows_ge2 = ccp.end_rows_ge2 as usize;
+        let num_eq1 = ccp.num_segs_eq1 as usize;
+        if end_rows_ge2 + num_eq1 != n_splits {
+            return Err(PreprocessError::InvalidInput(format!(
+                "family {name:?} split block lengths cover {} rows but N_splits={n_splits}",
+                end_rows_ge2 + num_eq1
+            )));
+        }
+        if ccp.split_leftrights_sorted.len() != 2 * n_splits {
+            return Err(PreprocessError::InvalidInput(format!(
+                "family {name:?} split_leftrights_sorted has length {} but expected {}",
+                ccp.split_leftrights_sorted.len(),
+                2 * n_splits
+            )));
+        }
+        if ccp.split_parents_sorted.len() != n_splits {
+            return Err(PreprocessError::InvalidInput(format!(
+                "family {name:?} split_parents_sorted has length {} but expected {n_splits}",
+                ccp.split_parents_sorted.len()
+            )));
+        }
+        if ccp.log_split_probs_sorted.len() != n_splits {
+            return Err(PreprocessError::InvalidInput(format!(
+                "family {name:?} log_split_probs_sorted has length {} but expected {n_splits}",
+                ccp.log_split_probs_sorted.len()
+            )));
+        }
+
+        let lefts = &ccp.split_leftrights_sorted[..n_splits];
+        let rights = &ccp.split_leftrights_sorted[n_splits..];
+        for row in 0..end_rows_ge2 {
+            ge2_left.push(lefts[row] + clade_offset);
+            ge2_right.push(rights[row] + clade_offset);
+            ge2_logp.push(ccp.log_split_probs_sorted[row] * INV_LN2);
+            ge2_parents.push(ccp.split_parents_sorted[row] + clade_offset);
+        }
+        for row in end_rows_ge2..(end_rows_ge2 + num_eq1) {
+            eq1_left.push(lefts[row] + clade_offset);
+            eq1_right.push(rights[row] + clade_offset);
+            eq1_logp.push(ccp.log_split_probs_sorted[row] * INV_LN2);
+            eq1_parents.push(ccp.split_parents_sorted[row] + clade_offset);
+        }
+
+        for row in &family.leaf_row_index {
+            leaf_row_index.push(*row + clade_offset);
+        }
+        leaf_col_index.extend(family.leaf_col_index.iter().copied());
+        root_clade_ids.push(family.root_clade_id + clade_offset);
+        family_clade_offsets.push(clade_offset);
+        family_clade_counts.push(c);
+        clade_offset += c;
+        total_splits += n_splits;
+    }
+
+    let mut split_leftrights_sorted = Vec::with_capacity(2 * total_splits);
+    split_leftrights_sorted.extend(ge2_left);
+    split_leftrights_sorted.extend(eq1_left);
+    split_leftrights_sorted.extend(ge2_right);
+    split_leftrights_sorted.extend(eq1_right);
+
+    let mut log_split_probs_sorted = Vec::with_capacity(total_splits);
+    log_split_probs_sorted.extend(ge2_logp);
+    log_split_probs_sorted.extend(eq1_logp);
+
+    let mut split_parents_sorted = Vec::with_capacity(total_splits);
+    split_parents_sorted.extend(ge2_parents);
+    split_parents_sorted.extend(eq1_parents);
+
+    Ok(CollatedFamilyBatch {
+        c: clade_offset as usize,
+        n_splits: total_splits,
+        split_leftrights_sorted,
+        split_parents_sorted,
+        log_split_probs_sorted,
+        leaf_row_index,
+        leaf_col_index,
+        root_clade_ids,
+        family_clade_counts,
+        family_clade_offsets,
+    })
+}
+
+#[cfg(feature = "python-extension")]
+fn build_fused_chunked_layouts(
+    output: &PreprocessOutput,
+    family_order: &[String],
+    request: &ChunkedLayoutRequest,
+) -> Result<Vec<FusedChunkOutput>, PreprocessError> {
+    let (clade_counts, split_counts) = family_basic_counts(output, family_order)?;
+    let needs_depth_stats = batch_packing_needs_depth_stats(&request.batch_packing);
+    let (leaf_counts, nonleaf_counts, schedule_depths) = if needs_depth_stats {
+        let (_, _, leaf_counts, nonleaf_counts, schedule_depths) =
+            family_counts_and_summaries(output, family_order)?;
+        (
+            Some(leaf_counts),
+            Some(nonleaf_counts),
+            Some(schedule_depths),
+        )
+    } else {
+        (None, None, None)
+    };
+    let plans = batch_planning::plan_family_batches(
+        &clade_counts,
+        request.family_chunk_size,
+        request.clade_budget,
+        &request.batch_packing,
+        None,
+        Some(family_order.len() as i64),
+        Some(&split_counts),
+        leaf_counts.as_deref(),
+        nonleaf_counts.as_deref(),
+        schedule_depths.as_deref(),
+        request.max_wave_size,
+    )?;
+
+    let mut chunks = Vec::with_capacity(plans.len());
+    for plan in plans {
+        let collated = collate_family_batch(output, family_order, &plan.indices)?;
+        let mut items = Vec::with_capacity(plan.indices.len());
+        for index in &plan.indices {
+            let name = &family_order[*index as usize];
+            let family = output
+                .families
+                .get(name)
+                .ok_or_else(|| PreprocessError::InvalidInput(format!("unknown family {name:?}")))?;
+            items.push(scheduler::ScheduleItem {
+                ccp: schedule_ccp_from_family(family),
+            });
+        }
+        let schedule = scheduler::schedule_global_phased_waves(
+            &items,
+            &collated.family_clade_offsets,
+            request.max_wave_size.map(|value| value as usize),
+            request.max_root_wave_size,
+            request.max_dts_partial_rows,
+            request.dts_partial_tile_splits,
+        )?;
+        let layout = layout::build_wave_layout_plan(
+            &schedule.waves,
+            &schedule.phases,
+            collated.c,
+            collated.n_splits,
+            &collated.split_leftrights_sorted,
+            &collated.split_parents_sorted,
+            &collated.leaf_row_index,
+            &collated.leaf_col_index,
+            &collated.root_clade_ids,
+            Some(&collated.family_clade_counts),
+            Some(&collated.family_clade_offsets),
+        )?;
+
+        let mut max_wave = 0i64;
+        let mut split_rows = 0i64;
+        let mut max_wave_split_rows = 0i64;
+        for meta in &layout.wave_metas {
+            max_wave = max_wave.max(meta.w);
+            let rows = meta
+                .sl
+                .as_ref()
+                .map(|values| values.len() as i64)
+                .unwrap_or(0);
+            split_rows += rows;
+            max_wave_split_rows = max_wave_split_rows.max(rows);
+        }
+
+        chunks.push(FusedChunkOutput {
+            indices: plan.indices,
+            clades: plan.clades,
+            splits: plan.splits,
+            wave_layout: layout,
+            log_split_probs_sorted: collated.log_split_probs_sorted,
+            waves: schedule.waves.len() as i64,
+            max_wave,
+            split_rows,
+            max_wave_split_rows,
+        });
+    }
+    Ok(chunks)
+}
+
+#[cfg(feature = "python-extension")]
+fn batch_packing_needs_depth_stats(value: &str) -> bool {
+    matches!(
+        value.trim().to_ascii_lowercase().replace('-', "_").as_str(),
+        "depth_first_fit"
+            | "depth_ffd"
+            | "critical_path_first_fit"
+            | "critical_first_fit"
+            | "wave_first_fit"
+    )
+}
+
+#[cfg(feature = "python-extension")]
+#[pyclass]
+struct PyPreprocessedDataset {
+    output: PreprocessOutput,
+    family_order: Vec<String>,
+}
+
+#[cfg(feature = "python-extension")]
+#[pymethods]
+impl PyPreprocessedDataset {
+    fn family_basic_counts<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        let (clade_counts, split_counts) = family_basic_counts(&self.output, &self.family_order)
+            .map_err(|err| PyRuntimeError::new_err(err.to_string()))?;
+        let result = PyDict::new_bound(py);
+        result.set_item("family_names", self.family_order.clone())?;
+        result.set_item("clade_counts", clade_counts)?;
+        result.set_item("split_counts", split_counts)?;
+        Ok(result)
+    }
+
+    fn family_counts<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        let (clade_counts, split_counts, leaf_counts, nonleaf_counts, schedule_depths) =
+            family_counts_and_summaries(&self.output, &self.family_order)
+                .map_err(|err| PyRuntimeError::new_err(err.to_string()))?;
+        let result = PyDict::new_bound(py);
+        result.set_item("family_names", self.family_order.clone())?;
+        result.set_item("clade_counts", clade_counts)?;
+        result.set_item("split_counts", split_counts)?;
+        result.set_item("leaf_counts", leaf_counts)?;
+        result.set_item("nonleaf_counts", nonleaf_counts)?;
+        result.set_item("schedule_depths", schedule_depths)?;
+        Ok(result)
+    }
+
+    fn to_torch<'py>(
+        &self,
+        py: Python<'py>,
+        from_numpy: &Bound<'py, PyAny>,
+    ) -> PyResult<Bound<'py, PyDict>> {
+        output_to_torch_python(py, from_numpy, self.output.clone())
+    }
+
+    fn build_chunked_layouts_torch<'py>(
+        &self,
+        py: Python<'py>,
+        request_json: &str,
+        from_numpy: &Bound<'py, PyAny>,
+    ) -> PyResult<Bound<'py, PyList>> {
+        let request: ChunkedLayoutRequest = serde_json::from_str(request_json)
+            .map_err(|err| PyRuntimeError::new_err(err.to_string()))?;
+        let chunks = py
+            .allow_threads(|| {
+                build_fused_chunked_layouts(&self.output, &self.family_order, &request)
+            })
+            .map_err(|err| PyRuntimeError::new_err(err.to_string()))?;
+        fused_chunks_to_torch_python(py, from_numpy, chunks, &request.dtype)
+    }
+}
+
+#[cfg(feature = "python-extension")]
+#[pyfunction]
+fn preprocess_dataset(py: Python<'_>, request_json: &str) -> PyResult<PyPreprocessedDataset> {
+    let request: PreprocessDatasetRequest = serde_json::from_str(request_json)
+        .map_err(|err| PyRuntimeError::new_err(err.to_string()))?;
+    let output = py
+        .allow_threads(|| preprocess_request(&request.preprocess))
+        .map_err(|err| PyRuntimeError::new_err(err.to_string()))?;
+    let family_order = ordered_family_names(&output, &request.family_order)
+        .map_err(|err| PyRuntimeError::new_err(err.to_string()))?;
+    Ok(PyPreprocessedDataset {
+        output,
+        family_order,
+    })
+}
+
+#[cfg(feature = "python-extension")]
 #[pyfunction]
 fn preprocess_request_binary<'py>(
     py: Python<'py>,
@@ -388,6 +853,8 @@ fn build_wave_layout_plan_json(request_json: &str) -> PyResult<String> {
 #[cfg(feature = "python-extension")]
 #[pymodule]
 fn gpurec_preprocess(_py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult<()> {
+    module.add_class::<PyPreprocessedDataset>()?;
+    module.add_function(wrap_pyfunction!(preprocess_dataset, module)?)?;
     module.add_function(wrap_pyfunction!(preprocess_request_binary, module)?)?;
     module.add_function(wrap_pyfunction!(preprocess_request_numpy, module)?)?;
     module.add_function(wrap_pyfunction!(preprocess_request_torch, module)?)?;
@@ -520,6 +987,158 @@ fn output_to_torch_python<'py>(
 }
 
 #[cfg(feature = "python-extension")]
+fn fused_chunks_to_torch_python<'py>(
+    py: Python<'py>,
+    from_numpy: &Bound<'py, PyAny>,
+    chunks: Vec<FusedChunkOutput>,
+    dtype: &str,
+) -> PyResult<Bound<'py, PyList>> {
+    let list = PyList::empty_bound(py);
+    for chunk in chunks {
+        let item = PyDict::new_bound(py);
+        item.set_item("indices", chunk.indices)?;
+        item.set_item("clades", chunk.clades)?;
+        item.set_item("splits", chunk.splits)?;
+        item.set_item("waves", chunk.waves)?;
+        item.set_item("max_wave", chunk.max_wave)?;
+        item.set_item("split_rows", chunk.split_rows)?;
+        item.set_item("max_wave_split_rows", chunk.max_wave_split_rows)?;
+        item.set_item(
+            "wave_layout",
+            wave_layout_to_torch_python(
+                py,
+                from_numpy,
+                chunk.wave_layout,
+                chunk.log_split_probs_sorted,
+                dtype,
+            )?,
+        )?;
+        list.append(item)?;
+    }
+    Ok(list)
+}
+
+#[cfg(feature = "python-extension")]
+fn wave_layout_to_torch_python<'py>(
+    py: Python<'py>,
+    from_numpy: &Bound<'py, PyAny>,
+    plan: WaveLayoutPlan,
+    log_split_probs_sorted: Vec<f64>,
+    dtype: &str,
+) -> PyResult<Bound<'py, PyDict>> {
+    let result = PyDict::new_bound(py);
+    result.set_item("perm", vec_i64_to_torch(py, from_numpy, plan.perm)?)?;
+    result.set_item("C", plan.c)?;
+    result.set_item(
+        "leaf_row_index",
+        vec_i64_to_torch(py, from_numpy, plan.leaf_row_index)?,
+    )?;
+    result.set_item(
+        "leaf_species_index",
+        vec_i64_to_torch(py, from_numpy, plan.leaf_species_index)?,
+    )?;
+    result.set_item(
+        "root_clade_ids",
+        vec_i64_to_torch(py, from_numpy, plan.root_clade_ids)?,
+    )?;
+    result.set_item("root_clade_ids_cpu", plan.root_clade_ids_cpu)?;
+    if let Some(family_idx) = plan.family_idx {
+        result.set_item("family_idx", vec_i64_to_torch(py, from_numpy, family_idx)?)?;
+    }
+
+    let metas = PyList::empty_bound(py);
+    for meta_plan in plan.wave_metas {
+        let meta = PyDict::new_bound(py);
+        meta.set_item("start", meta_plan.start)?;
+        meta.set_item("end", meta_plan.end)?;
+        meta.set_item("W", meta_plan.w)?;
+        meta.set_item("has_splits", meta_plan.has_splits)?;
+        meta.set_item("phase", meta_plan.phase)?;
+        if meta_plan.has_splits {
+            let split_indices = meta_plan.split_indices.unwrap_or_default();
+            let log_probs = gather_log_split_probs(&log_split_probs_sorted, &split_indices)?;
+            meta.set_item(
+                "sl",
+                vec_i32_to_torch(
+                    py,
+                    from_numpy,
+                    i64s_to_i32s("sl", meta_plan.sl.unwrap_or_default())?,
+                )?,
+            )?;
+            meta.set_item(
+                "sr",
+                vec_i32_to_torch(
+                    py,
+                    from_numpy,
+                    i64s_to_i32s("sr", meta_plan.sr.unwrap_or_default())?,
+                )?,
+            )?;
+            meta.set_item(
+                "log_split_probs",
+                log_probs_to_torch(py, from_numpy, log_probs, dtype)?,
+            )?;
+            meta.set_item(
+                "reduce_idx",
+                vec_i32_to_torch(
+                    py,
+                    from_numpy,
+                    i64s_to_i32s("reduce_idx", meta_plan.reduce_idx.unwrap_or_default())?,
+                )?,
+            )?;
+            meta.set_item("n_eq1", meta_plan.n_eq1.unwrap_or(0))?;
+            if let Some(values) = meta_plan.eq1_reduce_idx {
+                meta.set_item(
+                    "eq1_reduce_idx",
+                    vec_i32_to_torch(py, from_numpy, i64s_to_i32s("eq1_reduce_idx", values)?)?,
+                )?;
+            }
+            if let Some(values) = meta_plan.ge2_ptr {
+                meta.set_item("ge2_ptr", vec_i64_to_torch(py, from_numpy, values)?)?;
+            }
+            if let Some(values) = meta_plan.ge2_parent_ids {
+                meta.set_item(
+                    "ge2_parent_ids",
+                    vec_i32_to_torch(py, from_numpy, i64s_to_i32s("ge2_parent_ids", values)?)?,
+                )?;
+            }
+            if let Some(value) = meta_plan.ge2_max_fanout {
+                meta.set_item("ge2_max_fanout", value)?;
+            }
+        }
+        metas.append(meta)?;
+    }
+    result.set_item("wave_metas", metas)?;
+    Ok(result)
+}
+
+#[cfg(feature = "python-extension")]
+fn gather_log_split_probs(values: &[f64], split_indices: &[i64]) -> PyResult<Vec<f64>> {
+    let mut gathered = Vec::with_capacity(split_indices.len());
+    for split_idx in split_indices {
+        if *split_idx < 0 || (*split_idx as usize) >= values.len() {
+            return Err(PyRuntimeError::new_err(format!(
+                "split index {split_idx} outside log_split_probs length {}",
+                values.len()
+            )));
+        }
+        gathered.push(values[*split_idx as usize]);
+    }
+    Ok(gathered)
+}
+
+#[cfg(feature = "python-extension")]
+fn i64s_to_i32s(name: &str, values: Vec<i64>) -> PyResult<Vec<i32>> {
+    values
+        .into_iter()
+        .map(|value| {
+            i32::try_from(value).map_err(|_| {
+                PyValueError::new_err(format!("{name} value {value} does not fit int32"))
+            })
+        })
+        .collect()
+}
+
+#[cfg(feature = "python-extension")]
 fn species_to_torch_python<'py>(
     py: Python<'py>,
     from_numpy: &Bound<'py, PyAny>,
@@ -623,12 +1242,36 @@ fn vec_i64_to_torch<'py>(
 }
 
 #[cfg(feature = "python-extension")]
+fn vec_i32_to_torch<'py>(
+    py: Python<'py>,
+    from_numpy: &Bound<'py, PyAny>,
+    values: Vec<i32>,
+) -> PyResult<Py<PyAny>> {
+    let array = values.into_pyarray_bound(py);
+    from_numpy.call1((array,)).map(Bound::unbind)
+}
+
+#[cfg(feature = "python-extension")]
 fn vec_f64_to_torch<'py>(
     py: Python<'py>,
     from_numpy: &Bound<'py, PyAny>,
     values: Vec<f64>,
 ) -> PyResult<Py<PyAny>> {
     let array = values.into_pyarray_bound(py);
+    from_numpy.call1((array,)).map(Bound::unbind)
+}
+
+#[cfg(feature = "python-extension")]
+fn vec_f32_matrix_to_torch<'py>(
+    py: Python<'py>,
+    from_numpy: &Bound<'py, PyAny>,
+    values: Vec<f32>,
+    rows: usize,
+    cols: usize,
+) -> PyResult<Py<PyAny>> {
+    let array = Array2::from_shape_vec((rows, cols), values)
+        .map_err(|err| PyValueError::new_err(err.to_string()))?
+        .into_pyarray_bound(py);
     from_numpy.call1((array,)).map(Bound::unbind)
 }
 
@@ -642,6 +1285,28 @@ fn vec_f64_matrix_to_torch<'py>(
 ) -> PyResult<Py<PyAny>> {
     let array = vec_to_pyarray2(py, values, rows, cols)?;
     from_numpy.call1((array,)).map(Bound::unbind)
+}
+
+#[cfg(feature = "python-extension")]
+fn log_probs_to_torch<'py>(
+    py: Python<'py>,
+    from_numpy: &Bound<'py, PyAny>,
+    values: Vec<f64>,
+    dtype: &str,
+) -> PyResult<Py<PyAny>> {
+    let rows = values.len();
+    match dtype.trim().to_ascii_lowercase().as_str() {
+        "float32" | "fp32" | "single" | "torch.float32" => {
+            let values = values.into_iter().map(|value| value as f32).collect();
+            vec_f32_matrix_to_torch(py, from_numpy, values, rows, 1)
+        }
+        "float64" | "fp64" | "double" | "torch.float64" => {
+            vec_f64_matrix_to_torch(py, from_numpy, values, rows, 1)
+        }
+        other => Err(PyValueError::new_err(format!(
+            "dtype must be float32 or float64, got {other:?}"
+        ))),
+    }
 }
 
 #[cfg(feature = "python-extension")]

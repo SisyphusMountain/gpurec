@@ -42,11 +42,11 @@ python profiling/bench_uniform_forward_backward_pipeline.py \
   --strict-optimized-kernels
 ```
 
-Current benchmark status after removing the debug inclusion-DAG payload from
-preprocessing: a valid full 1000-family timed run exists.  Windowed preflight
-remains a setup diagnostic only; it reports `performance_evidence 0` and must
-not justify deleting self-loop backends, active-mask pruning modes, environment
-flags, or scheduler policies without a completed timed benchmark.
+Current benchmark status: a valid full 1000-family timed run exists.  Windowed
+preflight remains a setup diagnostic only; it reports `performance_evidence 0`
+and is not performance evidence.  The retained production path is now
+Triton-only for backward kernels, Rust-only for scheduling/chunk layout, and
+does not use preprocessing result caches.
 
 ## 2026-05-22 Benchmark Attempts
 
@@ -182,6 +182,24 @@ The full run used 13,562,496 KiB maximum resident set size and completed in
 4:09.40 wall time including preprocessing and layout.  The rebuilt cache for
 the full 1000-family dataset is about 734 MiB rather than the prior 100+ GiB
 partial cache.
+
+After the final Rust-only preprocessing/layout and Triton-only backward cleanup,
+the retained benchmark completed again without preprocessing caches:
+
+```text
+pipeline_policy families 1000 chunks 40 family_chunk_size 25 max_wave_size 8192
+preprocess_s 0.851863
+layout_s 2.136197
+strict_optimized_verdict pass
+compare_unchunked skipped reason fams_above_threshold fams 1000 threshold 0
+pipeline_summary reps 3
+forward_median_ms 2169.380
+backward_median_ms 3699.282
+total_median_ms 5867.989
+max_peak_gib 5.398
+max_peak_reserved_gib 14.785
+grad_finite 1
+```
 
 The branch intentionally removes alternatives that were slower, unvalidated, or
 not part of the measured path. Ordinary PyTorch optimizers are the primary

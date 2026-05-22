@@ -349,6 +349,78 @@ class RustPreprocessExtension:
         module = _load_native_module(self.cargo_manifest)
         return module.preprocess_request_torch(json.dumps(request), self._from_numpy)
 
+    def preprocess_dataset(
+        self,
+        species_path: str,
+        families: dict[str, list[str]],
+        *,
+        leaf_species_maps: dict[str, dict[str, str]] | None = None,
+        include_species_matrices: bool = True,
+        num_threads: int = 0,
+    ) -> "RustPreprocessedDataset":
+        request = {
+            "species_path": str(species_path),
+            "families": {
+                str(name): [str(path) for path in paths]
+                for name, paths in families.items()
+            },
+            "family_order": [str(name) for name in families],
+            "leaf_species_maps": leaf_species_maps or {},
+            "include_species_matrices": bool(include_species_matrices),
+            "num_threads": int(num_threads),
+        }
+        module = _load_native_module(self.cargo_manifest)
+        native = module.preprocess_dataset(json.dumps(request))
+        return RustPreprocessedDataset(native, self._from_numpy)
+
+
+class RustPreprocessedDataset:
+    """Native Rust preprocessing result retained for fused chunk/layout planning."""
+
+    def __init__(self, native, from_numpy) -> None:
+        self._native = native
+        self._from_numpy = from_numpy
+
+    def family_counts(self) -> dict[str, Any]:
+        return dict(self._native.family_counts())
+
+    def family_basic_counts(self) -> dict[str, Any]:
+        return dict(self._native.family_basic_counts())
+
+    def to_torch(self) -> dict[str, Any]:
+        return self._native.to_torch(self._from_numpy)
+
+    def build_chunked_layouts(
+        self,
+        *,
+        family_chunk_size: int,
+        clade_budget: int | None,
+        batch_packing: str,
+        max_wave_size: int | None,
+        max_root_wave_size: int | None,
+        max_dts_partial_rows: int | None = None,
+        dtype: str = "float32",
+    ) -> list[dict[str, Any]]:
+        request = {
+            "family_chunk_size": int(family_chunk_size),
+            "clade_budget": None if clade_budget is None else int(clade_budget),
+            "batch_packing": str(batch_packing),
+            "max_wave_size": None if max_wave_size is None else int(max_wave_size),
+            "max_root_wave_size": (
+                None if max_root_wave_size is None else int(max_root_wave_size)
+            ),
+            "max_dts_partial_rows": (
+                None if max_dts_partial_rows is None else int(max_dts_partial_rows)
+            ),
+            "dtype": str(dtype),
+        }
+        return list(
+            self._native.build_chunked_layouts_torch(
+                json.dumps(request),
+                self._from_numpy,
+            )
+        )
+
 
 class RustPreprocessSubprocessExtension:
     """C++ pybind-shaped wrapper around the Rust preprocessing CLI."""

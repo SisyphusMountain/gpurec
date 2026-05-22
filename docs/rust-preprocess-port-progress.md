@@ -19,10 +19,9 @@ Current Rust slice:
   preprocessing inside a Rayon thread pool, while `0` uses Rayon's default
   worker configuration.
 - `gpurec.core.preprocess_rust.RustPreprocessExtension` exposes the native
-  PyO3 Rust extension behind the same raw Python contract as the C++ pybind
-  extension. It returns Torch tensors directly through NumPy-backed PyO3
-  arrays. Setting `GPUREC_PREPROCESS_BACKEND=rust` makes `GeneDataset` use
-  that adapter.
+  PyO3 Rust extension behind the same raw Python contract as the former C++
+  pybind extension. It returns Torch tensors directly through NumPy-backed
+  PyO3 arrays, and `GeneDataset` now uses this adapter directly.
 - Positive `num_threads` values use cached Rayon thread pools keyed by worker
   count, so repeated preprocessing calls keep honoring the requested CPU core
   count without rebuilding the pool every call.

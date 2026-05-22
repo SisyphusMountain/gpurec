@@ -6,10 +6,7 @@ import pytest
 
 import gpurec.core.batch_planning as batch_planning
 import gpurec.core._helpers as helpers
-from gpurec.core._helpers import (
-    _env_flag_enabled,
-    _nvtx_range,
-)
+from gpurec.core._helpers import _nvtx_range
 
 
 def test_batch_planning_exports_supported_shared_planning_helpers():
@@ -26,30 +23,6 @@ def test_batch_planning_exports_supported_shared_planning_helpers():
     assert set(batch_planning.__all__) == expected
     for name in expected:
         assert namespace[name] is getattr(batch_planning, name)
-
-
-@pytest.mark.parametrize(
-    "token",
-    ("", "0", "false", "no", "off", " FALSE ", " No "),
-)
-def test_env_flag_enabled_preserves_false_token_semantics(monkeypatch, token: str):
-    monkeypatch.setenv("GPUREC_TEST_FLAG", token)
-
-    assert not _env_flag_enabled("GPUREC_TEST_FLAG", "1")
-
-
-@pytest.mark.parametrize("token", ("1", "true", "yes", "on", "auto", "enabled"))
-def test_env_flag_enabled_treats_other_tokens_as_enabled(monkeypatch, token: str):
-    monkeypatch.setenv("GPUREC_TEST_FLAG", token)
-
-    assert _env_flag_enabled("GPUREC_TEST_FLAG", "0")
-
-
-def test_env_flag_enabled_uses_default_for_unset_values(monkeypatch):
-    monkeypatch.delenv("GPUREC_TEST_FLAG", raising=False)
-
-    assert _env_flag_enabled("GPUREC_TEST_FLAG", "1")
-    assert not _env_flag_enabled("GPUREC_TEST_FLAG", "0")
 
 
 def test_nvtx_range_uses_context_manager_when_available(monkeypatch):

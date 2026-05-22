@@ -993,15 +993,10 @@ Verification:
    model-boundary gradient accumulation now have first-step guards.  Removing
    backward auto-wrap and routing hot CUDA scatter paths still require full
    gradient/parity gates.
-4. `BWD-01`, `BWD-02`, `ENV-01`, and `SCHED-01`: first characterization and
-   ownership guards are in place.  Do not remove self-loop backends,
-   CPU-pruning branches, env toggles, or scheduler alternatives while the
-   1000-family benchmark still lacks a valid timed run.  Resolve the
-   setup memory/disk blocker, likely by avoiding all-family resident
-   materialization for preflight or by using a larger cache/storage target,
-   before treating sparse/dense runtime benchmark results as authoritative.
-   Windowed preflight can now diagnose setup coverage across large family
-   ranges, but it is explicitly not performance evidence.
+4. `BWD-01`, `BWD-02`, `ENV-01`, and `SCHED-01`: superseded by the follow-up
+   cleanup.  The retained production path is Triton-only for backward kernels,
+   diagnostic env toggles and scheduler alternatives have been removed, and
+   the 1000-family benchmark now has a valid timed run.
 5. `CPP-01`, `CPP-02`, `SCRIPT-01`, and `TEST-01`: continue pruning and
    splitting only after each surface has an owner, deprecation path, or
    replacement behavior test.  C++ legacy/diagnostic exports and fixed-dataset

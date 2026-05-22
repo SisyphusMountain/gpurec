@@ -6,14 +6,11 @@ Centralises utilities that were previously copy-pasted across modules.
 from __future__ import annotations
 
 from contextlib import contextmanager
-import os
 
 import torch
 
 
 NEG_INF = float("-inf")
-_FALSE_ENV_TOKENS = frozenset(("", "0", "false", "no", "off"))
-_REQUIRED_ENV_TOKENS = frozenset(("1", "true", "yes", "on", "force", "required"))
 
 
 # ---------------------------------------------------------------------------
@@ -26,34 +23,6 @@ def _safe_exp2_ratio(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
     a_safe = torch.where(neg_inf_a, torch.zeros_like(a), a)
     b_safe = torch.where(neg_inf_a, torch.zeros_like(b), b)
     return torch.where(neg_inf_a, torch.zeros_like(a), torch.exp2(a_safe - b_safe))
-
-
-# ---------------------------------------------------------------------------
-# Environment option helpers
-# ---------------------------------------------------------------------------
-
-def _env_flag_enabled(name: str, default: str = "1") -> bool:
-    """Return whether an environment flag is enabled using gpurec truth rules."""
-    return os.environ.get(name, default).strip().lower() not in _FALSE_ENV_TOKENS
-
-
-def _env_mode_enabled_required(
-    name: str,
-    default: str = "auto",
-) -> tuple[str, bool, bool]:
-    """Return normalized mode plus enabled/required flags for CUDA path toggles.
-
-    ``auto`` and ``enabled`` are best-effort modes.  ``1``, ``true``, ``yes``,
-    ``on``, ``force``, and ``required`` make a selected prototype path
-    mandatory: call sites still apply their own eligibility checks before
-    attempting that prototype.
-    """
-    mode = os.environ.get(name, default).strip().lower()
-    return (
-        mode,
-        mode not in _FALSE_ENV_TOKENS,
-        mode in _REQUIRED_ENV_TOKENS,
-    )
 
 
 # ---------------------------------------------------------------------------

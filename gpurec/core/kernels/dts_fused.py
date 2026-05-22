@@ -1,7 +1,5 @@
 """Fused DTS computation: gather + 5 terms + logsumexp in one Triton kernel."""
 
-import os
-
 import torch
 import triton
 import triton.language as tl
@@ -388,18 +386,8 @@ def dts_fused_parent_reduced(
         log_pS_vec, mode_pS, row_stride_S, species_stride_S = _prepare_param(
             log_pS, N, S, family_indexed=family_indexed
         )
-        block_s_env = os.environ.get("GPUREC_DTS_PARENT_BLOCK_S")
-        if block_s_env is None:
-            BLOCK_S = min(256, triton.next_power_of_2(S))
-        else:
-            BLOCK_S = min(
-                max(1, triton.next_power_of_2(int(block_s_env))),
-                triton.next_power_of_2(S),
-            )
-        parent_num_warps = int(os.environ.get("GPUREC_DTS_PARENT_NUM_WARPS", "0"))
+        BLOCK_S = min(256, triton.next_power_of_2(S))
         launch_options = {}
-        if parent_num_warps > 0:
-            launch_options["num_warps"] = parent_num_warps
         grid_eq1 = (n_eq1, triton.cdiv(S, BLOCK_S))
         _dts_eq1_to_rows_kernel[grid_eq1](
             Pi.contiguous(),
@@ -440,21 +428,8 @@ def dts_fused_parent_reduced(
     log_pS_vec, mode_pS, row_stride_S, species_stride_S = _prepare_param(
         log_pS, N, S, family_indexed=family_indexed
     )
-    block_s_env = os.environ.get("GPUREC_DTS_PARENT_BLOCK_S")
-    if block_s_env is None:
-        BLOCK_S = min(256, triton.next_power_of_2(S))
-    else:
-        BLOCK_S = min(
-            max(1, triton.next_power_of_2(int(block_s_env))),
-            triton.next_power_of_2(S),
-        )
-    tile_splits_env = os.environ.get("GPUREC_DTS_PARENT_TILE_SPLITS")
-    if tile_splits_env is not None:
-        tile_splits = int(tile_splits_env)
-    parent_num_warps = int(os.environ.get("GPUREC_DTS_PARENT_NUM_WARPS", "0"))
+    BLOCK_S = min(256, triton.next_power_of_2(S))
     launch_options = {}
-    if parent_num_warps > 0:
-        launch_options["num_warps"] = parent_num_warps
     if ge2_max_fanout is None:
         ge2_max_fanout = int((ge2_ptr[1:] - ge2_ptr[:-1]).max().item())
     tile_splits = max(1, int(tile_splits))

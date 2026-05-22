@@ -6,8 +6,6 @@ inputs for standalone row-mask experiments, but the retained public
 ``Pi_wave_backward`` path rejects bf16 before this helper is reached.
 """
 
-import os
-
 import torch
 import triton
 import triton.language as tl
@@ -833,13 +831,9 @@ def _wave_backward_uniform_2d(
     compact_level_child1 = compact_level_child1.to(device=device, dtype=torch.int32).contiguous()
     compact_level_child2 = compact_level_child2.to(device=device, dtype=torch.int32).contiguous()
 
-    block_w = triton.next_power_of_2(
-        max(1, int(os.environ.get("GPUREC_SELF_LOOP_2D_BLOCK_W", "1")))
-    )
+    block_w = 1
     block_s = triton.next_power_of_2(S)
-    block_nodes = triton.next_power_of_2(
-        max(1, int(os.environ.get("GPUREC_SELF_LOOP_2D_BLOCK_NODES", "128")))
-    )
+    block_nodes = 128
     n_row_blocks = triton.cdiv(W, block_w)
     scratch_shape = (W, S)
 
@@ -876,10 +870,7 @@ def _wave_backward_uniform_2d(
     leaf_logp_arg = leaf_logp if use_leaf_index else leaf_term_wt
     use_child_edge_self_loop = True
 
-    precompute_warps = int(os.environ.get("GPUREC_SELF_LOOP_2D_NUM_WARPS", "8"))
-    launch_options = {}
-    if precompute_warps > 0:
-        launch_options["num_warps"] = precompute_warps
+    launch_options = {"num_warps": 8}
 
     _wave_backward_uniform_2d_precompute_kernel[(n_row_blocks,)](
         Pi_star,
@@ -926,10 +917,7 @@ def _wave_backward_uniform_2d(
         **launch_options,
     )
 
-    jt_warps = int(os.environ.get("GPUREC_SELF_LOOP_2D_JT_NUM_WARPS", "2"))
-    jt_options = {}
-    if jt_warps > 0:
-        jt_options["num_warps"] = jt_warps
+    jt_options = {"num_warps": 2}
     for n in range(int(neumann_terms)):
         term_in = rhs if n == 0 else (spec_buf if n % 2 == 1 else term_buf)
         term_out = spec_buf if n % 2 == 0 else term_buf
@@ -1754,9 +1742,6 @@ def dts_cross_backward_accum_fused(
         and not grad_mt_scalar
         and grad_mt.numel() == S
     )
-    env_tile_splits = os.environ.get("GPUREC_DTS_GRAD_MT_TILE_SPLITS")
-    if env_tile_splits is not None:
-        grad_mt_two_stage_tile_splits = int(env_tile_splits)
     grad_mt_two_stage_tile_splits = max(1, int(grad_mt_two_stage_tile_splits))
     n_grad_mt_tiles = triton.cdiv(n_ws, grad_mt_two_stage_tile_splits)
     if use_grad_mt_two_stage:
@@ -1766,18 +1751,8 @@ def dts_cross_backward_accum_fused(
         grad_mt_partial = dummy
 
     stride_C = Pi_star.stride(0)
-    block_s_env = os.environ.get("GPUREC_DTS_BLOCK_S")
-    if block_s_env is None:
-        BLOCK_S = min(256, triton.next_power_of_2(S))
-    else:
-        BLOCK_S = min(
-            max(1, triton.next_power_of_2(int(block_s_env))),
-            triton.next_power_of_2(S),
-        )
-    dts_num_warps = int(os.environ.get("GPUREC_DTS_NUM_WARPS", "8"))
-    launch_options = {}
-    if dts_num_warps > 0:
-        launch_options["num_warps"] = dts_num_warps
+    BLOCK_S = min(256, triton.next_power_of_2(S))
+    launch_options = {"num_warps": 8}
 
     _dts_cross_backward_accum_kernel[(n_ws,)](
         Pi_star, Pibar_star,
@@ -2003,18 +1978,8 @@ def uniform_cross_pibar_vjp_tree_from_ud_fused(
             else None
         )
 
-    pibar_ud_block_s_env = os.environ.get("GPUREC_PIBAR_UD_BLOCK_S")
-    if pibar_ud_block_s_env is None:
-        BLOCK_S = min(256, triton.next_power_of_2(S))
-    else:
-        BLOCK_S = min(
-            max(1, triton.next_power_of_2(int(pibar_ud_block_s_env))),
-            triton.next_power_of_2(S),
-        )
-    pibar_ud_num_warps = int(os.environ.get("GPUREC_PIBAR_UD_NUM_WARPS", "4"))
-    launch_options = {}
-    if pibar_ud_num_warps > 0:
-        launch_options["num_warps"] = pibar_ud_num_warps
+    BLOCK_S = min(256, triton.next_power_of_2(S))
+    launch_options = {"num_warps": 4}
     stride_C = Pi_star.stride(0)
     if side_active is not None:
         if side_active.numel() != 2 * n_ws:
