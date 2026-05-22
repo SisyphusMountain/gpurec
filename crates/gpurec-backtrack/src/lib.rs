@@ -7,9 +7,23 @@
 
 use rand::distributions::Uniform;
 use rand::prelude::*;
+use rayon::prelude::*;
 use rustree::{parse_newick, Event, FlatNode, FlatTree, RecTree};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
+use std::fs::{self, File};
+use std::io::Write;
+use std::path::Path;
+
+use flate2::{write::GzEncoder, Compression as GzipCompression};
+#[cfg(feature = "python-extension")]
+use numpy::{PyReadonlyArray1, PyReadonlyArray2, PyUntypedArrayMethods};
+#[cfg(feature = "python-extension")]
+use pyo3::{
+    exceptions::{PyRuntimeError, PyValueError},
+    prelude::*,
+    types::{PyDict, PyList},
+};
 
 const NEG_INF: f64 = -1.0e300;
 
@@ -20,7 +34,46 @@ pub enum BacktrackError {
     #[error("sampling failed: {0}")]
     Sampling(String),
     #[error(transparent)]
+    Io(#[from] std::io::Error),
+    #[error(transparent)]
     Rustree(#[from] rustree::RustreeError),
+}
+
+/// Per-scenario event counts using GPUREC/AleRax event labels.
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
+pub struct EventCounts {
+    #[serde(rename = "S")]
+    pub s: usize,
+    #[serde(rename = "SL")]
+    pub sl: usize,
+    #[serde(rename = "D")]
+    pub d: usize,
+    #[serde(rename = "DL")]
+    pub dl: usize,
+    #[serde(rename = "T")]
+    pub t: usize,
+    #[serde(rename = "TL")]
+    pub tl: usize,
+    #[serde(rename = "L")]
+    pub l: usize,
+    #[serde(rename = "Leaf")]
+    pub leaf: usize,
+}
+
+/// Metadata for one sampled scenario.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct SampleSummary {
+    pub seed: u64,
+    pub event_counts: EventCounts,
+    /// Base-2 log probability of the sampled backtracking path.
+    pub log_probability: f64,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum OutputCompression {
+    None,
+    Gzip,
 }
 
 /// Row-major matrix used by the JSON backtracking schema.
@@ -38,7 +91,14 @@ pub struct Matrix {
     pub data: Vec<f64>,
 }
 
-impl Matrix {
+#[derive(Clone, Copy, Debug)]
+struct MatrixView<'a> {
+    rows: usize,
+    cols: usize,
+    data: &'a [f64],
+}
+
+impl MatrixView<'_> {
     fn get(&self, row: usize, col: usize) -> f64 {
         self.data[row * self.cols + col]
     }
@@ -58,8 +118,18 @@ impl Matrix {
                 self.data.len()
             )));
         }
-        validate_finite_values(name, &self.data)?;
+        validate_finite_values(name, self.data)?;
         Ok(())
+    }
+}
+
+impl<'a> From<&'a Matrix> for MatrixView<'a> {
+    fn from(matrix: &'a Matrix) -> Self {
+        Self {
+            rows: matrix.rows,
+            cols: matrix.cols,
+            data: &matrix.data,
+        }
     }
 }
 
@@ -79,10 +149,10 @@ pub struct SplitInput {
 ///
 /// Clade-indexed arrays use the Python exporter clade order. Species-indexed
 /// arrays use `species_names_postorder`, matching the postorder indexing of the
-/// exported species tree. `pi`, `e`, `log_p_s`, `log_p_d`, and `max_transfer`
-/// are base-2 log values. `origination_probs`, when present, are ordinary
-/// nonnegative weights over species; zero weights are treated as impossible
-/// origination species during sampling.
+/// exported species tree. `pi`, `pibar`, `e`, `ebar`, `log_p_s`, `log_p_d`,
+/// and `max_transfer` are base-2 log values. `origination_probs`, when
+/// present, are ordinary nonnegative weights over species; zero weights are
+/// treated as impossible origination species during sampling.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct BacktrackInput {
     /// Species tree in Newick format.
@@ -99,8 +169,12 @@ pub struct BacktrackInput {
     pub splits: Vec<SplitInput>,
     /// Clade-by-species Pi matrix in base-2 log space.
     pub pi: Matrix,
+    /// Precomputed clade-by-donor transfer aggregate matrix in base-2 log space.
+    pub pibar: Matrix,
     /// Species extinction/survival fixed-point values in base-2 log space.
     pub e: Vec<f64>,
+    /// Precomputed donor transfer-loss aggregate vector in base-2 log space.
+    pub ebar: Vec<f64>,
     /// Speciation probabilities by species in base-2 log space.
     pub log_p_s: Vec<f64>,
     /// Duplication probabilities by species in base-2 log space.
@@ -113,6 +187,49 @@ pub struct BacktrackInput {
     pub seed: Option<u64>,
     /// Optional cap on sampled event expansions.
     pub max_events: Option<usize>,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct BacktrackInputView<'a> {
+    species_newick: &'a str,
+    species_names_postorder: &'a [String],
+    root_clade: usize,
+    leaf_species: &'a [Option<usize>],
+    clade_leaf_labels: &'a [String],
+    splits: &'a [SplitInput],
+    pi: MatrixView<'a>,
+    pibar: MatrixView<'a>,
+    e: &'a [f64],
+    ebar: &'a [f64],
+    log_p_s: &'a [f64],
+    log_p_d: &'a [f64],
+    max_transfer: &'a [f64],
+    origination_probs: Option<&'a [f64]>,
+    seed: Option<u64>,
+    max_events: Option<usize>,
+}
+
+impl<'a> From<&'a BacktrackInput> for BacktrackInputView<'a> {
+    fn from(input: &'a BacktrackInput) -> Self {
+        Self {
+            species_newick: &input.species_newick,
+            species_names_postorder: &input.species_names_postorder,
+            root_clade: input.root_clade,
+            leaf_species: &input.leaf_species,
+            clade_leaf_labels: &input.clade_leaf_labels,
+            splits: &input.splits,
+            pi: MatrixView::from(&input.pi),
+            pibar: MatrixView::from(&input.pibar),
+            e: &input.e,
+            ebar: &input.ebar,
+            log_p_s: &input.log_p_s,
+            log_p_d: &input.log_p_d,
+            max_transfer: &input.max_transfer,
+            origination_probs: input.origination_probs.as_deref(),
+            seed: input.seed,
+            max_events: input.max_events,
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -152,12 +269,22 @@ struct WorkItem {
 }
 
 #[derive(Clone, Debug)]
+struct SampledTree {
+    rec_tree: RecTree,
+    summary: SampleSummary,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct SampledIndex<T> {
+    item: T,
+    log_probability: f64,
+}
+
+#[derive(Clone, Debug)]
 struct PreparedBacktracker<'a> {
-    input: &'a BacktrackInput,
+    input: BacktrackInputView<'a>,
     species: SpeciesTopology,
     splits_by_parent: Vec<Vec<usize>>,
-    pibar: Matrix,
-    ebar: Vec<f64>,
     max_events: usize,
 }
 
@@ -168,13 +295,14 @@ struct Sampler<'a> {
     nodes: Vec<FlatNode>,
     node_mapping: Vec<Option<usize>>,
     event_mapping: Vec<Event>,
+    event_counts: EventCounts,
+    log_probability: f64,
     sampled_terms: usize,
 }
 
 /// Sample one reconciliation as RecPhyloXML.
 pub fn sample_recphyloxml(input: &BacktrackInput) -> Result<String, BacktrackError> {
-    let prepared = PreparedBacktracker::new(input)?;
-    prepared.sample_to_xml(input.seed.unwrap_or(0))
+    sample_recphyloxml_view(BacktrackInputView::from(input))
 }
 
 /// Sample multiple reconciliations with consecutive seeds.
@@ -186,6 +314,19 @@ pub fn sample_recphyloxmls(
     num_samples: usize,
     base_seed: u64,
 ) -> Result<Vec<String>, BacktrackError> {
+    sample_recphyloxmls_view(BacktrackInputView::from(input), num_samples, base_seed)
+}
+
+fn sample_recphyloxml_view(input: BacktrackInputView<'_>) -> Result<String, BacktrackError> {
+    let prepared = PreparedBacktracker::new(input)?;
+    prepared.sample_to_xml(input.seed.unwrap_or(0))
+}
+
+fn sample_recphyloxmls_view(
+    input: BacktrackInputView<'_>,
+    num_samples: usize,
+    base_seed: u64,
+) -> Result<Vec<String>, BacktrackError> {
     if num_samples == 0 {
         return Err(BacktrackError::InvalidInput(
             "num_samples must be positive".to_string(),
@@ -194,35 +335,149 @@ pub fn sample_recphyloxmls(
     let prepared = PreparedBacktracker::new(input)?;
     let mut out = Vec::with_capacity(num_samples);
     for sample_idx in 0..num_samples {
-        let seed_offset = u64::try_from(sample_idx).map_err(|_| {
-            BacktrackError::InvalidInput(format!("sample index {sample_idx} does not fit in u64"))
-        })?;
-        let seed = base_seed.checked_add(seed_offset).ok_or_else(|| {
-            BacktrackError::InvalidInput(format!(
-                "seed range exceeds u64 maximum: base_seed={base_seed} sample_idx={sample_idx}"
-            ))
-        })?;
+        let seed = sample_seed(base_seed, sample_idx)?;
         out.push(prepared.sample_to_xml(seed)?);
     }
     Ok(out)
 }
 
+/// Sample scenario summaries with consecutive deterministic seeds.
+///
+/// When `parallel` is true, sampling is distributed with Rayon while preserving
+/// output order and the `seed = base_seed + sample_idx` contract.
+pub fn sample_summaries(
+    input: &BacktrackInput,
+    num_samples: usize,
+    base_seed: u64,
+    parallel: bool,
+) -> Result<Vec<SampleSummary>, BacktrackError> {
+    sample_summaries_view(
+        BacktrackInputView::from(input),
+        num_samples,
+        base_seed,
+        parallel,
+    )
+}
+
+fn sample_summaries_view(
+    input: BacktrackInputView<'_>,
+    num_samples: usize,
+    base_seed: u64,
+    parallel: bool,
+) -> Result<Vec<SampleSummary>, BacktrackError> {
+    if num_samples == 0 {
+        return Err(BacktrackError::InvalidInput(
+            "num_samples must be positive".to_string(),
+        ));
+    }
+    let prepared = PreparedBacktracker::new(input)?;
+    if parallel {
+        (0..num_samples)
+            .into_par_iter()
+            .map(|sample_idx| {
+                let seed = sample_seed(base_seed, sample_idx)?;
+                prepared.sample_summary(seed)
+            })
+            .collect()
+    } else {
+        let mut out = Vec::with_capacity(num_samples);
+        for sample_idx in 0..num_samples {
+            let seed = sample_seed(base_seed, sample_idx)?;
+            out.push(prepared.sample_summary(seed)?);
+        }
+        Ok(out)
+    }
+}
+
+/// Sample RecPhyloXML files directly to `output_dir`.
+///
+/// Files are named `sample_{i}.xml` or `sample_{i}.xml.gz` using zero-based
+/// sample indices. This streams each sampled XML to disk instead of collecting
+/// all XML strings in memory.
+pub fn sample_recphyloxmls_to_dir(
+    input: &BacktrackInput,
+    num_samples: usize,
+    base_seed: u64,
+    output_dir: impl AsRef<Path>,
+    parallel: bool,
+    compression: OutputCompression,
+) -> Result<Vec<SampleSummary>, BacktrackError> {
+    sample_recphyloxmls_to_dir_view(
+        BacktrackInputView::from(input),
+        num_samples,
+        base_seed,
+        output_dir.as_ref(),
+        parallel,
+        compression,
+    )
+}
+
+fn sample_recphyloxmls_to_dir_view(
+    input: BacktrackInputView<'_>,
+    num_samples: usize,
+    base_seed: u64,
+    output_dir: &Path,
+    parallel: bool,
+    compression: OutputCompression,
+) -> Result<Vec<SampleSummary>, BacktrackError> {
+    if num_samples == 0 {
+        return Err(BacktrackError::InvalidInput(
+            "num_samples must be positive".to_string(),
+        ));
+    }
+    fs::create_dir_all(output_dir)?;
+    let prepared = PreparedBacktracker::new(input)?;
+
+    if parallel {
+        (0..num_samples)
+            .into_par_iter()
+            .map(|sample_idx| {
+                let seed = sample_seed(base_seed, sample_idx)?;
+                let sampled = prepared.sample_with_summary(seed)?;
+                let xml = sampled.rec_tree.to_xml();
+                write_sample_xml(output_dir, sample_idx, &xml, compression)?;
+                Ok(sampled.summary)
+            })
+            .collect()
+    } else {
+        let mut out = Vec::with_capacity(num_samples);
+        for sample_idx in 0..num_samples {
+            let seed = sample_seed(base_seed, sample_idx)?;
+            let sampled = prepared.sample_with_summary(seed)?;
+            let xml = sampled.rec_tree.to_xml();
+            write_sample_xml(output_dir, sample_idx, &xml, compression)?;
+            out.push(sampled.summary);
+        }
+        Ok(out)
+    }
+}
+
 impl<'a> PreparedBacktracker<'a> {
-    fn new(input: &'a BacktrackInput) -> Result<Self, BacktrackError> {
+    fn new(input: impl Into<BacktrackInputView<'a>>) -> Result<Self, BacktrackError> {
+        let input = input.into();
         input.pi.validate("pi")?;
+        input.pibar.validate("pibar")?;
         let c = input.pi.rows;
         let s = input.pi.cols;
+        if input.pibar.rows != c || input.pibar.cols != s {
+            return Err(BacktrackError::InvalidInput(format!(
+                "pibar shape is {}x{}, expected {c}x{s}",
+                input.pibar.rows, input.pibar.cols
+            )));
+        }
         validate_len("leaf_species", input.leaf_species.len(), c)?;
         validate_len("clade_leaf_labels", input.clade_leaf_labels.len(), c)?;
         validate_len("e", input.e.len(), s)?;
-        validate_finite_values("e", &input.e)?;
+        validate_finite_values("e", input.e)?;
+        validate_len("ebar", input.ebar.len(), s)?;
+        validate_finite_values("ebar", input.ebar)?;
         validate_len("log_p_s", input.log_p_s.len(), s)?;
-        validate_finite_values("log_p_s", &input.log_p_s)?;
+        validate_finite_values("log_p_s", input.log_p_s)?;
         validate_len("log_p_d", input.log_p_d.len(), s)?;
-        validate_finite_values("log_p_d", &input.log_p_d)?;
+        validate_finite_values("log_p_d", input.log_p_d)?;
         validate_len("max_transfer", input.max_transfer.len(), s)?;
-        validate_finite_values("max_transfer", &input.max_transfer)?;
-        if let Some(probs) = &input.origination_probs {
+        validate_finite_values("max_transfer", input.max_transfer)?;
+        if let Some(probs) = input.origination_probs {
             validate_len("origination_probs", probs.len(), s)?;
             validate_finite_values("origination_probs", probs)?;
             if let Some((idx, value)) = probs.iter().enumerate().find(|(_, value)| **value < 0.0) {
@@ -252,8 +507,7 @@ impl<'a> PreparedBacktracker<'a> {
             }
         }
 
-        let species =
-            parse_species_topology(&input.species_newick, &input.species_names_postorder)?;
+        let species = parse_species_topology(input.species_newick, input.species_names_postorder)?;
         validate_len("species_names_postorder", species.gp_to_rust.len(), s)?;
 
         let mut splits_by_parent = vec![Vec::new(); c];
@@ -273,22 +527,25 @@ impl<'a> PreparedBacktracker<'a> {
             splits_by_parent[split.parent].push(idx);
         }
 
-        let pibar = compute_pibar(&input.pi, &input.max_transfer, &species);
-        let ebar = compute_ebar(&input.e, &input.max_transfer, &species);
         Ok(Self {
             input,
             species,
             splits_by_parent,
-            pibar,
-            ebar,
             max_events: input.max_events.unwrap_or(100_000),
         })
     }
 
     fn sample_to_xml(&'a self, seed: u64) -> Result<String, BacktrackError> {
+        Ok(self.sample_with_summary(seed)?.rec_tree.to_xml())
+    }
+
+    fn sample_summary(&'a self, seed: u64) -> Result<SampleSummary, BacktrackError> {
+        Ok(self.sample_with_summary(seed)?.summary)
+    }
+
+    fn sample_with_summary(&'a self, seed: u64) -> Result<SampledTree, BacktrackError> {
         let mut sampler = Sampler::new(self, seed);
-        let rec_tree = sampler.sample()?;
-        Ok(rec_tree.to_xml())
+        sampler.sample(seed)
     }
 }
 
@@ -300,11 +557,13 @@ impl<'a> Sampler<'a> {
             nodes: Vec::new(),
             node_mapping: Vec::new(),
             event_mapping: Vec::new(),
+            event_counts: EventCounts::default(),
+            log_probability: 0.0,
             sampled_terms: 0,
         }
     }
 
-    fn sample(&mut self) -> Result<RecTree, BacktrackError> {
+    fn sample(&mut self, seed: u64) -> Result<SampledTree, BacktrackError> {
         let root_species = self.sample_root_species()?;
         let root = self.add_node("", Event::Speciation, root_species, None);
         let mut stack = vec![WorkItem {
@@ -331,15 +590,22 @@ impl<'a> Sampler<'a> {
             stack.extend(children.into_iter().rev());
         }
 
-        Ok(RecTree::new_owned(
-            self.prepared.species.rust_tree.clone(),
-            FlatTree {
-                nodes: std::mem::take(&mut self.nodes),
-                root,
+        Ok(SampledTree {
+            rec_tree: RecTree::new_owned(
+                self.prepared.species.rust_tree.clone(),
+                FlatTree {
+                    nodes: std::mem::take(&mut self.nodes),
+                    root,
+                },
+                std::mem::take(&mut self.node_mapping),
+                std::mem::take(&mut self.event_mapping),
+            ),
+            summary: SampleSummary {
+                seed,
+                event_counts: std::mem::take(&mut self.event_counts),
+                log_probability: self.log_probability,
             },
-            std::mem::take(&mut self.node_mapping),
-            std::mem::take(&mut self.event_mapping),
-        ))
+        })
     }
 
     fn sample_root_species(&mut self) -> Result<usize, BacktrackError> {
@@ -359,7 +625,9 @@ impl<'a> Sampler<'a> {
             };
             candidates.push((species, prior + input.pi.get(input.root_clade, species)));
         }
-        sample_index(&candidates, &mut self.rng)
+        let sampled = sample_index(&candidates, &mut self.rng)?;
+        self.log_probability += sampled.log_probability;
+        Ok(sampled.item)
     }
 
     fn expand_state(
@@ -388,11 +656,11 @@ impl<'a> Sampler<'a> {
         });
         candidates.push(Candidate {
             term: Term::HiddenTransferLossRecipient,
-            log_weight: pi_cs + self.prepared.ebar[species],
+            log_weight: pi_cs + input.ebar[species],
         });
         candidates.push(Candidate {
             term: Term::HiddenTransferLossDonor,
-            log_weight: self.prepared.pibar.get(clade, species) + e_s,
+            log_weight: input.pibar.get(clade, species) + e_s,
         });
 
         if let (Some(c1), Some(c2)) = (child1, child2) {
@@ -427,15 +695,11 @@ impl<'a> Sampler<'a> {
             });
             candidates.push(Candidate {
                 term: Term::SplitTransferRight(*split_idx),
-                log_weight: base
-                    + input.pi.get(left, species)
-                    + self.prepared.pibar.get(right, species),
+                log_weight: base + input.pi.get(left, species) + input.pibar.get(right, species),
             });
             candidates.push(Candidate {
                 term: Term::SplitTransferLeft(*split_idx),
-                log_weight: base
-                    + input.pi.get(right, species)
-                    + self.prepared.pibar.get(left, species),
+                log_weight: base + input.pi.get(right, species) + input.pibar.get(left, species),
             });
             if let (Some(c1), Some(c2)) = (child1, child2) {
                 candidates.push(Candidate {
@@ -460,8 +724,35 @@ impl<'a> Sampler<'a> {
             .enumerate()
             .map(|(idx, c)| (idx, c.log_weight))
             .collect();
-        let idx = sample_index(&weighted, &mut self.rng)?;
-        Ok(candidates[idx].term)
+        let sampled = sample_index(&weighted, &mut self.rng)?;
+        self.log_probability += sampled.log_probability;
+        let term = candidates[sampled.item].term;
+        self.count_term(term);
+        Ok(term)
+    }
+
+    fn count_term(&mut self, term: Term) {
+        match term {
+            Term::HiddenDupLoss | Term::HiddenTransferLossRecipient => {}
+            Term::HiddenTransferLossDonor => {
+                self.event_counts.tl += 1;
+            }
+            Term::HiddenSpeciationLeft | Term::HiddenSpeciationRight => {
+                self.event_counts.sl += 1;
+            }
+            Term::Leaf => {
+                self.event_counts.leaf += 1;
+            }
+            Term::SplitDup(_) => {
+                self.event_counts.d += 1;
+            }
+            Term::SplitTransferRight(_) | Term::SplitTransferLeft(_) => {
+                self.event_counts.t += 1;
+            }
+            Term::SplitSpeciation(_, _) => {
+                self.event_counts.s += 1;
+            }
+        }
     }
 
     fn apply_term(
@@ -655,7 +946,9 @@ impl<'a> Sampler<'a> {
                 )
             })
             .collect::<Vec<_>>();
-        sample_index(&candidates, &mut self.rng)
+        let sampled = sample_index(&candidates, &mut self.rng)?;
+        self.log_probability += sampled.log_probability;
+        Ok(sampled.item)
     }
 
     fn add_node(
@@ -695,6 +988,42 @@ impl<'a> Sampler<'a> {
     }
 }
 
+fn sample_seed(base_seed: u64, sample_idx: usize) -> Result<u64, BacktrackError> {
+    let seed_offset = u64::try_from(sample_idx).map_err(|_| {
+        BacktrackError::InvalidInput(format!("sample index {sample_idx} does not fit in u64"))
+    })?;
+    base_seed.checked_add(seed_offset).ok_or_else(|| {
+        BacktrackError::InvalidInput(format!(
+            "seed range exceeds u64 maximum: base_seed={base_seed} sample_idx={sample_idx}"
+        ))
+    })
+}
+
+fn write_sample_xml(
+    output_dir: &Path,
+    sample_idx: usize,
+    xml: &str,
+    compression: OutputCompression,
+) -> Result<(), BacktrackError> {
+    let filename = match compression {
+        OutputCompression::None => format!("sample_{sample_idx}.xml"),
+        OutputCompression::Gzip => format!("sample_{sample_idx}.xml.gz"),
+    };
+    let path = output_dir.join(filename);
+    match compression {
+        OutputCompression::None => {
+            fs::write(path, xml)?;
+        }
+        OutputCompression::Gzip => {
+            let file = File::create(path)?;
+            let mut encoder = GzEncoder::new(file, GzipCompression::default());
+            encoder.write_all(xml.as_bytes())?;
+            encoder.finish()?;
+        }
+    }
+    Ok(())
+}
+
 fn validate_len(name: &str, got: usize, expected: usize) -> Result<(), BacktrackError> {
     if got != expected {
         Err(BacktrackError::InvalidInput(format!(
@@ -718,7 +1047,7 @@ fn validate_finite_values(name: &str, values: &[f64]) -> Result<(), BacktrackErr
     Ok(())
 }
 
-fn leaf_name(input: &BacktrackInput, clade: usize) -> String {
+fn leaf_name(input: BacktrackInputView<'_>, clade: usize) -> String {
     let label = &input.clade_leaf_labels[clade];
     if label.is_empty() {
         format!("leaf_{clade}")
@@ -804,38 +1133,6 @@ fn parse_species_topology(
     })
 }
 
-fn compute_pibar(pi: &Matrix, max_transfer: &[f64], species: &SpeciesTopology) -> Matrix {
-    let mut data = vec![NEG_INF; pi.rows * pi.cols];
-    for clade in 0..pi.rows {
-        for donor in 0..pi.cols {
-            let mut terms = Vec::new();
-            for recipient in 0..pi.cols {
-                if !species.ancestors[donor].contains(&recipient) {
-                    terms.push(pi.get(clade, recipient));
-                }
-            }
-            data[clade * pi.cols + donor] = logsumexp2(&terms) + max_transfer[donor];
-        }
-    }
-    Matrix {
-        rows: pi.rows,
-        cols: pi.cols,
-        data,
-    }
-}
-
-fn compute_ebar(e: &[f64], max_transfer: &[f64], species: &SpeciesTopology) -> Vec<f64> {
-    (0..e.len())
-        .map(|donor| {
-            let terms = (0..e.len())
-                .filter(|recipient| !species.ancestors[donor].contains(recipient))
-                .map(|recipient| e[recipient])
-                .collect::<Vec<_>>();
-            logsumexp2(&terms) + max_transfer[donor]
-        })
-        .collect()
-}
-
 fn logsumexp2(values: &[f64]) -> f64 {
     let max = values
         .iter()
@@ -849,7 +1146,10 @@ fn logsumexp2(values: &[f64]) -> f64 {
     max + sum.log2()
 }
 
-fn sample_index<T: Copy>(weighted: &[(T, f64)], rng: &mut StdRng) -> Result<T, BacktrackError> {
+fn sample_index<T: Copy>(
+    weighted: &[(T, f64)],
+    rng: &mut StdRng,
+) -> Result<SampledIndex<T>, BacktrackError> {
     let logs = weighted.iter().map(|(_, w)| *w).collect::<Vec<_>>();
     let norm = logsumexp2(&logs);
     if norm <= NEG_INF / 2.0 || !norm.is_finite() {
@@ -859,24 +1159,610 @@ fn sample_index<T: Copy>(weighted: &[(T, f64)], rng: &mut StdRng) -> Result<T, B
     }
     let dist = Uniform::new(0.0, 1.0);
     let mut draw = dist.sample(rng);
-    let mut last = weighted[0].0;
+    let mut last_selectable = None;
     for (item, log_w) in weighted {
-        last = *item;
         if *log_w <= NEG_INF / 2.0 {
             continue;
         }
+        last_selectable = Some((*item, *log_w));
         let p = 2.0_f64.powf(*log_w - norm);
         if draw <= p {
-            return Ok(*item);
+            return Ok(SampledIndex {
+                item: *item,
+                log_probability: *log_w - norm,
+            });
         }
         draw -= p;
     }
-    Ok(last)
+    let (last, last_log_w) = last_selectable.ok_or_else(|| {
+        BacktrackError::Sampling("all candidate backtracking weights are zero".to_string())
+    })?;
+    Ok(SampledIndex {
+        item: last,
+        log_probability: last_log_w - norm,
+    })
+}
+
+#[cfg(feature = "python-extension")]
+fn py_backtrack_error(error: BacktrackError) -> PyErr {
+    match error {
+        BacktrackError::InvalidInput(message) => PyValueError::new_err(message),
+        BacktrackError::Sampling(message) => PyRuntimeError::new_err(message),
+        BacktrackError::Io(source) => PyRuntimeError::new_err(source.to_string()),
+        BacktrackError::Rustree(source) => PyValueError::new_err(source.to_string()),
+    }
+}
+
+#[cfg(feature = "python-extension")]
+fn nonnegative_i64_to_usize(name: &str, idx: usize, value: i64) -> PyResult<usize> {
+    usize::try_from(value).map_err(|_| {
+        PyValueError::new_err(format!("{name}[{idx}] must be non-negative, got {value}"))
+    })
+}
+
+#[cfg(feature = "python-extension")]
+fn i64_slice_from_numpy<'a>(
+    name: &str,
+    values: &'a PyReadonlyArray1<'_, i64>,
+) -> PyResult<&'a [i64]> {
+    if !values.is_c_contiguous() {
+        return Err(PyValueError::new_err(format!(
+            "{name} must be C-contiguous"
+        )));
+    }
+    values
+        .as_slice()
+        .map_err(|_| PyValueError::new_err(format!("{name} must be C-contiguous")))
+}
+
+#[cfg(feature = "python-extension")]
+fn f64_slice_from_numpy<'a>(
+    name: &str,
+    values: &'a PyReadonlyArray1<'_, f64>,
+) -> PyResult<&'a [f64]> {
+    if !values.is_c_contiguous() {
+        return Err(PyValueError::new_err(format!(
+            "{name} must be C-contiguous"
+        )));
+    }
+    values
+        .as_slice()
+        .map_err(|_| PyValueError::new_err(format!("{name} must be C-contiguous")))
+}
+
+#[cfg(feature = "python-extension")]
+fn optional_species_from_i64(values: &PyReadonlyArray1<'_, i64>) -> PyResult<Vec<Option<usize>>> {
+    i64_slice_from_numpy("leaf_species", values)?
+        .iter()
+        .enumerate()
+        .map(|(idx, value)| {
+            if *value < 0 {
+                Ok(None)
+            } else {
+                Ok(Some(nonnegative_i64_to_usize("leaf_species", idx, *value)?))
+            }
+        })
+        .collect()
+}
+
+#[cfg(feature = "python-extension")]
+fn matrix_view_from_numpy<'a>(
+    name: &str,
+    values: &'a PyReadonlyArray2<'_, f64>,
+) -> PyResult<MatrixView<'a>> {
+    let shape = values.shape();
+    if shape.len() != 2 {
+        return Err(PyValueError::new_err(format!(
+            "{name} must be two-dimensional"
+        )));
+    }
+    if !values.is_c_contiguous() {
+        return Err(PyValueError::new_err(format!(
+            "{name} must be C-contiguous"
+        )));
+    }
+    let data = values
+        .as_slice()
+        .map_err(|_| PyValueError::new_err(format!("{name} must be C-contiguous")))?;
+    Ok(MatrixView {
+        rows: shape[0],
+        cols: shape[1],
+        data,
+    })
+}
+
+#[cfg(feature = "python-extension")]
+fn parse_output_compression(value: &str) -> PyResult<OutputCompression> {
+    match value {
+        "none" | "" => Ok(OutputCompression::None),
+        "gzip" | "gz" => Ok(OutputCompression::Gzip),
+        other => Err(PyValueError::new_err(format!(
+            "compression must be 'none' or 'gzip', got {other:?}"
+        ))),
+    }
+}
+
+#[cfg(feature = "python-extension")]
+fn event_counts_to_dict<'py>(
+    py: Python<'py>,
+    event_counts: &EventCounts,
+) -> PyResult<Bound<'py, PyDict>> {
+    let dict = PyDict::new_bound(py);
+    dict.set_item("S", event_counts.s)?;
+    dict.set_item("SL", event_counts.sl)?;
+    dict.set_item("D", event_counts.d)?;
+    dict.set_item("DL", event_counts.dl)?;
+    dict.set_item("T", event_counts.t)?;
+    dict.set_item("TL", event_counts.tl)?;
+    dict.set_item("L", event_counts.l)?;
+    dict.set_item("Leaf", event_counts.leaf)?;
+    Ok(dict)
+}
+
+#[cfg(feature = "python-extension")]
+fn summaries_to_py(py: Python<'_>, summaries: Vec<SampleSummary>) -> PyResult<PyObject> {
+    let list = PyList::empty_bound(py);
+    for summary in summaries {
+        let dict = PyDict::new_bound(py);
+        dict.set_item("seed", summary.seed)?;
+        dict.set_item(
+            "event_counts",
+            event_counts_to_dict(py, &summary.event_counts)?,
+        )?;
+        dict.set_item("log_probability", summary.log_probability)?;
+        list.append(dict)?;
+    }
+    Ok(list.into_py(py))
+}
+
+#[cfg(feature = "python-extension")]
+#[allow(clippy::too_many_arguments)]
+struct NumpyBacktrackInput<'a> {
+    species_newick: String,
+    species_names_postorder: Vec<String>,
+    root_clade: usize,
+    leaf_species: Vec<Option<usize>>,
+    clade_leaf_labels: Vec<String>,
+    splits: Vec<SplitInput>,
+    pi: MatrixView<'a>,
+    pibar: MatrixView<'a>,
+    e: &'a [f64],
+    ebar: &'a [f64],
+    log_p_s: &'a [f64],
+    log_p_d: &'a [f64],
+    max_transfer: &'a [f64],
+    origination_probs: Option<&'a [f64]>,
+    seed: Option<u64>,
+    max_events: Option<usize>,
+}
+
+#[cfg(feature = "python-extension")]
+impl NumpyBacktrackInput<'_> {
+    fn as_view(&self) -> BacktrackInputView<'_> {
+        BacktrackInputView {
+            species_newick: &self.species_newick,
+            species_names_postorder: &self.species_names_postorder,
+            root_clade: self.root_clade,
+            leaf_species: &self.leaf_species,
+            clade_leaf_labels: &self.clade_leaf_labels,
+            splits: &self.splits,
+            pi: self.pi,
+            pibar: self.pibar,
+            e: self.e,
+            ebar: self.ebar,
+            log_p_s: self.log_p_s,
+            log_p_d: self.log_p_d,
+            max_transfer: self.max_transfer,
+            origination_probs: self.origination_probs,
+            seed: self.seed,
+            max_events: self.max_events,
+        }
+    }
+}
+
+#[cfg(feature = "python-extension")]
+#[allow(clippy::too_many_arguments)]
+fn build_borrowed_input_from_numpy<'a>(
+    species_newick: String,
+    species_names_postorder: Vec<String>,
+    root_clade: usize,
+    leaf_species: &'a PyReadonlyArray1<'_, i64>,
+    clade_leaf_labels: Vec<String>,
+    split_parents: &'a PyReadonlyArray1<'_, i64>,
+    split_lefts: &'a PyReadonlyArray1<'_, i64>,
+    split_rights: &'a PyReadonlyArray1<'_, i64>,
+    split_log_probs: &'a PyReadonlyArray1<'_, f64>,
+    pi: &'a PyReadonlyArray2<'_, f64>,
+    pibar: &'a PyReadonlyArray2<'_, f64>,
+    e: &'a PyReadonlyArray1<'_, f64>,
+    ebar: &'a PyReadonlyArray1<'_, f64>,
+    log_p_s: &'a PyReadonlyArray1<'_, f64>,
+    log_p_d: &'a PyReadonlyArray1<'_, f64>,
+    max_transfer: &'a PyReadonlyArray1<'_, f64>,
+    origination_probs: Option<&'a PyReadonlyArray1<'_, f64>>,
+    seed: Option<u64>,
+    max_events: Option<usize>,
+) -> PyResult<NumpyBacktrackInput<'a>> {
+    let split_len = split_parents.len();
+    if split_lefts.len() != split_len
+        || split_rights.len() != split_len
+        || split_log_probs.len() != split_len
+    {
+        return Err(PyValueError::new_err(
+            "split arrays must have the same length",
+        ));
+    }
+
+    let split_parents = i64_slice_from_numpy("split_parents", split_parents)?;
+    let split_lefts = i64_slice_from_numpy("split_lefts", split_lefts)?;
+    let split_rights = i64_slice_from_numpy("split_rights", split_rights)?;
+    let split_log_probs = f64_slice_from_numpy("split_log_probs", split_log_probs)?;
+    let mut splits = Vec::with_capacity(split_len);
+    for idx in 0..split_len {
+        splits.push(SplitInput {
+            parent: nonnegative_i64_to_usize("split_parents", idx, split_parents[idx])?,
+            left: nonnegative_i64_to_usize("split_lefts", idx, split_lefts[idx])?,
+            right: nonnegative_i64_to_usize("split_rights", idx, split_rights[idx])?,
+            log_prob: split_log_probs[idx],
+        });
+    }
+
+    Ok(NumpyBacktrackInput {
+        species_newick,
+        species_names_postorder,
+        root_clade,
+        leaf_species: optional_species_from_i64(leaf_species)?,
+        clade_leaf_labels,
+        splits,
+        pi: matrix_view_from_numpy("pi", pi)?,
+        pibar: matrix_view_from_numpy("pibar", pibar)?,
+        e: f64_slice_from_numpy("e", e)?,
+        ebar: f64_slice_from_numpy("ebar", ebar)?,
+        log_p_s: f64_slice_from_numpy("log_p_s", log_p_s)?,
+        log_p_d: f64_slice_from_numpy("log_p_d", log_p_d)?,
+        max_transfer: f64_slice_from_numpy("max_transfer", max_transfer)?,
+        origination_probs: origination_probs
+            .map(|values| f64_slice_from_numpy("origination_probs", values))
+            .transpose()?,
+        seed,
+        max_events,
+    })
+}
+
+#[cfg(feature = "python-extension")]
+#[pyfunction]
+#[pyo3(signature = (
+    species_newick,
+    species_names_postorder,
+    root_clade,
+    leaf_species,
+    clade_leaf_labels,
+    split_parents,
+    split_lefts,
+    split_rights,
+    split_log_probs,
+    pi,
+    pibar,
+    e,
+    ebar,
+    log_p_s,
+    log_p_d,
+    max_transfer,
+    origination_probs=None,
+    seed=None,
+    max_events=None
+))]
+#[allow(clippy::too_many_arguments)]
+fn sample_recphyloxml_torch(
+    py: Python<'_>,
+    species_newick: String,
+    species_names_postorder: Vec<String>,
+    root_clade: usize,
+    leaf_species: PyReadonlyArray1<'_, i64>,
+    clade_leaf_labels: Vec<String>,
+    split_parents: PyReadonlyArray1<'_, i64>,
+    split_lefts: PyReadonlyArray1<'_, i64>,
+    split_rights: PyReadonlyArray1<'_, i64>,
+    split_log_probs: PyReadonlyArray1<'_, f64>,
+    pi: PyReadonlyArray2<'_, f64>,
+    pibar: PyReadonlyArray2<'_, f64>,
+    e: PyReadonlyArray1<'_, f64>,
+    ebar: PyReadonlyArray1<'_, f64>,
+    log_p_s: PyReadonlyArray1<'_, f64>,
+    log_p_d: PyReadonlyArray1<'_, f64>,
+    max_transfer: PyReadonlyArray1<'_, f64>,
+    origination_probs: Option<PyReadonlyArray1<'_, f64>>,
+    seed: Option<u64>,
+    max_events: Option<usize>,
+) -> PyResult<String> {
+    let input = build_borrowed_input_from_numpy(
+        species_newick,
+        species_names_postorder,
+        root_clade,
+        &leaf_species,
+        clade_leaf_labels,
+        &split_parents,
+        &split_lefts,
+        &split_rights,
+        &split_log_probs,
+        &pi,
+        &pibar,
+        &e,
+        &ebar,
+        &log_p_s,
+        &log_p_d,
+        &max_transfer,
+        origination_probs.as_ref(),
+        seed,
+        max_events,
+    )?;
+    let input_view = input.as_view();
+    py.allow_threads(move || sample_recphyloxml_view(input_view))
+        .map_err(py_backtrack_error)
+}
+
+#[cfg(feature = "python-extension")]
+#[pyfunction]
+#[pyo3(signature = (
+    species_newick,
+    species_names_postorder,
+    root_clade,
+    leaf_species,
+    clade_leaf_labels,
+    split_parents,
+    split_lefts,
+    split_rights,
+    split_log_probs,
+    pi,
+    pibar,
+    e,
+    ebar,
+    log_p_s,
+    log_p_d,
+    max_transfer,
+    seed,
+    num_samples,
+    max_events=None,
+    origination_probs=None
+))]
+#[allow(clippy::too_many_arguments)]
+fn sample_recphyloxmls_torch(
+    py: Python<'_>,
+    species_newick: String,
+    species_names_postorder: Vec<String>,
+    root_clade: usize,
+    leaf_species: PyReadonlyArray1<'_, i64>,
+    clade_leaf_labels: Vec<String>,
+    split_parents: PyReadonlyArray1<'_, i64>,
+    split_lefts: PyReadonlyArray1<'_, i64>,
+    split_rights: PyReadonlyArray1<'_, i64>,
+    split_log_probs: PyReadonlyArray1<'_, f64>,
+    pi: PyReadonlyArray2<'_, f64>,
+    pibar: PyReadonlyArray2<'_, f64>,
+    e: PyReadonlyArray1<'_, f64>,
+    ebar: PyReadonlyArray1<'_, f64>,
+    log_p_s: PyReadonlyArray1<'_, f64>,
+    log_p_d: PyReadonlyArray1<'_, f64>,
+    max_transfer: PyReadonlyArray1<'_, f64>,
+    seed: u64,
+    num_samples: usize,
+    max_events: Option<usize>,
+    origination_probs: Option<PyReadonlyArray1<'_, f64>>,
+) -> PyResult<Vec<String>> {
+    let input = build_borrowed_input_from_numpy(
+        species_newick,
+        species_names_postorder,
+        root_clade,
+        &leaf_species,
+        clade_leaf_labels,
+        &split_parents,
+        &split_lefts,
+        &split_rights,
+        &split_log_probs,
+        &pi,
+        &pibar,
+        &e,
+        &ebar,
+        &log_p_s,
+        &log_p_d,
+        &max_transfer,
+        origination_probs.as_ref(),
+        Some(seed),
+        max_events,
+    )?;
+    let input_view = input.as_view();
+    py.allow_threads(move || sample_recphyloxmls_view(input_view, num_samples, seed))
+        .map_err(py_backtrack_error)
+}
+
+#[cfg(feature = "python-extension")]
+#[pyfunction]
+#[pyo3(signature = (
+    species_newick,
+    species_names_postorder,
+    root_clade,
+    leaf_species,
+    clade_leaf_labels,
+    split_parents,
+    split_lefts,
+    split_rights,
+    split_log_probs,
+    pi,
+    pibar,
+    e,
+    ebar,
+    log_p_s,
+    log_p_d,
+    max_transfer,
+    seed,
+    num_samples,
+    max_events=None,
+    origination_probs=None,
+    parallel=true
+))]
+#[allow(clippy::too_many_arguments)]
+fn sample_summaries_torch(
+    py: Python<'_>,
+    species_newick: String,
+    species_names_postorder: Vec<String>,
+    root_clade: usize,
+    leaf_species: PyReadonlyArray1<'_, i64>,
+    clade_leaf_labels: Vec<String>,
+    split_parents: PyReadonlyArray1<'_, i64>,
+    split_lefts: PyReadonlyArray1<'_, i64>,
+    split_rights: PyReadonlyArray1<'_, i64>,
+    split_log_probs: PyReadonlyArray1<'_, f64>,
+    pi: PyReadonlyArray2<'_, f64>,
+    pibar: PyReadonlyArray2<'_, f64>,
+    e: PyReadonlyArray1<'_, f64>,
+    ebar: PyReadonlyArray1<'_, f64>,
+    log_p_s: PyReadonlyArray1<'_, f64>,
+    log_p_d: PyReadonlyArray1<'_, f64>,
+    max_transfer: PyReadonlyArray1<'_, f64>,
+    seed: u64,
+    num_samples: usize,
+    max_events: Option<usize>,
+    origination_probs: Option<PyReadonlyArray1<'_, f64>>,
+    parallel: bool,
+) -> PyResult<PyObject> {
+    let input = build_borrowed_input_from_numpy(
+        species_newick,
+        species_names_postorder,
+        root_clade,
+        &leaf_species,
+        clade_leaf_labels,
+        &split_parents,
+        &split_lefts,
+        &split_rights,
+        &split_log_probs,
+        &pi,
+        &pibar,
+        &e,
+        &ebar,
+        &log_p_s,
+        &log_p_d,
+        &max_transfer,
+        origination_probs.as_ref(),
+        Some(seed),
+        max_events,
+    )?;
+    let input_view = input.as_view();
+    let summaries = py
+        .allow_threads(move || sample_summaries_view(input_view, num_samples, seed, parallel))
+        .map_err(py_backtrack_error)?;
+    summaries_to_py(py, summaries)
+}
+
+#[cfg(feature = "python-extension")]
+#[pyfunction]
+#[pyo3(signature = (
+    species_newick,
+    species_names_postorder,
+    root_clade,
+    leaf_species,
+    clade_leaf_labels,
+    split_parents,
+    split_lefts,
+    split_rights,
+    split_log_probs,
+    pi,
+    pibar,
+    e,
+    ebar,
+    log_p_s,
+    log_p_d,
+    max_transfer,
+    output_dir,
+    seed,
+    num_samples,
+    max_events=None,
+    origination_probs=None,
+    parallel=true,
+    compression="none"
+))]
+#[allow(clippy::too_many_arguments)]
+fn sample_recphyloxmls_to_dir_torch(
+    py: Python<'_>,
+    species_newick: String,
+    species_names_postorder: Vec<String>,
+    root_clade: usize,
+    leaf_species: PyReadonlyArray1<'_, i64>,
+    clade_leaf_labels: Vec<String>,
+    split_parents: PyReadonlyArray1<'_, i64>,
+    split_lefts: PyReadonlyArray1<'_, i64>,
+    split_rights: PyReadonlyArray1<'_, i64>,
+    split_log_probs: PyReadonlyArray1<'_, f64>,
+    pi: PyReadonlyArray2<'_, f64>,
+    pibar: PyReadonlyArray2<'_, f64>,
+    e: PyReadonlyArray1<'_, f64>,
+    ebar: PyReadonlyArray1<'_, f64>,
+    log_p_s: PyReadonlyArray1<'_, f64>,
+    log_p_d: PyReadonlyArray1<'_, f64>,
+    max_transfer: PyReadonlyArray1<'_, f64>,
+    output_dir: String,
+    seed: u64,
+    num_samples: usize,
+    max_events: Option<usize>,
+    origination_probs: Option<PyReadonlyArray1<'_, f64>>,
+    parallel: bool,
+    compression: &str,
+) -> PyResult<PyObject> {
+    let compression = parse_output_compression(compression)?;
+    let input = build_borrowed_input_from_numpy(
+        species_newick,
+        species_names_postorder,
+        root_clade,
+        &leaf_species,
+        clade_leaf_labels,
+        &split_parents,
+        &split_lefts,
+        &split_rights,
+        &split_log_probs,
+        &pi,
+        &pibar,
+        &e,
+        &ebar,
+        &log_p_s,
+        &log_p_d,
+        &max_transfer,
+        origination_probs.as_ref(),
+        Some(seed),
+        max_events,
+    )?;
+    let input_view = input.as_view();
+    let summaries = py
+        .allow_threads(move || {
+            sample_recphyloxmls_to_dir_view(
+                input_view,
+                num_samples,
+                seed,
+                Path::new(&output_dir),
+                parallel,
+                compression,
+            )
+        })
+        .map_err(py_backtrack_error)?;
+    summaries_to_py(py, summaries)
+}
+
+#[cfg(feature = "python-extension")]
+#[pymodule]
+fn gpurec_backtrack(_py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult<()> {
+    module.add_function(wrap_pyfunction!(sample_recphyloxml_torch, module)?)?;
+    module.add_function(wrap_pyfunction!(sample_recphyloxmls_torch, module)?)?;
+    module.add_function(wrap_pyfunction!(sample_summaries_torch, module)?)?;
+    module.add_function(wrap_pyfunction!(sample_recphyloxmls_to_dir_torch, module)?)?;
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use flate2::read::GzDecoder;
+    use std::fs;
+    use std::io::Read;
+    use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     fn speciation_input() -> BacktrackInput {
         let neg = NEG_INF;
@@ -897,7 +1783,13 @@ mod tests {
                 cols: 3,
                 data: vec![0.0, neg, neg, neg, 0.0, neg, neg, neg, 0.0],
             },
+            pibar: Matrix {
+                rows: 3,
+                cols: 3,
+                data: vec![neg; 9],
+            },
             e: vec![neg, neg, neg],
+            ebar: vec![neg, neg, neg],
             log_p_s: vec![0.0, 0.0, 0.0],
             log_p_d: vec![neg, neg, neg],
             max_transfer: vec![neg, neg, neg],
@@ -921,7 +1813,13 @@ mod tests {
                 cols: 3,
                 data: vec![0.0, 0.0, neg],
             },
+            pibar: Matrix {
+                rows: 1,
+                cols: 3,
+                data: vec![0.0, neg, neg],
+            },
             e: vec![0.0, neg, neg],
+            ebar: vec![neg, neg, neg],
             log_p_s: vec![0.0, 0.0, neg],
             log_p_d: vec![neg, neg, neg],
             max_transfer: vec![0.0, neg, neg],
@@ -935,6 +1833,14 @@ mod tests {
         assert_eq!(item.node_idx, node_idx);
         assert_eq!(item.clade, clade);
         assert_eq!(item.species, species);
+    }
+
+    fn temp_output_dir(name: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!("gpurec-backtrack-{name}-{nanos}"))
     }
 
     #[test]
@@ -990,6 +1896,162 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert_eq!(batch, expected);
+    }
+
+    #[test]
+    fn sample_summaries_match_forced_speciation_counts() {
+        let input = speciation_input();
+
+        let summaries = sample_summaries(&input, 1, 7, false).unwrap();
+
+        assert_eq!(summaries.len(), 1);
+        assert_eq!(summaries[0].seed, 7);
+        assert_eq!(
+            summaries[0].event_counts,
+            EventCounts {
+                s: 1,
+                leaf: 2,
+                ..EventCounts::default()
+            }
+        );
+        assert!(summaries[0].log_probability.is_finite());
+    }
+
+    #[test]
+    fn sample_summaries_match_transfer_loss_counts() {
+        let input = transfer_input(19);
+
+        let summaries = sample_summaries(&input, 1, 19, false).unwrap();
+
+        assert_eq!(
+            summaries[0].event_counts,
+            EventCounts {
+                tl: 1,
+                leaf: 1,
+                ..EventCounts::default()
+            }
+        );
+    }
+
+    #[test]
+    fn borrowed_input_view_samples_from_local_slices() {
+        let neg = NEG_INF;
+        let species_newick = "(A:1,B:1)Root:0;".to_string();
+        let species_names_postorder = vec!["A".into(), "B".into(), "Root".into()];
+        let leaf_species = vec![Some(0), Some(1), None];
+        let clade_leaf_labels = vec!["a".into(), "b".into(), String::new()];
+        let splits = vec![SplitInput {
+            parent: 2,
+            left: 0,
+            right: 1,
+            log_prob: 0.0,
+        }];
+        let pi = vec![0.0, neg, neg, neg, 0.0, neg, neg, neg, 0.0];
+        let pibar = vec![neg; 9];
+        let e = vec![neg, neg, neg];
+        let ebar = vec![neg, neg, neg];
+        let log_p_s = vec![0.0, 0.0, 0.0];
+        let log_p_d = vec![neg, neg, neg];
+        let max_transfer = vec![neg, neg, neg];
+        let origination_probs = vec![0.0, 0.0, 1.0];
+        let input = BacktrackInputView {
+            species_newick: &species_newick,
+            species_names_postorder: &species_names_postorder,
+            root_clade: 2,
+            leaf_species: &leaf_species,
+            clade_leaf_labels: &clade_leaf_labels,
+            splits: &splits,
+            pi: MatrixView {
+                rows: 3,
+                cols: 3,
+                data: &pi,
+            },
+            pibar: MatrixView {
+                rows: 3,
+                cols: 3,
+                data: &pibar,
+            },
+            e: &e,
+            ebar: &ebar,
+            log_p_s: &log_p_s,
+            log_p_d: &log_p_d,
+            max_transfer: &max_transfer,
+            origination_probs: Some(&origination_probs),
+            seed: Some(7),
+            max_events: Some(32),
+        };
+
+        let xml = sample_recphyloxml_view(input).unwrap();
+        let summaries = sample_summaries_view(input, 2, 7, true).unwrap();
+
+        assert!(xml.contains("<speciation speciesLocation=\"Root\"/>"));
+        assert_eq!(summaries.len(), 2);
+        assert_eq!(
+            summaries[0].event_counts,
+            EventCounts {
+                s: 1,
+                leaf: 2,
+                ..EventCounts::default()
+            }
+        );
+    }
+
+    #[test]
+    fn writes_samples_to_dir_without_collecting_returned_xml() {
+        let input = speciation_input();
+        let dir = temp_output_dir("plain");
+
+        let summaries =
+            sample_recphyloxmls_to_dir(&input, 2, 7, &dir, false, OutputCompression::None).unwrap();
+
+        assert_eq!(summaries.len(), 2);
+        assert!(dir.join("sample_0.xml").is_file());
+        assert!(dir.join("sample_1.xml").is_file());
+        let xml = fs::read_to_string(dir.join("sample_0.xml")).unwrap();
+        assert!(xml.contains("<speciation speciesLocation=\"Root\"/>"));
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn parallel_dir_sampling_matches_serial_output() {
+        let input = transfer_input(19);
+        let serial_dir = temp_output_dir("serial");
+        let parallel_dir = temp_output_dir("parallel");
+
+        let serial =
+            sample_recphyloxmls_to_dir(&input, 4, 19, &serial_dir, false, OutputCompression::None)
+                .unwrap();
+        let parallel =
+            sample_recphyloxmls_to_dir(&input, 4, 19, &parallel_dir, true, OutputCompression::None)
+                .unwrap();
+
+        assert_eq!(parallel, serial);
+        for idx in 0..4 {
+            let serial_xml =
+                fs::read_to_string(serial_dir.join(format!("sample_{idx}.xml"))).unwrap();
+            let parallel_xml =
+                fs::read_to_string(parallel_dir.join(format!("sample_{idx}.xml"))).unwrap();
+            assert_eq!(parallel_xml, serial_xml);
+        }
+        fs::remove_dir_all(serial_dir).unwrap();
+        fs::remove_dir_all(parallel_dir).unwrap();
+    }
+
+    #[test]
+    fn writes_gzip_samples_to_dir() {
+        let input = speciation_input();
+        let dir = temp_output_dir("gzip");
+
+        sample_recphyloxmls_to_dir(&input, 1, 7, &dir, false, OutputCompression::Gzip).unwrap();
+
+        let path = dir.join("sample_0.xml.gz");
+        assert!(path.is_file());
+        let mut decoder = GzDecoder::new(fs::File::open(path).unwrap());
+        let mut xml = String::new();
+        decoder.read_to_string(&mut xml).unwrap();
+        assert!(xml.contains("recPhylo"));
+        assert!(xml.contains("<leaf speciesLocation=\"A\"/>"));
+        fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
@@ -1305,7 +2367,10 @@ mod tests {
             data: Vec::new(),
         };
 
-        let err = matrix.validate("pi").unwrap_err().to_string();
+        let err = MatrixView::from(&matrix)
+            .validate("pi")
+            .unwrap_err()
+            .to_string();
 
         assert!(err.contains("pi shape"));
         assert!(err.contains("overflows usize"));

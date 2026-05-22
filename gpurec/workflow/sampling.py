@@ -11,7 +11,7 @@ from gpurec.api.model import GeneReconModel
 from gpurec.backtracking import (
     ensure_backtracking_available,
     recphyloxml_event_counts,
-    sample_recphyloxmls,
+    sample_recphyloxmls_to_dir,
 )
 from gpurec.recphyloxml import (
     EVENT_KEYS,
@@ -316,22 +316,41 @@ class SamplingRunner:
             for family_index in range(start, stop):
                 family = family_names[family_index]
                 family_file_stem = _family_file_stem(family_index, family)
-                xmls = sample_recphyloxmls(
+                family_stage_dir = stage_all_dir / f".{family_file_stem}_samples"
+                family_stage_dir.mkdir(parents=True, exist_ok=True)
+                summaries = sample_recphyloxmls_to_dir(
                     model,
                     family_index=family_index,
                     num_samples=self.config.samples,
+                    output_dir=family_stage_dir,
                     seed=self.config.seed + family_index * self.config.samples,
                     max_events=self.config.max_events,
                     backtrack_binary=self.config.backtrack_binary,
                 )
-                for sample_index, xml in enumerate(xmls):
+                summary_by_sample = {
+                    sample_index: summary
+                    for sample_index, summary in enumerate(summaries)
+                }
+                for sample_index in range(self.config.samples):
                     xml_path = all_dir / f"{family_file_stem}_sample_{sample_index}.xml"
-                    staged_xml_path = stage_all_dir / xml_path.name
+                    staged_xml_path = family_stage_dir / f"sample_{sample_index}.xml"
+                    if not staged_xml_path.is_file():
+                        raise RuntimeError(
+                            "gpurec backtracking command succeeded but did not write "
+                            f"expected RecPhyloXML output {staged_xml_path}"
+                        )
                     staged_outputs.append((staged_xml_path, xml_path))
-                    staged_xml_path.write_text(xml, encoding="utf-8")
+                    xml = staged_xml_path.read_text(encoding="utf-8")
                     xml_count += 1
 
-                    event_counts = recphyloxml_event_counts(xml)
+                    summary = summary_by_sample.get(sample_index)
+                    if summary is None or "event_counts" not in summary:
+                        event_counts = recphyloxml_event_counts(xml)
+                    else:
+                        event_counts = {
+                            key: int(summary["event_counts"].get(key, 0))
+                            for key in EVENT_KEYS
+                        }
                     event_counts_path = (
                         all_dir / f"{family_file_stem}_eventCounts_{sample_index}.txt"
                     )

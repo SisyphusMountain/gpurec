@@ -3,7 +3,9 @@ use std::fs;
 use std::io::{self, Read};
 use std::path::PathBuf;
 
-use gpurec_backtrack::{sample_recphyloxml, sample_recphyloxmls, BacktrackInput};
+use gpurec_backtrack::{
+    sample_recphyloxml, sample_recphyloxmls_to_dir, BacktrackInput, OutputCompression,
+};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = match parse_args(std::env::args_os().skip(1)) {
@@ -48,12 +50,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .ok_or("--output-dir is required in multi-sample mode")?;
     fs::create_dir_all(&dir)?;
     let base_seed = input.seed.unwrap_or(0);
-    for (sample_idx, xml) in sample_recphyloxmls(&input, args.samples, base_seed)?
-        .into_iter()
-        .enumerate()
-    {
-        fs::write(dir.join(format!("sample_{sample_idx}.xml")), xml)?;
-    }
+    sample_recphyloxmls_to_dir(
+        &input,
+        args.samples,
+        base_seed,
+        &dir,
+        args.parallel,
+        args.compression,
+    )?;
 
     Ok(())
 }
@@ -64,6 +68,8 @@ struct CliArgs {
     output_dir: Option<PathBuf>,
     seed_override: Option<u64>,
     max_events_override: Option<usize>,
+    compression: OutputCompression,
+    parallel: bool,
     positionals: Vec<PathBuf>,
 }
 
@@ -82,6 +88,8 @@ where
         output_dir: None,
         seed_override: None,
         max_events_override: None,
+        compression: OutputCompression::None,
+        parallel: true,
         positionals: Vec::new(),
     };
 
@@ -104,6 +112,16 @@ where
             "--max-events" => {
                 let value = next_option_value(&mut args, "--max-events")?;
                 parsed.max_events_override = Some(parse_option_value(&value, "--max-events")?);
+            }
+            "--compression" => {
+                let value = next_option_value(&mut args, "--compression")?;
+                parsed.compression = parse_compression_value(&value)?;
+            }
+            "--parallel" => {
+                parsed.parallel = true;
+            }
+            "--serial" => {
+                parsed.parallel = false;
             }
             "--help" | "-h" => {
                 return Err(CliError::Help);
@@ -159,8 +177,18 @@ where
 
 fn print_usage() {
     eprintln!(
-        "usage: gpurec-backtrack [--samples N --output-dir DIR --seed SEED --max-events N] [input.json] [output.xml]"
+        "usage: gpurec-backtrack [--samples N --output-dir DIR --seed SEED --max-events N --compression none|gzip --parallel|--serial] [input.json] [output.xml]"
     );
+}
+
+fn parse_compression_value(value: &OsString) -> Result<OutputCompression, CliError> {
+    match value.to_string_lossy().as_ref() {
+        "none" => Ok(OutputCompression::None),
+        "gzip" | "gz" => Ok(OutputCompression::Gzip),
+        other => Err(CliError::Message(format!(
+            "--compression must be none or gzip, got {other:?}"
+        ))),
+    }
 }
 
 #[cfg(test)]
@@ -190,7 +218,37 @@ mod tests {
         assert_eq!(parsed.output_dir, Some(PathBuf::from("out")));
         assert_eq!(parsed.seed_override, Some(17));
         assert_eq!(parsed.max_events_override, Some(99));
+        assert_eq!(parsed.compression, OutputCompression::None);
+        assert!(parsed.parallel);
         assert_eq!(parsed.positionals, vec![PathBuf::from("input.json")]);
+    }
+
+    #[test]
+    fn parses_compression_and_serial_flags() {
+        let parsed = parse(&[
+            "--samples",
+            "2",
+            "--output-dir",
+            "out",
+            "--compression",
+            "gzip",
+            "--serial",
+            "input.json",
+        ])
+        .unwrap();
+
+        assert_eq!(parsed.compression, OutputCompression::Gzip);
+        assert!(!parsed.parallel);
+    }
+
+    #[test]
+    fn rejects_unknown_compression() {
+        let err = parse(&["--compression", "zip"]).unwrap_err();
+
+        assert_eq!(
+            err,
+            CliError::Message("--compression must be none or gzip, got \"zip\"".to_string())
+        );
     }
 
     #[test]

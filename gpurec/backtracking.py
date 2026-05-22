@@ -2,15 +2,19 @@
 
 from __future__ import annotations
 
+import importlib.machinery
+import importlib.util
 import json
 import math
 import os
 import shlex
 import shutil
 import subprocess
+import sys
 import tempfile
 from collections.abc import Callable
 from dataclasses import dataclass
+from functools import lru_cache
 from numbers import Integral, Real
 from pathlib import Path
 from typing import Any
@@ -30,18 +34,22 @@ __all__ = [
     "ensure_backtracking_available",
     "export_backtracking_input",
     "recphyloxml_event_counts",
+    "sample_backtracking_summaries",
     "sample_recphyloxml",
     "sample_recphyloxmls",
+    "sample_recphyloxmls_to_dir",
 ]
 
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 _BACKTRACK_MANIFEST = _REPO_ROOT / "crates" / "gpurec-backtrack" / "Cargo.toml"
 _BACKTRACK_BINARY_ENV = "GPUREC_BACKTRACK_BIN"
+_BACKTRACK_NATIVE_LIB_ENV = "GPUREC_BACKTRACK_NATIVE_LIB"
 _BACKTRACK_BINARY_GUIDANCE = (
     f"Set {_BACKTRACK_BINARY_ENV}, pass backtrack_binary in Python, or use "
     "--backtrack-binary in the CLI"
 )
+_NATIVE_MODULE_NAME = "gpurec_backtrack"
 _BACKTRACK_HELP_TIMEOUT_SECONDS = 30
 _BACKTRACK_RUN_TIMEOUT_SECONDS = 3600
 _BACKTRACK_HELP_MARKERS = (
@@ -53,12 +61,38 @@ _BACKTRACK_HELP_MARKERS = (
     "input.json",
 )
 _UINT64_MAX = (1 << 64) - 1
+_BACKTRACK_BACKENDS = frozenset(("auto", "native", "cli"))
+_BACKTRACK_COMPRESSIONS = frozenset(("none", "gzip"))
+_NEG_INF_SENTINEL = -1.0e300
 
 
 @dataclass(frozen=True)
 class _BacktrackInvocation:
     command: list[str]
     cwd: str | None
+
+
+@dataclass(frozen=True)
+class _PreparedBacktrackingInput:
+    species_newick: str
+    species_names_postorder: list[str]
+    root_clade: int
+    leaf_species: torch.Tensor
+    clade_leaf_labels: list[str]
+    split_parents: torch.Tensor
+    split_lefts: torch.Tensor
+    split_rights: torch.Tensor
+    split_log_probs: torch.Tensor
+    pi: torch.Tensor
+    pibar: torch.Tensor
+    e: torch.Tensor
+    ebar: torch.Tensor
+    log_p_s: torch.Tensor
+    log_p_d: torch.Tensor
+    max_transfer: torch.Tensor
+    origination_probs: torch.Tensor | None
+    seed: int | None
+    max_events: int | None
 
 
 def _integer_limit(
@@ -116,6 +150,16 @@ def _tensor_list(value: Any, *, dtype: torch.dtype | None = None) -> list:
     if dtype is not None:
         tensor = tensor.to(dtype=dtype)
     return tensor.detach().cpu().tolist()
+
+
+def _log_tensor_for_rust(value: Any, *, name: str) -> torch.Tensor:
+    """Return a finite CPU float64 log tensor using Rust's negative sentinel."""
+    tensor = torch.as_tensor(value).detach().to(dtype=torch.float64)
+    neg_inf = torch.full((), _NEG_INF_SENTINEL, dtype=torch.float64, device=tensor.device)
+    tensor = torch.where(torch.isneginf(tensor), neg_inf, tensor)
+    if torch.isposinf(tensor).any():
+        raise ValueError(f"{name} contains positive infinity")
+    return tensor.cpu().contiguous()
 
 
 def _validate_finite_json_numbers(value: Any, *, path: str) -> None:
@@ -182,17 +226,29 @@ def _family_origination_probs(
     family_index: int,
     S: int,
 ) -> list[float] | None:
+    tensor = _family_origination_tensor(probs, family_index=family_index, S=S)
+    if tensor is None:
+        return None
+    return _tensor_list(tensor, dtype=torch.float64)
+
+
+def _family_origination_tensor(
+    probs: torch.Tensor | None,
+    *,
+    family_index: int,
+    S: int,
+) -> torch.Tensor | None:
     if probs is None:
         return None
     probs = probs.detach()
     if probs.ndim == 1:
         if int(probs.shape[0]) != S:
             raise ValueError(f"origination_probs length {int(probs.shape[0])} != S={S}")
-        return _tensor_list(probs, dtype=torch.float64)
+        return probs.to(dtype=torch.float64).cpu().contiguous()
     if probs.ndim == 2:
         if int(probs.shape[1]) != S:
             raise ValueError(f"origination_probs shape {tuple(probs.shape)} incompatible with S={S}")
-        return _tensor_list(probs[family_index], dtype=torch.float64)
+        return probs[family_index].to(dtype=torch.float64).cpu().contiguous()
     raise ValueError(f"unsupported origination_probs shape {tuple(probs.shape)}")
 
 
@@ -269,6 +325,126 @@ def _is_cargo_fallback_command(command: list[str]) -> bool:
 
 def _command_text(command: list[str]) -> str:
     return " ".join(shlex.quote(part) for part in command)
+
+
+_ORIGINAL_BACKTRACK_COMMAND = _backtrack_command
+
+
+def _native_library_path(cargo_manifest: str | Path = _BACKTRACK_MANIFEST) -> Path:
+    override = os.environ.get(_BACKTRACK_NATIVE_LIB_ENV)
+    if override:
+        return Path(override).expanduser().resolve()
+    manifest = Path(cargo_manifest)
+    return (manifest.parent / "target" / "release" / "libgpurec_backtrack.so").resolve()
+
+
+def _build_native_extension(cargo_manifest: str | Path = _BACKTRACK_MANIFEST) -> None:
+    if shutil.which("cargo") is None:
+        raise RuntimeError(
+            "gpurec Rust backtracking native backend requires cargo to build "
+            f"the extension, or set {_BACKTRACK_NATIVE_LIB_ENV} to a built library"
+        )
+    subprocess.run(
+        [
+            "cargo",
+            "build",
+            "--release",
+            "--locked",
+            "--features",
+            "python-extension",
+            "--manifest-path",
+            str(cargo_manifest),
+        ],
+        cwd=_REPO_ROOT,
+        check=True,
+    )
+
+
+@lru_cache(maxsize=1)
+def _load_native_module(cargo_manifest: str | Path = _BACKTRACK_MANIFEST):
+    path = _native_library_path(cargo_manifest)
+    if not path.exists() and os.environ.get(_BACKTRACK_NATIVE_LIB_ENV) is None:
+        _build_native_extension(cargo_manifest)
+    if not path.exists():
+        raise RuntimeError(f"Rust backtracking native library not found: {path}")
+
+    existing = sys.modules.get(_NATIVE_MODULE_NAME)
+    if existing is not None:
+        return existing
+
+    loader = importlib.machinery.ExtensionFileLoader(_NATIVE_MODULE_NAME, str(path))
+    spec = importlib.util.spec_from_file_location(
+        _NATIVE_MODULE_NAME,
+        str(path),
+        loader=loader,
+    )
+    if spec is None:
+        raise RuntimeError(f"could not create import spec for Rust backtracking library: {path}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[_NATIVE_MODULE_NAME] = module
+    try:
+        loader.exec_module(module)
+    except Exception:
+        sys.modules.pop(_NATIVE_MODULE_NAME, None)
+        raise
+    return module
+
+
+def _validate_backtracking_backend(backend: str) -> str:
+    normalized = str(backend).strip().lower()
+    if normalized not in _BACKTRACK_BACKENDS:
+        valid = ", ".join(sorted(_BACKTRACK_BACKENDS))
+        raise ValueError(f"backend must be one of {valid}, got {backend!r}")
+    return normalized
+
+
+def _resolve_backtracking_backend(
+    backend: str,
+    *,
+    backtrack_binary: str | Path | None,
+) -> str:
+    backend = _validate_backtracking_backend(backend)
+    if backend != "auto":
+        return backend
+    if (
+        backtrack_binary is not None
+        or os.environ.get(_BACKTRACK_BINARY_ENV)
+        or _backtrack_command is not _ORIGINAL_BACKTRACK_COMMAND
+    ):
+        return "cli"
+    return "native"
+
+
+def _validate_backtracking_compression(compression: str) -> str:
+    normalized = str(compression).strip().lower()
+    if normalized not in _BACKTRACK_COMPRESSIONS:
+        valid = ", ".join(sorted(_BACKTRACK_COMPRESSIONS))
+        raise ValueError(f"compression must be one of {valid}, got {compression!r}")
+    return normalized
+
+
+def _validate_parallel(value: object) -> bool:
+    if isinstance(value, bool):
+        return value
+    raise ValueError("parallel must be a boolean")
+
+
+def _validate_sample_count_and_seed(
+    *,
+    num_samples: object,
+    seed: object,
+) -> tuple[int, int]:
+    sample_count = _integer_limit("num_samples", num_samples, minimum=1)
+    base_seed = _optional_int_limit("seed", seed, minimum=0, maximum=_UINT64_MAX)
+    if base_seed is None:
+        base_seed = 0
+    max_seed = base_seed + sample_count - 1
+    if max_seed > _UINT64_MAX:
+        raise ValueError(
+            "seed range exceeds u64 maximum: "
+            f"seed={base_seed}, num_samples={sample_count}, max_seed={max_seed}"
+        )
+    return sample_count, base_seed
 
 
 def _backtrack_invocation(
@@ -406,6 +582,273 @@ def _read_required_output(path: Path, *, description: str) -> str:
     return path.read_text(encoding="utf-8")
 
 
+def _prepare_backtracking_input(
+    model: GeneReconModel,
+    *,
+    family_index: int = 0,
+    seed: int | None = None,
+    max_events: int | None = None,
+) -> _PreparedBacktrackingInput:
+    seed, max_events = _validate_backtracking_limits(seed=seed, max_events=max_events)
+    family_index = _integer_limit("family_index", family_index, minimum=0)
+    family = model.family_input(family_index)
+    offset, parameter_family_index = _activate_family_batch(model, family_index)
+    state = _evaluate_backtracking_state(model)
+    C = family.clade_count
+    S = model.n_species
+    ccp = family.ccp_helpers
+    familywise_parameters = getattr(model, "mode", None) == "genewise"
+
+    if state.pibar is None or state.ebar is None:
+        raise RuntimeError(
+            "Rust backtracking requires ReconciliationState.pibar and "
+            "ReconciliationState.ebar. Use GeneReconModel.reconciliation_state() "
+            "from this version of gpurec so the sampler receives the retained "
+            "forward transfer aggregates."
+        )
+
+    pi = state.pi[offset : offset + C].detach().to(dtype=torch.float64).cpu().contiguous()
+    pibar = _log_tensor_for_rust(
+        state.pibar[offset : offset + C],
+        name="pibar",
+    )
+    e = _species_vector(
+        state.e,
+        family_index=parameter_family_index,
+        S=S,
+    ).to(dtype=torch.float64).cpu().contiguous()
+    ebar = _log_tensor_for_rust(
+        _species_vector(
+            state.ebar,
+            family_index=parameter_family_index,
+            S=S,
+        ),
+        name="ebar",
+    )
+    log_p_s = _species_vector(
+        state.log_p_s,
+        family_index=parameter_family_index,
+        S=S,
+        familywise_1d=familywise_parameters,
+    ).to(dtype=torch.float64).cpu().contiguous()
+    log_p_d = _species_vector(
+        state.log_p_d,
+        family_index=parameter_family_index,
+        S=S,
+        familywise_1d=familywise_parameters,
+    ).to(dtype=torch.float64).cpu().contiguous()
+    max_transfer = _species_vector(
+        state.max_transfer,
+        family_index=parameter_family_index,
+        S=S,
+        familywise_1d=familywise_parameters,
+    ).to(dtype=torch.float64).cpu().contiguous()
+
+    N = int(ccp["N_splits"])
+    parents = torch.as_tensor(ccp["split_parents_sorted"], dtype=torch.long).cpu().contiguous()
+    leftrights = torch.as_tensor(ccp["split_leftrights_sorted"], dtype=torch.long).cpu()
+    lefts = leftrights[:N].contiguous()
+    rights = leftrights[N:].contiguous()
+    log_probs = torch.as_tensor(
+        ccp["log_split_probs_sorted"],
+        dtype=torch.float64,
+    ).cpu().contiguous()
+
+    leaf_species = torch.full((C,), -1, dtype=torch.long)
+    leaf_rows = torch.as_tensor(family.leaf_row_index, dtype=torch.long).cpu()
+    leaf_cols = torch.as_tensor(family.leaf_col_index, dtype=torch.long).cpu()
+    for row, col in zip(leaf_rows.tolist(), leaf_cols.tolist()):
+        leaf_species[int(row)] = int(col)
+
+    labels = list(family.clade_leaf_labels)
+    if len(labels) != C:
+        labels = [""] * C
+
+    species_names = list(model.species_names)
+    species_newick = model.species_tree_path.read_text(encoding="utf-8")
+    origination_probs = _family_origination_tensor(
+        state.origination_probs,
+        family_index=parameter_family_index,
+        S=S,
+    )
+
+    return _PreparedBacktrackingInput(
+        species_newick=species_newick,
+        species_names_postorder=species_names,
+        root_clade=int(family.root_clade_id),
+        leaf_species=leaf_species.contiguous(),
+        clade_leaf_labels=labels,
+        split_parents=parents,
+        split_lefts=lefts,
+        split_rights=rights,
+        split_log_probs=log_probs,
+        pi=pi,
+        pibar=pibar,
+        e=e,
+        ebar=ebar,
+        log_p_s=log_p_s,
+        log_p_d=log_p_d,
+        max_transfer=max_transfer,
+        origination_probs=origination_probs,
+        seed=seed,
+        max_events=max_events,
+    )
+
+
+def _prepared_backtracking_payload(
+    prepared: _PreparedBacktrackingInput,
+) -> dict[str, Any]:
+    leaf_species = [
+        None if int(value) < 0 else int(value)
+        for value in prepared.leaf_species.detach().cpu().tolist()
+    ]
+    splits = [
+        {
+            "parent": int(parent),
+            "left": int(left),
+            "right": int(right),
+            "log_prob": float(log_prob),
+        }
+        for parent, left, right, log_prob in zip(
+            prepared.split_parents.detach().cpu().tolist(),
+            prepared.split_lefts.detach().cpu().tolist(),
+            prepared.split_rights.detach().cpu().tolist(),
+            prepared.split_log_probs.detach().cpu().tolist(),
+        )
+    ]
+
+    rows, cols = map(int, prepared.pi.shape)
+    pibar_rows, pibar_cols = map(int, prepared.pibar.shape)
+    payload = {
+        "species_newick": prepared.species_newick,
+        "species_names_postorder": prepared.species_names_postorder,
+        "root_clade": prepared.root_clade,
+        "leaf_species": leaf_species,
+        "clade_leaf_labels": prepared.clade_leaf_labels,
+        "splits": splits,
+        "pi": {"rows": rows, "cols": cols, "data": prepared.pi.reshape(-1).tolist()},
+        "pibar": {
+            "rows": pibar_rows,
+            "cols": pibar_cols,
+            "data": prepared.pibar.reshape(-1).tolist(),
+        },
+        "e": _tensor_list(prepared.e, dtype=torch.float64),
+        "ebar": _tensor_list(prepared.ebar, dtype=torch.float64),
+        "log_p_s": _tensor_list(prepared.log_p_s, dtype=torch.float64),
+        "log_p_d": _tensor_list(prepared.log_p_d, dtype=torch.float64),
+        "max_transfer": _tensor_list(prepared.max_transfer, dtype=torch.float64),
+        "origination_probs": (
+            None
+            if prepared.origination_probs is None
+            else _tensor_list(prepared.origination_probs, dtype=torch.float64)
+        ),
+        "seed": prepared.seed,
+        "max_events": prepared.max_events,
+    }
+    _validate_finite_json_numbers(payload, path="backtracking payload")
+    return payload
+
+
+def _i64_numpy_view(value: torch.Tensor):
+    return value.detach().to(device="cpu", dtype=torch.long).contiguous().numpy()
+
+
+def _f64_numpy_view(value: torch.Tensor):
+    return value.detach().to(device="cpu", dtype=torch.float64).contiguous().numpy()
+
+
+def _native_torch_args(prepared: _PreparedBacktrackingInput) -> tuple[object, ...]:
+    return (
+        prepared.species_newick,
+        prepared.species_names_postorder,
+        prepared.root_clade,
+        _i64_numpy_view(prepared.leaf_species),
+        prepared.clade_leaf_labels,
+        _i64_numpy_view(prepared.split_parents),
+        _i64_numpy_view(prepared.split_lefts),
+        _i64_numpy_view(prepared.split_rights),
+        _f64_numpy_view(prepared.split_log_probs),
+        _f64_numpy_view(prepared.pi),
+        _f64_numpy_view(prepared.pibar),
+        _f64_numpy_view(prepared.e),
+        _f64_numpy_view(prepared.ebar),
+        _f64_numpy_view(prepared.log_p_s),
+        _f64_numpy_view(prepared.log_p_d),
+        _f64_numpy_view(prepared.max_transfer),
+    )
+
+
+def _native_origination_probs(prepared: _PreparedBacktrackingInput):
+    if prepared.origination_probs is None:
+        return None
+    return _f64_numpy_view(prepared.origination_probs)
+
+
+def _sample_recphyloxmls_native(
+    prepared: _PreparedBacktrackingInput,
+    *,
+    num_samples: int,
+    seed: int,
+    cargo_manifest: str | Path,
+) -> list[str]:
+    module = _load_native_module(cargo_manifest)
+    return list(
+        module.sample_recphyloxmls_torch(
+            *_native_torch_args(prepared),
+            int(seed),
+            int(num_samples),
+            prepared.max_events,
+            _native_origination_probs(prepared),
+        )
+    )
+
+
+def _sample_recphyloxmls_to_dir_native(
+    prepared: _PreparedBacktrackingInput,
+    *,
+    num_samples: int,
+    output_dir: Path,
+    seed: int,
+    cargo_manifest: str | Path,
+    compression: str,
+    parallel: bool,
+) -> list[dict[str, Any]]:
+    module = _load_native_module(cargo_manifest)
+    return list(
+        module.sample_recphyloxmls_to_dir_torch(
+            *_native_torch_args(prepared),
+            str(output_dir),
+            int(seed),
+            int(num_samples),
+            prepared.max_events,
+            _native_origination_probs(prepared),
+            parallel,
+            compression,
+        )
+    )
+
+
+def _sample_backtracking_summaries_native(
+    prepared: _PreparedBacktrackingInput,
+    *,
+    num_samples: int,
+    seed: int,
+    cargo_manifest: str | Path,
+    parallel: bool,
+) -> list[dict[str, Any]]:
+    module = _load_native_module(cargo_manifest)
+    return list(
+        module.sample_summaries_torch(
+            *_native_torch_args(prepared),
+            int(seed),
+            int(num_samples),
+            prepared.max_events,
+            _native_origination_probs(prepared),
+            parallel,
+        )
+    )
+
+
 def export_backtracking_input(
     model: GeneReconModel,
     *,
@@ -419,93 +862,13 @@ def export_backtracking_input(
     for the selected family.
     """
 
-    seed, max_events = _validate_backtracking_limits(seed=seed, max_events=max_events)
-    family_index = _integer_limit("family_index", family_index, minimum=0)
-    family = model.family_input(family_index)
-    offset, parameter_family_index = _activate_family_batch(model, family_index)
-    state = _evaluate_backtracking_state(model)
-    C = family.clade_count
-    S = model.n_species
-    ccp = family.ccp_helpers
-    familywise_parameters = getattr(model, "mode", None) == "genewise"
-
-    pi = state.pi[offset : offset + C].detach().to(dtype=torch.float64).cpu().contiguous()
-    e = _species_vector(
-        state.e,
-        family_index=parameter_family_index,
-        S=S,
-    ).to(dtype=torch.float64)
-    log_p_s = _species_vector(
-        state.log_p_s,
-        family_index=parameter_family_index,
-        S=S,
-        familywise_1d=familywise_parameters,
-    ).to(dtype=torch.float64)
-    log_p_d = _species_vector(
-        state.log_p_d,
-        family_index=parameter_family_index,
-        S=S,
-        familywise_1d=familywise_parameters,
-    ).to(dtype=torch.float64)
-    max_transfer = _species_vector(
-        state.max_transfer,
-        family_index=parameter_family_index,
-        S=S,
-        familywise_1d=familywise_parameters,
-    ).to(dtype=torch.float64)
-
-    N = int(ccp["N_splits"])
-    parents = torch.as_tensor(ccp["split_parents_sorted"], dtype=torch.long).cpu()
-    leftrights = torch.as_tensor(ccp["split_leftrights_sorted"], dtype=torch.long).cpu()
-    lefts = leftrights[:N]
-    rights = leftrights[N:]
-    log_probs = torch.as_tensor(ccp["log_split_probs_sorted"], dtype=torch.float64).cpu()
-    splits = [
-        {
-            "parent": int(parent),
-            "left": int(left),
-            "right": int(right),
-            "log_prob": float(log_prob),
-        }
-        for parent, left, right, log_prob in zip(parents, lefts, rights, log_probs)
-    ]
-
-    leaf_species: list[int | None] = [None] * C
-    leaf_rows = torch.as_tensor(family.leaf_row_index, dtype=torch.long).cpu()
-    leaf_cols = torch.as_tensor(family.leaf_col_index, dtype=torch.long).cpu()
-    for row, col in zip(leaf_rows.tolist(), leaf_cols.tolist()):
-        leaf_species[int(row)] = int(col)
-
-    labels = list(family.clade_leaf_labels)
-    if len(labels) != C:
-        labels = [""] * C
-
-    species_names = model.species_names
-    species_newick = model.species_tree_path.read_text(encoding="utf-8")
-    origination_probs = _family_origination_probs(
-        state.origination_probs,
-        family_index=parameter_family_index,
-        S=S,
+    prepared = _prepare_backtracking_input(
+        model,
+        family_index=family_index,
+        seed=seed,
+        max_events=max_events,
     )
-
-    payload = {
-        "species_newick": species_newick,
-        "species_names_postorder": species_names,
-        "root_clade": family.root_clade_id,
-        "leaf_species": leaf_species,
-        "clade_leaf_labels": labels,
-        "splits": splits,
-        "pi": {"rows": C, "cols": S, "data": pi.reshape(-1).tolist()},
-        "e": _tensor_list(e, dtype=torch.float64),
-        "log_p_s": _tensor_list(log_p_s, dtype=torch.float64),
-        "log_p_d": _tensor_list(log_p_d, dtype=torch.float64),
-        "max_transfer": _tensor_list(max_transfer, dtype=torch.float64),
-        "origination_probs": origination_probs,
-        "seed": seed,
-        "max_events": max_events,
-    }
-    _validate_finite_json_numbers(payload, path="backtracking payload")
-    return payload
+    return _prepared_backtracking_payload(prepared)
 
 
 def sample_recphyloxml(
@@ -516,8 +879,32 @@ def sample_recphyloxml(
     max_events: int | None = None,
     cargo_manifest: str | Path = _BACKTRACK_MANIFEST,
     backtrack_binary: str | Path | None = None,
+    backend: str = "auto",
 ) -> str:
-    """Run the Rust sampler and return one RecPhyloXML document."""
+    """Run the Rust sampler and return one RecPhyloXML document.
+
+    ``backend="auto"`` uses the in-process native Rust extension unless a
+    backtracking binary is explicitly configured, in which case it preserves the
+    CLI/JSON path.
+    """
+
+    resolved_backend = _resolve_backtracking_backend(
+        backend,
+        backtrack_binary=backtrack_binary,
+    )
+    if resolved_backend == "native":
+        prepared = _prepare_backtracking_input(
+            model,
+            family_index=family_index,
+            seed=seed,
+            max_events=max_events,
+        )
+        return _sample_recphyloxmls_native(
+            prepared,
+            num_samples=1,
+            seed=0 if prepared.seed is None else prepared.seed,
+            cargo_manifest=cargo_manifest,
+        )[0]
 
     payload = export_backtracking_input(
         model,
@@ -553,21 +940,37 @@ def sample_recphyloxmls(
     max_events: int | None = None,
     cargo_manifest: str | Path = _BACKTRACK_MANIFEST,
     backtrack_binary: str | Path | None = None,
+    backend: str = "auto",
 ) -> list[str]:
-    """Run the Rust sampler once and return multiple RecPhyloXML documents."""
+    """Run the Rust sampler once and return multiple RecPhyloXML documents.
 
-    num_samples = int(
-        _optional_int_limit("num_samples", num_samples, minimum=1)
+    ``backend="auto"`` uses the in-process native Rust extension unless a
+    backtracking binary is explicitly configured, in which case it preserves the
+    CLI/JSON path.
+    """
+
+    num_samples, base_seed = _validate_sample_count_and_seed(
+        num_samples=num_samples,
+        seed=seed,
     )
-    base_seed = _optional_int_limit("seed", seed, minimum=0, maximum=_UINT64_MAX)
-    if base_seed is None:
-        base_seed = 0
-    max_seed = base_seed + num_samples - 1
-    if max_seed > _UINT64_MAX:
-        raise ValueError(
-            "seed range exceeds u64 maximum: "
-            f"seed={base_seed}, num_samples={num_samples}, max_seed={max_seed}"
+    resolved_backend = _resolve_backtracking_backend(
+        backend,
+        backtrack_binary=backtrack_binary,
+    )
+    if resolved_backend == "native":
+        prepared = _prepare_backtracking_input(
+            model,
+            family_index=family_index,
+            seed=base_seed,
+            max_events=max_events,
         )
+        return _sample_recphyloxmls_native(
+            prepared,
+            num_samples=num_samples,
+            seed=base_seed,
+            cargo_manifest=cargo_manifest,
+        )
+
     payload = export_backtracking_input(
         model,
         family_index=family_index,
@@ -616,6 +1019,150 @@ def sample_recphyloxmls(
         backtrack_binary=backtrack_binary,
         build_args=build_args,
         read_output=read_output,
+    )
+
+
+def sample_recphyloxmls_to_dir(
+    model: GeneReconModel,
+    *,
+    family_index: int = 0,
+    num_samples: int,
+    output_dir: str | Path,
+    seed: int = 0,
+    max_events: int | None = None,
+    cargo_manifest: str | Path = _BACKTRACK_MANIFEST,
+    backtrack_binary: str | Path | None = None,
+    backend: str = "auto",
+    compression: str = "none",
+    parallel: bool = True,
+) -> list[dict[str, Any]]:
+    """Sample RecPhyloXML documents directly into ``output_dir``.
+
+    The native backend returns Rust event-count summaries. The CLI backend
+    writes the files through the JSON/binary path and returns an empty summary
+    list because the command-line surface does not emit compact summaries.
+    """
+
+    num_samples, base_seed = _validate_sample_count_and_seed(
+        num_samples=num_samples,
+        seed=seed,
+    )
+    compression = _validate_backtracking_compression(compression)
+    parallel = _validate_parallel(parallel)
+    output_path = Path(output_dir).expanduser()
+    resolved_backend = _resolve_backtracking_backend(
+        backend,
+        backtrack_binary=backtrack_binary,
+    )
+
+    if resolved_backend == "native":
+        prepared = _prepare_backtracking_input(
+            model,
+            family_index=family_index,
+            seed=base_seed,
+            max_events=max_events,
+        )
+        return _sample_recphyloxmls_to_dir_native(
+            prepared,
+            num_samples=num_samples,
+            output_dir=output_path,
+            seed=base_seed,
+            cargo_manifest=cargo_manifest,
+            compression=compression,
+            parallel=parallel,
+        )
+
+    payload = export_backtracking_input(
+        model,
+        family_index=family_index,
+        seed=base_seed,
+        max_events=max_events,
+    )
+
+    def build_args(input_path: Path, tmp_path: Path) -> list[str]:
+        return [
+            "--samples",
+            str(num_samples),
+            "--seed",
+            str(base_seed),
+            "--output-dir",
+            str(output_path),
+            "--compression",
+            compression,
+            "--parallel" if parallel else "--serial",
+            str(input_path),
+        ]
+
+    def read_output(tmp_path: Path) -> None:
+        if not output_path.is_dir():
+            raise RuntimeError(
+                "gpurec backtracking command succeeded but did not create "
+                f"multi-sample output directory {output_path}"
+            )
+        missing = [
+            (
+                f"sample_{sample_idx}.xml"
+                if compression == "none"
+                else f"sample_{sample_idx}.xml.gz"
+            )
+            for sample_idx in range(num_samples)
+            if not (
+                output_path
+                / (
+                    f"sample_{sample_idx}.xml"
+                    if compression == "none"
+                    else f"sample_{sample_idx}.xml.gz"
+                )
+            ).exists()
+        ]
+        if missing:
+            joined = ", ".join(missing)
+            raise RuntimeError(
+                "gpurec backtracking command succeeded but did not write "
+                f"{len(missing)} of {num_samples} expected RecPhyloXML outputs: "
+                f"{joined}"
+            )
+        return None
+
+    _run_backtracking_payload(
+        payload,
+        cargo_manifest=cargo_manifest,
+        backtrack_binary=backtrack_binary,
+        build_args=build_args,
+        read_output=read_output,
+    )
+    return []
+
+
+def sample_backtracking_summaries(
+    model: GeneReconModel,
+    *,
+    family_index: int = 0,
+    num_samples: int,
+    seed: int = 0,
+    max_events: int | None = None,
+    cargo_manifest: str | Path = _BACKTRACK_MANIFEST,
+    parallel: bool = True,
+) -> list[dict[str, Any]]:
+    """Sample compact backtracking summaries through the native PyO3 backend."""
+
+    num_samples, base_seed = _validate_sample_count_and_seed(
+        num_samples=num_samples,
+        seed=seed,
+    )
+    parallel = _validate_parallel(parallel)
+    prepared = _prepare_backtracking_input(
+        model,
+        family_index=family_index,
+        seed=base_seed,
+        max_events=max_events,
+    )
+    return _sample_backtracking_summaries_native(
+        prepared,
+        num_samples=num_samples,
+        seed=base_seed,
+        cargo_manifest=cargo_manifest,
+        parallel=parallel,
     )
 
 

@@ -416,8 +416,10 @@ def test_top_level_exports_backtracking_surface():
         "ensure_backtracking_available",
         "export_backtracking_input",
         "recphyloxml_event_counts",
+        "sample_backtracking_summaries",
         "sample_recphyloxml",
         "sample_recphyloxmls",
+        "sample_recphyloxmls_to_dir",
     }
 
     assert set(backtracking.__all__) == public_names
@@ -2545,6 +2547,26 @@ def test_public_backtracking_rejects_invalid_seed_and_event_limits():
         sample_recphyloxmls(model, num_samples=True)  # type: ignore[arg-type]
     with pytest.raises(ValueError, match="num_samples"):
         sample_recphyloxmls(model, num_samples=1.5)  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="compression"):
+        backtracking.sample_recphyloxmls_to_dir(
+            model,
+            num_samples=1,
+            output_dir="out",
+            compression="zip",
+        )  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="parallel"):
+        backtracking.sample_recphyloxmls_to_dir(
+            model,
+            num_samples=1,
+            output_dir="out",
+            parallel="false",
+        )  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="parallel"):
+        backtracking.sample_backtracking_summaries(
+            model,
+            num_samples=1,
+            parallel="false",
+        )  # type: ignore[arg-type]
 
 
 def test_public_backtracking_accepts_integral_real_limits(
@@ -2592,6 +2614,8 @@ def test_public_backtracking_accepts_integral_real_limits(
     state = ReconciliationState(
         e=torch.zeros((2, 2), dtype=torch.float64),
         pi=torch.zeros((2, 2), dtype=torch.float64),
+        pibar=torch.zeros((2, 2), dtype=torch.float64),
+        ebar=torch.zeros((2, 2), dtype=torch.float64),
         log_p_s=torch.zeros(2, dtype=torch.float64),
         log_p_d=torch.zeros(2, dtype=torch.float64),
         log_p_l=torch.zeros(2, dtype=torch.float64),
@@ -2650,6 +2674,8 @@ def test_export_backtracking_input_rejects_nonfinite_payload_tensors(
     state = ReconciliationState(
         e=torch.zeros(2, dtype=torch.float64),
         pi=torch.tensor([[math.nan, 0.0], [0.0, 0.0]], dtype=torch.float64),
+        pibar=torch.zeros((2, 2), dtype=torch.float64),
+        ebar=torch.zeros(2, dtype=torch.float64),
         log_p_s=torch.zeros(2, dtype=torch.float64),
         log_p_d=torch.zeros(2, dtype=torch.float64),
         log_p_l=torch.zeros(2, dtype=torch.float64),
@@ -2700,6 +2726,8 @@ def test_export_backtracking_input_uses_genewise_parameter_row_when_families_equ
     state = ReconciliationState(
         e=torch.tensor([[-1.0, -1.1], [-2.0, -2.1]], dtype=torch.float64),
         pi=torch.zeros((2, 2), dtype=torch.float64),
+        pibar=torch.zeros((2, 2), dtype=torch.float64),
+        ebar=torch.tensor([[-3.0, -3.1], [-4.0, -4.1]], dtype=torch.float64),
         log_p_s=torch.tensor([-10.0, -20.0], dtype=torch.float64),
         log_p_d=torch.tensor([-30.0, -40.0], dtype=torch.float64),
         log_p_l=torch.tensor([-50.0, -60.0], dtype=torch.float64),
@@ -2712,9 +2740,144 @@ def test_export_backtracking_input_uses_genewise_parameter_row_when_families_equ
     payload = export_backtracking_input(model, family_index=1)  # type: ignore[arg-type]
 
     assert payload["e"] == [-2.0, -2.1]
+    assert payload["ebar"] == [-4.0, -4.1]
     assert payload["log_p_s"] == [-20.0, -20.0]
     assert payload["log_p_d"] == [-40.0, -40.0]
     assert payload["max_transfer"] == [-80.0, -80.0]
+
+
+def _fake_backtracking_model(tmp_path: Path, monkeypatch):
+    species_tree = tmp_path / "sp.nwk"
+    species_tree.write_text("(s0,s1);", encoding="utf-8")
+    family = FamilyInput(
+        index=0,
+        name="fam0",
+        gene_tree_paths=["g0.nwk"],
+        leaf_species_map={},
+        clade_count=2,
+        split_count=0,
+        root_clade_id=0,
+        ccp_helpers={
+            "N_splits": 0,
+            "split_parents_sorted": torch.empty(0, dtype=torch.long),
+            "split_leftrights_sorted": torch.empty(0, dtype=torch.long),
+            "log_split_probs_sorted": torch.empty(0, dtype=torch.float64),
+        },
+        leaf_row_index=torch.tensor([0, 1], dtype=torch.long),
+        leaf_col_index=torch.tensor([0, 1], dtype=torch.long),
+        clade_leaf_labels=["a", "b"],
+    )
+    model = SimpleNamespace(
+        mode="global",
+        n_species=2,
+        species_names=["s0", "s1"],
+        species_tree_path=species_tree,
+    )
+    model.family_input = lambda family_index: family
+    model.activate_family = lambda family_index: SimpleNamespace(
+        clade_offset=0,
+        local_family_index=0,
+    )
+    state = ReconciliationState(
+        e=torch.tensor([1.0, 1.1], dtype=torch.float64),
+        pi=torch.tensor([[2.0, 2.1], [2.2, 2.3]], dtype=torch.float64),
+        pibar=torch.tensor([[3.0, 3.1], [3.2, 3.3]], dtype=torch.float64),
+        ebar=torch.tensor([4.0, 4.1], dtype=torch.float64),
+        log_p_s=torch.tensor([5.0, 5.1], dtype=torch.float64),
+        log_p_d=torch.tensor([6.0, 6.1], dtype=torch.float64),
+        log_p_l=torch.tensor([7.0, 7.1], dtype=torch.float64),
+        max_transfer=torch.tensor([8.0, 8.1], dtype=torch.float64),
+        origination_probs=None,
+    )
+    monkeypatch.setattr(backtracking, "_evaluate_backtracking_state", lambda _: state)
+    return model
+
+
+def test_sample_recphyloxmls_to_dir_native_passes_pibar_ebar_and_options(
+    tmp_path: Path,
+    monkeypatch,
+):
+    model = _fake_backtracking_model(tmp_path, monkeypatch)
+    calls: list[tuple[object, ...]] = []
+
+    class NativeModule:
+        def sample_recphyloxmls_to_dir_torch(self, *args: object):
+            calls.append(args)
+            return [
+                {
+                    "seed": args[17],
+                    "event_counts": {key: 0 for key in EVENT_KEYS},
+                    "log_probability": 0.0,
+                }
+            ]
+
+    monkeypatch.setattr(backtracking, "_load_native_module", lambda _manifest: NativeModule())
+    output_dir = tmp_path / "samples"
+
+    result = backtracking.sample_recphyloxmls_to_dir(
+        model,  # type: ignore[arg-type]
+        family_index=0,
+        num_samples=2,
+        output_dir=output_dir,
+        seed=3,
+        max_events=99,
+        compression="gzip",
+        parallel=False,
+    )
+
+    assert result[0]["seed"] == 3
+    args = calls[0]
+    assert args[9].tolist() == [[2.0, 2.1], [2.2, 2.3]]
+    assert args[10].tolist() == [[3.0, 3.1], [3.2, 3.3]]
+    assert args[11].tolist() == [1.0, 1.1]
+    assert args[12].tolist() == [4.0, 4.1]
+    assert args[16] == str(output_dir)
+    assert args[17] == 3
+    assert args[18] == 2
+    assert args[19] == 99
+    assert args[20] is None
+    assert args[21] is False
+    assert args[22] == "gzip"
+
+
+def test_sample_backtracking_summaries_native_passes_expected_arguments(
+    tmp_path: Path,
+    monkeypatch,
+):
+    model = _fake_backtracking_model(tmp_path, monkeypatch)
+    calls: list[tuple[object, ...]] = []
+
+    class NativeModule:
+        def sample_summaries_torch(self, *args: object):
+            calls.append(args)
+            return [
+                {
+                    "seed": args[16],
+                    "event_counts": {key: 0 for key in EVENT_KEYS},
+                    "log_probability": -1.5,
+                }
+            ]
+
+    monkeypatch.setattr(backtracking, "_load_native_module", lambda _manifest: NativeModule())
+
+    result = backtracking.sample_backtracking_summaries(
+        model,  # type: ignore[arg-type]
+        family_index=0,
+        num_samples=2,
+        seed=5,
+        max_events=77,
+        parallel=True,
+    )
+
+    assert result[0]["log_probability"] == -1.5
+    args = calls[0]
+    assert args[9].tolist() == [[2.0, 2.1], [2.2, 2.3]]
+    assert args[10].tolist() == [[3.0, 3.1], [3.2, 3.3]]
+    assert args[16] == 5
+    assert args[17] == 2
+    assert args[18] == 77
+    assert args[19] is None
+    assert args[20] is True
 
 
 def test_backtracking_payload_writer_rejects_nonfinite_json_before_subprocess(
@@ -3245,6 +3408,13 @@ def test_sampling_runner_preflights_backtracking_before_loading_model(
     assert load_calls == []
 
 
+def _write_fake_recphyloxml_dir(output_dir: Path, num_samples: int, xml: str) -> list[dict]:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    for sample_index in range(num_samples):
+        (output_dir / f"sample_{sample_index}.xml").write_text(xml, encoding="utf-8")
+    return []
+
+
 def test_sampling_runner_writes_outputs_and_aggregates(tmp_path: Path, monkeypatch):
     xml = """
     <recPhylo>
@@ -3294,15 +3464,16 @@ def test_sampling_runner_writes_outputs_and_aggregates(tmp_path: Path, monkeypat
     )
     calls: list[dict[str, object]] = []
 
-    def fake_sample_recphyloxmls(
+    def fake_sample_recphyloxmls_to_dir(
         model_arg: object,
         *,
         family_index: int,
         num_samples: int,
+        output_dir: Path,
         seed: int,
         max_events: int | None,
         backtrack_binary: Path | None,
-    ) -> list[str]:
+    ) -> list[dict]:
         assert model_arg is model
         calls.append(
             {
@@ -3313,7 +3484,7 @@ def test_sampling_runner_writes_outputs_and_aggregates(tmp_path: Path, monkeypat
                 "backtrack_binary": backtrack_binary,
             }
         )
-        return [xml for _ in range(num_samples)]
+        return _write_fake_recphyloxml_dir(output_dir, num_samples, xml)
 
     runner = SamplingRunner(config)
     preflight_calls: list[Path | None] = []
@@ -3325,8 +3496,8 @@ def test_sampling_runner_writes_outputs_and_aggregates(tmp_path: Path, monkeypat
     monkeypatch.setattr(runner, "_load_model", lambda: (run_config, model))
     monkeypatch.setattr(
         sampling_workflow,
-        "sample_recphyloxmls",
-        fake_sample_recphyloxmls,
+        "sample_recphyloxmls_to_dir",
+        fake_sample_recphyloxmls_to_dir,
     )
     recon_dir = config.out_dir / "reconciliations"
     all_dir = recon_dir / "all"
@@ -3480,18 +3651,19 @@ def test_sampling_runner_windowed_success_replaces_generated_output_set(
 
     sampled_families: list[int] = []
 
-    def fake_sample_recphyloxmls(
+    def fake_sample_recphyloxmls_to_dir(
         model_arg: object,
         *,
         family_index: int,
         num_samples: int,
+        output_dir: Path,
         seed: int,
         max_events: int | None,
         backtrack_binary: Path | None,
-    ) -> list[str]:
+    ) -> list[dict]:
         assert model_arg is model
         sampled_families.append(family_index)
-        return [xml]
+        return _write_fake_recphyloxml_dir(output_dir, num_samples, xml)
 
     runner = SamplingRunner(config)
     monkeypatch.setattr(
@@ -3502,8 +3674,8 @@ def test_sampling_runner_windowed_success_replaces_generated_output_set(
     monkeypatch.setattr(runner, "_load_model", lambda: (run_config, model))
     monkeypatch.setattr(
         sampling_workflow,
-        "sample_recphyloxmls",
-        fake_sample_recphyloxmls,
+        "sample_recphyloxmls_to_dir",
+        fake_sample_recphyloxmls_to_dir,
     )
 
     runner.run()
@@ -3712,13 +3884,13 @@ def test_sampling_runner_preserves_sampling_error_when_close_fails(
     )
     monkeypatch.setattr(runner, "_load_model", lambda: (run_config, model))
 
-    def fail_sample_recphyloxmls(*_args: object, **_kwargs: object) -> list[str]:
+    def fail_sample_recphyloxmls_to_dir(*_args: object, **_kwargs: object) -> list[dict]:
         raise RuntimeError("backtrack failed")
 
     monkeypatch.setattr(
         sampling_workflow,
-        "sample_recphyloxmls",
-        fail_sample_recphyloxmls,
+        "sample_recphyloxmls_to_dir",
+        fail_sample_recphyloxmls_to_dir,
     )
 
     with pytest.raises(RuntimeError, match="backtrack failed") as excinfo:
@@ -3787,19 +3959,20 @@ def test_sampling_runner_preserves_previous_outputs_after_sampling_error(
 
     calls: list[int] = []
 
-    def fake_sample_recphyloxmls(
+    def fake_sample_recphyloxmls_to_dir(
         model_arg: object,
         *,
         family_index: int,
         num_samples: int,
+        output_dir: Path,
         seed: int,
         max_events: int | None,
         backtrack_binary: Path | None,
-    ) -> list[str]:
+    ) -> list[dict]:
         assert model_arg is model
         calls.append(family_index)
         if family_index == 0:
-            return [xml]
+            return _write_fake_recphyloxml_dir(output_dir, num_samples, xml)
         raise RuntimeError("backtrack failed on fam1")
 
     runner = SamplingRunner(config)
@@ -3811,8 +3984,8 @@ def test_sampling_runner_preserves_previous_outputs_after_sampling_error(
     monkeypatch.setattr(runner, "_load_model", lambda: (run_config, model))
     monkeypatch.setattr(
         sampling_workflow,
-        "sample_recphyloxmls",
-        fake_sample_recphyloxmls,
+        "sample_recphyloxmls_to_dir",
+        fake_sample_recphyloxmls_to_dir,
     )
 
     with pytest.raises(RuntimeError, match="backtrack failed on fam1"):
@@ -3925,13 +4098,13 @@ def test_sampling_runner_rejects_seed_range_overflow_before_outputs(
     )
     monkeypatch.setattr(runner, "_load_model", lambda: (run_config, model))
 
-    def unexpected_sample_recphyloxmls(*_args: object, **_kwargs: object) -> list[str]:
+    def unexpected_sample_recphyloxmls_to_dir(*_args: object, **_kwargs: object) -> list[dict]:
         raise AssertionError("sampling should not run")
 
     monkeypatch.setattr(
         sampling_workflow,
-        "sample_recphyloxmls",
-        unexpected_sample_recphyloxmls,
+        "sample_recphyloxmls_to_dir",
+        unexpected_sample_recphyloxmls_to_dir,
     )
 
     with pytest.raises(ValueError, match="sampling seed range exceeds u64"):

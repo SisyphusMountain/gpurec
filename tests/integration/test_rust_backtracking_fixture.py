@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import gzip
 import subprocess
 import xml.etree.ElementTree as ET
 from pathlib import Path
@@ -36,6 +37,10 @@ def test_rust_backtracking_json_fixture_matches_documented_contract():
     assert payload["pi"]["rows"] == 3
     assert payload["pi"]["cols"] == 3
     assert len(payload["pi"]["data"]) == 9
+    assert payload["pibar"]["rows"] == 3
+    assert payload["pibar"]["cols"] == 3
+    assert len(payload["pibar"]["data"]) == 9
+    assert payload["ebar"] == [-1.0e300, -1.0e300, -1.0e300]
     assert payload["origination_probs"] == [0.0, 0.0, 1.0]
     assert payload["seed"] == 7
     assert payload["max_events"] == 32
@@ -103,3 +108,40 @@ def test_rust_backtracking_cli_writes_multi_sample_output_dir(
     ]
     _assert_speciation_recphyloxml(output_dir / "sample_0.xml")
     _assert_speciation_recphyloxml(output_dir / "sample_1.xml")
+
+
+def test_rust_backtracking_cli_writes_gzip_output_dir(
+    tmp_path: Path,
+):
+    output_dir = tmp_path / "samples-gz"
+
+    result = subprocess.run(
+        [
+            "cargo",
+            "run",
+            "--locked",
+            "--quiet",
+            "--manifest-path",
+            str(MANIFEST),
+            "--",
+            "--samples",
+            "1",
+            "--output-dir",
+            str(output_dir),
+            "--compression",
+            "gzip",
+            "--serial",
+            str(FIXTURE),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        cwd=ROOT,
+        timeout=SUBPROCESS_TIMEOUT,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert sorted(path.name for path in output_dir.iterdir()) == ["sample_0.xml.gz"]
+    xml = gzip.decompress((output_dir / "sample_0.xml.gz").read_bytes()).decode("utf-8")
+    assert '<speciation speciesLocation="Root"/>' in xml
+    assert '<leaf speciesLocation="A"/>' in xml

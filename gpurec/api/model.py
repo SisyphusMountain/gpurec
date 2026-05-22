@@ -227,6 +227,8 @@ class ReconciliationState:
 
     e: torch.Tensor
     pi: torch.Tensor
+    pibar: torch.Tensor | None
+    ebar: torch.Tensor | None
     log_p_s: torch.Tensor
     log_p_d: torch.Tensor
     log_p_l: torch.Tensor
@@ -1731,9 +1733,16 @@ class GeneReconModel(torch.nn.Module):
             if original_order
             else solve.pi_out["Pi_wave_ordered"]
         )
+        pibar_wave = solve.pi_out["Pibar_wave_ordered"]
+        if pibar_wave is not None and original_order:
+            pibar = pibar_wave.index_select(0, static.wave_layout["perm"])
+        else:
+            pibar = pibar_wave
         return ReconciliationState(
             e=solve.e_out["E"],
             pi=pi,
+            pibar=pibar,
+            ebar=solve.e_out["E_bar"],
             log_p_s=solve.log_p_s,
             log_p_d=solve.log_p_d,
             log_p_l=solve.log_p_l,
