@@ -205,7 +205,7 @@ before any flag is removed.
 | `GPUREC_MEMORY_POLICY_FRACTION`, `GPUREC_MEMORY_POLICY_RESERVE_GIB` | User-facing | Memory-budget margins for uniform chunk planning. |
 | `GPUREC_PREPROCESS_BIN`, `GPUREC_PREPROCESS_NATIVE_LIB` | Internal production/diagnostic | Rust preprocessing binary/native-extension discovery while source builds and prebuilt artifacts coexist. |
 | `GPUREC_PREPROCESS_BACKEND` | Internal production/diagnostic | CPU preprocessing backend selector retained while the Rust port and C++ fallback coexist. |
-| `GPUREC_SCHEDULER_BACKEND` | Internal production/diagnostic | Wave scheduler backend selector retained while the Rust scheduler and Python fallback coexist. |
+| `GPUREC_SCHEDULER_BACKEND` | Internal production/diagnostic | Wave scheduling and batching backend selector; Rust is the default production path while the Python fallback remains for parity diagnostics. |
 | `GPUREC_FUSE_FINAL_PIBAR`, `GPUREC_SPECIALIZE_NONLEAF_LEAF_TERM` | Internal production fast path | Forward/backward retained-kernel selectors that should become fixed behavior after benchmark gates. |
 | `GPUREC_BACKWARD_NO_CPU_PRUNING`, `GPUREC_DTS_SKIP_INACTIVE_PIBAR_ZERO` | Internal production/diagnostic | Backward pruning and inactive-output zero-fill controls retained for behavior comparison. |
 | `GPUREC_TRITON_CHILD_EDGE_SELF_LOOP`, `GPUREC_TRITON_SELF_LOOP_DIRECT_GRADS` | Internal production/diagnostic | Triton backward self-loop diagnostic selectors retained for behavior comparison. |

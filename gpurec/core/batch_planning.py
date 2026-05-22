@@ -349,8 +349,8 @@ def plan_family_batches(
     max_wave_size: int | None = None,
 ) -> list[FamilyBatchPlan]:
     """Plan family batches using the configured scheduling backend."""
-    backend = os.environ.get(_SCHEDULER_BACKEND_ENV, "python").strip().lower()
-    if backend in {"", "python", "py"}:
+    backend = os.environ.get(_SCHEDULER_BACKEND_ENV, "rust").strip().lower()
+    if backend in {"python", "py"}:
         return _plan_family_batches_python(
             clade_counts=clade_counts,
             family_chunk_size=family_chunk_size,
@@ -364,7 +364,7 @@ def plan_family_batches(
             schedule_depths=schedule_depths,
             max_wave_size=max_wave_size,
         )
-    if backend == "rust":
+    if backend in {"", "rust"}:
         from gpurec.core.schedule_rust import plan_family_batches as rust_plan
 
         return [

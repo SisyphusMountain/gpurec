@@ -447,9 +447,9 @@ def test_rust_wave_layout_matches_python_layout_plan(monkeypatch):
         "family_clade_offsets": [0, 2],
     }
 
-    monkeypatch.delenv("GPUREC_SCHEDULER_BACKEND", raising=False)
+    monkeypatch.setenv("GPUREC_SCHEDULER_BACKEND", "python")
     python_layout = build_wave_layout(**kwargs)
-    monkeypatch.setenv("GPUREC_SCHEDULER_BACKEND", "rust")
+    monkeypatch.delenv("GPUREC_SCHEDULER_BACKEND", raising=False)
     rust_layout = build_wave_layout(**kwargs)
 
     assert _plain_layout_value(rust_layout) == _plain_layout_value(python_layout)

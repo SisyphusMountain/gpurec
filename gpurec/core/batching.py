@@ -1404,8 +1404,8 @@ def build_wave_layout(
           'wave_metas': list of per-wave metadata dicts
           'family_idx': Long[C] clade→family (only if family_clade_counts provided)
     """
-    backend = os.environ.get(_SCHEDULER_BACKEND_ENV, "python").strip().lower()
-    if backend == "rust":
+    backend = os.environ.get(_SCHEDULER_BACKEND_ENV, "rust").strip().lower()
+    if backend in {"", "rust"}:
         return _build_wave_layout_rust(
             waves,
             phases,
@@ -1418,7 +1418,7 @@ def build_wave_layout(
             family_clade_counts,
             family_clade_offsets,
         )
-    if backend not in {"", "python", "py"}:
+    if backend not in {"python", "py"}:
         raise ValueError(
             f"{_SCHEDULER_BACKEND_ENV} must be 'python' or 'rust', got {backend!r}"
         )
