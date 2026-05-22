@@ -47,7 +47,6 @@ def test_chunked_uniform_matches_resident_global_model(tmp_path):
         neumann_terms=3,
         use_pruning=True,
         pruning_threshold=1e-6,
-        preprocess_cache_dir=str(tmp_path),
     )
 
     resident = GeneReconModel.from_trees(
@@ -84,7 +83,6 @@ def test_chunked_uniform_from_folder_and_adam_step(tmp_path):
         device="cuda",
         dtype=torch.float32,
         theta_init_rates=(0.05, 0.05, 0.05),
-        preprocess_cache_dir=str(tmp_path),
         family_chunk_size=2,
         max_wave_size=32768,
         fixed_iters_E=4,
@@ -114,7 +112,6 @@ def test_chunked_uniform_chunk_subset_nll_and_gradient(tmp_path):
         device="cuda",
         dtype=torch.float32,
         theta_init_rates=(0.05, 0.05, 0.05),
-        preprocess_cache_dir=str(tmp_path),
         family_chunk_size=2,
         max_wave_size=32768,
         fixed_iters_E=4,
@@ -237,7 +234,6 @@ def test_chunked_uniform_accepts_hogenom_unrooted_binary_newick(tmp_path):
         device="cuda",
         dtype=torch.float32,
         theta_init_rates=(0.05, 0.05, 0.05),
-        preprocess_cache_dir=str(tmp_path),
         family_chunk_size=3,
         max_wave_size=32768,
         fixed_iters_Pi=6,

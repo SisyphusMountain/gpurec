@@ -882,7 +882,7 @@ not edit files.  New or still-open findings from that refresh are:
 - Ignored test-data roots are now inventoried before relying on local-only files
   during the repo-wide audit.  `tests/README.md` and the runtime-surface pruning
   plan identify generated `test_trees_*` datasets, external HOGENOM/Davin
-  roots, `tests/data.tar.gz`, `.preprocess_cache/`, and `tests/data/**/output/`
+  roots, `tests/data.tar.gz`, and `tests/data/**/output/`
   as non-distributed local state.  Required tests should use tracked fixtures or
   a documented generator instead of depending on those ignored paths.
 - Test and CI coverage gaps remain visible.  CPU CI does not enforce CUDA or

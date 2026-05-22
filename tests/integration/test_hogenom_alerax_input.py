@@ -32,7 +32,6 @@ def test_hogenom_alerax_family_file_likelihood_matches_reference(tmp_path):
         device="cuda",
         dtype=torch.float64,
         theta_init_rates=(0.1, 0.1, 0.1),
-        preprocess_cache_dir=tmp_path / "preprocess",
         max_families=2,
         fixed_iters_E=16,
         fixed_iters_Pi=6,

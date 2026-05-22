@@ -215,23 +215,6 @@ def _add_run_config_args(parser: argparse.ArgumentParser) -> None:
         help="Maximum number of families to load.",
     )
     parser.add_argument(
-        "--preprocess-cache",
-        type=Path,
-        help=(
-            "Deprecated compatibility option; preprocessing is no longer cached "
-            "by the production workflow."
-        ),
-    )
-    parser.add_argument(
-        "--refresh-preprocess-cache",
-        action=argparse.BooleanOptionalAction,
-        default=None,
-        help=(
-            "Deprecated compatibility option; preprocessing is no longer cached "
-            "by the production workflow."
-        ),
-    )
-    parser.add_argument(
         "--preprocess-cpu-cores",
         type=int,
         help=(

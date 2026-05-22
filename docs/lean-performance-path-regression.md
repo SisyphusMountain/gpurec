@@ -62,7 +62,7 @@ Validation added:
 - CUDA forward tests for all retained modes that monkeypatch
   `_compute_Pibar_uniform_inline` to fail if the sparse fallback is reached;
 - HOGENOM strict-path smoke:
-  `python profiling/bench_genewise_forward_chunking.py --dataset tests/data/hogenom_bench --fams 20 --family-chunk-size 20 --warmups 1 --reps 1 --cache-dir /tmp/gpurec_hogenom_fast_cache`
+  `python profiling/bench_genewise_forward_chunking.py --dataset tests/data/hogenom_bench --fams 20 --family-chunk-size 20 --warmups 1 --reps 1`
   reported `optimized_forward_status optimized 1` and `forward_ms 29.824`.
 
 ## Related DTS Issue
@@ -107,7 +107,6 @@ python profiling/bench_genewise_forward_chunking.py \
   --warmups 1 \
   --reps 3 \
   --max-wave-size 32768 \
-  --cache-dir /tmp/gpurec_test_trees_1000_bench
 
 PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
 PREPROCESS_CACHE_DIR=/tmp/gpurec_test_trees_1000_bench \
@@ -120,7 +119,6 @@ python profiling/bench_genewise_backward_chunking.py \
   --backward-path optimized-genewise \
   --strict-optimized-kernels \
   --max-wave-size 32768 \
-  --cache-dir /tmp/gpurec_test_trees_1000_bench
 
 PREPROCESS_CACHE_DIR=/tmp/gpurec_test_trees_1000_bench \
 python profiling/ancestor_batching/bench_uniform_backward.py \
@@ -130,7 +128,6 @@ python profiling/ancestor_batching/bench_uniform_backward.py \
   --reps 9 \
   --max-wave-size 32768 \
   --variant-label current-lean \
-  --cache-dir /tmp/gpurec_test_trees_1000_bench
 ```
 
 Results:

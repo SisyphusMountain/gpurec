@@ -228,7 +228,6 @@ def build_parser() -> argparse.ArgumentParser:
         type=positive_int_arg("max-wave-size"),
         default=32768,
     )
-    parser.add_argument("--refresh-preprocess-cache", action="store_true")
     return parser
 
 
@@ -265,7 +264,6 @@ def main(argv: list[str] | None = None) -> None:
     if not names:
         raise RuntimeError("no overlapping families to evaluate")
 
-    preprocess_cache = args.out_dir / "preprocess_cache"
     rows: list[dict[str, object]] = []
     t0 = perf_counter()
     ln2 = math.log(2.0)
@@ -285,8 +283,6 @@ def main(argv: list[str] | None = None) -> None:
             specieswise=False,
             dtype=dtype,
             device=device,
-            preprocess_cache_dir=preprocess_cache,
-            refresh_preprocess_cache=args.refresh_preprocess_cache,
             family_names=chunk_names,
             leaf_species_maps=chunk_leaf_maps,
         )

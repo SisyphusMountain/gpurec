@@ -141,7 +141,6 @@ def test_run_config_from_json_resolves_relative_paths_from_config_file(
                 "species_tree": "inputs/sp.nwk",
                 "families_file": "inputs/families.txt",
                 "out_dir": "runs/main",
-                "preprocess_cache": "cache/preprocess",
                 "resume_from": "checkpoints/latest.pt",
                 "device": "cpu",
             }
@@ -156,9 +155,6 @@ def test_run_config_from_json_resolves_relative_paths_from_config_file(
         config_dir / "inputs" / "families.txt"
     ).resolve()
     assert config.out_dir == (config_dir / "runs" / "main").resolve()
-    assert config.preprocess_cache == (
-        config_dir / "cache" / "preprocess"
-    ).resolve()
     assert config.resume_from == (
         config_dir / "checkpoints" / "latest.pt"
     ).resolve()
@@ -1051,7 +1047,6 @@ def test_run_config_defaults_to_cuda_for_production_workflow(tmp_path: Path):
         ("species_tree", "species_tree must be a path string"),
         ("families_file", "families_file must be a path string"),
         ("out_dir", "out_dir must be a path string"),
-        ("preprocess_cache", "preprocess_cache must be a path string"),
         ("resume_from", "resume_from must be a path string"),
     ],
 )
@@ -1184,8 +1179,6 @@ def test_run_config_rejects_boolean_float_controls(
 @pytest.mark.parametrize(
     ("field", "value"),
     [
-        ("refresh_preprocess_cache", "false"),
-        ("refresh_preprocess_cache", 1),
         ("adaptive_iters", "false"),
         ("adaptive_iters", 0),
     ],
@@ -1654,6 +1647,65 @@ def test_gene_recon_from_trees_normalizes_mode_like_uniform_api(
     assert calls["init_mode"] == mode.strip().lower()
     assert calls["theta_shape"] == expected_theta_shape
     assert calls["theta_dtype"] is torch.float64
+
+
+def test_public_constructors_warn_and_ignore_deprecated_preprocessing_cache_kwargs(
+    tmp_path: Path,
+    monkeypatch,
+):
+    gene_dataset_kwargs: dict[str, object] = {}
+    uniform_kwargs: dict[str, object] = {}
+
+    class FakeDataset:
+        S = 1
+
+        def __init__(self, **kwargs: object) -> None:
+            gene_dataset_kwargs.update(kwargs)
+            self.genewise = False
+            self.specieswise = False
+            self.dtype = kwargs["dtype"]
+            self.device = kwargs["device"]
+            self.families = [object()]
+
+    def fake_gene_init(self: GeneReconModel, **_kwargs: object) -> None:
+        return None
+
+    def fake_uniform_init(self: UniformChunkedReconModel, **kwargs: object) -> None:
+        uniform_kwargs.update(kwargs)
+
+    monkeypatch.setattr(api_model, "GeneDataset", FakeDataset)
+    monkeypatch.setattr(
+        api_model,
+        "require_cuda_device",
+        lambda device, *, owner: torch.device("cpu"),
+    )
+    monkeypatch.setattr(api_model.GeneReconModel, "__init__", fake_gene_init)
+    monkeypatch.setattr(
+        uniform_chunked_api.UniformChunkedReconModel,
+        "__init__",
+        fake_uniform_init,
+    )
+
+    with pytest.warns(DeprecationWarning, match="preprocessing is no longer cached"):
+        GeneReconModel.from_trees(
+            tmp_path / "sp.nwk",
+            [tmp_path / "g.nwk"],
+            device="cpu",
+            preprocess_cache_dir=tmp_path / "cache",
+            refresh_preprocess_cache=True,
+        )
+    with pytest.warns(DeprecationWarning, match="preprocessing is no longer cached"):
+        UniformChunkedReconModel.from_trees(
+            tmp_path / "sp.nwk",
+            [tmp_path / "g.nwk"],
+            preprocess_cache_dir=tmp_path / "cache",
+            refresh_preprocess_cache=True,
+        )
+
+    assert "preprocess_cache_dir" not in gene_dataset_kwargs
+    assert "refresh_preprocess_cache" not in gene_dataset_kwargs
+    assert "preprocess_cache_dir" not in uniform_kwargs
+    assert "refresh_preprocess_cache" not in uniform_kwargs
 
 
 @pytest.mark.parametrize("dtype", [torch.int64, torch.float16, "float32"])

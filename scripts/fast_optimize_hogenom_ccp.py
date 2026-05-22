@@ -36,7 +36,6 @@ SPECIES_TREE = (
     if INFERRED_SPECIES_TREE.exists()
     else HOGENOM_DIR / "hogenom_S.tree"
 )
-PREPROCESS_CACHE = HOGENOM_DIR / "output_gpurec_ccp_reconciliation" / "preprocess_cache"
 OUT_DIR = HOGENOM_DIR / "output_gpurec_fast_ccp_opt"
 
 LN2 = math.log(2.0)
@@ -729,7 +728,6 @@ def build_model(args: argparse.Namespace) -> GeneReconModel:
         device=args.device,
         dtype=torch.float32,
         theta_init_rates=(args.init_d, args.init_l, args.init_t),
-        preprocess_cache_dir=args.preprocess_cache,
         fixed_iters_E=args.fixed_iters_e,
         fixed_iters_Pi=args.fixed_iters_pi,
         neumann_terms=args.neumann_terms,
@@ -888,7 +886,6 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--species-tree", type=Path, default=SPECIES_TREE)
     parser.add_argument("--families-file", type=Path, default=FAMILIES_FILE)
-    parser.add_argument("--preprocess-cache", type=Path, default=PREPROCESS_CACHE)
     parser.add_argument("--out-dir", type=Path, default=OUT_DIR)
 
     parser.add_argument("--family-chunk-size", type=int, default=0)

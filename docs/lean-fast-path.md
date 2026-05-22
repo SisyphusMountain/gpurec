@@ -70,16 +70,15 @@ timeout 3600s env PYTHONDONTWRITEBYTECODE=1 \
   --reps 3 \
   --strict-optimized-kernels \
   --compare-unchunked-max-fams 0 \
-  --no-preprocess-cache \
   --progress-jsonl
 ```
 
 This run was stopped during preprocessing before timed reps.  It reached
 224/1000 families and 43,117,352 KiB maximum resident set size in 1:45.85.
-The memory trajectory matched the previous no-cache setup blocker, so this is
-not valid performance evidence.
+The memory trajectory matched the previous setup blocker, so this is not valid
+performance evidence.
 
-Cached full timed attempt:
+Full timed attempt:
 
 ```bash
 timeout 7200s env PYTHONDONTWRITEBYTECODE=1 \
@@ -95,15 +94,12 @@ timeout 7200s env PYTHONDONTWRITEBYTECODE=1 \
   --reps 3 \
   --strict-optimized-kernels \
   --compare-unchunked-max-fams 0 \
-  --cache-dir /media/enzo/Stockage/gpurec_perf_cache_20260522 \
   --progress-jsonl
 ```
 
-This run got past the root-disk blocker by writing about 102 GiB of cache to
-`/media/enzo/Stockage/gpurec_perf_cache_20260522`, but it was killed by the OS
-before timed reps after reaching 640/1000 families.  Maximum resident set size
-was 127,440,120 KiB.  This is also not valid performance evidence for the
-full 1000-family path.
+This run was killed by the OS before timed reps after reaching 640/1000
+families.  Maximum resident set size was 127,440,120 KiB.  This is also not
+valid performance evidence for the full 1000-family path.
 
 Largest completed timed fallback in the same session:
 
@@ -120,8 +116,7 @@ timeout 3600s env PYTHONDONTWRITEBYTECODE=1 \
   --warmups 1 \
   --reps 3 \
   --strict-optimized-kernels \
-  --compare-unchunked-max-fams 0 \
-  --cache-dir /media/enzo/Stockage/gpurec_perf_cache_20260522
+  --compare-unchunked-max-fams 0
 ```
 
 This partial benchmark completed with strict optimized kernels active and
@@ -167,8 +162,7 @@ timeout 7200s env PYTHONDONTWRITEBYTECODE=1 \
   --warmups 1 \
   --reps 3 \
   --strict-optimized-kernels \
-  --compare-unchunked-max-fams 0 \
-  --cache-dir /media/enzo/Stockage/gpurec_perf_cache_20260522
+  --compare-unchunked-max-fams 0
 ```
 
 ```text

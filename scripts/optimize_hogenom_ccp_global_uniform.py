@@ -38,7 +38,6 @@ SPECIES_TREE = (
     if INFERRED_SPECIES_TREE.exists()
     else HOGENOM_DIR / "hogenom_S.tree"
 )
-PREPROCESS_CACHE = HOGENOM_DIR / "output_gpurec_ccp_reconciliation" / "preprocess_cache"
 OUT_DIR = HOGENOM_DIR / "output_gpurec_global_uniform_opt_max100"
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
@@ -874,7 +873,6 @@ def main(argv: list[str] | None = None) -> None:
         device=DEVICE,
         dtype=DTYPE,
         theta_init_rates=INITIAL_RATES,
-        preprocess_cache_dir=PREPROCESS_CACHE,
         fixed_iters_E=FIXED_ITERS_E,
         fixed_iters_Pi=FIXED_ITERS_PI,
         neumann_terms=NEUMANN_TERMS,

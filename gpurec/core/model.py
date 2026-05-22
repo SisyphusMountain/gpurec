@@ -276,8 +276,6 @@ class GeneDataset:
         specieswise, # no need for genewise: it only appear when collating or gradient steps
         dtype=torch.float32,
         device=None,
-        preprocess_cache_dir: str | os.PathLike | None = None,
-        refresh_preprocess_cache: bool = False,
         preprocess_cpu_cores: int | None = None,
         family_names: Sequence[str] | None = None,
         leaf_species_maps: Sequence[dict[str, str]] | None = None,
@@ -286,7 +284,6 @@ class GeneDataset:
     ):
         if device is None:
             device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-        del preprocess_cache_dir, refresh_preprocess_cache
         preprocess_cpu_cores = _normalize_preprocess_cpu_cores(preprocess_cpu_cores)
 
         self.genewise = genewise

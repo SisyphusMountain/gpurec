@@ -113,7 +113,7 @@ ambiguous production runs:
 
 \subsection{CLI Coverage}
 
-The CLI now forwards \texttt{--refresh-preprocess-cache} through to
+The CLI now forwards preprocessing CPU core controls through to
 \texttt{RunConfig}.  Unit tests cover config round-tripping, batch-control
 normalization, rejection of unsupported auto chunking, clade-budget validation,
 checkpoint restore, resident-batch offset activation, XML event summaries, and
@@ -672,8 +672,7 @@ hand-built subprocess payload that must fail before process launch.
 Backtracking no longer re-enters private C++ preprocessing to recover clade
 leaf labels.  Preprocessing now asks for the lightweight detail needed by the
 sampler, drops unused heavy detail fields, stores leaf labels on each public
-\texttt{FamilyInput}, and bumps the preprocess cache key so older light caches
-are not reused without labels.  The public-surface guard now forbids private
+\texttt{FamilyInput}.  The public-surface guard now forbids private
 preprocessing imports from returning to the workflow and backtracking bridge.
 
 \subsection{Legacy HOGENOM Script Boundary}
@@ -795,13 +794,11 @@ the real \texttt{gpurec-backtrack} CLI with that JSON, writes RecPhyloXML to a
 temporary file, parses it with the standard XML parser, and checks the expected
 root speciation plus A/B leaf events.
 
-\subsection{Preprocess Cache README Guidance}
+\subsection{Preprocess README Guidance}
 
-The production workflow section of the README now documents
-\texttt{--preprocess-cache} directly in the main \texttt{gpurec optimize}
-example and explains when to rerun with the refresh flag.  The guidance points
-users back to the original tree inputs when safe-loading or cache-shape
-validation rejects stale preprocessing artifacts.  A source-level unit guard
+The production workflow section of the README now documents preprocessing CPU
+core controls directly in the main \texttt{gpurec optimize} example.  A
+source-level unit guard
 checks that the production README keeps the cache directory, refresh flag,
 validation-error context, and original-input recovery path visible.
 
@@ -3142,19 +3139,19 @@ AleRax parser and family input suite after uniqueness guards &
 CPU unit gate after AleRax uniqueness guards &
 \texttt{157 passed, 27 deselected} \\
 \texttt{python -m py\_compile gpurec/core/model.py tests/unit/test\_alerax\_family\_input.py} &
-Nested preprocess cache validation syntax &
+Nested preprocess validation syntax &
 \texttt{ok} \\
 \texttt{pytest -q tests/unit/test\_alerax\_family\_input.py::test\_species\_preprocess\_... ...} &
-Focused malformed cache regressions &
+Focused malformed input regressions &
 \texttt{5 passed} \\
 \texttt{pytest -q tests/unit/test\_alerax\_family\_input.py} &
-AleRax input suite after cache validation &
+AleRax input suite after validation &
 \texttt{14 passed} \\
-\texttt{python tiny GeneDataset cache write/read smoke} &
-Valid generated preprocess caches under new validators &
+\texttt{python tiny GeneDataset smoke} &
+Valid generated preprocessing under new validators &
 \texttt{ok} \\
 \texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
-CPU unit gate after nested cache validation &
+CPU unit gate after nested validation &
 \texttt{162 passed, 27 deselected} \\
 \texttt{python -m py\_compile scripts/check\_release\_metadata.py tests/unit/test\_release\_metadata.py} &
 Release metadata checker syntax &
@@ -3232,10 +3229,10 @@ Release metadata, workflow, and Rust CI guards &
 CPU unit selector after Rust JSON fixture &
 \texttt{170 passed, 28 deselected} \\
 \texttt{python -m py\_compile tests/unit/test\_workflow.py} &
-README preprocess-cache guidance guard syntax &
+README preprocess guidance guard syntax &
 \texttt{ok} \\
 \texttt{pytest -q tests/unit/test\_workflow.py::test\_project\_readme\_... ...} &
-README cache guidance and CLI refresh forwarding guards &
+README preprocessing guidance and CLI forwarding guards &
 \texttt{2 passed} \\
 \texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
 CPU unit gate after README cache guidance &
@@ -3664,13 +3661,13 @@ CPU unit gate after quiet CLI help import fix &
 Release metadata checker after quiet CLI help import fix &
 \texttt{expected license blockers} \\
 \texttt{python -m py\_compile gpurec/core/model.py tests/unit/test\_alerax\_family\_input.py} &
-Preprocess cache split-clade validation syntax &
+Preprocess split-clade validation syntax &
 \texttt{ok} \\
-\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q tests/unit/test\_alerax\_family\_input.py -k preprocess\_cache} &
-Focused preprocess cache validation regressions &
+\texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q tests/unit/test\_alerax\_family\_input.py -k preprocess} &
+Focused preprocess validation regressions &
 \texttt{10 passed, 13 deselected} \\
 \texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q tests/unit/test\_alerax\_family\_input.py} &
-AleRax family input and cache validation units &
+AleRax family input and validation units &
 \texttt{23 passed} \\
 \texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q -m "unit and not gpu"} &
 CPU unit gate after split-clade cache validation &
@@ -3963,7 +3960,7 @@ Packaged minimal example syntax &
 \texttt{CUDA\_VISIBLE\_DEVICES='' pytest -q tests/unit/test\_examples.py tests/unit/test\_release\_metadata.py -k "..."} &
 Focused minimal-example packaging guards &
 \texttt{4 passed, 14 deselected} \\
-\texttt{git check-ignore -v examples/output/minimal-run examples/output/preprocess-cache} &
+\texttt{git check-ignore -v examples/output/minimal-run} &
 Minimal example output ignore guard &
 \texttt{ok} \\
 \texttt{python -m build --sdist --outdir ...} &
@@ -6612,12 +6609,11 @@ reporting \texttt{42 passed}, full collection reporting
 \texttt{872 tests collected}, and the CPU-only unit gate reporting
 \texttt{842 passed, 1 skipped, 6 deselected}.
 
-The cached \texttt{leaf\_col\_index} upper-bound validation gap from that
-refresh is now closed.  Family preprocess cache validation accepts only species
-indexes in \texttt{[0, S)} once the species cache is available, so stale or
-malformed cache entries cannot become out-of-range
+The \texttt{leaf\_col\_index} upper-bound validation gap from that refresh is
+now closed.  Family preprocessing validation accepts only species indexes in
+\texttt{[0, S)}, so malformed entries cannot become out-of-range
 \texttt{leaf\_species\_index} values in the forward layout.  A focused
-regression tampers a cached family to contain species index \texttt{S}, confirms
+regression tampers a family to contain species index \texttt{S}, confirms
 the cache path rejects it without rerunning preprocessing, and reports
 \texttt{1 passed}.  The neighboring AleRax/cache unit module reports
 \texttt{29 passed}; \texttt{py\_compile} passes for the touched Python modules.

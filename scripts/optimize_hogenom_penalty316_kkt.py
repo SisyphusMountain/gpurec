@@ -63,7 +63,6 @@ def build_model(config: opt.RunConfig, dtype: torch.dtype) -> opt.GeneReconModel
         device=device,
         dtype=dtype,
         theta_init_rates=(0.05, 0.05, 0.05),
-        preprocess_cache_dir=config.preprocess_cache,
         fixed_iters_E=None,
         max_iters_E=config.max_iters_e,
         fixed_iters_Pi=config.max_iters_pi,

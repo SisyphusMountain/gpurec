@@ -168,7 +168,6 @@ def _make_model(
     mode: str,
     dtype: torch.dtype,
     device: torch.device,
-    preprocess_cache_dir: Path,
     use_pruning: bool = False,
 ) -> GeneReconModel:
     return GeneReconModel.from_trees(
@@ -183,7 +182,6 @@ def _make_model(
         tol_E=TOL,
         neumann_terms=2,
         use_pruning=use_pruning,
-        preprocess_cache_dir=preprocess_cache_dir,
     )
 
 
@@ -267,7 +265,6 @@ def test_specieswise_uniform_forward_root_rows_match_saved_state(data_dir_100, t
         mode="specieswise",
         dtype=dtype,
         device=device,
-        preprocess_cache_dir=tmp_path / "preprocess",
     )
     with torch.no_grad():
         model.theta.copy_(_specieswise_theta(model.n_species, dtype=dtype, device=device))
@@ -303,7 +300,6 @@ def test_gpu_logsumexp_traces_match_final_values(data_dir_100, tmp_path):
         fixed_iters_Pi=4,
         neumann_terms=2,
         use_pruning=False,
-        preprocess_cache_dir=tmp_path / "preprocess",
     )
     static = model.static
     log_pS, log_pD, log_pL, max_transfer_vec = _extract_parameters(
@@ -375,7 +371,6 @@ def test_specieswise_uniform_backward_fast_path_runs(data_dir_1000, tmp_path):
         mode="specieswise",
         dtype=dtype,
         device=device,
-        preprocess_cache_dir=tmp_path / "preprocess",
     )
     theta = _specieswise_theta(model.n_species, dtype=dtype, device=device)
     with torch.no_grad():
@@ -403,7 +398,6 @@ def test_constant_specieswise_matches_global_loss_and_gradient_semantics(
         mode="global",
         dtype=dtype,
         device=device,
-        preprocess_cache_dir=tmp_path / "global-preprocess",
     )
     species_model = _make_model(
         data_dir_1000,
@@ -411,7 +405,6 @@ def test_constant_specieswise_matches_global_loss_and_gradient_semantics(
         mode="specieswise",
         dtype=dtype,
         device=device,
-        preprocess_cache_dir=tmp_path / "species-preprocess",
     )
     theta_global, theta_species = _constant_specieswise_theta(
         species_model.n_species, dtype=dtype, device=device
@@ -445,7 +438,6 @@ def test_specieswise_uniform_matches_alerax_specieswise_reference(
         fixed_iters_Pi=6,
         max_iters_E=4000,
         tol_E=1e-10,
-        preprocess_cache_dir=tmp_path / "preprocess",
     )
     theta = _load_alerax_specieswise_theta(
         data_dir_100,

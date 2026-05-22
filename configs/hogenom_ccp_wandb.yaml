@@ -4,7 +4,6 @@
 paths:
   species_tree: tests/data/HOGENOM/hogenom/hogenom_S.tree
   families_file: tests/data/HOGENOM/hogenom/hogenom_families.local.txt
-  preprocess_cache: tests/data/HOGENOM/hogenom/output_gpurec_ccp_reconciliation/preprocess_cache
   out_dir: tests/data/HOGENOM/hogenom/output_gpurec_wandb_adam_lbfgs
   timestamped_out_dir: true
   resume_from: null

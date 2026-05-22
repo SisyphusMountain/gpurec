@@ -237,10 +237,9 @@ _JSON_FLOAT_FIELDS = {
     "loss_change_tol",
     "best_likelihood_min_delta",
 }
-_JSON_BOOL_FIELDS = {"refresh_preprocess_cache", "adaptive_iters"}
+_JSON_BOOL_FIELDS = {"adaptive_iters"}
 _RUN_CONFIG_REQUIRED_PATH_FIELDS = ("species_tree", "families_file", "out_dir")
 _RUN_CONFIG_PATH_FIELDS = _RUN_CONFIG_REQUIRED_PATH_FIELDS + (
-    "preprocess_cache",
     "resume_from",
 )
 
@@ -285,8 +284,6 @@ class RunConfig:
 
     start: int = 0
     max_families: int | None = None
-    preprocess_cache: Path | None = None
-    refresh_preprocess_cache: bool = False
     preprocess_cpu_cores: int | None = None
 
     family_chunk_size: int | str | None = 0
@@ -336,10 +333,6 @@ class RunConfig:
         self.species_tree = _normalize_path("species_tree", self.species_tree)
         self.families_file = _normalize_path("families_file", self.families_file)
         self.out_dir = _normalize_path("out_dir", self.out_dir)
-        self.preprocess_cache = _normalize_optional_path(
-            "preprocess_cache",
-            self.preprocess_cache,
-        )
         self.resume_from = _normalize_optional_path("resume_from", self.resume_from)
         for name in _JSON_BOOL_FIELDS:
             setattr(self, name, _normalize_bool(name, getattr(self, name)))

@@ -138,7 +138,6 @@ def compare_family(
     backtrack_binary: Path | None,
     families_file: Path | None,
     species_tree: Path | None,
-    preprocess_cache_dir: Path | None,
 ) -> list[tuple[str, str, int, float, int, int, float, int, float]]:
     if families_file is None:
         family_name = f"family_{family_index:04d}"
@@ -189,7 +188,6 @@ def compare_family(
             device="cuda",
             dtype=torch.float64,
             theta_init_rates=(duplication, loss, transfer),
-            preprocess_cache_dir=preprocess_cache_dir,
             fixed_iters_Pi=fixed_iters_pi,
             max_iters_E=max_iters_e,
             tol_E=tol_e,
@@ -233,7 +231,6 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--backtrack-binary", type=Path)
     parser.add_argument("--families-file", type=Path)
     parser.add_argument("--species-tree", type=Path)
-    parser.add_argument("--preprocess-cache-dir", type=Path)
     return parser
 
 
@@ -262,7 +259,6 @@ def main(argv: list[str] | None = None) -> None:
             backtrack_binary=args.backtrack_binary,
             families_file=args.families_file,
             species_tree=args.species_tree,
-            preprocess_cache_dir=args.preprocess_cache_dir,
         ):
             family, key, a_min, a_mean, a_max, g_min, g_mean, g_max, delta = row
             print(

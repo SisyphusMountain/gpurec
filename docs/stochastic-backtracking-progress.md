@@ -98,8 +98,7 @@ python scripts/compare_backtracking_alerax_events.py \
   --families-file tests/data/HOGENOM/hogenom/hogenom_families.local.txt \
   --species-tree tests/data/HOGENOM/hogenom/hogenom_S.tree \
   --families 5 --samples 10 \
-  --backtrack-binary crates/gpurec-backtrack/target/release/gpurec-backtrack \
-  --preprocess-cache-dir /tmp/gpurec_backtrack_hogenom_native_cache
+  --backtrack-binary crates/gpurec-backtrack/target/release/gpurec-backtrack
 ```
 
 For all `test_trees_100` families, `DL`, `L`, and `Leaf` match exactly. With

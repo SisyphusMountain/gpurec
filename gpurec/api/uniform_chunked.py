@@ -14,6 +14,7 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Sequence
+import warnings
 
 import torch
 
@@ -204,9 +205,28 @@ def _set_default_flags() -> None:
         os.environ.setdefault(key, value)
 
 
+def _warn_ignored_preprocess_cache_kwargs(
+    *,
+    preprocess_cache_dir: str | os.PathLike | None,
+    refresh_preprocess_cache: bool,
+) -> None:
+    if preprocess_cache_dir is None and not refresh_preprocess_cache:
+        return
+    warnings.warn(
+        "preprocess_cache_dir and refresh_preprocess_cache are deprecated and "
+        "ignored; preprocessing is no longer cached.",
+        DeprecationWarning,
+        stacklevel=3,
+    )
+
+
 def _normalize_uniform_solver_kwargs(kwargs: dict[str, Any]) -> dict[str, Any]:
     """Validate public solver kwargs before CUDA setup or AleRax parsing."""
     normalized = dict(kwargs)
+    _warn_ignored_preprocess_cache_kwargs(
+        preprocess_cache_dir=normalized.pop("preprocess_cache_dir", None),
+        refresh_preprocess_cache=bool(normalized.pop("refresh_preprocess_cache", False)),
+    )
     if "dtype" in normalized:
         normalized["dtype"] = _validate_uniform_dtype(normalized["dtype"])
     if normalized.get("fixed_iters_E") is not None:
@@ -885,6 +905,10 @@ class UniformChunkedReconModel(torch.nn.Module):
             "preprocess_cpu_cores",
             preprocess_cpu_cores,
         )
+        _warn_ignored_preprocess_cache_kwargs(
+            preprocess_cache_dir=preprocess_cache_dir,
+            refresh_preprocess_cache=refresh_preprocess_cache,
+        )
         chunk_value = _auto_nonnegative_int("family_chunk_size", family_chunk_size)
         wave_value = _auto_positive_int("max_wave_size", max_wave_size)
         max_root_wave_size = optional_positive_int(
@@ -915,8 +939,6 @@ class UniformChunkedReconModel(torch.nn.Module):
             specieswise=False,
             dtype=dtype,
             device=device,
-            preprocess_cache_dir=preprocess_cache_dir,
-            refresh_preprocess_cache=refresh_preprocess_cache,
             preprocess_cpu_cores=preprocess_cpu_cores,
             family_names=family_names,
             leaf_species_maps=leaf_species_maps,

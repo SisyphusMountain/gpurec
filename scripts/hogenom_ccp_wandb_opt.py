@@ -37,7 +37,6 @@ SPECIES_TREE = (
     if INFERRED_SPECIES_TREE.exists()
     else HOGENOM_DIR / "hogenom_S.tree"
 )
-PREPROCESS_CACHE = HOGENOM_DIR / "output_gpurec_ccp_reconciliation" / "preprocess_cache"
 OUT_DIR = HOGENOM_DIR / "output_gpurec_wandb_adam"
 
 LN2 = math.log(2.0)
@@ -64,7 +63,6 @@ class TreeNode:
 class RunConfig:
     species_tree: Path
     families_file: Path
-    preprocess_cache: Path
     out_dir: Path
     device: str
     max_families: int | None
@@ -725,7 +723,6 @@ def build_model(config: RunConfig) -> GeneReconModel:
         device=device,
         dtype=dtype,
         theta_init_rates=(0.05, 0.05, 0.05),
-        preprocess_cache_dir=config.preprocess_cache,
         fixed_iters_E=None,
         max_iters_E=config.max_iters_e,
         fixed_iters_Pi=config.max_iters_pi,
@@ -1791,7 +1788,6 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--species-tree", type=Path, default=SPECIES_TREE)
     parser.add_argument("--families-file", type=Path, default=FAMILIES_FILE)
-    parser.add_argument("--preprocess-cache", type=Path, default=PREPROCESS_CACHE)
     parser.add_argument("--out-dir", type=Path, default=OUT_DIR)
     parser.add_argument(
         "--timestamped-out-dir",
@@ -2022,7 +2018,6 @@ def config_from_args(args: argparse.Namespace) -> RunConfig:
     return RunConfig(
         species_tree=args.species_tree,
         families_file=args.families_file,
-        preprocess_cache=args.preprocess_cache,
         out_dir=resolve_out_dir(args),
         device=args.device,
         max_families=args.max_families,

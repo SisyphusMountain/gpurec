@@ -188,7 +188,6 @@ def test_uniform_origination_probs_match_default_global_model(tmp_path, trees):
         fixed_iters_E=2,
         fixed_iters_Pi=2,
         neumann_terms=1,
-        preprocess_cache_dir=tmp_path / "preprocess",
     )
     default = GeneReconModel.from_trees(**kwargs)
     uniform = torch.ones(default.n_species, device="cuda", dtype=torch.float32)
@@ -262,7 +261,6 @@ def test_memory_safe_resident_batches_match_resident_and_slice(tmp_path, two_tre
         fixed_iters_E=2,
         fixed_iters_Pi=2,
         neumann_terms=1,
-        preprocess_cache_dir=tmp_path / "preprocess",
     )
     resident = GeneReconModel.from_trees(
         species_tree=sp,

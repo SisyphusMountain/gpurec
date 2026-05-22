@@ -26,6 +26,7 @@ from pathlib import Path
 from threading import Lock
 from types import MappingProxyType
 from typing import Any, Optional, Sequence
+import warnings
 
 import torch
 
@@ -86,6 +87,21 @@ _MODE_MAP: dict[str, tuple[bool, bool]] = {
     "specieswise": (False, True),
     "genewise": (True, False),
 }
+
+
+def _warn_ignored_preprocess_cache_kwargs(
+    *,
+    preprocess_cache_dir: str | os.PathLike | None,
+    refresh_preprocess_cache: bool,
+) -> None:
+    if preprocess_cache_dir is None and not refresh_preprocess_cache:
+        return
+    warnings.warn(
+        "preprocess_cache_dir and refresh_preprocess_cache are deprecated and "
+        "ignored; preprocessing is no longer cached.",
+        DeprecationWarning,
+        stacklevel=3,
+    )
 
 
 def _normalize_mode(mode: str) -> str:
@@ -1034,6 +1050,10 @@ class GeneReconModel(torch.nn.Module):
             "preprocess_cpu_cores",
             preprocess_cpu_cores,
         )
+        _warn_ignored_preprocess_cache_kwargs(
+            preprocess_cache_dir=preprocess_cache_dir,
+            refresh_preprocess_cache=refresh_preprocess_cache,
+        )
         theta_base = theta_init_base_from_rates(
             theta_init_rates,
             dtype=dtype,
@@ -1050,8 +1070,6 @@ class GeneReconModel(torch.nn.Module):
             specieswise=specieswise,
             dtype=dtype,
             device=device,
-            preprocess_cache_dir=preprocess_cache_dir,
-            refresh_preprocess_cache=refresh_preprocess_cache,
             preprocess_cpu_cores=preprocess_cpu_cores,
         )
         theta_init = None
@@ -1106,6 +1124,10 @@ class GeneReconModel(torch.nn.Module):
             "preprocess_cpu_cores",
             preprocess_cpu_cores,
         )
+        _warn_ignored_preprocess_cache_kwargs(
+            preprocess_cache_dir=preprocess_cache_dir,
+            refresh_preprocess_cache=refresh_preprocess_cache,
+        )
         theta_base = theta_init_base_from_rates(
             theta_init_rates,
             dtype=dtype,
@@ -1126,8 +1148,6 @@ class GeneReconModel(torch.nn.Module):
             specieswise=specieswise,
             dtype=dtype,
             device=device,
-            preprocess_cache_dir=preprocess_cache_dir,
-            refresh_preprocess_cache=refresh_preprocess_cache,
             preprocess_cpu_cores=preprocess_cpu_cores,
             family_names=family_names,
             leaf_species_maps=leaf_maps,

@@ -37,7 +37,6 @@ SPECIES_TREE = (
     if INFERRED_SPECIES_TREE.exists()
     else HOGENOM_DIR / "hogenom_S.tree"
 )
-PREPROCESS_CACHE = HOGENOM_DIR / "output_gpurec_ccp_reconciliation" / "preprocess_cache"
 OUT_DIR = HOGENOM_DIR / "profile_hogenom_ccp_pass"
 
 FIXED_ITERS_E = 6
@@ -52,7 +51,6 @@ class DatasetConfig:
         *,
         species_tree: Path,
         families_file: Path,
-        preprocess_cache: Path,
         device: str,
         dtype: torch.dtype,
         max_families: int | None,
@@ -68,7 +66,6 @@ class DatasetConfig:
     ) -> None:
         self.species_tree = species_tree
         self.families_file = families_file
-        self.preprocess_cache = preprocess_cache
         self.device = device
         self.dtype = dtype
         self.max_families = max_families
@@ -187,7 +184,6 @@ def dataset_config(args: argparse.Namespace) -> DatasetConfig:
     return DatasetConfig(
         species_tree=SPECIES_TREE,
         families_file=FAMILIES_FILE,
-        preprocess_cache=PREPROCESS_CACHE,
         device="cuda" if torch.cuda.is_available() else "cpu",
         dtype=torch.float32,
         max_families=args.max_families,
@@ -215,7 +211,6 @@ def build_model(
         device=config.device,
         dtype=config.dtype,
         theta_init_rates=INITIAL_RATES,
-        preprocess_cache_dir=config.preprocess_cache,
         fixed_iters_E=config.fixed_iters_E,
         fixed_iters_Pi=config.fixed_iters_Pi,
         neumann_terms=config.neumann_terms,

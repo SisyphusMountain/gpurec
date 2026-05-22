@@ -163,7 +163,6 @@ def test_compare_backtracking_closes_model_after_successful_sampling(
         backtrack_binary=None,
         families_file=None,
         species_tree=None,
-        preprocess_cache_dir=None,
     )
 
     assert model.close_calls == 1
@@ -198,11 +197,10 @@ def test_compare_backtracking_closes_model_after_sampling_failure(
             fixed_iters_pi=6,
             max_iters_e=10,
             tol_e=1e-6,
-            backtrack_binary=None,
-            families_file=None,
-            species_tree=None,
-            preprocess_cache_dir=None,
-        )
+                backtrack_binary=None,
+                families_file=None,
+                species_tree=None,
+            )
 
     assert model.close_calls == 1
 

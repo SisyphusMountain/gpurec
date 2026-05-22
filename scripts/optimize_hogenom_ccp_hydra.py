@@ -50,7 +50,6 @@ def _argv_from_config(cfg: dict[str, Any]) -> list[str]:
     argv: list[str] = []
     _append_option(argv, "--species-tree", paths.get("species_tree"))
     _append_option(argv, "--families-file", paths.get("families_file"))
-    _append_option(argv, "--preprocess-cache", paths.get("preprocess_cache"))
     _append_option(argv, "--out-dir", paths.get("out_dir"))
     if not bool(paths.get("timestamped_out_dir", True)):
         argv.append("--no-timestamped-out-dir")

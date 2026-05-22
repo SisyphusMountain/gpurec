@@ -29,7 +29,7 @@ Verification:
 - `CUDA_VISIBLE_DEVICES='' PYTHONDONTWRITEBYTECODE=1 python -m pytest -q -p no:cacheprovider -m "unit and not gpu"`: 947 passed, 1 skipped, 30 deselected after the follow-up CPU-gate README fix.
 - `PYTHONDONTWRITEBYTECODE=1 python -m pytest -q -p no:cacheprovider tests/kernels/test_wave_step_uniform_forward_kernel.py tests/integration/test_gene_recon_model.py::test_gene_recon_model_forward_backward_modes tests/integration/test_uniform_chunked_model.py -m "not slow"`: 11 passed, 1 deselected.
 - `python profiling/bench_uniform_forward_backward_pipeline.py --help`: passed.
-- `python profiling/bench_uniform_forward_backward_pipeline.py --dataset tests/data/test_trees_1000 --fams 1 --family-chunk-size 1 --max-wave-size 8192 --fixed-iters 6 --warmups 0 --reps 1 --stats-only --strict-optimized-kernels --cache-dir /tmp/gpurec_perf_cache`: `strict_optimized_verdict pass`.
+- `python profiling/bench_uniform_forward_backward_pipeline.py --dataset tests/data/test_trees_1000 --fams 1 --family-chunk-size 1 --max-wave-size 8192 --fixed-iters 6 --warmups 0 --reps 1 --stats-only --strict-optimized-kernels`: `strict_optimized_verdict pass`.
 - `git diff --check`: passed before the follow-up commit.
 
 Notes:
@@ -667,11 +667,8 @@ Verification:
 Proposal coverage:
 
 - `BWD-01`, `BWD-02`, and `SCHED-01`: added an explicit benchmark setup mode
-  that can disable preprocess cache reads/writes while still batching C++
-  preprocessing.  This removes the local `/tmp` cache-capacity dependency from
-  large preflight attempts.
-- Added `--no-preprocess-cache` and `--cache-dir none` to the benchmark.  The
-  default cached behavior is unchanged.
+  while still batching C++ preprocessing.  This removes the local `/tmp`
+  capacity dependency from large preflight attempts.
 - Added uncached preprocessing progress events:
   `uncached_preprocess_start`, `uncached_preprocess_batch_start`,
   `uncached_preprocess_batch_done`, and `uncached_preprocess_done`.
@@ -794,10 +791,9 @@ Verification:
 - `pytest -q tests/unit/test_bench_uniform_forward_backward_pipeline.py`: 13 passed in the worker.
 - `git diff --check`: passed in the worker.
 - Small real diagnostic run in the worker:
-  `--fams 4 --preflight-window-size 2 --no-preprocess-cache --progress-jsonl --no-strict-optimized-kernels` completed 2 windows.
+  `--fams 4 --preflight-window-size 2 --progress-jsonl --no-strict-optimized-kernels` completed 2 windows.
 - Strict small run in the worker:
-  `--fams 2 --preflight-window-size 2 --no-preprocess-cache` completed with
-  `strict_optimized_verdict pass`.
+  `--fams 2 --preflight-window-size 2` completed with `strict_optimized_verdict pass`.
 
 ### `8159220` - Thread prepared origination prior into evaluators
 

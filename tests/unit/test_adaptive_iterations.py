@@ -37,10 +37,7 @@ def test_adaptive_iterations_match_fixed_when_tolerances_force_max(
         fixed_iters_Pi=4,
         neumann_terms=4,
     )
-    fixed = GeneReconModel.from_trees(
-        **kwargs,
-        preprocess_cache_dir=tmp_path / "fixed_cache",
-    )
+    fixed = GeneReconModel.from_trees(**kwargs)
     adaptive = GeneReconModel.from_trees(
         **kwargs,
         adaptive_iters=True,
@@ -49,7 +46,6 @@ def test_adaptive_iterations_match_fixed_when_tolerances_force_max(
         pi_max_diff_tol=0.0,
         gradient_change_tol=0.0,
         gradient_change_rtol=0.0,
-        preprocess_cache_dir=tmp_path / "adaptive_cache",
     )
 
     loss_fixed = fixed()

@@ -43,7 +43,6 @@ SPECIES_TREE = (
     if INFERRED_SPECIES_TREE.exists()
     else HOGENOM_DIR / "hogenom_S.tree"
 )
-PREPROCESS_CACHE = HOGENOM_DIR / "output_gpurec_ccp_reconciliation" / "preprocess_cache"
 OUT_DIR = HOGENOM_DIR / "output_gpurec_specieswise_uniform_opt_max100"
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
@@ -145,7 +144,6 @@ def dataset_config() -> DatasetConfig:
     return DatasetConfig(
         species_tree=SPECIES_TREE,
         families_file=FAMILIES_FILE,
-        preprocess_cache=PREPROCESS_CACHE,
         out_dir=OUT_DIR,
         device=DEVICE,
         dtype=DTYPE,

@@ -30,7 +30,6 @@ RATE_COLUMNS = (("D", 0), ("T", 2), ("L", 1))
 class DatasetConfig:
     species_tree: Path
     families_file: Path
-    preprocess_cache: Path
     out_dir: Path
     device: str
     dtype: torch.dtype
@@ -82,7 +81,6 @@ def build_model(
         device=config.device,
         dtype=config.dtype,
         theta_init_rates=config.initial_rates,
-        preprocess_cache_dir=config.preprocess_cache,
         fixed_iters_E=config.fixed_iters_E,
         fixed_iters_Pi=config.fixed_iters_Pi,
         neumann_terms=config.neumann_terms,

@@ -469,7 +469,6 @@ Historical command sketch for the missing global-parameter benchmark harness:
 ```bash
 python path/to/global_parameter_optimization_benchmark.py \
   --dataset tests/data/test_trees_100 \
-  --cache-dir /tmp/gpurec_paramopt_second_order \
   --strategies recommended-fp32,bfgs-armijo-loss-only,fd-newton-loss-hessian,fd-newton-gradient-hessian \
   --init-rate 0.05 \
   --no-print-evals
@@ -480,7 +479,6 @@ python path/to/global_parameter_optimization_benchmark.py \
   --dataset tests/data/test_trees_1000 \
   --max-families 100 \
   --allow-missing-target \
-  --cache-dir /tmp/gpurec_paramopt_second_order_1000_first100 \
   --strategies recommended-fp32,bfgs-armijo-loss-only,fd-newton-loss-hessian \
   --init-rate 0.05 \
   --no-print-evals
