@@ -319,6 +319,18 @@ class OptimizationRunner:
             return torch.optim.Adam([model.theta], lr=config.lr)
         if phase == "adagrad":
             return torch.optim.Adagrad([model.theta], lr=config.lr, eps=1e-10)
+        if phase == "batched-lbfgs":
+            from gpurec.optimization import BatchedLBFGS
+
+            return BatchedLBFGS(
+                [model.theta],
+                lr=config.lbfgs_lr,
+                max_iter=config.lbfgs_max_iter,
+                history_size=config.lbfgs_history_size,
+                tolerance_grad=config.grad_inf_tol,
+                lower_bound=math.log2(config.min_rate),
+                upper_bound=math.log2(config.max_rate),
+            )
         if phase == "lbfgs":
             return torch.optim.LBFGS(
                 [model.theta],
@@ -350,6 +362,32 @@ class OptimizationRunner:
         row.update(parameter_stats(model.theta))
         row.update(solver_stats(model))
         return loss, row
+
+    def _evaluate_genewise_vector_and_grad(
+        self,
+        model: GeneReconModel,
+    ) -> tuple[torch.Tensor, dict[str, Any]]:
+        model.theta.grad = None
+        loss_vec, grad = model.full_genewise_nll_and_grad(need_grad=True)
+        if grad is None:
+            raise RuntimeError("genewise optimizer evaluation did not produce gradients")
+        model.theta.grad = grad.detach().to(
+            device=model.theta.device,
+            dtype=model.theta.dtype,
+        )
+        loss = loss_vec.sum()
+        row: dict[str, Any] = {
+            "likelihood/data_nll_bits": float(loss.detach().cpu()),
+            "likelihood/log_likelihood_bits": float(-loss.detach().cpu()),
+        }
+        row.update(tensor_stats("grad", model.theta.grad))
+        row.update(parameter_stats(model.theta))
+        row.update(solver_stats(model))
+        return loss_vec.detach(), row
+
+    def _evaluate_genewise_loss_vector(self, model: GeneReconModel) -> torch.Tensor:
+        loss_vec, _grad = model.full_genewise_nll_and_grad(need_grad=False)
+        return loss_vec.detach()
 
     def _record(self, row: dict[str, Any]) -> None:
         self.history.append(row)
@@ -492,6 +530,8 @@ class OptimizationRunner:
                 t0 = time.perf_counter()
                 theta_before = model.theta.detach().clone()
                 closure_evals = 0
+                batched_grad_evals = 0
+                batched_loss_evals = 0
                 metrics: dict[str, Any] = {}
 
                 def closure() -> torch.Tensor:
@@ -506,9 +546,32 @@ class OptimizationRunner:
                     closure_evals += 1
                     return loss_i
 
+                def batched_closure() -> torch.Tensor:
+                    nonlocal batched_grad_evals, metrics
+                    batched_grad_evals += 1
+                    with torch.no_grad():
+                        model.clamp_theta_(config.min_rate, config.max_rate)
+                    if optimizer is None:
+                        raise RuntimeError("missing optimizer")
+                    optimizer.zero_grad(set_to_none=True)
+                    loss_vec_i, metrics_i = self._evaluate_genewise_vector_and_grad(model)
+                    metrics = metrics_i
+                    return loss_vec_i
+
+                def batched_loss_closure() -> torch.Tensor:
+                    nonlocal batched_loss_evals
+                    batched_loss_evals += 1
+                    with torch.no_grad():
+                        model.clamp_theta_(config.min_rate, config.max_rate)
+                    return self._evaluate_genewise_loss_vector(model)
+
                 save_best_after_row = False
                 first_order_pending_step = False
-                eval_position = "post_step" if phase == "lbfgs" else "pre_step"
+                eval_position = (
+                    "post_step"
+                    if phase in {"lbfgs", "batched-lbfgs"}
+                    else "pre_step"
+                )
                 if phase == "lbfgs":
                     try:
                         optimizer.step(closure)
@@ -527,6 +590,61 @@ class OptimizationRunner:
                     closure_evals += 1
                     if (
                         not torch.isfinite(loss_current).item()
+                        or not _is_finite_tensor(model.theta.grad)
+                    ):
+                        status = {
+                            "status": "failed",
+                            "reason": "nonfinite_objective_or_gradient",
+                        }
+                        model.clear()
+                        break
+                    model.clear()
+                elif phase == "batched-lbfgs":
+                    try:
+                        optimizer.step(
+                            batched_closure,
+                            loss_closure=batched_loss_closure,
+                        )
+                    except RuntimeError:
+                        status = {
+                            "status": "failed",
+                            "reason": "batched_lbfgs_runtime_error",
+                        }
+                        break
+                    opt_state = optimizer.state.get(model.theta, {})
+                    closure_evals = batched_grad_evals + batched_loss_evals
+                    with torch.no_grad():
+                        model.clamp_theta_(config.min_rate, config.max_rate)
+                    theta_step = float((model.theta.detach() - theta_before).abs().amax().cpu())
+                    model.clear()
+                    model.theta.grad = None
+                    loss_vec_current, metrics = self._evaluate_genewise_vector_and_grad(model)
+                    closure_evals += 1
+                    metrics["optimizer/batched_lbfgs_grad_evals"] = float(batched_grad_evals)
+                    metrics["optimizer/batched_lbfgs_loss_evals"] = float(batched_loss_evals)
+                    metrics["optimizer/batched_lbfgs_inner_iters"] = float(
+                        int(opt_state.get("last_n_iter", 0))
+                    )
+                    accepted = opt_state.get("last_accepted")
+                    if torch.is_tensor(accepted):
+                        accepted_f = accepted.detach().to(dtype=torch.float32)
+                        metrics["optimizer/batched_lbfgs_accepted_rows"] = float(
+                            accepted_f.sum().cpu()
+                        )
+                        metrics["optimizer/batched_lbfgs_accepted_fraction"] = float(
+                            accepted_f.mean().cpu()
+                        )
+                    alpha = opt_state.get("last_alpha")
+                    if torch.is_tensor(alpha):
+                        alpha_cpu = alpha.detach().cpu()
+                        metrics["optimizer/batched_lbfgs_alpha_mean"] = float(
+                            alpha_cpu.mean()
+                        )
+                        metrics["optimizer/batched_lbfgs_alpha_max"] = float(
+                            alpha_cpu.max()
+                        )
+                    if (
+                        not bool(torch.isfinite(loss_vec_current).all().item())
                         or not _is_finite_tensor(model.theta.grad)
                     ):
                         status = {
@@ -590,7 +708,7 @@ class OptimizationRunner:
                     "previous_objective": previous_objective,
                     "stable_loss_steps": stable_loss_steps,
                 }
-                if save_best_after_row and phase != "lbfgs":
+                if save_best_after_row and phase not in {"lbfgs", "batched-lbfgs"}:
                     best_row = dict(row)
                     best_row["optimizer/step_applied"] = False
                     best_row["step_s"] = time.perf_counter() - t0
@@ -617,7 +735,7 @@ class OptimizationRunner:
                 model.clear()
                 row["theta_step_inf"] = theta_step
                 row["optimizer/step_applied"] = bool(
-                    first_order_pending_step or phase == "lbfgs"
+                    first_order_pending_step or phase in {"lbfgs", "batched-lbfgs"}
                 )
                 row["step_s"] = time.perf_counter() - t0
 

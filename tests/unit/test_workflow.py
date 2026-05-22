@@ -1099,6 +1099,31 @@ def test_run_config_rejects_unsupported_auto_chunking(tmp_path: Path):
         )
 
 
+def test_run_config_rejects_batched_lbfgs_outside_genewise(tmp_path: Path):
+    with pytest.raises(ValueError, match="batched-lbfgs.*genewise"):
+        RunConfig(
+            species_tree=tmp_path / "sp.nwk",
+            families_file=tmp_path / "families.txt",
+            out_dir=tmp_path / "out",
+            mode="global",
+            optimizer="batched-lbfgs",
+            device="cpu",
+        )
+
+
+def test_run_config_rejects_strong_wolfe_for_batched_lbfgs(tmp_path: Path):
+    with pytest.raises(ValueError, match="row-wise Armijo"):
+        RunConfig(
+            species_tree=tmp_path / "sp.nwk",
+            families_file=tmp_path / "families.txt",
+            out_dir=tmp_path / "out",
+            mode="genewise",
+            optimizer="batched-lbfgs",
+            lbfgs_line_search="strong_wolfe",
+            device="cpu",
+        )
+
+
 @pytest.mark.parametrize(
     "field",
     [
@@ -4261,9 +4286,61 @@ class _WorkflowOptimizerModeModel:
         self.closed = True
 
 
+class _WorkflowBatchedLBFGSModeModel:
+    def __init__(self):
+        self.theta = torch.nn.Parameter(
+            torch.tensor(
+                [
+                    [0.50, -0.25, 0.125],
+                    [0.10, 0.20, -0.05],
+                ],
+                dtype=torch.float32,
+            )
+        )
+        self.initial_theta = self.theta.detach().clone()
+        self.family_names = ["fam0", "fam1"]
+        self.species_names = ["sp0", "sp1"]
+        self.n_families = 2
+        self.n_species = 2
+        self.batch_metadata: list[SimpleNamespace] = []
+        self.clears = 0
+        self.closed = False
+
+    def full_loss(self):
+        return self.theta.square().sum() + 1.0
+
+    def full_genewise_nll_and_grad(self, *, need_grad: bool):
+        values = self.theta.detach().square().sum(dim=1) + 1.0
+        grad = 2.0 * self.theta.detach() if need_grad else None
+        return values, grad
+
+    def full_nll_per_family(self):
+        values, _grad = self.full_genewise_nll_and_grad(need_grad=False)
+        return values
+
+    def clamp_theta_(self, min_rate, max_rate):
+        with torch.no_grad():
+            self.theta.clamp_(min=-4.0, max=4.0)
+
+    def solver_stat_records(self):
+        return []
+
+    def clear(self):
+        self.clears += 1
+
+    def close(self):
+        self.closed = True
+
+
 class _WorkflowOptimizerModeRunner(OptimizationRunner):
     def build_model(self):
         self.fake_model = _WorkflowOptimizerModeModel()
+        return self.fake_model
+
+
+class _WorkflowBatchedLBFGSModeRunner(OptimizationRunner):
+    def build_model(self):
+        self.fake_model = _WorkflowBatchedLBFGSModeModel()
         return self.fake_model
 
 
@@ -4350,6 +4427,78 @@ def test_optimization_runner_lbfgs_mode_records_public_phase(tmp_path: Path):
     assert latest["last_row"]["optimizer/phase"] == "final_eval"
     assert result.status == "not_converged"
     assert runner.fake_model.closed
+
+
+def test_optimization_runner_batched_lbfgs_mode_records_public_phase(tmp_path: Path):
+    config = _optimizer_mode_config(
+        tmp_path,
+        optimizer="batched-lbfgs",
+        mode="genewise",
+        lbfgs_max_iter=1,
+    )
+    runner = _WorkflowBatchedLBFGSModeRunner(config)
+
+    result = runner.run()
+
+    history_rows = _optimizer_mode_history_rows(config.out_dir)
+    assert [row["optimizer/phase"] for row in history_rows] == [
+        "batched-lbfgs",
+        "final_eval",
+    ]
+    assert history_rows[0]["closure_evals"] >= 2
+    assert history_rows[0]["optimizer/eval_position"] == "post_step"
+    assert history_rows[0]["optimizer/step_applied"] is True
+    assert history_rows[0]["optimizer/batched_lbfgs_grad_evals"] >= 1
+    assert history_rows[0]["optimizer/batched_lbfgs_loss_evals"] >= 1
+    assert history_rows[0]["optimizer/batched_lbfgs_accepted_rows"] > 0
+    assert history_rows[0]["theta_step_inf"] > 0.0
+    assert torch.linalg.vector_norm(runner.fake_model.theta.detach()) < torch.linalg.vector_norm(
+        runner.fake_model.initial_theta
+    )
+    latest = load_checkpoint(config.out_dir / "checkpoints" / "latest.pt")
+    assert latest["optimizer_phase"] == "batched-lbfgs"
+    assert latest["last_row"]["optimizer/phase"] == "final_eval"
+    assert result.status == "not_converged"
+    assert runner.fake_model.closed
+
+
+def test_optimization_runner_batched_lbfgs_resume_restores_state(tmp_path: Path):
+    first_config = _optimizer_mode_config(
+        tmp_path,
+        optimizer="batched-lbfgs",
+        mode="genewise",
+        steps=1,
+        lbfgs_max_iter=1,
+    )
+    first_runner = _WorkflowBatchedLBFGSModeRunner(first_config)
+    first_runner.run()
+    first_latest = load_checkpoint(first_config.out_dir / "checkpoints" / "latest.pt")
+    assert first_latest["optimizer_phase"] == "batched-lbfgs"
+
+    resumed_config = _optimizer_mode_config(
+        tmp_path,
+        optimizer="batched-lbfgs",
+        mode="genewise",
+        steps=2,
+        lbfgs_max_iter=1,
+        out_dir=tmp_path / "out-batched-lbfgs-resumed",
+        resume_from=first_config.out_dir / "checkpoints" / "latest.pt",
+    )
+    resumed_runner = _WorkflowBatchedLBFGSModeRunner(resumed_config)
+
+    result = resumed_runner.run()
+
+    history_rows = _optimizer_mode_history_rows(resumed_config.out_dir)
+    assert [(row["optimizer/phase"], row["step"]) for row in history_rows] == [
+        ("batched-lbfgs", 1),
+        ("final_eval", 2),
+    ]
+    assert history_rows[0]["resume_optimizer_state"] == "restored"
+    resumed_latest = load_checkpoint(resumed_config.out_dir / "checkpoints" / "latest.pt")
+    assert resumed_latest["optimizer_phase"] == "batched-lbfgs"
+    assert result.steps_completed == 2
+    assert result.status == "not_converged"
+    assert resumed_runner.fake_model.closed
 
 
 def test_optimization_runner_adam_lbfgs_schedule_runs_active_phases(tmp_path: Path):

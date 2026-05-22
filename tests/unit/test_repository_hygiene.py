@@ -1293,10 +1293,14 @@ def test_project_readme_documents_workflow_optimizer_modes():
         "| `adagrad` |",
         "| `lbfgs` |",
         "| `adam-lbfgs` |",
+        "| `batched-lbfgs` |",
         "`lbfgs_line_search` is `none` or `strong_wolfe`",
         "LBFGS runtime errors stop the run with a failed status",
         "`adam_warmup_steps` controls the phase switch",
         "incompatible resumed optimizer state is discarded",
+        "Requires `mode=genewise`",
+        "internal row-wise Armijo search",
+        "`lbfgs_line_search` must be `none`",
     ):
         assert token in normalized
 

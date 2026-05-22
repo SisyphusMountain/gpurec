@@ -297,7 +297,7 @@ def _add_run_config_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--max-rate", type=float, help="Maximum allowed D/L/T rate.")
     parser.add_argument(
         "--optimizer",
-        choices=("adam", "adagrad", "lbfgs", "adam-lbfgs"),
+        choices=("adam", "adagrad", "lbfgs", "adam-lbfgs", "batched-lbfgs"),
         help="Optimizer schedule. Workflow default: adam.",
     )
     parser.add_argument("--steps", type=int, help="Maximum optimization steps.")

@@ -451,8 +451,19 @@ class RunConfig:
             or theta_init_t <= 0.0
         ):
             raise ValueError("theta_init_d/l/t must be strictly positive")
-        if self.optimizer not in {"adam", "adagrad", "lbfgs", "adam-lbfgs"}:
-            raise ValueError("optimizer must be adam, adagrad, lbfgs, or adam-lbfgs")
+        if self.optimizer not in {
+            "adam",
+            "adagrad",
+            "lbfgs",
+            "adam-lbfgs",
+            "batched-lbfgs",
+        }:
+            raise ValueError(
+                "optimizer must be adam, adagrad, lbfgs, adam-lbfgs, "
+                "or batched-lbfgs"
+            )
+        if self.optimizer == "batched-lbfgs" and self.mode != "genewise":
+            raise ValueError("batched-lbfgs optimizer requires genewise mode")
         if self.steps < 1:
             raise ValueError("steps must be positive")
         lr = _normalize_finite_float("lr", self.lr)
@@ -465,6 +476,11 @@ class RunConfig:
             raise ValueError("LBFGS history size and max_iter must be positive")
         if self.lbfgs_line_search not in {"none", "strong_wolfe"}:
             raise ValueError("lbfgs_line_search must be 'none' or 'strong_wolfe'")
+        if self.optimizer == "batched-lbfgs" and self.lbfgs_line_search != "none":
+            raise ValueError(
+                "batched-lbfgs uses its internal row-wise Armijo line search; "
+                "lbfgs_line_search must be 'none'"
+            )
         if self.loss_patience < 0 or self.best_likelihood_patience < 0:
             raise ValueError("patience values must be non-negative")
         if self.checkpoint_every < 0 or self.log_every < 1:

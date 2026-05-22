@@ -267,9 +267,11 @@ class BatchedLBFGS(Optimizer):
         """Perform one batched L-BFGS step and return final per-row losses.
 
         ``closure`` must zero gradients, compute a loss vector with shape
-        ``[B]``, call ``loss_vec.sum().backward()``, and return the vector.
-        ``loss_closure`` is optional and should return the same vector without
-        backward; it is used for cheaper Armijo line-search probes.
+        ``[B]``, populate the parameter gradient, and return the vector. Most
+        callers can use ``loss_vec.sum().backward()``; streaming callers may
+        assign ``param.grad`` directly. ``loss_closure`` is optional and should
+        return the same vector without gradients; it is used for cheaper Armijo
+        line-search probes.
         """
         closure = torch.enable_grad()(closure)
         group = self.param_groups[0]

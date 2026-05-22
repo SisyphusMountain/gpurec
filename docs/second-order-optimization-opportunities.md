@@ -64,7 +64,8 @@ during line search and stopping earlier when the NLL/rates have already landed.
 
 The production workflow optimizer loop in `gpurec/workflow/optimize.py` builds
 standard PyTorch `Adam`, `Adagrad`, or `LBFGS` optimizers over
-`GeneReconModel.theta`. Its closure:
+`GeneReconModel.theta`, and also supports genewise-only `batched-lbfgs` through
+`gpurec.optimization.BatchedLBFGS`. The scalar optimizer closure:
 
 - clamps `model.theta`;
 - runs `loss = model()`;
@@ -93,7 +94,9 @@ The chunked global model also has a no-grad loss path:
   grad is needed, then `backward()` only returns the cached gradient.
 
 The genewise optimizer already has the useful pattern. `BatchedLBFGS` accepts a
-`loss_closure` and uses it for Armijo probes. Current integration coverage for
+`loss_closure` and uses it for row-wise Armijo probes, while the workflow feeds
+it full-dataset per-family losses and gradients from
+`GeneReconModel.full_genewise_nll_and_grad()`. Current integration coverage for
 the genewise optimizer lives in `tests/integration/test_gene_recon_model.py`;
 avoid relying on historical line numbers in this note when changing that test.
 
