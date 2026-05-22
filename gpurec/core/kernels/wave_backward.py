@@ -12,31 +12,14 @@ import torch
 import triton
 import triton.language as tl
 
-from gpurec.core._helpers import _env_flag_enabled, _env_mode_enabled_required
 from gpurec.core.kernels._dts_layout_contract import dts_backward_param_layout
 from gpurec.core.memory_policy import proposal0_memory_gate
 
-_cuda_pibar_from_ud_fallback_warned = False
 _SUPPORTED_FLOAT_DTYPES = (torch.float32, torch.float64, torch.bfloat16)
 
 
 def _tl_float_dtype(dtype):
     return tl.float64 if dtype == torch.float64 else tl.float32
-
-
-def _cuda_pibar_from_ud_options():
-    """Return CUDA Pibar prototype mode, enablement, and selected-path strictness.
-
-    ``auto`` is silent best-effort, ``enabled`` is best-effort with the caller's
-    warning-on-fallback path, and ``GPUREC_CUDA_PIBAR_FROM_UD_STRICT`` makes an
-    otherwise best-effort selected Pibar prototype re-raise failures.
-    """
-    mode, enabled, required = _env_mode_enabled_required(
-        "GPUREC_CUDA_PIBAR_FROM_UD",
-        "auto",
-    )
-    strict_required = _env_flag_enabled("GPUREC_CUDA_PIBAR_FROM_UD_STRICT", "0")
-    return mode, enabled, enabled and (required or strict_required)
 
 
 def _device_scalar_param(param, *, device, dtype):
@@ -875,13 +858,7 @@ def _wave_backward_uniform_2d(
     if pibar_row_max is None:
         raise ValueError("pibar_row_max is required for the retained 2D self-loop path")
     pibar_row_max = pibar_row_max.to(device=device, dtype=dtype).contiguous()
-    skip_inactive_scratch_zero = (
-        os.environ.get(
-            "GPUREC_SELF_LOOP_2D_SKIP_INACTIVE_SCRATCH_ZERO",
-            "1",
-        ).strip().lower()
-        not in ("", "0", "false", "no", "off")
-    )
+    skip_inactive_scratch_zero = True
     if family_idx is not None:
         family_idx = family_idx.to(device=device, dtype=torch.long).contiguous()
     else:
@@ -897,10 +874,7 @@ def _wave_backward_uniform_2d(
     )
     leaf_species_arg = leaf_species_idx if use_leaf_index else sp_child1
     leaf_logp_arg = leaf_logp if use_leaf_index else leaf_term_wt
-    use_child_edge_self_loop = _env_flag_enabled(
-        "GPUREC_TRITON_CHILD_EDGE_SELF_LOOP",
-        "0",
-    )
+    use_child_edge_self_loop = True
 
     precompute_warps = int(os.environ.get("GPUREC_SELF_LOOP_2D_NUM_WARPS", "8"))
     launch_options = {}
@@ -2058,53 +2032,6 @@ def uniform_cross_pibar_vjp_tree_from_ud_fused(
             DTYPE=_tl_float_dtype(Pi_star.dtype),
             **launch_options,
         )
-
-    (
-        cuda_pibar_from_ud_mode,
-        cuda_pibar_from_ud_enabled,
-        cuda_pibar_from_ud_required,
-    ) = _cuda_pibar_from_ud_options()
-    if (
-        cuda_pibar_from_ud_enabled
-        and Pi_star.dtype == torch.float32
-        and Pi_star.device.type == "cuda"
-    ):
-        try:
-            from .pibar_vjp_cuda import uniform_cross_pibar_vjp_tree_from_ud_cuda
-
-            return uniform_cross_pibar_vjp_tree_from_ud_cuda(
-                Pi_star,
-                pibar_ud,
-                pibar_A,
-                sl,
-                sr,
-                accumulated_rhs,
-                S,
-                active_mask=active_mask,
-                reduce_idx=reduce_idx,
-                pibar_row_max=pibar_row_max,
-                side_active=side_active,
-                compact_level_ptr=compact_level_ptr,
-                compact_level_parents=compact_level_parents,
-                compact_level_child1=compact_level_child1,
-                compact_level_child2=compact_level_child2,
-            )
-        except Exception as exc:
-            if cuda_pibar_from_ud_required:
-                raise
-
-            if cuda_pibar_from_ud_mode not in ("auto", ""):
-                import warnings
-
-                global _cuda_pibar_from_ud_fallback_warned
-                if not _cuda_pibar_from_ud_fallback_warned:
-                    warnings.warn(
-                        "GPUREC_CUDA_PIBAR_FROM_UD requested, but the CUDA "
-                        f"prototype was unavailable ({exc}); falling back to Triton.",
-                        RuntimeWarning,
-                        stacklevel=2,
-                    )
-                    _cuda_pibar_from_ud_fallback_warned = True
 
     if (
         compact_level_ptr is None

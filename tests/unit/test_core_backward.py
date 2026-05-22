@@ -8,26 +8,6 @@ DEVICE = torch.device("cpu")
 DTYPE = torch.float64
 
 
-def test_optional_cuda_self_loop_fallback_handles_validation_failures():
-    captured = None
-
-    try:
-        raise ValueError("optional CUDA prototype validation failed")
-    except backward._OPTIONAL_CUDA_SELF_LOOP_EXCEPTIONS as exc:
-        captured = exc
-
-    assert isinstance(captured, ValueError)
-
-
-def test_optional_cuda_self_loop_fallback_exceptions_stay_narrow():
-    assert backward._OPTIONAL_CUDA_SELF_LOOP_EXCEPTIONS == (
-        ImportError,
-        RuntimeError,
-        ValueError,
-    )
-    assert Exception not in backward._OPTIONAL_CUDA_SELF_LOOP_EXCEPTIONS
-
-
 def test_backward_auto_wrap_records_family_idx_none_as_single_shared_row():
     C = 4
     S = 3

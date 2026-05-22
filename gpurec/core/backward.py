@@ -1,17 +1,10 @@
-"""Backward pass: retained fused CUDA path for Pi adjoints.
+"""Backward pass: retained Triton CUDA path for Pi adjoints.
 
-The production Pi backward/gradient path is the retained fused CUDA path for
+The production Pi backward/gradient path is the retained fused Triton path for
 ``float32``/``float64`` tensors and currently requires ``S > 256`` species
 nodes.  Tiny species trees are useful for parser/config tests but need a
 small-species backward fallback before they can be end-to-end optimizer smokes.
-
-Native self-loop CUDA prototypes are experimental diagnostics.  ``auto`` and
-``enabled`` modes fall back to the retained Triton self-loop path on optional
-``ImportError``, ``RuntimeError``, or ``ValueError`` failures; required modes
-re-raise failures after the wave is eligible for the prototype.
 """
-
-import os
 
 import torch
 
@@ -19,7 +12,6 @@ from .log2_utils import logsumexp2
 from .likelihood import prepare_origination_probs
 from ._helpers import (  # noqa: F401
     _env_flag_enabled,
-    _env_mode_enabled_required,
     _safe_exp2_ratio,
 )
 from .memory_policy import proposal0_memory_gate
@@ -27,102 +19,9 @@ from .extract_parameters import as_family_param, as_family_species
 from .species import species_wave_topology
 from .backward_pruning_policy import (
     backward_pruning_policy,
-    inactive_wave_accounting,
 )
 
 _SUPPORTED_BACKWARD_FLOAT_DTYPES = (torch.float32, torch.float64)
-_OPTIONAL_CUDA_SELF_LOOP_EXCEPTIONS = (ImportError, RuntimeError, ValueError)
-
-
-def _cuda_self_loop_options_from_env():
-    """Return current native CUDA self-loop prototype mode switches.
-
-    ``auto``/``enabled`` are optional and may fall back to the retained Triton
-    self-loop path.  Required/force-style modes stay enabled but re-raise
-    eligible-wave prototype failures.
-    """
-    (
-        nosplit_mode,
-        nosplit_enabled,
-        nosplit_required,
-    ) = _env_mode_enabled_required(
-        "GPUREC_CUDA_SELF_LOOP_NOSPLIT",
-        "auto",
-    )
-    nosplit_correction = os.environ.get(
-        "GPUREC_CUDA_SELF_LOOP_NOSPLIT_CORRECTION",
-        "tree",
-    )
-    (
-        split_mode,
-        split_enabled,
-        split_required,
-    ) = _env_mode_enabled_required(
-        "GPUREC_CUDA_SELF_LOOP_SPLIT",
-        "auto",
-    )
-    return (
-        nosplit_mode,
-        nosplit_enabled,
-        nosplit_required,
-        nosplit_correction,
-        split_mode,
-        split_enabled,
-        split_required,
-    )
-
-
-def _cuda_self_loop_wave_backend(
-    *,
-    dts_r,
-    nosplit_enabled,
-    split_enabled,
-    auto_wrapped,
-    dtype,
-    uniform_leaf_logp,
-    S,
-    compact_level_ptr,
-    compact_level_parents,
-    compact_level_child1,
-    compact_level_child2,
-):
-    """Return ``(wave_enabled, use_cuda_prototype)`` for one self-loop wave."""
-    wave_enabled = (
-        (dts_r is None and nosplit_enabled)
-        or (dts_r is not None and split_enabled)
-    )
-    use_cuda_prototype = (
-        wave_enabled
-        and auto_wrapped
-        and dtype == torch.float32
-        and torch.is_tensor(uniform_leaf_logp)
-        and int(uniform_leaf_logp.numel()) == S
-        and compact_level_ptr is not None
-        and compact_level_parents is not None
-        and compact_level_child1 is not None
-        and compact_level_child2 is not None
-    )
-    return wave_enabled, use_cuda_prototype
-
-
-def _cuda_self_loop_fallback_after_optional_failure(
-    *,
-    dts_r,
-    nosplit_enabled,
-    split_enabled,
-    nosplit_required,
-    split_required,
-):
-    """Return required-state and updated enabled flags after prototype failure."""
-    required = (
-        (dts_r is None and nosplit_required)
-        or (dts_r is not None and split_required)
-    )
-    if required:
-        return True, nosplit_enabled, split_enabled
-    if dts_r is None:
-        return False, False, split_enabled
-    return False, nosplit_enabled, False
 
 
 def _auto_wrap_backward_inputs(
@@ -220,7 +119,7 @@ def Pi_wave_backward(
         use_pruning: whether to prune waves with negligible adjoint gradient
         family_idx: Long[C] clade→family mapping. None → auto-wrapped as G=1.
         uniform_pibar_row_max: optional [C] final forward-side row max values
-            for uniform Pibar. Used only by opt-in fused cross-Pibar VJP paths.
+            for uniform Pibar. Required by fused cross-Pibar VJP paths.
         origination_probs: optional [S] or [F, S] root-species origination
             probabilities. ``None`` keeps the historical uniform distribution.
         origination_probs_prepared: when True, skip validation/renormalization
@@ -461,25 +360,11 @@ def Pi_wave_backward(
             rhs, active_mask_threshold, use_pruning=use_pruning
         )
 
-    no_cpu_pruning = pruning_policy.no_cpu_pruning
     skip_inactive_pibar_zero = pruning_policy.skip_inactive_pibar_zero
     specialize_nonleaf_leaf_term = _env_flag_enabled(
         "GPUREC_SPECIALIZE_NONLEAF_LEAF_TERM",
         "1",
     )
-    triton_self_loop_direct_grads = _env_flag_enabled(
-        "GPUREC_TRITON_SELF_LOOP_DIRECT_GRADS",
-        "0",
-    )
-    (
-        _cuda_self_loop_nosplit_mode,
-        cuda_self_loop_nosplit_enabled,
-        cuda_self_loop_nosplit_required,
-        cuda_self_loop_nosplit_correction,
-        _cuda_self_loop_split_mode,
-        cuda_self_loop_split_enabled,
-        cuda_self_loop_split_required,
-    ) = _cuda_self_loop_options_from_env()
 
     for k in range(K - 1, -1, -1):
         meta = wave_metas[k]
@@ -490,22 +375,7 @@ def Pi_wave_backward(
         # The fused uniform kernel treats rhs as read-only, and this wave's
         # later cross-DTS/Pibar adjoints accumulate into child rows.
         rhs_k = accumulated_rhs[ws:we]
-        if no_cpu_pruning:
-            active_mask = (
-                _compute_active_mask(rhs_k).contiguous() if use_pruning else None
-            )
-        else:
-            active_mask = _compute_active_mask(rhs_k).contiguous()
-            active_count = int(active_mask.sum().item())
-            process_wave, wave_skip, clade_skip = inactive_wave_accounting(
-                active_count,
-                W,
-                cpu_wave_skip_enabled=True,
-            )
-            n_waves_skipped += wave_skip
-            n_clades_skipped += clade_skip
-            if not process_wave:
-                continue
+        active_mask = _compute_active_mask(rhs_k).contiguous() if use_pruning else None
 
         leaf_wt = None
         wave_has_leaf_term = (
@@ -551,154 +421,75 @@ def Pi_wave_backward(
             else:
                 acc.scatter_add_(0, fi_expand, contrib)
 
-        cuda_self_loop_wave_enabled, use_cuda_nosplit = (
-            _cuda_self_loop_wave_backend(
-                dts_r=dts_r,
-                nosplit_enabled=cuda_self_loop_nosplit_enabled,
-                split_enabled=cuda_self_loop_split_enabled,
-                auto_wrapped=_auto_wrapped,
-                dtype=dtype,
-                uniform_leaf_logp=uniform_leaf_logp,
-                S=S,
-                compact_level_ptr=compact_level_ptr,
-                compact_level_parents=compact_level_parents,
-                compact_level_child1=compact_level_child1,
-                compact_level_child2=compact_level_child2,
-            )
+        param_grad_vector = (
+            grad_log_pD.ndim == 2
+            and grad_log_pS.ndim == 2
+            and int(grad_log_pD.shape[0]) == 1
+            and int(grad_log_pS.shape[0]) == 1
+            and int(grad_log_pD.shape[1]) == S
+            and int(grad_log_pS.shape[1]) == S
         )
-        self_loop_grads_accumulated = False
-        if use_cuda_nosplit:
-            try:
-                from .kernels.wave_backward_cuda import wave_backward_uniform_nosplit_cuda
-
-                v_k = wave_backward_uniform_nosplit_cuda(
-                    Pi_star_wave,
-                    Pibar_star_wave,
-                    ws,
-                    W,
-                    S,
-                    rhs_k,
-                    mt_w,
-                    DL_w,
-                    Ebar_w,
-                    E_w,
-                    SL1_w,
-                    SL2_w,
-                    sp_child1_wave,
-                    sp_child2_wave,
-                    sp_parent_wave,
-                    leaf_species_index_wave,
-                    uniform_leaf_logp,
-                    forward_pibar_row_max,
-                    compact_level_ptr,
-                    compact_level_parents,
-                    compact_level_child1,
-                    compact_level_child2,
-                    (
-                        grad_log_pD[0],
-                        grad_log_pS[0],
-                        grad_E_acc[0],
-                        grad_Ebar_acc[0],
-                        grad_E_s1_acc[0],
-                        grad_E_s2_acc[0],
-                        grad_mt[0] if grad_mt.ndim == 2 else grad_mt,
-                    ),
-                    dts_r=dts_r,
-                    active_mask=active_mask,
-                    neumann_terms=neumann_terms,
-                    correction_mode=cuda_self_loop_nosplit_correction,
-                    has_leaf_term=wave_has_leaf_term,
-                )
-                aw0 = aw1 = aw2 = aw345 = aw3 = aw4 = None
-                self_loop_grads_accumulated = True
-            except _OPTIONAL_CUDA_SELF_LOOP_EXCEPTIONS:
-                (
-                    cuda_self_loop_failure_required,
-                    cuda_self_loop_nosplit_enabled,
-                    cuda_self_loop_split_enabled,
-                ) = _cuda_self_loop_fallback_after_optional_failure(
-                    dts_r=dts_r,
-                    nosplit_enabled=cuda_self_loop_nosplit_enabled,
-                    split_enabled=cuda_self_loop_split_enabled,
-                    nosplit_required=cuda_self_loop_nosplit_required,
-                    split_required=cuda_self_loop_split_required,
-                )
-                if cuda_self_loop_failure_required:
-                    raise
-                use_cuda_nosplit = False
-                self_loop_grads_accumulated = False
-        if not use_cuda_nosplit:
-            param_grad_vector = (
-                grad_log_pD.ndim == 2
-                and grad_log_pS.ndim == 2
-                and int(grad_log_pD.shape[0]) == 1
-                and int(grad_log_pS.shape[0]) == 1
-                and int(grad_log_pD.shape[1]) == S
-                and int(grad_log_pS.shape[1]) == S
+        param_grad_scalar = (
+            grad_log_pD.ndim == 1
+            and grad_log_pS.ndim == 1
+            and int(grad_log_pD.numel()) == 1
+            and int(grad_log_pS.numel()) == 1
+        )
+        triton_accum_self_loop_grads = (
+            _auto_wrapped
+            and dtype == torch.float32
+            and G == 1
+            and grad_E_acc.ndim == 2
+            and grad_Ebar_acc.ndim == 2
+            and grad_E_s1_acc.ndim == 2
+            and grad_E_s2_acc.ndim == 2
+            and grad_mt.ndim == 2
+            and int(grad_E_acc.shape[0]) == 1
+            and int(grad_Ebar_acc.shape[0]) == 1
+            and int(grad_E_s1_acc.shape[0]) == 1
+            and int(grad_E_s2_acc.shape[0]) == 1
+            and int(grad_mt.shape[0]) == 1
+            and int(grad_E_acc.shape[1]) == S
+            and int(grad_Ebar_acc.shape[1]) == S
+            and int(grad_E_s1_acc.shape[1]) == S
+            and int(grad_E_s2_acc.shape[1]) == S
+            and int(grad_mt.shape[1]) == S
+            and (param_grad_vector or param_grad_scalar)
+        )
+        self_loop_grad_targets = None
+        if triton_accum_self_loop_grads:
+            self_loop_grad_targets = (
+                grad_log_pD[0] if param_grad_vector else grad_log_pD,
+                grad_log_pS[0] if param_grad_vector else grad_log_pS,
+                grad_E_acc[0],
+                grad_Ebar_acc[0],
+                grad_E_s1_acc[0],
+                grad_E_s2_acc[0],
+                grad_mt[0],
+                param_grad_vector,
             )
-            param_grad_scalar = (
-                grad_log_pD.ndim == 1
-                and grad_log_pS.ndim == 1
-                and int(grad_log_pD.numel()) == 1
-                and int(grad_log_pS.numel()) == 1
-            )
-            triton_accum_self_loop_grads = (
-                triton_self_loop_direct_grads
-                and _auto_wrapped
-                and dtype == torch.float32
-                and G == 1
-                and grad_E_acc.ndim == 2
-                and grad_Ebar_acc.ndim == 2
-                and grad_E_s1_acc.ndim == 2
-                and grad_E_s2_acc.ndim == 2
-                and grad_mt.ndim == 2
-                and int(grad_E_acc.shape[0]) == 1
-                and int(grad_Ebar_acc.shape[0]) == 1
-                and int(grad_E_s1_acc.shape[0]) == 1
-                and int(grad_E_s2_acc.shape[0]) == 1
-                and int(grad_mt.shape[0]) == 1
-                and int(grad_E_acc.shape[1]) == S
-                and int(grad_Ebar_acc.shape[1]) == S
-                and int(grad_E_s1_acc.shape[1]) == S
-                and int(grad_E_s2_acc.shape[1]) == S
-                and int(grad_mt.shape[1]) == S
-                and (param_grad_vector or param_grad_scalar)
-            )
-            self_loop_grad_targets = None
-            if triton_accum_self_loop_grads:
-                self_loop_grad_targets = (
-                    grad_log_pD[0] if param_grad_vector else grad_log_pD,
-                    grad_log_pS[0] if param_grad_vector else grad_log_pS,
-                    grad_E_acc[0],
-                    grad_Ebar_acc[0],
-                    grad_E_s1_acc[0],
-                    grad_E_s2_acc[0],
-                    grad_mt[0],
-                    param_grad_vector,
-                )
-            v_k, aw0, aw1, aw2, aw345, aw3, aw4 = wave_backward_uniform_fused(
-                Pi_star_wave, Pibar_star_wave, ws, W, S,
-                dts_r, rhs_k,
-                mt_w, DL_w, Ebar_w, E_w, SL1_w, SL2_w,
-                sp_child1_wave, sp_child2_wave, leaf_wt,
-                neumann_terms=neumann_terms,
-                leaf_species_idx=leaf_species_index_wave,
-                leaf_logp=uniform_leaf_logp,
-                has_leaf_term=wave_has_leaf_term,
-                active_mask=active_mask,
-                sp_parent=sp_parent_wave,
-                max_ancestor_depth=max_ancestor_depth,
-                pibar_row_max=forward_pibar_row_max,
-                family_idx=family_idx if use_family_indexed_self_loop else None,
-                family_indexed_consts=use_family_indexed_self_loop,
-                compact_level_ptr=compact_level_ptr,
-                compact_level_parents=compact_level_parents,
-                compact_level_child1=compact_level_child1,
-                compact_level_child2=compact_level_child2,
-                self_loop_grad_targets=self_loop_grad_targets,
-            )
-            if triton_accum_self_loop_grads:
-                self_loop_grads_accumulated = True
+        v_k, aw0, aw1, aw2, aw345, aw3, aw4 = wave_backward_uniform_fused(
+            Pi_star_wave, Pibar_star_wave, ws, W, S,
+            dts_r, rhs_k,
+            mt_w, DL_w, Ebar_w, E_w, SL1_w, SL2_w,
+            sp_child1_wave, sp_child2_wave, leaf_wt,
+            neumann_terms=neumann_terms,
+            leaf_species_idx=leaf_species_index_wave,
+            leaf_logp=uniform_leaf_logp,
+            has_leaf_term=wave_has_leaf_term,
+            active_mask=active_mask,
+            sp_parent=sp_parent_wave,
+            max_ancestor_depth=max_ancestor_depth,
+            pibar_row_max=forward_pibar_row_max,
+            family_idx=family_idx if use_family_indexed_self_loop else None,
+            family_indexed_consts=use_family_indexed_self_loop,
+            compact_level_ptr=compact_level_ptr,
+            compact_level_parents=compact_level_parents,
+            compact_level_child1=compact_level_child1,
+            compact_level_child2=compact_level_child2,
+            self_loop_grad_targets=self_loop_grad_targets,
+        )
+        self_loop_grads_accumulated = triton_accum_self_loop_grads
 
         if not self_loop_grads_accumulated:
             if (
