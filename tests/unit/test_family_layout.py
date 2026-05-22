@@ -9,6 +9,7 @@ from gpurec.api._family_layout import (
     build_family_wave_layout,
     family_wave_inputs,
     origination_probs_for_family_indices,
+    schedule_family_waves,
 )
 
 
@@ -132,6 +133,32 @@ def test_build_family_wave_layout_matches_inputs_and_wave_order():
     ]
     assert len(root_ids) == len(inputs.family_indices)
     assert all(0 <= root_id < inputs.clade_count for root_id in root_ids)
+
+
+def test_schedule_family_waves_can_use_rust_backend(monkeypatch):
+    inputs = family_wave_inputs(_dataset(), [1, 0])
+    monkeypatch.setenv("GPUREC_SCHEDULER_BACKEND", "rust")
+
+    waves, phases = schedule_family_waves(
+        inputs,
+        max_wave_size=2,
+        max_root_wave_size=None,
+    )
+
+    assert waves == [[0, 3], [4], [1, 2]]
+    assert phases == [1, 1, 3]
+
+
+def test_schedule_family_waves_rejects_unknown_backend(monkeypatch):
+    inputs = family_wave_inputs(_dataset(), [0])
+    monkeypatch.setenv("GPUREC_SCHEDULER_BACKEND", "nope")
+
+    with pytest.raises(ValueError, match="GPUREC_SCHEDULER_BACKEND"):
+        schedule_family_waves(
+            inputs,
+            max_wave_size=2,
+            max_root_wave_size=None,
+        )
 
 
 def test_build_family_wave_layout_requires_waves_and_phases_together():

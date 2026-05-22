@@ -8,6 +8,7 @@ runtime layout contract.
 
 from __future__ import annotations
 
+import os
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
@@ -21,6 +22,9 @@ from gpurec.core.batching import (
     schedule_global_phased_waves,
 )
 from gpurec.core.model import GeneDataset
+
+
+_SCHEDULER_BACKEND_ENV = "GPUREC_SCHEDULER_BACKEND"
 
 
 @dataclass(frozen=True)
@@ -132,7 +136,19 @@ def schedule_family_waves(
     max_dts_partial_rows: int | None = None,
 ) -> tuple[list[list[int]], list[int]]:
     """Schedule phased waves for already-collected family input metadata."""
-    return schedule_global_phased_waves(
+    backend = os.environ.get(_SCHEDULER_BACKEND_ENV, "python").strip().lower()
+    if backend in {"", "python", "py"}:
+        scheduler = schedule_global_phased_waves
+    elif backend == "rust":
+        from gpurec.core.schedule_rust import (
+            schedule_global_phased_waves as scheduler,
+        )
+    else:
+        raise ValueError(
+            f"{_SCHEDULER_BACKEND_ENV} must be 'python' or 'rust', got {backend!r}"
+        )
+
+    return scheduler(
         list(inputs.items),
         inputs.family_clade_offsets,
         max_wave_size=max_wave_size,
