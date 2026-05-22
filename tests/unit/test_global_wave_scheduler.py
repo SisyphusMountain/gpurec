@@ -780,6 +780,27 @@ def test_depth_first_fit_groups_deep_families_under_clade_budget():
     assert chunks == [[0, 1], [2, 3], [4]]
 
 
+def test_plan_family_batches_can_use_rust_backend(monkeypatch):
+    monkeypatch.setenv("GPUREC_SCHEDULER_BACKEND", "rust")
+
+    plans = plan_family_batches(
+        total=5,
+        clade_counts=[6, 6, 6, 6, 6],
+        split_counts=[10, 20, 30, 40, 50],
+        family_chunk_size=0,
+        clade_budget=12,
+        batch_packing="depth_first_fit",
+        leaf_counts=[1, 1, 1, 1, 1],
+        nonleaf_counts=[5, 5, 5, 5, 5],
+        schedule_depths=[10, 9, 2, 1, 1],
+        max_wave_size=8,
+    )
+
+    assert [plan.indices for plan in plans] == [[0, 1], [2, 3], [4]]
+    assert [plan.clades for plan in plans] == [12, 12, 6]
+    assert [plan.splits for plan in plans] == [30, 70, 50]
+
+
 def test_uniform_chunk_specs_use_shared_depth_first_fit_planner():
     specs = _make_chunks(
         [0, 1, 2, 3, 4],

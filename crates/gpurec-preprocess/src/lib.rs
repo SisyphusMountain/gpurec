@@ -14,7 +14,9 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 
+pub mod batch_planning;
 pub mod scheduler;
+pub use batch_planning::{plan_family_batches_request, BatchPlanRequest, FamilyBatchPlanOutput};
 pub use scheduler::{
     family_schedule_summary, schedule_global_phased_waves_request, FamilyScheduleSummary,
     ScheduleCcp, ScheduleOutput, ScheduleRequest,
@@ -362,6 +364,16 @@ fn family_schedule_summary_json(ccp_json: &str) -> PyResult<String> {
 }
 
 #[cfg(feature = "python-extension")]
+#[pyfunction]
+fn plan_family_batches_json(request_json: &str) -> PyResult<String> {
+    let request: BatchPlanRequest = serde_json::from_str(request_json)
+        .map_err(|err| PyRuntimeError::new_err(err.to_string()))?;
+    let output = plan_family_batches_request(&request)
+        .map_err(|err| PyRuntimeError::new_err(err.to_string()))?;
+    serde_json::to_string(&output).map_err(|err| PyRuntimeError::new_err(err.to_string()))
+}
+
+#[cfg(feature = "python-extension")]
 #[pymodule]
 fn gpurec_preprocess(_py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(preprocess_request_binary, module)?)?;
@@ -369,6 +381,7 @@ fn gpurec_preprocess(_py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult<
     module.add_function(wrap_pyfunction!(preprocess_request_torch, module)?)?;
     module.add_function(wrap_pyfunction!(schedule_global_phased_waves_json, module)?)?;
     module.add_function(wrap_pyfunction!(family_schedule_summary_json, module)?)?;
+    module.add_function(wrap_pyfunction!(plan_family_batches_json, module)?)?;
     Ok(())
 }
 

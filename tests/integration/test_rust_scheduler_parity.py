@@ -2,6 +2,7 @@ from pathlib import Path
 
 import torch
 
+from gpurec.core.batch_planning import _plan_family_batches_python as py_plan_batches
 from gpurec.core.batching import (
     family_schedule_summary as py_family_schedule_summary,
     schedule_global_phased_waves as py_schedule,
@@ -10,6 +11,7 @@ from gpurec.core.model import parse_alerax_family_file
 from gpurec.core.preprocess_rust import RustPreprocessExtension
 from gpurec.core.schedule_rust import (
     family_schedule_summary as rust_family_schedule_summary,
+    plan_family_batches as rust_plan_batches,
     schedule_global_phased_waves as rust_schedule,
 )
 
@@ -34,6 +36,23 @@ def _ccp(C, parents, lefts, rights, root):
 
 def _assert_scheduler_parity(items, offsets, **kwargs):
     assert rust_schedule(items, offsets, **kwargs) == py_schedule(items, offsets, **kwargs)
+
+
+def _plain_batch_plans(plans):
+    return [
+        {
+            "indices": list(plan["indices"] if isinstance(plan, dict) else plan.indices),
+            "clades": int(plan["clades"] if isinstance(plan, dict) else plan.clades),
+            "splits": int(plan["splits"] if isinstance(plan, dict) else plan.splits),
+        }
+        for plan in plans
+    ]
+
+
+def _assert_batch_plan_parity(**kwargs):
+    assert _plain_batch_plans(rust_plan_batches(**kwargs)) == _plain_batch_plans(
+        py_plan_batches(**kwargs)
+    )
 
 
 def test_rust_scheduler_matches_python_ready_packing_and_root_caps():
@@ -156,3 +175,43 @@ def test_rust_scheduler_matches_python_on_hogenom_bench_fixture():
         offset += int(ccp["C"])
 
     _assert_scheduler_parity(items, offsets, max_wave_size=8192)
+
+    clade_counts = []
+    split_counts = []
+    leaf_counts = []
+    nonleaf_counts = []
+    schedule_depths = []
+    for item in items:
+        ccp = item["ccp"]
+        summary = rust_family_schedule_summary(ccp)
+        clade_counts.append(int(summary["clade_count"]))
+        split_counts.append(int(ccp["N_splits"]))
+        leaf_counts.append(int(summary["leaf_count"]))
+        nonleaf_counts.append(int(summary["nonleaf_count"]))
+        schedule_depths.append(int(summary["max_level"]))
+
+    _assert_batch_plan_parity(
+        clade_counts=clade_counts,
+        split_counts=split_counts,
+        family_chunk_size=128,
+        clade_budget=None,
+        batch_packing="sequential",
+    )
+    _assert_batch_plan_parity(
+        clade_counts=clade_counts,
+        split_counts=split_counts,
+        family_chunk_size=0,
+        clade_budget=50_000,
+        batch_packing="clade_first_fit",
+    )
+    _assert_batch_plan_parity(
+        clade_counts=clade_counts,
+        split_counts=split_counts,
+        leaf_counts=leaf_counts,
+        nonleaf_counts=nonleaf_counts,
+        schedule_depths=schedule_depths,
+        family_chunk_size=0,
+        clade_budget=50_000,
+        batch_packing="depth_first_fit",
+        max_wave_size=8192,
+    )
