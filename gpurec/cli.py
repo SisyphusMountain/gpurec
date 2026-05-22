@@ -260,6 +260,30 @@ def _add_run_config_args(parser: argparse.ArgumentParser) -> None:
         help="Terms for implicit-gradient Neumann series.",
     )
     parser.add_argument(
+        "--solver-warmup-iters",
+        type=int,
+        help=(
+            "Initial fixed E/Pi/Neumann budget for genewise batched-LBFGS; "
+            "use 0 to disable."
+        ),
+    )
+    parser.add_argument(
+        "--solver-warmup-grad-inf-tol",
+        type=float,
+        help=(
+            "Switch genewise batched-LBFGS from warmup to full solvers below "
+            "this gradient infinity norm."
+        ),
+    )
+    parser.add_argument(
+        "--solver-warmup-loss-patience",
+        type=int,
+        help=(
+            "Switch genewise batched-LBFGS from warmup to full solvers after "
+            "this many flat warmup steps."
+        ),
+    )
+    parser.add_argument(
         "--adaptive-iters",
         action=argparse.BooleanOptionalAction,
         default=None,

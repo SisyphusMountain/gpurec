@@ -1158,6 +1158,7 @@ def test_run_config_rejects_strong_wolfe_for_batched_lbfgs(tmp_path: Path):
         "pi_max_diff_tol",
         "gradient_change_tol",
         "gradient_change_rtol",
+        "solver_warmup_grad_inf_tol",
         "grad_inf_tol",
         "loss_change_tol",
         "best_likelihood_min_delta",
@@ -1258,6 +1259,8 @@ def test_run_config_rejects_nonbool_boolean_controls(
         ("max_iters_e", 2000.5),
         ("fixed_iters_pi", 64.5),
         ("neumann_terms", True),
+        ("solver_warmup_iters", 1.5),
+        ("solver_warmup_loss_patience", 1.5),
         ("convergence_check_interval", 4.5),
         ("steps", 1.5),
         ("adam_warmup_steps", 0.5),
@@ -2094,6 +2097,8 @@ def test_uniform_chunked_factories_reject_removed_optimized_env_toggle(
 @pytest.mark.parametrize(
     ("kwargs", "message"),
     [
+        ({"fixed_iters_E": math.inf}, "fixed_iters_E"),
+        ({"fixed_iters_E": 0}, "fixed_iters_E"),
         ({"fixed_iters_Pi": math.inf}, "fixed_iters_Pi"),
         ({"fixed_iters_Pi": 4.5}, "fixed_iters_Pi"),
         ({"neumann_terms": math.nan}, "neumann_terms"),
@@ -2108,6 +2113,36 @@ def test_gene_recon_configure_solver_iterations_rejects_nonfinite_tolerances(
 ):
     with pytest.raises(ValueError, match=message):
         GeneReconModel.configure_solver_iterations(SimpleNamespace(), **kwargs)
+
+
+def test_gene_recon_configure_solver_iterations_can_restore_adaptive_e():
+    static = SimpleNamespace(
+        fixed_iters_E=6,
+        fixed_iters_Pi=6,
+        neumann_terms=6,
+        pi_max_diff_tol=1e-5,
+        gradient_change_tol=1e-4,
+    )
+    model = SimpleNamespace(
+        _fixed_iters_E=6,
+        _fixed_iters_Pi=6,
+        _neumann_terms=6,
+        cached_static_states=[static],
+    )
+
+    GeneReconModel.configure_solver_iterations(
+        model,
+        fixed_iters_E=None,
+        fixed_iters_Pi=64,
+        neumann_terms=64,
+    )
+
+    assert model._fixed_iters_E is None
+    assert model._fixed_iters_Pi == 64
+    assert model._neumann_terms == 64
+    assert static.fixed_iters_E is None
+    assert static.fixed_iters_Pi == 64
+    assert static.neumann_terms == 64
 
 
 @pytest.mark.parametrize(
@@ -4504,6 +4539,7 @@ class _WorkflowBatchedLBFGSModeModel:
             SimpleNamespace(batch_index=1, family_indices=(1,)),
         ]
         self._current_batch_index = 0
+        self.solver_configs: list[dict[str, object]] = []
         self.clears = 0
         self.closed = False
 
@@ -4527,6 +4563,9 @@ class _WorkflowBatchedLBFGSModeModel:
         )
         theta = self.theta.index_select(0, idx)
         return theta.square().sum(dim=1) + 1.0
+
+    def configure_solver_iterations(self, **kwargs):
+        self.solver_configs.append(dict(kwargs))
 
     def full_loss(self):
         return self.theta.square().sum() + 2.0
@@ -4694,7 +4733,10 @@ def test_batched_lbfgs_active_batch_closure_zeros_inactive_rows(tmp_path: Path):
     model = _WorkflowBatchedLBFGSModeModel()
 
     model.select_batch(0)
-    loss_vec, metrics = runner._evaluate_active_genewise_vector_and_grad(model)
+    loss_vec, metrics = runner._evaluate_active_genewise_vector_and_grad(
+        model,
+        solver_stage="warmup",
+    )
 
     assert loss_vec.shape == (2,)
     assert loss_vec[0] > 0.0
@@ -4703,6 +4745,7 @@ def test_batched_lbfgs_active_batch_closure_zeros_inactive_rows(tmp_path: Path):
     assert torch.count_nonzero(model.theta.grad[1]).item() == 0
     assert metrics["optimizer/objective_scope"] == "active_batch"
     assert metrics["optimizer/batch_index"] == 0
+    assert metrics["optimizer/solver_stage"] == "warmup"
 
 
 def test_optimization_runner_batched_lbfgs_advances_resident_batches(tmp_path: Path):
@@ -4713,6 +4756,7 @@ def test_optimization_runner_batched_lbfgs_advances_resident_batches(tmp_path: P
         steps=4,
         grad_inf_tol=0.8,
         lbfgs_max_iter=1,
+        solver_warmup_iters=6,
     )
     runner = _WorkflowBatchedLBFGSModeRunner(config)
 
@@ -4722,10 +4766,22 @@ def test_optimization_runner_batched_lbfgs_advances_resident_batches(tmp_path: P
     batched_rows = [
         row for row in history_rows if row["optimizer/phase"] == "batched-lbfgs"
     ]
-    assert [row["optimizer/batch_index"] for row in batched_rows] == [0, 1]
-    assert [row["optimizer/objective_scope"] for row in batched_rows] == [
+    assert [row["optimizer/batch_index"] for row in batched_rows] == [0, 0, 1, 1]
+    assert [row["optimizer/solver_stage"] for row in batched_rows] == [
+        "warmup",
+        "full",
+        "warmup",
+        "full",
+    ]
+    assert {row["optimizer/objective_scope"] for row in batched_rows} == {
         "active_batch",
-        "active_batch",
+    }
+    assert runner.fake_model.solver_configs == [
+        {"fixed_iters_E": 6, "fixed_iters_Pi": 6, "neumann_terms": 6},
+        {"fixed_iters_E": None, "fixed_iters_Pi": 64, "neumann_terms": 64},
+        {"fixed_iters_E": 6, "fixed_iters_Pi": 6, "neumann_terms": 6},
+        {"fixed_iters_E": None, "fixed_iters_Pi": 64, "neumann_terms": 64},
+        {"fixed_iters_E": None, "fixed_iters_Pi": 64, "neumann_terms": 64},
     ]
     assert result.status == "converged"
     assert runner.fake_model.closed

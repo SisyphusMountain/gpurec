@@ -65,6 +65,7 @@ class _ResumeState:
     previous_objective: float | None = None
     stable_loss_steps: int = 0
     active_batch_index: int = 0
+    active_solver_stage: str = "full"
 
 
 _FINAL_ARTIFACT_FILES = (
@@ -121,6 +122,7 @@ def _resume_state_from_payload(path: Path, payload: dict[str, Any]) -> _ResumeSt
                 default=0,
             )
         ),
+        active_solver_stage=str(ckpt_status.get("active_solver_stage", "full")),
     )
 
 
@@ -403,6 +405,50 @@ class OptimizationRunner:
         loss_vec, _grad = model.full_genewise_nll_and_grad(need_grad=False)
         return loss_vec.detach()
 
+    def _uses_solver_warmup(self) -> bool:
+        return (
+            self.config.mode == "genewise"
+            and self.config.optimizer == "batched-lbfgs"
+            and self.config.solver_warmup_iters > 0
+        )
+
+    def _configure_solver_stage(
+        self,
+        model: GeneReconModel,
+        stage: str,
+    ) -> None:
+        config = self.config
+        if stage == "warmup":
+            iters = int(config.solver_warmup_iters)
+            model.configure_solver_iterations(
+                fixed_iters_E=iters,
+                fixed_iters_Pi=iters,
+                neumann_terms=iters,
+            )
+            return
+        if stage == "full":
+            model.configure_solver_iterations(
+                fixed_iters_E=config.fixed_iters_e,
+                fixed_iters_Pi=config.fixed_iters_pi,
+                neumann_terms=config.neumann_terms,
+            )
+            return
+        raise ValueError(f"unknown solver stage {stage!r}")
+
+    def _should_switch_solver_warmup(
+        self,
+        *,
+        grad_inf: float,
+        stable_loss_steps: int,
+    ) -> bool:
+        config = self.config
+        if grad_inf <= config.solver_warmup_grad_inf_tol:
+            return True
+        return (
+            config.solver_warmup_loss_patience > 0
+            and stable_loss_steps >= config.solver_warmup_loss_patience
+        )
+
     def _active_batch_indices(self, model: GeneReconModel) -> torch.Tensor:
         indices = getattr(model.current_batch_metadata, "family_indices")
         return torch.as_tensor(
@@ -457,6 +503,7 @@ class OptimizationRunner:
         model: GeneReconModel,
         *,
         loss_vec: torch.Tensor,
+        solver_stage: str,
     ) -> dict[str, Any]:
         metadata = model.current_batch_metadata
         family_indices = tuple(int(idx) for idx in metadata.family_indices)
@@ -467,6 +514,7 @@ class OptimizationRunner:
             "optimizer/objective_scope": "active_batch",
             "optimizer/batch_index": int(model.current_batch_index),
             "optimizer/batch_family_count": int(len(family_indices)),
+            "optimizer/solver_stage": solver_stage,
         }
         if family_indices:
             row["optimizer/batch_family_first"] = int(min(family_indices))
@@ -479,6 +527,8 @@ class OptimizationRunner:
     def _evaluate_active_genewise_vector_and_grad(
         self,
         model: GeneReconModel,
+        *,
+        solver_stage: str,
     ) -> tuple[torch.Tensor, dict[str, Any]]:
         model.theta.grad = None
         local_loss_vec = model.nll_per_family()
@@ -486,7 +536,11 @@ class OptimizationRunner:
         idx = self._active_batch_indices(model)
         self._zero_inactive_batch_grad(model, idx)
         loss_vec = self._full_vector_from_active_batch(model, local_loss_vec)
-        return loss_vec, self._active_batch_metrics(model, loss_vec=loss_vec)
+        return loss_vec, self._active_batch_metrics(
+            model,
+            loss_vec=loss_vec,
+            solver_stage=solver_stage,
+        )
 
     def _evaluate_active_genewise_loss_vector(self, model: GeneReconModel) -> torch.Tensor:
         local_loss_vec = model.nll_per_family()
@@ -575,6 +629,8 @@ class OptimizationRunner:
         batchwise_batched_lbfgs = (
             config.mode == "genewise" and config.optimizer == "batched-lbfgs"
         )
+        solver_warmup_enabled = self._uses_solver_warmup()
+        active_solver_stage = "warmup" if solver_warmup_enabled else "full"
         batch_best_nll: float | None = None
         batch_best_step: int | None = None
         status = {"status": "running", "reason": "running"}
@@ -613,6 +669,13 @@ class OptimizationRunner:
                 previous_objective = resume_state.previous_objective
                 stable_loss_steps = resume_state.stable_loss_steps
                 active_batch_index = resume_state.active_batch_index
+                active_solver_stage = resume_state.active_solver_stage
+                if active_solver_stage not in {"warmup", "full"}:
+                    raise RuntimeError(
+                        f"checkpoint {config.resume_from} has invalid active_solver_stage"
+                    )
+                if active_solver_stage == "warmup" and not solver_warmup_enabled:
+                    active_solver_stage = "full"
                 if batchwise_batched_lbfgs:
                     batch_best_nll = best_nll
                     batch_best_step = best_step
@@ -626,6 +689,7 @@ class OptimizationRunner:
                         f"{len(model.batch_metadata)} model batches"
                     )
                 model.select_batch(active_batch_index)
+                self._configure_solver_stage(model, active_solver_stage)
 
             current_phase = self._phase_for_step(start_step)
             optimizer = self._make_optimizer(model, current_phase)
@@ -694,7 +758,10 @@ class OptimizationRunner:
                     optimizer.zero_grad(set_to_none=True)
                     if batchwise_batched_lbfgs:
                         loss_vec_i, metrics_i = (
-                            self._evaluate_active_genewise_vector_and_grad(model)
+                            self._evaluate_active_genewise_vector_and_grad(
+                                model,
+                                solver_stage=active_solver_stage,
+                            )
                         )
                     else:
                         loss_vec_i, metrics_i = self._evaluate_genewise_vector_and_grad(
@@ -767,7 +834,10 @@ class OptimizationRunner:
                     model.theta.grad = None
                     if batchwise_batched_lbfgs:
                         loss_vec_current, metrics = (
-                            self._evaluate_active_genewise_vector_and_grad(model)
+                            self._evaluate_active_genewise_vector_and_grad(
+                                model,
+                                solver_stage=active_solver_stage,
+                            )
                         )
                     else:
                         loss_vec_current, metrics = self._evaluate_genewise_vector_and_grad(
@@ -880,6 +950,7 @@ class OptimizationRunner:
                 }
                 if active_objective_scope:
                     checkpoint_status["active_batch_index"] = active_batch_index
+                    checkpoint_status["active_solver_stage"] = active_solver_stage
                 if save_best_after_row and phase not in {"lbfgs", "batched-lbfgs"}:
                     best_row = dict(row)
                     best_row["optimizer/step_applied"] = False
@@ -939,6 +1010,7 @@ class OptimizationRunner:
                 if step % config.log_every == 0:
                     print(
                         f"step={step} phase={phase} "
+                        f"solver={row.get('optimizer/solver_stage', 'full')} "
                         f"nll_bits={objective:.6f} "
                         f"grad_inf={row.get('grad/inf', float('nan')):.6g} "
                         f"delta={float('nan') if delta is None else delta:.6g} "
@@ -947,6 +1019,14 @@ class OptimizationRunner:
                         flush=True,
                     )
 
+                warmup_switch = (
+                    active_objective_scope
+                    and active_solver_stage == "warmup"
+                    and self._should_switch_solver_warmup(
+                        grad_inf=float(row.get("grad/inf", math.inf)),
+                        stable_loss_steps=stable_loss_steps,
+                    )
+                )
                 step_status = _step_stopping_status(
                     config,
                     step=step,
@@ -954,12 +1034,44 @@ class OptimizationRunner:
                     stable_loss_steps=stable_loss_steps,
                     best_step=row_best_step,
                 )
+                if warmup_switch:
+                    active_solver_stage = "full"
+                    previous_objective = None
+                    stable_loss_steps = 0
+                    batch_best_nll = None
+                    batch_best_step = None
+                    optimizer = None
+                    active_optimizer_batch_index = None
+                    self._configure_solver_stage(model, active_solver_stage)
+                    if config.checkpoint_every:
+                        transition_status = {
+                            **checkpoint_status,
+                            "active_batch_index": active_batch_index,
+                            "active_solver_stage": active_solver_stage,
+                            "previous_objective": None,
+                            "stable_loss_steps": 0,
+                            "best_nll_bits": None,
+                            "best_step": None,
+                        }
+                        self._save_status(
+                            latest_checkpoint,
+                            model=model,
+                            optimizer=None,
+                            step=step,
+                            next_step=step + 1,
+                            status=transition_status,
+                            row=row,
+                            optimizer_phase=phase,
+                        )
+                    resume_info = {}
+                    continue
                 if step_status is not None:
                     if (
                         active_objective_scope
                         and active_batch_index + 1 < len(model.batch_metadata)
                     ):
                         active_batch_index += 1
+                        active_solver_stage = "warmup" if solver_warmup_enabled else "full"
                         previous_objective = None
                         stable_loss_steps = 0
                         batch_best_nll = None
@@ -970,6 +1082,7 @@ class OptimizationRunner:
                             transition_status = {
                                 **checkpoint_status,
                                 "active_batch_index": active_batch_index,
+                                "active_solver_stage": active_solver_stage,
                                 "previous_objective": None,
                                 "stable_loss_steps": 0,
                                 "best_nll_bits": None,
@@ -986,6 +1099,7 @@ class OptimizationRunner:
                                 optimizer_phase=phase,
                             )
                         model.select_batch(active_batch_index)
+                        self._configure_solver_stage(model, active_solver_stage)
                         resume_info = {}
                         continue
                     status = step_status
@@ -993,6 +1107,8 @@ class OptimizationRunner:
             else:
                 status = {"status": "not_converged", "reason": "max_steps"}
 
+            if batchwise_batched_lbfgs:
+                self._configure_solver_stage(model, "full")
             model.theta.grad = None
             final_loss, final_metrics = self._evaluate_and_backward(model)
             final_step = max(start_step, min(config.steps, int(final_row.get("step", -1)) + 1))

@@ -81,6 +81,8 @@ from ._validation import (
     validate_theta_shape,
 )
 
+_UNSET = object()
+
 _MODE_MAP: dict[str, tuple[bool, bool]] = {
     "global": (False, False),
     "specieswise": (False, True),
@@ -1370,6 +1372,7 @@ class GeneReconModel(torch.nn.Module):
     def configure_solver_iterations(
         self,
         *,
+        fixed_iters_E: int | None | object = _UNSET,
         fixed_iters_Pi: int | None = None,
         neumann_terms: int | None = None,
         pi_max_diff_tol: float | None = None,
@@ -1383,6 +1386,10 @@ class GeneReconModel(torch.nn.Module):
         resident batches and configure again when all batches should share the
         new controls.
         """
+        if fixed_iters_E is not _UNSET:
+            if fixed_iters_E is not None:
+                fixed_iters_E = positive_int("fixed_iters_E", fixed_iters_E)
+            self._fixed_iters_E = fixed_iters_E
         if fixed_iters_Pi is not None:
             fixed_iters_Pi = positive_even_int("fixed_iters_Pi", fixed_iters_Pi)
             self._fixed_iters_Pi = fixed_iters_Pi
@@ -1400,6 +1407,8 @@ class GeneReconModel(torch.nn.Module):
             self._gradient_change_tol = gradient_change_tol
 
         for static in self.cached_static_states:
+            if fixed_iters_E is not _UNSET:
+                static.fixed_iters_E = fixed_iters_E
             if fixed_iters_Pi is not None:
                 static.fixed_iters_Pi = fixed_iters_Pi
             if neumann_terms is not None:

@@ -221,6 +221,8 @@ _JSON_INT_FIELDS = {
     "max_iters_e",
     "fixed_iters_pi",
     "neumann_terms",
+    "solver_warmup_iters",
+    "solver_warmup_loss_patience",
     "convergence_check_interval",
     "preprocess_cpu_cores",
     "steps",
@@ -245,6 +247,7 @@ _JSON_FLOAT_FIELDS = {
     "max_rate",
     "lr",
     "lbfgs_lr",
+    "solver_warmup_grad_inf_tol",
     "grad_inf_tol",
     "loss_change_tol",
     "best_likelihood_min_delta",
@@ -308,6 +311,9 @@ class RunConfig:
     tol_e: float = 1e-8
     fixed_iters_pi: int = 64
     neumann_terms: int = 64
+    solver_warmup_iters: int = 0
+    solver_warmup_grad_inf_tol: float = 1.0
+    solver_warmup_loss_patience: int = 2
     adaptive_iters: bool = True
     convergence_check_interval: int = 4
     e_logsumexp_tol: float = 1e-5
@@ -381,6 +387,14 @@ class RunConfig:
             "neumann_terms",
             self.neumann_terms,
         )
+        self.solver_warmup_iters = _normalize_nonnegative_int(
+            "solver_warmup_iters",
+            self.solver_warmup_iters,
+        )
+        self.solver_warmup_loss_patience = _normalize_nonnegative_int(
+            "solver_warmup_loss_patience",
+            self.solver_warmup_loss_patience,
+        )
         self.convergence_check_interval = _normalize_positive_int(
             "convergence_check_interval",
             self.convergence_check_interval,
@@ -435,6 +449,10 @@ class RunConfig:
         _normalize_positive_even_int("fixed_iters_pi", self.fixed_iters_pi)
         if self.neumann_terms < 1:
             raise ValueError("neumann_terms must be positive")
+        if self.solver_warmup_iters < 0:
+            raise ValueError("solver_warmup_iters must be non-negative")
+        if self.solver_warmup_loss_patience < 0:
+            raise ValueError("solver_warmup_loss_patience must be non-negative")
         if self.convergence_check_interval < 1:
             raise ValueError("convergence_check_interval must be positive")
         if self.adaptive_iters and self.convergence_check_interval % 2 != 0:
@@ -445,6 +463,7 @@ class RunConfig:
             "pi_max_diff_tol",
             "gradient_change_tol",
             "gradient_change_rtol",
+            "solver_warmup_grad_inf_tol",
             "grad_inf_tol",
             "loss_change_tol",
             "best_likelihood_min_delta",
