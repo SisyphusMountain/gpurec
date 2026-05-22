@@ -507,6 +507,8 @@ class OptimizationRunner:
                     return loss_i
 
                 save_best_after_row = False
+                first_order_pending_step = False
+                eval_position = "post_step" if phase == "lbfgs" else "pre_step"
                 if phase == "lbfgs":
                     try:
                         optimizer.step(closure)
@@ -546,31 +548,7 @@ class OptimizationRunner:
                     skip_step_for_gradient = (
                         float(metrics.get("grad/inf", math.inf)) <= config.grad_inf_tol
                     )
-                    if not skip_step_for_gradient:
-                        optimizer.step()
-                        with torch.no_grad():
-                            model.clamp_theta_(config.min_rate, config.max_rate)
-                        theta_step = float(
-                            (model.theta.detach() - theta_before).abs().amax().cpu()
-                        )
-                        model.clear()
-                        # Ordinary optimizers evaluate gradients before the
-                        # parameter update.  Record one current-theta
-                        # evaluation so rows and checkpoints describe the
-                        # weights that are actually being saved.
-                        model.theta.grad = None
-                        loss, metrics = self._evaluate_and_backward(model)
-                        closure_evals += 1
-                        if (
-                            not torch.isfinite(loss).item()
-                            or not _is_finite_tensor(model.theta.grad)
-                        ):
-                            status = {
-                                "status": "failed",
-                                "reason": "nonfinite_objective_or_gradient",
-                            }
-                            break
-                    model.clear()
+                    first_order_pending_step = not skip_step_for_gradient
 
                 objective = float(metrics["likelihood/data_nll_bits"])
                 delta = None if previous_objective is None else previous_objective - objective
@@ -592,6 +570,7 @@ class OptimizationRunner:
                 row = {
                     "step": step,
                     "optimizer/phase": phase,
+                    "optimizer/eval_position": eval_position,
                     "closure_evals": closure_evals,
                     "theta_step_inf": theta_step,
                     "delta_likelihood_bits": delta,
@@ -602,9 +581,6 @@ class OptimizationRunner:
                     "step_s": time.perf_counter() - t0,
                     **metrics,
                 }
-                final_row = row
-                self._record(row)
-
                 checkpoint_status = {
                     "status": "running",
                     "reason": "running",
@@ -614,6 +590,40 @@ class OptimizationRunner:
                     "previous_objective": previous_objective,
                     "stable_loss_steps": stable_loss_steps,
                 }
+                if save_best_after_row and phase != "lbfgs":
+                    best_row = dict(row)
+                    best_row["optimizer/step_applied"] = False
+                    best_row["step_s"] = time.perf_counter() - t0
+                    self._save_status(
+                        best_checkpoint,
+                        model=model,
+                        optimizer=optimizer,
+                        step=step,
+                        next_step=step,
+                        status=checkpoint_status,
+                        row=best_row,
+                        optimizer_phase=phase,
+                    )
+                    sampling_checkpoint = best_checkpoint
+                    save_best_after_row = False
+
+                if first_order_pending_step:
+                    optimizer.step()
+                    with torch.no_grad():
+                        model.clamp_theta_(config.min_rate, config.max_rate)
+                    theta_step = float(
+                        (model.theta.detach() - theta_before).abs().amax().cpu()
+                    )
+                model.clear()
+                row["theta_step_inf"] = theta_step
+                row["optimizer/step_applied"] = bool(
+                    first_order_pending_step or phase == "lbfgs"
+                )
+                row["step_s"] = time.perf_counter() - t0
+
+                final_row = row
+                self._record(row)
+
                 if save_best_after_row:
                     self._save_status(
                         best_checkpoint,
@@ -682,6 +692,8 @@ class OptimizationRunner:
                 final_row = {
                     "step": final_step,
                     "optimizer/phase": "final_eval",
+                    "optimizer/eval_position": "final",
+                    "optimizer/step_applied": False,
                     "optimizer/final_eval_status": "failed",
                     "optimizer/final_eval_reason": (
                         "nonfinite_objective_or_gradient"
@@ -710,6 +722,8 @@ class OptimizationRunner:
                 final_row = {
                     "step": final_step,
                     "optimizer/phase": "final_eval",
+                    "optimizer/eval_position": "final",
+                    "optimizer/step_applied": False,
                     "closure_evals": 1,
                     "theta_step_inf": 0.0,
                     "delta_likelihood_bits": None,

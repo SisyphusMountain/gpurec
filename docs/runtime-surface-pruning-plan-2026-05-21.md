@@ -203,8 +203,10 @@ before any flag is removed.
 | `GPUREC_BACKTRACK_BIN` | User-facing | Binary/distribution contract for `gpurec sample`, `gpurec run`, and `gpurec backtrack-check`. |
 | `GPUREC_ALERAX_COMPAT` | User-facing compatibility | Compatibility guard read by API validation; supported differentiable optimization accepts only unset or `0`. |
 | `GPUREC_MEMORY_POLICY_FRACTION`, `GPUREC_MEMORY_POLICY_RESERVE_GIB` | User-facing | Memory-budget margins for uniform chunk planning. |
+| `GPUREC_PREPROCESS_BACKEND` | Internal production/diagnostic | CPU preprocessing backend selector retained while the Rust port and C++ fallback coexist. |
 | `GPUREC_FUSE_FINAL_PIBAR`, `GPUREC_SPECIALIZE_NONLEAF_LEAF_TERM` | Internal production fast path | Forward/backward retained-kernel selectors that should become fixed behavior after benchmark gates. |
 | `GPUREC_BACKWARD_NO_CPU_PRUNING`, `GPUREC_DTS_SKIP_INACTIVE_PIBAR_ZERO` | Internal production/diagnostic | Backward pruning and inactive-output zero-fill controls retained for behavior comparison. |
+| `GPUREC_TRITON_CHILD_EDGE_SELF_LOOP`, `GPUREC_TRITON_SELF_LOOP_DIRECT_GRADS` | Internal production/diagnostic | Triton backward self-loop diagnostic selectors retained for behavior comparison. |
 | `GPUREC_WAVE_STEP_BLOCK_S`, `GPUREC_WAVE_STEP_NUM_WARPS` | Benchmark/internal tuning | Triton forward wave-step launch tuning. |
 | `GPUREC_DTS_BLOCK_S`, `GPUREC_DTS_NUM_WARPS`, `GPUREC_DTS_GRAD_MT_TILE_SPLITS` | Benchmark/internal tuning | Triton cross-DTS backward launch tuning. |
 | `GPUREC_DTS_PARENT_BLOCK_S`, `GPUREC_DTS_PARENT_NUM_WARPS`, `GPUREC_DTS_PARENT_TILE_SPLITS` | Benchmark/internal tuning | Triton parent-reduced DTS launch tuning. |

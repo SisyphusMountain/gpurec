@@ -4,3 +4,7 @@ include crates/gpurec-backtrack/Cargo.toml
 include crates/gpurec-backtrack/Cargo.lock
 recursive-include crates/gpurec-backtrack/src *.rs
 prune crates/gpurec-backtrack/target
+include crates/gpurec-preprocess/Cargo.toml
+include crates/gpurec-preprocess/Cargo.lock
+recursive-include crates/gpurec-preprocess/src *.rs
+prune crates/gpurec-preprocess/target

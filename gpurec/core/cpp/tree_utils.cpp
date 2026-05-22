@@ -5,17 +5,29 @@
 #include <fstream>
 #include <sstream>
 #include <stdexcept>
+#include <string_view>
 
 namespace {
 
-std::string trim_copy(const std::string &s) {
+std::string_view trim_view(std::string_view s) {
   auto not_space = [](unsigned char ch) { return !std::isspace(ch); };
   auto begin = std::find_if(s.begin(), s.end(), not_space);
   auto end = std::find_if(s.rbegin(), s.rend(), not_space).base();
   if (begin >= end) {
-    return "";
+    return {};
   }
-  return std::string(begin, end);
+  return std::string_view(&*begin, static_cast<size_t>(end - begin));
+}
+
+void trim_string(std::string &s) {
+  auto not_space = [](unsigned char ch) { return !std::isspace(ch); };
+  auto begin = std::find_if(s.begin(), s.end(), not_space);
+  auto end = std::find_if(s.rbegin(), s.rend(), not_space).base();
+  if (begin >= end) {
+    s.clear();
+  } else {
+    s = std::string(begin, end);
+  }
 }
 
 std::string read_text_file(const std::string &path) {
@@ -28,9 +40,126 @@ std::string read_text_file(const std::string &path) {
   return buffer.str();
 }
 
+class ArenaNewickParser {
+public:
+  ArenaNewickParser(std::string_view text, std::deque<TreeNode> &nodes)
+      : text_(text), nodes_(nodes), pos_(0) {}
+
+  TreeNode *parse() {
+    TreeNode *root = parse_subtree();
+    skip_whitespace();
+    if (pos_ < text_.size() && text_[pos_] == ';') {
+      ++pos_;
+    }
+    skip_whitespace();
+    if (pos_ != text_.size()) {
+      throw std::runtime_error("Unexpected trailing characters in Newick string");
+    }
+    return root;
+  }
+
+private:
+  TreeNode *make_node() {
+    nodes_.emplace_back();
+    TreeNode *node = &nodes_.back();
+    node->owns_children = false;
+    return node;
+  }
+
+  TreeNode *parse_subtree() {
+    skip_whitespace();
+    TreeNode *node = make_node();
+    if (pos_ >= text_.size()) {
+      throw std::runtime_error("Unexpected end of Newick string");
+    }
+    if (text_[pos_] == '(') {
+      ++pos_;
+      node->children.reserve(2);
+      while (true) {
+        TreeNode *child = parse_subtree();
+        child->parent = node;
+        node->children.push_back(child);
+        skip_whitespace();
+        if (pos_ >= text_.size()) {
+          throw std::runtime_error("Unexpected end while parsing children");
+        }
+        char c = text_[pos_];
+        if (c == ',') {
+          ++pos_;
+          continue;
+        }
+        if (c == ')') {
+          ++pos_;
+          break;
+        }
+        throw std::runtime_error("Expected ',' or ')' in Newick string");
+      }
+      parse_node_label(node);
+    } else {
+      parse_leaf_label(node);
+    }
+    skip_branch_length();
+    return node;
+  }
+
+  void parse_leaf_label(TreeNode *node) {
+    size_t start = pos_;
+    while (pos_ < text_.size()) {
+      char c = text_[pos_];
+      if (c == ':' || c == ',' || c == ')' || c == '(' || c == ';') {
+        break;
+      }
+      ++pos_;
+    }
+    node->name = std::string(text_.substr(start, pos_ - start));
+    trim_string(node->name);
+  }
+
+  void parse_node_label(TreeNode *node) {
+    skip_whitespace();
+    size_t start = pos_;
+    while (pos_ < text_.size()) {
+      char c = text_[pos_];
+      if (c == ':' || c == ',' || c == ')' || c == '(' || c == ';') {
+        break;
+      }
+      ++pos_;
+    }
+    node->name = std::string(text_.substr(start, pos_ - start));
+    trim_string(node->name);
+  }
+
+  void skip_branch_length() {
+    skip_whitespace();
+    if (pos_ < text_.size() && text_[pos_] == ':') {
+      ++pos_;
+      while (pos_ < text_.size()) {
+        char c = text_[pos_];
+        if (std::isdigit(static_cast<unsigned char>(c)) || c == '.' ||
+            c == 'e' || c == 'E' || c == '+' || c == '-') {
+          ++pos_;
+        } else {
+          break;
+        }
+      }
+    }
+  }
+
+  void skip_whitespace() {
+    while (pos_ < text_.size() &&
+           std::isspace(static_cast<unsigned char>(text_[pos_]))) {
+      ++pos_;
+    }
+  }
+
+  std::string_view text_;
+  std::deque<TreeNode> &nodes_;
+  size_t pos_;
+};
+
 }  // namespace
 
-NewickParser::NewickParser(const std::string &text) : text_(text), pos_(0) {}
+NewickParser::NewickParser(std::string_view text) : text_(text), pos_(0) {}
 
 TreeNode *NewickParser::parse() {
   TreeNode *root = parse_subtree();
@@ -53,6 +182,7 @@ TreeNode *NewickParser::parse_subtree() {
   }
   if (text_[pos_] == '(') {
     ++pos_;
+    node->children.reserve(2);
     while (true) {
       TreeNode *child = parse_subtree();
       child->parent = node;
@@ -129,14 +259,7 @@ void NewickParser::skip_whitespace() {
 }
 
 void NewickParser::trim(std::string &s) {
-  auto not_space = [](unsigned char ch) { return !std::isspace(ch); };
-  auto begin = std::find_if(s.begin(), s.end(), not_space);
-  auto end = std::find_if(s.rbegin(), s.rend(), not_space).base();
-  if (begin >= end) {
-    s.clear();
-  } else {
-    s = std::string(begin, end);
-  }
+  trim_string(s);
 }
 
 std::unique_ptr<TreeNode> parse_newick_file(const std::string &path) {
@@ -151,15 +274,12 @@ std::vector<std::unique_ptr<TreeNode>> parse_newick_trees_file(const std::string
   size_t start = 0;
   while (start < text.size()) {
     size_t semi = text.find(';', start);
-    std::string record;
+    std::string_view record;
     if (semi == std::string::npos) {
-      record = trim_copy(text.substr(start));
+      record = trim_view(std::string_view(text).substr(start));
       start = text.size();
-      if (!record.empty()) {
-        record.push_back(';');
-      }
     } else {
-      record = trim_copy(text.substr(start, semi - start + 1));
+      record = trim_view(std::string_view(text).substr(start, semi - start + 1));
       start = semi + 1;
     }
     if (record.empty() || record == ";") {
@@ -174,10 +294,38 @@ std::vector<std::unique_ptr<TreeNode>> parse_newick_trees_file(const std::string
   return trees;
 }
 
+void parse_newick_trees_file_into(const std::string &path,
+                                  std::deque<TreeNode> &nodes,
+                                  std::vector<TreeNode *> &roots) {
+  std::string text = read_text_file(path);
+  const size_t roots_before = roots.size();
+  size_t start = 0;
+  while (start < text.size()) {
+    size_t semi = text.find(';', start);
+    std::string_view record;
+    if (semi == std::string::npos) {
+      record = trim_view(std::string_view(text).substr(start));
+      start = text.size();
+    } else {
+      record = trim_view(std::string_view(text).substr(start, semi - start + 1));
+      start = semi + 1;
+    }
+    if (record.empty() || record == ";") {
+      continue;
+    }
+    ArenaNewickParser parser(record, nodes);
+    roots.push_back(parser.parse());
+  }
+  if (roots.size() == roots_before) {
+    throw std::runtime_error("No Newick trees found in file: " + path);
+  }
+}
+
 void collect_nodes_postorder(TreeNode *node, std::vector<TreeNode *> &order) {
   for (TreeNode *child : node->children) {
     collect_nodes_postorder(child, order);
   }
+  node->traversal_index = order.size();
   order.push_back(node);
 }
 
@@ -194,6 +342,16 @@ void collect_leaf_names(TreeNode *node, std::vector<std::string> &leaf_names,
   }
   for (TreeNode *child : node->children) {
     collect_leaf_names(child, leaf_names, leaf_to_idx);
+  }
+}
+
+void collect_leaf_names(TreeNode *node, std::unordered_set<std::string> &leaf_names) {
+  if (node->children.empty()) {
+    leaf_names.insert(node->name);
+    return;
+  }
+  for (TreeNode *child : node->children) {
+    collect_leaf_names(child, leaf_names);
   }
 }
 

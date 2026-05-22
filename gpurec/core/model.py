@@ -1,7 +1,5 @@
-import hashlib
 import math
 import os
-import pickle
 from numbers import Integral, Real
 from pathlib import Path
 from typing import Any, Callable, Iterable, Sequence
@@ -11,8 +9,8 @@ from .preprocess_cpp import _load_extension as _load_species_gene_ext
 from .species import uniform_ancestors_t_from_topology
 
 
-_DEFAULT_PREPROCESS_CACHE_MISSING_BATCH_SIZE = 64
-_DEFAULT_PREPROCESS_UNCACHED_BATCH_SIZE = 16
+_DEFAULT_PREPROCESS_UNCACHED_BATCH_SIZE = 1024
+_PREPROCESS_BACKEND_ENV = "GPUREC_PREPROCESS_BACKEND"
 
 
 def _resolve_family_path(text: str, base_dir: Path) -> str:
@@ -197,330 +195,36 @@ def normalize_family_tree_paths(
     return normalized
 
 
-def _bool_control(name: str, value: bool) -> bool:
-    if not isinstance(value, bool):
-        raise ValueError(f"{name} must be true or false")
-    return value
-
-
-def _load_preprocess_cache(
-    path: str | os.PathLike,
-    *,
-    label: str,
-    required_keys: Sequence[str],
-    validator: Callable[[dict[str, Any], Path, str], None] | None = None,
-) -> dict[str, Any]:
-    path = Path(path)
-    try:
-        payload = torch.load(path, map_location="cpu", weights_only=True)
-    except (pickle.UnpicklingError, RuntimeError, TypeError, ValueError) as exc:
-        raise RuntimeError(
-            f"could not safely load {label} preprocess cache {path}; "
-            "delete it or rerun with refresh_preprocess_cache=True"
-        ) from exc
-    if not isinstance(payload, dict):
-        raise RuntimeError(f"{label} preprocess cache {path} must contain a dictionary")
-    missing = sorted(key for key in required_keys if key not in payload)
-    if missing:
-        raise RuntimeError(
-            f"{label} preprocess cache {path} is missing key(s): {', '.join(missing)}"
-        )
-    if validator is not None:
-        validator(payload, path, label)
-    return payload
-
-
-def _invalid_preprocess_cache(path: Path, label: str, reason: str) -> RuntimeError:
-    return RuntimeError(
-        f"{label} preprocess cache {path} is invalid: {reason}; "
-        "delete it or rerun with refresh_preprocess_cache=True"
-    )
-
-
-def _cache_int(
-    payload: dict[str, Any],
-    key: str,
-    *,
-    path: Path,
-    label: str,
-    minimum: int | None = None,
-) -> int:
-    if key not in payload:
-        raise _invalid_preprocess_cache(path, label, f"missing key {key!r}")
-    value = payload[key]
+def _normalize_preprocess_cpu_cores(value: int | float | None) -> int | None:
+    if value is None:
+        return None
     if isinstance(value, bool):
-        raise _invalid_preprocess_cache(path, label, f"{key!r} must be an integer")
-    if torch.is_tensor(value):
-        if value.ndim != 0 or value.dtype == torch.bool:
-            raise _invalid_preprocess_cache(path, label, f"{key!r} must be an integer")
-        value = value.item()
-    if isinstance(value, float) and not value.is_integer():
-        raise _invalid_preprocess_cache(path, label, f"{key!r} must be an integer")
-    try:
-        parsed = int(value)
-    except (TypeError, ValueError) as exc:
-        raise _invalid_preprocess_cache(
-            path,
-            label,
-            f"{key!r} must be an integer",
-        ) from exc
-    if minimum is not None and parsed < minimum:
-        raise _invalid_preprocess_cache(
-            path,
-            label,
-            f"{key!r} must be at least {minimum}",
-        )
-    return parsed
+        raise ValueError("preprocess_cpu_cores must be a positive integer")
+    if isinstance(value, Integral):
+        cores = int(value)
+    elif isinstance(value, Real):
+        number = float(value)
+        if not math.isfinite(number) or not number.is_integer():
+            raise ValueError("preprocess_cpu_cores must be a positive integer")
+        cores = int(number)
+    else:
+        raise ValueError("preprocess_cpu_cores must be a positive integer")
+    if cores <= 0:
+        raise ValueError("preprocess_cpu_cores must be a positive integer")
+    return cores
 
 
-def _cache_tensor(
-    payload: dict[str, Any],
-    key: str,
-    *,
-    path: Path,
-    label: str,
-    dtype: torch.dtype | None = None,
-    floating: bool = False,
-    ndim: int | None = None,
-    length: int | None = None,
-    shape: tuple[int, ...] | None = None,
-) -> torch.Tensor:
-    if key not in payload:
-        raise _invalid_preprocess_cache(path, label, f"missing key {key!r}")
-    tensor = payload[key]
-    if not torch.is_tensor(tensor):
-        raise _invalid_preprocess_cache(path, label, f"{key!r} must be a tensor")
-    if dtype is not None and tensor.dtype != dtype:
-        raise _invalid_preprocess_cache(
-            path,
-            label,
-            f"{key!r} must have dtype {dtype}, got {tensor.dtype}",
-        )
-    if floating and not tensor.dtype.is_floating_point:
-        raise _invalid_preprocess_cache(
-            path,
-            label,
-            f"{key!r} must be a floating-point tensor",
-        )
-    if ndim is not None and tensor.ndim != ndim:
-        raise _invalid_preprocess_cache(
-            path,
-            label,
-            f"{key!r} must have {ndim} dimension(s), got {tensor.ndim}",
-        )
-    if length is not None and tensor.numel() != length:
-        raise _invalid_preprocess_cache(
-            path,
-            label,
-            f"{key!r} has length {tensor.numel()} but expected {length}",
-        )
-    if shape is not None and tuple(tensor.shape) != shape:
-        raise _invalid_preprocess_cache(
-            path,
-            label,
-            f"{key!r} has shape {tuple(tensor.shape)} but expected {shape}",
-        )
-    return tensor
+def _load_preprocess_extension():
+    backend = os.environ.get(_PREPROCESS_BACKEND_ENV, "cpp").strip().lower()
+    if backend in {"", "cpp", "c++"}:
+        return _load_species_gene_ext()
+    if backend == "rust":
+        from .preprocess_rust import RustPreprocessExtension
 
-
-def _validate_species_preprocess_cache(
-    payload: dict[str, Any],
-    path: Path,
-    label: str,
-) -> None:
-    S = _cache_int(payload, "S", path=path, label=label, minimum=1)
-    names = payload.get("names")
-    if not isinstance(names, (list, tuple)) or len(names) != S:
-        raise _invalid_preprocess_cache(
-            path,
-            label,
-            f"'names' must contain {S} species labels",
-        )
-    s_parents = _cache_tensor(
-        payload,
-        "s_P_indexes",
-        path=path,
-        label=label,
-        dtype=torch.long,
-        ndim=1,
+        return RustPreprocessExtension()
+    raise ValueError(
+        f"{_PREPROCESS_BACKEND_ENV} must be 'cpp' or 'rust', got {backend!r}"
     )
-    s_children = _cache_tensor(
-        payload,
-        "s_C12_indexes",
-        path=path,
-        label=label,
-        dtype=torch.long,
-        ndim=1,
-    )
-    if s_parents.numel() != s_children.numel():
-        raise _invalid_preprocess_cache(
-            path,
-            label,
-            "'s_P_indexes' and 's_C12_indexes' must have the same length",
-        )
-    for key, tensor, upper_bound in (
-        ("s_P_indexes", s_parents, 2 * S),
-        ("s_C12_indexes", s_children, S),
-    ):
-        if tensor.numel() > 0:
-            min_index = int(tensor.min().item())
-            max_index = int(tensor.max().item())
-            if min_index < 0 or max_index >= upper_bound:
-                raise _invalid_preprocess_cache(
-                    path,
-                    label,
-                    f"{key!r} contains topology ids outside range [0, {upper_bound})",
-                )
-    _cache_tensor(
-        payload,
-        "unnorm_row_max",
-        path=path,
-        label=label,
-        floating=True,
-        ndim=1,
-        length=S,
-    )
-    if "Recipients_mat" in payload:
-        _cache_tensor(
-            payload,
-            "Recipients_mat",
-            path=path,
-            label=label,
-            floating=True,
-            shape=(S, S),
-        )
-    species_name_to_index = payload.get("species_name_to_index")
-    if not isinstance(species_name_to_index, dict):
-        raise _invalid_preprocess_cache(
-            path,
-            label,
-            "'species_name_to_index' must be a dictionary",
-        )
-
-
-def _validate_family_preprocess_cache(
-    payload: dict[str, Any],
-    path: Path,
-    label: str,
-    *,
-    species_count: int | None = None,
-) -> None:
-    ccp = payload.get("ccp")
-    if not isinstance(ccp, dict):
-        raise _invalid_preprocess_cache(path, label, "'ccp' must be a dictionary")
-    C = _cache_int(ccp, "C", path=path, label=label, minimum=1)
-    N = _cache_int(ccp, "N_splits", path=path, label=label, minimum=0)
-    root = _cache_int(ccp, "root_clade_id", path=path, label=label, minimum=0)
-    if root >= C:
-        raise _invalid_preprocess_cache(
-            path,
-            label,
-            f"'root_clade_id'={root} outside clade range [0, {C})",
-        )
-    num_eq1 = _cache_int(ccp, "num_segs_eq1", path=path, label=label, minimum=0)
-    end_rows_ge2 = _cache_int(ccp, "end_rows_ge2", path=path, label=label, minimum=0)
-    if num_eq1 + end_rows_ge2 != N:
-        raise _invalid_preprocess_cache(
-            path,
-            label,
-            "'num_segs_eq1' + 'end_rows_ge2' must equal 'N_splits'",
-        )
-    _cache_tensor(
-        ccp,
-        "split_counts",
-        path=path,
-        label=label,
-        dtype=torch.long,
-        ndim=1,
-        length=C,
-    )
-    split_parents = _cache_tensor(
-        ccp,
-        "split_parents_sorted",
-        path=path,
-        label=label,
-        dtype=torch.long,
-        ndim=1,
-        length=N,
-    )
-    split_leftrights = _cache_tensor(
-        ccp,
-        "split_leftrights_sorted",
-        path=path,
-        label=label,
-        dtype=torch.long,
-        ndim=1,
-        length=2 * N,
-    )
-    for key, tensor in (
-        ("split_parents_sorted", split_parents),
-        ("split_leftrights_sorted", split_leftrights),
-    ):
-        if tensor.numel() > 0:
-            min_clade = int(tensor.min().item())
-            max_clade = int(tensor.max().item())
-            if min_clade < 0 or max_clade >= C:
-                raise _invalid_preprocess_cache(
-                    path,
-                    label,
-                    f"{key!r} contains clade ids outside range [0, {C})",
-                )
-    _cache_tensor(
-        ccp,
-        "log_split_probs_sorted",
-        path=path,
-        label=label,
-        floating=True,
-        ndim=1,
-        length=N,
-    )
-    clade_leaf_labels = ccp.get("clade_leaf_labels")
-    if not isinstance(clade_leaf_labels, (list, tuple)) or len(clade_leaf_labels) != C:
-        raise _invalid_preprocess_cache(
-            path,
-            label,
-            f"'clade_leaf_labels' must contain {C} labels",
-        )
-
-    leaf_rows = _cache_tensor(
-        payload,
-        "leaf_row_index",
-        path=path,
-        label=label,
-        dtype=torch.long,
-        ndim=1,
-    )
-    leaf_cols = _cache_tensor(
-        payload,
-        "leaf_col_index",
-        path=path,
-        label=label,
-        dtype=torch.long,
-        ndim=1,
-        length=int(leaf_rows.numel()),
-    )
-    if leaf_rows.numel() > 0:
-        if int(leaf_rows.min().item()) < 0 or int(leaf_rows.max().item()) >= C:
-            raise _invalid_preprocess_cache(
-                path,
-                label,
-                "'leaf_row_index' contains clade rows outside the CCP range",
-            )
-    if leaf_cols.numel() > 0:
-        min_species = int(leaf_cols.min().item())
-        max_species = int(leaf_cols.max().item())
-        if min_species < 0:
-            raise _invalid_preprocess_cache(
-                path,
-                label,
-                "'leaf_col_index' contains negative species indexes",
-            )
-        if species_count is not None and max_species >= species_count:
-            raise _invalid_preprocess_cache(
-                path,
-                label,
-                f"'leaf_col_index' contains species indexes outside range [0, {species_count})",
-            )
 
 
 class GeneDataset:
@@ -574,6 +278,7 @@ class GeneDataset:
         device=None,
         preprocess_cache_dir: str | os.PathLike | None = None,
         refresh_preprocess_cache: bool = False,
+        preprocess_cpu_cores: int | None = None,
         family_names: Sequence[str] | None = None,
         leaf_species_maps: Sequence[dict[str, str]] | None = None,
         _preprocess_progress: Callable[..., None] | None = None,
@@ -581,10 +286,8 @@ class GeneDataset:
     ):
         if device is None:
             device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-        refresh_preprocess_cache = _bool_control(
-            "refresh_preprocess_cache",
-            refresh_preprocess_cache,
-        )
+        del preprocess_cache_dir, refresh_preprocess_cache
+        preprocess_cpu_cores = _normalize_preprocess_cpu_cores(preprocess_cpu_cores)
 
         self.genewise = genewise
         self.specieswise = specieswise
@@ -609,39 +312,27 @@ class GeneDataset:
         if len(leaf_species_maps) != len(family_tree_paths):
             raise ValueError("leaf_species_maps must match gene_tree_paths length")
 
-        ext = _load_species_gene_ext()
+        ext = _load_preprocess_extension()
         # Private benchmark hook: this intentionally stays out of the documented
-        # dataset API because it observes setup/cache stages without changing
-        # model inputs, outputs, or preprocessing semantics.
+        # dataset API because it observes setup stages without changing model
+        # inputs, outputs, or preprocessing semantics.
         preprocess_progress = _preprocess_progress or (lambda *_args, **_kwargs: None)
         preprocess_progress(
             "init_start",
             families=len(family_tree_paths),
-            cache_enabled=preprocess_cache_dir is not None,
+            preprocess_cpu_cores=preprocess_cpu_cores,
         )
-        if preprocess_cache_dir is not None:
-            self.species_helpers, raw_by_family = self._preprocess_with_cache(
-                ext,
-                species_tree_path,
-                family_tree_paths,
-                family_names,
-                leaf_species_maps,
-                preprocess_cache_dir=preprocess_cache_dir,
-                refresh=refresh_preprocess_cache,
-                progress=preprocess_progress,
-            )
-            families = None
-        else:
-            self.species_helpers, families = self._preprocess_without_cache(
-                ext,
-                species_tree_path,
-                family_tree_paths,
-                family_names,
-                leaf_species_maps,
-                progress=preprocess_progress,
-                _batch_size=_uncached_preprocess_batch_size,
-                _materialize_families=True,
-            )
+        self.species_helpers, families = self._preprocess_without_cache(
+            ext,
+            species_tree_path,
+            family_tree_paths,
+            family_names,
+            leaf_species_maps,
+            progress=preprocess_progress,
+            preprocess_cpu_cores=preprocess_cpu_cores,
+            _batch_size=_uncached_preprocess_batch_size,
+            _materialize_families=True,
+        )
 
         if "Recipients_mat" in self.species_helpers:
             self.unnorm_row_max = torch.log2(self.species_helpers["Recipients_mat"]).max(dim=-1).values
@@ -649,11 +340,6 @@ class GeneDataset:
             self.unnorm_row_max = self.species_helpers["unnorm_row_max"]
         self.S = int(self.species_helpers['S'])
 
-        if families is None:
-            families = [
-                self._family_from_raw(raw_by_family[family_name])
-                for family_name in family_names
-            ]
         # stored on CPU. Only move when computing likelihood and optimizing.
         self.families = families
         self.family_names = list(family_names)
@@ -673,10 +359,12 @@ class GeneDataset:
         leaf_species_maps,
         *,
         progress: Callable[..., None] | None = None,
+        preprocess_cpu_cores: int | None = None,
         _batch_size: int = _DEFAULT_PREPROCESS_UNCACHED_BATCH_SIZE,
         _materialize_families: bool = False,
     ):
         progress = progress or (lambda *_args, **_kwargs: None)
+        preprocess_cpu_cores = _normalize_preprocess_cpu_cores(preprocess_cpu_cores)
         if (
             isinstance(_batch_size, bool)
             or not isinstance(_batch_size, Integral)
@@ -701,6 +389,7 @@ class GeneDataset:
             families_with_leaf_maps=len(leaf_species_input),
             batch_size=batch_size,
             batches=batches,
+            preprocess_cpu_cores=preprocess_cpu_cores,
         )
 
         if not family_items:
@@ -709,6 +398,10 @@ class GeneDataset:
                 {},
                 include_details=True,
                 include_species_matrices=False,
+                include_debug_details=False,
+                include_scheduler_details=False,
+                include_legacy_ccp_details=False,
+                num_threads=0 if preprocess_cpu_cores is None else preprocess_cpu_cores,
             )
             progress("uncached_preprocess_done", families=0, batches=0)
             return raw_all["species"], [] if _materialize_families else {}
@@ -741,6 +434,10 @@ class GeneDataset:
                 leaf_species_maps=batch_maps,
                 include_details=True,
                 include_species_matrices=False,
+                include_debug_details=False,
+                include_scheduler_details=False,
+                include_legacy_ccp_details=False,
+                num_threads=0 if preprocess_cpu_cores is None else preprocess_cpu_cores,
             )
             raw_families = raw_all["families"]
             missing_outputs = set(batch_input) - set(raw_families)
@@ -772,263 +469,6 @@ class GeneDataset:
         )
         if _materialize_families:
             return species_helpers, families
-        return species_helpers, raw_by_family
-
-    @staticmethod
-    def _hash_file(path: str | os.PathLike) -> str:
-        h = hashlib.sha256()
-        with open(path, "rb") as fh:
-            for chunk in iter(lambda: fh.read(1024 * 1024), b""):
-                h.update(chunk)
-        return h.hexdigest()
-
-    @classmethod
-    def _preprocess_with_cache(
-        cls,
-        ext,
-        species_tree_path,
-        gene_tree_paths,
-        family_names,
-        leaf_species_maps,
-        *,
-        preprocess_cache_dir: str | os.PathLike,
-        refresh: bool,
-        progress: Callable[..., None] | None = None,
-        _missing_family_batch_size: int = _DEFAULT_PREPROCESS_CACHE_MISSING_BATCH_SIZE,
-    ):
-        progress = progress or (lambda *_args, **_kwargs: None)
-        if (
-            isinstance(_missing_family_batch_size, bool)
-            or not isinstance(_missing_family_batch_size, Integral)
-            or int(_missing_family_batch_size) <= 0
-        ):
-            raise ValueError("_missing_family_batch_size must be a positive integer")
-        missing_family_batch_size = int(_missing_family_batch_size)
-        cache_dir = Path(preprocess_cache_dir)
-        cache_dir.mkdir(parents=True, exist_ok=True)
-
-        version = "light-v5:compact-species:alerax-maps:leaf-labels"
-        progress(
-            "cache_start",
-            cache_dir=str(cache_dir),
-            refresh=refresh,
-            families=len(family_names),
-        )
-        progress("species_hash_start")
-        species_hash = cls._hash_file(species_tree_path)
-        progress("species_hash_done")
-        species_key = hashlib.sha256(
-            f"{version}:species:{species_hash}".encode("utf-8")
-        ).hexdigest()
-        species_cache = cache_dir / f"species-{species_key}.pt"
-
-        species_helpers = None
-        if species_cache.exists() and not refresh:
-            progress("species_cache_load_start", cache_path=str(species_cache))
-            species_helpers = _load_preprocess_cache(
-                species_cache,
-                label="species",
-                required_keys=("S",),
-                validator=_validate_species_preprocess_cache,
-            )
-            progress(
-                "species_cache_load_done",
-                cache_path=str(species_cache),
-                S=int(species_helpers["S"]),
-            )
-        else:
-            progress(
-                "species_cache_miss",
-                cache_path=str(species_cache),
-                reason="refresh" if refresh else "not_found",
-            )
-
-        raw_by_family = {}
-        missing = {}
-        missing_maps = {}
-        family_cache_paths = {}
-        progress("family_cache_scan_start", families=len(family_names))
-        for idx, (name, paths, leaf_map) in enumerate(
-            zip(family_names, gene_tree_paths, leaf_species_maps)
-        ):
-            progress(
-                "family_hash_start",
-                idx=idx,
-                family=name,
-                paths=len(paths),
-                has_leaf_map=bool(leaf_map),
-            )
-            h = hashlib.sha256()
-            for path in paths:
-                h.update(cls._hash_file(path).encode("utf-8"))
-                h.update(b"\0")
-            for gene, species in sorted(leaf_map.items()):
-                h.update(gene.encode("utf-8"))
-                h.update(b"\t")
-                h.update(species.encode("utf-8"))
-                h.update(b"\0")
-            gene_hash = h.hexdigest()
-            family_key = hashlib.sha256(
-                f"{version}:family:{species_hash}:{gene_hash}".encode("utf-8")
-            ).hexdigest()
-            cache_path = cache_dir / f"family-{family_key}.pt"
-            family_cache_paths[name] = cache_path
-            if cache_path.exists() and not refresh:
-                progress(
-                    "family_cache_load_start",
-                    idx=idx,
-                    family=name,
-                    cache_path=str(cache_path),
-                )
-                raw_by_family[name] = cls._drop_unused_family_details(
-                    _load_preprocess_cache(
-                        cache_path,
-                        label=f"family {name!r}",
-                        required_keys=("ccp", "leaf_row_index", "leaf_col_index"),
-                        validator=_validate_family_preprocess_cache,
-                    )
-                )
-                progress(
-                    "family_cache_hit",
-                    idx=idx,
-                    family=name,
-                    cache_path=str(cache_path),
-                )
-            else:
-                missing[name] = paths
-                if leaf_map:
-                    missing_maps[name] = leaf_map
-                progress(
-                    "family_cache_miss",
-                    idx=idx,
-                    family=name,
-                    cache_path=str(cache_path),
-                    reason="refresh" if refresh else "not_found",
-                )
-        progress(
-            "family_cache_scan_done",
-            hits=len(raw_by_family),
-            misses=len(missing),
-        )
-
-        if missing:
-            missing_items = list(missing.items())
-            batches = math.ceil(len(missing_items) / missing_family_batch_size)
-            progress(
-                "missing_families_preprocess_start",
-                families=len(missing),
-                families_with_leaf_maps=len(missing_maps),
-                batch_size=missing_family_batch_size,
-                batches=batches,
-            )
-
-            built_families = 0
-            for batch_idx, start in enumerate(
-                range(0, len(missing_items), missing_family_batch_size)
-            ):
-                batch_items = missing_items[start:start + missing_family_batch_size]
-                batch_missing = dict(batch_items)
-                batch_missing_maps = {
-                    name: missing_maps[name]
-                    for name, _paths in batch_items
-                    if name in missing_maps
-                }
-                batch_names = list(batch_missing)
-                progress(
-                    "missing_families_preprocess_batch_start",
-                    batch_idx=batch_idx,
-                    batches=batches,
-                    families=len(batch_missing),
-                    families_with_leaf_maps=len(batch_missing_maps),
-                    first_family=batch_names[0],
-                    last_family=batch_names[-1],
-                )
-                raw_all = ext.preprocess_multiple_families(
-                    str(species_tree_path),
-                    batch_missing,
-                    leaf_species_maps=batch_missing_maps,
-                    include_details=True,
-                    include_species_matrices=False,
-                )
-                raw_families = raw_all["families"]
-                missing_outputs = set(batch_missing) - set(raw_families)
-                if missing_outputs:
-                    raise RuntimeError(
-                        "preprocess_multiple_families did not return family result(s): "
-                        + ", ".join(sorted(missing_outputs))
-                    )
-                progress(
-                    "missing_families_preprocess_batch_done",
-                    batch_idx=batch_idx,
-                    batches=batches,
-                    families=len(raw_families),
-                )
-                if species_helpers is None:
-                    species_helpers = raw_all["species"]
-                    progress("species_cache_save_start", cache_path=str(species_cache))
-                    torch.save(species_helpers, species_cache)
-                    progress("species_cache_save_done", cache_path=str(species_cache))
-
-                species_count = int(species_helpers["S"])
-                for name, raw in raw_families.items():
-                    raw = cls._drop_unused_family_details(raw)
-                    _validate_family_preprocess_cache(
-                        raw,
-                        family_cache_paths[name],
-                        f"family {name!r}",
-                        species_count=species_count,
-                    )
-                    raw_by_family[name] = raw
-                    progress(
-                        "family_cache_save_start",
-                        family=name,
-                        cache_path=str(family_cache_paths[name]),
-                    )
-                    torch.save(raw, family_cache_paths[name])
-                    progress(
-                        "family_cache_save_done",
-                        family=name,
-                        cache_path=str(family_cache_paths[name]),
-                    )
-                    built_families += 1
-                progress(
-                    "missing_families_preprocess_batch_cached",
-                    batch_idx=batch_idx,
-                    batches=batches,
-                    families=len(raw_families),
-                    total_built=built_families,
-                )
-            progress(
-                "missing_families_preprocess_done",
-                families=built_families,
-                batches=batches,
-            )
-
-        if species_helpers is None:
-            progress("species_only_preprocess_start")
-            raw_species = ext.preprocess_multiple_families(
-                str(species_tree_path),
-                {},
-                include_species_matrices=False,
-            )
-            progress("species_only_preprocess_done")
-            species_helpers = raw_species["species"]
-            progress("species_cache_save_start", cache_path=str(species_cache))
-            torch.save(species_helpers, species_cache)
-            progress("species_cache_save_done", cache_path=str(species_cache))
-
-        species_count = int(species_helpers["S"])
-        progress("family_cache_validate_start", families=len(raw_by_family))
-        for name, raw in raw_by_family.items():
-            _validate_family_preprocess_cache(
-                raw,
-                family_cache_paths[name],
-                f"family {name!r}",
-                species_count=species_count,
-            )
-        progress("family_cache_validate_done", families=len(raw_by_family))
-        progress("cache_done", hits=len(raw_by_family) - len(missing), misses=len(missing))
-
         return species_helpers, raw_by_family
     
     @staticmethod

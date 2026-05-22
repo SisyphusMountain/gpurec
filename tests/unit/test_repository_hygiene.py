@@ -980,15 +980,14 @@ def test_unit_gpu_tree_data_fixtures_are_centralized():
     assert offenders == []
 
 
-def test_project_readme_documents_preprocess_cache_refresh_guidance():
+def test_project_readme_documents_preprocess_cpu_core_guidance():
     root = Path(__file__).resolve().parents[2]
     project_readme = (root / "README.md").read_text(encoding="utf-8")
     normalized = " ".join(project_readme.split())
 
-    assert "--preprocess-cache output_gpurec/preprocess_cache" in normalized
-    assert "--refresh-preprocess-cache" in normalized
-    assert "safe-loading or cache-shape validation errors" in normalized
-    assert "original tree inputs" in normalized
+    assert "--preprocess-cpu-cores 8" in normalized
+    assert "worker thread count for CPU preprocessing" in normalized
+    assert "selected backend's runtime default" in normalized
 
 
 def test_project_readme_documents_workflow_config_aliases():
@@ -1892,7 +1891,7 @@ def test_newick_input_subset_is_documented_on_public_surfaces():
     normalized_readme = " ".join(project_readme.split())
 
     for token in (
-        "retained C++ preprocessing parser supports a deliberately small Newick subset",
+        "retained preprocessing parser supports a deliberately small Newick subset",
         "unquoted labels",
         "optional internal labels",
         "optional numeric branch lengths",
@@ -2962,7 +2961,7 @@ def test_preprocess_cpp_pybind_exports_match_classified_manifest():
         "Production preprocessing export",
         "GeneDataset calls this with",
         "include_details=True for family CCP payloads",
-        "species-only empty-family cache fill",
+        "empty-family preprocessing path",
         "Production callers consume scheduler metadata from preprocess_multiple_families",
     ):
         assert token in " ".join(source.replace('"', "").split())
@@ -2999,8 +2998,6 @@ def test_cpp_preprocess_legacy_and_diagnostic_exports_have_no_runtime_callers():
     assert [path for path, _node in preprocess_family_calls] == [
         "gpurec/core/model.py",
         "gpurec/core/model.py",
-        "gpurec/core/model.py",
-        "gpurec/core/model.py",
     ]
 
     detailed_calls = 0
@@ -3025,8 +3022,8 @@ def test_cpp_preprocess_legacy_and_diagnostic_exports_have_no_runtime_callers():
         assert keywords["include_species_matrices"].value is False
         species_only_default_calls += 1
 
-    assert detailed_calls == 3
-    assert species_only_default_calls == 1
+    assert detailed_calls == 2
+    assert species_only_default_calls == 0
 
 
 def test_cpp_preprocess_does_not_materialize_inclusion_dag_payloads():

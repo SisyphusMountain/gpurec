@@ -82,7 +82,7 @@ def test_minimal_run_config_command_smoke_uses_documented_cli(monkeypatch):
 
 def test_minimal_run_config_outputs_are_gitignored():
     config = RunConfig.from_json(ROOT / "examples" / "minimal-run-config.json")
-    output_paths = [config.out_dir, config.preprocess_cache]
+    output_paths = [config.out_dir]
 
     for output_path in output_paths:
         assert output_path is not None

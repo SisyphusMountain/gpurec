@@ -90,8 +90,7 @@ def test_build_alerax_workflow_model_forwards_run_config(tmp_path: Path, monkeyp
         dtype="float64",
         start=2,
         max_families=5,
-        preprocess_cache=tmp_path / "cache",
-        refresh_preprocess_cache=True,
+        preprocess_cpu_cores=7,
         family_chunk_size=4,
         clade_budget=42,
         batch_packing="sequential",
@@ -123,11 +122,7 @@ def test_build_alerax_workflow_model_forwards_run_config(tmp_path: Path, monkeyp
         staticmethod(fake_from_alerax_families),
     )
 
-    model = build_alerax_workflow_model(
-        config,
-        refresh_preprocess_cache=False,
-        prefetch_batches=0,
-    )
+    model = build_alerax_workflow_model(config, prefetch_batches=0)
 
     assert model is sentinel
     assert call["args"] == (str(config.species_tree), config.families_file)
@@ -138,8 +133,9 @@ def test_build_alerax_workflow_model_forwards_run_config(tmp_path: Path, monkeyp
     assert kwargs["device"] == "cuda"
     assert kwargs["dtype"] is torch.float64
     assert kwargs["theta_init_rates"] == config.theta_init_rates
-    assert kwargs["preprocess_cache_dir"] == config.preprocess_cache
-    assert kwargs["refresh_preprocess_cache"] is False
+    assert kwargs["preprocess_cpu_cores"] == 7
+    assert "preprocess_cache_dir" not in kwargs
+    assert "refresh_preprocess_cache" not in kwargs
     assert kwargs["family_chunk_size"] == 4
     assert kwargs["clade_budget"] == 42
     assert kwargs["batch_packing"] == "sequential"
@@ -159,7 +155,7 @@ def test_build_alerax_workflow_model_forwards_run_config(tmp_path: Path, monkeyp
     assert kwargs["prefetch_batches"] == 0
 
 
-def test_cli_forwards_refresh_preprocess_cache(tmp_path: Path):
+def test_cli_forwards_preprocess_cpu_cores(tmp_path: Path):
     write_tiny_alerax_inputs(tmp_path)
     args = build_parser().parse_args(
         [
@@ -172,13 +168,14 @@ def test_cli_forwards_refresh_preprocess_cache(tmp_path: Path):
             str(tmp_path / "out"),
             "--device",
             "cpu",
-            "--refresh-preprocess-cache",
+            "--preprocess-cpu-cores",
+            "3",
         ]
     )
 
     config = _run_config_from_args(args)
 
-    assert config.refresh_preprocess_cache is True
+    assert config.preprocess_cpu_cores == 3
 
 
 def test_cli_accepts_family_chunk_all_alias(tmp_path: Path):

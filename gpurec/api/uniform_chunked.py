@@ -237,7 +237,6 @@ def _normalize_uniform_solver_kwargs(kwargs: dict[str, Any]) -> dict[str, Any]:
             normalized["pruning_threshold"],
         )
     for name in (
-        "refresh_preprocess_cache",
         "use_pruning",
         "warm_start_E",
         "profile",
@@ -249,6 +248,11 @@ def _normalize_uniform_solver_kwargs(kwargs: dict[str, Any]) -> dict[str, Any]:
         normalized["family_chunk_size"] = _auto_nonnegative_int(
             "family_chunk_size",
             normalized["family_chunk_size"],
+        )
+    if normalized.get("preprocess_cpu_cores") is not None:
+        normalized["preprocess_cpu_cores"] = positive_int(
+            "preprocess_cpu_cores",
+            normalized["preprocess_cpu_cores"],
         )
     if "max_wave_size" in normalized:
         normalized["max_wave_size"] = _auto_positive_int(
@@ -830,6 +834,7 @@ class UniformChunkedReconModel(torch.nn.Module):
         leaf_species_maps: Sequence[dict[str, str]] | None = None,
         preprocess_cache_dir: str | os.PathLike[str] | None = None,
         refresh_preprocess_cache: bool = False,
+        preprocess_cpu_cores: int | None = None,
         family_chunk_size: int | str = "auto",
         max_wave_size: int | str | None = "auto",
         max_root_wave_size: int | None = None,
@@ -872,14 +877,14 @@ class UniformChunkedReconModel(torch.nn.Module):
         neumann_terms = positive_int("neumann_terms", neumann_terms)
         tol_E = nonnegative_float("tol_E", tol_E)
         pruning_threshold = nonnegative_float("pruning_threshold", pruning_threshold)
-        refresh_preprocess_cache = bool_value(
-            "refresh_preprocess_cache",
-            refresh_preprocess_cache,
-        )
         use_pruning = bool_value("use_pruning", use_pruning)
         warm_start_E = bool_value("warm_start_E", warm_start_E)
         profile = bool_value("profile", profile)
         set_optimized_env = bool_value("set_optimized_env", set_optimized_env)
+        preprocess_cpu_cores = optional_positive_int(
+            "preprocess_cpu_cores",
+            preprocess_cpu_cores,
+        )
         chunk_value = _auto_nonnegative_int("family_chunk_size", family_chunk_size)
         wave_value = _auto_positive_int("max_wave_size", max_wave_size)
         max_root_wave_size = optional_positive_int(
@@ -912,6 +917,7 @@ class UniformChunkedReconModel(torch.nn.Module):
             device=device,
             preprocess_cache_dir=preprocess_cache_dir,
             refresh_preprocess_cache=refresh_preprocess_cache,
+            preprocess_cpu_cores=preprocess_cpu_cores,
             family_names=family_names,
             leaf_species_maps=leaf_species_maps,
         )

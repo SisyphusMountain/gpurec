@@ -217,13 +217,27 @@ def _add_run_config_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--preprocess-cache",
         type=Path,
-        help="Directory for reusable preprocessing cache files.",
+        help=(
+            "Deprecated compatibility option; preprocessing is no longer cached "
+            "by the production workflow."
+        ),
     )
     parser.add_argument(
         "--refresh-preprocess-cache",
         action=argparse.BooleanOptionalAction,
         default=None,
-        help="Regenerate preprocessing cache entries before optimization.",
+        help=(
+            "Deprecated compatibility option; preprocessing is no longer cached "
+            "by the production workflow."
+        ),
+    )
+    parser.add_argument(
+        "--preprocess-cpu-cores",
+        type=int,
+        help=(
+            "Worker thread count for CPU preprocessing. Workflow default uses "
+            "the preprocessing backend's runtime default."
+        ),
     )
     parser.add_argument(
         "--family-chunk-size",

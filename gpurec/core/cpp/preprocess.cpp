@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <exception>
 #include <fstream>
 #include <limits>
 #include <numeric>
@@ -109,12 +110,26 @@ torch::Tensor to_uint8_tensor(const std::vector<uint8_t>& vec) {
       .clone();
 }
 
-void binarize_gene_tree(TreeNode *node, const std::string &path) {
+TreeNode *make_gene_internal_node(std::deque<TreeNode> *arena) {
+  TreeNode *node = nullptr;
+  if (arena != nullptr) {
+    arena->emplace_back();
+    node = &arena->back();
+    node->owns_children = false;
+  } else {
+    node = new TreeNode();
+  }
+  node->children.reserve(2);
+  return node;
+}
+
+void binarize_gene_tree(TreeNode *node, const std::string &path,
+                        std::deque<TreeNode> *arena = nullptr) {
   if (node == nullptr) {
     return;
   }
   for (TreeNode *child : node->children) {
-    binarize_gene_tree(child, path);
+    binarize_gene_tree(child, path, arena);
   }
   if (node->children.size() == 1) {
     throw std::runtime_error(
@@ -128,7 +143,7 @@ void binarize_gene_tree(TreeNode *node, const std::string &path) {
     TreeNode *left = node->children.back();
     node->children.pop_back();
 
-    TreeNode *internal = new TreeNode();
+    TreeNode *internal = make_gene_internal_node(arena);
     internal->parent = node;
     left->parent = internal;
     right->parent = internal;
@@ -232,6 +247,28 @@ public:
   }
 };
 
+struct SplitKey {
+  int parent;
+  int left;
+  int right;
+};
+
+struct SplitKeyHash {
+  size_t operator()(const SplitKey &key) const noexcept {
+    uint64_t a = wyhash64(
+        static_cast<uint32_t>(key.parent),
+        static_cast<uint32_t>(key.left));
+    return static_cast<size_t>(
+        wyhash64(a, static_cast<uint32_t>(key.right)));
+  }
+};
+
+struct SplitKeyEqual {
+  bool operator()(const SplitKey &a, const SplitKey &b) const noexcept {
+    return a.parent == b.parent && a.left == b.left && a.right == b.right;
+  }
+};
+
 /**
  * @brief Represents a split (parent clade divided into two child clades)
  */
@@ -258,13 +295,13 @@ public:
    *
    * Ensures left_id <= right_id for consistent hashing
    */
-  std::tuple<int, int, int> canonical_key() const {
+  SplitKey canonical_key() const {
     int l = left_id_;
     int r = right_id_;
     if (l > r) {
       std::swap(l, r);
     }
-    return std::make_tuple(parent_id_, l, r);
+    return SplitKey{parent_id_, l, r};
   }
 
   /**
@@ -322,6 +359,23 @@ struct CCPArrays {
   int end_rows_ge2;
 };
 
+struct FamilyPreprocessResult {
+  std::string family_name;
+  CCPArrays ccp;
+  int64_t C;
+  int64_t N_splits;
+  int64_t root_clade_id;
+  std::vector<int64_t> leaf_row_index;
+  std::vector<int64_t> leaf_col_index;
+  std::vector<std::vector<int64_t>> clade_leaves_indices;
+  std::vector<std::string> clade_leaf_labels;
+  std::vector<uint8_t> clade_is_leaf;
+  std::vector<int64_t> clade_wave_level;
+  int64_t n_waves;
+  std::vector<std::vector<int64_t>> phased_waves;
+  std::vector<int> phased_phases;
+};
+
 // ============================================================================
 // Core Algorithms
 // ============================================================================
@@ -347,12 +401,6 @@ CladeData compute_clades_and_splits(
   collect_nodes_postorder(gene_root, postorder_nodes);
   const size_t num_nodes = postorder_nodes.size();
 
-  std::unordered_map<TreeNode *, size_t> node_index;
-  node_index.reserve(num_nodes);
-  for (size_t i = 0; i < num_nodes; ++i) {
-    node_index[postorder_nodes[i]] = i;
-  }
-
   std::vector<BitVec> node_clades(num_nodes, BitVec(num_words, 0ULL));
   std::vector<int> node_clade_ids(num_nodes, -1);
   std::vector<int> node_above_ids(num_nodes, -1);
@@ -361,24 +409,23 @@ CladeData compute_clades_and_splits(
   // Will create the n leaf clades, n-2 internal clade nodes (corresponding to this fixed root choice), and the ubiquitous clade
   // We will still have to construct clades corresponding to other rootings.
   for (TreeNode *node : postorder_nodes) {
-    size_t idx = node_index[node];
-    BitVec bits(num_words, 0ULL);
+    size_t idx = node->traversal_index;
+    BitVec &bits = node_clades[idx];
     if (node->children.empty()) {
       int leaf_idx = leaf_to_index.at(node->name);
       set_bit(bits, leaf_idx);
     } else {
-      const BitVec &left = node_clades[node_index[node->children[0]]];
-      const BitVec &right = node_clades[node_index[node->children[1]]];
+      const BitVec &left = node_clades[node->children[0]->traversal_index];
+      const BitVec &right = node_clades[node->children[1]->traversal_index];
       for (size_t w = 0; w < num_words; ++w) {
         bits[w] = left[w] | right[w];
       }
     }
-    node_clades[idx] = bits;
-    node_clade_ids[idx] = result.clades.get_or_create(std::move(bits));
+    node_clade_ids[idx] = result.clades.get_or_create(bits);
   }
 
-  const BitVec &root_bits = node_clades[node_index[gene_root]];
-  result.root_clade_id = node_clade_ids[node_index[gene_root]];
+  const BitVec &root_bits = node_clades[gene_root->traversal_index];
+  result.root_clade_id = node_clade_ids[gene_root->traversal_index];
 
   result.splits.reserve(num_nodes * 3);
   std::unordered_set<PairKey, PairKeyHash, PairKeyEqual> root_split_keys;
@@ -389,7 +436,7 @@ CladeData compute_clades_and_splits(
     if (node == gene_root) {
       continue;
     }
-    size_t idx = node_index[node];
+    size_t idx = node->traversal_index;
     const BitVec &below_bits = node_clades[idx];
     BitVec above_bits = bit_difference(root_bits, below_bits);
     if (is_empty(above_bits)) {
@@ -414,12 +461,12 @@ CladeData compute_clades_and_splits(
     if (node == gene_root || node->children.size() != 2) {
       continue;
     }
-    size_t idx = node_index[node];
+    size_t idx = node->traversal_index;
     int parent_id = node_clade_ids[idx];
     TreeNode *left_node = node->children[0];
     TreeNode *right_node = node->children[1];
-    size_t left_idx = node_index[left_node];
-    size_t right_idx = node_index[right_node];
+    size_t left_idx = left_node->traversal_index;
+    size_t right_idx = right_node->traversal_index;
     int left_id = node_clade_ids[left_idx];
     int right_id = node_clade_ids[right_idx];
     result.splits.emplace_back(parent_id, left_id, right_id, 1.0);
@@ -649,20 +696,17 @@ CladeData amalgamate_clades_and_splits(
 
   // Collect all unique leaf names from all trees
   std::unordered_set<std::string> all_leaves_set;
-  std::vector<std::unique_ptr<TreeNode>> gene_trees;
+  std::deque<TreeNode> gene_tree_nodes;
+  std::vector<TreeNode *> gene_trees;
   gene_trees.reserve(gene_paths.size());
 
   for (const std::string &path : gene_paths) {
-    auto parsed_trees = parse_newick_trees_file(path);
-    for (auto &tree : parsed_trees) {
-      binarize_gene_tree(tree.get(), path);
-      std::vector<std::string> tree_leaves;
-      std::unordered_map<std::string, int> tree_leaf_map;
-      collect_leaf_names(tree.get(), tree_leaves, tree_leaf_map);
-      for (const std::string &name : tree_leaves) {
-        all_leaves_set.insert(name);
-      }
-      gene_trees.push_back(std::move(tree));
+    const size_t first_new_tree = gene_trees.size();
+    parse_newick_trees_file_into(path, gene_tree_nodes, gene_trees);
+    for (size_t i = first_new_tree; i < gene_trees.size(); ++i) {
+      TreeNode *tree = gene_trees[i];
+      binarize_gene_tree(tree, path, &gene_tree_nodes);
+      collect_leaf_names(tree, all_leaves_set);
     }
   }
 
@@ -689,7 +733,7 @@ CladeData amalgamate_clades_and_splits(
   const size_t num_words = bitvec_num_words(num_leaves);
 
   // Map from canonical split key to split index for weight accumulation
-  std::map<std::tuple<int,int,int>, size_t> split_index_map;
+  std::unordered_map<SplitKey, size_t, SplitKeyHash, SplitKeyEqual> split_index_map;
 
   // Create root clade (all leaves)
   BitVec root_bits(num_words, 0ULL);
@@ -697,20 +741,15 @@ CladeData amalgamate_clades_and_splits(
     set_bit(root_bits, i);
   }
   result.root_clade_id = result.clades.get_or_create(std::move(root_bits));
+  split_index_map.reserve(gene_trees.size() * num_leaves * 3);
 
   // Process each gene tree
   for (size_t tree_idx = 0; tree_idx < gene_trees.size(); ++tree_idx) {
-    TreeNode *gene_root = gene_trees[tree_idx].get();
+    TreeNode *gene_root = gene_trees[tree_idx];
 
     std::vector<TreeNode *> postorder_nodes;
     collect_nodes_postorder(gene_root, postorder_nodes);
     const size_t num_nodes = postorder_nodes.size();
-
-    std::unordered_map<TreeNode *, size_t> node_index;
-    node_index.reserve(num_nodes);
-    for (size_t i = 0; i < num_nodes; ++i) {
-      node_index[postorder_nodes[i]] = i;
-    }
 
     std::vector<BitVec> node_clades(num_nodes, BitVec(num_words, 0ULL));
     std::vector<int> node_clade_ids(num_nodes, -1);
@@ -718,24 +757,23 @@ CladeData amalgamate_clades_and_splits(
 
     // Build clades for each node using global leaf indexing
     for (TreeNode *node : postorder_nodes) {
-      size_t idx = node_index[node];
-      BitVec bits(num_words, 0ULL);
+      size_t idx = node->traversal_index;
+      BitVec &bits = node_clades[idx];
       if (node->children.empty()) {
         int global_idx = leaf_to_index.at(node->name);
         set_bit(bits, global_idx);
       } else {
-        const BitVec &left = node_clades[node_index[node->children[0]]];
-        const BitVec &right = node_clades[node_index[node->children[1]]];
+        const BitVec &left = node_clades[node->children[0]->traversal_index];
+        const BitVec &right = node_clades[node->children[1]->traversal_index];
         for (size_t w = 0; w < num_words; ++w) {
           bits[w] = left[w] | right[w];
         }
       }
-      node_clades[idx] = bits;
-      node_clade_ids[idx] = result.clades.get_or_create(std::move(bits));
+      node_clade_ids[idx] = result.clades.get_or_create(bits);
     }
 
-    const BitVec &tree_root_bits = node_clades[node_index[gene_root]];
-    int tree_root_id = node_clade_ids[node_index[gene_root]];
+    const BitVec &tree_root_bits = node_clades[gene_root->traversal_index];
+    int tree_root_id = node_clade_ids[gene_root->traversal_index];
 
     std::unordered_set<PairKey, PairKeyHash, PairKeyEqual> tree_root_split_keys;
 
@@ -744,7 +782,7 @@ CladeData amalgamate_clades_and_splits(
       if (node == gene_root) {
         continue;
       }
-      size_t idx = node_index[node];
+      size_t idx = node->traversal_index;
       const BitVec &below_bits = node_clades[idx];
       BitVec above_bits = bit_difference(tree_root_bits, below_bits);
       if (is_empty(above_bits)) {
@@ -778,12 +816,12 @@ CladeData amalgamate_clades_and_splits(
       if (node == gene_root || node->children.size() != 2) {
         continue;
       }
-      size_t idx = node_index[node];
+      size_t idx = node->traversal_index;
       int parent_id = node_clade_ids[idx];
       TreeNode *left_node = node->children[0];
       TreeNode *right_node = node->children[1];
-      size_t left_idx = node_index[left_node];
-      size_t right_idx = node_index[right_node];
+      size_t left_idx = left_node->traversal_index;
+      size_t right_idx = right_node->traversal_index;
       int left_id = node_clade_ids[left_idx];
       int right_id = node_clade_ids[right_idx];
 
@@ -1250,6 +1288,179 @@ compute_clade_waves(const CCPArrays &ccp, size_t C) {
   return {level, max_wave + 1};
 }
 
+FamilyPreprocessResult preprocess_one_family(
+    const std::string &family_name,
+    const std::vector<std::string> &gene_paths,
+    const std::map<std::string, std::string> *leaf_species_map,
+    const std::unordered_map<std::string, int> &species_name_to_index,
+    bool include_details,
+    bool include_debug_details,
+    bool include_scheduler_details) {
+  FamilyPreprocessResult result;
+  result.family_name = family_name;
+
+  std::vector<std::string> leaf_names;
+  std::unordered_map<std::string, int> leaf_to_index;
+  CladeData clade_data =
+      amalgamate_clades_and_splits(gene_paths, leaf_names, leaf_to_index);
+  result.ccp = build_ccp_arrays(clade_data);
+
+  const size_t C = clade_data.clades.size();
+  result.C = static_cast<int64_t>(C);
+  result.N_splits = static_cast<int64_t>(clade_data.splits.size());
+  result.root_clade_id = static_cast<int64_t>(clade_data.root_clade_id);
+
+  const bool collect_debug_details = include_details && include_debug_details;
+  if (include_details) {
+    result.clade_leaf_labels.resize(C);
+  }
+  if (collect_debug_details) {
+    result.clade_leaves_indices.resize(C);
+    result.clade_is_leaf.resize(C, 0);
+  }
+
+  if (collect_debug_details) {
+    for (size_t cid = 0; cid < C; ++cid) {
+      const Clade& clade = clade_data.clades.get(cid);
+      const BitVec& bits = clade.bits();
+      for (size_t word_index = 0; word_index < bits.size(); ++word_index) {
+        uint64_t word = bits[word_index];
+        while (word) {
+          unsigned long bit = __builtin_ctzll(word);
+          size_t leaf_idx = word_index * BITS_PER_WORD + bit;
+          if (leaf_idx < leaf_names.size()) {
+            result.clade_leaves_indices[cid].push_back(
+                static_cast<int64_t>(leaf_idx));
+            if (clade.size() == 1) {
+              const std::string &leaf_name = leaf_names[leaf_idx];
+              std::string species = species_for_gene_leaf(
+                  leaf_name, leaf_species_map, family_name);
+              auto it = species_name_to_index.find(species);
+              if (it == species_name_to_index.end()) {
+                throw std::runtime_error("Species " + species +
+                                         " not found for gene leaf " +
+                                         leaf_name);
+              }
+              result.leaf_row_index.push_back(static_cast<int64_t>(cid));
+              result.leaf_col_index.push_back(static_cast<int64_t>(it->second));
+              result.clade_leaf_labels[cid] = leaf_name;
+            }
+          }
+          word &= word - 1ULL;
+        }
+      }
+      std::vector<int64_t> &indices = result.clade_leaves_indices[cid];
+      std::sort(indices.begin(), indices.end());
+      if (clade.size() == 1) {
+        result.clade_is_leaf[cid] = 1;
+      }
+    }
+  } else {
+    for (size_t cid = 0; cid < C; ++cid) {
+      const Clade& clade = clade_data.clades.get(cid);
+      if (clade.size() != 1) {
+        continue;
+      }
+      const BitVec& bits = clade.bits();
+      size_t leaf_idx = leaf_names.size();
+      for (size_t word_index = 0; word_index < bits.size(); ++word_index) {
+        uint64_t word = bits[word_index];
+        if (word != 0) {
+          unsigned long bit = __builtin_ctzll(word);
+          leaf_idx = word_index * BITS_PER_WORD + bit;
+          break;
+        }
+      }
+      if (leaf_idx >= leaf_names.size()) {
+        continue;
+      }
+      const std::string &leaf_name = leaf_names[leaf_idx];
+      std::string species = species_for_gene_leaf(
+          leaf_name, leaf_species_map, family_name);
+      auto it = species_name_to_index.find(species);
+      if (it == species_name_to_index.end()) {
+        throw std::runtime_error("Species " + species +
+                                 " not found for gene leaf " +
+                                 leaf_name);
+      }
+      result.leaf_row_index.push_back(static_cast<int64_t>(cid));
+      result.leaf_col_index.push_back(static_cast<int64_t>(it->second));
+      if (include_details) {
+        result.clade_leaf_labels[cid] = leaf_name;
+      }
+    }
+  }
+
+  if (include_scheduler_details) {
+    auto [wave_level, n_waves] = compute_clade_waves(result.ccp, C);
+    result.clade_wave_level.assign(wave_level.begin(), wave_level.end());
+    result.n_waves = static_cast<int64_t>(n_waves);
+
+    SchedData sd = build_sched_data(clade_data);
+    std::tie(result.phased_waves, result.phased_phases) =
+        compute_phased_waves_impl(sd, static_cast<int>(C));
+  }
+
+  return result;
+}
+
+py::dict family_preprocess_result_to_dict(
+    const FamilyPreprocessResult &family,
+    bool include_details,
+    bool include_debug_details,
+    bool include_scheduler_details,
+    bool include_legacy_ccp_details) {
+  py::dict ccp_dict;
+  if (include_details) {
+    if (include_debug_details) {
+      ccp_dict["clade_leaves"] = family.clade_leaves_indices;
+      ccp_dict["clade_is_leaf"] = to_uint8_tensor(family.clade_is_leaf);
+    }
+    ccp_dict["clade_leaf_labels"] = family.clade_leaf_labels;
+  }
+  ccp_dict["split_counts"] = to_long_tensor(family.ccp.split_counts);
+  ccp_dict["split_parents_sorted"] =
+      to_long_tensor(family.ccp.split_parents_sorted);
+  ccp_dict["split_leftrights_sorted"] =
+      to_long_tensor(family.ccp.split_leftrights_sorted);
+  ccp_dict["log_split_probs_sorted"] =
+      to_double_tensor(family.ccp.log_split_probs_sorted);
+  ccp_dict["num_segs_ge2"] = family.ccp.num_segs_ge2;
+  ccp_dict["num_segs_eq1"] = family.ccp.num_segs_eq1;
+  ccp_dict["end_rows_ge2"] = family.ccp.end_rows_ge2;
+  ccp_dict["C"] = family.C;
+  ccp_dict["N_splits"] = family.N_splits;
+  ccp_dict["root_clade_id"] = family.root_clade_id;
+  if (include_legacy_ccp_details) {
+    ccp_dict["split_order"] = to_long_tensor(family.ccp.split_order);
+    ccp_dict["parents_sorted"] = to_long_tensor(family.ccp.parents_sorted);
+    ccp_dict["seg_parent_ids"] = to_long_tensor(family.ccp.parents_sorted);
+    ccp_dict["seg_counts"] = to_long_tensor(family.ccp.seg_counts);
+    ccp_dict["ptr"] = to_long_tensor(family.ccp.ptr);
+    ccp_dict["ptr_ge2"] = to_long_tensor(family.ccp.ptr_ge2);
+    ccp_dict["num_segs_eq0"] = family.ccp.num_segs_eq0;
+    ccp_dict["stop_reduce_ptr_idx"] = family.ccp.stop_reduce_ptr_idx;
+  }
+  if (include_scheduler_details) {
+    ccp_dict["clade_wave_level"] = to_long_tensor(family.clade_wave_level);
+    ccp_dict["n_waves"] = family.n_waves;
+
+    py::list py_waves;
+    for (const auto &wave : family.phased_waves) {
+      py_waves.append(to_long_tensor(wave));
+    }
+    ccp_dict["phased_waves"] = py_waves;
+    ccp_dict["phased_phases"] = family.phased_phases;
+  }
+
+  py::dict family_dict;
+  family_dict["ccp"] = ccp_dict;
+  family_dict["root_clade_id"] = family.root_clade_id;
+  family_dict["leaf_row_index"] = to_long_tensor(family.leaf_row_index);
+  family_dict["leaf_col_index"] = to_long_tensor(family.leaf_col_index);
+  return family_dict;
+}
+
 /**
  * @brief Process multiple gene families, each with their own gene tree samples
  *
@@ -1258,6 +1469,14 @@ compute_clade_waves(const CCPArrays &ccp, size_t C) {
  * @param include_details Whether to compute and return full debug/detail fields.
  *                        Defaults to false because likelihood construction only
  *                        needs the light CCP/scheduler payload.
+ * @param include_debug_details Whether include_details should also emit bulky
+ *                              debug-only clade membership fields.
+ * @param include_scheduler_details Whether to emit legacy per-family scheduler
+ *                                  metadata in addition to CCP arrays.
+ * @param include_legacy_ccp_details Whether to emit legacy helper arrays not
+ *                                   required by the runtime fast path.
+ * @param num_threads Number of OpenMP worker threads for family preprocessing.
+ *                    A value of 0 keeps the OpenMP runtime default.
  * @return Dictionary with shared species data and per-family CCPs
  */
 py::dict preprocess_multiple_families(
@@ -1265,7 +1484,14 @@ py::dict preprocess_multiple_families(
     const std::map<std::string, std::vector<std::string>> &families,
     const std::map<std::string, std::map<std::string, std::string>> &leaf_species_maps = {},
     bool include_details = false,
-    bool include_species_matrices = true) {
+    bool include_species_matrices = true,
+    bool include_debug_details = true,
+    bool include_scheduler_details = true,
+    bool include_legacy_ccp_details = true,
+    int num_threads = 0) {
+  if (num_threads < 0) {
+    throw std::runtime_error("num_threads must be non-negative");
+  }
 
   // Parse species tree once (shared across all families)
   std::unique_ptr<TreeNode> species_root = parse_newick_file(species_path);
@@ -1322,121 +1548,63 @@ py::dict preprocess_multiple_families(
   // Process each gene family
   py::dict families_dict;
 
+  struct FamilyEntry {
+    std::string name;
+    std::vector<std::string> gene_paths;
+    const std::map<std::string, std::string> *leaf_species_map;
+  };
+
+  std::vector<FamilyEntry> family_entries;
+  family_entries.reserve(families.size());
   for (const auto& [family_name, gene_paths] : families) {
     auto map_it = leaf_species_maps.find(family_name);
-    const std::map<std::string, std::string> *leaf_species_map =
-        map_it == leaf_species_maps.end() ? nullptr : &map_it->second;
-    std::vector<std::string> leaf_names;
-    std::unordered_map<std::string, int> leaf_to_index;
+    family_entries.push_back(
+        FamilyEntry{
+            family_name,
+            gene_paths,
+            map_it == leaf_species_maps.end() ? nullptr : &map_it->second,
+        });
+  }
 
-    CladeData clade_data = amalgamate_clades_and_splits(gene_paths, leaf_names, leaf_to_index);
-    CCPArrays ccp = build_ccp_arrays(clade_data);
+  std::vector<FamilyPreprocessResult> family_results(family_entries.size());
+  std::vector<std::exception_ptr> family_errors(family_entries.size());
+  const int n_families = static_cast<int>(family_entries.size());
+  const int omp_threads =
+      num_threads > 0 ? num_threads : omp_get_max_threads();
 
-    const size_t C = clade_data.clades.size();
-
-    // Build leaf-to-species mapping
-    std::vector<int64_t> leaf_row_index;
-    std::vector<int64_t> leaf_col_index;
-    std::vector<std::vector<int64_t>> clade_leaves_indices;
-    std::vector<std::string> clade_leaf_labels;
-    std::vector<uint8_t> clade_is_leaf;
-    if (include_details) {
-      clade_leaves_indices.resize(C);
-      clade_leaf_labels.resize(C);
-      clade_is_leaf.resize(C, 0);
-    }
-
-    for (size_t cid = 0; cid < C; ++cid) {
-      const Clade& clade = clade_data.clades.get(cid);
-      const BitVec& bits = clade.bits();
-      for (size_t word_index = 0; word_index < bits.size(); ++word_index) {
-        uint64_t word = bits[word_index];
-        while (word) {
-          unsigned long bit = __builtin_ctzll(word);
-          size_t leaf_idx = word_index * BITS_PER_WORD + bit;
-          if (leaf_idx < leaf_names.size()) {
-            if (include_details) {
-              clade_leaves_indices[cid].push_back(static_cast<int64_t>(leaf_idx));
-            }
-            if (clade.size() == 1) {
-              const std::string &leaf_name = leaf_names[leaf_idx];
-              std::string species = species_for_gene_leaf(
-                  leaf_name, leaf_species_map, family_name);
-              auto it = species_name_to_index.find(species);
-              if (it == species_name_to_index.end()) {
-                throw std::runtime_error("Species " + species +
-                                         " not found for gene leaf " +
-                                         leaf_name);
-              }
-              leaf_row_index.push_back(static_cast<int64_t>(cid));
-              leaf_col_index.push_back(static_cast<int64_t>(it->second));
-              if (include_details) {
-                clade_leaf_labels[cid] = leaf_name;
-              }
-            }
-          }
-          word &= word - 1ULL;
-        }
-      }
-      if (include_details) {
-        std::vector<int64_t> &indices = clade_leaves_indices[cid];
-        std::sort(indices.begin(), indices.end());
-      }
-      if (include_details && clade.size() == 1) {
-        clade_is_leaf[cid] = 1;
+  {
+    py::gil_scoped_release release;
+#pragma omp parallel for schedule(dynamic, 1) num_threads(omp_threads)
+    for (int fi = 0; fi < n_families; ++fi) {
+      try {
+        const FamilyEntry &entry = family_entries[static_cast<size_t>(fi)];
+        family_results[static_cast<size_t>(fi)] = preprocess_one_family(
+            entry.name,
+            entry.gene_paths,
+            entry.leaf_species_map,
+            species_name_to_index,
+            include_details,
+            include_debug_details,
+            include_scheduler_details);
+      } catch (...) {
+        family_errors[static_cast<size_t>(fi)] = std::current_exception();
       }
     }
+  }
 
-    py::dict ccp_dict;
-    if (include_details) {
-      ccp_dict["clade_leaves"] = clade_leaves_indices;
-      ccp_dict["clade_leaf_labels"] = clade_leaf_labels;
-      ccp_dict["clade_is_leaf"] = to_uint8_tensor(clade_is_leaf);
+  for (std::exception_ptr &error : family_errors) {
+    if (error) {
+      std::rethrow_exception(error);
     }
-    ccp_dict["split_counts"] = to_long_tensor(ccp.split_counts);
-    ccp_dict["split_order"] = to_long_tensor(ccp.split_order);
-    ccp_dict["split_parents_sorted"] = to_long_tensor(ccp.split_parents_sorted);
-    ccp_dict["split_leftrights_sorted"] = to_long_tensor(ccp.split_leftrights_sorted);
-    ccp_dict["log_split_probs_sorted"] = to_double_tensor(ccp.log_split_probs_sorted);
-    ccp_dict["parents_sorted"] = to_long_tensor(ccp.parents_sorted);
-    ccp_dict["seg_parent_ids"] = to_long_tensor(ccp.parents_sorted);
-    ccp_dict["seg_counts"] = to_long_tensor(ccp.seg_counts);
-    ccp_dict["ptr"] = to_long_tensor(ccp.ptr);
-    ccp_dict["ptr_ge2"] = to_long_tensor(ccp.ptr_ge2);
-    ccp_dict["num_segs_ge2"] = ccp.num_segs_ge2;
-    ccp_dict["num_segs_eq1"] = ccp.num_segs_eq1;
-    ccp_dict["num_segs_eq0"] = ccp.num_segs_eq0;
-    ccp_dict["stop_reduce_ptr_idx"] = ccp.stop_reduce_ptr_idx;
-    ccp_dict["end_rows_ge2"] = ccp.end_rows_ge2;
-    ccp_dict["C"] = static_cast<int64_t>(C);
-    ccp_dict["N_splits"] = static_cast<int64_t>(clade_data.splits.size());
-    ccp_dict["root_clade_id"] = clade_data.root_clade_id;
-    auto [wave_level, n_waves] = compute_clade_waves(ccp, C);
-    std::vector<int64_t> wave_level_i64(wave_level.begin(), wave_level.end());
-    ccp_dict["clade_wave_level"] = to_long_tensor(wave_level_i64);
-    ccp_dict["n_waves"] = static_cast<int64_t>(n_waves);
-
-    // Also compute phased waves (default max_wave_size = C, i.e. no limit).
-    // Keep this in sync with preprocess() so Python code can use the same
-    // scheduler metadata whether families are preprocessed singly or batched.
-    {
-      SchedData sd = build_sched_data(clade_data);
-      auto [phased_waves, phased_phases] = compute_phased_waves_impl(sd, static_cast<int>(C));
-      py::list py_waves;
-      for (const auto &w : phased_waves) {
-        py_waves.append(to_long_tensor(w));
-      }
-      ccp_dict["phased_waves"] = py_waves;
-      ccp_dict["phased_phases"] = phased_phases;
-    }
-
-    py::dict family_dict;
-    family_dict["ccp"] = ccp_dict;
-    family_dict["root_clade_id"] = clade_data.root_clade_id;
-    family_dict["leaf_row_index"] = to_long_tensor(leaf_row_index);
-    family_dict["leaf_col_index"] = to_long_tensor(leaf_col_index);
-
-    families_dict[family_name.c_str()] = family_dict;
+  }
+  for (const FamilyPreprocessResult &family : family_results) {
+    families_dict[family.family_name.c_str()] =
+        family_preprocess_result_to_dict(
+            family,
+            include_details,
+            include_debug_details,
+            include_scheduler_details,
+            include_legacy_ccp_details);
   }
 
   py::dict result;
@@ -2679,11 +2847,21 @@ PYBIND11_MODULE(preprocess_cpp, m) {
         py::arg("leaf_species_maps") = std::map<std::string, std::map<std::string, std::string>>{},
         py::arg("include_details") = false,
         py::arg("include_species_matrices") = true,
+        py::arg("include_debug_details") = true,
+        py::arg("include_scheduler_details") = true,
+        py::arg("include_legacy_ccp_details") = true,
+        py::arg("num_threads") = 0,
         "Production preprocessing export for multiple gene families with one "
         "shared rooted binary species Newick tree. GeneDataset calls this with "
-        "include_details=True for family CCP payloads; the default "
+        "include_details=True for family CCP payloads and "
+        "include_debug_details=False to skip debug-only clade membership "
+        "fields, and include_scheduler_details=False because runtime scheduling "
+        "is built from compact CCP arrays. Uncached GeneDataset construction "
+        "also passes include_legacy_ccp_details=False to skip compatibility "
+        "helper arrays not needed by the runtime, and num_threads when a "
+        "workflow CPU-core count is configured. The default "
         "include_details=False path is retained for the species-only "
-        "empty-family cache fill. Gene files use the retained simple-Newick "
+        "empty-family preprocessing path. Gene files use the retained simple-Newick "
         "subset and may contain multiple semicolon-delimited records; the final "
         "record may omit its terminal semicolon.");
   m.def("compute_phased_waves", &compute_phased_waves,

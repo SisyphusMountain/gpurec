@@ -142,7 +142,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--uncached-preprocess-batch-size",
         type=int,
-        default=int(os.getenv("UNCACHED_PREPROCESS_BATCH_SIZE", "16")),
+        default=int(os.getenv("UNCACHED_PREPROCESS_BATCH_SIZE", "1024")),
         help="Private benchmark diagnostic: batch size for no-cache family preprocessing.",
     )
     parser.add_argument("--profile-cuda-api", action="store_true", default=os.getenv("PROFILE_CUDA_API", "0") != "0")

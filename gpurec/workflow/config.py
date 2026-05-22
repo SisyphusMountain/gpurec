@@ -210,6 +210,7 @@ _JSON_INT_FIELDS = {
     "fixed_iters_pi",
     "neumann_terms",
     "convergence_check_interval",
+    "preprocess_cpu_cores",
     "steps",
     "adam_warmup_steps",
     "lbfgs_history_size",
@@ -286,6 +287,7 @@ class RunConfig:
     max_families: int | None = None
     preprocess_cache: Path | None = None
     refresh_preprocess_cache: bool = False
+    preprocess_cpu_cores: int | None = None
 
     family_chunk_size: int | str | None = 0
     clade_budget: int | None = 305_000
@@ -345,6 +347,10 @@ class RunConfig:
         self.max_families = _normalize_optional_positive_int(
             "max_families",
             self.max_families,
+        )
+        self.preprocess_cpu_cores = _normalize_optional_positive_int(
+            "preprocess_cpu_cores",
+            self.preprocess_cpu_cores,
         )
         self.family_chunk_size = int(_normalize_family_chunk_size(self.family_chunk_size))
         self.clade_budget = _normalize_optional_positive_int(

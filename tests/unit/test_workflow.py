@@ -1772,11 +1772,7 @@ def test_gene_recon_init_rejects_invalid_solver_controls_before_device(
         ("from_trees", {"fixed_iters_Pi": 4.5}, "fixed_iters_Pi"),
         ("from_trees", {"adaptive_iters": "false"}, "adaptive_iters"),
         ("from_trees", {"use_pruning": "false"}, "use_pruning"),
-        (
-            "from_trees",
-            {"refresh_preprocess_cache": "false"},
-            "refresh_preprocess_cache",
-        ),
+        ("from_trees", {"preprocess_cpu_cores": 0}, "preprocess_cpu_cores"),
         ("from_trees", {"family_chunk_size": True}, "family_chunk_size"),
         ("from_trees", {"max_wave_size": 0}, "max_wave_size"),
         ("from_trees", {"max_wave_size": 1.5}, "max_wave_size"),
@@ -1816,8 +1812,8 @@ def test_gene_recon_init_rejects_invalid_solver_controls_before_device(
         ),
         (
             "from_alerax_families",
-            {"refresh_preprocess_cache": "false"},
-            "refresh_preprocess_cache",
+            {"preprocess_cpu_cores": True},
+            "preprocess_cpu_cores",
         ),
         (
             "from_alerax_families",
@@ -1867,6 +1863,7 @@ def test_gene_recon_factories_reject_invalid_solver_controls_before_device_or_io
         ("from_trees", {"fixed_iters_Pi": math.nan}, "fixed_iters_Pi"),
         ("from_trees", {"fixed_iters_Pi": 4.5}, "fixed_iters_Pi"),
         ("from_trees", {"family_chunk_size": -1}, "family_chunk_size"),
+        ("from_trees", {"preprocess_cpu_cores": 0}, "preprocess_cpu_cores"),
         ("from_trees", {"max_wave_size": 0}, "max_wave_size"),
         ("from_trees", {"max_root_wave_size": True}, "max_root_wave_size"),
         ("from_trees", {"clade_budget": 0}, "clade_budget"),
@@ -1885,6 +1882,11 @@ def test_gene_recon_factories_reject_invalid_solver_controls_before_device_or_io
         ),
         ("from_alerax_families", {"neumann_terms": 0}, "neumann_terms"),
         ("from_alerax_families", {"neumann_terms": True}, "neumann_terms"),
+        (
+            "from_alerax_families",
+            {"preprocess_cpu_cores": True},
+            "preprocess_cpu_cores",
+        ),
         (
             "from_alerax_families",
             {"family_chunk_candidates": [-1]},
@@ -1932,7 +1934,6 @@ def test_uniform_chunked_factories_reject_invalid_solver_controls_before_device_
 @pytest.mark.parametrize(
     ("kwargs", "message"),
     [
-        ({"refresh_preprocess_cache": "false"}, "refresh_preprocess_cache"),
         ({"use_pruning": "false"}, "use_pruning"),
         ({"warm_start_E": "false"}, "warm_start_E"),
         ({"profile": "false"}, "profile"),
@@ -1985,7 +1986,6 @@ def test_uniform_chunked_init_rejects_nonbool_controls_before_side_effects(
 @pytest.mark.parametrize(
     ("kwargs", "message"),
     [
-        ({"refresh_preprocess_cache": "false"}, "refresh_preprocess_cache"),
         ({"use_pruning": "false"}, "use_pruning"),
         ({"warm_start_E": "false"}, "warm_start_E"),
         ({"profile": "false"}, "profile"),
@@ -4281,7 +4281,9 @@ def test_optimization_runner_adagrad_mode_records_public_phase(tmp_path: Path):
         "adagrad",
         "final_eval",
     ]
-    assert history_rows[0]["closure_evals"] == 2
+    assert history_rows[0]["closure_evals"] == 1
+    assert history_rows[0]["optimizer/eval_position"] == "pre_step"
+    assert history_rows[0]["optimizer/step_applied"] is True
     assert history_rows[0]["theta_step_inf"] > 0.0
     assert torch.linalg.vector_norm(runner.fake_model.theta.detach()) < torch.linalg.vector_norm(
         runner.fake_model.initial_theta
@@ -4305,6 +4307,8 @@ def test_optimization_runner_lbfgs_mode_records_public_phase(tmp_path: Path):
         "final_eval",
     ]
     assert history_rows[0]["closure_evals"] == 2
+    assert history_rows[0]["optimizer/eval_position"] == "post_step"
+    assert history_rows[0]["optimizer/step_applied"] is True
     assert history_rows[0]["theta_step_inf"] > 0.0
     assert torch.linalg.vector_norm(runner.fake_model.theta.detach()) < torch.linalg.vector_norm(
         runner.fake_model.initial_theta
@@ -4334,8 +4338,11 @@ def test_optimization_runner_adam_lbfgs_schedule_runs_active_phases(tmp_path: Pa
         "lbfgs",
         "final_eval",
     ]
-    assert history_rows[0]["closure_evals"] == 2
+    assert history_rows[0]["closure_evals"] == 1
+    assert history_rows[0]["optimizer/eval_position"] == "pre_step"
+    assert history_rows[0]["optimizer/step_applied"] is True
     assert all(row["closure_evals"] >= 2 for row in history_rows[1:3])
+    assert all(row["optimizer/eval_position"] == "post_step" for row in history_rows[1:3])
     assert all(row["theta_step_inf"] > 0.0 for row in history_rows[:3])
     latest = load_checkpoint(config.out_dir / "checkpoints" / "latest.pt")
     assert latest["optimizer_phase"] == "lbfgs"
@@ -4422,7 +4429,7 @@ def test_optimization_runner_marks_nonfinite_final_evaluation_failed(tmp_path: P
 
         def full_loss(self):
             self.loss_calls += 1
-            if self.loss_calls == 3:
+            if self.loss_calls == 2:
                 return self.theta.sum() * torch.tensor(float("nan"))
             return super().full_loss()
 
@@ -4439,7 +4446,7 @@ def test_optimization_runner_marks_nonfinite_final_evaluation_failed(tmp_path: P
     assert result.status == "failed"
     assert result.reason == "nonfinite_objective_or_gradient"
     assert math.isfinite(result.final_nll_bits)
-    assert runner.fake_model.loss_calls == 3
+    assert runner.fake_model.loss_calls == 2
     history_rows = _optimizer_mode_history_rows(config.out_dir)
     assert [row["optimizer/phase"] for row in history_rows] == ["adam", "final_eval"]
     assert history_rows[-1]["optimizer/final_eval_status"] == "failed"
@@ -4547,6 +4554,8 @@ def test_optimization_runner_run_writes_outputs_with_fake_model(tmp_path: Path):
                 self.saved_checkpoint_losses.append(
                     (
                         Path(path).name,
+                        row.get("optimizer/eval_position"),
+                        row.get("optimizer/step_applied"),
                         expected_loss,
                         float(row["likelihood/data_nll_bits"]),
                     )
@@ -4574,13 +4583,21 @@ def test_optimization_runner_run_writes_outputs_with_fake_model(tmp_path: Path):
     assert result.status == "not_converged"
     assert result.reason == "max_steps"
     assert result.steps_completed == 1
-    assert result.best_step == 0
+    assert result.best_step == 1
     assert result.out_dir == config.out_dir
     assert result.sampling_checkpoint == config.out_dir / "checkpoints" / "best.pt"
     assert runner.fake_model.closed
     assert runner.fake_model.clears >= 1
     assert runner.saved_checkpoint_losses
-    for checkpoint_name, expected_loss, row_loss in runner.saved_checkpoint_losses:
+    for (
+        checkpoint_name,
+        eval_position,
+        step_applied,
+        expected_loss,
+        row_loss,
+    ) in runner.saved_checkpoint_losses:
+        if eval_position == "pre_step" and step_applied is True:
+            continue
         assert row_loss == pytest.approx(expected_loss), checkpoint_name
 
     history_rows = [
@@ -4589,7 +4606,7 @@ def test_optimization_runner_run_writes_outputs_with_fake_model(tmp_path: Path):
     ]
     assert [row["optimizer/phase"] for row in history_rows] == ["adam", "final_eval"]
     assert history_rows[-1]["step"] == 1
-    assert history_rows[-1]["best_step"] == 0
+    assert history_rows[-1]["best_step"] == 1
     assert all(
         row["solver/e_adjoint_failed_batches"] == 1.0
         for row in history_rows
@@ -4614,7 +4631,7 @@ def test_optimization_runner_run_writes_outputs_with_fake_model(tmp_path: Path):
     best = load_checkpoint(config.out_dir / "checkpoints" / "best.pt")
     assert latest["status"]["status"] == "not_converged"
     assert latest["last_row"]["solver/e_adjoint_failed_batches"] == 1.0
-    assert best["status"]["best_step"] == 0
+    assert best["status"]["best_step"] == 1
     assert latest["last_row"]["optimizer/phase"] == "final_eval"
     assert latest["family_names"] == ["fam0", "fam1"]
 

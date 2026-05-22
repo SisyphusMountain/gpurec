@@ -5,9 +5,6 @@ import torch
 
 from gpurec.core.model import (
     GeneDataset,
-    _load_preprocess_cache,
-    _validate_family_preprocess_cache,
-    _validate_species_preprocess_cache,
     parse_alerax_family_file,
     parse_alerax_mapping_file,
 )
@@ -37,52 +34,7 @@ def test_alerax_family_selection_validates_before_io(tmp_path, kwargs, message):
         parse_alerax_family_file(missing, **kwargs)
 
 
-def test_preprocess_cache_load_uses_weights_only(tmp_path, monkeypatch):
-    calls = []
-
-    def fake_load(path, *, map_location, weights_only):
-        calls.append(
-            {
-                "path": path,
-                "map_location": map_location,
-                "weights_only": weights_only,
-            }
-        )
-        return {"S": 3}
-
-    monkeypatch.setattr("gpurec.core.model.torch.load", fake_load)
-
-    payload = _load_preprocess_cache(
-        tmp_path / "species.pt",
-        label="species",
-        required_keys=("S",),
-    )
-
-    assert payload == {"S": 3}
-    assert calls == [
-        {
-            "path": tmp_path / "species.pt",
-            "map_location": "cpu",
-            "weights_only": True,
-        }
-    ]
-
-
-def test_gene_dataset_rejects_nonbool_cache_refresh_before_extension_load(tmp_path):
-    with pytest.raises(ValueError, match="refresh_preprocess_cache"):
-        GeneDataset(
-            tmp_path / "missing_species.nwk",
-            [tmp_path / "missing_gene.nwk"],
-            genewise=False,
-            specieswise=False,
-            dtype=torch.float64,
-            device="cpu",
-            preprocess_cache_dir=tmp_path / "cache",
-            refresh_preprocess_cache="false",
-        )
-
-
-def _valid_species_cache_payload() -> dict[str, object]:
+def _valid_species_payload() -> dict[str, object]:
     return {
         "S": 3,
         "names": ["Root", "A", "B"],
@@ -93,7 +45,7 @@ def _valid_species_cache_payload() -> dict[str, object]:
     }
 
 
-def _valid_family_cache_payload() -> dict[str, object]:
+def _valid_family_payload() -> dict[str, object]:
     return {
         "ccp": {
             "C": 3,
@@ -112,28 +64,6 @@ def _valid_family_cache_payload() -> dict[str, object]:
     }
 
 
-class _FakePreprocessExt:
-    def __init__(self, species_payload, family_payload):
-        self.species_payload = species_payload
-        self.family_payload = family_payload
-        self.calls = 0
-
-    def preprocess_multiple_families(
-        self,
-        species_tree,
-        gene_tree_paths,
-        *,
-        leaf_species_maps=None,
-        include_details=False,
-        include_species_matrices=False,
-    ):
-        self.calls += 1
-        return {
-            "species": self.species_payload,
-            "families": {"fam0": self.family_payload},
-        }
-
-
 class _BatchRecordingPreprocessExt:
     def __init__(self, species_payload):
         self.species_payload = species_payload
@@ -147,232 +77,52 @@ class _BatchRecordingPreprocessExt:
         leaf_species_maps=None,
         include_details=False,
         include_species_matrices=False,
+        include_debug_details=True,
+        include_scheduler_details=True,
+        include_legacy_ccp_details=True,
+        num_threads=0,
     ):
-        del species_tree, include_details, include_species_matrices
+        del (
+            species_tree,
+            include_details,
+            include_species_matrices,
+            include_debug_details,
+            include_scheduler_details,
+            include_legacy_ccp_details,
+        )
         leaf_species_maps = leaf_species_maps or {}
         names = list(gene_tree_paths)
         self.calls.append(
             {
                 "names": names,
                 "leaf_species_maps": dict(leaf_species_maps),
+                "num_threads": num_threads,
             }
         )
         return {
             "species": self.species_payload,
-            "families": {
-                name: _valid_family_cache_payload()
-                for name in names
-            },
+            "families": {name: _valid_family_payload() for name in names},
         }
 
 
-class _NoPreprocessExt:
-    def preprocess_multiple_families(self, *args, **kwargs):
-        raise AssertionError("cache hit should not invoke preprocessing")
-
-
-def test_species_preprocess_cache_rejects_missing_nested_helpers(tmp_path):
-    path = tmp_path / "species.pt"
-    torch.save({"S": 3}, path)
-
-    with pytest.raises(RuntimeError, match="names"):
-        _load_preprocess_cache(
-            path,
-            label="species",
-            required_keys=("S",),
-            validator=_validate_species_preprocess_cache,
-        )
-
-
-def test_species_preprocess_cache_rejects_inconsistent_topology_lengths(tmp_path):
-    path = tmp_path / "species.pt"
-    payload = _valid_species_cache_payload()
-    payload["s_C12_indexes"] = torch.tensor([1], dtype=torch.long)
-    torch.save(payload, path)
-
-    with pytest.raises(RuntimeError, match="same length"):
-        _load_preprocess_cache(
-            path,
-            label="species",
-            required_keys=("S",),
-            validator=_validate_species_preprocess_cache,
-        )
-
-
-@pytest.mark.parametrize(
-    ("field", "values"),
-    [
-        ("s_P_indexes", [-1, 3]),
-        ("s_P_indexes", [0, 6]),
-        ("s_C12_indexes", [-1, 2]),
-        ("s_C12_indexes", [1, 3]),
-    ],
-)
-def test_species_preprocess_cache_rejects_topology_ids_outside_range(
+@pytest.mark.parametrize("bad_value", [0, -1, True, 1.5, "2"])
+def test_gene_dataset_rejects_invalid_preprocess_cpu_cores_before_extension_load(
     tmp_path,
-    field: str,
-    values: list[int],
+    bad_value,
 ):
-    path = tmp_path / "species.pt"
-    payload = _valid_species_cache_payload()
-    payload[field] = torch.tensor(values, dtype=torch.long)
-    torch.save(payload, path)
-
-    with pytest.raises(RuntimeError, match=f"{field}.*outside range"):
-        _load_preprocess_cache(
-            path,
-            label="species",
-            required_keys=("S",),
-            validator=_validate_species_preprocess_cache,
+    with pytest.raises(ValueError, match="preprocess_cpu_cores"):
+        GeneDataset(
+            tmp_path / "missing_species.nwk",
+            [tmp_path / "missing_gene.nwk"],
+            genewise=False,
+            specieswise=False,
+            dtype=torch.float64,
+            device="cpu",
+            preprocess_cpu_cores=bad_value,
         )
 
 
-def test_family_preprocess_cache_rejects_missing_nested_ccp_helpers(tmp_path):
-    path = tmp_path / "family.pt"
-    torch.save(
-        {
-            "ccp": {"C": 3, "N_splits": 1},
-            "leaf_row_index": torch.tensor([1, 2], dtype=torch.long),
-            "leaf_col_index": torch.tensor([1, 2], dtype=torch.long),
-        },
-        path,
-    )
-
-    with pytest.raises(RuntimeError, match="root_clade_id"):
-        _load_preprocess_cache(
-            path,
-            label="family 'fam0'",
-            required_keys=("ccp", "leaf_row_index", "leaf_col_index"),
-            validator=_validate_family_preprocess_cache,
-        )
-
-
-def test_family_preprocess_cache_rejects_wrong_index_tensor_dtype(tmp_path):
-    path = tmp_path / "family.pt"
-    payload = _valid_family_cache_payload()
-    payload["ccp"]["split_parents_sorted"] = torch.tensor([0.0], dtype=torch.float32)
-    torch.save(payload, path)
-
-    with pytest.raises(RuntimeError, match="split_parents_sorted.*torch.int64"):
-        _load_preprocess_cache(
-            path,
-            label="family 'fam0'",
-            required_keys=("ccp", "leaf_row_index", "leaf_col_index"),
-            validator=_validate_family_preprocess_cache,
-        )
-
-
-def test_family_preprocess_cache_rejects_inconsistent_split_lengths(tmp_path):
-    path = tmp_path / "family.pt"
-    payload = _valid_family_cache_payload()
-    payload["ccp"]["split_leftrights_sorted"] = torch.tensor([1], dtype=torch.long)
-    torch.save(payload, path)
-
-    with pytest.raises(RuntimeError, match="split_leftrights_sorted.*expected 2"):
-        _load_preprocess_cache(
-            path,
-            label="family 'fam0'",
-            required_keys=("ccp", "leaf_row_index", "leaf_col_index"),
-            validator=_validate_family_preprocess_cache,
-        )
-
-
-def test_cached_family_preprocess_rejects_leaf_species_indexes_outside_species_range(
-    tmp_path,
-):
-    species_tree = _write(tmp_path / "species.nwk", "(A:1,B:1)Root;\n")
-    gene_tree = _write(tmp_path / "gene.nwk", "(a:1,b:1);\n")
-    cache_dir = tmp_path / "cache"
-
-    ext = _FakePreprocessExt(
-        _valid_species_cache_payload(),
-        _valid_family_cache_payload(),
-    )
-    GeneDataset._preprocess_with_cache(
-        ext,
-        species_tree,
-        [[str(gene_tree)]],
-        ["fam0"],
-        [{}],
-        preprocess_cache_dir=cache_dir,
-        refresh=False,
-    )
-    assert ext.calls == 1
-
-    family_cache = next(cache_dir.glob("family-*.pt"))
-    cached_family = torch.load(family_cache, map_location="cpu", weights_only=True)
-    cached_family["leaf_col_index"] = torch.tensor([1, 3], dtype=torch.long)
-    torch.save(cached_family, family_cache)
-
-    with pytest.raises(RuntimeError, match="leaf_col_index.*outside range \\[0, 3\\)"):
-        GeneDataset._preprocess_with_cache(
-            _NoPreprocessExt(),
-            species_tree,
-            [[str(gene_tree)]],
-            ["fam0"],
-            [{}],
-            preprocess_cache_dir=cache_dir,
-            refresh=False,
-        )
-
-
-def test_preprocess_cache_progress_reports_miss_build_and_hit_load(tmp_path):
-    species_tree = _write(tmp_path / "species.nwk", "(A:1,B:1)Root;\n")
-    gene_tree = _write(tmp_path / "gene.nwk", "(a:1,b:1);\n")
-    cache_dir = tmp_path / "cache"
-    events: list[tuple[str, dict[str, object]]] = []
-
-    def progress(event: str, **fields: object) -> None:
-        events.append((event, fields))
-
-    ext = _FakePreprocessExt(
-        _valid_species_cache_payload(),
-        _valid_family_cache_payload(),
-    )
-    GeneDataset._preprocess_with_cache(
-        ext,
-        species_tree,
-        [[str(gene_tree)]],
-        ["fam0"],
-        [{}],
-        preprocess_cache_dir=cache_dir,
-        refresh=False,
-        progress=progress,
-    )
-
-    first_pass = [event for event, _fields in events]
-    assert "cache_start" in first_pass
-    assert "species_cache_miss" in first_pass
-    assert "family_cache_miss" in first_pass
-    assert "missing_families_preprocess_start" in first_pass
-    assert "missing_families_preprocess_done" in first_pass
-    assert "species_cache_save_done" in first_pass
-    assert "family_cache_save_done" in first_pass
-    assert first_pass[-1] == "cache_done"
-    assert ext.calls == 1
-
-    events.clear()
-    GeneDataset._preprocess_with_cache(
-        _NoPreprocessExt(),
-        species_tree,
-        [[str(gene_tree)]],
-        ["fam0"],
-        [{}],
-        preprocess_cache_dir=cache_dir,
-        refresh=False,
-        progress=progress,
-    )
-
-    second_pass = [event for event, _fields in events]
-    assert "species_cache_load_start" in second_pass
-    assert "species_cache_load_done" in second_pass
-    assert "family_cache_load_start" in second_pass
-    assert "family_cache_hit" in second_pass
-    assert "missing_families_preprocess_start" not in second_pass
-    assert second_pass[-1] == "cache_done"
-
-
-def test_missing_family_preprocessing_is_batched_and_cached_incrementally(tmp_path):
+def test_uncached_family_preprocessing_is_batched_and_forwards_cpu_cores(tmp_path):
     species_tree = _write(tmp_path / "species.nwk", "(A:1,B:1)Root;\n")
     gene_trees = [
         _write(tmp_path / f"gene{i}.nwk", f"(a:1,b:{i + 1});\n")
@@ -380,99 +130,12 @@ def test_missing_family_preprocessing_is_batched_and_cached_incrementally(tmp_pa
     ]
     family_names = [f"fam{i}" for i in range(5)]
     leaf_maps = [{}, {"a": "A"}, {}, {"b": "B"}, {}]
-    cache_dir = tmp_path / "cache"
     events: list[tuple[str, dict[str, object]]] = []
 
     def progress(event: str, **fields: object) -> None:
         events.append((event, fields))
 
-    ext = _BatchRecordingPreprocessExt(_valid_species_cache_payload())
-    species_helpers, raw_by_family = GeneDataset._preprocess_with_cache(
-        ext,
-        species_tree,
-        [[str(path)] for path in gene_trees],
-        family_names,
-        leaf_maps,
-        preprocess_cache_dir=cache_dir,
-        refresh=False,
-        progress=progress,
-        _missing_family_batch_size=2,
-    )
-
-    assert species_helpers["S"] == 3
-    assert list(raw_by_family) == family_names
-    assert [call["names"] for call in ext.calls] == [
-        ["fam0", "fam1"],
-        ["fam2", "fam3"],
-        ["fam4"],
-    ]
-    assert ext.calls[0]["leaf_species_maps"] == {"fam1": {"a": "A"}}
-    assert ext.calls[1]["leaf_species_maps"] == {"fam3": {"b": "B"}}
-    assert ext.calls[2]["leaf_species_maps"] == {}
-
-    batch_starts = [
-        fields
-        for event, fields in events
-        if event == "missing_families_preprocess_batch_start"
-    ]
-    batch_dones = [
-        fields
-        for event, fields in events
-        if event == "missing_families_preprocess_batch_done"
-    ]
-    batch_cached = [
-        fields
-        for event, fields in events
-        if event == "missing_families_preprocess_batch_cached"
-    ]
-    assert batch_starts == [
-        {
-            "batch_idx": 0,
-            "batches": 3,
-            "families": 2,
-            "families_with_leaf_maps": 1,
-            "first_family": "fam0",
-            "last_family": "fam1",
-        },
-        {
-            "batch_idx": 1,
-            "batches": 3,
-            "families": 2,
-            "families_with_leaf_maps": 1,
-            "first_family": "fam2",
-            "last_family": "fam3",
-        },
-        {
-            "batch_idx": 2,
-            "batches": 3,
-            "families": 1,
-            "families_with_leaf_maps": 0,
-            "first_family": "fam4",
-            "last_family": "fam4",
-        },
-    ]
-    assert [fields["families"] for fields in batch_dones] == [2, 2, 1]
-    assert [fields["total_built"] for fields in batch_cached] == [2, 4, 5]
-    assert len(list(cache_dir.glob("family-*.pt"))) == 5
-    assert len(list(cache_dir.glob("species-*.pt"))) == 1
-    assert events[-1] == ("cache_done", {"hits": 0, "misses": 5})
-
-
-def test_uncached_family_preprocessing_is_batched_without_cache_writes(tmp_path):
-    species_tree = _write(tmp_path / "species.nwk", "(A:1,B:1)Root;\n")
-    gene_trees = [
-        _write(tmp_path / f"gene{i}.nwk", f"(a:1,b:{i + 1});\n")
-        for i in range(5)
-    ]
-    family_names = [f"fam{i}" for i in range(5)]
-    leaf_maps = [{}, {"a": "A"}, {}, {"b": "B"}, {}]
-    cache_dir = tmp_path / "cache"
-    events: list[tuple[str, dict[str, object]]] = []
-
-    def progress(event: str, **fields: object) -> None:
-        events.append((event, fields))
-
-    ext = _BatchRecordingPreprocessExt(_valid_species_cache_payload())
+    ext = _BatchRecordingPreprocessExt(_valid_species_payload())
     species_helpers, raw_by_family = GeneDataset._preprocess_without_cache(
         ext,
         species_tree,
@@ -480,6 +143,7 @@ def test_uncached_family_preprocessing_is_batched_without_cache_writes(tmp_path)
         family_names,
         leaf_maps,
         progress=progress,
+        preprocess_cpu_cores=3,
         _batch_size=2,
     )
 
@@ -490,6 +154,7 @@ def test_uncached_family_preprocessing_is_batched_without_cache_writes(tmp_path)
         ["fam2", "fam3"],
         ["fam4"],
     ]
+    assert [call["num_threads"] for call in ext.calls] == [3, 3, 3]
     assert ext.calls[0]["leaf_species_maps"] == {"fam1": {"a": "A"}}
     assert ext.calls[1]["leaf_species_maps"] == {"fam3": {"b": "B"}}
     assert ext.calls[2]["leaf_species_maps"] == {}
@@ -511,6 +176,7 @@ def test_uncached_family_preprocessing_is_batched_without_cache_writes(tmp_path)
             "families_with_leaf_maps": 2,
             "batch_size": 2,
             "batches": 3,
+            "preprocess_cpu_cores": 3,
         },
     )
     assert batch_starts == [
@@ -542,76 +208,29 @@ def test_uncached_family_preprocessing_is_batched_without_cache_writes(tmp_path)
     assert [fields["families"] for fields in batch_dones] == [2, 2, 1]
     assert [fields["total_built"] for fields in batch_dones] == [2, 4, 5]
     assert events[-1] == ("uncached_preprocess_done", {"families": 5, "batches": 3})
-    assert not cache_dir.exists()
 
 
-def test_all_cached_family_preprocessing_uses_no_batches(tmp_path):
+def test_uncached_preprocessing_uses_openmp_default_when_cpu_cores_is_none(tmp_path):
     species_tree = _write(tmp_path / "species.nwk", "(A:1,B:1)Root;\n")
-    gene_trees = [
-        _write(tmp_path / f"gene{i}.nwk", f"(a:1,b:{i + 1});\n")
-        for i in range(3)
-    ]
-    family_names = [f"fam{i}" for i in range(3)]
-    cache_dir = tmp_path / "cache"
+    gene_tree = _write(tmp_path / "gene.nwk", "(a:1,b:1);\n")
 
-    ext = _BatchRecordingPreprocessExt(_valid_species_cache_payload())
-    GeneDataset._preprocess_with_cache(
+    ext = _BatchRecordingPreprocessExt(_valid_species_payload())
+    GeneDataset._preprocess_without_cache(
         ext,
         species_tree,
-        [[str(path)] for path in gene_trees],
-        family_names,
-        [{} for _ in family_names],
-        preprocess_cache_dir=cache_dir,
-        refresh=False,
-        _missing_family_batch_size=2,
-    )
-    assert len(ext.calls) == 2
-
-    events: list[str] = []
-    GeneDataset._preprocess_with_cache(
-        _NoPreprocessExt(),
-        species_tree,
-        [[str(path)] for path in gene_trees],
-        family_names,
-        [{} for _ in family_names],
-        preprocess_cache_dir=cache_dir,
-        refresh=False,
-        progress=lambda event, **_fields: events.append(event),
-        _missing_family_batch_size=2,
+        [[str(gene_tree)]],
+        ["fam0"],
+        [{}],
+        preprocess_cpu_cores=None,
     )
 
-    assert "family_cache_hit" in events
-    assert "missing_families_preprocess_start" not in events
-    assert "missing_families_preprocess_batch_start" not in events
-    assert events[-1] == "cache_done"
-
-
-@pytest.mark.parametrize(
-    ("field", "values"),
-    [
-        ("split_parents_sorted", [-1]),
-        ("split_parents_sorted", [3]),
-        ("split_leftrights_sorted", [-1, 2]),
-        ("split_leftrights_sorted", [1, 3]),
-    ],
-)
-def test_family_preprocess_cache_rejects_split_clade_ids_outside_range(
-    tmp_path,
-    field: str,
-    values: list[int],
-):
-    path = tmp_path / "family.pt"
-    payload = _valid_family_cache_payload()
-    payload["ccp"][field] = torch.tensor(values, dtype=torch.long)
-    torch.save(payload, path)
-
-    with pytest.raises(RuntimeError, match=f"{field}.*outside range"):
-        _load_preprocess_cache(
-            path,
-            label="family 'fam0'",
-            required_keys=("ccp", "leaf_row_index", "leaf_col_index"),
-            validator=_validate_family_preprocess_cache,
-        )
+    assert ext.calls == [
+        {
+            "names": ["fam0"],
+            "leaf_species_maps": {},
+            "num_threads": 0,
+        }
+    ]
 
 
 @pytest.mark.parametrize(
@@ -690,6 +309,7 @@ def test_gene_dataset_accepts_documented_simple_newick_subset(tmp_path):
         device="cpu",
         family_names=["fam0"],
         leaf_species_maps=[{"a": "A", "b": "B", "c": "C"}],
+        preprocess_cpu_cores=1,
     )
 
     family = dataset.families[0]
@@ -811,15 +431,18 @@ def test_alerax_family_file_multi_tree_ccp_matches_split_files(tmp_path):
     assert "inclusion_children" not in ccp_dist
     assert "inclusion_parents" not in ccp_dist
     assert "ubiquitous_clade_id" not in ccp_dist
+    assert "parents_sorted" not in ccp_dist
+    assert "seg_parent_ids" not in ccp_dist
+    assert "seg_counts" not in ccp_dist
+    assert "ptr" not in ccp_dist
+    assert "ptr_ge2" not in ccp_dist
+    assert "split_order" not in ccp_dist
     assert labels_dist == labels_split
     assert sorted(label for label in labels_dist if label) == ["a1", "b1", "c1"]
     for key in (
         "split_counts",
         "split_parents_sorted",
         "split_leftrights_sorted",
-        "parents_sorted",
-        "seg_counts",
-        "ptr",
         "log_split_probs_sorted",
     ):
         torch.testing.assert_close(ccp_dist[key], ccp_split[key])

@@ -984,6 +984,7 @@ class GeneReconModel(torch.nn.Module):
         theta_init_rates: Optional[tuple[float, float, float]] = None,
         preprocess_cache_dir: str | os.PathLike | None = None,
         refresh_preprocess_cache: bool = False,
+        preprocess_cpu_cores: int | None = None,
         **solver_kwargs,
     ) -> "GeneReconModel":
         """One-liner: Newick paths → ready-to-optimize model.
@@ -1018,20 +1019,21 @@ class GeneReconModel(torch.nn.Module):
             Optional natural-space initial rates. If ``None``, the dataset
             default of ``log2(1e-10)`` is used (matching GeneDataset).
         preprocess_cache_dir : str | os.PathLike | None
-            Optional directory for CPU preprocessing cache files. Reusing the
-            same cache avoids reparsing/rebuilding unchanged gene trees.
+            Deprecated compatibility keyword. Preprocessing is no longer cached.
         refresh_preprocess_cache : bool
-            Ignore existing preprocessing cache entries and overwrite them.
+            Deprecated compatibility keyword. Preprocessing is no longer cached.
+        preprocess_cpu_cores : int | None
+            Optional worker thread count for CPU preprocessing.
         """
         mode = _normalize_mode(mode)
         genewise, specieswise = _mode_to_flags(mode)
         require_default_objective("GeneReconModel")
-        refresh_preprocess_cache = bool_value(
-            "refresh_preprocess_cache",
-            refresh_preprocess_cache,
-        )
         dtype = _validate_gene_dtype(dtype)
         solver_kwargs = _normalize_gene_solver_kwargs(solver_kwargs)
+        preprocess_cpu_cores = optional_positive_int(
+            "preprocess_cpu_cores",
+            preprocess_cpu_cores,
+        )
         theta_base = theta_init_base_from_rates(
             theta_init_rates,
             dtype=dtype,
@@ -1050,6 +1052,7 @@ class GeneReconModel(torch.nn.Module):
             device=device,
             preprocess_cache_dir=preprocess_cache_dir,
             refresh_preprocess_cache=refresh_preprocess_cache,
+            preprocess_cpu_cores=preprocess_cpu_cores,
         )
         theta_init = None
         if theta_base is not None:
@@ -1082,23 +1085,27 @@ class GeneReconModel(torch.nn.Module):
         theta_init_rates: Optional[tuple[float, float, float]] = None,
         preprocess_cache_dir: str | os.PathLike | None = None,
         refresh_preprocess_cache: bool = False,
+        preprocess_cpu_cores: int | None = None,
         **solver_kwargs,
     ) -> "GeneReconModel":
         """Build from an AleRax ``[FAMILIES]`` file with CCP/tree samples.
 
         Referenced species and gene tree files use the same supported simple
-        Newick subset as :meth:`from_trees`.
+        Newick subset as :meth:`from_trees`. ``preprocess_cache_dir`` and
+        ``refresh_preprocess_cache`` are retained as deprecated compatibility
+        keywords; preprocessing is no longer cached. ``preprocess_cpu_cores``
+        optionally fixes the worker thread count for CPU preprocessing.
         """
         mode = _normalize_mode(mode)
         genewise, specieswise = _mode_to_flags(mode)
         require_default_objective("GeneReconModel")
-        refresh_preprocess_cache = bool_value(
-            "refresh_preprocess_cache",
-            refresh_preprocess_cache,
-        )
         dtype = _validate_gene_dtype(dtype)
         start, max_families = normalize_family_selection(start, max_families)
         solver_kwargs = _normalize_gene_solver_kwargs(solver_kwargs)
+        preprocess_cpu_cores = optional_positive_int(
+            "preprocess_cpu_cores",
+            preprocess_cpu_cores,
+        )
         theta_base = theta_init_base_from_rates(
             theta_init_rates,
             dtype=dtype,
@@ -1121,6 +1128,7 @@ class GeneReconModel(torch.nn.Module):
             device=device,
             preprocess_cache_dir=preprocess_cache_dir,
             refresh_preprocess_cache=refresh_preprocess_cache,
+            preprocess_cpu_cores=preprocess_cpu_cores,
             family_names=family_names,
             leaf_species_maps=leaf_maps,
         )

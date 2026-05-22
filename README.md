@@ -88,7 +88,7 @@ gene labels do not follow that prefix convention.  `GeneDataset` is retained
 for this explicit preprocessing/mapping use; the rest of `gpurec.core` should
 be treated as unstable implementation surface unless separately documented.
 
-The retained C++ preprocessing parser supports a deliberately small Newick
+The retained preprocessing parser supports a deliberately small Newick
 subset: nested trees with unquoted labels, optional internal labels, optional
 numeric branch lengths, and ordinary whitespace.  Branch lengths are ignored.
 When a branch length is present, the numeric text must immediately follow `:`.
@@ -256,15 +256,13 @@ gpurec optimize \
   --species-tree S.tree \
   --families-file families.txt \
   --out-dir output_gpurec \
-  --preprocess-cache output_gpurec/preprocess_cache \
+  --preprocess-cpu-cores 8 \
   --mode genewise \
   --device cuda
 ```
 
-`--preprocess-cache` stores reusable CPU preprocessing artifacts for unchanged
-species and gene trees.  If cache loading fails with safe-loading or cache-shape
-validation errors after a code upgrade, rerun with `--refresh-preprocess-cache`
-to regenerate those entries from the original tree inputs.
+`--preprocess-cpu-cores` sets the worker thread count for CPU preprocessing.
+When it is omitted, preprocessing uses the selected backend's runtime default.
 
 Main outputs include:
 
@@ -426,11 +424,15 @@ follow the best-effort or required-mode fallback policy above.
 
 | Variable | Scope |
 | --- | --- |
+| `GPUREC_PREPROCESS_BACKEND` | CPU preprocessing backend selector; use `cpp` for the retained C++ extension or `rust` for the native Rust preprocessing extension. |
+| `GPUREC_PREPROCESS_NATIVE_LIB` | Optional path to a prebuilt native Rust preprocessing extension. |
+| `GPUREC_PREPROCESS_BIN` | Optional path to the Rust preprocessing CLI used by the subprocess adapter and profiling helpers. |
 | `GPUREC_BACKTRACK_BIN` | Path to the Rust backtracking binary used by `gpurec sample`, `gpurec run`, and `gpurec backtrack-check`. |
 | `GPUREC_ALERAX_COMPAT` | Compatibility guard; differentiable model optimization supports only unset or `0`. |
 | `GPUREC_MEMORY_POLICY_FRACTION`, `GPUREC_MEMORY_POLICY_RESERVE_GIB` | GPU memory-budget margins used by uniform chunk planning. |
 | `GPUREC_FUSE_FINAL_PIBAR`, `GPUREC_SPECIALIZE_NONLEAF_LEAF_TERM` | Forward/backward fast-path selectors for retained uniform kernels. |
 | `GPUREC_BACKWARD_NO_CPU_PRUNING`, `GPUREC_DTS_SKIP_INACTIVE_PIBAR_ZERO` | Backward pass pruning and inactive-output zero-fill controls. |
+| `GPUREC_TRITON_CHILD_EDGE_SELF_LOOP`, `GPUREC_TRITON_SELF_LOOP_DIRECT_GRADS` | Triton backward self-loop diagnostic selectors. |
 | `GPUREC_CUDA_SELF_LOOP_NOSPLIT`, `GPUREC_CUDA_SELF_LOOP_SPLIT`, `GPUREC_CUDA_SELF_LOOP_NOSPLIT_CORRECTION` | Native CUDA self-loop prototype selectors and correction mode. |
 | `GPUREC_CUDA_PIBAR_FROM_UD`, `GPUREC_CUDA_PIBAR_FROM_UD_STRICT` | Native CUDA Pibar-from-`u_d` prototype selector and strict-failure mode. |
 | `GPUREC_WAVE_STEP_BLOCK_S`, `GPUREC_WAVE_STEP_NUM_WARPS` | Triton forward wave-step launch tuning. |
@@ -448,8 +450,8 @@ scripts under `scripts/` are legacy checkout-local experiment launchers and
 diagnostics for a local, untracked HOGENOM benchmark layout.  The HOGENOM data
 under `tests/data/HOGENOM/...` is intentionally not distributed with the package.
 The optimization launchers default to those local paths; pass explicit
-`--species-tree`, `--families-file`, `--preprocess-cache`, and `--out-dir`
-values to those launchers for other datasets.  The one-pass profiler is tied to
+`--species-tree`, `--families-file`, and `--out-dir` values to those launchers
+for other datasets.  The one-pass profiler is tied to
 that local HOGENOM layout and exposes profiling and batch-control flags instead
 of dataset path overrides.
 

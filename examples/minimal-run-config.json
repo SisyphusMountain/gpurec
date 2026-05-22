@@ -5,7 +5,7 @@
   "mode": "genewise",
   "device": "cuda",
   "max_families": 1,
-  "preprocess_cache": "output/preprocess-cache",
+  "preprocess_cpu_cores": 1,
   "steps": 10,
   "log_every": 1,
   "checkpoint_every": 1

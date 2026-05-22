@@ -262,7 +262,6 @@ class SamplingRunner:
         run_config = RunConfig.from_dict(payload["config"])
         model = build_alerax_workflow_model(
             run_config,
-            refresh_preprocess_cache=False,
             prefetch_batches=0,
         )
         try:

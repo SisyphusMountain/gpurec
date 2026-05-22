@@ -11,12 +11,9 @@ from .config import RunConfig
 def build_alerax_workflow_model(
     config: RunConfig,
     *,
-    refresh_preprocess_cache: bool | None = None,
     prefetch_batches: Literal["all"] | int = "all",
 ) -> GeneReconModel:
     require_cuda_device(config.device, owner="gpurec production workflow")
-    if refresh_preprocess_cache is None:
-        refresh_preprocess_cache = config.refresh_preprocess_cache
     return GeneReconModel.from_alerax_families(
         str(config.species_tree),
         config.families_file,
@@ -26,8 +23,7 @@ def build_alerax_workflow_model(
         device=config.device,
         dtype=config.torch_dtype,
         theta_init_rates=config.theta_init_rates,
-        preprocess_cache_dir=config.preprocess_cache,
-        refresh_preprocess_cache=refresh_preprocess_cache,
+        preprocess_cpu_cores=config.preprocess_cpu_cores,
         fixed_iters_E=config.fixed_iters_e,
         max_iters_E=config.max_iters_e,
         tol_E=config.tol_e,
