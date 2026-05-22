@@ -37,7 +37,6 @@ from gpurec.core.memory_policy import choose_uniform_pipeline_policy
 from gpurec.core.model import GeneDataset
 from gpurec.optimization.implicit_grad import _e_adjoint_and_theta_vjp
 from gpurec.api.uniform_chunked import (
-    UNIFORM_OPTIMIZED_DEFAULT_FLAGS as DEFAULT_FLAGS,
     _UniformBuiltChunk as BuiltChunk,
     _UniformChunkSpec as ChunkSpec,
     _build_chunk,
@@ -102,77 +101,48 @@ def _parse_dtype(value: str) -> torch.dtype:
     raise argparse.ArgumentTypeError("dtype must be float32/fp32 or float64/fp64")
 
 
-def _normalize_preprocess_cache_dir(
-    cache_dir: str | os.PathLike | None,
-    *,
-    disable_cache: bool = False,
-) -> str | None:
-    if disable_cache:
-        return None
-    if cache_dir is None:
-        return None
-    value = os.fspath(cache_dir)
-    if value.strip().lower() in {"none", "null", "off", "disabled"}:
-        return None
-    return value
-
-
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--dataset", default=os.getenv("DATASET", "tests/data/test_trees_1000"))
-    parser.add_argument("--start", type=int, default=int(os.getenv("FAMILY_START", "0")))
-    parser.add_argument("--fams", type=int, default=int(os.getenv("FAMS", "1000")))
-    parser.add_argument("--family-chunk-size", default=os.getenv("FAMILY_CHUNK_SIZE", "auto"))
-    parser.add_argument("--max-wave-size", default=os.getenv("MAX_WAVE_SIZE", "auto"))
-    parser.add_argument("--fixed-iters", default=os.getenv("FIXED_ITERS_PI", "6"))
-    parser.add_argument("--reps", type=int, default=int(os.getenv("REPS", "3")))
-    parser.add_argument("--warmups", type=int, default=int(os.getenv("WARMUPS", "1")))
-    parser.add_argument(
-        "--cache-dir",
-        default=os.getenv("PREPROCESS_CACHE_DIR", "/tmp/gpurec_preprocess_cache"),
-        help="Directory for preprocess caches. Use 'none' to disable cache writes.",
-    )
-    parser.add_argument(
-        "--no-preprocess-cache",
-        action="store_true",
-        default=os.getenv("NO_PREPROCESS_CACHE", "0") != "0",
-        help="Disable preprocess cache reads and writes for setup.",
-    )
-    parser.add_argument("--dtype", type=_parse_dtype, default=_parse_dtype(os.getenv("DTYPE", "float32")))
+    parser.add_argument("--dataset", default="tests/data/test_trees_1000")
+    parser.add_argument("--start", type=int, default=0)
+    parser.add_argument("--fams", type=int, default=1000)
+    parser.add_argument("--family-chunk-size", default="auto")
+    parser.add_argument("--max-wave-size", default="auto")
+    parser.add_argument("--fixed-iters", default="6")
+    parser.add_argument("--reps", type=int, default=3)
+    parser.add_argument("--warmups", type=int, default=1)
+    parser.add_argument("--dtype", type=_parse_dtype, default=_parse_dtype("float32"))
     parser.add_argument(
         "--uncached-preprocess-batch-size",
         type=int,
-        default=int(os.getenv("UNCACHED_PREPROCESS_BATCH_SIZE", "1024")),
+        default=1024,
         help="Private benchmark diagnostic: batch size for no-cache family preprocessing.",
     )
-    parser.add_argument("--profile-cuda-api", action="store_true", default=os.getenv("PROFILE_CUDA_API", "0") != "0")
-    parser.add_argument("--theta-rate", type=float, default=float(os.getenv("THETA_RATE", "0.05")))
-    parser.add_argument("--max-iters-E", type=int, default=int(os.getenv("MAX_ITERS_E", "2000")))
-    parser.add_argument("--tol-E", type=float, default=float(os.getenv("TOL_E", "1e-8")))
-    parser.add_argument("--neumann-terms", type=int, default=int(os.getenv("NEUMANN_TERMS", "3")))
-    parser.add_argument("--use-pruning", action=argparse.BooleanOptionalAction, default=os.getenv("USE_PRUNING", "1") != "0")
-    parser.add_argument("--pruning-threshold", type=float, default=float(os.getenv("PRUNING_THRESHOLD", "1e-6")))
-    parser.add_argument("--stats-only", action="store_true", default=os.getenv("STATS_ONLY", "0") != "0")
+    parser.add_argument("--profile-cuda-api", action="store_true", default=False)
+    parser.add_argument("--theta-rate", type=float, default=0.05)
+    parser.add_argument("--max-iters-E", type=int, default=2000)
+    parser.add_argument("--tol-E", type=float, default=1e-8)
+    parser.add_argument("--neumann-terms", type=int, default=3)
+    parser.add_argument("--use-pruning", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--pruning-threshold", type=float, default=1e-6)
+    parser.add_argument("--stats-only", action="store_true", default=False)
     parser.add_argument(
         "--progress-jsonl",
         action="store_true",
-        default=os.getenv("PROGRESS_JSONL", "0") != "0",
+        default=False,
         help="Emit flushed JSONL progress records during setup and benchmark execution.",
     )
     parser.add_argument(
         "--preflight-only",
         "--setup-only",
         action="store_true",
-        default=(
-            os.getenv("PREFLIGHT_ONLY", "0") != "0"
-            or os.getenv("SETUP_ONLY", "0") != "0"
-        ),
+        default=False,
         help="Build static inputs, print setup/status information, then exit before benchmark passes.",
     )
     parser.add_argument(
         "--preflight-window-size",
         type=int,
-        default=int(os.getenv("PREFLIGHT_WINDOW_SIZE", "0")),
+        default=0,
         help=(
             "Diagnostic setup-only mode: validate the requested family range in "
             "sequential windows of this size and discard each window before "
@@ -183,33 +153,29 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--strict-optimized-kernels",
         action=argparse.BooleanOptionalAction,
-        default=os.getenv("STRICT_OPTIMIZED_KERNELS", "1") != "0",
+        default=True,
         help="Report and fail early when required optimized global/uniform gates are inactive.",
     )
     parser.add_argument(
         "--compare-unchunked-max-fams",
         type=int,
-        default=int(os.getenv("COMPARE_UNCHUNKED_MAX_FAMS", "8")),
+        default=8,
         help="For fam counts at or below this value, compare chunked and one-chunk loss/gradient.",
     )
     parser.add_argument(
         "--fail-on-correctness-mismatch",
         action=argparse.BooleanOptionalAction,
-        default=os.getenv("FAIL_ON_CORRECTNESS_MISMATCH", "0") != "0",
+        default=False,
     )
     parser.add_argument(
         "--empty-cache-between-reps",
         action=argparse.BooleanOptionalAction,
-        default=os.getenv("EMPTY_CACHE_BETWEEN_REPS", "0") != "0",
+        default=False,
     )
     args = parser.parse_args()
     args.family_chunk_size = _parse_auto_int(args.family_chunk_size)
     args.max_wave_size = _parse_auto_optional_int(args.max_wave_size)
     args.fixed_iters = _parse_optional_int(args.fixed_iters)
-    args.cache_dir = _normalize_preprocess_cache_dir(
-        args.cache_dir,
-        disable_cache=args.no_preprocess_cache,
-    )
     if isinstance(args.family_chunk_size, int) and args.family_chunk_size < 0:
         raise ValueError("--family-chunk-size must be non-negative")
     if args.reps <= 0:
@@ -566,7 +532,6 @@ def _make_static_inputs(args: argparse.Namespace) -> StaticInputs:
         specieswise=False,
         dtype=dtype,
         device=device,
-        preprocess_cache_dir=args.cache_dir,
         family_names=[Path(gene).stem for gene in genes],
         _preprocess_progress=_make_dataset_progress_hook(args),
         _uncached_preprocess_batch_size=args.uncached_preprocess_batch_size,
@@ -1214,7 +1179,6 @@ def _print_active_path_flags(
         "fused_dts_backward_accum", status["fused_dts_backward_accum"],
         "compact_tree_pibar_vjp", status["compact_tree_pibar_vjp"],
         "proposal0_self_loop", status["proposal0_self_loop"],
-        "proposal0_block_w", os.environ.get("GPUREC_SELF_LOOP_2D_BLOCK_W", "unset"),
         "strict_optimized_kernels", int(args.strict_optimized_kernels),
     )
     print(
@@ -1247,12 +1211,6 @@ def _print_active_path_flags(
     )
 
 
-def _print_env_flags() -> None:
-    print("env_flags")
-    for key in sorted(k for k in os.environ if k.startswith("GPUREC_")):
-        print(key, os.environ[key])
-
-
 def _clone_args_for_preflight_window(
     args: argparse.Namespace,
     *,
@@ -1268,13 +1226,9 @@ def _clone_args_for_preflight_window(
 
 def _run_static_preflight(
     args: argparse.Namespace,
-    *,
-    print_env: bool = False,
 ) -> StaticInputs:
     static = _make_static_inputs(args)
     _print_policy(static, args)
-    if print_env:
-        _print_env_flags()
     status = _optimized_feature_status(args, static)
     if _progress_enabled(args):
         _emit_progress(args, "optimized_status", **status)
@@ -1437,18 +1391,15 @@ def _print_summary(results: list[dict[str, Any]]) -> None:
 
 def main() -> None:
     args = _parse_args()
-    for key, value in DEFAULT_FLAGS.items():
-        os.environ.setdefault(key, value)
 
     torch.cuda.empty_cache()
     gc.collect()
 
     if args.preflight_window_size > 0:
-        _print_env_flags()
         _run_windowed_preflight(args)
         return
 
-    static = _run_static_preflight(args, print_env=True)
+    static = _run_static_preflight(args)
 
     if args.preflight_only or args.stats_only:
         return

@@ -191,10 +191,10 @@ Verification:
 
 ## Environment Variable Surface
 
-Current package runtime reads the following environment variables.  This table
-is an ownership manifest, not a deletion list; pruning should move non-user
-surfaces behind constructor/config objects or benchmark/profiling entry points
-before any flag is removed.
+The supported runtime environment surface is intentionally small.  This table
+is a support manifest for environment variables that users may rely on; package
+internals may still contain temporary reads while pruning is in progress, but
+those reads are not public contracts.
 
 ### Environment Owner Manifest
 
@@ -203,39 +203,25 @@ before any flag is removed.
 | `GPUREC_BACKTRACK_BIN` | User-facing | Binary/distribution contract for `gpurec sample`, `gpurec run`, and `gpurec backtrack-check`. |
 | `GPUREC_ALERAX_COMPAT` | User-facing compatibility | Compatibility guard read by API validation; supported differentiable optimization accepts only unset or `0`. |
 | `GPUREC_MEMORY_POLICY_FRACTION`, `GPUREC_MEMORY_POLICY_RESERVE_GIB` | User-facing | Memory-budget margins for uniform chunk planning. |
-| `GPUREC_PREPROCESS_BIN`, `GPUREC_PREPROCESS_NATIVE_LIB` | Internal production/diagnostic | Rust preprocessing binary/native-extension discovery while source builds and prebuilt artifacts coexist. |
-| `GPUREC_PREPROCESS_BACKEND` | Internal production/diagnostic | CPU preprocessing backend selector retained while the Rust port and C++ fallback coexist. |
-| `GPUREC_SCHEDULER_BACKEND` | Internal production/diagnostic | Wave scheduling and batching backend selector; unset prefers Rust with Python fallback when the native extension is unavailable, while explicit `rust` or `python` force one backend for diagnostics. |
-| `GPUREC_FUSE_FINAL_PIBAR`, `GPUREC_SPECIALIZE_NONLEAF_LEAF_TERM` | Internal production fast path | Forward/backward retained-kernel selectors that should become fixed behavior after benchmark gates. |
-| `GPUREC_BACKWARD_NO_CPU_PRUNING`, `GPUREC_DTS_SKIP_INACTIVE_PIBAR_ZERO` | Internal production/diagnostic | Backward pruning and inactive-output zero-fill controls retained for behavior comparison. |
-| `GPUREC_TRITON_CHILD_EDGE_SELF_LOOP`, `GPUREC_TRITON_SELF_LOOP_DIRECT_GRADS` | Internal production/diagnostic | Triton backward self-loop diagnostic selectors retained for behavior comparison. |
-| `GPUREC_WAVE_STEP_BLOCK_S`, `GPUREC_WAVE_STEP_NUM_WARPS` | Benchmark/internal tuning | Triton forward wave-step launch tuning. |
-| `GPUREC_DTS_BLOCK_S`, `GPUREC_DTS_NUM_WARPS`, `GPUREC_DTS_GRAD_MT_TILE_SPLITS` | Benchmark/internal tuning | Triton cross-DTS backward launch tuning. |
-| `GPUREC_DTS_PARENT_BLOCK_S`, `GPUREC_DTS_PARENT_NUM_WARPS`, `GPUREC_DTS_PARENT_TILE_SPLITS` | Benchmark/internal tuning | Triton parent-reduced DTS launch tuning. |
-| `GPUREC_PIBAR_UD_BLOCK_S`, `GPUREC_PIBAR_UD_NUM_WARPS` | Benchmark/internal tuning | Triton Pibar-from-`u_d` launch tuning. |
-| `GPUREC_SELF_LOOP_2D_BLOCK_W`, `GPUREC_SELF_LOOP_2D_BLOCK_NODES`, `GPUREC_SELF_LOOP_2D_NUM_WARPS`, `GPUREC_SELF_LOOP_2D_JT_NUM_WARPS`, `GPUREC_SELF_LOOP_2D_SKIP_INACTIVE_SCRATCH_ZERO` | Benchmark/internal tuning | Triton 2D backward self-loop launch tuning and scratch-zero behavior. |
-| `GPUREC_CUDA_SELF_LOOP_NOSPLIT`, `GPUREC_CUDA_SELF_LOOP_SPLIT`, `GPUREC_CUDA_SELF_LOOP_NOSPLIT_CORRECTION` | Prototype/internal | Native CUDA self-loop prototype selectors and correction mode. |
-| `GPUREC_CUDA_SELF_LOOP_BLOCK`, `GPUREC_CUDA_SELF_LOOP_CHILD_EDGE_WEIGHT` | Prototype/internal tuning | Native CUDA self-loop launch tuning. |
-| `GPUREC_CUDA_PIBAR_FROM_UD`, `GPUREC_CUDA_PIBAR_FROM_UD_STRICT` | Prototype/internal | Native CUDA Pibar-from-`u_d` prototype selector and strict-failure mode. |
-| `GPUREC_CUDA_PIBAR_FROM_UD_BLOCK`, `GPUREC_CUDA_PIBAR_FROM_UD_PAD_SHARED` | Prototype/internal tuning | Native CUDA Pibar-from-`u_d` launch tuning. |
+| `GPUREC_PREPROCESS_BIN`, `GPUREC_PREPROCESS_NATIVE_LIB` | User-facing discovery | Optional Rust preprocessing CLI/native-library discovery while source builds and prebuilt artifacts coexist. |
 
-User-facing environment flags are limited to `GPUREC_BACKTRACK_BIN`,
-`GPUREC_ALERAX_COMPAT`, `GPUREC_MEMORY_POLICY_FRACTION`, and
-`GPUREC_MEMORY_POLICY_RESERVE_GIB`.  All other package-read `GPUREC_*` flags
-are internal production, benchmark/internal tuning, or prototype/internal
-diagnostics and should not be promoted in README wording without updating this
-manifest.
+Supported environment flags are limited to `GPUREC_BACKTRACK_BIN`,
+`GPUREC_ALERAX_COMPAT`, `GPUREC_MEMORY_POLICY_FRACTION`,
+`GPUREC_MEMORY_POLICY_RESERVE_GIB`, `GPUREC_PREPROCESS_BIN`, and
+`GPUREC_PREPROCESS_NATIVE_LIB`.  Scheduler backend selection, preprocess cache
+locations, backward CUDA/Triton selectors, and kernel launch tuning are not
+supported environment contracts.
 
 Plan:
 
-- Keep binary/distribution and memory-policy env vars.
-- Convert production toggles into fixed behavior after benchmark gates.
-- Move tuning variables to benchmark CLI flags or a `KernelOptions` object
-  printed in benchmark output.
-- Move native CUDA prototype controls out of production model execution unless
-  a required-mode CUDA smoke test owns them.
-- Read env once during model/static construction, not in every wave/kernel
-  wrapper.
+- Keep binary/distribution, memory-policy, AleRax compatibility, and Rust
+  preprocessing discovery env vars.
+- Keep scheduler selection, preprocess cache paths, and profiling controls as
+  explicit API/CLI/profiling arguments rather than environment aliases.
+- Keep backward CUDA/Triton diagnostic selectors and kernel launch tuning out
+  of the supported docs/test manifest.
+- Continue pruning temporary package-internal reads until runtime behavior is
+  reproducible from constructor/config state.
 
 Expected user-facing result:
 
@@ -298,7 +284,7 @@ Ignored test-data and cache inventory:
 | `tests/data/test_trees_dtl01/` | Local DTL experiment fixture with prior output. | Local species/gene trees and generated output. | `output/` likelihood artifacts. | Scratch/local fixture, not a distributed contract. | Migrate the useful DTL expectation into a tracked fixture before CI, otherwise treat as deletable scratch. |
 | `tests/data/HOGENOM/`, `tests/data/hogenom_bench/`, `tests/data/davin/` | External biological datasets used by HOGENOM notebooks, scripts, profiling, and local validation. | Local HOGENOM/AleRax/Davin files outside package distribution. | Local rate tables, benchmark outputs, and profiler inputs. | Checkout-local only; package and release checks must not require these roots. | Archive/delete local copies or migrate unique behavior into tracked fixtures/workflows before promotion. |
 | `tests/data.tar.gz` | Local archive/transfer bundle for generated data. | Previous local dataset snapshot. | Compressed generated fixture bundle. | Not a source of truth and intentionally ignored. | Replace with a documented source/generator before any required workflow depends on it. |
-| `.preprocess_cache/` and `tests/data/**/output/` | Runtime-generated cache and local test outputs. | Prior preprocessing or local runs. | Torch cache files, per-family likelihoods, XML, CSV, and other generated artifacts. | Regenerable byproducts. | Delete/regenerate as needed; never promote as expected fixtures. |
+| `tests/data/**/output/` | Runtime-generated local test outputs. | Prior local runs. | Per-family likelihoods, XML, CSV, and other generated artifacts. | Regenerable byproducts. | Delete/regenerate as needed; never promote as expected fixtures. |
 
 Plan:
 

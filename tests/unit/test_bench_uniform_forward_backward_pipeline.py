@@ -62,10 +62,10 @@ def test_dataset_progress_hook_prefixes_benchmark_events(
 
     hook = bench._make_dataset_progress_hook(args)
     assert hook is not None
-    hook("family_cache_miss", idx=3, family="fam3")
+    hook("batch_start", idx=3, family="fam3")
 
     payload = json.loads(capsys.readouterr().out)
-    assert payload["event"] == "dataset_preprocess_family_cache_miss"
+    assert payload["event"] == "dataset_preprocess_batch_start"
     assert payload["idx"] == 3
     assert payload["family"] == "fam3"
 
@@ -80,7 +80,6 @@ def test_dataset_progress_hook_is_disabled_without_progress_jsonl():
 def test_make_static_inputs_progress_reports_setup_sizes(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
-    tmp_path: Path,
 ):
     bench = _load_bench_module()
 
@@ -143,7 +142,6 @@ def test_make_static_inputs_progress_reports_setup_sizes(
         start=0,
         fams=2,
         dtype=bench.torch.float32,
-        cache_dir=str(tmp_path / "cache"),
         uncached_preprocess_batch_size=7,
         theta_rate=0.05,
         family_chunk_size="auto",
@@ -288,41 +286,6 @@ def test_windowed_preflight_runs_sequential_setup_windows_and_reports_progress(
         "preflight_window_done",
         "windowed_preflight_done",
     ]
-
-
-def test_cache_dir_none_disables_preprocess_cache(monkeypatch: pytest.MonkeyPatch):
-    bench = _load_bench_module()
-    monkeypatch.setattr(
-        bench.sys,
-        "argv",
-        ["bench_uniform_forward_backward_pipeline.py", "--cache-dir", "none"],
-    )
-
-    args = bench._parse_args()
-
-    assert args.cache_dir is None
-
-
-def test_no_preprocess_cache_overrides_cache_dir(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-):
-    bench = _load_bench_module()
-    monkeypatch.setattr(
-        bench.sys,
-        "argv",
-        [
-            "bench_uniform_forward_backward_pipeline.py",
-            "--cache-dir",
-            str(tmp_path / "should-not-be-used"),
-            "--no-preprocess-cache",
-        ],
-    )
-
-    args = bench._parse_args()
-
-    assert args.cache_dir is None
-    assert args.no_preprocess_cache is True
 
 
 def test_uncached_preprocess_batch_size_arg(monkeypatch: pytest.MonkeyPatch):

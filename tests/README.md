@@ -91,7 +91,7 @@ contract:
 | `tests/data/test_trees_dtl01/` | Local DTL experiment fixture plus generated output. | Legacy DTL/reference checks. | Migrate the reusable contract into a tracked fixture before using it in CI, otherwise treat it as local scratch. |
 | `tests/data/HOGENOM/`, `tests/data/hogenom_bench/`, `tests/data/davin/` | External or checkout-local biological datasets. | HOGENOM notebooks, scripts, profiling, and validation runs. | Archive/delete local copies or migrate unique behavior into tracked fixtures before promoting any dependent workflow. |
 | `tests/data.tar.gz` | Local transfer/archive artifact for generated data. | Convenience restore bundle. | Do not treat as source of truth; replace with a documented source or generator before any required workflow depends on it. |
-| `.preprocess_cache/` and `tests/data/**/output/` | Runtime-generated cache and output trees. | Speedups and previous local run outputs. | Delete/regenerate as needed; never use them as expected fixtures. |
+| `tests/data/**/output/` | Runtime-generated output trees. | Previous local run outputs. | Delete/regenerate as needed; never use them as expected fixtures. |
 
 After installing the normal Python test dependencies, the broader non-GPU
 integration marker can be collected with:

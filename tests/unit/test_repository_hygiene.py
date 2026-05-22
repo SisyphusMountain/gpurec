@@ -57,25 +57,55 @@ _ENV_OWNER_CATEGORIES = frozenset(
     {
         "User-facing",
         "User-facing compatibility",
-        "Internal production fast path",
-        "Internal production/diagnostic",
-        "Benchmark/internal tuning",
-        "Prototype/internal",
-        "Prototype/internal tuning",
+        "User-facing discovery",
     }
 )
-_USER_FACING_ENV_FLAGS = frozenset(
+_SUPPORTED_ENV_FLAGS = frozenset(
     {
         "GPUREC_BACKTRACK_BIN",
         "GPUREC_ALERAX_COMPAT",
         "GPUREC_MEMORY_POLICY_FRACTION",
         "GPUREC_MEMORY_POLICY_RESERVE_GIB",
+        "GPUREC_PREPROCESS_BIN",
+        "GPUREC_PREPROCESS_NATIVE_LIB",
     }
 )
-_USER_FACING_ENV_CATEGORIES = frozenset(
+_SUPPORTED_ENV_CATEGORIES = frozenset(
     {
         "User-facing",
         "User-facing compatibility",
+        "User-facing discovery",
+    }
+)
+_UNSUPPORTED_ENV_DOC_FLAGS = frozenset(
+    {
+        "GPUREC_PREPROCESS_BACKEND",
+        "GPUREC_SCHEDULER_BACKEND",
+        "GPUREC_FUSE_FINAL_PIBAR",
+        "GPUREC_SPECIALIZE_NONLEAF_LEAF_TERM",
+        "GPUREC_WAVE_STEP_BLOCK_S",
+        "GPUREC_WAVE_STEP_NUM_WARPS",
+        "GPUREC_DTS_BLOCK_S",
+        "GPUREC_DTS_NUM_WARPS",
+        "GPUREC_DTS_GRAD_MT_TILE_SPLITS",
+        "GPUREC_DTS_PARENT_BLOCK_S",
+        "GPUREC_DTS_PARENT_NUM_WARPS",
+        "GPUREC_DTS_PARENT_TILE_SPLITS",
+        "GPUREC_PIBAR_UD_BLOCK_S",
+        "GPUREC_PIBAR_UD_NUM_WARPS",
+        "GPUREC_SELF_LOOP_2D_BLOCK_W",
+        "GPUREC_SELF_LOOP_2D_BLOCK_NODES",
+        "GPUREC_SELF_LOOP_2D_NUM_WARPS",
+        "GPUREC_SELF_LOOP_2D_JT_NUM_WARPS",
+        "GPUREC_CUDA_SELF_LOOP_NOSPLIT",
+        "GPUREC_CUDA_SELF_LOOP_SPLIT",
+        "GPUREC_CUDA_SELF_LOOP_NOSPLIT_CORRECTION",
+        "GPUREC_CUDA_PIBAR_FROM_UD",
+        "GPUREC_CUDA_PIBAR_FROM_UD_STRICT",
+        "GPUREC_BACKWARD_NO_CPU_PRUNING",
+        "GPUREC_DTS_SKIP_INACTIVE_PIBAR_ZERO",
+        "GPUREC_TRITON_CHILD_EDGE_SELF_LOOP",
+        "GPUREC_TRITON_SELF_LOOP_DIRECT_GRADS",
     }
 )
 
@@ -173,7 +203,7 @@ def _runtime_environment_owner_manifest(root: Path) -> dict[str, str]:
     ).read_text(encoding="utf-8")
     manifest_match = re.search(
         r"### Environment Owner Manifest\n\n(?P<table>\| Variable\(s\).*?)\n\n"
-        r"User-facing environment flags are limited to",
+        r"Supported environment flags are limited to",
         pruning_plan,
         flags=re.S,
     )
@@ -922,7 +952,6 @@ def test_generated_artifact_roots_stay_ignored_and_untracked():
     gitignore = (root / ".gitignore").read_text(encoding="utf-8")
 
     expected_ignored_patterns = (
-        ".preprocess_cache/",
         "build/",
         "dist/",
         "*.egg-info/",
@@ -937,7 +966,6 @@ def test_generated_artifact_roots_stay_ignored_and_untracked():
         path.relative_to(root).as_posix()
         for path in _tracked_files(
             root,
-            ".preprocess_cache",
             "build",
             "dist",
             "*.egg-info",
@@ -1042,10 +1070,8 @@ def test_bfloat16_policy_is_documented_as_direct_api_only():
     ):
         assert token in normalized
     for token in (
-        "Both native CUDA prototypes compute dynamic shared-memory requirements",
-        "`CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES`",
-        "pass that same byte count to `cuLaunchKernel`",
-        "preflight the requested scratch size against the device shared-memory limit",
+        "Backward CUDA/Triton prototype selectors have been removed",
+        "retained backward path is Triton-only",
     ):
         assert token in normalized
     for token in (
@@ -2055,15 +2081,14 @@ def test_project_readme_documents_top_level_backtracking_helpers():
         assert name in project_readme
 
 
-def test_project_readme_documents_package_environment_flags():
+def test_project_readme_documents_supported_environment_flags_only():
     root = Path(__file__).resolve().parents[2]
     project_readme = (root / "README.md").read_text(encoding="utf-8")
     package_env_flags = _package_env_flags(root)
 
-    assert package_env_flags
-    undocumented = [name for name in package_env_flags if name not in project_readme]
-
-    assert undocumented == []
+    assert _SUPPORTED_ENV_FLAGS.issubset(package_env_flags)
+    assert sorted(name for name in _SUPPORTED_ENV_FLAGS if name not in project_readme) == []
+    assert sorted(name for name in _UNSUPPORTED_ENV_DOC_FLAGS if name in project_readme) == []
 
 
 def test_runtime_surface_plan_records_package_environment_owners():
@@ -2075,172 +2100,69 @@ def test_runtime_surface_plan_records_package_environment_owners():
     runtime_read_flags = _runtime_read_env_flags(root)
     owner_by_flag = _runtime_environment_owner_manifest(root)
 
-    assert package_env_flags
-    assert runtime_read_flags
-    assert sorted(owner_by_flag) == package_env_flags
-    assert sorted(set(runtime_read_flags) - set(owner_by_flag)) == []
+    assert _SUPPORTED_ENV_FLAGS.issubset(package_env_flags)
+    assert _SUPPORTED_ENV_FLAGS.issubset(runtime_read_flags)
+    assert sorted(owner_by_flag) == sorted(_SUPPORTED_ENV_FLAGS)
     assert sorted(
         flag
         for flag, owner in owner_by_flag.items()
-        if owner in _USER_FACING_ENV_CATEGORIES
-    ) == sorted(_USER_FACING_ENV_FLAGS)
-    assert sorted(
-        flag
-        for flag in owner_by_flag
-        if flag.startswith("GPUREC_CUDA_")
-        and owner_by_flag[flag] not in {"Prototype/internal", "Prototype/internal tuning"}
-    ) == []
+        if owner in _SUPPORTED_ENV_CATEGORIES
+    ) == sorted(_SUPPORTED_ENV_FLAGS)
     normalized_plan = " ".join(pruning_plan.split())
-    assert (
-        "All other package-read `GPUREC_*` flags are internal production, "
-        "benchmark/internal tuning, or prototype/internal diagnostics"
-    ) in normalized_plan
-    assert "should not be promoted in README wording" in normalized_plan
+    assert "Supported environment flags are limited to" in normalized_plan
+    assert "Scheduler backend selection" in normalized_plan
+    assert "preprocess cache locations" in normalized_plan
+    assert "backward CUDA/Triton selectors" in normalized_plan
+    assert "kernel launch tuning" in normalized_plan
+    assert sorted(
+        name for name in _UNSUPPORTED_ENV_DOC_FLAGS if name in pruning_plan
+    ) == []
 
 
-def test_project_readme_documents_cuda_prototype_fallback_policy():
+def test_project_readme_excludes_removed_diagnostic_environment_matrix():
     root = Path(__file__).resolve().parents[2]
     project_readme = (root / "README.md").read_text(encoding="utf-8")
     normalized = " ".join(project_readme.split())
 
     for token in (
-        "native CUDA prototype flags are experimental diagnostics",
-        "`auto` and `enabled` fall back to the retained Triton paths",
-        "required modes re-raise failures only after",
-        "dtype/device/layout eligibility checks select that path",
-        "`GPUREC_CUDA_PIBAR_FROM_UD_STRICT=1`",
-        "self-loop prototype fallback is silent",
-        "Pibar prototype fallback is silent in `auto` but warns once in `enabled`",
-        "self-loop loader preloads wheel NVRTC builtins",
-        "Pibar loader currently does not",
+        "Kernel routing, scheduler selection, cache locations, and launch tuning "
+        "are not supported environment contracts",
+        "Rust preprocessing discovery",
     ):
         assert token in normalized
+    assert sorted(name for name in _UNSUPPORTED_ENV_DOC_FLAGS if name in project_readme) == []
 
 
-def test_cuda_prototype_source_documents_loader_and_fallback_policy():
+def test_backward_source_omits_native_cuda_prototype_surface():
     root = Path(__file__).resolve().parents[2]
-    helper_module = ast.parse(
-        (root / "gpurec" / "core" / "_helpers.py").read_text(encoding="utf-8")
+    backward_source = (root / "gpurec" / "core" / "backward.py").read_text(
+        encoding="utf-8"
     )
-    wave_backward = ast.parse(
-        (root / "gpurec" / "core" / "kernels" / "wave_backward.py").read_text(
-            encoding="utf-8"
-        )
-    )
-
-    helper_functions = {
-        node.name: node
-        for node in helper_module.body
-        if isinstance(node, ast.FunctionDef)
-    }
-    wave_functions = {
-        node.name: node for node in wave_backward.body if isinstance(node, ast.FunctionDef)
-    }
-
-    helper_doc = " ".join(
-        (
-            ast.get_docstring(helper_functions["_env_mode_enabled_required"])
-            or ""
-        ).split()
-    )
-    pibar_options_doc = " ".join(
-        (
-            ast.get_docstring(wave_functions["_cuda_pibar_from_ud_options"])
-            or ""
-        ).split()
-    )
-    backward_doc = " ".join(
-        (
-            ast.get_docstring(
-                ast.parse(
-                    (root / "gpurec" / "core" / "backward.py").read_text(
-                        encoding="utf-8"
-                    )
-                )
-            )
-            or ""
-        ).split()
-    )
-    self_loop_doc = " ".join(
-        (
-            ast.get_docstring(
-                ast.parse(
-                    (
-                        root
-                        / "gpurec"
-                        / "core"
-                        / "kernels"
-                        / "wave_backward_cuda.py"
-                    ).read_text(encoding="utf-8")
-                )
-            )
-            or ""
-        ).split()
-    )
-    pibar_doc = " ".join(
-        (
-            ast.get_docstring(
-                ast.parse(
-                    (
-                        root
-                        / "gpurec"
-                        / "core"
-                        / "kernels"
-                        / "pibar_vjp_cuda.py"
-                    ).read_text(encoding="utf-8")
-                )
-            )
-            or ""
-        ).split()
-    )
+    wave_backward_source = (
+        root / "gpurec" / "core" / "kernels" / "wave_backward.py"
+    ).read_text(encoding="utf-8")
 
     for token in (
-        "``auto`` and ``enabled`` are best-effort modes",
-        "call sites still apply their own eligibility checks",
+        "_cuda_self_loop",
+        "_OPTIONAL_CUDA_SELF_LOOP_EXCEPTIONS",
+        "wave_backward_cuda",
+        "pibar_vjp_cuda",
+        "GPUREC_CUDA_SELF_LOOP",
+        "GPUREC_CUDA_PIBAR_FROM_UD",
+        "GPUREC_TRITON_CHILD_EDGE_SELF_LOOP",
+        "GPUREC_TRITON_SELF_LOOP_DIRECT_GRADS",
+        "GPUREC_BACKWARD_NO_CPU_PRUNING",
+        "GPUREC_DTS_SKIP_INACTIVE_PIBAR_ZERO",
+        "GPUREC_SELF_LOOP_2D_SKIP_INACTIVE_SCRATCH_ZERO",
     ):
-        assert token in helper_doc
-    for token in (
-        "``auto`` is silent best-effort",
-        "``enabled`` is best-effort with the caller's warning-on-fallback path",
-        "``GPUREC_CUDA_PIBAR_FROM_UD_STRICT``",
-    ):
-        assert token in pibar_options_doc
-    for token in (
-        "fall back to the retained Triton self-loop path",
-        "``ImportError``, ``RuntimeError``, or ``ValueError``",
-        "required modes re-raise failures after the wave is eligible",
-    ):
-        assert token in backward_doc
-    assert "preloads wheel-provided NVRTC builtins" in self_loop_doc
-    assert "preflights dynamic shared-memory scratch size" in self_loop_doc
-    assert "compiles directly without the self-loop loader's wheel NVRTC builtins preload" in pibar_doc
-    assert "preflights dynamic shared-memory scratch size" in pibar_doc
-
-
-def test_cuda_prototype_launchers_preflight_dynamic_shared_memory():
-    root = Path(__file__).resolve().parents[2]
+        assert token not in backward_source
+        assert token not in wave_backward_source
 
     for relative_path in (
         "gpurec/core/kernels/wave_backward_cuda.py",
         "gpurec/core/kernels/pibar_vjp_cuda.py",
     ):
-        source = (root / relative_path).read_text(encoding="utf-8")
-        shared_pos = source.index("shared_bytes =")
-        props_pos = source.index("torch.cuda.get_device_properties")
-        optin_pos = source.index("shared_memory_per_block_optin")
-        fallback_pos = source.index(
-            "shared_memory_per_block",
-            optin_pos + len("shared_memory_per_block_optin"),
-        )
-        check_pos = source.index("shared_bytes > int(max_shared)")
-        attr_pos = source.index("CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES")
-        launch_pos = source.index("cuLaunchKernel(")
-
-        assert shared_pos < props_pos < optin_pos
-        assert props_pos < fallback_pos < check_pos < attr_pos < launch_pos
-        assert "shared_bytes," in source[attr_pos:launch_pos]
-        assert "shared_bytes," in source[launch_pos:]
-
+        assert not (root / relative_path).exists()
 
 def test_retired_leaf_hit_env_flag_stays_out_of_runtime_surface():
     root = Path(__file__).resolve().parents[2]
@@ -2601,7 +2523,6 @@ def test_ignored_local_test_data_inventory_is_documented():
         "tests/data/davin/",
         "tests/data/hogenom_bench/",
         "tests/data.tar.gz",
-        ".preprocess_cache/",
         "tests/data/**/output/",
     )
     for token in ignored_data_patterns:

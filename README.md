@@ -400,49 +400,20 @@ prebuilt binary.
 
 Most production settings should be expressed through JSON config files or CLI
 flags.  The `GPUREC_*` environment variables are retained for binary discovery,
-compatibility guards, memory-policy margins, and kernel diagnostics.
-Boolean flags treat empty, `0`, `false`, `no`, and `off` as false.  CUDA
-prototype mode flags also accept `auto`, with `1`, `true`, `yes`, `on`,
-`force`, or `required` making a selected prototype path required instead of
-best-effort.  These native CUDA prototype flags are experimental diagnostics:
-`auto` and `enabled` fall back to the retained Triton paths when a selected
-prototype is unavailable, while required modes re-raise failures only after the
-prototype's dtype/device/layout eligibility checks select that path.
-`GPUREC_CUDA_PIBAR_FROM_UD_STRICT=1` makes the Pibar prototype required after
-selection even when `GPUREC_CUDA_PIBAR_FROM_UD=auto`.  Current fallback behavior
-is intentionally documented before consolidation: self-loop prototype fallback
-is silent and catches only optional import/runtime/validation failures, Pibar
-prototype fallback is silent in `auto` but warns once in `enabled`, and the
-self-loop loader preloads wheel NVRTC builtins while the Pibar loader currently
-does not.
-Both native CUDA prototypes compute dynamic shared-memory requirements from the
-requested species count and launch tuning, set
-`CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES`, and pass that same byte count
-to `cuLaunchKernel`.  They preflight the requested scratch size against the
-device shared-memory limit before launch; later attribute or launch failures
-follow the best-effort or required-mode fallback policy above.
+compatibility guards, memory-policy margins, and Rust preprocessing discovery.
+Kernel routing, scheduler selection, cache locations, and launch tuning are not
+supported environment contracts; use explicit API, CLI, or profiling arguments
+for those controls.  Backward CUDA/Triton prototype selectors have been removed
+from the production environment surface; the retained backward path is
+Triton-only.
 
 | Variable | Scope |
 | --- | --- |
-| `GPUREC_PREPROCESS_BACKEND` | CPU preprocessing backend selector; use `cpp` for the retained C++ extension or `rust` for the native Rust preprocessing extension. |
 | `GPUREC_PREPROCESS_NATIVE_LIB` | Optional path to a prebuilt native Rust preprocessing extension. |
 | `GPUREC_PREPROCESS_BIN` | Optional path to the Rust preprocessing CLI used by the subprocess adapter and profiling helpers. |
-| `GPUREC_SCHEDULER_BACKEND` | Wave scheduling and batching backend selector; unset prefers native Rust and falls back to Python if the native extension is unavailable, use `rust` to require Rust or `python` for the retained parity fallback. |
 | `GPUREC_BACKTRACK_BIN` | Path to the Rust backtracking binary used by `gpurec sample`, `gpurec run`, and `gpurec backtrack-check`. |
 | `GPUREC_ALERAX_COMPAT` | Compatibility guard; differentiable model optimization supports only unset or `0`. |
 | `GPUREC_MEMORY_POLICY_FRACTION`, `GPUREC_MEMORY_POLICY_RESERVE_GIB` | GPU memory-budget margins used by uniform chunk planning. |
-| `GPUREC_FUSE_FINAL_PIBAR`, `GPUREC_SPECIALIZE_NONLEAF_LEAF_TERM` | Forward/backward fast-path selectors for retained uniform kernels. |
-| `GPUREC_BACKWARD_NO_CPU_PRUNING`, `GPUREC_DTS_SKIP_INACTIVE_PIBAR_ZERO` | Backward pass pruning and inactive-output zero-fill controls. |
-| `GPUREC_TRITON_CHILD_EDGE_SELF_LOOP`, `GPUREC_TRITON_SELF_LOOP_DIRECT_GRADS` | Triton backward self-loop diagnostic selectors. |
-| `GPUREC_CUDA_SELF_LOOP_NOSPLIT`, `GPUREC_CUDA_SELF_LOOP_SPLIT`, `GPUREC_CUDA_SELF_LOOP_NOSPLIT_CORRECTION` | Native CUDA self-loop prototype selectors and correction mode. |
-| `GPUREC_CUDA_PIBAR_FROM_UD`, `GPUREC_CUDA_PIBAR_FROM_UD_STRICT` | Native CUDA Pibar-from-`u_d` prototype selector and strict-failure mode. |
-| `GPUREC_WAVE_STEP_BLOCK_S`, `GPUREC_WAVE_STEP_NUM_WARPS` | Triton forward wave-step launch tuning. |
-| `GPUREC_DTS_BLOCK_S`, `GPUREC_DTS_NUM_WARPS`, `GPUREC_DTS_GRAD_MT_TILE_SPLITS` | Triton cross-DTS backward launch tuning. |
-| `GPUREC_DTS_PARENT_BLOCK_S`, `GPUREC_DTS_PARENT_NUM_WARPS`, `GPUREC_DTS_PARENT_TILE_SPLITS` | Triton parent-reduced DTS forward launch tuning. |
-| `GPUREC_PIBAR_UD_BLOCK_S`, `GPUREC_PIBAR_UD_NUM_WARPS` | Triton Pibar-from-`u_d` launch tuning. |
-| `GPUREC_SELF_LOOP_2D_BLOCK_W`, `GPUREC_SELF_LOOP_2D_BLOCK_NODES`, `GPUREC_SELF_LOOP_2D_NUM_WARPS`, `GPUREC_SELF_LOOP_2D_JT_NUM_WARPS`, `GPUREC_SELF_LOOP_2D_SKIP_INACTIVE_SCRATCH_ZERO` | Triton 2D backward self-loop launch tuning and scratch-zero behavior. |
-| `GPUREC_CUDA_SELF_LOOP_BLOCK`, `GPUREC_CUDA_SELF_LOOP_CHILD_EDGE_WEIGHT` | Native CUDA self-loop launch tuning. |
-| `GPUREC_CUDA_PIBAR_FROM_UD_BLOCK`, `GPUREC_CUDA_PIBAR_FROM_UD_PAD_SHARED` | Native CUDA Pibar-from-`u_d` launch tuning. |
 
 ## HOGENOM Workflows
 

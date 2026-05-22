@@ -6,10 +6,8 @@ import pytest
 
 import gpurec.core.batch_planning as batch_planning
 import gpurec.core._helpers as helpers
-from gpurec.core.kernels import wave_backward
 from gpurec.core._helpers import (
     _env_flag_enabled,
-    _env_mode_enabled_required,
     _nvtx_range,
 )
 
@@ -52,69 +50,6 @@ def test_env_flag_enabled_uses_default_for_unset_values(monkeypatch):
 
     assert _env_flag_enabled("GPUREC_TEST_FLAG", "1")
     assert not _env_flag_enabled("GPUREC_TEST_FLAG", "0")
-
-
-@pytest.mark.parametrize(
-    ("token", "enabled", "required"),
-    (
-        ("auto", True, False),
-        ("off", False, False),
-        (" false ", False, False),
-        ("force", True, True),
-        ("required", True, True),
-        ("1", True, True),
-        ("yes", True, True),
-        ("enabled", True, False),
-    ),
-)
-def test_env_mode_enabled_required_preserves_cuda_toggle_semantics(
-    monkeypatch,
-    token: str,
-    enabled: bool,
-    required: bool,
-):
-    monkeypatch.setenv("GPUREC_TEST_MODE", token)
-
-    mode, mode_enabled, mode_required = _env_mode_enabled_required(
-        "GPUREC_TEST_MODE",
-        "auto",
-    )
-
-    assert mode == token.strip().lower()
-    assert mode_enabled is enabled
-    assert mode_required is required
-
-
-def test_env_mode_enabled_required_uses_auto_default(monkeypatch):
-    monkeypatch.delenv("GPUREC_TEST_MODE", raising=False)
-
-    assert _env_mode_enabled_required("GPUREC_TEST_MODE") == ("auto", True, False)
-
-
-@pytest.mark.parametrize("token", ("", "0", "false", "no", "off", " FALSE "))
-def test_cuda_pibar_from_ud_strict_false_tokens_do_not_require(
-    monkeypatch,
-    token: str,
-):
-    monkeypatch.setenv("GPUREC_CUDA_PIBAR_FROM_UD", "auto")
-    monkeypatch.setenv("GPUREC_CUDA_PIBAR_FROM_UD_STRICT", token)
-
-    assert wave_backward._cuda_pibar_from_ud_options() == ("auto", True, False)
-
-
-@pytest.mark.parametrize("token", ("1", "true", "yes", "on", "required", "enabled"))
-def test_cuda_pibar_from_ud_strict_truthy_tokens_require(monkeypatch, token: str):
-    monkeypatch.setenv("GPUREC_CUDA_PIBAR_FROM_UD", "auto")
-    monkeypatch.setenv("GPUREC_CUDA_PIBAR_FROM_UD_STRICT", token)
-
-    assert wave_backward._cuda_pibar_from_ud_options() == ("auto", True, True)
-
-
-def test_cuda_pibar_from_ud_disabled_mode_stays_not_required(monkeypatch):
-    monkeypatch.setenv("GPUREC_CUDA_PIBAR_FROM_UD", "off")
-    monkeypatch.setenv("GPUREC_CUDA_PIBAR_FROM_UD_STRICT", "1")
-
-    assert wave_backward._cuda_pibar_from_ud_options() == ("off", False, False)
 
 
 def test_nvtx_range_uses_context_manager_when_available(monkeypatch):
