@@ -9,8 +9,8 @@ from typing import Any
 import pytest
 import torch
 
-from gpurec.core.preprocess_cpp import _load_extension
 from gpurec.core.preprocess_rust import RustPreprocessExtension
+from gpurec.core.preprocess_rust import RustPreprocessSubprocessExtension
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -54,53 +54,53 @@ def _flatten_float_list(values: list[Any]) -> list[float]:
 
 def _assert_preprocess_outputs_match(
     rust: dict[str, Any],
-    cpp: dict[str, Any],
+    expected: dict[str, Any],
     *,
     family_name: str,
     include_species_matrices: bool,
 ) -> None:
-    cpp_species = cpp["species"]
+    expected_species = expected["species"]
     rust_species = rust["species"]
-    assert rust_species["s"] == cpp_species["S"]
-    assert rust_species["names"] == cpp_species["names"]
-    assert rust_species["s_p_indexes"] == cpp_species["s_P_indexes"]
-    assert rust_species["s_c12_indexes"] == cpp_species["s_C12_indexes"]
-    _assert_float_list_close(rust_species["unnorm_row_max"], cpp_species["unnorm_row_max"])
+    assert rust_species["s"] == expected_species["S"]
+    assert rust_species["names"] == expected_species["names"]
+    assert rust_species["s_p_indexes"] == expected_species["s_P_indexes"]
+    assert rust_species["s_c12_indexes"] == expected_species["s_C12_indexes"]
+    _assert_float_list_close(rust_species["unnorm_row_max"], expected_species["unnorm_row_max"])
     if include_species_matrices:
         _assert_float_list_close(
             rust_species["ancestors_dense"],
-            _flatten_float_list(cpp_species["ancestors_dense"]),
+            _flatten_float_list(expected_species["ancestors_dense"]),
         )
         _assert_float_list_close(
             rust_species["recipients_mat"],
-            _flatten_float_list(cpp_species["Recipients_mat"]),
+            _flatten_float_list(expected_species["Recipients_mat"]),
         )
 
-    cpp_family = cpp["families"][family_name]
+    expected_family = expected["families"][family_name]
     rust_family = rust["families"][family_name]
-    assert rust_family["root_clade_id"] == cpp_family["root_clade_id"]
-    assert rust_family["leaf_row_index"] == cpp_family["leaf_row_index"]
-    assert rust_family["leaf_col_index"] == cpp_family["leaf_col_index"]
+    assert rust_family["root_clade_id"] == expected_family["root_clade_id"]
+    assert rust_family["leaf_row_index"] == expected_family["leaf_row_index"]
+    assert rust_family["leaf_col_index"] == expected_family["leaf_col_index"]
 
-    cpp_ccp = cpp_family["ccp"]
+    expected_ccp = expected_family["ccp"]
     rust_ccp = rust_family["ccp"]
-    assert rust_ccp["c"] == cpp_ccp["C"]
-    assert rust_ccp["n_splits"] == cpp_ccp["N_splits"]
-    assert rust_ccp["root_clade_id"] == cpp_ccp["root_clade_id"]
-    assert rust_ccp["split_counts"] == cpp_ccp["split_counts"]
-    assert rust_ccp["split_parents_sorted"] == cpp_ccp["split_parents_sorted"]
-    assert rust_ccp["split_leftrights_sorted"] == cpp_ccp["split_leftrights_sorted"]
-    assert rust_ccp["num_segs_ge2"] == cpp_ccp["num_segs_ge2"]
-    assert rust_ccp["num_segs_eq1"] == cpp_ccp["num_segs_eq1"]
-    assert rust_ccp["end_rows_ge2"] == cpp_ccp["end_rows_ge2"]
-    assert rust_ccp["clade_leaf_labels"] == cpp_ccp["clade_leaf_labels"]
+    assert rust_ccp["c"] == expected_ccp["C"]
+    assert rust_ccp["n_splits"] == expected_ccp["N_splits"]
+    assert rust_ccp["root_clade_id"] == expected_ccp["root_clade_id"]
+    assert rust_ccp["split_counts"] == expected_ccp["split_counts"]
+    assert rust_ccp["split_parents_sorted"] == expected_ccp["split_parents_sorted"]
+    assert rust_ccp["split_leftrights_sorted"] == expected_ccp["split_leftrights_sorted"]
+    assert rust_ccp["num_segs_ge2"] == expected_ccp["num_segs_ge2"]
+    assert rust_ccp["num_segs_eq1"] == expected_ccp["num_segs_eq1"]
+    assert rust_ccp["end_rows_ge2"] == expected_ccp["end_rows_ge2"]
+    assert rust_ccp["clade_leaf_labels"] == expected_ccp["clade_leaf_labels"]
     _assert_float_list_close(
         rust_ccp["log_split_probs_sorted"],
-        cpp_ccp["log_split_probs_sorted"],
+        expected_ccp["log_split_probs_sorted"],
     )
 
 
-def _assert_cpp_shaped_outputs_match(
+def _assert_raw_outputs_match(
     actual: dict[str, Any],
     expected: dict[str, Any],
     *,
@@ -173,7 +173,7 @@ def _run_rust_preprocess(request_path: Path) -> dict[str, Any]:
     return json.loads(result.stdout)
 
 
-def test_rust_preprocess_matches_cpp_compact_arrays(tmp_path: Path):
+def test_rust_preprocess_cli_matches_native_adapter_compact_arrays(tmp_path: Path):
     species = tmp_path / "species.nwk"
     gene = tmp_path / "gene.nwk"
     request_path = tmp_path / "request.json"
@@ -193,8 +193,8 @@ def test_rust_preprocess_matches_cpp_compact_arrays(tmp_path: Path):
     )
 
     rust = _run_rust_preprocess(request_path)
-    cpp = _plain(
-        _load_extension().preprocess_multiple_families(
+    expected = _plain(
+        RustPreprocessExtension().preprocess_multiple_families(
             str(species),
             {"fam": [str(gene)]},
             leaf_species_maps={"fam": leaf_map},
@@ -209,13 +209,13 @@ def test_rust_preprocess_matches_cpp_compact_arrays(tmp_path: Path):
 
     _assert_preprocess_outputs_match(
         rust,
-        cpp,
+        expected,
         family_name="fam",
         include_species_matrices=False,
     )
 
 
-def test_rust_preprocess_matches_cpp_multifurcating_gene_tree_and_species_matrices(
+def test_rust_preprocess_cli_matches_native_adapter_multifurcating_gene_tree_and_species_matrices(
     tmp_path: Path,
 ):
     species = tmp_path / "species.nwk"
@@ -238,8 +238,8 @@ def test_rust_preprocess_matches_cpp_multifurcating_gene_tree_and_species_matric
     )
 
     rust = _run_rust_preprocess(request_path)
-    cpp = _plain(
-        _load_extension().preprocess_multiple_families(
+    expected = _plain(
+        RustPreprocessExtension().preprocess_multiple_families(
             str(species),
             {"fam": [str(gene)]},
             leaf_species_maps={"fam": leaf_map},
@@ -254,13 +254,13 @@ def test_rust_preprocess_matches_cpp_multifurcating_gene_tree_and_species_matric
 
     _assert_preprocess_outputs_match(
         rust,
-        cpp,
+        expected,
         family_name="fam",
         include_species_matrices=True,
     )
 
 
-def test_rust_preprocess_matches_cpp_multiple_families_and_branch_lengths(
+def test_rust_preprocess_cli_matches_native_adapter_multiple_families_and_branch_lengths(
     tmp_path: Path,
 ):
     species = tmp_path / "species.nwk"
@@ -292,8 +292,8 @@ def test_rust_preprocess_matches_cpp_multiple_families_and_branch_lengths(
     )
 
     rust = _run_rust_preprocess(request_path)
-    cpp = _plain(
-        _load_extension().preprocess_multiple_families(
+    expected = _plain(
+        RustPreprocessExtension().preprocess_multiple_families(
             str(species),
             families,
             leaf_species_maps=leaf_maps,
@@ -308,19 +308,19 @@ def test_rust_preprocess_matches_cpp_multiple_families_and_branch_lengths(
 
     _assert_preprocess_outputs_match(
         rust,
-        cpp,
+        expected,
         family_name="fam1",
         include_species_matrices=False,
     )
     _assert_preprocess_outputs_match(
         rust,
-        cpp,
+        expected,
         family_name="fam2",
         include_species_matrices=False,
     )
 
 
-def test_rust_preprocess_python_adapter_matches_cpp_raw_contract(tmp_path: Path):
+def test_rust_preprocess_native_adapter_matches_subprocess_adapter_raw_contract(tmp_path: Path):
     species = tmp_path / "species.nwk"
     gene = tmp_path / "gene.nwk"
     species.write_text("((A,B)AB,C)Root;\n", encoding="utf-8")
@@ -340,8 +340,8 @@ def test_rust_preprocess_python_adapter_matches_cpp_raw_contract(tmp_path: Path)
             num_threads=2,
         )
     )
-    cpp = _plain(
-        _load_extension().preprocess_multiple_families(
+    subprocess_adapter = _plain(
+        RustPreprocessSubprocessExtension().preprocess_multiple_families(
             str(species),
             {"fam": [str(gene)]},
             leaf_species_maps={"fam": leaf_map},
@@ -354,9 +354,9 @@ def test_rust_preprocess_python_adapter_matches_cpp_raw_contract(tmp_path: Path)
         )
     )
 
-    _assert_cpp_shaped_outputs_match(
+    _assert_raw_outputs_match(
         rust,
-        cpp,
+        subprocess_adapter,
         family_name="fam",
         include_species_matrices=True,
     )

@@ -21,7 +21,6 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Bio-Informatics",
 ]
 dependencies = [
-    "ninja>=1.11",
     "torch>=2.0",
     "triton>=2.1",
 ]
@@ -49,6 +48,3 @@ release = ["build", "twine"]
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["gpurec*"]
-
-[tool.setuptools.package-data]
-"gpurec.core" = ["cpp/*.cpp", "cpp/*.hpp"]

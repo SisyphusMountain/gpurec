@@ -159,7 +159,7 @@ def normalize_family_tree_paths(
 ) -> list[list[str]]:
     """Normalize public gene-tree inputs into one path list per family.
 
-    Each path is later parsed by the retained C++ simple-Newick reader.  A file
+    Each path is later parsed by the retained Rust simple-Newick reader.  A file
     may contain one or more semicolon-delimited gene-tree records, with an
     optional terminal semicolon on the final record; every record from every
     path in one family is amalgamated into that family's CCP.
@@ -240,7 +240,7 @@ class GeneDataset:
         _INV_LN2 = 1.0 / math.log(2.0)
         ccp = raw['ccp']
         clade_leaf_labels = list(ccp.pop('clade_leaf_labels', []))
-        # Convert log_split_probs from ln (C++ output) to log2.
+        # Convert log_split_probs from ln (Rust preprocessing output) to log2.
         ccp['log_split_probs_sorted'] = ccp['log_split_probs_sorted'] * _INV_LN2
         C = int(ccp['C'])
         if len(clade_leaf_labels) != C:

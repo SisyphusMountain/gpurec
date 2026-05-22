@@ -210,7 +210,7 @@ def test_uncached_family_preprocessing_is_batched_and_forwards_cpu_cores(tmp_pat
     assert events[-1] == ("uncached_preprocess_done", {"families": 5, "batches": 3})
 
 
-def test_uncached_preprocessing_uses_openmp_default_when_cpu_cores_is_none(tmp_path):
+def test_uncached_preprocessing_uses_rayon_default_when_cpu_cores_is_none(tmp_path):
     species_tree = _write(tmp_path / "species.nwk", "(A:1,B:1)Root;\n")
     gene_tree = _write(tmp_path / "gene.nwk", "(a:1,b:1);\n")
 

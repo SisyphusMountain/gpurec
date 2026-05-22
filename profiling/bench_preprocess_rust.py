@@ -1,4 +1,4 @@
-"""Compare C++ and Rust preprocessing on AleRax-style family inputs."""
+"""Benchmark Rust preprocessing adapters on AleRax-style family inputs."""
 
 from __future__ import annotations
 
@@ -12,7 +12,6 @@ from pathlib import Path
 from typing import Any, Callable
 
 from gpurec.core.model import parse_alerax_family_file
-from gpurec.core.preprocess_cpp import _load_extension
 from gpurec.core.preprocess_rust import (
     RustPreprocessExtension,
     RustPreprocessSubprocessExtension,
@@ -89,20 +88,6 @@ def _load_inputs(args: argparse.Namespace):
     return species, families, leaf_species_maps
 
 
-def _cpp_call(ext, species, families, leaf_species_maps, args):
-    return ext.preprocess_multiple_families(
-        str(species),
-        families,
-        leaf_species_maps=leaf_species_maps,
-        include_details=True,
-        include_species_matrices=args.include_species_matrices,
-        include_debug_details=False,
-        include_scheduler_details=False,
-        include_legacy_ccp_details=False,
-        num_threads=args.threads,
-    )
-
-
 def _rust_cli_call(binary: Path, request_path: Path, *flags: str) -> bytes:
     result = subprocess.run(
         [str(binary), *flags, str(request_path)],
@@ -137,7 +122,6 @@ def main(argv: list[str] | None = None) -> int:
         "num_threads": args.threads,
     }
 
-    cpp_ext = _load_extension()
     rust_native_ext = RustPreprocessExtension()
     rust_subprocess_ext = RustPreprocessSubprocessExtension(preprocess_binary=RUST_BINARY)
     results: dict[str, dict[str, Any]] = {}
@@ -146,13 +130,8 @@ def main(argv: list[str] | None = None) -> int:
         request_path = Path(tmp) / "request.json"
         request_path.write_text(json.dumps(request), encoding="utf-8")
 
-        _cpp_call(cpp_ext, species, families, leaf_species_maps, args)
         _rust_cli_call(RUST_BINARY, request_path, "--discard-output")
 
-        cpp_times = _time_repeated(
-            lambda: _cpp_call(cpp_ext, species, families, leaf_species_maps, args),
-            args.repeats,
-        )
         discard_times = _time_repeated(
             lambda: _rust_cli_call(RUST_BINARY, request_path, "--discard-output"),
             args.repeats,
@@ -164,7 +143,6 @@ def main(argv: list[str] | None = None) -> int:
             ),
             args.repeats,
         )
-        results["cpp_pybind"] = {"times_s": cpp_times, "median_s": _median(cpp_times)}
         results["rust_discard_output"] = {
             "times_s": discard_times,
             "median_s": _median(discard_times),

@@ -43,10 +43,9 @@ pip install -e ".[dev]"
 
 The CUDA kernels import Triton directly, so Triton is a core dependency rather
 than an optional extra.  Install a PyTorch build that matches the local CUDA
-runtime before installing `gpurec`.  The preprocessing extension is compiled at
-runtime through PyTorch's C++ extension loader; source installs therefore need
-a working C++ compiler, OpenMP support, and the normal PyTorch extension build
-tooling available in the Python environment.
+runtime before installing `gpurec`.  CPU preprocessing is implemented by the
+Rust `crates/gpurec-preprocess` extension; source-checkout runs need a Rust
+toolchain unless `GPUREC_PREPROCESS_NATIVE_LIB` points at a prebuilt extension.
 
 For the checkout-local HOGENOM experiment scripts:
 

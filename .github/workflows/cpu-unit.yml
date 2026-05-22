@@ -104,13 +104,7 @@ jobs:
           import tarfile
           import zipfile
 
-          required_wheel = [
-              "gpurec/core/cpp/preprocess.cpp",
-              "gpurec/core/cpp/clade_utils.cpp",
-              "gpurec/core/cpp/clade_utils.hpp",
-              "gpurec/core/cpp/tree_utils.cpp",
-              "gpurec/core/cpp/tree_utils.hpp",
-          ]
+          required_wheel = []
           required_sdist = required_wheel + [
               "examples/minimal-run-config.json",
               "examples/tiny/families.txt",
@@ -121,12 +115,18 @@ jobs:
               "crates/gpurec-backtrack/Cargo.lock",
               "crates/gpurec-backtrack/src/lib.rs",
               "crates/gpurec-backtrack/src/main.rs",
+              "crates/gpurec-preprocess/Cargo.toml",
+              "crates/gpurec-preprocess/Cargo.lock",
+              "crates/gpurec-preprocess/src/lib.rs",
+              "crates/gpurec-preprocess/src/main.rs",
           ]
           forbidden_sdist_prefixes = [
               "crates/gpurec-backtrack/target/",
+              "crates/gpurec-preprocess/target/",
           ]
           forbidden_wheel_prefixes = [
               "crates/gpurec-backtrack/",
+              "crates/gpurec-preprocess/",
               "examples/",
           ]
           forbidden_wheel_names = {
@@ -231,6 +231,8 @@ jobs:
           root=$(find "$sdist_unpack_dir" -mindepth 1 -maxdepth 1 -type d -print -quit)
           cargo test --locked --manifest-path "$root/crates/gpurec-backtrack/Cargo.toml"
           cargo run --locked --quiet --manifest-path "$root/crates/gpurec-backtrack/Cargo.toml" -- --help
+          cargo test --locked --manifest-path "$root/crates/gpurec-preprocess/Cargo.toml"
+          cargo run --locked --quiet --manifest-path "$root/crates/gpurec-preprocess/Cargo.toml" -- --help
 
       - name: Install built wheel and smoke CLI
         run: |

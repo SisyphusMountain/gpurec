@@ -1994,15 +1994,15 @@ def test_newick_input_subset_is_documented_on_public_surfaces():
     uniform_doc = " ".join((ast.get_docstring(uniform_class) or "").split())
     assert "simple Newick subset" in uniform_doc
 
-    preprocess_cpp = (
-        root / "gpurec" / "core" / "cpp" / "preprocess.cpp"
+    rust_preprocess = (
+        root / "crates" / "gpurec-preprocess" / "src" / "lib.rs"
     ).read_text(encoding="utf-8")
     for token in (
-        "rooted binary species Newick tree",
-        "simple-Newick gene-tree files",
-        "multiple semicolon-delimited records",
+        "GeneNewickParser",
+        "skip_branch_length",
+        "preprocess_multiple_families_with_threads",
     ):
-        assert token in preprocess_cpp
+        assert token in rust_preprocess
 
 
 def test_solver_reconfiguration_docs_cover_lazy_prefetch_contract():
@@ -2751,147 +2751,30 @@ def test_missing_inline_path_references_are_explicitly_historical_or_optional():
     assert offenders == []
 
 
-def test_cpp_wave_stat_exports_validate_positive_max_wave_size():
+def test_rust_preprocess_extension_exports_match_runtime_surface():
     root = Path(__file__).resolve().parents[2]
     source = (
-        root / "gpurec" / "core" / "cpp" / "preprocess.cpp"
-    ).read_text(encoding="utf-8")
-    exported_functions = [
-        "compute_phased_waves",
-        "compute_wave_stats",
-        "compute_packet_wave_stats",
-        "compute_phased_wave_stats",
-        "compute_phased_cross_family_wave_stats",
-        "compute_cross_family_wave_stats",
-    ]
-
-    assert "void require_positive_max_wave_size" in source
-    for name in exported_functions:
-        pattern = (
-            rf"{name}\([^)]*max_wave_size\)\s*\{{\s*"
-            r"require_positive_max_wave_size\("
-            r'"max_wave_size", max_wave_size\);'
-        )
-        assert re.search(pattern, source, flags=re.S), name
-
-
-def test_runtime_surface_plan_documents_scheduler_and_pybind_ownership():
-    root = Path(__file__).resolve().parents[2]
-    pruning_plan = (
-        root / "docs" / "runtime-surface-pruning-plan-2026-05-21.md"
-    ).read_text(encoding="utf-8")
-    normalized_plan = " ".join(pruning_plan.split())
-    preprocess_source = (
-        root / "gpurec" / "core" / "cpp" / "preprocess.cpp"
+        root / "crates" / "gpurec-preprocess" / "src" / "lib.rs"
     ).read_text(encoding="utf-8")
 
-    for token in (
-        "Ownership table from the current read-only audit",
-        "`preprocess_multiple_families` pybind",
-        "Production-owned",
-        "`include_details=True`",
-        "`include_details=False`",
-        "species-only empty-family cache path",
-        "Legacy `preprocess` pybind",
-        "Document as legacy/deprecated before removal",
-        "`compute_phased_waves` pybind",
-        "Do not remove the implementation",
-        "`compute_wave_stats`",
-        "`compute_packet_wave_stats`",
-        "`compute_phased_wave_stats`",
-        "`compute_phased_cross_family_wave_stats`",
-        "`compute_cross_family_wave_stats`",
-        "Keep only with a maintained profiling or diagnostic command",
-        "`bench_parse`",
-        "Already retired",
-        "`compute_clade_waves` Python helper",
-        "`gpurec/core/scheduling.py`",
-        "do not return to tracked runtime Python",
-        "C++ preprocessing still owns phased-wave generation",
-        "`collate_wave`, `split_phase_waves`",
-        "deleted from `gpurec.core.batching`",
-        "absent from tracked runtime Python sources",
-        "Rust-default scheduler/layout path",
-        "`family_schedule_summary`",
-    ):
-        assert token in normalized_plan
-
-    for exported in (
-        'm.def("preprocess"',
-        'm.def("preprocess_multiple_families"',
-        'm.def("compute_phased_waves"',
-        'm.def("compute_wave_stats"',
-        'm.def("compute_packet_wave_stats"',
-        'm.def("compute_phased_wave_stats"',
-        'm.def("compute_phased_cross_family_wave_stats"',
-        'm.def("compute_cross_family_wave_stats"',
-    ):
-        assert exported in preprocess_source
-
-    for token in (
-        "Legacy compatibility export for one rooted binary species Newick",
-        "gene-tree files. Production",
-        "Python code uses preprocess_multiple_families",
-        "direct pybind only for historical",
-        "low-level callers while deprecation/removal is evaluated",
-        "Direct diagnostic export for the three-phase scheduler",
-        "the direct pybind is not a",
-        "supported workflow API",
-        "Keep only with maintained profiling",
-        "or diagnostic ownership",
-    ):
-        assert token in preprocess_source
-
-
-def test_preprocess_cpp_pybind_exports_match_classified_manifest():
-    root = Path(__file__).resolve().parents[2]
-    pruning_plan = (
-        root / "docs" / "runtime-surface-pruning-plan-2026-05-21.md"
-    ).read_text(encoding="utf-8")
-    source = (
-        root / "gpurec" / "core" / "cpp" / "preprocess.cpp"
-    ).read_text(encoding="utf-8")
-
-    production_exports = {"preprocess_multiple_families"}
-    legacy_exports = {"preprocess"}
-    diagnostic_exports = {
-        "compute_phased_waves",
-        "compute_wave_stats",
-        "compute_packet_wave_stats",
-        "compute_phased_wave_stats",
-        "compute_phased_cross_family_wave_stats",
-        "compute_cross_family_wave_stats",
+    expected_exports = {
+        "preprocess_dataset",
+        "preprocess_request_binary",
+        "preprocess_request_numpy",
+        "preprocess_request_torch",
+        "schedule_global_phased_waves_json",
+        "family_schedule_summary_json",
+        "plan_family_batches_json",
+        "build_wave_layout_plan_json",
     }
-    classified_exports = production_exports | legacy_exports | diagnostic_exports
-    actual_exports = set(re.findall(r'm\.def\("([^"]+)"', source))
+    actual_exports = set(re.findall(r"wrap_pyfunction!\(([^,\s]+)", source))
 
-    assert actual_exports == classified_exports
-
-    for export in production_exports:
-        assert f"`{export}`" in pruning_plan
-    for export in legacy_exports:
-        assert f"`{export}`" in pruning_plan
-        assert "legacy/deprecated before removal" in pruning_plan
-    for export in diagnostic_exports:
-        assert f"`{export}`" in pruning_plan
-        assert "maintained profiling or diagnostic command" in pruning_plan
-
-    for token in (
-        "Pybind surface manifest",
-        "Production-owned export",
-        "Legacy compatibility export retained while deprecation/removal is evaluated",
-        "Direct diagnostic exports retained only with maintained profiling",
-        "does not grow accidental public surface",
-        "Production preprocessing export",
-        "GeneDataset calls this with",
-        "include_details=True for family CCP payloads",
-        "empty-family preprocessing path",
-        "Production callers consume scheduler metadata from preprocess_multiple_families",
-    ):
-        assert token in " ".join(source.replace('"', "").split())
+    assert expected_exports <= actual_exports
+    assert "PYBIND11_MODULE" not in source
+    assert 'm.def("' not in source
 
 
-def test_cpp_preprocess_legacy_and_diagnostic_exports_have_no_runtime_callers():
+def test_removed_preprocess_diagnostic_exports_have_no_runtime_callers():
     root = Path(__file__).resolve().parents[2]
     runtime_files = _tracked_package_python_files(root)
     legacy_exports = {"preprocess"}
@@ -2950,9 +2833,9 @@ def test_cpp_preprocess_legacy_and_diagnostic_exports_have_no_runtime_callers():
     assert species_only_default_calls == 0
 
 
-def test_cpp_preprocess_does_not_materialize_inclusion_dag_payloads():
+def test_rust_preprocess_does_not_materialize_inclusion_dag_payloads():
     root = Path(__file__).resolve().parents[2]
-    cpp_source = (root / "gpurec/core/cpp/preprocess.cpp").read_text(
+    rust_source = (root / "crates/gpurec-preprocess/src/lib.rs").read_text(
         encoding="utf-8"
     )
     model_source = (root / "gpurec/core/model.py").read_text(encoding="utf-8")
@@ -2963,7 +2846,7 @@ def test_cpp_preprocess_does_not_materialize_inclusion_dag_payloads():
         "inclusion_parents",
         "ubiquitous_clade_id",
     ):
-        assert token not in cpp_source
+        assert token not in rust_source
 
     for token in (
         'ccp.pop("inclusion_children", None)',
@@ -3113,30 +2996,10 @@ def test_collate_gene_families_docstring_uses_current_layout_owner():
     assert "likelihood_2.py" not in docstring
 
 
-def test_preprocess_cpp_declares_direct_standard_includes():
+def test_removed_cpp_preprocessing_sources_do_not_return():
     root = Path(__file__).resolve().parents[2]
-    source = (
-        root / "gpurec" / "core" / "cpp" / "preprocess.cpp"
-    ).read_text(encoding="utf-8")
-
-    required_includes = {
-        "std::chrono": "#include <chrono>",
-        "std::set": "#include <set>",
-    }
-    for symbol, include in required_includes.items():
-        if symbol in source:
-            assert include in source, f"{symbol} requires direct {include}"
-
-
-def test_preprocess_cpp_does_not_export_unowned_bench_parse():
-    root = Path(__file__).resolve().parents[2]
-    source = (
-        root / "gpurec" / "core" / "cpp" / "preprocess.cpp"
-    ).read_text(encoding="utf-8")
-
-    assert "bench_parse" not in source
-    assert "std::chrono" not in source
-    assert "#include <chrono>" not in source
+    assert not (root / "gpurec" / "core" / "cpp").exists()
+    assert not (root / "gpurec" / "core" / "preprocess_cpp.py").exists()
 
 
 def test_repo_audit_headline_metrics_are_marked_as_initial_snapshot():

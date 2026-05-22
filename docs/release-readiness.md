@@ -23,8 +23,8 @@ and the packaging assumptions covered by current automated build steps.
 The CPU GitHub Actions workflow includes a packaging job that installs
 `.[release]` on Python 3.10 and 3.12, builds source and wheel artifacts, runs
 `twine check`, installs the built wheel with existing runtime dependencies,
-checks the source archive for packaged C++ preprocessing sources and Rust
-backtracking crate sources, smokes that crate from the unpacked source archive,
+checks the source archive for packaged Rust preprocessing and backtracking crate
+sources, smokes those crates from the unpacked source archive,
 and smokes both `gpurec --help` and `python -m gpurec.cli --help`.  The same
 package job keeps examples out of wheels while requiring them in the source
 archive, verifies the minimal example config points to source-archive files,

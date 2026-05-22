@@ -1,15 +1,15 @@
 # Rust Preprocessing Port Progress
 
-Goal: replace the C++ preprocessing implementation with Rust while preserving
-output parity and matching or improving preprocessing runtime.
+Goal: keep preprocessing on the Rust implementation while preserving the raw
+Python contract and matching or improving preprocessing runtime.
 
 Current Rust slice:
 
 - `crates/gpurec-preprocess` implements a Rust preprocessing library and JSON
   CLI.
-- Species and gene Newick parsing use the retained-subset parser so the Rust
-  path matches the current C++ support for optional branch-length spellings,
-  multifurcations, and deterministic right-binarization.
+- Species and gene Newick parsing use the retained-subset Rust parser with
+  optional branch-length spellings, multifurcations, and deterministic
+  right-binarization.
 - The implemented path emits the compact production arrays used by
   `GeneDataset`: species postorder helpers, leaf row/column mapping,
   `split_counts`, `split_parents_sorted`, `split_leftrights_sorted`,
@@ -19,25 +19,22 @@ Current Rust slice:
   preprocessing inside a Rayon thread pool, while `0` uses Rayon's default
   worker configuration.
 - `gpurec.core.preprocess_rust.RustPreprocessExtension` exposes the native
-  PyO3 Rust extension behind the same raw Python contract as the former C++
-  pybind extension. It returns Torch tensors directly through NumPy-backed
-  PyO3 arrays, and `GeneDataset` now uses this adapter directly.
+  PyO3 Rust extension behind the raw Python contract used by `GeneDataset`. It
+  returns Torch tensors directly through NumPy-backed PyO3 arrays.
 - Positive `num_threads` values use cached Rayon thread pools keyed by worker
   count, so repeated preprocessing calls keep honoring the requested CPU core
   count without rebuilding the pool every call.
-- `profiling/bench_preprocess_rust_vs_cpp.py` compares the current C++ pybind
-  path with Rust preprocessing, Rust binary output, and the Python adapter.
-- `tests/integration/test_rust_preprocess_parity.py` compares the Rust output
-  with the current C++ pybind output for a binary multi-record family and a
-  multifurcating gene-tree family with species matrices enabled and a threaded
-  Rust request. It also covers a multi-family request with branch lengths and
-  the Python adapter's C++-shaped raw output.
+- `profiling/bench_preprocess_rust.py` compares Rust preprocessing, Rust binary
+  output, the native adapter, and the subprocess adapter.
+- `tests/integration/test_rust_preprocess_parity.py` compares Rust CLI JSON
+  output with the native adapter for a binary multi-record family, a
+  multifurcating gene-tree family with species matrices enabled, and a
+  multi-family request with branch lengths. It also covers native-vs-subprocess
+  adapter raw output parity.
 
-Latest local timing from `profiling/bench_preprocess_rust_vs_cpp.py` on
-`tests/data/hogenom_bench` (1,055 families, 8 threads, 9 repeats, species
-matrices disabled):
+Latest local timing from the preprocessing benchmark on `tests/data/hogenom_bench`
+(1,055 families, 8 threads, 9 repeats, species matrices disabled):
 
-- C++ pybind median: `0.040163 s`.
 - Rust preprocessing with output discarded: `0.032559 s`.
 - Rust CLI sparse-binary output median: `0.086972 s` for `20,626,857` bytes.
 - Rust native Python adapter median: `0.037159 s`.
@@ -46,22 +43,17 @@ matrices disabled):
 Latest local timing with species matrices enabled on the same fixture
 (7 repeats):
 
-- C++ pybind median: `0.048253 s`.
 - Rust preprocessing with output discarded: `0.040924 s`.
 - Rust CLI sparse-binary output median: `0.160685 s` for `48,716,873` bytes.
 - Rust native Python adapter median: `0.040590 s`.
 - Rust subprocess adapter median: `0.249493 s`.
 
-Interpretation: the native Rust adapter now matches the C++-shaped Python
-output contract and is slightly faster than the C++ pybind path on the local
-HOGENOM benchmark. The subprocess/binary-output adapter remains useful for CLI
-experiments but is not the production-performance path.
+Interpretation: the native Rust adapter matches the raw Python output contract
+and is the production path. The subprocess/binary-output adapter remains useful
+for CLI experiments but is not the production-performance path.
 
 Known remaining work before replacement:
 
 - Add parity coverage for mapping error behavior, malformed inputs, broader
   branch-length edge cases, and HOGENOM-style fixtures.
-- Add packaging/install integration for the Rust extension before making Rust
-  the default backend.
-- Decide when to retire or demote the C++ extension after the Rust extension is
-  available in normal installs.
+- Add packaging/install integration for prebuilt Rust extension artifacts.

@@ -469,12 +469,14 @@ def test_cpu_ci_builds_and_smokes_release_artifacts():
         "forbidden_wheel_names",
         "gpurec-backtrack.exe",
         "wheel includes Rust backtracking binaries",
-        "gpurec/core/cpp/preprocess.cpp",
+        "crates/gpurec-preprocess/Cargo.toml",
+        "crates/gpurec-preprocess/Cargo.lock",
+        "crates/gpurec-preprocess/src/lib.rs",
+        "crates/gpurec-preprocess/src/main.rs",
         "examples/",
         "json.load",
         'for field in ("species_tree", "families_file")',
         "example config targets missing from sdist",
-        "gpurec/core/cpp/clade_utils.hpp",
         "sdist missing required source files",
         "sdist includes forbidden paths",
         "wheel missing required package data",
@@ -491,6 +493,11 @@ def test_cpu_ci_builds_and_smokes_release_artifacts():
         'cargo test --locked --manifest-path "$root/crates/gpurec-backtrack/Cargo.toml"',
         (
             'cargo run --locked --quiet --manifest-path "$root/crates/gpurec-backtrack/'
+            'Cargo.toml" -- --help'
+        ),
+        'cargo test --locked --manifest-path "$root/crates/gpurec-preprocess/Cargo.toml"',
+        (
+            'cargo run --locked --quiet --manifest-path "$root/crates/gpurec-preprocess/'
             'Cargo.toml" -- --help'
         ),
     ):
@@ -553,7 +560,6 @@ def test_cpu_ci_workflow_uses_minimal_permissions_and_concurrency():
 def test_manifest_includes_documented_examples_in_source_archive():
     manifest = (ROOT / "MANIFEST.in").read_text(encoding="utf-8")
 
-    assert "recursive-include gpurec/core/cpp *.cpp *.hpp" in manifest
     assert "recursive-include examples" in manifest
     for pattern in ("*.json", "*.map", "*.nwk", "*.txt"):
         assert pattern in manifest
@@ -566,6 +572,15 @@ def test_manifest_includes_rust_backtracking_crate_in_source_archive_only():
     assert "include crates/gpurec-backtrack/Cargo.lock" in manifest
     assert "recursive-include crates/gpurec-backtrack/src *.rs" in manifest
     assert "prune crates/gpurec-backtrack/target" in manifest
+
+
+def test_manifest_includes_rust_preprocess_crate_in_source_archive_only():
+    manifest = (ROOT / "MANIFEST.in").read_text(encoding="utf-8")
+
+    assert "include crates/gpurec-preprocess/Cargo.toml" in manifest
+    assert "include crates/gpurec-preprocess/Cargo.lock" in manifest
+    assert "recursive-include crates/gpurec-preprocess/src *.rs" in manifest
+    assert "prune crates/gpurec-preprocess/target" in manifest
 
 
 @pytest.mark.parametrize(
@@ -740,7 +755,7 @@ def test_readme_install_docs_match_declared_python_range():
     assert f"Python {supported_versions[0]}-{supported_versions[-1]}" in readme
 
 
-def test_runtime_dependencies_include_cpp_extension_build_backend():
+def test_runtime_dependencies_do_not_include_removed_extension_build_backend():
     pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
     match = re.search(
         r"^dependencies\s*=\s*\[(?P<block>.*?)^\]",
@@ -759,7 +774,7 @@ def test_runtime_dependencies_include_cpp_extension_build_backend():
         for dependency in dependencies
     }
 
-    assert "ninja" in dependency_names
+    assert "ninja" not in dependency_names
 
 
 def test_rust_backtracking_uses_pinned_git_dependency():
