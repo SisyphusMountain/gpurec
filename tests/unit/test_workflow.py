@@ -1041,6 +1041,30 @@ def test_run_config_defaults_to_cuda_for_production_workflow(tmp_path: Path):
     assert config.device == "cuda"
 
 
+def test_run_config_defaults_to_batched_lbfgs_for_genewise_mode(tmp_path: Path):
+    config = RunConfig(
+        species_tree=tmp_path / "sp.nwk",
+        families_file=tmp_path / "families.txt",
+        out_dir=tmp_path / "out",
+        mode="genewise",
+        device="cpu",
+    )
+
+    assert config.optimizer == "batched-lbfgs"
+
+
+def test_run_config_auto_optimizer_uses_adam_for_shared_theta_modes(tmp_path: Path):
+    config = RunConfig(
+        species_tree=tmp_path / "sp.nwk",
+        families_file=tmp_path / "families.txt",
+        out_dir=tmp_path / "out",
+        mode="global",
+        device="cpu",
+    )
+
+    assert config.optimizer == "adam"
+
+
 @pytest.mark.parametrize(
     ("field", "message"),
     [

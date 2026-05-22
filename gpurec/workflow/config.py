@@ -146,6 +146,18 @@ def _normalize_device(value: str | None) -> str:
     return value
 
 
+def _normalize_optimizer(mode: str, value: str) -> str:
+    if not isinstance(value, str):
+        raise ValueError(
+            "optimizer must be auto, adam, adagrad, lbfgs, adam-lbfgs, "
+            "or batched-lbfgs"
+        )
+    normalized = value.strip().lower().replace("_", "-")
+    if normalized == "auto":
+        return "batched-lbfgs" if mode == "genewise" else "adam"
+    return normalized
+
+
 def _normalize_workflow_batch_packing(value: str | None) -> str:
     if value is None:
         raise ValueError("batch_packing must be provided as a string")
@@ -309,7 +321,7 @@ class RunConfig:
     min_rate: float = 1e-10
     max_rate: float = 1e9
 
-    optimizer: str = "adam"
+    optimizer: str = "auto"
     steps: int = 5000
     lr: float = 0.01
     adam_warmup_steps: int = 100
@@ -403,6 +415,7 @@ class RunConfig:
             setattr(self, name, _normalize_finite_float(name, getattr(self, name)))
         self.device = _normalize_device(self.device)
         self.dtype = dtype_name_from_name(self.dtype)
+        self.optimizer = _normalize_optimizer(self.mode, self.optimizer)
         self.validate()
 
     def validate(self) -> None:
@@ -459,7 +472,7 @@ class RunConfig:
             "batched-lbfgs",
         }:
             raise ValueError(
-                "optimizer must be adam, adagrad, lbfgs, adam-lbfgs, "
+                "optimizer must be auto, adam, adagrad, lbfgs, adam-lbfgs, "
                 "or batched-lbfgs"
             )
         if self.optimizer == "batched-lbfgs" and self.mode != "genewise":

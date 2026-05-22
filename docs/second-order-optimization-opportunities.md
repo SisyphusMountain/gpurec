@@ -65,7 +65,9 @@ during line search and stopping earlier when the NLL/rates have already landed.
 The production workflow optimizer loop in `gpurec/workflow/optimize.py` builds
 standard PyTorch `Adam`, `Adagrad`, or `LBFGS` optimizers over
 `GeneReconModel.theta`, and also supports genewise-only `batched-lbfgs` through
-`gpurec.optimization.BatchedLBFGS`. The scalar optimizer closure:
+`gpurec.optimization.BatchedLBFGS`; the workflow default resolves genewise runs
+to the batched optimizer and keeps shared-theta modes on Adam. The scalar
+optimizer closure:
 
 - clamps `model.theta`;
 - runs `loss = model()`;

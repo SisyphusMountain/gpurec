@@ -297,8 +297,11 @@ def _add_run_config_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--max-rate", type=float, help="Maximum allowed D/L/T rate.")
     parser.add_argument(
         "--optimizer",
-        choices=("adam", "adagrad", "lbfgs", "adam-lbfgs", "batched-lbfgs"),
-        help="Optimizer schedule. Workflow default: adam.",
+        choices=("auto", "adam", "adagrad", "lbfgs", "adam-lbfgs", "batched-lbfgs"),
+        help=(
+            "Optimizer schedule. auto uses batched-lbfgs for genewise mode "
+            "and adam otherwise."
+        ),
     )
     parser.add_argument("--steps", type=int, help="Maximum optimization steps.")
     parser.add_argument("--lr", type=float, help="Adam/Adagrad learning rate.")

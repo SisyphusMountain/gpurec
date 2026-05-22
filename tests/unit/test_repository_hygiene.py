@@ -1289,11 +1289,13 @@ def test_project_readme_documents_workflow_optimizer_modes():
     normalized = " ".join(project_readme.split())
 
     for token in (
+        "| `auto` |",
         "| `adam` |",
         "| `adagrad` |",
         "| `lbfgs` |",
         "| `adam-lbfgs` |",
         "| `batched-lbfgs` |",
+        "If omitted, `auto` resolves to `batched-lbfgs` for `mode=genewise`",
         "`lbfgs_line_search` is `none` or `strong_wolfe`",
         "LBFGS runtime errors stop the run with a failed status",
         "`adam_warmup_steps` controls the phase switch",

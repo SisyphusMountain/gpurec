@@ -241,11 +241,13 @@ the retained Pi backward/gradient path.  Do not use bf16 for release smokes,
 optimizer checkpoints, or Hessian/second-order diagnostics.
 
 Optimizer modes are selected with `optimizer` in JSON or `--optimizer` on the
-CLI:
+CLI. If omitted, `auto` resolves to `batched-lbfgs` for `mode=genewise` and
+`adam` for shared-theta modes:
 
 | Mode | Behavior | Notes |
 | --- | --- | --- |
-| `adam` | Default Adam optimizer for all configured steps. | Uses `lr` and ordinary PyTorch Adam state. |
+| `auto` | Mode-dependent workflow default. | Uses `batched-lbfgs` for `mode=genewise`; uses `adam` for `global` and `specieswise`. |
+| `adam` | Adam optimizer for all configured steps. | Uses `lr` and ordinary PyTorch Adam state. |
 | `adagrad` | Adagrad optimizer for all configured steps. | Uses `lr`; retained for long-running comparison runs. |
 | `lbfgs` | PyTorch LBFGS for all configured steps. | Uses `lbfgs_lr`, `lbfgs_history_size`, `lbfgs_max_iter`, and `lbfgs_line_search`.  `lbfgs_line_search` is `none` or `strong_wolfe`; LBFGS runtime errors stop the run with a failed status. |
 | `adam-lbfgs` | Adam warmup, then LBFGS polishing. | `adam_warmup_steps` controls the phase switch; incompatible resumed optimizer state is discarded when the checkpoint phase differs from the current phase. |
