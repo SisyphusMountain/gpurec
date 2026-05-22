@@ -12,6 +12,17 @@ import torch
 from .preprocess_rust import _load_native_module
 
 
+def _native_json(call, payload: str) -> Any:
+    try:
+        return json.loads(call(payload))
+    except RuntimeError as exc:
+        message = str(exc)
+        prefix = "invalid input: "
+        if message.startswith(prefix):
+            raise ValueError(message[len(prefix):]) from exc
+        raise
+
+
 def _long_list(value: Any) -> list[int]:
     if torch.is_tensor(value):
         return [int(x) for x in value.detach().cpu().tolist()]
@@ -59,7 +70,10 @@ def family_schedule_summary(ccp: dict[str, Any]) -> dict[str, int]:
     """Return Rust-computed per-family scheduling stats."""
     module = _load_native_module()
     request_ccp = _schedule_item({"ccp": ccp})["ccp"]
-    output = json.loads(module.family_schedule_summary_json(json.dumps(request_ccp)))
+    output = _native_json(
+        module.family_schedule_summary_json,
+        json.dumps(request_ccp),
+    )
     return {key: int(value) for key, value in output.items()}
 
 
@@ -127,7 +141,7 @@ def plan_family_batches(
         "max_wave_size": _optional_integer_value("max_wave_size", max_wave_size),
     }
     module = _load_native_module()
-    output = json.loads(module.plan_family_batches_json(json.dumps(request)))
+    output = _native_json(module.plan_family_batches_json, json.dumps(request))
     return [
         {
             "indices": [int(index) for index in plan["indices"]],
@@ -136,6 +150,46 @@ def plan_family_batches(
         }
         for plan in output
     ]
+
+
+def build_wave_layout_plan(
+    *,
+    waves: Sequence[Sequence[int]],
+    phases: Sequence[int],
+    c: int,
+    n_splits: int,
+    split_leftrights_sorted: Any,
+    split_parents_sorted: Any,
+    leaf_row_index: Any,
+    leaf_col_index: Any,
+    root_clade_ids: Any,
+    family_clade_counts: Sequence[int] | None = None,
+    family_clade_offsets: Sequence[int] | None = None,
+) -> dict[str, Any]:
+    """Return Rust-computed wave-layout index metadata."""
+    request = {
+        "waves": [[int(clade) for clade in wave] for wave in waves],
+        "phases": [int(phase) for phase in phases],
+        "c": int(c),
+        "n_splits": int(n_splits),
+        "split_leftrights_sorted": _long_list(split_leftrights_sorted),
+        "split_parents_sorted": _long_list(split_parents_sorted),
+        "leaf_row_index": _long_list(leaf_row_index),
+        "leaf_col_index": _long_list(leaf_col_index),
+        "root_clade_ids": _long_list(root_clade_ids),
+        "family_clade_counts": (
+            None
+            if family_clade_counts is None
+            else [int(count) for count in family_clade_counts]
+        ),
+        "family_clade_offsets": (
+            None
+            if family_clade_offsets is None
+            else [int(offset) for offset in family_clade_offsets]
+        ),
+    }
+    module = _load_native_module()
+    return _native_json(module.build_wave_layout_plan_json, json.dumps(request))
 
 
 def schedule_global_phased_waves(
@@ -161,7 +215,7 @@ def schedule_global_phased_waves(
         "dts_partial_tile_splits": int(dts_partial_tile_splits),
     }
     module = _load_native_module()
-    output = json.loads(module.schedule_global_phased_waves_json(json.dumps(request)))
+    output = _native_json(module.schedule_global_phased_waves_json, json.dumps(request))
     return (
         [[int(clade) for clade in wave] for wave in output["waves"]],
         [int(phase) for phase in output["phases"]],

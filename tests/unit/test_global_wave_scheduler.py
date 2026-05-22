@@ -409,6 +409,52 @@ def test_global_scheduler_packs_ready_clades_after_leaf_phase():
     _assert_topological(waves, [0, 4], items)
 
 
+def _plain_layout_value(value):
+    if torch.is_tensor(value):
+        return {
+            "dtype": str(value.dtype),
+            "shape": list(value.shape),
+            "values": value.detach().cpu().tolist(),
+        }
+    if isinstance(value, list):
+        return [_plain_layout_value(item) for item in value]
+    if isinstance(value, dict):
+        return {key: _plain_layout_value(item) for key, item in value.items()}
+    return value
+
+
+def test_rust_wave_layout_matches_python_layout_plan(monkeypatch):
+    ccp = {
+        "C": 5,
+        "N_splits": 3,
+        "split_parents_sorted": torch.tensor([0, 0, 1], dtype=torch.long),
+        "split_leftrights_sorted": torch.tensor(
+            [1, 2, 3, 2, 3, 4],
+            dtype=torch.long,
+        ),
+        "log_split_probs_sorted": torch.tensor([0.1, 0.2, 0.3], dtype=torch.float32),
+    }
+    kwargs = {
+        "waves": [[2, 3, 4], [1], [0]],
+        "phases": [1, 2, 3],
+        "ccp_helpers": ccp,
+        "leaf_row_index": torch.tensor([2, 3, 4], dtype=torch.long),
+        "leaf_col_index": torch.tensor([0, 1, 2], dtype=torch.long),
+        "root_clade_ids": torch.tensor([0], dtype=torch.long),
+        "device": "cpu",
+        "dtype": torch.float32,
+        "family_clade_counts": [2, 3],
+        "family_clade_offsets": [0, 2],
+    }
+
+    monkeypatch.delenv("GPUREC_SCHEDULER_BACKEND", raising=False)
+    python_layout = build_wave_layout(**kwargs)
+    monkeypatch.setenv("GPUREC_SCHEDULER_BACKEND", "rust")
+    rust_layout = build_wave_layout(**kwargs)
+
+    assert _plain_layout_value(rust_layout) == _plain_layout_value(python_layout)
+
+
 def test_global_scheduler_respects_cap_and_topological_order():
     items = [
         {"ccp": _ccp(4, [0, 1], [1, 3], [2, 3], root=0)},

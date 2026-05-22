@@ -1,7 +1,11 @@
 import heapq
+import os
 from typing import Any, Dict, List, Sequence, Tuple
 
 import torch
+
+
+_SCHEDULER_BACKEND_ENV = "GPUREC_SCHEDULER_BACKEND"
 
 
 def collate_gene_families(
@@ -1221,6 +1225,146 @@ def schedule_global_phased_waves(
     return waves, phases
 
 
+def _tensor_from_plan(
+    values: Sequence[int],
+    *,
+    dtype: torch.dtype,
+    device: torch.device | str,
+) -> torch.Tensor:
+    return torch.tensor(list(values), dtype=dtype, device=device).contiguous()
+
+
+def _build_wave_layout_rust(
+    waves: List[List[int]],
+    phases: List[int],
+    ccp_helpers: Dict[str, Any],
+    leaf_row_index: torch.Tensor,
+    leaf_col_index: torch.Tensor,
+    root_clade_ids: torch.Tensor,
+    device: torch.device | str,
+    dtype: torch.dtype,
+    family_clade_counts: List[int] | None,
+    family_clade_offsets: List[int] | None,
+) -> Dict[str, Any]:
+    C = int(ccp_helpers["C"])
+    N_splits = int(ccp_helpers["N_splits"])
+    if C > torch.iinfo(torch.int32).max:
+        raise ValueError(f"wave split metadata requires int32 clade ids, got C={C}")
+    if "split_parents_sorted" not in ccp_helpers:
+        raise RuntimeError("preprocessed CCP helpers must include split_parents_sorted")
+    _require_numel(
+        "log_split_probs_sorted",
+        ccp_helpers["log_split_probs_sorted"],
+        N_splits,
+    )
+
+    from gpurec.core.schedule_rust import build_wave_layout_plan
+
+    plan = build_wave_layout_plan(
+        waves=waves,
+        phases=phases,
+        c=C,
+        n_splits=N_splits,
+        split_leftrights_sorted=ccp_helpers["split_leftrights_sorted"],
+        split_parents_sorted=ccp_helpers["split_parents_sorted"],
+        leaf_row_index=leaf_row_index,
+        leaf_col_index=leaf_col_index,
+        root_clade_ids=root_clade_ids,
+        family_clade_counts=family_clade_counts,
+        family_clade_offsets=family_clade_offsets,
+    )
+
+    log_split_probs = torch.as_tensor(
+        ccp_helpers["log_split_probs_sorted"],
+        dtype=dtype,
+        device=device,
+    )
+    index_dtype = torch.int32
+    wave_metas: List[Dict[str, Any]] = []
+    for meta_plan in plan["wave_metas"]:
+        meta: Dict[str, Any] = {
+            "start": int(meta_plan["start"]),
+            "end": int(meta_plan["end"]),
+            "W": int(meta_plan["W"]),
+            "has_splits": bool(meta_plan["has_splits"]),
+            "phase": int(meta_plan["phase"]),
+        }
+        if meta["has_splits"]:
+            split_indices = _tensor_from_plan(
+                meta_plan["split_indices"],
+                dtype=torch.long,
+                device=device,
+            )
+            meta["sl"] = _tensor_from_plan(
+                meta_plan["sl"],
+                dtype=index_dtype,
+                device=device,
+            )
+            meta["sr"] = _tensor_from_plan(
+                meta_plan["sr"],
+                dtype=index_dtype,
+                device=device,
+            )
+            meta["log_split_probs"] = log_split_probs[
+                split_indices
+            ].unsqueeze(1).contiguous()
+            reduce_idx = _tensor_from_plan(
+                meta_plan["reduce_idx"],
+                dtype=index_dtype,
+                device=device,
+            )
+            meta["reduce_idx"] = reduce_idx
+            meta["n_eq1"] = int(meta_plan["n_eq1"])
+            if "eq1_reduce_idx" in meta_plan:
+                meta["eq1_reduce_idx"] = _tensor_from_plan(
+                    meta_plan["eq1_reduce_idx"],
+                    dtype=index_dtype,
+                    device=device,
+                )
+            if "ge2_ptr" in meta_plan:
+                meta["ge2_ptr"] = _tensor_from_plan(
+                    meta_plan["ge2_ptr"],
+                    dtype=torch.long,
+                    device=device,
+                )
+                meta["ge2_parent_ids"] = _tensor_from_plan(
+                    meta_plan["ge2_parent_ids"],
+                    dtype=index_dtype,
+                    device=device,
+                )
+                meta["ge2_max_fanout"] = int(meta_plan["ge2_max_fanout"])
+        wave_metas.append(meta)
+
+    result = {
+        "perm": _tensor_from_plan(plan["perm"], dtype=torch.long, device=device),
+        "C": int(plan["c"]),
+        "leaf_row_index": _tensor_from_plan(
+            plan["leaf_row_index"],
+            dtype=torch.long,
+            device=device,
+        ),
+        "leaf_species_index": _tensor_from_plan(
+            plan["leaf_species_index"],
+            dtype=torch.long,
+            device=device,
+        ),
+        "root_clade_ids": _tensor_from_plan(
+            plan["root_clade_ids"],
+            dtype=torch.long,
+            device=device,
+        ),
+        "root_clade_ids_cpu": [int(value) for value in plan["root_clade_ids_cpu"]],
+        "wave_metas": wave_metas,
+    }
+    if "family_idx" in plan:
+        result["family_idx"] = _tensor_from_plan(
+            plan["family_idx"],
+            dtype=torch.long,
+            device=device,
+        )
+    return result
+
+
 def build_wave_layout(
     waves: List[List[int]],
     phases: List[int],
@@ -1260,6 +1404,25 @@ def build_wave_layout(
           'wave_metas': list of per-wave metadata dicts
           'family_idx': Long[C] clade→family (only if family_clade_counts provided)
     """
+    backend = os.environ.get(_SCHEDULER_BACKEND_ENV, "python").strip().lower()
+    if backend == "rust":
+        return _build_wave_layout_rust(
+            waves,
+            phases,
+            ccp_helpers,
+            leaf_row_index,
+            leaf_col_index,
+            root_clade_ids,
+            device,
+            dtype,
+            family_clade_counts,
+            family_clade_offsets,
+        )
+    if backend not in {"", "python", "py"}:
+        raise ValueError(
+            f"{_SCHEDULER_BACKEND_ENV} must be 'python' or 'rust', got {backend!r}"
+        )
+
     C = int(ccp_helpers['C'])
     N_splits = int(ccp_helpers['N_splits'])
     family_clade_ranges = _validate_family_clade_metadata(
