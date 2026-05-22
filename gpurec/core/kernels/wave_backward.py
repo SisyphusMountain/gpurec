@@ -571,6 +571,13 @@ def _wave_backward_uniform_param_store_kernel(
     leaf_species_ptr,
     leaf_logp_ptr,
     family_idx_ptr,
+    grad_log_pD_ptr,
+    grad_log_pS_ptr,
+    grad_E_ptr,
+    grad_Ebar_ptr,
+    grad_E_s1_ptr,
+    grad_E_s2_ptr,
+    grad_mt_ptr,
     aw0_ptr,
     aw1_ptr,
     aw2_ptr,
@@ -588,6 +595,8 @@ def _wave_backward_uniform_param_store_kernel(
     LEAF_LOGP_MODE: tl.constexpr,
     USE_ACTIVE_MASK: tl.constexpr,
     CONST_LAYOUT: tl.constexpr,
+    ACCUM_GRADS: tl.constexpr,
+    PARAM_GRAD_VECTOR: tl.constexpr,
     DTYPE: tl.constexpr,
 ):
     """Store per-element self-loop parameter VJP contributions after Neumann."""
@@ -709,12 +718,66 @@ def _wave_backward_uniform_param_store_kernel(
     _aw5 = alpha * e5 * inv_sum
     _aw345 = _aw3 + _aw4 + _aw5
     zero = tl.zeros([BLOCK_S, BLOCK_W], dtype=DTYPE)
-    tl.store(aw0_ptr + out_offsets, tl.where(mask, _aw0, zero), mask=store_mask)
-    tl.store(aw1_ptr + out_offsets, tl.where(mask, _aw1, zero), mask=store_mask)
-    tl.store(aw2_ptr + out_offsets, tl.where(mask, _aw2, zero), mask=store_mask)
-    tl.store(aw345_ptr + out_offsets, tl.where(mask, _aw345, zero), mask=store_mask)
-    tl.store(aw3_ptr + out_offsets, tl.where(mask, _aw3, zero), mask=store_mask)
-    tl.store(aw4_ptr + out_offsets, tl.where(mask, _aw4, zero), mask=store_mask)
+    if ACCUM_GRADS:
+        aw0_s = tl.sum(tl.where(mask, _aw0, zero), axis=1)
+        aw1_s = tl.sum(tl.where(mask, _aw1, zero), axis=1)
+        aw2_s = tl.sum(tl.where(mask, _aw2, zero), axis=1)
+        aw345_s = tl.sum(tl.where(mask, _aw345, zero), axis=1)
+        aw3_s = tl.sum(tl.where(mask, _aw3, zero), axis=1)
+        aw4_s = tl.sum(tl.where(mask, _aw4, zero), axis=1)
+        if PARAM_GRAD_VECTOR:
+            tl.atomic_add(
+                grad_log_pD_ptr + s_offs,
+                aw0_s,
+                sem="relaxed",
+                mask=species_valid,
+            )
+            tl.atomic_add(
+                grad_log_pS_ptr + s_offs,
+                aw345_s,
+                sem="relaxed",
+                mask=species_valid,
+            )
+        else:
+            tl.atomic_add(grad_log_pD_ptr, tl.sum(aw0_s, axis=0), sem="relaxed")
+            tl.atomic_add(grad_log_pS_ptr, tl.sum(aw345_s, axis=0), sem="relaxed")
+        tl.atomic_add(
+            grad_E_ptr + s_offs,
+            aw0_s + aw2_s,
+            sem="relaxed",
+            mask=species_valid,
+        )
+        tl.atomic_add(
+            grad_Ebar_ptr + s_offs,
+            aw1_s,
+            sem="relaxed",
+            mask=species_valid,
+        )
+        tl.atomic_add(
+            grad_E_s1_ptr + s_offs,
+            aw4_s,
+            sem="relaxed",
+            mask=species_valid,
+        )
+        tl.atomic_add(
+            grad_E_s2_ptr + s_offs,
+            aw3_s,
+            sem="relaxed",
+            mask=species_valid,
+        )
+        tl.atomic_add(
+            grad_mt_ptr + s_offs,
+            aw2_s,
+            sem="relaxed",
+            mask=species_valid,
+        )
+    else:
+        tl.store(aw0_ptr + out_offsets, tl.where(mask, _aw0, zero), mask=store_mask)
+        tl.store(aw1_ptr + out_offsets, tl.where(mask, _aw1, zero), mask=store_mask)
+        tl.store(aw2_ptr + out_offsets, tl.where(mask, _aw2, zero), mask=store_mask)
+        tl.store(aw345_ptr + out_offsets, tl.where(mask, _aw345, zero), mask=store_mask)
+        tl.store(aw3_ptr + out_offsets, tl.where(mask, _aw3, zero), mask=store_mask)
+        tl.store(aw4_ptr + out_offsets, tl.where(mask, _aw4, zero), mask=store_mask)
 
 
 def _wave_backward_uniform_2d(
@@ -740,6 +803,7 @@ def _wave_backward_uniform_2d(
     compact_level_parents,
     compact_level_child1,
     compact_level_child2,
+    self_loop_grad_targets=None,
 ):
     """Retained 2D row-block/full-species tree-reduction self-loop."""
     if Pi_star.device.type != "cuda":
@@ -800,7 +864,8 @@ def _wave_backward_uniform_2d(
     aw0 = torch.empty(scratch_shape, device=device, dtype=dtype)
     aw1 = torch.empty(scratch_shape, device=device, dtype=dtype)
     aw2 = torch.empty(scratch_shape, device=device, dtype=dtype)
-    aw345 = torch.empty(scratch_shape, device=device, dtype=dtype)
+    accum_self_loop_grads = self_loop_grad_targets is not None
+    aw345 = None if accum_self_loop_grads else torch.empty(scratch_shape, device=device, dtype=dtype)
     aw3 = torch.empty(scratch_shape, device=device, dtype=dtype)
     aw4 = torch.empty(scratch_shape, device=device, dtype=dtype)
     spec_buf = torch.empty(scratch_shape, device=device, dtype=dtype)
@@ -925,6 +990,29 @@ def _wave_backward_uniform_2d(
             **jt_options,
         )
 
+    if accum_self_loop_grads:
+        (
+            grad_log_pD_ptr,
+            grad_log_pS_ptr,
+            grad_E_ptr,
+            grad_Ebar_ptr,
+            grad_E_s1_ptr,
+            grad_E_s2_ptr,
+            grad_mt_ptr,
+            param_grad_vector,
+        ) = self_loop_grad_targets
+        aw345_ptr = aw0
+    else:
+        grad_log_pD_ptr = aw0
+        grad_log_pS_ptr = aw0
+        grad_E_ptr = aw0
+        grad_Ebar_ptr = aw0
+        grad_E_s1_ptr = aw0
+        grad_E_s2_ptr = aw0
+        grad_mt_ptr = aw0
+        param_grad_vector = False
+        aw345_ptr = aw345
+
     _wave_backward_uniform_param_store_kernel[(n_row_blocks,)](
         Pi_star,
         Pibar_star,
@@ -944,10 +1032,17 @@ def _wave_backward_uniform_2d(
         leaf_species_arg,
         leaf_logp_arg,
         family_idx,
+        grad_log_pD_ptr,
+        grad_log_pS_ptr,
+        grad_E_ptr,
+        grad_Ebar_ptr,
+        grad_E_s1_ptr,
+        grad_E_s2_ptr,
+        grad_mt_ptr,
         aw0,
         aw1,
         aw2,
-        aw345,
+        aw345_ptr,
         aw3,
         aw4,
         ws,
@@ -961,10 +1056,14 @@ def _wave_backward_uniform_2d(
         LEAF_LOGP_MODE=int(leaf_logp_mode),
         USE_ACTIVE_MASK=bool(active_mask is not None),
         CONST_LAYOUT=int(const_layout),
+        ACCUM_GRADS=bool(accum_self_loop_grads),
+        PARAM_GRAD_VECTOR=bool(param_grad_vector),
         DTYPE=_tl_float_dtype(dtype),
         **launch_options,
     )
 
+    if accum_self_loop_grads:
+        return v_k, None, None, None, None, None, None
     return v_k, aw0, aw1, aw2, aw345, aw3, aw4
 
 
@@ -988,6 +1087,7 @@ def wave_backward_uniform_fused(
     compact_level_parents=None,
     compact_level_child1=None,
     compact_level_child2=None,
+    self_loop_grad_targets=None,
 ):
     """Fused backward: precompute + Neumann + param VJP in one kernel per wave.
 
@@ -1078,6 +1178,7 @@ def wave_backward_uniform_fused(
         compact_level_parents=compact_level_parents,
         compact_level_child1=compact_level_child1,
         compact_level_child2=compact_level_child2,
+        self_loop_grad_targets=self_loop_grad_targets,
     )
 
 

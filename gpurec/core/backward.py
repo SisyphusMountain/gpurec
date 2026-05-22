@@ -467,6 +467,10 @@ def Pi_wave_backward(
         "GPUREC_SPECIALIZE_NONLEAF_LEAF_TERM",
         "1",
     )
+    triton_self_loop_direct_grads = _env_flag_enabled(
+        "GPUREC_TRITON_SELF_LOOP_DIRECT_GRADS",
+        "0",
+    )
     (
         _cuda_self_loop_nosplit_mode,
         cuda_self_loop_nosplit_enabled,
@@ -624,6 +628,54 @@ def Pi_wave_backward(
                 use_cuda_nosplit = False
                 self_loop_grads_accumulated = False
         if not use_cuda_nosplit:
+            param_grad_vector = (
+                grad_log_pD.ndim == 2
+                and grad_log_pS.ndim == 2
+                and int(grad_log_pD.shape[0]) == 1
+                and int(grad_log_pS.shape[0]) == 1
+                and int(grad_log_pD.shape[1]) == S
+                and int(grad_log_pS.shape[1]) == S
+            )
+            param_grad_scalar = (
+                grad_log_pD.ndim == 1
+                and grad_log_pS.ndim == 1
+                and int(grad_log_pD.numel()) == 1
+                and int(grad_log_pS.numel()) == 1
+            )
+            triton_accum_self_loop_grads = (
+                triton_self_loop_direct_grads
+                and _auto_wrapped
+                and dtype == torch.float32
+                and G == 1
+                and grad_E_acc.ndim == 2
+                and grad_Ebar_acc.ndim == 2
+                and grad_E_s1_acc.ndim == 2
+                and grad_E_s2_acc.ndim == 2
+                and grad_mt.ndim == 2
+                and int(grad_E_acc.shape[0]) == 1
+                and int(grad_Ebar_acc.shape[0]) == 1
+                and int(grad_E_s1_acc.shape[0]) == 1
+                and int(grad_E_s2_acc.shape[0]) == 1
+                and int(grad_mt.shape[0]) == 1
+                and int(grad_E_acc.shape[1]) == S
+                and int(grad_Ebar_acc.shape[1]) == S
+                and int(grad_E_s1_acc.shape[1]) == S
+                and int(grad_E_s2_acc.shape[1]) == S
+                and int(grad_mt.shape[1]) == S
+                and (param_grad_vector or param_grad_scalar)
+            )
+            self_loop_grad_targets = None
+            if triton_accum_self_loop_grads:
+                self_loop_grad_targets = (
+                    grad_log_pD[0] if param_grad_vector else grad_log_pD,
+                    grad_log_pS[0] if param_grad_vector else grad_log_pS,
+                    grad_E_acc[0],
+                    grad_Ebar_acc[0],
+                    grad_E_s1_acc[0],
+                    grad_E_s2_acc[0],
+                    grad_mt[0],
+                    param_grad_vector,
+                )
             v_k, aw0, aw1, aw2, aw345, aw3, aw4 = wave_backward_uniform_fused(
                 Pi_star_wave, Pibar_star_wave, ws, W, S,
                 dts_r, rhs_k,
@@ -643,7 +695,10 @@ def Pi_wave_backward(
                 compact_level_parents=compact_level_parents,
                 compact_level_child1=compact_level_child1,
                 compact_level_child2=compact_level_child2,
+                self_loop_grad_targets=self_loop_grad_targets,
             )
+            if triton_accum_self_loop_grads:
+                self_loop_grads_accumulated = True
 
         if not self_loop_grads_accumulated:
             if (
