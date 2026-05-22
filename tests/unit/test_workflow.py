@@ -4499,12 +4499,37 @@ class _WorkflowBatchedLBFGSModeModel:
         self.species_names = ["sp0", "sp1"]
         self.n_families = 2
         self.n_species = 2
-        self.batch_metadata: list[SimpleNamespace] = []
+        self.batch_metadata: list[SimpleNamespace] = [
+            SimpleNamespace(batch_index=0, family_indices=(0,)),
+            SimpleNamespace(batch_index=1, family_indices=(1,)),
+        ]
+        self._current_batch_index = 0
         self.clears = 0
         self.closed = False
 
+    @property
+    def current_batch_index(self):
+        return self._current_batch_index
+
+    @property
+    def current_batch_metadata(self):
+        return self.batch_metadata[self._current_batch_index]
+
+    def select_batch(self, batch_index):
+        self._current_batch_index = int(batch_index)
+        return self.current_batch_metadata
+
+    def nll_per_family(self):
+        idx = torch.as_tensor(
+            self.current_batch_metadata.family_indices,
+            dtype=torch.long,
+            device=self.theta.device,
+        )
+        theta = self.theta.index_select(0, idx)
+        return theta.square().sum(dim=1) + 1.0
+
     def full_loss(self):
-        return self.theta.square().sum() + 1.0
+        return self.theta.square().sum() + 2.0
 
     def full_genewise_nll_and_grad(self, *, need_grad: bool):
         values = self.theta.detach().square().sum(dim=1) + 1.0
@@ -4656,6 +4681,53 @@ def test_optimization_runner_batched_lbfgs_mode_records_public_phase(tmp_path: P
     assert latest["optimizer_phase"] == "batched-lbfgs"
     assert latest["last_row"]["optimizer/phase"] == "final_eval"
     assert result.status == "not_converged"
+    assert runner.fake_model.closed
+
+
+def test_batched_lbfgs_active_batch_closure_zeros_inactive_rows(tmp_path: Path):
+    config = _optimizer_mode_config(
+        tmp_path,
+        optimizer="batched-lbfgs",
+        mode="genewise",
+    )
+    runner = OptimizationRunner(config)
+    model = _WorkflowBatchedLBFGSModeModel()
+
+    model.select_batch(0)
+    loss_vec, metrics = runner._evaluate_active_genewise_vector_and_grad(model)
+
+    assert loss_vec.shape == (2,)
+    assert loss_vec[0] > 0.0
+    assert loss_vec[1] == 0.0
+    assert torch.count_nonzero(model.theta.grad[0]).item() == 3
+    assert torch.count_nonzero(model.theta.grad[1]).item() == 0
+    assert metrics["optimizer/objective_scope"] == "active_batch"
+    assert metrics["optimizer/batch_index"] == 0
+
+
+def test_optimization_runner_batched_lbfgs_advances_resident_batches(tmp_path: Path):
+    config = _optimizer_mode_config(
+        tmp_path,
+        optimizer="batched-lbfgs",
+        mode="genewise",
+        steps=4,
+        grad_inf_tol=0.8,
+        lbfgs_max_iter=1,
+    )
+    runner = _WorkflowBatchedLBFGSModeRunner(config)
+
+    result = runner.run()
+
+    history_rows = _optimizer_mode_history_rows(config.out_dir)
+    batched_rows = [
+        row for row in history_rows if row["optimizer/phase"] == "batched-lbfgs"
+    ]
+    assert [row["optimizer/batch_index"] for row in batched_rows] == [0, 1]
+    assert [row["optimizer/objective_scope"] for row in batched_rows] == [
+        "active_batch",
+        "active_batch",
+    ]
+    assert result.status == "converged"
     assert runner.fake_model.closed
 
 

@@ -64,6 +64,7 @@ class _ResumeState:
     best_step: int | None = None
     previous_objective: float | None = None
     stable_loss_steps: int = 0
+    active_batch_index: int = 0
 
 
 _FINAL_ARTIFACT_FILES = (
@@ -109,6 +110,14 @@ def _resume_state_from_payload(path: Path, payload: dict[str, Any]) -> _ResumeSt
                 path,
                 "status.stable_loss_steps",
                 ckpt_status.get("stable_loss_steps", MISSING),
+                default=0,
+            )
+        ),
+        active_batch_index=int(
+            checkpoint_nonnegative_int(
+                path,
+                "status.active_batch_index",
+                ckpt_status.get("active_batch_index", MISSING),
                 default=0,
             )
         ),
@@ -311,7 +320,12 @@ class OptimizationRunner:
 
     def build_model(self) -> GeneReconModel:
         config = self.config
-        return build_alerax_workflow_model(config, prefetch_batches="all")
+        prefetch_batches: int | str = (
+            1
+            if config.mode == "genewise" and config.optimizer == "batched-lbfgs"
+            else "all"
+        )
+        return build_alerax_workflow_model(config, prefetch_batches=prefetch_batches)
 
     def _make_optimizer(self, model: GeneReconModel, phase: str) -> torch.optim.Optimizer:
         config = self.config
@@ -388,6 +402,95 @@ class OptimizationRunner:
     def _evaluate_genewise_loss_vector(self, model: GeneReconModel) -> torch.Tensor:
         loss_vec, _grad = model.full_genewise_nll_and_grad(need_grad=False)
         return loss_vec.detach()
+
+    def _active_batch_indices(self, model: GeneReconModel) -> torch.Tensor:
+        indices = getattr(model.current_batch_metadata, "family_indices")
+        return torch.as_tensor(
+            indices,
+            dtype=torch.long,
+            device=model.theta.device,
+        )
+
+    def _full_vector_from_active_batch(
+        self,
+        model: GeneReconModel,
+        active_values: torch.Tensor,
+    ) -> torch.Tensor:
+        idx = self._active_batch_indices(model)
+        values = active_values.detach().reshape(-1).to(
+            device=model.theta.device,
+            dtype=model.theta.dtype,
+        )
+        if values.numel() != idx.numel():
+            raise RuntimeError(
+                "active genewise objective returned "
+                f"{values.numel()} values for {idx.numel()} batch families"
+            )
+        full = torch.zeros(
+            (int(model.n_families),),
+            device=model.theta.device,
+            dtype=model.theta.dtype,
+        )
+        full.index_copy_(0, idx, values)
+        return full
+
+    def _zero_inactive_batch_grad(
+        self,
+        model: GeneReconModel,
+        idx: torch.Tensor,
+    ) -> None:
+        grad = model.theta.grad
+        if grad is None:
+            raise RuntimeError("active genewise optimizer evaluation did not produce gradients")
+        mask = torch.zeros(
+            (int(model.n_families),),
+            device=grad.device,
+            dtype=torch.bool,
+        )
+        mask.index_fill_(0, idx.to(device=grad.device), True)
+        grad = grad.detach().clone()
+        grad[~mask] = 0
+        model.theta.grad = grad
+
+    def _active_batch_metrics(
+        self,
+        model: GeneReconModel,
+        *,
+        loss_vec: torch.Tensor,
+    ) -> dict[str, Any]:
+        metadata = model.current_batch_metadata
+        family_indices = tuple(int(idx) for idx in metadata.family_indices)
+        loss = loss_vec.sum()
+        row: dict[str, Any] = {
+            "likelihood/data_nll_bits": float(loss.detach().cpu()),
+            "likelihood/log_likelihood_bits": float(-loss.detach().cpu()),
+            "optimizer/objective_scope": "active_batch",
+            "optimizer/batch_index": int(model.current_batch_index),
+            "optimizer/batch_family_count": int(len(family_indices)),
+        }
+        if family_indices:
+            row["optimizer/batch_family_first"] = int(min(family_indices))
+            row["optimizer/batch_family_last"] = int(max(family_indices))
+        row.update(tensor_stats("grad", model.theta.grad))
+        row.update(parameter_stats(model.theta))
+        row.update(solver_stats(model))
+        return row
+
+    def _evaluate_active_genewise_vector_and_grad(
+        self,
+        model: GeneReconModel,
+    ) -> tuple[torch.Tensor, dict[str, Any]]:
+        model.theta.grad = None
+        local_loss_vec = model.nll_per_family()
+        local_loss_vec.sum().backward()
+        idx = self._active_batch_indices(model)
+        self._zero_inactive_batch_grad(model, idx)
+        loss_vec = self._full_vector_from_active_batch(model, local_loss_vec)
+        return loss_vec, self._active_batch_metrics(model, loss_vec=loss_vec)
+
+    def _evaluate_active_genewise_loss_vector(self, model: GeneReconModel) -> torch.Tensor:
+        local_loss_vec = model.nll_per_family()
+        return self._full_vector_from_active_batch(model, local_loss_vec)
 
     def _record(self, row: dict[str, Any]) -> None:
         self.history.append(row)
@@ -467,6 +570,13 @@ class OptimizationRunner:
         previous_objective: float | None = None
         stable_loss_steps = 0
         start_step = 0
+        active_batch_index = 0
+        active_optimizer_batch_index: int | None = None
+        batchwise_batched_lbfgs = (
+            config.mode == "genewise" and config.optimizer == "batched-lbfgs"
+        )
+        batch_best_nll: float | None = None
+        batch_best_step: int | None = None
         status = {"status": "running", "reason": "running"}
         final_row: dict[str, Any] = {}
         resume_info: dict[str, Any] = {}
@@ -502,9 +612,25 @@ class OptimizationRunner:
                 best_step = resume_state.best_step
                 previous_objective = resume_state.previous_objective
                 stable_loss_steps = resume_state.stable_loss_steps
+                active_batch_index = resume_state.active_batch_index
+                if batchwise_batched_lbfgs:
+                    batch_best_nll = best_nll
+                    batch_best_step = best_step
+                    best_nll = None
+                    best_step = None
+
+            if batchwise_batched_lbfgs:
+                if active_batch_index >= len(model.batch_metadata):
+                    raise RuntimeError(
+                        f"checkpoint active batch {active_batch_index} exceeds "
+                        f"{len(model.batch_metadata)} model batches"
+                    )
+                model.select_batch(active_batch_index)
 
             current_phase = self._phase_for_step(start_step)
             optimizer = self._make_optimizer(model, current_phase)
+            if current_phase == "batched-lbfgs" and batchwise_batched_lbfgs:
+                active_optimizer_batch_index = active_batch_index
             if config.resume_from is not None:
                 resume_info = self._restore_optimizer_state(
                     optimizer,
@@ -523,9 +649,21 @@ class OptimizationRunner:
 
             for step in range(start_step, config.steps):
                 phase = self._phase_for_step(step)
-                if optimizer is None or phase != current_phase:
+                if batchwise_batched_lbfgs and phase == "batched-lbfgs":
+                    if model.current_batch_index != active_batch_index:
+                        model.select_batch(active_batch_index)
+                    if (
+                        optimizer is None
+                        or phase != current_phase
+                        or active_optimizer_batch_index != active_batch_index
+                    ):
+                        current_phase = phase
+                        optimizer = self._make_optimizer(model, phase)
+                        active_optimizer_batch_index = active_batch_index
+                elif optimizer is None or phase != current_phase:
                     current_phase = phase
                     optimizer = self._make_optimizer(model, phase)
+                    active_optimizer_batch_index = None
 
                 t0 = time.perf_counter()
                 theta_before = model.theta.detach().clone()
@@ -554,7 +692,14 @@ class OptimizationRunner:
                     if optimizer is None:
                         raise RuntimeError("missing optimizer")
                     optimizer.zero_grad(set_to_none=True)
-                    loss_vec_i, metrics_i = self._evaluate_genewise_vector_and_grad(model)
+                    if batchwise_batched_lbfgs:
+                        loss_vec_i, metrics_i = (
+                            self._evaluate_active_genewise_vector_and_grad(model)
+                        )
+                    else:
+                        loss_vec_i, metrics_i = self._evaluate_genewise_vector_and_grad(
+                            model
+                        )
                     metrics = metrics_i
                     return loss_vec_i
 
@@ -563,6 +708,8 @@ class OptimizationRunner:
                     batched_loss_evals += 1
                     with torch.no_grad():
                         model.clamp_theta_(config.min_rate, config.max_rate)
+                    if batchwise_batched_lbfgs:
+                        return self._evaluate_active_genewise_loss_vector(model)
                     return self._evaluate_genewise_loss_vector(model)
 
                 save_best_after_row = False
@@ -618,7 +765,14 @@ class OptimizationRunner:
                     theta_step = float((model.theta.detach() - theta_before).abs().amax().cpu())
                     model.clear()
                     model.theta.grad = None
-                    loss_vec_current, metrics = self._evaluate_genewise_vector_and_grad(model)
+                    if batchwise_batched_lbfgs:
+                        loss_vec_current, metrics = (
+                            self._evaluate_active_genewise_vector_and_grad(model)
+                        )
+                    else:
+                        loss_vec_current, metrics = self._evaluate_genewise_vector_and_grad(
+                            model
+                        )
                     closure_evals += 1
                     metrics["optimizer/batched_lbfgs_grad_evals"] = float(batched_grad_evals)
                     metrics["optimizer/batched_lbfgs_loss_evals"] = float(batched_loss_evals)
@@ -676,14 +830,30 @@ class OptimizationRunner:
                     stable_loss_steps = 0
                 previous_objective = objective
 
-                improved = (
-                    best_nll is None
-                    or objective < best_nll - config.best_likelihood_min_delta
+                active_objective_scope = (
+                    batchwise_batched_lbfgs and phase == "batched-lbfgs"
                 )
-                if improved:
-                    best_nll = objective
-                    best_step = step
-                    save_best_after_row = True
+                if active_objective_scope:
+                    improved = (
+                        batch_best_nll is None
+                        or objective < batch_best_nll - config.best_likelihood_min_delta
+                    )
+                    if improved:
+                        batch_best_nll = objective
+                        batch_best_step = step
+                    row_best_nll = batch_best_nll
+                    row_best_step = batch_best_step
+                else:
+                    improved = (
+                        best_nll is None
+                        or objective < best_nll - config.best_likelihood_min_delta
+                    )
+                    if improved:
+                        best_nll = objective
+                        best_step = step
+                        save_best_after_row = True
+                    row_best_nll = best_nll
+                    row_best_step = best_step
 
                 row = {
                     "step": step,
@@ -693,8 +863,8 @@ class OptimizationRunner:
                     "theta_step_inf": theta_step,
                     "delta_likelihood_bits": delta,
                     "stable_loss_steps": stable_loss_steps,
-                    "best_nll_bits": best_nll,
-                    "best_step": best_step,
+                    "best_nll_bits": row_best_nll,
+                    "best_step": row_best_step,
                     **resume_info,
                     "step_s": time.perf_counter() - t0,
                     **metrics,
@@ -703,11 +873,13 @@ class OptimizationRunner:
                     "status": "running",
                     "reason": "running",
                     **resume_info,
-                    "best_nll_bits": best_nll,
-                    "best_step": best_step,
+                    "best_nll_bits": row_best_nll,
+                    "best_step": row_best_step,
                     "previous_objective": previous_objective,
                     "stable_loss_steps": stable_loss_steps,
                 }
+                if active_objective_scope:
+                    checkpoint_status["active_batch_index"] = active_batch_index
                 if save_best_after_row and phase not in {"lbfgs", "batched-lbfgs"}:
                     best_row = dict(row)
                     best_row["optimizer/step_applied"] = False
@@ -770,7 +942,7 @@ class OptimizationRunner:
                         f"nll_bits={objective:.6f} "
                         f"grad_inf={row.get('grad/inf', float('nan')):.6g} "
                         f"delta={float('nan') if delta is None else delta:.6g} "
-                        f"best={float('nan') if best_nll is None else best_nll:.6f} "
+                        f"best={float('nan') if row_best_nll is None else row_best_nll:.6f} "
                         f"step_s={row['step_s']:.3f}",
                         flush=True,
                     )
@@ -780,9 +952,42 @@ class OptimizationRunner:
                     step=step,
                     grad_inf=float(row.get("grad/inf", math.inf)),
                     stable_loss_steps=stable_loss_steps,
-                    best_step=best_step,
+                    best_step=row_best_step,
                 )
                 if step_status is not None:
+                    if (
+                        active_objective_scope
+                        and active_batch_index + 1 < len(model.batch_metadata)
+                    ):
+                        active_batch_index += 1
+                        previous_objective = None
+                        stable_loss_steps = 0
+                        batch_best_nll = None
+                        batch_best_step = None
+                        optimizer = None
+                        active_optimizer_batch_index = None
+                        if config.checkpoint_every:
+                            transition_status = {
+                                **checkpoint_status,
+                                "active_batch_index": active_batch_index,
+                                "previous_objective": None,
+                                "stable_loss_steps": 0,
+                                "best_nll_bits": None,
+                                "best_step": None,
+                            }
+                            self._save_status(
+                                latest_checkpoint,
+                                model=model,
+                                optimizer=None,
+                                step=step,
+                                next_step=step + 1,
+                                status=transition_status,
+                                row=row,
+                                optimizer_phase=phase,
+                            )
+                        model.select_batch(active_batch_index)
+                        resume_info = {}
+                        continue
                     status = step_status
                     break
             else:
