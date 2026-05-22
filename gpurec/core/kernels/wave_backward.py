@@ -254,6 +254,7 @@ def _wave_backward_uniform_2d_precompute_kernel(
     SKIP_INACTIVE_SCRATCH_ZERO: tl.constexpr,
     CONST_LAYOUT: tl.constexpr,
     DTYPE: tl.constexpr,
+    USE_CHILD_EDGE_SELF_LOOP: tl.constexpr,
 ):
     """Precompute self-loop J^T coefficients for a block of rows and all species."""
     NEG_LARGE: tl.constexpr = -1e30
@@ -404,8 +405,16 @@ def _wave_backward_uniform_2d_precompute_kernel(
     tl.store(diag_ptr + out_offsets, tl.where(mask, diag_wt, zero), mask=store_mask)
     tl.store(pibar_coeff_ptr + out_offsets, tl.where(mask, pibar_u_coeff, zero), mask=store_mask)
     tl.store(p_prime_ptr + out_offsets, tl.where(mask, p_prime, zero), mask=store_mask)
-    tl.store(sl1_ptr + out_offsets, tl.where(mask, sl1_wt, zero), mask=store_mask)
-    tl.store(sl2_ptr + out_offsets, tl.where(mask, sl2_wt, zero), mask=store_mask)
+    if USE_CHILD_EDGE_SELF_LOOP:
+        child1_offsets = rows[None, :] * S + c1[:, None]
+        child2_offsets = rows[None, :] * S + c2[:, None]
+        child1_mask = (species_valid & c1_valid)[:, None] & row_mask[None, :]
+        child2_mask = (species_valid & c2_valid)[:, None] & row_mask[None, :]
+        tl.store(sl1_ptr + child1_offsets, sl1_wt, mask=child1_mask)
+        tl.store(sl1_ptr + child2_offsets, sl2_wt, mask=child2_mask)
+    else:
+        tl.store(sl1_ptr + out_offsets, tl.where(mask, sl1_wt, zero), mask=store_mask)
+        tl.store(sl2_ptr + out_offsets, tl.where(mask, sl2_wt, zero), mask=store_mask)
 
 
 @triton.jit
@@ -420,6 +429,7 @@ def _wave_backward_uniform_2d_jt_kernel(
     sl2_ptr,
     sp_child1_ptr,
     sp_child2_ptr,
+    sp_parent_ptr,
     compact_level_ptr,
     compact_level_parent_ptr,
     compact_level_child1_ptr,
@@ -435,6 +445,7 @@ def _wave_backward_uniform_2d_jt_kernel(
     USE_ACTIVE_MASK: tl.constexpr,
     SKIP_INACTIVE_SCRATCH_ZERO: tl.constexpr,
     DTYPE: tl.constexpr,
+    USE_CHILD_EDGE_SELF_LOOP: tl.constexpr,
 ):
     """Apply one self-loop J^T term using in-program bottom-up tree reduction."""
     block = tl.program_id(0)
@@ -503,25 +514,45 @@ def _wave_backward_uniform_2d_jt_kernel(
     diag_wt = tl.load(diag_ptr + offsets, mask=mask, other=0.0).to(DTYPE)
     p_prime = tl.load(p_prime_ptr + offsets, mask=mask, other=0.0).to(DTYPE)
     base = term_val * diag_wt + p_prime * (A[None, :] - corr)
-    tl.store(term_out_ptr + offsets, tl.where(mask, base, tl.zeros_like(base)), mask=store_mask)
 
-    tl.debug_barrier()
+    if USE_CHILD_EDGE_SELF_LOOP:
+        parent = tl.load(sp_parent_ptr + s_offs, mask=species_valid, other=-1)
+        parent_valid = species_valid & (parent >= 0) & (parent < S)
+        row_base = rows[None, :] * S
+        parent_mask = parent_valid[:, None] & row_mask[None, :]
+        parent_term = tl.load(
+            term_in_ptr + row_base + parent[:, None],
+            mask=parent_mask,
+            other=0.0,
+        ).to(DTYPE)
+        edge_wt = tl.load(sl1_ptr + offsets, mask=parent_mask, other=0.0).to(DTYPE)
+        result = base + parent_term * edge_wt
+        tl.store(
+            term_out_ptr + offsets,
+            tl.where(mask, result, tl.zeros_like(result)),
+            mask=store_mask,
+        )
+    else:
+        tl.store(term_out_ptr + offsets, tl.where(mask, base, tl.zeros_like(base)), mask=store_mask)
 
-    c1 = tl.load(sp_child1_ptr + s_offs, mask=species_valid, other=S)
-    c2 = tl.load(sp_child2_ptr + s_offs, mask=species_valid, other=S)
-    sl1_wt = tl.load(sl1_ptr + offsets, mask=mask, other=0.0).to(DTYPE)
-    sl2_wt = tl.load(sl2_ptr + offsets, mask=mask, other=0.0).to(DTYPE)
-    row_base = rows[None, :] * S
-    c1_mask = (species_valid & (c1 < S))[:, None] & row_mask[None, :]
-    c2_mask = (species_valid & (c2 < S))[:, None] & row_mask[None, :]
-    c1_cur = tl.load(term_out_ptr + row_base + c1[:, None], mask=c1_mask, other=0.0).to(DTYPE)
-    c2_cur = tl.load(term_out_ptr + row_base + c2[:, None], mask=c2_mask, other=0.0).to(DTYPE)
-    tl.store(term_out_ptr + row_base + c1[:, None], c1_cur + term_val * sl1_wt, mask=c1_mask)
-    tl.store(term_out_ptr + row_base + c2[:, None], c2_cur + term_val * sl2_wt, mask=c2_mask)
+        tl.debug_barrier()
 
-    tl.debug_barrier()
+        c1 = tl.load(sp_child1_ptr + s_offs, mask=species_valid, other=S)
+        c2 = tl.load(sp_child2_ptr + s_offs, mask=species_valid, other=S)
+        sl1_wt = tl.load(sl1_ptr + offsets, mask=mask, other=0.0).to(DTYPE)
+        sl2_wt = tl.load(sl2_ptr + offsets, mask=mask, other=0.0).to(DTYPE)
+        row_base = rows[None, :] * S
+        c1_mask = (species_valid & (c1 < S))[:, None] & row_mask[None, :]
+        c2_mask = (species_valid & (c2 < S))[:, None] & row_mask[None, :]
+        c1_cur = tl.load(term_out_ptr + row_base + c1[:, None], mask=c1_mask, other=0.0).to(DTYPE)
+        c2_cur = tl.load(term_out_ptr + row_base + c2[:, None], mask=c2_mask, other=0.0).to(DTYPE)
+        tl.store(term_out_ptr + row_base + c1[:, None], c1_cur + term_val * sl1_wt, mask=c1_mask)
+        tl.store(term_out_ptr + row_base + c2[:, None], c2_cur + term_val * sl2_wt, mask=c2_mask)
 
-    result = tl.load(term_out_ptr + offsets, mask=mask, other=0.0).to(DTYPE)
+        tl.debug_barrier()
+
+        result = tl.load(term_out_ptr + offsets, mask=mask, other=0.0).to(DTYPE)
+
     v_prev = tl.load(v_k_ptr + offsets, mask=mask, other=0.0).to(DTYPE)
     tl.store(v_k_ptr + offsets, v_prev + result, mask=mask)
 
@@ -801,6 +832,10 @@ def _wave_backward_uniform_2d(
     )
     leaf_species_arg = leaf_species_idx if use_leaf_index else sp_child1
     leaf_logp_arg = leaf_logp if use_leaf_index else leaf_term_wt
+    use_child_edge_self_loop = _env_flag_enabled(
+        "GPUREC_TRITON_CHILD_EDGE_SELF_LOOP",
+        "0",
+    )
 
     precompute_warps = int(os.environ.get("GPUREC_SELF_LOOP_2D_NUM_WARPS", "8"))
     launch_options = {}
@@ -848,6 +883,7 @@ def _wave_backward_uniform_2d(
         SKIP_INACTIVE_SCRATCH_ZERO=bool(skip_inactive_scratch_zero),
         CONST_LAYOUT=int(const_layout),
         DTYPE=_tl_float_dtype(dtype),
+        USE_CHILD_EDGE_SELF_LOOP=bool(use_child_edge_self_loop),
         **launch_options,
     )
 
@@ -869,6 +905,7 @@ def _wave_backward_uniform_2d(
             aw4,
             sp_child1,
             sp_child2,
+            sp_parent,
             compact_level_ptr,
             compact_level_parents,
             compact_level_child1,
@@ -884,6 +921,7 @@ def _wave_backward_uniform_2d(
             USE_ACTIVE_MASK=bool(active_mask is not None),
             SKIP_INACTIVE_SCRATCH_ZERO=bool(skip_inactive_scratch_zero),
             DTYPE=_tl_float_dtype(dtype),
+            USE_CHILD_EDGE_SELF_LOOP=bool(use_child_edge_self_loop),
             **jt_options,
         )
 
