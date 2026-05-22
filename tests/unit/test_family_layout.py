@@ -136,9 +136,9 @@ def test_build_family_wave_layout_matches_inputs_and_wave_order():
     assert all(0 <= root_id < inputs.clade_count for root_id in root_ids)
 
 
-def test_schedule_family_waves_can_use_rust_backend(monkeypatch):
+def test_schedule_family_waves_uses_rust_backend_by_default(monkeypatch):
     inputs = family_wave_inputs(_dataset(), [1, 0])
-    monkeypatch.setenv("GPUREC_SCHEDULER_BACKEND", "rust")
+    monkeypatch.delenv("GPUREC_SCHEDULER_BACKEND", raising=False)
 
     waves, phases = schedule_family_waves(
         inputs,

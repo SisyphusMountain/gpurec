@@ -826,8 +826,8 @@ def test_depth_first_fit_groups_deep_families_under_clade_budget():
     assert chunks == [[0, 1], [2, 3], [4]]
 
 
-def test_plan_family_batches_can_use_rust_backend(monkeypatch):
-    monkeypatch.setenv("GPUREC_SCHEDULER_BACKEND", "rust")
+def test_plan_family_batches_uses_rust_backend_by_default(monkeypatch):
+    monkeypatch.delenv("GPUREC_SCHEDULER_BACKEND", raising=False)
 
     plans = plan_family_batches(
         total=5,

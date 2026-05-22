@@ -10,6 +10,7 @@ environment variables.  Keep user-facing workflows in `gpurec` and
 
 | Entrypoint | Owner | Inputs | Output contract |
 | --- | --- | --- | --- |
+| `bench_preprocess_rust_vs_cpp.py` | Maintained preprocessing backend benchmark. | Source checkout with the Rust preprocessing crate, C++ preprocessing extension, local AleRax-style family input such as `tests/data/hogenom_bench`, and explicit repeat/thread flags. | JSON timing summaries comparing C++ pybind, Rust native adapter, Rust subprocess adapter, and Rust CLI output modes; use for local backend validation, not as a stable downstream schema. |
 | `bench_uniform_forward_backward_pipeline.py` | Maintained full-pipeline benchmark for the lean branch. | CUDA, a source-checkout dataset such as generated `test_trees_*`, and explicit benchmark flags. | Human-readable timing lines and strict optimized-kernel verdicts; new output fields should be documented before downstream tooling depends on them. |
 | `evaluate_hogenom_alerax_rates.py` | Checkout-local HOGENOM/AleRax validation helper. | Local untracked HOGENOM benchmark layout, AleRax output files, GPUREC checkpoints, and CUDA. | CSV-style likelihood comparisons for local validation only; it is not a general AleRax rate-file parser. |
 

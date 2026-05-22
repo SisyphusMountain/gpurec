@@ -2887,7 +2887,7 @@ def test_runtime_surface_plan_documents_scheduler_and_pybind_ownership():
         "`collate_wave`, `split_phase_waves`",
         "deleted from `gpurec.core.batching`",
         "absent from tracked runtime Python sources",
-        "Runtime Python scheduler/layout path",
+        "Rust-default scheduler/layout path",
         "`family_schedule_summary`",
     ):
         assert token in normalized_plan
