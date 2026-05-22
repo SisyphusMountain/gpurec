@@ -349,7 +349,8 @@ def plan_family_batches(
     max_wave_size: int | None = None,
 ) -> list[FamilyBatchPlan]:
     """Plan family batches using the configured scheduling backend."""
-    backend = os.environ.get(_SCHEDULER_BACKEND_ENV, "rust").strip().lower()
+    raw_backend = os.environ.get(_SCHEDULER_BACKEND_ENV)
+    backend = "rust" if raw_backend is None else raw_backend.strip().lower()
     if backend in {"python", "py"}:
         return _plan_family_batches_python(
             clade_counts=clade_counts,
@@ -365,15 +366,13 @@ def plan_family_batches(
             max_wave_size=max_wave_size,
         )
     if backend in {"", "rust"}:
-        from gpurec.core.schedule_rust import plan_family_batches as rust_plan
+        from gpurec.core.schedule_rust import (
+            RustSchedulerBackendUnavailable,
+            plan_family_batches as rust_plan,
+        )
 
-        return [
-            FamilyBatchPlan(
-                indices=list(plan["indices"]),
-                clades=int(plan["clades"]),
-                splits=int(plan["splits"]),
-            )
-            for plan in rust_plan(
+        try:
+            rust_plans = rust_plan(
                 clade_counts=clade_counts,
                 family_chunk_size=family_chunk_size,
                 clade_budget=clade_budget,
@@ -386,6 +385,29 @@ def plan_family_batches(
                 schedule_depths=schedule_depths,
                 max_wave_size=max_wave_size,
             )
+        except RustSchedulerBackendUnavailable:
+            if raw_backend is not None and raw_backend.strip():
+                raise
+            return _plan_family_batches_python(
+                clade_counts=clade_counts,
+                family_chunk_size=family_chunk_size,
+                clade_budget=clade_budget,
+                batch_packing=batch_packing,
+                indices=indices,
+                total=total,
+                split_counts=split_counts,
+                leaf_counts=leaf_counts,
+                nonleaf_counts=nonleaf_counts,
+                schedule_depths=schedule_depths,
+                max_wave_size=max_wave_size,
+            )
+        return [
+            FamilyBatchPlan(
+                indices=list(plan["indices"]),
+                clades=int(plan["clades"]),
+                splits=int(plan["splits"]),
+            )
+            for plan in rust_plans
         ]
     raise ValueError(
         f"{_SCHEDULER_BACKEND_ENV} must be 'python' or 'rust', got {backend!r}"

@@ -1404,20 +1404,28 @@ def build_wave_layout(
           'wave_metas': list of per-wave metadata dicts
           'family_idx': Long[C] clade→family (only if family_clade_counts provided)
     """
-    backend = os.environ.get(_SCHEDULER_BACKEND_ENV, "rust").strip().lower()
+    raw_backend = os.environ.get(_SCHEDULER_BACKEND_ENV)
+    backend = "rust" if raw_backend is None else raw_backend.strip().lower()
     if backend in {"", "rust"}:
-        return _build_wave_layout_rust(
-            waves,
-            phases,
-            ccp_helpers,
-            leaf_row_index,
-            leaf_col_index,
-            root_clade_ids,
-            device,
-            dtype,
-            family_clade_counts,
-            family_clade_offsets,
-        )
+        from gpurec.core.schedule_rust import RustSchedulerBackendUnavailable
+
+        try:
+            return _build_wave_layout_rust(
+                waves,
+                phases,
+                ccp_helpers,
+                leaf_row_index,
+                leaf_col_index,
+                root_clade_ids,
+                device,
+                dtype,
+                family_clade_counts,
+                family_clade_offsets,
+            )
+        except RustSchedulerBackendUnavailable:
+            if raw_backend is not None and raw_backend.strip():
+                raise
+            backend = "python"
     if backend not in {"python", "py"}:
         raise ValueError(
             f"{_SCHEDULER_BACKEND_ENV} must be 'python' or 'rust', got {backend!r}"

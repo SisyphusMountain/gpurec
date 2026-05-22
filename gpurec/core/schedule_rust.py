@@ -12,6 +12,17 @@ import torch
 from .preprocess_rust import _load_native_module
 
 
+class RustSchedulerBackendUnavailable(RuntimeError):
+    """Raised when the Rust scheduler native extension cannot be loaded."""
+
+
+def _load_scheduler_native_module():
+    try:
+        return _load_native_module()
+    except Exception as exc:
+        raise RustSchedulerBackendUnavailable(str(exc)) from exc
+
+
 def _native_json(call, payload: str) -> Any:
     try:
         return json.loads(call(payload))
@@ -68,7 +79,7 @@ def _schedule_item(item: dict[str, Any]) -> dict[str, Any]:
 
 def family_schedule_summary(ccp: dict[str, Any]) -> dict[str, int]:
     """Return Rust-computed per-family scheduling stats."""
-    module = _load_native_module()
+    module = _load_scheduler_native_module()
     request_ccp = _schedule_item({"ccp": ccp})["ccp"]
     output = _native_json(
         module.family_schedule_summary_json,
@@ -140,7 +151,7 @@ def plan_family_batches(
         ),
         "max_wave_size": _optional_integer_value("max_wave_size", max_wave_size),
     }
-    module = _load_native_module()
+    module = _load_scheduler_native_module()
     output = _native_json(module.plan_family_batches_json, json.dumps(request))
     return [
         {
@@ -188,7 +199,7 @@ def build_wave_layout_plan(
             else [int(offset) for offset in family_clade_offsets]
         ),
     }
-    module = _load_native_module()
+    module = _load_scheduler_native_module()
     return _native_json(module.build_wave_layout_plan_json, json.dumps(request))
 
 
@@ -214,7 +225,7 @@ def schedule_global_phased_waves(
         ),
         "dts_partial_tile_splits": int(dts_partial_tile_splits),
     }
-    module = _load_native_module()
+    module = _load_scheduler_native_module()
     output = _native_json(module.schedule_global_phased_waves_json, json.dumps(request))
     return (
         [[int(clade) for clade in wave] for wave in output["waves"]],

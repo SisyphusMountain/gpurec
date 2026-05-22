@@ -156,6 +156,35 @@ def test_schedule_family_waves_uses_rust_backend_by_default(monkeypatch):
     }
 
 
+def test_schedule_family_waves_default_falls_back_when_rust_unavailable(monkeypatch):
+    import gpurec.core.schedule_rust as rust_schedule
+
+    inputs = family_wave_inputs(_dataset(), [1, 0])
+
+    def unavailable(*args, **kwargs):
+        raise rust_schedule.RustSchedulerBackendUnavailable("missing native module")
+
+    monkeypatch.delenv("GPUREC_SCHEDULER_BACKEND", raising=False)
+    monkeypatch.setattr(rust_schedule, "schedule_global_phased_waves", unavailable)
+
+    waves, phases = schedule_family_waves(
+        inputs,
+        max_wave_size=2,
+        max_root_wave_size=None,
+    )
+
+    assert waves == [[0, 3], [4], [1, 2]]
+    assert phases == [1, 1, 3]
+
+    monkeypatch.setenv("GPUREC_SCHEDULER_BACKEND", "rust")
+    with pytest.raises(rust_schedule.RustSchedulerBackendUnavailable):
+        schedule_family_waves(
+            inputs,
+            max_wave_size=2,
+            max_root_wave_size=None,
+        )
+
+
 def test_schedule_family_waves_rejects_unknown_backend(monkeypatch):
     inputs = family_wave_inputs(_dataset(), [0])
     monkeypatch.setenv("GPUREC_SCHEDULER_BACKEND", "nope")

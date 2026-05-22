@@ -847,6 +847,36 @@ def test_plan_family_batches_uses_rust_backend_by_default(monkeypatch):
     assert [plan.splits for plan in plans] == [30, 70, 50]
 
 
+def test_plan_family_batches_default_falls_back_when_rust_unavailable(monkeypatch):
+    import gpurec.core.schedule_rust as rust_schedule
+
+    def unavailable(*args, **kwargs):
+        raise rust_schedule.RustSchedulerBackendUnavailable("missing native module")
+
+    monkeypatch.delenv("GPUREC_SCHEDULER_BACKEND", raising=False)
+    monkeypatch.setattr(rust_schedule, "plan_family_batches", unavailable)
+
+    plans = plan_family_batches(
+        total=3,
+        clade_counts=[20, 6, 5],
+        family_chunk_size=0,
+        clade_budget=12,
+        batch_packing="clade_first_fit",
+    )
+
+    assert [plan.indices for plan in plans] == [[0], [1, 2]]
+
+    monkeypatch.setenv("GPUREC_SCHEDULER_BACKEND", "rust")
+    with pytest.raises(rust_schedule.RustSchedulerBackendUnavailable):
+        plan_family_batches(
+            total=3,
+            clade_counts=[20, 6, 5],
+            family_chunk_size=0,
+            clade_budget=12,
+            batch_packing="clade_first_fit",
+        )
+
+
 def test_uniform_chunk_specs_use_shared_depth_first_fit_planner():
     specs = _make_chunks(
         [0, 1, 2, 3, 4],

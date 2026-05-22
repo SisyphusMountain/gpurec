@@ -427,7 +427,7 @@ follow the best-effort or required-mode fallback policy above.
 | `GPUREC_PREPROCESS_BACKEND` | CPU preprocessing backend selector; use `cpp` for the retained C++ extension or `rust` for the native Rust preprocessing extension. |
 | `GPUREC_PREPROCESS_NATIVE_LIB` | Optional path to a prebuilt native Rust preprocessing extension. |
 | `GPUREC_PREPROCESS_BIN` | Optional path to the Rust preprocessing CLI used by the subprocess adapter and profiling helpers. |
-| `GPUREC_SCHEDULER_BACKEND` | Wave scheduling and batching backend selector; defaults to native Rust, use `python` for the retained parity fallback. |
+| `GPUREC_SCHEDULER_BACKEND` | Wave scheduling and batching backend selector; unset prefers native Rust and falls back to Python if the native extension is unavailable, use `rust` to require Rust or `python` for the retained parity fallback. |
 | `GPUREC_BACKTRACK_BIN` | Path to the Rust backtracking binary used by `gpurec sample`, `gpurec run`, and `gpurec backtrack-check`. |
 | `GPUREC_ALERAX_COMPAT` | Compatibility guard; differentiable model optimization supports only unset or `0`. |
 | `GPUREC_MEMORY_POLICY_FRACTION`, `GPUREC_MEMORY_POLICY_RESERVE_GIB` | GPU memory-budget margins used by uniform chunk planning. |

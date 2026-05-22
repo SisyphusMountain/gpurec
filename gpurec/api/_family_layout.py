@@ -137,11 +137,26 @@ def schedule_family_waves(
     max_dts_partial_rows: int | None = None,
 ) -> tuple[list[list[int]], list[int]]:
     """Schedule phased waves for already-collected family input metadata."""
-    backend = os.environ.get(_SCHEDULER_BACKEND_ENV, "rust").strip().lower()
+    raw_backend = os.environ.get(_SCHEDULER_BACKEND_ENV)
+    backend = "rust" if raw_backend is None else raw_backend.strip().lower()
     if backend in {"", "rust"}:
         from gpurec.core.schedule_rust import (
+            RustSchedulerBackendUnavailable,
             schedule_global_phased_waves as scheduler,
         )
+
+        try:
+            return scheduler(
+                list(inputs.items),
+                inputs.family_clade_offsets,
+                max_wave_size=max_wave_size,
+                max_root_wave_size=max_root_wave_size,
+                max_dts_partial_rows=max_dts_partial_rows,
+            )
+        except RustSchedulerBackendUnavailable:
+            if raw_backend is not None and raw_backend.strip():
+                raise
+            scheduler = schedule_global_phased_waves
     elif backend in {"python", "py"}:
         scheduler = schedule_global_phased_waves
     else:
@@ -160,11 +175,20 @@ def schedule_family_waves(
 
 def family_schedule_summary(ccp: dict[str, Any]) -> dict[str, int]:
     """Return per-family scheduling stats using the configured scheduler backend."""
-    backend = os.environ.get(_SCHEDULER_BACKEND_ENV, "rust").strip().lower()
+    raw_backend = os.environ.get(_SCHEDULER_BACKEND_ENV)
+    backend = "rust" if raw_backend is None else raw_backend.strip().lower()
     if backend in {"", "rust"}:
-        from gpurec.core.schedule_rust import family_schedule_summary as rust_summary
+        from gpurec.core.schedule_rust import (
+            RustSchedulerBackendUnavailable,
+            family_schedule_summary as rust_summary,
+        )
 
-        return rust_summary(ccp)
+        try:
+            return rust_summary(ccp)
+        except RustSchedulerBackendUnavailable:
+            if raw_backend is not None and raw_backend.strip():
+                raise
+            return _python_family_schedule_summary(ccp)
     if backend in {"python", "py"}:
         return _python_family_schedule_summary(ccp)
     raise ValueError(
