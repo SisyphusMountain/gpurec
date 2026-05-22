@@ -40,6 +40,14 @@ pub struct ScheduleOutput {
     pub phases: Vec<i64>,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct FamilyScheduleSummary {
+    pub clade_count: i64,
+    pub leaf_count: i64,
+    pub nonleaf_count: i64,
+    pub max_level: i64,
+}
+
 #[derive(Clone, Debug)]
 struct FamilySchedule {
     c: usize,
@@ -71,6 +79,18 @@ pub fn schedule_global_phased_waves_request(
         request.max_dts_partial_rows,
         request.dts_partial_tile_splits,
     )
+}
+
+pub fn family_schedule_summary(
+    ccp: &ScheduleCcp,
+) -> Result<FamilyScheduleSummary, PreprocessError> {
+    let data = family_schedule_data(ccp)?;
+    Ok(FamilyScheduleSummary {
+        clade_count: data.c as i64,
+        leaf_count: (data.c - data.nonleaf_count) as i64,
+        nonleaf_count: data.nonleaf_count as i64,
+        max_level: data.max_level as i64,
+    })
 }
 
 pub fn schedule_global_phased_waves(

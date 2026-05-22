@@ -29,7 +29,6 @@ from typing import Any, Optional, Sequence
 
 import torch
 
-from gpurec.core.batching import family_schedule_summary
 from gpurec.core.batch_planning import (
     normalize_batch_packing,
     normalize_clade_budget,
@@ -60,6 +59,7 @@ from .autograd import (
 from ._family_layout import (
     FamilyWaveInputs,
     build_family_wave_layout,
+    family_schedule_summary,
     family_wave_inputs,
     schedule_family_waves,
 )

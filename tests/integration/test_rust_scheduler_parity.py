@@ -2,10 +2,16 @@ from pathlib import Path
 
 import torch
 
-from gpurec.core.batching import schedule_global_phased_waves as py_schedule
+from gpurec.core.batching import (
+    family_schedule_summary as py_family_schedule_summary,
+    schedule_global_phased_waves as py_schedule,
+)
 from gpurec.core.model import parse_alerax_family_file
 from gpurec.core.preprocess_rust import RustPreprocessExtension
-from gpurec.core.schedule_rust import schedule_global_phased_waves as rust_schedule
+from gpurec.core.schedule_rust import (
+    family_schedule_summary as rust_family_schedule_summary,
+    schedule_global_phased_waves as rust_schedule,
+)
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -106,6 +112,18 @@ def test_rust_scheduler_matches_python_dts_partial_cap():
         max_dts_partial_rows=8,
         dts_partial_tile_splits=4,
     )
+
+
+def test_rust_family_schedule_summary_matches_python():
+    ccp = _ccp(
+        6,
+        [0, 1, 2, 3],
+        [2, 3, 4, 4],
+        [4, 5, 5, 5],
+        root=0,
+    )
+
+    assert rust_family_schedule_summary(ccp) == py_family_schedule_summary(ccp)
 
 
 def test_rust_scheduler_matches_python_on_hogenom_bench_fixture():

@@ -19,6 +19,7 @@ from gpurec.api._validation import integer_value
 from gpurec.core.batching import (
     build_wave_layout,
     collate_gene_families,
+    family_schedule_summary as _python_family_schedule_summary,
     schedule_global_phased_waves,
 )
 from gpurec.core.model import GeneDataset
@@ -154,6 +155,20 @@ def schedule_family_waves(
         max_wave_size=max_wave_size,
         max_root_wave_size=max_root_wave_size,
         max_dts_partial_rows=max_dts_partial_rows,
+    )
+
+
+def family_schedule_summary(ccp: dict[str, Any]) -> dict[str, int]:
+    """Return per-family scheduling stats using the configured scheduler backend."""
+    backend = os.environ.get(_SCHEDULER_BACKEND_ENV, "python").strip().lower()
+    if backend in {"", "python", "py"}:
+        return _python_family_schedule_summary(ccp)
+    if backend == "rust":
+        from gpurec.core.schedule_rust import family_schedule_summary as rust_summary
+
+        return rust_summary(ccp)
+    raise ValueError(
+        f"{_SCHEDULER_BACKEND_ENV} must be 'python' or 'rust', got {backend!r}"
     )
 
 

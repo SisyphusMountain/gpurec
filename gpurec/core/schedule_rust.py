@@ -30,6 +30,14 @@ def _schedule_item(item: dict[str, Any]) -> dict[str, Any]:
     return {"ccp": request_ccp}
 
 
+def family_schedule_summary(ccp: dict[str, Any]) -> dict[str, int]:
+    """Return Rust-computed per-family scheduling stats."""
+    module = _load_native_module()
+    request_ccp = _schedule_item({"ccp": ccp})["ccp"]
+    output = json.loads(module.family_schedule_summary_json(json.dumps(request_ccp)))
+    return {key: int(value) for key, value in output.items()}
+
+
 def schedule_global_phased_waves(
     items: Sequence[dict[str, Any]],
     family_clade_offsets: Sequence[int],

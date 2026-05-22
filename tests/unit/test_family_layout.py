@@ -8,6 +8,7 @@ import torch
 from gpurec.api._family_layout import (
     build_family_wave_layout,
     family_wave_inputs,
+    family_schedule_summary,
     origination_probs_for_family_indices,
     schedule_family_waves,
 )
@@ -147,6 +148,12 @@ def test_schedule_family_waves_can_use_rust_backend(monkeypatch):
 
     assert waves == [[0, 3], [4], [1, 2]]
     assert phases == [1, 1, 3]
+    assert family_schedule_summary(inputs.items[0]["ccp"]) == {
+        "clade_count": 2,
+        "leaf_count": 1,
+        "nonleaf_count": 1,
+        "max_level": 1,
+    }
 
 
 def test_schedule_family_waves_rejects_unknown_backend(monkeypatch):

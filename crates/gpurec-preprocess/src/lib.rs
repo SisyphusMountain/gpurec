@@ -15,7 +15,10 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 
 pub mod scheduler;
-pub use scheduler::{schedule_global_phased_waves_request, ScheduleOutput, ScheduleRequest};
+pub use scheduler::{
+    family_schedule_summary, schedule_global_phased_waves_request, FamilyScheduleSummary,
+    ScheduleCcp, ScheduleOutput, ScheduleRequest,
+};
 
 #[cfg(feature = "python-extension")]
 use numpy::{ndarray::Array2, IntoPyArray};
@@ -349,12 +352,23 @@ fn schedule_global_phased_waves_json(request_json: &str) -> PyResult<String> {
 }
 
 #[cfg(feature = "python-extension")]
+#[pyfunction]
+fn family_schedule_summary_json(ccp_json: &str) -> PyResult<String> {
+    let ccp: ScheduleCcp =
+        serde_json::from_str(ccp_json).map_err(|err| PyRuntimeError::new_err(err.to_string()))?;
+    let output =
+        family_schedule_summary(&ccp).map_err(|err| PyRuntimeError::new_err(err.to_string()))?;
+    serde_json::to_string(&output).map_err(|err| PyRuntimeError::new_err(err.to_string()))
+}
+
+#[cfg(feature = "python-extension")]
 #[pymodule]
 fn gpurec_preprocess(_py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(preprocess_request_binary, module)?)?;
     module.add_function(wrap_pyfunction!(preprocess_request_numpy, module)?)?;
     module.add_function(wrap_pyfunction!(preprocess_request_torch, module)?)?;
     module.add_function(wrap_pyfunction!(schedule_global_phased_waves_json, module)?)?;
+    module.add_function(wrap_pyfunction!(family_schedule_summary_json, module)?)?;
     Ok(())
 }
 

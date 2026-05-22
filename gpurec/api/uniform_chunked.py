@@ -18,7 +18,6 @@ from typing import Any, Sequence
 import torch
 
 from gpurec.core.backward import Pi_wave_backward
-from gpurec.core.batching import family_schedule_summary
 from gpurec.core.batch_planning import (
     normalize_batch_packing,
     normalize_clade_budget,
@@ -51,6 +50,7 @@ from gpurec.optimization.implicit_grad import _e_adjoint_and_theta_vjp
 
 from ._family_layout import (
     build_family_wave_layout,
+    family_schedule_summary,
     family_wave_inputs,
 )
 from ._validation import (
