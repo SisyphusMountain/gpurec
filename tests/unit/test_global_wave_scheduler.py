@@ -423,7 +423,7 @@ def _plain_layout_value(value):
     return value
 
 
-def test_rust_wave_layout_matches_python_layout_plan(monkeypatch):
+def test_build_wave_layout_uses_rust_layout_plan():
     ccp = {
         "C": 5,
         "N_splits": 3,
@@ -447,12 +447,118 @@ def test_rust_wave_layout_matches_python_layout_plan(monkeypatch):
         "family_clade_offsets": [0, 2],
     }
 
-    monkeypatch.setenv("GPUREC_SCHEDULER_BACKEND", "python")
-    python_layout = build_wave_layout(**kwargs)
-    monkeypatch.delenv("GPUREC_SCHEDULER_BACKEND", raising=False)
     rust_layout = build_wave_layout(**kwargs)
 
-    assert _plain_layout_value(rust_layout) == _plain_layout_value(python_layout)
+    assert _plain_layout_value(rust_layout) == {
+        "perm": {
+            "dtype": "torch.int64",
+            "shape": [5],
+            "values": [4, 3, 0, 1, 2],
+        },
+        "C": 5,
+        "leaf_row_index": {
+            "dtype": "torch.int64",
+            "shape": [3],
+            "values": [0, 1, 2],
+        },
+        "leaf_species_index": {
+            "dtype": "torch.int64",
+            "shape": [5],
+            "values": [0, 1, 2, -1, -1],
+        },
+        "root_clade_ids": {
+            "dtype": "torch.int64",
+            "shape": [1],
+            "values": [4],
+        },
+        "root_clade_ids_cpu": [4],
+        "wave_metas": [
+            {
+                "start": 0,
+                "end": 3,
+                "W": 3,
+                "has_splits": False,
+                "phase": 1,
+            },
+            {
+                "start": 3,
+                "end": 4,
+                "W": 1,
+                "has_splits": True,
+                "phase": 2,
+                "sl": {
+                    "dtype": "torch.int32",
+                    "shape": [1],
+                    "values": [1],
+                },
+                "sr": {
+                    "dtype": "torch.int32",
+                    "shape": [1],
+                    "values": [2],
+                },
+                "log_split_probs": {
+                    "dtype": "torch.float32",
+                    "shape": [1, 1],
+                    "values": [[0.30000001192092896]],
+                },
+                "reduce_idx": {
+                    "dtype": "torch.int32",
+                    "shape": [1],
+                    "values": [0],
+                },
+                "n_eq1": 1,
+                "eq1_reduce_idx": {
+                    "dtype": "torch.int32",
+                    "shape": [1],
+                    "values": [0],
+                },
+            },
+            {
+                "start": 4,
+                "end": 5,
+                "W": 1,
+                "has_splits": True,
+                "phase": 3,
+                "sl": {
+                    "dtype": "torch.int32",
+                    "shape": [2],
+                    "values": [3, 0],
+                },
+                "sr": {
+                    "dtype": "torch.int32",
+                    "shape": [2],
+                    "values": [0, 1],
+                },
+                "log_split_probs": {
+                    "dtype": "torch.float32",
+                    "shape": [2, 1],
+                    "values": [[0.10000000149011612], [0.20000000298023224]],
+                },
+                "reduce_idx": {
+                    "dtype": "torch.int32",
+                    "shape": [2],
+                    "values": [0, 0],
+                },
+                "n_eq1": 0,
+                "ge2_ptr": {
+                    "dtype": "torch.int64",
+                    "shape": [2],
+                    "values": [0, 2],
+                },
+                "ge2_parent_ids": {
+                    "dtype": "torch.int32",
+                    "shape": [1],
+                    "values": [0],
+                },
+                "ge2_max_fanout": 2,
+            },
+        ],
+        "family_idx": {
+            "dtype": "torch.int64",
+            "shape": [5],
+            "values": [1, 1, 1, 0, 0],
+        },
+    }
 
 
 def test_global_scheduler_respects_cap_and_topological_order():
@@ -826,9 +932,7 @@ def test_depth_first_fit_groups_deep_families_under_clade_budget():
     assert chunks == [[0, 1], [2, 3], [4]]
 
 
-def test_plan_family_batches_uses_rust_backend_by_default(monkeypatch):
-    monkeypatch.delenv("GPUREC_SCHEDULER_BACKEND", raising=False)
-
+def test_plan_family_batches_uses_rust_backend():
     plans = plan_family_batches(
         total=5,
         clade_counts=[6, 6, 6, 6, 6],
@@ -847,26 +951,14 @@ def test_plan_family_batches_uses_rust_backend_by_default(monkeypatch):
     assert [plan.splits for plan in plans] == [30, 70, 50]
 
 
-def test_plan_family_batches_default_falls_back_when_rust_unavailable(monkeypatch):
+def test_plan_family_batches_propagates_rust_unavailable(monkeypatch):
     import gpurec.core.schedule_rust as rust_schedule
 
     def unavailable(*args, **kwargs):
         raise rust_schedule.RustSchedulerBackendUnavailable("missing native module")
 
-    monkeypatch.delenv("GPUREC_SCHEDULER_BACKEND", raising=False)
     monkeypatch.setattr(rust_schedule, "plan_family_batches", unavailable)
 
-    plans = plan_family_batches(
-        total=3,
-        clade_counts=[20, 6, 5],
-        family_chunk_size=0,
-        clade_budget=12,
-        batch_packing="clade_first_fit",
-    )
-
-    assert [plan.indices for plan in plans] == [[0], [1, 2]]
-
-    monkeypatch.setenv("GPUREC_SCHEDULER_BACKEND", "rust")
     with pytest.raises(rust_schedule.RustSchedulerBackendUnavailable):
         plan_family_batches(
             total=3,

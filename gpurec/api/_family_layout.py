@@ -8,7 +8,6 @@ runtime layout contract.
 
 from __future__ import annotations
 
-import os
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
@@ -19,13 +18,8 @@ from gpurec.api._validation import integer_value
 from gpurec.core.batching import (
     build_wave_layout,
     collate_gene_families,
-    family_schedule_summary as _python_family_schedule_summary,
-    schedule_global_phased_waves,
 )
 from gpurec.core.model import GeneDataset
-
-
-_SCHEDULER_BACKEND_ENV = "GPUREC_SCHEDULER_BACKEND"
 
 
 @dataclass(frozen=True)
@@ -137,34 +131,9 @@ def schedule_family_waves(
     max_dts_partial_rows: int | None = None,
 ) -> tuple[list[list[int]], list[int]]:
     """Schedule phased waves for already-collected family input metadata."""
-    raw_backend = os.environ.get(_SCHEDULER_BACKEND_ENV)
-    backend = "rust" if raw_backend is None else raw_backend.strip().lower()
-    if backend in {"", "rust"}:
-        from gpurec.core.schedule_rust import (
-            RustSchedulerBackendUnavailable,
-            schedule_global_phased_waves as scheduler,
-        )
+    from gpurec.core.schedule_rust import schedule_global_phased_waves
 
-        try:
-            return scheduler(
-                list(inputs.items),
-                inputs.family_clade_offsets,
-                max_wave_size=max_wave_size,
-                max_root_wave_size=max_root_wave_size,
-                max_dts_partial_rows=max_dts_partial_rows,
-            )
-        except RustSchedulerBackendUnavailable:
-            if raw_backend is not None and raw_backend.strip():
-                raise
-            scheduler = schedule_global_phased_waves
-    elif backend in {"python", "py"}:
-        scheduler = schedule_global_phased_waves
-    else:
-        raise ValueError(
-            f"{_SCHEDULER_BACKEND_ENV} must be 'python' or 'rust', got {backend!r}"
-        )
-
-    return scheduler(
+    return schedule_global_phased_waves(
         list(inputs.items),
         inputs.family_clade_offsets,
         max_wave_size=max_wave_size,
@@ -174,26 +143,10 @@ def schedule_family_waves(
 
 
 def family_schedule_summary(ccp: dict[str, Any]) -> dict[str, int]:
-    """Return per-family scheduling stats using the configured scheduler backend."""
-    raw_backend = os.environ.get(_SCHEDULER_BACKEND_ENV)
-    backend = "rust" if raw_backend is None else raw_backend.strip().lower()
-    if backend in {"", "rust"}:
-        from gpurec.core.schedule_rust import (
-            RustSchedulerBackendUnavailable,
-            family_schedule_summary as rust_summary,
-        )
+    """Return per-family scheduling stats using the Rust scheduler backend."""
+    from gpurec.core.schedule_rust import family_schedule_summary as rust_summary
 
-        try:
-            return rust_summary(ccp)
-        except RustSchedulerBackendUnavailable:
-            if raw_backend is not None and raw_backend.strip():
-                raise
-            return _python_family_schedule_summary(ccp)
-    if backend in {"python", "py"}:
-        return _python_family_schedule_summary(ccp)
-    raise ValueError(
-        f"{_SCHEDULER_BACKEND_ENV} must be 'python' or 'rust', got {backend!r}"
-    )
+    return rust_summary(ccp)
 
 
 def build_family_wave_layout(

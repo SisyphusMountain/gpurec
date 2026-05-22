@@ -1,11 +1,7 @@
 import heapq
-import os
 from typing import Any, Dict, List, Sequence, Tuple
 
 import torch
-
-
-_SCHEDULER_BACKEND_ENV = "GPUREC_SCHEDULER_BACKEND"
 
 
 def collate_gene_families(
@@ -262,90 +258,6 @@ def _validate_split_block_lengths(
         )
 
 
-def _validate_wave_clade_coverage(all_clades: Sequence[int], C: int) -> None:
-    if len(all_clades) != C:
-        raise ValueError(f"Wave layout covers {len(all_clades)} clades but C={C}")
-    seen: set[int] = set()
-    for position, clade in enumerate(all_clades):
-        clade_id = int(clade)
-        if clade_id < 0 or clade_id >= C:
-            raise ValueError(
-                f"Wave layout contains clade {clade_id} at position {position}, "
-                f"outside valid range [0, {C})"
-            )
-        if clade_id in seen:
-            raise ValueError(f"Wave layout contains duplicate clade {clade_id}")
-        seen.add(clade_id)
-
-
-def _family_metadata_index(name: str, family_index: int, value: Any) -> int:
-    if isinstance(value, bool):
-        raise ValueError(f"{name}[{family_index}] must be an integer")
-    try:
-        return value.__index__()
-    except AttributeError as exc:
-        raise ValueError(f"{name}[{family_index}] must be an integer") from exc
-
-
-def _validate_family_clade_metadata(
-    family_clade_counts: Sequence[int] | None,
-    family_clade_offsets: Sequence[int] | None,
-    C: int,
-) -> List[Tuple[int, int]] | None:
-    if family_clade_counts is None and family_clade_offsets is None:
-        return None
-    if family_clade_counts is None or family_clade_offsets is None:
-        raise ValueError(
-            "family_clade_counts and family_clade_offsets must be provided together"
-        )
-    if len(family_clade_counts) != len(family_clade_offsets):
-        raise ValueError(
-            "family_clade_counts and family_clade_offsets must have matching lengths"
-        )
-
-    covered = [False] * C
-    ranges: List[Tuple[int, int]] = []
-    for family_index, (offset_value, count_value) in enumerate(
-        zip(family_clade_offsets, family_clade_counts)
-    ):
-        offset = _family_metadata_index(
-            "family_clade_offsets",
-            family_index,
-            offset_value,
-        )
-        count = _family_metadata_index(
-            "family_clade_counts",
-            family_index,
-            count_value,
-        )
-        if offset < 0:
-            raise ValueError(
-                f"family_clade_offsets[{family_index}] must be non-negative"
-            )
-        if count < 0:
-            raise ValueError(
-                f"family_clade_counts[{family_index}] must be non-negative"
-            )
-        end = offset + count
-        if end > C:
-            raise ValueError(
-                f"family {family_index} clade range [{offset}, {end}) "
-                f"is outside C={C}"
-            )
-        for clade in range(offset, end):
-            if covered[clade]:
-                raise ValueError(
-                    f"family clade metadata overlaps clade {clade}"
-                )
-            covered[clade] = True
-        ranges.append((offset, count))
-
-    for clade, is_covered in enumerate(covered):
-        if not is_covered:
-            raise ValueError(f"family clade metadata does not cover clade {clade}")
-    return ranges
-
-
 def _ccp_split_counts(ccp: Dict[str, Any], C: int, parents: Sequence[int]) -> List[int]:
     derived = [0] * C
     for row, parent in enumerate(parents):
@@ -374,17 +286,6 @@ def _validate_split_child_id(name: str, value: int, *, row: int, C: int) -> int:
             f"outside valid range [0, {C})"
         )
     return child_id
-
-
-def _validate_clade_id_values(name: str, value: Any, *, C: int) -> None:
-    ids = _cpu_long_list(value)
-    for position, clade in enumerate(ids):
-        clade_id = int(clade)
-        if clade_id < 0 or clade_id >= C:
-            raise ValueError(
-                f"{name} contains clade {clade_id} at position {position}, "
-                f"outside valid range [0, {C})"
-            )
 
 
 def _family_schedule_data(ccp: Dict[str, Any]) -> Dict[str, Any]:
@@ -480,7 +381,7 @@ def _family_schedule_data(ccp: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def family_schedule_summary(ccp: Dict[str, Any]) -> Dict[str, int]:
-    """Return compact per-family scheduling stats for resident batch packing."""
+    """Reference Python scheduling stats retained for Rust parity tests only."""
     data = _family_schedule_data(ccp)
     return {
         "clade_count": int(data["C"]),
@@ -1153,13 +1054,14 @@ def schedule_global_phased_waves(
     max_dts_partial_rows: int | None = None,
     dts_partial_tile_splits: int = 64,
 ) -> Tuple[List[List[int]], List[int]]:
-    """Schedule one resident batch with globally packed ready waves.
+    """Reference Python scheduler retained for Rust parity tests only.
 
     The retained kernels still need leaf clades handled before non-leaf clades,
     but after the leaf phase this schedules all ready clades from all families
     into waves capped by ``max_wave_size``.  This replaces the older lockstep
     ``family wave k -> resident wave k`` collation, which left many waves far
-    below the GPU-friendly cap.
+    below the GPU-friendly cap. Production scheduling goes through
+    ``gpurec.core.schedule_rust``.
     """
     if len(items) != len(family_clade_offsets):
         raise ValueError("items and family_clade_offsets must have matching lengths")
@@ -1404,226 +1306,15 @@ def build_wave_layout(
           'wave_metas': list of per-wave metadata dicts
           'family_idx': Long[C] clade→family (only if family_clade_counts provided)
     """
-    raw_backend = os.environ.get(_SCHEDULER_BACKEND_ENV)
-    backend = "rust" if raw_backend is None else raw_backend.strip().lower()
-    if backend in {"", "rust"}:
-        from gpurec.core.schedule_rust import RustSchedulerBackendUnavailable
-
-        try:
-            return _build_wave_layout_rust(
-                waves,
-                phases,
-                ccp_helpers,
-                leaf_row_index,
-                leaf_col_index,
-                root_clade_ids,
-                device,
-                dtype,
-                family_clade_counts,
-                family_clade_offsets,
-            )
-        except RustSchedulerBackendUnavailable:
-            if raw_backend is not None and raw_backend.strip():
-                raise
-            backend = "python"
-    if backend not in {"python", "py"}:
-        raise ValueError(
-            f"{_SCHEDULER_BACKEND_ENV} must be 'python' or 'rust', got {backend!r}"
-        )
-
-    C = int(ccp_helpers['C'])
-    N_splits = int(ccp_helpers['N_splits'])
-    family_clade_ranges = _validate_family_clade_metadata(
+    return _build_wave_layout_rust(
+        waves,
+        phases,
+        ccp_helpers,
+        leaf_row_index,
+        leaf_col_index,
+        root_clade_ids,
+        device,
+        dtype,
         family_clade_counts,
         family_clade_offsets,
-        C,
     )
-    if len(phases) != len(waves):
-        raise ValueError(
-            "waves and phases must have matching lengths, "
-            f"got {len(waves)} and {len(phases)}"
-        )
-    if C > torch.iinfo(torch.int32).max:
-        raise ValueError(f"wave split metadata requires int32 clade ids, got C={C}")
-    _require_numel(
-        "split_leftrights_sorted",
-        ccp_helpers['split_leftrights_sorted'],
-        2 * N_splits,
-    )
-    _require_numel(
-        "log_split_probs_sorted",
-        ccp_helpers['log_split_probs_sorted'],
-        N_splits,
-    )
-    if 'split_parents_sorted' not in ccp_helpers:
-        raise RuntimeError("preprocessed CCP helpers must include split_parents_sorted")
-    _require_numel(
-        "split_parents_sorted",
-        ccp_helpers['split_parents_sorted'],
-        N_splits,
-    )
-    _validate_clade_id_values(
-        "split_leftrights_sorted",
-        ccp_helpers['split_leftrights_sorted'],
-        C=C,
-    )
-    _validate_clade_id_values(
-        "split_parents_sorted",
-        ccp_helpers['split_parents_sorted'],
-        C=C,
-    )
-    _require_numel(
-        "leaf_col_index",
-        leaf_col_index,
-        _numel(leaf_row_index),
-    )
-    _validate_clade_id_values("leaf_row_index", leaf_row_index, C=C)
-    _validate_clade_id_values("root_clade_ids", root_clade_ids, C=C)
-
-    # --- 2a. Build permutation ---
-    all_clades: List[int] = []
-    wave_starts_list: List[int] = [0]
-    for wave_ids in waves:
-        all_clades.extend(wave_ids)
-        wave_starts_list.append(len(all_clades))
-
-    _validate_wave_clade_coverage(all_clades, C)
-
-    inv_perm = torch.tensor(all_clades, dtype=torch.long, device=device)
-    perm = torch.empty(C, dtype=torch.long, device=device)
-    perm[inv_perm] = torch.arange(C, dtype=torch.long, device=device)
-
-    # --- 2b. Remap all clade-index tensors (fully vectorized) ---
-    split_lr = ccp_helpers['split_leftrights_sorted'].to(device=device, dtype=torch.long)
-    lefts_orig = split_lr[:N_splits]
-    rights_orig = split_lr[N_splits:]
-    lefts_new = perm[lefts_orig]
-    rights_new = perm[rights_orig]
-
-    split_parents = ccp_helpers['split_parents_sorted']
-    sp_new = perm[split_parents.to(device=device, dtype=torch.long)]
-
-    leaf_row_new = perm[leaf_row_index.to(device=device, dtype=torch.long)]
-    root_ids_new = perm[root_clade_ids.to(device=device, dtype=torch.long)]
-    root_ids_new_cpu = [int(x) for x in root_ids_new.detach().cpu().tolist()]
-    leaf_col_new = leaf_col_index.to(device=device, dtype=torch.long)
-    leaf_species_index = torch.full((C,), -1, dtype=torch.long, device=device)
-    if leaf_row_new.numel() > 0:
-        leaf_species_index[leaf_row_new] = leaf_col_new
-
-    log_split_probs = ccp_helpers['log_split_probs_sorted']
-    if torch.is_tensor(log_split_probs):
-        log_split_probs = log_split_probs.to(device=device, dtype=dtype)
-
-    # --- 2c. Vectorized per-wave metadata ---
-    # For each split, find which wave its parent belongs to via searchsorted
-    # sp_new[i] is the new-space parent clade of split i, which is in [0, C)
-    # wave_starts is sorted → searchsorted gives the wave index
-    wave_starts_cpu = torch.tensor(wave_starts_list, dtype=torch.long)
-    sp_new_cpu = sp_new.cpu()
-
-    # searchsorted: find wave index for each split's parent
-    # wave_starts_list = [0, w0_end, w1_end, ...]. searchsorted(right) - 1 gives wave idx.
-    split_wave_idx = torch.searchsorted(wave_starts_cpu[1:], sp_new_cpu, right=True)
-    # split_wave_idx[i] = wave index of split i's parent
-
-    # Sort splits by wave index for efficient slicing
-    sort_order = split_wave_idx.argsort()
-    split_wave_sorted = split_wave_idx[sort_order]
-
-    # Find boundaries: where does each wave's splits start/end in the sorted order
-    n_waves = len(waves)
-    # Use searchsorted on the sorted wave indices
-    wave_split_starts = torch.searchsorted(split_wave_sorted, torch.arange(n_waves, dtype=torch.long))
-    wave_split_ends = torch.searchsorted(split_wave_sorted, torch.arange(n_waves, dtype=torch.long), right=True)
-
-    # Move sort_order to device for indexing
-    sort_order_dev = sort_order.to(device)
-
-    wave_metas: List[Dict[str, Any]] = []
-    for wi in range(n_waves):
-        ws = wave_starts_list[wi]
-        we = wave_starts_list[wi + 1]
-        W = we - ws
-
-        ss = int(wave_split_starts[wi].item())
-        se = int(wave_split_ends[wi].item())
-        n_ws = se - ss
-
-        meta: Dict[str, Any] = {
-            'start': ws,
-            'end': we,
-            'W': W,
-            'has_splits': n_ws > 0,
-            'phase': phases[wi],
-        }
-
-        if n_ws > 0:
-            wst = sort_order_dev[ss:se]  # split indices for this wave
-            reduce_idx = sp_new[wst] - ws  # [n_ws] wave-local clade index
-
-            # Sort splits: single-split clades first, then multi-split clades.
-            clade_split_counts = torch.zeros(W, dtype=torch.long, device=device)
-            clade_split_counts.scatter_add_(0, reduce_idx,
-                                            torch.ones(n_ws, dtype=torch.long, device=device))
-            # Per-split: count for the parent clade of that split
-            per_split_count = clade_split_counts[reduce_idx]  # [n_ws]
-            # Composite sort key: eq1 first (is_ge2=0), ge2 after (is_ge2=1),
-            # within ge2 sorted by parent clade (ascending) for CSR contiguity.
-            sort_key = (per_split_count > 1).long() * (W + 1) + reduce_idx
-            inner_order = sort_key.argsort(stable=True)
-            wst = wst[inner_order]
-            reduce_idx = reduce_idx[inner_order]
-
-            n_eq1 = int((per_split_count == 1).sum().item())
-            n_ge2_clades = int((clade_split_counts >= 2).sum().item())
-
-            index_dtype = torch.int32
-            sl_index = lefts_new[wst].to(index_dtype).contiguous()
-            sr_index = rights_new[wst].to(index_dtype).contiguous()
-            reduce_idx_index = reduce_idx.to(index_dtype).contiguous()
-
-            meta['sl'] = sl_index
-            meta['sr'] = sr_index
-            meta['log_split_probs'] = log_split_probs[wst].unsqueeze(1).contiguous()
-            meta['reduce_idx'] = reduce_idx_index
-            meta['n_eq1'] = n_eq1
-
-            if n_eq1 > 0:
-                meta['eq1_reduce_idx'] = reduce_idx_index[:n_eq1]
-
-            if n_ge2_clades > 0:
-                # Build CSR pointers for the ge2 portion (splits n_eq1:).
-                # Splits are sorted by parent clade, so same-parent splits are contiguous.
-                ge2_reduce = reduce_idx[n_eq1:]  # [n_ge2_splits]
-                # Unique parent clades in order of first appearance (= ascending,
-                # since we sorted by clade index)
-                ge2_parent_ids, ge2_counts = ge2_reduce.unique_consecutive(return_counts=True)
-                ge2_ptr = torch.zeros(len(ge2_parent_ids) + 1, dtype=torch.long, device=device)
-                torch.cumsum(ge2_counts, dim=0, out=ge2_ptr[1:])
-
-                meta['ge2_ptr'] = ge2_ptr
-                meta['ge2_parent_ids'] = ge2_parent_ids.to(index_dtype).contiguous()  # wave-local clade indices
-                meta['ge2_max_fanout'] = int(ge2_counts.max().item())
-
-        wave_metas.append(meta)
-
-    result = {
-        'perm': perm,
-        'C': C,
-        'leaf_row_index': leaf_row_new,
-        'leaf_species_index': leaf_species_index,
-        'root_clade_ids': root_ids_new,
-        'root_clade_ids_cpu': root_ids_new_cpu,
-        'wave_metas': wave_metas,
-    }
-
-    # Build clade→family mapping in wave-ordered space
-    if family_clade_ranges is not None:
-        family_idx_orig = torch.full((C,), -1, dtype=torch.long, device=device)
-        for g, (offset, c_g) in enumerate(family_clade_ranges):
-            family_idx_orig[offset:offset + c_g] = g
-        # Permute to wave-ordered space: result[new_idx] = family of original clade inv_perm[new_idx]
-        result['family_idx'] = family_idx_orig[inv_perm]
-
-    return result
