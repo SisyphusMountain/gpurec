@@ -137,6 +137,7 @@ def _is_memory_retryable_runtime_error(exc: RuntimeError) -> bool:
         "out of memory" in message
         or "memory budget" in message
         or "estimated scratch" in message
+        or ("scratch" in message and "budget" in message)
     )
 
 

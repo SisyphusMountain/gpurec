@@ -5281,6 +5281,15 @@ def test_final_genewise_eval_falls_back_to_smaller_clade_budget(
     assert fallback_model.closed
 
 
+def test_memory_retryable_error_includes_scratch_budget_guard():
+    exc = RuntimeError(
+        "Pi_wave_backward fused path requires 2D self-loop scratch "
+        "(0.61 GiB requested, 0.20 GiB budget)"
+    )
+
+    assert optimize_workflow._is_memory_retryable_runtime_error(exc)
+
+
 def test_final_genewise_eval_does_not_fallback_for_non_memory_error(
     tmp_path: Path,
     monkeypatch,
