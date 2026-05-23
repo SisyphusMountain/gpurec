@@ -67,6 +67,7 @@ class _ResumeState:
     active_batch_index: int = 0
     active_solver_stage: str = "full"
     active_batch_local_step: int = 0
+    active_hessian_sgd_polish: bool = False
     converged_family_indices: tuple[int, ...] = ()
     batch_plan_generation: int = 0
 
@@ -146,6 +147,11 @@ def _checkpoint_index_tuple(
 def _resume_state_from_payload(path: Path, payload: dict[str, Any]) -> _ResumeState:
     _, start_step = checkpoint_progress(path, payload)
     ckpt_status = checkpoint_status_dict(path, payload)
+    active_hessian_sgd_polish = ckpt_status.get("active_hessian_sgd_polish", False)
+    if not isinstance(active_hessian_sgd_polish, bool):
+        raise RuntimeError(
+            f"checkpoint {path} has invalid status.active_hessian_sgd_polish"
+        )
 
     return _ResumeState(
         start_step=start_step,
@@ -192,6 +198,7 @@ def _resume_state_from_payload(path: Path, payload: dict[str, Any]) -> _ResumeSt
                 default=0,
             )
         ),
+        active_hessian_sgd_polish=active_hessian_sgd_polish,
         converged_family_indices=_checkpoint_index_tuple(
             path,
             "converged_family_indices",
@@ -547,8 +554,13 @@ class OptimizationRunner:
         config = self.config
         if stage == "warmup":
             iters = int(config.solver_warmup_iters)
+            fixed_iters_E = (
+                config.fixed_iters_e
+                if config.optimizer == "hessian-sgd"
+                else iters
+            )
             model.configure_solver_iterations(
-                fixed_iters_E=iters,
+                fixed_iters_E=fixed_iters_E,
                 fixed_iters_Pi=iters,
                 neumann_terms=iters,
             )
@@ -1060,8 +1072,16 @@ class OptimizationRunner:
         step_scale: float = 1.0,
         use_line_search: bool = True,
         reject_loss_increases_after_step: bool = False,
+        hessian_refresh_steps: int | None = None,
     ) -> tuple[torch.Tensor, dict[str, Any], int, _FDNewtonHessianState]:
         config = self.config
+        hessian_refresh_steps = (
+            config.fd_hessian_refresh_steps
+            if hessian_refresh_steps is None
+            else int(hessian_refresh_steps)
+        )
+        if hessian_refresh_steps < 1:
+            raise ValueError("hessian_refresh_steps must be positive")
         idx = self._active_batch_indices(model)
         lower_bound = math.log2(config.min_rate)
         upper_bound = math.log2(config.max_rate)
@@ -1075,7 +1095,7 @@ class OptimizationRunner:
                 solver_stage=solver_stage,
             )
             or hessian_state is None
-            or hessian_state.updates_since_refresh >= config.fd_hessian_refresh_steps
+            or hessian_state.updates_since_refresh >= hessian_refresh_steps
         )
         if refreshed_hessian:
             hessian_state, metrics0, refresh_grad_evals = (
@@ -1316,7 +1336,7 @@ class OptimizationRunner:
             next_state.updates_since_refresh
         )
         metrics["optimizer/fd_newton_hessian_refresh_steps"] = float(
-            config.fd_hessian_refresh_steps
+            hessian_refresh_steps
         )
         metrics["optimizer/fd_newton_bfgs_updated_rows"] = float(
             bfgs_updated.sum().detach().cpu()
@@ -1440,6 +1460,7 @@ class OptimizationRunner:
         batch_final_grad_cache: torch.Tensor | None = None
         batch_final_cache_ready: torch.Tensor | None = None
         fd_newton_hessian_state: _FDNewtonHessianState | None = None
+        hessian_sgd_polish_active = False
         converged_family_mask: torch.Tensor | None = None
         if adaptive_rebatch_enabled:
             converged_family_mask = torch.zeros(
@@ -1554,6 +1575,11 @@ class OptimizationRunner:
                 active_batch_index = resume_state.active_batch_index
                 active_solver_stage = resume_state.active_solver_stage
                 active_batch_local_step = resume_state.active_batch_local_step
+                hessian_sgd_polish_active = (
+                    bool(resume_state.active_hessian_sgd_polish)
+                    and batchwise_hessian_sgd
+                    and active_solver_stage == "full"
+                )
                 batch_plan_generation = resume_state.batch_plan_generation
                 if adaptive_rebatch_enabled and converged_family_mask is not None:
                     if resume_state.converged_family_indices:
@@ -1585,6 +1611,7 @@ class OptimizationRunner:
                     )
                 if active_solver_stage == "warmup" and not solver_warmup_enabled:
                     active_solver_stage = "full"
+                    hessian_sgd_polish_active = False
                 if batchwise_active_optimizer:
                     batch_best_nll = best_nll
                     batch_best_step = best_step
@@ -1894,13 +1921,35 @@ class OptimizationRunner:
                                 solver_stage=active_solver_stage,
                                 hessian_state=fd_newton_hessian_state,
                                 update_hessian_with_bfgs=phase == "adam-fd-newton",
-                                step_scale=1.0 if phase == "adam-fd-newton" else config.lr,
-                                use_line_search=phase == "adam-fd-newton",
-                                reject_loss_increases_after_step=phase == "hessian-sgd",
+                                step_scale=(
+                                    1.0
+                                    if phase == "adam-fd-newton"
+                                    or hessian_sgd_polish_active
+                                    else config.lr
+                                ),
+                                use_line_search=(
+                                    phase == "adam-fd-newton"
+                                    or hessian_sgd_polish_active
+                                ),
+                                reject_loss_increases_after_step=(
+                                    phase == "hessian-sgd"
+                                    and not hessian_sgd_polish_active
+                                ),
+                                hessian_refresh_steps=(
+                                    1
+                                    if hessian_sgd_polish_active
+                                    else config.fd_hessian_refresh_steps
+                                ),
                             )
                         )
                         metrics["optimizer/fd_newton_subphase"] = (
-                            "fd_newton" if phase == "adam-fd-newton" else "hessian_sgd"
+                            "fd_newton"
+                            if phase == "adam-fd-newton"
+                            else (
+                                "hessian_sgd_polish"
+                                if hessian_sgd_polish_active
+                                else "hessian_sgd"
+                            )
                         )
                     theta_step = float(
                         (model.theta.detach() - theta_before).abs().amax().cpu()
@@ -2048,6 +2097,10 @@ class OptimizationRunner:
                                 )
 
                 objective = float(metrics["likelihood/data_nll_bits"])
+                if batchwise_hessian_sgd and phase == "hessian-sgd":
+                    metrics["optimizer/hessian_sgd_polish_active"] = (
+                        hessian_sgd_polish_active
+                    )
                 delta = None if previous_objective is None else previous_objective - objective
                 if delta is not None and abs(delta) <= config.loss_change_tol:
                     stable_loss_steps += 1
@@ -2108,6 +2161,9 @@ class OptimizationRunner:
                     checkpoint_status["active_batch_index"] = active_batch_index
                     checkpoint_status["active_solver_stage"] = active_solver_stage
                     checkpoint_status["active_batch_local_step"] = active_batch_local_step
+                    checkpoint_status["active_hessian_sgd_polish"] = bool(
+                        hessian_sgd_polish_active
+                    )
                 if save_best_after_row and phase not in _POST_STEP_OPTIMIZERS:
                     best_row = dict(row)
                     best_row["optimizer/step_applied"] = False
@@ -2153,6 +2209,7 @@ class OptimizationRunner:
                     active_solver_stage = "full"
                     active_batch_local_step = config.fd_adam_warmup_steps
                     fd_newton_hessian_state = None
+                    hessian_sgd_polish_active = False
                     previous_objective = None
                     stable_loss_steps = 0
                     batch_best_nll = None
@@ -2177,6 +2234,7 @@ class OptimizationRunner:
                             "active_batch_index": active_batch_index,
                             "active_solver_stage": active_solver_stage,
                             "active_batch_local_step": active_batch_local_step,
+                            "active_hessian_sgd_polish": False,
                             "previous_objective": None,
                             "stable_loss_steps": 0,
                             "best_nll_bits": None,
@@ -2260,6 +2318,7 @@ class OptimizationRunner:
                     active_solver_stage = "full"
                     active_batch_local_step = 0
                     fd_newton_hessian_state = None
+                    hessian_sgd_polish_active = False
                     previous_objective = None
                     stable_loss_steps = 0
                     batch_best_nll = None
@@ -2274,6 +2333,7 @@ class OptimizationRunner:
                             "active_batch_index": active_batch_index,
                             "active_solver_stage": active_solver_stage,
                             "active_batch_local_step": active_batch_local_step,
+                            "active_hessian_sgd_polish": False,
                             "previous_objective": None,
                             "stable_loss_steps": 0,
                             "best_nll_bits": None,
@@ -2293,11 +2353,14 @@ class OptimizationRunner:
                     continue
                 if step_status is not None:
                     if (
-                        active_objective_scope
-                        and active_batch_index + 1 < len(model.batch_metadata)
+                        step_status.get("status") == "stalled"
+                        and batchwise_hessian_sgd
+                        and phase == "hessian-sgd"
+                        and active_objective_scope
+                        and active_solver_stage == "full"
+                        and not hessian_sgd_polish_active
                     ):
-                        active_batch_index += 1
-                        active_solver_stage = "warmup" if solver_warmup_enabled else "full"
+                        hessian_sgd_polish_active = True
                         active_batch_local_step = 0
                         fd_newton_hessian_state = None
                         previous_objective = None
@@ -2313,6 +2376,47 @@ class OptimizationRunner:
                                 "active_batch_index": active_batch_index,
                                 "active_solver_stage": active_solver_stage,
                                 "active_batch_local_step": active_batch_local_step,
+                                "active_hessian_sgd_polish": True,
+                                "previous_objective": None,
+                                "stable_loss_steps": 0,
+                                "best_nll_bits": None,
+                                "best_step": None,
+                            }
+                            self._save_status(
+                                latest_checkpoint,
+                                model=model,
+                                optimizer=None,
+                                step=step,
+                                next_step=step + 1,
+                                status=_adaptive_checkpoint_status(transition_status),
+                                row=row,
+                                optimizer_phase=phase,
+                            )
+                        resume_info = {}
+                        continue
+                    if (
+                        active_objective_scope
+                        and active_batch_index + 1 < len(model.batch_metadata)
+                    ):
+                        active_batch_index += 1
+                        active_solver_stage = "warmup" if solver_warmup_enabled else "full"
+                        active_batch_local_step = 0
+                        fd_newton_hessian_state = None
+                        hessian_sgd_polish_active = False
+                        previous_objective = None
+                        stable_loss_steps = 0
+                        batch_best_nll = None
+                        batch_best_step = None
+                        optimizer = None
+                        active_optimizer_batch_index = None
+                        active_batch_last_checked_converged_count = 0
+                        if config.checkpoint_every:
+                            transition_status = {
+                                **checkpoint_status,
+                                "active_batch_index": active_batch_index,
+                                "active_solver_stage": active_solver_stage,
+                                "active_batch_local_step": active_batch_local_step,
+                                "active_hessian_sgd_polish": False,
                                 "previous_objective": None,
                                 "stable_loss_steps": 0,
                                 "best_nll_bits": None,

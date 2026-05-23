@@ -292,8 +292,9 @@ def _add_run_config_args(parser: argparse.ArgumentParser) -> None:
         "--solver-warmup-iters",
         type=int,
         help=(
-            "Initial fixed E/Pi/Neumann budget for genewise batched-LBFGS; "
-            "use 0 to disable."
+            "Initial fixed solver budget for supported genewise active-batch "
+            "optimizers; hessian-sgd keeps E at --fixed-iters-e and uses this "
+            "only for Pi/Neumann. Use 0 to disable."
         ),
     )
     parser.add_argument(

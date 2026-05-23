@@ -4994,6 +4994,132 @@ def test_optimization_runner_hessian_sgd_mode_records_public_phase(tmp_path: Pat
     assert runner.fake_model.closed
 
 
+def test_hessian_sgd_solver_warmup_keeps_full_e_budget(tmp_path: Path):
+    config = _optimizer_mode_config(
+        tmp_path,
+        optimizer="hessian-sgd",
+        mode="genewise",
+        fixed_iters_e=16,
+        solver_warmup_iters=6,
+    )
+    runner = OptimizationRunner(config)
+    model = _WorkflowBatchedLBFGSModeModel()
+
+    runner._configure_solver_stage(model, "warmup")
+
+    assert model.solver_configs == [
+        {"fixed_iters_E": 16, "fixed_iters_Pi": 6, "neumann_terms": 6}
+    ]
+
+
+def test_hessian_sgd_enters_newton_polish_after_full_stage_stall(tmp_path: Path):
+    config = _optimizer_mode_config(
+        tmp_path,
+        optimizer="hessian-sgd",
+        mode="genewise",
+        steps=3,
+        solver_warmup_iters=0,
+        fd_hessian_refresh_steps=5,
+        fd_hessian_epsilon=1e-3,
+        fd_newton_damping=1e-6,
+        loss_change_tol=1e9,
+        loss_patience=1,
+        best_likelihood_patience=0,
+        checkpoint_every=1,
+    )
+    runner = _WorkflowBatchedLBFGSModeRunner(config)
+
+    result = runner.run()
+
+    history_rows = _optimizer_mode_history_rows(config.out_dir)
+    hessian_rows = [
+        row for row in history_rows if row["optimizer/phase"] == "hessian-sgd"
+    ]
+    assert [row["optimizer/fd_newton_subphase"] for row in hessian_rows] == [
+        "hessian_sgd",
+        "hessian_sgd",
+        "hessian_sgd_polish",
+    ]
+    assert hessian_rows[1]["optimizer/hessian_sgd_polish_active"] is False
+    assert hessian_rows[2]["optimizer/hessian_sgd_polish_active"] is True
+    assert hessian_rows[2]["optimizer/fd_newton_line_search"] is True
+    assert hessian_rows[2]["optimizer/fd_newton_post_step_loss_filter"] is False
+    assert hessian_rows[2]["optimizer/fd_newton_hessian_source"] == "finite_difference"
+    assert hessian_rows[2]["optimizer/fd_newton_hessian_refresh_steps"] == 1.0
+    assert hessian_rows[2]["optimizer/fd_newton_step_scale"] == pytest.approx(1.0)
+    assert result.status == "not_converged"
+    assert runner.fake_model.closed
+
+
+def test_hessian_sgd_enters_newton_polish_after_best_likelihood_stall(
+    tmp_path: Path,
+):
+    config = _optimizer_mode_config(
+        tmp_path,
+        optimizer="hessian-sgd",
+        mode="genewise",
+        steps=3,
+        solver_warmup_iters=0,
+        fd_hessian_refresh_steps=5,
+        fd_hessian_epsilon=1e-3,
+        fd_newton_damping=1e-6,
+        loss_patience=0,
+        best_likelihood_patience=1,
+        best_likelihood_min_delta=1e9,
+        checkpoint_every=1,
+    )
+    runner = _WorkflowBatchedLBFGSModeRunner(config)
+
+    result = runner.run()
+
+    history_rows = _optimizer_mode_history_rows(config.out_dir)
+    hessian_rows = [
+        row for row in history_rows if row["optimizer/phase"] == "hessian-sgd"
+    ]
+    assert [row["optimizer/fd_newton_subphase"] for row in hessian_rows] == [
+        "hessian_sgd",
+        "hessian_sgd",
+        "hessian_sgd_polish",
+    ]
+    assert hessian_rows[2]["optimizer/hessian_sgd_polish_active"] is True
+    assert hessian_rows[2]["optimizer/fd_newton_line_search"] is True
+    assert hessian_rows[2]["optimizer/fd_newton_hessian_refresh_steps"] == 1.0
+    assert result.status == "not_converged"
+    assert runner.fake_model.closed
+
+
+def test_hessian_sgd_gradient_tolerance_does_not_enter_polish(tmp_path: Path):
+    config = _optimizer_mode_config(
+        tmp_path,
+        optimizer="hessian-sgd",
+        mode="genewise",
+        steps=3,
+        solver_warmup_iters=0,
+        fd_hessian_epsilon=1e-3,
+        fd_newton_damping=1e-6,
+        grad_inf_tol=10.0,
+        loss_patience=1,
+        best_likelihood_patience=1,
+    )
+    runner = _WorkflowBatchedLBFGSModeRunner(config)
+
+    result = runner.run()
+
+    history_rows = _optimizer_mode_history_rows(config.out_dir)
+    hessian_rows = [
+        row for row in history_rows if row["optimizer/phase"] == "hessian-sgd"
+    ]
+    assert hessian_rows
+    assert {row["optimizer/fd_newton_subphase"] for row in hessian_rows} == {
+        "hessian_sgd"
+    }
+    assert {
+        row["optimizer/hessian_sgd_polish_active"] for row in hessian_rows
+    } == {False}
+    assert result.status == "converged"
+    assert runner.fake_model.closed
+
+
 def test_optimization_runner_adaptive_rebatch_replans_unconverged_families(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -5351,6 +5477,44 @@ def test_hessian_sgd_refreshes_fixed_hessian_after_configured_steps(
     assert second_metrics["optimizer/fd_newton_line_search"] is False
     assert second_metrics["optimizer/fd_newton_loss_evals"] == 0.0
     assert second_evals == 8
+
+
+def test_hessian_sgd_refresh_override_forces_fixed_hessian_refresh(
+    tmp_path: Path,
+):
+    config = _optimizer_mode_config(
+        tmp_path,
+        optimizer="hessian-sgd",
+        mode="genewise",
+        fd_hessian_refresh_steps=5,
+        fd_hessian_epsilon=1e-3,
+        fd_newton_damping=1.0,
+    )
+    runner = OptimizationRunner(config)
+    model = _WorkflowBatchedLBFGSModeModel()
+    model.select_batch(0)
+
+    _loss_vec, _first_metrics, _first_evals, state = runner._active_fd_newton_step(
+        model,
+        solver_stage="full",
+        update_hessian_with_bfgs=False,
+        step_scale=0.5,
+        use_line_search=False,
+    )
+    _loss_vec, second_metrics, second_evals, _state = runner._active_fd_newton_step(
+        model,
+        solver_stage="full",
+        hessian_state=state,
+        update_hessian_with_bfgs=False,
+        step_scale=1.0,
+        use_line_search=True,
+        hessian_refresh_steps=1,
+    )
+
+    assert second_metrics["optimizer/fd_newton_hessian_source"] == "finite_difference"
+    assert second_metrics["optimizer/fd_newton_hessian_refresh_steps"] == 1.0
+    assert second_metrics["optimizer/fd_newton_line_search"] is True
+    assert second_evals > 1
 
 
 def test_adam_fd_newton_refreshes_hessian_after_configured_steps(
