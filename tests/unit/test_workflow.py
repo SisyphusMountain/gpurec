@@ -1104,6 +1104,21 @@ def test_run_config_accepts_adam_fd_newton_for_genewise_mode(tmp_path: Path):
     assert config.fd_hessian_epsilon == pytest.approx(1e-3)
 
 
+def test_run_config_accepts_hessian_sgd_for_genewise_mode(tmp_path: Path):
+    config = RunConfig(
+        species_tree=tmp_path / "sp.nwk",
+        families_file=tmp_path / "families.txt",
+        out_dir=tmp_path / "out",
+        mode="genewise",
+        optimizer="hessian-sgd",
+        device="cpu",
+    )
+
+    assert config.optimizer == "hessian-sgd"
+    assert config.fd_hessian_refresh_steps == 5
+    assert config.fd_hessian_epsilon == pytest.approx(1e-3)
+
+
 def test_run_config_auto_optimizer_uses_adam_for_shared_theta_modes(tmp_path: Path):
     config = RunConfig(
         species_tree=tmp_path / "sp.nwk",
@@ -1186,6 +1201,18 @@ def test_run_config_rejects_adam_fd_newton_outside_genewise(tmp_path: Path):
         )
 
 
+def test_run_config_rejects_hessian_sgd_outside_genewise(tmp_path: Path):
+    with pytest.raises(ValueError, match="hessian-sgd optimizer requires genewise"):
+        RunConfig(
+            species_tree=tmp_path / "sp.nwk",
+            families_file=tmp_path / "families.txt",
+            out_dir=tmp_path / "out",
+            mode="global",
+            optimizer="hessian-sgd",
+            device="cpu",
+        )
+
+
 def test_run_config_rejects_batched_lbfgs_outside_genewise(tmp_path: Path):
     with pytest.raises(ValueError, match="batched-lbfgs.*genewise"):
         RunConfig(
@@ -1212,7 +1239,7 @@ def test_run_config_accepts_strong_wolfe_for_batched_lbfgs(tmp_path: Path):
     assert config.lbfgs_line_search == "strong_wolfe"
 
 
-@pytest.mark.parametrize("optimizer", ["batched-lbfgs", "adam-fd-newton"])
+@pytest.mark.parametrize("optimizer", ["batched-lbfgs", "adam-fd-newton", "hessian-sgd"])
 def test_run_config_accepts_adaptive_rebatch_for_genewise_batch_optimizers(
     tmp_path: Path,
     optimizer: str,
@@ -4923,6 +4950,45 @@ def test_optimization_runner_batched_lbfgs_mode_records_public_phase(tmp_path: P
     assert runner.fake_model.closed
 
 
+def test_optimization_runner_hessian_sgd_mode_records_public_phase(tmp_path: Path):
+    config = _optimizer_mode_config(
+        tmp_path,
+        optimizer="hessian-sgd",
+        mode="genewise",
+        solver_warmup_iters=0,
+        fd_hessian_epsilon=1e-3,
+        fd_newton_damping=1e-6,
+    )
+    runner = _WorkflowBatchedLBFGSModeRunner(config)
+
+    result = runner.run()
+
+    history_rows = _optimizer_mode_history_rows(config.out_dir)
+    assert [row["optimizer/phase"] for row in history_rows] == [
+        "hessian-sgd",
+        "final_eval",
+    ]
+    assert history_rows[0]["closure_evals"] == 9
+    assert history_rows[0]["optimizer/eval_position"] == "post_step"
+    assert history_rows[0]["optimizer/step_applied"] is True
+    assert history_rows[0]["optimizer/fd_newton_subphase"] == "hessian_sgd"
+    assert history_rows[0]["optimizer/fd_newton_hessian_update"] == "fixed"
+    assert history_rows[0]["optimizer/fd_newton_hessian_source"] == "finite_difference"
+    assert history_rows[0]["optimizer/fd_newton_bfgs_updated_rows"] == 0.0
+    assert history_rows[0]["optimizer/fd_newton_step_scale"] == pytest.approx(
+        config.lr
+    )
+    assert history_rows[0]["theta_step_inf"] > 0.0
+    assert torch.linalg.vector_norm(runner.fake_model.theta.detach()) < torch.linalg.vector_norm(
+        runner.fake_model.initial_theta
+    )
+    latest = load_checkpoint(config.out_dir / "checkpoints" / "latest.pt")
+    assert latest["optimizer_phase"] == "hessian-sgd"
+    assert latest["last_row"]["optimizer/phase"] == "final_eval"
+    assert result.status == "not_converged"
+    assert runner.fake_model.closed
+
+
 def test_optimization_runner_adaptive_rebatch_replans_unconverged_families(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -4983,6 +5049,44 @@ def test_optimization_runner_fd_newton_adaptive_rebatch_replans_unconverged_fami
     history_rows = _optimizer_mode_history_rows(config.out_dir)
     assert history_rows[0]["optimizer/phase"] == "adam-fd-newton"
     assert history_rows[0]["optimizer/fd_newton_subphase"] == "adam_warmup"
+    assert history_rows[0]["optimizer/rebatch_checked"] is True
+    assert history_rows[0]["optimizer/rebatch_triggered"] is True
+    assert history_rows[0]["optimizer/rebatch_active_converged_families"] == 1.0
+    assert history_rows[0]["optimizer/rebatch_remaining_families"] == 1.0
+    assert runner.fake_model.replanned_indices == [(0,)]
+    latest = load_checkpoint(config.out_dir / "checkpoints" / "latest.pt")
+    assert latest["status"]["converged_family_indices"] == [1]
+    assert latest["status"]["batch_plan_generation"] == 1
+    assert result.status == "not_converged"
+    assert runner.fake_model.closed
+
+
+def test_optimization_runner_hessian_sgd_adaptive_rebatch_replans_unconverged_families(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setattr(optimize_workflow, "_ADAPTIVE_REBATCH_MIN_ACTIVE_FAMILIES", 1)
+    config = _optimizer_mode_config(
+        tmp_path,
+        optimizer="hessian-sgd",
+        mode="genewise",
+        steps=1,
+        solver_warmup_iters=0,
+        adaptive_rebatch=True,
+        adaptive_rebatch_fraction=0.5,
+        adaptive_rebatch_min_remaining_families=1,
+        fd_hessian_epsilon=1e-3,
+        fd_newton_damping=1e-6,
+        grad_inf_tol=0.5,
+        lr=1e-9,
+    )
+    runner = _WorkflowAdaptiveRebatchRunner(config)
+
+    result = runner.run()
+
+    history_rows = _optimizer_mode_history_rows(config.out_dir)
+    assert history_rows[0]["optimizer/phase"] == "hessian-sgd"
+    assert history_rows[0]["optimizer/fd_newton_subphase"] == "hessian_sgd"
     assert history_rows[0]["optimizer/rebatch_checked"] is True
     assert history_rows[0]["optimizer/rebatch_triggered"] is True
     assert history_rows[0]["optimizer/rebatch_active_converged_families"] == 1.0
@@ -5158,6 +5262,80 @@ def test_adam_fd_newton_reuses_bfgs_updated_hessian_between_refreshes(
     assert second_metrics["optimizer/fd_newton_grad_evals"] == 1.0
     assert second_metrics["optimizer/fd_newton_bfgs_updated_rows"] == 1.0
     assert state.updates_since_refresh == 2
+
+
+def test_hessian_sgd_reuses_fixed_hessian_between_refreshes(tmp_path: Path):
+    config = _optimizer_mode_config(
+        tmp_path,
+        optimizer="hessian-sgd",
+        mode="genewise",
+        fd_hessian_refresh_steps=5,
+        fd_hessian_epsilon=1e-3,
+        fd_newton_damping=1.0,
+    )
+    runner = OptimizationRunner(config)
+    model = _WorkflowBatchedLBFGSModeModel()
+    model.select_batch(0)
+
+    _loss_vec, first_metrics, first_evals, state = runner._active_fd_newton_step(
+        model,
+        solver_stage="full",
+        update_hessian_with_bfgs=False,
+        step_scale=0.5,
+    )
+    fixed_hessian = state.hessian.detach().clone()
+    _loss_vec, second_metrics, second_evals, state = runner._active_fd_newton_step(
+        model,
+        solver_stage="full",
+        hessian_state=state,
+        update_hessian_with_bfgs=False,
+        step_scale=0.5,
+    )
+
+    assert first_metrics["optimizer/fd_newton_hessian_source"] == "finite_difference"
+    assert first_metrics["optimizer/fd_newton_hessian_update"] == "fixed"
+    assert second_metrics["optimizer/fd_newton_hessian_source"] == "fixed_hessian"
+    assert second_metrics["optimizer/fd_newton_hessian_update"] == "fixed"
+    assert first_evals == 9
+    assert second_evals < first_evals
+    assert second_metrics["optimizer/fd_newton_grad_evals"] == 1.0
+    assert second_metrics["optimizer/fd_newton_bfgs_updated_rows"] == 0.0
+    torch.testing.assert_close(state.hessian, fixed_hessian)
+    assert state.updates_since_refresh == 2
+
+
+def test_hessian_sgd_refreshes_fixed_hessian_after_configured_steps(
+    tmp_path: Path,
+):
+    config = _optimizer_mode_config(
+        tmp_path,
+        optimizer="hessian-sgd",
+        mode="genewise",
+        fd_hessian_refresh_steps=1,
+        fd_hessian_epsilon=1e-3,
+        fd_newton_damping=1.0,
+    )
+    runner = OptimizationRunner(config)
+    model = _WorkflowBatchedLBFGSModeModel()
+    model.select_batch(0)
+
+    _loss_vec, _first_metrics, _first_evals, state = runner._active_fd_newton_step(
+        model,
+        solver_stage="full",
+        update_hessian_with_bfgs=False,
+        step_scale=0.5,
+    )
+    _loss_vec, second_metrics, second_evals, _state = runner._active_fd_newton_step(
+        model,
+        solver_stage="full",
+        hessian_state=state,
+        update_hessian_with_bfgs=False,
+        step_scale=0.5,
+    )
+
+    assert second_metrics["optimizer/fd_newton_hessian_source"] == "finite_difference"
+    assert second_metrics["optimizer/fd_newton_hessian_update"] == "fixed"
+    assert second_evals == 9
 
 
 def test_adam_fd_newton_refreshes_hessian_after_configured_steps(

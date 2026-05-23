@@ -150,7 +150,7 @@ def _normalize_optimizer(mode: str, value: str) -> str:
     if not isinstance(value, str):
         raise ValueError(
             "optimizer must be auto, adam, adagrad, lbfgs, adam-lbfgs, "
-            "batched-lbfgs, or adam-fd-newton"
+            "batched-lbfgs, adam-fd-newton, or hessian-sgd"
         )
     normalized = value.strip().lower().replace("_", "-")
     if normalized == "auto":
@@ -545,15 +545,18 @@ class RunConfig:
             "adam-lbfgs",
             "batched-lbfgs",
             "adam-fd-newton",
+            "hessian-sgd",
         }:
             raise ValueError(
                 "optimizer must be auto, adam, adagrad, lbfgs, adam-lbfgs, "
-                "batched-lbfgs, or adam-fd-newton"
+                "batched-lbfgs, adam-fd-newton, or hessian-sgd"
             )
         if self.optimizer == "batched-lbfgs" and self.mode != "genewise":
             raise ValueError("batched-lbfgs optimizer requires genewise mode")
         if self.optimizer == "adam-fd-newton" and self.mode != "genewise":
             raise ValueError("adam-fd-newton optimizer requires genewise mode")
+        if self.optimizer == "hessian-sgd" and self.mode != "genewise":
+            raise ValueError("hessian-sgd optimizer requires genewise mode")
         if self.steps < 1:
             raise ValueError("steps must be positive")
         lr = _normalize_finite_float("lr", self.lr)
@@ -568,11 +571,11 @@ class RunConfig:
             raise ValueError("adaptive_rebatch_fraction must be in (0, 1]")
         if self.adaptive_rebatch and (
             self.mode != "genewise"
-            or self.optimizer not in {"batched-lbfgs", "adam-fd-newton"}
+            or self.optimizer not in {"batched-lbfgs", "adam-fd-newton", "hessian-sgd"}
         ):
             raise ValueError(
                 "adaptive_rebatch requires genewise mode with batched-lbfgs "
-                "or adam-fd-newton"
+                "adam-fd-newton, or hessian-sgd"
             )
         if self.adam_warmup_steps < 0:
             raise ValueError("adam_warmup_steps must be non-negative")

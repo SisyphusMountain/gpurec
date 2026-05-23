@@ -383,6 +383,7 @@ def _add_run_config_args(parser: argparse.ArgumentParser) -> None:
             "adam-lbfgs",
             "batched-lbfgs",
             "adam-fd-newton",
+            "hessian-sgd",
         ),
         help=(
             "Optimizer schedule. auto uses batched-lbfgs for genewise mode "
@@ -390,7 +391,11 @@ def _add_run_config_args(parser: argparse.ArgumentParser) -> None:
         ),
     )
     parser.add_argument("--steps", type=int, help="Maximum optimization steps.")
-    parser.add_argument("--lr", type=float, help="Adam/Adagrad learning rate.")
+    parser.add_argument(
+        "--lr",
+        type=float,
+        help="Adam/Adagrad learning rate or hessian-sgd preconditioned step scale.",
+    )
     parser.add_argument(
         "--adam-warmup-steps",
         type=int,
@@ -418,7 +423,7 @@ def _add_run_config_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--fd-hessian-epsilon",
         type=float,
-        help="Finite-difference epsilon for adam-fd-newton Hessian probes.",
+        help="Finite-difference epsilon for Hessian-conditioned genewise probes.",
     )
     parser.add_argument(
         "--fd-newton-damping",

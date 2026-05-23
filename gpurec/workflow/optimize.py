@@ -84,6 +84,13 @@ _ADAPTIVE_REBATCH_MIN_ACTIVE_FAMILIES = 64
 _FD_NEWTON_LARGE_BATCH_MAX_LS = 8
 _FD_NEWTON_EXTENDED_LINE_SEARCH_MAX_FAMILIES = 256
 _FD_NEWTON_CURVATURE_EPS = 1e-12
+_BATCHWISE_ACTIVE_OPTIMIZERS = frozenset(
+    {"batched-lbfgs", "adam-fd-newton", "hessian-sgd"}
+)
+_HESSIAN_CONDITIONED_OPTIMIZERS = frozenset({"adam-fd-newton", "hessian-sgd"})
+_POST_STEP_OPTIMIZERS = frozenset(
+    {"lbfgs", "batched-lbfgs", "adam-fd-newton", "hessian-sgd"}
+)
 
 
 @dataclass
@@ -434,7 +441,7 @@ class OptimizationRunner:
         prefetch_batches: int | str = (
             1
             if config.mode == "genewise"
-            and config.optimizer in {"batched-lbfgs", "adam-fd-newton"}
+            and config.optimizer in _BATCHWISE_ACTIVE_OPTIMIZERS
             else "all"
         )
         return build_alerax_workflow_model(config, prefetch_batches=prefetch_batches)
@@ -465,6 +472,8 @@ class OptimizationRunner:
             )
         if phase == "adam-fd-newton":
             return torch.optim.Adam([model.theta], lr=config.lr)
+        if phase == "hessian-sgd":
+            return torch.optim.SGD([model.theta], lr=config.lr)
         if phase == "lbfgs":
             return torch.optim.LBFGS(
                 [model.theta],
@@ -526,7 +535,7 @@ class OptimizationRunner:
     def _uses_solver_warmup(self) -> bool:
         return (
             self.config.mode == "genewise"
-            and self.config.optimizer in {"batched-lbfgs", "adam-fd-newton"}
+            and self.config.optimizer in _BATCHWISE_ACTIVE_OPTIMIZERS
             and self.config.solver_warmup_iters > 0
         )
 
@@ -904,7 +913,8 @@ class OptimizationRunner:
         rows, cols = active_grad0.shape
         if cols != 3:
             raise RuntimeError(
-                "adam-fd-newton expects three D/T/L parameters per family; "
+                "Hessian-conditioned genewise optimization expects three D/T/L "
+                "parameters per family; "
                 f"got {cols}"
             )
 
@@ -1046,6 +1056,8 @@ class OptimizationRunner:
         *,
         solver_stage: str,
         hessian_state: _FDNewtonHessianState | None = None,
+        update_hessian_with_bfgs: bool = True,
+        step_scale: float = 1.0,
     ) -> tuple[torch.Tensor, dict[str, Any], int, _FDNewtonHessianState]:
         config = self.config
         idx = self._active_batch_indices(model)
@@ -1082,7 +1094,8 @@ class OptimizationRunner:
         rows, cols = active_grad0.shape
         if cols != 3:
             raise RuntimeError(
-                "adam-fd-newton expects three D/T/L parameters per family; "
+                "Hessian-conditioned genewise optimization expects three D/T/L "
+                "parameters per family; "
                 f"got {cols}"
             )
 
@@ -1112,6 +1125,7 @@ class OptimizationRunner:
         fallback = row_active & (~solve_ok | ~descent)
         step = torch.where(fallback[:, None], -projected_grad, step)
         step = torch.where(row_active[:, None], step, torch.zeros_like(step))
+        step = step * float(step_scale)
         raw_step_inf = float(step.detach().abs().amax().cpu()) if step.numel() else 0.0
         bounded_step = (
             torch.clamp(active_theta0 + step, min=lower_bound, max=upper_bound)
@@ -1188,15 +1202,30 @@ class OptimizationRunner:
         active_grad1 = model.theta.grad.detach().index_select(0, idx)
         active_projected_grad1 = final_projected_grad.index_select(0, idx)
         free_after = active_projected_grad1.abs() > 0
-        next_state, bfgs_updated = self._bfgs_update_fd_newton_hessian(
-            state=hessian_state,
-            active_theta=active_theta1,
-            active_grad=active_grad1,
-            active_loss=active_loss1,
-            accepted=accepted,
-            free_before=free,
-            free_after=free_after,
-        )
+        if update_hessian_with_bfgs:
+            next_state, bfgs_updated = self._bfgs_update_fd_newton_hessian(
+                state=hessian_state,
+                active_theta=active_theta1,
+                active_grad=active_grad1,
+                active_loss=active_loss1,
+                accepted=accepted,
+                free_before=free,
+                free_after=free_after,
+            )
+            hessian_update = "bfgs"
+        else:
+            next_state = _FDNewtonHessianState(
+                batch_index=hessian_state.batch_index,
+                solver_stage=hessian_state.solver_stage,
+                family_indices=hessian_state.family_indices,
+                hessian=hessian_state.hessian.detach().clone(),
+                active_theta=active_theta1.detach().clone(),
+                active_grad=active_grad1.detach().clone(),
+                active_loss=active_loss1.detach().clone(),
+                updates_since_refresh=hessian_state.updates_since_refresh + 1,
+            )
+            bfgs_updated = torch.zeros_like(accepted)
+            hessian_update = "fixed"
         bfgs_skipped = accepted & ~bfgs_updated
         if refreshed_hessian:
             refresh_grad_inf = metrics0.get("grad/inf")
@@ -1217,8 +1246,11 @@ class OptimizationRunner:
         )
         metrics["optimizer/fd_newton_fallback_rows"] = float(fallback.sum().detach().cpu())
         metrics["optimizer/fd_newton_hessian_source"] = (
-            "finite_difference" if refreshed_hessian else "bfgs_update"
+            "finite_difference"
+            if refreshed_hessian
+            else ("bfgs_update" if update_hessian_with_bfgs else "fixed_hessian")
         )
+        metrics["optimizer/fd_newton_hessian_update"] = hessian_update
         metrics["optimizer/fd_newton_hessian_refreshed"] = bool(refreshed_hessian)
         metrics["optimizer/fd_newton_hessian_updates_since_refresh"] = float(
             next_state.updates_since_refresh
@@ -1233,6 +1265,7 @@ class OptimizationRunner:
             bfgs_skipped.sum().detach().cpu()
         )
         metrics["optimizer/fd_newton_baseline_projected_inf"] = projected_grad_inf
+        metrics["optimizer/fd_newton_step_scale"] = float(step_scale)
         metrics["optimizer/fd_newton_raw_step_inf"] = raw_step_inf
         metrics["optimizer/fd_newton_bound_projected_step_inf"] = bounded_step_inf
         return loss_vec, metrics, grad_evals + loss_evals, next_state
@@ -1324,7 +1357,7 @@ class OptimizationRunner:
         active_optimizer_batch_index: int | None = None
         batchwise_active_optimizer = (
             config.mode == "genewise"
-            and config.optimizer in {"batched-lbfgs", "adam-fd-newton"}
+            and config.optimizer in _BATCHWISE_ACTIVE_OPTIMIZERS
         )
         batchwise_batched_lbfgs = (
             config.mode == "genewise" and config.optimizer == "batched-lbfgs"
@@ -1332,9 +1365,12 @@ class OptimizationRunner:
         batchwise_fd_newton = (
             config.mode == "genewise" and config.optimizer == "adam-fd-newton"
         )
+        batchwise_hessian_sgd = (
+            config.mode == "genewise" and config.optimizer == "hessian-sgd"
+        )
         adaptive_rebatch_enabled = bool(
             config.adaptive_rebatch
-            and (batchwise_batched_lbfgs or batchwise_fd_newton)
+            and batchwise_active_optimizer
         )
         solver_warmup_enabled = self._uses_solver_warmup()
         active_solver_stage = "warmup" if solver_warmup_enabled else "full"
@@ -1518,7 +1554,7 @@ class OptimizationRunner:
             current_phase = self._phase_for_step(start_step)
             optimizer = self._make_optimizer(model, current_phase)
             if (
-                current_phase in {"batched-lbfgs", "adam-fd-newton"}
+                current_phase in _BATCHWISE_ACTIVE_OPTIMIZERS
                 and batchwise_active_optimizer
             ):
                 active_optimizer_batch_index = active_batch_index
@@ -1551,7 +1587,10 @@ class OptimizationRunner:
                         current_phase = phase
                         optimizer = self._make_optimizer(model, phase)
                         active_optimizer_batch_index = active_batch_index
-                elif batchwise_fd_newton and phase == "adam-fd-newton":
+                elif (
+                    (batchwise_fd_newton or batchwise_hessian_sgd)
+                    and phase in _HESSIAN_CONDITIONED_OPTIMIZERS
+                ):
                     if model.current_batch_index != active_batch_index:
                         model.select_batch(active_batch_index)
                     if (
@@ -1623,7 +1662,7 @@ class OptimizationRunner:
                 first_order_pending_step = False
                 eval_position = (
                     "post_step"
-                    if phase in {"lbfgs", "batched-lbfgs", "adam-fd-newton"}
+                    if phase in _POST_STEP_OPTIMIZERS
                     else "pre_step"
                 )
                 if phase == "lbfgs":
@@ -1769,10 +1808,13 @@ class OptimizationRunner:
                         )
                         batch_final_cache_ready.index_fill_(0, idx, True)
                     model.clear()
-                elif phase == "adam-fd-newton":
+                elif phase in _HESSIAN_CONDITIONED_OPTIMIZERS:
                     if optimizer is None:
                         raise RuntimeError("missing optimizer")
-                    if active_batch_local_step < config.fd_adam_warmup_steps:
+                    if (
+                        phase == "adam-fd-newton"
+                        and active_batch_local_step < config.fd_adam_warmup_steps
+                    ):
                         fd_newton_hessian_state = None
                         loss_vec_current, metrics, closure_evals = self._active_adam_step(
                             model,
@@ -1791,9 +1833,13 @@ class OptimizationRunner:
                                 model,
                                 solver_stage=active_solver_stage,
                                 hessian_state=fd_newton_hessian_state,
+                                update_hessian_with_bfgs=phase == "adam-fd-newton",
+                                step_scale=1.0 if phase == "adam-fd-newton" else config.lr,
                             )
                         )
-                        metrics["optimizer/fd_newton_subphase"] = "fd_newton"
+                        metrics["optimizer/fd_newton_subphase"] = (
+                            "fd_newton" if phase == "adam-fd-newton" else "hessian_sgd"
+                        )
                     theta_step = float(
                         (model.theta.detach() - theta_before).abs().amax().cpu()
                     )
@@ -1841,10 +1887,7 @@ class OptimizationRunner:
                     )
                     first_order_pending_step = not skip_step_for_gradient
 
-                if adaptive_rebatch_enabled and phase in {
-                    "batched-lbfgs",
-                    "adam-fd-newton",
-                }:
+                if adaptive_rebatch_enabled and phase in _BATCHWISE_ACTIVE_OPTIMIZERS:
                     metrics = dict(metrics)
                     metrics["optimizer/adaptive_rebatch_enabled"] = True
                     metrics["optimizer/rebatch_generation"] = float(
@@ -1950,10 +1993,10 @@ class OptimizationRunner:
                     stable_loss_steps = 0
                 previous_objective = objective
 
-                active_objective_scope = batchwise_active_optimizer and phase in {
-                    "batched-lbfgs",
-                    "adam-fd-newton",
-                }
+                active_objective_scope = (
+                    batchwise_active_optimizer
+                    and phase in _BATCHWISE_ACTIVE_OPTIMIZERS
+                )
                 if active_objective_scope:
                     improved = (
                         batch_best_nll is None
@@ -2003,11 +2046,7 @@ class OptimizationRunner:
                     checkpoint_status["active_batch_index"] = active_batch_index
                     checkpoint_status["active_solver_stage"] = active_solver_stage
                     checkpoint_status["active_batch_local_step"] = active_batch_local_step
-                if save_best_after_row and phase not in {
-                    "lbfgs",
-                    "batched-lbfgs",
-                    "adam-fd-newton",
-                }:
+                if save_best_after_row and phase not in _POST_STEP_OPTIMIZERS:
                     best_row = dict(row)
                     best_row["optimizer/step_applied"] = False
                     best_row["step_s"] = time.perf_counter() - t0
@@ -2035,7 +2074,7 @@ class OptimizationRunner:
                 row["theta_step_inf"] = theta_step
                 row["optimizer/step_applied"] = bool(
                     first_order_pending_step
-                    or phase in {"lbfgs", "batched-lbfgs", "adam-fd-newton"}
+                    or phase in _POST_STEP_OPTIMIZERS
                 )
                 row["step_s"] = time.perf_counter() - t0
 
