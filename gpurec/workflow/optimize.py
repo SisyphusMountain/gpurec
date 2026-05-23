@@ -476,6 +476,107 @@ class OptimizationRunner:
             return
         raise ValueError(f"unknown solver stage {stage!r}")
 
+    def _evaluate_final_iteration_check(
+        self,
+        model: GeneReconModel,
+        *,
+        baseline_loss: torch.Tensor,
+        baseline_grad: torch.Tensor,
+    ) -> dict[str, Any]:
+        config = self.config
+        check_iters = int(config.final_check_iters)
+        configure_solver = getattr(model, "configure_solver_iterations", None)
+        if config.mode != "genewise" or not callable(configure_solver):
+            return {
+                "optimizer/final_check_status": "skipped",
+                "optimizer/final_check_iters": check_iters,
+            }
+        if check_iters <= 0:
+            return {
+                "optimizer/final_check_status": "disabled",
+                "optimizer/final_check_iters": 0,
+            }
+
+        baseline_loss_bits = float(baseline_loss.detach().cpu())
+        baseline_grad = baseline_grad.detach().clone()
+        baseline_grad_inf = (
+            float(baseline_grad.detach().abs().amax().cpu())
+            if baseline_grad.numel()
+            else 0.0
+        )
+
+        metrics: dict[str, Any] = {
+            "optimizer/final_check_status": "failed",
+            "optimizer/final_check_iters": check_iters,
+            "optimizer/final_check_evals": 1,
+        }
+        try:
+            model.clear()
+            configure_solver(
+                fixed_iters_E=config.fixed_iters_e,
+                fixed_iters_Pi=check_iters,
+                neumann_terms=check_iters,
+            )
+            if config.mode == "genewise" and callable(
+                getattr(model, "full_genewise_nll_and_grad", None)
+            ):
+                check_loss_vec, _check_metrics = (
+                    self._evaluate_genewise_vector_and_grad(model)
+                )
+                check_loss = check_loss_vec.sum()
+            else:
+                check_loss, _check_metrics = self._evaluate_and_backward(model)
+
+            check_grad = model.theta.grad
+            check_failed = (
+                not torch.isfinite(check_loss).item()
+                or not _is_finite_tensor(check_grad)
+            )
+            if check_failed or check_grad is None:
+                metrics["optimizer/final_check_reason"] = (
+                    "nonfinite_objective_or_gradient"
+                )
+                return metrics
+
+            check_grad = check_grad.detach()
+            check_loss_bits = float(check_loss.detach().cpu())
+            grad_delta = (check_grad - baseline_grad).detach()
+            grad_delta_inf = (
+                float(grad_delta.abs().amax().cpu()) if grad_delta.numel() else 0.0
+            )
+            check_grad_inf = (
+                float(check_grad.abs().amax().cpu()) if check_grad.numel() else 0.0
+            )
+            grad_scale = max(baseline_grad_inf, check_grad_inf, 1.0)
+            metrics.update(
+                {
+                    "optimizer/final_check_status": "ok",
+                    "optimizer/final_check_loss_bits": check_loss_bits,
+                    "optimizer/final_check_loss_delta_bits": (
+                        check_loss_bits - baseline_loss_bits
+                    ),
+                    "optimizer/final_check_loss_abs_delta_bits": abs(
+                        check_loss_bits - baseline_loss_bits
+                    ),
+                    "optimizer/final_check_grad_inf": check_grad_inf,
+                    "optimizer/final_check_grad_baseline_inf": baseline_grad_inf,
+                    "optimizer/final_check_grad_max_abs_delta": grad_delta_inf,
+                    "optimizer/final_check_grad_rel_inf_delta": (
+                        grad_delta_inf / grad_scale
+                    ),
+                }
+            )
+            return metrics
+        except Exception as exc:  # pragma: no cover - defensive diagnostic path
+            metrics["optimizer/final_check_reason"] = (
+                f"{type(exc).__name__}: {exc}"
+            )
+            return metrics
+        finally:
+            self._configure_solver_stage(model, "full")
+            model.theta.grad = baseline_grad
+            model.clear()
+
     def _should_switch_solver_warmup(
         self,
         *,
@@ -966,6 +1067,7 @@ class OptimizationRunner:
                         break
                     if (
                         batchwise_batched_lbfgs
+                        and active_solver_stage == "full"
                         and batch_final_loss_cache is not None
                         and batch_final_grad_cache is not None
                         and batch_final_cache_ready is not None
@@ -1294,6 +1396,13 @@ class OptimizationRunner:
                 model.theta.grad = None
                 model.clear()
             else:
+                final_metrics.update(
+                    self._evaluate_final_iteration_check(
+                        model,
+                        baseline_loss=final_loss,
+                        baseline_grad=model.theta.grad,
+                    )
+                )
                 final_nll_bits = float(final_loss.detach().cpu())
                 final_grad_inf = float(final_metrics.get("grad/inf", math.inf))
                 final_improved = (

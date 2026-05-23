@@ -62,6 +62,7 @@ class ReconStaticState:
     fixed_iters_Pi: int = 6
     neumann_terms: int = 3
     adaptive_iters: bool = False
+    adaptive_neumann_terms: bool = False
     convergence_check_interval: int = 4
     e_logsumexp_tol: float = 1e-5
     pi_max_diff_tol: float = 1e-5
@@ -302,7 +303,7 @@ def compute_resident_implicit_gradient(
         origination_probs_prepared=True,
         genewise=static.genewise,
         gradient_convergence_tol=(
-            static.gradient_change_tol if static.adaptive_iters else -1.0
+            static.gradient_change_tol if static.adaptive_neumann_terms else -1.0
         ),
         gradient_convergence_rtol=static.gradient_change_rtol,
         gradient_convergence_check_interval=static.convergence_check_interval,

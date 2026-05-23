@@ -341,6 +341,11 @@ def _normalize_gene_solver_kwargs(kwargs: dict[str, Any]) -> dict[str, Any]:
             "adaptive_iters",
             normalized["adaptive_iters"],
         )
+    if "adaptive_neumann_terms" in normalized:
+        normalized["adaptive_neumann_terms"] = bool_value(
+            "adaptive_neumann_terms",
+            normalized["adaptive_neumann_terms"],
+        )
     if "use_pruning" in normalized:
         normalized["use_pruning"] = bool_value(
             "use_pruning",
@@ -545,6 +550,7 @@ def _build_static_state(
     fixed_iters_Pi: int,
     neumann_terms: int,
     adaptive_iters: bool,
+    adaptive_neumann_terms: bool,
     convergence_check_interval: int,
     e_logsumexp_tol: float,
     pi_max_diff_tol: float,
@@ -604,6 +610,7 @@ def _build_static_state(
         fixed_iters_Pi=fixed_iters_Pi,
         neumann_terms=neumann_terms,
         adaptive_iters=adaptive_iters,
+        adaptive_neumann_terms=adaptive_neumann_terms,
         convergence_check_interval=convergence_check_interval,
         e_logsumexp_tol=e_logsumexp_tol,
         pi_max_diff_tol=pi_max_diff_tol,
@@ -627,6 +634,7 @@ def _build_batch_static_state(
     fixed_iters_Pi: int,
     neumann_terms: int,
     adaptive_iters: bool,
+    adaptive_neumann_terms: bool,
     convergence_check_interval: int,
     e_logsumexp_tol: float,
     pi_max_diff_tol: float,
@@ -663,6 +671,7 @@ def _build_batch_static_state(
         fixed_iters_Pi=fixed_iters_Pi,
         neumann_terms=neumann_terms,
         adaptive_iters=adaptive_iters,
+        adaptive_neumann_terms=adaptive_neumann_terms,
         convergence_check_interval=convergence_check_interval,
         e_logsumexp_tol=e_logsumexp_tol,
         pi_max_diff_tol=pi_max_diff_tol,
@@ -774,6 +783,7 @@ class GeneReconModel(torch.nn.Module):
         fixed_iters_Pi: int = 6,
         neumann_terms: int = 3,
         adaptive_iters: bool = False,
+        adaptive_neumann_terms: bool = False,
         convergence_check_interval: int = 4,
         e_logsumexp_tol: float = 1e-5,
         pi_max_diff_tol: float = 1e-5,
@@ -812,6 +822,10 @@ class GeneReconModel(torch.nn.Module):
             convergence_check_interval,
         )
         adaptive_iters = bool_value("adaptive_iters", adaptive_iters)
+        adaptive_neumann_terms = bool_value(
+            "adaptive_neumann_terms",
+            adaptive_neumann_terms,
+        )
         if adaptive_iters and convergence_check_interval % 2 != 0:
             raise ValueError(
                 "adaptive_iters requires an even convergence_check_interval"
@@ -903,6 +917,7 @@ class GeneReconModel(torch.nn.Module):
         self._fixed_iters_Pi = fixed_iters_Pi
         self._neumann_terms = neumann_terms
         self._adaptive_iters = adaptive_iters
+        self._adaptive_neumann_terms = adaptive_neumann_terms
         self._convergence_check_interval = convergence_check_interval
         self._e_logsumexp_tol = float(e_logsumexp_tol)
         self._pi_max_diff_tol = float(pi_max_diff_tol)
@@ -963,6 +978,7 @@ class GeneReconModel(torch.nn.Module):
                 fixed_iters_Pi=fixed_iters_Pi,
                 neumann_terms=neumann_terms,
                 adaptive_iters=self._adaptive_iters,
+                adaptive_neumann_terms=self._adaptive_neumann_terms,
                 convergence_check_interval=self._convergence_check_interval,
                 e_logsumexp_tol=self._e_logsumexp_tol,
                 pi_max_diff_tol=self._pi_max_diff_tol,
@@ -1161,6 +1177,7 @@ class GeneReconModel(torch.nn.Module):
             fixed_iters_Pi=self._fixed_iters_Pi,
             neumann_terms=self._neumann_terms,
             adaptive_iters=self._adaptive_iters,
+            adaptive_neumann_terms=self._adaptive_neumann_terms,
             convergence_check_interval=self._convergence_check_interval,
             e_logsumexp_tol=self._e_logsumexp_tol,
             pi_max_diff_tol=self._pi_max_diff_tol,
@@ -1377,6 +1394,7 @@ class GeneReconModel(torch.nn.Module):
         neumann_terms: int | None = None,
         pi_max_diff_tol: float | None = None,
         gradient_change_tol: float | None = None,
+        adaptive_neumann_terms: bool | None = None,
     ) -> None:
         """Update solver iteration controls on the model and built batches.
 
@@ -1405,6 +1423,12 @@ class GeneReconModel(torch.nn.Module):
                 gradient_change_tol,
             )
             self._gradient_change_tol = gradient_change_tol
+        if adaptive_neumann_terms is not None:
+            adaptive_neumann_terms = bool_value(
+                "adaptive_neumann_terms",
+                adaptive_neumann_terms,
+            )
+            self._adaptive_neumann_terms = adaptive_neumann_terms
 
         for static in self.cached_static_states:
             if fixed_iters_E is not _UNSET:
@@ -1417,6 +1441,8 @@ class GeneReconModel(torch.nn.Module):
                 static.pi_max_diff_tol = pi_max_diff_tol
             if gradient_change_tol is not None:
                 static.gradient_change_tol = gradient_change_tol
+            if adaptive_neumann_terms is not None:
+                static.adaptive_neumann_terms = adaptive_neumann_terms
 
     def solver_stat_records(self) -> list[dict[str, Any]]:
         """Copies of solver stats from already-built static states."""

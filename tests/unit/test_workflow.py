@@ -1234,6 +1234,8 @@ def test_run_config_rejects_boolean_float_controls(
     [
         ("adaptive_iters", "false"),
         ("adaptive_iters", 0),
+        ("adaptive_neumann_terms", "false"),
+        ("adaptive_neumann_terms", 0),
     ],
 )
 def test_run_config_rejects_nonbool_boolean_controls(
@@ -1260,6 +1262,7 @@ def test_run_config_rejects_nonbool_boolean_controls(
         ("max_iters_e", 2000.5),
         ("fixed_iters_pi", 64.5),
         ("neumann_terms", True),
+        ("final_check_iters", 12.5),
         ("solver_warmup_iters", 1.5),
         ("solver_warmup_loss_patience", 1.5),
         ("convergence_check_interval", 4.5),
@@ -4721,6 +4724,7 @@ def test_optimization_runner_batched_lbfgs_mode_records_public_phase(tmp_path: P
     latest = load_checkpoint(config.out_dir / "checkpoints" / "latest.pt")
     assert latest["optimizer_phase"] == "batched-lbfgs"
     assert latest["last_row"]["optimizer/phase"] == "final_eval"
+    assert "optimizer/final_eval_source" not in history_rows[-1]
     assert result.status == "not_converged"
     assert runner.fake_model.closed
 
@@ -4780,10 +4784,12 @@ def test_optimization_runner_batched_lbfgs_advances_resident_batches(tmp_path: P
     }
     assert runner.fake_model.solver_configs == [
         {"fixed_iters_E": 6, "fixed_iters_Pi": 6, "neumann_terms": 6},
-        {"fixed_iters_E": None, "fixed_iters_Pi": 64, "neumann_terms": 64},
+        {"fixed_iters_E": None, "fixed_iters_Pi": 16, "neumann_terms": 16},
         {"fixed_iters_E": 6, "fixed_iters_Pi": 6, "neumann_terms": 6},
-        {"fixed_iters_E": None, "fixed_iters_Pi": 64, "neumann_terms": 64},
-        {"fixed_iters_E": None, "fixed_iters_Pi": 64, "neumann_terms": 64},
+        {"fixed_iters_E": None, "fixed_iters_Pi": 16, "neumann_terms": 16},
+        {"fixed_iters_E": None, "fixed_iters_Pi": 16, "neumann_terms": 16},
+        {"fixed_iters_E": None, "fixed_iters_Pi": 32, "neumann_terms": 32},
+        {"fixed_iters_E": None, "fixed_iters_Pi": 16, "neumann_terms": 16},
     ]
     assert result.status == "converged"
     assert runner.fake_model.closed
@@ -4796,6 +4802,7 @@ def test_optimization_runner_batched_lbfgs_resume_restores_state(tmp_path: Path)
         mode="genewise",
         steps=1,
         lbfgs_max_iter=1,
+        solver_warmup_iters=0,
     )
     first_runner = _WorkflowBatchedLBFGSModeRunner(first_config)
     first_runner.run()
@@ -4808,6 +4815,7 @@ def test_optimization_runner_batched_lbfgs_resume_restores_state(tmp_path: Path)
         mode="genewise",
         steps=2,
         lbfgs_max_iter=1,
+        solver_warmup_iters=0,
         out_dir=tmp_path / "out-batched-lbfgs-resumed",
         resume_from=first_config.out_dir / "checkpoints" / "latest.pt",
     )

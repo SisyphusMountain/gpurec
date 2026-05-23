@@ -3,7 +3,8 @@
 //! The JSON schema mirrors the Python exporter. Probability-like tensors are
 //! base-2 log values, with `-1e300` used as the practical negative-infinity
 //! sentinel. Species indices use the postorder order supplied by
-//! `species_names_postorder`.
+//! `species_names_postorder`. `origination_probs`, when present, are ordinary
+//! nonnegative weights over species; zero weights are treated as impossible.
 
 use rand::distributions::Uniform;
 use rand::prelude::*;

@@ -268,6 +268,14 @@ def _add_run_config_args(parser: argparse.ArgumentParser) -> None:
         ),
     )
     parser.add_argument(
+        "--final-check-iters",
+        type=int,
+        help=(
+            "Final Pi/Neumann iteration budget used only to compare the final "
+            "loss and gradient against the configured full budget; use 0 to disable."
+        ),
+    )
+    parser.add_argument(
         "--solver-warmup-grad-inf-tol",
         type=float,
         help=(
@@ -288,6 +296,15 @@ def _add_run_config_args(parser: argparse.ArgumentParser) -> None:
         action=argparse.BooleanOptionalAction,
         default=None,
         help="Enable adaptive E/Pi solver iteration stopping.",
+    )
+    parser.add_argument(
+        "--adaptive-neumann-terms",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help=(
+            "Enable legacy adaptive backward Neumann gradient-convergence "
+            "checks. Default is disabled."
+        ),
     )
     parser.add_argument(
         "--convergence-check-interval",

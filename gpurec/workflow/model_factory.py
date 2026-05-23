@@ -30,6 +30,7 @@ def build_alerax_workflow_model(
         fixed_iters_Pi=config.fixed_iters_pi,
         neumann_terms=config.neumann_terms,
         adaptive_iters=config.adaptive_iters,
+        adaptive_neumann_terms=config.adaptive_neumann_terms,
         convergence_check_interval=config.convergence_check_interval,
         e_logsumexp_tol=config.e_logsumexp_tol,
         pi_max_diff_tol=config.pi_max_diff_tol,

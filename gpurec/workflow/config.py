@@ -221,6 +221,7 @@ _JSON_INT_FIELDS = {
     "max_iters_e",
     "fixed_iters_pi",
     "neumann_terms",
+    "final_check_iters",
     "solver_warmup_iters",
     "solver_warmup_loss_patience",
     "convergence_check_interval",
@@ -253,7 +254,7 @@ _JSON_FLOAT_FIELDS = {
     "loss_change_tol",
     "best_likelihood_min_delta",
 }
-_JSON_BOOL_FIELDS = {"adaptive_iters"}
+_JSON_BOOL_FIELDS = {"adaptive_iters", "adaptive_neumann_terms"}
 _RUN_CONFIG_REQUIRED_PATH_FIELDS = ("species_tree", "families_file", "out_dir")
 _RUN_CONFIG_PATH_FIELDS = _RUN_CONFIG_REQUIRED_PATH_FIELDS + (
     "resume_from",
@@ -310,12 +311,14 @@ class RunConfig:
     fixed_iters_e: int | None = None
     max_iters_e: int = 2000
     tol_e: float = 1e-8
-    fixed_iters_pi: int = 64
-    neumann_terms: int = 64
-    solver_warmup_iters: int = 0
+    fixed_iters_pi: int = 16
+    neumann_terms: int = 16
+    solver_warmup_iters: int = 6
     solver_warmup_grad_inf_tol: float = 1.0
     solver_warmup_loss_patience: int = 2
     adaptive_iters: bool = True
+    adaptive_neumann_terms: bool = False
+    final_check_iters: int = 32
     convergence_check_interval: int = 4
     e_logsumexp_tol: float = 1e-5
     pi_max_diff_tol: float = 1e-5
@@ -389,6 +392,10 @@ class RunConfig:
             "neumann_terms",
             self.neumann_terms,
         )
+        self.final_check_iters = _normalize_nonnegative_int(
+            "final_check_iters",
+            self.final_check_iters,
+        )
         self.solver_warmup_iters = _normalize_nonnegative_int(
             "solver_warmup_iters",
             self.solver_warmup_iters,
@@ -455,6 +462,10 @@ class RunConfig:
         _normalize_positive_even_int("fixed_iters_pi", self.fixed_iters_pi)
         if self.neumann_terms < 1:
             raise ValueError("neumann_terms must be positive")
+        if self.final_check_iters < 0:
+            raise ValueError("final_check_iters must be non-negative")
+        if self.final_check_iters > 0:
+            _normalize_positive_even_int("final_check_iters", self.final_check_iters)
         if self.solver_warmup_iters < 0:
             raise ValueError("solver_warmup_iters must be non-negative")
         if self.solver_warmup_loss_patience < 0:

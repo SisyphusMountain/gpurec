@@ -175,8 +175,10 @@ from gpurec import (
     ensure_backtracking_available,
     export_backtracking_input,
     recphyloxml_event_counts,
+    sample_backtracking_summaries,
     sample_recphyloxml,
     sample_recphyloxmls,
+    sample_recphyloxmls_to_dir,
 )
 ```
 

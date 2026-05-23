@@ -100,7 +100,9 @@ def test_build_alerax_workflow_model_forwards_run_config(tmp_path: Path, monkeyp
         tol_e=1e-7,
         fixed_iters_pi=8,
         neumann_terms=6,
+        final_check_iters=12,
         adaptive_iters=False,
+        adaptive_neumann_terms=True,
         convergence_check_interval=6,
         e_logsumexp_tol=2e-5,
         pi_max_diff_tol=3e-5,
@@ -146,6 +148,7 @@ def test_build_alerax_workflow_model_forwards_run_config(tmp_path: Path, monkeyp
     assert kwargs["fixed_iters_Pi"] == 8
     assert kwargs["neumann_terms"] == 6
     assert kwargs["adaptive_iters"] is False
+    assert kwargs["adaptive_neumann_terms"] is True
     assert kwargs["convergence_check_interval"] == 6
     assert kwargs["e_logsumexp_tol"] == pytest.approx(2e-5)
     assert kwargs["pi_max_diff_tol"] == pytest.approx(3e-5)
