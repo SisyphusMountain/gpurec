@@ -1443,6 +1443,8 @@ class OptimizationRunner:
         accepted = torch.zeros(rows, device=model.theta.device, dtype=torch.bool)
         accepted_active = active_theta0.clone()
         alpha = torch.ones(rows, device=model.theta.device, dtype=model.theta.dtype)
+        line_search_fallback_attempted = torch.zeros_like(accepted)
+        line_search_fallback_accepted = torch.zeros_like(accepted)
         max_line_search_steps = 0
         if use_line_search:
             max_line_search_steps = (
@@ -1497,6 +1499,78 @@ class OptimizationRunner:
                     )
                 searching = trial_searching & ~accepted
                 alpha = torch.where(searching, alpha * 0.5, alpha)
+            fallback_searching = row_active & ~accepted & torch.isfinite(
+                projected_grad,
+            ).all(dim=1)
+            fallback_step = -torch.where(
+                free,
+                projected_grad,
+                torch.zeros_like(projected_grad),
+            ) * float(step_scale)
+            fallback_bounded_step = (
+                torch.clamp(
+                    active_theta0 + fallback_step,
+                    min=lower_bound,
+                    max=upper_bound,
+                )
+                - active_theta0
+            )
+            fallback_gtd = (projected_grad * fallback_bounded_step).sum(dim=1)
+            fallback_searching = fallback_searching & torch.isfinite(
+                fallback_gtd,
+            ) & (fallback_gtd < -1e-12)
+            line_search_fallback_attempted = fallback_searching.clone()
+            fallback_alpha = torch.ones(
+                rows,
+                device=model.theta.device,
+                dtype=model.theta.dtype,
+            )
+            for _ in range(max_line_search_steps):
+                if not bool(fallback_searching.any()):
+                    break
+                trial_active = torch.clamp(
+                    active_theta0 + fallback_alpha[:, None] * fallback_step,
+                    min=lower_bound,
+                    max=upper_bound,
+                )
+                candidate_active = torch.where(
+                    fallback_searching[:, None],
+                    trial_active,
+                    accepted_active,
+                )
+                candidate = theta0.clone()
+                candidate.index_copy_(0, idx, candidate_active)
+                self._set_model_theta(model, candidate)
+                model.clear()
+                with torch.no_grad():
+                    trial_loss_vec = self._evaluate_active_genewise_loss_vector(model)
+                loss_evals += 1
+                trial_active_loss = trial_loss_vec.index_select(0, idx)
+                trial_delta = trial_active - active_theta0
+                trial_gtd = (projected_grad * trial_delta).sum(dim=1)
+                trial_searching = fallback_searching & torch.isfinite(trial_gtd) & (
+                    trial_gtd < -1e-12
+                )
+                armijo_rhs = active_loss0 + 1e-4 * trial_gtd
+                ok = trial_searching & torch.isfinite(trial_active_loss) & (
+                    trial_active_loss <= armijo_rhs
+                )
+                if bool(ok.any()):
+                    accepted = accepted | ok
+                    line_search_fallback_accepted = (
+                        line_search_fallback_accepted | ok
+                    )
+                    accepted_active = torch.where(
+                        ok[:, None],
+                        trial_active,
+                        accepted_active,
+                    )
+                fallback_searching = trial_searching & ~accepted
+                fallback_alpha = torch.where(
+                    fallback_searching,
+                    fallback_alpha * 0.5,
+                    fallback_alpha,
+                )
         else:
             trial_active = active_theta0 + bounded_step
             accepted = valid_projected_step
@@ -1610,6 +1684,12 @@ class OptimizationRunner:
             accepted.to(dtype=torch.float32).mean().detach().cpu()
         )
         metrics["optimizer/fd_newton_fallback_rows"] = float(fallback.sum().detach().cpu())
+        metrics["optimizer/fd_newton_line_search_fallback_attempted_rows"] = float(
+            line_search_fallback_attempted.sum().detach().cpu()
+        )
+        metrics["optimizer/fd_newton_line_search_fallback_rows"] = float(
+            line_search_fallback_accepted.sum().detach().cpu()
+        )
         metrics["optimizer/fd_newton_hessian_source"] = (
             "finite_difference"
             if refreshed_hessian
