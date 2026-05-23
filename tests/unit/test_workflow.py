@@ -5443,6 +5443,76 @@ def test_hessian_sgd_likelihood_plateau_converges_with_nonzero_gradient(
     assert runner.fake_model.closed
 
 
+def test_hessian_sgd_polish_plateau_refreshes_stale_zero_accept_hessian(
+    tmp_path: Path,
+):
+    config = _optimizer_mode_config(
+        tmp_path,
+        optimizer="hessian-sgd",
+        mode="genewise",
+        steps=5,
+        solver_warmup_iters=0,
+        fd_hessian_epsilon=1e-3,
+        fd_newton_damping=1e-6,
+        loss_change_tol=0.0,
+        loss_patience=1,
+        best_likelihood_patience=0,
+    )
+    runner = _WorkflowAdaptiveRebatchRunner(config)
+    state_seen_as_none: list[bool] = []
+
+    def fake_step(model, *, solver_stage, hessian_state=None, **_kwargs):
+        state_seen_as_none.append(hessian_state is None)
+        model.theta.grad = torch.ones_like(model.theta)
+        loss_vec = torch.full(
+            (int(model.n_families),),
+            5.0,
+            device=model.theta.device,
+            dtype=model.theta.dtype,
+        )
+        metrics = runner._active_batch_metrics(
+            model,
+            loss_vec=loss_vec,
+            solver_stage=solver_stage,
+        )
+        refreshed = hessian_state is None
+        metrics["optimizer/fd_newton_accepted_rows"] = 0.0
+        metrics["optimizer/fd_newton_hessian_refreshed"] = refreshed
+        metrics["optimizer/fd_newton_hessian_source"] = (
+            "finite_difference" if refreshed else "fixed_hessian"
+        )
+        return loss_vec, metrics, 1, object()
+
+    runner._active_fd_newton_step = fake_step  # type: ignore[method-assign]
+
+    result = runner.run()
+
+    history_rows = _optimizer_mode_history_rows(config.out_dir)
+    hessian_rows = [
+        row for row in history_rows if row["optimizer/phase"] == "hessian-sgd"
+    ]
+    assert state_seen_as_none == [True, False, True, False, True]
+    assert [row["optimizer/fd_newton_subphase"] for row in hessian_rows] == [
+        "hessian_sgd",
+        "hessian_sgd",
+        "hessian_sgd_polish",
+        "hessian_sgd_polish",
+        "hessian_sgd_polish",
+    ]
+    assert (
+        hessian_rows[3]["optimizer/fd_newton_force_refresh_after_plateau"]
+        is True
+    )
+    assert hessian_rows[3]["stable_loss_steps"] == 0
+    assert hessian_rows[4]["optimizer/fd_newton_hessian_source"] == (
+        "finite_difference"
+    )
+    assert hessian_rows[4]["stable_loss_steps"] == 1
+    assert result.status == "converged"
+    assert result.reason == "loss_change_patience"
+    assert runner.fake_model.closed
+
+
 def test_hessian_sgd_gradient_tolerance_does_not_converge_or_enter_polish(
     tmp_path: Path,
 ):

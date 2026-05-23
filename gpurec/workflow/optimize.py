@@ -2488,8 +2488,31 @@ class OptimizationRunner:
                         hessian_sgd_polish_limit_reached
                     )
                 delta = None if previous_objective is None else previous_objective - objective
+                force_hessian_refresh_after_plateau = False
                 if delta is not None and delta <= loss_change_tol_bits:
-                    stable_loss_steps += 1
+                    accepted_rows = metrics.get("optimizer/fd_newton_accepted_rows")
+                    force_hessian_refresh_after_plateau = (
+                        batchwise_hessian_sgd
+                        and phase == "hessian-sgd"
+                        and active_objective_scope
+                        and active_solver_stage == "full"
+                        and hessian_sgd_polish_active
+                        and not bool(
+                            metrics.get(
+                                "optimizer/fd_newton_hessian_refreshed",
+                                False,
+                            )
+                        )
+                        and accepted_rows is not None
+                        and float(accepted_rows) <= 0.0
+                    )
+                    if force_hessian_refresh_after_plateau:
+                        stable_loss_steps = 0
+                        metrics[
+                            "optimizer/fd_newton_force_refresh_after_plateau"
+                        ] = True
+                    else:
+                        stable_loss_steps += 1
                 else:
                     stable_loss_steps = 0
                 previous_objective = objective
@@ -2582,6 +2605,8 @@ class OptimizationRunner:
 
                 final_row = row
                 self._record(row)
+                if force_hessian_refresh_after_plateau:
+                    fd_newton_hessian_state = None
 
                 if adaptive_rebatch_stop:
                     status = {"status": "converged", "reason": "best_likelihood_patience"}
