@@ -229,6 +229,7 @@ _JSON_INT_FIELDS = {
     "adam_warmup_steps",
     "lbfgs_history_size",
     "lbfgs_max_iter",
+    "lbfgs_max_ls",
     "loss_patience",
     "best_likelihood_patience",
     "checkpoint_every",
@@ -334,6 +335,7 @@ class RunConfig:
     lbfgs_lr: float = 0.1
     lbfgs_history_size: int = 20
     lbfgs_max_iter: int = 1
+    lbfgs_max_ls: int = 8
     lbfgs_line_search: str = "none"
 
     grad_inf_tol: float = 1e-3
@@ -411,6 +413,10 @@ class RunConfig:
         self.lbfgs_max_iter = _normalize_positive_int(
             "lbfgs_max_iter",
             self.lbfgs_max_iter,
+        )
+        self.lbfgs_max_ls = _normalize_positive_int(
+            "lbfgs_max_ls",
+            self.lbfgs_max_ls,
         )
         self.loss_patience = _normalize_nonnegative_int(
             "loss_patience",
@@ -504,8 +510,12 @@ class RunConfig:
             raise ValueError("optimizer learning rates must be positive")
         if self.adam_warmup_steps < 0:
             raise ValueError("adam_warmup_steps must be non-negative")
-        if self.lbfgs_history_size < 1 or self.lbfgs_max_iter < 1:
-            raise ValueError("LBFGS history size and max_iter must be positive")
+        if (
+            self.lbfgs_history_size < 1
+            or self.lbfgs_max_iter < 1
+            or self.lbfgs_max_ls < 1
+        ):
+            raise ValueError("LBFGS history size, max_iter, and max_ls must be positive")
         if self.lbfgs_line_search not in {"none", "strong_wolfe"}:
             raise ValueError("lbfgs_line_search must be 'none' or 'strong_wolfe'")
         if self.loss_patience < 0 or self.best_likelihood_patience < 0:

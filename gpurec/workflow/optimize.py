@@ -76,6 +76,7 @@ _FINAL_ARTIFACT_FILES = (
     "optimization_history.csv",
     "summary.json",
 )
+_ACTIVE_BATCH_LBFGS_STALL_PATIENCE = 3
 
 
 def _is_finite_tensor(tensor: torch.Tensor | None) -> bool:
@@ -177,16 +178,31 @@ def _write_rate_table(path: Path, model: GeneReconModel, mode: str) -> None:
 
 
 @torch.no_grad()
-def _per_family_nll(model: GeneReconModel) -> list[tuple[str, float]]:
-    values = model.full_nll_per_family().detach().cpu().reshape(-1).tolist()
-    return list(zip(model_family_names(model), values))
+def _per_family_nll(
+    model: GeneReconModel,
+    values: torch.Tensor | None = None,
+) -> list[tuple[str, float]]:
+    if values is None:
+        values = model.full_nll_per_family()
+    values = values.detach().cpu().reshape(-1)
+    family_names = model_family_names(model)
+    if values.numel() != len(family_names):
+        raise RuntimeError(
+            "per-family likelihood vector has "
+            f"{values.numel()} rows for {len(family_names)} families"
+        )
+    return list(zip(family_names, values.tolist()))
 
 
-def _write_per_family_likelihoods(path: Path, model: GeneReconModel) -> None:
+def _write_per_family_likelihoods(
+    path: Path,
+    model: GeneReconModel,
+    values: torch.Tensor | None = None,
+) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8") as handle:
         handle.write("family\tnll_bits\tlog_likelihood_bits\n")
-        for family, nll in _per_family_nll(model):
+        for family, nll in _per_family_nll(model, values):
             handle.write(f"{family}\t{nll:.12g}\t{-nll:.12g}\n")
 
 
@@ -239,6 +255,7 @@ def _write_final_artifacts(
     final_row: dict[str, Any],
     summary: dict[str, Any],
     history_jsonl: Path,
+    per_family_nll: torch.Tensor | None = None,
 ) -> None:
     stage_dir: Path | None = None
     try:
@@ -262,7 +279,11 @@ def _write_final_artifacts(
 
         if config.mode == "genewise":
             per_family_stage_path = stage_dir / "per_fam_likelihoods.tsv"
-            _write_per_family_likelihoods(per_family_stage_path, model)
+            _write_per_family_likelihoods(
+                per_family_stage_path,
+                model,
+                per_family_nll,
+            )
             staged_outputs.append(
                 (
                     per_family_stage_path,
@@ -300,18 +321,32 @@ def _step_stopping_status(
     grad_inf: float,
     stable_loss_steps: int,
     best_step: int | None,
+    loss_patience: int | None = None,
+    best_likelihood_patience: int | None = None,
 ) -> dict[str, str] | None:
+    loss_patience = config.loss_patience if loss_patience is None else loss_patience
+    best_likelihood_patience = (
+        config.best_likelihood_patience
+        if best_likelihood_patience is None
+        else best_likelihood_patience
+    )
     if grad_inf <= config.grad_inf_tol:
         return {"status": "converged", "reason": "gradient_tolerance"}
-    if config.loss_patience and stable_loss_steps >= config.loss_patience:
+    if loss_patience and stable_loss_steps >= loss_patience:
         return {"status": "stalled", "reason": "loss_change_patience"}
     if (
-        config.best_likelihood_patience
+        best_likelihood_patience
         and best_step is not None
-        and step - int(best_step) >= config.best_likelihood_patience
+        and step - int(best_step) >= best_likelihood_patience
     ):
         return {"status": "stalled", "reason": "best_likelihood_patience"}
     return None
+
+
+def _active_batch_patience(configured_patience: int) -> int:
+    if configured_patience <= 0:
+        return configured_patience
+    return min(configured_patience, _ACTIVE_BATCH_LBFGS_STALL_PATIENCE)
 
 
 class OptimizationRunner:
@@ -343,6 +378,7 @@ class OptimizationRunner:
                 lr=config.lbfgs_lr,
                 max_iter=config.lbfgs_max_iter,
                 history_size=config.lbfgs_history_size,
+                max_ls=config.lbfgs_max_ls,
                 tolerance_grad=config.grad_inf_tol,
                 line_search_fn=(
                     "strong_wolfe"
@@ -638,6 +674,9 @@ class OptimizationRunner:
         active_solver_stage = "warmup" if solver_warmup_enabled else "full"
         batch_best_nll: float | None = None
         batch_best_step: int | None = None
+        batch_final_loss_cache: torch.Tensor | None = None
+        batch_final_grad_cache: torch.Tensor | None = None
+        batch_final_cache_ready: torch.Tensor | None = None
         status = {"status": "running", "reason": "running"}
         final_row: dict[str, Any] = {}
         resume_info: dict[str, Any] = {}
@@ -693,6 +732,17 @@ class OptimizationRunner:
                         f"checkpoint active batch {active_batch_index} exceeds "
                         f"{len(model.batch_metadata)} model batches"
                     )
+                batch_final_loss_cache = torch.empty(
+                    (int(model.n_families),),
+                    device=model.theta.device,
+                    dtype=model.theta.dtype,
+                )
+                batch_final_grad_cache = torch.empty_like(model.theta)
+                batch_final_cache_ready = torch.zeros(
+                    (int(model.n_families),),
+                    device=model.theta.device,
+                    dtype=torch.bool,
+                )
                 model.select_batch(active_batch_index)
                 self._configure_solver_stage(model, active_solver_stage)
 
@@ -836,21 +886,53 @@ class OptimizationRunner:
                         model.clamp_theta_(config.min_rate, config.max_rate)
                     theta_step = float((model.theta.detach() - theta_before).abs().amax().cpu())
                     model.clear()
-                    model.theta.grad = None
-                    if batchwise_batched_lbfgs:
-                        loss_vec_current, metrics = (
-                            self._evaluate_active_genewise_vector_and_grad(
-                                model,
-                                solver_stage=active_solver_stage,
-                            )
+                    reused_optimizer_gradient = False
+                    loss_vec_current = opt_state.get("last_loss")
+                    grad_current = opt_state.get("last_grad")
+                    if (
+                        config.lbfgs_line_search == "none"
+                        and torch.is_tensor(loss_vec_current)
+                        and torch.is_tensor(grad_current)
+                        and loss_vec_current.numel() == int(model.n_families)
+                        and grad_current.numel() == model.theta.numel()
+                    ):
+                        model.theta.grad = grad_current.detach().reshape_as(model.theta).to(
+                            device=model.theta.device,
+                            dtype=model.theta.dtype,
                         )
+                        loss_vec_current = loss_vec_current.detach().to(
+                            device=model.theta.device,
+                            dtype=model.theta.dtype,
+                        ).reshape(int(model.n_families))
+                        metrics = dict(metrics)
+                        metrics["likelihood/data_nll_bits"] = float(
+                            loss_vec_current.sum().detach().cpu()
+                        )
+                        metrics["likelihood/log_likelihood_bits"] = float(
+                            -loss_vec_current.sum().detach().cpu()
+                        )
+                        metrics.update(tensor_stats("grad", model.theta.grad))
+                        metrics.update(parameter_stats(model.theta))
+                        reused_optimizer_gradient = True
                     else:
-                        loss_vec_current, metrics = self._evaluate_genewise_vector_and_grad(
-                            model
-                        )
-                    closure_evals += 1
+                        model.theta.grad = None
+                        if batchwise_batched_lbfgs:
+                            loss_vec_current, metrics = (
+                                self._evaluate_active_genewise_vector_and_grad(
+                                    model,
+                                    solver_stage=active_solver_stage,
+                                )
+                            )
+                        else:
+                            loss_vec_current, metrics = self._evaluate_genewise_vector_and_grad(
+                                model
+                            )
+                        closure_evals += 1
                     metrics["optimizer/batched_lbfgs_grad_evals"] = float(batched_grad_evals)
                     metrics["optimizer/batched_lbfgs_loss_evals"] = float(batched_loss_evals)
+                    metrics["optimizer/batched_lbfgs_reused_gradient"] = (
+                        reused_optimizer_gradient
+                    )
                     metrics["optimizer/batched_lbfgs_inner_iters"] = float(
                         int(opt_state.get("last_n_iter", 0))
                     )
@@ -882,6 +964,24 @@ class OptimizationRunner:
                         }
                         model.clear()
                         break
+                    if (
+                        batchwise_batched_lbfgs
+                        and batch_final_loss_cache is not None
+                        and batch_final_grad_cache is not None
+                        and batch_final_cache_ready is not None
+                    ):
+                        idx = self._active_batch_indices(model)
+                        batch_final_loss_cache.index_copy_(
+                            0,
+                            idx,
+                            loss_vec_current.detach().index_select(0, idx),
+                        )
+                        batch_final_grad_cache.index_copy_(
+                            0,
+                            idx,
+                            model.theta.grad.detach().index_select(0, idx),
+                        )
+                        batch_final_cache_ready.index_fill_(0, idx, True)
                     model.clear()
                 else:
                     loss = closure()
@@ -1038,6 +1138,16 @@ class OptimizationRunner:
                     grad_inf=float(row.get("grad/inf", math.inf)),
                     stable_loss_steps=stable_loss_steps,
                     best_step=row_best_step,
+                    loss_patience=(
+                        _active_batch_patience(config.loss_patience)
+                        if active_objective_scope
+                        else None
+                    ),
+                    best_likelihood_patience=(
+                        _active_batch_patience(config.best_likelihood_patience)
+                        if active_objective_scope
+                        else None
+                    ),
                 )
                 if warmup_switch:
                     active_solver_stage = "full"
@@ -1115,7 +1225,37 @@ class OptimizationRunner:
             if batchwise_batched_lbfgs:
                 self._configure_solver_stage(model, "full")
             model.theta.grad = None
-            final_loss, final_metrics = self._evaluate_and_backward(model)
+            final_per_family_nll: torch.Tensor | None = None
+            final_closure_evals = 1
+            if (
+                batchwise_batched_lbfgs
+                and batch_final_loss_cache is not None
+                and batch_final_grad_cache is not None
+                and batch_final_cache_ready is not None
+                and bool(batch_final_cache_ready.all().item())
+            ):
+                final_per_family_nll = batch_final_loss_cache.detach().clone()
+                model.theta.grad = batch_final_grad_cache.detach().clone()
+                final_loss = final_per_family_nll.sum()
+                final_metrics = {
+                    "likelihood/data_nll_bits": float(final_loss.detach().cpu()),
+                    "likelihood/log_likelihood_bits": float(-final_loss.detach().cpu()),
+                    "optimizer/final_eval_source": "cached_active_batches",
+                }
+                final_metrics.update(tensor_stats("grad", model.theta.grad))
+                final_metrics.update(parameter_stats(model.theta))
+                final_metrics.update(solver_stats(model))
+                final_closure_evals = 0
+            elif config.mode == "genewise" and callable(
+                getattr(model, "full_genewise_nll_and_grad", None)
+            ):
+                final_loss_vec, final_metrics = self._evaluate_genewise_vector_and_grad(
+                    model
+                )
+                final_loss = final_loss_vec.sum()
+                final_per_family_nll = final_loss_vec.detach()
+            else:
+                final_loss, final_metrics = self._evaluate_and_backward(model)
             final_step = max(start_step, min(config.steps, int(final_row.get("step", -1)) + 1))
             final_eval_failed = (
                 not torch.isfinite(final_loss).item()
@@ -1142,7 +1282,7 @@ class OptimizationRunner:
                     "optimizer/final_eval_reason": (
                         "nonfinite_objective_or_gradient"
                     ),
-                    "closure_evals": 1,
+                    "closure_evals": final_closure_evals,
                     "theta_step_inf": 0.0,
                     "delta_likelihood_bits": None,
                     "stable_loss_steps": stable_loss_steps,
@@ -1168,7 +1308,7 @@ class OptimizationRunner:
                     "optimizer/phase": "final_eval",
                     "optimizer/eval_position": "final",
                     "optimizer/step_applied": False,
-                    "closure_evals": 1,
+                    "closure_evals": final_closure_evals,
                     "theta_step_inf": 0.0,
                     "delta_likelihood_bits": None,
                     "stable_loss_steps": stable_loss_steps,
@@ -1230,6 +1370,7 @@ class OptimizationRunner:
                 final_row=final_row,
                 summary=summary,
                 history_jsonl=self.history_jsonl,
+                per_family_nll=final_per_family_nll,
             )
             result = OptimizationResult(
                 out_dir=config.out_dir,

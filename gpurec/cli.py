@@ -337,6 +337,7 @@ def _add_run_config_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--lbfgs-lr", type=float, help="LBFGS learning rate.")
     parser.add_argument("--lbfgs-history-size", type=int, help="LBFGS history size.")
     parser.add_argument("--lbfgs-max-iter", type=int, help="LBFGS inner iterations per step.")
+    parser.add_argument("--lbfgs-max-ls", type=int, help="Batched LBFGS line-search probes.")
     parser.add_argument(
         "--lbfgs-line-search",
         choices=("none", "strong_wolfe"),

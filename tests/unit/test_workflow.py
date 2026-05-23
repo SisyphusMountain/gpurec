@@ -1266,6 +1266,7 @@ def test_run_config_rejects_nonbool_boolean_controls(
         ("steps", 1.5),
         ("adam_warmup_steps", 0.5),
         ("lbfgs_max_iter", 1.5),
+        ("lbfgs_max_ls", 1.5),
         ("checkpoint_every", 0.5),
         ("log_every", 1.5),
     ],
@@ -5145,6 +5146,89 @@ def test_optimization_runner_run_writes_outputs_with_fake_model(tmp_path: Path):
     assert (config.out_dir / "optimization_history.csv").exists()
     assert (config.out_dir / "theta_final.pt").exists()
     assert "fam0" in (config.out_dir / "rates_final.tsv").read_text(encoding="utf-8")
+    per_family = (config.out_dir / "per_fam_likelihoods.tsv").read_text(
+        encoding="utf-8"
+    )
+    assert "fam0" in per_family
+    assert "fam1" in per_family
+
+
+def test_optimization_runner_reuses_final_genewise_vector_for_artifacts(
+    tmp_path: Path,
+):
+    class FakeGenewiseVectorModel:
+        def __init__(self):
+            self.theta = torch.nn.Parameter(
+                torch.tensor(
+                    [
+                        [0.25, -0.15, 0.05],
+                        [0.10, 0.20, -0.05],
+                    ],
+                    dtype=torch.float32,
+                )
+            )
+            self.family_names = ["fam0", "fam1"]
+            self.species_names = ["sp0", "sp1"]
+            self.n_families = 2
+            self.n_species = 2
+            self.batch_metadata = [SimpleNamespace(batch_index=0)]
+            self.full_vector_calls = 0
+            self.closed = False
+
+        def _values(self):
+            return self.theta.detach().square().sum(dim=1) + 1.0
+
+        def full_loss(self):
+            return self.theta.square().sum() + 2.0
+
+        def full_genewise_nll_and_grad(self, *, need_grad: bool):
+            self.full_vector_calls += 1
+            values = self._values()
+            grad = 2.0 * self.theta.detach() if need_grad else None
+            return values, grad
+
+        def full_nll_per_family(self):
+            raise AssertionError("final artifact writer should reuse final vector")
+
+        def clamp_theta_(self, min_rate, max_rate):
+            with torch.no_grad():
+                self.theta.clamp_(min=-4.0, max=4.0)
+
+        def solver_stat_records(self):
+            return []
+
+        def clear(self):
+            pass
+
+        def close(self):
+            self.closed = True
+
+    class FakeRunner(OptimizationRunner):
+        def build_model(self):
+            self.fake_model = FakeGenewiseVectorModel()
+            return self.fake_model
+
+    config = RunConfig(
+        species_tree=tmp_path / "sp.nwk",
+        families_file=tmp_path / "families.txt",
+        out_dir=tmp_path / "out",
+        mode="genewise",
+        device="cpu",
+        optimizer="adam",
+        steps=1,
+        lr=0.05,
+        checkpoint_every=0,
+        log_every=10,
+        grad_inf_tol=0.0,
+        loss_patience=0,
+        best_likelihood_patience=0,
+    )
+    runner = FakeRunner(config)
+
+    result = runner.run()
+
+    assert result.status == "not_converged"
+    assert runner.fake_model.full_vector_calls == 1
     per_family = (config.out_dir / "per_fam_likelihoods.tsv").read_text(
         encoding="utf-8"
     )
