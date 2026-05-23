@@ -3089,6 +3089,73 @@ in this run (`85.8 s` for 128 and `108.4 s` for 512 forward+backward warmup),
 while their steady measured passes remain slower than the default.  Since the
 event screen did not improve, do not run `nsys` and do not change the default.
 
+## Current Triton-Only HOGENOM Retest
+
+After simplifying the runtime to the retained Triton paths, the older CUDA
+Pibar/self-loop timing tables above are no longer apples-to-apples with the
+current branch.  A fresh HOGENOM stream-batches sweep on the local full
+HOGENOM fixture used:
+
+- `tests/data/HOGENOM/hogenom/hogenom_families.local.txt`
+- species tree
+  `tests/data/HOGENOM/hogenom/output_alerax_corrected/species_trees/inferred_species_tree.newick`
+- `mode=specieswise`, `float32`
+- `fixed_iters_E=6`, `fixed_iters_Pi=6`, `neumann_terms=6`
+- `batch_packing=depth_first_fit`, `max_wave_size=8192`
+- one warmup pass and five measured passes after kernel specializations were
+  available in the Triton cache
+
+Measured stream-batches results:
+
+| layout | batches | waves | median fwd+bwd | median forward | median backward | peak alloc | peak reserved |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `chunk_size=300, clade_budget=315000` | 5 | 258 | 1.1071 s | 0.3060 s | 0.8011 s | 5.781 GiB | 6.041 GiB |
+| `chunk_size=0, clade_budget=305000` | 4 | 245 | 1.1483 s | 0.3050 s | 0.8433 s | 5.673 GiB | 5.727 GiB |
+| `chunk_size=0, clade_budget=400000` | 3 | 203 | 1.1040 s | 0.3026 s | 0.8014 s | 11.454 GiB | 11.818 GiB |
+| `chunk_size=0, clade_budget=500000` | 3 | 182 | 1.0958 s | 0.3030 s | 0.7929 s | 14.806 GiB | 14.865 GiB |
+| `chunk_size=0, clade_budget=600000` | 2 | 159 | 1.0797 s | 0.3021 s | 0.7776 s | 20.968 GiB | 21.055 GiB |
+
+The fastest verified current layout is `family_chunk_size=0,
+clade_budget=600000`.  It is a high-memory 24GB-class setting: the measured
+gain over `500000` is small, about 16 ms per warm stream pass, and it leaves
+little free memory on a 24GB card.  The lower-memory fallback remains
+`family_chunk_size=300, clade_budget=315000`.
+
+Correctness check against the conservative `chunk_size=300, clade_budget=315000`
+layout stayed within fp32 accumulation-order noise:
+
+| layout | loss delta | max abs gradient delta | mean abs gradient delta |
+| --- | ---: | ---: | ---: |
+| `chunk_size=0, clade_budget=305000` | -0.0625 bits | 0.01147 | 0.000144 |
+| `chunk_size=0, clade_budget=500000` | 0 bits | 0.03531 | 0.001060 |
+| `chunk_size=0, clade_budget=600000` | -0.0625 bits | 0.04004 | 0.001222 |
+
+End-to-end genewise Batched-LBFGS with the documented 6/6/6 solver settings and
+the `600000` layout converged to the same cached and recomputed final result:
+
+| setting | value |
+| --- | ---: |
+| families | 1055 |
+| batches | 2 |
+| optimizer rows | 98 |
+| elapsed | 232.585 s |
+| median non-final step | 2.146 s |
+| final NLL | 576324.6875 bits |
+| final grad inf | 26.86177 |
+| stop reason | `loss_change_patience` |
+| final eval source | `cached_active_batches` |
+
+Independent final-theta recomputation took 3.046 s and matched the cached final
+NLL exactly (`0.0` bit delta); gradient infinity norm differed by
+`1.53e-05`.
+
+The analogous full 64/64 adaptive genewise run is not yet a useful timing
+baseline for HOGENOM: `lbfgs_lr=1.0` failed with
+`nonfinite_objective_or_gradient`, while `lbfgs_lr=0.1` was stable but spent too
+many closure probes unless line-search probes were capped.  HOGENOM full-solver
+genewise convergence needs separate optimizer continuation tuning rather than a
+batch-layout-only change.
+
 ## Commands
 
 Warm whole-dataset stream timing, conservative memory layout:
@@ -3110,7 +3177,7 @@ Warm whole-dataset stream timing, best validated runtime layout:
 ```bash
 python scripts/profile_hogenom_ccp_pass.py \
   --chunk-size 0 \
-  --clade-budget 305000 \
+  --clade-budget 600000 \
   --batch-packing depth_first_fit \
   --max-wave-size 8192 \
   --warmup-runs 1 \

@@ -1813,7 +1813,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--max-families", type=int, default=None)
     parser.add_argument("--family-chunk-size", type=parse_family_chunk_size, default="0")
-    parser.add_argument("--clade-budget", type=int, default=305_000)
+    parser.add_argument("--clade-budget", type=int, default=600_000)
     parser.add_argument("--max-wave-size", type=int, default=8192)
     parser.add_argument("--max-iters-e", type=int, default=2000)
     parser.add_argument("--max-iters-pi", type=int, default=64)

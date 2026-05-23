@@ -889,7 +889,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--out-dir", type=Path, default=OUT_DIR)
 
     parser.add_argument("--family-chunk-size", type=int, default=0)
-    parser.add_argument("--clade-budget", type=int, default=305000)
+    parser.add_argument("--clade-budget", type=int, default=600000)
     parser.add_argument("--batch-packing", choices=("sequential", "clade_first_fit", "depth_first_fit"), default="depth_first_fit")
     parser.add_argument("--max-wave-size", type=int, default=8192)
     parser.add_argument("--fixed-iters-e", type=int, default=6)

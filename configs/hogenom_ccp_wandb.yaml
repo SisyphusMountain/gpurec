@@ -15,7 +15,9 @@ model:
   mode: specieswise
   max_families: null
   family_chunk_size: 0
-  clade_budget: 305000
+  # Fastest current checkout-local HOGENOM layout on a 24GB RTX 4090-class GPU.
+  # Use family_chunk_size=300 with clade_budget=315000 for a low-memory run.
+  clade_budget: 600000
   max_wave_size: 8192
 
 solver:
