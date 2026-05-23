@@ -1100,7 +1100,7 @@ def test_run_config_accepts_adam_fd_newton_for_genewise_mode(tmp_path: Path):
 
     assert config.optimizer == "adam-fd-newton"
     assert config.fd_adam_warmup_steps == 3
-    assert config.fd_hessian_refresh_steps == 5
+    assert config.fd_hessian_refresh_steps == 16
     assert config.fd_hessian_epsilon == pytest.approx(1e-3)
 
 
@@ -1115,7 +1115,7 @@ def test_run_config_accepts_hessian_sgd_for_genewise_mode(tmp_path: Path):
     )
 
     assert config.optimizer == "hessian-sgd"
-    assert config.fd_hessian_refresh_steps == 5
+    assert config.fd_hessian_refresh_steps == 16
     assert config.fd_hessian_epsilon == pytest.approx(1e-3)
 
 
@@ -4703,6 +4703,7 @@ class _WorkflowBatchedLBFGSModeModel:
         self._current_batch_index = 0
         self.solver_configs: list[dict[str, object]] = []
         self.clears = 0
+        self.drop_cached_static_states_calls = 0
         self.closed = False
 
     @property
@@ -4750,6 +4751,9 @@ class _WorkflowBatchedLBFGSModeModel:
 
     def clear(self):
         self.clears += 1
+
+    def drop_cached_static_states(self):
+        self.drop_cached_static_states_calls += 1
 
     def close(self):
         self.closed = True
@@ -5534,7 +5538,8 @@ def test_hessian_sgd_refreshes_fixed_hessian_after_configured_steps(
     assert second_metrics["optimizer/fd_newton_hessian_update"] == "fixed"
     assert second_metrics["optimizer/fd_newton_line_search"] is False
     assert second_metrics["optimizer/fd_newton_loss_evals"] == 0.0
-    assert second_evals == 8
+    assert second_evals == 7
+    assert second_metrics["optimizer/fd_newton_grad_evals"] == 7.0
 
 
 def test_hessian_sgd_refresh_override_forces_fixed_hessian_refresh(
@@ -5602,7 +5607,8 @@ def test_adam_fd_newton_refreshes_hessian_after_configured_steps(
     )
 
     assert second_metrics["optimizer/fd_newton_hessian_source"] == "finite_difference"
-    assert second_evals == 9
+    assert second_evals == 8
+    assert second_metrics["optimizer/fd_newton_grad_evals"] == 7.0
 
 
 def test_optimization_runner_batched_lbfgs_advances_resident_batches(tmp_path: Path):
@@ -5680,6 +5686,7 @@ def test_final_iteration_check_clears_cuda_allocator_cache_before_recompute(
     )
 
     assert calls == [0]
+    assert model.drop_cached_static_states_calls == 1
     assert metrics["optimizer/final_check_status"] == "ok"
     assert model.solver_configs == [
         {"fixed_iters_E": None, "fixed_iters_Pi": 32, "neumann_terms": 32},

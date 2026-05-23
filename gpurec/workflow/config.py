@@ -346,7 +346,7 @@ class RunConfig:
     lr: float = 0.01
     adam_warmup_steps: int = 100
     fd_adam_warmup_steps: int = 3
-    fd_hessian_refresh_steps: int = 5
+    fd_hessian_refresh_steps: int = 16
     lbfgs_lr: float = 0.1
     lbfgs_history_size: int = 20
     lbfgs_max_iter: int = 1
@@ -361,8 +361,8 @@ class RunConfig:
 
     grad_inf_tol: float = 1e-3
     loss_change_tol: float = 1e-3
-    loss_patience: int = 20
-    best_likelihood_patience: int = 20
+    loss_patience: int = 1
+    best_likelihood_patience: int = 1
     best_likelihood_min_delta: float = 0.0
 
     checkpoint_every: int = 1

@@ -1509,6 +1509,14 @@ class GeneReconModel(torch.nn.Module):
             return [static for static in self._batch_statics if static is not None]
         return [] if self._static is None else [self._static]
 
+    def drop_cached_static_states(self) -> None:
+        """Release built resident batch static states while keeping batch metadata."""
+        if not self._batched_resident:
+            return
+        self._shutdown_prefetch_executor_for_replan()
+        with self._batch_lock:
+            self._batch_statics = [None for _ in self._batch_specs]
+
     def materialize_batches(self) -> list[BatchMetadata]:
         """Build all resident batch static states and return metadata copies.
 

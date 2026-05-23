@@ -418,8 +418,6 @@ def _step_stopping_status(
         if best_likelihood_patience is None
         else best_likelihood_patience
     )
-    if grad_inf <= config.grad_inf_tol:
-        return {"status": "converged", "reason": "gradient_tolerance"}
     if loss_patience and stable_loss_steps >= loss_patience:
         return {"status": "converged", "reason": "loss_change_patience"}
     if (
@@ -428,6 +426,8 @@ def _step_stopping_status(
         and step - int(best_step) >= best_likelihood_patience
     ):
         return {"status": "converged", "reason": "best_likelihood_patience"}
+    if grad_inf <= config.grad_inf_tol:
+        return {"status": "converged", "reason": "gradient_tolerance"}
     return None
 
 
@@ -610,6 +610,13 @@ class OptimizationRunner:
         }
         try:
             model.clear()
+            drop_cached_static_states = getattr(
+                model,
+                "drop_cached_static_states",
+                None,
+            )
+            if callable(drop_cached_static_states):
+                drop_cached_static_states()
             _clear_cuda_allocator_cache_if_needed(model)
             configure_solver(
                 fixed_iters_E=config.fixed_iters_e,
@@ -905,6 +912,7 @@ class OptimizationRunner:
         model: GeneReconModel,
         *,
         solver_stage: str,
+        baseline_state: _FDNewtonHessianState | None = None,
     ) -> tuple[_FDNewtonHessianState, dict[str, Any], int]:
         config = self.config
         idx = self._active_batch_indices(model)
@@ -913,15 +921,29 @@ class OptimizationRunner:
         upper_bound = math.log2(config.max_rate)
         eps = float(config.fd_hessian_epsilon)
 
-        loss0, grad0, metrics0 = self._evaluate_active_genewise_vector_grad_at_current_theta(
-            model,
-            solver_stage=solver_stage,
-        )
-        grad_evals = 1
+        if baseline_state is None:
+            loss0, grad0, metrics0 = (
+                self._evaluate_active_genewise_vector_grad_at_current_theta(
+                    model,
+                    solver_stage=solver_stage,
+                )
+            )
+            grad_evals = 1
+            active_grad0 = grad0.index_select(0, idx)
+            active_loss0 = loss0.index_select(0, idx)
+        else:
+            active_grad0 = baseline_state.active_grad.detach().clone()
+            active_loss0 = baseline_state.active_loss.detach().clone()
+            metrics0 = {
+                "grad/inf": (
+                    float(active_grad0.detach().abs().amax().cpu())
+                    if active_grad0.numel()
+                    else 0.0
+                ),
+            }
+            grad_evals = 0
         loss_evals = 0
-        active_grad0 = grad0.index_select(0, idx)
         active_theta0 = theta0.index_select(0, idx)
-        active_loss0 = loss0.index_select(0, idx)
         rows, cols = active_grad0.shape
         if cols != 3:
             raise RuntimeError(
@@ -1088,12 +1110,13 @@ class OptimizationRunner:
         damping = float(config.fd_newton_damping)
         grad_evals = 0
         loss_evals = 0
+        hessian_state_matches = self._fd_newton_state_matches(
+            model,
+            hessian_state,
+            solver_stage=solver_stage,
+        )
         refreshed_hessian = (
-            not self._fd_newton_state_matches(
-                model,
-                hessian_state,
-                solver_stage=solver_stage,
-            )
+            not hessian_state_matches
             or hessian_state is None
             or hessian_state.updates_since_refresh >= hessian_refresh_steps
         )
@@ -1102,6 +1125,9 @@ class OptimizationRunner:
                 self._refresh_fd_newton_hessian_state(
                     model,
                     solver_stage=solver_stage,
+                    baseline_state=(
+                        hessian_state if hessian_state_matches else None
+                    ),
                 )
             )
             grad_evals += refresh_grad_evals

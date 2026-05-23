@@ -440,7 +440,7 @@ def test_uniform_chunked_nll_per_family_uses_no_grad_chunked_diagnostic(
             1,
             0,
             1,
-            {"status": "converged", "reason": "gradient_tolerance"},
+            {"status": "converged", "reason": "loss_change_patience"},
         ),
         (
             {"loss_patience": 2, "best_likelihood_patience": 1},
