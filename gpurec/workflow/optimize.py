@@ -67,6 +67,8 @@ class _ResumeState:
     active_batch_index: int = 0
     active_solver_stage: str = "full"
     active_batch_local_step: int = 0
+    converged_family_indices: tuple[int, ...] = ()
+    batch_plan_generation: int = 0
 
 
 _FINAL_ARTIFACT_FILES = (
@@ -78,6 +80,22 @@ _FINAL_ARTIFACT_FILES = (
     "summary.json",
 )
 _ACTIVE_BATCH_LBFGS_STALL_PATIENCE = 3
+_ADAPTIVE_REBATCH_MIN_ACTIVE_FAMILIES = 64
+_FD_NEWTON_LARGE_BATCH_MAX_LS = 8
+_FD_NEWTON_EXTENDED_LINE_SEARCH_MAX_FAMILIES = 256
+_FD_NEWTON_CURVATURE_EPS = 1e-12
+
+
+@dataclass
+class _FDNewtonHessianState:
+    batch_index: int
+    solver_stage: str
+    family_indices: tuple[int, ...]
+    hessian: torch.Tensor
+    active_theta: torch.Tensor
+    active_grad: torch.Tensor
+    active_loss: torch.Tensor
+    updates_since_refresh: int = 0
 
 
 def _is_finite_tensor(tensor: torch.Tensor | None) -> bool:
@@ -88,6 +106,34 @@ def _clear_cuda_allocator_cache_if_needed(model: GeneReconModel) -> None:
     theta = getattr(model, "theta", None)
     if bool(getattr(theta, "is_cuda", False)) and torch.cuda.is_available():
         torch.cuda.empty_cache()
+
+
+def _checkpoint_index_tuple(
+    path: Path,
+    name: str,
+    value: Any,
+) -> tuple[int, ...]:
+    if value is MISSING or value is None:
+        return ()
+    if not isinstance(value, (list, tuple)):
+        raise RuntimeError(f"checkpoint {path} has invalid status.{name}")
+    out: list[int] = []
+    seen: set[int] = set()
+    for position, item in enumerate(value):
+        index = int(
+            checkpoint_nonnegative_int(
+                path,
+                f"status.{name}[{position}]",
+                item,
+            )
+        )
+        if index in seen:
+            raise RuntimeError(
+                f"checkpoint {path} has duplicate family index {index} in status.{name}"
+            )
+        seen.add(index)
+        out.append(index)
+    return tuple(out)
 
 
 def _resume_state_from_payload(path: Path, payload: dict[str, Any]) -> _ResumeState:
@@ -136,6 +182,19 @@ def _resume_state_from_payload(path: Path, payload: dict[str, Any]) -> _ResumeSt
                 path,
                 "status.active_batch_local_step",
                 ckpt_status.get("active_batch_local_step", MISSING),
+                default=0,
+            )
+        ),
+        converged_family_indices=_checkpoint_index_tuple(
+            path,
+            "converged_family_indices",
+            ckpt_status.get("converged_family_indices", MISSING),
+        ),
+        batch_plan_generation=int(
+            checkpoint_nonnegative_int(
+                path,
+                "status.batch_plan_generation",
+                ckpt_status.get("batch_plan_generation", MISSING),
                 default=0,
             )
         ),
@@ -724,6 +783,25 @@ class OptimizationRunner:
         projected_inf = float(projected.detach().abs().amax().cpu()) if projected.numel() else 0.0
         return projected, projected_inf
 
+    def _active_projected_row_grad_inf(
+        self,
+        model: GeneReconModel,
+        idx: torch.Tensor,
+        *,
+        lower_bound: float,
+        upper_bound: float,
+    ) -> torch.Tensor:
+        grad = model.theta.grad
+        if grad is None:
+            raise RuntimeError("projected row gradient requested before gradient evaluation")
+        active_theta = model.theta.detach().index_select(0, idx)
+        projected = grad.detach().index_select(0, idx).clone()
+        projected[(active_theta <= lower_bound) & (projected > 0)] = 0
+        projected[(active_theta >= upper_bound) & (projected < 0)] = 0
+        if projected.ndim == 1:
+            projected = projected.reshape(idx.numel(), -1)
+        return projected.abs().amax(dim=1)
+
     def _evaluate_active_genewise_vector_grad_at_current_theta(
         self,
         model: GeneReconModel,
@@ -760,22 +838,59 @@ class OptimizationRunner:
             model,
             solver_stage=solver_stage,
         )
+        _projected_grad, projected_grad_inf = self._projected_grad_inf(
+            model,
+            lower_bound=math.log2(self.config.min_rate),
+            upper_bound=math.log2(self.config.max_rate),
+        )
+        metrics["grad/projected_inf"] = projected_grad_inf
         return loss_vec, metrics, 2
 
-    def _active_fd_newton_step(
+    def _active_projected_grad_and_free(
+        self,
+        active_theta: torch.Tensor,
+        active_grad: torch.Tensor,
+        *,
+        lower_bound: float,
+        upper_bound: float,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        projected = active_grad.clone()
+        projected[(active_theta <= lower_bound) & (projected > 0)] = 0
+        projected[(active_theta >= upper_bound) & (projected < 0)] = 0
+        return projected, projected.abs() > 0
+
+    def _fd_newton_state_matches(
+        self,
+        model: GeneReconModel,
+        state: _FDNewtonHessianState | None,
+        *,
+        solver_stage: str,
+    ) -> bool:
+        if state is None:
+            return False
+        if state.batch_index != int(model.current_batch_index):
+            return False
+        if state.solver_stage != solver_stage:
+            return False
+        family_indices = tuple(int(idx) for idx in model.current_batch_metadata.family_indices)
+        if state.family_indices != family_indices:
+            return False
+        idx = self._active_batch_indices(model)
+        active_theta = model.theta.detach().index_select(0, idx)
+        return torch.equal(active_theta, state.active_theta)
+
+    def _refresh_fd_newton_hessian_state(
         self,
         model: GeneReconModel,
         *,
         solver_stage: str,
-    ) -> tuple[torch.Tensor, dict[str, Any], int]:
+    ) -> tuple[_FDNewtonHessianState, dict[str, Any], int]:
         config = self.config
         idx = self._active_batch_indices(model)
         theta0 = model.theta.detach().clone()
         lower_bound = math.log2(config.min_rate)
         upper_bound = math.log2(config.max_rate)
         eps = float(config.fd_hessian_epsilon)
-        damping = float(config.fd_newton_damping)
-        max_step = float(config.fd_newton_max_step)
 
         loss0, grad0, metrics0 = self._evaluate_active_genewise_vector_grad_at_current_theta(
             model,
@@ -793,14 +908,12 @@ class OptimizationRunner:
                 f"got {cols}"
             )
 
-        projected_grad = active_grad0.clone()
-        projected_grad[(active_theta0 <= lower_bound) & (projected_grad > 0)] = 0
-        projected_grad[(active_theta0 >= upper_bound) & (projected_grad < 0)] = 0
-        projected_grad_inf = (
-            float(projected_grad.detach().abs().amax().cpu()) if projected_grad.numel() else 0.0
+        projected_grad, free = self._active_projected_grad_and_free(
+            active_theta0,
+            active_grad0,
+            lower_bound=lower_bound,
+            upper_bound=upper_bound,
         )
-        free = projected_grad.abs() > 0
-        row_active = free.any(dim=1)
 
         hessian = torch.zeros(
             (rows, cols, cols),
@@ -848,6 +961,143 @@ class OptimizationRunner:
 
         self._set_model_theta(model, theta0)
         hessian = 0.5 * (hessian + hessian.transpose(1, 2))
+        state = _FDNewtonHessianState(
+            batch_index=int(model.current_batch_index),
+            solver_stage=solver_stage,
+            family_indices=tuple(
+                int(index) for index in model.current_batch_metadata.family_indices
+            ),
+            hessian=hessian.detach().clone(),
+            active_theta=active_theta0.detach().clone(),
+            active_grad=active_grad0.detach().clone(),
+            active_loss=active_loss0.detach().clone(),
+            updates_since_refresh=0,
+        )
+        metrics0 = dict(metrics0)
+        metrics0["grad/projected_inf"] = (
+            float(projected_grad.detach().abs().amax().cpu())
+            if projected_grad.numel()
+            else 0.0
+        )
+        return state, metrics0, grad_evals
+
+    def _bfgs_update_fd_newton_hessian(
+        self,
+        *,
+        state: _FDNewtonHessianState,
+        active_theta: torch.Tensor,
+        active_grad: torch.Tensor,
+        active_loss: torch.Tensor,
+        accepted: torch.Tensor,
+        free_before: torch.Tensor,
+        free_after: torch.Tensor,
+    ) -> tuple[_FDNewtonHessianState, torch.Tensor]:
+        old_hessian = state.hessian.detach()
+        s = active_theta - state.active_theta
+        y = active_grad - state.active_grad
+        bs = torch.bmm(old_hessian, s.unsqueeze(-1)).squeeze(-1)
+        sbs = (s * bs).sum(dim=1)
+        ys = (y * s).sum(dim=1)
+        finite = (
+            torch.isfinite(s).all(dim=1)
+            & torch.isfinite(y).all(dim=1)
+            & torch.isfinite(bs).all(dim=1)
+            & torch.isfinite(sbs)
+            & torch.isfinite(ys)
+        )
+        active_set_same = (free_before == free_after).all(dim=1)
+        moved = s.abs().amax(dim=1) > _FD_NEWTON_CURVATURE_EPS
+        valid_update = (
+            accepted
+            & moved
+            & finite
+            & active_set_same
+            & (ys > _FD_NEWTON_CURVATURE_EPS)
+            & (sbs > _FD_NEWTON_CURVATURE_EPS)
+        )
+        safe_sbs = sbs.abs().clamp_min(_FD_NEWTON_CURVATURE_EPS)
+        safe_ys = ys.abs().clamp_min(_FD_NEWTON_CURVATURE_EPS)
+        bfgs_hessian = (
+            old_hessian
+            - torch.einsum("bi,bj->bij", bs, bs) / safe_sbs[:, None, None]
+            + torch.einsum("bi,bj->bij", y, y) / safe_ys[:, None, None]
+        )
+        bfgs_hessian = 0.5 * (bfgs_hessian + bfgs_hessian.transpose(1, 2))
+        hessian = torch.where(
+            valid_update[:, None, None],
+            bfgs_hessian,
+            old_hessian,
+        )
+        new_state = _FDNewtonHessianState(
+            batch_index=state.batch_index,
+            solver_stage=state.solver_stage,
+            family_indices=state.family_indices,
+            hessian=hessian.detach().clone(),
+            active_theta=active_theta.detach().clone(),
+            active_grad=active_grad.detach().clone(),
+            active_loss=active_loss.detach().clone(),
+            updates_since_refresh=state.updates_since_refresh + 1,
+        )
+        return new_state, valid_update
+
+    def _active_fd_newton_step(
+        self,
+        model: GeneReconModel,
+        *,
+        solver_stage: str,
+        hessian_state: _FDNewtonHessianState | None = None,
+    ) -> tuple[torch.Tensor, dict[str, Any], int, _FDNewtonHessianState]:
+        config = self.config
+        idx = self._active_batch_indices(model)
+        lower_bound = math.log2(config.min_rate)
+        upper_bound = math.log2(config.max_rate)
+        damping = float(config.fd_newton_damping)
+        grad_evals = 0
+        loss_evals = 0
+        refreshed_hessian = (
+            not self._fd_newton_state_matches(
+                model,
+                hessian_state,
+                solver_stage=solver_stage,
+            )
+            or hessian_state is None
+            or hessian_state.updates_since_refresh >= config.fd_hessian_refresh_steps
+        )
+        if refreshed_hessian:
+            hessian_state, metrics0, refresh_grad_evals = (
+                self._refresh_fd_newton_hessian_state(
+                    model,
+                    solver_stage=solver_stage,
+                )
+            )
+            grad_evals += refresh_grad_evals
+        else:
+            metrics0 = {}
+
+        theta0 = model.theta.detach().clone()
+        active_theta0 = hessian_state.active_theta.detach()
+        active_grad0 = hessian_state.active_grad.detach()
+        active_loss0 = hessian_state.active_loss.detach()
+        hessian = hessian_state.hessian.detach()
+        rows, cols = active_grad0.shape
+        if cols != 3:
+            raise RuntimeError(
+                "adam-fd-newton expects three D/T/L parameters per family; "
+                f"got {cols}"
+            )
+
+        projected_grad, free = self._active_projected_grad_and_free(
+            active_theta0,
+            active_grad0,
+            lower_bound=lower_bound,
+            upper_bound=upper_bound,
+        )
+        projected_grad_inf = (
+            float(projected_grad.detach().abs().amax().cpu())
+            if projected_grad.numel()
+            else 0.0
+        )
+        row_active = free.any(dim=1)
         eye = torch.eye(cols, device=hessian.device, dtype=hessian.dtype).expand(rows, cols, cols)
         free_matrix = free[:, :, None] & free[:, None, :]
         hessian_solve = torch.where(free_matrix, hessian, torch.zeros_like(hessian))
@@ -862,16 +1112,29 @@ class OptimizationRunner:
         fallback = row_active & (~solve_ok | ~descent)
         step = torch.where(fallback[:, None], -projected_grad, step)
         step = torch.where(row_active[:, None], step, torch.zeros_like(step))
-        step_norm = step.abs().amax(dim=1).clamp_min(1e-30)
-        step_scale = torch.minimum(torch.ones_like(step_norm), max_step / step_norm)
-        step = step * step_scale[:, None]
-        gtd = (projected_grad * step).sum(dim=1)
+        raw_step_inf = float(step.detach().abs().amax().cpu()) if step.numel() else 0.0
+        bounded_step = (
+            torch.clamp(active_theta0 + step, min=lower_bound, max=upper_bound)
+            - active_theta0
+        )
+        bounded_step_inf = (
+            float(bounded_step.detach().abs().amax().cpu())
+            if bounded_step.numel()
+            else 0.0
+        )
+        gtd = (projected_grad * bounded_step).sum(dim=1)
         searching = row_active & torch.isfinite(gtd) & (gtd < -1e-12)
         accepted = torch.zeros(rows, device=model.theta.device, dtype=torch.bool)
         accepted_active = active_theta0.clone()
         alpha = torch.ones(rows, device=model.theta.device, dtype=model.theta.dtype)
+        max_line_search_steps = int(config.lbfgs_max_ls)
+        if rows > _FD_NEWTON_EXTENDED_LINE_SEARCH_MAX_FAMILIES:
+            max_line_search_steps = min(
+                max_line_search_steps,
+                _FD_NEWTON_LARGE_BATCH_MAX_LS,
+            )
 
-        for _ in range(config.lbfgs_max_ls):
+        for _ in range(max_line_search_steps):
             if not bool(searching.any()):
                 break
             trial_active = torch.clamp(
@@ -888,17 +1151,23 @@ class OptimizationRunner:
             candidate.index_copy_(0, idx, candidate_active)
             self._set_model_theta(model, candidate)
             model.clear()
-            trial_loss_vec = self._evaluate_active_genewise_loss_vector(model)
+            with torch.no_grad():
+                trial_loss_vec = self._evaluate_active_genewise_loss_vector(model)
             loss_evals += 1
             trial_active_loss = trial_loss_vec.index_select(0, idx)
-            armijo_rhs = active_loss0 + 1e-4 * alpha * gtd
-            ok = searching & torch.isfinite(trial_active_loss) & (
+            trial_delta = trial_active - active_theta0
+            trial_gtd = (projected_grad * trial_delta).sum(dim=1)
+            trial_searching = searching & torch.isfinite(trial_gtd) & (
+                trial_gtd < -1e-12
+            )
+            armijo_rhs = active_loss0 + 1e-4 * trial_gtd
+            ok = trial_searching & torch.isfinite(trial_active_loss) & (
                 trial_active_loss <= armijo_rhs
             )
             if bool(ok.any()):
                 accepted = accepted | ok
                 accepted_active = torch.where(ok[:, None], trial_active, accepted_active)
-            searching = row_active & ~accepted
+            searching = trial_searching & ~accepted
             alpha = torch.where(searching, alpha * 0.5, alpha)
 
         final_theta = theta0.clone()
@@ -909,15 +1178,64 @@ class OptimizationRunner:
             solver_stage=solver_stage,
         )
         grad_evals += 1
-        metrics["grad/projected_inf"] = projected_grad_inf
+        final_projected_grad, final_projected_grad_inf = self._projected_grad_inf(
+            model,
+            lower_bound=lower_bound,
+            upper_bound=upper_bound,
+        )
+        active_theta1 = final_theta.index_select(0, idx).detach()
+        active_loss1 = loss_vec.detach().index_select(0, idx)
+        active_grad1 = model.theta.grad.detach().index_select(0, idx)
+        active_projected_grad1 = final_projected_grad.index_select(0, idx)
+        free_after = active_projected_grad1.abs() > 0
+        next_state, bfgs_updated = self._bfgs_update_fd_newton_hessian(
+            state=hessian_state,
+            active_theta=active_theta1,
+            active_grad=active_grad1,
+            active_loss=active_loss1,
+            accepted=accepted,
+            free_before=free,
+            free_after=free_after,
+        )
+        bfgs_skipped = accepted & ~bfgs_updated
+        if refreshed_hessian:
+            refresh_grad_inf = metrics0.get("grad/inf")
+            refresh_projected_inf = metrics0.get("grad/projected_inf")
+            if refresh_grad_inf is not None:
+                metrics["optimizer/fd_newton_refresh_grad_inf"] = refresh_grad_inf
+            if refresh_projected_inf is not None:
+                metrics["optimizer/fd_newton_refresh_projected_inf"] = (
+                    refresh_projected_inf
+                )
+        metrics["grad/projected_inf"] = final_projected_grad_inf
         metrics["optimizer/fd_newton_grad_evals"] = float(grad_evals)
         metrics["optimizer/fd_newton_loss_evals"] = float(loss_evals)
+        metrics["optimizer/fd_newton_max_ls"] = float(max_line_search_steps)
         metrics["optimizer/fd_newton_accepted_rows"] = float(accepted.sum().detach().cpu())
         metrics["optimizer/fd_newton_accepted_fraction"] = float(
             accepted.to(dtype=torch.float32).mean().detach().cpu()
         )
         metrics["optimizer/fd_newton_fallback_rows"] = float(fallback.sum().detach().cpu())
-        return loss_vec, metrics, grad_evals + loss_evals
+        metrics["optimizer/fd_newton_hessian_source"] = (
+            "finite_difference" if refreshed_hessian else "bfgs_update"
+        )
+        metrics["optimizer/fd_newton_hessian_refreshed"] = bool(refreshed_hessian)
+        metrics["optimizer/fd_newton_hessian_updates_since_refresh"] = float(
+            next_state.updates_since_refresh
+        )
+        metrics["optimizer/fd_newton_hessian_refresh_steps"] = float(
+            config.fd_hessian_refresh_steps
+        )
+        metrics["optimizer/fd_newton_bfgs_updated_rows"] = float(
+            bfgs_updated.sum().detach().cpu()
+        )
+        metrics["optimizer/fd_newton_bfgs_skipped_rows"] = float(
+            bfgs_skipped.sum().detach().cpu()
+        )
+        metrics["optimizer/fd_newton_baseline_projected_inf"] = projected_grad_inf
+        metrics["optimizer/fd_newton_raw_step_inf"] = raw_step_inf
+        metrics["optimizer/fd_newton_bound_projected_step_inf"] = bounded_step_inf
+        return loss_vec, metrics, grad_evals + loss_evals, next_state
 
     def _set_model_theta(self, model: GeneReconModel, theta: torch.Tensor) -> None:
         with torch.no_grad():
@@ -1014,6 +1332,10 @@ class OptimizationRunner:
         batchwise_fd_newton = (
             config.mode == "genewise" and config.optimizer == "adam-fd-newton"
         )
+        adaptive_rebatch_enabled = bool(
+            config.adaptive_rebatch
+            and (batchwise_batched_lbfgs or batchwise_fd_newton)
+        )
         solver_warmup_enabled = self._uses_solver_warmup()
         active_solver_stage = "warmup" if solver_warmup_enabled else "full"
         batch_best_nll: float | None = None
@@ -1021,6 +1343,16 @@ class OptimizationRunner:
         batch_final_loss_cache: torch.Tensor | None = None
         batch_final_grad_cache: torch.Tensor | None = None
         batch_final_cache_ready: torch.Tensor | None = None
+        fd_newton_hessian_state: _FDNewtonHessianState | None = None
+        converged_family_mask: torch.Tensor | None = None
+        if adaptive_rebatch_enabled:
+            converged_family_mask = torch.zeros(
+                (int(model.n_families),),
+                device=model.theta.device,
+                dtype=torch.bool,
+            )
+        batch_plan_generation = 0
+        active_batch_last_checked_converged_count = 0
         status = {"status": "running", "reason": "running"}
         final_row: dict[str, Any] = {}
         resume_info: dict[str, Any] = {}
@@ -1028,6 +1360,73 @@ class OptimizationRunner:
         best_checkpoint = config.out_dir / "checkpoints" / "best.pt"
         latest_checkpoint = config.out_dir / "checkpoints" / "latest.pt"
         sampling_checkpoint: Path | None = None
+
+        def _adaptive_family_indices(
+            mask: torch.Tensor,
+            *,
+            converged: bool,
+        ) -> list[int]:
+            selected = mask if converged else ~mask
+            return [
+                int(index)
+                for index in torch.nonzero(
+                    selected,
+                    as_tuple=False,
+                ).flatten().detach().cpu().tolist()
+            ]
+
+        def _adaptive_remaining_current_plan_indices(mask: torch.Tensor) -> list[int]:
+            plan_indices: list[int] = []
+            for metadata in model.batch_metadata[active_batch_index:]:
+                plan_indices.extend(int(index) for index in metadata.family_indices)
+            if not plan_indices:
+                return []
+            idx = torch.as_tensor(
+                plan_indices,
+                dtype=torch.long,
+                device=model.theta.device,
+            )
+            keep = ~mask.index_select(0, idx)
+            if not bool(keep.any().detach().cpu()):
+                return []
+            return [
+                int(index)
+                for index in idx.index_select(
+                    0,
+                    torch.nonzero(keep, as_tuple=False).flatten(),
+                ).detach().cpu().tolist()
+            ]
+
+        def _adaptive_mask_with_prior_plan_families(mask: torch.Tensor) -> torch.Tensor:
+            if active_batch_index <= 0:
+                return mask
+            prior_indices: list[int] = []
+            for metadata in model.batch_metadata[:active_batch_index]:
+                prior_indices.extend(int(index) for index in metadata.family_indices)
+            if not prior_indices:
+                return mask
+            out = mask.clone()
+            out.index_fill_(
+                0,
+                torch.as_tensor(
+                    prior_indices,
+                    dtype=torch.long,
+                    device=model.theta.device,
+                ),
+                True,
+            )
+            return out
+
+        def _adaptive_checkpoint_status(base: dict[str, Any]) -> dict[str, Any]:
+            if not adaptive_rebatch_enabled or converged_family_mask is None:
+                return base
+            enriched = dict(base)
+            enriched["converged_family_indices"] = _adaptive_family_indices(
+                converged_family_mask,
+                converged=True,
+            )
+            enriched["batch_plan_generation"] = batch_plan_generation
+            return enriched
 
         try:
             if config.resume_from is not None:
@@ -1059,6 +1458,31 @@ class OptimizationRunner:
                 active_batch_index = resume_state.active_batch_index
                 active_solver_stage = resume_state.active_solver_stage
                 active_batch_local_step = resume_state.active_batch_local_step
+                batch_plan_generation = resume_state.batch_plan_generation
+                if adaptive_rebatch_enabled and converged_family_mask is not None:
+                    if resume_state.converged_family_indices:
+                        max_index = max(resume_state.converged_family_indices)
+                        if max_index >= int(model.n_families):
+                            raise RuntimeError(
+                                f"checkpoint {config.resume_from} has "
+                                "out-of-range converged family indices"
+                            )
+                        converged_family_mask.index_fill_(
+                            0,
+                            torch.as_tensor(
+                                resume_state.converged_family_indices,
+                                dtype=torch.long,
+                                device=model.theta.device,
+                            ),
+                            True,
+                        )
+                    if batch_plan_generation > 0:
+                        remaining_indices = _adaptive_family_indices(
+                            converged_family_mask,
+                            converged=False,
+                        )
+                        if remaining_indices:
+                            model.replan_resident_batches(remaining_indices)
                 if active_solver_stage not in {"warmup", "full"}:
                     raise RuntimeError(
                         f"checkpoint {config.resume_from} has invalid active_solver_stage"
@@ -1149,6 +1573,8 @@ class OptimizationRunner:
                 batched_grad_evals = 0
                 batched_loss_evals = 0
                 metrics: dict[str, Any] = {}
+                adaptive_rebatch_pending_indices: list[int] | None = None
+                adaptive_rebatch_stop = False
 
                 def closure() -> torch.Tensor:
                     nonlocal closure_evals, metrics
@@ -1346,7 +1772,8 @@ class OptimizationRunner:
                 elif phase == "adam-fd-newton":
                     if optimizer is None:
                         raise RuntimeError("missing optimizer")
-                    if active_batch_local_step < config.adam_warmup_steps:
+                    if active_batch_local_step < config.fd_adam_warmup_steps:
+                        fd_newton_hessian_state = None
                         loss_vec_current, metrics, closure_evals = self._active_adam_step(
                             model,
                             optimizer,
@@ -1354,10 +1781,16 @@ class OptimizationRunner:
                         )
                         metrics["optimizer/fd_newton_subphase"] = "adam_warmup"
                     else:
-                        loss_vec_current, metrics, closure_evals = (
+                        (
+                            loss_vec_current,
+                            metrics,
+                            closure_evals,
+                            fd_newton_hessian_state,
+                        ) = (
                             self._active_fd_newton_step(
                                 model,
                                 solver_stage=active_solver_stage,
+                                hessian_state=fd_newton_hessian_state,
                             )
                         )
                         metrics["optimizer/fd_newton_subphase"] = "fd_newton"
@@ -1407,6 +1840,107 @@ class OptimizationRunner:
                         float(metrics.get("grad/inf", math.inf)) <= config.grad_inf_tol
                     )
                     first_order_pending_step = not skip_step_for_gradient
+
+                if adaptive_rebatch_enabled and phase in {
+                    "batched-lbfgs",
+                    "adam-fd-newton",
+                }:
+                    metrics = dict(metrics)
+                    metrics["optimizer/adaptive_rebatch_enabled"] = True
+                    metrics["optimizer/rebatch_generation"] = float(
+                        batch_plan_generation
+                    )
+                    metrics["optimizer/rebatch_triggered"] = False
+                    idx = self._active_batch_indices(model)
+                    batch_family_count = int(idx.numel())
+                    metrics["optimizer/rebatch_active_family_count"] = float(
+                        batch_family_count
+                    )
+                    active_batch_large_enough = (
+                        batch_family_count >= _ADAPTIVE_REBATCH_MIN_ACTIVE_FAMILIES
+                    )
+                    should_check_rebatch = (
+                        active_solver_stage == "full"
+                        and active_batch_large_enough
+                        and (step + 1) % config.adaptive_rebatch_check_interval == 0
+                    )
+                    metrics["optimizer/rebatch_checked"] = should_check_rebatch
+                    if not active_batch_large_enough:
+                        metrics["optimizer/rebatch_reason"] = "small_active_batch"
+                    if (
+                        should_check_rebatch
+                        and converged_family_mask is not None
+                        and model.theta.grad is not None
+                    ):
+                        row_grad_inf = self._active_projected_row_grad_inf(
+                            model,
+                            idx,
+                            lower_bound=math.log2(config.min_rate),
+                            upper_bound=math.log2(config.max_rate),
+                        )
+                        row_converged = row_grad_inf <= config.grad_inf_tol
+                        threshold_count = max(
+                            1,
+                            math.ceil(
+                                config.adaptive_rebatch_fraction * batch_family_count
+                            ),
+                        )
+                        converged_count = int(row_converged.sum().detach().cpu())
+                        crossed_threshold = (
+                            active_batch_last_checked_converged_count
+                            < threshold_count
+                            <= converged_count
+                        )
+                        active_batch_last_checked_converged_count = converged_count
+                        metrics.update(
+                            {
+                                "optimizer/rebatch_active_converged_families": float(
+                                    converged_count
+                                ),
+                                "optimizer/rebatch_threshold_families": float(
+                                    threshold_count
+                                ),
+                            }
+                        )
+                        if crossed_threshold:
+                            candidate_mask = converged_family_mask.clone()
+                            if bool(row_converged.any().detach().cpu()):
+                                candidate_mask.index_fill_(
+                                    0,
+                                    idx.index_select(
+                                        0,
+                                        torch.nonzero(
+                                            row_converged,
+                                            as_tuple=False,
+                                        ).flatten(),
+                                    ),
+                                    True,
+                                )
+                            candidate_mask = _adaptive_mask_with_prior_plan_families(
+                                candidate_mask
+                            )
+                            remaining_indices = _adaptive_remaining_current_plan_indices(
+                                candidate_mask
+                            )
+                            remaining_count = len(remaining_indices)
+                            metrics["optimizer/rebatch_remaining_families"] = float(
+                                remaining_count
+                            )
+                            if remaining_count == 0:
+                                converged_family_mask.copy_(candidate_mask)
+                                adaptive_rebatch_stop = True
+                                metrics["optimizer/rebatch_reason"] = "all_converged"
+                            elif (
+                                remaining_count
+                                >= config.adaptive_rebatch_min_remaining_families
+                            ):
+                                converged_family_mask.copy_(candidate_mask)
+                                adaptive_rebatch_pending_indices = remaining_indices
+                                metrics["optimizer/rebatch_triggered"] = True
+                            else:
+                                metrics["optimizer/rebatch_reason"] = (
+                                    "below_min_remaining"
+                                )
 
                 objective = float(metrics["likelihood/data_nll_bits"])
                 delta = None if previous_objective is None else previous_objective - objective
@@ -1483,7 +2017,7 @@ class OptimizationRunner:
                         optimizer=optimizer,
                         step=step,
                         next_step=step,
-                        status=checkpoint_status,
+                        status=_adaptive_checkpoint_status(checkpoint_status),
                         row=best_row,
                         optimizer_phase=phase,
                     )
@@ -1508,13 +2042,65 @@ class OptimizationRunner:
                 final_row = row
                 self._record(row)
 
+                if adaptive_rebatch_stop:
+                    status = {"status": "converged", "reason": "gradient_tolerance"}
+                    break
+                if adaptive_rebatch_pending_indices is not None:
+                    model.replan_resident_batches(adaptive_rebatch_pending_indices)
+                    batch_plan_generation += 1
+                    active_batch_index = 0
+                    active_solver_stage = "full"
+                    active_batch_local_step = config.fd_adam_warmup_steps
+                    fd_newton_hessian_state = None
+                    previous_objective = None
+                    stable_loss_steps = 0
+                    batch_best_nll = None
+                    batch_best_step = None
+                    optimizer = None
+                    active_optimizer_batch_index = None
+                    active_batch_last_checked_converged_count = 0
+                    if batch_final_cache_ready is not None:
+                        batch_final_cache_ready.index_fill_(
+                            0,
+                            torch.as_tensor(
+                                adaptive_rebatch_pending_indices,
+                                dtype=torch.long,
+                                device=batch_final_cache_ready.device,
+                            ),
+                            False,
+                        )
+                    self._configure_solver_stage(model, active_solver_stage)
+                    if config.checkpoint_every:
+                        transition_status = {
+                            **checkpoint_status,
+                            "active_batch_index": active_batch_index,
+                            "active_solver_stage": active_solver_stage,
+                            "active_batch_local_step": active_batch_local_step,
+                            "previous_objective": None,
+                            "stable_loss_steps": 0,
+                            "best_nll_bits": None,
+                            "best_step": None,
+                        }
+                        self._save_status(
+                            latest_checkpoint,
+                            model=model,
+                            optimizer=None,
+                            step=step,
+                            next_step=step + 1,
+                            status=_adaptive_checkpoint_status(transition_status),
+                            row=row,
+                            optimizer_phase=phase,
+                        )
+                    resume_info = {}
+                    continue
+
                 if save_best_after_row:
                     self._save_status(
                         best_checkpoint,
                         model=model,
                         optimizer=optimizer,
                         step=step,
-                        status=checkpoint_status,
+                        status=_adaptive_checkpoint_status(checkpoint_status),
                         row=row,
                         optimizer_phase=phase,
                     )
@@ -1525,7 +2111,7 @@ class OptimizationRunner:
                         model=model,
                         optimizer=optimizer,
                         step=step,
-                        status=checkpoint_status,
+                        status=_adaptive_checkpoint_status(checkpoint_status),
                         row=row,
                         optimizer_phase=phase,
                     )
@@ -1572,12 +2158,14 @@ class OptimizationRunner:
                 if warmup_switch:
                     active_solver_stage = "full"
                     active_batch_local_step = 0
+                    fd_newton_hessian_state = None
                     previous_objective = None
                     stable_loss_steps = 0
                     batch_best_nll = None
                     batch_best_step = None
                     optimizer = None
                     active_optimizer_batch_index = None
+                    active_batch_last_checked_converged_count = 0
                     self._configure_solver_stage(model, active_solver_stage)
                     if config.checkpoint_every:
                         transition_status = {
@@ -1596,7 +2184,7 @@ class OptimizationRunner:
                             optimizer=None,
                             step=step,
                             next_step=step + 1,
-                            status=transition_status,
+                            status=_adaptive_checkpoint_status(transition_status),
                             row=row,
                             optimizer_phase=phase,
                         )
@@ -1610,12 +2198,14 @@ class OptimizationRunner:
                         active_batch_index += 1
                         active_solver_stage = "warmup" if solver_warmup_enabled else "full"
                         active_batch_local_step = 0
+                        fd_newton_hessian_state = None
                         previous_objective = None
                         stable_loss_steps = 0
                         batch_best_nll = None
                         batch_best_step = None
                         optimizer = None
                         active_optimizer_batch_index = None
+                        active_batch_last_checked_converged_count = 0
                         if config.checkpoint_every:
                             transition_status = {
                                 **checkpoint_status,
@@ -1633,7 +2223,7 @@ class OptimizationRunner:
                                 optimizer=None,
                                 step=step,
                                 next_step=step + 1,
-                                status=transition_status,
+                                status=_adaptive_checkpoint_status(transition_status),
                                 row=row,
                                 optimizer_phase=phase,
                             )
@@ -1769,7 +2359,7 @@ class OptimizationRunner:
                     optimizer=optimizer,
                     step=int(final_row["step"]),
                     next_step=final_step,
-                    status=final_status,
+                    status=_adaptive_checkpoint_status(final_status),
                     row=final_row,
                     optimizer_phase=current_phase,
                 )
@@ -1780,7 +2370,7 @@ class OptimizationRunner:
                 optimizer=optimizer,
                 step=int(final_row["step"]),
                 next_step=final_step,
-                status=final_status,
+                status=_adaptive_checkpoint_status(final_status),
                 row=final_row,
                 optimizer_phase=current_phase,
             )

@@ -684,6 +684,32 @@ def test_clade_first_fit_packs_non_contiguous_families():
     )
 
 
+def test_plan_family_batches_prioritizes_small_families_under_leaf_threshold():
+    clade_counts = [5, 3, 4, 4, 6, 2]
+    leaf_counts = [9, 4, 7, 2, 6, 4]
+    budget = 6
+    plans = plan_family_batches(
+        total=6,
+        clade_counts=clade_counts,
+        family_chunk_size=2,
+        clade_budget=budget,
+        batch_packing="clade_first_fit",
+        leaf_counts=leaf_counts,
+        small_family_max_leaves=4,
+    )
+
+    chunks = [plan.indices for plan in plans]
+    assert chunks == [[3, 5], [1], [4], [0], [2]]
+    assert all(plan.clades <= budget for plan in plans)
+    assert all(len(plan.indices) <= 2 for plan in plans)
+
+    flat = [idx for chunk in chunks for idx in chunk]
+    small = {idx for idx, leaf_count in enumerate(leaf_counts) if leaf_count <= 4}
+    first_normal = min(pos for pos, idx in enumerate(flat) if idx not in small)
+    assert set(flat[:first_normal]) == small
+    assert sorted(flat) == list(range(6))
+
+
 def test_model_family_index_chunks_delegates_to_shared_planner():
     chunks = _family_index_chunks(
         total=5,
@@ -694,6 +720,20 @@ def test_model_family_index_chunks_delegates_to_shared_planner():
     )
 
     assert chunks == [[0, 4], [1, 3], [2]]
+
+
+def test_model_family_index_chunks_delegates_selected_indices_to_shared_planner():
+    chunks = _family_index_chunks(
+        total=5,
+        clade_counts=[8, 7, 6, 5, 4],
+        split_counts=[3, 4, 5, 6, 7],
+        family_chunk_size=0,
+        clade_budget=12,
+        batch_packing="clade_first_fit",
+        indices=[1, 3, 4],
+    )
+
+    assert chunks == [[1, 3], [4]]
 
 
 @pytest.mark.parametrize("batch_packing", ["clade_first_fit", "depth_first_fit"])

@@ -75,7 +75,7 @@ for _ in range(20):
     loss = model()
     loss.backward()
     opt.step()
-    model.clamp_theta_(min_rate=1e-10, max_rate=2.0)
+    model.clamp_theta_(min_rate=2.0**-30, max_rate=2.0)
 ```
 
 For direct `from_trees` inputs, gene-tree leaf labels are mapped to species by
@@ -234,6 +234,9 @@ resident batch.  `batch_packing` accepts `sequential`, `clade_first_fit`, and
 `first_fit_decreasing`/`ffd`/`clade_ffd`, and
 `depth_ffd`/`critical_path_first_fit`/`wave_first_fit`, with hyphenated forms
 accepted by the CLI.  Non-sequential packing requires `clade_budget`.
+`small_family_max_leaves` defaults to `4` in the workflow and plans families
+with at most that many leaves before larger families while still respecting the
+normal clade budget; set it to `0` to disable this priority grouping.
 
 The workflow CLI intentionally supports only float32 and float64.  The direct
 `UniformChunkedReconModel` constructor also accepts `torch.bfloat16` as an
@@ -244,7 +247,8 @@ optimizer checkpoints, or Hessian/second-order diagnostics.
 
 Optimizer modes are selected with `optimizer` in JSON or `--optimizer` on the
 CLI. If omitted, `auto` resolves to `batched-lbfgs` for `mode=genewise` and
-`adam` for shared-theta modes:
+`adam` for shared-theta modes. Workflow rate bounds default to `min_rate=2^-30`
+and `max_rate=2`:
 
 | Mode | Behavior | Notes |
 | --- | --- | --- |
@@ -253,7 +257,15 @@ CLI. If omitted, `auto` resolves to `batched-lbfgs` for `mode=genewise` and
 | `adagrad` | Adagrad optimizer for all configured steps. | Uses `lr`; retained for long-running comparison runs. |
 | `lbfgs` | PyTorch LBFGS for all configured steps. | Uses `lbfgs_lr`, `lbfgs_history_size`, `lbfgs_max_iter`, and `lbfgs_line_search`.  `lbfgs_line_search` is `none` or `strong_wolfe`; LBFGS runtime errors stop the run with a failed status. |
 | `adam-lbfgs` | Adam warmup, then LBFGS polishing. | `adam_warmup_steps` controls the phase switch; incompatible resumed optimizer state is discarded when the checkpoint phase differs from the current phase. |
-| `batched-lbfgs` | Row-wise batched L-BFGS for genewise runs. | Requires `mode=genewise`; uses per-family NLL/gradient vectors, `lbfgs_lr`, `lbfgs_history_size`, `lbfgs_max_iter`, `lbfgs_max_ls`, and `lbfgs_line_search`. `none` uses internal row-wise Armijo probes; `strong_wolfe` uses a vectorized row-wise port of PyTorch's bracket/zoom line search. |
+| `batched-lbfgs` | Row-wise batched L-BFGS-B for genewise runs. | Requires `mode=genewise`; uses per-family NLL/gradient vectors, projected gradients at rate bounds, `lbfgs_lr`, `lbfgs_history_size`, `lbfgs_max_iter`, `lbfgs_max_ls`, and `lbfgs_line_search`. `none` uses internal row-wise Armijo probes; `strong_wolfe` uses a vectorized row-wise port of PyTorch's bracket/zoom line search. |
+| `adam-fd-newton` | Short Adam warmup, then finite-difference/quasi-Newton updates for genewise batches. | Requires `mode=genewise`; `fd_adam_warmup_steps` controls per-batch Adam warmup, `fd_hessian_refresh_steps` controls how many rate-bounded Newton steps reuse BFGS-updated row-wise 3x3 Hessians between finite-difference refreshes, `fd_hessian_epsilon` controls refresh probes, and `fd_newton_damping` controls Hessian regularization. Newton trial rates are projected to `min_rate`/`max_rate`; there is no separate log-rate movement cap. |
+
+For `mode=genewise` with `optimizer=batched-lbfgs` or `adam-fd-newton`,
+`adaptive_rebatch` can rebuild resident waves for the remaining unconverged
+families when the current batch crosses `adaptive_rebatch_fraction`.  The check
+uses the post-step projected gradients already produced by the optimizer, and
+`adaptive_rebatch_check_interval` controls how often that aggregate threshold
+is tested.
 
 ```bash
 gpurec optimize \

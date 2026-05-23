@@ -40,6 +40,7 @@ def build_alerax_workflow_model(
         clade_budget=config.clade_budget,
         batch_packing=config.batch_packing,
         max_wave_size=config.max_wave_size,
+        small_family_max_leaves=config.small_family_max_leaves,
         lazy_preprocess=True,
         prefetch_batches=prefetch_batches,
     )

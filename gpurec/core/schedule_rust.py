@@ -98,6 +98,7 @@ def plan_family_batches(
     total: int | None = None,
     split_counts: Sequence[int] | None = None,
     leaf_counts: Sequence[int] | None = None,
+    small_family_max_leaves: int | None = None,
     nonleaf_counts: Sequence[int] | None = None,
     schedule_depths: Sequence[int] | None = None,
     max_wave_size: int | None = None,
@@ -132,6 +133,10 @@ def plan_family_batches(
                 _integer_value("leaf_counts entries", value)
                 for value in leaf_counts
             ]
+        ),
+        "small_family_max_leaves": _optional_integer_value(
+            "small_family_max_leaves",
+            small_family_max_leaves,
         ),
         "nonleaf_counts": (
             None

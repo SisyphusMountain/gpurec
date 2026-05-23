@@ -70,6 +70,7 @@ from ._uniform_evaluator import (
 from ._validation import (
     bool_value,
     integer_value,
+    nonnegative_int,
     nonnegative_float,
     optional_positive_int,
     positive_even_int,
@@ -249,6 +250,15 @@ class _ResidentBatchSpec:
     metadata: BatchMetadata
 
 
+@dataclass(frozen=True)
+class _FamilyScheduleStats:
+    clade_counts: list[int]
+    split_counts: list[int]
+    leaf_counts: list[int] | None = None
+    nonleaf_counts: list[int] | None = None
+    schedule_depths: list[int] | None = None
+
+
 def _normalize_family_chunk_size(value: int | str | None) -> int:
     return int(normalize_family_chunk_size(value))
 
@@ -355,6 +365,11 @@ def _normalize_gene_solver_kwargs(kwargs: dict[str, Any]) -> dict[str, Any]:
         normalized["family_chunk_size"] = _normalize_family_chunk_size(
             normalized["family_chunk_size"]
         )
+    if "small_family_max_leaves" in normalized:
+        normalized["small_family_max_leaves"] = nonnegative_int(
+            "small_family_max_leaves",
+            normalized["small_family_max_leaves"],
+        )
     if "clade_budget" in normalized:
         normalized["clade_budget"] = _normalize_clade_budget(
             normalized["clade_budget"]
@@ -421,7 +436,10 @@ def _family_index_chunks(
     family_chunk_size: int,
     clade_budget: int | None,
     batch_packing: str = "sequential",
+    indices: Sequence[int] | None = None,
+    split_counts: Sequence[int] | None = None,
     leaf_counts: Sequence[int] | None = None,
+    small_family_max_leaves: int | None = None,
     nonleaf_counts: Sequence[int] | None = None,
     schedule_depths: Sequence[int] | None = None,
     max_wave_size: int | None = None,
@@ -434,9 +452,12 @@ def _family_index_chunks(
             family_chunk_size=family_chunk_size,
             clade_budget=clade_budget,
             batch_packing=batch_packing,
+            indices=indices,
             leaf_counts=leaf_counts,
+            small_family_max_leaves=small_family_max_leaves,
             nonleaf_counts=nonleaf_counts,
             schedule_depths=schedule_depths,
+            split_counts=split_counts,
             max_wave_size=max_wave_size,
         )
     ]
@@ -467,6 +488,43 @@ def _immutable_public_value(value: Any) -> Any:
     return value
 
 
+def _build_family_schedule_stats(
+    dataset: GeneDataset,
+    *,
+    batch_packing: str,
+    small_family_max_leaves: int,
+) -> _FamilyScheduleStats:
+    clade_counts = [int(fam["C"]) for fam in dataset.families]
+    split_counts = [int(fam["N_splits"]) for fam in dataset.families]
+    needs_depth_stats = _normalize_batch_packing(batch_packing) == "depth_first_fit"
+    needs_leaf_stats = needs_depth_stats or small_family_max_leaves > 0
+    if not needs_leaf_stats:
+        return _FamilyScheduleStats(
+            clade_counts=clade_counts,
+            split_counts=split_counts,
+        )
+
+    summaries = [
+        family_schedule_summary(fam["ccp_helpers"])
+        for fam in dataset.families
+    ]
+    return _FamilyScheduleStats(
+        clade_counts=clade_counts,
+        split_counts=split_counts,
+        leaf_counts=[int(summary["leaf_count"]) for summary in summaries],
+        nonleaf_counts=(
+            [int(summary["nonleaf_count"]) for summary in summaries]
+            if needs_depth_stats
+            else None
+        ),
+        schedule_depths=(
+            [int(summary["max_level"]) for summary in summaries]
+            if needs_depth_stats
+            else None
+        ),
+    )
+
+
 def _build_batch_specs(
     dataset: GeneDataset,
     *,
@@ -477,28 +535,30 @@ def _build_batch_specs(
     max_wave_size: int | None,
     max_root_wave_size: int | None,
     max_dts_partial_rows: int | None,
+    small_family_max_leaves: int = 0,
+    family_indices: Sequence[int] | None = None,
+    schedule_stats: _FamilyScheduleStats | None = None,
 ) -> list[_ResidentBatchSpec]:
-    clade_counts = [int(fam["C"]) for fam in dataset.families]
-    leaf_counts: list[int] | None = None
-    nonleaf_counts: list[int] | None = None
-    schedule_depths: list[int] | None = None
-    if _normalize_batch_packing(batch_packing) == "depth_first_fit":
-        summaries = [
-            family_schedule_summary(fam["ccp_helpers"])
-            for fam in dataset.families
-        ]
-        leaf_counts = [int(summary["leaf_count"]) for summary in summaries]
-        nonleaf_counts = [int(summary["nonleaf_count"]) for summary in summaries]
-        schedule_depths = [int(summary["max_level"]) for summary in summaries]
+    if schedule_stats is None:
+        schedule_stats = _build_family_schedule_stats(
+            dataset,
+            batch_packing=batch_packing,
+            small_family_max_leaves=small_family_max_leaves,
+        )
     chunks = _family_index_chunks(
         total=len(dataset.families),
-        clade_counts=clade_counts,
+        clade_counts=schedule_stats.clade_counts,
         family_chunk_size=family_chunk_size,
         clade_budget=clade_budget,
         batch_packing=batch_packing,
-        leaf_counts=leaf_counts,
-        nonleaf_counts=nonleaf_counts,
-        schedule_depths=schedule_depths,
+        indices=family_indices,
+        split_counts=schedule_stats.split_counts,
+        leaf_counts=schedule_stats.leaf_counts,
+        small_family_max_leaves=(
+            small_family_max_leaves if small_family_max_leaves > 0 else None
+        ),
+        nonleaf_counts=schedule_stats.nonleaf_counts,
+        schedule_depths=schedule_stats.schedule_depths,
         max_wave_size=max_wave_size,
     )
     specs: list[_ResidentBatchSpec] = []
@@ -798,6 +858,7 @@ class GeneReconModel(torch.nn.Module):
         family_chunk_size: int | str | None = None,
         clade_budget: int | None = None,
         batch_packing: str | None = None,
+        small_family_max_leaves: int | None = None,
         lazy_preprocess: bool = False,
         prefetch_batches: int | str | None = None,
         origination_probs: (
@@ -856,6 +917,11 @@ class GeneReconModel(torch.nn.Module):
             "max_dts_partial_rows",
             max_dts_partial_rows,
         )
+        small_family_max_leaves = (
+            0
+            if small_family_max_leaves is None
+            else nonnegative_int("small_family_max_leaves", small_family_max_leaves)
+        )
         batch_packing = _normalize_batch_packing(batch_packing)
         lazy_preprocess = bool_value("lazy_preprocess", lazy_preprocess)
         prefetch_batches = _normalize_prefetch_batches(
@@ -899,6 +965,7 @@ class GeneReconModel(torch.nn.Module):
         self.family_chunk_size = family_chunk_size
         self.clade_budget = clade_budget
         self.batch_packing = batch_packing
+        self.small_family_max_leaves = small_family_max_leaves
         self.lazy_preprocess = lazy_preprocess
         self.prefetch_batches = prefetch_batches
         self._batched_resident = bool(
@@ -937,6 +1004,7 @@ class GeneReconModel(torch.nn.Module):
         self._prefetch_closed = False
         self._batch_lock = Lock()
         self._current_batch_index = 0
+        self._family_schedule_stats: _FamilyScheduleStats | None = None
 
         if self._batched_resident:
             species_helpers, ancestors_T = dataset._species_helpers_for_mode(
@@ -949,6 +1017,11 @@ class GeneReconModel(torch.nn.Module):
                 device=dataset.device,
                 dtype=dataset.dtype,
             )
+            self._family_schedule_stats = _build_family_schedule_stats(
+                dataset,
+                batch_packing=self.batch_packing,
+                small_family_max_leaves=self.small_family_max_leaves,
+            )
             self._batch_specs = _build_batch_specs(
                 dataset,
                 mode=mode,
@@ -958,6 +1031,8 @@ class GeneReconModel(torch.nn.Module):
                 max_wave_size=max_wave_size,
                 max_root_wave_size=max_root_wave_size,
                 max_dts_partial_rows=max_dts_partial_rows,
+                small_family_max_leaves=self.small_family_max_leaves,
+                schedule_stats=self._family_schedule_stats,
             )
             self._batch_statics = [None for _ in self._batch_specs]
             self.batch_metadata = [spec.metadata for spec in self._batch_specs]
@@ -1189,6 +1264,68 @@ class GeneReconModel(torch.nn.Module):
                 self._batch_specs[batch_idx].family_indices,
             ),
         )
+
+    def _shutdown_prefetch_executor_for_replan(self) -> None:
+        with self._batch_lock:
+            executor = self._prefetch_executor
+            self._prefetch_executor = None
+            self._batch_futures.clear()
+        if executor is not None:
+            executor.shutdown(wait=True, cancel_futures=True)
+
+    def replan_resident_batches(
+        self,
+        family_indices: Sequence[int],
+    ) -> list[BatchMetadata]:
+        """Rebuild resident batch specs for selected genewise family rows.
+
+        This is an internal workflow hook for adaptive genewise optimization.
+        It reuses preprocessed family payloads and cached per-family scheduler
+        stats, then asks the Rust planner/scheduler to regroup and regenerate
+        waves for the selected original family indices.
+        """
+        if not self._batched_resident or self._mode != "genewise":
+            raise RuntimeError(
+                "replan_resident_batches() requires genewise resident-batch mode"
+            )
+        indices = [integer_value("family_indices entries", value) for value in family_indices]
+        if not indices:
+            raise ValueError("family_indices must not be empty")
+        seen: set[int] = set()
+        for index in indices:
+            if index < 0 or index >= self.n_families:
+                raise IndexError(
+                    f"family index {index} out of range for {self.n_families} families"
+                )
+            if index in seen:
+                raise ValueError(f"duplicate family index {index}")
+            seen.add(index)
+        if self._family_schedule_stats is None:
+            raise RuntimeError("family scheduler stats are not available")
+
+        self._shutdown_prefetch_executor_for_replan()
+        specs = _build_batch_specs(
+            self._dataset,
+            mode=self._mode,
+            family_chunk_size=self.family_chunk_size,
+            clade_budget=self.clade_budget,
+            batch_packing=self.batch_packing,
+            max_wave_size=self.max_wave_size,
+            max_root_wave_size=self.max_root_wave_size,
+            max_dts_partial_rows=self.max_dts_partial_rows,
+            small_family_max_leaves=self.small_family_max_leaves,
+            family_indices=indices,
+            schedule_stats=self._family_schedule_stats,
+        )
+        if not specs:
+            raise ValueError("replanned resident batches must not be empty")
+        self._batch_specs = specs
+        self._batch_statics = [None for _ in specs]
+        self.batch_metadata = [spec.metadata for spec in specs]
+        self._current_batch_index = 0
+        self._ensure_batch_static(0)
+        self._schedule_prefetch()
+        return list(self.batch_metadata)
 
     def _ensure_batch_static(self, batch_idx: int) -> ReconStaticState:
         if not self._batched_resident:

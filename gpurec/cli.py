@@ -87,7 +87,7 @@ def _config_data(path: Path | None) -> dict[str, Any]:
 
 
 def _set_if_present(data: dict[str, Any], args: argparse.Namespace, name: str) -> None:
-    value = getattr(args, name)
+    value = getattr(args, name, None)
     if value is not None:
         data[name] = value
 
@@ -250,6 +250,35 @@ def _add_run_config_args(parser: argparse.ArgumentParser) -> None:
         type=int,
         help="Maximum clades scheduled into one resident wave.",
     )
+    parser.add_argument(
+        "--small-family-max-leaves",
+        type=int,
+        help=(
+            "Plan families with at most this many leaves before larger "
+            "families; use 0 to disable. Workflow default: 4."
+        ),
+    )
+    parser.add_argument(
+        "--adaptive-rebatch",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Enable adaptive resident-batch rebuilding for supported genewise runs.",
+    )
+    parser.add_argument(
+        "--adaptive-rebatch-fraction",
+        type=float,
+        help="Fraction threshold used by adaptive resident-batch rebuilding.",
+    )
+    parser.add_argument(
+        "--adaptive-rebatch-check-interval",
+        type=int,
+        help="Step interval for adaptive resident-batch rebuilding checks.",
+    )
+    parser.add_argument(
+        "--adaptive-rebatch-min-remaining-families",
+        type=int,
+        help="Minimum remaining families before adaptive rebatching can run.",
+    )
     parser.add_argument("--fixed-iters-e", type=int, help="Fixed E iterations per solve.")
     parser.add_argument("--max-iters-e", type=int, help="Maximum adaptive E iterations.")
     parser.add_argument("--tol-e", type=float, help="E fixed-point convergence tolerance.")
@@ -334,11 +363,27 @@ def _add_run_config_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--theta-init-d", type=float, help="Initial duplication rate.")
     parser.add_argument("--theta-init-l", type=float, help="Initial loss rate.")
     parser.add_argument("--theta-init-t", type=float, help="Initial transfer rate.")
-    parser.add_argument("--min-rate", type=float, help="Minimum allowed D/L/T rate.")
-    parser.add_argument("--max-rate", type=float, help="Maximum allowed D/L/T rate.")
+    parser.add_argument(
+        "--min-rate",
+        type=float,
+        help="Minimum allowed D/L/T rate; defaults to 2^-30.",
+    )
+    parser.add_argument(
+        "--max-rate",
+        type=float,
+        help="Maximum allowed D/L/T rate; defaults to 2.",
+    )
     parser.add_argument(
         "--optimizer",
-        choices=("auto", "adam", "adagrad", "lbfgs", "adam-lbfgs", "batched-lbfgs"),
+        choices=(
+            "auto",
+            "adam",
+            "adagrad",
+            "lbfgs",
+            "adam-lbfgs",
+            "batched-lbfgs",
+            "adam-fd-newton",
+        ),
         help=(
             "Optimizer schedule. auto uses batched-lbfgs for genewise mode "
             "and adam otherwise."
@@ -351,6 +396,16 @@ def _add_run_config_args(parser: argparse.ArgumentParser) -> None:
         type=int,
         help="Adam steps before LBFGS in adam-lbfgs mode.",
     )
+    parser.add_argument(
+        "--fd-adam-warmup-steps",
+        type=int,
+        help="Adam steps per resident batch before finite-difference Newton updates.",
+    )
+    parser.add_argument(
+        "--fd-hessian-refresh-steps",
+        type=int,
+        help="Newton steps between full finite-difference Hessian refreshes.",
+    )
     parser.add_argument("--lbfgs-lr", type=float, help="LBFGS learning rate.")
     parser.add_argument("--lbfgs-history-size", type=int, help="LBFGS history size.")
     parser.add_argument("--lbfgs-max-iter", type=int, help="LBFGS inner iterations per step.")
@@ -359,6 +414,16 @@ def _add_run_config_args(parser: argparse.ArgumentParser) -> None:
         "--lbfgs-line-search",
         choices=("none", "strong_wolfe"),
         help="LBFGS line-search mode.",
+    )
+    parser.add_argument(
+        "--fd-hessian-epsilon",
+        type=float,
+        help="Finite-difference epsilon for adam-fd-newton Hessian probes.",
+    )
+    parser.add_argument(
+        "--fd-newton-damping",
+        type=float,
+        help="Diagonal damping added to finite-difference Hessians.",
     )
     parser.add_argument(
         "--grad-inf-tol",

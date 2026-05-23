@@ -967,6 +967,7 @@ def test_run_config_normalizes_batch_controls(tmp_path: Path):
         batch_packing="depth-first-fit",
         clade_budget="12",
         max_wave_size="32",
+        small_family_max_leaves="8",
         device="cpu",
     )
 
@@ -974,6 +975,7 @@ def test_run_config_normalizes_batch_controls(tmp_path: Path):
     assert config.batch_packing == "depth_first_fit"
     assert config.clade_budget == 12
     assert config.max_wave_size == 32
+    assert config.small_family_max_leaves == 8
 
 
 def test_run_config_from_dict_preserves_batch_packing_default(tmp_path: Path):
@@ -987,6 +989,25 @@ def test_run_config_from_dict_preserves_batch_packing_default(tmp_path: Path):
     )
 
     assert config.batch_packing == "depth_first_fit"
+    assert config.small_family_max_leaves == 4
+
+
+def test_run_config_ignores_legacy_fd_newton_max_step(tmp_path: Path):
+    config = RunConfig.from_dict(
+        {
+            "species_tree": tmp_path / "sp.nwk",
+            "families_file": tmp_path / "families.txt",
+            "out_dir": tmp_path / "out",
+            "mode": "genewise",
+            "optimizer": "adam-fd-newton",
+            "fd_newton_max_step": 0.0,
+            "device": "cpu",
+        }
+    )
+
+    assert config.optimizer == "adam-fd-newton"
+    assert not hasattr(config, "fd_newton_max_step")
+    assert "fd_newton_max_step" not in config.to_dict()
 
 
 def test_run_config_rejects_null_batch_packing(tmp_path: Path):
@@ -1043,6 +1064,18 @@ def test_run_config_defaults_to_cuda_for_production_workflow(tmp_path: Path):
     assert config.device == "cuda"
 
 
+def test_run_config_defaults_to_natural_rate_bounds(tmp_path: Path):
+    config = RunConfig(
+        species_tree=tmp_path / "sp.nwk",
+        families_file=tmp_path / "families.txt",
+        out_dir=tmp_path / "out",
+        device="cpu",
+    )
+
+    assert config.min_rate == pytest.approx(2.0**-30)
+    assert config.max_rate == 2.0
+
+
 def test_run_config_defaults_to_batched_lbfgs_for_genewise_mode(tmp_path: Path):
     config = RunConfig(
         species_tree=tmp_path / "sp.nwk",
@@ -1053,6 +1086,22 @@ def test_run_config_defaults_to_batched_lbfgs_for_genewise_mode(tmp_path: Path):
     )
 
     assert config.optimizer == "batched-lbfgs"
+
+
+def test_run_config_accepts_adam_fd_newton_for_genewise_mode(tmp_path: Path):
+    config = RunConfig(
+        species_tree=tmp_path / "sp.nwk",
+        families_file=tmp_path / "families.txt",
+        out_dir=tmp_path / "out",
+        mode="genewise",
+        optimizer="adam-fd-newton",
+        device="cpu",
+    )
+
+    assert config.optimizer == "adam-fd-newton"
+    assert config.fd_adam_warmup_steps == 3
+    assert config.fd_hessian_refresh_steps == 5
+    assert config.fd_hessian_epsilon == pytest.approx(1e-3)
 
 
 def test_run_config_auto_optimizer_uses_adam_for_shared_theta_modes(tmp_path: Path):
@@ -1125,6 +1174,18 @@ def test_run_config_rejects_unsupported_auto_chunking(tmp_path: Path):
         )
 
 
+def test_run_config_rejects_adam_fd_newton_outside_genewise(tmp_path: Path):
+    with pytest.raises(ValueError, match="adam-fd-newton optimizer requires genewise"):
+        RunConfig(
+            species_tree=tmp_path / "sp.nwk",
+            families_file=tmp_path / "families.txt",
+            out_dir=tmp_path / "out",
+            mode="global",
+            optimizer="adam-fd-newton",
+            device="cpu",
+        )
+
+
 def test_run_config_rejects_batched_lbfgs_outside_genewise(tmp_path: Path):
     with pytest.raises(ValueError, match="batched-lbfgs.*genewise"):
         RunConfig(
@@ -1149,6 +1210,61 @@ def test_run_config_accepts_strong_wolfe_for_batched_lbfgs(tmp_path: Path):
     )
 
     assert config.lbfgs_line_search == "strong_wolfe"
+
+
+@pytest.mark.parametrize("optimizer", ["batched-lbfgs", "adam-fd-newton"])
+def test_run_config_accepts_adaptive_rebatch_for_genewise_batch_optimizers(
+    tmp_path: Path,
+    optimizer: str,
+):
+    config = RunConfig(
+        species_tree=tmp_path / "sp.nwk",
+        families_file=tmp_path / "families.txt",
+        out_dir=tmp_path / "out",
+        mode="genewise",
+        optimizer=optimizer,
+        adaptive_rebatch=True,
+        adaptive_rebatch_fraction="0.75",
+        adaptive_rebatch_check_interval="2",
+        adaptive_rebatch_min_remaining_families="3",
+        device="cpu",
+    )
+
+    assert config.adaptive_rebatch is True
+    assert config.adaptive_rebatch_fraction == pytest.approx(0.75)
+    assert config.adaptive_rebatch_check_interval == 2
+    assert config.adaptive_rebatch_min_remaining_families == 3
+
+
+def test_run_config_rejects_adaptive_rebatch_outside_batch_optimizers(tmp_path: Path):
+    with pytest.raises(ValueError, match="adaptive_rebatch requires"):
+        RunConfig(
+            species_tree=tmp_path / "sp.nwk",
+            families_file=tmp_path / "families.txt",
+            out_dir=tmp_path / "out",
+            mode="genewise",
+            optimizer="adam",
+            adaptive_rebatch=True,
+            device="cpu",
+        )
+
+
+@pytest.mark.parametrize("value", [0.0, -0.1, 1.1])
+def test_run_config_rejects_invalid_adaptive_rebatch_fraction(
+    tmp_path: Path,
+    value: float,
+):
+    with pytest.raises(ValueError, match="adaptive_rebatch_fraction"):
+        RunConfig(
+            species_tree=tmp_path / "sp.nwk",
+            families_file=tmp_path / "families.txt",
+            out_dir=tmp_path / "out",
+            mode="genewise",
+            optimizer="batched-lbfgs",
+            adaptive_rebatch=True,
+            adaptive_rebatch_fraction=value,
+            device="cpu",
+        )
 
 
 @pytest.mark.parametrize(
@@ -1188,6 +1304,9 @@ def test_run_config_rejects_negative_tolerances(tmp_path: Path, field: str):
         ("theta_init_l", math.inf),
         ("lr", math.nan),
         ("lbfgs_lr", math.inf),
+        ("fd_hessian_epsilon", math.nan),
+        ("fd_newton_damping", math.inf),
+        ("adaptive_rebatch_fraction", math.inf),
     ],
 )
 def test_run_config_rejects_nonfinite_float_controls(
@@ -1212,6 +1331,7 @@ def test_run_config_rejects_nonfinite_float_controls(
         ("theta_init_d", False),
         ("lr", True),
         ("min_rate", True),
+        ("adaptive_rebatch_fraction", False),
     ],
 )
 def test_run_config_rejects_boolean_float_controls(
@@ -1236,6 +1356,8 @@ def test_run_config_rejects_boolean_float_controls(
         ("adaptive_iters", 0),
         ("adaptive_neumann_terms", "false"),
         ("adaptive_neumann_terms", 0),
+        ("adaptive_rebatch", "false"),
+        ("adaptive_rebatch", 0),
     ],
 )
 def test_run_config_rejects_nonbool_boolean_controls(
@@ -1268,6 +1390,11 @@ def test_run_config_rejects_nonbool_boolean_controls(
         ("convergence_check_interval", 4.5),
         ("steps", 1.5),
         ("adam_warmup_steps", 0.5),
+        ("fd_adam_warmup_steps", 0.5),
+        ("fd_hessian_refresh_steps", 0.5),
+        ("adaptive_rebatch_check_interval", 0.5),
+        ("adaptive_rebatch_min_remaining_families", 1.5),
+        ("small_family_max_leaves", 1.5),
         ("lbfgs_max_iter", 1.5),
         ("lbfgs_max_ls", 1.5),
         ("checkpoint_every", 0.5),
@@ -1801,6 +1928,9 @@ def test_bfloat16_is_direct_uniform_api_only(name: str):
         ("max_wave_size", -1),
         ("max_wave_size", 1.5),
         ("max_wave_size", True),
+        ("small_family_max_leaves", -1),
+        ("small_family_max_leaves", 1.5),
+        ("small_family_max_leaves", True),
         ("max_root_wave_size", 0),
         ("max_root_wave_size", 1.5),
         ("max_root_wave_size", True),
@@ -4598,6 +4728,64 @@ class _WorkflowBatchedLBFGSModeModel:
         self.closed = True
 
 
+class _WorkflowBoundedFDNewtonModel(_WorkflowBatchedLBFGSModeModel):
+    def __init__(self):
+        super().__init__()
+        self.theta = torch.nn.Parameter(
+            torch.tensor(
+                [
+                    [0.0, 0.0, 0.0],
+                    [0.10, 0.20, -0.05],
+                ],
+                dtype=torch.float32,
+            )
+        )
+        self.initial_theta = self.theta.detach().clone()
+
+    def nll_per_family(self):
+        idx = torch.as_tensor(
+            self.current_batch_metadata.family_indices,
+            dtype=torch.long,
+            device=self.theta.device,
+        )
+        theta = self.theta.index_select(0, idx)
+        target = torch.full_like(theta, 5.0)
+        return (theta - target).square().sum(dim=1) + 1.0
+
+    def full_loss(self):
+        target = torch.full_like(self.theta, 5.0)
+        return (self.theta - target).square().sum() + 2.0
+
+    def full_genewise_nll_and_grad(self, *, need_grad: bool):
+        target = torch.full_like(self.theta.detach(), 5.0)
+        values = (self.theta.detach() - target).square().sum(dim=1) + 1.0
+        grad = 2.0 * (self.theta.detach() - target) if need_grad else None
+        return values, grad
+
+    def clamp_theta_(self, min_rate, max_rate):
+        with torch.no_grad():
+            self.theta.clamp_(min=math.log2(min_rate), max=math.log2(max_rate))
+
+
+class _WorkflowAdaptiveRebatchModel(_WorkflowBatchedLBFGSModeModel):
+    def __init__(self):
+        super().__init__()
+        self.batch_metadata = [
+            SimpleNamespace(batch_index=0, family_indices=(0, 1)),
+        ]
+        self.replanned_indices: list[tuple[int, ...]] = []
+
+    def replan_resident_batches(self, family_indices):
+        indices = tuple(int(index) for index in family_indices)
+        self.replanned_indices.append(indices)
+        self.batch_metadata = [
+            SimpleNamespace(batch_index=batch_index, family_indices=(index,))
+            for batch_index, index in enumerate(indices)
+        ]
+        self._current_batch_index = 0
+        return list(self.batch_metadata)
+
+
 class _WorkflowOptimizerModeRunner(OptimizationRunner):
     def build_model(self):
         self.fake_model = _WorkflowOptimizerModeModel()
@@ -4607,6 +4795,12 @@ class _WorkflowOptimizerModeRunner(OptimizationRunner):
 class _WorkflowBatchedLBFGSModeRunner(OptimizationRunner):
     def build_model(self):
         self.fake_model = _WorkflowBatchedLBFGSModeModel()
+        return self.fake_model
+
+
+class _WorkflowAdaptiveRebatchRunner(OptimizationRunner):
+    def build_model(self):
+        self.fake_model = _WorkflowAdaptiveRebatchModel()
         return self.fake_model
 
 
@@ -4729,6 +4923,107 @@ def test_optimization_runner_batched_lbfgs_mode_records_public_phase(tmp_path: P
     assert runner.fake_model.closed
 
 
+def test_optimization_runner_adaptive_rebatch_replans_unconverged_families(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setattr(optimize_workflow, "_ADAPTIVE_REBATCH_MIN_ACTIVE_FAMILIES", 1)
+    config = _optimizer_mode_config(
+        tmp_path,
+        optimizer="batched-lbfgs",
+        mode="genewise",
+        steps=1,
+        solver_warmup_iters=0,
+        adaptive_rebatch=True,
+        adaptive_rebatch_fraction=0.5,
+        adaptive_rebatch_min_remaining_families=1,
+        grad_inf_tol=0.5,
+        lbfgs_lr=1e-9,
+        lbfgs_max_iter=1,
+    )
+    runner = _WorkflowAdaptiveRebatchRunner(config)
+
+    result = runner.run()
+
+    history_rows = _optimizer_mode_history_rows(config.out_dir)
+    assert history_rows[0]["optimizer/rebatch_checked"] is True
+    assert history_rows[0]["optimizer/rebatch_triggered"] is True
+    assert history_rows[0]["optimizer/rebatch_active_converged_families"] == 1.0
+    assert history_rows[0]["optimizer/rebatch_remaining_families"] == 1.0
+    assert runner.fake_model.replanned_indices == [(0,)]
+    latest = load_checkpoint(config.out_dir / "checkpoints" / "latest.pt")
+    assert latest["status"]["converged_family_indices"] == [1]
+    assert latest["status"]["batch_plan_generation"] == 1
+    assert result.status == "not_converged"
+    assert runner.fake_model.closed
+
+
+def test_optimization_runner_fd_newton_adaptive_rebatch_replans_unconverged_families(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setattr(optimize_workflow, "_ADAPTIVE_REBATCH_MIN_ACTIVE_FAMILIES", 1)
+    config = _optimizer_mode_config(
+        tmp_path,
+        optimizer="adam-fd-newton",
+        mode="genewise",
+        steps=1,
+        solver_warmup_iters=0,
+        adaptive_rebatch=True,
+        adaptive_rebatch_fraction=0.5,
+        adaptive_rebatch_min_remaining_families=1,
+        fd_adam_warmup_steps=1,
+        grad_inf_tol=0.5,
+        lr=1e-9,
+    )
+    runner = _WorkflowAdaptiveRebatchRunner(config)
+
+    result = runner.run()
+
+    history_rows = _optimizer_mode_history_rows(config.out_dir)
+    assert history_rows[0]["optimizer/phase"] == "adam-fd-newton"
+    assert history_rows[0]["optimizer/fd_newton_subphase"] == "adam_warmup"
+    assert history_rows[0]["optimizer/rebatch_checked"] is True
+    assert history_rows[0]["optimizer/rebatch_triggered"] is True
+    assert history_rows[0]["optimizer/rebatch_active_converged_families"] == 1.0
+    assert history_rows[0]["optimizer/rebatch_remaining_families"] == 1.0
+    assert runner.fake_model.replanned_indices == [(0,)]
+    latest = load_checkpoint(config.out_dir / "checkpoints" / "latest.pt")
+    assert latest["status"]["converged_family_indices"] == [1]
+    assert latest["status"]["batch_plan_generation"] == 1
+    assert result.status == "not_converged"
+    assert runner.fake_model.closed
+
+
+def test_optimization_runner_adaptive_rebatch_skips_tiny_active_batches(
+    tmp_path: Path,
+):
+    config = _optimizer_mode_config(
+        tmp_path,
+        optimizer="adam-fd-newton",
+        mode="genewise",
+        steps=1,
+        solver_warmup_iters=0,
+        adaptive_rebatch=True,
+        adaptive_rebatch_fraction=0.5,
+        adaptive_rebatch_min_remaining_families=1,
+        fd_adam_warmup_steps=1,
+        grad_inf_tol=0.5,
+        lr=1e-9,
+    )
+    runner = _WorkflowAdaptiveRebatchRunner(config)
+
+    result = runner.run()
+
+    history_rows = _optimizer_mode_history_rows(config.out_dir)
+    assert history_rows[0]["optimizer/rebatch_checked"] is False
+    assert history_rows[0]["optimizer/rebatch_triggered"] is False
+    assert history_rows[0]["optimizer/rebatch_reason"] == "small_active_batch"
+    assert runner.fake_model.replanned_indices == []
+    assert result.status == "not_converged"
+    assert runner.fake_model.closed
+
+
 def test_batched_lbfgs_active_batch_closure_zeros_inactive_rows(tmp_path: Path):
     config = _optimizer_mode_config(
         tmp_path,
@@ -4752,6 +5047,147 @@ def test_batched_lbfgs_active_batch_closure_zeros_inactive_rows(tmp_path: Path):
     assert metrics["optimizer/objective_scope"] == "active_batch"
     assert metrics["optimizer/batch_index"] == 0
     assert metrics["optimizer/solver_stage"] == "warmup"
+
+
+def test_adam_fd_newton_active_batch_step_uses_finite_difference_hessian(
+    tmp_path: Path,
+):
+    config = _optimizer_mode_config(
+        tmp_path,
+        optimizer="adam-fd-newton",
+        mode="genewise",
+        fd_adam_warmup_steps=0,
+        fd_hessian_epsilon=1e-3,
+        fd_newton_damping=1e-6,
+    )
+    runner = OptimizationRunner(config)
+    model = _WorkflowBatchedLBFGSModeModel()
+    before = model.theta.detach().clone()
+    model.select_batch(0)
+
+    loss_vec, metrics, evals, state = runner._active_fd_newton_step(
+        model,
+        solver_stage="full",
+    )
+
+    assert evals == 9
+    assert metrics["optimizer/fd_newton_accepted_rows"] == 1.0
+    assert metrics["optimizer/fd_newton_fallback_rows"] == 0.0
+    assert metrics["optimizer/fd_newton_hessian_source"] == "finite_difference"
+    assert state.updates_since_refresh == 1
+    assert loss_vec[0] < 1.000001
+    torch.testing.assert_close(model.theta.detach()[0], torch.zeros(3), atol=1e-3, rtol=0)
+    torch.testing.assert_close(model.theta.detach()[1], before[1])
+
+
+def test_adam_fd_newton_step_ignores_legacy_cap_and_projects_to_rate_bounds(
+    tmp_path: Path,
+):
+    config = RunConfig.from_dict(
+        {
+            "species_tree": tmp_path / "sp.nwk",
+            "families_file": tmp_path / "families.txt",
+            "out_dir": tmp_path / "out-adam-fd-newton",
+            "mode": "genewise",
+            "optimizer": "adam-fd-newton",
+            "fd_adam_warmup_steps": 0,
+            "fd_hessian_epsilon": 1e-3,
+            "fd_newton_damping": 1e-6,
+            "fd_newton_max_step": 1e-6,
+            "device": "cpu",
+        }
+    )
+    runner = OptimizationRunner(config)
+    model = _WorkflowBoundedFDNewtonModel()
+    before = model.theta.detach().clone()
+    model.select_batch(0)
+
+    _loss_vec, metrics, _evals, _state = runner._active_fd_newton_step(
+        model,
+        solver_stage="full",
+    )
+
+    upper_bound = math.log2(config.max_rate)
+    lower_bound = math.log2(config.min_rate)
+    assert metrics["optimizer/fd_newton_raw_step_inf"] > 2.0
+    assert metrics["optimizer/fd_newton_bound_projected_step_inf"] == pytest.approx(
+        upper_bound,
+        abs=1e-5,
+    )
+    assert model.theta.detach()[0].min() >= lower_bound
+    assert model.theta.detach()[0].max() <= upper_bound
+    torch.testing.assert_close(
+        model.theta.detach()[0],
+        torch.full((3,), upper_bound),
+        atol=1e-5,
+        rtol=0,
+    )
+    torch.testing.assert_close(model.theta.detach()[1], before[1])
+
+
+def test_adam_fd_newton_reuses_bfgs_updated_hessian_between_refreshes(
+    tmp_path: Path,
+):
+    config = _optimizer_mode_config(
+        tmp_path,
+        optimizer="adam-fd-newton",
+        mode="genewise",
+        fd_adam_warmup_steps=0,
+        fd_hessian_refresh_steps=5,
+        fd_hessian_epsilon=1e-3,
+        fd_newton_damping=1.0,
+    )
+    runner = OptimizationRunner(config)
+    model = _WorkflowBatchedLBFGSModeModel()
+    model.select_batch(0)
+
+    _loss_vec, first_metrics, first_evals, state = runner._active_fd_newton_step(
+        model,
+        solver_stage="full",
+    )
+    _loss_vec, second_metrics, second_evals, state = runner._active_fd_newton_step(
+        model,
+        solver_stage="full",
+        hessian_state=state,
+    )
+
+    assert first_metrics["optimizer/fd_newton_hessian_source"] == "finite_difference"
+    assert second_metrics["optimizer/fd_newton_hessian_source"] == "bfgs_update"
+    assert first_evals == 9
+    assert second_evals < first_evals
+    assert second_metrics["optimizer/fd_newton_grad_evals"] == 1.0
+    assert second_metrics["optimizer/fd_newton_bfgs_updated_rows"] == 1.0
+    assert state.updates_since_refresh == 2
+
+
+def test_adam_fd_newton_refreshes_hessian_after_configured_steps(
+    tmp_path: Path,
+):
+    config = _optimizer_mode_config(
+        tmp_path,
+        optimizer="adam-fd-newton",
+        mode="genewise",
+        fd_adam_warmup_steps=0,
+        fd_hessian_refresh_steps=1,
+        fd_hessian_epsilon=1e-3,
+        fd_newton_damping=1.0,
+    )
+    runner = OptimizationRunner(config)
+    model = _WorkflowBatchedLBFGSModeModel()
+    model.select_batch(0)
+
+    _loss_vec, _first_metrics, _first_evals, state = runner._active_fd_newton_step(
+        model,
+        solver_stage="full",
+    )
+    _loss_vec, second_metrics, second_evals, _state = runner._active_fd_newton_step(
+        model,
+        solver_stage="full",
+        hessian_state=state,
+    )
+
+    assert second_metrics["optimizer/fd_newton_hessian_source"] == "finite_difference"
+    assert second_evals == 9
 
 
 def test_optimization_runner_batched_lbfgs_advances_resident_batches(tmp_path: Path):

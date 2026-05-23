@@ -18,6 +18,8 @@ pub struct BatchPlanRequest {
     #[serde(default)]
     pub leaf_counts: Option<Vec<i64>>,
     #[serde(default)]
+    pub small_family_max_leaves: Option<i64>,
+    #[serde(default)]
     pub nonleaf_counts: Option<Vec<i64>>,
     #[serde(default)]
     pub schedule_depths: Option<Vec<i64>>,
@@ -39,7 +41,7 @@ fn default_batch_packing() -> String {
 pub fn plan_family_batches_request(
     request: &BatchPlanRequest,
 ) -> Result<Vec<FamilyBatchPlanOutput>, PreprocessError> {
-    plan_family_batches(
+    plan_family_batches_impl(
         &request.clade_counts,
         request.family_chunk_size,
         request.clade_budget,
@@ -51,6 +53,7 @@ pub fn plan_family_batches_request(
         request.nonleaf_counts.as_deref(),
         request.schedule_depths.as_deref(),
         request.max_wave_size,
+        request.small_family_max_leaves,
     )
 }
 
@@ -68,10 +71,41 @@ pub fn plan_family_batches(
     schedule_depths: Option<&[i64]>,
     max_wave_size: Option<i64>,
 ) -> Result<Vec<FamilyBatchPlanOutput>, PreprocessError> {
+    plan_family_batches_impl(
+        clade_counts,
+        family_chunk_size,
+        clade_budget,
+        batch_packing,
+        indices,
+        total,
+        split_counts,
+        leaf_counts,
+        nonleaf_counts,
+        schedule_depths,
+        max_wave_size,
+        None,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn plan_family_batches_impl(
+    clade_counts: &[i64],
+    family_chunk_size: i64,
+    clade_budget: Option<i64>,
+    batch_packing: &str,
+    indices: Option<&[i64]>,
+    total: Option<i64>,
+    split_counts: Option<&[i64]>,
+    leaf_counts: Option<&[i64]>,
+    nonleaf_counts: Option<&[i64]>,
+    schedule_depths: Option<&[i64]>,
+    max_wave_size: Option<i64>,
+    small_family_max_leaves: Option<i64>,
+) -> Result<Vec<FamilyBatchPlanOutput>, PreprocessError> {
     let selected = selected_indices(indices, total, clade_counts.len())?;
     validate_selected_indices(&selected, clade_counts.len())?;
     if let Some(counts) = split_counts {
-        require_indexed_stats("split_counts", Some(counts), &selected)?;
+        require_indexed_stats("split_counts", "split_counts", Some(counts), &selected)?;
     }
     if family_chunk_size < 0 {
         return invalid("family_chunk_size must be non-negative");
@@ -82,16 +116,109 @@ pub fn plan_family_batches(
             return invalid("clade_budget must be positive when provided");
         }
     }
+    if let Some(max_leaves) = small_family_max_leaves {
+        if max_leaves < 0 {
+            return invalid("small_family_max_leaves must be non-negative when provided");
+        }
+    }
 
+    if packing == "clade_first_fit" {
+        clade_budget.ok_or_else(|| {
+            PreprocessError::InvalidInput(
+                "batch_packing='clade_first_fit' requires clade_budget".to_string(),
+            )
+        })?;
+    }
+    if packing == "depth_first_fit" {
+        clade_budget.ok_or_else(|| {
+            PreprocessError::InvalidInput(
+                "batch_packing='depth_first_fit' requires clade_budget".to_string(),
+            )
+        })?;
+        require_indexed_stats(
+            "batch_packing='depth_first_fit'",
+            "leaf_counts",
+            leaf_counts,
+            &selected,
+        )?;
+        require_indexed_stats(
+            "batch_packing='depth_first_fit'",
+            "nonleaf_counts",
+            nonleaf_counts,
+            &selected,
+        )?;
+        require_indexed_stats(
+            "batch_packing='depth_first_fit'",
+            "schedule_depths",
+            schedule_depths,
+            &selected,
+        )?;
+    }
+
+    let resolved_max_wave_size = if packing == "depth_first_fit" {
+        let wave_cap = match max_wave_size {
+            Some(value) => value,
+            None => selected.iter().map(|idx| clade_counts[*idx]).sum(),
+        };
+        if wave_cap <= 0 {
+            return invalid("max_wave_size must be positive");
+        }
+        Some(wave_cap)
+    } else {
+        max_wave_size
+    };
+
+    let small_family_leaf_counts = match small_family_max_leaves {
+        Some(_) => Some(require_indexed_stats(
+            "small_family_max_leaves",
+            "leaf_counts",
+            leaf_counts,
+            &selected,
+        )?),
+        None => None,
+    };
+    let selected_groups = selected_groups_by_small_family(
+        &selected,
+        small_family_leaf_counts,
+        small_family_max_leaves,
+    );
+
+    let mut plans = Vec::new();
+    for group in selected_groups {
+        plans.extend(plan_family_batches_for_selected(
+            &group,
+            clade_counts,
+            split_counts,
+            family_chunk_size,
+            clade_budget,
+            packing,
+            leaf_counts,
+            nonleaf_counts,
+            schedule_depths,
+            resolved_max_wave_size,
+        )?);
+    }
+    Ok(plans)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn plan_family_batches_for_selected(
+    selected: &[usize],
+    clade_counts: &[i64],
+    split_counts: Option<&[i64]>,
+    family_chunk_size: i64,
+    clade_budget: Option<i64>,
+    packing: &str,
+    leaf_counts: Option<&[i64]>,
+    nonleaf_counts: Option<&[i64]>,
+    schedule_depths: Option<&[i64]>,
+    max_wave_size: Option<i64>,
+) -> Result<Vec<FamilyBatchPlanOutput>, PreprocessError> {
     match packing {
         "clade_first_fit" => {
-            let budget = clade_budget.ok_or_else(|| {
-                PreprocessError::InvalidInput(
-                    "batch_packing='clade_first_fit' requires clade_budget".to_string(),
-                )
-            })?;
+            let budget = clade_budget.expect("clade_first_fit budget validated");
             plan_clade_first_fit(
-                &selected,
+                selected,
                 clade_counts,
                 split_counts,
                 family_chunk_size,
@@ -99,23 +226,13 @@ pub fn plan_family_batches(
             )
         }
         "depth_first_fit" => {
-            let budget = clade_budget.ok_or_else(|| {
-                PreprocessError::InvalidInput(
-                    "batch_packing='depth_first_fit' requires clade_budget".to_string(),
-                )
-            })?;
-            let leaves = require_indexed_stats("leaf_counts", leaf_counts, &selected)?;
-            let nonleaves = require_indexed_stats("nonleaf_counts", nonleaf_counts, &selected)?;
-            let depths = require_indexed_stats("schedule_depths", schedule_depths, &selected)?;
-            let wave_cap = match max_wave_size {
-                Some(value) => value,
-                None => selected.iter().map(|idx| clade_counts[*idx]).sum(),
-            };
-            if wave_cap <= 0 {
-                return invalid("max_wave_size must be positive");
-            }
+            let budget = clade_budget.expect("depth_first_fit budget validated");
+            let leaves = leaf_counts.expect("depth_first_fit leaf_counts validated");
+            let nonleaves = nonleaf_counts.expect("depth_first_fit nonleaf_counts validated");
+            let depths = schedule_depths.expect("depth_first_fit schedule_depths validated");
+            let wave_cap = max_wave_size.expect("depth_first_fit max_wave_size validated");
             plan_depth_first_fit(
-                &selected,
+                selected,
                 clade_counts,
                 split_counts,
                 leaves,
@@ -127,7 +244,7 @@ pub fn plan_family_batches(
             )
         }
         "sequential" => plan_sequential(
-            &selected,
+            selected,
             clade_counts,
             split_counts,
             family_chunk_size,
@@ -135,6 +252,34 @@ pub fn plan_family_batches(
         ),
         _ => unreachable!("normalize_batch_packing returns only known values"),
     }
+}
+
+fn selected_groups_by_small_family(
+    selected: &[usize],
+    leaf_counts: Option<&[i64]>,
+    small_family_max_leaves: Option<i64>,
+) -> Vec<Vec<usize>> {
+    let Some(max_leaves) = small_family_max_leaves else {
+        return vec![selected.to_vec()];
+    };
+    let leaves = leaf_counts.expect("small_family_max_leaves leaf_counts validated");
+    let mut small = Vec::new();
+    let mut normal = Vec::new();
+    for idx in selected {
+        if leaves[*idx] <= max_leaves {
+            small.push(*idx);
+        } else {
+            normal.push(*idx);
+        }
+    }
+    let mut groups = Vec::new();
+    if !small.is_empty() {
+        groups.push(small);
+    }
+    if !normal.is_empty() {
+        groups.push(normal);
+    }
+    groups
 }
 
 fn invalid<T>(message: impl Into<String>) -> Result<T, PreprocessError> {
@@ -203,13 +348,13 @@ fn validate_selected_indices(
 }
 
 fn require_indexed_stats<'a>(
+    context: &str,
     name: &str,
     values: Option<&'a [i64]>,
     selected: &[usize],
 ) -> Result<&'a [i64], PreprocessError> {
-    let values = values.ok_or_else(|| {
-        PreprocessError::InvalidInput(format!("batch_packing='depth_first_fit' requires {name}"))
-    })?;
+    let values = values
+        .ok_or_else(|| PreprocessError::InvalidInput(format!("{context} requires {name}")))?;
     if let Some(required) = selected.iter().max().map(|idx| idx + 1) {
         if values.len() < required {
             return invalid(format!("{name} must cover selected family indices"));
@@ -446,5 +591,32 @@ mod tests {
             plans.iter().map(|plan| plan.splits).collect::<Vec<_>>(),
             vec![30, 70, 50]
         );
+    }
+
+    #[test]
+    fn request_prioritizes_small_families_under_leaf_threshold() {
+        let request = BatchPlanRequest {
+            clade_counts: vec![5, 3, 4, 4, 6, 2],
+            family_chunk_size: 2,
+            clade_budget: Some(6),
+            batch_packing: "clade_first_fit".to_string(),
+            indices: None,
+            total: Some(6),
+            split_counts: None,
+            leaf_counts: Some(vec![9, 4, 7, 2, 6, 4]),
+            small_family_max_leaves: Some(4),
+            nonleaf_counts: None,
+            schedule_depths: None,
+            max_wave_size: None,
+        };
+
+        let plans = plan_family_batches_request(&request).unwrap();
+
+        assert_eq!(
+            plan_indices(&plans),
+            vec![vec![3, 5], vec![1], vec![4], vec![0], vec![2]]
+        );
+        assert!(plans.iter().all(|plan| plan.clades <= 6));
+        assert!(plans.iter().all(|plan| plan.indices.len() <= 2));
     }
 }

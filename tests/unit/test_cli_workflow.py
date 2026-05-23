@@ -95,6 +95,7 @@ def test_build_alerax_workflow_model_forwards_run_config(tmp_path: Path, monkeyp
         clade_budget=42,
         batch_packing="sequential",
         max_wave_size=64,
+        small_family_max_leaves=8,
         fixed_iters_e=3,
         max_iters_e=17,
         tol_e=1e-7,
@@ -142,6 +143,7 @@ def test_build_alerax_workflow_model_forwards_run_config(tmp_path: Path, monkeyp
     assert kwargs["clade_budget"] == 42
     assert kwargs["batch_packing"] == "sequential"
     assert kwargs["max_wave_size"] == 64
+    assert kwargs["small_family_max_leaves"] == 8
     assert kwargs["fixed_iters_E"] == 3
     assert kwargs["max_iters_E"] == 17
     assert kwargs["tol_E"] == pytest.approx(1e-7)

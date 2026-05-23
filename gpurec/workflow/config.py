@@ -217,6 +217,7 @@ _JSON_INT_FIELDS = {
     "max_families",
     "clade_budget",
     "max_wave_size",
+    "small_family_max_leaves",
     "fixed_iters_e",
     "max_iters_e",
     "fixed_iters_pi",
@@ -228,6 +229,10 @@ _JSON_INT_FIELDS = {
     "preprocess_cpu_cores",
     "steps",
     "adam_warmup_steps",
+    "fd_adam_warmup_steps",
+    "fd_hessian_refresh_steps",
+    "adaptive_rebatch_check_interval",
+    "adaptive_rebatch_min_remaining_families",
     "lbfgs_history_size",
     "lbfgs_max_iter",
     "lbfgs_max_ls",
@@ -251,17 +256,18 @@ _JSON_FLOAT_FIELDS = {
     "lbfgs_lr",
     "fd_hessian_epsilon",
     "fd_newton_damping",
-    "fd_newton_max_step",
+    "adaptive_rebatch_fraction",
     "solver_warmup_grad_inf_tol",
     "grad_inf_tol",
     "loss_change_tol",
     "best_likelihood_min_delta",
 }
-_JSON_BOOL_FIELDS = {"adaptive_iters", "adaptive_neumann_terms"}
+_JSON_BOOL_FIELDS = {"adaptive_iters", "adaptive_neumann_terms", "adaptive_rebatch"}
 _RUN_CONFIG_REQUIRED_PATH_FIELDS = ("species_tree", "families_file", "out_dir")
 _RUN_CONFIG_PATH_FIELDS = _RUN_CONFIG_REQUIRED_PATH_FIELDS + (
     "resume_from",
 )
+_RUN_CONFIG_LEGACY_FIELDS = frozenset({"fd_newton_max_step"})
 
 
 def _validate_json_scalar_types(data: dict[str, Any]) -> None:
@@ -310,6 +316,7 @@ class RunConfig:
     clade_budget: int | None = 500_000
     batch_packing: str = "depth_first_fit"
     max_wave_size: int | None = 8192
+    small_family_max_leaves: int = 4
 
     fixed_iters_e: int | None = None
     max_iters_e: int = 2000
@@ -331,13 +338,15 @@ class RunConfig:
     theta_init_d: float = 0.05
     theta_init_l: float = 0.05
     theta_init_t: float = 0.05
-    min_rate: float = 1e-10
-    max_rate: float = 1e9
+    min_rate: float = 2.0 ** -30
+    max_rate: float = 2.0
 
     optimizer: str = "auto"
     steps: int = 5000
     lr: float = 0.01
     adam_warmup_steps: int = 100
+    fd_adam_warmup_steps: int = 3
+    fd_hessian_refresh_steps: int = 5
     lbfgs_lr: float = 0.1
     lbfgs_history_size: int = 20
     lbfgs_max_iter: int = 1
@@ -345,7 +354,10 @@ class RunConfig:
     lbfgs_line_search: str = "none"
     fd_hessian_epsilon: float = 1e-3
     fd_newton_damping: float = 1e-3
-    fd_newton_max_step: float = 2.0
+    adaptive_rebatch: bool = False
+    adaptive_rebatch_fraction: float = 0.5
+    adaptive_rebatch_check_interval: int = 1
+    adaptive_rebatch_min_remaining_families: int = 2
 
     grad_inf_tol: float = 1e-3
     loss_change_tol: float = 1e-5
@@ -383,6 +395,10 @@ class RunConfig:
             "max_wave_size",
             self.max_wave_size,
         )
+        self.small_family_max_leaves = _normalize_nonnegative_int(
+            "small_family_max_leaves",
+            self.small_family_max_leaves,
+        )
         self.batch_packing = _normalize_workflow_batch_packing(self.batch_packing)
         if self.fixed_iters_e is not None:
             self.fixed_iters_e = _normalize_positive_int(
@@ -418,6 +434,22 @@ class RunConfig:
         self.adam_warmup_steps = _normalize_nonnegative_int(
             "adam_warmup_steps",
             self.adam_warmup_steps,
+        )
+        self.fd_adam_warmup_steps = _normalize_nonnegative_int(
+            "fd_adam_warmup_steps",
+            self.fd_adam_warmup_steps,
+        )
+        self.fd_hessian_refresh_steps = _normalize_positive_int(
+            "fd_hessian_refresh_steps",
+            self.fd_hessian_refresh_steps,
+        )
+        self.adaptive_rebatch_check_interval = _normalize_positive_int(
+            "adaptive_rebatch_check_interval",
+            self.adaptive_rebatch_check_interval,
+        )
+        self.adaptive_rebatch_min_remaining_families = _normalize_positive_int(
+            "adaptive_rebatch_min_remaining_families",
+            self.adaptive_rebatch_min_remaining_families,
         )
         self.lbfgs_history_size = _normalize_positive_int(
             "lbfgs_history_size",
@@ -532,10 +564,22 @@ class RunConfig:
             raise ValueError("fd_hessian_epsilon must be positive")
         if self.fd_newton_damping <= 0.0:
             raise ValueError("fd_newton_damping must be positive")
-        if self.fd_newton_max_step <= 0.0:
-            raise ValueError("fd_newton_max_step must be positive")
+        if not (0.0 < self.adaptive_rebatch_fraction <= 1.0):
+            raise ValueError("adaptive_rebatch_fraction must be in (0, 1]")
+        if self.adaptive_rebatch and (
+            self.mode != "genewise"
+            or self.optimizer not in {"batched-lbfgs", "adam-fd-newton"}
+        ):
+            raise ValueError(
+                "adaptive_rebatch requires genewise mode with batched-lbfgs "
+                "or adam-fd-newton"
+            )
         if self.adam_warmup_steps < 0:
             raise ValueError("adam_warmup_steps must be non-negative")
+        if self.fd_adam_warmup_steps < 0:
+            raise ValueError("fd_adam_warmup_steps must be non-negative")
+        if self.fd_hessian_refresh_steps < 1:
+            raise ValueError("fd_hessian_refresh_steps must be positive")
         if (
             self.lbfgs_history_size < 1
             or self.lbfgs_max_iter < 1
@@ -565,9 +609,18 @@ class RunConfig:
         if not isinstance(data, dict):
             raise ValueError("RunConfig data must be a JSON object")
         allowed = {field.name for field in fields(cls)}
-        unknown = sorted(str(key) for key in data if key not in allowed)
+        unknown = sorted(
+            str(key)
+            for key in data
+            if key not in allowed and key not in _RUN_CONFIG_LEGACY_FIELDS
+        )
         if unknown:
             raise ValueError(f"unknown RunConfig field(s): {', '.join(unknown)}")
+        data = {
+            key: value
+            for key, value in data.items()
+            if key not in _RUN_CONFIG_LEGACY_FIELDS
+        }
         missing = [
             name for name in _RUN_CONFIG_REQUIRED_PATH_FIELDS if data.get(name) is None
         ]

@@ -1035,6 +1035,7 @@ def test_project_readme_documents_workflow_config_aliases():
         "`first_fit_decreasing`",
         "`wave_first_fit`",
         "`clade_budget`",
+        "`small_family_max_leaves`",
     ):
         assert token in project_readme
 
@@ -1295,15 +1296,26 @@ def test_project_readme_documents_workflow_optimizer_modes():
         "| `lbfgs` |",
         "| `adam-lbfgs` |",
         "| `batched-lbfgs` |",
+        "| `adam-fd-newton` |",
         "If omitted, `auto` resolves to `batched-lbfgs` for `mode=genewise`",
+        "Workflow rate bounds default to `min_rate=2^-30` and `max_rate=2`",
         "`lbfgs_line_search` is `none` or `strong_wolfe`",
         "LBFGS runtime errors stop the run with a failed status",
         "`adam_warmup_steps` controls the phase switch",
+        "`fd_adam_warmup_steps` controls per-batch Adam warmup",
+        "`fd_hessian_refresh_steps` controls",
+        "`fd_newton_damping` controls Hessian regularization",
+        "there is no separate log-rate movement cap",
         "incompatible resumed optimizer state is discarded",
         "Requires `mode=genewise`",
+        "projected gradients at rate bounds",
         "vectorized row-wise port of PyTorch's bracket/zoom line search",
     ):
         assert token in normalized
+    assert "fd_newton_max_step" not in normalized
+    assert "--fd-newton-max-step" not in (
+        root / "gpurec" / "cli.py"
+    ).read_text(encoding="utf-8")
 
 
 def test_project_readme_documents_completed_resume_status():
