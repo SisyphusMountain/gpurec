@@ -1,9 +1,8 @@
-//! Rust preprocessing prototype for GPUREC.
+//! Rust preprocessing implementation for GPUREC.
 //!
-//! This crate mirrors the C++ `preprocess_multiple_families` data path closely:
-//! species nodes are indexed in postorder, gene-family clades use sorted global
+//! Species nodes are indexed in postorder, gene-family clades use sorted global
 //! leaf labels, split weights are accumulated across tree samples, and CCP split
-//! arrays are emitted in the same parent-ranked order as the current pybind.
+//! arrays are emitted in parent-ranked order for the Python likelihood runtime.
 
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -25,7 +24,7 @@ pub use scheduler::{
 };
 
 #[cfg(feature = "python-extension")]
-use numpy::{ndarray::Array2, IntoPyArray};
+use numpy::{ndarray::Array2, IntoPyArray, PyReadonlyArray1};
 #[cfg(feature = "python-extension")]
 use pyo3::{
     exceptions::{PyRuntimeError, PyValueError},
@@ -141,6 +140,8 @@ pub struct ChunkedLayoutRequest {
     pub dts_partial_tile_splits: usize,
     #[serde(default = "default_layout_dtype")]
     pub dtype: String,
+    #[serde(default)]
+    pub num_threads: usize,
 }
 
 #[cfg(feature = "python-extension")]
@@ -180,6 +181,19 @@ struct FusedChunkOutput {
     max_wave: i64,
     split_rows: i64,
     max_wave_split_rows: i64,
+}
+
+#[cfg(feature = "python-extension")]
+#[derive(Clone, Debug)]
+struct SpeciesHelperTopology {
+    sp_child1_cpu: Vec<i64>,
+    sp_child2_cpu: Vec<i64>,
+    sp_parent_cpu: Vec<i64>,
+    max_ancestor_depth: i64,
+    compact_level_ptr: Vec<i64>,
+    compact_level_parents: Vec<i32>,
+    compact_level_child1: Vec<i32>,
+    compact_level_child2: Vec<i32>,
 }
 
 pub fn write_binary_output<W: Write>(output: &PreprocessOutput, mut writer: W) -> io::Result<()> {
@@ -580,6 +594,74 @@ fn collate_family_batch(
 }
 
 #[cfg(feature = "python-extension")]
+fn build_one_fused_chunk(
+    output: &PreprocessOutput,
+    family_order: &[String],
+    request: &ChunkedLayoutRequest,
+    plan: FamilyBatchPlanOutput,
+) -> Result<FusedChunkOutput, PreprocessError> {
+    let collated = collate_family_batch(output, family_order, &plan.indices)?;
+    let mut items = Vec::with_capacity(plan.indices.len());
+    for index in &plan.indices {
+        let name = &family_order[*index as usize];
+        let family = output
+            .families
+            .get(name)
+            .ok_or_else(|| PreprocessError::InvalidInput(format!("unknown family {name:?}")))?;
+        items.push(scheduler::ScheduleItem {
+            ccp: schedule_ccp_from_family(family),
+        });
+    }
+    let schedule = scheduler::schedule_global_phased_waves(
+        &items,
+        &collated.family_clade_offsets,
+        request.max_wave_size.map(|value| value as usize),
+        request.max_root_wave_size,
+        request.max_dts_partial_rows,
+        request.dts_partial_tile_splits,
+    )?;
+    let layout = layout::build_wave_layout_plan(
+        &schedule.waves,
+        &schedule.phases,
+        collated.c,
+        collated.n_splits,
+        &collated.split_leftrights_sorted,
+        &collated.split_parents_sorted,
+        &collated.leaf_row_index,
+        &collated.leaf_col_index,
+        &collated.root_clade_ids,
+        Some(&collated.family_clade_counts),
+        Some(&collated.family_clade_offsets),
+    )?;
+
+    let mut max_wave = 0i64;
+    let mut split_rows = 0i64;
+    let mut max_wave_split_rows = 0i64;
+    for meta in &layout.wave_metas {
+        max_wave = max_wave.max(meta.w);
+        let rows = meta
+            .sl
+            .as_ref()
+            .map(|values| values.len() as i64)
+            .unwrap_or(0);
+        split_rows += rows;
+        max_wave_split_rows = max_wave_split_rows.max(rows);
+    }
+
+    Ok(FusedChunkOutput {
+        indices: plan.indices,
+        clades: plan.clades,
+        splits: plan.splits,
+        wave_layout: layout,
+        log_split_probs_sorted: collated.log_split_probs_sorted,
+        waves: schedule.waves.len() as i64,
+        max_wave,
+        split_rows,
+        max_wave_split_rows,
+    })
+}
+
+#[cfg(feature = "python-extension")]
 fn build_fused_chunked_layouts(
     output: &PreprocessOutput,
     family_order: &[String],
@@ -612,69 +694,232 @@ fn build_fused_chunked_layouts(
         request.max_wave_size,
     )?;
 
-    let mut chunks = Vec::with_capacity(plans.len());
-    for plan in plans {
-        let collated = collate_family_batch(output, family_order, &plan.indices)?;
-        let mut items = Vec::with_capacity(plan.indices.len());
-        for index in &plan.indices {
-            let name = &family_order[*index as usize];
-            let family = output
-                .families
-                .get(name)
-                .ok_or_else(|| PreprocessError::InvalidInput(format!("unknown family {name:?}")))?;
-            items.push(scheduler::ScheduleItem {
-                ccp: schedule_ccp_from_family(family),
-            });
-        }
-        let schedule = scheduler::schedule_global_phased_waves(
-            &items,
-            &collated.family_clade_offsets,
-            request.max_wave_size.map(|value| value as usize),
-            request.max_root_wave_size,
-            request.max_dts_partial_rows,
-            request.dts_partial_tile_splits,
-        )?;
-        let layout = layout::build_wave_layout_plan(
-            &schedule.waves,
-            &schedule.phases,
-            collated.c,
-            collated.n_splits,
-            &collated.split_leftrights_sorted,
-            &collated.split_parents_sorted,
-            &collated.leaf_row_index,
-            &collated.leaf_col_index,
-            &collated.root_clade_ids,
-            Some(&collated.family_clade_counts),
-            Some(&collated.family_clade_offsets),
-        )?;
-
-        let mut max_wave = 0i64;
-        let mut split_rows = 0i64;
-        let mut max_wave_split_rows = 0i64;
-        for meta in &layout.wave_metas {
-            max_wave = max_wave.max(meta.w);
-            let rows = meta
-                .sl
-                .as_ref()
-                .map(|values| values.len() as i64)
-                .unwrap_or(0);
-            split_rows += rows;
-            max_wave_split_rows = max_wave_split_rows.max(rows);
-        }
-
-        chunks.push(FusedChunkOutput {
-            indices: plan.indices,
-            clades: plan.clades,
-            splits: plan.splits,
-            wave_layout: layout,
-            log_split_probs_sorted: collated.log_split_probs_sorted,
-            waves: schedule.waves.len() as i64,
-            max_wave,
-            split_rows,
-            max_wave_split_rows,
-        });
+    let build = || {
+        plans
+            .into_par_iter()
+            .map(|plan| build_one_fused_chunk(output, family_order, request, plan))
+            .collect::<Result<Vec<_>, _>>()
+    };
+    if request.num_threads > 0 {
+        get_thread_pool(request.num_threads)?.install(build)
+    } else {
+        build()
     }
-    Ok(chunks)
+}
+
+#[cfg(feature = "python-extension")]
+fn species_indexes_from_numpy(
+    s_p_indexes: PyReadonlyArray1<'_, i64>,
+    s_c12_indexes: PyReadonlyArray1<'_, i64>,
+) -> (Vec<i64>, Vec<i64>) {
+    (
+        s_p_indexes.as_array().iter().copied().collect(),
+        s_c12_indexes.as_array().iter().copied().collect(),
+    )
+}
+
+#[cfg(feature = "python-extension")]
+fn validate_species_index_lengths(s_p_indexes: &[i64], s_c12_indexes: &[i64]) -> PyResult<()> {
+    if s_p_indexes.len() != s_c12_indexes.len() {
+        return Err(PyValueError::new_err(
+            "s_P_indexes and s_C12_indexes must have the same length",
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(feature = "python-extension")]
+fn species_parent_from_indexes(
+    s: usize,
+    s_p_indexes: &[i64],
+    s_c12_indexes: &[i64],
+) -> PyResult<Vec<i64>> {
+    validate_species_index_lengths(s_p_indexes, s_c12_indexes)?;
+    let mut parent = vec![-1i64; s];
+    for (&parent_code, &child) in s_p_indexes.iter().zip(s_c12_indexes.iter()) {
+        if child < 0 || child as usize >= s {
+            return Err(PyValueError::new_err(format!(
+                "s_C12_indexes value {child} is outside valid range [0, {s})"
+            )));
+        }
+        if parent_code < 0 || parent_code as usize >= 2 * s {
+            return Err(PyValueError::new_err(format!(
+                "s_P_indexes value {parent_code} is outside valid range [0, {})",
+                2 * s
+            )));
+        }
+        let parent_idx = if parent_code < s as i64 {
+            parent_code
+        } else {
+            parent_code - s as i64
+        };
+        parent[child as usize] = parent_idx;
+    }
+    Ok(parent)
+}
+
+#[cfg(feature = "python-extension")]
+fn compute_max_ancestor_depth(parent: &[i64]) -> PyResult<i64> {
+    let s = parent.len();
+    let mut max_ancestor_depth = 0usize;
+    for s_idx in 0..s {
+        let mut depth = 0usize;
+        let mut cur = s_idx as i64;
+        while cur >= 0 {
+            depth += 1;
+            if depth > s {
+                return Err(PyRuntimeError::new_err(
+                    "Cycle detected in species parent pointers",
+                ));
+            }
+            cur = parent[cur as usize];
+        }
+        max_ancestor_depth = max_ancestor_depth.max(depth);
+    }
+    Ok(max_ancestor_depth as i64)
+}
+
+#[cfg(feature = "python-extension")]
+fn species_helper_topology_from_indexes(
+    s: usize,
+    s_p_indexes: &[i64],
+    s_c12_indexes: &[i64],
+) -> PyResult<SpeciesHelperTopology> {
+    validate_species_index_lengths(s_p_indexes, s_c12_indexes)?;
+    let mut sp_child1_cpu = vec![s as i64; s];
+    let mut sp_child2_cpu = vec![s as i64; s];
+    for (&parent_code, &child) in s_p_indexes.iter().zip(s_c12_indexes.iter()) {
+        if child < 0 || child as usize >= s {
+            return Err(PyValueError::new_err(format!(
+                "s_C12_indexes value {child} is outside valid range [0, {s})"
+            )));
+        }
+        if parent_code < 0 || parent_code as usize >= 2 * s {
+            return Err(PyValueError::new_err(format!(
+                "s_P_indexes value {parent_code} is outside valid range [0, {})",
+                2 * s
+            )));
+        }
+        if parent_code < s as i64 {
+            sp_child1_cpu[parent_code as usize] = child;
+        } else {
+            sp_child2_cpu[(parent_code - s as i64) as usize] = child;
+        }
+    }
+
+    let sp_parent_cpu = species_parent_from_indexes(s, s_p_indexes, s_c12_indexes)?;
+    let max_ancestor_depth = compute_max_ancestor_depth(&sp_parent_cpu)?;
+
+    let mut levels = vec![-1i64; s];
+    for s_idx in 0..s {
+        if levels[s_idx] >= 0 {
+            continue;
+        }
+        let mut stack = vec![(s_idx, false)];
+        while let Some((node, expanded)) = stack.pop() {
+            if levels[node] >= 0 {
+                continue;
+            }
+            let c1 = sp_child1_cpu[node];
+            let c2 = sp_child2_cpu[node];
+            if !expanded {
+                stack.push((node, true));
+                if c2 >= 0 && (c2 as usize) < s && levels[c2 as usize] < 0 {
+                    stack.push((c2 as usize, false));
+                }
+                if c1 >= 0 && (c1 as usize) < s && levels[c1 as usize] < 0 {
+                    stack.push((c1 as usize, false));
+                }
+                continue;
+            }
+            let mut max_child_level = -1i64;
+            if c1 >= 0 && (c1 as usize) < s {
+                max_child_level = max_child_level.max(levels[c1 as usize]);
+            }
+            if c2 >= 0 && (c2 as usize) < s {
+                max_child_level = max_child_level.max(levels[c2 as usize]);
+            }
+            levels[node] = if max_child_level >= 0 {
+                max_child_level + 1
+            } else {
+                0
+            };
+        }
+    }
+
+    let max_level = levels.iter().copied().max().unwrap_or(0);
+    let mut compact_level_ptr = vec![0i64];
+    let mut compact_level_parents = Vec::new();
+    let mut compact_level_child1 = Vec::new();
+    let mut compact_level_child2 = Vec::new();
+    for level in 1..=max_level {
+        for (idx, &node_level) in levels.iter().enumerate() {
+            if node_level == level
+                && ((sp_child1_cpu[idx] as usize) < s || (sp_child2_cpu[idx] as usize) < s)
+            {
+                compact_level_parents.push(i32::try_from(idx).map_err(|_| {
+                    PyValueError::new_err(format!("species parent index {idx} does not fit int32"))
+                })?);
+                compact_level_child1.push(i32::try_from(sp_child1_cpu[idx]).map_err(|_| {
+                    PyValueError::new_err(format!(
+                        "species child1 index {} does not fit int32",
+                        sp_child1_cpu[idx]
+                    ))
+                })?);
+                compact_level_child2.push(i32::try_from(sp_child2_cpu[idx]).map_err(|_| {
+                    PyValueError::new_err(format!(
+                        "species child2 index {} does not fit int32",
+                        sp_child2_cpu[idx]
+                    ))
+                })?);
+            }
+        }
+        compact_level_ptr.push(compact_level_parents.len() as i64);
+    }
+    if compact_level_ptr.len() == 1 {
+        compact_level_ptr.push(0);
+    }
+
+    Ok(SpeciesHelperTopology {
+        sp_child1_cpu,
+        sp_child2_cpu,
+        sp_parent_cpu,
+        max_ancestor_depth,
+        compact_level_ptr,
+        compact_level_parents,
+        compact_level_child1,
+        compact_level_child2,
+    })
+}
+
+#[cfg(feature = "python-extension")]
+fn uniform_ancestor_index_pairs_from_indexes(
+    s: usize,
+    s_p_indexes: &[i64],
+    s_c12_indexes: &[i64],
+) -> PyResult<Vec<i64>> {
+    let parent = species_parent_from_indexes(s, s_p_indexes, s_c12_indexes)?;
+    let mut pairs = Vec::new();
+    for desc in 0..s {
+        let mut depth = 0usize;
+        let mut cur = desc as i64;
+        while cur >= 0 {
+            pairs.push((cur, desc as i64));
+            depth += 1;
+            if depth > s {
+                return Err(PyRuntimeError::new_err(
+                    "Cycle detected in species parent pointers",
+                ));
+            }
+            cur = parent[cur as usize];
+        }
+    }
+    pairs.sort_unstable();
+
+    let mut indices = Vec::with_capacity(2 * pairs.len());
+    indices.extend(pairs.iter().map(|(row, _)| *row));
+    indices.extend(pairs.into_iter().map(|(_, col)| col));
+    Ok(indices)
 }
 
 #[cfg(feature = "python-extension")]
@@ -812,6 +1057,80 @@ fn preprocess_request_torch<'py>(
 
 #[cfg(feature = "python-extension")]
 #[pyfunction]
+fn species_parent_from_indexes_torch<'py>(
+    py: Python<'py>,
+    s: usize,
+    s_p_indexes: PyReadonlyArray1<'py, i64>,
+    s_c12_indexes: PyReadonlyArray1<'py, i64>,
+    from_numpy: &Bound<'py, PyAny>,
+) -> PyResult<Py<PyAny>> {
+    let (s_p_indexes, s_c12_indexes) = species_indexes_from_numpy(s_p_indexes, s_c12_indexes);
+    let parent = species_parent_from_indexes(s, &s_p_indexes, &s_c12_indexes)?;
+    vec_i64_to_torch(py, from_numpy, parent)
+}
+
+#[cfg(feature = "python-extension")]
+#[pyfunction]
+fn species_wave_topology_torch<'py>(
+    py: Python<'py>,
+    s: usize,
+    s_p_indexes: PyReadonlyArray1<'py, i64>,
+    s_c12_indexes: PyReadonlyArray1<'py, i64>,
+    from_numpy: &Bound<'py, PyAny>,
+) -> PyResult<Bound<'py, PyDict>> {
+    let (s_p_indexes, s_c12_indexes) = species_indexes_from_numpy(s_p_indexes, s_c12_indexes);
+    let topology = species_helper_topology_from_indexes(s, &s_p_indexes, &s_c12_indexes)?;
+    let result = PyDict::new_bound(py);
+    result.set_item("S", s)?;
+    result.set_item(
+        "sp_child1_cpu",
+        vec_i64_to_torch(py, from_numpy, topology.sp_child1_cpu)?,
+    )?;
+    result.set_item(
+        "sp_child2_cpu",
+        vec_i64_to_torch(py, from_numpy, topology.sp_child2_cpu)?,
+    )?;
+    result.set_item(
+        "sp_parent_cpu",
+        vec_i64_to_torch(py, from_numpy, topology.sp_parent_cpu)?,
+    )?;
+    result.set_item("max_ancestor_depth", topology.max_ancestor_depth)?;
+    result.set_item(
+        "compact_level_ptr",
+        vec_i64_to_torch(py, from_numpy, topology.compact_level_ptr)?,
+    )?;
+    result.set_item(
+        "compact_level_parents",
+        vec_i32_to_torch(py, from_numpy, topology.compact_level_parents)?,
+    )?;
+    result.set_item(
+        "compact_level_child1",
+        vec_i32_to_torch(py, from_numpy, topology.compact_level_child1)?,
+    )?;
+    result.set_item(
+        "compact_level_child2",
+        vec_i32_to_torch(py, from_numpy, topology.compact_level_child2)?,
+    )?;
+    Ok(result)
+}
+
+#[cfg(feature = "python-extension")]
+#[pyfunction]
+fn uniform_ancestors_t_indices_torch<'py>(
+    py: Python<'py>,
+    s: usize,
+    s_p_indexes: PyReadonlyArray1<'py, i64>,
+    s_c12_indexes: PyReadonlyArray1<'py, i64>,
+    from_numpy: &Bound<'py, PyAny>,
+) -> PyResult<Py<PyAny>> {
+    let (s_p_indexes, s_c12_indexes) = species_indexes_from_numpy(s_p_indexes, s_c12_indexes);
+    let indices = uniform_ancestor_index_pairs_from_indexes(s, &s_p_indexes, &s_c12_indexes)?;
+    let cols = indices.len() / 2;
+    vec_i64_matrix_to_torch(py, from_numpy, indices, 2, cols)
+}
+
+#[cfg(feature = "python-extension")]
+#[pyfunction]
 fn schedule_global_phased_waves_json(request_json: &str) -> PyResult<String> {
     let request: ScheduleRequest = serde_json::from_str(request_json)
         .map_err(|err| PyRuntimeError::new_err(err.to_string()))?;
@@ -858,6 +1177,9 @@ fn gpurec_preprocess(_py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult<
     module.add_function(wrap_pyfunction!(preprocess_request_binary, module)?)?;
     module.add_function(wrap_pyfunction!(preprocess_request_numpy, module)?)?;
     module.add_function(wrap_pyfunction!(preprocess_request_torch, module)?)?;
+    module.add_function(wrap_pyfunction!(species_parent_from_indexes_torch, module)?)?;
+    module.add_function(wrap_pyfunction!(species_wave_topology_torch, module)?)?;
+    module.add_function(wrap_pyfunction!(uniform_ancestors_t_indices_torch, module)?)?;
     module.add_function(wrap_pyfunction!(schedule_global_phased_waves_json, module)?)?;
     module.add_function(wrap_pyfunction!(family_schedule_summary_json, module)?)?;
     module.add_function(wrap_pyfunction!(plan_family_batches_json, module)?)?;
@@ -1248,6 +1570,20 @@ fn vec_i32_to_torch<'py>(
     values: Vec<i32>,
 ) -> PyResult<Py<PyAny>> {
     let array = values.into_pyarray_bound(py);
+    from_numpy.call1((array,)).map(Bound::unbind)
+}
+
+#[cfg(feature = "python-extension")]
+fn vec_i64_matrix_to_torch<'py>(
+    py: Python<'py>,
+    from_numpy: &Bound<'py, PyAny>,
+    values: Vec<i64>,
+    rows: usize,
+    cols: usize,
+) -> PyResult<Py<PyAny>> {
+    let array = Array2::from_shape_vec((rows, cols), values)
+        .map_err(|err| PyValueError::new_err(err.to_string()))?
+        .into_pyarray_bound(py);
     from_numpy.call1((array,)).map(Bound::unbind)
 }
 

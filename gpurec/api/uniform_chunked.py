@@ -1020,6 +1020,7 @@ class UniformChunkedReconModel(torch.nn.Module):
                 max_wave_size=max_wave_n,
                 max_root_wave_size=max_root_wave_size,
                 dtype=_dtype_name_for_rust(dtype),
+                num_threads=0 if preprocess_cpu_cores is None else preprocess_cpu_cores,
             ),
             device=device,
             dtype=dtype,

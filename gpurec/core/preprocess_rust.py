@@ -261,6 +261,128 @@ def _torchify_native_output(value: Any) -> Any:
     return value
 
 
+def _canonical_torch_device(device: torch.device | str) -> torch.device:
+    dev = torch.device(device)
+    if dev.type == "cuda" and dev.index is None:
+        return torch.device("cuda", torch.cuda.current_device())
+    return dev
+
+
+def _i64_numpy_view(value: Any):
+    tensor = value.detach() if torch.is_tensor(value) else torch.as_tensor(value)
+    return tensor.to(device="cpu", dtype=torch.long).contiguous().numpy()
+
+
+def _species_index_arrays(
+    species_helpers: dict[str, Any],
+    *,
+    S: int | None = None,
+) -> tuple[int, Any, Any]:
+    s = int(species_helpers["S"] if S is None else S)
+    return (
+        s,
+        _i64_numpy_view(species_helpers["s_P_indexes"]),
+        _i64_numpy_view(species_helpers["s_C12_indexes"]),
+    )
+
+
+def rust_species_parent_from_helpers(
+    species_helpers: dict[str, Any],
+    *,
+    dtype: torch.dtype = torch.long,
+) -> torch.Tensor:
+    s, s_p_indexes, s_c12_indexes = _species_index_arrays(species_helpers)
+    module = _load_native_module()
+    parent = module.species_parent_from_indexes_torch(
+        s,
+        s_p_indexes,
+        s_c12_indexes,
+        torch.from_numpy,
+    )
+    return parent.to(dtype=dtype)
+
+
+def rust_species_wave_topology(
+    species_helpers: dict[str, Any],
+    *,
+    device: torch.device | str,
+    S: int | None = None,
+) -> dict[str, Any]:
+    target_device = _canonical_torch_device(device)
+    s, s_p_indexes, s_c12_indexes = _species_index_arrays(species_helpers, S=S)
+    module = _load_native_module()
+    topology = dict(
+        module.species_wave_topology_torch(
+            s,
+            s_p_indexes,
+            s_c12_indexes,
+            torch.from_numpy,
+        )
+    )
+    topology["S"] = int(topology["S"])
+    topology["sp_child1"] = topology["sp_child1_cpu"].to(
+        device=target_device,
+        dtype=torch.int32,
+    )
+    topology["sp_child2"] = topology["sp_child2_cpu"].to(
+        device=target_device,
+        dtype=torch.int32,
+    )
+    topology["sp_parent"] = topology["sp_parent_cpu"].to(
+        device=target_device,
+        dtype=torch.int32,
+    )
+    topology["max_ancestor_depth"] = int(topology["max_ancestor_depth"])
+    topology["compact_level_ptr"] = topology["compact_level_ptr"].to(
+        device=target_device,
+        dtype=torch.long,
+    ).contiguous()
+    topology["compact_level_parents"] = topology["compact_level_parents"].to(
+        device=target_device,
+        dtype=torch.int32,
+    ).contiguous()
+    topology["compact_level_child1"] = topology["compact_level_child1"].to(
+        device=target_device,
+        dtype=torch.int32,
+    ).contiguous()
+    topology["compact_level_child2"] = topology["compact_level_child2"].to(
+        device=target_device,
+        dtype=torch.int32,
+    ).contiguous()
+    return topology
+
+
+def rust_uniform_ancestors_t_from_topology(
+    species_helpers: dict[str, Any],
+    *,
+    device: torch.device | str,
+    dtype: torch.dtype,
+) -> torch.Tensor:
+    target_device = _canonical_torch_device(device)
+    s, s_p_indexes, s_c12_indexes = _species_index_arrays(species_helpers)
+    module = _load_native_module()
+    indices = module.uniform_ancestors_t_indices_torch(
+        s,
+        s_p_indexes,
+        s_c12_indexes,
+        torch.from_numpy,
+    ).to(device=target_device, dtype=torch.long).contiguous()
+    values = torch.ones(
+        (int(indices.shape[1]),),
+        dtype=dtype,
+        device=target_device,
+    )
+    with torch.sparse.check_sparse_tensor_invariants(False):
+        return torch.sparse_coo_tensor(
+            indices,
+            values,
+            (s, s),
+            device=target_device,
+            dtype=dtype,
+            is_coalesced=True,
+        )
+
+
 def _read_binary_species(reader: _BinaryReader) -> dict[str, Any]:
     s = reader.read_u64()
     species = {
@@ -307,7 +429,7 @@ def _read_binary_family(reader: _BinaryReader) -> dict[str, Any]:
 
 
 class RustPreprocessExtension:
-    """C++ pybind-shaped wrapper around the native Rust preprocessing module."""
+    """Raw Python wrapper around the native Rust preprocessing module."""
 
     def __init__(
         self,
@@ -400,6 +522,7 @@ class RustPreprocessedDataset:
         max_root_wave_size: int | None,
         max_dts_partial_rows: int | None = None,
         dtype: str = "float32",
+        num_threads: int = 0,
     ) -> list[dict[str, Any]]:
         request = {
             "family_chunk_size": int(family_chunk_size),
@@ -413,6 +536,7 @@ class RustPreprocessedDataset:
                 None if max_dts_partial_rows is None else int(max_dts_partial_rows)
             ),
             "dtype": str(dtype),
+            "num_threads": int(num_threads),
         }
         return list(
             self._native.build_chunked_layouts_torch(
@@ -423,7 +547,7 @@ class RustPreprocessedDataset:
 
 
 class RustPreprocessSubprocessExtension:
-    """C++ pybind-shaped wrapper around the Rust preprocessing CLI."""
+    """Raw Python wrapper around the Rust preprocessing CLI."""
 
     def __init__(
         self,

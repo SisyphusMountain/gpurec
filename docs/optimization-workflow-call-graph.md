@@ -1,0 +1,156 @@
+# gpurec Optimization Workflow Call Graph
+
+Scope: this follows the supported production path used by `gpurec optimize`
+and the equivalent Python API call `gpurec.optimize(RunConfig)`. It covers
+AleRax-style dataset processing, likelihood optimization, and final artifact
+publication. `gpurec run` calls the same optimization path first, then continues
+into sampling.
+
+## End-To-End Workflow
+
+```mermaid
+flowchart TD
+  CLI["gpurec.cli.main(argv)<br/>gpurec/cli.py:492"]
+  Parser["build_parser() / _run_config_from_args(args)<br/>gpurec/cli.py:446,117"]
+  Config["RunConfig.from_dict(...)<br/>gpurec/workflow/config.py:492"]
+  CLIOptimize["gpurec.cli.optimize(config)<br/>gpurec/cli.py:40"]
+  PyAPI["gpurec.optimize(config)<br/>gpurec/__init__.py:31<br/>gpurec/workflow/__init__.py:10"]
+  Optimize["workflow.optimize(config)<br/>gpurec/workflow/optimize.py:809"]
+  Runner["OptimizationRunner(config).run()<br/>gpurec/workflow/optimize.py:417"]
+
+  BuildModel["OptimizationRunner.build_model()<br/>gpurec/workflow/optimize.py:312"]
+  ModelFactory["build_alerax_workflow_model(config)<br/>gpurec/workflow/model_factory.py:11"]
+  FromFamilies["GeneReconModel.from_alerax_families(...)<br/>gpurec/api/model.py:1072"]
+  ParseFamilies["parse_alerax_family_file(...)<br/>gpurec/core/model.py:78"]
+  Dataset["GeneDataset.__init__(...)<br/>gpurec/core/model.py:257"]
+  LoadExt["_load_preprocess_extension()<br/>gpurec/core/model.py:202"]
+  Preprocess["GeneDataset._preprocess_without_cache(..., preprocess_cpu_cores)<br/>gpurec/core/model.py:339"]
+  RustPreprocess["RustPreprocessExtension.preprocess_multiple_families(..., num_threads)<br/>gpurec/core/preprocess_rust.py:442"]
+  FamilyRaw["GeneDataset._family_from_raw(raw)<br/>gpurec/core/model.py:237"]
+
+  ModelInit["GeneReconModel.__init__(...)<br/>gpurec/api/model.py:754"]
+  BatchSpecs["_build_batch_specs(...)<br/>gpurec/api/model.py:453"]
+  FamilyInputs["family_wave_inputs(...)<br/>gpurec/api/_family_layout.py:86"]
+  Schedule["schedule_family_waves(...)<br/>gpurec/api/_family_layout.py:127"]
+  BuildStatic["_build_batch_static_state(...)<br/>gpurec/api/model.py:605"]
+  BuildLayout["build_family_wave_layout(...)<br/>gpurec/api/_family_layout.py:144"]
+  WaveLayout["build_wave_layout(...)<br/>gpurec/core/batching.py:1224"]
+
+  OptimizerLoop["optimizer loop over config.steps<br/>gpurec/workflow/optimize.py:486"]
+  FinalEval["final _evaluate_and_backward(model)<br/>gpurec/workflow/optimize.py:673"]
+  FinalArtifacts["_write_final_artifacts(...)<br/>gpurec/workflow/optimize.py:223"]
+  Result["OptimizationResult<br/>gpurec/workflow/optimize.py:47"]
+
+  CLI --> Parser --> Config --> CLIOptimize --> Optimize
+  PyAPI --> Optimize
+  Optimize --> Runner
+  Runner --> BuildModel --> ModelFactory --> FromFamilies
+  FromFamilies --> ParseFamilies
+  FromFamilies --> Dataset
+  Dataset --> LoadExt --> Preprocess --> RustPreprocess --> FamilyRaw
+  FromFamilies --> ModelInit
+  ModelInit --> BatchSpecs --> FamilyInputs --> Schedule
+  ModelInit --> BuildStatic --> BuildLayout --> WaveLayout
+  Runner --> OptimizerLoop --> FinalEval --> FinalArtifacts --> Result
+```
+
+## Per-Step Likelihood And Gradient
+
+This is the work done by each optimizer closure. The workflow model is built
+with `lazy_preprocess=True`, so `full_loss()` uses the full-batch streaming
+autograd bridge.
+
+```mermaid
+flowchart TD
+  Closure["closure()<br/>gpurec/workflow/optimize.py:497"]
+  ClampBefore["model.clamp_theta_(min_rate, max_rate)<br/>gpurec/api/model.py:1751"]
+  EvalBackward["OptimizationRunner._evaluate_and_backward(model)<br/>gpurec/workflow/optimize.py:339"]
+  FullLoss["model.full_loss()<br/>gpurec/api/model.py:1581"]
+  FullLossFn["_GeneReconFullLossFunction.forward(...)<br/>gpurec/api/model.py:729"]
+  Stream["_stream_full_batches(theta, need_grad=True)<br/>gpurec/api/model.py:1258"]
+  EvalStatic["_evaluate_static_state(static, theta, need_grad=True)<br/>gpurec/api/model.py:692"]
+  ForwardSolve["evaluate_resident_gradient_forward(static, theta)<br/>gpurec/api/autograd.py:229"]
+  SolveEPi["solve_resident_e_pi(static, theta, pi_training_state_request())<br/>gpurec/api/autograd.py:163"]
+  Extract["extract_parameters_uniform(...)<br/>gpurec/core/extract_parameters.py:44"]
+  EFixed["E_fixed_point(...)<br/>gpurec/core/likelihood.py:105"]
+  EStep["E_step(...)<br/>gpurec/core/likelihood.py:31"]
+  PiRequest["pi_training_state_request().run(...)<br/>gpurec/core/forward.py:84"]
+  PiForward["Pi_wave_forward(...)<br/>gpurec/core/forward.py:143"]
+  DTS["_compute_dts_cross(...)<br/>gpurec/core/forward.py:112"]
+  DTSKernel["dts_fused_parent_reduced(...)<br/>gpurec/core/kernels/dts_fused.py:346"]
+  SelfLoop["_run_wave_self_loop(...)<br/>gpurec/core/forward.py:373"]
+  WaveStep["wave_step_uniform_fused_into(...)<br/>gpurec/core/kernels/wave_step.py:281"]
+  Pibar["wave_pibar_uniform_parent_fused(...)<br/>gpurec/core/kernels/wave_step.py:427"]
+  NLL["compute_nll(...)<br/>gpurec/core/likelihood.py:324"]
+
+  Implicit["compute_resident_implicit_gradient(...)<br/>gpurec/api/autograd.py:257"]
+  VJP["implicit_grad_loglik_vjp_wave(...)<br/>gpurec/optimization/implicit_grad.py:122"]
+  PiBackward["Pi_wave_backward(...)<br/>gpurec/core/backward.py:181"]
+  BackwardKernels["wave_backward_uniform_fused(...) / dts_cross_backward_accum_fused(...)<br/>gpurec/core/kernels/wave_backward.py:933,1501"]
+  EAdjoint["_e_adjoint_and_theta_vjp(...)<br/>gpurec/optimization/implicit_grad.py:234"]
+  Bicgstab["_bicgstab(...)<br/>gpurec/optimization/implicit_grad.py:55"]
+  LossBackward["loss.backward()<br/>gpurec/workflow/optimize.py:342"]
+  FullLossFnBackward["_GeneReconFullLossFunction.backward(...)<br/>gpurec/api/model.py:739"]
+  OptimizerStep["optimizer.step(...) / torch.optim Adam, Adagrad, or LBFGS<br/>gpurec/workflow/optimize.py:513,610"]
+  Clear["model.clear()<br/>gpurec/api/model.py:1510"]
+
+  Closure --> ClampBefore --> EvalBackward --> FullLoss --> FullLossFn --> Stream --> EvalStatic
+  EvalStatic --> ForwardSolve --> SolveEPi
+  SolveEPi --> Extract
+  SolveEPi --> EFixed --> EStep
+  SolveEPi --> PiRequest --> PiForward
+  PiForward --> DTS --> DTSKernel
+  PiForward --> SelfLoop --> WaveStep
+  SelfLoop --> Pibar
+  ForwardSolve --> NLL
+  EvalStatic --> Implicit --> VJP
+  VJP --> PiBackward --> BackwardKernels
+  VJP --> EAdjoint
+  EAdjoint --> Bicgstab
+  EAdjoint --> EStep
+  EAdjoint --> Extract
+  EvalBackward --> LossBackward --> FullLossFnBackward
+  Closure --> OptimizerStep --> Clear
+```
+
+## Outputs And Checkpoints
+
+```mermaid
+flowchart TD
+  StepRow["per-step metrics row<br/>gpurec/workflow/optimize.py:570"]
+  Record["_record(row)<br/>gpurec/workflow/optimize.py:354"]
+  Append["append_jsonl(history.jsonl, row)<br/>gpurec/workflow/diagnostics.py:163"]
+  SaveStatus["_save_status(... latest.pt / best.pt)<br/>gpurec/workflow/optimize.py:393"]
+  SaveCheckpoint["save_checkpoint(...)<br/>gpurec/workflow/checkpoint.py:122"]
+
+  FinalArtifacts["_write_final_artifacts(...)<br/>gpurec/workflow/optimize.py:223"]
+  Stage["create_artifact_temp_dir(...)<br/>gpurec/workflow/_artifact_publish.py:13"]
+  History["_write_history_jsonl_with_final_row(...)<br/>gpurec/workflow/optimize.py:182"]
+  Rates["_write_rate_table(rates_final.tsv, ...)<br/>gpurec/workflow/optimize.py:140"]
+  PerFamily["_write_per_family_likelihoods(per_fam_likelihoods.tsv, ...)<br/>gpurec/workflow/optimize.py:174"]
+  PerFamilyNLL["model.full_nll_per_family()<br/>gpurec/api/model.py:1693"]
+  Theta["torch.save(model.theta, theta_final.pt)<br/>gpurec/workflow/optimize.py:262"]
+  CSV["write_csv(optimization_history.csv, history)<br/>gpurec/workflow/diagnostics.py:169"]
+  Summary["write_json_strict(summary.json, summary)<br/>gpurec/workflow/diagnostics.py:39"]
+  Publish["_publish_final_artifacts(...)<br/>gpurec/workflow/optimize.py:210"]
+  AtomicPublish["publish_staged_artifacts(...)<br/>gpurec/workflow/_artifact_publish.py:68"]
+  OutDir["output directory<br/>history.jsonl, optimization_history.csv,<br/>rates_final.tsv, theta_final.pt, summary.json,<br/>checkpoints/latest.pt, checkpoints/best.pt,<br/>per_fam_likelihoods.tsv in genewise mode"]
+
+  StepRow --> Record --> Append
+  StepRow --> SaveStatus --> SaveCheckpoint
+  FinalArtifacts --> Stage
+  FinalArtifacts --> History
+  FinalArtifacts --> Rates
+  FinalArtifacts --> PerFamily --> PerFamilyNLL
+  FinalArtifacts --> Theta
+  FinalArtifacts --> CSV
+  FinalArtifacts --> Summary
+  FinalArtifacts --> Publish --> AtomicPublish --> OutDir
+  SaveCheckpoint --> OutDir
+```
+
+## Notes
+
+- The workflow optimizer phases are selected in `OptimizationRunner._phase_for_step()` and built in `_make_optimizer()` (`gpurec/workflow/optimize.py:316`).
+- Adam and Adagrad evaluate once before the parameter update. LBFGS calls the closure during `optimizer.step(closure)` and then records one current-theta evaluation.
+- The direct `UniformChunkedReconModel` path has its own public surface in `gpurec/api/uniform_chunked.py`, but the production workflow above currently constructs `GeneReconModel`.
