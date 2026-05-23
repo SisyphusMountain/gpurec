@@ -303,7 +303,7 @@ class RunConfig:
     preprocess_cpu_cores: int | None = None
 
     family_chunk_size: int | str | None = 0
-    clade_budget: int | None = 305_000
+    clade_budget: int | None = 500_000
     batch_packing: str = "depth_first_fit"
     max_wave_size: int | None = 8192
 
