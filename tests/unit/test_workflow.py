@@ -4817,6 +4817,14 @@ class _WorkflowAdaptiveRebatchModel(_WorkflowBatchedLBFGSModeModel):
         return list(self.batch_metadata)
 
 
+class _WorkflowAdaptiveRebatchLikelihoodPlateauModel(_WorkflowAdaptiveRebatchModel):
+    def __init__(self):
+        super().__init__()
+        with torch.no_grad():
+            self.theta[1].zero_()
+        self.initial_theta = self.theta.detach().clone()
+
+
 class _WorkflowOptimizerModeRunner(OptimizationRunner):
     def build_model(self):
         self.fake_model = _WorkflowOptimizerModeModel()
@@ -4832,6 +4840,12 @@ class _WorkflowBatchedLBFGSModeRunner(OptimizationRunner):
 class _WorkflowAdaptiveRebatchRunner(OptimizationRunner):
     def build_model(self):
         self.fake_model = _WorkflowAdaptiveRebatchModel()
+        return self.fake_model
+
+
+class _WorkflowAdaptiveRebatchLikelihoodPlateauRunner(OptimizationRunner):
+    def build_model(self):
+        self.fake_model = _WorkflowAdaptiveRebatchLikelihoodPlateauModel()
         return self.fake_model
 
 
@@ -4984,6 +4998,7 @@ def test_optimization_runner_hessian_sgd_mode_records_public_phase(tmp_path: Pat
     assert history_rows[0]["optimizer/fd_newton_loss_rejected_rows"] == 0.0
     assert history_rows[0]["optimizer/fd_newton_max_ls"] == 0.0
     assert history_rows[0]["optimizer/fd_newton_bfgs_updated_rows"] == 1.0
+    assert history_rows[0]["optimizer/fd_newton_hessian_refresh_steps"] == 16.0
     assert history_rows[0]["optimizer/fd_newton_step_scale"] == pytest.approx(
         config.lr
     )
@@ -5126,7 +5141,9 @@ def test_hessian_sgd_likelihood_plateau_converges_with_nonzero_gradient(
     assert runner.fake_model.closed
 
 
-def test_hessian_sgd_gradient_tolerance_does_not_enter_polish(tmp_path: Path):
+def test_hessian_sgd_gradient_tolerance_does_not_converge_or_enter_polish(
+    tmp_path: Path,
+):
     config = _optimizer_mode_config(
         tmp_path,
         optimizer="hessian-sgd",
@@ -5136,8 +5153,8 @@ def test_hessian_sgd_gradient_tolerance_does_not_enter_polish(tmp_path: Path):
         fd_hessian_epsilon=1e-3,
         fd_newton_damping=1e-6,
         grad_inf_tol=10.0,
-        loss_patience=1,
-        best_likelihood_patience=1,
+        loss_patience=0,
+        best_likelihood_patience=0,
     )
     runner = _WorkflowBatchedLBFGSModeRunner(config)
 
@@ -5154,7 +5171,8 @@ def test_hessian_sgd_gradient_tolerance_does_not_enter_polish(tmp_path: Path):
     assert {
         row["optimizer/hessian_sgd_polish_active"] for row in hessian_rows
     } == {False}
-    assert result.status == "converged"
+    assert result.status == "not_converged"
+    assert result.reason == "max_steps"
     assert runner.fake_model.closed
 
 
@@ -5225,24 +5243,31 @@ def test_optimization_runner_adaptive_rebatch_replans_unconverged_families(
         tmp_path,
         optimizer="batched-lbfgs",
         mode="genewise",
-        steps=1,
+        steps=2,
         solver_warmup_iters=0,
         adaptive_rebatch=True,
         adaptive_rebatch_fraction=0.5,
         adaptive_rebatch_min_remaining_families=1,
+        best_likelihood_patience=1,
         grad_inf_tol=0.5,
-        lbfgs_lr=1e-9,
         lbfgs_max_iter=1,
     )
-    runner = _WorkflowAdaptiveRebatchRunner(config)
+    runner = _WorkflowAdaptiveRebatchLikelihoodPlateauRunner(config)
 
     result = runner.run()
 
     history_rows = _optimizer_mode_history_rows(config.out_dir)
     assert history_rows[0]["optimizer/rebatch_checked"] is True
-    assert history_rows[0]["optimizer/rebatch_triggered"] is True
-    assert history_rows[0]["optimizer/rebatch_active_converged_families"] == 1.0
-    assert history_rows[0]["optimizer/rebatch_remaining_families"] == 1.0
+    assert history_rows[0]["optimizer/rebatch_triggered"] is False
+    assert history_rows[0]["optimizer/rebatch_active_converged_families"] == 0.0
+    assert history_rows[1]["optimizer/rebatch_checked"] is True
+    assert history_rows[1]["optimizer/rebatch_triggered"] is True
+    assert (
+        history_rows[1]["optimizer/rebatch_convergence_criterion"]
+        == "best_likelihood_patience"
+    )
+    assert history_rows[1]["optimizer/rebatch_active_converged_families"] == 1.0
+    assert history_rows[1]["optimizer/rebatch_remaining_families"] == 1.0
     assert runner.fake_model.replanned_indices == [(0,)]
     latest = load_checkpoint(config.out_dir / "checkpoints" / "latest.pt")
     assert latest["status"]["converged_family_indices"] == [1]
@@ -5260,16 +5285,17 @@ def test_optimization_runner_fd_newton_adaptive_rebatch_replans_unconverged_fami
         tmp_path,
         optimizer="adam-fd-newton",
         mode="genewise",
-        steps=1,
+        steps=2,
         solver_warmup_iters=0,
         adaptive_rebatch=True,
         adaptive_rebatch_fraction=0.5,
         adaptive_rebatch_min_remaining_families=1,
         fd_adam_warmup_steps=1,
+        best_likelihood_patience=1,
         grad_inf_tol=0.5,
-        lr=1e-9,
+        lr=0.2,
     )
-    runner = _WorkflowAdaptiveRebatchRunner(config)
+    runner = _WorkflowAdaptiveRebatchLikelihoodPlateauRunner(config)
 
     result = runner.run()
 
@@ -5277,9 +5303,16 @@ def test_optimization_runner_fd_newton_adaptive_rebatch_replans_unconverged_fami
     assert history_rows[0]["optimizer/phase"] == "adam-fd-newton"
     assert history_rows[0]["optimizer/fd_newton_subphase"] == "adam_warmup"
     assert history_rows[0]["optimizer/rebatch_checked"] is True
-    assert history_rows[0]["optimizer/rebatch_triggered"] is True
-    assert history_rows[0]["optimizer/rebatch_active_converged_families"] == 1.0
-    assert history_rows[0]["optimizer/rebatch_remaining_families"] == 1.0
+    assert history_rows[0]["optimizer/rebatch_triggered"] is False
+    assert history_rows[0]["optimizer/rebatch_active_converged_families"] == 0.0
+    assert history_rows[1]["optimizer/rebatch_checked"] is True
+    assert history_rows[1]["optimizer/rebatch_triggered"] is True
+    assert (
+        history_rows[1]["optimizer/rebatch_convergence_criterion"]
+        == "best_likelihood_patience"
+    )
+    assert history_rows[1]["optimizer/rebatch_active_converged_families"] == 1.0
+    assert history_rows[1]["optimizer/rebatch_remaining_families"] == 1.0
     assert runner.fake_model.replanned_indices == [(0,)]
     latest = load_checkpoint(config.out_dir / "checkpoints" / "latest.pt")
     assert latest["status"]["converged_family_indices"] == [1]
@@ -5297,17 +5330,18 @@ def test_optimization_runner_hessian_sgd_adaptive_rebatch_replans_unconverged_fa
         tmp_path,
         optimizer="hessian-sgd",
         mode="genewise",
-        steps=1,
+        steps=2,
         solver_warmup_iters=0,
         adaptive_rebatch=True,
         adaptive_rebatch_fraction=0.5,
         adaptive_rebatch_min_remaining_families=1,
         fd_hessian_epsilon=1e-3,
         fd_newton_damping=1e-6,
+        best_likelihood_patience=1,
         grad_inf_tol=0.5,
-        lr=1e-9,
+        lr=0.5,
     )
-    runner = _WorkflowAdaptiveRebatchRunner(config)
+    runner = _WorkflowAdaptiveRebatchLikelihoodPlateauRunner(config)
 
     result = runner.run()
 
@@ -5315,9 +5349,16 @@ def test_optimization_runner_hessian_sgd_adaptive_rebatch_replans_unconverged_fa
     assert history_rows[0]["optimizer/phase"] == "hessian-sgd"
     assert history_rows[0]["optimizer/fd_newton_subphase"] == "hessian_sgd"
     assert history_rows[0]["optimizer/rebatch_checked"] is True
-    assert history_rows[0]["optimizer/rebatch_triggered"] is True
-    assert history_rows[0]["optimizer/rebatch_active_converged_families"] == 1.0
-    assert history_rows[0]["optimizer/rebatch_remaining_families"] == 1.0
+    assert history_rows[0]["optimizer/rebatch_triggered"] is False
+    assert history_rows[0]["optimizer/rebatch_active_converged_families"] == 0.0
+    assert history_rows[1]["optimizer/rebatch_checked"] is True
+    assert history_rows[1]["optimizer/rebatch_triggered"] is True
+    assert (
+        history_rows[1]["optimizer/rebatch_convergence_criterion"]
+        == "best_likelihood_patience"
+    )
+    assert history_rows[1]["optimizer/rebatch_active_converged_families"] == 1.0
+    assert history_rows[1]["optimizer/rebatch_remaining_families"] == 1.0
     assert runner.fake_model.replanned_indices == [(0,)]
     latest = load_checkpoint(config.out_dir / "checkpoints" / "latest.pt")
     assert latest["status"]["converged_family_indices"] == [1]
@@ -5652,6 +5693,8 @@ def test_optimization_runner_batched_lbfgs_advances_resident_batches(tmp_path: P
         mode="genewise",
         steps=4,
         grad_inf_tol=0.8,
+        loss_change_tol=1e9,
+        loss_patience=1,
         lbfgs_max_iter=1,
         solver_warmup_iters=6,
     )
@@ -5663,12 +5706,12 @@ def test_optimization_runner_batched_lbfgs_advances_resident_batches(tmp_path: P
     batched_rows = [
         row for row in history_rows if row["optimizer/phase"] == "batched-lbfgs"
     ]
-    assert [row["optimizer/batch_index"] for row in batched_rows] == [0, 0, 1, 1]
+    assert [row["optimizer/batch_index"] for row in batched_rows] == [0, 0, 0, 1]
     assert [row["optimizer/solver_stage"] for row in batched_rows] == [
         "warmup",
         "full",
-        "warmup",
         "full",
+        "warmup",
     ]
     assert {row["optimizer/objective_scope"] for row in batched_rows} == {
         "active_batch",
@@ -5682,7 +5725,8 @@ def test_optimization_runner_batched_lbfgs_advances_resident_batches(tmp_path: P
         {"fixed_iters_E": None, "fixed_iters_Pi": 32, "neumann_terms": 32},
         {"fixed_iters_E": None, "fixed_iters_Pi": 16, "neumann_terms": 16},
     ]
-    assert result.status == "converged"
+    assert result.status == "not_converged"
+    assert result.reason == "max_steps"
     assert runner.fake_model.closed
 
 

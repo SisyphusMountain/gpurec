@@ -432,11 +432,10 @@ def test_uniform_chunked_nll_per_family_uses_no_grad_chunked_diagnostic(
 
 
 @pytest.mark.parametrize(
-    ("overrides", "grad_inf", "stable_loss_steps", "best_step", "step", "expected"),
+    ("overrides", "stable_loss_steps", "best_step", "step", "expected"),
     [
         (
             {"grad_inf_tol": 0.1, "loss_patience": 1, "best_likelihood_patience": 1},
-            0.1,
             1,
             0,
             1,
@@ -444,7 +443,6 @@ def test_uniform_chunked_nll_per_family_uses_no_grad_chunked_diagnostic(
         ),
         (
             {"loss_patience": 2, "best_likelihood_patience": 1},
-            1.0,
             2,
             0,
             2,
@@ -452,7 +450,6 @@ def test_uniform_chunked_nll_per_family_uses_no_grad_chunked_diagnostic(
         ),
         (
             {"best_likelihood_patience": 3},
-            1.0,
             0,
             2,
             5,
@@ -460,10 +457,16 @@ def test_uniform_chunked_nll_per_family_uses_no_grad_chunked_diagnostic(
         ),
         (
             {"loss_patience": 2, "best_likelihood_patience": 3},
-            1.0,
             1,
             4,
             5,
+            None,
+        ),
+        (
+            {"grad_inf_tol": 10.0, "loss_patience": 0, "best_likelihood_patience": 0},
+            0,
+            None,
+            0,
             None,
         ),
     ],
@@ -471,7 +474,6 @@ def test_uniform_chunked_nll_per_family_uses_no_grad_chunked_diagnostic(
 def test_step_stopping_status_matches_optimizer_loop_order(
     tmp_path: Path,
     overrides: dict[str, object],
-    grad_inf: float,
     stable_loss_steps: int,
     best_step: int | None,
     step: int,
@@ -480,7 +482,6 @@ def test_step_stopping_status_matches_optimizer_loop_order(
     status = _step_stopping_status(
         _run_config(tmp_path, **overrides),
         step=step,
-        grad_inf=grad_inf,
         stable_loss_steps=stable_loss_steps,
         best_step=best_step,
     )

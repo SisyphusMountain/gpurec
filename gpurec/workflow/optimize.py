@@ -407,7 +407,6 @@ def _step_stopping_status(
     config: RunConfig,
     *,
     step: int,
-    grad_inf: float,
     stable_loss_steps: int,
     best_step: int | None,
     loss_patience: int | None = None,
@@ -427,8 +426,6 @@ def _step_stopping_status(
         and step - int(best_step) >= best_likelihood_patience
     ):
         return {"status": "converged", "reason": "best_likelihood_patience"}
-    if grad_inf <= config.grad_inf_tol:
-        return {"status": "converged", "reason": "gradient_tolerance"}
     return None
 
 
@@ -1489,11 +1486,24 @@ class OptimizationRunner:
         fd_newton_hessian_state: _FDNewtonHessianState | None = None
         hessian_sgd_polish_active = False
         converged_family_mask: torch.Tensor | None = None
+        adaptive_family_best_nll: torch.Tensor | None = None
+        adaptive_family_stable_steps: torch.Tensor | None = None
         if adaptive_rebatch_enabled:
             converged_family_mask = torch.zeros(
                 (int(model.n_families),),
                 device=model.theta.device,
                 dtype=torch.bool,
+            )
+            adaptive_family_best_nll = torch.full(
+                (int(model.n_families),),
+                math.inf,
+                device=model.theta.device,
+                dtype=model.theta.dtype,
+            )
+            adaptive_family_stable_steps = torch.zeros(
+                (int(model.n_families),),
+                device=model.theta.device,
+                dtype=torch.long,
             )
         batch_plan_generation = 0
         active_batch_last_checked_converged_count = 0
@@ -2053,14 +2063,56 @@ class OptimizationRunner:
                         should_check_rebatch
                         and converged_family_mask is not None
                         and model.theta.grad is not None
+                        and adaptive_family_best_nll is not None
+                        and adaptive_family_stable_steps is not None
                     ):
+                        active_loss = loss_vec_current.detach().index_select(0, idx)
+                        active_best = adaptive_family_best_nll.index_select(0, idx)
+                        active_stable = adaptive_family_stable_steps.index_select(
+                            0,
+                            idx,
+                        )
+                        finite_loss = torch.isfinite(active_loss)
+                        improved_family = finite_loss & (
+                            active_loss < active_best - config.best_likelihood_min_delta
+                        )
+                        next_best = torch.where(
+                            improved_family,
+                            active_loss,
+                            active_best,
+                        )
+                        next_stable = torch.where(
+                            improved_family,
+                            torch.zeros_like(active_stable),
+                            active_stable + 1,
+                        )
+                        adaptive_family_best_nll.index_copy_(0, idx, next_best)
+                        adaptive_family_stable_steps.index_copy_(
+                            0,
+                            idx,
+                            next_stable,
+                        )
+                        family_patience = _active_batch_patience(
+                            config.best_likelihood_patience
+                        )
+                        if family_patience > 0:
+                            row_converged = next_stable >= family_patience
+                        else:
+                            row_converged = torch.zeros_like(
+                                next_stable,
+                                dtype=torch.bool,
+                            )
+                        row_converged = (
+                            row_converged
+                            & ~converged_family_mask.index_select(0, idx)
+                        )
                         row_grad_inf = self._active_projected_row_grad_inf(
                             model,
                             idx,
                             lower_bound=math.log2(config.min_rate),
                             upper_bound=math.log2(config.max_rate),
                         )
-                        row_converged = row_grad_inf <= config.grad_inf_tol
+                        row_grad_below_tol = row_grad_inf <= config.grad_inf_tol
                         threshold_count = max(
                             1,
                             math.ceil(
@@ -2078,6 +2130,15 @@ class OptimizationRunner:
                             {
                                 "optimizer/rebatch_active_converged_families": float(
                                     converged_count
+                                ),
+                                "optimizer/rebatch_convergence_criterion": (
+                                    "best_likelihood_patience"
+                                ),
+                                "optimizer/rebatch_grad_below_tol_families": float(
+                                    row_grad_below_tol.sum().detach().cpu()
+                                ),
+                                "optimizer/rebatch_family_stable_steps_max": float(
+                                    next_stable.max().detach().cpu()
                                 ),
                                 "optimizer/rebatch_threshold_families": float(
                                     threshold_count
@@ -2239,7 +2300,7 @@ class OptimizationRunner:
                 self._record(row)
 
                 if adaptive_rebatch_stop:
-                    status = {"status": "converged", "reason": "gradient_tolerance"}
+                    status = {"status": "converged", "reason": "best_likelihood_patience"}
                     break
                 if adaptive_rebatch_pending_indices is not None:
                     model.replan_resident_batches(adaptive_rebatch_pending_indices)
@@ -2337,9 +2398,6 @@ class OptimizationRunner:
                 step_status = _step_stopping_status(
                     config,
                     step=step,
-                    grad_inf=float(
-                        row.get("grad/projected_inf", row.get("grad/inf", math.inf))
-                    ),
                     stable_loss_steps=stable_loss_steps,
                     best_step=row_best_step,
                     loss_patience=(
