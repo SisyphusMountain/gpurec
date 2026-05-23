@@ -412,6 +412,43 @@ def _add_run_config_args(parser: argparse.ArgumentParser) -> None:
         type=int,
         help="Newton steps between full finite-difference Hessian refreshes.",
     )
+    parser.add_argument(
+        "--hessian-sgd-normal-fixed-iters-pi",
+        type=int,
+        help=(
+            "Optional Pi iteration budget for normal hessian-sgd full-stage "
+            "steps before polish."
+        ),
+    )
+    parser.add_argument(
+        "--hessian-sgd-normal-neumann-terms",
+        type=int,
+        help=(
+            "Optional Neumann iteration budget for normal hessian-sgd "
+            "full-stage steps before polish."
+        ),
+    )
+    parser.add_argument(
+        "--hessian-sgd-polish-max-steps",
+        type=int,
+        help=(
+            "Maximum hessian-sgd polish steps per active batch; 0 skips "
+            "polish after normal likelihood plateau."
+        ),
+    )
+    parser.add_argument(
+        "--hessian-sgd-polish-refresh-steps",
+        type=int,
+        help="Newton steps between finite-difference Hessian refreshes during polish.",
+    )
+    parser.add_argument(
+        "--hessian-sgd-polish-max-ls",
+        type=int,
+        help=(
+            "Optional line-search probe cap for hessian-sgd polish; defaults "
+            "to --lbfgs-max-ls."
+        ),
+    )
     parser.add_argument("--lbfgs-lr", type=float, help="LBFGS learning rate.")
     parser.add_argument("--lbfgs-history-size", type=int, help="LBFGS history size.")
     parser.add_argument("--lbfgs-max-iter", type=int, help="LBFGS inner iterations per step.")

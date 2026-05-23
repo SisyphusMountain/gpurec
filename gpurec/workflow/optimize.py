@@ -85,7 +85,6 @@ _ADAPTIVE_REBATCH_MIN_ACTIVE_FAMILIES = 64
 _FD_NEWTON_LARGE_BATCH_MAX_LS = 8
 _FD_NEWTON_EXTENDED_LINE_SEARCH_MAX_FAMILIES = 256
 _FD_NEWTON_CURVATURE_EPS = 1e-12
-_FD_NEWTON_POLISH_REFRESH_STEPS = 8
 _BATCHWISE_ACTIVE_OPTIMIZERS = frozenset(
     {"batched-lbfgs", "adam-fd-newton", "hessian-sgd"}
 )
@@ -571,6 +570,64 @@ class OptimizationRunner:
             )
             return
         raise ValueError(f"unknown solver stage {stage!r}")
+
+    def _configure_active_solver_stage(
+        self,
+        model: GeneReconModel,
+        stage: str,
+        *,
+        hessian_sgd_polish_active: bool = False,
+    ) -> None:
+        config = self.config
+        if (
+            config.optimizer == "hessian-sgd"
+            and stage == "full"
+            and not hessian_sgd_polish_active
+        ):
+            model.configure_solver_iterations(
+                fixed_iters_E=config.fixed_iters_e,
+                fixed_iters_Pi=(
+                    config.hessian_sgd_normal_fixed_iters_pi
+                    if config.hessian_sgd_normal_fixed_iters_pi is not None
+                    else config.fixed_iters_pi
+                ),
+                neumann_terms=(
+                    config.hessian_sgd_normal_neumann_terms
+                    if config.hessian_sgd_normal_neumann_terms is not None
+                    else config.neumann_terms
+                ),
+            )
+            return
+        self._configure_solver_stage(model, stage)
+
+    def _active_batch_result_is_canonical_full_solver(
+        self,
+        *,
+        phase: str,
+        solver_stage: str,
+        hessian_sgd_polish_active: bool,
+    ) -> bool:
+        config = self.config
+        if solver_stage != "full":
+            return False
+        if phase != "hessian-sgd":
+            return True
+        if hessian_sgd_polish_active:
+            return True
+        normal_pi = (
+            config.hessian_sgd_normal_fixed_iters_pi
+            if config.hessian_sgd_normal_fixed_iters_pi is not None
+            else config.fixed_iters_pi
+        )
+        normal_neumann = (
+            config.hessian_sgd_normal_neumann_terms
+            if config.hessian_sgd_normal_neumann_terms is not None
+            else config.neumann_terms
+        )
+        return (
+            normal_pi == config.fixed_iters_pi
+            and normal_neumann == config.neumann_terms
+        )
 
     def _evaluate_final_iteration_check(
         self,
@@ -1090,6 +1147,7 @@ class OptimizationRunner:
         use_line_search: bool = True,
         reject_loss_increases_after_step: bool = False,
         hessian_refresh_steps: int | None = None,
+        line_search_max_steps: int | None = None,
     ) -> tuple[torch.Tensor, dict[str, Any], int, _FDNewtonHessianState]:
         config = self.config
         hessian_refresh_steps = (
@@ -1187,7 +1245,13 @@ class OptimizationRunner:
         alpha = torch.ones(rows, device=model.theta.device, dtype=model.theta.dtype)
         max_line_search_steps = 0
         if use_line_search:
-            max_line_search_steps = int(config.lbfgs_max_ls)
+            max_line_search_steps = (
+                int(config.lbfgs_max_ls)
+                if line_search_max_steps is None
+                else int(line_search_max_steps)
+            )
+            if max_line_search_steps < 1:
+                raise ValueError("line_search_max_steps must be positive")
             if rows > _FD_NEWTON_EXTENDED_LINE_SEARCH_MAX_FAMILIES:
                 max_line_search_steps = min(
                     max_line_search_steps,
@@ -1670,7 +1734,11 @@ class OptimizationRunner:
                     dtype=torch.bool,
                 )
                 model.select_batch(active_batch_index)
-                self._configure_solver_stage(model, active_solver_stage)
+                self._configure_active_solver_stage(
+                    model,
+                    active_solver_stage,
+                    hessian_sgd_polish_active=hessian_sgd_polish_active,
+                )
 
             current_phase = self._phase_for_step(start_step)
             optimizer = self._make_optimizer(model, current_phase)
@@ -1971,9 +2039,20 @@ class OptimizationRunner:
                                     and not hessian_sgd_polish_active
                                 ),
                                 hessian_refresh_steps=(
-                                    _FD_NEWTON_POLISH_REFRESH_STEPS
-                                    if hessian_sgd_polish_active
+                                    config.hessian_sgd_polish_refresh_steps
+                                    if (
+                                        phase == "hessian-sgd"
+                                        and hessian_sgd_polish_active
+                                    )
                                     else config.fd_hessian_refresh_steps
+                                ),
+                                line_search_max_steps=(
+                                    config.hessian_sgd_polish_max_ls
+                                    if (
+                                        phase == "hessian-sgd"
+                                        and hessian_sgd_polish_active
+                                    )
+                                    else None
                                 ),
                             )
                         )
@@ -2000,7 +2079,11 @@ class OptimizationRunner:
                         model.clear()
                         break
                     if (
-                        active_solver_stage == "full"
+                        self._active_batch_result_is_canonical_full_solver(
+                            phase=phase,
+                            solver_stage=active_solver_stage,
+                            hessian_sgd_polish_active=hessian_sgd_polish_active,
+                        )
                         and batch_final_loss_cache is not None
                         and batch_final_grad_cache is not None
                         and batch_final_cache_ready is not None
@@ -2193,9 +2276,22 @@ class OptimizationRunner:
                     config.best_likelihood_min_delta * active_family_count
                 )
                 objective = float(metrics["likelihood/data_nll_bits"])
+                hessian_sgd_polish_limit_reached = False
                 if batchwise_hessian_sgd and phase == "hessian-sgd":
                     metrics["optimizer/hessian_sgd_polish_active"] = (
                         hessian_sgd_polish_active
+                    )
+                    if config.hessian_sgd_polish_max_steps is not None:
+                        metrics["optimizer/hessian_sgd_polish_max_steps"] = float(
+                            config.hessian_sgd_polish_max_steps
+                        )
+                        hessian_sgd_polish_limit_reached = (
+                            hessian_sgd_polish_active
+                            and active_batch_local_step
+                            >= config.hessian_sgd_polish_max_steps
+                        )
+                    metrics["optimizer/hessian_sgd_polish_limit_reached"] = (
+                        hessian_sgd_polish_limit_reached
                     )
                 delta = None if previous_objective is None else previous_objective - objective
                 if delta is not None and delta <= loss_change_tol_bits:
@@ -2321,7 +2417,11 @@ class OptimizationRunner:
                             ),
                             False,
                         )
-                    self._configure_solver_stage(model, active_solver_stage)
+                    self._configure_active_solver_stage(
+                        model,
+                        active_solver_stage,
+                        hessian_sgd_polish_active=False,
+                    )
                     if config.checkpoint_every:
                         transition_status = {
                             **checkpoint_status,
@@ -2404,6 +2504,11 @@ class OptimizationRunner:
                         else None
                     ),
                 )
+                if step_status is None and hessian_sgd_polish_limit_reached:
+                    step_status = {
+                        "status": "converged",
+                        "reason": "hessian_sgd_polish_max_steps",
+                    }
                 if (
                     step_status is not None
                     and active_objective_scope
@@ -2423,7 +2528,11 @@ class OptimizationRunner:
                     optimizer = None
                     active_optimizer_batch_index = None
                     active_batch_last_checked_converged_count = 0
-                    self._configure_solver_stage(model, active_solver_stage)
+                    self._configure_active_solver_stage(
+                        model,
+                        active_solver_stage,
+                        hessian_sgd_polish_active=False,
+                    )
                     if config.checkpoint_every:
                         transition_status = {
                             **checkpoint_status,
@@ -2457,6 +2566,10 @@ class OptimizationRunner:
                         and active_objective_scope
                         and active_solver_stage == "full"
                         and not hessian_sgd_polish_active
+                        and (
+                            config.hessian_sgd_polish_max_steps is None
+                            or config.hessian_sgd_polish_max_steps > 0
+                        )
                     ):
                         hessian_sgd_polish_active = True
                         active_batch_local_step = 0
@@ -2468,6 +2581,11 @@ class OptimizationRunner:
                         optimizer = None
                         active_optimizer_batch_index = None
                         active_batch_last_checked_converged_count = 0
+                        self._configure_active_solver_stage(
+                            model,
+                            active_solver_stage,
+                            hessian_sgd_polish_active=True,
+                        )
                         if config.checkpoint_every:
                             transition_status = {
                                 **checkpoint_status,
@@ -2531,7 +2649,11 @@ class OptimizationRunner:
                                 optimizer_phase=phase,
                             )
                         model.select_batch(active_batch_index)
-                        self._configure_solver_stage(model, active_solver_stage)
+                        self._configure_active_solver_stage(
+                            model,
+                            active_solver_stage,
+                            hessian_sgd_polish_active=hessian_sgd_polish_active,
+                        )
                         resume_info = {}
                         continue
                     status = step_status

@@ -1117,6 +1117,11 @@ def test_run_config_accepts_hessian_sgd_for_genewise_mode(tmp_path: Path):
     assert config.optimizer == "hessian-sgd"
     assert config.fd_hessian_refresh_steps == 16
     assert config.fd_hessian_epsilon == pytest.approx(1e-3)
+    assert config.hessian_sgd_normal_fixed_iters_pi is None
+    assert config.hessian_sgd_normal_neumann_terms is None
+    assert config.hessian_sgd_polish_max_steps is None
+    assert config.hessian_sgd_polish_refresh_steps == 8
+    assert config.hessian_sgd_polish_max_ls is None
 
 
 def test_run_config_auto_optimizer_uses_adam_for_shared_theta_modes(tmp_path: Path):
@@ -1419,6 +1424,11 @@ def test_run_config_rejects_nonbool_boolean_controls(
         ("adam_warmup_steps", 0.5),
         ("fd_adam_warmup_steps", 0.5),
         ("fd_hessian_refresh_steps", 0.5),
+        ("hessian_sgd_normal_fixed_iters_pi", 12.5),
+        ("hessian_sgd_normal_neumann_terms", 12.5),
+        ("hessian_sgd_polish_max_steps", 1.5),
+        ("hessian_sgd_polish_refresh_steps", 8.5),
+        ("hessian_sgd_polish_max_ls", 4.5),
         ("adaptive_rebatch_check_interval", 0.5),
         ("adaptive_rebatch_min_remaining_families", 1.5),
         ("small_family_max_leaves", 1.5),
@@ -1443,6 +1453,33 @@ def test_run_config_rejects_nonintegral_integer_controls(
         )
 
 
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("hessian_sgd_normal_fixed_iters_pi", 0),
+        ("hessian_sgd_normal_neumann_terms", 0),
+        ("hessian_sgd_polish_max_steps", -1),
+        ("hessian_sgd_polish_refresh_steps", 0),
+        ("hessian_sgd_polish_max_ls", 0),
+    ],
+)
+def test_run_config_rejects_invalid_hessian_sgd_controls(
+    tmp_path: Path,
+    field: str,
+    value: object,
+):
+    with pytest.raises(ValueError, match=field):
+        RunConfig(
+            species_tree=tmp_path / "sp.nwk",
+            families_file=tmp_path / "families.txt",
+            out_dir=tmp_path / "out",
+            optimizer="hessian-sgd",
+            mode="genewise",
+            device="cpu",
+            **{field: value},
+        )
+
+
 def test_run_config_rejects_odd_fixed_pi_iterations(tmp_path: Path):
     with pytest.raises(ValueError, match="fixed_iters_pi"):
         RunConfig(
@@ -1451,6 +1488,16 @@ def test_run_config_rejects_odd_fixed_pi_iterations(tmp_path: Path):
             out_dir=tmp_path / "out",
             device="cpu",
             fixed_iters_pi=3,
+        )
+    with pytest.raises(ValueError, match="hessian_sgd_normal_fixed_iters_pi"):
+        RunConfig(
+            species_tree=tmp_path / "sp.nwk",
+            families_file=tmp_path / "families.txt",
+            out_dir=tmp_path / "out",
+            optimizer="hessian-sgd",
+            mode="genewise",
+            device="cpu",
+            hessian_sgd_normal_fixed_iters_pi=3,
         )
 
 
@@ -5068,6 +5115,119 @@ def test_hessian_sgd_enters_newton_polish_after_full_stage_stall(tmp_path: Path)
     assert hessian_rows[1]["optimizer/fd_newton_hessian_refresh_steps"] == 16.0
     assert hessian_rows[2]["optimizer/fd_newton_hessian_refresh_steps"] == 8.0
     assert hessian_rows[2]["optimizer/fd_newton_step_scale"] == pytest.approx(1.0)
+    assert result.status == "not_converged"
+    assert runner.fake_model.closed
+
+
+def test_hessian_sgd_phase_specific_controls_drive_normal_and_polish(
+    tmp_path: Path,
+):
+    config = _optimizer_mode_config(
+        tmp_path,
+        optimizer="hessian-sgd",
+        mode="genewise",
+        steps=3,
+        solver_warmup_iters=0,
+        hessian_sgd_normal_fixed_iters_pi=12,
+        hessian_sgd_normal_neumann_terms=12,
+        hessian_sgd_polish_refresh_steps=5,
+        hessian_sgd_polish_max_ls=4,
+        fd_hessian_refresh_steps=16,
+        fd_hessian_epsilon=1e-3,
+        fd_newton_damping=1e-6,
+        loss_change_tol=1e9,
+        loss_patience=1,
+        best_likelihood_patience=0,
+    )
+    runner = _WorkflowBatchedLBFGSModeRunner(config)
+
+    result = runner.run()
+
+    history_rows = _optimizer_mode_history_rows(config.out_dir)
+    hessian_rows = [
+        row for row in history_rows if row["optimizer/phase"] == "hessian-sgd"
+    ]
+    assert [row["optimizer/fd_newton_subphase"] for row in hessian_rows] == [
+        "hessian_sgd",
+        "hessian_sgd",
+        "hessian_sgd_polish",
+    ]
+    assert hessian_rows[0]["optimizer/fd_newton_hessian_refresh_steps"] == 16.0
+    assert hessian_rows[2]["optimizer/fd_newton_hessian_refresh_steps"] == 5.0
+    assert hessian_rows[2]["optimizer/fd_newton_max_ls"] == 4.0
+    assert runner.fake_model.solver_configs[:2] == [
+        {"fixed_iters_E": None, "fixed_iters_Pi": 12, "neumann_terms": 12},
+        {"fixed_iters_E": None, "fixed_iters_Pi": 16, "neumann_terms": 16},
+    ]
+    assert result.status == "not_converged"
+    assert runner.fake_model.closed
+
+
+def test_hessian_sgd_zero_polish_cap_skips_polish_after_normal_plateau(
+    tmp_path: Path,
+):
+    config = _optimizer_mode_config(
+        tmp_path,
+        optimizer="hessian-sgd",
+        mode="genewise",
+        steps=3,
+        solver_warmup_iters=0,
+        hessian_sgd_normal_fixed_iters_pi=12,
+        hessian_sgd_normal_neumann_terms=12,
+        hessian_sgd_polish_max_steps=0,
+        fd_hessian_epsilon=1e-3,
+        fd_newton_damping=1e-6,
+        loss_change_tol=1e9,
+        loss_patience=1,
+        best_likelihood_patience=0,
+    )
+    runner = _WorkflowBatchedLBFGSModeRunner(config)
+
+    result = runner.run()
+
+    history_rows = _optimizer_mode_history_rows(config.out_dir)
+    hessian_rows = [
+        row for row in history_rows if row["optimizer/phase"] == "hessian-sgd"
+    ]
+    assert [row["optimizer/batch_index"] for row in hessian_rows] == [0, 0, 1]
+    assert {
+        row["optimizer/fd_newton_subphase"] for row in hessian_rows
+    } == {"hessian_sgd"}
+    assert hessian_rows[1]["optimizer/hessian_sgd_polish_max_steps"] == 0.0
+    assert hessian_rows[1]["optimizer/hessian_sgd_polish_limit_reached"] is False
+    assert "optimizer/final_eval_source" not in history_rows[-1]
+    assert result.status == "not_converged"
+    assert runner.fake_model.closed
+
+
+def test_hessian_sgd_polish_cap_advances_after_configured_polish_steps(
+    tmp_path: Path,
+):
+    config = _optimizer_mode_config(
+        tmp_path,
+        optimizer="hessian-sgd",
+        mode="genewise",
+        steps=4,
+        solver_warmup_iters=0,
+        hessian_sgd_polish_max_steps=1,
+        fd_hessian_epsilon=1e-3,
+        fd_newton_damping=1e-6,
+        loss_change_tol=1e9,
+        loss_patience=1,
+        best_likelihood_patience=0,
+    )
+    runner = _WorkflowBatchedLBFGSModeRunner(config)
+
+    result = runner.run()
+
+    history_rows = _optimizer_mode_history_rows(config.out_dir)
+    hessian_rows = [
+        row for row in history_rows if row["optimizer/phase"] == "hessian-sgd"
+    ]
+    assert [row["optimizer/batch_index"] for row in hessian_rows] == [0, 0, 0, 1]
+    assert hessian_rows[2]["optimizer/fd_newton_subphase"] == "hessian_sgd_polish"
+    assert hessian_rows[2]["optimizer/hessian_sgd_polish_max_steps"] == 1.0
+    assert hessian_rows[2]["optimizer/hessian_sgd_polish_limit_reached"] is True
     assert result.status == "not_converged"
     assert runner.fake_model.closed
 

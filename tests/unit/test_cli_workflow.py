@@ -183,6 +183,34 @@ def test_cli_forwards_preprocess_cpu_cores(tmp_path: Path):
     assert config.preprocess_cpu_cores == 3
 
 
+def test_cli_forwards_hessian_sgd_phase_controls(tmp_path: Path):
+    args = build_parser().parse_args(
+        _minimal_workflow_cli_args("optimize", tmp_path)
+        + [
+            "--optimizer",
+            "hessian-sgd",
+            "--hessian-sgd-normal-fixed-iters-pi",
+            "12",
+            "--hessian-sgd-normal-neumann-terms",
+            "10",
+            "--hessian-sgd-polish-max-steps",
+            "24",
+            "--hessian-sgd-polish-refresh-steps",
+            "6",
+            "--hessian-sgd-polish-max-ls",
+            "4",
+        ]
+    )
+
+    config = _run_config_from_args(args)
+
+    assert config.hessian_sgd_normal_fixed_iters_pi == 12
+    assert config.hessian_sgd_normal_neumann_terms == 10
+    assert config.hessian_sgd_polish_max_steps == 24
+    assert config.hessian_sgd_polish_refresh_steps == 6
+    assert config.hessian_sgd_polish_max_ls == 4
+
+
 def test_cli_accepts_family_chunk_all_alias(tmp_path: Path):
     write_tiny_alerax_inputs(tmp_path)
     args = build_parser().parse_args(

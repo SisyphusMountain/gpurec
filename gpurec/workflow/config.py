@@ -96,6 +96,27 @@ def _normalize_optional_positive_int(
     return number
 
 
+def _normalize_optional_positive_even_int(
+    name: str,
+    value: int | float | str | None,
+) -> int | None:
+    if value is None:
+        return None
+    return _normalize_positive_even_int(name, value)
+
+
+def _normalize_optional_nonnegative_int(
+    name: str,
+    value: int | float | str | None,
+) -> int | None:
+    if value is None:
+        return None
+    number = _normalize_int(name, value)
+    if number < 0:
+        raise ValueError(f"{name} must be non-negative when provided")
+    return number
+
+
 def _normalize_finite_float(name: str, value: float | int | str) -> float:
     return finite_float(name, value)
 
@@ -231,6 +252,11 @@ _JSON_INT_FIELDS = {
     "adam_warmup_steps",
     "fd_adam_warmup_steps",
     "fd_hessian_refresh_steps",
+    "hessian_sgd_normal_fixed_iters_pi",
+    "hessian_sgd_normal_neumann_terms",
+    "hessian_sgd_polish_max_steps",
+    "hessian_sgd_polish_refresh_steps",
+    "hessian_sgd_polish_max_ls",
     "adaptive_rebatch_check_interval",
     "adaptive_rebatch_min_remaining_families",
     "lbfgs_history_size",
@@ -347,6 +373,11 @@ class RunConfig:
     adam_warmup_steps: int = 100
     fd_adam_warmup_steps: int = 3
     fd_hessian_refresh_steps: int = 16
+    hessian_sgd_normal_fixed_iters_pi: int | None = None
+    hessian_sgd_normal_neumann_terms: int | None = None
+    hessian_sgd_polish_max_steps: int | None = None
+    hessian_sgd_polish_refresh_steps: int = 8
+    hessian_sgd_polish_max_ls: int | None = None
     lbfgs_lr: float = 0.1
     lbfgs_history_size: int = 20
     lbfgs_max_iter: int = 1
@@ -442,6 +473,26 @@ class RunConfig:
         self.fd_hessian_refresh_steps = _normalize_positive_int(
             "fd_hessian_refresh_steps",
             self.fd_hessian_refresh_steps,
+        )
+        self.hessian_sgd_normal_fixed_iters_pi = _normalize_optional_positive_even_int(
+            "hessian_sgd_normal_fixed_iters_pi",
+            self.hessian_sgd_normal_fixed_iters_pi,
+        )
+        self.hessian_sgd_normal_neumann_terms = _normalize_optional_positive_int(
+            "hessian_sgd_normal_neumann_terms",
+            self.hessian_sgd_normal_neumann_terms,
+        )
+        self.hessian_sgd_polish_max_steps = _normalize_optional_nonnegative_int(
+            "hessian_sgd_polish_max_steps",
+            self.hessian_sgd_polish_max_steps,
+        )
+        self.hessian_sgd_polish_refresh_steps = _normalize_positive_int(
+            "hessian_sgd_polish_refresh_steps",
+            self.hessian_sgd_polish_refresh_steps,
+        )
+        self.hessian_sgd_polish_max_ls = _normalize_optional_positive_int(
+            "hessian_sgd_polish_max_ls",
+            self.hessian_sgd_polish_max_ls,
         )
         self.adaptive_rebatch_check_interval = _normalize_positive_int(
             "adaptive_rebatch_check_interval",
@@ -583,6 +634,8 @@ class RunConfig:
             raise ValueError("fd_adam_warmup_steps must be non-negative")
         if self.fd_hessian_refresh_steps < 1:
             raise ValueError("fd_hessian_refresh_steps must be positive")
+        if self.hessian_sgd_polish_refresh_steps < 1:
+            raise ValueError("hessian_sgd_polish_refresh_steps must be positive")
         if (
             self.lbfgs_history_size < 1
             or self.lbfgs_max_iter < 1
