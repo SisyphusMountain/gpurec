@@ -421,13 +421,13 @@ def _step_stopping_status(
     if grad_inf <= config.grad_inf_tol:
         return {"status": "converged", "reason": "gradient_tolerance"}
     if loss_patience and stable_loss_steps >= loss_patience:
-        return {"status": "stalled", "reason": "loss_change_patience"}
+        return {"status": "converged", "reason": "loss_change_patience"}
     if (
         best_likelihood_patience
         and best_step is not None
         and step - int(best_step) >= best_likelihood_patience
     ):
-        return {"status": "stalled", "reason": "best_likelihood_patience"}
+        return {"status": "converged", "reason": "best_likelihood_patience"}
     return None
 
 
@@ -2353,7 +2353,8 @@ class OptimizationRunner:
                     continue
                 if step_status is not None:
                     if (
-                        step_status.get("status") == "stalled"
+                        step_status.get("reason")
+                        in {"loss_change_patience", "best_likelihood_patience"}
                         and batchwise_hessian_sgd
                         and phase == "hessian-sgd"
                         and active_objective_scope

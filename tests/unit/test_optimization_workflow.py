@@ -448,7 +448,7 @@ def test_uniform_chunked_nll_per_family_uses_no_grad_chunked_diagnostic(
             2,
             0,
             2,
-            {"status": "stalled", "reason": "loss_change_patience"},
+            {"status": "converged", "reason": "loss_change_patience"},
         ),
         (
             {"best_likelihood_patience": 3},
@@ -456,7 +456,7 @@ def test_uniform_chunked_nll_per_family_uses_no_grad_chunked_diagnostic(
             0,
             2,
             5,
-            {"status": "stalled", "reason": "best_likelihood_patience"},
+            {"status": "converged", "reason": "best_likelihood_patience"},
         ),
         (
             {"loss_patience": 2, "best_likelihood_patience": 3},
