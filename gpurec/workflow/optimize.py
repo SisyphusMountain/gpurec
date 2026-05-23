@@ -1058,6 +1058,8 @@ class OptimizationRunner:
         hessian_state: _FDNewtonHessianState | None = None,
         update_hessian_with_bfgs: bool = True,
         step_scale: float = 1.0,
+        use_line_search: bool = True,
+        reject_loss_increases_after_step: bool = False,
     ) -> tuple[torch.Tensor, dict[str, Any], int, _FDNewtonHessianState]:
         config = self.config
         idx = self._active_batch_indices(model)
@@ -1137,52 +1139,67 @@ class OptimizationRunner:
             else 0.0
         )
         gtd = (projected_grad * bounded_step).sum(dim=1)
-        searching = row_active & torch.isfinite(gtd) & (gtd < -1e-12)
+        valid_projected_step = row_active & torch.isfinite(gtd) & (gtd < -1e-12)
+        searching = valid_projected_step
         accepted = torch.zeros(rows, device=model.theta.device, dtype=torch.bool)
         accepted_active = active_theta0.clone()
         alpha = torch.ones(rows, device=model.theta.device, dtype=model.theta.dtype)
-        max_line_search_steps = int(config.lbfgs_max_ls)
-        if rows > _FD_NEWTON_EXTENDED_LINE_SEARCH_MAX_FAMILIES:
-            max_line_search_steps = min(
-                max_line_search_steps,
-                _FD_NEWTON_LARGE_BATCH_MAX_LS,
-            )
+        max_line_search_steps = 0
+        if use_line_search:
+            max_line_search_steps = int(config.lbfgs_max_ls)
+            if rows > _FD_NEWTON_EXTENDED_LINE_SEARCH_MAX_FAMILIES:
+                max_line_search_steps = min(
+                    max_line_search_steps,
+                    _FD_NEWTON_LARGE_BATCH_MAX_LS,
+                )
 
-        for _ in range(max_line_search_steps):
-            if not bool(searching.any()):
-                break
-            trial_active = torch.clamp(
-                active_theta0 + alpha[:, None] * step,
-                min=lower_bound,
-                max=upper_bound,
-            )
-            candidate_active = torch.where(
-                searching[:, None],
+            for _ in range(max_line_search_steps):
+                if not bool(searching.any()):
+                    break
+                trial_active = torch.clamp(
+                    active_theta0 + alpha[:, None] * step,
+                    min=lower_bound,
+                    max=upper_bound,
+                )
+                candidate_active = torch.where(
+                    searching[:, None],
+                    trial_active,
+                    accepted_active,
+                )
+                candidate = theta0.clone()
+                candidate.index_copy_(0, idx, candidate_active)
+                self._set_model_theta(model, candidate)
+                model.clear()
+                with torch.no_grad():
+                    trial_loss_vec = self._evaluate_active_genewise_loss_vector(model)
+                loss_evals += 1
+                trial_active_loss = trial_loss_vec.index_select(0, idx)
+                trial_delta = trial_active - active_theta0
+                trial_gtd = (projected_grad * trial_delta).sum(dim=1)
+                trial_searching = searching & torch.isfinite(trial_gtd) & (
+                    trial_gtd < -1e-12
+                )
+                armijo_rhs = active_loss0 + 1e-4 * trial_gtd
+                ok = trial_searching & torch.isfinite(trial_active_loss) & (
+                    trial_active_loss <= armijo_rhs
+                )
+                if bool(ok.any()):
+                    accepted = accepted | ok
+                    accepted_active = torch.where(
+                        ok[:, None],
+                        trial_active,
+                        accepted_active,
+                    )
+                searching = trial_searching & ~accepted
+                alpha = torch.where(searching, alpha * 0.5, alpha)
+        else:
+            trial_active = active_theta0 + bounded_step
+            accepted = valid_projected_step
+            accepted_active = torch.where(
+                accepted[:, None],
                 trial_active,
                 accepted_active,
             )
-            candidate = theta0.clone()
-            candidate.index_copy_(0, idx, candidate_active)
-            self._set_model_theta(model, candidate)
-            model.clear()
-            with torch.no_grad():
-                trial_loss_vec = self._evaluate_active_genewise_loss_vector(model)
-            loss_evals += 1
-            trial_active_loss = trial_loss_vec.index_select(0, idx)
-            trial_delta = trial_active - active_theta0
-            trial_gtd = (projected_grad * trial_delta).sum(dim=1)
-            trial_searching = searching & torch.isfinite(trial_gtd) & (
-                trial_gtd < -1e-12
-            )
-            armijo_rhs = active_loss0 + 1e-4 * trial_gtd
-            ok = trial_searching & torch.isfinite(trial_active_loss) & (
-                trial_active_loss <= armijo_rhs
-            )
-            if bool(ok.any()):
-                accepted = accepted | ok
-                accepted_active = torch.where(ok[:, None], trial_active, accepted_active)
-            searching = trial_searching & ~accepted
-            alpha = torch.where(searching, alpha * 0.5, alpha)
 
         final_theta = theta0.clone()
         final_theta.index_copy_(0, idx, accepted_active)
@@ -1192,14 +1209,50 @@ class OptimizationRunner:
             solver_stage=solver_stage,
         )
         grad_evals += 1
+        active_theta1 = final_theta.index_select(0, idx).detach()
+        active_loss1 = loss_vec.detach().index_select(0, idx)
+        active_grad1 = model.theta.grad.detach().index_select(0, idx)
+        loss_rejected = torch.zeros_like(accepted)
+        if reject_loss_increases_after_step:
+            finite_loss = torch.isfinite(active_loss1)
+            accepted_after_loss = accepted & finite_loss & (active_loss1 <= active_loss0)
+            loss_rejected = accepted & ~accepted_after_loss
+            if bool(loss_rejected.any().detach().cpu()):
+                accepted = accepted_after_loss
+                active_theta1 = torch.where(
+                    accepted[:, None],
+                    active_theta1,
+                    active_theta0,
+                )
+                active_loss1 = torch.where(accepted, active_loss1, active_loss0)
+                active_grad1 = torch.where(
+                    accepted[:, None],
+                    active_grad1,
+                    active_grad0,
+                )
+                final_theta = final_theta.clone()
+                final_theta.index_copy_(0, idx, active_theta1)
+                self._set_model_theta(model, final_theta)
+                loss_vec = loss_vec.detach().clone()
+                loss_vec.index_copy_(0, idx, active_loss1)
+                grad = model.theta.grad.detach().clone()
+                grad.index_copy_(0, idx, active_grad1)
+                model.theta.grad = grad
+                corrected_loss = loss_vec.sum()
+                metrics = dict(metrics)
+                metrics["likelihood/data_nll_bits"] = float(
+                    corrected_loss.detach().cpu()
+                )
+                metrics["likelihood/log_likelihood_bits"] = float(
+                    -corrected_loss.detach().cpu()
+                )
+                metrics.update(tensor_stats("grad", model.theta.grad))
+                metrics.update(parameter_stats(model.theta))
         final_projected_grad, final_projected_grad_inf = self._projected_grad_inf(
             model,
             lower_bound=lower_bound,
             upper_bound=upper_bound,
         )
-        active_theta1 = final_theta.index_select(0, idx).detach()
-        active_loss1 = loss_vec.detach().index_select(0, idx)
-        active_grad1 = model.theta.grad.detach().index_select(0, idx)
         active_projected_grad1 = final_projected_grad.index_select(0, idx)
         free_after = active_projected_grad1.abs() > 0
         if update_hessian_with_bfgs:
@@ -1239,6 +1292,13 @@ class OptimizationRunner:
         metrics["grad/projected_inf"] = final_projected_grad_inf
         metrics["optimizer/fd_newton_grad_evals"] = float(grad_evals)
         metrics["optimizer/fd_newton_loss_evals"] = float(loss_evals)
+        metrics["optimizer/fd_newton_line_search"] = bool(use_line_search)
+        metrics["optimizer/fd_newton_post_step_loss_filter"] = bool(
+            reject_loss_increases_after_step
+        )
+        metrics["optimizer/fd_newton_loss_rejected_rows"] = float(
+            loss_rejected.sum().detach().cpu()
+        )
         metrics["optimizer/fd_newton_max_ls"] = float(max_line_search_steps)
         metrics["optimizer/fd_newton_accepted_rows"] = float(accepted.sum().detach().cpu())
         metrics["optimizer/fd_newton_accepted_fraction"] = float(
@@ -1835,6 +1895,8 @@ class OptimizationRunner:
                                 hessian_state=fd_newton_hessian_state,
                                 update_hessian_with_bfgs=phase == "adam-fd-newton",
                                 step_scale=1.0 if phase == "adam-fd-newton" else config.lr,
+                                use_line_search=phase == "adam-fd-newton",
+                                reject_loss_increases_after_step=phase == "hessian-sgd",
                             )
                         )
                         metrics["optimizer/fd_newton_subphase"] = (

@@ -4968,12 +4968,17 @@ def test_optimization_runner_hessian_sgd_mode_records_public_phase(tmp_path: Pat
         "hessian-sgd",
         "final_eval",
     ]
-    assert history_rows[0]["closure_evals"] == 9
+    assert history_rows[0]["closure_evals"] == 8
     assert history_rows[0]["optimizer/eval_position"] == "post_step"
     assert history_rows[0]["optimizer/step_applied"] is True
     assert history_rows[0]["optimizer/fd_newton_subphase"] == "hessian_sgd"
     assert history_rows[0]["optimizer/fd_newton_hessian_update"] == "fixed"
     assert history_rows[0]["optimizer/fd_newton_hessian_source"] == "finite_difference"
+    assert history_rows[0]["optimizer/fd_newton_line_search"] is False
+    assert history_rows[0]["optimizer/fd_newton_post_step_loss_filter"] is True
+    assert history_rows[0]["optimizer/fd_newton_loss_evals"] == 0.0
+    assert history_rows[0]["optimizer/fd_newton_loss_rejected_rows"] == 0.0
+    assert history_rows[0]["optimizer/fd_newton_max_ls"] == 0.0
     assert history_rows[0]["optimizer/fd_newton_bfgs_updated_rows"] == 0.0
     assert history_rows[0]["optimizer/fd_newton_step_scale"] == pytest.approx(
         config.lr
@@ -5282,6 +5287,7 @@ def test_hessian_sgd_reuses_fixed_hessian_between_refreshes(tmp_path: Path):
         solver_stage="full",
         update_hessian_with_bfgs=False,
         step_scale=0.5,
+        use_line_search=False,
     )
     fixed_hessian = state.hessian.detach().clone()
     _loss_vec, second_metrics, second_evals, state = runner._active_fd_newton_step(
@@ -5290,14 +5296,19 @@ def test_hessian_sgd_reuses_fixed_hessian_between_refreshes(tmp_path: Path):
         hessian_state=state,
         update_hessian_with_bfgs=False,
         step_scale=0.5,
+        use_line_search=False,
     )
 
     assert first_metrics["optimizer/fd_newton_hessian_source"] == "finite_difference"
     assert first_metrics["optimizer/fd_newton_hessian_update"] == "fixed"
     assert second_metrics["optimizer/fd_newton_hessian_source"] == "fixed_hessian"
     assert second_metrics["optimizer/fd_newton_hessian_update"] == "fixed"
-    assert first_evals == 9
-    assert second_evals < first_evals
+    assert first_metrics["optimizer/fd_newton_line_search"] is False
+    assert first_metrics["optimizer/fd_newton_loss_evals"] == 0.0
+    assert second_metrics["optimizer/fd_newton_line_search"] is False
+    assert second_metrics["optimizer/fd_newton_loss_evals"] == 0.0
+    assert first_evals == 8
+    assert second_evals == 1
     assert second_metrics["optimizer/fd_newton_grad_evals"] == 1.0
     assert second_metrics["optimizer/fd_newton_bfgs_updated_rows"] == 0.0
     torch.testing.assert_close(state.hessian, fixed_hessian)
@@ -5324,6 +5335,7 @@ def test_hessian_sgd_refreshes_fixed_hessian_after_configured_steps(
         solver_stage="full",
         update_hessian_with_bfgs=False,
         step_scale=0.5,
+        use_line_search=False,
     )
     _loss_vec, second_metrics, second_evals, _state = runner._active_fd_newton_step(
         model,
@@ -5331,11 +5343,14 @@ def test_hessian_sgd_refreshes_fixed_hessian_after_configured_steps(
         hessian_state=state,
         update_hessian_with_bfgs=False,
         step_scale=0.5,
+        use_line_search=False,
     )
 
     assert second_metrics["optimizer/fd_newton_hessian_source"] == "finite_difference"
     assert second_metrics["optimizer/fd_newton_hessian_update"] == "fixed"
-    assert second_evals == 9
+    assert second_metrics["optimizer/fd_newton_line_search"] is False
+    assert second_metrics["optimizer/fd_newton_loss_evals"] == 0.0
+    assert second_evals == 8
 
 
 def test_adam_fd_newton_refreshes_hessian_after_configured_steps(
