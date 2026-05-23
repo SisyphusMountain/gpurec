@@ -5691,10 +5691,11 @@ def test_optimization_runner_batched_lbfgs_advances_resident_batches(tmp_path: P
         tmp_path,
         optimizer="batched-lbfgs",
         mode="genewise",
-        steps=4,
+        steps=5,
         grad_inf_tol=0.8,
         loss_change_tol=1e9,
         loss_patience=1,
+        solver_warmup_loss_patience=1,
         lbfgs_max_iter=1,
         solver_warmup_iters=6,
     )
@@ -5706,8 +5707,9 @@ def test_optimization_runner_batched_lbfgs_advances_resident_batches(tmp_path: P
     batched_rows = [
         row for row in history_rows if row["optimizer/phase"] == "batched-lbfgs"
     ]
-    assert [row["optimizer/batch_index"] for row in batched_rows] == [0, 0, 0, 1]
+    assert [row["optimizer/batch_index"] for row in batched_rows] == [0, 0, 0, 0, 1]
     assert [row["optimizer/solver_stage"] for row in batched_rows] == [
+        "warmup",
         "warmup",
         "full",
         "full",
@@ -5720,7 +5722,6 @@ def test_optimization_runner_batched_lbfgs_advances_resident_batches(tmp_path: P
         {"fixed_iters_E": 6, "fixed_iters_Pi": 6, "neumann_terms": 6},
         {"fixed_iters_E": None, "fixed_iters_Pi": 16, "neumann_terms": 16},
         {"fixed_iters_E": 6, "fixed_iters_Pi": 6, "neumann_terms": 6},
-        {"fixed_iters_E": None, "fixed_iters_Pi": 16, "neumann_terms": 16},
         {"fixed_iters_E": None, "fixed_iters_Pi": 16, "neumann_terms": 16},
         {"fixed_iters_E": None, "fixed_iters_Pi": 32, "neumann_terms": 32},
         {"fixed_iters_E": None, "fixed_iters_Pi": 16, "neumann_terms": 16},

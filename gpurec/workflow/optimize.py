@@ -466,7 +466,7 @@ class OptimizationRunner:
                 max_iter=config.lbfgs_max_iter,
                 history_size=config.lbfgs_history_size,
                 max_ls=config.lbfgs_max_ls,
-                tolerance_grad=config.grad_inf_tol,
+                tolerance_grad=0.0,
                 line_search_fn=(
                     "strong_wolfe"
                     if config.lbfgs_line_search == "strong_wolfe"
@@ -684,12 +684,9 @@ class OptimizationRunner:
     def _should_switch_solver_warmup(
         self,
         *,
-        grad_inf: float,
         stable_loss_steps: int,
     ) -> bool:
         config = self.config
-        if grad_inf <= config.solver_warmup_grad_inf_tol:
-            return True
         return (
             config.solver_warmup_loss_patience > 0
             and stable_loss_steps >= config.solver_warmup_loss_patience
@@ -2031,10 +2028,7 @@ class OptimizationRunner:
                         }
                         break
                     theta_step = 0.0
-                    skip_step_for_gradient = (
-                        float(metrics.get("grad/inf", math.inf)) <= config.grad_inf_tol
-                    )
-                    first_order_pending_step = not skip_step_for_gradient
+                    first_order_pending_step = True
 
                 if adaptive_rebatch_enabled and phase in _BATCHWISE_ACTIVE_OPTIMIZERS:
                     metrics = dict(metrics)
@@ -2391,7 +2385,6 @@ class OptimizationRunner:
                     active_objective_scope
                     and active_solver_stage == "warmup"
                     and self._should_switch_solver_warmup(
-                        grad_inf=float(row.get("grad/inf", math.inf)),
                         stable_loss_steps=stable_loss_steps,
                     )
                 )

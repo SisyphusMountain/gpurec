@@ -309,8 +309,8 @@ def _add_run_config_args(parser: argparse.ArgumentParser) -> None:
         "--solver-warmup-grad-inf-tol",
         type=float,
         help=(
-            "Switch genewise batched-LBFGS from warmup to full solvers below "
-            "this gradient infinity norm."
+            "Deprecated compatibility option; genewise solver warmup now "
+            "switches to full solvers from likelihood plateau only."
         ),
     )
     parser.add_argument(
@@ -434,7 +434,10 @@ def _add_run_config_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--grad-inf-tol",
         type=float,
-        help="Stop when gradient infinity norm is below this value.",
+        help=(
+            "Diagnostic projected-gradient threshold. Workflow convergence is "
+            "controlled by likelihood plateau, not gradient norm."
+        ),
     )
     parser.add_argument(
         "--loss-change-tol",
