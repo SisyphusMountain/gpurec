@@ -5503,6 +5503,23 @@ def test_hessian_sgd_reuses_fixed_hessian_between_refreshes(tmp_path: Path):
     assert state.updates_since_refresh == 2
 
 
+def test_fd_newton_refreshes_small_clade_batches_more_often(tmp_path: Path):
+    config = _optimizer_mode_config(
+        tmp_path,
+        optimizer="hessian-sgd",
+        mode="genewise",
+        fd_hessian_refresh_steps=16,
+    )
+    runner = OptimizationRunner(config)
+    model = _WorkflowBatchedLBFGSModeModel()
+
+    model.current_batch_metadata.clade_count = 100_000
+    assert runner._effective_fd_hessian_refresh_steps(model, 16) == 8
+
+    model.current_batch_metadata.clade_count = 500_000
+    assert runner._effective_fd_hessian_refresh_steps(model, 16) == 16
+
+
 def test_hessian_sgd_refreshes_fixed_hessian_after_configured_steps(
     tmp_path: Path,
 ):
