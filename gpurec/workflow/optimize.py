@@ -116,6 +116,19 @@ def _clear_cuda_allocator_cache_if_needed(model: GeneReconModel) -> None:
         torch.cuda.empty_cache()
 
 
+def _drop_cached_static_states_if_needed(model: GeneReconModel) -> None:
+    drop_cached_static_states = getattr(
+        model,
+        "drop_cached_static_states",
+        None,
+    )
+    if callable(drop_cached_static_states):
+        drop_cached_static_states()
+    else:
+        model.clear()
+    _clear_cuda_allocator_cache_if_needed(model)
+
+
 def _is_memory_retryable_runtime_error(exc: RuntimeError) -> bool:
     if isinstance(exc, torch.OutOfMemoryError):
         return True
@@ -577,15 +590,7 @@ class OptimizationRunner:
         except RuntimeError as original_exc:
             if not _is_memory_retryable_runtime_error(original_exc):
                 raise
-            model.clear()
-            drop_cached_static_states = getattr(
-                model,
-                "drop_cached_static_states",
-                None,
-            )
-            if callable(drop_cached_static_states):
-                drop_cached_static_states()
-            _clear_cuda_allocator_cache_if_needed(model)
+            _drop_cached_static_states_if_needed(model)
             try:
                 loss_vec, metrics = self._evaluate_genewise_vector_and_grad(model)
                 metrics = dict(metrics)
@@ -599,7 +604,7 @@ class OptimizationRunner:
             except RuntimeError as retry_exc:
                 if not _is_memory_retryable_runtime_error(retry_exc):
                     raise
-                _clear_cuda_allocator_cache_if_needed(model)
+                _drop_cached_static_states_if_needed(model)
             budgets = self._final_eval_fallback_clade_budgets()
             if not budgets:
                 raise
@@ -873,15 +878,7 @@ class OptimizationRunner:
             "optimizer/final_check_evals": 1,
         }
         try:
-            model.clear()
-            drop_cached_static_states = getattr(
-                model,
-                "drop_cached_static_states",
-                None,
-            )
-            if callable(drop_cached_static_states):
-                drop_cached_static_states()
-            _clear_cuda_allocator_cache_if_needed(model)
+            _drop_cached_static_states_if_needed(model)
             configure_solver(
                 fixed_iters_E=config.fixed_iters_e,
                 fixed_iters_Pi=check_iters,
@@ -1935,6 +1932,8 @@ class OptimizationRunner:
                     device=model.theta.device,
                     dtype=torch.bool,
                 )
+                if model.current_batch_index != active_batch_index:
+                    _drop_cached_static_states_if_needed(model)
                 model.select_batch(active_batch_index)
                 self._configure_active_solver_stage(
                     model,
@@ -1969,6 +1968,7 @@ class OptimizationRunner:
                 phase = self._phase_for_step(step)
                 if batchwise_batched_lbfgs and phase == "batched-lbfgs":
                     if model.current_batch_index != active_batch_index:
+                        _drop_cached_static_states_if_needed(model)
                         model.select_batch(active_batch_index)
                     if (
                         optimizer is None
@@ -1983,6 +1983,7 @@ class OptimizationRunner:
                     and phase in _HESSIAN_CONDITIONED_OPTIMIZERS
                 ):
                     if model.current_batch_index != active_batch_index:
+                        _drop_cached_static_states_if_needed(model)
                         model.select_batch(active_batch_index)
                     if (
                         optimizer is None
@@ -2585,6 +2586,7 @@ class OptimizationRunner:
                     status = {"status": "converged", "reason": "best_likelihood_patience"}
                     break
                 if adaptive_rebatch_pending_indices is not None:
+                    _drop_cached_static_states_if_needed(model)
                     model.replan_resident_batches(adaptive_rebatch_pending_indices)
                     batch_plan_generation += 1
                     active_batch_index = 0
@@ -2840,6 +2842,7 @@ class OptimizationRunner:
                                 row=row,
                                 optimizer_phase=phase,
                             )
+                        _drop_cached_static_states_if_needed(model)
                         model.select_batch(active_batch_index)
                         self._configure_active_solver_stage(
                             model,

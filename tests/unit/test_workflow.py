@@ -6021,6 +6021,7 @@ def test_optimization_runner_batched_lbfgs_advances_resident_batches(tmp_path: P
     ]
     assert result.status == "not_converged"
     assert result.reason == "max_steps"
+    assert runner.fake_model.drop_cached_static_states_calls == 2
     assert runner.fake_model.closed
 
 
