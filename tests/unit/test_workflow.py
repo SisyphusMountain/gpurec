@@ -1137,17 +1137,18 @@ def test_run_config_rejects_batched_lbfgs_outside_genewise(tmp_path: Path):
         )
 
 
-def test_run_config_rejects_strong_wolfe_for_batched_lbfgs(tmp_path: Path):
-    with pytest.raises(ValueError, match="row-wise Armijo"):
-        RunConfig(
-            species_tree=tmp_path / "sp.nwk",
-            families_file=tmp_path / "families.txt",
-            out_dir=tmp_path / "out",
-            mode="genewise",
-            optimizer="batched-lbfgs",
-            lbfgs_line_search="strong_wolfe",
-            device="cpu",
-        )
+def test_run_config_accepts_strong_wolfe_for_batched_lbfgs(tmp_path: Path):
+    config = RunConfig(
+        species_tree=tmp_path / "sp.nwk",
+        families_file=tmp_path / "families.txt",
+        out_dir=tmp_path / "out",
+        mode="genewise",
+        optimizer="batched-lbfgs",
+        lbfgs_line_search="strong_wolfe",
+        device="cpu",
+    )
+
+    assert config.lbfgs_line_search == "strong_wolfe"
 
 
 @pytest.mark.parametrize(

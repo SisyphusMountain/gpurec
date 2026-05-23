@@ -251,7 +251,7 @@ CLI. If omitted, `auto` resolves to `batched-lbfgs` for `mode=genewise` and
 | `adagrad` | Adagrad optimizer for all configured steps. | Uses `lr`; retained for long-running comparison runs. |
 | `lbfgs` | PyTorch LBFGS for all configured steps. | Uses `lbfgs_lr`, `lbfgs_history_size`, `lbfgs_max_iter`, and `lbfgs_line_search`.  `lbfgs_line_search` is `none` or `strong_wolfe`; LBFGS runtime errors stop the run with a failed status. |
 | `adam-lbfgs` | Adam warmup, then LBFGS polishing. | `adam_warmup_steps` controls the phase switch; incompatible resumed optimizer state is discarded when the checkpoint phase differs from the current phase. |
-| `batched-lbfgs` | Row-wise batched L-BFGS for genewise runs. | Requires `mode=genewise`; uses per-family NLL/gradient vectors, `lbfgs_lr`, `lbfgs_history_size`, and `lbfgs_max_iter`. It always uses its internal row-wise Armijo search, so `lbfgs_line_search` must be `none`. |
+| `batched-lbfgs` | Row-wise batched L-BFGS for genewise runs. | Requires `mode=genewise`; uses per-family NLL/gradient vectors, `lbfgs_lr`, `lbfgs_history_size`, `lbfgs_max_iter`, and `lbfgs_line_search`. `none` uses internal row-wise Armijo probes; `strong_wolfe` uses a vectorized row-wise port of PyTorch's bracket/zoom line search. |
 
 ```bash
 gpurec optimize \

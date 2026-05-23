@@ -1301,8 +1301,7 @@ def test_project_readme_documents_workflow_optimizer_modes():
         "`adam_warmup_steps` controls the phase switch",
         "incompatible resumed optimizer state is discarded",
         "Requires `mode=genewise`",
-        "internal row-wise Armijo search",
-        "`lbfgs_line_search` must be `none`",
+        "vectorized row-wise port of PyTorch's bracket/zoom line search",
     ):
         assert token in normalized
 

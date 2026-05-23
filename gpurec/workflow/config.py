@@ -508,11 +508,6 @@ class RunConfig:
             raise ValueError("LBFGS history size and max_iter must be positive")
         if self.lbfgs_line_search not in {"none", "strong_wolfe"}:
             raise ValueError("lbfgs_line_search must be 'none' or 'strong_wolfe'")
-        if self.optimizer == "batched-lbfgs" and self.lbfgs_line_search != "none":
-            raise ValueError(
-                "batched-lbfgs uses its internal row-wise Armijo line search; "
-                "lbfgs_line_search must be 'none'"
-            )
         if self.loss_patience < 0 or self.best_likelihood_patience < 0:
             raise ValueError("patience values must be non-negative")
         if self.checkpoint_every < 0 or self.log_every < 1:

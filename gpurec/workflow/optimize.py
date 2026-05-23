@@ -344,6 +344,11 @@ class OptimizationRunner:
                 max_iter=config.lbfgs_max_iter,
                 history_size=config.lbfgs_history_size,
                 tolerance_grad=config.grad_inf_tol,
+                line_search_fn=(
+                    "strong_wolfe"
+                    if config.lbfgs_line_search == "strong_wolfe"
+                    else "armijo"
+                ),
                 lower_bound=math.log2(config.min_rate),
                 upper_bound=math.log2(config.max_rate),
             )

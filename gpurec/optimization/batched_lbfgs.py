@@ -22,6 +22,51 @@ def _row_dot(a: Tensor, b: Tensor) -> Tensor:
     return (a * b).sum(dim=1)
 
 
+def _clamp_tensor(value: Tensor, lower: Tensor, upper: Tensor) -> Tensor:
+    return torch.minimum(torch.maximum(value, lower), upper)
+
+
+def _cubic_interpolate(
+    x1: Tensor,
+    f1: Tensor,
+    g1: Tensor,
+    x2: Tensor,
+    f2: Tensor,
+    g2: Tensor,
+    *,
+    bounds: tuple[Tensor, Tensor] | None = None,
+) -> Tensor:
+    """Vectorized port of ``torch.optim.lbfgs._cubic_interpolate``."""
+    if bounds is None:
+        xmin_bound = torch.minimum(x1, x2)
+        xmax_bound = torch.maximum(x1, x2)
+    else:
+        xmin_bound, xmax_bound = bounds
+
+    x_diff = x1 - x2
+    d1 = g1 + g2 - 3 * (f1 - f2) / x_diff
+    d2_square = d1.square() - g1 * g2
+    d2 = d2_square.clamp_min(0).sqrt()
+
+    denom_forward = g2 - g1 + 2 * d2
+    denom_reverse = g1 - g2 + 2 * d2
+    min_forward = x2 - (x2 - x1) * ((g2 + d2 - d1) / denom_forward)
+    min_reverse = x1 - (x1 - x2) * ((g1 + d2 - d1) / denom_reverse)
+    min_pos = torch.where(x1 <= x2, min_forward, min_reverse)
+
+    midpoint = (xmin_bound + xmax_bound) / 2.0
+    denom = torch.where(x1 <= x2, denom_forward, denom_reverse)
+    valid = (
+        (d2_square >= 0)
+        & torch.isfinite(min_pos)
+        & torch.isfinite(denom)
+        & torch.isfinite(x_diff)
+        & (denom.abs() > torch.finfo(x1.dtype).eps)
+        & (x_diff.abs() > torch.finfo(x1.dtype).eps)
+    )
+    return _clamp_tensor(torch.where(valid, min_pos, midpoint), xmin_bound, xmax_bound)
+
+
 class BatchedLBFGS(Optimizer):
     """Limited-memory BFGS with independent state along dimension 0.
 
@@ -51,8 +96,15 @@ class BatchedLBFGS(Optimizer):
         Maximum Armijo backtracking probes per L-BFGS iteration.
     c1:
         Armijo sufficient-decrease constant.
+    c2:
+        Strong-Wolfe curvature constant. Used only when
+        ``line_search_fn="strong_wolfe"``.
     shrink:
         Multiplicative step-size shrink factor for failed Armijo probes.
+    line_search_fn:
+        ``"armijo"`` for the original masked row-wise Armijo backtracking or
+        ``"strong_wolfe"`` for a vectorized port of PyTorch's scalar
+        strong-Wolfe bracket/zoom search.
     lower_bound:
         Optional scalar lower bound applied to the parameter values after every
         candidate step. For gpurec rates in log2-space this is
@@ -61,7 +113,6 @@ class BatchedLBFGS(Optimizer):
         Optional scalar upper bound applied after every candidate step. For
         ALERax-style DTL rate comparisons in log2-space this is typically
         ``math.log2(2.0)``.
-    The line search is masked row-wise Armijo backtracking.
     """
 
     def __init__(
@@ -76,7 +127,9 @@ class BatchedLBFGS(Optimizer):
         history_size: int = 10,
         max_ls: int = 20,
         c1: float = 1e-4,
+        c2: float = 0.9,
         shrink: float = 0.5,
+        line_search_fn: str = "armijo",
         lower_bound: float | Tensor | None = None,
         upper_bound: float | Tensor | None = None,
     ) -> None:
@@ -92,8 +145,12 @@ class BatchedLBFGS(Optimizer):
             raise ValueError(f"max_ls must be >= 1, got {max_ls}")
         if not (0.0 < c1 < 1.0):
             raise ValueError(f"c1 must be in (0, 1), got {c1}")
+        if not (0.0 < c2 < 1.0):
+            raise ValueError(f"c2 must be in (0, 1), got {c2}")
         if not (0.0 < shrink < 1.0):
             raise ValueError(f"shrink must be in (0, 1), got {shrink}")
+        if line_search_fn not in {"armijo", "strong_wolfe"}:
+            raise ValueError("line_search_fn must be 'armijo' or 'strong_wolfe'")
 
         defaults = {
             "lr": float(lr),
@@ -104,7 +161,9 @@ class BatchedLBFGS(Optimizer):
             "history_size": int(history_size),
             "max_ls": int(max_ls),
             "c1": float(c1),
+            "c2": float(c2),
             "shrink": float(shrink),
+            "line_search_fn": line_search_fn,
             "lower_bound": lower_bound,
             "upper_bound": upper_bound,
         }
@@ -195,6 +254,344 @@ class BatchedLBFGS(Optimizer):
                 loss = loss_closure()
         return self._loss_vector(loss)
 
+    def _evaluate_trial_with_grad(
+        self,
+        closure: LossClosure,
+        *,
+        start_flat: Tensor,
+        direction: Tensor,
+        alpha: Tensor,
+        evaluate: Tensor,
+        keep_flat: Tensor,
+        lower_bound: float | Tensor | None,
+        upper_bound: float | Tensor | None,
+    ) -> tuple[Tensor, Tensor, Tensor]:
+        trial_flat = self._project_flat(
+            start_flat + alpha[:, None] * direction,
+            lower_bound,
+            upper_bound,
+        )
+        candidate_flat = torch.where(evaluate[:, None], trial_flat, keep_flat)
+        self._set_flat_param(candidate_flat)
+        trial_loss, trial_grad = self._evaluate_with_grad(closure)
+        return trial_loss, trial_grad, trial_flat
+
+    def _strong_wolfe(
+        self,
+        closure: LossClosure,
+        *,
+        start_flat: Tensor,
+        direction: Tensor,
+        start_loss: Tensor,
+        start_grad: Tensor,
+        gtd: Tensor,
+        alpha: Tensor,
+        active: Tensor,
+        c1: float,
+        c2: float,
+        tolerance_change: float,
+        max_ls: int,
+        remaining_eval_budget: int,
+        lower_bound: float | Tensor | None,
+        upper_bound: float | Tensor | None,
+    ) -> tuple[Tensor, Tensor, Tensor, Tensor, Tensor, int]:
+        B = start_flat.shape[0]
+        device = start_flat.device
+        dtype = start_flat.dtype
+        zeros = torch.zeros(B, device=device, dtype=dtype)
+        false = torch.zeros(B, device=device, dtype=torch.bool)
+
+        final_alpha = zeros.clone()
+        final_loss = start_loss.clone()
+        final_grad = start_grad.clone()
+        if remaining_eval_budget <= 0 or not bool(active.any()):
+            return start_flat, final_loss, final_grad, final_alpha, false, 0
+
+        trial_loss, trial_grad, _trial_flat = self._evaluate_trial_with_grad(
+            closure,
+            start_flat=start_flat,
+            direction=direction,
+            alpha=alpha,
+            evaluate=active,
+            keep_flat=start_flat,
+            lower_bound=lower_bound,
+            upper_bound=upper_bound,
+        )
+        evals = 1
+        loss_new = torch.where(active, trial_loss, start_loss)
+        grad_new = torch.where(active[:, None], trial_grad, start_grad)
+        gtd_new = _row_dot(grad_new, direction)
+
+        t = alpha.clone()
+        t_prev = zeros.clone()
+        f_prev = start_loss.clone()
+        g_prev = start_grad.clone(memory_format=torch.contiguous_format)
+        gtd_prev = gtd.clone()
+
+        bracket_t0 = zeros.clone()
+        bracket_t1 = t.clone()
+        bracket_f0 = start_loss.clone()
+        bracket_f1 = loss_new.clone()
+        bracket_g0 = start_grad.clone(memory_format=torch.contiguous_format)
+        bracket_g1 = grad_new.clone(memory_format=torch.contiguous_format)
+        bracket_gtd0 = gtd.clone()
+        bracket_gtd1 = gtd_new.clone()
+
+        done = false.clone()
+        bracketed = false.clone()
+        searching = active.clone()
+        ls_iter = torch.zeros(B, device=device, dtype=torch.long)
+
+        while bool(searching.any()):
+            exhausted = searching & (ls_iter >= max_ls)
+            if bool(exhausted.any()):
+                bracket_t0 = torch.where(exhausted, zeros, bracket_t0)
+                bracket_t1 = torch.where(exhausted, t, bracket_t1)
+                bracket_f0 = torch.where(exhausted, start_loss, bracket_f0)
+                bracket_f1 = torch.where(exhausted, loss_new, bracket_f1)
+                bracket_g0 = torch.where(exhausted[:, None], start_grad, bracket_g0)
+                bracket_g1 = torch.where(exhausted[:, None], grad_new, bracket_g1)
+                bracket_gtd0 = torch.where(exhausted, gtd, bracket_gtd0)
+                bracket_gtd1 = torch.where(exhausted, gtd_new, bracket_gtd1)
+                bracketed |= exhausted
+                searching = searching & ~exhausted
+                if not bool(searching.any()):
+                    break
+            armijo = start_loss + c1 * t * gtd
+            previous_worse = (ls_iter > 1) & (loss_new >= f_prev)
+            bracket_now = searching & (
+                ~torch.isfinite(loss_new)
+                | ~torch.isfinite(gtd_new)
+                | (loss_new > armijo)
+                | previous_worse
+            )
+            if bool(bracket_now.any()):
+                bracket_t0 = torch.where(bracket_now, t_prev, bracket_t0)
+                bracket_t1 = torch.where(bracket_now, t, bracket_t1)
+                bracket_f0 = torch.where(bracket_now, f_prev, bracket_f0)
+                bracket_f1 = torch.where(bracket_now, loss_new, bracket_f1)
+                bracket_g0 = torch.where(bracket_now[:, None], g_prev, bracket_g0)
+                bracket_g1 = torch.where(bracket_now[:, None], grad_new, bracket_g1)
+                bracket_gtd0 = torch.where(bracket_now, gtd_prev, bracket_gtd0)
+                bracket_gtd1 = torch.where(bracket_now, gtd_new, bracket_gtd1)
+                bracketed |= bracket_now
+
+            remaining = searching & ~bracket_now
+            done_now = remaining & (gtd_new.abs() <= -c2 * gtd)
+            if bool(done_now.any()):
+                final_alpha = torch.where(done_now, t, final_alpha)
+                final_loss = torch.where(done_now, loss_new, final_loss)
+                final_grad = torch.where(done_now[:, None], grad_new, final_grad)
+                done |= done_now
+
+            remaining = remaining & ~done_now
+            bracket_turn = remaining & (gtd_new >= 0)
+            if bool(bracket_turn.any()):
+                bracket_t0 = torch.where(bracket_turn, t_prev, bracket_t0)
+                bracket_t1 = torch.where(bracket_turn, t, bracket_t1)
+                bracket_f0 = torch.where(bracket_turn, f_prev, bracket_f0)
+                bracket_f1 = torch.where(bracket_turn, loss_new, bracket_f1)
+                bracket_g0 = torch.where(bracket_turn[:, None], g_prev, bracket_g0)
+                bracket_g1 = torch.where(bracket_turn[:, None], grad_new, bracket_g1)
+                bracket_gtd0 = torch.where(bracket_turn, gtd_prev, bracket_gtd0)
+                bracket_gtd1 = torch.where(bracket_turn, gtd_new, bracket_gtd1)
+                bracketed |= bracket_turn
+
+            searching = remaining & ~bracket_turn
+            if not bool(searching.any()) or evals >= remaining_eval_budget:
+                break
+
+            min_step = t + 0.01 * (t - t_prev)
+            max_step = t * 10.0
+            next_t = _cubic_interpolate(
+                t_prev,
+                f_prev,
+                gtd_prev,
+                t,
+                loss_new,
+                gtd_new,
+                bounds=(min_step, max_step),
+            )
+
+            old_t = t.clone()
+            t_prev = torch.where(searching, old_t, t_prev)
+            f_prev = torch.where(searching, loss_new, f_prev)
+            g_prev = torch.where(searching[:, None], grad_new, g_prev)
+            gtd_prev = torch.where(searching, gtd_new, gtd_prev)
+            t = torch.where(searching, next_t, t)
+
+            trial_loss, trial_grad, _trial_flat = self._evaluate_trial_with_grad(
+                closure,
+                start_flat=start_flat,
+                direction=direction,
+                alpha=t,
+                evaluate=searching,
+                keep_flat=start_flat,
+                lower_bound=lower_bound,
+                upper_bound=upper_bound,
+            )
+            evals += 1
+            loss_new = torch.where(searching, trial_loss, loss_new)
+            grad_new = torch.where(searching[:, None], trial_grad, grad_new)
+            gtd_new = torch.where(searching, _row_dot(grad_new, direction), gtd_new)
+            ls_iter = torch.where(searching, ls_iter + 1, ls_iter)
+
+        if bool(searching.any()):
+            bracket_t0 = torch.where(searching, zeros, bracket_t0)
+            bracket_t1 = torch.where(searching, t, bracket_t1)
+            bracket_f0 = torch.where(searching, start_loss, bracket_f0)
+            bracket_f1 = torch.where(searching, loss_new, bracket_f1)
+            bracket_g0 = torch.where(searching[:, None], start_grad, bracket_g0)
+            bracket_g1 = torch.where(searching[:, None], grad_new, bracket_g1)
+            bracket_gtd0 = torch.where(searching, gtd, bracket_gtd0)
+            bracket_gtd1 = torch.where(searching, gtd_new, bracket_gtd1)
+            bracketed |= searching
+            searching = false.clone()
+
+        low_is_0 = bracket_f0 <= bracket_f1
+        low_t = torch.where(low_is_0, bracket_t0, bracket_t1)
+        high_t = torch.where(low_is_0, bracket_t1, bracket_t0)
+        low_f = torch.where(low_is_0, bracket_f0, bracket_f1)
+        high_f = torch.where(low_is_0, bracket_f1, bracket_f0)
+        low_g = torch.where(low_is_0[:, None], bracket_g0, bracket_g1)
+        high_g = torch.where(low_is_0[:, None], bracket_g1, bracket_g0)
+        low_gtd = torch.where(low_is_0, bracket_gtd0, bracket_gtd1)
+        high_gtd = torch.where(low_is_0, bracket_gtd1, bracket_gtd0)
+
+        zooming = bracketed & ~done
+        insuf_progress = false.clone()
+        d_norm = direction.abs().amax(dim=1)
+
+        while (
+            bool(zooming.any())
+            and evals < remaining_eval_budget
+        ):
+            zooming = zooming & (ls_iter < max_ls)
+            if not bool(zooming.any()):
+                break
+            bracket_width = (high_t - low_t).abs()
+            too_small = zooming & (bracket_width * d_norm < tolerance_change)
+            zoom_eval = zooming & ~too_small
+            if not bool(zoom_eval.any()):
+                break
+
+            trial_t = _cubic_interpolate(low_t, low_f, low_gtd, high_t, high_f, high_gtd)
+
+            min_bracket = torch.minimum(low_t, high_t)
+            max_bracket = torch.maximum(low_t, high_t)
+            eps = 0.1 * (max_bracket - min_bracket)
+            near_boundary = zoom_eval & (
+                torch.minimum(max_bracket - trial_t, trial_t - min_bracket) < eps
+            )
+            force_progress = near_boundary & (
+                insuf_progress | (trial_t >= max_bracket) | (trial_t <= min_bracket)
+            )
+            closer_to_max = (trial_t - max_bracket).abs() < (
+                trial_t - min_bracket
+            ).abs()
+            forced_t = torch.where(closer_to_max, max_bracket - eps, min_bracket + eps)
+            trial_t = torch.where(force_progress, forced_t, trial_t)
+            insuf_progress = torch.where(
+                zoom_eval,
+                near_boundary & ~force_progress,
+                insuf_progress,
+            )
+
+            keep_flat = self._project_flat(
+                start_flat + low_t[:, None] * direction,
+                lower_bound,
+                upper_bound,
+            )
+            trial_loss, trial_grad, _trial_flat = self._evaluate_trial_with_grad(
+                closure,
+                start_flat=start_flat,
+                direction=direction,
+                alpha=trial_t,
+                evaluate=zoom_eval,
+                keep_flat=keep_flat,
+                lower_bound=lower_bound,
+                upper_bound=upper_bound,
+            )
+            evals += 1
+            ls_iter = torch.where(zoom_eval, ls_iter + 1, ls_iter)
+            trial_gtd = _row_dot(trial_grad, direction)
+
+            high_from_trial = zoom_eval & (
+                ~torch.isfinite(trial_loss)
+                | ~torch.isfinite(trial_gtd)
+                | (trial_loss > start_loss + c1 * trial_t * gtd)
+                | (trial_loss >= low_f)
+            )
+            if bool(high_from_trial.any()):
+                cand_high_t = torch.where(high_from_trial, trial_t, high_t)
+                cand_high_f = torch.where(high_from_trial, trial_loss, high_f)
+                cand_high_g = torch.where(high_from_trial[:, None], trial_grad, high_g)
+                cand_high_gtd = torch.where(high_from_trial, trial_gtd, high_gtd)
+                swap = high_from_trial & (cand_high_f < low_f)
+                old_low_t = low_t.clone()
+                old_low_f = low_f.clone()
+                old_low_g = low_g.clone(memory_format=torch.contiguous_format)
+                old_low_gtd = low_gtd.clone()
+                low_t = torch.where(swap, cand_high_t, low_t)
+                low_f = torch.where(swap, cand_high_f, low_f)
+                low_g = torch.where(swap[:, None], cand_high_g, low_g)
+                low_gtd = torch.where(swap, cand_high_gtd, low_gtd)
+                high_t = torch.where(
+                    high_from_trial,
+                    torch.where(swap, old_low_t, cand_high_t),
+                    high_t,
+                )
+                high_f = torch.where(
+                    high_from_trial,
+                    torch.where(swap, old_low_f, cand_high_f),
+                    high_f,
+                )
+                high_g = torch.where(
+                    high_from_trial[:, None],
+                    torch.where(swap[:, None], old_low_g, cand_high_g),
+                    high_g,
+                )
+                high_gtd = torch.where(
+                    high_from_trial,
+                    torch.where(swap, old_low_gtd, cand_high_gtd),
+                    high_gtd,
+                )
+
+            new_low = zoom_eval & ~high_from_trial
+            wolfe_done = new_low & (trial_gtd.abs() <= -c2 * gtd)
+            turn_high = new_low & ~wolfe_done & (
+                trial_gtd * (high_t - low_t) >= 0
+            )
+            if bool(turn_high.any()):
+                high_t = torch.where(turn_high, low_t, high_t)
+                high_f = torch.where(turn_high, low_f, high_f)
+                high_g = torch.where(turn_high[:, None], low_g, high_g)
+                high_gtd = torch.where(turn_high, low_gtd, high_gtd)
+            if bool(new_low.any()):
+                low_t = torch.where(new_low, trial_t, low_t)
+                low_f = torch.where(new_low, trial_loss, low_f)
+                low_g = torch.where(new_low[:, None], trial_grad, low_g)
+                low_gtd = torch.where(new_low, trial_gtd, low_gtd)
+
+            zooming = zooming & ~too_small & ~wolfe_done
+
+        if bool(bracketed.any()):
+            final_alpha = torch.where(bracketed, low_t, final_alpha)
+            final_loss = torch.where(bracketed, low_f, final_loss)
+            final_grad = torch.where(bracketed[:, None], low_g, final_grad)
+
+        accepted = active & torch.isfinite(final_loss) & (final_alpha > 0)
+        final_flat = self._project_flat(
+            start_flat + final_alpha[:, None] * direction,
+            lower_bound,
+            upper_bound,
+        )
+        final_flat = torch.where(accepted[:, None], final_flat, start_flat)
+        final_loss = torch.where(accepted, final_loss, start_loss)
+        final_grad = torch.where(accepted[:, None], final_grad, start_grad)
+        final_alpha = torch.where(accepted, final_alpha, zeros)
+        return final_flat, final_loss, final_grad, final_alpha, accepted, evals
+
     def _direction(
         self,
         flat_grad: Tensor,
@@ -283,7 +680,9 @@ class BatchedLBFGS(Optimizer):
         history_size = int(group["history_size"])
         max_ls = int(group["max_ls"])
         c1 = float(group["c1"])
+        c2 = float(group["c2"])
         shrink = float(group["shrink"])
+        line_search_fn = group["line_search_fn"]
         lower_bound = group["lower_bound"]
         upper_bound = group["upper_bound"]
 
@@ -353,54 +752,92 @@ class BatchedLBFGS(Optimizer):
             start_loss = loss.clone()
             start_grad = flat_grad.clone()
             accepted = torch.zeros(B, device=device, dtype=torch.bool)
-            accepted_flat = start_flat.clone()
-            accepted_loss = start_loss.clone()
 
-            searching = active.clone()
-            for _ in range(max_ls):
-                if func_evals >= max_eval:
-                    break
-                trial_flat = self._project_flat(
-                    start_flat + alpha[:, None] * direction,
-                    lower_bound,
-                    upper_bound,
-                )
-                candidate_flat = torch.where(
-                    searching[:, None],
-                    trial_flat,
+            if line_search_fn == "strong_wolfe":
+                (
                     accepted_flat,
+                    accepted_loss,
+                    accepted_grad,
+                    alpha,
+                    accepted,
+                    ls_evals,
+                ) = self._strong_wolfe(
+                    closure,
+                    start_flat=start_flat,
+                    direction=direction,
+                    start_loss=start_loss,
+                    start_grad=start_grad,
+                    gtd=gtd,
+                    alpha=alpha,
+                    active=active,
+                    c1=c1,
+                    c2=c2,
+                    tolerance_change=tolerance_change,
+                    max_ls=max_ls,
+                    remaining_eval_budget=max_eval - func_evals,
+                    lower_bound=lower_bound,
+                    upper_bound=upper_bound,
                 )
-                self._set_flat_param(candidate_flat)
-                trial_loss = self._evaluate_loss(closure, loss_closure)
-                func_evals += 1
-                state["func_evals"] += 1
-
-                armijo_rhs = start_loss + c1 * alpha * gtd
-                ok = searching & torch.isfinite(trial_loss) & (trial_loss <= armijo_rhs)
-                if bool(ok.any()):
-                    accepted = accepted | ok
-                    accepted_flat = torch.where(ok[:, None], trial_flat, accepted_flat)
-                    accepted_loss = torch.where(ok, trial_loss, accepted_loss)
-
-                searching = active & ~accepted
-                if not bool(searching.any()):
-                    break
-                alpha = torch.where(searching, alpha * shrink, alpha)
-
-            accepted_flat = torch.where(active[:, None] & accepted[:, None], accepted_flat, start_flat)
-            final_alpha = torch.where(active & accepted, alpha, final_alpha)
-            self._set_flat_param(accepted_flat)
-            accepted_loss = torch.where(accepted, accepted_loss, start_loss)
-
-            refreshed_grad = func_evals < max_eval
-            if refreshed_grad:
-                loss, flat_grad = self._evaluate_with_grad(closure)
-                func_evals += 1
-                state["func_evals"] += 1
-                loss = torch.where(active, loss, accepted_loss)
-            else:
+                func_evals += ls_evals
+                state["func_evals"] += ls_evals
+                final_alpha = torch.where(active & accepted, alpha, final_alpha)
+                self._set_flat_param(accepted_flat)
                 loss = torch.where(active, accepted_loss, start_loss)
-                flat_grad = start_grad
+                flat_grad = torch.where(active[:, None], accepted_grad, start_grad)
+                refreshed_grad = True
+            else:
+                accepted_flat = start_flat.clone()
+                accepted_loss = start_loss.clone()
+
+                searching = active.clone()
+                for _ in range(max_ls):
+                    if func_evals >= max_eval:
+                        break
+                    trial_flat = self._project_flat(
+                        start_flat + alpha[:, None] * direction,
+                        lower_bound,
+                        upper_bound,
+                    )
+                    candidate_flat = torch.where(
+                        searching[:, None],
+                        trial_flat,
+                        accepted_flat,
+                    )
+                    self._set_flat_param(candidate_flat)
+                    trial_loss = self._evaluate_loss(closure, loss_closure)
+                    func_evals += 1
+                    state["func_evals"] += 1
+
+                    armijo_rhs = start_loss + c1 * alpha * gtd
+                    ok = searching & torch.isfinite(trial_loss) & (trial_loss <= armijo_rhs)
+                    if bool(ok.any()):
+                        accepted = accepted | ok
+                        accepted_flat = torch.where(ok[:, None], trial_flat, accepted_flat)
+                        accepted_loss = torch.where(ok, trial_loss, accepted_loss)
+
+                    searching = active & ~accepted
+                    if not bool(searching.any()):
+                        break
+                    alpha = torch.where(searching, alpha * shrink, alpha)
+
+                accepted_flat = torch.where(
+                    active[:, None] & accepted[:, None],
+                    accepted_flat,
+                    start_flat,
+                )
+                final_alpha = torch.where(active & accepted, alpha, final_alpha)
+                self._set_flat_param(accepted_flat)
+                accepted_loss = torch.where(accepted, accepted_loss, start_loss)
+
+                refreshed_grad = func_evals < max_eval
+                if refreshed_grad:
+                    loss, flat_grad = self._evaluate_with_grad(closure)
+                    func_evals += 1
+                    state["func_evals"] += 1
+                    loss = torch.where(active, loss, accepted_loss)
+                else:
+                    loss = torch.where(active, accepted_loss, start_loss)
+                    flat_grad = start_grad
 
             accepted_total = accepted_total | accepted
             new_flat = self._flat_param().clone()
