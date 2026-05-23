@@ -177,7 +177,7 @@ fn plan_family_batches_impl(
         )?),
         None => None,
     };
-    let selected_groups = selected_groups_by_small_family(
+    let selected_groups = selected_groups_by_leaf_count(
         &selected,
         small_family_leaf_counts,
         small_family_max_leaves,
@@ -254,7 +254,7 @@ fn plan_family_batches_for_selected(
     }
 }
 
-fn selected_groups_by_small_family(
+fn selected_groups_by_leaf_count(
     selected: &[usize],
     leaf_counts: Option<&[i64]>,
     small_family_max_leaves: Option<i64>,
@@ -262,24 +262,30 @@ fn selected_groups_by_small_family(
     let Some(max_leaves) = small_family_max_leaves else {
         return vec![selected.to_vec()];
     };
+    if max_leaves == 0 {
+        return vec![selected.to_vec()];
+    }
     let leaves = leaf_counts.expect("small_family_max_leaves leaf_counts validated");
-    let mut small = Vec::new();
-    let mut normal = Vec::new();
+    let mut boundaries = vec![max_leaves];
+    let mut next = max_leaves;
+    while next < 256 {
+        next *= 2;
+        boundaries.push(next);
+    }
+    boundaries.push(i64::MAX);
+    let mut groups = vec![Vec::new(); boundaries.len()];
     for idx in selected {
-        if leaves[*idx] <= max_leaves {
-            small.push(*idx);
-        } else {
-            normal.push(*idx);
-        }
-    }
-    let mut groups = Vec::new();
-    if !small.is_empty() {
-        groups.push(small);
-    }
-    if !normal.is_empty() {
-        groups.push(normal);
+        let leaf_count = leaves[*idx];
+        let bucket = boundaries
+            .iter()
+            .position(|boundary| leaf_count <= *boundary)
+            .unwrap_or(boundaries.len() - 1);
+        groups[bucket].push(*idx);
     }
     groups
+        .into_iter()
+        .filter(|group| !group.is_empty())
+        .collect()
 }
 
 fn invalid<T>(message: impl Into<String>) -> Result<T, PreprocessError> {
@@ -614,9 +620,34 @@ mod tests {
 
         assert_eq!(
             plan_indices(&plans),
-            vec![vec![3, 5], vec![1], vec![4], vec![0], vec![2]]
+            vec![vec![3, 5], vec![1], vec![4], vec![2], vec![0]]
         );
         assert!(plans.iter().all(|plan| plan.clades <= 6));
         assert!(plans.iter().all(|plan| plan.indices.len() <= 2));
+    }
+
+    #[test]
+    fn request_buckets_families_by_leaf_count_bands() {
+        let request = BatchPlanRequest {
+            clade_counts: vec![2, 2, 2, 2, 2, 2],
+            family_chunk_size: 0,
+            clade_budget: Some(12),
+            batch_packing: "clade_first_fit".to_string(),
+            indices: None,
+            total: Some(6),
+            split_counts: None,
+            leaf_counts: Some(vec![4, 5, 8, 9, 16, 33]),
+            small_family_max_leaves: Some(4),
+            nonleaf_counts: None,
+            schedule_depths: None,
+            max_wave_size: None,
+        };
+
+        let plans = plan_family_batches_request(&request).unwrap();
+
+        assert_eq!(
+            plan_indices(&plans),
+            vec![vec![0], vec![1, 2], vec![3, 4], vec![5]]
+        );
     }
 }

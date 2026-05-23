@@ -1920,7 +1920,8 @@ class OptimizationRunner:
                                 model,
                                 solver_stage=active_solver_stage,
                                 hessian_state=fd_newton_hessian_state,
-                                update_hessian_with_bfgs=phase == "adam-fd-newton",
+                                update_hessian_with_bfgs=phase
+                                in {"adam-fd-newton", "hessian-sgd"},
                                 step_scale=(
                                     1.0
                                     if phase == "adam-fd-newton"
@@ -1936,9 +1937,7 @@ class OptimizationRunner:
                                     and not hessian_sgd_polish_active
                                 ),
                                 hessian_refresh_steps=(
-                                    1
-                                    if hessian_sgd_polish_active
-                                    else config.fd_hessian_refresh_steps
+                                    config.fd_hessian_refresh_steps
                                 ),
                             )
                         )
@@ -2096,26 +2095,35 @@ class OptimizationRunner:
                                     "below_min_remaining"
                                 )
 
+                active_objective_scope = (
+                    batchwise_active_optimizer
+                    and phase in _BATCHWISE_ACTIVE_OPTIMIZERS
+                )
+                active_family_count = (
+                    max(1, int(metrics.get("optimizer/batch_family_count", 1)))
+                    if active_objective_scope
+                    else 1
+                )
+                loss_change_tol_bits = config.loss_change_tol * active_family_count
+                best_likelihood_min_delta_bits = (
+                    config.best_likelihood_min_delta * active_family_count
+                )
                 objective = float(metrics["likelihood/data_nll_bits"])
                 if batchwise_hessian_sgd and phase == "hessian-sgd":
                     metrics["optimizer/hessian_sgd_polish_active"] = (
                         hessian_sgd_polish_active
                     )
                 delta = None if previous_objective is None else previous_objective - objective
-                if delta is not None and abs(delta) <= config.loss_change_tol:
+                if delta is not None and abs(delta) <= loss_change_tol_bits:
                     stable_loss_steps += 1
                 else:
                     stable_loss_steps = 0
                 previous_objective = objective
 
-                active_objective_scope = (
-                    batchwise_active_optimizer
-                    and phase in _BATCHWISE_ACTIVE_OPTIMIZERS
-                )
                 if active_objective_scope:
                     improved = (
                         batch_best_nll is None
-                        or objective < batch_best_nll - config.best_likelihood_min_delta
+                        or objective < batch_best_nll - best_likelihood_min_delta_bits
                     )
                     if improved:
                         batch_best_nll = objective
@@ -2125,7 +2133,7 @@ class OptimizationRunner:
                 else:
                     improved = (
                         best_nll is None
-                        or objective < best_nll - config.best_likelihood_min_delta
+                        or objective < best_nll - best_likelihood_min_delta_bits
                     )
                     if improved:
                         best_nll = objective
@@ -2141,6 +2149,8 @@ class OptimizationRunner:
                     "closure_evals": closure_evals,
                     "theta_step_inf": theta_step,
                     "delta_likelihood_bits": delta,
+                    "loss_change_tol_bits": loss_change_tol_bits,
+                    "best_likelihood_min_delta_bits": best_likelihood_min_delta_bits,
                     "stable_loss_steps": stable_loss_steps,
                     "best_nll_bits": row_best_nll,
                     "best_step": row_best_step,
@@ -2314,6 +2324,13 @@ class OptimizationRunner:
                         else None
                     ),
                 )
+                if (
+                    step_status is not None
+                    and active_objective_scope
+                    and active_solver_stage == "warmup"
+                ):
+                    warmup_switch = True
+                    step_status = None
                 if warmup_switch:
                     active_solver_stage = "full"
                     active_batch_local_step = 0

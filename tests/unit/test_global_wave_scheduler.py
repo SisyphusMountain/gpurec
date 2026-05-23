@@ -699,7 +699,7 @@ def test_plan_family_batches_prioritizes_small_families_under_leaf_threshold():
     )
 
     chunks = [plan.indices for plan in plans]
-    assert chunks == [[3, 5], [1], [4], [0], [2]]
+    assert chunks == [[3, 5], [1], [4], [2], [0]]
     assert all(plan.clades <= budget for plan in plans)
     assert all(len(plan.indices) <= 2 for plan in plans)
 

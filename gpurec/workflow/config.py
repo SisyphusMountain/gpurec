@@ -154,7 +154,7 @@ def _normalize_optimizer(mode: str, value: str) -> str:
         )
     normalized = value.strip().lower().replace("_", "-")
     if normalized == "auto":
-        return "batched-lbfgs" if mode == "genewise" else "adam"
+        return "hessian-sgd" if mode == "genewise" else "adam"
     return normalized
 
 
@@ -360,7 +360,7 @@ class RunConfig:
     adaptive_rebatch_min_remaining_families: int = 2
 
     grad_inf_tol: float = 1e-3
-    loss_change_tol: float = 1e-5
+    loss_change_tol: float = 1e-3
     loss_patience: int = 20
     best_likelihood_patience: int = 20
     best_likelihood_min_delta: float = 0.0

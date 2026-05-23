@@ -1076,7 +1076,7 @@ def test_run_config_defaults_to_natural_rate_bounds(tmp_path: Path):
     assert config.max_rate == 2.0
 
 
-def test_run_config_defaults_to_batched_lbfgs_for_genewise_mode(tmp_path: Path):
+def test_run_config_defaults_to_hessian_sgd_for_genewise_mode(tmp_path: Path):
     config = RunConfig(
         species_tree=tmp_path / "sp.nwk",
         families_file=tmp_path / "families.txt",
@@ -1085,7 +1085,7 @@ def test_run_config_defaults_to_batched_lbfgs_for_genewise_mode(tmp_path: Path):
         device="cpu",
     )
 
-    assert config.optimizer == "batched-lbfgs"
+    assert config.optimizer == "hessian-sgd"
 
 
 def test_run_config_accepts_adam_fd_newton_for_genewise_mode(tmp_path: Path):
@@ -4972,14 +4972,14 @@ def test_optimization_runner_hessian_sgd_mode_records_public_phase(tmp_path: Pat
     assert history_rows[0]["optimizer/eval_position"] == "post_step"
     assert history_rows[0]["optimizer/step_applied"] is True
     assert history_rows[0]["optimizer/fd_newton_subphase"] == "hessian_sgd"
-    assert history_rows[0]["optimizer/fd_newton_hessian_update"] == "fixed"
+    assert history_rows[0]["optimizer/fd_newton_hessian_update"] == "bfgs"
     assert history_rows[0]["optimizer/fd_newton_hessian_source"] == "finite_difference"
     assert history_rows[0]["optimizer/fd_newton_line_search"] is False
     assert history_rows[0]["optimizer/fd_newton_post_step_loss_filter"] is True
     assert history_rows[0]["optimizer/fd_newton_loss_evals"] == 0.0
     assert history_rows[0]["optimizer/fd_newton_loss_rejected_rows"] == 0.0
     assert history_rows[0]["optimizer/fd_newton_max_ls"] == 0.0
-    assert history_rows[0]["optimizer/fd_newton_bfgs_updated_rows"] == 0.0
+    assert history_rows[0]["optimizer/fd_newton_bfgs_updated_rows"] == 1.0
     assert history_rows[0]["optimizer/fd_newton_step_scale"] == pytest.approx(
         config.lr
     )
@@ -5045,7 +5045,7 @@ def test_hessian_sgd_enters_newton_polish_after_full_stage_stall(tmp_path: Path)
     assert hessian_rows[2]["optimizer/fd_newton_line_search"] is True
     assert hessian_rows[2]["optimizer/fd_newton_post_step_loss_filter"] is False
     assert hessian_rows[2]["optimizer/fd_newton_hessian_source"] == "finite_difference"
-    assert hessian_rows[2]["optimizer/fd_newton_hessian_refresh_steps"] == 1.0
+    assert hessian_rows[2]["optimizer/fd_newton_hessian_refresh_steps"] == 5.0
     assert hessian_rows[2]["optimizer/fd_newton_step_scale"] == pytest.approx(1.0)
     assert result.status == "not_converged"
     assert runner.fake_model.closed
@@ -5083,7 +5083,7 @@ def test_hessian_sgd_enters_newton_polish_after_best_likelihood_stall(
     ]
     assert hessian_rows[2]["optimizer/hessian_sgd_polish_active"] is True
     assert hessian_rows[2]["optimizer/fd_newton_line_search"] is True
-    assert hessian_rows[2]["optimizer/fd_newton_hessian_refresh_steps"] == 1.0
+    assert hessian_rows[2]["optimizer/fd_newton_hessian_refresh_steps"] == 5.0
     assert result.status == "not_converged"
     assert runner.fake_model.closed
 
@@ -5117,6 +5117,64 @@ def test_hessian_sgd_gradient_tolerance_does_not_enter_polish(tmp_path: Path):
         row["optimizer/hessian_sgd_polish_active"] for row in hessian_rows
     } == {False}
     assert result.status == "converged"
+    assert runner.fake_model.closed
+
+
+def test_hessian_sgd_warmup_plateau_promotes_to_full_solver(tmp_path: Path):
+    config = _optimizer_mode_config(
+        tmp_path,
+        optimizer="hessian-sgd",
+        mode="genewise",
+        steps=3,
+        solver_warmup_iters=6,
+        solver_warmup_grad_inf_tol=0.0,
+        solver_warmup_loss_patience=99,
+        loss_change_tol=1e9,
+        loss_patience=1,
+        best_likelihood_patience=0,
+        fd_hessian_epsilon=1e-3,
+        fd_newton_damping=1e-6,
+        lr=1e-9,
+    )
+    runner = _WorkflowBatchedLBFGSModeRunner(config)
+
+    result = runner.run()
+
+    history_rows = _optimizer_mode_history_rows(config.out_dir)
+    hessian_rows = [
+        row for row in history_rows if row["optimizer/phase"] == "hessian-sgd"
+    ]
+    assert [row["optimizer/solver_stage"] for row in hessian_rows] == [
+        "warmup",
+        "warmup",
+        "full",
+    ]
+    assert result.status == "not_converged"
+    assert runner.fake_model.closed
+
+
+def test_active_batch_plateau_tolerances_scale_by_family_count(tmp_path: Path):
+    config = _optimizer_mode_config(
+        tmp_path,
+        optimizer="hessian-sgd",
+        mode="genewise",
+        steps=1,
+        solver_warmup_iters=0,
+        loss_change_tol=0.25,
+        best_likelihood_min_delta=0.5,
+        fd_hessian_epsilon=1e-3,
+        fd_newton_damping=1e-6,
+        lr=1e-9,
+    )
+    runner = _WorkflowAdaptiveRebatchRunner(config)
+
+    result = runner.run()
+
+    history_rows = _optimizer_mode_history_rows(config.out_dir)
+    assert history_rows[0]["optimizer/batch_family_count"] == 2
+    assert history_rows[0]["loss_change_tol_bits"] == pytest.approx(0.5)
+    assert history_rows[0]["best_likelihood_min_delta_bits"] == pytest.approx(1.0)
+    assert result.status == "not_converged"
     assert runner.fake_model.closed
 
 

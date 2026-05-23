@@ -387,7 +387,7 @@ def _add_run_config_args(parser: argparse.ArgumentParser) -> None:
             "hessian-sgd",
         ),
         help=(
-            "Optimizer schedule. auto uses batched-lbfgs for genewise mode "
+            "Optimizer schedule. auto uses hessian-sgd for genewise mode "
             "and adam otherwise."
         ),
     )
@@ -439,7 +439,10 @@ def _add_run_config_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--loss-change-tol",
         type=float,
-        help="Loss-change stopping tolerance.",
+        help=(
+            "Loss-change stopping tolerance; genewise active-batch optimizers "
+            "apply this per active family."
+        ),
     )
     parser.add_argument(
         "--loss-patience",
