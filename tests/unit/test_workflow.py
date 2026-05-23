@@ -5023,7 +5023,7 @@ def test_hessian_sgd_enters_newton_polish_after_full_stage_stall(tmp_path: Path)
         mode="genewise",
         steps=3,
         solver_warmup_iters=0,
-        fd_hessian_refresh_steps=5,
+        fd_hessian_refresh_steps=16,
         fd_hessian_epsilon=1e-3,
         fd_newton_damping=1e-6,
         loss_change_tol=1e9,
@@ -5049,7 +5049,9 @@ def test_hessian_sgd_enters_newton_polish_after_full_stage_stall(tmp_path: Path)
     assert hessian_rows[2]["optimizer/fd_newton_line_search"] is True
     assert hessian_rows[2]["optimizer/fd_newton_post_step_loss_filter"] is False
     assert hessian_rows[2]["optimizer/fd_newton_hessian_source"] == "finite_difference"
-    assert hessian_rows[2]["optimizer/fd_newton_hessian_refresh_steps"] == 5.0
+    assert hessian_rows[0]["optimizer/fd_newton_hessian_refresh_steps"] == 16.0
+    assert hessian_rows[1]["optimizer/fd_newton_hessian_refresh_steps"] == 16.0
+    assert hessian_rows[2]["optimizer/fd_newton_hessian_refresh_steps"] == 8.0
     assert hessian_rows[2]["optimizer/fd_newton_step_scale"] == pytest.approx(1.0)
     assert result.status == "not_converged"
     assert runner.fake_model.closed
@@ -5064,7 +5066,7 @@ def test_hessian_sgd_enters_newton_polish_after_best_likelihood_stall(
         mode="genewise",
         steps=3,
         solver_warmup_iters=0,
-        fd_hessian_refresh_steps=5,
+        fd_hessian_refresh_steps=16,
         fd_hessian_epsilon=1e-3,
         fd_newton_damping=1e-6,
         loss_patience=0,
@@ -5087,8 +5089,40 @@ def test_hessian_sgd_enters_newton_polish_after_best_likelihood_stall(
     ]
     assert hessian_rows[2]["optimizer/hessian_sgd_polish_active"] is True
     assert hessian_rows[2]["optimizer/fd_newton_line_search"] is True
-    assert hessian_rows[2]["optimizer/fd_newton_hessian_refresh_steps"] == 5.0
+    assert hessian_rows[0]["optimizer/fd_newton_hessian_refresh_steps"] == 16.0
+    assert hessian_rows[1]["optimizer/fd_newton_hessian_refresh_steps"] == 16.0
+    assert hessian_rows[2]["optimizer/fd_newton_hessian_refresh_steps"] == 8.0
     assert result.status == "not_converged"
+    assert runner.fake_model.closed
+
+
+def test_hessian_sgd_likelihood_plateau_converges_with_nonzero_gradient(
+    tmp_path: Path,
+):
+    config = _optimizer_mode_config(
+        tmp_path,
+        optimizer="hessian-sgd",
+        mode="genewise",
+        steps=4,
+        solver_warmup_iters=0,
+        fd_hessian_refresh_steps=16,
+        fd_hessian_epsilon=1e-3,
+        fd_newton_damping=1e-6,
+        loss_patience=0,
+        best_likelihood_patience=1,
+        best_likelihood_min_delta=1e9,
+        grad_inf_tol=0.0,
+    )
+    runner = _WorkflowAdaptiveRebatchRunner(config)
+
+    result = runner.run()
+
+    history_rows = _optimizer_mode_history_rows(config.out_dir)
+    final_step = history_rows[-2]
+    assert final_step["optimizer/fd_newton_subphase"] == "hessian_sgd_polish"
+    assert final_step["grad/projected_inf"] > 0.0
+    assert result.status == "converged"
+    assert result.reason == "best_likelihood_patience"
     assert runner.fake_model.closed
 
 
@@ -5501,23 +5535,6 @@ def test_hessian_sgd_reuses_fixed_hessian_between_refreshes(tmp_path: Path):
     assert second_metrics["optimizer/fd_newton_bfgs_updated_rows"] == 0.0
     torch.testing.assert_close(state.hessian, fixed_hessian)
     assert state.updates_since_refresh == 2
-
-
-def test_fd_newton_refreshes_small_clade_batches_more_often(tmp_path: Path):
-    config = _optimizer_mode_config(
-        tmp_path,
-        optimizer="hessian-sgd",
-        mode="genewise",
-        fd_hessian_refresh_steps=16,
-    )
-    runner = OptimizationRunner(config)
-    model = _WorkflowBatchedLBFGSModeModel()
-
-    model.current_batch_metadata.clade_count = 100_000
-    assert runner._effective_fd_hessian_refresh_steps(model, 16) == 8
-
-    model.current_batch_metadata.clade_count = 500_000
-    assert runner._effective_fd_hessian_refresh_steps(model, 16) == 16
 
 
 def test_hessian_sgd_refreshes_fixed_hessian_after_configured_steps(

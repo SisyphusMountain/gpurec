@@ -85,8 +85,7 @@ _ADAPTIVE_REBATCH_MIN_ACTIVE_FAMILIES = 64
 _FD_NEWTON_LARGE_BATCH_MAX_LS = 8
 _FD_NEWTON_EXTENDED_LINE_SEARCH_MAX_FAMILIES = 256
 _FD_NEWTON_CURVATURE_EPS = 1e-12
-_FD_NEWTON_SMALL_BATCH_CLADE_REFRESH_THRESHOLD = 128_000
-_FD_NEWTON_SMALL_BATCH_REFRESH_STEPS = 8
+_FD_NEWTON_POLISH_REFRESH_STEPS = 8
 _BATCHWISE_ACTIVE_OPTIMIZERS = frozenset(
     {"batched-lbfgs", "adam-fd-newton", "hessian-sgd"}
 )
@@ -707,21 +706,6 @@ class OptimizationRunner:
             device=model.theta.device,
         )
 
-    def _effective_fd_hessian_refresh_steps(
-        self,
-        model: GeneReconModel,
-        configured_steps: int,
-    ) -> int:
-        steps = int(configured_steps)
-        if steps <= _FD_NEWTON_SMALL_BATCH_REFRESH_STEPS:
-            return steps
-        clade_count = getattr(model.current_batch_metadata, "clade_count", None)
-        if clade_count is None:
-            return steps
-        if int(clade_count) <= _FD_NEWTON_SMALL_BATCH_CLADE_REFRESH_THRESHOLD:
-            return _FD_NEWTON_SMALL_BATCH_REFRESH_STEPS
-        return steps
-
     def _full_vector_from_active_batch(
         self,
         model: GeneReconModel,
@@ -1118,10 +1102,6 @@ class OptimizationRunner:
             config.fd_hessian_refresh_steps
             if hessian_refresh_steps is None
             else int(hessian_refresh_steps)
-        )
-        hessian_refresh_steps = self._effective_fd_hessian_refresh_steps(
-            model,
-            hessian_refresh_steps,
         )
         if hessian_refresh_steps < 1:
             raise ValueError("hessian_refresh_steps must be positive")
@@ -1984,7 +1964,9 @@ class OptimizationRunner:
                                     and not hessian_sgd_polish_active
                                 ),
                                 hessian_refresh_steps=(
-                                    config.fd_hessian_refresh_steps
+                                    _FD_NEWTON_POLISH_REFRESH_STEPS
+                                    if hessian_sgd_polish_active
+                                    else config.fd_hessian_refresh_steps
                                 ),
                             )
                         )
