@@ -237,6 +237,87 @@ def test_batched_lbfgs_projects_to_lower_bound():
     assert math.isclose(float(theta.detach()[1, 0]), 2.0, abs_tol=1e-8)
 
 
+def test_batched_lbfgs_lower_bound_outward_gradient_is_projected_inactive():
+    theta = torch.nn.Parameter(torch.tensor([[-1.0]], dtype=torch.float64))
+    target = torch.tensor([[-3.0]], dtype=torch.float64)
+    opt = BatchedLBFGS(
+        [theta],
+        lr=1.0,
+        max_iter=5,
+        history_size=3,
+        lower_bound=-1.0,
+        tolerance_grad=1e-12,
+    )
+
+    def loss_vec() -> torch.Tensor:
+        return ((theta - target) ** 2).sum(dim=1)
+
+    def closure() -> torch.Tensor:
+        opt.zero_grad(set_to_none=True)
+        loss = loss_vec()
+        loss.sum().backward()
+        return loss
+
+    final = opt.step(closure, loss_closure=loss_vec)
+    state = opt.state[theta]
+
+    torch.testing.assert_close(final, torch.tensor([4.0], dtype=torch.float64))
+    torch.testing.assert_close(
+        theta.detach(),
+        torch.tensor([[-1.0]], dtype=torch.float64),
+    )
+    torch.testing.assert_close(
+        state["last_grad"],
+        torch.tensor([[4.0]], dtype=torch.float64),
+    )
+    torch.testing.assert_close(
+        state["last_projected_grad"],
+        torch.tensor([[0.0]], dtype=torch.float64),
+    )
+    assert state["func_evals"] == 1
+    assert not bool(state["last_accepted"].any())
+
+
+def test_batched_lbfgs_lower_bound_outward_gradient_does_not_scale_free_step():
+    theta = torch.nn.Parameter(torch.tensor([[-1.0, 0.0]], dtype=torch.float64))
+    target = torch.tensor([[-1000.0, 2.0]], dtype=torch.float64)
+    opt = BatchedLBFGS(
+        [theta],
+        lr=1.0,
+        max_iter=1,
+        history_size=3,
+        lower_bound=-1.0,
+        tolerance_grad=1e-12,
+    )
+
+    def loss_vec() -> torch.Tensor:
+        return ((theta - target) ** 2).sum(dim=1)
+
+    def closure() -> torch.Tensor:
+        opt.zero_grad(set_to_none=True)
+        loss = loss_vec()
+        loss.sum().backward()
+        return loss
+
+    opt.step(closure, loss_closure=loss_vec)
+    state = opt.state[theta]
+
+    torch.testing.assert_close(
+        theta.detach(),
+        torch.tensor([[-1.0, 1.0]], dtype=torch.float64),
+    )
+    torch.testing.assert_close(
+        state["last_projected_grad"],
+        torch.tensor([[0.0, -2.0]], dtype=torch.float64),
+    )
+    assert math.isclose(
+        float(state["last_alpha"][0]),
+        0.25,
+        rel_tol=0.0,
+        abs_tol=1e-12,
+    )
+
+
 def test_batched_lbfgs_projects_to_upper_bound():
     theta = torch.nn.Parameter(torch.tensor([[0.0], [0.0]], dtype=torch.float64))
     target = torch.tensor([[10.0], [-2.0]], dtype=torch.float64)
@@ -264,6 +345,87 @@ def test_batched_lbfgs_projects_to_upper_bound():
     assert torch.all(theta.detach() <= upper_bound)
     assert math.isclose(float(theta.detach()[0, 0]), upper_bound, abs_tol=1e-12)
     assert math.isclose(float(theta.detach()[1, 0]), -2.0, abs_tol=1e-8)
+
+
+def test_batched_lbfgs_upper_bound_outward_gradient_is_projected_inactive():
+    theta = torch.nn.Parameter(torch.tensor([[1.0]], dtype=torch.float64))
+    target = torch.tensor([[3.0]], dtype=torch.float64)
+    opt = BatchedLBFGS(
+        [theta],
+        lr=1.0,
+        max_iter=5,
+        history_size=3,
+        upper_bound=1.0,
+        tolerance_grad=1e-12,
+    )
+
+    def loss_vec() -> torch.Tensor:
+        return ((theta - target) ** 2).sum(dim=1)
+
+    def closure() -> torch.Tensor:
+        opt.zero_grad(set_to_none=True)
+        loss = loss_vec()
+        loss.sum().backward()
+        return loss
+
+    final = opt.step(closure, loss_closure=loss_vec)
+    state = opt.state[theta]
+
+    torch.testing.assert_close(final, torch.tensor([4.0], dtype=torch.float64))
+    torch.testing.assert_close(
+        theta.detach(),
+        torch.tensor([[1.0]], dtype=torch.float64),
+    )
+    torch.testing.assert_close(
+        state["last_grad"],
+        torch.tensor([[-4.0]], dtype=torch.float64),
+    )
+    torch.testing.assert_close(
+        state["last_projected_grad"],
+        torch.tensor([[0.0]], dtype=torch.float64),
+    )
+    assert state["func_evals"] == 1
+    assert not bool(state["last_accepted"].any())
+
+
+def test_batched_lbfgs_upper_bound_outward_gradient_does_not_scale_free_step():
+    theta = torch.nn.Parameter(torch.tensor([[1.0, 0.0]], dtype=torch.float64))
+    target = torch.tensor([[1000.0, -2.0]], dtype=torch.float64)
+    opt = BatchedLBFGS(
+        [theta],
+        lr=1.0,
+        max_iter=1,
+        history_size=3,
+        upper_bound=1.0,
+        tolerance_grad=1e-12,
+    )
+
+    def loss_vec() -> torch.Tensor:
+        return ((theta - target) ** 2).sum(dim=1)
+
+    def closure() -> torch.Tensor:
+        opt.zero_grad(set_to_none=True)
+        loss = loss_vec()
+        loss.sum().backward()
+        return loss
+
+    opt.step(closure, loss_closure=loss_vec)
+    state = opt.state[theta]
+
+    torch.testing.assert_close(
+        theta.detach(),
+        torch.tensor([[1.0, -1.0]], dtype=torch.float64),
+    )
+    torch.testing.assert_close(
+        state["last_projected_grad"],
+        torch.tensor([[0.0, 2.0]], dtype=torch.float64),
+    )
+    assert math.isclose(
+        float(state["last_alpha"][0]),
+        0.25,
+        rel_tol=0.0,
+        abs_tol=1e-12,
+    )
 
 
 def test_batched_lbfgs_rejects_scalar_loss():

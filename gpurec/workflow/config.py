@@ -150,7 +150,7 @@ def _normalize_optimizer(mode: str, value: str) -> str:
     if not isinstance(value, str):
         raise ValueError(
             "optimizer must be auto, adam, adagrad, lbfgs, adam-lbfgs, "
-            "or batched-lbfgs"
+            "batched-lbfgs, or adam-fd-newton"
         )
     normalized = value.strip().lower().replace("_", "-")
     if normalized == "auto":
@@ -249,6 +249,9 @@ _JSON_FLOAT_FIELDS = {
     "max_rate",
     "lr",
     "lbfgs_lr",
+    "fd_hessian_epsilon",
+    "fd_newton_damping",
+    "fd_newton_max_step",
     "solver_warmup_grad_inf_tol",
     "grad_inf_tol",
     "loss_change_tol",
@@ -340,6 +343,9 @@ class RunConfig:
     lbfgs_max_iter: int = 1
     lbfgs_max_ls: int = 8
     lbfgs_line_search: str = "none"
+    fd_hessian_epsilon: float = 1e-3
+    fd_newton_damping: float = 1e-3
+    fd_newton_max_step: float = 2.0
 
     grad_inf_tol: float = 1e-3
     loss_change_tol: float = 1e-5
@@ -506,19 +512,28 @@ class RunConfig:
             "lbfgs",
             "adam-lbfgs",
             "batched-lbfgs",
+            "adam-fd-newton",
         }:
             raise ValueError(
                 "optimizer must be auto, adam, adagrad, lbfgs, adam-lbfgs, "
-                "or batched-lbfgs"
+                "batched-lbfgs, or adam-fd-newton"
             )
         if self.optimizer == "batched-lbfgs" and self.mode != "genewise":
             raise ValueError("batched-lbfgs optimizer requires genewise mode")
+        if self.optimizer == "adam-fd-newton" and self.mode != "genewise":
+            raise ValueError("adam-fd-newton optimizer requires genewise mode")
         if self.steps < 1:
             raise ValueError("steps must be positive")
         lr = _normalize_finite_float("lr", self.lr)
         lbfgs_lr = _normalize_finite_float("lbfgs_lr", self.lbfgs_lr)
         if lr <= 0.0 or lbfgs_lr <= 0.0:
             raise ValueError("optimizer learning rates must be positive")
+        if self.fd_hessian_epsilon <= 0.0:
+            raise ValueError("fd_hessian_epsilon must be positive")
+        if self.fd_newton_damping <= 0.0:
+            raise ValueError("fd_newton_damping must be positive")
+        if self.fd_newton_max_step <= 0.0:
+            raise ValueError("fd_newton_max_step must be positive")
         if self.adam_warmup_steps < 0:
             raise ValueError("adam_warmup_steps must be non-negative")
         if (

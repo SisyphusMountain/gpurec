@@ -113,6 +113,12 @@ class BatchedLBFGS(Optimizer):
         Optional scalar upper bound applied after every candidate step. For
         ALERax-style DTL rate comparisons in log2-space this is typically
         ``math.log2(2.0)``.
+
+    Notes
+    -----
+    Bound handling uses L-BFGS-B-style projected gradients: coordinates at a
+    lower bound with positive gradient, or at an upper bound with negative
+    gradient, are treated as inactive for convergence and search directions.
     """
 
     def __init__(
@@ -200,20 +206,71 @@ class BatchedLBFGS(Optimizer):
         lower_bound: float | Tensor | None,
         upper_bound: float | Tensor | None,
     ) -> Tensor:
+        lower, upper = self._bounds_for_flat(flat, lower_bound, upper_bound)
         projected = flat
-        if lower_bound is not None:
-            if torch.is_tensor(lower_bound):
-                lb = lower_bound.to(device=flat.device, dtype=flat.dtype)
-            else:
-                lb = torch.as_tensor(lower_bound, device=flat.device, dtype=flat.dtype)
-            projected = torch.maximum(projected, lb)
-        if upper_bound is not None:
-            if torch.is_tensor(upper_bound):
-                ub = upper_bound.to(device=flat.device, dtype=flat.dtype)
-            else:
-                ub = torch.as_tensor(upper_bound, device=flat.device, dtype=flat.dtype)
-            projected = torch.minimum(projected, ub)
+        if lower is not None:
+            projected = torch.maximum(projected, lower)
+        if upper is not None:
+            projected = torch.minimum(projected, upper)
         return projected
+
+    def _bound_for_flat(
+        self,
+        bound: float | Tensor | None,
+        flat: Tensor,
+    ) -> Tensor | None:
+        if bound is None:
+            return None
+        if torch.is_tensor(bound):
+            bound_tensor = bound.detach().to(device=flat.device, dtype=flat.dtype)
+        else:
+            bound_tensor = torch.as_tensor(bound, device=flat.device, dtype=flat.dtype)
+        if bound_tensor.ndim == 0:
+            return bound_tensor
+        if tuple(bound_tensor.shape) == tuple(flat.shape):
+            return bound_tensor
+        if tuple(bound_tensor.shape) == tuple(self._param.shape):
+            return bound_tensor.reshape_as(flat)
+        try:
+            return torch.broadcast_to(bound_tensor, self._param.shape).reshape_as(flat)
+        except RuntimeError:
+            return torch.broadcast_to(bound_tensor, flat.shape)
+
+    def _bounds_for_flat(
+        self,
+        flat: Tensor,
+        lower_bound: float | Tensor | None,
+        upper_bound: float | Tensor | None,
+    ) -> tuple[Tensor | None, Tensor | None]:
+        lower = self._bound_for_flat(lower_bound, flat)
+        upper = self._bound_for_flat(upper_bound, flat)
+        if lower is not None and upper is not None and bool((lower > upper).any()):
+            raise ValueError("lower_bound must be <= upper_bound")
+        return lower, upper
+
+    def _projected_gradient(
+        self,
+        flat: Tensor,
+        grad: Tensor,
+        lower_bound: float | Tensor | None,
+        upper_bound: float | Tensor | None,
+    ) -> Tensor:
+        return flat - self._project_flat(flat - grad, lower_bound, upper_bound)
+
+    def _feasible_direction(
+        self,
+        flat: Tensor,
+        direction: Tensor,
+        lower_bound: float | Tensor | None,
+        upper_bound: float | Tensor | None,
+    ) -> Tensor:
+        lower, upper = self._bounds_for_flat(flat, lower_bound, upper_bound)
+        feasible = torch.ones_like(direction, dtype=torch.bool)
+        if lower is not None:
+            feasible = feasible & ((flat > lower) | (direction >= 0))
+        if upper is not None:
+            feasible = feasible & ((flat < upper) | (direction <= 0))
+        return torch.where(feasible, direction, torch.zeros_like(direction))
 
     def _gather_flat_grad(self) -> Tensor:
         grad = self._param.grad
@@ -307,7 +364,7 @@ class BatchedLBFGS(Optimizer):
         if remaining_eval_budget <= 0 or not bool(active.any()):
             return start_flat, final_loss, final_grad, final_alpha, false, 0
 
-        trial_loss, trial_grad, _trial_flat = self._evaluate_trial_with_grad(
+        trial_loss, trial_grad, trial_flat = self._evaluate_trial_with_grad(
             closure,
             start_flat=start_flat,
             direction=direction,
@@ -320,7 +377,13 @@ class BatchedLBFGS(Optimizer):
         evals = 1
         loss_new = torch.where(active, trial_loss, start_loss)
         grad_new = torch.where(active[:, None], trial_grad, start_grad)
-        gtd_new = _row_dot(grad_new, direction)
+        trial_direction = self._feasible_direction(
+            trial_flat,
+            direction,
+            lower_bound,
+            upper_bound,
+        )
+        gtd_new = torch.where(active, _row_dot(grad_new, trial_direction), gtd)
 
         t = alpha.clone()
         t_prev = zeros.clone()
@@ -420,7 +483,7 @@ class BatchedLBFGS(Optimizer):
             gtd_prev = torch.where(searching, gtd_new, gtd_prev)
             t = torch.where(searching, next_t, t)
 
-            trial_loss, trial_grad, _trial_flat = self._evaluate_trial_with_grad(
+            trial_loss, trial_grad, trial_flat = self._evaluate_trial_with_grad(
                 closure,
                 start_flat=start_flat,
                 direction=direction,
@@ -433,7 +496,17 @@ class BatchedLBFGS(Optimizer):
             evals += 1
             loss_new = torch.where(searching, trial_loss, loss_new)
             grad_new = torch.where(searching[:, None], trial_grad, grad_new)
-            gtd_new = torch.where(searching, _row_dot(grad_new, direction), gtd_new)
+            trial_direction = self._feasible_direction(
+                trial_flat,
+                direction,
+                lower_bound,
+                upper_bound,
+            )
+            gtd_new = torch.where(
+                searching,
+                _row_dot(grad_new, trial_direction),
+                gtd_new,
+            )
             ls_iter = torch.where(searching, ls_iter + 1, ls_iter)
 
         if bool(searching.any()):
@@ -502,7 +575,7 @@ class BatchedLBFGS(Optimizer):
                 lower_bound,
                 upper_bound,
             )
-            trial_loss, trial_grad, _trial_flat = self._evaluate_trial_with_grad(
+            trial_loss, trial_grad, trial_flat = self._evaluate_trial_with_grad(
                 closure,
                 start_flat=start_flat,
                 direction=direction,
@@ -514,7 +587,13 @@ class BatchedLBFGS(Optimizer):
             )
             evals += 1
             ls_iter = torch.where(zoom_eval, ls_iter + 1, ls_iter)
-            trial_gtd = _row_dot(trial_grad, direction)
+            trial_direction = self._feasible_direction(
+                trial_flat,
+                direction,
+                lower_bound,
+                upper_bound,
+            )
+            trial_gtd = _row_dot(trial_grad, trial_direction)
 
             high_from_trial = zoom_eval & (
                 ~torch.isfinite(trial_loss)
@@ -701,10 +780,21 @@ class BatchedLBFGS(Optimizer):
         state.setdefault("ro", [])
         state.setdefault("H_diag", torch.ones(B, device=device, dtype=dtype))
 
+        initial_flat = self._flat_param()
+        projected_initial = self._project_flat(initial_flat, lower_bound, upper_bound)
+        if not torch.equal(projected_initial, initial_flat):
+            self._set_flat_param(projected_initial)
+
         loss, flat_grad = self._evaluate_with_grad(closure)
         func_evals = 1
         state["func_evals"] += 1
         flat_param = self._flat_param().clone()
+        projected_grad = self._projected_gradient(
+            flat_param,
+            flat_grad,
+            lower_bound,
+            upper_bound,
+        )
 
         accepted_total = torch.zeros(B, device=device, dtype=torch.bool)
         final_alpha = torch.zeros(B, device=device, dtype=dtype)
@@ -716,25 +806,43 @@ class BatchedLBFGS(Optimizer):
 
             finite_grad = torch.isfinite(flat_grad).all(dim=1)
             finite_loss = torch.isfinite(loss)
-            grad_norm = flat_grad.abs().amax(dim=1)
+            projected_grad = self._projected_gradient(
+                flat_param,
+                flat_grad,
+                lower_bound,
+                upper_bound,
+            )
+            grad_norm = projected_grad.abs().amax(dim=1)
             active = finite_loss & finite_grad & (grad_norm > tolerance_grad)
             if not bool(active.any()):
                 break
 
             H_diag = state["H_diag"]
             direction = self._direction(
-                flat_grad,
+                projected_grad,
                 state["old_dirs"],
                 state["old_stps"],
                 state["ro"],
                 H_diag,
+            )
+            direction = self._feasible_direction(
+                flat_param,
+                direction,
+                lower_bound,
+                upper_bound,
             )
             direction = torch.where(active[:, None], direction, torch.zeros_like(direction))
 
             gtd = _row_dot(flat_grad, direction)
             bad_dir = active & (~torch.isfinite(gtd) | (gtd >= -tolerance_change))
             if bool(bad_dir.any()):
-                direction = torch.where(bad_dir[:, None], -flat_grad, direction)
+                fallback_direction = self._feasible_direction(
+                    flat_param,
+                    -projected_grad,
+                    lower_bound,
+                    upper_bound,
+                )
+                direction = torch.where(bad_dir[:, None], fallback_direction, direction)
                 gtd = _row_dot(flat_grad, direction)
 
             active = active & torch.isfinite(gtd) & (gtd < -tolerance_change)
@@ -742,7 +850,7 @@ class BatchedLBFGS(Optimizer):
                 break
 
             if state["n_iter"] == 1:
-                grad_l1 = flat_grad.abs().sum(dim=1).clamp_min(1e-30)
+                grad_l1 = projected_grad.abs().sum(dim=1).clamp_min(1e-30)
                 alpha = torch.minimum(torch.ones_like(grad_l1), 1.0 / grad_l1) * lr
             else:
                 alpha = torch.full((B,), lr, device=device, dtype=dtype)
@@ -751,6 +859,7 @@ class BatchedLBFGS(Optimizer):
             start_flat = flat_param.clone()
             start_loss = loss.clone()
             start_grad = flat_grad.clone()
+            start_projected_grad = projected_grad.clone()
             accepted = torch.zeros(B, device=device, dtype=torch.bool)
 
             if line_search_fn == "strong_wolfe":
@@ -842,11 +951,23 @@ class BatchedLBFGS(Optimizer):
             accepted_total = accepted_total | accepted
             new_flat = self._flat_param().clone()
             s_k = new_flat - start_flat
+            projected_grad = self._projected_gradient(
+                new_flat,
+                flat_grad,
+                lower_bound,
+                upper_bound,
+            )
             if refreshed_grad:
-                y_k = flat_grad - start_grad
+                free_s_k = self._feasible_direction(
+                    new_flat,
+                    s_k,
+                    lower_bound,
+                    upper_bound,
+                )
+                y_k = projected_grad - start_projected_grad
                 self._append_history(
                     state,
-                    s_k,
+                    free_s_k,
                     y_k,
                     active & accepted,
                     history_size,
@@ -865,6 +986,7 @@ class BatchedLBFGS(Optimizer):
 
         state["last_loss"] = loss.detach()
         state["last_grad"] = flat_grad.detach()
+        state["last_projected_grad"] = projected_grad.detach()
         state["last_accepted"] = accepted_total.detach()
         state["last_alpha"] = final_alpha.detach()
         state["last_n_iter"] = n_iter

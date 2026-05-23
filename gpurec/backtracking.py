@@ -89,6 +89,7 @@ class _PreparedBacktrackingInput:
     ebar: torch.Tensor
     log_p_s: torch.Tensor
     log_p_d: torch.Tensor
+    log_p_l: torch.Tensor
     max_transfer: torch.Tensor
     origination_probs: torch.Tensor | None
     seed: int | None
@@ -637,6 +638,12 @@ def _prepare_backtracking_input(
         S=S,
         familywise_1d=familywise_parameters,
     ).to(dtype=torch.float64).cpu().contiguous()
+    log_p_l = _species_vector(
+        state.log_p_l,
+        family_index=parameter_family_index,
+        S=S,
+        familywise_1d=familywise_parameters,
+    ).to(dtype=torch.float64).cpu().contiguous()
     max_transfer = _species_vector(
         state.max_transfer,
         family_index=parameter_family_index,
@@ -688,6 +695,7 @@ def _prepare_backtracking_input(
         ebar=ebar,
         log_p_s=log_p_s,
         log_p_d=log_p_d,
+        log_p_l=log_p_l,
         max_transfer=max_transfer,
         origination_probs=origination_probs,
         seed=seed,
@@ -736,6 +744,7 @@ def _prepared_backtracking_payload(
         "ebar": _tensor_list(prepared.ebar, dtype=torch.float64),
         "log_p_s": _tensor_list(prepared.log_p_s, dtype=torch.float64),
         "log_p_d": _tensor_list(prepared.log_p_d, dtype=torch.float64),
+        "log_p_l": _tensor_list(prepared.log_p_l, dtype=torch.float64),
         "max_transfer": _tensor_list(prepared.max_transfer, dtype=torch.float64),
         "origination_probs": (
             None

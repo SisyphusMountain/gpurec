@@ -4795,6 +4795,47 @@ def test_optimization_runner_batched_lbfgs_advances_resident_batches(tmp_path: P
     assert runner.fake_model.closed
 
 
+def test_final_iteration_check_clears_cuda_allocator_cache_before_recompute(
+    tmp_path: Path,
+    monkeypatch,
+):
+    config = _optimizer_mode_config(
+        tmp_path,
+        optimizer="batched-lbfgs",
+        mode="genewise",
+        final_check_iters=32,
+    )
+    runner = OptimizationRunner(config)
+    model = _WorkflowBatchedLBFGSModeModel()
+    baseline_loss_vec, baseline_grad = model.full_genewise_nll_and_grad(
+        need_grad=True,
+    )
+    calls: list[int] = []
+
+    def record_cache_clear(model_arg):
+        assert model_arg is model
+        calls.append(len(model.solver_configs))
+
+    monkeypatch.setattr(
+        optimize_workflow,
+        "_clear_cuda_allocator_cache_if_needed",
+        record_cache_clear,
+    )
+
+    metrics = runner._evaluate_final_iteration_check(
+        model,
+        baseline_loss=baseline_loss_vec.sum(),
+        baseline_grad=baseline_grad,
+    )
+
+    assert calls == [0]
+    assert metrics["optimizer/final_check_status"] == "ok"
+    assert model.solver_configs == [
+        {"fixed_iters_E": None, "fixed_iters_Pi": 32, "neumann_terms": 32},
+        {"fixed_iters_E": None, "fixed_iters_Pi": 16, "neumann_terms": 16},
+    ]
+
+
 def test_optimization_runner_batched_lbfgs_resume_restores_state(tmp_path: Path):
     first_config = _optimizer_mode_config(
         tmp_path,

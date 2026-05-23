@@ -44,6 +44,8 @@ _LAZY_EXPORTS = {
     "sample_recphyloxml": "gpurec.backtracking",
     "sample_recphyloxmls": "gpurec.backtracking",
     "sample_recphyloxmls_to_dir": "gpurec.backtracking",
+    "compute_reconciliation_entropy": "gpurec.entropy",
+    "reconciliation_entropy_from_payload": "gpurec.entropy",
     "RunConfig": "gpurec.workflow",
     "SamplingConfig": "gpurec.workflow",
     "OptimizationResult": "gpurec.workflow",
