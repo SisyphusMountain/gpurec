@@ -5232,6 +5232,139 @@ def test_hessian_sgd_polish_cap_advances_after_configured_polish_steps(
     assert runner.fake_model.closed
 
 
+def test_final_genewise_eval_falls_back_to_smaller_clade_budget(
+    tmp_path: Path,
+    monkeypatch,
+):
+    config = _optimizer_mode_config(
+        tmp_path,
+        optimizer="hessian-sgd",
+        mode="genewise",
+        clade_budget=500_000,
+    )
+    runner = OptimizationRunner(config)
+    model = _WorkflowBatchedLBFGSModeModel()
+
+    def fail_full_genewise_nll_and_grad(*, need_grad: bool):
+        raise RuntimeError(
+            "2D self-loop fast path estimated scratch 0.00 GiB above memory budget"
+        )
+
+    model.full_genewise_nll_and_grad = fail_full_genewise_nll_and_grad
+    fallback_model = _WorkflowBatchedLBFGSModeModel()
+    budgets: list[int | None] = []
+
+    def fake_build_alerax_workflow_model(fallback_config, *, prefetch_batches):
+        budgets.append(fallback_config.clade_budget)
+        assert prefetch_batches == 1
+        return fallback_model
+
+    monkeypatch.setattr(
+        optimize_workflow,
+        "build_alerax_workflow_model",
+        fake_build_alerax_workflow_model,
+    )
+
+    loss_vec, metrics = runner._evaluate_genewise_vector_and_grad_with_memory_fallback(
+        model
+    )
+
+    assert budgets == [250_000]
+    assert metrics["optimizer/final_eval_source"] == "fallback_clade_budget"
+    assert metrics["optimizer/final_eval_fallback_clade_budget"] == 250_000.0
+    assert "2D self-loop fast path" in metrics["optimizer/final_eval_fallback_reason"]
+    torch.testing.assert_close(
+        loss_vec,
+        model.theta.detach().square().sum(dim=1) + 1.0,
+    )
+    torch.testing.assert_close(model.theta.grad, 2.0 * model.theta.detach())
+    assert fallback_model.closed
+
+
+def test_final_genewise_eval_does_not_fallback_for_non_memory_error(
+    tmp_path: Path,
+    monkeypatch,
+):
+    config = _optimizer_mode_config(
+        tmp_path,
+        optimizer="hessian-sgd",
+        mode="genewise",
+        clade_budget=500_000,
+    )
+    runner = OptimizationRunner(config)
+    model = _WorkflowBatchedLBFGSModeModel()
+
+    def fail_full_genewise_nll_and_grad(*, need_grad: bool):
+        raise RuntimeError("logic bug")
+
+    def fake_build_alerax_workflow_model(fallback_config, *, prefetch_batches):
+        raise AssertionError("fallback should not be built")
+
+    model.full_genewise_nll_and_grad = fail_full_genewise_nll_and_grad
+    monkeypatch.setattr(
+        optimize_workflow,
+        "build_alerax_workflow_model",
+        fake_build_alerax_workflow_model,
+    )
+
+    with pytest.raises(RuntimeError, match="logic bug"):
+        runner._evaluate_genewise_vector_and_grad_with_memory_fallback(model)
+
+
+def test_final_iteration_check_falls_back_to_smaller_clade_budget(
+    tmp_path: Path,
+    monkeypatch,
+):
+    config = _optimizer_mode_config(
+        tmp_path,
+        optimizer="hessian-sgd",
+        mode="genewise",
+        clade_budget=500_000,
+        final_check_iters=32,
+    )
+    runner = OptimizationRunner(config)
+    model = _WorkflowBatchedLBFGSModeModel()
+
+    def fail_full_genewise_nll_and_grad(*, need_grad: bool):
+        raise RuntimeError(
+            "2D self-loop fast path estimated scratch 0.00 GiB above memory budget"
+        )
+
+    model.full_genewise_nll_and_grad = fail_full_genewise_nll_and_grad
+    fallback_model = _WorkflowBatchedLBFGSModeModel()
+    baseline_loss_vec, baseline_grad = fallback_model.full_genewise_nll_and_grad(
+        need_grad=True
+    )
+    assert baseline_grad is not None
+    budgets: list[int | None] = []
+
+    def fake_build_alerax_workflow_model(fallback_config, *, prefetch_batches):
+        budgets.append(fallback_config.clade_budget)
+        assert prefetch_batches == 1
+        return fallback_model
+
+    monkeypatch.setattr(
+        optimize_workflow,
+        "build_alerax_workflow_model",
+        fake_build_alerax_workflow_model,
+    )
+
+    metrics = runner._evaluate_final_iteration_check(
+        model,
+        baseline_loss=baseline_loss_vec.sum(),
+        baseline_grad=baseline_grad,
+    )
+
+    assert budgets == [250_000]
+    assert metrics["optimizer/final_check_status"] == "ok"
+    assert metrics["optimizer/final_check_source"] == "fallback_clade_budget"
+    assert metrics["optimizer/final_check_fallback_clade_budget"] == 250_000.0
+    assert "2D self-loop fast path" in metrics["optimizer/final_check_fallback_reason"]
+    assert metrics["optimizer/final_check_loss_abs_delta_bits"] == pytest.approx(0.0)
+    assert metrics["optimizer/final_check_grad_max_abs_delta"] == pytest.approx(0.0)
+    assert fallback_model.closed
+
+
 def test_hessian_sgd_enters_newton_polish_after_best_likelihood_stall(
     tmp_path: Path,
 ):

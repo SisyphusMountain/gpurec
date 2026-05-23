@@ -116,6 +116,17 @@ def _clear_cuda_allocator_cache_if_needed(model: GeneReconModel) -> None:
         torch.cuda.empty_cache()
 
 
+def _is_memory_retryable_runtime_error(exc: RuntimeError) -> bool:
+    if isinstance(exc, torch.OutOfMemoryError):
+        return True
+    message = str(exc).lower()
+    return (
+        "out of memory" in message
+        or "memory budget" in message
+        or "estimated scratch" in message
+    )
+
+
 def _checkpoint_index_tuple(
     path: Path,
     name: str,
@@ -536,6 +547,204 @@ class OptimizationRunner:
         loss_vec, _grad = model.full_genewise_nll_and_grad(need_grad=False)
         return loss_vec.detach()
 
+    def _final_eval_fallback_clade_budgets(self) -> list[int]:
+        current = self.config.clade_budget
+        candidates: list[int] = []
+        if current is not None:
+            candidates.extend(
+                max(1, int(current) // divisor)
+                for divisor in (2, 5, 10, 20)
+                if int(current) // divisor > 0
+            )
+        candidates.extend([100_000, 50_000, 25_000])
+        seen: set[int] = set()
+        out: list[int] = []
+        for budget in candidates:
+            if current is not None and budget >= int(current):
+                continue
+            if budget in seen:
+                continue
+            seen.add(budget)
+            out.append(budget)
+        return out
+
+    def _evaluate_genewise_vector_and_grad_with_memory_fallback(
+        self,
+        model: GeneReconModel,
+    ) -> tuple[torch.Tensor, dict[str, Any]]:
+        try:
+            return self._evaluate_genewise_vector_and_grad(model)
+        except RuntimeError as original_exc:
+            if not _is_memory_retryable_runtime_error(original_exc):
+                raise
+            model.clear()
+            drop_cached_static_states = getattr(
+                model,
+                "drop_cached_static_states",
+                None,
+            )
+            if callable(drop_cached_static_states):
+                drop_cached_static_states()
+            _clear_cuda_allocator_cache_if_needed(model)
+            try:
+                loss_vec, metrics = self._evaluate_genewise_vector_and_grad(model)
+                metrics = dict(metrics)
+                metrics["optimizer/final_eval_source"] = (
+                    "recomputed_after_cache_drop"
+                )
+                metrics["optimizer/final_eval_fallback_reason"] = (
+                    f"{type(original_exc).__name__}: {original_exc}"
+                )
+                return loss_vec, metrics
+            except RuntimeError as retry_exc:
+                if not _is_memory_retryable_runtime_error(retry_exc):
+                    raise
+                _clear_cuda_allocator_cache_if_needed(model)
+            budgets = self._final_eval_fallback_clade_budgets()
+            if not budgets:
+                raise
+            fallback_errors: list[str] = []
+            for budget in budgets:
+                fallback_model: GeneReconModel | None = None
+                try:
+                    fallback_data = self.config.to_dict()
+                    fallback_data["clade_budget"] = budget
+                    fallback_config = RunConfig.from_dict(fallback_data)
+                    fallback_model = build_alerax_workflow_model(
+                        fallback_config,
+                        prefetch_batches=1,
+                    )
+                    with torch.no_grad():
+                        fallback_model.theta.copy_(
+                            model.theta.detach().to(
+                                device=fallback_model.theta.device,
+                                dtype=fallback_model.theta.dtype,
+                            )
+                        )
+                    self._configure_solver_stage(fallback_model, "full")
+                    loss_vec, metrics = self._evaluate_genewise_vector_and_grad(
+                        fallback_model
+                    )
+                    if fallback_model.theta.grad is None:
+                        raise RuntimeError("fallback final eval did not produce gradients")
+                    model.theta.grad = fallback_model.theta.grad.detach().to(
+                        device=model.theta.device,
+                        dtype=model.theta.dtype,
+                    )
+                    metrics = dict(metrics)
+                    metrics["optimizer/final_eval_source"] = (
+                        "fallback_clade_budget"
+                    )
+                    metrics["optimizer/final_eval_fallback_clade_budget"] = float(
+                        budget
+                    )
+                    metrics["optimizer/final_eval_fallback_reason"] = (
+                        f"{type(original_exc).__name__}: {original_exc}"
+                    )
+                    metrics.update(tensor_stats("grad", model.theta.grad))
+                    metrics.update(parameter_stats(model.theta))
+                    return loss_vec.detach().to(
+                        device=model.theta.device,
+                        dtype=model.theta.dtype,
+                    ), metrics
+                except RuntimeError as fallback_exc:
+                    if not _is_memory_retryable_runtime_error(fallback_exc):
+                        raise
+                    fallback_errors.append(
+                        f"clade_budget={budget}: "
+                        f"{type(fallback_exc).__name__}: {fallback_exc}"
+                    )
+                except Exception:
+                    raise
+                finally:
+                    if fallback_model is not None:
+                        fallback_model.close()
+                    _clear_cuda_allocator_cache_if_needed(model)
+            raise RuntimeError(
+                "final genewise evaluation failed in the resident layout and all "
+                "smaller-clade fallbacks failed; original error: "
+                f"{type(original_exc).__name__}: {original_exc}; fallbacks: "
+                + "; ".join(fallback_errors)
+            ) from original_exc
+
+    def _evaluate_final_check_genewise_with_memory_fallback(
+        self,
+        model: GeneReconModel,
+        *,
+        check_iters: int,
+        original_exc: RuntimeError,
+    ) -> tuple[torch.Tensor, torch.Tensor, dict[str, Any]]:
+        budgets = self._final_eval_fallback_clade_budgets()
+        if not budgets:
+            raise original_exc
+        _clear_cuda_allocator_cache_if_needed(model)
+        fallback_errors: list[str] = []
+        for budget in budgets:
+            fallback_model: GeneReconModel | None = None
+            try:
+                fallback_data = self.config.to_dict()
+                fallback_data["clade_budget"] = budget
+                fallback_config = RunConfig.from_dict(fallback_data)
+                fallback_model = build_alerax_workflow_model(
+                    fallback_config,
+                    prefetch_batches=1,
+                )
+                with torch.no_grad():
+                    fallback_model.theta.copy_(
+                        model.theta.detach().to(
+                            device=fallback_model.theta.device,
+                            dtype=fallback_model.theta.dtype,
+                        )
+                    )
+                fallback_model.configure_solver_iterations(
+                    fixed_iters_E=self.config.fixed_iters_e,
+                    fixed_iters_Pi=check_iters,
+                    neumann_terms=check_iters,
+                )
+                loss_vec, _metrics = self._evaluate_genewise_vector_and_grad(
+                    fallback_model
+                )
+                if fallback_model.theta.grad is None:
+                    raise RuntimeError("fallback final check did not produce gradients")
+                grad = fallback_model.theta.grad.detach().to(
+                    device=model.theta.device,
+                    dtype=model.theta.dtype,
+                )
+                metrics = {
+                    "optimizer/final_check_source": "fallback_clade_budget",
+                    "optimizer/final_check_fallback_clade_budget": float(budget),
+                    "optimizer/final_check_fallback_reason": (
+                        f"{type(original_exc).__name__}: {original_exc}"
+                    ),
+                }
+                return (
+                    loss_vec.detach().to(
+                        device=model.theta.device,
+                        dtype=model.theta.dtype,
+                    ),
+                    grad,
+                    metrics,
+                )
+            except RuntimeError as fallback_exc:
+                if not _is_memory_retryable_runtime_error(fallback_exc):
+                    raise
+                fallback_errors.append(
+                    f"clade_budget={budget}: "
+                    f"{type(fallback_exc).__name__}: {fallback_exc}"
+                )
+            except Exception:
+                raise
+            finally:
+                if fallback_model is not None:
+                    fallback_model.close()
+                _clear_cuda_allocator_cache_if_needed(model)
+        raise RuntimeError(
+            "final iteration check failed in the resident layout and all "
+            "smaller-clade fallbacks failed; original error: "
+            f"{type(original_exc).__name__}: {original_exc}; fallbacks: "
+            + "; ".join(fallback_errors)
+        ) from original_exc
+
     def _uses_solver_warmup(self) -> bool:
         return (
             self.config.mode == "genewise"
@@ -681,14 +890,26 @@ class OptimizationRunner:
             if config.mode == "genewise" and callable(
                 getattr(model, "full_genewise_nll_and_grad", None)
             ):
-                check_loss_vec, _check_metrics = (
-                    self._evaluate_genewise_vector_and_grad(model)
-                )
+                try:
+                    check_loss_vec, _check_metrics = (
+                        self._evaluate_genewise_vector_and_grad(model)
+                    )
+                    check_grad = model.theta.grad
+                except RuntimeError as check_exc:
+                    if not _is_memory_retryable_runtime_error(check_exc):
+                        raise
+                    check_loss_vec, check_grad, fallback_metrics = (
+                        self._evaluate_final_check_genewise_with_memory_fallback(
+                            model,
+                            check_iters=check_iters,
+                            original_exc=check_exc,
+                        )
+                    )
+                    metrics.update(fallback_metrics)
                 check_loss = check_loss_vec.sum()
             else:
                 check_loss, _check_metrics = self._evaluate_and_backward(model)
-
-            check_grad = model.theta.grad
+                check_grad = model.theta.grad
             check_failed = (
                 not torch.isfinite(check_loss).item()
                 or not _is_finite_tensor(check_grad)
@@ -862,25 +1083,6 @@ class OptimizationRunner:
         projected[(theta >= upper_bound) & (projected < 0)] = 0
         projected_inf = float(projected.detach().abs().amax().cpu()) if projected.numel() else 0.0
         return projected, projected_inf
-
-    def _active_projected_row_grad_inf(
-        self,
-        model: GeneReconModel,
-        idx: torch.Tensor,
-        *,
-        lower_bound: float,
-        upper_bound: float,
-    ) -> torch.Tensor:
-        grad = model.theta.grad
-        if grad is None:
-            raise RuntimeError("projected row gradient requested before gradient evaluation")
-        active_theta = model.theta.detach().index_select(0, idx)
-        projected = grad.detach().index_select(0, idx).clone()
-        projected[(active_theta <= lower_bound) & (projected > 0)] = 0
-        projected[(active_theta >= upper_bound) & (projected < 0)] = 0
-        if projected.ndim == 1:
-            projected = projected.reshape(idx.numel(), -1)
-        return projected.abs().amax(dim=1)
 
     def _evaluate_active_genewise_vector_grad_at_current_theta(
         self,
@@ -2183,13 +2385,6 @@ class OptimizationRunner:
                             row_converged
                             & ~converged_family_mask.index_select(0, idx)
                         )
-                        row_grad_inf = self._active_projected_row_grad_inf(
-                            model,
-                            idx,
-                            lower_bound=math.log2(config.min_rate),
-                            upper_bound=math.log2(config.max_rate),
-                        )
-                        row_grad_below_tol = row_grad_inf <= config.grad_inf_tol
                         threshold_count = max(
                             1,
                             math.ceil(
@@ -2210,9 +2405,6 @@ class OptimizationRunner:
                                 ),
                                 "optimizer/rebatch_convergence_criterion": (
                                     "best_likelihood_patience"
-                                ),
-                                "optimizer/rebatch_grad_below_tol_families": float(
-                                    row_grad_below_tol.sum().detach().cpu()
                                 ),
                                 "optimizer/rebatch_family_stable_steps_max": float(
                                     next_stable.max().detach().cpu()
@@ -2688,8 +2880,10 @@ class OptimizationRunner:
             elif config.mode == "genewise" and callable(
                 getattr(model, "full_genewise_nll_and_grad", None)
             ):
-                final_loss_vec, final_metrics = self._evaluate_genewise_vector_and_grad(
-                    model
+                final_loss_vec, final_metrics = (
+                    self._evaluate_genewise_vector_and_grad_with_memory_fallback(
+                        model
+                    )
                 )
                 final_loss = final_loss_vec.sum()
                 final_per_family_nll = final_loss_vec.detach()
