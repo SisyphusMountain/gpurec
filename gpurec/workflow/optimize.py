@@ -2511,6 +2511,15 @@ class OptimizationRunner:
                         metrics[
                             "optimizer/fd_newton_force_refresh_after_plateau"
                         ] = True
+                        if (
+                            adaptive_rebatch_stop
+                            or adaptive_rebatch_pending_indices is not None
+                        ):
+                            metrics[
+                                "optimizer/rebatch_deferred_for_hessian_refresh"
+                            ] = True
+                        adaptive_rebatch_stop = False
+                        adaptive_rebatch_pending_indices = None
                     else:
                         stable_loss_steps += 1
                 else:
@@ -2724,6 +2733,8 @@ class OptimizationRunner:
                         else None
                     ),
                 )
+                if force_hessian_refresh_after_plateau:
+                    step_status = None
                 if step_status is None and hessian_sgd_polish_limit_reached:
                     step_status = {
                         "status": "converged",

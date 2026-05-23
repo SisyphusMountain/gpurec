@@ -5420,7 +5420,7 @@ def test_hessian_sgd_likelihood_plateau_converges_with_nonzero_gradient(
         tmp_path,
         optimizer="hessian-sgd",
         mode="genewise",
-        steps=4,
+        steps=5,
         solver_warmup_iters=0,
         fd_hessian_refresh_steps=16,
         fd_hessian_epsilon=1e-3,
@@ -5456,7 +5456,7 @@ def test_hessian_sgd_polish_plateau_refreshes_stale_zero_accept_hessian(
         fd_newton_damping=1e-6,
         loss_change_tol=0.0,
         loss_patience=1,
-        best_likelihood_patience=0,
+        best_likelihood_patience=1,
     )
     runner = _WorkflowAdaptiveRebatchRunner(config)
     state_seen_as_none: list[bool] = []
