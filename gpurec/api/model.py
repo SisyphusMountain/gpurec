@@ -1693,6 +1693,12 @@ class GeneReconModel(torch.nn.Module):
 
     def clear(self) -> None:
         """Release active runtime caches held by the model."""
+        if self._batched_resident:
+            with self._batch_lock:
+                static = self._batch_statics[self._current_batch_index]
+            if static is not None:
+                static.warm_E = None
+            return
         static = self._active_static()
         static.warm_E = None
 

@@ -727,6 +727,34 @@ def test_close_tolerates_partially_initialized_model():
     assert model._prefetch_executor is None
 
 
+def test_clear_batched_resident_does_not_materialize_missing_active_batch():
+    model = GeneReconModel.__new__(GeneReconModel)
+    model._batched_resident = True
+    model._current_batch_index = 0
+    model._batch_statics = [None]
+    model._batch_lock = Lock()
+    model._build_batch_static = lambda batch_idx: pytest.fail(
+        "clear() should not materialize a missing resident batch"
+    )
+
+    model.clear()
+
+    assert model._batch_statics == [None]
+
+
+def test_clear_batched_resident_clears_existing_active_warm_state():
+    static = SimpleNamespace(warm_E=object())
+    model = GeneReconModel.__new__(GeneReconModel)
+    model._batched_resident = True
+    model._current_batch_index = 0
+    model._batch_statics = [static]
+    model._batch_lock = Lock()
+
+    model.clear()
+
+    assert static.warm_E is None
+
+
 def test_close_shuts_down_executor_without_batch_lock():
     class FakeExecutor:
         def __init__(self):
