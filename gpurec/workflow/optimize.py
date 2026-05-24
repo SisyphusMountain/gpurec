@@ -90,6 +90,7 @@ _HESSIAN_SGD_LINE_SEARCH_ACCEPT_FRACTION = 0.6
 _HESSIAN_SGD_LINE_SEARCH_LOW_ACCEPT_PATIENCE = 2
 _HESSIAN_SGD_NO_LINE_REFRESH_STEPS = 64
 _HESSIAN_SGD_NO_LINE_REFRESH_MIN_CLADES = 400_000
+_HESSIAN_SGD_LARGE_BATCH_WARMUP_ITERS = 2
 _BATCHWISE_ACTIVE_OPTIMIZERS = frozenset(
     {"batched-lbfgs", "adam-fd-newton", "hessian-sgd"}
 )
@@ -765,6 +766,12 @@ class OptimizationRunner:
         config = self.config
         if stage == "warmup":
             iters = int(config.solver_warmup_iters)
+            if config.optimizer == "hessian-sgd":
+                active_clade_count = int(
+                    getattr(model.current_batch_metadata, "clade_count", 0) or 0
+                )
+                if active_clade_count >= _HESSIAN_SGD_NO_LINE_REFRESH_MIN_CLADES:
+                    iters = min(iters, _HESSIAN_SGD_LARGE_BATCH_WARMUP_ITERS)
             fixed_iters_E = (
                 config.fixed_iters_e
                 if config.optimizer == "hessian-sgd"

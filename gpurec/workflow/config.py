@@ -353,7 +353,7 @@ class RunConfig:
     tol_e: float = 1e-8
     fixed_iters_pi: int = 16
     neumann_terms: int = 16
-    solver_warmup_iters: int = 6
+    solver_warmup_iters: int = 4
     solver_warmup_loss_patience: int = 2
     adaptive_iters: bool = True
     adaptive_neumann_terms: bool = False
@@ -390,7 +390,7 @@ class RunConfig:
     adaptive_rebatch_check_interval: int = 1
     adaptive_rebatch_min_remaining_families: int = 2
 
-    loss_change_tol: float = 1e-3
+    loss_change_tol: float = 2e-3
     loss_patience: int = 1
     best_likelihood_patience: int = 1
     best_likelihood_min_delta: float = 0.0

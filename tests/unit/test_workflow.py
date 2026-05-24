@@ -1131,6 +1131,8 @@ def test_run_config_accepts_hessian_sgd_for_genewise_mode(tmp_path: Path):
     assert config.optimizer == "hessian-sgd"
     assert config.fd_hessian_refresh_steps == 16
     assert config.fd_hessian_epsilon == pytest.approx(1e-3)
+    assert config.solver_warmup_iters == 4
+    assert config.loss_change_tol == pytest.approx(2e-3)
     assert config.hessian_sgd_normal_fixed_iters_pi is None
     assert config.hessian_sgd_normal_neumann_terms is None
 
@@ -5095,6 +5097,27 @@ def test_hessian_sgd_solver_warmup_keeps_full_e_budget(tmp_path: Path):
 
     assert model.solver_configs == [
         {"fixed_iters_E": 16, "fixed_iters_Pi": 6, "neumann_terms": 6}
+    ]
+
+
+def test_hessian_sgd_large_batch_warmup_uses_short_pi_neumann_schedule(
+    tmp_path: Path,
+):
+    config = _optimizer_mode_config(
+        tmp_path,
+        optimizer="hessian-sgd",
+        mode="genewise",
+        fixed_iters_e=16,
+        solver_warmup_iters=4,
+    )
+    runner = OptimizationRunner(config)
+    model = _WorkflowBatchedLBFGSModeModel()
+    model.batch_metadata[0].clade_count = 500_000
+
+    runner._configure_solver_stage(model, "warmup")
+
+    assert model.solver_configs == [
+        {"fixed_iters_E": 16, "fixed_iters_Pi": 2, "neumann_terms": 2}
     ]
 
 
