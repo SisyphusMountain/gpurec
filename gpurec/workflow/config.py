@@ -254,9 +254,6 @@ _JSON_INT_FIELDS = {
     "fd_hessian_refresh_steps",
     "hessian_sgd_normal_fixed_iters_pi",
     "hessian_sgd_normal_neumann_terms",
-    "hessian_sgd_polish_max_steps",
-    "hessian_sgd_polish_refresh_steps",
-    "hessian_sgd_polish_max_ls",
     "adaptive_rebatch_check_interval",
     "adaptive_rebatch_min_remaining_families",
     "lbfgs_history_size",
@@ -293,7 +290,14 @@ _RUN_CONFIG_REQUIRED_PATH_FIELDS = ("species_tree", "families_file", "out_dir")
 _RUN_CONFIG_PATH_FIELDS = _RUN_CONFIG_REQUIRED_PATH_FIELDS + (
     "resume_from",
 )
-_RUN_CONFIG_LEGACY_FIELDS = frozenset({"fd_newton_max_step"})
+_RUN_CONFIG_LEGACY_FIELDS = frozenset(
+    {
+        "fd_newton_max_step",
+        "hessian_sgd_polish_max_steps",
+        "hessian_sgd_polish_refresh_steps",
+        "hessian_sgd_polish_max_ls",
+    }
+)
 
 
 def _validate_json_scalar_types(data: dict[str, Any]) -> None:
@@ -375,9 +379,6 @@ class RunConfig:
     fd_hessian_refresh_steps: int = 16
     hessian_sgd_normal_fixed_iters_pi: int | None = None
     hessian_sgd_normal_neumann_terms: int | None = None
-    hessian_sgd_polish_max_steps: int | None = None
-    hessian_sgd_polish_refresh_steps: int = 8
-    hessian_sgd_polish_max_ls: int | None = None
     lbfgs_lr: float = 0.1
     lbfgs_history_size: int = 20
     lbfgs_max_iter: int = 1
@@ -481,18 +482,6 @@ class RunConfig:
         self.hessian_sgd_normal_neumann_terms = _normalize_optional_positive_int(
             "hessian_sgd_normal_neumann_terms",
             self.hessian_sgd_normal_neumann_terms,
-        )
-        self.hessian_sgd_polish_max_steps = _normalize_optional_nonnegative_int(
-            "hessian_sgd_polish_max_steps",
-            self.hessian_sgd_polish_max_steps,
-        )
-        self.hessian_sgd_polish_refresh_steps = _normalize_positive_int(
-            "hessian_sgd_polish_refresh_steps",
-            self.hessian_sgd_polish_refresh_steps,
-        )
-        self.hessian_sgd_polish_max_ls = _normalize_optional_positive_int(
-            "hessian_sgd_polish_max_ls",
-            self.hessian_sgd_polish_max_ls,
         )
         self.adaptive_rebatch_check_interval = _normalize_positive_int(
             "adaptive_rebatch_check_interval",
@@ -634,8 +623,6 @@ class RunConfig:
             raise ValueError("fd_adam_warmup_steps must be non-negative")
         if self.fd_hessian_refresh_steps < 1:
             raise ValueError("fd_hessian_refresh_steps must be positive")
-        if self.hessian_sgd_polish_refresh_steps < 1:
-            raise ValueError("hessian_sgd_polish_refresh_steps must be positive")
         if (
             self.lbfgs_history_size < 1
             or self.lbfgs_max_iter < 1
