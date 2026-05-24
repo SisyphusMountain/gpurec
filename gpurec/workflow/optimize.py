@@ -90,6 +90,9 @@ _HESSIAN_SGD_LINE_SEARCH_ACCEPT_FRACTION = 0.6
 _HESSIAN_SGD_LINE_SEARCH_LOW_ACCEPT_PATIENCE = 2
 _HESSIAN_SGD_NO_LINE_REFRESH_STEPS = 64
 _HESSIAN_SGD_NO_LINE_REFRESH_MIN_CLADES = 400_000
+_HESSIAN_SGD_SKIP_FULL_AFTER_WARMUP_MIN_CLADES = (
+    _HESSIAN_SGD_NO_LINE_REFRESH_MIN_CLADES
+)
 _HESSIAN_SGD_LARGE_BATCH_WARMUP_ITERS = 2
 _BATCHWISE_ACTIVE_OPTIMIZERS = frozenset(
     {"batched-lbfgs", "adam-fd-newton", "hessian-sgd"}
@@ -1093,6 +1096,37 @@ class OptimizationRunner:
         if model.theta.grad is None:
             raise RuntimeError("active genewise evaluation did not produce gradients")
         return loss_vec.detach(), model.theta.grad.detach().clone(), metrics
+
+    def _cache_active_batch_final_result(
+        self,
+        model: GeneReconModel,
+        *,
+        loss_vec: torch.Tensor,
+        batch_final_loss_cache: torch.Tensor | None,
+        batch_final_grad_cache: torch.Tensor | None,
+        batch_final_cache_ready: torch.Tensor | None,
+    ) -> None:
+        if (
+            batch_final_loss_cache is None
+            or batch_final_grad_cache is None
+            or batch_final_cache_ready is None
+        ):
+            return
+        grad = model.theta.grad
+        if grad is None:
+            raise RuntimeError("active genewise final cache requested before gradients")
+        idx = self._active_batch_indices(model)
+        batch_final_loss_cache.index_copy_(
+            0,
+            idx,
+            loss_vec.detach().index_select(0, idx),
+        )
+        batch_final_grad_cache.index_copy_(
+            0,
+            idx,
+            grad.detach().index_select(0, idx),
+        )
+        batch_final_cache_ready.index_fill_(0, idx, True)
 
     def _active_adam_step(
         self,
@@ -2268,18 +2302,13 @@ class OptimizationRunner:
                         and batch_final_grad_cache is not None
                         and batch_final_cache_ready is not None
                     ):
-                        idx = self._active_batch_indices(model)
-                        batch_final_loss_cache.index_copy_(
-                            0,
-                            idx,
-                            loss_vec_current.detach().index_select(0, idx),
+                        self._cache_active_batch_final_result(
+                            model,
+                            loss_vec=loss_vec_current,
+                            batch_final_loss_cache=batch_final_loss_cache,
+                            batch_final_grad_cache=batch_final_grad_cache,
+                            batch_final_cache_ready=batch_final_cache_ready,
                         )
-                        batch_final_grad_cache.index_copy_(
-                            0,
-                            idx,
-                            model.theta.grad.detach().index_select(0, idx),
-                        )
-                        batch_final_cache_ready.index_fill_(0, idx, True)
                     model.clear()
                 elif phase in _HESSIAN_CONDITIONED_OPTIMIZERS:
                     if optimizer is None:
@@ -2381,18 +2410,13 @@ class OptimizationRunner:
                         and batch_final_grad_cache is not None
                         and batch_final_cache_ready is not None
                     ):
-                        idx = self._active_batch_indices(model)
-                        batch_final_loss_cache.index_copy_(
-                            0,
-                            idx,
-                            loss_vec_current.detach().index_select(0, idx),
+                        self._cache_active_batch_final_result(
+                            model,
+                            loss_vec=loss_vec_current,
+                            batch_final_loss_cache=batch_final_loss_cache,
+                            batch_final_grad_cache=batch_final_grad_cache,
+                            batch_final_cache_ready=batch_final_cache_ready,
                         )
-                        batch_final_grad_cache.index_copy_(
-                            0,
-                            idx,
-                            model.theta.grad.detach().index_select(0, idx),
-                        )
-                        batch_final_cache_ready.index_fill_(0, idx, True)
                     active_batch_local_step += 1
                     model.clear()
                 else:
@@ -2835,8 +2859,61 @@ class OptimizationRunner:
                     and active_objective_scope
                     and active_solver_stage == "warmup"
                 ):
-                    warmup_switch = True
-                    step_status = None
+                    active_clade_count = int(
+                        getattr(
+                            model.current_batch_metadata,
+                            "clade_count",
+                            0,
+                        )
+                        or 0
+                    )
+                    skip_full_after_warmup = (
+                        batchwise_hessian_sgd
+                        and phase == "hessian-sgd"
+                        and not hessian_sgd_line_search_active
+                        and active_clade_count
+                        >= _HESSIAN_SGD_SKIP_FULL_AFTER_WARMUP_MIN_CLADES
+                    )
+                    if skip_full_after_warmup:
+                        cache_skipped_full = (
+                            self._active_batch_result_is_canonical_full_solver(
+                                phase=phase,
+                                solver_stage="full",
+                            )
+                        )
+                        if cache_skipped_full:
+                            self._configure_active_solver_stage(
+                                model,
+                                "full",
+                            )
+                            loss_vec_current, _grad, _metrics = (
+                                self._evaluate_active_genewise_vector_grad_at_current_theta(
+                                    model,
+                                    solver_stage="full",
+                                )
+                            )
+                            if (
+                                not bool(torch.isfinite(loss_vec_current).all().item())
+                                or not _is_finite_tensor(model.theta.grad)
+                            ):
+                                status = {
+                                    "status": "failed",
+                                    "reason": "nonfinite_objective_or_gradient",
+                                }
+                                model.clear()
+                                break
+                            self._cache_active_batch_final_result(
+                                model,
+                                loss_vec=loss_vec_current,
+                                batch_final_loss_cache=batch_final_loss_cache,
+                                batch_final_grad_cache=batch_final_grad_cache,
+                                batch_final_cache_ready=batch_final_cache_ready,
+                            )
+                            model.clear()
+                        warmup_switch = False
+                    else:
+                        warmup_switch = True
+                        step_status = None
                 if warmup_switch:
                     active_clade_count = int(
                         getattr(
@@ -2968,6 +3045,7 @@ class OptimizationRunner:
             else:
                 status = {"status": "not_converged", "reason": "max_steps"}
 
+            final_eval_started = time.perf_counter()
             if batchwise_active_optimizer:
                 self._configure_solver_stage(model, "full")
             model.theta.grad = None
@@ -3010,6 +3088,7 @@ class OptimizationRunner:
                 or not _is_finite_tensor(model.theta.grad)
             )
             if final_eval_failed:
+                final_eval_s = time.perf_counter() - final_eval_started
                 status = {
                     "status": "failed",
                     "reason": "nonfinite_objective_or_gradient",
@@ -3037,7 +3116,7 @@ class OptimizationRunner:
                     "best_nll_bits": best_nll,
                     "best_step": best_step,
                     **resume_info,
-                    "step_s": 0.0,
+                    "step_s": final_eval_s,
                 }
                 model.theta.grad = None
                 model.clear()
@@ -3049,6 +3128,7 @@ class OptimizationRunner:
                         baseline_grad=model.theta.grad,
                     )
                 )
+                final_eval_s = time.perf_counter() - final_eval_started
                 final_nll_bits = float(final_loss.detach().cpu())
                 final_grad_inf = float(final_metrics.get("grad/inf", math.inf))
                 final_improved = (
@@ -3070,7 +3150,7 @@ class OptimizationRunner:
                     "best_nll_bits": best_nll,
                     "best_step": best_step,
                     **resume_info,
-                    "step_s": 0.0,
+                    "step_s": final_eval_s,
                     **final_metrics,
                 }
             self.history.append(final_row)

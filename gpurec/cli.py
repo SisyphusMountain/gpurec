@@ -255,7 +255,7 @@ def _add_run_config_args(parser: argparse.ArgumentParser) -> None:
         type=int,
         help=(
             "Plan families with at most this many leaves before larger "
-            "families; use 0 to disable. Workflow default: 4."
+            "families; use 0 to disable. Workflow default: 0."
         ),
     )
     parser.add_argument(

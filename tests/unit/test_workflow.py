@@ -5855,6 +5855,86 @@ def test_hessian_sgd_warmup_plateau_promotes_to_full_solver(tmp_path: Path):
     assert runner.fake_model.closed
 
 
+def test_hessian_sgd_large_batch_warmup_plateau_skips_full_solver(
+    tmp_path: Path,
+):
+    config = _optimizer_mode_config(
+        tmp_path,
+        optimizer="hessian-sgd",
+        mode="genewise",
+        steps=3,
+        solver_warmup_iters=6,
+        solver_warmup_loss_patience=99,
+        loss_change_tol=1e9,
+        loss_patience=1,
+        best_likelihood_patience=0,
+        fd_hessian_epsilon=1e-3,
+        fd_newton_damping=1e-6,
+        lr=1e-9,
+    )
+    runner = _WorkflowLargeCladeAdaptiveRebatchRunner(config)
+
+    result = runner.run()
+
+    history_rows = _optimizer_mode_history_rows(config.out_dir)
+    hessian_rows = [
+        row for row in history_rows if row["optimizer/phase"] == "hessian-sgd"
+    ]
+    final_rows = [
+        row for row in history_rows if row["optimizer/phase"] == "final_eval"
+    ]
+    assert [row["optimizer/solver_stage"] for row in hessian_rows] == [
+        "warmup",
+        "warmup",
+    ]
+    assert final_rows[-1]["optimizer/final_eval_source"] == "cached_active_batches"
+    assert result.status == "converged"
+    assert result.reason == "loss_change_patience"
+    assert runner.fake_model.closed
+
+
+def test_hessian_sgd_large_batch_warmup_skip_does_not_cache_noncanonical_full(
+    tmp_path: Path,
+):
+    config = _optimizer_mode_config(
+        tmp_path,
+        optimizer="hessian-sgd",
+        mode="genewise",
+        steps=3,
+        fixed_iters_pi=16,
+        neumann_terms=16,
+        hessian_sgd_normal_fixed_iters_pi=8,
+        hessian_sgd_normal_neumann_terms=8,
+        solver_warmup_iters=6,
+        solver_warmup_loss_patience=99,
+        loss_change_tol=1e9,
+        loss_patience=1,
+        best_likelihood_patience=0,
+        fd_hessian_epsilon=1e-3,
+        fd_newton_damping=1e-6,
+        lr=1e-9,
+    )
+    runner = _WorkflowLargeCladeAdaptiveRebatchRunner(config)
+
+    result = runner.run()
+
+    history_rows = _optimizer_mode_history_rows(config.out_dir)
+    hessian_rows = [
+        row for row in history_rows if row["optimizer/phase"] == "hessian-sgd"
+    ]
+    final_rows = [
+        row for row in history_rows if row["optimizer/phase"] == "final_eval"
+    ]
+    assert [row["optimizer/solver_stage"] for row in hessian_rows] == [
+        "warmup",
+        "warmup",
+    ]
+    assert "optimizer/final_eval_source" not in final_rows[-1]
+    assert result.status == "converged"
+    assert result.reason == "loss_change_patience"
+    assert runner.fake_model.closed
+
+
 def test_active_batch_plateau_tolerances_scale_by_family_count(tmp_path: Path):
     config = _optimizer_mode_config(
         tmp_path,
