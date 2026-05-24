@@ -39,6 +39,7 @@ def _parser_action_dests(command: str) -> set[str]:
         action.dest
         for action in subparsers.choices[command]._actions
         if action.dest not in (argparse.SUPPRESS, "help")
+        and action.help is not argparse.SUPPRESS
     }
 
 
@@ -57,7 +58,6 @@ def test_run_config_cli_surface_matches_dataclass_fields():
         "sample_max_families",
         "max_events",
         "backtrack_binary",
-        "checkpoint",
     }
     assert _parser_action_dests("backtrack-check") == {"backtrack_binary"}
 
@@ -200,6 +200,23 @@ def test_cli_forwards_hessian_sgd_solver_controls(tmp_path: Path):
 
     assert config.hessian_sgd_normal_fixed_iters_pi == 12
     assert config.hessian_sgd_normal_neumann_terms == 10
+
+
+def test_cli_accepts_legacy_gradient_tolerance_options_as_noops(tmp_path: Path):
+    args = build_parser().parse_args(
+        _minimal_workflow_cli_args("optimize", tmp_path)
+        + [
+            "--grad-inf-tol",
+            "10",
+            "--solver-warmup-grad-inf-tol",
+            "0",
+        ]
+    )
+
+    config = _run_config_from_args(args)
+
+    assert not hasattr(config, "grad_inf_tol")
+    assert not hasattr(config, "solver_warmup_grad_inf_tol")
 
 
 def test_cli_accepts_family_chunk_all_alias(tmp_path: Path):

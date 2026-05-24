@@ -280,8 +280,6 @@ _JSON_FLOAT_FIELDS = {
     "fd_hessian_epsilon",
     "fd_newton_damping",
     "adaptive_rebatch_fraction",
-    "solver_warmup_grad_inf_tol",
-    "grad_inf_tol",
     "loss_change_tol",
     "best_likelihood_min_delta",
 }
@@ -293,9 +291,11 @@ _RUN_CONFIG_PATH_FIELDS = _RUN_CONFIG_REQUIRED_PATH_FIELDS + (
 _RUN_CONFIG_LEGACY_FIELDS = frozenset(
     {
         "fd_newton_max_step",
+        "grad_inf_tol",
         "hessian_sgd_polish_max_steps",
         "hessian_sgd_polish_refresh_steps",
         "hessian_sgd_polish_max_ls",
+        "solver_warmup_grad_inf_tol",
     }
 )
 
@@ -354,7 +354,6 @@ class RunConfig:
     fixed_iters_pi: int = 16
     neumann_terms: int = 16
     solver_warmup_iters: int = 6
-    solver_warmup_grad_inf_tol: float = 1.0
     solver_warmup_loss_patience: int = 2
     adaptive_iters: bool = True
     adaptive_neumann_terms: bool = False
@@ -391,7 +390,6 @@ class RunConfig:
     adaptive_rebatch_check_interval: int = 1
     adaptive_rebatch_min_remaining_families: int = 2
 
-    grad_inf_tol: float = 1e-3
     loss_change_tol: float = 1e-3
     loss_patience: int = 1
     best_likelihood_patience: int = 1
@@ -558,8 +556,6 @@ class RunConfig:
             "pi_max_diff_tol",
             "gradient_change_tol",
             "gradient_change_rtol",
-            "solver_warmup_grad_inf_tol",
-            "grad_inf_tol",
             "loss_change_tol",
             "best_likelihood_min_delta",
         ):

@@ -308,10 +308,7 @@ def _add_run_config_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--solver-warmup-grad-inf-tol",
         type=float,
-        help=(
-            "Deprecated compatibility option; genewise solver warmup now "
-            "switches to full solvers from likelihood plateau only."
-        ),
+        help=argparse.SUPPRESS,
     )
     parser.add_argument(
         "--solver-warmup-loss-patience",
@@ -448,10 +445,7 @@ def _add_run_config_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--grad-inf-tol",
         type=float,
-        help=(
-            "Diagnostic projected-gradient threshold. Workflow convergence is "
-            "controlled by likelihood plateau, not gradient norm."
-        ),
+        help=argparse.SUPPRESS,
     )
     parser.add_argument(
         "--loss-change-tol",

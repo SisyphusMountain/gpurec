@@ -241,7 +241,6 @@ def _run_config(tmp_path: Path, **overrides: object) -> RunConfig:
         "families_file": tmp_path / "families.txt",
         "out_dir": tmp_path / "out",
         "device": "cuda",
-        "grad_inf_tol": 0.01,
         "loss_patience": 0,
         "best_likelihood_patience": 0,
     }
@@ -435,7 +434,7 @@ def test_uniform_chunked_nll_per_family_uses_no_grad_chunked_diagnostic(
     ("overrides", "stable_loss_steps", "best_step", "step", "expected"),
     [
         (
-            {"grad_inf_tol": 0.1, "loss_patience": 1, "best_likelihood_patience": 1},
+            {"loss_patience": 1, "best_likelihood_patience": 1},
             1,
             0,
             1,
@@ -463,7 +462,7 @@ def test_uniform_chunked_nll_per_family_uses_no_grad_chunked_diagnostic(
             None,
         ),
         (
-            {"grad_inf_tol": 10.0, "loss_patience": 0, "best_likelihood_patience": 0},
+            {"loss_patience": 0, "best_likelihood_patience": 0},
             0,
             None,
             0,

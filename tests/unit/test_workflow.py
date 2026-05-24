@@ -1001,9 +1001,11 @@ def test_run_config_ignores_legacy_optimizer_controls(tmp_path: Path):
             "mode": "genewise",
             "optimizer": "adam-fd-newton",
             "fd_newton_max_step": 0.0,
+            "grad_inf_tol": 10.0,
             "hessian_sgd_polish_max_steps": 12,
             "hessian_sgd_polish_refresh_steps": 4,
             "hessian_sgd_polish_max_ls": 2,
+            "solver_warmup_grad_inf_tol": 0.0,
             "device": "cpu",
         }
     )
@@ -1012,9 +1014,11 @@ def test_run_config_ignores_legacy_optimizer_controls(tmp_path: Path):
     data = config.to_dict()
     for field in (
         "fd_newton_max_step",
+        "grad_inf_tol",
         "hessian_sgd_polish_max_steps",
         "hessian_sgd_polish_refresh_steps",
         "hessian_sgd_polish_max_ls",
+        "solver_warmup_grad_inf_tol",
     ):
         assert not hasattr(config, field)
         assert field not in data
@@ -1314,8 +1318,6 @@ def test_run_config_rejects_invalid_adaptive_rebatch_fraction(
         "pi_max_diff_tol",
         "gradient_change_tol",
         "gradient_change_rtol",
-        "solver_warmup_grad_inf_tol",
-        "grad_inf_tol",
         "loss_change_tol",
         "best_likelihood_min_delta",
     ],
@@ -4916,7 +4918,6 @@ def _optimizer_mode_config(
         "lbfgs_max_iter": 1,
         "checkpoint_every": 1,
         "log_every": 10,
-        "grad_inf_tol": 0.0,
         "loss_patience": 0,
         "best_likelihood_patience": 0,
     }
@@ -5357,7 +5358,6 @@ def test_hessian_sgd_likelihood_plateau_converges_with_nonzero_gradient(
         loss_patience=0,
         best_likelihood_patience=1,
         best_likelihood_min_delta=1e9,
-        grad_inf_tol=0.0,
     )
     runner = _WorkflowAdaptiveRebatchRunner(config)
 
@@ -5554,7 +5554,7 @@ def test_hessian_sgd_low_acceptance_uses_line_search_before_plateau(
     assert runner.fake_model.closed
 
 
-def test_hessian_sgd_gradient_tolerance_does_not_converge(
+def test_hessian_sgd_legacy_gradient_tolerance_is_ignored(
     tmp_path: Path,
 ):
     config = _optimizer_mode_config(
@@ -5565,10 +5565,12 @@ def test_hessian_sgd_gradient_tolerance_does_not_converge(
         solver_warmup_iters=0,
         fd_hessian_epsilon=1e-3,
         fd_newton_damping=1e-6,
-        grad_inf_tol=10.0,
         loss_patience=0,
         best_likelihood_patience=0,
     )
+    legacy_data = config.to_dict()
+    legacy_data["grad_inf_tol"] = 10.0
+    config = RunConfig.from_dict(legacy_data)
     runner = _WorkflowBatchedLBFGSModeRunner(config)
 
     result = runner.run()
@@ -5594,7 +5596,6 @@ def test_hessian_sgd_warmup_plateau_promotes_to_full_solver(tmp_path: Path):
         mode="genewise",
         steps=3,
         solver_warmup_iters=6,
-        solver_warmup_grad_inf_tol=0.0,
         solver_warmup_loss_patience=99,
         loss_change_tol=1e9,
         loss_patience=1,
@@ -5660,7 +5661,6 @@ def test_optimization_runner_adaptive_rebatch_replans_unconverged_families(
         adaptive_rebatch_fraction=0.5,
         adaptive_rebatch_min_remaining_families=1,
         best_likelihood_patience=1,
-        grad_inf_tol=0.5,
         lbfgs_max_iter=1,
     )
     runner = _WorkflowAdaptiveRebatchLikelihoodPlateauRunner(config)
@@ -5703,7 +5703,6 @@ def test_optimization_runner_fd_newton_adaptive_rebatch_replans_unconverged_fami
         adaptive_rebatch_min_remaining_families=1,
         fd_adam_warmup_steps=1,
         best_likelihood_patience=1,
-        grad_inf_tol=0.5,
         lr=0.2,
     )
     runner = _WorkflowAdaptiveRebatchLikelihoodPlateauRunner(config)
@@ -5749,7 +5748,6 @@ def test_optimization_runner_hessian_sgd_adaptive_rebatch_replans_unconverged_fa
         fd_hessian_epsilon=1e-3,
         fd_newton_damping=1e-6,
         best_likelihood_patience=1,
-        grad_inf_tol=0.5,
         lr=0.5,
     )
     runner = _WorkflowAdaptiveRebatchLikelihoodPlateauRunner(config)
@@ -5791,7 +5789,6 @@ def test_optimization_runner_adaptive_rebatch_skips_tiny_active_batches(
         adaptive_rebatch_fraction=0.5,
         adaptive_rebatch_min_remaining_families=1,
         fd_adam_warmup_steps=1,
-        grad_inf_tol=0.5,
         lr=1e-9,
     )
     runner = _WorkflowAdaptiveRebatchRunner(config)
@@ -6156,7 +6153,6 @@ def test_optimization_runner_batched_lbfgs_advances_resident_batches(tmp_path: P
         optimizer="batched-lbfgs",
         mode="genewise",
         steps=5,
-        grad_inf_tol=0.8,
         loss_change_tol=1e9,
         loss_patience=1,
         solver_warmup_loss_patience=1,
@@ -6531,7 +6527,6 @@ def test_optimization_runner_run_writes_outputs_with_fake_model(tmp_path: Path):
         lr=0.05,
         checkpoint_every=1,
         log_every=10,
-        grad_inf_tol=0.0,
         loss_patience=0,
         best_likelihood_patience=0,
     )
@@ -6670,7 +6665,6 @@ def test_optimization_runner_reuses_final_genewise_vector_for_artifacts(
         lr=0.05,
         checkpoint_every=0,
         log_every=10,
-        grad_inf_tol=0.0,
         loss_patience=0,
         best_likelihood_patience=0,
     )
@@ -6738,7 +6732,6 @@ def test_optimization_runner_preserves_final_artifacts_when_staging_fails(
         lr=0.05,
         checkpoint_every=0,
         log_every=10,
-        grad_inf_tol=0.0,
         loss_patience=0,
         best_likelihood_patience=0,
     )
@@ -6907,7 +6900,6 @@ def test_optimization_runner_periodic_latest_uses_completed_step_cadence(
         lr=0.05,
         checkpoint_every=2,
         log_every=10,
-        grad_inf_tol=0.0,
         loss_patience=0,
         best_likelihood_patience=0,
     )
@@ -6970,7 +6962,6 @@ def test_optimization_runner_final_latest_resumes_at_next_optimizer_step(tmp_pat
         lr=0.05,
         checkpoint_every=0,
         log_every=10,
-        grad_inf_tol=0.0,
     )
 
     first_runner = FakeResumeRunner(first_config)
@@ -6994,7 +6985,6 @@ def test_optimization_runner_final_latest_resumes_at_next_optimizer_step(tmp_pat
         resume_from=first_latest_path,
         checkpoint_every=0,
         log_every=10,
-        grad_inf_tol=0.0,
     )
     resumed_runner = FakeResumeRunner(resumed_config)
 
@@ -7145,7 +7135,6 @@ def test_optimization_runner_reports_latest_when_no_best_written_this_run(
         resume_from=resume_checkpoint,
         checkpoint_every=0,
         log_every=10,
-        grad_inf_tol=0.0,
     )
     runner = FakeResumeRunner(config)
 
