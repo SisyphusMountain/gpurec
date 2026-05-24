@@ -87,6 +87,8 @@ _FD_NEWTON_CURVATURE_EPS = 1e-12
 _HESSIAN_SGD_LINE_SEARCH_MAX_STEPS = 8
 _HESSIAN_SGD_LINE_SEARCH_ACCEPT_FRACTION = 0.6
 _HESSIAN_SGD_LINE_SEARCH_LOW_ACCEPT_PATIENCE = 2
+_HESSIAN_SGD_NO_LINE_REFRESH_STEPS = 64
+_HESSIAN_SGD_NO_LINE_REFRESH_MIN_CLADES = 400_000
 _BATCHWISE_ACTIVE_OPTIMIZERS = frozenset(
     {"batched-lbfgs", "adam-fd-newton", "hessian-sgd"}
 )
@@ -2277,6 +2279,25 @@ class OptimizationRunner:
                         )
                         metrics["optimizer/fd_newton_subphase"] = "adam_warmup"
                     else:
+                        hessian_refresh_steps = config.fd_hessian_refresh_steps
+                        active_clade_count = int(
+                            getattr(
+                                model.current_batch_metadata,
+                                "clade_count",
+                                0,
+                            )
+                            or 0
+                        )
+                        if (
+                            phase == "hessian-sgd"
+                            and not hessian_sgd_line_search_active
+                            and active_clade_count
+                            >= _HESSIAN_SGD_NO_LINE_REFRESH_MIN_CLADES
+                        ):
+                            hessian_refresh_steps = max(
+                                hessian_refresh_steps,
+                                _HESSIAN_SGD_NO_LINE_REFRESH_STEPS,
+                            )
                         (
                             loss_vec_current,
                             metrics,
@@ -2305,7 +2326,7 @@ class OptimizationRunner:
                                     phase == "hessian-sgd"
                                     and not hessian_sgd_line_search_active
                                 ),
-                                hessian_refresh_steps=config.fd_hessian_refresh_steps,
+                                hessian_refresh_steps=hessian_refresh_steps,
                                 line_search_max_steps=(
                                     _HESSIAN_SGD_LINE_SEARCH_MAX_STEPS
                                     if (
