@@ -5599,6 +5599,71 @@ def test_hessian_sgd_large_batch_uses_long_refresh_until_line_search(
         hessian_refresh_steps,
         **_kwargs,
     ):
+        call_index = len(calls)
+        calls.append((bool(use_line_search), hessian_refresh_steps))
+        model.theta.grad = torch.ones_like(model.theta)
+        loss_value = 6.0 if call_index == 0 else 5.0
+        loss_vec = torch.full(
+            (int(model.n_families),),
+            loss_value,
+            device=model.theta.device,
+            dtype=model.theta.dtype,
+        )
+        metrics = runner._active_batch_metrics(
+            model,
+            loss_vec=loss_vec,
+            solver_stage=solver_stage,
+        )
+        metrics["optimizer/fd_newton_accepted_fraction"] = (
+            1.0 if use_line_search else 0.0
+        )
+        metrics["optimizer/fd_newton_loss_rejected_rows"] = (
+            0.0 if use_line_search else float(model.n_families)
+        )
+        return loss_vec, metrics, 1, object()
+
+    runner._active_fd_newton_step = fake_step  # type: ignore[method-assign]
+
+    result = runner.run()
+
+    assert calls == [
+        (False, 64),
+        (False, 64),
+        (True, 16),
+        (True, 16),
+    ]
+    assert result.status == "converged"
+    assert result.reason == "loss_change_patience"
+    assert runner.fake_model.closed
+
+
+def test_hessian_sgd_large_batch_plateau_stops_before_line_search(
+    tmp_path: Path,
+):
+    config = _optimizer_mode_config(
+        tmp_path,
+        optimizer="hessian-sgd",
+        mode="genewise",
+        steps=4,
+        solver_warmup_iters=0,
+        fd_hessian_refresh_steps=16,
+        fd_hessian_epsilon=1e-3,
+        fd_newton_damping=1e-6,
+        loss_change_tol=0.0,
+        loss_patience=1,
+        best_likelihood_patience=0,
+    )
+    runner = _WorkflowLargeCladeAdaptiveRebatchRunner(config)
+    calls: list[tuple[bool, int | None]] = []
+
+    def fake_step(
+        model,
+        *,
+        solver_stage,
+        use_line_search,
+        hessian_refresh_steps,
+        **_kwargs,
+    ):
         calls.append((bool(use_line_search), hessian_refresh_steps))
         model.theta.grad = torch.ones_like(model.theta)
         loss_vec = torch.full(
@@ -5627,8 +5692,6 @@ def test_hessian_sgd_large_batch_uses_long_refresh_until_line_search(
     assert calls == [
         (False, 64),
         (False, 64),
-        (True, 16),
-        (True, 16),
     ]
     assert result.status == "converged"
     assert result.reason == "loss_change_patience"

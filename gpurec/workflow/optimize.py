@@ -2755,6 +2755,22 @@ class OptimizationRunner:
                         hessian_sgd_low_accept_steps
                         >= _HESSIAN_SGD_LINE_SEARCH_LOW_ACCEPT_PATIENCE
                     )
+                    active_clade_count = int(
+                        getattr(
+                            model.current_batch_metadata,
+                            "clade_count",
+                            0,
+                        )
+                        or 0
+                    )
+                    if (
+                        hessian_sgd_activate_line_search
+                        and active_solver_stage == "full"
+                        and stable_loss_steps > 0
+                        and active_clade_count
+                        >= _HESSIAN_SGD_NO_LINE_REFRESH_MIN_CLADES
+                    ):
+                        hessian_sgd_activate_line_search = False
                 if hessian_sgd_activate_line_search:
                     hessian_sgd_line_search_active = True
                     hessian_sgd_low_accept_steps = 0
@@ -2799,6 +2815,23 @@ class OptimizationRunner:
                     warmup_switch = True
                     step_status = None
                 if warmup_switch:
+                    active_clade_count = int(
+                        getattr(
+                            model.current_batch_metadata,
+                            "clade_count",
+                            0,
+                        )
+                        or 0
+                    )
+                    carry_warmup_hessian = (
+                        batchwise_hessian_sgd
+                        and phase == "hessian-sgd"
+                        and not hessian_sgd_line_search_active
+                        and active_clade_count
+                        >= _HESSIAN_SGD_NO_LINE_REFRESH_MIN_CLADES
+                        and fd_newton_hessian_state is not None
+                    )
+                    warmup_hessian_state = fd_newton_hessian_state
                     active_solver_stage = "full"
                     active_batch_local_step = 0
                     fd_newton_hessian_state = None
@@ -2815,6 +2848,28 @@ class OptimizationRunner:
                         model,
                         active_solver_stage,
                     )
+                    if carry_warmup_hessian and warmup_hessian_state is not None:
+                        loss_vec_current, _grad, _metrics = (
+                            self._evaluate_active_genewise_vector_grad_at_current_theta(
+                                model,
+                                solver_stage=active_solver_stage,
+                            )
+                        )
+                        idx = self._active_batch_indices(model)
+                        fd_newton_hessian_state = _FDNewtonHessianState(
+                            batch_index=int(model.current_batch_index),
+                            solver_stage=active_solver_stage,
+                            family_indices=tuple(
+                                int(index)
+                                for index in model.current_batch_metadata.family_indices
+                            ),
+                            hessian=warmup_hessian_state.hessian.detach().clone(),
+                            active_theta=model.theta.detach().index_select(0, idx).clone(),
+                            active_grad=model.theta.grad.detach().index_select(0, idx).clone(),
+                            active_loss=loss_vec_current.detach().index_select(0, idx).clone(),
+                            updates_since_refresh=warmup_hessian_state.updates_since_refresh,
+                        )
+                        model.clear()
                     if config.checkpoint_every:
                         transition_status = {
                             **checkpoint_status,
