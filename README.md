@@ -234,9 +234,10 @@ resident batch.  `batch_packing` accepts `sequential`, `clade_first_fit`, and
 `first_fit_decreasing`/`ffd`/`clade_ffd`, and
 `depth_ffd`/`critical_path_first_fit`/`wave_first_fit`, with hyphenated forms
 accepted by the CLI.  Non-sequential packing requires `clade_budget`.
-`small_family_max_leaves` defaults to `4` in the workflow and plans families
-with at most that many leaves before larger families while still respecting the
-normal clade budget; set it to `0` to disable this priority grouping.
+`small_family_max_leaves` defaults to `0` in the workflow, which disables
+leaf-count priority grouping.  Set it to a positive value to plan families with
+at most that many leaves before larger families while still respecting the
+normal clade budget.
 
 The workflow CLI intentionally supports only float32 and float64.  The direct
 `UniformChunkedReconModel` constructor also accepts `torch.bfloat16` as an

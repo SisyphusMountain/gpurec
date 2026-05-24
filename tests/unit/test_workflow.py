@@ -989,7 +989,7 @@ def test_run_config_from_dict_preserves_batch_packing_default(tmp_path: Path):
     )
 
     assert config.batch_packing == "depth_first_fit"
-    assert config.small_family_max_leaves == 4
+    assert config.small_family_max_leaves == 0
 
 
 def test_run_config_ignores_legacy_optimizer_controls(tmp_path: Path):

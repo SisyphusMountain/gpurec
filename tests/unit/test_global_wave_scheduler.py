@@ -846,6 +846,27 @@ def test_depth_first_fit_groups_deep_families_under_clade_budget():
     assert chunks == [[0, 1], [2, 3], [4]]
 
 
+def test_depth_first_fit_can_disable_small_leaf_priority_grouping():
+    chunks = [
+        plan.indices
+        for plan in plan_family_batches(
+            total=4,
+            clade_counts=[10, 9, 8, 7],
+            split_counts=[10, 9, 8, 7],
+            family_chunk_size=0,
+            clade_budget=100,
+            batch_packing="depth_first_fit",
+            leaf_counts=[4, 8, 16, 32],
+            small_family_max_leaves=None,
+            nonleaf_counts=[6, 1, 1, 1],
+            schedule_depths=[10, 8, 6, 4],
+            max_wave_size=32,
+        )
+    ]
+
+    assert chunks == [[0, 1, 2, 3]]
+
+
 def test_plan_family_batches_uses_rust_backend():
     plans = plan_family_batches(
         total=5,

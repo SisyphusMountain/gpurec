@@ -346,7 +346,7 @@ class RunConfig:
     clade_budget: int | None = 500_000
     batch_packing: str = "depth_first_fit"
     max_wave_size: int | None = 8192
-    small_family_max_leaves: int = 4
+    small_family_max_leaves: int = 0
 
     fixed_iters_e: int | None = None
     max_iters_e: int = 2000
