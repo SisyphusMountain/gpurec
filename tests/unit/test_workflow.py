@@ -1132,7 +1132,7 @@ def test_run_config_accepts_hessian_sgd_for_genewise_mode(tmp_path: Path):
     assert config.fd_hessian_refresh_steps == 16
     assert config.fd_hessian_epsilon == pytest.approx(1e-3)
     assert config.solver_warmup_iters == 4
-    assert config.loss_change_tol == pytest.approx(2e-3)
+    assert config.loss_change_tol == pytest.approx(3e-3)
     assert config.hessian_sgd_normal_fixed_iters_pi is None
     assert config.hessian_sgd_normal_neumann_terms is None
 

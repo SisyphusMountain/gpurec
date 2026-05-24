@@ -390,7 +390,7 @@ class RunConfig:
     adaptive_rebatch_check_interval: int = 1
     adaptive_rebatch_min_remaining_families: int = 2
 
-    loss_change_tol: float = 2e-3
+    loss_change_tol: float = 3e-3
     loss_patience: int = 1
     best_likelihood_patience: int = 1
     best_likelihood_min_delta: float = 0.0
