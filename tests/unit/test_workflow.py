@@ -5501,14 +5501,14 @@ def test_hessian_sgd_likelihood_plateau_does_not_refine_on_projected_gradient(
     assert runner.fake_model.closed
 
 
-def test_hessian_sgd_low_acceptance_uses_line_search_before_plateau(
+def test_hessian_sgd_likelihood_plateau_skips_low_acceptance_line_search(
     tmp_path: Path,
 ):
     config = _optimizer_mode_config(
         tmp_path,
         optimizer="hessian-sgd",
         mode="genewise",
-        steps=4,
+        steps=5,
         solver_warmup_iters=0,
         fd_hessian_epsilon=1e-3,
         fd_newton_damping=1e-6,
@@ -5541,6 +5541,73 @@ def test_hessian_sgd_low_acceptance_uses_line_search_before_plateau(
         loss_vec = torch.full(
             (int(model.n_families),),
             5.0,
+            device=model.theta.device,
+            dtype=model.theta.dtype,
+        )
+        metrics = runner._active_batch_metrics(
+            model,
+            loss_vec=loss_vec,
+            solver_stage=solver_stage,
+        )
+        metrics["optimizer/fd_newton_accepted_fraction"] = 0.0
+        metrics["optimizer/fd_newton_loss_rejected_rows"] = float(model.n_families)
+        return loss_vec, metrics, 1, object()
+
+    runner._active_fd_newton_step = fake_step  # type: ignore[method-assign]
+
+    result = runner.run()
+
+    assert calls == [
+        (False, True, None, True),
+        (False, True, None, False),
+    ]
+    assert result.status == "converged"
+    assert result.reason == "loss_change_patience"
+    assert runner.fake_model.closed
+
+
+def test_hessian_sgd_low_acceptance_uses_line_search_before_plateau(
+    tmp_path: Path,
+):
+    config = _optimizer_mode_config(
+        tmp_path,
+        optimizer="hessian-sgd",
+        mode="genewise",
+        steps=4,
+        solver_warmup_iters=0,
+        fd_hessian_epsilon=1e-3,
+        fd_newton_damping=1e-6,
+        loss_change_tol=0.0,
+        loss_patience=1,
+        best_likelihood_patience=0,
+    )
+    runner = _WorkflowAdaptiveRebatchRunner(config)
+    calls: list[tuple[bool, bool, int | None, bool]] = []
+
+    def fake_step(
+        model,
+        *,
+        solver_stage,
+        hessian_state=None,
+        use_line_search,
+        reject_loss_increases_after_step,
+        line_search_max_steps,
+        **_kwargs,
+    ):
+        call_index = len(calls)
+        calls.append(
+            (
+                bool(use_line_search),
+                bool(reject_loss_increases_after_step),
+                line_search_max_steps,
+                hessian_state is None,
+            )
+        )
+        model.theta.grad = torch.ones_like(model.theta)
+        loss_value = 3.0 if use_line_search else 5.0 - call_index
+        loss_vec = torch.full(
+            (int(model.n_families),),
+            loss_value,
             device=model.theta.device,
             dtype=model.theta.dtype,
         )

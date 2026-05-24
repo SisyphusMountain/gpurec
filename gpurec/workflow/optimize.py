@@ -2737,12 +2737,34 @@ class OptimizationRunner:
                         flush=True,
                     )
 
+                step_status = _step_stopping_status(
+                    config,
+                    step=step,
+                    stable_loss_steps=stable_loss_steps,
+                    best_step=row_best_step,
+                    loss_patience=(
+                        _active_batch_patience(config.loss_patience)
+                        if active_objective_scope
+                        else None
+                    ),
+                    best_likelihood_patience=(
+                        _active_batch_patience(config.best_likelihood_patience)
+                        if active_objective_scope
+                        else None
+                    ),
+                )
+                full_stage_plateau = (
+                    step_status is not None
+                    and active_objective_scope
+                    and active_solver_stage == "full"
+                )
                 hessian_sgd_activate_line_search = False
                 if (
                     batchwise_hessian_sgd
                     and phase == "hessian-sgd"
                     and active_objective_scope
                     and not hessian_sgd_line_search_active
+                    and not full_stage_plateau
                 ):
                     accepted_fraction = metrics.get(
                         "optimizer/fd_newton_accepted_fraction"
@@ -2800,22 +2822,6 @@ class OptimizationRunner:
                     and self._should_switch_solver_warmup(
                         stable_loss_steps=stable_loss_steps,
                     )
-                )
-                step_status = _step_stopping_status(
-                    config,
-                    step=step,
-                    stable_loss_steps=stable_loss_steps,
-                    best_step=row_best_step,
-                    loss_patience=(
-                        _active_batch_patience(config.loss_patience)
-                        if active_objective_scope
-                        else None
-                    ),
-                    best_likelihood_patience=(
-                        _active_batch_patience(config.best_likelihood_patience)
-                        if active_objective_scope
-                        else None
-                    ),
                 )
                 if (
                     step_status is not None
