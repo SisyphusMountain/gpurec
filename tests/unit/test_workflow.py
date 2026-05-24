@@ -6057,6 +6057,54 @@ def test_fd_newton_line_search_falls_back_to_projected_gradient(
     torch.testing.assert_close(model.theta.detach()[1], before[1])
 
 
+def test_fd_newton_fallback_line_search_uses_short_cap(tmp_path: Path):
+    config = _optimizer_mode_config(
+        tmp_path,
+        optimizer="hessian-sgd",
+        mode="genewise",
+        fd_hessian_epsilon=1e-3,
+        fd_newton_damping=1e-6,
+    )
+    runner = OptimizationRunner(config)
+    model = _WorkflowBatchedLBFGSModeModel()
+    model.select_batch(0)
+    with torch.no_grad():
+        model.theta[0].copy_(torch.tensor([1.0, 0.0, 0.0]))
+    active_theta = model.theta.detach().index_select(
+        0,
+        torch.tensor([0], dtype=torch.long),
+    )
+    hessian = torch.eye(3, dtype=model.theta.dtype).unsqueeze(0) * 1e-3
+    state = optimize_workflow._FDNewtonHessianState(
+        batch_index=0,
+        solver_stage="full",
+        family_indices=(0,),
+        hessian=hessian,
+        active_theta=active_theta,
+        active_grad=torch.tensor([[2.0, 0.0, 0.0]], dtype=model.theta.dtype),
+        active_loss=torch.tensor([2.0], dtype=model.theta.dtype),
+        updates_since_refresh=0,
+    )
+
+    loss_vec, metrics, evals, _state = runner._active_fd_newton_step(
+        model,
+        solver_stage="full",
+        hessian_state=state,
+        update_hessian_with_bfgs=True,
+        step_scale=1.0,
+        use_line_search=True,
+        line_search_max_steps=8,
+    )
+
+    assert metrics["optimizer/fd_newton_max_ls"] == 8.0
+    assert metrics["optimizer/fd_newton_fallback_max_ls"] == 2.0
+    assert metrics["optimizer/fd_newton_line_search_fallback_attempted_rows"] == 1.0
+    assert metrics["optimizer/fd_newton_line_search_fallback_rows"] == 1.0
+    assert metrics["optimizer/fd_newton_loss_evals"] == 10.0
+    assert evals == 11
+    assert loss_vec[0] < 2.0
+
+
 def test_adam_fd_newton_step_ignores_legacy_cap_and_projects_to_rate_bounds(
     tmp_path: Path,
 ):

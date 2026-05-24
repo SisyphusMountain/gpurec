@@ -83,6 +83,7 @@ _ACTIVE_BATCH_LBFGS_STALL_PATIENCE = 3
 _ADAPTIVE_REBATCH_MIN_ACTIVE_FAMILIES = 64
 _FD_NEWTON_LARGE_BATCH_MAX_LS = 8
 _FD_NEWTON_EXTENDED_LINE_SEARCH_MAX_FAMILIES = 256
+_FD_NEWTON_FALLBACK_LINE_SEARCH_MAX_STEPS = 2
 _FD_NEWTON_CURVATURE_EPS = 1e-12
 _HESSIAN_SGD_LINE_SEARCH_MAX_STEPS = 8
 _HESSIAN_SGD_LINE_SEARCH_ACCEPT_FRACTION = 0.6
@@ -1514,7 +1515,11 @@ class OptimizationRunner:
                 device=model.theta.device,
                 dtype=model.theta.dtype,
             )
-            for _ in range(max_line_search_steps):
+            fallback_line_search_steps = min(
+                max_line_search_steps,
+                _FD_NEWTON_FALLBACK_LINE_SEARCH_MAX_STEPS,
+            )
+            for _ in range(fallback_line_search_steps):
                 if not bool(fallback_searching.any()):
                     break
                 trial_active = torch.clamp(
@@ -1668,6 +1673,11 @@ class OptimizationRunner:
             loss_rejected.sum().detach().cpu()
         )
         metrics["optimizer/fd_newton_max_ls"] = float(max_line_search_steps)
+        metrics["optimizer/fd_newton_fallback_max_ls"] = float(
+            min(max_line_search_steps, _FD_NEWTON_FALLBACK_LINE_SEARCH_MAX_STEPS)
+            if use_line_search
+            else 0
+        )
         metrics["optimizer/fd_newton_accepted_rows"] = float(accepted.sum().detach().cpu())
         metrics["optimizer/fd_newton_accepted_fraction"] = float(
             accepted.to(dtype=torch.float32).mean().detach().cpu()
