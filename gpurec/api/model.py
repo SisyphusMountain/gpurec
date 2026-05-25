@@ -65,6 +65,8 @@ from ._family_layout import (
 )
 from ._uniform_evaluator import (
     evaluate_resident_no_grad,
+    evaluate_resident_no_grad_with_solved_e,
+    solve_resident_e,
     solve_resident_e_pi,
 )
 from ._validation import (
@@ -1428,6 +1430,26 @@ class GeneReconModel(torch.nn.Module):
                 need_grad=need_grad,
             )
             return loss, grad
+
+        if not need_grad and self._mode != "genewise":
+            first_static = self._ensure_batch_static(0)
+            e_solve = solve_resident_e(first_static, theta)
+            total_loss = torch.zeros(
+                (),
+                device=self._dataset.device,
+                dtype=self._dataset.dtype,
+            )
+            for batch_idx in range(len(self._batch_specs)):
+                static = self._ensure_batch_static(batch_idx)
+                loss_i = evaluate_resident_no_grad_with_solved_e(
+                    static,
+                    e_solve,
+                )
+                total_loss = total_loss + loss_i.to(
+                    device=total_loss.device,
+                    dtype=total_loss.dtype,
+                )
+            return total_loss.detach(), None
 
         total_loss = torch.zeros((), device=self._dataset.device, dtype=self._dataset.dtype)
         grad_accumulator = (

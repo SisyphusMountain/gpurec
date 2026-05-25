@@ -78,6 +78,16 @@ class ReconStaticState:
 
 
 @dataclass(frozen=True)
+class ResidentESolveResult:
+    theta: torch.Tensor
+    e_out: dict[str, Any]
+    log_p_s: torch.Tensor
+    log_p_d: torch.Tensor
+    log_p_l: torch.Tensor
+    max_transfer: torch.Tensor
+
+
+@dataclass(frozen=True)
 class ResidentSolveResult:
     theta: torch.Tensor
     e_out: dict[str, Any]
@@ -161,14 +171,13 @@ def _record_backward_solver_stats(static: ReconStaticState, stats: Any) -> None:
             static.last_solver_stats[target] = value
 
 
-def solve_resident_e_pi(
+def solve_resident_e(
     static: ReconStaticState,
     theta: torch.Tensor,
     *,
-    pi_request: _PiForwardRequest,
     warm_start_E: torch.Tensor | None = None,
-) -> ResidentSolveResult:
-    """Solve resident E and Pi tensors without owning caller side effects."""
+) -> ResidentESolveResult:
+    """Solve resident E tensors and extract uniform-transfer parameters."""
     theta_eval = theta.detach().to(device=static.device, dtype=static.dtype)
     log_pS, log_pD, log_pL, max_transfer_vec = _extract_parameters(theta_eval, static)
     e_max_iters = (
@@ -196,7 +205,24 @@ def solve_resident_e_pi(
         check_interval=static.convergence_check_interval,
         convergence_metric="logsumexp" if static.adaptive_iters else "max_diff",
     )
+    return ResidentESolveResult(
+        theta=theta_eval,
+        e_out=e_out,
+        log_p_s=log_pS,
+        log_p_d=log_pD,
+        log_p_l=log_pL,
+        max_transfer=max_transfer_vec,
+    )
 
+
+def solve_resident_pi_given_e(
+    static: ReconStaticState,
+    e_solve: ResidentESolveResult,
+    *,
+    pi_request: _PiForwardRequest,
+) -> ResidentSolveResult:
+    """Solve resident Pi tensors from a precomputed E solution."""
+    e_out = e_solve.e_out
     pi_out = pi_request.run(
         wave_layout=static.wave_layout,
         species_helpers=static.species_helpers,
@@ -204,9 +230,9 @@ def solve_resident_e_pi(
         Ebar=e_out["E_bar"],
         E_s1=e_out["E_s1"],
         E_s2=e_out["E_s2"],
-        log_pS=log_pS,
-        log_pD=log_pD,
-        max_transfer_mat=max_transfer_vec,
+        log_pS=e_solve.log_p_s,
+        log_pD=e_solve.log_p_d,
+        max_transfer_mat=e_solve.max_transfer,
         device=static.device,
         dtype=static.dtype,
         fixed_iters=static.fixed_iters_Pi,
@@ -217,14 +243,26 @@ def solve_resident_e_pi(
         convergence_check_interval=static.convergence_check_interval,
     )
     return ResidentSolveResult(
-        theta=theta_eval,
+        theta=e_solve.theta,
         e_out=e_out,
         pi_out=pi_out,
-        log_p_s=log_pS,
-        log_p_d=log_pD,
-        log_p_l=log_pL,
-        max_transfer=max_transfer_vec,
+        log_p_s=e_solve.log_p_s,
+        log_p_d=e_solve.log_p_d,
+        log_p_l=e_solve.log_p_l,
+        max_transfer=e_solve.max_transfer,
     )
+
+
+def solve_resident_e_pi(
+    static: ReconStaticState,
+    theta: torch.Tensor,
+    *,
+    pi_request: _PiForwardRequest,
+    warm_start_E: torch.Tensor | None = None,
+) -> ResidentSolveResult:
+    """Solve resident E and Pi tensors without owning caller side effects."""
+    e_solve = solve_resident_e(static, theta, warm_start_E=warm_start_E)
+    return solve_resident_pi_given_e(static, e_solve, pi_request=pi_request)
 
 
 def evaluate_resident_gradient_forward(

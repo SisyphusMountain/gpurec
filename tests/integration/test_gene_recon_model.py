@@ -330,6 +330,15 @@ def test_memory_safe_resident_batches_match_resident_and_slice(tmp_path, two_tre
         rtol=1e-4,
         atol=1e-3,
     )
+    with torch.no_grad():
+        batched_no_grad = batched.full_loss_for_theta(batched.theta.detach())
+        resident_no_grad = resident.full_loss_for_theta(resident.theta.detach())
+    torch.testing.assert_close(
+        batched_no_grad,
+        resident_no_grad,
+        rtol=1e-5,
+        atol=1e-4,
+    )
 
     next_meta = batched.next()
     assert next_meta.family_indices == (1,)
