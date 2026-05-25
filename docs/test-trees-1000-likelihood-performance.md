@@ -140,6 +140,27 @@ Interpretation:
 - `8`, `32`, and `128` agree at the printed precision, so higher fixed budgets
   are useful mainly as periodic validation points, not every-step work.
 
+Rejected follow-ups:
+
+- Increasing lazy prefetch workers from one to two made the fixed4 loss pass a
+  few milliseconds faster in isolation, but the four-process cold total stayed
+  around `3.178s`; three and four workers were slower.
+- Putting the small tail batch first made the cold path worse (`3.406573s` in
+  one sample) and increased reserved memory to about `21.4 GiB`.  The allocator
+  behaves better when the first resident Pi batch is full sized.
+- Pre-reserving `0.5` to `4.0 GiB` in the CUDA warmup thread did not beat the
+  current path; the best samples were around `3.163s` and used more reserved
+  memory.
+- `PYTORCH_CUDA_ALLOC_CONF=backend:cudaMallocAsync` reduced reserved memory
+  dramatically, but the sampled total was about `3.196s`, slower than the
+  default caching allocator for this benchmark.
+- Decoupling E below the Pi budget was not a valid shortcut.  With `Pi=4`,
+  `E=1/2/3` gave losses `1896378.75`, `2092414.125`, and `2148211.25` bits.
+  With `Pi=6`, `E=4` still lost about `672` bits relative to `E=6`.
+- Adaptive fixed-point checks were slower than fixed budgets here.  Accurate
+  `max=8`, `check_interval=4` took about `3.903s`, and lower-overhead settings
+  either hit the maximum or added check overhead.
+
 Differences from HOGENOM:
 
 - HOGENOM's successful counts-free specieswise route used a `8 -> 16 -> 32`
