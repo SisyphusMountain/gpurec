@@ -234,6 +234,20 @@ Rejected follow-ups:
   Steady fixed4 medians ranged from `1.2849044169997796s` to
   `1.2880120140034705s`, within noise of the current `1.2834076849976555s`
   route, so the code keeps the existing `64` split tile.
+- Raising the DTS species block cap from `512` to `1024` was not a stable win.
+  One fixed4 steady run reached `1.2805625679902732s`, but a repeat regressed
+  to `1.2851436759810895s`, and the cold first likelihood sample was slower at
+  `1.5901524130022153s` with higher reserved memory.
+- Bucketing the multi-child DTS `MAX_TILES` compile shape to multiples of eight
+  lowered the post-compile fixed4 sample to `1.2795667869504541s`, but a fresh
+  Triton-cache run exposed unacceptable first-use cost: model init rose to
+  `3.424378103984054s` and the first fixed4 likelihood took
+  `38.11984705296345s`.
+- Reusing a single per-pass DTS scratch buffer lowered peak allocated memory
+  from about `5.13 GiB` to about `5.09 GiB`, but timing was not reliable enough
+  to keep for a speed-focused route.  Fixed4 medians ranged from
+  `1.282040969002992s` to `1.2945115490001626s`, and the cold first-likelihood
+  pass stayed around `1.577s`.
 - Rechecking the uniform wave-step species tile cap after the leaf-state
   specialization did not improve the route: raising the generic uniform cap
   from `256` to `512` moved steady fixed4 to about `1.292s`, slower than the
@@ -254,6 +268,12 @@ Rejected follow-ups:
   isolated generated-dataset retained preprocess/layout timing was best at `16`
   threads, about `0.91s` total, while `12`, `20`, `24`, `32`, and the default
   global pool were slower.
+- Family chunk size was not an active lever under the current `315000` clade
+  budget.  Sweeping `250`, `333`, `400`, `500`, `625`, `750`, and `1000` all
+  produced `21` batches and similar fixed4 likelihood times.  A paired cold
+  comparison of `250` and `500` kept `500` as the documented route: the `250`
+  totals were about `2.565s`, `2.523s`, and `2.601s`, while `500` was about
+  `2.540s`, `2.553s`, and `2.582s`.
 
 Differences from HOGENOM:
 
