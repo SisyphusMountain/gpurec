@@ -248,6 +248,15 @@ Rejected follow-ups:
   to keep for a speed-focused route.  Fixed4 medians ranged from
   `1.282040969002992s` to `1.2945115490001626s`, and the cold first-likelihood
   pass stayed around `1.577s`.
+- Accumulating the final-Pibar row max/sum while computing the final Pi tile
+  avoided one extra read/reduction pass in the wave-step kernel, but the extra
+  register pressure erased the theoretical win.  One fixed4 steady run reached
+  `1.281840581970755s`, but a repeat regressed to `1.285640132962726s`, and
+  cold first-likelihood samples stayed around `1.576s` to `1.581s`.
+- Warming additional final-wave-step flag combinations during resident model
+  construction did not lower the measured first likelihood.  The first run paid
+  `1.403340880991891s` of model init while compiling the extra variants, and
+  the fixed4 first likelihood remained around `1.578s` to `1.581s`.
 - Rechecking the uniform wave-step species tile cap after the leaf-state
   specialization did not improve the route: raising the generic uniform cap
   from `256` to `512` moved steady fixed4 to about `1.292s`, slower than the
@@ -256,6 +265,11 @@ Rejected follow-ups:
   only about `1ms` in the instrumented root-likelihood split while adding
   another cold compile/cache surface, so the PyTorch root reduction remains in
   place.
+- Computing the shared root denominator once outside the batch loop was also
+  slower in a direct timing split: the existing path measured
+  `1.2793854749761522s` while the denominator-once loop measured
+  `1.2841742759919725s`, and it changed the final fp32 sum by `0.25` bits from
+  accumulation order.
 - Disabling lazy prefetch/resident kernel warmup still loses.  It lowers model
   construction to about `1.01s`, but the first likelihood pass grows to about
   `1.90s`; the current prefetch/warmup path keeps first likelihood near
@@ -279,6 +293,13 @@ Rejected follow-ups:
   comparison of `250` and `500` kept `500` as the documented route: the `250`
   totals were about `2.565s`, `2.523s`, and `2.601s`, while `500` was about
   `2.540s`, `2.553s`, and `2.582s`.
+- `max_dts_partial_rows` did not produce a stable end-to-end win.  Single
+  samples at `25000`, `50000`, `75000`, and `100000` sometimes moved the
+  first likelihood a few milliseconds, with the best single total
+  `2.5357451439485885s` at `75000`, but paired uncapped versus `75000` samples
+  were not better overall.  The paired totals were uncapped `2.583690342027694s`,
+  `2.5344259899575263s`, `2.5741731580346823s` versus capped
+  `2.633321139961481s`, `2.549399826035369s`, `2.553070565976668s`.
 
 Differences from HOGENOM:
 
