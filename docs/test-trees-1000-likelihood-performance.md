@@ -135,6 +135,25 @@ materialization in the fixed4 steady-state run.  The `4/6/8` rows above are
 three-repetition medians after one warmup; the `128` row is a single validation
 sample.
 
+Current fixed4 bottleneck profile on the same resident layout:
+
+| Component | Time |
+|---|---:|
+| model init | `0.9855209130328149s` |
+| materialize all resident batches | `0.06756154203321785s` |
+| shared E solve | `0.003427101008128375s` |
+| all Pi batches | `1.574903720000293s` |
+| all root reductions | `0.012738829071167856s` |
+
+The Pi pass remains the dominant cost.  Inside the instrumented fixed4 pass,
+the largest kernel buckets were DTS phase 2 (`0.5598659516554342s`), final
+Pibar/storage waves (`0.44713026658073274s`), local-DTS iteration-2 waves
+(`0.19817568136751587s`), regular waves with DTS
+(`0.19584079997241566s`), regular waves without DTS
+(`0.12040464065969005s`), and DTS phase 3 (`0.023367967963218692s`).
+All `973` split waves were fully covered; `922` were pure single-child split
+waves, `30` were mixed, and `21` were pure multi-child split waves.
+
 Gradient timing for the same resident layout:
 
 ```bash
@@ -210,6 +229,11 @@ Rejected follow-ups:
 - DTS species tile caps of `128` and `2048` lost on the steady fixed4 path.
   `2048` also paid an unacceptable first compile.  The `512` cap was the best
   measured option for this `S=1999` generated benchmark.
+- Sweeping the multi-child DTS parent-reduction `tile_splits` setting across
+  `32`, `64`, `96`, `128`, and `256` did not produce a reliable improvement.
+  Steady fixed4 medians ranged from `1.2849044169997796s` to
+  `1.2880120140034705s`, within noise of the current `1.2834076849976555s`
+  route, so the code keeps the existing `64` split tile.
 - Rechecking the uniform wave-step species tile cap after the leaf-state
   specialization did not improve the route: raising the generic uniform cap
   from `256` to `512` moved steady fixed4 to about `1.292s`, slower than the
