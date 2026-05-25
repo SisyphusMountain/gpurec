@@ -512,6 +512,12 @@ class RustPreprocessedDataset:
     def to_torch(self) -> dict[str, Any]:
         return self._native.to_torch(self._from_numpy)
 
+    def to_torch_compact(self) -> dict[str, Any]:
+        compact = getattr(self._native, "to_torch_compact", None)
+        if not callable(compact):
+            return self.to_torch()
+        return compact(self._from_numpy)
+
     def build_chunked_layouts(
         self,
         *,

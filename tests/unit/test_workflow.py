@@ -842,6 +842,62 @@ def test_family_input_returns_read_only_public_containers_and_tensor_copies():
     assert family_record["clade_leaf_labels"] == ["gene_a", ""]
 
 
+def test_family_input_materializes_compact_retained_dataset_on_demand():
+    species = {"S": 1, "unnorm_row_max": torch.tensor([0.0], dtype=torch.float64)}
+    compact_raw = {
+        "species": species,
+        "families": {"fam0": {"C": 2, "N_splits": 1, "root_clade_id": 0}},
+    }
+    full_raw = {
+        "species": species,
+        "families": {
+            "fam0": {
+                "ccp": {
+                    "split_counts": torch.tensor([0, 1], dtype=torch.long),
+                    "split_parents_sorted": torch.tensor([0], dtype=torch.long),
+                    "split_leftrights_sorted": torch.tensor([[0, 1]], dtype=torch.long),
+                    "log_split_probs_sorted": torch.tensor([0.0], dtype=torch.float64),
+                    "C": 2,
+                    "N_splits": 1,
+                    "root_clade_id": 0,
+                    "clade_leaf_labels": ["gene_a", ""],
+                },
+                "root_clade_id": 0,
+                "leaf_row_index": torch.tensor([0], dtype=torch.long),
+                "leaf_col_index": torch.tensor([0], dtype=torch.long),
+            }
+        },
+    }
+
+    class FakeRustPreprocessed:
+        def to_torch(self):
+            return full_raw
+
+    dataset = GeneDataset._from_preprocessed_raw(
+        raw=compact_raw,
+        species_tree_path="sp.nwk",
+        gene_tree_paths=[["g0.nwk"]],
+        genewise=False,
+        specieswise=True,
+        dtype=torch.float32,
+        device=torch.device("cpu"),
+        family_names=["fam0"],
+        leaf_species_maps=[{"gene_a": "SpeciesA"}],
+        rust_preprocessed=FakeRustPreprocessed(),
+        compact_families=True,
+    )
+    model = object.__new__(GeneReconModel)
+    object.__setattr__(model, "_dataset", dataset)
+
+    assert dataset._compact_families is True
+    public_family = GeneReconModel.family_input(model, 0)
+
+    assert dataset._compact_families is False
+    assert public_family.clade_count == 2
+    assert public_family.split_count == 1
+    assert public_family.clade_leaf_labels == ("gene_a", "")
+
+
 def _public_selector_model() -> GeneReconModel:
     model = object.__new__(GeneReconModel)
     object.__setattr__(

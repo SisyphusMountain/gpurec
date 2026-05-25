@@ -497,6 +497,9 @@ def _build_family_schedule_stats(
     batch_packing: str,
     small_family_max_leaves: int,
 ) -> _FamilyScheduleStats:
+    ensure_full = getattr(dataset, "_ensure_full_families", None)
+    if callable(ensure_full):
+        ensure_full()
     clade_counts = [int(fam["C"]) for fam in dataset.families]
     split_counts = [int(fam["N_splits"]) for fam in dataset.families]
     needs_depth_stats = _normalize_batch_packing(batch_packing) == "depth_first_fit"
@@ -704,6 +707,25 @@ def _build_batch_specs_from_retained_rust(
             )
         )
     return specs
+
+
+def _should_use_compact_retained_preprocess(
+    mode: str,
+    solver_kwargs: Mapping[str, Any],
+) -> bool:
+    if mode == "genewise":
+        return False
+    small_family_max_leaves = solver_kwargs.get("small_family_max_leaves")
+    if (
+        small_family_max_leaves is not None
+        and int(small_family_max_leaves) != 0
+    ):
+        return False
+    return (
+        bool_value("lazy_preprocess", solver_kwargs.get("lazy_preprocess", False))
+        or solver_kwargs.get("family_chunk_size") is not None
+        or solver_kwargs.get("clade_budget") is not None
+    )
 
 
 def _build_static_state(
@@ -1276,6 +1298,10 @@ class GeneReconModel(torch.nn.Module):
             dtype=dtype,
             device=device,
             preprocess_cpu_cores=preprocess_cpu_cores,
+            compact_families=_should_use_compact_retained_preprocess(
+                mode,
+                solver_kwargs,
+            ),
         )
         theta_init = None
         if theta_base is not None:
@@ -1348,6 +1374,10 @@ class GeneReconModel(torch.nn.Module):
             preprocess_cpu_cores=preprocess_cpu_cores,
             family_names=family_names,
             leaf_species_maps=leaf_maps,
+            compact_families=_should_use_compact_retained_preprocess(
+                mode,
+                solver_kwargs,
+            ),
         )
         theta_init = None
         if theta_base is not None:
@@ -1752,6 +1782,9 @@ class GeneReconModel(torch.nn.Module):
             raise IndexError(
                 f"family_index {family_index} outside 0..{self.n_families}"
             )
+        ensure_full = getattr(self._dataset, "_ensure_full_families", None)
+        if callable(ensure_full):
+            ensure_full()
         family = self._dataset.families[family_index]
         leaf_map = self._dataset.leaf_species_maps[family_index] or {}
         return FamilyInput(

@@ -76,7 +76,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--dtype", type=_parse_dtype, default=_parse_dtype("float32"))
     parser.add_argument("--fixed-iters", type=_parse_fixed_iters, default=_parse_fixed_iters("4,6,8"))
     parser.add_argument("--theta-rate", type=float, default=0.05)
-    parser.add_argument("--family-chunk-size", type=int, default=300)
+    parser.add_argument("--family-chunk-size", type=int, default=500)
     parser.add_argument("--clade-budget", type=_parse_optional_int, default=315_000)
     parser.add_argument(
         "--batch-packing",

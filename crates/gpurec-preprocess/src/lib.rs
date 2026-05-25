@@ -976,6 +976,14 @@ impl PyPreprocessedDataset {
         output_to_torch_python(py, from_numpy, self.output.clone())
     }
 
+    fn to_torch_compact<'py>(
+        &self,
+        py: Python<'py>,
+        from_numpy: &Bound<'py, PyAny>,
+    ) -> PyResult<Bound<'py, PyDict>> {
+        compact_output_to_torch_python(py, from_numpy, &self.output, &self.family_order)
+    }
+
     fn build_chunked_layouts_torch<'py>(
         &self,
         py: Python<'py>,
@@ -1303,6 +1311,34 @@ fn output_to_torch_python<'py>(
     let families = PyDict::new_bound(py);
     for (name, family) in output.families {
         families.set_item(name, family_to_torch_python(py, from_numpy, family)?)?;
+    }
+    result.set_item("families", families)?;
+    Ok(result)
+}
+
+#[cfg(feature = "python-extension")]
+fn compact_output_to_torch_python<'py>(
+    py: Python<'py>,
+    from_numpy: &Bound<'py, PyAny>,
+    output: &PreprocessOutput,
+    family_order: &[String],
+) -> PyResult<Bound<'py, PyDict>> {
+    let result = PyDict::new_bound(py);
+    result.set_item(
+        "species",
+        species_to_torch_python(py, from_numpy, output.species.clone())?,
+    )?;
+
+    let families = PyDict::new_bound(py);
+    for name in family_order {
+        let family = output.families.get(name).ok_or_else(|| {
+            PyRuntimeError::new_err(format!("family_order references unknown family {name:?}"))
+        })?;
+        let family_dict = PyDict::new_bound(py);
+        family_dict.set_item("C", family.ccp.c)?;
+        family_dict.set_item("N_splits", family.ccp.n_splits)?;
+        family_dict.set_item("root_clade_id", family.ccp.root_clade_id)?;
+        families.set_item(name, family_dict)?;
     }
     result.set_item("families", families)?;
     Ok(result)

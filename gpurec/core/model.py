@@ -333,6 +333,7 @@ class GeneDataset:
         self.species_tree_path = species_tree_path
         self._rust_preprocessed = None
         self._preprocess_cpu_cores = preprocess_cpu_cores
+        self._compact_families = False
 
         self.num_families = len(families)
 
@@ -348,6 +349,7 @@ class GeneDataset:
         preprocess_cpu_cores: int | None = None,
         family_names: Sequence[str] | None = None,
         leaf_species_maps: Sequence[dict[str, str]] | None = None,
+        compact_families: bool = False,
     ) -> "GeneDataset":
         """Build a dataset while retaining native Rust preprocessing output."""
         preprocess_cpu_cores = _normalize_preprocess_cpu_cores(preprocess_cpu_cores)
@@ -401,8 +403,15 @@ class GeneDataset:
             include_species_matrices=False,
             num_threads=0 if preprocess_cpu_cores is None else preprocess_cpu_cores,
         )
+        use_compact_families = compact_families and callable(
+            getattr(getattr(rust_preprocessed, "_native", None), "to_torch_compact", None)
+        )
         return cls._from_preprocessed_raw(
-            raw=rust_preprocessed.to_torch(),
+            raw=(
+                rust_preprocessed.to_torch_compact()
+                if use_compact_families
+                else rust_preprocessed.to_torch()
+            ),
             species_tree_path=species_tree_path,
             gene_tree_paths=family_tree_paths,
             genewise=genewise,
@@ -413,6 +422,7 @@ class GeneDataset:
             leaf_species_maps=leaf_species_maps,
             rust_preprocessed=rust_preprocessed,
             preprocess_cpu_cores=preprocess_cpu_cores,
+            compact_families=use_compact_families,
         )
 
     @classmethod
@@ -552,6 +562,7 @@ class GeneDataset:
         leaf_species_maps: Sequence[dict[str, str]] | None = None,
         rust_preprocessed: Any | None = None,
         preprocess_cpu_cores: int | None = None,
+        compact_families: bool = False,
     ) -> "GeneDataset":
         if device is None:
             device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -595,20 +606,39 @@ class GeneDataset:
         else:
             self.unnorm_row_max = self.species_helpers["unnorm_row_max"]
         self.S = int(self.species_helpers['S'])
-        self.families = [
-            cls._family_from_raw(
-                cls._drop_unused_family_details(raw_families[name])
-            )
-            for name in family_names
-        ]
+        if compact_families:
+            self.families = [dict(raw_families[name]) for name in family_names]
+        else:
+            self.families = [
+                cls._family_from_raw(
+                    cls._drop_unused_family_details(raw_families[name])
+                )
+                for name in family_names
+            ]
         self.family_names = list(family_names)
         self.gene_tree_paths = family_tree_paths
         self.leaf_species_maps = [dict(m) for m in leaf_species_maps]
         self.species_tree_path = species_tree_path
         self._rust_preprocessed = rust_preprocessed
         self._preprocess_cpu_cores = preprocess_cpu_cores
+        self._compact_families = compact_families
         self.num_families = len(self.families)
         return self
+
+    def _ensure_full_families(self) -> None:
+        if not getattr(self, "_compact_families", False):
+            return
+        rust_preprocessed = getattr(self, "_rust_preprocessed", None)
+        if rust_preprocessed is None:
+            raise RuntimeError("compact dataset cannot materialize family details")
+        raw_families = rust_preprocessed.to_torch()["families"]
+        self.families = [
+            self._family_from_raw(
+                self._drop_unused_family_details(raw_families[name])
+            )
+            for name in self.family_names
+        ]
+        self._compact_families = False
     
     @staticmethod
     def _move_tensor(t: torch.Tensor, *, device: torch.device, dtype: torch.dtype) -> torch.Tensor:
