@@ -4,7 +4,10 @@
 This source-checkout profiler targets datasets laid out like
 ``tests/data/test_trees_1000`` with ``sp.nwk`` and ``g_*.nwk`` files. It uses
 the public ``GeneReconModel.from_trees`` API, materializes resident batches, and
-times full-dataset likelihood-only or likelihood+gradient passes.
+times full-dataset likelihood-only or likelihood+gradient passes.  By default
+it materializes resident batches before timed passes; use
+``--materialize-batches none`` to measure lazy end-to-end construction plus the
+first likelihood pass.
 """
 
 from __future__ import annotations
@@ -78,9 +81,18 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--batch-packing",
         choices=("sequential", "clade_first_fit", "depth_first_fit"),
-        default="depth_first_fit",
+        default="clade_first_fit",
     )
     parser.add_argument("--max-wave-size", type=_parse_optional_int, default=8192)
+    parser.add_argument(
+        "--materialize-batches",
+        choices=("all", "none"),
+        default="all",
+        help=(
+            "Build every resident batch static state before timing, or leave "
+            "lazy construction/prefetch to the first measured pass."
+        ),
+    )
     parser.add_argument(
         "--measure",
         choices=("loss-only", "loss-grad", "both"),
@@ -268,7 +280,14 @@ def main(argv: list[str] | None = None) -> int:
         lazy_preprocess=True,
         prefetch_batches=args.prefetch_batches,
     )
-    model.materialize_batches()
+    _synchronize()
+    model_init_s = time.perf_counter() - started
+    materialize_s = 0.0
+    if args.materialize_batches == "all":
+        materialize_started = time.perf_counter()
+        model.materialize_batches()
+        _synchronize()
+        materialize_s = time.perf_counter() - materialize_started
     _synchronize()
     print(
         json.dumps(
@@ -277,7 +296,10 @@ def main(argv: list[str] | None = None) -> int:
                 "dataset": str(dataset),
                 "mode": args.mode,
                 "dtype": str(args.dtype).replace("torch.", ""),
-                "build_s": time.perf_counter() - started,
+                "build_s": model_init_s + materialize_s,
+                "model_init_s": model_init_s,
+                "materialize_s": materialize_s,
+                "materialize_batches": args.materialize_batches,
                 "families": int(model.n_families),
                 "species": int(model.n_species),
                 "batches": len(model.batch_metadata),
