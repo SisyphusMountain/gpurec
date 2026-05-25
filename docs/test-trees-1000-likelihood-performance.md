@@ -344,6 +344,15 @@ Rejected follow-ups:
   this large-`S` generated shape.  The first warmup paid `31.28786089399364s`
   to compile the new Triton variants, and the post-compile fixed4 steady-state
   median was `1.2863251420203596s`, slower than the current route.
+- The current `clade_first_fit` batches are already balanced for fixed4 Pi
+  timing.  A post-warm per-batch split measured `20` full batches between
+  about `0.061s` and `0.063s`, plus a tail batch at `0.03352210501907393s`;
+  the summed batch time was `1.2789311109809205s`.  That rules out another
+  simple batch-ordering win for the steady path.
+- Replacing root-row advanced indexing with `index_select` did not improve the
+  loss-only root gather path.  Two fixed4 steady-state medians were
+  `1.2822566300164908s` and `1.2869528399896808s`, so the existing root gather
+  remains in place.
 
 Differences from HOGENOM:
 
