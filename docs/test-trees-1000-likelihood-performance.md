@@ -326,6 +326,11 @@ Rejected follow-ups:
   comparison of `250` and `500` kept `500` as the documented route: the `250`
   totals were about `2.565s`, `2.523s`, and `2.601s`, while `500` was about
   `2.540s`, `2.553s`, and `2.582s`.
+- The HOGENOM-style no-family-cap setting (`--family-chunk-size 0`) also did
+  not become a clear route improvement here.  It still produced `21` batches
+  with the same max clade and wave envelope; fixed4 steady medians were
+  `1.2764153979951516s` and `1.2823010300053284s`, while cold totals were
+  about `2.543s` and `2.567s`, overlapping the documented `500`-family route.
 - Rechecking batch packing on the current checkout kept `clade_first_fit`.
   The `sequential` and `depth_first_fit` first samples paid fresh compile/path
   costs (`21.8037438269821s` and `17.070824889990035s` first likelihoods),
@@ -410,6 +415,10 @@ Differences from HOGENOM:
   dataset splits into `21` batches, so reusing a single global/specieswise
   resident E solve across no-grad batches removes repeated E work and is worth
   about two percent on likelihood-only timing.
+- HOGENOM had a faster high-memory no-family-cap scheduling option.  On
+  `test_trees_1000`, no-family-cap does not reduce the batch or wave envelope
+  under `clade_first_fit` at the current clade budget, so the finite
+  `--family-chunk-size 500` route remains the documented command.
 - Both HOGENOM and `test_trees_1000` have fully covered split waves under the
   measured layouts, so the DTS-fill skip is structurally applicable to both.
   The generated benchmark has many more split rows in its likelihood pass
