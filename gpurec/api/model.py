@@ -712,6 +712,56 @@ def _build_batch_specs_from_retained_rust(
     return specs
 
 
+def _retained_rust_layout_available(
+    dataset: GeneDataset,
+    *,
+    mode: str,
+    small_family_max_leaves: int,
+) -> bool:
+    rust_preprocessed = getattr(dataset, "_rust_preprocessed", None)
+    if rust_preprocessed is None or mode == "genewise" or small_family_max_leaves:
+        return False
+    return callable(getattr(rust_preprocessed, "build_chunked_layouts", None))
+
+
+def _start_batch_specs_from_retained_rust(
+    dataset: GeneDataset,
+    **kwargs: Any,
+) -> tuple[ThreadPoolExecutor, Future] | None:
+    if not _retained_rust_layout_available(
+        dataset,
+        mode=kwargs["mode"],
+        small_family_max_leaves=kwargs["small_family_max_leaves"],
+    ):
+        return None
+    executor = ThreadPoolExecutor(
+        max_workers=1,
+        thread_name_prefix="gpurec-rust-layout",
+    )
+    return executor, executor.submit(_build_batch_specs_from_retained_rust, dataset, **kwargs)
+
+
+def _finish_batch_specs_from_retained_rust(
+    handle: tuple[ThreadPoolExecutor, Future] | None,
+) -> list[_ResidentBatchSpec] | None:
+    if handle is None:
+        return None
+    executor, future = handle
+    try:
+        return future.result()
+    finally:
+        executor.shutdown(wait=True, cancel_futures=True)
+
+
+def _cancel_batch_specs_from_retained_rust(
+    handle: tuple[ThreadPoolExecutor, Future] | None,
+) -> None:
+    if handle is None:
+        return
+    executor, _future = handle
+    executor.shutdown(wait=True, cancel_futures=True)
+
+
 def _should_use_compact_retained_preprocess(
     mode: str,
     solver_kwargs: Mapping[str, Any],
@@ -1179,18 +1229,7 @@ class GeneReconModel(torch.nn.Module):
         self._family_schedule_stats: _FamilyScheduleStats | None = None
 
         if self._batched_resident:
-            species_helpers, ancestors_T = dataset._species_helpers_for_mode(
-                device=dataset.device,
-                dtype=dataset.dtype,
-            )
-            self._resident_species_helpers = species_helpers
-            self._resident_ancestors_T = ancestors_T
-            self._resident_unnorm_row_max = dataset.unnorm_row_max.to(
-                device=dataset.device,
-                dtype=dataset.dtype,
-            )
-            rust_specs = _build_batch_specs_from_retained_rust(
-                dataset,
+            rust_specs_kwargs = dict(
                 mode=mode,
                 family_chunk_size=self.family_chunk_size,
                 clade_budget=self.clade_budget,
@@ -1199,6 +1238,27 @@ class GeneReconModel(torch.nn.Module):
                 max_root_wave_size=max_root_wave_size,
                 max_dts_partial_rows=max_dts_partial_rows,
                 small_family_max_leaves=self.small_family_max_leaves,
+            )
+            rust_specs_handle = _start_batch_specs_from_retained_rust(
+                dataset,
+                **rust_specs_kwargs,
+            )
+            try:
+                species_helpers, ancestors_T = dataset._species_helpers_for_mode(
+                    device=dataset.device,
+                    dtype=dataset.dtype,
+                )
+                rust_specs = _finish_batch_specs_from_retained_rust(
+                    rust_specs_handle,
+                )
+                rust_specs_handle = None
+            finally:
+                _cancel_batch_specs_from_retained_rust(rust_specs_handle)
+            self._resident_species_helpers = species_helpers
+            self._resident_ancestors_T = ancestors_T
+            self._resident_unnorm_row_max = dataset.unnorm_row_max.to(
+                device=dataset.device,
+                dtype=dataset.dtype,
             )
             if rust_specs is None:
                 self._family_schedule_stats = _build_family_schedule_stats(

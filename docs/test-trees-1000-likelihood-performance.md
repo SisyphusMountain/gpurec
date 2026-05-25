@@ -19,7 +19,8 @@ uses the scheduler's forward nonleaf policy rather than the exhaustive
 fewest-wave policy; it keeps the measured max wave count here while avoiding
 extra native scheduling passes during construction.  CUDA context warmup is
 started while Rust preprocessing runs, so the small first CUDA setup cost is
-mostly hidden under CPU/native work.
+mostly hidden under CPU/native work.  During model construction, retained Rust
+layout generation is also started while CUDA species-helper tensors are built.
 
 Cold end-to-end command:
 
@@ -44,9 +45,9 @@ Cold result:
 
 | Stage | Time |
 |---|---:|
-| model init / first resident batch | `1.0204792845179327s` |
-| first fixed4 likelihood pass plus lazy remaining batches | `2.1667786845064256s` |
-| total to first fixed4 likelihood | `3.186404627020238s` |
+| model init / first resident batch | `1.0107047630299348s` |
+| first fixed4 likelihood pass plus lazy remaining batches | `2.1673732825147454s` |
+| total to first fixed4 likelihood | `3.1761530120274983s` |
 
 Cold first-pass fidelity samples with the same construction path:
 
@@ -56,14 +57,16 @@ Cold first-pass fidelity samples with the same construction path:
 | 6 | `3.6668981159455143s` | `2157095.0` | `2.25` |
 | 8 | `4.169835773995146s` | `2157097.25` | `0.0` |
 
-Before CUDA warmup overlap, the forward-scheduled retained clade-first path took
-about `3.24s` to the first fixed4 likelihood.  Before the forward scheduler
-policy, the compact retained-layout clade-first lazy path took about `3.46s`.
-Before compact family summaries, it took about `3.86s`.  Before retaining the
-Rust chunked layouts, the same clade-first lazy path took `13.062108609999996s`,
-and the HOGENOM-style `depth_first_fit` path took `17.548588357982226s` in a
-manual timing split.  The construction path is therefore the main end-to-end win
-for this generated dataset.
+Before overlapping retained Rust layout generation with CUDA species-helper
+setup, the CUDA-warmed retained clade-first path took about `3.19s` to the first
+fixed4 likelihood.  Before CUDA warmup overlap, the forward-scheduled retained
+clade-first path took about `3.24s`.  Before the forward scheduler policy, the
+compact retained-layout clade-first lazy path took about `3.46s`.  Before
+compact family summaries, it took about `3.86s`.  Before retaining the Rust
+chunked layouts, the same clade-first lazy path took `13.062108609999996s`, and
+the HOGENOM-style `depth_first_fit` path took `17.548588357982226s` in a manual
+timing split.  The construction path is therefore the main end-to-end win for
+this generated dataset.
 
 Steady-state command:
 
@@ -157,13 +160,19 @@ Differences from HOGENOM:
 - HOGENOM's older end-to-end route paid CUDA setup before the heavy CPU/native
   work.  On this generated benchmark, starting CUDA warmup before retained Rust
   preprocessing hides most of that setup in the construction phase.
+- The generated benchmark also has independent CUDA species-helper setup and
+  retained Rust layout generation during resident model construction; overlapping
+  those saves a small additional amount.  This is less relevant to HOGENOM's
+  accepted route because its depth-first layout planning was the dominant setup
+  decision.
 - HOGENOM resident batching had fewer batches under the accepted policy.  This
   dataset splits into `21` batches, so reusing a single global/specieswise
   resident E solve across no-grad batches removes repeated E work and is worth
   about two percent on likelihood-only timing.
 - Larger clade budgets and larger wave caps hurt the first likelihood here.
-  `250000`, `280000`, `300000`, `330000`, `350000`, `400000`, `500000`, and
-  non-`8192` max-wave samples all hit much slower first-pass timings.  The
+  `250000`, `280000`, `300000`, `310000`, `312000`, `314000`, `316000`,
+  `318000`, `320000`, `330000`, `350000`, `400000`, `500000`, and non-`8192`
+  max-wave samples all hit much slower first-pass timings.  The
   `clade_first_fit`, `315000` clade-budget, `8192` max-wave policy keeps peak
   allocated memory near `5.13 GiB` for likelihood-only while avoiding those
   shape cliffs.
