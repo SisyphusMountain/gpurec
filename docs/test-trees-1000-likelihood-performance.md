@@ -156,7 +156,8 @@ Differences from HOGENOM:
   resident E solve across no-grad batches removes repeated E work and is worth
   about two percent on likelihood-only timing.
 - Larger clade budgets and larger wave caps hurt the first likelihood here.
-  `250000`, `400000`, `500000`, and `16384` max-wave samples all hit much
-  slower first-pass timings.  The `clade_first_fit`, `315000` clade-budget,
-  `8192` max-wave policy keeps peak allocated memory near `5.13 GiB` for
-  likelihood-only while avoiding those shape cliffs.
+  `250000`, `280000`, `300000`, `330000`, `350000`, `400000`, `500000`, and
+  non-`8192` max-wave samples all hit much slower first-pass timings.  The
+  `clade_first_fit`, `315000` clade-budget, `8192` max-wave policy keeps peak
+  allocated memory near `5.13 GiB` for likelihood-only while avoiding those
+  shape cliffs.
