@@ -90,6 +90,7 @@ def _wave_step_uniform_kernel(
     STORE_FINAL_PIBAR: tl.constexpr,
     STORE_FINAL_PIBAR_ROW_MAX: tl.constexpr,
     OUTPUT_GLOBAL: tl.constexpr,
+    INITIAL_STATE: tl.constexpr,
     FP64: tl.constexpr,
     TOPOLOGY_INT32: tl.constexpr,
     CONST_LAYOUT: tl.constexpr = 0,
@@ -125,7 +126,18 @@ def _wave_step_uniform_kernel(
     for s_start in range(0, S, BLOCK_S):
         s_offs = s_start + tl.arange(0, BLOCK_S)
         mask = s_offs < S
-        pi_val = tl.load(Pi_ptr + pi_base + s_offs, mask=mask, other=NEG_LARGE)
+        if INITIAL_STATE:
+            if USE_LEAF_INDEX:
+                leaf_species = tl.load(leaf_species_ptr + ws + w)
+                pi_val = tl.where(
+                    mask & (leaf_species == s_offs),
+                    tl.zeros([BLOCK_S], dtype=DTYPE),
+                    tl.full([BLOCK_S], value=NEG_LARGE, dtype=DTYPE),
+                )
+            else:
+                pi_val = tl.full([BLOCK_S], value=NEG_LARGE, dtype=DTYPE)
+        else:
+            pi_val = tl.load(Pi_ptr + pi_base + s_offs, mask=mask, other=NEG_LARGE)
         tile_max = tl.max(pi_val, axis=0)
         new_max = tl.maximum(row_max, tile_max)
         # Rescale running sum to new max, add this tile's contribution
@@ -145,7 +157,21 @@ def _wave_step_uniform_kernel(
         mask = s_offs < S
 
         # Load Pi[w, s]
-        pi_w = tl.load(Pi_ptr + pi_base + s_offs, mask=mask, other=NEG_LARGE)
+        if INITIAL_STATE:
+            if USE_LEAF_INDEX:
+                leaf_species = tl.load(leaf_species_ptr + ws + w)
+                leaf_hit_initial = mask & (leaf_species == s_offs)
+                pi_w = tl.where(
+                    leaf_hit_initial,
+                    tl.zeros([BLOCK_S], dtype=DTYPE),
+                    tl.full([BLOCK_S], value=NEG_LARGE, dtype=DTYPE),
+                )
+            else:
+                leaf_species = tl.full((), -1, dtype=tl.int64)
+                pi_w = tl.full([BLOCK_S], value=NEG_LARGE, dtype=DTYPE)
+        else:
+            leaf_species = tl.full((), -1, dtype=tl.int64)
+            pi_w = tl.load(Pi_ptr + pi_base + s_offs, mask=mask, other=NEG_LARGE)
 
         ancestor_sum = tl.zeros([BLOCK_S], dtype=DTYPE)
         # Uniform Pibar: log2(row_sum - ancestor_sum) + max + mt. Walk the
@@ -156,7 +182,17 @@ def _wave_step_uniform_kernel(
             cur = s_offs.to(tl.int64)
         for _ in range(0, MAX_ANCESTOR_DEPTH):
             cur_valid = mask & (cur >= 0) & (cur < S)
-            pi_anc = tl.load(Pi_ptr + pi_base + cur, mask=cur_valid, other=NEG_LARGE)
+            if INITIAL_STATE:
+                if USE_LEAF_INDEX:
+                    pi_anc = tl.where(
+                        cur_valid & (cur == leaf_species),
+                        tl.zeros([BLOCK_S], dtype=DTYPE),
+                        tl.full([BLOCK_S], value=NEG_LARGE, dtype=DTYPE),
+                    )
+                else:
+                    pi_anc = tl.full([BLOCK_S], value=NEG_LARGE, dtype=DTYPE)
+            else:
+                pi_anc = tl.load(Pi_ptr + pi_base + cur, mask=cur_valid, other=NEG_LARGE)
             ancestor_sum += tl.where(cur_valid, tl.exp2(pi_anc - row_max), tl.zeros([BLOCK_S], dtype=DTYPE))
             cur = tl.load(sp_parent_ptr + cur, mask=cur_valid, other=-1)
 
@@ -182,8 +218,24 @@ def _wave_step_uniform_kernel(
         c2 = tl.load(sp_child2_ptr + s_offs, mask=mask, other=0)
         c1_valid = c1 < S
         c2_valid = c2 < S
-        pi_s1 = tl.load(Pi_ptr + pi_base + c1, mask=mask & c1_valid, other=NEG_LARGE)
-        pi_s2 = tl.load(Pi_ptr + pi_base + c2, mask=mask & c2_valid, other=NEG_LARGE)
+        if INITIAL_STATE:
+            if USE_LEAF_INDEX:
+                pi_s1 = tl.where(
+                    mask & c1_valid & (c1 == leaf_species),
+                    tl.zeros([BLOCK_S], dtype=DTYPE),
+                    tl.full([BLOCK_S], value=NEG_LARGE, dtype=DTYPE),
+                )
+                pi_s2 = tl.where(
+                    mask & c2_valid & (c2 == leaf_species),
+                    tl.zeros([BLOCK_S], dtype=DTYPE),
+                    tl.full([BLOCK_S], value=NEG_LARGE, dtype=DTYPE),
+                )
+            else:
+                pi_s1 = tl.full([BLOCK_S], value=NEG_LARGE, dtype=DTYPE)
+                pi_s2 = tl.full([BLOCK_S], value=NEG_LARGE, dtype=DTYPE)
+        else:
+            pi_s1 = tl.load(Pi_ptr + pi_base + c1, mask=mask & c1_valid, other=NEG_LARGE)
+            pi_s2 = tl.load(Pi_ptr + pi_base + c2, mask=mask & c2_valid, other=NEG_LARGE)
 
         # 6 DTS_L terms
         t0 = dl_const + pi_w
@@ -284,7 +336,8 @@ def wave_step_uniform_fused_into(Pi_in, Pi_out, Pibar, ws, W, S,
                                  final_pibar_row_max=None,
                                  compute_diff=False,
                                  max_diff_out=None,
-                                 has_leaf_term=True):
+                                 has_leaf_term=True,
+                                 initial_state=False):
     """Fused uniform wave step writing Pi output directly into global rows."""
     fp64 = Pi_in.dtype == torch.float64
     has_splits = DTS_reduced is not None
@@ -347,6 +400,7 @@ def wave_step_uniform_fused_into(Pi_in, Pi_out, Pibar, ws, W, S,
         STORE_FINAL_PIBAR=bool(store_final_pibar),
         STORE_FINAL_PIBAR_ROW_MAX=bool(final_pibar_row_max is not None),
         OUTPUT_GLOBAL=False,
+        INITIAL_STATE=bool(initial_state),
         FP64=fp64,
         TOPOLOGY_INT32=sp_parent.dtype == torch.int32,
         CONST_LAYOUT=const_layout,

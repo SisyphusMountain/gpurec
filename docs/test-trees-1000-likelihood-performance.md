@@ -17,11 +17,13 @@ family tensors are materialized later only if diagnostic family input is
 requested.  For this generated tree shape, the retained `clade_first_fit` path
 uses the scheduler's forward nonleaf policy rather than the exhaustive
 fewest-wave policy; it keeps the measured max wave count here while avoiding
-extra native scheduling passes during construction.  CUDA warmup is started
-while Rust preprocessing runs and exercises cuBLAS plus common elementwise math,
-so more of the first E-solve setup is hidden under CPU/native work.  During
-model construction, retained Rust layout generation is also started while CUDA
-species-helper tensors are built.
+extra native scheduling passes during construction.  The first Pi self-loop
+kernel now synthesizes the all-`-inf`/leaf initial state directly, so resident
+forward no longer fills the full `Pi` matrix before every batch.  CUDA warmup is
+started while Rust preprocessing runs and exercises cuBLAS plus common
+elementwise math, so more of the first E-solve setup is hidden under CPU/native
+work.  During model construction, retained Rust layout generation is also
+started while CUDA species-helper tensors are built.
 
 Cold end-to-end command:
 
@@ -46,30 +48,32 @@ Cold result:
 
 | Stage | Time |
 |---|---:|
-| model init / first resident batch | `1.0128701945068315s` |
-| first fixed4 likelihood pass plus lazy remaining batches | `2.147080860013375s` |
-| total to first fixed4 likelihood | `3.1598341505450662s` |
+| model init / first resident batch | `1.0094792360032443s` |
+| first fixed4 likelihood pass plus lazy remaining batches | `2.030625150015112s` |
+| total to first fixed4 likelihood | `3.0446397330379114s` |
 
 Cold first-pass fidelity samples with the same construction path:
 
 | Pi/E/Neumann budget | total to first likelihood | loss bits | delta vs fixed128 |
 |---:|---:|---:|---:|
-| 4 | `3.1771413069800474s` | `2156427.0` | `670.25` |
-| 6 | `3.6668981159455143s` | `2157095.0` | `2.25` |
-| 8 | `4.169835773995146s` | `2157097.25` | `0.0` |
+| 4 | `3.0446397330379114s` | `2156427.0` | `670.25` |
+| 6 | `3.53992178698536s` | `2157095.0` | `2.25` |
+| 8 | `4.033265120990109s` | `2157097.25` | `0.0` |
 
-Before warming cuBLAS and the first elementwise CUDA math during preprocessing,
-the same retained-layout overlap path took about `3.176s` to the first fixed4
-likelihood.  Before overlapping retained Rust layout generation with CUDA
-species-helper setup, the CUDA-warmed retained clade-first path took about
-`3.19s`.  Before CUDA warmup overlap, the forward-scheduled retained clade-first
-path took about `3.24s`.  Before the forward scheduler policy, the compact
-retained-layout clade-first lazy path took about `3.46s`.  Before compact family
-summaries, it took about `3.86s`.  Before retaining the Rust chunked layouts,
-the same clade-first lazy path took `13.062108609999996s`, and the HOGENOM-style
-`depth_first_fit` path took `17.548588357982226s` in a manual timing split.  The
-construction path is therefore the main end-to-end win for this generated
-dataset.
+Before deriving the initial Pi state inside the wave kernel, the same retained
+layout and CUDA math warmup path took about `3.160s` to the first fixed4
+likelihood.  Before warming cuBLAS and the first elementwise CUDA math during
+preprocessing, the retained-layout overlap path took about `3.176s`.  Before
+overlapping retained Rust layout generation with CUDA species-helper setup, the
+CUDA-warmed retained clade-first path took about `3.19s`.  Before CUDA warmup
+overlap, the forward-scheduled retained clade-first path took about `3.24s`.
+Before the forward scheduler policy, the compact retained-layout clade-first
+lazy path took about `3.46s`.  Before compact family summaries, it took about
+`3.86s`.  Before retaining the Rust chunked layouts, the same clade-first lazy
+path took `13.062108609999996s`, and the HOGENOM-style `depth_first_fit` path
+took `17.548588357982226s` in a manual timing split.  The construction path and
+per-batch Pi initialization are therefore the main end-to-end wins for this
+generated dataset.
 
 Steady-state command:
 
@@ -89,16 +93,18 @@ env PYTHONDONTWRITEBYTECODE=1 GPUREC_MEMORY_POLICY_RESERVE_GIB=0 \
   --materialize-batches all
 ```
 
-| Pi/E/Neumann budget | loss-only median | loss bits | delta vs fixed128 |
+| Pi/E/Neumann budget | loss-only time | loss bits | delta vs fixed128 |
 |---:|---:|---:|---:|
-| 4 | `1.6164941460010596s` | `2156427.0` | `670.25` |
-| 6 | `2.1500701049808413s` | `2157095.0` | `2.25` |
-| 8 | `2.6858214950188994s` | `2157097.25` | `0.0` |
-| 128 | `35.36583194194827s` | `2157097.25` | `0.0` |
+| 4 | `1.4987762719974853s` | `2156427.0` | `670.25` |
+| 6 | `2.0291887830244377s` | `2157095.0` | `2.25` |
+| 8 | `2.5632447139942087s` | `2157097.25` | `0.0` |
+| 128 | `35.236629224033095s` | `2157097.25` | `0.0` |
 
 With `--materialize-batches all`, the clade-first resident build split was
-`1.0175689089810476s` for model init plus `0.0647850509849377s` for full
-materialization in the fixed4 run.
+`1.0307386600179598s` for model init plus `0.0668996159802191s` for full
+materialization in the fixed4 steady-state run.  The `4/6/8` rows above are
+three-repetition medians after one warmup; the `128` row is a single validation
+sample.
 
 Gradient timing for the same resident layout:
 
@@ -111,7 +117,7 @@ env PYTHONDONTWRITEBYTECODE=1 GPUREC_MEMORY_POLICY_RESERVE_GIB=0 \
   --measure loss-grad \
   --warmups 1 \
   --reps 3 \
-  --family-chunk-size 300 \
+  --family-chunk-size 500 \
   --clade-budget 315000 \
   --batch-packing clade_first_fit \
   --max-wave-size 8192 \
@@ -120,13 +126,12 @@ env PYTHONDONTWRITEBYTECODE=1 GPUREC_MEMORY_POLICY_RESERVE_GIB=0 \
 
 | Pi/E/Neumann budget | loss+backward median | loss bits | grad inf |
 |---:|---:|---:|---:|
-| 4 | `6.295372458000202s` | `2156427.0` | `311.9596252441406` |
-| 6 | `7.550051988975611s` | `2157095.0` | `312.9272766113281` |
-| 8 | `8.658673683996312s` | `2157097.25` | `312.9301452636719` |
+| 4 | `6.077169136959128s` | `2156427.0` | `311.95965576171875` |
+| 6 | `7.372949571989011s` | `2157095.0` | `312.92724609375` |
+| 8 | `8.356295902049169s` | `2157097.25` | `312.9301452636719` |
 
-The first clade-first loss+backward warmup in this process took
-`43.41080819600029s` because it compiled additional backward kernel
-specializations.  The table above is steady-state after that compilation.
+The first clade-first loss+backward warmup in this run took `8.028820995008573s`
+for fixed4.  The table above is steady-state after that warmup.
 
 Interpretation:
 
@@ -195,6 +200,11 @@ Differences from HOGENOM:
   dataset splits into `21` batches, so reusing a single global/specieswise
   resident E solve across no-grad batches removes repeated E work and is worth
   about two percent on likelihood-only timing.
+- This dataset also pays the initial `Pi` fill once per resident batch.  Moving
+  that initial state into the first wave-step kernel saves about `0.12s` on the
+  fixed4 cold likelihood path and about `0.12s` on steady likelihood.  The same
+  optimization should help HOGENOM too, but its accepted end-to-end route has
+  fewer resident batches and is dominated more by optimizer/gradient work.
 - Larger clade budgets and larger wave caps hurt the first likelihood here.
   `250000`, `280000`, `300000`, `310000`, `312000`, `314000`, `316000`,
   `318000`, `320000`, `330000`, `350000`, `400000`, `500000`, and non-`8192`

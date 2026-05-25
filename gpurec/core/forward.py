@@ -227,10 +227,7 @@ def Pi_wave_forward(
         )
 
     with _nvtx_range("Pi setup tensors"):
-        _PI_INIT = torch.finfo(dtype).min
-        Pi = torch.full((C, S), _PI_INIT, dtype=dtype, device=device)
-        leaf_rows = leaf_row_index.to(device)
-        Pi[leaf_rows, leaf_species_index[leaf_rows]] = 0.0
+        Pi = torch.empty((C, S), dtype=dtype, device=device)
         # Pibar is a ping-pong scratch/output buffer. Each row is written by
         # its wave before any later DTS wave can read it, so an initial full
         # tensor fill only burns memory bandwidth on large tree batches.
@@ -406,6 +403,7 @@ def Pi_wave_forward(
                 compute_diff=check_convergence,
                 max_diff_out=max_diff_scratch[:W] if check_convergence else None,
                 has_leaf_term=has_leaf_term,
+                initial_state=local_iter == 0,
             )
             if root_logsumexp_trace is not None:
                 root_entry = roots_by_wave[wave_index]
