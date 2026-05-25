@@ -201,6 +201,22 @@ Rejected follow-ups:
 - DTS species tile caps of `128` and `2048` lost on the steady fixed4 path.
   `2048` also paid an unacceptable first compile.  The `512` cap was the best
   measured option for this `S=1999` generated benchmark.
+- Rechecking the uniform wave-step species tile cap after the leaf-state
+  specialization did not improve the route: raising the generic uniform cap
+  from `256` to `512` moved steady fixed4 to about `1.292s`, slower than the
+  current `1.285s` measurement.
+- A custom Triton row-logsumexp kernel for the already-gathered root rows saved
+  only about `1ms` in the instrumented root-likelihood split while adding
+  another cold compile/cache surface, so the PyTorch root reduction remains in
+  place.
+- Disabling lazy prefetch/resident kernel warmup still loses.  It lowers model
+  construction to about `1.01s`, but the first likelihood pass grows to about
+  `1.90s`; the current prefetch/warmup path keeps first likelihood near
+  `1.58s`.
+- The post-leaf-specialization clade-budget resweep reconfirmed the sharp shape
+  cliffs around the current route.  Single cold fixed4 samples at `300000`,
+  `310000`, `318000`, `320000`, and `325000` all paid first likelihood times
+  from about `14s` to `34s`, while `315000` stayed near `1.58s`.
 
 Differences from HOGENOM:
 
