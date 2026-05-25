@@ -357,6 +357,10 @@ Rejected follow-ups:
   root-only waves.  A layout audit found that the current `21` skipped waves
   cover exactly the same `65` rows as the set of waves whose rows are never
   used as later DTS children; no extra whole-wave skip is available.
+- There is also no row-level final-Pibar skip hiding inside mixed waves on this
+  generated layout.  A row audit found `6,416,248` rows used as later DTS
+  children and `1,000` root rows across `6,417,248` total rows, with `0`
+  non-root rows unused by later DTS.
 - Forcing the forward parent-reduced DTS kernels to `num_warps=8` did not help
   this large-`S` generated shape.  The first warmup paid `31.28786089399364s`
   to compile the new Triton variants, and the post-compile fixed4 steady-state
