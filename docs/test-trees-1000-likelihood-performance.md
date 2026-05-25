@@ -264,6 +264,11 @@ Rejected follow-ups:
   cliffs around the current route.  Single cold fixed4 samples at `300000`,
   `310000`, `318000`, `320000`, and `325000` all paid first likelihood times
   from about `14s` to `34s`, while `315000` stayed near `1.58s`.
+- Rechecking `max_wave_size` after the current Pi fast paths reconfirmed that
+  `8192` is the only good measured shape in the local sweep.  Cold fixed4 first
+  likelihood samples were `14.915235649968963s` at `4096`,
+  `11.24351201299578s` at `6144`, `1.5818899900186807s` at `8192`,
+  `32.38246097502997s` at `12288`, and `20.292580714041833s` at `16384`.
 - Thread-count pinning is host- and shape-sensitive.  On this 32-core host, an
   isolated generated-dataset retained preprocess/layout timing was best at `16`
   threads, about `0.91s` total, while `12`, `20`, `24`, `32`, and the default
