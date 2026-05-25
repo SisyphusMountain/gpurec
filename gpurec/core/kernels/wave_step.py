@@ -55,6 +55,7 @@ def _wave_step_uniform_kernel(
     # Global Pi tensor [C, S] — read from rows [ws : ws+W]
     Pi_ptr,
     ws,                  # wave start (clade offset)
+    pi_ws,               # input wave start; may be zero for local [W, S] input
     # Constants: [S] each
     mt_ptr,
     DL_const_ptr, Ebar_ptr, E_ptr, SL1_const_ptr, SL2_const_ptr,
@@ -109,9 +110,10 @@ def _wave_step_uniform_kernel(
     NEG_LARGE = -1e300 if FP64 else -1e30
 
     w = tl.program_id(0)
-    pi_base = (ws + w) * stride      # offset into global Pi/Pibar
+    pi_base = (pi_ws + w) * stride   # offset into Pi input
+    global_base = (ws + w) * stride  # offset into global Pi/Pibar outputs
     if OUTPUT_GLOBAL:
-        out_base = pi_base            # offset into global output rows
+        out_base = global_base        # offset into global output rows
     else:
         out_base = w * stride         # offset into [W, S] outputs
     const_base = 0
@@ -205,7 +207,7 @@ def _wave_step_uniform_kernel(
         # final Pibar rows. Fixed-iteration ping-pong uses Pibar as Pi scratch
         # and recomputes/stores final Pibar after the last iteration.
         if STORE_PIBAR:
-            tl.store(Pibar_out_ptr + pi_base + s_offs, pibar_w, mask=mask)
+            tl.store(Pibar_out_ptr + global_base + s_offs, pibar_w, mask=mask)
 
         dl_const = tl.load(DL_const_ptr + const_offsets, mask=mask, other=NEG_LARGE)
         ebar = tl.load(Ebar_ptr + const_offsets, mask=mask, other=NEG_LARGE)
@@ -322,7 +324,7 @@ def _wave_step_uniform_kernel(
             mt = tl.load(mt_ptr + const_offsets, mask=mask, other=0.0)
             denom = final_row_sum - ancestor_sum
             pibar_w = tl.where(denom > 0.0, tl.log2(denom) + final_row_max + mt, NEG_LARGE)
-            tl.store(Pibar_out_ptr + pi_base + s_offs, pibar_w, mask=mask)
+            tl.store(Pibar_out_ptr + global_base + s_offs, pibar_w, mask=mask)
 
 
 def wave_step_uniform_fused_into(Pi_in, Pi_out, Pibar, ws, W, S,
@@ -337,7 +339,8 @@ def wave_step_uniform_fused_into(Pi_in, Pi_out, Pibar, ws, W, S,
                                  compute_diff=False,
                                  max_diff_out=None,
                                  has_leaf_term=True,
-                                 initial_state=False):
+                                 initial_state=False,
+                                 input_ws=None):
     """Fused uniform wave step writing Pi output directly into global rows."""
     fp64 = Pi_in.dtype == torch.float64
     has_splits = DTS_reduced is not None
@@ -373,7 +376,7 @@ def wave_step_uniform_fused_into(Pi_in, Pi_out, Pibar, ws, W, S,
     row_max_arg = final_pibar_row_max if final_pibar_row_max is not None else Pibar
 
     _wave_step_uniform_kernel[grid](
-        Pi_in, ws,
+        Pi_in, ws, ws if input_ws is None else int(input_ws),
         mt_squeezed,
         DL_const, Ebar, E, SL1_const, SL2_const,
         sp_child1, sp_child2,

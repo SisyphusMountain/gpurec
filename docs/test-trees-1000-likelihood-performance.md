@@ -20,9 +20,11 @@ fewest-wave policy; it keeps the measured max wave count here while avoiding
 extra native scheduling passes during construction.  The first Pi self-loop
 kernel now synthesizes the all-`-inf`/leaf initial state directly, and non-leaf
 waves without a leaf term copy the already-reduced DTS contribution instead of
-launching the full first wave-step.  CUDA warmup is started while Rust
-preprocessing runs and exercises cuBLAS plus common elementwise math, so more of
-the first E-solve setup is hidden under CPU/native work.  During model
+launching the full first wave-step.  The second local iteration reads that DTS
+tensor directly, avoiding a device-to-device copy into the global ping-pong
+buffer.  CUDA warmup is started while Rust preprocessing runs and exercises
+cuBLAS plus common elementwise math, so more of the first E-solve setup is
+hidden under CPU/native work.  During model
 construction, retained Rust layout generation is also started while CUDA
 species-helper tensors are built.
 
@@ -49,34 +51,35 @@ Cold result:
 
 | Stage | Time |
 |---|---:|
-| model init / first resident batch | `1.0133269735088106s` |
-| first fixed4 likelihood pass plus lazy remaining batches | `1.9834722115192562s` |
-| total to first fixed4 likelihood | `2.9935171705146786s` |
+| model init / first resident batch | `1.0148982965038158s` |
+| first fixed4 likelihood pass plus lazy remaining batches | `1.908232117537409s` |
+| total to first fixed4 likelihood | `2.9247796200506855s` |
 
 Cold first-pass fidelity samples with the same construction path:
 
 | Pi/E/Neumann budget | total to first likelihood | loss bits | delta vs fixed128 |
 |---:|---:|---:|---:|
-| 4 | `2.9935171705146786s` | `2156427.0` | `670.25` |
-| 6 | `3.4846826859866268s` | `2157095.0` | `2.25` |
-| 8 | `3.9747316939756274s` | `2157097.25` | `0.0` |
+| 4 | `2.9247796200506855s` | `2156427.0` | `670.25` |
+| 6 | `3.4132213970297016s` | `2157095.0` | `2.25` |
+| 8 | `3.902521108975634s` | `2157097.25` | `0.0` |
 
-Before copying the first non-leaf DTS state directly, deriving the initial Pi
-state inside the wave kernel took about `3.045s` to the first fixed4
-likelihood.  Before deriving that initial state inside the wave kernel, the
-same retained layout and CUDA math warmup path took about `3.160s`.  Before
-warming cuBLAS and the first elementwise CUDA math during preprocessing, the
-retained-layout overlap path took about `3.176s`.  Before overlapping retained
-Rust layout generation with CUDA species-helper setup, the CUDA-warmed retained
-clade-first path took about `3.19s`.  Before CUDA warmup overlap, the
-forward-scheduled retained clade-first path took about `3.24s`.  Before the
-forward scheduler policy, the compact retained-layout clade-first lazy path took
-about `3.46s`.  Before compact family summaries, it took about `3.86s`.  Before
-retaining the Rust chunked layouts, the same clade-first lazy path took
-`13.062108609999996s`, and the HOGENOM-style `depth_first_fit` path took
-`17.548588357982226s` in a manual timing split.  The construction path and
-per-batch Pi initialization are therefore the main end-to-end wins for this
-generated dataset.
+Before reading the first non-leaf DTS tensor directly on iteration 1, the
+copy-based initial non-leaf fast path took about `2.994s` to the first fixed4
+likelihood.  Before copying the first non-leaf DTS state directly, deriving the
+initial Pi state inside the wave kernel took about `3.045s`.  Before deriving
+that initial state inside the wave kernel, the same retained layout and CUDA
+math warmup path took about `3.160s`.  Before warming cuBLAS and the first
+elementwise CUDA math during preprocessing, the retained-layout overlap path
+took about `3.176s`.  Before overlapping retained Rust layout generation with
+CUDA species-helper setup, the CUDA-warmed retained clade-first path took about
+`3.19s`.  Before CUDA warmup overlap, the forward-scheduled retained
+clade-first path took about `3.24s`.  Before the forward scheduler policy, the
+compact retained-layout clade-first lazy path took about `3.46s`.  Before
+compact family summaries, it took about `3.86s`.  Before retaining the Rust
+chunked layouts, the same clade-first lazy path took `13.062108609999996s`, and
+the HOGENOM-style `depth_first_fit` path took `17.548588357982226s` in a manual
+timing split.  The construction path and per-batch Pi initialization are
+therefore the main end-to-end wins for this generated dataset.
 
 Steady-state command:
 
@@ -99,13 +102,13 @@ env PYTHONDONTWRITEBYTECODE=1 GPUREC_MEMORY_POLICY_RESERVE_GIB=0 \
 
 | Pi/E/Neumann budget | loss-only time | loss bits | delta vs fixed128 |
 |---:|---:|---:|---:|
-| 4 | `1.4310235269949771s` | `2156427.0` | `670.25` |
-| 6 | `1.9615468069678172s` | `2157095.0` | `2.25` |
-| 8 | `2.4973996769986115s` | `2157097.25` | `0.0` |
+| 4 | `1.3629295059945434s` | `2156427.0` | `670.25` |
+| 6 | `1.893350541999098s` | `2157095.0` | `2.25` |
+| 8 | `2.4285347720142454s` | `2157097.25` | `0.0` |
 | 128 | `35.236629224033095s` | `2157097.25` | `0.0` |
 
 With `--materialize-batches all`, the clade-first resident build split was
-`1.0148627610178664s` for model init plus `0.07970164204016328s` for full
+`1.0153865829925053s` for model init plus `0.07799340895144269s` for full
 materialization in the fixed4 steady-state run.  The `4/6/8` rows above are
 three-repetition medians after one warmup; the `128` row is a single validation
 sample.
@@ -131,11 +134,11 @@ env PYTHONDONTWRITEBYTECODE=1 GPUREC_MEMORY_POLICY_RESERVE_GIB=0 \
 
 | Pi/E/Neumann budget | loss+backward median | loss bits | grad inf |
 |---:|---:|---:|---:|
-| 4 | `6.039807219989598s` | `2156427.0` | `311.95965576171875` |
-| 6 | `7.296662562992424s` | `2157095.0` | `312.92724609375` |
-| 8 | `8.30261915596202s` | `2157097.25` | `312.93011474609375` |
+| 4 | `5.968396109004971s` | `2156427.0` | `311.9596252441406` |
+| 6 | `7.25878949399339s` | `2157095.0` | `312.9272766113281` |
+| 8 | `8.223480562039185s` | `2157097.25` | `312.93011474609375` |
 
-The first clade-first loss+backward warmup in this run took `7.967632035957649s`
+The first clade-first loss+backward warmup in this run took `7.84887395700207s`
 for fixed4.  The table above is steady-state after that warmup.
 
 Interpretation:
@@ -207,16 +210,17 @@ Differences from HOGENOM:
   resident E solve across no-grad batches removes repeated E work and is worth
   about two percent on likelihood-only timing.
 - This dataset also pays initial Pi setup once per resident batch.  Deriving the
-  initial state in the wave kernel and then copying the first non-leaf DTS state
-  directly saves about `0.17s` versus the CUDA-math-warmed retained path
-  (`3.160s` to `2.994s`), including about `0.05s` beyond the no-fill initial
-  Pi path.  The same optimization should help HOGENOM too, but its accepted
-  end-to-end route has fewer resident batches and is dominated more by
-  optimizer/gradient work.
+  initial state in the wave kernel, using the first non-leaf DTS state directly,
+  and letting iteration 1 read that local DTS tensor saves about `0.24s` versus
+  the CUDA-math-warmed retained path (`3.160s` to `2.925s`), including about
+  `0.07s` beyond the copy-based first non-leaf path.  The same optimization
+  should help HOGENOM too, but its accepted end-to-end route has fewer resident
+  batches and is dominated more by optimizer/gradient work.
 - Larger clade budgets and larger wave caps hurt the first likelihood here.
-  `250000`, `280000`, `300000`, `310000`, `312000`, `314000`, `316000`,
-  `318000`, `320000`, `330000`, `350000`, `400000`, `500000`, and non-`8192`
-  max-wave samples all hit much slower first-pass timings.  The
-  `clade_first_fit`, `315000` clade-budget, `8192` max-wave policy keeps peak
-  allocated memory near `5.15 GiB` for likelihood-only while avoiding those
-  shape cliffs.
+  `250000`, `280000`, `300000`, `310000`, `312000`, `320000`, `330000`,
+  `350000`, `400000`, `500000`, and non-`8192` max-wave samples all hit much
+  slower first-pass timings in earlier sweeps.  After the local-DTS input
+  change, `318000` was roughly tied with `315000` for fixed4 and used less
+  reserved memory, but it did not clearly improve the fixed8 cold sample.  The
+  `clade_first_fit`, `315000` clade-budget, `8192` max-wave policy remains the
+  main measured route while avoiding those shape cliffs.

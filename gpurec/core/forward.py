@@ -376,6 +376,7 @@ def Pi_wave_forward(
             not specialize_nonleaf_leaf_term
             or int(meta.get('phase', 1)) == 1
         )
+        initial_nonleaf_input = None
         for local_iter in range(fixed_iters):
             iteration_count = local_iter + 1
             pi_in = Pi if (local_iter % 2 == 0) else Pibar
@@ -391,14 +392,28 @@ def Pi_wave_forward(
                 and iteration_count % convergence_check_interval == 0
             )
             if initial_nonleaf_fast_path:
-                pi_out_rows = pi_out.narrow(0, int(ws), int(W))
-                if dts_r is None:
-                    pi_out_rows.fill_(torch.finfo(dtype).min)
+                can_read_local_initial = (
+                    dts_r is not None
+                    and root_logsumexp_trace is None
+                    and not check_convergence
+                )
+                if can_read_local_initial:
+                    initial_nonleaf_input = dts_r
                 else:
-                    pi_out_rows.copy_(dts_r)
+                    pi_out_rows = pi_out.narrow(0, int(ws), int(W))
+                    if dts_r is None:
+                        pi_out_rows.fill_(torch.finfo(dtype).min)
+                    else:
+                        pi_out_rows.copy_(dts_r)
+                    initial_nonleaf_input = None
             else:
+                step_pi_in = pi_in
+                step_input_ws = None
+                if local_iter == 1 and initial_nonleaf_input is not None:
+                    step_pi_in = initial_nonleaf_input
+                    step_input_ws = 0
                 wave_step_uniform_fused_into(
-                    pi_in, pi_out, Pibar, ws, W, S,
+                    step_pi_in, pi_out, Pibar, ws, W, S,
                     mt_w, DL_w, Ebar_w, E_w, SL1_w, SL2_w,
                     sp_child1, sp_child2, sp_parent, max_ancestor_depth,
                     leaf_wt, dts_r,
@@ -412,6 +427,7 @@ def Pi_wave_forward(
                     max_diff_out=max_diff_scratch[:W] if check_convergence else None,
                     has_leaf_term=has_leaf_term,
                     initial_state=local_iter == 0,
+                    input_ws=step_input_ws,
                 )
             if root_logsumexp_trace is not None:
                 root_entry = roots_by_wave[wave_index]

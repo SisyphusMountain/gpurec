@@ -189,6 +189,101 @@ def test_wave_step_uniform_fused_matches_sparse_ancestor_reference(per_clade_con
     torch.testing.assert_close(max_diff, expected_diff, rtol=2e-5, atol=2e-5)
 
 
+def test_wave_step_uniform_local_input_rows_match_global_offset():
+    torch.manual_seed(17)
+    device = torch.device("cuda")
+    dtype = torch.float32
+    sp_parent, sp_child1, sp_child2, _ancestors, *_rest = _balanced_species_tree(device)
+    max_depth = _rest[-1]
+
+    W = 4
+    S = int(sp_parent.numel())
+    ws = 3
+    C = W + 6
+    Pi = torch.randn((C, S), device=device, dtype=dtype) * 1.1 - 3.0
+    mt = torch.randn((S,), device=device, dtype=dtype) * 0.1
+    DL = torch.randn((S,), device=device, dtype=dtype) * 0.2 - 2.0
+    Ebar = torch.randn((S,), device=device, dtype=dtype) * 0.2 - 1.5
+    E = torch.randn((S,), device=device, dtype=dtype) * 0.2 - 2.5
+    SL1 = torch.randn((S,), device=device, dtype=dtype) * 0.2 - 2.0
+    SL2 = torch.randn((S,), device=device, dtype=dtype) * 0.2 - 2.0
+    leaf_term = torch.randn((W, S), device=device, dtype=dtype) * 0.2 - 4.0
+    dts = torch.randn((W, S), device=device, dtype=dtype) * 0.2 - 5.0
+
+    Pi_out_global = Pi.clone()
+    Pibar_global = torch.full_like(Pi, float("-inf"))
+    row_max_global = torch.full((C,), float("-inf"), device=device, dtype=dtype)
+    wave_step_uniform_fused_into(
+        Pi,
+        Pi_out_global,
+        Pibar_global,
+        ws,
+        W,
+        S,
+        mt,
+        DL,
+        Ebar,
+        E,
+        SL1,
+        SL2,
+        sp_child1,
+        sp_child2,
+        sp_parent,
+        max_depth,
+        leaf_term,
+        dts,
+        store_final_pibar=True,
+        final_pibar_row_max=row_max_global,
+    )
+
+    Pi_out_local = Pi.clone()
+    Pibar_local = torch.full_like(Pi, float("-inf"))
+    row_max_local = torch.full((C,), float("-inf"), device=device, dtype=dtype)
+    wave_step_uniform_fused_into(
+        Pi[ws:ws + W].contiguous(),
+        Pi_out_local,
+        Pibar_local,
+        ws,
+        W,
+        S,
+        mt,
+        DL,
+        Ebar,
+        E,
+        SL1,
+        SL2,
+        sp_child1,
+        sp_child2,
+        sp_parent,
+        max_depth,
+        leaf_term,
+        dts,
+        store_final_pibar=True,
+        final_pibar_row_max=row_max_local,
+        input_ws=0,
+    )
+    torch.cuda.synchronize()
+
+    torch.testing.assert_close(
+        Pi_out_local[ws:ws + W],
+        Pi_out_global[ws:ws + W],
+        rtol=2e-5,
+        atol=2e-5,
+    )
+    torch.testing.assert_close(
+        Pibar_local[ws:ws + W],
+        Pibar_global[ws:ws + W],
+        rtol=2e-5,
+        atol=2e-5,
+    )
+    torch.testing.assert_close(
+        row_max_local[ws:ws + W],
+        row_max_global[ws:ws + W],
+        rtol=2e-5,
+        atol=2e-5,
+    )
+
+
 @pytest.mark.parametrize("leaf_logp_mode", ["shared", "genewise_scalar", "genewise_specieswise"])
 def test_wave_step_uniform_leaf_index_logp_modes_match_dense_leaf_term(leaf_logp_mode):
     torch.manual_seed(13)
