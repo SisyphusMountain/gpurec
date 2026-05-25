@@ -346,14 +346,20 @@ def Pi_wave_forward(
                 rows = root_ids[pos]
                 roots_by_wave[wave_index] = (rows, pos)
 
-    def _can_skip_final_pibar(ws: int, we: int, W: int) -> bool:
-        if root_clade_ids_for_skip is None:
-            return False
-        roots_in_wave = 0
-        for root_id in root_clade_ids_for_skip:
-            if ws <= root_id < we:
-                roots_in_wave += 1
-        return roots_in_wave == W
+    root_only_wave_flags = None
+    if root_clade_ids_for_skip is not None:
+        root_only_wave_flags = [False] * len(wave_metas)
+        for wave_index, meta in enumerate(wave_metas):
+            if int(meta.get('phase', 1)) != 3:
+                continue
+            ws = int(meta['start'])
+            we = int(meta['end'])
+            W = int(meta['W'])
+            roots_in_wave = 0
+            for root_id in root_clade_ids_for_skip:
+                if ws <= root_id < we:
+                    roots_in_wave += 1
+            root_only_wave_flags[wave_index] = roots_in_wave == W
 
     fuse_final_pibar = True
     specialize_nonleaf_leaf_term = True
@@ -383,6 +389,10 @@ def Pi_wave_forward(
             not specialize_nonleaf_leaf_term
             or int(meta.get('phase', 1)) == 1
         )
+        skip_final_pibar = (
+            root_only_wave_flags is not None
+            and root_only_wave_flags[wave_index]
+        )
         initial_nonleaf_input = None
         for local_iter in range(fixed_iters):
             iteration_count = local_iter + 1
@@ -391,7 +401,7 @@ def Pi_wave_forward(
             initial_nonleaf_fast_path = local_iter == 0 and not has_leaf_term
             needs_final_pibar = (
                 local_iter == fixed_iters - 1
-                and not _can_skip_final_pibar(ws, we, W)
+                and not skip_final_pibar
             )
             store_final_pibar = fuse_final_pibar and needs_final_pibar
             check_convergence = (
@@ -473,7 +483,7 @@ def Pi_wave_forward(
                 if max_diff < convergence_tolerance:
                     pi_wave_iterations[wave_index] = iteration_count
                     pi_wave_converged[wave_index] = True
-                    if not _can_skip_final_pibar(ws, we, W):
+                    if not skip_final_pibar:
                         wave_pibar_uniform_parent_fused(
                             Pi, Pibar, ws, W, S,
                             mt_w, sp_parent, max_ancestor_depth,

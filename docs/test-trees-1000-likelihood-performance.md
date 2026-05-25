@@ -106,11 +106,12 @@ the HOGENOM-style `depth_first_fit` path took `17.548588357982226s` in a manual
 timing split.  The construction path and per-batch Pi initialization are
 therefore the main end-to-end wins for this generated dataset.
 
-Skipping no-op progress callback dispatch in the normal no-callback Pi path is
-a small Python-side cleanup rather than a large kernel win.  A fixed4
-steady-state seven-repetition sample measured `1.282079865981359s` median with
-unchanged loss, while cold first-likelihood samples stayed in the current
-`1.577s` to `1.580s` band.
+Skipping no-op progress callback dispatch and precomputing the root-only waves
+used for final-Pibar skipping are small Python-side cleanups rather than large
+kernel wins.  Fixed4 steady-state seven-repetition samples measured
+`1.282079865981359s` and `1.2819753359653987s` medians with unchanged loss.
+Cold first-likelihood samples remained noisy, so the cold route is still
+reported with the established `2.55s` total sample above.
 
 Steady-state command:
 
