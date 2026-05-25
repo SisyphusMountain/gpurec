@@ -307,6 +307,11 @@ Rejected follow-ups:
   isolated generated-dataset retained preprocess/layout timing was best at `16`
   threads, about `0.91s` total, while `12`, `20`, `24`, `32`, and the default
   global pool were slower.
+- A narrower cold end-to-end thread-count resweep around `16` did not identify
+  a more stable setting.  Single fixed4 cold totals were about `2.525s` at
+  `14`, `2.600s` at `15`, `2.548s` at `16`, `2.519s` at `17`, and `2.559s`
+  at `18`, but repeats regressed to about `2.560s` at `17` and `2.603s` at
+  `14`.  The documented command therefore keeps `--preprocess-cpu-cores 16`.
 - Family chunk size was not an active lever under the current `315000` clade
   budget.  Sweeping `250`, `333`, `400`, `500`, `625`, `750`, and `1000` all
   produced `21` batches and similar fixed4 likelihood times.  A paired cold
