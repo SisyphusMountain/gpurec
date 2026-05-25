@@ -462,7 +462,6 @@ fn leaf_phase_waves(
             }
         }
     }
-    leaves.sort();
     leaves
         .chunks(wave_cap)
         .map(|chunk| materialize_local_clades(chunk, family_clade_offsets))

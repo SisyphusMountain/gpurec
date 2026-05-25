@@ -525,6 +525,12 @@ Differences from HOGENOM:
   smaller preprocessing/layout cost, so this is mostly a cleanliness and
   memory-traffic improvement there rather than a route-changing optimizer
   result.
+- The scheduler also skips a redundant sort after enumerating leaf clades:
+  the enumeration already yields `(family, clade)` order.  The latest fixed4
+  cold sample with that cleanup was `2.2928918009856716s`, effectively tied
+  with the current best.  The cleanup matters more to `test_trees_1000` than
+  HOGENOM because this generated layout has `1.61M` leaf rows across `206` leaf
+  waves.
 - This dataset also pays initial Pi setup once per resident batch.  Deriving the
   initial state in the wave kernel, using the first non-leaf DTS state directly,
   and letting iteration 1 read that local DTS tensor saves about `0.24s` versus
