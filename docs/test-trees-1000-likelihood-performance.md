@@ -340,6 +340,10 @@ Rejected follow-ups:
   kernel was worse on this shape.  A fixed4 steady-state sample measured
   `1.2893211269984022s` median after a `1.7043520050356165s` warmup, so the
   fused final-Pibar store remains enabled.
+- Forcing the forward parent-reduced DTS kernels to `num_warps=8` did not help
+  this large-`S` generated shape.  The first warmup paid `31.28786089399364s`
+  to compile the new Triton variants, and the post-compile fixed4 steady-state
+  median was `1.2863251420203596s`, slower than the current route.
 
 Differences from HOGENOM:
 
