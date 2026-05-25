@@ -362,6 +362,7 @@ def dts_fused_parent_reduced(
     family_offset=0,
     tile_splits=64,
     ge2_max_fanout=None,
+    initialize_out=True,
 ):
     """Parent-reduced DTS forward recompute.
 
@@ -372,8 +373,11 @@ def dts_fused_parent_reduced(
     N = lefts.shape[0]
     S = Pi.shape[1]
     if out is None:
-        out = torch.full((W, S), float("-inf"), device=Pi.device, dtype=Pi.dtype)
-    else:
+        if initialize_out:
+            out = torch.full((W, S), float("-inf"), device=Pi.device, dtype=Pi.dtype)
+        else:
+            out = torch.empty((W, S), device=Pi.device, dtype=Pi.dtype)
+    elif initialize_out:
         out.fill_(float("-inf"))
 
     lsp = log_split_probs.reshape(N).contiguous()

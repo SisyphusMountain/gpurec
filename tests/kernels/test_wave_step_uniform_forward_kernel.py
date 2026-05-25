@@ -1,6 +1,7 @@
 import pytest
 import torch
 
+from gpurec.core.kernels.dts_fused import dts_fused_parent_reduced
 from gpurec.core.kernels.wave_step import (
     wave_pibar_uniform_parent_fused,
     wave_step_uniform_fused_into,
@@ -44,6 +45,41 @@ def _wave_step_reference(Pi_W, Pibar_W, DL, Ebar, E, SL1, SL2, sp_child1, sp_chi
         dim=0,
     )
     return _logsumexp2_reference(terms)
+
+
+def _dts_eq1_reference(
+    Pi,
+    Pibar,
+    lefts,
+    rights,
+    sp_child1,
+    sp_child2,
+    log_pD,
+    log_pS,
+    split_logp,
+    parent_ids,
+    W,
+):
+    S = Pi.shape[1]
+    pad = torch.full((Pi.shape[0], 1), float("-inf"), device=Pi.device, dtype=Pi.dtype)
+    Pi_pad = torch.cat([Pi, pad], dim=1)
+    out = torch.full((W, S), float("-inf"), device=Pi.device, dtype=Pi.dtype)
+    for n in range(int(lefts.numel())):
+        left = int(lefts[n])
+        right = int(rights[n])
+        parent = int(parent_ids[n])
+        terms = torch.stack(
+            [
+                log_pD + Pi[left] + Pi[right],
+                Pi[left] + Pibar[right],
+                Pi[right] + Pibar[left],
+                log_pS + Pi_pad[left, sp_child1] + Pi_pad[right, sp_child2],
+                log_pS + Pi_pad[right, sp_child1] + Pi_pad[left, sp_child2],
+            ],
+            dim=0,
+        )
+        out[parent] = _logsumexp2_reference(terms) + split_logp[n]
+    return out
 
 
 def _balanced_species_tree(device):
@@ -395,3 +431,84 @@ def test_wave_step_uniform_leaf_index_logp_modes_match_dense_leaf_term(leaf_logp
 
     torch.testing.assert_close(Pi_indexed, Pi_dense, rtol=2e-5, atol=2e-5)
     torch.testing.assert_close(max_diff_indexed, max_diff_dense, rtol=2e-5, atol=2e-5)
+
+
+def test_dts_parent_reduced_skips_output_initialization_when_all_rows_covered():
+    device = torch.device("cuda")
+    dtype = torch.float32
+    torch.manual_seed(17)
+    (
+        _sp_parent,
+        sp_child1,
+        sp_child2,
+        _ancestors,
+        _ancestor_cols,
+        _ancestor_csr_indptr,
+        _ancestor_csr_indices,
+        _max_depth,
+    ) = _balanced_species_tree(device)
+    S = int(sp_child1.numel())
+    C = 4
+    W = 2
+    Pi = torch.randn((C, S), device=device, dtype=dtype) * 0.2 - 2.0
+    Pibar = torch.randn((C, S), device=device, dtype=dtype) * 0.2 - 2.5
+    lefts = torch.tensor([2, 0], device=device, dtype=torch.long)
+    rights = torch.tensor([3, 1], device=device, dtype=torch.long)
+    parent_ids = torch.tensor([0, 1], device=device, dtype=torch.long)
+    ge2_ptr = torch.tensor([0], device=device, dtype=torch.long)
+    ge2_parent_ids = torch.empty((0,), device=device, dtype=torch.long)
+    log_pD = torch.randn((S,), device=device, dtype=dtype) * 0.1 - 3.0
+    log_pS = torch.randn((S,), device=device, dtype=dtype) * 0.1 - 2.0
+    split_logp = torch.tensor([-0.25, -0.75], device=device, dtype=dtype)
+
+    initialized = dts_fused_parent_reduced(
+        Pi,
+        Pibar,
+        lefts,
+        rights,
+        sp_child1,
+        sp_child2,
+        log_pD,
+        log_pS,
+        split_logp,
+        W,
+        int(parent_ids.numel()),
+        parent_ids,
+        ge2_ptr,
+        ge2_parent_ids,
+        initialize_out=True,
+    )
+    uninitialized = dts_fused_parent_reduced(
+        Pi,
+        Pibar,
+        lefts,
+        rights,
+        sp_child1,
+        sp_child2,
+        log_pD,
+        log_pS,
+        split_logp,
+        W,
+        int(parent_ids.numel()),
+        parent_ids,
+        ge2_ptr,
+        ge2_parent_ids,
+        initialize_out=False,
+    )
+    expected = _dts_eq1_reference(
+        Pi,
+        Pibar,
+        lefts,
+        rights,
+        sp_child1,
+        sp_child2,
+        log_pD,
+        log_pS,
+        split_logp,
+        parent_ids,
+        W,
+    )
+    torch.cuda.synchronize()
+
+    torch.testing.assert_close(initialized, expected, rtol=1e-5, atol=1e-5)
+    torch.testing.assert_close(uninitialized, expected, rtol=1e-5, atol=1e-5)

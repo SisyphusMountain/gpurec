@@ -119,6 +119,9 @@ def _compute_dts_cross(Pi, Pibar, meta, sp_child1, sp_child2, log_pD, log_pS,
     wlsp = meta['log_split_probs']
     W = meta['W']
     n_eq1 = meta.get('n_eq1', 0)
+    ge2_parent_ids = meta.get('ge2_parent_ids', sl[:0])
+    covered_parent_rows = int(n_eq1) + int(ge2_parent_ids.numel())
+    initialize_out = active_mask is not None or covered_parent_rows != int(W)
     return dts_fused_parent_reduced(
         Pi, Pibar, sl, sr,
         sp_child1, sp_child2,
@@ -127,12 +130,13 @@ def _compute_dts_cross(Pi, Pibar, meta, sp_child1, sp_child2, log_pD, log_pS,
         n_eq1,
         meta.get('eq1_reduce_idx', sl[:0]),
         meta.get('ge2_ptr', sl.new_zeros((1,), dtype=torch.long)),
-        meta.get('ge2_parent_ids', sl[:0]),
+        ge2_parent_ids,
         active_mask=active_mask,
         family_idx=family_idx,
         family_offset=family_offset,
         tile_splits=64,
         ge2_max_fanout=meta.get('ge2_max_fanout'),
+        initialize_out=initialize_out,
     )
 
 
