@@ -69,15 +69,15 @@ Cold result:
 
 | Stage | Time |
 |---|---:|
-| model init / first resident batch | `0.9708010379690677s` |
-| first fixed4 likelihood pass plus lazy remaining batches | `1.34020919498289s` |
-| total to first fixed4 likelihood | `2.3110102329519577s` |
+| model init / first resident batch | `0.9630599020165391s` |
+| first fixed4 likelihood pass plus lazy remaining batches | `1.344272744958289s` |
+| total to first fixed4 likelihood | `2.307332646974828s` |
 
 Cold first-pass fidelity samples with the same construction path:
 
 | Pi/E/Neumann budget | total to first likelihood | loss bits | delta vs fixed128 |
 |---:|---:|---:|---:|
-| 4 | `2.3110102329519577s` | `2156427.0` | `670.25` |
+| 4 | `2.307332646974828s` | `2156427.0` | `670.25` |
 | 6 | `2.914167365990579s` | `2157095.0` | `2.25` |
 | 8 | `3.3453044299967587s` | `2157097.25` | `0.0` |
 
