@@ -731,6 +731,39 @@ def _should_use_compact_retained_preprocess(
     )
 
 
+def _warm_cuda_context(device: torch.device) -> None:
+    with torch.cuda.device(device):
+        torch.empty((), device=device)
+        torch.cuda.synchronize(device)
+
+
+def _start_cuda_context_warmup(
+    device: torch.device,
+) -> tuple[ThreadPoolExecutor, Future] | None:
+    if device.type != "cuda" or not torch.cuda.is_available():
+        return None
+    executor = ThreadPoolExecutor(
+        max_workers=1,
+        thread_name_prefix="gpurec-cuda-warmup",
+    )
+    return executor, executor.submit(_warm_cuda_context, device)
+
+
+def _finish_cuda_context_warmup(
+    handle: tuple[ThreadPoolExecutor, Future] | None,
+) -> None:
+    if handle is None:
+        return
+    executor, future = handle
+    try:
+        try:
+            future.result()
+        except Exception:
+            pass
+    finally:
+        executor.shutdown(wait=True, cancel_futures=True)
+
+
 def _build_static_state(
     dataset: GeneDataset,
     *,
@@ -1291,21 +1324,25 @@ class GeneReconModel(torch.nn.Module):
         )
         gene_tree_paths = normalize_family_tree_paths(gene_trees)
         device = require_cuda_device(device, owner="GeneReconModel")
+        cuda_warmup = _start_cuda_context_warmup(device)
+        try:
+            ds = GeneDataset.from_retained_preprocess(
+                species_tree_path=species_tree,
+                gene_tree_paths=gene_tree_paths,
+                genewise=genewise,
+                specieswise=specieswise,
+                dtype=dtype,
+                device=device,
+                preprocess_cpu_cores=preprocess_cpu_cores,
+                compact_families=_should_use_compact_retained_preprocess(
+                    mode,
+                    solver_kwargs,
+                ),
+            )
+        finally:
+            _finish_cuda_context_warmup(cuda_warmup)
         if theta_base is not None:
             theta_base = theta_base.to(device=device)
-        ds = GeneDataset.from_retained_preprocess(
-            species_tree_path=species_tree,
-            gene_tree_paths=gene_tree_paths,
-            genewise=genewise,
-            specieswise=specieswise,
-            dtype=dtype,
-            device=device,
-            preprocess_cpu_cores=preprocess_cpu_cores,
-            compact_families=_should_use_compact_retained_preprocess(
-                mode,
-                solver_kwargs,
-            ),
-        )
         theta_init = None
         if theta_base is not None:
             if mode == "specieswise":
@@ -1360,28 +1397,32 @@ class GeneReconModel(torch.nn.Module):
             device=torch.device("cpu"),
         )
         device = require_cuda_device(device, owner="GeneReconModel")
+        cuda_warmup = _start_cuda_context_warmup(device)
+        try:
+            family_names, tree_paths, leaf_maps = parse_alerax_family_file(
+                families_file,
+                start=start,
+                max_families=max_families,
+            )
+            ds = GeneDataset.from_retained_preprocess(
+                species_tree_path=species_tree,
+                gene_tree_paths=tree_paths,
+                genewise=genewise,
+                specieswise=specieswise,
+                dtype=dtype,
+                device=device,
+                preprocess_cpu_cores=preprocess_cpu_cores,
+                family_names=family_names,
+                leaf_species_maps=leaf_maps,
+                compact_families=_should_use_compact_retained_preprocess(
+                    mode,
+                    solver_kwargs,
+                ),
+            )
+        finally:
+            _finish_cuda_context_warmup(cuda_warmup)
         if theta_base is not None:
             theta_base = theta_base.to(device=device)
-        family_names, tree_paths, leaf_maps = parse_alerax_family_file(
-            families_file,
-            start=start,
-            max_families=max_families,
-        )
-        ds = GeneDataset.from_retained_preprocess(
-            species_tree_path=species_tree,
-            gene_tree_paths=tree_paths,
-            genewise=genewise,
-            specieswise=specieswise,
-            dtype=dtype,
-            device=device,
-            preprocess_cpu_cores=preprocess_cpu_cores,
-            family_names=family_names,
-            leaf_species_maps=leaf_maps,
-            compact_families=_should_use_compact_retained_preprocess(
-                mode,
-                solver_kwargs,
-            ),
-        )
         theta_init = None
         if theta_base is not None:
             if mode == "specieswise":
