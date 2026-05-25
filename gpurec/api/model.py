@@ -783,7 +783,10 @@ def _should_use_compact_retained_preprocess(
 
 def _warm_cuda_context(device: torch.device) -> None:
     with torch.cuda.device(device):
-        torch.empty((), device=device)
+        # Exercise cuBLAS and common elementwise kernels while CPU preprocessing runs.
+        probe = torch.ones((64, 64), device=device, dtype=torch.float32)
+        warmed = torch.log2(torch.exp2((probe @ probe) * 0.001) + 1.0)
+        warmed.sum()
         torch.cuda.synchronize(device)
 
 

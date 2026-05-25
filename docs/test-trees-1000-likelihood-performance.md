@@ -17,10 +17,11 @@ family tensors are materialized later only if diagnostic family input is
 requested.  For this generated tree shape, the retained `clade_first_fit` path
 uses the scheduler's forward nonleaf policy rather than the exhaustive
 fewest-wave policy; it keeps the measured max wave count here while avoiding
-extra native scheduling passes during construction.  CUDA context warmup is
-started while Rust preprocessing runs, so the small first CUDA setup cost is
-mostly hidden under CPU/native work.  During model construction, retained Rust
-layout generation is also started while CUDA species-helper tensors are built.
+extra native scheduling passes during construction.  CUDA warmup is started
+while Rust preprocessing runs and exercises cuBLAS plus common elementwise math,
+so more of the first E-solve setup is hidden under CPU/native work.  During
+model construction, retained Rust layout generation is also started while CUDA
+species-helper tensors are built.
 
 Cold end-to-end command:
 
@@ -45,9 +46,9 @@ Cold result:
 
 | Stage | Time |
 |---|---:|
-| model init / first resident batch | `1.0107047630299348s` |
-| first fixed4 likelihood pass plus lazy remaining batches | `2.1673732825147454s` |
-| total to first fixed4 likelihood | `3.1761530120274983s` |
+| model init / first resident batch | `1.0128701945068315s` |
+| first fixed4 likelihood pass plus lazy remaining batches | `2.147080860013375s` |
+| total to first fixed4 likelihood | `3.1598341505450662s` |
 
 Cold first-pass fidelity samples with the same construction path:
 
@@ -57,16 +58,18 @@ Cold first-pass fidelity samples with the same construction path:
 | 6 | `3.6668981159455143s` | `2157095.0` | `2.25` |
 | 8 | `4.169835773995146s` | `2157097.25` | `0.0` |
 
-Before overlapping retained Rust layout generation with CUDA species-helper
-setup, the CUDA-warmed retained clade-first path took about `3.19s` to the first
-fixed4 likelihood.  Before CUDA warmup overlap, the forward-scheduled retained
-clade-first path took about `3.24s`.  Before the forward scheduler policy, the
-compact retained-layout clade-first lazy path took about `3.46s`.  Before
-compact family summaries, it took about `3.86s`.  Before retaining the Rust
-chunked layouts, the same clade-first lazy path took `13.062108609999996s`, and
-the HOGENOM-style `depth_first_fit` path took `17.548588357982226s` in a manual
-timing split.  The construction path is therefore the main end-to-end win for
-this generated dataset.
+Before warming cuBLAS and the first elementwise CUDA math during preprocessing,
+the same retained-layout overlap path took about `3.176s` to the first fixed4
+likelihood.  Before overlapping retained Rust layout generation with CUDA
+species-helper setup, the CUDA-warmed retained clade-first path took about
+`3.19s`.  Before CUDA warmup overlap, the forward-scheduled retained clade-first
+path took about `3.24s`.  Before the forward scheduler policy, the compact
+retained-layout clade-first lazy path took about `3.46s`.  Before compact family
+summaries, it took about `3.86s`.  Before retaining the Rust chunked layouts,
+the same clade-first lazy path took `13.062108609999996s`, and the HOGENOM-style
+`depth_first_fit` path took `17.548588357982226s` in a manual timing split.  The
+construction path is therefore the main end-to-end win for this generated
+dataset.
 
 Steady-state command:
 
@@ -159,7 +162,9 @@ Differences from HOGENOM:
   construction without changing likelihood values.
 - HOGENOM's older end-to-end route paid CUDA setup before the heavy CPU/native
   work.  On this generated benchmark, starting CUDA warmup before retained Rust
-  preprocessing hides most of that setup in the construction phase.
+  preprocessing hides most of that setup in the construction phase.  Warming
+  cuBLAS and elementwise math is useful here because the first E solve is part
+  of the measured cold likelihood pass.
 - The generated benchmark also has independent CUDA species-helper setup and
   retained Rust layout generation during resident model construction; overlapping
   those saves a small additional amount.  This is less relevant to HOGENOM's
@@ -174,5 +179,5 @@ Differences from HOGENOM:
   `318000`, `320000`, `330000`, `350000`, `400000`, `500000`, and non-`8192`
   max-wave samples all hit much slower first-pass timings.  The
   `clade_first_fit`, `315000` clade-budget, `8192` max-wave policy keeps peak
-  allocated memory near `5.13 GiB` for likelihood-only while avoiding those
+  allocated memory near `5.15 GiB` for likelihood-only while avoiding those
   shape cliffs.
