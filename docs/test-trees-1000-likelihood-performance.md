@@ -109,7 +109,8 @@ therefore the main end-to-end wins for this generated dataset.
 Skipping no-op progress callback dispatch and precomputing the root-only waves
 used for final-Pibar skipping are small Python-side cleanups rather than large
 kernel wins.  Fixed4 steady-state seven-repetition samples measured
-`1.282079865981359s` and `1.2819753359653987s` medians with unchanged loss.
+`1.282079865981359s`, `1.2819753359653987s`, and
+`1.2804367360076867s` medians with unchanged loss.
 Cold first-likelihood samples remained noisy, so the cold route is still
 reported with the established `2.55s` total sample above.
 
@@ -385,6 +386,11 @@ Rejected follow-ups:
   loss-only root gather path.  Two fixed4 steady-state medians were
   `1.2822566300164908s` and `1.2869528399896808s`, so the existing root gather
   remains in place.
+- Precomputing a dense species ancestor table for branch-free parent walks was
+  also slower here.  The prototype passed the targeted uniform forward/specieswise
+  tests, but a seven-repetition fixed4 steady run regressed to
+  `1.4639405140187591s` median with the same `2156427.0`-bit loss, versus the
+  restored parent-chain path at `1.2804367360076867s` median.
 
 Differences from HOGENOM:
 
