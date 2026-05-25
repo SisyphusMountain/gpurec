@@ -204,6 +204,9 @@ Interpretation:
 - Starting at `4` Pi iterations is a good warm phase.  It is about `40%`
   cheaper than `8` for likelihood-only and about `27%` cheaper than `8` for
   loss+backward.
+- Do not start the default ladder at `2` on this dataset.  A steady-state
+  sample measured `0.7704234900302254s`, but its loss was only `2098963.0`
+  bits, about `58134.25` bits below the fixed8/fixed128 value.
 - Do not treat `4` as final fidelity on this dataset.  It is still `670` bits
   away from the fixed128 reference, in the optimistic direction.  Promote to at
   least `6` once a cheap phase stops making progress; `6` is within `2` bits of
@@ -350,6 +353,10 @@ Rejected follow-ups:
   kernel was worse on this shape.  A fixed4 steady-state sample measured
   `1.2893211269984022s` median after a `1.7043520050356165s` warmup, so the
   fused final-Pibar store remains enabled.
+- There are no additional whole-wave final-Pibar skips beyond the current
+  root-only waves.  A layout audit found that the current `21` skipped waves
+  cover exactly the same `65` rows as the set of waves whose rows are never
+  used as later DTS children; no extra whole-wave skip is available.
 - Forcing the forward parent-reduced DTS kernels to `num_warps=8` did not help
   this large-`S` generated shape.  The first warmup paid `31.28786089399364s`
   to compile the new Triton variants, and the post-compile fixed4 steady-state
