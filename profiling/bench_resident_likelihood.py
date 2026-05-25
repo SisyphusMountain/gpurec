@@ -85,6 +85,8 @@ def _build_parser() -> argparse.ArgumentParser:
         default="clade_first_fit",
     )
     parser.add_argument("--max-wave-size", type=_parse_optional_int, default=8192)
+    parser.add_argument("--max-root-wave-size", type=_parse_optional_int, default=None)
+    parser.add_argument("--max-dts-partial-rows", type=_parse_optional_int, default=None)
     parser.add_argument(
         "--materialize-batches",
         choices=("all", "none"),
@@ -279,6 +281,8 @@ def main(argv: list[str] | None = None) -> int:
         clade_budget=args.clade_budget,
         batch_packing=args.batch_packing,
         max_wave_size=args.max_wave_size,
+        max_root_wave_size=args.max_root_wave_size,
+        max_dts_partial_rows=args.max_dts_partial_rows,
         lazy_preprocess=True,
         prefetch_batches=args.prefetch_batches,
     )
@@ -310,6 +314,8 @@ def main(argv: list[str] | None = None) -> int:
                 "clade_budget": args.clade_budget,
                 "batch_packing": args.batch_packing,
                 "max_wave_size": args.max_wave_size,
+                "max_root_wave_size": args.max_root_wave_size,
+                "max_dts_partial_rows": args.max_dts_partial_rows,
             },
             sort_keys=True,
         ),

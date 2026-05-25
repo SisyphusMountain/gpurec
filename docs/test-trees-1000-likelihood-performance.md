@@ -54,6 +54,8 @@ env PYTHONDONTWRITEBYTECODE=1 GPUREC_MEMORY_POLICY_RESERVE_GIB=0 \
   --clade-budget 315000 \
   --batch-packing clade_first_fit \
   --max-wave-size 8192 \
+  --max-root-wave-size none \
+  --max-dts-partial-rows none \
   --materialize-batches none \
   --prefetch-batches all
 ```
@@ -118,6 +120,8 @@ env PYTHONDONTWRITEBYTECODE=1 GPUREC_MEMORY_POLICY_RESERVE_GIB=0 \
   --clade-budget 315000 \
   --batch-packing clade_first_fit \
   --max-wave-size 8192 \
+  --max-root-wave-size none \
+  --max-dts-partial-rows none \
   --materialize-batches all \
   --prefetch-batches all
 ```
@@ -170,6 +174,8 @@ env PYTHONDONTWRITEBYTECODE=1 GPUREC_MEMORY_POLICY_RESERVE_GIB=0 \
   --clade-budget 315000 \
   --batch-packing clade_first_fit \
   --max-wave-size 8192 \
+  --max-root-wave-size none \
+  --max-dts-partial-rows none \
   --materialize-batches all \
   --prefetch-batches all
 ```
@@ -293,6 +299,13 @@ Rejected follow-ups:
   comparison of `250` and `500` kept `500` as the documented route: the `250`
   totals were about `2.565s`, `2.523s`, and `2.601s`, while `500` was about
   `2.540s`, `2.553s`, and `2.582s`.
+- Rechecking batch packing on the current checkout kept `clade_first_fit`.
+  The `sequential` and `depth_first_fit` first samples paid fresh compile/path
+  costs (`21.8037438269821s` and `17.070824889990035s` first likelihoods),
+  and repeats were still worse end-to-end.  A depth-first sample with a
+  temporarily forced forward nonleaf scheduler reduced model init to
+  `1.7240403910400346s` and measured likelihood to `1.567154006974306s`, but
+  its total remained about `3.29s`, far slower than clade-first.
 - `max_dts_partial_rows` did not produce a stable end-to-end win.  Single
   samples at `25000`, `50000`, `75000`, and `100000` sometimes moved the
   first likelihood a few milliseconds, with the best single total
