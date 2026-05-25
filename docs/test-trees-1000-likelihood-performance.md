@@ -289,6 +289,11 @@ Rejected follow-ups:
   likelihood samples were `14.915235649968963s` at `4096`,
   `11.24351201299578s` at `6144`, `1.5818899900186807s` at `8192`,
   `32.38246097502997s` at `12288`, and `20.292580714041833s` at `16384`.
+- `max_root_wave_size` likewise stayed uncapped.  Cold fixed4 first-likelihood
+  samples were `1.5791340339928865s` uncapped, `1.8603418220300227s` at `1`,
+  `2.3634141320362687s` at `2`, `1.8267846549861133s` at `4`,
+  `1.5795229229843244s` at `8`, `1.579538435966242s` at `16`, and
+  `1.5842193069984205s` at `32`.
 - Thread-count pinning is host- and shape-sensitive.  On this 32-core host, an
   isolated generated-dataset retained preprocess/layout timing was best at `16`
   threads, about `0.91s` total, while `12`, `20`, `24`, `32`, and the default
