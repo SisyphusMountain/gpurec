@@ -18,12 +18,13 @@ requested.  For this generated tree shape, the retained `clade_first_fit` path
 uses the scheduler's forward nonleaf policy rather than the exhaustive
 fewest-wave policy; it keeps the measured max wave count here while avoiding
 extra native scheduling passes during construction.  The first Pi self-loop
-kernel now synthesizes the all-`-inf`/leaf initial state directly, so resident
-forward no longer fills the full `Pi` matrix before every batch.  CUDA warmup is
-started while Rust preprocessing runs and exercises cuBLAS plus common
-elementwise math, so more of the first E-solve setup is hidden under CPU/native
-work.  During model construction, retained Rust layout generation is also
-started while CUDA species-helper tensors are built.
+kernel now synthesizes the all-`-inf`/leaf initial state directly, and non-leaf
+waves without a leaf term copy the already-reduced DTS contribution instead of
+launching the full first wave-step.  CUDA warmup is started while Rust
+preprocessing runs and exercises cuBLAS plus common elementwise math, so more of
+the first E-solve setup is hidden under CPU/native work.  During model
+construction, retained Rust layout generation is also started while CUDA
+species-helper tensors are built.
 
 Cold end-to-end command:
 
@@ -48,30 +49,32 @@ Cold result:
 
 | Stage | Time |
 |---|---:|
-| model init / first resident batch | `1.0094792360032443s` |
-| first fixed4 likelihood pass plus lazy remaining batches | `2.030625150015112s` |
-| total to first fixed4 likelihood | `3.0446397330379114s` |
+| model init / first resident batch | `1.0133269735088106s` |
+| first fixed4 likelihood pass plus lazy remaining batches | `1.9834722115192562s` |
+| total to first fixed4 likelihood | `2.9935171705146786s` |
 
 Cold first-pass fidelity samples with the same construction path:
 
 | Pi/E/Neumann budget | total to first likelihood | loss bits | delta vs fixed128 |
 |---:|---:|---:|---:|
-| 4 | `3.0446397330379114s` | `2156427.0` | `670.25` |
-| 6 | `3.53992178698536s` | `2157095.0` | `2.25` |
-| 8 | `4.033265120990109s` | `2157097.25` | `0.0` |
+| 4 | `2.9935171705146786s` | `2156427.0` | `670.25` |
+| 6 | `3.4846826859866268s` | `2157095.0` | `2.25` |
+| 8 | `3.9747316939756274s` | `2157097.25` | `0.0` |
 
-Before deriving the initial Pi state inside the wave kernel, the same retained
-layout and CUDA math warmup path took about `3.160s` to the first fixed4
-likelihood.  Before warming cuBLAS and the first elementwise CUDA math during
-preprocessing, the retained-layout overlap path took about `3.176s`.  Before
-overlapping retained Rust layout generation with CUDA species-helper setup, the
-CUDA-warmed retained clade-first path took about `3.19s`.  Before CUDA warmup
-overlap, the forward-scheduled retained clade-first path took about `3.24s`.
-Before the forward scheduler policy, the compact retained-layout clade-first
-lazy path took about `3.46s`.  Before compact family summaries, it took about
-`3.86s`.  Before retaining the Rust chunked layouts, the same clade-first lazy
-path took `13.062108609999996s`, and the HOGENOM-style `depth_first_fit` path
-took `17.548588357982226s` in a manual timing split.  The construction path and
+Before copying the first non-leaf DTS state directly, deriving the initial Pi
+state inside the wave kernel took about `3.045s` to the first fixed4
+likelihood.  Before deriving that initial state inside the wave kernel, the
+same retained layout and CUDA math warmup path took about `3.160s`.  Before
+warming cuBLAS and the first elementwise CUDA math during preprocessing, the
+retained-layout overlap path took about `3.176s`.  Before overlapping retained
+Rust layout generation with CUDA species-helper setup, the CUDA-warmed retained
+clade-first path took about `3.19s`.  Before CUDA warmup overlap, the
+forward-scheduled retained clade-first path took about `3.24s`.  Before the
+forward scheduler policy, the compact retained-layout clade-first lazy path took
+about `3.46s`.  Before compact family summaries, it took about `3.86s`.  Before
+retaining the Rust chunked layouts, the same clade-first lazy path took
+`13.062108609999996s`, and the HOGENOM-style `depth_first_fit` path took
+`17.548588357982226s` in a manual timing split.  The construction path and
 per-batch Pi initialization are therefore the main end-to-end wins for this
 generated dataset.
 
@@ -90,18 +93,19 @@ env PYTHONDONTWRITEBYTECODE=1 GPUREC_MEMORY_POLICY_RESERVE_GIB=0 \
   --clade-budget 315000 \
   --batch-packing clade_first_fit \
   --max-wave-size 8192 \
-  --materialize-batches all
+  --materialize-batches all \
+  --prefetch-batches all
 ```
 
 | Pi/E/Neumann budget | loss-only time | loss bits | delta vs fixed128 |
 |---:|---:|---:|---:|
-| 4 | `1.4987762719974853s` | `2156427.0` | `670.25` |
-| 6 | `2.0291887830244377s` | `2157095.0` | `2.25` |
-| 8 | `2.5632447139942087s` | `2157097.25` | `0.0` |
+| 4 | `1.4310235269949771s` | `2156427.0` | `670.25` |
+| 6 | `1.9615468069678172s` | `2157095.0` | `2.25` |
+| 8 | `2.4973996769986115s` | `2157097.25` | `0.0` |
 | 128 | `35.236629224033095s` | `2157097.25` | `0.0` |
 
 With `--materialize-batches all`, the clade-first resident build split was
-`1.0307386600179598s` for model init plus `0.0668996159802191s` for full
+`1.0148627610178664s` for model init plus `0.07970164204016328s` for full
 materialization in the fixed4 steady-state run.  The `4/6/8` rows above are
 three-repetition medians after one warmup; the `128` row is a single validation
 sample.
@@ -121,16 +125,17 @@ env PYTHONDONTWRITEBYTECODE=1 GPUREC_MEMORY_POLICY_RESERVE_GIB=0 \
   --clade-budget 315000 \
   --batch-packing clade_first_fit \
   --max-wave-size 8192 \
-  --materialize-batches all
+  --materialize-batches all \
+  --prefetch-batches all
 ```
 
 | Pi/E/Neumann budget | loss+backward median | loss bits | grad inf |
 |---:|---:|---:|---:|
-| 4 | `6.077169136959128s` | `2156427.0` | `311.95965576171875` |
-| 6 | `7.372949571989011s` | `2157095.0` | `312.92724609375` |
-| 8 | `8.356295902049169s` | `2157097.25` | `312.9301452636719` |
+| 4 | `6.039807219989598s` | `2156427.0` | `311.95965576171875` |
+| 6 | `7.296662562992424s` | `2157095.0` | `312.92724609375` |
+| 8 | `8.30261915596202s` | `2157097.25` | `312.93011474609375` |
 
-The first clade-first loss+backward warmup in this run took `8.028820995008573s`
+The first clade-first loss+backward warmup in this run took `7.967632035957649s`
 for fixed4.  The table above is steady-state after that warmup.
 
 Interpretation:
@@ -170,8 +175,9 @@ Differences from HOGENOM:
 
 - HOGENOM's successful counts-free specieswise route used a `8 -> 16 -> 32`
   optimizer budget ladder with a `128` validation check.  On `test_trees_1000`,
-  the first useful fidelity point is lower: `4` is cheap enough to use as the
-  startup phase, then `6` is already nearly at the high-budget likelihood.
+  the first useful fidelity point is lower: start the exploratory phase at `4`
+  Pi iterations rather than going directly to `8`, then promote once the cheap
+  phase stalls.  `6` is already nearly at the high-budget likelihood here.
 - HOGENOM worked best with `depth_first_fit`.  On `test_trees_1000`, depth-first
   originally gave similar steady likelihood timing but paid an extra Python
   construction prepass.  Retaining the native Rust layouts removes that Python
@@ -200,11 +206,13 @@ Differences from HOGENOM:
   dataset splits into `21` batches, so reusing a single global/specieswise
   resident E solve across no-grad batches removes repeated E work and is worth
   about two percent on likelihood-only timing.
-- This dataset also pays the initial `Pi` fill once per resident batch.  Moving
-  that initial state into the first wave-step kernel saves about `0.12s` on the
-  fixed4 cold likelihood path and about `0.12s` on steady likelihood.  The same
-  optimization should help HOGENOM too, but its accepted end-to-end route has
-  fewer resident batches and is dominated more by optimizer/gradient work.
+- This dataset also pays initial Pi setup once per resident batch.  Deriving the
+  initial state in the wave kernel and then copying the first non-leaf DTS state
+  directly saves about `0.17s` versus the CUDA-math-warmed retained path
+  (`3.160s` to `2.994s`), including about `0.05s` beyond the no-fill initial
+  Pi path.  The same optimization should help HOGENOM too, but its accepted
+  end-to-end route has fewer resident batches and is dominated more by
+  optimizer/gradient work.
 - Larger clade budgets and larger wave caps hurt the first likelihood here.
   `250000`, `280000`, `300000`, `310000`, `312000`, `314000`, `316000`,
   `318000`, `320000`, `330000`, `350000`, `400000`, `500000`, and non-`8192`

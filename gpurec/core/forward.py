@@ -380,6 +380,7 @@ def Pi_wave_forward(
             iteration_count = local_iter + 1
             pi_in = Pi if (local_iter % 2 == 0) else Pibar
             pi_out = Pibar if (local_iter % 2 == 0) else Pi
+            initial_nonleaf_fast_path = local_iter == 0 and not has_leaf_term
             needs_final_pibar = (
                 local_iter == fixed_iters - 1
                 and not _can_skip_final_pibar(ws, we, W)
@@ -389,22 +390,29 @@ def Pi_wave_forward(
                 max_diff_scratch is not None
                 and iteration_count % convergence_check_interval == 0
             )
-            wave_step_uniform_fused_into(
-                pi_in, pi_out, Pibar, ws, W, S,
-                mt_w, DL_w, Ebar_w, E_w, SL1_w, SL2_w,
-                sp_child1, sp_child2, sp_parent, max_ancestor_depth,
-                leaf_wt, dts_r,
-                leaf_species_idx=leaf_species_index,
-                leaf_logp=uniform_leaf_logp,
-                family_idx=family_idx if batched else None,
-                family_indexed_consts=batched,
-                store_final_pibar=store_final_pibar,
-                final_pibar_row_max=uniform_pibar_row_max if store_final_pibar else None,
-                compute_diff=check_convergence,
-                max_diff_out=max_diff_scratch[:W] if check_convergence else None,
-                has_leaf_term=has_leaf_term,
-                initial_state=local_iter == 0,
-            )
+            if initial_nonleaf_fast_path:
+                pi_out_rows = pi_out.narrow(0, int(ws), int(W))
+                if dts_r is None:
+                    pi_out_rows.fill_(torch.finfo(dtype).min)
+                else:
+                    pi_out_rows.copy_(dts_r)
+            else:
+                wave_step_uniform_fused_into(
+                    pi_in, pi_out, Pibar, ws, W, S,
+                    mt_w, DL_w, Ebar_w, E_w, SL1_w, SL2_w,
+                    sp_child1, sp_child2, sp_parent, max_ancestor_depth,
+                    leaf_wt, dts_r,
+                    leaf_species_idx=leaf_species_index,
+                    leaf_logp=uniform_leaf_logp,
+                    family_idx=family_idx if batched else None,
+                    family_indexed_consts=batched,
+                    store_final_pibar=store_final_pibar,
+                    final_pibar_row_max=uniform_pibar_row_max if store_final_pibar else None,
+                    compute_diff=check_convergence,
+                    max_diff_out=max_diff_scratch[:W] if check_convergence else None,
+                    has_leaf_term=has_leaf_term,
+                    initial_state=local_iter == 0,
+                )
             if root_logsumexp_trace is not None:
                 root_entry = roots_by_wave[wave_index]
                 if root_entry is not None:
