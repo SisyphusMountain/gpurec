@@ -113,6 +113,11 @@ kernel wins.  Fixed4 steady-state seven-repetition samples measured
 `1.2804367360076867s` medians with unchanged loss.
 Cold first-likelihood samples remained noisy, so the cold route is still
 reported with the established `2.55s` total sample above.
+Two fresh paired samples kept lazy construction and eager materialization within
+noise: lazy totals were about `2.580s` and `2.538s`, while materialize-all totals
+were about `2.559s` and `2.592s`.  Materialize-all lowers the first likelihood
+pass itself by about `50ms`, but the up-front materialization cost cancels that
+on the end-to-end total.
 
 Steady-state command:
 
@@ -391,6 +396,15 @@ Rejected follow-ups:
   tests, but a seven-repetition fixed4 steady run regressed to
   `1.4639405140187591s` median with the same `2156427.0`-bit loss, versus the
   restored parent-chain path at `1.2804367360076867s` median.
+- Applying `torch.inference_mode()` only around the Pi/root-loss portion that
+  reuses a pre-solved E was neutral.  The targeted uniform forward/specieswise
+  tests passed, but fixed4 steady-state timing was `1.2804541109944694s`
+  median, indistinguishable from the current path, so the no-grad wrapper stays
+  in plain `torch.no_grad()`.
+- Disabling lazy prefetch/resident warmup while still materializing all batches
+  before the first likelihood was slower.  The build took
+  `1.0070954780094326s`, but the first fixed4 pass rose to
+  `1.8282219489919953s`, for about `2.835s` end-to-end.
 
 Differences from HOGENOM:
 
