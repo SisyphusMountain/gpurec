@@ -454,7 +454,7 @@ of dataset path overrides.
 | Hydra HOGENOM run | `python scripts/optimize_hogenom_ccp_hydra.py` | Uses `configs/hogenom_ccp_wandb.yaml`, a checkout-local full experiment config, and Hydra override syntax; see `configs/README.md` for config ownership. |
 | Checkpoint rate export | `python scripts/export_hogenom_rates_from_checkpoint.py` | Exports D/T/L rates from a HOGENOM optimization checkpoint. |
 | One-pass profiling | `python scripts/profile_hogenom_ccp_pass.py` | Profiles full, streamed, active-batch, or largest-batch forward/backward passes on the local HOGENOM layout. |
-| Specieswise multifidelity Adagrad | `python scripts/benchmark_hogenom_specieswise_multifidelity_adagrad.py` | Counts-free route from uniform 0.05 rates: fixed8 Adagrad warmup, fixed16 bridge, fixed32 repair, and fixed128 validation. |
+| Specieswise multifidelity Adagrad | `python scripts/benchmark_hogenom_specieswise_multifidelity_adagrad.py` | Counts-free route from uniform 0.05 rates: fixed8 Adagrad warmup, fixed16 bridge, fixed32 repair, and fixed128 validation; `--schedule-mode adaptive` chooses phase lengths from higher-budget validation stalls. |
 | Historical notebooks | `notebooks/` | Checkout-local HOGENOM analyses; see `notebooks/README.md` before using or migrating them. |
 
 Optional script dependencies are intentionally separate from the core package

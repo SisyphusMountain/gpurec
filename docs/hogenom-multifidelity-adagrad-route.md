@@ -67,3 +67,36 @@ finishes about 36 seconds faster than the discovery run.
   the fixed8 accumulator into fixed32 slowed the repair trajectory.
 - A direct fixed32 Adagrad run from uniform 0.05 was too slow to enter the basin
   under the five-minute budget.
+
+## Adaptive Schedule
+
+The script also supports an adaptive mode that avoids hard-coding per-phase
+step counts:
+
+```bash
+python scripts/benchmark_hogenom_specieswise_multifidelity_adagrad.py \
+  --schedule-mode adaptive \
+  --out-dir /tmp/gpurec_hogenom_adaptive_multifidelity_adagrad_default_20260525
+```
+
+Adaptive mode validates fixed8 and fixed16 phases at fixed32, promotes when the
+validation improvement rate stalls, restores the best validated theta before
+promotion, and runs the fixed32 phase until the wall-time guard leaves room for
+final fixed128 validation.
+
+Default adaptive HOGENOM result:
+
+| Metric | Value |
+|---|---:|
+| wall time | `297.7560245550121s` |
+| fixed128 NLL | `526777.3125` bits |
+| fixed8 chosen steps | `70` |
+| fixed16 chosen steps | `50` |
+| fixed32 chosen steps | `22` |
+| fixed8 stop reason | `validation_stall` |
+| fixed16 stop reason | `validation_stall` |
+| fixed32 stop reason | `wall_budget` |
+
+The adaptive result is slower than the hand-scheduled replay but better in
+likelihood, and it chose phase lengths from validation behavior rather than
+from manually supplied phase step counts.
