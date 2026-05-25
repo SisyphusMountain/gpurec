@@ -246,10 +246,11 @@ class ReconciliationState:
 class _ResidentBatchSpec:
     index: int
     family_indices: list[int]
-    layout_inputs: FamilyWaveInputs
+    layout_inputs: FamilyWaveInputs | None
     waves: list[list[int]]
     phases: list[int]
     metadata: BatchMetadata
+    wave_layout: Mapping[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -603,6 +604,108 @@ def _build_batch_specs(
     return specs
 
 
+def _dtype_name_for_rust(dtype: torch.dtype) -> str:
+    if dtype == torch.float32:
+        return "float32"
+    if dtype == torch.float64:
+        return "float64"
+    raise RuntimeError(f"unsupported resident Rust layout dtype {dtype}")
+
+
+def _move_wave_layout_to_device(
+    value: Any,
+    *,
+    device: torch.device,
+    dtype: torch.dtype,
+) -> Any:
+    if torch.is_tensor(value):
+        if value.dtype.is_floating_point:
+            return value.to(device=device, dtype=dtype).contiguous()
+        return value.to(device=device).contiguous()
+    if isinstance(value, list):
+        return [
+            _move_wave_layout_to_device(item, device=device, dtype=dtype)
+            for item in value
+        ]
+    if isinstance(value, Mapping):
+        return {
+            key: _move_wave_layout_to_device(item, device=device, dtype=dtype)
+            for key, item in value.items()
+        }
+    return value
+
+
+def _build_batch_specs_from_retained_rust(
+    dataset: GeneDataset,
+    *,
+    mode: str,
+    family_chunk_size: int,
+    clade_budget: int | None,
+    batch_packing: str,
+    max_wave_size: int | None,
+    max_root_wave_size: int | None,
+    max_dts_partial_rows: int | None,
+    small_family_max_leaves: int,
+) -> list[_ResidentBatchSpec] | None:
+    rust_preprocessed = getattr(dataset, "_rust_preprocessed", None)
+    if rust_preprocessed is None or mode == "genewise" or small_family_max_leaves:
+        return None
+    build_chunked_layouts = getattr(rust_preprocessed, "build_chunked_layouts", None)
+    if not callable(build_chunked_layouts):
+        return None
+
+    preprocess_cpu_cores = getattr(dataset, "_preprocess_cpu_cores", None)
+    payloads = build_chunked_layouts(
+        family_chunk_size=family_chunk_size,
+        clade_budget=clade_budget,
+        batch_packing=batch_packing,
+        max_wave_size=max_wave_size,
+        max_root_wave_size=max_root_wave_size,
+        max_dts_partial_rows=max_dts_partial_rows,
+        dtype=_dtype_name_for_rust(dataset.dtype),
+        num_threads=0 if preprocess_cpu_cores is None else int(preprocess_cpu_cores),
+    )
+    specs: list[_ResidentBatchSpec] = []
+    for batch_index, payload in enumerate(payloads):
+        family_indices = [int(index) for index in payload["indices"]]
+        wave_layout = dict(payload["wave_layout"])
+        root_clade_rows: list[int] = []
+        clade_offset = 0
+        for family_index in family_indices:
+            family = dataset.families[family_index]
+            root_clade_rows.append(int(family["root_clade_id"]) + clade_offset)
+            clade_offset += int(family["C"])
+        metadata = BatchMetadata(
+            batch_index=batch_index,
+            family_indices=family_indices,
+            family_names=[dataset.family_names[i] for i in family_indices],
+            gene_tree_paths=[list(dataset.gene_tree_paths[i]) for i in family_indices],
+            family_count=len(family_indices),
+            clade_count=int(payload["clades"]),
+            split_count=int(payload["splits"]),
+            wave_count=int(payload["waves"]),
+            max_wave_size=int(payload["max_wave"]),
+            root_clade_rows=root_clade_rows,
+            parameter_mapping=_parameter_mapping(
+                mode=mode,
+                dataset=dataset,
+                family_indices=family_indices,
+            ),
+        )
+        specs.append(
+            _ResidentBatchSpec(
+                index=batch_index,
+                family_indices=family_indices,
+                layout_inputs=None,
+                waves=[],
+                phases=[],
+                metadata=metadata,
+                wave_layout=wave_layout,
+            )
+        )
+    return specs
+
+
 def _build_static_state(
     dataset: GeneDataset,
     *,
@@ -708,14 +811,23 @@ def _build_batch_static_state(
 ) -> ReconStaticState:
     device = dataset.device
     dtype = dataset.dtype
-    family_layout = build_family_wave_layout(
-        spec.layout_inputs,
-        device=device,
-        dtype=dtype,
-        waves=spec.waves,
-        phases=spec.phases,
-    )
-    wave_layout = family_layout.wave_layout
+    if spec.wave_layout is None:
+        if spec.layout_inputs is None:
+            raise RuntimeError("resident batch spec is missing layout inputs")
+        family_layout = build_family_wave_layout(
+            spec.layout_inputs,
+            device=device,
+            dtype=dtype,
+            waves=spec.waves,
+            phases=spec.phases,
+        )
+        wave_layout = family_layout.wave_layout
+    else:
+        wave_layout = _move_wave_layout_to_device(
+            spec.wave_layout,
+            device=device,
+            dtype=dtype,
+        )
     return ReconStaticState(
         device=device,
         dtype=dtype,
@@ -1019,12 +1131,7 @@ class GeneReconModel(torch.nn.Module):
                 device=dataset.device,
                 dtype=dataset.dtype,
             )
-            self._family_schedule_stats = _build_family_schedule_stats(
-                dataset,
-                batch_packing=self.batch_packing,
-                small_family_max_leaves=self.small_family_max_leaves,
-            )
-            self._batch_specs = _build_batch_specs(
+            rust_specs = _build_batch_specs_from_retained_rust(
                 dataset,
                 mode=mode,
                 family_chunk_size=self.family_chunk_size,
@@ -1034,8 +1141,27 @@ class GeneReconModel(torch.nn.Module):
                 max_root_wave_size=max_root_wave_size,
                 max_dts_partial_rows=max_dts_partial_rows,
                 small_family_max_leaves=self.small_family_max_leaves,
-                schedule_stats=self._family_schedule_stats,
             )
+            if rust_specs is None:
+                self._family_schedule_stats = _build_family_schedule_stats(
+                    dataset,
+                    batch_packing=self.batch_packing,
+                    small_family_max_leaves=self.small_family_max_leaves,
+                )
+                self._batch_specs = _build_batch_specs(
+                    dataset,
+                    mode=mode,
+                    family_chunk_size=self.family_chunk_size,
+                    clade_budget=self.clade_budget,
+                    batch_packing=self.batch_packing,
+                    max_wave_size=max_wave_size,
+                    max_root_wave_size=max_root_wave_size,
+                    max_dts_partial_rows=max_dts_partial_rows,
+                    small_family_max_leaves=self.small_family_max_leaves,
+                    schedule_stats=self._family_schedule_stats,
+                )
+            else:
+                self._batch_specs = rust_specs
             self._batch_statics = [None for _ in self._batch_specs]
             self.batch_metadata = [spec.metadata for spec in self._batch_specs]
             if not self._batch_specs:
@@ -1142,7 +1268,7 @@ class GeneReconModel(torch.nn.Module):
         device = require_cuda_device(device, owner="GeneReconModel")
         if theta_base is not None:
             theta_base = theta_base.to(device=device)
-        ds = GeneDataset(
+        ds = GeneDataset.from_retained_preprocess(
             species_tree_path=species_tree,
             gene_tree_paths=gene_tree_paths,
             genewise=genewise,
@@ -1212,7 +1338,7 @@ class GeneReconModel(torch.nn.Module):
             start=start,
             max_families=max_families,
         )
-        ds = GeneDataset(
+        ds = GeneDataset.from_retained_preprocess(
             species_tree_path=species_tree,
             gene_tree_paths=tree_paths,
             genewise=genewise,

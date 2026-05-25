@@ -331,8 +331,89 @@ class GeneDataset:
         self.gene_tree_paths = family_tree_paths
         self.leaf_species_maps = [dict(m) for m in leaf_species_maps]
         self.species_tree_path = species_tree_path
+        self._rust_preprocessed = None
+        self._preprocess_cpu_cores = preprocess_cpu_cores
 
         self.num_families = len(families)
+
+    @classmethod
+    def from_retained_preprocess(
+        cls,
+        species_tree_path,
+        gene_tree_paths,
+        genewise,
+        specieswise,
+        dtype=torch.float32,
+        device=None,
+        preprocess_cpu_cores: int | None = None,
+        family_names: Sequence[str] | None = None,
+        leaf_species_maps: Sequence[dict[str, str]] | None = None,
+    ) -> "GeneDataset":
+        """Build a dataset while retaining native Rust preprocessing output."""
+        preprocess_cpu_cores = _normalize_preprocess_cpu_cores(preprocess_cpu_cores)
+        family_tree_paths = normalize_family_tree_paths(gene_tree_paths)
+        if family_names is None:
+            family_names = [f"family_{i:06d}" for i in range(len(family_tree_paths))]
+        else:
+            family_names = [str(name) for name in family_names]
+        if len(family_names) != len(family_tree_paths):
+            raise ValueError("family_names must match gene_tree_paths length")
+        seen_family_names: set[str] = set()
+        for name in family_names:
+            if name in seen_family_names:
+                raise ValueError(f"duplicate family name {name!r} in family_names")
+            seen_family_names.add(name)
+        if leaf_species_maps is None:
+            leaf_species_maps = [{} for _ in family_tree_paths]
+        else:
+            leaf_species_maps = [dict(m) for m in leaf_species_maps]
+        if len(leaf_species_maps) != len(family_tree_paths):
+            raise ValueError("leaf_species_maps must match gene_tree_paths length")
+
+        ext = _load_preprocess_extension()
+        preprocess_dataset = getattr(ext, "preprocess_dataset", None)
+        if not callable(preprocess_dataset):
+            return cls(
+                species_tree_path=species_tree_path,
+                gene_tree_paths=family_tree_paths,
+                genewise=genewise,
+                specieswise=specieswise,
+                dtype=dtype,
+                device=device,
+                preprocess_cpu_cores=preprocess_cpu_cores,
+                family_names=family_names,
+                leaf_species_maps=leaf_species_maps,
+            )
+
+        families_input = {
+            name: paths
+            for name, paths in zip(family_names, family_tree_paths)
+        }
+        leaf_species_input = {
+            name: mapping
+            for name, mapping in zip(family_names, leaf_species_maps)
+            if mapping
+        }
+        rust_preprocessed = preprocess_dataset(
+            str(species_tree_path),
+            families_input,
+            leaf_species_maps=leaf_species_input,
+            include_species_matrices=False,
+            num_threads=0 if preprocess_cpu_cores is None else preprocess_cpu_cores,
+        )
+        return cls._from_preprocessed_raw(
+            raw=rust_preprocessed.to_torch(),
+            species_tree_path=species_tree_path,
+            gene_tree_paths=family_tree_paths,
+            genewise=genewise,
+            specieswise=specieswise,
+            dtype=dtype,
+            device=device,
+            family_names=family_names,
+            leaf_species_maps=leaf_species_maps,
+            rust_preprocessed=rust_preprocessed,
+            preprocess_cpu_cores=preprocess_cpu_cores,
+        )
 
     @classmethod
     def _preprocess_without_cache(
@@ -469,6 +550,8 @@ class GeneDataset:
         device=None,
         family_names: Sequence[str] | None = None,
         leaf_species_maps: Sequence[dict[str, str]] | None = None,
+        rust_preprocessed: Any | None = None,
+        preprocess_cpu_cores: int | None = None,
     ) -> "GeneDataset":
         if device is None:
             device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -522,6 +605,8 @@ class GeneDataset:
         self.gene_tree_paths = family_tree_paths
         self.leaf_species_maps = [dict(m) for m in leaf_species_maps]
         self.species_tree_path = species_tree_path
+        self._rust_preprocessed = rust_preprocessed
+        self._preprocess_cpu_cores = preprocess_cpu_cores
         self.num_families = len(self.families)
         return self
     

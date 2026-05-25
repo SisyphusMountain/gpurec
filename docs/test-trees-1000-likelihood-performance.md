@@ -8,9 +8,10 @@ tree dataset has a different shape from HOGENOM: `1999` species, `1000`
 families, about `6.4M` clades, and `21` resident batches at a `315000` clade
 budget.
 
-For end-to-end timing on this dataset, `clade_first_fit` is better than the
-HOGENOM-style `depth_first_fit` layout.  It preserves the steady likelihood
-time while avoiding the depth-first prepass over per-family scheduler summaries.
+For end-to-end timing on this dataset, the fastest route found so far is the
+retained Rust preprocessing path with `clade_first_fit`.  It reuses the native
+chunked wave-layout builder directly, avoiding the older Python scheduler
+summary and JSON/tensor roundtrips during resident batch construction.
 
 Cold end-to-end command:
 
@@ -34,13 +35,14 @@ Cold result:
 
 | Stage | Time |
 |---|---:|
-| model init / first resident batch | `5.597596463048831s` |
-| first likelihood pass plus lazy remaining batches | `7.464512146951165s` |
-| total to first fixed4 likelihood | `13.062108609999996s` |
+| model init / first resident batch | `1.7052436550147831s` |
+| first likelihood pass plus lazy remaining batches | `2.154687149974052s` |
+| total to first fixed4 likelihood | `3.859930804988835s` |
 
-The same lazy end-to-end path with `depth_first_fit` took `17.548588357982226s`
-in a manual timing split (`9.950179827981628s` build, `7.598408530000597s`
-first likelihood), so `clade_first_fit` saves about `4.9s` for this generated
+Before retaining the Rust chunked layouts, the same clade-first lazy path took
+`13.062108609999996s` to the first fixed4 likelihood, and the HOGENOM-style
+`depth_first_fit` path took `17.548588357982226s` in a manual timing split.  The
+new construction path is therefore the main end-to-end win for this generated
 dataset.
 
 Steady-state command:
@@ -50,7 +52,7 @@ env PYTHONDONTWRITEBYTECODE=1 GPUREC_MEMORY_POLICY_RESERVE_GIB=0 \
   python profiling/bench_resident_likelihood.py \
   --dataset tests/data/test_trees_1000 \
   --mode specieswise \
-  --fixed-iters 4,6,8,32,128 \
+  --fixed-iters 4,6,8,128 \
   --measure loss-only \
   --warmups 1 \
   --reps 3 \
@@ -63,13 +65,13 @@ env PYTHONDONTWRITEBYTECODE=1 GPUREC_MEMORY_POLICY_RESERVE_GIB=0 \
 
 | Pi/E/Neumann budget | loss-only median | loss bits | delta vs fixed128 |
 |---:|---:|---:|---:|
-| 4 | `1.6204433359671384s` | `2156427.0` | `670.25` |
-| 6 | `2.1482912749634124s` | `2157095.0` | `2.25` |
-| 8 | `2.687740627967287s` | `2157097.25` | `0.0` |
-| 128 | `34.98644854099257s` | `2157097.25` | `0.0` |
+| 4 | `1.6163441769895144s` | `2156427.0` | `670.25` |
+| 6 | `2.145508774963673s` | `2157095.0` | `2.25` |
+| 8 | `2.6810360589879565s` | `2157097.25` | `0.0` |
+| 128 | `35.36583194194827s` | `2157097.25` | `0.0` |
 
 With `--materialize-batches all`, the clade-first resident build split was
-`5.495721116021741s` for model init plus `5.5996280499966815s` for full
+`1.7336249140207656s` for model init plus `0.06800101703265682s` for full
 materialization in the fixed128 reference run.
 
 Gradient timing for the same resident layout:
@@ -119,9 +121,10 @@ Differences from HOGENOM:
   the first useful fidelity point is lower: `4` is cheap enough to use as the
   startup phase, then `6` is already nearly at the high-budget likelihood.
 - HOGENOM worked best with `depth_first_fit`.  On `test_trees_1000`, depth-first
-  gives similar steady likelihood timing but pays an extra construction prepass;
-  `clade_first_fit` is therefore the better end-to-end default for the generated
-  tree benchmark.
+  originally gave similar steady likelihood timing but paid an extra Python
+  construction prepass.  Retaining the native Rust layouts removes that Python
+  prepass; with the current timings, `clade_first_fit` remains the best measured
+  default for the generated tree benchmark.
 - HOGENOM resident batching had fewer batches under the accepted policy.  This
   dataset splits into `21` batches, so reusing a single global/specieswise
   resident E solve across no-grad batches removes repeated E work and is worth
