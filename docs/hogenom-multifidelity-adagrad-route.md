@@ -79,12 +79,12 @@ python scripts/benchmark_hogenom_specieswise_multifidelity_adagrad.py \
   --out-dir /tmp/gpurec_hogenom_adaptive_multifidelity_adagrad_default_20260525
 ```
 
-Adaptive mode validates fixed8 and fixed16 phases at fixed32, promotes when the
-validation improvement rate stalls, restores the best validated theta before
-promotion, and runs the fixed32 phase until the wall-time guard leaves room for
-final fixed128 validation.
+Adaptive mode now prepends a fixed4 phase before fixed8.  The fixed4 phase is
+validated at fixed16, fixed8 and fixed16 are validated at fixed32, each
+promotion restores the best validated theta, and the fixed32 phase runs until
+the wall-time guard leaves room for final fixed128 validation.
 
-Default adaptive HOGENOM result:
+For comparison, the previous fixed8-start adaptive result was:
 
 | Metric | Value |
 |---|---:|
@@ -97,6 +97,41 @@ Default adaptive HOGENOM result:
 | fixed16 stop reason | `validation_stall` |
 | fixed32 stop reason | `wall_budget` |
 
-The adaptive result is slower than the hand-scheduled replay but better in
-likelihood, and it chose phase lengths from validation behavior rather than
-from manually supplied phase step counts.
+That fixed8-start adaptive result was slower than the hand-scheduled replay but
+better in likelihood, and it chose phase lengths from validation behavior rather
+than from manually supplied phase step counts.
+
+With the current defaults, the fixed4-start adaptive route still stops too early
+under a strict five-minute wall: it chooses `40` fixed4 steps, `40` fixed8
+steps, and `34` fixed16 steps, never reaching fixed32 repair.  That run took
+`298.23166375397705s` and validated at fixed128 `527104.5` bits, about
+`327.1875` bits worse than the previous fixed8 adaptive result.
+
+With the wall guard relaxed so the fixed4-start schedule can reach fixed32
+repair:
+
+```bash
+python scripts/benchmark_hogenom_specieswise_multifidelity_adagrad.py \
+  --schedule-mode adaptive \
+  --adaptive-max-wall-s 420 \
+  --out-dir /tmp/gpurec_hogenom_adaptive_multifidelity_fixed4_420_20260525
+```
+
+Fixed4-start adaptive HOGENOM result:
+
+| Metric | Value |
+|---|---:|
+| wall time | `421.1917021870031s` |
+| fixed128 NLL | `526736.75` bits |
+| fixed4 chosen steps | `40` |
+| fixed8 chosen steps | `40` |
+| fixed16 chosen steps | `50` |
+| fixed32 chosen steps | `60` |
+| fixed4 stop reason | `validation_stall` |
+| fixed8 stop reason | `validation_stall` |
+| fixed16 stop reason | `validation_stall` |
+| fixed32 stop reason | `wall_budget` |
+
+This is `40.5625` bits better than the earlier fixed8 adaptive result and
+`49.125` bits better than the verified fixed-length replay, but it uses about
+`162s` more wall time than the fixed-length replay.

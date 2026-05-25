@@ -1,8 +1,8 @@
 """Counts-free multifidelity Adagrad route for HOGENOM specieswise rates.
 
 The route starts from uniform 0.05 D/L/T rates on every species branch and uses
-only gpurec full-objective gradients. By default it replays the fixed phase
-lengths from the first successful route:
+only gpurec full-objective gradients. By default fixed mode replays the fixed
+phase lengths from the first successful route:
 
 1. fixed8 Adagrad warmup,
 2. fixed16 Adagrad bridge,
@@ -11,7 +11,8 @@ lengths from the first successful route:
 
 With ``--schedule-mode adaptive`` the same budget ladder is promoted by
 higher-budget validation stalls instead of fixed phase lengths, restoring the
-best validated theta before each promotion.
+best validated theta before each promotion.  Adaptive mode prepends a fixed4
+phase by default before the fixed8 phase.
 
 It is checkout-local benchmarking glue for the bundled HOGENOM data, not a
 general workflow optimizer.
@@ -385,6 +386,21 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--repair-steps", type=int, default=30)
     parser.add_argument("--repair-lr", type=float, default=0.5)
     parser.add_argument("--validation-budget", type=int, default=128)
+    parser.add_argument(
+        "--adaptive-initial-budget",
+        type=int,
+        default=4,
+        help=(
+            "Optional first adaptive solver budget before the fixed8 warmup; "
+            "use 0 to start directly at --warmup-budget."
+        ),
+    )
+    parser.add_argument(
+        "--adaptive-initial-validation-budget",
+        type=int,
+        default=16,
+        help="Validation budget used to decide when the initial adaptive phase stalls.",
+    )
     parser.add_argument("--adaptive-warmup-validation-budget", type=int, default=32)
     parser.add_argument("--adaptive-bridge-validation-budget", type=int, default=32)
     parser.add_argument("--adaptive-max-steps-per-phase", type=int, default=256)
@@ -455,9 +471,24 @@ def main(argv: list[str] | None = None) -> int:
     rows: list[dict[str, Any]] = []
     global_step = 0
     fixed_phases = (
-        ("fixed8_warmup", args.warmup_budget, args.warmup_lr, args.warmup_steps),
-        ("fixed16_bridge", args.bridge_budget, args.bridge_lr, args.bridge_steps),
-        ("fixed32_repair", args.repair_budget, args.repair_lr, args.repair_steps),
+        (
+            f"fixed{args.warmup_budget}_warmup",
+            args.warmup_budget,
+            args.warmup_lr,
+            args.warmup_steps,
+        ),
+        (
+            f"fixed{args.bridge_budget}_bridge",
+            args.bridge_budget,
+            args.bridge_lr,
+            args.bridge_steps,
+        ),
+        (
+            f"fixed{args.repair_budget}_repair",
+            args.repair_budget,
+            args.repair_lr,
+            args.repair_steps,
+        ),
     )
     actual_schedule: list[dict[str, Any]] = []
     if args.schedule_mode == "fixed":
@@ -492,34 +523,51 @@ def main(argv: list[str] | None = None) -> int:
                 {"phase": phase, "budget": budget, "lr": lr, "steps": steps}
             )
     else:
-        adaptive_phases = (
-            (
-                "fixed8_warmup",
-                args.warmup_budget,
-                args.adaptive_warmup_validation_budget,
-                args.warmup_lr,
-                args.adaptive_check_interval,
-                args.adaptive_min_improvement_per_second,
-                None,
-            ),
-            (
-                "fixed16_bridge",
-                args.bridge_budget,
-                args.adaptive_bridge_validation_budget,
-                args.bridge_lr,
-                args.adaptive_check_interval,
-                args.adaptive_min_improvement_per_second,
-                None,
-            ),
-            (
-                "fixed32_repair",
-                args.repair_budget,
-                args.validation_budget,
-                args.repair_lr,
-                args.adaptive_repair_check_interval,
-                args.adaptive_repair_min_improvement_per_second,
-                args.adaptive_target_nll,
-            ),
+        adaptive_phases_list: list[
+            tuple[str, int, int, float, int, float, float | None]
+        ] = []
+        if args.adaptive_initial_budget > 0:
+            adaptive_phases_list.append(
+                (
+                    f"fixed{args.adaptive_initial_budget}_initial",
+                    args.adaptive_initial_budget,
+                    args.adaptive_initial_validation_budget,
+                    args.warmup_lr,
+                    args.adaptive_check_interval,
+                    args.adaptive_min_improvement_per_second,
+                    None,
+                )
+            )
+        adaptive_phases_list.extend(
+            [
+                (
+                    f"fixed{args.warmup_budget}_warmup",
+                    args.warmup_budget,
+                    args.adaptive_warmup_validation_budget,
+                    args.warmup_lr,
+                    args.adaptive_check_interval,
+                    args.adaptive_min_improvement_per_second,
+                    None,
+                ),
+                (
+                    f"fixed{args.bridge_budget}_bridge",
+                    args.bridge_budget,
+                    args.adaptive_bridge_validation_budget,
+                    args.bridge_lr,
+                    args.adaptive_check_interval,
+                    args.adaptive_min_improvement_per_second,
+                    None,
+                ),
+                (
+                    f"fixed{args.repair_budget}_repair",
+                    args.repair_budget,
+                    args.validation_budget,
+                    args.repair_lr,
+                    args.adaptive_repair_check_interval,
+                    args.adaptive_repair_min_improvement_per_second,
+                    args.adaptive_target_nll,
+                ),
+            ]
         )
         for (
             phase,
@@ -529,7 +577,7 @@ def main(argv: list[str] | None = None) -> int:
             check_interval,
             min_improvement_per_second,
             target_nll,
-        ) in adaptive_phases:
+        ) in adaptive_phases_list:
             global_step, phase_summary, reached_target = _run_adaptive_phase(
                 model=model,
                 phase=phase,
@@ -610,6 +658,12 @@ def main(argv: list[str] | None = None) -> int:
             else {
                 "check_interval": args.adaptive_check_interval,
                 "repair_check_interval": args.adaptive_repair_check_interval,
+                "initial_budget": args.adaptive_initial_budget,
+                "initial_validation_budget": (
+                    args.adaptive_initial_validation_budget
+                    if args.adaptive_initial_budget > 0
+                    else None
+                ),
                 "min_checks": args.adaptive_min_checks,
                 "patience": args.adaptive_patience,
                 "min_delta": args.adaptive_min_delta,
