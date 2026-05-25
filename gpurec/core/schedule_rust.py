@@ -216,6 +216,7 @@ def schedule_global_phased_waves(
     max_root_wave_size: int | None = None,
     max_dts_partial_rows: int | None = None,
     dts_partial_tile_splits: int = 64,
+    nonleaf_schedule_policy: str = "auto",
 ) -> tuple[list[list[int]], list[int]]:
     """Return Rust-computed phased waves with the Python scheduler contract."""
     request = {
@@ -229,6 +230,7 @@ def schedule_global_phased_waves(
             None if max_dts_partial_rows is None else int(max_dts_partial_rows)
         ),
         "dts_partial_tile_splits": int(dts_partial_tile_splits),
+        "nonleaf_schedule_policy": str(nonleaf_schedule_policy),
     }
     module = _load_scheduler_native_module()
     output = _native_json(module.schedule_global_phased_waves_json, json.dumps(request))

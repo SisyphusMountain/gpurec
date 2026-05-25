@@ -142,6 +142,8 @@ pub struct ChunkedLayoutRequest {
     pub dtype: String,
     #[serde(default)]
     pub num_threads: usize,
+    #[serde(default = "scheduler::default_nonleaf_schedule_policy")]
+    pub nonleaf_schedule_policy: String,
 }
 
 #[cfg(feature = "python-extension")]
@@ -612,13 +614,14 @@ fn build_one_fused_chunk(
             ccp: schedule_ccp_from_family(family),
         });
     }
-    let schedule = scheduler::schedule_global_phased_waves(
+    let schedule = scheduler::schedule_global_phased_waves_with_policy(
         &items,
         &collated.family_clade_offsets,
         request.max_wave_size.map(|value| value as usize),
         request.max_root_wave_size,
         request.max_dts_partial_rows,
         request.dts_partial_tile_splits,
+        &request.nonleaf_schedule_policy,
     )?;
     let layout = layout::build_wave_layout_plan(
         &schedule.waves,

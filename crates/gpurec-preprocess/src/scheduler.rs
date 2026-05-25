@@ -14,6 +14,8 @@ pub struct ScheduleRequest {
     pub max_dts_partial_rows: Option<usize>,
     #[serde(default = "default_dts_partial_tile_splits")]
     pub dts_partial_tile_splits: usize,
+    #[serde(default = "default_nonleaf_schedule_policy")]
+    pub nonleaf_schedule_policy: String,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -68,16 +70,60 @@ pub(crate) fn default_dts_partial_tile_splits() -> usize {
     64
 }
 
+pub(crate) fn default_nonleaf_schedule_policy() -> String {
+    "auto".to_string()
+}
+
 pub fn schedule_global_phased_waves_request(
     request: &ScheduleRequest,
 ) -> Result<ScheduleOutput, PreprocessError> {
-    schedule_global_phased_waves(
+    schedule_global_phased_waves_with_policy(
         &request.items,
         &request.family_clade_offsets,
         request.max_wave_size,
         request.max_root_wave_size,
         request.max_dts_partial_rows,
         request.dts_partial_tile_splits,
+        &request.nonleaf_schedule_policy,
+    )
+}
+
+pub fn schedule_global_phased_waves(
+    items: &[ScheduleItem],
+    family_clade_offsets: &[i64],
+    max_wave_size: Option<usize>,
+    max_root_wave_size: Option<usize>,
+    max_dts_partial_rows: Option<usize>,
+    dts_partial_tile_splits: usize,
+) -> Result<ScheduleOutput, PreprocessError> {
+    schedule_global_phased_waves_with_policy(
+        items,
+        family_clade_offsets,
+        max_wave_size,
+        max_root_wave_size,
+        max_dts_partial_rows,
+        dts_partial_tile_splits,
+        "auto",
+    )
+}
+
+pub fn schedule_global_phased_waves_with_policy(
+    items: &[ScheduleItem],
+    family_clade_offsets: &[i64],
+    max_wave_size: Option<usize>,
+    max_root_wave_size: Option<usize>,
+    max_dts_partial_rows: Option<usize>,
+    dts_partial_tile_splits: usize,
+    nonleaf_schedule_policy: &str,
+) -> Result<ScheduleOutput, PreprocessError> {
+    schedule_global_phased_waves_impl(
+        items,
+        family_clade_offsets,
+        max_wave_size,
+        max_root_wave_size,
+        max_dts_partial_rows,
+        dts_partial_tile_splits,
+        nonleaf_schedule_policy,
     )
 }
 
@@ -93,13 +139,14 @@ pub fn family_schedule_summary(
     })
 }
 
-pub fn schedule_global_phased_waves(
+fn schedule_global_phased_waves_impl(
     items: &[ScheduleItem],
     family_clade_offsets: &[i64],
     max_wave_size: Option<usize>,
     max_root_wave_size: Option<usize>,
     max_dts_partial_rows: Option<usize>,
     dts_partial_tile_splits: usize,
+    nonleaf_schedule_policy: &str,
 ) -> Result<ScheduleOutput, PreprocessError> {
     if items.len() != family_clade_offsets.len() {
         return invalid("items and family_clade_offsets must have matching lengths");
@@ -139,6 +186,7 @@ pub fn schedule_global_phased_waves(
         max_root_wave_size,
         max_dts_partial_rows,
         dts_partial_tile_splits,
+        nonleaf_schedule_policy,
     )?;
     let (nonleaf_waves, nonleaf_phases) = materialize_nonleaf_waves(
         &batches,
@@ -1122,6 +1170,7 @@ fn select_nonleaf_schedule_candidate(
     root_cap: Option<usize>,
     max_dts_partial_rows: Option<usize>,
     dts_partial_tile_splits: usize,
+    nonleaf_schedule_policy: &str,
 ) -> Result<(String, Vec<Vec<LocalClade>>), PreprocessError> {
     let forward_batches = schedule_forward_nonleaf_waves(
         families,
@@ -1130,6 +1179,15 @@ fn select_nonleaf_schedule_candidate(
         max_dts_partial_rows,
         dts_partial_tile_splits,
     );
+    let policy = nonleaf_schedule_policy.trim().to_ascii_lowercase();
+    if policy == "forward" {
+        return Ok(("forward".to_string(), forward_batches));
+    }
+    if policy != "auto" {
+        return invalid(format!(
+            "nonleaf_schedule_policy must be 'auto' or 'forward', got {nonleaf_schedule_policy:?}"
+        ));
+    }
     let mut best_name = "forward".to_string();
     let mut best_batches = forward_batches;
     let mut best_nonleaf_count = materialized_nonleaf_wave_count(&best_batches, families, root_cap);

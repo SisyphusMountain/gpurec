@@ -529,6 +529,7 @@ class RustPreprocessedDataset:
         max_dts_partial_rows: int | None = None,
         dtype: str = "float32",
         num_threads: int = 0,
+        nonleaf_schedule_policy: str = "auto",
     ) -> list[dict[str, Any]]:
         request = {
             "family_chunk_size": int(family_chunk_size),
@@ -543,6 +544,7 @@ class RustPreprocessedDataset:
             ),
             "dtype": str(dtype),
             "num_threads": int(num_threads),
+            "nonleaf_schedule_policy": str(nonleaf_schedule_policy),
         }
         return list(
             self._native.build_chunked_layouts_torch(

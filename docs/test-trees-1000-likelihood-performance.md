@@ -14,7 +14,10 @@ chunked wave-layout builder directly, avoiding the older Python scheduler
 summary and JSON/tensor roundtrips during resident batch construction.  The
 resident path also keeps only compact family summaries during construction; full
 family tensors are materialized later only if diagnostic family input is
-requested.
+requested.  For this generated tree shape, the retained `clade_first_fit` path
+uses the scheduler's forward nonleaf policy rather than the exhaustive
+fewest-wave policy; it keeps the measured max wave count here while avoiding
+extra native scheduling passes during construction.
 
 Cold end-to-end command:
 
@@ -39,20 +42,21 @@ Cold result:
 
 | Stage | Time |
 |---|---:|
-| model init / first resident batch | `1.3144657299853861s` |
-| first fixed4 likelihood pass plus lazy remaining batches | `2.142956684983801s` |
-| total to first fixed4 likelihood | `3.4574224149691872s` |
+| model init / first resident batch | `1.1038189910468645s` |
+| first fixed4 likelihood pass plus lazy remaining batches | `2.1364303800510243s` |
+| total to first fixed4 likelihood | `3.240249371097889s` |
 
 Cold first-pass fidelity samples with the same construction path:
 
 | Pi/E/Neumann budget | total to first likelihood | loss bits | delta vs fixed128 |
 |---:|---:|---:|---:|
-| 4 | `3.466220354021061s` | `2156427.0` | `670.25` |
-| 6 | `3.9456264569889754s` | `2157095.0` | `2.25` |
-| 8 | `4.452940932009369s` | `2157097.25` | `0.0` |
+| 4 | `3.240249371097889s` | `2156427.0` | `670.25` |
+| 6 | `3.721749029995408s` | `2157095.0` | `2.25` |
+| 8 | `4.21332141692983s` | `2157097.25` | `0.0` |
 
-Before compact family summaries, the retained-layout clade-first lazy path took
-about `3.86s` to the first fixed4 likelihood.  Before retaining the Rust chunked
+Before the forward scheduler policy, the compact retained-layout clade-first
+lazy path took about `3.46s` to the first fixed4 likelihood.  Before compact
+family summaries, it took about `3.86s`.  Before retaining the Rust chunked
 layouts, the same clade-first lazy path took `13.062108609999996s`, and the
 HOGENOM-style `depth_first_fit` path took `17.548588357982226s` in a manual
 timing split.  The construction path is therefore the main end-to-end win for
@@ -78,13 +82,13 @@ env PYTHONDONTWRITEBYTECODE=1 GPUREC_MEMORY_POLICY_RESERVE_GIB=0 \
 
 | Pi/E/Neumann budget | loss-only median | loss bits | delta vs fixed128 |
 |---:|---:|---:|---:|
-| 4 | `1.6231537510175258s` | `2156427.0` | `670.25` |
-| 6 | `2.1573459950159304s` | `2157095.0` | `2.25` |
-| 8 | `2.6942556719877757s` | `2157097.25` | `0.0` |
+| 4 | `1.6164941460010596s` | `2156427.0` | `670.25` |
+| 6 | `2.1500701049808413s` | `2157095.0` | `2.25` |
+| 8 | `2.6858214950188994s` | `2157097.25` | `0.0` |
 | 128 | `35.36583194194827s` | `2157097.25` | `0.0` |
 
 With `--materialize-batches all`, the clade-first resident build split was
-`1.3173015140346251s` for model init plus `0.06714285496855155s` for full
+`1.1021584539557807s` for model init plus `0.06575283297570422s` for full
 materialization in the fixed4/6/8 run.
 
 Gradient timing for the same resident layout:
@@ -138,6 +142,11 @@ Differences from HOGENOM:
   construction prepass.  Retaining the native Rust layouts removes that Python
   prepass; with the current timings, `clade_first_fit` remains the best measured
   default for the generated tree benchmark.
+- HOGENOM's depth-first path should keep the exhaustive scheduler policy because
+  wave compaction mattered there.  On `test_trees_1000`, the retained
+  `clade_first_fit` chunks had the same measured max wave count with the
+  forward scheduler policy, so skipping the extra candidate schedulers saves
+  about `0.2s` of cold construction.
 - HOGENOM needed full family tensors during the accepted route.  On
   `test_trees_1000`, the resident Rust layout already contains the tensors used
   for likelihood, so compact family summaries remove about `0.3s` from cold

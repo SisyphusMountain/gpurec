@@ -101,6 +101,16 @@ def test_rust_scheduler_compaction_policies():
         [1, 2, 2, 2],
     )
 
+    assert rust_schedule(
+        [{"ccp": _ccp(8, layered_parents, layered_lefts, layered_rights, root=0)}],
+        [0],
+        max_wave_size=2,
+        nonleaf_schedule_policy="forward",
+    ) == (
+        [[5, 7], [3, 4], [6], [0, 1], [2]],
+        [1, 2, 2, 2, 2],
+    )
+
 
 def test_rust_scheduler_dts_partial_cap():
     parents = [0, 0, 0]

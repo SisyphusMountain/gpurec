@@ -667,6 +667,9 @@ def _build_batch_specs_from_retained_rust(
         max_dts_partial_rows=max_dts_partial_rows,
         dtype=_dtype_name_for_rust(dataset.dtype),
         num_threads=0 if preprocess_cpu_cores is None else int(preprocess_cpu_cores),
+        nonleaf_schedule_policy=(
+            "forward" if batch_packing == "clade_first_fit" else "auto"
+        ),
     )
     specs: list[_ResidentBatchSpec] = []
     for batch_index, payload in enumerate(payloads):
