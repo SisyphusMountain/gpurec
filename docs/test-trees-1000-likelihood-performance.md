@@ -33,7 +33,10 @@ row in the wave has a split contribution; on this generated layout all `973`
 split waves are fully covered.  The first leaf-state Pi iteration now uses a
 specialized kernel with species subtree intervals instead of paying a uniform
 Pibar parent-chain walk from a one-hot leaf state, and the DTS species tile cap
-is `512` for this large-`S` shape.
+is `512` for this large-`S` shape.  On the local 32-core host, the cold
+benchmark also pins native preprocessing and retained layout generation to `16`
+CPU threads; that is faster for this generated dataset than the default global
+Rayon pool.
 
 Cold end-to-end command:
 
@@ -43,6 +46,7 @@ env PYTHONDONTWRITEBYTECODE=1 GPUREC_MEMORY_POLICY_RESERVE_GIB=0 \
   --dataset tests/data/test_trees_1000 \
   --mode specieswise \
   --fixed-iters 4 \
+  --preprocess-cpu-cores 16 \
   --measure loss-only \
   --warmups 0 \
   --reps 1 \
@@ -58,37 +62,40 @@ Cold result:
 
 | Stage | Time |
 |---|---:|
-| model init / first resident batch | `1.0983738009817898s` |
-| first fixed4 likelihood pass plus lazy remaining batches | `1.5801798375032376s` |
-| total to first fixed4 likelihood | `2.6775139055098407s` |
+| model init / first resident batch | `0.9730085899936967s` |
+| first fixed4 likelihood pass plus lazy remaining batches | `1.577356451016385s` |
+| total to first fixed4 likelihood | `2.5503650410100818s` |
 
 Cold first-pass fidelity samples with the same construction path:
 
 | Pi/E/Neumann budget | total to first likelihood | loss bits | delta vs fixed128 |
 |---:|---:|---:|---:|
-| 4 | `2.6775139055098407s` | `2156427.0` | `670.25` |
-| 6 | `3.1695208799792453s` | `2157095.0` | `2.25` |
-| 8 | `3.685110876976978s` | `2157097.25` | `0.0` |
+| 4 | `2.5503650410100818s` | `2156427.0` | `670.25` |
+| 6 | `3.051072600996122s` | `2157095.0` | `2.25` |
+| 8 | `3.5452640849980526s` | `2157097.25` | `0.0` |
 
-Before specializing the first leaf-state Pi iteration and raising the DTS tile
-cap for this shape, the DTS-fill-skip path took about `2.702s` to the first
-fixed4 likelihood.  Before skipping full DTS output initialization for fully
-covered split waves, the resident-kernel-warmed path took about `2.745s` to the
-first fixed4 likelihood.  Before overlapping the resident uniform kernel warmup
-with retained Rust layout generation, the local-DTS input path took about
-`2.925s` to the first fixed4 likelihood.  Before reading the first non-leaf DTS
-tensor directly on iteration 1, the copy-based initial non-leaf fast path took
-about `2.994s` to the first fixed4 likelihood.  Before copying the first
-non-leaf DTS state directly, deriving the initial Pi state inside the wave
-kernel took about `3.045s`.  Before deriving that initial state inside the wave
-kernel, the same retained layout and CUDA math warmup path took about `3.160s`.
-Before warming cuBLAS and the first elementwise CUDA math during preprocessing,
-the retained-layout overlap path took about `3.176s`.  Before overlapping
-retained Rust layout generation with CUDA species-helper setup, the CUDA-warmed
-retained clade-first path took about `3.19s`.  Before CUDA warmup overlap, the
-forward-scheduled retained clade-first path took about `3.24s`.  Before the
-forward scheduler policy, the compact retained-layout clade-first lazy path
-took about `3.46s`.  Before compact family summaries, it took about `3.86s`.
+Before pinning native preprocessing and retained layout generation to `16` CPU
+threads on this host, the first-leaf-specialized route took about `2.678s` to
+the first fixed4 likelihood.  Before specializing the first leaf-state Pi
+iteration and raising the DTS tile cap for this shape, the DTS-fill-skip path
+took about `2.702s` to the first fixed4 likelihood.  Before skipping full DTS
+output initialization for fully covered split waves, the resident-kernel-warmed
+path took about `2.745s` to the first fixed4 likelihood.  Before overlapping
+the resident uniform kernel warmup with retained Rust layout generation, the
+local-DTS input path took about `2.925s` to the first fixed4 likelihood.  Before
+reading the first non-leaf DTS tensor directly on iteration 1, the copy-based
+initial non-leaf fast path took about `2.994s` to the first fixed4 likelihood.
+Before copying the first non-leaf DTS state directly, deriving the initial Pi
+state inside the wave kernel took about `3.045s`.  Before deriving that initial
+state inside the wave kernel, the same retained layout and CUDA math warmup path
+took about `3.160s`.  Before warming cuBLAS and the first elementwise CUDA math
+during preprocessing, the retained-layout overlap path took about `3.176s`.
+Before overlapping retained Rust layout generation with CUDA species-helper
+setup, the CUDA-warmed retained clade-first path took about `3.19s`.  Before
+CUDA warmup overlap, the forward-scheduled retained clade-first path took about
+`3.24s`.  Before the forward scheduler policy, the compact retained-layout
+clade-first lazy path took about `3.46s`.  Before compact family summaries, it
+took about `3.86s`.
 Before retaining the Rust
 chunked layouts, the same clade-first lazy path took `13.062108609999996s`, and
 the HOGENOM-style `depth_first_fit` path took `17.548588357982226s` in a manual
@@ -103,6 +110,7 @@ env PYTHONDONTWRITEBYTECODE=1 GPUREC_MEMORY_POLICY_RESERVE_GIB=0 \
   --dataset tests/data/test_trees_1000 \
   --mode specieswise \
   --fixed-iters 4,6,8,128 \
+  --preprocess-cpu-cores 16 \
   --measure loss-only \
   --warmups 1 \
   --reps 3 \
@@ -116,13 +124,13 @@ env PYTHONDONTWRITEBYTECODE=1 GPUREC_MEMORY_POLICY_RESERVE_GIB=0 \
 
 | Pi/E/Neumann budget | loss-only time | loss bits | delta vs fixed128 |
 |---:|---:|---:|---:|
-| 4 | `1.2853614480118267s` | `2156427.0` | `670.25` |
-| 6 | `1.8155015640077181s` | `2157095.0` | `2.25` |
-| 8 | `2.3477314470219426s` | `2157097.25` | `0.0` |
+| 4 | `1.2834076849976555s` | `2156427.0` | `670.25` |
+| 6 | `1.816627103020437s` | `2157095.0` | `2.25` |
+| 8 | `2.3491738659795374s` | `2157097.25` | `0.0` |
 | 128 | `35.236629224033095s` | `2157097.25` | `0.0` |
 
 With `--materialize-batches all`, the clade-first resident build split was
-`1.0717829579953104s` for model init plus `0.06984004902187735s` for full
+`0.9815053479978815s` for model init plus `0.06590698298532516s` for full
 materialization in the fixed4 steady-state run.  The `4/6/8` rows above are
 three-repetition medians after one warmup; the `128` row is a single validation
 sample.
@@ -135,6 +143,7 @@ env PYTHONDONTWRITEBYTECODE=1 GPUREC_MEMORY_POLICY_RESERVE_GIB=0 \
   --dataset tests/data/test_trees_1000 \
   --mode specieswise \
   --fixed-iters 4,6,8 \
+  --preprocess-cpu-cores 16 \
   --measure loss-grad \
   --warmups 1 \
   --reps 3 \
@@ -204,7 +213,7 @@ Rejected follow-ups:
 - Rechecking the uniform wave-step species tile cap after the leaf-state
   specialization did not improve the route: raising the generic uniform cap
   from `256` to `512` moved steady fixed4 to about `1.292s`, slower than the
-  current `1.285s` measurement.
+  current `1.283s` measurement.
 - A custom Triton row-logsumexp kernel for the already-gathered root rows saved
   only about `1ms` in the instrumented root-likelihood split while adding
   another cold compile/cache surface, so the PyTorch root reduction remains in
@@ -217,6 +226,10 @@ Rejected follow-ups:
   cliffs around the current route.  Single cold fixed4 samples at `300000`,
   `310000`, `318000`, `320000`, and `325000` all paid first likelihood times
   from about `14s` to `34s`, while `315000` stayed near `1.58s`.
+- Thread-count pinning is host- and shape-sensitive.  On this 32-core host, an
+  isolated generated-dataset retained preprocess/layout timing was best at `16`
+  threads, about `0.91s` total, while `12`, `20`, `24`, `32`, and the default
+  global pool were slower.
 
 Differences from HOGENOM:
 
@@ -264,6 +277,12 @@ Differences from HOGENOM:
   across `206` leaf waves, while the local HOGENOM depth-first fixture measured
   here has only `86k` leaf rows across `13` leaf waves.  HOGENOM's accepted
   route remains more optimizer/gradient dominated.
+- Pinning native preprocessing and retained layout generation to `16` CPU
+  threads is likewise more useful here than on the local HOGENOM fixture.  For
+  `test_trees_1000`, default retained preprocessing and layout generation each
+  cost about half a second; for the local HOGENOM depth-first fixture, the same
+  work totals only about `0.17s`, and the default pool was essentially tied or
+  slightly faster than a `16`-thread pin.
 - This dataset also pays initial Pi setup once per resident batch.  Deriving the
   initial state in the wave kernel, using the first non-leaf DTS state directly,
   and letting iteration 1 read that local DTS tensor saves about `0.24s` versus

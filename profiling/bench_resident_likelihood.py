@@ -76,6 +76,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--dtype", type=_parse_dtype, default=_parse_dtype("float32"))
     parser.add_argument("--fixed-iters", type=_parse_fixed_iters, default=_parse_fixed_iters("4,6,8"))
     parser.add_argument("--theta-rate", type=float, default=0.05)
+    parser.add_argument("--preprocess-cpu-cores", type=int, default=None)
     parser.add_argument("--family-chunk-size", type=int, default=500)
     parser.add_argument("--clade-budget", type=_parse_optional_int, default=315_000)
     parser.add_argument(
@@ -267,6 +268,7 @@ def main(argv: list[str] | None = None) -> int:
         mode=args.mode,
         device="cuda",
         dtype=args.dtype,
+        preprocess_cpu_cores=args.preprocess_cpu_cores,
         theta_init_rates=(args.theta_rate, args.theta_rate, args.theta_rate),
         fixed_iters_E=args.fixed_iters[0],
         fixed_iters_Pi=args.fixed_iters[0],
@@ -304,6 +306,7 @@ def main(argv: list[str] | None = None) -> int:
                 "species": int(model.n_species),
                 "batches": len(model.batch_metadata),
                 "family_chunk_size": args.family_chunk_size,
+                "preprocess_cpu_cores": args.preprocess_cpu_cores,
                 "clade_budget": args.clade_budget,
                 "batch_packing": args.batch_packing,
                 "max_wave_size": args.max_wave_size,
