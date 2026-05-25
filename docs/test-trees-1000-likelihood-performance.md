@@ -81,6 +81,23 @@ Cold first-pass fidelity samples with the same construction path:
 | 6 | `2.914167365990579s` | `2157095.0` | `2.25` |
 | 8 | `3.3453044299967587s` | `2157097.25` | `0.0` |
 
+Progressive fixed4-start sample on the same route, using one cold model and
+then evaluating `4,6,8` in sequence:
+
+| Step | Incremental pass | Cumulative from process start | loss bits | delta vs fixed8 |
+|---:|---:|---:|---:|---:|
+| build | `0.9812196380225942s` | `0.9812196380225942s` | n/a | n/a |
+| 4 | `1.3362598160165362s` | `2.3174794540391304s` | `2156427.0` | `670.25` |
+| 6 | `1.9899028320214711s` | `4.3073822860606015s` | `2157095.0` | `2.25` |
+| 8 | `2.3181870129774325s` | `6.625569299038034s` | `2157097.25` | `0.0` |
+
+A direct cold fixed8 sample under the same cached code path took
+`3.365096386987716s`.  So starting at fixed4 is useful when the caller can use
+an early approximate likelihood, or for optimizer phases that will move theta
+before promotion.  It is not a shortcut to the fixed8 likelihood itself because
+the current fixed-Pi path does not carry a reusable Pi state from the fixed4
+pass into the fixed8 pass.
+
 Before removing the unused DTS compile-shape arguments from the eq1 and ge2
 kernel signatures, the retained-layout fixed4 route took about `2.55s` to the
 first likelihood.
