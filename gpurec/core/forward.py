@@ -231,7 +231,10 @@ def Pi_wave_forward(
         Pi = torch.full((C, S), _PI_INIT, dtype=dtype, device=device)
         leaf_rows = leaf_row_index.to(device)
         Pi[leaf_rows, leaf_species_index[leaf_rows]] = 0.0
-        Pibar = torch.full((C, S), NEG_INF, dtype=dtype, device=device)
+        # Pibar is a ping-pong scratch/output buffer. Each row is written by
+        # its wave before any later DTS wave can read it, so an initial full
+        # tensor fill only burns memory bandwidth on large tree batches.
+        Pibar = torch.empty((C, S), dtype=dtype, device=device)
 
     batched = family_idx is not None
     if batched:
