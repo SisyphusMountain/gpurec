@@ -33,9 +33,11 @@ row in the wave has a split contribution; on this generated layout all `973`
 split waves are fully covered.  The first leaf-state Pi iteration now uses a
 specialized kernel with species subtree intervals instead of paying a uniform
 Pibar parent-chain walk from a one-hot leaf state, and the DTS species tile cap
-is `512` for this large-`S` shape.  The no-callback Pi path also avoids the
-per-wave progress shim calls used only by diagnostic tracing.  On the local
-32-core host, the cold
+is `512` for this large-`S` shape.  The eq1 DTS forward kernel no longer
+specializes on the wave-specific `n_eq1` split count, removing many identical
+first-use Triton variants from the first likelihood pass.  The no-callback Pi
+path also avoids the per-wave progress shim calls used only by diagnostic
+tracing.  On the local 32-core host, the cold
 benchmark also pins native preprocessing and retained layout generation to `16`
 CPU threads; that is faster for this generated dataset than the default global
 Rayon pool.
@@ -66,18 +68,20 @@ Cold result:
 
 | Stage | Time |
 |---|---:|
-| model init / first resident batch | `0.9730085899936967s` |
-| first fixed4 likelihood pass plus lazy remaining batches | `1.577356451016385s` |
-| total to first fixed4 likelihood | `2.5503650410100818s` |
+| model init / first resident batch | `0.9940999419777654s` |
+| first fixed4 likelihood pass plus lazy remaining batches | `1.3551118019968271s` |
+| total to first fixed4 likelihood | `2.3492117439745925s` |
 
 Cold first-pass fidelity samples with the same construction path:
 
 | Pi/E/Neumann budget | total to first likelihood | loss bits | delta vs fixed128 |
 |---:|---:|---:|---:|
-| 4 | `2.5503650410100818s` | `2156427.0` | `670.25` |
-| 6 | `3.051072600996122s` | `2157095.0` | `2.25` |
-| 8 | `3.5452640849980526s` | `2157097.25` | `0.0` |
+| 4 | `2.3492117439745925s` | `2156427.0` | `670.25` |
+| 6 | `2.8393524100538343s` | `2157095.0` | `2.25` |
+| 8 | `3.356129075982608s` | `2157097.25` | `0.0` |
 
+Before removing the unused `n_eq1` constexpr from the eq1 DTS kernel signature,
+the retained-layout fixed4 route took about `2.55s` to the first likelihood.
 Before pinning native preprocessing and retained layout generation to `16` CPU
 threads on this host, the first-leaf-specialized route took about `2.678s` to
 the first fixed4 likelihood.  Before specializing the first leaf-state Pi
@@ -110,14 +114,20 @@ Skipping no-op progress callback dispatch and precomputing the root-only waves
 used for final-Pibar skipping are small Python-side cleanups rather than large
 kernel wins.  Fixed4 steady-state seven-repetition samples measured
 `1.282079865981359s`, `1.2819753359653987s`, and
-`1.2804367360076867s` medians with unchanged loss.
-Cold first-likelihood samples remained noisy, so the cold route is still
-reported with the established `2.55s` total sample above.
+`1.2804367360076867s` medians before the eq1 DTS specialization cleanup, and
+`1.2814912779722363s` afterward, with unchanged loss.
 Two fresh paired samples kept lazy construction and eager materialization within
 noise: lazy totals were about `2.580s` and `2.538s`, while materialize-all totals
 were about `2.559s` and `2.592s`.  Materialize-all lowers the first likelihood
 pass itself by about `50ms`, but the up-front materialization cost cancels that
-on the end-to-end total.
+on the end-to-end total.  After removing `n_eq1` from the DTS eq1 compile shape,
+lazy cold totals repeated at `2.3492117439745925s` and `2.3551931240945123s`;
+materialize-all reached `2.3555265389732085s` and kept reserved memory lower
+than the lazy all-prefetch sample.  The first local run immediately after
+changing the Triton signature paid a one-time cache rebuild and is not a route
+timing sample: model build was `1.253343741002027s`, the first pass was
+`7.724968408991117s`, and the second pass in the same process was back to
+`1.2759294480201788s`.
 
 Steady-state command:
 
@@ -154,7 +164,9 @@ materialization in the fixed4 steady-state run.  The `4/6/8` rows above are
 three-repetition medians after one warmup; the `128` row is a single validation
 sample.
 
-Current fixed4 bottleneck profile on the same resident layout:
+The last detailed fixed4 bottleneck profile on the same resident layout
+predates the `n_eq1` DTS signature cleanup, but it still identifies the dominant
+kernel buckets:
 
 | Component | Time |
 |---|---:|
@@ -234,8 +246,8 @@ Rejected follow-ups:
 - Finite lazy prefetch depths also lost to `--prefetch-batches all` on the cold
   fixed4 route.  Single samples with depths `4`, `8`, and `12` had first
   likelihood passes of `1.6143241939716972s`, `1.6010761460056528s`, and
-  `1.5955134850228205s`; the documented `all` route keeps the pass near
-  `1.57s` while hiding remaining batch construction.
+  `1.5955134850228205s`; at that point the documented `all` route kept the pass
+  near `1.57s` while hiding remaining batch construction.
 - Putting the small tail batch first made the cold path worse (`3.406573s` in
   one sample) and increased reserved memory to about `21.4 GiB`.  The allocator
   behaves better when the first resident Pi batch is full sized.
@@ -451,6 +463,9 @@ Differences from HOGENOM:
   (`4.81M` rows across `973` split waves versus HOGENOM's `0.94M` rows across
   `244` split waves in the accepted `depth_first_fit` layout), so the cold
   likelihood win is more visible here.
+- The same split-wave asymmetry makes the `n_eq1` compile-shape cleanup more
+  valuable on `test_trees_1000`: hundreds of pure single-child split waves no
+  longer generate redundant eq1 DTS variants during the first likelihood pass.
 - The first-leaf-state specialization also applies to HOGENOM, but it is more
   important on `test_trees_1000`: the generated benchmark has `1.61M` leaf rows
   across `206` leaf waves, while the local HOGENOM depth-first fixture measured
