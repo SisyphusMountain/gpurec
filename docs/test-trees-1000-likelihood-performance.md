@@ -213,6 +213,12 @@ Interpretation:
   fixed128 here.
 - `8`, `32`, and `128` agree at the printed precision, so higher fixed budgets
   are useful mainly as periodic validation points, not every-step work.
+- The fixed4 error is spread across the resident batches, not concentrated in
+  a small subset.  In a per-batch fixed4/fixed6/fixed8 split, full batches each
+  contributed about `29` to `38` bits of the fixed4-to-fixed8 delta, and the
+  small tail contributed about `16` bits.  Upgrading only a few batches to
+  fixed6 would therefore leave hundreds of bits of fixed4 error; uniform fixed6
+  remains the practical near-reference budget.
 
 Rejected follow-ups:
 
