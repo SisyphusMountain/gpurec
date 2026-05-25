@@ -327,6 +327,15 @@ Rejected follow-ups:
   were not better overall.  The paired totals were uncapped `2.583690342027694s`,
   `2.5344259899575263s`, `2.5741731580346823s` versus capped
   `2.633321139961481s`, `2.549399826035369s`, `2.553070565976668s`.
+- Hoisting fixed-loop convergence and trace booleans out of the common no-grad
+  Pi loop did not improve the measured path.  A seven-repetition fixed4
+  steady-state run measured `1.2837643179809675s`, slightly slower than the
+  current fixed4 baseline, so the change was reverted.
+- Scheduling lazy prefetch before constructing resident batch 0 did not produce
+  a stable cold win.  Four fixed4 cold samples measured totals of
+  `2.608110374014359s`, `2.5429647190030665s`, `2.55199750198517s`, and
+  `2.5878938979585654s`; the one low sample overlapped existing noise, while
+  the median was worse than the documented route.
 
 Differences from HOGENOM:
 
