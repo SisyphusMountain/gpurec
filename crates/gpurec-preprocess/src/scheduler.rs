@@ -1,7 +1,9 @@
 use crate::PreprocessError;
 use serde::{Deserialize, Serialize};
 use std::cmp::Reverse;
-use std::collections::{BinaryHeap, HashSet};
+use std::collections::{BinaryHeap, HashMap, HashSet};
+
+const CHILD_DEDUP_SET_THRESHOLD: usize = 8;
 
 #[derive(Clone, Debug, Deserialize)]
 pub struct ScheduleRequest {
@@ -289,7 +291,7 @@ fn family_schedule_data(ccp: ScheduleCcpView<'_>) -> Result<FamilySchedule, Prep
     let mut children = vec![Vec::new(); c];
     let mut parents_of = vec![Vec::new(); c];
     let mut remaining = vec![0usize; c];
-    let mut child_sets: Vec<HashSet<usize>> = (0..c).map(|_| HashSet::new()).collect();
+    let mut child_sets: HashMap<usize, HashSet<usize>> = HashMap::new();
 
     for row in 0..n {
         let parent = as_parent_id(ccp.split_parents_sorted[row], row, c)?;
@@ -299,7 +301,7 @@ fn family_schedule_data(ccp: ScheduleCcpView<'_>) -> Result<FamilySchedule, Prep
             ("split_leftrights_sorted", n + row, rights[row]),
         ] {
             let child = as_child_id(name, child_value, position, c)?;
-            if child_sets[parent].insert(child) {
+            if record_parent_child(&mut children, &mut child_sets, parent, child) {
                 children[parent].push(child);
                 parents_of[child].push(parent);
                 remaining[parent] += 1;
@@ -344,6 +346,27 @@ fn family_schedule_data(ccp: ScheduleCcpView<'_>) -> Result<FamilySchedule, Prep
         max_level,
         root_id,
     })
+}
+
+fn record_parent_child(
+    children: &mut [Vec<usize>],
+    child_sets: &mut HashMap<usize, HashSet<usize>>,
+    parent: usize,
+    child: usize,
+) -> bool {
+    if let Some(set) = child_sets.get_mut(&parent) {
+        return set.insert(child);
+    }
+    if children[parent].contains(&child) {
+        return false;
+    }
+    if children[parent].len() >= CHILD_DEDUP_SET_THRESHOLD {
+        let mut set = children[parent].iter().copied().collect::<HashSet<_>>();
+        let inserted = set.insert(child);
+        child_sets.insert(parent, set);
+        return inserted;
+    }
+    true
 }
 
 fn bottom_up_levels(

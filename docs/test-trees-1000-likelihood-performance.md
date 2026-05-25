@@ -69,16 +69,16 @@ Cold result:
 
 | Stage | Time |
 |---|---:|
-| model init / first resident batch | `0.9630599020165391s` |
-| first fixed4 likelihood pass plus lazy remaining batches | `1.344272744958289s` |
-| total to first fixed4 likelihood | `2.307332646974828s` |
+| model init / first resident batch | `0.9559082390042022s` |
+| first fixed4 likelihood pass plus lazy remaining batches | `1.3363667230005376s` |
+| total to first fixed4 likelihood | `2.29227496200474s` |
 
 Cold first-pass fidelity samples with the same construction path:
 
 | Pi/E/Neumann budget | total to first likelihood | loss bits | delta vs fixed128 |
 |---:|---:|---:|---:|
-| 4 | `2.307332646974828s` | `2156427.0` | `670.25` |
-| 6 | `2.813714316987898s` | `2157095.0` | `2.25` |
+| 4 | `2.29227496200474s` | `2156427.0` | `670.25` |
+| 6 | `2.788982933969237s` | `2157095.0` | `2.25` |
 | 8 | `3.323484256048687s` | `2157097.25` | `0.0` |
 
 Progressive fixed4-start sample on the same route, using one cold model and
@@ -99,14 +99,15 @@ the current fixed-Pi path does not carry a reusable Pi state from the fixed4
 pass into the fixed8 pass.
 
 The retained Rust chunked-layout builder now schedules chunks through borrowed
-CCP slices instead of cloning each family's split arrays into scheduler items.
-On this dataset, isolated retained-layout generation after dataset
-preprocessing measured `0.47961619298439473s`, `0.4710561840329319s`,
-`0.43162761098938063s`, `0.4427406609756872s`, and `0.43092988996068016s`;
-the previous detailed setup split had the same native chunked layout generation
-near `0.496s`.  The end-to-end win is partly hidden by overlapping layout work
-with CUDA setup, but direct fixed6/fixed8 cold samples improved to the rows
-above.
+CCP slices instead of cloning each family's split arrays into scheduler items,
+and its scheduler allocates child-dedup hash sets only for high-degree parents
+instead of creating one empty set per clade.  On this dataset, isolated
+retained-layout generation after dataset preprocessing measured
+`0.4546270810533315s`, `0.448365535994526s`, `0.41906961804488674s`,
+`0.41099122702144086s`, and `0.4032032579998486s`; the previous detailed setup
+split had the same native chunked layout generation near `0.496s`.  The
+end-to-end win is partly hidden by overlapping layout work with CUDA setup, but
+direct fixed4/fixed6 cold samples improved to the rows above.
 
 Before removing the unused DTS compile-shape arguments from the eq1 and ge2
 kernel signatures, the retained-layout fixed4 route took about `2.55s` to the
@@ -516,13 +517,14 @@ Differences from HOGENOM:
   cost about half a second; for the local HOGENOM depth-first fixture, the same
   work totals only about `0.17s`, and the default pool was essentially tied or
   slightly faster than a `16`-thread pin.
-- Borrowed Rust scheduler inputs are also more visible here than on HOGENOM.
-  The generated dataset builds `21` retained resident layouts and scans about
-  `6.4M` clades, so avoiding scheduler-side split-array clones moves the
-  construction split measurably.  HOGENOM's local fixture has fewer resident
-  batches and much smaller preprocessing/layout cost, so this is mostly a
-  cleanliness and memory-traffic improvement there rather than a route-changing
-  optimizer result.
+- The Rust scheduler input and child-dedup cleanups are also more visible here
+  than on HOGENOM.  The generated dataset builds `21` retained resident layouts
+  and scans about `6.4M` clades, so avoiding scheduler-side split-array clones
+  and millions of empty child-dedup sets moves the construction split
+  measurably.  HOGENOM's local fixture has fewer resident batches and much
+  smaller preprocessing/layout cost, so this is mostly a cleanliness and
+  memory-traffic improvement there rather than a route-changing optimizer
+  result.
 - This dataset also pays initial Pi setup once per resident batch.  Deriving the
   initial state in the wave kernel, using the first non-leaf DTS state directly,
   and letting iteration 1 read that local DTS tensor saves about `0.24s` versus
