@@ -22,6 +22,8 @@ pub use scheduler::{
     family_schedule_summary, schedule_global_phased_waves_request, FamilyScheduleSummary,
     ScheduleCcp, ScheduleOutput, ScheduleRequest,
 };
+#[cfg(feature = "python-extension")]
+use scheduler::{family_schedule_summary_view, ScheduleCcpView, ScheduleItemView};
 
 #[cfg(feature = "python-extension")]
 use numpy::{ndarray::Array2, IntoPyArray, PyReadonlyArray1};
@@ -412,14 +414,14 @@ fn ordered_family_names(
 }
 
 #[cfg(feature = "python-extension")]
-fn schedule_ccp_from_family(family: &FamilyOutput) -> ScheduleCcp {
+fn schedule_ccp_view_from_family(family: &FamilyOutput) -> ScheduleCcpView<'_> {
     let ccp = &family.ccp;
-    ScheduleCcp {
+    ScheduleCcpView {
         c: ccp.c as usize,
         n_splits: ccp.n_splits as usize,
-        split_counts: Some(ccp.split_counts.clone()),
-        split_parents_sorted: ccp.split_parents_sorted.clone(),
-        split_leftrights_sorted: ccp.split_leftrights_sorted.clone(),
+        split_counts: Some(&ccp.split_counts),
+        split_parents_sorted: &ccp.split_parents_sorted,
+        split_leftrights_sorted: &ccp.split_leftrights_sorted,
         root_clade_id: ccp.root_clade_id,
     }
 }
@@ -456,7 +458,7 @@ fn family_counts_and_summaries(
             .families
             .get(name)
             .ok_or_else(|| PreprocessError::InvalidInput(format!("unknown family {name:?}")))?;
-        let summary = family_schedule_summary(&schedule_ccp_from_family(family))?;
+        let summary = family_schedule_summary_view(schedule_ccp_view_from_family(family))?;
         leaf_counts.push(summary.leaf_count);
         nonleaf_counts.push(summary.nonleaf_count);
         schedule_depths.push(summary.max_level);
@@ -610,11 +612,11 @@ fn build_one_fused_chunk(
             .families
             .get(name)
             .ok_or_else(|| PreprocessError::InvalidInput(format!("unknown family {name:?}")))?;
-        items.push(scheduler::ScheduleItem {
-            ccp: schedule_ccp_from_family(family),
+        items.push(ScheduleItemView {
+            ccp: schedule_ccp_view_from_family(family),
         });
     }
-    let schedule = scheduler::schedule_global_phased_waves_with_policy(
+    let schedule = scheduler::schedule_global_phased_waves_with_policy_views(
         &items,
         &collated.family_clade_offsets,
         request.max_wave_size.map(|value| value as usize),

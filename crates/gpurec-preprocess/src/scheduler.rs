@@ -23,6 +23,11 @@ pub struct ScheduleItem {
     pub ccp: ScheduleCcp,
 }
 
+#[derive(Clone, Copy)]
+pub(crate) struct ScheduleItemView<'a> {
+    pub ccp: ScheduleCcpView<'a>,
+}
+
 #[derive(Clone, Debug, Deserialize)]
 pub struct ScheduleCcp {
     #[serde(rename = "C", alias = "c")]
@@ -34,6 +39,29 @@ pub struct ScheduleCcp {
     pub split_parents_sorted: Vec<i64>,
     pub split_leftrights_sorted: Vec<i64>,
     pub root_clade_id: i64,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct ScheduleCcpView<'a> {
+    pub c: usize,
+    pub n_splits: usize,
+    pub split_counts: Option<&'a [i64]>,
+    pub split_parents_sorted: &'a [i64],
+    pub split_leftrights_sorted: &'a [i64],
+    pub root_clade_id: i64,
+}
+
+impl<'a> From<&'a ScheduleCcp> for ScheduleCcpView<'a> {
+    fn from(ccp: &'a ScheduleCcp) -> Self {
+        Self {
+            c: ccp.c,
+            n_splits: ccp.n_splits,
+            split_counts: ccp.split_counts.as_deref(),
+            split_parents_sorted: &ccp.split_parents_sorted,
+            split_leftrights_sorted: &ccp.split_leftrights_sorted,
+            root_clade_id: ccp.root_clade_id,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -116,8 +144,14 @@ pub fn schedule_global_phased_waves_with_policy(
     dts_partial_tile_splits: usize,
     nonleaf_schedule_policy: &str,
 ) -> Result<ScheduleOutput, PreprocessError> {
+    let views = items
+        .iter()
+        .map(|item| ScheduleItemView {
+            ccp: ScheduleCcpView::from(&item.ccp),
+        })
+        .collect::<Vec<_>>();
     schedule_global_phased_waves_impl(
-        items,
+        &views,
         family_clade_offsets,
         max_wave_size,
         max_root_wave_size,
@@ -130,6 +164,12 @@ pub fn schedule_global_phased_waves_with_policy(
 pub fn family_schedule_summary(
     ccp: &ScheduleCcp,
 ) -> Result<FamilyScheduleSummary, PreprocessError> {
+    family_schedule_summary_view(ScheduleCcpView::from(ccp))
+}
+
+pub(crate) fn family_schedule_summary_view(
+    ccp: ScheduleCcpView<'_>,
+) -> Result<FamilyScheduleSummary, PreprocessError> {
     let data = family_schedule_data(ccp)?;
     Ok(FamilyScheduleSummary {
         clade_count: data.c as i64,
@@ -139,8 +179,28 @@ pub fn family_schedule_summary(
     })
 }
 
+pub(crate) fn schedule_global_phased_waves_with_policy_views(
+    items: &[ScheduleItemView<'_>],
+    family_clade_offsets: &[i64],
+    max_wave_size: Option<usize>,
+    max_root_wave_size: Option<usize>,
+    max_dts_partial_rows: Option<usize>,
+    dts_partial_tile_splits: usize,
+    nonleaf_schedule_policy: &str,
+) -> Result<ScheduleOutput, PreprocessError> {
+    schedule_global_phased_waves_impl(
+        items,
+        family_clade_offsets,
+        max_wave_size,
+        max_root_wave_size,
+        max_dts_partial_rows,
+        dts_partial_tile_splits,
+        nonleaf_schedule_policy,
+    )
+}
+
 fn schedule_global_phased_waves_impl(
-    items: &[ScheduleItem],
+    items: &[ScheduleItemView<'_>],
     family_clade_offsets: &[i64],
     max_wave_size: Option<usize>,
     max_root_wave_size: Option<usize>,
@@ -174,7 +234,7 @@ fn schedule_global_phased_waves_impl(
 
     let families = items
         .iter()
-        .map(|item| family_schedule_data(&item.ccp))
+        .map(|item| family_schedule_data(item.ccp))
         .collect::<Result<Vec<_>, _>>()?;
 
     let mut waves = leaf_phase_waves(&families, family_clade_offsets, wave_cap)?;
@@ -205,7 +265,7 @@ fn invalid<T>(message: impl Into<String>) -> Result<T, PreprocessError> {
     Err(PreprocessError::InvalidInput(message.into()))
 }
 
-fn family_schedule_data(ccp: &ScheduleCcp) -> Result<FamilySchedule, PreprocessError> {
+fn family_schedule_data(ccp: ScheduleCcpView<'_>) -> Result<FamilySchedule, PreprocessError> {
     let c = ccp.c;
     let n = ccp.n_splits;
     let root_id = as_clade_id("root_clade_id", ccp.root_clade_id, c)?;
@@ -247,7 +307,7 @@ fn family_schedule_data(ccp: &ScheduleCcp) -> Result<FamilySchedule, PreprocessE
         }
     }
 
-    let split_counts = if let Some(counts) = &ccp.split_counts {
+    let split_counts = if let Some(counts) = ccp.split_counts {
         if counts.len() != c {
             return invalid(format!(
                 "split_counts has length {} but C={c}",
