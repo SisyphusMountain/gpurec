@@ -336,6 +336,10 @@ Rejected follow-ups:
   `2.608110374014359s`, `2.5429647190030665s`, `2.55199750198517s`, and
   `2.5878938979585654s`; the one low sample overlapped existing noise, while
   the median was worse than the documented route.
+- Disabling the fused final-Pibar path and falling back to a separate parent-walk
+  kernel was worse on this shape.  A fixed4 steady-state sample measured
+  `1.2893211269984022s` median after a `1.7043520050356165s` warmup, so the
+  fused final-Pibar store remains enabled.
 
 Differences from HOGENOM:
 
