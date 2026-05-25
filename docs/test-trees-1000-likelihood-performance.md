@@ -33,11 +33,12 @@ row in the wave has a split contribution; on this generated layout all `973`
 split waves are fully covered.  The first leaf-state Pi iteration now uses a
 specialized kernel with species subtree intervals instead of paying a uniform
 Pibar parent-chain walk from a one-hot leaf state, and the DTS species tile cap
-is `512` for this large-`S` shape.  The eq1 DTS forward kernel no longer
-specializes on the wave-specific `n_eq1` split count, removing many identical
-first-use Triton variants from the first likelihood pass.  The no-callback Pi
-path also avoids the per-wave progress shim calls used only by diagnostic
-tracing.  On the local 32-core host, the cold
+is `512` for this large-`S` shape.  The DTS forward kernels no longer specialize
+on wave-specific eq1 split counts or ge2 group/tile counts that are only used as
+launch sizes or pointer strides, removing many identical first-use Triton
+variants from the first likelihood pass.  The no-callback Pi path also avoids
+the per-wave progress shim calls used only by diagnostic tracing.  On the local
+32-core host, the cold
 benchmark also pins native preprocessing and retained layout generation to `16`
 CPU threads; that is faster for this generated dataset than the default global
 Rayon pool.
@@ -68,20 +69,21 @@ Cold result:
 
 | Stage | Time |
 |---|---:|
-| model init / first resident batch | `0.9940999419777654s` |
-| first fixed4 likelihood pass plus lazy remaining batches | `1.3551118019968271s` |
-| total to first fixed4 likelihood | `2.3492117439745925s` |
+| model init / first resident batch | `0.9708010379690677s` |
+| first fixed4 likelihood pass plus lazy remaining batches | `1.34020919498289s` |
+| total to first fixed4 likelihood | `2.3110102329519577s` |
 
 Cold first-pass fidelity samples with the same construction path:
 
 | Pi/E/Neumann budget | total to first likelihood | loss bits | delta vs fixed128 |
 |---:|---:|---:|---:|
-| 4 | `2.3492117439745925s` | `2156427.0` | `670.25` |
-| 6 | `2.8393524100538343s` | `2157095.0` | `2.25` |
-| 8 | `3.356129075982608s` | `2157097.25` | `0.0` |
+| 4 | `2.3110102329519577s` | `2156427.0` | `670.25` |
+| 6 | `2.914167365990579s` | `2157095.0` | `2.25` |
+| 8 | `3.3453044299967587s` | `2157097.25` | `0.0` |
 
-Before removing the unused `n_eq1` constexpr from the eq1 DTS kernel signature,
-the retained-layout fixed4 route took about `2.55s` to the first likelihood.
+Before removing the unused DTS compile-shape arguments from the eq1 and ge2
+kernel signatures, the retained-layout fixed4 route took about `2.55s` to the
+first likelihood.
 Before pinning native preprocessing and retained layout generation to `16` CPU
 threads on this host, the first-leaf-specialized route took about `2.678s` to
 the first fixed4 likelihood.  Before specializing the first leaf-state Pi
@@ -115,7 +117,10 @@ used for final-Pibar skipping are small Python-side cleanups rather than large
 kernel wins.  Fixed4 steady-state seven-repetition samples measured
 `1.282079865981359s`, `1.2819753359653987s`, and
 `1.2804367360076867s` medians before the eq1 DTS specialization cleanup, and
-`1.2814912779722363s` afterward, with unchanged loss.
+`1.2814912779722363s` after removing the eq1 split-count specialization.  After
+also moving ge2 group/tile shape arguments to runtime values, a shorter
+three-repetition steady check measured `1.2800687580020167s` median, with
+unchanged loss.
 Two fresh paired samples kept lazy construction and eager materialization within
 noise: lazy totals were about `2.580s` and `2.538s`, while materialize-all totals
 were about `2.559s` and `2.592s`.  Materialize-all lowers the first likelihood
@@ -123,11 +128,10 @@ pass itself by about `50ms`, but the up-front materialization cost cancels that
 on the end-to-end total.  After removing `n_eq1` from the DTS eq1 compile shape,
 lazy cold totals repeated at `2.3492117439745925s` and `2.3551931240945123s`;
 materialize-all reached `2.3555265389732085s` and kept reserved memory lower
-than the lazy all-prefetch sample.  The first local run immediately after
-changing the Triton signature paid a one-time cache rebuild and is not a route
-timing sample: model build was `1.253343741002027s`, the first pass was
-`7.724968408991117s`, and the second pass in the same process was back to
-`1.2759294480201788s`.
+than the lazy all-prefetch sample.  After the ge2 compile-shape cleanup, lazy
+fixed4 totals measured `2.3258029819699004s`, `2.326640389917884s`, and
+`2.3110102329519577s`.  The first local runs immediately after changing Triton
+signatures paid one-time cache rebuilds and are not route timing samples.
 
 Steady-state command:
 
@@ -165,8 +169,8 @@ three-repetition medians after one warmup; the `128` row is a single validation
 sample.
 
 The last detailed fixed4 bottleneck profile on the same resident layout
-predates the `n_eq1` DTS signature cleanup, but it still identifies the dominant
-kernel buckets:
+predates the DTS signature cleanup, but it still identifies the dominant kernel
+buckets:
 
 | Component | Time |
 |---|---:|
@@ -463,9 +467,11 @@ Differences from HOGENOM:
   (`4.81M` rows across `973` split waves versus HOGENOM's `0.94M` rows across
   `244` split waves in the accepted `depth_first_fit` layout), so the cold
   likelihood win is more visible here.
-- The same split-wave asymmetry makes the `n_eq1` compile-shape cleanup more
-  valuable on `test_trees_1000`: hundreds of pure single-child split waves no
-  longer generate redundant eq1 DTS variants during the first likelihood pass.
+- The same split-wave asymmetry makes the DTS compile-shape cleanup more valuable
+  on `test_trees_1000`: hundreds of pure single-child split waves no longer
+  generate redundant eq1 DTS variants during the first likelihood pass, and the
+  smaller number of mixed/multi-child waves no longer specialize ge2 kernels on
+  group/tile counts.
 - The first-leaf-state specialization also applies to HOGENOM, but it is more
   important on `test_trees_1000`: the generated benchmark has `1.61M` leaf rows
   across `206` leaf waves, while the local HOGENOM depth-first fixture measured
