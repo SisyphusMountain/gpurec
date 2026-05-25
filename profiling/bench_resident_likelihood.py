@@ -63,6 +63,16 @@ def _parse_fixed_iters(value: str) -> list[int]:
     return budgets
 
 
+def _parse_prefetch_batches(value: str) -> int | str:
+    text = value.strip().lower()
+    if text in ("all", "none"):
+        return text
+    depth = int(text)
+    if depth < 0:
+        raise argparse.ArgumentTypeError("prefetch batch depth must be >= 0")
+    return "none" if depth == 0 else depth
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dataset", type=Path, default=Path("tests/data/test_trees_1000"))
@@ -105,7 +115,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--reps", type=int, default=5)
     parser.add_argument(
         "--prefetch-batches",
-        choices=("all", "none"),
+        type=_parse_prefetch_batches,
         default="all",
     )
     return parser

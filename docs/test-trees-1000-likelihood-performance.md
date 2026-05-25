@@ -216,6 +216,11 @@ Rejected follow-ups:
 - Increasing lazy prefetch workers from one to two made the fixed4 loss pass a
   few milliseconds faster in isolation, but the four-process cold total stayed
   around `3.178s`; three and four workers were slower.
+- Finite lazy prefetch depths also lost to `--prefetch-batches all` on the cold
+  fixed4 route.  Single samples with depths `4`, `8`, and `12` had first
+  likelihood passes of `1.6143241939716972s`, `1.6010761460056528s`, and
+  `1.5955134850228205s`; the documented `all` route keeps the pass near
+  `1.57s` while hiding remaining batch construction.
 - Putting the small tail batch first made the cold path worse (`3.406573s` in
   one sample) and increased reserved memory to about `21.4 GiB`.  The allocator
   behaves better when the first resident Pi batch is full sized.
