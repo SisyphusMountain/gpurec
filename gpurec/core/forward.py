@@ -357,18 +357,18 @@ def Pi_wave_forward(
 
     fuse_final_pibar = True
     specialize_nonleaf_leaf_term = True
+    emit_progress = progress_callback is not None
 
     def _progress(event: str, wave_index: int | None = None,
                   local_iter: int | None = None, meta=None) -> None:
-        if progress_callback is not None:
-            progress_callback(
-                event,
-                wave_index,
-                len(wave_metas),
-                local_iter,
-                fixed_iters,
-                meta,
-            )
+        progress_callback(
+            event,
+            wave_index,
+            len(wave_metas),
+            local_iter,
+            fixed_iters,
+            meta,
+        )
 
     pi_wave_iterations = [fixed_iters] * len(wave_metas)
     pi_wave_converged = [False] * len(wave_metas)
@@ -461,7 +461,8 @@ def Pi_wave_forward(
                         pi_out[root_rows],
                         dim=-1,
                     )
-            _progress("pi_iter", wave_index, local_iter + 1, meta)
+            if emit_progress:
+                _progress("pi_iter", wave_index, local_iter + 1, meta)
             if check_convergence:
                 if max_diff_scratch is None:
                     raise RuntimeError(
@@ -491,11 +492,14 @@ def Pi_wave_forward(
                 )
 
     with _nvtx_range("Pi wave forward v2"):
-        _progress("start")
+        if emit_progress:
+            _progress("start")
         for wave_index, meta in enumerate(wave_metas):
-            _progress("wave_start", wave_index, None, meta)
+            if emit_progress:
+                _progress("wave_start", wave_index, None, meta)
             if meta['has_splits']:
-                _progress("dts_start", wave_index, None, meta)
+                if emit_progress:
+                    _progress("dts_start", wave_index, None, meta)
                 dts_r = _compute_dts_cross(
                     Pi, Pibar, meta, sp_child1, sp_child2,
                     log_pD_param, log_pS_param, S, device, dtype,
@@ -510,7 +514,8 @@ def Pi_wave_forward(
                 meta, dts_r, uniform_leaf_logp, DL_w, SL1_w, SL2_w,
                 Ebar_w, E_w, mt_w, wave_index,
             )
-        _progress("done")
+        if emit_progress:
+            _progress("done")
 
     with _nvtx_range("Pi finalize permute"):
         if output_intent.emit_root_rows:

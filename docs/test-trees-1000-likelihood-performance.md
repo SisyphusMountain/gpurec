@@ -33,7 +33,9 @@ row in the wave has a split contribution; on this generated layout all `973`
 split waves are fully covered.  The first leaf-state Pi iteration now uses a
 specialized kernel with species subtree intervals instead of paying a uniform
 Pibar parent-chain walk from a one-hot leaf state, and the DTS species tile cap
-is `512` for this large-`S` shape.  On the local 32-core host, the cold
+is `512` for this large-`S` shape.  The no-callback Pi path also avoids the
+per-wave progress shim calls used only by diagnostic tracing.  On the local
+32-core host, the cold
 benchmark also pins native preprocessing and retained layout generation to `16`
 CPU threads; that is faster for this generated dataset than the default global
 Rayon pool.
@@ -103,6 +105,12 @@ chunked layouts, the same clade-first lazy path took `13.062108609999996s`, and
 the HOGENOM-style `depth_first_fit` path took `17.548588357982226s` in a manual
 timing split.  The construction path and per-batch Pi initialization are
 therefore the main end-to-end wins for this generated dataset.
+
+Skipping no-op progress callback dispatch in the normal no-callback Pi path is
+a small Python-side cleanup rather than a large kernel win.  A fixed4
+steady-state seven-repetition sample measured `1.282079865981359s` median with
+unchanged loss, while cold first-likelihood samples stayed in the current
+`1.577s` to `1.580s` band.
 
 Steady-state command:
 
