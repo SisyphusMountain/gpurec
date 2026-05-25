@@ -232,17 +232,22 @@ def _summary_row(
     budget: int,
     measure: str,
     rows: list[dict[str, Any]],
+    build_s: float,
 ) -> dict[str, Any]:
     times = [float(row["elapsed_s"]) for row in rows]
     last = rows[-1]
+    first_measured_s = float(rows[0]["elapsed_s"])
+    median_s = statistics.median(times)
     row: dict[str, Any] = {
         "event": "summary",
         "measure": measure,
         "budget": budget,
         "reps": len(rows),
-        "median_s": statistics.median(times),
+        "median_s": median_s,
         "mean_s": statistics.mean(times),
         "min_s": min(times),
+        "build_plus_first_measured_s": build_s + first_measured_s,
+        "build_plus_median_s": build_s + median_s,
         "loss_bits": float(last["loss_bits"]),
         "families": int(model.n_families),
         "species": int(model.n_species),
@@ -304,6 +309,7 @@ def main(argv: list[str] | None = None) -> int:
         model.materialize_batches()
         _synchronize()
         materialize_s = time.perf_counter() - materialize_started
+    build_s = model_init_s + materialize_s
     _synchronize()
     print(
         json.dumps(
@@ -312,7 +318,7 @@ def main(argv: list[str] | None = None) -> int:
                 "dataset": str(dataset),
                 "mode": args.mode,
                 "dtype": str(args.dtype).replace("torch.", ""),
-                "build_s": model_init_s + materialize_s,
+                "build_s": build_s,
                 "model_init_s": model_init_s,
                 "materialize_s": materialize_s,
                 "materialize_batches": args.materialize_batches,
@@ -344,7 +350,13 @@ def main(argv: list[str] | None = None) -> int:
             )
             print(
                 json.dumps(
-                    _summary_row(model=model, budget=budget, measure=measure, rows=rows),
+                    _summary_row(
+                        model=model,
+                        budget=budget,
+                        measure=measure,
+                        rows=rows,
+                        build_s=build_s,
+                    ),
                     sort_keys=True,
                 ),
                 flush=True,
