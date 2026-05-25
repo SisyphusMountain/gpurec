@@ -233,6 +233,7 @@ def _summary_row(
     measure: str,
     rows: list[dict[str, Any]],
     build_s: float,
+    cumulative_first_measured_s: float | None,
 ) -> dict[str, Any]:
     times = [float(row["elapsed_s"]) for row in rows]
     last = rows[-1]
@@ -256,6 +257,8 @@ def _summary_row(
         "max_batch_waves": max(meta.wave_count for meta in model.batch_metadata),
         "max_batch_wave_size": max(meta.max_wave_size for meta in model.batch_metadata),
     }
+    if cumulative_first_measured_s is not None:
+        row["cumulative_first_measured_s"] = cumulative_first_measured_s
     if "grad_inf" in last:
         row["grad_inf"] = float(last["grad_inf"])
     if torch.cuda.is_available():
@@ -332,6 +335,7 @@ def main(argv: list[str] | None = None) -> int:
                 "max_wave_size": args.max_wave_size,
                 "max_root_wave_size": args.max_root_wave_size,
                 "max_dts_partial_rows": args.max_dts_partial_rows,
+                "prefetch_batches": args.prefetch_batches,
             },
             sort_keys=True,
         ),
@@ -339,6 +343,7 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     measures = ("loss-only", "loss-grad") if args.measure == "both" else (args.measure,)
+    cumulative_first_measured_by_measure = {measure: build_s for measure in measures}
     for budget in args.fixed_iters:
         for measure in measures:
             rows = _timed_rows(
@@ -348,6 +353,14 @@ def main(argv: list[str] | None = None) -> int:
                 warmups=args.warmups,
                 reps=args.reps,
             )
+            cumulative_first_measured_s: float | None = None
+            if rows:
+                cumulative_first_measured_by_measure[measure] += float(
+                    rows[0]["elapsed_s"]
+                )
+                cumulative_first_measured_s = cumulative_first_measured_by_measure[
+                    measure
+                ]
             print(
                 json.dumps(
                     _summary_row(
@@ -356,6 +369,7 @@ def main(argv: list[str] | None = None) -> int:
                         measure=measure,
                         rows=rows,
                         build_s=build_s,
+                        cumulative_first_measured_s=cumulative_first_measured_s,
                     ),
                     sort_keys=True,
                 ),

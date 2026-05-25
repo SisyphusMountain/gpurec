@@ -264,11 +264,12 @@ Rejected follow-ups:
 - Increasing lazy prefetch workers from one to two made the fixed4 loss pass a
   few milliseconds faster in isolation, but the four-process cold total stayed
   around `3.178s`; three and four workers were slower.
-- Finite lazy prefetch depths also lost to `--prefetch-batches all` on the cold
-  fixed4 route.  Single samples with depths `4`, `8`, and `12` had first
-  likelihood passes of `1.6143241939716972s`, `1.6010761460056528s`, and
-  `1.5955134850228205s`; at that point the documented `all` route kept the pass
-  near `1.57s` while hiding remaining batch construction.
+- Finite lazy prefetch depths are now mostly a memory tradeoff rather than a
+  speed win.  After the DTS compile-shape cleanup, `--prefetch-batches all`
+  still produced the best fixed4 cold samples (`2.307332646974828s` and
+  `2.308705120929517s`), but depth `4` was close (`2.317219710967038s`,
+  `2.319942276983056s`, and `2.324342556006741s`) while reserving about
+  `14.34 GiB` instead of `21.36 GiB`.
 - Putting the small tail batch first made the cold path worse (`3.406573s` in
   one sample) and increased reserved memory to about `21.4 GiB`.  The allocator
   behaves better when the first resident Pi batch is full sized.
@@ -284,16 +285,20 @@ Rejected follow-ups:
 - Adaptive fixed-point checks were slower than fixed budgets here.  Accurate
   `max=8`, `check_interval=4` took about `3.903s`, and lower-overhead settings
   either hit the maximum or added check overhead.
-- The resident uniform kernel warmup trades memory for cold latency.  The cold
-  fixed4 route now reserves about `16.7 GiB`, up from about `14.5 GiB` before
-  the extra resident-kernel warmup.
+- The resident uniform kernel warmup and all-batch lazy prefetch trade memory
+  for cold latency.  The fastest `--prefetch-batches all` fixed4 samples reserve
+  about `21.36 GiB`; a depth-`4` prefetch route keeps the same math path near
+  `2.32s` while reserving about `14.34 GiB`.
 - Deferring the resident warmup wait until after prefetch scheduling did not
   improve the median.  Caching E-derived Pi constants did not move the measured
   path, and `torch.inference_mode()` is not valid here because sparse uniform
   ancestor matmul attempts to update inference tensor version counters.
-- After the DTS-fill change, nearby clade budgets `310000`, `318000`, and
-  `320000` remained roughly tied or slower in repeated cold samples.  `305000`
-  and `325000` still hit severe shape cliffs.
+- After the DTS compile-shape cleanup, nearby and larger clade budgets still do
+  not clearly beat `315000`.  Current single fixed4 cold samples measured
+  `2.3146543949842453s` at `310000`, `2.3289775589946657s` at `400000`, and
+  `2.373008435999509s` at `500000`; `330000` reduced the layout to `20`
+  batches and reached `2.3149897510302253s` in one sample, but repeats stayed
+  around `2.324s` to `2.397s`.
 - DTS species tile caps of `128` and `2048` lost on the steady fixed4 path.
   `2048` also paid an unacceptable first compile.  The `512` cap was the best
   measured option for this `S=1999` generated benchmark.
@@ -341,11 +346,12 @@ Rejected follow-ups:
 - Disabling lazy prefetch/resident kernel warmup still loses.  It lowers model
   construction to about `1.01s`, but the first likelihood pass grows to about
   `1.90s`; the current prefetch/warmup path keeps first likelihood near
-  `1.58s`.
-- The post-leaf-specialization clade-budget resweep reconfirmed the sharp shape
-  cliffs around the current route.  Single cold fixed4 samples at `300000`,
-  `310000`, `318000`, `320000`, and `325000` all paid first likelihood times
-  from about `14s` to `34s`, while `315000` stayed near `1.58s`.
+  `1.34s`.
+- The latest clade-budget sweep shows the current route is no longer dominated
+  by first-use shape cliffs at neighboring budgets, but the lower batch counts
+  from larger budgets do not translate into a faster first fixed4 likelihood.
+  The pass itself stays near `1.34s`; model construction and allocator noise
+  decide the cold total.
 - Rechecking `max_wave_size` after the current Pi fast paths reconfirmed that
   `8192` is the only good measured shape in the local sweep.  Cold fixed4 first
   likelihood samples were `14.915235649968963s` at `4096`,
@@ -507,11 +513,11 @@ Differences from HOGENOM:
   `0.07s` beyond the copy-based first non-leaf path.  The same optimization
   should help HOGENOM too, but its accepted end-to-end route has fewer resident
   batches and is dominated more by optimizer/gradient work.
-- Larger clade budgets and larger wave caps hurt the first likelihood here.
-  `250000`, `280000`, `300000`, `310000`, `312000`, `320000`, `330000`,
-  `350000`, `400000`, `500000`, and non-`8192` max-wave samples all hit much
-  slower first-pass timings in earlier sweeps.  After the local-DTS input
-  change, `318000` was roughly tied with `315000` for fixed4 and used less
-  reserved memory, but it did not clearly improve the fixed8 cold sample.  The
+- Larger clade budgets and larger wave caps do not buy the same kind of win
+  here that the HOGENOM high-memory route found.  Current `330000` to `500000`
+  clade-budget samples reduce the number of resident batches from `21` down to
+  as few as `13`, but fixed4 cold totals stay around `2.32s` to `2.37s` or
+  worse because the larger wave envelopes and allocation behavior offset the
+  lower batch count.  The
   `clade_first_fit`, `315000` clade-budget, `8192` max-wave policy remains the
   main measured route while avoiding those shape cliffs.
