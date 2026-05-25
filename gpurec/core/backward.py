@@ -93,6 +93,7 @@ def Pi_wave_backward(
     uniform_pibar_row_max=None,
     origination_probs=None,
     origination_probs_prepared: bool = False,
+    initial_v_pi=None,
 ):
     """Wave-decomposed backward pass for implicit gradient computation.
 
@@ -122,6 +123,8 @@ def Pi_wave_backward(
         origination_probs_prepared: when True, skip validation/renormalization
             for model-owned origination probabilities already prepared at
             construction time.
+        initial_v_pi: optional [C, S] previous Pi adjoint used to warm-start
+            each wave's self-loop fixed-point solve.
 
     Returns:
         dict with:
@@ -153,6 +156,15 @@ def Pi_wave_backward(
         raise RuntimeError("Pi_wave_backward fused path requires float32 or float64")
     if S <= 256:
         raise RuntimeError("Pi_wave_backward fused path requires S > 256")
+    if initial_v_pi is not None:
+        if not torch.is_tensor(initial_v_pi):
+            raise TypeError("initial_v_pi must be a tensor when provided")
+        if tuple(initial_v_pi.shape) != (int(C), int(S)):
+            raise ValueError(
+                f"initial_v_pi shape {tuple(initial_v_pi.shape)} does not match "
+                f"Pi shape {(int(C), int(S))}"
+            )
+        initial_v_pi = initial_v_pi.to(device=device, dtype=dtype).contiguous()
 
     dts_grad_mt_two_stage_tile_splits = 128
 
@@ -302,6 +314,7 @@ def Pi_wave_backward(
     n_clades_skipped = 0
 
     accumulated_rhs = torch.zeros(C, S, device=device, dtype=dtype)
+    solved_v_pi = torch.zeros_like(accumulated_rhs)
     if torch.is_tensor(root_clade_ids_perm):
         root_ids_device = root_clade_ids_perm.to(device=device, dtype=torch.long)
     else:
@@ -482,7 +495,13 @@ def Pi_wave_backward(
             compact_level_child1=compact_level_child1,
             compact_level_child2=compact_level_child2,
             self_loop_grad_targets=self_loop_grad_targets,
+            initial_v=None if initial_v_pi is None else initial_v_pi[ws:we],
         )
+        solved_slice = solved_v_pi[ws:we]
+        if active_mask is None:
+            solved_slice.copy_(v_k)
+        else:
+            solved_slice.copy_(torch.where(active_mask[:, None], v_k, 0.0))
         self_loop_grads_accumulated = triton_accum_self_loop_grads
 
         if not self_loop_grads_accumulated:
@@ -584,7 +603,7 @@ def Pi_wave_backward(
             )
 
     result = {
-        'v_Pi': accumulated_rhs,
+        'v_Pi': solved_v_pi,
         'grad_E': grad_E_acc,
         'grad_Ebar': grad_Ebar_acc,
         'grad_E_s1': grad_E_s1_acc,
@@ -598,6 +617,7 @@ def Pi_wave_backward(
         'n_clades_total': n_clades_total,
         'n_clades_skipped': n_clades_skipped,
         'n_clades_active': n_clades_total - n_clades_skipped,
+        'used_pi_initial_guess': initial_v_pi is not None,
     }
     # Unwrap G=1 results back to original shapes.
     if _auto_wrapped:

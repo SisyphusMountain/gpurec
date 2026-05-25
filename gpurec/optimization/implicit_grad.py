@@ -152,6 +152,8 @@ def implicit_grad_loglik_vjp_wave(
     gradient_convergence_tol: float = -1.0,
     gradient_convergence_rtol: float = 0.0,
     gradient_convergence_check_interval: int = 4,
+    pi_adjoint_initial_guess: Optional[torch.Tensor] = None,
+    return_aux: bool = False,
 ):
     """Internal API bridge for wave-decomposed ∇θ logL computation.
 
@@ -187,9 +189,10 @@ def implicit_grad_loglik_vjp_wave(
             uniform_pibar_row_max=uniform_pibar_row_max,
             origination_probs=origination_probs,
             origination_probs_prepared=origination_probs_prepared,
+            initial_v_pi=pi_adjoint_initial_guess,
         )
 
-        grad_theta, statsG = _e_adjoint_and_theta_vjp(
+        grad_theta, statsG, aux = _e_adjoint_and_theta_vjp(
             pi_bwd, E_star, Ebar, E_s1, E_s2,
             log_pS, log_pD, log_pL,
             max_transfer_mat, species_helpers, root_clade_ids_perm,
@@ -199,23 +202,32 @@ def implicit_grad_loglik_vjp_wave(
             ancestors_T=ancestors_T,
             origination_probs=origination_probs,
             origination_probs_prepared=origination_probs_prepared,
+            return_aux=True,
         )
         statsG.neumann_terms = int(terms)
-        return grad_theta, statsG
+        aux = dict(aux)
+        aux["pi_adjoint"] = pi_bwd["v_Pi"].detach()
+        aux["used_pi_initial_guess"] = bool(pi_bwd.get("used_pi_initial_guess", False))
+        return grad_theta, statsG, aux
 
     if gradient_convergence_tol < 0.0:
-        return compute_with_terms(neumann_terms)
+        grad_theta, statsG, aux = compute_with_terms(neumann_terms)
+        if return_aux:
+            return grad_theta, statsG, aux
+        return grad_theta, statsG
 
     previous_grad = None
     final_grad = None
     final_stats = None
+    final_aux = None
     for terms in _iteration_schedule(
         neumann_terms,
         gradient_convergence_check_interval,
     ):
-        grad_theta, statsG = compute_with_terms(terms)
+        grad_theta, statsG, aux = compute_with_terms(terms)
         final_grad = grad_theta
         final_stats = statsG
+        final_aux = aux
         if previous_grad is not None:
             delta, scale = _change_metrics(previous_grad, grad_theta)
             threshold = gradient_convergence_tol + gradient_convergence_rtol * scale
@@ -226,8 +238,10 @@ def implicit_grad_loglik_vjp_wave(
                 break
         previous_grad = grad_theta.detach()
 
-    if final_grad is None or final_stats is None:
+    if final_grad is None or final_stats is None or final_aux is None:
         raise RuntimeError("internal error: gradient convergence loop did not run")
+    if return_aux:
+        return final_grad, final_stats, final_aux
     return final_grad, final_stats
 
 
@@ -243,6 +257,7 @@ def _e_adjoint_and_theta_vjp(
     ancestors_T=None,
     origination_probs=None,
     origination_probs_prepared: bool = False,
+    return_aux: bool = False,
 ):
     """E adjoint solve + theta VJP from pre-computed Pi backward result.
 
@@ -386,4 +401,6 @@ def _e_adjoint_and_theta_vjp(
         )[0]
 
     grad_theta = (grad_theta_pi + gtheta_E).detach()
+    if return_aux:
+        return grad_theta, statsG, {}
     return grad_theta, statsG

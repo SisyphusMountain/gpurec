@@ -402,6 +402,7 @@ def _wave_backward_uniform_2d_precompute_kernel(
 def _wave_backward_uniform_2d_jt_kernel(
     term_in_ptr,
     term_out_ptr,
+    rhs_update_ptr,
     active_mask_ptr,
     diag_ptr,
     pibar_coeff_ptr,
@@ -425,6 +426,7 @@ def _wave_backward_uniform_2d_jt_kernel(
     N_LEVELS: tl.constexpr,
     USE_ACTIVE_MASK: tl.constexpr,
     SKIP_INACTIVE_SCRATCH_ZERO: tl.constexpr,
+    FIXED_POINT_UPDATE: tl.constexpr,
     DTYPE: tl.constexpr,
     USE_CHILD_EDGE_SELF_LOOP: tl.constexpr,
 ):
@@ -534,8 +536,16 @@ def _wave_backward_uniform_2d_jt_kernel(
 
         result = tl.load(term_out_ptr + offsets, mask=mask, other=0.0).to(DTYPE)
 
-    v_prev = tl.load(v_k_ptr + offsets, mask=mask, other=0.0).to(DTYPE)
-    tl.store(v_k_ptr + offsets, v_prev + result, mask=mask)
+    if FIXED_POINT_UPDATE:
+        rhs_val = tl.load(rhs_update_ptr + offsets, mask=mask, other=0.0).to(DTYPE)
+        tl.store(
+            v_k_ptr + offsets,
+            tl.where(mask, rhs_val + result, tl.zeros_like(result)),
+            mask=store_mask,
+        )
+    else:
+        v_prev = tl.load(v_k_ptr + offsets, mask=mask, other=0.0).to(DTYPE)
+        tl.store(v_k_ptr + offsets, v_prev + result, mask=mask)
 
 
 @triton.jit
@@ -785,6 +795,7 @@ def _wave_backward_uniform_2d(
     compact_level_child1,
     compact_level_child2,
     self_loop_grad_targets=None,
+    initial_v=None,
 ):
     """Retained 2D row-block/full-species tree-reduction self-loop."""
     if Pi_star.device.type != "cuda":
@@ -918,39 +929,82 @@ def _wave_backward_uniform_2d(
     )
 
     jt_options = {"num_warps": 2}
-    for n in range(int(neumann_terms)):
-        term_in = rhs if n == 0 else (spec_buf if n % 2 == 1 else term_buf)
-        term_out = spec_buf if n % 2 == 0 else term_buf
-        _wave_backward_uniform_2d_jt_kernel[(n_row_blocks,)](
-            term_in,
-            term_out,
-            active_mask if active_mask is not None else rhs,
-            aw0,
-            aw1,
-            aw2,
-            aw3,
-            aw4,
-            sp_child1,
-            sp_child2,
-            sp_parent,
-            compact_level_ptr,
-            compact_level_parents,
-            compact_level_child1,
-            compact_level_child2,
-            pibar_corr,
-            v_k,
-            W,
-            S,
-            block_w,
-            block_s,
-            block_nodes,
-            compact_level_ptr.numel() - 1,
-            USE_ACTIVE_MASK=bool(active_mask is not None),
-            SKIP_INACTIVE_SCRATCH_ZERO=bool(skip_inactive_scratch_zero),
-            DTYPE=_tl_float_dtype(dtype),
-            USE_CHILD_EDGE_SELF_LOOP=bool(use_child_edge_self_loop),
-            **jt_options,
-        )
+    if initial_v is not None:
+        if tuple(initial_v.shape) != scratch_shape:
+            raise ValueError(
+                f"initial_v shape {tuple(initial_v.shape)} does not match "
+                f"wave scratch shape {scratch_shape}"
+            )
+        v_k.copy_(initial_v.to(device=device, dtype=dtype).contiguous())
+        for _n in range(int(neumann_terms)):
+            _wave_backward_uniform_2d_jt_kernel[(n_row_blocks,)](
+                v_k,
+                spec_buf,
+                rhs,
+                active_mask if active_mask is not None else rhs,
+                aw0,
+                aw1,
+                aw2,
+                aw3,
+                aw4,
+                sp_child1,
+                sp_child2,
+                sp_parent,
+                compact_level_ptr,
+                compact_level_parents,
+                compact_level_child1,
+                compact_level_child2,
+                pibar_corr,
+                v_k,
+                W,
+                S,
+                block_w,
+                block_s,
+                block_nodes,
+                compact_level_ptr.numel() - 1,
+                USE_ACTIVE_MASK=bool(active_mask is not None),
+                SKIP_INACTIVE_SCRATCH_ZERO=bool(skip_inactive_scratch_zero),
+                FIXED_POINT_UPDATE=True,
+                DTYPE=_tl_float_dtype(dtype),
+                USE_CHILD_EDGE_SELF_LOOP=bool(use_child_edge_self_loop),
+                **jt_options,
+            )
+    else:
+        for n in range(int(neumann_terms)):
+            term_in = rhs if n == 0 else (spec_buf if n % 2 == 1 else term_buf)
+            term_out = spec_buf if n % 2 == 0 else term_buf
+            _wave_backward_uniform_2d_jt_kernel[(n_row_blocks,)](
+                term_in,
+                term_out,
+                rhs,
+                active_mask if active_mask is not None else rhs,
+                aw0,
+                aw1,
+                aw2,
+                aw3,
+                aw4,
+                sp_child1,
+                sp_child2,
+                sp_parent,
+                compact_level_ptr,
+                compact_level_parents,
+                compact_level_child1,
+                compact_level_child2,
+                pibar_corr,
+                v_k,
+                W,
+                S,
+                block_w,
+                block_s,
+                block_nodes,
+                compact_level_ptr.numel() - 1,
+                USE_ACTIVE_MASK=bool(active_mask is not None),
+                SKIP_INACTIVE_SCRATCH_ZERO=bool(skip_inactive_scratch_zero),
+                FIXED_POINT_UPDATE=False,
+                DTYPE=_tl_float_dtype(dtype),
+                USE_CHILD_EDGE_SELF_LOOP=bool(use_child_edge_self_loop),
+                **jt_options,
+            )
 
     if accum_self_loop_grads:
         (
@@ -1050,6 +1104,7 @@ def wave_backward_uniform_fused(
     compact_level_child1=None,
     compact_level_child2=None,
     self_loop_grad_targets=None,
+    initial_v=None,
 ):
     """Fused backward: precompute + Neumann + param VJP in one kernel per wave.
 
@@ -1141,6 +1196,7 @@ def wave_backward_uniform_fused(
         compact_level_child1=compact_level_child1,
         compact_level_child2=compact_level_child2,
         self_loop_grad_targets=self_loop_grad_targets,
+        initial_v=initial_v,
     )
 
 
