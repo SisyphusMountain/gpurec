@@ -831,6 +831,7 @@ def _warm_resident_uniform_kernels(
     try:
         from gpurec.core.kernels.dts_fused import dts_fused_parent_reduced
         from gpurec.core.kernels.wave_step import (
+            wave_step_uniform_initial_leaf_fused_into,
             wave_pibar_uniform_parent_fused,
             wave_step_uniform_fused_into,
         )
@@ -843,6 +844,8 @@ def _warm_resident_uniform_kernels(
             sp_child1 = topology["sp_child1"]
             sp_child2 = topology["sp_child2"]
             sp_parent = topology["sp_parent"]
+            sp_subtree_start = topology["sp_subtree_start"]
+            sp_subtree_end = topology["sp_subtree_end"]
             max_ancestor_depth = int(topology["max_ancestor_depth"])
             W = 1
             C = 2
@@ -881,6 +884,14 @@ def _warm_resident_uniform_kernels(
                 leaf_logp=leaf_logp,
                 has_leaf_term=True,
                 initial_state=True,
+            )
+            wave_step_uniform_initial_leaf_fused_into(
+                Pibar, 0, W, S,
+                mt, DL, Ebar, E, SL1, SL2,
+                sp_child1, sp_child2,
+                sp_subtree_start, sp_subtree_end,
+                leaf_species,
+                leaf_logp,
             )
             wave_step_uniform_fused_into(
                 Pibar, Pi, Pibar, 0, W, S,

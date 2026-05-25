@@ -327,6 +327,177 @@ def _wave_step_uniform_kernel(
             tl.store(Pibar_out_ptr + global_base + s_offs, pibar_w, mask=mask)
 
 
+@triton.jit
+def _wave_step_initial_leaf_kernel(
+    Pi_new_ptr,
+    ws,
+    mt_ptr,
+    DL_const_ptr,
+    Ebar_ptr,
+    E_ptr,
+    SL1_const_ptr,
+    SL2_const_ptr,
+    sp_child1_ptr,
+    sp_child2_ptr,
+    sp_subtree_start_ptr,
+    sp_subtree_end_ptr,
+    leaf_species_ptr,
+    leaf_logp_ptr,
+    family_idx_ptr,
+    S: tl.constexpr,
+    stride: tl.constexpr,
+    CONST_ROW_STRIDE: tl.constexpr,
+    CONST_SPECIES_STRIDE: tl.constexpr,
+    BLOCK_S: tl.constexpr,
+    LEAF_LOGP_MODE: tl.constexpr,
+    FP64: tl.constexpr,
+    CONST_LAYOUT: tl.constexpr = 0,
+):
+    DTYPE = tl.float64 if FP64 else tl.float32
+    NEG_LARGE = -1e300 if FP64 else -1e30
+
+    w = tl.program_id(0)
+    s_start = tl.program_id(1) * BLOCK_S
+    s_offs = s_start + tl.arange(0, BLOCK_S)
+    mask = s_offs < S
+    out_base = w * stride
+
+    family = tl.full((), 0, dtype=tl.int64)
+    const_base = 0
+    if CONST_LAYOUT == 2:
+        family = tl.load(family_idx_ptr + ws + w)
+        const_base = family * CONST_ROW_STRIDE
+
+    leaf_species = tl.load(leaf_species_ptr + ws + w)
+    leaf_valid = (leaf_species >= 0) & (leaf_species < S)
+    leaf_start = tl.load(
+        sp_subtree_start_ptr + leaf_species,
+        mask=leaf_valid,
+        other=0,
+    )
+    leaf_end = tl.load(
+        sp_subtree_end_ptr + leaf_species,
+        mask=leaf_valid,
+        other=0,
+    )
+    species_start = tl.load(sp_subtree_start_ptr + s_offs, mask=mask, other=-1)
+    descendant = leaf_valid & (species_start >= leaf_start) & (species_start < leaf_end)
+    leaf_hit = mask & leaf_valid & (s_offs == leaf_species)
+
+    const_offsets = const_base + s_offs * CONST_SPECIES_STRIDE
+    mt = tl.load(mt_ptr + const_offsets, mask=mask, other=0.0)
+    dl_const = tl.load(DL_const_ptr + const_offsets, mask=mask, other=NEG_LARGE)
+    ebar = tl.load(Ebar_ptr + const_offsets, mask=mask, other=NEG_LARGE)
+    e_val = tl.load(E_ptr + const_offsets, mask=mask, other=NEG_LARGE)
+    sl1_const = tl.load(SL1_const_ptr + const_offsets, mask=mask, other=NEG_LARGE)
+    sl2_const = tl.load(SL2_const_ptr + const_offsets, mask=mask, other=NEG_LARGE)
+
+    pi_w = tl.where(leaf_hit, tl.zeros([BLOCK_S], dtype=DTYPE), NEG_LARGE)
+    pibar_w = tl.where(leaf_valid & ~descendant, mt, NEG_LARGE)
+
+    c1 = tl.load(sp_child1_ptr + s_offs, mask=mask, other=S)
+    c2 = tl.load(sp_child2_ptr + s_offs, mask=mask, other=S)
+    pi_s1 = tl.where(mask & leaf_valid & (c1 == leaf_species), 0.0, NEG_LARGE)
+    pi_s2 = tl.where(mask & leaf_valid & (c2 == leaf_species), 0.0, NEG_LARGE)
+
+    t0 = dl_const + pi_w
+    t1 = pi_w + ebar
+    t2 = pibar_w + e_val
+    t3 = sl1_const + pi_s1
+    t4 = sl2_const + pi_s2
+    if LEAF_LOGP_MODE == 2:
+        leaf_logp = tl.load(
+            leaf_logp_ptr + family * S + s_offs,
+            mask=mask,
+            other=NEG_LARGE,
+        )
+        t5 = tl.where(leaf_hit, leaf_logp, NEG_LARGE)
+    elif LEAF_LOGP_MODE == 1:
+        leaf_logp = tl.load(leaf_logp_ptr + family)
+        t5 = tl.where(leaf_hit, leaf_logp, NEG_LARGE)
+    else:
+        leaf_logp = tl.load(leaf_logp_ptr + s_offs, mask=mask, other=NEG_LARGE)
+        t5 = tl.where(leaf_hit, leaf_logp, NEG_LARGE)
+
+    m = tl.maximum(t0, t1)
+    m = tl.maximum(m, t2)
+    m = tl.maximum(m, t3)
+    m = tl.maximum(m, t4)
+    m = tl.maximum(m, t5)
+    m_safe = tl.where(m > (-1e299 if FP64 else -1e29), m, tl.zeros_like(m))
+    total = (
+        tl.exp2(t0 - m_safe)
+        + tl.exp2(t1 - m_safe)
+        + tl.exp2(t2 - m_safe)
+        + tl.exp2(t3 - m_safe)
+        + tl.exp2(t4 - m_safe)
+        + tl.exp2(t5 - m_safe)
+    )
+    result = tl.log2(total) + m
+    tl.store(Pi_new_ptr + out_base + s_offs, result, mask=mask)
+
+
+def wave_step_uniform_initial_leaf_fused_into(
+    Pi_out,
+    ws,
+    W,
+    S,
+    mt_squeezed,
+    DL_const,
+    Ebar,
+    E,
+    SL1_const,
+    SL2_const,
+    sp_child1,
+    sp_child2,
+    sp_subtree_start,
+    sp_subtree_end,
+    leaf_species_idx,
+    leaf_logp,
+    family_idx=None,
+    family_indexed_consts=False,
+):
+    """Specialized first leaf-state update for uniform Pi iteration."""
+    fp64 = Pi_out.dtype == torch.float64
+    const_layout = _uniform_const_layout(DL_const, family_idx, family_indexed_consts)
+    const_row_stride = 0
+    const_species_stride = 1
+    if const_layout == 2:
+        const_row_stride = 0 if int(DL_const.shape[0]) == 1 else int(DL_const.stride(0))
+        const_species_stride = int(DL_const.stride(1)) if DL_const.ndim == 2 else 1
+    family_idx_arg = family_idx if family_idx is not None else sp_child1
+    leaf_logp_mode = _leaf_logp_mode(True, leaf_logp, family_idx, S)
+    BLOCK_S = _uniform_block_s(S)
+    grid = (W, triton.cdiv(S, BLOCK_S))
+    Pi_out_rows = Pi_out.narrow(0, int(ws), int(W))
+    _wave_step_initial_leaf_kernel[grid](
+        Pi_out_rows,
+        ws,
+        mt_squeezed,
+        DL_const,
+        Ebar,
+        E,
+        SL1_const,
+        SL2_const,
+        sp_child1,
+        sp_child2,
+        sp_subtree_start,
+        sp_subtree_end,
+        leaf_species_idx,
+        leaf_logp,
+        family_idx_arg,
+        S,
+        stride=S,
+        CONST_ROW_STRIDE=const_row_stride,
+        CONST_SPECIES_STRIDE=const_species_stride,
+        BLOCK_S=BLOCK_S,
+        LEAF_LOGP_MODE=leaf_logp_mode,
+        FP64=fp64,
+        CONST_LAYOUT=const_layout,
+        num_warps=_uniform_num_warps(),
+    )
+
+
 def wave_step_uniform_fused_into(Pi_in, Pi_out, Pibar, ws, W, S,
                                  mt_squeezed, DL_const, Ebar, E, SL1_const, SL2_const,
                                  sp_child1, sp_child2, sp_parent, max_ancestor_depth,

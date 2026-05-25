@@ -6,6 +6,7 @@ import torch
 
 from .kernels.wave_step import (
     wave_step_uniform_fused_into,
+    wave_step_uniform_initial_leaf_fused_into,
     wave_pibar_uniform_parent_fused,
 )
 from .kernels.dts_fused import dts_fused_parent_reduced
@@ -279,6 +280,8 @@ def Pi_wave_forward(
         sp_child1 = species_topology["sp_child1"]
         sp_child2 = species_topology["sp_child2"]
         sp_parent = species_topology["sp_parent"]
+        sp_subtree_start = species_topology["sp_subtree_start"]
+        sp_subtree_end = species_topology["sp_subtree_end"]
         max_ancestor_depth = int(species_topology["max_ancestor_depth"])
 
     with _nvtx_range("Pi setup DTS constants"):
@@ -410,6 +413,23 @@ def Pi_wave_forward(
                     else:
                         pi_out_rows.copy_(dts_r)
                     initial_nonleaf_input = None
+            elif (
+                local_iter == 0
+                and has_leaf_term
+                and dts_r is None
+                and leaf_species_index is not None
+                and not check_convergence
+            ):
+                wave_step_uniform_initial_leaf_fused_into(
+                    pi_out, ws, W, S,
+                    mt_w, DL_w, Ebar_w, E_w, SL1_w, SL2_w,
+                    sp_child1, sp_child2,
+                    sp_subtree_start, sp_subtree_end,
+                    leaf_species_index,
+                    uniform_leaf_logp,
+                    family_idx=family_idx if batched else None,
+                    family_indexed_consts=batched,
+                )
             else:
                 step_pi_in = pi_in
                 step_input_ws = None

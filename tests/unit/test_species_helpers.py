@@ -31,6 +31,14 @@ def test_species_wave_topology_builds_child_parent_and_compact_level_tensors():
     torch.testing.assert_close(topology["sp_child1_cpu"], torch.tensor([1, 3, 5, 5, 5]))
     torch.testing.assert_close(topology["sp_child2_cpu"], torch.tensor([2, 4, 5, 5, 5]))
     torch.testing.assert_close(topology["sp_parent_cpu"], torch.tensor([-1, 0, 0, 1, 1]))
+    torch.testing.assert_close(
+        topology["sp_subtree_start_cpu"],
+        torch.tensor([0, 1, 4, 2, 3], dtype=torch.int32),
+    )
+    torch.testing.assert_close(
+        topology["sp_subtree_end_cpu"],
+        torch.tensor([5, 4, 5, 3, 4], dtype=torch.int32),
+    )
     assert topology["max_ancestor_depth"] == 3
     torch.testing.assert_close(topology["compact_level_ptr"], torch.tensor([0, 1, 2]))
     torch.testing.assert_close(topology["compact_level_parents"], torch.tensor([1, 0], dtype=torch.int32))

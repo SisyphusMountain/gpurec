@@ -390,7 +390,7 @@ def dts_fused_parent_reduced(
         log_pS_vec, mode_pS, row_stride_S, species_stride_S = _prepare_param(
             log_pS, N, S, family_indexed=family_indexed
         )
-        BLOCK_S = min(256, triton.next_power_of_2(S))
+        BLOCK_S = min(512, triton.next_power_of_2(S))
         launch_options = {}
         grid_eq1 = (n_eq1, triton.cdiv(S, BLOCK_S))
         _dts_eq1_to_rows_kernel[grid_eq1](
@@ -432,7 +432,7 @@ def dts_fused_parent_reduced(
     log_pS_vec, mode_pS, row_stride_S, species_stride_S = _prepare_param(
         log_pS, N, S, family_indexed=family_indexed
     )
-    BLOCK_S = min(256, triton.next_power_of_2(S))
+    BLOCK_S = min(512, triton.next_power_of_2(S))
     launch_options = {}
     if ge2_max_fanout is None:
         ge2_max_fanout = int((ge2_ptr[1:] - ge2_ptr[:-1]).max().item())

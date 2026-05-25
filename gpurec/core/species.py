@@ -13,6 +13,53 @@ from .preprocess_rust import (
 )
 
 
+def _attach_species_subtree_intervals(
+    topology: dict[str, Any],
+    *,
+    device: torch.device,
+) -> None:
+    """Attach preorder intervals for constant-time descendant checks."""
+    if "sp_subtree_start_cpu" in topology and "sp_subtree_end_cpu" in topology:
+        topology["sp_subtree_start"] = topology["sp_subtree_start_cpu"].to(
+            device=device,
+            dtype=torch.int32,
+        )
+        topology["sp_subtree_end"] = topology["sp_subtree_end_cpu"].to(
+            device=device,
+            dtype=torch.int32,
+        )
+        return
+
+    child1 = topology["sp_child1_cpu"].to(device="cpu", dtype=torch.long)
+    child2 = topology["sp_child2_cpu"].to(device="cpu", dtype=torch.long)
+    parent = topology["sp_parent_cpu"].to(device="cpu", dtype=torch.long)
+    S = int(topology["S"])
+    starts = torch.empty((S,), dtype=torch.int32)
+    ends = torch.empty((S,), dtype=torch.int32)
+    roots = [idx for idx, value in enumerate(parent.tolist()) if int(value) < 0]
+    cursor = 0
+    for root in roots:
+        stack: list[tuple[int, bool]] = [(int(root), False)]
+        while stack:
+            node, exiting = stack.pop()
+            if exiting:
+                ends[node] = cursor
+                continue
+            starts[node] = cursor
+            cursor += 1
+            stack.append((node, True))
+            c2 = int(child2[node])
+            c1 = int(child1[node])
+            if 0 <= c2 < S:
+                stack.append((c2, False))
+            if 0 <= c1 < S:
+                stack.append((c1, False))
+    topology["sp_subtree_start_cpu"] = starts
+    topology["sp_subtree_end_cpu"] = ends
+    topology["sp_subtree_start"] = starts.to(device=device, dtype=torch.int32)
+    topology["sp_subtree_end"] = ends.to(device=device, dtype=torch.int32)
+
+
 def _canonical_device(device: torch.device | str) -> torch.device:
     dev = torch.device(device)
     if dev.type == "cuda" and dev.index is None:
@@ -47,9 +94,13 @@ def species_wave_topology(
             "sp_child1",
             "sp_child2",
             "sp_parent",
+            "sp_subtree_start",
+            "sp_subtree_end",
             "sp_child1_cpu",
             "sp_child2_cpu",
             "sp_parent_cpu",
+            "sp_subtree_start_cpu",
+            "sp_subtree_end_cpu",
             "compact_level_ptr",
             "compact_level_parents",
             "compact_level_child1",
@@ -62,6 +113,8 @@ def species_wave_topology(
                     "sp_child1",
                     "sp_child2",
                     "sp_parent",
+                    "sp_subtree_start",
+                    "sp_subtree_end",
                     "compact_level_ptr",
                     "compact_level_parents",
                     "compact_level_child1",
@@ -70,7 +123,13 @@ def species_wave_topology(
             )
             cpu_tensors_ok = all(
                 torch.is_tensor(cached[name]) and cached[name].device.type == "cpu"
-                for name in ("sp_child1_cpu", "sp_child2_cpu", "sp_parent_cpu")
+                for name in (
+                    "sp_child1_cpu",
+                    "sp_child2_cpu",
+                    "sp_parent_cpu",
+                    "sp_subtree_start_cpu",
+                    "sp_subtree_end_cpu",
+                )
             )
             if device_tensors_ok and cpu_tensors_ok:
                 return cached
@@ -80,6 +139,7 @@ def species_wave_topology(
         device=target_device,
         S=int(S),
     )
+    _attach_species_subtree_intervals(topology, device=target_device)
     cache[key] = topology
     return topology
 

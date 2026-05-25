@@ -3,6 +3,7 @@ import torch
 
 from gpurec.core.kernels.dts_fused import dts_fused_parent_reduced
 from gpurec.core.kernels.wave_step import (
+    wave_step_uniform_initial_leaf_fused_into,
     wave_pibar_uniform_parent_fused,
     wave_step_uniform_fused_into,
 )
@@ -126,6 +127,34 @@ def _balanced_species_tree(device):
         torch.tensor(csr_indices, dtype=torch.int32, device=device),
         max_depth,
     )
+
+
+def _subtree_intervals_from_parent(parent):
+    parent_cpu = parent.detach().cpu().to(torch.long)
+    S = int(parent_cpu.numel())
+    children = [[] for _ in range(S)]
+    roots = []
+    for idx, par in enumerate(parent_cpu.tolist()):
+        if int(par) < 0:
+            roots.append(idx)
+        else:
+            children[int(par)].append(idx)
+    start = torch.empty((S,), dtype=torch.int32)
+    end = torch.empty((S,), dtype=torch.int32)
+    cursor = 0
+    for root in roots:
+        stack = [(root, False)]
+        while stack:
+            node, exiting = stack.pop()
+            if exiting:
+                end[node] = cursor
+                continue
+            start[node] = cursor
+            cursor += 1
+            stack.append((node, True))
+            for child in reversed(children[node]):
+                stack.append((child, False))
+    return start.to(parent.device), end.to(parent.device)
 
 
 @pytest.mark.parametrize("per_clade_constants", [False, True])
@@ -431,6 +460,102 @@ def test_wave_step_uniform_leaf_index_logp_modes_match_dense_leaf_term(leaf_logp
 
     torch.testing.assert_close(Pi_indexed, Pi_dense, rtol=2e-5, atol=2e-5)
     torch.testing.assert_close(max_diff_indexed, max_diff_dense, rtol=2e-5, atol=2e-5)
+
+
+@pytest.mark.parametrize("leaf_logp_mode", ["shared", "genewise_scalar", "genewise_specieswise"])
+def test_initial_leaf_specialization_matches_generic_initial_state(leaf_logp_mode):
+    torch.manual_seed(23)
+    device = torch.device("cuda")
+    dtype = torch.float32
+    (
+        sp_parent,
+        sp_child1,
+        sp_child2,
+        _ancestors,
+        _ancestor_cols,
+        _ancestor_csr_indptr,
+        _ancestor_csr_indices,
+        max_depth,
+    ) = _balanced_species_tree(device)
+    subtree_start, subtree_end = _subtree_intervals_from_parent(sp_parent)
+
+    W = 4
+    S = int(sp_parent.numel())
+    G = 3
+    ws = 2
+    C = W + 4
+    Pi = torch.empty((C, S), device=device, dtype=dtype)
+    family_idx = torch.tensor([0, 0, 0, 1, 2, 1, 2, 0], device=device, dtype=torch.long)
+    leaf_species_idx = torch.full((C,), -1, device=device, dtype=torch.long)
+    leaf_species_idx[ws:ws + W] = torch.tensor([3, 1, -1, 2], device=device)
+    mt = torch.randn((G, S), device=device, dtype=dtype) * 0.1
+    DL = torch.randn((G, S), device=device, dtype=dtype) * 0.2 - 2.0
+    Ebar = torch.randn((G, S), device=device, dtype=dtype) * 0.2 - 1.5
+    E = torch.randn((G, S), device=device, dtype=dtype) * 0.2 - 2.5
+    SL1 = torch.randn((G, S), device=device, dtype=dtype) * 0.2 - 2.0
+    SL2 = torch.randn((G, S), device=device, dtype=dtype) * 0.2 - 2.0
+    if leaf_logp_mode == "shared":
+        leaf_logp = torch.randn((S,), device=device, dtype=dtype) * 0.2 - 4.0
+    elif leaf_logp_mode == "genewise_scalar":
+        leaf_logp = torch.randn((G,), device=device, dtype=dtype) * 0.2 - 4.0
+    else:
+        leaf_logp = torch.randn((G, S), device=device, dtype=dtype) * 0.2 - 4.0
+
+    generic = torch.empty_like(Pi)
+    pibar = torch.empty_like(Pi)
+    wave_step_uniform_fused_into(
+        Pi,
+        generic,
+        pibar,
+        ws,
+        W,
+        S,
+        mt,
+        DL,
+        Ebar,
+        E,
+        SL1,
+        SL2,
+        sp_child1,
+        sp_child2,
+        sp_parent,
+        max_depth,
+        None,
+        leaf_species_idx=leaf_species_idx,
+        leaf_logp=leaf_logp,
+        family_idx=family_idx,
+        family_indexed_consts=True,
+        initial_state=True,
+    )
+    specialized = torch.empty_like(Pi)
+    wave_step_uniform_initial_leaf_fused_into(
+        specialized,
+        ws,
+        W,
+        S,
+        mt,
+        DL,
+        Ebar,
+        E,
+        SL1,
+        SL2,
+        sp_child1,
+        sp_child2,
+        subtree_start,
+        subtree_end,
+        leaf_species_idx,
+        leaf_logp,
+        family_idx=family_idx,
+        family_indexed_consts=True,
+    )
+    torch.cuda.synchronize()
+
+    torch.testing.assert_close(
+        specialized[ws:ws + W],
+        generic[ws:ws + W],
+        rtol=2e-5,
+        atol=2e-5,
+    )
 
 
 def test_dts_parent_reduced_skips_output_initialization_when_all_rows_covered():
