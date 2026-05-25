@@ -817,6 +817,143 @@ def _finish_cuda_context_warmup(
         executor.shutdown(wait=True, cancel_futures=True)
 
 
+def _warm_resident_uniform_kernels(
+    species_helpers: dict[str, Any],
+    ancestors_T: torch.Tensor | None,
+    *,
+    dtype: torch.dtype,
+    device: torch.device,
+) -> None:
+    if device.type != "cuda" or not torch.cuda.is_available():
+        return
+    if ancestors_T is None:
+        return
+    try:
+        from gpurec.core.kernels.dts_fused import dts_fused_parent_reduced
+        from gpurec.core.kernels.wave_step import (
+            wave_pibar_uniform_parent_fused,
+            wave_step_uniform_fused_into,
+        )
+        from gpurec.core.likelihood import E_fixed_point
+        from gpurec.core.species import species_wave_topology
+
+        with torch.cuda.device(device):
+            S = int(species_helpers["S"])
+            topology = species_wave_topology(species_helpers, S=S, device=device)
+            sp_child1 = topology["sp_child1"]
+            sp_child2 = topology["sp_child2"]
+            sp_parent = topology["sp_parent"]
+            max_ancestor_depth = int(topology["max_ancestor_depth"])
+            W = 1
+            C = 2
+            Pi = torch.empty((C, S), dtype=dtype, device=device)
+            Pibar = torch.empty_like(Pi)
+            row_max = torch.empty((C,), dtype=dtype, device=device)
+            mt = torch.zeros((S,), dtype=dtype, device=device)
+            E = torch.full((S,), -1.0, dtype=dtype, device=device)
+            Ebar = torch.full((S,), -2.0, dtype=dtype, device=device)
+            DL = torch.full((S,), -3.0, dtype=dtype, device=device)
+            SL1 = torch.full((S,), -4.0, dtype=dtype, device=device)
+            SL2 = torch.full((S,), -5.0, dtype=dtype, device=device)
+            leaf_species = torch.zeros((C,), dtype=torch.long, device=device)
+            leaf_logp = torch.zeros((S,), dtype=dtype, device=device)
+            dts = torch.full((W, S), -10.0, dtype=dtype, device=device)
+
+            E_fixed_point(
+                species_helpers=species_helpers,
+                log_pS=leaf_logp,
+                log_pD=leaf_logp,
+                log_pL=leaf_logp,
+                max_transfer_mat=mt,
+                max_iters=1,
+                tolerance=-1.0,
+                warm_start_E=None,
+                dtype=dtype,
+                device=device,
+                ancestors_T=ancestors_T,
+            )
+            wave_step_uniform_fused_into(
+                Pi, Pibar, Pibar, 0, W, S,
+                mt, DL, Ebar, E, SL1, SL2,
+                sp_child1, sp_child2, sp_parent, max_ancestor_depth,
+                None, None,
+                leaf_species_idx=leaf_species,
+                leaf_logp=leaf_logp,
+                has_leaf_term=True,
+                initial_state=True,
+            )
+            wave_step_uniform_fused_into(
+                Pibar, Pi, Pibar, 0, W, S,
+                mt, DL, Ebar, E, SL1, SL2,
+                sp_child1, sp_child2, sp_parent, max_ancestor_depth,
+                None, dts,
+                leaf_species_idx=leaf_species,
+                leaf_logp=leaf_logp,
+                has_leaf_term=False,
+            )
+            wave_step_uniform_fused_into(
+                Pibar, Pi, Pibar, 0, W, S,
+                mt, DL, Ebar, E, SL1, SL2,
+                sp_child1, sp_child2, sp_parent, max_ancestor_depth,
+                None, dts,
+                leaf_species_idx=leaf_species,
+                leaf_logp=leaf_logp,
+                has_leaf_term=False,
+                store_final_pibar=True,
+                final_pibar_row_max=row_max,
+            )
+            wave_pibar_uniform_parent_fused(
+                Pi, Pibar, 0, W, S,
+                mt, sp_parent, max_ancestor_depth,
+                row_max_out=row_max,
+            )
+            lefts = torch.zeros((1,), dtype=torch.long, device=device)
+            rights = torch.ones((1,), dtype=torch.long, device=device)
+            split_logp = torch.zeros((1,), dtype=dtype, device=device)
+            eq1_parent = torch.zeros((1,), dtype=torch.long, device=device)
+            ge2_ptr = torch.tensor([0, 1], dtype=torch.long, device=device)
+            ge2_parent = torch.zeros((1,), dtype=torch.long, device=device)
+            dts_fused_parent_reduced(
+                Pi, Pibar,
+                lefts, rights,
+                sp_child1, sp_child2,
+                leaf_logp, leaf_logp, split_logp,
+                W, 1, eq1_parent, ge2_ptr[:1], ge2_parent[:0],
+            )
+            dts_fused_parent_reduced(
+                Pi, Pibar,
+                lefts, rights,
+                sp_child1, sp_child2,
+                leaf_logp, leaf_logp, split_logp,
+                W, 0, eq1_parent[:0], ge2_ptr, ge2_parent,
+            )
+            torch.cuda.synchronize(device)
+    except Exception:
+        return
+
+
+def _start_resident_uniform_kernel_warmup(
+    species_helpers: dict[str, Any],
+    ancestors_T: torch.Tensor | None,
+    *,
+    dtype: torch.dtype,
+    device: torch.device,
+) -> tuple[ThreadPoolExecutor, Future] | None:
+    if device.type != "cuda" or not torch.cuda.is_available():
+        return None
+    executor = ThreadPoolExecutor(
+        max_workers=1,
+        thread_name_prefix="gpurec-resident-warmup",
+    )
+    return executor, executor.submit(
+        _warm_resident_uniform_kernels,
+        species_helpers,
+        ancestors_T,
+        dtype=dtype,
+        device=device,
+    )
+
+
 def _build_static_state(
     dataset: GeneDataset,
     *,
@@ -1246,16 +1383,29 @@ class GeneReconModel(torch.nn.Module):
                 dataset,
                 **rust_specs_kwargs,
             )
+            resident_warmup = None
             try:
                 species_helpers, ancestors_T = dataset._species_helpers_for_mode(
                     device=dataset.device,
                     dtype=dataset.dtype,
                 )
+                if (
+                    self.lazy_preprocess
+                    and self.prefetch_batches != 0
+                    and rust_specs_handle is not None
+                ):
+                    resident_warmup = _start_resident_uniform_kernel_warmup(
+                        species_helpers,
+                        ancestors_T,
+                        dtype=dataset.dtype,
+                        device=dataset.device,
+                    )
                 rust_specs = _finish_batch_specs_from_retained_rust(
                     rust_specs_handle,
                 )
                 rust_specs_handle = None
             finally:
+                _finish_cuda_context_warmup(resident_warmup)
                 _cancel_batch_specs_from_retained_rust(rust_specs_handle)
             self._resident_species_helpers = species_helpers
             self._resident_ancestors_T = ancestors_T

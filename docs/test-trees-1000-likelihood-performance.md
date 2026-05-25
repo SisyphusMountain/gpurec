@@ -24,9 +24,10 @@ launching the full first wave-step.  The second local iteration reads that DTS
 tensor directly, avoiding a device-to-device copy into the global ping-pong
 buffer.  CUDA warmup is started while Rust preprocessing runs and exercises
 cuBLAS plus common elementwise math, so more of the first E-solve setup is
-hidden under CPU/native work.  During model
-construction, retained Rust layout generation is also started while CUDA
-species-helper tensors are built.
+hidden under CPU/native work.  During model construction, retained Rust layout
+generation is also overlapped with CUDA species-helper setup and a tiny resident
+uniform E/Pi/DTS kernel warmup, hiding a large part of first-use Triton/CUDA
+module loading under native layout construction.
 
 Cold end-to-end command:
 
@@ -51,28 +52,30 @@ Cold result:
 
 | Stage | Time |
 |---|---:|
-| model init / first resident batch | `1.0148982965038158s` |
-| first fixed4 likelihood pass plus lazy remaining batches | `1.908232117537409s` |
-| total to first fixed4 likelihood | `2.9247796200506855s` |
+| model init / first resident batch | `1.0852486395160668s` |
+| first fixed4 likelihood pass plus lazy remaining batches | `1.6584319895191584s` |
+| total to first fixed4 likelihood | `2.74468837652239s` |
 
 Cold first-pass fidelity samples with the same construction path:
 
 | Pi/E/Neumann budget | total to first likelihood | loss bits | delta vs fixed128 |
 |---:|---:|---:|---:|
-| 4 | `2.9247796200506855s` | `2156427.0` | `670.25` |
-| 6 | `3.4132213970297016s` | `2157095.0` | `2.25` |
-| 8 | `3.902521108975634s` | `2157097.25` | `0.0` |
+| 4 | `2.74468837652239s` | `2156427.0` | `670.25` |
+| 6 | `3.222732363967225s` | `2157095.0` | `2.25` |
+| 8 | `3.6771243889816105s` | `2157097.25` | `0.0` |
 
-Before reading the first non-leaf DTS tensor directly on iteration 1, the
-copy-based initial non-leaf fast path took about `2.994s` to the first fixed4
-likelihood.  Before copying the first non-leaf DTS state directly, deriving the
-initial Pi state inside the wave kernel took about `3.045s`.  Before deriving
-that initial state inside the wave kernel, the same retained layout and CUDA
-math warmup path took about `3.160s`.  Before warming cuBLAS and the first
-elementwise CUDA math during preprocessing, the retained-layout overlap path
-took about `3.176s`.  Before overlapping retained Rust layout generation with
-CUDA species-helper setup, the CUDA-warmed retained clade-first path took about
-`3.19s`.  Before CUDA warmup overlap, the forward-scheduled retained
+Before overlapping the resident uniform kernel warmup with retained Rust layout
+generation, the local-DTS input path took about `2.925s` to the first fixed4
+likelihood.  Before reading the first non-leaf DTS tensor directly on iteration
+1, the copy-based initial non-leaf fast path took about `2.994s` to the first
+fixed4 likelihood.  Before copying the first non-leaf DTS state directly,
+deriving the initial Pi state inside the wave kernel took about `3.045s`.
+Before deriving that initial state inside the wave kernel, the same retained
+layout and CUDA math warmup path took about `3.160s`.  Before warming cuBLAS
+and the first elementwise CUDA math during preprocessing, the retained-layout
+overlap path took about `3.176s`.  Before overlapping retained Rust layout
+generation with CUDA species-helper setup, the CUDA-warmed retained clade-first
+path took about `3.19s`.  Before CUDA warmup overlap, the forward-scheduled retained
 clade-first path took about `3.24s`.  Before the forward scheduler policy, the
 compact retained-layout clade-first lazy path took about `3.46s`.  Before
 compact family summaries, it took about `3.86s`.  Before retaining the Rust
@@ -102,13 +105,13 @@ env PYTHONDONTWRITEBYTECODE=1 GPUREC_MEMORY_POLICY_RESERVE_GIB=0 \
 
 | Pi/E/Neumann budget | loss-only time | loss bits | delta vs fixed128 |
 |---:|---:|---:|---:|
-| 4 | `1.3629295059945434s` | `2156427.0` | `670.25` |
-| 6 | `1.893350541999098s` | `2157095.0` | `2.25` |
-| 8 | `2.4285347720142454s` | `2157097.25` | `0.0` |
+| 4 | `1.3630238589830697s` | `2156427.0` | `670.25` |
+| 6 | `1.894401895988267s` | `2157095.0` | `2.25` |
+| 8 | `2.425881564966403s` | `2157097.25` | `0.0` |
 | 128 | `35.236629224033095s` | `2157097.25` | `0.0` |
 
 With `--materialize-batches all`, the clade-first resident build split was
-`1.0153865829925053s` for model init plus `0.07799340895144269s` for full
+`1.0799543529865332s` for model init plus `0.07366829796228558s` for full
 materialization in the fixed4 steady-state run.  The `4/6/8` rows above are
 three-repetition medians after one warmup; the `128` row is a single validation
 sample.
@@ -134,11 +137,11 @@ env PYTHONDONTWRITEBYTECODE=1 GPUREC_MEMORY_POLICY_RESERVE_GIB=0 \
 
 | Pi/E/Neumann budget | loss+backward median | loss bits | grad inf |
 |---:|---:|---:|---:|
-| 4 | `5.968396109004971s` | `2156427.0` | `311.9596252441406` |
-| 6 | `7.25878949399339s` | `2157095.0` | `312.9272766113281` |
-| 8 | `8.223480562039185s` | `2157097.25` | `312.93011474609375` |
+| 4 | `6.015088586020283s` | `2156427.0` | `311.9596252441406` |
+| 6 | `7.204988185025286s` | `2157095.0` | `312.9272766113281` |
+| 8 | `8.413991626992356s` | `2157097.25` | `312.9301452636719` |
 
-The first clade-first loss+backward warmup in this run took `7.84887395700207s`
+The first clade-first loss+backward warmup in this run took `7.577703654998913s`
 for fixed4.  The table above is steady-state after that warmup.
 
 Interpretation:
@@ -173,6 +176,9 @@ Rejected follow-ups:
 - Adaptive fixed-point checks were slower than fixed budgets here.  Accurate
   `max=8`, `check_interval=4` took about `3.903s`, and lower-overhead settings
   either hit the maximum or added check overhead.
+- The resident uniform kernel warmup trades memory for cold latency.  The cold
+  fixed4 route now reserves about `16.7 GiB`, up from about `14.5 GiB` before
+  the extra resident-kernel warmup.
 
 Differences from HOGENOM:
 
@@ -202,9 +208,9 @@ Differences from HOGENOM:
   of the measured cold likelihood pass.
 - The generated benchmark also has independent CUDA species-helper setup and
   retained Rust layout generation during resident model construction; overlapping
-  those saves a small additional amount.  This is less relevant to HOGENOM's
-  accepted route because its depth-first layout planning was the dominant setup
-  decision.
+  those with a resident uniform kernel warmup saves a larger additional amount.
+  This is less relevant to HOGENOM's accepted route because it has fewer resident
+  batches and the optimizer/gradient work dominates more of the run.
 - HOGENOM resident batching had fewer batches under the accepted policy.  This
   dataset splits into `21` batches, so reusing a single global/specieswise
   resident E solve across no-grad batches removes repeated E work and is worth
