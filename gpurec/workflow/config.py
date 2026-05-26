@@ -520,6 +520,7 @@ _JSON_BOOL_FIELDS = {
     "adaptive_neumann_terms",
     "adaptive_rebatch",
     "hessian_sgd_pi_adjoint_warmstart",
+    "loss_stop_projected_grad_gate",
 }
 _RUN_CONFIG_REQUIRED_PATH_FIELDS = ("species_tree", "families_file", "out_dir")
 _RUN_CONFIG_PATH_FIELDS = _RUN_CONFIG_REQUIRED_PATH_FIELDS + (
@@ -646,6 +647,7 @@ class RunConfig:
     best_likelihood_patience: int = 1
     best_likelihood_min_delta: float = 0.0
     projected_grad_tol: float = 1e-3
+    loss_stop_projected_grad_gate: bool = True
     projected_lbfgs_min_lr: float = 1e-8
 
     checkpoint_every: int = 1

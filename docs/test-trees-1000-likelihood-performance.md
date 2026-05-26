@@ -431,8 +431,10 @@ Measured routes:
 | A + adaptive L-BFGS-B tail, looser stall delta | Resume A, `lbfgsb`, `lr=0.6`, max 60 L-BFGS-B steps, `loss_change_tol=2`, `loss_patience=2`, `projected_grad_tol=10` | `910.7812392250635s` combined | `1699469.375` validated | `3.3085007667541504` | Best one-shot adaptive endpoint in the relaxed-gradient sweep, but only `0.75` bits below the 1-bit stall route and about `1.96s` slower. Fixed8, fixed16, and fixed32 validation all returned `1699469.375` bits. |
 | Composite one-command route | `adagrad-restarts-lbfgsb`, route A prefix, tail `lbfgsb` `lr=0.6`, `loss_change_tol=2`, `loss_patience=2`, `projected_grad_tol=10` | `859.07s` process wall (`856.943264578993s` optimizer elapsed) | `1699473.0` validated | `2.8404898643493652` | New single-workflow route, no manual resume between Adagrad and L-BFGS-B. It ran `12 + 8 + 2` Adagrad-prefix rows, then `38` L-BFGS-B rows, and stopped by `loss_change_patience`. Fixed8 final validation matched exactly. |
 | Composite strict continuation | Resume the composite route, continue `lbfgsb` with `loss_change_tol=1`, `projected_grad_tol=3` | `930.90s` combined (`859.07s + 71.83s`) | `1699471.625` validated | `2.203108787536621` | Restored L-BFGS-B optimizer state from the composite checkpoint and added three tail rows. A fixed32 validation returned the same `1699471.625`-bit loss; final-check gradient max-abs delta was `0.00376129150390625`. |
+| Composite objective-plateau route | `adagrad-restarts-lbfgsb`, route A prefix, tail `lbfgsb` `lr=0.6`, `lbfgs_max_ls=4`, `loss_change_tol=0.25`, `loss_patience=2`, `projected_grad_tol=0.5`, `loss_stop_projected_grad_gate=false` | `1039.92s` process wall | `1699466.375` fixed32 validated | `1.4706581830978394` | Clean one-command run from uniform `0.05`. It stopped at optimizer step 68 after two `<=0.25`-bit improvements, then ran a fixed32 final check with `0.0` loss delta and `9.059906005859375e-06` gradient max-abs delta. This is `1.75` bits lower and `161.31s` faster than the previous `1699468.125` automatic endpoint. |
+| Composite bounded polish probe | Continue the objective-plateau route with `loss_change_tol=0.1`, `lbfgs_max_ls=4`, same no-gate stop policy | `164.52s` for steps 69-75, then `72.31s` recorded for steps 76-79 before killing the next fallback row; fixed32 validation cost `27.08s` | `1699460.125` fixed32 validated | `1.228520393371582` | Probe, not yet packaged as a clean automatic route. Steps 76-79 still bought `1.0`, `0.5`, `0.125`, and `0.125` bits; the following high-KKT fallback row became the current time sink. A production policy should stop or explicitly budget this fallback rather than enter an unbounded polish row. |
 | A + post-stall continuation check | Continue the uninterrupted 40-step `lr=0.6` tail with `loss_change_tol=1`, `loss_patience=2`, `projected_grad_tol=10` | `982.2694296170375s` combined | `1699468.25` validated | `1.4578275680541992` | Segmented continuation check. Fixed8, fixed16, and fixed32 validation all returned `1699468.25` bits. |
-| A + adaptive L-BFGS-B tail, stricter gradient gate | Resume A, `lbfgsb`, `lr=0.6`, max 60 L-BFGS-B steps, `loss_change_tol=1`, `loss_patience=2`, `projected_grad_tol=3` | `1201.2349555559922s` combined | `1699468.125` validated | `2.8452367782592773` | Current lowest validated objective and best fully automatic endpoint observed so far. Fixed8, fixed16, and fixed32 validation all returned `1699468.125` bits; the extra time buys only `1.25` bits versus the `projected_grad_tol=10`, `loss_change_tol=2` one-shot route. |
+| A + adaptive L-BFGS-B tail, stricter gradient gate | Resume A, `lbfgsb`, `lr=0.6`, max 60 L-BFGS-B steps, `loss_change_tol=1`, `loss_patience=2`, `projected_grad_tol=3` | `1201.2349555559922s` combined | `1699468.125` validated | `2.8452367782592773` | Former best automatic endpoint before the no-gate composite route. Fixed8, fixed16, and fixed32 validation all returned `1699468.125` bits; the extra time buys only `1.25` bits versus the `projected_grad_tol=10`, `loss_change_tol=2` one-shot route. |
 | A + L-BFGS-B tail, rejected high step | Resume A, `lbfgsb`, `lr=0.7`, 20 L-BFGS-B steps | `548.9326881880406s` combined | `1699557.125` | `13.341646194458008` | Upper-bracket reject: worse than `lr=0.6` by `6.25` bits with a much larger residual, so no manual fixed16/fixed32 validation was run. |
 | A + longer L-BFGS-B tail | Resume A, `lbfgsb`, `lr=0.1`, 30 L-BFGS-B steps total | `745.2935658869683s` combined | `1699746.125` | `20.155467987060547` | Longer `lr=0.1` tail is slower and worse than the 20-step `lr=0.3` tail. Fixed8, fixed16, and fixed32 validation all returned `1699746.125` bits. |
 | B + early L-BFGS-B tail | Resume B, `lbfgsb`, `lr=0.1`, 20 L-BFGS-B steps | `786.3332051589969s` combined | `1700015.5` | `27.92882537841797` | Later switch is slower and slightly worse than the 30-step tail from A. |
@@ -470,25 +472,33 @@ in `859.07s`, saving `51.71s` versus the old `loss_change_tol=2` manual
 two-stage run while ending `3.625` bits higher.  A strict continuation with the
 saved L-BFGS-B state reached `1699471.625` bits in `930.90s` combined, and
 fixed32 validation matched the fixed8 objective exactly.
+Disabling the projected-gradient gate for loss stopping changes the tradeoff in
+the direction needed for end-to-end likelihood optimization.  With
+`lbfgs_max_ls=4`, `loss_change_tol=0.25`, `loss_patience=2`,
+`projected_grad_tol=0.5`, and `loss_stop_projected_grad_gate=false`, the same
+composite command reached `1699466.375` bits in `1039.92s` from uniform `0.05`.
+The fixed32 validation matched exactly, and the final projected-gradient
+infinity norm was `1.4706581830978394`.  A tighter continuation reached a
+validated `1699460.125` bits, but the next high-KKT fallback row stalled; this
+is a polish probe, not yet a clean automatic production route.
 A post-stall continuation check from the fixed 40-step endpoint reached the
 lower reference point `1699468.25` bits in `982.27s`; the extra `71.10s`
 bought only `1.25` bits beyond the uninterrupted 40-step endpoint.  Tightening
-the projected-gradient gate to `3` produced the current lowest validated
-objective, `1699468.125` bits, but total time rose to `1201.23s`.  That is only
-`1.25` bits below the best `projected_grad_tol=10` one-shot route for about
-`290.45s` extra wall time.
+the projected-gradient gate to `3` produced `1699468.125` bits, but total time
+rose to `1201.23s`.  That result is now dominated by the no-gate composite
+route, which is both lower and faster.
 
 This is still not a formal optimum, but it is the first point in this sequence
 where the marginal objective movement dropped sharply.  In the segmented run,
 the final two optimizer steps improved by only `0.375` bits each; in the
 uninterrupted run, the late improvements were still small and the final
 projected-gradient infinity norm was `2.84893`.  The adaptive one-shot endpoint
-is the route to prefer when avoiding per-dataset step tuning, and the stricter
-`projected_grad_tol=3` gate is the best automatic route when squeezing out the
-last one to two bits is worth several more minutes.  With the current data, the
-practical automatic choice is `loss_change_tol` in the `1` to `2` bit range,
-plus a projected-gradient gate chosen for the desired time/objective tradeoff,
-not a hand-picked phase step count.
+is the route to prefer when avoiding per-dataset step tuning, and the no-gate
+composite route is the best current wall-time-to-likelihood point when the
+objective value matters more than a projected-gradient certificate.  With the
+current data, the practical automatic choice is a small objective plateau
+threshold, a bounded `lbfgs_max_ls`, and an explicit projected-gradient gate
+policy, not a hand-picked phase step count.
 
 The `lr=0.4` variant has a smaller residual, `2.95082`, but is `13.375` bits
 higher and `1.27s` slower than the 20-step `lr=0.6` route in the measured runs.

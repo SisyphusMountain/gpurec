@@ -215,6 +215,13 @@ benefits from a cheap multifidelity basin entry followed by an L-BFGS-B tail;
 keep `adagrad-restarts` as the HOGENOM default unless the composite route is
 validated there.
 
+For end-to-end likelihood optimization, `loss_stop_projected_grad_gate=false`
+lets the L-BFGS-B tail stop on objective plateau even when the projected-gradient
+diagnostic is still above `projected_grad_tol`. Keep the gate enabled when the
+projected-gradient norm is the convergence contract; disable it when the
+production question is wall-time-to-likelihood and late projected-gradient
+polishing is too expensive for the marginal objective gain.
+
 The default is based on the retained counts-free HOGENOM route: uniform `0.05`
 D/L/T initialization, no AleRax event-count checkpoint, fixed budgets of 8, 16,
 then 32, and a fixed128 validation check. It is the specieswise `auto` route

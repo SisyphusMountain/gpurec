@@ -541,6 +541,17 @@ def test_cli_accepts_adagrad_restarts_lbfgsb_optimizer(tmp_path: Path):
     assert config.adagrad_restart_schedule == "8/4:1:2,8:0.5:3"
 
 
+def test_cli_accepts_loss_stop_projected_grad_gate_override(tmp_path: Path):
+    args = build_parser().parse_args(
+        _minimal_workflow_cli_args("optimize", tmp_path)
+        + ["--no-loss-stop-projected-grad-gate"]
+    )
+
+    config = _run_config_from_args(args)
+
+    assert config.loss_stop_projected_grad_gate is False
+
+
 def test_cli_config_template_prints_genewise_hessian_sgd_auto_defaults(capsys):
     main(["config-template", "--mode", "genewise"])
 

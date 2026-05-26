@@ -1788,6 +1788,26 @@ def _add_run_config_args(parser: argparse.ArgumentParser) -> None:
         ),
     )
     parser.add_argument(
+        "--loss-stop-projected-grad-gate",
+        dest="loss_stop_projected_grad_gate",
+        action="store_true",
+        default=None,
+        help=(
+            "Require projected-lbfgs/lbfgsb to pass --projected-grad-tol before "
+            "loss-change patience can stop the run."
+        ),
+    )
+    parser.add_argument(
+        "--no-loss-stop-projected-grad-gate",
+        dest="loss_stop_projected_grad_gate",
+        action="store_false",
+        default=None,
+        help=(
+            "Allow loss-change patience to stop projected-lbfgs/lbfgsb even when "
+            "the projected-gradient diagnostic is still above tolerance."
+        ),
+    )
+    parser.add_argument(
         "--projected-lbfgs-min-lr",
         type=float,
         help="Minimum projected-lbfgs base learning rate after automatic backoff.",

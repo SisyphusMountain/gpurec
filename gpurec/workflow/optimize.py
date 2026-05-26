@@ -4049,8 +4049,10 @@ class OptimizationRunner:
                     )
                     plateau = delta is not None and delta <= loss_change_tol_bits
                     high_projected_grad = projected_inf_value > config.projected_grad_tol
-                    bounded_high_projected_plateau = high_projected_grad and (
-                        plateau or not accepted
+                    bounded_high_projected_plateau = (
+                        config.loss_stop_projected_grad_gate
+                        and high_projected_grad
+                        and (plateau or not accepted)
                     )
                     if (
                         phase == "projected-lbfgs"
@@ -4077,6 +4079,9 @@ class OptimizationRunner:
                         metrics["optimizer/projected_lbfgs_projected_grad_tol"] = (
                             float(config.projected_grad_tol)
                         )
+                        metrics[
+                            "optimizer/projected_lbfgs_loss_stop_projected_grad_gate"
+                        ] = bool(config.loss_stop_projected_grad_gate)
                         metrics["optimizer/projected_lbfgs_lr_before"] = old_lr
                         metrics["optimizer/projected_lbfgs_lr_after"] = new_lr
                         metrics["optimizer/projected_lbfgs_lr_reduced"] = (
@@ -4090,6 +4095,9 @@ class OptimizationRunner:
                         metrics[f"optimizer/{metric_prefix}_projected_grad_tol"] = (
                             float(config.projected_grad_tol)
                         )
+                        metrics[
+                            f"optimizer/{metric_prefix}_loss_stop_projected_grad_gate"
+                        ] = bool(config.loss_stop_projected_grad_gate)
                         if phase == "projected-lbfgs":
                             metrics["optimizer/projected_lbfgs_lr_reduced"] = False
                             metrics["optimizer/projected_lbfgs_min_lr_reached"] = False

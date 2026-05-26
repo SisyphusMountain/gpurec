@@ -8117,6 +8117,44 @@ def test_optimization_runner_lbfgsb_specieswise_records_kkt_metrics(tmp_path: Pa
     assert runner.fake_model.closed
 
 
+def test_optimization_runner_lbfgsb_can_stop_on_loss_plateau_without_projected_grad_gate(
+    tmp_path: Path,
+):
+    config = _optimizer_mode_config(
+        tmp_path,
+        optimizer="lbfgsb",
+        mode="specieswise",
+        steps=2,
+        lbfgs_lr=0.25,
+        lbfgs_max_iter=1,
+        lbfgs_max_ls=1,
+        loss_change_tol=1.0,
+        loss_patience=1,
+        best_likelihood_patience=0,
+        projected_grad_tol=1e-6,
+        loss_stop_projected_grad_gate=False,
+        solver_warmup_iters=0,
+    )
+    runner = _WorkflowRejectingProjectedLBFGSRunner(config)
+
+    result = runner.run()
+
+    history_rows = _optimizer_mode_history_rows(config.out_dir)
+    optimizer_rows = [row for row in history_rows if row["optimizer/phase"] == "lbfgsb"]
+    assert len(optimizer_rows) == 2
+    assert optimizer_rows[1]["delta_likelihood_bits"] == pytest.approx(0.0)
+    assert optimizer_rows[1]["optimizer/lbfgsb_high_projected_grad"] is True
+    assert optimizer_rows[1]["optimizer/lbfgsb_blocked_loss_stop"] is False
+    assert (
+        optimizer_rows[1]["optimizer/lbfgsb_loss_stop_projected_grad_gate"]
+        is False
+    )
+    assert optimizer_rows[1]["stable_loss_steps"] == 1
+    assert result.status == "converged"
+    assert result.reason == "loss_change_patience"
+    assert runner.fake_model.closed
+
+
 def test_optimization_runner_projected_lbfgs_reduces_lr_instead_of_stopping_on_large_projected_gradient(
     tmp_path: Path,
 ):
