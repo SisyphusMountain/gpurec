@@ -517,8 +517,50 @@ def test_cli_validate_config_reports_selected_family_references(
     assert "families=1" in captured.out
     assert "gene_tree_files=1" in captured.out
     assert "mapped_families=1" in captured.out
+    assert "batch_packing=depth_first_fit" in captured.out
+    assert "family_chunk_size=0" in captured.out
+    assert "clade_budget=500000" in captured.out
+    assert "fixed_iters_e=adaptive" in captured.out
+    assert "fixed_iters_pi=16" in captured.out
+    assert "neumann_terms=16" in captured.out
+    assert "solver_warmup_iters=4" in captured.out
+    assert "fd_adam_warmup_steps=3" in captured.out
+    assert "fd_hessian_refresh_steps=16" in captured.out
     assert "preprocess_checked" not in captured.out
     assert str((tmp_path / "out").resolve()) in captured.out
+    assert captured.err == ""
+
+
+def test_cli_validate_config_reports_specieswise_restart_route(
+    tmp_path: Path,
+    capsys,
+):
+    config_path = tmp_path / "run.json"
+    write_tiny_alerax_inputs(tmp_path)
+    config_path.write_text(
+        json.dumps(
+            {
+                "species_tree": "sp.nwk",
+                "families_file": "families.txt",
+                "out_dir": "out",
+                "mode": "specieswise",
+                "device": "cuda",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    main(["validate-config", "--config", str(config_path)])
+
+    captured = capsys.readouterr()
+    assert "valid_config=true" in captured.out
+    assert "mode=specieswise" in captured.out
+    assert "optimizer=adagrad-restarts" in captured.out
+    assert (
+        "adagrad_restart_schedule=8:1:60,16:0.5:35,32:0.5:30"
+        in captured.out
+    )
+    assert "adagrad_restart_final_check_iters=128" in captured.out
     assert captured.err == ""
 
 

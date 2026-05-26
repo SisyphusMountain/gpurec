@@ -287,6 +287,40 @@ def _write_config_template(args: argparse.Namespace) -> Path | None:
     return output
 
 
+def _validate_config_route_text(config: RunConfig) -> str:
+    clade_budget = "none" if config.clade_budget is None else str(config.clade_budget)
+    fixed_iters_e = (
+        "adaptive" if config.fixed_iters_e is None else str(config.fixed_iters_e)
+    )
+    fields = [
+        f"batch_packing={config.batch_packing}",
+        f"family_chunk_size={config.family_chunk_size}",
+        f"clade_budget={clade_budget}",
+        f"fixed_iters_e={fixed_iters_e}",
+        f"fixed_iters_pi={config.fixed_iters_pi}",
+        f"neumann_terms={config.neumann_terms}",
+    ]
+    if config.optimizer == "hessian-sgd":
+        fields.extend(
+            [
+                f"solver_warmup_iters={config.solver_warmup_iters}",
+                f"fd_adam_warmup_steps={config.fd_adam_warmup_steps}",
+                f"fd_hessian_refresh_steps={config.fd_hessian_refresh_steps}",
+            ]
+        )
+    elif config.optimizer == "adagrad-restarts":
+        fields.extend(
+            [
+                f"adagrad_restart_schedule={config.adagrad_restart_schedule}",
+                (
+                    "adagrad_restart_final_check_iters="
+                    f"{config.adagrad_restart_final_check_iters}"
+                ),
+            ]
+        )
+    return " ".join(fields)
+
+
 def _add_run_config_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--config",
@@ -888,6 +922,7 @@ def main(argv: list[str] | None = None) -> None:
             f"families={summary['families']} "
             f"gene_tree_files={summary['gene_tree_files']} "
             f"mapped_families={summary['mapped_families']} "
+            f"{_validate_config_route_text(config)} "
             f"device={config.device} out_dir={config.out_dir}"
             f"{preprocess_text}",
             flush=True,
