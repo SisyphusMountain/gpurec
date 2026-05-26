@@ -27,6 +27,12 @@ from gpurec.workflow.model_factory import build_alerax_workflow_model
 from tests.unit.alerax_helpers import write_tiny_alerax_inputs
 
 SUBPROCESS_TIMEOUT = 30
+_PRODUCTION_ROUTE_CONTRACT: dict[str, object] = {
+    "objective": "negative_log_likelihood_bits",
+    "gradient_route": "implicit_first_order_adjoint",
+    "rate_parameterization": "base2_log_dlt_rates",
+    "production_default_basis": "hogenom_and_" + "test_trees_" + "1000",
+}
 
 
 def _parser_action_dests(command: str) -> set[str]:
@@ -95,7 +101,7 @@ def _checkpoint_with_route_metadata(
         },
     )
     payload = torch.load(checkpoint, weights_only=True)
-    payload["route_metadata"] = route_metadata
+    payload["route_metadata"] = {**_PRODUCTION_ROUTE_CONTRACT, **route_metadata}
     torch.save(payload, checkpoint)
     return checkpoint
 
@@ -846,7 +852,7 @@ def test_cli_validate_config_require_production_default_route_rejects_custom_set
     captured = capsys.readouterr()
     assert exc_info.value.code == 2
     assert (
-        "config production default route settings differ for mode 'genewise': "
+        "config production default route fields differ for mode 'genewise': "
         "fd_hessian_refresh_steps"
     ) in captured.err
     assert "use optimizer=auto and the shipped optimizer defaults" in captured.err
@@ -1923,7 +1929,7 @@ def test_cli_checkpoint_info_require_production_default_route_recomputes_stale_a
     assert "production_default_optimizer_setting_mismatches=fd_hessian_refresh_steps" in (
         captured.out
     )
-    assert "checkpoint production default route settings differ" in captured.err
+    assert "checkpoint production default route fields differ" in captured.err
     assert "fd_hessian_refresh_steps" in captured.err
     assert "usage:" not in captured.err
     assert "Traceback" not in captured.err
@@ -2194,6 +2200,7 @@ def test_cli_summary_info_normalizes_route_mode_and_optimizer_aliases(
             {
                 "status": "converged",
                 "reason": "adagrad_restart_schedule_complete",
+                **_PRODUCTION_ROUTE_CONTRACT,
                 "mode": " SpeciesWise ",
                 "optimizer": "ADAGRAD_RESTARTS",
                 "final_check_iters": 128,
@@ -2359,6 +2366,7 @@ def test_cli_summary_info_require_production_default_route_rejects_custom_settin
             {
                 "status": "converged",
                 "reason": "loss_change_patience",
+                **_PRODUCTION_ROUTE_CONTRACT,
                 "mode": "genewise",
                 "optimizer": "hessian-sgd",
                 "final_check_iters": 32,
@@ -2396,7 +2404,7 @@ def test_cli_summary_info_require_production_default_route_rejects_custom_settin
         captured.out
     )
     assert (
-        "summary production default route settings differ for mode 'genewise': "
+        "summary production default route fields differ for mode 'genewise': "
         "fd_hessian_refresh_steps"
     ) in captured.err
     assert "expected the shipped production optimizer route" in captured.err
@@ -2414,6 +2422,7 @@ def test_cli_summary_info_require_production_default_route_recomputes_stale_audi
             {
                 "status": "converged",
                 "reason": "loss_change_patience",
+                **_PRODUCTION_ROUTE_CONTRACT,
                 "mode": "genewise",
                 "optimizer": "hessian-sgd",
                 "uses_production_default_optimizer_settings": True,
@@ -2456,6 +2465,60 @@ def test_cli_summary_info_require_production_default_route_recomputes_stale_audi
     assert "Traceback" not in captured.err
 
 
+def test_cli_summary_info_require_production_default_route_rejects_stale_gradient_route(
+    tmp_path: Path,
+    capsys,
+):
+    summary = tmp_path / "summary.json"
+    summary.write_text(
+        json.dumps(
+            {
+                **_PRODUCTION_ROUTE_CONTRACT,
+                "gradient_route": "legacy_autograd",
+                "status": "converged",
+                "reason": "loss_change_patience",
+                "mode": "genewise",
+                "optimizer": "hessian-sgd",
+                "final_check_iters": 32,
+                "solver_warmup_iters": 4,
+                "fd_adam_warmup_steps": 3,
+                "fd_hessian_refresh_steps": 16,
+                "hessian_sgd_normal_fixed_iters_pi": None,
+                "hessian_sgd_normal_neumann_terms": None,
+                "hessian_sgd_pi_adjoint_warmstart": False,
+                "pi_fixed_point_relaxation": 1.0,
+                "hessian_sgd_validation_interval": 0,
+                "hessian_sgd_validation_fixed_iters_pi": None,
+                "hessian_sgd_validation_neumann_terms": None,
+                "steps_completed": 4,
+                "final_nll_bits": 12.0,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(
+            [
+                "summary-info",
+                "--summary",
+                str(summary),
+                "--require-production-default-route",
+            ]
+        )
+
+    captured = capsys.readouterr()
+    assert exc_info.value.code == 1
+    assert "gradient_route=legacy_autograd" in captured.out
+    assert "uses_production_default_optimizer_settings=true" in captured.out
+    assert "production_default_optimizer_setting_mismatches=none" in captured.out
+    assert (
+        "summary production default route fields differ for mode 'genewise': "
+        "gradient_route"
+    ) in captured.err
+    assert "Traceback" not in captured.err
+
+
 def test_cli_summary_info_require_production_default_route_requires_settings_evidence(
     tmp_path: Path,
     capsys,
@@ -2466,6 +2529,7 @@ def test_cli_summary_info_require_production_default_route_requires_settings_evi
             {
                 "status": "converged",
                 "reason": "loss_change_patience",
+                **_PRODUCTION_ROUTE_CONTRACT,
                 "mode": "genewise",
                 "optimizer": "hessian-sgd",
                 "uses_production_default_optimizer_settings": True,

@@ -27,9 +27,12 @@ matches the production default for the selected sharing mode.
 `uses_production_default_optimizer_settings` and
 `production_default_optimizer_setting_mismatches` then say whether the
 optimizer-specific settings still match the shipped HOGENOM/`test_trees_1000`
-profile. `final_check_iters` records the solver iteration budget used for the
-final high-fidelity likelihood/gradient validation, and optimizer-specific
-route fields reproduce the selected production route: Hessian-SGD
+profile. The stricter `--require-production-default-route` gate also requires
+the shipped objective, gradient route, rate parameterization, and production
+default basis metadata. `final_check_iters` records the solver iteration budget
+used for the final high-fidelity likelihood/gradient validation, and
+optimizer-specific route fields reproduce the selected production route:
+Hessian-SGD
 warmup/refresh/normal-stage solver controls for genewise runs and the
 Adagrad-restart schedule, total scheduled steps, and final-check budget for
 specieswise runs.
@@ -276,9 +279,9 @@ Add `--require-mode-default-optimizer` to `gpurec validate-config`,
 `gpurec checkpoint-info` when the pipeline should fail unless the resolved route
 uses the production optimizer default for the selected mode.
 Add `--require-production-default-route` when the pipeline should also fail on
-optimizer-specific setting changes, such as a non-default Hessian-SGD refresh
-budget or a specieswise restart ladder that no longer reaches the default
-fixed32 phase.
+stale likelihood/gradient route metadata or optimizer-specific setting changes,
+such as a non-default Hessian-SGD refresh budget or a specieswise restart ladder
+that no longer reaches the default fixed32 phase.
 For combined optimize-and-sample workflows, add
 `gpurec run --require-converged` when sampling should be skipped unless
 optimization reached `status=converged`.

@@ -1011,6 +1011,12 @@ _PRODUCTION_DEFAULT_SPECIESWISE_OPTIMIZER_SETTINGS = {
     "adagrad_restart_total_steps": DEFAULT_ADAGRAD_RESTART_TOTAL_STEPS,
     "adagrad_restart_final_check_iters": DEFAULT_ADAGRAD_RESTART_FINAL_CHECK_ITERS,
 }
+_PRODUCTION_DEFAULT_ROUTE_CONTRACT = {
+    "objective": "negative_log_likelihood_bits",
+    "gradient_route": "implicit_first_order_adjoint",
+    "rate_parameterization": "base2_log_dlt_rates",
+    "production_default_basis": "hogenom_and_test_trees_1000",
+}
 
 
 def _production_default_optimizer_expected_settings(mode: str) -> dict[str, Any]:
@@ -1087,6 +1093,25 @@ def production_default_optimizer_setting_mismatches_from_route(
             continue
         if not _route_setting_matches(name, route[name], expected):
             mismatched.append(name)
+    return tuple(missing), tuple(mismatched)
+
+
+def production_default_route_mismatches_from_route(
+    route: dict[str, Any],
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """Return missing/mismatched fields for the shipped likelihood route."""
+    missing: list[str] = []
+    mismatched: list[str] = []
+    for name, expected in _PRODUCTION_DEFAULT_ROUTE_CONTRACT.items():
+        if name not in route:
+            missing.append(name)
+        elif route[name] != expected:
+            mismatched.append(name)
+    setting_missing, setting_mismatches = (
+        production_default_optimizer_setting_mismatches_from_route(route)
+    )
+    missing.extend(setting_missing)
+    mismatched.extend(setting_mismatches)
     return tuple(missing), tuple(mismatched)
 
 

@@ -80,8 +80,9 @@ def _add_require_production_default_route_arg(
         "--require-production-default-route",
         action="store_true",
         help=(
-            "Fail unless the resolved optimizer and optimizer-specific settings "
-            "match the shipped HOGENOM/test_trees_1000 production route."
+            "Fail unless the likelihood/gradient route, resolved optimizer, "
+            "and optimizer-specific settings match the shipped "
+            "HOGENOM/test_trees_1000 production route."
         ),
     )
 
@@ -123,11 +124,13 @@ def _route_with_mode_default_audit_fields(route: dict[str, Any]) -> dict[str, An
 def _route_with_production_default_audit_fields(
     route: dict[str, Any],
 ) -> dict[str, Any]:
-    audited, _missing, _mismatches = _production_default_route_evidence(route)
+    audited, _missing, _mismatches = (
+        _production_default_optimizer_settings_evidence(route)
+    )
     return audited
 
 
-def _production_default_route_evidence(
+def _production_default_optimizer_settings_evidence(
     route: dict[str, Any],
 ) -> tuple[dict[str, Any], tuple[str, ...], tuple[str, ...]]:
     audited = _route_with_mode_default_audit_fields(route)
@@ -149,6 +152,30 @@ def _production_default_route_evidence(
     else:
         audited["production_default_optimizer_setting_mismatches"] = None
         audited["uses_production_default_optimizer_settings"] = None
+    return audited, tuple(missing), tuple(mismatches)
+
+
+def _production_default_route_evidence(
+    route: dict[str, Any],
+) -> tuple[dict[str, Any], tuple[str, ...], tuple[str, ...]]:
+    audited, _missing, _mismatches = _production_default_optimizer_settings_evidence(
+        route
+    )
+    try:
+        from gpurec.workflow.config import (
+            production_default_route_mismatches_from_route,
+        )
+
+        missing, mismatches = production_default_route_mismatches_from_route(audited)
+    except _EXPECTED_WORKFLOW_ERRORS:
+        return audited, (
+            "objective",
+            "gradient_route",
+            "rate_parameterization",
+            "production_default_basis",
+            "mode",
+            "optimizer",
+        ), ()
     return audited, tuple(missing), tuple(mismatches)
 
 
@@ -200,7 +227,7 @@ def _production_default_route_gate_message(
     else:
         mismatch_text = ", ".join(str(item) for item in mismatches) or "none"
         message = (
-            f"{subject} production default route settings differ for mode "
+            f"{subject} production default route fields differ for mode "
             f"{audited.get('mode')!r}: {mismatch_text}"
         )
     if action is not None:

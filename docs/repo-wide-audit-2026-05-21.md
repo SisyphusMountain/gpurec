@@ -2150,6 +2150,21 @@ not edit files.  New or still-open findings from that refresh are:
 - `CUDA_VISIBLE_DEVICES='' python -m pytest -q -m "unit and not gpu"`:
   1465 passed, 1 skipped, 51 deselected after the explicit-theta device/dtype
   validation slice.
+- `--require-production-default-route` now verifies the shipped likelihood
+  route contract, not only optimizer-specific settings: artifacts and configs
+  must prove `objective=negative_log_likelihood_bits`,
+  `gradient_route=implicit_first_order_adjoint`,
+  `rate_parameterization=base2_log_dlt_rates`, and
+  `production_default_basis=hogenom_and_test_trees_1000` before the stricter
+  gate accepts them.
+- `python -m py_compile gpurec/workflow/config.py gpurec/cli.py tests/unit/test_cli_workflow.py tests/unit/test_workflow.py tests/unit/test_repository_hygiene.py`:
+  passed after extending production-route gate evidence.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest -q tests/unit/test_workflow.py::test_production_route_audit_requires_likelihood_gradient_contract_fields tests/unit/test_workflow.py::test_route_audit_infers_production_default_settings_from_route_dict tests/unit/test_cli_workflow.py::test_cli_validate_config_require_production_default_route_rejects_custom_settings tests/unit/test_cli_workflow.py::test_cli_checkpoint_info_require_production_default_route_recomputes_stale_audit tests/unit/test_cli_workflow.py::test_cli_checkpoint_info_require_production_default_route_requires_settings_evidence tests/unit/test_cli_workflow.py::test_cli_summary_info_require_production_default_route_rejects_custom_settings tests/unit/test_cli_workflow.py::test_cli_summary_info_require_production_default_route_recomputes_stale_audit tests/unit/test_cli_workflow.py::test_cli_summary_info_require_production_default_route_rejects_stale_gradient_route tests/unit/test_cli_workflow.py::test_cli_summary_info_require_production_default_route_requires_settings_evidence tests/unit/test_repository_hygiene.py::test_run_config_reference_covers_current_config_surface tests/unit/test_repository_hygiene.py::test_production_optimization_guide_is_linked_and_documents_routes tests/unit/test_repository_hygiene.py::test_output_artifact_reference_is_linked_and_documents_contract tests/unit/test_repository_hygiene.py::test_troubleshooting_guide_documents_operator_failure_triage`:
+  13 passed after adding likelihood/gradient route-contract evidence to the
+  production default route gate.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest -q -m "unit and not gpu"`:
+  1467 passed, 1 skipped, 51 deselected after the production-route
+  likelihood/gradient contract gate.
 
 ## Recommended Next Order
 

@@ -77,6 +77,7 @@ from gpurec.workflow.config import (
     dtype_from_name,
     effective_route_metadata,
     production_default_optimizer_setting_mismatches_from_route,
+    production_default_route_mismatches_from_route,
 )
 from gpurec.workflow.diagnostics import (
     append_jsonl,
@@ -1430,6 +1431,10 @@ def test_effective_route_metadata_marks_nondefault_optimizer(tmp_path: Path):
 
 def test_route_audit_infers_production_default_settings_from_route_dict():
     route = {
+        "objective": "negative_log_likelihood_bits",
+        "gradient_route": "implicit_first_order_adjoint",
+        "rate_parameterization": "base2_log_dlt_rates",
+        "production_default_basis": "hogenom_and_" + "test_trees_" + "1000",
         "mode": "specieswise",
         "optimizer": "adagrad-restarts",
         "final_check_iters": 128,
@@ -1446,6 +1451,39 @@ def test_route_audit_infers_production_default_settings_from_route_dict():
 
     assert missing == ()
     assert mismatches == ()
+
+
+def test_production_route_audit_requires_likelihood_gradient_contract_fields():
+    route = {
+        "objective": "negative_log_likelihood_bits",
+        "gradient_route": "legacy_autograd",
+        "rate_parameterization": "base2_log_dlt_rates",
+        "production_default_basis": "hogenom_and_" + "test_trees_" + "1000",
+        "mode": "genewise",
+        "optimizer": "hessian-sgd",
+        "final_check_iters": 32,
+        "solver_warmup_iters": 4,
+        "fd_adam_warmup_steps": 3,
+        "fd_hessian_refresh_steps": 16,
+        "hessian_sgd_normal_fixed_iters_pi": None,
+        "hessian_sgd_normal_neumann_terms": None,
+        "hessian_sgd_pi_adjoint_warmstart": False,
+        "pi_fixed_point_relaxation": 1.0,
+        "hessian_sgd_validation_interval": 0,
+        "hessian_sgd_validation_fixed_iters_pi": None,
+        "hessian_sgd_validation_neumann_terms": None,
+    }
+
+    missing, mismatches = production_default_route_mismatches_from_route(route)
+
+    assert missing == ()
+    assert mismatches == ("gradient_route",)
+
+    route.pop("objective")
+    missing, mismatches = production_default_route_mismatches_from_route(route)
+
+    assert "objective" in missing
+    assert mismatches == ("gradient_route",)
 
 
 def test_route_audit_normalizes_checkpoint_mode_strings():

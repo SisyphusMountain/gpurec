@@ -7470,6 +7470,14 @@ touched modules compile, and the focused validation/workflow/docs selector
 reports \texttt{7 passed}.  The full CPU unit gate reports
 \texttt{1465 passed, 1 skipped, 51 deselected}.
 
+The stricter production-route gate now checks the likelihood route contract as
+well as optimizer-specific defaults.  \texttt{--require-production-default-route}
+requires artifacts/configs to prove the shipped objective, gradient route, rate
+parameterization, and production default basis before accepting the
+HOGENOM/\texttt{test\_trees\_1000} route.  The touched modules compile, and the
+focused workflow/CLI/docs selector reports \texttt{13 passed}.  The full CPU
+unit gate reports \texttt{1467 passed, 1 skipped, 51 deselected}.
+
 \section{Next Audit Targets}
 
 \begin{enumerate}[leftmargin=*]

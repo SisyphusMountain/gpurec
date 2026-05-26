@@ -44,7 +44,9 @@ a run used the production optimizer default for its sharing mode. They also
 record `uses_production_default_optimizer_settings` and
 `production_default_optimizer_setting_mismatches`, which distinguish a plain
 optimizer-name match from the full shipped HOGENOM/`test_trees_1000`
-optimizer-specific route. Optimizer-specific route fields include the
+optimizer-specific route. The stricter `--require-production-default-route`
+gate also checks the objective, gradient route, rate parameterization, and
+production default basis fields. Optimizer-specific route fields include the
 specieswise restart schedule and genewise Hessian-SGD normal-stage solver
 overrides. For specieswise
 `adagrad-restarts`, `adagrad_restart_total_steps` records the derived number of
@@ -117,7 +119,8 @@ the same status line and then exit nonzero unless the optimization status is
 `gpurec optimize`, or `gpurec run` when automation should fail unless the
 resolved optimizer matches the production default for the selected mode. Add
 `--require-production-default-route` when automation should also reject
-optimizer-specific setting overrides.
+stale likelihood/gradient route metadata or optimizer-specific setting
+overrides.
 Text and path values that contain whitespace or control characters are emitted
 as JSON strings with spaces escaped as `\u0020` so each status line remains one
 record.
@@ -147,8 +150,9 @@ and then exit nonzero unless `summary.status` is `converged`. Add
 `summary.final_check_status` to be `ok`. Add
 `--require-mode-default-optimizer` when downstream automation should reject
 summaries that do not prove the mode default optimizer was used, or
-`--require-production-default-route` when the optimizer-specific settings must
-also match the shipped production route.
+`--require-production-default-route` when the likelihood/gradient route
+metadata and optimizer-specific settings must also match the shipped production
+route.
 
 `theta_final.pt` is intentionally smaller than a checkpoint. Tooling that needs
 to restore a model, sample reconciliations, or verify family/species ordering
@@ -203,12 +207,14 @@ also exits before sampling unless `final_check_status=ok`. With
 `--require-mode-default-optimizer`, it exits before optimization or sampling
 unless the resolved optimizer is the production default for the selected mode.
 With `--require-production-default-route`, it also rejects changed
-optimizer-specific settings before optimization or sampling.
+optimizer-specific settings or stale likelihood/gradient route metadata before
+optimization or sampling.
 The same `--require-mode-default-optimizer` flag is available on standalone
 `gpurec sample`; it inspects the checkpoint route and exits before sampling if
 the checkpoint cannot prove it used the production default optimizer. Standalone
 `gpurec sample` also supports `--require-production-default-route` to require
-the full shipped optimizer-specific route before sampling.
+the full shipped likelihood/gradient and optimizer-specific route before
+sampling.
 
 | Path | Contents |
 |---|---|
