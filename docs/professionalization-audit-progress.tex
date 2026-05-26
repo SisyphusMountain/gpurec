@@ -7747,6 +7747,14 @@ configs are then checked with \texttt{--require-cuda-backward-ready}, which must
 fail with status 2, \texttt{cuda_backward_ready_reason=requires_s_gt_256}, and
 empty stdout for the tiny species tree.
 
+The primary README and \texttt{examples/README.md} now show both checked source
+example configs with \texttt{--require-mode-default-optimizer},
+\texttt{--require-production-default-route}, and \texttt{--check-preprocess},
+and document that the tiny fixtures intentionally fail
+\texttt{--require-cuda-backward-ready} with
+\texttt{cuda_backward_ready_reason=requires_s_gt_256} before any GPU
+optimization starts.
+
 \section{Next Audit Targets}
 
 \begin{enumerate}[leftmargin=*]

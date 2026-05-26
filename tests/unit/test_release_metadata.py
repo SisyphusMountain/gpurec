@@ -1265,8 +1265,18 @@ def test_readme_scopes_example_config_to_source_artifacts():
     assert "examples/specieswise-adagrad-restarts-config.json" in readme
     assert (
         "gpurec validate-config --config examples/minimal-run-config.json "
+        "--require-mode-default-optimizer --require-production-default-route "
         "--check-preprocess"
     ) in readme
+    assert (
+        "gpurec validate-config --config "
+        "examples/specieswise-adagrad-restarts-config.json "
+        "--require-mode-default-optimizer --require-production-default-route "
+        "--check-preprocess"
+    ) in readme
+    assert "`cuda_backward_ready=false`" in readme
+    assert "`cuda_backward_ready_reason=requires_s_gt_256`" in readme
+    assert "`--require-cuda-backward-ready` intentionally exits nonzero" in readme
     assert "gpurec optimize --config examples/minimal-run-config.json" not in readme
     assert "examples/README.md" in readme
     assert "gpurec config-template --mode genewise --output run.json" in readme

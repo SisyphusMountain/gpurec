@@ -12,10 +12,20 @@ templates, then replace the tree and family paths with a real dataset whose
 species tree satisfies the current CUDA backward requirements.
 
 ```bash
-gpurec validate-config --config examples/minimal-run-config.json
-gpurec validate-config --config examples/specieswise-adagrad-restarts-config.json
-gpurec validate-config --config examples/minimal-run-config.json --check-preprocess
+gpurec validate-config --config examples/minimal-run-config.json --require-mode-default-optimizer --require-production-default-route
+gpurec validate-config --config examples/specieswise-adagrad-restarts-config.json --require-mode-default-optimizer --require-production-default-route
+gpurec validate-config --config examples/minimal-run-config.json --require-mode-default-optimizer --require-production-default-route --check-preprocess
+gpurec validate-config --config examples/specieswise-adagrad-restarts-config.json --require-mode-default-optimizer --require-production-default-route --check-preprocess
 ```
+
+With `--check-preprocess`, both tiny examples report
+`preprocess_checked=true`, `preprocessed_species_nodes=3`,
+`cuda_backward_ready=false`, and
+`cuda_backward_ready_reason=requires_s_gt_256`. Adding
+`--require-cuda-backward-ready` to either tiny example is expected to exit with
+status 2 and empty stdout. Use that hard gate on real launch configs so a
+species tree that is too small for the retained CUDA backward path fails before
+GPU optimization starts.
 
 - `minimal-run-config.json` uses `mode=genewise`; `optimizer=auto` resolves to
   `hessian-sgd`. It records the Hessian-SGD warmup, finite-difference Hessian

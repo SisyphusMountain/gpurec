@@ -248,18 +248,21 @@ the mode-specific optimizer route knobs and final-check solver budgets that
 CLI command shape is:
 
 ```bash
-gpurec validate-config --config examples/minimal-run-config.json
-gpurec validate-config --config examples/specieswise-adagrad-restarts-config.json
-gpurec validate-config --config examples/minimal-run-config.json --check-preprocess
+gpurec validate-config --config examples/minimal-run-config.json --require-mode-default-optimizer --require-production-default-route
+gpurec validate-config --config examples/specieswise-adagrad-restarts-config.json --require-mode-default-optimizer --require-production-default-route
+gpurec validate-config --config examples/minimal-run-config.json --require-mode-default-optimizer --require-production-default-route --check-preprocess
+gpurec validate-config --config examples/specieswise-adagrad-restarts-config.json --require-mode-default-optimizer --require-production-default-route --check-preprocess
 gpurec checkpoint-info --checkpoint output_gpurec/checkpoints/latest.pt
 ```
 
 The checked config is a source-tree config/parser fixture and sets `"device": "cuda"`.
 The tiny tree files are portable, but the current optimized
-likelihood implementation is not a CPU fallback.  The retained Pi
-backward/gradient path currently requires more than 256 postorder species nodes
-(`S > 256`), so this tiny fixture is not an end-to-end optimizer smoke until a
-small-species backward fallback is restored.
+likelihood implementation is not a CPU fallback. Each tiny fixture is not an end-to-end optimizer smoke.
+The retained Pi backward/gradient path currently requires more than 256 postorder species nodes
+(`S > 256`), so these examples report `cuda_backward_ready=false` and
+`cuda_backward_ready_reason=requires_s_gt_256`. Adding
+`--require-cuda-backward-ready` intentionally exits nonzero for the tiny
+fixtures; use that hard gate on real launch configs before spending GPU time.
 
 Installed wheels do not install the `examples/` directory as runtime package
 data. Use the installed CLI to generate a flat JSON starting point, then edit

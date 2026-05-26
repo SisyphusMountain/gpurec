@@ -2433,6 +2433,12 @@ not edit files.  New or still-open findings from that refresh are:
   are then checked with `--require-cuda-backward-ready`, which must fail with
   status 2, `cuda_backward_ready_reason=requires_s_gt_256`, and empty stdout
   for the tiny species tree.
+- The primary README and `examples/README.md` now show both checked source
+  example configs with `--require-mode-default-optimizer`,
+  `--require-production-default-route`, and `--check-preprocess`, and document
+  that the tiny fixtures intentionally fail `--require-cuda-backward-ready` with
+  `cuda_backward_ready_reason=requires_s_gt_256` before any GPU optimization
+  starts.
 
 ## Recommended Next Order
 
