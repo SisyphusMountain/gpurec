@@ -500,7 +500,7 @@ status line also reports
 ### Sampling Binary Setup
 
 `gpurec sample` and the sampling phase of `gpurec run` use the Rust
-backtracking binary.  Wheels currently do not ship that binary or the Rust
+backtracking binary.  Wheels intentionally do not ship that binary or the Rust
 crate sources, so installed environments should provide a compiled binary
 through `GPUREC_BACKTRACK_BIN` or `--backtrack-binary`.  In a wheel-only
 install, point gpurec at a prebuilt binary produced by your deployment or build

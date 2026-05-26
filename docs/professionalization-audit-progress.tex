@@ -1609,8 +1609,11 @@ section now has an explicit binary-setup recipe for installed environments:
 wheels currently require a prebuilt Rust backtracking binary supplied through
 \texttt{GPUREC\_BACKTRACK\_BIN} or \texttt{--backtrack-binary}, while the
 automatic Cargo fallback is documented as source-tree only.  The
-release-readiness note records the same unresolved binary-distribution blocker
-so release docs and README do not drift.
+release-readiness note now records this as the current distribution contract:
+wheels intentionally omit the Rust binary and crate sources, source archives
+carry the locked crate and Cargo fallback, and installed sampling must use a
+compatible external binary unless a future packaging change updates the README,
+package-data checks, installed-wheel smoke, and source-archive smoke together.
 
 \subsection{Rust Backtracking Source Archive}
 
@@ -7254,9 +7257,12 @@ repository hygiene guards that every tracked profiling Python file is listed in
 the profiling README and that ignored artifact roots stay documented.
 
 The public-API/docs refresh pass then flagged release metadata license blockers
-and the Rust sampling binary distribution decision as unresolved release
-blockers.  It also identified an inconsistency between the new
-\texttt{gpurec.core} internal-stability wording and the README's
+and the Rust sampling binary distribution model.  The license decision remains
+the only open release blocker from that pair.  The binary model is now captured
+by the release-readiness contract as an external-binary wheel expectation plus a
+locked source-archive Cargo fallback.  The pass also identified an
+inconsistency between the new \texttt{gpurec.core} internal-stability wording
+and the README's
 \texttt{GeneDataset(..., leaf\_species\_maps=...)} guidance, broad
 \texttt{core.batch\_planning} exports, retained deprecated likelihood aliases,
 private API helper modules without clear support notes, duplicated evaluator
@@ -7362,10 +7368,10 @@ documentation update.
 \begin{enumerate}[leftmargin=*]
   \item Choose and add a redistributable license, then update
         \texttt{pyproject.toml} license metadata and license classifier.
-  \item Decide whether releases should ship a prebuilt backtracking binary or
-        document a Rust-toolchain requirement for source-tree sampling.
-  \item Add an installed-artifact sampling smoke once the backtracking binary
-        distribution model is settled.
+  \item Add an installed-artifact sampling smoke if a future release ships a
+        bundled backtracking binary; the current contract keeps wheels on an
+        external-binary requirement and source archives on the locked Cargo
+        fallback.
   \item Re-scan workflow internals for the next low-risk reuse or boundary
         improvement now that artifact publication, metadata validation, and
         summary JSON handling have shared helpers.

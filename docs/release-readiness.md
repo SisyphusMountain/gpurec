@@ -8,15 +8,25 @@ and the packaging assumptions covered by current automated build steps.
 - Choose and add a project license.  After a `LICENSE` file exists, add matching
   `pyproject.toml` license metadata and a license classifier.  Project URLs and
   non-license classifiers are already present.
-- Decide the Rust backtracking binary distribution model.  The Python package
-  supports `gpurec sample` and the sampling phase of `gpurec run` through a
-  compiled sampler selected via `GPUREC_BACKTRACK_BIN` or `--backtrack-binary`;
-  the source-tree or unpacked-source-archive `cargo run` fallback uses a locked
-  Cargo build and the pinned `rustree` git dependency.  Wheels currently do not
-  ship the Rust binary or crate sources, so installed sampling requires an
-  external prebuilt binary until that distribution model changes.
 - Build source and wheel artifacts from a clean checkout and install them in a
   fresh environment with a PyTorch build that matches the target CUDA runtime.
+
+## Sampling Binary Distribution Contract
+
+The current release contract is explicit rather than unresolved:
+
+- Wheels intentionally do not ship the Rust backtracking binary or Rust crate
+  sources.  Installed `gpurec sample`, the sampling phase of `gpurec run`, and
+  `gpurec backtrack-check` require a compatible prebuilt binary for
+  `gpurec-backtrack`, selected with `GPUREC_BACKTRACK_BIN` or
+  `--backtrack-binary`.
+- Source archives include `crates/gpurec-backtrack/` and support the locked
+  source-archive `cargo run` fallback.  That fallback requires Rust/Cargo and
+  fetches the pinned `rustree` git dependency declared by the crate lockfile.
+- Release notes and deployment docs must state the wheel-only external-binary
+  requirement unless a future packaging change ships and smokes a bundled
+  binary.  Any such change must update the README, package-data checks,
+  installed-wheel smoke, and source-archive smoke together.
 
 ## Maintainer Build Path
 
@@ -146,8 +156,9 @@ print("exports_ok")
 PY
 ```
 
-Do not publish artifacts until the license and binary distribution expectation
-for sampling above are resolved.
+Do not publish artifacts until the license blocker above is resolved.  The
+sampling binary expectation above is the current release contract, not a
+separate no-publish blocker.
 
 ## Lightweight Verification
 

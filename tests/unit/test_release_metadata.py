@@ -997,6 +997,30 @@ def test_release_readiness_preserves_license_no_publish_blocker():
         "Do not publish artifacts until the license",
     ):
         assert token in guide
+    assert "Decide the Rust backtracking binary distribution model" not in guide
+    assert "license and binary distribution expectation" not in guide
+
+
+def test_release_readiness_documents_sampling_binary_distribution_contract():
+    guide = (ROOT / "docs" / "release-readiness.md").read_text(encoding="utf-8")
+
+    for token in (
+        "Sampling Binary Distribution Contract",
+        "Wheels intentionally do not ship the Rust backtracking binary",
+        "Installed `gpurec sample`, the sampling phase of `gpurec run`, and",
+        "`gpurec backtrack-check` require a compatible prebuilt binary",
+        "`gpurec-backtrack`, selected",
+        "`GPUREC_BACKTRACK_BIN`",
+        "`--backtrack-binary`",
+        "Source archives include `crates/gpurec-backtrack/`",
+        "locked\n  source-archive `cargo run` fallback",
+        "requires Rust/Cargo",
+        "pinned `rustree` git dependency",
+        "Release notes and deployment docs must state the wheel-only",
+        "update the README, package-data checks,\n  installed-wheel smoke, and source-archive smoke together",
+        "current release contract, not a\nseparate no-publish blocker",
+    ):
+        assert token in guide
 
 
 def test_release_readiness_smokes_top_level_exports():
@@ -1134,7 +1158,8 @@ def test_readme_documents_installed_sampling_binary_setup():
 
     for text in (readme, guide):
         normalized = " ".join(text.split())
-        assert "Wheels currently do not ship" in normalized
+        assert "Wheels" in normalized
+        assert "do not ship" in normalized
     assert "prebuilt binary" in normalized
     assert "### Sampling Binary Setup" in readme
     assert "`gpurec sample` and the sampling phase of `gpurec run`" in readme
@@ -1158,7 +1183,7 @@ def test_readme_documents_installed_sampling_binary_setup():
     assert "gpurec backtrack-check" in readme
     assert "The same `GPUREC_BACKTRACK_BIN` environment variable" in readme
     assert "fallback works from a source checkout or unpacked\nsource archive" in readme
-    assert "unpacked-source-archive `cargo run` fallback" in normalized_guide
+    assert "source-archive `cargo run` fallback" in normalized_guide
     assert (
         "installed `gpurec config-template --help`"
         in normalized_guide

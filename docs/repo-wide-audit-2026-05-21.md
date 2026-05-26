@@ -1938,12 +1938,15 @@ not edit files.  New or still-open findings from that refresh are:
   point to that note, and repository hygiene guards the entrypoint list and
   artifact policy.
 - Fresh public-API/docs subagent findings were recorded from a read-only pass.
-  The remaining unresolved blockers are release metadata license fields and the
-  Rust sampling binary distribution decision.  The pass also flagged the
-  `GeneDataset(..., leaf_species_maps=...)` documentation inconsistency created
-  by classifying `gpurec.core` as internal, broad `core.batch_planning.__all__`
-  exports, retained deprecated likelihood aliases, internal-looking API helper
-  modules without clear support notes, duplicated evaluator/gradient logic,
+  The remaining unresolved release blocker is the metadata/license decision.
+  The Rust sampling binary distribution model is now explicit release contract:
+  wheels require an external compatible `gpurec-backtrack` binary, while source
+  archives include the locked crate and Cargo fallback.  The pass also flagged
+  the `GeneDataset(..., leaf_species_maps=...)` documentation inconsistency
+  created by classifying `gpurec.core` as internal, broad
+  `core.batch_planning.__all__` exports, retained deprecated likelihood aliases,
+  internal-looking API helper modules without clear support notes,
+  duplicated evaluator/gradient logic,
   high scheduler complexity, public helper/property docstring gaps, stale
   ignored notebook artifacts, and repository hygiene tests that intentionally
   preserve some private or deprecated surfaces.
