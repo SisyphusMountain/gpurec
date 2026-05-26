@@ -2957,6 +2957,10 @@ def test_backward_source_omits_native_cuda_prototype_surface():
     wave_backward_source = (
         root / "gpurec" / "core" / "kernels" / "wave_backward.py"
     ).read_text(encoding="utf-8")
+    audit = (root / "docs" / "repo-wide-audit-2026-05-21.md").read_text(
+        encoding="utf-8"
+    )
+    normalized_audit = " ".join(audit.split())
 
     for token in (
         "_cuda_self_loop",
@@ -2979,6 +2983,19 @@ def test_backward_source_omits_native_cuda_prototype_surface():
         "gpurec/core/kernels/pibar_vjp_cuda.py",
     ):
         assert not (root / relative_path).exists()
+
+    for token in (
+        "Native CUDA prototype paths are no longer part of the production runtime",
+        "The native CUDA prototype loader/fallback finding is closed for production runtime by deletion",
+        "former `wave_backward_cuda.py` and `pibar_vjp_cuda.py` modules are absent",
+        "Historical performance logs can still describe those experiments as archived provenance",
+    ):
+        assert token in normalized_audit
+    assert (
+        "native CUDA prototype loader/fallback policy is now documented but still inconsistent"
+        not in normalized_audit
+    )
+
 
 def test_retired_leaf_hit_env_flag_stays_out_of_runtime_surface():
     root = Path(__file__).resolve().parents[2]

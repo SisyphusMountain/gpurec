@@ -370,10 +370,13 @@ removed and are guarded against returning.
   `float32`/`float64`, `S > 256`, required `leaf_species_index`, scratch budget,
   and `uniform_pibar_row_max`.  Document these before changing backward fallback
   behavior.
-- Native CUDA prototype paths remain experimental and thinly tested.  The
-  `GPUREC_CUDA_SELF_LOOP_*` and `GPUREC_CUDA_PIBAR_FROM_UD` routes should have a
-  documented support/fallback policy before adding parity tests or removing
-  broad auto-mode fallbacks.
+- Native CUDA prototype paths are no longer part of the production runtime.
+  The backward source omits `GPUREC_CUDA_SELF_LOOP_*`,
+  `GPUREC_CUDA_PIBAR_FROM_UD`, and related prototype selectors, while
+  repository hygiene asserts the former `wave_backward_cuda.py` and
+  `pibar_vjp_cuda.py` modules stay absent.  Historical performance logs may
+  still mention those routes as archived provenance, not current fallback
+  policy.
 - DTS parameter shape precedence is now documented for direct callers before
   changing either implementation.  Public model paths normalize genewise scalar
   event vectors to `[G, 1]`; direct DTS callers should avoid bare `[G]` vectors
@@ -787,20 +790,17 @@ not edit files.  New or still-open findings from that refresh are:
   `e_adjoint_iterations`, `e_adjoint_rel_res`, and `e_adjoint_success` so
   direct `UniformChunkedReconModel` users have the same nonconvergence
   visibility that workflow history already surfaces in aggregate form.
-- The native CUDA prototype loader/fallback policy is now documented but still
-  inconsistent.  `wave_backward_cuda.py` preloads wheel-provided NVRTC builtins
-  before compilation, while `pibar_vjp_cuda.py` compiles without that preflight.
-  Self-loop optional fallback is silent and catches only import/runtime/
-  validation failures; Pibar fallback is silent in `auto`, warns once in
-  `enabled`, and catches broader prototype failures.  Treat shared loader
-  preflight, narrower Pibar exceptions, or unified warning behavior as future
-  runtime changes.
-- The native CUDA prototype launchers now share the documented dynamic
-  shared-memory preflight shape.  Both self-loop and Pibar compute
-  `shared_bytes`, check it against the device opt-in shared-memory limit before
-  launch, set `CU_FUNC_ATTRIBUTE_MAX_DYNAMIC_SHARED_SIZE_BYTES`, and pass the
-  same byte count to `cuLaunchKernel`.  A repository hygiene guard keeps the two
-  launchers aligned until a CUDA smoke can exercise the required-mode paths.
+- The native CUDA prototype loader/fallback finding is closed for production
+  runtime by deletion.  The former `wave_backward_cuda.py` and
+  `pibar_vjp_cuda.py` modules are absent, the backward source omits their
+  selectors and imports, and public runtime-environment docs exclude
+  `GPUREC_CUDA_SELF_LOOP_*`/`GPUREC_CUDA_PIBAR_FROM_UD` as supported contracts.
+  Historical performance logs can still describe those experiments as archived
+  provenance.
+- The former native CUDA launcher dynamic-shared-memory finding is likewise
+  historical for the production branch.  Since the launchers are absent, the
+  maintained guard is absence of the modules/selectors rather than parity
+  between deleted launcher implementations.
 - Historical benchmark provenance is now separated from current checkout
   contracts in `docs/lean-performance-path-regression.md`.  The missing
   genewise/uniform reference docs and benchmark harness names are labeled as
@@ -1887,12 +1887,13 @@ not edit files.  New or still-open findings from that refresh are:
   no longer import them, and repository hygiene now guards that tracked runtime,
   test, script, and profiling Python surfaces stay on `compute_nll*`.
 - Fresh native/C++/kernel subagent audit findings were recorded from a
-  read-only pass.  The highest-risk unresolved surfaces are production-auto
-  native CUDA prototype routing with broad fallback, unowned direct pybind
-  scheduler/stat exports, the legacy `preprocess` pybind, DTS direct-kernel
-  one-dimensional parameter ambiguity, thin direct wrapper characterization for
-  retained backward/native kernels, and broad env-driven launch tuning spread
-  across kernel modules.
+  read-only pass.  The historical production-auto native CUDA prototype routing
+  finding is now closed by deleting the modules and guarding their absence.  The
+  highest-risk unresolved surfaces are unowned direct pybind scheduler/stat
+  exports, the legacy `preprocess` pybind, DTS direct-kernel one-dimensional
+  parameter ambiguity, thin direct wrapper characterization for retained
+  backward kernels, and broad env-driven launch tuning spread across kernel
+  modules.
 - Fresh workflow/CLI/scripts/profiling subagent audit findings were recorded
   from a read-only pass.  The largest remaining script surface is the legacy
   HOGENOM optimizer family; other unresolved surfaces are duplicated validation
