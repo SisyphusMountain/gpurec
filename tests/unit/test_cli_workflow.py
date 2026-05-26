@@ -1983,6 +1983,77 @@ def test_cli_checkpoint_info_reports_route_status_and_last_row(
         assert token in captured.out
 
 
+def test_cli_checkpoint_info_treats_malformed_numeric_fields_as_null(
+    tmp_path: Path,
+    capsys,
+):
+    class FakeModel:
+        theta = torch.nn.Parameter(torch.zeros(1, 3))
+        family_names = ["fam0"]
+        species_names = ["sp0", "sp1"]
+
+    config = RunConfig(
+        species_tree=tmp_path / "sp.nwk",
+        families_file=tmp_path / "families.txt",
+        out_dir=tmp_path / "out",
+        mode="genewise",
+        device="cpu",
+    )
+    checkpoint = tmp_path / "latest.pt"
+    save_checkpoint(
+        checkpoint,
+        config=config,
+        model=FakeModel(),
+        optimizer=None,
+        optimizer_phase="hessian-sgd",
+        step=3,
+        next_step=4,
+        status={
+            "status": "running",
+            "reason": "checkpoint_interval",
+            "best_step": 3,
+            "best_nll_bits": 10.0,
+        },
+        row={
+            "optimizer/phase": "hessian-sgd",
+            "likelihood/data_nll_bits": 10.0,
+            "likelihood/log_likelihood_bits": -10.0,
+            "grad/inf": 0.1,
+            "optimizer/final_check_iters": 32,
+        },
+    )
+    payload = torch.load(checkpoint, weights_only=True)
+    payload["route_metadata"]["optimizer_step_cap"] = "5000"
+    payload["route_metadata"]["solver_warmup_iters"] = "4"
+    payload["status"]["best_step"] = "3"
+    payload["status"]["best_nll_bits"] = "10.0"
+    payload["last_row"]["likelihood/data_nll_bits"] = "10.0"
+    payload["last_row"]["likelihood/log_likelihood_bits"] = "-10.0"
+    payload["last_row"]["grad/inf"] = False
+    payload["last_row"]["optimizer/final_check_iters"] = "32"
+    torch.save(payload, checkpoint)
+
+    main(["checkpoint-info", "--checkpoint", str(checkpoint)])
+
+    captured = capsys.readouterr()
+    tokens = set(captured.out.split())
+    assert captured.err == ""
+    assert "route_metadata_source=checkpoint" in tokens
+    assert "uses_production_default_optimizer_settings=false" in tokens
+    assert "production_default_optimizer_setting_mismatches=solver_warmup_iters" in tokens
+    assert "optimizer_step_cap=null" in tokens
+    assert "solver_warmup_iters=null" in tokens
+    assert "best_step=null" in tokens
+    assert "best_nll_bits=null" in tokens
+    assert "last_nll_bits=null" in tokens
+    assert "last_log_likelihood_bits=null" in tokens
+    assert "last_grad_inf=null" in tokens
+    assert "last_final_check_iters=null" in tokens
+    assert "optimizer_step_cap=5000" not in tokens
+    assert "best_step=3" not in tokens
+    assert "last_nll_bits=10.000000" not in tokens
+
+
 def test_cli_checkpoint_info_require_final_check_ok_fails_after_printing_checkpoint(
     tmp_path: Path,
     capsys,
@@ -2473,6 +2544,58 @@ def test_cli_summary_info_reports_status_route_and_final_check(
         "final_solver_e_adjoint_rel_res_max=0.125000",
     ):
         assert token in captured.out
+
+
+def test_cli_summary_info_treats_malformed_numeric_fields_as_null(
+    tmp_path: Path,
+    capsys,
+):
+    summary = tmp_path / "summary.json"
+    summary.write_text(
+        json.dumps(
+            {
+                "status": "not_converged",
+                "reason": "max_steps",
+                "mode": "genewise",
+                "optimizer": "hessian-sgd",
+                "families": "3",
+                "species": True,
+                "configured_steps": "5000",
+                "optimizer_step_cap": "5000",
+                "final_check_iters": "32",
+                "solver_warmup_iters": "4",
+                "hessian_sgd_pi_adjoint_warmstart": 0,
+                "pi_fixed_point_relaxation": "1.0",
+                "steps_completed": "7",
+                "best_step": "5",
+                "final_nll_bits": "12.5",
+                "final_grad_inf": False,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    main(["summary-info", "--summary", str(summary)])
+
+    captured = capsys.readouterr()
+    tokens = set(captured.out.split())
+    assert captured.err == ""
+    assert "uses_production_default_optimizer_settings=true" not in tokens
+    assert "families=null" in tokens
+    assert "species=null" in tokens
+    assert "configured_steps=null" in tokens
+    assert "optimizer_step_cap=null" in tokens
+    assert "final_check_iters=null" in tokens
+    assert "solver_warmup_iters=null" in tokens
+    assert "hessian_sgd_pi_adjoint_warmstart=null" in tokens
+    assert "pi_fixed_point_relaxation=null" in tokens
+    assert "steps_completed=null" in tokens
+    assert "best_step=null" in tokens
+    assert "final_nll_bits=null" in tokens
+    assert "final_log_likelihood_bits=null" in tokens
+    assert "final_grad_inf=null" in tokens
+    assert "optimizer_step_cap=5000" not in tokens
+    assert "final_nll_bits=12.500000" not in tokens
 
 
 def test_cli_summary_info_reports_adagrad_restart_route_fields(

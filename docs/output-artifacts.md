@@ -75,6 +75,10 @@ optimizer-specific route fields for quick programmatic and terminal triage.
 The Python result parser follows the same typed artifact contract: stringified
 or boolean stand-ins for numeric summary fields are treated as missing or
 invalid rather than coerced into numbers.
+The CPU-safe artifact inspection commands follow that same display contract:
+`gpurec summary-info` and `gpurec checkpoint-info` print malformed numeric
+artifact fields as `null` instead of converting strings or booleans into
+numbers.
 For genewise `hessian-sgd`, those fields are
 `solver_warmup_iters`, `fd_adam_warmup_steps`, `fd_hessian_refresh_steps`,
 `hessian_sgd_normal_fixed_iters_pi`, and

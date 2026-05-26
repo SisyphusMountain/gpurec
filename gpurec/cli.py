@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+from numbers import Integral, Real
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -332,10 +333,9 @@ def _exit_unless_production_default_route(
 def _optional_metric_text(name: str, value: object) -> str:
     if value is None:
         return f"{name}=null"
-    try:
-        numeric = float(value)
-    except (TypeError, ValueError):
+    if isinstance(value, bool) or not isinstance(value, Real):
         return f"{name}=null"
+    numeric = float(value)
     if math.isnan(numeric):
         return f"{name}=null"
     if math.isinf(numeric):
@@ -346,10 +346,9 @@ def _optional_metric_text(name: str, value: object) -> str:
 def _optional_int_text(name: str, value: object) -> str:
     if value is None:
         return f"{name}=null"
-    try:
-        return f"{name}={int(value)}"
-    except (TypeError, ValueError):
+    if isinstance(value, bool) or not isinstance(value, Integral):
         return f"{name}=null"
+    return f"{name}={int(value)}"
 
 
 def _optional_text(name: str, value: object) -> str:
@@ -390,19 +389,17 @@ def _log_likelihood_from_result(
 ) -> float | None:
     explicit = getattr(result, log_likelihood_attr, None)
     if explicit is not None:
-        try:
-            return float(explicit)
-        except (TypeError, ValueError):
+        if isinstance(explicit, bool) or not isinstance(explicit, Real):
             return None
+        return float(explicit)
     if final_metric and getattr(result, "status", None) == "failed":
         return None
     nll_value = getattr(result, nll_attr, None)
     if nll_value is None:
         return None
-    try:
-        nll = float(nll_value)
-    except (TypeError, ValueError):
+    if isinstance(nll_value, bool) or not isinstance(nll_value, Real):
         return None
+    nll = float(nll_value)
     if not math.isfinite(nll):
         return None
     return -nll

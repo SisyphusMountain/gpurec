@@ -2452,6 +2452,10 @@ not edit files.  New or still-open findings from that refresh are:
   contract.  Stringified likelihood, gradient, step-count, and optimizer-route
   numerics are treated as missing or invalid instead of being silently coerced by
   the Python API.
+- `gpurec summary-info` and `gpurec checkpoint-info` now use that same typed
+  display contract.  Malformed numeric artifact fields are printed as `null`
+  instead of being converted from strings or booleans in terminal inspection
+  output.
 
 ## Recommended Next Order
 

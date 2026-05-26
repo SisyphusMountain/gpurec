@@ -7773,6 +7773,11 @@ artifact contract.  Stringified likelihood, gradient, step-count, and
 optimizer-route numerics are treated as missing or invalid instead of being
 silently coerced by the Python API.
 
+\texttt{gpurec summary-info} and \texttt{gpurec checkpoint-info} now use the
+same typed display contract.  Malformed numeric artifact fields are printed as
+\texttt{null} instead of being converted from strings or booleans in terminal
+inspection output.
+
 \section{Next Audit Targets}
 
 \begin{enumerate}[leftmargin=*]
