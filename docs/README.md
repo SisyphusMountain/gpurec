@@ -12,6 +12,9 @@ file as the map for deeper context.
   likelihood objective, gradient route, solver fidelity controls, genewise
   `hessian-sgd` default, specieswise `adagrad-restarts` default, and
   HOGENOM/`test_trees_1000` validation gates.
+- `input-preparation.md`: bioinformatician-facing guide for species trees,
+  AleRax `[FAMILIES]` records, gene-tree files, mapping files, JSON config path
+  resolution, and `validate-config --check-preprocess` preflight validation.
 - `optimization-workflow-call-graph.md`: current production call graph for
   `validate-config`, AleRax preprocessing, resident likelihood/gradient
   evaluation, optimizer phases, checkpoints, and final artifacts.

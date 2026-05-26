@@ -455,6 +455,7 @@ def test_cpu_ci_builds_and_smokes_release_artifacts():
         "zipfile.ZipFile",
         "required_sdist = required_wheel +",
         "docs/README.md",
+        "docs/input-preparation.md",
         "docs/lean-fast-path.md",
         "docs/optimization-workflow-call-graph.md",
         "docs/output-artifacts.md",

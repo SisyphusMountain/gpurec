@@ -1439,6 +1439,36 @@ def test_troubleshooting_guide_documents_operator_failure_triage():
         assert token in normalized
 
 
+def test_input_preparation_guide_documents_alerax_data_contract():
+    root = Path(__file__).resolve().parents[2]
+    project_readme = (root / "README.md").read_text(encoding="utf-8")
+    docs_readme = (root / "docs" / "README.md").read_text(encoding="utf-8")
+    guide = (root / "docs" / "input-preparation.md").read_text(
+        encoding="utf-8"
+    )
+    normalized = " ".join(guide.split())
+
+    assert "docs/input-preparation.md" in project_readme
+    assert "input-preparation.md" in docs_readme
+    for token in (
+        "`[FAMILIES]`",
+        "`starting_gene_tree`",
+        "`gene_tree`",
+        "`mapping`",
+        "Species:gene1;gene2",
+        "relative to the family file",
+        "relative to the JSON config file",
+        "duplicate gene assignments",
+        "gpurec validate-config --config run.json --check-preprocess",
+        "`optimizer=auto`",
+        "`hessian-sgd`",
+        "`adagrad-restarts`",
+        "`S > 256`",
+        "GeneDataset(..., leaf_species_maps=...)",
+    ):
+        assert token in normalized
+
+
 def test_optimization_workflow_call_graph_documents_current_cli_and_optimizers():
     root = Path(__file__).resolve().parents[2]
     docs_readme = (root / "docs" / "README.md").read_text(encoding="utf-8")

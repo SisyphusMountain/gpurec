@@ -278,6 +278,9 @@ The production optimization guide
 explains how the likelihood objective, gradient route, solver budgets,
 genewise `hessian-sgd` default, specieswise `adagrad-restarts` default, and
 HOGENOM/`test_trees_1000` validation gates fit together.
+For source data layout, AleRax family syntax, mapping files, path resolution,
+and preflight validation, see
+[`docs/input-preparation.md`](docs/input-preparation.md).
 
 | Mode | Behavior | Notes |
 | --- | --- | --- |
@@ -545,4 +548,6 @@ strict_optimized_verdict pass
 
 See `docs/README.md` for the current documentation map.  It separates current
 operating notes from historical performance and research logs.
+For source data layout and preflight validation, see
+[`docs/input-preparation.md`](docs/input-preparation.md).
 For run triage, see [`docs/troubleshooting.md`](docs/troubleshooting.md).
