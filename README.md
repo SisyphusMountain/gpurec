@@ -403,8 +403,9 @@ final high-fidelity likelihood/gradient validation reports
 `final_check_status=ok`.
 
 See [`docs/output-artifacts.md`](docs/output-artifacts.md) for the output
-artifact contract, including history fields, checkpoint contents, rate-table
-columns, genewise per-family likelihoods, and sampling files.
+artifact contract, including the normalized config snapshot, history fields,
+checkpoint contents, rate-table columns, genewise per-family likelihoods, and
+sampling files.
 Use `gpurec summary-info --summary output_gpurec/summary.json` to inspect the
 final summary status, likelihood/gradient diagnostics, and route metadata
 without opening JSON by hand. Add `--require-converged` when a shell pipeline

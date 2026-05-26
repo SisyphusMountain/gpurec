@@ -9198,6 +9198,16 @@ def test_optimization_runner_run_writes_outputs_with_fake_model(tmp_path: Path):
     assert latest["last_row"]["optimizer/phase"] == "final_eval"
     assert latest["family_names"] == ["fam0", "fam1"]
 
+    run_config = json.loads(
+        (config.out_dir / optimize_workflow._RUN_CONFIG_ARTIFACT_FILE).read_text(
+            encoding="utf-8"
+        )
+    )
+    assert run_config["mode"] == "genewise"
+    assert run_config["optimizer"] == "adam"
+    assert run_config["species_tree"] == str(config.species_tree)
+    assert run_config["families_file"] == str(config.families_file)
+
     assert (config.out_dir / "optimization_history.csv").exists()
     assert (config.out_dir / "theta_final.pt").exists()
     assert "fam0" in (config.out_dir / "rates_final.tsv").read_text(encoding="utf-8")

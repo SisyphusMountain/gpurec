@@ -14,6 +14,7 @@ the end of the optimization phase.
 
 | Path | Written by | Contents | Notes |
 |---|---|---|---|
+| `run_config.json` | `optimize`, optimization phase of `run` | Canonical flat JSON `RunConfig` snapshot written before model construction. | This normalized config snapshot includes resolved paths for reruns and audit records; it is not a resumable checkpoint. |
 | `history.jsonl` | `optimize`, optimization phase of `run` | One JSON object per recorded optimizer step plus the final evaluation row. | Strict JSON is used: non-finite diagnostics are serialized as `null`, not `NaN` or `Infinity`. |
 | `optimization_history.csv` | `optimize`, optimization phase of `run` | CSV version of the in-memory history rows. | Useful for spreadsheets; `history.jsonl` preserves richer typing. |
 | `summary.json` | `optimize`, optimization phase of `run` | Final status, reason, elapsed time, selected sampling checkpoint, family/species/batch counts, objective/gradient/parameterization metadata, effective optimizer/batch/solver route, best NLL/log-likelihood metadata, final NLL/log-likelihood, final gradient infinity norm, and projected-gradient infinity norm. | Check `status` and `reason` before treating rates as accepted. |

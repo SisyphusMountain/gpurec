@@ -1515,6 +1515,8 @@ def test_second_order_notes_do_not_contradict_production_optimizer_defaults():
 
 
 def test_output_artifact_reference_is_linked_and_documents_contract():
+    import importlib
+
     root = Path(__file__).resolve().parents[2]
     project_readme = (root / "README.md").read_text(encoding="utf-8")
     docs_readme = (root / "docs" / "README.md").read_text(encoding="utf-8")
@@ -1524,13 +1526,33 @@ def test_output_artifact_reference_is_linked_and_documents_contract():
     reference = (root / "docs" / "output-artifacts.md").read_text(
         encoding="utf-8"
     )
+    optimize_workflow = importlib.import_module("gpurec.workflow.optimize")
+    sampling_workflow = importlib.import_module("gpurec.workflow.sampling")
     normalized = " ".join(reference.split())
+    rows = _markdown_table_rows_by_first_cell(reference)
+    expected_optimization_paths = {
+        optimize_workflow._RUN_CONFIG_ARTIFACT_FILE,
+        *optimize_workflow._FINAL_ARTIFACT_FILES,
+        "checkpoints/latest.pt",
+        "checkpoints/best.pt",
+    }
+    expected_sampling_paths = {
+        f"reconciliations/{name}"
+        for name in sampling_workflow._SAMPLING_AGGREGATE_FILES
+    } | {
+        f"reconciliations/all/{pattern}"
+        for pattern in sampling_workflow._SAMPLING_ALL_PATTERNS
+    }
 
     assert "docs/output-artifacts.md" in project_readme
     assert "output-artifacts.md" in docs_readme
     assert "`docs/output-artifacts.md`" in guide
+    assert expected_optimization_paths <= set(rows)
+    assert expected_sampling_paths <= set(rows)
     for token in (
         "staged publish step",
+        "`run_config.json`",
+        "normalized config snapshot",
         "`history.jsonl`",
         "`optimization_history.csv`",
         "`summary.json`",

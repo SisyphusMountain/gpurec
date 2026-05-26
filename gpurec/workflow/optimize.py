@@ -335,6 +335,7 @@ _FINAL_ARTIFACT_FILES = (
     "optimization_history.csv",
     "summary.json",
 )
+_RUN_CONFIG_ARTIFACT_FILE = "run_config.json"
 _ACTIVE_BATCH_LBFGS_STALL_PATIENCE = 3
 _ADAPTIVE_REBATCH_MIN_ACTIVE_FAMILIES = 64
 _FD_NEWTON_LARGE_BATCH_MAX_LS = 8
@@ -2487,7 +2488,7 @@ class OptimizationRunner:
     def run(self) -> OptimizationResult:
         config = self.config
         config.out_dir.mkdir(parents=True, exist_ok=True)
-        config.write_json(config.out_dir / "run_config.json")
+        config.write_json(config.out_dir / _RUN_CONFIG_ARTIFACT_FILE)
         if self.history_jsonl.exists() and config.resume_from is None:
             self.history_jsonl.unlink()
 
