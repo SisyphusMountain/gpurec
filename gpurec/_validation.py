@@ -31,6 +31,20 @@ def finite_float(name: str, value: float) -> float:
     return number
 
 
+def nonnegative_float(name: str, value: float) -> float:
+    number = finite_float(name, value)
+    if number < 0.0:
+        raise ValueError(f"{name} must be non-negative")
+    return number
+
+
+def positive_float(name: str, value: float) -> float:
+    number = finite_float(name, value)
+    if number <= 0.0:
+        raise ValueError(f"{name} must be positive")
+    return number
+
+
 def bool_value(name: str, value: bool) -> bool:
     if not isinstance(value, bool):
         raise ValueError(f"{name} must be true or false")

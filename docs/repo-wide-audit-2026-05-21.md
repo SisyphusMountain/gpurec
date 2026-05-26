@@ -1927,6 +1927,11 @@ not edit files.  New or still-open findings from that refresh are:
   `nonnegative_int()`, and `positive_even_int()`; the API validation module
   re-exports those support helpers, and `RunConfig` string adapters delegate to
   them for workflow integer controls.
+- The float-range part of the duplicated-validation finding is now reduced as
+  well.  `gpurec._validation` owns `finite_float()`, `positive_float()`, and
+  `nonnegative_float()`; the API validation module re-exports those helpers for
+  direct API callers while workflow float adapters already delegate to the same
+  shared validator.
 - The profiling ownership-boundary documentation gap is now fixed.
   `profiling/README.md` documents the two tracked profiling entrypoints, their
   source-checkout/CUDA/local-data assumptions, output-contract expectations,

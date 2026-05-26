@@ -426,7 +426,7 @@ def test_internal_api_helper_modules_document_support_boundary():
     assert "Direct imports from `gpurec.core` are unstable" in docs_readme
 
 
-def test_workflow_integer_validation_uses_shared_helpers():
+def test_workflow_numeric_validation_uses_shared_helpers():
     root = Path(__file__).resolve().parents[2]
     shared_validation = ast.parse(
         (root / "gpurec" / "_validation.py").read_text(encoding="utf-8")
@@ -450,9 +450,16 @@ def test_workflow_integer_validation_uses_shared_helpers():
         "nonnegative_int",
         "positive_even_int",
     }
+    float_helpers = {
+        "finite_float",
+        "positive_float",
+        "nonnegative_float",
+    }
 
     assert integer_helpers.issubset(shared_function_names)
+    assert float_helpers.issubset(shared_function_names)
     assert api_function_names.isdisjoint(integer_helpers)
+    assert api_function_names.isdisjoint(float_helpers)
     for helper in integer_helpers:
         assert helper in workflow_config
     for stale in (
