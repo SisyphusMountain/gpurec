@@ -73,6 +73,19 @@ def _add_require_mode_default_optimizer_arg(parser: argparse.ArgumentParser) -> 
     )
 
 
+def _add_require_production_default_route_arg(
+    parser: argparse.ArgumentParser,
+) -> None:
+    parser.add_argument(
+        "--require-production-default-route",
+        action="store_true",
+        help=(
+            "Fail unless the resolved optimizer and optimizer-specific settings "
+            "match the shipped HOGENOM/test_trees_1000 production route."
+        ),
+    )
+
+
 def _route_with_mode_default_audit_fields(route: dict[str, Any]) -> dict[str, Any]:
     audited = dict(route)
     if audited.get("mode_default_optimizer") is None and audited.get("mode") is not None:
@@ -91,6 +104,36 @@ def _route_with_mode_default_audit_fields(route: dict[str, Any]) -> dict[str, An
     ):
         audited["uses_mode_default_optimizer"] = (
             audited["optimizer"] == audited["mode_default_optimizer"]
+        )
+    return audited
+
+
+def _route_with_production_default_audit_fields(
+    route: dict[str, Any],
+) -> dict[str, Any]:
+    audited = _route_with_mode_default_audit_fields(route)
+    if (
+        isinstance(audited.get("uses_production_default_optimizer_settings"), bool)
+        and isinstance(
+            audited.get("production_default_optimizer_setting_mismatches"),
+            (list, tuple),
+        )
+    ):
+        return audited
+    try:
+        from gpurec.workflow.config import (
+            production_default_optimizer_setting_mismatches_from_route,
+        )
+
+        missing, mismatches = (
+            production_default_optimizer_setting_mismatches_from_route(audited)
+        )
+    except _EXPECTED_WORKFLOW_ERRORS:
+        return audited
+    if not missing:
+        audited["production_default_optimizer_setting_mismatches"] = list(mismatches)
+        audited["uses_production_default_optimizer_settings"] = (
+            len(mismatches) == 0
         )
     return audited
 
@@ -128,6 +171,46 @@ def _mode_default_optimizer_gate_message(
     return message
 
 
+def _production_default_route_gate_message(
+    subject: str,
+    route: dict[str, Any],
+    *,
+    action: str | None = None,
+) -> str:
+    audited = _route_with_production_default_audit_fields(route)
+    try:
+        from gpurec.workflow.config import (
+            production_default_optimizer_setting_mismatches_from_route,
+        )
+
+        missing, inferred_mismatches = (
+            production_default_optimizer_setting_mismatches_from_route(audited)
+        )
+    except _EXPECTED_WORKFLOW_ERRORS:
+        missing = ("mode", "optimizer")
+        inferred_mismatches = ()
+    if missing:
+        message = (
+            f"{subject} production default route evidence is incomplete; "
+            f"missing {', '.join(missing)}"
+        )
+    else:
+        mismatches = audited.get(
+            "production_default_optimizer_setting_mismatches",
+            list(inferred_mismatches),
+        )
+        if not isinstance(mismatches, (list, tuple)):
+            mismatches = list(inferred_mismatches)
+        mismatch_text = ", ".join(str(item) for item in mismatches) or "none"
+        message = (
+            f"{subject} production default route settings differ for mode "
+            f"{audited.get('mode')!r}: {mismatch_text}"
+        )
+    if action is not None:
+        message = f"{message}; {action}"
+    return message
+
+
 def _require_config_mode_default_optimizer(
     parser: argparse.ArgumentParser,
     config: Any,
@@ -141,6 +224,23 @@ def _require_config_mode_default_optimizer(
                 "config",
                 route,
                 action="use optimizer=auto or the mode default optimizer",
+            )
+        )
+
+
+def _require_config_production_default_route(
+    parser: argparse.ArgumentParser,
+    config: Any,
+) -> None:
+    from gpurec.workflow.config import effective_route_metadata
+
+    route = effective_route_metadata(config)
+    if route.get("uses_production_default_optimizer_settings") is not True:
+        parser.error(
+            _production_default_route_gate_message(
+                "config",
+                route,
+                action="use optimizer=auto and the shipped optimizer defaults",
             )
         )
 
@@ -161,6 +261,28 @@ def _exit_unless_mode_default_optimizer(
                 subject,
                 audited,
                 action="expected the production default optimizer route",
+            )
+            + "\n"
+        ),
+    )
+
+
+def _exit_unless_production_default_route(
+    parser: argparse.ArgumentParser,
+    route: dict[str, Any],
+    *,
+    subject: str,
+) -> None:
+    audited = _route_with_production_default_audit_fields(route)
+    if audited.get("uses_production_default_optimizer_settings") is True:
+        return
+    parser.exit(
+        status=1,
+        message=(
+            _production_default_route_gate_message(
+                subject,
+                audited,
+                action="expected the shipped production optimizer route",
             )
             + "\n"
         ),
@@ -207,6 +329,16 @@ def _optional_bool_text(name: str, value: object) -> str:
     if isinstance(value, bool):
         return f"{name}={'true' if value else 'false'}"
     return f"{name}=null"
+
+
+def _optional_list_text(name: str, value: object, *, empty_text: str = "none") -> str:
+    if value is None:
+        return f"{name}=null"
+    if not isinstance(value, (list, tuple)):
+        return f"{name}=null"
+    if not value:
+        return f"{name}={empty_text}"
+    return _optional_text(name, ",".join(str(item) for item in value))
 
 
 def _log_likelihood_from_result(
@@ -261,6 +393,22 @@ def _optimization_result_text(result: Any) -> str:
             _optional_bool_text(
                 "uses_mode_default_optimizer",
                 getattr(result, "uses_mode_default_optimizer", None),
+            ),
+            _optional_bool_text(
+                "uses_production_default_optimizer_settings",
+                getattr(
+                    result,
+                    "uses_production_default_optimizer_settings",
+                    None,
+                ),
+            ),
+            _optional_list_text(
+                "production_default_optimizer_setting_mismatches",
+                getattr(
+                    result,
+                    "production_default_optimizer_setting_mismatches",
+                    None,
+                ),
             ),
             _optional_int_text("families", getattr(result, "families", None)),
             _optional_int_text("species", getattr(result, "species", None)),
@@ -488,7 +636,7 @@ def _optimization_result_text(result: Any) -> str:
 
 
 def _summary_info_text(summary: Path, payload: dict[str, Any]) -> str:
-    payload = _route_with_mode_default_audit_fields(payload)
+    payload = _route_with_production_default_audit_fields(payload)
     return (
         f"{_optional_text('summary', summary)} "
         f"{_optimization_result_text(SimpleNamespace(**payload))}"
@@ -655,13 +803,13 @@ def _partial_route_metadata_from_config_data(
         for key in ("mode", "optimizer")
         if config_data.get(key) is not None
     }
-    return _route_with_mode_default_audit_fields(route)
+    return _route_with_production_default_audit_fields(route)
 
 
 def _checkpoint_route_metadata(payload: dict[str, Any]) -> tuple[dict[str, Any], str]:
     route = payload.get("route_metadata")
     if isinstance(route, dict):
-        return _route_with_mode_default_audit_fields(route), "checkpoint"
+        return _route_with_production_default_audit_fields(route), "checkpoint"
     config_data = payload.get("config")
     if not isinstance(config_data, dict):
         return {}, "missing"
@@ -669,7 +817,7 @@ def _checkpoint_route_metadata(payload: dict[str, Any]) -> tuple[dict[str, Any],
         from gpurec.workflow.config import RunConfig, effective_route_metadata
 
         return (
-            _route_with_mode_default_audit_fields(
+            _route_with_production_default_audit_fields(
                 effective_route_metadata(RunConfig.from_dict(config_data))
             ),
             "config",
@@ -689,6 +837,7 @@ def _route_int_text(name: str, route: dict[str, Any], *, none_text: str = "null"
 
 
 def _route_metadata_text(route: dict[str, Any]) -> str:
+    route = _route_with_production_default_audit_fields(route)
     fields = [
         _optional_text("objective", route.get("objective")),
         _optional_text("gradient_route", route.get("gradient_route")),
@@ -707,6 +856,14 @@ def _route_metadata_text(route: dict[str, Any]) -> str:
         _optional_bool_text(
             "uses_mode_default_optimizer",
             route.get("uses_mode_default_optimizer"),
+        ),
+        _optional_bool_text(
+            "uses_production_default_optimizer_settings",
+            route.get("uses_production_default_optimizer_settings"),
+        ),
+        _optional_list_text(
+            "production_default_optimizer_setting_mismatches",
+            route.get("production_default_optimizer_setting_mismatches"),
         ),
         _optional_text("batch_packing", route.get("batch_packing")),
         _route_int_text("family_chunk_size", route),
@@ -1506,6 +1663,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_run_config_args(optimize_parser)
     _add_require_mode_default_optimizer_arg(optimize_parser)
+    _add_require_production_default_route_arg(optimize_parser)
     optimize_parser.add_argument(
         "--require-converged",
         action="store_true",
@@ -1535,6 +1693,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_run_config_args(validate_parser)
     _add_require_mode_default_optimizer_arg(validate_parser)
+    _add_require_production_default_route_arg(validate_parser)
     validate_parser.add_argument(
         "--check-preprocess",
         action="store_true",
@@ -1561,6 +1720,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_sampling_args(sample_parser, checkpoint_required=True)
     _add_require_mode_default_optimizer_arg(sample_parser)
+    _add_require_production_default_route_arg(sample_parser)
     sample_parser.set_defaults(_command_parser=sample_parser)
 
     run_parser = sub.add_parser(
@@ -1571,6 +1731,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_run_config_args(run_parser)
     _add_sampling_args(run_parser, checkpoint_required=False, include_checkpoint=False)
     _add_require_mode_default_optimizer_arg(run_parser)
+    _add_require_production_default_route_arg(run_parser)
     run_parser.add_argument("--checkpoint", type=Path, help=argparse.SUPPRESS)
     run_parser.add_argument(
         "--require-converged",
@@ -1624,6 +1785,7 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     _add_require_mode_default_optimizer_arg(checkpoint_info_parser)
+    _add_require_production_default_route_arg(checkpoint_info_parser)
     checkpoint_info_parser.set_defaults(_command_parser=checkpoint_info_parser)
 
     summary_info_parser = sub.add_parser(
@@ -1657,6 +1819,7 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     _add_require_mode_default_optimizer_arg(summary_info_parser)
+    _add_require_production_default_route_arg(summary_info_parser)
     summary_info_parser.set_defaults(_command_parser=summary_info_parser)
 
     template_parser = sub.add_parser(
@@ -1725,6 +1888,8 @@ def main(argv: list[str] | None = None) -> None:
             config = _run_config_from_args(args)
             if args.require_mode_default_optimizer:
                 _require_config_mode_default_optimizer(command_parser, config)
+            if args.require_production_default_route:
+                _require_config_production_default_route(command_parser, config)
             _preflight_run_config(config)
         except _EXPECTED_WORKFLOW_ERRORS as exc:
             command_parser.error(str(exc))
@@ -1760,6 +1925,8 @@ def main(argv: list[str] | None = None) -> None:
             config = _run_config_from_args(args)
             if args.require_mode_default_optimizer:
                 _require_config_mode_default_optimizer(command_parser, config)
+            if args.require_production_default_route:
+                _require_config_production_default_route(command_parser, config)
             summary = _preflight_run_config(
                 config,
                 check_preprocess=args.check_preprocess,
@@ -1826,6 +1993,19 @@ def main(argv: list[str] | None = None) -> None:
                 route,
                 subject="checkpoint",
             )
+        if args.require_production_default_route:
+            try:
+                from gpurec.workflow.checkpoint import load_checkpoint
+
+                payload = load_checkpoint(sampling_config.checkpoint)
+            except _EXPECTED_WORKFLOW_ERRORS as exc:
+                _exit_runtime_error(command_parser, _sampling_error_message(exc))
+            route, _route_source = _checkpoint_route_metadata(payload)
+            _exit_unless_production_default_route(
+                command_parser,
+                route,
+                subject="checkpoint",
+            )
         try:
             result = sample(sampling_config)
         except _EXPECTED_WORKFLOW_ERRORS as exc:
@@ -1857,6 +2037,13 @@ def main(argv: list[str] | None = None) -> None:
                 route,
                 subject="checkpoint",
             )
+        if args.require_production_default_route:
+            route, _route_source = _checkpoint_route_metadata(payload)
+            _exit_unless_production_default_route(
+                command_parser,
+                route,
+                subject="checkpoint",
+            )
         if args.require_final_check_ok:
             _exit_unless_final_check_ok(
                 command_parser,
@@ -1876,6 +2063,12 @@ def main(argv: list[str] | None = None) -> None:
         print(_summary_info_text(summary, payload), flush=True)
         if args.require_mode_default_optimizer:
             _exit_unless_mode_default_optimizer(
+                command_parser,
+                payload,
+                subject="summary",
+            )
+        if args.require_production_default_route:
+            _exit_unless_production_default_route(
                 command_parser,
                 payload,
                 subject="summary",
@@ -1914,6 +2107,8 @@ def main(argv: list[str] | None = None) -> None:
             run_config = _run_config_from_args(args)
             if args.require_mode_default_optimizer:
                 _require_config_mode_default_optimizer(command_parser, run_config)
+            if args.require_production_default_route:
+                _require_config_production_default_route(command_parser, run_config)
             _preflight_run_config(run_config)
             _validate_run_sampling_args(args, run_config)
         except _EXPECTED_WORKFLOW_ERRORS as exc:

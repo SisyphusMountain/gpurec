@@ -40,9 +40,13 @@ available. `summary.json` and
 `rate_parameterization=base2_log_dlt_rates`, and
 `production_default_basis=hogenom_and_test_trees_1000`, plus
 `mode_default_optimizer` and `uses_mode_default_optimizer` for auditing whether
-a run used the production optimizer default for its sharing mode, and
-optimizer-specific route fields such as the specieswise restart schedule and
-genewise Hessian-SGD normal-stage solver overrides. For specieswise
+a run used the production optimizer default for its sharing mode. They also
+record `uses_production_default_optimizer_settings` and
+`production_default_optimizer_setting_mismatches`, which distinguish a plain
+optimizer-name match from the full shipped HOGENOM/`test_trees_1000`
+optimizer-specific route. Optimizer-specific route fields include the
+specieswise restart schedule and genewise Hessian-SGD normal-stage solver
+overrides. For specieswise
 `adagrad-restarts`, `adagrad_restart_total_steps` records the derived number of
 scheduled Adagrad updates; the run stops when this schedule is complete even if
 `steps` is larger. Route metadata also records `configured_steps`,
@@ -53,9 +57,11 @@ The `OptimizationResult` returned by the Python API and the optimization status
 line expose the same family/species/batch counts, `batch_packing`,
 `family_chunk_size`, `clade_budget`, `fixed_iters_e`, `fixed_iters_pi`,
 `neumann_terms`, route contract fields, configured/effective step cap,
-`mode_default_optimizer`, `uses_mode_default_optimizer`, `final_check_iters`,
-and optimizer-specific route fields for quick
-programmatic and terminal triage. For genewise `hessian-sgd`, those fields are
+`mode_default_optimizer`, `uses_mode_default_optimizer`,
+`uses_production_default_optimizer_settings`,
+`production_default_optimizer_setting_mismatches`, `final_check_iters`, and
+optimizer-specific route fields for quick programmatic and terminal triage.
+For genewise `hessian-sgd`, those fields are
 `solver_warmup_iters`, `fd_adam_warmup_steps`, `fd_hessian_refresh_steps`,
 `hessian_sgd_normal_fixed_iters_pi`, and
 `hessian_sgd_normal_neumann_terms`, plus the experimental
@@ -109,7 +115,9 @@ the same status line and then exit nonzero unless the optimization status is
 `final_check_status=ok` before returning success. Add
 `--require-mode-default-optimizer` to `gpurec validate-config`,
 `gpurec optimize`, or `gpurec run` when automation should fail unless the
-resolved optimizer matches the production default for the selected mode.
+resolved optimizer matches the production default for the selected mode. Add
+`--require-production-default-route` when automation should also reject
+optimizer-specific setting overrides.
 Text and path values that contain whitespace or control characters are emitted
 as JSON strings with spaces escaped as `\u0020` so each status line remains one
 record.
@@ -126,13 +134,18 @@ infers those audit fields before printing so the displayed line matches the
 route evidence used by `--require-mode-default-optimizer`. If the summary is
 too old or incomplete to prove both `mode` and `optimizer`, the gate fails with
 an incomplete-evidence error instead of treating the route as accepted.
+`summary-info` also infers the stricter production-route settings audit when
+the summary carries the relevant optimizer-specific fields; otherwise
+`--require-production-default-route` fails with an incomplete-evidence error.
 
 Add `--require-converged` when the command should print the same summary line
 and then exit nonzero unless `summary.status` is `converged`. Add
 `--require-final-check-ok` when downstream automation should also require
 `summary.final_check_status` to be `ok`. Add
 `--require-mode-default-optimizer` when downstream automation should reject
-summaries that do not prove the mode default optimizer was used.
+summaries that do not prove the mode default optimizer was used, or
+`--require-production-default-route` when the optimizer-specific settings must
+also match the shipped production route.
 
 `theta_final.pt` is intentionally smaller than a checkpoint. Tooling that needs
 to restore a model, sample reconciliations, or verify family/species ordering
@@ -186,9 +199,13 @@ status is anything other than `converged`. With `--require-final-check-ok`, it
 also exits before sampling unless `final_check_status=ok`. With
 `--require-mode-default-optimizer`, it exits before optimization or sampling
 unless the resolved optimizer is the production default for the selected mode.
+With `--require-production-default-route`, it also rejects changed
+optimizer-specific settings before optimization or sampling.
 The same `--require-mode-default-optimizer` flag is available on standalone
 `gpurec sample`; it inspects the checkpoint route and exits before sampling if
-the checkpoint cannot prove it used the production default optimizer.
+the checkpoint cannot prove it used the production default optimizer. Standalone
+`gpurec sample` also supports `--require-production-default-route` to require
+the full shipped optimizer-specific route before sampling.
 
 | Path | Contents |
 |---|---|

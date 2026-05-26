@@ -340,6 +340,9 @@ def _normalize_adagrad_restart_schedule(value: str) -> str:
 DEFAULT_NORMALIZED_ADAGRAD_RESTART_SCHEDULE = _normalize_adagrad_restart_schedule(
     DEFAULT_ADAGRAD_RESTART_SCHEDULE
 )
+DEFAULT_ADAGRAD_RESTART_TOTAL_STEPS = adagrad_restart_schedule_total_steps(
+    DEFAULT_ADAGRAD_RESTART_SCHEDULE
+)
 
 
 def _normalize_workflow_batch_packing(value: str | None) -> str:
@@ -976,11 +979,162 @@ class RunConfig:
         )
 
 
+_PRODUCTION_DEFAULT_GENEWISE_OPTIMIZER_SETTINGS = {
+    "final_check_iters": 32,
+    "solver_warmup_iters": 4,
+    "fd_adam_warmup_steps": 3,
+    "fd_hessian_refresh_steps": 16,
+    "hessian_sgd_normal_fixed_iters_pi": None,
+    "hessian_sgd_normal_neumann_terms": None,
+    "hessian_sgd_pi_adjoint_warmstart": False,
+    "pi_fixed_point_relaxation": 1.0,
+    "hessian_sgd_validation_interval": 0,
+    "hessian_sgd_validation_fixed_iters_pi": None,
+    "hessian_sgd_validation_neumann_terms": None,
+}
+_PRODUCTION_DEFAULT_SPECIESWISE_OPTIMIZER_SETTINGS = {
+    "final_check_iters": DEFAULT_ADAGRAD_RESTART_FINAL_CHECK_ITERS,
+    "optimizer_step_cap": DEFAULT_ADAGRAD_RESTART_TOTAL_STEPS,
+    "optimizer_step_cap_reason": "adagrad_restart_schedule",
+    "adagrad_restart_schedule": DEFAULT_NORMALIZED_ADAGRAD_RESTART_SCHEDULE,
+    "adagrad_restart_total_steps": DEFAULT_ADAGRAD_RESTART_TOTAL_STEPS,
+    "adagrad_restart_final_check_iters": DEFAULT_ADAGRAD_RESTART_FINAL_CHECK_ITERS,
+}
+
+
+def _production_default_optimizer_expected_settings(mode: str) -> dict[str, Any]:
+    if mode == "genewise":
+        return _PRODUCTION_DEFAULT_GENEWISE_OPTIMIZER_SETTINGS
+    if mode == "specieswise":
+        return _PRODUCTION_DEFAULT_SPECIESWISE_OPTIMIZER_SETTINGS
+    if mode == "global":
+        return {}
+    raise ValueError("mode must be 'global', 'specieswise', or 'genewise'")
+
+
+def _route_setting_matches(name: str, actual: Any, expected: Any) -> bool:
+    if name == "adagrad_restart_schedule" and actual is not None:
+        try:
+            actual = _normalize_adagrad_restart_schedule(str(actual))
+        except ValueError:
+            return False
+    if expected is None:
+        return actual is None
+    if isinstance(expected, bool):
+        return isinstance(actual, bool) and actual is expected
+    if isinstance(expected, int):
+        if isinstance(actual, bool):
+            return False
+        try:
+            if isinstance(actual, Real) and not float(actual).is_integer():
+                return False
+            return int(actual) == expected
+        except (TypeError, ValueError):
+            return False
+    if isinstance(expected, float):
+        if isinstance(actual, bool):
+            return False
+        try:
+            return float(actual) == expected
+        except (TypeError, ValueError):
+            return False
+    return actual == expected
+
+
+def production_default_optimizer_setting_mismatches_from_route(
+    route: dict[str, Any],
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """Return ``(missing, mismatched)`` audit fields for a route dictionary."""
+    missing: list[str] = []
+    mismatched: list[str] = []
+    mode = route.get("mode")
+    optimizer = route.get("optimizer")
+    if mode is None:
+        missing.append("mode")
+    if optimizer is None:
+        missing.append("optimizer")
+    if missing:
+        return tuple(missing), tuple(mismatched)
+    mode_text = str(mode)
+    try:
+        mode_default_optimizer = default_optimizer_for_mode(mode_text)
+    except ValueError:
+        mismatched.append("mode")
+        return tuple(missing), tuple(mismatched)
+    if optimizer != mode_default_optimizer:
+        mismatched.append("optimizer")
+        return tuple(missing), tuple(mismatched)
+    expected_settings = _production_default_optimizer_expected_settings(mode_text)
+    for name, expected in expected_settings.items():
+        if name not in route:
+            missing.append(name)
+            continue
+        if not _route_setting_matches(name, route[name], expected):
+            mismatched.append(name)
+    return tuple(missing), tuple(mismatched)
+
+
+def production_default_optimizer_setting_mismatches(
+    config: RunConfig,
+) -> tuple[str, ...]:
+    optimizer_step_cap, optimizer_step_cap_reason = effective_optimizer_step_cap(
+        config
+    )
+    route = {
+        "mode": config.mode,
+        "optimizer": config.optimizer,
+        "final_check_iters": (
+            config.adagrad_restart_final_check_iters
+            if config.optimizer == "adagrad-restarts"
+            else config.final_check_iters
+        ),
+        "optimizer_step_cap": optimizer_step_cap,
+        "optimizer_step_cap_reason": optimizer_step_cap_reason,
+        "solver_warmup_iters": config.solver_warmup_iters,
+        "fd_adam_warmup_steps": config.fd_adam_warmup_steps,
+        "fd_hessian_refresh_steps": config.fd_hessian_refresh_steps,
+        "hessian_sgd_normal_fixed_iters_pi": (
+            config.hessian_sgd_normal_fixed_iters_pi
+        ),
+        "hessian_sgd_normal_neumann_terms": config.hessian_sgd_normal_neumann_terms,
+        "hessian_sgd_pi_adjoint_warmstart": (
+            config.hessian_sgd_pi_adjoint_warmstart
+        ),
+        "pi_fixed_point_relaxation": config.pi_fixed_point_relaxation,
+        "hessian_sgd_validation_interval": config.hessian_sgd_validation_interval,
+        "hessian_sgd_validation_fixed_iters_pi": (
+            config.hessian_sgd_validation_fixed_iters_pi
+        ),
+        "hessian_sgd_validation_neumann_terms": (
+            config.hessian_sgd_validation_neumann_terms
+        ),
+        "adagrad_restart_schedule": config.adagrad_restart_schedule,
+        "adagrad_restart_total_steps": adagrad_restart_schedule_total_steps(
+            config.adagrad_restart_schedule
+        ),
+        "adagrad_restart_final_check_iters": (
+            config.adagrad_restart_final_check_iters
+        ),
+    }
+    missing, mismatches = production_default_optimizer_setting_mismatches_from_route(
+        route
+    )
+    if missing:
+        raise RuntimeError(
+            "internal error: complete RunConfig route is missing production "
+            f"default optimizer setting field(s): {', '.join(missing)}"
+        )
+    return mismatches
+
+
 def effective_route_metadata(config: RunConfig) -> dict[str, Any]:
     optimizer_step_cap, optimizer_step_cap_reason = effective_optimizer_step_cap(
         config
     )
     mode_default_optimizer = default_optimizer_for_mode(config.mode)
+    default_setting_mismatches = production_default_optimizer_setting_mismatches(
+        config
+    )
     route: dict[str, Any] = {
         "objective": "negative_log_likelihood_bits",
         "gradient_route": "implicit_first_order_adjoint",
@@ -990,6 +1144,12 @@ def effective_route_metadata(config: RunConfig) -> dict[str, Any]:
         "optimizer": config.optimizer,
         "mode_default_optimizer": mode_default_optimizer,
         "uses_mode_default_optimizer": config.optimizer == mode_default_optimizer,
+        "uses_production_default_optimizer_settings": (
+            len(default_setting_mismatches) == 0
+        ),
+        "production_default_optimizer_setting_mismatches": list(
+            default_setting_mismatches
+        ),
         "batch_packing": config.batch_packing,
         "family_chunk_size": config.family_chunk_size,
         "clade_budget": config.clade_budget,

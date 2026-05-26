@@ -73,6 +73,7 @@ from gpurec.workflow.config import (
     default_optimizer_for_mode,
     dtype_from_name,
     effective_route_metadata,
+    production_default_optimizer_setting_mismatches_from_route,
 )
 from gpurec.workflow.diagnostics import (
     append_jsonl,
@@ -1301,6 +1302,8 @@ def test_effective_route_metadata_reports_production_likelihood_contract(
     assert route["optimizer"] == "hessian-sgd"
     assert route["mode_default_optimizer"] == "hessian-sgd"
     assert route["uses_mode_default_optimizer"] is True
+    assert route["uses_production_default_optimizer_settings"] is True
+    assert route["production_default_optimizer_setting_mismatches"] == []
     assert route["configured_steps"] == 5000
     assert route["optimizer_step_cap"] == 5000
     assert route["optimizer_step_cap_reason"] == "configured_steps"
@@ -1328,6 +1331,52 @@ def test_effective_route_metadata_marks_nondefault_optimizer(tmp_path: Path):
     assert route["optimizer"] == "adam"
     assert route["mode_default_optimizer"] == "hessian-sgd"
     assert route["uses_mode_default_optimizer"] is False
+    assert route["uses_production_default_optimizer_settings"] is False
+    assert route["production_default_optimizer_setting_mismatches"] == ["optimizer"]
+
+
+def test_route_audit_infers_production_default_settings_from_route_dict():
+    route = {
+        "mode": "specieswise",
+        "optimizer": "adagrad-restarts",
+        "final_check_iters": 128,
+        "optimizer_step_cap": 125,
+        "optimizer_step_cap_reason": "adagrad_restart_schedule",
+        "adagrad_restart_schedule": "8:1.0:60,16:0.5:35,32:0.5:30",
+        "adagrad_restart_total_steps": 125,
+        "adagrad_restart_final_check_iters": 128,
+    }
+
+    missing, mismatches = production_default_optimizer_setting_mismatches_from_route(
+        route
+    )
+
+    assert missing == ()
+    assert mismatches == ()
+
+
+def test_route_audit_reports_missing_and_custom_optimizer_settings():
+    route = {
+        "mode": "genewise",
+        "optimizer": "hessian-sgd",
+        "final_check_iters": 32,
+        "solver_warmup_iters": 4,
+        "fd_adam_warmup_steps": 3,
+        "fd_hessian_refresh_steps": 8,
+        "hessian_sgd_normal_fixed_iters_pi": None,
+        "hessian_sgd_normal_neumann_terms": None,
+        "hessian_sgd_pi_adjoint_warmstart": False,
+        "pi_fixed_point_relaxation": 1.0,
+        "hessian_sgd_validation_interval": 0,
+        "hessian_sgd_validation_fixed_iters_pi": None,
+    }
+
+    missing, mismatches = production_default_optimizer_setting_mismatches_from_route(
+        route
+    )
+
+    assert missing == ("hessian_sgd_validation_neumann_terms",)
+    assert mismatches == ("fd_hessian_refresh_steps",)
 
 
 def test_optimization_result_is_derived_from_summary_contract(tmp_path: Path):
@@ -1347,6 +1396,16 @@ def test_optimization_result_is_derived_from_summary_contract(tmp_path: Path):
         "optimizer": "hessian-sgd",
         "mode_default_optimizer": "hessian-sgd",
         "uses_mode_default_optimizer": True,
+        "uses_production_default_optimizer_settings": False,
+        "production_default_optimizer_setting_mismatches": [
+            "hessian_sgd_normal_fixed_iters_pi",
+            "hessian_sgd_normal_neumann_terms",
+            "hessian_sgd_pi_adjoint_warmstart",
+            "pi_fixed_point_relaxation",
+            "hessian_sgd_validation_interval",
+            "hessian_sgd_validation_fixed_iters_pi",
+            "hessian_sgd_validation_neumann_terms",
+        ],
         "batch_packing": "depth_first_fit",
         "family_chunk_size": 64,
         "clade_budget": 500_000,
@@ -1401,6 +1460,7 @@ def test_optimization_result_is_derived_from_summary_contract(tmp_path: Path):
         "optimizer": "hessian-sgd",
         "mode_default_optimizer": "hessian-sgd",
         "uses_mode_default_optimizer": True,
+        "uses_production_default_optimizer_settings": False,
         "objective": "negative_log_likelihood_bits",
         "gradient_route": "implicit_first_order_adjoint",
         "rate_parameterization": "base2_log_dlt_rates",
@@ -1452,6 +1512,15 @@ def test_optimization_result_is_derived_from_summary_contract(tmp_path: Path):
     assert result.final_solver_e_adjoint_failed_batches == pytest.approx(0.0)
     assert result.final_solver_e_adjoint_success_batches == pytest.approx(3.0)
     assert result.final_solver_e_adjoint_rel_res_max == pytest.approx(0.001)
+    assert result.production_default_optimizer_setting_mismatches == (
+        "hessian_sgd_normal_fixed_iters_pi",
+        "hessian_sgd_normal_neumann_terms",
+        "hessian_sgd_pi_adjoint_warmstart",
+        "pi_fixed_point_relaxation",
+        "hessian_sgd_validation_interval",
+        "hessian_sgd_validation_fixed_iters_pi",
+        "hessian_sgd_validation_neumann_terms",
+    )
     assert result.adagrad_restart_schedule is None
     assert result.adagrad_restart_total_steps is None
     assert result.adagrad_restart_final_check_iters is None
@@ -1485,6 +1554,16 @@ def test_effective_route_metadata_reports_hessian_sgd_normal_solver_overrides(
     assert route["hessian_sgd_validation_interval"] == 3
     assert route["hessian_sgd_validation_fixed_iters_pi"] == 32
     assert route["hessian_sgd_validation_neumann_terms"] == 48
+    assert route["uses_production_default_optimizer_settings"] is False
+    assert route["production_default_optimizer_setting_mismatches"] == [
+        "hessian_sgd_normal_fixed_iters_pi",
+        "hessian_sgd_normal_neumann_terms",
+        "hessian_sgd_pi_adjoint_warmstart",
+        "pi_fixed_point_relaxation",
+        "hessian_sgd_validation_interval",
+        "hessian_sgd_validation_fixed_iters_pi",
+        "hessian_sgd_validation_neumann_terms",
+    ]
 
 
 def test_run_config_accepts_adam_fd_newton_for_genewise_mode(tmp_path: Path):
@@ -1559,6 +1638,8 @@ def test_run_config_auto_optimizer_uses_adagrad_restarts_for_specieswise_mode(
     assert route["configured_steps"] == 5000
     assert route["optimizer_step_cap"] == 125
     assert route["optimizer_step_cap_reason"] == "adagrad_restart_schedule"
+    assert route["uses_production_default_optimizer_settings"] is True
+    assert route["production_default_optimizer_setting_mismatches"] == []
 
 
 def test_run_config_specieswise_adagrad_restarts_step_cap_honors_shorter_steps(
@@ -1579,6 +1660,11 @@ def test_run_config_specieswise_adagrad_restarts_step_cap_honors_shorter_steps(
     assert route["configured_steps"] == 12
     assert route["optimizer_step_cap"] == 12
     assert route["optimizer_step_cap_reason"] == "configured_steps"
+    assert route["uses_production_default_optimizer_settings"] is False
+    assert route["production_default_optimizer_setting_mismatches"] == [
+        "optimizer_step_cap",
+        "optimizer_step_cap_reason",
+    ]
 
 
 def test_run_config_accepts_specieswise_adagrad_restart_schedule(tmp_path: Path):

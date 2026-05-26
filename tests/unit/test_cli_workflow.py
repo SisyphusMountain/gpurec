@@ -69,6 +69,7 @@ def test_run_config_cli_surface_matches_dataclass_fields():
             "require_converged",
             "require_final_check_ok",
             "require_mode_default_optimizer",
+            "require_production_default_route",
         }
     )
     assert _parser_action_dests("validate-config") == (
@@ -77,6 +78,7 @@ def test_run_config_cli_surface_matches_dataclass_fields():
             "check_preprocess",
             "require_cuda_backward_ready",
             "require_mode_default_optimizer",
+            "require_production_default_route",
         }
     )
     assert _parser_action_dests("run") == expected_parser_dests | {
@@ -90,18 +92,21 @@ def test_run_config_cli_surface_matches_dataclass_fields():
         "require_converged",
         "require_final_check_ok",
         "require_mode_default_optimizer",
+        "require_production_default_route",
     }
     assert _parser_action_dests("backtrack-check") == {"backtrack_binary"}
     assert _parser_action_dests("checkpoint-info") == {
         "checkpoint",
         "require_final_check_ok",
         "require_mode_default_optimizer",
+        "require_production_default_route",
     }
     assert _parser_action_dests("summary-info") == {
         "summary",
         "require_converged",
         "require_final_check_ok",
         "require_mode_default_optimizer",
+        "require_production_default_route",
     }
     assert _parser_action_dests("config-template") == {
         "mode",
@@ -130,6 +135,7 @@ def test_sampling_config_cli_surface_matches_dataclass_fields():
     assert set(sampling_dest_to_field.values()) == sampling_config_fields
     assert set(sampling_dest_to_field) <= _parser_action_dests("sample")
     assert "require_mode_default_optimizer" in _parser_action_dests("sample")
+    assert "require_production_default_route" in _parser_action_dests("sample")
     assert set(sampling_dest_to_field) - {"checkpoint"} <= _parser_action_dests("run")
 
 
@@ -701,6 +707,8 @@ def test_cli_validate_config_reports_selected_family_references(
     assert f"production_default_basis={basis}" in captured.out
     assert "mode_default_optimizer=hessian-sgd" in captured.out
     assert "uses_mode_default_optimizer=true" in captured.out
+    assert "uses_production_default_optimizer_settings=true" in captured.out
+    assert "production_default_optimizer_setting_mismatches=none" in captured.out
     assert "families=1" in captured.out
     assert "gene_tree_files=1" in captured.out
     assert "mapped_families=1" in captured.out
@@ -757,6 +765,35 @@ def test_cli_validate_config_require_mode_default_optimizer_rejects_override(
     assert "Traceback" not in captured.err
 
 
+def test_cli_validate_config_require_production_default_route_rejects_custom_settings(
+    tmp_path: Path,
+    capsys,
+):
+    write_tiny_alerax_inputs(tmp_path)
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(
+            _minimal_workflow_cli_args("validate-config", tmp_path)
+            + [
+                "--optimizer",
+                "hessian-sgd",
+                "--fd-hessian-refresh-steps",
+                "8",
+                "--require-production-default-route",
+            ]
+        )
+
+    captured = capsys.readouterr()
+    assert exc_info.value.code == 2
+    assert (
+        "config production default route settings differ for mode 'genewise': "
+        "fd_hessian_refresh_steps"
+    ) in captured.err
+    assert "use optimizer=auto and the shipped optimizer defaults" in captured.err
+    assert "valid_config=true" not in captured.out
+    assert "Traceback" not in captured.err
+
+
 def test_cli_validate_config_reports_hessian_sgd_normal_solver_overrides(
     tmp_path: Path,
     capsys,
@@ -804,6 +841,14 @@ def test_cli_validate_config_reports_hessian_sgd_normal_solver_overrides(
     assert "hessian_sgd_validation_interval=4" in captured.out
     assert "hessian_sgd_validation_fixed_iters_pi=32" in captured.out
     assert "hessian_sgd_validation_neumann_terms=48" in captured.out
+    assert "uses_production_default_optimizer_settings=false" in captured.out
+    assert (
+        "production_default_optimizer_setting_mismatches="
+        "hessian_sgd_normal_fixed_iters_pi,hessian_sgd_normal_neumann_terms,"
+        "hessian_sgd_pi_adjoint_warmstart,pi_fixed_point_relaxation,"
+        "hessian_sgd_validation_interval,hessian_sgd_validation_fixed_iters_pi,"
+        "hessian_sgd_validation_neumann_terms"
+    ) in captured.out
     assert captured.err == ""
 
 
@@ -834,6 +879,8 @@ def test_cli_validate_config_reports_specieswise_restart_route(
     assert "optimizer=adagrad-restarts" in captured.out
     assert "mode_default_optimizer=adagrad-restarts" in captured.out
     assert "uses_mode_default_optimizer=true" in captured.out
+    assert "uses_production_default_optimizer_settings=true" in captured.out
+    assert "production_default_optimizer_setting_mismatches=none" in captured.out
     assert (
         "adagrad_restart_schedule=8:1:60,16:0.5:35,32:0.5:30"
         in captured.out
@@ -1518,6 +1565,8 @@ def test_cli_checkpoint_info_reports_route_status_and_last_row(
         f"production_default_basis={basis}",
         "mode_default_optimizer=adagrad-restarts",
         "uses_mode_default_optimizer=true",
+        "uses_production_default_optimizer_settings=true",
+        "production_default_optimizer_setting_mismatches=none",
         "batch_packing=depth_first_fit",
         "family_chunk_size=0",
         "clade_budget=500000",
@@ -1829,6 +1878,8 @@ def test_cli_summary_info_reports_status_route_and_final_check(
         "optimizer=hessian-sgd",
         "mode_default_optimizer=hessian-sgd",
         "uses_mode_default_optimizer=true",
+        "uses_production_default_optimizer_settings=true",
+        "production_default_optimizer_setting_mismatches=none",
         "families=3",
         "species=4",
         "batches=2",
@@ -1894,6 +1945,8 @@ def test_cli_summary_info_reports_adagrad_restart_route_fields(
                 "mode_default_optimizer": "adagrad-restarts",
                 "uses_mode_default_optimizer": True,
                 "final_check_iters": 128,
+                "optimizer_step_cap": 125,
+                "optimizer_step_cap_reason": "adagrad_restart_schedule",
                 "adagrad_restart_schedule": "8:1:60,16:0.5:35,32:0.5:30",
                 "adagrad_restart_total_steps": 125,
                 "adagrad_restart_final_check_iters": 128,
@@ -1913,6 +1966,8 @@ def test_cli_summary_info_reports_adagrad_restart_route_fields(
     assert "optimizer=adagrad-restarts" in captured.out
     assert "mode_default_optimizer=adagrad-restarts" in captured.out
     assert "uses_mode_default_optimizer=true" in captured.out
+    assert "uses_production_default_optimizer_settings=true" in captured.out
+    assert "production_default_optimizer_setting_mismatches=none" in captured.out
     assert "reason=adagrad_restart_schedule_complete" in captured.out
     assert "final_check_iters=128" in captured.out
     assert "adagrad_restart_schedule=8:1:60,16:0.5:35,32:0.5:30" in captured.out
@@ -2024,6 +2079,61 @@ def test_cli_summary_info_require_mode_default_optimizer_reports_missing_evidenc
     assert "summary mode default optimizer evidence is incomplete" in captured.err
     assert "missing optimizer" in captured.err
     assert "mode='genewise', optimizer=None" in captured.err
+    assert "usage:" not in captured.err
+    assert "Traceback" not in captured.err
+
+
+def test_cli_summary_info_require_production_default_route_rejects_custom_settings(
+    tmp_path: Path,
+    capsys,
+):
+    summary = tmp_path / "summary.json"
+    summary.write_text(
+        json.dumps(
+            {
+                "status": "converged",
+                "reason": "loss_change_patience",
+                "mode": "genewise",
+                "optimizer": "hessian-sgd",
+                "final_check_iters": 32,
+                "solver_warmup_iters": 4,
+                "fd_adam_warmup_steps": 3,
+                "fd_hessian_refresh_steps": 8,
+                "hessian_sgd_normal_fixed_iters_pi": None,
+                "hessian_sgd_normal_neumann_terms": None,
+                "hessian_sgd_pi_adjoint_warmstart": False,
+                "pi_fixed_point_relaxation": 1.0,
+                "hessian_sgd_validation_interval": 0,
+                "hessian_sgd_validation_fixed_iters_pi": None,
+                "hessian_sgd_validation_neumann_terms": None,
+                "steps_completed": 4,
+                "final_nll_bits": 12.0,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(
+            [
+                "summary-info",
+                "--summary",
+                str(summary),
+                "--require-production-default-route",
+            ]
+        )
+
+    captured = capsys.readouterr()
+    assert exc_info.value.code == 1
+    assert "uses_production_default_optimizer_settings=false" in captured.out
+    assert "production_default_optimizer_setting_mismatches=fd_hessian_refresh_steps" in (
+        captured.out
+    )
+    assert (
+        "summary production default route settings differ for mode 'genewise': "
+        "fd_hessian_refresh_steps"
+    ) in captured.err
+    assert "expected the shipped production optimizer route" in captured.err
     assert "usage:" not in captured.err
     assert "Traceback" not in captured.err
 
@@ -3247,6 +3357,7 @@ def test_cli_run_help_omits_checkpoint_argument(capsys):
     assert "--require-converged" in captured.out
     assert "--require-final-check-ok" in captured.out
     assert "--require-mode-default-optimizer" in captured.out
+    assert "--require-production-default-route" in captured.out
     assert "--backtrack-binary" in captured.out
     assert "GPUREC_BACKTRACK_BIN" in captured.out
 
@@ -3318,6 +3429,7 @@ def test_cli_optimize_help_describes_config_and_path_inputs(capsys):
     assert "--require-converged" in captured.out
     assert "--require-final-check-ok" in captured.out
     assert "--require-mode-default-optimizer" in captured.out
+    assert "--require-production-default-route" in captured.out
 
 
 def test_cli_sample_help_describes_checkpoint_and_backtracking(capsys):
@@ -3334,3 +3446,4 @@ def test_cli_sample_help_describes_checkpoint_and_backtracking(capsys):
     assert "GPUREC_BACKTRACK_BIN" in captured.out
     assert "Samples per selected family" in captured.out
     assert "--require-mode-default-optimizer" in captured.out
+    assert "--require-production-default-route" in captured.out

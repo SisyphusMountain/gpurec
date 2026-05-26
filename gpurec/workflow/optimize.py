@@ -72,6 +72,8 @@ class OptimizationResult:
     optimizer: str | None = None
     mode_default_optimizer: str | None = None
     uses_mode_default_optimizer: bool | None = None
+    uses_production_default_optimizer_settings: bool | None = None
+    production_default_optimizer_setting_mismatches: tuple[str, ...] | None = None
     families: int | None = None
     species: int | None = None
     batches: int | None = None
@@ -192,6 +194,14 @@ def _optional_result_path(value: object) -> Path | None:
     return None if text is None else Path(text)
 
 
+def _optional_result_text_tuple(value: object) -> tuple[str, ...] | None:
+    if value is None:
+        return None
+    if not isinstance(value, (list, tuple)):
+        return None
+    return tuple(str(item) for item in value)
+
+
 def _optimization_result_from_summary(
     out_dir: Path,
     summary: dict[str, Any],
@@ -215,6 +225,12 @@ def _optimization_result_from_summary(
         ),
         uses_mode_default_optimizer=_optional_result_bool(
             summary.get("uses_mode_default_optimizer")
+        ),
+        uses_production_default_optimizer_settings=_optional_result_bool(
+            summary.get("uses_production_default_optimizer_settings")
+        ),
+        production_default_optimizer_setting_mismatches=_optional_result_text_tuple(
+            summary.get("production_default_optimizer_setting_mismatches")
         ),
         families=_optional_result_int(summary.get("families")),
         species=_optional_result_int(summary.get("species")),

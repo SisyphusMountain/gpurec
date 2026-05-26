@@ -138,7 +138,11 @@ optimization.
 
 Route metadata and status outputs include `mode_default_optimizer` and
 `uses_mode_default_optimizer`, making explicit whether the resolved optimizer is
-the production default for the selected sharing mode.
+the production default for the selected sharing mode. They also include
+`uses_production_default_optimizer_settings` and
+`production_default_optimizer_setting_mismatches`, which audit whether the
+optimizer-specific settings still match the shipped HOGENOM/`test_trees_1000`
+route.
 
 For automation, `gpurec optimize`, `gpurec run`, and `gpurec summary-info`
 support `--require-converged`. Add `--require-final-check-ok` when the command
@@ -146,4 +150,5 @@ should also fail unless final high-fidelity likelihood/gradient validation
 reports `final_check_status=ok`. Add `--require-mode-default-optimizer` to
 preflight, run, standalone sampling, or artifact-inspection commands when
 production automation must reject non-default optimizer routes for the selected
-mode.
+mode. Add `--require-production-default-route` when changed optimizer-specific
+settings should also fail those gates.

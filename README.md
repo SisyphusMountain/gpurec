@@ -307,7 +307,11 @@ CLI. If omitted, `auto` resolves to `hessian-sgd` for `mode=genewise`,
 `adagrad-restarts` for `mode=specieswise`, and `adam` for `mode=global`.
 Route metadata, summaries, and status lines also report
 `mode_default_optimizer` and `uses_mode_default_optimizer` so operators can
-tell whether a run is on the production default optimizer for its sharing mode.
+tell whether a run is on the production default optimizer for its sharing mode,
+plus `uses_production_default_optimizer_settings` and
+`production_default_optimizer_setting_mismatches` to show whether the
+optimizer-specific settings still match the shipped HOGENOM/`test_trees_1000`
+route.
 Workflow rate bounds default to `min_rate=2^-30` and `max_rate=2`:
 
 The production optimization guide
@@ -383,10 +387,11 @@ Main outputs include:
 
 The `gpurec optimize` status line and the optimization portion of
 `gpurec run` also print the resolved `mode`, `optimizer`, mode default
-optimizer, whether the optimizer matches that default, family/species/batch
-counts, batch packing, family chunk size, clade budget, solver iteration
-budgets, objective, gradient route, rate parameterization, production default
-basis, optimizer-specific route fields,
+optimizer, whether the optimizer matches that default, whether the
+optimizer-specific settings match the shipped production route, any setting
+mismatches, family/species/batch counts, batch packing, family chunk size,
+clade budget, solver iteration budgets, objective, gradient route, rate
+parameterization, production default basis, optimizer-specific route fields,
 `configured_steps`, `optimizer_step_cap`, `optimizer_step_cap_reason`,
 `final_check_iters`, `steps_completed`, `elapsed_s`, `best_step`,
 `sampling_checkpoint`,
@@ -407,7 +412,10 @@ final high-fidelity likelihood/gradient validation reports
 `final_check_status=ok`. Add `--require-mode-default-optimizer` to
 `gpurec validate-config`, `gpurec optimize`, or `gpurec run` when production
 automation should fail unless the resolved optimizer is the mode default
-(`hessian-sgd` for genewise, `adagrad-restarts` for specieswise).
+(`hessian-sgd` for genewise, `adagrad-restarts` for specieswise). Add
+`--require-production-default-route` when automation should also fail on
+non-default optimizer-specific settings such as a changed Hessian-SGD refresh
+budget or a truncated specieswise restart ladder.
 
 See [`docs/output-artifacts.md`](docs/output-artifacts.md) for the output
 artifact contract, including the normalized config snapshot, history fields,
@@ -419,7 +427,9 @@ without opening JSON by hand. Add `--require-converged` when a shell pipeline
 or workflow manager should fail unless the summary status is `converged`, and
 add `--require-final-check-ok` when it should also require
 `final_check_status=ok`. Add `--require-mode-default-optimizer` to fail unless
-the summary proves the run used the production default optimizer for its mode.
+the summary proves the run used the production default optimizer for its mode;
+add `--require-production-default-route` when it should also require the
+shipped optimizer-specific settings.
 Use `gpurec checkpoint-info --checkpoint output_gpurec/checkpoints/latest.pt`
 to inspect checkpoint progress, status, optimizer route, and last
 likelihood/gradient diagnostics without constructing the CUDA likelihood model.
@@ -428,7 +438,9 @@ also prints `last_final_check_status` and the matching source/reason and
 loss/gradient delta fields. Add `--require-final-check-ok` when automation
 should fail unless that checkpoint row reports `optimizer/final_check_status=ok`;
 add `--require-mode-default-optimizer` to require a checkpoint route whose
-optimizer matches the production default for its mode.
+optimizer matches the production default for its mode, or
+`--require-production-default-route` to require the full shipped optimizer
+route.
 
 History rows include aggregate `solver/*` telemetry when the model reports
 solver statistics.  E-adjoint nonconvergence is diagnostic-only: the retained
@@ -515,7 +527,8 @@ Use `--family-start` and `--sample-max-families` to sample a family window,
 pathological samples.
 Add `--require-mode-default-optimizer` to `gpurec sample` when standalone
 sampling automation should fail unless the checkpoint route used the production
-default optimizer for its mode.
+default optimizer for its mode; use `--require-production-default-route` when
+the checkpoint must also prove the shipped optimizer-specific settings.
 Successful sampling reruns replace prior gpurec-generated reconciliation
 artifacts in the target output directory, including generated files outside a
 requested window; use a separate `--sample-out-dir` to keep multiple windows.
@@ -541,7 +554,9 @@ the optimization status and exit before sampling unless the run reached
 `status=converged`; add `--require-final-check-ok` when it should also skip
 sampling unless `final_check_status=ok`; add `--require-mode-default-optimizer`
 when it should reject non-default optimizer routes before optimization or
-sampling. When sampling succeeds, the final status line also reports
+sampling; add `--require-production-default-route` when changed optimizer
+settings should also stop the run before optimization or sampling. When
+sampling succeeds, the final status line also reports
 `sampled_families`, `samples`, `xml`, and `sample_out_dir`. Use
 `gpurec sample --checkpoint ...` to sample an existing run.
 

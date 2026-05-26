@@ -23,12 +23,16 @@ fields
 carry the likelihood, gradient, parameterization, and benchmark-basis contract.
 They also report `mode_default_optimizer` and
 `uses_mode_default_optimizer`, so runs explicitly show whether their optimizer
-matches the production default for the selected sharing mode. `final_check_iters`
-records the solver iteration budget used for the final high-fidelity
-likelihood/gradient validation, and optimizer-specific route fields reproduce
-the selected production route: Hessian-SGD warmup/refresh/normal-stage solver
-controls for genewise runs and the Adagrad-restart schedule, total scheduled
-steps, and final-check budget for specieswise runs.
+matches the production default for the selected sharing mode.
+`uses_production_default_optimizer_settings` and
+`production_default_optimizer_setting_mismatches` then say whether the
+optimizer-specific settings still match the shipped HOGENOM/`test_trees_1000`
+profile. `final_check_iters` records the solver iteration budget used for the
+final high-fidelity likelihood/gradient validation, and optimizer-specific
+route fields reproduce the selected production route: Hessian-SGD
+warmup/refresh/normal-stage solver controls for genewise runs and the
+Adagrad-restart schedule, total scheduled steps, and final-check budget for
+specieswise runs.
 
 `theta` stores base-2 log rates for duplication, loss, and transfer. The public
 rate table writes columns in D/T/L order as probabilities/rates plus the raw
@@ -126,7 +130,10 @@ History rows record `optimizer/hessian_sgd_validation_step`,
 
 Route metadata records the chosen default as `mode_default_optimizer` and
 whether the resolved `optimizer` currently matches it as
-`uses_mode_default_optimizer`.
+`uses_mode_default_optimizer`. It also records
+`uses_production_default_optimizer_settings`; when that field is false,
+`production_default_optimizer_setting_mismatches` names the changed
+optimizer-specific fields.
 
 ### Genewise `hessian-sgd`
 
@@ -268,6 +275,10 @@ Add `--require-mode-default-optimizer` to `gpurec validate-config`,
 `gpurec optimize`, `gpurec run`, `gpurec sample`, `gpurec summary-info`, or
 `gpurec checkpoint-info` when the pipeline should fail unless the resolved route
 uses the production optimizer default for the selected mode.
+Add `--require-production-default-route` when the pipeline should also fail on
+optimizer-specific setting changes, such as a non-default Hessian-SGD refresh
+budget or a specieswise restart ladder that no longer reaches the default
+fixed32 phase.
 For combined optimize-and-sample workflows, add
 `gpurec run --require-converged` when sampling should be skipped unless
 optimization reached `status=converged`.
