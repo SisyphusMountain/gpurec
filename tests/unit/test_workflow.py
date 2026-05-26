@@ -66,6 +66,7 @@ from gpurec.workflow.config import (
     RunConfig,
     SamplingConfig,
     adagrad_restart_schedule_specs,
+    adagrad_restart_schedule_total_steps,
     dtype_from_name,
     effective_route_metadata,
 )
@@ -1297,6 +1298,9 @@ def test_run_config_auto_optimizer_uses_adagrad_restarts_for_specieswise_mode(
     assert config.optimizer == "adagrad-restarts"
     assert config.adagrad_restart_schedule == "8:1:60,16:0.5:35,32:0.5:30"
     assert config.adagrad_restart_final_check_iters == 128
+    assert adagrad_restart_schedule_total_steps(config.adagrad_restart_schedule) == 125
+    route = effective_route_metadata(config)
+    assert route["adagrad_restart_total_steps"] == 125
 
 
 def test_run_config_accepts_specieswise_adagrad_restart_schedule(tmp_path: Path):
@@ -5533,6 +5537,7 @@ def test_optimization_runner_adagrad_restarts_accepts_split_solver_budgets(
     assert summary["mode"] == "specieswise"
     assert summary["optimizer"] == "adagrad-restarts"
     assert summary["adagrad_restart_schedule"] == "8/4:1:2,16/8/6:0.5:2"
+    assert summary["adagrad_restart_total_steps"] == 4
     assert summary["adagrad_restart_final_check_iters"] == 32
     assert summary["final_check_iters"] == 32
     assert summary["fixed_iters_pi"] == 16

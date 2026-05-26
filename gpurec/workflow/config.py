@@ -296,6 +296,10 @@ def adagrad_restart_schedule_specs(value: str) -> tuple[AdagradRestartPhase, ...
     return tuple(phases)
 
 
+def adagrad_restart_schedule_total_steps(value: str) -> int:
+    return sum(phase.steps for phase in adagrad_restart_schedule_specs(value))
+
+
 def _normalize_adagrad_restart_schedule(value: str) -> str:
     return ",".join(
         f"{phase.budget_spec()}:{phase.lr:.12g}:{phase.steps}"
@@ -888,6 +892,11 @@ def effective_route_metadata(config: RunConfig) -> dict[str, Any]:
         route.update(
             {
                 "adagrad_restart_schedule": config.adagrad_restart_schedule,
+                "adagrad_restart_total_steps": (
+                    adagrad_restart_schedule_total_steps(
+                        config.adagrad_restart_schedule
+                    )
+                ),
                 "adagrad_restart_final_check_iters": (
                     config.adagrad_restart_final_check_iters
                 ),

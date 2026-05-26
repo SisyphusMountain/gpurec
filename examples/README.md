@@ -23,7 +23,8 @@ gpurec validate-config --config examples/minimal-run-config.json --check-preproc
   production starter route.
 - `specieswise-adagrad-restarts-config.json` uses `mode=specieswise`;
   `optimizer=auto` resolves to `adagrad-restarts` with the default
-  `8:1.0:60,16:0.5:35,32:0.5:30` schedule and fixed128 final validation.
+  `8:1.0:60,16:0.5:35,32:0.5:30` schedule, 125 scheduled Adagrad updates,
+  and fixed128 final validation.
 
 Installed wheels intentionally do not install this directory as package data.
 Installed users can generate equivalent flat JSON starting points with:

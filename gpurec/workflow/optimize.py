@@ -34,6 +34,7 @@ from .config import (
     AdagradRestartPhase,
     RunConfig,
     adagrad_restart_schedule_specs,
+    adagrad_restart_schedule_total_steps,
     effective_route_metadata,
 )
 from .diagnostics import (
@@ -561,10 +562,6 @@ def _adagrad_restart_phase_name(
     else:
         label = f"phase{index + 1}"
     return f"{phase.budget_label()}_{label}"
-
-
-def _adagrad_restart_total_steps(specs: tuple[AdagradRestartPhase, ...]) -> int:
-    return sum(phase.steps for phase in specs)
 
 
 def _active_adagrad_restart_phase(
@@ -2126,8 +2123,8 @@ class OptimizationRunner:
             adagrad_restart_specs = adagrad_restart_schedule_specs(
                 config.adagrad_restart_schedule,
             )
-            adagrad_restart_step_limit = _adagrad_restart_total_steps(
-                adagrad_restart_specs,
+            adagrad_restart_step_limit = adagrad_restart_schedule_total_steps(
+                config.adagrad_restart_schedule,
             )
         optimizer: torch.optim.Optimizer | None = None
         started = time.perf_counter()

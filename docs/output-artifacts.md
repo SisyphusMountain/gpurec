@@ -35,7 +35,10 @@ gradient summaries at bounds use `grad/projected_inf`. Solver diagnostics use
 `rate_parameterization=base2_log_dlt_rates`, and
 `production_default_basis=hogenom_and_test_trees_1000`, plus
 optimizer-specific route fields such as the specieswise restart schedule and
-genewise Hessian-SGD normal-stage solver overrides.
+genewise Hessian-SGD normal-stage solver overrides. For specieswise
+`adagrad-restarts`, `adagrad_restart_total_steps` records the derived number of
+scheduled Adagrad updates; the run stops when this schedule is complete even if
+`steps` is larger.
 
 `summary.json` repeats the final objective as `final_nll_bits` and
 `final_log_likelihood_bits`, and the best accepted objective as `best_nll_bits`

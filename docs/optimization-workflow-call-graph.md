@@ -185,6 +185,7 @@ flowchart TD
 - `adagrad-restarts` is specieswise-only. Each schedule phase reconfigures
   `fixed_iters_E`, `fixed_iters_Pi`, and `neumann_terms` to the phase budget,
   resets Adagrad state, records `optimizer/adagrad_restart_*` fields, and uses
+  `adagrad_restart_total_steps` as the schedule-derived optimizer cap and
   `adagrad_restart_final_check_iters` for the final high-fidelity evaluation.
 - `hessian-sgd` is genewise-only. It works on active resident batches, uses
   warmup solver budgets before the full stage, refreshes row-wise 3x3

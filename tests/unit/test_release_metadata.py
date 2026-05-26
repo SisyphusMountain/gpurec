@@ -530,6 +530,7 @@ def test_cpu_ci_builds_and_smokes_release_artifacts():
         ),
         "optimizer=adagrad-restarts",
         "adagrad_restart_schedule=8:1:60,16:0.5:35,32:0.5:30",
+        "adagrad_restart_total_steps=125",
         "cuda_backward_ready=false",
         "preprocess_checked=true",
     ):

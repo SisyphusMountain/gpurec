@@ -105,6 +105,9 @@ accepted as `E/Pi[/Neumann]:learning_rate:steps`, for example
 records `optimizer/adagrad_restart_*` fields in history, including explicit
 E/Pi/Neumann budgets. The final validation uses
 `adagrad_restart_final_check_iters=128` by default.
+The default ladder has `adagrad_restart_total_steps=125`; `steps` is treated as
+a maximum cap, so specieswise `adagrad-restarts` stops when either the configured
+step cap or the restart ladder is exhausted.
 
 The default is based on the retained counts-free HOGENOM route: uniform `0.05`
 D/L/T initialization, no AleRax event-count checkpoint, fixed budgets of 8, 16,
@@ -157,7 +160,9 @@ For specieswise, set `--mode specieswise` and let `auto` choose
 `adagrad-restarts`. Installed users can start from
 `gpurec config-template --mode specieswise --output specieswise-run.json`; that
 template keeps `optimizer=auto` and writes the default
-`adagrad_restart_schedule` and fixed128 final validation fields explicitly.
+`adagrad_restart_schedule`; `validate-config`, `summary.json`, and
+`checkpoint-info` report the derived `adagrad_restart_total_steps` and fixed128
+final validation fields explicitly.
 `validate-config` checks the flat JSON/CLI config, selected AleRax family
 records, mapping files, and referenced gene-tree files without CUDA or
 preprocessing. Its summary prints the resolved optimizer, batch planning,

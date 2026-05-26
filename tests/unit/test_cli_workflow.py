@@ -641,6 +641,7 @@ def test_cli_validate_config_reports_specieswise_restart_route(
         "adagrad_restart_schedule=8:1:60,16:0.5:35,32:0.5:30"
         in captured.out
     )
+    assert "adagrad_restart_total_steps=125" in captured.out
     assert "final_check_iters=128" in captured.out
     assert "adagrad_restart_final_check_iters=128" in captured.out
     assert captured.err == ""
@@ -1277,6 +1278,7 @@ def test_cli_checkpoint_info_reports_route_status_and_last_row(
         "neumann_terms=16",
         "final_check_iters=128",
         "adagrad_restart_schedule=8:1:60,16:0.5:35,32:0.5:30",
+        "adagrad_restart_total_steps=125",
         "adagrad_restart_final_check_iters=128",
         "route_metadata_source=checkpoint",
         "optimizer_phase=fixed32",

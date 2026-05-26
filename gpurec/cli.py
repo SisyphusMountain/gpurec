@@ -404,6 +404,7 @@ def _route_metadata_text(route: dict[str, Any]) -> str:
                     "adagrad_restart_schedule",
                     route.get("adagrad_restart_schedule"),
                 ),
+                _route_int_text("adagrad_restart_total_steps", route),
                 _route_int_text("adagrad_restart_final_check_iters", route),
             ]
         )
@@ -633,6 +634,7 @@ def _validate_config_route_text(config: RunConfig) -> str:
         fields.extend(
             [
                 f"adagrad_restart_schedule={route['adagrad_restart_schedule']}",
+                f"adagrad_restart_total_steps={route['adagrad_restart_total_steps']}",
                 (
                     "adagrad_restart_final_check_iters="
                     f"{route['adagrad_restart_final_check_iters']}"
