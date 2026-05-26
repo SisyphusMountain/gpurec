@@ -849,7 +849,12 @@ Rejected follow-ups:
   (`2.313574720057659s`, `2.3038053709897213s`, `2.2635737379896455s`) and the
   materialized steady median regressed to `1.2852614839794114s` versus the
   current `1.2784311089781113s` median.  The root reductions were already a
-  small part of the pass, so this was not an aligned improvement.
+  small part of the pass, so this was not an aligned improvement.  Repeating
+  the same idea on the current `E=7, Pi=4` route was still not stable: the first
+  materialized check improved to `1.2744981619762257s` median, but the repeat
+  regressed to `1.280531055002939s`; cold totals stayed in-band at
+  `2.264361812034622s`, `2.2908622620161623s`, `2.273455304966774s`, and
+  `2.2519061420462094s`, with no new low.
 - Removing redundant-looking `Pi.contiguous()` and `Pibar.contiguous()` calls
   from the DTS launch wrapper was also reverted.  The prototype passed the
   targeted DTS/resident tests (`14 passed`) and a materialized fixed4 sample
