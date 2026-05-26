@@ -17,14 +17,55 @@ NEG_INF = float("-inf")
 # E solver
 # =========================================================================
 
+def _devices_match(actual: torch.device, expected: torch.device) -> bool:
+    if expected.index is None:
+        return actual.type == expected.type
+    return actual == expected
+
+
 def _uniform_ancestor_sum(expE_2d, ancestors_T):
     """Compute the retained uniform ancestor sum."""
+    ancestors_T = _require_ancestors_T(
+        ancestors_T,
+        S=int(expE_2d.shape[-1]),
+        device=expE_2d.device,
+        dtype=expE_2d.dtype,
+    )
     return (expE_2d @ ancestors_T).contiguous()
 
 
-def _require_ancestors_T(ancestors_T):
+def _require_ancestors_T(
+    ancestors_T,
+    *,
+    S: int | None = None,
+    device: torch.device | str | None = None,
+    dtype: torch.dtype | None = None,
+):
     if ancestors_T is None:
         raise ValueError("ancestors_T is required for uniform-transfer E solves")
+    if not torch.is_tensor(ancestors_T):
+        raise ValueError("ancestors_T must be a tensor")
+    if ancestors_T.ndim != 2:
+        raise ValueError(
+            "ancestors_T must be a two-dimensional transposed ancestor matrix"
+        )
+    if S is not None and tuple(ancestors_T.shape) != (int(S), int(S)):
+        raise ValueError(
+            "ancestors_T shape must be "
+            f"({int(S)}, {int(S)}), got {tuple(ancestors_T.shape)}"
+        )
+    if device is not None:
+        expected_device = torch.device(device)
+        if not _devices_match(ancestors_T.device, expected_device):
+            raise ValueError(
+                "ancestors_T device must match E solver device "
+                f"{expected_device}, got {ancestors_T.device}"
+            )
+    if dtype is not None and ancestors_T.dtype != dtype:
+        raise ValueError(
+            f"ancestors_T dtype must match E solver dtype {dtype}, "
+            f"got {ancestors_T.dtype}"
+        )
     return ancestors_T
 
 
@@ -44,7 +85,12 @@ def E_step(
     transposed species-ancestor matrix used by the retained uniform-transfer
     implementation and must be supplied by callers.
     """
-    ancestors_T = _require_ancestors_T(ancestors_T)
+    ancestors_T = _require_ancestors_T(
+        ancestors_T,
+        S=int(E.shape[-1]),
+        device=E.device,
+        dtype=E.dtype,
+    )
     E_stack = torch.empty((4, *E.shape), dtype=E.dtype, device=E.device)
     # S
     E_s12 = gather_E_children(E, sp_P_idx, sp_child12_idx)
@@ -117,9 +163,13 @@ def E_fixed_point(species_helpers,
                           trace_logsumexp: bool = False,
                           check_interval: int = 1,
                           convergence_metric: str = "max_diff"):
-    ancestors_T = _require_ancestors_T(ancestors_T)
-
     S = species_helpers['S']
+    ancestors_T = _require_ancestors_T(
+        ancestors_T,
+        S=int(S),
+        device=device,
+        dtype=dtype,
+    )
 
     # Determine batch size from parameters if present
     N = None

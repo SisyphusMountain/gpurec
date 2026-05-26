@@ -62,12 +62,10 @@ evidence is thin.
    because the retained Pi backward/gradient path currently requires `S > 256`
    until a small-species backward fallback is restored.
 
-2. `ancestors_T` is optional by signature but required in practice.
-   `E_step(..., ancestors_T=None)` and `E_fixed_point(..., ancestors_T=None)`
-   expose defaults at `gpurec/core/likelihood.py:32` and
-   `gpurec/core/likelihood.py:105`, but `_uniform_ancestor_sum` immediately uses
-   `expE_2d @ ancestors_T` at `gpurec/core/likelihood.py:22`.  Existing tests
-   pass `static.ancestors_T`, so the default path is untested.
+2. `ancestors_T` is optional by signature but required in practice.  The
+   retained uniform-transfer E solver now rejects missing, non-tensor,
+   non-square, wrong-shape, wrong-device, or wrong-dtype `ancestors_T` values
+   before entering the fixed-point loop or ancestor matrix multiply.
 
 3. Direct duplicate `family_names` can collapse preprocessing data.  The direct
    `GeneDataset` constructor checks only length at `gpurec/core/model.py:545`,
@@ -626,10 +624,11 @@ staleness found above:
   `clade_budget` behavior for both first-fit planners: the budget is a packing
   target, so an individual oversized family can occupy its own batch.
 - `gpurec/core/likelihood.py` now documents and validates that `ancestors_T` is
-  required for the retained uniform-transfer E solver, replacing an indirect
-  matrix-multiply failure with a clear `ValueError`.
+  required for the retained uniform-transfer E solver and has the expected
+  tensor type, `[S, S]` shape, device, and dtype, replacing indirect
+  matrix-multiply failures with clear `ValueError`s.
 - `tests/unit/test_origination_probs.py` now covers both `E_step` and
-  `E_fixed_point` missing-`ancestors_T` errors.
+  `E_fixed_point` missing- and malformed-`ancestors_T` errors.
 - `gpurec/core/model.py` now rejects duplicate direct `family_names` before
   loading the preprocessing extension, so the direct constructor matches the
   AleRax parser's no-duplicate-name contract.
