@@ -43,7 +43,10 @@ resident batches; this keeps the fixed4 timing band unchanged while avoiding the
 large CUDA allocator reserve previously caused by cycling those work tensors
 through `21` batches.  The forward pass also prepares the DTS `log_pD`/`log_pS`
 addressing metadata once per Pi pass instead of revalidating the same specieswise
-parameter layout for every split wave.  On the local 32-core host, the cold
+parameter layout for every split wave.  Lazy resident-batch prefetch now uses
+three background static-layout workers instead of one, hiding more of the
+remaining per-batch layout-to-device work under the first likelihood pass.  On
+the local 32-core host, the cold
 benchmark also pins native preprocessing and retained layout generation to `16`
 CPU threads; that is faster for this generated dataset than the default global
 Rayon pool.
@@ -74,25 +77,28 @@ Cold result:
 
 | Stage | Time |
 |---|---:|
-| model init / first resident batch | `0.9331823280081153s` |
-| first fixed4 likelihood pass plus lazy remaining batches | `1.3379031700314954s` |
-| total to first fixed4 likelihood | `2.2710854980396107s` |
+| model init / first resident batch | `0.9394730250351131s` |
+| first fixed4 likelihood pass plus lazy remaining batches | `1.3213535840041004s` |
+| total to first fixed4 likelihood | `2.2608266090392135s` |
 
-This current scratch-reuse sample is effectively tied with the previous best
-fixed4 timing band while reducing peak reserved CUDA memory in the same lazy
-`--prefetch-batches all` route from about `21.36 GiB` to `5.1640625 GiB`.
-Repeats after the `2.2710854980396107s` low sample measured
-`2.2904644059599377s`, `2.285656556021422s`, and `2.329664205026347s`, so the
-new low is best-observed rather than a new stable median.  A later 2026-05-26
-sanity run in the same lazy fixed4-start configuration measured
-`2.3467985900351778s` total to first likelihood, with `1.0148086069966666s`
-model construction and `1.3319899830385111s` for the measured pass.
+The three-worker lazy-prefetch route produced fixed4 cold totals of
+`2.2904225840466097s`, `2.266941985988524s`,
+`2.2779467049986124s`, `2.262116832949687s`,
+`2.2608266090392135s`, `2.2833276209421456s`,
+`2.279989818984177s`, and `2.2708818310056813s`.
+The new low remains best-observed rather than a stable median, but the measured
+first-pass component moved from the previous one-worker `~1.334s` band to about
+`1.321s` to `1.325s` in the three-worker samples.  Immediate same-checkout
+one-worker A/B samples measured `2.3445855720201507s` and
+`2.316118259972427s`, with measured passes `1.3370230720029213s` and
+`1.336572587955743s`.  Peak reserved CUDA memory remains around `5.17 GiB`,
+well below the older `21.36 GiB` high-memory all-prefetch route.
 
 Cold first-pass fidelity samples with the same construction path:
 
 | Pi/E/Neumann budget | total to first likelihood | loss bits | delta vs fixed128 |
 |---:|---:|---:|---:|
-| 4 | `2.2710854980396107s` | `2156427.0` | `670.25` |
+| 4 | `2.2608266090392135s` | `2156427.0` | `670.25` |
 | 6 | `2.788982933969237s` | `2157095.0` | `2.25` |
 | 8 | `3.3188985750311986s` | `2157097.25` | `0.0` |
 
@@ -140,7 +146,8 @@ end-to-end win is partly hidden by overlapping layout work with CUDA setup, but
 direct fixed4/fixed6 cold samples improved to the rows above.
 
 Reusing the root-loss Pi/Pibar scratch tensors changed the memory behavior more
-than the timing.  Current fixed4 lazy samples measured `2.29978136200225s`,
+than the timing before the later prefetch-worker resweep.  Fixed4 lazy samples
+at that point measured `2.29978136200225s`,
 `2.3235359659884125s`, `2.3087819020147435s`, `2.2922973530367017s`,
 `2.2839784509851597s`, `2.2908750560018234s`,
 `2.2710854980396107s`, `2.2995317989843898s`, and
@@ -149,7 +156,7 @@ than the timing.  Current fixed4 lazy samples measured `2.29978136200225s`,
 check after this change, `--prefetch-batches none` was still slower
 (`2.543537666031625s`), while depth `4` (`2.2950046080513857s`) and `all`
 (`2.2922973530367017s`) were essentially tied in memory and timing.  A later
-same-route `16`-core repeat produced the current `2.2710854980396107s` low.
+same-route `16`-core repeat produced a then-current `2.2710854980396107s` low.
 
 Before removing the unused DTS compile-shape arguments from the eq1 and ge2
 kernel signatures, the retained-layout fixed4 route took about `2.55s` to the
@@ -318,14 +325,15 @@ Interpretation:
 
 Rejected follow-ups:
 
-- Increasing lazy prefetch workers from one to two made the fixed4 loss pass a
-  few milliseconds faster in isolation, but the four-process cold total stayed
-  around `3.178s`; three and four workers were slower.
-- Rechecking two lazy prefetch workers after root-loss scratch reuse again did
-  not improve the end-to-end route.  The first fixed4 pass dropped to about
-  `1.322s` to `1.328s`, but model construction rose, giving cold totals of
-  `2.2845199950388633s`, `2.293449474964291s`, and
-  `2.3079738809610717s`; the one-worker route keeps the lower best sample.
+- Earlier lazy-prefetch worker sweeps before scratch reuse were inconclusive:
+  two workers improved the fixed4 loss pass in isolation, but the four-process
+  cold total stayed around `3.178s`, and three/four workers were slower.  After
+  scratch reuse and the later cold-path cleanups, the same-checkout resweep
+  changed the answer: two workers reached `2.266941985988524s`, three workers
+  reached `2.2608266090392135s`, four workers had a slower outlier at
+  `2.3021931539988145s`, and eight workers regressed to
+  `2.296754330978729s`.  The retained cap is therefore three workers, not an
+  unbounded prefetch pool.
 - Finite lazy prefetch depths were a memory tradeoff before root-loss scratch
   reuse.  After the DTS compile-shape cleanup, `--prefetch-batches all`
   produced fixed4 cold samples of `2.307332646974828s` and
@@ -591,6 +599,12 @@ Differences from HOGENOM:
   It mostly fixes allocator reserve rather than raw math time here; HOGENOM's
   accepted route had fewer resident batches and was more gradient/optimizer
   dominated, so this is less route-changing there.
+- Three-worker lazy prefetch is also a generated-dataset-specific cold-path
+  improvement.  `test_trees_1000` still has enough lazy batch-static work during
+  the first fixed4 pass to hide with a small worker pool.  The accepted HOGENOM
+  multifidelity script materializes resident batches before optimizing and has
+  fewer/larger optimizer-gradient passes, so this change is not expected to
+  move its route in the same way.
 - HOGENOM had a faster high-memory no-family-cap scheduling option.  On
   `test_trees_1000`, no-family-cap does not reduce the batch or wave envelope
   under `clade_first_fit` at the current clade budget, so the finite

@@ -91,6 +91,9 @@ _MODE_MAP: dict[str, tuple[bool, bool]] = {
     "specieswise": (False, True),
     "genewise": (True, False),
 }
+# The generated-tree lazy path streams many resident batches; three workers hide
+# static layout transfers without the contention seen at higher counts.
+_RESIDENT_PREFETCH_WORKERS = 3
 
 
 def _normalize_mode(mode: str) -> str:
@@ -1791,7 +1794,7 @@ class GeneReconModel(torch.nn.Module):
                 return
             if self._prefetch_executor is None:
                 self._prefetch_executor = ThreadPoolExecutor(
-                    max_workers=1,
+                    max_workers=_RESIDENT_PREFETCH_WORKERS,
                     thread_name_prefix="gpurec-preprocess",
                 )
             self._batch_futures[batch_idx] = self._prefetch_executor.submit(
