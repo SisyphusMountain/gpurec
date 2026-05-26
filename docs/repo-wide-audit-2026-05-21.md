@@ -337,9 +337,10 @@ removed and are guarded against returning.
   metadata only, and the specieswise backward check asserts finite values.
   Prefer before/after NLL decrease or reference-close assertions when local
   data makes that practical.
-- Adaptive iteration coverage only proves the forced-max path.  Add a slow GPU
-  case with loose tolerances that asserts solver iterations stop before the
-  configured maximum.
+- Adaptive iteration coverage now includes forced-max parity and a slow GPU
+  loose-tolerance guard that asserts E/Pi solver iterations stop before the
+  configured maximum.  Broaden it with more data-backed close-reference cases
+  when local GPU time permits.
 - Some useful tests intentionally construct private or partially initialized
   objects.  `tests/README.md` should document when that is acceptable as a
   guardrail, what a smoke test must prove, and how Rust/cargo checks fit into

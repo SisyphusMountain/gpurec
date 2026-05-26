@@ -61,3 +61,40 @@ def test_adaptive_iterations_match_fixed_when_tolerances_force_max(
     assert adaptive.static.last_solver_stats["Pi_wave_iterations"]
     assert fixed.static.last_solver_stats["E_adjoint_iterations"] >= 0
     assert adaptive.static.last_solver_stats["E_adjoint_iterations"] >= 0
+
+
+@pytest.mark.slow
+def test_adaptive_iterations_stop_before_caps_with_loose_tolerances(
+    one_gene_tree,
+):
+    sp, genes = one_gene_tree
+    fixed_iters = 8
+    model = GeneReconModel.from_trees(
+        species_tree=sp,
+        gene_trees=genes,
+        mode="specieswise",
+        device="cuda",
+        dtype=torch.float32,
+        theta_init_rates=(0.05, 0.05, 0.05),
+        fixed_iters_E=fixed_iters,
+        fixed_iters_Pi=fixed_iters,
+        neumann_terms=4,
+        adaptive_iters=True,
+        convergence_check_interval=2,
+        e_logsumexp_tol=1e30,
+        pi_max_diff_tol=1e30,
+    )
+
+    loss = model()
+    loss.backward()
+
+    assert torch.isfinite(loss)
+    assert model.theta.grad is not None
+    assert torch.isfinite(model.theta.grad).all()
+    stats = model.static.last_solver_stats
+    assert 0 < stats["E_iterations"] < fixed_iters
+    assert 0 < stats["Pi_max_iterations"] < fixed_iters
+    assert stats["Pi_wave_iterations"]
+    assert max(stats["Pi_wave_iterations"]) < fixed_iters
+    assert stats["Pi_converged_waves"] == stats["Pi_wave_count"]
+    assert stats["Neumann_terms"] == 4
