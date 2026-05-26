@@ -14,7 +14,8 @@ The workflow minimizes negative log-likelihood in bits. History rows report
 `best_nll_bits`/`best_log_likelihood_bits`.
 `summary.json`, current checkpoints, `gpurec validate-config`, the Python
 `OptimizationResult`, and the optimization status line also report the
-family/species/batch counts and stable route fields
+family/species/batch counts, base batch/solver route fields, and stable route
+fields
 `objective=negative_log_likelihood_bits`,
 `gradient_route=implicit_first_order_adjoint`,
 `rate_parameterization=base2_log_dlt_rates`, and

@@ -5601,6 +5601,12 @@ def test_optimization_runner_adagrad_restarts_accepts_split_solver_budgets(
     assert result.families == summary["families"]
     assert result.species == summary["species"]
     assert result.batches == summary["batches"]
+    assert result.batch_packing == summary["batch_packing"]
+    assert result.family_chunk_size == summary["family_chunk_size"]
+    assert result.clade_budget == summary["clade_budget"]
+    assert result.fixed_iters_e == summary["fixed_iters_e"]
+    assert result.fixed_iters_pi == summary["fixed_iters_pi"]
+    assert result.neumann_terms == summary["neumann_terms"]
     assert summary["adagrad_restart_schedule"] == "8/4:1:2,16/8/6:0.5:2"
     assert summary["adagrad_restart_total_steps"] == 4
     assert summary["configured_steps"] == 10
@@ -7961,6 +7967,12 @@ def test_optimization_runner_run_writes_outputs_with_fake_model(tmp_path: Path):
     assert result.families == summary["families"]
     assert result.species == summary["species"]
     assert result.batches == summary["batches"]
+    assert result.batch_packing == summary["batch_packing"]
+    assert result.family_chunk_size == summary["family_chunk_size"]
+    assert result.clade_budget == summary["clade_budget"]
+    assert result.fixed_iters_e == summary["fixed_iters_e"]
+    assert result.fixed_iters_pi == summary["fixed_iters_pi"]
+    assert result.neumann_terms == summary["neumann_terms"]
     assert result.objective == summary["objective"]
     assert result.gradient_route == summary["gradient_route"]
     assert result.rate_parameterization == summary["rate_parameterization"]

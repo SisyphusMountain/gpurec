@@ -66,6 +66,12 @@ class OptimizationResult:
     families: int | None = None
     species: int | None = None
     batches: int | None = None
+    batch_packing: str | None = None
+    family_chunk_size: int | None = None
+    clade_budget: int | None = None
+    fixed_iters_e: int | None = None
+    fixed_iters_pi: int | None = None
+    neumann_terms: int | None = None
     objective: str | None = None
     gradient_route: str | None = None
     rate_parameterization: str | None = None
@@ -114,6 +120,15 @@ def _optional_result_float(value: object) -> float | None:
         return None
     try:
         return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _optional_result_int(value: object) -> int | None:
+    if value is None:
+        return None
+    try:
+        return int(value)
     except (TypeError, ValueError):
         return None
 
@@ -3911,6 +3926,20 @@ class OptimizationRunner:
                 families=int(model.n_families),
                 species=int(model.n_species),
                 batches=len(model.batch_metadata),
+                batch_packing=_optional_result_text(
+                    route_metadata.get("batch_packing")
+                ),
+                family_chunk_size=int(route_metadata["family_chunk_size"]),
+                clade_budget=int(route_metadata["clade_budget"]),
+                fixed_iters_e=_optional_result_int(
+                    route_metadata.get("fixed_iters_e")
+                ),
+                fixed_iters_pi=_optional_result_int(
+                    route_metadata.get("fixed_iters_pi")
+                ),
+                neumann_terms=_optional_result_int(
+                    route_metadata.get("neumann_terms")
+                ),
                 objective=_optional_result_text(route_metadata.get("objective")),
                 gradient_route=_optional_result_text(
                     route_metadata.get("gradient_route")

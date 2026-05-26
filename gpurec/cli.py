@@ -128,6 +128,27 @@ def _optimization_result_text(result: Any) -> str:
             _optional_int_text("families", getattr(result, "families", None)),
             _optional_int_text("species", getattr(result, "species", None)),
             _optional_int_text("batches", getattr(result, "batches", None)),
+            _optional_text("batch_packing", getattr(result, "batch_packing", None)),
+            _optional_int_text(
+                "family_chunk_size",
+                getattr(result, "family_chunk_size", None),
+            ),
+            _optional_int_text(
+                "clade_budget",
+                getattr(result, "clade_budget", None),
+            ),
+            _optional_int_text(
+                "fixed_iters_e",
+                getattr(result, "fixed_iters_e", None),
+            ),
+            _optional_int_text(
+                "fixed_iters_pi",
+                getattr(result, "fixed_iters_pi", None),
+            ),
+            _optional_int_text(
+                "neumann_terms",
+                getattr(result, "neumann_terms", None),
+            ),
             _optional_text("objective", getattr(result, "objective", None)),
             _optional_text(
                 "gradient_route",

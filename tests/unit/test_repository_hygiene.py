@@ -1299,6 +1299,8 @@ def test_project_readme_documents_gpurec_run_end_to_end_workflow():
     assert "exits without sampling if optimization fails" in normalized
     assert "Failed optimization still prints the optimization status line" in project_readme
     assert "resolved `mode`, `optimizer`, family/species/batch counts" in normalized
+    assert "batch packing, family chunk size, clade budget" in normalized
+    assert "solver iteration budgets" in normalized
     assert (
         "`configured_steps`, `optimizer_step_cap`, `optimizer_step_cap_reason`"
         in project_readme
@@ -1443,6 +1445,12 @@ def test_output_artifact_reference_is_linked_and_documents_contract():
         "`families`",
         "`species`",
         "`batches`",
+        "`batch_packing`",
+        "`family_chunk_size`",
+        "`clade_budget`",
+        "`fixed_iters_e`",
+        "`fixed_iters_pi`",
+        "`neumann_terms`",
         "`final_log_likelihood_bits`",
         "`final_grad_inf`",
         "`final_projected_grad_inf`",
