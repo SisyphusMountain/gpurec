@@ -270,8 +270,8 @@ Plan:
 
 Possible simplifications:
 
-- Remove duplicate int/float/bool normalizers from `workflow/config.py` once
-  `gpurec/api/_validation.py` covers the same contracts.
+- Keep `workflow/config.py` string/path adapters thin over shared validators;
+  integer controls now delegate to `gpurec._validation`.
 - Keep `dtype_from_name()` workflow-specific only if CLI wording needs it.
 - Keep optimizer modes only if behavior is tested by fake-model guards.
 

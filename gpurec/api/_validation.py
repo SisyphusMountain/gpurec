@@ -7,14 +7,19 @@ theta-shape validation consistent, but they are not standalone public API.
 
 from __future__ import annotations
 
-import math
 import os
-from numbers import Integral, Real
 from typing import Any, Optional, Sequence
 
 import torch
 
-from gpurec._validation import bool_value, finite_float
+from gpurec._validation import (
+    bool_value,
+    finite_float,
+    integer_value,
+    nonnegative_int,
+    positive_even_int,
+    positive_int,
+)
 
 
 def require_cuda_device(device: Any, *, owner: str) -> torch.device:
@@ -61,40 +66,6 @@ def positive_float(name: str, value: float) -> float:
     return number
 
 
-def integer_value(name: str, value: int) -> int:
-    if isinstance(value, bool):
-        raise ValueError(f"{name} must be an integer")
-    if isinstance(value, Integral):
-        return int(value)
-    elif isinstance(value, Real):
-        number_float = finite_float(name, float(value))
-        if not number_float.is_integer():
-            raise ValueError(f"{name} must be an integer")
-        return int(number_float)
-    raise ValueError(f"{name} must be an integer")
-
-
-def positive_int(name: str, value: int) -> int:
-    number = integer_value(name, value)
-    if number < 1:
-        raise ValueError(f"{name} must be positive")
-    return number
-
-
-def nonnegative_int(name: str, value: int) -> int:
-    number = integer_value(name, value)
-    if number < 0:
-        raise ValueError(f"{name} must be non-negative")
-    return number
-
-
-def positive_even_int(name: str, value: int) -> int:
-    number = positive_int(name, value)
-    if number % 2 != 0:
-        raise ValueError(f"{name} must be a positive even integer")
-    return number
-
-
 def optional_positive_int(name: str, value: int | None) -> int | None:
     if value is None:
         return None
@@ -116,14 +87,10 @@ def auto_int(name: str, value: int | float | str | None) -> int | str | None:
             raise ValueError(f"{name} must be an integer, 'auto', or none") from exc
     if isinstance(value, bool):
         raise ValueError(f"{name} must be an integer, 'auto', or none")
-    if isinstance(value, Integral):
-        return int(value)
-    if isinstance(value, Real):
-        number = float(value)
-        if not math.isfinite(number) or not number.is_integer():
-            raise ValueError(f"{name} must be an integer, 'auto', or none")
-        return int(number)
-    raise ValueError(f"{name} must be an integer, 'auto', or none")
+    try:
+        return integer_value(name, value)
+    except ValueError as exc:
+        raise ValueError(f"{name} must be an integer, 'auto', or none") from exc
 
 
 def auto_nonnegative_int(

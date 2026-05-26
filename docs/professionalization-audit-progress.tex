@@ -7270,6 +7270,13 @@ The family path/name/map normalization slice of the duplicated-validation
 finding is now addressed for dataset construction and the uniform chunked API
 through shared \texttt{gpurec.core.model.normalize\_family\_inputs()} handling.
 
+The integer-control slice of the duplicated-validation finding is now reduced:
+\texttt{gpurec.\_validation} owns \texttt{integer\_value()},
+\texttt{positive\_int()}, \texttt{nonnegative\_int()}, and
+\texttt{positive\_even\_int()}.  The API validation module re-exports those
+support helpers, and \texttt{RunConfig} string adapters delegate to them for
+workflow integer controls.
+
 The profiling ownership boundary documentation gap from that pass is now
 addressed.  \texttt{profiling/README.md} records the two tracked profiling
 entrypoints, their source-checkout/CUDA/local-data assumptions, output-contract

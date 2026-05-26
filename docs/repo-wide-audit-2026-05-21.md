@@ -1922,6 +1922,11 @@ not edit files.  New or still-open findings from that refresh are:
   finding is now fixed for dataset construction and the uniform chunked API:
   they share `gpurec.core.model.normalize_family_inputs()` for default family
   names, duplicate-name rejection, and leaf-species-map length checks.
+- The integer-control part of the duplicated-validation finding is now reduced.
+  `gpurec._validation` owns `integer_value()`, `positive_int()`,
+  `nonnegative_int()`, and `positive_even_int()`; the API validation module
+  re-exports those support helpers, and `RunConfig` string adapters delegate to
+  them for workflow integer controls.
 - The profiling ownership-boundary documentation gap is now fixed.
   `profiling/README.md` documents the two tracked profiling entrypoints, their
   source-checkout/CUDA/local-data assumptions, output-contract expectations,

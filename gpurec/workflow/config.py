@@ -1,9 +1,8 @@
 from __future__ import annotations
 
 import json
-import math
 from dataclasses import asdict, dataclass, fields
-from numbers import Integral, Real
+from numbers import Real
 from pathlib import Path
 from typing import Any
 
@@ -13,6 +12,10 @@ from gpurec._validation import (
     bool_value,
     disabled_adaptive_neumann_terms_value,
     finite_float,
+    integer_value,
+    nonnegative_int,
+    positive_even_int,
+    positive_int,
 )
 from gpurec.core.batch_planning import (
     normalize_batch_packing as _normalize_batch_packing,
@@ -89,44 +92,24 @@ def default_optimizer_for_mode(mode: str) -> str:
 
 
 def _normalize_int(name: str, value: int | float | str) -> int:
-    if isinstance(value, bool):
-        raise ValueError(f"{name} must be an integer")
     if isinstance(value, str):
         try:
             return int(value.strip())
         except ValueError as exc:
             raise ValueError(f"{name} must be an integer") from exc
-    if isinstance(value, Integral):
-        return int(value)
-    if isinstance(value, Real):
-        number = float(value)
-        if not math.isfinite(number):
-            raise ValueError(f"{name} must be finite")
-        if not number.is_integer():
-            raise ValueError(f"{name} must be an integer")
-        return int(number)
-    raise ValueError(f"{name} must be an integer")
+    return integer_value(name, value)
 
 
 def _normalize_positive_int(name: str, value: int | float | str) -> int:
-    number = _normalize_int(name, value)
-    if number <= 0:
-        raise ValueError(f"{name} must be positive")
-    return number
+    return positive_int(name, _normalize_int(name, value))
 
 
 def _normalize_positive_even_int(name: str, value: int | float | str) -> int:
-    number = _normalize_positive_int(name, value)
-    if number % 2 != 0:
-        raise ValueError(f"{name} must be a positive even integer")
-    return number
+    return positive_even_int(name, _normalize_int(name, value))
 
 
 def _normalize_nonnegative_int(name: str, value: int | float | str) -> int:
-    number = _normalize_int(name, value)
-    if number < 0:
-        raise ValueError(f"{name} must be non-negative")
-    return number
+    return nonnegative_int(name, _normalize_int(name, value))
 
 
 def _normalize_uint64(name: str, value: int | float | str) -> int:

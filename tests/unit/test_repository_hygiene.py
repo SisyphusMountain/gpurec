@@ -426,6 +426,44 @@ def test_internal_api_helper_modules_document_support_boundary():
     assert "Direct imports from `gpurec.core` are unstable" in docs_readme
 
 
+def test_workflow_integer_validation_uses_shared_helpers():
+    root = Path(__file__).resolve().parents[2]
+    shared_validation = ast.parse(
+        (root / "gpurec" / "_validation.py").read_text(encoding="utf-8")
+    )
+    api_validation = ast.parse(
+        (root / "gpurec" / "api" / "_validation.py").read_text(encoding="utf-8")
+    )
+    workflow_config = (
+        root / "gpurec" / "workflow" / "config.py"
+    ).read_text(encoding="utf-8")
+
+    shared_function_names = {
+        node.name for node in shared_validation.body if isinstance(node, ast.FunctionDef)
+    }
+    api_function_names = {
+        node.name for node in api_validation.body if isinstance(node, ast.FunctionDef)
+    }
+    integer_helpers = {
+        "integer_value",
+        "positive_int",
+        "nonnegative_int",
+        "positive_even_int",
+    }
+
+    assert integer_helpers.issubset(shared_function_names)
+    assert api_function_names.isdisjoint(integer_helpers)
+    for helper in integer_helpers:
+        assert helper in workflow_config
+    for stale in (
+        "from numbers import Integral",
+        "import math",
+        "number.is_integer()",
+        "must be a positive even integer",
+    ):
+        assert stale not in workflow_config
+
+
 def test_workflow_sampling_uses_public_config_constants():
     root = Path(__file__).resolve().parents[2]
     sampling_text = (root / "gpurec" / "workflow" / "sampling.py").read_text(
