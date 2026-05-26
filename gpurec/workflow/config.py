@@ -228,7 +228,8 @@ def normalize_optimizer_name(value: str) -> str:
         raise ValueError(
             "optimizer must be auto, adam, adagrad, projected-sgd, lbfgs, "
             "adam-lbfgs, projected-lbfgs, lbfgsb, batched-lbfgs, "
-            "adam-fd-newton, hessian-sgd, or adagrad-restarts"
+            "adam-fd-newton, hessian-sgd, adagrad-restarts, or "
+            "adagrad-restarts-lbfgsb"
         )
     return value.strip().lower().replace("_", "-")
 
@@ -875,11 +876,13 @@ class RunConfig:
             "adam-fd-newton",
             "hessian-sgd",
             "adagrad-restarts",
+            "adagrad-restarts-lbfgsb",
         }:
             raise ValueError(
                 "optimizer must be auto, adam, adagrad, projected-sgd, "
                 "lbfgs, adam-lbfgs, projected-lbfgs, lbfgsb, batched-lbfgs, "
-                "adam-fd-newton, hessian-sgd, or adagrad-restarts"
+                "adam-fd-newton, hessian-sgd, adagrad-restarts, or "
+                "adagrad-restarts-lbfgsb"
             )
         if self.optimizer == "batched-lbfgs" and self.mode != "genewise":
             raise ValueError("batched-lbfgs optimizer requires genewise mode")
@@ -937,16 +940,27 @@ class RunConfig:
             )
         if self.optimizer == "adagrad-restarts" and self.mode != "specieswise":
             raise ValueError("adagrad-restarts optimizer requires specieswise mode")
+        if (
+            self.optimizer == "adagrad-restarts-lbfgsb"
+            and self.mode != "specieswise"
+        ):
+            raise ValueError(
+                "adagrad-restarts-lbfgsb optimizer requires specieswise mode"
+            )
         adagrad_restart_configured = (
             self.adagrad_restart_schedule
             != DEFAULT_NORMALIZED_ADAGRAD_RESTART_SCHEDULE
             or self.adagrad_restart_final_check_iters
             != DEFAULT_ADAGRAD_RESTART_FINAL_CHECK_ITERS
         )
-        if adagrad_restart_configured and self.optimizer != "adagrad-restarts":
+        if (
+            adagrad_restart_configured
+            and self.optimizer
+            not in {"adagrad-restarts", "adagrad-restarts-lbfgsb"}
+        ):
             raise ValueError(
                 "adagrad_restart controls require specieswise "
-                "adagrad-restarts optimizer"
+                "adagrad-restarts"
             )
         if self.adagrad_restart_final_check_iters > 0:
             _normalize_positive_even_int(

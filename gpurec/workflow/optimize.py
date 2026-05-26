@@ -956,6 +956,14 @@ def _is_adagrad_restart_phase(phase: str) -> bool:
     return phase == "adagrad-restarts" or phase.startswith("adagrad-restarts:")
 
 
+def _uses_adagrad_restart_prefix(optimizer: str) -> bool:
+    return optimizer in {"adagrad-restarts", "adagrad-restarts-lbfgsb"}
+
+
+def _continues_after_adagrad_restart_prefix(optimizer: str) -> bool:
+    return optimizer == "adagrad-restarts-lbfgsb"
+
+
 def _adagrad_restart_phase_name(
     specs: tuple[AdagradRestartPhase, ...],
     index: int,
@@ -1011,7 +1019,7 @@ class OptimizationRunner:
     def build_model(self) -> GeneReconModel:
         config = self.config
         build_config = config
-        if config.optimizer == "adagrad-restarts":
+        if _uses_adagrad_restart_prefix(config.optimizer):
             first_phase = adagrad_restart_schedule_specs(
                 config.adagrad_restart_schedule,
             )[0]
@@ -1102,12 +1110,14 @@ class OptimizationRunner:
         raise ValueError(f"unknown optimizer phase {phase!r}")
 
     def _phase_for_step(self, step: int) -> str:
-        if self.config.optimizer == "adagrad-restarts":
+        if _uses_adagrad_restart_prefix(self.config.optimizer):
             specs = adagrad_restart_schedule_specs(
                 self.config.adagrad_restart_schedule,
             )
             active_phase = _active_adagrad_restart_phase(specs, step)
             if active_phase is None:
+                if _continues_after_adagrad_restart_prefix(self.config.optimizer):
+                    return "lbfgsb"
                 return "adagrad-restarts:complete"
             return f"adagrad-restarts:{active_phase.name}"
         if self.config.optimizer == "adam-lbfgs":
@@ -1234,12 +1244,15 @@ class OptimizationRunner:
         return self.config.fixed_iters_e
 
     def _final_check_fixed_iters_E(self, check_iters: int) -> int | None:
-        if int(check_iters) <= 0:
-            return 0
-        return effective_final_check_iters_e(self.config)
+        if _uses_adagrad_restart_prefix(self.config.optimizer):
+            return int(check_iters)
+        return self._fixed_iters_E_for_pi_budget(check_iters)
 
     def _final_iteration_check_iters(self) -> int:
-        return effective_final_check_iters(self.config)
+        if _uses_adagrad_restart_prefix(self.config.optimizer):
+            return int(self.config.adagrad_restart_final_check_iters)
+        return int(self.config.final_check_iters)
+
 
     def _configure_specieswise_final_eval_solver_stage(
         self,
@@ -1247,18 +1260,20 @@ class OptimizationRunner:
     ) -> bool:
         if self.config.mode != "specieswise":
             return False
-        if (
-            self.config.optimizer != "adagrad-restarts"
-            and self.config.final_check_iters <= 0
-        ):
+        if not _uses_adagrad_restart_prefix(
+            self.config.optimizer
+        ) and self.config.final_check_iters <= 0:
             return False
         configure_solver = getattr(model, "configure_solver_iterations", None)
         if not callable(configure_solver):
             return False
-        if self.config.optimizer == "adagrad-restarts":
+        if _uses_adagrad_restart_prefix(self.config.optimizer):
+            check_iters = int(self.config.adagrad_restart_final_check_iters)
+        else:
             check_iters = effective_final_check_iters(self.config)
-            if check_iters <= 0:
-                return False
+        if check_iters <= 0:
+            return False
+        if _uses_adagrad_restart_prefix(self.config.optimizer):
             configure_solver(
                 fixed_iters_E=check_iters,
                 fixed_iters_Pi=check_iters,
@@ -1273,6 +1288,24 @@ class OptimizationRunner:
             neumann_terms=self.config.neumann_terms,
         )
         return True
+
+    def _configure_specieswise_adagrad_lbfgsb_tail_solver(
+        self,
+        model: GeneReconModel,
+    ) -> None:
+        configure_solver = getattr(model, "configure_solver_iterations", None)
+        if not callable(configure_solver):
+            raise RuntimeError(
+                "adagrad-restarts-lbfgsb requires a model with "
+                "configure_solver_iterations"
+            )
+        configure_solver(
+            fixed_iters_E=self._fixed_iters_E_for_pi_budget(
+                self.config.fixed_iters_pi
+            ),
+            fixed_iters_Pi=int(self.config.fixed_iters_pi),
+            neumann_terms=int(self.config.neumann_terms),
+        )
 
     def _configure_specieswise_adagrad_restart_phase(
         self,
@@ -1466,7 +1499,7 @@ class OptimizationRunner:
         config = self.config
         if config.solver_warmup_iters <= 0:
             return False
-        if config.optimizer == "adagrad-restarts":
+        if _uses_adagrad_restart_prefix(config.optimizer):
             return False
         if (
             config.mode == "genewise"
@@ -2727,7 +2760,7 @@ class OptimizationRunner:
         model = self.build_model()
         adagrad_restart_specs: tuple[AdagradRestartPhase, ...] = ()
         adagrad_restart_step_limit: int | None = None
-        if config.optimizer == "adagrad-restarts":
+        if _uses_adagrad_restart_prefix(config.optimizer):
             adagrad_restart_specs = adagrad_restart_schedule_specs(
                 config.adagrad_restart_schedule,
             )
@@ -2746,7 +2779,7 @@ class OptimizationRunner:
         active_optimizer_batch_index: int | None = None
         active_adagrad_restart_phase_index: int | None = None
         adagrad_restart_dynamic_enabled = (
-            config.optimizer == "adagrad-restarts"
+            _uses_adagrad_restart_prefix(config.optimizer)
             and config.adagrad_restart_phase_loss_patience > 0
         )
         adagrad_restart_dynamic_phase_index = 0
@@ -3013,14 +3046,29 @@ class OptimizationRunner:
                 self._configure_active_solver_stage(model, active_solver_stage)
 
             optimization_stop_step = config.steps
-            if adagrad_restart_step_limit is not None:
+            if (
+                adagrad_restart_step_limit is not None
+                and not _continues_after_adagrad_restart_prefix(config.optimizer)
+            ):
                 optimization_stop_step = min(
                     optimization_stop_step,
                     adagrad_restart_step_limit,
                 )
 
             initial_adagrad_restart_phase: _ActiveAdagradRestartPhase | None = None
-            if config.optimizer == "adagrad-restarts":
+            if (
+                _uses_adagrad_restart_prefix(config.optimizer)
+                and not (
+                    _continues_after_adagrad_restart_prefix(config.optimizer)
+                    and adagrad_restart_dynamic_enabled
+                    and adagrad_restart_dynamic_phase_index
+                    >= len(adagrad_restart_specs)
+                )
+                and (
+                    adagrad_restart_step_limit is None
+                    or start_step < adagrad_restart_step_limit
+                )
+            ):
                 phase_lookup_step = (
                     start_step
                     if start_step < optimization_stop_step
@@ -3065,6 +3113,22 @@ class OptimizationRunner:
                     active_adagrad_restart_phase_index = (
                         initial_adagrad_restart_phase.index
                     )
+            elif (
+                _continues_after_adagrad_restart_prefix(config.optimizer)
+                and (
+                    (
+                        adagrad_restart_step_limit is not None
+                        and start_step >= adagrad_restart_step_limit
+                    )
+                    or (
+                        adagrad_restart_dynamic_enabled
+                        and adagrad_restart_dynamic_phase_index
+                        >= len(adagrad_restart_specs)
+                    )
+                )
+            ):
+                self._configure_specieswise_adagrad_lbfgsb_tail_solver(model)
+                current_phase = "lbfgsb"
             elif start_step >= optimization_stop_step:
                 current_phase = self._phase_for_step(
                     max(0, optimization_stop_step - 1)
@@ -3100,7 +3164,20 @@ class OptimizationRunner:
             for step in range(start_step, optimization_stop_step):
                 adagrad_restart_active_phase = None
                 adagrad_restart_phase_step: int | None = None
-                if config.optimizer == "adagrad-restarts":
+                if (
+                    _uses_adagrad_restart_prefix(config.optimizer)
+                    and not (
+                        _continues_after_adagrad_restart_prefix(config.optimizer)
+                        and adagrad_restart_dynamic_enabled
+                        and adagrad_restart_dynamic_phase_index
+                        >= len(adagrad_restart_specs)
+                    )
+                    and (
+                        not _continues_after_adagrad_restart_prefix(config.optimizer)
+                        or adagrad_restart_step_limit is None
+                        or step < adagrad_restart_step_limit
+                    )
+                ):
                     if adagrad_restart_dynamic_enabled:
                         adagrad_restart_active_phase = _adagrad_restart_phase_by_index(
                             adagrad_restart_specs,
@@ -3118,7 +3195,15 @@ class OptimizationRunner:
                         )
                     phase = f"adagrad-restarts:{adagrad_restart_active_phase.name}"
                 else:
-                    phase = self._phase_for_step(step)
+                    if (
+                        _continues_after_adagrad_restart_prefix(config.optimizer)
+                        and adagrad_restart_dynamic_enabled
+                        and adagrad_restart_dynamic_phase_index
+                        >= len(adagrad_restart_specs)
+                    ):
+                        phase = "lbfgsb"
+                    else:
+                        phase = self._phase_for_step(step)
                 if batchwise_batched_lbfgs and phase == "batched-lbfgs":
                     if model.current_batch_index != active_batch_index:
                         _clear_cached_solver_runtime_state(model)
@@ -3170,6 +3255,14 @@ class OptimizationRunner:
                         optimizer = self._make_optimizer(model, phase)
                         active_optimizer_batch_index = active_batch_index
                 elif optimizer is None or phase != current_phase:
+                    if (
+                        _continues_after_adagrad_restart_prefix(config.optimizer)
+                        and phase == "lbfgsb"
+                        and _is_adagrad_restart_phase(current_phase)
+                    ):
+                        self._configure_specieswise_adagrad_lbfgsb_tail_solver(model)
+                        previous_objective = None
+                        stable_loss_steps = 0
                     current_phase = phase
                     optimizer = self._make_optimizer(model, phase)
                     active_optimizer_batch_index = None
@@ -4052,14 +4145,25 @@ class OptimizationRunner:
                             float(config.adagrad_restart_phase_loss_patience)
                         )
                         if last_adagrad_phase:
-                            adagrad_restart_terminal_status = {
-                                "status": "converged",
-                                "reason": (
-                                    "adagrad_restart_phase_loss_patience"
-                                    if phase_done_by_loss
-                                    else "adagrad_restart_schedule_complete"
-                                ),
-                            }
+                            if _continues_after_adagrad_restart_prefix(
+                                config.optimizer
+                            ):
+                                metrics["optimizer/adagrad_restart_next_phase"] = (
+                                    "lbfgsb"
+                                )
+                                adagrad_restart_phase_next_index = (
+                                    len(adagrad_restart_specs)
+                                )
+                                adagrad_restart_phase_next_start_step = step + 1
+                            else:
+                                adagrad_restart_terminal_status = {
+                                    "status": "converged",
+                                    "reason": (
+                                        "adagrad_restart_phase_loss_patience"
+                                        if phase_done_by_loss
+                                        else "adagrad_restart_schedule_complete"
+                                    ),
+                                }
                         else:
                             adagrad_restart_phase_next_index = (
                                 adagrad_restart_active_phase.index + 1
@@ -4639,7 +4743,8 @@ class OptimizationRunner:
                     break
             else:
                 if (
-                    adagrad_restart_step_limit is not None
+                    config.optimizer == "adagrad-restarts"
+                    and adagrad_restart_step_limit is not None
                     and optimization_stop_step >= adagrad_restart_step_limit
                     and config.steps >= adagrad_restart_step_limit
                 ):

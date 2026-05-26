@@ -206,6 +206,15 @@ checkpoints, and `summary.json` report this as `configured_steps`,
 specieswise config, `optimizer_step_cap=125` and
 `optimizer_step_cap_reason=adagrad_restart_schedule`.
 
+`adagrad-restarts-lbfgsb` uses the same specieswise Adagrad restart prefix, but
+does not stop when that prefix completes. It continues with the workflow
+`lbfgsb` optimizer, resets the tail solver budget to the run-level
+`fixed_iters_e`, `fixed_iters_pi`, and `neumann_terms`, and keeps the same
+`adagrad_restart_final_check_iters` validation rule. Use it when a dataset
+benefits from a cheap multifidelity basin entry followed by an L-BFGS-B tail;
+keep `adagrad-restarts` as the HOGENOM default unless the composite route is
+validated there.
+
 The default is based on the retained counts-free HOGENOM route: uniform `0.05`
 D/L/T initialization, no AleRax event-count checkpoint, fixed budgets of 8, 16,
 then 32, and a fixed128 validation check. It is the specieswise `auto` route

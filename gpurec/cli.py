@@ -1635,6 +1635,7 @@ def _add_run_config_args(parser: argparse.ArgumentParser) -> None:
             "adam-fd-newton",
             "hessian-sgd",
             "adagrad-restarts",
+            "adagrad-restarts-lbfgsb",
         ),
         help=(
             "Optimizer schedule. auto uses hessian-sgd for genewise mode, "
@@ -1722,14 +1723,16 @@ def _add_run_config_args(parser: argparse.ArgumentParser) -> None:
         help=(
             "Specieswise adagrad-restarts phase schedule as "
             "budget:lr:steps or E/Pi[/Neumann]:lr:steps entries, for "
-            "example 8/4:1.0:60,16:0.5:35."
+            "example 8/4:1.0:60,16:0.5:35. Also controls the Adagrad "
+            "prefix of adagrad-restarts-lbfgsb."
         ),
     )
     parser.add_argument(
         "--adagrad-restart-final-check-iters",
         type=int,
         help=(
-            "Final specieswise validation budget for adagrad-restarts; "
+            "Final specieswise validation budget for adagrad-restarts and "
+            "adagrad-restarts-lbfgsb; "
             "workflow default: 128."
         ),
     )
@@ -1738,7 +1741,9 @@ def _add_run_config_args(parser: argparse.ArgumentParser) -> None:
         type=int,
         help=(
             "For specieswise adagrad-restarts, advance to the next restart "
-            "phase after this many flat-loss steps; 0 keeps fixed phase lengths."
+            "phase after this many flat-loss steps; 0 keeps fixed phase lengths. "
+            "The same rule controls the Adagrad prefix of "
+            "adagrad-restarts-lbfgsb."
         ),
     )
     parser.add_argument("--lbfgs-lr", type=float, help="LBFGS learning rate.")

@@ -194,6 +194,9 @@ flowchart TD
   Route metadata reports the resulting `optimizer_step_cap` and
   `optimizer_step_cap_reason` alongside `configured_steps`, and uses
   `adagrad_restart_final_check_iters` for the final high-fidelity evaluation.
+- `adagrad-restarts-lbfgsb` is specieswise-only. It runs the same Adagrad
+  restart prefix, then switches to `lbfgsb` for the remaining steps instead of
+  reporting `adagrad_restart_schedule_complete`.
 - `hessian-sgd` is genewise-only. It works on active resident batches, uses
   warmup solver budgets before the full stage, refreshes row-wise 3x3
   finite-difference Hessians, applies BFGS row updates between refreshes, and

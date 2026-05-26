@@ -2351,6 +2351,23 @@ def test_run_config_accepts_specieswise_adagrad_restart_schedule(tmp_path: Path)
     assert config.adagrad_restart_final_check_iters == 16
 
 
+def test_run_config_accepts_specieswise_adagrad_restarts_lbfgsb(tmp_path: Path):
+    config = RunConfig(
+        species_tree=tmp_path / "sp.nwk",
+        families_file=tmp_path / "families.txt",
+        out_dir=tmp_path / "out",
+        mode="specieswise",
+        optimizer="adagrad-restarts-lbfgsb",
+        adagrad_restart_schedule="8/4:1.0:2,8:0.5:3",
+        adagrad_restart_final_check_iters=16,
+        device="cpu",
+    )
+
+    assert config.optimizer == "adagrad-restarts-lbfgsb"
+    assert config.adagrad_restart_schedule == "8/4:1:2,8:0.5:3"
+    assert config.adagrad_restart_final_check_iters == 16
+
+
 def test_run_config_accepts_split_specieswise_adagrad_restart_schedule(
     tmp_path: Path,
 ):
@@ -2521,6 +2538,23 @@ def test_run_config_rejects_adagrad_restarts_outside_specieswise(tmp_path: Path)
             out_dir=tmp_path / "out",
             mode="genewise",
             optimizer="adagrad-restarts",
+            device="cpu",
+        )
+
+
+def test_run_config_rejects_adagrad_restarts_lbfgsb_outside_specieswise(
+    tmp_path: Path,
+):
+    with pytest.raises(
+        ValueError,
+        match="adagrad-restarts-lbfgsb optimizer requires specieswise mode",
+    ):
+        RunConfig(
+            species_tree=tmp_path / "sp.nwk",
+            families_file=tmp_path / "families.txt",
+            out_dir=tmp_path / "out",
+            mode="genewise",
+            optimizer="adagrad-restarts-lbfgsb",
             device="cpu",
         )
 
@@ -7613,6 +7647,99 @@ def test_optimization_runner_adagrad_restarts_can_advance_flat_phases(
     latest = load_checkpoint(config.out_dir / "checkpoints" / "latest.pt")
     assert latest["status"]["status"] == "converged"
     assert latest["status"]["reason"] == "adagrad_restart_phase_loss_patience"
+    assert runner.fake_model.closed
+
+
+def test_optimization_runner_adagrad_restarts_lbfgsb_continues_after_prefix(
+    tmp_path: Path,
+):
+    config = _optimizer_mode_config(
+        tmp_path,
+        optimizer="adagrad-restarts-lbfgsb",
+        mode="specieswise",
+        steps=5,
+        adagrad_restart_schedule="4:1.0:2,6:0.5:1",
+        adagrad_restart_final_check_iters=10,
+        fixed_iters_e=8,
+        fixed_iters_pi=8,
+        neumann_terms=8,
+        loss_patience=0,
+        best_likelihood_patience=0,
+        lbfgs_lr=0.25,
+        lbfgs_max_iter=1,
+        lbfgs_max_ls=2,
+    )
+    runner = _WorkflowSpecieswiseAdagradRestartRunner(config)
+
+    result = runner.run()
+
+    history_rows = _optimizer_mode_history_rows(config.out_dir)
+    step_rows = history_rows[:-1]
+    assert [row["optimizer/phase"] for row in step_rows] == [
+        "adagrad-restarts:fixed4_phase1",
+        "adagrad-restarts:fixed4_phase1",
+        "adagrad-restarts:fixed6_phase2",
+        "lbfgsb",
+        "lbfgsb",
+    ]
+    assert step_rows[3]["optimizer/lbfgsb_grad_evals"] >= 1.0
+    assert step_rows[3]["delta_likelihood_bits"] is None
+    assert result.status == "not_converged"
+    assert result.reason == "max_steps"
+    assert runner.fake_model.solver_configs[:4] == [
+        {"fixed_iters_E": 4, "fixed_iters_Pi": 4, "neumann_terms": 4},
+        {"fixed_iters_E": 6, "fixed_iters_Pi": 6, "neumann_terms": 6},
+        {"fixed_iters_E": 8, "fixed_iters_Pi": 8, "neumann_terms": 8},
+        {"fixed_iters_E": 10, "fixed_iters_Pi": 10, "neumann_terms": 10},
+    ]
+    latest = load_checkpoint(config.out_dir / "checkpoints" / "latest.pt")
+    assert latest["optimizer_phase"] == "lbfgsb"
+    assert latest["last_row"]["optimizer/phase"] == "final_eval"
+    assert runner.fake_model.closed
+
+
+def test_optimization_runner_adagrad_restarts_lbfgsb_dynamic_prefix_enters_tail(
+    tmp_path: Path,
+):
+    config = _optimizer_mode_config(
+        tmp_path,
+        optimizer="adagrad-restarts-lbfgsb",
+        mode="specieswise",
+        steps=4,
+        adagrad_restart_schedule="8/4:1.0:5",
+        adagrad_restart_final_check_iters=10,
+        fixed_iters_e=8,
+        fixed_iters_pi=8,
+        neumann_terms=8,
+        loss_patience=0,
+        best_likelihood_patience=0,
+        adagrad_restart_phase_loss_patience=1,
+        lbfgs_lr=0.25,
+        lbfgs_max_iter=1,
+        lbfgs_max_ls=1,
+    )
+    runner = _WorkflowSpecieswiseAdagradRestartPlateauRunner(config)
+
+    result = runner.run()
+
+    history_rows = _optimizer_mode_history_rows(config.out_dir)
+    step_rows = history_rows[:-1]
+    assert [row["optimizer/phase"] for row in step_rows] == [
+        "adagrad-restarts:E8_Pi4_phase1",
+        "adagrad-restarts:E8_Pi4_phase1",
+        "lbfgsb",
+        "lbfgsb",
+    ]
+    assert step_rows[1]["optimizer/adagrad_restart_phase_complete"] is True
+    assert step_rows[1]["optimizer/adagrad_restart_next_phase"] == "lbfgsb"
+    assert step_rows[2]["delta_likelihood_bits"] is None
+    assert result.status == "not_converged"
+    assert result.reason == "max_steps"
+    assert runner.fake_model.solver_configs[:3] == [
+        {"fixed_iters_E": 8, "fixed_iters_Pi": 4, "neumann_terms": 4},
+        {"fixed_iters_E": 8, "fixed_iters_Pi": 8, "neumann_terms": 8},
+        {"fixed_iters_E": 10, "fixed_iters_Pi": 10, "neumann_terms": 10},
+    ]
     assert runner.fake_model.closed
 
 
