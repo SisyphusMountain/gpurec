@@ -59,8 +59,11 @@ automation, the mode-default optimizer audit gate, the production-route audit
 gate, and the checkpoint final-check gate for direct artifact inspection.
 The same package job checks `gpurec optimize --help` for the direct
 optimization convergence, final-check, mode-default optimizer, and
-production-route gates and `gpurec run --help` for the matching pre-sampling
-convergence, final-check, mode-default optimizer, and production-route gates, keeps
+production-route gates, including help text that names the objective,
+likelihood/gradient route, rate parameterization, `final_check_iters_e`
+evidence, and optimizer route. It checks `gpurec run --help` for the matching
+pre-sampling convergence, final-check, mode-default optimizer, and
+production-route gates, keeps
 examples out of wheels while requiring them in the source
 archive, verifies the minimal example config points to source-archive files,
 checks source-archive preprocessing reports the tiny fixtures as

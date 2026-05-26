@@ -7653,6 +7653,13 @@ The \texttt{--require-mode-default-optimizer} help text says mode default
 optimizer for the selected mode, while production-route remediation keeps the
 full shipped likelihood/gradient and optimizer wording.
 
+The shared \texttt{--require-production-default-route} help text now spells out
+the full route contract: objective, likelihood/gradient route, rate
+parameterization, \texttt{final\_check\_iters\_e} evidence, optimizer-specific
+settings, and the shipped HOGENOM/\texttt{test\_trees\_1000}
+likelihood/gradient and optimizer route.  Installed-wheel CLI smoke checks now
+grep \texttt{gpurec optimize --help} for those route-contract terms.
+
 \section{Next Audit Targets}
 
 \begin{enumerate}[leftmargin=*]

@@ -1897,6 +1897,12 @@ def test_cli_route_gate_wording_is_centralized():
             "Fail unless the resolved optimizer matches the mode default optimizer "
             "for the selected mode."
         ),
+        "_PRODUCTION_DEFAULT_ROUTE_HELP": (
+            "Fail unless the objective, likelihood/gradient route, rate parameterization, "
+            "resolved optimizer, final_check_iters_e evidence, and optimizer-specific "
+            "settings match the full shipped HOGENOM/test_trees_1000 likelihood/gradient "
+            "and optimizer route."
+        ),
         "_MODE_DEFAULT_OPTIMIZER_CONFIG_ACTION": (
             "use optimizer=auto or the mode default optimizer"
         ),

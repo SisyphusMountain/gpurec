@@ -220,9 +220,15 @@ def test_cli_mode_default_optimizer_help_uses_narrow_gate_wording(command: str):
 def test_cli_production_route_help_names_final_check_evidence(command: str):
     action = _parser_action(command, "require_production_default_route")
 
+    assert "objective" in str(action.help)
     assert "likelihood/gradient route" in str(action.help)
+    assert "rate parameterization" in str(action.help)
     assert "final_check_iters_e evidence" in str(action.help)
-    assert "HOGENOM/" + "test_trees_" + "1000 production route" in str(action.help)
+    assert (
+        "full shipped HOGENOM/" + "test_trees_" + "1000 likelihood/gradient "
+        "and optimizer route"
+    ) in str(action.help)
+    assert "HOGENOM/" + "test_trees_" + "1000 production route" not in str(action.help)
 
 
 def test_build_alerax_workflow_model_forwards_run_config(tmp_path: Path, monkeypatch):

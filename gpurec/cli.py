@@ -20,6 +20,12 @@ _MODE_DEFAULT_OPTIMIZER_HELP = (
     "Fail unless the resolved optimizer matches the mode default optimizer "
     "for the selected mode."
 )
+_PRODUCTION_DEFAULT_ROUTE_HELP = (
+    "Fail unless the objective, likelihood/gradient route, rate parameterization, "
+    "resolved optimizer, final_check_iters_e evidence, and optimizer-specific "
+    "settings match the full shipped HOGENOM/test_trees_1000 likelihood/gradient "
+    "and optimizer route."
+)
 _MODE_DEFAULT_OPTIMIZER_CONFIG_ACTION = (
     "use optimizer=auto or the mode default optimizer"
 )
@@ -91,11 +97,7 @@ def _add_require_production_default_route_arg(
     parser.add_argument(
         "--require-production-default-route",
         action="store_true",
-        help=(
-            "Fail unless the likelihood/gradient route, resolved optimizer, "
-            "final_check_iters_e evidence, and optimizer-specific settings "
-            "match the shipped HOGENOM/test_trees_1000 production route."
-        ),
+        help=_PRODUCTION_DEFAULT_ROUTE_HELP,
     )
 
 

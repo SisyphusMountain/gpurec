@@ -2358,6 +2358,12 @@ not edit files.  New or still-open findings from that refresh are:
   `--require-mode-default-optimizer` help says mode default optimizer for the
   selected mode, while the full production-route gate keeps the shipped
   likelihood/gradient and optimizer wording.
+- The shared `--require-production-default-route` help now spells out the full
+  contract: objective, likelihood/gradient route, rate parameterization,
+  `final_check_iters_e` evidence, optimizer-specific settings, and the shipped
+  HOGENOM/`test_trees_1000` likelihood/gradient and optimizer route.  The
+  installed-wheel smoke now greps for those route-contract terms in
+  `gpurec optimize --help`.
 
 ## Recommended Next Order
 
