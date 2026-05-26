@@ -186,6 +186,10 @@ all-batch prefetch settings.  An `E=4, Pi=2` clade-budget sweep measured
 `315000` repeats.  Prefetch depths measured `none`: `2.071594687993638s`,
 `2`: `1.8023037790553644s`, `4`: `1.806620042945724s`, and `all`:
 `1.795652323984541s`, so the current all-prefetch route remains best.
+A current-code fast-route clade-budget recheck also failed to move the
+best-observed sample: `250000` measured `1.779081451066304s` with `26` batches,
+while `400000` measured `1.8268427449511364s` with `17` batches and higher
+memory.
 
 For `E=4, Pi=2`, a larger `12288` wave cap is a tiny timing near-tie rather
 than a clear route change.  Single cold samples measured `4096`:
@@ -224,6 +228,9 @@ Cold `E=7, Pi=4` samples also matched the `E=8, Pi=4` loss at
 `2157098.25` bits, but did not beat the best `E=8` cold sample: totals were
 `2.3259418689995073s`, `2.314654977992177s`,
 `2.267007304006256s`, and `2.2859832789981738s`.
+A current-code recheck after the shared-constant hoist was worse still at
+`2.3588287950260565s`, so `E=7, Pi=4` remains a validation curiosity rather
+than the default route.
 
 A split-budget clade-budget sweep kept the same `315000` route decision as the
 tied fixed4 path.  With `E=8, Pi=4`, single cold samples measured `250000`:
