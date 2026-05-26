@@ -487,6 +487,19 @@ def test_python_scripts_do_not_use_runtime_asserts():
     assert offenders == []
 
 
+def test_package_runtime_does_not_use_assert_statements():
+    root = Path(__file__).resolve().parents[2]
+    offenders: list[str] = []
+
+    for path in _tracked_package_python_files(root):
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Assert):
+                offenders.append(f"{path.relative_to(root)}:{node.lineno}")
+
+    assert offenders == []
+
+
 def test_tests_subprocess_calls_have_explicit_timeouts():
     root = Path(__file__).resolve().parents[2]
     offenders: list[str] = []

@@ -388,11 +388,9 @@ class LBFGSB(Optimizer):
         old_stps: list[Tensor],
         theta: float,
     ) -> Tensor:
-        matrices = self._history_matrices(old_dirs, old_stps)
-        if matrices[0] is None or matrices[1] is None:
+        s_mat, y_mat = self._history_matrices(old_dirs, old_stps)
+        if s_mat is None or y_mat is None:
             return theta * vec
-        s_mat, y_mat = matrices
-        assert s_mat is not None and y_mat is not None
         m = s_mat.shape[1]
         sy = s_mat.T @ y_mat
         ss = s_mat.T @ s_mat
