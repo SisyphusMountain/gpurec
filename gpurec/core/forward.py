@@ -166,6 +166,7 @@ def Pi_wave_forward(
     trace_root_logsumexp: bool = False,
     convergence_tolerance: float = -1.0,
     convergence_check_interval: int = 4,
+    scratch_tensors: tuple[torch.Tensor, torch.Tensor] | None = None,
 ):
     """Wave-based Pi forward pass with wave-ordered layout (v2).
 
@@ -202,6 +203,8 @@ def Pi_wave_forward(
         convergence_check_interval: check every N local self-loop iterations.
                                     Must be even when convergence is enabled so
                                     final Pi rows remain in ``Pi``.
+        scratch_tensors: optional ``(Pi, Pibar)`` work buffers for root-row
+                         loss calls where full Pi/Pibar state is not returned.
 
     Returns:
         dict with 'Pi' (in original clade order when requested),
@@ -211,6 +214,8 @@ def Pi_wave_forward(
         return_original=return_original,
         return_root_rows=return_root_rows,
     )
+    if scratch_tensors is not None and output_intent.retain_saved_state:
+        raise ValueError("Pi scratch reuse is only supported for root-row loss output")
     leaf_row_index = wave_layout['leaf_row_index']
     leaf_species_index = wave_layout.get('leaf_species_index')
     wave_metas = wave_layout['wave_metas']
@@ -232,11 +237,37 @@ def Pi_wave_forward(
         )
 
     with _nvtx_range("Pi setup tensors"):
-        Pi = torch.empty((C, S), dtype=dtype, device=device)
-        # Pibar is a ping-pong scratch/output buffer. Each row is written by
-        # its wave before any later DTS wave can read it, so an initial full
-        # tensor fill only burns memory bandwidth on large tree batches.
-        Pibar = torch.empty((C, S), dtype=dtype, device=device)
+        if scratch_tensors is None:
+            Pi = torch.empty((C, S), dtype=dtype, device=device)
+            # Pibar is a ping-pong scratch/output buffer. Each row is written by
+            # its wave before any later DTS wave can read it, so an initial full
+            # tensor fill only burns memory bandwidth on large tree batches.
+            Pibar = torch.empty((C, S), dtype=dtype, device=device)
+        else:
+            Pi_scratch, Pibar_scratch = scratch_tensors
+            required_shape = (C, S)
+            for name, scratch in (
+                ("Pi scratch", Pi_scratch),
+                ("Pibar scratch", Pibar_scratch),
+            ):
+                device_mismatch = scratch.device.type != target_device.type or (
+                    target_device.index is not None
+                    and scratch.device.index != target_device.index
+                )
+                if device_mismatch:
+                    raise ValueError(
+                        f"{name} is on {scratch.device}, expected {target_device}"
+                    )
+                if scratch.dtype != dtype:
+                    raise ValueError(
+                        f"{name} has dtype {scratch.dtype}, expected {dtype}"
+                    )
+                if scratch.ndim != 2 or scratch.shape[0] < C or scratch.shape[1] != S:
+                    raise ValueError(
+                        f"{name} must cover shape {required_shape}, got {tuple(scratch.shape)}"
+                    )
+            Pi = Pi_scratch.narrow(0, 0, C)
+            Pibar = Pibar_scratch.narrow(0, 0, C)
 
     batched = family_idx is not None
     if batched:

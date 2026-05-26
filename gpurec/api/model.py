@@ -1858,6 +1858,22 @@ class GeneReconModel(torch.nn.Module):
         if not need_grad and self._mode != "genewise":
             first_static = self._ensure_batch_static(0)
             e_solve = solve_resident_e(first_static, theta)
+            scratch_shape = (
+                max(meta.clade_count for meta in self.batch_metadata),
+                int(self._dataset.S),
+            )
+            scratch_tensors = (
+                torch.empty(
+                    scratch_shape,
+                    device=self._dataset.device,
+                    dtype=self._dataset.dtype,
+                ),
+                torch.empty(
+                    scratch_shape,
+                    device=self._dataset.device,
+                    dtype=self._dataset.dtype,
+                ),
+            )
             total_loss = torch.zeros(
                 (),
                 device=self._dataset.device,
@@ -1868,6 +1884,7 @@ class GeneReconModel(torch.nn.Module):
                 loss_i = evaluate_resident_no_grad_with_solved_e(
                     static,
                     e_solve,
+                    scratch_tensors=scratch_tensors,
                 )
                 total_loss = total_loss + loss_i.to(
                     device=total_loss.device,

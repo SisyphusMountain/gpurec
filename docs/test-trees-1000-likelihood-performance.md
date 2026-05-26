@@ -37,8 +37,11 @@ is `512` for this large-`S` shape.  The DTS forward kernels no longer specialize
 on wave-specific eq1 split counts or ge2 group/tile counts that are only used as
 launch sizes or pointer strides, removing many identical first-use Triton
 variants from the first likelihood pass.  The no-callback Pi path also avoids
-the per-wave progress shim calls used only by diagnostic tracing.  On the local
-32-core host, the cold
+the per-wave progress shim calls used only by diagnostic tracing.  Shared-theta
+loss-only streaming now reuses one max-sized Pi/Pibar scratch pair across the
+resident batches; this keeps the fixed4 timing band unchanged while avoiding the
+large CUDA allocator reserve previously caused by cycling those work tensors
+through `21` batches.  On the local 32-core host, the cold
 benchmark also pins native preprocessing and retained layout generation to `16`
 CPU threads; that is faster for this generated dataset than the default global
 Rayon pool.
@@ -69,17 +72,22 @@ Cold result:
 
 | Stage | Time |
 |---|---:|
-| model init / first resident batch | `0.9559082390042022s` |
-| first fixed4 likelihood pass plus lazy remaining batches | `1.3363667230005376s` |
-| total to first fixed4 likelihood | `2.29227496200474s` |
+| model init / first resident batch | `0.9497040830319747s` |
+| first fixed4 likelihood pass plus lazy remaining batches | `1.342593270004727s` |
+| total to first fixed4 likelihood | `2.2922973530367017s` |
+
+This current scratch-reuse sample is effectively tied with the previous best
+fixed4 total (`2.29227496200474s`) while reducing peak reserved CUDA memory in
+the same lazy `--prefetch-batches all` route from about `21.36 GiB` to
+`5.1640625 GiB`.
 
 Cold first-pass fidelity samples with the same construction path:
 
 | Pi/E/Neumann budget | total to first likelihood | loss bits | delta vs fixed128 |
 |---:|---:|---:|---:|
-| 4 | `2.29227496200474s` | `2156427.0` | `670.25` |
+| 4 | `2.2922973530367017s` | `2156427.0` | `670.25` |
 | 6 | `2.788982933969237s` | `2157095.0` | `2.25` |
-| 8 | `3.323484256048687s` | `2157097.25` | `0.0` |
+| 8 | `3.3188985750311986s` | `2157097.25` | `0.0` |
 
 Progressive fixed4-start sample on the same route, using one cold model and
 then evaluating `4,6,8` in sequence:
@@ -108,6 +116,16 @@ retained-layout generation after dataset preprocessing measured
 split had the same native chunked layout generation near `0.496s`.  The
 end-to-end win is partly hidden by overlapping layout work with CUDA setup, but
 direct fixed4/fixed6 cold samples improved to the rows above.
+
+Reusing the root-loss Pi/Pibar scratch tensors changed the memory behavior more
+than the timing.  Current fixed4 lazy samples measured `2.29978136200225s`,
+`2.3235359659884125s`, `2.3087819020147435s`, and
+`2.2922973530367017s`; all reserved about `5.16 GiB` instead of the previous
+`21.36 GiB` high-memory all-prefetch route.  In a one-sample prefetch-depth
+check after this change, `--prefetch-batches none` was still slower
+(`2.543537666031625s`), while depth `4` (`2.2950046080513857s`) and `all`
+(`2.2922973530367017s`) were essentially tied in memory and timing, with `all`
+keeping the best sample.
 
 Before removing the unused DTS compile-shape arguments from the eq1 and ge2
 kernel signatures, the retained-layout fixed4 route took about `2.55s` to the
@@ -185,14 +203,15 @@ env PYTHONDONTWRITEBYTECODE=1 GPUREC_MEMORY_POLICY_RESERVE_GIB=0 \
 
 | Pi/E/Neumann budget | loss-only time | loss bits | delta vs fixed128 |
 |---:|---:|---:|---:|
-| 4 | `1.2834076849976555s` | `2156427.0` | `670.25` |
+| 4 | `1.2797727399738505s` | `2156427.0` | `670.25` |
 | 6 | `1.816627103020437s` | `2157095.0` | `2.25` |
 | 8 | `2.3491738659795374s` | `2157097.25` | `0.0` |
 | 128 | `35.236629224033095s` | `2157097.25` | `0.0` |
 
-With `--materialize-batches all`, the clade-first resident build split was
-`0.9815053479978815s` for model init plus `0.06590698298532516s` for full
-materialization in the fixed4 steady-state run.  The `4/6/8` rows above are
+With `--materialize-batches all`, the latest scratch-reuse fixed4 check split
+the build into `0.9480655260267667s` for model init plus
+`0.07432144199265167s` for full materialization, then measured seven fixed4
+repetitions after one warmup.  The `6/8` rows above are earlier
 three-repetition medians after one warmup; the `128` row is a single validation
 sample.
 
@@ -275,12 +294,13 @@ Rejected follow-ups:
 - Increasing lazy prefetch workers from one to two made the fixed4 loss pass a
   few milliseconds faster in isolation, but the four-process cold total stayed
   around `3.178s`; three and four workers were slower.
-- Finite lazy prefetch depths are now mostly a memory tradeoff rather than a
-  speed win.  After the DTS compile-shape cleanup, `--prefetch-batches all`
-  still produced the best fixed4 cold samples (`2.307332646974828s` and
-  `2.308705120929517s`), but depth `4` was close (`2.317219710967038s`,
+- Finite lazy prefetch depths were a memory tradeoff before root-loss scratch
+  reuse.  After the DTS compile-shape cleanup, `--prefetch-batches all`
+  produced fixed4 cold samples of `2.307332646974828s` and
+  `2.308705120929517s`, but depth `4` was close (`2.317219710967038s`,
   `2.319942276983056s`, and `2.324342556006741s`) while reserving about
-  `14.34 GiB` instead of `21.36 GiB`.
+  `14.34 GiB` instead of `21.36 GiB`.  With scratch reuse, depth `4` and `all`
+  both reserve about `5.16 GiB`, and `all` keeps a slightly better sample.
 - Putting the small tail batch first made the cold path worse (`3.406573s` in
   one sample) and increased reserved memory to about `21.4 GiB`.  The allocator
   behaves better when the first resident Pi batch is full sized.
@@ -296,10 +316,11 @@ Rejected follow-ups:
 - Adaptive fixed-point checks were slower than fixed budgets here.  Accurate
   `max=8`, `check_interval=4` took about `3.903s`, and lower-overhead settings
   either hit the maximum or added check overhead.
-- The resident uniform kernel warmup and all-batch lazy prefetch trade memory
-  for cold latency.  The fastest `--prefetch-batches all` fixed4 samples reserve
-  about `21.36 GiB`; a depth-`4` prefetch route keeps the same math path near
-  `2.32s` while reserving about `14.34 GiB`.
+- The resident uniform kernel warmup and all-batch lazy prefetch still trade
+  construction overlap for cold latency, but root-loss scratch reuse removes
+  the old large reserve from the all-prefetch route.  Current depth `4` and
+  `all` samples both reserve about `5.16 GiB`, while disabling prefetch still
+  slows the first fixed4 likelihood.
 - Deferring the resident warmup wait until after prefetch scheduling did not
   improve the median.  Caching E-derived Pi constants did not move the measured
   path, and `torch.inference_mode()` is not valid here because sparse uniform
@@ -316,8 +337,8 @@ Rejected follow-ups:
 - Sweeping the multi-child DTS parent-reduction `tile_splits` setting across
   `32`, `64`, `96`, `128`, and `256` did not produce a reliable improvement.
   Steady fixed4 medians ranged from `1.2849044169997796s` to
-  `1.2880120140034705s`, within noise of the current `1.2834076849976555s`
-  route, so the code keeps the existing `64` split tile.
+  `1.2880120140034705s`, within noise of the then-current
+  `1.2834076849976555s` route, so the code keeps the existing `64` split tile.
 - Raising the DTS species block cap from `512` to `1024` was not a stable win.
   One fixed4 steady run reached `1.2805625679902732s`, but a repeat regressed
   to `1.2851436759810895s`, and the cold first likelihood sample was slower at
@@ -491,6 +512,11 @@ Differences from HOGENOM:
   dataset splits into `21` batches, so reusing a single global/specieswise
   resident E solve across no-grad batches removes repeated E work and is worth
   about two percent on likelihood-only timing.
+- The new root-loss Pi/Pibar scratch reuse is also more visible on
+  `test_trees_1000` because the generated route streams `21` resident batches.
+  It mostly fixes allocator reserve rather than raw math time here; HOGENOM's
+  accepted route had fewer resident batches and was more gradient/optimizer
+  dominated, so this is less route-changing there.
 - HOGENOM had a faster high-memory no-family-cap scheduling option.  On
   `test_trees_1000`, no-family-cap does not reduce the batch or wave envelope
   under `clade_first_fit` at the current clade budget, so the finite

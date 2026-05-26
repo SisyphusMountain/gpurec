@@ -30,6 +30,7 @@ def evaluate_resident_no_grad(
     theta: torch.Tensor,
     *,
     per_family: bool = False,
+    scratch_tensors: tuple[torch.Tensor, torch.Tensor] | None = None,
 ) -> torch.Tensor:
     """Return resident no-grad NLL for the active static state."""
     require_default_objective("GeneReconModel")
@@ -38,6 +39,7 @@ def evaluate_resident_no_grad(
         static,
         theta,
         pi_request=pi_root_row_loss_request(),
+        scratch_tensors=scratch_tensors,
     )
     _record_forward_solver_stats(static, solve.e_out, solve.pi_out)
 
@@ -57,6 +59,7 @@ def evaluate_resident_no_grad_with_solved_e(
     e_solve: ResidentESolveResult,
     *,
     per_family: bool = False,
+    scratch_tensors: tuple[torch.Tensor, torch.Tensor] | None = None,
 ) -> torch.Tensor:
     """Return resident no-grad NLL using a shared E solution."""
     require_default_objective("GeneReconModel")
@@ -65,6 +68,7 @@ def evaluate_resident_no_grad_with_solved_e(
         static,
         e_solve,
         pi_request=pi_root_row_loss_request(),
+        scratch_tensors=scratch_tensors,
     )
     _record_forward_solver_stats(static, solve.e_out, solve.pi_out)
 

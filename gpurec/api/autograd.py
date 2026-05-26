@@ -220,6 +220,7 @@ def solve_resident_pi_given_e(
     e_solve: ResidentESolveResult,
     *,
     pi_request: _PiForwardRequest,
+    scratch_tensors: tuple[torch.Tensor, torch.Tensor] | None = None,
 ) -> ResidentSolveResult:
     """Solve resident Pi tensors from a precomputed E solution."""
     e_out = e_solve.e_out
@@ -241,6 +242,7 @@ def solve_resident_pi_given_e(
             static.pi_max_diff_tol if static.adaptive_iters else -1.0
         ),
         convergence_check_interval=static.convergence_check_interval,
+        scratch_tensors=scratch_tensors,
     )
     return ResidentSolveResult(
         theta=e_solve.theta,
@@ -259,10 +261,16 @@ def solve_resident_e_pi(
     *,
     pi_request: _PiForwardRequest,
     warm_start_E: torch.Tensor | None = None,
+    scratch_tensors: tuple[torch.Tensor, torch.Tensor] | None = None,
 ) -> ResidentSolveResult:
     """Solve resident E and Pi tensors without owning caller side effects."""
     e_solve = solve_resident_e(static, theta, warm_start_E=warm_start_E)
-    return solve_resident_pi_given_e(static, e_solve, pi_request=pi_request)
+    return solve_resident_pi_given_e(
+        static,
+        e_solve,
+        pi_request=pi_request,
+        scratch_tensors=scratch_tensors,
+    )
 
 
 def evaluate_resident_gradient_forward(

@@ -182,6 +182,67 @@ def test_evaluate_static_state_no_grad_delegates_to_resident_evaluator(monkeypat
     assert calls[0]["per_family"] is True
 
 
+def test_shared_no_grad_full_loss_reuses_pi_scratch(monkeypatch):
+    model = api_model.GeneReconModel.__new__(api_model.GeneReconModel)
+    torch.nn.Module.__init__(model)
+    theta = torch.tensor([1.0, 2.0, 3.0], dtype=torch.float32)
+    statics = [object(), object()]
+    model._batched_resident = True
+    model._mode = "specieswise"
+    model._batch_specs = [object(), object()]
+    model.batch_metadata = [
+        SimpleNamespace(clade_count=3),
+        SimpleNamespace(clade_count=5),
+    ]
+    model._dataset = SimpleNamespace(
+        device=torch.device("cpu"),
+        dtype=torch.float32,
+        S=7,
+    )
+    model._ensure_batch_static = lambda batch_idx: statics[batch_idx]
+    e_solve = object()
+    calls: list[dict[str, object]] = []
+
+    def fake_solve_resident_e(static_arg, theta_arg):
+        assert static_arg is statics[0]
+        assert theta_arg is theta
+        return e_solve
+
+    def fake_evaluate_resident_no_grad_with_solved_e(
+        static_arg,
+        e_solve_arg,
+        *,
+        scratch_tensors=None,
+    ):
+        calls.append(
+            {
+                "static": static_arg,
+                "e_solve": e_solve_arg,
+                "scratch_tensors": scratch_tensors,
+            }
+        )
+        return torch.tensor(float(len(calls)), dtype=torch.float32)
+
+    monkeypatch.setattr(api_model, "solve_resident_e", fake_solve_resident_e)
+    monkeypatch.setattr(
+        api_model,
+        "evaluate_resident_no_grad_with_solved_e",
+        fake_evaluate_resident_no_grad_with_solved_e,
+    )
+
+    loss, grad = model._stream_full_batches(theta, need_grad=False)
+
+    assert grad is None
+    torch.testing.assert_close(loss, torch.tensor(3.0))
+    assert [call["static"] for call in calls] == statics
+    assert all(call["e_solve"] is e_solve for call in calls)
+    first_scratch = calls[0]["scratch_tensors"]
+    assert isinstance(first_scratch, tuple)
+    assert tuple(first_scratch[0].shape) == (5, 7)
+    assert tuple(first_scratch[1].shape) == (5, 7)
+    assert calls[1]["scratch_tensors"] is first_scratch
+
+
 def test_evaluate_static_state_grad_uses_resident_gradient_boundary(monkeypatch):
     theta = torch.tensor([[1.0, 2.0, 3.0], [1.5, 2.5, 3.5]], dtype=torch.float64)
     static = SimpleNamespace(
