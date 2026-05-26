@@ -1888,9 +1888,10 @@ def build_parser() -> argparse.ArgumentParser:
         "config-template",
         help="Print or write a flat JSON RunConfig template.",
         description=(
-            "Print or write a flat JSON RunConfig template for installed "
-            "production workflows. The mode keeps optimizer=auto so genewise "
-            "uses hessian-sgd and specieswise uses adagrad-restarts."
+            "Print or write a flat JSON RunConfig template. Genewise and "
+            "specieswise templates are production-route starters; global "
+            "remains a mode-default Adam diagnostic outside "
+            "--require-production-default-route."
         ),
     )
     template_parser.add_argument(
@@ -1898,7 +1899,11 @@ def build_parser() -> argparse.ArgumentParser:
         type=_mode_name,
         choices=("genewise", "specieswise", "global"),
         default="genewise",
-        help="Template parameter-sharing mode. Default: genewise.",
+        help=(
+            "Template parameter-sharing mode. Genewise/specieswise are "
+            "production-route starters; global is a diagnostic Adam template. "
+            "Default: genewise."
+        ),
     )
     template_parser.add_argument(
         "--species-tree",

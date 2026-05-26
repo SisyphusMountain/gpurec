@@ -646,6 +646,77 @@ def test_cli_config_template_output_validates_with_production_route_gates(
     assert "production_default_route_mismatches=none" in captured.out
 
 
+def test_cli_config_template_global_mode_is_mode_default_but_not_production_route(
+    tmp_path: Path,
+    capsys,
+):
+    write_tiny_alerax_inputs(tmp_path)
+    output = tmp_path / "global.json"
+
+    main(
+        [
+            "config-template",
+            "--mode",
+            "global",
+            "--species-tree",
+            str(tmp_path / "sp.nwk"),
+            "--families-file",
+            str(tmp_path / "families.txt"),
+            "--out-dir",
+            str(tmp_path / "global-out"),
+            "--output",
+            str(output),
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert captured.err == ""
+    assert (
+        gpurec_cli._optional_text("config_template", output.resolve())
+        in captured.out
+    )
+    data = json.loads(output.read_text(encoding="utf-8"))
+    assert data["mode"] == "global"
+    assert data["optimizer"] == "auto"
+
+    main(
+        [
+            "validate-config",
+            "--config",
+            str(output),
+            "--require-mode-default-optimizer",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert captured.err == ""
+    assert "valid_config=true" in captured.out
+    assert "mode=global" in captured.out
+    assert "optimizer=adam" in captured.out
+    assert "uses_mode_default_optimizer=true" in captured.out
+    assert "uses_production_default_route=false" in captured.out
+    assert "production_default_route_mismatches=mode" in captured.out
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(
+            [
+                "validate-config",
+                "--config",
+                str(output),
+                "--require-production-default-route",
+            ]
+        )
+
+    captured = capsys.readouterr()
+    assert exc_info.value.code == 2
+    assert (
+        "config production default route fields differ for mode 'global': mode"
+        in captured.err
+    )
+    assert "valid_config=true" not in captured.out
+    assert "Traceback" not in captured.err
+
+
 def test_cli_config_template_writes_output_and_refuses_overwrite(
     tmp_path: Path,
     capsys,

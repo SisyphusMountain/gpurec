@@ -7713,6 +7713,12 @@ check, but \texttt{uses\_production\_default\_route=false} now reports a
 scoped to the retained genewise \texttt{hessian-sgd} and specieswise
 \texttt{adagrad-restarts} profiles.
 
+\texttt{gpurec config-template --mode global} remains available for shared-rate
+diagnostics, but CLI help, RunConfig docs, input-preparation docs, and direct
+CLI coverage now state and prove that the generated global template only
+satisfies \texttt{--require-mode-default-optimizer}.  The strict
+production-route gate rejects it with a \texttt{mode} mismatch.
+
 \section{Next Audit Targets}
 
 \begin{enumerate}[leftmargin=*]

@@ -2405,6 +2405,11 @@ not edit files.  New or still-open findings from that refresh are:
   but `uses_production_default_route=false` now reports a `mode` mismatch so
   `--require-production-default-route` stays scoped to the retained genewise
   `hessian-sgd` and specieswise `adagrad-restarts` profiles.
+- `gpurec config-template --mode global` remains available for shared-rate
+  diagnostics, but CLI help, RunConfig docs, input-preparation docs, and direct
+  CLI coverage now state and prove that the generated global template only
+  satisfies `--require-mode-default-optimizer`; the strict production-route gate
+  rejects it with a `mode` mismatch.
 
 ## Recommended Next Order
 

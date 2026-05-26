@@ -20,6 +20,9 @@ flat JSON configs and explicit CLI flags.
 with `optimizer=auto`, which resolves to `hessian-sgd`. The specieswise
 template command, `gpurec config-template --mode specieswise`, writes the
 specieswise starter, where `optimizer=auto` resolves to `adagrad-restarts`.
+`gpurec config-template --mode global` remains available for shared-rate
+diagnostic configs, but it resolves to the mode-default `adam` optimizer and
+will not pass `--require-production-default-route`.
 The template command includes the fields normally edited for that mode; this
 reference lists the complete `RunConfig` surface.
 

@@ -96,6 +96,10 @@ gpurec config-template --mode genewise --output run.json
 gpurec config-template --mode specieswise --output specieswise-run.json
 ```
 
+`gpurec config-template --mode global` is available for shared-rate
+diagnostic configs, but it is outside the strict HOGENOM/`test_trees_1000`
+production-route gate and will not pass `--require-production-default-route`.
+
 ## Preflight Validation
 
 Run the lightweight config and file-reference validation first:
