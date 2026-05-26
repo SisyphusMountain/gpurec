@@ -43,7 +43,9 @@ unpacked source archive, runs source-archive
 `validate-config --require-mode-default-optimizer
 --require-production-default-route --check-preprocess` on
 `examples/minimal-run-config.json` and
-`examples/specieswise-adagrad-restarts-config.json`, and smokes both
+`examples/specieswise-adagrad-restarts-config.json`, then confirms
+`--require-cuda-backward-ready` fails both source-archive examples with
+`cuda_backward_ready_reason=requires_s_gt_256` and no stdout, and smokes both
 `gpurec --help` and `python -m gpurec.cli --help`.  It also smokes installed
 `gpurec config-template --help`,
 `gpurec config-template --mode specieswise`,
@@ -83,7 +85,9 @@ production-route gates, keeps
 examples out of wheels while requiring them in the source
 archive, verifies the minimal example config points to source-archive files,
 checks source-archive preprocessing reports the tiny fixtures as
-`cuda_backward_ready=false`, and checks installed `gpurec sample --help`,
+`cuda_backward_ready=false`, verifies the source-archive examples hard-fail
+`--require-cuda-backward-ready` with empty stdout, and checks installed
+`gpurec sample --help`,
 `gpurec run --help`, and `gpurec backtrack-check` for external backtracking
 binary guidance, direct sampling mode-default optimizer and production-route
 gating, and the installed missing-binary diagnostic.

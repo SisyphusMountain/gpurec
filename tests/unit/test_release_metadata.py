@@ -533,6 +533,19 @@ def test_cpu_ci_builds_and_smokes_release_artifacts():
         "hessian_sgd_validation_fixed_iters_pi=configured",
         "hessian_sgd_validation_neumann_terms=configured",
         "cuda_backward_ready=false",
+        "preprocess_checked=true",
+        (
+            "python -m gpurec.cli validate-config --config "
+            "examples/minimal-run-config.json --require-mode-default-optimizer "
+            "--require-production-default-route --check-preprocess "
+            "--require-cuda-backward-ready"
+        ),
+        "genewise-cuda-ready.out",
+        "genewise-cuda-ready.err",
+        "genewise_example_cuda_status=$?",
+        'test "$genewise_example_cuda_status" -eq 2',
+        "cuda_backward_ready=false cuda_backward_ready_reason=requires_s_gt_256",
+        "test ! -s genewise-cuda-ready.out",
         (
             "python -m gpurec.cli validate-config --config "
             "examples/specieswise-adagrad-restarts-config.json "
@@ -546,6 +559,17 @@ def test_cpu_ci_builds_and_smokes_release_artifacts():
         "optimizer_step_cap_reason=adagrad_restart_schedule",
         "cuda_backward_ready=false",
         "preprocess_checked=true",
+        (
+            "python -m gpurec.cli validate-config --config "
+            "examples/specieswise-adagrad-restarts-config.json "
+            "--require-mode-default-optimizer --require-production-default-route "
+            "--check-preprocess --require-cuda-backward-ready"
+        ),
+        "specieswise-cuda-ready.out",
+        "specieswise-cuda-ready.err",
+        "specieswise_example_cuda_status=$?",
+        'test "$specieswise_example_cuda_status" -eq 2',
+        "test ! -s specieswise-cuda-ready.out",
     ):
         assert required in rust_smoke
 
@@ -1196,7 +1220,9 @@ def test_release_readiness_documents_source_archive_preprocess_smoke():
         "examples/minimal-run-config.json",
         "examples/specieswise-adagrad-restarts-config.json",
         "cuda_backward_ready=false",
+        "cuda_backward_ready_reason=requires_s_gt_256",
         "--require-cuda-backward-ready",
+        "source-archive examples hard-fail\n`--require-cuda-backward-ready` with empty stdout",
     ):
         assert expected in guide
 

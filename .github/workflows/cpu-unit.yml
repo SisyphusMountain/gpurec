@@ -264,6 +264,13 @@ jobs:
           grep -q "hessian_sgd_validation_neumann_terms=configured" genewise-validate.txt
           grep -q "cuda_backward_ready=false" genewise-validate.txt
           grep -q "preprocess_checked=true" genewise-validate.txt
+          set +e
+          python -m gpurec.cli validate-config --config examples/minimal-run-config.json --require-mode-default-optimizer --require-production-default-route --check-preprocess --require-cuda-backward-ready > genewise-cuda-ready.out 2> genewise-cuda-ready.err
+          genewise_example_cuda_status=$?
+          set -e
+          test "$genewise_example_cuda_status" -eq 2
+          grep -q "cuda_backward_ready=false cuda_backward_ready_reason=requires_s_gt_256" genewise-cuda-ready.err
+          test ! -s genewise-cuda-ready.out
           python -m gpurec.cli validate-config --config examples/specieswise-adagrad-restarts-config.json --require-mode-default-optimizer --require-production-default-route --check-preprocess | tee specieswise-validate.txt
           grep -q "optimizer=adagrad-restarts" specieswise-validate.txt
           grep -q "uses_mode_default_optimizer=true" specieswise-validate.txt
@@ -275,6 +282,13 @@ jobs:
           grep -q "optimizer_step_cap_reason=adagrad_restart_schedule" specieswise-validate.txt
           grep -q "cuda_backward_ready=false" specieswise-validate.txt
           grep -q "preprocess_checked=true" specieswise-validate.txt
+          set +e
+          python -m gpurec.cli validate-config --config examples/specieswise-adagrad-restarts-config.json --require-mode-default-optimizer --require-production-default-route --check-preprocess --require-cuda-backward-ready > specieswise-cuda-ready.out 2> specieswise-cuda-ready.err
+          specieswise_example_cuda_status=$?
+          set -e
+          test "$specieswise_example_cuda_status" -eq 2
+          grep -q "cuda_backward_ready=false cuda_backward_ready_reason=requires_s_gt_256" specieswise-cuda-ready.err
+          test ! -s specieswise-cuda-ready.out
 
       - name: Install built wheel and smoke CLI
         run: |

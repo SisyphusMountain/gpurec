@@ -2398,7 +2398,10 @@ not edit files.  New or still-open findings from that refresh are:
   `validate-config --require-mode-default-optimizer
   --require-production-default-route --check-preprocess`, so unpacked source
   artifacts must prove the shipped genewise and specieswise route gates while
-  still exercising the retained CPU preprocessing path.
+  still exercising the retained CPU preprocessing path. The same source-archive
+  examples now also prove `--require-cuda-backward-ready` fails with status 2,
+  `cuda_backward_ready_reason=requires_s_gt_256`, and empty stdout on the tiny
+  fixture.
 - `mode=global` no longer passes the strict production-route audit merely
   because its mode-default `adam` profile has no optimizer-specific override
   fields. Global configs still pass the narrower mode-default optimizer check,
