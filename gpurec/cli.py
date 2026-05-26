@@ -1560,6 +1560,7 @@ def build_parser() -> argparse.ArgumentParser:
         description="Sample RecPhyloXML scenarios from a gpurec optimization checkpoint.",
     )
     _add_sampling_args(sample_parser, checkpoint_required=True)
+    _add_require_mode_default_optimizer_arg(sample_parser)
     sample_parser.set_defaults(_command_parser=sample_parser)
 
     run_parser = sub.add_parser(
@@ -1812,6 +1813,19 @@ def main(argv: list[str] | None = None) -> None:
             _validate_sampling_checkpoint_path(sampling_config.checkpoint)
         except _EXPECTED_WORKFLOW_ERRORS as exc:
             command_parser.error(_sampling_error_message(exc))
+        if args.require_mode_default_optimizer:
+            try:
+                from gpurec.workflow.checkpoint import load_checkpoint
+
+                payload = load_checkpoint(sampling_config.checkpoint)
+            except _EXPECTED_WORKFLOW_ERRORS as exc:
+                _exit_runtime_error(command_parser, _sampling_error_message(exc))
+            route, _route_source = _checkpoint_route_metadata(payload)
+            _exit_unless_mode_default_optimizer(
+                command_parser,
+                route,
+                subject="checkpoint",
+            )
         try:
             result = sample(sampling_config)
         except _EXPECTED_WORKFLOW_ERRORS as exc:

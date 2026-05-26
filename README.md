@@ -513,6 +513,9 @@ sample output while keeping multi-tree compatibility inputs deterministic.
 Use `--family-start` and `--sample-max-families` to sample a family window,
 `--seed` for reproducible stochastic backtracking, and `--max-events` to cap
 pathological samples.
+Add `--require-mode-default-optimizer` to `gpurec sample` when standalone
+sampling automation should fail unless the checkpoint route used the production
+default optimizer for its mode.
 Successful sampling reruns replace prior gpurec-generated reconciliation
 artifacts in the target output directory, including generated files outside a
 requested window; use a separate `--sample-out-dir` to keep multiple windows.
@@ -536,8 +539,9 @@ fails.  Failed optimization still prints the optimization status line before
 `gpurec run` exits. Add `--require-converged` when `gpurec run` should print
 the optimization status and exit before sampling unless the run reached
 `status=converged`; add `--require-final-check-ok` when it should also skip
-sampling unless `final_check_status=ok`. When sampling succeeds, the final
-status line also reports
+sampling unless `final_check_status=ok`; add `--require-mode-default-optimizer`
+when it should reject non-default optimizer routes before optimization or
+sampling. When sampling succeeds, the final status line also reports
 `sampled_families`, `samples`, `xml`, and `sample_out_dir`. Use
 `gpurec sample --checkpoint ...` to sample an existing run.
 

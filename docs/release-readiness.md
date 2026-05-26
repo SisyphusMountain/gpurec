@@ -64,7 +64,8 @@ archive, verifies the minimal example config points to source-archive files,
 checks source-archive preprocessing reports the tiny fixtures as
 `cuda_backward_ready=false`, and checks installed `gpurec sample --help`,
 `gpurec run --help`, and `gpurec backtrack-check` for external backtracking
-binary guidance and the installed missing-binary diagnostic.
+binary guidance, direct sampling default-optimizer gating, and the installed
+missing-binary diagnostic.
 
 Install release tooling from the dedicated extra:
 

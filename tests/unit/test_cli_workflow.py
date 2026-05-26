@@ -129,6 +129,7 @@ def test_sampling_config_cli_surface_matches_dataclass_fields():
 
     assert set(sampling_dest_to_field.values()) == sampling_config_fields
     assert set(sampling_dest_to_field) <= _parser_action_dests("sample")
+    assert "require_mode_default_optimizer" in _parser_action_dests("sample")
     assert set(sampling_dest_to_field) - {"checkpoint"} <= _parser_action_dests("run")
 
 
@@ -2250,6 +2251,140 @@ def test_cli_sample_forwards_sampling_options(
     assert "Traceback" not in output.err
 
 
+def test_cli_sample_require_mode_default_optimizer_accepts_default_route_checkpoint(
+    tmp_path: Path,
+    capsys,
+    monkeypatch,
+):
+    class FakeModel:
+        theta = torch.nn.Parameter(torch.zeros(1, 3))
+        family_names = ["fam0"]
+        species_names = ["sp0", "sp1"]
+
+    config = RunConfig(
+        species_tree=tmp_path / "sp.nwk",
+        families_file=tmp_path / "families.txt",
+        out_dir=tmp_path / "out",
+        mode="genewise",
+        device="cpu",
+    )
+    checkpoint = tmp_path / "best.pt"
+    save_checkpoint(
+        checkpoint,
+        config=config,
+        model=FakeModel(),
+        optimizer=None,
+        optimizer_phase="hessian-sgd",
+        step=3,
+        next_step=4,
+        status={
+            "status": "converged",
+            "reason": "loss_change",
+            "best_step": 3,
+            "best_nll_bits": 10.0,
+        },
+        row={
+            "optimizer/phase": "hessian-sgd",
+            "likelihood/data_nll_bits": 10.0,
+            "grad/inf": 0.1,
+        },
+    )
+
+    captured_config = {}
+
+    def capture_sample(sample_config):
+        captured_config["config"] = sample_config
+        return SimpleNamespace(
+            families_sampled=1,
+            samples_per_family=sample_config.samples,
+            xml_files=2,
+            out_dir=sample_config.out_dir,
+        )
+
+    monkeypatch.setattr("gpurec.cli.sample", capture_sample)
+
+    main(
+        [
+            "sample",
+            "--checkpoint",
+            str(checkpoint),
+            "--samples",
+            "2",
+            "--require-mode-default-optimizer",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert captured.err == ""
+    assert captured_config["config"].checkpoint == checkpoint.resolve()
+    assert "sampled_families=1 samples=2 xml=2 out_dir=null" in captured.out
+
+
+def test_cli_sample_require_mode_default_optimizer_rejects_override_before_sampling(
+    tmp_path: Path,
+    capsys,
+    monkeypatch,
+):
+    class FakeModel:
+        theta = torch.nn.Parameter(torch.zeros(1, 3))
+        family_names = ["fam0"]
+        species_names = ["sp0", "sp1"]
+
+    config = RunConfig(
+        species_tree=tmp_path / "sp.nwk",
+        families_file=tmp_path / "families.txt",
+        out_dir=tmp_path / "out",
+        mode="genewise",
+        optimizer="adam",
+        device="cpu",
+    )
+    checkpoint = tmp_path / "best.pt"
+    save_checkpoint(
+        checkpoint,
+        config=config,
+        model=FakeModel(),
+        optimizer=None,
+        optimizer_phase="adam",
+        step=3,
+        next_step=4,
+        status={
+            "status": "running",
+            "reason": "checkpoint_interval",
+            "best_step": 3,
+            "best_nll_bits": 10.0,
+        },
+        row={
+            "optimizer/phase": "adam",
+            "likelihood/data_nll_bits": 10.0,
+            "grad/inf": 0.1,
+        },
+    )
+
+    def unexpected_sample(sample_config):
+        raise AssertionError("sample should not be called")
+
+    monkeypatch.setattr("gpurec.cli.sample", unexpected_sample)
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(
+            [
+                "sample",
+                "--checkpoint",
+                str(checkpoint),
+                "--require-mode-default-optimizer",
+            ]
+        )
+
+    captured = capsys.readouterr()
+    assert exc_info.value.code == 1
+    assert captured.out == ""
+    assert "checkpoint optimizer is 'adam'" in captured.err
+    assert "expected mode default 'hessian-sgd' for mode 'genewise'" in captured.err
+    assert "sampled_families" not in captured.out
+    assert "usage:" not in captured.err
+    assert "Traceback" not in captured.err
+
+
 def test_cli_optimize_reports_workflow_errors_without_traceback(
     tmp_path: Path,
     capsys,
@@ -3198,3 +3333,4 @@ def test_cli_sample_help_describes_checkpoint_and_backtracking(capsys):
     assert "--backtrack-binary" in captured.out
     assert "GPUREC_BACKTRACK_BIN" in captured.out
     assert "Samples per selected family" in captured.out
+    assert "--require-mode-default-optimizer" in captured.out

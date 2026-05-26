@@ -186,6 +186,9 @@ status is anything other than `converged`. With `--require-final-check-ok`, it
 also exits before sampling unless `final_check_status=ok`. With
 `--require-mode-default-optimizer`, it exits before optimization or sampling
 unless the resolved optimizer is the production default for the selected mode.
+The same `--require-mode-default-optimizer` flag is available on standalone
+`gpurec sample`; it inspects the checkpoint route and exits before sampling if
+the checkpoint cannot prove it used the production default optimizer.
 
 | Path | Contents |
 |---|---|
