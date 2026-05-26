@@ -2257,6 +2257,16 @@ def test_runtime_e_fixed_point_calls_pass_explicit_e_shape():
 def test_dts_shape_precedence_is_documented_before_runtime_change():
     root = Path(__file__).resolve().parents[2]
     readme = " ".join((root / "README.md").read_text(encoding="utf-8").split())
+    audit = " ".join(
+        (
+            root / "docs" / "repo-wide-audit-2026-05-21.md"
+        ).read_text(encoding="utf-8").split()
+    )
+    professionalization_progress = " ".join(
+        (
+            root / "docs" / "professionalization-audit-progress.tex"
+        ).read_text(encoding="utf-8").split()
+    )
     forward_module = ast.parse(
         (root / "gpurec" / "core" / "forward.py").read_text(encoding="utf-8")
     )
@@ -2320,6 +2330,25 @@ def test_dts_shape_precedence_is_documented_before_runtime_change():
         "retained backward helper with `family_idx` treats a one-dimensional tensor as family-indexed",
     ):
         assert token in readme
+
+    for token in (
+        "DTS direct-kernel one-dimensional parameter ambiguity finding is now closed",
+        "shared `_dts_layout_contract.py` classifier",
+        "`tests/unit/test_dts_layout_contract.py`",
+        "Direct callers still must use `[G, 1]` or `[G, S]` when `G == S`",
+    ):
+        assert token in audit
+
+    for token in (
+        "DTS direct-kernel one-dimensional parameter ambiguity finding is now closed",
+        "\\texttt{\\_dts\\_layout\\_contract.py}",
+        "\\texttt{tests/unit/test\\_dts\\_layout\\_contract.py}",
+    ):
+        assert token in professionalization_progress
+    assert (
+        "highest-risk unresolved native/kernel surfaces are DTS direct-kernel"
+        not in audit
+    )
 
     for token in (
         "Direct callers should pass [G, 1] or [G, S]",

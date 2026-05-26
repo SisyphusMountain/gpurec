@@ -1891,10 +1891,12 @@ not edit files.  New or still-open findings from that refresh are:
   read-only pass.  The historical production-auto native CUDA prototype routing
   finding is now closed by deleting the modules and guarding their absence.  The
   former direct pybind scheduler/stat and legacy `preprocess` surfaces are now
-  closed by the Rust/PyO3 export-manifest guard.  The highest-risk unresolved
-  native/kernel surfaces are DTS direct-kernel one-dimensional parameter
-  ambiguity, thin direct wrapper characterization for retained backward
-  kernels, and broad env-driven launch tuning spread across kernel modules.
+  closed by the Rust/PyO3 export-manifest guard.  The remaining high-risk
+  native/kernel findings from that pass have since been reduced by dedicated
+  guards: DTS direct-kernel one-dimensional parameter ambiguity is governed by
+  the shared DTS layout contract, retained backward direct wrappers have
+  pre-launch metadata validation tests, and kernel modules are kept free of
+  runtime environment tuning knobs.
 - Fresh workflow/CLI/scripts/profiling subagent audit findings were recorded
   from a read-only pass.  The largest remaining script surface is the legacy
   HOGENOM optimizer family; other unresolved surfaces are duplicated validation
@@ -1902,6 +1904,11 @@ not edit files.  New or still-open findings from that refresh are:
   underspecified profiling ownership boundary, source-checkout-only configs
   that can look like installed workflows, and historical branchscale/KKT report
   scripts that need migration or archival.
+- The DTS direct-kernel one-dimensional parameter ambiguity finding is now
+  closed for retained production code by the shared `_dts_layout_contract.py`
+  classifier and `tests/unit/test_dts_layout_contract.py`.  Direct callers
+  still must use `[G, 1]` or `[G, S]` when `G == S`; the contract documents and
+  tests the current forward/backward precedence before any behavior change.
 - The retained backward direct-wrapper characterization slice is now guarded
   by CPU-safe tests for pre-launch metadata validation in the uniform backward
   wrapper, DTS Pibar staging wrapper, and DTS-staged Pibar VJP wrapper.  These

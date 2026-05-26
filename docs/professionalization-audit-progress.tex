@@ -7247,6 +7247,14 @@ unclear profiling ownership, source-checkout-only configs that can be mistaken
 for installed workflows, and historical branchscale/KKT scripts that need
 migration or archival.
 
+The DTS direct-kernel one-dimensional parameter ambiguity finding is now closed
+for retained production code by the shared
+\texttt{\_dts\_layout\_contract.py} classifier and
+\texttt{tests/unit/test\_dts\_layout\_contract.py}.  Direct callers still must
+use \texttt{[G, 1]} or \texttt{[G, S]} when \texttt{G == S}; the contract
+documents and tests the current forward/backward precedence before any behavior
+change.
+
 The retained backward direct-wrapper characterization slice is now guarded by
 CPU-safe tests for pre-launch metadata validation in the uniform backward
 wrapper, DTS Pibar staging wrapper, and DTS-staged Pibar VJP wrapper.  These
