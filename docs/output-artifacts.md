@@ -43,11 +43,12 @@ scheduled Adagrad updates; the run stops when this schedule is complete even if
 distinguish a normal configured step limit from a specieswise restart schedule
 cap.
 
-`summary.json` repeats the final objective as `final_nll_bits` and
-`final_log_likelihood_bits`, and the best accepted objective as `best_nll_bits`
-and `best_log_likelihood_bits`.  If the final likelihood/gradient validation
-fails, `final_log_likelihood_bits` is `null`; inspect `status`, `reason`, and
-the final `history.jsonl` row before using the rates.
+`summary.json` repeats the completed optimizer step as `steps_completed`, the
+final objective as `final_nll_bits` and `final_log_likelihood_bits`, and the
+best accepted objective as `best_nll_bits` and `best_log_likelihood_bits`.  If
+the final likelihood/gradient validation fails, `final_log_likelihood_bits` is
+`null`; inspect `status`, `reason`, and the final `history.jsonl` row before
+using the rates.
 The `final_check_iters` field records the effective solver iteration budget
 used for the final high-fidelity likelihood/gradient validation; for
 specieswise `adagrad-restarts`, this is the resolved

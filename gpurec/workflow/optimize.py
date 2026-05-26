@@ -3864,6 +3864,7 @@ class OptimizationRunner:
                 "families": model.n_families,
                 "species": int(model.n_species),
                 "batches": len(model.batch_metadata),
+                "steps_completed": int(final_row["step"]),
                 "final_nll_bits": final_nll_bits,
                 "final_log_likelihood_bits": final_log_likelihood_bits,
                 "best_log_likelihood_bits": best_log_likelihood_bits,

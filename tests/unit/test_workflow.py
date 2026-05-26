@@ -5603,6 +5603,8 @@ def test_optimization_runner_adagrad_restarts_accepts_split_solver_budgets(
     assert summary["configured_steps"] == 10
     assert summary["optimizer_step_cap"] == 4
     assert summary["optimizer_step_cap_reason"] == "adagrad_restart_schedule"
+    assert summary["steps_completed"] == result.steps_completed
+    assert summary["steps_completed"] == 4
     assert summary["adagrad_restart_final_check_iters"] == 32
     assert summary["final_check_iters"] == 32
     assert summary["fixed_iters_pi"] == 16
@@ -7750,6 +7752,7 @@ def test_optimization_runner_marks_nonfinite_final_evaluation_failed(tmp_path: P
     assert summary["status"] == "failed"
     assert summary["reason"] == "nonfinite_objective_or_gradient"
     assert summary["elapsed_s"] >= 0.0
+    assert summary["steps_completed"] == result.steps_completed
     assert summary["final_nll_bits"] == pytest.approx(result.final_nll_bits)
     assert summary["final_log_likelihood_bits"] is None
     assert math.isinf(result.final_grad_inf)
@@ -7932,6 +7935,8 @@ def test_optimization_runner_run_writes_outputs_with_fake_model(tmp_path: Path):
     summary = json.loads((config.out_dir / "summary.json").read_text(encoding="utf-8"))
     assert summary["status"] == "not_converged"
     assert summary["elapsed_s"] >= 0.0
+    assert summary["steps_completed"] == result.steps_completed
+    assert summary["steps_completed"] == 1
     assert summary["families"] == 2
     assert summary["species"] == 3
     assert summary["batches"] == 1
