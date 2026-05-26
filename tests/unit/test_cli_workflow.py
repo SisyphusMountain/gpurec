@@ -2097,8 +2097,8 @@ def test_cli_checkpoint_info_reports_route_status_and_last_row(
             "optimizer/final_check_loss_abs_delta_bits": 0.125,
             "optimizer/final_check_grad_max_abs_delta": 0.5,
             "optimizer/final_check_grad_rel_inf_delta": 0.25,
-            "solver/e_adjoint_failed_batches": 1.0,
-            "solver/e_adjoint_success_batches": 0.0,
+            "solver/e_adjoint_failed_batches": 1,
+            "solver/e_adjoint_success_batches": 0,
             "solver/e_adjoint_rel_res_max": 0.125,
         },
     )
@@ -2182,8 +2182,8 @@ def test_cli_checkpoint_info_reports_route_status_and_last_row(
         "last_final_check_loss_abs_delta_bits=0.125000",
         "last_final_check_grad_max_abs_delta=0.500000",
         "last_final_check_grad_rel_inf_delta=0.250000",
-        "last_solver_e_adjoint_failed_batches=1.000000",
-        "last_solver_e_adjoint_success_batches=0.000000",
+        "last_solver_e_adjoint_failed_batches=1",
+        "last_solver_e_adjoint_success_batches=0",
         "last_solver_e_adjoint_rel_res_max=0.125000",
     ):
         assert token in captured.out
@@ -2237,6 +2237,8 @@ def test_cli_checkpoint_info_treats_malformed_numeric_fields_as_null(
     payload["last_row"]["likelihood/log_likelihood_bits"] = "-10.0"
     payload["last_row"]["grad/inf"] = False
     payload["last_row"]["optimizer/final_check_iters"] = "32"
+    payload["last_row"]["solver/e_adjoint_failed_batches"] = 1.0
+    payload["last_row"]["solver/e_adjoint_success_batches"] = "0"
     torch.save(payload, checkpoint)
 
     main(["checkpoint-info", "--checkpoint", str(checkpoint)])
@@ -2255,6 +2257,8 @@ def test_cli_checkpoint_info_treats_malformed_numeric_fields_as_null(
     assert "last_log_likelihood_bits=null" in tokens
     assert "last_grad_inf=null" in tokens
     assert "last_final_check_iters=null" in tokens
+    assert "last_solver_e_adjoint_failed_batches=null" in tokens
+    assert "last_solver_e_adjoint_success_batches=null" in tokens
     assert "optimizer_step_cap=5000" not in tokens
     assert "best_step=3" not in tokens
     assert "last_nll_bits=10.000000" not in tokens
@@ -2807,8 +2811,8 @@ def test_cli_summary_info_reports_status_route_and_final_check(
         "final_check_loss_abs_delta_bits": 0.0,
         "final_check_grad_max_abs_delta": 0.0,
         "final_check_grad_rel_inf_delta": 0.0,
-        "final_solver_e_adjoint_failed_batches": 1.0,
-        "final_solver_e_adjoint_success_batches": 0.0,
+        "final_solver_e_adjoint_failed_batches": 1,
+        "final_solver_e_adjoint_success_batches": 0,
         "final_solver_e_adjoint_rel_res_max": 0.125,
     }
     summary.write_text(json.dumps(payload), encoding="utf-8")
@@ -2873,8 +2877,8 @@ def test_cli_summary_info_reports_status_route_and_final_check(
         "final_check_loss_abs_delta_bits=0.000000",
         "final_check_grad_max_abs_delta=0.000000",
         "final_check_grad_rel_inf_delta=0.000000",
-        "final_solver_e_adjoint_failed_batches=1.000000",
-        "final_solver_e_adjoint_success_batches=0.000000",
+        "final_solver_e_adjoint_failed_batches=1",
+        "final_solver_e_adjoint_success_batches=0",
         "final_solver_e_adjoint_rel_res_max=0.125000",
     ):
         assert token in captured.out
@@ -2904,6 +2908,8 @@ def test_cli_summary_info_treats_malformed_numeric_fields_as_null(
                 "best_step": "5",
                 "final_nll_bits": "12.5",
                 "final_grad_inf": False,
+                "final_solver_e_adjoint_failed_batches": 1.0,
+                "final_solver_e_adjoint_success_batches": "0",
             }
         ),
         encoding="utf-8",
@@ -2928,6 +2934,8 @@ def test_cli_summary_info_treats_malformed_numeric_fields_as_null(
     assert "final_nll_bits=null" in tokens
     assert "final_log_likelihood_bits=null" in tokens
     assert "final_grad_inf=null" in tokens
+    assert "final_solver_e_adjoint_failed_batches=null" in tokens
+    assert "final_solver_e_adjoint_success_batches=null" in tokens
     assert "optimizer_step_cap=5000" not in tokens
     assert "final_nll_bits=12.500000" not in tokens
 

@@ -1813,8 +1813,8 @@ def test_optimization_result_is_derived_from_summary_contract(tmp_path: Path):
         "final_check_loss_abs_delta_bits": 0.0,
         "final_check_grad_max_abs_delta": 1e-6,
         "final_check_grad_rel_inf_delta": 1e-7,
-        "final_solver_e_adjoint_failed_batches": 0.0,
-        "final_solver_e_adjoint_success_batches": 3.0,
+        "final_solver_e_adjoint_failed_batches": 0,
+        "final_solver_e_adjoint_success_batches": 3,
         "final_solver_e_adjoint_rel_res_max": 0.001,
     }
 
@@ -1881,8 +1881,8 @@ def test_optimization_result_is_derived_from_summary_contract(tmp_path: Path):
     assert result.final_check_loss_abs_delta_bits == pytest.approx(0.0)
     assert result.final_check_grad_max_abs_delta == pytest.approx(1e-6)
     assert result.final_check_grad_rel_inf_delta == pytest.approx(1e-7)
-    assert result.final_solver_e_adjoint_failed_batches == pytest.approx(0.0)
-    assert result.final_solver_e_adjoint_success_batches == pytest.approx(3.0)
+    assert result.final_solver_e_adjoint_failed_batches == 0
+    assert result.final_solver_e_adjoint_success_batches == 3
     assert result.final_solver_e_adjoint_rel_res_max == pytest.approx(0.001)
     assert result.production_default_optimizer_setting_mismatches == (
         "final_check_iters_e",
@@ -1922,6 +1922,11 @@ def test_optimization_result_is_derived_from_summary_contract(tmp_path: Path):
         ("final_check_iters_e", "128", "final_check_iters_e"),
         ("final_check_iters_e", 128.0, "final_check_iters_e"),
         ("adagrad_restart_total_steps", 125.0, "adagrad_restart_total_steps"),
+        (
+            "final_solver_e_adjoint_failed_batches",
+            1.0,
+            "final_solver_e_adjoint_failed_batches",
+        ),
         ("pi_fixed_point_relaxation", "1.25", "pi_fixed_point_relaxation"),
     ],
 )
@@ -4264,8 +4269,8 @@ def test_workflow_solver_stats_surface_e_adjoint_failure_telemetry():
     assert stats["solver/e_adjoint_iterations_mean"] == pytest.approx(2.0)
     assert stats["solver/e_adjoint_rel_res_max"] == pytest.approx(0.25)
     assert stats["solver/e_adjoint_rel_res_mean"] == pytest.approx(0.15)
-    assert stats["solver/e_adjoint_success_batches"] == 1.0
-    assert stats["solver/e_adjoint_failed_batches"] == 1.0
+    assert stats["solver/e_adjoint_success_batches"] == 1
+    assert stats["solver/e_adjoint_failed_batches"] == 1
     assert stats["solver/gradient_converged_batches"] == 2.0
     assert stats["solver/pi_adjoint_warmstart_enabled_batches"] == 2.0
     assert stats["solver/pi_adjoint_warmstart_used_batches"] == 1.0
@@ -9843,8 +9848,8 @@ def test_optimization_runner_run_writes_outputs_with_fake_model(tmp_path: Path):
     assert result.final_check_loss_abs_delta_bits == pytest.approx(0.0)
     assert result.final_check_grad_max_abs_delta == pytest.approx(0.0)
     assert result.final_check_grad_rel_inf_delta == pytest.approx(0.0)
-    assert result.final_solver_e_adjoint_failed_batches == pytest.approx(1.0)
-    assert result.final_solver_e_adjoint_success_batches == pytest.approx(0.0)
+    assert result.final_solver_e_adjoint_failed_batches == 1
+    assert result.final_solver_e_adjoint_success_batches == 0
     assert result.final_solver_e_adjoint_rel_res_max == pytest.approx(0.125)
     assert result.out_dir == config.out_dir
     assert result.sampling_checkpoint == config.out_dir / "checkpoints" / "best.pt"
@@ -9870,11 +9875,11 @@ def test_optimization_runner_run_writes_outputs_with_fake_model(tmp_path: Path):
     assert history_rows[-1]["step"] == 1
     assert history_rows[-1]["best_step"] == 1
     assert all(
-        row["solver/e_adjoint_failed_batches"] == 1.0
+        row["solver/e_adjoint_failed_batches"] == 1
         for row in history_rows
     )
     assert all(
-        row["solver/e_adjoint_success_batches"] == 0.0
+        row["solver/e_adjoint_success_batches"] == 0
         for row in history_rows
     )
     assert all(
@@ -9944,15 +9949,15 @@ def test_optimization_runner_run_writes_outputs_with_fake_model(tmp_path: Path):
     assert summary["final_check_loss_abs_delta_bits"] == pytest.approx(0.0)
     assert summary["final_check_grad_max_abs_delta"] == pytest.approx(0.0)
     assert summary["final_check_grad_rel_inf_delta"] == pytest.approx(0.0)
-    assert summary["final_solver_e_adjoint_failed_batches"] == pytest.approx(1.0)
-    assert summary["final_solver_e_adjoint_success_batches"] == pytest.approx(0.0)
+    assert summary["final_solver_e_adjoint_failed_batches"] == 1
+    assert summary["final_solver_e_adjoint_success_batches"] == 0
     assert summary["final_solver_e_adjoint_rel_res_max"] == pytest.approx(0.125)
     assert result.elapsed_s == pytest.approx(summary["elapsed_s"])
 
     latest = load_checkpoint(config.out_dir / "checkpoints" / "latest.pt")
     best = load_checkpoint(config.out_dir / "checkpoints" / "best.pt")
     assert latest["status"]["status"] == "not_converged"
-    assert latest["last_row"]["solver/e_adjoint_failed_batches"] == 1.0
+    assert latest["last_row"]["solver/e_adjoint_failed_batches"] == 1
     assert best["status"]["best_step"] == 1
     assert latest["last_row"]["optimizer/phase"] == "final_eval"
     assert latest["family_names"] == ["fam0", "fam1"]

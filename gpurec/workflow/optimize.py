@@ -122,8 +122,8 @@ class OptimizationResult:
     final_check_loss_abs_delta_bits: float | None = None
     final_check_grad_max_abs_delta: float | None = None
     final_check_grad_rel_inf_delta: float | None = None
-    final_solver_e_adjoint_failed_batches: float | None = None
-    final_solver_e_adjoint_success_batches: float | None = None
+    final_solver_e_adjoint_failed_batches: int | None = None
+    final_solver_e_adjoint_success_batches: int | None = None
     final_solver_e_adjoint_rel_res_max: float | None = None
 
 
@@ -346,10 +346,10 @@ def _optimization_result_from_summary(
         final_check_grad_rel_inf_delta=_optional_result_float(
             summary.get("final_check_grad_rel_inf_delta")
         ),
-        final_solver_e_adjoint_failed_batches=_optional_result_float(
+        final_solver_e_adjoint_failed_batches=_optional_result_int(
             summary.get("final_solver_e_adjoint_failed_batches")
         ),
-        final_solver_e_adjoint_success_batches=_optional_result_float(
+        final_solver_e_adjoint_success_batches=_optional_result_int(
             summary.get("final_solver_e_adjoint_success_batches")
         ),
         final_solver_e_adjoint_rel_res_max=_optional_result_float(

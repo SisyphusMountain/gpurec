@@ -119,7 +119,9 @@ When the final gradient route emits E-adjoint solver diagnostics, the summary
 also includes `final_solver_e_adjoint_failed_batches`,
 `final_solver_e_adjoint_success_batches`, and
 `final_solver_e_adjoint_rel_res_max` so nonconverged adjoint solves are visible
-without scanning `history.jsonl`.
+without scanning `history.jsonl`. The failed/success batch fields are typed
+JSON integers; malformed string, float, or boolean stand-ins are displayed as
+`null` by inspection commands and ignored by the Python result parser.
 The `gpurec optimize` status line and the optimization portion of `gpurec run`
 print the resolved `mode` and `optimizer`, `families`, `species`, `batches`,
 base batch/solver route fields, route contract fields, configured and effective

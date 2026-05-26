@@ -430,7 +430,10 @@ optimizer-specific route fields,
 `final_check_grad_max_abs_delta`, `final_check_grad_rel_inf_delta`,
 `final_solver_e_adjoint_failed_batches`,
 `final_solver_e_adjoint_success_batches`, and
-`final_solver_e_adjoint_rel_res_max` for quick terminal triage.
+`final_solver_e_adjoint_rel_res_max` for quick terminal triage. The
+failed/success batch fields are typed integer counts; malformed external
+artifacts display them as `null` instead of coercing strings, floats, or
+booleans.
 Add `--require-converged` to `gpurec optimize` when a
 shell pipeline should print the same optimization status line and then exit
 nonzero unless the run reached `status=converged`. Add
@@ -482,7 +485,8 @@ History rows include aggregate `solver/*` telemetry when the model reports
 solver statistics.  E-adjoint nonconvergence is diagnostic-only: the retained
 BiCGSTAB solve returns its best iterate with `success=False`, optimization
 continues unless the objective or gradient becomes nonfinite, and history rows
-surface `solver/e_adjoint_failed_batches` plus relative-residual and iteration
+surface integer `solver/e_adjoint_failed_batches` and
+`solver/e_adjoint_success_batches` counts plus relative-residual and iteration
 summaries for monitoring. Opt-in Pi-adjoint warmstart runs also report
 `solver/pi_adjoint_residual_absmax_max` and
 `solver/pi_adjoint_residual_relmax_max`, computed from one extra fixed-point

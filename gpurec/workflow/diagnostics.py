@@ -96,7 +96,7 @@ def parameter_stats(theta: torch.Tensor) -> dict[str, float]:
     return out
 
 
-def solver_stats(model: Any) -> dict[str, float]:
+def solver_stats(model: Any) -> dict[str, float | int]:
     stats = model.solver_stat_records() if hasattr(model, "solver_stat_records") else []
     if not stats:
         return {}
@@ -184,8 +184,8 @@ def solver_stats(model: Any) -> dict[str, float]:
         )
     if e_adjoint_success:
         success_count = sum(e_adjoint_success)
-        out["solver/e_adjoint_success_batches"] = float(success_count)
-        out["solver/e_adjoint_failed_batches"] = float(
+        out["solver/e_adjoint_success_batches"] = int(success_count)
+        out["solver/e_adjoint_failed_batches"] = int(
             len(e_adjoint_success) - success_count
         )
     if pi_adjoint_warmstart_enabled:
