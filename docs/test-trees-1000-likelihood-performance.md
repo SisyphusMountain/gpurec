@@ -269,7 +269,11 @@ tied fixed4 path.  With `E=8, Pi=4`, single cold samples measured `250000`:
 `2.2937483189743944s` at `7.95 GiB`, and `650000`:
 `2.355606388999149s` at `10.27 GiB`.  The small `400000` tie does not justify
 the higher memory and larger wave envelope, and the previous fixed4 repeats
-already showed this region does not hold a stable cold win.
+already showed this region does not hold a stable cold win.  Rechecking the new
+`E=7, Pi=4` route likewise rejected the neighboring clade budgets: `250000`
+measured `2.2842069599428214s` with `26` batches and `4.126953125 GiB`
+reserved, while `400000` measured `2.296551337989513s` with `17` batches and
+`6.419921875 GiB` reserved.
 
 The split-budget route also keeps the documented `8192` max-wave cap.  One
 `E=8, Pi=4` cold sweep measured `4096`: `2.3022571059991606s`, `8192`:
@@ -279,7 +283,9 @@ A materialized steady check measured `8192` at `1.2848945879959501s` median and
 `1.2801758240093477s` minimum, while `16384` measured
 `1.2845551520003937s` median and `1.2798394349520095s` minimum with higher
 memory.  The near-tie is not enough to move the default away from the lower
-memory `8192` shape.
+memory `8192` shape.  A fresh `E=7, Pi=4` sweep kept the same decision:
+`4096` measured `2.295460112974979s` and `12288` measured
+`2.2948793239775114s`, both slower than the documented `8192` route.
 
 Split-budget rechecks also kept the root-wave and DTS partial-row caps
 disabled.  With `E=8, Pi=4`, root caps at `8`, `16`, and `32` measured cold
