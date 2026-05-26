@@ -2253,6 +2253,19 @@ not edit files.  New or still-open findings from that refresh are:
 - `CUDA_VISIBLE_DEVICES='' python -m pytest -q -m "unit and not gpu"`:
   1475 passed, 1 skipped, 51 deselected after the artifact inspection
   production-route success slice.
+- `gpurec validate-config --require-production-default-route` now has direct
+  success-path CLI coverage for both shipped production default modes:
+  genewise `hessian-sgd` and specieswise `adagrad-restarts`.
+- `python -m py_compile tests/unit/test_cli_workflow.py`: passed after adding
+  strict validate-config production-route success coverage.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest -q tests/unit/test_cli_workflow.py::test_cli_validate_config_require_production_default_route_accepts_genewise_default tests/unit/test_cli_workflow.py::test_cli_validate_config_require_production_default_route_accepts_specieswise_default`:
+  2 passed after guarding the strict validate-config production-route success
+  gates.
+- `git diff --check`: passed before the full CPU gate for the strict
+  validate-config production-route success slice.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest -q -m "unit and not gpu"`:
+  1477 passed, 1 skipped, 51 deselected after the strict validate-config
+  production-route success slice.
 
 ## Recommended Next Order
 

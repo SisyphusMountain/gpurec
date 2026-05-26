@@ -7535,6 +7535,13 @@ the focused artifact-inspection gate selector reports \texttt{2 passed}.
 \texttt{git diff --check} passes, and the full CPU unit gate reports
 \texttt{1475 passed, 1 skipped, 51 deselected}.
 
+\texttt{gpurec validate-config --require-production-default-route} now has
+direct success-path CLI coverage for both shipped production default modes:
+genewise \texttt{hessian-sgd} and specieswise \texttt{adagrad-restarts}.  The
+touched CLI test compiles, and the focused strict preflight selector reports
+\texttt{2 passed}.  \texttt{git diff --check} passes, and the full CPU unit
+gate reports \texttt{1477 passed, 1 skipped, 51 deselected}.
+
 \section{Next Audit Targets}
 
 \begin{enumerate}[leftmargin=*]

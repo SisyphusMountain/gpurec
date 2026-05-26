@@ -862,6 +862,28 @@ def test_cli_validate_config_require_production_default_route_rejects_custom_set
     assert "Traceback" not in captured.err
 
 
+def test_cli_validate_config_require_production_default_route_accepts_genewise_default(
+    tmp_path: Path,
+    capsys,
+):
+    main(
+        _minimal_workflow_cli_args("validate-config", tmp_path)
+        + ["--require-production-default-route"]
+    )
+
+    captured = capsys.readouterr()
+    assert captured.err == ""
+    assert "valid_config=true" in captured.out
+    assert "mode=genewise" in captured.out
+    assert "optimizer=hessian-sgd" in captured.out
+    assert "mode_default_optimizer=hessian-sgd" in captured.out
+    assert "uses_mode_default_optimizer=true" in captured.out
+    assert "uses_production_default_optimizer_settings=true" in captured.out
+    assert "production_default_optimizer_setting_mismatches=none" in captured.out
+    assert "uses_production_default_route=true" in captured.out
+    assert "production_default_route_mismatches=none" in captured.out
+
+
 def test_cli_validate_config_reports_hessian_sgd_normal_solver_overrides(
     tmp_path: Path,
     capsys,
@@ -970,6 +992,34 @@ def test_cli_validate_config_reports_specieswise_restart_route(
     assert "final_check_iters=128" in captured.out
     assert "adagrad_restart_final_check_iters=128" in captured.out
     assert captured.err == ""
+
+
+def test_cli_validate_config_require_production_default_route_accepts_specieswise_default(
+    tmp_path: Path,
+    capsys,
+):
+    main(
+        _minimal_workflow_cli_args("validate-config", tmp_path)
+        + [
+            "--mode",
+            "specieswise",
+            "--require-production-default-route",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert captured.err == ""
+    assert "valid_config=true" in captured.out
+    assert "mode=specieswise" in captured.out
+    assert "optimizer=adagrad-restarts" in captured.out
+    assert "mode_default_optimizer=adagrad-restarts" in captured.out
+    assert "uses_mode_default_optimizer=true" in captured.out
+    assert "uses_production_default_optimizer_settings=true" in captured.out
+    assert "production_default_optimizer_setting_mismatches=none" in captured.out
+    assert "uses_production_default_route=true" in captured.out
+    assert "production_default_route_mismatches=none" in captured.out
+    assert "optimizer_step_cap=125" in captured.out
+    assert "optimizer_step_cap_reason=adagrad_restart_schedule" in captured.out
 
 
 def test_cli_validate_config_reuses_checkpoint_route_formatter(tmp_path: Path):
