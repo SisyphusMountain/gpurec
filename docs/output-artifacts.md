@@ -227,7 +227,7 @@ any route-gate verdicts are derived from the same audited checkpoint route
 snapshot. If a legacy checkpoint has no
 `route_metadata`, `checkpoint-info` falls back to
 recoverable config `mode` and `optimizer` fields; incomplete artifacts fail the
-gate with an incomplete-evidence error.
+gate with an incomplete-evidence error from that same fallback snapshot.
 
 ## Sampling Artifacts
 

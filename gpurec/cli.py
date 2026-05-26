@@ -936,12 +936,19 @@ def _validate_summary_path(summary: Path) -> None:
 def _partial_route_metadata_from_config_data(
     config_data: dict[str, Any],
 ) -> dict[str, Any]:
+    route, _evidence = _partial_route_metadata_evidence_from_config_data(config_data)
+    return route
+
+
+def _partial_route_metadata_evidence_from_config_data(
+    config_data: dict[str, Any],
+) -> tuple[dict[str, Any], _ProductionRouteEvidence]:
     route = {
         key: config_data[key]
         for key in ("mode", "optimizer")
         if config_data.get(key) is not None
     }
-    return _route_with_production_default_audit_fields(route)
+    return _route_with_production_default_audit_evidence(route)
 
 
 def _checkpoint_route_metadata(payload: dict[str, Any]) -> tuple[dict[str, Any], str]:
@@ -967,9 +974,11 @@ def _checkpoint_route_metadata_evidence(
         )
         return audited, "config", evidence
     except _EXPECTED_WORKFLOW_ERRORS:
-        partial_route = _partial_route_metadata_from_config_data(config_data)
+        partial_route, partial_evidence = (
+            _partial_route_metadata_evidence_from_config_data(config_data)
+        )
         if partial_route:
-            return partial_route, "config", None
+            return partial_route, "config", partial_evidence
         return {}, "missing", None
 
 

@@ -474,7 +474,7 @@ optimizer matches the mode default for its mode, or
 `--require-production-default-route` to require the full shipped
 likelihood/gradient and optimizer route, including the contract fields. The
 printed checkpoint line and any route gates use the same audited checkpoint
-route snapshot.
+route snapshot, including legacy config fallback evidence.
 
 History rows include aggregate `solver/*` telemetry when the model reports
 solver statistics.  E-adjoint nonconvergence is diagnostic-only: the retained

@@ -2333,6 +2333,7 @@ def test_cli_checkpoint_info_require_mode_default_optimizer_recomputes_stale_aud
 def test_cli_checkpoint_info_require_mode_default_optimizer_reports_missing_evidence(
     tmp_path: Path,
     capsys,
+    monkeypatch,
 ):
     checkpoint = tmp_path / "legacy.pt"
     torch.save(
@@ -2364,6 +2365,19 @@ def test_cli_checkpoint_info_require_mode_default_optimizer_reports_missing_evid
         },
         checkpoint,
     )
+    original_route_evidence = gpurec_cli._production_default_route_evidence
+    route_evidence_calls = 0
+
+    def counted_route_evidence(route):
+        nonlocal route_evidence_calls
+        route_evidence_calls += 1
+        return original_route_evidence(route)
+
+    monkeypatch.setattr(
+        gpurec_cli,
+        "_production_default_route_evidence",
+        counted_route_evidence,
+    )
 
     with pytest.raises(SystemExit) as exc_info:
         main(
@@ -2377,6 +2391,7 @@ def test_cli_checkpoint_info_require_mode_default_optimizer_reports_missing_evid
 
     captured = capsys.readouterr()
     assert exc_info.value.code == 1
+    assert route_evidence_calls == 1
     assert "mode=genewise" in captured.out
     assert "optimizer=null" in captured.out
     assert "mode_default_optimizer=hessian-sgd" in captured.out
