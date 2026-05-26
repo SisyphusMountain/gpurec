@@ -7518,6 +7518,14 @@ compiles, the focused run gate selector reports \texttt{2 passed}, and
 \texttt{git diff --check} passes.  The full CPU unit gate reports
 \texttt{1471 passed, 1 skipped, 51 deselected}.
 
+Direct \texttt{gpurec optimize --require-production-default-route} now has CLI
+coverage for the strict production-route preflight.  The new tests prove that
+default genewise optimization proceeds to the optimizer workflow, while a
+non-default Hessian-SGD refresh setting is rejected before optimization is
+invoked.  The touched CLI test compiles, and the focused optimize gate selector
+reports \texttt{2 passed}.  \texttt{git diff --check} passes, and the full CPU
+unit gate reports \texttt{1473 passed, 1 skipped, 51 deselected}.
+
 \section{Next Audit Targets}
 
 \begin{enumerate}[leftmargin=*]

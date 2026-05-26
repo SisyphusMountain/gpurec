@@ -3308,6 +3308,85 @@ def test_cli_optimize_require_mode_default_optimizer_rejects_override_before_run
     assert "Traceback" not in captured.err
 
 
+def test_cli_optimize_require_production_default_route_accepts_default_config(
+    tmp_path: Path,
+    capsys,
+    monkeypatch,
+):
+    captured_config: dict[str, RunConfig] = {}
+
+    def successful_optimize(config):
+        captured_config["config"] = config
+        fields = {
+            **effective_route_metadata(config),
+            "out_dir": config.out_dir,
+            "status": "not_converged",
+            "reason": "max_steps",
+            "families": 1,
+            "species": 2,
+            "batches": 1,
+            "steps_completed": 1,
+            "elapsed_s": 0.5,
+            "best_step": 1,
+            "sampling_checkpoint": config.out_dir / "checkpoints" / "best.pt",
+            "final_nll_bits": 12.0,
+            "final_grad_inf": 0.25,
+            "final_projected_grad_inf": 0.125,
+            "best_nll_bits": 11.0,
+        }
+        return SimpleNamespace(**fields)
+
+    monkeypatch.setattr("gpurec.cli.optimize", successful_optimize)
+
+    main(
+        _minimal_workflow_cli_args("optimize", tmp_path)
+        + ["--require-production-default-route"]
+    )
+
+    captured = capsys.readouterr()
+    assert captured.err == ""
+    assert captured_config["config"].optimizer == "hessian-sgd"
+    assert "status=not_converged" in captured.out
+    assert "mode=genewise" in captured.out
+    assert "optimizer=hessian-sgd" in captured.out
+    assert "uses_production_default_route=true" in captured.out
+    assert "production_default_route_mismatches=none" in captured.out
+
+
+def test_cli_optimize_require_production_default_route_rejects_custom_settings_before_run(
+    tmp_path: Path,
+    capsys,
+    monkeypatch,
+):
+    def unexpected_optimize(config):
+        raise AssertionError("optimize should not be called")
+
+    monkeypatch.setattr("gpurec.cli.optimize", unexpected_optimize)
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(
+            _minimal_workflow_cli_args("optimize", tmp_path)
+            + [
+                "--optimizer",
+                "hessian-sgd",
+                "--fd-hessian-refresh-steps",
+                "8",
+                "--require-production-default-route",
+            ]
+        )
+
+    captured = capsys.readouterr()
+    assert exc_info.value.code == 2
+    assert (
+        "config production default route fields differ for mode 'genewise': "
+        "fd_hessian_refresh_steps"
+    ) in captured.err
+    assert "use optimizer=auto and the shipped optimizer defaults" in captured.err
+    assert captured.out == ""
+    assert "usage:" in captured.err
+    assert "Traceback" not in captured.err
+
+
 def test_cli_optimize_require_converged_fails_after_printing_status(
     tmp_path: Path,
     capsys,

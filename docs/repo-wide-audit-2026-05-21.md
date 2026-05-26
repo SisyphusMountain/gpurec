@@ -2226,6 +2226,19 @@ not edit files.  New or still-open findings from that refresh are:
 - `CUDA_VISIBLE_DEVICES='' python -m pytest -q -m "unit and not gpu"`:
   1471 passed, 1 skipped, 51 deselected after the combined run
   production-route gate slice.
+- Direct `gpurec optimize --require-production-default-route` now has CLI
+  coverage proving default genewise optimization proceeds and non-default
+  Hessian-SGD route settings are rejected before the optimizer workflow is
+  invoked.
+- `python -m py_compile tests/unit/test_cli_workflow.py`: passed after adding
+  direct optimize production-route gate coverage.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest -q tests/unit/test_cli_workflow.py::test_cli_optimize_require_production_default_route_accepts_default_config tests/unit/test_cli_workflow.py::test_cli_optimize_require_production_default_route_rejects_custom_settings_before_run`:
+  2 passed after guarding direct optimize production-route gates.
+- `git diff --check`: passed before the full CPU gate for the direct optimize
+  production-route gate slice.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest -q -m "unit and not gpu"`:
+  1473 passed, 1 skipped, 51 deselected after the direct optimize
+  production-route gate slice.
 
 ## Recommended Next Order
 
