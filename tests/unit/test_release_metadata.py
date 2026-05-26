@@ -461,6 +461,7 @@ def test_cpu_ci_builds_and_smokes_release_artifacts():
         "docs/production-optimization-guide.md",
         "docs/professionalization-audit-progress.tex",
         "docs/release-readiness.md",
+        "docs/troubleshooting.md",
         "examples/README.md",
         "examples/minimal-run-config.json",
         "examples/specieswise-adagrad-restarts-config.json",

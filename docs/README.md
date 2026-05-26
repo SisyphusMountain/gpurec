@@ -17,6 +17,9 @@ file as the map for deeper context.
   evaluation, optimizer phases, checkpoints, and final artifacts.
 - `output-artifacts.md`: operator-facing reference for optimization,
   checkpoint, rate-table, per-family likelihood, and sampling output files.
+- `troubleshooting.md`: operator-facing preflight and failure triage for JSON
+  configs, AleRax family inputs, CUDA memory, optimization status, and sampling
+  binary setup.
 - `simplification-opportunity-index-2026-05-21.md`: direct inventory of
   removable or mergeable alternative paths, with source-file evidence, retained
   behavior, and deletion gates.

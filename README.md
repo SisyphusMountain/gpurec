@@ -545,3 +545,4 @@ strict_optimized_verdict pass
 
 See `docs/README.md` for the current documentation map.  It separates current
 operating notes from historical performance and research logs.
+For run triage, see [`docs/troubleshooting.md`](docs/troubleshooting.md).

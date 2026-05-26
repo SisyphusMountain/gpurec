@@ -1406,6 +1406,39 @@ def test_output_artifact_reference_is_linked_and_documents_contract():
         assert token in normalized
 
 
+def test_troubleshooting_guide_documents_operator_failure_triage():
+    root = Path(__file__).resolve().parents[2]
+    project_readme = (root / "README.md").read_text(encoding="utf-8")
+    docs_readme = (root / "docs" / "README.md").read_text(encoding="utf-8")
+    guide = (root / "docs" / "troubleshooting.md").read_text(
+        encoding="utf-8"
+    )
+    normalized = " ".join(guide.split())
+
+    assert "docs/troubleshooting.md" in project_readme
+    assert "troubleshooting.md" in docs_readme
+    for token in (
+        "gpurec validate-config --config run.json",
+        "`--check-preprocess`",
+        "`unknown RunConfig field`",
+        "`missing gene-tree path`",
+        "`summary.json`",
+        "`history.jsonl`",
+        "`grad/projected_inf`",
+        "`nonfinite_objective_or_gradient`",
+        "`adagrad_restart_schedule_complete`",
+        (
+            "gpurec optimize --config run.json --resume-from "
+            "output/checkpoints/latest.pt"
+        ),
+        "`clade_budget`",
+        "`family_chunk_size`",
+        "`GPUREC_BACKTRACK_BIN`",
+        "`theta_final.pt`",
+    ):
+        assert token in normalized
+
+
 def test_optimization_workflow_call_graph_documents_current_cli_and_optimizers():
     root = Path(__file__).resolve().parents[2]
     docs_readme = (root / "docs" / "README.md").read_text(encoding="utf-8")
