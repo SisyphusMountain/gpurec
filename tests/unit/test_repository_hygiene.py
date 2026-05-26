@@ -1963,6 +1963,38 @@ def test_removed_likelihood_aliases_stay_out_of_runtime_surface():
     assert offenders == []
 
 
+def test_runtime_e_fixed_point_calls_pass_explicit_e_shape():
+    root = Path(__file__).resolve().parents[2]
+    offenders: list[str] = []
+
+    for path in _tracked_files(
+        root,
+        "gpurec/**/*.py",
+        "scripts/**/*.py",
+        "profiling/**/*.py",
+    ):
+        relative = path.relative_to(root).as_posix()
+        if relative == "gpurec/core/likelihood.py":
+            continue
+        module = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(module):
+            if not isinstance(node, ast.Call):
+                continue
+            is_e_call = (
+                isinstance(node.func, ast.Name)
+                and node.func.id == "E_fixed_point"
+            ) or (
+                isinstance(node.func, ast.Attribute)
+                and node.func.attr == "E_fixed_point"
+            )
+            if not is_e_call:
+                continue
+            if not any(keyword.arg == "e_shape" for keyword in node.keywords):
+                offenders.append(f"{relative}:{node.lineno}")
+
+    assert offenders == []
+
+
 def test_dts_shape_precedence_is_documented_before_runtime_change():
     root = Path(__file__).resolve().parents[2]
     readme = " ".join((root / "README.md").read_text(encoding="utf-8").split())

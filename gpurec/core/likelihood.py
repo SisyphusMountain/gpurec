@@ -73,12 +73,12 @@ def _require_ancestors_T(
 
 
 def _normalize_e_shape(
-    e_shape: Sequence[int] | None,
+    e_shape: Sequence[int],
     *,
     S: int,
-) -> tuple[int, ...] | None:
+) -> tuple[int, ...]:
     if e_shape is None:
-        return None
+        raise ValueError("e_shape is required for E_fixed_point")
     if isinstance(e_shape, (str, bytes)):
         raise ValueError("e_shape must be (S,) or (N, S)")
     try:
@@ -197,6 +197,7 @@ def E_fixed_point(species_helpers,
                           check_interval: int = 1,
                           convergence_metric: str = "max_diff",
                           e_shape: Sequence[int] | None = None):
+    """Solve extinction probabilities for an explicit ``[S]`` or ``[N, S]`` shape."""
     S = species_helpers['S']
     ancestors_T = _require_ancestors_T(
         ancestors_T,
@@ -206,53 +207,16 @@ def E_fixed_point(species_helpers,
     )
     expected_e_shape = _normalize_e_shape(e_shape, S=int(S))
 
-    # Determine batch size from parameters if present
-    N = None
-    if expected_e_shape is None:
-        if isinstance(max_transfer_mat, torch.Tensor) and max_transfer_mat.ndim >= 2:
-            N = max_transfer_mat.shape[0]
-        elif isinstance(log_pS, torch.Tensor) and log_pS.ndim == 2:
-            N = log_pS.shape[0]
-        # If parameters are per-gene scalars (shape [N]) in the
-        # genewise/non-specieswise case, infer N from their length when it
-        # differs from S.
-        if (
-            N is None
-            and isinstance(log_pS, torch.Tensor)
-            and log_pS.ndim == 1
-            and log_pS.shape[0] != S
-        ):
-            N = log_pS.shape[0]
-        if (
-            N is None
-            and isinstance(log_pD, torch.Tensor)
-            and log_pD.ndim == 1
-            and log_pD.shape[0] != S
-        ):
-            N = log_pD.shape[0]
-        if (
-            N is None
-            and isinstance(log_pL, torch.Tensor)
-            and log_pL.ndim == 1
-            and log_pL.shape[0] != S
-        ):
-            N = log_pL.shape[0]
-
     # Initialize with log(0.5), or use a warm-start value if available
     if warm_start_E is not None:
         E = warm_start_E.detach()
-        if expected_e_shape is not None and _tensor_shape(E) != expected_e_shape:
+        if _tensor_shape(E) != expected_e_shape:
             raise ValueError(
                 "warm_start_E shape must match explicit e_shape "
                 f"{expected_e_shape}, got {_tensor_shape(E)}"
             )
     else:
-        if expected_e_shape is not None:
-            E = torch.full(expected_e_shape, -1.0, dtype=dtype, device=device)
-        elif N is None:
-            E = torch.full((S,), -1.0, dtype=dtype, device=device)  # log2(0.5)
-        else:
-            E = torch.full((N, S), -1.0, dtype=dtype, device=device)  # log2(0.5)
+        E = torch.full(expected_e_shape, -1.0, dtype=dtype, device=device)
     E_s1 = torch.full_like(E, NEG_INF)
     E_s2 = torch.full_like(E, NEG_INF)
     E_logsumexp_trace = None

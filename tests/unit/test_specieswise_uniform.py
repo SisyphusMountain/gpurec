@@ -201,6 +201,7 @@ def _prepare_forward(model: GeneReconModel):
         dtype=static.dtype,
         device=static.device,
         ancestors_T=static.ancestors_T,
+        e_shape=(int(static.species_helpers["S"]),),
     )
     return E_out, params
 
@@ -320,6 +321,10 @@ def test_gpu_logsumexp_traces_match_final_values(data_dir_100, tmp_path):
         device=static.device,
         ancestors_T=static.ancestors_T,
         trace_logsumexp=True,
+        e_shape=(
+            len(static.wave_layout["root_clade_ids"]),
+            int(static.species_helpers["S"]),
+        ),
     )
     Pi_out = Pi_wave_forward(
         wave_layout=static.wave_layout,

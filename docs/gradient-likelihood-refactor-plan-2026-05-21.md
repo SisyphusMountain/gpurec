@@ -174,20 +174,21 @@ Gates:
 
 ### Step 3: Make E Solver Shape Explicit
 
-`E_fixed_point()` now accepts an explicit `e_shape`. Resident/chunked model
+`E_fixed_point()` now requires an explicit `e_shape`. Resident/chunked model
 callers pass the shape derived from `ParameterLayout`, and maintained global /
 uniform CUDA warmup and full-pipeline benchmark callers pass explicit `[S]`
-shape instead of relying on parameter-shape inference. The legacy inference
-remains for direct low-level callers until every supported path supplies an
-explicit layout or `UniformRates.e_rows`.
+shape instead of relying on parameter-shape inference. Runtime hygiene guards
+tracked package, script, and profiling calls so new callers do not reintroduce
+implicit parameter-shape inference.
 
 Internal behavior should become:
 
 - global/specieswise: E shape `[S]`;
 - genewise: E shape `[G, S]`.
 
-`E_step()` math is unchanged.  Remove the remaining N-detection branches only
-after tests prove all supported callers supply explicit layout.
+`E_step()` math is unchanged.  The old N-detection branches have been removed
+after tests proved supported runtime and benchmark callers supply explicit
+layout.
 
 Gates:
 

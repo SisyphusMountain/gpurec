@@ -153,6 +153,7 @@ def test_e_fixed_point_requires_ancestors_t():
             dtype=dtype,
             device=torch.device("cpu"),
             ancestors_T=None,
+            e_shape=(3,),
         )
 
 
@@ -178,6 +179,35 @@ def test_e_fixed_point_rejects_invalid_ancestors_t_before_iterations():
             dtype=dtype,
             device=torch.device("cpu"),
             ancestors_T=torch.eye(2, dtype=dtype),
+            progress_callback=lambda *_args: progress_calls.append(_args),
+            e_shape=(3,),
+        )
+
+    assert progress_calls == []
+
+
+def test_e_fixed_point_requires_explicit_e_shape_before_iterations():
+    dtype = torch.float64
+    species_helpers = {
+        "S": 3,
+        "s_P_indexes": torch.tensor([0], dtype=torch.long),
+        "s_C12_indexes": torch.tensor([1, 2], dtype=torch.long),
+    }
+    progress_calls = []
+
+    with pytest.raises(ValueError, match="e_shape is required"):
+        E_fixed_point(
+            species_helpers=species_helpers,
+            log_pS=torch.zeros(3, dtype=dtype),
+            log_pD=torch.zeros(3, dtype=dtype),
+            log_pL=torch.zeros(3, dtype=dtype),
+            max_transfer_mat=torch.zeros(3, dtype=dtype),
+            max_iters=1,
+            tolerance=-1.0,
+            warm_start_E=None,
+            dtype=dtype,
+            device=torch.device("cpu"),
+            ancestors_T=torch.eye(3, dtype=dtype),
             progress_callback=lambda *_args: progress_calls.append(_args),
         )
 
