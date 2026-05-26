@@ -143,6 +143,14 @@ def _optimization_result_text(result: Any) -> str:
                 final_log_likelihood,
             ),
             _optional_metric_text(
+                "final_grad_inf",
+                getattr(result, "final_grad_inf", None),
+            ),
+            _optional_metric_text(
+                "final_projected_grad_inf",
+                getattr(result, "final_projected_grad_inf", None),
+            ),
+            _optional_metric_text(
                 "best_nll_bits",
                 getattr(result, "best_nll_bits", None),
             ),

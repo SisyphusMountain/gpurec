@@ -1237,6 +1237,8 @@ def test_cli_optimize_failed_result_exits_nonzero_without_traceback(
     assert "nonfinite_objective_or_gradient" in captured.out
     assert "final_nll_bits=inf" in captured.out
     assert "final_log_likelihood_bits=null" in captured.out
+    assert "final_grad_inf=null" in captured.out
+    assert "final_projected_grad_inf=null" in captured.out
     assert "best_nll_bits=null" in captured.out
     assert "best_log_likelihood_bits=null" in captured.out
     assert "final_check_status=null" in captured.out
@@ -1263,6 +1265,8 @@ def test_cli_optimize_reports_final_and_best_objective_summary(
             elapsed_s=3.25,
             best_step=5,
             final_nll_bits=12.5,
+            final_grad_inf=0.75,
+            final_projected_grad_inf=0.625,
             final_log_likelihood_bits=-12.5,
             best_nll_bits=10.25,
             best_log_likelihood_bits=-10.25,
@@ -1291,6 +1295,8 @@ def test_cli_optimize_reports_final_and_best_objective_summary(
     assert "best_step=5" in captured.out
     assert "final_nll_bits=12.500000" in captured.out
     assert "final_log_likelihood_bits=-12.500000" in captured.out
+    assert "final_grad_inf=0.750000" in captured.out
+    assert "final_projected_grad_inf=0.625000" in captured.out
     assert "best_nll_bits=10.250000" in captured.out
     assert "best_log_likelihood_bits=-10.250000" in captured.out
     assert "final_check_status=ok" in captured.out
@@ -1387,6 +1393,8 @@ def test_cli_run_samples_reported_checkpoint_instead_of_stale_best(
             elapsed_s=4.5,
             best_step=2,
             final_nll_bits=12.0,
+            final_grad_inf=0.75,
+            final_projected_grad_inf=0.5,
             best_nll_bits=11.0,
             final_check_status="ok",
             final_check_source="configured_solver_budget",
@@ -1420,6 +1428,8 @@ def test_cli_run_samples_reported_checkpoint_instead_of_stale_best(
     assert "best_step=2" in captured.out
     assert "final_nll_bits=12.000000" in captured.out
     assert "final_log_likelihood_bits=-12.000000" in captured.out
+    assert "final_grad_inf=0.750000" in captured.out
+    assert "final_projected_grad_inf=0.500000" in captured.out
     assert "best_nll_bits=11.000000" in captured.out
     assert "best_log_likelihood_bits=-11.000000" in captured.out
     assert "final_check_status=ok" in captured.out
@@ -1525,6 +1535,8 @@ def test_cli_run_refuses_sampling_after_failed_optimization(
     assert "reason=nonfinite_objective_or_gradient" in captured.out
     assert "final_nll_bits=inf" in captured.out
     assert "final_log_likelihood_bits=null" in captured.out
+    assert "final_grad_inf=null" in captured.out
+    assert "final_projected_grad_inf=null" in captured.out
     assert "best_nll_bits=null" in captured.out
     assert "best_log_likelihood_bits=null" in captured.out
     assert gpurec_cli._optional_text(

@@ -60,6 +60,7 @@ class OptimizationResult:
     best_step: int | None
     steps_completed: int
     elapsed_s: float | None = None
+    final_projected_grad_inf: float | None = None
     sampling_checkpoint: Path | None = None
     final_log_likelihood_bits: float | None = None
     best_log_likelihood_bits: float | None = None
@@ -3853,6 +3854,11 @@ class OptimizationRunner:
                 None if best_nll is None else -float(best_nll)
             )
             final_check_summary = _final_check_summary_metrics(final_metrics)
+            final_projected_grad_inf = (
+                None
+                if final_eval_failed
+                else float(final_metrics.get("grad/projected_inf", math.inf))
+            )
             summary = {
                 **final_status,
                 **effective_route_metadata(config),
@@ -3863,11 +3869,7 @@ class OptimizationRunner:
                 "final_log_likelihood_bits": final_log_likelihood_bits,
                 "best_log_likelihood_bits": best_log_likelihood_bits,
                 "final_grad_inf": final_grad_inf,
-                "final_projected_grad_inf": (
-                    None
-                    if final_eval_failed
-                    else float(final_metrics.get("grad/projected_inf", math.inf))
-                ),
+                "final_projected_grad_inf": final_projected_grad_inf,
                 **final_check_summary,
             }
             _write_final_artifacts(
@@ -3889,6 +3891,7 @@ class OptimizationRunner:
                 best_step=None if best_step is None else int(best_step),
                 steps_completed=int(final_row["step"]),
                 elapsed_s=float(final_status["elapsed_s"]),
+                final_projected_grad_inf=final_projected_grad_inf,
                 sampling_checkpoint=sampling_checkpoint,
                 final_log_likelihood_bits=final_log_likelihood_bits,
                 best_log_likelihood_bits=best_log_likelihood_bits,

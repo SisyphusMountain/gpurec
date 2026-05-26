@@ -1299,6 +1299,8 @@ def test_project_readme_documents_gpurec_run_end_to_end_workflow():
     assert "exits without sampling if optimization fails" in normalized
     assert "Failed optimization still prints the optimization status line" in project_readme
     assert "`steps_completed`, `elapsed_s`, `best_step`" in project_readme
+    assert "`final_grad_inf`" in project_readme
+    assert "`final_projected_grad_inf`" in project_readme
     assert "`sampled_families`, `samples`, `xml`, and `sample_out_dir`" in project_readme
     assert "Use `gpurec sample --checkpoint ...` to sample an existing run" in normalized
 
@@ -1426,6 +1428,8 @@ def test_output_artifact_reference_is_linked_and_documents_contract():
         "`rate_parameterization=base2_log_dlt_rates`",
         "`production_default_basis=hogenom_and_test_trees_1000`",
         "`final_log_likelihood_bits`",
+        "`final_grad_inf`",
+        "`final_projected_grad_inf`",
         "`best_log_likelihood_bits`",
         "`steps_completed`",
         "`elapsed_s`",
