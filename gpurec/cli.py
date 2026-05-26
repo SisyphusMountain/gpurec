@@ -1783,6 +1783,13 @@ def _add_run_config_args(parser: argparse.ArgumentParser) -> None:
         ),
     )
     parser.add_argument(
+        "--lbfgsb-loss-change-tol-schedule",
+        help=(
+            "Optional lbfgsb loss-stop schedule as "
+            "loss_change_tol:loss_patience entries, for example 0.25:2,0.1:2."
+        ),
+    )
+    parser.add_argument(
         "--lbfgs-line-search",
         choices=("none", "strong_wolfe"),
         help="LBFGS line-search mode.",

@@ -77,6 +77,15 @@ class AdagradRestartPhase:
         return f"{self.fixed_iters_e}/{self.fixed_iters_pi}/{self.neumann_terms}"
 
 
+@dataclass(frozen=True)
+class LossStopPhase:
+    loss_change_tol: float
+    loss_patience: int
+
+    def spec(self) -> str:
+        return f"{self.loss_change_tol:.12g}:{self.loss_patience}"
+
+
 def dtype_from_name(name: str) -> torch.dtype:
     text = str(name).lower().replace("torch.", "")
     if text in {"float32", "fp32", "single"}:
@@ -373,6 +382,53 @@ DEFAULT_ADAGRAD_RESTART_TOTAL_STEPS = adagrad_restart_schedule_total_steps(
     DEFAULT_ADAGRAD_RESTART_SCHEDULE
 )
 
+def loss_stop_schedule_specs(value: str) -> tuple[LossStopPhase, ...]:
+    if not isinstance(value, str):
+        raise ValueError("lbfgsb_loss_change_tol_schedule must be a string")
+    text = value.strip()
+    if not text:
+        raise ValueError("lbfgsb_loss_change_tol_schedule must not be empty")
+    phases: list[LossStopPhase] = []
+    for position, raw_entry in enumerate(text.split(","), start=1):
+        entry = raw_entry.strip()
+        if not entry:
+            raise ValueError(
+                "lbfgsb_loss_change_tol_schedule entries must be "
+                "loss_change_tol:loss_patience"
+            )
+        pieces = [piece.strip() for piece in entry.split(":")]
+        if len(pieces) != 2:
+            raise ValueError(
+                "lbfgsb_loss_change_tol_schedule entries must be "
+                "loss_change_tol:loss_patience"
+            )
+        loss_change_tol = _normalize_finite_float(
+            f"lbfgsb_loss_change_tol_schedule entry {position} loss_change_tol",
+            pieces[0],
+        )
+        if loss_change_tol < 0.0:
+            raise ValueError(
+                "lbfgsb_loss_change_tol_schedule loss_change_tol values must "
+                "be non-negative"
+            )
+        loss_patience = _normalize_positive_int(
+            f"lbfgsb_loss_change_tol_schedule entry {position} loss_patience",
+            pieces[1],
+        )
+        phases.append(
+            LossStopPhase(
+                loss_change_tol=loss_change_tol,
+                loss_patience=loss_patience,
+            )
+        )
+    return tuple(phases)
+
+
+def _normalize_optional_loss_stop_schedule(value: str | None) -> str | None:
+    if value is None:
+        return None
+    return ",".join(phase.spec() for phase in loss_stop_schedule_specs(value))
+
 
 def _normalize_workflow_batch_packing(value: str | None) -> str:
     if value is None:
@@ -643,6 +699,7 @@ class RunConfig:
     lbfgsb_high_kkt_stop_min_fallbacks: int = 1
     lbfgsb_fallback_max_coordinates: int = 16
     lbfgsb_fallback_max_loss_evals: int | None = None
+    lbfgsb_loss_change_tol_schedule: str | None = None
     fd_hessian_epsilon: float = 1e-3
     fd_newton_damping: float = 1e-3
     adaptive_rebatch: bool = False
@@ -813,6 +870,9 @@ class RunConfig:
         self.lbfgsb_fallback_max_loss_evals = _normalize_optional_positive_int(
             "lbfgsb_fallback_max_loss_evals",
             self.lbfgsb_fallback_max_loss_evals,
+        )
+        self.lbfgsb_loss_change_tol_schedule = _normalize_optional_loss_stop_schedule(
+            self.lbfgsb_loss_change_tol_schedule,
         )
         self.loss_patience = _normalize_nonnegative_int(
             "loss_patience",

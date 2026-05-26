@@ -41,12 +41,14 @@ from .checkpoint import (
 )
 from .config import (
     AdagradRestartPhase,
+    LossStopPhase,
     RunConfig,
     adagrad_restart_schedule_specs,
     adagrad_restart_schedule_total_steps,
     effective_final_check_iters,
     effective_final_check_iters_e,
     effective_route_metadata,
+    loss_stop_schedule_specs,
 )
 from .diagnostics import (
     append_jsonl,
@@ -373,6 +375,7 @@ class _ResumeState:
     converged_family_indices: tuple[int, ...] = ()
     batch_plan_generation: int = 0
     lbfgsb_fallback_used_count: int = 0
+    lbfgsb_loss_schedule_index: int = 0
 
 
 _FINAL_ARTIFACT_FILES = (
@@ -673,6 +676,14 @@ def _resume_state_from_payload(path: Path, payload: dict[str, Any]) -> _ResumeSt
                 path,
                 "status.lbfgsb_fallback_used_count",
                 ckpt_status.get("lbfgsb_fallback_used_count", MISSING),
+                default=0,
+            )
+        ),
+        lbfgsb_loss_schedule_index=int(
+            checkpoint_nonnegative_int(
+                path,
+                "status.lbfgsb_loss_schedule_index",
+                ckpt_status.get("lbfgsb_loss_schedule_index", MISSING),
                 default=0,
             )
         ),
@@ -2815,6 +2826,12 @@ class OptimizationRunner:
         previous_objective: float | None = None
         stable_loss_steps = 0
         lbfgsb_fallback_used_count = 0
+        lbfgsb_loss_schedule: tuple[LossStopPhase, ...] = (
+            loss_stop_schedule_specs(config.lbfgsb_loss_change_tol_schedule)
+            if config.lbfgsb_loss_change_tol_schedule is not None
+            else ()
+        )
+        lbfgsb_loss_schedule_index = 0
         start_step = 0
         active_batch_index = 0
         active_batch_local_step = 0
@@ -3000,6 +3017,10 @@ class OptimizationRunner:
                 previous_objective = resume_state.previous_objective
                 stable_loss_steps = resume_state.stable_loss_steps
                 lbfgsb_fallback_used_count = resume_state.lbfgsb_fallback_used_count
+                lbfgsb_loss_schedule_index = min(
+                    int(resume_state.lbfgsb_loss_schedule_index),
+                    max(0, len(lbfgsb_loss_schedule) - 1),
+                )
                 resume_status = checkpoint_status_dict(config.resume_from, resume_payload)
                 if (
                     start_step < config.steps
@@ -4082,7 +4103,29 @@ class OptimizationRunner:
                     if active_objective_scope
                     else 1
                 )
-                loss_change_tol_bits = config.loss_change_tol * active_family_count
+                effective_loss_change_tol = float(config.loss_change_tol)
+                effective_loss_patience = int(config.loss_patience)
+                if phase == "lbfgsb" and lbfgsb_loss_schedule:
+                    lbfgsb_loss_schedule_index = min(
+                        lbfgsb_loss_schedule_index,
+                        len(lbfgsb_loss_schedule) - 1,
+                    )
+                    loss_phase = lbfgsb_loss_schedule[lbfgsb_loss_schedule_index]
+                    effective_loss_change_tol = float(loss_phase.loss_change_tol)
+                    effective_loss_patience = int(loss_phase.loss_patience)
+                    metrics["optimizer/lbfgsb_loss_schedule_index"] = float(
+                        lbfgsb_loss_schedule_index
+                    )
+                    metrics["optimizer/lbfgsb_loss_schedule_phases"] = float(
+                        len(lbfgsb_loss_schedule)
+                    )
+                    metrics["optimizer/lbfgsb_loss_schedule_active_tol"] = (
+                        effective_loss_change_tol
+                    )
+                    metrics["optimizer/lbfgsb_loss_schedule_active_patience"] = (
+                        float(effective_loss_patience)
+                    )
+                loss_change_tol_bits = effective_loss_change_tol * active_family_count
                 best_likelihood_min_delta_bits = (
                     config.best_likelihood_min_delta * active_family_count
                 )
@@ -4309,6 +4352,35 @@ class OptimizationRunner:
                             "reason": "lbfgsb_high_kkt_tiny_progress_patience",
                         }
 
+                lbfgsb_loss_schedule_next_index: int | None = None
+                if (
+                    phase == "lbfgsb"
+                    and lbfgsb_loss_schedule
+                    and lbfgsb_high_kkt_status is None
+                    and effective_loss_patience
+                    and stable_loss_steps >= effective_loss_patience
+                    and lbfgsb_loss_schedule_index + 1
+                    < len(lbfgsb_loss_schedule)
+                ):
+                    lbfgsb_loss_schedule_next_index = (
+                        lbfgsb_loss_schedule_index + 1
+                    )
+                    next_loss_phase = lbfgsb_loss_schedule[
+                        lbfgsb_loss_schedule_next_index
+                    ]
+                    metrics["optimizer/lbfgsb_loss_schedule_advance"] = True
+                    metrics["optimizer/lbfgsb_loss_schedule_next_index"] = float(
+                        lbfgsb_loss_schedule_next_index
+                    )
+                    metrics["optimizer/lbfgsb_loss_schedule_next_tol"] = float(
+                        next_loss_phase.loss_change_tol
+                    )
+                    metrics["optimizer/lbfgsb_loss_schedule_next_patience"] = float(
+                        next_loss_phase.loss_patience
+                    )
+                elif phase == "lbfgsb" and lbfgsb_loss_schedule:
+                    metrics["optimizer/lbfgsb_loss_schedule_advance"] = False
+
                 row = {
                     "step": step,
                     "optimizer/phase": phase,
@@ -4335,6 +4407,14 @@ class OptimizationRunner:
                     "stable_loss_steps": stable_loss_steps,
                     "lbfgsb_fallback_used_count": lbfgsb_fallback_used_count,
                 }
+                if lbfgsb_loss_schedule:
+                    checkpoint_status["lbfgsb_loss_schedule_index"] = (
+                        lbfgsb_loss_schedule_index
+                        if lbfgsb_loss_schedule_next_index is None
+                        else lbfgsb_loss_schedule_next_index
+                    )
+                    if lbfgsb_loss_schedule_next_index is not None:
+                        checkpoint_status["stable_loss_steps"] = 0
                 if active_objective_scope:
                     checkpoint_status["active_batch_index"] = active_batch_index
                     checkpoint_status["active_solver_stage"] = active_solver_stage
@@ -4575,7 +4655,7 @@ class OptimizationRunner:
                         loss_patience=(
                             _active_batch_patience(config.loss_patience)
                             if active_objective_scope
-                            else None
+                            else effective_loss_patience
                         ),
                         best_likelihood_patience=(
                             _active_batch_patience(config.best_likelihood_patience)
@@ -4585,6 +4665,11 @@ class OptimizationRunner:
                     )
                 if lbfgsb_high_kkt_status is not None:
                     step_status = lbfgsb_high_kkt_status
+                if lbfgsb_loss_schedule_next_index is not None:
+                    lbfgsb_loss_schedule_index = lbfgsb_loss_schedule_next_index
+                    stable_loss_steps = 0
+                    resume_info = {}
+                    continue
                 if projected_lbfgs_min_lr_reached:
                     status = {
                         "status": "not_converged",
@@ -5001,6 +5086,10 @@ class OptimizationRunner:
                 "stable_loss_steps": stable_loss_steps,
                 "lbfgsb_fallback_used_count": lbfgsb_fallback_used_count,
             }
+            if lbfgsb_loss_schedule:
+                final_status["lbfgsb_loss_schedule_index"] = (
+                    lbfgsb_loss_schedule_index
+                )
             if final_improved:
                 self._save_status(
                     best_checkpoint,
