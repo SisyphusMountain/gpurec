@@ -174,8 +174,10 @@ Gates:
 
 ### Step 3: Make E Solver Shape Explicit
 
-Current `E_fixed_point()` infers `N` from `max_transfer_mat`, `log_pS`,
-`log_pD`, and `log_pL`.  Replace that with an explicit `e_shape` or use
+`E_fixed_point()` now accepts an explicit `e_shape`, and resident/chunked model
+callers pass the shape derived from `ParameterLayout` instead of relying on
+parameter-shape inference.  The legacy inference remains for direct low-level
+callers until every supported path supplies an explicit layout or
 `UniformRates.e_rows`.
 
 Internal behavior should become:
@@ -183,7 +185,7 @@ Internal behavior should become:
 - global/specieswise: E shape `[S]`;
 - genewise: E shape `[G, S]`.
 
-Keep `E_step()` math unchanged at first.  Remove only the N-detection branches
+`E_step()` math is unchanged.  Remove the remaining N-detection branches only
 after tests prove all supported callers supply explicit layout.
 
 Gates:

@@ -184,6 +184,62 @@ def test_e_fixed_point_rejects_invalid_ancestors_t_before_iterations():
     assert progress_calls == []
 
 
+def test_e_fixed_point_uses_explicit_e_shape_for_initial_state():
+    dtype = torch.float64
+    species_helpers = {
+        "S": 3,
+        "s_P_indexes": torch.tensor([0, 3], dtype=torch.long),
+        "s_C12_indexes": torch.tensor([1, 2], dtype=torch.long),
+    }
+
+    result = E_fixed_point(
+        species_helpers=species_helpers,
+        log_pS=torch.tensor(0.0, dtype=dtype),
+        log_pD=torch.tensor(0.0, dtype=dtype),
+        log_pL=torch.tensor(0.0, dtype=dtype),
+        max_transfer_mat=torch.zeros(3, dtype=dtype),
+        max_iters=1,
+        tolerance=-1.0,
+        warm_start_E=None,
+        dtype=dtype,
+        device=torch.device("cpu"),
+        ancestors_T=torch.eye(3, dtype=dtype),
+        e_shape=(2, 3),
+    )
+
+    assert result["E"].shape == (2, 3)
+    assert result["E_bar"].shape == (2, 3)
+
+
+def test_e_fixed_point_rejects_warm_start_that_conflicts_with_explicit_e_shape():
+    dtype = torch.float64
+    species_helpers = {
+        "S": 3,
+        "s_P_indexes": torch.tensor([0], dtype=torch.long),
+        "s_C12_indexes": torch.tensor([1, 2], dtype=torch.long),
+    }
+    progress_calls = []
+
+    with pytest.raises(ValueError, match="warm_start_E shape"):
+        E_fixed_point(
+            species_helpers=species_helpers,
+            log_pS=torch.zeros(3, dtype=dtype),
+            log_pD=torch.zeros(3, dtype=dtype),
+            log_pL=torch.zeros(3, dtype=dtype),
+            max_transfer_mat=torch.zeros(3, dtype=dtype),
+            max_iters=1,
+            tolerance=-1.0,
+            warm_start_E=torch.zeros(2, 3, dtype=dtype),
+            dtype=dtype,
+            device=torch.device("cpu"),
+            ancestors_T=torch.eye(3, dtype=dtype),
+            progress_callback=lambda *_args: progress_calls.append(_args),
+            e_shape=(3,),
+        )
+
+    assert progress_calls == []
+
+
 def test_weighted_origination_likelihood_matches_manual_formula():
     dtype = torch.float64
     Pi = torch.tensor(

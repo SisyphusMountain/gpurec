@@ -3,6 +3,9 @@
 The heavy Pi forward/backward code lives in forward.py and backward.py;
 this module owns E_step, E_fixed_point, and compute_nll.
 """
+from collections.abc import Sequence
+from numbers import Integral
+
 import torch
 import math
 
@@ -67,6 +70,36 @@ def _require_ancestors_T(
             f"got {ancestors_T.dtype}"
         )
     return ancestors_T
+
+
+def _normalize_e_shape(
+    e_shape: Sequence[int] | None,
+    *,
+    S: int,
+) -> tuple[int, ...] | None:
+    if e_shape is None:
+        return None
+    if isinstance(e_shape, (str, bytes)):
+        raise ValueError("e_shape must be (S,) or (N, S)")
+    try:
+        raw_dims = tuple(e_shape)
+    except TypeError as exc:
+        raise ValueError("e_shape must be (S,) or (N, S)") from exc
+    dims: list[int] = []
+    for dim in raw_dims:
+        if isinstance(dim, bool) or not isinstance(dim, Integral):
+            raise ValueError("e_shape dimensions must be integers")
+        dims.append(int(dim))
+    shape = tuple(dims)
+    if shape == (int(S),):
+        return shape
+    if len(shape) == 2 and shape[0] > 0 and shape[1] == int(S):
+        return shape
+    raise ValueError(f"e_shape must be ({int(S)},) or (N, {int(S)}), got {shape}")
+
+
+def _tensor_shape(tensor: torch.Tensor) -> tuple[int, ...]:
+    return tuple(int(dim) for dim in tensor.shape)
 
 
 def E_step(
@@ -162,7 +195,8 @@ def E_fixed_point(species_helpers,
                           progress_callback=None,
                           trace_logsumexp: bool = False,
                           check_interval: int = 1,
-                          convergence_metric: str = "max_diff"):
+                          convergence_metric: str = "max_diff",
+                          e_shape: Sequence[int] | None = None):
     S = species_helpers['S']
     ancestors_T = _require_ancestors_T(
         ancestors_T,
@@ -170,27 +204,52 @@ def E_fixed_point(species_helpers,
         device=device,
         dtype=dtype,
     )
+    expected_e_shape = _normalize_e_shape(e_shape, S=int(S))
 
     # Determine batch size from parameters if present
     N = None
-    if isinstance(max_transfer_mat, torch.Tensor) and max_transfer_mat.ndim >= 2:
-        N = max_transfer_mat.shape[0]
-    elif isinstance(log_pS, torch.Tensor) and log_pS.ndim == 2:
-        N = log_pS.shape[0]
-    # If parameters are per-gene scalars (shape [N]) in the genewise/non-specieswise case,
-    # infer N from their length when it differs from S.
-    if N is None and isinstance(log_pS, torch.Tensor) and log_pS.ndim == 1 and log_pS.shape[0] != S:
-        N = log_pS.shape[0]
-    if N is None and isinstance(log_pD, torch.Tensor) and log_pD.ndim == 1 and log_pD.shape[0] != S:
-        N = log_pD.shape[0]
-    if N is None and isinstance(log_pL, torch.Tensor) and log_pL.ndim == 1 and log_pL.shape[0] != S:
-        N = log_pL.shape[0]
+    if expected_e_shape is None:
+        if isinstance(max_transfer_mat, torch.Tensor) and max_transfer_mat.ndim >= 2:
+            N = max_transfer_mat.shape[0]
+        elif isinstance(log_pS, torch.Tensor) and log_pS.ndim == 2:
+            N = log_pS.shape[0]
+        # If parameters are per-gene scalars (shape [N]) in the
+        # genewise/non-specieswise case, infer N from their length when it
+        # differs from S.
+        if (
+            N is None
+            and isinstance(log_pS, torch.Tensor)
+            and log_pS.ndim == 1
+            and log_pS.shape[0] != S
+        ):
+            N = log_pS.shape[0]
+        if (
+            N is None
+            and isinstance(log_pD, torch.Tensor)
+            and log_pD.ndim == 1
+            and log_pD.shape[0] != S
+        ):
+            N = log_pD.shape[0]
+        if (
+            N is None
+            and isinstance(log_pL, torch.Tensor)
+            and log_pL.ndim == 1
+            and log_pL.shape[0] != S
+        ):
+            N = log_pL.shape[0]
 
     # Initialize with log(0.5), or use a warm-start value if available
     if warm_start_E is not None:
         E = warm_start_E.detach()
+        if expected_e_shape is not None and _tensor_shape(E) != expected_e_shape:
+            raise ValueError(
+                "warm_start_E shape must match explicit e_shape "
+                f"{expected_e_shape}, got {_tensor_shape(E)}"
+            )
     else:
-        if N is None:
+        if expected_e_shape is not None:
+            E = torch.full(expected_e_shape, -1.0, dtype=dtype, device=device)
+        elif N is None:
             E = torch.full((S,), -1.0, dtype=dtype, device=device)  # log2(0.5)
         else:
             E = torch.full((N, S), -1.0, dtype=dtype, device=device)  # log2(0.5)

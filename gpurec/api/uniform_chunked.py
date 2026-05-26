@@ -532,6 +532,7 @@ def _evaluate_chunked_uniform_result(
             dtype=state.dtype,
             device=state.device,
             ancestors_T=state.ancestors_T,
+            e_shape=(int(state.species_helpers["S"]),),
         ),
     )
     state.warm_E = e_out["E"].detach() if state.warm_start_E else None

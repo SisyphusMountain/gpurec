@@ -220,6 +220,51 @@ def test_evaluate_static_state_no_grad_delegates_to_resident_evaluator(monkeypat
     assert calls[0]["per_family"] is True
 
 
+@pytest.mark.parametrize(
+    ("genewise", "specieswise", "theta", "expected_e_shape"),
+    [
+        (False, False, torch.zeros(3, dtype=torch.float64), (3,)),
+        (False, True, torch.zeros(3, 3, dtype=torch.float64), (3,)),
+        (True, False, torch.zeros(2, 3, dtype=torch.float64), (2, 3)),
+    ],
+)
+def test_solve_resident_e_passes_layout_e_shape(
+    monkeypatch,
+    genewise: bool,
+    specieswise: bool,
+    theta: torch.Tensor,
+    expected_e_shape: tuple[int, ...],
+):
+    static = SimpleNamespace(
+        wave_layout={"root_clade_ids": torch.tensor([4, 9], dtype=torch.long)},
+        species_helpers={"S": 3},
+        unnorm_row_max=torch.zeros(3, dtype=torch.float64),
+        genewise=genewise,
+        specieswise=specieswise,
+        device=torch.device("cpu"),
+        dtype=torch.float64,
+        fixed_iters_E=1,
+        max_iters_E=4,
+        tol_E=1e-8,
+        adaptive_iters=False,
+        e_logsumexp_tol=1e-5,
+        convergence_check_interval=2,
+        ancestors_T=torch.eye(3, dtype=torch.float64),
+    )
+    calls: list[dict[str, object]] = []
+
+    def fake_e_fixed_point(**kwargs):
+        calls.append(kwargs)
+        return {"E": torch.full(expected_e_shape, -1.0), "iterations": 1}
+
+    monkeypatch.setattr(api_autograd, "E_fixed_point", fake_e_fixed_point)
+
+    result = api_autograd.solve_resident_e(static, theta)
+
+    assert result.e_out["E"].shape == expected_e_shape
+    assert calls[0]["e_shape"] == expected_e_shape
+
+
 def test_shared_no_grad_full_loss_reuses_pi_scratch(monkeypatch):
     model = api_model.GeneReconModel.__new__(api_model.GeneReconModel)
     torch.nn.Module.__init__(model)

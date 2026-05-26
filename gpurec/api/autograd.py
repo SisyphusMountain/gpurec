@@ -26,6 +26,7 @@ from gpurec.core.forward import (
 from gpurec.core._helpers import _nvtx_range
 from gpurec.core.extract_parameters import extract_parameters_uniform
 from gpurec.core.origination import PreparedOriginationPrior
+from gpurec.core.parameter_layout import ParameterLayout, RateMode
 from gpurec.optimization.implicit_grad import (
     implicit_grad_loglik_vjp_wave,
 )
@@ -127,6 +128,27 @@ def _extract_parameters(theta: torch.Tensor, static: ReconStaticState):
             genewise=static.genewise,
         )
     )
+
+
+def _static_family_count(static: ReconStaticState) -> int:
+    roots = static.wave_layout.get("root_clade_ids")
+    if torch.is_tensor(roots):
+        return int(roots.numel())
+    if roots is None:
+        raise ValueError("static wave layout is missing root_clade_ids")
+    return len(roots)
+
+
+def _e_shape_for_static(static: ReconStaticState) -> tuple[int, ...]:
+    layout = ParameterLayout.for_mode(
+        RateMode.from_flags(
+            genewise=bool(static.genewise),
+            specieswise=bool(static.specieswise),
+        ),
+        species_count=int(static.species_helpers["S"]),
+        family_count=_static_family_count(static),
+    )
+    return layout.e_shape
 
 
 def _record_forward_solver_stats(
@@ -324,6 +346,7 @@ def solve_resident_e(
         ancestors_T=static.ancestors_T,
         check_interval=static.convergence_check_interval,
         convergence_metric="logsumexp" if static.adaptive_iters else "max_diff",
+        e_shape=_e_shape_for_static(static),
     )
     return ResidentESolveResult(
         theta=theta_eval,

@@ -177,6 +177,13 @@ class ParameterLayout:
             return self.species_indices
         return tuple(self.family_indices)
 
+    @property
+    def e_shape(self) -> tuple[int, ...]:
+        """Expected extinction-probability shape for this active layout."""
+        if self.mode is RateMode.GENEWISE:
+            return (len(self.family_indices), self.species_count)
+        return (self.species_count,)
+
     def validate_theta_shape(
         self,
         theta_or_shape: Any,
@@ -200,6 +207,7 @@ class ParameterLayout:
             "theta_shape": list(self.theta_shape),
             "row_axis": self.row_axis,
             "shared_across_families": self.shared_across_families,
+            "e_shape": [int(dim) for dim in self.e_shape],
             "family_indices": [int(index) for index in self.family_indices],
             "species_indices": [int(index) for index in self.species_indices],
             "theta_row_indices": [int(index) for index in self.theta_row_indices],

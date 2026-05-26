@@ -36,6 +36,7 @@ def test_global_layout_contract_has_no_theta_row_axis() -> None:
     assert layout.theta_shape == (3,)
     assert layout.row_axis is None
     assert layout.shared_across_families is True
+    assert layout.e_shape == (4,)
     assert layout.family_indices == (2, 0)
     assert layout.species_indices == (0, 1, 2, 3)
     assert layout.theta_row_indices == ()
@@ -45,6 +46,7 @@ def test_global_layout_contract_has_no_theta_row_axis() -> None:
         "theta_shape": [3],
         "row_axis": None,
         "shared_across_families": True,
+        "e_shape": [4],
         "family_indices": [2, 0],
         "species_indices": [0, 1, 2, 3],
         "theta_row_indices": [],
@@ -62,6 +64,7 @@ def test_specieswise_layout_contract_exposes_species_rows() -> None:
     assert layout.theta_shape == (4, 3)
     assert layout.row_axis == "species"
     assert layout.shared_across_families is True
+    assert layout.e_shape == (4,)
     assert layout.family_indices == (1,)
     assert layout.species_indices == (0, 1, 2, 3)
     assert layout.theta_row_indices == (0, 1, 2, 3)
@@ -79,6 +82,7 @@ def test_genewise_layout_contract_exposes_active_family_rows() -> None:
     assert layout.theta_shape == (5, 3)
     assert layout.row_axis == "family"
     assert layout.shared_across_families is False
+    assert layout.e_shape == (2, 4)
     assert layout.family_indices == (4, 2)
     assert layout.species_indices == (0, 1, 2, 3)
     assert layout.theta_row_indices == (4, 2)
