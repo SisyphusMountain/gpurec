@@ -318,6 +318,10 @@ Main outputs include:
 - `rates_final.tsv`, `theta_final.pt`, `summary.json`
 - `per_fam_likelihoods.tsv` for genewise runs
 
+See [`docs/output-artifacts.md`](docs/output-artifacts.md) for the output
+artifact contract, including history fields, checkpoint contents, rate-table
+columns, genewise per-family likelihoods, and sampling files.
+
 History rows include aggregate `solver/*` telemetry when the model reports
 solver statistics.  E-adjoint nonconvergence is diagnostic-only: the retained
 BiCGSTAB solve returns its best iterate with `success=False`, optimization

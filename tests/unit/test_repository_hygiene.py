@@ -1367,6 +1367,43 @@ def test_production_optimization_guide_is_linked_and_documents_routes():
         assert token in normalized
 
 
+def test_output_artifact_reference_is_linked_and_documents_contract():
+    root = Path(__file__).resolve().parents[2]
+    project_readme = (root / "README.md").read_text(encoding="utf-8")
+    docs_readme = (root / "docs" / "README.md").read_text(encoding="utf-8")
+    guide = (root / "docs" / "production-optimization-guide.md").read_text(
+        encoding="utf-8"
+    )
+    reference = (root / "docs" / "output-artifacts.md").read_text(
+        encoding="utf-8"
+    )
+    normalized = " ".join(reference.split())
+
+    assert "docs/output-artifacts.md" in project_readme
+    assert "output-artifacts.md" in docs_readme
+    assert "`docs/output-artifacts.md`" in guide
+    for token in (
+        "staged publish step",
+        "`history.jsonl`",
+        "`optimization_history.csv`",
+        "`summary.json`",
+        "`rates_final.tsv`",
+        "`per_fam_likelihoods.tsv`",
+        "`theta_final.pt`",
+        "`checkpoints/latest.pt`",
+        "`checkpoints/best.pt`",
+        "`likelihood/data_nll_bits`",
+        "`grad/projected_inf`",
+        "`optimizer/adagrad_restart_*`",
+        "Strict JSON",
+        "family ordering",
+        "`reconciliations/event_counts.tsv`",
+        "`reconciliations/totalSpeciesEventCounts.txt`",
+        "`reconciliations/all/*_sample_*.xml`",
+    ):
+        assert token in normalized
+
+
 def test_optimization_workflow_call_graph_documents_current_cli_and_optimizers():
     root = Path(__file__).resolve().parents[2]
     docs_readme = (root / "docs" / "README.md").read_text(encoding="utf-8")

@@ -163,6 +163,9 @@ Inspect these outputs first:
 - `rates_final.tsv`: final D/T/L rates and theta values.
 - `per_fam_likelihoods.tsv`: genewise-only final per-family NLLs.
 
+The complete optimization, checkpoint, rate-table, and sampling output contract
+is maintained in `docs/output-artifacts.md`.
+
 Resume uses checkpoint `next_step`. If `next_step` already equals configured
 `steps`, the runner performs the final evaluation/artifact refresh only.
 
