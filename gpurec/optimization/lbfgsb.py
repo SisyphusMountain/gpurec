@@ -58,6 +58,7 @@ class LBFGSB(Optimizer):
         cg_tol: float = 1e-4,
         fallback_max_ls: int | None = None,
         fallback_max_coordinates: int = 16,
+        fallback_max_loss_evals: int | None = None,
     ) -> None:
         if lr <= 0.0:
             raise ValueError(f"Invalid learning rate: {lr}")
@@ -83,6 +84,10 @@ class LBFGSB(Optimizer):
             raise ValueError("fallback_max_ls must be positive when provided")
         if fallback_max_coordinates < 0:
             raise ValueError("fallback_max_coordinates must be non-negative")
+        if fallback_max_loss_evals is not None and fallback_max_loss_evals < 1:
+            raise ValueError(
+                "fallback_max_loss_evals must be positive when provided"
+            )
 
         defaults = {
             "lr": float(lr),
@@ -104,6 +109,11 @@ class LBFGSB(Optimizer):
                 else int(fallback_max_ls)
             ),
             "fallback_max_coordinates": int(fallback_max_coordinates),
+            "fallback_max_loss_evals": (
+                None
+                if fallback_max_loss_evals is None
+                else int(fallback_max_loss_evals)
+            ),
         }
         super().__init__(params, defaults)
 
@@ -687,7 +697,10 @@ class LBFGSB(Optimizer):
         tolerance_change: float,
         topk_sizes: tuple[int, ...] | None = None,
         competitive: bool = True,
+        max_loss_evals: int | None = None,
     ) -> tuple[_LineSearchResult | None, str, int]:
+        if max_loss_evals is not None and max_loss_evals <= 0:
+            return None, "none", 0
         if topk_sizes is None:
             topk_sizes = tuple(
                 size
@@ -696,7 +709,7 @@ class LBFGSB(Optimizer):
             )
         total_loss_evals = 0
 
-        def probe(topk_size: int) -> _LineSearchResult | None:
+        def probe(topk_size: int, *, probe_max_ls: int) -> _LineSearchResult | None:
             direction = self._projected_gradient_topk_sign_direction(
                 flat,
                 projected_grad,
@@ -721,7 +734,7 @@ class LBFGSB(Optimizer):
                 lower_bound=lower_bound,
                 upper_bound=upper_bound,
                 initial_alpha=max(float(initial_alpha), 4.0),
-                max_ls=max_ls,
+                max_ls=probe_max_ls,
                 c1=c1,
                 shrink=shrink,
                 tolerance_change=tolerance_change,
@@ -730,7 +743,16 @@ class LBFGSB(Optimizer):
         best_search: _LineSearchResult | None = None
         best_kind = "none"
         for topk_size in topk_sizes:
-            search = probe(topk_size)
+            remaining = self._remaining_loss_eval_budget(
+                max_loss_evals,
+                total_loss_evals,
+            )
+            if remaining is not None and remaining <= 0:
+                break
+            probe_max_ls = max_ls if remaining is None else min(max_ls, remaining)
+            if probe_max_ls <= 0:
+                break
+            search = probe(topk_size, probe_max_ls=probe_max_ls)
             if search is None:
                 continue
             total_loss_evals += search.loss_evals
@@ -763,7 +785,10 @@ class LBFGSB(Optimizer):
         c1: float,
         shrink: float,
         tolerance_change: float,
+        max_loss_evals: int | None = None,
     ) -> tuple[_LineSearchResult | None, str, int]:
+        if max_loss_evals is not None and max_loss_evals <= 0:
+            return None, "none", 0
         if projected_grad.numel() == 0 or max_coordinates <= 0:
             return None, "none", 0
         values = projected_grad.abs()
@@ -800,9 +825,21 @@ class LBFGSB(Optimizer):
 
         alpha = max(float(initial_alpha), 4.0)
         for _ in range(coordinate_max_ls):
+            remaining = self._remaining_loss_eval_budget(
+                max_loss_evals,
+                total_loss_evals,
+            )
+            if remaining is not None and remaining <= 0:
+                break
             best_at_alpha: _LineSearchResult | None = None
             best_at_alpha_kind = "none"
             for rank, direction in directions:
+                remaining = self._remaining_loss_eval_budget(
+                    max_loss_evals,
+                    total_loss_evals,
+                )
+                if remaining is not None and remaining <= 0:
+                    break
                 search = self._backtracking_line_search(
                     closure=closure,
                     loss_closure=loss_closure,
@@ -838,6 +875,15 @@ class LBFGSB(Optimizer):
         if best_overall is not None:
             return best_overall, best_overall_kind, total_loss_evals
         return None, "none", total_loss_evals
+
+    @staticmethod
+    def _remaining_loss_eval_budget(
+        max_loss_evals: int | None,
+        used_loss_evals: int,
+    ) -> int | None:
+        if max_loss_evals is None:
+            return None
+        return max(0, int(max_loss_evals) - int(used_loss_evals))
 
     def _loss_resolution(self, loss: Tensor) -> float:
         if torch.is_floating_point(loss):
@@ -904,11 +950,23 @@ class LBFGSB(Optimizer):
         shrink: float,
         tolerance_change: float,
         max_coordinates: int = 16,
+        max_loss_evals: int | None = None,
     ) -> tuple[_LineSearchResult, str, int]:
         best_search = current_search
         best_kind = current_kind
         total_loss_evals = 0
         alternative_max_ls = min(max_ls, 8)
+
+        def remaining_budget() -> int | None:
+            return self._remaining_loss_eval_budget(
+                max_loss_evals,
+                total_loss_evals,
+            )
+
+        def capped_max_ls(value: int) -> int:
+            remaining = remaining_budget()
+            return int(value) if remaining is None else min(int(value), remaining)
+
         if not self._fallback_needs_competition(
             best_search,
             flat=flat,
@@ -926,32 +984,34 @@ class LBFGSB(Optimizer):
         if torch.isfinite(direction).all() and bool((direction != 0).any()):
             gtd = torch.dot(grad, direction)
             if torch.isfinite(gtd) and float(gtd.detach().cpu()) < -1e-12:
-                sign_search = self._backtracking_line_search(
-                    closure=closure,
-                    loss_closure=loss_closure,
-                    flat=flat,
-                    loss=loss,
-                    grad=grad,
-                    direction=direction,
-                    lower_bound=lower_bound,
-                    upper_bound=upper_bound,
-                    initial_alpha=self._adaptive_projected_gradient_alpha(
-                        state,
-                        lr=lr,
+                sign_max_ls = capped_max_ls(alternative_max_ls)
+                if sign_max_ls > 0:
+                    sign_search = self._backtracking_line_search(
+                        closure=closure,
+                        loss_closure=loss_closure,
+                        flat=flat,
+                        loss=loss,
+                        grad=grad,
+                        direction=direction,
+                        lower_bound=lower_bound,
+                        upper_bound=upper_bound,
+                        initial_alpha=self._adaptive_projected_gradient_alpha(
+                            state,
+                            lr=lr,
+                            shrink=shrink,
+                        ),
+                        max_ls=sign_max_ls,
+                        c1=c1,
                         shrink=shrink,
-                    ),
-                    max_ls=alternative_max_ls,
-                    c1=c1,
-                    shrink=shrink,
-                    tolerance_change=tolerance_change,
-                )
-                total_loss_evals += sign_search.loss_evals
-                if sign_search.accepted and (
-                    not best_search.accepted
-                    or sign_search.decrease > best_search.decrease
-                ):
-                    best_search = sign_search
-                    best_kind = "projected_gradient_sign_fallback"
+                        tolerance_change=tolerance_change,
+                    )
+                    total_loss_evals += sign_search.loss_evals
+                    if sign_search.accepted and (
+                        not best_search.accepted
+                        or sign_search.decrease > best_search.decrease
+                    ):
+                        best_search = sign_search
+                        best_kind = "projected_gradient_sign_fallback"
 
         if self._fallback_needs_competition(
             best_search,
@@ -960,6 +1020,7 @@ class LBFGSB(Optimizer):
             tolerance_change=tolerance_change,
         ):
             topk_sizes = self._topk_sign_fallback_sizes(int(projected_grad.numel()))
+            remaining = remaining_budget()
             topk_search, topk_kind, topk_loss_evals = (
                 self._topk_sign_fallback_search(
                     closure=closure,
@@ -975,6 +1036,7 @@ class LBFGSB(Optimizer):
                     c1=c1,
                     shrink=shrink,
                     tolerance_change=tolerance_change,
+                    max_loss_evals=remaining,
                 )
             )
             total_loss_evals += topk_loss_evals
@@ -1007,6 +1069,7 @@ class LBFGSB(Optimizer):
                         c1=c1,
                         shrink=shrink,
                         tolerance_change=tolerance_change,
+                        max_loss_evals=remaining_budget(),
                     )
                 )
                 total_loss_evals += coord_loss_evals
@@ -1036,6 +1099,7 @@ class LBFGSB(Optimizer):
                         tolerance_change=tolerance_change,
                         topk_sizes=large_topk_sizes,
                         competitive=False,
+                        max_loss_evals=remaining_budget(),
                     )
                 )
                 total_loss_evals += topk_loss_evals
@@ -1081,6 +1145,9 @@ class LBFGSB(Optimizer):
         fallback_attempted: bool,
         fallback_used: bool,
         fallback_alpha: float,
+        fallback_loss_evals: int,
+        fallback_max_loss_evals: int | None,
+        fallback_budget_exhausted: bool,
         fallback_reason: str,
         high_kkt_stall_count: int,
         history_cleared_for_fallback: bool,
@@ -1101,6 +1168,13 @@ class LBFGSB(Optimizer):
         state["last_fallback_attempted"] = bool(fallback_attempted)
         state["last_fallback_used"] = bool(fallback_used)
         state["last_fallback_alpha"] = float(fallback_alpha)
+        state["last_fallback_loss_evals"] = int(fallback_loss_evals)
+        state["last_fallback_max_loss_evals"] = (
+            None
+            if fallback_max_loss_evals is None
+            else int(fallback_max_loss_evals)
+        )
+        state["last_fallback_budget_exhausted"] = bool(fallback_budget_exhausted)
         state["last_fallback_reason"] = str(fallback_reason)
         state["last_high_kkt_stall_count"] = int(high_kkt_stall_count)
         state["last_history_cleared_for_fallback"] = bool(history_cleared_for_fallback)
@@ -1118,6 +1192,12 @@ class LBFGSB(Optimizer):
         max_ls = int(group["max_ls"])
         fallback_max_ls = int(group["fallback_max_ls"])
         fallback_max_coordinates = int(group.get("fallback_max_coordinates", 16))
+        fallback_max_loss_evals_raw = group.get("fallback_max_loss_evals")
+        fallback_max_loss_evals = (
+            None
+            if fallback_max_loss_evals_raw is None
+            else int(fallback_max_loss_evals_raw)
+        )
         c1 = float(group["c1"])
         shrink = float(group["shrink"])
         tolerance_grad = float(group["tolerance_grad"])
@@ -1152,6 +1232,7 @@ class LBFGSB(Optimizer):
         fallback_attempted = False
         fallback_used = False
         fallback_alpha = 0.0
+        fallback_loss_evals = 0
         fallback_reason = "none"
         history_cleared_for_fallback = False
         high_kkt_stall_count = int(state.get("consecutive_high_kkt_stalls", 0))
@@ -1225,6 +1306,20 @@ class LBFGSB(Optimizer):
             if (not torch.isfinite(gtd)) or float(gtd.detach().cpu()) >= -1e-12:
                 break
 
+            step_max_ls = fallback_max_ls if force_fallback else max_ls
+            if force_fallback:
+                remaining = self._remaining_loss_eval_budget(
+                    fallback_max_loss_evals,
+                    fallback_loss_evals,
+                )
+                step_max_ls = (
+                    fallback_max_ls
+                    if remaining is None
+                    else min(fallback_max_ls, remaining)
+                )
+                if step_max_ls <= 0:
+                    break
+
             search = self._backtracking_line_search(
                 closure=closure,
                 loss_closure=loss_closure,
@@ -1235,12 +1330,14 @@ class LBFGSB(Optimizer):
                 lower_bound=lower_bound,
                 upper_bound=upper_bound,
                 initial_alpha=initial_alpha,
-                max_ls=fallback_max_ls if force_fallback else max_ls,
+                max_ls=step_max_ls,
                 c1=c1,
                 shrink=shrink,
                 tolerance_change=tolerance_change,
             )
             loss_evals += search.loss_evals
+            if force_fallback:
+                fallback_loss_evals += search.loss_evals
 
             if force_fallback:
                 search, direction_kind, extra_loss_evals = (
@@ -1259,12 +1356,17 @@ class LBFGSB(Optimizer):
                         lr=lr,
                         max_ls=fallback_max_ls,
                         max_coordinates=fallback_max_coordinates,
+                        max_loss_evals=self._remaining_loss_eval_budget(
+                            fallback_max_loss_evals,
+                            fallback_loss_evals,
+                        ),
                         c1=c1,
                         shrink=shrink,
                         tolerance_change=tolerance_change,
                     )
                 )
                 loss_evals += extra_loss_evals
+                fallback_loss_evals += extra_loss_evals
 
             if not search.accepted and not force_fallback:
                 if old_dirs:
@@ -1285,6 +1387,17 @@ class LBFGSB(Optimizer):
                 gtd = torch.dot(grad, direction)
                 if (not torch.isfinite(gtd)) or float(gtd.detach().cpu()) >= -1e-12:
                     break
+                remaining = self._remaining_loss_eval_budget(
+                    fallback_max_loss_evals,
+                    fallback_loss_evals,
+                )
+                fallback_line_search_max_ls = (
+                    fallback_max_ls
+                    if remaining is None
+                    else min(fallback_max_ls, remaining)
+                )
+                if fallback_line_search_max_ls <= 0:
+                    break
                 search = self._backtracking_line_search(
                     closure=closure,
                     loss_closure=loss_closure,
@@ -1300,12 +1413,13 @@ class LBFGSB(Optimizer):
                         shrink=shrink,
                         upper_alpha=search.next_alpha,
                     ),
-                    max_ls=fallback_max_ls,
+                    max_ls=fallback_line_search_max_ls,
                     c1=c1,
                     shrink=shrink,
                     tolerance_change=tolerance_change,
                 )
                 loss_evals += search.loss_evals
+                fallback_loss_evals += search.loss_evals
                 search, direction_kind, extra_loss_evals = (
                     self._compete_projected_gradient_fallbacks(
                         closure=closure,
@@ -1322,12 +1436,17 @@ class LBFGSB(Optimizer):
                         lr=lr,
                         max_ls=fallback_max_ls,
                         max_coordinates=fallback_max_coordinates,
+                        max_loss_evals=self._remaining_loss_eval_budget(
+                            fallback_max_loss_evals,
+                            fallback_loss_evals,
+                        ),
                         c1=c1,
                         shrink=shrink,
                         tolerance_change=tolerance_change,
                     )
                 )
                 loss_evals += extra_loss_evals
+                fallback_loss_evals += extra_loss_evals
 
             if not search.accepted:
                 if projected_grad_inf > tolerance_grad:
@@ -1411,6 +1530,10 @@ class LBFGSB(Optimizer):
 
         if not accepted_any:
             self._set_flat_param(flat)
+        fallback_budget_exhausted = (
+            fallback_max_loss_evals is not None
+            and fallback_loss_evals >= fallback_max_loss_evals
+        )
 
         self._store_last_state(
             loss=loss,
@@ -1428,6 +1551,9 @@ class LBFGSB(Optimizer):
             fallback_attempted=fallback_attempted,
             fallback_used=fallback_used,
             fallback_alpha=fallback_alpha,
+            fallback_loss_evals=fallback_loss_evals,
+            fallback_max_loss_evals=fallback_max_loss_evals,
+            fallback_budget_exhausted=fallback_budget_exhausted,
             fallback_reason=fallback_reason,
             high_kkt_stall_count=high_kkt_stall_count,
             history_cleared_for_fallback=history_cleared_for_fallback,

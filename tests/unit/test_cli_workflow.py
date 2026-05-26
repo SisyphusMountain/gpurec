@@ -552,6 +552,8 @@ def test_cli_accepts_loss_stop_projected_grad_gate_override(tmp_path: Path):
             "1",
             "--lbfgsb-fallback-max-coordinates",
             "0",
+            "--lbfgsb-fallback-max-loss-evals",
+            "12",
         ]
     )
 
@@ -561,6 +563,7 @@ def test_cli_accepts_loss_stop_projected_grad_gate_override(tmp_path: Path):
     assert config.lbfgsb_high_kkt_stop_patience == 2
     assert config.lbfgsb_high_kkt_stop_min_fallbacks == 1
     assert config.lbfgsb_fallback_max_coordinates == 0
+    assert config.lbfgsb_fallback_max_loss_evals == 12
 
 
 def test_cli_config_template_prints_genewise_hessian_sgd_auto_defaults(capsys):

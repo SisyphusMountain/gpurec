@@ -8195,6 +8195,9 @@ def test_optimization_runner_lbfgsb_can_stop_before_second_high_kkt_fallback(
                     "last_fallback_attempted": fallback_used,
                     "last_fallback_used": fallback_used,
                     "last_fallback_alpha": 1.0 if fallback_used else 0.0,
+                    "last_fallback_loss_evals": 8 if fallback_used else 0,
+                    "last_fallback_max_loss_evals": 8,
+                    "last_fallback_budget_exhausted": fallback_used,
                     "last_fallback_reason": (
                         "high_kkt_tiny_progress" if fallback_used else "none"
                     ),
@@ -8222,6 +8225,7 @@ def test_optimization_runner_lbfgsb_can_stop_before_second_high_kkt_fallback(
         best_likelihood_patience=0,
         lbfgsb_high_kkt_stop_patience=2,
         lbfgsb_high_kkt_stop_min_fallbacks=1,
+        lbfgsb_fallback_max_loss_evals=8,
         solver_warmup_iters=0,
     )
     runner = ScriptedRunner(config)
@@ -8235,6 +8239,9 @@ def test_optimization_runner_lbfgsb_can_stop_before_second_high_kkt_fallback(
     ]
     assert len(optimizer_rows) == 2
     assert optimizer_rows[0]["optimizer/lbfgsb_fallback_used_count"] == 1.0
+    assert optimizer_rows[0]["optimizer/lbfgsb_fallback_loss_evals"] == 8.0
+    assert optimizer_rows[0]["optimizer/lbfgsb_fallback_max_loss_evals"] == 8.0
+    assert optimizer_rows[0]["optimizer/lbfgsb_fallback_budget_exhausted"] is True
     assert optimizer_rows[0]["optimizer/lbfgsb_high_kkt_stop_ready"] is False
     assert optimizer_rows[1]["optimizer/lbfgsb_fallback_used_count"] == 1.0
     assert optimizer_rows[1]["optimizer/lbfgsb_high_kkt_stop_ready"] is True

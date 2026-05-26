@@ -1107,6 +1107,7 @@ class OptimizationRunner:
                 active_tol=1e-7,
                 fallback_max_ls=config.lbfgs_max_ls,
                 fallback_max_coordinates=config.lbfgsb_fallback_max_coordinates,
+                fallback_max_loss_evals=config.lbfgsb_fallback_max_loss_evals,
             )
         if phase == "lbfgs":
             return torch.optim.LBFGS(
@@ -3493,6 +3494,19 @@ class OptimizationRunner:
                     metrics[f"optimizer/{metric_prefix}_fallback_alpha"] = float(
                         opt_state.get("last_fallback_alpha", 0.0)
                     )
+                    metrics[f"optimizer/{metric_prefix}_fallback_loss_evals"] = float(
+                        int(opt_state.get("last_fallback_loss_evals", 0))
+                    )
+                    fallback_max_loss_evals = opt_state.get(
+                        "last_fallback_max_loss_evals"
+                    )
+                    if fallback_max_loss_evals is not None:
+                        metrics[
+                            f"optimizer/{metric_prefix}_fallback_max_loss_evals"
+                        ] = float(int(fallback_max_loss_evals))
+                    metrics[
+                        f"optimizer/{metric_prefix}_fallback_budget_exhausted"
+                    ] = bool(opt_state.get("last_fallback_budget_exhausted", False))
                     metrics[f"optimizer/{metric_prefix}_fallback_reason"] = str(
                         opt_state.get("last_fallback_reason", "none")
                     )

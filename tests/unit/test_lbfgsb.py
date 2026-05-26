@@ -458,6 +458,65 @@ def test_coordinate_sign_fallback_search_scans_beyond_prefix(monkeypatch):
     assert max_ls_values == [1, 1, 1, 1, 1]
 
 
+def test_coordinate_sign_fallback_search_respects_loss_eval_budget(monkeypatch):
+    x = torch.nn.Parameter(torch.zeros(8, dtype=torch.float64))
+    optimizer = LBFGSB([x], lr=0.5, lower_bound=-10.0, upper_bound=10.0)
+    flat = x.detach().clone()
+    loss = torch.tensor(100.0, dtype=torch.float64)
+    grad = torch.tensor([8.0, -7.0, 6.0, -5.0, 4.0, -3.0, 2.0, -1.0])
+    grad = grad.to(dtype=torch.float64)
+    projected_grad = grad.clone()
+    calls: list[int] = []
+
+    def fake_backtracking_line_search(**kwargs):
+        direction = kwargs["direction"]
+        index = int(torch.nonzero(direction, as_tuple=False).flatten()[0].cpu())
+        calls.append(index)
+        delta = direction.detach().clone()
+        return _LineSearchResult(
+            accepted=False,
+            flat=flat + delta,
+            loss=loss,
+            alpha=1.0,
+            delta=delta,
+            directional_derivative=float(torch.dot(grad, delta).detach().cpu()),
+            step_inf=float(delta.abs().amax().detach().cpu()),
+            decrease=0.0,
+            loss_evals=1,
+            next_alpha=0.5,
+            armijo_required_decrease=0.0,
+        )
+
+    monkeypatch.setattr(
+        optimizer,
+        "_backtracking_line_search",
+        fake_backtracking_line_search,
+    )
+
+    search, kind, loss_evals = optimizer._coordinate_sign_fallback_search(
+        closure=lambda: loss,
+        loss_closure=lambda: loss,
+        flat=flat,
+        loss=loss,
+        grad=grad,
+        projected_grad=projected_grad,
+        lower_bound=-10.0,
+        upper_bound=10.0,
+        initial_alpha=0.5,
+        max_coordinates=5,
+        max_ls=20,
+        c1=1e-4,
+        shrink=0.5,
+        tolerance_change=0.0,
+        max_loss_evals=3,
+    )
+
+    assert search is None
+    assert kind == "none"
+    assert loss_evals == 3
+    assert calls == [0, 1, 2]
+
+
 def test_lbfgsb_projected_gradient_fallback_recovers_after_failed_candidate_line_search(
     monkeypatch,
 ):
@@ -715,6 +774,7 @@ def test_lbfgsb_step_tolerates_legacy_state_without_fallback_coordinate_key():
         upper_bound=torch.full_like(x, 5.0),
     )
     del optimizer.param_groups[0]["fallback_max_coordinates"]
+    del optimizer.param_groups[0]["fallback_max_loss_evals"]
 
     def loss_fn(value: torch.Tensor) -> torch.Tensor:
         return value.square().sum()

@@ -1775,6 +1775,14 @@ def _add_run_config_args(parser: argparse.ArgumentParser) -> None:
         ),
     )
     parser.add_argument(
+        "--lbfgsb-fallback-max-loss-evals",
+        type=int,
+        help=(
+            "Optional per-step loss-only evaluation budget for lbfgsb fallback "
+            "line searches and fallback competition."
+        ),
+    )
+    parser.add_argument(
         "--lbfgs-line-search",
         choices=("none", "strong_wolfe"),
         help="LBFGS line-search mode.",
