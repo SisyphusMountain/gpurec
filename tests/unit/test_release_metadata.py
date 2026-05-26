@@ -523,6 +523,11 @@ def test_cpu_ci_builds_and_smokes_release_artifacts():
         ),
         "optimizer=hessian-sgd",
         "hessian_sgd_normal_fixed_iters_pi=full",
+        "hessian_sgd_pi_adjoint_warmstart=false",
+        "pi_fixed_point_relaxation=1.000000",
+        "hessian_sgd_validation_interval=0",
+        "hessian_sgd_validation_fixed_iters_pi=configured",
+        "hessian_sgd_validation_neumann_terms=configured",
         "cuda_backward_ready=false",
         (
             "python -m gpurec.cli validate-config --config "
@@ -552,6 +557,11 @@ def test_cpu_ci_builds_and_smokes_release_artifacts():
         '"mode": "genewise"',
         '"solver_warmup_iters": 4',
         '"hessian_sgd_normal_fixed_iters_pi": null',
+        '"hessian_sgd_pi_adjoint_warmstart": false',
+        '"pi_fixed_point_relaxation": 1.0',
+        '"hessian_sgd_validation_interval": 0',
+        '"hessian_sgd_validation_fixed_iters_pi": null',
+        '"hessian_sgd_validation_neumann_terms": null',
         "gpurec config-template --mode specieswise",
         "specieswise-config-template.json",
         '"mode": "specieswise"',
