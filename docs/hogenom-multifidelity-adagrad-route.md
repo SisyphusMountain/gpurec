@@ -67,6 +67,11 @@ finishes about 36 seconds faster than the discovery run.
   the fixed8 accumulator into fixed32 slowed the repair trajectory.
 - A direct fixed32 Adagrad run from uniform 0.05 was too slow to enter the basin
   under the five-minute budget.
+- A fixed replay can be forced to start with fixed4 by passing
+  `--fixed-initial-budget 4`.  On 2026-05-26, the direct fixed4->8->16->32
+  replay with `40/60/35/30` steps took `290.6722433550167s` and validated at
+  fixed128 `526990.625` bits.  That is slower and worse than the fixed8-first
+  fixed replay above, so fixed mode keeps the fixed8 start by default.
 
 ## Adaptive Schedule
 

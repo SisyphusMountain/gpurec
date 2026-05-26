@@ -83,7 +83,10 @@ fixed4 timing band while reducing peak reserved CUDA memory in the same lazy
 `--prefetch-batches all` route from about `21.36 GiB` to `5.1640625 GiB`.
 Repeats after the `2.2710854980396107s` low sample measured
 `2.2904644059599377s`, `2.285656556021422s`, and `2.329664205026347s`, so the
-new low is best-observed rather than a new stable median.
+new low is best-observed rather than a new stable median.  A later 2026-05-26
+sanity run in the same lazy fixed4-start configuration measured
+`2.3467985900351778s` total to first likelihood, with `1.0148086069966666s`
+model construction and `1.3319899830385111s` for the measured pass.
 
 Cold first-pass fidelity samples with the same construction path:
 
@@ -92,6 +95,10 @@ Cold first-pass fidelity samples with the same construction path:
 | 4 | `2.2710854980396107s` | `2156427.0` | `670.25` |
 | 6 | `2.788982933969237s` | `2157095.0` | `2.25` |
 | 8 | `3.3188985750311986s` | `2157097.25` | `0.0` |
+
+The same 2026-05-26 sanity run measured a direct fixed8 cold total of
+`3.3119525730144233s`, with `0.949136951006949s` model construction and
+`2.3628156220074743s` for the measured pass.
 
 Progressive fixed4-start sample on the same route, using one cold model and
 then evaluating `4,6,8` in sequence:

@@ -177,6 +177,59 @@ def _run_phase(
     return global_step
 
 
+def _fixed_phase_specs(args: argparse.Namespace) -> list[tuple[str, int, float, int]]:
+    phases: list[tuple[str, int, float, int]] = []
+    if args.fixed_initial_budget > 0 and args.fixed_initial_steps > 0:
+        initial_lr = (
+            args.warmup_lr
+            if args.fixed_initial_lr is None
+            else args.fixed_initial_lr
+        )
+        phases.append(
+            (
+                f"fixed{args.fixed_initial_budget}_initial",
+                args.fixed_initial_budget,
+                initial_lr,
+                args.fixed_initial_steps,
+            )
+        )
+    phases.extend(
+        [
+            (
+                f"fixed{args.warmup_budget}_warmup",
+                args.warmup_budget,
+                args.warmup_lr,
+                args.warmup_steps,
+            ),
+            (
+                f"fixed{args.bridge_budget}_bridge",
+                args.bridge_budget,
+                args.bridge_lr,
+                args.bridge_steps,
+            ),
+            (
+                f"fixed{args.repair_budget}_repair",
+                args.repair_budget,
+                args.repair_lr,
+                args.repair_steps,
+            ),
+        ]
+    )
+    return phases
+
+
+def _initial_model_budget(args: argparse.Namespace) -> int:
+    if (
+        args.schedule_mode == "fixed"
+        and args.fixed_initial_budget > 0
+        and args.fixed_initial_steps > 0
+    ):
+        return args.fixed_initial_budget
+    if args.schedule_mode == "adaptive" and args.adaptive_initial_budget > 0:
+        return args.adaptive_initial_budget
+    return args.warmup_budget
+
+
 def _run_adaptive_phase(
     *,
     model: Any,
@@ -379,6 +432,27 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--warmup-budget", type=int, default=8)
     parser.add_argument("--warmup-steps", type=int, default=60)
     parser.add_argument("--warmup-lr", type=float, default=1.0)
+    parser.add_argument(
+        "--fixed-initial-budget",
+        type=int,
+        default=0,
+        help=(
+            "Optional first fixed-mode solver budget before --warmup-budget; "
+            "use 4 to test a fixed4-start replay."
+        ),
+    )
+    parser.add_argument(
+        "--fixed-initial-steps",
+        type=int,
+        default=40,
+        help="Number of fixed-mode steps to run at --fixed-initial-budget.",
+    )
+    parser.add_argument(
+        "--fixed-initial-lr",
+        type=float,
+        default=None,
+        help="Learning rate for the fixed initial phase; defaults to --warmup-lr.",
+    )
     parser.add_argument("--bridge-budget", type=int, default=16)
     parser.add_argument("--bridge-steps", type=int, default=35)
     parser.add_argument("--bridge-lr", type=float, default=0.5)
@@ -437,6 +511,7 @@ def main(argv: list[str] | None = None) -> int:
         history_jsonl.unlink()
 
     wall_start = time.perf_counter()
+    initial_model_budget = _initial_model_budget(args)
     config = RunConfig(
         species_tree=args.species_tree,
         families_file=args.families_file,
@@ -448,9 +523,9 @@ def main(argv: list[str] | None = None) -> int:
         clade_budget=args.clade_budget,
         batch_packing=args.batch_packing,
         max_wave_size=args.max_wave_size,
-        fixed_iters_e=args.warmup_budget,
-        fixed_iters_pi=args.warmup_budget,
-        neumann_terms=args.warmup_budget,
+        fixed_iters_e=initial_model_budget,
+        fixed_iters_pi=initial_model_budget,
+        neumann_terms=initial_model_budget,
         adaptive_iters=False,
         adaptive_neumann_terms=False,
         final_check_iters=0,
@@ -470,26 +545,7 @@ def main(argv: list[str] | None = None) -> int:
     upper_bound = math.log2(args.max_rate)
     rows: list[dict[str, Any]] = []
     global_step = 0
-    fixed_phases = (
-        (
-            f"fixed{args.warmup_budget}_warmup",
-            args.warmup_budget,
-            args.warmup_lr,
-            args.warmup_steps,
-        ),
-        (
-            f"fixed{args.bridge_budget}_bridge",
-            args.bridge_budget,
-            args.bridge_lr,
-            args.bridge_steps,
-        ),
-        (
-            f"fixed{args.repair_budget}_repair",
-            args.repair_budget,
-            args.repair_lr,
-            args.repair_steps,
-        ),
-    )
+    fixed_phases = _fixed_phase_specs(args)
     actual_schedule: list[dict[str, Any]] = []
     if args.schedule_mode == "fixed":
         for phase, budget, lr, steps in fixed_phases:
