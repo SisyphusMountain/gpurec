@@ -200,7 +200,10 @@ to `1.7475068190251477s` at `E=4, Pi=2`, `max_wave_size=12288`, and
 repeats after rejecting the early-prefetch prototype measured
 `1.7857683220063336s` and `1.77085414895555s`, so `12288` remains the
 best-observed fast setting but not a stable median improvement over the lower
-memory `8192` route.
+memory `8192` route.  A same-code post-hoist `12288`/chunk-`666` recheck
+measured `1.7595705519779585s` total with `0.9342424949863926s` construction
+and `0.825328056991566s` measured likelihood time, so it stayed in the existing
+fast-approximate band rather than setting a new low.
 `CUDA_DEVICE_MAX_CONNECTIONS=1` did not improve the fast-approximate route
 either: three `E=4, Pi=2`, `12288`, chunk-`666` samples measured
 `1.7939132550382055s`, `1.759844618034549s`, and `1.7760014350060374s`.
