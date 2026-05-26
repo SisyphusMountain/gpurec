@@ -1926,7 +1926,10 @@ not edit files.  New or still-open findings from that refresh are:
   `gpurec._validation` owns `integer_value()`, `positive_int()`,
   `nonnegative_int()`, and `positive_even_int()`; the API validation module
   re-exports those support helpers, and `RunConfig` string adapters delegate to
-  them for workflow integer controls.
+  them for workflow integer controls.  Optional integer controls now follow the
+  same support boundary through `optional_positive_int()`,
+  `optional_nonnegative_int()`, and `optional_positive_even_int()`, including
+  workflow string adapters and core AleRax family-selection validation.
 - The float-range part of the duplicated-validation finding is now reduced as
   well.  `gpurec._validation` owns `finite_float()`, `positive_float()`, and
   `nonnegative_float()`; the API validation module re-exports those helpers for

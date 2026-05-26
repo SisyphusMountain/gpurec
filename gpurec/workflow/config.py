@@ -14,6 +14,9 @@ from gpurec._validation import (
     finite_float,
     integer_value,
     nonnegative_int,
+    optional_nonnegative_int,
+    optional_positive_even_int,
+    optional_positive_int,
     positive_even_int,
     positive_int,
 )
@@ -123,33 +126,30 @@ def _normalize_optional_positive_int(
     name: str,
     value: int | float | str | None,
 ) -> int | None:
-    if value is None:
-        return None
-    number = _normalize_int(name, value)
-    if number <= 0:
-        raise ValueError(f"{name} must be positive when provided")
-    return number
+    return optional_positive_int(
+        name,
+        None if value is None else _normalize_int(name, value),
+    )
 
 
 def _normalize_optional_positive_even_int(
     name: str,
     value: int | float | str | None,
 ) -> int | None:
-    if value is None:
-        return None
-    return _normalize_positive_even_int(name, value)
+    return optional_positive_even_int(
+        name,
+        None if value is None else _normalize_int(name, value),
+    )
 
 
 def _normalize_optional_nonnegative_int(
     name: str,
     value: int | float | str | None,
 ) -> int | None:
-    if value is None:
-        return None
-    number = _normalize_int(name, value)
-    if number < 0:
-        raise ValueError(f"{name} must be non-negative when provided")
-    return number
+    return optional_nonnegative_int(
+        name,
+        None if value is None else _normalize_int(name, value),
+    )
 
 
 def _normalize_finite_float(name: str, value: float | int | str) -> float:

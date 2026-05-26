@@ -1,10 +1,12 @@
 import math
 import os
-from numbers import Integral, Real
+from numbers import Integral
 from pathlib import Path
 from typing import Any, Callable, Iterable, Sequence
 
 import torch
+from gpurec._validation import nonnegative_int, optional_positive_int
+
 from .preprocess_rust import RustPreprocessExtension
 from .species import uniform_ancestors_t_from_topology
 
@@ -42,32 +44,14 @@ def parse_alerax_mapping_file(path: str | os.PathLike) -> dict[str, str]:
     return mapping
 
 
-def _normalize_family_index(name: str, value: int) -> int:
-    if isinstance(value, bool):
-        raise ValueError(f"{name} must be an integer")
-    if isinstance(value, Integral):
-        return int(value)
-    if isinstance(value, Real):
-        number = float(value)
-        if not math.isfinite(number) or not number.is_integer():
-            raise ValueError(f"{name} must be an integer")
-        return int(number)
-    raise ValueError(f"{name} must be an integer")
-
-
 def normalize_family_selection(
     start: int,
     max_families: int | None,
 ) -> tuple[int, int | None]:
-    start_int = _normalize_family_index("start", start)
-    if start_int < 0:
-        raise ValueError("start must be non-negative")
-    if max_families is None:
-        return start_int, None
-    max_int = _normalize_family_index("max_families", max_families)
-    if max_int <= 0:
-        raise ValueError("max_families must be positive when provided")
-    return start_int, max_int
+    return (
+        nonnegative_int("start", start),
+        optional_positive_int("max_families", max_families),
+    )
 
 
 def parse_alerax_family_file(
@@ -222,22 +206,10 @@ def normalize_family_inputs(
 
 
 def _normalize_preprocess_cpu_cores(value: int | float | None) -> int | None:
-    if value is None:
-        return None
-    if isinstance(value, bool):
-        raise ValueError("preprocess_cpu_cores must be a positive integer")
-    if isinstance(value, Integral):
-        cores = int(value)
-    elif isinstance(value, Real):
-        number = float(value)
-        if not math.isfinite(number) or not number.is_integer():
-            raise ValueError("preprocess_cpu_cores must be a positive integer")
-        cores = int(number)
-    else:
-        raise ValueError("preprocess_cpu_cores must be a positive integer")
-    if cores <= 0:
-        raise ValueError("preprocess_cpu_cores must be a positive integer")
-    return cores
+    try:
+        return optional_positive_int("preprocess_cpu_cores", value)
+    except ValueError as exc:
+        raise ValueError("preprocess_cpu_cores must be a positive integer") from exc
 
 
 def _load_preprocess_extension():

@@ -7275,7 +7275,11 @@ The integer-control slice of the duplicated-validation finding is now reduced:
 \texttt{positive\_int()}, \texttt{nonnegative\_int()}, and
 \texttt{positive\_even\_int()}.  The API validation module re-exports those
 support helpers, and \texttt{RunConfig} string adapters delegate to them for
-workflow integer controls.
+workflow integer controls.  Optional integer controls now follow that same
+support boundary through \texttt{optional\_positive\_int()},
+\texttt{optional\_nonnegative\_int()}, and
+\texttt{optional\_positive\_even\_int()}, including workflow string adapters
+and core AleRax family-selection validation.
 
 The float-range slice now follows the same ownership boundary:
 \texttt{gpurec.\_validation} owns \texttt{finite\_float()},

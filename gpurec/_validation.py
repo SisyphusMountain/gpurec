@@ -85,6 +85,24 @@ def positive_even_int(name: str, value: object) -> int:
     return number
 
 
+def optional_positive_int(name: str, value: object | None) -> int | None:
+    if value is None:
+        return None
+    return positive_int(name, value)
+
+
+def optional_nonnegative_int(name: str, value: object | None) -> int | None:
+    if value is None:
+        return None
+    return nonnegative_int(name, value)
+
+
+def optional_positive_even_int(name: str, value: object | None) -> int | None:
+    if value is None:
+        return None
+    return positive_even_int(name, value)
+
+
 def disabled_adaptive_neumann_terms_value(value: bool) -> bool:
     enabled = bool_value("adaptive_neumann_terms", value)
     if enabled:

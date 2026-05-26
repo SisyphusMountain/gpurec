@@ -437,6 +437,9 @@ def test_workflow_numeric_validation_uses_shared_helpers():
     workflow_config = (
         root / "gpurec" / "workflow" / "config.py"
     ).read_text(encoding="utf-8")
+    core_model = (root / "gpurec" / "core" / "model.py").read_text(
+        encoding="utf-8"
+    )
 
     shared_function_names = {
         node.name for node in shared_validation.body if isinstance(node, ast.FunctionDef)
@@ -455,13 +458,22 @@ def test_workflow_numeric_validation_uses_shared_helpers():
         "positive_float",
         "nonnegative_float",
     }
+    optional_integer_helpers = {
+        "optional_positive_int",
+        "optional_nonnegative_int",
+        "optional_positive_even_int",
+    }
 
     assert integer_helpers.issubset(shared_function_names)
     assert float_helpers.issubset(shared_function_names)
-    assert api_function_names.isdisjoint(integer_helpers)
+    assert optional_integer_helpers.issubset(shared_function_names)
+    assert api_function_names.isdisjoint(integer_helpers | optional_integer_helpers)
     assert api_function_names.isdisjoint(float_helpers)
-    for helper in integer_helpers:
+    for helper in integer_helpers | optional_integer_helpers:
         assert helper in workflow_config
+    assert "_normalize_family_index" not in core_model
+    assert 'nonnegative_int("start", start)' in core_model
+    assert 'optional_positive_int("max_families", max_families)' in core_model
     for stale in (
         "from numbers import Integral",
         "import math",

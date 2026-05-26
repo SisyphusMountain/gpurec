@@ -18,6 +18,7 @@ from gpurec._validation import (
     integer_value,
     nonnegative_float,
     nonnegative_int,
+    optional_positive_int,
     positive_even_int,
     positive_float,
     positive_int,
@@ -52,12 +53,6 @@ def require_default_objective(owner: str) -> None:
             "fixed-pass compatibility objective is not implemented for "
             "differentiable GPUREC model optimization."
         )
-
-
-def optional_positive_int(name: str, value: int | None) -> int | None:
-    if value is None:
-        return None
-    return positive_int(name, value)
 
 
 def auto_int(name: str, value: int | float | str | None) -> int | str | None:
