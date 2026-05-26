@@ -2364,6 +2364,10 @@ not edit files.  New or still-open findings from that refresh are:
   HOGENOM/`test_trees_1000` likelihood/gradient and optimizer route.  The
   installed-wheel smoke now greps for those route-contract terms in
   `gpurec optimize --help`.
+- `effective_route_metadata()` now emits the production route contract fields
+  directly from `_PRODUCTION_DEFAULT_ROUTE_CONTRACT`, so artifact metadata and
+  `--require-production-default-route` comparisons cannot drift between
+  separate copies of the shipped likelihood/gradient route literals.
 
 ## Recommended Next Order
 

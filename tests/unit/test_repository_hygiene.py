@@ -1622,6 +1622,22 @@ def test_project_readme_documents_workflow_optimizer_modes():
     ).read_text(encoding="utf-8")
 
 
+def test_effective_route_metadata_reuses_production_route_contract_source():
+    root = Path(__file__).resolve().parents[2]
+    source = (root / "gpurec" / "workflow" / "config.py").read_text(
+        encoding="utf-8"
+    )
+
+    assert "**_PRODUCTION_DEFAULT_ROUTE_CONTRACT" in source
+    for token in (
+        '"negative_log_likelihood_bits"',
+        '"implicit_first_order_adjoint"',
+        '"base2_log_dlt_rates"',
+        '"hogenom_and_test_trees_1000"',
+    ):
+        assert source.count(token) == 1
+
+
 def test_production_optimization_guide_is_linked_and_documents_routes():
     root = Path(__file__).resolve().parents[2]
     project_readme = (root / "README.md").read_text(encoding="utf-8")

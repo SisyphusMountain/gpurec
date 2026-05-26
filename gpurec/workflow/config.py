@@ -1124,7 +1124,10 @@ def production_default_optimizer_setting_mismatches_from_route(
 def production_default_route_mismatches_from_route(
     route: dict[str, Any],
 ) -> tuple[tuple[str, ...], tuple[str, ...]]:
-    """Return missing/mismatched fields for the shipped likelihood route."""
+    """Return missing/mismatched fields for the shipped route.
+
+    The route includes likelihood/gradient fields and optimizer evidence.
+    """
     missing: list[str] = []
     mismatched: list[str] = []
     for name, expected in _PRODUCTION_DEFAULT_ROUTE_CONTRACT.items():
@@ -1199,10 +1202,7 @@ def effective_route_metadata(config: RunConfig) -> dict[str, Any]:
         config
     )
     route: dict[str, Any] = {
-        "objective": "negative_log_likelihood_bits",
-        "gradient_route": "implicit_first_order_adjoint",
-        "rate_parameterization": "base2_log_dlt_rates",
-        "production_default_basis": "hogenom_and_test_trees_1000",
+        **_PRODUCTION_DEFAULT_ROUTE_CONTRACT,
         "mode": config.mode,
         "optimizer": config.optimizer,
         "mode_default_optimizer": mode_default_optimizer,
