@@ -221,6 +221,9 @@ diagnostic is still above `projected_grad_tol`. Keep the gate enabled when the
 projected-gradient norm is the convergence contract; disable it when the
 production question is wall-time-to-likelihood and late projected-gradient
 polishing is too expensive for the marginal objective gain.
+`lbfgsb_loss_change_tol_schedule` can stage plateau thresholds inside the same
+tail, for example `0.25:2,0.1:2` to take a coarse plateau first and then polish
+with a tighter loss-change rule without a manual checkpoint resume.
 
 The `lbfgsb_high_kkt_stop_patience`,
 `lbfgsb_high_kkt_stop_min_fallbacks`, and
