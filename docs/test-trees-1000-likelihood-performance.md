@@ -976,6 +976,41 @@ Rejected follow-ups:
   check measured `1.274828838009853s` median, worse than the recent
   `1.2724366540205665s` materialized baseline.  The existing vector helper plus
   `.sum()` remains in place.
+- Fresh continuation rechecks on 2026-05-26 kept `E=7, Pi=4, Neumann=4` as the
+  near-reference route.  Three cold samples measured `2.274839742050972s`,
+  `2.2544504269608296s`, and `2.266165839973837s`, all with
+  `2157098.25`-bit loss.  The measured likelihood pass stayed in the
+  `1.313s` to `1.319s` band, while construction accounted for most of the
+  total spread.
+- Rechecking the slightly optimistic `E=6, Pi=4, Neumann=4` route did not expose
+  a speed win.  Cold samples measured `2.3143601480405778s`,
+  `2.2669091350398958s`, and `2.2747382109519094s`, with
+  `2157096.0`-bit loss.  Its pass time was effectively identical to E7/Pi4, so
+  the only difference was construction noise plus the less conservative loss
+  bias.
+- Lowering Neumann terms for loss-only computation was also rejected.  Although
+  no-gradient likelihood does not use the implicit-gradient Neumann series,
+  `E=7, Pi=4, Neumann=1` measured `2.4379382629995234s`,
+  `2.401937930029817s`, and `2.31613227003254s`; `Neumann=2` measured
+  `2.2946807079715654s`, `2.2932448709616438s`, and
+  `2.2546982710482553s`.  The loss stayed `2157098.25` bits, but the route did
+  not beat the documented `Neumann=4` command.
+- Building the same benchmark through `GeneReconModel.from_alerax_families()`
+  was not a cold-path replacement for the documented direct tree-list source.
+  Fresh cold samples from `families.txt` measured `2.3390709669911303s`,
+  `2.2643726890091784s`, and `2.3282454780419357s`, all with the same
+  `2157098.25`-bit loss and `21` resident batches.  Occasional faster
+  same-process samples were warm-cache effects rather than a reproducible
+  end-to-end route.
+- A fresh `E=7, Pi=4` CPU-thread sweep still left `16` as the documented local
+  setting.  Single cold totals were `10`: `2.360891352989711s`, `12`:
+  `2.261137897032313s`, `14`: `2.279004193027504s`, `16`:
+  `2.3394252699799836s`, `18`: `2.2783811920089647s`, and `20`:
+  `2.283500710967928s`; the default Rayon pool was slower in two follow-up
+  samples at `2.393924950971268s` and `2.390638910001144s`.  The isolated
+  `12`-thread low did not beat the existing E7/Pi4 best and matches the earlier
+  conclusion that this knob is construction noise around the `16`-thread
+  setting rather than a new route.
 
 Differences from HOGENOM:
 
@@ -995,6 +1030,11 @@ Differences from HOGENOM:
   measured `3.5548714509932324s` for `depth_first_fit` and
   `2.360776627960149s` for `sequential`, versus the `clade_first_fit`
   `2.27s` band.
+- HOGENOM benchmark scripts are naturally AleRax-family-file driven.  On
+  `test_trees_1000`, switching this likelihood benchmark from direct tree paths
+  to `from_alerax_families()` did not improve cold time; both sources produce
+  the same `21` retained batches and loss, and source parsing is not the active
+  bottleneck once CUDA/module warmup is cold.
 - HOGENOM's depth-first path should keep the exhaustive scheduler policy because
   wave compaction mattered there.  On `test_trees_1000`, the retained
   `clade_first_fit` chunks had the same measured max wave count with the
