@@ -206,6 +206,9 @@ Use `gpurec summary-info --summary output_gpurec/summary.json` for the same
 status, objective, gradient, and route fields in a stable terminal record. Add
 `--require-converged` for strict automation gates that should fail on
 `not_converged` or `failed` summaries.
+For combined optimize-and-sample workflows, add
+`gpurec run --require-converged` when sampling should be skipped unless
+optimization reached `status=converged`.
 Use `gpurec checkpoint-info --checkpoint output_gpurec/checkpoints/latest.pt`
 when you need the checkpoint's progress, status, route metadata, and last
 likelihood/gradient diagnostics without starting CUDA model construction.

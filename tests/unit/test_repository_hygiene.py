@@ -1298,6 +1298,7 @@ def test_project_readme_documents_gpurec_run_end_to_end_workflow():
     assert "falling back to `checkpoints/best.pt` or `checkpoints/latest.pt`" in normalized
     assert "exits without sampling if optimization fails" in normalized
     assert "Failed optimization still prints the optimization status line" in project_readme
+    assert "unless the run reached `status=converged`" in normalized
     assert "resolved `mode`, `optimizer`, family/species/batch counts" in normalized
     assert "batch packing, family chunk size, clade budget" in normalized
     assert "solver iteration budgets" in normalized
@@ -1490,6 +1491,7 @@ def test_output_artifact_reference_is_linked_and_documents_contract():
         "`xml`",
         "`sample_out_dir`",
         "exits without sampling fields",
+        "anything other than `converged`",
         "`gpurec run`",
         "`rates_final.tsv`",
         "`per_fam_likelihoods.tsv`",
@@ -1535,6 +1537,7 @@ def test_troubleshooting_guide_documents_operator_failure_triage():
         "`summary.json`",
         "gpurec summary-info --summary output/summary.json",
         "`--require-converged`",
+        "gpurec run --require-converged",
         "final-check likelihood/gradient deltas",
         "gpurec checkpoint-info --checkpoint output/checkpoints/latest.pt",
         "`history.jsonl`",

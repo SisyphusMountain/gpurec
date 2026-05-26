@@ -119,7 +119,9 @@ Standalone `gpurec sample` prints `sampled_families`, `samples`, `xml`, and
 status line prints the optimization fields plus `sampled_families`, `samples`,
 `xml`, `out_dir`, and `sample_out_dir` after sampling succeeds. If
 optimization fails, `gpurec run` prints the optimization status fields and exits
-without sampling fields.
+without sampling fields. With `--require-converged`, `gpurec run` also prints
+the optimization status fields and exits before sampling when the optimization
+status is anything other than `converged`.
 
 | Path | Contents |
 |---|---|

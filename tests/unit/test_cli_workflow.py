@@ -75,6 +75,7 @@ def test_run_config_cli_surface_matches_dataclass_fields():
         "sample_max_families",
         "max_events",
         "backtrack_binary",
+        "require_converged",
     }
     assert _parser_action_dests("backtrack-check") == {"backtrack_binary"}
     assert _parser_action_dests("checkpoint-info") == {"checkpoint"}
@@ -2137,6 +2138,55 @@ def test_cli_run_refuses_sampling_after_failed_optimization(
     assert "Traceback" not in captured.err
 
 
+def test_cli_run_require_converged_refuses_not_converged_sampling(
+    tmp_path: Path,
+    capsys,
+    monkeypatch,
+):
+    checkpoint_dir = tmp_path / "out" / "checkpoints"
+    checkpoint_dir.mkdir(parents=True)
+    (checkpoint_dir / "latest.pt").write_bytes(b"not sampled")
+
+    def not_converged_optimize(config):
+        return SimpleNamespace(
+            out_dir=config.out_dir,
+            status="not_converged",
+            reason="max_steps",
+            mode=config.mode,
+            optimizer=config.optimizer,
+            sampling_checkpoint=checkpoint_dir / "latest.pt",
+            final_nll_bits=12.0,
+            best_nll_bits=11.0,
+        )
+
+    def unexpected_sample(config):
+        raise AssertionError("sample should not be called")
+
+    monkeypatch.setattr("gpurec.cli.optimize", not_converged_optimize)
+    monkeypatch.setattr("gpurec.cli.sample", unexpected_sample)
+    monkeypatch.setattr("gpurec.cli._ensure_backtracking_available", lambda _: None)
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(_minimal_workflow_cli_args("run", tmp_path) + ["--require-converged"])
+
+    captured = capsys.readouterr()
+    assert exc_info.value.code == 1
+    assert "status=not_converged" in captured.out
+    assert "reason=max_steps" in captured.out
+    assert "mode=genewise" in captured.out
+    assert "optimizer=hessian-sgd" in captured.out
+    assert "final_nll_bits=12.000000" in captured.out
+    assert "best_nll_bits=11.000000" in captured.out
+    assert "sampled_families" not in captured.out
+    assert "sample_out_dir" not in captured.out
+    assert (
+        "optimization status is 'not_converged'; expected 'converged'; "
+        "refusing to sample"
+    ) in captured.err
+    assert "usage:" not in captured.err
+    assert "Traceback" not in captured.err
+
+
 def test_cli_run_rejects_checkpoint_argument_without_traceback(capsys):
     with pytest.raises(SystemExit) as exc_info:
         main(["run", "--checkpoint", "existing.pt"])
@@ -2160,6 +2210,7 @@ def test_cli_run_help_omits_checkpoint_argument(capsys):
     assert "--sample-out-dir" in captured.out
     assert "--checkpoint CHECKPOINT" not in captured.out
     assert "--resume-from" in captured.out
+    assert "--require-converged" in captured.out
     assert "--backtrack-binary" in captured.out
     assert "GPUREC_BACKTRACK_BIN" in captured.out
 

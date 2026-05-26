@@ -1278,6 +1278,14 @@ def build_parser() -> argparse.ArgumentParser:
     _add_run_config_args(run_parser)
     _add_sampling_args(run_parser, checkpoint_required=False, include_checkpoint=False)
     run_parser.add_argument("--checkpoint", type=Path, help=argparse.SUPPRESS)
+    run_parser.add_argument(
+        "--require-converged",
+        action="store_true",
+        help=(
+            "After optimization, print the optimization status and exit before "
+            "sampling unless the status is converged."
+        ),
+    )
     run_parser.set_defaults(_command_parser=run_parser)
 
     backtrack_check_parser = sub.add_parser(
@@ -1551,6 +1559,20 @@ def main(argv: list[str] | None = None) -> None:
                     "optimization failed; refusing to sample from a failed run "
                     f"({opt_result.reason})"
                     "\n"
+                ),
+            )
+        if args.require_converged and opt_result.status != "converged":
+            print(
+                f"{_optimization_result_text(opt_result)} "
+                f"{_optional_text('out_dir', run_config.out_dir)}",
+                flush=True,
+            )
+            command_parser.exit(
+                status=1,
+                message=(
+                    "optimization status is "
+                    f"{opt_result.status!r}; expected 'converged'; "
+                    "refusing to sample\n"
                 ),
             )
         checkpoint = getattr(opt_result, "sampling_checkpoint", None)

@@ -37,7 +37,8 @@ and the specieswise Adagrad restart schedule, and verifies the
 `--require-cuda-backward-ready` preflight gate is exposed. It also smokes
 `gpurec summary-info --help` and `gpurec checkpoint-info --help` so artifact
 inspection stays available without CUDA model construction, including the
-`--require-converged` summary gate for automation. The same package job keeps
+`--require-converged` summary gate for automation. The same package job checks
+`gpurec run --help` for the matching pre-sampling convergence gate, keeps
 examples out of wheels while requiring them in the source
 archive, verifies the minimal example config points to source-archive files,
 checks source-archive preprocessing reports the tiny fixtures as

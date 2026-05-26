@@ -298,6 +298,7 @@ jobs:
           grep -q -- "checkpoints/best.pt" sample-help.txt
           grep -q -- "checkpoints/latest.pt" sample-help.txt
           gpurec run --help | tee run-help.txt
+          grep -q -- "--require-converged" run-help.txt
           grep -q -- "--backtrack-binary" run-help.txt
           grep -q -- "GPUREC_BACKTRACK_BIN" run-help.txt
           gpurec backtrack-check --help | tee backtrack-check-help.txt
