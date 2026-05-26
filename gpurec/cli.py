@@ -1102,11 +1102,14 @@ def _checkpoint_info_text(
     route_metadata: tuple[dict[str, Any], str] | None = None,
     production_route_evidence: _ProductionRouteEvidence | None = None,
 ) -> str:
-    route, route_source = (
-        _checkpoint_route_metadata(payload)
-        if route_metadata is None
-        else route_metadata
-    )
+    if route_metadata is None:
+        route, route_source, reconstructed_evidence = (
+            _checkpoint_route_metadata_evidence(payload)
+        )
+        if production_route_evidence is None:
+            production_route_evidence = reconstructed_evidence
+    else:
+        route, route_source = route_metadata
     config_data = payload.get("config")
     if not isinstance(config_data, dict):
         config_data = {}

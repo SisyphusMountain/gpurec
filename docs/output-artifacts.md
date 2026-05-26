@@ -222,9 +222,9 @@ automation should fail unless the checkpoint last row has
 the checkpoint route must use the mode default optimizer for its mode, or
 `--require-production-default-route` when the checkpoint route must also match
 the shipped likelihood/gradient contract and optimizer-specific route,
-including the stored `final_check_iters_e`. When both route gates are requested,
-the displayed checkpoint route and both gate verdicts are derived from the same
-audited checkpoint route snapshot. If a legacy checkpoint has no
+including the stored `final_check_iters_e`. The displayed checkpoint route and
+any route-gate verdicts are derived from the same audited checkpoint route
+snapshot. If a legacy checkpoint has no
 `route_metadata`, `checkpoint-info` falls back to
 recoverable config `mode` and `optimizer` fields; incomplete artifacts fail the
 gate with an incomplete-evidence error.

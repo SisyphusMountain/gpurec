@@ -1965,6 +1965,7 @@ def test_cli_sample_raw_theta_checkpoint_error_suggests_real_checkpoints(
 def test_cli_checkpoint_info_reports_route_status_and_last_row(
     tmp_path: Path,
     capsys,
+    monkeypatch,
 ):
     class FakeModel:
         theta = torch.nn.Parameter(torch.zeros(2, 3))
@@ -2013,6 +2014,19 @@ def test_cli_checkpoint_info_reports_route_status_and_last_row(
             "solver/e_adjoint_rel_res_max": 0.125,
         },
     )
+    original_route_evidence = gpurec_cli._production_default_route_evidence
+    route_evidence_calls = 0
+
+    def counted_route_evidence(route):
+        nonlocal route_evidence_calls
+        route_evidence_calls += 1
+        return original_route_evidence(route)
+
+    monkeypatch.setattr(
+        gpurec_cli,
+        "_production_default_route_evidence",
+        counted_route_evidence,
+    )
 
     main(
         [
@@ -2026,6 +2040,7 @@ def test_cli_checkpoint_info_reports_route_status_and_last_row(
     captured = capsys.readouterr()
     basis = "hogenom_and_" + "test_trees_" + "1000"
     assert captured.err == ""
+    assert route_evidence_calls == 1
     assert gpurec_cli._optional_text("checkpoint", checkpoint.resolve()) in captured.out
     for token in (
         "version=1",
