@@ -1457,6 +1457,7 @@ def test_output_artifact_reference_is_linked_and_documents_contract():
         "`theta_final.pt`",
         "`checkpoints/latest.pt`",
         "`checkpoints/best.pt`",
+        "`route_metadata`",
         "`likelihood/data_nll_bits`",
         "`grad/projected_inf`",
         "`optimizer/adagrad_restart_*`",
@@ -2077,6 +2078,7 @@ def test_project_readme_documents_checkpoint_config_metadata_surface():
 
     for token in (
         "`load_checkpoint(path)[\"config\"]`",
+        "`load_checkpoint(path)[\"route_metadata\"]`",
         "`gpurec.workflow.checkpoint`",
         "`RunConfig.from_dict(...)`",
         "no separate public `load_checkpoint_config`",
@@ -2099,6 +2101,7 @@ def test_project_readme_documents_checkpoint_config_metadata_surface():
         "explicit lower-level support boundary",
         "stable shortcut surface is ``gpurec.workflow``/top-level ``gpurec``",
         "payload schema is versioned",
+        "``route_metadata``",
     ):
         assert token in module_docstring
 

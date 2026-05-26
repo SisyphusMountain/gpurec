@@ -321,7 +321,7 @@ When it is omitted, Rust preprocessing uses its runtime default.
 Main outputs include:
 
 - `checkpoints/latest.pt` and `checkpoints/best.pt`, metadata-bearing
-  checkpoints for resume, sampling, and restore workflows
+  checkpoints for resume, sampling, restore workflows, and route inspection
 - `optimization_history.csv` and `history.jsonl`
 - `rates_final.tsv`, `theta_final.pt`, `summary.json` with status, final/best
   NLL and log-likelihood, and the effective optimizer/batch/solver route
@@ -355,8 +355,10 @@ use `checkpoints/best.pt` or `checkpoints/latest.pt` whenever a workflow needs
 to restore parameters into a model or sample reconciliation scenarios.
 Python tooling that needs checkpoint configuration metadata should read
 `load_checkpoint(path)["config"]` from `gpurec.workflow.checkpoint` and pass it
-to `RunConfig.from_dict(...)`; no separate public `load_checkpoint_config`
-helper is supported.
+to `RunConfig.from_dict(...)`; tooling that only needs the resolved
+likelihood/gradient/optimizer route can read
+`load_checkpoint(path)["route_metadata"]` from checkpoints written by current
+versions, and no separate public `load_checkpoint_config` helper is supported.
 The lower-level `gpurec.workflow.checkpoint` submodule explicitly supports
 `save_checkpoint`, `load_checkpoint`, `restore_model_theta`,
 `validate_checkpoint_model_compatibility`, and `CHECKPOINT_VERSION` for
@@ -367,8 +369,10 @@ versioned checkpoint payload.
 
 Version-1 workflow checkpoints carry identity metadata for safe restore:
 `family_names`, `species_names`, and config identity fields `species_tree`,
-`families_file`, `mode`, `start`, and `max_families`.  `load_checkpoint()`
-requires those fields to be present and validates the name-list metadata;
+`families_file`, `mode`, `start`, and `max_families`. `load_checkpoint()`
+requires those fields to be present and validates the name-list metadata.
+Current checkpoints also carry `route_metadata` with the resolved objective,
+gradient route, parameterization, optimizer, and solver route.
 `validate_checkpoint_model_compatibility()` compares them with the active
 `RunConfig` and rebuilt model before `restore_model_theta()` copies parameters.
 Path identity fields are normalized during comparison.  The checkpoint loader

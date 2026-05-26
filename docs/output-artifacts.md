@@ -20,7 +20,7 @@ the end of the optimization phase.
 | `rates_final.tsv` | `optimize`, optimization phase of `run` | Final D/T/L rates, survival probability `pS`, and raw theta values. | Rows are `global`, species labels, or family labels depending on mode. |
 | `per_fam_likelihoods.tsv` | Genewise `optimize` and genewise optimization phase of `run` | Final per-family NLL and log-likelihood in bits. | Genewise-only because rows are independent only in genewise mode. |
 | `theta_final.pt` | `optimize`, optimization phase of `run` | Raw CPU tensor containing final theta values. | For inspection only; it does not carry config, family ordering, species ordering, or optimizer state. |
-| `checkpoints/latest.pt` | `optimize`, optimization phase of `run` | Versioned checkpoint for resume. | Carries config metadata, theta, optimizer state when available, progress, status, last row, family names, and species names. |
+| `checkpoints/latest.pt` | `optimize`, optimization phase of `run` | Versioned checkpoint for resume. | Carries config metadata, effective route metadata, theta, optimizer state when available, progress, status, last row, family names, and species names. |
 | `checkpoints/best.pt` | `optimize`, optimization phase of `run` | Versioned checkpoint at the best accepted NLL. | Preferred checkpoint for downstream sampling when present. |
 
 The primary objective is negative log-likelihood in bits:
@@ -66,7 +66,10 @@ record.
 to restore a model, sample reconciliations, or verify family/species ordering
 should read `checkpoints/best.pt` or `checkpoints/latest.pt` with
 `gpurec.workflow.checkpoint.load_checkpoint(...)`, then pass the stored
-configuration through `RunConfig.from_dict(...)`.
+configuration through `RunConfig.from_dict(...)`. Current checkpoints also
+include `route_metadata`, matching the route fields in `summary.json`, so
+inspection tools can identify the objective, gradient route, optimizer, and
+solver budgets without reconstructing a full `RunConfig`.
 
 ## Sampling Artifacts
 

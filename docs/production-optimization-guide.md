@@ -12,8 +12,8 @@ The workflow minimizes negative log-likelihood in bits. History rows report
 `likelihood/log_likelihood_bits`. The final run summary repeats those views as
 `final_nll_bits`/`final_log_likelihood_bits` and
 `best_nll_bits`/`best_log_likelihood_bits`.
-`summary.json` and `gpurec validate-config` also report the stable route fields
-`objective=negative_log_likelihood_bits`,
+`summary.json`, current checkpoints, and `gpurec validate-config` also report
+the stable route fields `objective=negative_log_likelihood_bits`,
 `gradient_route=implicit_first_order_adjoint`,
 `rate_parameterization=base2_log_dlt_rates`, and
 `production_default_basis=hogenom_and_test_trees_1000` so exported artifacts
@@ -174,8 +174,8 @@ Inspect these outputs first:
   objective, gradient norms, projected gradients, and solver telemetry.
 - `summary.json`: final status/reason, elapsed seconds, final objective, and
   best objective metadata as both NLL and log-likelihood in bits.
-- `checkpoints/best.pt` and `checkpoints/latest.pt`: resumable model and
-  optimizer state.
+- `checkpoints/best.pt` and `checkpoints/latest.pt`: resumable model,
+  optimizer state, and effective route metadata.
 - `rates_final.tsv`: final D/T/L rates and theta values.
 - `per_fam_likelihoods.tsv`: genewise-only final per-family NLLs.
 

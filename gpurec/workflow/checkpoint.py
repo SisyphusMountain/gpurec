@@ -10,8 +10,10 @@ Version-1 checkpoints carry identity metadata for safe restore:
 ``family_names``, ``species_names``, and config identity fields
 ``species_tree``, ``families_file``, ``mode``, ``start``, and
 ``max_families``.  ``load_checkpoint()`` requires those fields to exist and
-validates the name-list metadata; ``validate_checkpoint_model_compatibility()``
-compares them with the active ``RunConfig`` and rebuilt model before
+validates the name-list metadata. New checkpoints also carry ``route_metadata``
+with the resolved objective, gradient route, rate parameterization, optimizer,
+and solver route. ``validate_checkpoint_model_compatibility()`` compares
+them with the active ``RunConfig`` and rebuilt model before
 ``restore_model_theta()`` copies parameters, normalizing only path identity
 fields during comparison.  The loader does not reconstruct a full ``RunConfig``;
 callers that need complete config validation should pass ``payload["config"]``
@@ -34,7 +36,7 @@ from ._metadata import (
     model_family_names,
     model_species_names,
 )
-from .config import RunConfig
+from .config import RunConfig, effective_route_metadata
 
 
 __all__ = [
@@ -138,6 +140,7 @@ def save_checkpoint(
         "step": int(step),
         "next_step": int(step) + 1 if next_step is None else int(next_step),
         "config": config.to_dict(),
+        "route_metadata": effective_route_metadata(config),
         "theta": model.theta.detach().cpu(),
         "optimizer_state": None if optimizer is None else optimizer.state_dict(),
         "optimizer_phase": optimizer_phase,
@@ -187,6 +190,9 @@ def _validate_checkpoint_payload(payload: Any, path: Path) -> dict[str, Any]:
         )
     if not isinstance(payload["config"], dict):
         raise RuntimeError(f"checkpoint {path} has invalid config metadata")
+    route_metadata = payload.get("route_metadata")
+    if route_metadata is not None and not isinstance(route_metadata, dict):
+        raise RuntimeError(f"checkpoint {path} has invalid route_metadata")
     missing_identity = sorted(_REQUIRED_CHECKPOINT_IDENTITY_KEYS - set(payload))
     if missing_identity:
         raise RuntimeError(

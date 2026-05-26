@@ -4675,6 +4675,10 @@ def test_checkpoint_roundtrip_restores_theta_and_status(tmp_path: Path):
     assert int(payload["next_step"]) == 5
     assert payload["config"]["dtype"] == "float64"
     assert RunConfig.from_dict(payload["config"]).dtype == "float64"
+    assert payload["route_metadata"] == effective_route_metadata(config)
+    assert payload["route_metadata"]["objective"] == "negative_log_likelihood_bits"
+    assert payload["route_metadata"]["gradient_route"] == "implicit_first_order_adjoint"
+    assert payload["route_metadata"]["optimizer"] == "hessian-sgd"
     assert payload["optimizer_phase"] == "adam"
     assert payload["status"]["best_nll_bits"] == 12.0
     assert isinstance(payload["optimizer_state"], dict)
@@ -4751,6 +4755,33 @@ def test_checkpoint_load_wraps_os_errors_with_context(tmp_path: Path):
     assert "could not safely load checkpoint" in str(exc_info.value)
     assert str(checkpoint) in str(exc_info.value)
     assert isinstance(exc_info.value.__cause__, FileNotFoundError)
+
+
+def test_checkpoint_load_rejects_invalid_route_metadata(tmp_path: Path):
+    path = tmp_path / "invalid_route.pt"
+    torch.save(
+        {
+            "version": CHECKPOINT_VERSION,
+            "step": 0,
+            "next_step": 1,
+            "config": {
+                "species_tree": str(tmp_path / "sp.nwk"),
+                "families_file": str(tmp_path / "families.txt"),
+                "out_dir": str(tmp_path / "out"),
+                "mode": "genewise",
+                "start": 0,
+                "max_families": None,
+            },
+            "route_metadata": "not-a-dict",
+            "theta": torch.zeros(3),
+            "family_names": [],
+            "species_names": [],
+        },
+        path,
+    )
+
+    with pytest.raises(RuntimeError, match="invalid route_metadata"):
+        load_checkpoint(path)
 
 
 @pytest.mark.parametrize(
