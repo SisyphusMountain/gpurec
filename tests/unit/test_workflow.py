@@ -7747,6 +7747,8 @@ def test_optimization_runner_run_writes_outputs_with_fake_model(tmp_path: Path):
     assert summary["batches"] == 1
     assert summary["mode"] == "genewise"
     assert summary["optimizer"] == "adam"
+    assert result.mode == summary["mode"]
+    assert result.optimizer == summary["optimizer"]
     assert summary["batch_packing"] == "depth_first_fit"
     assert summary["family_chunk_size"] == 0
     assert summary["clade_budget"] == 500_000

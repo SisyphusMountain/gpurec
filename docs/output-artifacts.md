@@ -53,10 +53,11 @@ Nominal successful checks may omit `final_check_reason` and
 `final_check_fallback_clade_budget`; skipped, disabled, failed, fallback, or
 cache-drop recomputed checks carry a reason when the workflow can determine one.
 The `gpurec optimize` status line and the optimization portion of `gpurec run`
-print `steps_completed`, `elapsed_s`, `best_step`, and the same final/best NLL and
-log-likelihood fields, plus `final_grad_inf`, `final_projected_grad_inf`, and
-the final validation source, reason, status, and fallback budget/loss/gradient
-delta fields, for quick terminal triage.
+print the resolved `mode` and `optimizer`, `steps_completed`, `elapsed_s`,
+`best_step`, and the same final/best NLL and log-likelihood fields, plus
+`final_grad_inf`, `final_projected_grad_inf`, and the final validation source,
+reason, status, and fallback budget/loss/gradient delta fields, for quick
+terminal triage.
 Text and path values that contain whitespace or control characters are emitted
 as JSON strings with spaces escaped as `\u0020` so each status line remains one
 record.

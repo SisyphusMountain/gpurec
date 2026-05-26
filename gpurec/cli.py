@@ -122,6 +122,8 @@ def _optimization_result_text(result: Any) -> str:
         [
             _optional_text("status", getattr(result, "status", None)),
             _optional_text("reason", getattr(result, "reason", None)),
+            _optional_text("mode", getattr(result, "mode", None)),
+            _optional_text("optimizer", getattr(result, "optimizer", None)),
             _optional_int_text(
                 "steps_completed",
                 getattr(result, "steps_completed", None),

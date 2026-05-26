@@ -1223,6 +1223,8 @@ def test_cli_optimize_failed_result_exits_nonzero_without_traceback(
             out_dir=config.out_dir,
             status="failed",
             reason="nonfinite_objective_or_gradient",
+            mode=config.mode,
+            optimizer=config.optimizer,
             final_nll_bits=math.inf,
         )
 
@@ -1235,6 +1237,8 @@ def test_cli_optimize_failed_result_exits_nonzero_without_traceback(
     assert exc_info.value.code == 1
     assert "status=failed" in captured.out
     assert "nonfinite_objective_or_gradient" in captured.out
+    assert "mode=genewise" in captured.out
+    assert "optimizer=hessian-sgd" in captured.out
     assert "final_nll_bits=inf" in captured.out
     assert "final_log_likelihood_bits=null" in captured.out
     assert "final_grad_inf=null" in captured.out
@@ -1261,6 +1265,8 @@ def test_cli_optimize_reports_final_and_best_objective_summary(
             out_dir=config.out_dir,
             status="not_converged",
             reason="max_steps",
+            mode=config.mode,
+            optimizer=config.optimizer,
             steps_completed=7,
             elapsed_s=3.25,
             best_step=5,
@@ -1290,6 +1296,8 @@ def test_cli_optimize_reports_final_and_best_objective_summary(
     captured = capsys.readouterr()
     assert "status=not_converged" in captured.out
     assert "reason=max_steps" in captured.out
+    assert "mode=genewise" in captured.out
+    assert "optimizer=hessian-sgd" in captured.out
     assert "steps_completed=7" in captured.out
     assert "elapsed_s=3.250000" in captured.out
     assert "best_step=5" in captured.out
@@ -1389,6 +1397,8 @@ def test_cli_run_samples_reported_checkpoint_instead_of_stale_best(
             sampling_checkpoint=current_latest,
             status="success",
             reason="completed",
+            mode=config.mode,
+            optimizer=config.optimizer,
             steps_completed=3,
             elapsed_s=4.5,
             best_step=2,
@@ -1423,6 +1433,8 @@ def test_cli_run_samples_reported_checkpoint_instead_of_stale_best(
     )
 
     captured = capsys.readouterr()
+    assert "mode=genewise" in captured.out
+    assert "optimizer=hessian-sgd" in captured.out
     assert "steps_completed=3" in captured.out
     assert "elapsed_s=4.500000" in captured.out
     assert "best_step=2" in captured.out
@@ -1516,6 +1528,8 @@ def test_cli_run_refuses_sampling_after_failed_optimization(
             out_dir=config.out_dir,
             status="failed",
             reason="nonfinite_objective_or_gradient",
+            mode=config.mode,
+            optimizer=config.optimizer,
             final_nll_bits=math.inf,
         )
 
@@ -1533,6 +1547,8 @@ def test_cli_run_refuses_sampling_after_failed_optimization(
     assert exc_info.value.code == 1
     assert "status=failed" in captured.out
     assert "reason=nonfinite_objective_or_gradient" in captured.out
+    assert "mode=genewise" in captured.out
+    assert "optimizer=hessian-sgd" in captured.out
     assert "final_nll_bits=inf" in captured.out
     assert "final_log_likelihood_bits=null" in captured.out
     assert "final_grad_inf=null" in captured.out

@@ -60,6 +60,8 @@ class OptimizationResult:
     best_step: int | None
     steps_completed: int
     elapsed_s: float | None = None
+    mode: str | None = None
+    optimizer: str | None = None
     final_projected_grad_inf: float | None = None
     sampling_checkpoint: Path | None = None
     final_log_likelihood_bits: float | None = None
@@ -3891,6 +3893,8 @@ class OptimizationRunner:
                 best_step=None if best_step is None else int(best_step),
                 steps_completed=int(final_row["step"]),
                 elapsed_s=float(final_status["elapsed_s"]),
+                mode=config.mode,
+                optimizer=config.optimizer,
                 final_projected_grad_inf=final_projected_grad_inf,
                 sampling_checkpoint=sampling_checkpoint,
                 final_log_likelihood_bits=final_log_likelihood_bits,
