@@ -2499,6 +2499,7 @@ def test_profiling_readme_documents_entrypoints_and_artifact_policy():
         "evaluate_hogenom_alerax_rates.py",
         "Checkout-local HOGENOM/AleRax validation helper",
         "New tracked profiling entrypoints should have a `--help` smoke",
+        "adaptive fixed-point convergence",
         "Artifact Policy",
         "profiling/ancestor_batching/",
         "profiling/bf16_backward_nsys/",
