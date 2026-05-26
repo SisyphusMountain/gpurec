@@ -1783,6 +1783,14 @@ def _add_run_config_args(parser: argparse.ArgumentParser) -> None:
         ),
     )
     parser.add_argument(
+        "--lbfgsb-best-retry-attempts",
+        type=int,
+        help=(
+            "For lbfgsb, reload the best checkpoint this many times when a "
+            "terminal plateau is reached, preserving serialized LBFGS-B state."
+        ),
+    )
+    parser.add_argument(
         "--lbfgsb-loss-change-tol-schedule",
         help=(
             "Optional lbfgsb loss-stop schedule as "

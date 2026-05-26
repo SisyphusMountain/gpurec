@@ -376,6 +376,7 @@ class _ResumeState:
     batch_plan_generation: int = 0
     lbfgsb_fallback_used_count: int = 0
     lbfgsb_loss_schedule_index: int = 0
+    lbfgsb_best_retry_count: int = 0
 
 
 _FINAL_ARTIFACT_FILES = (
@@ -684,6 +685,14 @@ def _resume_state_from_payload(path: Path, payload: dict[str, Any]) -> _ResumeSt
                 path,
                 "status.lbfgsb_loss_schedule_index",
                 ckpt_status.get("lbfgsb_loss_schedule_index", MISSING),
+                default=0,
+            )
+        ),
+        lbfgsb_best_retry_count=int(
+            checkpoint_nonnegative_int(
+                path,
+                "status.lbfgsb_best_retry_count",
+                ckpt_status.get("lbfgsb_best_retry_count", MISSING),
                 default=0,
             )
         ),
@@ -2832,6 +2841,7 @@ class OptimizationRunner:
             else ()
         )
         lbfgsb_loss_schedule_index = 0
+        lbfgsb_best_retry_count = 0
         start_step = 0
         active_batch_index = 0
         active_batch_local_step = 0
@@ -3021,6 +3031,7 @@ class OptimizationRunner:
                     int(resume_state.lbfgsb_loss_schedule_index),
                     max(0, len(lbfgsb_loss_schedule) - 1),
                 )
+                lbfgsb_best_retry_count = resume_state.lbfgsb_best_retry_count
                 resume_status = checkpoint_status_dict(config.resume_from, resume_payload)
                 if (
                     start_step < config.steps
@@ -4209,7 +4220,7 @@ class OptimizationRunner:
                         )
                 objective_plateau_this_row = (
                     delta is not None
-                    and delta < loss_change_tol_bits
+                    and delta <= loss_change_tol_bits
                     and not projected_lbfgs_backoff
                     and not projected_lbfgs_min_lr_reached
                 )
@@ -4428,6 +4439,7 @@ class OptimizationRunner:
                     "previous_objective": previous_objective,
                     "stable_loss_steps": stable_loss_steps,
                     "lbfgsb_fallback_used_count": lbfgsb_fallback_used_count,
+                    "lbfgsb_best_retry_count": lbfgsb_best_retry_count,
                 }
                 if lbfgsb_loss_schedule:
                     checkpoint_status["lbfgsb_loss_schedule_index"] = (
@@ -4957,6 +4969,65 @@ class OptimizationRunner:
                         )
                         resume_info = {}
                         continue
+                    if (
+                        phase == "lbfgsb"
+                        and not active_objective_scope
+                        and lbfgsb_best_retry_count
+                        < int(config.lbfgsb_best_retry_attempts)
+                        and row_best_step is not None
+                        and best_checkpoint.exists()
+                    ):
+                        retry_payload = load_checkpoint(
+                            best_checkpoint,
+                            map_location="cpu",
+                        )
+                        validate_checkpoint_model_compatibility(
+                            path=best_checkpoint,
+                            config=config,
+                            model=model,
+                            payload=retry_payload,
+                        )
+                        retry_phase = retry_payload.get("optimizer_phase")
+                        if retry_phase == "lbfgsb":
+                            retry_state = _resume_state_from_payload(
+                                best_checkpoint,
+                                retry_payload,
+                            )
+                            restore_model_theta(model, retry_payload)
+                            current_phase = "lbfgsb"
+                            optimizer = self._make_optimizer(model, current_phase)
+                            active_optimizer_batch_index = None
+                            restore_info = self._restore_optimizer_state(
+                                optimizer,
+                                retry_payload.get("optimizer_state"),
+                                current_phase=current_phase,
+                                checkpoint_phase=retry_phase,
+                            )
+                            best_nll = retry_state.best_nll
+                            best_step = retry_state.best_step
+                            previous_objective = retry_state.previous_objective
+                            stable_loss_steps = retry_state.stable_loss_steps
+                            lbfgsb_fallback_used_count = (
+                                retry_state.lbfgsb_fallback_used_count
+                            )
+                            lbfgsb_loss_schedule_index = min(
+                                int(retry_state.lbfgsb_loss_schedule_index),
+                                max(0, len(lbfgsb_loss_schedule) - 1),
+                            )
+                            lbfgsb_best_retry_count += 1
+                            resume_info = {
+                                **restore_info,
+                                "optimizer/lbfgsb_best_retry_count": float(
+                                    lbfgsb_best_retry_count
+                                ),
+                                "optimizer/lbfgsb_best_retry_source_step": float(
+                                    -1
+                                    if retry_state.best_step is None
+                                    else retry_state.best_step
+                                ),
+                            }
+                            model.clear()
+                            continue
                     status = step_status
                     break
             else:
@@ -5107,6 +5178,7 @@ class OptimizationRunner:
                 ),
                 "stable_loss_steps": stable_loss_steps,
                 "lbfgsb_fallback_used_count": lbfgsb_fallback_used_count,
+                "lbfgsb_best_retry_count": lbfgsb_best_retry_count,
             }
             if lbfgsb_loss_schedule:
                 final_status["lbfgsb_loss_schedule_index"] = (
