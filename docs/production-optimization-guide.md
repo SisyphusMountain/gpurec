@@ -242,14 +242,15 @@ For specieswise, set `--mode specieswise` and let `auto` choose
 `gpurec config-template --mode specieswise --output specieswise-run.json`; that
 template keeps `optimizer=auto` and writes the default
 `adagrad_restart_schedule`; `validate-config`, `summary.json`, and
-`checkpoint-info` report the derived `adagrad_restart_total_steps` and fixed128
-final validation fields explicitly.
+`checkpoint-info` report the derived `adagrad_restart_total_steps`,
+`final_check_iters=128`, and `final_check_iters_e=128` fields explicitly.
 `validate-config` checks the flat JSON/CLI config, selected AleRax family
 records, mapping files, and referenced gene-tree files without CUDA or
 preprocessing. Its summary prints the resolved optimizer, batch planning,
-solver budgets, effective `final_check_iters`, and optimizer-specific defaults
-such as the specieswise restart schedule and genewise Hessian-SGD normal-stage
-solver overrides. It is a preflight for path and parser issues, not a
+solver budgets, effective `final_check_iters`, effective
+`final_check_iters_e`, and optimizer-specific defaults such as the specieswise
+restart schedule and genewise Hessian-SGD normal-stage solver overrides. It is
+a preflight for path and parser issues, not a
 likelihood or gradient correctness check. Add `--check-preprocess` for a
 heavier CPU preprocessing pass that uses the retained Rust parser to validate
 selected Newick trees and leaf/species mappings before optimization. That

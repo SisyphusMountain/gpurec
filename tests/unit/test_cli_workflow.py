@@ -787,6 +787,7 @@ def test_cli_validate_config_reports_selected_family_references(
     assert "fixed_iters_pi=16" in captured.out
     assert "neumann_terms=16" in captured.out
     assert "final_check_iters=32" in captured.out
+    assert "final_check_iters_e=null" in captured.out
     assert "configured_steps=5000" in captured.out
     assert "optimizer_step_cap=5000" in captured.out
     assert "optimizer_step_cap_reason=configured_steps" in captured.out
@@ -990,6 +991,7 @@ def test_cli_validate_config_reports_specieswise_restart_route(
     assert "optimizer_step_cap=125" in captured.out
     assert "optimizer_step_cap_reason=adagrad_restart_schedule" in captured.out
     assert "final_check_iters=128" in captured.out
+    assert "final_check_iters_e=128" in captured.out
     assert "adagrad_restart_final_check_iters=128" in captured.out
     assert captured.err == ""
 
@@ -1020,6 +1022,7 @@ def test_cli_validate_config_require_production_default_route_accepts_specieswis
     assert "production_default_route_mismatches=none" in captured.out
     assert "optimizer_step_cap=125" in captured.out
     assert "optimizer_step_cap_reason=adagrad_restart_schedule" in captured.out
+    assert "final_check_iters_e=128" in captured.out
 
 
 def test_cli_validate_config_reuses_checkpoint_route_formatter(tmp_path: Path):
@@ -1706,6 +1709,7 @@ def test_cli_checkpoint_info_reports_route_status_and_last_row(
         "fixed_iters_pi=16",
         "neumann_terms=16",
         "final_check_iters=128",
+        "final_check_iters_e=128",
         "configured_steps=5000",
         "optimizer_step_cap=125",
         "optimizer_step_cap_reason=adagrad_restart_schedule",

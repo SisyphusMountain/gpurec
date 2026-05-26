@@ -7588,6 +7588,14 @@ visibility for checkpoint last rows.  When the saved row includes
 status/source/reason and loss/gradient deltas.  The checkpoint-info CLI fixture
 and output-artifact hygiene guard cover the new terminal contract.
 
+\texttt{gpurec.workflow.config.effective\_final\_check\_iters\_e(config)} now
+centralizes the paired E-solver budget used by final likelihood/gradient
+validation.  Route metadata, \texttt{validate-config}, checkpoints, summaries,
+and the optimization runner now agree on \texttt{final\_check\_iters\_e}
+before and after optimization, including adaptive \texttt{null} values for
+genewise Hessian-SGD and fixed128 values for specieswise
+\texttt{adagrad-restarts}.
+
 \section{Next Audit Targets}
 
 \begin{enumerate}[leftmargin=*]

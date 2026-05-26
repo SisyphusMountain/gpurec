@@ -342,6 +342,21 @@ def effective_final_check_iters(config: RunConfig) -> int:
     return int(config.final_check_iters)
 
 
+def effective_final_check_iters_e(config: RunConfig) -> int | None:
+    """Return the E-solver budget used by final likelihood/gradient validation."""
+
+    check_iters = effective_final_check_iters(config)
+    if check_iters <= 0:
+        return 0
+    if config.optimizer == "adagrad-restarts":
+        return int(check_iters)
+    if config.mode == "specieswise" and check_iters > 16:
+        if config.fixed_iters_e is None:
+            return int(check_iters)
+        return max(int(config.fixed_iters_e), int(check_iters))
+    return None if config.fixed_iters_e is None else int(config.fixed_iters_e)
+
+
 def _normalize_adagrad_restart_schedule(value: str) -> str:
     return ",".join(
         f"{phase.budget_spec()}:{phase.lr:.12g}:{phase.steps}"
@@ -1202,6 +1217,7 @@ def effective_route_metadata(config: RunConfig) -> dict[str, Any]:
         "fixed_iters_pi": config.fixed_iters_pi,
         "neumann_terms": config.neumann_terms,
         "final_check_iters": effective_final_check_iters(config),
+        "final_check_iters_e": effective_final_check_iters_e(config),
         "configured_steps": config.steps,
         "optimizer_step_cap": optimizer_step_cap,
         "optimizer_step_cap_reason": optimizer_step_cap_reason,

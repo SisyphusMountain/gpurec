@@ -43,6 +43,7 @@ from .config import (
     adagrad_restart_schedule_specs,
     adagrad_restart_schedule_total_steps,
     effective_final_check_iters,
+    effective_final_check_iters_e,
     effective_route_metadata,
 )
 from .diagnostics import (
@@ -1075,9 +1076,9 @@ class OptimizationRunner:
         return self.config.fixed_iters_e
 
     def _final_check_fixed_iters_E(self, check_iters: int) -> int | None:
-        if self.config.optimizer == "adagrad-restarts":
-            return int(check_iters)
-        return self._fixed_iters_E_for_pi_budget(check_iters)
+        if int(check_iters) <= 0:
+            return 0
+        return effective_final_check_iters_e(self.config)
 
     def _final_iteration_check_iters(self) -> int:
         return effective_final_check_iters(self.config)

@@ -2319,6 +2319,10 @@ not edit files.  New or still-open findings from that refresh are:
   `last_final_check_iters_e` when those budgets exist in the checkpoint last
   row, matching the final likelihood/gradient validation budget visibility in
   `summary.json` and the optimization status line.
+- `gpurec.workflow.config.effective_final_check_iters_e(config)` now
+  centralizes the paired E-solver budget used for final likelihood/gradient
+  validation. Route metadata and `validate-config` report the same
+  `final_check_iters_e` value that the optimization runner uses at runtime.
 
 ## Recommended Next Order
 

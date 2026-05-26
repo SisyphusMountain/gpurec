@@ -90,7 +90,10 @@ used for the final high-fidelity likelihood/gradient validation; for
 specieswise `adagrad-restarts`, this is the resolved
 `adagrad_restart_final_check_iters` value.
 The `final_check_iters_e` field records the paired E-solver budget used by that
-final validation, or `null` when the E solve remains adaptive.
+final validation, or `null` when the E solve remains adaptive. The same field
+appears in route metadata from `gpurec validate-config`, current checkpoints,
+and new summaries so preflight output and final artifacts agree on the planned
+E budget.
 When the final validation runs, `summary.json` also includes
 `final_check_status`, `final_check_source`, `final_check_reason`,
 `final_check_fallback_clade_budget`, `final_check_loss_abs_delta_bits`,

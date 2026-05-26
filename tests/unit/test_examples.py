@@ -109,6 +109,7 @@ def test_examples_readme_documents_mode_specific_default_configs():
         "`optimizer=auto` resolves to `adagrad-restarts`",
         "`8:1.0:60,16:0.5:35,32:0.5:30`",
         "fixed128 final validation",
+        "`final_check_iters_e=128`",
         "Installed wheels intentionally do not install this directory",
         "gpurec config-template --mode genewise --output run.json",
         "gpurec config-template --mode specieswise --output specieswise-run.json",

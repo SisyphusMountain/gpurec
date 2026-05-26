@@ -938,6 +938,7 @@ def _route_metadata_text(route: dict[str, Any]) -> str:
         _route_int_text("fixed_iters_pi", route),
         _route_int_text("neumann_terms", route),
         _route_int_text("final_check_iters", route),
+        _route_int_text("final_check_iters_e", route),
         _route_int_text("configured_steps", route),
         _route_int_text("optimizer_step_cap", route),
         _optional_text(
