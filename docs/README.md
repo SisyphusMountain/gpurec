@@ -12,6 +12,9 @@ file as the map for deeper context.
   likelihood objective, gradient route, solver fidelity controls, genewise
   `hessian-sgd` default, specieswise `adagrad-restarts` default, and
   HOGENOM/`test_trees_1000` validation gates.
+- `optimization-workflow-call-graph.md`: current production call graph for
+  `validate-config`, AleRax preprocessing, resident likelihood/gradient
+  evaluation, optimizer phases, checkpoints, and final artifacts.
 - `simplification-opportunity-index-2026-05-21.md`: direct inventory of
   removable or mergeable alternative paths, with source-file evidence, retained
   behavior, and deletion gates.

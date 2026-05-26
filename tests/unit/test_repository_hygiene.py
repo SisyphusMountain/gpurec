@@ -1362,6 +1362,32 @@ def test_production_optimization_guide_is_linked_and_documents_routes():
         assert token in normalized
 
 
+def test_optimization_workflow_call_graph_documents_current_cli_and_optimizers():
+    root = Path(__file__).resolve().parents[2]
+    docs_readme = (root / "docs" / "README.md").read_text(encoding="utf-8")
+    call_graph = (
+        root / "docs" / "optimization-workflow-call-graph.md"
+    ).read_text(encoding="utf-8")
+    normalized = " ".join(call_graph.split())
+
+    assert "optimization-workflow-call-graph.md" in docs_readme
+    for token in (
+        "`gpurec validate-config`",
+        "stops at the preflight node",
+        "without constructing `GeneReconModel`",
+        "without constructing `GeneReconModel`, loading the Rust preprocessing extension, or touching CUDA",
+        "`optimizer=auto` resolves to `hessian-sgd`",
+        "`adagrad-restarts` for `mode=specieswise`",
+        "`adagrad_restart_final_check_iters`",
+        "records `optimizer/adagrad_restart_*` fields",
+        "`hessian-sgd` is genewise-only",
+        "finite-difference Hessians",
+        "projected gradients",
+        "loss-only probes",
+    ):
+        assert token in normalized
+
+
 def test_project_readme_documents_completed_resume_status():
     root = Path(__file__).resolve().parents[2]
     project_readme = (root / "README.md").read_text(encoding="utf-8")

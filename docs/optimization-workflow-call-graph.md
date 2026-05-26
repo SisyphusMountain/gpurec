@@ -1,7 +1,8 @@
 # gpurec Optimization Workflow Call Graph
 
-Scope: this follows the supported production path used by `gpurec optimize`
-and the equivalent Python API call `gpurec.optimize(RunConfig)`. It covers
+Scope: this follows the supported production path used by `gpurec
+validate-config`, `gpurec optimize`, `gpurec run`, and the equivalent Python
+API call `gpurec.optimize(RunConfig)`. It covers CPU-safe config preflight,
 AleRax-style dataset processing, likelihood optimization, and final artifact
 publication. `gpurec run` calls the same optimization path first, then continues
 into sampling.
@@ -13,6 +14,8 @@ flowchart TD
   CLI["gpurec.cli.main(argv)<br/>gpurec/cli.py:492"]
   Parser["build_parser() / _run_config_from_args(args)<br/>gpurec/cli.py:446,117"]
   Config["RunConfig.from_dict(...)<br/>gpurec/workflow/config.py:492"]
+  Preflight["CLI preflight<br/>input paths and AleRax family references"]
+  ValidateConfig["gpurec validate-config<br/>print valid_config summary"]
   CLIOptimize["gpurec.cli.optimize(config)<br/>gpurec/cli.py:40"]
   PyAPI["gpurec.optimize(config)<br/>gpurec/__init__.py:31<br/>gpurec/workflow/__init__.py:10"]
   Optimize["workflow.optimize(config)<br/>gpurec/workflow/optimize.py:809"]
@@ -41,7 +44,9 @@ flowchart TD
   FinalArtifacts["_write_final_artifacts(...)<br/>gpurec/workflow/optimize.py:223"]
   Result["OptimizationResult<br/>gpurec/workflow/optimize.py:47"]
 
-  CLI --> Parser --> Config --> CLIOptimize --> Optimize
+  CLI --> Parser --> Config --> Preflight
+  Preflight --> ValidateConfig
+  Preflight --> CLIOptimize --> Optimize
   PyAPI --> Optimize
   Optimize --> Runner
   Runner --> BuildModel --> ModelFactory --> FromFamilies
@@ -53,6 +58,14 @@ flowchart TD
   ModelInit --> BuildStatic --> BuildLayout --> WaveLayout
   Runner --> OptimizerLoop --> FinalEval --> FinalArtifacts --> Result
 ```
+
+`gpurec validate-config` stops at the preflight node. It validates the flat
+JSON/CLI `RunConfig`, required paths, selected AleRax family records, mapping
+files, and referenced gene-tree files without constructing `GeneReconModel`,
+loading the Rust preprocessing extension, or touching CUDA. `gpurec optimize`
+and `gpurec run` use the same preflight before entering the CUDA likelihood
+workflow. The Python API starts at `workflow.optimize(config)` and therefore
+skips only the CLI parser/preflight layer.
 
 ## Per-Step Likelihood And Gradient
 
@@ -91,7 +104,7 @@ flowchart TD
   Bicgstab["_bicgstab(...)<br/>gpurec/optimization/implicit_grad.py:55"]
   LossBackward["loss.backward()<br/>gpurec/workflow/optimize.py:342"]
   FullLossFnBackward["_GeneReconFullLossFunction.backward(...)<br/>gpurec/api/model.py:739"]
-  OptimizerStep["optimizer.step(...) / torch.optim Adam, Adagrad, or LBFGS<br/>gpurec/workflow/optimize.py:513,610"]
+  OptimizerStep["optimizer step<br/>Adam, Adagrad, adagrad-restarts,<br/>hessian-sgd, LBFGS variants"]
   Clear["model.clear()<br/>gpurec/api/model.py:1510"]
 
   Closure --> ClampBefore --> EvalBackward --> FullLoss --> FullLossFn --> Stream --> EvalStatic
@@ -151,6 +164,19 @@ flowchart TD
 
 ## Notes
 
-- The workflow optimizer phases are selected in `OptimizationRunner._phase_for_step()` and built in `_make_optimizer()` (`gpurec/workflow/optimize.py:316`).
-- Adam and Adagrad evaluate once before the parameter update. LBFGS calls the closure during `optimizer.step(closure)` and then records one current-theta evaluation.
+- `optimizer=auto` resolves to `hessian-sgd` for `mode=genewise`,
+  `adagrad-restarts` for `mode=specieswise`, and `adam` for `mode=global`.
+- The workflow optimizer phases are selected in
+  `OptimizationRunner._phase_for_step()` and built in `_make_optimizer()`.
+- `adagrad-restarts` is specieswise-only. Each schedule phase reconfigures
+  `fixed_iters_E`, `fixed_iters_Pi`, and `neumann_terms` to the phase budget,
+  resets Adagrad state, records `optimizer/adagrad_restart_*` fields, and uses
+  `adagrad_restart_final_check_iters` for the final high-fidelity evaluation.
+- `hessian-sgd` is genewise-only. It works on active resident batches, uses
+  warmup solver budgets before the full stage, refreshes row-wise 3x3
+  finite-difference Hessians, applies BFGS row updates between refreshes, and
+  records projected gradients for rate-bound-aware stopping.
+- Adam and Adagrad evaluate once before the parameter update. LBFGS-style
+  optimizers use loss-only probes where supported, then record one accepted
+  current-theta gradient evaluation.
 - The direct `UniformChunkedReconModel` path has its own public surface in `gpurec/api/uniform_chunked.py`, but the production workflow above currently constructs `GeneReconModel`.
