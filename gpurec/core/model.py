@@ -192,6 +192,35 @@ def normalize_family_tree_paths(
     return normalized
 
 
+def normalize_family_inputs(
+    gene_tree_paths: Iterable[str | os.PathLike | Iterable[str | os.PathLike]],
+    family_names: Sequence[str] | None = None,
+    leaf_species_maps: Sequence[dict[str, str]] | None = None,
+) -> tuple[list[list[str]], list[str], list[dict[str, str]]]:
+    """Normalize family paths plus optional names and leaf-species maps."""
+    family_tree_paths = normalize_family_tree_paths(gene_tree_paths)
+    if family_names is None:
+        normalized_names = [
+            f"family_{i:06d}" for i in range(len(family_tree_paths))
+        ]
+    else:
+        normalized_names = [str(name) for name in family_names]
+    if len(normalized_names) != len(family_tree_paths):
+        raise ValueError("family_names must match gene_tree_paths length")
+    seen_family_names: set[str] = set()
+    for name in normalized_names:
+        if name in seen_family_names:
+            raise ValueError(f"duplicate family name {name!r} in family_names")
+        seen_family_names.add(name)
+    if leaf_species_maps is None:
+        normalized_maps = [{} for _ in family_tree_paths]
+    else:
+        normalized_maps = [dict(m) for m in leaf_species_maps]
+    if len(normalized_maps) != len(family_tree_paths):
+        raise ValueError("leaf_species_maps must match gene_tree_paths length")
+    return family_tree_paths, normalized_names, normalized_maps
+
+
 def _normalize_preprocess_cpu_cores(value: int | float | None) -> int | None:
     if value is None:
         return None
@@ -278,24 +307,11 @@ class GeneDataset:
         self.specieswise = specieswise
         self.device = device
         self.dtype = dtype
-        family_tree_paths = normalize_family_tree_paths(gene_tree_paths)
-        if family_names is None:
-            family_names = [f"family_{i:06d}" for i in range(len(family_tree_paths))]
-        else:
-            family_names = [str(name) for name in family_names]
-        if len(family_names) != len(family_tree_paths):
-            raise ValueError("family_names must match gene_tree_paths length")
-        seen_family_names: set[str] = set()
-        for name in family_names:
-            if name in seen_family_names:
-                raise ValueError(f"duplicate family name {name!r} in family_names")
-            seen_family_names.add(name)
-        if leaf_species_maps is None:
-            leaf_species_maps = [{} for _ in family_tree_paths]
-        else:
-            leaf_species_maps = [dict(m) for m in leaf_species_maps]
-        if len(leaf_species_maps) != len(family_tree_paths):
-            raise ValueError("leaf_species_maps must match gene_tree_paths length")
+        family_tree_paths, family_names, leaf_species_maps = normalize_family_inputs(
+            gene_tree_paths,
+            family_names,
+            leaf_species_maps,
+        )
 
         ext = _load_preprocess_extension()
         # Private benchmark hook: this intentionally stays out of the documented
@@ -353,24 +369,11 @@ class GeneDataset:
     ) -> "GeneDataset":
         """Build a dataset while retaining native Rust preprocessing output."""
         preprocess_cpu_cores = _normalize_preprocess_cpu_cores(preprocess_cpu_cores)
-        family_tree_paths = normalize_family_tree_paths(gene_tree_paths)
-        if family_names is None:
-            family_names = [f"family_{i:06d}" for i in range(len(family_tree_paths))]
-        else:
-            family_names = [str(name) for name in family_names]
-        if len(family_names) != len(family_tree_paths):
-            raise ValueError("family_names must match gene_tree_paths length")
-        seen_family_names: set[str] = set()
-        for name in family_names:
-            if name in seen_family_names:
-                raise ValueError(f"duplicate family name {name!r} in family_names")
-            seen_family_names.add(name)
-        if leaf_species_maps is None:
-            leaf_species_maps = [{} for _ in family_tree_paths]
-        else:
-            leaf_species_maps = [dict(m) for m in leaf_species_maps]
-        if len(leaf_species_maps) != len(family_tree_paths):
-            raise ValueError("leaf_species_maps must match gene_tree_paths length")
+        family_tree_paths, family_names, leaf_species_maps = normalize_family_inputs(
+            gene_tree_paths,
+            family_names,
+            leaf_species_maps,
+        )
 
         ext = _load_preprocess_extension()
         preprocess_dataset = getattr(ext, "preprocess_dataset", None)
@@ -566,24 +569,11 @@ class GeneDataset:
     ) -> "GeneDataset":
         if device is None:
             device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-        family_tree_paths = normalize_family_tree_paths(gene_tree_paths)
-        if family_names is None:
-            family_names = [f"family_{i:06d}" for i in range(len(family_tree_paths))]
-        else:
-            family_names = [str(name) for name in family_names]
-        if len(family_names) != len(family_tree_paths):
-            raise ValueError("family_names must match gene_tree_paths length")
-        seen_family_names: set[str] = set()
-        for name in family_names:
-            if name in seen_family_names:
-                raise ValueError(f"duplicate family name {name!r} in family_names")
-            seen_family_names.add(name)
-        if leaf_species_maps is None:
-            leaf_species_maps = [{} for _ in family_tree_paths]
-        else:
-            leaf_species_maps = [dict(m) for m in leaf_species_maps]
-        if len(leaf_species_maps) != len(family_tree_paths):
-            raise ValueError("leaf_species_maps must match gene_tree_paths length")
+        family_tree_paths, family_names, leaf_species_maps = normalize_family_inputs(
+            gene_tree_paths,
+            family_names,
+            leaf_species_maps,
+        )
 
         raw_families = raw["families"]
         missing = [name for name in family_names if name not in raw_families]

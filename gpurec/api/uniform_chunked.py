@@ -36,8 +36,8 @@ from gpurec.core.likelihood import (
 from gpurec.core.memory_policy import UniformPipelinePolicy, choose_uniform_pipeline_policy
 from gpurec.core.model import (
     GeneDataset,
+    normalize_family_inputs,
     normalize_family_selection,
-    normalize_family_tree_paths,
     parse_alerax_family_file,
 )
 from gpurec.core.origination import (
@@ -319,32 +319,6 @@ def _dtype_name_for_rust(dtype: torch.dtype) -> str:
     if dtype == torch.float64:
         return "float64"
     raise ValueError(f"unsupported fused Rust layout dtype: {dtype}")
-
-
-def _normalize_preprocess_inputs(
-    gene_paths: Sequence[str | os.PathLike[str] | Sequence[str | os.PathLike[str]]],
-    family_names: Sequence[str] | None,
-    leaf_species_maps: Sequence[dict[str, str]] | None,
-) -> tuple[list[list[str]], list[str], list[dict[str, str]]]:
-    family_tree_paths = normalize_family_tree_paths(gene_paths)
-    if family_names is None:
-        names = [f"family_{i:06d}" for i in range(len(family_tree_paths))]
-    else:
-        names = [str(name) for name in family_names]
-    if len(names) != len(family_tree_paths):
-        raise ValueError("family_names must match gene_tree_paths length")
-    seen_family_names: set[str] = set()
-    for name in names:
-        if name in seen_family_names:
-            raise ValueError(f"duplicate family name {name!r} in family_names")
-        seen_family_names.add(name)
-    if leaf_species_maps is None:
-        maps = [{} for _ in family_tree_paths]
-    else:
-        maps = [dict(m) for m in leaf_species_maps]
-    if len(maps) != len(family_tree_paths):
-        raise ValueError("leaf_species_maps must match gene_tree_paths length")
-    return family_tree_paths, names, maps
 
 
 def _move_wave_layout_to_device(
@@ -912,20 +886,19 @@ class UniformChunkedReconModel(torch.nn.Module):
             "max_wave_candidates",
             max_wave_candidates,
         )
-        gene_paths = normalize_family_tree_paths(gene_trees)
+        family_tree_paths, normalized_family_names, normalized_leaf_maps = (
+            normalize_family_inputs(
+                gene_trees,
+                family_names,
+                leaf_species_maps,
+            )
+        )
 
         device = require_cuda_device(device, owner="UniformChunkedReconModel")
         theta_init = theta_init.to(device=device)
 
         from gpurec.core.preprocess_rust import RustPreprocessExtension
 
-        family_tree_paths, normalized_family_names, normalized_leaf_maps = (
-            _normalize_preprocess_inputs(
-                gene_paths,
-                family_names,
-                leaf_species_maps,
-            )
-        )
         families_input = {
             name: paths
             for name, paths in zip(normalized_family_names, family_tree_paths)

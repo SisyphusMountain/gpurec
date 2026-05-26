@@ -1930,6 +1930,10 @@ not edit files.  New or still-open findings from that refresh are:
   underspecified profiling ownership boundary, source-checkout-only configs
   that can look like installed workflows, and historical branchscale/KKT report
   scripts that need migration or archival.
+- The family path/name/map normalization part of the duplicated-validation
+  finding is now fixed for dataset construction and the uniform chunked API:
+  they share `gpurec.core.model.normalize_family_inputs()` for default family
+  names, duplicate-name rejection, and leaf-species-map length checks.
 - The profiling ownership-boundary documentation gap is now fixed.
   `profiling/README.md` documents the two tracked profiling entrypoints, their
   source-checkout/CUDA/local-data assumptions, output-contract expectations,

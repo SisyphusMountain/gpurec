@@ -68,8 +68,10 @@ Plan:
 - Move chunk selection and `loss_and_grad(chunk_indices=...)` into the shared
   evaluator.
 - Keep the public class as a thin adapter while users migrate.
-- Remove duplicated validation helpers from `uniform_chunked.py` once they are
-  shared through `gpurec/api/_validation.py` or the evaluator.
+- Keep family path/name/map normalization shared through
+  `gpurec.core.model.normalize_family_inputs()` so dataset constructors and the
+  uniform chunked API reject mismatched or duplicate family metadata through one
+  implementation.
 
 ### Core/API Refresh Findings
 

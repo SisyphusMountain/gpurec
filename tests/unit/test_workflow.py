@@ -33,7 +33,7 @@ from gpurec.backtracking import (
 )
 from gpurec.cli import _sampling_config_from_args
 from gpurec.core.batch_planning import normalize_clade_budget, normalize_family_chunk_size
-from gpurec.core.model import GeneDataset
+from gpurec.core.model import GeneDataset, normalize_family_inputs
 from gpurec.api import (
     ActiveFamilyBatch,
     BatchMetadata,
@@ -2371,6 +2371,33 @@ def test_public_tree_constructors_reject_invalid_gene_trees_before_device(
 
     assert "CUDA" not in str(exc_info.value)
     assert "missing" not in str(exc_info.value)
+
+
+def test_normalize_family_inputs_defaults_names_and_copies_maps(tmp_path: Path):
+    leaf_map = {"gene_a": "SpeciesA"}
+
+    paths, names, maps = normalize_family_inputs(
+        [tmp_path / "a.nwk", [tmp_path / "b.nwk", tmp_path / "c.nwk"]],
+        family_names=("alpha", "beta"),
+        leaf_species_maps=[leaf_map, {}],
+    )
+
+    assert paths == [
+        [str(tmp_path / "a.nwk")],
+        [str(tmp_path / "b.nwk"), str(tmp_path / "c.nwk")],
+    ]
+    assert names == ["alpha", "beta"]
+    assert maps == [{"gene_a": "SpeciesA"}, {}]
+
+    leaf_map["gene_a"] = "Other"
+    assert maps[0] == {"gene_a": "SpeciesA"}
+
+    default_paths, default_names, default_maps = normalize_family_inputs(
+        [tmp_path / "default.nwk"]
+    )
+    assert default_paths == [[str(tmp_path / "default.nwk")]]
+    assert default_names == ["family_000000"]
+    assert default_maps == [{}]
 
 
 def test_gene_dataset_rejects_single_gene_tree_path_before_extension(

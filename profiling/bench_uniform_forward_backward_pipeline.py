@@ -35,14 +35,13 @@ from gpurec.core.extract_parameters import extract_parameters_uniform
 from gpurec.core.forward import Pi_wave_forward
 from gpurec.core.likelihood import E_fixed_point, compute_nll
 from gpurec.core.memory_policy import choose_uniform_pipeline_policy
-from gpurec.core.model import GeneDataset
+from gpurec.core.model import GeneDataset, normalize_family_inputs
 from gpurec.core.preprocess_rust import RustPreprocessExtension
 from gpurec.optimization.implicit_grad import _e_adjoint_and_theta_vjp
 from gpurec.api.uniform_chunked import (
     _UniformBuiltChunk as BuiltChunk,
     _built_chunks_from_rust,
     _dtype_name_for_rust,
-    _normalize_preprocess_inputs,
     _selected_gene_paths,
 )
 
@@ -524,7 +523,7 @@ def _make_static_inputs(args: argparse.Namespace) -> StaticInputs:
         )
 
     t0 = time.perf_counter()
-    family_tree_paths, family_names, leaf_species_maps = _normalize_preprocess_inputs(
+    family_tree_paths, family_names, leaf_species_maps = normalize_family_inputs(
         genes,
         [Path(gene).stem for gene in genes],
         None,
