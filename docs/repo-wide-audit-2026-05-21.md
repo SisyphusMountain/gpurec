@@ -2331,6 +2331,9 @@ not edit files.  New or still-open findings from that refresh are:
   `--require-mode-default-optimizer` and `--require-production-default-route`
   are enabled. The shared payload keeps standalone sampling gates from doing
   duplicate large-checkpoint IO before the same production route audit.
+- The shared `--require-production-default-route` CLI help now names
+  `final_check_iters_e` evidence explicitly, matching the stricter route audit
+  shown in summaries, checkpoints, and preflight output.
 
 ## Recommended Next Order
 

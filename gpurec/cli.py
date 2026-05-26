@@ -81,8 +81,8 @@ def _add_require_production_default_route_arg(
         action="store_true",
         help=(
             "Fail unless the likelihood/gradient route, resolved optimizer, "
-            "and optimizer-specific settings match the shipped "
-            "HOGENOM/test_trees_1000 production route."
+            "final_check_iters_e evidence, and optimizer-specific settings "
+            "match the shipped HOGENOM/test_trees_1000 production route."
         ),
     )
 

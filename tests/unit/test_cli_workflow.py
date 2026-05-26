@@ -188,6 +188,25 @@ def test_sampling_config_cli_surface_matches_dataclass_fields():
     assert set(sampling_dest_to_field) - {"checkpoint"} <= _parser_action_dests("run")
 
 
+@pytest.mark.parametrize(
+    "command",
+    [
+        "optimize",
+        "validate-config",
+        "sample",
+        "run",
+        "checkpoint-info",
+        "summary-info",
+    ],
+)
+def test_cli_production_route_help_names_final_check_evidence(command: str):
+    action = _parser_action(command, "require_production_default_route")
+
+    assert "likelihood/gradient route" in str(action.help)
+    assert "final_check_iters_e evidence" in str(action.help)
+    assert "HOGENOM/" + "test_trees_" + "1000 production route" in str(action.help)
+
+
 def test_build_alerax_workflow_model_forwards_run_config(tmp_path: Path, monkeypatch):
     config = RunConfig(
         species_tree=tmp_path / "sp.nwk",

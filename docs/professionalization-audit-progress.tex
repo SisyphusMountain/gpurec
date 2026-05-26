@@ -7608,6 +7608,11 @@ sampling route gates.  When both \texttt{--require-mode-default-optimizer} and
 optimization checkpoint once and applies both production audits to the same route
 metadata before invoking sampling.
 
+The shared \texttt{--require-production-default-route} help text now names
+\texttt{final\_check\_iters\_e} evidence explicitly.  This keeps terminal help
+aligned with the stricter route audit exposed by config preflight, checkpoints,
+and summaries.
+
 \section{Next Audit Targets}
 
 \begin{enumerate}[leftmargin=*]
