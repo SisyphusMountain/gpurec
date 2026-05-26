@@ -7284,13 +7284,18 @@ such as \texttt{clade\_budget} and \texttt{family\_chunk\_size}.  The
 resident uniform memory-policy estimators now delegate integer dimensions and
 candidate controls to the shared helpers too.  The Rust scheduler bridge keeps
 only its string adapter locally and delegates non-string integer semantics to
-the same shared validation helper.
+the same shared validation helper.  Checkpoint resume metadata now keeps its
+checkpoint-specific error wording while using the shared nonnegative-integer
+validator.
 
 The float-range slice now follows the same ownership boundary:
 \texttt{gpurec.\_validation} owns \texttt{finite\_float()},
 \texttt{positive\_float()}, and \texttt{nonnegative\_float()}.  The API
 validation module re-exports those helpers for direct API callers, while
 workflow float adapters already delegate to the shared validator.
+Checkpoint resume metadata now delegates finite-float semantics to that helper
+too, with torch-specific bool-tensor detection kept lazy so metadata imports
+remain lightweight.
 
 The profiling ownership boundary documentation gap from that pass is now
 addressed.  \texttt{profiling/README.md} records the two tracked profiling

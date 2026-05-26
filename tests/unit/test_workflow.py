@@ -58,6 +58,9 @@ from gpurec.workflow.checkpoint import (
     validate_checkpoint_model_compatibility,
 )
 from gpurec.workflow._metadata import (
+    MISSING,
+    checkpoint_finite_float,
+    checkpoint_nonnegative_int,
     checkpoint_progress,
     checkpoint_status_dict,
     model_family_names,
@@ -3772,6 +3775,32 @@ def test_workflow_metadata_checkpoint_status_defaults_and_validates(
 
     with pytest.raises(RuntimeError, match="invalid status metadata"):
         checkpoint_status_dict(path, {"status": "not-a-dict"})
+
+
+def test_workflow_metadata_numeric_helpers_keep_checkpoint_errors(tmp_path: Path):
+    path = tmp_path / "checkpoint.pt"
+
+    assert checkpoint_nonnegative_int(path, "status.best_step", 2.0) == 2
+    assert checkpoint_nonnegative_int(
+        path, "status.best_step", None, allow_none=True
+    ) is None
+    assert checkpoint_nonnegative_int(
+        path, "status.stable_loss_steps", MISSING, default=0
+    ) == 0
+    assert checkpoint_finite_float(path, "status.best_nll_bits", 1) == pytest.approx(
+        1.0
+    )
+    assert checkpoint_finite_float(
+        path, "status.best_nll_bits", None, allow_none=True
+    ) is None
+
+    for value in ("2", True, -1, 1.5, math.inf):
+        with pytest.raises(RuntimeError, match="invalid status.best_step"):
+            checkpoint_nonnegative_int(path, "status.best_step", value)
+
+    for value in ("1.0", True, math.nan, math.inf):
+        with pytest.raises(RuntimeError, match="invalid status.best_nll_bits"):
+            checkpoint_finite_float(path, "status.best_nll_bits", value)
 
 
 def test_sampling_config_validates_selection(tmp_path: Path):

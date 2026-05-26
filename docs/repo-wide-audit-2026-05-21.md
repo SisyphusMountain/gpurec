@@ -1934,12 +1934,16 @@ not edit files.  New or still-open findings from that refresh are:
   resident uniform memory-policy estimators also delegate their integer
   dimensions and candidate controls to the shared helpers.  The Rust scheduler
   bridge now keeps only its string adapter locally and delegates non-string
-  integer semantics to the same shared validation helper.
+  integer semantics to the same shared validation helper.  Checkpoint resume
+  metadata now uses the shared nonnegative-integer validator beneath its
+  checkpoint-specific error messages.
 - The float-range part of the duplicated-validation finding is now reduced as
   well.  `gpurec._validation` owns `finite_float()`, `positive_float()`, and
   `nonnegative_float()`; the API validation module re-exports those helpers for
-  direct API callers while workflow float adapters already delegate to the same
-  shared validator.
+  direct API callers while workflow float adapters and checkpoint resume
+  metadata already delegate to the same shared finite-float validator.  The
+  shared validation module keeps torch-specific bool-tensor detection lazy so
+  checkpoint metadata imports stay lightweight.
 - The profiling ownership-boundary documentation gap is now fixed.
   `profiling/README.md` documents the two tracked profiling entrypoints, their
   source-checkout/CUDA/local-data assumptions, output-contract expectations,

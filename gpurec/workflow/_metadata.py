@@ -7,10 +7,11 @@ use ``gpurec.workflow.checkpoint`` for supported checkpoint tooling.
 
 from __future__ import annotations
 
-import math
-from numbers import Integral, Real
+from numbers import Real
 from pathlib import Path
 from typing import Any
+
+from gpurec._validation import finite_float, nonnegative_int
 
 
 MISSING = object()
@@ -36,19 +37,10 @@ def checkpoint_nonnegative_int(
         if allow_none:
             return None
         raise invalid_checkpoint_field(path, key)
-    if isinstance(value, bool):
-        raise invalid_checkpoint_field(path, key)
-    if isinstance(value, Integral):
-        number = int(value)
-    elif isinstance(value, Real):
-        raw = float(value)
-        if not math.isfinite(raw) or not raw.is_integer():
-            raise invalid_checkpoint_field(path, key)
-        number = int(raw)
-    else:
-        raise invalid_checkpoint_field(path, key)
-    if number < 0:
-        raise invalid_checkpoint_field(path, key)
+    try:
+        number = nonnegative_int(key, value)
+    except ValueError as exc:
+        raise invalid_checkpoint_field(path, key) from exc
     return number
 
 
@@ -65,9 +57,10 @@ def checkpoint_finite_float(
         raise invalid_checkpoint_field(path, key)
     if isinstance(value, bool) or not isinstance(value, Real):
         raise invalid_checkpoint_field(path, key)
-    number = float(value)
-    if not math.isfinite(number):
-        raise invalid_checkpoint_field(path, key)
+    try:
+        number = finite_float(key, value)
+    except ValueError as exc:
+        raise invalid_checkpoint_field(path, key) from exc
     return number
 
 

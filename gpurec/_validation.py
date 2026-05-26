@@ -3,9 +3,8 @@
 from __future__ import annotations
 
 import math
+import sys
 from numbers import Integral, Real
-
-import torch
 
 
 ADAPTIVE_NEUMANN_TERMS_DISABLED_MESSAGE = (
@@ -18,8 +17,11 @@ ADAPTIVE_NEUMANN_TERMS_DISABLED_MESSAGE = (
 
 
 def finite_float(name: str, value: float) -> float:
+    torch_module = sys.modules.get("torch")
     if isinstance(value, bool) or (
-        torch.is_tensor(value) and value.dtype == torch.bool
+        torch_module is not None
+        and torch_module.is_tensor(value)
+        and value.dtype == torch_module.bool
     ):
         raise ValueError(f"{name} must be a number, not a boolean")
     try:

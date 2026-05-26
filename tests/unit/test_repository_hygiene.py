@@ -428,14 +428,18 @@ def test_internal_api_helper_modules_document_support_boundary():
 
 def test_workflow_numeric_validation_uses_shared_helpers():
     root = Path(__file__).resolve().parents[2]
-    shared_validation = ast.parse(
-        (root / "gpurec" / "_validation.py").read_text(encoding="utf-8")
+    shared_validation_source = (root / "gpurec" / "_validation.py").read_text(
+        encoding="utf-8"
     )
+    shared_validation = ast.parse(shared_validation_source)
     api_validation = ast.parse(
         (root / "gpurec" / "api" / "_validation.py").read_text(encoding="utf-8")
     )
     workflow_config = (
         root / "gpurec" / "workflow" / "config.py"
+    ).read_text(encoding="utf-8")
+    workflow_metadata = (
+        root / "gpurec" / "workflow" / "_metadata.py"
     ).read_text(encoding="utf-8")
     core_model = (root / "gpurec" / "core" / "model.py").read_text(
         encoding="utf-8"
@@ -476,6 +480,8 @@ def test_workflow_numeric_validation_uses_shared_helpers():
     assert integer_helpers.issubset(shared_function_names)
     assert float_helpers.issubset(shared_function_names)
     assert optional_integer_helpers.issubset(shared_function_names)
+    assert "import torch" not in shared_validation_source
+    assert 'sys.modules.get("torch")' in shared_validation_source
     assert api_function_names.isdisjoint(integer_helpers | optional_integer_helpers)
     assert api_function_names.isdisjoint(float_helpers)
     for helper in integer_helpers | optional_integer_helpers:
@@ -497,6 +503,10 @@ def test_workflow_numeric_validation_uses_shared_helpers():
     assert "from numbers import Integral" not in schedule_rust
     assert "math.isfinite" not in schedule_rust
     assert "return integer_value(name, value)" in schedule_rust
+    assert "from numbers import Integral" not in workflow_metadata
+    assert "math.isfinite" not in workflow_metadata
+    assert "nonnegative_int(key, value)" in workflow_metadata
+    assert "finite_float(key, value)" in workflow_metadata
     for stale in (
         "from numbers import Integral",
         "import math",
