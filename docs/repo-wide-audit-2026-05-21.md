@@ -44,12 +44,13 @@ Largest production symbols by source length:
 - `gpurec/core/forward.py:53` `Pi_wave_forward`, 345 lines.
 
 Modules with weak direct test references in the static scan include
-`gpurec/core/kernels/dts_fused.py`, `gpurec/core/kernels/pibar_vjp_cuda.py`,
+`gpurec/core/kernels/dts_fused.py`,
 `gpurec/core/kernels/wave_backward.py`,
-`gpurec/core/kernels/wave_backward_cuda.py`,
 `gpurec/core/extract_parameters.py`, and the profiling scripts.  Some are
 covered indirectly through higher-level GPU tests, but direct branch-level
-evidence is thin.
+evidence is thin.  The former native CUDA prototype modules named in earlier
+audit slices, `pibar_vjp_cuda.py` and `wave_backward_cuda.py`, have since been
+removed and are guarded against returning.
 
 ## Findings
 
@@ -67,17 +68,15 @@ evidence is thin.
    non-square, wrong-shape, wrong-device, or wrong-dtype `ancestors_T` values
    before entering the fixed-point loop or ancestor matrix multiply.
 
-3. Direct duplicate `family_names` can collapse preprocessing data.  The direct
-   `GeneDataset` constructor checks only length at `gpurec/core/model.py:545`,
-   then builds dictionaries keyed by family name at `gpurec/core/model.py:569`
-   and cache maps at `gpurec/core/model.py:669`.  AleRax file parsing rejects
-   duplicate names, but the direct constructor path lacks equivalent coverage.
+3. Direct duplicate `family_names` are now rejected before preprocessing.  The
+   direct `GeneDataset` constructor matches the AleRax parser's no-duplicate
+   contract, and CPU-safe tests prove the validation runs before extension or
+   IO work.
 
-4. `clade_budget` is a packing target, not a hard cap.  In `clade_first_fit`
-   and `depth_first_fit`, a single over-budget family still starts its own
-   chunk at `gpurec/core/batch_planning.py:221` and
-   `gpurec/core/batch_planning.py:287`.  Tests cover under-budget fixtures, but
-   not oversized-family semantics.
+4. `clade_budget` is specified as a packing target, not a hard cap.  Both
+   `clade_first_fit` and `depth_first_fit` allow one oversized family to occupy
+   its own batch, and scheduler tests pin that behavior for future memory-policy
+   changes.
 
 5. Adaptive root trace behavior is now specified and guarded.  `Pi_wave_forward`
    keeps the existing fixed `[fixed_iters, n_roots]` trace shape and carries
@@ -96,17 +95,11 @@ evidence is thin.
    family-indexed.  Direct callers needing parity should use `[G, 1]` or
    `[G, S]` until a runtime shape-policy change is made.
 
-7. Exposed C++ scheduler helpers do not validate `max_wave_size`.  The phased
-   wave implementation advances by `max_wave_size` at
-   `gpurec/core/cpp/preprocess.cpp:1086` and loops while
-   `batch.size() < max_wave_size` at `gpurec/core/cpp/preprocess.cpp:1126`.
-   Cross-family variants have the same pattern at
-   `gpurec/core/cpp/preprocess.cpp:2401` and
-   `gpurec/core/cpp/preprocess.cpp:2622`.  Python wrapper tests cover invalid
-   values, but the pybind exports do not.  The direct pybind wave-stat entry
-   points should reject `max_wave_size <= 0` before parsing input files, and a
-   source-level hygiene guard should keep every exported `max_wave_size`
-   scheduler wired to the shared validator.
+7. The former direct C++ scheduler `max_wave_size` gap is now guarded.  The
+   retained diagnostic exports were covered by positive-`max_wave_size`
+   validation before the C++ preprocessing source was retired from the tracked
+   runtime tree; repository hygiene now also guards that the removed C++ source
+   and `preprocess_cpp.py` wrapper do not return.
 
 8. The opt-in CUDA Pibar VJP path can mask failures in default `auto` mode.
    `gpurec/core/kernels/wave_backward.py:1910` enables the CUDA prototype for
@@ -150,15 +143,11 @@ evidence is thin.
 
 ### Public API, Workflow, And Optimization
 
-14. `BatchedLBFGS.max_eval` can be exceeded.  The outer loop checks
-    `func_evals < max_eval` at `gpurec/optimization/batched_lbfgs.py:295`, but
-    `step()` performs an unconditional final gradient evaluation after the line
-    search at `gpurec/optimization/batched_lbfgs.py:374`.  Existing LBFGS tests
-    do not cover `max_eval`.  The next guard should assert both the optimizer's
-    `state["func_evals"]` counter and the observed closure-call count stay
-    within a tight `max_eval` budget.  The runtime fix should skip curvature
-    history updates when the budget is exhausted before the post-line-search
-    gradient refresh, because no valid `y_k` pair exists for the accepted step.
+14. `BatchedLBFGS.max_eval` evaluation accounting is now guarded.  Tight-budget
+    tests assert both the optimizer's `state["func_evals"]` counter and the
+    observed closure-call count stay within `max_eval`; when Armijo probes use
+    the final allowed evaluation, the accepted probed loss is returned without a
+    budget-breaking gradient refresh or invalid curvature-history update.
 
 15. `GeneReconModel.configure_solver_iterations()` now documents its active
     lazy-prefetch contract.  The method updates model defaults and resident
@@ -185,13 +174,10 @@ evidence is thin.
     the checkpoint.  A repository hygiene guard keeps those format and
     normalization details present in user docs.
 
-18. `UniformChunkedReconModel.loss_and_grad(reduction="full_sum_estimate")` is
-    a public stochastic-optimizer helper branch without direct coverage.  The
-    existing integration test covers default, `sum`, and `mean` reductions, but
-    not the `total_families / selected_families` scaling applied to both the
-    returned loss and gradient.  This can be covered with a CPU-safe unit test
-    by monkeypatching the internal chunk evaluator rather than constructing a
-    CUDA model.
+18. `UniformChunkedReconModel.loss_and_grad(reduction="full_sum_estimate")`
+    now has direct CPU-safe coverage.  The regression monkeypatches the internal
+    chunk evaluator and verifies that `total_families / selected_families`
+    scales both the returned loss and gradient.
 
 19. `gpurec.workflow.checkpoint.load_checkpoint_config()` has been removed from
     the package code and is not exported by `gpurec.workflow` or the package top
@@ -255,20 +241,15 @@ evidence is thin.
     species, invalid split clade IDs, negative origination weights, and
     nonpositive `max_events` before sampling.
 
-27. Some profiling/evaluation scripts encode brittle external file-format
-    assumptions.  `profiling/evaluate_hogenom_alerax_rates.py:29` reads only
-    the second line of each `*_rates.txt` and treats the first three columns as
-    D/L/T; defaults around line 147 hard-code the HOGENOM root, CUDA device, and
-    iteration count.  The next low-risk cleanup is documentation-only: make the
-    script module/help text state that it is a checkout-local HOGENOM AleRax
-    validation utility, not a general rate-file parser.
+27. Profiling/evaluation scripts that encode brittle external file-format
+    assumptions are now labeled as checkout-local utilities before broader
+    script migration.  In particular, `profiling/evaluate_hogenom_alerax_rates.py`
+    documents its HOGENOM AleRax rate-file assumptions instead of presenting
+    itself as a general parser.
 
-28. The Rust backtracking CLI accepts an ignored positional output file when
-    `--samples 1 --output-dir DIR input.json output.xml` is passed.  Directory
-    mode is selected by `output_dir.is_some()` in
-    `crates/gpurec-backtrack/src/main.rs:37`, but the parse-time rejection of a
-    second positional output path only triggers when `samples > 1` around line
-    132.  Document or reject that combination before users rely on it.
+28. The Rust backtracking CLI now rejects an ignored positional output file
+    when `--samples 1 --output-dir DIR input.json output.xml` is passed, matching
+    the multi-sample directory-mode contract.
 
 ### Tests, Docs, And Packaging
 
@@ -288,14 +269,10 @@ evidence is thin.
     `profiling/bench_global_parameter_optimization.py` plus a line number that
     no longer exists in `tests/integration/test_gene_recon_model.py`.
 
-32. Some GPU/data-heavy tests are classified as unit tests.  `tests/conftest.py`
-    auto-marks everything under `tests/unit` as `unit`, but
-    `tests/unit/test_adaptive_iterations.py` requires CUDA and `test_trees_1000`
-    and some `test_specieswise_uniform.py` CUDA checks lack local `slow`
-    markers.  This conflicts with `tests/README.md` guidance.  The follow-up
-    keeps those tests in `tests/unit` for ownership, but requires every unit
-    test that directly or indirectly depends on the 1000-family CUDA fixture to
-    carry a local `@pytest.mark.slow` marker.
+32. GPU/data-heavy tests under `tests/unit` are now explicitly documented as the
+    `unit` plus `gpu` marker overlap.  The 1000-family CUDA fixture cases carry
+    local `@pytest.mark.slow` markers, and `tests/README.md` documents the
+    CPU-only audit gate as `-m "unit and not gpu"`.
 
 33. `tests/unit/test_release_metadata.py` mirrors docs and GitHub Actions YAML
     with many exact substring assertions.  These guards catch release drift, but
@@ -306,18 +283,13 @@ evidence is thin.
     backtracking commands, sampling, and more.  Splitting it by behavior would
     improve ownership and reduce stale-test risk.
 
-35. `pytest.ini` globally ignores all `DeprecationWarning` and
-    `PendingDeprecationWarning`.  Scoping suppression to known external noise
-    would make project-owned deprecations visible.  A CPU unit run with
-    `-W default` did not surface known warning noise, so the low-risk cleanup is
-    to remove the blanket ignores and add a repository hygiene guard that only
-    permits targeted warning filters.
+35. `pytest.ini` no longer globally ignores all `DeprecationWarning` and
+    `PendingDeprecationWarning`.  Repository hygiene now rejects blanket warning
+    ignores and leaves room only for targeted dependency filters.
 
-36. `tests/__init__.py` is stale or unnecessary.  It describes `gradients` and
-    `performance` suites, while the current marker taxonomy is `unit`,
-    `integration`, `kernel`, `gpu`, and `slow`.  The file still helps direct
-    imports such as `tests.unit.alerax_helpers`, so the low-risk cleanup is to
-    simplify the package docstring rather than delete it.
+36. `tests/__init__.py` now accurately documents the retained test-package
+    namespace and current `unit`, `integration`, `kernel`, `gpu`, and `slow`
+    ownership, while preserving imports such as `tests.unit.alerax_helpers`.
 
 37. CLI help smoke tests are sensitive to stale installed console scripts.  In
     this checkout, `which gpurec` resolved to `/home/enzo/miniforge3/bin/gpurec`,
@@ -336,34 +308,30 @@ evidence is thin.
 
 ### Subagent Refresh Findings
 
-- Workflow optimizer modes are public but underdocumented and under-tested.
-  `RunConfig` and the CLI expose `adagrad`, `lbfgs`, and `adam-lbfgs`, while
-  README guidance still mostly describes Adam.  Before changing optimizer logic
-  or deleting modes, add an optimizer-mode reference covering stopping and LBFGS
-  failure semantics, then add fake-model tests for Adagrad, active LBFGS, and
-  LBFGS runtime failure paths.
-- E-adjoint solver failures can disappear into partial diagnostics.  The
-  implicit-gradient solver can return `success=False`, while workflow
-  diagnostics currently aggregate only iteration/convergence summaries.  Decide
-  whether failed adjoint solves fail optimization, warn, or only appear in
-  history, then surface `E_adjoint_success` and `E_adjoint_rel_res` before
-  relying on the diagnostics for production monitoring.
-- `gpurec.workflow.diagnostics.safe_float()` appears unused outside its direct
-  unit test.  If it is not intended as public workflow API, delete the helper
-  and test; if it is intended public surface, document and export it first.
-- Completed-resume status is not documented or asserted.  Metadata validation
-  permits `step == next_step`, and resuming at `config.steps` falls through the
-  optimization loop status path.  Document the expected completed-checkpoint
-  status before changing resume behavior.
-- RunConfig and CLI reference docs lag the current option surface.  Add a
-  maintained or generated option table before changing defaults or validation
-  rules, so constraints such as even `fixed_iters_pi`, optimizer modes, and
-  checkpoint cadence are not only captured in tests.
-- The tests audit found one overbroad integration-test skip: the
-  `test_uniform_chunked_model.py` module skips entirely when `test_trees_1000`
-  is absent, even though its HOGENOM unrooted-Newick test only needs
-  `hogenom_bench`.  Move the large-fixture skip to the tests that actually use
-  `test_trees_1000`, or split the HOGENOM case into its own module.
+- Workflow optimizer modes are now documented and guarded.  README and
+  `docs/run-config-reference.md` cover `adagrad`, `lbfgs`, `adam-lbfgs`, and
+  the production defaults, while fake-model workflow tests cover Adagrad rows,
+  active LBFGS accounting, the Adam-to-LBFGS phase transition, and LBFGS runtime
+  failure status.
+- E-adjoint solver failure telemetry is now explicit diagnostics.  Workflow
+  history records iteration, relative-residual, success, and failed-batch
+  aggregates; direct uniform-chunk `loss_and_grad()` stats expose the same
+  nonconvergence fields.  The retained policy remains diagnostic-only rather
+  than fail-fast.
+- `gpurec.workflow.diagnostics.safe_float()` was confirmed unused outside its
+  direct unit test and removed rather than promoted as public workflow API.
+- Completed-resume status is now documented and asserted.  A checkpoint whose
+  `next_step` already equals configured `steps` refreshes final artifacts and
+  returns the ordinary `not_converged`/`max_steps` status instead of performing
+  another optimizer step.
+- RunConfig and CLI reference docs now track the current option surface.
+  `docs/run-config-reference.md` is guarded against the `RunConfig` dataclass
+  fields, and CLI parser tests compare parser destinations to `RunConfig`
+  fields so constraints such as even `fixed_iters_pi`, optimizer modes, and
+  checkpoint cadence are not only implicit in scattered tests.
+- The former overbroad `test_uniform_chunked_model.py` fixture skip is closed:
+  large `test_trees_1000` availability is checked only by tests that need it,
+  while the HOGENOM unrooted-Newick case has its own `hogenom_bench` guard.
 - Several GPU tests are still smoke-heavy: Adam/LBFGS integration checks mostly
   assert that theta changed, the HOGENOM unrooted parsing check asserts
   metadata only, and the specieswise backward check asserts finite values.
@@ -544,10 +512,10 @@ evidence is thin.
   `gpurec/core/species.py`, and `gpurec/core/memory_policy.py` have focused
   unit coverage.
 - `gpurec/core/batching.py` and `gpurec/core/batch_planning.py` have strong
-  scheduler and layout coverage, with the oversized-family `clade_budget` edge
-  left open.
-- `gpurec/core/model.py` cache validation and AleRax parsing are well covered,
-  with the direct duplicate-family-name constructor path left open.
+  scheduler and layout coverage, including the oversized-family
+  `clade_budget` edge.
+- `gpurec/core/model.py` cache validation, AleRax parsing, and direct
+  duplicate-family-name constructor validation are well covered.
 - Workflow checkpointing, CLI parse failures, public export guards, and
   backtracking command failure paths have broad unit coverage.
 
