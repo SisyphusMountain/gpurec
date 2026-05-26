@@ -78,6 +78,7 @@ from gpurec.workflow.config import (
     effective_final_check_iters,
     effective_final_check_iters_e,
     effective_route_metadata,
+    production_default_optimizer_config_overrides,
     production_default_optimizer_setting_mismatches_from_route,
     production_default_route_contract,
     production_default_route_contract_fields,
@@ -1426,6 +1427,40 @@ def test_production_route_contract_helper_returns_a_copy():
 
     assert production_default_route_contract()["gradient_route"] == (
         "implicit_first_order_adjoint"
+    )
+
+
+def test_production_optimizer_config_overrides_match_shipped_profiles():
+    genewise = production_default_optimizer_config_overrides(" GeneWise ")
+    specieswise = production_default_optimizer_config_overrides(" SpeciesWise ")
+    global_overrides = production_default_optimizer_config_overrides("global")
+
+    assert genewise == {
+        "final_check_iters": 32,
+        "solver_warmup_iters": 4,
+        "fd_adam_warmup_steps": 3,
+        "fd_hessian_refresh_steps": 16,
+        "hessian_sgd_normal_fixed_iters_pi": None,
+        "hessian_sgd_normal_neumann_terms": None,
+        "hessian_sgd_pi_adjoint_warmstart": False,
+        "pi_fixed_point_relaxation": 1.0,
+        "hessian_sgd_validation_interval": 0,
+        "hessian_sgd_validation_fixed_iters_pi": None,
+        "hessian_sgd_validation_neumann_terms": None,
+    }
+    assert "final_check_iters_e" not in genewise
+    assert specieswise == {
+        "adagrad_restart_schedule": "8:1.0:60,16:0.5:35,32:0.5:30",
+        "adagrad_restart_final_check_iters": 128,
+    }
+    assert global_overrides == {}
+
+    genewise["solver_warmup_iters"] = 99
+    assert (
+        production_default_optimizer_config_overrides("genewise")[
+            "solver_warmup_iters"
+        ]
+        == 4
     )
 
 

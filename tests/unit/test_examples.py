@@ -11,6 +11,7 @@ from gpurec.workflow.config import (
     DEFAULT_ADAGRAD_RESTART_SCHEDULE,
     RunConfig,
     adagrad_restart_schedule_specs,
+    production_default_optimizer_config_overrides,
 )
 
 
@@ -46,6 +47,10 @@ def test_minimal_run_config_example_loads_and_points_to_tiny_fixture():
     assert config.optimizer == "hessian-sgd"
     assert config.max_families == 1
     assert config.steps == 10
+    for name, expected in production_default_optimizer_config_overrides(
+        "genewise"
+    ).items():
+        assert getattr(config, name) == expected
     assert config.solver_warmup_iters == 4
     assert config.fd_adam_warmup_steps == 3
     assert config.fd_hessian_refresh_steps == 16
@@ -83,6 +88,16 @@ def test_specieswise_adagrad_restart_example_loads_and_uses_auto_default():
     assert config.mode == "specieswise"
     assert config.device == "cuda"
     assert config.optimizer == "adagrad-restarts"
+    for name, expected in production_default_optimizer_config_overrides(
+        "specieswise"
+    ).items():
+        actual = getattr(config, name)
+        if name == "adagrad_restart_schedule":
+            assert adagrad_restart_schedule_specs(
+                actual
+            ) == adagrad_restart_schedule_specs(expected)
+        else:
+            assert actual == expected
     assert adagrad_restart_schedule_specs(
         config.adagrad_restart_schedule
     ) == adagrad_restart_schedule_specs(DEFAULT_ADAGRAD_RESTART_SCHEDULE)

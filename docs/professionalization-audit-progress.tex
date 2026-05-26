@@ -7672,6 +7672,13 @@ workflow-config contract to CLI route-gate fallback evidence and CLI checkpoint
 fixtures.  Those paths no longer carry a separate hard-coded copy of the
 shipped likelihood/gradient route field set.
 
+\texttt{production\_default\_optimizer\_config\_overrides()} now exposes the
+editable \texttt{RunConfig} fields for the shipped optimizer profiles.  The
+\texttt{gpurec config-template} command and source example checks reuse that
+helper, keeping installed starter templates tied to the same genewise
+\texttt{hessian-sgd} and specieswise \texttt{adagrad-restarts} route metadata
+audits.
+
 \section{Next Audit Targets}
 
 \begin{enumerate}[leftmargin=*]

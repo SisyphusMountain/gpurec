@@ -2373,6 +2373,11 @@ not edit files.  New or still-open findings from that refresh are:
   the workflow config module. CLI route-gate fallback evidence and CLI test
   checkpoint fixtures reuse those helpers instead of carrying another copy of
   the shipped likelihood/gradient field set.
+- `production_default_optimizer_config_overrides()` now exposes the editable
+  RunConfig fields for the shipped optimizer profiles. `gpurec config-template`
+  and the source example checks reuse that helper, keeping installed starter
+  templates tied to the same genewise `hessian-sgd` and specieswise
+  `adagrad-restarts` defaults audited by the route metadata.
 
 ## Recommended Next Order
 

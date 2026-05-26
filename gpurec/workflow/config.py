@@ -1036,6 +1036,18 @@ _PRODUCTION_DEFAULT_SPECIESWISE_OPTIMIZER_SETTINGS = {
     "adagrad_restart_total_steps": DEFAULT_ADAGRAD_RESTART_TOTAL_STEPS,
     "adagrad_restart_final_check_iters": DEFAULT_ADAGRAD_RESTART_FINAL_CHECK_ITERS,
 }
+_PRODUCTION_DEFAULT_OPTIMIZER_CONFIG_FIELDS = {
+    "genewise": tuple(
+        name
+        for name in _PRODUCTION_DEFAULT_GENEWISE_OPTIMIZER_SETTINGS
+        if name != "final_check_iters_e"
+    ),
+    "specieswise": (
+        "adagrad_restart_schedule",
+        "adagrad_restart_final_check_iters",
+    ),
+    "global": (),
+}
 _PRODUCTION_DEFAULT_ROUTE_CONTRACT = {
     "objective": "negative_log_likelihood_bits",
     "gradient_route": "implicit_first_order_adjoint",
@@ -1052,6 +1064,24 @@ def production_default_route_contract() -> dict[str, Any]:
 def production_default_route_contract_fields() -> tuple[str, ...]:
     """Return the required shipped likelihood/gradient route field names."""
     return tuple(_PRODUCTION_DEFAULT_ROUTE_CONTRACT)
+
+
+def production_default_optimizer_config_overrides(mode: str) -> dict[str, Any]:
+    """Return RunConfig overrides for the shipped optimizer profile."""
+    mode_text = normalize_mode_name(mode)
+    if mode_text == "specieswise":
+        settings = {
+            "adagrad_restart_schedule": DEFAULT_ADAGRAD_RESTART_SCHEDULE,
+            "adagrad_restart_final_check_iters": (
+                DEFAULT_ADAGRAD_RESTART_FINAL_CHECK_ITERS
+            ),
+        }
+    else:
+        settings = _production_default_optimizer_expected_settings(mode_text)
+    return {
+        name: settings[name]
+        for name in _PRODUCTION_DEFAULT_OPTIMIZER_CONFIG_FIELDS[mode_text]
+    }
 
 
 def _production_default_optimizer_expected_settings(mode: str) -> dict[str, Any]:

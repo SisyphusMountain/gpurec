@@ -1643,6 +1643,19 @@ def test_effective_route_metadata_reuses_production_route_contract_source():
         assert source.count(token) == 1
 
 
+def test_config_template_reuses_production_optimizer_profile_source():
+    root = Path(__file__).resolve().parents[2]
+    cli_source = (root / "gpurec" / "cli.py").read_text(encoding="utf-8")
+    config_source = (root / "gpurec" / "workflow" / "config.py").read_text(
+        encoding="utf-8"
+    )
+
+    assert "def production_default_optimizer_config_overrides(" in config_source
+    assert "production_default_optimizer_config_overrides" in cli_source
+    assert '"solver_warmup_iters": 4' not in cli_source
+    assert '"adagrad_restart_final_check_iters": (' not in cli_source
+
+
 def test_production_optimization_guide_is_linked_and_documents_routes():
     root = Path(__file__).resolve().parents[2]
     project_readme = (root / "README.md").read_text(encoding="utf-8")

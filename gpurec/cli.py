@@ -1186,10 +1186,7 @@ def _validate_run_sampling_args(args: argparse.Namespace, run_config: RunConfig)
 
 
 def _config_template_data(args: argparse.Namespace) -> dict[str, Any]:
-    from gpurec.workflow.config import (
-        DEFAULT_ADAGRAD_RESTART_FINAL_CHECK_ITERS,
-        DEFAULT_ADAGRAD_RESTART_SCHEDULE,
-    )
+    from gpurec.workflow.config import production_default_optimizer_config_overrides
 
     data: dict[str, Any] = {
         "species_tree": str(args.species_tree),
@@ -1208,31 +1205,7 @@ def _config_template_data(args: argparse.Namespace) -> dict[str, Any]:
         "log_every": 1,
         "checkpoint_every": 1,
     }
-    if args.mode == "genewise":
-        data.update(
-            {
-                "solver_warmup_iters": 4,
-                "fd_adam_warmup_steps": 3,
-                "fd_hessian_refresh_steps": 16,
-                "hessian_sgd_normal_fixed_iters_pi": None,
-                "hessian_sgd_normal_neumann_terms": None,
-                "hessian_sgd_pi_adjoint_warmstart": False,
-                "pi_fixed_point_relaxation": 1.0,
-                "hessian_sgd_validation_interval": 0,
-                "hessian_sgd_validation_fixed_iters_pi": None,
-                "hessian_sgd_validation_neumann_terms": None,
-                "final_check_iters": 32,
-            }
-        )
-    elif args.mode == "specieswise":
-        data.update(
-            {
-                "adagrad_restart_schedule": DEFAULT_ADAGRAD_RESTART_SCHEDULE,
-                "adagrad_restart_final_check_iters": (
-                    DEFAULT_ADAGRAD_RESTART_FINAL_CHECK_ITERS
-                ),
-            }
-        )
+    data.update(production_default_optimizer_config_overrides(args.mode))
     return data
 
 
