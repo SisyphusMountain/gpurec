@@ -2138,6 +2138,99 @@ def test_cli_summary_info_require_production_default_route_rejects_custom_settin
     assert "Traceback" not in captured.err
 
 
+def test_cli_summary_info_require_production_default_route_recomputes_stale_audit(
+    tmp_path: Path,
+    capsys,
+):
+    summary = tmp_path / "summary.json"
+    summary.write_text(
+        json.dumps(
+            {
+                "status": "converged",
+                "reason": "loss_change_patience",
+                "mode": "genewise",
+                "optimizer": "hessian-sgd",
+                "uses_production_default_optimizer_settings": True,
+                "production_default_optimizer_setting_mismatches": [],
+                "final_check_iters": 32,
+                "solver_warmup_iters": 4,
+                "fd_adam_warmup_steps": 3,
+                "fd_hessian_refresh_steps": 8,
+                "hessian_sgd_normal_fixed_iters_pi": None,
+                "hessian_sgd_normal_neumann_terms": None,
+                "hessian_sgd_pi_adjoint_warmstart": False,
+                "pi_fixed_point_relaxation": 1.0,
+                "hessian_sgd_validation_interval": 0,
+                "hessian_sgd_validation_fixed_iters_pi": None,
+                "hessian_sgd_validation_neumann_terms": None,
+                "steps_completed": 4,
+                "final_nll_bits": 12.0,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(
+            [
+                "summary-info",
+                "--summary",
+                str(summary),
+                "--require-production-default-route",
+            ]
+        )
+
+    captured = capsys.readouterr()
+    assert exc_info.value.code == 1
+    assert "uses_production_default_optimizer_settings=false" in captured.out
+    assert "production_default_optimizer_setting_mismatches=fd_hessian_refresh_steps" in (
+        captured.out
+    )
+    assert "fd_hessian_refresh_steps" in captured.err
+    assert "Traceback" not in captured.err
+
+
+def test_cli_summary_info_require_production_default_route_requires_settings_evidence(
+    tmp_path: Path,
+    capsys,
+):
+    summary = tmp_path / "summary.json"
+    summary.write_text(
+        json.dumps(
+            {
+                "status": "converged",
+                "reason": "loss_change_patience",
+                "mode": "genewise",
+                "optimizer": "hessian-sgd",
+                "uses_production_default_optimizer_settings": True,
+                "production_default_optimizer_setting_mismatches": [],
+                "steps_completed": 4,
+                "final_nll_bits": 12.0,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(
+            [
+                "summary-info",
+                "--summary",
+                str(summary),
+                "--require-production-default-route",
+            ]
+        )
+
+    captured = capsys.readouterr()
+    assert exc_info.value.code == 1
+    assert "uses_production_default_optimizer_settings=null" in captured.out
+    assert "production_default_optimizer_setting_mismatches=null" in captured.out
+    assert "summary production default route evidence is incomplete" in captured.err
+    assert "missing final_check_iters" in captured.err
+    assert "fd_hessian_refresh_steps" in captured.err
+    assert "Traceback" not in captured.err
+
+
 def test_cli_summary_info_require_converged_accepts_converged_summary(
     tmp_path: Path,
     capsys,

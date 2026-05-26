@@ -111,15 +111,14 @@ def _route_with_mode_default_audit_fields(route: dict[str, Any]) -> dict[str, An
 def _route_with_production_default_audit_fields(
     route: dict[str, Any],
 ) -> dict[str, Any]:
+    audited, _missing, _mismatches = _production_default_route_evidence(route)
+    return audited
+
+
+def _production_default_route_evidence(
+    route: dict[str, Any],
+) -> tuple[dict[str, Any], tuple[str, ...], tuple[str, ...]]:
     audited = _route_with_mode_default_audit_fields(route)
-    if (
-        isinstance(audited.get("uses_production_default_optimizer_settings"), bool)
-        and isinstance(
-            audited.get("production_default_optimizer_setting_mismatches"),
-            (list, tuple),
-        )
-    ):
-        return audited
     try:
         from gpurec.workflow.config import (
             production_default_optimizer_setting_mismatches_from_route,
@@ -129,13 +128,16 @@ def _route_with_production_default_audit_fields(
             production_default_optimizer_setting_mismatches_from_route(audited)
         )
     except _EXPECTED_WORKFLOW_ERRORS:
-        return audited
+        return audited, ("mode", "optimizer"), ()
     if not missing:
         audited["production_default_optimizer_setting_mismatches"] = list(mismatches)
         audited["uses_production_default_optimizer_settings"] = (
             len(mismatches) == 0
         )
-    return audited
+    else:
+        audited["production_default_optimizer_setting_mismatches"] = None
+        audited["uses_production_default_optimizer_settings"] = None
+    return audited, tuple(missing), tuple(mismatches)
 
 
 def _mode_default_optimizer_gate_message(
@@ -177,30 +179,13 @@ def _production_default_route_gate_message(
     *,
     action: str | None = None,
 ) -> str:
-    audited = _route_with_production_default_audit_fields(route)
-    try:
-        from gpurec.workflow.config import (
-            production_default_optimizer_setting_mismatches_from_route,
-        )
-
-        missing, inferred_mismatches = (
-            production_default_optimizer_setting_mismatches_from_route(audited)
-        )
-    except _EXPECTED_WORKFLOW_ERRORS:
-        missing = ("mode", "optimizer")
-        inferred_mismatches = ()
+    audited, missing, mismatches = _production_default_route_evidence(route)
     if missing:
         message = (
             f"{subject} production default route evidence is incomplete; "
             f"missing {', '.join(missing)}"
         )
     else:
-        mismatches = audited.get(
-            "production_default_optimizer_setting_mismatches",
-            list(inferred_mismatches),
-        )
-        if not isinstance(mismatches, (list, tuple)):
-            mismatches = list(inferred_mismatches)
         mismatch_text = ", ".join(str(item) for item in mismatches) or "none"
         message = (
             f"{subject} production default route settings differ for mode "
@@ -273,8 +258,8 @@ def _exit_unless_production_default_route(
     *,
     subject: str,
 ) -> None:
-    audited = _route_with_production_default_audit_fields(route)
-    if audited.get("uses_production_default_optimizer_settings") is True:
+    audited, missing, mismatches = _production_default_route_evidence(route)
+    if not missing and not mismatches:
         return
     parser.exit(
         status=1,
