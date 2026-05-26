@@ -51,7 +51,11 @@ and the specieswise Adagrad restart schedule, and verifies the
 `--require-cuda-backward-ready`, `--require-mode-default-optimizer`, and
 `--require-production-default-route` preflight gates are exposed. These
 mode-default optimizer gates remain separate from the stricter production-route
-gate. It also smokes
+gate. It also generates genewise and specieswise configs from the installed
+`gpurec config-template` command, points them at the checked tiny AleRax fixture
+paths, and validates both with
+`gpurec validate-config --require-mode-default-optimizer
+--require-production-default-route`. It also smokes
 `gpurec summary-info --help` and `gpurec checkpoint-info --help` so artifact
 inspection stays available without CUDA model construction, including the
 `--require-converged` and `--require-final-check-ok` summary gates for
@@ -131,6 +135,22 @@ gpurec --help
 python -m gpurec.cli --help
 gpurec config-template --mode genewise
 gpurec config-template --mode specieswise
+gpurec config-template --mode genewise \
+  --species-tree "$repo_root/examples/tiny/species.nwk" \
+  --families-file "$repo_root/examples/tiny/families.txt" \
+  --out-dir "$smoke_dir/generated-genewise-out" \
+  --output generated-genewise-run.json
+gpurec validate-config --config generated-genewise-run.json \
+  --require-mode-default-optimizer \
+  --require-production-default-route
+gpurec config-template --mode specieswise \
+  --species-tree "$repo_root/examples/tiny/species.nwk" \
+  --families-file "$repo_root/examples/tiny/families.txt" \
+  --out-dir "$smoke_dir/generated-specieswise-out" \
+  --output generated-specieswise-run.json
+gpurec validate-config --config generated-specieswise-run.json \
+  --require-mode-default-optimizer \
+  --require-production-default-route
 gpurec summary-info --help
 gpurec checkpoint-info --help
 gpurec sample --help

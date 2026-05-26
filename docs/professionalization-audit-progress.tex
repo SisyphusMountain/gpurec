@@ -7691,6 +7691,13 @@ Generated templates now also pass the public
 inputs.  This guards the installed starter workflow end to end through CLI
 preflight without constructing the CUDA likelihood model.
 
+The package workflow's installed-wheel smoke now generates genewise and
+specieswise templates from the installed \texttt{gpurec config-template}
+command, points them at the checked tiny AleRax fixture paths, and validates
+both with \texttt{gpurec validate-config --require-mode-default-optimizer
+--require-production-default-route}.  Release-readiness documentation and
+release metadata tests track the same operator path.
+
 \section{Next Audit Targets}
 
 \begin{enumerate}[leftmargin=*]

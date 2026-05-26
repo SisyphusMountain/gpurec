@@ -2387,6 +2387,12 @@ not edit files.  New or still-open findings from that refresh are:
   --require-production-default-route` path when pointed at existing AleRax
   inputs, so the installed starter workflow is guarded end to end through CLI
   preflight without constructing the CUDA likelihood model.
+- The package workflow's installed-wheel smoke now generates genewise and
+  specieswise templates from the installed `gpurec config-template` command,
+  points them at the checked tiny AleRax fixture paths, and validates both with
+  `gpurec validate-config --require-mode-default-optimizer
+  --require-production-default-route`. Release-readiness documentation and
+  release metadata tests track the same operator path.
 
 ## Recommended Next Order
 

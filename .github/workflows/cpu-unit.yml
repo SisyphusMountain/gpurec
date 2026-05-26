@@ -293,6 +293,18 @@ jobs:
           grep -q '"mode": "specieswise"' specieswise-config-template.json
           grep -q '"adagrad_restart_schedule": "8:1.0:60,16:0.5:35,32:0.5:30"' specieswise-config-template.json
           grep -q '"adagrad_restart_final_check_iters": 128' specieswise-config-template.json
+          gpurec config-template --mode genewise --species-tree "$GITHUB_WORKSPACE/examples/tiny/species.nwk" --families-file "$GITHUB_WORKSPACE/examples/tiny/families.txt" --out-dir "$smoke_dir/generated-genewise-out" --output generated-genewise-run.json
+          gpurec validate-config --config generated-genewise-run.json --require-mode-default-optimizer --require-production-default-route | tee generated-genewise-validate.txt
+          grep -q "optimizer=hessian-sgd" generated-genewise-validate.txt
+          grep -q "uses_mode_default_optimizer=true" generated-genewise-validate.txt
+          grep -q "uses_production_default_route=true" generated-genewise-validate.txt
+          grep -q "production_default_route_mismatches=none" generated-genewise-validate.txt
+          gpurec config-template --mode specieswise --species-tree "$GITHUB_WORKSPACE/examples/tiny/species.nwk" --families-file "$GITHUB_WORKSPACE/examples/tiny/families.txt" --out-dir "$smoke_dir/generated-specieswise-out" --output generated-specieswise-run.json
+          gpurec validate-config --config generated-specieswise-run.json --require-mode-default-optimizer --require-production-default-route | tee generated-specieswise-validate.txt
+          grep -q "optimizer=adagrad-restarts" generated-specieswise-validate.txt
+          grep -q "uses_mode_default_optimizer=true" generated-specieswise-validate.txt
+          grep -q "uses_production_default_route=true" generated-specieswise-validate.txt
+          grep -q "production_default_route_mismatches=none" generated-specieswise-validate.txt
           gpurec optimize --help | tee optimize-help.txt
           grep -q -- "--require-converged" optimize-help.txt
           grep -q -- "--require-final-check-ok" optimize-help.txt
