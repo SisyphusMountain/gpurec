@@ -2350,6 +2350,10 @@ not edit files.  New or still-open findings from that refresh are:
 - Release-readiness smoke documentation now uses the same wording: installed
   help checks expose mode-default optimizer gates separately from the stricter
   production-route gates.
+- The README and output artifact contract no longer use the ambiguous
+  "shipped production route" shorthand; current docs now name either the
+  shipped HOGENOM/`test_trees_1000` optimizer route or the full shipped
+  likelihood/gradient and optimizer route.
 
 ## Recommended Next Order
 

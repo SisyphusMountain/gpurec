@@ -399,8 +399,8 @@ Main outputs include:
 The `gpurec optimize` status line and the optimization portion of
 `gpurec run` also print the resolved `mode`, `optimizer`, mode default
 optimizer, whether the optimizer matches that default, whether the
-optimizer-specific settings match the shipped production route, any setting
-mismatches, `uses_production_default_route`,
+optimizer-specific settings match the shipped HOGENOM/`test_trees_1000`
+optimizer route, any setting mismatches, `uses_production_default_route`,
 `production_default_route_mismatches`, family/species/batch counts, batch
 packing, family chunk size, clade budget, solver iteration budgets, objective,
 gradient route, rate parameterization, production default basis,

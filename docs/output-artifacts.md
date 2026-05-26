@@ -165,7 +165,8 @@ and then exit nonzero unless `summary.status` is `converged`. Add
 summaries that do not prove the mode default optimizer was used, or
 `--require-production-default-route` when the likelihood/gradient route
 metadata and optimizer-specific settings, including the stored
-`final_check_iters_e`, must also match the shipped production route.
+`final_check_iters_e`, must also match the full shipped likelihood/gradient and
+optimizer route.
 
 `theta_final.pt` is intentionally smaller than a checkpoint. Tooling that needs
 to restore a model, sample reconciliations, or verify family/species ordering

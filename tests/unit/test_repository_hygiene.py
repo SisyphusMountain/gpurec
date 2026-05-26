@@ -1873,6 +1873,7 @@ def test_operator_docs_distinguish_mode_default_from_production_route():
         "production optimizer default",
         "non-default optimizer routes",
         "full shipped production route",
+        "shipped production route",
     ):
         assert stale not in joined
 
@@ -1881,6 +1882,7 @@ def test_operator_docs_distinguish_mode_default_from_production_route():
         "mode default optimizer for the selected sharing mode",
         "mode default optimizer for the selected mode",
         "full shipped likelihood/gradient and optimizer route",
+        "shipped HOGENOM/`test_trees_1000` optimizer route",
         "stale likelihood/gradient route metadata or changed optimizer-specific settings",
     ):
         assert expected in normalized
