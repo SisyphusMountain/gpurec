@@ -65,6 +65,7 @@ class OptimizationResult:
     final_check_status: str | None = None
     final_check_source: str | None = None
     final_check_reason: str | None = None
+    final_check_fallback_clade_budget: float | None = None
     final_check_loss_abs_delta_bits: float | None = None
     final_check_grad_max_abs_delta: float | None = None
     final_check_grad_rel_inf_delta: float | None = None
@@ -74,6 +75,10 @@ _FINAL_CHECK_SUMMARY_FIELDS = (
     ("optimizer/final_check_status", "final_check_status"),
     ("optimizer/final_check_source", "final_check_source"),
     ("optimizer/final_check_reason", "final_check_reason"),
+    (
+        "optimizer/final_check_fallback_clade_budget",
+        "final_check_fallback_clade_budget",
+    ),
     ("optimizer/final_check_loss_abs_delta_bits", "final_check_loss_abs_delta_bits"),
     ("optimizer/final_check_grad_max_abs_delta", "final_check_grad_max_abs_delta"),
     ("optimizer/final_check_grad_rel_inf_delta", "final_check_grad_rel_inf_delta"),
@@ -951,6 +956,9 @@ class OptimizationRunner:
                 metrics = {
                     "optimizer/final_check_source": "fallback_clade_budget",
                     "optimizer/final_check_fallback_clade_budget": float(budget),
+                    "optimizer/final_check_reason": (
+                        f"{type(original_exc).__name__}: {original_exc}"
+                    ),
                     "optimizer/final_check_fallback_reason": (
                         f"{type(original_exc).__name__}: {original_exc}"
                     ),
@@ -1161,6 +1169,9 @@ class OptimizationRunner:
                             {
                                 "optimizer/final_check_source": (
                                     "recomputed_after_cache_drop"
+                                ),
+                                "optimizer/final_check_reason": (
+                                    f"{type(check_exc).__name__}: {check_exc}"
                                 ),
                                 "optimizer/final_check_fallback_reason": (
                                     f"{type(check_exc).__name__}: {check_exc}"
@@ -3893,6 +3904,9 @@ class OptimizationRunner:
                     _optional_result_text(
                         final_check_summary.get("final_check_reason")
                     )
+                ),
+                final_check_fallback_clade_budget=_optional_result_float(
+                    final_check_summary.get("final_check_fallback_clade_budget")
                 ),
                 final_check_loss_abs_delta_bits=_optional_result_float(
                     final_check_summary.get("final_check_loss_abs_delta_bits")

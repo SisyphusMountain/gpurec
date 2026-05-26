@@ -1398,6 +1398,7 @@ def test_output_artifact_reference_is_linked_and_documents_contract():
         "`final_check_status`",
         "`final_check_source`",
         "`final_check_reason`",
+        "`final_check_fallback_clade_budget`",
         "`final_check_loss_abs_delta_bits`",
         "`final_check_grad_max_abs_delta`",
         "`final_check_grad_rel_inf_delta`",

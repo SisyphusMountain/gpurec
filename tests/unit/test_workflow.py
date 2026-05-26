@@ -6003,7 +6003,12 @@ def test_final_iteration_check_falls_back_to_smaller_clade_budget(
     assert metrics["optimizer/final_check_status"] == "ok"
     assert metrics["optimizer/final_check_source"] == "fallback_clade_budget"
     assert metrics["optimizer/final_check_fallback_clade_budget"] == 250_000.0
+    assert "2D self-loop fast path" in metrics["optimizer/final_check_reason"]
     assert "2D self-loop fast path" in metrics["optimizer/final_check_fallback_reason"]
+    summary_metrics = optimize_workflow._final_check_summary_metrics(metrics)
+    assert summary_metrics["final_check_source"] == "fallback_clade_budget"
+    assert summary_metrics["final_check_fallback_clade_budget"] == 250_000.0
+    assert "2D self-loop fast path" in summary_metrics["final_check_reason"]
     assert metrics["optimizer/final_check_loss_abs_delta_bits"] == pytest.approx(0.0)
     assert metrics["optimizer/final_check_grad_max_abs_delta"] == pytest.approx(0.0)
     assert fallback_model.closed
@@ -7666,6 +7671,7 @@ def test_optimization_runner_run_writes_outputs_with_fake_model(tmp_path: Path):
     assert result.final_check_status == "ok"
     assert result.final_check_source == "configured_solver_budget"
     assert result.final_check_reason is None
+    assert result.final_check_fallback_clade_budget is None
     assert result.final_check_loss_abs_delta_bits == pytest.approx(0.0)
     assert result.final_check_grad_max_abs_delta == pytest.approx(0.0)
     assert result.final_check_grad_rel_inf_delta == pytest.approx(0.0)
@@ -7729,6 +7735,7 @@ def test_optimization_runner_run_writes_outputs_with_fake_model(tmp_path: Path):
     assert summary["final_check_status"] == "ok"
     assert summary["final_check_source"] == "configured_solver_budget"
     assert "final_check_reason" not in summary
+    assert "final_check_fallback_clade_budget" not in summary
     assert summary["final_check_loss_abs_delta_bits"] == pytest.approx(0.0)
     assert summary["final_check_grad_max_abs_delta"] == pytest.approx(0.0)
     assert summary["final_check_grad_rel_inf_delta"] == pytest.approx(0.0)

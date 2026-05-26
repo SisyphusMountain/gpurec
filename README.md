@@ -332,8 +332,9 @@ The `gpurec optimize` status line and the optimization portion of
 `final_log_likelihood_bits`, `best_nll_bits`, and
 `best_log_likelihood_bits`, plus `final_check_status`,
 `final_check_source`, `final_check_reason`,
-`final_check_loss_abs_delta_bits`, `final_check_grad_max_abs_delta`, and
-`final_check_grad_rel_inf_delta` for quick terminal triage.
+`final_check_fallback_clade_budget`, `final_check_loss_abs_delta_bits`,
+`final_check_grad_max_abs_delta`, and `final_check_grad_rel_inf_delta` for
+quick terminal triage.
 
 See [`docs/output-artifacts.md`](docs/output-artifacts.md) for the output
 artifact contract, including history fields, checkpoint contents, rate-table

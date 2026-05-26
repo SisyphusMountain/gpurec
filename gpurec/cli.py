@@ -151,6 +151,10 @@ def _optimization_result_text(result: Any) -> str:
                 getattr(result, "final_check_reason", None),
             ),
             _optional_metric_text(
+                "final_check_fallback_clade_budget",
+                getattr(result, "final_check_fallback_clade_budget", None),
+            ),
+            _optional_metric_text(
                 "final_check_loss_abs_delta_bits",
                 getattr(result, "final_check_loss_abs_delta_bits", None),
             ),
