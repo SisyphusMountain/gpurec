@@ -454,7 +454,9 @@ def test_cpu_ci_builds_and_smokes_release_artifacts():
         "tarfile.open",
         "zipfile.ZipFile",
         "required_sdist = required_wheel +",
+        "examples/README.md",
         "examples/minimal-run-config.json",
+        "examples/specieswise-adagrad-restarts-config.json",
         "examples/tiny/families.txt",
         "examples/tiny/gene.map",
         "examples/tiny/gene.nwk",
@@ -474,6 +476,8 @@ def test_cpu_ci_builds_and_smokes_release_artifacts():
         "crates/gpurec-preprocess/src/lib.rs",
         "crates/gpurec-preprocess/src/main.rs",
         "examples/",
+        "example_configs",
+        "configs.append",
         "json.load",
         'for field in ("species_tree", "families_file")',
         "example config targets missing from sdist",
@@ -562,7 +566,7 @@ def test_manifest_includes_documented_examples_in_source_archive():
     manifest = (ROOT / "MANIFEST.in").read_text(encoding="utf-8")
 
     assert "recursive-include examples" in manifest
-    for pattern in ("*.json", "*.map", "*.nwk", "*.txt"):
+    for pattern in ("*.json", "*.map", "*.nwk", "*.txt", "*.md"):
         assert pattern in manifest
 
 
@@ -984,6 +988,7 @@ def test_final_theta_artifact_is_documented_as_export_only():
 
 def test_readme_scopes_example_config_to_source_artifacts():
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    examples_readme = (ROOT / "examples" / "README.md").read_text(encoding="utf-8")
     workflow = _load_cpu_ci_workflow()
     artifact_check = _step_run(
         workflow["jobs"]["package"],
@@ -991,16 +996,21 @@ def test_readme_scopes_example_config_to_source_artifacts():
     )
 
     assert "For a source checkout or source archive" in readme
+    assert "checked JSON configs and a tiny\nAleRax-style fixture" in readme
     assert "examples/minimal-run-config.json" in readme
+    assert "examples/specieswise-adagrad-restarts-config.json" in readme
+    assert "examples/README.md" in readme
     assert "source-tree config/parser fixture" in readme
     assert 'sets `"device": "cuda"`' in readme
     assert "not a CPU fallback" in readme
     assert "S > 256" in readme
     assert "not an end-to-end optimizer smoke" in readme
     assert "Installed wheels do not install the `examples/` directory" in readme
+    assert "Installed wheels intentionally do not install this directory" in examples_readme
     assert '"species_tree": "S.tree"' in readme
     assert '"families_file": "families.txt"' in readme
     assert '"examples/"' in artifact_check
+    assert "example_configs" in artifact_check
     assert "json.load" in artifact_check
     assert "example config targets missing from sdist" in artifact_check
 

@@ -201,11 +201,14 @@ directory.
 Use `gpurec validate-config --config ...` to check JSON/CLI config values,
 input paths, AleRax family records, mapping files, and referenced gene-tree
 files without constructing the CUDA likelihood model.
-For a source checkout or source archive, a checked minimal JSON config and tiny
-AleRax-style fixture live under `examples/`.  The CLI command shape is:
+For a source checkout or source archive, checked JSON configs and a tiny
+AleRax-style fixture live under `examples/`.  They cover the genewise and
+specieswise production defaults documented in `examples/README.md`.  The CLI
+command shape is:
 
 ```bash
 gpurec validate-config --config examples/minimal-run-config.json
+gpurec validate-config --config examples/specieswise-adagrad-restarts-config.json
 gpurec optimize --config examples/minimal-run-config.json
 ```
 

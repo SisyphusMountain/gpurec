@@ -106,7 +106,9 @@ jobs:
 
           required_wheel = []
           required_sdist = required_wheel + [
+              "examples/README.md",
               "examples/minimal-run-config.json",
+              "examples/specieswise-adagrad-restarts-config.json",
               "examples/tiny/families.txt",
               "examples/tiny/gene.map",
               "examples/tiny/gene.nwk",
@@ -144,23 +146,28 @@ jobs:
                   for name in members
                   if "/" in name
               }
-              config_member = next(
-                  (
-                      name
-                      for name in members
-                      if name.endswith("/examples/minimal-run-config.json")
-                  ),
-                  None,
-              )
-              if config_member is None:
-                  raise SystemExit(
-                      "sdist missing example config: "
-                      "examples/minimal-run-config.json"
+              example_configs = [
+                  "examples/minimal-run-config.json",
+                  "examples/specieswise-adagrad-restarts-config.json",
+              ]
+              configs = []
+              for example_config in example_configs:
+                  config_member = next(
+                      (
+                          name
+                          for name in members
+                          if name.endswith(f"/{example_config}")
+                      ),
+                      None,
                   )
-              config_file = archive.extractfile(config_member)
-              if config_file is None:
-                  raise SystemExit(f"could not read sdist member: {config_member}")
-              config = json.load(config_file)
+                  if config_member is None:
+                      raise SystemExit(
+                          f"sdist missing example config: {example_config}"
+                      )
+                  config_file = archive.extractfile(config_member)
+                  if config_file is None:
+                      raise SystemExit(f"could not read sdist member: {config_member}")
+                  configs.append((example_config, json.load(config_file)))
           missing = [
               path
               for path in required_sdist
@@ -168,11 +175,12 @@ jobs:
           ]
           if missing:
               raise SystemExit(f"sdist missing required source files: {missing}")
-          missing_example_targets = [
-              f"examples/{config[field]}"
-              for field in ("species_tree", "families_file")
-              if f"examples/{config[field]}" not in names
-          ]
+          missing_example_targets = []
+          for example_config, config in configs:
+              for field in ("species_tree", "families_file"):
+                  target = f"examples/{config[field]}"
+                  if target not in names:
+                      missing_example_targets.append(f"{example_config}: {target}")
           if missing_example_targets:
               raise SystemExit(
                   "example config targets missing from sdist: "

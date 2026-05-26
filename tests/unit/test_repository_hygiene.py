@@ -731,7 +731,9 @@ def test_docs_map_distinguishes_cuda_smoke_from_checkout_local_config():
     normalized_configs_readme = " ".join(configs_readme.split())
 
     for token in (
-        "../examples/minimal-run-config.json",
+        "../examples/README.md",
+        "genewise `hessian-sgd`",
+        "specieswise `adagrad-restarts`",
         "source-checkout/source-archive CUDA",
         "config/parser fixture",
         "not a CPU fallback",
@@ -756,10 +758,13 @@ def test_docs_map_distinguishes_cuda_smoke_from_checkout_local_config():
         "Checkout-local only",
         "untracked `tests/data/HOGENOM/...` inputs",
         "online W&B defaults",
+        "`examples/README.md`",
         "`examples/minimal-run-config.json`",
-        "source-checkout/source-archive CUDA parser fixture",
-        "not a CPU fallback",
-        "not an end-to-end optimizer smoke",
+        "`examples/specieswise-adagrad-restarts-config.json`",
+        "genewise `hessian-sgd` auto defaults",
+        "specieswise `adagrad-restarts` auto defaults",
+        "not CPU fallbacks",
+        "end-to-end optimizer smokes",
         "New tracked configs should state",
         "which command consumes the file",
         "parser fixture",

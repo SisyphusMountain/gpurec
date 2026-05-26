@@ -1,0 +1,11 @@
+{
+  "species_tree": "tiny/species.nwk",
+  "families_file": "tiny/families.txt",
+  "out_dir": "output/specieswise-adagrad-restarts",
+  "mode": "specieswise",
+  "device": "cuda",
+  "max_families": 1,
+  "preprocess_cpu_cores": 1,
+  "log_every": 1,
+  "checkpoint_every": 1
+}

@@ -7,7 +7,11 @@ import gpurec
 import gpurec.workflow as workflow
 import gpurec.cli as cli
 from gpurec.core.model import parse_alerax_family_file
-from gpurec.workflow.config import RunConfig
+from gpurec.workflow.config import (
+    DEFAULT_ADAGRAD_RESTART_SCHEDULE,
+    RunConfig,
+    adagrad_restart_schedule_specs,
+)
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -48,6 +52,49 @@ def test_minimal_run_config_example_loads_and_points_to_tiny_fixture():
         [str((ROOT / "examples" / "tiny" / "gene.nwk").resolve())]
     ]
     assert leaf_maps == [{"a": "A", "b": "B"}]
+
+
+def test_specieswise_adagrad_restart_example_loads_and_uses_auto_default():
+    config = RunConfig.from_json(
+        ROOT / "examples" / "specieswise-adagrad-restarts-config.json"
+    )
+
+    assert config.species_tree == (
+        ROOT / "examples" / "tiny" / "species.nwk"
+    ).resolve()
+    assert config.families_file == (
+        ROOT / "examples" / "tiny" / "families.txt"
+    ).resolve()
+    assert config.out_dir == (
+        ROOT / "examples" / "output" / "specieswise-adagrad-restarts"
+    ).resolve()
+    assert config.mode == "specieswise"
+    assert config.device == "cuda"
+    assert config.optimizer == "adagrad-restarts"
+    assert adagrad_restart_schedule_specs(
+        config.adagrad_restart_schedule
+    ) == adagrad_restart_schedule_specs(DEFAULT_ADAGRAD_RESTART_SCHEDULE)
+    assert config.adagrad_restart_final_check_iters == 128
+    assert config.max_families == 1
+
+
+def test_examples_readme_documents_mode_specific_default_configs():
+    readme = (ROOT / "examples" / "README.md").read_text(encoding="utf-8")
+    normalized = " ".join(readme.split())
+
+    for token in (
+        "source-checkout and source-archive fixtures",
+        "without constructing the CUDA likelihood model",
+        "not end-to-end optimizer smokes",
+        "gpurec validate-config --config examples/minimal-run-config.json",
+        "gpurec validate-config --config examples/specieswise-adagrad-restarts-config.json",
+        "`optimizer=auto` resolves to `hessian-sgd`",
+        "`optimizer=auto` resolves to `adagrad-restarts`",
+        "`8:1.0:60,16:0.5:35,32:0.5:30`",
+        "fixed128 final validation",
+        "Installed wheels intentionally do not install this directory",
+    ):
+        assert token in normalized
 
 
 def test_minimal_run_config_command_smoke_uses_documented_cli(monkeypatch):
