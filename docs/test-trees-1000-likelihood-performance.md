@@ -1011,6 +1011,23 @@ Rejected follow-ups:
   `12`-thread low did not beat the existing E7/Pi4 best and matches the earlier
   conclusion that this knob is construction noise around the `16`-thread
   setting rather than a new route.
+- Direct lower-level construction through `GeneDataset.from_retained_preprocess`
+  plus `GeneReconModel(...)` was also only in-band, measuring
+  `2.274539925972931s` with the same `2157098.25`-bit loss.  The public
+  `from_trees()` constructor is not the active bottleneck.
+- A direct-parent-row specialization for eq1 DTS waves was prototyped and
+  reverted.  An audit showed all `952` eq1 DTS waves in the retained
+  `test_trees_1000` layout have sequential parent rows, including `922` pure
+  eq1 waves, so the prototype marked that metadata and let the Triton eq1 DTS
+  kernel use `program_id(0)` instead of loading `eq1_reduce_idx[n]`.  Targeted
+  scheduler/kernel checks passed while the prototype was present, but cold
+  E7/Pi4 timings did not improve.  Without a matching warmup, samples were
+  `2.461927135940641s`, `2.276818887970876s`, and
+  `2.2694924459792674s`; changing the existing resident DTS warmup to compile
+  the direct-parent variant still measured `2.422379998024553s`,
+  `2.3362076219636947s`, `2.2770920139737427s`, and
+  `2.282298989011906s`.  The extra specialization does not pay for itself on
+  the cold end-to-end route.
 
 Differences from HOGENOM:
 
