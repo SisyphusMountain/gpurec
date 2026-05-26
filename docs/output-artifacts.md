@@ -28,7 +28,11 @@ The primary objective is negative log-likelihood in bits:
 `likelihood/log_likelihood_bits`. Gradient summaries use `grad/*`; projected
 gradient summaries at bounds use `grad/projected_inf`. Solver diagnostics use
 `solver/*`. Specieswise Adagrad restart runs also record
-`optimizer/adagrad_restart_*` fields. `summary.json` and
+`optimizer/adagrad_restart_*` fields. Warmstart-enabled Pi-adjoint gradients
+also report `solver/pi_adjoint_residual_absmax_max`,
+`solver/pi_adjoint_residual_relmax_max`, and
+`solver/pi_adjoint_residual_checked_batches` when residual telemetry is
+available. `summary.json` and
 `gpurec validate-config` expose the stable route metadata fields
 `objective=negative_log_likelihood_bits`,
 `gradient_route=implicit_first_order_adjoint`,

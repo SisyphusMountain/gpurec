@@ -392,7 +392,11 @@ solver statistics.  E-adjoint nonconvergence is diagnostic-only: the retained
 BiCGSTAB solve returns its best iterate with `success=False`, optimization
 continues unless the objective or gradient becomes nonfinite, and history rows
 surface `solver/e_adjoint_failed_batches` plus relative-residual and iteration
-summaries for monitoring.
+summaries for monitoring. Opt-in Pi-adjoint warmstart runs also report
+`solver/pi_adjoint_residual_absmax_max` and
+`solver/pi_adjoint_residual_relmax_max`, computed from one extra fixed-point
+self-loop application, so warm-budget experiments can monitor whether the
+implicit-gradient solve is actually converging.
 
 `theta_final.pt` is a raw tensor export for inspection or custom analysis.  It
 does not carry run configuration, family ordering, or species ordering metadata;

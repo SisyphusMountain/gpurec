@@ -44,6 +44,28 @@ def _root_row_loss(model, state, pi):
     ).sum()
 
 
+def _balanced_newick(names: list[str], *, root_name: str) -> str:
+    def subtree(items: list[str]) -> str:
+        if len(items) == 1:
+            return f"{items[0]}:1"
+        mid = len(items) // 2
+        return f"({subtree(items[:mid])},{subtree(items[mid:])}):1"
+
+    root = subtree(names)
+    if root.endswith(":1"):
+        root = root[:-2]
+    return f"{root}{root_name};\n"
+
+
+def _write_large_matched_tree_pair(tmp_path: Path) -> tuple[str, list[str]]:
+    names = [f"s{i:03d}" for i in range(129)]
+    species_tree = tmp_path / "sp.nwk"
+    gene_tree = tmp_path / "g.nwk"
+    species_tree.write_text(_balanced_newick(names, root_name="Root"), encoding="utf-8")
+    gene_tree.write_text(_balanced_newick(names, root_name="Gene"), encoding="utf-8")
+    return str(species_tree), [str(gene_tree)]
+
+
 @pytest.mark.parametrize("mode", ["global", "specieswise", "genewise"])
 def test_gene_recon_model_forward_backward_modes(trees, mode):
     sp, genes = trees
@@ -68,6 +90,32 @@ def test_gene_recon_model_forward_backward_modes(trees, mode):
     assert model.theta.grad is not None
     assert model.theta.grad.shape == model.theta.shape
     assert torch.isfinite(model.theta.grad).all()
+
+
+def test_gene_recon_model_pi_adjoint_warmstart_records_residual_stats(tmp_path):
+    sp, genes = _write_large_matched_tree_pair(tmp_path)
+    model = GeneReconModel.from_trees(
+        species_tree=sp,
+        gene_trees=genes,
+        mode="genewise",
+        device="cuda",
+        dtype=torch.float32,
+        fixed_iters_E=2,
+        fixed_iters_Pi=2,
+        neumann_terms=2,
+        pi_adjoint_warmstart=True,
+    )
+
+    loss = model()
+    loss.backward()
+
+    stats = model.static.last_solver_stats
+    assert stats["Pi_adjoint_warmstart_enabled"] is True
+    assert stats["Pi_adjoint_residual_wave_count"] > 0
+    assert stats["Pi_adjoint_residual_absmax"] >= 0.0
+    assert stats["Pi_adjoint_residual_relmax"] >= 0.0
+    assert torch.isfinite(torch.tensor(stats["Pi_adjoint_residual_absmax"]))
+    assert torch.isfinite(torch.tensor(stats["Pi_adjoint_residual_relmax"]))
 
 
 @pytest.mark.parametrize("mode", ["global", "specieswise", "genewise"])

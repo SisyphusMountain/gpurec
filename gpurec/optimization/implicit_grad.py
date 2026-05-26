@@ -28,6 +28,9 @@ class _SolveStats:
     gradient_convergence_delta: float | None = None
     gradient_convergence_threshold: float | None = None
     gradient_converged: bool | None = None
+    pi_adjoint_residual_absmax: float | None = None
+    pi_adjoint_residual_relmax: float | None = None
+    pi_adjoint_residual_wave_count: int | None = None
 
 
 def _as_float(value: torch.Tensor) -> float:
@@ -154,6 +157,7 @@ def implicit_grad_loglik_vjp_wave(
     gradient_convergence_check_interval: int = 4,
     pi_adjoint_initial_guess: Optional[torch.Tensor] = None,
     return_aux: bool = False,
+    record_pi_adjoint_residual: bool = False,
 ):
     """Internal API bridge for wave-decomposed ∇θ logL computation.
 
@@ -190,6 +194,7 @@ def implicit_grad_loglik_vjp_wave(
             origination_probs=origination_probs,
             origination_probs_prepared=origination_probs_prepared,
             initial_v_pi=pi_adjoint_initial_guess,
+            return_residual_stats=record_pi_adjoint_residual,
         )
 
         grad_theta, statsG, aux = _e_adjoint_and_theta_vjp(
@@ -205,6 +210,13 @@ def implicit_grad_loglik_vjp_wave(
             return_aux=True,
         )
         statsG.neumann_terms = int(terms)
+        for key in (
+            "pi_adjoint_residual_absmax",
+            "pi_adjoint_residual_relmax",
+            "pi_adjoint_residual_wave_count",
+        ):
+            if key in pi_bwd:
+                setattr(statsG, key, pi_bwd[key])
         aux = dict(aux)
         aux["pi_adjoint"] = pi_bwd["v_Pi"].detach()
         aux["used_pi_initial_guess"] = bool(pi_bwd.get("used_pi_initial_guess", False))

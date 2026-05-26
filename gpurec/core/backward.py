@@ -94,6 +94,7 @@ def Pi_wave_backward(
     origination_probs=None,
     origination_probs_prepared: bool = False,
     initial_v_pi=None,
+    return_residual_stats: bool = False,
 ):
     """Wave-decomposed backward pass for implicit gradient computation.
 
@@ -125,6 +126,9 @@ def Pi_wave_backward(
             construction time.
         initial_v_pi: optional [C, S] previous Pi adjoint used to warm-start
             each wave's self-loop fixed-point solve.
+        return_residual_stats: when True, apply one extra self-loop step per
+            wave after the solve and return aggregate fixed-point residual
+            diagnostics.
 
     Returns:
         dict with:
@@ -312,6 +316,8 @@ def Pi_wave_backward(
     n_waves_skipped = 0
     n_clades_total = C
     n_clades_skipped = 0
+    residual_absmax_values = []
+    residual_relmax_values = []
 
     accumulated_rhs = torch.zeros(C, S, device=device, dtype=dtype)
     solved_v_pi = torch.zeros_like(accumulated_rhs)
@@ -475,7 +481,7 @@ def Pi_wave_backward(
                 grad_mt[0],
                 param_grad_vector,
             )
-        v_k, aw0, aw1, aw2, aw345, aw3, aw4 = wave_backward_uniform_fused(
+        wave_result = wave_backward_uniform_fused(
             Pi_star_wave, Pibar_star_wave, ws, W, S,
             dts_r, rhs_k,
             mt_w, DL_w, Ebar_w, E_w, SL1_w, SL2_w,
@@ -496,7 +502,19 @@ def Pi_wave_backward(
             compact_level_child2=compact_level_child2,
             self_loop_grad_targets=self_loop_grad_targets,
             initial_v=None if initial_v_pi is None else initial_v_pi[ws:we],
+            return_residual_stats=return_residual_stats,
         )
+        if return_residual_stats:
+            v_k, aw0, aw1, aw2, aw345, aw3, aw4, residual_stats = wave_result
+            if residual_stats is not None:
+                residual_absmax_values.append(
+                    float(residual_stats["residual_absmax"])
+                )
+                residual_relmax_values.append(
+                    float(residual_stats["residual_relmax"])
+                )
+        else:
+            v_k, aw0, aw1, aw2, aw345, aw3, aw4 = wave_result
         solved_slice = solved_v_pi[ws:we]
         if active_mask is None:
             solved_slice.copy_(v_k)
@@ -619,6 +637,20 @@ def Pi_wave_backward(
         'n_clades_active': n_clades_total - n_clades_skipped,
         'used_pi_initial_guess': initial_v_pi is not None,
     }
+    if return_residual_stats:
+        result.update(
+            {
+                'pi_adjoint_residual_absmax': max(
+                    residual_absmax_values,
+                    default=0.0,
+                ),
+                'pi_adjoint_residual_relmax': max(
+                    residual_relmax_values,
+                    default=0.0,
+                ),
+                'pi_adjoint_residual_wave_count': len(residual_absmax_values),
+            }
+        )
     # Unwrap G=1 results back to original shapes.
     if _auto_wrapped:
         for key in ('grad_E', 'grad_Ebar', 'grad_E_s1', 'grad_E_s2',

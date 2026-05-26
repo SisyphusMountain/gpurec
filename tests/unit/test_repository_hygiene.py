@@ -1466,6 +1466,9 @@ def test_output_artifact_reference_is_linked_and_documents_contract():
         "`fixed_iters_e`",
         "`fixed_iters_pi`",
         "`neumann_terms`",
+        "`solver/pi_adjoint_residual_absmax_max`",
+        "`solver/pi_adjoint_residual_relmax_max`",
+        "`solver/pi_adjoint_residual_checked_batches`",
         "`final_log_likelihood_bits`",
         "`final_grad_inf`",
         "`final_projected_grad_inf`",
@@ -1671,6 +1674,10 @@ def test_project_readme_documents_e_adjoint_diagnostics():
         "optimization continues unless the objective or gradient becomes nonfinite",
         "`solver/e_adjoint_failed_batches`",
         "relative-residual and iteration summaries",
+        "Opt-in Pi-adjoint warmstart runs also report",
+        "`solver/pi_adjoint_residual_absmax_max`",
+        "`solver/pi_adjoint_residual_relmax_max`",
+        "one extra fixed-point self-loop application",
     ):
         assert token in normalized
 

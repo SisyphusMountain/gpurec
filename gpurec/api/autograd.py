@@ -170,6 +170,9 @@ def _record_backward_solver_stats(static: ReconStaticState, stats: Any) -> None:
         ("gradient_convergence_delta", "Gradient_convergence_delta"),
         ("gradient_convergence_threshold", "Gradient_convergence_threshold"),
         ("gradient_converged", "Gradient_converged"),
+        ("pi_adjoint_residual_absmax", "Pi_adjoint_residual_absmax"),
+        ("pi_adjoint_residual_relmax", "Pi_adjoint_residual_relmax"),
+        ("pi_adjoint_residual_wave_count", "Pi_adjoint_residual_wave_count"),
     ):
         value = getattr(stats, source, None)
         if value is not None:
@@ -475,6 +478,7 @@ def compute_resident_implicit_gradient(
         gradient_convergence_check_interval=static.convergence_check_interval,
         pi_adjoint_initial_guess=pi_adjoint_initial_guess,
         return_aux=use_pi_adjoint_warmstart,
+        record_pi_adjoint_residual=use_pi_adjoint_warmstart,
     )
     if use_pi_adjoint_warmstart:
         grad_theta, stats, aux = result

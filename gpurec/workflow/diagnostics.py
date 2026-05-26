@@ -126,13 +126,27 @@ def solver_stats(model: Any) -> dict[str, float]:
         for row in stats
         if "Pi_adjoint_warmstart_used" in row
     ]
+    pi_adjoint_residual_absmax = []
+    pi_adjoint_residual_relmax = []
+    pi_adjoint_residual_wave_count = []
     e_adjoint_rel_res = []
     for row in stats:
-        if "E_adjoint_rel_res" not in row:
-            continue
-        value = float(row.get("E_adjoint_rel_res", math.nan))
-        if math.isfinite(value):
-            e_adjoint_rel_res.append(value)
+        if "E_adjoint_rel_res" in row:
+            value = float(row.get("E_adjoint_rel_res", math.nan))
+            if math.isfinite(value):
+                e_adjoint_rel_res.append(value)
+        if "Pi_adjoint_residual_absmax" in row:
+            value = float(row.get("Pi_adjoint_residual_absmax", math.nan))
+            if math.isfinite(value):
+                pi_adjoint_residual_absmax.append(value)
+        if "Pi_adjoint_residual_relmax" in row:
+            value = float(row.get("Pi_adjoint_residual_relmax", math.nan))
+            if math.isfinite(value):
+                pi_adjoint_residual_relmax.append(value)
+        if "Pi_adjoint_residual_wave_count" in row:
+            pi_adjoint_residual_wave_count.append(
+                int(row.get("Pi_adjoint_residual_wave_count", 0))
+            )
     pi_wave_count = sum(int(row.get("Pi_wave_count", 0)) for row in stats)
     pi_converged = sum(int(row.get("Pi_converged_waves", 0)) for row in stats)
     out = {
@@ -174,6 +188,29 @@ def solver_stats(model: Any) -> dict[str, float]:
     if pi_adjoint_warmstart_used:
         out["solver/pi_adjoint_warmstart_used_batches"] = float(
             sum(pi_adjoint_warmstart_used)
+        )
+    if pi_adjoint_residual_absmax:
+        out["solver/pi_adjoint_residual_absmax_max"] = float(
+            max(pi_adjoint_residual_absmax)
+        )
+        out["solver/pi_adjoint_residual_absmax_mean"] = float(
+            sum(pi_adjoint_residual_absmax)
+            / len(pi_adjoint_residual_absmax)
+        )
+    if pi_adjoint_residual_relmax:
+        out["solver/pi_adjoint_residual_relmax_max"] = float(
+            max(pi_adjoint_residual_relmax)
+        )
+        out["solver/pi_adjoint_residual_relmax_mean"] = float(
+            sum(pi_adjoint_residual_relmax)
+            / len(pi_adjoint_residual_relmax)
+        )
+    if pi_adjoint_residual_wave_count:
+        out["solver/pi_adjoint_residual_checked_batches"] = float(
+            len(pi_adjoint_residual_wave_count)
+        )
+        out["solver/pi_adjoint_residual_wave_count"] = float(
+            sum(pi_adjoint_residual_wave_count)
         )
     return out
 

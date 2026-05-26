@@ -796,6 +796,7 @@ def _wave_backward_uniform_2d(
     compact_level_child2,
     self_loop_grad_targets=None,
     initial_v=None,
+    return_residual_stats=False,
 ):
     """Retained 2D row-block/full-species tree-reduction self-loop."""
     if Pi_star.device.type != "cuda":
@@ -1006,6 +1007,65 @@ def _wave_backward_uniform_2d(
                 **jt_options,
             )
 
+    residual_stats = None
+    if return_residual_stats:
+        _wave_backward_uniform_2d_jt_kernel[(n_row_blocks,)](
+            v_k,
+            term_buf,
+            rhs,
+            active_mask if active_mask is not None else rhs,
+            aw0,
+            aw1,
+            aw2,
+            aw3,
+            aw4,
+            sp_child1,
+            sp_child2,
+            sp_parent,
+            compact_level_ptr,
+            compact_level_parents,
+            compact_level_child1,
+            compact_level_child2,
+            pibar_corr,
+            term_buf,
+            W,
+            S,
+            block_w,
+            block_s,
+            block_nodes,
+            compact_level_ptr.numel() - 1,
+            USE_ACTIVE_MASK=bool(active_mask is not None),
+            SKIP_INACTIVE_SCRATCH_ZERO=bool(skip_inactive_scratch_zero),
+            FIXED_POINT_UPDATE=True,
+            DTYPE=_tl_float_dtype(dtype),
+            USE_CHILD_EDGE_SELF_LOOP=bool(use_child_edge_self_loop),
+            **jt_options,
+        )
+        residual = term_buf - v_k
+        rhs_for_scale = rhs
+        if active_mask is not None:
+            residual = torch.where(
+                active_mask[:, None],
+                residual,
+                torch.zeros_like(residual),
+            )
+            rhs_for_scale = torch.where(
+                active_mask[:, None],
+                rhs,
+                torch.zeros_like(rhs),
+            )
+        residual_absmax = residual.detach().abs().amax()
+        rhs_absmax = rhs_for_scale.detach().abs().amax()
+        residual_stats = {
+            "residual_absmax": float(residual_absmax.detach().cpu()),
+            "residual_relmax": float(
+                (residual_absmax / torch.clamp(rhs_absmax, min=1.0))
+                .detach()
+                .cpu()
+            ),
+            "rhs_absmax": float(rhs_absmax.detach().cpu()),
+        }
+
     if accum_self_loop_grads:
         (
             grad_log_pD_ptr,
@@ -1079,7 +1139,11 @@ def _wave_backward_uniform_2d(
     )
 
     if accum_self_loop_grads:
+        if return_residual_stats:
+            return v_k, None, None, None, None, None, None, residual_stats
         return v_k, None, None, None, None, None, None
+    if return_residual_stats:
+        return v_k, aw0, aw1, aw2, aw345, aw3, aw4, residual_stats
     return v_k, aw0, aw1, aw2, aw345, aw3, aw4
 
 
@@ -1105,6 +1169,7 @@ def wave_backward_uniform_fused(
     compact_level_child2=None,
     self_loop_grad_targets=None,
     initial_v=None,
+    return_residual_stats=False,
 ):
     """Fused backward: precompute + Neumann + param VJP in one kernel per wave.
 
@@ -1128,6 +1193,7 @@ def wave_backward_uniform_fused(
     Returns:
         v_k: [W, S] Neumann-solved adjoint
         aw0, aw1, aw2, aw345, aw3, aw4: [W, S] per-element param grad contributions
+        residual_stats: optional dict when ``return_residual_stats=True``
     """
     requested_has_leaf_term = bool(has_leaf_term)
     use_leaf_index = (
@@ -1197,6 +1263,7 @@ def wave_backward_uniform_fused(
         compact_level_child2=compact_level_child2,
         self_loop_grad_targets=self_loop_grad_targets,
         initial_v=initial_v,
+        return_residual_stats=return_residual_stats,
     )
 
 

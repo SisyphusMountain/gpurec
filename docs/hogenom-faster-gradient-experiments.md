@@ -180,8 +180,9 @@ the non-Pi parts of the gradient path are also reduced or amortized.
 2. Run HOGENOM end-to-end validations with warm/cold gradient budgets in the
    workflow: ordinary `hessian_sgd_normal_*` Pi/Neumann terms of 16 or 24 plus
    `hessian_sgd_validation_interval` with periodic 48/64/128-term validation.
-3. Add residual logging for the Pi adjoint solve so budget escalation is based
-   on convergence, not only on a fixed iteration count.
+3. Use the warmstart-enabled Pi-adjoint residual history fields
+   (`solver/pi_adjoint_residual_*`) in HOGENOM validation runs so budget
+   escalation is based on convergence, not only on a fixed iteration count.
 4. Expose `pi_fixed_point_relaxation` as an experimental config and benchmark
    alpha values on several near-optimum checkpoints.
 5. Revisit Anderson or GMRES only after the warm cache and budget policy are

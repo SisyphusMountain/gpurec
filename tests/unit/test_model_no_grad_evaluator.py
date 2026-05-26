@@ -538,10 +538,19 @@ def test_compute_resident_implicit_gradient_uses_pi_adjoint_cache_when_enabled(
     def fake_implicit_grad(*args, **kwargs):
         calls.append(kwargs)
         assert kwargs["return_aux"] is True
+        assert kwargs["record_pi_adjoint_residual"] is True
         torch.testing.assert_close(kwargs["pi_adjoint_initial_guess"], cached)
         return (
             expected_grad,
-            SimpleNamespace(iters=3, rel_res=0.125, success=True, neumann_terms=4),
+            SimpleNamespace(
+                iters=3,
+                rel_res=0.125,
+                success=True,
+                neumann_terms=4,
+                pi_adjoint_residual_absmax=0.0625,
+                pi_adjoint_residual_relmax=0.03125,
+                pi_adjoint_residual_wave_count=2,
+            ),
             {
                 "pi_adjoint": solved,
                 "used_pi_initial_guess": kwargs["pi_adjoint_initial_guess"] is not None,
@@ -578,6 +587,9 @@ def test_compute_resident_implicit_gradient_uses_pi_adjoint_cache_when_enabled(
         "E_adjoint_iterations": 3,
         "E_adjoint_rel_res": 0.125,
         "E_adjoint_success": True,
+        "Pi_adjoint_residual_absmax": 0.0625,
+        "Pi_adjoint_residual_relmax": 0.03125,
+        "Pi_adjoint_residual_wave_count": 2,
         "Pi_adjoint_warmstart_enabled": True,
         "Pi_adjoint_warmstart_used": True,
         "Pi_adjoint_cache_update_mode": "immediate",

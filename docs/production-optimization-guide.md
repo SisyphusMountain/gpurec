@@ -84,7 +84,13 @@ current-theta gradient. When enabled in a controlled experiment, history rows in
 `solver/pi_adjoint_warmstart_enabled_batches`,
 `solver/pi_adjoint_warmstart_used_batches`,
 `solver/pi_adjoint_pending_cache_commits`, and
-`solver/pi_adjoint_pending_cache_discards`.
+`solver/pi_adjoint_pending_cache_discards`. Warmstart-enabled gradients also
+measure the Pi-adjoint fixed-point residual by applying one extra self-loop
+step after the solve; history rows expose
+`solver/pi_adjoint_residual_absmax_max`,
+`solver/pi_adjoint_residual_relmax_max`, and
+`solver/pi_adjoint_residual_checked_batches` so warm/cold budget validation can
+distinguish a short but converged Pi solve from a short and under-resolved one.
 
 Warmstarted validation runs can also lower ordinary full-stage Hessian-SGD
 Pi/Neumann budgets while periodically forcing high-budget gradients. Set
