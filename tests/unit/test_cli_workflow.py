@@ -2408,7 +2408,7 @@ def test_cli_checkpoint_info_require_production_default_route_accepts_current_ro
     assert "production_default_route_mismatches=none" in captured.out
 
 
-def test_cli_checkpoint_info_combined_route_gates_share_route_metadata(
+def test_cli_checkpoint_info_combined_route_gates_share_route_metadata_and_audit(
     tmp_path: Path,
     capsys,
     monkeypatch,
@@ -2424,18 +2424,30 @@ def test_cli_checkpoint_info_combined_route_gates_share_route_metadata(
         tmp_path,
         effective_route_metadata(config),
     )
-    original_route_metadata = gpurec_cli._checkpoint_route_metadata
-    calls = 0
+    original_route_metadata = gpurec_cli._checkpoint_route_metadata_evidence
+    original_route_evidence = gpurec_cli._production_default_route_evidence
+    metadata_calls = 0
+    route_evidence_calls = 0
 
     def counted_route_metadata(payload):
-        nonlocal calls
-        calls += 1
+        nonlocal metadata_calls
+        metadata_calls += 1
         return original_route_metadata(payload)
+
+    def counted_route_evidence(route):
+        nonlocal route_evidence_calls
+        route_evidence_calls += 1
+        return original_route_evidence(route)
 
     monkeypatch.setattr(
         gpurec_cli,
-        "_checkpoint_route_metadata",
+        "_checkpoint_route_metadata_evidence",
         counted_route_metadata,
+    )
+    monkeypatch.setattr(
+        gpurec_cli,
+        "_production_default_route_evidence",
+        counted_route_evidence,
     )
 
     main(
@@ -2450,7 +2462,8 @@ def test_cli_checkpoint_info_combined_route_gates_share_route_metadata(
 
     captured = capsys.readouterr()
     assert captured.err == ""
-    assert calls == 1
+    assert metadata_calls == 1
+    assert route_evidence_calls == 1
     assert "route_metadata_source=checkpoint" in captured.out
     assert "uses_mode_default_optimizer=true" in captured.out
     assert "uses_production_default_route=true" in captured.out
@@ -3850,12 +3863,19 @@ def test_cli_sample_combined_route_gates_load_checkpoint_once(
         effective_route_metadata(config),
     )
     payload = checkpoint_module.load_checkpoint(checkpoint)
+    original_route_evidence = gpurec_cli._production_default_route_evidence
     load_calls: list[Path] = []
+    route_evidence_calls = 0
     captured_config = {}
 
     def capture_load(path):
         load_calls.append(Path(path))
         return payload
+
+    def counted_route_evidence(route):
+        nonlocal route_evidence_calls
+        route_evidence_calls += 1
+        return original_route_evidence(route)
 
     def capture_sample(sample_config):
         captured_config["config"] = sample_config
@@ -3867,6 +3887,11 @@ def test_cli_sample_combined_route_gates_load_checkpoint_once(
         )
 
     monkeypatch.setattr(checkpoint_module, "load_checkpoint", capture_load)
+    monkeypatch.setattr(
+        gpurec_cli,
+        "_production_default_route_evidence",
+        counted_route_evidence,
+    )
     monkeypatch.setattr("gpurec.cli.sample", capture_sample)
 
     main(
@@ -3885,6 +3910,7 @@ def test_cli_sample_combined_route_gates_load_checkpoint_once(
     assert captured.err == ""
     assert captured_config["config"].checkpoint == checkpoint.resolve()
     assert load_calls == [checkpoint.resolve()]
+    assert route_evidence_calls == 1
     assert "sampled_families=1 samples=2 xml=2 out_dir=null" in captured.out
 
 

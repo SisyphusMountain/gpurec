@@ -144,12 +144,15 @@ def _route_with_mode_default_audit_fields(route: dict[str, Any]) -> dict[str, An
 def _route_with_production_default_audit_fields(
     route: dict[str, Any],
 ) -> dict[str, Any]:
-    audited, missing, mismatches = _production_default_route_evidence(route)
-    return _route_with_production_default_evidence_fields(
-        audited,
-        missing,
-        mismatches,
-    )
+    audited, _evidence = _route_with_production_default_audit_evidence(route)
+    return audited
+
+
+def _route_with_production_default_audit_evidence(
+    route: dict[str, Any],
+) -> tuple[dict[str, Any], _ProductionRouteEvidence]:
+    evidence = _production_default_route_evidence(route)
+    return _route_with_production_default_evidence_fields(*evidence), evidence
 
 
 def _route_with_production_default_evidence_fields(
@@ -942,26 +945,32 @@ def _partial_route_metadata_from_config_data(
 
 
 def _checkpoint_route_metadata(payload: dict[str, Any]) -> tuple[dict[str, Any], str]:
+    route, route_source, _evidence = _checkpoint_route_metadata_evidence(payload)
+    return route, route_source
+
+
+def _checkpoint_route_metadata_evidence(
+    payload: dict[str, Any],
+) -> tuple[dict[str, Any], str, _ProductionRouteEvidence | None]:
     route = payload.get("route_metadata")
     if isinstance(route, dict):
-        return _route_with_production_default_audit_fields(route), "checkpoint"
+        audited, evidence = _route_with_production_default_audit_evidence(route)
+        return audited, "checkpoint", evidence
     config_data = payload.get("config")
     if not isinstance(config_data, dict):
-        return {}, "missing"
+        return {}, "missing", None
     try:
         from gpurec.workflow.config import RunConfig, effective_route_metadata
 
-        return (
-            _route_with_production_default_audit_fields(
-                effective_route_metadata(RunConfig.from_dict(config_data))
-            ),
-            "config",
+        audited, evidence = _route_with_production_default_audit_evidence(
+            effective_route_metadata(RunConfig.from_dict(config_data))
         )
+        return audited, "config", evidence
     except _EXPECTED_WORKFLOW_ERRORS:
         partial_route = _partial_route_metadata_from_config_data(config_data)
         if partial_route:
-            return partial_route, "config"
-        return {}, "missing"
+            return partial_route, "config", None
+        return {}, "missing", None
 
 
 def _route_int_text(name: str, route: dict[str, Any], *, none_text: str = "null") -> str:
@@ -971,8 +980,20 @@ def _route_int_text(name: str, route: dict[str, Any], *, none_text: str = "null"
     return _optional_int_text(name, value)
 
 
-def _route_metadata_text(route: dict[str, Any]) -> str:
-    route = _route_with_production_default_audit_fields(route)
+def _route_metadata_text(
+    route: dict[str, Any],
+    *,
+    production_route_evidence: _ProductionRouteEvidence | None = None,
+) -> str:
+    route = (
+        _route_with_production_default_audit_fields(route)
+        if production_route_evidence is None
+        else _route_with_production_default_evidence_fields(
+            production_route_evidence[0],
+            production_route_evidence[1],
+            production_route_evidence[2],
+        )
+    )
     fields = [
         _optional_text("objective", route.get("objective")),
         _optional_text("gradient_route", route.get("gradient_route")),
@@ -1079,6 +1100,7 @@ def _checkpoint_info_text(
     payload: dict[str, Any],
     *,
     route_metadata: tuple[dict[str, Any], str] | None = None,
+    production_route_evidence: _ProductionRouteEvidence | None = None,
 ) -> str:
     route, route_source = (
         _checkpoint_route_metadata(payload)
@@ -1109,7 +1131,10 @@ def _checkpoint_info_text(
                 "optimizer",
                 route.get("optimizer", config_data.get("optimizer")),
             ),
-            _route_metadata_text(route),
+            _route_metadata_text(
+                route,
+                production_route_evidence=production_route_evidence,
+            ),
             _optional_text("route_metadata_source", route_source),
             _optional_text("optimizer_phase", payload.get("optimizer_phase")),
             _optional_text("last_phase", last_row.get("optimizer/phase")),
@@ -2130,6 +2155,7 @@ def main(argv: list[str] | None = None) -> None:
         except _EXPECTED_WORKFLOW_ERRORS as exc:
             command_parser.error(_sampling_error_message(exc))
         checkpoint_gate_route: dict[str, Any] | None = None
+        checkpoint_gate_evidence: _ProductionRouteEvidence | None = None
         if args.require_mode_default_optimizer or args.require_production_default_route:
             try:
                 from gpurec.workflow.checkpoint import load_checkpoint
@@ -2137,18 +2163,26 @@ def main(argv: list[str] | None = None) -> None:
                 payload = load_checkpoint(sampling_config.checkpoint)
             except _EXPECTED_WORKFLOW_ERRORS as exc:
                 _exit_runtime_error(command_parser, _sampling_error_message(exc))
-            checkpoint_gate_route, _route_source = _checkpoint_route_metadata(payload)
+            checkpoint_gate_route, _route_source, checkpoint_gate_evidence = (
+                _checkpoint_route_metadata_evidence(payload)
+            )
         if args.require_mode_default_optimizer:
             _exit_unless_mode_default_optimizer(
                 command_parser,
                 checkpoint_gate_route or {},
                 subject="checkpoint",
+                audited_route=(
+                    checkpoint_gate_route
+                    if checkpoint_gate_evidence is not None
+                    else None
+                ),
             )
         if args.require_production_default_route:
             _exit_unless_production_default_route(
                 command_parser,
                 checkpoint_gate_route or {},
                 subject="checkpoint",
+                production_route_evidence=checkpoint_gate_evidence,
             )
         try:
             result = sample(sampling_config)
@@ -2177,14 +2211,19 @@ def main(argv: list[str] | None = None) -> None:
             args.require_mode_default_optimizer
             or args.require_production_default_route
         )
-        route_metadata = (
-            _checkpoint_route_metadata(payload) if route_gate_required else None
-        )
+        route_metadata: tuple[dict[str, Any], str] | None = None
+        checkpoint_route_evidence: _ProductionRouteEvidence | None = None
+        if route_gate_required:
+            route, route_source, checkpoint_route_evidence = (
+                _checkpoint_route_metadata_evidence(payload)
+            )
+            route_metadata = (route, route_source)
         print(
             _checkpoint_info_text(
                 checkpoint,
                 payload,
                 route_metadata=route_metadata,
+                production_route_evidence=checkpoint_route_evidence,
             ),
             flush=True,
         )
@@ -2194,6 +2233,9 @@ def main(argv: list[str] | None = None) -> None:
                 command_parser,
                 route,
                 subject="checkpoint",
+                audited_route=(
+                    route if checkpoint_route_evidence is not None else None
+                ),
             )
         if args.require_production_default_route:
             route, _route_source = route_metadata or _checkpoint_route_metadata(payload)
@@ -2201,6 +2243,7 @@ def main(argv: list[str] | None = None) -> None:
                 command_parser,
                 route,
                 subject="checkpoint",
+                production_route_evidence=checkpoint_route_evidence,
             )
         if args.require_final_check_ok:
             _exit_unless_final_check_ok(

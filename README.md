@@ -472,7 +472,9 @@ should fail unless that checkpoint row reports `optimizer/final_check_status=ok`
 add `--require-mode-default-optimizer` to require a checkpoint route whose
 optimizer matches the mode default for its mode, or
 `--require-production-default-route` to require the full shipped
-likelihood/gradient and optimizer route, including the contract fields.
+likelihood/gradient and optimizer route, including the contract fields. When
+both route gates are requested, the printed checkpoint line and both gates use
+the same audited checkpoint route snapshot.
 
 History rows include aggregate `solver/*` telemetry when the model reports
 solver statistics.  E-adjoint nonconvergence is diagnostic-only: the retained
@@ -558,11 +560,13 @@ Use `--family-start` and `--sample-max-families` to sample a family window,
 `--seed` for reproducible stochastic backtracking, and `--max-events` to cap
 pathological samples.
 Add `--require-mode-default-optimizer` to `gpurec sample` when standalone
-sampling automation should fail unless the checkpoint route used the production
+sampling automation should fail unless the checkpoint route used the mode
 default optimizer for its mode; use `--require-production-default-route` when
 the checkpoint must also prove `uses_production_default_route=true` for the
 shipped likelihood/gradient route metadata and optimizer-specific settings,
 including the stored `final_check_iters_e` evidence.
+When both route gates are requested, standalone sampling audits the checkpoint
+route once and reuses that verdict for both pre-sampling checks.
 Successful sampling reruns replace prior gpurec-generated reconciliation
 artifacts in the target output directory, including generated files outside a
 requested window; use a separate `--sample-out-dir` to keep multiple windows.

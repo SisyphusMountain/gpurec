@@ -222,8 +222,10 @@ automation should fail unless the checkpoint last row has
 the checkpoint route must use the mode default optimizer for its mode, or
 `--require-production-default-route` when the checkpoint route must also match
 the shipped likelihood/gradient contract and optimizer-specific route,
-including the stored `final_check_iters_e`. If
-a legacy checkpoint has no `route_metadata`, `checkpoint-info` falls back to
+including the stored `final_check_iters_e`. When both route gates are requested,
+the displayed checkpoint route and both gate verdicts are derived from the same
+audited checkpoint route snapshot. If a legacy checkpoint has no
+`route_metadata`, `checkpoint-info` falls back to
 recoverable config `mode` and `optimizer` fields; incomplete artifacts fail the
 gate with an incomplete-evidence error.
 
@@ -253,7 +255,8 @@ The same `--require-mode-default-optimizer` flag is available on standalone
 the checkpoint cannot prove it used the mode default optimizer. Standalone
 `gpurec sample` also supports `--require-production-default-route` to require
 the full shipped likelihood/gradient and optimizer-specific route before
-sampling.
+sampling. When both route gates are requested, standalone sampling audits the
+checkpoint route once and reuses that verdict for both checks.
 
 | Path | Contents |
 |---|---|
