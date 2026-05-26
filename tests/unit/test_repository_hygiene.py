@@ -1963,6 +1963,28 @@ def test_removed_likelihood_aliases_stay_out_of_runtime_surface():
     assert offenders == []
 
 
+def test_compute_nll_is_thin_root_row_adapter():
+    root = Path(__file__).resolve().parents[2]
+    likelihood_module = ast.parse(
+        (root / "gpurec" / "core" / "likelihood.py").read_text(encoding="utf-8")
+    )
+    compute_nll = next(
+        node
+        for node in likelihood_module.body
+        if isinstance(node, ast.FunctionDef) and node.name == "compute_nll"
+    )
+    called_names = {
+        node.func.id
+        for node in ast.walk(compute_nll)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+    }
+
+    assert "compute_nll_root_rows" in called_names
+    assert "logsumexp2" not in called_names
+    assert "_weighted_logsumexp2" not in called_names
+    assert "compute_origination_denominator" not in called_names
+
+
 def test_runtime_e_fixed_point_calls_pass_explicit_e_shape():
     root = Path(__file__).resolve().parents[2]
     offenders: list[str] = []

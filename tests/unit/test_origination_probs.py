@@ -86,6 +86,24 @@ def test_root_row_nll_accepts_precomputed_denominator():
     torch.testing.assert_close(actual, expected, rtol=1e-12, atol=1e-12)
 
 
+def test_compute_nll_scalar_root_uses_root_row_contract_with_weighted_prior():
+    dtype = torch.float64
+    Pi = torch.tensor(
+        [
+            [-4.0, -2.0, -5.0],
+            [-1.5, -3.0, -2.5],
+        ],
+        dtype=dtype,
+    )
+    E = torch.tensor([-3.0, -2.0, -4.0], dtype=dtype)
+    weights = torch.tensor([2.0, 5.0, 1.0], dtype=dtype)
+
+    actual = compute_nll(Pi, E, torch.tensor(1), origination_probs=weights)
+    expected = compute_nll_root_rows(Pi[1], E, origination_probs=weights)
+
+    torch.testing.assert_close(actual, expected, rtol=1e-12, atol=1e-12)
+
+
 def test_e_step_requires_ancestors_t():
     dtype = torch.float64
     E = torch.full((3,), -1.0, dtype=dtype)

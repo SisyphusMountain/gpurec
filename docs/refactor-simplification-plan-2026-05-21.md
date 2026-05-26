@@ -229,7 +229,8 @@ Current branch surface:
   paths and maintained global/uniform warmup/benchmark paths pass explicit E
   shapes, and runtime hygiene prevents tracked package, script, and profiling
   callers from omitting `e_shape`.
-- `compute_nll()` and `compute_nll_root_rows()` duplicate root likelihood logic.
+- `compute_nll()` is now a thin full-Pi root-gather adapter over
+  `compute_nll_root_rows()`, so root-row NLL owns the likelihood math.
 - The former `compute_log_likelihood()` and
   `compute_log_likelihood_root_rows()` compatibility aliases returned NLL
   despite their names and have been removed.
@@ -242,8 +243,9 @@ Plan:
   future `UniformRates.e_rows`; do not infer E rows from parameter tensor
   shapes.
 - Normalize origination probabilities once into an `OriginationPrior` object.
-- Standardize on root-row likelihood internally.  Full-Pi callers should gather
-  root rows before calling the likelihood helper.
+- Keep root-row likelihood as the internal contract. Full-Pi callers should
+  gather root rows before calling the likelihood helper or use the thin
+  `compute_nll()` adapter.
 - Keep profiling/tests on `compute_nll*` and prevent reintroduction of the
   removed misleading likelihood aliases.
 - Make E warm-start policy explicit in the evaluator: disabled, active-batch,

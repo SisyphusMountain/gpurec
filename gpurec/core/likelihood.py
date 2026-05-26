@@ -411,30 +411,13 @@ def compute_nll(
     ``origination_probs`` as ``[S]`` or ``[G, S]`` uses those probabilities for
     both the root ``Pi`` mixture and the ``1 - E`` denominator.
     """
-
-    # This will broadcast if root_clade_idx has shape [N_gene_trees]
     root_probs = Pi[root_clade_idx, :]
-    if origination_probs is None:
-        # We remove log2(|S|) because we assume a uniform prior over the root species
-        numerator = logsumexp2(root_probs, dim=-1) - math.log2(Pi.shape[-1])
-        # Will still work if E has shape [N_gene_trees, S]
-        denominator = torch.log2((1-torch.exp2(E).mean(dim=-1)))
-    else:
-        probs = prepare_origination_probs(
-            origination_probs,
-            S=int(Pi.shape[-1]),
-            device=Pi.device,
-            dtype=Pi.dtype,
-            family_count=int(root_probs.shape[0]) if root_probs.ndim == 2 else None,
-            assume_prepared=origination_probs_prepared,
-        )
-        numerator = _weighted_logsumexp2(root_probs, probs)
-        denominator = compute_origination_denominator(
-            E,
-            probs,
-            origination_probs_prepared=True,
-        )
-    return -(numerator - denominator)
+    return compute_nll_root_rows(
+        root_probs,
+        E,
+        origination_probs=origination_probs,
+        origination_probs_prepared=origination_probs_prepared,
+    )
 
 
 def compute_nll_root_rows(
@@ -463,7 +446,9 @@ def compute_nll_root_rows(
             S=int(Pi_root_rows.shape[-1]),
             device=Pi_root_rows.device,
             dtype=Pi_root_rows.dtype,
-            family_count=int(Pi_root_rows.shape[0]),
+            family_count=(
+                int(Pi_root_rows.shape[0]) if Pi_root_rows.ndim == 2 else None
+            ),
             assume_prepared=origination_probs_prepared,
         )
         numerator = _weighted_logsumexp2(Pi_root_rows, probs)

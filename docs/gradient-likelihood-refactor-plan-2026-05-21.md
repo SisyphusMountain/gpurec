@@ -198,21 +198,22 @@ Gates:
 
 ### Step 4: Standardize Root Likelihood On Root Rows
 
-Internal code should call a single helper:
+Internal code now uses root rows as the shared NLL contract:
 
 ```python
-root_nll(root_rows, E, prior)
+compute_nll_root_rows(root_rows, E, origination_probs)
 ```
 
-Then:
+Current behavior:
 
-- gradient/training callers pass `Pi_wave_ordered[root_clade_ids]`;
+- `compute_nll()` is a thin root-gather adapter over
+  `compute_nll_root_rows()`;
+- gradient/training callers can still pass full `Pi` through that adapter;
 - loss-only callers pass `Pi_root_rows`;
 - export/state callers compute loss only if requested.
 
 After internal migration:
 
-- keep `compute_nll()` as a thin root-gather adapter if it is useful;
 - keep the removed `compute_log_likelihood*` aliases out of runtime code.
 
 Gates:
