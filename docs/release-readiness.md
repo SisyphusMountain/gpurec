@@ -25,8 +25,10 @@ The CPU GitHub Actions workflow includes a packaging job that installs
 `twine check`, installs the built wheel with existing runtime dependencies,
 checks the source archive for packaged Rust preprocessing and backtracking crate
 sources, smokes those crates from the unpacked source archive,
-and smokes both `gpurec --help` and `python -m gpurec.cli --help`.  The same
-package job keeps examples out of wheels while requiring them in the source
+and smokes both `gpurec --help` and `python -m gpurec.cli --help`.  It also
+smokes installed `gpurec validate-config --help` so the CPU-safe config
+preflight remains part of the command surface.  The same package job keeps
+examples out of wheels while requiring them in the source
 archive, verifies the minimal example config points to source-archive files,
 and checks installed `gpurec sample --help`, `gpurec run --help`, and
 `gpurec backtrack-check` for external backtracking binary guidance and the
@@ -135,6 +137,7 @@ Run these CPU-safe gates before release packaging:
 ```bash
 CUDA_VISIBLE_DEVICES='' gpurec --help
 CUDA_VISIBLE_DEVICES='' python -m gpurec.cli --help
+CUDA_VISIBLE_DEVICES='' gpurec validate-config --config examples/minimal-run-config.json
 CUDA_VISIBLE_DEVICES='' python - <<'PY'
 import gpurec
 import gpurec.workflow as workflow

@@ -510,6 +510,7 @@ def test_cpu_ci_builds_and_smokes_release_artifacts():
         'cd "$smoke_dir"',
         "gpurec --help",
         "python -m gpurec.cli --help",
+        "gpurec validate-config --help",
         "gpurec sample --help",
         "gpurec run --help",
         "gpurec backtrack-check --help",
@@ -939,6 +940,7 @@ def test_release_readiness_documents_installed_wheel_smoke():
         "python -m pip install --no-deps dist/*.whl",
         "smoke_dir=$(mktemp -d)",
         'cd "$smoke_dir"',
+        "gpurec validate-config --help",
         "gpurec sample --help",
         "gpurec run --help",
         "gpurec backtrack-check --help",
@@ -1011,10 +1013,15 @@ def test_readme_documents_installed_sampling_binary_setup():
     for text in (readme, guide):
         normalized = " ".join(text.split())
         assert "Wheels currently do not ship" in normalized
-        assert "prebuilt binary" in normalized
+    assert "prebuilt binary" in normalized
     assert "### Sampling Binary Setup" in readme
     assert "`gpurec sample` and the sampling phase of `gpurec run`" in readme
-    assert "`optimize`, `sample`, `run`, and\n  `backtrack-check` commands" in readme
+    assert (
+        "`validate-config`, `optimize`, `sample`,\n  `run`, and "
+        "`backtrack-check` commands"
+    ) in readme
+    assert "gpurec validate-config --config examples/minimal-run-config.json" in readme
+    assert "CPU-safe path/reference preflight" in readme
     assert "In a wheel-only\ninstall" in readme
     assert "For a source checkout or unpacked source archive" in readme
     assert (
@@ -1027,6 +1034,10 @@ def test_readme_documents_installed_sampling_binary_setup():
     assert "The same `GPUREC_BACKTRACK_BIN` environment variable" in readme
     assert "fallback works from a source checkout or unpacked\nsource archive" in readme
     assert "unpacked-source-archive `cargo run` fallback" in normalized_guide
+    assert (
+        "installed `gpurec validate-config --help`"
+        in normalized_guide
+    )
     assert (
         "installed `gpurec sample --help`, `gpurec run --help`, and "
         "`gpurec backtrack-check`"

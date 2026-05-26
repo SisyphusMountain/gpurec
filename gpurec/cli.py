@@ -106,6 +106,38 @@ def _validate_run_config_input_paths(config: RunConfig) -> None:
         )
 
 
+def _validate_run_config_family_references(config: RunConfig) -> dict[str, int]:
+    from gpurec.core.model import parse_alerax_family_file
+
+    family_names, tree_paths, leaf_species_maps = parse_alerax_family_file(
+        config.families_file,
+        start=config.start,
+        max_families=config.max_families,
+    )
+    missing: list[tuple[str, Path]] = []
+    gene_tree_files = 0
+    for family, paths in zip(family_names, tree_paths):
+        for raw_path in paths:
+            gene_tree_files += 1
+            path = Path(raw_path)
+            if not path.is_file():
+                missing.append((family, path))
+    if missing:
+        preview = "; ".join(
+            f"{family}: {path}" for family, path in missing[:5]
+        )
+        suffix = "" if len(missing) <= 5 else f"; ... {len(missing) - 5} more"
+        raise ValueError(
+            "AleRax family file references missing gene-tree path(s): "
+            f"{preview}{suffix}"
+        )
+    return {
+        "families": len(family_names),
+        "gene_tree_files": gene_tree_files,
+        "mapped_families": sum(1 for mapping in leaf_species_maps if mapping),
+    }
+
+
 def _validate_sampling_checkpoint_path(checkpoint: Path) -> None:
     path = checkpoint.expanduser().resolve()
     if not path.is_file():
@@ -130,6 +162,10 @@ def _run_config_from_args(args: argparse.Namespace) -> RunConfig:
     config = RunConfig.from_dict(data)
     _validate_run_config_input_paths(config)
     return config
+
+
+def _preflight_run_config(config: RunConfig) -> dict[str, int]:
+    return _validate_run_config_family_references(config)
 
 
 def _sampling_config_from_args(
@@ -613,6 +649,18 @@ def build_parser() -> argparse.ArgumentParser:
     _add_run_config_args(optimize_parser)
     optimize_parser.set_defaults(_command_parser=optimize_parser)
 
+    validate_parser = sub.add_parser(
+        "validate-config",
+        help="Validate an optimization config without CUDA.",
+        description=(
+            "Validate a flat RunConfig JSON file or equivalent CLI flags, "
+            "including AleRax family references, without constructing the "
+            "CUDA likelihood model."
+        ),
+    )
+    _add_run_config_args(validate_parser)
+    validate_parser.set_defaults(_command_parser=validate_parser)
+
     sample_parser = sub.add_parser(
         "sample",
         help="Sample RecPhyloXML scenarios from a checkpoint.",
@@ -651,6 +699,7 @@ def main(argv: list[str] | None = None) -> None:
     if args.command == "optimize":
         try:
             config = _run_config_from_args(args)
+            _preflight_run_config(config)
         except _EXPECTED_WORKFLOW_ERRORS as exc:
             command_parser.error(str(exc))
         try:
@@ -664,6 +713,22 @@ def main(argv: list[str] | None = None) -> None:
         )
         if result.status == "failed":
             command_parser.exit(status=1)
+        return
+    if args.command == "validate-config":
+        try:
+            config = _run_config_from_args(args)
+            summary = _preflight_run_config(config)
+        except _EXPECTED_WORKFLOW_ERRORS as exc:
+            command_parser.error(str(exc))
+        print(
+            "valid_config=true "
+            f"mode={config.mode} optimizer={config.optimizer} "
+            f"families={summary['families']} "
+            f"gene_tree_files={summary['gene_tree_files']} "
+            f"mapped_families={summary['mapped_families']} "
+            f"device={config.device} out_dir={config.out_dir}",
+            flush=True,
+        )
         return
     if args.command == "sample":
         try:
@@ -698,6 +763,7 @@ def main(argv: list[str] | None = None) -> None:
             )
         try:
             run_config = _run_config_from_args(args)
+            _preflight_run_config(run_config)
             _validate_run_sampling_args(args, run_config)
         except _EXPECTED_WORKFLOW_ERRORS as exc:
             command_parser.error(str(exc))

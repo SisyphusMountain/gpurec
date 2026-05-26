@@ -242,6 +242,7 @@ jobs:
           cd "$smoke_dir"
           gpurec --help
           python -m gpurec.cli --help
+          gpurec validate-config --help
           gpurec sample --help | tee sample-help.txt
           grep -q -- "--backtrack-binary" sample-help.txt
           grep -q -- "GPUREC_BACKTRACK_BIN" sample-help.txt

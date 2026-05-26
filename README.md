@@ -13,8 +13,8 @@ stochastic RecPhyloXML sampling.
 - `gpurec.workflow` production runners for AleRax-style family inputs,
   checkpointed optimization, convergence diagnostics, and stochastic
   backtracking.
-- `gpurec` CLI entry point with `optimize`, `sample`, `run`, and
-  `backtrack-check` commands.
+- `gpurec` CLI entry point with `validate-config`, `optimize`, `sample`,
+  `run`, and `backtrack-check` commands.
 - Standard PyTorch optimizers over `model.theta`, including `torch.optim.Adam`.
 - `gpurec.optimization.BatchedLBFGS` for row-wise genewise polishing.
 - The optimized uniform CUDA forward/backward kernels used by the 1000-tree
@@ -198,10 +198,14 @@ configs should be converted to JSON or passed as explicit CLI flags.  Relative
 paths in JSON configs are resolved from the config file's directory; relative
 paths passed as explicit CLI flags are resolved from the current working
 directory.
+Use `gpurec validate-config --config ...` to check JSON/CLI config values,
+input paths, AleRax family records, mapping files, and referenced gene-tree
+files without constructing the CUDA likelihood model.
 For a source checkout or source archive, a checked minimal JSON config and tiny
 AleRax-style fixture live under `examples/`.  The CLI command shape is:
 
 ```bash
+gpurec validate-config --config examples/minimal-run-config.json
 gpurec optimize --config examples/minimal-run-config.json
 ```
 
@@ -458,7 +462,7 @@ of dataset path overrides.
 
 | Task | Command | Notes |
 | --- | --- | --- |
-| General installed workflow | `gpurec optimize`, `gpurec sample`, `gpurec run` | Uses flat JSON for `--config`; Hydra YAML is not accepted by the main CLI. |
+| General installed workflow | `gpurec validate-config`, `gpurec optimize`, `gpurec sample`, `gpurec run` | Uses flat JSON for `--config`; Hydra YAML is not accepted by the main CLI. `validate-config` is a CPU-safe path/reference preflight and does not construct the CUDA likelihood model. |
 | Sampling binary preflight | `gpurec backtrack-check` | Validates `GPUREC_BACKTRACK_BIN`, `--backtrack-binary`, or the source-tree Cargo fallback without loading a checkpoint. |
 | Legacy HOGENOM W&B wrapper | `python scripts/optimize_hogenom_ccp_wandb.py` | Checkout-local compatibility wrapper with argparse flags, checkpoints, plots, and optional W&B logging. |
 | Hydra HOGENOM run | `python scripts/optimize_hogenom_ccp_hydra.py` | Uses `configs/hogenom_ccp_wandb.yaml`, a checkout-local full experiment config, and Hydra override syntax; see `configs/README.md` for config ownership. |

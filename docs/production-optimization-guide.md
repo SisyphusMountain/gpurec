@@ -126,6 +126,13 @@ optimization on the other.
 For a normal genewise production run:
 
 ```bash
+gpurec validate-config \
+  --species-tree S.tree \
+  --families-file families.txt \
+  --out-dir output_gpurec \
+  --mode genewise \
+  --device cuda
+
 gpurec optimize \
   --species-tree S.tree \
   --families-file families.txt \
@@ -136,6 +143,10 @@ gpurec optimize \
 
 For specieswise, set `--mode specieswise` and let `auto` choose
 `adagrad-restarts`.
+`validate-config` checks the flat JSON/CLI config, selected AleRax family
+records, mapping files, and referenced gene-tree files without CUDA or
+preprocessing. It is a preflight for path and parser issues, not a likelihood
+or gradient correctness check.
 
 Inspect these outputs first:
 

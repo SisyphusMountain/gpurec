@@ -50,6 +50,7 @@ def test_run_config_cli_surface_matches_dataclass_fields():
     assert set(_run_config_cli_override_fields()) == run_config_fields
     assert not hasattr(gpurec_cli, "_RUN_CONFIG_CLI_OVERRIDE_FIELDS")
     assert _parser_action_dests("optimize") == expected_parser_dests
+    assert _parser_action_dests("validate-config") == expected_parser_dests
     assert _parser_action_dests("run") == expected_parser_dests | {
         "sample_out_dir",
         "samples",
@@ -399,6 +400,108 @@ def test_cli_config_path_expands_user_before_validation(
     assert config.species_tree == (input_dir / "sp.nwk").resolve()
     assert config.families_file == (input_dir / "families.txt").resolve()
     assert config.out_dir == (config_dir / "runs" / "main").resolve()
+
+
+def test_cli_validate_config_reports_selected_family_references(
+    tmp_path: Path,
+    capsys,
+):
+    config_path = tmp_path / "run.json"
+    write_tiny_alerax_inputs(tmp_path)
+    config_path.write_text(
+        json.dumps(
+            {
+                "species_tree": "sp.nwk",
+                "families_file": "families.txt",
+                "out_dir": "out",
+                "mode": "genewise",
+                "device": "cuda",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    main(["validate-config", "--config", str(config_path)])
+
+    captured = capsys.readouterr()
+    assert "valid_config=true" in captured.out
+    assert "mode=genewise" in captured.out
+    assert "optimizer=hessian-sgd" in captured.out
+    assert "families=1" in captured.out
+    assert "gene_tree_files=1" in captured.out
+    assert "mapped_families=1" in captured.out
+    assert str((tmp_path / "out").resolve()) in captured.out
+    assert captured.err == ""
+
+
+def test_cli_validate_config_rejects_missing_gene_tree_before_cuda(
+    tmp_path: Path,
+    capsys,
+):
+    write_tiny_alerax_inputs(
+        tmp_path,
+        family_lines=("starting_gene_tree = missing_gene.nwk", "mapping = gene.map"),
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(
+            [
+                "validate-config",
+                "--species-tree",
+                str(tmp_path / "sp.nwk"),
+                "--families-file",
+                str(tmp_path / "families.txt"),
+                "--out-dir",
+                str(tmp_path / "out"),
+                "--device",
+                "cuda",
+            ]
+        )
+
+    captured = capsys.readouterr()
+    assert exc_info.value.code == 2
+    assert "missing gene-tree path" in captured.err
+    assert "missing_gene.nwk" in captured.err
+    assert "CUDA" not in captured.err
+    assert "Traceback" not in captured.err
+
+
+def test_cli_optimize_rejects_missing_gene_tree_before_workflow(
+    tmp_path: Path,
+    capsys,
+    monkeypatch,
+):
+    write_tiny_alerax_inputs(
+        tmp_path,
+        family_lines=("starting_gene_tree = missing_gene.nwk", "mapping = gene.map"),
+    )
+
+    def unexpected_optimize(config):
+        raise AssertionError("optimize should not be called")
+
+    monkeypatch.setattr("gpurec.cli.optimize", unexpected_optimize)
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(
+            [
+                "optimize",
+                "--species-tree",
+                str(tmp_path / "sp.nwk"),
+                "--families-file",
+                str(tmp_path / "families.txt"),
+                "--out-dir",
+                str(tmp_path / "out"),
+                "--device",
+                "cuda",
+            ]
+        )
+
+    captured = capsys.readouterr()
+    assert exc_info.value.code == 2
+    assert "missing gene-tree path" in captured.err
+    assert "missing_gene.nwk" in captured.err
+    assert "CUDA" not in captured.err
+    assert "Traceback" not in captured.err
 
 
 def _minimal_workflow_cli_args(command: str, tmp_path: Path) -> list[str]:
