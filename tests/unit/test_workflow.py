@@ -3346,6 +3346,37 @@ def test_workflow_final_tsv_artifacts_quote_labels(tmp_path: Path):
     assert likelihood_rows[2] == ["fam\nline", "2.5", "-2.5"]
 
 
+def test_workflow_rate_table_rejects_label_theta_mismatches(tmp_path: Path):
+    theta = torch.zeros((2, 3), dtype=torch.float64)
+
+    species_model = SimpleNamespace(
+        theta=torch.nn.Parameter(theta.clone()),
+        species_names=["sp0"],
+    )
+    with pytest.raises(
+        RuntimeError,
+        match="specieswise rate table has 2 theta rows but only 1 species labels",
+    ):
+        _write_rate_table(tmp_path / "species.tsv", species_model, "specieswise")
+
+    family_model = SimpleNamespace(
+        theta=torch.nn.Parameter(theta.clone()),
+        family_names=["fam0"],
+    )
+    with pytest.raises(
+        RuntimeError,
+        match="genewise rate table has 2 theta rows but only 1 family labels",
+    ):
+        _write_rate_table(tmp_path / "families.tsv", family_model, "genewise")
+
+    global_model = SimpleNamespace(theta=torch.nn.Parameter(theta.clone()))
+    with pytest.raises(
+        RuntimeError,
+        match="global rate table has 2 theta rows; expected 1",
+    ):
+        _write_rate_table(tmp_path / "global.tsv", global_model, "global")
+
+
 def test_workflow_jsonl_diagnostics_sanitize_nonfinite_values(tmp_path: Path):
     path = tmp_path / "history.jsonl"
     row = {

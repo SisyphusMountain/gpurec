@@ -29,6 +29,7 @@ from ._metadata import (
     checkpoint_progress,
     checkpoint_status_dict,
     model_family_names,
+    model_species_names,
 )
 from .checkpoint import (
     load_checkpoint,
@@ -457,18 +458,37 @@ def _validate_resume_progress(
         )
 
 
-def _parameter_labels(model: GeneReconModel, mode: str) -> list[str]:
-    theta_rows = int(model.theta.detach().reshape(-1, 3).shape[0])
+def _parameter_labels(
+    model: GeneReconModel,
+    mode: str,
+    *,
+    theta_rows: int,
+) -> list[str]:
     if mode == "genewise":
-        return model_family_names(model)
-    if mode == "specieswise":
-        return model.species_names[:theta_rows]
-    return ["global"]
+        labels = model_family_names(model)
+        label_kind = "family"
+    elif mode == "specieswise":
+        labels = model_species_names(model)
+        label_kind = "species"
+    elif mode == "global":
+        if theta_rows != 1:
+            raise RuntimeError(
+                f"global rate table has {theta_rows} theta rows; expected 1"
+            )
+        return ["global"]
+    else:
+        raise RuntimeError(f"unsupported rate-table mode {mode!r}")
+    if len(labels) < theta_rows:
+        raise RuntimeError(
+            f"{mode} rate table has {theta_rows} theta rows but only "
+            f"{len(labels)} {label_kind} labels"
+        )
+    return labels[:theta_rows]
 
 
 def _write_rate_table(path: Path, model: GeneReconModel, mode: str) -> None:
-    labels = _parameter_labels(model, mode)
     theta = model.theta.detach().reshape(-1, 3).to(device="cpu", dtype=torch.float64)
+    labels = _parameter_labels(model, mode, theta_rows=int(theta.shape[0]))
     rates, p_s = rates_and_survival_probability(theta)
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", newline="", encoding="utf-8") as handle:
