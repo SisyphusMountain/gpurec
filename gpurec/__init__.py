@@ -7,9 +7,10 @@ Notebook-friendly API:
 Workflow API:
   from gpurec import RunConfig, optimize, sample
 
-Public exports come from ``gpurec.api`` and ``gpurec.workflow``.  The
-``gpurec.core`` namespace is an implementation namespace and is unstable unless
-a helper is explicitly documented as supported.
+Public exports come from ``gpurec.api``, ``gpurec.workflow``,
+``gpurec.backtracking``, and ``gpurec.entropy``.  The ``gpurec.core``
+namespace is an implementation namespace and is unstable unless a helper is
+explicitly documented as supported.
 """
 
 from importlib import import_module

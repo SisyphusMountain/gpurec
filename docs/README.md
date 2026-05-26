@@ -87,8 +87,9 @@ README, the CLI help, and the current operating notes for user-facing guidance.
 
 ## Low-Level API Stability
 
-The supported package entry points are the high-level classes and workflow
-helpers exported from `gpurec`, `gpurec.api`, and `gpurec.workflow`.
+The supported package entry points are the high-level classes, workflow
+helpers, backtracking helpers, and entropy helpers exported from `gpurec`,
+`gpurec.api`, `gpurec.workflow`, `gpurec.backtracking`, and `gpurec.entropy`.
 `gpurec.core` is an implementation namespace for preprocessing, likelihood
 kernels, scheduling, and white-box tests.  Direct imports from `gpurec.core`
 are unstable unless a helper is explicitly documented as supported; tests may

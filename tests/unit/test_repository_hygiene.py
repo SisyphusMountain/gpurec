@@ -312,34 +312,40 @@ def test_package_docs_do_not_advertise_core_as_public_surface():
     docs_readme = " ".join(
         (root / "docs" / "README.md").read_text(encoding="utf-8").split()
     )
+    public_export_modules = sorted(set(gpurec._LAZY_EXPORTS.values()))
 
     for token in (
         "High-level public API",
         "from gpurec import GeneReconModel",
         "from gpurec import RunConfig, optimize, sample",
-        "Public exports come from ``gpurec.api`` and ``gpurec.workflow``",
         "``gpurec.core`` namespace is an implementation namespace",
         "unstable unless a helper is explicitly documented as supported",
     ):
         assert token in package_doc
+    for module_name in public_export_modules:
+        assert f"``{module_name}``" in package_doc
 
     for token in (
         "Low-Level API Stability",
-        "The supported package entry points are the high-level classes and workflow helpers",
+        "The supported package entry points are the high-level classes, workflow helpers, backtracking helpers, and entropy helpers",
         "`gpurec.core` is an implementation namespace",
         "Direct imports from `gpurec.core` are unstable",
         "tests may use internals to guard behavior",
         "not public API evidence",
     ):
         assert token in docs_readme
+    for module_name in public_export_modules:
+        assert f"`{module_name}`" in docs_readme
 
     for token in (
         "Internal implementation namespace",
-        "Public user-facing imports are exported from :mod:`gpurec`, :mod:`gpurec.api`, and :mod:`gpurec.workflow`",
+        "Public user-facing imports are exported from :mod:`gpurec`",
         "``gpurec.core`` are unstable",
         "explicitly documented as a supported low-level exception",
     ):
         assert token in core_package_doc
+    for module_name in public_export_modules:
+        assert f":mod:`{module_name}`" in core_package_doc
 
     for token in (
         "Lower-level access",
