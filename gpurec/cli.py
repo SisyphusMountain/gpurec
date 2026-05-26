@@ -1049,6 +1049,14 @@ def _checkpoint_info_text(checkpoint: Path, payload: dict[str, Any]) -> str:
                 "last_projected_grad_inf",
                 last_row.get("grad/projected_inf"),
             ),
+            _optional_int_text(
+                "last_final_check_iters",
+                last_row.get("optimizer/final_check_iters"),
+            ),
+            _optional_int_text(
+                "last_final_check_iters_e",
+                last_row.get("optimizer/final_check_iters_E"),
+            ),
             _optional_text(
                 "last_final_check_status",
                 last_row.get("optimizer/final_check_status"),

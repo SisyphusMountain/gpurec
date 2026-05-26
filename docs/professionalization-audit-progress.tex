@@ -7579,6 +7579,15 @@ paired E-solver budget, including \texttt{null} for adaptive E solves on
 genewise routes.  Focused workflow, CLI, and repository hygiene tests guard the
 new summary/result/status field.
 
+\texttt{gpurec checkpoint-info} now mirrors that final validation budget
+visibility for checkpoint last rows.  When the saved row includes
+\texttt{optimizer/final\_check\_iters} or
+\texttt{optimizer/final\_check\_iters\_E}, the CLI prints
+\texttt{last\_final\_check\_iters} and
+\texttt{last\_final\_check\_iters\_e} alongside the existing final-check
+status/source/reason and loss/gradient deltas.  The checkpoint-info CLI fixture
+and output-artifact hygiene guard cover the new terminal contract.
+
 \section{Next Audit Targets}
 
 \begin{enumerate}[leftmargin=*]

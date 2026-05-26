@@ -2315,6 +2315,10 @@ not edit files.  New or still-open findings from that refresh are:
   This keeps `summary.json`, the Python `OptimizationResult`, and CLI status
   lines explicit about both the Pi/Neumann final-check budget and the paired
   E-solver budget, including adaptive `null` E budgets for genewise routes.
+- `gpurec checkpoint-info` now also exposes `last_final_check_iters` and
+  `last_final_check_iters_e` when those budgets exist in the checkpoint last
+  row, matching the final likelihood/gradient validation budget visibility in
+  `summary.json` and the optimization status line.
 
 ## Recommended Next Order
 

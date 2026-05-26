@@ -1825,6 +1825,8 @@ def test_output_artifact_reference_is_linked_and_documents_contract():
         "`final_check_status=ok`",
         "gpurec optimize` when the command should print",
         "gpurec checkpoint-info --checkpoint output_gpurec/checkpoints/latest.pt",
+        "`last_final_check_iters`",
+        "`last_final_check_iters_e`",
         "`last_final_check_status`",
         "`last_solver_e_adjoint_failed_batches`",
         "`last_solver_e_adjoint_success_batches`",

@@ -448,8 +448,9 @@ Use `gpurec checkpoint-info --checkpoint output_gpurec/checkpoints/latest.pt`
 to inspect checkpoint progress, status, optimizer route, and last
 likelihood/gradient diagnostics without constructing the CUDA likelihood model.
 When the checkpoint's last row contains final validation metrics, the command
-also prints `last_final_check_status` and the matching source/reason and
-loss/gradient delta fields. Add `--require-final-check-ok` when automation
+also prints `last_final_check_iters`, `last_final_check_iters_e`,
+`last_final_check_status`, and the matching source/reason and loss/gradient
+delta fields. Add `--require-final-check-ok` when automation
 should fail unless that checkpoint row reports `optimizer/final_check_status=ok`;
 add `--require-mode-default-optimizer` to require a checkpoint route whose
 optimizer matches the production default for its mode, or

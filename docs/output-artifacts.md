@@ -182,7 +182,8 @@ gpurec checkpoint-info --checkpoint output_gpurec/checkpoints/latest.pt
 ```
 
 When the checkpoint's saved last row contains final validation metrics,
-`checkpoint-info` also prints `last_final_check_status`,
+`checkpoint-info` also prints `last_final_check_iters`,
+`last_final_check_iters_e`, `last_final_check_status`,
 `last_final_check_source`, `last_final_check_reason`,
 `last_final_check_fallback_clade_budget`,
 `last_final_check_loss_abs_delta_bits`,
