@@ -2599,6 +2599,16 @@ def test_gene_recon_init_rejects_invalid_solver_controls_before_device(
         ("from_trees", {"clade_budget": True}, "clade_budget"),
         ("from_trees", {"lazy_preprocess": "false"}, "lazy_preprocess"),
         (
+            "from_trees",
+            {"pi_fixed_point_relaxation": True},
+            "pi_fixed_point_relaxation",
+        ),
+        (
+            "from_trees",
+            {"pi_fixed_point_relaxation": 0},
+            "pi_fixed_point_relaxation",
+        ),
+        (
             "from_alerax_families",
             {"gradient_change_rtol": math.inf},
             "gradient_change_rtol",
@@ -2642,6 +2652,11 @@ def test_gene_recon_init_rejects_invalid_solver_controls_before_device(
             "from_alerax_families",
             {"prefetch_batches": "many"},
             "prefetch_batches",
+        ),
+        (
+            "from_alerax_families",
+            {"pi_fixed_point_relaxation": math.inf},
+            "pi_fixed_point_relaxation",
         ),
     ],
 )

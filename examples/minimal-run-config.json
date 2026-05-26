@@ -13,6 +13,11 @@
   "fd_hessian_refresh_steps": 16,
   "hessian_sgd_normal_fixed_iters_pi": null,
   "hessian_sgd_normal_neumann_terms": null,
+  "hessian_sgd_pi_adjoint_warmstart": false,
+  "pi_fixed_point_relaxation": 1.0,
+  "hessian_sgd_validation_interval": 0,
+  "hessian_sgd_validation_fixed_iters_pi": null,
+  "hessian_sgd_validation_neumann_terms": null,
   "final_check_iters": 32,
   "log_every": 1,
   "checkpoint_every": 1

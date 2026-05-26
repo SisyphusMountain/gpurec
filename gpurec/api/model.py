@@ -389,6 +389,11 @@ def _normalize_gene_solver_kwargs(kwargs: dict[str, Any]) -> dict[str, Any]:
                 normalized["pi_adjoint_cache_update_mode"]
             )
         )
+    if "pi_fixed_point_relaxation" in normalized:
+        normalized["pi_fixed_point_relaxation"] = positive_float(
+            "pi_fixed_point_relaxation",
+            normalized["pi_fixed_point_relaxation"],
+        )
     if "use_pruning" in normalized:
         normalized["use_pruning"] = bool_value(
             "use_pruning",
