@@ -905,6 +905,23 @@ Rejected follow-ups:
   `1.2755018040188588s` minimum, slower than the current documented
   `1.2784311089781113s` median.  The root/loss scalar path remains too small to
   matter next to the Pi/DTS kernels.
+- Disabling forward solver-stat recording in a throwaway process was also
+  rejected.  The normal materialized `E=8, Pi=4` route measured `1.2724366540205665s`
+  median over three post-warm passes, while monkeypatching the no-grad stat
+  recorder to a no-op measured `1.2777643840527162s` median.  The stat conversion
+  is not a visible bottleneck, and preserving workflow diagnostics is the better
+  tradeoff.
+- Replacing the root-row base-2 logsumexp helper with an equivalent
+  `torch.logsumexp(root_rows * ln2) / ln2` form was neutral to slightly worse.
+  A throwaway monkeypatch preserved the `2157098.25`-bit `E=8, Pi=4` loss, but
+  measured `1.2732835609931499s` median over three post-warm materialized passes,
+  versus `1.2724366540205665s` for the current helper.  The base-2 helper stays
+  in place.
+- Reducing the `21` scalar batch losses by stacking them and summing once at the
+  end also did not help the current split-budget route.  The targeted
+  no-grad/model tests passed (`7 passed`), but the cold `E=8, Pi=4` sample
+  measured `2.2636918509961106s`, worse than the documented `2.253481016959995s`
+  low, so the existing per-batch scalar accumulation remains in place.
 
 Differences from HOGENOM:
 
