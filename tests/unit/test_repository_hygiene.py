@@ -1297,6 +1297,7 @@ def test_project_readme_documents_gpurec_run_end_to_end_workflow():
     assert "reported by the optimizer" in normalized
     assert "falling back to `checkpoints/best.pt` or `checkpoints/latest.pt`" in normalized
     assert "exits without sampling if optimization fails" in normalized
+    assert "Failed optimization still prints the optimization status line" in project_readme
     assert "`sampled_families`, `samples`, `xml`, and `sample_out_dir`" in project_readme
     assert "Use `gpurec sample --checkpoint ...` to sample an existing run" in normalized
 
@@ -1409,6 +1410,7 @@ def test_output_artifact_reference_is_linked_and_documents_contract():
         "`samples`",
         "`xml`",
         "`sample_out_dir`",
+        "exits without sampling fields",
         "`gpurec run`",
         "`rates_final.tsv`",
         "`per_fam_likelihoods.tsv`",

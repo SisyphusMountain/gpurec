@@ -1488,6 +1488,18 @@ def test_cli_run_refuses_sampling_after_failed_optimization(
 
     captured = capsys.readouterr()
     assert exc_info.value.code == 1
+    assert "status=failed" in captured.out
+    assert "reason=nonfinite_objective_or_gradient" in captured.out
+    assert "final_nll_bits=inf" in captured.out
+    assert "final_log_likelihood_bits=null" in captured.out
+    assert "best_nll_bits=null" in captured.out
+    assert "best_log_likelihood_bits=null" in captured.out
+    assert gpurec_cli._optional_text(
+        "out_dir",
+        (tmp_path / "out").resolve(),
+    ) in captured.out
+    assert "sampled_families" not in captured.out
+    assert "sample_out_dir" not in captured.out
     assert "optimization failed" in captured.err
     assert "nonfinite_objective_or_gradient" in captured.err
     assert "Traceback" not in captured.err

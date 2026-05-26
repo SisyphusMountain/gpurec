@@ -1120,6 +1120,11 @@ def main(argv: list[str] | None = None) -> None:
         except _EXPECTED_WORKFLOW_ERRORS as exc:
             _exit_runtime_error(command_parser, str(exc))
         if opt_result.status == "failed":
+            print(
+                f"{_optimization_result_text(opt_result)} "
+                f"{_optional_text('out_dir', run_config.out_dir)}",
+                flush=True,
+            )
             command_parser.exit(
                 status=1,
                 message=(

@@ -69,7 +69,9 @@ provided.
 Standalone `gpurec sample` prints `sampled_families`, `samples`, `xml`, and
 `out_dir` with the same status-line escaping rule.  The combined `gpurec run`
 status line prints the optimization fields plus `sampled_families`, `samples`,
-`xml`, `out_dir`, and `sample_out_dir` after sampling succeeds.
+`xml`, `out_dir`, and `sample_out_dir` after sampling succeeds. If
+optimization fails, `gpurec run` prints the optimization status fields and exits
+without sampling fields.
 
 | Path | Contents |
 |---|---|

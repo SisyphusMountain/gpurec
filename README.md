@@ -428,7 +428,8 @@ Sampling flags such as `--samples`, `--family-start`, `--sample-max-families`,
 `gpurec run` does not accept `--checkpoint`; it samples from the checkpoint
 reported by the optimizer, falling back to `checkpoints/best.pt` or
 `checkpoints/latest.pt` when needed, and exits without sampling if optimization
-fails.  When sampling succeeds, the final status line also reports
+fails.  Failed optimization still prints the optimization status line before
+`gpurec run` exits. When sampling succeeds, the final status line also reports
 `sampled_families`, `samples`, `xml`, and `sample_out_dir`. Use
 `gpurec sample --checkpoint ...` to sample an existing run.
 
