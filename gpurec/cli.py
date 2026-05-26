@@ -1798,6 +1798,15 @@ def _add_run_config_args(parser: argparse.ArgumentParser) -> None:
         ),
     )
     parser.add_argument(
+        "--lbfgsb-loss-schedule-force-fallback",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help=(
+            "When an lbfgsb loss-stop schedule advances, force the next row to "
+            "start from the projected-gradient fallback."
+        ),
+    )
+    parser.add_argument(
         "--lbfgs-line-search",
         choices=("none", "strong_wolfe"),
         help="LBFGS line-search mode.",

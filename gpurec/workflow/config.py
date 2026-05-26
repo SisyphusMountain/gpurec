@@ -581,6 +581,7 @@ _JSON_BOOL_FIELDS = {
     "adaptive_neumann_terms",
     "adaptive_rebatch",
     "hessian_sgd_pi_adjoint_warmstart",
+    "lbfgsb_loss_schedule_force_fallback",
     "loss_stop_projected_grad_gate",
 }
 _RUN_CONFIG_REQUIRED_PATH_FIELDS = ("species_tree", "families_file", "out_dir")
@@ -702,6 +703,7 @@ class RunConfig:
     lbfgsb_fallback_max_loss_evals: int | None = None
     lbfgsb_best_retry_attempts: int = 0
     lbfgsb_loss_change_tol_schedule: str | None = None
+    lbfgsb_loss_schedule_force_fallback: bool = False
     fd_hessian_epsilon: float = 1e-3
     fd_newton_damping: float = 1e-3
     adaptive_rebatch: bool = False

@@ -4411,8 +4411,30 @@ class OptimizationRunner:
                     metrics["optimizer/lbfgsb_loss_schedule_next_patience"] = float(
                         next_loss_phase.loss_patience
                     )
+                    if (
+                        config.lbfgsb_loss_schedule_force_fallback
+                        and optimizer is not None
+                    ):
+                        opt_state = optimizer.state.get(model.theta)
+                        if isinstance(opt_state, dict):
+                            previous_stalls = int(
+                                opt_state.get("consecutive_high_kkt_stalls", 0)
+                            )
+                            opt_state["consecutive_high_kkt_stalls"] = max(
+                                previous_stalls,
+                                2,
+                            )
+                            metrics[
+                                "optimizer/lbfgsb_loss_schedule_force_fallback_next"
+                            ] = True
+                            metrics[
+                                "optimizer/lbfgsb_loss_schedule_force_fallback_previous_stalls"
+                            ] = float(previous_stalls)
                 elif phase == "lbfgsb" and lbfgsb_loss_schedule:
                     metrics["optimizer/lbfgsb_loss_schedule_advance"] = False
+                    metrics[
+                        "optimizer/lbfgsb_loss_schedule_force_fallback_next"
+                    ] = False
 
                 row = {
                     "step": step,

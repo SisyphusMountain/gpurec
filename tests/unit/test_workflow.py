@@ -8280,6 +8280,7 @@ def test_optimization_runner_lbfgsb_loss_schedule_advances_before_stop(
         loss_patience=1,
         best_likelihood_patience=0,
         lbfgsb_loss_change_tol_schedule="0.25:2,0.1:1",
+        lbfgsb_loss_schedule_force_fallback=True,
         loss_stop_projected_grad_gate=False,
         solver_warmup_iters=0,
     )
@@ -8296,6 +8297,10 @@ def test_optimization_runner_lbfgsb_loss_schedule_advances_before_stop(
     assert optimizer_rows[2]["stable_loss_steps"] == 2
     assert optimizer_rows[2]["optimizer/lbfgsb_loss_schedule_advance"] is True
     assert optimizer_rows[2]["optimizer/lbfgsb_loss_schedule_next_index"] == 1.0
+    assert (
+        optimizer_rows[2]["optimizer/lbfgsb_loss_schedule_force_fallback_next"]
+        is True
+    )
     assert optimizer_rows[3]["optimizer/lbfgsb_loss_schedule_index"] == 1.0
     assert optimizer_rows[3]["stable_loss_steps"] == 1
     assert result.status == "converged"
