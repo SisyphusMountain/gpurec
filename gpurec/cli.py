@@ -777,7 +777,10 @@ def _validate_run_sampling_args(args: argparse.Namespace, run_config: RunConfig)
 
 
 def _config_template_data(args: argparse.Namespace) -> dict[str, Any]:
-    from gpurec.workflow.config import DEFAULT_ADAGRAD_RESTART_SCHEDULE
+    from gpurec.workflow.config import (
+        DEFAULT_ADAGRAD_RESTART_FINAL_CHECK_ITERS,
+        DEFAULT_ADAGRAD_RESTART_SCHEDULE,
+    )
 
     data: dict[str, Any] = {
         "species_tree": str(args.species_tree),
@@ -816,7 +819,9 @@ def _config_template_data(args: argparse.Namespace) -> dict[str, Any]:
         data.update(
             {
                 "adagrad_restart_schedule": DEFAULT_ADAGRAD_RESTART_SCHEDULE,
-                "adagrad_restart_final_check_iters": 128,
+                "adagrad_restart_final_check_iters": (
+                    DEFAULT_ADAGRAD_RESTART_FINAL_CHECK_ITERS
+                ),
             }
         )
     return data

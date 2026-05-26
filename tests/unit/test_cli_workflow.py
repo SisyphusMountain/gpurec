@@ -340,6 +340,42 @@ def test_cli_forwards_adagrad_restart_controls(tmp_path: Path):
     assert config.adagrad_restart_final_check_iters == 16
 
 
+def test_cli_rejects_misplaced_hessian_sgd_normal_controls(tmp_path: Path):
+    args = build_parser().parse_args(
+        _minimal_workflow_cli_args("optimize", tmp_path)
+        + [
+            "--mode",
+            "specieswise",
+            "--hessian-sgd-normal-fixed-iters-pi",
+            "12",
+        ]
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="hessian_sgd_normal solver controls require genewise hessian-sgd",
+    ):
+        _run_config_from_args(args)
+
+
+def test_cli_rejects_misplaced_adagrad_restart_controls(tmp_path: Path):
+    args = build_parser().parse_args(
+        _minimal_workflow_cli_args("optimize", tmp_path)
+        + [
+            "--mode",
+            "genewise",
+            "--adagrad-restart-schedule",
+            "4:1.0:2",
+        ]
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="adagrad_restart controls require specieswise adagrad-restarts",
+    ):
+        _run_config_from_args(args)
+
+
 def test_cli_config_template_prints_genewise_hessian_sgd_auto_defaults(capsys):
     main(["config-template", "--mode", "genewise"])
 

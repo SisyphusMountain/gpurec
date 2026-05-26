@@ -26,6 +26,7 @@ def _default_device() -> str:
 
 UINT64_MAX = (1 << 64) - 1
 DEFAULT_ADAGRAD_RESTART_SCHEDULE = "8:1.0:60,16:0.5:35,32:0.5:30"
+DEFAULT_ADAGRAD_RESTART_FINAL_CHECK_ITERS = 128
 
 
 @dataclass(frozen=True)
@@ -317,6 +318,11 @@ def _normalize_adagrad_restart_schedule(value: str) -> str:
     )
 
 
+DEFAULT_NORMALIZED_ADAGRAD_RESTART_SCHEDULE = _normalize_adagrad_restart_schedule(
+    DEFAULT_ADAGRAD_RESTART_SCHEDULE
+)
+
+
 def _normalize_workflow_batch_packing(value: str | None) -> str:
     if value is None:
         raise ValueError("batch_packing must be provided as a string")
@@ -534,7 +540,7 @@ class RunConfig:
     hessian_sgd_validation_fixed_iters_pi: int | None = None
     hessian_sgd_validation_neumann_terms: int | None = None
     adagrad_restart_schedule: str = DEFAULT_ADAGRAD_RESTART_SCHEDULE
-    adagrad_restart_final_check_iters: int = 128
+    adagrad_restart_final_check_iters: int = DEFAULT_ADAGRAD_RESTART_FINAL_CHECK_ITERS
     lbfgs_lr: float = 0.1
     lbfgs_history_size: int = 20
     lbfgs_max_iter: int = 1
@@ -789,6 +795,15 @@ class RunConfig:
             raise ValueError("adam-fd-newton optimizer requires genewise mode")
         if self.optimizer == "hessian-sgd" and self.mode != "genewise":
             raise ValueError("hessian-sgd optimizer requires genewise mode")
+        hessian_sgd_normal_configured = (
+            self.hessian_sgd_normal_fixed_iters_pi is not None
+            or self.hessian_sgd_normal_neumann_terms is not None
+        )
+        if hessian_sgd_normal_configured and self.optimizer != "hessian-sgd":
+            raise ValueError(
+                "hessian_sgd_normal solver controls require genewise "
+                "hessian-sgd optimizer"
+            )
         if self.hessian_sgd_pi_adjoint_warmstart and self.optimizer != "hessian-sgd":
             raise ValueError(
                 "hessian_sgd_pi_adjoint_warmstart requires genewise "
@@ -830,6 +845,17 @@ class RunConfig:
             )
         if self.optimizer == "adagrad-restarts" and self.mode != "specieswise":
             raise ValueError("adagrad-restarts optimizer requires specieswise mode")
+        adagrad_restart_configured = (
+            self.adagrad_restart_schedule
+            != DEFAULT_NORMALIZED_ADAGRAD_RESTART_SCHEDULE
+            or self.adagrad_restart_final_check_iters
+            != DEFAULT_ADAGRAD_RESTART_FINAL_CHECK_ITERS
+        )
+        if adagrad_restart_configured and self.optimizer != "adagrad-restarts":
+            raise ValueError(
+                "adagrad_restart controls require specieswise "
+                "adagrad-restarts optimizer"
+            )
         if self.adagrad_restart_final_check_iters > 0:
             _normalize_positive_even_int(
                 "adagrad_restart_final_check_iters",

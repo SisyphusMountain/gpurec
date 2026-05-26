@@ -333,6 +333,11 @@ uses the post-step projected gradients already produced by the optimizer, and
 `adaptive_rebatch_check_interval` controls how often that aggregate threshold
 is tested.
 
+Optimizer-specific controls are scoped to the optimizer that consumes them.
+`hessian_sgd_normal_*`, validation, and Pi-adjoint warm-start controls require
+genewise `hessian-sgd`; non-default `adagrad_restart_*` controls require
+specieswise `adagrad-restarts`.
+
 `adagrad_restart_schedule` is validated before model loading.  Each phase must
 use `budget:lr:steps` or `E/Pi[/Neumann]:lr:steps`; tied budgets and `Pi`
 budgets must be positive even integers, split `E` and Neumann budgets must be

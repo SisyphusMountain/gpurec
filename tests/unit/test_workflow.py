@@ -64,6 +64,8 @@ from gpurec.workflow._metadata import (
     model_species_names,
 )
 from gpurec.workflow.config import (
+    DEFAULT_ADAGRAD_RESTART_FINAL_CHECK_ITERS,
+    DEFAULT_ADAGRAD_RESTART_SCHEDULE,
     RunConfig,
     SamplingConfig,
     adagrad_restart_schedule_specs,
@@ -1478,6 +1480,51 @@ def test_run_config_accepts_split_specieswise_adagrad_restart_schedule(
     ]
 
 
+def test_run_config_allows_default_adagrad_restart_fields_outside_specieswise(
+    tmp_path: Path,
+):
+    config = RunConfig(
+        species_tree=tmp_path / "sp.nwk",
+        families_file=tmp_path / "families.txt",
+        out_dir=tmp_path / "out",
+        mode="genewise",
+        adagrad_restart_schedule=DEFAULT_ADAGRAD_RESTART_SCHEDULE,
+        adagrad_restart_final_check_iters=(
+            DEFAULT_ADAGRAD_RESTART_FINAL_CHECK_ITERS
+        ),
+        device="cpu",
+    )
+
+    assert config.optimizer == "hessian-sgd"
+    assert config.adagrad_restart_schedule == "8:1:60,16:0.5:35,32:0.5:30"
+    assert config.adagrad_restart_final_check_iters == 128
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"adagrad_restart_schedule": "4:1.0:2"},
+        {"adagrad_restart_final_check_iters": 64},
+    ],
+)
+def test_run_config_rejects_adagrad_restart_controls_outside_adagrad_restarts(
+    tmp_path: Path,
+    overrides: dict[str, object],
+):
+    with pytest.raises(
+        ValueError,
+        match="adagrad_restart controls require specieswise adagrad-restarts",
+    ):
+        RunConfig(
+            species_tree=tmp_path / "sp.nwk",
+            families_file=tmp_path / "families.txt",
+            out_dir=tmp_path / "out",
+            mode="genewise",
+            device="cpu",
+            **overrides,
+        )
+
+
 @pytest.mark.parametrize(
     ("schedule", "message"),
     [
@@ -1653,6 +1700,31 @@ def test_run_config_rejects_hessian_sgd_outside_genewise(tmp_path: Path):
             mode="global",
             optimizer="hessian-sgd",
             device="cpu",
+        )
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"hessian_sgd_normal_fixed_iters_pi": 12},
+        {"hessian_sgd_normal_neumann_terms": 12},
+    ],
+)
+def test_run_config_rejects_hessian_sgd_normal_controls_outside_hessian_sgd(
+    tmp_path: Path,
+    overrides: dict[str, object],
+):
+    with pytest.raises(
+        ValueError,
+        match="hessian_sgd_normal solver controls require genewise hessian-sgd",
+    ):
+        RunConfig(
+            species_tree=tmp_path / "sp.nwk",
+            families_file=tmp_path / "families.txt",
+            out_dir=tmp_path / "out",
+            mode="specieswise",
+            device="cpu",
+            **overrides,
         )
 
 

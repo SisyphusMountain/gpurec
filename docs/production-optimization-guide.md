@@ -171,6 +171,9 @@ same basin.
 Override the ladder with `adagrad_restart_schedule` or
 `--adagrad-restart-schedule` only when a dataset-specific validation run shows
 that the default under- or over-spends early fidelity.
+`validate-config` rejects non-default `adagrad_restart_*` controls unless the
+resolved optimizer is specieswise `adagrad-restarts`, just as genewise
+`hessian_sgd_*` controls are rejected outside `hessian-sgd`.
 
 ## Dataset-Grounded Defaults
 
