@@ -21,18 +21,18 @@ from gpurec.cli import (
     build_parser,
     main,
 )
-from gpurec.workflow.config import RunConfig, SamplingConfig, effective_route_metadata
+from gpurec.workflow.config import (
+    RunConfig,
+    SamplingConfig,
+    effective_route_metadata,
+    production_default_route_contract,
+)
 from gpurec.workflow.checkpoint import CHECKPOINT_VERSION, save_checkpoint
 from gpurec.workflow.model_factory import build_alerax_workflow_model
 from tests.unit.alerax_helpers import write_tiny_alerax_inputs
 
 SUBPROCESS_TIMEOUT = 30
-_PRODUCTION_ROUTE_CONTRACT: dict[str, object] = {
-    "objective": "negative_log_likelihood_bits",
-    "gradient_route": "implicit_first_order_adjoint",
-    "rate_parameterization": "base2_log_dlt_rates",
-    "production_default_basis": "hogenom_and_" + "test_trees_" + "1000",
-}
+_PRODUCTION_ROUTE_CONTRACT: dict[str, object] = production_default_route_contract()
 
 
 def _parser_action_dests(command: str) -> set[str]:

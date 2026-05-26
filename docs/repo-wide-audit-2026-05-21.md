@@ -2368,6 +2368,11 @@ not edit files.  New or still-open findings from that refresh are:
   directly from `_PRODUCTION_DEFAULT_ROUTE_CONTRACT`, so artifact metadata and
   `--require-production-default-route` comparisons cannot drift between
   separate copies of the shipped likelihood/gradient route literals.
+- `production_default_route_contract()` and
+  `production_default_route_contract_fields()` now expose that contract inside
+  the workflow config module. CLI route-gate fallback evidence and CLI test
+  checkpoint fixtures reuse those helpers instead of carrying another copy of
+  the shipped likelihood/gradient field set.
 
 ## Recommended Next Order
 

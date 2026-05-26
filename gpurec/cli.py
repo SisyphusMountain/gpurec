@@ -179,18 +179,16 @@ def _production_default_route_evidence(
     audited, _missing, _mismatches = _production_default_optimizer_settings_evidence(
         route
     )
-    try:
-        from gpurec.workflow.config import (
-            production_default_route_mismatches_from_route,
-        )
+    from gpurec.workflow.config import (
+        production_default_route_contract_fields,
+        production_default_route_mismatches_from_route,
+    )
 
+    try:
         missing, mismatches = production_default_route_mismatches_from_route(audited)
     except _EXPECTED_WORKFLOW_ERRORS:
         return audited, (
-            "objective",
-            "gradient_route",
-            "rate_parameterization",
-            "production_default_basis",
+            *production_default_route_contract_fields(),
             "mode",
             "optimizer",
         ), ()

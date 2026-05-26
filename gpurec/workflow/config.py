@@ -1044,6 +1044,16 @@ _PRODUCTION_DEFAULT_ROUTE_CONTRACT = {
 }
 
 
+def production_default_route_contract() -> dict[str, Any]:
+    """Return the shipped likelihood/gradient route contract fields."""
+    return dict(_PRODUCTION_DEFAULT_ROUTE_CONTRACT)
+
+
+def production_default_route_contract_fields() -> tuple[str, ...]:
+    """Return the required shipped likelihood/gradient route field names."""
+    return tuple(_PRODUCTION_DEFAULT_ROUTE_CONTRACT)
+
+
 def _production_default_optimizer_expected_settings(mode: str) -> dict[str, Any]:
     if mode == "genewise":
         return _PRODUCTION_DEFAULT_GENEWISE_OPTIMIZER_SETTINGS

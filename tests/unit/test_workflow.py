@@ -20,7 +20,6 @@ import gpurec.entropy as entropy
 import gpurec.api.model as api_model
 import gpurec.api.uniform_chunked as uniform_chunked_api
 import gpurec.workflow as workflow
-import gpurec.workflow.config as workflow_config
 import gpurec.workflow.sampling as sampling_workflow
 from gpurec.backtracking import (
     EVENT_KEYS,
@@ -80,6 +79,8 @@ from gpurec.workflow.config import (
     effective_final_check_iters_e,
     effective_route_metadata,
     production_default_optimizer_setting_mismatches_from_route,
+    production_default_route_contract,
+    production_default_route_contract_fields,
     production_default_route_mismatches_from_route,
 )
 from gpurec.workflow.diagnostics import (
@@ -1391,9 +1392,10 @@ def test_effective_route_metadata_reports_production_likelihood_contract(
 
     route = effective_route_metadata(config)
     basis = "hogenom_and_" + "test_trees_" + "1000"
-    contract = workflow_config._PRODUCTION_DEFAULT_ROUTE_CONTRACT
+    contract = production_default_route_contract()
 
     assert {name: route[name] for name in contract} == contract
+    assert production_default_route_contract_fields() == tuple(contract)
     assert route["production_default_basis"] == basis
     assert route["optimizer"] == "hessian-sgd"
     assert route["mode_default_optimizer"] == "hessian-sgd"
@@ -1416,6 +1418,15 @@ def test_effective_route_metadata_reports_production_likelihood_contract(
     assert route["hessian_sgd_validation_interval"] == 0
     assert route["hessian_sgd_validation_fixed_iters_pi"] is None
     assert route["hessian_sgd_validation_neumann_terms"] is None
+
+
+def test_production_route_contract_helper_returns_a_copy():
+    contract = production_default_route_contract()
+    contract["gradient_route"] = "changed"
+
+    assert production_default_route_contract()["gradient_route"] == (
+        "implicit_first_order_adjoint"
+    )
 
 
 def test_effective_route_metadata_marks_nondefault_optimizer(tmp_path: Path):

@@ -1628,6 +1628,11 @@ def test_effective_route_metadata_reuses_production_route_contract_source():
         encoding="utf-8"
     )
 
+    assert "def production_default_route_contract()" in source
+    assert "def production_default_route_contract_fields()" in source
+    assert "production_default_route_contract_fields," in (
+        root / "gpurec" / "cli.py"
+    ).read_text(encoding="utf-8")
     assert "**_PRODUCTION_DEFAULT_ROUTE_CONTRACT" in source
     for token in (
         '"negative_log_likelihood_bits"',
