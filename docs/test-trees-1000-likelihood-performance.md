@@ -122,6 +122,15 @@ bit of the fixed8/fixed128 likelihood.  The `E=6, Pi=4` route is slightly more
 optimistic than fixed8, but still much closer than tied fixed4 and much faster
 than tied fixed6.
 
+A materialized split-budget sweep with Pi fixed at `4` measured `E=5` at
+`1.2753524020081386s` and `2157060.5` bits, `E=6` at
+`1.2751596000161953s` and `2157096.0` bits, `E=7` at
+`1.2767304159933701s` and `2157098.25` bits, and `E=8` at
+`1.2778630289831199s` and `2157098.25` bits.  `E=5` therefore leaves about
+`36.75` bits on the table with no useful speed advantage over `E=6`; `E=6` and
+`E=8` are the practical split-budget choices depending on whether a slight
+optimistic or slight pessimistic one-bit error is preferable.
+
 Split-budget near-reference command:
 
 ```bash
