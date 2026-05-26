@@ -1,4 +1,11 @@
 #!/usr/bin/env python3
+"""Compatibility wrapper for the legacy checkout-local HOGENOM W&B optimizer.
+
+The wrapper keeps the historical launcher path importable while forwarding to
+``hogenom_ccp_wandb_opt.main``. Supported production optimization uses the
+installed ``gpurec optimize`` command.
+"""
+
 from __future__ import annotations
 
 import sys

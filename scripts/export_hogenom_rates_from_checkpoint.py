@@ -1,4 +1,12 @@
 #!/usr/bin/env python3
+"""Checkout-local HOGENOM checkpoint rate exporter.
+
+This is a local analysis utility for extracting rate tables from historical
+HOGENOM checkpoints. Supported production artifact inspection should use the
+installed ``gpurec checkpoint-info`` and ``gpurec summary-info`` commands, or
+the files written by ``gpurec.workflow`` runs.
+"""
+
 from __future__ import annotations
 
 import argparse

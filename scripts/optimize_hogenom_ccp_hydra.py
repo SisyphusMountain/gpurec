@@ -1,4 +1,11 @@
 #!/usr/bin/env python3
+"""Checkout-local Hydra adapter for the legacy HOGENOM W&B optimizer.
+
+This launcher consumes ``configs/hogenom_ccp_wandb.yaml`` and forwards those
+values into the legacy W&B optimizer. Supported production optimization uses
+the installed ``gpurec optimize`` command with flat JSON ``RunConfig`` files.
+"""
+
 from __future__ import annotations
 
 import sys

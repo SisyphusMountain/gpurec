@@ -741,6 +741,43 @@ def test_scripts_readme_ownership_matrix_covers_tracked_script_surface():
         ), name
 
 
+def test_checkout_local_script_wrappers_document_support_boundary():
+    root = Path(__file__).resolve().parents[2]
+    script_docstring_tokens = {
+        "compare_backtracking_alerax_events.py": (
+            "Checkout-local AleRax/HOGENOM backtracking validation helper",
+            "local AleRax samples and HOGENOM data",
+            "not as a general sampling or production workflow CLI",
+        ),
+        "export_hogenom_rates_from_checkpoint.py": (
+            "Checkout-local HOGENOM checkpoint rate exporter",
+            "local analysis utility",
+            "gpurec checkpoint-info",
+            "gpurec summary-info",
+            "gpurec.workflow",
+        ),
+        "optimize_hogenom_ccp_hydra.py": (
+            "Checkout-local Hydra adapter",
+            "configs/hogenom_ccp_wandb.yaml",
+            "gpurec optimize",
+            "RunConfig",
+        ),
+        "optimize_hogenom_ccp_wandb.py": (
+            "Compatibility wrapper",
+            "legacy checkout-local HOGENOM W&B optimizer",
+            "hogenom_ccp_wandb_opt.main",
+            "gpurec optimize",
+        ),
+    }
+
+    for script_name, tokens in script_docstring_tokens.items():
+        path = root / "scripts" / script_name
+        module = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        docstring = " ".join((ast.get_docstring(module) or "").split())
+        for token in tokens:
+            assert token in docstring, script_name
+
+
 def test_tests_readme_documents_white_box_and_legacy_script_test_ownership():
     root = Path(__file__).resolve().parents[2]
     tests_readme = " ".join(

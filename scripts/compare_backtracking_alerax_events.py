@@ -1,5 +1,10 @@
 #!/usr/bin/env python
-"""Compare gpurec Rust backtracking event counts against AleRax samples."""
+"""Checkout-local AleRax/HOGENOM backtracking validation helper.
+
+This compares gpurec Rust backtracking event counts against local AleRax
+samples and HOGENOM data. It is retained for validation runs, not as a general
+sampling or production workflow CLI.
+"""
 
 from __future__ import annotations
 
