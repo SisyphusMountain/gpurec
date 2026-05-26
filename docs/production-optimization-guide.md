@@ -9,7 +9,9 @@ should inspect when running `gpurec optimize` or `gpurec run`.
 
 The workflow minimizes negative log-likelihood in bits. History rows report
 `likelihood/data_nll_bits`; the corresponding log-likelihood is
-`likelihood/log_likelihood_bits`.
+`likelihood/log_likelihood_bits`. The final run summary repeats those views as
+`final_nll_bits`/`final_log_likelihood_bits` and
+`best_nll_bits`/`best_log_likelihood_bits`.
 
 `theta` stores base-2 log rates for duplication, loss, and transfer. The public
 rate table writes columns in D/T/L order as probabilities/rates plus the raw
@@ -163,7 +165,8 @@ Inspect these outputs first:
 
 - `history.jsonl`: every optimizer step, including phase, solver stage,
   objective, gradient norms, projected gradients, and solver telemetry.
-- `summary.json`: final status/reason and best objective metadata.
+- `summary.json`: final status/reason, final objective, and best objective
+  metadata as both NLL and log-likelihood in bits.
 - `checkpoints/best.pt` and `checkpoints/latest.pt`: resumable model and
   optimizer state.
 - `rates_final.tsv`: final D/T/L rates and theta values.

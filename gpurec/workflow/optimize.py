@@ -3792,6 +3792,12 @@ class OptimizationRunner:
                 "species": int(model.n_species),
                 "batches": len(model.batch_metadata),
                 "final_nll_bits": final_nll_bits,
+                "final_log_likelihood_bits": (
+                    None if final_eval_failed else -final_nll_bits
+                ),
+                "best_log_likelihood_bits": (
+                    None if best_nll is None else -float(best_nll)
+                ),
                 "final_grad_inf": final_grad_inf,
                 "final_projected_grad_inf": (
                     None

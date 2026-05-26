@@ -323,8 +323,8 @@ Main outputs include:
 - `checkpoints/latest.pt` and `checkpoints/best.pt`, metadata-bearing
   checkpoints for resume, sampling, and restore workflows
 - `optimization_history.csv` and `history.jsonl`
-- `rates_final.tsv`, `theta_final.pt`, `summary.json` with status and the
-  effective optimizer/batch/solver route
+- `rates_final.tsv`, `theta_final.pt`, `summary.json` with status, final/best
+  NLL and log-likelihood, and the effective optimizer/batch/solver route
 - `per_fam_likelihoods.tsv` for genewise runs
 
 See [`docs/output-artifacts.md`](docs/output-artifacts.md) for the output
