@@ -251,8 +251,11 @@ jobs:
           cargo test --locked --manifest-path "$root/crates/gpurec-preprocess/Cargo.toml"
           cargo run --locked --quiet --manifest-path "$root/crates/gpurec-preprocess/Cargo.toml" -- --help
           cd "$root"
-          python -m gpurec.cli validate-config --config examples/minimal-run-config.json --check-preprocess | tee genewise-validate.txt
+          python -m gpurec.cli validate-config --config examples/minimal-run-config.json --require-mode-default-optimizer --require-production-default-route --check-preprocess | tee genewise-validate.txt
           grep -q "optimizer=hessian-sgd" genewise-validate.txt
+          grep -q "uses_mode_default_optimizer=true" genewise-validate.txt
+          grep -q "uses_production_default_route=true" genewise-validate.txt
+          grep -q "production_default_route_mismatches=none" genewise-validate.txt
           grep -q "hessian_sgd_normal_fixed_iters_pi=full" genewise-validate.txt
           grep -q "hessian_sgd_pi_adjoint_warmstart=false" genewise-validate.txt
           grep -q "pi_fixed_point_relaxation=1.000000" genewise-validate.txt
@@ -261,8 +264,11 @@ jobs:
           grep -q "hessian_sgd_validation_neumann_terms=configured" genewise-validate.txt
           grep -q "cuda_backward_ready=false" genewise-validate.txt
           grep -q "preprocess_checked=true" genewise-validate.txt
-          python -m gpurec.cli validate-config --config examples/specieswise-adagrad-restarts-config.json --check-preprocess | tee specieswise-validate.txt
+          python -m gpurec.cli validate-config --config examples/specieswise-adagrad-restarts-config.json --require-mode-default-optimizer --require-production-default-route --check-preprocess | tee specieswise-validate.txt
           grep -q "optimizer=adagrad-restarts" specieswise-validate.txt
+          grep -q "uses_mode_default_optimizer=true" specieswise-validate.txt
+          grep -q "uses_production_default_route=true" specieswise-validate.txt
+          grep -q "production_default_route_mismatches=none" specieswise-validate.txt
           grep -q "adagrad_restart_schedule=8:1:60,16:0.5:35,32:0.5:30" specieswise-validate.txt
           grep -q "adagrad_restart_total_steps=125" specieswise-validate.txt
           grep -q "optimizer_step_cap=125" specieswise-validate.txt

@@ -39,8 +39,10 @@ The CPU GitHub Actions workflow includes a packaging job that installs
 `twine check`, installs the built wheel with existing runtime dependencies,
 checks the source archive for current documentation, packaged examples, and
 Rust preprocessing and backtracking crate sources, smokes those crates from the
-unpacked source archive, runs source-archive `validate-config --check-preprocess`
-on `examples/minimal-run-config.json` and
+unpacked source archive, runs source-archive
+`validate-config --require-mode-default-optimizer
+--require-production-default-route --check-preprocess` on
+`examples/minimal-run-config.json` and
 `examples/specieswise-adagrad-restarts-config.json`, and smokes both
 `gpurec --help` and `python -m gpurec.cli --help`.  It also smokes installed
 `gpurec config-template --help`,

@@ -2393,6 +2393,12 @@ not edit files.  New or still-open findings from that refresh are:
   `gpurec validate-config --require-mode-default-optimizer
   --require-production-default-route`. Release-readiness documentation and
   release metadata tests track the same operator path.
+- The package workflow's source-archive example smoke now runs both checked
+  example configs through
+  `validate-config --require-mode-default-optimizer
+  --require-production-default-route --check-preprocess`, so unpacked source
+  artifacts must prove the shipped genewise and specieswise route gates while
+  still exercising the retained CPU preprocessing path.
 
 ## Recommended Next Order
 

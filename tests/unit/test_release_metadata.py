@@ -519,9 +519,13 @@ def test_cpu_ci_builds_and_smokes_release_artifacts():
         'cd "$root"',
         (
             "python -m gpurec.cli validate-config --config "
-            "examples/minimal-run-config.json --check-preprocess"
+            "examples/minimal-run-config.json --require-mode-default-optimizer "
+            "--require-production-default-route --check-preprocess"
         ),
         "optimizer=hessian-sgd",
+        "uses_mode_default_optimizer=true",
+        "uses_production_default_route=true",
+        "production_default_route_mismatches=none",
         "hessian_sgd_normal_fixed_iters_pi=full",
         "hessian_sgd_pi_adjoint_warmstart=false",
         "pi_fixed_point_relaxation=1.000000",
@@ -531,7 +535,9 @@ def test_cpu_ci_builds_and_smokes_release_artifacts():
         "cuda_backward_ready=false",
         (
             "python -m gpurec.cli validate-config --config "
-            "examples/specieswise-adagrad-restarts-config.json --check-preprocess"
+            "examples/specieswise-adagrad-restarts-config.json "
+            "--require-mode-default-optimizer --require-production-default-route "
+            "--check-preprocess"
         ),
         "optimizer=adagrad-restarts",
         "adagrad_restart_schedule=8:1:60,16:0.5:35,32:0.5:30",
@@ -1127,7 +1133,8 @@ def test_release_readiness_documents_source_archive_preprocess_smoke():
     guide = (ROOT / "docs" / "release-readiness.md").read_text(encoding="utf-8")
 
     for expected in (
-        "source-archive `validate-config --check-preprocess`",
+        "source-archive\n`validate-config --require-mode-default-optimizer",
+        "--require-production-default-route --check-preprocess`",
         "examples/minimal-run-config.json",
         "examples/specieswise-adagrad-restarts-config.json",
         "cuda_backward_ready=false",
