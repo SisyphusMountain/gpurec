@@ -2274,6 +2274,17 @@ class OptimizationRunner:
         with torch.no_grad():
             model.theta.copy_(theta)
 
+    def _restore_theta_if_nonfinite_update(
+        self,
+        model: GeneReconModel,
+        theta_before: torch.Tensor,
+    ) -> bool:
+        if _is_finite_tensor(model.theta):
+            return False
+        self._set_model_theta(model, theta_before)
+        model.theta.grad = None
+        return True
+
     def _record(self, row: dict[str, Any]) -> None:
         self.history.append(row)
         append_jsonl(self.history_jsonl, row)
@@ -2796,6 +2807,13 @@ class OptimizationRunner:
                         break
                     with torch.no_grad():
                         model.clamp_theta_(config.min_rate, config.max_rate)
+                    if self._restore_theta_if_nonfinite_update(model, theta_before):
+                        status = {
+                            "status": "failed",
+                            "reason": "nonfinite_parameter_update",
+                        }
+                        model.clear()
+                        break
                     theta_step = float((model.theta.detach() - theta_before).abs().amax().cpu())
                     model.clear()
                     # LBFGS may evaluate trial points during line search. Record
@@ -2836,6 +2854,13 @@ class OptimizationRunner:
                     )
                     with torch.no_grad():
                         model.clamp_theta_(config.min_rate, config.max_rate)
+                    if self._restore_theta_if_nonfinite_update(model, theta_before):
+                        status = {
+                            "status": "failed",
+                            "reason": "nonfinite_parameter_update",
+                        }
+                        model.clear()
+                        break
                     theta_step = float((model.theta.detach() - theta_before).abs().amax().cpu())
                     grad_current = opt_state.get("last_grad")
                     loss_current = opt_state.get("last_loss")
@@ -2949,6 +2974,13 @@ class OptimizationRunner:
                     closure_evals = batched_grad_evals + batched_loss_evals
                     with torch.no_grad():
                         model.clamp_theta_(config.min_rate, config.max_rate)
+                    if self._restore_theta_if_nonfinite_update(model, theta_before):
+                        status = {
+                            "status": "failed",
+                            "reason": "nonfinite_parameter_update",
+                        }
+                        model.clear()
+                        break
                     theta_step = float((model.theta.detach() - theta_before).abs().amax().cpu())
                     model.clear()
                     reused_optimizer_gradient = False
@@ -3198,6 +3230,13 @@ class OptimizationRunner:
                             metrics[
                                 "optimizer/hessian_sgd_active_neumann_terms"
                             ] = float(active_neumann_terms)
+                    if self._restore_theta_if_nonfinite_update(model, theta_before):
+                        status = {
+                            "status": "failed",
+                            "reason": "nonfinite_parameter_update",
+                        }
+                        model.clear()
+                        break
                     theta_step = float(
                         (model.theta.detach() - theta_before).abs().amax().cpu()
                     )
@@ -3600,9 +3639,10 @@ class OptimizationRunner:
                         (model.theta.detach() - theta_before).abs().amax().cpu()
                     )
                 rejected_nonfinite_parameter_update = False
-                if first_order_pending_step and not _is_finite_tensor(model.theta):
-                    self._set_model_theta(model, theta_before)
-                    model.theta.grad = None
+                if first_order_pending_step and self._restore_theta_if_nonfinite_update(
+                    model,
+                    theta_before,
+                ):
                     theta_step = 0.0
                     rejected_nonfinite_parameter_update = True
                     row["optimizer/step_rejected_reason"] = (

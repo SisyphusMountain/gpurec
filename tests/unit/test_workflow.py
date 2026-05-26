@@ -8586,6 +8586,51 @@ def test_optimization_runner_rejects_nonfinite_first_order_parameter_update(
     assert runner.fake_model.closed
 
 
+def test_optimization_runner_rejects_nonfinite_post_step_parameter_update(
+    tmp_path: Path,
+    monkeypatch,
+):
+    def finite_closure_then_make_theta_nonfinite(self, closure=None):
+        if closure is not None:
+            loss = closure()
+        else:
+            loss = None
+        with torch.no_grad():
+            for group in self.param_groups:
+                for parameter in group["params"]:
+                    parameter.fill_(float("nan"))
+        return loss
+
+    monkeypatch.setattr(
+        torch.optim.LBFGS,
+        "step",
+        finite_closure_then_make_theta_nonfinite,
+    )
+    config = _optimizer_mode_config(tmp_path, optimizer="lbfgs", steps=1)
+    runner = _WorkflowOptimizerModeRunner(config)
+
+    result = runner.run()
+
+    assert result.status == "failed"
+    assert result.reason == "nonfinite_parameter_update"
+    assert result.sampling_checkpoint is None
+    history_rows = _optimizer_mode_history_rows(config.out_dir)
+    assert [row["optimizer/phase"] for row in history_rows] == ["final_eval"]
+    latest = load_checkpoint(config.out_dir / "checkpoints" / "latest.pt")
+    assert latest["status"]["status"] == "failed"
+    assert latest["status"]["reason"] == "nonfinite_parameter_update"
+    assert bool(torch.isfinite(latest["theta"]).all().item())
+    torch.testing.assert_close(latest["theta"], runner.fake_model.initial_theta)
+    summary = json.loads((config.out_dir / "summary.json").read_text(encoding="utf-8"))
+    assert summary["status"] == "failed"
+    assert summary["reason"] == "nonfinite_parameter_update"
+    assert summary["sampling_checkpoint"] is None
+    assert "nan" not in (config.out_dir / "rates_final.tsv").read_text(
+        encoding="utf-8"
+    ).lower()
+    assert runner.fake_model.closed
+
+
 def test_optimization_runner_lbfgs_runtime_error_is_failed_status(
     tmp_path: Path,
     monkeypatch,
