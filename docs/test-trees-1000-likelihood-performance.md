@@ -48,7 +48,9 @@ three background static-layout workers instead of one, hiding more of the
 remaining per-batch layout-to-device work under the first likelihood pass.
 Shared-theta no-grad streaming also precomputes the root-origination
 denominator from the single shared E solve instead of recomputing it for every
-resident batch.  On the local 32-core host, the cold
+resident batch.  It also prepares the shared Pi forward constants and DTS
+parameter metadata once after that E solve and reuses them across the `21`
+resident batch Pi passes.  On the local 32-core host, the cold
 benchmark also pins native preprocessing and retained layout generation to `16`
 CPU threads; that is faster for this generated dataset than the default global
 Rayon pool.
@@ -105,7 +107,7 @@ Cold first-pass tied-budget fidelity samples with the same construction path:
 |---:|---:|---:|---:|
 | 4 | `2.257182637054939s` | `2156427.0` | `670.25` |
 | 6 | `2.788982933969237s` | `2157095.0` | `2.25` |
-| 8 | `3.3188985750311986s` | `2157097.25` | `0.0` |
+| 8 | `3.2904011249775067s`, `3.3188985750311986s` | `2157097.25` | `0.0` |
 
 Splitting the E and Pi budgets gives a better near-reference point for this
 generated dataset.  Keeping Pi at `4` but raising E removes almost all of the
@@ -114,10 +116,10 @@ fixed4 likelihood gap without paying the tied fixed6/fixed8 Pi loop cost:
 | E budget | Pi budget | cold total samples | loss bits | signed loss delta vs fixed8 |
 |---:|---:|---:|---:|---:|
 | 6 | 4 | `2.373896275938023s`, `2.318044687039219s`, `2.357071833044756s`, `2.280870435992256s` | `2157096.0` | `-1.25` |
-| 8 | 4 | `2.3150818049907684s`, `2.3092537610209547s`, `2.3501645749202s`, `2.2569857829948887s`, `2.3006827870267443s`, `2.270271884975955s` | `2157098.25` | `+1.0` |
+| 8 | 4 | `2.3150818049907684s`, `2.3092537610209547s`, `2.3501645749202s`, `2.2569857829948887s`, `2.3006827870267443s`, `2.270271884975955s`, `2.253481016959995s` | `2157098.25` | `+1.0` |
 
 The `E=8, Pi=4` route has a best-observed cold total of
-`2.2569857829948887s`, effectively tied with the raw fixed4 low but within one
+`2.253481016959995s` on the default chunk-500 route, effectively tied with the raw fixed4 low but within one
 bit of the fixed8/fixed128 likelihood.  The `E=6, Pi=4` route is slightly more
 optimistic than fixed8, but still much closer than tied fixed4 and much faster
 than tied fixed6.
@@ -128,6 +130,12 @@ and `2.2791547380620614s` with the slightly optimistic `2157096.0`-bit loss.
 After adding production split-schedule support, a same-route `E=8, Pi=4,
 Neumann=4` cold recheck measured `2.3047162730363198s` total with loss
 `2157098.25` bits; it is a normal in-band sample, not a new best.
+After hoisting shared Pi forward constants across the resident no-grad stream,
+the same route measured `2.253481016959995s` total: `0.9326847809716128s`
+model construction and `1.3207962359883823s` for the likelihood pass.  A same-code
+direct fixed8 comparison measured `3.2904011249775067s` total with
+`2157097.25`-bit loss, so the Pi4-start point was `1.0369201080175117s`
+faster while sitting `+1.0` bit above fixed8.
 An explicit promotion sequence starting with `E=8, Pi=4` and then evaluating
 tied fixed8 measured `2.2692654849379323s` to the Pi4 result, then another
 `2.3189413659856655s` for the fixed8 pass, for `4.588206850923598s`
@@ -928,6 +936,11 @@ Differences from HOGENOM:
   those with a resident uniform kernel warmup saves a larger additional amount.
   This is less relevant to HOGENOM's accepted route because it has fewer resident
   batches and the optimizer/gradient work dominates more of the run.
+- The shared Pi constant hoist is similarly specific to the generated
+  likelihood-only path: `test_trees_1000` streams `21` resident batches from one
+  shared E solve, so removing repeated per-batch shared-parameter preparation is
+  visible in the first pass.  HOGENOM's accepted route spent more time in
+  gradient-bearing optimizer steps and fewer resident batch transitions.
 - HOGENOM resident batching had fewer batches under the accepted policy.  This
   dataset splits into `21` batches, so reusing a single global/specieswise
   resident E solve across no-grad batches removes repeated E work and is worth

@@ -133,6 +133,46 @@ def _carry_forward_converged_root_trace(
         root_logsumexp_trace[valid_iters:, root_positions] = final_values
     return root_logsumexp_trace
 
+def prepare_shared_pi_forward_constants(
+    *,
+    E: torch.Tensor,
+    Ebar: torch.Tensor,
+    E_s1: torch.Tensor,
+    E_s2: torch.Tensor,
+    log_pS: torch.Tensor,
+    log_pD: torch.Tensor,
+    max_transfer_mat: torch.Tensor,
+    S: int,
+):
+    """Prepare shared-theta Pi constants that can be reused across batches."""
+    DL_const = 1.0 + log_pD + E
+    SL1_const = log_pS + E_s2
+    SL2_const = log_pS + E_s1
+    mt_squeezed = (
+        max_transfer_mat.squeeze(-1)
+        if max_transfer_mat.ndim > 1
+        else max_transfer_mat
+    )
+    uniform_leaf_logp = (
+        log_pS.expand(S).contiguous() if log_pS.ndim == 0 else log_pS.contiguous()
+    )
+    return {
+        "wave_consts": (DL_const, SL1_const, SL2_const, Ebar, E, mt_squeezed),
+        "uniform_leaf_logp": uniform_leaf_logp,
+        "dts_log_pD_param": prepare_dts_forward_param(
+            log_pD,
+            0,
+            S,
+            family_indexed=False,
+        ),
+        "dts_log_pS_param": prepare_dts_forward_param(
+            log_pS,
+            0,
+            S,
+            family_indexed=False,
+        ),
+    }
+
 
 # ---------------------------------------------------------------------------
 # Cross-clade DTS
@@ -199,6 +239,7 @@ def Pi_wave_forward(
     convergence_tolerance: float = -1.0,
     convergence_check_interval: int = 4,
     scratch_tensors: tuple[torch.Tensor, torch.Tensor] | None = None,
+    prepared_shared_constants: dict[str, object] | None = None,
 ):
     """Wave-based Pi forward pass with wave-ordered layout (v2).
 
@@ -239,6 +280,9 @@ def Pi_wave_forward(
                                     final Pi rows remain in ``Pi``.
         scratch_tensors: optional ``(Pi, Pibar)`` work buffers for root-row
                          loss calls where full Pi/Pibar state is not returned.
+        prepared_shared_constants: optional constants from
+                         ``prepare_shared_pi_forward_constants`` for shared
+                         non-family-indexed calls.
 
     Returns:
         dict with 'Pi' (in original clade order when requested),
@@ -304,6 +348,8 @@ def Pi_wave_forward(
             Pibar = Pibar_scratch.narrow(0, 0, C)
 
     batched = family_idx is not None
+    if prepared_shared_constants is not None and batched:
+        raise ValueError("prepared shared Pi constants cannot be used with family_idx")
     if batched:
         family_idx = family_idx.to(device=device, dtype=torch.long).contiguous()
 
@@ -349,45 +395,66 @@ def Pi_wave_forward(
         sp_subtree_end = species_topology["sp_subtree_end"]
         max_ancestor_depth = int(species_topology["max_ancestor_depth"])
 
-    with _nvtx_range("Pi setup DTS constants"):
-        if batched:
-            DL_const = 1.0 + log_pD_family + E_family
-            SL1_const = log_pS_family + E_s2_family
-            SL2_const = log_pS_family + E_s1_family
-        else:
-            DL_const = 1.0 + log_pD + E
-            SL1_const = log_pS + E_s2
-            SL2_const = log_pS + E_s1
+    if prepared_shared_constants is None:
+        with _nvtx_range("Pi setup DTS constants"):
+            if batched:
+                DL_const = 1.0 + log_pD_family + E_family
+                SL1_const = log_pS_family + E_s2_family
+                SL2_const = log_pS_family + E_s1_family
+            else:
+                DL_const = 1.0 + log_pD + E
+                SL1_const = log_pS + E_s2
+                SL2_const = log_pS + E_s1
 
-    with _nvtx_range("Pi setup uniform tensors"):
-        mt_squeezed = max_transfer_mat.squeeze(-1) if max_transfer_mat.ndim > 1 else max_transfer_mat
-        if batched:
-            DL_const = DL_const.contiguous()
-            SL1_const = SL1_const.contiguous()
-            SL2_const = SL2_const.contiguous()
-            Ebar_family = Ebar_family.contiguous()
-            E_family = E_family.contiguous()
-            mt_family = mt_family.contiguous()
-            uniform_leaf_logp = log_pS_family.contiguous()
-        else:
-            uniform_leaf_logp = log_pS.expand(S).contiguous() if log_pS.ndim == 0 else log_pS.contiguous()
+        with _nvtx_range("Pi setup uniform tensors"):
+            mt_squeezed = (
+                max_transfer_mat.squeeze(-1)
+                if max_transfer_mat.ndim > 1
+                else max_transfer_mat
+            )
+            if batched:
+                DL_const = DL_const.contiguous()
+                SL1_const = SL1_const.contiguous()
+                SL2_const = SL2_const.contiguous()
+                Ebar_family = Ebar_family.contiguous()
+                E_family = E_family.contiguous()
+                mt_family = mt_family.contiguous()
+                uniform_leaf_logp = log_pS_family.contiguous()
+            else:
+                uniform_leaf_logp = (
+                    log_pS.expand(S).contiguous()
+                    if log_pS.ndim == 0
+                    else log_pS.contiguous()
+                )
 
-    if batched:
-        wave_consts = (DL_const, SL1_const, SL2_const, Ebar_family, E_family, mt_family)
+        if batched:
+            wave_consts = (
+                DL_const,
+                SL1_const,
+                SL2_const,
+                Ebar_family,
+                E_family,
+                mt_family,
+            )
+        else:
+            wave_consts = (DL_const, SL1_const, SL2_const, Ebar, E, mt_squeezed)
+        dts_log_pD_param = prepare_dts_forward_param(
+            log_pD_param,
+            0,
+            S,
+            family_indexed=batched,
+        )
+        dts_log_pS_param = prepare_dts_forward_param(
+            log_pS_param,
+            0,
+            S,
+            family_indexed=batched,
+        )
     else:
-        wave_consts = (DL_const, SL1_const, SL2_const, Ebar, E, mt_squeezed)
-    dts_log_pD_param = prepare_dts_forward_param(
-        log_pD_param,
-        0,
-        S,
-        family_indexed=batched,
-    )
-    dts_log_pS_param = prepare_dts_forward_param(
-        log_pS_param,
-        0,
-        S,
-        family_indexed=batched,
-    )
+        wave_consts = prepared_shared_constants["wave_consts"]
+        uniform_leaf_logp = prepared_shared_constants["uniform_leaf_logp"]
+        dts_log_pD_param = prepared_shared_constants["dts_log_pD_param"]
+        dts_log_pS_param = prepared_shared_constants["dts_log_pS_param"]
 
     root_clade_ids_for_skip = None
     if output_intent.can_skip_final_pibar or trace_root_logsumexp:

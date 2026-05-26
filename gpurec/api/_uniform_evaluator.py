@@ -204,6 +204,7 @@ def evaluate_resident_no_grad_with_solved_e(
     per_family: bool = False,
     scratch_tensors: tuple[torch.Tensor, torch.Tensor] | None = None,
     origination_denominator: torch.Tensor | None = None,
+    prepared_shared_constants: dict[str, object] | None = None,
 ) -> torch.Tensor:
     """Return resident no-grad NLL using a shared E solution."""
     require_default_objective("GeneReconModel")
@@ -213,6 +214,7 @@ def evaluate_resident_no_grad_with_solved_e(
         e_solve,
         pi_request=pi_root_row_loss_request(),
         scratch_tensors=scratch_tensors,
+        prepared_shared_constants=prepared_shared_constants,
     )
     _record_forward_solver_stats(static, solve.e_out, solve.pi_out)
 

@@ -357,6 +357,7 @@ def solve_resident_pi_given_e(
     *,
     pi_request: PiForwardRequest,
     scratch_tensors: tuple[torch.Tensor, torch.Tensor] | None = None,
+    prepared_shared_constants: dict[str, object] | None = None,
 ) -> ResidentSolveResult:
     """Solve resident Pi tensors from a precomputed E solution."""
     e_out = e_solve.e_out
@@ -379,6 +380,7 @@ def solve_resident_pi_given_e(
         ),
         convergence_check_interval=static.convergence_check_interval,
         scratch_tensors=scratch_tensors,
+        prepared_shared_constants=prepared_shared_constants,
     )
     return ResidentSolveResult(
         theta=e_solve.theta,

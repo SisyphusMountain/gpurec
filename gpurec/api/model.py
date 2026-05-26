@@ -48,6 +48,10 @@ from gpurec.core.origination import (
     PreparedOriginationPrior,
     prepare_origination_prior,
 )
+from gpurec.core.forward import (
+    pi_export_state_request,
+    prepare_shared_pi_forward_constants,
+)
 from gpurec.core.parameter_layout import ParameterLayout
 from gpurec.core.likelihood import compute_origination_denominator
 
@@ -1965,6 +1969,16 @@ class GeneReconModel(torch.nn.Module):
                 if self._origination_prior.is_shared
                 else None
             )
+            prepared_shared_constants = prepare_shared_pi_forward_constants(
+                E=e_solve.e_out["E"],
+                Ebar=e_solve.e_out["E_bar"],
+                E_s1=e_solve.e_out["E_s1"],
+                E_s2=e_solve.e_out["E_s2"],
+                log_pS=e_solve.log_p_s,
+                log_pD=e_solve.log_p_d,
+                max_transfer_mat=e_solve.max_transfer,
+                S=int(self._dataset.S),
+            )
             scratch_shape = (
                 max(meta.clade_count for meta in self.batch_metadata),
                 int(self._dataset.S),
@@ -1993,6 +2007,7 @@ class GeneReconModel(torch.nn.Module):
                     e_solve,
                     scratch_tensors=scratch_tensors,
                     origination_denominator=origination_denominator,
+                    prepared_shared_constants=prepared_shared_constants,
                 )
                 loss_i = _validate_scalar_loss("full-batch NLL", loss_i)
                 total_loss = total_loss + loss_i.to(
