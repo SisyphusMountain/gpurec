@@ -65,7 +65,7 @@ env PYTHONDONTWRITEBYTECODE=1 GPUREC_MEMORY_POLICY_RESERVE_GIB=0 \
   python profiling/bench_resident_likelihood.py \
   --dataset tests/data/test_trees_1000 \
   --mode specieswise \
-  --fixed-iters-e 8 \
+  --fixed-iters-e 7 \
   --fixed-iters-pi 4 \
   --neumann-terms 4 \
   --preprocess-cpu-cores 16 \
@@ -86,9 +86,9 @@ Near-reference cold result:
 
 | Stage | Time |
 |---|---:|
-| model init / first resident batch | `0.9326847809716128s` |
-| first `E=8, Pi=4` likelihood pass plus lazy remaining batches | `1.3207962359883823s` |
-| total to first near-reference likelihood | `2.253481016959995s` |
+| model init / first resident batch | `0.9268650940502994s` |
+| first `E=7, Pi=4` likelihood pass plus lazy remaining batches | `1.3175705749890767s` |
+| total to first near-reference likelihood | `2.244435669039376s` |
 
 The tied fixed4 route is retained only as a lower-fidelity timing reference: it
 is about as fast, but sits `670.25` bits below the fixed8/fixed128 likelihood.
@@ -129,17 +129,24 @@ fixed4 likelihood gap without paying the tied fixed6/fixed8 Pi loop cost:
 | E budget | Pi budget | cold total samples | loss bits | signed loss delta vs fixed8 |
 |---:|---:|---:|---:|---:|
 | 6 | 4 | `2.373896275938023s`, `2.318044687039219s`, `2.357071833044756s`, `2.280870435992256s` | `2157096.0` | `-1.25` |
+| 7 | 4 | `2.278900177916512s`, `2.287128569034394s`, `2.2731798990280367s`, `2.244435669039376s` | `2157098.25` | `+1.0` |
 | 8 | 4 | `2.3150818049907684s`, `2.3092537610209547s`, `2.3501645749202s`, `2.2569857829948887s`, `2.3006827870267443s`, `2.270271884975955s`, `2.253481016959995s` | `2157098.25` | `+1.0` |
 
-The `E=8, Pi=4` route has a best-observed cold total of
-`2.253481016959995s` on the default chunk-500 route, effectively tied with the raw fixed4 low but within one
-bit of the fixed8/fixed128 likelihood.  The `E=6, Pi=4` route is slightly more
-optimistic than fixed8, but still much closer than tied fixed4 and much faster
-than tied fixed6.
-Additional current-code rechecks kept `E=8, Pi=4` as the near-reference route:
-`E=7, Pi=4` matched the `2157098.25`-bit loss but measured `2.278900177916512s`
-and `2.287128569034394s`, while `E=6, Pi=4` measured `2.2726288129924797s`
-and `2.2791547380620614s` with the slightly optimistic `2157096.0`-bit loss.
+The `E=7, Pi=4` route now has a best-observed cold total of
+`2.244435669039376s` on the default chunk-500 route, faster than the previous
+`E=8, Pi=4` low while preserving the same `2157098.25`-bit printed loss.  It
+is effectively tied with the raw fixed4 low but within one bit of the
+fixed8/fixed128 likelihood.  The `E=6, Pi=4` route is slightly more optimistic
+than fixed8, but still much closer than tied fixed4 and much faster than tied
+fixed6.
+Earlier current-code rechecks kept `E=8, Pi=4` as the near-reference route:
+`E=7, Pi=4` had matched the `2157098.25`-bit loss but measured only
+`2.278900177916512s` and `2.287128569034394s`, while `E=6, Pi=4` measured
+`2.2726288129924797s` and `2.2791547380620614s` with the slightly optimistic
+`2157096.0`-bit loss.  After the retained `family_idx` omission, fresh serial
+`E=7, Pi=4` samples measured `2.2731798990280367s` and the new
+`2.244435669039376s` low, so the documented near-reference route moved from
+E8 to E7.
 After adding production split-schedule support, a same-route `E=8, Pi=4,
 Neumann=4` cold recheck measured `2.3047162730363198s` total with loss
 `2157098.25` bits; it is a normal in-band sample, not a new best.
@@ -150,9 +157,9 @@ direct fixed8 comparison measured `3.2904011249775067s` total with
 `2157097.25`-bit loss, so the Pi4-start point was `1.0369201080175117s`
 faster while sitting `+1.0` bit above fixed8.
 With the retained `family_idx` omission present, a fresh serial fixed8 sample
-measured `3.3445263609755784s` total with loss `2157097.25`, so the same-run
-Pi4 sample above remained `1.0904330389457755s` faster while sitting `+1.0`
-bit from fixed8.
+measured `3.3445263609755784s` total with loss `2157097.25`, so the best
+E7/Pi4 sample above was `1.1000906919362024s` faster while sitting `+1.0` bit
+from fixed8.
 An explicit promotion sequence starting with `E=8, Pi=4` and then evaluating
 tied fixed8 measured `2.2692654849379323s` to the Pi4 result, then another
 `2.3189413659856655s` for the fixed8 pass, for `4.588206850923598s`
@@ -235,15 +242,20 @@ A materialized split-budget sweep with Pi fixed at `4` measured `E=5` at
 `1.2767304159933701s` and `2157098.25` bits, and `E=8` at
 `1.2778630289831199s` and `2157098.25` bits.  `E=5` therefore leaves about
 `36.75` bits on the table with no useful speed advantage over `E=6`; `E=6` and
-`E=8` are the practical split-budget choices depending on whether a slight
-optimistic or slight pessimistic one-bit error is preferable.
-Cold `E=7, Pi=4` samples also matched the `E=8, Pi=4` loss at
-`2157098.25` bits, but did not beat the best `E=8` cold sample: totals were
+`E=7` are the practical split-budget choices depending on whether a slight
+optimistic or slight pessimistic one-bit error is preferable.  A later
+materialized five-repetition recheck after the retained `family_idx` omission
+measured `E=7, Pi=4` at `1.2762305510113947s` median and
+`1.2732166629866697s` minimum, versus `E=8, Pi=4` at
+`1.2793222990003414s` median and `1.2765266370261088s` minimum, with the same
+`2157098.25` printed loss.
+Older cold `E=7, Pi=4` samples also matched the `E=8, Pi=4` loss at
+`2157098.25` bits, but did not beat the older best `E=8` cold sample: totals were
 `2.3259418689995073s`, `2.314654977992177s`,
 `2.267007304006256s`, and `2.2859832789981738s`.
 A current-code recheck after the shared-constant hoist was worse still at
-`2.3588287950260565s`, so `E=7, Pi=4` remains a validation curiosity rather
-than the default route.
+`2.3588287950260565s`; the latest retained-layout recheck reversed that route
+choice and made `E=7, Pi=4` the documented near-reference default.
 
 A split-budget clade-budget sweep kept the same `315000` route decision as the
 tied fixed4 path.  With `E=8, Pi=4`, single cold samples measured `250000`:
@@ -331,7 +343,7 @@ env PYTHONDONTWRITEBYTECODE=1 GPUREC_MEMORY_POLICY_RESERVE_GIB=0 \
   python profiling/bench_resident_likelihood.py \
   --dataset tests/data/test_trees_1000 \
   --mode specieswise \
-  --fixed-iters-e 8 \
+  --fixed-iters-e 7 \
   --fixed-iters-pi 4 \
   --preprocess-cpu-cores 16 \
   --measure loss-only \
@@ -559,7 +571,7 @@ Interpretation:
   The useful fast low-budget point is split `E=4, Pi=2`, not tied `2`.
 - Do not treat tied `4` as final fidelity on this dataset.  It is still `670`
   bits away from the fixed128 reference, in the optimistic direction.
-  `E=4, Pi=2` is faster and closer in absolute loss error, and `E=8, Pi=4` is
+  `E=4, Pi=2` is faster and closer in absolute loss error, and `E=7, Pi=4` is
   the current near-reference point.
 - `8`, `32`, and `128` agree at the printed precision, so higher fixed budgets
   are useful mainly as periodic validation points, not every-step work.
@@ -911,7 +923,7 @@ Rejected follow-ups:
   That extra warmup is therefore rejected.
 - Starting lazy background prefetch before building batch 0 was also rejected.
   The prototype passed `py_compile` and the targeted no-grad/specieswise/uniform
-  tests (`13 passed`), but current-route `E=8, Pi=4` samples stayed in the
+  tests (`13 passed`), but then-current-route `E=8, Pi=4` samples stayed in the
   existing band (`2.273360916005913s`, `2.2933849390246905s`) and did not beat
   the best documented near-reference cold total.  Finite prefetch depths were
   still slower than the all-prefetch route.
@@ -955,7 +967,7 @@ Differences from HOGENOM:
 - HOGENOM's successful counts-free specieswise route used a `8 -> 16 -> 32`
   optimizer budget ladder with a `128` validation check.  On `test_trees_1000`,
   the first useful fidelity points are lower and decoupled: `E=4, Pi=2` is the
-  best fast approximate likelihood point found so far, and `E=8, Pi=4` is the
+  best fast approximate likelihood point found so far, and `E=7, Pi=4` is the
   best measured near-reference point, within one bit of tied fixed8/fixed128
   while staying in the fixed4 Pi timing band.  Those split-budget shortcuts were
   not the HOGENOM route, where the accepted schedule used tied higher-fidelity
