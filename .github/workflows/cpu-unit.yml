@@ -260,6 +260,8 @@ jobs:
           grep -q "optimizer=adagrad-restarts" specieswise-validate.txt
           grep -q "adagrad_restart_schedule=8:1:60,16:0.5:35,32:0.5:30" specieswise-validate.txt
           grep -q "adagrad_restart_total_steps=125" specieswise-validate.txt
+          grep -q "optimizer_step_cap=125" specieswise-validate.txt
+          grep -q "optimizer_step_cap_reason=adagrad_restart_schedule" specieswise-validate.txt
           grep -q "cuda_backward_ready=false" specieswise-validate.txt
           grep -q "preprocess_checked=true" specieswise-validate.txt
 

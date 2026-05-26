@@ -1213,6 +1213,9 @@ def test_effective_route_metadata_reports_production_likelihood_contract(
     assert route["rate_parameterization"] == "base2_log_dlt_rates"
     assert route["production_default_basis"] == basis
     assert route["optimizer"] == "hessian-sgd"
+    assert route["configured_steps"] == 5000
+    assert route["optimizer_step_cap"] == 5000
+    assert route["optimizer_step_cap_reason"] == "configured_steps"
     assert route["hessian_sgd_normal_fixed_iters_pi"] is None
     assert route["hessian_sgd_normal_neumann_terms"] is None
 
@@ -1301,6 +1304,29 @@ def test_run_config_auto_optimizer_uses_adagrad_restarts_for_specieswise_mode(
     assert adagrad_restart_schedule_total_steps(config.adagrad_restart_schedule) == 125
     route = effective_route_metadata(config)
     assert route["adagrad_restart_total_steps"] == 125
+    assert route["configured_steps"] == 5000
+    assert route["optimizer_step_cap"] == 125
+    assert route["optimizer_step_cap_reason"] == "adagrad_restart_schedule"
+
+
+def test_run_config_specieswise_adagrad_restarts_step_cap_honors_shorter_steps(
+    tmp_path: Path,
+):
+    config = RunConfig(
+        species_tree=tmp_path / "sp.nwk",
+        families_file=tmp_path / "families.txt",
+        out_dir=tmp_path / "out",
+        mode="specieswise",
+        steps=12,
+        device="cpu",
+    )
+
+    route = effective_route_metadata(config)
+
+    assert route["adagrad_restart_total_steps"] == 125
+    assert route["configured_steps"] == 12
+    assert route["optimizer_step_cap"] == 12
+    assert route["optimizer_step_cap_reason"] == "configured_steps"
 
 
 def test_run_config_accepts_specieswise_adagrad_restart_schedule(tmp_path: Path):
@@ -4762,6 +4788,42 @@ def test_checkpoint_compatibility_rejects_route_metadata_mismatch(tmp_path: Path
         )
 
 
+def test_checkpoint_compatibility_allows_changed_step_cap_for_resume(
+    tmp_path: Path,
+):
+    checkpoint_config = RunConfig(
+        species_tree=tmp_path / "sp.nwk",
+        families_file=tmp_path / "families.txt",
+        out_dir=tmp_path / "checkpoint-out",
+        mode="genewise",
+        device="cpu",
+        optimizer="hessian-sgd",
+        steps=1,
+    )
+    resumed_config = RunConfig(
+        species_tree=checkpoint_config.species_tree,
+        families_file=checkpoint_config.families_file,
+        out_dir=tmp_path / "resumed-out",
+        mode="genewise",
+        device="cpu",
+        optimizer="hessian-sgd",
+        steps=5,
+    )
+    payload = {
+        "config": checkpoint_config.to_dict(),
+        "route_metadata": effective_route_metadata(checkpoint_config),
+        "family_names": ["a", "b"],
+        "species_names": ["s0", "s1"],
+    }
+
+    validate_checkpoint_model_compatibility(
+        path=tmp_path / "latest.pt",
+        config=resumed_config,
+        model=_DummyModel(),
+        payload=payload,
+    )
+
+
 def test_checkpoint_compatibility_allows_legacy_metadata_without_route(
     tmp_path: Path,
 ):
@@ -5538,6 +5600,9 @@ def test_optimization_runner_adagrad_restarts_accepts_split_solver_budgets(
     assert summary["optimizer"] == "adagrad-restarts"
     assert summary["adagrad_restart_schedule"] == "8/4:1:2,16/8/6:0.5:2"
     assert summary["adagrad_restart_total_steps"] == 4
+    assert summary["configured_steps"] == 10
+    assert summary["optimizer_step_cap"] == 4
+    assert summary["optimizer_step_cap_reason"] == "adagrad_restart_schedule"
     assert summary["adagrad_restart_final_check_iters"] == 32
     assert summary["final_check_iters"] == 32
     assert summary["fixed_iters_pi"] == 16

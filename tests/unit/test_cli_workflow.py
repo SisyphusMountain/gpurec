@@ -563,6 +563,9 @@ def test_cli_validate_config_reports_selected_family_references(
     assert "fixed_iters_pi=16" in captured.out
     assert "neumann_terms=16" in captured.out
     assert "final_check_iters=32" in captured.out
+    assert "configured_steps=5000" in captured.out
+    assert "optimizer_step_cap=5000" in captured.out
+    assert "optimizer_step_cap_reason=configured_steps" in captured.out
     assert "solver_warmup_iters=4" in captured.out
     assert "fd_adam_warmup_steps=3" in captured.out
     assert "fd_hessian_refresh_steps=16" in captured.out
@@ -642,6 +645,9 @@ def test_cli_validate_config_reports_specieswise_restart_route(
         in captured.out
     )
     assert "adagrad_restart_total_steps=125" in captured.out
+    assert "configured_steps=5000" in captured.out
+    assert "optimizer_step_cap=125" in captured.out
+    assert "optimizer_step_cap_reason=adagrad_restart_schedule" in captured.out
     assert "final_check_iters=128" in captured.out
     assert "adagrad_restart_final_check_iters=128" in captured.out
     assert captured.err == ""
@@ -1277,6 +1283,9 @@ def test_cli_checkpoint_info_reports_route_status_and_last_row(
         "fixed_iters_pi=16",
         "neumann_terms=16",
         "final_check_iters=128",
+        "configured_steps=5000",
+        "optimizer_step_cap=125",
+        "optimizer_step_cap_reason=adagrad_restart_schedule",
         "adagrad_restart_schedule=8:1:60,16:0.5:35,32:0.5:30",
         "adagrad_restart_total_steps=125",
         "adagrad_restart_final_check_iters=128",

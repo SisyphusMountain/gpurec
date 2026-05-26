@@ -300,6 +300,16 @@ def adagrad_restart_schedule_total_steps(value: str) -> int:
     return sum(phase.steps for phase in adagrad_restart_schedule_specs(value))
 
 
+def effective_optimizer_step_cap(config: RunConfig) -> tuple[int, str]:
+    if config.optimizer == "adagrad-restarts":
+        schedule_steps = adagrad_restart_schedule_total_steps(
+            config.adagrad_restart_schedule
+        )
+        if schedule_steps <= config.steps:
+            return schedule_steps, "adagrad_restart_schedule"
+    return config.steps, "configured_steps"
+
+
 def _normalize_adagrad_restart_schedule(value: str) -> str:
     return ",".join(
         f"{phase.budget_spec()}:{phase.lr:.12g}:{phase.steps}"
@@ -855,6 +865,9 @@ class RunConfig:
 
 
 def effective_route_metadata(config: RunConfig) -> dict[str, Any]:
+    optimizer_step_cap, optimizer_step_cap_reason = effective_optimizer_step_cap(
+        config
+    )
     route: dict[str, Any] = {
         "objective": "negative_log_likelihood_bits",
         "gradient_route": "implicit_first_order_adjoint",
@@ -873,6 +886,9 @@ def effective_route_metadata(config: RunConfig) -> dict[str, Any]:
             if config.optimizer == "adagrad-restarts"
             else config.final_check_iters
         ),
+        "configured_steps": config.steps,
+        "optimizer_step_cap": optimizer_step_cap,
+        "optimizer_step_cap_reason": optimizer_step_cap_reason,
     }
     if config.optimizer == "hessian-sgd":
         route.update(

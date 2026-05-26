@@ -107,7 +107,11 @@ E/Pi/Neumann budgets. The final validation uses
 `adagrad_restart_final_check_iters=128` by default.
 The default ladder has `adagrad_restart_total_steps=125`; `steps` is treated as
 a maximum cap, so specieswise `adagrad-restarts` stops when either the configured
-step cap or the restart ladder is exhausted.
+step cap or the restart ladder is exhausted. `gpurec validate-config`,
+checkpoints, and `summary.json` report this as `configured_steps`,
+`optimizer_step_cap`, and `optimizer_step_cap_reason`; with the default
+specieswise config, `optimizer_step_cap=125` and
+`optimizer_step_cap_reason=adagrad_restart_schedule`.
 
 The default is based on the retained counts-free HOGENOM route: uniform `0.05`
 D/L/T initialization, no AleRax event-count checkpoint, fixed budgets of 8, 16,

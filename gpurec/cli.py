@@ -378,6 +378,12 @@ def _route_metadata_text(route: dict[str, Any]) -> str:
         _route_int_text("fixed_iters_pi", route),
         _route_int_text("neumann_terms", route),
         _route_int_text("final_check_iters", route),
+        _route_int_text("configured_steps", route),
+        _route_int_text("optimizer_step_cap", route),
+        _optional_text(
+            "optimizer_step_cap_reason",
+            route.get("optimizer_step_cap_reason"),
+        ),
     ]
     if route.get("optimizer") == "hessian-sgd":
         fields.extend(
@@ -611,6 +617,9 @@ def _validate_config_route_text(config: RunConfig) -> str:
         f"fixed_iters_pi={route['fixed_iters_pi']}",
         f"neumann_terms={route['neumann_terms']}",
         f"final_check_iters={route['final_check_iters']}",
+        f"configured_steps={route['configured_steps']}",
+        f"optimizer_step_cap={route['optimizer_step_cap']}",
+        f"optimizer_step_cap_reason={route['optimizer_step_cap_reason']}",
     ]
     if config.optimizer == "hessian-sgd":
         fields.extend(

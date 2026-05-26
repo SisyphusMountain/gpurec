@@ -38,7 +38,10 @@ optimizer-specific route fields such as the specieswise restart schedule and
 genewise Hessian-SGD normal-stage solver overrides. For specieswise
 `adagrad-restarts`, `adagrad_restart_total_steps` records the derived number of
 scheduled Adagrad updates; the run stops when this schedule is complete even if
-`steps` is larger.
+`steps` is larger. Route metadata also records `configured_steps`,
+`optimizer_step_cap`, and `optimizer_step_cap_reason`, so downstream tools can
+distinguish a normal configured step limit from a specieswise restart schedule
+cap.
 
 `summary.json` repeats the final objective as `final_nll_bits` and
 `final_log_likelihood_bits`, and the best accepted objective as `best_nll_bits`

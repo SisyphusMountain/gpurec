@@ -202,7 +202,8 @@ directory.
 Use `gpurec validate-config --config ...` to check JSON/CLI config values,
 input paths, AleRax family records, mapping files, and referenced gene-tree
 files without constructing the CUDA likelihood model.
-The output includes the resolved optimizer, batch planning, solver budgets, and
+The output includes the resolved optimizer, effective optimizer step cap,
+batch planning, solver budgets, and
 optimizer-specific defaults such as the specieswise restart schedule and
 genewise Hessian-SGD normal-stage solver overrides.
 Add `--check-preprocess` when you also want the retained Rust parser to run on
@@ -295,7 +296,7 @@ and preflight validation, see
 | `auto` | Mode-dependent workflow default. | Uses `hessian-sgd` for `mode=genewise`, `adagrad-restarts` for `mode=specieswise`, and `adam` for `mode=global`. |
 | `adam` | Adam optimizer for all configured steps. | Uses `lr` and ordinary PyTorch Adam state. |
 | `adagrad` | Adagrad optimizer for all configured steps. | Uses `lr`; retained for long-running comparison runs. |
-| `adagrad-restarts` | Specieswise multifidelity Adagrad with state resets. | Requires `mode=specieswise`; this is the specieswise `auto` default. The default schedule is `8:1.0:60,16:0.5:35,32:0.5:30`, meaning fixed `E/Pi/Neumann` budgets of 8, 16, then 32, with Adagrad state reset at each budget increase. The default ladder has `adagrad_restart_total_steps=125`; the run stops when the schedule is complete even if `steps` is larger. The final validation/gradient evaluation uses `adagrad_restart_final_check_iters=128`. Override the phase ladder with `adagrad_restart_schedule` or `--adagrad-restart-schedule`. |
+| `adagrad-restarts` | Specieswise multifidelity Adagrad with state resets. | Requires `mode=specieswise`; this is the specieswise `auto` default. The default schedule is `8:1.0:60,16:0.5:35,32:0.5:30`, meaning fixed `E/Pi/Neumann` budgets of 8, 16, then 32, with Adagrad state reset at each budget increase. The default ladder has `adagrad_restart_total_steps=125`; `validate-config`, checkpoints, and `summary.json` report `optimizer_step_cap=125` and `optimizer_step_cap_reason=adagrad_restart_schedule` when the schedule is the active cap. The run stops when the schedule is complete even if `steps` is larger. The final validation/gradient evaluation uses `adagrad_restart_final_check_iters=128`. Override the phase ladder with `adagrad_restart_schedule` or `--adagrad-restart-schedule`. |
 | `projected-sgd` | Projected SGD for all configured steps. | Uses `lr`, records projected gradients at rate bounds, and clamps D/L/T rates to `min_rate`/`max_rate` after every step. |
 | `lbfgs` | PyTorch LBFGS for all configured steps. | Uses `lbfgs_lr`, `lbfgs_history_size`, `lbfgs_max_iter`, and `lbfgs_line_search`.  `lbfgs_line_search` is `none` or `strong_wolfe`; LBFGS runtime errors stop the run with a failed status. |
 | `adam-lbfgs` | Adam warmup, then LBFGS polishing. | `adam_warmup_steps` controls the phase switch; incompatible resumed optimizer state is discarded when the checkpoint phase differs from the current phase. |

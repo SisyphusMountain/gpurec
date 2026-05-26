@@ -15,9 +15,10 @@ with the resolved objective, gradient route, rate parameterization, optimizer,
 and solver route. ``validate_checkpoint_model_compatibility()`` compares
 them with the active ``RunConfig`` and rebuilt model before
 ``restore_model_theta()`` copies parameters, normalizing only path identity
-fields during comparison.  The loader does not reconstruct a full ``RunConfig``;
-callers that need complete config validation should pass ``payload["config"]``
-through ``RunConfig.from_dict(...)``.
+fields during comparison and allowing mutable reporting fields such as the
+configured/effective step cap to differ for resume.  The loader does not
+reconstruct a full ``RunConfig``; callers that need complete config validation
+should pass ``payload["config"]`` through ``RunConfig.from_dict(...)``.
 """
 
 from __future__ import annotations
@@ -56,6 +57,13 @@ _CHECKPOINT_CONFIG_IDENTITY_KEYS = (
     "mode",
     "start",
     "max_families",
+)
+_ROUTE_METADATA_RESUME_COMPATIBILITY_EXEMPT_KEYS = frozenset(
+    {
+        "configured_steps",
+        "optimizer_step_cap",
+        "optimizer_step_cap_reason",
+    }
 )
 
 
@@ -137,6 +145,8 @@ def _require_route_metadata_compatible(
     if not isinstance(checkpoint_route, dict):
         raise RuntimeError(f"checkpoint {path} has invalid route_metadata")
     for key, current_value in current_route.items():
+        if key in _ROUTE_METADATA_RESUME_COMPATIBILITY_EXEMPT_KEYS:
+            continue
         if key not in checkpoint_route:
             continue
         if checkpoint_route[key] != current_value:
