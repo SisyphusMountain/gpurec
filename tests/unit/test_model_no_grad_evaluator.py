@@ -179,6 +179,78 @@ def test_genewise_nll_per_family_no_grad_uses_resident_evaluator(monkeypatch):
     assert calls[0]["grad_enabled"] is False
 
 
+def test_reconciliation_state_delegates_to_resident_export_evaluator(monkeypatch):
+    model = api_model.GeneReconModel.__new__(api_model.GeneReconModel)
+    torch.nn.Module.__init__(model)
+    theta = torch.tensor([1.0, 2.0, 3.0], dtype=torch.float64)
+    origination_probs = torch.tensor([0.25, 0.75], dtype=torch.float64)
+    static = SimpleNamespace(
+        origination_prior=None,
+        origination_probs=origination_probs,
+    )
+    model._active_static = lambda: static
+    model._active_theta = lambda: theta
+    e = torch.full((2,), -0.5, dtype=theta.dtype)
+    ebar = e + 1.0
+    pi = torch.ones((2, 2), dtype=theta.dtype)
+    pibar = torch.full((2, 2), 2.0, dtype=theta.dtype)
+    solve = api_autograd.ResidentSolveResult(
+        theta=theta.detach(),
+        e_out={"E": e, "E_bar": ebar},
+        pi_out={},
+        log_p_s=torch.full((2,), 0.1, dtype=theta.dtype),
+        log_p_d=torch.full((2,), 0.2, dtype=theta.dtype),
+        log_p_l=torch.full((2,), 0.3, dtype=theta.dtype),
+        max_transfer=torch.full((2,), 0.4, dtype=theta.dtype),
+    )
+    calls: list[dict[str, object]] = []
+
+    def fake_evaluate_resident_export_state(
+        static_arg,
+        theta_arg,
+        *,
+        original_order=True,
+    ):
+        calls.append(
+            {
+                "static": static_arg,
+                "theta": theta_arg,
+                "original_order": original_order,
+            }
+        )
+        return api_evaluator.ResidentExportStateResult(
+            solve=solve,
+            pi=pi,
+            pibar=pibar,
+        )
+
+    monkeypatch.setattr(
+        api_model,
+        "evaluate_resident_export_state",
+        fake_evaluate_resident_export_state,
+    )
+
+    state = model.reconciliation_state(original_order=False)
+
+    assert calls == [
+        {
+            "static": static,
+            "theta": theta,
+            "original_order": False,
+        }
+    ]
+    assert state.e is e
+    assert state.pi is pi
+    assert state.pibar is pibar
+    assert state.ebar is ebar
+    assert state.origination_probs is origination_probs
+    assert state.origination_prior is None
+    assert state.log_p_s is solve.log_p_s
+    assert state.log_p_d is solve.log_p_d
+    assert state.log_p_l is solve.log_p_l
+    assert state.max_transfer is solve.max_transfer
+
+
 def test_model_evaluate_static_state_delegates_to_uniform_evaluator(monkeypatch):
     static = object()
     theta = torch.tensor([1.0, 2.0, 3.0], dtype=torch.float64)
@@ -268,6 +340,82 @@ def test_evaluate_static_state_no_grad_delegates_to_resident_evaluator(monkeypat
     assert calls[0]["static"] is static
     assert calls[0]["theta"] is theta
     assert calls[0]["per_family"] is True
+
+
+def test_evaluate_resident_export_state_selects_requested_order(monkeypatch):
+    theta = torch.tensor([1.0, 2.0, 3.0], dtype=torch.float64)
+    static = SimpleNamespace(
+        wave_layout={"perm": torch.tensor([2, 0, 1], dtype=torch.long)}
+    )
+    e = torch.full((3,), -0.5, dtype=theta.dtype)
+    pi_original = torch.arange(6, dtype=theta.dtype).reshape(3, 2)
+    pi_wave = pi_original + 10.0
+    pibar_wave = pi_original + 20.0
+    calls: list[dict[str, object]] = []
+
+    def fake_solve_resident_e_pi(
+        static_arg,
+        theta_arg,
+        *,
+        pi_request,
+    ):
+        calls.append(
+            {
+                "static": static_arg,
+                "theta": theta_arg,
+                "intent": pi_request.intent.name,
+            }
+        )
+        return api_autograd.ResidentSolveResult(
+            theta=theta_arg.detach(),
+            e_out={"E": e, "E_bar": e + 1.0},
+            pi_out={
+                "Pi": pi_original,
+                "Pi_wave_ordered": pi_wave,
+                "Pibar_wave_ordered": pibar_wave,
+            },
+            log_p_s=torch.zeros(3, dtype=theta.dtype),
+            log_p_d=torch.zeros(3, dtype=theta.dtype),
+            log_p_l=torch.zeros(3, dtype=theta.dtype),
+            max_transfer=torch.zeros(3, dtype=theta.dtype),
+        )
+
+    monkeypatch.setattr(
+        api_evaluator,
+        "solve_resident_e_pi",
+        fake_solve_resident_e_pi,
+    )
+
+    original = api_evaluator.evaluate_resident_export_state(
+        static,
+        theta,
+        original_order=True,
+    )
+    wave = api_evaluator.evaluate_resident_export_state(
+        static,
+        theta,
+        original_order=False,
+    )
+
+    torch.testing.assert_close(original.pi, pi_original)
+    torch.testing.assert_close(
+        original.pibar,
+        pibar_wave.index_select(0, static.wave_layout["perm"]),
+    )
+    torch.testing.assert_close(wave.pi, pi_wave)
+    torch.testing.assert_close(wave.pibar, pibar_wave)
+    assert calls == [
+        {
+            "static": static,
+            "theta": theta,
+            "intent": "export_original_and_wave_rows",
+        },
+        {
+            "static": static,
+            "theta": theta,
+            "intent": "training_or_wave_export_state",
+        },
+    ]
 
 
 def test_evaluate_static_state_rejects_non_genewise_per_family_gradients():

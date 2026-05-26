@@ -2028,7 +2028,9 @@ def test_resident_gradient_forward_lives_in_uniform_evaluator():
 
     for name in (
         "ResidentGradientForwardResult",
+        "ResidentExportStateResult",
         "evaluate_resident_gradient_forward",
+        "evaluate_resident_export_state",
         "evaluate_resident_static_state",
     ):
         assert name in evaluator_defs
@@ -2058,6 +2060,32 @@ def test_model_static_state_evaluation_is_thin_evaluator_wrapper():
         "_clear_post_gradient_runtime_cache",
     ):
         assert name not in called_names
+
+
+def test_model_reconciliation_state_uses_export_evaluator():
+    root = Path(__file__).resolve().parents[2]
+    model_module = ast.parse(
+        (root / "gpurec" / "api" / "model.py").read_text(encoding="utf-8")
+    )
+    model_class = next(
+        node
+        for node in model_module.body
+        if isinstance(node, ast.ClassDef) and node.name == "GeneReconModel"
+    )
+    function = next(
+        node
+        for node in model_class.body
+        if isinstance(node, ast.FunctionDef) and node.name == "reconciliation_state"
+    )
+    called_names = {
+        node.func.id
+        for node in ast.walk(function)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+    }
+
+    assert "evaluate_resident_export_state" in called_names
+    assert "solve_resident_e_pi" not in called_names
+    assert "pi_export_state_request" not in called_names
 
 
 def test_api_uses_named_pi_forward_request_contract():

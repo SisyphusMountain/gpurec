@@ -11,7 +11,11 @@ from dataclasses import dataclass
 import torch
 
 from gpurec.core._helpers import _nvtx_range
-from gpurec.core.forward import pi_root_row_loss_request, pi_training_state_request
+from gpurec.core.forward import (
+    pi_export_state_request,
+    pi_root_row_loss_request,
+    pi_training_state_request,
+)
 from gpurec.core.likelihood import compute_nll_root_rows, gather_root_rows
 
 from .autograd import (
@@ -33,6 +37,13 @@ from ._validation import require_default_objective
 class ResidentGradientForwardResult:
     solve: ResidentSolveResult
     loss_vec: torch.Tensor
+
+
+@dataclass(frozen=True)
+class ResidentExportStateResult:
+    solve: ResidentSolveResult
+    pi: torch.Tensor
+    pibar: torch.Tensor | None
 
 
 @torch.no_grad()
@@ -130,6 +141,32 @@ def evaluate_resident_static_state(
     return (
         loss_vec.detach() if per_family else loss_vec.sum().detach()
     ), grad_theta.detach()
+
+
+def evaluate_resident_export_state(
+    static: ReconStaticState,
+    theta: torch.Tensor,
+    *,
+    original_order: bool = True,
+) -> ResidentExportStateResult:
+    """Return resident E/Pi export tensors for the selected clade order."""
+    require_default_objective("GeneReconModel")
+    solve = solve_resident_e_pi(
+        static,
+        theta,
+        pi_request=pi_export_state_request(original_order=original_order),
+    )
+    pi = (
+        solve.pi_out["Pi"]
+        if original_order
+        else solve.pi_out["Pi_wave_ordered"]
+    )
+    pibar_wave = solve.pi_out["Pibar_wave_ordered"]
+    if pibar_wave is not None and original_order:
+        pibar = pibar_wave.index_select(0, static.wave_layout["perm"])
+    else:
+        pibar = pibar_wave
+    return ResidentExportStateResult(solve=solve, pi=pi, pibar=pibar)
 
 
 @torch.no_grad()

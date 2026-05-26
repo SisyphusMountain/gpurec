@@ -49,7 +49,6 @@ from gpurec.core.origination import (
     prepare_origination_prior,
 )
 from gpurec.core.parameter_layout import ParameterLayout
-from gpurec.core.forward import pi_export_state_request
 from gpurec.core.likelihood import compute_origination_denominator
 
 from .autograd import (
@@ -65,11 +64,11 @@ from ._family_layout import (
     schedule_family_waves,
 )
 from ._uniform_evaluator import (
+    evaluate_resident_export_state,
     evaluate_resident_no_grad,
     evaluate_resident_no_grad_with_solved_e,
     evaluate_resident_static_state,
     solve_resident_e,
-    solve_resident_e_pi,
 )
 from ._validation import (
     bool_value,
@@ -2457,25 +2456,16 @@ class GeneReconModel(torch.nn.Module):
         """
         static = self._active_static()
         theta = self._active_theta()
-        solve = solve_resident_e_pi(
+        export_state = evaluate_resident_export_state(
             static,
             theta,
-            pi_request=pi_export_state_request(original_order=original_order),
+            original_order=original_order,
         )
-        pi = (
-            solve.pi_out["Pi"]
-            if original_order
-            else solve.pi_out["Pi_wave_ordered"]
-        )
-        pibar_wave = solve.pi_out["Pibar_wave_ordered"]
-        if pibar_wave is not None and original_order:
-            pibar = pibar_wave.index_select(0, static.wave_layout["perm"])
-        else:
-            pibar = pibar_wave
+        solve = export_state.solve
         return ReconciliationState(
             e=solve.e_out["E"],
-            pi=pi,
-            pibar=pibar,
+            pi=export_state.pi,
+            pibar=export_state.pibar,
             ebar=solve.e_out["E_bar"],
             log_p_s=solve.log_p_s,
             log_p_d=solve.log_p_d,

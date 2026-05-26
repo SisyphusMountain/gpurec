@@ -68,12 +68,14 @@ Current duplication:
 
 - `gpurec/api/autograd.py:491` `_GeneReconFunction.forward()` runs E, Pi,
   `compute_nll()`, saves tensors, and delegates backward.
-- `gpurec/api/_uniform_evaluator.py:95`
+- `gpurec/api/_uniform_evaluator.py:106`
   `evaluate_resident_static_state()` now owns resident no-grad and optional
-  gradient E/Pi/NLL orchestration; `gpurec/api/model.py:1184`
+  gradient E/Pi/NLL orchestration; `gpurec/api/model.py:1183`
   `_evaluate_static_state()` is a thin compatibility wrapper.
-- `gpurec/api/model.py:2449` `reconciliation_state()` repeats the E/Pi solve
-  for export state.
+- `gpurec/api/_uniform_evaluator.py:146`
+  `evaluate_resident_export_state()` now owns resident export E/Pi solves and
+  clade-order selection; `gpurec/api/model.py:2448`
+  `reconciliation_state()` builds the public state object.
 - `gpurec/api/uniform_chunked.py:722` `_evaluate_chunked_uniform()` repeats E,
   chunked Pi forward, optional Pi backward, E-adjoint, stats, and reductions.
 
@@ -96,7 +98,8 @@ Plan:
 
 Expected simplification:
 
-- Removes one full duplicate E/Pi solve from `reconciliation_state()`.
+- Keeps the export E/Pi solve and clade-order handling behind the shared
+  evaluator instead of open-coding it in `reconciliation_state()`.
 - Makes no-grad loss probes, differentiable autograd calls, full resident
   streaming, and chunked `loss_and_grad()` share one gradient/loss contract.
 - Reduces failure modes where one path updates `warm_E`, stats, or origination
