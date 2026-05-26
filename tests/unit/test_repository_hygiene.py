@@ -1391,6 +1391,8 @@ def test_output_artifact_reference_is_linked_and_documents_contract():
         "effective optimizer/batch/solver route",
         "`final_log_likelihood_bits`",
         "`best_log_likelihood_bits`",
+        "`steps_completed`",
+        "`best_step`",
         "`gpurec optimize` status line",
         "`gpurec run`",
         "`rates_final.tsv`",

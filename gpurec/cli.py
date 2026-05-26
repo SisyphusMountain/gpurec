@@ -53,6 +53,15 @@ def _optional_metric_text(name: str, value: object) -> str:
     return f"{name}={numeric:.6f}"
 
 
+def _optional_int_text(name: str, value: object) -> str:
+    if value is None:
+        return f"{name}=null"
+    try:
+        return f"{name}={int(value)}"
+    except (TypeError, ValueError):
+        return f"{name}=null"
+
+
 def _log_likelihood_from_result(
     result: Any,
     *,
@@ -96,6 +105,14 @@ def _optimization_result_text(result: Any) -> str:
         [
             f"status={result.status}",
             f"reason={result.reason}",
+            _optional_int_text(
+                "steps_completed",
+                getattr(result, "steps_completed", None),
+            ),
+            _optional_int_text(
+                "best_step",
+                getattr(result, "best_step", None),
+            ),
             _optional_metric_text(
                 "final_nll_bits",
                 getattr(result, "final_nll_bits", None),
