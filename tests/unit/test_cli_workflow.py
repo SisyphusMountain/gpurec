@@ -2599,7 +2599,9 @@ def test_cli_summary_info_require_production_default_route_rejects_custom_settin
         "summary production default route fields differ for mode 'genewise': "
         "fd_hessian_refresh_steps"
     ) in captured.err
-    assert "expected the shipped production optimizer route" in captured.err
+    assert "expected the shipped likelihood/gradient and optimizer route" in (
+        captured.err
+    )
     assert "usage:" not in captured.err
     assert "Traceback" not in captured.err
 
@@ -3262,6 +3264,9 @@ def test_cli_sample_require_production_default_route_rejects_stale_route(
         "checkpoint production default route fields differ for mode 'genewise': "
         "gradient_route"
     ) in captured.err
+    assert "expected the shipped likelihood/gradient and optimizer route" in (
+        captured.err
+    )
     assert "sampled_families" not in captured.out
     assert "usage:" not in captured.err
     assert "Traceback" not in captured.err

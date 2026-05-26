@@ -7613,6 +7613,12 @@ The shared \texttt{--require-production-default-route} help text now names
 aligned with the stricter route audit exposed by config preflight, checkpoints,
 and summaries.
 
+Strict artifact-gate failures now use the same wording.  The
+\texttt{checkpoint-info}, \texttt{summary-info}, and standalone sampling gates
+say they expected the shipped likelihood/gradient and optimizer route, so stale
+\texttt{gradient\_route} metadata no longer receives optimizer-only remediation
+text.
+
 \section{Next Audit Targets}
 
 \begin{enumerate}[leftmargin=*]

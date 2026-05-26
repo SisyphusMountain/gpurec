@@ -2334,6 +2334,9 @@ not edit files.  New or still-open findings from that refresh are:
 - The shared `--require-production-default-route` CLI help now names
   `final_check_iters_e` evidence explicitly, matching the stricter route audit
   shown in summaries, checkpoints, and preflight output.
+- Strict artifact gate failures now say they expected the shipped
+  likelihood/gradient and optimizer route, not only the optimizer route, so the
+  remediation text matches route-contract fields such as `gradient_route`.
 
 ## Recommended Next Order
 

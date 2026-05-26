@@ -310,7 +310,7 @@ def _exit_unless_production_default_route(
             _production_default_route_gate_message(
                 subject,
                 audited,
-                action="expected the shipped production optimizer route",
+                action="expected the shipped likelihood/gradient and optimizer route",
             )
             + "\n"
         ),
