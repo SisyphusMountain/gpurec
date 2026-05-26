@@ -37,7 +37,8 @@ class ReconStaticState:
     """Container for non-differentiable state shared across ``forward()`` calls.
 
     Built once by :class:`gpurec.api.model.GeneReconModel` from a
-    :class:`GeneDataset`. Mutated only via ``warm_E`` (warm start cache).
+    :class:`GeneDataset`. Runtime warm-start caches are mutable and must be
+    cleared when the owning model discards solver state.
     """
 
     device: torch.device
@@ -73,6 +74,8 @@ class ReconStaticState:
 
     # Warm start cache, mutated across calls
     warm_E: Optional[torch.Tensor] = None
+    pi_adjoint_warmstart: bool = False
+    pi_adjoint_cache: Optional[torch.Tensor] = None
     clear_runtime_after_backward: bool = False
     last_solver_stats: Optional[dict[str, Any]] = None
 
@@ -169,6 +172,46 @@ def _record_backward_solver_stats(static: ReconStaticState, stats: Any) -> None:
         value = getattr(stats, source, None)
         if value is not None:
             static.last_solver_stats[target] = value
+
+
+def _pi_adjoint_initial_guess(
+    static: ReconStaticState,
+    pi_wave_ordered: torch.Tensor,
+) -> torch.Tensor | None:
+    """Return a valid cached Pi adjoint for the current resident layout."""
+    if not bool(getattr(static, "pi_adjoint_warmstart", False)):
+        return None
+    cache = getattr(static, "pi_adjoint_cache", None)
+    if cache is None:
+        return None
+    if not torch.is_tensor(cache) or tuple(cache.shape) != tuple(pi_wave_ordered.shape):
+        static.pi_adjoint_cache = None
+        return None
+    return cache.detach().to(
+        device=pi_wave_ordered.device,
+        dtype=pi_wave_ordered.dtype,
+    )
+
+
+def _record_pi_adjoint_cache_stats(
+    static: ReconStaticState,
+    *,
+    used_initial_guess: bool,
+    cache: torch.Tensor | None,
+) -> None:
+    if static.last_solver_stats is None:
+        static.last_solver_stats = {}
+    static.last_solver_stats.update(
+        {
+            "Pi_adjoint_warmstart_enabled": bool(
+                getattr(static, "pi_adjoint_warmstart", False)
+            ),
+            "Pi_adjoint_warmstart_used": bool(used_initial_guess),
+        }
+    )
+    if cache is not None:
+        static.last_solver_stats["Pi_adjoint_cache_rows"] = int(cache.shape[0])
+        static.last_solver_stats["Pi_adjoint_cache_species"] = int(cache.shape[1])
 
 
 def solve_resident_e(
@@ -320,7 +363,11 @@ def compute_resident_implicit_gradient(
     """Compute and record the resident implicit gradient for a forward solve."""
     if uniform_pibar_row_max is not None and uniform_pibar_row_max.numel() == 0:
         uniform_pibar_row_max = None
-    grad_theta, stats = implicit_grad_loglik_vjp_wave(
+    use_pi_adjoint_warmstart = bool(
+        getattr(static, "pi_adjoint_warmstart", False)
+    )
+    pi_adjoint_initial_guess = _pi_adjoint_initial_guess(static, pi_wave_ordered)
+    result = implicit_grad_loglik_vjp_wave(
         static.wave_layout,
         static.species_helpers,
         Pi_star_wave=pi_wave_ordered,
@@ -353,7 +400,24 @@ def compute_resident_implicit_gradient(
         ),
         gradient_convergence_rtol=static.gradient_change_rtol,
         gradient_convergence_check_interval=static.convergence_check_interval,
+        pi_adjoint_initial_guess=pi_adjoint_initial_guess,
+        return_aux=use_pi_adjoint_warmstart,
     )
+    if use_pi_adjoint_warmstart:
+        grad_theta, stats, aux = result
+        pi_adjoint_cache = aux.get("pi_adjoint")
+        if torch.is_tensor(pi_adjoint_cache):
+            static.pi_adjoint_cache = pi_adjoint_cache.detach()
+        else:
+            static.pi_adjoint_cache = None
+        _record_backward_solver_stats(static, stats)
+        _record_pi_adjoint_cache_stats(
+            static,
+            used_initial_guess=bool(aux.get("used_pi_initial_guess", False)),
+            cache=static.pi_adjoint_cache,
+        )
+        return grad_theta
+    grad_theta, stats = result
     _record_backward_solver_stats(static, stats)
     return grad_theta
 
@@ -477,5 +541,6 @@ class _GeneReconFunction(torch.autograd.Function):
 
         if static.clear_runtime_after_backward:
             static.warm_E = None
+            static.pi_adjoint_cache = None
 
         return grad_theta, None, None

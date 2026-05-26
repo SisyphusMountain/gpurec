@@ -116,6 +116,16 @@ def solver_stats(model: Any) -> dict[str, float]:
         for row in stats
         if "E_adjoint_success" in row
     ]
+    pi_adjoint_warmstart_enabled = [
+        bool(row.get("Pi_adjoint_warmstart_enabled"))
+        for row in stats
+        if "Pi_adjoint_warmstart_enabled" in row
+    ]
+    pi_adjoint_warmstart_used = [
+        bool(row.get("Pi_adjoint_warmstart_used"))
+        for row in stats
+        if "Pi_adjoint_warmstart_used" in row
+    ]
     e_adjoint_rel_res = []
     for row in stats:
         if "E_adjoint_rel_res" not in row:
@@ -156,6 +166,14 @@ def solver_stats(model: Any) -> dict[str, float]:
         out["solver/e_adjoint_success_batches"] = float(success_count)
         out["solver/e_adjoint_failed_batches"] = float(
             len(e_adjoint_success) - success_count
+        )
+    if pi_adjoint_warmstart_enabled:
+        out["solver/pi_adjoint_warmstart_enabled_batches"] = float(
+            sum(pi_adjoint_warmstart_enabled)
+        )
+    if pi_adjoint_warmstart_used:
+        out["solver/pi_adjoint_warmstart_used_batches"] = float(
+            sum(pi_adjoint_warmstart_used)
         )
     return out
 

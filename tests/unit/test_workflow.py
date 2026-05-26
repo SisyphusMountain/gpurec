@@ -751,7 +751,7 @@ def test_clear_batched_resident_does_not_materialize_missing_active_batch():
 
 
 def test_clear_batched_resident_clears_existing_active_warm_state():
-    static = SimpleNamespace(warm_E=object())
+    static = SimpleNamespace(warm_E=object(), pi_adjoint_cache=object())
     model = GeneReconModel.__new__(GeneReconModel)
     model._batched_resident = True
     model._current_batch_index = 0
@@ -761,6 +761,7 @@ def test_clear_batched_resident_clears_existing_active_warm_state():
     model.clear()
 
     assert static.warm_E is None
+    assert static.pi_adjoint_cache is None
 
 
 def test_close_shuts_down_executor_without_batch_lock():
@@ -3007,6 +3008,8 @@ def test_workflow_solver_stats_surface_e_adjoint_failure_telemetry():
                 "E_adjoint_iterations": 3,
                 "E_adjoint_rel_res": 0.25,
                 "E_adjoint_success": False,
+                "Pi_adjoint_warmstart_enabled": True,
+                "Pi_adjoint_warmstart_used": True,
             },
             {
                 "E_iterations": 3,
@@ -3019,6 +3022,8 @@ def test_workflow_solver_stats_surface_e_adjoint_failure_telemetry():
                 "E_adjoint_iterations": 1,
                 "E_adjoint_rel_res": 0.05,
                 "E_adjoint_success": True,
+                "Pi_adjoint_warmstart_enabled": True,
+                "Pi_adjoint_warmstart_used": False,
             },
         ]
     )
@@ -3032,6 +3037,8 @@ def test_workflow_solver_stats_surface_e_adjoint_failure_telemetry():
     assert stats["solver/e_adjoint_success_batches"] == 1.0
     assert stats["solver/e_adjoint_failed_batches"] == 1.0
     assert stats["solver/gradient_converged_batches"] == 2.0
+    assert stats["solver/pi_adjoint_warmstart_enabled_batches"] == 2.0
+    assert stats["solver/pi_adjoint_warmstart_used_batches"] == 1.0
 
 
 def test_workflow_metadata_model_name_helpers_return_copies_and_fallbacks():
@@ -5318,6 +5325,7 @@ class _WorkflowBatchedLBFGSModeModel:
         self.solver_configs: list[dict[str, object]] = []
         self.static_state = SimpleNamespace(
             warm_E=object(),
+            pi_adjoint_cache=object(),
             last_solver_stats={"Pi_wave_iterations": [2]},
         )
         self.clears = 0
@@ -7592,6 +7600,7 @@ def test_optimization_runner_batched_lbfgs_advances_resident_batches(tmp_path: P
     assert result.reason == "max_steps"
     assert runner.fake_model.drop_cached_static_states_calls == 0
     assert runner.fake_model.static_state.warm_E is None
+    assert runner.fake_model.static_state.pi_adjoint_cache is None
     assert runner.fake_model.static_state.last_solver_stats is None
     assert runner.fake_model.closed
 
@@ -7632,6 +7641,7 @@ def test_final_iteration_check_keeps_static_layout_and_clears_runtime_state(
     assert calls == [0]
     assert model.drop_cached_static_states_calls == 0
     assert model.static_state.warm_E is None
+    assert model.static_state.pi_adjoint_cache is None
     assert model.static_state.last_solver_stats is None
     assert metrics["optimizer/final_check_status"] == "ok"
     assert metrics["optimizer/final_check_source"] == "configured_solver_budget"

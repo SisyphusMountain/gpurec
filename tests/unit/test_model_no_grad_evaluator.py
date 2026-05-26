@@ -8,6 +8,38 @@ import gpurec.api.autograd as api_autograd
 import gpurec.api.model as api_model
 
 
+def _implicit_gradient_static(
+    *,
+    pi_adjoint_warmstart: bool,
+    pi_adjoint_cache=None,
+):
+    return SimpleNamespace(
+        wave_layout={
+            "root_clade_ids": torch.tensor([0, 1], dtype=torch.long),
+            "family_idx": torch.tensor([0, 1], dtype=torch.long),
+        },
+        species_helpers={},
+        unnorm_row_max=torch.zeros(2, dtype=torch.float64),
+        specieswise=False,
+        genewise=True,
+        device=torch.device("cpu"),
+        dtype=torch.float64,
+        neumann_terms=4,
+        use_pruning=True,
+        pruning_threshold=1e-6,
+        ancestors_T=None,
+        origination_prior=None,
+        origination_probs=None,
+        adaptive_neumann_terms=False,
+        gradient_change_tol=1e-4,
+        gradient_change_rtol=1e-4,
+        convergence_check_interval=4,
+        pi_adjoint_warmstart=pi_adjoint_warmstart,
+        pi_adjoint_cache=pi_adjoint_cache,
+        last_solver_stats=None,
+    )
+
+
 def _model_with_active_state(
     *,
     mode: str,
@@ -372,6 +404,117 @@ def test_evaluate_static_state_grad_uses_resident_gradient_boundary(monkeypatch)
     assert grad_calls[0]["log_p_l"] is solve.log_p_l
     assert grad_calls[0]["max_transfer"] is solve.max_transfer
     assert grad_calls[0]["uniform_pibar_row_max"] is pi_out["uniform_pibar_row_max"]
+
+
+def test_compute_resident_implicit_gradient_uses_pi_adjoint_cache_when_enabled(
+    monkeypatch,
+):
+    theta = torch.zeros((2, 3), dtype=torch.float64)
+    pi = torch.ones((2, 2), dtype=torch.float64)
+    cached = torch.full_like(pi, 0.25)
+    solved = torch.full_like(pi, 0.75)
+    expected_grad = torch.arange(theta.numel(), dtype=theta.dtype).reshape_as(theta)
+    static = _implicit_gradient_static(
+        pi_adjoint_warmstart=True,
+        pi_adjoint_cache=cached,
+    )
+    calls: list[dict[str, object]] = []
+
+    def fake_implicit_grad(*args, **kwargs):
+        calls.append(kwargs)
+        assert kwargs["return_aux"] is True
+        torch.testing.assert_close(kwargs["pi_adjoint_initial_guess"], cached)
+        return (
+            expected_grad,
+            SimpleNamespace(iters=3, rel_res=0.125, success=True, neumann_terms=4),
+            {
+                "pi_adjoint": solved,
+                "used_pi_initial_guess": kwargs["pi_adjoint_initial_guess"] is not None,
+            },
+        )
+
+    monkeypatch.setattr(
+        api_autograd,
+        "implicit_grad_loglik_vjp_wave",
+        fake_implicit_grad,
+    )
+
+    grad = api_autograd.compute_resident_implicit_gradient(
+        static,
+        theta=theta,
+        pi_wave_ordered=pi,
+        pibar_wave_ordered=pi + 1.0,
+        e=torch.zeros((2, 2), dtype=theta.dtype),
+        ebar=torch.zeros((2, 2), dtype=theta.dtype),
+        e_s1=torch.zeros((2, 2), dtype=theta.dtype),
+        e_s2=torch.zeros((2, 2), dtype=theta.dtype),
+        log_p_s=torch.zeros(2, dtype=theta.dtype),
+        log_p_d=torch.zeros(2, dtype=theta.dtype),
+        log_p_l=torch.zeros(2, dtype=theta.dtype),
+        max_transfer=torch.zeros(2, dtype=theta.dtype),
+        uniform_pibar_row_max=None,
+    )
+
+    torch.testing.assert_close(grad, expected_grad)
+    assert len(calls) == 1
+    torch.testing.assert_close(static.pi_adjoint_cache, solved)
+    assert static.last_solver_stats == {
+        "Neumann_terms": 4,
+        "E_adjoint_iterations": 3,
+        "E_adjoint_rel_res": 0.125,
+        "E_adjoint_success": True,
+        "Pi_adjoint_warmstart_enabled": True,
+        "Pi_adjoint_warmstart_used": True,
+        "Pi_adjoint_cache_rows": 2,
+        "Pi_adjoint_cache_species": 2,
+    }
+
+
+def test_compute_resident_implicit_gradient_drops_stale_pi_adjoint_cache(
+    monkeypatch,
+):
+    theta = torch.zeros((2, 3), dtype=torch.float64)
+    pi = torch.ones((2, 2), dtype=torch.float64)
+    stale_cache = torch.ones((1, 2), dtype=torch.float64)
+    solved = torch.full_like(pi, 2.0)
+    static = _implicit_gradient_static(
+        pi_adjoint_warmstart=True,
+        pi_adjoint_cache=stale_cache,
+    )
+
+    def fake_implicit_grad(*args, **kwargs):
+        assert kwargs["return_aux"] is True
+        assert kwargs["pi_adjoint_initial_guess"] is None
+        return (
+            torch.ones_like(theta),
+            SimpleNamespace(iters=0, rel_res=0.0, success=True, neumann_terms=4),
+            {"pi_adjoint": solved, "used_pi_initial_guess": False},
+        )
+
+    monkeypatch.setattr(
+        api_autograd,
+        "implicit_grad_loglik_vjp_wave",
+        fake_implicit_grad,
+    )
+
+    api_autograd.compute_resident_implicit_gradient(
+        static,
+        theta=theta,
+        pi_wave_ordered=pi,
+        pibar_wave_ordered=pi + 1.0,
+        e=torch.zeros((2, 2), dtype=theta.dtype),
+        ebar=torch.zeros((2, 2), dtype=theta.dtype),
+        e_s1=torch.zeros((2, 2), dtype=theta.dtype),
+        e_s2=torch.zeros((2, 2), dtype=theta.dtype),
+        log_p_s=torch.zeros(2, dtype=theta.dtype),
+        log_p_d=torch.zeros(2, dtype=theta.dtype),
+        log_p_l=torch.zeros(2, dtype=theta.dtype),
+        max_transfer=torch.zeros(2, dtype=theta.dtype),
+        uniform_pibar_row_max=None,
+    )
+
+    torch.testing.assert_close(static.pi_adjoint_cache, solved)
+    assert static.last_solver_stats["Pi_adjoint_warmstart_used"] is False
 
 
 def test_autograd_forward_uses_resident_solve_boundary(monkeypatch):

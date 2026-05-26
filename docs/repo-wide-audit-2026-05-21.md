@@ -2048,6 +2048,12 @@ not edit files.  New or still-open findings from that refresh are:
 - `CUDA_VISIBLE_DEVICES='' python -m pytest tests/unit/test_repository_hygiene.py::test_package_docs_do_not_advertise_core_as_public_surface tests/unit/test_repository_hygiene.py::test_project_readme_documents_leaf_species_mapping_contract tests/unit/test_repository_hygiene.py::test_profiling_readme_documents_entrypoints_and_artifact_policy tests/unit/test_repository_hygiene.py::test_ignored_local_workspace_inventory_documents_notebooks_and_profiles tests/unit/test_repository_hygiene.py::test_legacy_likelihood_aliases_warn_and_have_single_test_owner -q`:
   5 passed after adding the profiling README guard and documenting the
   `GeneDataset` mapping exception.
+- The Pi-adjoint warm-start cache is now an explicit API-bridge runtime
+  boundary instead of only a core-kernel argument.  It remains opt-in, records
+  whether an initial guess was used, refreshes the solved `v_Pi` cache only when
+  requested, drops stale layout-shaped caches, and participates in the existing
+  runtime-cache clear path.  Production optimizer defaults are unchanged until
+  accepted-step cache commit semantics are wired through line search.
 
 ## Recommended Next Order
 

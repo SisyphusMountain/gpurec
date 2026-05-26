@@ -72,6 +72,15 @@ promote to the configured full stage or to a final validation budget. History
 rows surface aggregate `solver/*` telemetry, and E-adjoint nonconvergence is
 diagnostic unless the objective or gradient becomes nonfinite.
 
+The API bridge also owns an opt-in Pi-adjoint warm-start cache for experiments
+that reuse the previous solved `v_Pi` as the next implicit-gradient initial
+guess. That cache is disabled for the supported production routes until the
+optimizer loop can commit updates only from accepted gradient evaluations; loss
+probes and rejected line-search candidates must not become the next accepted
+warm start. When enabled in a controlled experiment, history rows aggregate
+`solver/pi_adjoint_warmstart_enabled_batches` and
+`solver/pi_adjoint_warmstart_used_batches`.
+
 ## Default Optimizer Routes
 
 `optimizer=auto` is deliberately mode-dependent:

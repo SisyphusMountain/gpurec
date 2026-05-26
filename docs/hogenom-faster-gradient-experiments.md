@@ -165,14 +165,17 @@ the non-Pi parts of the gradient path are also reduced or amortized.
 
 | proposal | worker commit | supervisor result | targeted evidence | conclusion |
 | --- | --- | --- | --- | --- |
-| Runtime Pi-adjoint cache | `d8f6d68`, fix `2fc949a` | First review rejected stale lazy-prefetch statics; second review approved | Worker tests: `test_pi_adjoint_warmstart_cache.py`, targeted workflow tests, `test_implicit_grad_solver.py`, compileall, `git diff --check`. Supervisor rerun: 9 targeted tests passed. | Accept as a lower-level cache mechanism. Production integration still needs accepted-step commit semantics for line search. |
+| Runtime Pi-adjoint cache | `d8f6d68`, fix `2fc949a`, current production follow-up | First review rejected stale lazy-prefetch statics; second review approved; the API bridge now owns an opt-in cache field, stale-layout discard, and solver telemetry without changing defaults. | Worker tests: `test_pi_adjoint_warmstart_cache.py`, targeted workflow tests, `test_implicit_grad_solver.py`, compileall, `git diff --check`. Production follow-up added CPU bridge/cache tests and runtime-cache clearing guards. | Accept as a lower-level cache mechanism. Production routes still keep it disabled until accepted-step commit semantics are wired through optimizer line search. |
 | Warmstarted budget policy summary | `e3ce916` | Approved, no findings | Unit test `test_hogenom_gradient_policy_summary.py`: 2 passed. Smoke benchmark produced a policy recommendation. Baseline benchmark rows above quantify useful budgets. | Accept as benchmark/reporting support. Use it to choose 16/24-term warm budgets plus periodic higher-budget validation. |
 | Warmstarted fixed-point relaxation | `d0271bb`, fix `afcd7d3` | First review requested kernel coverage and bool validation; final review approved | Unit/core tests plus CUDA kernel regression: 14 passed locally. Supervisor rerun: bool/forwarding tests 10 passed, CUDA kernel test 1 passed, diff check clean. HOGENOM smoke: `alpha=1.25` improved relative L2 at terms 1, 4, 16 versus `alpha=1.0`. | Accept as an experimental knob. Keep default `alpha=1.0`; benchmark alpha grid before enabling in end-to-end optimization. |
 
 ## Recommended Integration Order
 
-1. Integrate the Pi-adjoint cache, but wire cache updates to accepted optimizer
-   steps rather than every trial gradient.
+1. Integrate the Pi-adjoint cache into the production optimizer loop, but wire
+   cache updates to accepted optimizer steps rather than every trial gradient.
+   The current API bridge cache is opt-in and clears stale layout state, so it is
+   a tested boundary for this later workflow work rather than a default route
+   change.
 2. Add warm/cold gradient budgets to HOGENOM optimization config, starting with
    warm Pi terms of 16 or 24 and periodic 48/64/128-term validation.
 3. Add residual logging for the Pi adjoint solve so budget escalation is based

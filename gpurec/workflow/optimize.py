@@ -251,6 +251,8 @@ def _clear_cached_solver_runtime_state(model: GeneReconModel) -> None:
         for static in list(statics):
             if hasattr(static, "warm_E"):
                 static.warm_E = None
+            if hasattr(static, "pi_adjoint_cache"):
+                static.pi_adjoint_cache = None
             if hasattr(static, "last_solver_stats"):
                 static.last_solver_stats = None
     else:
