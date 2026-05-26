@@ -199,6 +199,41 @@ def test_build_alerax_workflow_model_forwards_run_config(tmp_path: Path, monkeyp
     assert kwargs["prefetch_batches"] == 0
 
 
+def test_build_alerax_workflow_model_configures_pi_adjoint_warmstart(
+    tmp_path: Path,
+    monkeypatch,
+):
+    config = RunConfig(
+        species_tree=tmp_path / "sp.nwk",
+        families_file=tmp_path / "families.txt",
+        out_dir=tmp_path / "out",
+        mode="genewise",
+        optimizer="hessian-sgd",
+        device="cuda",
+        hessian_sgd_pi_adjoint_warmstart=True,
+    )
+
+    model = object()
+    call: dict[str, object] = {}
+
+    def fake_from_alerax_families(*args: object, **kwargs: object) -> object:
+        call["kwargs"] = kwargs
+        return model
+
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(
+        workflow_model_factory.GeneReconModel,
+        "from_alerax_families",
+        staticmethod(fake_from_alerax_families),
+    )
+
+    result = build_alerax_workflow_model(config, prefetch_batches=0)
+
+    assert result is model
+    assert call["kwargs"]["pi_adjoint_warmstart"] is True
+    assert call["kwargs"]["pi_adjoint_cache_update_mode"] == "stage"
+
+
 def test_cli_forwards_preprocess_cpu_cores(tmp_path: Path):
     write_tiny_alerax_inputs(tmp_path)
     args = build_parser().parse_args(
@@ -232,6 +267,7 @@ def test_cli_forwards_hessian_sgd_solver_controls(tmp_path: Path):
             "12",
             "--hessian-sgd-normal-neumann-terms",
             "10",
+            "--hessian-sgd-pi-adjoint-warmstart",
         ]
     )
 
@@ -239,16 +275,22 @@ def test_cli_forwards_hessian_sgd_solver_controls(tmp_path: Path):
 
     assert config.hessian_sgd_normal_fixed_iters_pi == 12
     assert config.hessian_sgd_normal_neumann_terms == 10
+    assert config.hessian_sgd_pi_adjoint_warmstart is True
 
 
 def test_cli_help_describes_current_genewise_hessian_sgd_controls():
     warmup_patience = _parser_action("optimize", "solver_warmup_loss_patience")
     adam_warmup = _parser_action("optimize", "fd_adam_warmup_steps")
     hessian_refresh = _parser_action("optimize", "fd_hessian_refresh_steps")
+    pi_adjoint_warmstart = _parser_action(
+        "optimize",
+        "hessian_sgd_pi_adjoint_warmstart",
+    )
 
     assert "genewise active-batch optimizers" in str(warmup_patience.help)
     assert "Hessian-conditioned genewise updates" in str(adam_warmup.help)
     assert "Hessian-conditioned genewise steps" in str(hessian_refresh.help)
+    assert "staged Pi-adjoint warm-start cache" in str(pi_adjoint_warmstart.help)
     assert "batched-LBFGS" not in str(warmup_patience.help)
 
 
@@ -291,6 +333,7 @@ def test_cli_config_template_prints_genewise_hessian_sgd_auto_defaults(capsys):
     assert data["fd_hessian_refresh_steps"] == 16
     assert data["hessian_sgd_normal_fixed_iters_pi"] is None
     assert data["hessian_sgd_normal_neumann_terms"] is None
+    assert data["hessian_sgd_pi_adjoint_warmstart"] is False
     assert data["final_check_iters"] == 32
     assert "adagrad_restart_schedule" not in data
 
@@ -306,6 +349,7 @@ def test_cli_config_template_prints_specieswise_adagrad_restart_defaults(capsys)
     assert data["adagrad_restart_schedule"] == "8:1.0:60,16:0.5:35,32:0.5:30"
     assert data["adagrad_restart_final_check_iters"] == 128
     assert "hessian_sgd_normal_fixed_iters_pi" not in data
+    assert "hessian_sgd_pi_adjoint_warmstart" not in data
     assert "fd_hessian_refresh_steps" not in data
 
 
@@ -583,6 +627,7 @@ def test_cli_validate_config_reports_selected_family_references(
     assert "fd_hessian_refresh_steps=16" in captured.out
     assert "hessian_sgd_normal_fixed_iters_pi=full" in captured.out
     assert "hessian_sgd_normal_neumann_terms=full" in captured.out
+    assert "hessian_sgd_pi_adjoint_warmstart=false" in captured.out
     assert "preprocess_checked" not in captured.out
     assert gpurec_cli._optional_text(
         "out_dir",
@@ -616,6 +661,7 @@ def test_cli_validate_config_reports_hessian_sgd_normal_solver_overrides(
             "12",
             "--hessian-sgd-normal-neumann-terms",
             "10",
+            "--hessian-sgd-pi-adjoint-warmstart",
         ]
     )
 
@@ -624,6 +670,7 @@ def test_cli_validate_config_reports_hessian_sgd_normal_solver_overrides(
     assert "optimizer=hessian-sgd" in captured.out
     assert "hessian_sgd_normal_fixed_iters_pi=12" in captured.out
     assert "hessian_sgd_normal_neumann_terms=10" in captured.out
+    assert "hessian_sgd_pi_adjoint_warmstart=true" in captured.out
     assert captured.err == ""
 
 
@@ -1451,6 +1498,7 @@ def test_cli_summary_info_reports_status_route_and_final_check(
         "fd_hessian_refresh_steps": 16,
         "hessian_sgd_normal_fixed_iters_pi": None,
         "hessian_sgd_normal_neumann_terms": None,
+        "hessian_sgd_pi_adjoint_warmstart": False,
         "steps_completed": 7,
         "elapsed_s": 3.25,
         "best_step": 5,
@@ -1501,6 +1549,7 @@ def test_cli_summary_info_reports_status_route_and_final_check(
         "fd_hessian_refresh_steps=16",
         "hessian_sgd_normal_fixed_iters_pi=null",
         "hessian_sgd_normal_neumann_terms=null",
+        "hessian_sgd_pi_adjoint_warmstart=false",
         "steps_completed=7",
         "elapsed_s=3.250000",
         "best_step=5",
@@ -1884,6 +1933,9 @@ def test_cli_optimize_reports_final_and_best_objective_summary(
             hessian_sgd_normal_neumann_terms=(
                 config.hessian_sgd_normal_neumann_terms
             ),
+            hessian_sgd_pi_adjoint_warmstart=(
+                config.hessian_sgd_pi_adjoint_warmstart
+            ),
             steps_completed=7,
             elapsed_s=3.25,
             best_step=5,
@@ -1938,6 +1990,7 @@ def test_cli_optimize_reports_final_and_best_objective_summary(
     assert "fd_hessian_refresh_steps=16" in captured.out
     assert "hessian_sgd_normal_fixed_iters_pi=null" in captured.out
     assert "hessian_sgd_normal_neumann_terms=null" in captured.out
+    assert "hessian_sgd_pi_adjoint_warmstart=false" in captured.out
     assert "steps_completed=7" in captured.out
     assert "elapsed_s=3.250000" in captured.out
     assert "best_step=5" in captured.out
@@ -2230,6 +2283,9 @@ def test_cli_run_samples_reported_checkpoint_instead_of_stale_best(
             hessian_sgd_normal_neumann_terms=(
                 config.hessian_sgd_normal_neumann_terms
             ),
+            hessian_sgd_pi_adjoint_warmstart=(
+                config.hessian_sgd_pi_adjoint_warmstart
+            ),
             steps_completed=3,
             elapsed_s=4.5,
             best_step=2,
@@ -2288,6 +2344,7 @@ def test_cli_run_samples_reported_checkpoint_instead_of_stale_best(
     assert "fd_hessian_refresh_steps=16" in captured.out
     assert "hessian_sgd_normal_fixed_iters_pi=null" in captured.out
     assert "hessian_sgd_normal_neumann_terms=null" in captured.out
+    assert "hessian_sgd_pi_adjoint_warmstart=false" in captured.out
     assert "steps_completed=3" in captured.out
     assert "elapsed_s=4.500000" in captured.out
     assert "best_step=2" in captured.out

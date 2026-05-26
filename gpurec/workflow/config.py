@@ -424,7 +424,12 @@ _JSON_FLOAT_FIELDS = {
     "projected_grad_tol",
     "projected_lbfgs_min_lr",
 }
-_JSON_BOOL_FIELDS = {"adaptive_iters", "adaptive_neumann_terms", "adaptive_rebatch"}
+_JSON_BOOL_FIELDS = {
+    "adaptive_iters",
+    "adaptive_neumann_terms",
+    "adaptive_rebatch",
+    "hessian_sgd_pi_adjoint_warmstart",
+}
 _RUN_CONFIG_REQUIRED_PATH_FIELDS = ("species_tree", "families_file", "out_dir")
 _RUN_CONFIG_PATH_FIELDS = _RUN_CONFIG_REQUIRED_PATH_FIELDS + (
     "resume_from",
@@ -519,6 +524,7 @@ class RunConfig:
     fd_hessian_refresh_steps: int = 16
     hessian_sgd_normal_fixed_iters_pi: int | None = None
     hessian_sgd_normal_neumann_terms: int | None = None
+    hessian_sgd_pi_adjoint_warmstart: bool = False
     adagrad_restart_schedule: str = DEFAULT_ADAGRAD_RESTART_SCHEDULE
     adagrad_restart_final_check_iters: int = 128
     lbfgs_lr: float = 0.1
@@ -761,6 +767,11 @@ class RunConfig:
             raise ValueError("adam-fd-newton optimizer requires genewise mode")
         if self.optimizer == "hessian-sgd" and self.mode != "genewise":
             raise ValueError("hessian-sgd optimizer requires genewise mode")
+        if self.hessian_sgd_pi_adjoint_warmstart and self.optimizer != "hessian-sgd":
+            raise ValueError(
+                "hessian_sgd_pi_adjoint_warmstart requires genewise "
+                "hessian-sgd optimizer"
+            )
         if self.optimizer == "adagrad-restarts" and self.mode != "specieswise":
             raise ValueError("adagrad-restarts optimizer requires specieswise mode")
         if self.adagrad_restart_final_check_iters > 0:
@@ -901,6 +912,9 @@ def effective_route_metadata(config: RunConfig) -> dict[str, Any]:
                 ),
                 "hessian_sgd_normal_neumann_terms": (
                     config.hessian_sgd_normal_neumann_terms
+                ),
+                "hessian_sgd_pi_adjoint_warmstart": (
+                    config.hessian_sgd_pi_adjoint_warmstart
                 ),
             }
         )

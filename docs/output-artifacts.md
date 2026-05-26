@@ -50,8 +50,9 @@ line expose the same family/species/batch counts, `batch_packing`,
 programmatic and terminal triage. For genewise `hessian-sgd`, those fields are
 `solver_warmup_iters`, `fd_adam_warmup_steps`, `fd_hessian_refresh_steps`,
 `hessian_sgd_normal_fixed_iters_pi`, and
-`hessian_sgd_normal_neumann_terms`. For specieswise `adagrad-restarts`, they
-are `adagrad_restart_schedule`, `adagrad_restart_total_steps`, and
+`hessian_sgd_normal_neumann_terms`, plus the experimental
+`hessian_sgd_pi_adjoint_warmstart` flag. For specieswise `adagrad-restarts`,
+they are `adagrad_restart_schedule`, `adagrad_restart_total_steps`, and
 `adagrad_restart_final_check_iters`.
 
 `summary.json` repeats the completed optimizer step as `steps_completed`, the

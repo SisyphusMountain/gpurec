@@ -72,14 +72,15 @@ promote to the configured full stage or to a final validation budget. History
 rows surface aggregate `solver/*` telemetry, and E-adjoint nonconvergence is
 diagnostic unless the objective or gradient becomes nonfinite.
 
-The API bridge also owns an opt-in Pi-adjoint warm-start cache for experiments
-that reuse the previous solved `v_Pi` as the next implicit-gradient initial
-guess. That cache is disabled for the supported production routes while
-warmstarted budget policy is validated, but the Hessian-conditioned genewise
-step path now has the safe commit boundary: loss probes and rejected
-line-search candidates do not become the next accepted warm start, and a
-staged adjoint is committed only after the final accepted current-theta
-gradient. When enabled in a controlled experiment, history rows include
+The API bridge also owns an opt-in Pi-adjoint warm-start cache for controlled
+experiments that reuse the previous solved `v_Pi` as the next implicit-gradient
+initial guess. Enable it only for genewise `hessian-sgd` validation runs with
+`hessian_sgd_pi_adjoint_warmstart=true` or
+`--hessian-sgd-pi-adjoint-warmstart`; defaults keep it disabled while
+warmstarted budget policy is validated. The workflow uses staged cache updates:
+loss probes and rejected line-search candidates do not become the next accepted
+warm start, and a staged adjoint is committed only after the final accepted
+current-theta gradient. When enabled in a controlled experiment, history rows include
 `solver/pi_adjoint_warmstart_enabled_batches`,
 `solver/pi_adjoint_warmstart_used_batches`,
 `solver/pi_adjoint_pending_cache_commits`, and

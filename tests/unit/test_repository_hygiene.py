@@ -1480,6 +1480,7 @@ def test_output_artifact_reference_is_linked_and_documents_contract():
         "`fd_hessian_refresh_steps`",
         "`hessian_sgd_normal_fixed_iters_pi`",
         "`hessian_sgd_normal_neumann_terms`",
+        "`hessian_sgd_pi_adjoint_warmstart`",
         "`adagrad_restart_schedule`",
         "`adagrad_restart_total_steps`",
         "`adagrad_restart_final_check_iters`",

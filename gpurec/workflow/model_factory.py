@@ -14,7 +14,15 @@ def build_alerax_workflow_model(
     prefetch_batches: Literal["all"] | int = "all",
 ) -> GeneReconModel:
     require_cuda_device(config.device, owner="gpurec production workflow")
-    return GeneReconModel.from_alerax_families(
+    pi_adjoint_kwargs = (
+        {
+            "pi_adjoint_warmstart": True,
+            "pi_adjoint_cache_update_mode": "stage",
+        }
+        if config.hessian_sgd_pi_adjoint_warmstart
+        else {}
+    )
+    model = GeneReconModel.from_alerax_families(
         str(config.species_tree),
         config.families_file,
         mode=config.mode,
@@ -43,4 +51,6 @@ def build_alerax_workflow_model(
         small_family_max_leaves=config.small_family_max_leaves,
         lazy_preprocess=True,
         prefetch_batches=prefetch_batches,
+        **pi_adjoint_kwargs,
     )
+    return model

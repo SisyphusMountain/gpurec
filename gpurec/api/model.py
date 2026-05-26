@@ -277,6 +277,19 @@ def _normalize_clade_budget(value: int | None) -> int | None:
     return normalize_clade_budget(value)
 
 
+def _normalize_pi_adjoint_cache_update_mode(value: str) -> str:
+    if not isinstance(value, str):
+        raise ValueError(
+            "pi_adjoint_cache_update_mode must be 'immediate' or 'stage'"
+        )
+    mode = value.strip().lower().replace("_", "-")
+    if mode not in {"immediate", "stage"}:
+        raise ValueError(
+            "pi_adjoint_cache_update_mode must be 'immediate' or 'stage'"
+        )
+    return mode
+
+
 def _normalize_batch_packing(value: str | None) -> str:
     return normalize_batch_packing(value)
 
@@ -364,6 +377,17 @@ def _normalize_gene_solver_kwargs(kwargs: dict[str, Any]) -> dict[str, Any]:
     if "adaptive_neumann_terms" in normalized:
         normalized["adaptive_neumann_terms"] = disabled_adaptive_neumann_terms_value(
             normalized["adaptive_neumann_terms"]
+        )
+    if "pi_adjoint_warmstart" in normalized:
+        normalized["pi_adjoint_warmstart"] = bool_value(
+            "pi_adjoint_warmstart",
+            normalized["pi_adjoint_warmstart"],
+        )
+    if "pi_adjoint_cache_update_mode" in normalized:
+        normalized["pi_adjoint_cache_update_mode"] = (
+            _normalize_pi_adjoint_cache_update_mode(
+                normalized["pi_adjoint_cache_update_mode"]
+            )
         )
     if "use_pruning" in normalized:
         normalized["use_pruning"] = bool_value(
@@ -1242,6 +1266,8 @@ class GeneReconModel(torch.nn.Module):
         small_family_max_leaves: int | None = None,
         lazy_preprocess: bool = False,
         prefetch_batches: int | str | None = None,
+        pi_adjoint_warmstart: bool = False,
+        pi_adjoint_cache_update_mode: str = "immediate",
         origination_probs: (
             torch.Tensor
             | Sequence[float]
@@ -1308,6 +1334,13 @@ class GeneReconModel(torch.nn.Module):
             prefetch_batches,
             lazy=lazy_preprocess,
         )
+        pi_adjoint_warmstart = bool_value(
+            "pi_adjoint_warmstart",
+            pi_adjoint_warmstart,
+        )
+        pi_adjoint_cache_update_mode = _normalize_pi_adjoint_cache_update_mode(
+            pi_adjoint_cache_update_mode
+        )
         _validate_gene_dtype(dataset.dtype)
 
         # Sanity check: dataset flags must be consistent with mode
@@ -1372,6 +1405,8 @@ class GeneReconModel(torch.nn.Module):
         self._gradient_change_rtol = float(gradient_change_rtol)
         self._use_pruning = use_pruning
         self._pruning_threshold = pruning_threshold
+        self._pi_adjoint_warmstart = pi_adjoint_warmstart
+        self._pi_adjoint_cache_update_mode = pi_adjoint_cache_update_mode
         self.max_wave_size = max_wave_size
         self.max_root_wave_size = max_root_wave_size
         self.max_dts_partial_rows = max_dts_partial_rows
@@ -1486,6 +1521,7 @@ class GeneReconModel(torch.nn.Module):
             self.batch_metadata = [
                 _metadata_for_full_static(dataset, mode=mode, static=self._static)
             ]
+            self._apply_pi_adjoint_warmstart_config(self._static, clear_cache=False)
 
     # ──────────────────────────────────────────────────────────────────
     # Construction
@@ -1673,7 +1709,7 @@ class GeneReconModel(torch.nn.Module):
     # Resident batch management
     # ──────────────────────────────────────────────────────────────────
     def _build_batch_static(self, batch_idx: int) -> ReconStaticState:
-        return _build_batch_static_state(
+        static = _build_batch_static_state(
             self._batch_specs[batch_idx],
             dataset=self._dataset,
             species_helpers=self._resident_species_helpers,
@@ -1697,6 +1733,8 @@ class GeneReconModel(torch.nn.Module):
                 self._batch_specs[batch_idx].family_indices,
             ),
         )
+        self._apply_pi_adjoint_warmstart_config(static, clear_cache=False)
+        return static
 
     def _shutdown_prefetch_executor_for_replan(self) -> None:
         with self._batch_lock:
@@ -2010,6 +2048,31 @@ class GeneReconModel(torch.nn.Module):
         elif self._static is None:
             raise RuntimeError("resident static state has not been built")
         return list(self.batch_metadata)
+
+    def _apply_pi_adjoint_warmstart_config(
+        self,
+        static: ReconStaticState,
+        *,
+        clear_cache: bool,
+    ) -> None:
+        static.pi_adjoint_warmstart = bool(self._pi_adjoint_warmstart)
+        static.pi_adjoint_cache_update_mode = self._pi_adjoint_cache_update_mode
+        if clear_cache:
+            _clear_pi_adjoint_runtime_cache(static)
+
+    def configure_pi_adjoint_warmstart(
+        self,
+        *,
+        enabled: bool,
+        cache_update_mode: str = "immediate",
+    ) -> None:
+        """Update Pi-adjoint warm-start policy on defaults and built batches."""
+        warmstart = bool_value("pi_adjoint_warmstart", enabled)
+        cache_mode = _normalize_pi_adjoint_cache_update_mode(cache_update_mode)
+        self._pi_adjoint_warmstart = warmstart
+        self._pi_adjoint_cache_update_mode = cache_mode
+        for static in self.cached_static_states:
+            self._apply_pi_adjoint_warmstart_config(static, clear_cache=True)
 
     def configure_solver_iterations(
         self,

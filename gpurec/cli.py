@@ -96,6 +96,14 @@ def _optional_text(name: str, value: object) -> str:
     return f"{name}={text}"
 
 
+def _optional_bool_text(name: str, value: object) -> str:
+    if value is None:
+        return f"{name}=null"
+    if isinstance(value, bool):
+        return f"{name}={'true' if value else 'false'}"
+    return f"{name}=null"
+
+
 def _log_likelihood_from_result(
     result: Any,
     *,
@@ -221,6 +229,14 @@ def _optimization_result_text(result: Any) -> str:
                         getattr(
                             result,
                             "hessian_sgd_normal_neumann_terms",
+                            None,
+                        ),
+                    ),
+                    _optional_bool_text(
+                        "hessian_sgd_pi_adjoint_warmstart",
+                        getattr(
+                            result,
+                            "hessian_sgd_pi_adjoint_warmstart",
                             None,
                         ),
                     ),
@@ -545,6 +561,10 @@ def _route_metadata_text(route: dict[str, Any]) -> str:
                     route,
                     none_text="full",
                 ),
+                _optional_bool_text(
+                    "hessian_sgd_pi_adjoint_warmstart",
+                    route.get("hessian_sgd_pi_adjoint_warmstart"),
+                ),
             ]
         )
     elif route.get("optimizer") == "adagrad-restarts":
@@ -745,6 +765,7 @@ def _config_template_data(args: argparse.Namespace) -> dict[str, Any]:
                 "fd_hessian_refresh_steps": 16,
                 "hessian_sgd_normal_fixed_iters_pi": None,
                 "hessian_sgd_normal_neumann_terms": None,
+                "hessian_sgd_pi_adjoint_warmstart": False,
                 "final_check_iters": 32,
             }
         )
@@ -815,6 +836,10 @@ def _validate_config_route_text(config: RunConfig) -> str:
                     "hessian_sgd_normal_neumann_terms",
                     route,
                     none_text="full",
+                ),
+                _optional_bool_text(
+                    "hessian_sgd_pi_adjoint_warmstart",
+                    route.get("hessian_sgd_pi_adjoint_warmstart"),
                 ),
             ]
         )
@@ -1103,6 +1128,15 @@ def _add_run_config_args(parser: argparse.ArgumentParser) -> None:
         type=int,
         help=(
             "Optional Neumann iteration budget for hessian-sgd full-stage steps."
+        ),
+    )
+    parser.add_argument(
+        "--hessian-sgd-pi-adjoint-warmstart",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help=(
+            "Enable the experimental staged Pi-adjoint warm-start cache for "
+            "genewise hessian-sgd runs. Workflow default: disabled."
         ),
     )
     parser.add_argument(

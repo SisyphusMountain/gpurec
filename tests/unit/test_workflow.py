@@ -769,6 +769,44 @@ def test_clear_batched_resident_clears_existing_active_warm_state():
     assert static.pi_adjoint_pending_cache is None
 
 
+def test_gene_recon_configure_pi_adjoint_warmstart_updates_static_state():
+    static = SimpleNamespace(
+        pi_adjoint_warmstart=False,
+        pi_adjoint_cache=object(),
+        pi_adjoint_pending_cache=object(),
+        pi_adjoint_cache_update_mode="immediate",
+    )
+    model = GeneReconModel.__new__(GeneReconModel)
+    model._batched_resident = False
+    model._static = static
+    model._pi_adjoint_warmstart = False
+    model._pi_adjoint_cache_update_mode = "immediate"
+
+    model.configure_pi_adjoint_warmstart(enabled=True, cache_update_mode="stage")
+
+    assert model._pi_adjoint_warmstart is True
+    assert model._pi_adjoint_cache_update_mode == "stage"
+    assert static.pi_adjoint_warmstart is True
+    assert static.pi_adjoint_cache_update_mode == "stage"
+    assert static.pi_adjoint_cache is None
+    assert static.pi_adjoint_pending_cache is None
+
+
+def test_gene_recon_configure_pi_adjoint_warmstart_rejects_invalid_mode():
+    model = GeneReconModel.__new__(GeneReconModel)
+    model._pi_adjoint_warmstart = False
+    model._pi_adjoint_cache_update_mode = "immediate"
+
+    with pytest.raises(ValueError, match="pi_adjoint_cache_update_mode"):
+        model.configure_pi_adjoint_warmstart(
+            enabled=True,
+            cache_update_mode="invalid",
+        )
+
+    assert model._pi_adjoint_warmstart is False
+    assert model._pi_adjoint_cache_update_mode == "immediate"
+
+
 def test_close_shuts_down_executor_without_batch_lock():
     class FakeExecutor:
         def __init__(self):
@@ -1224,6 +1262,7 @@ def test_effective_route_metadata_reports_production_likelihood_contract(
     assert route["optimizer_step_cap_reason"] == "configured_steps"
     assert route["hessian_sgd_normal_fixed_iters_pi"] is None
     assert route["hessian_sgd_normal_neumann_terms"] is None
+    assert route["hessian_sgd_pi_adjoint_warmstart"] is False
 
 
 def test_effective_route_metadata_reports_hessian_sgd_normal_solver_overrides(
@@ -1236,6 +1275,7 @@ def test_effective_route_metadata_reports_hessian_sgd_normal_solver_overrides(
         mode="genewise",
         hessian_sgd_normal_fixed_iters_pi=12,
         hessian_sgd_normal_neumann_terms=12,
+        hessian_sgd_pi_adjoint_warmstart=True,
         device="cpu",
     )
 
@@ -1244,6 +1284,7 @@ def test_effective_route_metadata_reports_hessian_sgd_normal_solver_overrides(
     assert route["optimizer"] == "hessian-sgd"
     assert route["hessian_sgd_normal_fixed_iters_pi"] == 12
     assert route["hessian_sgd_normal_neumann_terms"] == 12
+    assert route["hessian_sgd_pi_adjoint_warmstart"] is True
 
 
 def test_run_config_accepts_adam_fd_newton_for_genewise_mode(tmp_path: Path):
@@ -1279,6 +1320,7 @@ def test_run_config_accepts_hessian_sgd_for_genewise_mode(tmp_path: Path):
     assert config.loss_change_tol == pytest.approx(3e-3)
     assert config.hessian_sgd_normal_fixed_iters_pi is None
     assert config.hessian_sgd_normal_neumann_terms is None
+    assert config.hessian_sgd_pi_adjoint_warmstart is False
 
 
 def test_run_config_auto_optimizer_uses_adam_for_shared_theta_modes(tmp_path: Path):
@@ -1560,6 +1602,23 @@ def test_run_config_rejects_hessian_sgd_outside_genewise(tmp_path: Path):
         )
 
 
+def test_run_config_rejects_hessian_sgd_pi_adjoint_warmstart_outside_hessian_sgd(
+    tmp_path: Path,
+):
+    with pytest.raises(
+        ValueError,
+        match="hessian_sgd_pi_adjoint_warmstart requires genewise hessian-sgd",
+    ):
+        RunConfig(
+            species_tree=tmp_path / "sp.nwk",
+            families_file=tmp_path / "families.txt",
+            out_dir=tmp_path / "out",
+            mode="specieswise",
+            device="cpu",
+            hessian_sgd_pi_adjoint_warmstart=True,
+        )
+
+
 def test_run_config_rejects_batched_lbfgs_outside_genewise(tmp_path: Path):
     with pytest.raises(ValueError, match="batched-lbfgs.*genewise"):
         RunConfig(
@@ -1730,6 +1789,8 @@ def test_run_config_rejects_boolean_float_controls(
         ("adaptive_neumann_terms", 0),
         ("adaptive_rebatch", "false"),
         ("adaptive_rebatch", 0),
+        ("hessian_sgd_pi_adjoint_warmstart", "false"),
+        ("hessian_sgd_pi_adjoint_warmstart", 0),
     ],
 )
 def test_run_config_rejects_nonbool_boolean_controls(
@@ -5757,6 +5818,7 @@ def test_optimization_runner_adagrad_restarts_accepts_split_solver_budgets(
     assert result.fd_hessian_refresh_steps is None
     assert result.hessian_sgd_normal_fixed_iters_pi is None
     assert result.hessian_sgd_normal_neumann_terms is None
+    assert result.hessian_sgd_pi_adjoint_warmstart is None
     assert summary["steps_completed"] == result.steps_completed
     assert summary["steps_completed"] == 4
     assert summary["sampling_checkpoint"] == str(result.sampling_checkpoint)
@@ -6097,11 +6159,16 @@ def test_optimization_runner_hessian_sgd_mode_records_public_phase(tmp_path: Pat
         result.hessian_sgd_normal_neumann_terms
         == summary["hessian_sgd_normal_neumann_terms"]
     )
+    assert (
+        result.hessian_sgd_pi_adjoint_warmstart
+        == summary["hessian_sgd_pi_adjoint_warmstart"]
+    )
     assert summary["solver_warmup_iters"] == 0
     assert summary["fd_adam_warmup_steps"] == 3
     assert summary["fd_hessian_refresh_steps"] == 16
     assert summary["hessian_sgd_normal_fixed_iters_pi"] is None
     assert summary["hessian_sgd_normal_neumann_terms"] is None
+    assert summary["hessian_sgd_pi_adjoint_warmstart"] is False
     assert result.adagrad_restart_schedule is None
     assert result.adagrad_restart_total_steps is None
     assert result.adagrad_restart_final_check_iters is None

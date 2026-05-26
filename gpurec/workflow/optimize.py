@@ -90,6 +90,7 @@ class OptimizationResult:
     fd_hessian_refresh_steps: int | None = None
     hessian_sgd_normal_fixed_iters_pi: int | None = None
     hessian_sgd_normal_neumann_terms: int | None = None
+    hessian_sgd_pi_adjoint_warmstart: bool | None = None
     adagrad_restart_schedule: str | None = None
     adagrad_restart_total_steps: int | None = None
     adagrad_restart_final_check_iters: int | None = None
@@ -151,6 +152,14 @@ def _optional_result_text(value: object) -> str | None:
         return None
     text = str(value)
     return text if text else None
+
+
+def _optional_result_bool(value: object) -> bool | None:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return value
+    return None
 
 
 @dataclass(frozen=True)
@@ -4047,6 +4056,9 @@ class OptimizationRunner:
                 ),
                 hessian_sgd_normal_neumann_terms=_optional_result_int(
                     route_metadata.get("hessian_sgd_normal_neumann_terms")
+                ),
+                hessian_sgd_pi_adjoint_warmstart=_optional_result_bool(
+                    route_metadata.get("hessian_sgd_pi_adjoint_warmstart")
                 ),
                 adagrad_restart_schedule=_optional_result_text(
                     route_metadata.get("adagrad_restart_schedule")
