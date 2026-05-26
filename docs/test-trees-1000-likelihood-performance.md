@@ -593,6 +593,15 @@ Rejected follow-ups:
   did not improve (`2.2904487129999325s`, `2.2644186799880117s`,
   `2.269676612049807s`).  Keeping the explicit contiguous boundary is preferable
   until it produces a cold-path win.
+- Warming the two regular phase-1 leaf/no-DTS wave-step variants during resident
+  CUDA warmup was also rejected.  An audit of actual retained batches found
+  `206` phase-1 no-split waves, `922` phase-2 eq1-only split waves, `30`
+  phase-2 mixed split waves, and `21` phase-3 ge2-only split waves.  The
+  prototype passed targeted resident tests (`13 passed`) but did not improve
+  cold end-to-end timing: fixed4 totals were `2.26270189601928s`,
+  `2.3115326509578153s`, `2.304071097052656s`, `2.260307011019904s`,
+  `2.284385512000881s`, `2.2860829039709643s`, `2.2775780250085518s`,
+  `2.2877858880674466s`, and `2.274424984003417s`.
 - The current `clade_first_fit` batches are already balanced for fixed4 Pi
   timing.  A post-warm per-batch split measured `20` full batches between
   about `0.061s` and `0.063s`, plus a tail batch at `0.03352210501907393s`;
