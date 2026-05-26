@@ -1683,6 +1683,7 @@ class OptimizationRunner:
         *,
         baseline_loss: torch.Tensor,
         baseline_grad: torch.Tensor,
+        baseline_at_check_iters: bool = False,
     ) -> dict[str, Any]:
         config = self.config
         check_iters = self._final_iteration_check_iters()
@@ -1737,6 +1738,17 @@ class OptimizationRunner:
             if baseline_grad.numel()
             else 0.0
         )
+        if baseline_at_check_iters:
+            return {
+                "optimizer/final_check_status": "baseline",
+                "optimizer/final_check_iters": check_iters,
+                "optimizer/final_check_iters_E": check_iters_E,
+                "optimizer/final_check_evals": 0,
+                "optimizer/final_check_loss_abs_delta_bits": 0.0,
+                "optimizer/final_check_grad_max_abs_delta": 0.0,
+                "optimizer/final_check_baseline_grad_inf": baseline_grad_inf,
+                "optimizer/final_check_grad_inf": baseline_grad_inf,
+            }
         try:
             _clear_cached_solver_runtime_state(model)
             configure_solver(
@@ -5067,9 +5079,10 @@ class OptimizationRunner:
                     status = {"status": "not_converged", "reason": "max_steps"}
 
             final_eval_started = time.perf_counter()
-            if not self._configure_specieswise_final_eval_solver_stage(model) and (
-                batchwise_active_optimizer
-            ):
+            final_eval_at_check_iters = (
+                self._configure_specieswise_final_eval_solver_stage(model)
+            )
+            if not final_eval_at_check_iters and batchwise_active_optimizer:
                 self._configure_solver_stage(model, "full")
             model.theta.grad = None
             final_per_family_nll: torch.Tensor | None = None
@@ -5152,6 +5165,7 @@ class OptimizationRunner:
                         model,
                         baseline_loss=final_loss,
                         baseline_grad=model.theta.grad,
+                        baseline_at_check_iters=final_eval_at_check_iters,
                     )
                 )
                 _final_projected_grad, final_projected_grad_inf = (

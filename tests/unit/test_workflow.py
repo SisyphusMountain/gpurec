@@ -10707,6 +10707,7 @@ def test_final_iteration_check_runs_for_specieswise_mode(tmp_path: Path):
     ]
 
 
+
 def test_final_iteration_check_rejects_broadcastable_gradient_shape(tmp_path: Path):
     class FakeTheta:
         def __init__(self):
@@ -10765,6 +10766,47 @@ def test_final_iteration_check_rejects_broadcastable_gradient_shape(tmp_path: Pa
         {"fixed_iters_E": 32, "fixed_iters_Pi": 32, "neumann_terms": 32},
         {"fixed_iters_E": 6, "fixed_iters_Pi": 16, "neumann_terms": 16},
     ]
+
+
+def test_final_iteration_check_skips_duplicate_when_baseline_is_check_iters(
+    tmp_path: Path,
+):
+    config = _optimizer_mode_config(
+        tmp_path,
+        optimizer="lbfgsb",
+        mode="specieswise",
+        fixed_iters_e=6,
+        fixed_iters_pi=16,
+        neumann_terms=16,
+        final_check_iters=32,
+    )
+    runner = OptimizationRunner(config)
+    model = _WorkflowSpecieswiseOptimizerModeModel()
+    solver_configs: list[dict[str, object]] = []
+
+    def configure_solver_iterations(**kwargs):
+        solver_configs.append(dict(kwargs))
+
+    model.configure_solver_iterations = configure_solver_iterations
+    model.theta.grad = None
+    baseline_loss = model.full_loss()
+    baseline_loss.backward()
+    baseline_grad = model.theta.grad.detach().clone()
+
+    metrics = runner._evaluate_final_iteration_check(
+        model,
+        baseline_loss=baseline_loss,
+        baseline_grad=baseline_grad,
+        baseline_at_check_iters=True,
+    )
+
+    assert metrics["optimizer/final_check_status"] == "baseline"
+    assert metrics["optimizer/final_check_iters"] == 32
+    assert metrics["optimizer/final_check_iters_E"] == 32
+    assert metrics["optimizer/final_check_evals"] == 0
+    assert metrics["optimizer/final_check_loss_abs_delta_bits"] == pytest.approx(0.0)
+    assert metrics["optimizer/final_check_grad_max_abs_delta"] == pytest.approx(0.0)
+    assert solver_configs == []
 
 
 def test_final_iteration_check_skipped_or_disabled_reports_reason(tmp_path: Path):
