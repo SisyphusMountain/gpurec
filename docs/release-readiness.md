@@ -23,6 +23,10 @@ The current release contract is explicit rather than unresolved:
 - Source archives include `crates/gpurec-backtrack/` and support the locked
   source-archive `cargo run` fallback.  That fallback requires Rust/Cargo and
   fetches the pinned `rustree` git dependency declared by the crate lockfile.
+- Python backtracking helpers with native backend resolution may use a
+  compatible external PyO3 library selected with `GPUREC_BACKTRACK_NATIVE_LIB`.
+  This does not replace the CLI binary requirement for `gpurec sample`,
+  `gpurec run`, or `gpurec backtrack-check`.
 - Release notes and deployment docs must state the wheel-only external-binary
   requirement unless a future packaging change ships and smokes a bundled
   binary.  Any such change must update the README, package-data checks,

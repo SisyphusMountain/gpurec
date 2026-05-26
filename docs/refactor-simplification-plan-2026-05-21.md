@@ -299,9 +299,12 @@ Plan:
   state.
 - Keep only stable user-facing env vars:
   - `GPUREC_BACKTRACK_BIN`;
+  - `GPUREC_BACKTRACK_NATIVE_LIB`;
   - `GPUREC_ALERAX_COMPAT`;
   - `GPUREC_MEMORY_POLICY_FRACTION`;
-  - `GPUREC_MEMORY_POLICY_RESERVE_GIB`.
+  - `GPUREC_MEMORY_POLICY_RESERVE_GIB`;
+  - `GPUREC_PREPROCESS_BIN`;
+  - `GPUREC_PREPROCESS_NATIVE_LIB`.
 - Move kernel block-size tuning and prototype selectors to profiling scripts or
   explicit constructor/debug arguments.
 - Remove env reads from per-wave hot loops.

@@ -187,8 +187,11 @@ from gpurec import (
 )
 ```
 
-These helpers use the same Rust backtracking binary configuration documented
-below for `gpurec sample` and `gpurec run`.
+The `sample_recphyloxml*` helpers accept `backend="auto"`, `"native"`, or
+`"cli"`; `auto` uses the in-process native Rust extension unless
+`backtrack_binary` or `GPUREC_BACKTRACK_BIN` selects the CLI/binary path.
+`sample_backtracking_summaries()` is native-only.  The `gpurec sample` and
+`gpurec run` commands use the binary configuration documented below.
 
 Top-level entropy helpers are available for analytical reconciliation entropy:
 
@@ -557,6 +560,14 @@ source archive.  It requires a Rust toolchain and fetches the pinned `rustree`
 git dependency declared by `crates/gpurec-backtrack/Cargo.toml`; otherwise use a
 prebuilt binary.
 
+Python callers that use `sample_recphyloxml*` with `backend="native"` or
+`backend="auto"` can point `GPUREC_BACKTRACK_NATIVE_LIB` at a prebuilt PyO3
+backtracking extension.  Without that variable, source checkouts build
+`crates/gpurec-backtrack` with Cargo when the default release library is
+missing.  The native extension is for Python helper calls; CLI sampling still
+uses `GPUREC_BACKTRACK_BIN`, `--backtrack-binary`, or the source-tree Cargo
+binary fallback.
+
 ### Runtime Environment Flags
 
 Most production settings should be expressed through JSON config files or CLI
@@ -573,6 +584,7 @@ Triton-only.
 | `GPUREC_PREPROCESS_NATIVE_LIB` | Optional path to a prebuilt native Rust preprocessing extension. |
 | `GPUREC_PREPROCESS_BIN` | Optional path to the Rust preprocessing CLI used by the subprocess adapter and profiling helpers. |
 | `GPUREC_BACKTRACK_BIN` | Path to the Rust backtracking binary used by `gpurec sample`, `gpurec run`, and `gpurec backtrack-check`. |
+| `GPUREC_BACKTRACK_NATIVE_LIB` | Optional path to a prebuilt native Rust backtracking extension used by Python helper calls with `backend="native"` or native `auto` resolution. |
 | `GPUREC_ALERAX_COMPAT` | Compatibility guard; differentiable model optimization supports only unset or `0`. |
 | `GPUREC_MEMORY_POLICY_FRACTION`, `GPUREC_MEMORY_POLICY_RESERVE_GIB` | GPU memory-budget margins used by uniform chunk planning. |
 

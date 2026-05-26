@@ -63,6 +63,7 @@ _ENV_OWNER_CATEGORIES = frozenset(
 _SUPPORTED_ENV_FLAGS = frozenset(
     {
         "GPUREC_BACKTRACK_BIN",
+        "GPUREC_BACKTRACK_NATIVE_LIB",
         "GPUREC_ALERAX_COMPAT",
         "GPUREC_MEMORY_POLICY_FRACTION",
         "GPUREC_MEMORY_POLICY_RESERVE_GIB",
@@ -2514,7 +2515,7 @@ def test_project_readme_documents_supported_environment_flags_only():
     project_readme = (root / "README.md").read_text(encoding="utf-8")
     package_env_flags = _package_env_flags(root)
 
-    assert _SUPPORTED_ENV_FLAGS.issubset(package_env_flags)
+    assert sorted(package_env_flags) == sorted(_SUPPORTED_ENV_FLAGS)
     assert sorted(name for name in _SUPPORTED_ENV_FLAGS if name not in project_readme) == []
     assert sorted(name for name in _UNSUPPORTED_ENV_DOC_FLAGS if name in project_readme) == []
 
@@ -2530,6 +2531,7 @@ def test_runtime_surface_plan_records_package_environment_owners():
 
     assert _SUPPORTED_ENV_FLAGS.issubset(package_env_flags)
     assert _SUPPORTED_ENV_FLAGS.issubset(runtime_read_flags)
+    assert sorted(runtime_read_flags) == sorted(_SUPPORTED_ENV_FLAGS)
     assert sorted(owner_by_flag) == sorted(_SUPPORTED_ENV_FLAGS)
     assert sorted(
         flag
@@ -2556,6 +2558,8 @@ def test_project_readme_excludes_removed_diagnostic_environment_matrix():
         "Kernel routing, scheduler selection, cache locations, and launch tuning "
         "are not supported environment contracts",
         "Rust preprocessing discovery",
+        "`GPUREC_BACKTRACK_NATIVE_LIB`",
+        "Python helper calls with `backend=\"native\"`",
     ):
         assert token in normalized
     assert sorted(name for name in _UNSUPPORTED_ENV_DOC_FLAGS if name in project_readme) == []

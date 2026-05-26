@@ -1016,6 +1016,8 @@ def test_release_readiness_documents_sampling_binary_distribution_contract():
         "locked\n  source-archive `cargo run` fallback",
         "requires Rust/Cargo",
         "pinned `rustree` git dependency",
+        "`GPUREC_BACKTRACK_NATIVE_LIB`",
+        "does not replace the CLI binary requirement",
         "Release notes and deployment docs must state the wheel-only",
         "update the README, package-data checks,\n  installed-wheel smoke, and source-archive smoke together",
         "current release contract, not a\nseparate no-publish blocker",
@@ -1179,8 +1181,10 @@ def test_readme_documents_installed_sampling_binary_setup():
         "crates/gpurec-backtrack/Cargo.toml"
     ) in readme
     assert "GPUREC_BACKTRACK_BIN" in readme
+    assert "GPUREC_BACKTRACK_NATIVE_LIB" in readme
     assert "--backtrack-binary" in readme
     assert "gpurec backtrack-check" in readme
+    assert 'backend="native"' in readme
     assert "The same `GPUREC_BACKTRACK_BIN` environment variable" in readme
     assert "fallback works from a source checkout or unpacked\nsource archive" in readme
     assert "source-archive `cargo run` fallback" in normalized_guide

@@ -200,17 +200,18 @@ those reads are not public contracts.
 
 | Variable(s) | Current ownership | Runtime owner / notes |
 | --- | --- | --- |
-| `GPUREC_BACKTRACK_BIN` | User-facing | Binary/distribution contract for `gpurec sample`, `gpurec run`, and `gpurec backtrack-check`. |
+| `GPUREC_BACKTRACK_BIN` | User-facing | Binary/distribution contract for `gpurec sample`, `gpurec run`, `gpurec backtrack-check`, and Python backtracking helpers forced onto `backend="cli"`. |
+| `GPUREC_BACKTRACK_NATIVE_LIB` | User-facing discovery | Optional native PyO3 backtracking library discovery for Python helper calls using `backend="native"` or native `auto` resolution. CLI sampling still uses `GPUREC_BACKTRACK_BIN`, `--backtrack-binary`, or the source-tree Cargo binary fallback. |
 | `GPUREC_ALERAX_COMPAT` | User-facing compatibility | Compatibility guard read by API validation; supported differentiable optimization accepts only unset or `0`. |
 | `GPUREC_MEMORY_POLICY_FRACTION`, `GPUREC_MEMORY_POLICY_RESERVE_GIB` | User-facing | Memory-budget margins for uniform chunk planning. |
 | `GPUREC_PREPROCESS_BIN`, `GPUREC_PREPROCESS_NATIVE_LIB` | User-facing discovery | Optional Rust preprocessing CLI/native-library discovery while source builds and prebuilt artifacts coexist. |
 
 Supported environment flags are limited to `GPUREC_BACKTRACK_BIN`,
-`GPUREC_ALERAX_COMPAT`, `GPUREC_MEMORY_POLICY_FRACTION`,
-`GPUREC_MEMORY_POLICY_RESERVE_GIB`, `GPUREC_PREPROCESS_BIN`, and
-`GPUREC_PREPROCESS_NATIVE_LIB`.  Scheduler backend selection, preprocess cache
-locations, backward CUDA/Triton selectors, and kernel launch tuning are not
-supported environment contracts.
+`GPUREC_BACKTRACK_NATIVE_LIB`, `GPUREC_ALERAX_COMPAT`,
+`GPUREC_MEMORY_POLICY_FRACTION`, `GPUREC_MEMORY_POLICY_RESERVE_GIB`,
+`GPUREC_PREPROCESS_BIN`, and `GPUREC_PREPROCESS_NATIVE_LIB`.  Scheduler backend
+selection, preprocess cache locations, backward CUDA/Triton selectors, and
+kernel launch tuning are not supported environment contracts.
 
 Plan:
 
