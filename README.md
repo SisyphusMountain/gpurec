@@ -355,7 +355,9 @@ basis, optimizer-specific route fields,
 `final_check_reason`,
 `final_check_fallback_clade_budget`, `final_check_loss_abs_delta_bits`,
 `final_check_grad_max_abs_delta`, and `final_check_grad_rel_inf_delta` for
-quick terminal triage.
+quick terminal triage. Add `--require-converged` to `gpurec optimize` when a
+shell pipeline should print the same optimization status line and then exit
+nonzero unless the run reached `status=converged`.
 
 See [`docs/output-artifacts.md`](docs/output-artifacts.md) for the output
 artifact contract, including history fields, checkpoint contents, rate-table

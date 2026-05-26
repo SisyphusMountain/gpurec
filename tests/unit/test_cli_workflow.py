@@ -63,7 +63,9 @@ def test_run_config_cli_surface_matches_dataclass_fields():
 
     assert set(_run_config_cli_override_fields()) == run_config_fields
     assert not hasattr(gpurec_cli, "_RUN_CONFIG_CLI_OVERRIDE_FIELDS")
-    assert _parser_action_dests("optimize") == expected_parser_dests
+    assert _parser_action_dests("optimize") == (
+        expected_parser_dests | {"require_converged"}
+    )
     assert _parser_action_dests("validate-config") == (
         expected_parser_dests | {"check_preprocess", "require_cuda_backward_ready"}
     )
@@ -1817,6 +1819,68 @@ def test_cli_optimize_reports_final_and_best_objective_summary(
     assert "Traceback" not in captured.err
 
 
+def test_cli_optimize_require_converged_accepts_converged_result(
+    tmp_path: Path,
+    capsys,
+    monkeypatch,
+):
+    def converged_optimize(config):
+        return SimpleNamespace(
+            out_dir=config.out_dir,
+            status="converged",
+            reason="best_likelihood_patience",
+            mode=config.mode,
+            optimizer=config.optimizer,
+            final_nll_bits=10.0,
+            best_nll_bits=9.5,
+        )
+
+    monkeypatch.setattr("gpurec.cli.optimize", converged_optimize)
+
+    main(_minimal_workflow_cli_args("optimize", tmp_path) + ["--require-converged"])
+
+    captured = capsys.readouterr()
+    assert "status=converged" in captured.out
+    assert "reason=best_likelihood_patience" in captured.out
+    assert "final_nll_bits=10.000000" in captured.out
+    assert "best_nll_bits=9.500000" in captured.out
+    assert captured.err == ""
+
+
+def test_cli_optimize_require_converged_fails_after_printing_status(
+    tmp_path: Path,
+    capsys,
+    monkeypatch,
+):
+    def not_converged_optimize(config):
+        return SimpleNamespace(
+            out_dir=config.out_dir,
+            status="not_converged",
+            reason="max_steps",
+            mode=config.mode,
+            optimizer=config.optimizer,
+            final_nll_bits=12.0,
+            best_nll_bits=11.0,
+        )
+
+    monkeypatch.setattr("gpurec.cli.optimize", not_converged_optimize)
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(_minimal_workflow_cli_args("optimize", tmp_path) + ["--require-converged"])
+
+    captured = capsys.readouterr()
+    assert exc_info.value.code == 1
+    assert "status=not_converged" in captured.out
+    assert "reason=max_steps" in captured.out
+    assert "mode=genewise" in captured.out
+    assert "optimizer=hessian-sgd" in captured.out
+    assert "final_nll_bits=12.000000" in captured.out
+    assert "best_nll_bits=11.000000" in captured.out
+    assert "optimization status is 'not_converged'; expected 'converged'" in captured.err
+    assert "usage:" not in captured.err
+    assert "Traceback" not in captured.err
+
+
 def test_optimization_result_text_reports_adagrad_restart_route_fields():
     text = gpurec_cli._optimization_result_text(
         SimpleNamespace(
@@ -2276,6 +2340,7 @@ def test_cli_optimize_help_describes_config_and_path_inputs(capsys):
     assert "contiguous/input_order" in captured.out
     assert "ffd/clade_ffd" in captured.out
     assert "depth_ffd/wave_first_fit" in captured.out
+    assert "--require-converged" in captured.out
 
 
 def test_cli_sample_help_describes_checkpoint_and_backtracking(capsys):

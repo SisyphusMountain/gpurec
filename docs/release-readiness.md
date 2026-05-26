@@ -38,6 +38,7 @@ and the specieswise Adagrad restart schedule, and verifies the
 `gpurec summary-info --help` and `gpurec checkpoint-info --help` so artifact
 inspection stays available without CUDA model construction, including the
 `--require-converged` summary gate for automation. The same package job checks
+`gpurec optimize --help` for the direct optimization convergence gate and
 `gpurec run --help` for the matching pre-sampling convergence gate, keeps
 examples out of wheels while requiring them in the source
 archive, verifies the minimal example config points to source-archive files,
@@ -155,6 +156,7 @@ CUDA_VISIBLE_DEVICES='' gpurec --help
 CUDA_VISIBLE_DEVICES='' python -m gpurec.cli --help
 CUDA_VISIBLE_DEVICES='' gpurec config-template --mode genewise
 CUDA_VISIBLE_DEVICES='' gpurec config-template --mode specieswise
+CUDA_VISIBLE_DEVICES='' gpurec optimize --help
 CUDA_VISIBLE_DEVICES='' gpurec validate-config --config examples/minimal-run-config.json
 CUDA_VISIBLE_DEVICES='' gpurec summary-info --help
 CUDA_VISIBLE_DEVICES='' gpurec checkpoint-info --help

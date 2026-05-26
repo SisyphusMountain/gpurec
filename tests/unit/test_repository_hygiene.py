@@ -1312,6 +1312,7 @@ def test_project_readme_documents_gpurec_run_end_to_end_workflow():
     )
     assert "objective, gradient route, rate parameterization" in normalized
     assert "optimizer-specific route fields" in normalized
+    assert "Add `--require-converged` to `gpurec optimize`" in project_readme
     assert "`final_grad_inf`" in project_readme
     assert "`final_projected_grad_inf`" in project_readme
     assert "`sampled_families`, `samples`, `xml`, and `sample_out_dir`" in project_readme
@@ -1503,6 +1504,7 @@ def test_output_artifact_reference_is_linked_and_documents_contract():
         "`optimizer_step_cap`",
         "gpurec summary-info --summary output_gpurec/summary.json",
         "`--require-converged`",
+        "gpurec optimize` when the command should print",
         "gpurec checkpoint-info --checkpoint output_gpurec/checkpoints/latest.pt",
         "`likelihood/data_nll_bits`",
         "`grad/projected_inf`",
@@ -1537,6 +1539,7 @@ def test_troubleshooting_guide_documents_operator_failure_triage():
         "`summary.json`",
         "gpurec summary-info --summary output/summary.json",
         "`--require-converged`",
+        "gpurec optimize --require-converged",
         "gpurec run --require-converged",
         "final-check likelihood/gradient deltas",
         "gpurec checkpoint-info --checkpoint output/checkpoints/latest.pt",

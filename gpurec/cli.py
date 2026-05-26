@@ -1231,6 +1231,14 @@ def build_parser() -> argparse.ArgumentParser:
         description="Optimize D/T/L likelihood parameters from AleRax-style family inputs.",
     )
     _add_run_config_args(optimize_parser)
+    optimize_parser.add_argument(
+        "--require-converged",
+        action="store_true",
+        help=(
+            "After printing the optimization status, exit with status 1 unless "
+            "the status is converged."
+        ),
+    )
     optimize_parser.set_defaults(_command_parser=optimize_parser)
 
     validate_parser = sub.add_parser(
@@ -1417,6 +1425,15 @@ def main(argv: list[str] | None = None) -> None:
         )
         if result.status == "failed":
             command_parser.exit(status=1)
+        if args.require_converged and result.status != "converged":
+            command_parser.exit(
+                status=1,
+                message=(
+                    "optimization status is "
+                    f"{result.status!r}; expected 'converged'"
+                    "\n"
+                ),
+            )
         return
     if args.command == "validate-config":
         try:

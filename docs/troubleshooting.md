@@ -53,6 +53,8 @@ gpurec summary-info --summary output/summary.json
 
 Use `--require-converged` when a shell pipeline, Snakemake rule, or Nextflow
 process should fail unless the run ended with `status=converged`.
+Use `gpurec optimize --require-converged` when the optimization command itself
+should return nonzero after a `not_converged` status.
 For combined optimize-and-sample pipelines, use `gpurec run --require-converged`
 to print the optimization status and stop before sampling unless optimization
 converged.

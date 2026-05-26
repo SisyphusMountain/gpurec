@@ -206,6 +206,9 @@ Use `gpurec summary-info --summary output_gpurec/summary.json` for the same
 status, objective, gradient, and route fields in a stable terminal record. Add
 `--require-converged` for strict automation gates that should fail on
 `not_converged` or `failed` summaries.
+For direct optimization workflows, add `gpurec optimize --require-converged`
+when the optimize command itself should return nonzero for `not_converged`
+instead of relying on a later `summary-info` check.
 For combined optimize-and-sample workflows, add
 `gpurec run --require-converged` when sampling should be skipped unless
 optimization reached `status=converged`.

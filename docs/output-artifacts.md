@@ -81,6 +81,9 @@ step cap, `final_check_iters`, optimizer-specific route fields,
 same final/best NLL and log-likelihood fields, plus `final_grad_inf`,
 `final_projected_grad_inf`, and the final validation source, reason, status,
 and fallback budget/loss/gradient delta fields, for quick terminal triage.
+Add `--require-converged` to `gpurec optimize` when the command should print
+the same status line and then exit nonzero unless the optimization status is
+`converged`.
 Text and path values that contain whitespace or control characters are emitted
 as JSON strings with spaces escaped as `\u0020` so each status line remains one
 record.
