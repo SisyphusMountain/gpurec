@@ -151,6 +151,10 @@ def _optimization_result_text(result: Any) -> str:
                 getattr(result, "optimizer_step_cap_reason", None),
             ),
             _optional_int_text(
+                "final_check_iters",
+                getattr(result, "final_check_iters", None),
+            ),
+            _optional_int_text(
                 "steps_completed",
                 getattr(result, "steps_completed", None),
             ),

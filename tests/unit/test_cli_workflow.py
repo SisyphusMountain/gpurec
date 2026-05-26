@@ -1495,6 +1495,7 @@ def test_cli_optimize_reports_final_and_best_objective_summary(
             configured_steps=config.steps,
             optimizer_step_cap=config.steps,
             optimizer_step_cap_reason="configured_steps",
+            final_check_iters=config.final_check_iters,
             steps_completed=7,
             elapsed_s=3.25,
             best_step=5,
@@ -1534,6 +1535,7 @@ def test_cli_optimize_reports_final_and_best_objective_summary(
     assert "configured_steps=5000" in captured.out
     assert "optimizer_step_cap=5000" in captured.out
     assert "optimizer_step_cap_reason=configured_steps" in captured.out
+    assert "final_check_iters=32" in captured.out
     assert "steps_completed=7" in captured.out
     assert "elapsed_s=3.250000" in captured.out
     assert "best_step=5" in captured.out
@@ -1652,6 +1654,7 @@ def test_cli_run_samples_reported_checkpoint_instead_of_stale_best(
             configured_steps=config.steps,
             optimizer_step_cap=config.steps,
             optimizer_step_cap_reason="configured_steps",
+            final_check_iters=config.final_check_iters,
             steps_completed=3,
             elapsed_s=4.5,
             best_step=2,
@@ -1695,6 +1698,7 @@ def test_cli_run_samples_reported_checkpoint_instead_of_stale_best(
     assert "configured_steps=5000" in captured.out
     assert "optimizer_step_cap=5000" in captured.out
     assert "optimizer_step_cap_reason=configured_steps" in captured.out
+    assert "final_check_iters=32" in captured.out
     assert "steps_completed=3" in captured.out
     assert "elapsed_s=4.500000" in captured.out
     assert "best_step=2" in captured.out

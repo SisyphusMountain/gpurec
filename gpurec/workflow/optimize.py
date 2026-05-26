@@ -70,6 +70,7 @@ class OptimizationResult:
     configured_steps: int | None = None
     optimizer_step_cap: int | None = None
     optimizer_step_cap_reason: str | None = None
+    final_check_iters: int | None = None
     final_projected_grad_inf: float | None = None
     sampling_checkpoint: Path | None = None
     final_log_likelihood_bits: float | None = None
@@ -3919,6 +3920,7 @@ class OptimizationRunner:
                 optimizer_step_cap_reason=_optional_result_text(
                     route_metadata.get("optimizer_step_cap_reason")
                 ),
+                final_check_iters=int(route_metadata["final_check_iters"]),
                 final_projected_grad_inf=final_projected_grad_inf,
                 sampling_checkpoint=sampling_checkpoint,
                 final_log_likelihood_bits=final_log_likelihood_bits,

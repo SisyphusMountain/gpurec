@@ -344,7 +344,8 @@ The `gpurec optimize` status line and the optimization portion of
 `gpurec run` also print the resolved `mode` and `optimizer`, plus objective,
 gradient route, rate parameterization, production default basis,
 `configured_steps`, `optimizer_step_cap`, `optimizer_step_cap_reason`,
-`steps_completed`, `elapsed_s`, `best_step`, `sampling_checkpoint`,
+`final_check_iters`, `steps_completed`, `elapsed_s`, `best_step`,
+`sampling_checkpoint`,
 `final_nll_bits`, `final_log_likelihood_bits`, `best_nll_bits`, and
 `best_log_likelihood_bits`, plus `final_grad_inf`,
 `final_projected_grad_inf`, `final_check_status`, `final_check_source`,

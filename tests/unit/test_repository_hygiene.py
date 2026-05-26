@@ -1303,8 +1303,11 @@ def test_project_readme_documents_gpurec_run_end_to_end_workflow():
         "`configured_steps`, `optimizer_step_cap`, `optimizer_step_cap_reason`"
         in project_readme
     )
+    assert (
+        "`final_check_iters`, `steps_completed`, `elapsed_s`, `best_step`"
+        in project_readme
+    )
     assert "objective, gradient route, rate parameterization" in normalized
-    assert "`steps_completed`, `elapsed_s`, `best_step`" in project_readme
     assert "`final_grad_inf`" in project_readme
     assert "`final_projected_grad_inf`" in project_readme
     assert "`sampled_families`, `samples`, `xml`, and `sample_out_dir`" in project_readme

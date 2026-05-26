@@ -19,6 +19,8 @@ route fields `objective=negative_log_likelihood_bits`,
 `rate_parameterization=base2_log_dlt_rates`, and
 `production_default_basis=hogenom_and_test_trees_1000` so exported artifacts
 carry the likelihood, gradient, parameterization, and benchmark-basis contract.
+They also report `final_check_iters`, the solver iteration budget used for the
+final high-fidelity likelihood/gradient validation.
 
 `theta` stores base-2 log rates for duplication, loss, and transfer. The public
 rate table writes columns in D/T/L order as probabilities/rates plus the raw

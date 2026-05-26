@@ -5610,6 +5610,7 @@ def test_optimization_runner_adagrad_restarts_accepts_split_solver_budgets(
     assert result.configured_steps == summary["configured_steps"]
     assert result.optimizer_step_cap == summary["optimizer_step_cap"]
     assert result.optimizer_step_cap_reason == summary["optimizer_step_cap_reason"]
+    assert result.final_check_iters == summary["final_check_iters"]
     assert summary["steps_completed"] == result.steps_completed
     assert summary["steps_completed"] == 4
     assert summary["sampling_checkpoint"] == str(result.sampling_checkpoint)
@@ -7961,6 +7962,7 @@ def test_optimization_runner_run_writes_outputs_with_fake_model(tmp_path: Path):
     assert result.configured_steps == summary["configured_steps"]
     assert result.optimizer_step_cap == summary["optimizer_step_cap"]
     assert result.optimizer_step_cap_reason == summary["optimizer_step_cap_reason"]
+    assert result.final_check_iters == summary["final_check_iters"]
     assert summary["batch_packing"] == "depth_first_fit"
     assert summary["family_chunk_size"] == 0
     assert summary["clade_budget"] == 500_000
