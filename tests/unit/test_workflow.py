@@ -1095,7 +1095,12 @@ def test_full_loss_for_theta_uses_streaming_contract_for_explicit_theta():
     object.__setattr__(
         model,
         "_dataset",
-        SimpleNamespace(S=2, families=[object(), object()]),
+        SimpleNamespace(
+            S=2,
+            families=[object(), object()],
+            device=torch.device("cpu"),
+            dtype=torch.float64,
+        ),
     )
     calls: list[dict[str, object]] = []
 

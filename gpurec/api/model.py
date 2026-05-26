@@ -1342,6 +1342,8 @@ class GeneReconModel(torch.nn.Module):
                 mode=mode,
                 species_count=int(dataset.S),
                 family_count=len(dataset.families),
+                device=dataset.device,
+                dtype=dataset.dtype,
             )
 
         require_cuda_device(dataset.device, owner="GeneReconModel")
@@ -2331,6 +2333,8 @@ class GeneReconModel(torch.nn.Module):
             mode=self._mode,
             species_count=int(self._dataset.S),
             family_count=len(self._dataset.families),
+            device=self._dataset.device,
+            dtype=self._dataset.dtype,
         )
         if torch.is_grad_enabled() and theta.requires_grad:
             return _GeneReconFullLossFunction.apply(theta, self)

@@ -23,6 +23,7 @@ from gpurec.api._validation import (
     positive_int_sequence,
     require_cuda_device,
     theta_init_base_from_rates,
+    validate_theta_shape,
 )
 from gpurec.workflow.config import RunConfig
 from gpurec.workflow.model_factory import build_alerax_workflow_model
@@ -161,6 +162,40 @@ def test_gene_recon_model_rejects_invalid_theta_init_values_before_device_check(
         )
 
 
+def test_gene_recon_model_rejects_theta_init_device_and_dtype_before_device_check() -> None:
+    dataset = _fake_dataset_for_mode("global")
+
+    with pytest.raises(ValueError, match="theta_init dtype"):
+        GeneReconModel(
+            dataset=dataset,  # type: ignore[arg-type]
+            mode="global",
+            theta_init=torch.zeros(3, dtype=torch.float32),
+        )
+
+    dataset.device = torch.device("cuda")
+    with pytest.raises(ValueError, match="theta_init device"):
+        GeneReconModel(
+            dataset=dataset,  # type: ignore[arg-type]
+            mode="global",
+            theta_init=torch.zeros(3, dtype=torch.float64),
+        )
+
+
+def test_validate_theta_shape_checks_device_before_finite_values() -> None:
+    meta_theta = torch.empty(3, device="meta", dtype=torch.float64)
+
+    with pytest.raises(ValueError, match="theta device"):
+        validate_theta_shape(
+            "theta",
+            meta_theta,
+            mode="global",
+            species_count=2,
+            family_count=2,
+            device=torch.device("cpu"),
+            dtype=torch.float64,
+        )
+
+
 @pytest.mark.parametrize(
     ("mode", "theta"),
     [
@@ -203,6 +238,42 @@ def test_full_loss_for_theta_rejects_invalid_explicit_theta_values_before_stream
 
     def unexpected_stream(*_args: object, **_kwargs: object) -> None:
         raise AssertionError("streaming should not run for invalid theta values")
+
+    model._stream_full_batches = unexpected_stream  # type: ignore[method-assign]
+
+    with pytest.raises(ValueError, match=message):
+        model.full_loss_for_theta(theta)
+
+
+@pytest.mark.parametrize(
+    ("theta", "dataset_updates", "message"),
+    [
+        (
+            torch.zeros(3, dtype=torch.float32),
+            {},
+            "theta dtype",
+        ),
+        (
+            torch.zeros(3, dtype=torch.float64),
+            {"device": torch.device("cuda")},
+            "theta device",
+        ),
+    ],
+)
+def test_full_loss_for_theta_rejects_explicit_theta_device_or_dtype_before_streaming(
+    theta: torch.Tensor,
+    dataset_updates: dict[str, object],
+    message: str,
+) -> None:
+    model = object.__new__(GeneReconModel)
+    model._mode = "global"
+    dataset = _fake_dataset_for_mode("global")
+    for name, value in dataset_updates.items():
+        setattr(dataset, name, value)
+    model._dataset = dataset
+
+    def unexpected_stream(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("streaming should not run for invalid theta metadata")
 
     model._stream_full_batches = unexpected_stream  # type: ignore[method-assign]
 

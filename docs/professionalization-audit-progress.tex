@@ -7460,6 +7460,16 @@ touched modules compile, and the focused workflow/CLI/reference selector reports
 \texttt{5 passed}.  The full CPU unit gate reports
 \texttt{1461 passed, 1 skipped, 51 deselected}.
 
+Public explicit-theta likelihood probes now validate device and dtype before
+resident-batch streaming, in addition to the existing mode-specific theta shape
+and finite-value checks.  \texttt{GeneReconModel(..., theta\_init=...)} and
+\texttt{GeneReconModel.full\_loss\_for\_theta(theta)} now both use the shared
+\texttt{validate\_theta\_shape()} device/dtype contract, so direct API callers
+get field-specific \texttt{ValueError}s before CUDA/static-state failures.  The
+touched modules compile, and the focused validation/workflow/docs selector
+reports \texttt{7 passed}.  The full CPU unit gate reports
+\texttt{1465 passed, 1 skipped, 51 deselected}.
+
 \section{Next Audit Targets}
 
 \begin{enumerate}[leftmargin=*]

@@ -120,8 +120,9 @@ one-dimensional tensor as family-indexed.
 `model.materialize_batches()` builds every resident batch static state and
 returns a copy of the batch metadata list, which is useful before diagnostics or
 solver reconfiguration that should touch every batch.  `model.full_loss_for_theta(theta)`
-streams all resident batches with an explicit theta tensor; differentiable
-probes use the gradient-producing streaming path, while calls made under
+streams all resident batches with an explicit theta tensor that matches the
+active sharing-mode shape, model device, and model dtype; differentiable probes
+use the gradient-producing streaming path, while calls made under
 `torch.no_grad()` use the loss-only streaming path.
 
 For large global/uniform datasets, `UniformChunkedReconModel.loss_and_grad()`

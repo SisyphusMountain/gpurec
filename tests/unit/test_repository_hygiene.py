@@ -420,7 +420,7 @@ def test_internal_api_helper_modules_document_support_boundary():
     ):
         assert token in validation_doc
     assert (
-        "active sharing mode"
+        "shape, dtype, and device for the active sharing mode"
         in validation_docstrings["validate_theta_shape"]
     )
     assert "Direct imports from `gpurec.core` are unstable" in docs_readme
@@ -2542,6 +2542,7 @@ def test_project_readme_and_model_docstrings_document_full_batch_helpers():
         "`model.materialize_batches()` builds every resident batch static state",
         "returns a copy of the batch metadata list",
         "`model.full_loss_for_theta(theta)` streams all resident batches",
+        "matches the active sharing-mode shape, model device, and model dtype",
         "differentiable probes use the gradient-producing streaming path",
         "calls made under `torch.no_grad()` use the loss-only streaming path",
     ):

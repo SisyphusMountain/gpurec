@@ -2137,6 +2137,19 @@ not edit files.  New or still-open findings from that refresh are:
 - `CUDA_VISIBLE_DEVICES='' python -m pytest -q -m "unit and not gpu"`:
   1461 passed, 1 skipped, 51 deselected after the CLI mode/optimizer
   normalization slice.
+- Public explicit-theta likelihood probes now validate device and dtype before
+  resident-batch streaming, in addition to the existing mode-specific theta
+  shape and finite-value checks.  `GeneReconModel(..., theta_init=...)` and
+  `GeneReconModel.full_loss_for_theta(theta)` now both use the shared
+  `validate_theta_shape()` device/dtype contract, so direct API callers get
+  field-specific `ValueError`s before CUDA/static-state failures.
+- `python -m py_compile gpurec/api/_validation.py gpurec/api/model.py tests/unit/test_validation.py tests/unit/test_workflow.py tests/unit/test_repository_hygiene.py`:
+  passed after adding explicit-theta device/dtype validation.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest -q tests/unit/test_validation.py::test_gene_recon_model_rejects_theta_init_device_and_dtype_before_device_check tests/unit/test_validation.py::test_validate_theta_shape_checks_device_before_finite_values tests/unit/test_validation.py::test_full_loss_for_theta_rejects_explicit_theta_device_or_dtype_before_streaming tests/unit/test_workflow.py::test_full_loss_for_theta_uses_streaming_contract_for_explicit_theta tests/unit/test_repository_hygiene.py::test_package_docs_do_not_advertise_core_as_public_surface tests/unit/test_repository_hygiene.py::test_project_readme_and_model_docstrings_document_full_batch_helpers`:
+  7 passed after guarding explicit-theta public API validation and docs.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest -q -m "unit and not gpu"`:
+  1465 passed, 1 skipped, 51 deselected after the explicit-theta device/dtype
+  validation slice.
 
 ## Recommended Next Order
 
