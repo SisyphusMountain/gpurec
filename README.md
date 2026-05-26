@@ -410,12 +410,12 @@ Version-1 workflow checkpoints carry identity metadata for safe restore:
 requires those fields to be present and validates the name-list metadata.
 Current checkpoints also carry `route_metadata` with the resolved objective,
 gradient route, parameterization, optimizer, and solver route.
-`validate_checkpoint_model_compatibility()` compares them with the active
-`RunConfig` and rebuilt model before `restore_model_theta()` copies parameters.
-Path identity fields are normalized during comparison.  The checkpoint loader
-does not reconstruct a full `RunConfig`; tooling that needs complete config type
-and range validation should pass `load_checkpoint(path)["config"]` through
-`RunConfig.from_dict(...)`.
+`validate_checkpoint_model_compatibility()` first validates the stored config
+with `RunConfig.from_dict(...)`, then compares identity and route metadata with
+the active `RunConfig` and rebuilt model before `restore_model_theta()` copies
+parameters. Path identity fields are normalized during comparison. The
+checkpoint loader remains a lower-level payload reader and does not reconstruct
+a full `RunConfig`.
 
 Resume starts from the checkpoint `next_step`.  If `next_step` already equals
 the configured `steps`, `gpurec optimize --resume-from ...` performs only the

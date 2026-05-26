@@ -2184,7 +2184,7 @@ def test_project_readme_documents_checkpoint_config_metadata_surface():
         assert hasattr(workflow_checkpoint, name)
 
 
-def test_checkpoint_identity_boundary_is_documented_before_stricter_validation():
+def test_checkpoint_identity_and_config_validation_boundary_is_documented():
     root = Path(__file__).resolve().parents[2]
     project_readme = (root / "README.md").read_text(encoding="utf-8")
     checkpoint_source = (root / "gpurec" / "workflow" / "checkpoint.py").read_text(
@@ -2215,11 +2215,12 @@ def test_checkpoint_identity_boundary_is_documented_before_stricter_validation()
         "`start`",
         "`max_families`",
         "`load_checkpoint()` requires those fields to be present",
-        "`validate_checkpoint_model_compatibility()` compares them with the active `RunConfig`",
+        "`validate_checkpoint_model_compatibility()` first validates the stored config",
+        "with `RunConfig.from_dict(...)`",
+        "then compares identity and route metadata with the active `RunConfig`",
         "before `restore_model_theta()` copies parameters",
         "Path identity fields are normalized during comparison",
-        "does not reconstruct a full `RunConfig`",
-        "`RunConfig.from_dict(...)`",
+        "lower-level payload reader",
     ):
         assert token in normalized_readme
 
@@ -2235,13 +2236,14 @@ def test_checkpoint_identity_boundary_is_documented_before_stricter_validation()
         "``load_checkpoint()`` requires those fields to exist",
         "``validate_checkpoint_model_compatibility()`` compares them",
         "before ``restore_model_theta()`` copies parameters",
+        "first validating the stored config with ``RunConfig.from_dict(...)``",
         "normalizing only path identity fields during comparison",
-        "does not reconstruct a full ``RunConfig``",
-        "``RunConfig.from_dict(...)``",
+        "lower-level payload reader",
     ):
         assert token in module_docstring
 
     assert "_require_config_identity_fields(path, payload[\"config\"])" in checkpoint_source
+    assert "_validate_checkpoint_run_config(checkpoint_path, checkpoint_config)" in checkpoint_source
     assert "checkpoint_string_list(path, \"family_names\"" in checkpoint_source
     assert "checkpoint_string_list(path, \"species_names\"" in checkpoint_source
     assert "_normalize_checkpoint_identity_value(" in checkpoint_source

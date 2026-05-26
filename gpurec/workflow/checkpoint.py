@@ -14,11 +14,11 @@ validates the name-list metadata. New checkpoints also carry ``route_metadata``
 with the resolved objective, gradient route, rate parameterization, optimizer,
 and solver route. ``validate_checkpoint_model_compatibility()`` compares
 them with the active ``RunConfig`` and rebuilt model before
-``restore_model_theta()`` copies parameters, normalizing only path identity
-fields during comparison and allowing mutable reporting fields such as the
-configured/effective step cap to differ for resume.  The loader does not
-reconstruct a full ``RunConfig``; callers that need complete config validation
-should pass ``payload["config"]`` through ``RunConfig.from_dict(...)``.
+``restore_model_theta()`` copies parameters, first validating the stored config
+with ``RunConfig.from_dict(...)``, normalizing only path identity fields during
+comparison, and allowing mutable reporting fields such as the
+configured/effective step cap to differ for resume.  ``load_checkpoint()`` is a
+lower-level payload reader and does not reconstruct a full ``RunConfig``.
 """
 
 from __future__ import annotations
@@ -88,6 +88,7 @@ def validate_checkpoint_model_compatibility(
             "invalid config metadata"
         )
     _require_config_identity_fields(checkpoint_path, checkpoint_config)
+    _validate_checkpoint_run_config(checkpoint_path, checkpoint_config)
     current_config = config.to_dict()
     for key in _CHECKPOINT_CONFIG_IDENTITY_KEYS:
         checkpoint_value = _normalize_checkpoint_identity_value(
@@ -154,6 +155,15 @@ def _require_route_metadata_compatible(
                 f"checkpoint {path} is incompatible with current run: "
                 f"route_metadata.{key} differs"
             )
+
+
+def _validate_checkpoint_run_config(path: Path, config: dict[str, Any]) -> None:
+    try:
+        RunConfig.from_dict(config)
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError(
+            f"checkpoint {path} has invalid RunConfig metadata: {exc}"
+        ) from exc
 
 
 def save_checkpoint(

@@ -4824,6 +4824,38 @@ def test_checkpoint_compatibility_allows_changed_step_cap_for_resume(
     )
 
 
+def test_checkpoint_compatibility_rejects_invalid_run_config_metadata(
+    tmp_path: Path,
+):
+    config = RunConfig(
+        species_tree=tmp_path / "sp.nwk",
+        families_file=tmp_path / "families.txt",
+        out_dir=tmp_path / "out",
+        mode="genewise",
+        device="cpu",
+        optimizer="hessian-sgd",
+    )
+    checkpoint_config = config.to_dict()
+    checkpoint_config["steps"] = 0
+    payload = {
+        "config": checkpoint_config,
+        "route_metadata": effective_route_metadata(config),
+        "family_names": ["a", "b"],
+        "species_names": ["s0", "s1"],
+    }
+
+    with pytest.raises(
+        RuntimeError,
+        match="invalid RunConfig metadata: steps must be positive",
+    ):
+        validate_checkpoint_model_compatibility(
+            path=tmp_path / "latest.pt",
+            config=config,
+            model=_DummyModel(),
+            payload=payload,
+        )
+
+
 def test_checkpoint_compatibility_allows_legacy_metadata_without_route(
     tmp_path: Path,
 ):

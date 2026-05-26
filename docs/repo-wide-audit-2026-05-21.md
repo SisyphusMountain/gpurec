@@ -436,16 +436,17 @@ evidence is thin.
   explicit `leaf_species_maps` should be used when labels do not follow that
   convention.
 - The refreshed workflow audit found that checkpoint compatibility validates the
-  v1 identity slice but intentionally does not reconstruct a full `RunConfig`
-  before comparison.  The current documented boundary is: `load_checkpoint()`
+  v1 identity slice and now reconstructs the stored config with
+  `RunConfig.from_dict(...)` before comparison.  The current documented boundary
+  is: `load_checkpoint()`
   requires `family_names`, `species_names`, and config identity keys
   `species_tree`, `families_file`, `mode`, `start`, and `max_families`, while
-  `validate_checkpoint_model_compatibility()` compares those values with the
-  active `RunConfig` and rebuilt model before theta restore, normalizing only
-  path fields.  A future behavior change should decide whether resume should
-  call the full `RunConfig.from_dict()` validation path before comparison.  The
-  focused optimization-resume incompatibility regression now covers every
-  documented config identity key, not only `mode`.
+  `validate_checkpoint_model_compatibility()` validates the stored config with
+  `RunConfig.from_dict(...)`, then compares those values with the active
+  `RunConfig` and rebuilt model before theta restore, normalizing only path
+  fields.  The focused optimization-resume incompatibility regression now covers
+  every documented config identity key, not only `mode`, and direct
+  compatibility tests reject invalid stored RunConfig metadata before restore.
 - The workflow checkpoint submodule support boundary is now explicit below the
   lazy `gpurec.workflow` exports.  Top-level workflow exports remain the stable
   shortcut surface; `gpurec.workflow.checkpoint` now declares
