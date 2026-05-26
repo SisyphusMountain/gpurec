@@ -2239,6 +2239,20 @@ not edit files.  New or still-open findings from that refresh are:
 - `CUDA_VISIBLE_DEVICES='' python -m pytest -q -m "unit and not gpu"`:
   1473 passed, 1 skipped, 51 deselected after the direct optimize
   production-route gate slice.
+- `gpurec checkpoint-info --require-production-default-route` and
+  `gpurec summary-info --require-production-default-route` now have direct
+  success-path CLI coverage proving current production-route artifacts pass
+  the CPU-safe inspection gates, complementing the stale/incomplete artifact
+  rejection tests.
+- `python -m py_compile tests/unit/test_cli_workflow.py`: passed after adding
+  artifact inspection production-route success coverage.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest -q tests/unit/test_cli_workflow.py::test_cli_checkpoint_info_require_production_default_route_accepts_current_route tests/unit/test_cli_workflow.py::test_cli_summary_info_require_production_default_route_accepts_current_route`:
+  2 passed after guarding artifact inspection production-route success gates.
+- `git diff --check`: passed before the full CPU gate for the artifact
+  inspection production-route success slice.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest -q -m "unit and not gpu"`:
+  1475 passed, 1 skipped, 51 deselected after the artifact inspection
+  production-route success slice.
 
 ## Recommended Next Order
 

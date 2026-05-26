@@ -1901,6 +1901,40 @@ def test_cli_checkpoint_info_require_mode_default_optimizer_reports_missing_evid
     assert "Traceback" not in captured.err
 
 
+def test_cli_checkpoint_info_require_production_default_route_accepts_current_route(
+    tmp_path: Path,
+    capsys,
+):
+    config = RunConfig(
+        species_tree=tmp_path / "sp.nwk",
+        families_file=tmp_path / "families.txt",
+        out_dir=tmp_path / "out",
+        mode="genewise",
+        device="cpu",
+    )
+    checkpoint = _checkpoint_with_route_metadata(
+        tmp_path,
+        effective_route_metadata(config),
+    )
+
+    main(
+        [
+            "checkpoint-info",
+            "--checkpoint",
+            str(checkpoint),
+            "--require-production-default-route",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert captured.err == ""
+    assert "route_metadata_source=checkpoint" in captured.out
+    assert "mode=genewise" in captured.out
+    assert "optimizer=hessian-sgd" in captured.out
+    assert "uses_production_default_route=true" in captured.out
+    assert "production_default_route_mismatches=none" in captured.out
+
+
 def test_cli_checkpoint_info_require_production_default_route_recomputes_stale_audit(
     tmp_path: Path,
     capsys,
@@ -2380,6 +2414,49 @@ def test_cli_summary_info_require_mode_default_optimizer_reports_missing_evidenc
     assert "mode='genewise', optimizer=None" in captured.err
     assert "usage:" not in captured.err
     assert "Traceback" not in captured.err
+
+
+def test_cli_summary_info_require_production_default_route_accepts_current_route(
+    tmp_path: Path,
+    capsys,
+):
+    config = RunConfig(
+        species_tree=tmp_path / "sp.nwk",
+        families_file=tmp_path / "families.txt",
+        out_dir=tmp_path / "out",
+        mode="genewise",
+        device="cpu",
+    )
+    summary = tmp_path / "summary.json"
+    summary.write_text(
+        json.dumps(
+            {
+                "status": "converged",
+                "reason": "loss_change_patience",
+                **effective_route_metadata(config),
+                "steps_completed": 4,
+                "final_nll_bits": 12.0,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    main(
+        [
+            "summary-info",
+            "--summary",
+            str(summary),
+            "--require-production-default-route",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert captured.err == ""
+    assert "status=converged" in captured.out
+    assert "mode=genewise" in captured.out
+    assert "optimizer=hessian-sgd" in captured.out
+    assert "uses_production_default_route=true" in captured.out
+    assert "production_default_route_mismatches=none" in captured.out
 
 
 def test_cli_summary_info_require_production_default_route_rejects_custom_settings(

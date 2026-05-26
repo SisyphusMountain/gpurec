@@ -7526,6 +7526,15 @@ invoked.  The touched CLI test compiles, and the focused optimize gate selector
 reports \texttt{2 passed}.  \texttt{git diff --check} passes, and the full CPU
 unit gate reports \texttt{1473 passed, 1 skipped, 51 deselected}.
 
+\texttt{gpurec checkpoint-info --require-production-default-route} and
+\texttt{gpurec summary-info --require-production-default-route} now have direct
+success-path CLI coverage.  Current production-route checkpoint and summary
+fixtures pass the CPU-safe inspection gates, complementing the existing stale
+and incomplete artifact rejection tests.  The touched CLI test compiles, and
+the focused artifact-inspection gate selector reports \texttt{2 passed}.
+\texttt{git diff --check} passes, and the full CPU unit gate reports
+\texttt{1475 passed, 1 skipped, 51 deselected}.
+
 \section{Next Audit Targets}
 
 \begin{enumerate}[leftmargin=*]
