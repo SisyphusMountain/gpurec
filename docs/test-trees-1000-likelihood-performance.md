@@ -922,6 +922,13 @@ Rejected follow-ups:
   no-grad/model tests passed (`7 passed`), but the cold `E=8, Pi=4` sample
   measured `2.2636918509961106s`, worse than the documented `2.253481016959995s`
   low, so the existing per-batch scalar accumulation remains in place.
+- A scalar-only root-row NLL helper was also rejected.  The prototype returned
+  `compute_nll_root_rows(...).sum()` directly for loss-only callers and passed
+  targeted origination/no-grad/model tests (`16 passed`), but the cold
+  `E=8, Pi=4` route measured `2.282638431992382s` and a post-warm materialized
+  check measured `1.274828838009853s` median, worse than the recent
+  `1.2724366540205665s` materialized baseline.  The existing vector helper plus
+  `.sum()` remains in place.
 
 Differences from HOGENOM:
 
