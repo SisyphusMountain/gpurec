@@ -365,8 +365,9 @@ Measured routes:
 | A + uninterrupted L-BFGS-B tail | Resume A, `lbfgsb`, `lr=0.6`, 40 L-BFGS-B steps | `911.1706395330257s` combined | `1699469.5` validated | `2.8489274978637695` | Best fixed-length endpoint so far. Fixed8, fixed16, and fixed32 validation all returned `1699469.5` bits; avoiding two resume/final-eval cycles saved about `33.56s` versus the segmented route. |
 | A + adaptive L-BFGS-B tail | Resume A, `lbfgsb`, `lr=0.6`, max 60 L-BFGS-B steps, `loss_change_tol=1`, `loss_patience=2`, `projected_grad_tol=10` | `908.8200418340275s` combined | `1699470.125` validated | `4.6751389503479` | Practical no-hand-tuned endpoint: stopped by `loss_change_patience` after two sub-1-bit improvements. Fixed8, fixed16, and fixed32 validation all returned `1699470.125` bits. |
 | A + adaptive L-BFGS-B tail, stricter stall delta | Resume A, `lbfgsb`, `lr=0.6`, max 60 L-BFGS-B steps, `loss_change_tol=0.5`, `loss_patience=2`, `projected_grad_tol=10` | `909.929472856049s` combined | `1699470.0` validated | `2.6876778602600098` | Near-tie with the 1-bit stall route: `0.125` bits lower and about `1.11s` slower. Fixed8, fixed16, and fixed32 validation all returned `1699470.0` bits. |
-| A + adaptive L-BFGS-B tail, looser stall delta | Resume A, `lbfgsb`, `lr=0.6`, max 60 L-BFGS-B steps, `loss_change_tol=2`, `loss_patience=2`, `projected_grad_tol=10` | `910.7812392250635s` combined | `1699469.375` validated | `3.3085007667541504` | Best one-shot adaptive endpoint observed so far, but only `0.75` bits below the 1-bit stall route and about `1.96s` slower. Fixed8, fixed16, and fixed32 validation all returned `1699469.375` bits. |
-| A + post-stall continuation check, current lowest | Continue the uninterrupted 40-step `lr=0.6` tail with `loss_change_tol=1`, `loss_patience=2`, `projected_grad_tol=10` | `982.2694296170375s` combined | `1699468.25` validated | `1.4578275680541992` | Lowest validated objective observed so far. This is a segmented continuation check; fixed8, fixed16, and fixed32 validation all returned `1699468.25` bits. |
+| A + adaptive L-BFGS-B tail, looser stall delta | Resume A, `lbfgsb`, `lr=0.6`, max 60 L-BFGS-B steps, `loss_change_tol=2`, `loss_patience=2`, `projected_grad_tol=10` | `910.7812392250635s` combined | `1699469.375` validated | `3.3085007667541504` | Best one-shot adaptive endpoint in the relaxed-gradient sweep, but only `0.75` bits below the 1-bit stall route and about `1.96s` slower. Fixed8, fixed16, and fixed32 validation all returned `1699469.375` bits. |
+| A + post-stall continuation check | Continue the uninterrupted 40-step `lr=0.6` tail with `loss_change_tol=1`, `loss_patience=2`, `projected_grad_tol=10` | `982.2694296170375s` combined | `1699468.25` validated | `1.4578275680541992` | Segmented continuation check. Fixed8, fixed16, and fixed32 validation all returned `1699468.25` bits. |
+| A + adaptive L-BFGS-B tail, stricter gradient gate | Resume A, `lbfgsb`, `lr=0.6`, max 60 L-BFGS-B steps, `loss_change_tol=1`, `loss_patience=2`, `projected_grad_tol=3` | `1201.2349555559922s` combined | `1699468.125` validated | `2.8452367782592773` | Current lowest validated objective and best fully automatic endpoint observed so far. Fixed8, fixed16, and fixed32 validation all returned `1699468.125` bits; the extra time buys only `1.25` bits versus the `projected_grad_tol=10`, `loss_change_tol=2` one-shot route. |
 | A + L-BFGS-B tail, rejected high step | Resume A, `lbfgsb`, `lr=0.7`, 20 L-BFGS-B steps | `548.9326881880406s` combined | `1699557.125` | `13.341646194458008` | Upper-bracket reject: worse than `lr=0.6` by `6.25` bits with a much larger residual, so no manual fixed16/fixed32 validation was run. |
 | A + longer L-BFGS-B tail | Resume A, `lbfgsb`, `lr=0.1`, 30 L-BFGS-B steps total | `745.2935658869683s` combined | `1699746.125` | `20.155467987060547` | Longer `lr=0.1` tail is slower and worse than the 20-step `lr=0.3` tail. Fixed8, fixed16, and fixed32 validation all returned `1699746.125` bits. |
 | B + early L-BFGS-B tail | Resume B, `lbfgsb`, `lr=0.1`, 20 L-BFGS-B steps | `786.3332051589969s` combined | `1700015.5` | `27.92882537841797` | Later switch is slower and slightly worse than the 30-step tail from A. |
@@ -396,19 +397,26 @@ in the same time band.  The `loss_change_tol=1` route reached `1699470.125`
 bits in `908.82s`; `loss_change_tol=0.5` reached `1699470.0` bits in
 `909.93s`; and `loss_change_tol=2` reached `1699469.375` bits in `910.78s`.
 The `2`-bit stall threshold is the lowest one-shot adaptive endpoint observed
-so far, but the spread across the sweep is only `0.75` bits and `1.96s`.
+with `projected_grad_tol=10`, but the spread across the sweep is only `0.75`
+bits and `1.96s`.
 A post-stall continuation check from the fixed 40-step endpoint reached the
-lowest objective observed so far, `1699468.25` bits, in `982.27s`; the extra
-`71.10s` bought only `1.25` bits beyond the uninterrupted 40-step endpoint.
+lower reference point `1699468.25` bits in `982.27s`; the extra `71.10s`
+bought only `1.25` bits beyond the uninterrupted 40-step endpoint.  Tightening
+the projected-gradient gate to `3` produced the current lowest validated
+objective, `1699468.125` bits, but total time rose to `1201.23s`.  That is only
+`1.25` bits below the best `projected_grad_tol=10` one-shot route for about
+`290.45s` extra wall time.
 
 This is still not a formal optimum, but it is the first point in this sequence
 where the marginal objective movement dropped sharply.  In the segmented run,
 the final two optimizer steps improved by only `0.375` bits each; in the
 uninterrupted run, the late improvements were still small and the final
 projected-gradient infinity norm was `2.84893`.  The adaptive one-shot endpoint
-is the route to prefer when avoiding per-dataset step tuning; the continuation
-check is only a lower-objective reference point.  With the current data, the
+is the route to prefer when avoiding per-dataset step tuning, and the stricter
+`projected_grad_tol=3` gate is the best automatic route when squeezing out the
+last one to two bits is worth several more minutes.  With the current data, the
 practical automatic choice is `loss_change_tol` in the `1` to `2` bit range,
+plus a projected-gradient gate chosen for the desired time/objective tradeoff,
 not a hand-picked phase step count.
 
 The `lr=0.4` variant has a smaller residual, `2.95082`, but is `13.375` bits
