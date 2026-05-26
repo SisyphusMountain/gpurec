@@ -2109,6 +2109,21 @@ not edit files.  New or still-open findings from that refresh are:
 - `CUDA_VISIBLE_DEVICES='' python -m pytest -q -m "unit and not gpu"`:
   1455 passed, 1 skipped, 51 deselected after the workflow
   mode-normalization slice.
+- Summary and checkpoint route audits now normalize optimizer evidence with the
+  same workflow rules as `RunConfig`: underscore aliases and `auto` resolve
+  through the canonical mode before mode-default and production-default gates
+  are evaluated.  `gpurec summary-info` prints the canonical route evidence for
+  legacy summaries before applying `--require-mode-default-optimizer` or
+  `--require-production-default-route`.
+- `python -m py_compile gpurec/workflow/config.py gpurec/cli.py tests/unit/test_workflow.py tests/unit/test_cli_workflow.py tests/unit/test_repository_hygiene.py`:
+  passed after adding the artifact optimizer-route normalization helpers.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest -q tests/unit/test_workflow.py::test_route_audit_normalizes_optimizer_alias_strings tests/unit/test_cli_workflow.py::test_cli_summary_info_normalizes_route_mode_and_optimizer_aliases tests/unit/test_repository_hygiene.py::test_output_artifact_reference_is_linked_and_documents_contract`:
+  4 passed after guarding canonical route evidence in summaries and docs.
+- `git diff --check`: passed before the full CPU gate for the artifact
+  optimizer-route normalization slice.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest -q -m "unit and not gpu"`:
+  1458 passed, 1 skipped, 51 deselected after the artifact optimizer-route
+  normalization slice.
 
 ## Recommended Next Order
 

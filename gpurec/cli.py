@@ -91,18 +91,32 @@ def _route_with_mode_default_audit_fields(route: dict[str, Any]) -> dict[str, An
     mode = audited.get("mode")
     optimizer = audited.get("optimizer")
     mode_default_optimizer: str | None = None
+    optimizer_text: str | None = None
     if mode is not None:
         try:
-            from gpurec.workflow.config import default_optimizer_for_mode
+            from gpurec.workflow.config import (
+                default_optimizer_for_mode,
+                normalize_mode_name,
+                normalize_optimizer_for_mode,
+            )
 
-            mode_default_optimizer = default_optimizer_for_mode(str(mode))
+            mode_text = normalize_mode_name(str(mode))
+            mode_default_optimizer = default_optimizer_for_mode(mode_text)
+            audited["mode"] = mode_text
+            if optimizer is not None:
+                optimizer_text = normalize_optimizer_for_mode(mode_text, optimizer)
+                audited["optimizer"] = optimizer_text
         except _EXPECTED_WORKFLOW_ERRORS:
             pass
     audited["mode_default_optimizer"] = mode_default_optimizer
     if mode is None or optimizer is None or mode_default_optimizer is None:
         audited["uses_mode_default_optimizer"] = None
+    elif optimizer_text is None:
+        audited["uses_mode_default_optimizer"] = False
     else:
-        audited["uses_mode_default_optimizer"] = optimizer == mode_default_optimizer
+        audited["uses_mode_default_optimizer"] = (
+            optimizer_text == mode_default_optimizer
+        )
     return audited
 
 

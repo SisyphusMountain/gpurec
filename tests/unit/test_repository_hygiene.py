@@ -1804,6 +1804,7 @@ def test_output_artifact_reference_is_linked_and_documents_contract():
         "`--require-final-check-ok`",
         "`--require-mode-default-optimizer`",
         "`--require-production-default-route`",
+        "legacy casing and underscore aliases",
         "standalone `gpurec sample`",
         "incomplete-evidence error",
         "`final_check_status=ok`",

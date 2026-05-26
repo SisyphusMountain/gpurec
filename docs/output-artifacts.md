@@ -131,9 +131,12 @@ gpurec summary-info --summary output_gpurec/summary.json
 For older summaries that have `mode` and `optimizer` but predate
 `mode_default_optimizer` and `uses_mode_default_optimizer`, `summary-info`
 infers those audit fields before printing so the displayed line matches the
-route evidence used by `--require-mode-default-optimizer`. If the summary is
-too old or incomplete to prove both `mode` and `optimizer`, the gate fails with
-an incomplete-evidence error instead of treating the route as accepted.
+route evidence used by `--require-mode-default-optimizer`. Mode and optimizer
+strings are normalized with the same `RunConfig` rules before these audit fields
+are inferred, so legacy casing and underscore aliases do not fail the
+default-route gates. If the summary is too old or incomplete to prove both
+`mode` and `optimizer`, the gate fails with an incomplete-evidence error instead
+of treating the route as accepted.
 `summary-info` also infers the stricter production-route settings audit when
 the summary carries the relevant optimizer-specific fields; otherwise
 `--require-production-default-route` fails with an incomplete-evidence error.

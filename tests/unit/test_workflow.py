@@ -1438,6 +1438,32 @@ def test_route_audit_normalizes_checkpoint_mode_strings():
     assert mismatches == ()
 
 
+@pytest.mark.parametrize("optimizer", ["Hessian_SGD", "AUTO"])
+def test_route_audit_normalizes_optimizer_alias_strings(optimizer: str):
+    route = {
+        "mode": " GeneWise ",
+        "optimizer": optimizer,
+        "final_check_iters": 32,
+        "solver_warmup_iters": 4,
+        "fd_adam_warmup_steps": 3,
+        "fd_hessian_refresh_steps": 16,
+        "hessian_sgd_normal_fixed_iters_pi": None,
+        "hessian_sgd_normal_neumann_terms": None,
+        "hessian_sgd_pi_adjoint_warmstart": False,
+        "pi_fixed_point_relaxation": 1.0,
+        "hessian_sgd_validation_interval": 0,
+        "hessian_sgd_validation_fixed_iters_pi": None,
+        "hessian_sgd_validation_neumann_terms": None,
+    }
+
+    missing, mismatches = production_default_optimizer_setting_mismatches_from_route(
+        route
+    )
+
+    assert missing == ()
+    assert mismatches == ()
+
+
 def test_route_audit_reports_missing_and_custom_optimizer_settings():
     route = {
         "mode": "genewise",

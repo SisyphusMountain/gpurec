@@ -2167,6 +2167,51 @@ def test_cli_summary_info_infers_mode_default_optimizer_audit_fields(
     assert "uses_mode_default_optimizer=true" in captured.out
 
 
+def test_cli_summary_info_normalizes_route_mode_and_optimizer_aliases(
+    tmp_path: Path,
+    capsys,
+):
+    summary = tmp_path / "summary.json"
+    summary.write_text(
+        json.dumps(
+            {
+                "status": "converged",
+                "reason": "adagrad_restart_schedule_complete",
+                "mode": " SpeciesWise ",
+                "optimizer": "ADAGRAD_RESTARTS",
+                "final_check_iters": 128,
+                "optimizer_step_cap": 125,
+                "optimizer_step_cap_reason": "adagrad_restart_schedule",
+                "adagrad_restart_schedule": "8:1.0:60,16:0.5:35,32:0.5:30",
+                "adagrad_restart_total_steps": 125,
+                "adagrad_restart_final_check_iters": 128,
+                "steps_completed": 125,
+                "final_nll_bits": 12.0,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    main(
+        [
+            "summary-info",
+            "--summary",
+            str(summary),
+            "--require-mode-default-optimizer",
+            "--require-production-default-route",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert captured.err == ""
+    assert "mode=specieswise" in captured.out
+    assert "optimizer=adagrad-restarts" in captured.out
+    assert "mode_default_optimizer=adagrad-restarts" in captured.out
+    assert "uses_mode_default_optimizer=true" in captured.out
+    assert "uses_production_default_optimizer_settings=true" in captured.out
+    assert "production_default_optimizer_setting_mismatches=none" in captured.out
+
+
 def test_cli_summary_info_require_mode_default_optimizer_fails_after_printing(
     tmp_path: Path,
     capsys,

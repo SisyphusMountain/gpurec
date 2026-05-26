@@ -98,8 +98,12 @@ def _normalize_mode(mode: str) -> str:
     return normalized
 
 
+def normalize_mode_name(mode: str) -> str:
+    return _normalize_mode(mode)
+
+
 def default_optimizer_for_mode(mode: str) -> str:
-    return MODE_DEFAULT_OPTIMIZERS[_normalize_mode(mode)]
+    return MODE_DEFAULT_OPTIMIZERS[normalize_mode_name(mode)]
 
 
 def _normalize_int(name: str, value: int | float | str) -> int:
@@ -217,10 +221,15 @@ def _normalize_optimizer(mode: str, value: str) -> str:
             "adam-lbfgs, projected-lbfgs, lbfgsb, batched-lbfgs, "
             "adam-fd-newton, hessian-sgd, or adagrad-restarts"
         )
+    mode = normalize_mode_name(mode)
     normalized = value.strip().lower().replace("_", "-")
     if normalized == "auto":
         return default_optimizer_for_mode(mode)
     return normalized
+
+
+def normalize_optimizer_for_mode(mode: str, value: str) -> str:
+    return _normalize_optimizer(mode, value)
 
 
 def adagrad_restart_schedule_specs(value: str) -> tuple[AdagradRestartPhase, ...]:
@@ -1053,14 +1062,18 @@ def production_default_optimizer_setting_mismatches_from_route(
         missing.append("optimizer")
     if missing:
         return tuple(missing), tuple(mismatched)
-    mode_text = str(mode)
     try:
-        mode_text = _normalize_mode(mode_text)
+        mode_text = normalize_mode_name(str(mode))
         mode_default_optimizer = default_optimizer_for_mode(mode_text)
     except ValueError:
         mismatched.append("mode")
         return tuple(missing), tuple(mismatched)
-    if optimizer != mode_default_optimizer:
+    try:
+        optimizer_text = normalize_optimizer_for_mode(mode_text, optimizer)
+    except ValueError:
+        mismatched.append("optimizer")
+        return tuple(missing), tuple(mismatched)
+    if optimizer_text != mode_default_optimizer:
         mismatched.append("optimizer")
         return tuple(missing), tuple(mismatched)
     expected_settings = _production_default_optimizer_expected_settings(mode_text)
