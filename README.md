@@ -268,14 +268,21 @@ the tree paths and mode as needed:
 ```bash
 gpurec config-template --mode genewise --output run.json
 gpurec config-template --mode specieswise --output specieswise-run.json
+gpurec config-template --mode global --output global-diagnostic-run.json
 ```
 
 The command keeps `"optimizer": "auto"`, so `mode=genewise` resolves to
-`hessian-sgd` and `mode=specieswise` resolves to `adagrad-restarts`. You can
-use the same stripped, case-normalized mode and optimizer spelling in flat JSON
-configs or CLI flags; optimizer underscores are accepted as aliases for the
-canonical hyphenated names. You can also copy or adapt a flat JSON config
-alongside your own tree files:
+`hessian-sgd`, `mode=specieswise` resolves to `adagrad-restarts`, and
+`mode=global` resolves to `adam`. The genewise and specieswise templates are
+the production-route starters. The global template is available for shared-rate
+diagnostics, but it is outside the strict HOGENOM/`test_trees_1000`
+production-route gate and will not pass `--require-production-default-route`;
+use `--require-mode-default-optimizer` when you only need to check that it uses
+the mode-default `adam` optimizer. You can use the same stripped,
+case-normalized mode and optimizer spelling in flat JSON configs or CLI flags;
+optimizer underscores are accepted as aliases for the canonical hyphenated
+names. You can also copy or adapt a flat JSON config alongside your own tree
+files:
 
 ```json
 {
@@ -322,7 +329,10 @@ optimizer profile, including the final-check E budget reported as
 `uses_production_default_route` and `production_default_route_mismatches`
 combine those optimizer-setting checks with the shipped objective, gradient
 route, rate parameterization, and production default basis metadata enforced by
-`--require-production-default-route`.
+`--require-production-default-route`. That strict gate is scoped to the
+retained genewise `hessian-sgd` and specieswise `adagrad-restarts` profiles;
+`mode=global` can satisfy the mode-default optimizer check but fails the
+production-route gate with a `mode` mismatch.
 Workflow rate bounds default to `min_rate=2^-30` and `max_rate=2`:
 
 The production optimization guide
@@ -658,7 +668,7 @@ of dataset path overrides.
 
 | Task | Command | Notes |
 | --- | --- | --- |
-| General installed workflow | `gpurec config-template`, `gpurec validate-config`, `gpurec optimize`, `gpurec summary-info`, `gpurec checkpoint-info`, `gpurec sample`, `gpurec run` | Uses flat JSON for `--config`; Hydra YAML is not accepted by the main CLI. `config-template` prints or writes installed JSON templates for mode-specific defaults. `validate-config` is a CPU-safe path/reference preflight; `summary-info` and `checkpoint-info` are CPU-safe artifact inspection commands. None of those inspection/preflight commands construct the CUDA likelihood model. |
+| General installed workflow | `gpurec config-template`, `gpurec validate-config`, `gpurec optimize`, `gpurec summary-info`, `gpurec checkpoint-info`, `gpurec sample`, `gpurec run` | Uses flat JSON for `--config`; Hydra YAML is not accepted by the main CLI. `config-template` prints or writes installed JSON templates for mode-specific defaults: genewise and specieswise are production-route starters, while global is a shared-rate diagnostic that fails the strict production-route gate. `validate-config` is a CPU-safe path/reference preflight; `summary-info` and `checkpoint-info` are CPU-safe artifact inspection commands. None of those inspection/preflight commands construct the CUDA likelihood model. |
 | Sampling binary preflight | `gpurec backtrack-check` | Validates `GPUREC_BACKTRACK_BIN`, `--backtrack-binary`, or the source-tree Cargo fallback without loading a checkpoint. |
 | Legacy HOGENOM W&B wrapper | `python scripts/optimize_hogenom_ccp_wandb.py` | Checkout-local compatibility wrapper with argparse flags, checkpoints, plots, and optional W&B logging. |
 | Hydra HOGENOM run | `python scripts/optimize_hogenom_ccp_hydra.py` | Uses `configs/hogenom_ccp_wandb.yaml`, a checkout-local full experiment config, and Hydra override syntax; see `configs/README.md` for config ownership. |

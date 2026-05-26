@@ -1925,6 +1925,8 @@ def test_operator_docs_distinguish_mode_default_from_production_route():
         "full shipped likelihood/gradient and optimizer route",
         "shipped HOGENOM/`test_trees_1000` optimizer route",
         "stale likelihood/gradient route metadata or changed optimizer-specific settings",
+        "global template is available for shared-rate diagnostics",
+        "fails the production-route gate with a `mode` mismatch",
     ):
         assert expected in normalized
 

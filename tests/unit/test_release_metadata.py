@@ -1217,14 +1217,24 @@ def test_readme_scopes_example_config_to_source_artifacts():
         "gpurec config-template --mode specieswise --output specieswise-run.json"
         in readme
     )
+    assert (
+        "gpurec config-template --mode global --output global-diagnostic-run.json"
+        in readme
+    )
     assert '"optimizer": "auto"' in readme
-    assert "`hessian-sgd` and `mode=specieswise` resolves to `adagrad-restarts`" in readme
+    assert "`hessian-sgd`, `mode=specieswise` resolves to `adagrad-restarts`" in readme
+    assert "`mode=global` resolves to `adam`" in readme
+    assert "shared-rate\ndiagnostics" in readme
+    assert "will not pass `--require-production-default-route`" in readme
+    assert "mode-default `adam` optimizer" in readme
     assert "source-tree config/parser fixture" in readme
     assert 'sets `"device": "cuda"`' in readme
     assert "not a CPU fallback" in readme
     assert "S > 256" in readme
     assert "not an end-to-end optimizer smoke" in readme
     assert "Installed wheels do not install the `examples/` directory" in readme
+    assert "global is a shared-rate diagnostic" in readme
+    assert "fails the strict production-route gate" in readme
     assert "Installed wheels intentionally do not install this directory" in examples_readme
     assert '"species_tree": "S.tree"' in readme
     assert '"families_file": "families.txt"' in readme

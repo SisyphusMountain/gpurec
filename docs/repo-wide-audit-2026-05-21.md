@@ -2416,6 +2416,11 @@ not edit files.  New or still-open findings from that refresh are:
   resolves it to `optimizer=adam`, and checks that
   `--require-production-default-route` exits nonzero with the same `mode`
   mismatch instead of silently accepting global as a production route.
+- The primary README now mirrors that boundary for installed users: it lists
+  the global diagnostic template separately from the genewise/specieswise
+  production-route starters, states that it only satisfies the mode-default
+  `adam` check, and notes that the strict production-route gate rejects it with
+  a `mode` mismatch. README and operator-doc hygiene tests pin the wording.
 
 ## Recommended Next Order
 
