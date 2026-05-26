@@ -298,6 +298,11 @@ Rejected follow-ups:
 - Increasing lazy prefetch workers from one to two made the fixed4 loss pass a
   few milliseconds faster in isolation, but the four-process cold total stayed
   around `3.178s`; three and four workers were slower.
+- Rechecking two lazy prefetch workers after root-loss scratch reuse again did
+  not improve the end-to-end route.  The first fixed4 pass dropped to about
+  `1.322s` to `1.328s`, but model construction rose, giving cold totals of
+  `2.2845199950388633s`, `2.293449474964291s`, and
+  `2.3079738809610717s`; the one-worker route keeps the lower best sample.
 - Finite lazy prefetch depths were a memory tradeoff before root-loss scratch
   reuse.  After the DTS compile-shape cleanup, `--prefetch-batches all`
   produced fixed4 cold samples of `2.307332646974828s` and
