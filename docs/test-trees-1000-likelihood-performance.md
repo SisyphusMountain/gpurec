@@ -429,6 +429,8 @@ Measured routes:
 | A + adaptive L-BFGS-B tail | Resume A, `lbfgsb`, `lr=0.6`, max 60 L-BFGS-B steps, `loss_change_tol=1`, `loss_patience=2`, `projected_grad_tol=10` | `908.8200418340275s` combined | `1699470.125` validated | `4.6751389503479` | Practical no-hand-tuned endpoint: stopped by `loss_change_patience` after two sub-1-bit improvements. Fixed8, fixed16, and fixed32 validation all returned `1699470.125` bits. |
 | A + adaptive L-BFGS-B tail, stricter stall delta | Resume A, `lbfgsb`, `lr=0.6`, max 60 L-BFGS-B steps, `loss_change_tol=0.5`, `loss_patience=2`, `projected_grad_tol=10` | `909.929472856049s` combined | `1699470.0` validated | `2.6876778602600098` | Near-tie with the 1-bit stall route: `0.125` bits lower and about `1.11s` slower. Fixed8, fixed16, and fixed32 validation all returned `1699470.0` bits. |
 | A + adaptive L-BFGS-B tail, looser stall delta | Resume A, `lbfgsb`, `lr=0.6`, max 60 L-BFGS-B steps, `loss_change_tol=2`, `loss_patience=2`, `projected_grad_tol=10` | `910.7812392250635s` combined | `1699469.375` validated | `3.3085007667541504` | Best one-shot adaptive endpoint in the relaxed-gradient sweep, but only `0.75` bits below the 1-bit stall route and about `1.96s` slower. Fixed8, fixed16, and fixed32 validation all returned `1699469.375` bits. |
+| Composite one-command route | `adagrad-restarts-lbfgsb`, route A prefix, tail `lbfgsb` `lr=0.6`, `loss_change_tol=2`, `loss_patience=2`, `projected_grad_tol=10` | `859.07s` process wall (`856.943264578993s` optimizer elapsed) | `1699473.0` validated | `2.8404898643493652` | New single-workflow route, no manual resume between Adagrad and L-BFGS-B. It ran `12 + 8 + 2` Adagrad-prefix rows, then `38` L-BFGS-B rows, and stopped by `loss_change_patience`. Fixed8 final validation matched exactly. |
+| Composite strict continuation | Resume the composite route, continue `lbfgsb` with `loss_change_tol=1`, `projected_grad_tol=3` | `930.90s` combined (`859.07s + 71.83s`) | `1699471.625` validated | `2.203108787536621` | Restored L-BFGS-B optimizer state from the composite checkpoint and added three tail rows. A fixed32 validation returned the same `1699471.625`-bit loss; final-check gradient max-abs delta was `0.00376129150390625`. |
 | A + post-stall continuation check | Continue the uninterrupted 40-step `lr=0.6` tail with `loss_change_tol=1`, `loss_patience=2`, `projected_grad_tol=10` | `982.2694296170375s` combined | `1699468.25` validated | `1.4578275680541992` | Segmented continuation check. Fixed8, fixed16, and fixed32 validation all returned `1699468.25` bits. |
 | A + adaptive L-BFGS-B tail, stricter gradient gate | Resume A, `lbfgsb`, `lr=0.6`, max 60 L-BFGS-B steps, `loss_change_tol=1`, `loss_patience=2`, `projected_grad_tol=3` | `1201.2349555559922s` combined | `1699468.125` validated | `2.8452367782592773` | Current lowest validated objective and best fully automatic endpoint observed so far. Fixed8, fixed16, and fixed32 validation all returned `1699468.125` bits; the extra time buys only `1.25` bits versus the `projected_grad_tol=10`, `loss_change_tol=2` one-shot route. |
 | A + L-BFGS-B tail, rejected high step | Resume A, `lbfgsb`, `lr=0.7`, 20 L-BFGS-B steps | `548.9326881880406s` combined | `1699557.125` | `13.341646194458008` | Upper-bracket reject: worse than `lr=0.6` by `6.25` bits with a much larger residual, so no manual fixed16/fixed32 validation was run. |
@@ -462,6 +464,12 @@ bits in `908.82s`; `loss_change_tol=0.5` reached `1699470.0` bits in
 The `2`-bit stall threshold is the lowest one-shot adaptive endpoint observed
 with `projected_grad_tol=10`, but the spread across the sweep is only `0.75`
 bits and `1.96s`.
+The production `adagrad-restarts-lbfgsb` route packages the same policy into
+one workflow command.  Its first benchmark stopped sooner, at `1699473.0` bits
+in `859.07s`, saving `51.71s` versus the old `loss_change_tol=2` manual
+two-stage run while ending `3.625` bits higher.  A strict continuation with the
+saved L-BFGS-B state reached `1699471.625` bits in `930.90s` combined, and
+fixed32 validation matched the fixed8 objective exactly.
 A post-stall continuation check from the fixed 40-step endpoint reached the
 lower reference point `1699468.25` bits in `982.27s`; the extra `71.10s`
 bought only `1.25` bits beyond the uninterrupted 40-step endpoint.  Tightening
@@ -512,6 +520,13 @@ Adding `loss_change_tol=1`, `loss_patience=2`, and `projected_grad_tol=10`
 stopped the same route automatically at `1699470.125` bits in `908.82s`.  The
 improvement is coming from end-to-end parameter movement, not from spending
 more work on Pi/E iterations.
+
+The higher wave cap that improved no-grad likelihood-only timing should not be
+carried into the gradient route as-is.  A resumed one-step L-BFGS-B probe with
+`max_wave_size=24576` failed the 2D self-loop scratch budget check
+(`1.83 GiB` requested, `0.84 GiB` budget).  The smaller `16384` cap ran but was
+slower: the comparable L-BFGS-B row took `47.296s` versus about `18s` at the
+retained `8192` cap.
 
 While testing resumed continuations, a workflow stop-rule issue was found and
 fixed: extending a completed checkpoint used to restore `previous_objective`
@@ -1241,6 +1256,11 @@ Differences from HOGENOM:
   instead of a hand-counted number of tail steps.  That is again different from
   HOGENOM's route, where fixed high-fidelity phase lengths were the accepted
   tuning handle.
+- The route is now implemented as `adagrad-restarts-lbfgsb`, so
+  `test_trees_1000` no longer needs a manual checkpoint resume between the
+  Adagrad prefix and L-BFGS-B tail.  HOGENOM keeps plain `adagrad-restarts` as
+  the default until the composite route beats the retained HOGENOM basin and
+  fixed128 validation time.
 - The first `test_trees_1000` high-fidelity promotion does not currently need
   HOGENOM's tied fixed16/fixed32 validation ladder for objective consistency:
   fixed8, fixed16, and fixed32 validations matched exactly at the measured
