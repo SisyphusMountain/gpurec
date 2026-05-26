@@ -101,6 +101,7 @@ Run the lightweight config and file-reference validation first:
 ```bash
 gpurec validate-config --config run.json
 gpurec validate-config --config run.json --require-mode-default-optimizer
+gpurec validate-config --config run.json --require-production-default-route
 ```
 
 Then ask the retained Rust preprocessing parser to read the selected species
@@ -115,6 +116,11 @@ chunking, solver budgets, optimizer-specific defaults, and, when
 `--check-preprocess` is used, `cuda_backward_ready` for the current species
 node count. Treat parser failures as input contract failures; fix the
 referenced tree, family, or mapping file before starting `gpurec optimize`.
+Use `--require-mode-default-optimizer` when automation should reject explicit
+optimizer overrides. Use `--require-production-default-route` for release or
+pipeline launch checks that should also reject changed HOGENOM/`test_trees_1000`
+optimizer settings or stale likelihood/gradient route metadata before spending
+CUDA time.
 For production launch checks, add `--require-cuda-backward-ready` so a species
 tree that fails the retained CUDA backward size gate exits nonzero.
 

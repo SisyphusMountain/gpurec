@@ -2266,6 +2266,21 @@ not edit files.  New or still-open findings from that refresh are:
 - `CUDA_VISIBLE_DEVICES='' python -m pytest -q -m "unit and not gpu"`:
   1477 passed, 1 skipped, 51 deselected after the strict validate-config
   production-route success slice.
+- `docs/input-preparation.md` now tells production users to run
+  `gpurec validate-config --config run.json --require-production-default-route`
+  when launch automation should reject changed HOGENOM/`test_trees_1000`
+  optimizer settings or stale likelihood/gradient route metadata before
+  spending CUDA time.
+- `python -m py_compile tests/unit/test_repository_hygiene.py`: passed after
+  adding the strict preflight wording guard.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest -q tests/unit/test_repository_hygiene.py::test_input_preparation_guide_documents_alerax_data_contract`:
+  1 passed after guarding the input-preparation strict production-route
+  preflight wording.
+- `git diff --check`: passed before the full CPU gate for the input-preparation
+  strict preflight documentation slice.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest -q -m "unit and not gpu"`:
+  1477 passed, 1 skipped, 51 deselected after the input-preparation strict
+  preflight documentation slice.
 
 ## Recommended Next Order
 

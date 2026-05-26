@@ -7542,6 +7542,15 @@ touched CLI test compiles, and the focused strict preflight selector reports
 \texttt{2 passed}.  \texttt{git diff --check} passes, and the full CPU unit
 gate reports \texttt{1477 passed, 1 skipped, 51 deselected}.
 
+\texttt{docs/input-preparation.md} now tells production users to run
+\texttt{gpurec validate-config --config run.json --require-production-default-route}
+when release or pipeline launch automation should reject changed
+HOGENOM/\texttt{test\_trees\_1000} optimizer settings or stale
+likelihood/gradient route metadata before spending CUDA time.  The hygiene test
+module compiles, the focused input-preparation selector reports
+\texttt{1 passed}, \texttt{git diff --check} passes, and the full CPU unit
+gate reports \texttt{1477 passed, 1 skipped, 51 deselected}.
+
 \section{Next Audit Targets}
 
 \begin{enumerate}[leftmargin=*]
