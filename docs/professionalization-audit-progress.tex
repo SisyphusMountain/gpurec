@@ -7282,7 +7282,9 @@ support boundary through \texttt{optional\_positive\_int()},
 core AleRax family-selection validation, and shared batch-planning controls
 such as \texttt{clade\_budget} and \texttt{family\_chunk\_size}.  The
 resident uniform memory-policy estimators now delegate integer dimensions and
-candidate controls to the shared helpers too.
+candidate controls to the shared helpers too.  The Rust scheduler bridge keeps
+only its string adapter locally and delegates non-string integer semantics to
+the same shared validation helper.
 
 The float-range slice now follows the same ownership boundary:
 \texttt{gpurec.\_validation} owns \texttt{finite\_float()},

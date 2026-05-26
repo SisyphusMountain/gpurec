@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 import json
-import math
-from numbers import Integral, Real
 from typing import Any, Sequence
 
 import torch
+
+from gpurec._validation import integer_value
 
 from .preprocess_rust import _load_native_module
 
@@ -41,20 +41,12 @@ def _long_list(value: Any) -> list[int]:
 
 
 def _integer_value(name: str, value: Any) -> int:
-    if isinstance(value, bool):
-        raise ValueError(f"{name} must be an integer")
     if isinstance(value, str):
         try:
             return int(value.strip())
         except ValueError as exc:
             raise ValueError(f"{name} must be an integer") from exc
-    if isinstance(value, Integral):
-        return int(value)
-    if isinstance(value, Real):
-        number = float(value)
-        if math.isfinite(number) and number.is_integer():
-            return int(number)
-    raise ValueError(f"{name} must be an integer")
+    return integer_value(name, value)
 
 
 def _optional_integer_value(name: str, value: Any | None) -> int | None:

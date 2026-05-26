@@ -446,6 +446,9 @@ def test_workflow_numeric_validation_uses_shared_helpers():
     memory_policy = (
         root / "gpurec" / "core" / "memory_policy.py"
     ).read_text(encoding="utf-8")
+    schedule_rust = (
+        root / "gpurec" / "core" / "schedule_rust.py"
+    ).read_text(encoding="utf-8")
 
     shared_function_names = {
         node.name for node in shared_validation.body if isinstance(node, ast.FunctionDef)
@@ -491,6 +494,9 @@ def test_workflow_numeric_validation_uses_shared_helpers():
     assert "math.isfinite" not in memory_policy
     assert "positive_int as _positive_int" in memory_policy
     assert "nonnegative_int as _nonnegative_int" in memory_policy
+    assert "from numbers import Integral" not in schedule_rust
+    assert "math.isfinite" not in schedule_rust
+    assert "return integer_value(name, value)" in schedule_rust
     for stale in (
         "from numbers import Integral",
         "import math",
