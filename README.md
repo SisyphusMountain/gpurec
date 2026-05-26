@@ -328,8 +328,8 @@ Main outputs include:
 - `per_fam_likelihoods.tsv` for genewise runs
 
 The `gpurec optimize` status line and the optimization portion of
-`gpurec run` also print `steps_completed`, `best_step`, `final_nll_bits`,
-`final_log_likelihood_bits`, `best_nll_bits`, and
+`gpurec run` also print `steps_completed`, `elapsed_s`, `best_step`,
+`final_nll_bits`, `final_log_likelihood_bits`, `best_nll_bits`, and
 `best_log_likelihood_bits`, plus `final_check_status`,
 `final_check_source`, `final_check_reason`,
 `final_check_fallback_clade_budget`, `final_check_loss_abs_delta_bits`,

@@ -1260,6 +1260,7 @@ def test_cli_optimize_reports_final_and_best_objective_summary(
             status="not_converged",
             reason="max_steps",
             steps_completed=7,
+            elapsed_s=3.25,
             best_step=5,
             final_nll_bits=12.5,
             final_log_likelihood_bits=-12.5,
@@ -1286,6 +1287,7 @@ def test_cli_optimize_reports_final_and_best_objective_summary(
     assert "status=not_converged" in captured.out
     assert "reason=max_steps" in captured.out
     assert "steps_completed=7" in captured.out
+    assert "elapsed_s=3.250000" in captured.out
     assert "best_step=5" in captured.out
     assert "final_nll_bits=12.500000" in captured.out
     assert "final_log_likelihood_bits=-12.500000" in captured.out
@@ -1382,6 +1384,7 @@ def test_cli_run_samples_reported_checkpoint_instead_of_stale_best(
             status="success",
             reason="completed",
             steps_completed=3,
+            elapsed_s=4.5,
             best_step=2,
             final_nll_bits=12.0,
             best_nll_bits=11.0,
@@ -1413,6 +1416,7 @@ def test_cli_run_samples_reported_checkpoint_instead_of_stale_best(
 
     captured = capsys.readouterr()
     assert "steps_completed=3" in captured.out
+    assert "elapsed_s=4.500000" in captured.out
     assert "best_step=2" in captured.out
     assert "final_nll_bits=12.000000" in captured.out
     assert "final_log_likelihood_bits=-12.000000" in captured.out

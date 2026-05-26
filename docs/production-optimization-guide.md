@@ -172,8 +172,8 @@ Inspect these outputs first:
 
 - `history.jsonl`: every optimizer step, including phase, solver stage,
   objective, gradient norms, projected gradients, and solver telemetry.
-- `summary.json`: final status/reason, final objective, and best objective
-  metadata as both NLL and log-likelihood in bits.
+- `summary.json`: final status/reason, elapsed seconds, final objective, and
+  best objective metadata as both NLL and log-likelihood in bits.
 - `checkpoints/best.pt` and `checkpoints/latest.pt`: resumable model and
   optimizer state.
 - `rates_final.tsv`: final D/T/L rates and theta values.

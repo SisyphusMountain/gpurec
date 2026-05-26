@@ -59,6 +59,7 @@ class OptimizationResult:
     best_nll_bits: float | None
     best_step: int | None
     steps_completed: int
+    elapsed_s: float | None = None
     sampling_checkpoint: Path | None = None
     final_log_likelihood_bits: float | None = None
     best_log_likelihood_bits: float | None = None
@@ -3887,6 +3888,7 @@ class OptimizationRunner:
                 best_nll_bits=None if best_nll is None else float(best_nll),
                 best_step=None if best_step is None else int(best_step),
                 steps_completed=int(final_row["step"]),
+                elapsed_s=float(final_status["elapsed_s"]),
                 sampling_checkpoint=sampling_checkpoint,
                 final_log_likelihood_bits=final_log_likelihood_bits,
                 best_log_likelihood_bits=best_log_likelihood_bits,

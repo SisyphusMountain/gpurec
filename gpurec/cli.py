@@ -126,6 +126,10 @@ def _optimization_result_text(result: Any) -> str:
                 "steps_completed",
                 getattr(result, "steps_completed", None),
             ),
+            _optional_metric_text(
+                "elapsed_s",
+                getattr(result, "elapsed_s", None),
+            ),
             _optional_int_text(
                 "best_step",
                 getattr(result, "best_step", None),

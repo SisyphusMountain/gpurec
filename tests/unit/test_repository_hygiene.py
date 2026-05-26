@@ -1298,6 +1298,7 @@ def test_project_readme_documents_gpurec_run_end_to_end_workflow():
     assert "falling back to `checkpoints/best.pt` or `checkpoints/latest.pt`" in normalized
     assert "exits without sampling if optimization fails" in normalized
     assert "Failed optimization still prints the optimization status line" in project_readme
+    assert "`steps_completed`, `elapsed_s`, `best_step`" in project_readme
     assert "`sampled_families`, `samples`, `xml`, and `sample_out_dir`" in project_readme
     assert "Use `gpurec sample --checkpoint ...` to sample an existing run" in normalized
 
@@ -1369,6 +1370,7 @@ def test_production_optimization_guide_is_linked_and_documents_routes():
         "`tests/data/test_trees_1000`",
         "likelihood/gradient parity",
         "`history.jsonl`",
+        "elapsed seconds",
         "`per_fam_likelihoods.tsv`",
         "`--check-preprocess`",
     ):
@@ -1426,6 +1428,7 @@ def test_output_artifact_reference_is_linked_and_documents_contract():
         "`final_log_likelihood_bits`",
         "`best_log_likelihood_bits`",
         "`steps_completed`",
+        "`elapsed_s`",
         "`best_step`",
         "`final_check_iters`",
         "`final_check_status`",
