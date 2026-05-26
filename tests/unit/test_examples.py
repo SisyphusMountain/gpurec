@@ -43,8 +43,15 @@ def test_minimal_run_config_example_loads_and_points_to_tiny_fixture():
     ).resolve()
     assert config.mode == "genewise"
     assert config.device == "cuda"
+    assert config.optimizer == "hessian-sgd"
     assert config.max_families == 1
     assert config.steps == 10
+    assert config.solver_warmup_iters == 4
+    assert config.fd_adam_warmup_steps == 3
+    assert config.fd_hessian_refresh_steps == 16
+    assert config.hessian_sgd_normal_fixed_iters_pi is None
+    assert config.hessian_sgd_normal_neumann_terms is None
+    assert config.final_check_iters == 32
 
     names, tree_paths, leaf_maps = parse_alerax_family_file(config.families_file)
     assert names == ["tiny_family"]
@@ -90,6 +97,8 @@ def test_examples_readme_documents_mode_specific_default_configs():
         "gpurec validate-config --config examples/specieswise-adagrad-restarts-config.json",
         "gpurec validate-config --config examples/minimal-run-config.json --check-preprocess",
         "`optimizer=auto` resolves to `hessian-sgd`",
+        "Hessian-SGD warmup",
+        "normal-stage solver overrides",
         "`optimizer=auto` resolves to `adagrad-restarts`",
         "`8:1.0:60,16:0.5:35,32:0.5:30`",
         "fixed128 final validation",

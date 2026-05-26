@@ -522,11 +522,13 @@ def test_cpu_ci_builds_and_smokes_release_artifacts():
             "examples/minimal-run-config.json --check-preprocess"
         ),
         "optimizer=hessian-sgd",
+        "hessian_sgd_normal_fixed_iters_pi=full",
         (
             "python -m gpurec.cli validate-config --config "
             "examples/specieswise-adagrad-restarts-config.json --check-preprocess"
         ),
         "optimizer=adagrad-restarts",
+        "adagrad_restart_schedule=8:1:60,16:0.5:35,32:0.5:30",
         "preprocess_checked=true",
     ):
         assert required in rust_smoke
@@ -543,10 +545,13 @@ def test_cpu_ci_builds_and_smokes_release_artifacts():
         "genewise-config-template.json",
         '"optimizer": "auto"',
         '"mode": "genewise"',
+        '"solver_warmup_iters": 4',
+        '"hessian_sgd_normal_fixed_iters_pi": null',
         "gpurec config-template --mode specieswise",
         "specieswise-config-template.json",
         '"mode": "specieswise"',
         '"adagrad_restart_schedule": "8:1.0:60,16:0.5:35,32:0.5:30"',
+        '"adagrad_restart_final_check_iters": 128',
         "gpurec validate-config --help",
         "gpurec checkpoint-info --help",
         "checkpoint-info-help.txt",

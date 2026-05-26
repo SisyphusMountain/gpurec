@@ -253,9 +253,11 @@ jobs:
           cd "$root"
           python -m gpurec.cli validate-config --config examples/minimal-run-config.json --check-preprocess | tee genewise-validate.txt
           grep -q "optimizer=hessian-sgd" genewise-validate.txt
+          grep -q "hessian_sgd_normal_fixed_iters_pi=full" genewise-validate.txt
           grep -q "preprocess_checked=true" genewise-validate.txt
           python -m gpurec.cli validate-config --config examples/specieswise-adagrad-restarts-config.json --check-preprocess | tee specieswise-validate.txt
           grep -q "optimizer=adagrad-restarts" specieswise-validate.txt
+          grep -q "adagrad_restart_schedule=8:1:60,16:0.5:35,32:0.5:30" specieswise-validate.txt
           grep -q "preprocess_checked=true" specieswise-validate.txt
 
       - name: Install built wheel and smoke CLI
@@ -270,9 +272,12 @@ jobs:
           gpurec config-template --mode genewise | tee genewise-config-template.json
           grep -q '"optimizer": "auto"' genewise-config-template.json
           grep -q '"mode": "genewise"' genewise-config-template.json
+          grep -q '"solver_warmup_iters": 4' genewise-config-template.json
+          grep -q '"hessian_sgd_normal_fixed_iters_pi": null' genewise-config-template.json
           gpurec config-template --mode specieswise | tee specieswise-config-template.json
           grep -q '"mode": "specieswise"' specieswise-config-template.json
           grep -q '"adagrad_restart_schedule": "8:1.0:60,16:0.5:35,32:0.5:30"' specieswise-config-template.json
+          grep -q '"adagrad_restart_final_check_iters": 128' specieswise-config-template.json
           gpurec validate-config --help
           gpurec checkpoint-info --help | tee checkpoint-info-help.txt
           grep -q -- "--checkpoint" checkpoint-info-help.txt

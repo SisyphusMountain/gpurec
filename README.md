@@ -210,8 +210,9 @@ CPU and validate the selected Newick trees plus leaf/species mappings before a
 full optimization run.
 For a source checkout or source archive, checked JSON configs and a tiny
 AleRax-style fixture live under `examples/`.  They cover the genewise and
-specieswise production defaults documented in `examples/README.md`.  The CLI
-command shape is:
+specieswise production defaults documented in `examples/README.md`, including
+the mode-specific optimizer route knobs that `validate-config` reports.  The
+CLI command shape is:
 
 ```bash
 gpurec validate-config --config examples/minimal-run-config.json

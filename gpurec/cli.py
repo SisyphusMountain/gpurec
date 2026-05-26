@@ -541,8 +541,12 @@ def _config_template_data(args: argparse.Namespace) -> dict[str, Any]:
     if args.mode == "genewise":
         data.update(
             {
+                "solver_warmup_iters": 4,
                 "fd_adam_warmup_steps": 3,
                 "fd_hessian_refresh_steps": 16,
+                "hessian_sgd_normal_fixed_iters_pi": None,
+                "hessian_sgd_normal_neumann_terms": None,
+                "final_check_iters": 32,
             }
         )
     elif args.mode == "specieswise":

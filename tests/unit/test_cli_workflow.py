@@ -274,8 +274,12 @@ def test_cli_config_template_prints_genewise_hessian_sgd_auto_defaults(capsys):
     assert data["mode"] == "genewise"
     assert data["device"] == "cuda"
     assert data["optimizer"] == "auto"
+    assert data["solver_warmup_iters"] == 4
     assert data["fd_adam_warmup_steps"] == 3
     assert data["fd_hessian_refresh_steps"] == 16
+    assert data["hessian_sgd_normal_fixed_iters_pi"] is None
+    assert data["hessian_sgd_normal_neumann_terms"] is None
+    assert data["final_check_iters"] == 32
     assert "adagrad_restart_schedule" not in data
 
 
@@ -289,6 +293,7 @@ def test_cli_config_template_prints_specieswise_adagrad_restart_defaults(capsys)
     assert data["optimizer"] == "auto"
     assert data["adagrad_restart_schedule"] == "8:1.0:60,16:0.5:35,32:0.5:30"
     assert data["adagrad_restart_final_check_iters"] == 128
+    assert "hessian_sgd_normal_fixed_iters_pi" not in data
     assert "fd_hessian_refresh_steps" not in data
 
 

@@ -18,7 +18,9 @@ gpurec validate-config --config examples/minimal-run-config.json --check-preproc
 ```
 
 - `minimal-run-config.json` uses `mode=genewise`; `optimizer=auto` resolves to
-  `hessian-sgd`.
+  `hessian-sgd`. It records the Hessian-SGD warmup, finite-difference Hessian
+  refresh, normal-stage solver overrides, and final-check budget used by the
+  production starter route.
 - `specieswise-adagrad-restarts-config.json` uses `mode=specieswise`;
   `optimizer=auto` resolves to `adagrad-restarts` with the default
   `8:1.0:60,16:0.5:35,32:0.5:30` schedule and fixed128 final validation.

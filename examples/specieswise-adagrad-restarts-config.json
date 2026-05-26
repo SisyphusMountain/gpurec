@@ -4,8 +4,11 @@
   "out_dir": "output/specieswise-adagrad-restarts",
   "mode": "specieswise",
   "device": "cuda",
+  "optimizer": "auto",
   "max_families": 1,
   "preprocess_cpu_cores": 1,
+  "adagrad_restart_schedule": "8:1.0:60,16:0.5:35,32:0.5:30",
+  "adagrad_restart_final_check_iters": 128,
   "log_every": 1,
   "checkpoint_every": 1
 }

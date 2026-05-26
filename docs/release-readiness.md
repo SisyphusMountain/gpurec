@@ -32,7 +32,8 @@ on `examples/minimal-run-config.json` and
 `gpurec config-template --help`,
 `gpurec config-template --mode specieswise`, and
 `gpurec validate-config --help` so the installed template/preflight surface
-remains part of the command surface. It also smokes
+remains part of the command surface, including genewise Hessian-SGD route knobs
+and the specieswise Adagrad restart schedule. It also smokes
 `gpurec checkpoint-info --help` so checkpoint inspection stays available
 without CUDA model construction. The same package job keeps
 examples out of wheels while requiring them in the source
