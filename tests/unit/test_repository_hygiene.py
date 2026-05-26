@@ -1358,6 +1358,9 @@ def test_project_readme_documents_workflow_optimizer_modes():
         "Requires `mode=genewise`",
         "projected gradients at rate bounds",
         "vectorized row-wise port of PyTorch's bracket/zoom line search",
+        "`adagrad_restart_schedule` is validated before model loading",
+        "`E/Pi[/Neumann]:lr:steps`",
+        "`adagrad_restart_final_check_iters` must be zero to disable",
     ):
         assert token in normalized
     assert "fd_newton_max_step" not in normalized

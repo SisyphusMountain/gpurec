@@ -318,6 +318,14 @@ uses the post-step projected gradients already produced by the optimizer, and
 `adaptive_rebatch_check_interval` controls how often that aggregate threshold
 is tested.
 
+`adagrad_restart_schedule` is validated before model loading.  Each phase must
+use `budget:lr:steps` or `E/Pi[/Neumann]:lr:steps`; tied budgets and `Pi`
+budgets must be positive even integers, split `E` and Neumann budgets must be
+positive integers, learning rates must be positive finite numbers, and step
+counts must be positive integers.  `adagrad_restart_final_check_iters` must be
+zero to disable the final specieswise validation pass or a positive even
+integer.
+
 ```bash
 gpurec optimize \
   --species-tree S.tree \

@@ -1376,6 +1376,61 @@ def test_run_config_accepts_split_specieswise_adagrad_restart_schedule(
     ]
 
 
+@pytest.mark.parametrize(
+    ("schedule", "message"),
+    [
+        ("", "adagrad_restart_schedule must not be empty"),
+        ("8:1", "entries must be"),
+        ("3:1:2", "entry 1 budget"),
+        ("8/3:1:2", "entry 1 Pi budget"),
+        ("8/4/0:1:2", "entry 1 Neumann budget"),
+        ("8:0:2", "learning rates must be positive"),
+        ("8:1:0", "entry 1 steps"),
+    ],
+)
+def test_run_config_rejects_invalid_specieswise_adagrad_restart_schedule(
+    tmp_path: Path,
+    schedule: str,
+    message: str,
+):
+    with pytest.raises(ValueError, match=message):
+        RunConfig(
+            species_tree=tmp_path / "sp.nwk",
+            families_file=tmp_path / "families.txt",
+            out_dir=tmp_path / "out",
+            mode="specieswise",
+            optimizer="adagrad-restarts",
+            adagrad_restart_schedule=schedule,
+            device="cpu",
+        )
+
+
+@pytest.mark.parametrize(
+    ("value", "message"),
+    [
+        (-1, "adagrad_restart_final_check_iters must be non-negative"),
+        (3, "adagrad_restart_final_check_iters must be a positive even integer"),
+        (12.5, "adagrad_restart_final_check_iters must be an integer"),
+        (True, "adagrad_restart_final_check_iters must be an integer"),
+    ],
+)
+def test_run_config_rejects_invalid_adagrad_restart_final_check_iters(
+    tmp_path: Path,
+    value: object,
+    message: str,
+):
+    with pytest.raises(ValueError, match=message):
+        RunConfig(
+            species_tree=tmp_path / "sp.nwk",
+            families_file=tmp_path / "families.txt",
+            out_dir=tmp_path / "out",
+            mode="specieswise",
+            optimizer="adagrad-restarts",
+            adagrad_restart_final_check_iters=value,  # type: ignore[arg-type]
+            device="cpu",
+        )
+
+
 def test_run_config_rejects_adagrad_restarts_outside_specieswise(tmp_path: Path):
     with pytest.raises(
         ValueError,
