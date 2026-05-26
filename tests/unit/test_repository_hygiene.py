@@ -496,6 +496,14 @@ def test_package_runtime_does_not_use_assert_statements():
         for node in ast.walk(tree):
             if isinstance(node, ast.Assert):
                 offenders.append(f"{path.relative_to(root)}:{node.lineno}")
+            elif isinstance(node, ast.Raise):
+                exc = node.exc
+                if (
+                    isinstance(exc, ast.Call)
+                    and isinstance(exc.func, ast.Name)
+                    and exc.func.id == "AssertionError"
+                ) or (isinstance(exc, ast.Name) and exc.id == "AssertionError"):
+                    offenders.append(f"{path.relative_to(root)}:{node.lineno}")
 
     assert offenders == []
 

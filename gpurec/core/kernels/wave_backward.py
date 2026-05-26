@@ -76,7 +76,7 @@ def _dts_layout_param_args(log_pD, log_pS, *, family_idx, S, device, dtype):
             return param.contiguous(), 2
         if layout_code == 3:
             return param.contiguous(), 3
-        raise AssertionError("validated DTS backward layout reached unreachable branch")
+        raise RuntimeError("validated DTS backward layout reached unreachable branch")
 
     pD, layout_D = _normalize(log_pD)
     pS, layout_S = _normalize(log_pS)

@@ -60,7 +60,7 @@ def _prepare_param(p, n_splits, S, *, family_indexed=False):
             int(layout.row_stride),
             int(layout.species_stride),
         )
-    raise AssertionError("validated DTS forward layout reached unreachable branch")
+    raise RuntimeError("validated DTS forward layout reached unreachable branch")
 
 
 def prepare_dts_forward_param(p, n_splits, S, *, family_indexed=False):
