@@ -122,18 +122,18 @@ Current scheduler surfaces:
   after confirming it was helper-level tests only;
 - `collate_wave()` and `split_phase_waves()` were deleted from runtime source
   after confirming they were helper-level tests only;
-- C++ extension exports multiple wave-stat diagnostic functions.
+- former C++ wave-stat diagnostic exports are absent from the current
+  Rust/PyO3 extension and guarded from returning.
 
 Ownership table from the current read-only audit:
 
 | Surface | Current owner / callers | Tests / docs | Deletion risk |
 | --- | --- | --- | --- |
-| `preprocess_multiple_families` pybind | Production-owned. `GeneDataset` calls it for normal preprocessing, family cache misses, and species-only empty-family cache fill in `gpurec/core/model.py`. | Fake/cache tests in `tests/unit/test_alerax_family_input.py`, real parser coverage through `GeneDataset`, and integration construction in `tests/integration/test_gene_recon_model.py`. | High. Keep. Non-empty family preprocessing needs `include_details=True`; the empty-family species-only cache path currently uses the default `include_details=False`. |
-| Legacy `preprocess` pybind | No in-repo production caller found; exported from `gpurec/core/cpp/preprocess.cpp`. | Existing pruning docs flag it as legacy/open surface, and the pybind docstring now calls it a legacy compatibility export retained for historical low-level callers while deprecation/removal is evaluated. | Medium external/API risk, low in-repo runtime risk. Document as legacy/deprecated before removal. |
-| `compute_phased_waves` pybind | No direct production caller found, but the underlying implementation is production-used to populate `phased_waves`/`phased_phases` during preprocessing. | Source-level hygiene guards it with the other max-wave exports, and the pybind docstring now calls the direct binding a diagnostic export rather than supported workflow API. | Do not remove the implementation. Deprecate the direct export only after diagnostic ownership is documented. |
-| Wave-stat pybinds: `compute_wave_stats`, `compute_packet_wave_stats`, `compute_phased_wave_stats`, `compute_phased_cross_family_wave_stats`, `compute_cross_family_wave_stats` | No production caller found. | Hygiene checks positive `max_wave_size`; audit docs describe them as broad diagnostic ABI; pybind docstrings now require maintained profiling or diagnostic ownership. | Low runtime risk, medium diagnostic/API risk. Keep only with a maintained profiling or diagnostic command. |
-| `bench_parse` | Not currently exported. | Removal is guarded in repository hygiene and audit docs. | Already retired; keep the guard. |
-| `compute_clade_waves` Python helper | Addressed after the scheduler follow-up audit. The Python adapter and its helper-level unit module were deleted after confirming no tracked production caller imports it and no high-level public export exposes it. The C++ implementation with the same name remains production-internal to preprocessing. | Keep the source guard proving `gpurec/core/scheduling.py` and the Python adapter name do not return to tracked runtime Python. | Low in-repo runtime risk; direct low-level Python imports should use `schedule_global_phased_waves()` or `build_wave_layout()`, while C++ preprocessing still owns phased-wave generation. |
+| Rust/PyO3 preprocessing exports: `preprocess_dataset`, `preprocess_request_binary`, `preprocess_request_numpy`, `preprocess_request_torch` | Production-owned. `GeneDataset`, `UniformChunkedReconModel`, and the preprocessing wrappers call these for resident preprocessing and request conversion. | Fake/cache tests in `tests/unit/test_alerax_family_input.py`, real parser coverage through `GeneDataset`, uniform chunked tests, and integration construction in `tests/integration/test_gene_recon_model.py`. | High. Keep. Package runtime passes `include_details=True` for all tracked `preprocess_multiple_families` wrapper calls, including the empty-family species-only cache fill; `include_details=False` is only a Python-wrapper compatibility knob pending public-ABI review. |
+| Rust/PyO3 topology exports: `species_parent_from_indexes_torch`, `species_wave_topology_torch`, `uniform_ancestors_t_indices_torch` | Production-owned through `gpurec/core/preprocess_rust.py` helpers used by topology and ancestor-matrix construction. | Covered by topology/ancestor preprocessing tests and source-level export-manifest hygiene. | High. Keep while the Python wrappers call the native topology helpers. |
+| Rust/PyO3 scheduler/layout JSON exports: `schedule_global_phased_waves_json`, `family_schedule_summary_json`, `plan_family_batches_json`, `build_wave_layout_plan_json` | Production-owned through `gpurec/core/schedule_rust.py` and layout/batch planning wrappers. | Covered by global scheduler, family-layout, batch-planning, Rust parity, and workflow tests. | High. Keep while Rust scheduler/layout planning remains the default native path. |
+| Former legacy and diagnostic C++ pybind exports: `preprocess`, `compute_phased_waves`, wave-stat helpers, and `bench_parse` | Retired from the current Rust/PyO3 extension surface. | Repository hygiene guards the exact `wrap_pyfunction!` manifest and rejects the old `PYBIND11_MODULE`/`m.def` style from the native source. | Already retired; keep the absence guard. |
+| `compute_clade_waves` Python helper | Addressed after the scheduler follow-up audit. The Python adapter and its helper-level unit module were deleted after confirming no tracked production caller imports it and no high-level public export exposes it. | Keep the source guard proving `gpurec/core/scheduling.py` and the Python adapter name do not return to tracked runtime Python. | Low in-repo runtime risk; direct low-level Python imports should use `schedule_global_phased_waves()` or `build_wave_layout()`, while Rust scheduling owns phased-wave generation. |
 | `collate_wave`, `split_phase_waves` | Addressed after the scheduler follow-up audit. These helper-level scheduler functions were deleted from `gpurec.core.batching` after confirming no tracked production caller imports them and their only tracked users were direct helper tests. | Keep the source hygiene guard proving these helper names are absent from tracked runtime Python sources. | Low in-repo runtime risk; direct low-level external imports should use `schedule_global_phased_waves()` or `build_wave_layout()`. |
 | Rust-default scheduler/layout path | Production-owned through `gpurec/api/_family_layout.py`, Rust scheduler/layout planning wrappers, and retained Python fallback implementations. | Covered by global scheduler, family-layout, Rust parity, and full workflow tests. | High. Keep Python fallback as a parity oracle until replacement packaging and benchmark policy are settled. |
 | `family_schedule_summary` | Production-owned for depth-first batch packing in `GeneReconModel` and `UniformChunkedReconModel`. | Indirectly covered through planning/layout tests. | High while depth-first packing remains supported. |
@@ -146,67 +146,65 @@ Plan:
 2. Benchmark the current multi-candidate scheduler against one candidate policy.
 3. Keep the chosen runtime scheduler private to the layout builder.
 4. Move test-only scheduler helpers into `tests/` fixtures or delete them.
-5. Remove diagnostic C++ pybind exports unless they have a maintained profiling
-   command.
+5. Keep retired C++ diagnostic pybind exports out of the current Rust/PyO3
+   manifest unless a maintained profiling command reintroduces them explicitly.
 
 Remaining candidate deletions after classification:
 
-- direct pybind wave-stat exports in `gpurec/core/cpp/preprocess.cpp`.
+- no direct wave-stat pybind deletions remain in the current source; keep the
+  removed-surface guards.
 
-## C++ Preprocess Extension Surface
+## Native Preprocess Extension Surface
 
 Current runtime calls:
 
 - `GeneDataset` uses `preprocess_multiple_families(..., include_details=True,
   include_species_matrices=False)`.
-- The species-only empty-family cache path uses
-  `preprocess_multiple_families(..., include_details=False)` to materialize
-  species topology data without family details.
+- The species-only empty-family cache path also requests
+  `include_details=True`; no tracked package runtime caller depends on
+  `include_details=False`.
 - Cache loading expects detailed CCP helpers and leaf mapping tensors.
 
 Open surfaces:
 
-- legacy pybind `preprocess()`;
-- `preprocess_multiple_families(..., include_details=False)`;
-- wave-stat diagnostic pybind exports.
+- low-level `include_details=False` compatibility on the Python
+  `preprocess_multiple_families` wrapper;
+- retained Rust/PyO3 preprocessing, topology, scheduler, and layout helper
+  exports listed in the manifest above.
 
 CPP-01/CPP-02 refresh: tracked package Python still has exactly one production
 preprocessing route, `GeneDataset` calling
-`preprocess_multiple_families`.  Three call sites request
-`include_details=True` for family CCP payloads, and the only retained
-`include_details=False` path is the species-only empty-family cache fill.  No
-tracked package Python calls the legacy `preprocess()` export or the direct
-wave-stat diagnostic exports.  Deletion remains blocked by exported-ABI
-ownership rather than in-repo runtime use: remove `preprocess()` only after
-deprecation/replacement evidence for low-level callers, and remove diagnostic
-pybinds only after a maintained profiling/diagnostic owner is identified or the
-surface is formally retired.  Until then, the diagnostic exports must stay
-documented as non-product workflow API.
+`preprocess_multiple_families`.  Both tracked package call sites request
+`include_details=True`, including the species-only empty-family cache fill.  No
+tracked package Python calls `include_details=False`, and the legacy
+`preprocess()` plus direct wave-stat diagnostic exports are absent from the
+current Rust/PyO3 manifest.  Deletion remains blocked only for the Python
+wrapper's low-level `include_details=False` compatibility knob: remove that
+after deprecation/replacement evidence for low-level callers.  Retired C++
+diagnostic exports should stay absent unless a maintained profiling/diagnostic
+owner explicitly reintroduces them.
 
-Pybind export manifest:
+Rust/PyO3 export manifest:
 
 | Export | Classification | Replacement / deletion gate |
 | --- | --- | --- |
-| `preprocess_multiple_families` | Production-owned preprocessing entry point. | Keep while `GeneDataset` uses C++ preprocessing. Non-empty families require `include_details=True`; the species-only empty-family cache fill still owns `include_details=False`. |
-| `preprocess` | Legacy compatibility export. | Delete only after deprecation/replacement evidence confirms no maintained low-level caller depends on the single-family direct pybind. Replacement is `preprocess_multiple_families(..., include_details=True)` for detailed family payloads. |
-| `compute_phased_waves` | Direct scheduler diagnostic export. | Do not delete the underlying implementation while preprocessing emits `phased_waves` / `phased_phases`; hide or delete only the pybind after diagnostic ownership is replaced by preprocessing output or a maintained profiling command. |
-| `compute_wave_stats` | Direct wave-stat diagnostic export. | Keep only with a maintained profiling or diagnostic command. |
-| `compute_packet_wave_stats` | Direct wave-stat diagnostic export. | Keep only with a maintained profiling or diagnostic command. |
-| `compute_phased_wave_stats` | Direct wave-stat diagnostic export. | Keep only with a maintained profiling or diagnostic command. |
-| `compute_phased_cross_family_wave_stats` | Direct wave-stat diagnostic export. | Keep only with a maintained profiling or diagnostic command. |
-| `compute_cross_family_wave_stats` | Direct wave-stat diagnostic export. | Keep only with a maintained profiling or diagnostic command. |
+| `preprocess_dataset`, `preprocess_request_binary`, `preprocess_request_numpy`, `preprocess_request_torch` | Production-owned preprocessing entry points. | Keep while `GeneDataset`, `UniformChunkedReconModel`, and preprocessing wrappers use native preprocessing. |
+| `species_parent_from_indexes_torch`, `species_wave_topology_torch`, `uniform_ancestors_t_indices_torch` | Production-owned topology helper exports. | Keep while `gpurec/core/preprocess_rust.py` uses native topology helpers. |
+| `schedule_global_phased_waves_json`, `family_schedule_summary_json`, `plan_family_batches_json`, `build_wave_layout_plan_json` | Production-owned scheduler/layout planning exports. | Keep while Rust scheduling and layout planning remain supported. |
+| `preprocess`, `compute_phased_waves`, wave-stat helpers, `bench_parse` | Retired legacy/diagnostic exports. | Keep absent unless a maintained low-level API or profiling owner is added with tests and docs. |
 
 Plan:
 
-- Search installed/user docs for each export before deletion.
-- If no public owner exists, remove legacy `preprocess()` and
-  `include_details=False`.
+- Search installed/user docs for the low-level `include_details=False`
+  compatibility knob before deletion.
+- If no public owner exists, remove low-level `include_details=False`
+  compatibility from the Python wrapper.
 - Keep one path from Newick inputs to detailed family/species helpers.
-- Keep C++ validation guards around the retained path.
+- Keep native export-manifest guards around the retained path.
 
 Verification:
 
-- C++ extension imports cleanly.
+- Rust/PyO3 extension imports cleanly.
 - AleRax family input tests pass.
 - Preprocess cache validation tests pass.
 - Integration construction from `from_trees()` and `from_alerax_families()`

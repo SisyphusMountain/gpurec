@@ -395,12 +395,11 @@ removed and are guarded against returning.
   but it does not cancel or rewrite pending background prefetch work.  Future
   runtime changes should update that documented contract first.
 - Scheduler and diagnostic exports such as `collate_wave`, `split_phase_waves`,
-  `compute_clade_waves`, and C++ wave-stat exports now have an ownership table
-  in `docs/runtime-surface-pruning-plan-2026-05-21.md`.  Production-owned paths
-  (`preprocess_multiple_families`, runtime scheduler/layout helpers, and
-  `family_schedule_summary`) should be kept or hidden only behind replacements;
-  test-only and diagnostic exports still need migration/deprecation decisions.
-  `bench_parse` is no longer retained as public surface.
+  `compute_clade_waves`, and retired C++ wave-stat exports now have an
+  ownership table in `docs/runtime-surface-pruning-plan-2026-05-21.md`.
+  Production-owned Rust/PyO3 paths should be kept or hidden only behind
+  replacements; test-only and retired diagnostic exports are guarded against
+  returning.  `bench_parse` is no longer retained as public surface.
 - The legacy leaf-to-species fallback is now documented in public user-facing
   docs: direct `from_trees` inputs map `Species_gene` to species `Species` and
   labels without `_` to the full label, while AleRax `mapping` entries and
@@ -528,14 +527,14 @@ removed and are guarded against returning.
 
 ## Deletion And Simplification Candidates
 
-- Remove or document unused pybind debug exports in `preprocess.cpp`.
-- Decide whether the legacy pybind `preprocess()` wrapper should remain.  The
-  current Python runtime routes through `preprocess_multiple_families(...,
-  include_details=True)`, while the legacy wrapper duplicates extraction logic
-  and has no in-repo Python callers.
+- Keep retired pybind debug exports out of the current Rust/PyO3 preprocessing
+  manifest unless a maintained diagnostic owner reintroduces them explicitly.
+- The legacy pybind `preprocess()` wrapper is absent from the current native
+  manifest.  The current Python runtime routes through
+  `preprocess_multiple_families(..., include_details=True)`.
 - Decide whether `preprocess_multiple_families(..., include_details=False)` is
-  a public C++ extension mode or dead compatibility surface; production Python
-  callers request details.
+  a public extension mode or dead compatibility surface; production Python
+  callers request details, including species-only empty-family preprocessing.
 - Decide whether `compute_clade_waves`, `collate_wave`, and
   `split_phase_waves` remain public scheduler helpers or are test-only legacy
   surface.
@@ -1891,11 +1890,11 @@ not edit files.  New or still-open findings from that refresh are:
 - Fresh native/C++/kernel subagent audit findings were recorded from a
   read-only pass.  The historical production-auto native CUDA prototype routing
   finding is now closed by deleting the modules and guarding their absence.  The
-  highest-risk unresolved surfaces are unowned direct pybind scheduler/stat
-  exports, the legacy `preprocess` pybind, DTS direct-kernel one-dimensional
-  parameter ambiguity, thin direct wrapper characterization for retained
-  backward kernels, and broad env-driven launch tuning spread across kernel
-  modules.
+  former direct pybind scheduler/stat and legacy `preprocess` surfaces are now
+  closed by the Rust/PyO3 export-manifest guard.  The highest-risk unresolved
+  native/kernel surfaces are DTS direct-kernel one-dimensional parameter
+  ambiguity, thin direct wrapper characterization for retained backward
+  kernels, and broad env-driven launch tuning spread across kernel modules.
 - Fresh workflow/CLI/scripts/profiling subagent audit findings were recorded
   from a read-only pass.  The largest remaining script surface is the legacy
   HOGENOM optimizer family; other unresolved surfaces are duplicated validation

@@ -367,9 +367,10 @@ Risk:
 
 - Decide whether the legacy pybind `preprocess()` wrapper remains.  Python
   runtime calls `preprocess_multiple_families(..., include_details=True)`.
-- Decide whether `include_details=False` is public or dead compatibility.
-- Remove unowned C++ diagnostic wave-stat pybind exports, or move them to a
-  benchmark/diagnostic extension with explicit ownership.
+- Decide whether `include_details=False` is public or dead compatibility; the
+  package runtime now passes `include_details=True` for all preprocessing calls.
+- Former C++ diagnostic wave-stat pybind exports are removed and guarded; keep
+  current Rust/PyO3 scheduler/layout exports owned by the Python wrappers.
 
 ### Workflow And Optimizer Surface
 
@@ -407,8 +408,8 @@ and benchmark gates in this plan.
   owned benchmark-only paths.
 - Scheduler helpers used only by tests/docs:
   `collate_wave()`, `split_phase_waves()`, and `compute_clade_waves()`.
-- C++ pybind diagnostic exports if no supported workflow uses them:
-  wave-stat and cross-family wave-stat helpers.
+- Former C++ pybind diagnostic exports remain deleted: `preprocess`,
+  wave-stat, cross-family wave-stat, and `bench_parse` helpers.
 - Legacy C++ `preprocess()` wrapper and
   `preprocess_multiple_families(..., include_details=False)` if no public
   consumer is kept.

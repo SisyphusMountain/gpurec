@@ -373,8 +373,9 @@ Current alternatives:
 
 - Python runtime uses `preprocess_multiple_families(..., include_details=True,
   include_species_matrices=False)`.
-- Older pybind `preprocess()` and `include_details=False` branches preserve
-  alternate contracts.
+- Package runtime no longer uses `include_details=False`; older pybind
+  `preprocess()` and low-level `include_details=False` branches preserve
+  alternate compatibility contracts.
 
 Simplification:
 
@@ -393,12 +394,15 @@ Gate:
 
 Current alternatives:
 
-- C++ wave-stat diagnostic exports are available alongside runtime
-  preprocessing outputs.
+- Former C++ wave-stat diagnostic exports are absent from the current
+  Rust/PyO3 manifest.
+- Current Rust/PyO3 preprocessing, topology, scheduler, and layout JSON exports
+  are production-owned by Python wrappers.
 
 Simplification:
 
-- Move diagnostics behind a development-only tool or remove them if unused.
+- Keep retired diagnostics absent unless a maintained development-only tool
+  reintroduces them with explicit ownership.
 
 Keep:
 

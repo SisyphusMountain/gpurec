@@ -3599,12 +3599,38 @@ def test_rust_preprocess_extension_exports_match_runtime_surface():
     source = (
         root / "crates" / "gpurec-preprocess" / "src" / "lib.rs"
     ).read_text(encoding="utf-8")
+    runtime_plan = " ".join(
+        (
+            root / "docs" / "runtime-surface-pruning-plan-2026-05-21.md"
+        ).read_text(encoding="utf-8").split()
+    )
+    simplification_index = " ".join(
+        (
+            root / "docs" / "simplification-opportunity-index-2026-05-21.md"
+        ).read_text(encoding="utf-8").split()
+    )
+    refactor_plan = " ".join(
+        (
+            root / "docs" / "refactor-simplification-plan-2026-05-21.md"
+        ).read_text(encoding="utf-8").split()
+    )
+    audit = " ".join(
+        (
+            root / "docs" / "repo-wide-audit-2026-05-21.md"
+        ).read_text(encoding="utf-8").split()
+    )
+    surface_docs = "\n".join(
+        (runtime_plan, simplification_index, refactor_plan, audit)
+    )
 
     expected_exports = {
         "preprocess_dataset",
         "preprocess_request_binary",
         "preprocess_request_numpy",
         "preprocess_request_torch",
+        "species_parent_from_indexes_torch",
+        "species_wave_topology_torch",
+        "uniform_ancestors_t_indices_torch",
         "schedule_global_phased_waves_json",
         "family_schedule_summary_json",
         "plan_family_batches_json",
@@ -3612,14 +3638,54 @@ def test_rust_preprocess_extension_exports_match_runtime_surface():
     }
     actual_exports = set(re.findall(r"wrap_pyfunction!\(([^,\s]+)", source))
 
-    assert expected_exports <= actual_exports
+    assert actual_exports == expected_exports
     assert "PYBIND11_MODULE" not in source
     assert 'm.def("' not in source
+
+    for token in (
+        "Rust/PyO3 export manifest",
+        "Former legacy and diagnostic C++ pybind exports",
+        "Former C++ wave-stat diagnostic exports are absent from the current Rust/PyO3 manifest",
+        "Former C++ pybind diagnostic exports remain deleted",
+        "former direct pybind scheduler/stat and legacy `preprocess` surfaces are now closed by the Rust/PyO3 export-manifest guard",
+    ):
+        assert token in surface_docs
+
+    for stale in (
+        "exported from `gpurec/core/cpp/preprocess.cpp`",
+        "direct pybind wave-stat exports in `gpurec/core/cpp/preprocess.cpp`",
+        "C++ extension exports multiple wave-stat diagnostic functions",
+        "highest-risk unresolved surfaces are unowned direct pybind scheduler/stat exports",
+    ):
+        assert stale not in surface_docs
 
 
 def test_removed_preprocess_diagnostic_exports_have_no_runtime_callers():
     root = Path(__file__).resolve().parents[2]
     runtime_files = _tracked_package_python_files(root)
+    runtime_plan = " ".join(
+        (
+            root / "docs" / "runtime-surface-pruning-plan-2026-05-21.md"
+        ).read_text(encoding="utf-8").split()
+    )
+    simplification_index = " ".join(
+        (
+            root / "docs" / "simplification-opportunity-index-2026-05-21.md"
+        ).read_text(encoding="utf-8").split()
+    )
+    refactor_plan = " ".join(
+        (
+            root / "docs" / "refactor-simplification-plan-2026-05-21.md"
+        ).read_text(encoding="utf-8").split()
+    )
+    audit = " ".join(
+        (
+            root / "docs" / "repo-wide-audit-2026-05-21.md"
+        ).read_text(encoding="utf-8").split()
+    )
+    surface_docs = "\n".join(
+        (runtime_plan, simplification_index, refactor_plan, audit)
+    )
     legacy_exports = {"preprocess"}
     diagnostic_exports = {
         "compute_phased_waves",
@@ -3674,6 +3740,21 @@ def test_removed_preprocess_diagnostic_exports_have_no_runtime_callers():
 
     assert detailed_calls == 2
     assert species_only_default_calls == 0
+
+    for token in (
+        "Both tracked package call sites request `include_details=True`, including the species-only empty-family cache fill",
+        "Package runtime no longer uses `include_details=False`",
+        "package runtime now passes `include_details=True` for all preprocessing calls",
+        "production Python callers request details, including species-only empty-family preprocessing",
+    ):
+        assert token in surface_docs
+
+    for stale in (
+        "empty-family species-only cache path currently uses the default `include_details=False`",
+        "only retained `include_details=False` path is the species-only empty-family cache fill",
+        "species-only empty-family cache path uses `preprocess_multiple_families(..., include_details=False)`",
+    ):
+        assert stale not in surface_docs
 
 
 def test_rust_preprocess_does_not_materialize_inclusion_dag_payloads():
