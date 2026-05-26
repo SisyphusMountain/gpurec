@@ -1026,7 +1026,7 @@ def main(argv: list[str] | None = None) -> None:
         except _EXPECTED_WORKFLOW_ERRORS as exc:
             command_parser.error(str(exc))
         if output is not None:
-            print(f"config_template={output}", flush=True)
+            print(_optional_text("config_template", output), flush=True)
         return
     if args.command == "optimize":
         try:
@@ -1039,7 +1039,8 @@ def main(argv: list[str] | None = None) -> None:
         except _EXPECTED_WORKFLOW_ERRORS as exc:
             _exit_runtime_error(command_parser, str(exc))
         print(
-            f"{_optimization_result_text(result)} out_dir={result.out_dir}",
+            f"{_optimization_result_text(result)} "
+            f"{_optional_text('out_dir', result.out_dir)}",
             flush=True,
         )
         if result.status == "failed":
@@ -1068,7 +1069,7 @@ def main(argv: list[str] | None = None) -> None:
             f"gene_tree_files={summary['gene_tree_files']} "
             f"mapped_families={summary['mapped_families']} "
             f"{_validate_config_route_text(config)} "
-            f"device={config.device} out_dir={config.out_dir}"
+            f"device={config.device} {_optional_text('out_dir', config.out_dir)}"
             f"{preprocess_text}",
             flush=True,
         )
@@ -1084,9 +1085,9 @@ def main(argv: list[str] | None = None) -> None:
         except _EXPECTED_WORKFLOW_ERRORS as exc:
             _exit_runtime_error(command_parser, _sampling_error_message(exc))
         print(
-            f"sampled families={result.families_sampled} "
+            f"sampled_families={result.families_sampled} "
             f"samples={result.samples_per_family} xml={result.xml_files} "
-            f"out_dir={result.out_dir}",
+            f"{_optional_text('out_dir', result.out_dir)}",
             flush=True,
         )
         return
@@ -1151,7 +1152,7 @@ def main(argv: list[str] | None = None) -> None:
         print(
             f"{_optimization_result_text(opt_result)} "
             f"sampled_families={sampling_result.families_sampled} "
-            f"out_dir={run_config.out_dir}",
+            f"{_optional_text('out_dir', run_config.out_dir)}",
             flush=True,
         )
         return

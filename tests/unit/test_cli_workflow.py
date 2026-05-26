@@ -270,7 +270,7 @@ def test_cli_config_template_writes_output_and_refuses_overwrite(
     tmp_path: Path,
     capsys,
 ):
-    output = tmp_path / "nested" / "run.json"
+    output = tmp_path / "nested dir" / "run config.json"
 
     main(
         [
@@ -290,7 +290,10 @@ def test_cli_config_template_writes_output_and_refuses_overwrite(
 
     captured = capsys.readouterr()
     assert captured.err == ""
-    assert f"config_template={output.resolve()}" in captured.out
+    assert (
+        gpurec_cli._optional_text("config_template", output.resolve())
+        in captured.out
+    )
     data = json.loads(output.read_text(encoding="utf-8"))
     assert data["species_tree"] == "data/S.tree"
     assert data["families_file"] == "data/families.txt"
@@ -500,7 +503,7 @@ def test_cli_validate_config_reports_selected_family_references(
             {
                 "species_tree": "sp.nwk",
                 "families_file": "families.txt",
-                "out_dir": "out",
+                "out_dir": "run outputs",
                 "mode": "genewise",
                 "device": "cuda",
             }
@@ -528,7 +531,10 @@ def test_cli_validate_config_reports_selected_family_references(
     assert "fd_adam_warmup_steps=3" in captured.out
     assert "fd_hessian_refresh_steps=16" in captured.out
     assert "preprocess_checked" not in captured.out
-    assert str((tmp_path / "out").resolve()) in captured.out
+    assert gpurec_cli._optional_text(
+        "out_dir",
+        (tmp_path / "run outputs").resolve(),
+    ) in captured.out
     assert captured.err == ""
 
 
@@ -1102,7 +1108,7 @@ def test_cli_sample_forwards_sampling_options(
 ):
     checkpoint = tmp_path / "best.pt"
     checkpoint.write_bytes(b"not used")
-    sample_out_dir = tmp_path / "samples"
+    sample_out_dir = tmp_path / "sample outputs"
     backtrack_binary = tmp_path / "gpurec-backtrack"
     captured_config = {}
 
@@ -1149,7 +1155,12 @@ def test_cli_sample_forwards_sampling_options(
     assert config.max_families == 4
     assert config.max_events == 1000
     assert config.backtrack_binary == backtrack_binary.resolve()
-    assert "sampled families=4 samples=3 xml=12" in output.out
+    assert "sampled_families=4 samples=3 xml=12" in output.out
+    assert "sampled families=" not in output.out
+    assert (
+        gpurec_cli._optional_text("out_dir", sample_out_dir.resolve())
+        in output.out
+    )
     assert "Traceback" not in output.err
 
 
@@ -1236,7 +1247,11 @@ def test_cli_optimize_reports_final_and_best_objective_summary(
 
     monkeypatch.setattr("gpurec.cli.optimize", successful_optimize)
 
-    main(_minimal_workflow_cli_args("optimize", tmp_path))
+    args = _minimal_workflow_cli_args("optimize", tmp_path)
+    out_dir = tmp_path / "optimized outputs"
+    args[args.index("--out-dir") + 1] = str(out_dir)
+
+    main(args)
 
     captured = capsys.readouterr()
     assert "status=not_converged" in captured.out
@@ -1258,7 +1273,8 @@ def test_cli_optimize_reports_final_and_best_objective_summary(
     assert "final_check_loss_abs_delta_bits=0.125000" in captured.out
     assert "final_check_grad_max_abs_delta=0.500000" in captured.out
     assert "final_check_grad_rel_inf_delta=0.250000" in captured.out
-    assert f"out_dir={tmp_path / 'out'}" in captured.out
+    assert gpurec_cli._optional_text("out_dir", out_dir.resolve()) in captured.out
+    assert f"out_dir={out_dir.resolve()}" not in captured.out
     assert "Traceback" not in captured.err
 
 

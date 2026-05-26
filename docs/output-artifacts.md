@@ -51,8 +51,9 @@ The `gpurec optimize` status line and the optimization portion of `gpurec run`
 print `steps_completed`, `best_step`, and the same final/best NLL and
 log-likelihood fields, plus the final validation source, reason, status, and
 fallback budget/loss/gradient delta fields, for quick terminal triage.
-Text values that contain whitespace or control characters are emitted as JSON
-strings with spaces escaped as `\u0020` so the status line remains one record.
+Text and path values that contain whitespace or control characters are emitted
+as JSON strings with spaces escaped as `\u0020` so each status line remains one
+record.
 
 `theta_final.pt` is intentionally smaller than a checkpoint. Tooling that needs
 to restore a model, sample reconciliations, or verify family/species ordering
@@ -65,6 +66,8 @@ configuration through `RunConfig.from_dict(...)`.
 Sampling writes under `reconciliations/` in the sampling output directory. For
 `gpurec run`, that is the same `out_dir` unless a sampling output override is
 provided.
+Standalone `gpurec sample` prints `sampled_families`, `samples`, `xml`, and
+`out_dir` with the same status-line escaping rule.
 
 | Path | Contents |
 |---|---|
