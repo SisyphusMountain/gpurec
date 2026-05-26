@@ -221,14 +221,24 @@ def test_pytorch_adam_updates_global_model(trees):
     opt = torch.optim.Adam([model.theta], lr=0.01)
 
     before = model.theta.detach().clone()
+    with torch.no_grad():
+        before_loss = model().detach()
     opt.zero_grad(set_to_none=True)
     loss = model()
     loss.backward()
     opt.step()
     model.clamp_theta_(min_rate=1e-10, max_rate=2.0)
+    with torch.no_grad():
+        after_loss = model().detach()
 
     assert not torch.equal(model.theta.detach(), before)
     assert torch.isfinite(model.theta).all()
+    assert torch.isfinite(after_loss)
+    assert after_loss <= before_loss + torch.as_tensor(
+        1e-4,
+        device=after_loss.device,
+        dtype=after_loss.dtype,
+    )
 
 
 def test_uniform_origination_probs_match_default_global_model(tmp_path, trees):
@@ -285,12 +295,26 @@ def test_batched_lbfgs_genewise_runs_one_polish_step(trees):
         return losses.detach()
 
     before = model.theta.detach().clone()
+    with torch.no_grad():
+        before_losses = model.nll_per_family().detach()
     losses = opt.step(closure)
     model.clamp_theta_(min_rate=1e-10, max_rate=2.0)
+    with torch.no_grad():
+        after_losses = model.nll_per_family().detach()
 
     assert losses.shape == (1,)
     assert torch.isfinite(losses).all()
     assert not torch.equal(model.theta.detach(), before)
+    assert torch.isfinite(after_losses).all()
+    assert torch.all(
+        after_losses
+        <= before_losses
+        + torch.as_tensor(
+            1e-4,
+            device=after_losses.device,
+            dtype=after_losses.dtype,
+        )
+    )
 
 
 @pytest.fixture
