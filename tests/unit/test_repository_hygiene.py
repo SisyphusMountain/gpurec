@@ -1417,7 +1417,8 @@ def test_project_readme_documents_gpurec_run_end_to_end_workflow():
     assert "exits without sampling if optimization fails" in normalized
     assert "Failed optimization still prints the optimization status line" in project_readme
     assert "unless the run reached `status=converged`" in normalized
-    assert "resolved `mode`, `optimizer`, family/species/batch counts" in normalized
+    assert "resolved `mode`, `optimizer`, mode default optimizer" in normalized
+    assert "whether the optimizer matches that default" in normalized
     assert "batch packing, family chunk size, clade budget" in normalized
     assert "solver iteration budgets" in normalized
     assert (
@@ -1463,6 +1464,8 @@ def test_project_readme_documents_workflow_optimizer_modes():
         "| `adam-fd-newton` |",
         "If omitted, `auto` resolves to `hessian-sgd` for `mode=genewise`",
         "`adagrad-restarts` for `mode=specieswise`",
+        "`mode_default_optimizer`",
+        "`uses_mode_default_optimizer`",
         "Workflow rate bounds default to `min_rate=2^-30` and `max_rate=2`",
         "`lbfgs_line_search` is `none` or `strong_wolfe`",
         "LBFGS runtime errors stop the run with a failed status",
@@ -1506,6 +1509,8 @@ def test_production_optimization_guide_is_linked_and_documents_routes():
         "`gradient_route=implicit_first_order_adjoint`",
         "`rate_parameterization=base2_log_dlt_rates`",
         "`production_default_basis=hogenom_and_test_trees_1000`",
+        "`mode_default_optimizer`",
+        "`uses_mode_default_optimizer`",
         "`hessian-sgd`",
         "`adagrad-restarts`",
         "8:1.0:60,16:0.5:35,32:0.5:30",
@@ -1599,6 +1604,8 @@ def test_output_artifact_reference_is_linked_and_documents_contract():
         "`gradient_route=implicit_first_order_adjoint`",
         "`rate_parameterization=base2_log_dlt_rates`",
         "`production_default_basis=hogenom_and_test_trees_1000`",
+        "`mode_default_optimizer`",
+        "`uses_mode_default_optimizer`",
         "resolved `mode` and `optimizer`",
         "`families`",
         "`species`",
@@ -1755,6 +1762,8 @@ def test_input_preparation_guide_documents_alerax_data_contract():
         "`cuda_backward_ready`",
         "`--require-cuda-backward-ready`",
         "`optimizer=auto`",
+        "`mode_default_optimizer`",
+        "`uses_mode_default_optimizer`",
         "`hessian-sgd`",
         "`adagrad-restarts`",
         "`S > 256`",

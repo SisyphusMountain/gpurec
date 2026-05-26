@@ -21,12 +21,14 @@ fields
 `rate_parameterization=base2_log_dlt_rates`, and
 `production_default_basis=hogenom_and_test_trees_1000` so exported artifacts
 carry the likelihood, gradient, parameterization, and benchmark-basis contract.
-They also report `final_check_iters`, the solver iteration budget used for the
-final high-fidelity likelihood/gradient validation, plus the optimizer-specific
-route fields needed to reproduce the selected production route: Hessian-SGD
-warmup/refresh/normal-stage solver controls for genewise runs and the
-Adagrad-restart schedule, total scheduled steps, and final-check budget for
-specieswise runs.
+They also report `mode_default_optimizer` and
+`uses_mode_default_optimizer`, so runs explicitly show whether their optimizer
+matches the production default for the selected sharing mode. `final_check_iters`
+records the solver iteration budget used for the final high-fidelity
+likelihood/gradient validation, and optimizer-specific route fields reproduce
+the selected production route: Hessian-SGD warmup/refresh/normal-stage solver
+controls for genewise runs and the Adagrad-restart schedule, total scheduled
+steps, and final-check budget for specieswise runs.
 
 `theta` stores base-2 log rates for duplication, loss, and transfer. The public
 rate table writes columns in D/T/L order as probabilities/rates plus the raw
@@ -121,6 +123,10 @@ History rows record `optimizer/hessian_sgd_validation_step`,
 | `genewise` | `hessian-sgd` | Genewise rows are independent, so the runner can optimize active batches with projected, Hessian-conditioned row steps while caching canonical full-solver values for final artifacts. |
 | `specieswise` | `adagrad-restarts` | Specieswise rates share a single full objective; the HOGENOM route reached the accepted basin fastest with multifidelity Adagrad and explicit state resets. |
 | `global` | `adam` | The global surface is small and shared. Adam remains the conservative default. |
+
+Route metadata records the chosen default as `mode_default_optimizer` and
+whether the resolved `optimizer` currently matches it as
+`uses_mode_default_optimizer`.
 
 ### Genewise `hessian-sgd`
 

@@ -39,6 +39,8 @@ available. `summary.json` and
 `gradient_route=implicit_first_order_adjoint`,
 `rate_parameterization=base2_log_dlt_rates`, and
 `production_default_basis=hogenom_and_test_trees_1000`, plus
+`mode_default_optimizer` and `uses_mode_default_optimizer` for auditing whether
+a run used the production optimizer default for its sharing mode, and
 optimizer-specific route fields such as the specieswise restart schedule and
 genewise Hessian-SGD normal-stage solver overrides. For specieswise
 `adagrad-restarts`, `adagrad_restart_total_steps` records the derived number of
@@ -51,7 +53,8 @@ The `OptimizationResult` returned by the Python API and the optimization status
 line expose the same family/species/batch counts, `batch_packing`,
 `family_chunk_size`, `clade_budget`, `fixed_iters_e`, `fixed_iters_pi`,
 `neumann_terms`, route contract fields, configured/effective step cap,
-`final_check_iters`, and optimizer-specific route fields for quick
+`mode_default_optimizer`, `uses_mode_default_optimizer`, `final_check_iters`,
+and optimizer-specific route fields for quick
 programmatic and terminal triage. For genewise `hessian-sgd`, those fields are
 `solver_warmup_iters`, `fd_adam_warmup_steps`, `fd_hessian_refresh_steps`,
 `hessian_sgd_normal_fixed_iters_pi`, and
@@ -90,7 +93,8 @@ without scanning `history.jsonl`.
 The `gpurec optimize` status line and the optimization portion of `gpurec run`
 print the resolved `mode` and `optimizer`, `families`, `species`, `batches`,
 base batch/solver route fields, route contract fields, configured and effective
-step cap, `final_check_iters`, optimizer-specific route fields,
+step cap, `mode_default_optimizer`, `uses_mode_default_optimizer`,
+`final_check_iters`, optimizer-specific route fields,
 `steps_completed`, `elapsed_s`, `best_step`, `sampling_checkpoint`, and the
 same final/best NLL and log-likelihood fields, plus `final_grad_inf`,
 `final_projected_grad_inf`, and the final validation source, reason, status,

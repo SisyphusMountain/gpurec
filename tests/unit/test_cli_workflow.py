@@ -678,6 +678,8 @@ def test_cli_validate_config_reports_selected_family_references(
     assert "gradient_route=implicit_first_order_adjoint" in captured.out
     assert "rate_parameterization=base2_log_dlt_rates" in captured.out
     assert f"production_default_basis={basis}" in captured.out
+    assert "mode_default_optimizer=hessian-sgd" in captured.out
+    assert "uses_mode_default_optimizer=true" in captured.out
     assert "families=1" in captured.out
     assert "gene_tree_files=1" in captured.out
     assert "mapped_families=1" in captured.out
@@ -784,6 +786,8 @@ def test_cli_validate_config_reports_specieswise_restart_route(
     assert "valid_config=true" in captured.out
     assert "mode=specieswise" in captured.out
     assert "optimizer=adagrad-restarts" in captured.out
+    assert "mode_default_optimizer=adagrad-restarts" in captured.out
+    assert "uses_mode_default_optimizer=true" in captured.out
     assert (
         "adagrad_restart_schedule=8:1:60,16:0.5:35,32:0.5:30"
         in captured.out
@@ -1466,6 +1470,8 @@ def test_cli_checkpoint_info_reports_route_status_and_last_row(
         "gradient_route=implicit_first_order_adjoint",
         "rate_parameterization=base2_log_dlt_rates",
         f"production_default_basis={basis}",
+        "mode_default_optimizer=adagrad-restarts",
+        "uses_mode_default_optimizer=true",
         "batch_packing=depth_first_fit",
         "family_chunk_size=0",
         "clade_budget=500000",
@@ -1596,6 +1602,8 @@ def test_cli_summary_info_reports_status_route_and_final_check(
         "reason": "max_steps",
         "mode": "genewise",
         "optimizer": "hessian-sgd",
+        "mode_default_optimizer": "hessian-sgd",
+        "uses_mode_default_optimizer": True,
         "families": 3,
         "species": 4,
         "batches": 2,
@@ -1654,6 +1662,8 @@ def test_cli_summary_info_reports_status_route_and_final_check(
         "reason=max_steps",
         "mode=genewise",
         "optimizer=hessian-sgd",
+        "mode_default_optimizer=hessian-sgd",
+        "uses_mode_default_optimizer=true",
         "families=3",
         "species=4",
         "batches=2",
@@ -1716,6 +1726,8 @@ def test_cli_summary_info_reports_adagrad_restart_route_fields(
                 "reason": "adagrad_restart_schedule_complete",
                 "mode": "specieswise",
                 "optimizer": "adagrad-restarts",
+                "mode_default_optimizer": "adagrad-restarts",
+                "uses_mode_default_optimizer": True,
                 "final_check_iters": 128,
                 "adagrad_restart_schedule": "8:1:60,16:0.5:35,32:0.5:30",
                 "adagrad_restart_total_steps": 125,
@@ -1734,6 +1746,8 @@ def test_cli_summary_info_reports_adagrad_restart_route_fields(
     captured = capsys.readouterr()
     assert captured.err == ""
     assert "optimizer=adagrad-restarts" in captured.out
+    assert "mode_default_optimizer=adagrad-restarts" in captured.out
+    assert "uses_mode_default_optimizer=true" in captured.out
     assert "reason=adagrad_restart_schedule_complete" in captured.out
     assert "final_check_iters=128" in captured.out
     assert "adagrad_restart_schedule=8:1:60,16:0.5:35,32:0.5:30" in captured.out

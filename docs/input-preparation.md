@@ -84,7 +84,10 @@ relative to the JSON config file:
 
 The `optimizer=auto` route keeps the production defaults: `mode=genewise`
 uses `hessian-sgd`, `mode=specieswise` uses `adagrad-restarts`, and
-`mode=global` uses `adam`.  Generate a starter config with:
+`mode=global` uses `adam`. `validate-config`, summaries, and checkpoint route
+metadata report `mode_default_optimizer` and `uses_mode_default_optimizer` so
+automation can verify whether a config remains on that default. Generate a
+starter config with:
 
 ```bash
 gpurec config-template --mode genewise --output run.json

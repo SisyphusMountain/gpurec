@@ -70,6 +70,8 @@ class OptimizationResult:
     elapsed_s: float | None = None
     mode: str | None = None
     optimizer: str | None = None
+    mode_default_optimizer: str | None = None
+    uses_mode_default_optimizer: bool | None = None
     families: int | None = None
     species: int | None = None
     batches: int | None = None
@@ -208,6 +210,12 @@ def _optimization_result_from_summary(
         elapsed_s=_optional_result_float(summary.get("elapsed_s")),
         mode=_optional_result_text(summary.get("mode")),
         optimizer=_optional_result_text(summary.get("optimizer")),
+        mode_default_optimizer=_optional_result_text(
+            summary.get("mode_default_optimizer")
+        ),
+        uses_mode_default_optimizer=_optional_result_bool(
+            summary.get("uses_mode_default_optimizer")
+        ),
         families=_optional_result_int(summary.get("families")),
         species=_optional_result_int(summary.get("species")),
         batches=_optional_result_int(summary.get("batches")),

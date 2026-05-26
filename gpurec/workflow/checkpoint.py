@@ -17,9 +17,10 @@ them with the active ``RunConfig`` and rebuilt model before
 ``restore_model_theta()`` copies parameters, first validating the stored config
 with ``RunConfig.from_dict(...)``, normalizing only path identity fields during
 comparison, requiring present route metadata to be complete for the current
-route, and allowing mutable reporting fields such as the configured/effective
-step cap to differ for resume.  ``load_checkpoint()`` is a lower-level payload
-reader and does not reconstruct a full ``RunConfig``.
+route except audit-only default-optimizer reporting fields, and allowing
+mutable reporting fields such as the configured/effective step cap to differ
+for resume.  ``load_checkpoint()`` is a lower-level payload reader and does not
+reconstruct a full ``RunConfig``.
 """
 
 from __future__ import annotations
@@ -62,8 +63,10 @@ _CHECKPOINT_CONFIG_IDENTITY_KEYS = (
 _ROUTE_METADATA_RESUME_COMPATIBILITY_EXEMPT_KEYS = frozenset(
     {
         "configured_steps",
+        "mode_default_optimizer",
         "optimizer_step_cap",
         "optimizer_step_cap_reason",
+        "uses_mode_default_optimizer",
     }
 )
 

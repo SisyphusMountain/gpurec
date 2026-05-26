@@ -70,6 +70,7 @@ from gpurec.workflow.config import (
     SamplingConfig,
     adagrad_restart_schedule_specs,
     adagrad_restart_schedule_total_steps,
+    default_optimizer_for_mode,
     dtype_from_name,
     effective_route_metadata,
 )
@@ -1276,6 +1277,7 @@ def test_run_config_defaults_to_hessian_sgd_for_genewise_mode(tmp_path: Path):
     )
 
     assert config.optimizer == "hessian-sgd"
+    assert default_optimizer_for_mode("genewise") == "hessian-sgd"
 
 
 def test_effective_route_metadata_reports_production_likelihood_contract(
@@ -1297,6 +1299,8 @@ def test_effective_route_metadata_reports_production_likelihood_contract(
     assert route["rate_parameterization"] == "base2_log_dlt_rates"
     assert route["production_default_basis"] == basis
     assert route["optimizer"] == "hessian-sgd"
+    assert route["mode_default_optimizer"] == "hessian-sgd"
+    assert route["uses_mode_default_optimizer"] is True
     assert route["configured_steps"] == 5000
     assert route["optimizer_step_cap"] == 5000
     assert route["optimizer_step_cap_reason"] == "configured_steps"
@@ -1307,6 +1311,23 @@ def test_effective_route_metadata_reports_production_likelihood_contract(
     assert route["hessian_sgd_validation_interval"] == 0
     assert route["hessian_sgd_validation_fixed_iters_pi"] is None
     assert route["hessian_sgd_validation_neumann_terms"] is None
+
+
+def test_effective_route_metadata_marks_nondefault_optimizer(tmp_path: Path):
+    config = RunConfig(
+        species_tree=tmp_path / "sp.nwk",
+        families_file=tmp_path / "families.txt",
+        out_dir=tmp_path / "out",
+        mode="genewise",
+        optimizer="adam",
+        device="cpu",
+    )
+
+    route = effective_route_metadata(config)
+
+    assert route["optimizer"] == "adam"
+    assert route["mode_default_optimizer"] == "hessian-sgd"
+    assert route["uses_mode_default_optimizer"] is False
 
 
 def test_optimization_result_is_derived_from_summary_contract(tmp_path: Path):
@@ -1324,6 +1345,8 @@ def test_optimization_result_is_derived_from_summary_contract(tmp_path: Path):
         "production_default_basis": basis,
         "mode": "genewise",
         "optimizer": "hessian-sgd",
+        "mode_default_optimizer": "hessian-sgd",
+        "uses_mode_default_optimizer": True,
         "batch_packing": "depth_first_fit",
         "family_chunk_size": 64,
         "clade_budget": 500_000,
@@ -1376,6 +1399,8 @@ def test_optimization_result_is_derived_from_summary_contract(tmp_path: Path):
         "reason": "loss_change_patience",
         "mode": "genewise",
         "optimizer": "hessian-sgd",
+        "mode_default_optimizer": "hessian-sgd",
+        "uses_mode_default_optimizer": True,
         "objective": "negative_log_likelihood_bits",
         "gradient_route": "implicit_first_order_adjoint",
         "rate_parameterization": "base2_log_dlt_rates",
@@ -5493,6 +5518,35 @@ def test_checkpoint_compatibility_allows_changed_step_cap_for_resume(
     validate_checkpoint_model_compatibility(
         path=tmp_path / "latest.pt",
         config=resumed_config,
+        model=_DummyModel(),
+        payload=payload,
+    )
+
+
+def test_checkpoint_compatibility_allows_missing_route_audit_fields(
+    tmp_path: Path,
+):
+    config = RunConfig(
+        species_tree=tmp_path / "sp.nwk",
+        families_file=tmp_path / "families.txt",
+        out_dir=tmp_path / "out",
+        mode="genewise",
+        device="cpu",
+        optimizer="hessian-sgd",
+    )
+    route_metadata = effective_route_metadata(config)
+    route_metadata.pop("mode_default_optimizer")
+    route_metadata.pop("uses_mode_default_optimizer")
+    payload = {
+        "config": config.to_dict(),
+        "route_metadata": route_metadata,
+        "family_names": ["a", "b"],
+        "species_names": ["s0", "s1"],
+    }
+
+    validate_checkpoint_model_compatibility(
+        path=tmp_path / "latest.pt",
+        config=config,
         model=_DummyModel(),
         payload=payload,
     )

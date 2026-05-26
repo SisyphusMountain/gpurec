@@ -27,6 +27,11 @@ def _default_device() -> str:
 UINT64_MAX = (1 << 64) - 1
 DEFAULT_ADAGRAD_RESTART_SCHEDULE = "8:1.0:60,16:0.5:35,32:0.5:30"
 DEFAULT_ADAGRAD_RESTART_FINAL_CHECK_ITERS = 128
+MODE_DEFAULT_OPTIMIZERS = {
+    "genewise": "hessian-sgd",
+    "specieswise": "adagrad-restarts",
+    "global": "adam",
+}
 
 
 @dataclass(frozen=True)
@@ -75,6 +80,12 @@ def dtype_from_name(name: str) -> torch.dtype:
 
 def dtype_name_from_name(name: str) -> str:
     return str(dtype_from_name(name)).removeprefix("torch.")
+
+
+def default_optimizer_for_mode(mode: str) -> str:
+    if not isinstance(mode, str) or mode not in MODE_DEFAULT_OPTIMIZERS:
+        raise ValueError("mode must be 'global', 'specieswise', or 'genewise'")
+    return MODE_DEFAULT_OPTIMIZERS[mode]
 
 
 def _normalize_int(name: str, value: int | float | str) -> int:
@@ -217,11 +228,7 @@ def _normalize_optimizer(mode: str, value: str) -> str:
         )
     normalized = value.strip().lower().replace("_", "-")
     if normalized == "auto":
-        if mode == "genewise":
-            return "hessian-sgd"
-        if mode == "specieswise":
-            return "adagrad-restarts"
-        return "adam"
+        return default_optimizer_for_mode(mode)
     return normalized
 
 
@@ -973,6 +980,7 @@ def effective_route_metadata(config: RunConfig) -> dict[str, Any]:
     optimizer_step_cap, optimizer_step_cap_reason = effective_optimizer_step_cap(
         config
     )
+    mode_default_optimizer = default_optimizer_for_mode(config.mode)
     route: dict[str, Any] = {
         "objective": "negative_log_likelihood_bits",
         "gradient_route": "implicit_first_order_adjoint",
@@ -980,6 +988,8 @@ def effective_route_metadata(config: RunConfig) -> dict[str, Any]:
         "production_default_basis": "hogenom_and_test_trees_1000",
         "mode": config.mode,
         "optimizer": config.optimizer,
+        "mode_default_optimizer": mode_default_optimizer,
+        "uses_mode_default_optimizer": config.optimizer == mode_default_optimizer,
         "batch_packing": config.batch_packing,
         "family_chunk_size": config.family_chunk_size,
         "clade_budget": config.clade_budget,

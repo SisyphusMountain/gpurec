@@ -136,6 +136,10 @@ performs only final evaluation and artifact refresh, writes a fresh
 ordinary max-step exhaustion. Increase `steps` beyond `next_step` to continue
 optimization.
 
+Route metadata and status outputs include `mode_default_optimizer` and
+`uses_mode_default_optimizer`, making explicit whether the resolved optimizer is
+the production default for the selected sharing mode.
+
 For automation, `gpurec optimize`, `gpurec run`, and `gpurec summary-info`
 support `--require-converged`. Add `--require-final-check-ok` when the command
 should also fail unless final high-fidelity likelihood/gradient validation

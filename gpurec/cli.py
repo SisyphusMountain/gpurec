@@ -149,6 +149,14 @@ def _optimization_result_text(result: Any) -> str:
             _optional_text("reason", getattr(result, "reason", None)),
             _optional_text("mode", getattr(result, "mode", None)),
             _optional_text("optimizer", getattr(result, "optimizer", None)),
+            _optional_text(
+                "mode_default_optimizer",
+                getattr(result, "mode_default_optimizer", None),
+            ),
+            _optional_bool_text(
+                "uses_mode_default_optimizer",
+                getattr(result, "uses_mode_default_optimizer", None),
+            ),
             _optional_int_text("families", getattr(result, "families", None)),
             _optional_int_text("species", getattr(result, "species", None)),
             _optional_int_text("batches", getattr(result, "batches", None)),
@@ -566,6 +574,14 @@ def _route_metadata_text(route: dict[str, Any]) -> str:
         _optional_text(
             "production_default_basis",
             route.get("production_default_basis"),
+        ),
+        _optional_text(
+            "mode_default_optimizer",
+            route.get("mode_default_optimizer"),
+        ),
+        _optional_bool_text(
+            "uses_mode_default_optimizer",
+            route.get("uses_mode_default_optimizer"),
         ),
         _optional_text("batch_packing", route.get("batch_packing")),
         _route_int_text("family_chunk_size", route),

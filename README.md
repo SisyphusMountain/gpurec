@@ -305,6 +305,9 @@ optimizer checkpoints, or Hessian/second-order diagnostics.
 Optimizer modes are selected with `optimizer` in JSON or `--optimizer` on the
 CLI. If omitted, `auto` resolves to `hessian-sgd` for `mode=genewise`,
 `adagrad-restarts` for `mode=specieswise`, and `adam` for `mode=global`.
+Route metadata, summaries, and status lines also report
+`mode_default_optimizer` and `uses_mode_default_optimizer` so operators can
+tell whether a run is on the production default optimizer for its sharing mode.
 Workflow rate bounds default to `min_rate=2^-30` and `max_rate=2`:
 
 The production optimization guide
@@ -379,7 +382,8 @@ Main outputs include:
 - `per_fam_likelihoods.tsv` for genewise runs
 
 The `gpurec optimize` status line and the optimization portion of
-`gpurec run` also print the resolved `mode`, `optimizer`, family/species/batch
+`gpurec run` also print the resolved `mode`, `optimizer`, mode default
+optimizer, whether the optimizer matches that default, family/species/batch
 counts, batch packing, family chunk size, clade budget, solver iteration
 budgets, objective, gradient route, rate parameterization, production default
 basis, optimizer-specific route fields,
@@ -456,7 +460,8 @@ Version-1 workflow checkpoints carry identity metadata for safe restore:
 `families_file`, `mode`, `start`, and `max_families`. `load_checkpoint()`
 requires those fields to be present and validates the name-list metadata.
 Current checkpoints also carry `route_metadata` with the resolved objective,
-gradient route, parameterization, optimizer, and solver route.
+gradient route, parameterization, optimizer, mode default optimizer, and solver
+route.
 `validate_checkpoint_model_compatibility()` first validates the stored config
 with `RunConfig.from_dict(...)`, then compares identity and route metadata with
 the active `RunConfig` and rebuilt model before `restore_model_theta()` copies
