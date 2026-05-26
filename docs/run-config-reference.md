@@ -11,7 +11,10 @@ flags are resolved relative to the current working directory. Explicit CLI
 flags override fields loaded from `--config`. Unknown JSON fields are rejected
 by `RunConfig.from_dict(...)` before model construction. Mode strings are
 stripped and case-normalized before `optimizer=auto` resolves the production
-default optimizer.
+default optimizer. Optimizer strings are stripped and case-normalized, and
+underscore aliases such as `hessian_sgd` and `adagrad_restarts` are converted
+to the canonical hyphenated names. The same normalization rules are applied to
+flat JSON configs and explicit CLI flags.
 
 `gpurec config-template --mode genewise` writes the genewise production starter
 with `optimizer=auto`, which resolves to `hessian-sgd`. The specieswise

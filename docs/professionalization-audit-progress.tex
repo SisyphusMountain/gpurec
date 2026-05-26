@@ -7450,6 +7450,16 @@ focused workflow/CLI/output-artifact selector reports \texttt{4 passed}, and
 \texttt{git diff --check} passes.  The full CPU unit gate reports
 \texttt{1458 passed, 1 skipped, 51 deselected}.
 
+CLI mode and optimizer flags now use the same normalization rules as
+\texttt{RunConfig}: mode names are stripped and case-normalized, and optimizer
+names are stripped, case-normalized, and allowed to use underscore aliases
+before argparse choices are checked.  This keeps \texttt{gpurec optimize},
+\texttt{validate-config}, \texttt{run}, and \texttt{config-template}
+consistent with flat JSON configs for the production default routes.  The
+touched modules compile, and the focused workflow/CLI/reference selector reports
+\texttt{5 passed}.  The full CPU unit gate reports
+\texttt{1461 passed, 1 skipped, 51 deselected}.
+
 \section{Next Audit Targets}
 
 \begin{enumerate}[leftmargin=*]

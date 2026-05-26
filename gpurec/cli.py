@@ -668,6 +668,24 @@ def _dtype_name(value: str) -> str:
         raise argparse.ArgumentTypeError(str(exc)) from exc
 
 
+def _mode_name(value: str) -> str:
+    from gpurec.workflow.config import normalize_mode_name
+
+    try:
+        return normalize_mode_name(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from exc
+
+
+def _optimizer_name(value: str) -> str:
+    from gpurec.workflow.config import normalize_optimizer_name
+
+    try:
+        return normalize_optimizer_name(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from exc
+
+
 def _batch_packing(value: str) -> str:
     try:
         return normalize_batch_packing(value)
@@ -1197,6 +1215,7 @@ def _add_run_config_args(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument(
         "--mode",
+        type=_mode_name,
         choices=("genewise", "global", "specieswise"),
         help="Parameter sharing mode. Workflow default: genewise.",
     )
@@ -1388,6 +1407,7 @@ def _add_run_config_args(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument(
         "--optimizer",
+        type=_optimizer_name,
         choices=(
             "auto",
             "adam",
@@ -1830,6 +1850,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     template_parser.add_argument(
         "--mode",
+        type=_mode_name,
         choices=("genewise", "specieswise", "global"),
         default="genewise",
         help="Template parameter-sharing mode. Default: genewise.",

@@ -1328,6 +1328,31 @@ def test_run_config_from_dict_normalizes_mode_before_auto_optimizer_resolution(
     assert config.optimizer == "adagrad-restarts"
 
 
+@pytest.mark.parametrize(
+    ("mode", "optimizer", "expected_optimizer"),
+    [
+        (" GeneWise ", " Hessian_SGD ", "hessian-sgd"),
+        (" SpeciesWise ", " ADAGRAD_RESTARTS ", "adagrad-restarts"),
+    ],
+)
+def test_run_config_normalizes_explicit_optimizer_alias_strings(
+    tmp_path: Path,
+    mode: str,
+    optimizer: str,
+    expected_optimizer: str,
+):
+    config = RunConfig(
+        species_tree=tmp_path / "sp.nwk",
+        families_file=tmp_path / "families.txt",
+        out_dir=tmp_path / "out",
+        mode=mode,
+        optimizer=optimizer,
+        device="cpu",
+    )
+
+    assert config.optimizer == expected_optimizer
+
+
 def test_run_config_from_dict_rejects_non_string_mode(tmp_path: Path):
     with pytest.raises(
         ValueError,

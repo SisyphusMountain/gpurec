@@ -2124,6 +2124,19 @@ not edit files.  New or still-open findings from that refresh are:
 - `CUDA_VISIBLE_DEVICES='' python -m pytest -q -m "unit and not gpu"`:
   1458 passed, 1 skipped, 51 deselected after the artifact optimizer-route
   normalization slice.
+- CLI mode and optimizer flags now use the same normalization rules as
+  `RunConfig`: mode names are stripped and case-normalized, and optimizer
+  names are stripped, case-normalized, and allowed to use underscore aliases
+  before argparse choices are checked.  This keeps `gpurec optimize`,
+  `validate-config`, `run`, and `config-template` consistent with flat JSON
+  configs for the production default routes.
+- `python -m py_compile gpurec/workflow/config.py gpurec/cli.py tests/unit/test_workflow.py tests/unit/test_cli_workflow.py tests/unit/test_repository_hygiene.py`:
+  passed after sharing the mode/optimizer CLI normalization helpers.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest -q tests/unit/test_workflow.py::test_run_config_normalizes_explicit_optimizer_alias_strings tests/unit/test_cli_workflow.py::test_cli_normalizes_mode_and_optimizer_alias_flags tests/unit/test_cli_workflow.py::test_cli_config_template_prints_specieswise_adagrad_restart_defaults tests/unit/test_repository_hygiene.py::test_run_config_reference_covers_current_config_surface`:
+  5 passed after guarding CLI and JSON normalization parity.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest -q -m "unit and not gpu"`:
+  1461 passed, 1 skipped, 51 deselected after the CLI mode/optimizer
+  normalization slice.
 
 ## Recommended Next Order
 

@@ -215,17 +215,21 @@ def _normalize_device(value: str | None) -> str:
 
 
 def _normalize_optimizer(mode: str, value: str) -> str:
+    mode = normalize_mode_name(mode)
+    normalized = normalize_optimizer_name(value)
+    if normalized == "auto":
+        return default_optimizer_for_mode(mode)
+    return normalized
+
+
+def normalize_optimizer_name(value: str) -> str:
     if not isinstance(value, str):
         raise ValueError(
             "optimizer must be auto, adam, adagrad, projected-sgd, lbfgs, "
             "adam-lbfgs, projected-lbfgs, lbfgsb, batched-lbfgs, "
             "adam-fd-newton, hessian-sgd, or adagrad-restarts"
         )
-    mode = normalize_mode_name(mode)
-    normalized = value.strip().lower().replace("_", "-")
-    if normalized == "auto":
-        return default_optimizer_for_mode(mode)
-    return normalized
+    return value.strip().lower().replace("_", "-")
 
 
 def normalize_optimizer_for_mode(mode: str, value: str) -> str:

@@ -403,6 +403,23 @@ def test_cli_forwards_adagrad_restart_controls(tmp_path: Path):
     assert config.adagrad_restart_final_check_iters == 16
 
 
+def test_cli_normalizes_mode_and_optimizer_alias_flags(tmp_path: Path):
+    args = build_parser().parse_args(
+        _minimal_workflow_cli_args("optimize", tmp_path)
+        + [
+            "--mode",
+            " SpeciesWise ",
+            "--optimizer",
+            "ADAGRAD_RESTARTS",
+        ]
+    )
+
+    config = _run_config_from_args(args)
+
+    assert config.mode == "specieswise"
+    assert config.optimizer == "adagrad-restarts"
+
+
 def test_cli_rejects_misplaced_hessian_sgd_normal_controls(tmp_path: Path):
     args = build_parser().parse_args(
         _minimal_workflow_cli_args("optimize", tmp_path)
@@ -466,7 +483,7 @@ def test_cli_config_template_prints_genewise_hessian_sgd_auto_defaults(capsys):
 
 
 def test_cli_config_template_prints_specieswise_adagrad_restart_defaults(capsys):
-    main(["config-template", "--mode", "specieswise"])
+    main(["config-template", "--mode", " SpeciesWise "])
 
     captured = capsys.readouterr()
     data = json.loads(captured.out)

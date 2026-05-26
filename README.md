@@ -269,7 +269,10 @@ gpurec config-template --mode specieswise --output specieswise-run.json
 
 The command keeps `"optimizer": "auto"`, so `mode=genewise` resolves to
 `hessian-sgd` and `mode=specieswise` resolves to `adagrad-restarts`. You can
-also copy or adapt a flat JSON config alongside your own tree files:
+use the same stripped, case-normalized mode and optimizer spelling in flat JSON
+configs or CLI flags; optimizer underscores are accepted as aliases for the
+canonical hyphenated names. You can also copy or adapt a flat JSON config
+alongside your own tree files:
 
 ```json
 {
