@@ -45,7 +45,8 @@ When the final validation runs, `summary.json` also includes
 one-file summary carries the high-fidelity likelihood/gradient agreement check.
 The `gpurec optimize` status line and the optimization portion of `gpurec run`
 print `steps_completed`, `best_step`, and the same final/best NLL and
-log-likelihood fields for quick terminal triage.
+log-likelihood fields, plus the final validation status and loss/gradient
+delta fields, for quick terminal triage.
 
 `theta_final.pt` is intentionally smaller than a checkpoint. Tooling that needs
 to restore a model, sample reconciliations, or verify family/species ordering

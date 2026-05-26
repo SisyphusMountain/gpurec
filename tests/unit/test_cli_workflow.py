@@ -1199,6 +1199,10 @@ def test_cli_optimize_failed_result_exits_nonzero_without_traceback(
     assert "final_log_likelihood_bits=null" in captured.out
     assert "best_nll_bits=null" in captured.out
     assert "best_log_likelihood_bits=null" in captured.out
+    assert "final_check_status=null" in captured.out
+    assert "final_check_loss_abs_delta_bits=null" in captured.out
+    assert "final_check_grad_max_abs_delta=null" in captured.out
+    assert "final_check_grad_rel_inf_delta=null" in captured.out
     assert "Traceback" not in captured.err
 
 
@@ -1218,6 +1222,10 @@ def test_cli_optimize_reports_final_and_best_objective_summary(
             final_log_likelihood_bits=-12.5,
             best_nll_bits=10.25,
             best_log_likelihood_bits=-10.25,
+            final_check_status="ok",
+            final_check_loss_abs_delta_bits=0.125,
+            final_check_grad_max_abs_delta=0.5,
+            final_check_grad_rel_inf_delta=0.25,
         )
 
     monkeypatch.setattr("gpurec.cli.optimize", successful_optimize)
@@ -1233,6 +1241,10 @@ def test_cli_optimize_reports_final_and_best_objective_summary(
     assert "final_log_likelihood_bits=-12.500000" in captured.out
     assert "best_nll_bits=10.250000" in captured.out
     assert "best_log_likelihood_bits=-10.250000" in captured.out
+    assert "final_check_status=ok" in captured.out
+    assert "final_check_loss_abs_delta_bits=0.125000" in captured.out
+    assert "final_check_grad_max_abs_delta=0.500000" in captured.out
+    assert "final_check_grad_rel_inf_delta=0.250000" in captured.out
     assert f"out_dir={tmp_path / 'out'}" in captured.out
     assert "Traceback" not in captured.err
 
@@ -1314,6 +1326,10 @@ def test_cli_run_samples_reported_checkpoint_instead_of_stale_best(
             best_step=2,
             final_nll_bits=12.0,
             best_nll_bits=11.0,
+            final_check_status="ok",
+            final_check_loss_abs_delta_bits=0.0,
+            final_check_grad_max_abs_delta=0.0,
+            final_check_grad_rel_inf_delta=0.0,
         )
 
     def capture_sample(config):
@@ -1338,6 +1354,10 @@ def test_cli_run_samples_reported_checkpoint_instead_of_stale_best(
     assert "final_log_likelihood_bits=-12.000000" in captured.out
     assert "best_nll_bits=11.000000" in captured.out
     assert "best_log_likelihood_bits=-11.000000" in captured.out
+    assert "final_check_status=ok" in captured.out
+    assert "final_check_loss_abs_delta_bits=0.000000" in captured.out
+    assert "final_check_grad_max_abs_delta=0.000000" in captured.out
+    assert "final_check_grad_rel_inf_delta=0.000000" in captured.out
     assert "sampled_families=1" in captured.out
     assert sampled["checkpoint"] == current_latest.resolve()
 

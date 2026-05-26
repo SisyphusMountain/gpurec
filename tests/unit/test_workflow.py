@@ -7616,6 +7616,10 @@ def test_optimization_runner_run_writes_outputs_with_fake_model(tmp_path: Path):
     assert result.best_step == 1
     assert result.final_log_likelihood_bits == pytest.approx(-result.final_nll_bits)
     assert result.best_log_likelihood_bits == pytest.approx(-result.best_nll_bits)
+    assert result.final_check_status == "ok"
+    assert result.final_check_loss_abs_delta_bits == pytest.approx(0.0)
+    assert result.final_check_grad_max_abs_delta == pytest.approx(0.0)
+    assert result.final_check_grad_rel_inf_delta == pytest.approx(0.0)
     assert result.out_dir == config.out_dir
     assert result.sampling_checkpoint == config.out_dir / "checkpoints" / "best.pt"
     assert runner.fake_model.closed

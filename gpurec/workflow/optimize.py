@@ -62,6 +62,10 @@ class OptimizationResult:
     sampling_checkpoint: Path | None = None
     final_log_likelihood_bits: float | None = None
     best_log_likelihood_bits: float | None = None
+    final_check_status: str | None = None
+    final_check_loss_abs_delta_bits: float | None = None
+    final_check_grad_max_abs_delta: float | None = None
+    final_check_grad_rel_inf_delta: float | None = None
 
 
 _FINAL_CHECK_SUMMARY_FIELDS = (
@@ -80,6 +84,15 @@ def _final_check_summary_metrics(metrics: dict[str, Any]) -> dict[str, Any]:
         for metric_key, summary_key in _FINAL_CHECK_SUMMARY_FIELDS
         if metric_key in metrics
     }
+
+
+def _optional_result_float(value: object) -> float | None:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 @dataclass(frozen=True)
@@ -3811,6 +3824,7 @@ class OptimizationRunner:
             best_log_likelihood_bits = (
                 None if best_nll is None else -float(best_nll)
             )
+            final_check_summary = _final_check_summary_metrics(final_metrics)
             summary = {
                 **final_status,
                 **effective_route_metadata(config),
@@ -3826,7 +3840,7 @@ class OptimizationRunner:
                     if final_eval_failed
                     else float(final_metrics.get("grad/projected_inf", math.inf))
                 ),
-                **_final_check_summary_metrics(final_metrics),
+                **final_check_summary,
             }
             _write_final_artifacts(
                 config,
@@ -3849,6 +3863,20 @@ class OptimizationRunner:
                 sampling_checkpoint=sampling_checkpoint,
                 final_log_likelihood_bits=final_log_likelihood_bits,
                 best_log_likelihood_bits=best_log_likelihood_bits,
+                final_check_status=(
+                    None
+                    if final_check_summary.get("final_check_status") is None
+                    else str(final_check_summary["final_check_status"])
+                ),
+                final_check_loss_abs_delta_bits=_optional_result_float(
+                    final_check_summary.get("final_check_loss_abs_delta_bits")
+                ),
+                final_check_grad_max_abs_delta=_optional_result_float(
+                    final_check_summary.get("final_check_grad_max_abs_delta")
+                ),
+                final_check_grad_rel_inf_delta=_optional_result_float(
+                    final_check_summary.get("final_check_grad_rel_inf_delta")
+                ),
             )
         except BaseException as exc:
             close_model_after_error(model, exc)

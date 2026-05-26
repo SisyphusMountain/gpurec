@@ -62,6 +62,15 @@ def _optional_int_text(name: str, value: object) -> str:
         return f"{name}=null"
 
 
+def _optional_text(name: str, value: object) -> str:
+    if value is None:
+        return f"{name}=null"
+    text = str(value)
+    if not text:
+        return f"{name}=null"
+    return f"{name}={text}"
+
+
 def _log_likelihood_from_result(
     result: Any,
     *,
@@ -128,6 +137,22 @@ def _optimization_result_text(result: Any) -> str:
             _optional_metric_text(
                 "best_log_likelihood_bits",
                 best_log_likelihood,
+            ),
+            _optional_text(
+                "final_check_status",
+                getattr(result, "final_check_status", None),
+            ),
+            _optional_metric_text(
+                "final_check_loss_abs_delta_bits",
+                getattr(result, "final_check_loss_abs_delta_bits", None),
+            ),
+            _optional_metric_text(
+                "final_check_grad_max_abs_delta",
+                getattr(result, "final_check_grad_max_abs_delta", None),
+            ),
+            _optional_metric_text(
+                "final_check_grad_rel_inf_delta",
+                getattr(result, "final_check_grad_rel_inf_delta", None),
             ),
         ]
     )
