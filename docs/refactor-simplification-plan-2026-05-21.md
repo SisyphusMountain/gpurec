@@ -225,7 +225,9 @@ Risk:
 
 Current branch surface:
 
-- `E_fixed_point()` infers row count from several parameter shapes.
+- `E_fixed_point()` still keeps legacy row-count inference for direct low-level
+  callers, but resident/chunked model paths and maintained global/uniform
+  warmup/benchmark paths now pass explicit E shapes.
 - `compute_nll()` and `compute_nll_root_rows()` duplicate root likelihood logic.
 - The former `compute_log_likelihood()` and
   `compute_log_likelihood_root_rows()` compatibility aliases returned NLL
@@ -235,7 +237,9 @@ Current branch surface:
 
 Plan:
 
-- Make `ParameterLayout` provide the E row shape explicitly.
+- Finish routing remaining supported low-level callers through
+  `ParameterLayout.e_shape` or a future `UniformRates.e_rows`, then remove the
+  legacy E row-count inference.
 - Normalize origination probabilities once into an `OriginationPrior` object.
 - Standardize on root-row likelihood internally.  Full-Pi callers should gather
   root rows before calling the likelihood helper.

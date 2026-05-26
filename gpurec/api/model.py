@@ -909,6 +909,7 @@ def _warm_resident_uniform_kernels(
                 dtype=dtype,
                 device=device,
                 ancestors_T=ancestors_T,
+                e_shape=(S,),
             )
             wave_step_uniform_fused_into(
                 Pi, Pibar, Pibar, 0, W, S,

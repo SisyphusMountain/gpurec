@@ -236,6 +236,33 @@ def test_preflight_window_size_rejects_negative(monkeypatch: pytest.MonkeyPatch)
     assert excinfo.value.code == 2
 
 
+def test_compute_e_and_params_passes_explicit_e_shape(monkeypatch: pytest.MonkeyPatch):
+    bench = _load_bench_module()
+    calls: list[dict[str, object]] = []
+
+    def fake_e_fixed_point(**kwargs):
+        calls.append(kwargs)
+        return {"E": bench.torch.full((4,), -1.0), "iterations": 1}
+
+    monkeypatch.setattr(bench, "E_fixed_point", fake_e_fixed_point)
+    static = SimpleNamespace(
+        theta=bench.torch.zeros(3, dtype=bench.torch.float64),
+        unnorm_row_max=bench.torch.zeros(4, dtype=bench.torch.float64),
+        species_helpers={"S": 4},
+        dataset=SimpleNamespace(S=4),
+        dtype=bench.torch.float64,
+        device=bench.torch.device("cpu"),
+        ancestors_T=bench.torch.eye(4, dtype=bench.torch.float64),
+    )
+    args = argparse.Namespace(max_iters_E=7, tol_E=1e-8)
+
+    e_out, params = bench._compute_e_and_params(static, args)
+
+    assert e_out["E"].shape == (4,)
+    assert len(params) == 4
+    assert calls[0]["e_shape"] == (4,)
+
+
 @pytest.mark.parametrize(
     ("flag", "value", "message"),
     [

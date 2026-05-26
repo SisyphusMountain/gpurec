@@ -677,6 +677,7 @@ def _compute_e_and_params(
         dtype=static.dtype,
         device=static.device,
         ancestors_T=static.ancestors_T,
+        e_shape=(int(static.dataset.S),),
     )
     return e_out, (log_pS, log_pD, log_pL, max_transfer_vec)
 
