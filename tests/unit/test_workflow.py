@@ -8117,6 +8117,63 @@ def test_optimization_runner_lbfgsb_specieswise_records_kkt_metrics(tmp_path: Pa
     assert runner.fake_model.closed
 
 
+def test_lbfgsb_resume_reapplies_current_fallback_controls(tmp_path: Path):
+    from gpurec.optimization import LBFGSB
+
+    config = _optimizer_mode_config(
+        tmp_path,
+        optimizer="lbfgsb",
+        mode="specieswise",
+        lbfgs_lr=0.25,
+        lbfgs_max_iter=1,
+        lbfgs_max_ls=3,
+        lbfgsb_fallback_max_coordinates=0,
+        lbfgsb_fallback_max_loss_evals=4,
+    )
+    runner = OptimizationRunner(config)
+    param = torch.nn.Parameter(torch.zeros(2, dtype=torch.float64))
+    old_optimizer = LBFGSB(
+        [param],
+        lr=0.9,
+        max_iter=2,
+        history_size=5,
+        max_ls=8,
+        lower_bound=-5.0,
+        upper_bound=5.0,
+        fallback_max_ls=8,
+        fallback_max_coordinates=4,
+        fallback_max_loss_evals=12,
+    )
+    new_optimizer = LBFGSB(
+        [param],
+        lr=0.1,
+        max_iter=1,
+        history_size=20,
+        max_ls=3,
+        lower_bound=-30.0,
+        upper_bound=1.0,
+        fallback_max_ls=3,
+        fallback_max_coordinates=0,
+        fallback_max_loss_evals=4,
+    )
+
+    info = runner._restore_optimizer_state(
+        new_optimizer,
+        old_optimizer.state_dict(),
+        current_phase="lbfgsb",
+        checkpoint_phase="lbfgsb",
+    )
+
+    group = new_optimizer.param_groups[0]
+    assert info["resume_optimizer_state"] == "restored"
+    assert group["lr"] == pytest.approx(0.25)
+    assert group["max_iter"] == 1
+    assert group["max_ls"] == 3
+    assert group["fallback_max_ls"] == 3
+    assert group["fallback_max_coordinates"] == 0
+    assert group["fallback_max_loss_evals"] == 4
+
+
 def test_optimization_runner_lbfgsb_can_stop_on_loss_plateau_without_projected_grad_gate(
     tmp_path: Path,
 ):

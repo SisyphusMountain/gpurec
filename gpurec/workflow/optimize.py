@@ -2736,7 +2736,36 @@ class OptimizationRunner:
                 "resume_optimizer_state": "discarded",
                 "resume_optimizer_error": str(exc),
             }
+        self._refresh_optimizer_runtime_options(optimizer, current_phase)
         return {"resume_optimizer_state": "restored"}
+
+    def _refresh_optimizer_runtime_options(
+        self,
+        optimizer: torch.optim.Optimizer,
+        phase: str | None,
+    ) -> None:
+        if phase not in {"projected-lbfgs", "lbfgsb"}:
+            return
+        if not optimizer.param_groups:
+            return
+        config = self.config
+        group = optimizer.param_groups[0]
+        group["lr"] = float(config.lbfgs_lr)
+        group["max_iter"] = int(config.lbfgs_max_iter)
+        group["history_size"] = int(config.lbfgs_history_size)
+        group["max_ls"] = int(config.lbfgs_max_ls)
+        group["lower_bound"] = math.log2(config.min_rate)
+        group["upper_bound"] = math.log2(config.max_rate)
+        if phase == "lbfgsb":
+            group["fallback_max_ls"] = int(config.lbfgs_max_ls)
+            group["fallback_max_coordinates"] = int(
+                config.lbfgsb_fallback_max_coordinates
+            )
+            group["fallback_max_loss_evals"] = (
+                None
+                if config.lbfgsb_fallback_max_loss_evals is None
+                else int(config.lbfgsb_fallback_max_loss_evals)
+            )
 
     def _save_status(
         self,
