@@ -7,9 +7,9 @@ planning helpers, not a promise that the rest of ``gpurec.core`` is stable.
 from __future__ import annotations
 
 from dataclasses import dataclass
-import math
-from numbers import Integral, Real
 from typing import Sequence
+
+from gpurec._validation import integer_value, nonnegative_int, optional_positive_int
 
 
 @dataclass(frozen=True)
@@ -51,31 +51,20 @@ def normalize_batch_packing(value: str | None) -> str:
 
 
 def _normalize_int_control(name: str, value: int | float | str) -> int:
-    if isinstance(value, bool):
-        raise ValueError(f"{name} must be an integer")
     if isinstance(value, str):
         try:
             return int(value.strip())
         except ValueError as exc:
             raise ValueError(f"{name} must be an integer") from exc
-    if isinstance(value, Integral):
-        return int(value)
-    if isinstance(value, Real):
-        number = float(value)
-        if not math.isfinite(number) or not number.is_integer():
-            raise ValueError(f"{name} must be an integer")
-        return int(number)
-    raise ValueError(f"{name} must be an integer")
+    return integer_value(name, value)
 
 
 def normalize_clade_budget(value: int | float | str | None) -> int | None:
     """Normalize an optional positive clade budget."""
-    if value is None:
-        return None
-    budget = _normalize_int_control("clade_budget", value)
-    if budget <= 0:
-        raise ValueError("clade_budget must be positive when provided")
-    return budget
+    return optional_positive_int(
+        "clade_budget",
+        None if value is None else _normalize_int_control("clade_budget", value),
+    )
 
 
 def normalize_family_chunk_size(
@@ -98,9 +87,7 @@ def normalize_family_chunk_size(
                 "resident batch or a positive integer"
             )
     size = _normalize_int_control("family_chunk_size", value)
-    if size < 0:
-        raise ValueError("family_chunk_size must be non-negative")
-    return size
+    return nonnegative_int("family_chunk_size", size)
 
 
 def plan_family_batches(

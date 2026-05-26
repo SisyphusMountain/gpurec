@@ -440,6 +440,9 @@ def test_workflow_numeric_validation_uses_shared_helpers():
     core_model = (root / "gpurec" / "core" / "model.py").read_text(
         encoding="utf-8"
     )
+    batch_planning = (
+        root / "gpurec" / "core" / "batch_planning.py"
+    ).read_text(encoding="utf-8")
 
     shared_function_names = {
         node.name for node in shared_validation.body if isinstance(node, ast.FunctionDef)
@@ -474,6 +477,13 @@ def test_workflow_numeric_validation_uses_shared_helpers():
     assert "_normalize_family_index" not in core_model
     assert 'nonnegative_int("start", start)' in core_model
     assert 'optional_positive_int("max_families", max_families)' in core_model
+    assert "from numbers import Integral" not in batch_planning
+    assert "math.isfinite" not in batch_planning
+    assert "integer_value(name, value)" in batch_planning
+    assert "optional_positive_int(" in batch_planning
+    assert '"clade_budget"' in batch_planning
+    assert "nonnegative_int(" in batch_planning
+    assert '"family_chunk_size"' in batch_planning
     for stale in (
         "from numbers import Integral",
         "import math",
