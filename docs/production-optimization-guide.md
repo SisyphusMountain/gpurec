@@ -224,6 +224,11 @@ polishing is too expensive for the marginal objective gain.
 `lbfgsb_loss_change_tol_schedule` can stage plateau thresholds inside the same
 tail, for example `0.25:2,0.1:2` to take a coarse plateau first and then polish
 with a tighter loss-change rule without a manual checkpoint resume.
+`lbfgsb_loss_schedule_force_fallback` can force the next L-BFGS-B row to start
+from the projected-gradient fallback immediately after such a schedule advance.
+`lbfgsb_best_retry_attempts` can spend a bounded number of extra attempts by
+reloading the best checkpoint, including serialized L-BFGS-B state, when a
+terminal plateau is reached.
 
 The `lbfgsb_high_kkt_stop_patience`,
 `lbfgsb_high_kkt_stop_min_fallbacks`, and
@@ -231,8 +236,10 @@ The `lbfgsb_high_kkt_stop_patience`,
 `test_trees_1000`-style routes. `lbfgsb_fallback_max_loss_evals` adds a hard
 per-step budget for fallback line-search probes. Together they bound or stop
 projected-gradient fallback polishing after L-BFGS-B reaches tiny objective
-movements. They are not part of the retained HOGENOM default; validate them per
-dataset before promoting them to a production preset.
+movements. The schedule-forced fallback and best-checkpoint retry controls are
+also dataset-specific tail escape hatches. They are not part of the retained
+HOGENOM default; validate them per dataset before promoting them to a
+production preset.
 
 The default is based on the retained counts-free HOGENOM route: uniform `0.05`
 D/L/T initialization, no AleRax event-count checkpoint, fixed budgets of 8, 16,
