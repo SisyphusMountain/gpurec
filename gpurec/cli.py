@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 from pathlib import Path
 from typing import Any
 
@@ -36,6 +37,83 @@ def _sampling_error_message(exc: BaseException) -> str:
 
 def _exit_runtime_error(parser: argparse.ArgumentParser, message: str) -> None:
     parser.exit(status=1, message=f"error: {message}\n")
+
+
+def _optional_metric_text(name: str, value: object) -> str:
+    if value is None:
+        return f"{name}=null"
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return f"{name}=null"
+    if math.isnan(numeric):
+        return f"{name}=null"
+    if math.isinf(numeric):
+        return f"{name}={'inf' if numeric > 0.0 else '-inf'}"
+    return f"{name}={numeric:.6f}"
+
+
+def _log_likelihood_from_result(
+    result: Any,
+    *,
+    nll_attr: str,
+    log_likelihood_attr: str,
+    final_metric: bool = False,
+) -> float | None:
+    explicit = getattr(result, log_likelihood_attr, None)
+    if explicit is not None:
+        try:
+            return float(explicit)
+        except (TypeError, ValueError):
+            return None
+    if final_metric and getattr(result, "status", None) == "failed":
+        return None
+    nll_value = getattr(result, nll_attr, None)
+    if nll_value is None:
+        return None
+    try:
+        nll = float(nll_value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(nll):
+        return None
+    return -nll
+
+
+def _optimization_result_text(result: Any) -> str:
+    final_log_likelihood = _log_likelihood_from_result(
+        result,
+        nll_attr="final_nll_bits",
+        log_likelihood_attr="final_log_likelihood_bits",
+        final_metric=True,
+    )
+    best_log_likelihood = _log_likelihood_from_result(
+        result,
+        nll_attr="best_nll_bits",
+        log_likelihood_attr="best_log_likelihood_bits",
+    )
+    return " ".join(
+        [
+            f"status={result.status}",
+            f"reason={result.reason}",
+            _optional_metric_text(
+                "final_nll_bits",
+                getattr(result, "final_nll_bits", None),
+            ),
+            _optional_metric_text(
+                "final_log_likelihood_bits",
+                final_log_likelihood,
+            ),
+            _optional_metric_text(
+                "best_nll_bits",
+                getattr(result, "best_nll_bits", None),
+            ),
+            _optional_metric_text(
+                "best_log_likelihood_bits",
+                best_log_likelihood,
+            ),
+        ]
+    )
 
 
 def optimize(config: Any) -> Any:
@@ -898,8 +976,7 @@ def main(argv: list[str] | None = None) -> None:
         except _EXPECTED_WORKFLOW_ERRORS as exc:
             _exit_runtime_error(command_parser, str(exc))
         print(
-            f"status={result.status} reason={result.reason} "
-            f"final_nll_bits={result.final_nll_bits:.6f} out_dir={result.out_dir}",
+            f"{_optimization_result_text(result)} out_dir={result.out_dir}",
             flush=True,
         )
         if result.status == "failed":
@@ -1009,7 +1086,7 @@ def main(argv: list[str] | None = None) -> None:
         except _EXPECTED_WORKFLOW_ERRORS as exc:
             _exit_runtime_error(command_parser, _sampling_error_message(exc))
         print(
-            f"status={opt_result.status} reason={opt_result.reason} "
+            f"{_optimization_result_text(opt_result)} "
             f"sampled_families={sampling_result.families_sampled} "
             f"out_dir={run_config.out_dir}",
             flush=True,

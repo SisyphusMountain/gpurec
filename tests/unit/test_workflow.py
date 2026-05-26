@@ -7466,6 +7466,8 @@ def test_optimization_runner_marks_nonfinite_final_evaluation_failed(tmp_path: P
     assert result.status == "failed"
     assert result.reason == "nonfinite_objective_or_gradient"
     assert math.isfinite(result.final_nll_bits)
+    assert result.final_log_likelihood_bits is None
+    assert result.best_log_likelihood_bits == pytest.approx(-result.best_nll_bits)
     assert runner.fake_model.loss_calls == 2
     history_rows = _optimizer_mode_history_rows(config.out_dir)
     assert [row["optimizer/phase"] for row in history_rows] == ["adam", "final_eval"]
@@ -7607,6 +7609,8 @@ def test_optimization_runner_run_writes_outputs_with_fake_model(tmp_path: Path):
     assert result.reason == "max_steps"
     assert result.steps_completed == 1
     assert result.best_step == 1
+    assert result.final_log_likelihood_bits == pytest.approx(-result.final_nll_bits)
+    assert result.best_log_likelihood_bits == pytest.approx(-result.best_nll_bits)
     assert result.out_dir == config.out_dir
     assert result.sampling_checkpoint == config.out_dir / "checkpoints" / "best.pt"
     assert runner.fake_model.closed

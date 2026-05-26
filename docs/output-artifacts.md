@@ -35,6 +35,9 @@ gradient summaries at bounds use `grad/projected_inf`. Solver diagnostics use
 and `best_log_likelihood_bits`.  If the final likelihood/gradient validation
 fails, `final_log_likelihood_bits` is `null`; inspect `status`, `reason`, and
 the final `history.jsonl` row before using the rates.
+The `gpurec optimize` status line and the optimization portion of `gpurec run`
+print the same final/best NLL and log-likelihood fields for quick terminal
+triage.
 
 `theta_final.pt` is intentionally smaller than a checkpoint. Tooling that needs
 to restore a model, sample reconciliations, or verify family/species ordering

@@ -60,6 +60,8 @@ class OptimizationResult:
     best_step: int | None
     steps_completed: int
     sampling_checkpoint: Path | None = None
+    final_log_likelihood_bits: float | None = None
+    best_log_likelihood_bits: float | None = None
 
 
 @dataclass(frozen=True)
@@ -3785,6 +3787,12 @@ class OptimizationRunner:
             )
             if sampling_checkpoint is None:
                 sampling_checkpoint = latest_checkpoint
+            final_log_likelihood_bits = (
+                None if final_eval_failed else -final_nll_bits
+            )
+            best_log_likelihood_bits = (
+                None if best_nll is None else -float(best_nll)
+            )
             summary = {
                 **final_status,
                 **effective_route_metadata(config),
@@ -3792,12 +3800,8 @@ class OptimizationRunner:
                 "species": int(model.n_species),
                 "batches": len(model.batch_metadata),
                 "final_nll_bits": final_nll_bits,
-                "final_log_likelihood_bits": (
-                    None if final_eval_failed else -final_nll_bits
-                ),
-                "best_log_likelihood_bits": (
-                    None if best_nll is None else -float(best_nll)
-                ),
+                "final_log_likelihood_bits": final_log_likelihood_bits,
+                "best_log_likelihood_bits": best_log_likelihood_bits,
                 "final_grad_inf": final_grad_inf,
                 "final_projected_grad_inf": (
                     None
@@ -3824,6 +3828,8 @@ class OptimizationRunner:
                 best_step=None if best_step is None else int(best_step),
                 steps_completed=int(final_row["step"]),
                 sampling_checkpoint=sampling_checkpoint,
+                final_log_likelihood_bits=final_log_likelihood_bits,
+                best_log_likelihood_bits=best_log_likelihood_bits,
             )
         except BaseException as exc:
             close_model_after_error(model, exc)

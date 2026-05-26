@@ -1193,6 +1193,41 @@ def test_cli_optimize_failed_result_exits_nonzero_without_traceback(
     assert exc_info.value.code == 1
     assert "status=failed" in captured.out
     assert "nonfinite_objective_or_gradient" in captured.out
+    assert "final_nll_bits=inf" in captured.out
+    assert "final_log_likelihood_bits=null" in captured.out
+    assert "best_nll_bits=null" in captured.out
+    assert "best_log_likelihood_bits=null" in captured.out
+    assert "Traceback" not in captured.err
+
+
+def test_cli_optimize_reports_final_and_best_objective_summary(
+    tmp_path: Path,
+    capsys,
+    monkeypatch,
+):
+    def successful_optimize(config):
+        return SimpleNamespace(
+            out_dir=config.out_dir,
+            status="not_converged",
+            reason="max_steps",
+            final_nll_bits=12.5,
+            final_log_likelihood_bits=-12.5,
+            best_nll_bits=10.25,
+            best_log_likelihood_bits=-10.25,
+        )
+
+    monkeypatch.setattr("gpurec.cli.optimize", successful_optimize)
+
+    main(_minimal_workflow_cli_args("optimize", tmp_path))
+
+    captured = capsys.readouterr()
+    assert "status=not_converged" in captured.out
+    assert "reason=max_steps" in captured.out
+    assert "final_nll_bits=12.500000" in captured.out
+    assert "final_log_likelihood_bits=-12.500000" in captured.out
+    assert "best_nll_bits=10.250000" in captured.out
+    assert "best_log_likelihood_bits=-10.250000" in captured.out
+    assert f"out_dir={tmp_path / 'out'}" in captured.out
     assert "Traceback" not in captured.err
 
 
@@ -1270,6 +1305,7 @@ def test_cli_run_samples_reported_checkpoint_instead_of_stale_best(
             status="success",
             reason="completed",
             final_nll_bits=12.0,
+            best_nll_bits=11.0,
         )
 
     def capture_sample(config):
@@ -1288,6 +1324,10 @@ def test_cli_run_samples_reported_checkpoint_instead_of_stale_best(
     main(_minimal_workflow_cli_args("run", tmp_path))
 
     captured = capsys.readouterr()
+    assert "final_nll_bits=12.000000" in captured.out
+    assert "final_log_likelihood_bits=-12.000000" in captured.out
+    assert "best_nll_bits=11.000000" in captured.out
+    assert "best_log_likelihood_bits=-11.000000" in captured.out
     assert "sampled_families=1" in captured.out
     assert sampled["checkpoint"] == current_latest.resolve()
 

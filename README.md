@@ -327,6 +327,10 @@ Main outputs include:
   NLL and log-likelihood, and the effective optimizer/batch/solver route
 - `per_fam_likelihoods.tsv` for genewise runs
 
+The `gpurec optimize` status line and the optimization portion of
+`gpurec run` also print `final_nll_bits`, `final_log_likelihood_bits`,
+`best_nll_bits`, and `best_log_likelihood_bits` for quick terminal triage.
+
 See [`docs/output-artifacts.md`](docs/output-artifacts.md) for the output
 artifact contract, including history fields, checkpoint contents, rate-table
 columns, genewise per-family likelihoods, and sampling files.
