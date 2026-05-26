@@ -164,6 +164,13 @@ caps at `50000`, `75000`, and `100000` measured `2.2849829280166887s`,
 `2.2872178590041585s`, and `2.275073692027945s`, all slower than the
 same-sweep uncapped `2.2581794050056487s` sample and with no loss change.
 
+The split-budget route also still wants all-batch lazy prefetch.  With
+`E=8, Pi=4`, `--prefetch-batches none` lowered model construction to
+`0.8873169249854982s` but raised the first pass to `1.6338533840025775s`, for
+`2.5211703089880757s` total.  Finite depths `2` and `4` measured
+`2.308664307987783s` and `2.304723095963709s`; `all` measured
+`2.262025747972075s` in the same sweep.
+
 Split-budget near-reference command:
 
 ```bash
