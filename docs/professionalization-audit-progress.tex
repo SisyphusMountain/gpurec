@@ -7719,6 +7719,14 @@ CLI coverage now state and prove that the generated global template only
 satisfies \texttt{--require-mode-default-optimizer}.  The strict
 production-route gate rejects it with a \texttt{mode} mismatch.
 
+The package workflow's installed-wheel smoke now also exercises the global
+template boundary from an installed \texttt{gpurec}: it verifies the generated
+global JSON starter, checks that \texttt{validate-config
+--require-mode-default-optimizer} resolves it to \texttt{optimizer=adam}, and
+checks that \texttt{--require-production-default-route} exits nonzero with the
+same \texttt{mode} mismatch instead of silently accepting global as a production
+route.
+
 \section{Next Audit Targets}
 
 \begin{enumerate}[leftmargin=*]

@@ -2410,6 +2410,12 @@ not edit files.  New or still-open findings from that refresh are:
   CLI coverage now state and prove that the generated global template only
   satisfies `--require-mode-default-optimizer`; the strict production-route gate
   rejects it with a `mode` mismatch.
+- The package workflow's installed-wheel smoke now also exercises the global
+  template boundary from an installed `gpurec`: it verifies the generated global
+  JSON starter, checks that `validate-config --require-mode-default-optimizer`
+  resolves it to `optimizer=adam`, and checks that
+  `--require-production-default-route` exits nonzero with the same `mode`
+  mismatch instead of silently accepting global as a production route.
 
 ## Recommended Next Order
 

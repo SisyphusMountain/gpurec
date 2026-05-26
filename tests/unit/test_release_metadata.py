@@ -556,7 +556,8 @@ def test_cpu_ci_builds_and_smokes_release_artifacts():
         'cd "$smoke_dir"',
         "gpurec --help",
         "python -m gpurec.cli --help",
-        "gpurec config-template --help",
+        "gpurec config-template --help | tee config-template-help.txt",
+        'grep -q -- "mode-default Adam" config-template-help.txt',
         "gpurec config-template --mode genewise",
         "genewise-config-template.json",
         '"optimizer": "auto"',
@@ -573,21 +574,39 @@ def test_cpu_ci_builds_and_smokes_release_artifacts():
         '"mode": "specieswise"',
         '"adagrad_restart_schedule": "8:1.0:60,16:0.5:35,32:0.5:30"',
         '"adagrad_restart_final_check_iters": 128',
+        "gpurec config-template --mode global",
+        "global-config-template.json",
+        '"mode": "global"',
         "generated-genewise-run.json",
         "generated-genewise-validate.txt",
         "generated-specieswise-run.json",
         "generated-specieswise-validate.txt",
+        "generated-global-run.json",
+        "generated-global-mode-default-validate.txt",
+        "generated-global-production-route.out",
+        "generated-global-production-route.err",
         "$GITHUB_WORKSPACE/examples/tiny/species.nwk",
         "$GITHUB_WORKSPACE/examples/tiny/families.txt",
         "gpurec validate-config --config generated-genewise-run.json "
         "--require-mode-default-optimizer --require-production-default-route",
         "gpurec validate-config --config generated-specieswise-run.json "
         "--require-mode-default-optimizer --require-production-default-route",
+        "gpurec validate-config --config generated-global-run.json "
+        "--require-mode-default-optimizer",
+        "gpurec validate-config --config generated-global-run.json "
+        "--require-production-default-route",
         "optimizer=hessian-sgd",
         "optimizer=adagrad-restarts",
+        "optimizer=adam",
         "uses_mode_default_optimizer=true",
         "uses_production_default_route=true",
+        "uses_production_default_route=false",
         "production_default_route_mismatches=none",
+        "production_default_route_mismatches=mode",
+        "global_status=$?",
+        'test "$global_status" -eq 2',
+        "config production default route fields differ for mode 'global': mode",
+        "test ! -s generated-global-production-route.out",
         "gpurec optimize --help",
         "optimize-help.txt",
         'grep -q -- "--require-final-check-ok" optimize-help.txt',
@@ -1084,14 +1103,22 @@ def test_release_readiness_documents_installed_wheel_smoke():
         'cd "$smoke_dir"',
         "gpurec config-template --mode genewise",
         "gpurec config-template --mode specieswise",
+        "gpurec config-template --mode global",
         "generated-genewise-run.json",
         "generated-specieswise-run.json",
+        "generated-global-run.json",
         "gpurec validate-config --config generated-genewise-run.json",
         "gpurec validate-config --config generated-specieswise-run.json",
+        "gpurec validate-config --config generated-global-run.json",
+        "generated-global-production-route.err",
+        "config production default route fields differ for mode 'global': mode",
+        'test "$global_status" -eq 2',
+        "test ! -s generated-global-production-route.out",
         "gpurec optimize --help",
         "optimization convergence, final-check, mode-default optimizer, and production-route gates",
         "objective, likelihood/gradient route, rate parameterization",
         "validates both with `gpurec validate-config --require-mode-default-optimizer --require-production-default-route`",
+        "mode-default `adam` diagnostic and fails `--require-production-default-route` with a `mode` mismatch",
         "mode-default optimizer gates",
         "gpurec validate-config --help",
         "--require-cuda-backward-ready",
@@ -1248,6 +1275,12 @@ def test_readme_documents_installed_sampling_binary_setup():
     )
     assert (
         "`gpurec config-template --mode specieswise`, and "
+        "`gpurec validate-config --help`"
+        not in normalized_guide
+    )
+    assert (
+        "`gpurec config-template --mode specieswise`, "
+        "`gpurec config-template --mode global`, and "
         "`gpurec validate-config --help`"
         in normalized_guide
     )

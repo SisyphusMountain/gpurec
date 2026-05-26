@@ -46,10 +46,12 @@ unpacked source archive, runs source-archive
 `examples/specieswise-adagrad-restarts-config.json`, and smokes both
 `gpurec --help` and `python -m gpurec.cli --help`.  It also smokes installed
 `gpurec config-template --help`,
-`gpurec config-template --mode specieswise`, and
+`gpurec config-template --mode specieswise`,
+`gpurec config-template --mode global`, and
 `gpurec validate-config --help` so the installed template/preflight surface
-remains part of the command surface, including genewise Hessian-SGD route knobs
-and the specieswise Adagrad restart schedule, and verifies the
+remains part of the command surface, including genewise Hessian-SGD route knobs,
+the specieswise Adagrad restart schedule, and the global diagnostic template
+boundary, and verifies the
 `--require-cuda-backward-ready`, `--require-mode-default-optimizer`, and
 `--require-production-default-route` preflight gates are exposed. These
 mode-default optimizer gates remain separate from the stricter production-route
@@ -57,7 +59,10 @@ gate. It also generates genewise and specieswise configs from the installed
 `gpurec config-template` command, points them at the checked tiny AleRax fixture
 paths, and validates both with
 `gpurec validate-config --require-mode-default-optimizer
---require-production-default-route`. It also smokes
+--require-production-default-route`. It generates a global template too, then
+checks that it passes `--require-mode-default-optimizer` as a mode-default
+`adam` diagnostic and fails `--require-production-default-route` with a `mode`
+mismatch. It also smokes
 `gpurec summary-info --help` and `gpurec checkpoint-info --help` so artifact
 inspection stays available without CUDA model construction, including the
 `--require-converged` and `--require-final-check-ok` summary gates for
@@ -137,6 +142,7 @@ gpurec --help
 python -m gpurec.cli --help
 gpurec config-template --mode genewise
 gpurec config-template --mode specieswise
+gpurec config-template --mode global
 gpurec config-template --mode genewise \
   --species-tree "$repo_root/examples/tiny/species.nwk" \
   --families-file "$repo_root/examples/tiny/families.txt" \
@@ -153,6 +159,24 @@ gpurec config-template --mode specieswise \
 gpurec validate-config --config generated-specieswise-run.json \
   --require-mode-default-optimizer \
   --require-production-default-route
+gpurec config-template --mode global \
+  --species-tree "$repo_root/examples/tiny/species.nwk" \
+  --families-file "$repo_root/examples/tiny/families.txt" \
+  --out-dir "$smoke_dir/generated-global-out" \
+  --output generated-global-run.json
+gpurec validate-config --config generated-global-run.json \
+  --require-mode-default-optimizer
+set +e
+gpurec validate-config --config generated-global-run.json \
+  --require-production-default-route \
+  > generated-global-production-route.out \
+  2> generated-global-production-route.err
+global_status=$?
+set -e
+test "$global_status" -eq 2
+grep -q "config production default route fields differ for mode 'global': mode" \
+  generated-global-production-route.err
+test ! -s generated-global-production-route.out
 gpurec summary-info --help
 gpurec checkpoint-info --help
 gpurec sample --help
