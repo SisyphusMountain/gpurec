@@ -249,8 +249,12 @@ reported from resident and chunked calls.
 
 ### Step 6: Make Pi Forward Output Intent Explicit
 
-Replace `Pi_wave_forward(..., return_original, return_root_rows, ...)` at call
-sites with wrappers:
+Current model and maintained benchmark call sites route through named
+`PiForwardRequest` helpers instead of passing raw output booleans.  The
+`Pi_wave_forward(..., return_original, return_root_rows, ...)` signature remains
+as a low-level compatibility boundary.
+
+Continue replacing direct call sites with wrappers:
 
 - `forward_pi_gradient_state()`;
 - `forward_pi_root_rows()`;

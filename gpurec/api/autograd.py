@@ -20,7 +20,7 @@ import torch
 
 from gpurec.core.likelihood import E_fixed_point, compute_nll_root_rows
 from gpurec.core.forward import (
-    _PiForwardRequest,
+    PiForwardRequest,
     pi_training_state_request,
 )
 from gpurec.core._helpers import _nvtx_range
@@ -362,7 +362,7 @@ def solve_resident_pi_given_e(
     static: ReconStaticState,
     e_solve: ResidentESolveResult,
     *,
-    pi_request: _PiForwardRequest,
+    pi_request: PiForwardRequest,
     scratch_tensors: tuple[torch.Tensor, torch.Tensor] | None = None,
 ) -> ResidentSolveResult:
     """Solve resident Pi tensors from a precomputed E solution."""
@@ -402,7 +402,7 @@ def solve_resident_e_pi(
     static: ReconStaticState,
     theta: torch.Tensor,
     *,
-    pi_request: _PiForwardRequest,
+    pi_request: PiForwardRequest,
     warm_start_E: torch.Tensor | None = None,
     scratch_tensors: tuple[torch.Tensor, torch.Tensor] | None = None,
 ) -> ResidentSolveResult:

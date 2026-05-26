@@ -3,8 +3,10 @@ from __future__ import annotations
 import pytest
 
 from gpurec.core.forward import (
-    _pi_output_intent,
+    PiForwardRequest,
+    PiOutputIntent,
     pi_export_state_request,
+    pi_output_intent,
     pi_root_row_loss_request,
     pi_training_state_request,
 )
@@ -68,11 +70,12 @@ def test_pi_output_intent_maps_legacy_booleans_to_internal_contract(
     expected_wave_ordered: bool,
     expected_saved_state: bool,
 ):
-    intent = _pi_output_intent(
+    intent = pi_output_intent(
         return_original=return_original,
         return_root_rows=return_root_rows,
     )
 
+    assert isinstance(intent, PiOutputIntent)
     assert intent.name == expected_name
     assert intent.emit_original_pi is expected_original
     assert intent.emit_root_rows is expected_root_rows
@@ -82,16 +85,15 @@ def test_pi_output_intent_maps_legacy_booleans_to_internal_contract(
 
 
 def test_pi_forward_requests_name_internal_output_intent():
-    assert (
-        pi_training_state_request().intent.name
-        == "training_or_wave_export_state"
-    )
-    assert pi_root_row_loss_request().intent.name == "root_row_loss_only"
-    assert (
-        pi_export_state_request(original_order=True).intent.name
-        == "export_original_and_wave_rows"
-    )
-    assert (
-        pi_export_state_request(original_order=False).intent.name
-        == "training_or_wave_export_state"
-    )
+    training = pi_training_state_request()
+    root_rows = pi_root_row_loss_request()
+    export_original = pi_export_state_request(original_order=True)
+    export_wave = pi_export_state_request(original_order=False)
+
+    for request in (training, root_rows, export_original, export_wave):
+        assert isinstance(request, PiForwardRequest)
+
+    assert training.intent.name == "training_or_wave_export_state"
+    assert root_rows.intent.name == "root_row_loss_only"
+    assert export_original.intent.name == "export_original_and_wave_rows"
+    assert export_wave.intent.name == "training_or_wave_export_state"

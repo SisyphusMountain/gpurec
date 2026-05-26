@@ -2004,6 +2004,19 @@ def test_api_runtime_uses_root_row_likelihood_contract():
     assert offenders == []
 
 
+def test_api_uses_named_pi_forward_request_contract():
+    root = Path(__file__).resolve().parents[2]
+    offenders: list[str] = []
+
+    for path in _tracked_files(root, "gpurec/api/**/*.py"):
+        source = path.read_text(encoding="utf-8")
+        for token in ("_PiForwardRequest", "_PiOutputIntent", "_pi_output_intent"):
+            if token in source:
+                offenders.append(f"{path.relative_to(root).as_posix()}:{token}")
+
+    assert offenders == []
+
+
 def test_runtime_e_fixed_point_calls_pass_explicit_e_shape():
     root = Path(__file__).resolve().parents[2]
     offenders: list[str] = []
@@ -2891,7 +2904,8 @@ def test_documented_uniform_pipeline_benchmark_help_imports_current_api():
     assert "_UniformBuiltChunk as BuiltChunk" in source
     assert "_built_chunks_from_rust" in source
     assert "RustPreprocessExtension" in source
-    assert "compute_nll" in source
+    assert "pi_training_state_request" in source
+    assert "compute_nll_root_rows" in source
     assert ("compute_log_" + "likelihood") not in source
 
 

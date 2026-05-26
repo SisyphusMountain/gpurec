@@ -22,8 +22,8 @@ NEG_INF = float("-inf")
 
 
 @dataclass(frozen=True)
-class _PiOutputIntent:
-    """Resolved private output contract for ``Pi_wave_forward``."""
+class PiOutputIntent:
+    """Resolved output contract for ``Pi_wave_forward``."""
 
     name: str
     emit_original_pi: bool
@@ -36,14 +36,14 @@ class _PiOutputIntent:
         return not self.retain_saved_state
 
 
-def _pi_output_intent(
+def pi_output_intent(
     *,
     return_original: bool,
     return_root_rows: bool,
-) -> _PiOutputIntent:
+) -> PiOutputIntent:
     """Map legacy output booleans onto an explicit internal output contract."""
     if return_root_rows:
-        return _PiOutputIntent(
+        return PiOutputIntent(
             name=(
                 "legacy_original_root_rows"
                 if return_original
@@ -55,14 +55,14 @@ def _pi_output_intent(
             retain_saved_state=False,
         )
     if return_original:
-        return _PiOutputIntent(
+        return PiOutputIntent(
             name="export_original_and_wave_rows",
             emit_original_pi=True,
             emit_root_rows=False,
             emit_wave_ordered_pi=True,
             retain_saved_state=True,
         )
-    return _PiOutputIntent(
+    return PiOutputIntent(
         name="training_or_wave_export_state",
         emit_original_pi=False,
         emit_root_rows=False,
@@ -72,10 +72,10 @@ def _pi_output_intent(
 
 
 @dataclass(frozen=True)
-class _PiForwardRequest:
+class PiForwardRequest:
     """Intent-named internal request for invoking ``Pi_wave_forward``."""
 
-    intent: _PiOutputIntent
+    intent: PiOutputIntent
 
     def run(self, **forward_kwargs):
         return Pi_wave_forward(
@@ -85,24 +85,24 @@ class _PiForwardRequest:
         )
 
 
-def pi_training_state_request() -> _PiForwardRequest:
+def pi_training_state_request() -> PiForwardRequest:
     """Return wave-ordered Pi/Pibar state for likelihood plus gradients."""
-    return _PiForwardRequest(
-        _pi_output_intent(return_original=False, return_root_rows=False)
+    return PiForwardRequest(
+        pi_output_intent(return_original=False, return_root_rows=False)
     )
 
 
-def pi_root_row_loss_request() -> _PiForwardRequest:
+def pi_root_row_loss_request() -> PiForwardRequest:
     """Return root rows only for no-gradient loss evaluation."""
-    return _PiForwardRequest(
-        _pi_output_intent(return_original=False, return_root_rows=True)
+    return PiForwardRequest(
+        pi_output_intent(return_original=False, return_root_rows=True)
     )
 
 
-def pi_export_state_request(*, original_order: bool) -> _PiForwardRequest:
+def pi_export_state_request(*, original_order: bool) -> PiForwardRequest:
     """Return export Pi state in the caller-selected clade order."""
-    return _PiForwardRequest(
-        _pi_output_intent(
+    return PiForwardRequest(
+        pi_output_intent(
             return_original=original_order,
             return_root_rows=False,
         )
@@ -217,7 +217,7 @@ def Pi_wave_forward(
         dict with 'Pi' (in original clade order when requested),
         'Pi_root_rows' when requested.
     """
-    output_intent = _pi_output_intent(
+    output_intent = pi_output_intent(
         return_original=return_original,
         return_root_rows=return_root_rows,
     )

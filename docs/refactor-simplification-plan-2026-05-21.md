@@ -166,6 +166,10 @@ Plan:
   - `pi_forward_for_gradient(...)`;
   - `pi_forward_root_rows(...)`;
   - `pi_forward_state(...)`.
+- Current model and maintained benchmark call sites use named
+  `PiForwardRequest` helpers, so raw `return_original` / `return_root_rows`
+  booleans are confined to the low-level compatibility boundary and direct
+  core tests.
 - Return a dataclass instead of a loose dictionary.
 - Move root-logsumexp tracing and progress callbacks out of the hot production
   function, or keep them in a debug wrapper.

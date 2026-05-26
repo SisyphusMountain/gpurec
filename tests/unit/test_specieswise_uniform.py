@@ -10,7 +10,7 @@ import torch
 
 from gpurec import GeneReconModel
 from gpurec.api.autograd import _extract_parameters
-from gpurec.core.forward import Pi_wave_forward
+from gpurec.core.forward import pi_root_row_loss_request, pi_training_state_request
 from gpurec.core.likelihood import (
     E_fixed_point,
     compute_nll,
@@ -215,7 +215,12 @@ def _run_forward(
 ):
     static = model.static
     log_pS, log_pD, log_pL, max_transfer_vec = params
-    pi_out = Pi_wave_forward(
+    pi_request = (
+        pi_root_row_loss_request()
+        if root_rows
+        else pi_training_state_request()
+    )
+    pi_out = pi_request.run(
         wave_layout=static.wave_layout,
         species_helpers=static.species_helpers,
         E=E_out["E"],
@@ -228,8 +233,6 @@ def _run_forward(
         device=static.device,
         dtype=static.dtype,
         fixed_iters=static.fixed_iters_Pi,
-        return_original=False,
-        return_root_rows=root_rows,
         family_idx=None,
     )
     if root_rows:
@@ -326,7 +329,7 @@ def test_gpu_logsumexp_traces_match_final_values(data_dir_100, tmp_path):
             int(static.species_helpers["S"]),
         ),
     )
-    Pi_out = Pi_wave_forward(
+    Pi_out = pi_root_row_loss_request().run(
         wave_layout=static.wave_layout,
         species_helpers=static.species_helpers,
         E=E_out["E"],
@@ -339,8 +342,6 @@ def test_gpu_logsumexp_traces_match_final_values(data_dir_100, tmp_path):
         device=static.device,
         dtype=static.dtype,
         fixed_iters=static.fixed_iters_Pi,
-        return_original=False,
-        return_root_rows=True,
         family_idx=static.wave_layout["family_idx"],
         trace_root_logsumexp=True,
     )

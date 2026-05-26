@@ -118,9 +118,11 @@ Gate:
 
 Current alternatives:
 
-- `gpurec/core/forward.py:53` `Pi_wave_forward()` supports training tensors,
-  root-row loss-only tensors, optional original returns, convergence tracing,
-  final-Pibar storage, callbacks, and root row skipping in one function.
+- `gpurec/core/forward.py` exposes named `PiForwardRequest` helpers for
+  training tensors, root-row loss-only tensors, and export state.
+- The low-level `Pi_wave_forward()` compatibility boundary still supports
+  optional original returns, convergence tracing, final-Pibar storage,
+  callbacks, and root row skipping in one function.
 
 Simplification:
 
