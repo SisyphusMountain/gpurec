@@ -8,6 +8,7 @@ from typing import Any
 
 import torch
 
+from gpurec.api.autograd import _clear_pi_adjoint_runtime_cache
 from gpurec.api.model import GeneReconModel
 
 from ._artifact_publish import (
@@ -251,8 +252,7 @@ def _clear_cached_solver_runtime_state(model: GeneReconModel) -> None:
         for static in list(statics):
             if hasattr(static, "warm_E"):
                 static.warm_E = None
-            if hasattr(static, "pi_adjoint_cache"):
-                static.pi_adjoint_cache = None
+            _clear_pi_adjoint_runtime_cache(static)
             if hasattr(static, "last_solver_stats"):
                 static.last_solver_stats = None
     else:

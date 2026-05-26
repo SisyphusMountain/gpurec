@@ -55,6 +55,7 @@ from gpurec.core.likelihood import compute_origination_denominator
 from .autograd import (
     ReconStaticState,
     _GeneReconFunction,
+    _clear_pi_adjoint_runtime_cache,
     compute_resident_implicit_gradient,
     evaluate_resident_gradient_forward,
 )
@@ -1179,7 +1180,7 @@ def _evaluate_static_state(
     )
     static.warm_E = None
     if getattr(static, "clear_runtime_after_backward", False):
-        static.pi_adjoint_cache = None
+        _clear_pi_adjoint_runtime_cache(static)
     loss_vec = gradient_forward.loss_vec
     return (
         loss_vec.detach() if per_family else loss_vec.sum().detach()
@@ -2178,11 +2179,11 @@ class GeneReconModel(torch.nn.Module):
                 static = self._batch_statics[self._current_batch_index]
             if static is not None:
                 static.warm_E = None
-                static.pi_adjoint_cache = None
+                _clear_pi_adjoint_runtime_cache(static)
             return
         static = self._active_static()
         static.warm_E = None
-        static.pi_adjoint_cache = None
+        _clear_pi_adjoint_runtime_cache(static)
 
     def close(self) -> None:
         """Stop background batch preprocessing and drop pending futures."""

@@ -2050,10 +2050,10 @@ not edit files.  New or still-open findings from that refresh are:
   `GeneDataset` mapping exception.
 - The Pi-adjoint warm-start cache is now an explicit API-bridge runtime
   boundary instead of only a core-kernel argument.  It remains opt-in, records
-  whether an initial guess was used, refreshes the solved `v_Pi` cache only when
-  requested, drops stale layout-shaped caches, and participates in the existing
-  runtime-cache clear path.  Production optimizer defaults are unchanged until
-  accepted-step cache commit semantics are wired through line search.
+  whether an initial guess was used, supports staging a solved `v_Pi` separately
+  from the accepted cache, drops stale layout-shaped caches, and participates in
+  the existing runtime-cache clear path.  Production optimizer defaults are
+  unchanged until accepted-step cache commit calls are wired through line search.
 
 ## Recommended Next Order
 

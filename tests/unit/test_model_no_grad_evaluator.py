@@ -12,6 +12,7 @@ def _implicit_gradient_static(
     *,
     pi_adjoint_warmstart: bool,
     pi_adjoint_cache=None,
+    pi_adjoint_cache_update_mode: str = "immediate",
 ):
     return SimpleNamespace(
         wave_layout={
@@ -36,6 +37,8 @@ def _implicit_gradient_static(
         convergence_check_interval=4,
         pi_adjoint_warmstart=pi_adjoint_warmstart,
         pi_adjoint_cache=pi_adjoint_cache,
+        pi_adjoint_pending_cache=None,
+        pi_adjoint_cache_update_mode=pi_adjoint_cache_update_mode,
         last_solver_stats=None,
     )
 
@@ -465,9 +468,81 @@ def test_compute_resident_implicit_gradient_uses_pi_adjoint_cache_when_enabled(
         "E_adjoint_success": True,
         "Pi_adjoint_warmstart_enabled": True,
         "Pi_adjoint_warmstart_used": True,
+        "Pi_adjoint_cache_update_mode": "immediate",
+        "Pi_adjoint_cache_pending": False,
         "Pi_adjoint_cache_rows": 2,
         "Pi_adjoint_cache_species": 2,
     }
+
+
+def test_compute_resident_implicit_gradient_stages_pi_adjoint_cache_for_commit(
+    monkeypatch,
+):
+    theta = torch.zeros((2, 3), dtype=torch.float64)
+    pi = torch.ones((2, 2), dtype=torch.float64)
+    cached = torch.full_like(pi, 0.25)
+    solved = torch.full_like(pi, 0.75)
+    static = _implicit_gradient_static(
+        pi_adjoint_warmstart=True,
+        pi_adjoint_cache=cached,
+        pi_adjoint_cache_update_mode="stage",
+    )
+
+    def fake_implicit_grad(*args, **kwargs):
+        assert kwargs["return_aux"] is True
+        torch.testing.assert_close(kwargs["pi_adjoint_initial_guess"], cached)
+        return (
+            torch.ones_like(theta),
+            SimpleNamespace(iters=3, rel_res=0.125, success=True, neumann_terms=4),
+            {"pi_adjoint": solved, "used_pi_initial_guess": True},
+        )
+
+    monkeypatch.setattr(
+        api_autograd,
+        "implicit_grad_loglik_vjp_wave",
+        fake_implicit_grad,
+    )
+
+    api_autograd.compute_resident_implicit_gradient(
+        static,
+        theta=theta,
+        pi_wave_ordered=pi,
+        pibar_wave_ordered=pi + 1.0,
+        e=torch.zeros((2, 2), dtype=theta.dtype),
+        ebar=torch.zeros((2, 2), dtype=theta.dtype),
+        e_s1=torch.zeros((2, 2), dtype=theta.dtype),
+        e_s2=torch.zeros((2, 2), dtype=theta.dtype),
+        log_p_s=torch.zeros(2, dtype=theta.dtype),
+        log_p_d=torch.zeros(2, dtype=theta.dtype),
+        log_p_l=torch.zeros(2, dtype=theta.dtype),
+        max_transfer=torch.zeros(2, dtype=theta.dtype),
+        uniform_pibar_row_max=None,
+    )
+
+    torch.testing.assert_close(static.pi_adjoint_cache, cached)
+    torch.testing.assert_close(static.pi_adjoint_pending_cache, solved)
+    assert static.last_solver_stats["Pi_adjoint_cache_update_mode"] == "stage"
+    assert static.last_solver_stats["Pi_adjoint_cache_pending"] is True
+
+    assert api_autograd._commit_pi_adjoint_pending_cache(static) is True
+    torch.testing.assert_close(static.pi_adjoint_cache, solved)
+    assert static.pi_adjoint_pending_cache is None
+
+
+def test_discard_pi_adjoint_pending_cache_keeps_accepted_cache():
+    cached = torch.full((2, 2), 0.25, dtype=torch.float64)
+    pending = torch.full((2, 2), 0.75, dtype=torch.float64)
+    static = _implicit_gradient_static(
+        pi_adjoint_warmstart=True,
+        pi_adjoint_cache=cached,
+        pi_adjoint_cache_update_mode="stage",
+    )
+    static.pi_adjoint_pending_cache = pending
+
+    api_autograd._discard_pi_adjoint_pending_cache(static)
+
+    torch.testing.assert_close(static.pi_adjoint_cache, cached)
+    assert static.pi_adjoint_pending_cache is None
 
 
 def test_compute_resident_implicit_gradient_drops_stale_pi_adjoint_cache(

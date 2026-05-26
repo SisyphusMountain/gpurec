@@ -77,7 +77,9 @@ that reuse the previous solved `v_Pi` as the next implicit-gradient initial
 guess. That cache is disabled for the supported production routes until the
 optimizer loop can commit updates only from accepted gradient evaluations; loss
 probes and rejected line-search candidates must not become the next accepted
-warm start. When enabled in a controlled experiment, history rows aggregate
+warm start. The bridge can stage a newly solved adjoint separately from the
+accepted cache so future optimizer integration can commit only after an
+accepted step. When enabled in a controlled experiment, history rows aggregate
 `solver/pi_adjoint_warmstart_enabled_batches` and
 `solver/pi_adjoint_warmstart_used_batches`.
 

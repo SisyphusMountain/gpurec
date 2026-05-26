@@ -76,6 +76,8 @@ class ReconStaticState:
     warm_E: Optional[torch.Tensor] = None
     pi_adjoint_warmstart: bool = False
     pi_adjoint_cache: Optional[torch.Tensor] = None
+    pi_adjoint_pending_cache: Optional[torch.Tensor] = None
+    pi_adjoint_cache_update_mode: str = "immediate"
     clear_runtime_after_backward: bool = False
     last_solver_stats: Optional[dict[str, Any]] = None
 
@@ -193,11 +195,66 @@ def _pi_adjoint_initial_guess(
     )
 
 
+def _pi_adjoint_cache_update_mode(static: ReconStaticState) -> str:
+    mode = getattr(static, "pi_adjoint_cache_update_mode", "immediate")
+    if mode not in {"immediate", "stage"}:
+        raise ValueError(
+            "pi_adjoint_cache_update_mode must be 'immediate' or 'stage'"
+        )
+    return str(mode)
+
+
+def _clear_pi_adjoint_runtime_cache(static: ReconStaticState) -> None:
+    if hasattr(static, "pi_adjoint_cache"):
+        static.pi_adjoint_cache = None
+    if hasattr(static, "pi_adjoint_pending_cache"):
+        static.pi_adjoint_pending_cache = None
+
+
+def _commit_pi_adjoint_pending_cache(static: ReconStaticState) -> bool:
+    pending = getattr(static, "pi_adjoint_pending_cache", None)
+    if not torch.is_tensor(pending):
+        static.pi_adjoint_pending_cache = None
+        return False
+    static.pi_adjoint_cache = pending.detach()
+    static.pi_adjoint_pending_cache = None
+    return True
+
+
+def _discard_pi_adjoint_pending_cache(static: ReconStaticState) -> None:
+    static.pi_adjoint_pending_cache = None
+
+
+def _store_pi_adjoint_cache(
+    static: ReconStaticState,
+    cache: torch.Tensor | None,
+) -> tuple[str, torch.Tensor | None, torch.Tensor | None]:
+    mode = _pi_adjoint_cache_update_mode(static)
+    if not torch.is_tensor(cache):
+        if mode == "stage":
+            static.pi_adjoint_pending_cache = None
+        else:
+            static.pi_adjoint_cache = None
+        return mode, getattr(static, "pi_adjoint_cache", None), None
+    stored = cache.detach()
+    if mode == "stage":
+        static.pi_adjoint_pending_cache = stored
+    else:
+        static.pi_adjoint_cache = stored
+        static.pi_adjoint_pending_cache = None
+    return (
+        mode,
+        getattr(static, "pi_adjoint_cache", None),
+        getattr(static, "pi_adjoint_pending_cache", None),
+    )
+
+
 def _record_pi_adjoint_cache_stats(
     static: ReconStaticState,
     *,
     used_initial_guess: bool,
     cache: torch.Tensor | None,
+    pending_cache: torch.Tensor | None = None,
 ) -> None:
     if static.last_solver_stats is None:
         static.last_solver_stats = {}
@@ -207,6 +264,8 @@ def _record_pi_adjoint_cache_stats(
                 getattr(static, "pi_adjoint_warmstart", False)
             ),
             "Pi_adjoint_warmstart_used": bool(used_initial_guess),
+            "Pi_adjoint_cache_update_mode": _pi_adjoint_cache_update_mode(static),
+            "Pi_adjoint_cache_pending": torch.is_tensor(pending_cache),
         }
     )
     if cache is not None:
@@ -405,16 +464,15 @@ def compute_resident_implicit_gradient(
     )
     if use_pi_adjoint_warmstart:
         grad_theta, stats, aux = result
-        pi_adjoint_cache = aux.get("pi_adjoint")
-        if torch.is_tensor(pi_adjoint_cache):
-            static.pi_adjoint_cache = pi_adjoint_cache.detach()
-        else:
-            static.pi_adjoint_cache = None
+        _cache_mode, pi_adjoint_cache, pi_adjoint_pending_cache = (
+            _store_pi_adjoint_cache(static, aux.get("pi_adjoint"))
+        )
         _record_backward_solver_stats(static, stats)
         _record_pi_adjoint_cache_stats(
             static,
             used_initial_guess=bool(aux.get("used_pi_initial_guess", False)),
-            cache=static.pi_adjoint_cache,
+            cache=pi_adjoint_cache,
+            pending_cache=pi_adjoint_pending_cache,
         )
         return grad_theta
     grad_theta, stats = result
@@ -541,6 +599,6 @@ class _GeneReconFunction(torch.autograd.Function):
 
         if static.clear_runtime_after_backward:
             static.warm_E = None
-            static.pi_adjoint_cache = None
+            _clear_pi_adjoint_runtime_cache(static)
 
         return grad_theta, None, None

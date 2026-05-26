@@ -751,7 +751,11 @@ def test_clear_batched_resident_does_not_materialize_missing_active_batch():
 
 
 def test_clear_batched_resident_clears_existing_active_warm_state():
-    static = SimpleNamespace(warm_E=object(), pi_adjoint_cache=object())
+    static = SimpleNamespace(
+        warm_E=object(),
+        pi_adjoint_cache=object(),
+        pi_adjoint_pending_cache=object(),
+    )
     model = GeneReconModel.__new__(GeneReconModel)
     model._batched_resident = True
     model._current_batch_index = 0
@@ -762,6 +766,7 @@ def test_clear_batched_resident_clears_existing_active_warm_state():
 
     assert static.warm_E is None
     assert static.pi_adjoint_cache is None
+    assert static.pi_adjoint_pending_cache is None
 
 
 def test_close_shuts_down_executor_without_batch_lock():
@@ -5326,6 +5331,7 @@ class _WorkflowBatchedLBFGSModeModel:
         self.static_state = SimpleNamespace(
             warm_E=object(),
             pi_adjoint_cache=object(),
+            pi_adjoint_pending_cache=object(),
             last_solver_stats={"Pi_wave_iterations": [2]},
         )
         self.clears = 0
@@ -7601,6 +7607,7 @@ def test_optimization_runner_batched_lbfgs_advances_resident_batches(tmp_path: P
     assert runner.fake_model.drop_cached_static_states_calls == 0
     assert runner.fake_model.static_state.warm_E is None
     assert runner.fake_model.static_state.pi_adjoint_cache is None
+    assert runner.fake_model.static_state.pi_adjoint_pending_cache is None
     assert runner.fake_model.static_state.last_solver_stats is None
     assert runner.fake_model.closed
 
@@ -7642,6 +7649,7 @@ def test_final_iteration_check_keeps_static_layout_and_clears_runtime_state(
     assert model.drop_cached_static_states_calls == 0
     assert model.static_state.warm_E is None
     assert model.static_state.pi_adjoint_cache is None
+    assert model.static_state.pi_adjoint_pending_cache is None
     assert model.static_state.last_solver_stats is None
     assert metrics["optimizer/final_check_status"] == "ok"
     assert metrics["optimizer/final_check_source"] == "configured_solver_budget"
