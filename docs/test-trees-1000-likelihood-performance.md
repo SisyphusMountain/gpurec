@@ -586,6 +586,13 @@ Rejected follow-ups:
   materialized steady median regressed to `1.2852614839794114s` versus the
   current `1.2784311089781113s` median.  The root reductions were already a
   small part of the pass, so this was not an aligned improvement.
+- Removing redundant-looking `Pi.contiguous()` and `Pibar.contiguous()` calls
+  from the DTS launch wrapper was also reverted.  The prototype passed the
+  targeted DTS/resident tests (`14 passed`) and a materialized fixed4 sample
+  improved slightly to `1.2767550030257553s` median, but cold end-to-end samples
+  did not improve (`2.2904487129999325s`, `2.2644186799880117s`,
+  `2.269676612049807s`).  Keeping the explicit contiguous boundary is preferable
+  until it produces a cold-path win.
 - The current `clade_first_fit` batches are already balanced for fixed4 Pi
   timing.  A post-warm per-batch split measured `20` full batches between
   about `0.061s` and `0.063s`, plus a tail batch at `0.03352210501907393s`;
