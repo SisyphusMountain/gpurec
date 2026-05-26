@@ -1247,6 +1247,16 @@ def effective_route_metadata(config: RunConfig) -> dict[str, Any]:
                 ),
             }
         )
+    default_route_missing, default_route_mismatches = (
+        production_default_route_mismatches_from_route(route)
+    )
+    if default_route_missing:
+        raise RuntimeError(
+            "internal error: complete RunConfig route is missing production "
+            f"default route field(s): {', '.join(default_route_missing)}"
+        )
+    route["uses_production_default_route"] = len(default_route_mismatches) == 0
+    route["production_default_route_mismatches"] = list(default_route_mismatches)
     return _jsonable(route)
 
 

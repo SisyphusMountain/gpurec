@@ -68,8 +68,10 @@ optimizer-specific settings. If an older artifact used by `sample`,
 `summary-info`, or `checkpoint-info` is missing `mode`, `optimizer`, the
 objective/gradient/parameterization metadata, or the optimizer-specific route
 fields needed by the stricter gate, the inspection command reports incomplete
-route evidence; rerun from a current config or inspect an artifact that carries
-route metadata.
+route evidence. Otherwise, inspect `uses_production_default_route` and
+`production_default_route_mismatches` to see the exact stale or overridden
+fields; rerun from a current config or inspect an artifact that carries route
+metadata.
 For combined optimize-and-sample pipelines, use `gpurec run --require-converged`
 to print the optimization status and stop before sampling unless optimization
 converged.

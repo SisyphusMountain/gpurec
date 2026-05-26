@@ -775,6 +775,8 @@ def test_cli_validate_config_reports_selected_family_references(
     assert "uses_mode_default_optimizer=true" in captured.out
     assert "uses_production_default_optimizer_settings=true" in captured.out
     assert "production_default_optimizer_setting_mismatches=none" in captured.out
+    assert "uses_production_default_route=true" in captured.out
+    assert "production_default_route_mismatches=none" in captured.out
     assert "families=1" in captured.out
     assert "gene_tree_files=1" in captured.out
     assert "mapped_families=1" in captured.out
@@ -915,6 +917,14 @@ def test_cli_validate_config_reports_hessian_sgd_normal_solver_overrides(
         "hessian_sgd_validation_interval,hessian_sgd_validation_fixed_iters_pi,"
         "hessian_sgd_validation_neumann_terms"
     ) in captured.out
+    assert "uses_production_default_route=false" in captured.out
+    assert (
+        "production_default_route_mismatches="
+        "hessian_sgd_normal_fixed_iters_pi,hessian_sgd_normal_neumann_terms,"
+        "hessian_sgd_pi_adjoint_warmstart,pi_fixed_point_relaxation,"
+        "hessian_sgd_validation_interval,hessian_sgd_validation_fixed_iters_pi,"
+        "hessian_sgd_validation_neumann_terms"
+    ) in captured.out
     assert captured.err == ""
 
 
@@ -947,6 +957,8 @@ def test_cli_validate_config_reports_specieswise_restart_route(
     assert "uses_mode_default_optimizer=true" in captured.out
     assert "uses_production_default_optimizer_settings=true" in captured.out
     assert "production_default_optimizer_setting_mismatches=none" in captured.out
+    assert "uses_production_default_route=true" in captured.out
+    assert "production_default_route_mismatches=none" in captured.out
     assert (
         "adagrad_restart_schedule=8:1:60,16:0.5:35,32:0.5:30"
         in captured.out
@@ -1633,6 +1645,8 @@ def test_cli_checkpoint_info_reports_route_status_and_last_row(
         "uses_mode_default_optimizer=true",
         "uses_production_default_optimizer_settings=true",
         "production_default_optimizer_setting_mismatches=none",
+        "uses_production_default_route=true",
+        "production_default_route_mismatches=none",
         "batch_packing=depth_first_fit",
         "family_chunk_size=0",
         "clade_budget=500000",
@@ -1929,6 +1943,10 @@ def test_cli_checkpoint_info_require_production_default_route_recomputes_stale_a
     assert "production_default_optimizer_setting_mismatches=fd_hessian_refresh_steps" in (
         captured.out
     )
+    assert "uses_production_default_route=false" in captured.out
+    assert "production_default_route_mismatches=fd_hessian_refresh_steps" in (
+        captured.out
+    )
     assert "checkpoint production default route fields differ" in captured.err
     assert "fd_hessian_refresh_steps" in captured.err
     assert "usage:" not in captured.err
@@ -1964,6 +1982,8 @@ def test_cli_checkpoint_info_require_production_default_route_requires_settings_
     assert "route_metadata_source=checkpoint" in captured.out
     assert "uses_production_default_optimizer_settings=null" in captured.out
     assert "production_default_optimizer_setting_mismatches=null" in captured.out
+    assert "uses_production_default_route=null" in captured.out
+    assert "production_default_route_mismatches=null" in captured.out
     assert "checkpoint production default route evidence is incomplete" in captured.err
     assert "missing final_check_iters" in captured.err
     assert "fd_hessian_refresh_steps" in captured.err
@@ -2066,6 +2086,8 @@ def test_cli_summary_info_reports_status_route_and_final_check(
         "uses_mode_default_optimizer=true",
         "uses_production_default_optimizer_settings=true",
         "production_default_optimizer_setting_mismatches=none",
+        "uses_production_default_route=true",
+        "production_default_route_mismatches=none",
         "families=3",
         "species=4",
         "batches=2",
@@ -2154,6 +2176,8 @@ def test_cli_summary_info_reports_adagrad_restart_route_fields(
     assert "uses_mode_default_optimizer=true" in captured.out
     assert "uses_production_default_optimizer_settings=true" in captured.out
     assert "production_default_optimizer_setting_mismatches=none" in captured.out
+    assert "uses_production_default_route=null" in captured.out
+    assert "production_default_route_mismatches=null" in captured.out
     assert "reason=adagrad_restart_schedule_complete" in captured.out
     assert "final_check_iters=128" in captured.out
     assert "adagrad_restart_schedule=8:1:60,16:0.5:35,32:0.5:30" in captured.out
@@ -2234,6 +2258,8 @@ def test_cli_summary_info_normalizes_route_mode_and_optimizer_aliases(
     assert "uses_mode_default_optimizer=true" in captured.out
     assert "uses_production_default_optimizer_settings=true" in captured.out
     assert "production_default_optimizer_setting_mismatches=none" in captured.out
+    assert "uses_production_default_route=true" in captured.out
+    assert "production_default_route_mismatches=none" in captured.out
 
 
 def test_cli_summary_info_require_mode_default_optimizer_fails_after_printing(
@@ -2403,6 +2429,10 @@ def test_cli_summary_info_require_production_default_route_rejects_custom_settin
     assert "production_default_optimizer_setting_mismatches=fd_hessian_refresh_steps" in (
         captured.out
     )
+    assert "uses_production_default_route=false" in captured.out
+    assert "production_default_route_mismatches=fd_hessian_refresh_steps" in (
+        captured.out
+    )
     assert (
         "summary production default route fields differ for mode 'genewise': "
         "fd_hessian_refresh_steps"
@@ -2461,6 +2491,10 @@ def test_cli_summary_info_require_production_default_route_recomputes_stale_audi
     assert "production_default_optimizer_setting_mismatches=fd_hessian_refresh_steps" in (
         captured.out
     )
+    assert "uses_production_default_route=false" in captured.out
+    assert "production_default_route_mismatches=fd_hessian_refresh_steps" in (
+        captured.out
+    )
     assert "fd_hessian_refresh_steps" in captured.err
     assert "Traceback" not in captured.err
 
@@ -2512,6 +2546,8 @@ def test_cli_summary_info_require_production_default_route_rejects_stale_gradien
     assert "gradient_route=legacy_autograd" in captured.out
     assert "uses_production_default_optimizer_settings=true" in captured.out
     assert "production_default_optimizer_setting_mismatches=none" in captured.out
+    assert "uses_production_default_route=false" in captured.out
+    assert "production_default_route_mismatches=gradient_route" in captured.out
     assert (
         "summary production default route fields differ for mode 'genewise': "
         "gradient_route"
@@ -2555,6 +2591,8 @@ def test_cli_summary_info_require_production_default_route_requires_settings_evi
     assert exc_info.value.code == 1
     assert "uses_production_default_optimizer_settings=null" in captured.out
     assert "production_default_optimizer_setting_mismatches=null" in captured.out
+    assert "uses_production_default_route=null" in captured.out
+    assert "production_default_route_mismatches=null" in captured.out
     assert "summary production default route evidence is incomplete" in captured.err
     assert "missing final_check_iters" in captured.err
     assert "fd_hessian_refresh_steps" in captured.err

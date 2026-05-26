@@ -124,9 +124,13 @@ def _route_with_mode_default_audit_fields(route: dict[str, Any]) -> dict[str, An
 def _route_with_production_default_audit_fields(
     route: dict[str, Any],
 ) -> dict[str, Any]:
-    audited, _missing, _mismatches = (
-        _production_default_optimizer_settings_evidence(route)
-    )
+    audited, missing, mismatches = _production_default_route_evidence(route)
+    if not missing:
+        audited["production_default_route_mismatches"] = list(mismatches)
+        audited["uses_production_default_route"] = len(mismatches) == 0
+    else:
+        audited["production_default_route_mismatches"] = None
+        audited["uses_production_default_route"] = None
     return audited
 
 
@@ -259,7 +263,7 @@ def _require_config_production_default_route(
     from gpurec.workflow.config import effective_route_metadata
 
     route = effective_route_metadata(config)
-    if route.get("uses_production_default_optimizer_settings") is not True:
+    if route.get("uses_production_default_route") is not True:
         parser.error(
             _production_default_route_gate_message(
                 "config",
@@ -433,6 +437,14 @@ def _optimization_result_text(result: Any) -> str:
                     "production_default_optimizer_setting_mismatches",
                     None,
                 ),
+            ),
+            _optional_bool_text(
+                "uses_production_default_route",
+                getattr(result, "uses_production_default_route", None),
+            ),
+            _optional_list_text(
+                "production_default_route_mismatches",
+                getattr(result, "production_default_route_mismatches", None),
             ),
             _optional_int_text("families", getattr(result, "families", None)),
             _optional_int_text("species", getattr(result, "species", None)),
@@ -906,6 +918,14 @@ def _route_metadata_text(route: dict[str, Any]) -> str:
         _optional_list_text(
             "production_default_optimizer_setting_mismatches",
             route.get("production_default_optimizer_setting_mismatches"),
+        ),
+        _optional_bool_text(
+            "uses_production_default_route",
+            route.get("uses_production_default_route"),
+        ),
+        _optional_list_text(
+            "production_default_route_mismatches",
+            route.get("production_default_route_mismatches"),
         ),
         _optional_text("batch_packing", route.get("batch_packing")),
         _route_int_text("family_chunk_size", route),

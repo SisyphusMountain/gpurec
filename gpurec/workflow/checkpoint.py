@@ -67,8 +67,10 @@ _ROUTE_METADATA_RESUME_COMPATIBILITY_EXEMPT_KEYS = frozenset(
         "optimizer_step_cap",
         "optimizer_step_cap_reason",
         "production_default_optimizer_setting_mismatches",
+        "production_default_route_mismatches",
         "uses_mode_default_optimizer",
         "uses_production_default_optimizer_settings",
+        "uses_production_default_route",
     }
 )
 

@@ -147,9 +147,11 @@ the production default for the selected sharing mode. They also include
 `uses_production_default_optimizer_settings` and
 `production_default_optimizer_setting_mismatches`, which audit whether the
 optimizer-specific settings still match the shipped HOGENOM/`test_trees_1000`
-route. The stricter `--require-production-default-route` gate also requires
-the shipped objective, gradient route, rate parameterization, and production
-default basis metadata.
+optimizer profile. They also include `uses_production_default_route` and
+`production_default_route_mismatches`, which combine those optimizer-specific
+checks with the shipped objective, gradient route, rate parameterization, and
+production default basis metadata enforced by
+`--require-production-default-route`.
 
 For automation, `gpurec optimize`, `gpurec run`, and `gpurec summary-info`
 support `--require-converged`. Add `--require-final-check-ok` when the command
@@ -159,4 +161,4 @@ preflight, run, standalone sampling, or artifact-inspection commands when
 production automation must reject non-default optimizer routes for the selected
 mode. Add `--require-production-default-route` when stale likelihood/gradient
 route metadata or changed optimizer-specific settings should also fail those
-gates.
+gates and be reported in `production_default_route_mismatches`.

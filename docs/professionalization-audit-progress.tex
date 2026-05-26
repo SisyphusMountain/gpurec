@@ -7478,6 +7478,18 @@ HOGENOM/\texttt{test\_trees\_1000} route.  The touched modules compile, and the
 focused workflow/CLI/docs selector reports \texttt{13 passed}.  The full CPU
 unit gate reports \texttt{1467 passed, 1 skipped, 51 deselected}.
 
+Production route metadata now exposes the same strict-route verdict that the
+gate enforces.  \texttt{uses\_production\_default\_route} and
+\texttt{production\_default\_route\_mismatches} are derived from the shipped
+likelihood route contract, the mode default optimizer, and optimizer-specific
+settings, while the existing optimizer-settings fields remain available for
+narrower triage.  Older checkpoints stay resume-compatible because the new
+derived audit fields are route-identity exempt.  The touched modules compile,
+the focused config/CLI/docs selector reports \texttt{18 passed}, the focused
+\texttt{OptimizationResult} and CLI route-line selector reports
+\texttt{6 passed}, and \texttt{git diff --check} passes.  The full CPU unit
+gate reports \texttt{1467 passed, 1 skipped, 51 deselected}.
+
 \section{Next Audit Targets}
 
 \begin{enumerate}[leftmargin=*]

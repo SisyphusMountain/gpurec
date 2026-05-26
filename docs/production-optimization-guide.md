@@ -27,7 +27,9 @@ matches the production default for the selected sharing mode.
 `uses_production_default_optimizer_settings` and
 `production_default_optimizer_setting_mismatches` then say whether the
 optimizer-specific settings still match the shipped HOGENOM/`test_trees_1000`
-profile. The stricter `--require-production-default-route` gate also requires
+profile. `uses_production_default_route` and
+`production_default_route_mismatches` are the combined production verdict used
+by `--require-production-default-route`; they cover the optimizer settings plus
 the shipped objective, gradient route, rate parameterization, and production
 default basis metadata. `final_check_iters` records the solver iteration budget
 used for the final high-fidelity likelihood/gradient validation, and
@@ -136,7 +138,9 @@ whether the resolved `optimizer` currently matches it as
 `uses_mode_default_optimizer`. It also records
 `uses_production_default_optimizer_settings`; when that field is false,
 `production_default_optimizer_setting_mismatches` names the changed
-optimizer-specific fields.
+optimizer-specific fields. `uses_production_default_route` is stricter: when it
+is false, `production_default_route_mismatches` also names stale likelihood
+contract fields such as `gradient_route` or `production_default_basis`.
 
 ### Genewise `hessian-sgd`
 
@@ -281,7 +285,9 @@ uses the production optimizer default for the selected mode.
 Add `--require-production-default-route` when the pipeline should also fail on
 stale likelihood/gradient route metadata or optimizer-specific setting changes,
 such as a non-default Hessian-SGD refresh budget or a specieswise restart ladder
-that no longer reaches the default fixed32 phase.
+that no longer reaches the default fixed32 phase. The same check is printed in
+`uses_production_default_route` and `production_default_route_mismatches` for
+status-line and artifact triage.
 For combined optimize-and-sample workflows, add
 `gpurec run --require-converged` when sampling should be skipped unless
 optimization reached `status=converged`.

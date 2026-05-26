@@ -1000,6 +1000,8 @@ def test_run_config_reference_covers_current_config_surface():
         "Resume starts at checkpoint `next_step`",
         "`not_converged`/`max_steps`",
         "`--require-final-check-ok`",
+        "`uses_production_default_route`",
+        "`production_default_route_mismatches`",
     ):
         assert token in reference
     assert "docs/run-config-reference.md" in project_readme
@@ -1638,6 +1640,8 @@ def test_production_optimization_guide_is_linked_and_documents_routes():
         "`uses_mode_default_optimizer`",
         "`uses_production_default_optimizer_settings`",
         "`production_default_optimizer_setting_mismatches`",
+        "`uses_production_default_route`",
+        "`production_default_route_mismatches`",
         "`hessian-sgd`",
         "`adagrad-restarts`",
         "8:1.0:60,16:0.5:35,32:0.5:30",
@@ -1737,6 +1741,8 @@ def test_output_artifact_reference_is_linked_and_documents_contract():
         "`uses_mode_default_optimizer`",
         "`uses_production_default_optimizer_settings`",
         "`production_default_optimizer_setting_mismatches`",
+        "`uses_production_default_route`",
+        "`production_default_route_mismatches`",
         "resolved `mode` and `optimizer`",
         "`families`",
         "`species`",

@@ -1398,6 +1398,8 @@ def test_effective_route_metadata_reports_production_likelihood_contract(
     assert route["uses_mode_default_optimizer"] is True
     assert route["uses_production_default_optimizer_settings"] is True
     assert route["production_default_optimizer_setting_mismatches"] == []
+    assert route["uses_production_default_route"] is True
+    assert route["production_default_route_mismatches"] == []
     assert route["configured_steps"] == 5000
     assert route["optimizer_step_cap"] == 5000
     assert route["optimizer_step_cap_reason"] == "configured_steps"
@@ -1427,6 +1429,8 @@ def test_effective_route_metadata_marks_nondefault_optimizer(tmp_path: Path):
     assert route["uses_mode_default_optimizer"] is False
     assert route["uses_production_default_optimizer_settings"] is False
     assert route["production_default_optimizer_setting_mismatches"] == ["optimizer"]
+    assert route["uses_production_default_route"] is False
+    assert route["production_default_route_mismatches"] == ["optimizer"]
 
 
 def test_route_audit_infers_production_default_settings_from_route_dict():
@@ -1583,6 +1587,16 @@ def test_optimization_result_is_derived_from_summary_contract(tmp_path: Path):
             "hessian_sgd_validation_fixed_iters_pi",
             "hessian_sgd_validation_neumann_terms",
         ],
+        "uses_production_default_route": False,
+        "production_default_route_mismatches": [
+            "hessian_sgd_normal_fixed_iters_pi",
+            "hessian_sgd_normal_neumann_terms",
+            "hessian_sgd_pi_adjoint_warmstart",
+            "pi_fixed_point_relaxation",
+            "hessian_sgd_validation_interval",
+            "hessian_sgd_validation_fixed_iters_pi",
+            "hessian_sgd_validation_neumann_terms",
+        ],
         "batch_packing": "depth_first_fit",
         "family_chunk_size": 64,
         "clade_budget": 500_000,
@@ -1638,6 +1652,7 @@ def test_optimization_result_is_derived_from_summary_contract(tmp_path: Path):
         "mode_default_optimizer": "hessian-sgd",
         "uses_mode_default_optimizer": True,
         "uses_production_default_optimizer_settings": False,
+        "uses_production_default_route": False,
         "objective": "negative_log_likelihood_bits",
         "gradient_route": "implicit_first_order_adjoint",
         "rate_parameterization": "base2_log_dlt_rates",
@@ -1698,6 +1713,15 @@ def test_optimization_result_is_derived_from_summary_contract(tmp_path: Path):
         "hessian_sgd_validation_fixed_iters_pi",
         "hessian_sgd_validation_neumann_terms",
     )
+    assert result.production_default_route_mismatches == (
+        "hessian_sgd_normal_fixed_iters_pi",
+        "hessian_sgd_normal_neumann_terms",
+        "hessian_sgd_pi_adjoint_warmstart",
+        "pi_fixed_point_relaxation",
+        "hessian_sgd_validation_interval",
+        "hessian_sgd_validation_fixed_iters_pi",
+        "hessian_sgd_validation_neumann_terms",
+    )
     assert result.adagrad_restart_schedule is None
     assert result.adagrad_restart_total_steps is None
     assert result.adagrad_restart_final_check_iters is None
@@ -1733,6 +1757,16 @@ def test_effective_route_metadata_reports_hessian_sgd_normal_solver_overrides(
     assert route["hessian_sgd_validation_neumann_terms"] == 48
     assert route["uses_production_default_optimizer_settings"] is False
     assert route["production_default_optimizer_setting_mismatches"] == [
+        "hessian_sgd_normal_fixed_iters_pi",
+        "hessian_sgd_normal_neumann_terms",
+        "hessian_sgd_pi_adjoint_warmstart",
+        "pi_fixed_point_relaxation",
+        "hessian_sgd_validation_interval",
+        "hessian_sgd_validation_fixed_iters_pi",
+        "hessian_sgd_validation_neumann_terms",
+    ]
+    assert route["uses_production_default_route"] is False
+    assert route["production_default_route_mismatches"] == [
         "hessian_sgd_normal_fixed_iters_pi",
         "hessian_sgd_normal_neumann_terms",
         "hessian_sgd_pi_adjoint_warmstart",
@@ -1817,6 +1851,8 @@ def test_run_config_auto_optimizer_uses_adagrad_restarts_for_specieswise_mode(
     assert route["optimizer_step_cap_reason"] == "adagrad_restart_schedule"
     assert route["uses_production_default_optimizer_settings"] is True
     assert route["production_default_optimizer_setting_mismatches"] == []
+    assert route["uses_production_default_route"] is True
+    assert route["production_default_route_mismatches"] == []
 
 
 def test_run_config_specieswise_adagrad_restarts_step_cap_honors_shorter_steps(
@@ -1839,6 +1875,11 @@ def test_run_config_specieswise_adagrad_restarts_step_cap_honors_shorter_steps(
     assert route["optimizer_step_cap_reason"] == "configured_steps"
     assert route["uses_production_default_optimizer_settings"] is False
     assert route["production_default_optimizer_setting_mismatches"] == [
+        "optimizer_step_cap",
+        "optimizer_step_cap_reason",
+    ]
+    assert route["uses_production_default_route"] is False
+    assert route["production_default_route_mismatches"] == [
         "optimizer_step_cap",
         "optimizer_step_cap_reason",
     ]
@@ -6740,6 +6781,13 @@ def test_optimization_runner_adagrad_restarts_accepts_split_solver_budgets(
     assert result.gradient_route == summary["gradient_route"]
     assert result.rate_parameterization == summary["rate_parameterization"]
     assert result.production_default_basis == summary["production_default_basis"]
+    assert (
+        result.uses_production_default_route
+        == summary["uses_production_default_route"]
+    )
+    assert result.production_default_route_mismatches == tuple(
+        summary["production_default_route_mismatches"]
+    )
     assert result.configured_steps == summary["configured_steps"]
     assert result.optimizer_step_cap == summary["optimizer_step_cap"]
     assert result.optimizer_step_cap_reason == summary["optimizer_step_cap_reason"]
@@ -9550,6 +9598,13 @@ def test_optimization_runner_run_writes_outputs_with_fake_model(tmp_path: Path):
     assert result.gradient_route == summary["gradient_route"]
     assert result.rate_parameterization == summary["rate_parameterization"]
     assert result.production_default_basis == summary["production_default_basis"]
+    assert (
+        result.uses_production_default_route
+        == summary["uses_production_default_route"]
+    )
+    assert result.production_default_route_mismatches == tuple(
+        summary["production_default_route_mismatches"]
+    )
     assert result.configured_steps == summary["configured_steps"]
     assert result.optimizer_step_cap == summary["optimizer_step_cap"]
     assert result.optimizer_step_cap_reason == summary["optimizer_step_cap_reason"]

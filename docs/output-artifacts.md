@@ -44,9 +44,11 @@ a run used the production optimizer default for its sharing mode. They also
 record `uses_production_default_optimizer_settings` and
 `production_default_optimizer_setting_mismatches`, which distinguish a plain
 optimizer-name match from the full shipped HOGENOM/`test_trees_1000`
-optimizer-specific route. The stricter `--require-production-default-route`
-gate also checks the objective, gradient route, rate parameterization, and
-production default basis fields. Optimizer-specific route fields include the
+optimizer-specific route. They additionally record
+`uses_production_default_route` and `production_default_route_mismatches`, the
+combined verdict used by `--require-production-default-route` for the objective,
+gradient route, rate parameterization, production default basis, optimizer, and
+optimizer-specific settings. Optimizer-specific route fields include the
 specieswise restart schedule and genewise Hessian-SGD normal-stage solver
 overrides. For specieswise
 `adagrad-restarts`, `adagrad_restart_total_steps` records the derived number of
@@ -61,7 +63,9 @@ line expose the same family/species/batch counts, `batch_packing`,
 `neumann_terms`, route contract fields, configured/effective step cap,
 `mode_default_optimizer`, `uses_mode_default_optimizer`,
 `uses_production_default_optimizer_settings`,
-`production_default_optimizer_setting_mismatches`, `final_check_iters`, and
+`production_default_optimizer_setting_mismatches`,
+`uses_production_default_route`, `production_default_route_mismatches`,
+`final_check_iters`, and
 optimizer-specific route fields for quick programmatic and terminal triage.
 For genewise `hessian-sgd`, those fields are
 `solver_warmup_iters`, `fd_adam_warmup_steps`, `fd_hessian_refresh_steps`,
@@ -120,7 +124,7 @@ the same status line and then exit nonzero unless the optimization status is
 resolved optimizer matches the production default for the selected mode. Add
 `--require-production-default-route` when automation should also reject
 stale likelihood/gradient route metadata or optimizer-specific setting
-overrides.
+overrides reported by `production_default_route_mismatches`.
 Text and path values that contain whitespace or control characters are emitted
 as JSON strings with spaces escaped as `\u0020` so each status line remains one
 record.
@@ -143,6 +147,9 @@ of treating the route as accepted.
 `summary-info` also infers the stricter production-route settings audit when
 the summary carries the relevant optimizer-specific fields; otherwise
 `--require-production-default-route` fails with an incomplete-evidence error.
+When complete evidence is available, it prints
+`uses_production_default_route` and `production_default_route_mismatches` with
+the same verdict that drives the gate.
 
 Add `--require-converged` when the command should print the same summary line
 and then exit nonzero unless `summary.status` is `converged`. Add
@@ -208,7 +215,8 @@ also exits before sampling unless `final_check_status=ok`. With
 unless the resolved optimizer is the production default for the selected mode.
 With `--require-production-default-route`, it also rejects changed
 optimizer-specific settings or stale likelihood/gradient route metadata before
-optimization or sampling.
+optimization or sampling and reports the offending
+`production_default_route_mismatches`.
 The same `--require-mode-default-optimizer` flag is available on standalone
 `gpurec sample`; it inspects the checkpoint route and exits before sampling if
 the checkpoint cannot prove it used the production default optimizer. Standalone

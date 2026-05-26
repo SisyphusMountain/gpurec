@@ -74,6 +74,8 @@ class OptimizationResult:
     uses_mode_default_optimizer: bool | None = None
     uses_production_default_optimizer_settings: bool | None = None
     production_default_optimizer_setting_mismatches: tuple[str, ...] | None = None
+    uses_production_default_route: bool | None = None
+    production_default_route_mismatches: tuple[str, ...] | None = None
     families: int | None = None
     species: int | None = None
     batches: int | None = None
@@ -231,6 +233,12 @@ def _optimization_result_from_summary(
         ),
         production_default_optimizer_setting_mismatches=_optional_result_text_tuple(
             summary.get("production_default_optimizer_setting_mismatches")
+        ),
+        uses_production_default_route=_optional_result_bool(
+            summary.get("uses_production_default_route")
+        ),
+        production_default_route_mismatches=_optional_result_text_tuple(
+            summary.get("production_default_route_mismatches")
         ),
         families=_optional_result_int(summary.get("families")),
         species=_optional_result_int(summary.get("species")),

@@ -2165,6 +2165,26 @@ not edit files.  New or still-open findings from that refresh are:
 - `CUDA_VISIBLE_DEVICES='' python -m pytest -q -m "unit and not gpu"`:
   1467 passed, 1 skipped, 51 deselected after the production-route
   likelihood/gradient contract gate.
+- Production route metadata now exposes the full strict-route verdict in
+  artifacts and status lines, not only the optimizer-specific settings verdict:
+  `uses_production_default_route` and
+  `production_default_route_mismatches` are derived from the shipped
+  likelihood route contract, mode default optimizer, and optimizer-specific
+  settings. Older checkpoints remain resume-compatible because these new
+  derived audit fields are exempt from route metadata identity comparison.
+- `python -m py_compile gpurec/workflow/config.py gpurec/cli.py gpurec/workflow/optimize.py gpurec/workflow/checkpoint.py tests/unit/test_cli_workflow.py tests/unit/test_workflow.py tests/unit/test_repository_hygiene.py`:
+  passed after exposing production-route verdict metadata.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest -q tests/unit/test_workflow.py::test_effective_route_metadata_reports_production_likelihood_contract tests/unit/test_workflow.py::test_effective_route_metadata_marks_nondefault_optimizer tests/unit/test_workflow.py::test_effective_route_metadata_reports_hessian_sgd_normal_solver_overrides tests/unit/test_workflow.py::test_run_config_auto_optimizer_uses_adagrad_restarts_for_specieswise_mode tests/unit/test_workflow.py::test_run_config_specieswise_adagrad_restarts_step_cap_honors_shorter_steps tests/unit/test_cli_workflow.py::test_cli_validate_config_reports_selected_family_references tests/unit/test_cli_workflow.py::test_cli_checkpoint_info_reports_route_status_and_last_row tests/unit/test_cli_workflow.py::test_cli_checkpoint_info_require_production_default_route_recomputes_stale_audit tests/unit/test_cli_workflow.py::test_cli_checkpoint_info_require_production_default_route_requires_settings_evidence tests/unit/test_cli_workflow.py::test_cli_summary_info_reports_status_route_and_final_check tests/unit/test_cli_workflow.py::test_cli_summary_info_normalizes_route_mode_and_optimizer_aliases tests/unit/test_cli_workflow.py::test_cli_summary_info_require_production_default_route_rejects_custom_settings tests/unit/test_cli_workflow.py::test_cli_summary_info_require_production_default_route_recomputes_stale_audit tests/unit/test_cli_workflow.py::test_cli_summary_info_require_production_default_route_rejects_stale_gradient_route tests/unit/test_cli_workflow.py::test_cli_summary_info_require_production_default_route_requires_settings_evidence tests/unit/test_repository_hygiene.py::test_production_optimization_guide_is_linked_and_documents_routes tests/unit/test_repository_hygiene.py::test_output_artifact_reference_is_linked_and_documents_contract tests/unit/test_repository_hygiene.py::test_run_config_reference_covers_current_config_surface`:
+  18 passed after adding focused full-route verdict coverage to config,
+  checkpoint, summary, and docs paths.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest -q tests/unit/test_workflow.py::test_optimization_result_is_derived_from_summary_contract tests/unit/test_workflow.py::test_optimization_runner_adagrad_restarts_accepts_split_solver_budgets tests/unit/test_workflow.py::test_optimization_runner_run_writes_outputs_with_fake_model tests/unit/test_cli_workflow.py::test_cli_validate_config_reports_hessian_sgd_normal_solver_overrides tests/unit/test_cli_workflow.py::test_cli_validate_config_reports_specieswise_restart_route tests/unit/test_cli_workflow.py::test_cli_summary_info_reports_adagrad_restart_route_fields`:
+  6 passed after confirming OptimizationResult and CLI route lines carry the
+  new verdict fields.
+- `git diff --check`: passed before the full CPU gate for the production-route
+  verdict metadata slice.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest -q -m "unit and not gpu"`:
+  1467 passed, 1 skipped, 51 deselected after the production-route verdict
+  metadata slice.
 
 ## Recommended Next Order
 
