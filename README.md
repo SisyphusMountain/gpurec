@@ -13,8 +13,8 @@ stochastic RecPhyloXML sampling.
 - `gpurec.workflow` production runners for AleRax-style family inputs,
   checkpointed optimization, convergence diagnostics, and stochastic
   backtracking.
-- `gpurec` CLI entry point with `validate-config`, `optimize`, `sample`,
-  `run`, and `backtrack-check` commands.
+- `gpurec` CLI entry point with `config-template`, `validate-config`,
+  `optimize`, `sample`, `run`, and `backtrack-check` commands.
 - Standard PyTorch optimizers over `model.theta`, including `torch.optim.Adam`.
 - `gpurec.optimization.BatchedLBFGS` for row-wise genewise polishing.
 - The optimized uniform CUDA forward/backward kernels used by the 1000-tree
@@ -220,7 +220,17 @@ backward/gradient path currently requires more than 256 postorder species nodes
 small-species backward fallback is restored.
 
 Installed wheels do not install the `examples/` directory as runtime package
-data; copy or adapt a flat JSON config alongside your own tree files instead:
+data. Use the installed CLI to generate a flat JSON starting point, then edit
+the tree paths and mode as needed:
+
+```bash
+gpurec config-template --mode genewise --output run.json
+gpurec config-template --mode specieswise --output specieswise-run.json
+```
+
+The command keeps `"optimizer": "auto"`, so `mode=genewise` resolves to
+`hessian-sgd` and `mode=specieswise` resolves to `adagrad-restarts`. You can
+also copy or adapt a flat JSON config alongside your own tree files:
 
 ```json
 {
@@ -465,7 +475,7 @@ of dataset path overrides.
 
 | Task | Command | Notes |
 | --- | --- | --- |
-| General installed workflow | `gpurec validate-config`, `gpurec optimize`, `gpurec sample`, `gpurec run` | Uses flat JSON for `--config`; Hydra YAML is not accepted by the main CLI. `validate-config` is a CPU-safe path/reference preflight and does not construct the CUDA likelihood model. |
+| General installed workflow | `gpurec config-template`, `gpurec validate-config`, `gpurec optimize`, `gpurec sample`, `gpurec run` | Uses flat JSON for `--config`; Hydra YAML is not accepted by the main CLI. `config-template` prints or writes installed JSON templates for mode-specific defaults. `validate-config` is a CPU-safe path/reference preflight and does not construct the CUDA likelihood model. |
 | Sampling binary preflight | `gpurec backtrack-check` | Validates `GPUREC_BACKTRACK_BIN`, `--backtrack-binary`, or the source-tree Cargo fallback without loading a checkpoint. |
 | Legacy HOGENOM W&B wrapper | `python scripts/optimize_hogenom_ccp_wandb.py` | Checkout-local compatibility wrapper with argparse flags, checkpoints, plots, and optional W&B logging. |
 | Hydra HOGENOM run | `python scripts/optimize_hogenom_ccp_hydra.py` | Uses `configs/hogenom_ccp_wandb.yaml`, a checkout-local full experiment config, and Hydra override syntax; see `configs/README.md` for config ownership. |

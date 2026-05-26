@@ -250,6 +250,13 @@ jobs:
           cd "$smoke_dir"
           gpurec --help
           python -m gpurec.cli --help
+          gpurec config-template --help
+          gpurec config-template --mode genewise | tee genewise-config-template.json
+          grep -q '"optimizer": "auto"' genewise-config-template.json
+          grep -q '"mode": "genewise"' genewise-config-template.json
+          gpurec config-template --mode specieswise | tee specieswise-config-template.json
+          grep -q '"mode": "specieswise"' specieswise-config-template.json
+          grep -q '"adagrad_restart_schedule": "8:1.0:60,16:0.5:35,32:0.5:30"' specieswise-config-template.json
           gpurec validate-config --help
           gpurec sample --help | tee sample-help.txt
           grep -q -- "--backtrack-binary" sample-help.txt

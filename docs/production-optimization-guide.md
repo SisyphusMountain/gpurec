@@ -126,6 +126,8 @@ optimization on the other.
 For a normal genewise production run:
 
 ```bash
+gpurec config-template --mode genewise --output run.json
+
 gpurec validate-config \
   --species-tree S.tree \
   --families-file families.txt \
@@ -142,7 +144,10 @@ gpurec optimize \
 ```
 
 For specieswise, set `--mode specieswise` and let `auto` choose
-`adagrad-restarts`.
+`adagrad-restarts`. Installed users can start from
+`gpurec config-template --mode specieswise --output specieswise-run.json`; that
+template keeps `optimizer=auto` and writes the default
+`adagrad_restart_schedule` and fixed128 final validation fields explicitly.
 `validate-config` checks the flat JSON/CLI config, selected AleRax family
 records, mapping files, and referenced gene-tree files without CUDA or
 preprocessing. It is a preflight for path and parser issues, not a likelihood

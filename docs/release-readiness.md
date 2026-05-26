@@ -26,8 +26,10 @@ The CPU GitHub Actions workflow includes a packaging job that installs
 checks the source archive for packaged Rust preprocessing and backtracking crate
 sources, smokes those crates from the unpacked source archive,
 and smokes both `gpurec --help` and `python -m gpurec.cli --help`.  It also
-smokes installed `gpurec validate-config --help` so the CPU-safe config
-preflight remains part of the command surface.  The same package job keeps
+smokes installed `gpurec config-template --help`,
+`gpurec config-template --mode specieswise`, and
+`gpurec validate-config --help` so the installed template/preflight surface
+remains part of the command surface.  The same package job keeps
 examples out of wheels while requiring them in the source
 archive, verifies the minimal example config points to source-archive files,
 and checks installed `gpurec sample --help`, `gpurec run --help`, and
@@ -91,6 +93,8 @@ smoke_dir=$(mktemp -d)
 cd "$smoke_dir"
 gpurec --help
 python -m gpurec.cli --help
+gpurec config-template --mode genewise
+gpurec config-template --mode specieswise
 gpurec sample --help
 gpurec run --help
 gpurec backtrack-check --help
@@ -137,6 +141,8 @@ Run these CPU-safe gates before release packaging:
 ```bash
 CUDA_VISIBLE_DEVICES='' gpurec --help
 CUDA_VISIBLE_DEVICES='' python -m gpurec.cli --help
+CUDA_VISIBLE_DEVICES='' gpurec config-template --mode genewise
+CUDA_VISIBLE_DEVICES='' gpurec config-template --mode specieswise
 CUDA_VISIBLE_DEVICES='' gpurec validate-config --config examples/minimal-run-config.json
 CUDA_VISIBLE_DEVICES='' python - <<'PY'
 import gpurec

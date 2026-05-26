@@ -23,5 +23,12 @@ gpurec validate-config --config examples/specieswise-adagrad-restarts-config.jso
   `8:1.0:60,16:0.5:35,32:0.5:30` schedule and fixed128 final validation.
 
 Installed wheels intentionally do not install this directory as package data.
+Installed users can generate equivalent flat JSON starting points with:
+
+```bash
+gpurec config-template --mode genewise --output run.json
+gpurec config-template --mode specieswise --output specieswise-run.json
+```
+
 Copy one of these JSON files next to your own `S.tree` and `[FAMILIES]` file, or
 pass the same fields directly as CLI flags.

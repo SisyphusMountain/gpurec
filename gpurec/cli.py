@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 from pathlib import Path
 from typing import Any
 
@@ -197,6 +198,59 @@ def _validate_run_sampling_args(args: argparse.Namespace, run_config: RunConfig)
         args,
         run_config.out_dir / "checkpoints" / "sampling-argument-validation.pt",
     )
+
+
+def _config_template_data(args: argparse.Namespace) -> dict[str, Any]:
+    from gpurec.workflow.config import DEFAULT_ADAGRAD_RESTART_SCHEDULE
+
+    data: dict[str, Any] = {
+        "species_tree": str(args.species_tree),
+        "families_file": str(args.families_file),
+        "out_dir": str(args.out_dir),
+        "mode": args.mode,
+        "device": args.device,
+        "dtype": "float32",
+        "optimizer": "auto",
+        "family_chunk_size": 0,
+        "batch_packing": "depth_first_fit",
+        "clade_budget": 500_000,
+        "fixed_iters_pi": 16,
+        "neumann_terms": 16,
+        "steps": 5000,
+        "log_every": 1,
+        "checkpoint_every": 1,
+    }
+    if args.mode == "genewise":
+        data.update(
+            {
+                "fd_adam_warmup_steps": 3,
+                "fd_hessian_refresh_steps": 16,
+            }
+        )
+    elif args.mode == "specieswise":
+        data.update(
+            {
+                "adagrad_restart_schedule": DEFAULT_ADAGRAD_RESTART_SCHEDULE,
+                "adagrad_restart_final_check_iters": 128,
+            }
+        )
+    return data
+
+
+def _write_config_template(args: argparse.Namespace) -> Path | None:
+    text = json.dumps(_config_template_data(args), indent=2) + "\n"
+    output = args.output
+    if output is None:
+        print(text, end="", flush=True)
+        return None
+    output = output.expanduser().resolve()
+    if output.exists() and not args.force:
+        raise ValueError(
+            f"output config already exists: {output}; use --force to overwrite"
+        )
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(text, encoding="utf-8")
+    return output
 
 
 def _add_run_config_args(parser: argparse.ArgumentParser) -> None:
@@ -689,6 +743,53 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_backtrack_binary_arg(backtrack_check_parser)
     backtrack_check_parser.set_defaults(_command_parser=backtrack_check_parser)
+
+    template_parser = sub.add_parser(
+        "config-template",
+        help="Print or write a flat JSON RunConfig template.",
+        description=(
+            "Print or write a flat JSON RunConfig template for installed "
+            "production workflows. The mode keeps optimizer=auto so genewise "
+            "uses hessian-sgd and specieswise uses adagrad-restarts."
+        ),
+    )
+    template_parser.add_argument(
+        "--mode",
+        choices=("genewise", "specieswise", "global"),
+        default="genewise",
+        help="Template parameter-sharing mode. Default: genewise.",
+    )
+    template_parser.add_argument(
+        "--species-tree",
+        default="S.tree",
+        help="Species tree path to place in the template.",
+    )
+    template_parser.add_argument(
+        "--families-file",
+        default="families.txt",
+        help="AleRax [FAMILIES] path to place in the template.",
+    )
+    template_parser.add_argument(
+        "--out-dir",
+        default="output_gpurec",
+        help="Output directory to place in the template.",
+    )
+    template_parser.add_argument(
+        "--device",
+        default="cuda",
+        help="Torch device to place in the template. Default: cuda.",
+    )
+    template_parser.add_argument(
+        "--output",
+        type=Path,
+        help="Write the template to this path instead of stdout.",
+    )
+    template_parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Overwrite --output if it already exists.",
+    )
+    template_parser.set_defaults(_command_parser=template_parser)
     return parser
 
 
@@ -696,6 +797,14 @@ def main(argv: list[str] | None = None) -> None:
     parser = build_parser()
     args = parser.parse_args(argv)
     command_parser = getattr(args, "_command_parser", parser)
+    if args.command == "config-template":
+        try:
+            output = _write_config_template(args)
+        except _EXPECTED_WORKFLOW_ERRORS as exc:
+            command_parser.error(str(exc))
+        if output is not None:
+            print(f"config_template={output}", flush=True)
+        return
     if args.command == "optimize":
         try:
             config = _run_config_from_args(args)

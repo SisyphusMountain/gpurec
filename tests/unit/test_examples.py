@@ -93,6 +93,8 @@ def test_examples_readme_documents_mode_specific_default_configs():
         "`8:1.0:60,16:0.5:35,32:0.5:30`",
         "fixed128 final validation",
         "Installed wheels intentionally do not install this directory",
+        "gpurec config-template --mode genewise --output run.json",
+        "gpurec config-template --mode specieswise --output specieswise-run.json",
     ):
         assert token in normalized
 

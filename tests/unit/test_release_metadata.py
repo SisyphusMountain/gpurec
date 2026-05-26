@@ -514,6 +514,15 @@ def test_cpu_ci_builds_and_smokes_release_artifacts():
         'cd "$smoke_dir"',
         "gpurec --help",
         "python -m gpurec.cli --help",
+        "gpurec config-template --help",
+        "gpurec config-template --mode genewise",
+        "genewise-config-template.json",
+        '"optimizer": "auto"',
+        '"mode": "genewise"',
+        "gpurec config-template --mode specieswise",
+        "specieswise-config-template.json",
+        '"mode": "specieswise"',
+        '"adagrad_restart_schedule": "8:1.0:60,16:0.5:35,32:0.5:30"',
         "gpurec validate-config --help",
         "gpurec sample --help",
         "gpurec run --help",
@@ -944,6 +953,8 @@ def test_release_readiness_documents_installed_wheel_smoke():
         "python -m pip install --no-deps dist/*.whl",
         "smoke_dir=$(mktemp -d)",
         'cd "$smoke_dir"',
+        "gpurec config-template --mode genewise",
+        "gpurec config-template --mode specieswise",
         "gpurec validate-config --help",
         "gpurec sample --help",
         "gpurec run --help",
@@ -1000,6 +1011,13 @@ def test_readme_scopes_example_config_to_source_artifacts():
     assert "examples/minimal-run-config.json" in readme
     assert "examples/specieswise-adagrad-restarts-config.json" in readme
     assert "examples/README.md" in readme
+    assert "gpurec config-template --mode genewise --output run.json" in readme
+    assert (
+        "gpurec config-template --mode specieswise --output specieswise-run.json"
+        in readme
+    )
+    assert '"optimizer": "auto"' in readme
+    assert "`hessian-sgd` and `mode=specieswise` resolves to `adagrad-restarts`" in readme
     assert "source-tree config/parser fixture" in readme
     assert 'sets `"device": "cuda"`' in readme
     assert "not a CPU fallback" in readme
@@ -1027,7 +1045,8 @@ def test_readme_documents_installed_sampling_binary_setup():
     assert "### Sampling Binary Setup" in readme
     assert "`gpurec sample` and the sampling phase of `gpurec run`" in readme
     assert (
-        "`validate-config`, `optimize`, `sample`,\n  `run`, and "
+        "`config-template`, `validate-config`,\n  `optimize`, `sample`, "
+        "`run`, and "
         "`backtrack-check` commands"
     ) in readme
     assert "gpurec validate-config --config examples/minimal-run-config.json" in readme
@@ -1045,7 +1064,12 @@ def test_readme_documents_installed_sampling_binary_setup():
     assert "fallback works from a source checkout or unpacked\nsource archive" in readme
     assert "unpacked-source-archive `cargo run` fallback" in normalized_guide
     assert (
-        "installed `gpurec validate-config --help`"
+        "installed `gpurec config-template --help`"
+        in normalized_guide
+    )
+    assert (
+        "`gpurec config-template --mode specieswise`, and "
+        "`gpurec validate-config --help`"
         in normalized_guide
     )
     assert (

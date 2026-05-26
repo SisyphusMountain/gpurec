@@ -61,6 +61,15 @@ def test_run_config_cli_surface_matches_dataclass_fields():
         "backtrack_binary",
     }
     assert _parser_action_dests("backtrack-check") == {"backtrack_binary"}
+    assert _parser_action_dests("config-template") == {
+        "mode",
+        "species_tree",
+        "families_file",
+        "out_dir",
+        "device",
+        "output",
+        "force",
+    }
 
 
 def test_sampling_config_cli_surface_matches_dataclass_fields():
@@ -223,6 +232,82 @@ def test_cli_forwards_adagrad_restart_controls(tmp_path: Path):
     assert config.optimizer == "adagrad-restarts"
     assert config.adagrad_restart_schedule == "4:1:2,8:0.5:3"
     assert config.adagrad_restart_final_check_iters == 16
+
+
+def test_cli_config_template_prints_genewise_hessian_sgd_auto_defaults(capsys):
+    main(["config-template", "--mode", "genewise"])
+
+    captured = capsys.readouterr()
+    data = json.loads(captured.out)
+    assert captured.err == ""
+    assert data["species_tree"] == "S.tree"
+    assert data["families_file"] == "families.txt"
+    assert data["out_dir"] == "output_gpurec"
+    assert data["mode"] == "genewise"
+    assert data["device"] == "cuda"
+    assert data["optimizer"] == "auto"
+    assert data["fd_adam_warmup_steps"] == 3
+    assert data["fd_hessian_refresh_steps"] == 16
+    assert "adagrad_restart_schedule" not in data
+
+
+def test_cli_config_template_prints_specieswise_adagrad_restart_defaults(capsys):
+    main(["config-template", "--mode", "specieswise"])
+
+    captured = capsys.readouterr()
+    data = json.loads(captured.out)
+    assert captured.err == ""
+    assert data["mode"] == "specieswise"
+    assert data["optimizer"] == "auto"
+    assert data["adagrad_restart_schedule"] == "8:1.0:60,16:0.5:35,32:0.5:30"
+    assert data["adagrad_restart_final_check_iters"] == 128
+    assert "fd_hessian_refresh_steps" not in data
+
+
+def test_cli_config_template_writes_output_and_refuses_overwrite(
+    tmp_path: Path,
+    capsys,
+):
+    output = tmp_path / "nested" / "run.json"
+
+    main(
+        [
+            "config-template",
+            "--mode",
+            "specieswise",
+            "--species-tree",
+            "data/S.tree",
+            "--families-file",
+            "data/families.txt",
+            "--out-dir",
+            "runs/specieswise",
+            "--output",
+            str(output),
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert captured.err == ""
+    assert f"config_template={output.resolve()}" in captured.out
+    data = json.loads(output.read_text(encoding="utf-8"))
+    assert data["species_tree"] == "data/S.tree"
+    assert data["families_file"] == "data/families.txt"
+    assert data["out_dir"] == "runs/specieswise"
+    assert data["mode"] == "specieswise"
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(["config-template", "--output", str(output)])
+
+    captured = capsys.readouterr()
+    assert exc_info.value.code == 2
+    assert "output config already exists" in captured.err
+    assert "--force" in captured.err
+    assert "Traceback" not in captured.err
+
+    main(["config-template", "--mode", "global", "--output", str(output), "--force"])
+    data = json.loads(output.read_text(encoding="utf-8"))
+    assert data["mode"] == "global"
+    assert data["optimizer"] == "auto"
 
 
 def test_cli_accepts_legacy_gradient_tolerance_options_as_noops(tmp_path: Path):
