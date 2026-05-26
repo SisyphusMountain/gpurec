@@ -32,7 +32,9 @@ on `examples/minimal-run-config.json` and
 `gpurec config-template --help`,
 `gpurec config-template --mode specieswise`, and
 `gpurec validate-config --help` so the installed template/preflight surface
-remains part of the command surface.  The same package job keeps
+remains part of the command surface. It also smokes
+`gpurec checkpoint-info --help` so checkpoint inspection stays available
+without CUDA model construction. The same package job keeps
 examples out of wheels while requiring them in the source
 archive, verifies the minimal example config points to source-archive files,
 and checks installed `gpurec sample --help`, `gpurec run --help`, and
@@ -98,6 +100,7 @@ gpurec --help
 python -m gpurec.cli --help
 gpurec config-template --mode genewise
 gpurec config-template --mode specieswise
+gpurec checkpoint-info --help
 gpurec sample --help
 gpurec run --help
 gpurec backtrack-check --help
@@ -147,6 +150,7 @@ CUDA_VISIBLE_DEVICES='' python -m gpurec.cli --help
 CUDA_VISIBLE_DEVICES='' gpurec config-template --mode genewise
 CUDA_VISIBLE_DEVICES='' gpurec config-template --mode specieswise
 CUDA_VISIBLE_DEVICES='' gpurec validate-config --config examples/minimal-run-config.json
+CUDA_VISIBLE_DEVICES='' gpurec checkpoint-info --help
 CUDA_VISIBLE_DEVICES='' python - <<'PY'
 import gpurec
 import gpurec.workflow as workflow

@@ -40,6 +40,12 @@ tree/mapping problems before a full optimization run.
 Read `summary.json` first. It records `status`, `reason`, final objective and
 gradient diagnostics, final-check likelihood/gradient deltas when available,
 and the effective optimizer/batch/solver route that produced the run.
+Use `checkpoint-info` when the final summary is unavailable or you need to
+inspect a resume target directly:
+
+```bash
+gpurec checkpoint-info --checkpoint output/checkpoints/latest.pt
+```
 
 | Status and reason | Meaning | Next action |
 |---|---|---|

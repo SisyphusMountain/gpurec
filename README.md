@@ -14,7 +14,8 @@ stochastic RecPhyloXML sampling.
   checkpointed optimization, convergence diagnostics, and stochastic
   backtracking.
 - `gpurec` CLI entry point with `config-template`, `validate-config`,
-  `optimize`, `sample`, `run`, and `backtrack-check` commands.
+  `optimize`, `checkpoint-info`, `sample`, `run`, and `backtrack-check`
+  commands.
 - Standard PyTorch optimizers over `model.theta`, including `torch.optim.Adam`.
 - `gpurec.optimization.BatchedLBFGS` for row-wise genewise polishing.
 - The optimized uniform CUDA forward/backward kernels used by the 1000-tree
@@ -215,6 +216,7 @@ command shape is:
 gpurec validate-config --config examples/minimal-run-config.json
 gpurec validate-config --config examples/specieswise-adagrad-restarts-config.json
 gpurec optimize --config examples/minimal-run-config.json
+gpurec checkpoint-info --checkpoint output_gpurec/checkpoints/latest.pt
 ```
 
 The checked config is a source-tree config/parser fixture and sets `"device": "cuda"`.
@@ -341,6 +343,9 @@ quick terminal triage.
 See [`docs/output-artifacts.md`](docs/output-artifacts.md) for the output
 artifact contract, including history fields, checkpoint contents, rate-table
 columns, genewise per-family likelihoods, and sampling files.
+Use `gpurec checkpoint-info --checkpoint output_gpurec/checkpoints/latest.pt`
+to inspect checkpoint progress, status, optimizer route, and last
+likelihood/gradient diagnostics without constructing the CUDA likelihood model.
 
 History rows include aggregate `solver/*` telemetry when the model reports
 solver statistics.  E-adjoint nonconvergence is diagnostic-only: the retained
@@ -506,7 +511,7 @@ of dataset path overrides.
 
 | Task | Command | Notes |
 | --- | --- | --- |
-| General installed workflow | `gpurec config-template`, `gpurec validate-config`, `gpurec optimize`, `gpurec sample`, `gpurec run` | Uses flat JSON for `--config`; Hydra YAML is not accepted by the main CLI. `config-template` prints or writes installed JSON templates for mode-specific defaults. `validate-config` is a CPU-safe path/reference preflight and does not construct the CUDA likelihood model. |
+| General installed workflow | `gpurec config-template`, `gpurec validate-config`, `gpurec optimize`, `gpurec checkpoint-info`, `gpurec sample`, `gpurec run` | Uses flat JSON for `--config`; Hydra YAML is not accepted by the main CLI. `config-template` prints or writes installed JSON templates for mode-specific defaults. `validate-config` is a CPU-safe path/reference preflight; `checkpoint-info` is a CPU-safe checkpoint preflight. Neither command constructs the CUDA likelihood model. |
 | Sampling binary preflight | `gpurec backtrack-check` | Validates `GPUREC_BACKTRACK_BIN`, `--backtrack-binary`, or the source-tree Cargo fallback without loading a checkpoint. |
 | Legacy HOGENOM W&B wrapper | `python scripts/optimize_hogenom_ccp_wandb.py` | Checkout-local compatibility wrapper with argparse flags, checkpoints, plots, and optional W&B logging. |
 | Hydra HOGENOM run | `python scripts/optimize_hogenom_ccp_hydra.py` | Uses `configs/hogenom_ccp_wandb.yaml`, a checkout-local full experiment config, and Hydra override syntax; see `configs/README.md` for config ownership. |

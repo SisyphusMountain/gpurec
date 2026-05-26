@@ -179,6 +179,10 @@ Inspect these outputs first:
 - `rates_final.tsv`: final D/T/L rates and theta values.
 - `per_fam_likelihoods.tsv`: genewise-only final per-family NLLs.
 
+Use `gpurec checkpoint-info --checkpoint output_gpurec/checkpoints/latest.pt`
+when you need the checkpoint's progress, status, route metadata, and last
+likelihood/gradient diagnostics without starting CUDA model construction.
+
 The complete optimization, checkpoint, rate-table, and sampling output contract
 is maintained in `docs/output-artifacts.md`.
 

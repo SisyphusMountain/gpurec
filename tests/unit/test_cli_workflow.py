@@ -22,6 +22,7 @@ from gpurec.cli import (
     main,
 )
 from gpurec.workflow.config import RunConfig, SamplingConfig
+from gpurec.workflow.checkpoint import save_checkpoint
 from gpurec.workflow.model_factory import build_alerax_workflow_model
 from tests.unit.alerax_helpers import write_tiny_alerax_inputs
 
@@ -76,6 +77,7 @@ def test_run_config_cli_surface_matches_dataclass_fields():
         "backtrack_binary",
     }
     assert _parser_action_dests("backtrack-check") == {"backtrack_binary"}
+    assert _parser_action_dests("checkpoint-info") == {"checkpoint"}
     assert _parser_action_dests("config-template") == {
         "mode",
         "species_tree",
@@ -1094,6 +1096,100 @@ def test_cli_sample_raw_theta_checkpoint_error_suggests_real_checkpoints(
 
     with pytest.raises(SystemExit) as exc_info:
         main(["sample", "--checkpoint", str(checkpoint)])
+
+    captured = capsys.readouterr()
+    assert exc_info.value.code == 1
+    assert "must contain a dictionary payload" in captured.err
+    assert "checkpoints/best.pt" in captured.err
+    assert "checkpoints/latest.pt" in captured.err
+    assert "not theta_final.pt" in captured.err
+    assert "usage:" not in captured.err
+    assert "Traceback" not in captured.err
+
+
+def test_cli_checkpoint_info_reports_route_status_and_last_row(
+    tmp_path: Path,
+    capsys,
+):
+    class FakeModel:
+        theta = torch.nn.Parameter(torch.zeros(2, 3))
+        family_names = ["fam0", "fam1"]
+        species_names = ["sp0", "sp1", "sp2"]
+
+    config = RunConfig(
+        species_tree=tmp_path / "sp.nwk",
+        families_file=tmp_path / "families.txt",
+        out_dir=tmp_path / "out",
+        mode="specieswise",
+        device="cpu",
+    )
+    checkpoint = tmp_path / "best.pt"
+    save_checkpoint(
+        checkpoint,
+        config=config,
+        model=FakeModel(),
+        optimizer=None,
+        optimizer_phase="fixed32",
+        step=7,
+        next_step=8,
+        status={
+            "status": "running",
+            "reason": "checkpoint_interval",
+            "best_step": 6,
+            "best_nll_bits": 22.5,
+        },
+        row={
+            "optimizer/phase": "final_eval",
+            "likelihood/data_nll_bits": 23.5,
+            "likelihood/log_likelihood_bits": -23.5,
+            "grad/inf": 0.25,
+            "grad/projected_inf": 0.125,
+        },
+    )
+
+    main(["checkpoint-info", "--checkpoint", str(checkpoint)])
+
+    captured = capsys.readouterr()
+    basis = "hogenom_and_" + "test_trees_" + "1000"
+    assert captured.err == ""
+    assert gpurec_cli._optional_text("checkpoint", checkpoint.resolve()) in captured.out
+    for token in (
+        "version=1",
+        "step=7",
+        "next_step=8",
+        "status=running",
+        "reason=checkpoint_interval",
+        "mode=specieswise",
+        "optimizer=adagrad-restarts",
+        "objective=negative_log_likelihood_bits",
+        "gradient_route=implicit_first_order_adjoint",
+        "rate_parameterization=base2_log_dlt_rates",
+        f"production_default_basis={basis}",
+        "final_check_iters=128",
+        "route_metadata_source=checkpoint",
+        "optimizer_phase=fixed32",
+        "last_phase=final_eval",
+        "families=2",
+        "species=3",
+        "best_step=6",
+        "best_nll_bits=22.500000",
+        "last_nll_bits=23.500000",
+        "last_log_likelihood_bits=-23.500000",
+        "last_grad_inf=0.250000",
+        "last_projected_grad_inf=0.125000",
+    ):
+        assert token in captured.out
+
+
+def test_cli_checkpoint_info_raw_theta_error_suggests_real_checkpoints(
+    tmp_path: Path,
+    capsys,
+):
+    checkpoint = tmp_path / "theta_final.pt"
+    torch.save(torch.zeros(2, 3), checkpoint)
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(["checkpoint-info", "--checkpoint", str(checkpoint)])
 
     captured = capsys.readouterr()
     assert exc_info.value.code == 1

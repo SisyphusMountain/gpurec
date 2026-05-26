@@ -328,6 +328,88 @@ def _validate_sampling_checkpoint_path(checkpoint: Path) -> None:
         )
 
 
+def _checkpoint_route_metadata(payload: dict[str, Any]) -> tuple[dict[str, Any], str]:
+    route = payload.get("route_metadata")
+    if isinstance(route, dict):
+        return route, "checkpoint"
+    config_data = payload.get("config")
+    if not isinstance(config_data, dict):
+        return {}, "missing"
+    try:
+        from gpurec.workflow.config import RunConfig, effective_route_metadata
+
+        return effective_route_metadata(RunConfig.from_dict(config_data)), "config"
+    except _EXPECTED_WORKFLOW_ERRORS:
+        return {}, "missing"
+
+
+def _checkpoint_info_text(checkpoint: Path, payload: dict[str, Any]) -> str:
+    route, route_source = _checkpoint_route_metadata(payload)
+    config_data = payload.get("config")
+    if not isinstance(config_data, dict):
+        config_data = {}
+    status = payload.get("status")
+    if not isinstance(status, dict):
+        status = {}
+    last_row = payload.get("last_row")
+    if not isinstance(last_row, dict):
+        last_row = {}
+    family_names = payload.get("family_names")
+    species_names = payload.get("species_names")
+    return " ".join(
+        [
+            _optional_text("checkpoint", checkpoint),
+            _optional_int_text("version", payload.get("version")),
+            _optional_int_text("step", payload.get("step")),
+            _optional_int_text("next_step", payload.get("next_step")),
+            _optional_text("status", status.get("status")),
+            _optional_text("reason", status.get("reason")),
+            _optional_text("mode", route.get("mode", config_data.get("mode"))),
+            _optional_text(
+                "optimizer",
+                route.get("optimizer", config_data.get("optimizer")),
+            ),
+            _optional_text("objective", route.get("objective")),
+            _optional_text("gradient_route", route.get("gradient_route")),
+            _optional_text(
+                "rate_parameterization",
+                route.get("rate_parameterization"),
+            ),
+            _optional_text(
+                "production_default_basis",
+                route.get("production_default_basis"),
+            ),
+            _optional_int_text("final_check_iters", route.get("final_check_iters")),
+            _optional_text("route_metadata_source", route_source),
+            _optional_text("optimizer_phase", payload.get("optimizer_phase")),
+            _optional_text("last_phase", last_row.get("optimizer/phase")),
+            _optional_int_text(
+                "families",
+                None if not isinstance(family_names, list) else len(family_names),
+            ),
+            _optional_int_text(
+                "species",
+                None if not isinstance(species_names, list) else len(species_names),
+            ),
+            _optional_int_text("best_step", status.get("best_step")),
+            _optional_metric_text("best_nll_bits", status.get("best_nll_bits")),
+            _optional_metric_text(
+                "last_nll_bits",
+                last_row.get("likelihood/data_nll_bits"),
+            ),
+            _optional_metric_text(
+                "last_log_likelihood_bits",
+                last_row.get("likelihood/log_likelihood_bits"),
+            ),
+            _optional_metric_text("last_grad_inf", last_row.get("grad/inf")),
+            _optional_metric_text(
+                "last_projected_grad_inf",
+                last_row.get("grad/projected_inf"),
+            ),
+        ]
+    )
+
+
 def _run_config_from_args(args: argparse.Namespace) -> RunConfig:
     data = _config_data(args.config)
     from gpurec.workflow.config import RunConfig
@@ -985,6 +1067,22 @@ def build_parser() -> argparse.ArgumentParser:
     _add_backtrack_binary_arg(backtrack_check_parser)
     backtrack_check_parser.set_defaults(_command_parser=backtrack_check_parser)
 
+    checkpoint_info_parser = sub.add_parser(
+        "checkpoint-info",
+        help="Print optimization checkpoint status and route metadata.",
+        description=(
+            "Safely inspect a gpurec optimization checkpoint without building "
+            "the CUDA likelihood model."
+        ),
+    )
+    checkpoint_info_parser.add_argument(
+        "--checkpoint",
+        type=Path,
+        required=True,
+        help="Optimization checkpoint to inspect, usually checkpoints/best.pt or latest.pt.",
+    )
+    checkpoint_info_parser.set_defaults(_command_parser=checkpoint_info_parser)
+
     template_parser = sub.add_parser(
         "config-template",
         help="Print or write a flat JSON RunConfig template.",
@@ -1108,6 +1206,20 @@ def main(argv: list[str] | None = None) -> None:
             f"{_optional_text('out_dir', result.out_dir)}",
             flush=True,
         )
+        return
+    if args.command == "checkpoint-info":
+        try:
+            checkpoint = args.checkpoint.expanduser().resolve()
+            _validate_sampling_checkpoint_path(checkpoint)
+        except _EXPECTED_WORKFLOW_ERRORS as exc:
+            command_parser.error(str(exc))
+        try:
+            from gpurec.workflow.checkpoint import load_checkpoint
+
+            payload = load_checkpoint(checkpoint)
+        except _EXPECTED_WORKFLOW_ERRORS as exc:
+            _exit_runtime_error(command_parser, _sampling_error_message(exc))
+        print(_checkpoint_info_text(checkpoint, payload), flush=True)
         return
     if args.command == "backtrack-check":
         try:

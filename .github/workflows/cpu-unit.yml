@@ -274,6 +274,9 @@ jobs:
           grep -q '"mode": "specieswise"' specieswise-config-template.json
           grep -q '"adagrad_restart_schedule": "8:1.0:60,16:0.5:35,32:0.5:30"' specieswise-config-template.json
           gpurec validate-config --help
+          gpurec checkpoint-info --help | tee checkpoint-info-help.txt
+          grep -q -- "--checkpoint" checkpoint-info-help.txt
+          grep -q -- "checkpoint" checkpoint-info-help.txt
           gpurec sample --help | tee sample-help.txt
           grep -q -- "--backtrack-binary" sample-help.txt
           grep -q -- "GPUREC_BACKTRACK_BIN" sample-help.txt

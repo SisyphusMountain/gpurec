@@ -70,6 +70,11 @@ configuration through `RunConfig.from_dict(...)`. Current checkpoints also
 include `route_metadata`, matching the route fields in `summary.json`, so
 inspection tools can identify the objective, gradient route, optimizer, and
 solver budgets without reconstructing a full `RunConfig`.
+The same checkpoint status and route fields are available from the CLI:
+
+```bash
+gpurec checkpoint-info --checkpoint output_gpurec/checkpoints/latest.pt
+```
 
 ## Sampling Artifacts
 
