@@ -384,6 +384,11 @@ Rejected follow-ups:
   only about `1ms` in the instrumented root-likelihood split while adding
   another cold compile/cache surface, so the PyTorch root reduction remains in
   place.
+- Collapsing the `21` per-batch root-row reductions into one full-family
+  root-row buffer was also slower.  The prototype preserved global family order
+  and passed the targeted no-grad/origination tests, but the extra root-row copy
+  raised fixed4 steady timing to `1.2807044959627092s` median, with a
+  `1.2760750549496152s` minimum, so the per-batch root reductions remain.
 - Computing the shared root denominator once outside the batch loop was also
   slower in a direct timing split: the existing path measured
   `1.2793854749761522s` while the denominator-once loop measured
