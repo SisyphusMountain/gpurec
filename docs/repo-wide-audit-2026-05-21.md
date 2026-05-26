@@ -524,9 +524,10 @@ evidence is thin.
   and `TypeError` from `optimizer.load_state_dict`, so malformed or
   backend-incompatible optimizer state is reported in history instead of
   aborting resume.
-  Local validation/profiling CLIs still accept raw integer count controls, so
-  zero or negative chunk sizes, family counts, sample counts, iteration counts,
-  or wave sizes can fail late or produce no-op output.
+  The maintained full-pipeline profiling benchmark now rejects invalid count
+  controls before setup, including zero or negative family counts, chunk sizes,
+  iteration counts, and wave sizes.  Older checkout-local profiling proposals
+  should keep getting the same parser-level treatment before they are promoted.
 - The core/API follow-up explorer found three current contracts to guard before
   scheduler or parameter-shape refactors.  The direct `build_wave_layout()`
   family-index gap is now fixed: family count/offset metadata must be provided

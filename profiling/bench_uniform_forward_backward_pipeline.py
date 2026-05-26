@@ -29,6 +29,7 @@ if str(REPO_ROOT) not in sys.path:
 
 import torch
 
+from gpurec._argparse_types import nonnegative_int_arg, positive_int_arg
 from gpurec.core.backward import Pi_wave_backward
 from gpurec.core.extract_parameters import extract_parameters_uniform
 from gpurec.core.forward import Pi_wave_forward
@@ -64,25 +65,28 @@ class StaticInputs:
     layout_s: float
 
 
-def _parse_optional_int(value: str | None) -> int | None:
+def _parse_optional_positive_int(name: str, value: str | None) -> int | None:
     if value is None:
         return None
     text = str(value).strip().lower()
     if text in ("", "0", "none", "null"):
         return None
-    return int(text)
+    return positive_int_arg(name)(text)
 
 
-def _parse_auto_int(value: str | int | None) -> int | str:
+def _parse_auto_positive_int(name: str, value: str | int | None) -> int | str:
     if value is None:
         return "auto"
     text = str(value).strip().lower()
     if text in ("", "auto", "default"):
         return "auto"
-    return int(text)
+    return positive_int_arg(name)(text)
 
 
-def _parse_auto_optional_int(value: str | int | None) -> int | str | None:
+def _parse_auto_optional_positive_int(
+    name: str,
+    value: str | int | None,
+) -> int | str | None:
     if value is None:
         return "auto"
     text = str(value).strip().lower()
@@ -90,7 +94,7 @@ def _parse_auto_optional_int(value: str | int | None) -> int | str | None:
         return "auto"
     if text in ("0", "none", "null"):
         return None
-    return int(text)
+    return positive_int_arg(name)(text)
 
 
 def _parse_dtype(value: str) -> torch.dtype:
@@ -105,19 +109,27 @@ def _parse_dtype(value: str) -> torch.dtype:
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--dataset", default="tests/data/test_trees_1000")
-    parser.add_argument("--start", type=int, default=0)
-    parser.add_argument("--fams", type=int, default=1000)
+    parser.add_argument("--start", type=nonnegative_int_arg("start"), default=0)
+    parser.add_argument("--fams", type=positive_int_arg("fams"), default=1000)
     parser.add_argument("--family-chunk-size", default="auto")
     parser.add_argument("--max-wave-size", default="auto")
     parser.add_argument("--fixed-iters", default="6")
-    parser.add_argument("--reps", type=int, default=3)
-    parser.add_argument("--warmups", type=int, default=1)
+    parser.add_argument("--reps", type=positive_int_arg("reps"), default=3)
+    parser.add_argument("--warmups", type=nonnegative_int_arg("warmups"), default=1)
     parser.add_argument("--dtype", type=_parse_dtype, default=_parse_dtype("float32"))
     parser.add_argument("--profile-cuda-api", action="store_true", default=False)
     parser.add_argument("--theta-rate", type=float, default=0.05)
-    parser.add_argument("--max-iters-E", type=int, default=2000)
+    parser.add_argument(
+        "--max-iters-E",
+        type=positive_int_arg("max-iters-E"),
+        default=2000,
+    )
     parser.add_argument("--tol-E", type=float, default=1e-8)
-    parser.add_argument("--neumann-terms", type=int, default=3)
+    parser.add_argument(
+        "--neumann-terms",
+        type=positive_int_arg("neumann-terms"),
+        default=3,
+    )
     parser.add_argument("--use-pruning", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--pruning-threshold", type=float, default=1e-6)
     parser.add_argument("--stats-only", action="store_true", default=False)
@@ -136,7 +148,7 @@ def _parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--preflight-window-size",
-        type=int,
+        type=nonnegative_int_arg("preflight-window-size"),
         default=0,
         help=(
             "Diagnostic setup-only mode: validate the requested family range in "
@@ -153,7 +165,7 @@ def _parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--compare-unchunked-max-fams",
-        type=int,
+        type=nonnegative_int_arg("compare-unchunked-max-fams"),
         default=8,
         help="For fam counts at or below this value, compare chunked and one-chunk loss/gradient.",
     )
@@ -168,17 +180,21 @@ def _parse_args() -> argparse.Namespace:
         default=False,
     )
     args = parser.parse_args()
-    args.family_chunk_size = _parse_auto_int(args.family_chunk_size)
-    args.max_wave_size = _parse_auto_optional_int(args.max_wave_size)
-    args.fixed_iters = _parse_optional_int(args.fixed_iters)
-    if isinstance(args.family_chunk_size, int) and args.family_chunk_size < 0:
-        raise ValueError("--family-chunk-size must be non-negative")
-    if args.reps <= 0:
-        raise ValueError("--reps must be positive")
-    if args.warmups < 0:
-        raise ValueError("--warmups must be non-negative")
-    if args.preflight_window_size < 0:
-        raise ValueError("--preflight-window-size must be non-negative")
+    try:
+        args.family_chunk_size = _parse_auto_positive_int(
+            "family-chunk-size",
+            args.family_chunk_size,
+        )
+        args.max_wave_size = _parse_auto_optional_positive_int(
+            "max-wave-size",
+            args.max_wave_size,
+        )
+        args.fixed_iters = _parse_optional_positive_int(
+            "fixed-iters",
+            args.fixed_iters,
+        )
+    except argparse.ArgumentTypeError as exc:
+        parser.error(str(exc))
     return args
 
 

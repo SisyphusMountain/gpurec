@@ -27,6 +27,14 @@ def _load_bench_module():
     return module
 
 
+def _set_bench_argv(monkeypatch: pytest.MonkeyPatch, bench, *args: str) -> None:
+    monkeypatch.setattr(
+        bench.sys,
+        "argv",
+        ["bench_uniform_forward_backward_pipeline.py", *args],
+    )
+
+
 def test_progress_jsonl_emits_parseable_flushed_record(capsys: pytest.CaptureFixture[str]):
     bench = _load_bench_module()
     args = argparse.Namespace(progress_jsonl=True)
@@ -220,18 +228,54 @@ def test_preflight_window_size_arg(monkeypatch: pytest.MonkeyPatch):
 
 def test_preflight_window_size_rejects_negative(monkeypatch: pytest.MonkeyPatch):
     bench = _load_bench_module()
-    monkeypatch.setattr(
-        bench.sys,
-        "argv",
-        [
-            "bench_uniform_forward_backward_pipeline.py",
+    _set_bench_argv(monkeypatch, bench, "--preflight-window-size", "-1")
+
+    with pytest.raises(SystemExit) as excinfo:
+        bench._parse_args()
+
+    assert excinfo.value.code == 2
+
+
+@pytest.mark.parametrize(
+    ("flag", "value", "message"),
+    [
+        ("--start", "-1", "start must be non-negative"),
+        ("--fams", "0", "fams must be positive"),
+        ("--family-chunk-size", "0", "family-chunk-size must be positive"),
+        ("--family-chunk-size", "-1", "family-chunk-size must be positive"),
+        ("--max-wave-size", "-1", "max-wave-size must be positive"),
+        ("--fixed-iters", "-1", "fixed-iters must be positive"),
+        ("--reps", "0", "reps must be positive"),
+        ("--warmups", "-1", "warmups must be non-negative"),
+        ("--max-iters-E", "0", "max-iters-E must be positive"),
+        ("--neumann-terms", "0", "neumann-terms must be positive"),
+        (
             "--preflight-window-size",
             "-1",
-        ],
-    )
+            "preflight-window-size must be non-negative",
+        ),
+        (
+            "--compare-unchunked-max-fams",
+            "-1",
+            "compare-unchunked-max-fams must be non-negative",
+        ),
+    ],
+)
+def test_parse_args_rejects_invalid_count_controls(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    flag: str,
+    value: str,
+    message: str,
+):
+    bench = _load_bench_module()
+    _set_bench_argv(monkeypatch, bench, flag, value)
 
-    with pytest.raises(ValueError, match="preflight-window-size"):
+    with pytest.raises(SystemExit) as excinfo:
         bench._parse_args()
+
+    assert excinfo.value.code == 2
+    assert message in capsys.readouterr().err
 
 
 def test_windowed_preflight_runs_sequential_setup_windows_and_reports_progress(
