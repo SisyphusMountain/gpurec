@@ -1118,7 +1118,11 @@ def _checkpoint_final_check_status(payload: dict[str, Any]) -> object:
     return last_row.get("optimizer/final_check_status")
 
 
-def _run_config_from_args(args: argparse.Namespace) -> RunConfig:
+def _run_config_from_args(
+    args: argparse.Namespace,
+    *,
+    validate_input_paths: bool = True,
+) -> RunConfig:
     data = _config_data(args.config)
     from gpurec.workflow.config import RunConfig
 
@@ -1132,7 +1136,8 @@ def _run_config_from_args(args: argparse.Namespace) -> RunConfig:
     if missing:
         raise ValueError(f"missing required optimize option(s): {', '.join(missing)}")
     config = RunConfig.from_dict(data)
-    _validate_run_config_input_paths(config)
+    if validate_input_paths:
+        _validate_run_config_input_paths(config)
     return config
 
 
@@ -1950,11 +1955,12 @@ def main(argv: list[str] | None = None) -> None:
         return
     if args.command == "optimize":
         try:
-            config = _run_config_from_args(args)
+            config = _run_config_from_args(args, validate_input_paths=False)
             if args.require_mode_default_optimizer:
                 _require_config_mode_default_optimizer(command_parser, config)
             if args.require_production_default_route:
                 _require_config_production_default_route(command_parser, config)
+            _validate_run_config_input_paths(config)
             _preflight_run_config(config)
         except _EXPECTED_WORKFLOW_ERRORS as exc:
             command_parser.error(str(exc))
@@ -1991,11 +1997,12 @@ def main(argv: list[str] | None = None) -> None:
                 "--require-cuda-backward-ready requires --check-preprocess"
             )
         try:
-            config = _run_config_from_args(args)
+            config = _run_config_from_args(args, validate_input_paths=False)
             if args.require_mode_default_optimizer:
                 _require_config_mode_default_optimizer(command_parser, config)
             if args.require_production_default_route:
                 _require_config_production_default_route(command_parser, config)
+            _validate_run_config_input_paths(config)
             summary = _preflight_run_config(
                 config,
                 check_preprocess=args.check_preprocess,
@@ -2164,11 +2171,12 @@ def main(argv: list[str] | None = None) -> None:
                 "--resume-from to resume optimization"
             )
         try:
-            run_config = _run_config_from_args(args)
+            run_config = _run_config_from_args(args, validate_input_paths=False)
             if args.require_mode_default_optimizer:
                 _require_config_mode_default_optimizer(command_parser, run_config)
             if args.require_production_default_route:
                 _require_config_production_default_route(command_parser, run_config)
+            _validate_run_config_input_paths(run_config)
             _preflight_run_config(run_config)
             _validate_run_sampling_args(args, run_config)
         except _EXPECTED_WORKFLOW_ERRORS as exc:

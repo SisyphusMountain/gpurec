@@ -1078,6 +1078,85 @@ def test_cli_validate_config_require_production_default_route_rejects_custom_set
     assert "Traceback" not in captured.err
 
 
+@pytest.mark.parametrize("command", ["validate-config", "optimize", "run"])
+def test_cli_mode_default_gate_rejects_override_before_input_paths(
+    command: str,
+    tmp_path: Path,
+    capsys,
+):
+    missing_species = tmp_path / "missing-sp.nwk"
+    missing_families = tmp_path / "missing-families.txt"
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(
+            [
+                command,
+                "--species-tree",
+                str(missing_species),
+                "--families-file",
+                str(missing_families),
+                "--out-dir",
+                str(tmp_path / "out"),
+                "--mode",
+                "genewise",
+                "--optimizer",
+                "adam",
+                "--require-mode-default-optimizer",
+            ]
+        )
+
+    captured = capsys.readouterr()
+    assert exc_info.value.code == 2
+    assert "config optimizer is 'adam'" in captured.err
+    assert "expected mode default 'hessian-sgd' for mode 'genewise'" in captured.err
+    assert str(missing_species) not in captured.err
+    assert str(missing_families) not in captured.err
+    assert "path does not exist" not in captured.err
+    assert "Traceback" not in captured.err
+
+
+@pytest.mark.parametrize("command", ["validate-config", "optimize", "run"])
+def test_cli_production_route_gate_rejects_override_before_input_paths(
+    command: str,
+    tmp_path: Path,
+    capsys,
+):
+    missing_species = tmp_path / "missing-sp.nwk"
+    missing_families = tmp_path / "missing-families.txt"
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(
+            [
+                command,
+                "--species-tree",
+                str(missing_species),
+                "--families-file",
+                str(missing_families),
+                "--out-dir",
+                str(tmp_path / "out"),
+                "--mode",
+                "genewise",
+                "--optimizer",
+                "hessian-sgd",
+                "--fd-hessian-refresh-steps",
+                "8",
+                "--require-production-default-route",
+            ]
+        )
+
+    captured = capsys.readouterr()
+    assert exc_info.value.code == 2
+    assert (
+        "config production default route fields differ for mode 'genewise': "
+        "fd_hessian_refresh_steps"
+    ) in captured.err
+    assert "use optimizer=auto and omit route overrides" in captured.err
+    assert str(missing_species) not in captured.err
+    assert str(missing_families) not in captured.err
+    assert "path does not exist" not in captured.err
+    assert "Traceback" not in captured.err
+
+
 def test_cli_validate_config_require_production_default_route_rejects_global_mode(
     tmp_path: Path,
     capsys,

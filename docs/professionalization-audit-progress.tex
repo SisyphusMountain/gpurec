@@ -7783,6 +7783,15 @@ inspection output.
 checking paths, so production launch preflight reports the operator error
 directly.
 
+Explicit route gates now run before top-level input-path checks on
+\texttt{validate-config}, \texttt{optimize}, and \texttt{run}.  The CLI parses
+the \texttt{RunConfig}, applies
+\texttt{--require-mode-default-optimizer} and
+\texttt{--require-production-default-route}, and only then checks local species
+tree and family-file paths.  This keeps launch automation focused on route
+drift from the shipped likelihood/gradient and optimizer defaults even when a
+local fixture path is also missing.
+
 \section{Next Audit Targets}
 
 \begin{enumerate}[leftmargin=*]

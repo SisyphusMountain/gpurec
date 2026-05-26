@@ -2459,6 +2459,12 @@ not edit files.  New or still-open findings from that refresh are:
 - `validate-config --require-cuda-backward-ready` now rejects the missing
   `--check-preprocess` flag combination before loading config files or checking
   paths, so production launch preflight reports the operator error directly.
+- `validate-config`, `optimize`, and `run` now apply explicit
+  `--require-mode-default-optimizer` and `--require-production-default-route`
+  gates after parsing the config but before checking top-level input paths.
+  Launch automation therefore reports route drift from the shipped
+  likelihood/gradient and optimizer defaults before a missing local fixture path
+  can mask that route error.
 
 ## Recommended Next Order
 
