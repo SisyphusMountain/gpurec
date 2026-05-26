@@ -660,6 +660,13 @@ Rejected follow-ups:
   before the first likelihood was slower.  The build took
   `1.0070954780094326s`, but the first fixed4 pass rose to
   `1.8282219489919953s`, for about `2.835s` end-to-end.
+- Warming the direct local-DTS input variant used by the accepted first
+  non-leaf optimization did not improve the cold route.  The prototype passed
+  targeted no-grad/specieswise/uniform tests (`13 passed`), but five fixed4
+  cold samples were `2.2882246950175613s`, `2.3021020019659773s`,
+  `2.2710205909679644s`, `2.3239040829939768s`, and
+  `2.2830842310213484s`, with pass times around `1.324s` to `1.329s`.
+  That extra warmup is therefore rejected.
 
 Differences from HOGENOM:
 
@@ -763,6 +770,11 @@ Differences from HOGENOM:
   `0.07s` beyond the copy-based first non-leaf path.  The same optimization
   should help HOGENOM too, but its accepted end-to-end route has fewer resident
   batches and is dominated more by optimizer/gradient work.
+- Adding a separate warmup launch for that local-DTS input variant does not
+  help `test_trees_1000`, so it is also unlikely to be worth carrying into the
+  HOGENOM route.  The accepted resident warmup already covers the expensive
+  general uniform/DTS kernel families well enough; extra one-off warmup launches
+  mainly add cold construction noise.
 - Larger clade budgets and larger wave caps do not buy the same kind of win
   here that the HOGENOM high-memory route found.  Current `330000` to `500000`
   clade-budget samples reduce the number of resident batches from `21` down to
