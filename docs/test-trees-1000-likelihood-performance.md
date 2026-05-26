@@ -622,6 +622,21 @@ Rejected follow-ups:
   `2.2834861860610545s`, `2.340617485984694s`, and
   `2.2646979700075462s`.  The added branch complexity is not justified without a
   cold-path win.
+- Conditional `tile_splits=128` for mixed eq1/ge2 DTS waves improved
+  materialized fixed4 timing but was still rejected for the cold route.  The
+  layout has `30` mixed phase-2 waves carrying `935` ge2 groups, about `3.0M`
+  ge2 splits, and `47,326` 64-split tiles; the `21` pure phase-3 ge2 waves carry
+  only `65` groups, `208,509` ge2 splits, and `3,287` 64-split tiles.  Using
+  `128` only for mixed waves passed targeted tests (`14 passed`) and measured
+  `1.2752698680269532s` materialized median with `1.2719556670053862s` minimum,
+  but cold samples without an added warmup were `2.279916053987108s`,
+  `2.293243663967587s`, `2.2992008170112967s`, `2.364783897995949s`, and
+  `2.3065213810186833s`.  Adding a tiny mixed-DTS warmup for the new variant
+  also passed tests (`14 passed`) but raised construction enough that cold
+  samples still did not improve: `2.4507630320149474s`,
+  `2.3197203549789265s`, `2.2956745679839514s`,
+  `2.3365640210104175s`, and `2.273633966979105s`.  The default
+  `tile_splits=64` therefore remains the end-to-end route.
 - The current `clade_first_fit` batches are already balanced for fixed4 Pi
   timing.  A post-warm per-batch split measured `20` full batches between
   about `0.061s` and `0.063s`, plus a tail batch at `0.03352210501907393s`;
