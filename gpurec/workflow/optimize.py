@@ -4338,10 +4338,15 @@ class OptimizationRunner:
                         )
                     )
                     high_kkt_objective_stalled = objective_plateau_this_row
+                    high_kkt_final_loss_phase = (
+                        not lbfgsb_loss_schedule
+                        or lbfgsb_loss_schedule_index >= len(lbfgsb_loss_schedule) - 1
+                    )
                     high_kkt_stop_ready = (
                         high_kkt_stop_patience > 0
                         and high_kkt_stop_signal
                         and high_kkt_objective_stalled
+                        and high_kkt_final_loss_phase
                         and lbfgsb_fallback_used_count
                         >= int(config.lbfgsb_high_kkt_stop_min_fallbacks)
                     )
@@ -4356,6 +4361,9 @@ class OptimizationRunner:
                     )
                     metrics["optimizer/lbfgsb_high_kkt_objective_stalled"] = (
                         high_kkt_objective_stalled
+                    )
+                    metrics["optimizer/lbfgsb_high_kkt_final_loss_phase"] = (
+                        high_kkt_final_loss_phase
                     )
                     metrics["optimizer/lbfgsb_high_kkt_stop_ready"] = (
                         high_kkt_stop_ready
