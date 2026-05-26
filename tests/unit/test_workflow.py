@@ -5280,6 +5280,36 @@ def test_checkpoint_compatibility_rejects_route_metadata_mismatch(tmp_path: Path
         )
 
 
+def test_checkpoint_compatibility_rejects_partial_route_metadata(tmp_path: Path):
+    config = RunConfig(
+        species_tree=tmp_path / "sp.nwk",
+        families_file=tmp_path / "families.txt",
+        out_dir=tmp_path / "out",
+        mode="genewise",
+        device="cpu",
+        optimizer="hessian-sgd",
+    )
+    route_metadata = effective_route_metadata(config)
+    route_metadata.pop("gradient_route")
+    payload = {
+        "config": config.to_dict(),
+        "route_metadata": route_metadata,
+        "family_names": ["a", "b"],
+        "species_names": ["s0", "s1"],
+    }
+
+    with pytest.raises(
+        RuntimeError,
+        match=r"route_metadata missing key\(s\): gradient_route",
+    ):
+        validate_checkpoint_model_compatibility(
+            path=tmp_path / "latest.pt",
+            config=config,
+            model=_DummyModel(),
+            payload=payload,
+        )
+
+
 def test_checkpoint_compatibility_allows_changed_step_cap_for_resume(
     tmp_path: Path,
 ):

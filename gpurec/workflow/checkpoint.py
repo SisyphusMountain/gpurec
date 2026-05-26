@@ -16,9 +16,10 @@ and solver route. ``validate_checkpoint_model_compatibility()`` compares
 them with the active ``RunConfig`` and rebuilt model before
 ``restore_model_theta()`` copies parameters, first validating the stored config
 with ``RunConfig.from_dict(...)``, normalizing only path identity fields during
-comparison, and allowing mutable reporting fields such as the
-configured/effective step cap to differ for resume.  ``load_checkpoint()`` is a
-lower-level payload reader and does not reconstruct a full ``RunConfig``.
+comparison, requiring present route metadata to be complete for the current
+route, and allowing mutable reporting fields such as the configured/effective
+step cap to differ for resume.  ``load_checkpoint()`` is a lower-level payload
+reader and does not reconstruct a full ``RunConfig``.
 """
 
 from __future__ import annotations
@@ -148,13 +149,22 @@ def _require_route_metadata_compatible(
     for key, current_value in current_route.items():
         if key in _ROUTE_METADATA_RESUME_COMPATIBILITY_EXEMPT_KEYS:
             continue
-        if key not in checkpoint_route:
-            continue
-        if checkpoint_route[key] != current_value:
+        if key in checkpoint_route and checkpoint_route[key] != current_value:
             raise RuntimeError(
                 f"checkpoint {path} is incompatible with current run: "
                 f"route_metadata.{key} differs"
             )
+    missing = sorted(
+        key
+        for key in current_route
+        if key not in _ROUTE_METADATA_RESUME_COMPATIBILITY_EXEMPT_KEYS
+        and key not in checkpoint_route
+    )
+    if missing:
+        raise RuntimeError(
+            f"checkpoint {path} is incompatible with current run: "
+            f"route_metadata missing key(s): {', '.join(missing)}"
+        )
 
 
 def _validate_checkpoint_run_config(path: Path, config: dict[str, Any]) -> None:

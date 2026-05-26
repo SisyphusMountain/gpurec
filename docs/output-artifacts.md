@@ -125,7 +125,10 @@ configuration through `RunConfig.from_dict(...)`. Current checkpoints also
 include `route_metadata`, matching the route fields in `summary.json`, so
 inspection tools can identify the objective, gradient route, optimizer, batch
 packing, solver budgets, restart schedule, and Hessian-SGD normal-stage
-overrides without reconstructing a full `RunConfig`.
+overrides without reconstructing a full `RunConfig`. Resume and sampling
+compatibility checks treat absent route metadata as a legacy checkpoint, but a
+checkpoint that does carry `route_metadata` must include and match all current
+non-mutable route fields before theta restoration.
 The same checkpoint status and route fields are available from the CLI:
 
 ```bash
