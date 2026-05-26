@@ -7800,6 +7800,13 @@ optimizer-setting evidence.  Checkpoints and summaries with values such as
 likelihood/gradient and optimizer route gate instead of passing while the
 terminal display renders the same field as \texttt{null}.
 
+\texttt{gpurec checkpoint-info} now uses one reconstructed route-metadata
+snapshot for both terminal output and combined
+\texttt{--require-mode-default-optimizer} /
+\texttt{--require-production-default-route} gates.  The checkpoint gate verdict
+therefore follows the same route evidence that operators see in the printed
+inspection line.
+
 \section{Next Audit Targets}
 
 \begin{enumerate}[leftmargin=*]

@@ -2408,6 +2408,54 @@ def test_cli_checkpoint_info_require_production_default_route_accepts_current_ro
     assert "production_default_route_mismatches=none" in captured.out
 
 
+def test_cli_checkpoint_info_combined_route_gates_share_route_metadata(
+    tmp_path: Path,
+    capsys,
+    monkeypatch,
+):
+    config = RunConfig(
+        species_tree=tmp_path / "sp.nwk",
+        families_file=tmp_path / "families.txt",
+        out_dir=tmp_path / "out",
+        mode="genewise",
+        device="cpu",
+    )
+    checkpoint = _checkpoint_with_route_metadata(
+        tmp_path,
+        effective_route_metadata(config),
+    )
+    original_route_metadata = gpurec_cli._checkpoint_route_metadata
+    calls = 0
+
+    def counted_route_metadata(payload):
+        nonlocal calls
+        calls += 1
+        return original_route_metadata(payload)
+
+    monkeypatch.setattr(
+        gpurec_cli,
+        "_checkpoint_route_metadata",
+        counted_route_metadata,
+    )
+
+    main(
+        [
+            "checkpoint-info",
+            "--checkpoint",
+            str(checkpoint),
+            "--require-mode-default-optimizer",
+            "--require-production-default-route",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert captured.err == ""
+    assert calls == 1
+    assert "route_metadata_source=checkpoint" in captured.out
+    assert "uses_mode_default_optimizer=true" in captured.out
+    assert "uses_production_default_route=true" in captured.out
+
+
 def test_cli_checkpoint_info_require_production_default_route_recomputes_stale_audit(
     tmp_path: Path,
     capsys,

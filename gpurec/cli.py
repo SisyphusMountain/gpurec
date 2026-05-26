@@ -1006,8 +1006,17 @@ def _route_metadata_text(route: dict[str, Any]) -> str:
     return " ".join(fields)
 
 
-def _checkpoint_info_text(checkpoint: Path, payload: dict[str, Any]) -> str:
-    route, route_source = _checkpoint_route_metadata(payload)
+def _checkpoint_info_text(
+    checkpoint: Path,
+    payload: dict[str, Any],
+    *,
+    route_metadata: tuple[dict[str, Any], str] | None = None,
+) -> str:
+    route, route_source = (
+        _checkpoint_route_metadata(payload)
+        if route_metadata is None
+        else route_metadata
+    )
     config_data = payload.get("config")
     if not isinstance(config_data, dict):
         config_data = {}
@@ -2096,16 +2105,30 @@ def main(argv: list[str] | None = None) -> None:
             payload = load_checkpoint(checkpoint)
         except _EXPECTED_WORKFLOW_ERRORS as exc:
             _exit_runtime_error(command_parser, _sampling_error_message(exc))
-        print(_checkpoint_info_text(checkpoint, payload), flush=True)
+        route_gate_required = (
+            args.require_mode_default_optimizer
+            or args.require_production_default_route
+        )
+        route_metadata = (
+            _checkpoint_route_metadata(payload) if route_gate_required else None
+        )
+        print(
+            _checkpoint_info_text(
+                checkpoint,
+                payload,
+                route_metadata=route_metadata,
+            ),
+            flush=True,
+        )
         if args.require_mode_default_optimizer:
-            route, _route_source = _checkpoint_route_metadata(payload)
+            route, _route_source = route_metadata or _checkpoint_route_metadata(payload)
             _exit_unless_mode_default_optimizer(
                 command_parser,
                 route,
                 subject="checkpoint",
             )
         if args.require_production_default_route:
-            route, _route_source = _checkpoint_route_metadata(payload)
+            route, _route_source = route_metadata or _checkpoint_route_metadata(payload)
             _exit_unless_production_default_route(
                 command_parser,
                 route,

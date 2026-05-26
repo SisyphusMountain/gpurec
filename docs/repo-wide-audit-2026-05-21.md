@@ -2471,6 +2471,11 @@ not edit files.  New or still-open findings from that refresh are:
   `fd_hessian_refresh_steps=16.0` no longer passes the shipped
   likelihood/gradient and optimizer route gate while displaying that field as
   `null`.
+- `gpurec checkpoint-info` now shares one reconstructed checkpoint route
+  metadata snapshot between terminal output and combined
+  `--require-mode-default-optimizer` / `--require-production-default-route`
+  gates, so the gate verdict is tied to the same route evidence printed for
+  operators.
 
 ## Recommended Next Order
 
