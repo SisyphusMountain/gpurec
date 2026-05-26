@@ -96,6 +96,12 @@ def validate_checkpoint_model_compatibility(
                 f"config.{key} differs"
             )
 
+    _require_route_metadata_compatible(
+        checkpoint_path,
+        payload.get("route_metadata"),
+        effective_route_metadata(config),
+    )
+
     checkpoint_family_names = checkpoint_string_list(
         checkpoint_path,
         "family_names",
@@ -119,6 +125,25 @@ def validate_checkpoint_model_compatibility(
             f"checkpoint {checkpoint_path} is incompatible with current run: "
             "species_names differ"
         )
+
+
+def _require_route_metadata_compatible(
+    path: Path,
+    checkpoint_route: Any,
+    current_route: dict[str, Any],
+) -> None:
+    if checkpoint_route is None:
+        return
+    if not isinstance(checkpoint_route, dict):
+        raise RuntimeError(f"checkpoint {path} has invalid route_metadata")
+    for key, current_value in current_route.items():
+        if key not in checkpoint_route:
+            continue
+        if checkpoint_route[key] != current_value:
+            raise RuntimeError(
+                f"checkpoint {path} is incompatible with current run: "
+                f"route_metadata.{key} differs"
+            )
 
 
 def save_checkpoint(

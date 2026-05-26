@@ -54,6 +54,7 @@ from gpurec.workflow.checkpoint import (
     load_checkpoint,
     restore_model_theta,
     save_checkpoint,
+    validate_checkpoint_model_compatibility,
 )
 from gpurec.workflow._metadata import (
     checkpoint_progress,
@@ -4722,6 +4723,72 @@ def test_checkpoint_roundtrip_restores_theta_and_status(tmp_path: Path):
         status={"status": "not_converged"},
     )
     assert int(load_checkpoint(final_path)["next_step"]) == 4
+
+
+def test_checkpoint_compatibility_rejects_route_metadata_mismatch(tmp_path: Path):
+    config = RunConfig(
+        species_tree=tmp_path / "sp.nwk",
+        families_file=tmp_path / "families.txt",
+        out_dir=tmp_path / "out",
+        mode="genewise",
+        device="cpu",
+        optimizer="hessian-sgd",
+    )
+    checkpoint_config = RunConfig(
+        species_tree=config.species_tree,
+        families_file=config.families_file,
+        out_dir=tmp_path / "checkpoint-out",
+        mode="genewise",
+        device="cpu",
+        optimizer="adam",
+    )
+    payload = {
+        "config": checkpoint_config.to_dict(),
+        "route_metadata": effective_route_metadata(checkpoint_config),
+        "family_names": ["a", "b"],
+        "species_names": ["s0", "s1"],
+    }
+
+    with pytest.raises(RuntimeError, match=r"route_metadata\.optimizer differs"):
+        validate_checkpoint_model_compatibility(
+            path=tmp_path / "latest.pt",
+            config=config,
+            model=_DummyModel(),
+            payload=payload,
+        )
+
+
+def test_checkpoint_compatibility_allows_legacy_metadata_without_route(
+    tmp_path: Path,
+):
+    config = RunConfig(
+        species_tree=tmp_path / "sp.nwk",
+        families_file=tmp_path / "families.txt",
+        out_dir=tmp_path / "out",
+        mode="genewise",
+        device="cpu",
+        optimizer="hessian-sgd",
+    )
+    checkpoint_config = RunConfig(
+        species_tree=config.species_tree,
+        families_file=config.families_file,
+        out_dir=tmp_path / "checkpoint-out",
+        mode="genewise",
+        device="cpu",
+        optimizer="adam",
+    )
+    payload = {
+        "config": checkpoint_config.to_dict(),
+        "family_names": ["a", "b"],
+        "species_names": ["s0", "s1"],
+    }
+
+    validate_checkpoint_model_compatibility(
+        path=tmp_path / "legacy.pt",
+        config=config,
+        model=_DummyModel(),
+        payload=payload,
+    )
 
 
 def test_checkpoint_load_uses_weights_only(tmp_path: Path, monkeypatch):
