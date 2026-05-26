@@ -1299,6 +1299,11 @@ def test_project_readme_documents_gpurec_run_end_to_end_workflow():
     assert "exits without sampling if optimization fails" in normalized
     assert "Failed optimization still prints the optimization status line" in project_readme
     assert "resolved `mode` and `optimizer`" in project_readme
+    assert (
+        "`configured_steps`, `optimizer_step_cap`, `optimizer_step_cap_reason`"
+        in project_readme
+    )
+    assert "objective, gradient route, rate parameterization" in normalized
     assert "`steps_completed`, `elapsed_s`, `best_step`" in project_readme
     assert "`final_grad_inf`" in project_readme
     assert "`final_projected_grad_inf`" in project_readme

@@ -63,6 +63,13 @@ class OptimizationResult:
     elapsed_s: float | None = None
     mode: str | None = None
     optimizer: str | None = None
+    objective: str | None = None
+    gradient_route: str | None = None
+    rate_parameterization: str | None = None
+    production_default_basis: str | None = None
+    configured_steps: int | None = None
+    optimizer_step_cap: int | None = None
+    optimizer_step_cap_reason: str | None = None
     final_projected_grad_inf: float | None = None
     sampling_checkpoint: Path | None = None
     final_log_likelihood_bits: float | None = None
@@ -3858,9 +3865,10 @@ class OptimizationRunner:
                 if final_eval_failed
                 else float(final_metrics.get("grad/projected_inf", math.inf))
             )
+            route_metadata = effective_route_metadata(config)
             summary = {
                 **final_status,
-                **effective_route_metadata(config),
+                **route_metadata,
                 "families": model.n_families,
                 "species": int(model.n_species),
                 "batches": len(model.batch_metadata),
@@ -3896,6 +3904,21 @@ class OptimizationRunner:
                 elapsed_s=float(final_status["elapsed_s"]),
                 mode=config.mode,
                 optimizer=config.optimizer,
+                objective=_optional_result_text(route_metadata.get("objective")),
+                gradient_route=_optional_result_text(
+                    route_metadata.get("gradient_route")
+                ),
+                rate_parameterization=_optional_result_text(
+                    route_metadata.get("rate_parameterization")
+                ),
+                production_default_basis=_optional_result_text(
+                    route_metadata.get("production_default_basis")
+                ),
+                configured_steps=int(route_metadata["configured_steps"]),
+                optimizer_step_cap=int(route_metadata["optimizer_step_cap"]),
+                optimizer_step_cap_reason=_optional_result_text(
+                    route_metadata.get("optimizer_step_cap_reason")
+                ),
                 final_projected_grad_inf=final_projected_grad_inf,
                 sampling_checkpoint=sampling_checkpoint,
                 final_log_likelihood_bits=final_log_likelihood_bits,

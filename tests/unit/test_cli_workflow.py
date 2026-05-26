@@ -1479,6 +1479,8 @@ def test_cli_optimize_reports_final_and_best_objective_summary(
     capsys,
     monkeypatch,
 ):
+    basis = "hogenom_and_" + "test_trees_" + "1000"
+
     def successful_optimize(config):
         return SimpleNamespace(
             out_dir=config.out_dir,
@@ -1486,6 +1488,13 @@ def test_cli_optimize_reports_final_and_best_objective_summary(
             reason="max_steps",
             mode=config.mode,
             optimizer=config.optimizer,
+            objective="negative_log_likelihood_bits",
+            gradient_route="implicit_first_order_adjoint",
+            rate_parameterization="base2_log_dlt_rates",
+            production_default_basis=basis,
+            configured_steps=config.steps,
+            optimizer_step_cap=config.steps,
+            optimizer_step_cap_reason="configured_steps",
             steps_completed=7,
             elapsed_s=3.25,
             best_step=5,
@@ -1518,6 +1527,13 @@ def test_cli_optimize_reports_final_and_best_objective_summary(
     assert "reason=max_steps" in captured.out
     assert "mode=genewise" in captured.out
     assert "optimizer=hessian-sgd" in captured.out
+    assert "objective=negative_log_likelihood_bits" in captured.out
+    assert "gradient_route=implicit_first_order_adjoint" in captured.out
+    assert "rate_parameterization=base2_log_dlt_rates" in captured.out
+    assert f"production_default_basis={basis}" in captured.out
+    assert "configured_steps=5000" in captured.out
+    assert "optimizer_step_cap=5000" in captured.out
+    assert "optimizer_step_cap_reason=configured_steps" in captured.out
     assert "steps_completed=7" in captured.out
     assert "elapsed_s=3.250000" in captured.out
     assert "best_step=5" in captured.out
@@ -1611,6 +1627,7 @@ def test_cli_run_samples_reported_checkpoint_instead_of_stale_best(
     capsys,
     monkeypatch,
 ):
+    basis = "hogenom_and_" + "test_trees_" + "1000"
     checkpoint_dir = tmp_path / "out" / "checkpoints"
     checkpoint_dir.mkdir(parents=True)
     sample_out_dir = tmp_path / "run sample outputs"
@@ -1628,6 +1645,13 @@ def test_cli_run_samples_reported_checkpoint_instead_of_stale_best(
             reason="completed",
             mode=config.mode,
             optimizer=config.optimizer,
+            objective="negative_log_likelihood_bits",
+            gradient_route="implicit_first_order_adjoint",
+            rate_parameterization="base2_log_dlt_rates",
+            production_default_basis=basis,
+            configured_steps=config.steps,
+            optimizer_step_cap=config.steps,
+            optimizer_step_cap_reason="configured_steps",
             steps_completed=3,
             elapsed_s=4.5,
             best_step=2,
@@ -1664,6 +1688,13 @@ def test_cli_run_samples_reported_checkpoint_instead_of_stale_best(
     captured = capsys.readouterr()
     assert "mode=genewise" in captured.out
     assert "optimizer=hessian-sgd" in captured.out
+    assert "objective=negative_log_likelihood_bits" in captured.out
+    assert "gradient_route=implicit_first_order_adjoint" in captured.out
+    assert "rate_parameterization=base2_log_dlt_rates" in captured.out
+    assert f"production_default_basis={basis}" in captured.out
+    assert "configured_steps=5000" in captured.out
+    assert "optimizer_step_cap=5000" in captured.out
+    assert "optimizer_step_cap_reason=configured_steps" in captured.out
     assert "steps_completed=3" in captured.out
     assert "elapsed_s=4.500000" in captured.out
     assert "best_step=2" in captured.out

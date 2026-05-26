@@ -5603,6 +5603,13 @@ def test_optimization_runner_adagrad_restarts_accepts_split_solver_budgets(
     assert summary["configured_steps"] == 10
     assert summary["optimizer_step_cap"] == 4
     assert summary["optimizer_step_cap_reason"] == "adagrad_restart_schedule"
+    assert result.objective == summary["objective"]
+    assert result.gradient_route == summary["gradient_route"]
+    assert result.rate_parameterization == summary["rate_parameterization"]
+    assert result.production_default_basis == summary["production_default_basis"]
+    assert result.configured_steps == summary["configured_steps"]
+    assert result.optimizer_step_cap == summary["optimizer_step_cap"]
+    assert result.optimizer_step_cap_reason == summary["optimizer_step_cap_reason"]
     assert summary["steps_completed"] == result.steps_completed
     assert summary["steps_completed"] == 4
     assert summary["sampling_checkpoint"] == str(result.sampling_checkpoint)
@@ -7947,6 +7954,13 @@ def test_optimization_runner_run_writes_outputs_with_fake_model(tmp_path: Path):
     assert summary["optimizer"] == "adam"
     assert result.mode == summary["mode"]
     assert result.optimizer == summary["optimizer"]
+    assert result.objective == summary["objective"]
+    assert result.gradient_route == summary["gradient_route"]
+    assert result.rate_parameterization == summary["rate_parameterization"]
+    assert result.production_default_basis == summary["production_default_basis"]
+    assert result.configured_steps == summary["configured_steps"]
+    assert result.optimizer_step_cap == summary["optimizer_step_cap"]
+    assert result.optimizer_step_cap_reason == summary["optimizer_step_cap_reason"]
     assert summary["batch_packing"] == "depth_first_fit"
     assert summary["family_chunk_size"] == 0
     assert summary["clade_budget"] == 500_000

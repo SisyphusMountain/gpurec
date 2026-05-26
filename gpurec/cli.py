@@ -125,6 +125,31 @@ def _optimization_result_text(result: Any) -> str:
             _optional_text("reason", getattr(result, "reason", None)),
             _optional_text("mode", getattr(result, "mode", None)),
             _optional_text("optimizer", getattr(result, "optimizer", None)),
+            _optional_text("objective", getattr(result, "objective", None)),
+            _optional_text(
+                "gradient_route",
+                getattr(result, "gradient_route", None),
+            ),
+            _optional_text(
+                "rate_parameterization",
+                getattr(result, "rate_parameterization", None),
+            ),
+            _optional_text(
+                "production_default_basis",
+                getattr(result, "production_default_basis", None),
+            ),
+            _optional_int_text(
+                "configured_steps",
+                getattr(result, "configured_steps", None),
+            ),
+            _optional_int_text(
+                "optimizer_step_cap",
+                getattr(result, "optimizer_step_cap", None),
+            ),
+            _optional_text(
+                "optimizer_step_cap_reason",
+                getattr(result, "optimizer_step_cap_reason", None),
+            ),
             _optional_int_text(
                 "steps_completed",
                 getattr(result, "steps_completed", None),
