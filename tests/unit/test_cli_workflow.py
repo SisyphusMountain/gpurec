@@ -65,7 +65,7 @@ def test_run_config_cli_surface_matches_dataclass_fields():
     assert not hasattr(gpurec_cli, "_RUN_CONFIG_CLI_OVERRIDE_FIELDS")
     assert _parser_action_dests("optimize") == expected_parser_dests
     assert _parser_action_dests("validate-config") == (
-        expected_parser_dests | {"check_preprocess"}
+        expected_parser_dests | {"check_preprocess", "require_cuda_backward_ready"}
     )
     assert _parser_action_dests("run") == expected_parser_dests | {
         "sample_out_dir",
@@ -675,6 +675,65 @@ def test_cli_validate_config_can_check_cpu_preprocessing(
     assert "cuda_backward_ready=false" in captured.out
     assert "cuda_backward_ready_reason=requires_s_gt_256" in captured.out
     assert captured.err == ""
+
+
+def test_cli_validate_config_can_require_cuda_backward_readiness(
+    tmp_path: Path,
+    capsys,
+):
+    write_tiny_alerax_inputs(tmp_path)
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(
+            [
+                "validate-config",
+                "--species-tree",
+                str(tmp_path / "sp.nwk"),
+                "--families-file",
+                str(tmp_path / "families.txt"),
+                "--out-dir",
+                str(tmp_path / "out"),
+                "--device",
+                "cuda",
+                "--check-preprocess",
+                "--require-cuda-backward-ready",
+            ]
+        )
+
+    captured = capsys.readouterr()
+    assert exc_info.value.code == 2
+    assert "cuda_backward_ready=false" in captured.err
+    assert "requires_s_gt_256" in captured.err
+    assert "more than 256 postorder species nodes" in captured.err
+    assert "Traceback" not in captured.err
+
+
+def test_cli_validate_config_requires_preprocess_for_cuda_backward_gate(
+    tmp_path: Path,
+    capsys,
+):
+    write_tiny_alerax_inputs(tmp_path)
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(
+            [
+                "validate-config",
+                "--species-tree",
+                str(tmp_path / "sp.nwk"),
+                "--families-file",
+                str(tmp_path / "families.txt"),
+                "--out-dir",
+                str(tmp_path / "out"),
+                "--device",
+                "cuda",
+                "--require-cuda-backward-ready",
+            ]
+        )
+
+    captured = capsys.readouterr()
+    assert exc_info.value.code == 2
+    assert "--require-cuda-backward-ready requires --check-preprocess" in captured.err
+    assert "Traceback" not in captured.err
 
 
 def test_cli_validate_config_check_preprocess_rejects_bad_newick_before_cuda(

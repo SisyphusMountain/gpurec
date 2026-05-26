@@ -209,7 +209,9 @@ Add `--check-preprocess` when you also want the retained Rust parser to run on
 CPU and validate the selected Newick trees plus leaf/species mappings before a
 full optimization run.  That heavier preflight also prints
 `cuda_backward_ready`; this currently requires more than 256 postorder species
-nodes (`S > 256`) for the retained CUDA likelihood/gradient path.
+nodes (`S > 256`) for the retained CUDA likelihood/gradient path.  Add
+`--require-cuda-backward-ready` to make that readiness check a hard preflight
+failure.
 For a source checkout or source archive, checked JSON configs and a tiny
 AleRax-style fixture live under `examples/`.  They cover the genewise and
 specieswise production defaults documented in `examples/README.md`, including

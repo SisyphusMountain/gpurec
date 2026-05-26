@@ -77,6 +77,10 @@ entering the CUDA likelihood workflow. The Python API starts at
 `workflow.optimize(config)` and therefore skips only the CLI parser/preflight
 layer.
 
+`--require-cuda-backward-ready` makes the `--check-preprocess` readiness report
+a hard CLI gate. It is intended for production launch checks and still runs
+entirely on CPU.
+
 ## Per-Step Likelihood And Gradient
 
 This is the work done by each optimizer closure. The workflow model is built

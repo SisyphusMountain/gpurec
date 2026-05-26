@@ -555,6 +555,8 @@ def test_cpu_ci_builds_and_smokes_release_artifacts():
         '"adagrad_restart_schedule": "8:1.0:60,16:0.5:35,32:0.5:30"',
         '"adagrad_restart_final_check_iters": 128',
         "gpurec validate-config --help",
+        "validate-config-help.txt",
+        "--require-cuda-backward-ready",
         "gpurec checkpoint-info --help",
         "checkpoint-info-help.txt",
         "gpurec sample --help",
@@ -995,6 +997,7 @@ def test_release_readiness_documents_installed_wheel_smoke():
         "gpurec config-template --mode genewise",
         "gpurec config-template --mode specieswise",
         "gpurec validate-config --help",
+        "--require-cuda-backward-ready",
         "gpurec checkpoint-info --help",
         "gpurec sample --help",
         "gpurec run --help",
@@ -1022,6 +1025,7 @@ def test_release_readiness_documents_source_archive_preprocess_smoke():
         "examples/minimal-run-config.json",
         "examples/specieswise-adagrad-restarts-config.json",
         "cuda_backward_ready=false",
+        "--require-cuda-backward-ready",
     ):
         assert expected in guide
 

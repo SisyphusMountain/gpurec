@@ -111,6 +111,8 @@ chunking, solver budgets, optimizer-specific defaults, and, when
 `--check-preprocess` is used, `cuda_backward_ready` for the current species
 node count. Treat parser failures as input contract failures; fix the
 referenced tree, family, or mapping file before starting `gpurec optimize`.
+For production launch checks, add `--require-cuda-backward-ready` so a species
+tree that fails the retained CUDA backward size gate exits nonzero.
 
 The checked files under `examples/` are source-checkout and source-archive
 fixtures for parser/config validation.  They are useful for confirming command

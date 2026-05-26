@@ -27,7 +27,8 @@ files. It runs the retained Rust parser on the selected families and catches
 tree/mapping problems before a full optimization run. It also reports
 `cuda_backward_ready`; if this is `false`, the species tree is too small for
 the retained CUDA backward path (`S > 256`) even though parser validation
-succeeded.
+succeeded. Add `--require-cuda-backward-ready` to make that condition fail the
+preflight command.
 
 ## Common Preflight Failures
 

@@ -169,7 +169,8 @@ heavier CPU preprocessing pass that uses the retained Rust parser to validate
 selected Newick trees and leaf/species mappings before optimization. That
 heavier preflight also reports `cuda_backward_ready` from the preprocessed
 species-node count; the retained CUDA backward path currently requires
-`S > 256`.
+`S > 256`. Add `--require-cuda-backward-ready` when this preflight should fail
+instead of only reporting `cuda_backward_ready=false`.
 
 Inspect these outputs first:
 

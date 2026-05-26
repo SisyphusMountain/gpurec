@@ -1112,6 +1112,14 @@ def build_parser() -> argparse.ArgumentParser:
             "whether the species-node count passes the CUDA backward S > 256 gate."
         ),
     )
+    validate_parser.add_argument(
+        "--require-cuda-backward-ready",
+        action="store_true",
+        help=(
+            "With --check-preprocess, fail unless the species-node count passes "
+            "the retained CUDA backward S > 256 gate."
+        ),
+    )
     validate_parser.set_defaults(_command_parser=validate_parser)
 
     sample_parser = sub.add_parser(
@@ -1247,6 +1255,10 @@ def main(argv: list[str] | None = None) -> None:
             )
         except _EXPECTED_WORKFLOW_ERRORS as exc:
             command_parser.error(str(exc))
+        if args.require_cuda_backward_ready and not args.check_preprocess:
+            command_parser.error(
+                "--require-cuda-backward-ready requires --check-preprocess"
+            )
         preprocess_text = ""
         if args.check_preprocess:
             cuda_backward_ready = (
@@ -1263,6 +1275,15 @@ def main(argv: list[str] | None = None) -> None:
                 f" cuda_backward_ready={cuda_backward_ready}"
                 f" {cuda_backward_reason}"
             )
+            if (
+                args.require_cuda_backward_ready
+                and not summary["cuda_backward_ready"]
+            ):
+                command_parser.error(
+                    "cuda_backward_ready=false "
+                    f"{cuda_backward_reason}; retained CUDA backward requires "
+                    "more than 256 postorder species nodes"
+                )
         print(
             "valid_config=true "
             f"mode={config.mode} optimizer={config.optimizer} "
