@@ -57,6 +57,49 @@ def _parser_action(command: str, dest: str) -> argparse.Action:
     raise AssertionError(f"{command} has no parser action {dest!r}")
 
 
+def _checkpoint_with_route_metadata(
+    tmp_path: Path,
+    route_metadata: dict[str, object],
+) -> Path:
+    class FakeModel:
+        theta = torch.nn.Parameter(torch.zeros(1, 3))
+        family_names = ["fam0"]
+        species_names = ["sp0", "sp1"]
+
+    config = RunConfig(
+        species_tree=tmp_path / "sp.nwk",
+        families_file=tmp_path / "families.txt",
+        out_dir=tmp_path / "out",
+        mode="genewise",
+        device="cpu",
+    )
+    checkpoint = tmp_path / "latest.pt"
+    save_checkpoint(
+        checkpoint,
+        config=config,
+        model=FakeModel(),
+        optimizer=None,
+        optimizer_phase="hessian-sgd",
+        step=3,
+        next_step=4,
+        status={
+            "status": "running",
+            "reason": "checkpoint_interval",
+            "best_step": 3,
+            "best_nll_bits": 10.0,
+        },
+        row={
+            "optimizer/phase": "hessian-sgd",
+            "likelihood/data_nll_bits": 10.0,
+            "grad/inf": 0.1,
+        },
+    )
+    payload = torch.load(checkpoint, weights_only=True)
+    payload["route_metadata"] = route_metadata
+    torch.save(payload, checkpoint)
+    return checkpoint
+
+
 def test_run_config_cli_surface_matches_dataclass_fields():
     run_config_fields = {field.name for field in fields(RunConfig)}
     expected_parser_dests = run_config_fields | {"config"}
@@ -1781,6 +1824,90 @@ def test_cli_checkpoint_info_require_mode_default_optimizer_reports_missing_evid
     assert "checkpoint mode default optimizer evidence is incomplete" in captured.err
     assert "missing optimizer" in captured.err
     assert "mode='genewise', optimizer=None" in captured.err
+    assert "usage:" not in captured.err
+    assert "Traceback" not in captured.err
+
+
+def test_cli_checkpoint_info_require_production_default_route_recomputes_stale_audit(
+    tmp_path: Path,
+    capsys,
+):
+    checkpoint = _checkpoint_with_route_metadata(
+        tmp_path,
+        {
+            "mode": "genewise",
+            "optimizer": "hessian-sgd",
+            "uses_production_default_optimizer_settings": True,
+            "production_default_optimizer_setting_mismatches": [],
+            "final_check_iters": 32,
+            "solver_warmup_iters": 4,
+            "fd_adam_warmup_steps": 3,
+            "fd_hessian_refresh_steps": 8,
+            "hessian_sgd_normal_fixed_iters_pi": None,
+            "hessian_sgd_normal_neumann_terms": None,
+            "hessian_sgd_pi_adjoint_warmstart": False,
+            "pi_fixed_point_relaxation": 1.0,
+            "hessian_sgd_validation_interval": 0,
+            "hessian_sgd_validation_fixed_iters_pi": None,
+            "hessian_sgd_validation_neumann_terms": None,
+        },
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(
+            [
+                "checkpoint-info",
+                "--checkpoint",
+                str(checkpoint),
+                "--require-production-default-route",
+            ]
+        )
+
+    captured = capsys.readouterr()
+    assert exc_info.value.code == 1
+    assert "route_metadata_source=checkpoint" in captured.out
+    assert "uses_production_default_optimizer_settings=false" in captured.out
+    assert "production_default_optimizer_setting_mismatches=fd_hessian_refresh_steps" in (
+        captured.out
+    )
+    assert "checkpoint production default route settings differ" in captured.err
+    assert "fd_hessian_refresh_steps" in captured.err
+    assert "usage:" not in captured.err
+    assert "Traceback" not in captured.err
+
+
+def test_cli_checkpoint_info_require_production_default_route_requires_settings_evidence(
+    tmp_path: Path,
+    capsys,
+):
+    checkpoint = _checkpoint_with_route_metadata(
+        tmp_path,
+        {
+            "mode": "genewise",
+            "optimizer": "hessian-sgd",
+            "uses_production_default_optimizer_settings": True,
+            "production_default_optimizer_setting_mismatches": [],
+        },
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(
+            [
+                "checkpoint-info",
+                "--checkpoint",
+                str(checkpoint),
+                "--require-production-default-route",
+            ]
+        )
+
+    captured = capsys.readouterr()
+    assert exc_info.value.code == 1
+    assert "route_metadata_source=checkpoint" in captured.out
+    assert "uses_production_default_optimizer_settings=null" in captured.out
+    assert "production_default_optimizer_setting_mismatches=null" in captured.out
+    assert "checkpoint production default route evidence is incomplete" in captured.err
+    assert "missing final_check_iters" in captured.err
+    assert "fd_hessian_refresh_steps" in captured.err
     assert "usage:" not in captured.err
     assert "Traceback" not in captured.err
 
