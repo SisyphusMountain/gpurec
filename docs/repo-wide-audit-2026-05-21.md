@@ -2051,9 +2051,11 @@ not edit files.  New or still-open findings from that refresh are:
 - The Pi-adjoint warm-start cache is now an explicit API-bridge runtime
   boundary instead of only a core-kernel argument.  It remains opt-in, records
   whether an initial guess was used, supports staging a solved `v_Pi` separately
-  from the accepted cache, drops stale layout-shaped caches, and participates in
-  the existing runtime-cache clear path.  Production optimizer defaults are
-  unchanged until accepted-step cache commit calls are wired through line search.
+  from the accepted cache, drops stale layout-shaped caches, participates in
+  the existing runtime-cache clear path, and the Hessian-conditioned genewise
+  workflow now commits staged adjoints only after the accepted current-theta
+  gradient.  Production optimizer defaults are unchanged until warmstarted
+  gradient budgets are validated end to end.
 
 ## Recommended Next Order
 

@@ -8,7 +8,11 @@ from typing import Any
 
 import torch
 
-from gpurec.api.autograd import _clear_pi_adjoint_runtime_cache
+from gpurec.api.autograd import (
+    _clear_pi_adjoint_runtime_cache,
+    _commit_pi_adjoint_pending_cache,
+    _discard_pi_adjoint_pending_cache,
+)
 from gpurec.api.model import GeneReconModel
 
 from ._artifact_publish import (
@@ -258,6 +262,50 @@ def _clear_cached_solver_runtime_state(model: GeneReconModel) -> None:
     else:
         model.clear()
     _clear_cuda_allocator_cache_if_needed(model)
+
+
+def _cached_static_states(model: GeneReconModel) -> list[Any]:
+    statics = getattr(model, "cached_static_states", None)
+    if statics is None:
+        return []
+    return list(statics)
+
+
+def _uses_staged_pi_adjoint_cache(model: GeneReconModel) -> bool:
+    return any(
+        bool(getattr(static, "pi_adjoint_warmstart", False))
+        and getattr(static, "pi_adjoint_cache_update_mode", "immediate") == "stage"
+        for static in _cached_static_states(model)
+    )
+
+
+def _commit_pi_adjoint_pending_caches(model: GeneReconModel) -> int:
+    return sum(
+        1
+        for static in _cached_static_states(model)
+        if _commit_pi_adjoint_pending_cache(static)
+    )
+
+
+def _discard_pi_adjoint_pending_caches(model: GeneReconModel) -> int:
+    return sum(
+        1
+        for static in _cached_static_states(model)
+        if _discard_pi_adjoint_pending_cache(static)
+    )
+
+
+def _clear_solver_runtime_state_preserving_pi_cache(model: GeneReconModel) -> None:
+    """Clear per-evaluation state without dropping accepted staged Pi caches."""
+    if not _uses_staged_pi_adjoint_cache(model):
+        model.clear()
+        return
+    for static in _cached_static_states(model):
+        if hasattr(static, "warm_E"):
+            static.warm_E = None
+        _discard_pi_adjoint_pending_cache(static)
+        if hasattr(static, "last_solver_stats"):
+            static.last_solver_stats = None
 
 
 def _is_memory_retryable_runtime_error(exc: RuntimeError) -> bool:
@@ -1409,7 +1457,7 @@ class OptimizationRunner:
         *,
         solver_stage: str,
     ) -> tuple[torch.Tensor, torch.Tensor, dict[str, Any]]:
-        model.clear()
+        _clear_solver_runtime_state_preserving_pi_cache(model)
         loss_vec, metrics = self._evaluate_active_genewise_vector_and_grad(
             model,
             solver_stage=solver_stage,
@@ -1456,6 +1504,7 @@ class OptimizationRunner:
         *,
         solver_stage: str,
     ) -> tuple[torch.Tensor, dict[str, Any], int]:
+        pi_adjoint_pending_discards = _discard_pi_adjoint_pending_caches(model)
         optimizer.zero_grad(set_to_none=True)
         _pre_loss, _pre_grad, _pre_metrics = (
             self._evaluate_active_genewise_vector_grad_at_current_theta(
@@ -1476,6 +1525,12 @@ class OptimizationRunner:
             upper_bound=math.log2(self.config.max_rate),
         )
         metrics["grad/projected_inf"] = projected_grad_inf
+        metrics["solver/pi_adjoint_pending_cache_commits"] = float(
+            _commit_pi_adjoint_pending_caches(model)
+        )
+        metrics["solver/pi_adjoint_pending_cache_discards"] = float(
+            pi_adjoint_pending_discards
+        )
         return loss_vec, metrics, 2
 
     def _active_projected_grad_and_free(
@@ -1712,6 +1767,7 @@ class OptimizationRunner:
         if hessian_refresh_steps < 1:
             raise ValueError("hessian_refresh_steps must be positive")
         idx = self._active_batch_indices(model)
+        pi_adjoint_pending_discards = _discard_pi_adjoint_pending_caches(model)
         lower_bound = math.log2(config.min_rate)
         upper_bound = math.log2(config.max_rate)
         damping = float(config.fd_newton_damping)
@@ -1830,7 +1886,7 @@ class OptimizationRunner:
                 candidate = theta0.clone()
                 candidate.index_copy_(0, idx, candidate_active)
                 self._set_model_theta(model, candidate)
-                model.clear()
+                _clear_solver_runtime_state_preserving_pi_cache(model)
                 with torch.no_grad():
                     trial_loss_vec = self._evaluate_active_genewise_loss_vector(model)
                 loss_evals += 1
@@ -1899,7 +1955,7 @@ class OptimizationRunner:
                 candidate = theta0.clone()
                 candidate.index_copy_(0, idx, candidate_active)
                 self._set_model_theta(model, candidate)
-                model.clear()
+                _clear_solver_runtime_state_preserving_pi_cache(model)
                 with torch.no_grad():
                     trial_loss_vec = self._evaluate_active_genewise_loss_vector(model)
                 loss_evals += 1
@@ -2076,6 +2132,17 @@ class OptimizationRunner:
         metrics["optimizer/fd_newton_step_scale"] = float(step_scale)
         metrics["optimizer/fd_newton_raw_step_inf"] = raw_step_inf
         metrics["optimizer/fd_newton_bound_projected_step_inf"] = bounded_step_inf
+        if bool(loss_rejected.any().detach().cpu()):
+            pi_adjoint_pending_commits = 0
+            pi_adjoint_pending_discards += _discard_pi_adjoint_pending_caches(model)
+        else:
+            pi_adjoint_pending_commits = _commit_pi_adjoint_pending_caches(model)
+        metrics["solver/pi_adjoint_pending_cache_commits"] = float(
+            pi_adjoint_pending_commits
+        )
+        metrics["solver/pi_adjoint_pending_cache_discards"] = float(
+            pi_adjoint_pending_discards
+        )
         return loss_vec, metrics, grad_evals + loss_evals, next_state
 
     def _set_model_theta(self, model: GeneReconModel, theta: torch.Tensor) -> None:
@@ -2954,7 +3021,7 @@ class OptimizationRunner:
                             batch_final_cache_ready=batch_final_cache_ready,
                         )
                     active_batch_local_step += 1
-                    model.clear()
+                    _clear_solver_runtime_state_preserving_pi_cache(model)
                 else:
                     loss = closure()
                     if not torch.isfinite(loss).item() or not _is_finite_tensor(model.theta.grad):

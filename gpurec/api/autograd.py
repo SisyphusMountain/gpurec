@@ -221,8 +221,22 @@ def _commit_pi_adjoint_pending_cache(static: ReconStaticState) -> bool:
     return True
 
 
-def _discard_pi_adjoint_pending_cache(static: ReconStaticState) -> None:
+def _discard_pi_adjoint_pending_cache(static: ReconStaticState) -> bool:
+    had_pending = torch.is_tensor(getattr(static, "pi_adjoint_pending_cache", None))
     static.pi_adjoint_pending_cache = None
+    return bool(had_pending)
+
+
+def _clear_post_gradient_runtime_cache(static: ReconStaticState) -> None:
+    """Clear transient gradient state while preserving staged Pi commits."""
+    if hasattr(static, "warm_E"):
+        static.warm_E = None
+    if (
+        bool(getattr(static, "pi_adjoint_warmstart", False))
+        and _pi_adjoint_cache_update_mode(static) == "stage"
+    ):
+        return
+    _clear_pi_adjoint_runtime_cache(static)
 
 
 def _store_pi_adjoint_cache(
@@ -598,7 +612,6 @@ class _GeneReconFunction(torch.autograd.Function):
             grad_theta = grad_theta * gvec
 
         if static.clear_runtime_after_backward:
-            static.warm_E = None
-            _clear_pi_adjoint_runtime_cache(static)
+            _clear_post_gradient_runtime_cache(static)
 
         return grad_theta, None, None

@@ -7233,6 +7233,63 @@ def test_adam_fd_newton_active_batch_step_uses_finite_difference_hessian(
     torch.testing.assert_close(model.theta.detach()[1], before[1])
 
 
+def test_active_fd_newton_step_commits_staged_pi_adjoint_cache(tmp_path: Path):
+    config = _optimizer_mode_config(
+        tmp_path,
+        optimizer="hessian-sgd",
+        mode="genewise",
+        fd_hessian_epsilon=1e-3,
+        fd_newton_damping=1e-6,
+    )
+    runner = OptimizationRunner(config)
+    model = _WorkflowBatchedLBFGSModeModel()
+    model.select_batch(0)
+    static = model.static_state
+    static.pi_adjoint_warmstart = True
+    static.pi_adjoint_cache_update_mode = "stage"
+    static.pi_adjoint_cache = torch.tensor([-1.0], dtype=model.theta.dtype)
+    static.pi_adjoint_pending_cache = torch.tensor([-2.0], dtype=model.theta.dtype)
+    pending_values: list[torch.Tensor] = []
+    original_eval = runner._evaluate_active_genewise_vector_grad_at_current_theta
+
+    def staged_eval(model_arg, *, solver_stage):
+        loss_vec, grad, metrics = original_eval(
+            model_arg,
+            solver_stage=solver_stage,
+        )
+        pending = torch.tensor(
+            [float(len(pending_values) + 1)],
+            dtype=model_arg.theta.dtype,
+            device=model_arg.theta.device,
+        )
+        pending_values.append(pending.detach().cpu())
+        model_arg.static_state.pi_adjoint_pending_cache = pending
+        return loss_vec, grad, metrics
+
+    runner._evaluate_active_genewise_vector_grad_at_current_theta = staged_eval  # type: ignore[method-assign]
+
+    _loss_vec, metrics, _evals, _state = runner._active_fd_newton_step(
+        model,
+        solver_stage="full",
+    )
+
+    assert metrics["solver/pi_adjoint_pending_cache_commits"] == 1.0
+    assert metrics["solver/pi_adjoint_pending_cache_discards"] == 1.0
+    torch.testing.assert_close(static.pi_adjoint_cache.cpu(), pending_values[-1])
+    assert static.pi_adjoint_pending_cache is None
+    assert model.clears == 0
+
+    static.warm_E = object()
+    static.last_solver_stats = {"Pi_wave_iterations": [2]}
+    optimize_workflow._clear_solver_runtime_state_preserving_pi_cache(model)
+
+    torch.testing.assert_close(static.pi_adjoint_cache.cpu(), pending_values[-1])
+    assert static.pi_adjoint_pending_cache is None
+    assert static.warm_E is None
+    assert static.last_solver_stats is None
+    assert model.clears == 0
+
+
 def test_fd_newton_line_search_falls_back_to_projected_gradient(
     tmp_path: Path,
 ):

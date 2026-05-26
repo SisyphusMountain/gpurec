@@ -56,6 +56,7 @@ from .autograd import (
     ReconStaticState,
     _GeneReconFunction,
     _clear_pi_adjoint_runtime_cache,
+    _clear_post_gradient_runtime_cache,
     compute_resident_implicit_gradient,
     evaluate_resident_gradient_forward,
 )
@@ -1180,7 +1181,7 @@ def _evaluate_static_state(
     )
     static.warm_E = None
     if getattr(static, "clear_runtime_after_backward", False):
-        _clear_pi_adjoint_runtime_cache(static)
+        _clear_post_gradient_runtime_cache(static)
     loss_vec = gradient_forward.loss_vec
     return (
         loss_vec.detach() if per_family else loss_vec.sum().detach()

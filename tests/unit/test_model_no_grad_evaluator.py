@@ -409,6 +409,118 @@ def test_evaluate_static_state_grad_uses_resident_gradient_boundary(monkeypatch)
     assert grad_calls[0]["uniform_pibar_row_max"] is pi_out["uniform_pibar_row_max"]
 
 
+def test_evaluate_static_state_keeps_staged_pi_adjoint_for_workflow_commit(
+    monkeypatch,
+):
+    theta = torch.zeros((2, 3), dtype=torch.float64)
+    accepted = torch.full((2, 2), 0.25, dtype=theta.dtype)
+    pending = torch.full((2, 2), 0.75, dtype=theta.dtype)
+    static = SimpleNamespace(
+        genewise=True,
+        warm_E=object(),
+        clear_runtime_after_backward=True,
+        pi_adjoint_warmstart=True,
+        pi_adjoint_cache=accepted,
+        pi_adjoint_pending_cache=None,
+        pi_adjoint_cache_update_mode="stage",
+    )
+    e = torch.ones((2, 2), dtype=theta.dtype)
+    solve = api_autograd.ResidentSolveResult(
+        theta=theta.detach().clone(),
+        e_out={"E": e, "E_s1": e, "E_s2": e, "E_bar": e},
+        pi_out={
+            "Pi_wave_ordered": e,
+            "Pibar_wave_ordered": e,
+            "uniform_pibar_row_max": None,
+        },
+        log_p_s=torch.zeros(2, dtype=theta.dtype),
+        log_p_d=torch.zeros(2, dtype=theta.dtype),
+        log_p_l=torch.zeros(2, dtype=theta.dtype),
+        max_transfer=torch.zeros(2, dtype=theta.dtype),
+    )
+
+    monkeypatch.setattr(
+        api_model,
+        "evaluate_resident_gradient_forward",
+        lambda *_args, **_kwargs: api_autograd.ResidentGradientForwardResult(
+            solve=solve,
+            loss_vec=torch.ones(2, dtype=theta.dtype),
+        ),
+    )
+
+    def fake_compute(static_arg, **_kwargs):
+        static_arg.pi_adjoint_pending_cache = pending
+        return torch.ones_like(theta)
+
+    monkeypatch.setattr(api_model, "compute_resident_implicit_gradient", fake_compute)
+
+    _loss, grad = api_model._evaluate_static_state(
+        static,
+        theta,
+        need_grad=True,
+        per_family=True,
+    )
+
+    torch.testing.assert_close(grad, torch.ones_like(theta))
+    assert static.warm_E is None
+    torch.testing.assert_close(static.pi_adjoint_cache, accepted)
+    torch.testing.assert_close(static.pi_adjoint_pending_cache, pending)
+
+
+def test_evaluate_static_state_clears_immediate_pi_adjoint_runtime_cache(
+    monkeypatch,
+):
+    theta = torch.zeros((2, 3), dtype=torch.float64)
+    static = SimpleNamespace(
+        genewise=True,
+        warm_E=object(),
+        clear_runtime_after_backward=True,
+        pi_adjoint_warmstart=True,
+        pi_adjoint_cache=torch.full((2, 2), 0.25, dtype=theta.dtype),
+        pi_adjoint_pending_cache=torch.full((2, 2), 0.75, dtype=theta.dtype),
+        pi_adjoint_cache_update_mode="immediate",
+    )
+    e = torch.ones((2, 2), dtype=theta.dtype)
+    solve = api_autograd.ResidentSolveResult(
+        theta=theta.detach().clone(),
+        e_out={"E": e, "E_s1": e, "E_s2": e, "E_bar": e},
+        pi_out={
+            "Pi_wave_ordered": e,
+            "Pibar_wave_ordered": e,
+            "uniform_pibar_row_max": None,
+        },
+        log_p_s=torch.zeros(2, dtype=theta.dtype),
+        log_p_d=torch.zeros(2, dtype=theta.dtype),
+        log_p_l=torch.zeros(2, dtype=theta.dtype),
+        max_transfer=torch.zeros(2, dtype=theta.dtype),
+    )
+
+    monkeypatch.setattr(
+        api_model,
+        "evaluate_resident_gradient_forward",
+        lambda *_args, **_kwargs: api_autograd.ResidentGradientForwardResult(
+            solve=solve,
+            loss_vec=torch.ones(2, dtype=theta.dtype),
+        ),
+    )
+    monkeypatch.setattr(
+        api_model,
+        "compute_resident_implicit_gradient",
+        lambda *_args, **_kwargs: torch.ones_like(theta),
+    )
+
+    api_model._evaluate_static_state(
+        static,
+        theta,
+        need_grad=True,
+        per_family=True,
+    )
+
+    assert static.warm_E is None
+    assert static.pi_adjoint_cache is None
+    assert static.pi_adjoint_pending_cache is None
+
+
 def test_compute_resident_implicit_gradient_uses_pi_adjoint_cache_when_enabled(
     monkeypatch,
 ):

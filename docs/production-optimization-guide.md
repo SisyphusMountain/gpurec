@@ -74,14 +74,16 @@ diagnostic unless the objective or gradient becomes nonfinite.
 
 The API bridge also owns an opt-in Pi-adjoint warm-start cache for experiments
 that reuse the previous solved `v_Pi` as the next implicit-gradient initial
-guess. That cache is disabled for the supported production routes until the
-optimizer loop can commit updates only from accepted gradient evaluations; loss
-probes and rejected line-search candidates must not become the next accepted
-warm start. The bridge can stage a newly solved adjoint separately from the
-accepted cache so future optimizer integration can commit only after an
-accepted step. When enabled in a controlled experiment, history rows aggregate
-`solver/pi_adjoint_warmstart_enabled_batches` and
-`solver/pi_adjoint_warmstart_used_batches`.
+guess. That cache is disabled for the supported production routes while
+warmstarted budget policy is validated, but the Hessian-conditioned genewise
+step path now has the safe commit boundary: loss probes and rejected
+line-search candidates do not become the next accepted warm start, and a
+staged adjoint is committed only after the final accepted current-theta
+gradient. When enabled in a controlled experiment, history rows include
+`solver/pi_adjoint_warmstart_enabled_batches`,
+`solver/pi_adjoint_warmstart_used_batches`,
+`solver/pi_adjoint_pending_cache_commits`, and
+`solver/pi_adjoint_pending_cache_discards`.
 
 ## Default Optimizer Routes
 
