@@ -66,13 +66,15 @@ layout, and output intent independently.
 
 Current duplication:
 
-- `gpurec/api/autograd.py:115` `_GeneReconFunction.forward()` runs E, Pi,
+- `gpurec/api/autograd.py:491` `_GeneReconFunction.forward()` runs E, Pi,
   `compute_nll()`, saves tensors, and delegates backward.
-- `gpurec/api/model.py:685` `_evaluate_static_state()` independently runs E,
-  Pi, root-row loss-only evaluation, and optional gradient.
-- `gpurec/api/model.py:1748` `reconciliation_state()` repeats the E/Pi solve
+- `gpurec/api/_uniform_evaluator.py:95`
+  `evaluate_resident_static_state()` now owns resident no-grad and optional
+  gradient E/Pi/NLL orchestration; `gpurec/api/model.py:1184`
+  `_evaluate_static_state()` is a thin compatibility wrapper.
+- `gpurec/api/model.py:2449` `reconciliation_state()` repeats the E/Pi solve
   for export state.
-- `gpurec/api/uniform_chunked.py:477` `_evaluate_chunked_uniform()` repeats E,
+- `gpurec/api/uniform_chunked.py:722` `_evaluate_chunked_uniform()` repeats E,
   chunked Pi forward, optional Pi backward, E-adjoint, stats, and reductions.
 
 Plan:
@@ -80,8 +82,9 @@ Plan:
 - Add a model-internal evaluator module, for example
   `gpurec/api/_uniform_evaluator.py`.
 - Move common E/Pi/root-likelihood logic behind one request object. Resident
-  no-grad and gradient-forward evaluation now share `_uniform_evaluator.py`;
-  the autograd bridge still owns the implicit-gradient backward call.
+  no-grad, gradient-forward, and static-state evaluation now share
+  `_uniform_evaluator.py`; the autograd bridge still owns the implicit-gradient
+  VJP implementation.
 - Make `_GeneReconFunction`, `_GeneReconFullLossFunction`, and
   `_UniformChunkedFunction` call the evaluator instead of open-coding the
   pipeline.
@@ -411,8 +414,9 @@ and benchmark gates in this plan.
 2. Introduce `RateMode`, `ParameterLayout`, `UniformRates`, and
    `OriginationPrior` without changing kernels.
 3. Refactor E/root likelihood to use explicit layout and root rows.
-4. Add the shared evaluator and route `_evaluate_static_state()` through it.
-5. Route autograd functions through the evaluator.
+4. Add the shared evaluator and route `_evaluate_static_state()` through it
+   for resident static-state evaluation.
+5. Continue routing autograd/export functions through the evaluator.
 6. Route `UniformChunkedReconModel` through the evaluator.
 7. Split `Pi_wave_forward` wrappers by output intent.
 8. Refactor `Pi_wave_backward` around `ParameterLayout` and

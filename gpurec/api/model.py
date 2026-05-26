@@ -56,8 +56,6 @@ from .autograd import (
     ReconStaticState,
     _GeneReconFunction,
     _clear_pi_adjoint_runtime_cache,
-    _clear_post_gradient_runtime_cache,
-    compute_resident_implicit_gradient,
 )
 from ._family_layout import (
     FamilyWaveInputs,
@@ -67,9 +65,9 @@ from ._family_layout import (
     schedule_family_waves,
 )
 from ._uniform_evaluator import (
-    evaluate_resident_gradient_forward,
     evaluate_resident_no_grad,
     evaluate_resident_no_grad_with_solved_e,
+    evaluate_resident_static_state,
     solve_resident_e,
     solve_resident_e_pi,
 )
@@ -1190,36 +1188,12 @@ def _evaluate_static_state(
     need_grad: bool,
     per_family: bool = False,
 ) -> tuple[torch.Tensor, torch.Tensor | None]:
-    require_default_objective("GeneReconModel")
-    if not need_grad:
-        return evaluate_resident_no_grad(static, theta, per_family=per_family), None
-    if need_grad and per_family and not static.genewise:
-        raise ValueError("per-family gradients are only independent in genewise mode")
-
-    gradient_forward = evaluate_resident_gradient_forward(static, theta)
-    solve = gradient_forward.solve
-    grad_theta = compute_resident_implicit_gradient(
+    return evaluate_resident_static_state(
         static,
-        theta=solve.theta,
-        pi_wave_ordered=solve.pi_out["Pi_wave_ordered"],
-        pibar_wave_ordered=solve.pi_out["Pibar_wave_ordered"],
-        e=solve.e_out["E"],
-        ebar=solve.e_out["E_bar"],
-        e_s1=solve.e_out["E_s1"],
-        e_s2=solve.e_out["E_s2"],
-        log_p_s=solve.log_p_s,
-        log_p_d=solve.log_p_d,
-        log_p_l=solve.log_p_l,
-        max_transfer=solve.max_transfer,
-        uniform_pibar_row_max=solve.pi_out.get("uniform_pibar_row_max"),
+        theta,
+        need_grad=need_grad,
+        per_family=per_family,
     )
-    static.warm_E = None
-    if getattr(static, "clear_runtime_after_backward", False):
-        _clear_post_gradient_runtime_cache(static)
-    loss_vec = gradient_forward.loss_vec
-    return (
-        loss_vec.detach() if per_family else loss_vec.sum().detach()
-    ), grad_theta.detach()
 
 
 class _GeneReconFullLossFunction(torch.autograd.Function):

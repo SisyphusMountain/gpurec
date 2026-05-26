@@ -179,6 +179,55 @@ def test_genewise_nll_per_family_no_grad_uses_resident_evaluator(monkeypatch):
     assert calls[0]["grad_enabled"] is False
 
 
+def test_model_evaluate_static_state_delegates_to_uniform_evaluator(monkeypatch):
+    static = object()
+    theta = torch.tensor([1.0, 2.0, 3.0], dtype=torch.float64)
+    expected_loss = torch.tensor([4.0, 5.0], dtype=torch.float64)
+    expected_grad = torch.tensor([0.1, 0.2, 0.3], dtype=torch.float64)
+    calls: list[dict[str, object]] = []
+
+    def fake_evaluate_resident_static_state(
+        static_arg,
+        theta_arg,
+        *,
+        need_grad,
+        per_family=False,
+    ):
+        calls.append(
+            {
+                "static": static_arg,
+                "theta": theta_arg,
+                "need_grad": need_grad,
+                "per_family": per_family,
+            }
+        )
+        return expected_loss, expected_grad
+
+    monkeypatch.setattr(
+        api_model,
+        "evaluate_resident_static_state",
+        fake_evaluate_resident_static_state,
+    )
+
+    loss, grad = api_model._evaluate_static_state(
+        static,
+        theta,
+        need_grad=True,
+        per_family=True,
+    )
+
+    assert loss is expected_loss
+    assert grad is expected_grad
+    assert calls == [
+        {
+            "static": static,
+            "theta": theta,
+            "need_grad": True,
+            "per_family": True,
+        }
+    ]
+
+
 def test_evaluate_static_state_no_grad_delegates_to_resident_evaluator(monkeypatch):
     static = object()
     theta = torch.tensor([1.0, 2.0, 3.0], dtype=torch.float64)
@@ -201,12 +250,12 @@ def test_evaluate_static_state_no_grad_delegates_to_resident_evaluator(monkeypat
         return expected
 
     monkeypatch.setattr(
-        api_model,
+        api_evaluator,
         "evaluate_resident_no_grad",
         fake_evaluate_resident_no_grad,
     )
 
-    loss, grad = api_model._evaluate_static_state(
+    loss, grad = api_evaluator.evaluate_resident_static_state(
         static,
         theta,
         need_grad=False,
@@ -219,6 +268,19 @@ def test_evaluate_static_state_no_grad_delegates_to_resident_evaluator(monkeypat
     assert calls[0]["static"] is static
     assert calls[0]["theta"] is theta
     assert calls[0]["per_family"] is True
+
+
+def test_evaluate_static_state_rejects_non_genewise_per_family_gradients():
+    static = SimpleNamespace(genewise=False)
+    theta = torch.tensor([1.0, 2.0, 3.0], dtype=torch.float64)
+
+    with pytest.raises(ValueError, match="per-family gradients"):
+        api_evaluator.evaluate_resident_static_state(
+            static,
+            theta,
+            need_grad=True,
+            per_family=True,
+        )
 
 
 @pytest.mark.parametrize(
@@ -418,17 +480,17 @@ def test_evaluate_static_state_grad_uses_resident_gradient_boundary(monkeypatch)
         return expected_grad
 
     monkeypatch.setattr(
-        api_model,
+        api_evaluator,
         "evaluate_resident_gradient_forward",
         fake_evaluate_resident_gradient_forward,
     )
     monkeypatch.setattr(
-        api_model,
+        api_evaluator,
         "compute_resident_implicit_gradient",
         fake_compute_resident_implicit_gradient,
     )
 
-    loss, grad = api_model._evaluate_static_state(
+    loss, grad = api_evaluator.evaluate_resident_static_state(
         static,
         theta,
         need_grad=True,
@@ -489,7 +551,7 @@ def test_evaluate_static_state_keeps_staged_pi_adjoint_for_workflow_commit(
     )
 
     monkeypatch.setattr(
-        api_model,
+        api_evaluator,
         "evaluate_resident_gradient_forward",
         lambda *_args, **_kwargs: api_evaluator.ResidentGradientForwardResult(
             solve=solve,
@@ -501,9 +563,13 @@ def test_evaluate_static_state_keeps_staged_pi_adjoint_for_workflow_commit(
         static_arg.pi_adjoint_pending_cache = pending
         return torch.ones_like(theta)
 
-    monkeypatch.setattr(api_model, "compute_resident_implicit_gradient", fake_compute)
+    monkeypatch.setattr(
+        api_evaluator,
+        "compute_resident_implicit_gradient",
+        fake_compute,
+    )
 
-    _loss, grad = api_model._evaluate_static_state(
+    _loss, grad = api_evaluator.evaluate_resident_static_state(
         static,
         theta,
         need_grad=True,
@@ -545,7 +611,7 @@ def test_evaluate_static_state_clears_immediate_pi_adjoint_runtime_cache(
     )
 
     monkeypatch.setattr(
-        api_model,
+        api_evaluator,
         "evaluate_resident_gradient_forward",
         lambda *_args, **_kwargs: api_evaluator.ResidentGradientForwardResult(
             solve=solve,
@@ -553,12 +619,12 @@ def test_evaluate_static_state_clears_immediate_pi_adjoint_runtime_cache(
         ),
     )
     monkeypatch.setattr(
-        api_model,
+        api_evaluator,
         "compute_resident_implicit_gradient",
         lambda *_args, **_kwargs: torch.ones_like(theta),
     )
 
-    api_model._evaluate_static_state(
+    api_evaluator.evaluate_resident_static_state(
         static,
         theta,
         need_grad=True,

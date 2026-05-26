@@ -2026,9 +2026,38 @@ def test_resident_gradient_forward_lives_in_uniform_evaluator():
         if isinstance(node, (ast.ClassDef, ast.FunctionDef))
     }
 
-    for name in ("ResidentGradientForwardResult", "evaluate_resident_gradient_forward"):
+    for name in (
+        "ResidentGradientForwardResult",
+        "evaluate_resident_gradient_forward",
+        "evaluate_resident_static_state",
+    ):
         assert name in evaluator_defs
         assert name not in autograd_defs
+
+
+def test_model_static_state_evaluation_is_thin_evaluator_wrapper():
+    root = Path(__file__).resolve().parents[2]
+    model_module = ast.parse(
+        (root / "gpurec" / "api" / "model.py").read_text(encoding="utf-8")
+    )
+    function = next(
+        node
+        for node in model_module.body
+        if isinstance(node, ast.FunctionDef) and node.name == "_evaluate_static_state"
+    )
+    called_names = {
+        node.func.id
+        for node in ast.walk(function)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+    }
+
+    assert "evaluate_resident_static_state" in called_names
+    for name in (
+        "evaluate_resident_gradient_forward",
+        "compute_resident_implicit_gradient",
+        "_clear_post_gradient_runtime_cache",
+    ):
+        assert name not in called_names
 
 
 def test_api_uses_named_pi_forward_request_contract():

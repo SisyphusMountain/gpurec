@@ -32,13 +32,15 @@ index:
 
 Current alternatives:
 
-- `gpurec/api/autograd.py:115` `_GeneReconFunction.forward()` runs E, Pi,
+- `gpurec/api/autograd.py:491` `_GeneReconFunction.forward()` runs E, Pi,
   root likelihood, tensor saving, and backward delegation.
-- `gpurec/api/model.py:685` `_evaluate_static_state()` independently runs E,
-  Pi, root-row likelihood, optional gradient, and stats.
-- `gpurec/api/model.py:1748` `reconciliation_state()` repeats E/Pi work for
+- `gpurec/api/_uniform_evaluator.py:95`
+  `evaluate_resident_static_state()` now owns resident no-grad and optional
+  gradient E/Pi/NLL orchestration; `gpurec/api/model.py:1184`
+  `_evaluate_static_state()` is a thin wrapper.
+- `gpurec/api/model.py:2449` `reconciliation_state()` repeats E/Pi work for
   export state.
-- `gpurec/api/uniform_chunked.py:477` `_evaluate_chunked_uniform()` repeats
+- `gpurec/api/uniform_chunked.py:722` `_evaluate_chunked_uniform()` repeats
   E/Pi/gradient/stat reductions for chunked uniform mode.
 
 Simplification:
@@ -518,8 +520,8 @@ Gate:
 1. Add characterization tests around current loss, gradient, preprocessing,
    scheduler, and export behavior.
 2. Introduce explicit `ParameterLayout` and prepared origination-prior objects.
-3. Build the shared evaluator and route resident no-grad/autograd/export paths
-   through it.
+3. Build the shared evaluator and route resident no-grad, static-state,
+   autograd, and export paths through it.
 4. Route `UniformChunkedReconModel` through the shared evaluator.
 5. Prune backward kernel alternatives and collapse environment flags.
 6. Pick one scheduler and remove scheduler experiments from runtime code.

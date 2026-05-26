@@ -26,14 +26,14 @@ The graph is conceptually simple, but the code has several entry points that
 rebuild it differently:
 
 - Differentiable active-batch path:
-  `gpurec/api/autograd.py:115` `_GeneReconFunction`.
+  `gpurec/api/autograd.py:491` `_GeneReconFunction`.
 - No-grad / explicit-theta / full-stream path:
-  `gpurec/api/model.py:685` `_evaluate_static_state()` and
-  `gpurec/api/model.py:1329` `_stream_full_batches()`.
+  `gpurec/api/_uniform_evaluator.py:95` `evaluate_resident_static_state()`
+  and `gpurec/api/model.py:1881` `_stream_full_batches()`.
 - Export-state path:
-  `gpurec/api/model.py:1748` `reconciliation_state()`.
+  `gpurec/api/model.py:2449` `reconciliation_state()`.
 - Large global/uniform chunk path:
-  `gpurec/api/uniform_chunked.py:477` `_evaluate_chunked_uniform()`.
+  `gpurec/api/uniform_chunked.py:722` `_evaluate_chunked_uniform()`.
 - Benchmark path:
   `profiling/bench_uniform_forward_backward_pipeline.py`.
 
@@ -226,9 +226,10 @@ Gates:
 ### Step 5: Build The Shared Evaluator
 
 Move the current sequence from `_evaluate_static_state()` into the shared
-resident evaluator. Current resident no-grad and gradient-forward E/Pi/NLL
-evaluation live in `gpurec/api/_uniform_evaluator.py`; the implicit-gradient
-backward call still lives in the autograd bridge.
+resident evaluator. Current resident no-grad, gradient-forward E/Pi/NLL, and
+static-state optional-gradient orchestration live in
+`gpurec/api/_uniform_evaluator.py`; the implicit-gradient VJP implementation
+still lives in the autograd bridge.
 
 The evaluator owns:
 

@@ -90,13 +90,14 @@ autograd bridge.
 ```mermaid
 flowchart TD
   Closure["closure()<br/>gpurec/workflow/optimize.py:2747"]
-  ClampBefore["model.clamp_theta_(min_rate, max_rate)<br/>gpurec/api/model.py:2522"]
+  ClampBefore["model.clamp_theta_(min_rate, max_rate)<br/>gpurec/api/model.py:2496"]
   EvalBackward["OptimizationRunner._evaluate_and_backward(model)<br/>gpurec/workflow/optimize.py:822"]
-  FullLoss["model.full_loss()<br/>gpurec/api/model.py:2345"]
-  FullLossFn["_GeneReconFullLossFunction.forward(...)<br/>gpurec/api/model.py:1227"]
-  Stream["_stream_full_batches(theta, need_grad=True)<br/>gpurec/api/model.py:1907"]
-  EvalStatic["_evaluate_static_state(static, theta, need_grad=True)<br/>gpurec/api/model.py:1186"]
-  ForwardSolve["evaluate_resident_gradient_forward(static, theta)<br/>gpurec/api/_uniform_evaluator.py:65"]
+  FullLoss["model.full_loss()<br/>gpurec/api/model.py:2319"]
+  FullLossFn["_GeneReconFullLossFunction.forward(...)<br/>gpurec/api/model.py:1201"]
+  Stream["_stream_full_batches(theta, need_grad=True)<br/>gpurec/api/model.py:1881"]
+  ModelEval["_evaluate_static_state(static, theta, need_grad=True)<br/>gpurec/api/model.py:1184"]
+  EvalStatic["evaluate_resident_static_state(static, theta, need_grad=True)<br/>gpurec/api/_uniform_evaluator.py:95"]
+  ForwardSolve["evaluate_resident_gradient_forward(static, theta)<br/>gpurec/api/_uniform_evaluator.py:67"]
   SolveEPi["solve_resident_e_pi(static, theta, pi_training_state_request())<br/>gpurec/api/autograd.py:394"]
   Extract["extract_parameters_uniform(...)<br/>gpurec/core/extract_parameters.py:44"]
   EFixed["E_fixed_point(...)<br/>gpurec/core/likelihood.py:184"]
@@ -118,11 +119,11 @@ flowchart TD
   EAdjoint["_e_adjoint_and_theta_vjp(...)<br/>gpurec/optimization/implicit_grad.py:262"]
   Bicgstab["_bicgstab(...)<br/>gpurec/optimization/implicit_grad.py:59"]
   LossBackward["loss.backward()<br/>gpurec/workflow/optimize.py:825"]
-  FullLossFnBackward["_GeneReconFullLossFunction.backward(...)<br/>gpurec/api/model.py:1237"]
+  FullLossFnBackward["_GeneReconFullLossFunction.backward(...)<br/>gpurec/api/model.py:1211"]
   OptimizerStep["optimizer step<br/>Adam, Adagrad, adagrad-restarts,<br/>hessian-sgd, LBFGS variants"]
-  Clear["model.clear()<br/>gpurec/api/model.py:2266"]
+  Clear["model.clear()<br/>gpurec/api/model.py:2240"]
 
-  Closure --> ClampBefore --> EvalBackward --> FullLoss --> FullLossFn --> Stream --> EvalStatic
+  Closure --> ClampBefore --> EvalBackward --> FullLoss --> FullLossFn --> Stream --> ModelEval --> EvalStatic
   EvalStatic --> ForwardSolve --> SolveEPi
   SolveEPi --> Extract
   SolveEPi --> EFixed --> EStep
