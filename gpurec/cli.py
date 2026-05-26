@@ -1751,6 +1751,30 @@ def _add_run_config_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--lbfgs-max-iter", type=int, help="LBFGS inner iterations per step.")
     parser.add_argument("--lbfgs-max-ls", type=int, help="Batched LBFGS line-search probes.")
     parser.add_argument(
+        "--lbfgsb-high-kkt-stop-patience",
+        type=int,
+        help=(
+            "For lbfgsb, stop after this many consecutive high-KKT "
+            "tiny-progress rows; 0 disables the stop."
+        ),
+    )
+    parser.add_argument(
+        "--lbfgsb-high-kkt-stop-min-fallbacks",
+        type=int,
+        help=(
+            "Minimum accepted lbfgsb fallback rows before the high-KKT stop can "
+            "trigger."
+        ),
+    )
+    parser.add_argument(
+        "--lbfgsb-fallback-max-coordinates",
+        type=int,
+        help=(
+            "Maximum coordinate sign-fallback candidates for lbfgsb fallback "
+            "competition; 0 disables coordinate fallback."
+        ),
+    )
+    parser.add_argument(
         "--lbfgs-line-search",
         choices=("none", "strong_wolfe"),
         help="LBFGS line-search mode.",

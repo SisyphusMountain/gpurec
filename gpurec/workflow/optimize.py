@@ -372,6 +372,7 @@ class _ResumeState:
     adagrad_restart_dynamic_phase_start_step: int | None = None
     converged_family_indices: tuple[int, ...] = ()
     batch_plan_generation: int = 0
+    lbfgsb_fallback_used_count: int = 0
 
 
 _FINAL_ARTIFACT_FILES = (
@@ -664,6 +665,14 @@ def _resume_state_from_payload(path: Path, payload: dict[str, Any]) -> _ResumeSt
                 path,
                 "status.batch_plan_generation",
                 ckpt_status.get("batch_plan_generation", MISSING),
+                default=0,
+            )
+        ),
+        lbfgsb_fallback_used_count=int(
+            checkpoint_nonnegative_int(
+                path,
+                "status.lbfgsb_fallback_used_count",
+                ckpt_status.get("lbfgsb_fallback_used_count", MISSING),
                 default=0,
             )
         ),
@@ -1096,6 +1105,8 @@ class OptimizationRunner:
                 lower_bound=math.log2(config.min_rate),
                 upper_bound=math.log2(config.max_rate),
                 active_tol=1e-7,
+                fallback_max_ls=config.lbfgs_max_ls,
+                fallback_max_coordinates=config.lbfgsb_fallback_max_coordinates,
             )
         if phase == "lbfgs":
             return torch.optim.LBFGS(
@@ -2773,6 +2784,7 @@ class OptimizationRunner:
         best_step: int | None = None
         previous_objective: float | None = None
         stable_loss_steps = 0
+        lbfgsb_fallback_used_count = 0
         start_step = 0
         active_batch_index = 0
         active_batch_local_step = 0
@@ -2957,6 +2969,7 @@ class OptimizationRunner:
                 best_step = resume_state.best_step
                 previous_objective = resume_state.previous_objective
                 stable_loss_steps = resume_state.stable_loss_steps
+                lbfgsb_fallback_used_count = resume_state.lbfgsb_fallback_used_count
                 resume_status = checkpoint_status_dict(config.resume_from, resume_payload)
                 if (
                     start_step < config.steps
@@ -3263,6 +3276,7 @@ class OptimizationRunner:
                         self._configure_specieswise_adagrad_lbfgsb_tail_solver(model)
                         previous_objective = None
                         stable_loss_steps = 0
+                        lbfgsb_fallback_used_count = 0
                     current_phase = phase
                     optimizer = self._make_optimizer(model, phase)
                     active_optimizer_batch_index = None
@@ -4209,6 +4223,49 @@ class OptimizationRunner:
                     row_best_nll = best_nll
                     row_best_step = best_step
 
+                lbfgsb_high_kkt_status: dict[str, str] | None = None
+                if phase == "lbfgsb":
+                    if bool(metrics.get("optimizer/lbfgsb_fallback_used", False)):
+                        lbfgsb_fallback_used_count += 1
+                    high_kkt_stall_count = int(
+                        metrics.get("optimizer/lbfgsb_high_kkt_stall_count", 0)
+                    )
+                    high_kkt_stop_patience = int(
+                        config.lbfgsb_high_kkt_stop_patience
+                    )
+                    fallback_used_this_row = bool(
+                        metrics.get("optimizer/lbfgsb_fallback_used", False)
+                    )
+                    high_kkt_stop_signal = high_kkt_stall_count >= (
+                        2 if high_kkt_stop_patience <= 1 else high_kkt_stop_patience
+                    ) or (
+                        high_kkt_stall_count >= high_kkt_stop_patience
+                        and fallback_used_this_row
+                    )
+                    high_kkt_stop_ready = (
+                        high_kkt_stop_patience > 0
+                        and high_kkt_stop_signal
+                        and lbfgsb_fallback_used_count
+                        >= int(config.lbfgsb_high_kkt_stop_min_fallbacks)
+                    )
+                    metrics["optimizer/lbfgsb_fallback_used_count"] = float(
+                        lbfgsb_fallback_used_count
+                    )
+                    metrics["optimizer/lbfgsb_high_kkt_stop_patience"] = float(
+                        high_kkt_stop_patience
+                    )
+                    metrics["optimizer/lbfgsb_high_kkt_stop_min_fallbacks"] = float(
+                        int(config.lbfgsb_high_kkt_stop_min_fallbacks)
+                    )
+                    metrics["optimizer/lbfgsb_high_kkt_stop_ready"] = (
+                        high_kkt_stop_ready
+                    )
+                    if high_kkt_stop_ready:
+                        lbfgsb_high_kkt_status = {
+                            "status": "converged",
+                            "reason": "lbfgsb_high_kkt_tiny_progress_patience",
+                        }
+
                 row = {
                     "step": step,
                     "optimizer/phase": phase,
@@ -4233,6 +4290,7 @@ class OptimizationRunner:
                     "best_step": row_best_step,
                     "previous_objective": previous_objective,
                     "stable_loss_steps": stable_loss_steps,
+                    "lbfgsb_fallback_used_count": lbfgsb_fallback_used_count,
                 }
                 if active_objective_scope:
                     checkpoint_status["active_batch_index"] = active_batch_index
@@ -4482,6 +4540,8 @@ class OptimizationRunner:
                             else None
                         ),
                     )
+                if lbfgsb_high_kkt_status is not None:
+                    step_status = lbfgsb_high_kkt_status
                 if projected_lbfgs_min_lr_reached:
                     status = {
                         "status": "not_converged",
@@ -4833,6 +4893,9 @@ class OptimizationRunner:
                     "theta_step_inf": 0.0,
                     "delta_likelihood_bits": None,
                     "stable_loss_steps": stable_loss_steps,
+                    "optimizer/lbfgsb_fallback_used_count": float(
+                        lbfgsb_fallback_used_count
+                    ),
                     "best_nll_bits": best_nll,
                     "best_step": best_step,
                     **resume_info,
@@ -4893,6 +4956,7 @@ class OptimizationRunner:
                     None if final_eval_failed else final_nll_bits
                 ),
                 "stable_loss_steps": stable_loss_steps,
+                "lbfgsb_fallback_used_count": lbfgsb_fallback_used_count,
             }
             if final_improved:
                 self._save_status(

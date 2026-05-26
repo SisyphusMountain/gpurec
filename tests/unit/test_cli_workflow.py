@@ -544,12 +544,23 @@ def test_cli_accepts_adagrad_restarts_lbfgsb_optimizer(tmp_path: Path):
 def test_cli_accepts_loss_stop_projected_grad_gate_override(tmp_path: Path):
     args = build_parser().parse_args(
         _minimal_workflow_cli_args("optimize", tmp_path)
-        + ["--no-loss-stop-projected-grad-gate"]
+        + [
+            "--no-loss-stop-projected-grad-gate",
+            "--lbfgsb-high-kkt-stop-patience",
+            "2",
+            "--lbfgsb-high-kkt-stop-min-fallbacks",
+            "1",
+            "--lbfgsb-fallback-max-coordinates",
+            "0",
+        ]
     )
 
     config = _run_config_from_args(args)
 
     assert config.loss_stop_projected_grad_gate is False
+    assert config.lbfgsb_high_kkt_stop_patience == 2
+    assert config.lbfgsb_high_kkt_stop_min_fallbacks == 1
+    assert config.lbfgsb_fallback_max_coordinates == 0
 
 
 def test_cli_config_template_prints_genewise_hessian_sgd_auto_defaults(capsys):

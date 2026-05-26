@@ -488,6 +488,9 @@ _JSON_INT_FIELDS = {
     "lbfgs_history_size",
     "lbfgs_max_iter",
     "lbfgs_max_ls",
+    "lbfgsb_high_kkt_stop_patience",
+    "lbfgsb_high_kkt_stop_min_fallbacks",
+    "lbfgsb_fallback_max_coordinates",
     "loss_patience",
     "best_likelihood_patience",
     "checkpoint_every",
@@ -635,6 +638,9 @@ class RunConfig:
     lbfgs_max_iter: int = 1
     lbfgs_max_ls: int = 8
     lbfgs_line_search: str = "none"
+    lbfgsb_high_kkt_stop_patience: int = 0
+    lbfgsb_high_kkt_stop_min_fallbacks: int = 1
+    lbfgsb_fallback_max_coordinates: int = 16
     fd_hessian_epsilon: float = 1e-3
     fd_newton_damping: float = 1e-3
     adaptive_rebatch: bool = False
@@ -789,6 +795,18 @@ class RunConfig:
         self.lbfgs_max_ls = _normalize_positive_int(
             "lbfgs_max_ls",
             self.lbfgs_max_ls,
+        )
+        self.lbfgsb_high_kkt_stop_patience = _normalize_nonnegative_int(
+            "lbfgsb_high_kkt_stop_patience",
+            self.lbfgsb_high_kkt_stop_patience,
+        )
+        self.lbfgsb_high_kkt_stop_min_fallbacks = _normalize_nonnegative_int(
+            "lbfgsb_high_kkt_stop_min_fallbacks",
+            self.lbfgsb_high_kkt_stop_min_fallbacks,
+        )
+        self.lbfgsb_fallback_max_coordinates = _normalize_nonnegative_int(
+            "lbfgsb_fallback_max_coordinates",
+            self.lbfgsb_fallback_max_coordinates,
         )
         self.loss_patience = _normalize_nonnegative_int(
             "loss_patience",

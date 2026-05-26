@@ -57,6 +57,7 @@ class LBFGSB(Optimizer):
         cg_max_iter: int | None = None,
         cg_tol: float = 1e-4,
         fallback_max_ls: int | None = None,
+        fallback_max_coordinates: int = 16,
     ) -> None:
         if lr <= 0.0:
             raise ValueError(f"Invalid learning rate: {lr}")
@@ -80,6 +81,8 @@ class LBFGSB(Optimizer):
             raise ValueError("cg_tol must be non-negative")
         if fallback_max_ls is not None and fallback_max_ls < 1:
             raise ValueError("fallback_max_ls must be positive when provided")
+        if fallback_max_coordinates < 0:
+            raise ValueError("fallback_max_coordinates must be non-negative")
 
         defaults = {
             "lr": float(lr),
@@ -100,6 +103,7 @@ class LBFGSB(Optimizer):
                 if fallback_max_ls is None
                 else int(fallback_max_ls)
             ),
+            "fallback_max_coordinates": int(fallback_max_coordinates),
         }
         super().__init__(params, defaults)
 
@@ -754,7 +758,7 @@ class LBFGSB(Optimizer):
         lower_bound: float | Tensor | None,
         upper_bound: float | Tensor | None,
         initial_alpha: float,
-        max_coordinates: int,
+        max_coordinates: int = 16,
         max_ls: int,
         c1: float,
         shrink: float,
@@ -899,6 +903,7 @@ class LBFGSB(Optimizer):
         c1: float,
         shrink: float,
         tolerance_change: float,
+        max_coordinates: int = 16,
     ) -> tuple[_LineSearchResult, str, int]:
         best_search = current_search
         best_kind = current_kind
@@ -997,7 +1002,7 @@ class LBFGSB(Optimizer):
                         lower_bound=lower_bound,
                         upper_bound=upper_bound,
                         initial_alpha=lr,
-                        max_coordinates=16,
+                        max_coordinates=max_coordinates,
                         max_ls=alternative_max_ls,
                         c1=c1,
                         shrink=shrink,
@@ -1112,6 +1117,7 @@ class LBFGSB(Optimizer):
         history_size = int(group["history_size"])
         max_ls = int(group["max_ls"])
         fallback_max_ls = int(group["fallback_max_ls"])
+        fallback_max_coordinates = int(group["fallback_max_coordinates"])
         c1 = float(group["c1"])
         shrink = float(group["shrink"])
         tolerance_grad = float(group["tolerance_grad"])
@@ -1252,6 +1258,7 @@ class LBFGSB(Optimizer):
                         current_kind=direction_kind,
                         lr=lr,
                         max_ls=fallback_max_ls,
+                        max_coordinates=fallback_max_coordinates,
                         c1=c1,
                         shrink=shrink,
                         tolerance_change=tolerance_change,
@@ -1314,6 +1321,7 @@ class LBFGSB(Optimizer):
                         current_kind=direction_kind,
                         lr=lr,
                         max_ls=fallback_max_ls,
+                        max_coordinates=fallback_max_coordinates,
                         c1=c1,
                         shrink=shrink,
                         tolerance_change=tolerance_change,

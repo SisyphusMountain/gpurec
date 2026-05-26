@@ -433,6 +433,8 @@ Measured routes:
 | Composite strict continuation | Resume the composite route, continue `lbfgsb` with `loss_change_tol=1`, `projected_grad_tol=3` | `930.90s` combined (`859.07s + 71.83s`) | `1699471.625` validated | `2.203108787536621` | Restored L-BFGS-B optimizer state from the composite checkpoint and added three tail rows. A fixed32 validation returned the same `1699471.625`-bit loss; final-check gradient max-abs delta was `0.00376129150390625`. |
 | Composite objective-plateau route | `adagrad-restarts-lbfgsb`, route A prefix, tail `lbfgsb` `lr=0.6`, `lbfgs_max_ls=4`, `loss_change_tol=0.25`, `loss_patience=2`, `projected_grad_tol=0.5`, `loss_stop_projected_grad_gate=false` | `1039.92s` process wall | `1699466.375` fixed32 validated | `1.4706581830978394` | Clean one-command run from uniform `0.05`. It stopped at optimizer step 68 after two `<=0.25`-bit improvements, then ran a fixed32 final check with `0.0` loss delta and `9.059906005859375e-06` gradient max-abs delta. This is `1.75` bits lower and `161.31s` faster than the previous `1699468.125` automatic endpoint. |
 | Composite bounded polish probe | Continue the objective-plateau route with `loss_change_tol=0.1`, `lbfgs_max_ls=4`, same no-gate stop policy | `164.52s` for steps 69-75, then `72.31s` recorded for steps 76-79 before killing the next fallback row; fixed32 validation cost `27.08s` | `1699460.125` fixed32 validated | `1.228520393371582` | Probe, not yet packaged as a clean automatic route. Steps 76-79 still bought `1.0`, `0.5`, `0.125`, and `0.125` bits; the following high-KKT fallback row became the current time sink. A production policy should stop or explicitly budget this fallback rather than enter an unbounded polish row. |
+| Composite high-KKT stop, no coordinate fallback | `adagrad-restarts-lbfgsb`, route A prefix, tail `lbfgsb` `lr=0.6`, `lbfgs_max_ls=4`, `loss_change_tol=0.1`, no projected-gradient stop gate, `lbfgsb_high_kkt_stop_patience=2`, `lbfgsb_fallback_max_coordinates=0` | `1354.41s` process wall | `1699463.75` fixed32 validated | `1.0165135860443115` | Clean one-command lower-objective route, but slower than the objective-plateau route. It disabled coordinate fallback to avoid a `214.83s` coordinate-search row seen with coordinates enabled; the final row before validation spent `123.86s` on a no-improvement fallback search, so this is a lower-likelihood polish point rather than the best wall-time tradeoff. |
+| Composite high-KKT stop, early no-coordinate guard | Same as above, but `lbfgsb_high_kkt_stop_patience=1` with the refined stop signal | `1084.33s` process wall | `1699467.125` fixed32 validated | `2.840712308883667` | Rejected as dominated by the objective-plateau route: slower than `1039.92s` and `0.75` bits higher. The earlier unrefined patience-1 run was faster at `993.63s` but stopped at `1699468.0`, also above the objective-plateau route. |
 | A + post-stall continuation check | Continue the uninterrupted 40-step `lr=0.6` tail with `loss_change_tol=1`, `loss_patience=2`, `projected_grad_tol=10` | `982.2694296170375s` combined | `1699468.25` validated | `1.4578275680541992` | Segmented continuation check. Fixed8, fixed16, and fixed32 validation all returned `1699468.25` bits. |
 | A + adaptive L-BFGS-B tail, stricter gradient gate | Resume A, `lbfgsb`, `lr=0.6`, max 60 L-BFGS-B steps, `loss_change_tol=1`, `loss_patience=2`, `projected_grad_tol=3` | `1201.2349555559922s` combined | `1699468.125` validated | `2.8452367782592773` | Former best automatic endpoint before the no-gate composite route. Fixed8, fixed16, and fixed32 validation all returned `1699468.125` bits; the extra time buys only `1.25` bits versus the `projected_grad_tol=10`, `loss_change_tol=2` one-shot route. |
 | A + L-BFGS-B tail, rejected high step | Resume A, `lbfgsb`, `lr=0.7`, 20 L-BFGS-B steps | `548.9326881880406s` combined | `1699557.125` | `13.341646194458008` | Upper-bracket reject: worse than `lr=0.6` by `6.25` bits with a much larger residual, so no manual fixed16/fixed32 validation was run. |
@@ -481,6 +483,16 @@ The fixed32 validation matched exactly, and the final projected-gradient
 infinity norm was `1.4706581830978394`.  A tighter continuation reached a
 validated `1699460.125` bits, but the next high-KKT fallback row stalled; this
 is a polish probe, not yet a clean automatic production route.
+Bounding the late fallback path exposed a second tradeoff.  Passing the
+workflow `lbfgs_max_ls=4` into L-BFGS-B fallback line searches and adding
+high-KKT stop telemetry prevents silent unbounded polishing, but coordinate
+fallback can still spend heavily: the coordinate-enabled full run hit a
+`214.83s`, `96`-closure coordinate row.  Disabling coordinate fallback with
+`lbfgsb_fallback_max_coordinates=0` gave a clean `1699463.75`-bit endpoint in
+`1354.41s`, but the faster `1084.33s` high-KKT variant stopped above the
+objective-plateau route.  For now, the accepted wall-time/objective balance is
+still the `1039.92s` objective-plateau route; the no-coordinate route is a
+slower polish option.
 A post-stall continuation check from the fixed 40-step endpoint reached the
 lower reference point `1699468.25` bits in `982.27s`; the extra `71.10s`
 bought only `1.25` bits beyond the uninterrupted 40-step endpoint.  Tightening
@@ -1271,6 +1283,12 @@ Differences from HOGENOM:
   Adagrad prefix and L-BFGS-B tail.  HOGENOM keeps plain `adagrad-restarts` as
   the default until the composite route beats the retained HOGENOM basin and
   fixed128 validation time.
+- Late L-BFGS-B fallback behavior is currently dataset-specific.  On
+  `test_trees_1000`, coordinate fallback can find lower objectives but may cost
+  hundreds of seconds in one row; disabling coordinate fallback avoids that
+  tail risk but stopped at a higher objective in the full run.  These
+  high-KKT/fallback guards are therefore documented as `test_trees_1000`
+  controls, not as HOGENOM defaults.
 - The first `test_trees_1000` high-fidelity promotion does not currently need
   HOGENOM's tied fixed16/fixed32 validation ladder for objective consistency:
   fixed8, fixed16, and fixed32 validations matched exactly at the measured

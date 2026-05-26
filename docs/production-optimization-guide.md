@@ -222,6 +222,14 @@ projected-gradient norm is the convergence contract; disable it when the
 production question is wall-time-to-likelihood and late projected-gradient
 polishing is too expensive for the marginal objective gain.
 
+The `lbfgsb_high_kkt_stop_patience`,
+`lbfgsb_high_kkt_stop_min_fallbacks`, and
+`lbfgsb_fallback_max_coordinates` knobs are late-tail guards for generated
+`test_trees_1000`-style routes. They bound or stop projected-gradient fallback
+polishing after L-BFGS-B reaches tiny objective movements. They are not part of
+the retained HOGENOM default; validate them per dataset before promoting them
+to a production preset.
+
 The default is based on the retained counts-free HOGENOM route: uniform `0.05`
 D/L/T initialization, no AleRax event-count checkpoint, fixed budgets of 8, 16,
 then 32, and a fixed128 validation check. It is the specieswise `auto` route
