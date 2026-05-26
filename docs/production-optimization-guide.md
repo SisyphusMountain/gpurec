@@ -240,10 +240,12 @@ movements. `lbfgsb_fallback_resolution_competition_factor` can spend that
 budget challenging accepted fallback moves whose decrease is only a small
 multiple of the floating-point loss resolution; keep it at `0` for the faster
 `test_trees_1000` route, and use values such as `16` only for explicit
-quality-polish probes. The schedule-forced fallback and best-checkpoint retry
-controls are also dataset-specific tail escape hatches. They are not part of the retained
-HOGENOM default; validate them per dataset before promoting them to a
-production preset.
+quality-polish probes. Intermediate `test_trees_1000` probes at factors `4`
+and `8` did not preserve the lower objective basin, so this is not currently a
+smooth time/quality dial. The schedule-forced fallback and best-checkpoint
+retry controls are also dataset-specific tail escape hatches. They are not part
+of the retained HOGENOM default; validate them per dataset before promoting
+them to a production preset.
 
 The default is based on the retained counts-free HOGENOM route: uniform `0.05`
 D/L/T initialization, no AleRax event-count checkpoint, fixed budgets of 8, 16,
