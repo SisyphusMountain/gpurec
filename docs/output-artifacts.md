@@ -66,10 +66,9 @@ they are `adagrad_restart_schedule`, `adagrad_restart_total_steps`, and
 `summary.json` repeats the completed optimizer step as `steps_completed`, the
 selected checkpoint path as `sampling_checkpoint`, the final objective as
 `final_nll_bits` and `final_log_likelihood_bits`, and the best accepted
-objective as `best_nll_bits` and `best_log_likelihood_bits`.  If the final
-likelihood/gradient validation fails, `final_log_likelihood_bits` is `null`;
-inspect `status`, `reason`, and the final `history.jsonl` row before using the
-rates.
+objective as `best_nll_bits` and `best_log_likelihood_bits`. Failed runs set
+`sampling_checkpoint` and `final_log_likelihood_bits` to `null`; inspect
+`status`, `reason`, and the final `history.jsonl` row before using the rates.
 The `final_check_iters` field records the effective solver iteration budget
 used for the final high-fidelity likelihood/gradient validation; for
 specieswise `adagrad-restarts`, this is the resolved

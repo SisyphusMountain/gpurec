@@ -4108,7 +4108,9 @@ class OptimizationRunner:
                 row=final_row,
                 optimizer_phase=current_phase,
             )
-            if sampling_checkpoint is None:
+            if final_status["status"] == "failed":
+                sampling_checkpoint = None
+            elif sampling_checkpoint is None:
                 sampling_checkpoint = latest_checkpoint
             final_log_likelihood_bits = (
                 None if final_eval_failed else -final_nll_bits

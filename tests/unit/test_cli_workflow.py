@@ -1982,6 +1982,7 @@ def test_cli_optimize_failed_result_exits_nonzero_without_traceback(
     assert "nonfinite_objective_or_gradient" in captured.out
     assert "mode=genewise" in captured.out
     assert "optimizer=hessian-sgd" in captured.out
+    assert "sampling_checkpoint=null" in captured.out
     assert "final_nll_bits=inf" in captured.out
     assert "final_log_likelihood_bits=null" in captured.out
     assert "final_grad_inf=null" in captured.out
@@ -2592,6 +2593,7 @@ def test_cli_run_refuses_sampling_after_failed_optimization(
     assert "reason=nonfinite_objective_or_gradient" in captured.out
     assert "mode=genewise" in captured.out
     assert "optimizer=hessian-sgd" in captured.out
+    assert "sampling_checkpoint=null" in captured.out
     assert "final_nll_bits=inf" in captured.out
     assert "final_log_likelihood_bits=null" in captured.out
     assert "final_grad_inf=null" in captured.out

@@ -159,6 +159,8 @@ from gpurec import RunConfig, SamplingConfig, optimize, sample
 
 run = RunConfig.from_json("run.json")
 result = optimize(run)
+if result.sampling_checkpoint is None:
+    raise RuntimeError(f"optimization failed: {result.reason}")
 
 sampling = SamplingConfig(checkpoint=result.sampling_checkpoint, samples=100)
 sample_result = sample(sampling)
@@ -168,9 +170,9 @@ For direct imports from the workflow package, `gpurec.workflow` exports the same
 `RunConfig`, `SamplingConfig`, `OptimizationRunner`, `SamplingRunner`,
 `OptimizationResult`, `SamplingResult`, and `optimize`/`sample` functions.
 `OptimizationResult` includes the family/species/batch counts, selected
-sampling checkpoint, objective, gradient route, rate parameterization,
-batch/solver route, optimizer-specific route fields, configured steps, and
-effective optimizer step cap reported in `summary.json`.
+sampling checkpoint for usable runs, objective, gradient route, rate
+parameterization, batch/solver route, optimizer-specific route fields,
+configured steps, and effective optimizer step cap reported in `summary.json`.
 
 Top-level backtracking helpers are also available for lower-level sampling and
 validation workflows:
@@ -371,8 +373,8 @@ Main outputs include:
   checkpoints for resume, sampling, restore workflows, and route inspection
 - `optimization_history.csv` and `history.jsonl`
 - `rates_final.tsv`, `theta_final.pt`, `summary.json` with status, the selected
-  sampling checkpoint, final/best NLL and log-likelihood, and the effective
-  optimizer/batch/solver route
+  sampling checkpoint when available, final/best NLL and log-likelihood, and
+  the effective optimizer/batch/solver route
 - `per_fam_likelihoods.tsv` for genewise runs
 
 The `gpurec optimize` status line and the optimization portion of

@@ -8425,6 +8425,9 @@ def test_optimization_runner_lbfgs_rejects_nonfinite_post_step_evaluation(
     assert latest["status"]["status"] == "failed"
     assert latest["status"]["reason"] == "nonfinite_objective_or_gradient"
     assert latest["last_row"]["optimizer/phase"] == "final_eval"
+    summary = json.loads((config.out_dir / "summary.json").read_text(encoding="utf-8"))
+    assert result.sampling_checkpoint is None
+    assert summary["sampling_checkpoint"] is None
     assert runner.fake_model.closed
 
 
@@ -8473,7 +8476,8 @@ def test_optimization_runner_marks_nonfinite_final_evaluation_failed(tmp_path: P
     assert summary["reason"] == "nonfinite_objective_or_gradient"
     assert summary["elapsed_s"] >= 0.0
     assert summary["steps_completed"] == result.steps_completed
-    assert summary["sampling_checkpoint"] == str(result.sampling_checkpoint)
+    assert result.sampling_checkpoint is None
+    assert summary["sampling_checkpoint"] is None
     assert summary["final_nll_bits"] == pytest.approx(result.final_nll_bits)
     assert summary["final_log_likelihood_bits"] is None
     assert math.isinf(result.final_grad_inf)
