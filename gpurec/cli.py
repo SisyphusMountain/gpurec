@@ -16,6 +16,21 @@ from gpurec.core.batch_planning import (
 _EXPECTED_WORKFLOW_ERRORS = (ValueError, OSError, RuntimeError)
 _RAW_THETA_CHECKPOINT_ERROR = "must contain a dictionary payload"
 _CUDA_BACKWARD_MIN_SPECIES_NODES_EXCLUSIVE = 256
+_MODE_DEFAULT_OPTIMIZER_HELP = (
+    "Fail unless the resolved optimizer matches the mode default optimizer "
+    "for the selected mode."
+)
+_MODE_DEFAULT_OPTIMIZER_CONFIG_ACTION = (
+    "use optimizer=auto or the mode default optimizer"
+)
+_PRODUCTION_DEFAULT_ROUTE_CONFIG_ACTION = (
+    "use optimizer=auto and omit route overrides so the shipped "
+    "likelihood/gradient and optimizer defaults apply"
+)
+_MODE_DEFAULT_OPTIMIZER_ARTIFACT_ACTION = "expected the mode default optimizer route"
+_PRODUCTION_DEFAULT_ROUTE_ARTIFACT_ACTION = (
+    "expected the shipped likelihood/gradient and optimizer route"
+)
 _SAFE_STATUS_TEXT_CHARS = frozenset(
     "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
     "abcdefghijklmnopqrstuvwxyz"
@@ -66,10 +81,7 @@ def _add_require_mode_default_optimizer_arg(parser: argparse.ArgumentParser) -> 
     parser.add_argument(
         "--require-mode-default-optimizer",
         action="store_true",
-        help=(
-            "Fail unless the resolved optimizer matches the production default "
-            "for the selected mode."
-        ),
+        help=_MODE_DEFAULT_OPTIMIZER_HELP,
     )
 
 
@@ -251,7 +263,7 @@ def _require_config_mode_default_optimizer(
             _mode_default_optimizer_gate_message(
                 "config",
                 route,
-                action="use optimizer=auto or the mode default optimizer",
+                action=_MODE_DEFAULT_OPTIMIZER_CONFIG_ACTION,
             )
         )
 
@@ -268,10 +280,7 @@ def _require_config_production_default_route(
             _production_default_route_gate_message(
                 "config",
                 route,
-                action=(
-                    "use optimizer=auto and omit route overrides so the shipped "
-                    "likelihood/gradient and optimizer defaults apply"
-                ),
+                action=_PRODUCTION_DEFAULT_ROUTE_CONFIG_ACTION,
             )
         )
 
@@ -291,7 +300,7 @@ def _exit_unless_mode_default_optimizer(
             _mode_default_optimizer_gate_message(
                 subject,
                 audited,
-                action="expected the mode default optimizer route",
+                action=_MODE_DEFAULT_OPTIMIZER_ARTIFACT_ACTION,
             )
             + "\n"
         ),
@@ -313,7 +322,7 @@ def _exit_unless_production_default_route(
             _production_default_route_gate_message(
                 subject,
                 audited,
-                action="expected the shipped likelihood/gradient and optimizer route",
+                action=_PRODUCTION_DEFAULT_ROUTE_ARTIFACT_ACTION,
             )
             + "\n"
         ),

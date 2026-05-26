@@ -199,6 +199,24 @@ def test_sampling_config_cli_surface_matches_dataclass_fields():
         "summary-info",
     ],
 )
+def test_cli_mode_default_optimizer_help_uses_narrow_gate_wording(command: str):
+    action = _parser_action(command, "require_mode_default_optimizer")
+
+    assert "mode default optimizer for the selected mode" in str(action.help)
+    assert "production default for the selected mode" not in str(action.help)
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "optimize",
+        "validate-config",
+        "sample",
+        "run",
+        "checkpoint-info",
+        "summary-info",
+    ],
+)
 def test_cli_production_route_help_names_final_check_evidence(command: str):
     action = _parser_action(command, "require_production_default_route")
 

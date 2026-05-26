@@ -2354,6 +2354,10 @@ not edit files.  New or still-open findings from that refresh are:
   "shipped production route" shorthand; current docs now name either the
   shipped HOGENOM/`test_trees_1000` optimizer route or the full shipped
   likelihood/gradient and optimizer route.
+- The CLI gate help and remediation strings now share route-specific constants.
+  `--require-mode-default-optimizer` help says mode default optimizer for the
+  selected mode, while the full production-route gate keeps the shipped
+  likelihood/gradient and optimizer wording.
 
 ## Recommended Next Order
 

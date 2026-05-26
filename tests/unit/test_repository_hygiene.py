@@ -1888,6 +1888,49 @@ def test_operator_docs_distinguish_mode_default_from_production_route():
         assert expected in normalized
 
 
+def test_cli_route_gate_wording_is_centralized():
+    root = Path(__file__).resolve().parents[2]
+    source = (root / "gpurec" / "cli.py").read_text(encoding="utf-8")
+    module = ast.parse(source)
+    expected_constants = {
+        "_MODE_DEFAULT_OPTIMIZER_HELP": (
+            "Fail unless the resolved optimizer matches the mode default optimizer "
+            "for the selected mode."
+        ),
+        "_MODE_DEFAULT_OPTIMIZER_CONFIG_ACTION": (
+            "use optimizer=auto or the mode default optimizer"
+        ),
+        "_PRODUCTION_DEFAULT_ROUTE_CONFIG_ACTION": (
+            "use optimizer=auto and omit route overrides so the shipped "
+            "likelihood/gradient and optimizer defaults apply"
+        ),
+        "_MODE_DEFAULT_OPTIMIZER_ARTIFACT_ACTION": (
+            "expected the mode default optimizer route"
+        ),
+        "_PRODUCTION_DEFAULT_ROUTE_ARTIFACT_ACTION": (
+            "expected the shipped likelihood/gradient and optimizer route"
+        ),
+    }
+    actual_constants: dict[str, str] = {}
+    for node in module.body:
+        if not isinstance(node, ast.Assign):
+            continue
+        for target in node.targets:
+            if isinstance(target, ast.Name) and target.id in expected_constants:
+                actual_constants[target.id] = ast.literal_eval(node.value)
+    string_constants = [
+        node.value
+        for node in ast.walk(module)
+        if isinstance(node, ast.Constant) and isinstance(node.value, str)
+    ]
+
+    assert actual_constants == expected_constants
+    assert "production default for the selected mode" not in source
+    for constant_name, wording in expected_constants.items():
+        assert string_constants.count(wording) == 1
+        assert source.count(constant_name) >= 2
+
+
 def test_troubleshooting_guide_documents_operator_failure_triage():
     root = Path(__file__).resolve().parents[2]
     project_readme = (root / "README.md").read_text(encoding="utf-8")
