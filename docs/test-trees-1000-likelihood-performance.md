@@ -145,6 +145,16 @@ tied fixed4 path.  With `E=8, Pi=4`, single cold samples measured `250000`:
 the higher memory and larger wave envelope, and the previous fixed4 repeats
 already showed this region does not hold a stable cold win.
 
+The split-budget route also keeps the documented `8192` max-wave cap.  One
+`E=8, Pi=4` cold sweep measured `4096`: `2.3022571059991606s`, `8192`:
+`2.2856174019398168s`, `12288`: `2.2725106599973515s`, and `16384`:
+`2.267264521040488s`, but paired repeats did not establish a stable cold win.
+A materialized steady check measured `8192` at `1.2848945879959501s` median and
+`1.2801758240093477s` minimum, while `16384` measured
+`1.2845551520003937s` median and `1.2798394349520095s` minimum with higher
+memory.  The near-tie is not enough to move the default away from the lower
+memory `8192` shape.
+
 Split-budget near-reference command:
 
 ```bash
