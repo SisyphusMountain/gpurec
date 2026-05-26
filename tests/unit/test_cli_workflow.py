@@ -3148,6 +3148,63 @@ def test_cli_sample_require_production_default_route_accepts_default_checkpoint(
     assert "sampled_families=1 samples=2 xml=2 out_dir=null" in captured.out
 
 
+def test_cli_sample_combined_route_gates_load_checkpoint_once(
+    tmp_path: Path,
+    capsys,
+    monkeypatch,
+):
+    from gpurec.workflow import checkpoint as checkpoint_module
+
+    config = RunConfig(
+        species_tree=tmp_path / "sp.nwk",
+        families_file=tmp_path / "families.txt",
+        out_dir=tmp_path / "out",
+        mode="genewise",
+        device="cpu",
+    )
+    checkpoint = _checkpoint_with_route_metadata(
+        tmp_path,
+        effective_route_metadata(config),
+    )
+    payload = checkpoint_module.load_checkpoint(checkpoint)
+    load_calls: list[Path] = []
+    captured_config = {}
+
+    def capture_load(path):
+        load_calls.append(Path(path))
+        return payload
+
+    def capture_sample(sample_config):
+        captured_config["config"] = sample_config
+        return SimpleNamespace(
+            families_sampled=1,
+            samples_per_family=sample_config.samples,
+            xml_files=2,
+            out_dir=sample_config.out_dir,
+        )
+
+    monkeypatch.setattr(checkpoint_module, "load_checkpoint", capture_load)
+    monkeypatch.setattr("gpurec.cli.sample", capture_sample)
+
+    main(
+        [
+            "sample",
+            "--checkpoint",
+            str(checkpoint),
+            "--samples",
+            "2",
+            "--require-mode-default-optimizer",
+            "--require-production-default-route",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert captured.err == ""
+    assert captured_config["config"].checkpoint == checkpoint.resolve()
+    assert load_calls == [checkpoint.resolve()]
+    assert "sampled_families=1 samples=2 xml=2 out_dir=null" in captured.out
+
+
 def test_cli_sample_require_production_default_route_rejects_stale_route(
     tmp_path: Path,
     capsys,

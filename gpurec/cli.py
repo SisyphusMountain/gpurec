@@ -2058,30 +2058,25 @@ def main(argv: list[str] | None = None) -> None:
             _validate_sampling_checkpoint_path(sampling_config.checkpoint)
         except _EXPECTED_WORKFLOW_ERRORS as exc:
             command_parser.error(_sampling_error_message(exc))
-        if args.require_mode_default_optimizer:
+        checkpoint_gate_route: dict[str, Any] | None = None
+        if args.require_mode_default_optimizer or args.require_production_default_route:
             try:
                 from gpurec.workflow.checkpoint import load_checkpoint
 
                 payload = load_checkpoint(sampling_config.checkpoint)
             except _EXPECTED_WORKFLOW_ERRORS as exc:
                 _exit_runtime_error(command_parser, _sampling_error_message(exc))
-            route, _route_source = _checkpoint_route_metadata(payload)
+            checkpoint_gate_route, _route_source = _checkpoint_route_metadata(payload)
+        if args.require_mode_default_optimizer:
             _exit_unless_mode_default_optimizer(
                 command_parser,
-                route,
+                checkpoint_gate_route or {},
                 subject="checkpoint",
             )
         if args.require_production_default_route:
-            try:
-                from gpurec.workflow.checkpoint import load_checkpoint
-
-                payload = load_checkpoint(sampling_config.checkpoint)
-            except _EXPECTED_WORKFLOW_ERRORS as exc:
-                _exit_runtime_error(command_parser, _sampling_error_message(exc))
-            route, _route_source = _checkpoint_route_metadata(payload)
             _exit_unless_production_default_route(
                 command_parser,
-                route,
+                checkpoint_gate_route or {},
                 subject="checkpoint",
             )
         try:

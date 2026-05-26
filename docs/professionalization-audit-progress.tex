@@ -7602,6 +7602,12 @@ stale or incomplete artifacts that omit the paired E-solver final-check budget,
 even when the optimizer name and Pi/Neumann final-check budget still match the
 shipped HOGENOM/\texttt{test\_trees\_1000} route.
 
+\texttt{gpurec sample} now shares the checkpoint payload across standalone
+sampling route gates.  When both \texttt{--require-mode-default-optimizer} and
+\texttt{--require-production-default-route} are enabled, the CLI loads the
+optimization checkpoint once and applies both production audits to the same route
+metadata before invoking sampling.
+
 \section{Next Audit Targets}
 
 \begin{enumerate}[leftmargin=*]

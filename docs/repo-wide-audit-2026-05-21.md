@@ -2327,6 +2327,10 @@ not edit files.  New or still-open findings from that refresh are:
   `final_check_iters_e` evidence. Strict artifact gates therefore reject stale or
   incomplete route metadata that omits the paired E-solver budget even when the
   optimizer name and Pi/Neumann final-check budget still match.
+- `gpurec sample` now loads a checkpoint once when both
+  `--require-mode-default-optimizer` and `--require-production-default-route`
+  are enabled. The shared payload keeps standalone sampling gates from doing
+  duplicate large-checkpoint IO before the same production route audit.
 
 ## Recommended Next Order
 
