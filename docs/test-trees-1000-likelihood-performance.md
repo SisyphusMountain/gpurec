@@ -129,6 +129,11 @@ Changing `family_chunk_size` did not change the 21-batch retained layout; a
 single `666` sample reached `2.2480324909556657s`, but repeats moved back into
 the `2.27s` to `2.32s` band, so this remains construction noise rather than a
 route change.
+Setting `CUDA_DEVICE_MAX_CONNECTIONS=1` produced a new best-observed
+near-reference sample of `2.247412250027992s`, but repeats measured
+`2.302840727963485s`, `2.2829688700148836s`, and
+`2.2658810860011727s`.  This is recorded as a best single sample, not a stable
+default-route change.
 
 There is also a distinct fast-approximate route below fixed4.  The old tied
 `E=2, Pi=2` point is unusable, but increasing only E makes `Pi=2` useful:
@@ -176,6 +181,9 @@ repeats after rejecting the early-prefetch prototype measured
 `1.7857683220063336s` and `1.77085414895555s`, so `12288` remains the
 best-observed fast setting but not a stable median improvement over the lower
 memory `8192` route.
+`CUDA_DEVICE_MAX_CONNECTIONS=1` did not improve the fast-approximate route
+either: three `E=4, Pi=2`, `12288`, chunk-`666` samples measured
+`1.7939132550382055s`, `1.759844618034549s`, and `1.7760014350060374s`.
 
 A materialized split-budget sweep with Pi fixed at `4` measured `E=5` at
 `1.2753524020081386s` and `2157060.5` bits, `E=6` at
@@ -238,6 +246,24 @@ Current-code CPU and packing rechecks also kept the route unchanged.  With
 because construction was much slower on this generated shape; `sequential`
 measured `2.360776627960149s`.  `clade_first_fit` remains the generated-tree
 default.
+Runtime environment rechecks did not establish a route change.  Explicit
+`CUDA_MODULE_LOADING=LAZY` matched the base route at `2.270426261005923s`;
+`CUDA_MODULE_LOADING=EAGER` was rejected after raising construction to
+`7.578426808002405s` and total time to `8.904745513980743s`.
+`CUDA_DEVICE_MAX_CONNECTIONS=1` gave the best single sample above but did not
+repeat as a stable improvement, and `CUDA_DEVICE_MAX_CONNECTIONS=8` measured
+`2.2815428160247393s`.  Setting `OMP_NUM_THREADS=1 MKL_NUM_THREADS=1` measured
+`2.2856818459695205s`.
+
+Adaptive fixed-point stopping is also rejected for this likelihood-only route.
+The benchmark harness can now pass `--adaptive-iters`, but the convergence
+checks were more expensive than the fixed split-budget shortcut.  At the
+current `E=8, Pi=4` budget, adaptive checks measured
+`2.4835817339480855s` with unchanged `2157098.25`-bit loss.  Adaptive max
+`E=8, Pi=8` measured `2.9879215210094117s` at `pi_max_diff_tol=1e-5` and
+`2.8730849079438485s` at `1e-6`, with tied fixed8 loss
+`2157097.25`; adaptive max `E=16, Pi=16` was slower still at
+`3.4208932110341266s` and `4.050838949973695s`.
 
 Split-budget near-reference command:
 
@@ -830,6 +856,9 @@ Rejected follow-ups:
   existing band (`2.273360916005913s`, `2.2933849390246905s`) and did not beat
   the best documented near-reference cold total.  Finite prefetch depths were
   still slower than the all-prefetch route.
+- Adaptive fixed-point stopping is rejected for the generated-tree likelihood
+  route.  It is useful as a validation mode, but the per-wave convergence checks
+  are too expensive here and do not beat the explicit split budgets.
 - In-place accumulation of the `21` per-batch scalar losses in the shared-theta
   loss-only stream was also rejected.  The prototype passed the targeted
   no-grad/specieswise/uniform tests (`13 passed`), but a seven-repetition

@@ -48,6 +48,20 @@ def _parse_optional_int(value: str | None) -> int | None:
     return int(text)
 
 
+def _parse_positive_int(value: str) -> int:
+    parsed = int(value)
+    if parsed < 1:
+        raise argparse.ArgumentTypeError("value must be positive")
+    return parsed
+
+
+def _parse_nonnegative_float(value: str) -> float:
+    parsed = float(value)
+    if parsed < 0.0:
+        raise argparse.ArgumentTypeError("value must be non-negative")
+    return parsed
+
+
 def _parse_fixed_iters(value: str) -> list[int]:
     budgets: list[int] = []
     for part in value.split(","):
@@ -150,6 +164,32 @@ def _build_parser() -> argparse.ArgumentParser:
         choices=("loss-only", "loss-grad", "both"),
         default="loss-only",
     )
+    parser.add_argument(
+        "--adaptive-iters",
+        action="store_true",
+        help=(
+            "Enable fixed-point convergence checks; fixed iteration budgets "
+            "then act as maximum E/Pi budgets."
+        ),
+    )
+    parser.add_argument(
+        "--convergence-check-interval",
+        type=_parse_positive_int,
+        default=4,
+        help="Iteration interval for adaptive E/Pi convergence checks.",
+    )
+    parser.add_argument(
+        "--e-logsumexp-tol",
+        type=_parse_nonnegative_float,
+        default=1e-5,
+        help="Adaptive E logsumexp convergence tolerance.",
+    )
+    parser.add_argument(
+        "--pi-max-diff-tol",
+        type=_parse_nonnegative_float,
+        default=1e-5,
+        help="Adaptive Pi max-difference convergence tolerance.",
+    )
     parser.add_argument("--warmups", type=int, default=1)
     parser.add_argument("--reps", type=int, default=5)
     parser.add_argument(
@@ -189,6 +229,15 @@ def _budget_schedule(args: argparse.Namespace) -> list[dict[str, int]]:
             neumann_terms,
         )
     ]
+
+
+def _validate_args(args: argparse.Namespace) -> None:
+    if args.start < 0:
+        raise ValueError("--start must be non-negative")
+    if args.adaptive_iters and args.convergence_check_interval % 2 != 0:
+        raise ValueError(
+            "--adaptive-iters requires an even --convergence-check-interval"
+        )
 
 
 def _synchronize() -> None:
@@ -363,10 +412,9 @@ def _summary_row(
 
 def main(argv: list[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
+    _validate_args(args)
     if not torch.cuda.is_available():
         raise RuntimeError("CUDA is required for resident likelihood benchmarking")
-    if args.start < 0:
-        raise ValueError("--start must be non-negative")
     dataset = args.dataset
     species_tree = dataset / "sp.nwk"
     if not species_tree.is_file():
@@ -389,8 +437,11 @@ def main(argv: list[str] | None = None) -> int:
         fixed_iters_E=first_budget["fixed_iters_E"],
         fixed_iters_Pi=first_budget["fixed_iters_Pi"],
         neumann_terms=first_budget["neumann_terms"],
-        adaptive_iters=False,
+        adaptive_iters=args.adaptive_iters,
         adaptive_neumann_terms=False,
+        convergence_check_interval=args.convergence_check_interval,
+        e_logsumexp_tol=args.e_logsumexp_tol,
+        pi_max_diff_tol=args.pi_max_diff_tol,
         family_chunk_size=args.family_chunk_size,
         clade_budget=args.clade_budget,
         batch_packing=args.batch_packing,
@@ -432,6 +483,10 @@ def main(argv: list[str] | None = None) -> int:
                 "max_root_wave_size": args.max_root_wave_size,
                 "max_dts_partial_rows": args.max_dts_partial_rows,
                 "prefetch_batches": args.prefetch_batches,
+                "adaptive_iters": args.adaptive_iters,
+                "convergence_check_interval": args.convergence_check_interval,
+                "e_logsumexp_tol": args.e_logsumexp_tol,
+                "pi_max_diff_tol": args.pi_max_diff_tol,
                 "budget_schedule": budget_schedule,
             },
             sort_keys=True,
