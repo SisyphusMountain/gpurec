@@ -38,6 +38,7 @@ MODE_DEFAULT_OPTIMIZERS = {
     "specieswise": "adagrad-restarts",
     "global": "adam",
 }
+_RUN_CONFIG_MODES = frozenset(MODE_DEFAULT_OPTIMIZERS)
 
 
 @dataclass(frozen=True)
@@ -88,10 +89,17 @@ def dtype_name_from_name(name: str) -> str:
     return str(dtype_from_name(name)).removeprefix("torch.")
 
 
-def default_optimizer_for_mode(mode: str) -> str:
-    if not isinstance(mode, str) or mode not in MODE_DEFAULT_OPTIMIZERS:
+def _normalize_mode(mode: str) -> str:
+    if not isinstance(mode, str):
         raise ValueError("mode must be 'global', 'specieswise', or 'genewise'")
-    return MODE_DEFAULT_OPTIMIZERS[mode]
+    normalized = mode.strip().lower()
+    if normalized not in _RUN_CONFIG_MODES:
+        raise ValueError("mode must be 'global', 'specieswise', or 'genewise'")
+    return normalized
+
+
+def default_optimizer_for_mode(mode: str) -> str:
+    return MODE_DEFAULT_OPTIMIZERS[_normalize_mode(mode)]
 
 
 def _normalize_int(name: str, value: int | float | str) -> int:
@@ -483,6 +491,12 @@ def _validate_json_scalar_types(data: dict[str, Any]) -> None:
         and not isinstance(data["device"], str)
     ):
         raise ValueError("device must be a device string")
+    if (
+        "mode" in data
+        and data["mode"] is not None
+        and not isinstance(data["mode"], str)
+    ):
+        raise ValueError("mode must be 'global', 'specieswise', or 'genewise'")
     for name in _RUN_CONFIG_PATH_FIELDS:
         if name not in data or data[name] is None:
             continue
@@ -575,6 +589,7 @@ class RunConfig:
         self.families_file = _normalize_path("families_file", self.families_file)
         self.out_dir = _normalize_path("out_dir", self.out_dir)
         self.resume_from = _normalize_optional_path("resume_from", self.resume_from)
+        self.mode = _normalize_mode(self.mode)
         for name in _JSON_BOOL_FIELDS:
             setattr(self, name, _normalize_bool(name, getattr(self, name)))
         self.adaptive_neumann_terms = disabled_adaptive_neumann_terms_value(
@@ -1040,6 +1055,7 @@ def production_default_optimizer_setting_mismatches_from_route(
         return tuple(missing), tuple(mismatched)
     mode_text = str(mode)
     try:
+        mode_text = _normalize_mode(mode_text)
         mode_default_optimizer = default_optimizer_for_mode(mode_text)
     except ValueError:
         mismatched.append("mode")

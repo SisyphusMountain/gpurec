@@ -2094,6 +2094,21 @@ not edit files.  New or still-open findings from that refresh are:
 - `CUDA_VISIBLE_DEVICES='' python -m pytest -q -m "unit and not gpu"`:
   1449 passed, 1 skipped, 51 deselected after the Pi-adjoint relaxation
   validation cleanup.
+- Workflow `RunConfig` mode strings are now normalized before `optimizer=auto`
+  resolution, matching the public model API behavior.  Mixed-case or
+  whitespace-padded JSON config modes now still select the intended production
+  defaults: genewise `hessian-sgd`, specieswise `adagrad-restarts`, and global
+  `adam`.  Checkpoint route audits also normalize mode strings before testing
+  production-default optimizer settings.
+- `python -m py_compile gpurec/workflow/config.py tests/unit/test_workflow.py tests/unit/test_repository_hygiene.py`:
+  passed after adding the workflow mode-normalization guard.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest -q tests/unit/test_workflow.py::test_run_config_normalizes_mode_before_auto_optimizer_resolution tests/unit/test_workflow.py::test_run_config_from_dict_normalizes_mode_before_auto_optimizer_resolution tests/unit/test_workflow.py::test_run_config_from_dict_rejects_non_string_mode tests/unit/test_workflow.py::test_route_audit_normalizes_checkpoint_mode_strings tests/unit/test_repository_hygiene.py::test_run_config_reference_covers_current_config_surface`:
+  7 passed after guarding workflow mode normalization and documentation.
+- `git diff --check`: passed before the full CPU gate for the workflow
+  mode-normalization slice.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest -q -m "unit and not gpu"`:
+  1455 passed, 1 skipped, 51 deselected after the workflow
+  mode-normalization slice.
 
 ## Recommended Next Order
 

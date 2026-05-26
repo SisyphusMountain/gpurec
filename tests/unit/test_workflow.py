@@ -1284,6 +1284,66 @@ def test_run_config_defaults_to_hessian_sgd_for_genewise_mode(tmp_path: Path):
     assert default_optimizer_for_mode("genewise") == "hessian-sgd"
 
 
+@pytest.mark.parametrize(
+    ("mode", "expected_mode", "expected_optimizer"),
+    [
+        (" GeneWise ", "genewise", "hessian-sgd"),
+        (" SpeciesWise ", "specieswise", "adagrad-restarts"),
+        (" GLOBAL ", "global", "adam"),
+    ],
+)
+def test_run_config_normalizes_mode_before_auto_optimizer_resolution(
+    tmp_path: Path,
+    mode: str,
+    expected_mode: str,
+    expected_optimizer: str,
+):
+    config = RunConfig(
+        species_tree=tmp_path / "sp.nwk",
+        families_file=tmp_path / "families.txt",
+        out_dir=tmp_path / "out",
+        mode=mode,
+        device="cpu",
+    )
+
+    assert config.mode == expected_mode
+    assert config.optimizer == expected_optimizer
+    assert default_optimizer_for_mode(mode) == expected_optimizer
+
+
+def test_run_config_from_dict_normalizes_mode_before_auto_optimizer_resolution(
+    tmp_path: Path,
+):
+    config = RunConfig.from_dict(
+        {
+            "species_tree": str(tmp_path / "sp.nwk"),
+            "families_file": str(tmp_path / "families.txt"),
+            "out_dir": str(tmp_path / "out"),
+            "mode": " SpeciesWise ",
+            "device": "cpu",
+        }
+    )
+
+    assert config.mode == "specieswise"
+    assert config.optimizer == "adagrad-restarts"
+
+
+def test_run_config_from_dict_rejects_non_string_mode(tmp_path: Path):
+    with pytest.raises(
+        ValueError,
+        match="mode must be 'global', 'specieswise', or 'genewise'",
+    ):
+        RunConfig.from_dict(
+            {
+                "species_tree": str(tmp_path / "sp.nwk"),
+                "families_file": str(tmp_path / "families.txt"),
+                "out_dir": str(tmp_path / "out"),
+                "mode": 1,
+                "device": "cpu",
+            }
+        )
+
+
 def test_effective_route_metadata_reports_production_likelihood_contract(
     tmp_path: Path,
 ):
@@ -1341,6 +1401,26 @@ def test_effective_route_metadata_marks_nondefault_optimizer(tmp_path: Path):
 def test_route_audit_infers_production_default_settings_from_route_dict():
     route = {
         "mode": "specieswise",
+        "optimizer": "adagrad-restarts",
+        "final_check_iters": 128,
+        "optimizer_step_cap": 125,
+        "optimizer_step_cap_reason": "adagrad_restart_schedule",
+        "adagrad_restart_schedule": "8:1.0:60,16:0.5:35,32:0.5:30",
+        "adagrad_restart_total_steps": 125,
+        "adagrad_restart_final_check_iters": 128,
+    }
+
+    missing, mismatches = production_default_optimizer_setting_mismatches_from_route(
+        route
+    )
+
+    assert missing == ()
+    assert mismatches == ()
+
+
+def test_route_audit_normalizes_checkpoint_mode_strings():
+    route = {
+        "mode": " SpeciesWise ",
         "optimizer": "adagrad-restarts",
         "final_check_iters": 128,
         "optimizer_step_cap": 125,

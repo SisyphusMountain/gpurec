@@ -7428,6 +7428,17 @@ The touched modules compile, the focused helper and source-hygiene selector
 reports \texttt{14 passed}, \texttt{git diff --check} passes, and the full CPU
 unit gate reports \texttt{1449 passed, 1 skipped, 51 deselected}.
 
+Workflow \texttt{RunConfig} mode strings are now stripped and case-normalized
+before \texttt{optimizer=auto} resolves the production default optimizer.  This
+brings JSON config handling in line with the public model API, so
+mixed-case or whitespace-padded modes still select genewise
+\texttt{hessian-sgd}, specieswise \texttt{adagrad-restarts}, or global
+\texttt{adam}.  Checkpoint route audits normalize mode strings before testing
+production-default optimizer settings as well.  The touched modules compile,
+the focused workflow/config-reference selector reports \texttt{7 passed},
+\texttt{git diff --check} passes, and the full CPU unit gate reports
+\texttt{1455 passed, 1 skipped, 51 deselected}.
+
 \section{Next Audit Targets}
 
 \begin{enumerate}[leftmargin=*]

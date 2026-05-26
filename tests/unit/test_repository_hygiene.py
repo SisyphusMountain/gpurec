@@ -986,6 +986,8 @@ def test_run_config_reference_covers_current_config_surface():
     for token in (
         "flat JSON and Python dataclass contract",
         "`RunConfig.from_dict(...)` before model construction",
+        "Mode strings are",
+        "case-normalized before `optimizer=auto`",
         "resolves to `hessian-sgd`",
         "resolves to `adagrad-restarts`",
         "Disabled compatibility flag",
