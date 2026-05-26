@@ -62,7 +62,9 @@ paths, and validates both with
 --require-production-default-route --check-preprocess`, proving the installed
 preflight can parse the referenced AleRax fixture files and reports
 `preprocess_checked=true` with `cuda_backward_ready=false` for the tiny species
-tree. It generates a global template too, then
+tree, then confirms `--require-cuda-backward-ready` fails those generated
+configs with `cuda_backward_ready_reason=requires_s_gt_256` and no stdout. It
+generates a global template too, then
 checks that it passes `--require-mode-default-optimizer` as a mode-default
 `adam` diagnostic and fails `--require-production-default-route` with a `mode`
 mismatch. It also smokes
@@ -155,6 +157,20 @@ gpurec validate-config --config generated-genewise-run.json \
   --require-mode-default-optimizer \
   --require-production-default-route \
   --check-preprocess
+set +e
+gpurec validate-config --config generated-genewise-run.json \
+  --require-mode-default-optimizer \
+  --require-production-default-route \
+  --check-preprocess \
+  --require-cuda-backward-ready \
+  > generated-genewise-cuda-ready.out \
+  2> generated-genewise-cuda-ready.err
+genewise_cuda_status=$?
+set -e
+test "$genewise_cuda_status" -eq 2
+grep -q "cuda_backward_ready=false cuda_backward_ready_reason=requires_s_gt_256" \
+  generated-genewise-cuda-ready.err
+test ! -s generated-genewise-cuda-ready.out
 gpurec config-template --mode specieswise \
   --species-tree "$repo_root/examples/tiny/species.nwk" \
   --families-file "$repo_root/examples/tiny/families.txt" \
@@ -164,6 +180,20 @@ gpurec validate-config --config generated-specieswise-run.json \
   --require-mode-default-optimizer \
   --require-production-default-route \
   --check-preprocess
+set +e
+gpurec validate-config --config generated-specieswise-run.json \
+  --require-mode-default-optimizer \
+  --require-production-default-route \
+  --check-preprocess \
+  --require-cuda-backward-ready \
+  > generated-specieswise-cuda-ready.out \
+  2> generated-specieswise-cuda-ready.err
+specieswise_cuda_status=$?
+set -e
+test "$specieswise_cuda_status" -eq 2
+grep -q "cuda_backward_ready=false cuda_backward_ready_reason=requires_s_gt_256" \
+  generated-specieswise-cuda-ready.err
+test ! -s generated-specieswise-cuda-ready.out
 gpurec config-template --mode global \
   --species-tree "$repo_root/examples/tiny/species.nwk" \
   --families-file "$repo_root/examples/tiny/families.txt" \

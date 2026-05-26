@@ -311,6 +311,13 @@ jobs:
           grep -q "production_default_route_mismatches=none" generated-genewise-validate.txt
           grep -q "cuda_backward_ready=false" generated-genewise-validate.txt
           grep -q "preprocess_checked=true" generated-genewise-validate.txt
+          set +e
+          gpurec validate-config --config generated-genewise-run.json --require-mode-default-optimizer --require-production-default-route --check-preprocess --require-cuda-backward-ready > generated-genewise-cuda-ready.out 2> generated-genewise-cuda-ready.err
+          genewise_cuda_status=$?
+          set -e
+          test "$genewise_cuda_status" -eq 2
+          grep -q "cuda_backward_ready=false cuda_backward_ready_reason=requires_s_gt_256" generated-genewise-cuda-ready.err
+          test ! -s generated-genewise-cuda-ready.out
           gpurec config-template --mode specieswise --species-tree "$GITHUB_WORKSPACE/examples/tiny/species.nwk" --families-file "$GITHUB_WORKSPACE/examples/tiny/families.txt" --out-dir "$smoke_dir/generated-specieswise-out" --output generated-specieswise-run.json
           gpurec validate-config --config generated-specieswise-run.json --require-mode-default-optimizer --require-production-default-route --check-preprocess | tee generated-specieswise-validate.txt
           grep -q "optimizer=adagrad-restarts" generated-specieswise-validate.txt
@@ -319,6 +326,13 @@ jobs:
           grep -q "production_default_route_mismatches=none" generated-specieswise-validate.txt
           grep -q "cuda_backward_ready=false" generated-specieswise-validate.txt
           grep -q "preprocess_checked=true" generated-specieswise-validate.txt
+          set +e
+          gpurec validate-config --config generated-specieswise-run.json --require-mode-default-optimizer --require-production-default-route --check-preprocess --require-cuda-backward-ready > generated-specieswise-cuda-ready.out 2> generated-specieswise-cuda-ready.err
+          specieswise_cuda_status=$?
+          set -e
+          test "$specieswise_cuda_status" -eq 2
+          grep -q "cuda_backward_ready=false cuda_backward_ready_reason=requires_s_gt_256" generated-specieswise-cuda-ready.err
+          test ! -s generated-specieswise-cuda-ready.out
           gpurec config-template --mode global --species-tree "$GITHUB_WORKSPACE/examples/tiny/species.nwk" --families-file "$GITHUB_WORKSPACE/examples/tiny/families.txt" --out-dir "$smoke_dir/generated-global-out" --output generated-global-run.json
           gpurec validate-config --config generated-global-run.json --require-mode-default-optimizer | tee generated-global-mode-default-validate.txt
           grep -q "optimizer=adam" generated-global-mode-default-validate.txt

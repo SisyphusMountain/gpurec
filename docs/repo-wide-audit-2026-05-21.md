@@ -2426,7 +2426,10 @@ not edit files.  New or still-open findings from that refresh are:
   `--require-mode-default-optimizer --require-production-default-route
   --check-preprocess`, so installed artifacts prove both the shipped optimizer
   route and the retained CPU AleRax preprocessing path against the tiny fixture
-  before any CUDA likelihood model is constructed.
+  before any CUDA likelihood model is constructed. The same generated configs
+  are then checked with `--require-cuda-backward-ready`, which must fail with
+  status 2, `cuda_backward_ready_reason=requires_s_gt_256`, and empty stdout
+  for the tiny species tree.
 
 ## Recommended Next Order
 

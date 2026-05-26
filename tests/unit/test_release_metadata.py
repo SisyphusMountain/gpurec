@@ -579,8 +579,12 @@ def test_cpu_ci_builds_and_smokes_release_artifacts():
         '"mode": "global"',
         "generated-genewise-run.json",
         "generated-genewise-validate.txt",
+        "generated-genewise-cuda-ready.out",
+        "generated-genewise-cuda-ready.err",
         "generated-specieswise-run.json",
         "generated-specieswise-validate.txt",
+        "generated-specieswise-cuda-ready.out",
+        "generated-specieswise-cuda-ready.err",
         "generated-global-run.json",
         "generated-global-mode-default-validate.txt",
         "generated-global-production-route.out",
@@ -590,9 +594,15 @@ def test_cpu_ci_builds_and_smokes_release_artifacts():
         "gpurec validate-config --config generated-genewise-run.json "
         "--require-mode-default-optimizer --require-production-default-route "
         "--check-preprocess",
+        "gpurec validate-config --config generated-genewise-run.json "
+        "--require-mode-default-optimizer --require-production-default-route "
+        "--check-preprocess --require-cuda-backward-ready",
         "gpurec validate-config --config generated-specieswise-run.json "
         "--require-mode-default-optimizer --require-production-default-route "
         "--check-preprocess",
+        "gpurec validate-config --config generated-specieswise-run.json "
+        "--require-mode-default-optimizer --require-production-default-route "
+        "--check-preprocess --require-cuda-backward-ready",
         "gpurec validate-config --config generated-global-run.json "
         "--require-mode-default-optimizer",
         "gpurec validate-config --config generated-global-run.json "
@@ -607,6 +617,13 @@ def test_cpu_ci_builds_and_smokes_release_artifacts():
         "production_default_route_mismatches=mode",
         "cuda_backward_ready=false",
         "preprocess_checked=true",
+        "genewise_cuda_status=$?",
+        'test "$genewise_cuda_status" -eq 2',
+        "specieswise_cuda_status=$?",
+        'test "$specieswise_cuda_status" -eq 2',
+        "cuda_backward_ready=false cuda_backward_ready_reason=requires_s_gt_256",
+        "test ! -s generated-genewise-cuda-ready.out",
+        "test ! -s generated-specieswise-cuda-ready.out",
         "global_status=$?",
         'test "$global_status" -eq 2',
         "config production default route fields differ for mode 'global': mode",
@@ -1114,6 +1131,14 @@ def test_release_readiness_documents_installed_wheel_smoke():
         "gpurec validate-config --config generated-genewise-run.json",
         "gpurec validate-config --config generated-specieswise-run.json",
         "gpurec validate-config --config generated-global-run.json",
+        "generated-genewise-cuda-ready.err",
+        "generated-specieswise-cuda-ready.err",
+        "cuda_backward_ready_reason=requires_s_gt_256",
+        "no stdout",
+        'test "$genewise_cuda_status" -eq 2',
+        'test "$specieswise_cuda_status" -eq 2',
+        "test ! -s generated-genewise-cuda-ready.out",
+        "test ! -s generated-specieswise-cuda-ready.out",
         "generated-global-production-route.err",
         "config production default route fields differ for mode 'global': mode",
         'test "$global_status" -eq 2',
