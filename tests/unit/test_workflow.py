@@ -1448,6 +1448,7 @@ def test_route_audit_infers_production_default_settings_from_route_dict():
         "mode": "specieswise",
         "optimizer": "adagrad-restarts",
         "final_check_iters": 128,
+        "final_check_iters_e": 128,
         "optimizer_step_cap": 125,
         "optimizer_step_cap_reason": "adagrad_restart_schedule",
         "adagrad_restart_schedule": "8:1.0:60,16:0.5:35,32:0.5:30",
@@ -1472,6 +1473,7 @@ def test_production_route_audit_requires_likelihood_gradient_contract_fields():
         "mode": "genewise",
         "optimizer": "hessian-sgd",
         "final_check_iters": 32,
+        "final_check_iters_e": None,
         "solver_warmup_iters": 4,
         "fd_adam_warmup_steps": 3,
         "fd_hessian_refresh_steps": 16,
@@ -1501,6 +1503,7 @@ def test_route_audit_normalizes_checkpoint_mode_strings():
         "mode": " SpeciesWise ",
         "optimizer": "adagrad-restarts",
         "final_check_iters": 128,
+        "final_check_iters_e": 128,
         "optimizer_step_cap": 125,
         "optimizer_step_cap_reason": "adagrad_restart_schedule",
         "adagrad_restart_schedule": "8:1.0:60,16:0.5:35,32:0.5:30",
@@ -1516,12 +1519,41 @@ def test_route_audit_normalizes_checkpoint_mode_strings():
     assert mismatches == ()
 
 
+def test_route_audit_requires_final_check_e_budget_evidence():
+    route = {
+        "mode": "specieswise",
+        "optimizer": "adagrad-restarts",
+        "final_check_iters": 128,
+        "optimizer_step_cap": 125,
+        "optimizer_step_cap_reason": "adagrad_restart_schedule",
+        "adagrad_restart_schedule": "8:1.0:60,16:0.5:35,32:0.5:30",
+        "adagrad_restart_total_steps": 125,
+        "adagrad_restart_final_check_iters": 128,
+    }
+
+    missing, mismatches = production_default_optimizer_setting_mismatches_from_route(
+        route
+    )
+
+    assert missing == ("final_check_iters_e",)
+    assert mismatches == ()
+
+    route["final_check_iters_e"] = 32
+    missing, mismatches = production_default_optimizer_setting_mismatches_from_route(
+        route
+    )
+
+    assert missing == ()
+    assert mismatches == ("final_check_iters_e",)
+
+
 @pytest.mark.parametrize("optimizer", ["Hessian_SGD", "AUTO"])
 def test_route_audit_normalizes_optimizer_alias_strings(optimizer: str):
     route = {
         "mode": " GeneWise ",
         "optimizer": optimizer,
         "final_check_iters": 32,
+        "final_check_iters_e": None,
         "solver_warmup_iters": 4,
         "fd_adam_warmup_steps": 3,
         "fd_hessian_refresh_steps": 16,
@@ -1547,6 +1579,7 @@ def test_route_audit_reports_missing_and_custom_optimizer_settings():
         "mode": "genewise",
         "optimizer": "hessian-sgd",
         "final_check_iters": 32,
+        "final_check_iters_e": None,
         "solver_warmup_iters": 4,
         "fd_adam_warmup_steps": 3,
         "fd_hessian_refresh_steps": 8,
@@ -1585,6 +1618,7 @@ def test_optimization_result_is_derived_from_summary_contract(tmp_path: Path):
         "uses_mode_default_optimizer": True,
         "uses_production_default_optimizer_settings": False,
         "production_default_optimizer_setting_mismatches": [
+            "final_check_iters_e",
             "hessian_sgd_normal_fixed_iters_pi",
             "hessian_sgd_normal_neumann_terms",
             "hessian_sgd_pi_adjoint_warmstart",
@@ -1595,6 +1629,7 @@ def test_optimization_result_is_derived_from_summary_contract(tmp_path: Path):
         ],
         "uses_production_default_route": False,
         "production_default_route_mismatches": [
+            "final_check_iters_e",
             "hessian_sgd_normal_fixed_iters_pi",
             "hessian_sgd_normal_neumann_terms",
             "hessian_sgd_pi_adjoint_warmstart",
@@ -1713,6 +1748,7 @@ def test_optimization_result_is_derived_from_summary_contract(tmp_path: Path):
     assert result.final_solver_e_adjoint_success_batches == pytest.approx(3.0)
     assert result.final_solver_e_adjoint_rel_res_max == pytest.approx(0.001)
     assert result.production_default_optimizer_setting_mismatches == (
+        "final_check_iters_e",
         "hessian_sgd_normal_fixed_iters_pi",
         "hessian_sgd_normal_neumann_terms",
         "hessian_sgd_pi_adjoint_warmstart",
@@ -1722,6 +1758,7 @@ def test_optimization_result_is_derived_from_summary_contract(tmp_path: Path):
         "hessian_sgd_validation_neumann_terms",
     )
     assert result.production_default_route_mismatches == (
+        "final_check_iters_e",
         "hessian_sgd_normal_fixed_iters_pi",
         "hessian_sgd_normal_neumann_terms",
         "hessian_sgd_pi_adjoint_warmstart",

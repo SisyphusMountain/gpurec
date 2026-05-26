@@ -1547,6 +1547,7 @@ def test_project_readme_documents_gpurec_run_end_to_end_workflow():
     assert "whether the optimizer matches that default" in normalized
     assert "`uses_production_default_route`" in project_readme
     assert "`production_default_route_mismatches`" in project_readme
+    assert "stale `final_check_iters_e`" in normalized
     assert "batch packing, family chunk size, clade budget" in normalized
     assert "solver iteration budgets" in normalized
     assert (
@@ -1657,6 +1658,8 @@ def test_production_optimization_guide_is_linked_and_documents_routes():
         "must not reduce `fixed_iters_E`, `fixed_iters_Pi`, or `neumann_terms`",
         "`final_check_iters`",
         "`final_check_iters_e`",
+        "stored `final_check_iters_e` evidence",
+        "stale `final_check_iters_e` evidence",
         "optimizer-specific route fields",
         "Hessian-SGD warmup/refresh/normal-stage solver controls",
         "`--require-mode-default-optimizer`",
@@ -1771,6 +1774,7 @@ def test_output_artifact_reference_is_linked_and_documents_contract():
         "`best_step`",
         "`final_check_iters`",
         "`final_check_iters_e`",
+        "stored `final_check_iters_e` evidence",
         "`solver_warmup_iters`",
         "`fd_adam_warmup_steps`",
         "`fd_hessian_refresh_steps`",
@@ -1917,6 +1921,7 @@ def test_input_preparation_guide_documents_alerax_data_contract():
         "gpurec validate-config --config run.json --require-mode-default-optimizer",
         "gpurec validate-config --config run.json --require-production-default-route",
         "reject changed HOGENOM/`test_trees_1000` optimizer settings",
+        "stale `final_check_iters_e`",
         "stale likelihood/gradient route metadata",
         "`cuda_backward_ready`",
         "`--require-cuda-backward-ready`",

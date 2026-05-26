@@ -2005,6 +2005,7 @@ def test_cli_checkpoint_info_require_production_default_route_recomputes_stale_a
             "uses_production_default_optimizer_settings": True,
             "production_default_optimizer_setting_mismatches": [],
             "final_check_iters": 32,
+            "final_check_iters_e": None,
             "solver_warmup_iters": 4,
             "fd_adam_warmup_steps": 3,
             "fd_hessian_refresh_steps": 8,
@@ -2078,6 +2079,7 @@ def test_cli_checkpoint_info_require_production_default_route_requires_settings_
     assert "production_default_route_mismatches=null" in captured.out
     assert "checkpoint production default route evidence is incomplete" in captured.err
     assert "missing final_check_iters" in captured.err
+    assert "final_check_iters_e" in captured.err
     assert "fd_hessian_refresh_steps" in captured.err
     assert "usage:" not in captured.err
     assert "Traceback" not in captured.err
@@ -2324,6 +2326,7 @@ def test_cli_summary_info_normalizes_route_mode_and_optimizer_aliases(
                 "mode": " SpeciesWise ",
                 "optimizer": "ADAGRAD_RESTARTS",
                 "final_check_iters": 128,
+                "final_check_iters_e": 128,
                 "optimizer_step_cap": 125,
                 "optimizer_step_cap_reason": "adagrad_restart_schedule",
                 "adagrad_restart_schedule": "8:1.0:60,16:0.5:35,32:0.5:30",
@@ -2535,6 +2538,7 @@ def test_cli_summary_info_require_production_default_route_rejects_custom_settin
                 "mode": "genewise",
                 "optimizer": "hessian-sgd",
                 "final_check_iters": 32,
+                "final_check_iters_e": None,
                 "solver_warmup_iters": 4,
                 "fd_adam_warmup_steps": 3,
                 "fd_hessian_refresh_steps": 8,
@@ -2597,6 +2601,7 @@ def test_cli_summary_info_require_production_default_route_recomputes_stale_audi
                 "uses_production_default_optimizer_settings": True,
                 "production_default_optimizer_setting_mismatches": [],
                 "final_check_iters": 32,
+                "final_check_iters_e": None,
                 "solver_warmup_iters": 4,
                 "fd_adam_warmup_steps": 3,
                 "fd_hessian_refresh_steps": 8,
@@ -2653,6 +2658,7 @@ def test_cli_summary_info_require_production_default_route_rejects_stale_gradien
                 "mode": "genewise",
                 "optimizer": "hessian-sgd",
                 "final_check_iters": 32,
+                "final_check_iters_e": None,
                 "solver_warmup_iters": 4,
                 "fd_adam_warmup_steps": 3,
                 "fd_hessian_refresh_steps": 16,
@@ -2734,6 +2740,7 @@ def test_cli_summary_info_require_production_default_route_requires_settings_evi
     assert "production_default_route_mismatches=null" in captured.out
     assert "summary production default route evidence is incomplete" in captured.err
     assert "missing final_check_iters" in captured.err
+    assert "final_check_iters_e" in captured.err
     assert "fd_hessian_refresh_steps" in captured.err
     assert "Traceback" not in captured.err
 

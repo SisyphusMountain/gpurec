@@ -7596,6 +7596,12 @@ before and after optimization, including adaptive \texttt{null} values for
 genewise Hessian-SGD and fixed128 values for specieswise
 \texttt{adagrad-restarts}.
 
+Production-default optimizer-setting audits now also require explicit
+\texttt{final\_check\_iters\_e} evidence.  Strict production-route gates reject
+stale or incomplete artifacts that omit the paired E-solver final-check budget,
+even when the optimizer name and Pi/Neumann final-check budget still match the
+shipped HOGENOM/\texttt{test\_trees\_1000} route.
+
 \section{Next Audit Targets}
 
 \begin{enumerate}[leftmargin=*]

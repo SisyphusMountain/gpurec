@@ -1015,6 +1015,7 @@ class RunConfig:
 
 _PRODUCTION_DEFAULT_GENEWISE_OPTIMIZER_SETTINGS = {
     "final_check_iters": 32,
+    "final_check_iters_e": None,
     "solver_warmup_iters": 4,
     "fd_adam_warmup_steps": 3,
     "fd_hessian_refresh_steps": 16,
@@ -1028,6 +1029,7 @@ _PRODUCTION_DEFAULT_GENEWISE_OPTIMIZER_SETTINGS = {
 }
 _PRODUCTION_DEFAULT_SPECIESWISE_OPTIMIZER_SETTINGS = {
     "final_check_iters": DEFAULT_ADAGRAD_RESTART_FINAL_CHECK_ITERS,
+    "final_check_iters_e": DEFAULT_ADAGRAD_RESTART_FINAL_CHECK_ITERS,
     "optimizer_step_cap": DEFAULT_ADAGRAD_RESTART_TOTAL_STEPS,
     "optimizer_step_cap_reason": "adagrad_restart_schedule",
     "adagrad_restart_schedule": DEFAULT_NORMALIZED_ADAGRAD_RESTART_SCHEDULE,
@@ -1148,6 +1150,7 @@ def production_default_optimizer_setting_mismatches(
         "mode": config.mode,
         "optimizer": config.optimizer,
         "final_check_iters": effective_final_check_iters(config),
+        "final_check_iters_e": effective_final_check_iters_e(config),
         "optimizer_step_cap": optimizer_step_cap,
         "optimizer_step_cap_reason": optimizer_step_cap_reason,
         "solver_warmup_iters": config.solver_warmup_iters,

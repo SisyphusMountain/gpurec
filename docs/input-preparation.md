@@ -121,8 +121,8 @@ referenced tree, family, or mapping file before starting `gpurec optimize`.
 Use `--require-mode-default-optimizer` when automation should reject explicit
 optimizer overrides. Use `--require-production-default-route` for release or
 pipeline launch checks that should also reject changed HOGENOM/`test_trees_1000`
-optimizer settings or stale likelihood/gradient route metadata before spending
-CUDA time.
+optimizer settings, stale `final_check_iters_e`, or stale likelihood/gradient
+route metadata before spending CUDA time.
 For production launch checks, add `--require-cuda-backward-ready` so a species
 tree that fails the retained CUDA backward size gate exits nonzero.
 

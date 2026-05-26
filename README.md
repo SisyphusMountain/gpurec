@@ -317,7 +317,8 @@ tell whether a run is on the production default optimizer for its sharing mode,
 plus `uses_production_default_optimizer_settings` and
 `production_default_optimizer_setting_mismatches` to show whether the
 optimizer-specific settings still match the shipped HOGENOM/`test_trees_1000`
-optimizer profile. The full-route verdict fields
+optimizer profile, including the final-check E budget reported as
+`final_check_iters_e`. The full-route verdict fields
 `uses_production_default_route` and `production_default_route_mismatches`
 combine those optimizer-setting checks with the shipped objective, gradient
 route, rate parameterization, and production default basis metadata enforced by
@@ -428,8 +429,8 @@ automation should fail unless the resolved optimizer is the mode default
 (`hessian-sgd` for genewise, `adagrad-restarts` for specieswise). Add
 `--require-production-default-route` when automation should also fail on
 stale likelihood/gradient route metadata or non-default optimizer-specific
-settings such as a changed Hessian-SGD refresh budget or a truncated
-specieswise restart ladder.
+settings such as a changed Hessian-SGD refresh budget, stale
+`final_check_iters_e`, or a truncated specieswise restart ladder.
 
 See [`docs/output-artifacts.md`](docs/output-artifacts.md) for the output
 artifact contract, including the normalized config snapshot, history fields,
@@ -444,7 +445,8 @@ add `--require-final-check-ok` when it should also require
 the summary proves the run used the production default optimizer for its mode;
 add `--require-production-default-route` when it should also require the
 shipped likelihood/gradient route metadata and optimizer-specific settings
-reported by `uses_production_default_route`.
+reported by `uses_production_default_route`, including the stored
+`final_check_iters_e` evidence.
 Use `gpurec checkpoint-info --checkpoint output_gpurec/checkpoints/latest.pt`
 to inspect checkpoint progress, status, optimizer route, and last
 likelihood/gradient diagnostics without constructing the CUDA likelihood model.
@@ -545,7 +547,8 @@ Add `--require-mode-default-optimizer` to `gpurec sample` when standalone
 sampling automation should fail unless the checkpoint route used the production
 default optimizer for its mode; use `--require-production-default-route` when
 the checkpoint must also prove `uses_production_default_route=true` for the
-shipped likelihood/gradient route metadata and optimizer-specific settings.
+shipped likelihood/gradient route metadata and optimizer-specific settings,
+including the stored `final_check_iters_e` evidence.
 Successful sampling reruns replace prior gpurec-generated reconciliation
 artifacts in the target output directory, including generated files outside a
 requested window; use a separate `--sample-out-dir` to keep multiple windows.
