@@ -6326,6 +6326,126 @@ def test_optimization_runner_projected_lbfgs_specieswise_uses_loss_only_probes(
     assert runner.fake_model.closed
 
 
+def test_optimization_runner_loss_probe_clears_transient_solver_state(
+    tmp_path: Path,
+):
+    config = _optimizer_mode_config(
+        tmp_path,
+        optimizer="projected-lbfgs",
+        mode="specieswise",
+    )
+    runner = OptimizationRunner(config)
+    accepted_cache = torch.tensor([7.0], dtype=torch.float32)
+    static = SimpleNamespace(
+        warm_E=object(),
+        pi_adjoint_warmstart=True,
+        pi_adjoint_cache_update_mode="stage",
+        pi_adjoint_cache=accepted_cache.clone(),
+        pi_adjoint_pending_cache=torch.tensor([3.0], dtype=torch.float32),
+        last_solver_stats={"stale": True},
+    )
+    calls = 0
+
+    class ProbeModel:
+        def __init__(self):
+            self.theta = torch.nn.Parameter(torch.zeros(3, dtype=torch.float32))
+
+        @property
+        def cached_static_states(self):
+            return [static]
+
+        def full_loss_for_theta(self, theta):
+            nonlocal calls
+            calls += 1
+            assert static.warm_E is None
+            assert static.pi_adjoint_pending_cache is None
+            torch.testing.assert_close(static.pi_adjoint_cache, accepted_cache)
+            static.warm_E = object()
+            static.pi_adjoint_pending_cache = torch.tensor(
+                [11.0],
+                dtype=torch.float32,
+            )
+            static.last_solver_stats = {"probe": True}
+            return theta.square().sum() + 1.0
+
+        def clear(self):
+            raise AssertionError("staged cache probes should not call model.clear()")
+
+    loss = runner._evaluate_loss_only_probe(ProbeModel())
+
+    assert calls == 1
+    assert loss.item() == pytest.approx(1.0)
+    assert static.warm_E is None
+    assert static.pi_adjoint_pending_cache is None
+    assert static.last_solver_stats is None
+    torch.testing.assert_close(static.pi_adjoint_cache, accepted_cache)
+
+
+def test_optimization_runner_genewise_loss_probe_clears_transient_solver_state(
+    tmp_path: Path,
+):
+    config = _optimizer_mode_config(
+        tmp_path,
+        optimizer="batched-lbfgs",
+        mode="genewise",
+    )
+    runner = OptimizationRunner(config)
+    accepted_cache = torch.tensor([5.0], dtype=torch.float32)
+    static = SimpleNamespace(
+        warm_E=object(),
+        pi_adjoint_warmstart=True,
+        pi_adjoint_cache_update_mode="stage",
+        pi_adjoint_cache=accepted_cache.clone(),
+        pi_adjoint_pending_cache=torch.tensor([2.0], dtype=torch.float32),
+        last_solver_stats={"stale": True},
+    )
+    calls = 0
+
+    class ProbeModel:
+        def __init__(self):
+            self.theta = torch.nn.Parameter(
+                torch.zeros((2, 3), dtype=torch.float32)
+            )
+            self.n_families = 2
+            self.current_batch_metadata = SimpleNamespace(family_indices=(0,))
+
+        @property
+        def cached_static_states(self):
+            return [static]
+
+        def nll_per_family(self):
+            nonlocal calls
+            calls += 1
+            assert static.warm_E is None
+            assert static.pi_adjoint_pending_cache is None
+            torch.testing.assert_close(static.pi_adjoint_cache, accepted_cache)
+            static.warm_E = object()
+            static.pi_adjoint_pending_cache = torch.tensor(
+                [13.0],
+                dtype=torch.float32,
+            )
+            static.last_solver_stats = {"probe": True}
+            return torch.tensor([1.25], dtype=torch.float32)
+
+        def clear(self):
+            raise AssertionError("staged cache probes should not call model.clear()")
+
+    loss_vec = runner._evaluate_genewise_loss_vector_probe(
+        ProbeModel(),
+        active_batch=True,
+    )
+
+    assert calls == 1
+    torch.testing.assert_close(
+        loss_vec,
+        torch.tensor([1.25, 0.0], dtype=torch.float32),
+    )
+    assert static.warm_E is None
+    assert static.pi_adjoint_pending_cache is None
+    assert static.last_solver_stats is None
+    torch.testing.assert_close(static.pi_adjoint_cache, accepted_cache)
+
+
 def test_optimization_runner_lbfgsb_specieswise_records_kkt_metrics(tmp_path: Path):
     config = _optimizer_mode_config(
         tmp_path,

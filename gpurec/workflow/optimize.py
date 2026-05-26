@@ -841,6 +841,13 @@ class OptimizationRunner:
             raise RuntimeError("loss-only optimizer probe did not return a scalar loss")
         return loss.detach().reshape(())
 
+    def _evaluate_loss_only_probe(self, model: GeneReconModel) -> torch.Tensor:
+        _clear_solver_runtime_state_preserving_pi_cache(model)
+        try:
+            return self._evaluate_loss_only(model)
+        finally:
+            _clear_solver_runtime_state_preserving_pi_cache(model)
+
     def _evaluate_genewise_vector_and_grad(
         self,
         model: GeneReconModel,
@@ -1536,6 +1543,21 @@ class OptimizationRunner:
         local_loss_vec = model.nll_per_family()
         return self._full_vector_from_active_batch(model, local_loss_vec)
 
+    def _evaluate_genewise_loss_vector_probe(
+        self,
+        model: GeneReconModel,
+        *,
+        active_batch: bool,
+    ) -> torch.Tensor:
+        _clear_solver_runtime_state_preserving_pi_cache(model)
+        try:
+            with torch.no_grad():
+                if active_batch:
+                    return self._evaluate_active_genewise_loss_vector(model)
+                return self._evaluate_genewise_loss_vector(model)
+        finally:
+            _clear_solver_runtime_state_preserving_pi_cache(model)
+
     def _projected_grad_inf(
         self,
         model: GeneReconModel,
@@ -1987,9 +2009,10 @@ class OptimizationRunner:
                 candidate = theta0.clone()
                 candidate.index_copy_(0, idx, candidate_active)
                 self._set_model_theta(model, candidate)
-                _clear_solver_runtime_state_preserving_pi_cache(model)
-                with torch.no_grad():
-                    trial_loss_vec = self._evaluate_active_genewise_loss_vector(model)
+                trial_loss_vec = self._evaluate_genewise_loss_vector_probe(
+                    model,
+                    active_batch=True,
+                )
                 loss_evals += 1
                 trial_active_loss = trial_loss_vec.index_select(0, idx)
                 trial_delta = trial_active - active_theta0
@@ -2056,9 +2079,10 @@ class OptimizationRunner:
                 candidate = theta0.clone()
                 candidate.index_copy_(0, idx, candidate_active)
                 self._set_model_theta(model, candidate)
-                _clear_solver_runtime_state_preserving_pi_cache(model)
-                with torch.no_grad():
-                    trial_loss_vec = self._evaluate_active_genewise_loss_vector(model)
+                trial_loss_vec = self._evaluate_genewise_loss_vector_probe(
+                    model,
+                    active_batch=True,
+                )
                 loss_evals += 1
                 trial_active_loss = trial_loss_vec.index_select(0, idx)
                 trial_delta = trial_active - active_theta0
@@ -2741,15 +2765,21 @@ class OptimizationRunner:
                     with torch.no_grad():
                         model.clamp_theta_(config.min_rate, config.max_rate)
                     if batchwise_active_optimizer:
-                        return self._evaluate_active_genewise_loss_vector(model)
-                    return self._evaluate_genewise_loss_vector(model)
+                        return self._evaluate_genewise_loss_vector_probe(
+                            model,
+                            active_batch=True,
+                        )
+                    return self._evaluate_genewise_loss_vector_probe(
+                        model,
+                        active_batch=False,
+                    )
 
                 def projected_loss_closure() -> torch.Tensor:
                     nonlocal projected_loss_evals
                     projected_loss_evals += 1
                     with torch.no_grad():
                         model.clamp_theta_(config.min_rate, config.max_rate)
-                    return self._evaluate_loss_only(model)
+                    return self._evaluate_loss_only_probe(model)
 
                 save_best_after_row = False
                 first_order_pending_step = False
