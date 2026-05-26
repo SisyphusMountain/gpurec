@@ -1861,6 +1861,34 @@ def test_cli_summary_info_reports_adagrad_restart_route_fields(
     assert "solver_warmup_iters" not in captured.out
 
 
+def test_cli_summary_info_infers_mode_default_optimizer_audit_fields(
+    tmp_path: Path,
+    capsys,
+):
+    summary = tmp_path / "summary.json"
+    summary.write_text(
+        json.dumps(
+            {
+                "status": "converged",
+                "reason": "loss_change_patience",
+                "mode": "specieswise",
+                "optimizer": "adagrad-restarts",
+                "final_nll_bits": 12.0,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    main(["summary-info", "--summary", str(summary)])
+
+    captured = capsys.readouterr()
+    assert captured.err == ""
+    assert "mode=specieswise" in captured.out
+    assert "optimizer=adagrad-restarts" in captured.out
+    assert "mode_default_optimizer=adagrad-restarts" in captured.out
+    assert "uses_mode_default_optimizer=true" in captured.out
+
+
 def test_cli_summary_info_require_mode_default_optimizer_fails_after_printing(
     tmp_path: Path,
     capsys,
@@ -1892,6 +1920,8 @@ def test_cli_summary_info_require_mode_default_optimizer_fails_after_printing(
     captured = capsys.readouterr()
     assert exc_info.value.code == 1
     assert "optimizer=adam" in captured.out
+    assert "mode_default_optimizer=hessian-sgd" in captured.out
+    assert "uses_mode_default_optimizer=false" in captured.out
     assert "summary optimizer is 'adam'" in captured.err
     assert "expected mode default 'hessian-sgd' for mode 'genewise'" in captured.err
     assert "usage:" not in captured.err

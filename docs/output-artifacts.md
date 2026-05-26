@@ -120,6 +120,11 @@ checkpoint or constructing the CUDA model:
 gpurec summary-info --summary output_gpurec/summary.json
 ```
 
+For older summaries that have `mode` and `optimizer` but predate
+`mode_default_optimizer` and `uses_mode_default_optimizer`, `summary-info`
+infers those audit fields before printing so the displayed line matches the
+route evidence used by `--require-mode-default-optimizer`.
+
 Add `--require-converged` when the command should print the same summary line
 and then exit nonzero unless `summary.status` is `converged`. Add
 `--require-final-check-ok` when downstream automation should also require

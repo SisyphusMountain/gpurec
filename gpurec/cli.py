@@ -472,6 +472,7 @@ def _optimization_result_text(result: Any) -> str:
 
 
 def _summary_info_text(summary: Path, payload: dict[str, Any]) -> str:
+    payload = _route_with_mode_default_audit_fields(payload)
     return (
         f"{_optional_text('summary', summary)} "
         f"{_optimization_result_text(SimpleNamespace(**payload))}"
