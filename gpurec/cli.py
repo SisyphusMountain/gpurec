@@ -870,78 +870,7 @@ def _write_config_template(args: argparse.Namespace) -> Path | None:
 def _validate_config_route_text(config: RunConfig) -> str:
     from gpurec.workflow.config import effective_route_metadata
 
-    route = effective_route_metadata(config)
-    clade_budget = (
-        "none" if route["clade_budget"] is None else str(route["clade_budget"])
-    )
-    fixed_iters_e = "adaptive" if route["fixed_iters_e"] is None else str(
-        route["fixed_iters_e"]
-    )
-    fields = [
-        f"objective={route['objective']}",
-        f"gradient_route={route['gradient_route']}",
-        f"rate_parameterization={route['rate_parameterization']}",
-        f"production_default_basis={route['production_default_basis']}",
-        f"batch_packing={route['batch_packing']}",
-        f"family_chunk_size={route['family_chunk_size']}",
-        f"clade_budget={clade_budget}",
-        f"fixed_iters_e={fixed_iters_e}",
-        f"fixed_iters_pi={route['fixed_iters_pi']}",
-        f"neumann_terms={route['neumann_terms']}",
-        f"final_check_iters={route['final_check_iters']}",
-        f"configured_steps={route['configured_steps']}",
-        f"optimizer_step_cap={route['optimizer_step_cap']}",
-        f"optimizer_step_cap_reason={route['optimizer_step_cap_reason']}",
-    ]
-    if config.optimizer == "hessian-sgd":
-        fields.extend(
-            [
-                f"solver_warmup_iters={route['solver_warmup_iters']}",
-                f"fd_adam_warmup_steps={route['fd_adam_warmup_steps']}",
-                f"fd_hessian_refresh_steps={route['fd_hessian_refresh_steps']}",
-                _route_int_text(
-                    "hessian_sgd_normal_fixed_iters_pi",
-                    route,
-                    none_text="full",
-                ),
-                _route_int_text(
-                    "hessian_sgd_normal_neumann_terms",
-                    route,
-                    none_text="full",
-                ),
-                _optional_bool_text(
-                    "hessian_sgd_pi_adjoint_warmstart",
-                    route.get("hessian_sgd_pi_adjoint_warmstart"),
-                ),
-                _optional_metric_text(
-                    "pi_fixed_point_relaxation",
-                    route.get("pi_fixed_point_relaxation"),
-                ),
-                _route_int_text("hessian_sgd_validation_interval", route),
-                _route_int_text(
-                    "hessian_sgd_validation_fixed_iters_pi",
-                    route,
-                    none_text="configured",
-                ),
-                _route_int_text(
-                    "hessian_sgd_validation_neumann_terms",
-                    route,
-                    none_text="configured",
-                ),
-            ]
-        )
-    elif config.optimizer == "adagrad-restarts":
-        fields.extend(
-            [
-                f"adagrad_restart_schedule={route['adagrad_restart_schedule']}",
-                f"adagrad_restart_total_steps={route['adagrad_restart_total_steps']}",
-                (
-                    "adagrad_restart_final_check_iters="
-                    f"{route['adagrad_restart_final_check_iters']}"
-                ),
-            ]
-        )
-    return " ".join(fields)
+    return _route_metadata_text(effective_route_metadata(config))
 
 
 def _add_run_config_args(parser: argparse.ArgumentParser) -> None:

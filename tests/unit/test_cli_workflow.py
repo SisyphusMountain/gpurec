@@ -21,7 +21,7 @@ from gpurec.cli import (
     build_parser,
     main,
 )
-from gpurec.workflow.config import RunConfig, SamplingConfig
+from gpurec.workflow.config import RunConfig, SamplingConfig, effective_route_metadata
 from gpurec.workflow.checkpoint import save_checkpoint
 from gpurec.workflow.model_factory import build_alerax_workflow_model
 from tests.unit.alerax_helpers import write_tiny_alerax_inputs
@@ -795,6 +795,35 @@ def test_cli_validate_config_reports_specieswise_restart_route(
     assert "final_check_iters=128" in captured.out
     assert "adagrad_restart_final_check_iters=128" in captured.out
     assert captured.err == ""
+
+
+def test_cli_validate_config_reuses_checkpoint_route_formatter(tmp_path: Path):
+    genewise = RunConfig(
+        species_tree=tmp_path / "sp.nwk",
+        families_file=tmp_path / "families.txt",
+        out_dir=tmp_path / "out-genewise",
+        mode="genewise",
+        device="cpu",
+        hessian_sgd_normal_fixed_iters_pi=12,
+        hessian_sgd_normal_neumann_terms=10,
+        hessian_sgd_pi_adjoint_warmstart=True,
+        pi_fixed_point_relaxation=1.25,
+        hessian_sgd_validation_interval=4,
+        hessian_sgd_validation_fixed_iters_pi=32,
+        hessian_sgd_validation_neumann_terms=48,
+    )
+    specieswise = RunConfig(
+        species_tree=tmp_path / "sp.nwk",
+        families_file=tmp_path / "families.txt",
+        out_dir=tmp_path / "out-specieswise",
+        mode="specieswise",
+        device="cpu",
+    )
+
+    for config in (genewise, specieswise):
+        assert gpurec_cli._validate_config_route_text(
+            config
+        ) == gpurec_cli._route_metadata_text(effective_route_metadata(config))
 
 
 def test_cli_validate_config_can_check_cpu_preprocessing(
