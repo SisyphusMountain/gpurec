@@ -1320,6 +1320,7 @@ def test_project_readme_documents_gpurec_run_end_to_end_workflow():
     assert "`sampled_families`, `samples`, `xml`, and `sample_out_dir`" in project_readme
     assert "gpurec summary-info --summary output_gpurec/summary.json" in project_readme
     assert "`--require-converged`" in project_readme
+    assert "`last_final_check_status`" in project_readme
     assert "Use `gpurec sample --checkpoint ...` to sample an existing run" in normalized
 
 
@@ -1510,6 +1511,8 @@ def test_output_artifact_reference_is_linked_and_documents_contract():
         "`final_check_status=ok`",
         "gpurec optimize` when the command should print",
         "gpurec checkpoint-info --checkpoint output_gpurec/checkpoints/latest.pt",
+        "`last_final_check_status`",
+        "`optimizer/final_check_status=ok`",
         "`likelihood/data_nll_bits`",
         "`grad/projected_inf`",
         "`optimizer/adagrad_restart_*`",
@@ -1547,6 +1550,7 @@ def test_troubleshooting_guide_documents_operator_failure_triage():
         "gpurec optimize --require-converged",
         "gpurec run --require-converged",
         "`final_check_status=ok`",
+        "`optimizer/final_check_status=ok`",
         "final-check likelihood/gradient deltas",
         "gpurec checkpoint-info --checkpoint output/checkpoints/latest.pt",
         "`history.jsonl`",

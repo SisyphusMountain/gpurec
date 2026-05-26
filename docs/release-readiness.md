@@ -38,7 +38,8 @@ and the specieswise Adagrad restart schedule, and verifies the
 `gpurec summary-info --help` and `gpurec checkpoint-info --help` so artifact
 inspection stays available without CUDA model construction, including the
 `--require-converged` and `--require-final-check-ok` summary gates for
-automation. The same package job checks `gpurec optimize --help` for the direct
+automation and the checkpoint final-check gate for direct artifact inspection.
+The same package job checks `gpurec optimize --help` for the direct
 optimization convergence and final-check gates and `gpurec run --help` for the
 matching pre-sampling convergence and final-check gates, keeps
 examples out of wheels while requiring them in the source

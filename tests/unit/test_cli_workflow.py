@@ -81,7 +81,10 @@ def test_run_config_cli_surface_matches_dataclass_fields():
         "require_final_check_ok",
     }
     assert _parser_action_dests("backtrack-check") == {"backtrack_binary"}
-    assert _parser_action_dests("checkpoint-info") == {"checkpoint"}
+    assert _parser_action_dests("checkpoint-info") == {
+        "checkpoint",
+        "require_final_check_ok",
+    }
     assert _parser_action_dests("summary-info") == {
         "summary",
         "require_converged",
@@ -1264,10 +1267,24 @@ def test_cli_checkpoint_info_reports_route_status_and_last_row(
             "likelihood/log_likelihood_bits": -23.5,
             "grad/inf": 0.25,
             "grad/projected_inf": 0.125,
+            "optimizer/final_check_status": "ok",
+            "optimizer/final_check_source": "fallback_clade_budget",
+            "optimizer/final_check_reason": "smaller resident batch",
+            "optimizer/final_check_fallback_clade_budget": 250_000.0,
+            "optimizer/final_check_loss_abs_delta_bits": 0.125,
+            "optimizer/final_check_grad_max_abs_delta": 0.5,
+            "optimizer/final_check_grad_rel_inf_delta": 0.25,
         },
     )
 
-    main(["checkpoint-info", "--checkpoint", str(checkpoint)])
+    main(
+        [
+            "checkpoint-info",
+            "--checkpoint",
+            str(checkpoint),
+            "--require-final-check-ok",
+        ]
+    )
 
     captured = capsys.readouterr()
     basis = "hogenom_and_" + "test_trees_" + "1000"
@@ -1309,8 +1326,76 @@ def test_cli_checkpoint_info_reports_route_status_and_last_row(
         "last_log_likelihood_bits=-23.500000",
         "last_grad_inf=0.250000",
         "last_projected_grad_inf=0.125000",
+        "last_final_check_status=ok",
+        "last_final_check_source=fallback_clade_budget",
+        'last_final_check_reason="smaller\\u0020resident\\u0020batch"',
+        "last_final_check_fallback_clade_budget=250000.000000",
+        "last_final_check_loss_abs_delta_bits=0.125000",
+        "last_final_check_grad_max_abs_delta=0.500000",
+        "last_final_check_grad_rel_inf_delta=0.250000",
     ):
         assert token in captured.out
+
+
+def test_cli_checkpoint_info_require_final_check_ok_fails_after_printing_checkpoint(
+    tmp_path: Path,
+    capsys,
+):
+    class FakeModel:
+        theta = torch.nn.Parameter(torch.zeros(1, 3))
+        family_names = ["fam0"]
+        species_names = ["sp0", "sp1"]
+
+    config = RunConfig(
+        species_tree=tmp_path / "sp.nwk",
+        families_file=tmp_path / "families.txt",
+        out_dir=tmp_path / "out",
+        mode="genewise",
+        device="cpu",
+    )
+    checkpoint = tmp_path / "latest.pt"
+    save_checkpoint(
+        checkpoint,
+        config=config,
+        model=FakeModel(),
+        optimizer=None,
+        optimizer_phase="final_eval",
+        step=3,
+        next_step=4,
+        status={
+            "status": "converged",
+            "reason": "loss_change",
+            "best_step": 3,
+            "best_nll_bits": 10.0,
+        },
+        row={
+            "optimizer/phase": "final_eval",
+            "likelihood/data_nll_bits": 10.0,
+            "grad/inf": 0.1,
+            "optimizer/final_check_status": "skipped",
+            "optimizer/final_check_source": "not_evaluated",
+            "optimizer/final_check_reason": "solver_cache_unavailable",
+        },
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(
+            [
+                "checkpoint-info",
+                "--checkpoint",
+                str(checkpoint),
+                "--require-final-check-ok",
+            ]
+        )
+
+    captured = capsys.readouterr()
+    assert exc_info.value.code == 1
+    assert "status=converged" in captured.out
+    assert "last_final_check_status=skipped" in captured.out
+    assert "last_final_check_source=not_evaluated" in captured.out
+    assert "checkpoint final check status is 'skipped'; expected 'ok'" in captured.err
+    assert "usage:" not in captured.err
+    assert "Traceback" not in captured.err
 
 
 def test_cli_checkpoint_info_raw_theta_error_suggests_real_checkpoints(

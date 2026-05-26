@@ -115,6 +115,16 @@ The same checkpoint status and route fields are available from the CLI:
 gpurec checkpoint-info --checkpoint output_gpurec/checkpoints/latest.pt
 ```
 
+When the checkpoint's saved last row contains final validation metrics,
+`checkpoint-info` also prints `last_final_check_status`,
+`last_final_check_source`, `last_final_check_reason`,
+`last_final_check_fallback_clade_budget`,
+`last_final_check_loss_abs_delta_bits`,
+`last_final_check_grad_max_abs_delta`, and
+`last_final_check_grad_rel_inf_delta`. Add `--require-final-check-ok` when
+automation should fail unless the checkpoint last row has
+`optimizer/final_check_status=ok`.
+
 ## Sampling Artifacts
 
 Sampling writes under `reconciliations/` in the sampling output directory. For

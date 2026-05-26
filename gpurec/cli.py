@@ -614,8 +614,43 @@ def _checkpoint_info_text(checkpoint: Path, payload: dict[str, Any]) -> str:
                 "last_projected_grad_inf",
                 last_row.get("grad/projected_inf"),
             ),
+            _optional_text(
+                "last_final_check_status",
+                last_row.get("optimizer/final_check_status"),
+            ),
+            _optional_text(
+                "last_final_check_source",
+                last_row.get("optimizer/final_check_source"),
+            ),
+            _optional_text(
+                "last_final_check_reason",
+                last_row.get("optimizer/final_check_reason"),
+            ),
+            _optional_metric_text(
+                "last_final_check_fallback_clade_budget",
+                last_row.get("optimizer/final_check_fallback_clade_budget"),
+            ),
+            _optional_metric_text(
+                "last_final_check_loss_abs_delta_bits",
+                last_row.get("optimizer/final_check_loss_abs_delta_bits"),
+            ),
+            _optional_metric_text(
+                "last_final_check_grad_max_abs_delta",
+                last_row.get("optimizer/final_check_grad_max_abs_delta"),
+            ),
+            _optional_metric_text(
+                "last_final_check_grad_rel_inf_delta",
+                last_row.get("optimizer/final_check_grad_rel_inf_delta"),
+            ),
         ]
     )
+
+
+def _checkpoint_final_check_status(payload: dict[str, Any]) -> object:
+    last_row = payload.get("last_row")
+    if not isinstance(last_row, dict):
+        return None
+    return last_row.get("optimizer/final_check_status")
 
 
 def _run_config_from_args(args: argparse.Namespace) -> RunConfig:
@@ -1352,6 +1387,14 @@ def build_parser() -> argparse.ArgumentParser:
         required=True,
         help="Optimization checkpoint to inspect, usually checkpoints/best.pt or latest.pt.",
     )
+    checkpoint_info_parser.add_argument(
+        "--require-final-check-ok",
+        action="store_true",
+        help=(
+            "Exit with status 1 after printing checkpoint info unless the "
+            "checkpoint last row has optimizer/final_check_status ok."
+        ),
+    )
     checkpoint_info_parser.set_defaults(_command_parser=checkpoint_info_parser)
 
     summary_info_parser = sub.add_parser(
@@ -1560,6 +1603,12 @@ def main(argv: list[str] | None = None) -> None:
         except _EXPECTED_WORKFLOW_ERRORS as exc:
             _exit_runtime_error(command_parser, _sampling_error_message(exc))
         print(_checkpoint_info_text(checkpoint, payload), flush=True)
+        if args.require_final_check_ok:
+            _exit_unless_final_check_ok(
+                command_parser,
+                _checkpoint_final_check_status(payload),
+                subject="checkpoint",
+            )
         return
     if args.command == "summary-info":
         try:

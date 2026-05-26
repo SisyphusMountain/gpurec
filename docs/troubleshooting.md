@@ -68,6 +68,11 @@ inspect a resume target directly:
 gpurec checkpoint-info --checkpoint output/checkpoints/latest.pt
 ```
 
+If the checkpoint is expected to be a final validation checkpoint, add
+`--require-final-check-ok`; the command prints the checkpoint fields first and
+then fails unless the saved last row reports
+`optimizer/final_check_status=ok`.
+
 | Status and reason | Meaning | Next action |
 |---|---|---|
 | `converged` | The workflow met its stopping condition. | Use `checkpoints/best.pt` for sampling unless you intentionally need the last checkpoint. |

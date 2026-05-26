@@ -295,6 +295,7 @@ jobs:
           grep -q -- "summary.json" summary-info-help.txt
           gpurec checkpoint-info --help | tee checkpoint-info-help.txt
           grep -q -- "--checkpoint" checkpoint-info-help.txt
+          grep -q -- "--require-final-check-ok" checkpoint-info-help.txt
           grep -q -- "checkpoint" checkpoint-info-help.txt
           gpurec sample --help | tee sample-help.txt
           grep -q -- "--backtrack-binary" sample-help.txt
