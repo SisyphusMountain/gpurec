@@ -1769,6 +1769,42 @@ def test_cli_checkpoint_info_require_mode_default_optimizer_fails_after_printing
     assert "Traceback" not in captured.err
 
 
+def test_cli_checkpoint_info_require_mode_default_optimizer_recomputes_stale_audit(
+    tmp_path: Path,
+    capsys,
+):
+    checkpoint = _checkpoint_with_route_metadata(
+        tmp_path,
+        {
+            "mode": "genewise",
+            "optimizer": "adam",
+            "mode_default_optimizer": "adam",
+            "uses_mode_default_optimizer": True,
+        },
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(
+            [
+                "checkpoint-info",
+                "--checkpoint",
+                str(checkpoint),
+                "--require-mode-default-optimizer",
+            ]
+        )
+
+    captured = capsys.readouterr()
+    assert exc_info.value.code == 1
+    assert "route_metadata_source=checkpoint" in captured.out
+    assert "optimizer=adam" in captured.out
+    assert "mode_default_optimizer=hessian-sgd" in captured.out
+    assert "uses_mode_default_optimizer=false" in captured.out
+    assert "checkpoint optimizer is 'adam'" in captured.err
+    assert "expected mode default 'hessian-sgd' for mode 'genewise'" in captured.err
+    assert "usage:" not in captured.err
+    assert "Traceback" not in captured.err
+
+
 def test_cli_checkpoint_info_require_mode_default_optimizer_reports_missing_evidence(
     tmp_path: Path,
     capsys,
@@ -2143,6 +2179,47 @@ def test_cli_summary_info_require_mode_default_optimizer_fails_after_printing(
                 "reason": "loss_change_patience",
                 "mode": "genewise",
                 "optimizer": "adam",
+                "final_nll_bits": 12.0,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(
+            [
+                "summary-info",
+                "--summary",
+                str(summary),
+                "--require-mode-default-optimizer",
+            ]
+        )
+
+    captured = capsys.readouterr()
+    assert exc_info.value.code == 1
+    assert "optimizer=adam" in captured.out
+    assert "mode_default_optimizer=hessian-sgd" in captured.out
+    assert "uses_mode_default_optimizer=false" in captured.out
+    assert "summary optimizer is 'adam'" in captured.err
+    assert "expected mode default 'hessian-sgd' for mode 'genewise'" in captured.err
+    assert "usage:" not in captured.err
+    assert "Traceback" not in captured.err
+
+
+def test_cli_summary_info_require_mode_default_optimizer_recomputes_stale_audit(
+    tmp_path: Path,
+    capsys,
+):
+    summary = tmp_path / "summary.json"
+    summary.write_text(
+        json.dumps(
+            {
+                "status": "converged",
+                "reason": "loss_change_patience",
+                "mode": "genewise",
+                "optimizer": "adam",
+                "mode_default_optimizer": "adam",
+                "uses_mode_default_optimizer": True,
                 "final_nll_bits": 12.0,
             }
         ),

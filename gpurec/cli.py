@@ -88,23 +88,21 @@ def _add_require_production_default_route_arg(
 
 def _route_with_mode_default_audit_fields(route: dict[str, Any]) -> dict[str, Any]:
     audited = dict(route)
-    if audited.get("mode_default_optimizer") is None and audited.get("mode") is not None:
+    mode = audited.get("mode")
+    optimizer = audited.get("optimizer")
+    mode_default_optimizer: str | None = None
+    if mode is not None:
         try:
             from gpurec.workflow.config import default_optimizer_for_mode
 
-            audited["mode_default_optimizer"] = default_optimizer_for_mode(
-                str(audited["mode"])
-            )
+            mode_default_optimizer = default_optimizer_for_mode(str(mode))
         except _EXPECTED_WORKFLOW_ERRORS:
             pass
-    if (
-        audited.get("uses_mode_default_optimizer") is None
-        and audited.get("optimizer") is not None
-        and audited.get("mode_default_optimizer") is not None
-    ):
-        audited["uses_mode_default_optimizer"] = (
-            audited["optimizer"] == audited["mode_default_optimizer"]
-        )
+    audited["mode_default_optimizer"] = mode_default_optimizer
+    if mode is None or optimizer is None or mode_default_optimizer is None:
+        audited["uses_mode_default_optimizer"] = None
+    else:
+        audited["uses_mode_default_optimizer"] = optimizer == mode_default_optimizer
     return audited
 
 
