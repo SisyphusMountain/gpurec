@@ -2500,6 +2500,58 @@ def test_cli_checkpoint_info_require_production_default_route_requires_settings_
     assert "Traceback" not in captured.err
 
 
+def test_cli_checkpoint_info_production_route_rejects_float_integer_evidence(
+    tmp_path: Path,
+    capsys,
+):
+    checkpoint = _checkpoint_with_route_metadata(
+        tmp_path,
+        {
+            "mode": "genewise",
+            "optimizer": "hessian-sgd",
+            "final_check_iters": 32,
+            "final_check_iters_e": None,
+            "solver_warmup_iters": 4,
+            "fd_adam_warmup_steps": 3,
+            "fd_hessian_refresh_steps": 16.0,
+            "hessian_sgd_normal_fixed_iters_pi": None,
+            "hessian_sgd_normal_neumann_terms": None,
+            "hessian_sgd_pi_adjoint_warmstart": False,
+            "pi_fixed_point_relaxation": 1.0,
+            "hessian_sgd_validation_interval": 0,
+            "hessian_sgd_validation_fixed_iters_pi": None,
+            "hessian_sgd_validation_neumann_terms": None,
+        },
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(
+            [
+                "checkpoint-info",
+                "--checkpoint",
+                str(checkpoint),
+                "--require-production-default-route",
+            ]
+        )
+
+    captured = capsys.readouterr()
+    assert exc_info.value.code == 1
+    assert "route_metadata_source=checkpoint" in captured.out
+    assert "fd_hessian_refresh_steps=null" in captured.out
+    assert "uses_production_default_optimizer_settings=false" in captured.out
+    assert "production_default_optimizer_setting_mismatches=fd_hessian_refresh_steps" in (
+        captured.out
+    )
+    assert "uses_production_default_route=false" in captured.out
+    assert "production_default_route_mismatches=fd_hessian_refresh_steps" in (
+        captured.out
+    )
+    assert "checkpoint production default route fields differ" in captured.err
+    assert "fd_hessian_refresh_steps" in captured.err
+    assert "usage:" not in captured.err
+    assert "Traceback" not in captured.err
+
+
 def test_cli_checkpoint_info_raw_theta_error_suggests_real_checkpoints(
     tmp_path: Path,
     capsys,
@@ -3212,6 +3264,60 @@ def test_cli_summary_info_require_production_default_route_requires_settings_evi
     assert "missing final_check_iters" in captured.err
     assert "final_check_iters_e" in captured.err
     assert "fd_hessian_refresh_steps" in captured.err
+    assert "Traceback" not in captured.err
+
+
+def test_cli_summary_info_production_route_rejects_float_integer_evidence(
+    tmp_path: Path,
+    capsys,
+):
+    summary = tmp_path / "summary.json"
+    summary.write_text(
+        json.dumps(
+            {
+                "status": "converged",
+                "reason": "adagrad_restart_schedule_complete",
+                **_PRODUCTION_ROUTE_CONTRACT,
+                "mode": "specieswise",
+                "optimizer": "adagrad-restarts",
+                "final_check_iters": 128,
+                "final_check_iters_e": 128,
+                "optimizer_step_cap": 125.0,
+                "optimizer_step_cap_reason": "adagrad_restart_schedule",
+                "adagrad_restart_schedule": "8:1.0:60,16:0.5:35,32:0.5:30",
+                "adagrad_restart_total_steps": 125,
+                "adagrad_restart_final_check_iters": 128,
+                "steps_completed": 125,
+                "final_nll_bits": 12.0,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(
+            [
+                "summary-info",
+                "--summary",
+                str(summary),
+                "--require-production-default-route",
+            ]
+        )
+
+    captured = capsys.readouterr()
+    assert exc_info.value.code == 1
+    assert "optimizer_step_cap=null" in captured.out
+    assert "uses_production_default_optimizer_settings=false" in captured.out
+    assert "production_default_optimizer_setting_mismatches=optimizer_step_cap" in (
+        captured.out
+    )
+    assert "uses_production_default_route=false" in captured.out
+    assert "production_default_route_mismatches=optimizer_step_cap" in captured.out
+    assert (
+        "summary production default route fields differ for mode 'specieswise': "
+        "optimizer_step_cap"
+    ) in captured.err
+    assert "usage:" not in captured.err
     assert "Traceback" not in captured.err
 
 

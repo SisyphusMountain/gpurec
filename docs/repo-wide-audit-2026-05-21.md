@@ -2465,6 +2465,12 @@ not edit files.  New or still-open findings from that refresh are:
   Launch automation therefore reports route drift from the shipped
   likelihood/gradient and optimizer defaults before a missing local fixture path
   can mask that route error.
+- Production-route audits now reject floating-number stand-ins for
+  integer-valued optimizer-setting fields.  A checkpoint or summary with
+  `optimizer_step_cap=125.0`, `final_check_iters_e=128.0`, or
+  `fd_hessian_refresh_steps=16.0` no longer passes the shipped
+  likelihood/gradient and optimizer route gate while displaying that field as
+  `null`.
 
 ## Recommended Next Order
 

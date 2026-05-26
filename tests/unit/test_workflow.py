@@ -1619,7 +1619,9 @@ def test_route_audit_requires_final_check_e_budget_evidence():
     ("field", "value"),
     [
         ("final_check_iters_e", "128"),
+        ("final_check_iters_e", 128.0),
         ("optimizer_step_cap", "125"),
+        ("optimizer_step_cap", 125.0),
         ("adagrad_restart_total_steps", True),
     ],
 )

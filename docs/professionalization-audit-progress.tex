@@ -7792,6 +7792,14 @@ tree and family-file paths.  This keeps launch automation focused on route
 drift from the shipped likelihood/gradient and optimizer defaults even when a
 local fixture path is also missing.
 
+Production-route audits now reject floating-number stand-ins for integer-valued
+optimizer-setting evidence.  Checkpoints and summaries with values such as
+\texttt{optimizer\_step\_cap=125.0},
+\texttt{final\_check\_iters\_e=128.0}, or
+\texttt{fd\_hessian\_refresh\_steps=16.0} fail the shipped
+likelihood/gradient and optimizer route gate instead of passing while the
+terminal display renders the same field as \texttt{null}.
+
 \section{Next Audit Targets}
 
 \begin{enumerate}[leftmargin=*]

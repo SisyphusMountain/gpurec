@@ -1105,10 +1105,11 @@ def _route_setting_matches(name: str, actual: Any, expected: Any) -> bool:
     if isinstance(expected, bool):
         return isinstance(actual, bool) and actual is expected
     if isinstance(expected, int):
-        try:
-            return integer_value(name, actual) == expected
-        except ValueError:
-            return False
+        return (
+            not isinstance(actual, bool)
+            and isinstance(actual, int)
+            and actual == expected
+        )
     if isinstance(expected, float):
         if isinstance(actual, bool) or not isinstance(actual, Real):
             return False
