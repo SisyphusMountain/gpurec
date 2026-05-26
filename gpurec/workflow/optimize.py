@@ -262,6 +262,10 @@ def _is_finite_tensor(tensor: torch.Tensor | None) -> bool:
     return tensor is not None and bool(torch.isfinite(tensor).all().item())
 
 
+class _NonfiniteParameterUpdate(RuntimeError):
+    """Internal sentinel for optimizer updates that corrupt theta."""
+
+
 def _clear_cuda_allocator_cache_if_needed(model: GeneReconModel) -> None:
     theta = getattr(model, "theta", None)
     if bool(getattr(theta, "is_cuda", False)) and torch.cuda.is_available():
@@ -1635,9 +1639,13 @@ class OptimizationRunner:
                 solver_stage=solver_stage,
             )
         )
+        theta_before = model.theta.detach().clone()
         optimizer.step()
         with torch.no_grad():
             model.clamp_theta_(self.config.min_rate, self.config.max_rate)
+        if self._restore_theta_if_nonfinite_update(model, theta_before):
+            _discard_pi_adjoint_pending_caches(model)
+            raise _NonfiniteParameterUpdate
         loss_vec, _grad, metrics = self._evaluate_active_genewise_vector_grad_at_current_theta(
             model,
             solver_stage=solver_stage,
@@ -3104,11 +3112,21 @@ class OptimizationRunner:
                         and active_batch_local_step < config.fd_adam_warmup_steps
                     ):
                         fd_newton_hessian_state = None
-                        loss_vec_current, metrics, closure_evals = self._active_adam_step(
-                            model,
-                            optimizer,
-                            solver_stage=active_solver_stage,
-                        )
+                        try:
+                            loss_vec_current, metrics, closure_evals = (
+                                self._active_adam_step(
+                                    model,
+                                    optimizer,
+                                    solver_stage=active_solver_stage,
+                                )
+                            )
+                        except _NonfiniteParameterUpdate:
+                            status = {
+                                "status": "failed",
+                                "reason": "nonfinite_parameter_update",
+                            }
+                            model.clear()
+                            break
                         metrics["optimizer/fd_newton_subphase"] = "adam_warmup"
                     else:
                         hessian_refresh_steps = config.fd_hessian_refresh_steps
