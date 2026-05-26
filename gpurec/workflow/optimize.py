@@ -64,6 +64,24 @@ class OptimizationResult:
     best_log_likelihood_bits: float | None = None
 
 
+_FINAL_CHECK_SUMMARY_FIELDS = (
+    ("optimizer/final_check_status", "final_check_status"),
+    ("optimizer/final_check_source", "final_check_source"),
+    ("optimizer/final_check_reason", "final_check_reason"),
+    ("optimizer/final_check_loss_abs_delta_bits", "final_check_loss_abs_delta_bits"),
+    ("optimizer/final_check_grad_max_abs_delta", "final_check_grad_max_abs_delta"),
+    ("optimizer/final_check_grad_rel_inf_delta", "final_check_grad_rel_inf_delta"),
+)
+
+
+def _final_check_summary_metrics(metrics: dict[str, Any]) -> dict[str, Any]:
+    return {
+        summary_key: metrics[metric_key]
+        for metric_key, summary_key in _FINAL_CHECK_SUMMARY_FIELDS
+        if metric_key in metrics
+    }
+
+
 @dataclass(frozen=True)
 class _ResumeState:
     start_step: int = 0
@@ -3808,6 +3826,7 @@ class OptimizationRunner:
                     if final_eval_failed
                     else float(final_metrics.get("grad/projected_inf", math.inf))
                 ),
+                **_final_check_summary_metrics(final_metrics),
             }
             _write_final_artifacts(
                 config,

@@ -7512,6 +7512,7 @@ def test_optimization_runner_run_writes_outputs_with_fake_model(tmp_path: Path):
             self.batch_metadata = [SimpleNamespace(batch_index=0)]
             self.clears = 0
             self.closed = False
+            self.solver_configs = []
 
         def full_loss(self):
             return self.theta.square().sum() + 5.0
@@ -7538,6 +7539,9 @@ def test_optimization_runner_run_writes_outputs_with_fake_model(tmp_path: Path):
                     "E_adjoint_success": False,
                 }
             ]
+
+        def configure_solver_iterations(self, **kwargs):
+            self.solver_configs.append(dict(kwargs))
 
         def clear(self):
             self.clears += 1
@@ -7669,6 +7673,10 @@ def test_optimization_runner_run_writes_outputs_with_fake_model(tmp_path: Path):
     assert summary["best_log_likelihood_bits"] == pytest.approx(
         -summary["best_nll_bits"]
     )
+    assert summary["final_check_status"] == "ok"
+    assert summary["final_check_loss_abs_delta_bits"] == pytest.approx(0.0)
+    assert summary["final_check_grad_max_abs_delta"] == pytest.approx(0.0)
+    assert summary["final_check_grad_rel_inf_delta"] == pytest.approx(0.0)
 
     latest = load_checkpoint(config.out_dir / "checkpoints" / "latest.pt")
     best = load_checkpoint(config.out_dir / "checkpoints" / "best.pt")

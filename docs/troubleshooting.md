@@ -38,8 +38,8 @@ tree/mapping problems before a full optimization run.
 ## Optimization Status
 
 Read `summary.json` first. It records `status`, `reason`, final objective and
-gradient diagnostics, and the effective optimizer/batch/solver route that
-produced the run.
+gradient diagnostics, final-check likelihood/gradient deltas when available,
+and the effective optimizer/batch/solver route that produced the run.
 
 | Status and reason | Meaning | Next action |
 |---|---|---|

@@ -39,6 +39,10 @@ The `final_check_iters` field records the effective solver iteration budget
 used for the final high-fidelity likelihood/gradient validation; for
 specieswise `adagrad-restarts`, this is the resolved
 `adagrad_restart_final_check_iters` value.
+When the final validation runs, `summary.json` also includes
+`final_check_status`, `final_check_loss_abs_delta_bits`,
+`final_check_grad_max_abs_delta`, and `final_check_grad_rel_inf_delta` so the
+one-file summary carries the high-fidelity likelihood/gradient agreement check.
 The `gpurec optimize` status line and the optimization portion of `gpurec run`
 print `steps_completed`, `best_step`, and the same final/best NLL and
 log-likelihood fields for quick terminal triage.
