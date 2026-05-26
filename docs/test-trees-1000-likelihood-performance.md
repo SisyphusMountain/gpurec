@@ -171,8 +171,10 @@ Starting with tied fixed4 and then promoting to `E=8, Pi=4` measured
 still starts directly at the split Pi4 route rather than from tied fixed4.
 Changing `family_chunk_size` did not change the 21-batch retained layout; a
 single `666` sample reached `2.2480324909556657s`, but repeats moved back into
-the `2.27s` to `2.32s` band, so this remains construction noise rather than a
-route change.
+the `2.27s` to `2.32s` band.  Rechecking `666` after the route moved to
+`E=7, Pi=4` measured `2.2692324600648135s`, `2.255797177029308s`,
+`2.274380306014791s`, and `2.2722940339590423s`, so this remains construction
+noise rather than a route change.
 On the older `E=8, Pi=4` route, setting `CUDA_DEVICE_MAX_CONNECTIONS=1`
 produced a then-best observed near-reference sample of `2.247412250027992s`,
 but repeats measured `2.302840727963485s`, `2.2829688700148836s`, and
