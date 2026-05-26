@@ -167,9 +167,9 @@ sample_result = sample(sampling)
 For direct imports from the workflow package, `gpurec.workflow` exports the same
 `RunConfig`, `SamplingConfig`, `OptimizationRunner`, `SamplingRunner`,
 `OptimizationResult`, `SamplingResult`, and `optimize`/`sample` functions.
-`OptimizationResult` includes the selected sampling checkpoint, objective,
-gradient route, rate parameterization, configured steps, and effective
-optimizer step cap reported in `summary.json`.
+`OptimizationResult` includes the family/species/batch counts, selected
+sampling checkpoint, objective, gradient route, rate parameterization,
+configured steps, and effective optimizer step cap reported in `summary.json`.
 
 Top-level backtracking helpers are also available for lower-level sampling and
 validation workflows:
@@ -341,8 +341,9 @@ Main outputs include:
 - `per_fam_likelihoods.tsv` for genewise runs
 
 The `gpurec optimize` status line and the optimization portion of
-`gpurec run` also print the resolved `mode` and `optimizer`, plus objective,
-gradient route, rate parameterization, production default basis,
+`gpurec run` also print the resolved `mode`, `optimizer`, family/species/batch
+counts, objective, gradient route, rate parameterization, production default
+basis,
 `configured_steps`, `optimizer_step_cap`, `optimizer_step_cap_reason`,
 `final_check_iters`, `steps_completed`, `elapsed_s`, `best_step`,
 `sampling_checkpoint`,

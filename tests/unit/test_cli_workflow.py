@@ -1488,6 +1488,9 @@ def test_cli_optimize_reports_final_and_best_objective_summary(
             reason="max_steps",
             mode=config.mode,
             optimizer=config.optimizer,
+            families=3,
+            species=4,
+            batches=2,
             objective="negative_log_likelihood_bits",
             gradient_route="implicit_first_order_adjoint",
             rate_parameterization="base2_log_dlt_rates",
@@ -1528,6 +1531,9 @@ def test_cli_optimize_reports_final_and_best_objective_summary(
     assert "reason=max_steps" in captured.out
     assert "mode=genewise" in captured.out
     assert "optimizer=hessian-sgd" in captured.out
+    assert "families=3" in captured.out
+    assert "species=4" in captured.out
+    assert "batches=2" in captured.out
     assert "objective=negative_log_likelihood_bits" in captured.out
     assert "gradient_route=implicit_first_order_adjoint" in captured.out
     assert "rate_parameterization=base2_log_dlt_rates" in captured.out
@@ -1647,6 +1653,9 @@ def test_cli_run_samples_reported_checkpoint_instead_of_stale_best(
             reason="completed",
             mode=config.mode,
             optimizer=config.optimizer,
+            families=3,
+            species=4,
+            batches=2,
             objective="negative_log_likelihood_bits",
             gradient_route="implicit_first_order_adjoint",
             rate_parameterization="base2_log_dlt_rates",
@@ -1691,6 +1700,9 @@ def test_cli_run_samples_reported_checkpoint_instead_of_stale_best(
     captured = capsys.readouterr()
     assert "mode=genewise" in captured.out
     assert "optimizer=hessian-sgd" in captured.out
+    assert "families=3" in captured.out
+    assert "species=4" in captured.out
+    assert "batches=2" in captured.out
     assert "objective=negative_log_likelihood_bits" in captured.out
     assert "gradient_route=implicit_first_order_adjoint" in captured.out
     assert "rate_parameterization=base2_log_dlt_rates" in captured.out

@@ -1298,7 +1298,7 @@ def test_project_readme_documents_gpurec_run_end_to_end_workflow():
     assert "falling back to `checkpoints/best.pt` or `checkpoints/latest.pt`" in normalized
     assert "exits without sampling if optimization fails" in normalized
     assert "Failed optimization still prints the optimization status line" in project_readme
-    assert "resolved `mode` and `optimizer`" in project_readme
+    assert "resolved `mode`, `optimizer`, family/species/batch counts" in normalized
     assert (
         "`configured_steps`, `optimizer_step_cap`, `optimizer_step_cap_reason`"
         in project_readme
@@ -1440,6 +1440,9 @@ def test_output_artifact_reference_is_linked_and_documents_contract():
         "`rate_parameterization=base2_log_dlt_rates`",
         "`production_default_basis=hogenom_and_test_trees_1000`",
         "resolved `mode` and `optimizer`",
+        "`families`",
+        "`species`",
+        "`batches`",
         "`final_log_likelihood_bits`",
         "`final_grad_inf`",
         "`final_projected_grad_inf`",

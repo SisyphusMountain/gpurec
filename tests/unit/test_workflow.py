@@ -5598,6 +5598,9 @@ def test_optimization_runner_adagrad_restarts_accepts_split_solver_budgets(
     summary = json.loads((config.out_dir / "summary.json").read_text(encoding="utf-8"))
     assert summary["mode"] == "specieswise"
     assert summary["optimizer"] == "adagrad-restarts"
+    assert result.families == summary["families"]
+    assert result.species == summary["species"]
+    assert result.batches == summary["batches"]
     assert summary["adagrad_restart_schedule"] == "8/4:1:2,16/8/6:0.5:2"
     assert summary["adagrad_restart_total_steps"] == 4
     assert summary["configured_steps"] == 10
@@ -7955,6 +7958,9 @@ def test_optimization_runner_run_writes_outputs_with_fake_model(tmp_path: Path):
     assert summary["optimizer"] == "adam"
     assert result.mode == summary["mode"]
     assert result.optimizer == summary["optimizer"]
+    assert result.families == summary["families"]
+    assert result.species == summary["species"]
+    assert result.batches == summary["batches"]
     assert result.objective == summary["objective"]
     assert result.gradient_route == summary["gradient_route"]
     assert result.rate_parameterization == summary["rate_parameterization"]

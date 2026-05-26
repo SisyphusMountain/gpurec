@@ -43,8 +43,9 @@ scheduled Adagrad updates; the run stops when this schedule is complete even if
 distinguish a normal configured step limit from a specieswise restart schedule
 cap.
 The `OptimizationResult` returned by the Python API and the optimization status
-line expose the same route contract fields plus the configured/effective step
-cap and `final_check_iters` for quick programmatic and terminal triage.
+line expose the same family/species/batch counts, route contract fields,
+configured/effective step cap, and `final_check_iters` for quick programmatic
+and terminal triage.
 
 `summary.json` repeats the completed optimizer step as `steps_completed`, the
 selected checkpoint path as `sampling_checkpoint`, the final objective as
@@ -66,12 +67,12 @@ Nominal successful checks may omit `final_check_reason` and
 `final_check_fallback_clade_budget`; skipped, disabled, failed, fallback, or
 cache-drop recomputed checks carry a reason when the workflow can determine one.
 The `gpurec optimize` status line and the optimization portion of `gpurec run`
-print the resolved `mode` and `optimizer`, route contract fields, configured
-and effective step cap, `final_check_iters`, `steps_completed`, `elapsed_s`,
-`best_step`, `sampling_checkpoint`, and the same final/best NLL and
-log-likelihood fields, plus `final_grad_inf`, `final_projected_grad_inf`, and
-the final validation source, reason, status, and fallback budget/loss/gradient
-delta fields, for quick terminal triage.
+print the resolved `mode` and `optimizer`, `families`, `species`, `batches`,
+route contract fields, configured and effective step cap, `final_check_iters`,
+`steps_completed`, `elapsed_s`, `best_step`, `sampling_checkpoint`, and the
+same final/best NLL and log-likelihood fields, plus `final_grad_inf`,
+`final_projected_grad_inf`, and the final validation source, reason, status,
+and fallback budget/loss/gradient delta fields, for quick terminal triage.
 Text and path values that contain whitespace or control characters are emitted
 as JSON strings with spaces escaped as `\u0020` so each status line remains one
 record.

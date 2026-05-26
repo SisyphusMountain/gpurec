@@ -63,6 +63,9 @@ class OptimizationResult:
     elapsed_s: float | None = None
     mode: str | None = None
     optimizer: str | None = None
+    families: int | None = None
+    species: int | None = None
+    batches: int | None = None
     objective: str | None = None
     gradient_route: str | None = None
     rate_parameterization: str | None = None
@@ -3905,6 +3908,9 @@ class OptimizationRunner:
                 elapsed_s=float(final_status["elapsed_s"]),
                 mode=config.mode,
                 optimizer=config.optimizer,
+                families=int(model.n_families),
+                species=int(model.n_species),
+                batches=len(model.batch_metadata),
                 objective=_optional_result_text(route_metadata.get("objective")),
                 gradient_route=_optional_result_text(
                     route_metadata.get("gradient_route")

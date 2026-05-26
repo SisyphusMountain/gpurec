@@ -125,6 +125,9 @@ def _optimization_result_text(result: Any) -> str:
             _optional_text("reason", getattr(result, "reason", None)),
             _optional_text("mode", getattr(result, "mode", None)),
             _optional_text("optimizer", getattr(result, "optimizer", None)),
+            _optional_int_text("families", getattr(result, "families", None)),
+            _optional_int_text("species", getattr(result, "species", None)),
+            _optional_int_text("batches", getattr(result, "batches", None)),
             _optional_text("objective", getattr(result, "objective", None)),
             _optional_text(
                 "gradient_route",
