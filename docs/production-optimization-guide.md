@@ -22,7 +22,11 @@ fields
 `production_default_basis=hogenom_and_test_trees_1000` so exported artifacts
 carry the likelihood, gradient, parameterization, and benchmark-basis contract.
 They also report `final_check_iters`, the solver iteration budget used for the
-final high-fidelity likelihood/gradient validation.
+final high-fidelity likelihood/gradient validation, plus the optimizer-specific
+route fields needed to reproduce the selected production route: Hessian-SGD
+warmup/refresh/normal-stage solver controls for genewise runs and the
+Adagrad-restart schedule, total scheduled steps, and final-check budget for
+specieswise runs.
 
 `theta` stores base-2 log rates for duplication, loss, and transfer. The public
 rate table writes columns in D/T/L order as probabilities/rates plus the raw

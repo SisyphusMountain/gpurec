@@ -5484,6 +5484,28 @@ def test_optimization_runner_adagrad_mode_records_public_phase(tmp_path: Path):
     assert runner.fake_model.closed
 
 
+def test_optimization_runner_result_preserves_empty_clade_budget_for_sequential_packing(
+    tmp_path: Path,
+):
+    config = _optimizer_mode_config(
+        tmp_path,
+        optimizer="adam",
+        batch_packing="sequential",
+        clade_budget=None,
+    )
+    runner = _WorkflowOptimizerModeRunner(config)
+
+    result = runner.run()
+
+    summary = json.loads((config.out_dir / "summary.json").read_text(encoding="utf-8"))
+    assert summary["batch_packing"] == "sequential"
+    assert summary["clade_budget"] is None
+    assert result.batch_packing == "sequential"
+    assert result.clade_budget is None
+    assert result.status == "not_converged"
+    assert runner.fake_model.closed
+
+
 def test_optimization_runner_adagrad_restarts_specieswise_uses_schedule(
     tmp_path: Path,
 ):
@@ -5620,6 +5642,20 @@ def test_optimization_runner_adagrad_restarts_accepts_split_solver_budgets(
     assert result.optimizer_step_cap == summary["optimizer_step_cap"]
     assert result.optimizer_step_cap_reason == summary["optimizer_step_cap_reason"]
     assert result.final_check_iters == summary["final_check_iters"]
+    assert result.adagrad_restart_schedule == summary["adagrad_restart_schedule"]
+    assert (
+        result.adagrad_restart_total_steps
+        == summary["adagrad_restart_total_steps"]
+    )
+    assert (
+        result.adagrad_restart_final_check_iters
+        == summary["adagrad_restart_final_check_iters"]
+    )
+    assert result.solver_warmup_iters is None
+    assert result.fd_adam_warmup_steps is None
+    assert result.fd_hessian_refresh_steps is None
+    assert result.hessian_sgd_normal_fixed_iters_pi is None
+    assert result.hessian_sgd_normal_neumann_terms is None
     assert summary["steps_completed"] == result.steps_completed
     assert summary["steps_completed"] == 4
     assert summary["sampling_checkpoint"] == str(result.sampling_checkpoint)
@@ -5948,6 +5984,26 @@ def test_optimization_runner_hessian_sgd_mode_records_public_phase(tmp_path: Pat
     latest = load_checkpoint(config.out_dir / "checkpoints" / "latest.pt")
     assert latest["optimizer_phase"] == "hessian-sgd"
     assert latest["last_row"]["optimizer/phase"] == "final_eval"
+    summary = json.loads((config.out_dir / "summary.json").read_text(encoding="utf-8"))
+    assert result.solver_warmup_iters == summary["solver_warmup_iters"]
+    assert result.fd_adam_warmup_steps == summary["fd_adam_warmup_steps"]
+    assert result.fd_hessian_refresh_steps == summary["fd_hessian_refresh_steps"]
+    assert (
+        result.hessian_sgd_normal_fixed_iters_pi
+        == summary["hessian_sgd_normal_fixed_iters_pi"]
+    )
+    assert (
+        result.hessian_sgd_normal_neumann_terms
+        == summary["hessian_sgd_normal_neumann_terms"]
+    )
+    assert summary["solver_warmup_iters"] == 0
+    assert summary["fd_adam_warmup_steps"] == 3
+    assert summary["fd_hessian_refresh_steps"] == 16
+    assert summary["hessian_sgd_normal_fixed_iters_pi"] is None
+    assert summary["hessian_sgd_normal_neumann_terms"] is None
+    assert result.adagrad_restart_schedule is None
+    assert result.adagrad_restart_total_steps is None
+    assert result.adagrad_restart_final_check_iters is None
     assert result.status == "not_converged"
     assert runner.fake_model.closed
 

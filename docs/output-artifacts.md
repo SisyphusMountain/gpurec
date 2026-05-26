@@ -45,8 +45,14 @@ cap.
 The `OptimizationResult` returned by the Python API and the optimization status
 line expose the same family/species/batch counts, `batch_packing`,
 `family_chunk_size`, `clade_budget`, `fixed_iters_e`, `fixed_iters_pi`,
-`neumann_terms`, route contract fields, configured/effective step cap, and
-`final_check_iters` for quick programmatic and terminal triage.
+`neumann_terms`, route contract fields, configured/effective step cap,
+`final_check_iters`, and optimizer-specific route fields for quick
+programmatic and terminal triage. For genewise `hessian-sgd`, those fields are
+`solver_warmup_iters`, `fd_adam_warmup_steps`, `fd_hessian_refresh_steps`,
+`hessian_sgd_normal_fixed_iters_pi`, and
+`hessian_sgd_normal_neumann_terms`. For specieswise `adagrad-restarts`, they
+are `adagrad_restart_schedule`, `adagrad_restart_total_steps`, and
+`adagrad_restart_final_check_iters`.
 
 `summary.json` repeats the completed optimizer step as `steps_completed`, the
 selected checkpoint path as `sampling_checkpoint`, the final objective as
@@ -70,9 +76,9 @@ cache-drop recomputed checks carry a reason when the workflow can determine one.
 The `gpurec optimize` status line and the optimization portion of `gpurec run`
 print the resolved `mode` and `optimizer`, `families`, `species`, `batches`,
 base batch/solver route fields, route contract fields, configured and effective
-step cap, `final_check_iters`, `steps_completed`, `elapsed_s`, `best_step`,
-`sampling_checkpoint`, and the same final/best NLL and log-likelihood fields,
-plus `final_grad_inf`,
+step cap, `final_check_iters`, optimizer-specific route fields,
+`steps_completed`, `elapsed_s`, `best_step`, `sampling_checkpoint`, and the
+same final/best NLL and log-likelihood fields, plus `final_grad_inf`,
 `final_projected_grad_inf`, and the final validation source, reason, status,
 and fallback budget/loss/gradient delta fields, for quick terminal triage.
 Text and path values that contain whitespace or control characters are emitted

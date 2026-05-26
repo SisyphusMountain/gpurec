@@ -1505,6 +1505,15 @@ def test_cli_optimize_reports_final_and_best_objective_summary(
             optimizer_step_cap=config.steps,
             optimizer_step_cap_reason="configured_steps",
             final_check_iters=config.final_check_iters,
+            solver_warmup_iters=config.solver_warmup_iters,
+            fd_adam_warmup_steps=config.fd_adam_warmup_steps,
+            fd_hessian_refresh_steps=config.fd_hessian_refresh_steps,
+            hessian_sgd_normal_fixed_iters_pi=(
+                config.hessian_sgd_normal_fixed_iters_pi
+            ),
+            hessian_sgd_normal_neumann_terms=(
+                config.hessian_sgd_normal_neumann_terms
+            ),
             steps_completed=7,
             elapsed_s=3.25,
             best_step=5,
@@ -1554,6 +1563,11 @@ def test_cli_optimize_reports_final_and_best_objective_summary(
     assert "optimizer_step_cap=5000" in captured.out
     assert "optimizer_step_cap_reason=configured_steps" in captured.out
     assert "final_check_iters=32" in captured.out
+    assert "solver_warmup_iters=4" in captured.out
+    assert "fd_adam_warmup_steps=3" in captured.out
+    assert "fd_hessian_refresh_steps=16" in captured.out
+    assert "hessian_sgd_normal_fixed_iters_pi=null" in captured.out
+    assert "hessian_sgd_normal_neumann_terms=null" in captured.out
     assert "steps_completed=7" in captured.out
     assert "elapsed_s=3.250000" in captured.out
     assert "best_step=5" in captured.out
@@ -1586,6 +1600,31 @@ def test_cli_optimize_reports_final_and_best_objective_summary(
     assert gpurec_cli._optional_text("out_dir", out_dir.resolve()) in captured.out
     assert f"out_dir={out_dir.resolve()}" not in captured.out
     assert "Traceback" not in captured.err
+
+
+def test_optimization_result_text_reports_adagrad_restart_route_fields():
+    text = gpurec_cli._optimization_result_text(
+        SimpleNamespace(
+            status="converged",
+            reason="adagrad_restart_schedule_complete",
+            mode="specieswise",
+            optimizer="adagrad-restarts",
+            final_check_iters=128,
+            adagrad_restart_schedule="8:1:60,16:0.5:35,32:0.5:30",
+            adagrad_restart_total_steps=125,
+            adagrad_restart_final_check_iters=128,
+            steps_completed=125,
+            final_nll_bits=12.0,
+            final_grad_inf=0.5,
+        )
+    )
+
+    assert "optimizer=adagrad-restarts" in text
+    assert "final_check_iters=128" in text
+    assert "adagrad_restart_schedule=8:1:60,16:0.5:35,32:0.5:30" in text
+    assert "adagrad_restart_total_steps=125" in text
+    assert "adagrad_restart_final_check_iters=128" in text
+    assert "solver_warmup_iters" not in text
 
 
 def test_cli_run_reports_optimize_errors_without_traceback(
@@ -1682,6 +1721,15 @@ def test_cli_run_samples_reported_checkpoint_instead_of_stale_best(
             optimizer_step_cap=config.steps,
             optimizer_step_cap_reason="configured_steps",
             final_check_iters=config.final_check_iters,
+            solver_warmup_iters=config.solver_warmup_iters,
+            fd_adam_warmup_steps=config.fd_adam_warmup_steps,
+            fd_hessian_refresh_steps=config.fd_hessian_refresh_steps,
+            hessian_sgd_normal_fixed_iters_pi=(
+                config.hessian_sgd_normal_fixed_iters_pi
+            ),
+            hessian_sgd_normal_neumann_terms=(
+                config.hessian_sgd_normal_neumann_terms
+            ),
             steps_completed=3,
             elapsed_s=4.5,
             best_step=2,
@@ -1735,6 +1783,11 @@ def test_cli_run_samples_reported_checkpoint_instead_of_stale_best(
     assert "optimizer_step_cap=5000" in captured.out
     assert "optimizer_step_cap_reason=configured_steps" in captured.out
     assert "final_check_iters=32" in captured.out
+    assert "solver_warmup_iters=4" in captured.out
+    assert "fd_adam_warmup_steps=3" in captured.out
+    assert "fd_hessian_refresh_steps=16" in captured.out
+    assert "hessian_sgd_normal_fixed_iters_pi=null" in captured.out
+    assert "hessian_sgd_normal_neumann_terms=null" in captured.out
     assert "steps_completed=3" in captured.out
     assert "elapsed_s=4.500000" in captured.out
     assert "best_step=2" in captured.out

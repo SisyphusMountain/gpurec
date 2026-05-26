@@ -178,6 +178,62 @@ def _optimization_result_text(result: Any) -> str:
                 "final_check_iters",
                 getattr(result, "final_check_iters", None),
             ),
+            *(
+                [
+                    _optional_int_text(
+                        "solver_warmup_iters",
+                        getattr(result, "solver_warmup_iters", None),
+                    ),
+                    _optional_int_text(
+                        "fd_adam_warmup_steps",
+                        getattr(result, "fd_adam_warmup_steps", None),
+                    ),
+                    _optional_int_text(
+                        "fd_hessian_refresh_steps",
+                        getattr(result, "fd_hessian_refresh_steps", None),
+                    ),
+                    _optional_int_text(
+                        "hessian_sgd_normal_fixed_iters_pi",
+                        getattr(
+                            result,
+                            "hessian_sgd_normal_fixed_iters_pi",
+                            None,
+                        ),
+                    ),
+                    _optional_int_text(
+                        "hessian_sgd_normal_neumann_terms",
+                        getattr(
+                            result,
+                            "hessian_sgd_normal_neumann_terms",
+                            None,
+                        ),
+                    ),
+                ]
+                if getattr(result, "optimizer", None) == "hessian-sgd"
+                else []
+            ),
+            *(
+                [
+                    _optional_text(
+                        "adagrad_restart_schedule",
+                        getattr(result, "adagrad_restart_schedule", None),
+                    ),
+                    _optional_int_text(
+                        "adagrad_restart_total_steps",
+                        getattr(result, "adagrad_restart_total_steps", None),
+                    ),
+                    _optional_int_text(
+                        "adagrad_restart_final_check_iters",
+                        getattr(
+                            result,
+                            "adagrad_restart_final_check_iters",
+                            None,
+                        ),
+                    ),
+                ]
+                if getattr(result, "optimizer", None) == "adagrad-restarts"
+                else []
+            ),
             _optional_int_text(
                 "steps_completed",
                 getattr(result, "steps_completed", None),

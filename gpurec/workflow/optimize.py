@@ -80,6 +80,14 @@ class OptimizationResult:
     optimizer_step_cap: int | None = None
     optimizer_step_cap_reason: str | None = None
     final_check_iters: int | None = None
+    solver_warmup_iters: int | None = None
+    fd_adam_warmup_steps: int | None = None
+    fd_hessian_refresh_steps: int | None = None
+    hessian_sgd_normal_fixed_iters_pi: int | None = None
+    hessian_sgd_normal_neumann_terms: int | None = None
+    adagrad_restart_schedule: str | None = None
+    adagrad_restart_total_steps: int | None = None
+    adagrad_restart_final_check_iters: int | None = None
     final_projected_grad_inf: float | None = None
     sampling_checkpoint: Path | None = None
     final_log_likelihood_bits: float | None = None
@@ -3930,7 +3938,7 @@ class OptimizationRunner:
                     route_metadata.get("batch_packing")
                 ),
                 family_chunk_size=int(route_metadata["family_chunk_size"]),
-                clade_budget=int(route_metadata["clade_budget"]),
+                clade_budget=_optional_result_int(route_metadata.get("clade_budget")),
                 fixed_iters_e=_optional_result_int(
                     route_metadata.get("fixed_iters_e")
                 ),
@@ -3956,6 +3964,30 @@ class OptimizationRunner:
                     route_metadata.get("optimizer_step_cap_reason")
                 ),
                 final_check_iters=int(route_metadata["final_check_iters"]),
+                solver_warmup_iters=_optional_result_int(
+                    route_metadata.get("solver_warmup_iters")
+                ),
+                fd_adam_warmup_steps=_optional_result_int(
+                    route_metadata.get("fd_adam_warmup_steps")
+                ),
+                fd_hessian_refresh_steps=_optional_result_int(
+                    route_metadata.get("fd_hessian_refresh_steps")
+                ),
+                hessian_sgd_normal_fixed_iters_pi=_optional_result_int(
+                    route_metadata.get("hessian_sgd_normal_fixed_iters_pi")
+                ),
+                hessian_sgd_normal_neumann_terms=_optional_result_int(
+                    route_metadata.get("hessian_sgd_normal_neumann_terms")
+                ),
+                adagrad_restart_schedule=_optional_result_text(
+                    route_metadata.get("adagrad_restart_schedule")
+                ),
+                adagrad_restart_total_steps=_optional_result_int(
+                    route_metadata.get("adagrad_restart_total_steps")
+                ),
+                adagrad_restart_final_check_iters=_optional_result_int(
+                    route_metadata.get("adagrad_restart_final_check_iters")
+                ),
                 final_projected_grad_inf=final_projected_grad_inf,
                 sampling_checkpoint=sampling_checkpoint,
                 final_log_likelihood_bits=final_log_likelihood_bits,

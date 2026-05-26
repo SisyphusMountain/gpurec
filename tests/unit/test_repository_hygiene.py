@@ -1310,6 +1310,7 @@ def test_project_readme_documents_gpurec_run_end_to_end_workflow():
         in project_readme
     )
     assert "objective, gradient route, rate parameterization" in normalized
+    assert "optimizer-specific route fields" in normalized
     assert "`final_grad_inf`" in project_readme
     assert "`final_projected_grad_inf`" in project_readme
     assert "`sampled_families`, `samples`, `xml`, and `sample_out_dir`" in project_readme
@@ -1382,6 +1383,8 @@ def test_production_optimization_guide_is_linked_and_documents_routes():
         "`optimizer_step_cap_reason=adagrad_restart_schedule`",
         "`adagrad_restart_final_check_iters=128`",
         "`final_check_iters`",
+        "optimizer-specific route fields",
+        "Hessian-SGD warmup/refresh/normal-stage solver controls",
         "HOGENOM",
         "`tests/data/test_trees_1000`",
         "likelihood/gradient parity",
@@ -1460,6 +1463,14 @@ def test_output_artifact_reference_is_linked_and_documents_contract():
         "`elapsed_s`",
         "`best_step`",
         "`final_check_iters`",
+        "`solver_warmup_iters`",
+        "`fd_adam_warmup_steps`",
+        "`fd_hessian_refresh_steps`",
+        "`hessian_sgd_normal_fixed_iters_pi`",
+        "`hessian_sgd_normal_neumann_terms`",
+        "`adagrad_restart_schedule`",
+        "`adagrad_restart_total_steps`",
+        "`adagrad_restart_final_check_iters`",
         "`configured_steps`",
         "`optimizer_step_cap`",
         "`optimizer_step_cap_reason`",
