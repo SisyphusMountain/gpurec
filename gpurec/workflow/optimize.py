@@ -3865,6 +3865,9 @@ class OptimizationRunner:
                 "species": int(model.n_species),
                 "batches": len(model.batch_metadata),
                 "steps_completed": int(final_row["step"]),
+                "sampling_checkpoint": (
+                    None if sampling_checkpoint is None else str(sampling_checkpoint)
+                ),
                 "final_nll_bits": final_nll_bits,
                 "final_log_likelihood_bits": final_log_likelihood_bits,
                 "best_log_likelihood_bits": best_log_likelihood_bits,

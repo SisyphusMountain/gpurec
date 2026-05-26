@@ -16,7 +16,7 @@ the end of the optimization phase.
 |---|---|---|---|
 | `history.jsonl` | `optimize`, optimization phase of `run` | One JSON object per recorded optimizer step plus the final evaluation row. | Strict JSON is used: non-finite diagnostics are serialized as `null`, not `NaN` or `Infinity`. |
 | `optimization_history.csv` | `optimize`, optimization phase of `run` | CSV version of the in-memory history rows. | Useful for spreadsheets; `history.jsonl` preserves richer typing. |
-| `summary.json` | `optimize`, optimization phase of `run` | Final status, reason, elapsed time, family/species/batch counts, objective/gradient/parameterization metadata, effective optimizer/batch/solver route, best NLL/log-likelihood metadata, final NLL/log-likelihood, final gradient infinity norm, and projected-gradient infinity norm. | Check `status` and `reason` before treating rates as accepted. |
+| `summary.json` | `optimize`, optimization phase of `run` | Final status, reason, elapsed time, selected sampling checkpoint, family/species/batch counts, objective/gradient/parameterization metadata, effective optimizer/batch/solver route, best NLL/log-likelihood metadata, final NLL/log-likelihood, final gradient infinity norm, and projected-gradient infinity norm. | Check `status` and `reason` before treating rates as accepted. |
 | `rates_final.tsv` | `optimize`, optimization phase of `run` | Final D/T/L rates, survival probability `pS`, and raw theta values. | Rows are `global`, species labels, or family labels depending on mode. |
 | `per_fam_likelihoods.tsv` | Genewise `optimize` and genewise optimization phase of `run` | Final per-family NLL and log-likelihood in bits. | Genewise-only because rows are independent only in genewise mode. |
 | `theta_final.pt` | `optimize`, optimization phase of `run` | Raw CPU tensor containing final theta values. | For inspection only; it does not carry config, family ordering, species ordering, or optimizer state. |
@@ -44,11 +44,12 @@ distinguish a normal configured step limit from a specieswise restart schedule
 cap.
 
 `summary.json` repeats the completed optimizer step as `steps_completed`, the
-final objective as `final_nll_bits` and `final_log_likelihood_bits`, and the
-best accepted objective as `best_nll_bits` and `best_log_likelihood_bits`.  If
-the final likelihood/gradient validation fails, `final_log_likelihood_bits` is
-`null`; inspect `status`, `reason`, and the final `history.jsonl` row before
-using the rates.
+selected checkpoint path as `sampling_checkpoint`, the final objective as
+`final_nll_bits` and `final_log_likelihood_bits`, and the best accepted
+objective as `best_nll_bits` and `best_log_likelihood_bits`.  If the final
+likelihood/gradient validation fails, `final_log_likelihood_bits` is `null`;
+inspect `status`, `reason`, and the final `history.jsonl` row before using the
+rates.
 The `final_check_iters` field records the effective solver iteration budget
 used for the final high-fidelity likelihood/gradient validation; for
 specieswise `adagrad-restarts`, this is the resolved
@@ -63,10 +64,10 @@ Nominal successful checks may omit `final_check_reason` and
 cache-drop recomputed checks carry a reason when the workflow can determine one.
 The `gpurec optimize` status line and the optimization portion of `gpurec run`
 print the resolved `mode` and `optimizer`, `steps_completed`, `elapsed_s`,
-`best_step`, and the same final/best NLL and log-likelihood fields, plus
-`final_grad_inf`, `final_projected_grad_inf`, and the final validation source,
-reason, status, and fallback budget/loss/gradient delta fields, for quick
-terminal triage.
+`best_step`, `sampling_checkpoint`, and the same final/best NLL and
+log-likelihood fields, plus `final_grad_inf`, `final_projected_grad_inf`, and
+the final validation source, reason, status, and fallback budget/loss/gradient
+delta fields, for quick terminal triage.
 Text and path values that contain whitespace or control characters are emitted
 as JSON strings with spaces escaped as `\u0020` so each status line remains one
 record.

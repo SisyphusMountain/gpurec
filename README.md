@@ -332,15 +332,16 @@ Main outputs include:
 - `checkpoints/latest.pt` and `checkpoints/best.pt`, metadata-bearing
   checkpoints for resume, sampling, restore workflows, and route inspection
 - `optimization_history.csv` and `history.jsonl`
-- `rates_final.tsv`, `theta_final.pt`, `summary.json` with status, final/best
-  NLL and log-likelihood, and the effective optimizer/batch/solver route
+- `rates_final.tsv`, `theta_final.pt`, `summary.json` with status, the selected
+  sampling checkpoint, final/best NLL and log-likelihood, and the effective
+  optimizer/batch/solver route
 - `per_fam_likelihoods.tsv` for genewise runs
 
 The `gpurec optimize` status line and the optimization portion of
 `gpurec run` also print the resolved `mode` and `optimizer`,
-`steps_completed`, `elapsed_s`, `best_step`, `final_nll_bits`,
-`final_log_likelihood_bits`, `best_nll_bits`, and `best_log_likelihood_bits`,
-plus `final_grad_inf`,
+`steps_completed`, `elapsed_s`, `best_step`, `sampling_checkpoint`,
+`final_nll_bits`, `final_log_likelihood_bits`, `best_nll_bits`, and
+`best_log_likelihood_bits`, plus `final_grad_inf`,
 `final_projected_grad_inf`, `final_check_status`, `final_check_source`,
 `final_check_reason`,
 `final_check_fallback_clade_budget`, `final_check_loss_abs_delta_bits`,

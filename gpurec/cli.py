@@ -137,6 +137,10 @@ def _optimization_result_text(result: Any) -> str:
                 "best_step",
                 getattr(result, "best_step", None),
             ),
+            _optional_text(
+                "sampling_checkpoint",
+                getattr(result, "sampling_checkpoint", None),
+            ),
             _optional_metric_text(
                 "final_nll_bits",
                 getattr(result, "final_nll_bits", None),

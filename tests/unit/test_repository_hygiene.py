@@ -1437,6 +1437,7 @@ def test_output_artifact_reference_is_linked_and_documents_contract():
         "`final_projected_grad_inf`",
         "`best_log_likelihood_bits`",
         "`steps_completed`",
+        "`sampling_checkpoint`",
         "`elapsed_s`",
         "`best_step`",
         "`final_check_iters`",

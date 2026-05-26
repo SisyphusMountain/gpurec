@@ -1489,6 +1489,7 @@ def test_cli_optimize_reports_final_and_best_objective_summary(
             steps_completed=7,
             elapsed_s=3.25,
             best_step=5,
+            sampling_checkpoint=config.out_dir / "checkpoints" / "best.pt",
             final_nll_bits=12.5,
             final_grad_inf=0.75,
             final_projected_grad_inf=0.625,
@@ -1520,6 +1521,15 @@ def test_cli_optimize_reports_final_and_best_objective_summary(
     assert "steps_completed=7" in captured.out
     assert "elapsed_s=3.250000" in captured.out
     assert "best_step=5" in captured.out
+    assert (
+        gpurec_cli._optional_text(
+            "sampling_checkpoint",
+            out_dir.resolve() / "checkpoints" / "best.pt",
+        )
+        in captured.out
+    )
+    raw_checkpoint = f"sampling_checkpoint={out_dir.resolve()}/checkpoints/best.pt"
+    assert raw_checkpoint not in captured.out
     assert "final_nll_bits=12.500000" in captured.out
     assert "final_log_likelihood_bits=-12.500000" in captured.out
     assert "final_grad_inf=0.750000" in captured.out
@@ -1657,6 +1667,10 @@ def test_cli_run_samples_reported_checkpoint_instead_of_stale_best(
     assert "steps_completed=3" in captured.out
     assert "elapsed_s=4.500000" in captured.out
     assert "best_step=2" in captured.out
+    assert gpurec_cli._optional_text(
+        "sampling_checkpoint",
+        current_latest.resolve(),
+    ) in captured.out
     assert "final_nll_bits=12.000000" in captured.out
     assert "final_log_likelihood_bits=-12.000000" in captured.out
     assert "final_grad_inf=0.750000" in captured.out
