@@ -7571,6 +7571,14 @@ modules and workflow test compile, and the focused route/runner selector reports
 \texttt{4 passed}.  \texttt{git diff --check} passes, and the full CPU unit gate
 reports \texttt{1480 passed, 1 skipped, 51 deselected}.
 
+\texttt{summary.json}, \texttt{OptimizationResult}, and the optimization
+status line now expose \texttt{final\_check\_iters\_e}, derived from the
+existing \texttt{optimizer/final\_check\_iters\_E} final history metric.  The
+artifact contract now shows both the Pi/Neumann final-check budget and the
+paired E-solver budget, including \texttt{null} for adaptive E solves on
+genewise routes.  Focused workflow, CLI, and repository hygiene tests guard the
+new summary/result/status field.
+
 \section{Next Audit Targets}
 
 \begin{enumerate}[leftmargin=*]

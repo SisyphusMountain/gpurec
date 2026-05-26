@@ -94,6 +94,7 @@ class OptimizationResult:
     optimizer_step_cap: int | None = None
     optimizer_step_cap_reason: str | None = None
     final_check_iters: int | None = None
+    final_check_iters_e: int | None = None
     solver_warmup_iters: int | None = None
     fd_adam_warmup_steps: int | None = None
     fd_hessian_refresh_steps: int | None = None
@@ -124,6 +125,7 @@ class OptimizationResult:
 
 
 _FINAL_CHECK_SUMMARY_FIELDS = (
+    ("optimizer/final_check_iters_E", "final_check_iters_e"),
     ("optimizer/final_check_status", "final_check_status"),
     ("optimizer/final_check_source", "final_check_source"),
     ("optimizer/final_check_reason", "final_check_reason"),
@@ -264,6 +266,9 @@ def _optimization_result_from_summary(
             summary.get("optimizer_step_cap_reason")
         ),
         final_check_iters=_optional_result_int(summary.get("final_check_iters")),
+        final_check_iters_e=_optional_result_int(
+            summary.get("final_check_iters_e")
+        ),
         solver_warmup_iters=_optional_result_int(
             summary.get("solver_warmup_iters")
         ),

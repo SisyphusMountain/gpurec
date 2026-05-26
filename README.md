@@ -173,7 +173,8 @@ For direct imports from the workflow package, `gpurec.workflow` exports the same
 `OptimizationResult` includes the family/species/batch counts, selected
 sampling checkpoint for usable runs, objective, gradient route, rate
 parameterization, batch/solver route, optimizer-specific route fields,
-configured steps, and effective optimizer step cap reported in `summary.json`.
+configured steps, effective optimizer step cap, and final-check solver budgets
+reported in `summary.json`.
 
 Top-level backtracking helpers are also available for lower-level sampling and
 validation workflows:
@@ -403,7 +404,8 @@ packing, family chunk size, clade budget, solver iteration budgets, objective,
 gradient route, rate parameterization, production default basis,
 optimizer-specific route fields,
 `configured_steps`, `optimizer_step_cap`, `optimizer_step_cap_reason`,
-`final_check_iters`, `steps_completed`, `elapsed_s`, `best_step`,
+`final_check_iters`, `final_check_iters_e`, `steps_completed`, `elapsed_s`,
+`best_step`,
 `sampling_checkpoint`,
 `final_nll_bits`, `final_log_likelihood_bits`, `best_nll_bits`, and
 `best_log_likelihood_bits`, plus `final_grad_inf`,

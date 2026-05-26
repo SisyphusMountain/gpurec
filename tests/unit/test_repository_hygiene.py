@@ -1554,9 +1554,10 @@ def test_project_readme_documents_gpurec_run_end_to_end_workflow():
         in project_readme
     )
     assert (
-        "`final_check_iters`, `steps_completed`, `elapsed_s`, `best_step`"
+        "`final_check_iters`, `final_check_iters_e`, `steps_completed`, `elapsed_s`"
         in project_readme
     )
+    assert "`best_step`" in project_readme
     assert "objective, gradient route, rate parameterization" in normalized
     assert "optimizer-specific route fields" in normalized
     assert "Add `--require-converged` to `gpurec optimize`" in project_readme
@@ -1654,6 +1655,7 @@ def test_production_optimization_guide_is_linked_and_documents_routes():
         "same solver budget with a new LR",
         "must not reduce `fixed_iters_E`, `fixed_iters_Pi`, or `neumann_terms`",
         "`final_check_iters`",
+        "`final_check_iters_e`",
         "optimizer-specific route fields",
         "Hessian-SGD warmup/refresh/normal-stage solver controls",
         "`--require-mode-default-optimizer`",
@@ -1767,6 +1769,7 @@ def test_output_artifact_reference_is_linked_and_documents_contract():
         "`elapsed_s`",
         "`best_step`",
         "`final_check_iters`",
+        "`final_check_iters_e`",
         "`solver_warmup_iters`",
         "`fd_adam_warmup_steps`",
         "`fd_hessian_refresh_steps`",

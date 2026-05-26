@@ -1607,6 +1607,7 @@ def test_optimization_result_is_derived_from_summary_contract(tmp_path: Path):
         "fixed_iters_pi": 16,
         "neumann_terms": 16,
         "final_check_iters": 32,
+        "final_check_iters_e": 64,
         "configured_steps": 5000,
         "optimizer_step_cap": 5000,
         "optimizer_step_cap_reason": "configured_steps",
@@ -1670,6 +1671,7 @@ def test_optimization_result_is_derived_from_summary_contract(tmp_path: Path):
         "optimizer_step_cap": 5000,
         "optimizer_step_cap_reason": "configured_steps",
         "final_check_iters": 32,
+        "final_check_iters_e": 64,
         "solver_warmup_iters": 4,
         "fd_adam_warmup_steps": 3,
         "fd_hessian_refresh_steps": 16,
@@ -6835,6 +6837,7 @@ def test_optimization_runner_adagrad_restarts_accepts_split_solver_budgets(
     assert result.optimizer_step_cap == summary["optimizer_step_cap"]
     assert result.optimizer_step_cap_reason == summary["optimizer_step_cap_reason"]
     assert result.final_check_iters == summary["final_check_iters"]
+    assert result.final_check_iters_e == summary["final_check_iters_e"]
     assert result.adagrad_restart_schedule == summary["adagrad_restart_schedule"]
     assert (
         result.adagrad_restart_total_steps
@@ -6859,6 +6862,7 @@ def test_optimization_runner_adagrad_restarts_accepts_split_solver_budgets(
     assert summary["sampling_checkpoint"] == str(result.sampling_checkpoint)
     assert summary["adagrad_restart_final_check_iters"] == 32
     assert summary["final_check_iters"] == 32
+    assert summary["final_check_iters_e"] == 32
     assert summary["fixed_iters_pi"] == 16
     assert summary["neumann_terms"] == 16
     assert runner.fake_model.solver_configs[:3] == [
@@ -7697,6 +7701,7 @@ def test_final_iteration_check_falls_back_to_smaller_clade_budget(
     assert "2D self-loop fast path" in metrics["optimizer/final_check_reason"]
     assert "2D self-loop fast path" in metrics["optimizer/final_check_fallback_reason"]
     summary_metrics = optimize_workflow._final_check_summary_metrics(metrics)
+    assert summary_metrics["final_check_iters_e"] is None
     assert summary_metrics["final_check_source"] == "fallback_clade_budget"
     assert summary_metrics["final_check_fallback_clade_budget"] == 250_000.0
     assert "2D self-loop fast path" in summary_metrics["final_check_reason"]
@@ -9051,6 +9056,8 @@ def test_final_iteration_check_runs_for_specieswise_mode(tmp_path: Path):
     assert metrics["optimizer/final_check_source"] == "configured_solver_budget"
     assert metrics["optimizer/final_check_iters"] == 32
     assert metrics["optimizer/final_check_iters_E"] == 32
+    summary_metrics = optimize_workflow._final_check_summary_metrics(metrics)
+    assert summary_metrics["final_check_iters_e"] == 32
     assert metrics["optimizer/final_check_loss_abs_delta_bits"] == pytest.approx(0.0)
     assert metrics["optimizer/final_check_grad_max_abs_delta"] == pytest.approx(0.0)
     assert solver_configs == [

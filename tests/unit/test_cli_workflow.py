@@ -2125,6 +2125,7 @@ def test_cli_summary_info_reports_status_route_and_final_check(
         "optimizer_step_cap": 5000,
         "optimizer_step_cap_reason": "configured_steps",
         "final_check_iters": 32,
+        "final_check_iters_e": None,
         "solver_warmup_iters": 4,
         "fd_adam_warmup_steps": 3,
         "fd_hessian_refresh_steps": 16,
@@ -2189,6 +2190,7 @@ def test_cli_summary_info_reports_status_route_and_final_check(
         "optimizer_step_cap=5000",
         "optimizer_step_cap_reason=configured_steps",
         "final_check_iters=32",
+        "final_check_iters_e=null",
         "solver_warmup_iters=4",
         "fd_adam_warmup_steps=3",
         "fd_hessian_refresh_steps=16",
@@ -2243,6 +2245,7 @@ def test_cli_summary_info_reports_adagrad_restart_route_fields(
                 "adagrad_restart_total_steps": 125,
                 "adagrad_restart_final_check_iters": 128,
                 "steps_completed": 125,
+                "final_check_iters_e": 128,
                 "final_nll_bits": 12.0,
                 "final_log_likelihood_bits": -12.0,
                 "final_grad_inf": 0.5,
@@ -2264,6 +2267,7 @@ def test_cli_summary_info_reports_adagrad_restart_route_fields(
     assert "production_default_route_mismatches=null" in captured.out
     assert "reason=adagrad_restart_schedule_complete" in captured.out
     assert "final_check_iters=128" in captured.out
+    assert "final_check_iters_e=128" in captured.out
     assert "adagrad_restart_schedule=8:1:60,16:0.5:35,32:0.5:30" in captured.out
     assert "adagrad_restart_total_steps=125" in captured.out
     assert "adagrad_restart_final_check_iters=128" in captured.out
@@ -3266,6 +3270,7 @@ def test_cli_optimize_reports_final_and_best_objective_summary(
             optimizer_step_cap=config.steps,
             optimizer_step_cap_reason="configured_steps",
             final_check_iters=config.final_check_iters,
+            final_check_iters_e=None,
             solver_warmup_iters=config.solver_warmup_iters,
             fd_adam_warmup_steps=config.fd_adam_warmup_steps,
             fd_hessian_refresh_steps=config.fd_hessian_refresh_steps,
@@ -3335,6 +3340,7 @@ def test_cli_optimize_reports_final_and_best_objective_summary(
     assert "optimizer_step_cap=5000" in captured.out
     assert "optimizer_step_cap_reason=configured_steps" in captured.out
     assert "final_check_iters=32" in captured.out
+    assert "final_check_iters_e=null" in captured.out
     assert "solver_warmup_iters=4" in captured.out
     assert "fd_adam_warmup_steps=3" in captured.out
     assert "fd_hessian_refresh_steps=16" in captured.out
@@ -3677,6 +3683,7 @@ def test_optimization_result_text_reports_adagrad_restart_route_fields():
             mode="specieswise",
             optimizer="adagrad-restarts",
             final_check_iters=128,
+            final_check_iters_e=128,
             adagrad_restart_schedule="8:1:60,16:0.5:35,32:0.5:30",
             adagrad_restart_total_steps=125,
             adagrad_restart_final_check_iters=128,
@@ -3688,6 +3695,7 @@ def test_optimization_result_text_reports_adagrad_restart_route_fields():
 
     assert "optimizer=adagrad-restarts" in text
     assert "final_check_iters=128" in text
+    assert "final_check_iters_e=128" in text
     assert "adagrad_restart_schedule=8:1:60,16:0.5:35,32:0.5:30" in text
     assert "adagrad_restart_total_steps=125" in text
     assert "adagrad_restart_final_check_iters=128" in text

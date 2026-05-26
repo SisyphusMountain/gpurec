@@ -499,6 +499,10 @@ def _optimization_result_text(result: Any) -> str:
                 "final_check_iters",
                 getattr(result, "final_check_iters", None),
             ),
+            _optional_int_text(
+                "final_check_iters_e",
+                getattr(result, "final_check_iters_e", None),
+            ),
             *(
                 [
                     _optional_int_text(

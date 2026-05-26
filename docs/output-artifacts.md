@@ -65,7 +65,7 @@ line expose the same family/species/batch counts, `batch_packing`,
 `uses_production_default_optimizer_settings`,
 `production_default_optimizer_setting_mismatches`,
 `uses_production_default_route`, `production_default_route_mismatches`,
-`final_check_iters`, and
+`final_check_iters`, `final_check_iters_e`, and
 optimizer-specific route fields for quick programmatic and terminal triage.
 For genewise `hessian-sgd`, those fields are
 `solver_warmup_iters`, `fd_adam_warmup_steps`, `fd_hessian_refresh_steps`,
@@ -89,6 +89,8 @@ The `final_check_iters` field records the effective solver iteration budget
 used for the final high-fidelity likelihood/gradient validation; for
 specieswise `adagrad-restarts`, this is the resolved
 `adagrad_restart_final_check_iters` value.
+The `final_check_iters_e` field records the paired E-solver budget used by that
+final validation, or `null` when the E solve remains adaptive.
 When the final validation runs, `summary.json` also includes
 `final_check_status`, `final_check_source`, `final_check_reason`,
 `final_check_fallback_clade_budget`, `final_check_loss_abs_delta_bits`,
@@ -106,7 +108,7 @@ The `gpurec optimize` status line and the optimization portion of `gpurec run`
 print the resolved `mode` and `optimizer`, `families`, `species`, `batches`,
 base batch/solver route fields, route contract fields, configured and effective
 step cap, `mode_default_optimizer`, `uses_mode_default_optimizer`,
-`final_check_iters`, optimizer-specific route fields,
+`final_check_iters`, `final_check_iters_e`, optimizer-specific route fields,
 `steps_completed`, `elapsed_s`, `best_step`, `sampling_checkpoint`, and the
 same final/best NLL and log-likelihood fields, plus `final_grad_inf`,
 `final_projected_grad_inf`, and the final validation source, reason, status,

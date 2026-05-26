@@ -32,7 +32,9 @@ profile. `uses_production_default_route` and
 by `--require-production-default-route`; they cover the optimizer settings plus
 the shipped objective, gradient route, rate parameterization, and production
 default basis metadata. `final_check_iters` records the solver iteration budget
-used for the final high-fidelity likelihood/gradient validation, and
+used for the final high-fidelity likelihood/gradient validation, while
+`final_check_iters_e` records the paired E-solver budget or `null` when E stays
+adaptive. The
 optimizer-specific route fields reproduce the selected production route:
 Hessian-SGD
 warmup/refresh/normal-stage solver controls for genewise runs and the

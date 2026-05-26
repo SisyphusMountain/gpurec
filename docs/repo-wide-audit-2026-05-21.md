@@ -2310,6 +2310,11 @@ not edit files.  New or still-open findings from that refresh are:
 - `CUDA_VISIBLE_DEVICES='' python -m pytest -q -m "unit and not gpu"`:
   1480 passed, 1 skipped, 51 deselected after centralizing and guarding the
   effective final-check budget.
+- Final likelihood/gradient validation summaries now carry `final_check_iters_e`,
+  derived from the existing `optimizer/final_check_iters_E` history metric.
+  This keeps `summary.json`, the Python `OptimizationResult`, and CLI status
+  lines explicit about both the Pi/Neumann final-check budget and the paired
+  E-solver budget, including adaptive `null` E budgets for genewise routes.
 
 ## Recommended Next Order
 
