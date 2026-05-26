@@ -8129,6 +8129,7 @@ def test_lbfgsb_resume_reapplies_current_fallback_controls(tmp_path: Path):
         lbfgs_max_ls=3,
         lbfgsb_fallback_max_coordinates=0,
         lbfgsb_fallback_max_loss_evals=4,
+        lbfgsb_fallback_resolution_competition_factor=16.0,
     )
     runner = OptimizationRunner(config)
     param = torch.nn.Parameter(torch.zeros(2, dtype=torch.float64))
@@ -8143,6 +8144,7 @@ def test_lbfgsb_resume_reapplies_current_fallback_controls(tmp_path: Path):
         fallback_max_ls=8,
         fallback_max_coordinates=4,
         fallback_max_loss_evals=12,
+        fallback_resolution_competition_factor=4.0,
     )
     new_optimizer = LBFGSB(
         [param],
@@ -8155,6 +8157,7 @@ def test_lbfgsb_resume_reapplies_current_fallback_controls(tmp_path: Path):
         fallback_max_ls=3,
         fallback_max_coordinates=0,
         fallback_max_loss_evals=4,
+        fallback_resolution_competition_factor=1.0,
     )
 
     info = runner._restore_optimizer_state(
@@ -8172,6 +8175,7 @@ def test_lbfgsb_resume_reapplies_current_fallback_controls(tmp_path: Path):
     assert group["fallback_max_ls"] == 3
     assert group["fallback_max_coordinates"] == 0
     assert group["fallback_max_loss_evals"] == 4
+    assert group["fallback_resolution_competition_factor"] == pytest.approx(16.0)
 
 
 def test_optimization_runner_lbfgsb_can_stop_on_loss_plateau_without_projected_grad_gate(

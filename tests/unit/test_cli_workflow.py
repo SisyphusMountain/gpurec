@@ -554,6 +554,8 @@ def test_cli_accepts_loss_stop_projected_grad_gate_override(tmp_path: Path):
             "0",
             "--lbfgsb-fallback-max-loss-evals",
             "12",
+            "--lbfgsb-fallback-resolution-competition-factor",
+            "16",
             "--lbfgsb-loss-change-tol-schedule",
             "0.25:2,0.1:2",
         ]
@@ -566,6 +568,7 @@ def test_cli_accepts_loss_stop_projected_grad_gate_override(tmp_path: Path):
     assert config.lbfgsb_high_kkt_stop_min_fallbacks == 1
     assert config.lbfgsb_fallback_max_coordinates == 0
     assert config.lbfgsb_fallback_max_loss_evals == 12
+    assert config.lbfgsb_fallback_resolution_competition_factor == pytest.approx(16.0)
     assert config.lbfgsb_loss_change_tol_schedule == "0.25:2,0.1:2"
 
 

@@ -1783,6 +1783,15 @@ def _add_run_config_args(parser: argparse.ArgumentParser) -> None:
         ),
     )
     parser.add_argument(
+        "--lbfgsb-fallback-resolution-competition-factor",
+        type=float,
+        help=(
+            "For lbfgsb fallback competition, also challenge accepted fallback "
+            "moves whose decrease is at most this multiple of the fp loss "
+            "resolution; 0 keeps only the ordinary tiny-progress trigger."
+        ),
+    )
+    parser.add_argument(
         "--lbfgsb-best-retry-attempts",
         type=int,
         help=(

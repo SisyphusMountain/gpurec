@@ -705,7 +705,13 @@ def test_lbfgsb_fallback_competes_after_resolution_limited_accept(
     monkeypatch,
 ):
     x = torch.nn.Parameter(torch.zeros(3, dtype=torch.float32))
-    optimizer = LBFGSB([x], lr=1.0, lower_bound=-10.0, upper_bound=10.0)
+    optimizer = LBFGSB(
+        [x],
+        lr=1.0,
+        lower_bound=-10.0,
+        upper_bound=10.0,
+        fallback_resolution_competition_factor=16.0,
+    )
     flat = x.detach().clone()
     loss = torch.tensor(1_700_000.0, dtype=torch.float32)
     grad = torch.tensor([5.0, -1.0, 0.5], dtype=torch.float32)
@@ -768,6 +774,7 @@ def test_lbfgsb_fallback_competes_after_resolution_limited_accept(
         c1=1e-4,
         shrink=0.5,
         tolerance_change=0.0,
+        resolution_competition_factor=16.0,
     )
 
     assert kind == "projected_gradient_sign_fallback"
@@ -850,6 +857,7 @@ def test_lbfgsb_step_tolerates_legacy_state_without_fallback_coordinate_key():
     )
     del optimizer.param_groups[0]["fallback_max_coordinates"]
     del optimizer.param_groups[0]["fallback_max_loss_evals"]
+    del optimizer.param_groups[0]["fallback_resolution_competition_factor"]
 
     def loss_fn(value: torch.Tensor) -> torch.Tensor:
         return value.square().sum()

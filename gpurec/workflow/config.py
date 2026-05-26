@@ -567,6 +567,7 @@ _JSON_FLOAT_FIELDS = {
     "max_rate",
     "lr",
     "lbfgs_lr",
+    "lbfgsb_fallback_resolution_competition_factor",
     "fd_hessian_epsilon",
     "fd_newton_damping",
     "adaptive_rebatch_fraction",
@@ -701,6 +702,7 @@ class RunConfig:
     lbfgsb_high_kkt_stop_min_fallbacks: int = 1
     lbfgsb_fallback_max_coordinates: int = 16
     lbfgsb_fallback_max_loss_evals: int | None = None
+    lbfgsb_fallback_resolution_competition_factor: float = 0.0
     lbfgsb_best_retry_attempts: int = 0
     lbfgsb_loss_change_tol_schedule: str | None = None
     lbfgsb_loss_schedule_force_fallback: bool = False
@@ -940,6 +942,7 @@ class RunConfig:
             "loss_change_tol",
             "best_likelihood_min_delta",
             "projected_grad_tol",
+            "lbfgsb_fallback_resolution_competition_factor",
         ):
             if _normalize_finite_float(name, getattr(self, name)) < 0.0:
                 raise ValueError(f"{name} must be non-negative")

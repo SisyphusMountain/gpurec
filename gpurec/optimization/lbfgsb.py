@@ -59,6 +59,7 @@ class LBFGSB(Optimizer):
         fallback_max_ls: int | None = None,
         fallback_max_coordinates: int = 16,
         fallback_max_loss_evals: int | None = None,
+        fallback_resolution_competition_factor: float = 0.0,
     ) -> None:
         if lr <= 0.0:
             raise ValueError(f"Invalid learning rate: {lr}")
@@ -88,6 +89,10 @@ class LBFGSB(Optimizer):
             raise ValueError(
                 "fallback_max_loss_evals must be positive when provided"
             )
+        if fallback_resolution_competition_factor < 0.0:
+            raise ValueError(
+                "fallback_resolution_competition_factor must be non-negative"
+            )
 
         defaults = {
             "lr": float(lr),
@@ -113,6 +118,9 @@ class LBFGSB(Optimizer):
                 None
                 if fallback_max_loss_evals is None
                 else int(fallback_max_loss_evals)
+            ),
+            "fallback_resolution_competition_factor": float(
+                fallback_resolution_competition_factor
             ),
         }
         super().__init__(params, defaults)
@@ -921,13 +929,14 @@ class LBFGSB(Optimizer):
         flat: Tensor,
         loss: Tensor,
         tolerance_change: float,
+        resolution_competition_factor: float,
     ) -> bool:
         # At large fp32 likelihood scales, a nominally positive fallback decrease can
         # still sit in the evaluation-resolution band.  Spend the fallback budget on
         # sign/coordinate competitors before accepting that as a meaningful escape.
         meaningful_decrease = max(
             tolerance_change,
-            16.0 * self._loss_resolution(loss),
+            max(0.0, resolution_competition_factor) * self._loss_resolution(loss),
         )
         return (
             (not search.accepted)
@@ -962,6 +971,7 @@ class LBFGSB(Optimizer):
         tolerance_change: float,
         max_coordinates: int = 16,
         max_loss_evals: int | None = None,
+        resolution_competition_factor: float = 0.0,
     ) -> tuple[_LineSearchResult, str, int]:
         best_search = current_search
         best_kind = current_kind
@@ -983,6 +993,7 @@ class LBFGSB(Optimizer):
             flat=flat,
             loss=loss,
             tolerance_change=tolerance_change,
+            resolution_competition_factor=resolution_competition_factor,
         ):
             return best_search, best_kind, total_loss_evals
 
@@ -1029,6 +1040,7 @@ class LBFGSB(Optimizer):
             flat=flat,
             loss=loss,
             tolerance_change=tolerance_change,
+            resolution_competition_factor=resolution_competition_factor,
         ):
             topk_sizes = self._topk_sign_fallback_sizes(int(projected_grad.numel()))
             remaining = remaining_budget()
@@ -1063,6 +1075,7 @@ class LBFGSB(Optimizer):
                 flat=flat,
                 loss=loss,
                 tolerance_change=tolerance_change,
+                resolution_competition_factor=resolution_competition_factor,
             ):
                 coord_search, coord_kind, coord_loss_evals = (
                     self._coordinate_sign_fallback_search(
@@ -1208,6 +1221,9 @@ class LBFGSB(Optimizer):
             None
             if fallback_max_loss_evals_raw is None
             else int(fallback_max_loss_evals_raw)
+        )
+        fallback_resolution_competition_factor = float(
+            group.get("fallback_resolution_competition_factor", 0.0)
         )
         c1 = float(group["c1"])
         shrink = float(group["shrink"])
@@ -1371,6 +1387,9 @@ class LBFGSB(Optimizer):
                             fallback_max_loss_evals,
                             fallback_loss_evals,
                         ),
+                        resolution_competition_factor=(
+                            fallback_resolution_competition_factor
+                        ),
                         c1=c1,
                         shrink=shrink,
                         tolerance_change=tolerance_change,
@@ -1450,6 +1469,9 @@ class LBFGSB(Optimizer):
                         max_loss_evals=self._remaining_loss_eval_budget(
                             fallback_max_loss_evals,
                             fallback_loss_evals,
+                        ),
+                        resolution_competition_factor=(
+                            fallback_resolution_competition_factor
                         ),
                         c1=c1,
                         shrink=shrink,

@@ -1128,6 +1128,9 @@ class OptimizationRunner:
                 fallback_max_ls=config.lbfgs_max_ls,
                 fallback_max_coordinates=config.lbfgsb_fallback_max_coordinates,
                 fallback_max_loss_evals=config.lbfgsb_fallback_max_loss_evals,
+                fallback_resolution_competition_factor=(
+                    config.lbfgsb_fallback_resolution_competition_factor
+                ),
             )
         if phase == "lbfgs":
             return torch.optim.LBFGS(
@@ -2797,6 +2800,9 @@ class OptimizationRunner:
                 None
                 if config.lbfgsb_fallback_max_loss_evals is None
                 else int(config.lbfgsb_fallback_max_loss_evals)
+            )
+            group["fallback_resolution_competition_factor"] = float(
+                config.lbfgsb_fallback_resolution_competition_factor
             )
 
     def _save_status(
