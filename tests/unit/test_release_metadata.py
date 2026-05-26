@@ -1061,8 +1061,8 @@ def test_release_readiness_documents_installed_wheel_smoke():
         "gpurec config-template --mode genewise",
         "gpurec config-template --mode specieswise",
         "gpurec optimize --help",
-        "optimization convergence, final-check, default-optimizer, and production-route gates",
-        "default-optimizer gates",
+        "optimization convergence, final-check, mode-default optimizer, and production-route gates",
+        "mode-default optimizer gates",
         "gpurec validate-config --help",
         "--require-cuda-backward-ready",
         "--require-mode-default-optimizer",
@@ -1073,9 +1073,9 @@ def test_release_readiness_documents_installed_wheel_smoke():
         "gpurec checkpoint-info --help",
         "checkpoint final-check gate",
         "gpurec sample --help",
-        "direct sampling default-optimizer and production-route gating",
+        "direct sampling mode-default optimizer and production-route gating",
         "gpurec run --help",
-        "pre-sampling convergence, final-check, default-optimizer, and production-route gates",
+        "pre-sampling convergence, final-check, mode-default optimizer, and production-route gates",
         "gpurec backtrack-check --help",
         "package_path = Path(gpurec.__file__).resolve()",
         "package_path.is_relative_to(repo_root)",
@@ -1090,6 +1090,13 @@ def test_release_readiness_documents_installed_wheel_smoke():
         "exports_ok",
     ):
         assert expected in normalized
+    for stale in (
+        "default-optimizer gates",
+        "default-optimizer audit gate",
+        "direct sampling default-optimizer",
+        "final-check, default-optimizer",
+    ):
+        assert stale not in guide
 
 
 def test_release_readiness_documents_source_archive_preprocess_smoke():

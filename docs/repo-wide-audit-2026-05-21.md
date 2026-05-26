@@ -2347,6 +2347,9 @@ not edit files.  New or still-open findings from that refresh are:
   `--require-mode-default-optimizer` gate and reserve production-route wording
   for the full likelihood/gradient plus optimizer route enforced by
   `--require-production-default-route`.
+- Release-readiness smoke documentation now uses the same wording: installed
+  help checks expose mode-default optimizer gates separately from the stricter
+  production-route gates.
 
 ## Recommended Next Order
 

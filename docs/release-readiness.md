@@ -50,24 +50,24 @@ remains part of the command surface, including genewise Hessian-SGD route knobs
 and the specieswise Adagrad restart schedule, and verifies the
 `--require-cuda-backward-ready`, `--require-mode-default-optimizer`, and
 `--require-production-default-route` preflight gates are exposed. These
-default-optimizer gates remain separate from the stricter production-route
+mode-default optimizer gates remain separate from the stricter production-route
 gate. It also smokes
 `gpurec summary-info --help` and `gpurec checkpoint-info --help` so artifact
 inspection stays available without CUDA model construction, including the
 `--require-converged` and `--require-final-check-ok` summary gates for
-automation, the default-optimizer audit gate, the production-route audit gate,
-and the checkpoint final-check gate for direct artifact inspection.
+automation, the mode-default optimizer audit gate, the production-route audit
+gate, and the checkpoint final-check gate for direct artifact inspection.
 The same package job checks `gpurec optimize --help` for the direct
-optimization convergence, final-check, default-optimizer, and production-route
-gates and `gpurec run --help` for the matching pre-sampling convergence,
-final-check, default-optimizer, and production-route gates, keeps
+optimization convergence, final-check, mode-default optimizer, and
+production-route gates and `gpurec run --help` for the matching pre-sampling
+convergence, final-check, mode-default optimizer, and production-route gates, keeps
 examples out of wheels while requiring them in the source
 archive, verifies the minimal example config points to source-archive files,
 checks source-archive preprocessing reports the tiny fixtures as
 `cuda_backward_ready=false`, and checks installed `gpurec sample --help`,
 `gpurec run --help`, and `gpurec backtrack-check` for external backtracking
-binary guidance, direct sampling default-optimizer and production-route gating,
-and the installed missing-binary diagnostic.
+binary guidance, direct sampling mode-default optimizer and production-route
+gating, and the installed missing-binary diagnostic.
 
 Install release tooling from the dedicated extra:
 
