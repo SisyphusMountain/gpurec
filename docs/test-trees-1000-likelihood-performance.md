@@ -498,6 +498,11 @@ Rejected follow-ups:
   cold sample stayed in-band at `2.297392721986398s`.  A leaner cache-key repeat
   regressed to `1.2817456009797752s` median, so the cache was reverted and the
   direct per-pass `prepare_dts_forward_param` calls remain.
+- Suppressing Pi solver telemetry collection on the batched no-grad full-loss
+  stream was likewise too small.  The targeted no-grad/chunked/specieswise tests
+  passed, but fixed4 steady timing measured `1.2773516669985838s` median and
+  `1.2740960630471818s` minimum, and the cold fixed4 total was
+  `2.311466729035601s`.  The normal telemetry path remains in place.
 - The current `clade_first_fit` batches are already balanced for fixed4 Pi
   timing.  A post-warm per-batch split measured `20` full batches between
   about `0.061s` and `0.063s`, plus a tail batch at `0.03352210501907393s`;
