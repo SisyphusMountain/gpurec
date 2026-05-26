@@ -7705,6 +7705,14 @@ example configs through \texttt{validate-config
 genewise and specieswise route gates while still exercising the retained CPU
 preprocessing path.
 
+\texttt{mode=global} no longer passes the strict production-route audit merely
+because its mode-default \texttt{adam} profile has no optimizer-specific
+override fields.  Global configs still pass the narrower mode-default optimizer
+check, but \texttt{uses\_production\_default\_route=false} now reports a
+\texttt{mode} mismatch so \texttt{--require-production-default-route} stays
+scoped to the retained genewise \texttt{hessian-sgd} and specieswise
+\texttt{adagrad-restarts} profiles.
+
 \section{Next Audit Targets}
 
 \begin{enumerate}[leftmargin=*]

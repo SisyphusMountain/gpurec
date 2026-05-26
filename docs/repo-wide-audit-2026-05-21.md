@@ -2399,6 +2399,12 @@ not edit files.  New or still-open findings from that refresh are:
   --require-production-default-route --check-preprocess`, so unpacked source
   artifacts must prove the shipped genewise and specieswise route gates while
   still exercising the retained CPU preprocessing path.
+- `mode=global` no longer passes the strict production-route audit merely
+  because its mode-default `adam` profile has no optimizer-specific override
+  fields. Global configs still pass the narrower mode-default optimizer check,
+  but `uses_production_default_route=false` now reports a `mode` mismatch so
+  `--require-production-default-route` stays scoped to the retained genewise
+  `hessian-sgd` and specieswise `adagrad-restarts` profiles.
 
 ## Recommended Next Order
 

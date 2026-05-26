@@ -1007,6 +1007,31 @@ def test_cli_validate_config_require_production_default_route_rejects_custom_set
     assert "Traceback" not in captured.err
 
 
+def test_cli_validate_config_require_production_default_route_rejects_global_mode(
+    tmp_path: Path,
+    capsys,
+):
+    with pytest.raises(SystemExit) as exc_info:
+        main(
+            _minimal_workflow_cli_args("validate-config", tmp_path)
+            + [
+                "--mode",
+                "global",
+                "--require-production-default-route",
+            ]
+        )
+
+    captured = capsys.readouterr()
+    assert exc_info.value.code == 2
+    assert (
+        "config production default route fields differ for mode 'global': mode"
+        in captured.err
+    )
+    assert "use optimizer=auto and omit route overrides" in captured.err
+    assert "valid_config=true" not in captured.out
+    assert "Traceback" not in captured.err
+
+
 def test_cli_validate_config_require_production_default_route_accepts_genewise_default(
     tmp_path: Path,
     capsys,

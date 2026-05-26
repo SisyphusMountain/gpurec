@@ -51,7 +51,7 @@ The sharing mode defines the optimization surface:
 
 | Mode | Theta shape | Production use |
 |---|---:|---|
-| `global` | `[3]` | One D/L/T row for the full dataset. The `auto` optimizer resolves to `adam`. |
+| `global` | `[3]` | One D/L/T row for the full dataset. The `auto` optimizer resolves to `adam`, but this mode is outside the strict HOGENOM/`test_trees_1000` production-route gate. |
 | `specieswise` | `[S, 3]` | One D/L/T row per species branch. The `auto` optimizer resolves to `adagrad-restarts`. |
 | `genewise` | `[G, 3]` | One D/L/T row per family. The `auto` optimizer resolves to `hessian-sgd`. |
 
@@ -144,7 +144,11 @@ whether the resolved `optimizer` currently matches it as
 optimizer-specific fields. `uses_production_default_route` is stricter: when it
 is false, `production_default_route_mismatches` also names stale
 `final_check_iters_e` evidence or likelihood contract fields such as
-`gradient_route` or `production_default_basis`.
+`gradient_route` or `production_default_basis`.  The strict production-route
+gate is intentionally scoped to the retained genewise `hessian-sgd` and
+specieswise `adagrad-restarts` HOGENOM/`test_trees_1000` profiles; `mode=global`
+can still satisfy `--require-mode-default-optimizer`, but it fails
+`--require-production-default-route` with a `mode` mismatch.
 
 ### Genewise `hessian-sgd`
 

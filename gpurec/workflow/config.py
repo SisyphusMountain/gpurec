@@ -1151,6 +1151,9 @@ def production_default_optimizer_setting_mismatches_from_route(
     if optimizer_text != mode_default_optimizer:
         mismatched.append("optimizer")
         return tuple(missing), tuple(mismatched)
+    if mode_text == "global":
+        mismatched.append("mode")
+        return tuple(missing), tuple(mismatched)
     expected_settings = _production_default_optimizer_expected_settings(mode_text)
     for name, expected in expected_settings.items():
         if name not in route:

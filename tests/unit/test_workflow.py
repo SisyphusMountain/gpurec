@@ -1485,6 +1485,28 @@ def test_effective_route_metadata_marks_nondefault_optimizer(tmp_path: Path):
     assert route["production_default_route_mismatches"] == ["optimizer"]
 
 
+def test_effective_route_metadata_marks_global_outside_production_route(
+    tmp_path: Path,
+):
+    config = RunConfig(
+        species_tree=tmp_path / "sp.nwk",
+        families_file=tmp_path / "families.txt",
+        out_dir=tmp_path / "out",
+        mode="global",
+        device="cpu",
+    )
+
+    route = effective_route_metadata(config)
+
+    assert route["optimizer"] == "adam"
+    assert route["mode_default_optimizer"] == "adam"
+    assert route["uses_mode_default_optimizer"] is True
+    assert route["uses_production_default_optimizer_settings"] is False
+    assert route["production_default_optimizer_setting_mismatches"] == ["mode"]
+    assert route["uses_production_default_route"] is False
+    assert route["production_default_route_mismatches"] == ["mode"]
+
+
 def test_route_audit_infers_production_default_settings_from_route_dict():
     route = {
         "objective": "negative_log_likelihood_bits",

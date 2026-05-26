@@ -122,7 +122,10 @@ Use `--require-mode-default-optimizer` when automation should reject explicit
 optimizer overrides. Use `--require-production-default-route` for release or
 pipeline launch checks that should also reject changed HOGENOM/`test_trees_1000`
 route settings, stale `final_check_iters_e`, or stale likelihood/gradient route
-metadata before spending CUDA time.
+metadata before spending CUDA time. That stricter gate is scoped to the retained
+genewise `hessian-sgd` and specieswise `adagrad-restarts` profiles; `mode=global`
+can pass the mode-default optimizer gate but fails the production-route gate as
+outside the shipped HOGENOM/`test_trees_1000` optimizer route.
 For production launch checks, add `--require-cuda-backward-ready` so a species
 tree that fails the retained CUDA backward size gate exits nonzero.
 

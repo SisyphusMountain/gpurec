@@ -162,4 +162,8 @@ production automation must reject optimizers that do not match the selected
 mode default. Add `--require-production-default-route` when stale
 likelihood/gradient route metadata or changed optimizer-specific settings should
 also fail those gates and be reported in
-`production_default_route_mismatches`.
+`production_default_route_mismatches`. The strict production-route gate is
+limited to the retained genewise `hessian-sgd` and specieswise
+`adagrad-restarts` HOGENOM/`test_trees_1000` profiles; `mode=global` remains a
+mode-default `adam` route, but it is reported as a production-route `mode`
+mismatch.
