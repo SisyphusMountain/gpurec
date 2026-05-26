@@ -1360,6 +1360,8 @@ def test_project_readme_documents_gpurec_run_end_to_end_workflow():
     assert "`final_check_status=ok`" in project_readme
     assert "`final_grad_inf`" in project_readme
     assert "`final_projected_grad_inf`" in project_readme
+    assert "`final_solver_e_adjoint_failed_batches`" in project_readme
+    assert "`final_solver_e_adjoint_rel_res_max`" in project_readme
     assert "`sampled_families`, `samples`, `xml`, and `sample_out_dir`" in project_readme
     assert "gpurec summary-info --summary output_gpurec/summary.json" in project_readme
     assert "`--require-converged`" in project_readme
@@ -1542,6 +1544,9 @@ def test_output_artifact_reference_is_linked_and_documents_contract():
         "`final_check_loss_abs_delta_bits`",
         "`final_check_grad_max_abs_delta`",
         "`final_check_grad_rel_inf_delta`",
+        "`final_solver_e_adjoint_failed_batches`",
+        "`final_solver_e_adjoint_success_batches`",
+        "`final_solver_e_adjoint_rel_res_max`",
         "`gpurec optimize` status line",
         "JSON strings with spaces escaped as `\\u0020`",
         "`sampled_families`",
@@ -1566,6 +1571,9 @@ def test_output_artifact_reference_is_linked_and_documents_contract():
         "gpurec optimize` when the command should print",
         "gpurec checkpoint-info --checkpoint output_gpurec/checkpoints/latest.pt",
         "`last_final_check_status`",
+        "`last_solver_e_adjoint_failed_batches`",
+        "`last_solver_e_adjoint_success_batches`",
+        "`last_solver_e_adjoint_rel_res_max`",
         "`optimizer/final_check_status=ok`",
         "`likelihood/data_nll_bits`",
         "`grad/projected_inf`",

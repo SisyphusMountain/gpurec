@@ -109,6 +109,9 @@ class OptimizationResult:
     final_check_loss_abs_delta_bits: float | None = None
     final_check_grad_max_abs_delta: float | None = None
     final_check_grad_rel_inf_delta: float | None = None
+    final_solver_e_adjoint_failed_batches: float | None = None
+    final_solver_e_adjoint_success_batches: float | None = None
+    final_solver_e_adjoint_rel_res_max: float | None = None
 
 
 _FINAL_CHECK_SUMMARY_FIELDS = (
@@ -124,11 +127,25 @@ _FINAL_CHECK_SUMMARY_FIELDS = (
     ("optimizer/final_check_grad_rel_inf_delta", "final_check_grad_rel_inf_delta"),
 )
 
+_FINAL_SOLVER_SUMMARY_FIELDS = (
+    ("solver/e_adjoint_failed_batches", "final_solver_e_adjoint_failed_batches"),
+    ("solver/e_adjoint_success_batches", "final_solver_e_adjoint_success_batches"),
+    ("solver/e_adjoint_rel_res_max", "final_solver_e_adjoint_rel_res_max"),
+)
+
 
 def _final_check_summary_metrics(metrics: dict[str, Any]) -> dict[str, Any]:
     return {
         summary_key: metrics[metric_key]
         for metric_key, summary_key in _FINAL_CHECK_SUMMARY_FIELDS
+        if metric_key in metrics
+    }
+
+
+def _final_solver_summary_metrics(metrics: dict[str, Any]) -> dict[str, Any]:
+    return {
+        summary_key: metrics[metric_key]
+        for metric_key, summary_key in _FINAL_SOLVER_SUMMARY_FIELDS
         if metric_key in metrics
     }
 
@@ -4099,6 +4116,7 @@ class OptimizationRunner:
                 None if best_nll is None else -float(best_nll)
             )
             final_check_summary = _final_check_summary_metrics(final_metrics)
+            final_solver_summary = _final_solver_summary_metrics(final_metrics)
             final_projected_grad_inf = (
                 None
                 if final_eval_failed
@@ -4121,6 +4139,7 @@ class OptimizationRunner:
                 "final_grad_inf": final_grad_inf,
                 "final_projected_grad_inf": final_projected_grad_inf,
                 **final_check_summary,
+                **final_solver_summary,
             }
             _write_final_artifacts(
                 config,
@@ -4245,6 +4264,15 @@ class OptimizationRunner:
                 ),
                 final_check_grad_rel_inf_delta=_optional_result_float(
                     final_check_summary.get("final_check_grad_rel_inf_delta")
+                ),
+                final_solver_e_adjoint_failed_batches=_optional_result_float(
+                    final_solver_summary.get("final_solver_e_adjoint_failed_batches")
+                ),
+                final_solver_e_adjoint_success_batches=_optional_result_float(
+                    final_solver_summary.get("final_solver_e_adjoint_success_batches")
+                ),
+                final_solver_e_adjoint_rel_res_max=_optional_result_float(
+                    final_solver_summary.get("final_solver_e_adjoint_rel_res_max")
                 ),
             )
         except BaseException as exc:

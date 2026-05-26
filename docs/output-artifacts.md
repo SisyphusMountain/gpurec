@@ -82,6 +82,11 @@ one-file summary carries the high-fidelity likelihood/gradient agreement check.
 Nominal successful checks may omit `final_check_reason` and
 `final_check_fallback_clade_budget`; skipped, disabled, failed, fallback, or
 cache-drop recomputed checks carry a reason when the workflow can determine one.
+When the final gradient route emits E-adjoint solver diagnostics, the summary
+also includes `final_solver_e_adjoint_failed_batches`,
+`final_solver_e_adjoint_success_batches`, and
+`final_solver_e_adjoint_rel_res_max` so nonconverged adjoint solves are visible
+without scanning `history.jsonl`.
 The `gpurec optimize` status line and the optimization portion of `gpurec run`
 print the resolved `mode` and `optimizer`, `families`, `species`, `batches`,
 base batch/solver route fields, route contract fields, configured and effective
@@ -89,7 +94,11 @@ step cap, `final_check_iters`, optimizer-specific route fields,
 `steps_completed`, `elapsed_s`, `best_step`, `sampling_checkpoint`, and the
 same final/best NLL and log-likelihood fields, plus `final_grad_inf`,
 `final_projected_grad_inf`, and the final validation source, reason, status,
-and fallback budget/loss/gradient delta fields, for quick terminal triage.
+and fallback budget/loss/gradient delta fields. When available, it also prints
+the final E-adjoint solver diagnostics
+`final_solver_e_adjoint_failed_batches`,
+`final_solver_e_adjoint_success_batches`, and
+`final_solver_e_adjoint_rel_res_max` for quick terminal triage.
 Add `--require-converged` to `gpurec optimize` when the command should print
 the same status line and then exit nonzero unless the optimization status is
 `converged`. Add `--require-final-check-ok` when it should also require
@@ -130,7 +139,11 @@ When the checkpoint's saved last row contains final validation metrics,
 `last_final_check_fallback_clade_budget`,
 `last_final_check_loss_abs_delta_bits`,
 `last_final_check_grad_max_abs_delta`, and
-`last_final_check_grad_rel_inf_delta`. Add `--require-final-check-ok` when
+`last_final_check_grad_rel_inf_delta`. It also prints
+`last_solver_e_adjoint_failed_batches`,
+`last_solver_e_adjoint_success_batches`, and
+`last_solver_e_adjoint_rel_res_max` when those metrics were recorded in the
+checkpoint's last row. Add `--require-final-check-ok` when
 automation should fail unless the checkpoint last row has
 `optimizer/final_check_status=ok`.
 

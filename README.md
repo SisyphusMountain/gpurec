@@ -385,8 +385,11 @@ basis, optimizer-specific route fields,
 `final_projected_grad_inf`, `final_check_status`, `final_check_source`,
 `final_check_reason`,
 `final_check_fallback_clade_budget`, `final_check_loss_abs_delta_bits`,
-`final_check_grad_max_abs_delta`, and `final_check_grad_rel_inf_delta` for
-quick terminal triage. Add `--require-converged` to `gpurec optimize` when a
+`final_check_grad_max_abs_delta`, `final_check_grad_rel_inf_delta`,
+`final_solver_e_adjoint_failed_batches`,
+`final_solver_e_adjoint_success_batches`, and
+`final_solver_e_adjoint_rel_res_max` for quick terminal triage.
+Add `--require-converged` to `gpurec optimize` when a
 shell pipeline should print the same optimization status line and then exit
 nonzero unless the run reached `status=converged`. Add
 `--require-final-check-ok` when the same pipeline should also fail unless the

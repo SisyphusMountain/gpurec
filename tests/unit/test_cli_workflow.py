@@ -1403,6 +1403,9 @@ def test_cli_checkpoint_info_reports_route_status_and_last_row(
             "optimizer/final_check_loss_abs_delta_bits": 0.125,
             "optimizer/final_check_grad_max_abs_delta": 0.5,
             "optimizer/final_check_grad_rel_inf_delta": 0.25,
+            "solver/e_adjoint_failed_batches": 1.0,
+            "solver/e_adjoint_success_batches": 0.0,
+            "solver/e_adjoint_rel_res_max": 0.125,
         },
     )
 
@@ -1462,6 +1465,9 @@ def test_cli_checkpoint_info_reports_route_status_and_last_row(
         "last_final_check_loss_abs_delta_bits=0.125000",
         "last_final_check_grad_max_abs_delta=0.500000",
         "last_final_check_grad_rel_inf_delta=0.250000",
+        "last_solver_e_adjoint_failed_batches=1.000000",
+        "last_solver_e_adjoint_success_batches=0.000000",
+        "last_solver_e_adjoint_rel_res_max=0.125000",
     ):
         assert token in captured.out
 
@@ -1600,6 +1606,9 @@ def test_cli_summary_info_reports_status_route_and_final_check(
         "final_check_loss_abs_delta_bits": 0.0,
         "final_check_grad_max_abs_delta": 0.0,
         "final_check_grad_rel_inf_delta": 0.0,
+        "final_solver_e_adjoint_failed_batches": 1.0,
+        "final_solver_e_adjoint_success_batches": 0.0,
+        "final_solver_e_adjoint_rel_res_max": 0.125,
     }
     summary.write_text(json.dumps(payload), encoding="utf-8")
 
@@ -1656,6 +1665,9 @@ def test_cli_summary_info_reports_status_route_and_final_check(
         "final_check_loss_abs_delta_bits=0.000000",
         "final_check_grad_max_abs_delta=0.000000",
         "final_check_grad_rel_inf_delta=0.000000",
+        "final_solver_e_adjoint_failed_batches=1.000000",
+        "final_solver_e_adjoint_success_batches=0.000000",
+        "final_solver_e_adjoint_rel_res_max=0.125000",
     ):
         assert token in captured.out
 

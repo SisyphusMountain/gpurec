@@ -358,6 +358,18 @@ def _optimization_result_text(result: Any) -> str:
                 "final_check_grad_rel_inf_delta",
                 getattr(result, "final_check_grad_rel_inf_delta", None),
             ),
+            _optional_metric_text(
+                "final_solver_e_adjoint_failed_batches",
+                getattr(result, "final_solver_e_adjoint_failed_batches", None),
+            ),
+            _optional_metric_text(
+                "final_solver_e_adjoint_success_batches",
+                getattr(result, "final_solver_e_adjoint_success_batches", None),
+            ),
+            _optional_metric_text(
+                "final_solver_e_adjoint_rel_res_max",
+                getattr(result, "final_solver_e_adjoint_rel_res_max", None),
+            ),
         ]
     )
 
@@ -700,6 +712,18 @@ def _checkpoint_info_text(checkpoint: Path, payload: dict[str, Any]) -> str:
             _optional_metric_text(
                 "last_final_check_grad_rel_inf_delta",
                 last_row.get("optimizer/final_check_grad_rel_inf_delta"),
+            ),
+            _optional_metric_text(
+                "last_solver_e_adjoint_failed_batches",
+                last_row.get("solver/e_adjoint_failed_batches"),
+            ),
+            _optional_metric_text(
+                "last_solver_e_adjoint_success_batches",
+                last_row.get("solver/e_adjoint_success_batches"),
+            ),
+            _optional_metric_text(
+                "last_solver_e_adjoint_rel_res_max",
+                last_row.get("solver/e_adjoint_rel_res_max"),
             ),
         ]
     )
