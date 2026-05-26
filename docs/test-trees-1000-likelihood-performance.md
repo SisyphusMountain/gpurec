@@ -336,6 +336,49 @@ fixed8 validation ended at `1761134.0` bits with projected gradient infinity
 norm `11.61174201965332`.  This run validates the Pi4-start workflow path; it
 is a six-step smoke, not an optimum search.
 
+## End-To-End Specieswise Optimization From 0.05
+
+The current outer-optimization benchmark now starts from uniform
+`theta_init_d = theta_init_l = theta_init_t = 0.05` and uses the production
+`gpurec optimize` workflow, not the likelihood-only harness.  Unless noted,
+runs used specieswise rates, `family_chunk_size=500`, `clade_budget=315000`,
+`batch_packing=clade_first_fit`, `max_wave_size=8192`,
+`preprocess_cpu_cores=16`, `GPUREC_MEMORY_POLICY_RESERVE_GIB=0`, and fixed8
+final validation.
+
+Measured routes:
+
+| Route | Schedule / optimizer | Wall time | Final NLL bits | Projected grad inf | Notes |
+|---|---|---:|---:|---:|---|
+| A | `7/4:1.0:12,8:0.5:8,16/8:0.5:8`, `adagrad-restarts`, phase patience `1` | `170.31107250403147s` | `1707816.5` | `3.9513802528381348` | E16/Pi8 at `lr=0.5` was too aggressive and tripped the phase-loss stop after two repair evaluations. |
+| B | `7/4:1.0:12,8:0.5:40`, `adagrad-restarts`, phase patience `1` | `407.7515940640005s` | `1704378.5` | `0.9977045059204102` | Current best short Pi4-start route. Fixed8, fixed16, and fixed32 validation all returned `1704378.5` bits. |
+| C | `8:1.0:12,8:0.5:40`, direct fixed8 `adagrad-restarts`, phase patience `1` | `430.63535784796113s` | `1704378.625` | `0.9977216720581055` | Same trajectory as B within fp32 noise, but about `22.88s` slower because the first 12 steps use tied fixed8 instead of E7/Pi4. |
+| B + fixed-cap continuation | Resume B with `7/4:1.0:12,8:0.5:80`, phase patience `0` | `732.2706705760211s` combined | `1702241.25` | `0.5673627853393555` | Still improving by about `31` bits per step at the cap. |
+| B + continuation + L-BFGS-B tail | Resume the 92-step Adagrad point, `lbfgsb`, `lr=0.1`, 30 L-BFGS-B steps total | `1308.1464419650729s` combined | `1699551.25` | `28.2503719329834` | Fixed8, fixed16, and fixed32 validation all returned `1699551.25` bits, but the projected gradient is large, so this is not an optimum certificate. |
+
+The Pi4-start comparison is the cleanest result so far: route B and the direct
+fixed8 route C reach the same likelihood band, but B saves the cost of 12 tied
+fixed8 gradient evaluations.  The average first-phase step time was
+`6.2320073523345245s` for E7/Pi4 versus `7.9824362590006785s` for tied fixed8;
+the second fixed8 phase averaged `7.9114916901962715s` for B and
+`7.950046648895659s` for C.
+
+The best likelihood value observed in these runs is the L-BFGS-B tail value
+`1699551.25` bits, but it is not yet a final optimum: the projected-gradient
+infinity norm remained `28.25`, and the accepted L-BFGS-B steps were still
+making objective progress.  The more conservative 92-step Adagrad point has a
+higher NLL, `1702241.25`, but a much smaller projected-gradient residual,
+`0.56736`.  The current known gap from the short 52-step Pi4-start route B to
+the best objective seen in this round is `4827.25` bits.
+
+While testing resumed continuations, a workflow stop-rule issue was found and
+fixed: extending a completed checkpoint used to restore `previous_objective`
+from the final evaluation row, so the first resumed optimizer row could see a
+fake zero loss delta and immediately trip `adagrad_restart_phase_loss_patience`.
+Completed-checkpoint resumes now reset the loss-stall baseline when more
+optimizer steps are requested; running checkpoints still keep their live
+stop-rule state.
+
 Adaptive fixed-point stopping is also rejected for this likelihood-only route.
 The benchmark harness can now pass `--adaptive-iters`, but the convergence
 checks were more expensive than the fixed split-budget shortcut.  At the
@@ -1039,6 +1082,18 @@ Differences from HOGENOM:
   while staying in the fixed4 Pi timing band.  Those split-budget shortcuts were
   not the HOGENOM route, where the accepted schedule used tied higher-fidelity
   optimizer phases.
+- In actual outer optimization from uniform `0.05`, `test_trees_1000` also
+  benefits from starting with E7/Pi4: the Pi4-start Adagrad route matched the
+  direct fixed8 route's final likelihood band while saving about `22.88s`.
+  HOGENOM did not show the same behavior: fixed4/Pi4 starts there saved time
+  but reached a materially worse basin unless the run was allowed a longer
+  fixed32 repair phase.
+- The first `test_trees_1000` high-fidelity promotion does not currently need
+  HOGENOM's tied fixed16/fixed32 validation ladder for objective consistency:
+  fixed8, fixed16, and fixed32 validations matched exactly at the measured
+  52-step Adagrad point and at the L-BFGS-B tail point.  HOGENOM required the
+  higher-budget ladder because low-budget checkpoints could validate thousands
+  of bits away from the true objective.
 - HOGENOM worked best with `depth_first_fit`.  On `test_trees_1000`, depth-first
   originally gave similar steady likelihood timing but paid an extra Python
   construction prepass.  Retaining the native Rust layouts removes that Python
