@@ -132,6 +132,7 @@ There is also a distinct fast-approximate route below fixed4.  The old tied
 | 4 | 2 | `0.768705825030338s` | `2156863.0` | `-234.25` |
 | 5 | 2 | `0.769144629011862s` | `2157447.25` | `+350.0` |
 | 6 | 2 | `0.7699056839919649s` | `2157479.75` | `+382.5` |
+| 7 | 2 | `0.7702949329977855s` | `2157481.25` | `+384.0` |
 | 8 | 2 | `0.7709092769655399s` | `2157481.25` | `+384.0` |
 
 The best fast-approximate point is `E=4, Pi=2`: it is much faster than tied
@@ -139,6 +140,27 @@ fixed4 and its absolute loss error is smaller than tied fixed4's `670.25`-bit
 gap.  Five cold `E=4, Pi=2` samples measured `1.789836187963374s`,
 `1.7681905870558694s`, `1.8027284189593047s`, `1.801696198002901s`, and
 `1.7690634109312668s`, all with loss `2156863.0`.
+
+The same fast-approximate route keeps the general `315000` clade budget and
+all-batch prefetch settings.  An `E=4, Pi=2` clade-budget sweep measured
+`250000`: `1.779803994053509s`, `315000`: `1.791229895025026s`, `400000`:
+`1.793410616053734s`, `500000`: `1.8211529290420003s`, and `650000`:
+`1.8660963249858469s`; the lower-memory `250000` sample did not beat the best
+`315000` repeats.  Prefetch depths measured `none`: `2.071594687993638s`,
+`2`: `1.8023037790553644s`, `4`: `1.806620042945724s`, and `all`:
+`1.795652323984541s`, so the current all-prefetch route remains best.
+
+For `E=4, Pi=2`, a larger `12288` wave cap is a tiny timing near-tie rather
+than a clear route change.  Single cold samples measured `4096`:
+`1.8095041380729526s`, `8192`: `1.7904685469693504s`, `12288`:
+`1.770083504030481s`, and `16384`: `1.838730920047965s`; paired repeats then
+measured `8192`: `1.8086025349912234s` and `1.76793152699247s` versus
+`12288`: `1.7686329080024734s` and a best-observed
+`1.7664462180109695s`.  Materialized steady medians were
+`0.7687285720021464s` at `8192` and `0.7682073380565271s` at `12288`.  The
+general documented route keeps `8192` for lower memory and consistency with the
+near-reference route; `12288` is the current best-observed fast-approximate
+sample.
 
 A materialized split-budget sweep with Pi fixed at `4` measured `E=5` at
 `1.2753524020081386s` and `2157060.5` bits, `E=6` at
