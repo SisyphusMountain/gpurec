@@ -7778,6 +7778,11 @@ same typed display contract.  Malformed numeric artifact fields are printed as
 \texttt{null} instead of being converted from strings or booleans in terminal
 inspection output.
 
+\texttt{validate-config --require-cuda-backward-ready} now rejects the missing
+\texttt{--check-preprocess} flag combination before loading config files or
+checking paths, so production launch preflight reports the operator error
+directly.
+
 \section{Next Audit Targets}
 
 \begin{enumerate}[leftmargin=*]

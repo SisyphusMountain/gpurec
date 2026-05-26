@@ -2456,6 +2456,9 @@ not edit files.  New or still-open findings from that refresh are:
   display contract.  Malformed numeric artifact fields are printed as `null`
   instead of being converted from strings or booleans in terminal inspection
   output.
+- `validate-config --require-cuda-backward-ready` now rejects the missing
+  `--check-preprocess` flag combination before loading config files or checking
+  paths, so production launch preflight reports the operator error directly.
 
 ## Recommended Next Order
 

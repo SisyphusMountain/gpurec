@@ -1986,6 +1986,10 @@ def main(argv: list[str] | None = None) -> None:
             )
         return
     if args.command == "validate-config":
+        if args.require_cuda_backward_ready and not args.check_preprocess:
+            command_parser.error(
+                "--require-cuda-backward-ready requires --check-preprocess"
+            )
         try:
             config = _run_config_from_args(args)
             if args.require_mode_default_optimizer:
@@ -1998,10 +2002,6 @@ def main(argv: list[str] | None = None) -> None:
             )
         except _EXPECTED_WORKFLOW_ERRORS as exc:
             command_parser.error(str(exc))
-        if args.require_cuda_backward_ready and not args.check_preprocess:
-            command_parser.error(
-                "--require-cuda-backward-ready requires --check-preprocess"
-            )
         preprocess_text = ""
         if args.check_preprocess:
             cuda_backward_ready = (

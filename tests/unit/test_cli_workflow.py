@@ -1384,6 +1384,30 @@ def test_cli_validate_config_requires_preprocess_for_cuda_backward_gate(
     assert "Traceback" not in captured.err
 
 
+def test_cli_validate_config_cuda_gate_rejects_flag_combo_before_loading_config(
+    tmp_path: Path,
+    capsys,
+):
+    missing_config = tmp_path / "missing.json"
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(
+            [
+                "validate-config",
+                "--config",
+                str(missing_config),
+                "--require-cuda-backward-ready",
+            ]
+        )
+
+    captured = capsys.readouterr()
+    assert exc_info.value.code == 2
+    assert "--require-cuda-backward-ready requires --check-preprocess" in captured.err
+    assert str(missing_config) not in captured.err
+    assert "path does not exist" not in captured.err
+    assert "Traceback" not in captured.err
+
+
 def test_cli_validate_config_check_preprocess_rejects_bad_newick_before_cuda(
     tmp_path: Path,
     capsys,
