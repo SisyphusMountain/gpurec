@@ -177,8 +177,9 @@ the non-Pi parts of the gradient path are also reduced or amortized.
    adjoints before commit, clears stale layout state, and the Hessian-conditioned
    genewise workflow commits only after the accepted current-theta gradient, so
    the next work is budget validation rather than cache ownership.
-2. Add warm/cold gradient budgets to HOGENOM optimization config, starting with
-   warm Pi terms of 16 or 24 and periodic 48/64/128-term validation.
+2. Run HOGENOM end-to-end validations with warm/cold gradient budgets in the
+   workflow: ordinary `hessian_sgd_normal_*` Pi/Neumann terms of 16 or 24 plus
+   `hessian_sgd_validation_interval` with periodic 48/64/128-term validation.
 3. Add residual logging for the Pi adjoint solve so budget escalation is based
    on convergence, not only on a fixed iteration count.
 4. Expose `pi_fixed_point_relaxation` as an experimental config and benchmark

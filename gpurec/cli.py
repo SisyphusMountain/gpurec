@@ -240,6 +240,26 @@ def _optimization_result_text(result: Any) -> str:
                             None,
                         ),
                     ),
+                    _optional_int_text(
+                        "hessian_sgd_validation_interval",
+                        getattr(result, "hessian_sgd_validation_interval", None),
+                    ),
+                    _optional_int_text(
+                        "hessian_sgd_validation_fixed_iters_pi",
+                        getattr(
+                            result,
+                            "hessian_sgd_validation_fixed_iters_pi",
+                            None,
+                        ),
+                    ),
+                    _optional_int_text(
+                        "hessian_sgd_validation_neumann_terms",
+                        getattr(
+                            result,
+                            "hessian_sgd_validation_neumann_terms",
+                            None,
+                        ),
+                    ),
                 ]
                 if getattr(result, "optimizer", None) == "hessian-sgd"
                 else []
@@ -565,6 +585,17 @@ def _route_metadata_text(route: dict[str, Any]) -> str:
                     "hessian_sgd_pi_adjoint_warmstart",
                     route.get("hessian_sgd_pi_adjoint_warmstart"),
                 ),
+                _route_int_text("hessian_sgd_validation_interval", route),
+                _route_int_text(
+                    "hessian_sgd_validation_fixed_iters_pi",
+                    route,
+                    none_text="configured",
+                ),
+                _route_int_text(
+                    "hessian_sgd_validation_neumann_terms",
+                    route,
+                    none_text="configured",
+                ),
             ]
         )
     elif route.get("optimizer") == "adagrad-restarts":
@@ -766,6 +797,9 @@ def _config_template_data(args: argparse.Namespace) -> dict[str, Any]:
                 "hessian_sgd_normal_fixed_iters_pi": None,
                 "hessian_sgd_normal_neumann_terms": None,
                 "hessian_sgd_pi_adjoint_warmstart": False,
+                "hessian_sgd_validation_interval": 0,
+                "hessian_sgd_validation_fixed_iters_pi": None,
+                "hessian_sgd_validation_neumann_terms": None,
                 "final_check_iters": 32,
             }
         )
@@ -840,6 +874,17 @@ def _validate_config_route_text(config: RunConfig) -> str:
                 _optional_bool_text(
                     "hessian_sgd_pi_adjoint_warmstart",
                     route.get("hessian_sgd_pi_adjoint_warmstart"),
+                ),
+                _route_int_text("hessian_sgd_validation_interval", route),
+                _route_int_text(
+                    "hessian_sgd_validation_fixed_iters_pi",
+                    route,
+                    none_text="configured",
+                ),
+                _route_int_text(
+                    "hessian_sgd_validation_neumann_terms",
+                    route,
+                    none_text="configured",
                 ),
             ]
         )
@@ -1137,6 +1182,30 @@ def _add_run_config_args(parser: argparse.ArgumentParser) -> None:
         help=(
             "Enable the experimental staged Pi-adjoint warm-start cache for "
             "genewise hessian-sgd runs. Workflow default: disabled."
+        ),
+    )
+    parser.add_argument(
+        "--hessian-sgd-validation-interval",
+        type=int,
+        help=(
+            "Full-stage hessian-sgd cadence for high-budget validation "
+            "gradient steps; 0 disables periodic validation."
+        ),
+    )
+    parser.add_argument(
+        "--hessian-sgd-validation-fixed-iters-pi",
+        type=int,
+        help=(
+            "Optional Pi iteration budget for periodic hessian-sgd validation "
+            "gradient steps."
+        ),
+    )
+    parser.add_argument(
+        "--hessian-sgd-validation-neumann-terms",
+        type=int,
+        help=(
+            "Optional Neumann budget for periodic hessian-sgd validation "
+            "gradient steps."
         ),
     )
     parser.add_argument(

@@ -91,6 +91,9 @@ class OptimizationResult:
     hessian_sgd_normal_fixed_iters_pi: int | None = None
     hessian_sgd_normal_neumann_terms: int | None = None
     hessian_sgd_pi_adjoint_warmstart: bool | None = None
+    hessian_sgd_validation_interval: int | None = None
+    hessian_sgd_validation_fixed_iters_pi: int | None = None
+    hessian_sgd_validation_neumann_terms: int | None = None
     adagrad_restart_schedule: str | None = None
     adagrad_restart_total_steps: int | None = None
     adagrad_restart_final_check_iters: int | None = None
@@ -1108,13 +1111,7 @@ class OptimizationRunner:
     ) -> None:
         config = self.config
         if stage == "warmup":
-            iters = int(config.solver_warmup_iters)
-            if config.optimizer == "hessian-sgd":
-                active_clade_count = int(
-                    getattr(model.current_batch_metadata, "clade_count", 0) or 0
-                )
-                if active_clade_count >= _HESSIAN_SGD_NO_LINE_REFRESH_MIN_CLADES:
-                    iters = min(iters, _HESSIAN_SGD_LARGE_BATCH_WARMUP_ITERS)
+            iters = self._hessian_sgd_warmup_iters(model)
             fixed_iters_E = (
                 config.fixed_iters_e
                 if config.optimizer == "hessian-sgd"
@@ -1134,6 +1131,17 @@ class OptimizationRunner:
             )
             return
         raise ValueError(f"unknown solver stage {stage!r}")
+
+    def _hessian_sgd_warmup_iters(self, model: GeneReconModel) -> int:
+        iters = int(self.config.solver_warmup_iters)
+        if self.config.optimizer != "hessian-sgd":
+            return iters
+        active_clade_count = int(
+            getattr(model.current_batch_metadata, "clade_count", 0) or 0
+        )
+        if active_clade_count >= _HESSIAN_SGD_NO_LINE_REFRESH_MIN_CLADES:
+            return min(iters, _HESSIAN_SGD_LARGE_BATCH_WARMUP_ITERS)
+        return iters
 
     def _configure_active_solver_stage(
         self,
@@ -1158,6 +1166,51 @@ class OptimizationRunner:
             )
             return
         self._configure_solver_stage(model, stage)
+
+    def _hessian_sgd_validation_fixed_iters_pi(self) -> int:
+        value = self.config.hessian_sgd_validation_fixed_iters_pi
+        return int(value if value is not None else self.config.fixed_iters_pi)
+
+    def _hessian_sgd_validation_neumann_terms(self) -> int:
+        value = self.config.hessian_sgd_validation_neumann_terms
+        return int(value if value is not None else self.config.neumann_terms)
+
+    def _configure_hessian_sgd_validation_solver_stage(
+        self,
+        model: GeneReconModel,
+    ) -> None:
+        fixed_iters_pi = self._hessian_sgd_validation_fixed_iters_pi()
+        model.configure_solver_iterations(
+            fixed_iters_E=self._fixed_iters_E_for_pi_budget(fixed_iters_pi),
+            fixed_iters_Pi=fixed_iters_pi,
+            neumann_terms=self._hessian_sgd_validation_neumann_terms(),
+        )
+
+    def _is_hessian_sgd_validation_step(
+        self,
+        *,
+        phase: str,
+        solver_stage: str,
+        active_batch_local_step: int,
+        line_search_active: bool,
+    ) -> bool:
+        interval = int(self.config.hessian_sgd_validation_interval)
+        return (
+            interval > 0
+            and self.config.optimizer == "hessian-sgd"
+            and phase == "hessian-sgd"
+            and solver_stage == "full"
+            and not line_search_active
+            and active_batch_local_step % interval == 0
+        )
+
+    def _hessian_sgd_validation_result_is_canonical_full_solver(self) -> bool:
+        return (
+            self._hessian_sgd_validation_fixed_iters_pi()
+            == int(self.config.fixed_iters_pi)
+            and self._hessian_sgd_validation_neumann_terms()
+            == int(self.config.neumann_terms)
+        )
 
     def _active_batch_result_is_canonical_full_solver(
         self,
@@ -2925,6 +2978,26 @@ class OptimizationRunner:
                 elif phase in _HESSIAN_CONDITIONED_OPTIMIZERS:
                     if optimizer is None:
                         raise RuntimeError("missing optimizer")
+                    hessian_sgd_validation_step = False
+                    if phase == "hessian-sgd":
+                        hessian_sgd_validation_step = (
+                            self._is_hessian_sgd_validation_step(
+                                phase=phase,
+                                solver_stage=active_solver_stage,
+                                active_batch_local_step=active_batch_local_step,
+                                line_search_active=hessian_sgd_line_search_active,
+                            )
+                        )
+                        if hessian_sgd_validation_step:
+                            self._configure_hessian_sgd_validation_solver_stage(model)
+                        elif (
+                            active_solver_stage == "full"
+                            and config.hessian_sgd_validation_interval > 0
+                        ):
+                            self._configure_active_solver_stage(
+                                model,
+                                active_solver_stage,
+                            )
                     if (
                         phase == "adam-fd-newton"
                         and active_batch_local_step < config.fd_adam_warmup_steps
@@ -2960,12 +3033,16 @@ class OptimizationRunner:
                             loss_vec_current,
                             metrics,
                             closure_evals,
-                            fd_newton_hessian_state,
+                            next_fd_newton_hessian_state,
                         ) = (
                             self._active_fd_newton_step(
                                 model,
                                 solver_stage=active_solver_stage,
-                                hessian_state=fd_newton_hessian_state,
+                                hessian_state=(
+                                    None
+                                    if hessian_sgd_validation_step
+                                    else fd_newton_hessian_state
+                                ),
                                 update_hessian_with_bfgs=phase
                                 in {"adam-fd-newton", "hessian-sgd"},
                                 step_scale=(
@@ -2995,11 +3072,63 @@ class OptimizationRunner:
                                 ),
                             )
                         )
+                        fd_newton_hessian_state = (
+                            None
+                            if hessian_sgd_validation_step
+                            else next_fd_newton_hessian_state
+                        )
                         metrics["optimizer/fd_newton_subphase"] = (
                             "fd_newton"
                             if phase == "adam-fd-newton"
                             else "hessian_sgd"
                         )
+                        if (
+                            phase == "hessian-sgd"
+                            and config.hessian_sgd_validation_interval > 0
+                        ):
+                            metrics["optimizer/hessian_sgd_validation_step"] = (
+                                hessian_sgd_validation_step
+                            )
+                            if hessian_sgd_validation_step:
+                                metrics["optimizer/hessian_sgd_solver_budget"] = (
+                                    "validation"
+                                )
+                                active_fixed_iters_pi = (
+                                    self._hessian_sgd_validation_fixed_iters_pi()
+                                )
+                                active_neumann_terms = (
+                                    self._hessian_sgd_validation_neumann_terms()
+                                )
+                            elif active_solver_stage == "warmup":
+                                metrics["optimizer/hessian_sgd_solver_budget"] = (
+                                    "warmup"
+                                )
+                                active_fixed_iters_pi = (
+                                    self._hessian_sgd_warmup_iters(model)
+                                )
+                                active_neumann_terms = active_fixed_iters_pi
+                            else:
+                                metrics["optimizer/hessian_sgd_solver_budget"] = (
+                                    "normal"
+                                )
+                                active_fixed_iters_pi = (
+                                    config.hessian_sgd_normal_fixed_iters_pi
+                                    if config.hessian_sgd_normal_fixed_iters_pi
+                                    is not None
+                                    else config.fixed_iters_pi
+                                )
+                                active_neumann_terms = (
+                                    config.hessian_sgd_normal_neumann_terms
+                                    if config.hessian_sgd_normal_neumann_terms
+                                    is not None
+                                    else config.neumann_terms
+                                )
+                            metrics[
+                                "optimizer/hessian_sgd_active_fixed_iters_pi"
+                            ] = float(active_fixed_iters_pi)
+                            metrics[
+                                "optimizer/hessian_sgd_active_neumann_terms"
+                            ] = float(active_neumann_terms)
                     theta_step = float(
                         (model.theta.detach() - theta_before).abs().amax().cpu()
                     )
@@ -3014,9 +3143,13 @@ class OptimizationRunner:
                         model.clear()
                         break
                     if (
-                        self._active_batch_result_is_canonical_full_solver(
-                            phase=phase,
-                            solver_stage=active_solver_stage,
+                        (
+                            self._hessian_sgd_validation_result_is_canonical_full_solver()
+                            if hessian_sgd_validation_step
+                            else self._active_batch_result_is_canonical_full_solver(
+                                phase=phase,
+                                solver_stage=active_solver_stage,
+                            )
                         )
                         and batch_final_loss_cache is not None
                         and batch_final_grad_cache is not None
@@ -4059,6 +4192,15 @@ class OptimizationRunner:
                 ),
                 hessian_sgd_pi_adjoint_warmstart=_optional_result_bool(
                     route_metadata.get("hessian_sgd_pi_adjoint_warmstart")
+                ),
+                hessian_sgd_validation_interval=_optional_result_int(
+                    route_metadata.get("hessian_sgd_validation_interval")
+                ),
+                hessian_sgd_validation_fixed_iters_pi=_optional_result_int(
+                    route_metadata.get("hessian_sgd_validation_fixed_iters_pi")
+                ),
+                hessian_sgd_validation_neumann_terms=_optional_result_int(
+                    route_metadata.get("hessian_sgd_validation_neumann_terms")
                 ),
                 adagrad_restart_schedule=_optional_result_text(
                     route_metadata.get("adagrad_restart_schedule")

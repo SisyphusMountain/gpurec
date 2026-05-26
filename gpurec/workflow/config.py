@@ -392,6 +392,9 @@ _JSON_INT_FIELDS = {
     "fd_hessian_refresh_steps",
     "hessian_sgd_normal_fixed_iters_pi",
     "hessian_sgd_normal_neumann_terms",
+    "hessian_sgd_validation_interval",
+    "hessian_sgd_validation_fixed_iters_pi",
+    "hessian_sgd_validation_neumann_terms",
     "adagrad_restart_final_check_iters",
     "adaptive_rebatch_check_interval",
     "adaptive_rebatch_min_remaining_families",
@@ -525,6 +528,9 @@ class RunConfig:
     hessian_sgd_normal_fixed_iters_pi: int | None = None
     hessian_sgd_normal_neumann_terms: int | None = None
     hessian_sgd_pi_adjoint_warmstart: bool = False
+    hessian_sgd_validation_interval: int = 0
+    hessian_sgd_validation_fixed_iters_pi: int | None = None
+    hessian_sgd_validation_neumann_terms: int | None = None
     adagrad_restart_schedule: str = DEFAULT_ADAGRAD_RESTART_SCHEDULE
     adagrad_restart_final_check_iters: int = 128
     lbfgs_lr: float = 0.1
@@ -639,6 +645,20 @@ class RunConfig:
         self.hessian_sgd_normal_neumann_terms = _normalize_optional_positive_int(
             "hessian_sgd_normal_neumann_terms",
             self.hessian_sgd_normal_neumann_terms,
+        )
+        self.hessian_sgd_validation_interval = _normalize_nonnegative_int(
+            "hessian_sgd_validation_interval",
+            self.hessian_sgd_validation_interval,
+        )
+        self.hessian_sgd_validation_fixed_iters_pi = (
+            _normalize_optional_positive_even_int(
+                "hessian_sgd_validation_fixed_iters_pi",
+                self.hessian_sgd_validation_fixed_iters_pi,
+            )
+        )
+        self.hessian_sgd_validation_neumann_terms = _normalize_optional_positive_int(
+            "hessian_sgd_validation_neumann_terms",
+            self.hessian_sgd_validation_neumann_terms,
         )
         self.adagrad_restart_schedule = _normalize_adagrad_restart_schedule(
             self.adagrad_restart_schedule,
@@ -771,6 +791,27 @@ class RunConfig:
             raise ValueError(
                 "hessian_sgd_pi_adjoint_warmstart requires genewise "
                 "hessian-sgd optimizer"
+            )
+        hessian_sgd_validation_configured = (
+            self.hessian_sgd_validation_interval > 0
+            or self.hessian_sgd_validation_fixed_iters_pi is not None
+            or self.hessian_sgd_validation_neumann_terms is not None
+        )
+        if hessian_sgd_validation_configured and self.optimizer != "hessian-sgd":
+            raise ValueError(
+                "hessian_sgd_validation controls require genewise hessian-sgd "
+                "optimizer"
+            )
+        if (
+            self.hessian_sgd_validation_interval == 0
+            and (
+                self.hessian_sgd_validation_fixed_iters_pi is not None
+                or self.hessian_sgd_validation_neumann_terms is not None
+            )
+        ):
+            raise ValueError(
+                "hessian_sgd_validation_interval must be positive when "
+                "validation budgets are provided"
             )
         if self.optimizer == "adagrad-restarts" and self.mode != "specieswise":
             raise ValueError("adagrad-restarts optimizer requires specieswise mode")
@@ -915,6 +956,15 @@ def effective_route_metadata(config: RunConfig) -> dict[str, Any]:
                 ),
                 "hessian_sgd_pi_adjoint_warmstart": (
                     config.hessian_sgd_pi_adjoint_warmstart
+                ),
+                "hessian_sgd_validation_interval": (
+                    config.hessian_sgd_validation_interval
+                ),
+                "hessian_sgd_validation_fixed_iters_pi": (
+                    config.hessian_sgd_validation_fixed_iters_pi
+                ),
+                "hessian_sgd_validation_neumann_terms": (
+                    config.hessian_sgd_validation_neumann_terms
                 ),
             }
         )

@@ -1263,6 +1263,9 @@ def test_effective_route_metadata_reports_production_likelihood_contract(
     assert route["hessian_sgd_normal_fixed_iters_pi"] is None
     assert route["hessian_sgd_normal_neumann_terms"] is None
     assert route["hessian_sgd_pi_adjoint_warmstart"] is False
+    assert route["hessian_sgd_validation_interval"] == 0
+    assert route["hessian_sgd_validation_fixed_iters_pi"] is None
+    assert route["hessian_sgd_validation_neumann_terms"] is None
 
 
 def test_effective_route_metadata_reports_hessian_sgd_normal_solver_overrides(
@@ -1276,6 +1279,9 @@ def test_effective_route_metadata_reports_hessian_sgd_normal_solver_overrides(
         hessian_sgd_normal_fixed_iters_pi=12,
         hessian_sgd_normal_neumann_terms=12,
         hessian_sgd_pi_adjoint_warmstart=True,
+        hessian_sgd_validation_interval=3,
+        hessian_sgd_validation_fixed_iters_pi=32,
+        hessian_sgd_validation_neumann_terms=48,
         device="cpu",
     )
 
@@ -1285,6 +1291,9 @@ def test_effective_route_metadata_reports_hessian_sgd_normal_solver_overrides(
     assert route["hessian_sgd_normal_fixed_iters_pi"] == 12
     assert route["hessian_sgd_normal_neumann_terms"] == 12
     assert route["hessian_sgd_pi_adjoint_warmstart"] is True
+    assert route["hessian_sgd_validation_interval"] == 3
+    assert route["hessian_sgd_validation_fixed_iters_pi"] == 32
+    assert route["hessian_sgd_validation_neumann_terms"] == 48
 
 
 def test_run_config_accepts_adam_fd_newton_for_genewise_mode(tmp_path: Path):
@@ -1321,6 +1330,9 @@ def test_run_config_accepts_hessian_sgd_for_genewise_mode(tmp_path: Path):
     assert config.hessian_sgd_normal_fixed_iters_pi is None
     assert config.hessian_sgd_normal_neumann_terms is None
     assert config.hessian_sgd_pi_adjoint_warmstart is False
+    assert config.hessian_sgd_validation_interval == 0
+    assert config.hessian_sgd_validation_fixed_iters_pi is None
+    assert config.hessian_sgd_validation_neumann_terms is None
 
 
 def test_run_config_auto_optimizer_uses_adam_for_shared_theta_modes(tmp_path: Path):
@@ -1619,6 +1631,41 @@ def test_run_config_rejects_hessian_sgd_pi_adjoint_warmstart_outside_hessian_sgd
         )
 
 
+def test_run_config_rejects_hessian_sgd_validation_controls_outside_hessian_sgd(
+    tmp_path: Path,
+):
+    with pytest.raises(
+        ValueError,
+        match="hessian_sgd_validation controls require genewise hessian-sgd",
+    ):
+        RunConfig(
+            species_tree=tmp_path / "sp.nwk",
+            families_file=tmp_path / "families.txt",
+            out_dir=tmp_path / "out",
+            mode="specieswise",
+            device="cpu",
+            hessian_sgd_validation_interval=4,
+        )
+
+
+def test_run_config_rejects_hessian_sgd_validation_budget_without_interval(
+    tmp_path: Path,
+):
+    with pytest.raises(
+        ValueError,
+        match="hessian_sgd_validation_interval must be positive",
+    ):
+        RunConfig(
+            species_tree=tmp_path / "sp.nwk",
+            families_file=tmp_path / "families.txt",
+            out_dir=tmp_path / "out",
+            mode="genewise",
+            optimizer="hessian-sgd",
+            device="cpu",
+            hessian_sgd_validation_fixed_iters_pi=32,
+        )
+
+
 def test_run_config_rejects_batched_lbfgs_outside_genewise(tmp_path: Path):
     with pytest.raises(ValueError, match="batched-lbfgs.*genewise"):
         RunConfig(
@@ -1841,6 +1888,9 @@ def test_run_config_rejects_adaptive_neumann_terms_mode(tmp_path: Path):
         ("fd_hessian_refresh_steps", 0.5),
         ("hessian_sgd_normal_fixed_iters_pi", 12.5),
         ("hessian_sgd_normal_neumann_terms", 12.5),
+        ("hessian_sgd_validation_interval", 2.5),
+        ("hessian_sgd_validation_fixed_iters_pi", 32.5),
+        ("hessian_sgd_validation_neumann_terms", 48.5),
         ("adaptive_rebatch_check_interval", 0.5),
         ("adaptive_rebatch_min_remaining_families", 1.5),
         ("small_family_max_leaves", 1.5),
@@ -1870,6 +1920,9 @@ def test_run_config_rejects_nonintegral_integer_controls(
     [
         ("hessian_sgd_normal_fixed_iters_pi", 0),
         ("hessian_sgd_normal_neumann_terms", 0),
+        ("hessian_sgd_validation_interval", -1),
+        ("hessian_sgd_validation_fixed_iters_pi", 0),
+        ("hessian_sgd_validation_neumann_terms", 0),
     ],
 )
 def test_run_config_rejects_invalid_hessian_sgd_controls(
@@ -1907,6 +1960,17 @@ def test_run_config_rejects_odd_fixed_pi_iterations(tmp_path: Path):
             mode="genewise",
             device="cpu",
             hessian_sgd_normal_fixed_iters_pi=3,
+        )
+    with pytest.raises(ValueError, match="hessian_sgd_validation_fixed_iters_pi"):
+        RunConfig(
+            species_tree=tmp_path / "sp.nwk",
+            families_file=tmp_path / "families.txt",
+            out_dir=tmp_path / "out",
+            optimizer="hessian-sgd",
+            mode="genewise",
+            device="cpu",
+            hessian_sgd_validation_interval=4,
+            hessian_sgd_validation_fixed_iters_pi=3,
         )
 
 
@@ -5819,6 +5883,9 @@ def test_optimization_runner_adagrad_restarts_accepts_split_solver_budgets(
     assert result.hessian_sgd_normal_fixed_iters_pi is None
     assert result.hessian_sgd_normal_neumann_terms is None
     assert result.hessian_sgd_pi_adjoint_warmstart is None
+    assert result.hessian_sgd_validation_interval is None
+    assert result.hessian_sgd_validation_fixed_iters_pi is None
+    assert result.hessian_sgd_validation_neumann_terms is None
     assert summary["steps_completed"] == result.steps_completed
     assert summary["steps_completed"] == 4
     assert summary["sampling_checkpoint"] == str(result.sampling_checkpoint)
@@ -6163,12 +6230,27 @@ def test_optimization_runner_hessian_sgd_mode_records_public_phase(tmp_path: Pat
         result.hessian_sgd_pi_adjoint_warmstart
         == summary["hessian_sgd_pi_adjoint_warmstart"]
     )
+    assert (
+        result.hessian_sgd_validation_interval
+        == summary["hessian_sgd_validation_interval"]
+    )
+    assert (
+        result.hessian_sgd_validation_fixed_iters_pi
+        == summary["hessian_sgd_validation_fixed_iters_pi"]
+    )
+    assert (
+        result.hessian_sgd_validation_neumann_terms
+        == summary["hessian_sgd_validation_neumann_terms"]
+    )
     assert summary["solver_warmup_iters"] == 0
     assert summary["fd_adam_warmup_steps"] == 3
     assert summary["fd_hessian_refresh_steps"] == 16
     assert summary["hessian_sgd_normal_fixed_iters_pi"] is None
     assert summary["hessian_sgd_normal_neumann_terms"] is None
     assert summary["hessian_sgd_pi_adjoint_warmstart"] is False
+    assert summary["hessian_sgd_validation_interval"] == 0
+    assert summary["hessian_sgd_validation_fixed_iters_pi"] is None
+    assert summary["hessian_sgd_validation_neumann_terms"] is None
     assert result.adagrad_restart_schedule is None
     assert result.adagrad_restart_total_steps is None
     assert result.adagrad_restart_final_check_iters is None
@@ -6319,6 +6401,66 @@ def test_hessian_sgd_normal_solver_controls_drive_full_stage(
         {"fixed_iters_E": None, "fixed_iters_Pi": 12, "neumann_terms": 12},
         {"fixed_iters_E": None, "fixed_iters_Pi": 12, "neumann_terms": 12},
     ]
+    assert result.status == "not_converged"
+    assert runner.fake_model.closed
+
+
+def test_hessian_sgd_periodic_validation_budget_uses_high_budget_steps(
+    tmp_path: Path,
+):
+    config = _optimizer_mode_config(
+        tmp_path,
+        optimizer="hessian-sgd",
+        mode="genewise",
+        steps=3,
+        fixed_iters_pi=32,
+        neumann_terms=32,
+        solver_warmup_iters=0,
+        hessian_sgd_normal_fixed_iters_pi=16,
+        hessian_sgd_normal_neumann_terms=16,
+        hessian_sgd_validation_interval=2,
+        hessian_sgd_validation_fixed_iters_pi=32,
+        hessian_sgd_validation_neumann_terms=32,
+        fd_hessian_refresh_steps=16,
+        fd_hessian_epsilon=1e-3,
+        fd_newton_damping=1e-6,
+        loss_patience=0,
+        best_likelihood_patience=0,
+    )
+    runner = _WorkflowBatchedLBFGSModeRunner(config)
+
+    result = runner.run()
+
+    history_rows = _optimizer_mode_history_rows(config.out_dir)
+    hessian_rows = [
+        row for row in history_rows if row["optimizer/phase"] == "hessian-sgd"
+    ]
+    assert [row["optimizer/hessian_sgd_validation_step"] for row in hessian_rows] == [
+        True,
+        False,
+        True,
+    ]
+    assert [row["optimizer/hessian_sgd_solver_budget"] for row in hessian_rows] == [
+        "validation",
+        "normal",
+        "validation",
+    ]
+    assert [
+        row["optimizer/hessian_sgd_active_fixed_iters_pi"]
+        for row in hessian_rows
+    ] == [32.0, 16.0, 32.0]
+    assert [
+        row["optimizer/hessian_sgd_active_neumann_terms"]
+        for row in hessian_rows
+    ] == [32.0, 16.0, 32.0]
+    assert [
+        row["optimizer/fd_newton_hessian_source"] for row in hessian_rows
+    ] == ["finite_difference", "finite_difference", "finite_difference"]
+    summary = json.loads((config.out_dir / "summary.json").read_text(encoding="utf-8"))
+    assert summary["hessian_sgd_validation_interval"] == 2
+    assert summary["hessian_sgd_validation_fixed_iters_pi"] == 32
+    assert summary["hessian_sgd_validation_neumann_terms"] == 32
+    assert result.hessian_sgd_validation_interval == 2
     assert result.status == "not_converged"
     assert runner.fake_model.closed
 

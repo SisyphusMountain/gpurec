@@ -86,6 +86,21 @@ current-theta gradient. When enabled in a controlled experiment, history rows in
 `solver/pi_adjoint_pending_cache_commits`, and
 `solver/pi_adjoint_pending_cache_discards`.
 
+Warmstarted validation runs can also lower ordinary full-stage Hessian-SGD
+Pi/Neumann budgets while periodically forcing high-budget gradients. Set
+`hessian_sgd_normal_fixed_iters_pi` and
+`hessian_sgd_normal_neumann_terms` to the ordinary warm budget, then set
+`hessian_sgd_validation_interval` plus optional
+`hessian_sgd_validation_fixed_iters_pi` and
+`hessian_sgd_validation_neumann_terms` for the bootstrap and periodic
+validation gradients. The first full-stage step for each active batch is a
+validation step, and the workflow resets the row-Hessian cache across validation
+and normal budgets so curvature estimates are not mixed between fidelities.
+History rows record `optimizer/hessian_sgd_validation_step`,
+`optimizer/hessian_sgd_solver_budget`,
+`optimizer/hessian_sgd_active_fixed_iters_pi`, and
+`optimizer/hessian_sgd_active_neumann_terms`.
+
 ## Default Optimizer Routes
 
 `optimizer=auto` is deliberately mode-dependent:
