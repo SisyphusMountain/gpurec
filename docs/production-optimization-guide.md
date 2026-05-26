@@ -162,9 +162,10 @@ template keeps `optimizer=auto` and writes the default
 records, mapping files, and referenced gene-tree files without CUDA or
 preprocessing. Its summary prints the resolved optimizer, batch planning,
 solver budgets, effective `final_check_iters`, and optimizer-specific defaults
-such as the specieswise restart schedule. It is a preflight for path and parser
-issues, not a likelihood or gradient correctness check. Add `--check-preprocess`
-for a heavier CPU
+such as the specieswise restart schedule and genewise Hessian-SGD normal-stage
+solver overrides. It is a preflight for path and parser issues, not a
+likelihood or gradient correctness check. Add `--check-preprocess` for a
+heavier CPU
 preprocessing pass that uses the retained Rust parser to validate selected
 Newick trees and leaf/species mappings before optimization.
 

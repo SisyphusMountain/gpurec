@@ -600,6 +600,16 @@ def _validate_config_route_text(config: RunConfig) -> str:
                 f"solver_warmup_iters={route['solver_warmup_iters']}",
                 f"fd_adam_warmup_steps={route['fd_adam_warmup_steps']}",
                 f"fd_hessian_refresh_steps={route['fd_hessian_refresh_steps']}",
+                _route_int_text(
+                    "hessian_sgd_normal_fixed_iters_pi",
+                    route,
+                    none_text="full",
+                ),
+                _route_int_text(
+                    "hessian_sgd_normal_neumann_terms",
+                    route,
+                    none_text="full",
+                ),
             ]
         )
     elif config.optimizer == "adagrad-restarts":

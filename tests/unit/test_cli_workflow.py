@@ -561,11 +561,49 @@ def test_cli_validate_config_reports_selected_family_references(
     assert "solver_warmup_iters=4" in captured.out
     assert "fd_adam_warmup_steps=3" in captured.out
     assert "fd_hessian_refresh_steps=16" in captured.out
+    assert "hessian_sgd_normal_fixed_iters_pi=full" in captured.out
+    assert "hessian_sgd_normal_neumann_terms=full" in captured.out
     assert "preprocess_checked" not in captured.out
     assert gpurec_cli._optional_text(
         "out_dir",
         (tmp_path / "run outputs").resolve(),
     ) in captured.out
+    assert captured.err == ""
+
+
+def test_cli_validate_config_reports_hessian_sgd_normal_solver_overrides(
+    tmp_path: Path,
+    capsys,
+):
+    write_tiny_alerax_inputs(tmp_path)
+
+    main(
+        [
+            "validate-config",
+            "--species-tree",
+            str(tmp_path / "sp.nwk"),
+            "--families-file",
+            str(tmp_path / "families.txt"),
+            "--out-dir",
+            str(tmp_path / "out"),
+            "--mode",
+            "genewise",
+            "--optimizer",
+            "hessian-sgd",
+            "--device",
+            "cuda",
+            "--hessian-sgd-normal-fixed-iters-pi",
+            "12",
+            "--hessian-sgd-normal-neumann-terms",
+            "10",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert "valid_config=true" in captured.out
+    assert "optimizer=hessian-sgd" in captured.out
+    assert "hessian_sgd_normal_fixed_iters_pi=12" in captured.out
+    assert "hessian_sgd_normal_neumann_terms=10" in captured.out
     assert captured.err == ""
 
 

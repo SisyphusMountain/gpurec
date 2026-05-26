@@ -33,7 +33,9 @@ gradient summaries at bounds use `grad/projected_inf`. Solver diagnostics use
 `objective=negative_log_likelihood_bits`,
 `gradient_route=implicit_first_order_adjoint`,
 `rate_parameterization=base2_log_dlt_rates`, and
-`production_default_basis=hogenom_and_test_trees_1000`.
+`production_default_basis=hogenom_and_test_trees_1000`, plus
+optimizer-specific route fields such as the specieswise restart schedule and
+genewise Hessian-SGD normal-stage solver overrides.
 
 `summary.json` repeats the final objective as `final_nll_bits` and
 `final_log_likelihood_bits`, and the best accepted objective as `best_nll_bits`
