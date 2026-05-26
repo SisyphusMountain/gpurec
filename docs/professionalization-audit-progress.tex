@@ -7509,6 +7509,15 @@ focused sampling gate selector reports \texttt{2 passed}, and
 \texttt{git diff --check} passes.  The full CPU unit gate reports
 \texttt{1469 passed, 1 skipped, 51 deselected}.
 
+\texttt{gpurec run --require-production-default-route} now has direct CLI
+coverage for the combined optimize-and-sample command.  The new tests prove
+that the default genewise route proceeds through optimization and sampling,
+while a non-default Hessian-SGD refresh setting is rejected before checking
+backtracking availability or invoking optimization.  The touched CLI test
+compiles, the focused run gate selector reports \texttt{2 passed}, and
+\texttt{git diff --check} passes.  The full CPU unit gate reports
+\texttt{1471 passed, 1 skipped, 51 deselected}.
+
 \section{Next Audit Targets}
 
 \begin{enumerate}[leftmargin=*]

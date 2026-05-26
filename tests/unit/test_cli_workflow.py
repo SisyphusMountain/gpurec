@@ -3881,6 +3881,120 @@ def test_cli_run_require_mode_default_optimizer_rejects_override_before_run(
     assert "Traceback" not in captured.err
 
 
+def test_cli_run_require_production_default_route_accepts_default_config(
+    tmp_path: Path,
+    capsys,
+    monkeypatch,
+):
+    captured_objects: dict[str, object] = {}
+
+    def successful_optimize(config):
+        checkpoint = config.out_dir / "checkpoints" / "latest.pt"
+        checkpoint.parent.mkdir(parents=True)
+        checkpoint.write_bytes(b"checkpoint")
+        captured_objects["optimize_config"] = config
+        fields = {
+            **effective_route_metadata(config),
+            "out_dir": config.out_dir,
+            "sampling_checkpoint": checkpoint,
+            "status": "success",
+            "reason": "completed",
+            "families": 1,
+            "species": 2,
+            "batches": 1,
+            "steps_completed": 1,
+            "elapsed_s": 0.5,
+            "best_step": 1,
+            "final_nll_bits": 12.0,
+            "final_grad_inf": 0.25,
+            "final_projected_grad_inf": 0.125,
+            "best_nll_bits": 11.0,
+        }
+        return SimpleNamespace(**fields)
+
+    def capture_sample(config):
+        captured_objects["sample_config"] = config
+        return SimpleNamespace(
+            families_sampled=1,
+            samples_per_family=config.samples,
+            xml_files=2,
+            out_dir=config.out_dir,
+        )
+
+    monkeypatch.setattr("gpurec.cli.optimize", successful_optimize)
+    monkeypatch.setattr("gpurec.cli.sample", capture_sample)
+    monkeypatch.setattr("gpurec.cli._ensure_backtracking_available", lambda _: None)
+
+    main(
+        _minimal_workflow_cli_args("run", tmp_path)
+        + [
+            "--samples",
+            "2",
+            "--require-production-default-route",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    optimize_config = captured_objects["optimize_config"]
+    sample_config = captured_objects["sample_config"]
+    assert captured.err == ""
+    assert isinstance(optimize_config, RunConfig)
+    assert optimize_config.optimizer == "hessian-sgd"
+    assert isinstance(sample_config, SamplingConfig)
+    assert sample_config.checkpoint == (
+        tmp_path / "out" / "checkpoints" / "latest.pt"
+    ).resolve()
+    assert "uses_production_default_route=true" in captured.out
+    assert "production_default_route_mismatches=none" in captured.out
+    assert "sampled_families=1 samples=2 xml=2" in captured.out
+
+
+def test_cli_run_require_production_default_route_rejects_custom_settings_before_run(
+    tmp_path: Path,
+    capsys,
+    monkeypatch,
+):
+    def unexpected_backtracking_check(backtrack_binary):
+        raise AssertionError("backtracking should not be checked")
+
+    def unexpected_optimize(config):
+        raise AssertionError("optimize should not be called")
+
+    def unexpected_sample(config):
+        raise AssertionError("sample should not be called")
+
+    monkeypatch.setattr(
+        "gpurec.cli._ensure_backtracking_available",
+        unexpected_backtracking_check,
+    )
+    monkeypatch.setattr("gpurec.cli.optimize", unexpected_optimize)
+    monkeypatch.setattr("gpurec.cli.sample", unexpected_sample)
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(
+            _minimal_workflow_cli_args("run", tmp_path)
+            + [
+                "--optimizer",
+                "hessian-sgd",
+                "--fd-hessian-refresh-steps",
+                "8",
+                "--require-production-default-route",
+            ]
+        )
+
+    captured = capsys.readouterr()
+    assert exc_info.value.code == 2
+    assert (
+        "config production default route fields differ for mode 'genewise': "
+        "fd_hessian_refresh_steps"
+    ) in captured.err
+    assert "use optimizer=auto and the shipped optimizer defaults" in captured.err
+    assert captured.out == ""
+    assert "sampled_families" not in captured.out
+    assert "usage:" in captured.err
+    assert "Traceback" not in captured.err
+
+
 def test_cli_run_rejects_checkpoint_argument_without_traceback(capsys):
     with pytest.raises(SystemExit) as exc_info:
         main(["run", "--checkpoint", "existing.pt"])
