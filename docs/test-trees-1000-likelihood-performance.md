@@ -432,6 +432,8 @@ Measured routes:
 | Composite one-command route | `adagrad-restarts-lbfgsb`, route A prefix, tail `lbfgsb` `lr=0.6`, `loss_change_tol=2`, `loss_patience=2`, `projected_grad_tol=10` | `859.07s` process wall (`856.943264578993s` optimizer elapsed) | `1699473.0` validated | `2.8404898643493652` | New single-workflow route, no manual resume between Adagrad and L-BFGS-B. It ran `12 + 8 + 2` Adagrad-prefix rows, then `38` L-BFGS-B rows, and stopped by `loss_change_patience`. Fixed8 final validation matched exactly. |
 | Composite strict continuation | Resume the composite route, continue `lbfgsb` with `loss_change_tol=1`, `projected_grad_tol=3` | `930.90s` combined (`859.07s + 71.83s`) | `1699471.625` validated | `2.203108787536621` | Restored L-BFGS-B optimizer state from the composite checkpoint and added three tail rows. A fixed32 validation returned the same `1699471.625`-bit loss; final-check gradient max-abs delta was `0.00376129150390625`. |
 | Composite objective-plateau route | `adagrad-restarts-lbfgsb`, route A prefix, tail `lbfgsb` `lr=0.6`, `lbfgs_max_ls=4`, `loss_change_tol=0.25`, `loss_patience=2`, `projected_grad_tol=0.5`, `loss_stop_projected_grad_gate=false` | `1039.92s` process wall | `1699466.375` fixed32 validated | `1.4706581830978394` | Clean one-command run from uniform `0.05`. It stopped at optimizer step 68 after two `<=0.25`-bit improvements, then ran a fixed32 final check with `0.0` loss delta and `9.059906005859375e-06` gradient max-abs delta. This is `1.75` bits lower and `161.31s` faster than the previous `1699468.125` automatic endpoint. |
+| Composite fallback-budget route | Same prefix and tail, but `loss_change_tol=0.1`, `lbfgsb_high_kkt_stop_patience=2`, `lbfgsb_fallback_max_coordinates=4`, `lbfgsb_fallback_max_loss_evals=4` | `1125.67s` process wall | `1699464.875` fixed32 validated | `2.275754928588867` | New clean one-command lower-likelihood endpoint. The route stopped by `loss_change_patience` after two budget-exhausted no-movement fallback rows. It is `1.5` bits lower than the objective-plateau route for `85.75s` more wall time. |
+| Composite fallback-budget segmented polish | Objective-plateau route, then resume with `loss_change_tol=0.1`, `lbfgsb_fallback_max_coordinates=4`, `lbfgsb_fallback_max_loss_evals=4`, and continue to high-KKT stop | `1522.42s` combined (`1039.92s + 409.25s + 73.25s`) | `1699456.5` fixed32 validated | `2.7642757892608643` | Lowest clean endpoint reached so far, but segmented rather than packaged as one automatic workflow. The first continuation reached `1699456.875` by step 89 and hit a max-step cap; the second continuation stopped cleanly by `lbfgsb_high_kkt_tiny_progress_patience` at fixed32 `1699456.5`. |
 | Composite bounded polish probe | Continue the objective-plateau route with `loss_change_tol=0.1`, `lbfgs_max_ls=4`, same no-gate stop policy | `164.52s` for steps 69-75, then `72.31s` recorded for steps 76-79 before killing the next fallback row; fixed32 validation cost `27.08s` | `1699460.125` fixed32 validated | `1.228520393371582` | Probe, not yet packaged as a clean automatic route. Steps 76-79 still bought `1.0`, `0.5`, `0.125`, and `0.125` bits; the following high-KKT fallback row became the current time sink. A production policy should stop or explicitly budget this fallback rather than enter an unbounded polish row. |
 | Composite high-KKT stop, no coordinate fallback | `adagrad-restarts-lbfgsb`, route A prefix, tail `lbfgsb` `lr=0.6`, `lbfgs_max_ls=4`, `loss_change_tol=0.1`, no projected-gradient stop gate, `lbfgsb_high_kkt_stop_patience=2`, `lbfgsb_fallback_max_coordinates=0` | `1354.41s` process wall | `1699463.75` fixed32 validated | `1.0165135860443115` | Clean one-command lower-objective route, but slower than the objective-plateau route. It disabled coordinate fallback to avoid a `214.83s` coordinate-search row seen with coordinates enabled; the final row before validation spent `123.86s` on a no-improvement fallback search, so this is a lower-likelihood polish point rather than the best wall-time tradeoff. |
 | Composite high-KKT stop, early no-coordinate guard | Same as above, but `lbfgsb_high_kkt_stop_patience=1` with the refined stop signal | `1084.33s` process wall | `1699467.125` fixed32 validated | `2.840712308883667` | Rejected as dominated by the objective-plateau route: slower than `1039.92s` and `0.75` bits higher. The earlier unrefined patience-1 run was faster at `993.63s` but stopped at `1699468.0`, also above the objective-plateau route. |
@@ -491,12 +493,18 @@ fallback can still spend heavily: the coordinate-enabled full run hit a
 `214.83s`, `96`-closure coordinate row.  Disabling coordinate fallback with
 `lbfgsb_fallback_max_coordinates=0` gave a clean `1699463.75`-bit endpoint in
 `1354.41s`, but the faster `1084.33s` high-KKT variant stopped above the
-objective-plateau route.  For now, the accepted wall-time/objective balance is
-still the `1039.92s` objective-plateau route; the no-coordinate route is a
-slower polish option.  A limited-coordinate continuation with
-`lbfgsb_fallback_max_coordinates=4` reached `1699459.875` from the
-objective-plateau checkpoint, but the next row again stalled, so it remains a
-probe rather than an accepted route.
+objective-plateau route.  Adding `lbfgsb_fallback_max_loss_evals=4` gives the
+current best clean one-command tradeoff: `1699464.875` bits in `1125.67s` from
+uniform `0.05`.  It is slower than the objective-plateau route, but it buys
+`1.5` more bits and avoids unbounded fallback competition by spending at most
+four fallback loss-only probes per optimizer row.
+A limited-coordinate continuation with `lbfgsb_fallback_max_coordinates=4`
+reached `1699459.875` from the objective-plateau checkpoint, but the next row
+again stalled.  After fixing resume-time L-BFGS-B param-group refresh, the same
+plateau checkpoint plus a `4`-eval fallback budget reached a lower clean
+segmented endpoint: `1699456.5` bits in `1522.42s` combined.  That is the best
+objective reached so far, but it is still a segmented warm-start route rather
+than the current one-command default.
 A post-stall continuation check from the fixed 40-step endpoint reached the
 lower reference point `1699468.25` bits in `982.27s`; the extra `71.10s`
 bought only `1.25` bits beyond the uninterrupted 40-step endpoint.  Tightening
@@ -1289,10 +1297,16 @@ Differences from HOGENOM:
   fixed128 validation time.
 - Late L-BFGS-B fallback behavior is currently dataset-specific.  On
   `test_trees_1000`, coordinate fallback can find lower objectives but may cost
-  hundreds of seconds in one row; disabling coordinate fallback avoids that
-  tail risk but stopped at a higher objective in the full run.  These
-  high-KKT/fallback guards are therefore documented as `test_trees_1000`
-  controls, not as HOGENOM defaults.
+  hundreds of seconds in one row; a hard fallback loss-evaluation budget now
+  gives a clean one-command endpoint without relying on a hand-counted tail
+  length.  Disabling coordinate fallback avoids tail risk but stopped at a
+  higher objective in the full run.  These high-KKT/fallback guards are
+  therefore documented as `test_trees_1000` controls, not as HOGENOM defaults.
+- Resume-time L-BFGS-B controls matter for segmented polishing: loading an
+  optimizer checkpoint also restores its old param group, so the workflow now
+  reapplies current `lbfgsb` runtime knobs after `load_state_dict`.  This is
+  relevant to `test_trees_1000` warm-start polishing; HOGENOM's accepted route
+  does not currently depend on resumed L-BFGS-B fallback controls.
 - The first `test_trees_1000` high-fidelity promotion does not currently need
   HOGENOM's tied fixed16/fixed32 validation ladder for objective consistency:
   fixed8, fixed16, and fixed32 validations matched exactly at the measured
