@@ -130,6 +130,20 @@ A materialized split-budget sweep with Pi fixed at `4` measured `E=5` at
 `36.75` bits on the table with no useful speed advantage over `E=6`; `E=6` and
 `E=8` are the practical split-budget choices depending on whether a slight
 optimistic or slight pessimistic one-bit error is preferable.
+Cold `E=7, Pi=4` samples also matched the `E=8, Pi=4` loss at
+`2157098.25` bits, but did not beat the best `E=8` cold sample: totals were
+`2.3259418689995073s`, `2.314654977992177s`,
+`2.267007304006256s`, and `2.2859832789981738s`.
+
+A split-budget clade-budget sweep kept the same `315000` route decision as the
+tied fixed4 path.  With `E=8, Pi=4`, single cold samples measured `250000`:
+`2.283307211997453s` at `4.21 GiB` reserved, `315000`:
+`2.2804238710086793s` at `5.23 GiB`, `400000`:
+`2.2799866489949636s` at `6.46 GiB`, `500000`:
+`2.2937483189743944s` at `7.95 GiB`, and `650000`:
+`2.355606388999149s` at `10.27 GiB`.  The small `400000` tie does not justify
+the higher memory and larger wave envelope, and the previous fixed4 repeats
+already showed this region does not hold a stable cold win.
 
 Split-budget near-reference command:
 
