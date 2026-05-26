@@ -7429,7 +7429,7 @@ reports \texttt{14 passed}, \texttt{git diff --check} passes, and the full CPU
 unit gate reports \texttt{1449 passed, 1 skipped, 51 deselected}.
 
 Workflow \texttt{RunConfig} mode strings are now stripped and case-normalized
-before \texttt{optimizer=auto} resolves the production default optimizer.  This
+before \texttt{optimizer=auto} resolves the mode default optimizer.  This
 brings JSON config handling in line with the public model API, so
 mixed-case or whitespace-padded modes still select genewise
 \texttt{hessian-sgd}, specieswise \texttt{adagrad-restarts}, or global
@@ -7629,6 +7629,13 @@ Mode-default artifact-gate failures now use narrower wording too.  Checkpoint,
 summary, and standalone sampling failures for
 \texttt{--require-mode-default-optimizer} say they expected the mode default
 optimizer route instead of using production-route remediation text.
+
+Current operator docs now use the same distinction.  The README, run-config
+reference, production optimization guide, output artifact contract, and input
+preparation guide describe \texttt{--require-mode-default-optimizer} as a
+mode-default optimizer gate and reserve production-route wording for the full
+likelihood/gradient plus optimizer route enforced by
+\texttt{--require-production-default-route}.
 
 \section{Next Audit Targets}
 

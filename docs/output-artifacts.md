@@ -40,8 +40,8 @@ available. `summary.json` and
 `rate_parameterization=base2_log_dlt_rates`, and
 `production_default_basis=hogenom_and_test_trees_1000`, plus
 `mode_default_optimizer` and `uses_mode_default_optimizer` for auditing whether
-a run used the production optimizer default for its sharing mode. They also
-record `uses_production_default_optimizer_settings` and
+a run used the mode default optimizer for its sharing mode. They also record
+`uses_production_default_optimizer_settings` and
 `production_default_optimizer_setting_mismatches`, which distinguish a plain
 optimizer-name match from the full shipped HOGENOM/`test_trees_1000`
 optimizer-specific route. They additionally record
@@ -126,7 +126,7 @@ the same status line and then exit nonzero unless the optimization status is
 `final_check_status=ok` before returning success. Add
 `--require-mode-default-optimizer` to `gpurec validate-config`,
 `gpurec optimize`, or `gpurec run` when automation should fail unless the
-resolved optimizer matches the production default for the selected mode. Add
+resolved optimizer matches the mode default for the selected mode. Add
 `--require-production-default-route` when automation should also reject
 stale likelihood/gradient route metadata or optimizer-specific setting
 overrides reported by `production_default_route_mismatches`.
@@ -199,7 +199,7 @@ When the checkpoint's saved last row contains final validation metrics,
 checkpoint's last row. Add `--require-final-check-ok` when
 automation should fail unless the checkpoint last row has
 `optimizer/final_check_status=ok`; add `--require-mode-default-optimizer` when
-the checkpoint route must use the production optimizer default for its mode, or
+the checkpoint route must use the mode default optimizer for its mode, or
 `--require-production-default-route` when the checkpoint route must also match
 the shipped likelihood/gradient contract and optimizer-specific route,
 including the stored `final_check_iters_e`. If
@@ -222,7 +222,7 @@ the optimization status fields and exits before sampling when the optimization
 status is anything other than `converged`. With `--require-final-check-ok`, it
 also exits before sampling unless `final_check_status=ok`. With
 `--require-mode-default-optimizer`, it exits before optimization or sampling
-unless the resolved optimizer is the production default for the selected mode.
+unless the resolved optimizer is the mode default for the selected mode.
 With `--require-production-default-route`, it also rejects changed
 optimizer-specific settings, stale `final_check_iters_e`, or stale
 likelihood/gradient route metadata before optimization or sampling and reports
@@ -230,7 +230,7 @@ the offending
 `production_default_route_mismatches`.
 The same `--require-mode-default-optimizer` flag is available on standalone
 `gpurec sample`; it inspects the checkpoint route and exits before sampling if
-the checkpoint cannot prove it used the production default optimizer. Standalone
+the checkpoint cannot prove it used the mode default optimizer. Standalone
 `gpurec sample` also supports `--require-production-default-route` to require
 the full shipped likelihood/gradient and optimizer-specific route before
 sampling.

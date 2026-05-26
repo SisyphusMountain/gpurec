@@ -1751,6 +1751,8 @@ def test_output_artifact_reference_is_linked_and_documents_contract():
         "`production_default_optimizer_setting_mismatches`",
         "`uses_production_default_route`",
         "`production_default_route_mismatches`",
+        "mode default optimizer for its sharing mode",
+        "mode default optimizer for its mode",
         "resolved `mode` and `optimizer`",
         "`families`",
         "`species`",
@@ -1849,6 +1851,41 @@ def test_output_artifact_reference_is_linked_and_documents_contract():
         assert token in normalized
 
 
+def test_operator_docs_distinguish_mode_default_from_production_route():
+    root = Path(__file__).resolve().parents[2]
+    docs = {
+        "README.md": (root / "README.md").read_text(encoding="utf-8"),
+        "docs/output-artifacts.md": (
+            root / "docs" / "output-artifacts.md"
+        ).read_text(encoding="utf-8"),
+        "docs/production-optimization-guide.md": (
+            root / "docs" / "production-optimization-guide.md"
+        ).read_text(encoding="utf-8"),
+        "docs/run-config-reference.md": (
+            root / "docs" / "run-config-reference.md"
+        ).read_text(encoding="utf-8"),
+    }
+    joined = "\n".join(docs.values())
+    normalized = " ".join(joined.split())
+
+    for stale in (
+        "production default optimizer",
+        "production optimizer default",
+        "non-default optimizer routes",
+        "full shipped production route",
+    ):
+        assert stale not in joined
+
+    for expected in (
+        "mode default optimizer for its sharing mode",
+        "mode default optimizer for the selected sharing mode",
+        "mode default optimizer for the selected mode",
+        "full shipped likelihood/gradient and optimizer route",
+        "stale likelihood/gradient route metadata or changed optimizer-specific settings",
+    ):
+        assert expected in normalized
+
+
 def test_troubleshooting_guide_documents_operator_failure_triage():
     root = Path(__file__).resolve().parents[2]
     project_readme = (root / "README.md").read_text(encoding="utf-8")
@@ -1920,7 +1957,7 @@ def test_input_preparation_guide_documents_alerax_data_contract():
         "gpurec validate-config --config run.json --check-preprocess",
         "gpurec validate-config --config run.json --require-mode-default-optimizer",
         "gpurec validate-config --config run.json --require-production-default-route",
-        "reject changed HOGENOM/`test_trees_1000` optimizer settings",
+        "reject changed HOGENOM/`test_trees_1000` route settings",
         "stale `final_check_iters_e`",
         "stale likelihood/gradient route metadata",
         "`cuda_backward_ready`",

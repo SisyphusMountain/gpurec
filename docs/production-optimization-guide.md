@@ -23,7 +23,7 @@ fields
 carry the likelihood, gradient, parameterization, and benchmark-basis contract.
 They also report `mode_default_optimizer` and
 `uses_mode_default_optimizer`, so runs explicitly show whether their optimizer
-matches the production default for the selected sharing mode.
+matches the mode default optimizer for the selected sharing mode.
 `uses_production_default_optimizer_settings` and
 `production_default_optimizer_setting_mismatches` then say whether the
 optimizer-specific settings still match the shipped HOGENOM/`test_trees_1000`
@@ -286,7 +286,7 @@ high-fidelity likelihood/gradient validation reports `final_check_status=ok`.
 Add `--require-mode-default-optimizer` to `gpurec validate-config`,
 `gpurec optimize`, `gpurec run`, `gpurec sample`, `gpurec summary-info`, or
 `gpurec checkpoint-info` when the pipeline should fail unless the resolved route
-uses the production optimizer default for the selected mode.
+uses the mode default optimizer for the selected mode.
 Add `--require-production-default-route` when the pipeline should also fail on
 stale likelihood/gradient route metadata or optimizer-specific setting changes,
 such as a non-default Hessian-SGD refresh budget, stale `final_check_iters_e`,

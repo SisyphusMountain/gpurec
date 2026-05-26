@@ -313,7 +313,7 @@ CLI. If omitted, `auto` resolves to `hessian-sgd` for `mode=genewise`,
 `adagrad-restarts` for `mode=specieswise`, and `adam` for `mode=global`.
 Route metadata, summaries, and status lines also report
 `mode_default_optimizer` and `uses_mode_default_optimizer` so operators can
-tell whether a run is on the production default optimizer for its sharing mode,
+tell whether a run is on the mode default optimizer for its sharing mode,
 plus `uses_production_default_optimizer_settings` and
 `production_default_optimizer_setting_mismatches` to show whether the
 optimizer-specific settings still match the shipped HOGENOM/`test_trees_1000`
@@ -442,7 +442,7 @@ without opening JSON by hand. Add `--require-converged` when a shell pipeline
 or workflow manager should fail unless the summary status is `converged`, and
 add `--require-final-check-ok` when it should also require
 `final_check_status=ok`. Add `--require-mode-default-optimizer` to fail unless
-the summary proves the run used the production default optimizer for its mode;
+the summary proves the run used the mode default optimizer for its mode;
 add `--require-production-default-route` when it should also require the
 shipped likelihood/gradient route metadata and optimizer-specific settings
 reported by `uses_production_default_route`, including the stored
@@ -456,9 +456,9 @@ also prints `last_final_check_iters`, `last_final_check_iters_e`,
 delta fields. Add `--require-final-check-ok` when automation
 should fail unless that checkpoint row reports `optimizer/final_check_status=ok`;
 add `--require-mode-default-optimizer` to require a checkpoint route whose
-optimizer matches the production default for its mode, or
-`--require-production-default-route` to require the full shipped production
-route, including the likelihood/gradient contract fields.
+optimizer matches the mode default for its mode, or
+`--require-production-default-route` to require the full shipped
+likelihood/gradient and optimizer route, including the contract fields.
 
 History rows include aggregate `solver/*` telemetry when the model reports
 solver statistics.  E-adjoint nonconvergence is diagnostic-only: the retained
@@ -573,10 +573,11 @@ fails.  Failed optimization still prints the optimization status line before
 the optimization status and exit before sampling unless the run reached
 `status=converged`; add `--require-final-check-ok` when it should also skip
 sampling unless `final_check_status=ok`; add `--require-mode-default-optimizer`
-when it should reject non-default optimizer routes before optimization or
-sampling; add `--require-production-default-route` when changed optimizer
-settings or stale likelihood/gradient route metadata should also stop the run
-before optimization or sampling. When
+when it should reject optimizers that do not match the selected mode default
+before optimization or sampling; add `--require-production-default-route` when
+changed optimizer-specific settings, stale `final_check_iters_e`, or stale
+likelihood/gradient route metadata should also stop the run before optimization
+or sampling. When
 sampling succeeds, the final status line also reports
 `sampled_families`, `samples`, `xml`, and `sample_out_dir`. Use
 `gpurec sample --checkpoint ...` to sample an existing run.

@@ -2343,6 +2343,10 @@ not edit files.  New or still-open findings from that refresh are:
 - Mode-default artifact gate failures now say they expected the mode default
   optimizer route, avoiding production-route wording on the narrower
   `--require-mode-default-optimizer` check.
+- Current operator docs now use mode-default wording for the narrower
+  `--require-mode-default-optimizer` gate and reserve production-route wording
+  for the full likelihood/gradient plus optimizer route enforced by
+  `--require-production-default-route`.
 
 ## Recommended Next Order
 
