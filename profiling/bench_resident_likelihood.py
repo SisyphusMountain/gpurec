@@ -151,6 +151,15 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-root-wave-size", type=_parse_optional_int, default=None)
     parser.add_argument("--max-dts-partial-rows", type=_parse_optional_int, default=None)
     parser.add_argument(
+        "--shared-loss-batch-streams",
+        type=_parse_positive_int,
+        default=1,
+        help=(
+            "CUDA streams used to evaluate independent shared-theta resident "
+            "batches during loss-only full-dataset passes."
+        ),
+    )
+    parser.add_argument(
         "--materialize-batches",
         choices=("all", "none"),
         default="all",
@@ -448,6 +457,7 @@ def main(argv: list[str] | None = None) -> int:
         max_wave_size=args.max_wave_size,
         max_root_wave_size=args.max_root_wave_size,
         max_dts_partial_rows=args.max_dts_partial_rows,
+        shared_loss_batch_streams=args.shared_loss_batch_streams,
         lazy_preprocess=True,
         prefetch_batches=args.prefetch_batches,
     )
@@ -482,6 +492,7 @@ def main(argv: list[str] | None = None) -> int:
                 "max_wave_size": args.max_wave_size,
                 "max_root_wave_size": args.max_root_wave_size,
                 "max_dts_partial_rows": args.max_dts_partial_rows,
+                "shared_loss_batch_streams": args.shared_loss_batch_streams,
                 "prefetch_batches": args.prefetch_batches,
                 "adaptive_iters": args.adaptive_iters,
                 "convergence_check_interval": args.convergence_check_interval,

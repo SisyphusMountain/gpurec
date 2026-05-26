@@ -424,6 +424,11 @@ def _normalize_gene_solver_kwargs(kwargs: dict[str, Any]) -> dict[str, Any]:
             normalized["prefetch_batches"],
             lazy=lazy_preprocess,
         )
+    if "shared_loss_batch_streams" in normalized:
+        normalized["shared_loss_batch_streams"] = positive_int(
+            "shared_loss_batch_streams",
+            normalized["shared_loss_batch_streams"],
+        )
     adaptive_iters = normalized.get("adaptive_iters", False)
     convergence_check_interval = int(
         normalized.get("convergence_check_interval", 4)
@@ -1308,6 +1313,7 @@ class GeneReconModel(torch.nn.Module):
         pi_adjoint_warmstart: bool = False,
         pi_adjoint_cache_update_mode: str = "immediate",
         pi_fixed_point_relaxation: float = 1.0,
+        shared_loss_batch_streams: int = 1,
         origination_probs: (
             torch.Tensor
             | Sequence[float]
@@ -1385,6 +1391,10 @@ class GeneReconModel(torch.nn.Module):
             "pi_fixed_point_relaxation",
             pi_fixed_point_relaxation,
         )
+        shared_loss_batch_streams = positive_int(
+            "shared_loss_batch_streams",
+            shared_loss_batch_streams,
+        )
         _validate_gene_dtype(dataset.dtype)
 
         # Sanity check: dataset flags must be consistent with mode
@@ -1427,6 +1437,7 @@ class GeneReconModel(torch.nn.Module):
         self.small_family_max_leaves = small_family_max_leaves
         self.lazy_preprocess = lazy_preprocess
         self.prefetch_batches = prefetch_batches
+        self.shared_loss_batch_streams = shared_loss_batch_streams
         self._batched_resident = bool(
             self.lazy_preprocess
             or family_chunk_requested
@@ -2001,20 +2012,83 @@ class GeneReconModel(torch.nn.Module):
                 device=self._dataset.device,
                 dtype=self._dataset.dtype,
             )
-            for batch_idx in range(len(self._batch_specs)):
-                static = self._ensure_batch_static(batch_idx)
-                loss_i = evaluate_resident_no_grad_with_solved_e(
-                    static,
-                    e_solve,
-                    scratch_tensors=scratch_tensors,
-                    origination_denominator=origination_denominator,
-                    prepared_shared_constants=prepared_shared_constants,
+            stream_count = (
+                min(
+                    getattr(self, "shared_loss_batch_streams", 1),
+                    len(self._batch_specs),
                 )
-                loss_i = _validate_scalar_loss("full-batch NLL", loss_i)
-                total_loss = total_loss + loss_i.to(
-                    device=total_loss.device,
-                    dtype=total_loss.dtype,
-                )
+                if self._dataset.device.type == "cuda"
+                else 1
+            )
+            if stream_count <= 1:
+                for batch_idx in range(len(self._batch_specs)):
+                    static = self._ensure_batch_static(batch_idx)
+                    loss_i = evaluate_resident_no_grad_with_solved_e(
+                        static,
+                        e_solve,
+                        scratch_tensors=scratch_tensors,
+                        origination_denominator=origination_denominator,
+                        prepared_shared_constants=prepared_shared_constants,
+                    )
+                    loss_i = _validate_scalar_loss("full-batch NLL", loss_i)
+                    total_loss = total_loss + loss_i.to(
+                        device=total_loss.device,
+                        dtype=total_loss.dtype,
+                    )
+            else:
+                stream_scratch_tensors = [scratch_tensors]
+                for _ in range(1, stream_count):
+                    stream_scratch_tensors.append(
+                        (
+                            torch.empty(
+                                scratch_shape,
+                                device=self._dataset.device,
+                                dtype=self._dataset.dtype,
+                            ),
+                            torch.empty(
+                                scratch_shape,
+                                device=self._dataset.device,
+                                dtype=self._dataset.dtype,
+                            ),
+                        )
+                    )
+                current_stream = torch.cuda.current_stream(self._dataset.device)
+                streams = [
+                    torch.cuda.Stream(device=self._dataset.device)
+                    for _ in range(stream_count)
+                ]
+                for stream in streams:
+                    stream.wait_stream(current_stream)
+                batch_losses: list[torch.Tensor | None] = [
+                    None for _ in self._batch_specs
+                ]
+                for batch_idx in range(len(self._batch_specs)):
+                    static = self._ensure_batch_static(batch_idx)
+                    stream_idx = batch_idx % stream_count
+                    stream = streams[stream_idx]
+                    with torch.cuda.stream(stream):
+                        batch_losses[batch_idx] = (
+                            evaluate_resident_no_grad_with_solved_e(
+                                static,
+                                e_solve,
+                                scratch_tensors=stream_scratch_tensors[
+                                    stream_idx
+                                ],
+                                origination_denominator=origination_denominator,
+                                prepared_shared_constants=prepared_shared_constants,
+                            )
+                        )
+                for stream in streams:
+                    current_stream.wait_stream(stream)
+                for loss_i in batch_losses:
+                    if loss_i is None:
+                        raise RuntimeError("internal error: missing batch loss")
+                    loss_i = _validate_scalar_loss("full-batch NLL", loss_i)
+                    # Preserve the serial fp32 accumulation order.
+                    total_loss = total_loss + loss_i.to(
+                        device=total_loss.device,
+                        dtype=total_loss.dtype,
+                    )
             return total_loss.detach(), None
 
         total_loss = torch.zeros((), device=self._dataset.device, dtype=self._dataset.dtype)

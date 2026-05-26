@@ -50,13 +50,15 @@ Shared-theta no-grad streaming also precomputes the root-origination
 denominator from the single shared E solve instead of recomputing it for every
 resident batch.  It also prepares the shared Pi forward constants and DTS
 parameter metadata once after that E solve and reuses them across the `21`
-resident batch Pi passes.  Non-genewise retained layouts now also skip the
-per-clade `family_idx` tensor that only genewise rate layouts need, reducing
-construction traffic and the retained batch memory footprint without changing
-the shared/global/specieswise likelihood path.  On the local 32-core host, the cold
-benchmark also pins native preprocessing and retained layout generation to `16`
-CPU threads; that is faster for this generated dataset than the default global
-Rayon pool.
+resident batch Pi passes.  The current high-memory route evaluates independent
+shared-theta resident batch Pi/root passes across two CUDA streams, with one
+Pi/Pibar scratch pair per stream.  Non-genewise retained layouts now also skip
+the per-clade `family_idx` tensor that only genewise rate layouts need,
+reducing construction traffic and the retained batch memory footprint without
+changing the shared/global/specieswise likelihood path.  On the local 32-core
+host, the cold benchmark also pins native preprocessing and retained layout
+generation to `16` CPU threads; that is faster for this generated dataset than
+the default global Rayon pool.
 
 Near-reference cold end-to-end command:
 
@@ -71,13 +73,14 @@ env PYTHONDONTWRITEBYTECODE=1 GPUREC_MEMORY_POLICY_RESERVE_GIB=0 \
   --preprocess-cpu-cores 16 \
   --measure loss-only \
   --warmups 0 \
-  --reps 1 \
+  --reps 5 \
   --family-chunk-size 500 \
   --clade-budget 315000 \
   --batch-packing clade_first_fit \
-  --max-wave-size 8192 \
+  --max-wave-size 24576 \
   --max-root-wave-size none \
   --max-dts-partial-rows none \
+  --shared-loss-batch-streams 2 \
   --materialize-batches none \
   --prefetch-batches all
 ```
@@ -86,9 +89,21 @@ Near-reference cold result:
 
 | Stage | Time |
 |---|---:|
-| model init / first resident batch | `0.9268650940502994s` |
-| first `E=7, Pi=4` likelihood pass plus lazy remaining batches | `1.3175705749890767s` |
-| total to first near-reference likelihood | `2.244435669039376s` |
+| model init / first resident batch | `0.9441332590067759s` |
+| first `E=7, Pi=4` likelihood pass plus lazy remaining batches | `1.2984901159652509s` |
+| total to first near-reference likelihood | `2.242623374972027s` |
+
+This high-memory route has the same `2157098.25`-bit loss as the lower-memory
+`8192` route, but uses two shared-loss batch streams and a larger wave cap.
+The five-repetition check measured same-model pass times of
+`1.2984901159652509s`, `1.2709595579653978s`, `1.2699715420021676s`,
+`1.2741599319851957s`, and `1.2750586989568546s`, for a
+`2.2182931909919716s` build-plus-median time.  Peak allocated memory was
+`9.953985691070557 GiB`, and peak reserved memory reached
+`17.11328125 GiB`, still below the older `21.36 GiB` high-memory all-prefetch
+route.  A single follow-up sample at the same settings measured a new
+best-observed `2.240376742964145s`; as before, single cold lows are treated as
+best-observed samples rather than stable medians.
 
 The tied fixed4 route is retained only as a lower-fidelity timing reference: it
 is about as fast, but sits `670.25` bits below the fixed8/fixed128 likelihood.
@@ -200,21 +215,23 @@ samples for `10`, `12`, `14`, `16`, `18`, and `20` threads measured
 `2.33s` to `2.42s` band.  The 16-thread documented setting remains the
 conservative default despite isolated higher-thread lows.
 
-The same rescreen rejected several tempting cold-path changes.  Raising the
-resident prefetch pool from three to four workers slowed the E7/Pi4 route to
-`2.292750907014124s` to first likelihood and increased the reserved-memory
-band, so the three-worker default stayed in place.  Larger wave caps reduced
-the maximum wave count but were only near-ties while reserving more memory:
-single samples at `12288`, `16384`, `24576`, `32768`, and `49152` measured
+The same rescreen rejected several tempting cold-path changes before the
+two-stream route was added.  Raising the resident prefetch pool from three to
+four workers slowed the E7/Pi4 route to `2.292750907014124s` to first
+likelihood and increased the reserved-memory band, so the three-worker default
+stayed in place.  Larger wave caps reduced the maximum wave count but were only
+near-ties with serial batch evaluation while reserving more memory: single
+samples at `12288`, `16384`, `24576`, `32768`, and `49152` measured
 `2.2750234979903325s`, `2.270935578038916s`, `2.2718784059397876s`,
-`2.2779942030319944s`, and `2.2798203129787s`.  A `16384` wave cap with
-chunk sizes `666`, `750`, and `1000` likewise stayed in the `2.27s` band and
-did not change the 21-batch envelope.  Loss-only `neumann_terms=1` kept the
-same loss but measured `2.2792304910253733s` to first likelihood, so the
-documented `N=4` command remains aligned with the split Pi budget.  Adaptive
-fixed-point stopping with an `E=8, Pi=4` cap returned the same loss but was
-slower at `2.4373364209895954s` to the first likelihood because convergence
-checks cost more than they saved on this shape.
+`2.2779942030319944s`, and `2.2798203129787s`.  The later two-stream
+shared-loss route is what made the larger `24576` cap useful.  A `16384` wave
+cap with chunk sizes `666`, `750`, and `1000` likewise stayed in the `2.27s`
+band and did not change the 21-batch envelope.  Loss-only `neumann_terms=1`
+kept the same loss but measured `2.2792304910253733s` to first likelihood, so
+the documented `N=4` command remains aligned with the split Pi budget.
+Adaptive fixed-point stopping with an `E=8, Pi=4` cap returned the same loss
+but was slower at `2.4373364209895954s` to the first likelihood because
+convergence checks cost more than they saved on this shape.
 
 There is also a distinct fast-approximate route below fixed4.  The old tied
 `E=2, Pi=2` point is unusable, but increasing only E makes `Pi=2` useful:
@@ -308,8 +325,8 @@ measured `2.2842069599428214s` with `26` batches and `4.126953125 GiB`
 reserved, while `400000` measured `2.296551337989513s` with `17` batches and
 `6.419921875 GiB` reserved.
 
-The split-budget route also keeps the documented `8192` max-wave cap.  One
-`E=8, Pi=4` cold sweep measured `4096`: `2.3022571059991606s`, `8192`:
+The lower-memory split-budget route keeps the documented `8192` max-wave cap.
+One `E=8, Pi=4` cold sweep measured `4096`: `2.3022571059991606s`, `8192`:
 `2.2856174019398168s`, `12288`: `2.2725106599973515s`, and `16384`:
 `2.267264521040488s`, but paired repeats did not establish a stable cold win.
 A materialized steady check measured `8192` at `1.2848945879959501s` median and
@@ -319,6 +336,19 @@ memory.  The near-tie is not enough to move the default away from the lower
 memory `8192` shape.  A fresh `E=7, Pi=4` sweep kept the same decision:
 `4096` measured `2.295460112974979s` and `12288` measured
 `2.2948793239775114s`, both slower than the documented `8192` route.
+After adding opt-in two-stream shared-loss batch evaluation, a higher-memory
+`24576` wave cap became the fastest observed route: it keeps the same
+`315000` clade budget and `21` batches, but reduces the maximum batch wave
+count to `55` and gives the independent batch streams enough work to overlap.
+Single two-stream samples at `8192`, `12288`, `16384`, `24576`, `32768`, and
+`49152` measured `2.2603182760067284s`, `2.282659809978213s`,
+`2.2527123509789817s`, `2.2310416320106015s`,
+`2.264531149994582s`, and `2.2489085239358246s`.  A five-repetition
+`24576` check then measured `2.242623374972027s` to first likelihood, with
+the same `2157098.25`-bit loss in every repetition.  A stream-count spot check
+at `24576` measured `2.2510914970189333s` with one stream,
+`2.240376742964145s` with two streams, and `2.2452765370253474s` with three
+streams; two streams is the current useful memory/time point.
 
 Split-budget rechecks also kept the root-wave and DTS partial-row caps
 disabled.  With `E=8, Pi=4`, root caps at `8`, `16`, and `32` measured cold
@@ -1269,6 +1299,13 @@ Differences from HOGENOM:
   It mostly fixes allocator reserve rather than raw math time here; HOGENOM's
   accepted route had fewer resident batches and was more gradient/optimizer
   dominated, so this is less route-changing there.
+- The two-stream shared-loss route is another generated-dataset-specific
+  tradeoff.  It spends roughly twice the Pi/Pibar scratch memory to overlap
+  independent no-gradient resident batch Pi/root evaluations.  That is useful
+  for the `21`-batch `test_trees_1000` likelihood-only route, but it is not the
+  same high-memory win HOGENOM saw: HOGENOM's accepted route was dominated by
+  gradient-bearing optimizer work and did not repeatedly stream many
+  independent shared-theta no-grad batches from one E solve.
 - Three-worker lazy prefetch is also a generated-dataset-specific cold-path
   improvement.  `test_trees_1000` still has enough lazy batch-static work during
   the first fixed4 pass to hide with a small worker pool.  The accepted HOGENOM
@@ -1336,11 +1373,11 @@ Differences from HOGENOM:
   HOGENOM route.  The accepted resident warmup already covers the expensive
   general uniform/DTS kernel families well enough; extra one-off warmup launches
   mainly add cold construction noise.
-- Larger clade budgets and larger wave caps do not buy the same kind of win
-  here that the HOGENOM high-memory route found.  Current `330000` to `500000`
-  clade-budget samples reduce the number of resident batches from `21` down to
-  as few as `13`, but fixed4 cold totals stay around `2.32s` to `2.37s` or
-  worse because the larger wave envelopes and allocation behavior offset the
-  lower batch count.  The
-  `clade_first_fit`, `315000` clade-budget, `8192` max-wave policy remains the
-  main measured route while avoiding those shape cliffs.
+- Larger clade budgets still do not buy the same kind of win here that the
+  HOGENOM high-memory route found.  Current `330000` to `500000` clade-budget
+  samples reduce the number of resident batches from `21` down to as few as
+  `13`, but fixed4 cold totals stay around `2.32s` to `2.37s` or worse because
+  the larger wave envelopes and allocation behavior offset the lower batch
+  count.  The new high-memory route changes the wave cap only after adding
+  two-stream shared-loss batch evaluation; it does not rely on HOGENOM's
+  no-family-cap or fewer-batch behavior.

@@ -47,6 +47,19 @@ def _implicit_gradient_static(
     )
 
 
+def test_solver_kwargs_normalize_shared_loss_batch_streams():
+    normalized = api_model._normalize_gene_solver_kwargs(
+        {"shared_loss_batch_streams": 2}
+    )
+
+    assert normalized["shared_loss_batch_streams"] == 2
+
+
+def test_solver_kwargs_reject_invalid_shared_loss_batch_streams():
+    with pytest.raises(ValueError, match="shared_loss_batch_streams"):
+        api_model._normalize_gene_solver_kwargs({"shared_loss_batch_streams": 0})
+
+
 def _model_with_active_state(
     *,
     mode: str,
