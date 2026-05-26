@@ -627,8 +627,8 @@ def _add_run_config_args(parser: argparse.ArgumentParser) -> None:
         "--solver-warmup-loss-patience",
         type=int,
         help=(
-            "Switch genewise batched-LBFGS from warmup to full solvers after "
-            "this many flat warmup steps."
+            "Switch genewise active-batch optimizers from warmup to full "
+            "solvers after this many flat warmup steps."
         ),
     )
     parser.add_argument(
@@ -719,12 +719,12 @@ def _add_run_config_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--fd-adam-warmup-steps",
         type=int,
-        help="Adam steps per resident batch before finite-difference Newton updates.",
+        help="Adam steps per resident batch before Hessian-conditioned genewise updates.",
     )
     parser.add_argument(
         "--fd-hessian-refresh-steps",
         type=int,
-        help="Newton steps between full finite-difference Hessian refreshes.",
+        help="Hessian-conditioned genewise steps between full finite-difference Hessian refreshes.",
     )
     parser.add_argument(
         "--hessian-sgd-normal-fixed-iters-pi",

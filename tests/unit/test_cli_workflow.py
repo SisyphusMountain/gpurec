@@ -43,6 +43,19 @@ def _parser_action_dests(command: str) -> set[str]:
     }
 
 
+def _parser_action(command: str, dest: str) -> argparse.Action:
+    parser = build_parser()
+    subparsers = next(
+        action
+        for action in parser._actions
+        if isinstance(action, argparse._SubParsersAction)
+    )
+    for action in subparsers.choices[command]._actions:
+        if action.dest == dest:
+            return action
+    raise AssertionError(f"{command} has no parser action {dest!r}")
+
+
 def test_run_config_cli_surface_matches_dataclass_fields():
     run_config_fields = {field.name for field in fields(RunConfig)}
     expected_parser_dests = run_config_fields | {"config"}
@@ -212,6 +225,17 @@ def test_cli_forwards_hessian_sgd_solver_controls(tmp_path: Path):
 
     assert config.hessian_sgd_normal_fixed_iters_pi == 12
     assert config.hessian_sgd_normal_neumann_terms == 10
+
+
+def test_cli_help_describes_current_genewise_hessian_sgd_controls():
+    warmup_patience = _parser_action("optimize", "solver_warmup_loss_patience")
+    adam_warmup = _parser_action("optimize", "fd_adam_warmup_steps")
+    hessian_refresh = _parser_action("optimize", "fd_hessian_refresh_steps")
+
+    assert "genewise active-batch optimizers" in str(warmup_patience.help)
+    assert "Hessian-conditioned genewise updates" in str(adam_warmup.help)
+    assert "Hessian-conditioned genewise steps" in str(hessian_refresh.help)
+    assert "batched-LBFGS" not in str(warmup_patience.help)
 
 
 def test_cli_forwards_adagrad_restart_controls(tmp_path: Path):

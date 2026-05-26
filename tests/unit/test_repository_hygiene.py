@@ -1371,6 +1371,28 @@ def test_production_optimization_guide_is_linked_and_documents_routes():
         assert token in normalized
 
 
+def test_second_order_notes_do_not_contradict_production_optimizer_defaults():
+    root = Path(__file__).resolve().parents[2]
+    guide = (root / "docs" / "production-optimization-guide.md").read_text(
+        encoding="utf-8"
+    )
+    notes = (root / "docs" / "second-order-optimization-opportunities.md").read_text(
+        encoding="utf-8"
+    )
+    normalized = " ".join(notes.split())
+
+    assert "second-order-optimization-opportunities.md" in (
+        root / "docs" / "README.md"
+    ).read_text(encoding="utf-8")
+    assert "`hessian-sgd` for genewise batches" in normalized
+    assert "`adagrad-restarts` for specieswise runs" in normalized
+    assert "explicit `optimizer=batched-lbfgs`" in normalized
+    assert "genewise runs to `hessian-sgd`" in normalized
+    assert "specieswise runs to `adagrad-restarts`" in normalized
+    assert "to the batched optimizer" not in normalized
+    assert "`hessian-sgd`" in guide
+
+
 def test_output_artifact_reference_is_linked_and_documents_contract():
     root = Path(__file__).resolve().parents[2]
     project_readme = (root / "README.md").read_text(encoding="utf-8")
