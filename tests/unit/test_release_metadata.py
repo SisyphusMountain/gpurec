@@ -1059,6 +1059,11 @@ def test_readme_scopes_example_config_to_source_artifacts():
     assert "checked JSON configs and a tiny\nAleRax-style fixture" in readme
     assert "examples/minimal-run-config.json" in readme
     assert "examples/specieswise-adagrad-restarts-config.json" in readme
+    assert (
+        "gpurec validate-config --config examples/minimal-run-config.json "
+        "--check-preprocess"
+    ) in readme
+    assert "gpurec optimize --config examples/minimal-run-config.json" not in readme
     assert "examples/README.md" in readme
     assert "gpurec config-template --mode genewise --output run.json" in readme
     assert (

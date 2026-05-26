@@ -217,7 +217,7 @@ CLI command shape is:
 ```bash
 gpurec validate-config --config examples/minimal-run-config.json
 gpurec validate-config --config examples/specieswise-adagrad-restarts-config.json
-gpurec optimize --config examples/minimal-run-config.json
+gpurec validate-config --config examples/minimal-run-config.json --check-preprocess
 gpurec checkpoint-info --checkpoint output_gpurec/checkpoints/latest.pt
 ```
 
