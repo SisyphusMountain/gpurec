@@ -143,4 +143,6 @@ the production default for the selected sharing mode.
 For automation, `gpurec optimize`, `gpurec run`, and `gpurec summary-info`
 support `--require-converged`. Add `--require-final-check-ok` when the command
 should also fail unless final high-fidelity likelihood/gradient validation
-reports `final_check_status=ok`.
+reports `final_check_status=ok`. Add `--require-mode-default-optimizer` to
+preflight, run, or artifact-inspection commands when production automation must
+reject non-default optimizer routes for the selected mode.

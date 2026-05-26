@@ -264,6 +264,10 @@ instead of relying on a later `summary-info` check.
 Add `--require-final-check-ok` to `gpurec optimize`, `gpurec summary-info`, or
 `gpurec run` when the shell command should also fail unless the final
 high-fidelity likelihood/gradient validation reports `final_check_status=ok`.
+Add `--require-mode-default-optimizer` to `gpurec validate-config`,
+`gpurec optimize`, `gpurec run`, `gpurec summary-info`, or
+`gpurec checkpoint-info` when the pipeline should fail unless the resolved route
+uses the production optimizer default for the selected mode.
 For combined optimize-and-sample workflows, add
 `gpurec run --require-converged` when sampling should be skipped unless
 optimization reached `status=converged`.

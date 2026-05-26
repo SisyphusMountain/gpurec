@@ -106,7 +106,10 @@ the final E-adjoint solver diagnostics
 Add `--require-converged` to `gpurec optimize` when the command should print
 the same status line and then exit nonzero unless the optimization status is
 `converged`. Add `--require-final-check-ok` when it should also require
-`final_check_status=ok` before returning success.
+`final_check_status=ok` before returning success. Add
+`--require-mode-default-optimizer` to `gpurec validate-config`,
+`gpurec optimize`, or `gpurec run` when automation should fail unless the
+resolved optimizer matches the production default for the selected mode.
 Text and path values that contain whitespace or control characters are emitted
 as JSON strings with spaces escaped as `\u0020` so each status line remains one
 record.
@@ -120,7 +123,9 @@ gpurec summary-info --summary output_gpurec/summary.json
 Add `--require-converged` when the command should print the same summary line
 and then exit nonzero unless `summary.status` is `converged`. Add
 `--require-final-check-ok` when downstream automation should also require
-`summary.final_check_status` to be `ok`.
+`summary.final_check_status` to be `ok`. Add
+`--require-mode-default-optimizer` when downstream automation should reject
+summaries that do not prove the mode default optimizer was used.
 
 `theta_final.pt` is intentionally smaller than a checkpoint. Tooling that needs
 to restore a model, sample reconciliations, or verify family/species ordering
@@ -152,7 +157,8 @@ When the checkpoint's saved last row contains final validation metrics,
 `last_solver_e_adjoint_rel_res_max` when those metrics were recorded in the
 checkpoint's last row. Add `--require-final-check-ok` when
 automation should fail unless the checkpoint last row has
-`optimizer/final_check_status=ok`.
+`optimizer/final_check_status=ok`; add `--require-mode-default-optimizer` when
+the checkpoint route must use the production optimizer default for its mode.
 
 ## Sampling Artifacts
 
@@ -167,7 +173,9 @@ optimization fails, `gpurec run` prints the optimization status fields and exits
 without sampling fields. With `--require-converged`, `gpurec run` also prints
 the optimization status fields and exits before sampling when the optimization
 status is anything other than `converged`. With `--require-final-check-ok`, it
-also exits before sampling unless `final_check_status=ok`.
+also exits before sampling unless `final_check_status=ok`. With
+`--require-mode-default-optimizer`, it exits before optimization or sampling
+unless the resolved optimizer is the production default for the selected mode.
 
 | Path | Contents |
 |---|---|

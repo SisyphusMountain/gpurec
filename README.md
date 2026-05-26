@@ -404,7 +404,10 @@ shell pipeline should print the same optimization status line and then exit
 nonzero unless the run reached `status=converged`. Add
 `--require-final-check-ok` when the same pipeline should also fail unless the
 final high-fidelity likelihood/gradient validation reports
-`final_check_status=ok`.
+`final_check_status=ok`. Add `--require-mode-default-optimizer` to
+`gpurec validate-config`, `gpurec optimize`, or `gpurec run` when production
+automation should fail unless the resolved optimizer is the mode default
+(`hessian-sgd` for genewise, `adagrad-restarts` for specieswise).
 
 See [`docs/output-artifacts.md`](docs/output-artifacts.md) for the output
 artifact contract, including the normalized config snapshot, history fields,
@@ -415,14 +418,17 @@ final summary status, likelihood/gradient diagnostics, and route metadata
 without opening JSON by hand. Add `--require-converged` when a shell pipeline
 or workflow manager should fail unless the summary status is `converged`, and
 add `--require-final-check-ok` when it should also require
-`final_check_status=ok`.
+`final_check_status=ok`. Add `--require-mode-default-optimizer` to fail unless
+the summary proves the run used the production default optimizer for its mode.
 Use `gpurec checkpoint-info --checkpoint output_gpurec/checkpoints/latest.pt`
 to inspect checkpoint progress, status, optimizer route, and last
 likelihood/gradient diagnostics without constructing the CUDA likelihood model.
 When the checkpoint's last row contains final validation metrics, the command
 also prints `last_final_check_status` and the matching source/reason and
 loss/gradient delta fields. Add `--require-final-check-ok` when automation
-should fail unless that checkpoint row reports `optimizer/final_check_status=ok`.
+should fail unless that checkpoint row reports `optimizer/final_check_status=ok`;
+add `--require-mode-default-optimizer` to require a checkpoint route whose
+optimizer matches the production default for its mode.
 
 History rows include aggregate `solver/*` telemetry when the model reports
 solver statistics.  E-adjoint nonconvergence is diagnostic-only: the retained

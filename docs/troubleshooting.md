@@ -58,6 +58,10 @@ should return nonzero after a `not_converged` status.
 Use `--require-final-check-ok` with `gpurec optimize`, `gpurec summary-info`,
 or `gpurec run` when automation should also fail unless the final validation
 reports `final_check_status=ok`.
+Use `--require-mode-default-optimizer` with `gpurec validate-config`,
+`gpurec optimize`, `gpurec run`, `gpurec summary-info`, or
+`gpurec checkpoint-info` when a production pipeline should reject explicit
+optimizer overrides and stay on the mode default route.
 For combined optimize-and-sample pipelines, use `gpurec run --require-converged`
 to print the optimization status and stop before sampling unless optimization
 converged.

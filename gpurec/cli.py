@@ -62,6 +62,95 @@ def _exit_unless_final_check_ok(
     parser.exit(status=1, message=f"{message}\n")
 
 
+def _add_require_mode_default_optimizer_arg(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--require-mode-default-optimizer",
+        action="store_true",
+        help=(
+            "Fail unless the resolved optimizer matches the production default "
+            "for the selected mode."
+        ),
+    )
+
+
+def _route_with_mode_default_audit_fields(route: dict[str, Any]) -> dict[str, Any]:
+    audited = dict(route)
+    if audited.get("mode_default_optimizer") is None and audited.get("mode") is not None:
+        try:
+            from gpurec.workflow.config import default_optimizer_for_mode
+
+            audited["mode_default_optimizer"] = default_optimizer_for_mode(
+                str(audited["mode"])
+            )
+        except _EXPECTED_WORKFLOW_ERRORS:
+            pass
+    if (
+        audited.get("uses_mode_default_optimizer") is None
+        and audited.get("optimizer") is not None
+        and audited.get("mode_default_optimizer") is not None
+    ):
+        audited["uses_mode_default_optimizer"] = (
+            audited["optimizer"] == audited["mode_default_optimizer"]
+        )
+    return audited
+
+
+def _mode_default_optimizer_gate_message(
+    subject: str,
+    route: dict[str, Any],
+    *,
+    action: str | None = None,
+) -> str:
+    audited = _route_with_mode_default_audit_fields(route)
+    message = (
+        f"{subject} optimizer is {audited.get('optimizer')!r}; expected mode "
+        f"default {audited.get('mode_default_optimizer')!r} for mode "
+        f"{audited.get('mode')!r}"
+    )
+    if action is not None:
+        message = f"{message}; {action}"
+    return message
+
+
+def _require_config_mode_default_optimizer(
+    parser: argparse.ArgumentParser,
+    config: Any,
+) -> None:
+    from gpurec.workflow.config import effective_route_metadata
+
+    route = effective_route_metadata(config)
+    if route.get("uses_mode_default_optimizer") is not True:
+        parser.error(
+            _mode_default_optimizer_gate_message(
+                "config",
+                route,
+                action="use optimizer=auto or the mode default optimizer",
+            )
+        )
+
+
+def _exit_unless_mode_default_optimizer(
+    parser: argparse.ArgumentParser,
+    route: dict[str, Any],
+    *,
+    subject: str,
+) -> None:
+    audited = _route_with_mode_default_audit_fields(route)
+    if audited.get("uses_mode_default_optimizer") is True:
+        return
+    parser.exit(
+        status=1,
+        message=(
+            _mode_default_optimizer_gate_message(
+                subject,
+                audited,
+                action="expected the production default optimizer route",
+            )
+            + "\n"
+        ),
+    )
+
+
 def _optional_metric_text(name: str, value: object) -> str:
     if value is None:
         return f"{name}=null"
@@ -544,14 +633,19 @@ def _validate_summary_path(summary: Path) -> None:
 def _checkpoint_route_metadata(payload: dict[str, Any]) -> tuple[dict[str, Any], str]:
     route = payload.get("route_metadata")
     if isinstance(route, dict):
-        return route, "checkpoint"
+        return _route_with_mode_default_audit_fields(route), "checkpoint"
     config_data = payload.get("config")
     if not isinstance(config_data, dict):
         return {}, "missing"
     try:
         from gpurec.workflow.config import RunConfig, effective_route_metadata
 
-        return effective_route_metadata(RunConfig.from_dict(config_data)), "config"
+        return (
+            _route_with_mode_default_audit_fields(
+                effective_route_metadata(RunConfig.from_dict(config_data))
+            ),
+            "config",
+        )
     except _EXPECTED_WORKFLOW_ERRORS:
         return {}, "missing"
 
@@ -1380,6 +1474,7 @@ def build_parser() -> argparse.ArgumentParser:
         description="Optimize D/T/L likelihood parameters from AleRax-style family inputs.",
     )
     _add_run_config_args(optimize_parser)
+    _add_require_mode_default_optimizer_arg(optimize_parser)
     optimize_parser.add_argument(
         "--require-converged",
         action="store_true",
@@ -1408,6 +1503,7 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     _add_run_config_args(validate_parser)
+    _add_require_mode_default_optimizer_arg(validate_parser)
     validate_parser.add_argument(
         "--check-preprocess",
         action="store_true",
@@ -1442,6 +1538,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_run_config_args(run_parser)
     _add_sampling_args(run_parser, checkpoint_required=False, include_checkpoint=False)
+    _add_require_mode_default_optimizer_arg(run_parser)
     run_parser.add_argument("--checkpoint", type=Path, help=argparse.SUPPRESS)
     run_parser.add_argument(
         "--require-converged",
@@ -1494,6 +1591,7 @@ def build_parser() -> argparse.ArgumentParser:
             "checkpoint last row has optimizer/final_check_status ok."
         ),
     )
+    _add_require_mode_default_optimizer_arg(checkpoint_info_parser)
     checkpoint_info_parser.set_defaults(_command_parser=checkpoint_info_parser)
 
     summary_info_parser = sub.add_parser(
@@ -1526,6 +1624,7 @@ def build_parser() -> argparse.ArgumentParser:
             "summary.final_check_status is ok."
         ),
     )
+    _add_require_mode_default_optimizer_arg(summary_info_parser)
     summary_info_parser.set_defaults(_command_parser=summary_info_parser)
 
     template_parser = sub.add_parser(
@@ -1592,6 +1691,8 @@ def main(argv: list[str] | None = None) -> None:
     if args.command == "optimize":
         try:
             config = _run_config_from_args(args)
+            if args.require_mode_default_optimizer:
+                _require_config_mode_default_optimizer(command_parser, config)
             _preflight_run_config(config)
         except _EXPECTED_WORKFLOW_ERRORS as exc:
             command_parser.error(str(exc))
@@ -1625,6 +1726,8 @@ def main(argv: list[str] | None = None) -> None:
     if args.command == "validate-config":
         try:
             config = _run_config_from_args(args)
+            if args.require_mode_default_optimizer:
+                _require_config_mode_default_optimizer(command_parser, config)
             summary = _preflight_run_config(
                 config,
                 check_preprocess=args.check_preprocess,
@@ -1702,6 +1805,13 @@ def main(argv: list[str] | None = None) -> None:
         except _EXPECTED_WORKFLOW_ERRORS as exc:
             _exit_runtime_error(command_parser, _sampling_error_message(exc))
         print(_checkpoint_info_text(checkpoint, payload), flush=True)
+        if args.require_mode_default_optimizer:
+            route, _route_source = _checkpoint_route_metadata(payload)
+            _exit_unless_mode_default_optimizer(
+                command_parser,
+                route,
+                subject="checkpoint",
+            )
         if args.require_final_check_ok:
             _exit_unless_final_check_ok(
                 command_parser,
@@ -1719,6 +1829,12 @@ def main(argv: list[str] | None = None) -> None:
         except _EXPECTED_WORKFLOW_ERRORS as exc:
             command_parser.error(str(exc))
         print(_summary_info_text(summary, payload), flush=True)
+        if args.require_mode_default_optimizer:
+            _exit_unless_mode_default_optimizer(
+                command_parser,
+                payload,
+                subject="summary",
+            )
         if args.require_converged and payload.get("status") != "converged":
             command_parser.exit(
                 status=1,
@@ -1751,6 +1867,8 @@ def main(argv: list[str] | None = None) -> None:
             )
         try:
             run_config = _run_config_from_args(args)
+            if args.require_mode_default_optimizer:
+                _require_config_mode_default_optimizer(command_parser, run_config)
             _preflight_run_config(run_config)
             _validate_run_sampling_args(args, run_config)
         except _EXPECTED_WORKFLOW_ERRORS as exc:

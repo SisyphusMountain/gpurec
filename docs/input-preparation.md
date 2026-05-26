@@ -100,6 +100,7 @@ Run the lightweight config and file-reference validation first:
 
 ```bash
 gpurec validate-config --config run.json
+gpurec validate-config --config run.json --require-mode-default-optimizer
 ```
 
 Then ask the retained Rust preprocessing parser to read the selected species

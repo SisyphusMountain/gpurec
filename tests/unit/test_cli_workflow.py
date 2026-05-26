@@ -64,10 +64,20 @@ def test_run_config_cli_surface_matches_dataclass_fields():
     assert set(_run_config_cli_override_fields()) == run_config_fields
     assert not hasattr(gpurec_cli, "_RUN_CONFIG_CLI_OVERRIDE_FIELDS")
     assert _parser_action_dests("optimize") == (
-        expected_parser_dests | {"require_converged", "require_final_check_ok"}
+        expected_parser_dests
+        | {
+            "require_converged",
+            "require_final_check_ok",
+            "require_mode_default_optimizer",
+        }
     )
     assert _parser_action_dests("validate-config") == (
-        expected_parser_dests | {"check_preprocess", "require_cuda_backward_ready"}
+        expected_parser_dests
+        | {
+            "check_preprocess",
+            "require_cuda_backward_ready",
+            "require_mode_default_optimizer",
+        }
     )
     assert _parser_action_dests("run") == expected_parser_dests | {
         "sample_out_dir",
@@ -79,16 +89,19 @@ def test_run_config_cli_surface_matches_dataclass_fields():
         "backtrack_binary",
         "require_converged",
         "require_final_check_ok",
+        "require_mode_default_optimizer",
     }
     assert _parser_action_dests("backtrack-check") == {"backtrack_binary"}
     assert _parser_action_dests("checkpoint-info") == {
         "checkpoint",
         "require_final_check_ok",
+        "require_mode_default_optimizer",
     }
     assert _parser_action_dests("summary-info") == {
         "summary",
         "require_converged",
         "require_final_check_ok",
+        "require_mode_default_optimizer",
     }
     assert _parser_action_dests("config-template") == {
         "mode",
@@ -667,7 +680,14 @@ def test_cli_validate_config_reports_selected_family_references(
         encoding="utf-8",
     )
 
-    main(["validate-config", "--config", str(config_path)])
+    main(
+        [
+            "validate-config",
+            "--config",
+            str(config_path),
+            "--require-mode-default-optimizer",
+        ]
+    )
 
     captured = capsys.readouterr()
     basis = "hogenom_and_" + "test_trees_" + "1000"
@@ -709,6 +729,31 @@ def test_cli_validate_config_reports_selected_family_references(
         (tmp_path / "run outputs").resolve(),
     ) in captured.out
     assert captured.err == ""
+
+
+def test_cli_validate_config_require_mode_default_optimizer_rejects_override(
+    tmp_path: Path,
+    capsys,
+):
+    write_tiny_alerax_inputs(tmp_path)
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(
+            _minimal_workflow_cli_args("validate-config", tmp_path)
+            + [
+                "--optimizer",
+                "adam",
+                "--require-mode-default-optimizer",
+            ]
+        )
+
+    captured = capsys.readouterr()
+    assert exc_info.value.code == 2
+    assert "config optimizer is 'adam'" in captured.err
+    assert "expected mode default 'hessian-sgd' for mode 'genewise'" in captured.err
+    assert "use optimizer=auto or the mode default optimizer" in captured.err
+    assert "valid_config=true" not in captured.out
+    assert "Traceback" not in captured.err
 
 
 def test_cli_validate_config_reports_hessian_sgd_normal_solver_overrides(
@@ -1571,6 +1616,66 @@ def test_cli_checkpoint_info_require_final_check_ok_fails_after_printing_checkpo
     assert "Traceback" not in captured.err
 
 
+def test_cli_checkpoint_info_require_mode_default_optimizer_fails_after_printing(
+    tmp_path: Path,
+    capsys,
+):
+    class FakeModel:
+        theta = torch.nn.Parameter(torch.zeros(1, 3))
+        family_names = ["fam0"]
+        species_names = ["sp0", "sp1"]
+
+    config = RunConfig(
+        species_tree=tmp_path / "sp.nwk",
+        families_file=tmp_path / "families.txt",
+        out_dir=tmp_path / "out",
+        mode="genewise",
+        optimizer="adam",
+        device="cpu",
+    )
+    checkpoint = tmp_path / "latest.pt"
+    save_checkpoint(
+        checkpoint,
+        config=config,
+        model=FakeModel(),
+        optimizer=None,
+        optimizer_phase="adam",
+        step=3,
+        next_step=4,
+        status={
+            "status": "running",
+            "reason": "checkpoint_interval",
+            "best_step": 3,
+            "best_nll_bits": 10.0,
+        },
+        row={
+            "optimizer/phase": "adam",
+            "likelihood/data_nll_bits": 10.0,
+            "grad/inf": 0.1,
+        },
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(
+            [
+                "checkpoint-info",
+                "--checkpoint",
+                str(checkpoint),
+                "--require-mode-default-optimizer",
+            ]
+        )
+
+    captured = capsys.readouterr()
+    assert exc_info.value.code == 1
+    assert "optimizer=adam" in captured.out
+    assert "mode_default_optimizer=hessian-sgd" in captured.out
+    assert "uses_mode_default_optimizer=false" in captured.out
+    assert "checkpoint optimizer is 'adam'" in captured.err
+    assert "expected mode default 'hessian-sgd' for mode 'genewise'" in captured.err
+    assert "usage:" not in captured.err
+    assert "Traceback" not in captured.err
+
+
 def test_cli_checkpoint_info_raw_theta_error_suggests_real_checkpoints(
     tmp_path: Path,
     capsys,
@@ -1754,6 +1859,43 @@ def test_cli_summary_info_reports_adagrad_restart_route_fields(
     assert "adagrad_restart_total_steps=125" in captured.out
     assert "adagrad_restart_final_check_iters=128" in captured.out
     assert "solver_warmup_iters" not in captured.out
+
+
+def test_cli_summary_info_require_mode_default_optimizer_fails_after_printing(
+    tmp_path: Path,
+    capsys,
+):
+    summary = tmp_path / "summary.json"
+    summary.write_text(
+        json.dumps(
+            {
+                "status": "converged",
+                "reason": "loss_change_patience",
+                "mode": "genewise",
+                "optimizer": "adam",
+                "final_nll_bits": 12.0,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(
+            [
+                "summary-info",
+                "--summary",
+                str(summary),
+                "--require-mode-default-optimizer",
+            ]
+        )
+
+    captured = capsys.readouterr()
+    assert exc_info.value.code == 1
+    assert "optimizer=adam" in captured.out
+    assert "summary optimizer is 'adam'" in captured.err
+    assert "expected mode default 'hessian-sgd' for mode 'genewise'" in captured.err
+    assert "usage:" not in captured.err
+    assert "Traceback" not in captured.err
 
 
 def test_cli_summary_info_require_converged_accepts_converged_summary(
@@ -2212,6 +2354,34 @@ def test_cli_optimize_require_converged_accepts_converged_result(
     assert "final_nll_bits=10.000000" in captured.out
     assert "best_nll_bits=9.500000" in captured.out
     assert captured.err == ""
+
+
+def test_cli_optimize_require_mode_default_optimizer_rejects_override_before_run(
+    tmp_path: Path,
+    capsys,
+    monkeypatch,
+):
+    def unexpected_optimize(config):
+        raise AssertionError("optimize should not be called")
+
+    monkeypatch.setattr("gpurec.cli.optimize", unexpected_optimize)
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(
+            _minimal_workflow_cli_args("optimize", tmp_path)
+            + [
+                "--optimizer",
+                "adam",
+                "--require-mode-default-optimizer",
+            ]
+        )
+
+    captured = capsys.readouterr()
+    assert exc_info.value.code == 2
+    assert "config optimizer is 'adam'" in captured.err
+    assert "expected mode default 'hessian-sgd' for mode 'genewise'" in captured.err
+    assert "use optimizer=auto or the mode default optimizer" in captured.err
+    assert "Traceback" not in captured.err
 
 
 def test_cli_optimize_require_converged_fails_after_printing_status(
@@ -2754,6 +2924,39 @@ def test_cli_run_require_final_check_ok_refuses_unchecked_sampling(
     assert "Traceback" not in captured.err
 
 
+def test_cli_run_require_mode_default_optimizer_rejects_override_before_run(
+    tmp_path: Path,
+    capsys,
+    monkeypatch,
+):
+    def unexpected_optimize(config):
+        raise AssertionError("optimize should not be called")
+
+    def unexpected_sample(config):
+        raise AssertionError("sample should not be called")
+
+    monkeypatch.setattr("gpurec.cli.optimize", unexpected_optimize)
+    monkeypatch.setattr("gpurec.cli.sample", unexpected_sample)
+    monkeypatch.setattr("gpurec.cli._ensure_backtracking_available", lambda _: None)
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(
+            _minimal_workflow_cli_args("run", tmp_path)
+            + [
+                "--optimizer",
+                "adam",
+                "--require-mode-default-optimizer",
+            ]
+        )
+
+    captured = capsys.readouterr()
+    assert exc_info.value.code == 2
+    assert "config optimizer is 'adam'" in captured.err
+    assert "expected mode default 'hessian-sgd' for mode 'genewise'" in captured.err
+    assert "sampled_families" not in captured.out
+    assert "Traceback" not in captured.err
+
+
 def test_cli_run_rejects_checkpoint_argument_without_traceback(capsys):
     with pytest.raises(SystemExit) as exc_info:
         main(["run", "--checkpoint", "existing.pt"])
@@ -2779,6 +2982,7 @@ def test_cli_run_help_omits_checkpoint_argument(capsys):
     assert "--resume-from" in captured.out
     assert "--require-converged" in captured.out
     assert "--require-final-check-ok" in captured.out
+    assert "--require-mode-default-optimizer" in captured.out
     assert "--backtrack-binary" in captured.out
     assert "GPUREC_BACKTRACK_BIN" in captured.out
 
@@ -2849,6 +3053,7 @@ def test_cli_optimize_help_describes_config_and_path_inputs(capsys):
     assert "supported production optimization route" in captured.out
     assert "--require-converged" in captured.out
     assert "--require-final-check-ok" in captured.out
+    assert "--require-mode-default-optimizer" in captured.out
 
 
 def test_cli_sample_help_describes_checkpoint_and_backtracking(capsys):

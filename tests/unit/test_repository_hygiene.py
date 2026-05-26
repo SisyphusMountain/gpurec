@@ -1433,6 +1433,7 @@ def test_project_readme_documents_gpurec_run_end_to_end_workflow():
     assert "optimizer-specific route fields" in normalized
     assert "Add `--require-converged` to `gpurec optimize`" in project_readme
     assert "`--require-final-check-ok`" in project_readme
+    assert "`--require-mode-default-optimizer`" in project_readme
     assert "`final_check_status=ok`" in project_readme
     assert "`final_grad_inf`" in project_readme
     assert "`final_projected_grad_inf`" in project_readme
@@ -1523,6 +1524,7 @@ def test_production_optimization_guide_is_linked_and_documents_routes():
         "`final_check_iters`",
         "optimizer-specific route fields",
         "Hessian-SGD warmup/refresh/normal-stage solver controls",
+        "`--require-mode-default-optimizer`",
         "HOGENOM",
         "`tests/data/test_trees_1000`",
         "likelihood/gradient parity",
@@ -1674,6 +1676,7 @@ def test_output_artifact_reference_is_linked_and_documents_contract():
         "gpurec summary-info --summary output_gpurec/summary.json",
         "`--require-converged`",
         "`--require-final-check-ok`",
+        "`--require-mode-default-optimizer`",
         "`final_check_status=ok`",
         "gpurec optimize` when the command should print",
         "gpurec checkpoint-info --checkpoint output_gpurec/checkpoints/latest.pt",
@@ -1716,6 +1719,7 @@ def test_troubleshooting_guide_documents_operator_failure_triage():
         "gpurec summary-info --summary output/summary.json",
         "`--require-converged`",
         "`--require-final-check-ok`",
+        "`--require-mode-default-optimizer`",
         "gpurec optimize --require-converged",
         "gpurec run --require-converged",
         "`final_check_status=ok`",
@@ -1759,6 +1763,7 @@ def test_input_preparation_guide_documents_alerax_data_contract():
         "relative to the JSON config file",
         "duplicate gene assignments",
         "gpurec validate-config --config run.json --check-preprocess",
+        "gpurec validate-config --config run.json --require-mode-default-optimizer",
         "`cuda_backward_ready`",
         "`--require-cuda-backward-ready`",
         "`optimizer=auto`",
