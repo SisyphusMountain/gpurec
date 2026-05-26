@@ -72,20 +72,22 @@ Cold result:
 
 | Stage | Time |
 |---|---:|
-| model init / first resident batch | `0.9497040830319747s` |
-| first fixed4 likelihood pass plus lazy remaining batches | `1.342593270004727s` |
-| total to first fixed4 likelihood | `2.2922973530367017s` |
+| model init / first resident batch | `0.9331823280081153s` |
+| first fixed4 likelihood pass plus lazy remaining batches | `1.3379031700314954s` |
+| total to first fixed4 likelihood | `2.2710854980396107s` |
 
 This current scratch-reuse sample is effectively tied with the previous best
-fixed4 total (`2.29227496200474s`) while reducing peak reserved CUDA memory in
-the same lazy `--prefetch-batches all` route from about `21.36 GiB` to
-`5.1640625 GiB`.
+fixed4 timing band while reducing peak reserved CUDA memory in the same lazy
+`--prefetch-batches all` route from about `21.36 GiB` to `5.1640625 GiB`.
+Repeats after the `2.2710854980396107s` low sample measured
+`2.2904644059599377s`, `2.285656556021422s`, and `2.329664205026347s`, so the
+new low is best-observed rather than a new stable median.
 
 Cold first-pass fidelity samples with the same construction path:
 
 | Pi/E/Neumann budget | total to first likelihood | loss bits | delta vs fixed128 |
 |---:|---:|---:|---:|
-| 4 | `2.2922973530367017s` | `2156427.0` | `670.25` |
+| 4 | `2.2710854980396107s` | `2156427.0` | `670.25` |
 | 6 | `2.788982933969237s` | `2157095.0` | `2.25` |
 | 8 | `3.3188985750311986s` | `2157097.25` | `0.0` |
 
@@ -119,13 +121,15 @@ direct fixed4/fixed6 cold samples improved to the rows above.
 
 Reusing the root-loss Pi/Pibar scratch tensors changed the memory behavior more
 than the timing.  Current fixed4 lazy samples measured `2.29978136200225s`,
-`2.3235359659884125s`, `2.3087819020147435s`, and
-`2.2922973530367017s`; all reserved about `5.16 GiB` instead of the previous
+`2.3235359659884125s`, `2.3087819020147435s`, `2.2922973530367017s`,
+`2.2839784509851597s`, `2.2908750560018234s`,
+`2.2710854980396107s`, `2.2995317989843898s`, and
+`2.299258347018622s`; all reserved about `5.16 GiB` instead of the previous
 `21.36 GiB` high-memory all-prefetch route.  In a one-sample prefetch-depth
 check after this change, `--prefetch-batches none` was still slower
 (`2.543537666031625s`), while depth `4` (`2.2950046080513857s`) and `all`
-(`2.2922973530367017s`) were essentially tied in memory and timing, with `all`
-keeping the best sample.
+(`2.2922973530367017s`) were essentially tied in memory and timing.  A later
+same-route `16`-core repeat produced the current `2.2710854980396107s` low.
 
 Before removing the unused DTS compile-shape arguments from the eq1 and ge2
 kernel signatures, the retained-layout fixed4 route took about `2.55s` to the
