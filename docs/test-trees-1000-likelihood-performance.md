@@ -361,7 +361,8 @@ Measured routes:
 | A + L-BFGS-B tail, `lr=0.5` | Resume A, `lbfgsb`, `lr=0.5`, 20 L-BFGS-B steps | `548.2928214290296s` combined | `1699559.875` validated | `4.012872695922852` validated | The workflow summary reported `1699560.0` bits, while manual fixed8, fixed16, and fixed32 validation all returned `1699559.875` bits. |
 | A + L-BFGS-B tail, fast best | Resume A, `lbfgsb`, `lr=0.6`, 20 L-BFGS-B steps | `549.3528225499904s` combined | `1699550.875` validated | `5.094226837158203` validated | Fast validated route, `0.375` bits lower than the old long B-continuation tail in about `42%` of its wall time. Fixed8, fixed16, and fixed32 validation all returned `1699550.875` bits. |
 | A + L-BFGS-B continuation | Continue the `lr=0.6` tail for 10 more L-BFGS-B steps | `746.7829839309561s` combined | `1699505.5` validated | `9.706039428710938` validated | Fixed8, fixed16, and fixed32 validation all returned `1699505.5` bits, but the final accepted step still improved by `8.625` bits. |
-| A + longer L-BFGS-B continuation, current best | Continue the `lr=0.6` tail for 20 more L-BFGS-B steps total | `944.7325820129481s` combined | `1699470.25` validated | `3.031355857849121` validated | Best validated objective observed so far. Fixed8, fixed16, and fixed32 validation all returned `1699470.25` bits; the final two optimizer steps improved by only `0.375` bits each. |
+| A + longer L-BFGS-B continuation | Continue the `lr=0.6` tail for 20 more L-BFGS-B steps total | `944.7325820129481s` combined | `1699470.25` validated | `3.031355857849121` validated | Segmented 20+10+10-step measurement. Fixed8, fixed16, and fixed32 validation all returned `1699470.25` bits; the final two optimizer steps improved by only `0.375` bits each. |
+| A + uninterrupted L-BFGS-B tail, current best | Resume A, `lbfgsb`, `lr=0.6`, 40 L-BFGS-B steps | `911.1706395330257s` combined | `1699469.5` validated | `2.8489274978637695` | Best validated objective observed so far. Fixed8, fixed16, and fixed32 validation all returned `1699469.5` bits; avoiding two resume/final-eval cycles saved about `33.56s` versus the segmented route. |
 | A + L-BFGS-B tail, rejected high step | Resume A, `lbfgsb`, `lr=0.7`, 20 L-BFGS-B steps | `548.9326881880406s` combined | `1699557.125` | `13.341646194458008` | Upper-bracket reject: worse than `lr=0.6` by `6.25` bits with a much larger residual, so no manual fixed16/fixed32 validation was run. |
 | A + longer L-BFGS-B tail | Resume A, `lbfgsb`, `lr=0.1`, 30 L-BFGS-B steps total | `745.2935658869683s` combined | `1699746.125` | `20.155467987060547` | Longer `lr=0.1` tail is slower and worse than the 20-step `lr=0.3` tail. Fixed8, fixed16, and fixed32 validation all returned `1699746.125` bits. |
 | B + early L-BFGS-B tail | Resume B, `lbfgsb`, `lr=0.1`, 20 L-BFGS-B steps | `786.3332051589969s` combined | `1700015.5` | `27.92882537841797` | Later switch is slower and slightly worse than the 30-step tail from A. |
@@ -379,12 +380,17 @@ The fastest validated endpoint that beats the old long B-continuation tail is
 the 22-step route A followed by 20 L-BFGS-B steps at `lr=0.6`: it lands at
 `1699550.875` bits in `549.35s`, `0.375` bits below the previous best long
 B-continuation tail while saving about `758.79s`.  Continuing that same L-BFGS-B
-state for 10 more steps reaches `1699505.5` bits in `746.78s`, and continuing
-for 20 more steps reaches the best likelihood observed so far, `1699470.25`
-bits, in `944.73s`.  This is still not a formal optimum, but it is the first
-point in this sequence where the marginal objective movement dropped sharply:
-the final two optimizer steps improved by only `0.375` bits each, with
-projected-gradient infinity norm `3.03136`.
+state for 10 more steps reaches `1699505.5` bits in `746.78s`.  Running the
+full 40-step L-BFGS-B tail uninterrupted from route A reaches the best
+likelihood observed so far, `1699469.5` bits, in `911.17s`.  This replaces the
+segmented 20+10+10-step measurement: it is `0.75` bits lower and about `33.56s`
+faster because it avoids two resume/final-evaluation cycles.
+
+This is still not a formal optimum, but it is the first point in this sequence
+where the marginal objective movement dropped sharply.  In the segmented run,
+the final two optimizer steps improved by only `0.375` bits each; in the
+uninterrupted run, the late improvements were still small and the final
+projected-gradient infinity norm was `2.84893`.
 
 The `lr=0.4` variant has a smaller residual, `2.95082`, but is `13.375` bits
 higher and `1.27s` slower than the 20-step `lr=0.6` route in the measured runs.
@@ -410,8 +416,10 @@ Raising the L-BFGS-B step scale to `lr=0.3` made the 20-step tail reach
 reached `1699550.875` bits in `549.35s`; `lr=0.7` fell back to `1699557.125`
 bits.  Continuing the accepted `lr=0.6` L-BFGS-B state for 10 more steps reached
 `1699505.5` bits in `746.78s` combined, and another 10 steps reached
-`1699470.25` bits in `944.73s`.  The improvement is coming from end-to-end
-parameter movement, not from spending more work on Pi/E iterations.
+`1699470.25` bits in `944.73s` when measured as segmented resumes.  A single
+uninterrupted 40-step `lr=0.6` tail reached `1699469.5` bits in `911.17s`.
+The improvement is coming from end-to-end parameter movement, not from spending
+more work on Pi/E iterations.
 
 While testing resumed continuations, a workflow stop-rule issue was found and
 fixed: extending a completed checkpoint used to restore `previous_objective`
