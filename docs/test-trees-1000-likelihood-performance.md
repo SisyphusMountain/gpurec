@@ -491,6 +491,13 @@ Rejected follow-ups:
   passed, but fixed4 steady timing measured `1.2779726349981502s` median and
   `1.27439327101456s` minimum, not better than the DTS-parameter-layout-hoist
   route, so the extra Triton variant was reverted.
+- Caching prepared DTS parameter metadata in `species_helpers` across the `21`
+  resident batch Pi calls was also not a stable win.  The targeted
+  specieswise/chunked tests passed, and the first fixed4 steady check measured
+  `1.276590519992169s` median with a `1.2730084469658323s` minimum, but the
+  cold sample stayed in-band at `2.297392721986398s`.  A leaner cache-key repeat
+  regressed to `1.2817456009797752s` median, so the cache was reverted and the
+  direct per-pass `prepare_dts_forward_param` calls remain.
 - The current `clade_first_fit` batches are already balanced for fixed4 Pi
   timing.  A post-warm per-batch split measured `20` full batches between
   about `0.061s` and `0.063s`, plus a tail batch at `0.03352210501907393s`;
