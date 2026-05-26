@@ -33,7 +33,11 @@ from gpurec._argparse_types import nonnegative_int_arg, positive_int_arg
 from gpurec.core.backward import Pi_wave_backward
 from gpurec.core.extract_parameters import extract_parameters_uniform
 from gpurec.core.forward import pi_training_state_request
-from gpurec.core.likelihood import E_fixed_point, compute_nll_root_rows
+from gpurec.core.likelihood import (
+    E_fixed_point,
+    compute_nll_root_rows,
+    gather_root_rows,
+)
 from gpurec.core.memory_policy import choose_uniform_pipeline_policy
 from gpurec.core.model import GeneDataset, normalize_family_inputs
 from gpurec.core.preprocess_rust import RustPreprocessExtension
@@ -743,7 +747,7 @@ def _forward_chunk(
     )
     root_clade_ids = built.wave_layout["root_clade_ids"]
     loss = compute_nll_root_rows(
-        pi_out["Pi_wave_ordered"][root_clade_ids, :],
+        gather_root_rows(pi_out["Pi_wave_ordered"], root_clade_ids),
         e_out["E"],
     ).sum()
     return pi_out, loss

@@ -411,13 +411,18 @@ def compute_nll(
     ``origination_probs`` as ``[S]`` or ``[G, S]`` uses those probabilities for
     both the root ``Pi`` mixture and the ``1 - E`` denominator.
     """
-    root_probs = Pi[root_clade_idx, :]
+    root_probs = gather_root_rows(Pi, root_clade_idx)
     return compute_nll_root_rows(
         root_probs,
         E,
         origination_probs=origination_probs,
         origination_probs_prepared=origination_probs_prepared,
     )
+
+
+def gather_root_rows(Pi, root_clade_idx):
+    """Return root rows from a full wave-ordered Pi matrix."""
+    return Pi[root_clade_idx, :]
 
 
 def compute_nll_root_rows(

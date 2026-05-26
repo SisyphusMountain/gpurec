@@ -209,7 +209,7 @@ Current behavior:
 - `compute_nll()` is a thin root-gather adapter over
   `compute_nll_root_rows()`;
 - runtime API gradient/training callers gather root rows explicitly before
-  likelihood evaluation;
+  likelihood evaluation through `gather_root_rows()`;
 - direct low-level callers can still pass full `Pi` through the adapter;
 - loss-only callers pass `Pi_root_rows`;
 - export/state callers compute loss only if requested.

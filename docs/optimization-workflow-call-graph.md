@@ -108,7 +108,8 @@ flowchart TD
   SelfLoop["_run_wave_self_loop(...)<br/>gpurec/core/forward.py:373"]
   WaveStep["wave_step_uniform_fused_into(...)<br/>gpurec/core/kernels/wave_step.py:281"]
   Pibar["wave_pibar_uniform_parent_fused(...)<br/>gpurec/core/kernels/wave_step.py:427"]
-  NLL["compute_nll(...)<br/>gpurec/core/likelihood.py:324"]
+  GatherRoots["gather_root_rows(...)<br/>gpurec/core/likelihood.py:423"]
+  NLL["compute_nll_root_rows(...)<br/>gpurec/core/likelihood.py:428"]
 
   Implicit["compute_resident_implicit_gradient(...)<br/>gpurec/api/autograd.py:257"]
   VJP["implicit_grad_loglik_vjp_wave(...)<br/>gpurec/optimization/implicit_grad.py:122"]
@@ -129,7 +130,7 @@ flowchart TD
   PiForward --> DTS --> DTSKernel
   PiForward --> SelfLoop --> WaveStep
   SelfLoop --> Pibar
-  ForwardSolve --> NLL
+  ForwardSolve --> GatherRoots --> NLL
   EvalStatic --> Implicit --> VJP
   VJP --> PiBackward --> BackwardKernels
   VJP --> EAdjoint

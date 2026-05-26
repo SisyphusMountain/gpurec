@@ -15,6 +15,7 @@ from gpurec.core.likelihood import (
     E_fixed_point,
     compute_nll,
     compute_nll_root_rows,
+    gather_root_rows,
 )
 from gpurec.core.log2_utils import logsumexp2
 from gpurec.core.species import species_wave_topology
@@ -243,6 +244,14 @@ def _run_forward(
             E_out["E"],
             static.wave_layout["root_clade_ids"],
         ).sum()
+        nll_from_root_rows = compute_nll_root_rows(
+            gather_root_rows(
+                pi_out["Pi_wave_ordered"],
+                static.wave_layout["root_clade_ids"],
+            ),
+            E_out["E"],
+        ).sum()
+        torch.testing.assert_close(nll_from_root_rows, nll, atol=1e-6, rtol=1e-6)
     return nll, pi_out
 
 

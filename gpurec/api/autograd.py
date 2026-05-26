@@ -18,7 +18,11 @@ from typing import Any, Optional
 
 import torch
 
-from gpurec.core.likelihood import E_fixed_point, compute_nll_root_rows
+from gpurec.core.likelihood import (
+    E_fixed_point,
+    compute_nll_root_rows,
+    gather_root_rows,
+)
 from gpurec.core.forward import (
     PiForwardRequest,
     pi_training_state_request,
@@ -435,9 +439,8 @@ def evaluate_resident_gradient_forward(
 
     with _nvtx_range("resident root likelihood"):
         root_clade_ids = static.wave_layout["root_clade_ids"]
-        root_rows = solve.pi_out["Pi_wave_ordered"][root_clade_ids, :]
         loss_vec = compute_nll_root_rows(
-            root_rows,
+            gather_root_rows(solve.pi_out["Pi_wave_ordered"], root_clade_ids),
             solve.e_out["E"],
             _origination_probs_for_static(static),
             origination_probs_prepared=True,

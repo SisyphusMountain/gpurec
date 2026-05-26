@@ -236,8 +236,8 @@ Current branch surface:
 - `compute_nll()` is now a thin full-Pi root-gather adapter over
   `compute_nll_root_rows()`, so root-row NLL owns the likelihood math.
 - Resident and chunked runtime API gradient paths gather root rows explicitly
-  before NLL evaluation; the full-Pi adapter remains for direct low-level and
-  profiling callers.
+  with `gather_root_rows()` before NLL evaluation; the full-Pi adapter remains
+  for direct low-level callers.
 - The former `compute_log_likelihood()` and
   `compute_log_likelihood_root_rows()` compatibility aliases returned NLL
   despite their names and have been removed.

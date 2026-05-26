@@ -1933,7 +1933,7 @@ def test_removed_likelihood_aliases_stay_out_of_runtime_surface():
         f"`{legacy_full}()`",
         f"`{legacy_root_rows}()`",
         "aliases have been removed",
-        "`compute_nll()` and `compute_nll_root_rows()`",
+        "`compute_nll()`, `gather_root_rows()`, and `compute_nll_root_rows()`",
         "prevents tracked Python surfaces from reintroducing the removed aliases",
     ):
         assert token in runtime_plan
@@ -1980,6 +1980,7 @@ def test_compute_nll_is_thin_root_row_adapter():
     }
 
     assert "compute_nll_root_rows" in called_names
+    assert "gather_root_rows" in called_names
     assert "logsumexp2" not in called_names
     assert "_weighted_logsumexp2" not in called_names
     assert "compute_origination_denominator" not in called_names

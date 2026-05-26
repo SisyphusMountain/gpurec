@@ -31,6 +31,7 @@ from gpurec.core.gradient_accumulator import StructuredGradientAccumulator
 from gpurec.core.likelihood import (
     E_fixed_point,
     compute_nll_root_rows,
+    gather_root_rows,
 )
 from gpurec.core.memory_policy import UniformPipelinePolicy, choose_uniform_pipeline_policy
 from gpurec.core.model import (
@@ -572,9 +573,8 @@ def _evaluate_chunked_uniform_result(
             )
             if need_grad:
                 root_clade_ids = built.wave_layout["root_clade_ids"]
-                root_rows = pi_out["Pi_wave_ordered"][root_clade_ids, :]
                 loss_vec = compute_nll_root_rows(
-                    root_rows,
+                    gather_root_rows(pi_out["Pi_wave_ordered"], root_clade_ids),
                     e_out["E"],
                     chunk_origination_probs,
                     origination_probs_prepared=True,

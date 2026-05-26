@@ -45,13 +45,14 @@ Plan:
 Addressed after the public-API documentation follow-up audit.
 The former low-level likelihood aliases `compute_log_likelihood()` and
 `compute_log_likelihood_root_rows()` returned NLL despite their names.  Tracked
-runtime, profiling, and ordinary test usage now uses `compute_nll()` and
-`compute_nll_root_rows()`, and the aliases have been removed from
-`gpurec.core.likelihood`.
+runtime, profiling, and ordinary test usage now uses `compute_nll()`,
+`gather_root_rows()`, and `compute_nll_root_rows()`, and the aliases have been
+removed from `gpurec.core.likelihood`.
 
 Plan:
 
-- Keep internal/profiling usage on `compute_nll()` or the root-row helper.
+- Keep runtime/profiling usage on `gather_root_rows()` plus the root-row helper
+  when callers already hold full wave-ordered `Pi`.
 - Keep repository hygiene coverage that prevents tracked Python surfaces from
   reintroducing the removed aliases.
 - If external compatibility matters again, add a new explicitly owned

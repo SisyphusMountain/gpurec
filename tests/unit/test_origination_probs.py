@@ -6,6 +6,7 @@ from gpurec.core.likelihood import (
     E_step,
     compute_nll,
     compute_nll_root_rows,
+    gather_root_rows,
     prepare_origination_probs,
 )
 
@@ -66,9 +67,31 @@ def test_root_row_nll_matches_full_pi_for_origination_probability_modes(mode):
         )
 
     full_pi_nll = compute_nll(Pi, E, roots, **kwargs)
-    root_row_nll = compute_nll_root_rows(Pi[roots], E, **kwargs)
+    root_row_nll = compute_nll_root_rows(gather_root_rows(Pi, roots), E, **kwargs)
 
     torch.testing.assert_close(root_row_nll, full_pi_nll, rtol=1e-12, atol=1e-12)
+
+
+def test_gather_root_rows_matches_direct_indexing_for_vector_and_scalar_roots():
+    dtype = torch.float64
+    Pi = torch.tensor(
+        [
+            [-4.0, -2.0, -5.0],
+            [-1.5, -3.0, -2.5],
+            [-3.0, -1.0, -4.5],
+        ],
+        dtype=dtype,
+    )
+
+    vector_roots = torch.tensor([2, 0], dtype=torch.long)
+    torch.testing.assert_close(
+        gather_root_rows(Pi, vector_roots),
+        Pi[vector_roots, :],
+    )
+    torch.testing.assert_close(
+        gather_root_rows(Pi, torch.tensor(1)),
+        Pi[1, :],
+    )
 
 
 def test_root_row_nll_accepts_precomputed_denominator():
