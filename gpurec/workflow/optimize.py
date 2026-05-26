@@ -508,7 +508,7 @@ def _adagrad_restart_phase_name(
         label = ("warmup", "bridge", "repair")[index]
     else:
         label = f"phase{index + 1}"
-    return f"fixed{phase.budget}_{label}"
+    return f"{phase.budget_label()}_{label}"
 
 
 def _adagrad_restart_total_steps(specs: tuple[AdagradRestartPhase, ...]) -> int:
@@ -765,11 +765,10 @@ class OptimizationRunner:
             raise RuntimeError(
                 "adagrad-restarts requires a model with configure_solver_iterations"
             )
-        budget = int(phase.phase.budget)
         configure_solver(
-            fixed_iters_E=budget,
-            fixed_iters_Pi=budget,
-            neumann_terms=budget,
+            fixed_iters_E=int(phase.phase.fixed_iters_e),
+            fixed_iters_Pi=int(phase.phase.fixed_iters_pi),
+            neumann_terms=int(phase.phase.neumann_terms),
         )
 
     def _evaluate_genewise_vector_and_grad_with_memory_fallback(
@@ -2891,6 +2890,15 @@ class OptimizationRunner:
                         )
                         metrics["optimizer/adagrad_restart_budget"] = float(
                             adagrad_restart_active_phase.phase.budget
+                        )
+                        metrics["optimizer/adagrad_restart_fixed_iters_E"] = float(
+                            adagrad_restart_active_phase.phase.fixed_iters_e
+                        )
+                        metrics["optimizer/adagrad_restart_fixed_iters_Pi"] = float(
+                            adagrad_restart_active_phase.phase.fixed_iters_pi
+                        )
+                        metrics["optimizer/adagrad_restart_neumann_terms"] = float(
+                            adagrad_restart_active_phase.phase.neumann_terms
                         )
                         metrics["optimizer/adagrad_restart_lr"] = float(
                             adagrad_restart_active_phase.phase.lr

@@ -61,7 +61,12 @@ from gpurec.workflow._metadata import (
     model_family_names,
     model_species_names,
 )
-from gpurec.workflow.config import RunConfig, SamplingConfig, dtype_from_name
+from gpurec.workflow.config import (
+    RunConfig,
+    SamplingConfig,
+    adagrad_restart_schedule_specs,
+    dtype_from_name,
+)
 from gpurec.workflow.diagnostics import (
     append_jsonl,
     parameter_stats,
@@ -1264,6 +1269,36 @@ def test_run_config_accepts_specieswise_adagrad_restart_schedule(tmp_path: Path)
     assert config.optimizer == "adagrad-restarts"
     assert config.adagrad_restart_schedule == "4:1:2,8:0.25:3"
     assert config.adagrad_restart_final_check_iters == 16
+
+
+def test_run_config_accepts_split_specieswise_adagrad_restart_schedule(
+    tmp_path: Path,
+):
+    config = RunConfig(
+        species_tree=tmp_path / "sp.nwk",
+        families_file=tmp_path / "families.txt",
+        out_dir=tmp_path / "out",
+        mode="specieswise",
+        optimizer="adagrad-restarts",
+        adagrad_restart_schedule="8/4:1.0:2,16/8/6:0.25:3",
+        adagrad_restart_final_check_iters=16,
+        device="cpu",
+    )
+
+    assert config.adagrad_restart_schedule == "8/4:1:2,16/8/6:0.25:3"
+    phases = adagrad_restart_schedule_specs(config.adagrad_restart_schedule)
+    assert [
+        (
+            phase.fixed_iters_e,
+            phase.fixed_iters_pi,
+            phase.neumann_terms,
+            phase.budget,
+        )
+        for phase in phases
+    ] == [
+        (8, 4, 4, 4),
+        (16, 8, 6, 8),
+    ]
 
 
 def test_run_config_rejects_adagrad_restarts_outside_specieswise(tmp_path: Path):
@@ -5302,6 +5337,61 @@ def test_optimization_runner_adagrad_restarts_specieswise_uses_schedule(
     latest = load_checkpoint(config.out_dir / "checkpoints" / "latest.pt")
     assert latest["optimizer_phase"] == "adagrad-restarts:fixed6_phase2"
     assert latest["last_row"]["optimizer/phase"] == "final_eval"
+    assert runner.fake_model.closed
+
+
+def test_optimization_runner_adagrad_restarts_accepts_split_solver_budgets(
+    tmp_path: Path,
+):
+    config = _optimizer_mode_config(
+        tmp_path,
+        optimizer="adagrad-restarts",
+        mode="specieswise",
+        steps=10,
+        adagrad_restart_schedule="8/4:1.0:2,16/8/6:0.5:2",
+        adagrad_restart_final_check_iters=32,
+        final_check_iters=8,
+        loss_patience=0,
+        best_likelihood_patience=0,
+    )
+    runner = _WorkflowSpecieswiseAdagradRestartRunner(config)
+
+    result = runner.run()
+
+    history_rows = _optimizer_mode_history_rows(config.out_dir)
+    step_rows = history_rows[:-1]
+    assert [row["optimizer/phase"] for row in step_rows] == [
+        "adagrad-restarts:E8_Pi4_phase1",
+        "adagrad-restarts:E8_Pi4_phase1",
+        "adagrad-restarts:E16_Pi8_N6_phase2",
+        "adagrad-restarts:E16_Pi8_N6_phase2",
+    ]
+    assert [row["optimizer/adagrad_restart_budget"] for row in step_rows] == [
+        4.0,
+        4.0,
+        8.0,
+        8.0,
+    ]
+    assert [
+        (
+            row["optimizer/adagrad_restart_fixed_iters_E"],
+            row["optimizer/adagrad_restart_fixed_iters_Pi"],
+            row["optimizer/adagrad_restart_neumann_terms"],
+        )
+        for row in step_rows
+    ] == [
+        (8.0, 4.0, 4.0),
+        (8.0, 4.0, 4.0),
+        (16.0, 8.0, 6.0),
+        (16.0, 8.0, 6.0),
+    ]
+    assert result.status == "converged"
+    assert result.reason == "adagrad_restart_schedule_complete"
+    assert runner.fake_model.solver_configs[:3] == [
+        {"fixed_iters_E": 8, "fixed_iters_Pi": 4, "neumann_terms": 4},
+        {"fixed_iters_E": 16, "fixed_iters_Pi": 8, "neumann_terms": 6},
+        {"fixed_iters_E": 32, "fixed_iters_Pi": 32, "neumann_terms": 32},
+    ]
     assert runner.fake_model.closed
 
 

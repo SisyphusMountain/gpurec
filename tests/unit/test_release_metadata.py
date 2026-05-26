@@ -1050,6 +1050,8 @@ def test_readme_documents_installed_sampling_binary_setup():
         "`backtrack-check` commands"
     ) in readme
     assert "gpurec validate-config --config examples/minimal-run-config.json" in readme
+    assert "--check-preprocess" in readme
+    assert "retained Rust parser to run on\nCPU" in readme
     assert "CPU-safe path/reference preflight" in readme
     assert "In a wheel-only\ninstall" in readme
     assert "For a source checkout or unpacked source archive" in readme

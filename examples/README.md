@@ -14,6 +14,7 @@ species tree satisfies the current CUDA backward requirements.
 ```bash
 gpurec validate-config --config examples/minimal-run-config.json
 gpurec validate-config --config examples/specieswise-adagrad-restarts-config.json
+gpurec validate-config --config examples/minimal-run-config.json --check-preprocess
 ```
 
 - `minimal-run-config.json` uses `mode=genewise`; `optimizer=auto` resolves to

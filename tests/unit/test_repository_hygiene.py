@@ -1363,6 +1363,7 @@ def test_production_optimization_guide_is_linked_and_documents_routes():
         "likelihood/gradient parity",
         "`history.jsonl`",
         "`per_fam_likelihoods.tsv`",
+        "`--check-preprocess`",
     ):
         assert token in normalized
 
@@ -1416,8 +1417,11 @@ def test_optimization_workflow_call_graph_documents_current_cli_and_optimizers()
     for token in (
         "`gpurec validate-config`",
         "stops at the preflight node",
+        "`--check-preprocess`",
+        "CPU `GeneDataset` preprocessing",
         "without constructing `GeneReconModel`",
         "without constructing `GeneReconModel`, loading the Rust preprocessing extension, or touching CUDA",
+        "loads the retained Rust parser",
         "`optimizer=auto` resolves to `hessian-sgd`",
         "`adagrad-restarts` for `mode=specieswise`",
         "`adagrad_restart_final_check_iters`",

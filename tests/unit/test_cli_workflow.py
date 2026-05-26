@@ -50,7 +50,9 @@ def test_run_config_cli_surface_matches_dataclass_fields():
     assert set(_run_config_cli_override_fields()) == run_config_fields
     assert not hasattr(gpurec_cli, "_RUN_CONFIG_CLI_OVERRIDE_FIELDS")
     assert _parser_action_dests("optimize") == expected_parser_dests
-    assert _parser_action_dests("validate-config") == expected_parser_dests
+    assert _parser_action_dests("validate-config") == (
+        expected_parser_dests | {"check_preprocess"}
+    )
     assert _parser_action_dests("run") == expected_parser_dests | {
         "sample_out_dir",
         "samples",
@@ -515,8 +517,70 @@ def test_cli_validate_config_reports_selected_family_references(
     assert "families=1" in captured.out
     assert "gene_tree_files=1" in captured.out
     assert "mapped_families=1" in captured.out
+    assert "preprocess_checked" not in captured.out
     assert str((tmp_path / "out").resolve()) in captured.out
     assert captured.err == ""
+
+
+def test_cli_validate_config_can_check_cpu_preprocessing(
+    tmp_path: Path,
+    capsys,
+):
+    write_tiny_alerax_inputs(tmp_path)
+
+    main(
+        [
+            "validate-config",
+            "--species-tree",
+            str(tmp_path / "sp.nwk"),
+            "--families-file",
+            str(tmp_path / "families.txt"),
+            "--out-dir",
+            str(tmp_path / "out"),
+            "--device",
+            "cuda",
+            "--check-preprocess",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert "valid_config=true" in captured.out
+    assert "preprocess_checked=true" in captured.out
+    assert "preprocessed_families=1" in captured.out
+    assert "preprocessed_species_nodes=3" in captured.out
+    assert captured.err == ""
+
+
+def test_cli_validate_config_check_preprocess_rejects_bad_newick_before_cuda(
+    tmp_path: Path,
+    capsys,
+):
+    write_tiny_alerax_inputs(
+        tmp_path,
+        species_tree="(A:1,B:1,C:1)Root;\n",
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(
+            [
+                "validate-config",
+                "--species-tree",
+                str(tmp_path / "sp.nwk"),
+                "--families-file",
+                str(tmp_path / "families.txt"),
+                "--out-dir",
+                str(tmp_path / "out"),
+                "--device",
+                "cuda",
+                "--check-preprocess",
+            ]
+        )
+
+    captured = capsys.readouterr()
+    assert exc_info.value.code == 2
+    assert "Species tree" in captured.err
+    assert "CUDA" not in captured.err
+    assert "Traceback" not in captured.err
 
 
 def test_cli_validate_config_rejects_missing_gene_tree_before_cuda(

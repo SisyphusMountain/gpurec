@@ -201,6 +201,9 @@ directory.
 Use `gpurec validate-config --config ...` to check JSON/CLI config values,
 input paths, AleRax family records, mapping files, and referenced gene-tree
 files without constructing the CUDA likelihood model.
+Add `--check-preprocess` when you also want the retained Rust parser to run on
+CPU and validate the selected Newick trees plus leaf/species mappings before a
+full optimization run.
 For a source checkout or source archive, checked JSON configs and a tiny
 AleRax-style fixture live under `examples/`.  They cover the genewise and
 specieswise production defaults documented in `examples/README.md`.  The CLI

@@ -139,6 +139,33 @@ def _validate_run_config_family_references(config: RunConfig) -> dict[str, int]:
     }
 
 
+def _validate_run_config_preprocess(config: RunConfig) -> dict[str, int]:
+    import torch
+
+    from gpurec.core.model import GeneDataset, parse_alerax_family_file
+
+    family_names, tree_paths, leaf_species_maps = parse_alerax_family_file(
+        config.families_file,
+        start=config.start,
+        max_families=config.max_families,
+    )
+    dataset = GeneDataset(
+        config.species_tree,
+        tree_paths,
+        genewise=config.mode == "genewise",
+        specieswise=config.mode == "specieswise",
+        dtype=torch.float32,
+        device="cpu",
+        preprocess_cpu_cores=config.preprocess_cpu_cores,
+        family_names=family_names,
+        leaf_species_maps=leaf_species_maps,
+    )
+    return {
+        "preprocessed_families": int(dataset.num_families),
+        "preprocessed_species_nodes": int(dataset.S),
+    }
+
+
 def _validate_sampling_checkpoint_path(checkpoint: Path) -> None:
     path = checkpoint.expanduser().resolve()
     if not path.is_file():
@@ -165,8 +192,15 @@ def _run_config_from_args(args: argparse.Namespace) -> RunConfig:
     return config
 
 
-def _preflight_run_config(config: RunConfig) -> dict[str, int]:
-    return _validate_run_config_family_references(config)
+def _preflight_run_config(
+    config: RunConfig,
+    *,
+    check_preprocess: bool = False,
+) -> dict[str, int]:
+    summary = _validate_run_config_family_references(config)
+    if check_preprocess:
+        summary.update(_validate_run_config_preprocess(config))
+    return summary
 
 
 def _sampling_config_from_args(
@@ -530,7 +564,8 @@ def _add_run_config_args(parser: argparse.ArgumentParser) -> None:
         "--adagrad-restart-schedule",
         help=(
             "Specieswise adagrad-restarts phase schedule as "
-            "budget:lr:steps entries, for example 8:1.0:60,16:0.5:35."
+            "budget:lr:steps or E/Pi[/Neumann]:lr:steps entries, for "
+            "example 8/4:1.0:60,16:0.5:35."
         ),
     )
     parser.add_argument(
@@ -713,6 +748,14 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     _add_run_config_args(validate_parser)
+    validate_parser.add_argument(
+        "--check-preprocess",
+        action="store_true",
+        help=(
+            "Also run CPU preprocessing with the retained Rust parser to check "
+            "selected Newick trees and leaf/species mappings."
+        ),
+    )
     validate_parser.set_defaults(_command_parser=validate_parser)
 
     sample_parser = sub.add_parser(
@@ -826,16 +869,27 @@ def main(argv: list[str] | None = None) -> None:
     if args.command == "validate-config":
         try:
             config = _run_config_from_args(args)
-            summary = _preflight_run_config(config)
+            summary = _preflight_run_config(
+                config,
+                check_preprocess=args.check_preprocess,
+            )
         except _EXPECTED_WORKFLOW_ERRORS as exc:
             command_parser.error(str(exc))
+        preprocess_text = ""
+        if args.check_preprocess:
+            preprocess_text = (
+                f" preprocess_checked=true"
+                f" preprocessed_families={summary['preprocessed_families']}"
+                f" preprocessed_species_nodes={summary['preprocessed_species_nodes']}"
+            )
         print(
             "valid_config=true "
             f"mode={config.mode} optimizer={config.optimizer} "
             f"families={summary['families']} "
             f"gene_tree_files={summary['gene_tree_files']} "
             f"mapped_families={summary['mapped_families']} "
-            f"device={config.device} out_dir={config.out_dir}",
+            f"device={config.device} out_dir={config.out_dir}"
+            f"{preprocess_text}",
             flush=True,
         )
         return

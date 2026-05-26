@@ -88,6 +88,7 @@ def test_examples_readme_documents_mode_specific_default_configs():
         "not end-to-end optimizer smokes",
         "gpurec validate-config --config examples/minimal-run-config.json",
         "gpurec validate-config --config examples/specieswise-adagrad-restarts-config.json",
+        "gpurec validate-config --config examples/minimal-run-config.json --check-preprocess",
         "`optimizer=auto` resolves to `hessian-sgd`",
         "`optimizer=auto` resolves to `adagrad-restarts`",
         "`8:1.0:60,16:0.5:35,32:0.5:30`",

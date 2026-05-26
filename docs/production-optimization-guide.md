@@ -90,10 +90,12 @@ Use this route for production genewise runs unless a specific comparison needs
 8:1.0:60,16:0.5:35,32:0.5:30
 ```
 
-Each entry is `solver_budget:learning_rate:steps`. The runner sets
-`fixed_iters_E`, `fixed_iters_Pi`, and `neumann_terms` to the phase budget,
-resets Adagrad state at each budget increase, and records
-`optimizer/adagrad_restart_*` fields in history. The final validation uses
+Each entry is `solver_budget:learning_rate:steps`. Split entries are also
+accepted as `E/Pi[/Neumann]:learning_rate:steps`, for example
+`8/4:1.0:60` to start with `fixed_iters_E=8`, `fixed_iters_Pi=4`, and
+`neumann_terms=4`. The runner resets Adagrad state at each budget change and
+records `optimizer/adagrad_restart_*` fields in history, including explicit
+E/Pi/Neumann budgets. The final validation uses
 `adagrad_restart_final_check_iters=128` by default.
 
 The default is based on the retained counts-free HOGENOM route: uniform `0.05`
@@ -151,7 +153,9 @@ template keeps `optimizer=auto` and writes the default
 `validate-config` checks the flat JSON/CLI config, selected AleRax family
 records, mapping files, and referenced gene-tree files without CUDA or
 preprocessing. It is a preflight for path and parser issues, not a likelihood
-or gradient correctness check.
+or gradient correctness check. Add `--check-preprocess` for a heavier CPU
+preprocessing pass that uses the retained Rust parser to validate selected
+Newick trees and leaf/species mappings before optimization.
 
 Inspect these outputs first:
 

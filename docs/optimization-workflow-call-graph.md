@@ -16,6 +16,7 @@ flowchart TD
   Config["RunConfig.from_dict(...)<br/>gpurec/workflow/config.py:492"]
   Preflight["CLI preflight<br/>input paths and AleRax family references"]
   ValidateConfig["gpurec validate-config<br/>print valid_config summary"]
+  CheckPreprocess["optional --check-preprocess<br/>CPU GeneDataset preprocessing"]
   CLIOptimize["gpurec.cli.optimize(config)<br/>gpurec/cli.py:40"]
   PyAPI["gpurec.optimize(config)<br/>gpurec/__init__.py:31<br/>gpurec/workflow/__init__.py:10"]
   Optimize["workflow.optimize(config)<br/>gpurec/workflow/optimize.py:809"]
@@ -46,6 +47,8 @@ flowchart TD
 
   CLI --> Parser --> Config --> Preflight
   Preflight --> ValidateConfig
+  ValidateConfig -. "--check-preprocess" .-> CheckPreprocess
+  CheckPreprocess --> Dataset
   Preflight --> CLIOptimize --> Optimize
   PyAPI --> Optimize
   Optimize --> Runner
@@ -59,13 +62,18 @@ flowchart TD
   Runner --> OptimizerLoop --> FinalEval --> FinalArtifacts --> Result
 ```
 
-`gpurec validate-config` stops at the preflight node. It validates the flat
-JSON/CLI `RunConfig`, required paths, selected AleRax family records, mapping
-files, and referenced gene-tree files without constructing `GeneReconModel`,
-loading the Rust preprocessing extension, or touching CUDA. `gpurec optimize`
-and `gpurec run` use the same preflight before entering the CUDA likelihood
-workflow. The Python API starts at `workflow.optimize(config)` and therefore
-skips only the CLI parser/preflight layer.
+`gpurec validate-config` stops at the preflight node by default. It validates
+the flat JSON/CLI `RunConfig`, required paths, selected AleRax family records,
+mapping files, and referenced gene-tree files without constructing
+`GeneReconModel`, loading the Rust preprocessing extension, or touching CUDA.
+With `--check-preprocess`, `validate-config` additionally runs CPU
+`GeneDataset` preprocessing for the selected families; that optional path loads
+the retained Rust parser and catches Newick or mapping errors before
+optimization, but still does not construct the CUDA likelihood model. `gpurec
+optimize` and `gpurec run` use the default lightweight preflight before
+entering the CUDA likelihood workflow. The Python API starts at
+`workflow.optimize(config)` and therefore skips only the CLI parser/preflight
+layer.
 
 ## Per-Step Likelihood And Gradient
 
