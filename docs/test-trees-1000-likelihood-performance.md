@@ -55,14 +55,16 @@ benchmark also pins native preprocessing and retained layout generation to `16`
 CPU threads; that is faster for this generated dataset than the default global
 Rayon pool.
 
-Cold end-to-end command:
+Near-reference cold end-to-end command:
 
 ```bash
 env PYTHONDONTWRITEBYTECODE=1 GPUREC_MEMORY_POLICY_RESERVE_GIB=0 \
   python profiling/bench_resident_likelihood.py \
   --dataset tests/data/test_trees_1000 \
   --mode specieswise \
-  --fixed-iters 4 \
+  --fixed-iters-e 8 \
+  --fixed-iters-pi 4 \
+  --neumann-terms 4 \
   --preprocess-cpu-cores 16 \
   --measure loss-only \
   --warmups 0 \
@@ -77,14 +79,16 @@ env PYTHONDONTWRITEBYTECODE=1 GPUREC_MEMORY_POLICY_RESERVE_GIB=0 \
   --prefetch-batches all
 ```
 
-Cold result:
+Near-reference cold result:
 
 | Stage | Time |
 |---|---:|
-| model init / first resident batch | `0.9345410540117882s` |
-| first fixed4 likelihood pass plus lazy remaining batches | `1.3226415830431506s` |
-| total to first fixed4 likelihood | `2.257182637054939s` |
+| model init / first resident batch | `0.9326847809716128s` |
+| first `E=8, Pi=4` likelihood pass plus lazy remaining batches | `1.3207962359883823s` |
+| total to first near-reference likelihood | `2.253481016959995s` |
 
+The tied fixed4 route is retained only as a lower-fidelity timing reference: it
+is about as fast, but sits `670.25` bits below the fixed8/fixed128 likelihood.
 The three-worker lazy-prefetch route produced fixed4 cold totals of
 `2.2904225840466097s`, `2.266941985988524s`,
 `2.2779467049986124s`, `2.262116832949687s`,
