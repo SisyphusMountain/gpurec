@@ -304,17 +304,21 @@ jobs:
           grep -q '"optimizer": "auto"' global-config-template.json
           grep -q '"mode": "global"' global-config-template.json
           gpurec config-template --mode genewise --species-tree "$GITHUB_WORKSPACE/examples/tiny/species.nwk" --families-file "$GITHUB_WORKSPACE/examples/tiny/families.txt" --out-dir "$smoke_dir/generated-genewise-out" --output generated-genewise-run.json
-          gpurec validate-config --config generated-genewise-run.json --require-mode-default-optimizer --require-production-default-route | tee generated-genewise-validate.txt
+          gpurec validate-config --config generated-genewise-run.json --require-mode-default-optimizer --require-production-default-route --check-preprocess | tee generated-genewise-validate.txt
           grep -q "optimizer=hessian-sgd" generated-genewise-validate.txt
           grep -q "uses_mode_default_optimizer=true" generated-genewise-validate.txt
           grep -q "uses_production_default_route=true" generated-genewise-validate.txt
           grep -q "production_default_route_mismatches=none" generated-genewise-validate.txt
+          grep -q "cuda_backward_ready=false" generated-genewise-validate.txt
+          grep -q "preprocess_checked=true" generated-genewise-validate.txt
           gpurec config-template --mode specieswise --species-tree "$GITHUB_WORKSPACE/examples/tiny/species.nwk" --families-file "$GITHUB_WORKSPACE/examples/tiny/families.txt" --out-dir "$smoke_dir/generated-specieswise-out" --output generated-specieswise-run.json
-          gpurec validate-config --config generated-specieswise-run.json --require-mode-default-optimizer --require-production-default-route | tee generated-specieswise-validate.txt
+          gpurec validate-config --config generated-specieswise-run.json --require-mode-default-optimizer --require-production-default-route --check-preprocess | tee generated-specieswise-validate.txt
           grep -q "optimizer=adagrad-restarts" generated-specieswise-validate.txt
           grep -q "uses_mode_default_optimizer=true" generated-specieswise-validate.txt
           grep -q "uses_production_default_route=true" generated-specieswise-validate.txt
           grep -q "production_default_route_mismatches=none" generated-specieswise-validate.txt
+          grep -q "cuda_backward_ready=false" generated-specieswise-validate.txt
+          grep -q "preprocess_checked=true" generated-specieswise-validate.txt
           gpurec config-template --mode global --species-tree "$GITHUB_WORKSPACE/examples/tiny/species.nwk" --families-file "$GITHUB_WORKSPACE/examples/tiny/families.txt" --out-dir "$smoke_dir/generated-global-out" --output generated-global-run.json
           gpurec validate-config --config generated-global-run.json --require-mode-default-optimizer | tee generated-global-mode-default-validate.txt
           grep -q "optimizer=adam" generated-global-mode-default-validate.txt

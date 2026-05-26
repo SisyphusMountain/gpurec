@@ -588,9 +588,11 @@ def test_cpu_ci_builds_and_smokes_release_artifacts():
         "$GITHUB_WORKSPACE/examples/tiny/species.nwk",
         "$GITHUB_WORKSPACE/examples/tiny/families.txt",
         "gpurec validate-config --config generated-genewise-run.json "
-        "--require-mode-default-optimizer --require-production-default-route",
+        "--require-mode-default-optimizer --require-production-default-route "
+        "--check-preprocess",
         "gpurec validate-config --config generated-specieswise-run.json "
-        "--require-mode-default-optimizer --require-production-default-route",
+        "--require-mode-default-optimizer --require-production-default-route "
+        "--check-preprocess",
         "gpurec validate-config --config generated-global-run.json "
         "--require-mode-default-optimizer",
         "gpurec validate-config --config generated-global-run.json "
@@ -603,6 +605,8 @@ def test_cpu_ci_builds_and_smokes_release_artifacts():
         "uses_production_default_route=false",
         "production_default_route_mismatches=none",
         "production_default_route_mismatches=mode",
+        "cuda_backward_ready=false",
+        "preprocess_checked=true",
         "global_status=$?",
         'test "$global_status" -eq 2',
         "config production default route fields differ for mode 'global': mode",
@@ -1117,7 +1121,9 @@ def test_release_readiness_documents_installed_wheel_smoke():
         "gpurec optimize --help",
         "optimization convergence, final-check, mode-default optimizer, and production-route gates",
         "objective, likelihood/gradient route, rate parameterization",
-        "validates both with `gpurec validate-config --require-mode-default-optimizer --require-production-default-route`",
+        "validates both with `gpurec validate-config --require-mode-default-optimizer --require-production-default-route --check-preprocess`",
+        "preprocess_checked=true",
+        "cuda_backward_ready=false",
         "mode-default `adam` diagnostic and fails `--require-production-default-route` with a `mode` mismatch",
         "mode-default optimizer gates",
         "gpurec validate-config --help",

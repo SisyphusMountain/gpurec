@@ -7734,6 +7734,13 @@ production-route starters, states that it only satisfies the mode-default
 with a \texttt{mode} mismatch.  README and operator-doc hygiene tests pin the
 wording.
 
+The package workflow's installed-wheel smoke now validates generated genewise
+and specieswise starter configs with
+\texttt{--require-mode-default-optimizer --require-production-default-route
+--check-preprocess}.  Installed artifacts therefore prove both the shipped
+optimizer route and the retained CPU AleRax preprocessing path against the tiny
+fixture before any CUDA likelihood model is constructed.
+
 \section{Next Audit Targets}
 
 \begin{enumerate}[leftmargin=*]

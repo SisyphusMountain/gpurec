@@ -59,7 +59,10 @@ gate. It also generates genewise and specieswise configs from the installed
 `gpurec config-template` command, points them at the checked tiny AleRax fixture
 paths, and validates both with
 `gpurec validate-config --require-mode-default-optimizer
---require-production-default-route`. It generates a global template too, then
+--require-production-default-route --check-preprocess`, proving the installed
+preflight can parse the referenced AleRax fixture files and reports
+`preprocess_checked=true` with `cuda_backward_ready=false` for the tiny species
+tree. It generates a global template too, then
 checks that it passes `--require-mode-default-optimizer` as a mode-default
 `adam` diagnostic and fails `--require-production-default-route` with a `mode`
 mismatch. It also smokes
@@ -150,7 +153,8 @@ gpurec config-template --mode genewise \
   --output generated-genewise-run.json
 gpurec validate-config --config generated-genewise-run.json \
   --require-mode-default-optimizer \
-  --require-production-default-route
+  --require-production-default-route \
+  --check-preprocess
 gpurec config-template --mode specieswise \
   --species-tree "$repo_root/examples/tiny/species.nwk" \
   --families-file "$repo_root/examples/tiny/families.txt" \
@@ -158,7 +162,8 @@ gpurec config-template --mode specieswise \
   --output generated-specieswise-run.json
 gpurec validate-config --config generated-specieswise-run.json \
   --require-mode-default-optimizer \
-  --require-production-default-route
+  --require-production-default-route \
+  --check-preprocess
 gpurec config-template --mode global \
   --species-tree "$repo_root/examples/tiny/species.nwk" \
   --families-file "$repo_root/examples/tiny/families.txt" \

@@ -2421,6 +2421,12 @@ not edit files.  New or still-open findings from that refresh are:
   production-route starters, states that it only satisfies the mode-default
   `adam` check, and notes that the strict production-route gate rejects it with
   a `mode` mismatch. README and operator-doc hygiene tests pin the wording.
+- The package workflow's installed-wheel smoke now validates generated genewise
+  and specieswise starter configs with
+  `--require-mode-default-optimizer --require-production-default-route
+  --check-preprocess`, so installed artifacts prove both the shipped optimizer
+  route and the retained CPU AleRax preprocessing path against the tiny fixture
+  before any CUDA likelihood model is constructed.
 
 ## Recommended Next Order
 
