@@ -2443,6 +2443,29 @@ def test_project_readme_documents_top_level_backtracking_helpers():
         assert name in project_readme
 
 
+def test_project_readme_documents_top_level_entropy_helpers():
+    root = Path(__file__).resolve().parents[2]
+    project_readme = (root / "README.md").read_text(encoding="utf-8")
+    public_helpers = sorted(
+        name
+        for name, module_name in gpurec._LAZY_EXPORTS.items()
+        if module_name == "gpurec.entropy"
+    )
+
+    for name in public_helpers:
+        assert name in project_readme
+    for token in (
+        "analytical reconciliation entropy",
+        "`compute_reconciliation_entropy()` works from a solved `GeneReconModel` family",
+        "`reconciliation_entropy_from_payload()` works from an `export_backtracking_input()`",
+        "`collapsed` result",
+        "stochastic backtracker",
+        "`expanded` also includes hidden extinction histories",
+        "`E` and\n`Ebar`",
+    ):
+        assert token in project_readme
+
+
 def test_project_readme_documents_supported_environment_flags_only():
     root = Path(__file__).resolve().parents[2]
     project_readme = (root / "README.md").read_text(encoding="utf-8")

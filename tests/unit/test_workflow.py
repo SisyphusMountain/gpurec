@@ -16,6 +16,7 @@ import torch
 
 import gpurec
 import gpurec.backtracking as backtracking
+import gpurec.entropy as entropy
 import gpurec.api.model as api_model
 import gpurec.api.uniform_chunked as uniform_chunked_api
 import gpurec.workflow as workflow
@@ -435,6 +436,19 @@ def test_top_level_exports_backtracking_surface():
         assert name in gpurec.__all__
         assert gpurec._LAZY_EXPORTS[name] == "gpurec.backtracking"
         assert getattr(gpurec, name) is getattr(backtracking, name)
+
+
+def test_top_level_exports_entropy_surface():
+    public_names = {
+        "compute_reconciliation_entropy",
+        "reconciliation_entropy_from_payload",
+    }
+
+    assert set(entropy.__all__) == public_names
+    for name in entropy.__all__:
+        assert name in gpurec.__all__
+        assert gpurec._LAZY_EXPORTS[name] == "gpurec.entropy"
+        assert getattr(gpurec, name) is getattr(entropy, name)
 
 
 def test_top_level_exports_workflow_surface():

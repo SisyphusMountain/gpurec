@@ -190,6 +190,21 @@ from gpurec import (
 These helpers use the same Rust backtracking binary configuration documented
 below for `gpurec sample` and `gpurec run`.
 
+Top-level entropy helpers are available for analytical reconciliation entropy:
+
+```python
+from gpurec import compute_reconciliation_entropy, reconciliation_entropy_from_payload
+
+entropy = compute_reconciliation_entropy(model, family_index=0, mode="both")
+```
+
+`compute_reconciliation_entropy()` works from a solved `GeneReconModel` family.
+`reconciliation_entropy_from_payload()` works from an `export_backtracking_input()`
+payload plus matching species-tree topology arrays.  The `collapsed` result
+matches the distribution sampled by the stochastic backtracker, while
+`expanded` also includes hidden extinction histories represented by `E` and
+`Ebar`.
+
 ## Production AleRax-Style Workflow
 
 The production workflow accepts an AleRax `[FAMILIES]` file and a species tree.
