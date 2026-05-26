@@ -3480,6 +3480,59 @@ def test_cli_optimize_require_production_default_route_accepts_default_config(
     assert "production_default_route_mismatches=none" in captured.out
 
 
+def test_cli_optimize_require_production_default_route_accepts_specieswise_default(
+    tmp_path: Path,
+    capsys,
+    monkeypatch,
+):
+    captured_config: dict[str, RunConfig] = {}
+
+    def successful_optimize(config):
+        captured_config["config"] = config
+        fields = {
+            **effective_route_metadata(config),
+            "out_dir": config.out_dir,
+            "status": "not_converged",
+            "reason": "max_steps",
+            "families": 1,
+            "species": 2,
+            "batches": 1,
+            "steps_completed": 1,
+            "elapsed_s": 0.5,
+            "best_step": 1,
+            "sampling_checkpoint": config.out_dir / "checkpoints" / "best.pt",
+            "final_nll_bits": 12.0,
+            "final_grad_inf": 0.25,
+            "final_projected_grad_inf": 0.125,
+            "best_nll_bits": 11.0,
+        }
+        return SimpleNamespace(**fields)
+
+    monkeypatch.setattr("gpurec.cli.optimize", successful_optimize)
+
+    main(
+        _minimal_workflow_cli_args("optimize", tmp_path)
+        + [
+            "--mode",
+            "specieswise",
+            "--require-production-default-route",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert captured.err == ""
+    config = captured_config["config"]
+    assert config.mode == "specieswise"
+    assert config.optimizer == "adagrad-restarts"
+    assert "status=not_converged" in captured.out
+    assert "mode=specieswise" in captured.out
+    assert "optimizer=adagrad-restarts" in captured.out
+    assert "uses_production_default_route=true" in captured.out
+    assert "production_default_route_mismatches=none" in captured.out
+    assert "optimizer_step_cap=125" in captured.out
+    assert "optimizer_step_cap_reason=adagrad_restart_schedule" in captured.out
+
+
 def test_cli_optimize_require_production_default_route_rejects_custom_settings_before_run(
     tmp_path: Path,
     capsys,
@@ -4152,6 +4205,81 @@ def test_cli_run_require_production_default_route_accepts_default_config(
     ).resolve()
     assert "uses_production_default_route=true" in captured.out
     assert "production_default_route_mismatches=none" in captured.out
+    assert "sampled_families=1 samples=2 xml=2" in captured.out
+
+
+def test_cli_run_require_production_default_route_accepts_specieswise_default(
+    tmp_path: Path,
+    capsys,
+    monkeypatch,
+):
+    captured_objects: dict[str, object] = {}
+
+    def successful_optimize(config):
+        checkpoint = config.out_dir / "checkpoints" / "latest.pt"
+        checkpoint.parent.mkdir(parents=True)
+        checkpoint.write_bytes(b"checkpoint")
+        captured_objects["optimize_config"] = config
+        fields = {
+            **effective_route_metadata(config),
+            "out_dir": config.out_dir,
+            "sampling_checkpoint": checkpoint,
+            "status": "success",
+            "reason": "completed",
+            "families": 1,
+            "species": 2,
+            "batches": 1,
+            "steps_completed": 1,
+            "elapsed_s": 0.5,
+            "best_step": 1,
+            "final_nll_bits": 12.0,
+            "final_grad_inf": 0.25,
+            "final_projected_grad_inf": 0.125,
+            "best_nll_bits": 11.0,
+        }
+        return SimpleNamespace(**fields)
+
+    def capture_sample(config):
+        captured_objects["sample_config"] = config
+        return SimpleNamespace(
+            families_sampled=1,
+            samples_per_family=config.samples,
+            xml_files=2,
+            out_dir=config.out_dir,
+        )
+
+    monkeypatch.setattr("gpurec.cli.optimize", successful_optimize)
+    monkeypatch.setattr("gpurec.cli.sample", capture_sample)
+    monkeypatch.setattr("gpurec.cli._ensure_backtracking_available", lambda _: None)
+
+    main(
+        _minimal_workflow_cli_args("run", tmp_path)
+        + [
+            "--mode",
+            "specieswise",
+            "--samples",
+            "2",
+            "--require-production-default-route",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    optimize_config = captured_objects["optimize_config"]
+    sample_config = captured_objects["sample_config"]
+    assert captured.err == ""
+    assert isinstance(optimize_config, RunConfig)
+    assert optimize_config.mode == "specieswise"
+    assert optimize_config.optimizer == "adagrad-restarts"
+    assert isinstance(sample_config, SamplingConfig)
+    assert sample_config.checkpoint == (
+        tmp_path / "out" / "checkpoints" / "latest.pt"
+    ).resolve()
+    assert "mode=specieswise" in captured.out
+    assert "optimizer=adagrad-restarts" in captured.out
+    assert "uses_production_default_route=true" in captured.out
+    assert "production_default_route_mismatches=none" in captured.out
+    assert "optimizer_step_cap=125" in captured.out
+    assert "optimizer_step_cap_reason=adagrad_restart_schedule" in captured.out
     assert "sampled_families=1 samples=2 xml=2" in captured.out
 
 

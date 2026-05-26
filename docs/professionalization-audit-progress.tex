@@ -7551,6 +7551,16 @@ module compiles, the focused input-preparation selector reports
 \texttt{1 passed}, \texttt{git diff --check} passes, and the full CPU unit
 gate reports \texttt{1477 passed, 1 skipped, 51 deselected}.
 
+\texttt{gpurec optimize --require-production-default-route} and
+\texttt{gpurec run --require-production-default-route} now have direct
+specieswise success-path CLI coverage.  The new tests prove that execution
+commands accept the shipped \texttt{adagrad-restarts} production route,
+including the schedule-derived \texttt{optimizer\_step\_cap=125}, before
+workflow and sampling handoff.  The touched CLI test compiles, the focused
+specieswise execution selector reports \texttt{2 passed}, and
+\texttt{git diff --check} passes.  The full CPU unit gate reports
+\texttt{1479 passed, 1 skipped, 51 deselected}.
+
 \section{Next Audit Targets}
 
 \begin{enumerate}[leftmargin=*]

@@ -2281,6 +2281,20 @@ not edit files.  New or still-open findings from that refresh are:
 - `CUDA_VISIBLE_DEVICES='' python -m pytest -q -m "unit and not gpu"`:
   1477 passed, 1 skipped, 51 deselected after the input-preparation strict
   preflight documentation slice.
+- `gpurec optimize --require-production-default-route` and
+  `gpurec run --require-production-default-route` now have direct specieswise
+  success-path CLI coverage proving execution commands accept the shipped
+  `adagrad-restarts` production route, including the schedule-derived
+  `optimizer_step_cap=125`, before workflow and sampling handoff.
+- `python -m py_compile tests/unit/test_cli_workflow.py`: passed after adding
+  specieswise execution production-route gate coverage.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest -q tests/unit/test_cli_workflow.py::test_cli_optimize_require_production_default_route_accepts_specieswise_default tests/unit/test_cli_workflow.py::test_cli_run_require_production_default_route_accepts_specieswise_default`:
+  2 passed after guarding specieswise strict execution gates.
+- `git diff --check`: passed before the full CPU gate for the specieswise
+  execution production-route success slice.
+- `CUDA_VISIBLE_DEVICES='' python -m pytest -q -m "unit and not gpu"`:
+  1479 passed, 1 skipped, 51 deselected after the specieswise execution
+  production-route success slice.
 
 ## Recommended Next Order
 
