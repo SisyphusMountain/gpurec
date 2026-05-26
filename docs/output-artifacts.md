@@ -57,6 +57,11 @@ scheduled Adagrad updates; the run stops when this schedule is complete even if
 `optimizer_step_cap`, and `optimizer_step_cap_reason`, so downstream tools can
 distinguish a normal configured step limit from a specieswise restart schedule
 cap.
+Production-route gates treat these fields as typed JSON evidence: numeric
+optimizer-setting fields must remain JSON numbers and boolean fields must remain
+JSON booleans. Stringified values such as `"optimizer_step_cap": "125"` are
+reported as mismatches rather than accepted as proof that an artifact used the
+shipped route.
 The `OptimizationResult` returned by the Python API and the optimization status
 line expose the same family/species/batch counts, `batch_packing`,
 `family_chunk_size`, `clade_budget`, `fixed_iters_e`, `fixed_iters_pi`,

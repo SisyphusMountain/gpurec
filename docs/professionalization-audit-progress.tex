@@ -7762,6 +7762,12 @@ optimization starts.
 release metadata checks even if an older local environment still has such a
 script on \texttt{PATH}.
 
+Production-route audits now require typed JSON evidence for optimizer-setting
+fields.  Stringified numeric fields such as
+\texttt{"optimizer\_step\_cap": "125"} and integer stand-ins for booleans no
+longer pass as proof that a checkpoint or summary used the shipped
+HOGENOM/\texttt{test\_trees\_1000} route.
+
 \section{Next Audit Targets}
 
 \begin{enumerate}[leftmargin=*]

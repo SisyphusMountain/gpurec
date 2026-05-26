@@ -2444,6 +2444,10 @@ not edit files.  New or still-open findings from that refresh are:
   stale `gpurec.cli.reconcile` console-script entry point cannot pass release
   metadata checks even if a local environment still has an older script on
   `PATH`.
+- Production-route audits now require typed JSON evidence for optimizer-setting
+  fields.  Stringified numeric fields such as `"optimizer_step_cap": "125"` and
+  integer stand-ins for booleans no longer pass as proof that a checkpoint or
+  summary used the shipped HOGENOM/`test_trees_1000` route.
 
 ## Recommended Next Order
 

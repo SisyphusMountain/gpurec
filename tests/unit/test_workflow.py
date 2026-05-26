@@ -1615,6 +1615,73 @@ def test_route_audit_requires_final_check_e_budget_evidence():
     assert mismatches == ("final_check_iters_e",)
 
 
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("final_check_iters_e", "128"),
+        ("optimizer_step_cap", "125"),
+        ("adagrad_restart_total_steps", True),
+    ],
+)
+def test_route_audit_requires_typed_integer_evidence(field: str, value: object):
+    route = {
+        "mode": "specieswise",
+        "optimizer": "adagrad-restarts",
+        "final_check_iters": 128,
+        "final_check_iters_e": 128,
+        "optimizer_step_cap": 125,
+        "optimizer_step_cap_reason": "adagrad_restart_schedule",
+        "adagrad_restart_schedule": "8:1.0:60,16:0.5:35,32:0.5:30",
+        "adagrad_restart_total_steps": 125,
+        "adagrad_restart_final_check_iters": 128,
+    }
+    route[field] = value
+
+    missing, mismatches = production_default_optimizer_setting_mismatches_from_route(
+        route
+    )
+
+    assert missing == ()
+    assert mismatches == (field,)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("hessian_sgd_pi_adjoint_warmstart", 0),
+        ("pi_fixed_point_relaxation", "1.0"),
+    ],
+)
+def test_route_audit_requires_typed_boolean_and_float_evidence(
+    field: str,
+    value: object,
+):
+    route = {
+        "mode": "genewise",
+        "optimizer": "hessian-sgd",
+        "final_check_iters": 32,
+        "final_check_iters_e": None,
+        "solver_warmup_iters": 4,
+        "fd_adam_warmup_steps": 3,
+        "fd_hessian_refresh_steps": 16,
+        "hessian_sgd_normal_fixed_iters_pi": None,
+        "hessian_sgd_normal_neumann_terms": None,
+        "hessian_sgd_pi_adjoint_warmstart": False,
+        "pi_fixed_point_relaxation": 1.0,
+        "hessian_sgd_validation_interval": 0,
+        "hessian_sgd_validation_fixed_iters_pi": None,
+        "hessian_sgd_validation_neumann_terms": None,
+    }
+    route[field] = value
+
+    missing, mismatches = production_default_optimizer_setting_mismatches_from_route(
+        route
+    )
+
+    assert missing == ()
+    assert mismatches == (field,)
+
+
 @pytest.mark.parametrize("optimizer", ["Hessian_SGD", "AUTO"])
 def test_route_audit_normalizes_optimizer_alias_strings(optimizer: str):
     route = {
