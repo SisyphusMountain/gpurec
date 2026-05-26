@@ -333,10 +333,11 @@ removed and are guarded against returning.
   large `test_trees_1000` availability is checked only by tests that need it,
   while the HOGENOM unrooted-Newick case has its own `hogenom_bench` guard.
 - Several GPU tests are still smoke-heavy: Adam/LBFGS integration checks now
-  require post-step NLL non-increase, but the HOGENOM unrooted parsing check
-  still asserts metadata only and the specieswise backward check asserts finite
-  values.  Prefer before/after NLL decrease or reference-close assertions when
-  local data makes that practical.
+  require post-step NLL non-increase, and the HOGENOM unrooted parsing check now
+  asserts per-family likelihood plus direct/PyTorch gradient consistency.  The
+  specieswise backward check still asserts finite values.  Prefer before/after
+  NLL decrease or reference-close assertions when local data makes that
+  practical.
 - Adaptive iteration coverage now includes forced-max parity and a slow GPU
   loose-tolerance guard that asserts E/Pi solver iterations stop before the
   configured maximum.  Broaden it with more data-backed close-reference cases

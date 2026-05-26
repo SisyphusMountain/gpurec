@@ -269,6 +269,7 @@ def test_chunked_uniform_chunk_subset_nll_and_gradient(tmp_path):
     )
 
 
+@pytest.mark.slow
 def test_chunked_uniform_accepts_hogenom_unrooted_binary_newick(tmp_path):
     if not HOGENOM_DIR.exists():
         pytest.skip(f"dataset not present: {HOGENOM_DIR}")
@@ -288,3 +289,21 @@ def test_chunked_uniform_accepts_hogenom_unrooted_binary_newick(tmp_path):
     assert model.n_families == 3
     assert sum(chunk.clade_count for chunk in metadata) > 0
     assert sum(chunk.wave_count for chunk in metadata) > 0
+
+    per_family = model.nll_per_family()
+    loss = model()
+    loss.backward()
+    backward_grad = model.theta.grad.detach().clone()
+    direct_loss, direct_grad, stats = model.loss_and_grad()
+
+    assert per_family.shape == (model.n_families,)
+    assert torch.isfinite(per_family).all()
+    assert torch.isfinite(loss)
+    assert torch.isfinite(backward_grad).all()
+    assert torch.isfinite(direct_grad).all()
+    torch.testing.assert_close(per_family.sum(), loss.detach(), rtol=1e-5, atol=1e-4)
+    torch.testing.assert_close(direct_loss, loss.detach(), rtol=1e-5, atol=1e-4)
+    torch.testing.assert_close(direct_grad, backward_grad, rtol=1e-5, atol=1e-4)
+    assert stats["selected_families"] == model.n_families
+    assert stats["total_families"] == model.n_families
+    assert stats["reduction"] == "sum"
