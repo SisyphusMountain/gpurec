@@ -701,6 +701,81 @@ def test_lbfgsb_fallback_competes_after_tiny_projected_gradient_accept(
     )
 
 
+def test_lbfgsb_fallback_competes_after_resolution_limited_accept(
+    monkeypatch,
+):
+    x = torch.nn.Parameter(torch.zeros(3, dtype=torch.float32))
+    optimizer = LBFGSB([x], lr=1.0, lower_bound=-10.0, upper_bound=10.0)
+    flat = x.detach().clone()
+    loss = torch.tensor(1_700_000.0, dtype=torch.float32)
+    grad = torch.tensor([5.0, -1.0, 0.5], dtype=torch.float32)
+    projected_grad = grad.clone()
+    current_delta = torch.tensor([-0.04, 0.0, 0.0], dtype=torch.float32)
+    current_search = _LineSearchResult(
+        accepted=True,
+        flat=flat + current_delta,
+        loss=loss - 0.25,
+        alpha=0.04,
+        delta=current_delta,
+        directional_derivative=float(torch.dot(grad, current_delta).detach().cpu()),
+        step_inf=float(current_delta.abs().amax().detach().cpu()),
+        decrease=0.25,
+        loss_evals=1,
+        next_alpha=0.02,
+        armijo_required_decrease=0.0,
+    )
+    calls: list[torch.Tensor] = []
+
+    def fake_backtracking_line_search(**kwargs):
+        direction = kwargs["direction"].detach().clone()
+        calls.append(direction)
+        decrease = 8.0 if int((direction != 0).sum().detach().cpu()) == 3 else 0.0
+        accepted = decrease > 0.0
+        return _LineSearchResult(
+            accepted=accepted,
+            flat=flat + direction,
+            loss=loss - decrease,
+            alpha=1.0,
+            delta=direction,
+            directional_derivative=float(torch.dot(grad, direction).detach().cpu()),
+            step_inf=float(direction.abs().amax().detach().cpu()),
+            decrease=decrease,
+            loss_evals=1,
+            next_alpha=0.5,
+            armijo_required_decrease=0.0,
+        )
+
+    monkeypatch.setattr(
+        optimizer,
+        "_backtracking_line_search",
+        fake_backtracking_line_search,
+    )
+
+    search, kind, loss_evals = optimizer._compete_projected_gradient_fallbacks(
+        closure=lambda: loss,
+        loss_closure=lambda: loss,
+        state=optimizer.state[x],
+        flat=flat,
+        loss=loss,
+        grad=grad,
+        projected_grad=projected_grad,
+        lower_bound=-10.0,
+        upper_bound=10.0,
+        current_search=current_search,
+        current_kind="projected_gradient_fallback",
+        lr=1.0,
+        max_ls=8,
+        c1=1e-4,
+        shrink=0.5,
+        tolerance_change=0.0,
+    )
+
+    assert kind == "projected_gradient_sign_fallback"
+    assert search.decrease == pytest.approx(8.0)
+    assert loss_evals == 1
+    assert len(calls) == 1
+
+
 def test_lbfgsb_repeated_tiny_high_kkt_steps_trigger_projected_gradient_fallback(
     monkeypatch,
 ):

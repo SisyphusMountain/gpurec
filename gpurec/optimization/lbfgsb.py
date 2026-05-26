@@ -922,12 +922,23 @@ class LBFGSB(Optimizer):
         loss: Tensor,
         tolerance_change: float,
     ) -> bool:
-        return (not search.accepted) or self._tiny_progress(
-            flat=flat,
-            loss=loss,
-            step_inf=search.step_inf,
-            decrease=search.decrease,
-            tolerance_change=tolerance_change,
+        # At large fp32 likelihood scales, a nominally positive fallback decrease can
+        # still sit in the evaluation-resolution band.  Spend the fallback budget on
+        # sign/coordinate competitors before accepting that as a meaningful escape.
+        meaningful_decrease = max(
+            tolerance_change,
+            16.0 * self._loss_resolution(loss),
+        )
+        return (
+            (not search.accepted)
+            or search.decrease <= meaningful_decrease
+            or self._tiny_progress(
+                flat=flat,
+                loss=loss,
+                step_inf=search.step_inf,
+                decrease=search.decrease,
+                tolerance_change=tolerance_change,
+            )
         )
 
     def _compete_projected_gradient_fallbacks(
