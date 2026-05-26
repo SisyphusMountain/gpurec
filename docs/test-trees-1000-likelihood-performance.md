@@ -667,6 +667,13 @@ Rejected follow-ups:
   `2.2710205909679644s`, `2.3239040829939768s`, and
   `2.2830842310213484s`, with pass times around `1.324s` to `1.329s`.
   That extra warmup is therefore rejected.
+- In-place accumulation of the `21` per-batch scalar losses in the shared-theta
+  loss-only stream was also rejected.  The prototype passed the targeted
+  no-grad/specieswise/uniform tests (`13 passed`), but a seven-repetition
+  fixed4 materialized run measured `1.2801847120281309s` median and
+  `1.2755018040188588s` minimum, slower than the current documented
+  `1.2784311089781113s` median.  The root/loss scalar path remains too small to
+  matter next to the Pi/DTS kernels.
 
 Differences from HOGENOM:
 
