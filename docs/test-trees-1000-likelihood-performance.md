@@ -170,6 +170,11 @@ The split-budget route also still wants all-batch lazy prefetch.  With
 `2.5211703089880757s` total.  Finite depths `2` and `4` measured
 `2.308664307987783s` and `2.304723095963709s`; `all` measured
 `2.262025747972075s` in the same sweep.
+The split-budget route also keeps the three-worker resident prefetch pool.
+Temporarily lowering the worker count to `2` gave `E=8, Pi=4` cold totals of
+`2.3399722679168917s` and `2.2740334490081295s`; raising it to `4` gave
+`2.3272328549646772s` and `2.3391964139882475s`.  Neither setting beat the
+documented three-worker samples.
 
 Split-budget near-reference command:
 
