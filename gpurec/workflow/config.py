@@ -294,6 +294,18 @@ def adagrad_restart_schedule_specs(value: str) -> tuple[AdagradRestartPhase, ...
                 steps=steps,
             )
         )
+        if len(phases) > 1:
+            previous = phases[-2]
+            current = phases[-1]
+            if (
+                current.fixed_iters_e < previous.fixed_iters_e
+                or current.fixed_iters_pi < previous.fixed_iters_pi
+                or current.neumann_terms < previous.neumann_terms
+            ):
+                raise ValueError(
+                    "adagrad_restart_schedule phases must not decrease "
+                    "fixed_iters_E, fixed_iters_Pi, or neumann_terms"
+                )
     return tuple(phases)
 
 

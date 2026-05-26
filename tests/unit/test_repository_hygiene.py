@@ -1441,6 +1441,7 @@ def test_project_readme_documents_workflow_optimizer_modes():
         "vectorized row-wise port of PyTorch's bracket/zoom line search",
         "`adagrad_restart_schedule` is validated before model loading",
         "`E/Pi[/Neumann]:lr:steps`",
+        "Later phases must not decrease `fixed_iters_E`, `fixed_iters_Pi`, or `neumann_terms`",
         "`adagrad_restart_final_check_iters` must be zero to disable",
     ):
         assert token in normalized
@@ -1475,6 +1476,8 @@ def test_production_optimization_guide_is_linked_and_documents_routes():
         "`optimizer_step_cap=125`",
         "`optimizer_step_cap_reason=adagrad_restart_schedule`",
         "`adagrad_restart_final_check_iters=128`",
+        "same solver budget with a new LR",
+        "must not reduce `fixed_iters_E`, `fixed_iters_Pi`, or `neumann_terms`",
         "`final_check_iters`",
         "optimizer-specific route fields",
         "Hessian-SGD warmup/refresh/normal-stage solver controls",

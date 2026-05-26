@@ -97,7 +97,7 @@ values with labels.
 | `hessian_sgd_validation_interval` | `--hessian-sgd-validation-interval` | Non-negative full-stage cadence for periodic high-budget `hessian-sgd` validation steps; `0` disables periodic validation. |
 | `hessian_sgd_validation_fixed_iters_pi` | `--hessian-sgd-validation-fixed-iters-pi` | Optional positive even Pi budget for periodic `hessian-sgd` validation steps; requires a positive validation interval. |
 | `hessian_sgd_validation_neumann_terms` | `--hessian-sgd-validation-neumann-terms` | Optional positive Neumann budget for periodic `hessian-sgd` validation steps; requires a positive validation interval. |
-| `adagrad_restart_schedule` | `--adagrad-restart-schedule` | Specieswise `adagrad-restarts` phase ladder as `budget:lr:steps` or `E/Pi[/Neumann]:lr:steps`. Non-default values require specieswise `adagrad-restarts`. |
+| `adagrad_restart_schedule` | `--adagrad-restart-schedule` | Specieswise `adagrad-restarts` phase ladder as `budget:lr:steps` or `E/Pi[/Neumann]:lr:steps`. Later phases must not decrease `fixed_iters_E`, `fixed_iters_Pi`, or `neumann_terms`; same-budget LR restarts are allowed. Non-default values require specieswise `adagrad-restarts`. |
 | `adagrad_restart_final_check_iters` | `--adagrad-restart-final-check-iters` | Final specieswise validation budget for `adagrad-restarts`; `0` disables, otherwise positive even. Non-default values require specieswise `adagrad-restarts`. |
 | `lbfgs_lr` | `--lbfgs-lr` | Positive base learning rate for L-BFGS style optimizers. |
 | `lbfgs_history_size` | `--lbfgs-history-size` | Positive number of curvature pairs retained by L-BFGS style optimizers. |

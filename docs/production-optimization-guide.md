@@ -170,7 +170,10 @@ same basin.
 
 Override the ladder with `adagrad_restart_schedule` or
 `--adagrad-restart-schedule` only when a dataset-specific validation run shows
-that the default under- or over-spends early fidelity.
+that the default under- or over-spends early fidelity. Custom ladders are
+validated before model loading: later phases may keep the same solver budget
+with a new LR, but they must not reduce `fixed_iters_E`, `fixed_iters_Pi`, or
+`neumann_terms`.
 `validate-config` rejects non-default `adagrad_restart_*` controls unless the
 resolved optimizer is specieswise `adagrad-restarts`, just as genewise
 `hessian_sgd_*` controls are rejected outside `hessian-sgd`.

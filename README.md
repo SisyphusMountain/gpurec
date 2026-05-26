@@ -350,9 +350,10 @@ specieswise `adagrad-restarts`.
 use `budget:lr:steps` or `E/Pi[/Neumann]:lr:steps`; tied budgets and `Pi`
 budgets must be positive even integers, split `E` and Neumann budgets must be
 positive integers, learning rates must be positive finite numbers, and step
-counts must be positive integers.  `adagrad_restart_final_check_iters` must be
-zero to disable the final specieswise validation pass or a positive even
-integer.
+counts must be positive integers.  Later phases must not decrease
+`fixed_iters_E`, `fixed_iters_Pi`, or `neumann_terms`; same-budget LR restarts
+are allowed.  `adagrad_restart_final_check_iters` must be zero to disable the
+final specieswise validation pass or a positive even integer.
 
 ```bash
 gpurec optimize \

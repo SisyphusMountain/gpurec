@@ -1480,6 +1480,23 @@ def test_run_config_accepts_split_specieswise_adagrad_restart_schedule(
     ]
 
 
+def test_run_config_allows_same_budget_specieswise_adagrad_restart_phase(
+    tmp_path: Path,
+):
+    config = RunConfig(
+        species_tree=tmp_path / "sp.nwk",
+        families_file=tmp_path / "families.txt",
+        out_dir=tmp_path / "out",
+        mode="specieswise",
+        optimizer="adagrad-restarts",
+        adagrad_restart_schedule="8:1.0:2,8:0.5:2,16:0.5:3",
+        device="cpu",
+    )
+
+    assert config.adagrad_restart_schedule == "8:1:2,8:0.5:2,16:0.5:3"
+    assert adagrad_restart_schedule_total_steps(config.adagrad_restart_schedule) == 7
+
+
 def test_run_config_allows_default_adagrad_restart_fields_outside_specieswise(
     tmp_path: Path,
 ):
@@ -1535,6 +1552,18 @@ def test_run_config_rejects_adagrad_restart_controls_outside_adagrad_restarts(
         ("8/4/0:1:2", "entry 1 Neumann budget"),
         ("8:0:2", "learning rates must be positive"),
         ("8:1:0", "entry 1 steps"),
+        (
+            "16:1:2,8:1:2",
+            "phases must not decrease fixed_iters_E, fixed_iters_Pi, or neumann_terms",
+        ),
+        (
+            "8/8/8:1:2,8/4/8:1:2",
+            "phases must not decrease fixed_iters_E, fixed_iters_Pi, or neumann_terms",
+        ),
+        (
+            "8/8/8:1:2,8/8/4:1:2",
+            "phases must not decrease fixed_iters_E, fixed_iters_Pi, or neumann_terms",
+        ),
     ],
 )
 def test_run_config_rejects_invalid_specieswise_adagrad_restart_schedule(
