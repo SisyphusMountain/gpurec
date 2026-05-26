@@ -8,9 +8,11 @@ import torch
 
 
 ADAPTIVE_NEUMANN_TERMS_DISABLED_MESSAGE = (
-    "adaptive_neumann_terms mode is disabled: the current behaviour is "
-    "absolutely terrible and MUST be fixed before proceeding; it recomputes "
-    "full gradients at each adaptive check."
+    "adaptive_neumann_terms mode is disabled because it recomputes full "
+    "gradients at each adaptive check and is not part of the supported "
+    "production optimization route. Leave adaptive_neumann_terms=false and "
+    "use fixed neumann_terms or the documented hessian-sgd/adagrad-restarts "
+    "defaults."
 )
 
 

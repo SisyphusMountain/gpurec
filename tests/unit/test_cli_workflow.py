@@ -493,7 +493,10 @@ def test_cli_rejects_adaptive_neumann_terms_mode(tmp_path: Path):
 
     with pytest.raises(
         ValueError,
-        match="current behaviour is absolutely terrible.*MUST be fixed",
+        match=(
+            "adaptive_neumann_terms mode is disabled.*"
+            "not part of the supported production optimization route"
+        ),
     ):
         _run_config_from_args(args)
 
@@ -2796,6 +2799,10 @@ def test_cli_optimize_help_describes_config_and_path_inputs(capsys):
     assert "contiguous/input_order" in captured.out
     assert "ffd/clade_ffd" in captured.out
     assert "depth_ffd/wave_first_fit" in captured.out
+    assert "Disabled compatibility flag" in captured.out
+    assert "adaptive Neumann path is not part of the" in captured.out
+    assert "supported production optimization route" in captured.out
+    assert "legacy adaptive backward" not in captured.out
     assert "--require-converged" in captured.out
     assert "--require-final-check-ok" in captured.out
 

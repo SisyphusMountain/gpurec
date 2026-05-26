@@ -500,6 +500,16 @@ def test_package_runtime_does_not_use_assert_statements():
     assert offenders == []
 
 
+def test_disabled_adaptive_neumann_terms_message_is_professional():
+    from gpurec._validation import ADAPTIVE_NEUMANN_TERMS_DISABLED_MESSAGE
+
+    assert "not part of the supported production optimization route" in (
+        ADAPTIVE_NEUMANN_TERMS_DISABLED_MESSAGE
+    )
+    assert "absolutely terrible" not in ADAPTIVE_NEUMANN_TERMS_DISABLED_MESSAGE
+    assert "MUST be fixed" not in ADAPTIVE_NEUMANN_TERMS_DISABLED_MESSAGE
+
+
 def test_tests_subprocess_calls_have_explicit_timeouts():
     root = Path(__file__).resolve().parents[2]
     offenders: list[str] = []
@@ -818,6 +828,8 @@ def test_run_config_reference_covers_current_config_surface():
         "`RunConfig.from_dict(...)` before model construction",
         "resolves to `hessian-sgd`",
         "resolves to `adagrad-restarts`",
+        "Disabled compatibility flag",
+        "not part of the supported production optimization route",
         "Non-default values require specieswise `adagrad-restarts`",
         "Requires genewise `hessian-sgd`",
         "Resume starts at checkpoint `next_step`",
@@ -827,6 +839,8 @@ def test_run_config_reference_covers_current_config_surface():
         assert token in reference
     assert "docs/run-config-reference.md" in project_readme
     assert "run-config-reference.md" in docs_readme
+    assert "absolutely terrible" not in reference
+    assert "MUST be fixed" not in reference
 
 
 def test_simplification_opportunity_index_is_mapped_and_gate_oriented():

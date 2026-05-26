@@ -1119,8 +1119,9 @@ def _add_run_config_args(parser: argparse.ArgumentParser) -> None:
         action=argparse.BooleanOptionalAction,
         default=None,
         help=(
-            "Enable legacy adaptive backward Neumann gradient-convergence "
-            "checks. Default is disabled."
+            "Disabled compatibility flag; enabling it is rejected because the "
+            "adaptive Neumann path is not part of the supported production "
+            "optimization route."
         ),
     )
     parser.add_argument(

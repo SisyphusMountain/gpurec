@@ -2010,7 +2010,10 @@ def test_run_config_rejects_nonbool_boolean_controls(
 def test_run_config_rejects_adaptive_neumann_terms_mode(tmp_path: Path):
     with pytest.raises(
         ValueError,
-        match="current behaviour is absolutely terrible.*MUST be fixed",
+        match=(
+            "adaptive_neumann_terms mode is disabled.*"
+            "not part of the supported production optimization route"
+        ),
     ):
         RunConfig(
             species_tree=tmp_path / "sp.nwk",
@@ -2976,7 +2979,10 @@ def test_gene_recon_configure_solver_iterations_rejects_adaptive_neumann_terms_m
 
     with pytest.raises(
         ValueError,
-        match="current behaviour is absolutely terrible.*MUST be fixed",
+        match=(
+            "adaptive_neumann_terms mode is disabled.*"
+            "not part of the supported production optimization route"
+        ),
     ):
         GeneReconModel.configure_solver_iterations(
             model,
@@ -3057,7 +3063,10 @@ def test_gene_recon_constructors_reject_adaptive_neumann_terms_mode_before_io(
 ):
     with pytest.raises(
         ValueError,
-        match="current behaviour is absolutely terrible.*MUST be fixed",
+        match=(
+            "adaptive_neumann_terms mode is disabled.*"
+            "not part of the supported production optimization route"
+        ),
     ):
         GeneReconModel.from_alerax_families(
             tmp_path / "missing_species.nwk",

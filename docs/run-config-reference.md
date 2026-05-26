@@ -58,13 +58,13 @@ reference lists the complete `RunConfig` surface.
 | `solver_warmup_iters` | `--solver-warmup-iters` | Initial low-fidelity Pi/Neumann budget for supported genewise active-batch optimizers and specieswise runs with larger full budgets; `0` disables warmup. |
 | `solver_warmup_loss_patience` | `--solver-warmup-loss-patience` | Non-negative flat-loss patience before genewise active-batch optimizers promote from warmup to full solver budgets. |
 | `adaptive_iters` | `--adaptive-iters` / `--no-adaptive-iters` | Enables adaptive E/Pi iteration stopping. |
-| `adaptive_neumann_terms` | `--adaptive-neumann-terms` / `--no-adaptive-neumann-terms` | Disabled guardrail; enabling it raises until the legacy gradient-recompute behavior is fixed. |
+| `adaptive_neumann_terms` | `--adaptive-neumann-terms` / `--no-adaptive-neumann-terms` | Disabled compatibility flag. Enabling it is rejected because the adaptive Neumann path recomputes full gradients at each check and is not part of the supported production optimization route. |
 | `final_check_iters` | `--final-check-iters` | Final high-fidelity validation budget for non-`adagrad-restarts` optimizers; `0` disables the final check, otherwise it must be positive and even. |
 | `convergence_check_interval` | `--convergence-check-interval` | Positive iteration interval for adaptive solver checks; must be even when `adaptive_iters=true`. |
 | `e_logsumexp_tol` | `--e-logsumexp-tol` | Non-negative E logsumexp convergence tolerance. |
 | `pi_max_diff_tol` | `--pi-max-diff-tol` | Non-negative Pi max-difference convergence tolerance. |
-| `gradient_change_tol` | `--gradient-change-tol` | Non-negative absolute gradient-change tolerance for legacy adaptive-gradient checks. |
-| `gradient_change_rtol` | `--gradient-change-rtol` | Non-negative relative gradient-change tolerance for legacy adaptive-gradient checks. |
+| `gradient_change_tol` | `--gradient-change-tol` | Non-negative absolute gradient-change tolerance retained for compatibility with the disabled adaptive-Neumann surface. |
+| `gradient_change_rtol` | `--gradient-change-rtol` | Non-negative relative gradient-change tolerance retained for compatibility with the disabled adaptive-Neumann surface. |
 
 ## Rate Parameterization
 
