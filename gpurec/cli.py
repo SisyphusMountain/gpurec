@@ -1152,7 +1152,10 @@ def main(argv: list[str] | None = None) -> None:
         print(
             f"{_optimization_result_text(opt_result)} "
             f"sampled_families={sampling_result.families_sampled} "
+            f"samples={sampling_result.samples_per_family} "
+            f"xml={sampling_result.xml_files} "
             f"{_optional_text('out_dir', run_config.out_dir)}",
+            f"{_optional_text('sample_out_dir', sampling_result.out_dir)}",
             flush=True,
         )
         return

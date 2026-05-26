@@ -67,7 +67,9 @@ Sampling writes under `reconciliations/` in the sampling output directory. For
 `gpurec run`, that is the same `out_dir` unless a sampling output override is
 provided.
 Standalone `gpurec sample` prints `sampled_families`, `samples`, `xml`, and
-`out_dir` with the same status-line escaping rule.
+`out_dir` with the same status-line escaping rule.  The combined `gpurec run`
+status line prints the optimization fields plus `sampled_families`, `samples`,
+`xml`, `out_dir`, and `sample_out_dir` after sampling succeeds.
 
 | Path | Contents |
 |---|---|

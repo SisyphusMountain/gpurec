@@ -1339,11 +1339,12 @@ def test_cli_run_samples_reported_checkpoint_instead_of_stale_best(
 ):
     checkpoint_dir = tmp_path / "out" / "checkpoints"
     checkpoint_dir.mkdir(parents=True)
+    sample_out_dir = tmp_path / "run sample outputs"
     stale_best = checkpoint_dir / "best.pt"
     current_latest = checkpoint_dir / "latest.pt"
     stale_best.write_bytes(b"stale")
     current_latest.write_bytes(b"current")
-    sampled: dict[str, Path] = {}
+    sampled: dict[str, object] = {}
 
     def successful_optimize(config):
         return SimpleNamespace(
@@ -1364,10 +1365,11 @@ def test_cli_run_samples_reported_checkpoint_instead_of_stale_best(
 
     def capture_sample(config):
         sampled["checkpoint"] = config.checkpoint
+        sampled["out_dir"] = config.out_dir
         return SimpleNamespace(
             families_sampled=1,
-            samples_per_family=1,
-            xml_files=1,
+            samples_per_family=config.samples,
+            xml_files=2,
             out_dir=config.out_dir,
         )
 
@@ -1375,7 +1377,10 @@ def test_cli_run_samples_reported_checkpoint_instead_of_stale_best(
     monkeypatch.setattr("gpurec.cli.sample", capture_sample)
     monkeypatch.setattr("gpurec.cli._ensure_backtracking_available", lambda _: None)
 
-    main(_minimal_workflow_cli_args("run", tmp_path))
+    main(
+        _minimal_workflow_cli_args("run", tmp_path)
+        + ["--sample-out-dir", str(sample_out_dir), "--samples", "3"]
+    )
 
     captured = capsys.readouterr()
     assert "steps_completed=3" in captured.out
@@ -1392,7 +1397,18 @@ def test_cli_run_samples_reported_checkpoint_instead_of_stale_best(
     assert "final_check_grad_max_abs_delta=0.000000" in captured.out
     assert "final_check_grad_rel_inf_delta=0.000000" in captured.out
     assert "sampled_families=1" in captured.out
+    assert "samples=3" in captured.out
+    assert "xml=2" in captured.out
+    assert (
+        gpurec_cli._optional_text("out_dir", (tmp_path / "out").resolve())
+        in captured.out
+    )
+    assert (
+        gpurec_cli._optional_text("sample_out_dir", sample_out_dir.resolve())
+        in captured.out
+    )
     assert sampled["checkpoint"] == current_latest.resolve()
+    assert sampled["out_dir"] == sample_out_dir.resolve()
 
 
 def test_cli_run_rejects_sampling_options_before_optimization(

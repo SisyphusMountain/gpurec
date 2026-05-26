@@ -1297,7 +1297,8 @@ def test_project_readme_documents_gpurec_run_end_to_end_workflow():
     assert "reported by the optimizer" in normalized
     assert "falling back to `checkpoints/best.pt` or `checkpoints/latest.pt`" in normalized
     assert "exits without sampling if optimization fails" in normalized
-    assert "Use `gpurec sample --checkpoint ...` to sample an existing run" in project_readme
+    assert "`sampled_families`, `samples`, `xml`, and `sample_out_dir`" in project_readme
+    assert "Use `gpurec sample --checkpoint ...` to sample an existing run" in normalized
 
 
 def test_project_readme_documents_workflow_optimizer_modes():
@@ -1405,6 +1406,9 @@ def test_output_artifact_reference_is_linked_and_documents_contract():
         "`gpurec optimize` status line",
         "JSON strings with spaces escaped as `\\u0020`",
         "`sampled_families`",
+        "`samples`",
+        "`xml`",
+        "`sample_out_dir`",
         "`gpurec run`",
         "`rates_final.tsv`",
         "`per_fam_likelihoods.tsv`",
