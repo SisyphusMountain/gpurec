@@ -121,6 +121,14 @@ The `E=8, Pi=4` route has a best-observed cold total of
 bit of the fixed8/fixed128 likelihood.  The `E=6, Pi=4` route is slightly more
 optimistic than fixed8, but still much closer than tied fixed4 and much faster
 than tied fixed6.
+Additional current-code rechecks kept `E=8, Pi=4` as the near-reference route:
+`E=7, Pi=4` matched the `2157098.25`-bit loss but measured `2.278900177916512s`
+and `2.287128569034394s`, while `E=6, Pi=4` measured `2.2726288129924797s`
+and `2.2791547380620614s` with the slightly optimistic `2157096.0`-bit loss.
+Changing `family_chunk_size` did not change the 21-batch retained layout; a
+single `666` sample reached `2.2480324909556657s`, but repeats moved back into
+the `2.27s` to `2.32s` band, so this remains construction noise rather than a
+route change.
 
 There is also a distinct fast-approximate route below fixed4.  The old tied
 `E=2, Pi=2` point is unusable, but increasing only E makes `Pi=2` useful:
@@ -161,6 +169,13 @@ measured `8192`: `1.8086025349912234s` and `1.76793152699247s` versus
 general documented route keeps `8192` for lower memory and consistency with the
 near-reference route; `12288` is the current best-observed fast-approximate
 sample.
+An additional wave/chunk check moved the best-observed fast approximate sample
+to `1.7475068190251477s` at `E=4, Pi=2`, `max_wave_size=12288`, and
+`family_chunk_size=666`, with the same `2156863.0`-bit loss.  Current-code
+repeats after rejecting the early-prefetch prototype measured
+`1.7857683220063336s` and `1.77085414895555s`, so `12288` remains the
+best-observed fast setting but not a stable median improvement over the lower
+memory `8192` route.
 
 A materialized split-budget sweep with Pi fixed at `4` measured `E=5` at
 `1.2753524020081386s` and `2157060.5` bits, `E=6` at
@@ -215,6 +230,14 @@ Temporarily lowering the worker count to `2` gave `E=8, Pi=4` cold totals of
 `2.3399722679168917s` and `2.2740334490081295s`; raising it to `4` gave
 `2.3272328549646772s` and `2.3391964139882475s`.  Neither setting beat the
 documented three-worker samples.
+Current-code CPU and packing rechecks also kept the route unchanged.  With
+`E=8, Pi=4`, `preprocess_cpu_cores` values `8`, `16`, `24`, and `32` measured
+`2.399679420981556s`, `2.2792265199823305s`, `2.317675110010896s`, and
+`2.3776359270559624s`, keeping `16` as the local 32-core host setting.
+`depth_first_fit`, the HOGENOM-style packing, measured `3.5548714509932324s`
+because construction was much slower on this generated shape; `sequential`
+measured `2.360776627960149s`.  `clade_first_fit` remains the generated-tree
+default.
 
 Split-budget near-reference command:
 
@@ -801,6 +824,12 @@ Rejected follow-ups:
   `2.2710205909679644s`, `2.3239040829939768s`, and
   `2.2830842310213484s`, with pass times around `1.324s` to `1.329s`.
   That extra warmup is therefore rejected.
+- Starting lazy background prefetch before building batch 0 was also rejected.
+  The prototype passed `py_compile` and the targeted no-grad/specieswise/uniform
+  tests (`13 passed`), but current-route `E=8, Pi=4` samples stayed in the
+  existing band (`2.273360916005913s`, `2.2933849390246905s`) and did not beat
+  the best documented near-reference cold total.  Finite prefetch depths were
+  still slower than the all-prefetch route.
 - In-place accumulation of the `21` per-batch scalar losses in the shared-theta
   loss-only stream was also rejected.  The prototype passed the targeted
   no-grad/specieswise/uniform tests (`13 passed`), but a seven-repetition
@@ -823,7 +852,10 @@ Differences from HOGENOM:
   originally gave similar steady likelihood timing but paid an extra Python
   construction prepass.  Retaining the native Rust layouts removes that Python
   prepass; with the current timings, `clade_first_fit` remains the best measured
-  default for the generated tree benchmark.
+  default for the generated tree benchmark.  A fresh `E=8, Pi=4` recheck
+  measured `3.5548714509932324s` for `depth_first_fit` and
+  `2.360776627960149s` for `sequential`, versus the `clade_first_fit`
+  `2.27s` band.
 - HOGENOM's depth-first path should keep the exhaustive scheduler policy because
   wave compaction mattered there.  On `test_trees_1000`, the retained
   `clade_first_fit` chunks had the same measured max wave count with the
