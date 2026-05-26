@@ -228,7 +228,7 @@ jobs:
               )
           PY
 
-      - name: Smoke Rust crate from source archive
+      - name: Smoke source archive Rust crates and examples
         run: |
           sdist_unpack_dir=$(mktemp -d)
           export SDIST_UNPACK_DIR="$sdist_unpack_dir"
@@ -248,6 +248,13 @@ jobs:
           cargo run --locked --quiet --manifest-path "$root/crates/gpurec-backtrack/Cargo.toml" -- --help
           cargo test --locked --manifest-path "$root/crates/gpurec-preprocess/Cargo.toml"
           cargo run --locked --quiet --manifest-path "$root/crates/gpurec-preprocess/Cargo.toml" -- --help
+          cd "$root"
+          python -m gpurec.cli validate-config --config examples/minimal-run-config.json --check-preprocess | tee genewise-validate.txt
+          grep -q "optimizer=hessian-sgd" genewise-validate.txt
+          grep -q "preprocess_checked=true" genewise-validate.txt
+          python -m gpurec.cli validate-config --config examples/specieswise-adagrad-restarts-config.json --check-preprocess | tee specieswise-validate.txt
+          grep -q "optimizer=adagrad-restarts" specieswise-validate.txt
+          grep -q "preprocess_checked=true" specieswise-validate.txt
 
       - name: Install built wheel and smoke CLI
         run: |

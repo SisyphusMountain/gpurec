@@ -495,10 +495,13 @@ def test_cpu_ci_builds_and_smokes_release_artifacts():
     ):
         assert required in artifact_check
 
-    assert _workflow_step(package, "Smoke Rust crate from source archive")["name"] == (
-        "Smoke Rust crate from source archive"
+    assert _workflow_step(
+        package,
+        "Smoke source archive Rust crates and examples",
+    )["name"] == (
+        "Smoke source archive Rust crates and examples"
     )
-    rust_smoke = _step_run(package, "Smoke Rust crate from source archive")
+    rust_smoke = _step_run(package, "Smoke source archive Rust crates and examples")
     for required in (
         "SDIST_UNPACK_DIR",
         'cargo test --locked --manifest-path "$root/crates/gpurec-backtrack/Cargo.toml"',
@@ -511,6 +514,18 @@ def test_cpu_ci_builds_and_smokes_release_artifacts():
             'cargo run --locked --quiet --manifest-path "$root/crates/gpurec-preprocess/'
             'Cargo.toml" -- --help'
         ),
+        'cd "$root"',
+        (
+            "python -m gpurec.cli validate-config --config "
+            "examples/minimal-run-config.json --check-preprocess"
+        ),
+        "optimizer=hessian-sgd",
+        (
+            "python -m gpurec.cli validate-config --config "
+            "examples/specieswise-adagrad-restarts-config.json --check-preprocess"
+        ),
+        "optimizer=adagrad-restarts",
+        "preprocess_checked=true",
     ):
         assert required in rust_smoke
 
@@ -983,6 +998,17 @@ def test_release_readiness_documents_installed_wheel_smoke():
         "workflow exports missing from dir(gpurec.workflow)",
         "workflow wildcard mismatch",
         "exports_ok",
+    ):
+        assert expected in guide
+
+
+def test_release_readiness_documents_source_archive_preprocess_smoke():
+    guide = (ROOT / "docs" / "release-readiness.md").read_text(encoding="utf-8")
+
+    for expected in (
+        "source-archive `validate-config --check-preprocess`",
+        "examples/minimal-run-config.json",
+        "examples/specieswise-adagrad-restarts-config.json",
     ):
         assert expected in guide
 
