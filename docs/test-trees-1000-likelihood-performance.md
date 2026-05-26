@@ -168,16 +168,18 @@ or first optimizer phase is useful by itself; it is not a free prelude if the
 caller immediately requires a tied fixed8 likelihood.
 Starting with tied fixed4 and then promoting to `E=8, Pi=4` measured
 `3.5742293469957076s` cumulative, so the best near-reference single result
-still starts directly at `E=8, Pi=4`.
+still starts directly at the split Pi4 route rather than from tied fixed4.
 Changing `family_chunk_size` did not change the 21-batch retained layout; a
 single `666` sample reached `2.2480324909556657s`, but repeats moved back into
 the `2.27s` to `2.32s` band, so this remains construction noise rather than a
 route change.
-Setting `CUDA_DEVICE_MAX_CONNECTIONS=1` produced a new best-observed
-near-reference sample of `2.247412250027992s`, but repeats measured
-`2.302840727963485s`, `2.2829688700148836s`, and
-`2.2658810860011727s`.  This is recorded as a best single sample, not a stable
-default-route change.
+On the older `E=8, Pi=4` route, setting `CUDA_DEVICE_MAX_CONNECTIONS=1`
+produced a then-best observed near-reference sample of `2.247412250027992s`,
+but repeats measured `2.302840727963485s`, `2.2829688700148836s`, and
+`2.2658810860011727s`.  A fresh `E=7, Pi=4` check with the same environment
+measured `2.2591210909886286s`, `2.2517540119588375s`,
+`2.2623116039903834s`, and `2.2573027559556067s`, so this is still rejected as
+a stable default-route change.
 
 There is also a distinct fast-approximate route below fixed4.  The old tied
 `E=2, Pi=2` point is unusable, but increasing only E makes `Pi=2` useful:
@@ -309,10 +311,10 @@ Runtime environment rechecks did not establish a route change.  Explicit
 `CUDA_MODULE_LOADING=LAZY` matched the base route at `2.270426261005923s`;
 `CUDA_MODULE_LOADING=EAGER` was rejected after raising construction to
 `7.578426808002405s` and total time to `8.904745513980743s`.
-`CUDA_DEVICE_MAX_CONNECTIONS=1` gave the best single sample above but did not
-repeat as a stable improvement, and `CUDA_DEVICE_MAX_CONNECTIONS=8` measured
-`2.2815428160247393s`.  Setting `OMP_NUM_THREADS=1 MKL_NUM_THREADS=1` measured
-`2.2856818459695205s`.
+`CUDA_DEVICE_MAX_CONNECTIONS=1` gave the best single sample on the older E8/Pi4
+route but did not repeat as a stable improvement and did not beat the newer
+E7/Pi4 low.  `CUDA_DEVICE_MAX_CONNECTIONS=8` measured `2.2815428160247393s`.
+Setting `OMP_NUM_THREADS=1 MKL_NUM_THREADS=1` measured `2.2856818459695205s`.
 
 The production workflow now also supports opt-in early phase promotion for
 specieswise `adagrad-restarts`: `adagrad_restart_phase_loss_patience > 0`
