@@ -1204,6 +1204,94 @@ def test_cli_validate_config_require_production_default_route_accepts_genewise_d
     assert "production_default_route_mismatches=none" in captured.out
 
 
+def test_cli_validate_config_combined_route_gates_share_printed_route_metadata(
+    tmp_path: Path,
+    capsys,
+    monkeypatch,
+):
+    import gpurec.workflow.config as workflow_config
+
+    original_route_metadata = workflow_config.effective_route_metadata
+    route_metadata_calls = 0
+
+    def counted_route_metadata(config):
+        nonlocal route_metadata_calls
+        route_metadata_calls += 1
+        return original_route_metadata(config)
+
+    monkeypatch.setattr(
+        workflow_config,
+        "effective_route_metadata",
+        counted_route_metadata,
+    )
+
+    main(
+        _minimal_workflow_cli_args("validate-config", tmp_path)
+        + [
+            "--require-mode-default-optimizer",
+            "--require-production-default-route",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert captured.err == ""
+    assert route_metadata_calls == 1
+    assert "valid_config=true" in captured.out
+    assert "uses_mode_default_optimizer=true" in captured.out
+    assert "uses_production_default_route=true" in captured.out
+
+
+@pytest.mark.parametrize("command", ["validate-config", "optimize", "run"])
+def test_cli_combined_config_route_gates_share_route_metadata_before_path_checks(
+    command: str,
+    tmp_path: Path,
+    capsys,
+    monkeypatch,
+):
+    import gpurec.workflow.config as workflow_config
+
+    original_route_metadata = workflow_config.effective_route_metadata
+    route_metadata_calls = 0
+
+    def counted_route_metadata(config):
+        nonlocal route_metadata_calls
+        route_metadata_calls += 1
+        return original_route_metadata(config)
+
+    monkeypatch.setattr(
+        workflow_config,
+        "effective_route_metadata",
+        counted_route_metadata,
+    )
+    missing_species = tmp_path / "missing-sp.nwk"
+    missing_families = tmp_path / "missing-families.txt"
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(
+            [
+                command,
+                "--species-tree",
+                str(missing_species),
+                "--families-file",
+                str(missing_families),
+                "--out-dir",
+                str(tmp_path / "out"),
+                "--mode",
+                "genewise",
+                "--require-mode-default-optimizer",
+                "--require-production-default-route",
+            ]
+        )
+
+    captured = capsys.readouterr()
+    assert exc_info.value.code == 2
+    assert route_metadata_calls == 1
+    assert "path does not exist" in captured.err
+    assert "config optimizer is" not in captured.err
+    assert "production default route fields differ" not in captured.err
+    assert "Traceback" not in captured.err
+
+
 def test_cli_validate_config_reports_hessian_sgd_normal_solver_overrides(
     tmp_path: Path,
     capsys,

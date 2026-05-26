@@ -305,10 +305,10 @@ def _production_default_route_gate_message_from_evidence(
 def _require_config_mode_default_optimizer(
     parser: argparse.ArgumentParser,
     config: Any,
+    *,
+    route: dict[str, Any] | None = None,
 ) -> None:
-    from gpurec.workflow.config import effective_route_metadata
-
-    route = effective_route_metadata(config)
+    route = _config_route_metadata(config) if route is None else route
     if route.get("uses_mode_default_optimizer") is not True:
         parser.error(
             _mode_default_optimizer_gate_message(
@@ -322,10 +322,10 @@ def _require_config_mode_default_optimizer(
 def _require_config_production_default_route(
     parser: argparse.ArgumentParser,
     config: Any,
+    *,
+    route: dict[str, Any] | None = None,
 ) -> None:
-    from gpurec.workflow.config import effective_route_metadata
-
-    route = effective_route_metadata(config)
+    route = _config_route_metadata(config) if route is None else route
     if route.get("uses_production_default_route") is not True:
         parser.error(
             _production_default_route_gate_message(
@@ -334,6 +334,29 @@ def _require_config_production_default_route(
                 action=_PRODUCTION_DEFAULT_ROUTE_CONFIG_ACTION,
             )
         )
+
+
+def _config_route_metadata(config: Any) -> dict[str, Any]:
+    from gpurec.workflow.config import effective_route_metadata
+
+    return effective_route_metadata(config)
+
+
+def _require_config_route_gates(
+    parser: argparse.ArgumentParser,
+    config: Any,
+    *,
+    require_mode_default_optimizer: bool,
+    require_production_default_route: bool,
+) -> dict[str, Any] | None:
+    if not require_mode_default_optimizer and not require_production_default_route:
+        return None
+    route = _config_route_metadata(config)
+    if require_mode_default_optimizer:
+        _require_config_mode_default_optimizer(parser, config, route=route)
+    if require_production_default_route:
+        _require_config_production_default_route(parser, config, route=route)
+    return route
 
 
 def _exit_unless_mode_default_optimizer(
@@ -1341,10 +1364,13 @@ def _write_config_template(args: argparse.Namespace) -> Path | None:
     return output
 
 
-def _validate_config_route_text(config: RunConfig) -> str:
-    from gpurec.workflow.config import effective_route_metadata
-
-    return _route_metadata_text(effective_route_metadata(config))
+def _validate_config_route_text(
+    config: RunConfig,
+    *,
+    route_metadata: dict[str, Any] | None = None,
+) -> str:
+    route = _config_route_metadata(config) if route_metadata is None else route_metadata
+    return _route_metadata_text(route)
 
 
 def _add_run_config_args(parser: argparse.ArgumentParser) -> None:
@@ -2070,10 +2096,12 @@ def main(argv: list[str] | None = None) -> None:
     if args.command == "optimize":
         try:
             config = _run_config_from_args(args, validate_input_paths=False)
-            if args.require_mode_default_optimizer:
-                _require_config_mode_default_optimizer(command_parser, config)
-            if args.require_production_default_route:
-                _require_config_production_default_route(command_parser, config)
+            _require_config_route_gates(
+                command_parser,
+                config,
+                require_mode_default_optimizer=args.require_mode_default_optimizer,
+                require_production_default_route=args.require_production_default_route,
+            )
             _validate_run_config_input_paths(config)
             _preflight_run_config(config)
         except _EXPECTED_WORKFLOW_ERRORS as exc:
@@ -2112,10 +2140,12 @@ def main(argv: list[str] | None = None) -> None:
             )
         try:
             config = _run_config_from_args(args, validate_input_paths=False)
-            if args.require_mode_default_optimizer:
-                _require_config_mode_default_optimizer(command_parser, config)
-            if args.require_production_default_route:
-                _require_config_production_default_route(command_parser, config)
+            route_metadata = _require_config_route_gates(
+                command_parser,
+                config,
+                require_mode_default_optimizer=args.require_mode_default_optimizer,
+                require_production_default_route=args.require_production_default_route,
+            )
             _validate_run_config_input_paths(config)
             summary = _preflight_run_config(
                 config,
@@ -2154,7 +2184,7 @@ def main(argv: list[str] | None = None) -> None:
             f"families={summary['families']} "
             f"gene_tree_files={summary['gene_tree_files']} "
             f"mapped_families={summary['mapped_families']} "
-            f"{_validate_config_route_text(config)} "
+            f"{_validate_config_route_text(config, route_metadata=route_metadata)} "
             f"device={config.device} {_optional_text('out_dir', config.out_dir)}"
             f"{preprocess_text}",
             flush=True,
@@ -2340,10 +2370,12 @@ def main(argv: list[str] | None = None) -> None:
             )
         try:
             run_config = _run_config_from_args(args, validate_input_paths=False)
-            if args.require_mode_default_optimizer:
-                _require_config_mode_default_optimizer(command_parser, run_config)
-            if args.require_production_default_route:
-                _require_config_production_default_route(command_parser, run_config)
+            _require_config_route_gates(
+                command_parser,
+                run_config,
+                require_mode_default_optimizer=args.require_mode_default_optimizer,
+                require_production_default_route=args.require_production_default_route,
+            )
             _validate_run_config_input_paths(run_config)
             _preflight_run_config(run_config)
             _validate_run_sampling_args(args, run_config)

@@ -443,7 +443,9 @@ automation should fail unless the resolved optimizer is the mode default
 `--require-production-default-route` when automation should also fail on
 stale likelihood/gradient route metadata or non-default optimizer-specific
 settings such as a changed Hessian-SGD refresh budget, stale
-`final_check_iters_e`, or a truncated specieswise restart ladder.
+`final_check_iters_e`, or a truncated specieswise restart ladder. When both
+route gates are requested, config preflight resolves the route once and reuses
+that snapshot for the gate checks and `validate-config` status line.
 
 See [`docs/output-artifacts.md`](docs/output-artifacts.md) for the output
 artifact contract, including the normalized config snapshot, history fields,
