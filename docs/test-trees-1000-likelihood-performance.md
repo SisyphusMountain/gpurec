@@ -1,6 +1,6 @@
 # test_trees_1000 Resident Likelihood Timing
 
-Date: 2026-05-25
+Date: 2026-05-26
 
 This records the current fast path for full-dataset resident likelihood
 evaluation on `tests/data/test_trees_1000` in specieswise mode.  The generated
@@ -99,6 +99,17 @@ Cold first-pass fidelity samples with the same construction path:
 The same 2026-05-26 sanity run measured a direct fixed8 cold total of
 `3.3119525730144233s`, with `0.949136951006949s` model construction and
 `2.3628156220074743s` for the measured pass.
+
+Following the fixed4 pass with a fixed8 pass on the same cold resident model is
+more expensive than a direct fixed8 validation, because the current fixed-Pi
+path does not reuse the previous fixed4 Pi state.  A fresh 2026-05-26
+`--fixed-iters 4,8` sample measured:
+
+| Step | Incremental pass | Cumulative from process start | loss bits | delta vs fixed8 |
+|---:|---:|---:|---:|---:|
+| build | `0.9365219409810379s` | `0.9365219409810379s` | n/a | n/a |
+| 4 | `1.3344161220011301s` | `2.270938062982168s` | `2156427.0` | `670.25` |
+| 8 | `2.3105589839979075s` | `4.5814970469800755s` | `2157097.25` | `0.0` |
 
 Progressive fixed4-start sample on the same route, using one cold model and
 then evaluating `4,6,8` in sequence:
