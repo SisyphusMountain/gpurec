@@ -1902,6 +1902,11 @@ not edit files.  New or still-open findings from that refresh are:
   underspecified profiling ownership boundary, source-checkout-only configs
   that can look like installed workflows, and historical branchscale/KKT report
   scripts that need migration or archival.
+- The retained backward direct-wrapper characterization slice is now guarded
+  by CPU-safe tests for pre-launch metadata validation in the uniform backward
+  wrapper, DTS Pibar staging wrapper, and DTS-staged Pibar VJP wrapper.  These
+  tests pin the direct caller contract without requiring CUDA or reaching
+  Triton launch.
 - The family path/name/map normalization part of the duplicated-validation
   finding is now fixed for dataset construction and the uniform chunked API:
   they share `gpurec.core.model.normalize_family_inputs()` for default family

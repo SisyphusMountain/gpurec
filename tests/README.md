@@ -54,6 +54,7 @@ CUDA_VISIBLE_DEVICES='' pytest -q \
   tests/unit/test_species_helpers.py \
   tests/unit/test_terms.py \
   tests/unit/test_validation.py \
+  tests/unit/test_wave_backward_wrappers.py \
   tests/unit/test_workflow.py \
   tests/unit/test_workflow_artifacts.py
 ```
