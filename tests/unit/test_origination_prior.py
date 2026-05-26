@@ -214,10 +214,56 @@ def test_gene_recon_model_threads_prepared_origination_prior(monkeypatch):
     assert build_calls[0].probs is model.origination_probs
 
 
+def test_retained_shared_theta_layout_omits_family_idx():
+    calls = []
+
+    class FakeRustPreprocessed:
+        def build_chunked_layouts(self, **kwargs):
+            calls.append(dict(kwargs))
+            return [
+                {
+                    "indices": [0],
+                    "clades": 2,
+                    "splits": 0,
+                    "waves": 1,
+                    "max_wave": 2,
+                    "wave_layout": {},
+                }
+            ]
+
+    dataset = SimpleNamespace(
+        _rust_preprocessed=FakeRustPreprocessed(),
+        _preprocess_cpu_cores=16,
+        dtype=torch.float32,
+        S=3,
+        families=[{"root_clade_id": 1, "C": 2}],
+        family_names=["fam0"],
+        gene_tree_paths=[["g0.nwk"]],
+    )
+
+    specs = api_model._build_batch_specs_from_retained_rust(
+        dataset,
+        mode="specieswise",
+        family_chunk_size=500,
+        clade_budget=315000,
+        batch_packing="clade_first_fit",
+        max_wave_size=8192,
+        max_root_wave_size=None,
+        max_dts_partial_rows=None,
+        small_family_max_leaves=0,
+    )
+
+    assert specs is not None
+    assert calls[0]["include_family_idx"] is False
+    assert specs[0].wave_layout == {}
+
+
 def test_uniform_chunked_model_threads_prepared_origination_prior(
     monkeypatch,
     tmp_path,
 ):
+    build_kwargs = []
+
     class FakeDataset:
         def __init__(self, **kwargs):
             self.dtype = kwargs.get("dtype", torch.float64)
@@ -263,7 +309,8 @@ def test_uniform_chunked_model_threads_prepared_origination_prior(
                 "split_counts": [1, 2],
             }
 
-        def build_chunked_layouts(self, **_kwargs):
+        def build_chunked_layouts(self, **kwargs):
+            build_kwargs.append(dict(kwargs))
             return [
                 {
                     "indices": spec.indices,
@@ -311,3 +358,4 @@ def test_uniform_chunked_model_threads_prepared_origination_prior(
     assert model._origination_prior.probs is model.origination_probs
     assert model._state.origination_prior is model._origination_prior
     assert model._state.origination_probs is model.origination_probs
+    assert build_kwargs[0]["include_family_idx"] is False

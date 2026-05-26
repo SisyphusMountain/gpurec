@@ -50,7 +50,10 @@ Shared-theta no-grad streaming also precomputes the root-origination
 denominator from the single shared E solve instead of recomputing it for every
 resident batch.  It also prepares the shared Pi forward constants and DTS
 parameter metadata once after that E solve and reuses them across the `21`
-resident batch Pi passes.  On the local 32-core host, the cold
+resident batch Pi passes.  Non-genewise retained layouts now also skip the
+per-clade `family_idx` tensor that only genewise rate layouts need, reducing
+construction traffic and the retained batch memory footprint without changing
+the shared/global/specieswise likelihood path.  On the local 32-core host, the cold
 benchmark also pins native preprocessing and retained layout generation to `16`
 CPU threads; that is faster for this generated dataset than the default global
 Rayon pool.
@@ -102,8 +105,14 @@ first-pass component moved from the previous one-worker `~1.334s` band to about
 `1.321s` to `1.325s` in the three-worker samples.  Immediate same-checkout
 one-worker A/B samples measured `2.3445855720201507s` and
 `2.316118259972427s`, with measured passes `1.3370230720029213s` and
-`1.336572587955743s`.  Peak reserved CUDA memory remains around `5.17 GiB`,
-well below the older `21.36 GiB` high-memory all-prefetch route.
+`1.336572587955743s`.  After omitting unused retained `family_idx`, a serial
+same-route `E=8, Pi=4, Neumann=4` sample measured `2.254093322029803s` total
+with build `0.9380271580303088s`, measured pass `1.3160661639994942s`,
+loss `2157098.25`, peak allocated `5.085336208343506 GiB`, and peak reserved
+`5.125 GiB`.  This is not a new timing low, but it keeps the route in-band
+while lowering the previous `~5.17 GiB` reserved-memory band.  Peak reserved
+CUDA memory remains well below the older `21.36 GiB` high-memory all-prefetch
+route.
 
 Cold first-pass tied-budget fidelity samples with the same construction path:
 
@@ -140,6 +149,10 @@ model construction and `1.3207962359883823s` for the likelihood pass.  A same-co
 direct fixed8 comparison measured `3.2904011249775067s` total with
 `2157097.25`-bit loss, so the Pi4-start point was `1.0369201080175117s`
 faster while sitting `+1.0` bit above fixed8.
+With the retained `family_idx` omission present, a fresh serial fixed8 sample
+measured `3.3445263609755784s` total with loss `2157097.25`, so the same-run
+Pi4 sample above remained `1.0904330389457755s` faster while sitting `+1.0`
+bit from fixed8.
 An explicit promotion sequence starting with `E=8, Pi=4` and then evaluating
 tied fixed8 measured `2.2692654849379323s` to the Pi4 result, then another
 `2.3189413659856655s` for the fixed8 pass, for `4.588206850923598s`
@@ -964,6 +977,12 @@ Differences from HOGENOM:
   `test_trees_1000`, the resident Rust layout already contains the tensors used
   for likelihood, so compact family summaries remove about `0.3s` from cold
   construction without changing likelihood values.
+- The retained `family_idx` omission is likewise a generated likelihood-path
+  cleanup rather than a HOGENOM optimizer change.  Shared/global/specieswise
+  retained batches never index rates by per-clade family id, while genewise
+  retained batches still opt in to that tensor.  On `test_trees_1000`, avoiding
+  it trims memory and layout work across `21` resident batches; HOGENOM's
+  accepted specieswise route is dominated more by optimizer-gradient work.
 - HOGENOM's older end-to-end route paid CUDA setup before the heavy CPU/native
   work.  On this generated benchmark, starting CUDA warmup before retained Rust
   preprocessing hides most of that setup in the construction phase.  Warming

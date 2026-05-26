@@ -699,6 +699,7 @@ def _build_batch_specs_from_retained_rust(
         nonleaf_schedule_policy=(
             "forward" if batch_packing == "clade_first_fit" else "auto"
         ),
+        include_family_idx=(mode == "genewise"),
     )
     specs: list[_ResidentBatchSpec] = []
     for batch_index, payload in enumerate(payloads):

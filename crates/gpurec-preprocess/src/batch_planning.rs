@@ -177,11 +177,8 @@ fn plan_family_batches_impl(
         )?),
         None => None,
     };
-    let selected_groups = selected_groups_by_leaf_count(
-        &selected,
-        small_family_leaf_counts,
-        small_family_max_leaves,
-    );
+    let selected_groups =
+        selected_groups_by_leaf_count(&selected, small_family_leaf_counts, small_family_max_leaves);
 
     let mut plans = Vec::new();
     for group in selected_groups {

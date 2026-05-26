@@ -146,6 +146,8 @@ pub struct ChunkedLayoutRequest {
     pub num_threads: usize,
     #[serde(default = "scheduler::default_nonleaf_schedule_policy")]
     pub nonleaf_schedule_policy: String,
+    #[serde(default = "default_include_family_idx")]
+    pub include_family_idx: bool,
 }
 
 #[cfg(feature = "python-extension")]
@@ -156,6 +158,11 @@ fn default_layout_batch_packing() -> String {
 #[cfg(feature = "python-extension")]
 fn default_layout_dtype() -> String {
     "float32".to_string()
+}
+
+#[cfg(feature = "python-extension")]
+fn default_include_family_idx() -> bool {
+    true
 }
 
 #[cfg(feature = "python-extension")]
@@ -635,8 +642,12 @@ fn build_one_fused_chunk(
         &collated.leaf_row_index,
         &collated.leaf_col_index,
         &collated.root_clade_ids,
-        Some(&collated.family_clade_counts),
-        Some(&collated.family_clade_offsets),
+        request
+            .include_family_idx
+            .then_some(collated.family_clade_counts.as_slice()),
+        request
+            .include_family_idx
+            .then_some(collated.family_clade_offsets.as_slice()),
     )?;
 
     let mut max_wave = 0i64;
