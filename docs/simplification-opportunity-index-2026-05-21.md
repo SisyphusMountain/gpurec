@@ -141,11 +141,12 @@ Gate:
 
 ### LIK-01 - Standardize Internal Likelihood On Root Rows
 
-Current alternatives:
+Current state:
 
-- `compute_nll()` operates on full `Pi`.
-- `compute_nll_root_rows()` operates on root rows.
-- Export and no-grad paths decide independently which representation to use.
+- `compute_nll()` is a full-`Pi` adapter that gathers root rows.
+- `compute_nll_root_rows()` owns the likelihood math.
+- Runtime API loss and gradient paths gather or request root rows before NLL
+  evaluation.
 
 Simplification:
 

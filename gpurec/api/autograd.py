@@ -7,9 +7,9 @@ backward pass delegates to the existing
 :func:`gpurec.optimization.implicit_grad.implicit_grad_loglik_vjp_wave`.
 No new gradient math is written here.
 
-Sign convention: the core likelihood helper is ``compute_nll``.  The bridge
-keeps the NLL convention and returns NLL from ``forward()``, so users write
-``loss = model(); loss.backward()`` directly.
+Sign convention: the core likelihood helper is ``compute_nll_root_rows``.  The
+bridge keeps the NLL convention and returns NLL from ``forward()``, so users
+write ``loss = model(); loss.backward()`` directly.
 """
 from __future__ import annotations
 
@@ -18,7 +18,7 @@ from typing import Any, Optional
 
 import torch
 
-from gpurec.core.likelihood import E_fixed_point, compute_nll
+from gpurec.core.likelihood import E_fixed_point, compute_nll_root_rows
 from gpurec.core.forward import (
     _PiForwardRequest,
     pi_training_state_request,
@@ -434,10 +434,11 @@ def evaluate_resident_gradient_forward(
         _record_forward_solver_stats(static, solve.e_out, solve.pi_out)
 
     with _nvtx_range("resident root likelihood"):
-        loss_vec = compute_nll(
-            solve.pi_out["Pi_wave_ordered"],
+        root_clade_ids = static.wave_layout["root_clade_ids"]
+        root_rows = solve.pi_out["Pi_wave_ordered"][root_clade_ids, :]
+        loss_vec = compute_nll_root_rows(
+            root_rows,
             solve.e_out["E"],
-            static.wave_layout["root_clade_ids"],
             _origination_probs_for_static(static),
             origination_probs_prepared=True,
         )

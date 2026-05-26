@@ -1985,6 +1985,25 @@ def test_compute_nll_is_thin_root_row_adapter():
     assert "compute_origination_denominator" not in called_names
 
 
+def test_api_runtime_uses_root_row_likelihood_contract():
+    root = Path(__file__).resolve().parents[2]
+    offenders: list[str] = []
+
+    for path in _tracked_files(root, "gpurec/api/**/*.py"):
+        module = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(module):
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name)
+                and node.func.id == "compute_nll"
+            ):
+                offenders.append(
+                    f"{path.relative_to(root).as_posix()}:{node.lineno}"
+                )
+
+    assert offenders == []
+
+
 def test_runtime_e_fixed_point_calls_pass_explicit_e_shape():
     root = Path(__file__).resolve().parents[2]
     offenders: list[str] = []

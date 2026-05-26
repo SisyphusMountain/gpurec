@@ -818,7 +818,7 @@ def test_autograd_forward_uses_resident_solve_boundary(monkeypatch):
         clear_runtime_after_backward=False,
         genewise=False,
         warm_E=warm_E,
-        wave_layout={"root_clade_ids": torch.tensor([0, 1])},
+        wave_layout={"root_clade_ids": torch.tensor([1, 0])},
         origination_probs=None,
         fixed_iters_Pi=2,
         last_solver_stats=None,
@@ -833,7 +833,10 @@ def test_autograd_forward_uses_resident_solve_boundary(monkeypatch):
         "E_convergence_delta": 0.0,
     }
     pi_out = {
-        "Pi_wave_ordered": torch.ones((2, 2), dtype=theta.dtype),
+        "Pi_wave_ordered": torch.tensor(
+            [[1.0, 2.0], [3.0, 4.0]],
+            dtype=theta.dtype,
+        ),
         "Pibar_wave_ordered": torch.ones((2, 2), dtype=theta.dtype) * 2.0,
         "uniform_pibar_row_max": torch.arange(2, dtype=theta.dtype),
         "Pi_max_iterations": 2,
@@ -869,19 +872,17 @@ def test_autograd_forward_uses_resident_solve_boundary(monkeypatch):
             max_transfer=torch.zeros(2, dtype=theta.dtype),
         )
 
-    def fake_compute_nll(
-        pi,
+    def fake_compute_nll_root_rows(
+        root_rows,
         e_arg,
-        root_clade_ids,
         origination_probs,
         *,
         origination_probs_prepared,
     ):
         likelihood_calls.append(
             {
-                "pi": pi,
+                "root_rows": root_rows,
                 "e": e_arg,
-                "root_clade_ids": root_clade_ids,
                 "origination_probs": origination_probs,
                 "origination_probs_prepared": origination_probs_prepared,
             }
@@ -893,7 +894,11 @@ def test_autograd_forward_uses_resident_solve_boundary(monkeypatch):
         "solve_resident_e_pi",
         fake_solve_resident_e_pi,
     )
-    monkeypatch.setattr(api_autograd, "compute_nll", fake_compute_nll)
+    monkeypatch.setattr(
+        api_autograd,
+        "compute_nll_root_rows",
+        fake_compute_nll_root_rows,
+    )
 
     actual = api_autograd._GeneReconFunction.apply(theta, static, "sum")
 
@@ -908,9 +913,11 @@ def test_autograd_forward_uses_resident_solve_boundary(monkeypatch):
     assert solve_calls[0]["warm_start_E"] is warm_E
     assert solve_calls[0]["grad_enabled"] is False
     assert len(likelihood_calls) == 1
-    assert likelihood_calls[0]["pi"] is pi_out["Pi_wave_ordered"]
+    torch.testing.assert_close(
+        likelihood_calls[0]["root_rows"],
+        pi_out["Pi_wave_ordered"][static.wave_layout["root_clade_ids"], :],
+    )
     assert likelihood_calls[0]["e"] is e
-    assert likelihood_calls[0]["root_clade_ids"] is static.wave_layout["root_clade_ids"]
     assert likelihood_calls[0]["origination_probs"] is None
     assert likelihood_calls[0]["origination_probs_prepared"] is True
     assert static.warm_E is not e
