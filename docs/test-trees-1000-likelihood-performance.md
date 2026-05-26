@@ -155,6 +155,15 @@ A materialized steady check measured `8192` at `1.2848945879959501s` median and
 memory.  The near-tie is not enough to move the default away from the lower
 memory `8192` shape.
 
+Split-budget rechecks also kept the root-wave and DTS partial-row caps
+disabled.  With `E=8, Pi=4`, root caps at `8`, `16`, and `32` measured cold
+totals of `2.270672336977441s`, `2.273461366945412s`, and
+`2.2887684240122326s`, but their measured passes stayed at `1.329s` to
+`1.332s`; the apparent total movement was construction noise.  DTS partial-row
+caps at `50000`, `75000`, and `100000` measured `2.2849829280166887s`,
+`2.2872178590041585s`, and `2.275073692027945s`, all slower than the
+same-sweep uncapped `2.2581794050056487s` sample and with no loss change.
+
 Split-budget near-reference command:
 
 ```bash
