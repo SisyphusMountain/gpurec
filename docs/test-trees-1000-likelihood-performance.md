@@ -471,6 +471,13 @@ Rejected follow-ups:
   root-only waves.  A layout audit found that the current `21` skipped waves
   cover exactly the same `65` rows as the set of waves whose rows are never
   used as later DTS children; no extra whole-wave skip is available.
+- Precomputing the root-only wave flags in the retained Rust layout was not a
+  win.  The prototype passed targeted layout and resident forward tests after
+  guarding the flags to the no-grad root-row path, but fixed4 steady timing
+  measured `1.278411909006536s` median and `1.274784742970951s` minimum, and a
+  cold fixed4 sample measured `2.293933361012023s` total to first likelihood.
+  That is in the existing timing band but slower than the current best steady
+  median, so the added layout field was reverted.
 - There is also no row-level final-Pibar skip hiding inside mixed waves on this
   generated layout.  A row audit found `6,416,248` rows used as later DTS
   children and `1,000` root rows across `6,417,248` total rows, with `0`
