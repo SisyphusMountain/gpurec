@@ -1930,7 +1930,9 @@ not edit files.  New or still-open findings from that refresh are:
   same support boundary through `optional_positive_int()`,
   `optional_nonnegative_int()`, and `optional_positive_even_int()`, including
   workflow string adapters, core AleRax family-selection validation, and shared
-  batch-planning controls such as `clade_budget` and `family_chunk_size`.
+  batch-planning controls such as `clade_budget` and `family_chunk_size`.  The
+  resident uniform memory-policy estimators also delegate their integer
+  dimensions and candidate controls to the shared helpers.
 - The float-range part of the duplicated-validation finding is now reduced as
   well.  `gpurec._validation` owns `finite_float()`, `positive_float()`, and
   `nonnegative_float()`; the API validation module re-exports those helpers for

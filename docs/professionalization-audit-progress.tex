@@ -7278,9 +7278,11 @@ support helpers, and \texttt{RunConfig} string adapters delegate to them for
 workflow integer controls.  Optional integer controls now follow that same
 support boundary through \texttt{optional\_positive\_int()},
 \texttt{optional\_nonnegative\_int()}, and
-\texttt{optional\_positive\_even\_int()}, including workflow string adapters
+\texttt{optional\_positive\_even\_int()}, including workflow string adapters,
 core AleRax family-selection validation, and shared batch-planning controls
-such as \texttt{clade\_budget} and \texttt{family\_chunk\_size}.
+such as \texttt{clade\_budget} and \texttt{family\_chunk\_size}.  The
+resident uniform memory-policy estimators now delegate integer dimensions and
+candidate controls to the shared helpers too.
 
 The float-range slice now follows the same ownership boundary:
 \texttt{gpurec.\_validation} owns \texttt{finite\_float()},

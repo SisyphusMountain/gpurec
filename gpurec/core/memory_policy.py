@@ -1,45 +1,19 @@
 """Memory estimates and GPU policy helpers for uniform wave kernels."""
 from __future__ import annotations
 
-import math
 import os
 from dataclasses import dataclass
-from numbers import Integral, Real
 from typing import Sequence
 
 import torch
+
+from gpurec._validation import nonnegative_int as _nonnegative_int
+from gpurec._validation import positive_int as _positive_int
 
 from .batch_planning import plan_family_batches
 
 
 GIB = 1024 ** 3
-
-
-def _int_dimension(name: str, value: int | float) -> int:
-    if isinstance(value, bool):
-        raise ValueError(f"{name} must be an integer")
-    if isinstance(value, Integral):
-        return int(value)
-    if isinstance(value, Real):
-        number = float(value)
-        if not math.isfinite(number) or not number.is_integer():
-            raise ValueError(f"{name} must be an integer")
-        return int(number)
-    raise ValueError(f"{name} must be an integer")
-
-
-def _positive_int(name: str, value: int | float) -> int:
-    number = _int_dimension(name, value)
-    if number <= 0:
-        raise ValueError(f"{name} must be positive")
-    return number
-
-
-def _nonnegative_int(name: str, value: int | float) -> int:
-    number = _int_dimension(name, value)
-    if number < 0:
-        raise ValueError(f"{name} must be non-negative")
-    return number
 
 
 def dtype_nbytes(dtype: torch.dtype) -> int:

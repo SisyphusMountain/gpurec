@@ -272,7 +272,8 @@ Possible simplifications:
 
 - Keep `workflow/config.py` string/path adapters thin over shared validators;
   required and optional integer controls now delegate to `gpurec._validation`,
-  including the shared batch-planning adapters.
+  including the shared batch-planning adapters and resident memory-policy
+  estimators.
 - Keep `dtype_from_name()` workflow-specific only if CLI wording needs it.
 - Keep optimizer modes only if behavior is tested by fake-model guards.
 
